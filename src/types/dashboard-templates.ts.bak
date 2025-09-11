@@ -1,0 +1,736 @@
+// Dashboard Template System Types
+// Comprehensive type definitions for the WS-211 Client Dashboard Templates feature
+
+// Base interfaces
+export interface BaseEntity {
+  id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+// Dashboard Template Configuration
+export interface DashboardTemplate extends BaseEntity {
+  supplier_id: string;
+  name: string;
+  description: string;
+  category: DashboardTemplateCategory;
+  
+  // Status and visibility
+  is_active: boolean;
+  is_default: boolean;
+  is_premium: boolean;
+  sort_order: number;
+  
+  // Assignment and targeting
+  target_criteria: TemplateCriteria;
+  assignment_rules: AssignmentRule[];
+  
+  // Visual branding
+  branding_id?: string;
+  branding_config?: BrandingConfig;
+  
+  // Performance and caching
+  cache_duration_minutes: number;
+  priority_loading: boolean;
+  
+  // Metadata
+  usage_count: number;
+  last_used_at?: string;
+  client_feedback_score?: number;
+  
+  // Relationships
+  sections: DashboardSection[];
+  clients: ClientDashboardAssignment[];
+}
+
+export type DashboardTemplateCategory = 
+  | 'luxury' 
+  | 'standard' 
+  | 'budget' 
+  | 'destination' 
+  | 'venue_specific'
+  | 'photographer_focused'
+  | 'planner_focused'
+  | 'multi_vendor'
+  | 'custom';
+
+// Template Criteria for Auto-Assignment
+export interface TemplateCriteria {
+  budget_range?: {
+    min: number;
+    max: number;
+    currency: string;
+  };
+  guest_count_range?: {
+    min: number;
+    max: number;
+  };
+  wedding_style?: string[];
+  venue_types?: string[];
+  season?: ('spring' | 'summer' | 'fall' | 'winter')[];
+  location_type?: ('local' | 'destination' | 'international')[];
+  planning_timeline?: {
+    min_months: number;
+    max_months: number;
+  };
+  services_required?: string[];
+  complexity_level?: 'simple' | 'moderate' | 'complex' | 'luxury';
+}
+
+// Assignment Rules
+export interface AssignmentRule {
+  id: string;
+  name: string;
+  condition_type: 'budget' | 'guest_count' | 'style' | 'venue' | 'timeline' | 'custom';
+  operator: 'equals' | 'not_equals' | 'greater_than' | 'less_than' | 'contains' | 'not_contains' | 'in_range';
+  value: any;
+  priority: number; // Higher number = higher priority
+  is_active: boolean;
+}
+
+// Dashboard Section Configuration
+export interface DashboardSection extends BaseEntity {
+  template_id: string;
+  section_type: DashboardSectionType;
+  widget_id?: string;
+  
+  // Basic properties
+  title: string;
+  description: string;
+  
+  // Layout positioning (grid-based)
+  position: {
+    x: number; // Grid column (0-11 for 12-column grid)
+    y: number; // Grid row
+  };
+  size: {
+    width: number; // Grid columns span
+    height: number; // Grid rows span
+    min_width?: number;
+    min_height?: number;
+    max_width?: number;
+    max_height?: number;
+  };
+  
+  // Display settings
+  is_active: boolean;
+  is_required: boolean;
+  is_collapsible: boolean;
+  is_moveable: boolean;
+  is_resizable: boolean;
+  sort_order: number;
+  z_index: number;
+  
+  // Section-specific configuration
+  section_config: SectionConfig;
+  
+  // Responsive behavior
+  responsive_config: {
+    mobile?: Partial<DashboardSection>;
+    tablet?: Partial<DashboardSection>;
+    desktop?: Partial<DashboardSection>;
+  };
+  
+  // Conditional display
+  conditional_rules?: ConditionalRule[];
+  
+  // Performance
+  lazy_load: boolean;
+  cache_settings?: CacheSettings;
+  
+  // Analytics
+  interaction_tracking: boolean;
+  view_analytics: SectionAnalytics;
+}
+
+export type DashboardSectionType = 
+  // Essential sections
+  | 'welcome'
+  | 'countdown'
+  | 'progress_overview'
+  
+  // Planning sections
+  | 'timeline'
+  | 'task_manager'
+  | 'checklist'
+  | 'milestone_tracker'
+  
+  // Financial sections
+  | 'budget_tracker'
+  | 'payment_schedule'
+  | 'expense_tracker'
+  | 'invoice_viewer'
+  
+  // Communication sections
+  | 'message_center'
+  | 'vendor_chat'
+  | 'notification_feed'
+  | 'announcement_board'
+  
+  // Visual sections
+  | 'photo_gallery'
+  | 'inspiration_board'
+  | 'mood_board'
+  | 'venue_showcase'
+  
+  // Vendor sections
+  | 'vendor_portfolio'
+  | 'vendor_directory'
+  | 'vendor_reviews'
+  | 'booking_calendar'
+  
+  // Guest management
+  | 'guest_list'
+  | 'rsvp_manager'
+  | 'seating_chart'
+  | 'guest_messages'
+  
+  // Event details
+  | 'ceremony_details'
+  | 'reception_details'
+  | 'travel_info'
+  | 'accommodation_info'
+  | 'weather_widget'
+  
+  // Documents
+  | 'contract_viewer'
+  | 'document_library'
+  | 'itinerary_viewer'
+  | 'emergency_contacts'
+  
+  // Interactive features
+  | 'feedback_form'
+  | 'survey_widget'
+  | 'poll_widget'
+  | 'quiz_widget'
+  
+  // Analytics and insights
+  | 'analytics_dashboard'
+  | 'progress_charts'
+  | 'budget_insights'
+  | 'timeline_insights'
+  
+  // Custom and AI
+  | 'ai_assistant'
+  | 'custom_widget'
+  | 'embedded_content'
+  | 'social_feed';
+
+// Section Configuration (flexible JSON structure)
+export interface SectionConfig {
+  // Common settings
+  theme?: 'default' | 'minimal' | 'card' | 'modern' | 'elegant';
+  color_scheme?: 'brand' | 'neutral' | 'custom';
+  custom_colors?: {
+    background: string;
+    text: string;
+    accent: string;
+    border: string;
+  };
+  
+  // Layout settings
+  layout?: 'grid' | 'list' | 'carousel' | 'masonry' | 'kanban' | 'calendar';
+  columns?: number;
+  spacing?: 'tight' | 'normal' | 'loose';
+  
+  // Content settings
+  show_header?: boolean;
+  show_footer?: boolean;
+  show_border?: boolean;
+  show_shadow?: boolean;
+  
+  // Interactive settings
+  enable_search?: boolean;
+  enable_filter?: boolean;
+  enable_sort?: boolean;
+  enable_export?: boolean;
+  enable_print?: boolean;
+  
+  // Data source settings
+  data_source?: string;
+  refresh_interval?: number;
+  max_items?: number;
+  pagination?: boolean;
+  items_per_page?: number;
+  
+  // Widget-specific settings (varies by section_type)
+  widget_settings?: Record<string, any>;
+  
+  // Custom CSS and styling
+  custom_css?: string;
+  css_classes?: string[];
+}
+
+// Conditional Rules for Section Display
+export interface ConditionalRule {
+  id: string;
+  field: string;
+  operator: 'equals' | 'not_equals' | 'greater_than' | 'less_than' | 'contains' | 'exists';
+  value: any;
+  logic_operator?: 'and' | 'or';
+}
+
+// Cache Settings
+export interface CacheSettings {
+  enabled: boolean;
+  duration_minutes: number;
+  vary_by_user: boolean;
+  vary_by_device: boolean;
+}
+
+// Section Analytics
+export interface SectionAnalytics {
+  views: number;
+  unique_viewers: number;
+  interactions: number;
+  time_spent_seconds: number;
+  last_viewed_at?: string;
+  engagement_score: number;
+}
+
+// Branding Configuration
+export interface BrandingConfig extends BaseEntity {
+  supplier_id: string;
+  name: string;
+  description?: string;
+  
+  // Color palette
+  colors: {
+    primary: string;
+    secondary?: string;
+    accent?: string;
+    text: string;
+    background: string;
+    surface: string;
+    border: string;
+    success?: string;
+    warning?: string;
+    error?: string;
+    info?: string;
+  };
+  
+  // Typography
+  typography: {
+    font_family: string;
+    heading_font?: string;
+    font_size_base: number;
+    font_weights: {
+      normal: number;
+      medium: number;
+      bold: number;
+    };
+    line_height: number;
+    letter_spacing?: number;
+  };
+  
+  // Visual assets
+  assets: {
+    logo_url?: string;
+    logo_dark_url?: string;
+    favicon_url?: string;
+    background_image_url?: string;
+    background_pattern?: string;
+    watermark_url?: string;
+  };
+  
+  // Layout preferences
+  layout: {
+    border_radius: number;
+    shadow_level: 'none' | 'sm' | 'md' | 'lg' | 'xl';
+    spacing_scale: number;
+    container_width: 'sm' | 'md' | 'lg' | 'xl' | 'full';
+    grid_gaps: number;
+  };
+  
+  // Theme settings
+  theme: {
+    mode: 'light' | 'dark' | 'auto';
+    color_scheme: 'vibrant' | 'muted' | 'monochrome' | 'pastel' | 'bold';
+    contrast_level: 'standard' | 'high' | 'higher';
+  };
+  
+  // Custom styling
+  custom_css?: string;
+  css_variables?: Record<string, string>;
+  
+  // Vendor-specific branding
+  vendor_type: string;
+  wedding_style: string;
+  brand_personality: string[];
+  
+  // Status
+  is_active: boolean;
+  is_default: boolean;
+}
+
+// Widget Library Types
+export interface WidgetDefinition extends BaseEntity {
+  name: string;
+  description: string;
+  category: WidgetCategory;
+  subcategory?: string;
+  
+  // Visual
+  icon: string;
+  thumbnail_url?: string;
+  preview_images?: string[];
+  
+  // Sizing and layout
+  default_size: {
+    width: number;
+    height: number;
+    min_width?: number;
+    min_height?: number;
+    max_width?: number;
+    max_height?: number;
+  };
+  
+  // Configuration
+  settings_schema: WidgetSettingField[];
+  default_settings: Record<string, any>;
+  
+  // Restrictions and requirements
+  tier_restrictions: SubscriptionTier[];
+  vendor_type_restrictions?: string[];
+  wedding_style_compatibility?: string[];
+  dependencies?: string[];
+  
+  // Metadata
+  is_premium: boolean;
+  is_custom: boolean;
+  is_official: boolean;
+  installation_count: number;
+  rating: number;
+  reviews_count: number;
+  
+  // Developer info
+  created_by: WidgetCreator;
+  version: string;
+  changelog?: VersionChange[];
+  
+  // Technical
+  component_name: string;
+  bundle_size_kb?: number;
+  performance_score?: number;
+}
+
+export type WidgetCategory = 
+  | 'essential'
+  | 'communication'
+  | 'planning'
+  | 'financial'
+  | 'visual'
+  | 'analytics'
+  | 'automation'
+  | 'integration'
+  | 'social'
+  | 'custom';
+
+export interface WidgetSettingField {
+  key: string;
+  label: string;
+  description?: string;
+  type: SettingFieldType;
+  required: boolean;
+  default_value: any;
+  
+  // Validation
+  validation?: FieldValidation;
+  
+  // Options (for select, radio, checkbox)
+  options?: SelectOption[];
+  
+  // Conditional display
+  conditional?: FieldConditional;
+  
+  // UI hints
+  placeholder?: string;
+  help_text?: string;
+  group?: string;
+}
+
+export type SettingFieldType = 
+  | 'text'
+  | 'textarea'
+  | 'number'
+  | 'boolean'
+  | 'select'
+  | 'multiselect'
+  | 'radio'
+  | 'checkbox'
+  | 'color'
+  | 'image'
+  | 'file'
+  | 'url'
+  | 'email'
+  | 'date'
+  | 'datetime'
+  | 'time'
+  | 'json'
+  | 'code';
+
+export interface FieldValidation {
+  min?: number;
+  max?: number;
+  min_length?: number;
+  max_length?: number;
+  pattern?: string;
+  custom_validator?: string;
+  error_message?: string;
+}
+
+export interface SelectOption {
+  value: string;
+  label: string;
+  description?: string;
+  disabled?: boolean;
+  group?: string;
+}
+
+export interface FieldConditional {
+  field: string;
+  operator: 'equals' | 'not_equals' | 'contains' | 'greater_than' | 'less_than';
+  value: any;
+}
+
+export interface WidgetCreator {
+  type: 'wedsync' | 'partner' | 'community';
+  name: string;
+  avatar?: string;
+  verified: boolean;
+  website?: string;
+}
+
+export interface VersionChange {
+  version: string;
+  date: string;
+  changes: string[];
+  breaking_changes?: string[];
+}
+
+// Client Dashboard Assignment
+export interface ClientDashboardAssignment extends BaseEntity {
+  client_id: string;
+  template_id: string;
+  supplier_id: string;
+  
+  // Assignment details
+  assigned_by: string; // user_id
+  assignment_reason: 'manual' | 'auto_rule' | 'client_request' | 'template_default';
+  assignment_metadata?: Record<string, any>;
+  
+  // Customization
+  custom_sections?: DashboardSection[];
+  hidden_sections?: string[]; // section IDs
+  branding_overrides?: Partial<BrandingConfig>;
+  
+  // Status
+  is_active: boolean;
+  activation_date?: string;
+  expiry_date?: string;
+  
+  // Analytics
+  client_feedback?: ClientFeedback;
+  usage_analytics: DashboardUsageAnalytics;
+}
+
+export interface ClientFeedback {
+  rating: number; // 1-5
+  comments?: string;
+  helpful_sections: string[];
+  unhelpful_sections: string[];
+  suggested_improvements?: string;
+  submitted_at: string;
+}
+
+export interface DashboardUsageAnalytics {
+  total_visits: number;
+  unique_visits: number;
+  total_time_spent_minutes: number;
+  average_session_duration_minutes: number;
+  most_viewed_sections: Array<{
+    section_id: string;
+    views: number;
+    time_spent_minutes: number;
+  }>;
+  last_visit_at?: string;
+  device_breakdown: {
+    desktop: number;
+    tablet: number;
+    mobile: number;
+  };
+  browser_breakdown: Record<string, number>;
+}
+
+// Subscription tiers for restrictions
+export type SubscriptionTier = 
+  | 'free'
+  | 'starter'
+  | 'professional'
+  | 'scale'
+  | 'enterprise';
+
+// API Request/Response Types
+export interface CreateDashboardTemplateRequest {
+  name: string;
+  description: string;
+  category: DashboardTemplateCategory;
+  target_criteria?: TemplateCriteria;
+  branding_config?: Partial<BrandingConfig>;
+  sections: Omit<DashboardSection, 'id' | 'created_at' | 'updated_at' | 'template_id'>[];
+}
+
+export interface UpdateDashboardTemplateRequest extends Partial<CreateDashboardTemplateRequest> {
+  is_active?: boolean;
+  is_default?: boolean;
+  sort_order?: number;
+}
+
+export interface DashboardTemplateResponse extends DashboardTemplate {
+  sections: DashboardSection[];
+  usage_statistics?: {
+    active_assignments: number;
+    average_rating: number;
+    total_views: number;
+  };
+}
+
+export interface CreateBrandingConfigRequest {
+  name: string;
+  colors: BrandingConfig['colors'];
+  typography: BrandingConfig['typography'];
+  assets?: BrandingConfig['assets'];
+  layout?: BrandingConfig['layout'];
+  theme?: BrandingConfig['theme'];
+  custom_css?: string;
+  vendor_type: string;
+  wedding_style: string;
+  brand_personality: string[];
+}
+
+export interface UpdateBrandingConfigRequest extends Partial<CreateBrandingConfigRequest> {
+  is_active?: boolean;
+  is_default?: boolean;
+}
+
+export interface AssignTemplateToClientRequest {
+  client_id: string;
+  template_id: string;
+  assignment_reason: ClientDashboardAssignment['assignment_reason'];
+  custom_sections?: DashboardSection[];
+  branding_overrides?: Partial<BrandingConfig>;
+  activation_date?: string;
+  expiry_date?: string;
+}
+
+// Widget Instance Types (for runtime)
+export interface WidgetInstance {
+  id: string;
+  widget_definition_id: string;
+  section_id: string;
+  settings: Record<string, any>;
+  is_active: boolean;
+  
+  // Runtime data
+  data?: any;
+  error?: string;
+  loading?: boolean;
+  last_updated_at?: string;
+}
+
+// Template Builder State
+export interface TemplateBuilderState {
+  template: DashboardTemplate;
+  sections: DashboardSection[];
+  branding: BrandingConfig;
+  
+  // UI State
+  selected_section_id?: string;
+  is_preview_mode: boolean;
+  preview_device: 'desktop' | 'tablet' | 'mobile';
+  
+  // Validation
+  validation_errors: ValidationError[];
+  is_valid: boolean;
+  
+  // Persistence
+  is_saving: boolean;
+  has_unsaved_changes: boolean;
+  last_saved_at?: string;
+}
+
+export interface ValidationError {
+  type: 'template' | 'section' | 'branding' | 'widget';
+  field: string;
+  message: string;
+  severity: 'error' | 'warning' | 'info';
+}
+
+// Events and Hooks
+export interface DashboardEvent {
+  type: string;
+  timestamp: string;
+  user_id?: string;
+  client_id?: string;
+  template_id?: string;
+  section_id?: string;
+  data?: Record<string, any>;
+}
+
+export type DashboardEventType = 
+  | 'template_created'
+  | 'template_updated'
+  | 'template_deleted'
+  | 'template_assigned'
+  | 'template_unassigned'
+  | 'section_added'
+  | 'section_removed'
+  | 'section_moved'
+  | 'section_resized'
+  | 'section_configured'
+  | 'branding_applied'
+  | 'dashboard_viewed'
+  | 'section_interacted'
+  | 'widget_installed'
+  | 'widget_configured'
+  | 'client_feedback_submitted';
+
+// Export all types for easy importing
+export type {
+  BaseEntity,
+  DashboardTemplate,
+  DashboardTemplateCategory,
+  TemplateCriteria,
+  AssignmentRule,
+  DashboardSection,
+  DashboardSectionType,
+  SectionConfig,
+  ConditionalRule,
+  CacheSettings,
+  SectionAnalytics,
+  BrandingConfig,
+  WidgetDefinition,
+  WidgetCategory,
+  WidgetSettingField,
+  SettingFieldType,
+  FieldValidation,
+  SelectOption,
+  FieldConditional,
+  WidgetCreator,
+  VersionChange,
+  ClientDashboardAssignment,
+  ClientFeedback,
+  DashboardUsageAnalytics,
+  SubscriptionTier,
+  CreateDashboardTemplateRequest,
+  UpdateDashboardTemplateRequest,
+  DashboardTemplateResponse,
+  CreateBrandingConfigRequest,
+  UpdateBrandingConfigRequest,
+  AssignTemplateToClientRequest,
+  WidgetInstance,
+  TemplateBuilderState,
+  ValidationError,
+  DashboardEvent,
+  DashboardEventType
+};

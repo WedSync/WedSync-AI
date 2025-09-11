@@ -1,0 +1,153 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { OpenAIDietaryService } from '@/lib/integrations/OpenAIDietaryService'
+import { withSecureValidation } from '@/lib/security/withSecureValidation'
+import { z } from 'zod'
+
+// Request validation schema
+const dietaryAnalysisSchema = z.object({
+  ingredients: z.array(z.string().min(1, 'Ingredient names cannot be empty')),
+  dietaryRestrictions: z.array(z.string().min(1, 'Restriction names cannot be empty')),
+  culturalRequirements: z.array(z.string()).optional(),
+  allergenWarnings: z.array(z.string()).optional(),
+  portionSize: z.number().positive().optional(),
+  preparationMethod: z.string().optional(),
+  priority: z.enum(['low', 'normal', 'high']).optional().default('normal')
+})
+
+// Initialize OpenAI service
+const openAIService = new OpenAIDietaryService({
+  apiKey: process.env.OPENAI_API_KEY!,
+  maxRetries: 3,
+  timeout: 30000
+})
+
+export async function POST(request: NextRequest) {
+  return withSecureValidation(request, async ({ body, user }) => {
+    try {
+      // Validate request body
+      const validatedData = dietaryAnalysisSchema.parse(body)
+      
+      // Check user permissions for dietary analysis
+      if (!user.organizationId) {
+        return NextResponse.json(
+          { 
+            error: 'Organization membership required for dietary analysis',
+            code: 'NO_ORGANIZATION'
+          },
+          { status: 403 }
+        )
+      }
+
+      // Perform dietary analysis
+      const analysisResult = await openAIService.analyzeDietaryConflicts(
+        {
+          ingredients: validatedData.ingredients,
+          dietaryRestrictions: validatedData.dietaryRestrictions,
+          culturalRequirements: validatedData.culturalRequirements,
+          allergenWarnings: validatedData.allergenWarnings,
+          portionSize: validatedData.portionSize,
+          preparationMethod: validatedData.preparationMethod
+        },
+        user.id
+      )
+
+      // Log the analysis for audit
+      console.log(`[DIETARY ANALYSIS] User ${user.id} analyzed ${validatedData.ingredients.length} ingredients for ${validatedData.dietaryRestrictions.length} restrictions`, {
+        userId: user.id,
+        organizationId: user.organizationId,
+        ingredientCount: validatedData.ingredients.length,
+        restrictionCount: validatedData.dietaryRestrictions.length,
+        complianceScore: analysisResult.complianceScore,
+        riskLevel: analysisResult.riskLevel
+      })
+
+      return NextResponse.json({
+        success: true,
+        data: {
+          analysisId: `analysis_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+          ...analysisResult,
+          processedAt: new Date().toISOString(),
+          userId: user.id
+        }
+      })
+
+    } catch (error: any) {
+      console.error('[DIETARY ANALYSIS ERROR]', error)
+      
+      if (error instanceof z.ZodError) {
+        return NextResponse.json(
+          {
+            error: 'Validation failed',
+            code: 'VALIDATION_ERROR',
+            details: error.errors
+          },
+          { status: 400 }
+        )
+      }
+
+      if (error.message?.includes('Rate limit exceeded')) {
+        return NextResponse.json(
+          {
+            error: 'Rate limit exceeded',
+            code: 'RATE_LIMIT_EXCEEDED',
+            message: 'Too many analysis requests. Please try again later.'
+          },
+          { status: 429 }
+        )
+      }
+
+      return NextResponse.json(
+        {
+          error: 'Dietary analysis failed',
+          code: 'ANALYSIS_ERROR',
+          message: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+        },
+        { status: 500 }
+      )
+    }
+  }, {
+    requireAuth: true,
+    requireOrganization: true,
+    bodySchema: dietaryAnalysisSchema,
+    rateLimitKey: 'dietary_analysis',
+    rateLimitMax: 50,
+    rateLimitWindowMs: 60000
+  })
+}
+
+export async function GET(request: NextRequest) {
+  return withSecureValidation(request, async ({ user, query }) => {
+    try {
+      // Get service health status
+      const healthStatus = await openAIService.getServiceHealth()
+      
+      return NextResponse.json({
+        success: true,
+        service: 'dietary-analysis',
+        health: healthStatus,
+        endpoints: {
+          analysis: '/api/catering/dietary/analysis',
+          menu_generation: '/api/catering/dietary/menu',
+          real_time_validation: '/api/catering/dietary/validate'
+        },
+        rate_limits: {
+          analysis: '50 requests per minute',
+          menu_generation: '10 requests per minute'
+        }
+      })
+    } catch (error: any) {
+      return NextResponse.json(
+        {
+          error: 'Health check failed',
+          code: 'HEALTH_CHECK_ERROR'
+        },
+        { status: 500 }
+      )
+    }
+  }, {
+    requireAuth: true,
+    rateLimitKey: 'dietary_health_check',
+    rateLimitMax: 30,
+    rateLimitWindowMs: 60000
+  })
+}

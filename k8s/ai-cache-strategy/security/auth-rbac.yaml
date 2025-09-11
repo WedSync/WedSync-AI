@@ -1,0 +1,638 @@
+# Authentication and Authorization Framework
+# WS-241: RBAC with comprehensive audit logging
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ai-cache-admin
+  namespace: ai-cache-strategy
+  labels:
+    security.wedsync.com/role: "admin"
+    security.wedsync.com/audit: "required"
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ai-cache-operator
+  namespace: ai-cache-strategy
+  labels:
+    security.wedsync.com/role: "operator"
+    security.wedsync.com/audit: "required"
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ai-cache-readonly
+  namespace: ai-cache-strategy
+  labels:
+    security.wedsync.com/role: "readonly"
+    security.wedsync.com/audit: "required"
+
+---
+# Custom Resource Definitions for RBAC
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: wedsync-ai-cache-admin
+  labels:
+    security.wedsync.com/compliance: "soc2"
+rules:
+# Full access to AI cache resources
+- apiGroups: [""]
+  resources: ["pods", "services", "configmaps", "secrets", "persistentvolumeclaims"]
+  verbs: ["*"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "statefulsets", "replicasets"]
+  verbs: ["*"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["networkpolicies", "ingresses"]
+  verbs: ["*"]
+- apiGroups: ["policy"]
+  resources: ["poddisruptionbudgets", "podsecuritypolicies"]
+  verbs: ["*"]
+# Monitoring and metrics
+- apiGroups: ["monitoring.coreos.com"]
+  resources: ["servicemonitors", "prometheusrules"]
+  verbs: ["*"]
+# Security policies
+- apiGroups: ["security.istio.io"]
+  resources: ["peerauthentications", "authorizationpolicies"]
+  verbs: ["*"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: wedsync-ai-cache-operator
+rules:
+# Read-write access to deployments and services
+- apiGroups: [""]
+  resources: ["pods", "services", "configmaps"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "statefulsets"]
+  verbs: ["get", "list", "watch", "update", "patch"]
+# Scaling operations
+- apiGroups: ["autoscaling"]
+  resources: ["horizontalpodautoscalers"]
+  verbs: ["get", "list", "watch", "update", "patch"]
+# Monitoring access
+- apiGroups: ["monitoring.coreos.com"]
+  resources: ["servicemonitors"]
+  verbs: ["get", "list", "watch"]
+# Limited secret access (not including encryption keys)
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list"]
+  resourceNames: ["redis-auth", "ai-cache-config"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: wedsync-ai-cache-readonly
+rules:
+# Read-only access to resources
+- apiGroups: [""]
+  resources: ["pods", "services", "configmaps"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "statefulsets", "replicasets"]
+  verbs: ["get", "list", "watch"]
+# Metrics and monitoring
+- apiGroups: ["monitoring.coreos.com"]
+  resources: ["servicemonitors", "prometheusrules"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["metrics.k8s.io"]
+  resources: ["*"]
+  verbs: ["get", "list"]
+
+---
+# Role Bindings
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ai-cache-admin-binding
+  namespace: ai-cache-strategy
+subjects:
+- kind: ServiceAccount
+  name: ai-cache-admin
+  namespace: ai-cache-strategy
+- kind: User
+  name: sre@wedsync.com
+  apiGroup: rbac.authorization.k8s.io
+- kind: User
+  name: devops@wedsync.com
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: wedsync-ai-cache-admin
+  apiGroup: rbac.authorization.k8s.io
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ai-cache-operator-binding
+  namespace: ai-cache-strategy
+subjects:
+- kind: ServiceAccount
+  name: ai-cache-operator
+  namespace: ai-cache-strategy
+- kind: User
+  name: engineer@wedsync.com
+  apiGroup: rbac.authorization.k8s.io
+- kind: Group
+  name: wedsync-engineers
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: wedsync-ai-cache-operator
+  apiGroup: rbac.authorization.k8s.io
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ai-cache-readonly-binding
+  namespace: ai-cache-strategy
+subjects:
+- kind: ServiceAccount
+  name: ai-cache-readonly
+  namespace: ai-cache-strategy
+- kind: Group
+  name: wedsync-support
+  apiGroup: rbac.authorization.k8s.io
+- kind: Group
+  name: wedsync-analysts
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: wedsync-ai-cache-readonly
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# JWT Token Service for API Authentication
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jwt-auth-service
+  namespace: ai-cache-strategy
+  labels:
+    security.wedsync.com/component: "authentication"
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: jwt-auth-service
+  template:
+    metadata:
+      labels:
+        app: jwt-auth-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+    spec:
+      serviceAccountName: jwt-auth-service
+      containers:
+      - name: auth-service
+        image: wedsync/jwt-auth-service:v1.0.0
+        ports:
+        - containerPort: 8080
+          name: http
+        - containerPort: 9090
+          name: grpc
+        env:
+        - name: JWT_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: jwt-secrets
+              key: secret-key
+        - name: JWT_ISSUER
+          value: "wedsync-ai-cache"
+        - name: JWT_EXPIRY
+          value: "1h"
+        - name: REFRESH_TOKEN_EXPIRY
+          value: "30d"
+        - name: OAUTH_PROVIDERS
+          value: "google,microsoft,auth0"
+        - name: MFA_REQUIRED
+          value: "true"
+        - name: AUDIT_LOGGING
+          value: "enabled"
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+
+---
+# OPA (Open Policy Agent) for Advanced Authorization
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opa-authorization
+  namespace: ai-cache-strategy
+  labels:
+    security.wedsync.com/component: "authorization"
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: opa-authorization
+  template:
+    metadata:
+      labels:
+        app: opa-authorization
+    spec:
+      containers:
+      - name: opa
+        image: openpolicyagent/opa:0.58.0-envoy
+        ports:
+        - containerPort: 8181
+        - containerPort: 9191
+        env:
+        - name: OPA_LOG_LEVEL
+          value: "info"
+        - name: OPA_LOG_FORMAT
+          value: "json"
+        args:
+        - "run"
+        - "--server"
+        - "--config-file=/config/config.yaml"
+        - "/policies"
+        volumeMounts:
+        - name: opa-policies
+          mountPath: /policies
+        - name: opa-config
+          mountPath: /config
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 300m
+            memory: 256Mi
+      volumes:
+      - name: opa-policies
+        configMap:
+          name: opa-policies
+      - name: opa-config
+        configMap:
+          name: opa-config
+
+---
+# OPA Policies for Wedding Data Access
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opa-policies
+  namespace: ai-cache-strategy
+data:
+  wedding_data_access.rego: |
+    package wedsync.ai_cache.authz
+    
+    import rego.v1
+    
+    # Default deny
+    default allow = false
+    
+    # Admin users have full access
+    allow if {
+        input.user.role == "admin"
+        input.user.authenticated == true
+    }
+    
+    # Wedding day protection - enhanced access controls on Saturdays
+    wedding_day_protection if {
+        time.weekday(time.now_ns()) == 6  # Saturday
+        input.action in ["read", "write", "delete"]
+        input.resource.type == "wedding_data"
+    }
+    
+    # Wedding day operators have restricted access
+    allow if {
+        wedding_day_protection
+        input.user.role == "wedding_operator"
+        input.action in ["read", "write"]
+        not input.action == "delete"
+    }
+    
+    # Regular operators have standard access
+    allow if {
+        not wedding_day_protection
+        input.user.role == "operator"
+        input.action in ["read", "write", "scale"]
+        input.resource.namespace == "ai-cache-strategy"
+    }
+    
+    # Readonly users have read access only
+    allow if {
+        input.user.role == "readonly"
+        input.action == "read"
+        not input.resource.sensitive == true
+    }
+    
+    # Regional data access restrictions (GDPR compliance)
+    allow if {
+        input.user.region == input.resource.region
+        input.user.role in ["operator", "admin"]
+        gdpr_compliance_check
+    }
+    
+    gdpr_compliance_check if {
+        input.resource.type == "eu_wedding_data"
+        input.user.gdpr_certified == true
+        input.user.region == "eu"
+    }
+    
+    # Audit logging requirement
+    audit_required if {
+        input.resource.classification in ["confidential", "highly_sensitive"]
+        input.action in ["read", "write", "delete", "export"]
+    }
+    
+    # Multi-factor authentication requirement
+    mfa_required if {
+        input.user.role in ["admin", "operator"]
+        input.action in ["delete", "export", "decrypt"]
+        input.resource.classification == "highly_sensitive"
+    }
+    
+    # Wedding vendor access controls
+    vendor_access if {
+        input.user.role == "vendor"
+        input.resource.wedding_id == input.user.associated_wedding_id
+        input.action in ["read", "update"]
+        not input.resource.type == "payment_info"
+    }
+    
+    # Emergency access during incidents
+    emergency_access if {
+        input.context.emergency_mode == true
+        input.user.role in ["admin", "sre"]
+        input.action in ["read", "write", "restart"]
+        input.context.incident_id != ""
+    }
+    
+    allow if emergency_access
+    allow if vendor_access
+
+  config.yaml: |
+    services:
+      authz:
+        url: http://bundle-service:8080
+    
+    bundles:
+      wedsync_policies:
+        resource: /policies/wedding_data_access.rego
+        polling:
+          min_delay_seconds: 10
+          max_delay_seconds: 20
+
+---
+# Audit Logging Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: audit-logger
+  namespace: ai-cache-strategy
+  labels:
+    security.wedsync.com/component: "audit"
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: audit-logger
+  template:
+    metadata:
+      labels:
+        app: audit-logger
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+    spec:
+      containers:
+      - name: audit-logger
+        image: wedsync/audit-logger:v1.0.0
+        ports:
+        - containerPort: 8080
+        - containerPort: 9092  # gRPC for log ingestion
+        env:
+        - name: LOG_LEVEL
+          value: "info"
+        - name: AUDIT_RETENTION_DAYS
+          value: "2555"  # 7 years for wedding industry
+        - name: COMPLIANCE_MODE
+          value: "SOC2_GDPR_CCPA"
+        - name: WEDDING_DATA_CLASSIFICATION
+          value: "HIGHLY_SENSITIVE"
+        - name: ELASTICSEARCH_URL
+          valueFrom:
+            secretKeyRef:
+              name: elasticsearch-credentials
+              key: url
+        volumeMounts:
+        - name: audit-logs
+          mountPath: /logs
+        - name: audit-config
+          mountPath: /config
+        resources:
+          requests:
+            cpu: 200m
+            memory: 512Mi
+          limits:
+            cpu: 500m
+            memory: 1Gi
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+      volumes:
+      - name: audit-logs
+        persistentVolumeClaim:
+          claimName: audit-logs-pvc
+      - name: audit-config
+        configMap:
+          name: audit-config
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: audit-config
+  namespace: ai-cache-strategy
+data:
+  audit.yaml: |
+    # WedSync AI Cache Audit Configuration
+    
+    audit_rules:
+      # Authentication events
+      - name: "authentication_events"
+        events: ["login", "logout", "login_failed", "mfa_challenge"]
+        log_level: "info"
+        retention_days: 2555  # 7 years
+        
+      # Authorization events
+      - name: "authorization_events" 
+        events: ["access_granted", "access_denied", "privilege_escalation"]
+        log_level: "warning"
+        retention_days: 2555
+        
+      # Data access events
+      - name: "wedding_data_access"
+        events: ["data_read", "data_write", "data_export", "data_delete"]
+        log_level: "info"
+        retention_days: 2555
+        pii_redaction: true
+        
+      # Administrative actions
+      - name: "admin_actions"
+        events: ["user_created", "role_assigned", "config_changed", "key_rotated"]
+        log_level: "info"
+        retention_days: 2555
+        
+      # Security events
+      - name: "security_events"
+        events: ["intrusion_attempt", "anomaly_detected", "policy_violation"]
+        log_level: "error"
+        retention_days: 2555
+        immediate_alert: true
+        
+    # Compliance requirements
+    compliance:
+      soc2:
+        enabled: true
+        control_objectives: ["CC6.1", "CC6.2", "CC6.3", "CC6.7"]
+        
+      gdpr:
+        enabled: true
+        data_subject_rights: true
+        consent_tracking: true
+        breach_notification: true
+        
+      ccpa:
+        enabled: true
+        consumer_rights: true
+        opt_out_tracking: true
+        
+    # Wedding-specific audit requirements
+    wedding_industry:
+      vendor_access_logging: true
+      couple_data_access_logging: true
+      wedding_date_protection: true  # Enhanced on Saturdays
+      photo_access_logging: true
+      payment_audit_trail: true
+
+---
+# Multi-Factor Authentication Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mfa-service
+  namespace: ai-cache-strategy
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: mfa-service
+  template:
+    metadata:
+      labels:
+        app: mfa-service
+    spec:
+      containers:
+      - name: mfa-service
+        image: wedsync/mfa-service:v1.0.0
+        ports:
+        - containerPort: 8080
+        env:
+        - name: TOTP_ISSUER
+          value: "WedSync AI Cache"
+        - name: SMS_PROVIDER
+          value: "twilio"
+        - name: EMAIL_PROVIDER
+          value: "sendgrid"
+        - name: BACKUP_CODES_COUNT
+          value: "8"
+        - name: REQUIRED_FOR_ROLES
+          value: "admin,operator"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+
+---
+# API Key Management
+apiVersion: v1
+kind: Secret
+metadata:
+  name: api-keys
+  namespace: ai-cache-strategy
+  labels:
+    security.wedsync.com/type: "api-keys"
+type: Opaque
+stringData:
+  # Vendor API keys for cache integration
+  vendor-api-key-1: "ak_vendor_12345abcdef"
+  vendor-api-key-2: "ak_vendor_67890ghijkl"
+  # AI service API keys  
+  ai-service-key: "ak_ai_service_abcd1234"
+  # Monitoring API keys
+  prometheus-api-key: "ak_prom_monitoring_xyz789"
+  grafana-api-key: "ak_grafana_dashboard_123abc"
+
+---
+# Session Management
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: session-config
+  namespace: ai-cache-strategy
+data:
+  session.yaml: |
+    session:
+      # Session timeout settings
+      timeout_minutes: 60
+      absolute_timeout_hours: 8
+      
+      # Wedding day session extension
+      wedding_day_extension: true
+      wedding_day_timeout_minutes: 180  # 3 hours on Saturdays
+      
+      # Security settings
+      secure_cookies: true
+      httponly_cookies: true
+      samesite: "strict"
+      
+      # Redis session store
+      store:
+        type: "redis"
+        cluster: true
+        encryption: "AES-256-GCM"
+        
+      # Concurrent session limits
+      max_sessions_per_user: 3
+      max_sessions_per_role:
+        admin: 2
+        operator: 3
+        readonly: 5
+        vendor: 1

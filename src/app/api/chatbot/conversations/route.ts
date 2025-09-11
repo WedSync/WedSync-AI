@@ -1,0 +1,240 @@
+// ==========================================
+// WS-243: AI Chatbot - Conversations API
+// GET /api/chatbot/conversations - List conversations
+// POST /api/chatbot/conversations - Create conversation
+// ==========================================
+
+import { NextRequest, NextResponse } from 'next/server';
+import {
+  getAuthenticatedUser,
+  checkRateLimit,
+  createAuthErrorResponse,
+  createRateLimitResponse,
+  canAccessChatbot,
+} from '@/lib/auth/chatbot-auth';
+import { chatbotDB } from '@/lib/database/chatbot-database-service';
+import {
+  validateAndSanitize,
+  CreateConversationSchema,
+  ConversationQuerySchema,
+} from '@/lib/validation/chatbot-schemas';
+
+// ==========================================
+// GET - List user's conversations
+// ==========================================
+export async function GET(request: NextRequest) {
+  try {
+    // Authentication
+    const user = await getAuthenticatedUser();
+    if (!user || !canAccessChatbot(user)) {
+      return createAuthErrorResponse(
+        'Access denied. Chatbot feature required.',
+      );
+    }
+
+    // Rate limiting
+    const rateLimit = checkRateLimit(
+      `conversations:list:${user.id}`,
+      20,
+      60000,
+    );
+    if (!rateLimit.allowed) {
+      return createRateLimitResponse(rateLimit);
+    }
+
+    // Parse query parameters
+    const { searchParams } = new URL(request.url);
+    const queryData = {
+      status: searchParams.get('status') || undefined,
+      client_id: searchParams.get('client_id') || undefined,
+      wedding_id: searchParams.get('wedding_id') || undefined,
+      search: searchParams.get('search') || undefined,
+      page: parseInt(searchParams.get('page') || '1'),
+      limit: parseInt(searchParams.get('limit') || '20'),
+    };
+
+    // Validate query parameters
+    const validatedQuery = validateAndSanitize(
+      ConversationQuerySchema,
+      queryData,
+    );
+
+    // Fetch conversations
+    const result = await chatbotDB.getConversations(user.organization_id, {
+      userId: user.id,
+      ...validatedQuery,
+    });
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        conversations: result.conversations,
+        pagination: {
+          total: result.total,
+          page: validatedQuery.page,
+          limit: validatedQuery.limit,
+          pages: Math.ceil(result.total / validatedQuery.limit),
+        },
+      },
+      meta: {
+        timestamp: new Date().toISOString(),
+        rate_limit: {
+          remaining: rateLimit.remaining,
+          reset_time: rateLimit.resetTime,
+        },
+      },
+    });
+  } catch (error) {
+    console.error('GET /api/chatbot/conversations error:', error);
+
+    return NextResponse.json(
+      {
+        error: 'Failed to fetch conversations',
+        code: 'FETCH_FAILED',
+        details:
+          process.env.NODE_ENV === 'development' ? error.message : undefined,
+        timestamp: new Date().toISOString(),
+      },
+      { status: 500 },
+    );
+  }
+}
+
+// ==========================================
+// POST - Create new conversation
+// ==========================================
+export async function POST(request: NextRequest) {
+  try {
+    // Authentication
+    const user = await getAuthenticatedUser();
+    if (!user || !canAccessChatbot(user)) {
+      return createAuthErrorResponse(
+        'Access denied. Chatbot feature required.',
+      );
+    }
+
+    // Rate limiting
+    const rateLimit = checkRateLimit(
+      `conversations:create:${user.id}`,
+      5,
+      60000,
+    );
+    if (!rateLimit.allowed) {
+      return createRateLimitResponse(rateLimit);
+    }
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validatedData = validateAndSanitize(CreateConversationSchema, body);
+
+    // Validate client/wedding access if provided
+    if (validatedData.client_id) {
+      const hasAccess = await chatbotDB.getWeddingContext(
+        user.organization_id,
+        undefined,
+        validatedData.client_id,
+      );
+      if (!hasAccess || Object.keys(hasAccess).length === 0) {
+        return NextResponse.json(
+          {
+            error: 'Client not found or access denied',
+            code: 'CLIENT_ACCESS_DENIED',
+            timestamp: new Date().toISOString(),
+          },
+          { status: 403 },
+        );
+      }
+    }
+
+    if (validatedData.wedding_id) {
+      const hasAccess = await chatbotDB.getWeddingContext(
+        user.organization_id,
+        validatedData.wedding_id,
+      );
+      if (!hasAccess || Object.keys(hasAccess).length === 0) {
+        return NextResponse.json(
+          {
+            error: 'Wedding not found or access denied',
+            code: 'WEDDING_ACCESS_DENIED',
+            timestamp: new Date().toISOString(),
+          },
+          { status: 403 },
+        );
+      }
+    }
+
+    // Create conversation
+    const conversation = await chatbotDB.createConversation(
+      user.id,
+      user.organization_id,
+      validatedData,
+    );
+
+    // Log conversation creation
+    console.log(
+      `Conversation created: ${conversation.id} by user ${user.id} in org ${user.organization_id}`,
+    );
+
+    return NextResponse.json(
+      {
+        success: true,
+        data: {
+          conversation,
+          context: await chatbotDB.getWeddingContext(
+            user.organization_id,
+            conversation.wedding_id || undefined,
+            conversation.client_id || undefined,
+          ),
+        },
+        meta: {
+          timestamp: new Date().toISOString(),
+          rate_limit: {
+            remaining: rateLimit.remaining,
+            reset_time: rateLimit.resetTime,
+          },
+        },
+      },
+      { status: 201 },
+    );
+  } catch (error) {
+    console.error('POST /api/chatbot/conversations error:', error);
+
+    // Handle validation errors
+    if (error.message.includes('Validation failed')) {
+      return NextResponse.json(
+        {
+          error: 'Invalid request data',
+          code: 'VALIDATION_ERROR',
+          details: error.message,
+          timestamp: new Date().toISOString(),
+        },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      {
+        error: 'Failed to create conversation',
+        code: 'CREATE_FAILED',
+        details:
+          process.env.NODE_ENV === 'development' ? error.message : undefined,
+        timestamp: new Date().toISOString(),
+      },
+      { status: 500 },
+    );
+  }
+}
+
+// ==========================================
+// OPTIONS - CORS preflight
+// ==========================================
+export async function OPTIONS() {
+  return new NextResponse(null, {
+    status: 200,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    },
+  });
+}

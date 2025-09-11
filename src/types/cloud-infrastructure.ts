@@ -1,0 +1,550 @@
+/**
+ * Cloud Infrastructure Management System - Types and Interfaces
+ * WS-257 Team B Implementation
+ */
+
+// =====================================================
+// CORE ENUMS
+// =====================================================
+
+export enum CloudProviderType {
+  AWS = 'aws',
+  AZURE = 'azure',
+  GCP = 'gcp',
+  ALIBABA = 'alibaba',
+  DIGITALOCEAN = 'digitalocean',
+  LINODE = 'linode',
+  VULTR = 'vultr',
+  ORACLE = 'oracle',
+}
+
+export enum ResourceType {
+  COMPUTE_INSTANCE = 'compute_instance',
+  DATABASE = 'database',
+  STORAGE_BUCKET = 'storage_bucket',
+  LOAD_BALANCER = 'load_balancer',
+  NETWORK = 'network',
+  SUBNET = 'subnet',
+  SECURITY_GROUP = 'security_group',
+  CONTAINER_CLUSTER = 'container_cluster',
+  SERVERLESS_FUNCTION = 'serverless_function',
+  CDN = 'cdn',
+  DNS_ZONE = 'dns_zone',
+  SSL_CERTIFICATE = 'ssl_certificate',
+  API_GATEWAY = 'api_gateway',
+  MESSAGE_QUEUE = 'message_queue',
+  CACHE = 'cache',
+  MONITORING_DASHBOARD = 'monitoring_dashboard',
+}
+
+export enum ResourceState {
+  CREATING = 'creating',
+  RUNNING = 'running',
+  STOPPED = 'stopped',
+  ERROR = 'error',
+  DELETING = 'deleting',
+  DELETED = 'deleted',
+  UPDATING = 'updating',
+}
+
+export enum DeploymentState {
+  PLANNING = 'planning',
+  DEPLOYING = 'deploying',
+  DEPLOYED = 'deployed',
+  UPDATING = 'updating',
+  DESTROYING = 'destroying',
+  FAILED = 'failed',
+  CANCELLED = 'cancelled',
+}
+
+export enum AlertSeverity {
+  INFO = 'info',
+  WARNING = 'warning',
+  CRITICAL = 'critical',
+  EMERGENCY = 'emergency',
+}
+
+// =====================================================
+// CLOUD PROVIDER INTERFACES
+// =====================================================
+
+export interface CloudProviderCredentials {
+  [key: string]: unknown;
+}
+
+export interface AWSCredentials extends CloudProviderCredentials {
+  accessKeyId: string;
+  secretAccessKey: string;
+  sessionToken?: string;
+  defaultRegion: string;
+}
+
+export interface AzureCredentials extends CloudProviderCredentials {
+  clientId: string;
+  clientSecret: string;
+  tenantId: string;
+  subscriptionId: string;
+}
+
+export interface GCPCredentials extends CloudProviderCredentials {
+  projectId: string;
+  keyFilePath?: string;
+  keyFileContent?: string;
+  serviceAccountEmail?: string;
+}
+
+export interface CloudProviderConfiguration {
+  [key: string]: unknown;
+  defaultVpc?: string;
+  defaultSubnet?: string;
+  defaultSecurityGroup?: string;
+  tags?: Record<string, string>;
+}
+
+export interface CloudProvider {
+  id: string;
+  organizationId: string;
+  name: string;
+  providerType: CloudProviderType;
+  region: string;
+  credentials: CloudProviderCredentials;
+  configuration: CloudProviderConfiguration;
+  isActive: boolean;
+  lastSyncAt?: Date;
+  syncStatus: 'pending' | 'syncing' | 'synced' | 'error';
+  errorMessage?: string;
+  createdAt: Date;
+  updatedAt: Date;
+  createdBy: string;
+}
+
+// =====================================================
+// CLOUD RESOURCES
+// =====================================================
+
+export interface CloudResource {
+  id: string;
+  organizationId: string;
+  cloudProviderId: string;
+  resourceGroupId?: string;
+  name: string;
+  resourceType: ResourceType;
+  providerResourceId: string;
+  arnOrId?: string;
+  configuration: Record<string, unknown>;
+  state: ResourceState;
+  region: string;
+  availabilityZone?: string;
+  monthlyCost?: number;
+  currency: string;
+  costLastUpdated?: Date;
+  tags: Record<string, string>;
+  metadata: Record<string, unknown>;
+  createdAt: Date;
+  updatedAt: Date;
+  lastSyncAt?: Date;
+  createdBy: string;
+}
+
+export interface ResourceGroup {
+  id: string;
+  organizationId: string;
+  name: string;
+  description?: string;
+  tags: Record<string, string>;
+  createdAt: Date;
+  updatedAt: Date;
+  createdBy: string;
+}
+
+// =====================================================
+// DEPLOYMENT INTERFACES
+// =====================================================
+
+export interface Deployment {
+  id: string;
+  organizationId: string;
+  cloudProviderId: string;
+  name: string;
+  description?: string;
+  version: string;
+  state: DeploymentState;
+  templateContent: Record<string, unknown>;
+  templateType: 'terraform' | 'arm' | 'cloudformation' | 'pulumi' | 'ansible';
+  variables: Record<string, unknown>;
+  outputs: Record<string, unknown>;
+  lastExecutionId?: string;
+  executionLog?: string;
+  errorDetails?: Record<string, unknown>;
+  planSummary?: Record<string, unknown>;
+  estimatedCost?: number;
+  estimatedCostCurrency: string;
+  tags: Record<string, string>;
+  createdAt: Date;
+  updatedAt: Date;
+  lastDeployedAt?: Date;
+  createdBy: string;
+}
+
+// =====================================================
+// COST MANAGEMENT
+// =====================================================
+
+export interface CostBudget {
+  id: string;
+  organizationId: string;
+  cloudProviderId?: string;
+  resourceGroupId?: string;
+  name: string;
+  description?: string;
+  budgetAmount: number;
+  currency: string;
+  period: 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'yearly';
+  warningThresholdPercent: number;
+  criticalThresholdPercent: number;
+  currentSpend: number;
+  lastCalculatedAt?: Date;
+  isActive: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+  createdBy: string;
+}
+
+export interface CostOptimizationRecommendation {
+  id: string;
+  organizationId: string;
+  cloudProviderId?: string;
+  resourceId?: string;
+  deploymentId?: string;
+  title: string;
+  description: string;
+  recommendationType: string;
+  impact: 'low' | 'medium' | 'high' | 'critical';
+  estimatedMonthlySavings: number;
+  currency: string;
+  confidenceScore: number;
+  implementationEffort: 'low' | 'medium' | 'high';
+  implementationSteps: string[];
+  automationAvailable: boolean;
+  status: 'open' | 'in_progress' | 'implemented' | 'dismissed' | 'expired';
+  implementedAt?: Date;
+  actualSavings?: number;
+  metadata: Record<string, unknown>;
+  createdAt: Date;
+  updatedAt: Date;
+  createdBy?: string;
+}
+
+// =====================================================
+// DISASTER RECOVERY
+// =====================================================
+
+export interface DisasterRecoveryPlan {
+  id: string;
+  organizationId: string;
+  name: string;
+  description?: string;
+  planType:
+    | 'backup_restore'
+    | 'failover'
+    | 'pilot_light'
+    | 'warm_standby'
+    | 'hot_standby';
+  state: 'active' | 'inactive' | 'testing' | 'executing' | 'failed';
+  rtoMinutes: number; // Recovery Time Objective
+  rpoMinutes: number; // Recovery Point Objective
+  priority: number;
+  recoverySteps: string[];
+  rollbackSteps: string[];
+  dependencies: string[];
+  lastTestDate?: Date;
+  lastTestSuccess?: boolean;
+  testFrequencyDays: number;
+  nextTestDate?: Date;
+  tags: Record<string, string>;
+  contacts: string[];
+  createdAt: Date;
+  updatedAt: Date;
+  createdBy: string;
+}
+
+export interface FailoverExecution {
+  id: string;
+  organizationId: string;
+  drPlanId: string;
+  executionType: 'manual' | 'automated' | 'test' | 'rollback';
+  triggerReason: string;
+  state: 'initiated' | 'in_progress' | 'completed' | 'failed' | 'cancelled';
+  startedAt: Date;
+  completedAt?: Date;
+  estimatedCompletionAt?: Date;
+  totalSteps: number;
+  completedSteps: number;
+  currentStepDescription?: string;
+  success?: boolean;
+  errorDetails?: Record<string, unknown>;
+  executionLog?: string;
+  rollbackRequired: boolean;
+  rollbackCompleted: boolean;
+  metadata: Record<string, unknown>;
+  initiatedBy: string;
+}
+
+// =====================================================
+// MONITORING
+// =====================================================
+
+export interface AlertRule {
+  id: string;
+  organizationId: string;
+  cloudProviderId?: string;
+  resourceId?: string;
+  name: string;
+  description?: string;
+  metricName: string;
+  condition: string;
+  thresholdValue: number;
+  comparisonOperator: '>' | '<' | '>=' | '<=' | '=' | '!=';
+  severity: AlertSeverity;
+  evaluationPeriodMinutes: number;
+  notificationChannels: string[];
+  isActive: boolean;
+  lastTriggeredAt?: Date;
+  createdAt: Date;
+  updatedAt: Date;
+  createdBy: string;
+}
+
+export interface MonitoringAlert {
+  id: string;
+  organizationId: string;
+  alertRuleId?: string;
+  resourceId?: string;
+  deploymentId?: string;
+  title: string;
+  description?: string;
+  severity: AlertSeverity;
+  alertType: 'metric' | 'log' | 'synthetic' | 'custom';
+  metricName?: string;
+  metricValue?: number;
+  thresholdValue?: number;
+  status: 'active' | 'acknowledged' | 'resolved' | 'suppressed';
+  acknowledgedAt?: Date;
+  acknowledgedBy?: string;
+  resolvedAt?: Date;
+  resolvedBy?: string;
+  resolutionNotes?: string;
+  notificationSent: boolean;
+  notificationChannels: string[];
+  metadata: Record<string, unknown>;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface InfrastructureMetrics {
+  id: string;
+  organizationId: string;
+  resourceId: string;
+  metricName: string;
+  metricValue: number;
+  unit?: string;
+  dimensions: Record<string, unknown>;
+  timestamp: Date;
+  collectedAt: Date;
+}
+
+// =====================================================
+// API REQUEST/RESPONSE TYPES
+// =====================================================
+
+export interface CreateCloudProviderRequest {
+  name: string;
+  providerType: CloudProviderType;
+  region: string;
+  credentials: CloudProviderCredentials;
+  configuration?: CloudProviderConfiguration;
+}
+
+export interface UpdateCloudProviderRequest {
+  name?: string;
+  region?: string;
+  credentials?: CloudProviderCredentials;
+  configuration?: CloudProviderConfiguration;
+  isActive?: boolean;
+}
+
+export interface TestConnectionResponse {
+  success: boolean;
+  latencyMs?: number;
+  regions?: string[];
+  services?: string[];
+  error?: string;
+  details?: Record<string, unknown>;
+}
+
+export interface CloudRegion {
+  id: string;
+  name: string;
+  displayName: string;
+  isDefault?: boolean;
+  availabilityZones?: string[];
+}
+
+export interface CloudService {
+  id: string;
+  name: string;
+  displayName: string;
+  category: string;
+  isAvailable: boolean;
+  pricing?: Record<string, unknown>;
+}
+
+export interface SyncResourcesResponse {
+  success: boolean;
+  resourcesDiscovered: number;
+  resourcesCreated: number;
+  resourcesUpdated: number;
+  resourcesDeleted: number;
+  errors: string[];
+  syncDurationMs: number;
+}
+
+// =====================================================
+// ERROR TYPES
+// =====================================================
+
+export interface CloudInfrastructureError extends Error {
+  code: string;
+  statusCode: number;
+  details?: Record<string, unknown>;
+}
+
+export class CloudProviderConnectionError
+  extends Error
+  implements CloudInfrastructureError
+{
+  code = 'PROVIDER_CONNECTION_ERROR';
+  statusCode = 502;
+  details?: Record<string, unknown>;
+
+  constructor(message: string, details?: Record<string, unknown>) {
+    super(message);
+    this.name = 'CloudProviderConnectionError';
+    this.details = details;
+  }
+}
+
+export class CloudProviderAuthError
+  extends Error
+  implements CloudInfrastructureError
+{
+  code = 'PROVIDER_AUTH_ERROR';
+  statusCode = 401;
+  details?: Record<string, unknown>;
+
+  constructor(message: string, details?: Record<string, unknown>) {
+    super(message);
+    this.name = 'CloudProviderAuthError';
+    this.details = details;
+  }
+}
+
+export class CloudResourceNotFoundError
+  extends Error
+  implements CloudInfrastructureError
+{
+  code = 'RESOURCE_NOT_FOUND';
+  statusCode = 404;
+  details?: Record<string, unknown>;
+
+  constructor(message: string, details?: Record<string, unknown>) {
+    super(message);
+    this.name = 'CloudResourceNotFoundError';
+    this.details = details;
+  }
+}
+
+// =====================================================
+// UTILITY TYPES
+// =====================================================
+
+export type CloudProviderFilter = {
+  providerType?: CloudProviderType;
+  region?: string;
+  isActive?: boolean;
+  syncStatus?: CloudProvider['syncStatus'];
+};
+
+export type ResourceFilter = {
+  resourceType?: ResourceType;
+  state?: ResourceState;
+  cloudProviderId?: string;
+  resourceGroupId?: string;
+  tags?: Record<string, string>;
+};
+
+export type PaginationParams = {
+  page?: number;
+  limit?: number;
+  sortBy?: string;
+  sortOrder?: 'asc' | 'desc';
+};
+
+export type PaginatedResponse<T> = {
+  data: T[];
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+    hasNext: boolean;
+    hasPrevious: boolean;
+  };
+};
+
+// =====================================================
+// AUDIT AND COMPLIANCE
+// =====================================================
+
+export interface AuditLog {
+  id: string;
+  organizationId: string;
+  userId?: string;
+  action: string;
+  resourceType: string;
+  resourceId?: string;
+  oldValues?: Record<string, unknown>;
+  newValues?: Record<string, unknown>;
+  changes?: Record<string, unknown>;
+  ipAddress?: string;
+  userAgent?: string;
+  sessionId?: string;
+  apiKeyId?: string;
+  metadata: Record<string, unknown>;
+  createdAt: Date;
+}
+
+export interface ComplianceCheck {
+  id: string;
+  organizationId: string;
+  checkName: string;
+  checkType:
+    | 'security'
+    | 'cost'
+    | 'performance'
+    | 'availability'
+    | 'governance';
+  description?: string;
+  complianceFramework?: string;
+  lastRunAt?: Date;
+  status: 'pending' | 'running' | 'passed' | 'failed' | 'error';
+  score?: number;
+  findingsCount: number;
+  criticalFindingsCount: number;
+  checkConfiguration: Record<string, unknown>;
+  scheduleCron?: string;
+  isActive: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+  createdBy: string;
+}

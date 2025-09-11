@@ -1,0 +1,296 @@
+/**
+ * WS-130: AI Mood Board Generator API Endpoint
+ * Creates intelligent mood boards for wedding photography inspiration
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { moodBoardBuilder } from '@/lib/ml/mood-board-builder';
+import { z } from 'zod';
+
+const moodBoardRequestSchema = z.object({
+  style_preferences: z.object({
+    primary_style: z.enum(['romantic', 'modern', 'vintage', 'boho', 'classic', 'artistic', 'minimalist', 'rustic']),
+    color_palette: z.array(z.string()),
+    mood: z.enum(['dreamy', 'elegant', 'fun', 'intimate', 'dramatic', 'natural', 'luxurious']),
+    inspiration_keywords: z.array(z.string())
+  }),
+  wedding_details: z.object({
+    venue_type: z.enum(['indoor', 'outdoor', 'beach', 'garden', 'church', 'ballroom', 'rustic', 'destination']),
+    season: z.enum(['spring', 'summer', 'fall', 'winter']),
+    time_of_day: z.enum(['morning', 'afternoon', 'evening', 'night']),
+    guest_count: z.number().min(10).max(500),
+    formality: z.enum(['casual', 'semi_formal', 'formal', 'black_tie'])
+  }),
+  reference_images: z.array(z.string()).optional(),
+  avoid_elements: z.array(z.string()).optional()
+});
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+    
+    // Check authentication
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    const body = await request.json();
+    
+    // Handle mood board variations request
+    if (body.generate_variations) {
+      const baseRequest = moodBoardRequestSchema.parse(body.base_request);
+      const variations = body.variations || ['Warmer Tones', 'Cooler Tones', 'More Vintage'];
+      
+      const moodBoardVariations = await moodBoardBuilder.generateMoodBoardVariations(
+        baseRequest,
+        variations
+      );
+      
+      return NextResponse.json({
+        success: true,
+        variations: moodBoardVariations.map(board => ({
+          id: board.id,
+          title: board.title,
+          description: board.description,
+          style_summary: board.style_summary,
+          primary_colors: board.color_palette.primary_colors,
+          element_count: board.elements.length,
+          created_at: board.created_at
+        }))
+      });
+    }
+
+    // Regular mood board generation
+    const moodBoardRequest = moodBoardRequestSchema.parse(body);
+    
+    // Generate mood board using AI
+    const generatedMoodBoard = await moodBoardBuilder.generateMoodBoard(moodBoardRequest);
+    
+    // Store mood board in database
+    const { data: moodBoardData, error: moodBoardError } = await supabase
+      .from('mood_boards')
+      .insert({
+        id: generatedMoodBoard.id,
+        user_id: user.id,
+        title: generatedMoodBoard.title,
+        description: generatedMoodBoard.description,
+        style_summary: generatedMoodBoard.style_summary,
+        request_data: moodBoardRequest,
+        mood_board_data: generatedMoodBoard,
+        created_at: new Date().toISOString()
+      })
+      .select()
+      .single();
+
+    if (moodBoardError) {
+      console.error('Failed to store mood board:', moodBoardError);
+      // Continue anyway - mood board is still returned
+    }
+
+    return NextResponse.json({
+      success: true,
+      mood_board: {
+        id: generatedMoodBoard.id,
+        title: generatedMoodBoard.title,
+        description: generatedMoodBoard.description,
+        style_summary: generatedMoodBoard.style_summary,
+        elements: generatedMoodBoard.elements.map(element => ({
+          id: element.id,
+          type: element.type,
+          content: element.content,
+          position: element.position,
+          size: element.size,
+          style_tags: element.style_tags,
+          relevance_score: element.relevance_score,
+          description: element.description
+        })),
+        color_palette: {
+          primary_colors: generatedMoodBoard.color_palette.primary_colors,
+          accent_colors: generatedMoodBoard.color_palette.accent_colors,
+          neutral_colors: generatedMoodBoard.color_palette.neutral_colors,
+          color_harmony: generatedMoodBoard.color_palette.color_harmony,
+          emotional_impact: generatedMoodBoard.color_palette.emotional_impact
+        },
+        typography_suggestions: generatedMoodBoard.typography_suggestions,
+        composition_notes: generatedMoodBoard.composition_notes,
+        style_guidelines: generatedMoodBoard.style_guidelines,
+        inspiration_sources: generatedMoodBoard.inspiration_sources,
+        created_at: generatedMoodBoard.created_at,
+        version: generatedMoodBoard.version
+      }
+    });
+
+  } catch (error) {
+    console.error('Mood board generation error:', error);
+    
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid request data', details: error.errors },
+        { status: 400 }
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Mood board generation failed', message: error.message },
+      { status: 500 }
+    );
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+    
+    // Check authentication
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    const { searchParams } = new URL(request.url);
+    const moodBoardId = searchParams.get('mood_board_id');
+    const includeElements = searchParams.get('include_elements') === 'true';
+
+    if (moodBoardId) {
+      // Get specific mood board
+      const { data: moodBoard, error: moodBoardError } = await supabase
+        .from('mood_boards')
+        .select('*')
+        .eq('id', moodBoardId)
+        .eq('user_id', user.id)
+        .single();
+
+      if (moodBoardError || !moodBoard) {
+        return NextResponse.json(
+          { error: 'Mood board not found' },
+          { status: 404 }
+        );
+      }
+
+      const response = {
+        id: moodBoard.id,
+        title: moodBoard.title,
+        description: moodBoard.description,
+        style_summary: moodBoard.style_summary,
+        created_at: moodBoard.created_at,
+        ...(includeElements ? { full_data: moodBoard.mood_board_data } : {})
+      };
+
+      return NextResponse.json({
+        success: true,
+        mood_board: response
+      });
+    }
+
+    // Get all mood boards for user
+    const { data: moodBoards, error: moodBoardsError } = await supabase
+      .from('mood_boards')
+      .select('id, title, description, style_summary, created_at, mood_board_data')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false })
+      .limit(20);
+
+    if (moodBoardsError) {
+      return NextResponse.json(
+        { error: 'Failed to fetch mood boards' },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      mood_boards: moodBoards.map(board => ({
+        id: board.id,
+        title: board.title,
+        description: board.description,
+        style_summary: board.style_summary,
+        created_at: board.created_at,
+        primary_colors: board.mood_board_data?.color_palette?.primary_colors || [],
+        element_count: board.mood_board_data?.elements?.length || 0
+      }))
+    });
+
+  } catch (error) {
+    console.error('Fetch mood board error:', error);
+    return NextResponse.json(
+      { error: 'Failed to fetch mood board data' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function PUT(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+    
+    // Check authentication
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    const body = await request.json();
+    const { mood_board_id, updates } = body;
+
+    if (!mood_board_id || !updates) {
+      return NextResponse.json(
+        { error: 'Mood board ID and updates are required' },
+        { status: 400 }
+      );
+    }
+
+    // Update mood board
+    const updatedMoodBoard = await moodBoardBuilder.updateMoodBoard(mood_board_id, updates);
+    
+    // Store updated mood board
+    const { data: updateData, error: updateError } = await supabase
+      .from('mood_boards')
+      .update({
+        title: updatedMoodBoard.title,
+        description: updatedMoodBoard.description,
+        style_summary: updatedMoodBoard.style_summary,
+        mood_board_data: updatedMoodBoard,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', mood_board_id)
+      .eq('user_id', user.id)
+      .select()
+      .single();
+
+    if (updateError) {
+      return NextResponse.json(
+        { error: 'Failed to update mood board' },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      mood_board: {
+        id: updatedMoodBoard.id,
+        title: updatedMoodBoard.title,
+        description: updatedMoodBoard.description,
+        version: updatedMoodBoard.version,
+        updated_at: updateData.updated_at
+      }
+    });
+
+  } catch (error) {
+    console.error('Update mood board error:', error);
+    return NextResponse.json(
+      { error: 'Failed to update mood board' },
+      { status: 500 }
+    );
+  }
+}

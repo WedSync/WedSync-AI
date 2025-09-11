@@ -1,0 +1,566 @@
+/**
+ * WS-236: User Feedback System - Session Complete API
+ *
+ * Handles manually completing or abandoning feedback sessions
+ * Triggers final analysis and follow-up workflows
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
+import { createClient } from '@/lib/supabase/server';
+import { rateLimit } from '@/lib/rate-limiter';
+import { followUpAutomation } from '@/lib/feedback/follow-up-automation';
+
+// Validation schemas
+const completeSessionSchema = z.object({
+  action: z.enum(['complete', 'abandon']),
+  additionalContext: z.record(z.any()).optional(),
+  reason: z.string().optional(), // for abandonment reason
+});
+
+export const dynamic = 'force-dynamic';
+
+/**
+ * POST /api/feedback/session/[sessionId]/complete
+ * Manually complete or abandon a feedback session
+ */
+export async function POST(
+  request: NextRequest,
+  { params }: { params: { sessionId: string } },
+) {
+  try {
+    // Rate limiting
+    const rateLimitResult = await rateLimit(request, {
+      max: 20,
+      windowMs: 60000,
+    });
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { error: 'Too many requests' },
+        { status: 429, headers: rateLimitResult.headers },
+      );
+    }
+
+    const { sessionId } = params;
+    if (!sessionId) {
+      return NextResponse.json(
+        { error: 'Session ID is required' },
+        { status: 400 },
+      );
+    }
+
+    const supabase = createClient();
+
+    // Check authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Verify session ownership and get current state
+    const { data: session, error: sessionError } = await supabase
+      .from('feedback_sessions')
+      .select(
+        `
+        id,
+        user_id,
+        session_type,
+        started_at,
+        completed_at,
+        abandoned_at,
+        questions_total,
+        questions_answered,
+        completion_rate
+      `,
+      )
+      .eq('id', sessionId)
+      .single();
+
+    if (sessionError || !session) {
+      return NextResponse.json(
+        { error: 'Feedback session not found' },
+        { status: 404 },
+      );
+    }
+
+    if (session.user_id !== user.id) {
+      return NextResponse.json(
+        { error: 'Access denied to this feedback session' },
+        { status: 403 },
+      );
+    }
+
+    if (session.completed_at || session.abandoned_at) {
+      return NextResponse.json(
+        { error: 'Feedback session already finalized' },
+        { status: 400 },
+      );
+    }
+
+    // Parse and validate request body
+    const body = await request.json();
+    const { action, additionalContext, reason } =
+      completeSessionSchema.parse(body);
+
+    console.log(
+      `${action === 'complete' ? 'Completing' : 'Abandoning'} feedback session ${sessionId}`,
+    );
+
+    try {
+      const now = new Date().toISOString();
+      const sessionDuration = Math.floor(
+        (new Date().getTime() - new Date(session.started_at).getTime()) / 1000,
+      );
+
+      let updateData: any = {
+        session_duration_seconds: sessionDuration,
+        updated_at: now,
+      };
+
+      if (action === 'complete') {
+        updateData.completed_at = now;
+
+        // If manually completing with partial responses, mark as completed anyway
+        if (
+          session.questions_answered > 0 &&
+          session.questions_answered < session.questions_total
+        ) {
+          updateData.completion_rate =
+            session.questions_answered / session.questions_total;
+        }
+
+        // Add any additional context
+        if (additionalContext) {
+          updateData.trigger_context = {
+            ...updateData.trigger_context,
+            manualCompletion: true,
+            additionalContext,
+          };
+        }
+      } else {
+        // abandon
+        updateData.abandoned_at = now;
+        updateData.abandonment_reason = reason || 'user_abandoned';
+
+        // Track abandonment context
+        updateData.trigger_context = {
+          ...updateData.trigger_context,
+          abandonment: {
+            reason,
+            questionsAnswered: session.questions_answered,
+            completionRate: session.completion_rate,
+            timeSpent: sessionDuration,
+          },
+        };
+      }
+
+      // Update session in database
+      const { data: updatedSession, error: updateError } = await supabase
+        .from('feedback_sessions')
+        .update(updateData)
+        .eq('id', sessionId)
+        .select(
+          `
+          id,
+          session_type,
+          completed_at,
+          abandoned_at,
+          completion_rate,
+          session_duration_seconds,
+          overall_sentiment,
+          satisfaction_category
+        `,
+        )
+        .single();
+
+      if (updateError) {
+        console.error('Error updating feedback session:', updateError);
+        return NextResponse.json(
+          { error: 'Failed to finalize feedback session' },
+          { status: 500 },
+        );
+      }
+
+      // For completed sessions, trigger follow-up workflows and automation
+      if (action === 'complete') {
+        await triggerFollowUpWorkflows(
+          sessionId,
+          updatedSession.session_type,
+          user.id,
+        );
+
+        // Trigger automated follow-up based on NPS and sentiment
+        await triggerAutomatedFollowUp(sessionId, user.id, updatedSession);
+      } else {
+        // For abandoned sessions, track abandonment analytics
+        await trackSessionAbandonment(
+          sessionId,
+          updatedSession.session_type,
+          user.id,
+          reason,
+        );
+      }
+
+      // Prepare response
+      const responseData = {
+        success: true,
+        data: {
+          sessionId: updatedSession.id,
+          action,
+          finalizedAt:
+            action === 'complete'
+              ? updatedSession.completed_at
+              : updatedSession.abandoned_at,
+          completionRate: updatedSession.completion_rate,
+          sessionDuration: updatedSession.session_duration_seconds,
+          overallSentiment: updatedSession.overall_sentiment,
+          satisfactionCategory: updatedSession.satisfaction_category,
+        },
+        message:
+          action === 'complete'
+            ? 'Feedback session completed successfully'
+            : 'Feedback session abandoned',
+      };
+
+      // Add follow-up information for completed sessions
+      if (action === 'complete' && updatedSession.satisfaction_category) {
+        responseData.data = {
+          ...responseData.data,
+          followUpScheduled: true,
+          nextSteps: getPostSessionNextSteps(
+            updatedSession.session_type,
+            updatedSession.satisfaction_category,
+          ),
+        };
+      }
+
+      return NextResponse.json(responseData);
+    } catch (serviceError) {
+      console.error('Error finalizing feedback session:', serviceError);
+      return NextResponse.json(
+        { error: 'Failed to finalize feedback session' },
+        { status: 500 },
+      );
+    }
+  } catch (error) {
+    console.error(
+      'POST /api/feedback/session/[sessionId]/complete error:',
+      error,
+    );
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid completion data', details: error.errors },
+        { status: 400 },
+      );
+    }
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * Trigger automated follow-up based on NPS and sentiment analysis
+ */
+async function triggerAutomatedFollowUp(
+  sessionId: string,
+  userId: string,
+  session: any,
+): Promise<void> {
+  try {
+    const supabase = createClient();
+
+    // Get user profile for wedding context
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('vendor_type, subscription_tier')
+      .eq('user_id', userId)
+      .single();
+
+    // Get NPS score and sentiment from latest responses if available
+    const { data: responses } = await supabase
+      .from('feedback_responses')
+      .select('nps_score, sentiment_score, sentiment_category')
+      .eq('session_id', sessionId)
+      .not('nps_score', 'is', null)
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    const latestResponse = responses?.[0];
+
+    // Prepare automation trigger
+    const trigger = {
+      sessionId,
+      userId,
+      npsScore: latestResponse?.nps_score || session.nps_score,
+      sentimentScore:
+        latestResponse?.sentiment_score || session.overall_sentiment,
+      sentimentCategory:
+        latestResponse?.sentiment_category ||
+        (session.overall_sentiment
+          ? session.overall_sentiment > 0.6
+            ? 'positive'
+            : session.overall_sentiment < 0.4
+              ? 'negative'
+              : 'neutral'
+          : 'neutral'),
+      weddingContext: {
+        isWeddingSeason: isCurrentlyWeddingSeason(),
+        vendorType: userProfile?.vendor_type,
+        userTier: userProfile?.subscription_tier,
+      },
+    };
+
+    // Execute follow-up automation
+    await followUpAutomation.processFeedbackTrigger(trigger);
+
+    console.log(`Automated follow-up triggered for session ${sessionId}`);
+  } catch (error) {
+    console.error('Error triggering automated follow-up:', error);
+    // Don't throw - this shouldn't block the main session completion
+  }
+}
+
+/**
+ * Check if current date is in wedding season (April-October)
+ */
+function isCurrentlyWeddingSeason(): boolean {
+  const currentMonth = new Date().getMonth() + 1; // 1-12
+  return currentMonth >= 4 && currentMonth <= 10;
+}
+
+/**
+ * Trigger follow-up workflows for completed feedback sessions
+ */
+async function triggerFollowUpWorkflows(
+  sessionId: string,
+  sessionType: string,
+  userId: string,
+): Promise<void> {
+  try {
+    const supabase = createClient();
+
+    // Schedule follow-up actions based on session type and analysis results
+    const followUpActions = [];
+
+    switch (sessionType) {
+      case 'nps':
+        followUpActions.push({
+          action_type: 'nps_analysis_followup',
+          scheduled_at: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(), // 2 hours
+          priority: 'medium',
+        });
+        break;
+
+      case 'feature':
+        followUpActions.push({
+          action_type: 'feature_feedback_review',
+          scheduled_at: new Date(
+            Date.now() + 24 * 60 * 60 * 1000,
+          ).toISOString(), // 24 hours
+          priority: 'low',
+        });
+        break;
+
+      case 'churn':
+        followUpActions.push({
+          action_type: 'churn_prevention_outreach',
+          scheduled_at: new Date(Date.now() + 30 * 60 * 1000).toISOString(), // 30 minutes
+          priority: 'high',
+        });
+        break;
+
+      case 'onboarding':
+        followUpActions.push({
+          action_type: 'onboarding_success_check',
+          scheduled_at: new Date(
+            Date.now() + 7 * 24 * 60 * 60 * 1000,
+          ).toISOString(), // 7 days
+          priority: 'medium',
+        });
+        break;
+    }
+
+    // Insert follow-up actions
+    for (const action of followUpActions) {
+      await supabase.from('feedback_follow_up_actions').insert({
+        session_id: sessionId,
+        user_id: userId,
+        action_type: action.action_type,
+        action_status: 'pending',
+        scheduled_at: action.scheduled_at,
+        action_config: {
+          sessionType,
+          automated: true,
+          priority: action.priority,
+        },
+        wedding_priority:
+          sessionType === 'churn' || sessionType.includes('wedding'),
+        created_at: new Date().toISOString(),
+      });
+    }
+
+    console.log(
+      `Scheduled ${followUpActions.length} follow-up actions for session ${sessionId}`,
+    );
+  } catch (error) {
+    console.error('Error triggering follow-up workflows:', error);
+    // Don't throw - this shouldn't block the main session completion
+  }
+}
+
+/**
+ * Track session abandonment for analytics
+ */
+async function trackSessionAbandonment(
+  sessionId: string,
+  sessionType: string,
+  userId: string,
+  reason?: string,
+): Promise<void> {
+  try {
+    const supabase = createClient();
+
+    // Log abandonment event for analytics
+    await supabase.from('events').insert({
+      event_type: 'feedback',
+      event_name: 'session_abandoned',
+      event_data: {
+        sessionId,
+        sessionType,
+        userId,
+        abandonmentReason: reason,
+        timestamp: new Date().toISOString(),
+      },
+      user_id: userId,
+      created_at: new Date().toISOString(),
+    });
+
+    console.log(`Tracked abandonment for session ${sessionId}: ${reason}`);
+  } catch (error) {
+    console.error('Error tracking session abandonment:', error);
+    // Don't throw - this shouldn't block the main session completion
+  }
+}
+
+/**
+ * Get next steps for user after session completion
+ */
+function getPostSessionNextSteps(
+  sessionType: string,
+  satisfactionCategory: string,
+): any {
+  const nextStepsMap = {
+    nps: {
+      very_satisfied: {
+        title: 'Thank you for being a promoter!',
+        actions: [
+          'Join our referral program and earn rewards',
+          'Get early access to new features',
+          'Consider leaving a review to help other wedding professionals',
+        ],
+      },
+      satisfied: {
+        title: 'We appreciate your positive feedback',
+        actions: [
+          'Explore advanced features to get even more value',
+          'Check out our latest tutorials and best practices',
+          'Connect with our community of wedding professionals',
+        ],
+      },
+      neutral: {
+        title: 'We want to earn your recommendation',
+        actions: [
+          'A team member will reach out to understand your experience',
+          'Priority support access has been activated',
+          'We will keep you updated on improvements',
+        ],
+      },
+      dissatisfied: {
+        title: 'We are committed to improving your experience',
+        actions: [
+          'A senior team member will contact you within 24 hours',
+          'Premium support access activated for 60 days',
+          'Executive review of your feedback has been initiated',
+        ],
+      },
+    },
+    feature: {
+      satisfied: {
+        title: 'Glad you love this feature!',
+        actions: [
+          'Your feedback helps us prioritize improvements',
+          'Look for related features in upcoming releases',
+          'Consider sharing tips with other users',
+        ],
+      },
+      dissatisfied: {
+        title: 'We will make this feature better',
+        actions: [
+          'Development team has been notified of your feedback',
+          'You will receive updates on improvements',
+          'Contact support for alternative solutions',
+        ],
+      },
+    },
+    churn: {
+      default: {
+        title: 'We hate to see you go',
+        actions: [
+          'A retention specialist will reach out immediately',
+          'Special offer and support package prepared',
+          'Executive team review of your feedback scheduled',
+        ],
+      },
+    },
+    onboarding: {
+      satisfied: {
+        title: 'Welcome to the WedSync family!',
+        actions: [
+          'Complete your profile for the best experience',
+          'Join our community for tips and support',
+          'Schedule a success call if you need guidance',
+        ],
+      },
+      dissatisfied: {
+        title: 'Let us help you succeed',
+        actions: [
+          'Personalized onboarding session scheduled',
+          'Premium tutorial access activated',
+          'Dedicated success specialist assigned',
+        ],
+      },
+    },
+  };
+
+  try {
+    const typeSteps = nextStepsMap[sessionType as keyof typeof nextStepsMap];
+    if (!typeSteps) {
+      return {
+        title: 'Thank you for your feedback',
+        actions: ['We appreciate you taking the time to share your thoughts'],
+      };
+    }
+
+    const categorySteps =
+      typeSteps[satisfactionCategory as keyof typeof typeSteps] ||
+      typeSteps['default' as keyof typeof typeSteps];
+
+    return (
+      categorySteps || {
+        title: 'Thank you for your feedback',
+        actions: ['Your input helps us improve WedSync for everyone'],
+      }
+    );
+  } catch (error) {
+    console.error('Error getting post-session next steps:', error);
+    return {
+      title: 'Thank you for your feedback',
+      actions: ['We appreciate you taking the time to share your thoughts'],
+    };
+  }
+}

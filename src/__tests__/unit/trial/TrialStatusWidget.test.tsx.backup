@@ -1,0 +1,545 @@
+/**
+ * WS-140 Trial Management System - TrialStatusWidget Unit Tests
+ * Comprehensive test suite for TrialStatusWidget component
+ */
+
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/react';
+import { TrialStatusWidget } from '@/components/trial/TrialStatusWidget';
+import { TrialStatusResponse, TrialStatus } from '@/types/trial';
+
+// Mock fetch globally
+global.fetch = vi.fn();
+
+const mockTrialData: TrialStatusResponse = {
+  success: true,
+  trial: {
+    id: 'trial-123',
+    user_id: 'user-123',
+    business_type: 'wedding_planner',
+    business_goals: ['save_time', 'grow_business'],
+    current_workflow_pain_points: ['manual_tasks', 'communication'],
+    expected_time_savings_hours: 10,
+    hourly_rate: 75,
+    trial_start: new Date('2025-01-01'),
+    trial_end: new Date('2025-01-31'),
+    status: 'active' as TrialStatus,
+    onboarding_completed: true,
+    created_at: new Date('2025-01-01'),
+    updated_at: new Date('2025-01-01')
+  },
+  progress: {
+    trial_id: 'trial-123',
+    days_remaining: 15,
+    days_elapsed: 15,
+    progress_percentage: 50,
+    milestones_achieved: [
+      {
+        id: 'milestone-1',
+        trial_id: 'trial-123',
+        milestone_type: 'first_client_connected',
+        milestone_name: 'First Client Connected',
+        description: 'Successfully add your first client',
+        achieved: true,
+        achieved_at: new Date('2025-01-10'),
+        time_to_achieve_hours: 2,
+        value_impact_score: 8,
+        created_at: new Date('2025-01-01')
+      }
+    ],
+    milestones_remaining: [
+      {
+        id: 'milestone-2',
+        trial_id: 'trial-123',
+        milestone_type: 'initial_journey_created',
+        milestone_name: 'Initial Journey Created',
+        description: 'Create your first automated journey',
+        achieved: false,
+        value_impact_score: 9,
+        created_at: new Date('2025-01-01')
+      }
+    ],
+    feature_usage_summary: [
+      {
+        id: 'usage-1',
+        trial_id: 'trial-123',
+        feature_key: 'client_onboarding',
+        feature_name: 'Client Onboarding',
+        usage_count: 3,
+        time_saved_minutes: 90,
+        last_used_at: new Date('2025-01-15'),
+        created_at: new Date('2025-01-10')
+      }
+    ],
+    roi_metrics: {
+      trial_id: 'trial-123',
+      total_time_saved_hours: 3.5,
+      estimated_cost_savings: 262.5,
+      productivity_improvement_percent: 25,
+      features_adopted_count: 4,
+      milestones_achieved_count: 1,
+      workflow_efficiency_gain: 30,
+      projected_monthly_savings: 500,
+      roi_percentage: 125,
+      calculated_at: new Date('2025-01-15')
+    },
+    conversion_recommendation: 'Strong candidate for conversion',
+    urgency_score: 3
+  },
+  recommendations: {
+    next_actions: ['Create your first journey', 'Add a vendor partner'],
+    upgrade_benefits: ['Unlimited clients', 'Advanced automation'],
+    urgency_message: '15 days remaining to continue your progress'
+  }
+};
+
+const urgentTrialData: TrialStatusResponse = {
+  ...mockTrialData,
+  progress: {
+    ...mockTrialData.progress,
+    days_remaining: 3,
+    urgency_score: 5
+  }
+};
+
+const defaultProps = {
+  onUpgradeClick: vi.fn(),
+  showUpgradeButton: true,
+  compact: false
+};
+
+describe('TrialStatusWidget', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    
+    // Mock successful API response
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(mockTrialData)
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  describe('Loading States', () => {
+    it('renders loading state initially', () => {
+      render(<TrialStatusWidget {...defaultProps} />);
+      
+      expect(screen.getByText('Loading...')).toBeInTheDocument();
+      expect(screen.getByRole('generic')).toHaveClass('flex', 'items-center', 'justify-center');
+    });
+
+    it('shows loading spinner during fetch', () => {
+      render(<TrialStatusWidget {...defaultProps} />);
+      
+      const spinner = document.querySelector('.animate-spin');
+      expect(spinner).toBeInTheDocument();
+    });
+  });
+
+  describe('Error States', () => {
+    it('displays error state when API fails', async () => {
+      (global.fetch as any).mockResolvedValue({
+        ok: false,
+        json: () => Promise.resolve({ message: 'Network error' })
+      });
+
+      render(<TrialStatusWidget {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Trial Status Error')).toBeInTheDocument();
+        expect(screen.getByText('Network error')).toBeInTheDocument();
+      });
+    });
+
+    it('shows error state when trial data is unsuccessful', async () => {
+      (global.fetch as any).mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ success: false, message: 'Invalid trial' })
+      });
+
+      render(<TrialStatusWidget {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Trial Status Error')).toBeInTheDocument();
+        expect(screen.getByText('Invalid trial')).toBeInTheDocument();
+      });
+    });
+
+    it('handles network error gracefully', async () => {
+      (global.fetch as any).mockRejectedValue(new Error('Network failed'));
+
+      render(<TrialStatusWidget {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Trial Status Error')).toBeInTheDocument();
+        expect(screen.getByText('Network error loading trial status')).toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('Compact Mode', () => {
+    it('renders compact layout correctly', async () => {
+      render(<TrialStatusWidget {...defaultProps} compact={true} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Professional Trial')).toBeInTheDocument();
+        expect(screen.getByText('15d left')).toBeInTheDocument();
+        expect(screen.getByText('50% complete')).toBeInTheDocument();
+        expect(screen.getByText('125% ROI')).toBeInTheDocument();
+      });
+    });
+
+    it('shows upgrade button in compact mode when enabled', async () => {
+      render(<TrialStatusWidget {...defaultProps} compact={true} showUpgradeButton={true} />);
+
+      await waitFor(() => {
+        const upgradeButton = screen.getByRole('button', { name: /upgrade/i });
+        expect(upgradeButton).toBeInTheDocument();
+        expect(upgradeButton).toHaveClass('font-medium');
+      });
+    });
+
+    it('hides upgrade button in compact mode when disabled', async () => {
+      render(<TrialStatusWidget {...defaultProps} compact={true} showUpgradeButton={false} />);
+
+      await waitFor(() => {
+        expect(screen.queryByRole('button', { name: /upgrade/i })).not.toBeInTheDocument();
+      });
+    });
+
+    it('calls onUpgradeClick when upgrade button is clicked in compact mode', async () => {
+      const onUpgradeClick = vi.fn();
+      render(<TrialStatusWidget {...defaultProps} compact={true} onUpgradeClick={onUpgradeClick} />);
+
+      await waitFor(() => {
+        const upgradeButton = screen.getByRole('button', { name: /upgrade/i });
+        fireEvent.click(upgradeButton);
+        expect(onUpgradeClick).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Standard Mode', () => {
+    it('renders standard layout with all sections', async () => {
+      render(<TrialStatusWidget {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Professional Trial')).toBeInTheDocument();
+        expect(screen.getByText('Day 15 of 30')).toBeInTheDocument();
+        expect(screen.getByText('15 days remaining')).toBeInTheDocument();
+        expect(screen.getByText('Trial Progress')).toBeInTheDocument();
+        expect(screen.getByText('50%')).toBeInTheDocument();
+        expect(screen.getByText('Milestones')).toBeInTheDocument();
+        expect(screen.getByText('1/2')).toBeInTheDocument();
+        expect(screen.getByText('ROI')).toBeInTheDocument();
+        expect(screen.getByText('125%')).toBeInTheDocument();
+        expect(screen.getByText('Time Saved')).toBeInTheDocument();
+        expect(screen.getByText('4h')).toBeInTheDocument();
+      });
+    });
+
+    it('shows progress bar with correct value', async () => {
+      render(<TrialStatusWidget {...defaultProps} />);
+
+      await waitFor(() => {
+        const progressElement = screen.getByRole('progressbar');
+        expect(progressElement).toHaveAttribute('aria-valuenow', '50');
+      });
+    });
+
+    it('displays time saved correctly', async () => {
+      render(<TrialStatusWidget {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('4h')).toBeInTheDocument(); // Rounded from 3.5
+        expect(screen.getByText('During your trial period')).toBeInTheDocument();
+      });
+    });
+
+    it('shows milestone completion ratio', async () => {
+      render(<TrialStatusWidget {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('1/2')).toBeInTheDocument(); // 1 achieved, 1 remaining
+        expect(screen.getByText('completed')).toBeInTheDocument();
+      });
+    });
+
+    it('displays ROI percentage correctly', async () => {
+      render(<TrialStatusWidget {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('125%')).toBeInTheDocument();
+        expect(screen.getByText('return')).toBeInTheDocument();
+      });
+    });
+
+    it('calls onUpgradeClick when upgrade button is clicked', async () => {
+      const onUpgradeClick = vi.fn();
+      render(<TrialStatusWidget {...defaultProps} onUpgradeClick={onUpgradeClick} />);
+
+      await waitFor(() => {
+        const upgradeButton = screen.getByRole('button', { name: /upgrade now/i });
+        fireEvent.click(upgradeButton);
+        expect(onUpgradeClick).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Urgency Handling', () => {
+    it('shows high urgency alert when urgency score is 4+', async () => {
+      (global.fetch as any).mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve(urgentTrialData)
+      });
+
+      render(<TrialStatusWidget {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Trial ending soon! Upgrade to continue your progress.')).toBeInTheDocument();
+        expect(screen.getByText('3 days remaining')).toBeInTheDocument();
+      });
+    });
+
+    it('applies error badge variant for urgent trials', async () => {
+      (global.fetch as any).mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve(urgentTrialData)
+      });
+
+      render(<TrialStatusWidget {...defaultProps} />);
+
+      await waitFor(() => {
+        const badge = screen.getByText('3 days remaining');
+        expect(badge).toBeInTheDocument();
+        // Badge should have error styling for urgent trials
+      });
+    });
+
+    it('shows success badge for normal urgency', async () => {
+      render(<TrialStatusWidget {...defaultProps} />);
+
+      await waitFor(() => {
+        const badge = screen.getByText('15 days remaining');
+        expect(badge).toBeInTheDocument();
+        // Badge should have success styling for normal trials
+      });
+    });
+  });
+
+  describe('CTA Section', () => {
+    it('shows upgrade CTA with motivational text', async () => {
+      render(<TrialStatusWidget {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Ready to unlock full potential?')).toBeInTheDocument();
+        expect(screen.getByText('Continue your progress with all professional features')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: /upgrade now/i })).toBeInTheDocument();
+      });
+    });
+
+    it('hides upgrade section when showUpgradeButton is false', async () => {
+      render(<TrialStatusWidget {...defaultProps} showUpgradeButton={false} />);
+
+      await waitFor(() => {
+        expect(screen.queryByText('Ready to unlock full potential?')).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: /upgrade now/i })).not.toBeInTheDocument();
+      });
+    });
+
+    it('upgrade button has responsive styling', async () => {
+      render(<TrialStatusWidget {...defaultProps} />);
+
+      await waitFor(() => {
+        const upgradeButton = screen.getByRole('button', { name: /upgrade now/i });
+        expect(upgradeButton).toHaveClass('w-full', 'sm:w-auto');
+      });
+    });
+  });
+
+  describe('Data Handling', () => {
+    it('handles missing optional data gracefully', async () => {
+      const incompleteData = {
+        ...mockTrialData,
+        progress: {
+          ...mockTrialData.progress,
+          roi_metrics: {
+            ...mockTrialData.progress.roi_metrics,
+            total_time_saved_hours: 0,
+            roi_percentage: 0
+          }
+        }
+      };
+
+      (global.fetch as any).mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve(incompleteData)
+      });
+
+      render(<TrialStatusWidget {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('0%')).toBeInTheDocument();
+        expect(screen.getByText('0h')).toBeInTheDocument();
+      });
+    });
+
+    it('calculates milestone ratio correctly', async () => {
+      const dataWithMoreMilestones = {
+        ...mockTrialData,
+        progress: {
+          ...mockTrialData.progress,
+          milestones_achieved: [
+            mockTrialData.progress.milestones_achieved[0]
+          ],
+          milestones_remaining: [
+            mockTrialData.progress.milestones_remaining[0],
+            {
+              id: 'milestone-3',
+              trial_id: 'trial-123',
+              milestone_type: 'vendor_added',
+              milestone_name: 'Vendor Added',
+              description: 'Add your first vendor',
+              achieved: false,
+              value_impact_score: 7,
+              created_at: new Date('2025-01-01')
+            }
+          ]
+        }
+      };
+
+      (global.fetch as any).mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve(dataWithMoreMilestones)
+      });
+
+      render(<TrialStatusWidget {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('1/3')).toBeInTheDocument(); // 1 achieved, 2 remaining
+      });
+    });
+
+    it('rounds time saved hours correctly', async () => {
+      const dataWithDecimalHours = {
+        ...mockTrialData,
+        progress: {
+          ...mockTrialData.progress,
+          roi_metrics: {
+            ...mockTrialData.progress.roi_metrics,
+            total_time_saved_hours: 2.7
+          }
+        }
+      };
+
+      (global.fetch as any).mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve(dataWithDecimalHours)
+      });
+
+      render(<TrialStatusWidget {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('3h')).toBeInTheDocument(); // Rounded from 2.7
+      });
+    });
+
+    it('rounds ROI percentage correctly', async () => {
+      const dataWithDecimalROI = {
+        ...mockTrialData,
+        progress: {
+          ...mockTrialData.progress,
+          roi_metrics: {
+            ...mockTrialData.progress.roi_metrics,
+            roi_percentage: 124.7
+          }
+        }
+      };
+
+      (global.fetch as any).mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve(dataWithDecimalROI)
+      });
+
+      render(<TrialStatusWidget {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('125%')).toBeInTheDocument(); // Rounded from 124.7
+      });
+    });
+  });
+
+  describe('Accessibility', () => {
+    it('has proper ARIA labels', async () => {
+      render(<TrialStatusWidget {...defaultProps} />);
+
+      await waitFor(() => {
+        const progressElement = screen.getByRole('progressbar');
+        expect(progressElement).toHaveAttribute('aria-valuenow', '50');
+        expect(progressElement).toHaveAttribute('aria-valuemin', '0');
+        expect(progressElement).toHaveAttribute('aria-valuemax', '100');
+      });
+    });
+
+    it('upgrade button has proper accessibility', async () => {
+      render(<TrialStatusWidget {...defaultProps} />);
+
+      await waitFor(() => {
+        const upgradeButton = screen.getByRole('button', { name: /upgrade now/i });
+        expect(upgradeButton).toBeInTheDocument();
+        expect(upgradeButton).not.toHaveAttribute('aria-disabled');
+      });
+    });
+  });
+
+  describe('API Integration', () => {
+    it('makes correct API call on mount', () => {
+      render(<TrialStatusWidget {...defaultProps} />);
+
+      expect(global.fetch).toHaveBeenCalledWith('/api/trial/status');
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('handles API call only once per component instance', () => {
+      render(<TrialStatusWidget {...defaultProps} />);
+      
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not retry failed requests automatically', async () => {
+      (global.fetch as any).mockRejectedValue(new Error('Network error'));
+
+      render(<TrialStatusWidget {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Trial Status Error')).toBeInTheDocument();
+      });
+
+      // Should not retry automatically
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('Custom CSS Classes', () => {
+    it('applies custom className prop', async () => {
+      render(<TrialStatusWidget {...defaultProps} className="custom-class" />);
+
+      await waitFor(() => {
+        const card = document.querySelector('.custom-class');
+        expect(card).toBeInTheDocument();
+      });
+    });
+
+    it('combines custom className with default classes', async () => {
+      render(<TrialStatusWidget {...defaultProps} className="custom-class" />);
+
+      await waitFor(() => {
+        const card = document.querySelector('.custom-class');
+        expect(card).toHaveClass('custom-class', 'p-6'); // Should have both custom and default classes
+      });
+    });
+  });
+});

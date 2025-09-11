@@ -1,0 +1,546 @@
+import { test, expect } from '@playwright/test'
+
+// Test data setup
+const setupTestData = async (page: any) => {
+  // Mock API responses for photo groups
+  await page.route('/api/guests/photo-groups*', async (route: any) => {
+    const url = route.request().url()
+    
+    if (route.request().method() === 'GET') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([
+          {
+            id: 'group-1',
+            couple_id: 'couple-1',
+            name: 'Family Photos',
+            description: 'Extended family group shots',
+            photo_type: 'family',
+            priority: 1,
+            estimated_time_minutes: 15,
+            location: 'Garden',
+            timeline_slot: 'ceremony-after',
+            assignments: [
+              {
+                id: 'assign-1',
+                photo_group_id: 'group-1',
+                guest_id: 'guest-1',
+                is_primary: true,
+                guest: {
+                  id: 'guest-1',
+                  first_name: 'John',
+                  last_name: 'Smith',
+                  side: 'partner1',
+                  category: 'family'
+                }
+              }
+            ]
+          },
+          {
+            id: 'group-2',
+            couple_id: 'couple-1',
+            name: 'Wedding Party',
+            description: 'Bridal party and groomsmen',
+            photo_type: 'bridal_party',
+            priority: 2,
+            estimated_time_minutes: 20,
+            location: 'Church Steps',
+            assignments: []
+          }
+        ])
+      })
+    }
+    
+    if (route.request().method() === 'PATCH') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ success: true })
+      })
+    }
+  })
+
+  // Mock guests API
+  await page.route('/api/guests*', async (route: any) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        success: true,
+        data: [
+          {
+            id: 'guest-1',
+            first_name: 'John',
+            last_name: 'Smith',
+            side: 'partner1',
+            category: 'family',
+            rsvp_status: 'pending'
+          },
+          {
+            id: 'guest-2',
+            first_name: 'Jane',
+            last_name: 'Doe',
+            side: 'partner2',
+            category: 'friends',
+            rsvp_status: 'attending'
+          },
+          {
+            id: 'guest-3',
+            first_name: 'Bob',
+            last_name: 'Johnson',
+            side: 'mutual',
+            category: 'family',
+            rsvp_status: 'pending'
+          }
+        ],
+        analytics: {
+          total_guests: 3,
+          adults: 3,
+          children: 0,
+          infants: 0,
+          attending: 1,
+          declined: 0,
+          pending: 2,
+          maybe: 0
+        }
+      })
+    })
+  })
+}
+
+test.describe('Photo Groups Management', () => {
+  test.beforeEach(async ({ page }) => {
+    await setupTestData(page)
+    
+    // Navigate to photo groups page
+    await page.goto('/guests/photo-groups')
+    
+    // Wait for page to load
+    await page.waitForSelector('[data-testid="photo-groups-container"]')
+  })
+
+  test('displays photo groups list with proper structure', async ({ page }) => {
+    // Take accessibility snapshot for structure analysis
+    const snapshot = await page.locator('[data-testid="photo-groups-container"]').evaluate(element => {
+      return {
+        tagName: element.tagName,
+        role: element.getAttribute('role'),
+        ariaLabel: element.getAttribute('aria-label'),
+        childCount: element.children.length
+      }
+    })
+
+    expect(snapshot.tagName).toBe('DIV')
+    expect(snapshot.childCount).toBeGreaterThan(0)
+
+    // Verify photo groups are displayed
+    await expect(page.getByText('Family Photos')).toBeVisible()
+    await expect(page.getByText('Wedding Party')).toBeVisible()
+    
+    // Verify group details
+    await expect(page.getByText('15 minutes')).toBeVisible()
+    await expect(page.getByText('Garden')).toBeVisible()
+    await expect(page.getByText('Priority 1')).toBeVisible()
+  })
+
+  test('creates new photo group via builder modal', async ({ page }) => {
+    // Click create button
+    await page.getByRole('button', { name: /create.*group/i }).click()
+    
+    // Wait for modal to appear
+    await expect(page.getByText(/new photo group/i)).toBeVisible()
+    
+    // Fill form fields
+    await page.getByLabel(/group name/i).fill('Cocktail Hour Photos')
+    await page.getByLabel(/description/i).fill('Casual mingling photos')
+    await page.getByLabel(/photo type/i).selectOption('candid')
+    await page.getByLabel(/estimated time/i).fill('10')
+    await page.getByLabel(/location/i).fill('Reception Hall')
+    
+    // Assign a guest
+    await page.getByText('Jane Doe').click()
+    
+    // Verify guest is selected
+    await expect(page.getByText('Jane Doe')).toHaveClass(/selected/)
+    
+    // Save the group
+    await page.getByRole('button', { name: /save.*group/i }).click()
+    
+    // Verify success (modal should close)
+    await expect(page.getByText(/new photo group/i)).not.toBeVisible()
+  })
+
+  test('drags guest from unassigned to photo group', async ({ page }) => {
+    // Ensure unassigned guests section is visible
+    await expect(page.getByText('Unassigned Guests')).toBeVisible()
+    await expect(page.getByText('Jane Doe')).toBeVisible()
+    
+    // Get source and target elements
+    const sourceGuest = page.getByTestId('guest-guest-2')
+    const targetGroup = page.getByTestId('photo-group-group-2')
+    
+    // Perform drag and drop
+    await sourceGuest.dragTo(targetGroup)
+    
+    // Wait for the action to complete
+    await page.waitForTimeout(1000)
+    
+    // Verify guest was moved
+    const groupContent = targetGroup.getByText('Jane Doe')
+    await expect(groupContent).toBeVisible()
+    
+    // Verify guest is no longer in unassigned section
+    const unassignedSection = page.getByTestId('unassigned-guests-section')
+    await expect(unassignedSection.getByText('Jane Doe')).not.toBeVisible()
+  })
+
+  test('drags guest between photo groups', async ({ page }) => {
+    // First assign a guest to group 1 if not already assigned
+    const johnInGroup1 = page.getByTestId('photo-group-group-1').getByText('John Smith')
+    await expect(johnInGroup1).toBeVisible()
+    
+    // Drag John from group 1 to group 2
+    const sourceElement = page.getByTestId('guest-assignment-guest-1')
+    const targetGroup = page.getByTestId('photo-group-group-2')
+    
+    await sourceElement.dragTo(targetGroup)
+    
+    // Wait for the action to complete
+    await page.waitForTimeout(1000)
+    
+    // Verify guest moved to new group
+    await expect(targetGroup.getByText('John Smith')).toBeVisible()
+    
+    // Verify guest is no longer in original group
+    const originalGroup = page.getByTestId('photo-group-group-1')
+    await expect(originalGroup.getByText('John Smith')).not.toBeVisible()
+  })
+
+  test('reorders photo groups by dragging', async ({ page }) => {
+    // Get initial order
+    const groups = page.getByTestId(/^photo-group-/)
+    const initialOrder = await groups.evaluateAll(elements => 
+      elements.map(el => el.getAttribute('data-testid'))
+    )
+    
+    // Drag first group after second group
+    const firstGroup = page.getByTestId('photo-group-group-1')
+    const secondGroup = page.getByTestId('photo-group-group-2')
+    
+    await firstGroup.dragTo(secondGroup, { targetPosition: { x: 0, y: 50 } })
+    
+    // Wait for reorder to complete
+    await page.waitForTimeout(1000)
+    
+    // Verify order changed
+    const newOrder = await groups.evaluateAll(elements => 
+      elements.map(el => el.getAttribute('data-testid'))
+    )
+    
+    expect(newOrder).not.toEqual(initialOrder)
+    expect(newOrder[0]).toBe('photo-group-group-2')
+    expect(newOrder[1]).toBe('photo-group-group-1')
+  })
+
+  test('shows conflict warnings during drag operations', async ({ page }) => {
+    // Mock a guest with conflicts
+    await page.route('/api/guests/photo-groups*', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([
+          {
+            id: 'group-1',
+            name: 'Family Photos',
+            timeline_slot: '14:00-14:15',
+            assignments: [
+              {
+                id: 'assign-1',
+                guest_id: 'guest-1',
+                guest: { id: 'guest-1', first_name: 'John', last_name: 'Smith' }
+              }
+            ]
+          },
+          {
+            id: 'group-2',
+            name: 'Couple Photos',
+            timeline_slot: '14:10-14:25',
+            assignments: []
+          }
+        ])
+      })
+    })
+    
+    await page.reload()
+    
+    // Try to drag John to the conflicting group
+    const sourceElement = page.getByTestId('guest-assignment-guest-1')
+    const targetGroup = page.getByTestId('photo-group-group-2')
+    
+    // Start drag operation
+    await sourceElement.hover()
+    await page.mouse.down()
+    await targetGroup.hover()
+    
+    // Should show conflict warning
+    await expect(page.getByText(/time overlap/i)).toBeVisible()
+    await expect(page.getByText(/warning/i)).toBeVisible()
+    
+    // Cancel drag
+    await page.mouse.up()
+  })
+
+  test('filters photo groups by type and search', async ({ page }) => {
+    // Test search functionality
+    const searchInput = page.getByPlaceholder(/search.*groups/i)
+    await searchInput.fill('Family')
+    
+    // Should show only Family Photos
+    await expect(page.getByText('Family Photos')).toBeVisible()
+    await expect(page.getByText('Wedding Party')).not.toBeVisible()
+    
+    // Clear search
+    await searchInput.clear()
+    await expect(page.getByText('Wedding Party')).toBeVisible()
+    
+    // Test filter by type
+    const typeFilter = page.getByRole('combobox', { name: /photo type/i })
+    await typeFilter.selectOption('family')
+    
+    // Should show only family type photos
+    await expect(page.getByText('Family Photos')).toBeVisible()
+    await expect(page.getByText('Wedding Party')).not.toBeVisible()
+  })
+
+  test('handles empty states gracefully', async ({ page }) => {
+    // Mock empty state
+    await page.route('/api/guests/photo-groups*', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([])
+      })
+    })
+    
+    await page.reload()
+    
+    // Should show empty state
+    await expect(page.getByText(/no photo groups/i)).toBeVisible()
+    await expect(page.getByText(/create your first/i)).toBeVisible()
+    
+    // Create button should still be available
+    await expect(page.getByRole('button', { name: /create.*group/i })).toBeVisible()
+  })
+
+  test('validates accessibility standards', async ({ page }) => {
+    // Check for proper ARIA labels and roles
+    await expect(page.getByRole('main')).toBeVisible()
+    await expect(page.getByRole('button', { name: /create.*group/i })).toBeVisible()
+    
+    // Check keyboard navigation
+    await page.keyboard.press('Tab')
+    const focusedElement = await page.locator(':focus').getAttribute('role')
+    expect(['button', 'textbox', 'combobox']).toContain(focusedElement)
+    
+    // Check color contrast (simplified)
+    const backgroundColor = await page.getByText('Family Photos').evaluate(el => 
+      getComputedStyle(el).backgroundColor
+    )
+    expect(backgroundColor).toBeTruthy()
+  })
+
+  test('works responsively across different screen sizes', async ({ page }) => {
+    const breakpoints = [
+      { width: 375, height: 667, name: 'Mobile' },
+      { width: 768, height: 1024, name: 'Tablet' },
+      { width: 1920, height: 1080, name: 'Desktop' }
+    ]
+
+    for (const breakpoint of breakpoints) {
+      await page.setViewportSize({ width: breakpoint.width, height: breakpoint.height })
+      
+      // Take screenshot for visual regression
+      await page.screenshot({ 
+        path: `test-results/photo-groups-${breakpoint.width}px.png`,
+        fullPage: true 
+      })
+      
+      // Verify core functionality works
+      await expect(page.getByText('Family Photos')).toBeVisible()
+      await expect(page.getByRole('button', { name: /create.*group/i })).toBeVisible()
+      
+      // Test responsive drag-drop (simplified)
+      if (breakpoint.width >= 768) {
+        const dragElement = page.getByTestId('guest-guest-2')
+        const dropTarget = page.getByTestId('photo-group-group-2')
+        
+        if (await dragElement.isVisible() && await dropTarget.isVisible()) {
+          await dragElement.dragTo(dropTarget)
+          await page.waitForTimeout(500)
+        }
+      }
+    }
+  })
+
+  test('handles error states and recovery', async ({ page }) => {
+    // Mock API error
+    await page.route('/api/guests/photo-groups*', async (route) => {
+      if (route.request().method() === 'PATCH') {
+        await route.fulfill({
+          status: 500,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'Server error' })
+        })
+      }
+    })
+    
+    // Attempt an operation that will fail
+    const sourceElement = page.getByTestId('guest-guest-2')
+    const targetGroup = page.getByTestId('photo-group-group-2')
+    
+    await sourceElement.dragTo(targetGroup)
+    
+    // Should show error message
+    await expect(page.getByText(/error/i)).toBeVisible()
+    await expect(page.getByText(/try again/i)).toBeVisible()
+    
+    // Should allow retry
+    const retryButton = page.getByRole('button', { name: /retry/i })
+    if (await retryButton.isVisible()) {
+      await retryButton.click()
+    }
+  })
+
+  test('maintains performance with large datasets', async ({ page }) => {
+    // Mock large dataset
+    const largeDataset = Array.from({ length: 200 }, (_, i) => ({
+      id: `guest-${i}`,
+      first_name: `Guest${i}`,
+      last_name: `LastName${i}`,
+      side: i % 2 === 0 ? 'partner1' : 'partner2',
+      category: ['family', 'friends', 'work', 'other'][i % 4],
+      rsvp_status: 'pending'
+    }))
+
+    await page.route('/api/guests*', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          data: largeDataset,
+          analytics: { total_guests: 200 }
+        })
+      })
+    })
+    
+    await page.reload()
+    
+    // Measure performance
+    const startTime = Date.now()
+    await page.waitForSelector('[data-testid="photo-groups-container"]')
+    const loadTime = Date.now() - startTime
+    
+    // Should load within reasonable time (less than 2 seconds)
+    expect(loadTime).toBeLessThan(2000)
+    
+    // Test virtual scrolling works
+    await expect(page.getByText('Guest0 LastName0')).toBeVisible()
+    
+    // Scroll to trigger virtual loading
+    await page.evaluate(() => {
+      const container = document.querySelector('[data-testid="guests-container"]')
+      if (container) {
+        container.scrollTop = 1000
+      }
+    })
+    
+    // Should still be responsive
+    await page.waitForTimeout(100)
+    expect(await page.getByTestId('guest-guest-50').isVisible()).toBeTruthy()
+  })
+
+  test('saves state and handles browser refresh', async ({ page }) => {
+    // Make changes
+    const searchInput = page.getByPlaceholder(/search.*groups/i)
+    await searchInput.fill('Family')
+    
+    const typeFilter = page.getByRole('combobox', { name: /photo type/i })
+    await typeFilter.selectOption('family')
+    
+    // Refresh page
+    await page.reload()
+    
+    // State should be preserved (if implemented with URL params or localStorage)
+    // This is a placeholder - actual implementation would depend on state management
+    await expect(page.getByText('Family Photos')).toBeVisible()
+  })
+
+  test('handles concurrent user operations', async ({ page }) => {
+    // Simulate another user making changes
+    await page.route('/api/guests/photo-groups*', async (route) => {
+      // Simulate data change from another user
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([
+          {
+            id: 'group-1',
+            name: 'Family Photos (Updated by User 2)',
+            assignments: []
+          }
+        ])
+      })
+    })
+    
+    // Make a change that triggers a refetch
+    await page.getByRole('button', { name: /refresh/i }).click()
+    
+    // Should show updated data
+    await expect(page.getByText('Updated by User 2')).toBeVisible()
+  })
+})
+
+// Test drag-drop keyboard accessibility
+test.describe('Photo Groups Keyboard Accessibility', () => {
+  test('supports keyboard-only drag and drop', async ({ page }) => {
+    await setupTestData(page)
+    await page.goto('/guests/photo-groups')
+    
+    // Focus on draggable guest
+    const guestCard = page.getByTestId('guest-guest-2')
+    await guestCard.focus()
+    
+    // Use keyboard to initiate drag
+    await page.keyboard.press('Space')
+    await expect(page.getByText(/drag mode/i)).toBeVisible()
+    
+    // Navigate to drop target
+    await page.keyboard.press('ArrowDown')
+    await page.keyboard.press('ArrowDown')
+    
+    // Drop
+    await page.keyboard.press('Space')
+    
+    // Verify action completed
+    await expect(page.getByText(/moved successfully/i)).toBeVisible()
+  })
+
+  test('provides clear focus indicators during navigation', async ({ page }) => {
+    await setupTestData(page)
+    await page.goto('/guests/photo-groups')
+    
+    // Tab through interactive elements
+    await page.keyboard.press('Tab')
+    
+    let focusedElement = page.locator(':focus')
+    await expect(focusedElement).toBeVisible()
+    
+    // Check focus ring is visible
+    const focusStyle = await focusedElement.evaluate(el => 
+      getComputedStyle(el).outline
+    )
+    expect(focusStyle).toBeTruthy()
+  })
+})

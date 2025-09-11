@@ -1,0 +1,371 @@
+/**
+ * WS-153 Photo Groups Load Testing Suite - Round 2
+ * Advanced load testing with 100+ concurrent users
+ * Tests system behavior under heavy load conditions
+ */
+
+import { describe, test, expect, beforeAll, afterAll, vi } from 'vitest';
+import { Browser, Page, BrowserContext, chromium } from 'playwright';
+// Load testing configuration
+const LOAD_TEST_CONFIG = {
+  CONCURRENT_USERS: 100,
+  TEST_DURATION_MS: 30000, // 30 seconds
+  RAMP_UP_TIME_MS: 5000, // 5 seconds to ramp up
+  TARGET_SUCCESS_RATE: 0.95, // 95% success rate
+  MAX_RESPONSE_TIME_MS: 5000, // 5 seconds max response
+  AVERAGE_RESPONSE_TARGET_MS: 2000, // 2 seconds average
+  BASE_URL: process.env.TEST_BASE_URL || 'http://localhost:3000',
+  SUPABASE_URL: process.env.SUPABASE_URL || 'http://localhost:54321',
+  SUPABASE_ANON_KEY: process.env.SUPABASE_ANON_KEY || ''
+};
+interface LoadTestResult {
+  success: boolean;
+  duration: number;
+  userId: number;
+  error?: string;
+  responseTime: number;
+  timestamp: number;
+}
+interface LoadTestMetrics {
+  totalRequests: number;
+  successfulRequests: number;
+  failedRequests: number;
+  averageResponseTime: number;
+  minResponseTime: number;
+  maxResponseTime: number;
+  percentile95: number;
+  percentile99: number;
+  throughputPerSecond: number;
+  errorRate: number;
+  concurrentUsers: number;
+  testDuration: number;
+describe('WS-153 Photo Groups Load Testing', () => {
+  let browser: Browser;
+  let contexts: BrowserContext[] = [];
+  beforeAll(async () => {
+    // Launch browser with optimized settings for load testing
+    browser = await chromium.launch({
+      headless: true,
+      args: [
+        '--disable-dev-shm-usage',
+        '--disable-setuid-sandbox',
+        '--no-sandbox',
+        '--disable-web-security',
+        '--disable-background-timer-throttling',
+        '--disable-backgrounding-occluded-windows',
+        '--disable-renderer-backgrounding'
+      ]
+    });
+    // Create test data in database for consistent testing
+    await setupLoadTestData();
+  });
+  afterAll(async () => {
+    // Cleanup contexts and browser
+    await Promise.all(contexts.map(context => context.close().catch(() => {})));
+    await browser?.close();
+    await cleanupLoadTestData();
+  test('System handles 100 concurrent users creating photo groups', async () => {
+    const results: LoadTestResult[] = [];
+    const startTime = Date.now();
+    console.log(`🚀 Starting load test with ${LOAD_TEST_CONFIG.CONCURRENT_USERS} concurrent users`);
+    // Create browser contexts for concurrent users
+    const contextPromises = Array.from({ length: LOAD_TEST_CONFIG.CONCURRENT_USERS }, async (_, i) => {
+      const context = await browser.newContext({
+        userAgent: `LoadTest-User-${i}`,
+        viewport: { width: 1920, height: 1080 },
+        ignoreHTTPSErrors: true
+      });
+      
+      contexts.push(context);
+      const page = await context.newPage();
+      // Configure page for load testing
+      await page.route('**/*', route => {
+        // Skip non-essential resources during load testing
+        const resourceType = route.request().resourceType();
+        if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
+          route.abort();
+        } else {
+          route.continue();
+        }
+      return { context, page, userId: i };
+    const userSessions = await Promise.all(contextPromises);
+    console.log(`✅ Created ${userSessions.length} user sessions`);
+    // Simulate realistic user behavior with staggered start times
+    const loadTestPromises = userSessions.map(async ({ page, userId }, index) => {
+      // Stagger user entry over ramp-up period
+      const delay = (index / LOAD_TEST_CONFIG.CONCURRENT_USERS) * LOAD_TEST_CONFIG.RAMP_UP_TIME_MS;
+      await new Promise(resolve => setTimeout(resolve, delay));
+      const userStartTime = Date.now();
+      try {
+        // Navigate to photo groups page
+        const navigationStart = performance.now();
+        await page.goto(`${LOAD_TEST_CONFIG.BASE_URL}/guests/photo-groups`, {
+          waitUntil: 'networkidle',
+          timeout: 10000
+        });
+        const navigationTime = performance.now() - navigationStart;
+        // Authenticate user (simulate logged-in state)
+        await page.evaluate(() => {
+          localStorage.setItem('supabase.auth.token', JSON.stringify({
+            access_token: 'mock-token',
+            refresh_token: 'mock-refresh',
+            user: {
+              id: `user-${Math.random()}`,
+              email: `loadtest${Math.random()}@example.com`
+            }
+          }));
+        // Wait for page to load
+        await page.waitForSelector('[data-testid="photo-groups-container"]', { timeout: 5000 });
+        // Perform core photo group operations
+        const operationResults = await performPhotoGroupOperations(page, userId);
+        
+        const totalDuration = Date.now() - userStartTime;
+        results.push({
+          success: true,
+          duration: totalDuration,
+          userId,
+          responseTime: navigationTime + operationResults.totalOperationTime,
+          timestamp: userStartTime
+        console.log(`✅ User ${userId} completed successfully in ${totalDuration}ms`);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          success: false,
+          error: errorMessage,
+          responseTime: totalDuration,
+        console.log(`❌ User ${userId} failed: ${errorMessage}`);
+      }
+    // Execute load test
+    console.log(`⚡ Executing load test operations...`);
+    await Promise.allSettled(loadTestPromises);
+    
+    const totalTestDuration = Date.now() - startTime;
+    console.log(`🏁 Load test completed in ${totalTestDuration}ms`);
+    // Analyze results
+    const metrics = analyzeLoadTestResults(results, totalTestDuration);
+    // Log detailed results
+    console.log('📊 Load Test Results:', JSON.stringify(metrics, null, 2));
+    // Performance assertions
+    expect(metrics.successfulRequests / metrics.totalRequests).toBeGreaterThanOrEqual(LOAD_TEST_CONFIG.TARGET_SUCCESS_RATE);
+    expect(metrics.averageResponseTime).toBeLessThan(LOAD_TEST_CONFIG.AVERAGE_RESPONSE_TARGET_MS);
+    expect(metrics.maxResponseTime).toBeLessThan(LOAD_TEST_CONFIG.MAX_RESPONSE_TIME_MS);
+    expect(metrics.errorRate).toBeLessThan(0.05); // Less than 5% error rate
+    // Throughput validation
+    expect(metrics.throughputPerSecond).toBeGreaterThan(10); // At least 10 operations/second
+    // Save results for analysis
+    await saveLoadTestResults(metrics, results);
+  }, 120000); // 2 minute timeout
+  test('Real-time collaboration works with multiple users', async () => {
+    const userCount = 5;
+    const collaborationResults: any[] = [];
+    console.log(`🤝 Testing real-time collaboration with ${userCount} users`);
+    // Create user sessions
+    const userSessions = await Promise.all(
+      Array.from({ length: userCount }, async (_, i) => {
+        const context = await browser.newContext();
+        contexts.push(context);
+        const page = await context.newPage();
+        await page.goto(`${LOAD_TEST_CONFIG.BASE_URL}/guests/photo-groups`);
+        return { context, page, userId: i };
+      })
+    );
+    // Test real-time synchronization
+    const collaborationPromise = Promise.all(
+      userSessions.map(async ({ page, userId }) => {
+        const startTime = Date.now();
+        try {
+          if (userId === 0) {
+            // User 0 creates a photo group
+            await page.click('[data-testid="create-group"]');
+            await page.fill('[data-testid="group-name"]', 'Collaboration Test Group');
+            await page.fill('[data-testid="group-description"]', 'Real-time collaboration test');
+            await page.click('[data-testid="save-group"]');
+            
+            collaborationResults.push({
+              userId,
+              action: 'create_group',
+              timestamp: Date.now(),
+              duration: Date.now() - startTime
+            });
+          } else {
+            // Other users should see the new group appear
+            await page.waitForSelector('[data-group-name="Collaboration Test Group"]', {
+              timeout: 10000
+              action: 'view_group',
+            if (userId === 1) {
+              // User 1 adds a guest to the group
+              await page.drag(
+                '[data-guest-id="test-guest-1"]',
+                '[data-group="collaboration-test-group"]'
+              );
+              
+              collaborationResults.push({
+                userId,
+                action: 'add_guest',
+                timestamp: Date.now(),
+                duration: Date.now() - startTime
+              });
+            } else if (userId > 1) {
+              // Other users should see the guest addition
+              await page.waitForSelector('[data-group-member="test-guest-1"]', {
+                timeout: 5000
+                action: 'see_guest_added',
+          }
+        } catch (error) {
+          collaborationResults.push({
+            userId,
+            error: error instanceof Error ? error.message : 'Unknown error',
+            timestamp: Date.now()
+          });
+    await collaborationPromise;
+    // Analyze collaboration results
+    const successfulOperations = collaborationResults.filter(r => !r.error);
+    const failedOperations = collaborationResults.filter(r => r.error);
+    console.log('🤝 Collaboration Results:', {
+      successful: successfulOperations.length,
+      failed: failedOperations.length,
+      details: collaborationResults
+    // Assertions
+    expect(failedOperations.length).toBe(0);
+    expect(successfulOperations.length).toBe(userCount + 3); // Initial + create + add + see operations
+    // Cleanup contexts
+    await Promise.all(userSessions.map(({ context }) => context.close()));
+  test('System performance under sustained load', async () => {
+    const sustainedLoadDuration = 60000; // 1 minute
+    const concurrentUsers = 25;
+    console.log(`⏱️ Starting sustained load test for ${sustainedLoadDuration}ms with ${concurrentUsers} users`);
+      Array.from({ length: concurrentUsers }, async (_, i) => {
+    let testRunning = true;
+    // Stop test after duration
+    setTimeout(() => {
+      testRunning = false;
+    }, sustainedLoadDuration);
+    // Continuous operations
+    const sustainedOperations = userSessions.map(async ({ page, userId }) => {
+      let operationCount = 0;
+      while (testRunning) {
+        const operationStart = Date.now();
+          await page.goto(`${LOAD_TEST_CONFIG.BASE_URL}/guests/photo-groups`);
+          await page.waitForSelector('[data-testid="photo-groups-container"]', { timeout: 5000 });
+          
+          // Perform random operations
+          const operations = ['create_group', 'view_groups', 'edit_group', 'reorder_groups'];
+          const randomOperation = operations[Math.floor(Math.random() * operations.length)];
+          await performOperation(page, randomOperation, operationCount);
+          results.push({
+            success: true,
+            duration: Date.now() - operationStart,
+            responseTime: Date.now() - operationStart,
+            timestamp: operationStart
+          operationCount++;
+          // Small delay between operations
+          await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 2000));
+            success: false,
+    await Promise.allSettled(sustainedOperations);
+    const totalDuration = Date.now() - startTime;
+    const metrics = analyzeLoadTestResults(results, totalDuration);
+    console.log('⏱️ Sustained Load Test Results:', JSON.stringify(metrics, null, 2));
+    // Performance degradation assertions
+    expect(metrics.errorRate).toBeLessThan(0.10); // Allow higher error rate for sustained load
+    expect(metrics.averageResponseTime).toBeLessThan(5000); // 5 seconds average under sustained load
+    expect(metrics.throughputPerSecond).toBeGreaterThan(5); // Minimum throughput
+    // Cleanup
+});
+// Helper Functions
+async function performPhotoGroupOperations(page: Page, userId: number) {
+  const operations = [];
+  const startTime = performance.now();
+  // Create a photo group
+  const createStart = performance.now();
+  await page.click('[data-testid="create-group"]', { timeout: 5000 });
+  await page.fill('[data-testid="group-name"]', `Load Test Group ${userId}`);
+  await page.fill('[data-testid="group-description"]', `Group created by user ${userId} during load test`);
+  await page.selectOption('[data-testid="shot-type"]', 'formal');
+  await page.fill('[data-testid="estimated-duration"]', '15');
+  await page.click('[data-testid="save-group"]');
+  await page.waitForSelector('[data-testid="group-saved"]', { timeout: 5000 });
+  operations.push({ name: 'create_group', duration: performance.now() - createStart });
+  // Add guests to the group
+  const addGuestsStart = performance.now();
+  const guestElements = await page.locator('[data-guest-id]').first();
+  if (await guestElements.count() > 0) {
+    await page.drag('[data-guest-id]', '[data-drop-zone="new-group"]');
+  }
+  operations.push({ name: 'add_guests', duration: performance.now() - addGuestsStart });
+  // Schedule the group
+  const scheduleStart = performance.now();
+  await page.click('[data-testid="schedule-group"]');
+  await page.fill('[data-testid="schedule-time"]', '14:30');
+  await page.click('[data-testid="save-schedule"]');
+  operations.push({ name: 'schedule_group', duration: performance.now() - scheduleStart });
+  // View group details
+  const viewStart = performance.now();
+  await page.click('[data-testid="view-group-details"]');
+  await page.waitForSelector('[data-testid="group-details-modal"]');
+  await page.click('[data-testid="close-modal"]');
+  operations.push({ name: 'view_details', duration: performance.now() - viewStart });
+  const totalOperationTime = performance.now() - startTime;
+  return {
+    operations,
+    totalOperationTime
+  };
+async function performOperation(page: Page, operation: string, operationCount: number) {
+  switch (operation) {
+    case 'create_group':
+      await page.click('[data-testid="create-group"]');
+      await page.fill('[data-testid="group-name"]', `Sustained Test Group ${operationCount}`);
+      await page.click('[data-testid="save-group"]');
+      break;
+    case 'view_groups':
+      await page.waitForSelector('[data-testid="photo-groups-list"]');
+    case 'edit_group':
+      const groups = await page.locator('[data-testid="photo-group-item"]');
+      if (await groups.count() > 0) {
+        await groups.first().click();
+        await page.fill('[data-testid="group-name"]', `Updated Group ${operationCount}`);
+        await page.click('[data-testid="save-group"]');
+    case 'reorder_groups':
+      const groupElements = await page.locator('[data-testid="photo-group-item"]');
+      if (await groupElements.count() > 1) {
+        const first = groupElements.first();
+        const second = groupElements.nth(1);
+        await first.dragTo(second);
+function analyzeLoadTestResults(results: LoadTestResult[], totalDuration: number): LoadTestMetrics {
+  const successful = results.filter(r => r.success);
+  const failed = results.filter(r => !r.success);
+  
+  const responseTimes = results.map(r => r.responseTime).sort((a, b) => a - b);
+  const averageResponseTime = responseTimes.reduce((sum, time) => sum + time, 0) / responseTimes.length;
+  const percentile95Index = Math.floor(responseTimes.length * 0.95);
+  const percentile99Index = Math.floor(responseTimes.length * 0.99);
+    totalRequests: results.length,
+    successfulRequests: successful.length,
+    failedRequests: failed.length,
+    averageResponseTime: Math.round(averageResponseTime),
+    minResponseTime: Math.min(...responseTimes),
+    maxResponseTime: Math.max(...responseTimes),
+    percentile95: responseTimes[percentile95Index] || 0,
+    percentile99: responseTimes[percentile99Index] || 0,
+    throughputPerSecond: Math.round((results.length / totalDuration) * 1000),
+    errorRate: failed.length / results.length,
+    concurrentUsers: LOAD_TEST_CONFIG.CONCURRENT_USERS,
+    testDuration: totalDuration
+async function setupLoadTestData() {
+  // Create test organizations, couples, and guests for load testing
+  console.log('🔧 Setting up load test data...');
+  // This would typically create test data in the database
+  // For now, we'll assume the test environment has sufficient data
+async function cleanupLoadTestData() {
+  // Clean up any test data created during load testing
+  console.log('🧹 Cleaning up load test data...');
+async function saveLoadTestResults(metrics: LoadTestMetrics, results: LoadTestResult[]) {
+  // Save results to a file for analysis
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const resultsData = {
+    timestamp,
+    metrics,
+    detailedResults: results
+  // In a real implementation, this would save to a file or database
+  console.log('💾 Load test results saved:', {
+    totalRequests: metrics.totalRequests,
+    successRate: (metrics.successfulRequests / metrics.totalRequests * 100).toFixed(2) + '%',
+    averageResponseTime: metrics.averageResponseTime + 'ms'

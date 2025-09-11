@@ -1,0 +1,338 @@
+import React from 'react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import '@testing-library/jest-dom';
+import { SubscriptionTierVisualizer } from '../SubscriptionTierVisualizer';
+import { SubscriptionTier, TierUsageData, UpgradeFlow } from '@/types/rate-limiting';
+
+const mockTierData: TierUsageData[] = [
+  {
+    tier: SubscriptionTier.FREE,
+    activeUsers: 245,
+    totalRequests: 12500,
+    averageUsage: 65,
+    revenueGenerated: 0,
+    upgradePotential: 85,
+    conversionRate: 12.5,
+    churnRate: 8.2,
+    weddingSeasonImpact: 1.2,
+    topFeatures: ['Basic Forms', 'Email Support'],
+    limitReached: 78
+  },
+  {
+    tier: SubscriptionTier.STARTER,
+    activeUsers: 156,
+    totalRequests: 45600,
+    averageUsage: 78,
+    revenueGenerated: 2964,
+    upgradePotential: 72,
+    conversionRate: 8.3,
+    churnRate: 5.1,
+    weddingSeasonImpact: 1.5,
+    topFeatures: ['Unlimited Forms', 'Email Automation'],
+    limitReached: 45
+  },
+  {
+    tier: SubscriptionTier.PROFESSIONAL,
+    activeUsers: 89,
+    totalRequests: 78900,
+    averageUsage: 89,
+    revenueGenerated: 4361,
+    upgradePotential: 45,
+    conversionRate: 5.2,
+    churnRate: 3.8,
+    weddingSeasonImpact: 2.0,
+    topFeatures: ['AI Features', 'Marketplace Access', 'Advanced Analytics'],
+    limitReached: 23
+  }
+];
+
+const mockUpgradeFlows: UpgradeFlow[] = [
+  {
+    fromTier: SubscriptionTier.FREE,
+    toTier: SubscriptionTier.STARTER,
+    conversionRate: 12.5,
+    averageTimeToUpgrade: 14,
+    commonTriggers: ['Form Limit Reached', 'Wedding Season'],
+    revenueImpact: 228,
+    weddingDeadlineInfluence: 67
+  },
+  {
+    fromTier: SubscriptionTier.STARTER,
+    toTier: SubscriptionTier.PROFESSIONAL,
+    conversionRate: 8.3,
+    averageTimeToUpgrade: 28,
+    commonTriggers: ['Need AI Features', 'Marketplace Interest'],
+    revenueImpact: 468,
+    weddingDeadlineInfluence: 45
+  }
+];
+
+describe('SubscriptionTierVisualizer', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('renders tier visualizer with all tiers', () => {
+    render(<SubscriptionTierVisualizer tierData={mockTierData} />);
+    
+    expect(screen.getByText('Subscription Tier Visualizer')).toBeInTheDocument();
+    expect(screen.getByText('FREE')).toBeInTheDocument();
+    expect(screen.getByText('STARTER')).toBeInTheDocument();
+    expect(screen.getByText('PROFESSIONAL')).toBeInTheDocument();
+  });
+
+  it('displays tier statistics correctly', () => {
+    render(<SubscriptionTierVisualizer tierData={mockTierData} />);
+    
+    expect(screen.getByText('245')).toBeInTheDocument(); // FREE users
+    expect(screen.getByText('156')).toBeInTheDocument(); // STARTER users  
+    expect(screen.getByText('89')).toBeInTheDocument(); // PROFESSIONAL users
+    expect(screen.getByText('$2,964')).toBeInTheDocument(); // STARTER revenue
+  });
+
+  it('shows upgrade potential with visual indicators', () => {
+    render(<SubscriptionTierVisualizer tierData={mockTierData} />);
+    
+    expect(screen.getByText('85%')).toBeInTheDocument(); // FREE upgrade potential
+    expect(screen.getByText('72%')).toBeInTheDocument(); // STARTER upgrade potential
+  });
+
+  it('displays wedding season impact multipliers', () => {
+    render(<SubscriptionTierVisualizer tierData={mockTierData} showWeddingContext={true} />);
+    
+    expect(screen.getByText('1.2x')).toBeInTheDocument(); // FREE multiplier
+    expect(screen.getByText('1.5x')).toBeInTheDocument(); // STARTER multiplier  
+    expect(screen.getByText('2.0x')).toBeInTheDocument(); // PROFESSIONAL multiplier
+  });
+
+  it('handles view mode switching', () => {
+    render(<SubscriptionTierVisualizer tierData={mockTierData} />);
+    
+    const chartViewButton = screen.getByRole('button', { name: /chart view/i });
+    const tableViewButton = screen.getByRole('button', { name: /table view/i });
+    
+    fireEvent.click(chartViewButton);
+    expect(screen.getByTestId('tier-chart')).toBeInTheDocument();
+    
+    fireEvent.click(tableViewButton);
+    expect(screen.getByTestId('tier-table')).toBeInTheDocument();
+  });
+
+  it('shows upgrade flows when provided', () => {
+    render(
+      <SubscriptionTierVisualizer 
+        tierData={mockTierData} 
+        upgradeFlows={mockUpgradeFlows}
+      />
+    );
+    
+    expect(screen.getByText('Upgrade Flows')).toBeInTheDocument();
+    expect(screen.getByText('FREE → STARTER')).toBeInTheDocument();
+    expect(screen.getByText('STARTER → PROFESSIONAL')).toBeInTheDocument();
+  });
+
+  it('displays conversion rates and metrics', () => {
+    render(
+      <SubscriptionTierVisualizer 
+        tierData={mockTierData} 
+        upgradeFlows={mockUpgradeFlows}
+      />
+    );
+    
+    expect(screen.getByText('12.5%')).toBeInTheDocument(); // Conversion rate
+    expect(screen.getByText('14 days')).toBeInTheDocument(); // Time to upgrade
+  });
+
+  it('shows wedding deadline influence on upgrades', () => {
+    render(
+      <SubscriptionTierVisualizer 
+        tierData={mockTierData} 
+        upgradeFlows={mockUpgradeFlows}
+        showWeddingContext={true}
+      />
+    );
+    
+    expect(screen.getByText('67%')).toBeInTheDocument(); // Wedding deadline influence
+    expect(screen.getByText(/wedding deadline/i)).toBeInTheDocument();
+  });
+
+  it('filters data by date range', async () => {
+    render(<SubscriptionTierVisualizer tierData={mockTierData} />);
+    
+    const dateRangeSelector = screen.getByRole('combobox', { name: /date range/i });
+    fireEvent.change(dateRangeSelector, { target: { value: 'last-30-days' } });
+    
+    await waitFor(() => {
+      expect(dateRangeSelector).toHaveValue('last-30-days');
+    });
+  });
+
+  it('sorts tiers by different metrics', () => {
+    render(<SubscriptionTierVisualizer tierData={mockTierData} />);
+    
+    const sortDropdown = screen.getByRole('combobox', { name: /sort by/i });
+    fireEvent.change(sortDropdown, { target: { value: 'revenue' } });
+    
+    const tierCards = screen.getAllByTestId('tier-card');
+    expect(tierCards[0]).toHaveTextContent('PROFESSIONAL'); // Highest revenue
+  });
+
+  it('displays tier comparison correctly', () => {
+    render(<SubscriptionTierVisualizer tierData={mockTierData} />);
+    
+    const compareButton = screen.getByText(/compare tiers/i);
+    fireEvent.click(compareButton);
+    
+    expect(screen.getByTestId('tier-comparison-modal')).toBeInTheDocument();
+  });
+
+  it('shows revenue projections', () => {
+    render(<SubscriptionTierVisualizer tierData={mockTierData} />);
+    
+    expect(screen.getByText('Revenue Projections')).toBeInTheDocument();
+    expect(screen.getByTestId('revenue-chart')).toBeInTheDocument();
+  });
+
+  it('handles tier upgrade recommendations', () => {
+    const mockOnUpgradeRecommendation = jest.fn();
+    render(
+      <SubscriptionTierVisualizer 
+        tierData={mockTierData}
+        onUpgradeRecommendation={mockOnUpgradeRecommendation}
+      />
+    );
+    
+    const recommendButton = screen.getByText(/recommend upgrades/i);
+    fireEvent.click(recommendButton);
+    
+    expect(mockOnUpgradeRecommendation).toHaveBeenCalled();
+  });
+
+  it('displays churn rate analysis', () => {
+    render(<SubscriptionTierVisualizer tierData={mockTierData} />);
+    
+    expect(screen.getByText('8.2%')).toBeInTheDocument(); // FREE churn rate
+    expect(screen.getByText('5.1%')).toBeInTheDocument(); // STARTER churn rate
+    expect(screen.getByText('3.8%')).toBeInTheDocument(); // PROFESSIONAL churn rate
+  });
+
+  it('shows top features for each tier', () => {
+    render(<SubscriptionTierVisualizer tierData={mockTierData} />);
+    
+    expect(screen.getByText('Basic Forms')).toBeInTheDocument();
+    expect(screen.getByText('Email Automation')).toBeInTheDocument();
+    expect(screen.getByText('AI Features')).toBeInTheDocument();
+    expect(screen.getByText('Marketplace Access')).toBeInTheDocument();
+  });
+
+  it('handles export functionality', () => {
+    const mockOnExport = jest.fn();
+    render(
+      <SubscriptionTierVisualizer 
+        tierData={mockTierData}
+        onExport={mockOnExport}
+      />
+    );
+    
+    const exportButton = screen.getByText(/export data/i);
+    fireEvent.click(exportButton);
+    
+    expect(mockOnExport).toHaveBeenCalledWith(mockTierData);
+  });
+
+  it('displays loading state correctly', () => {
+    render(<SubscriptionTierVisualizer tierData={[]} isLoading={true} />);
+    
+    expect(screen.getByText(/loading tier data/i)).toBeInTheDocument();
+    expect(screen.getByTestId('loading-spinner')).toBeInTheDocument();
+  });
+
+  it('handles error state correctly', () => {
+    render(
+      <SubscriptionTierVisualizer 
+        tierData={[]} 
+        error="Failed to load tier data"
+      />
+    );
+    
+    expect(screen.getByText(/failed to load tier data/i)).toBeInTheDocument();
+  });
+
+  it('shows empty state when no data available', () => {
+    render(<SubscriptionTierVisualizer tierData={[]} />);
+    
+    expect(screen.getByText(/no tier data available/i)).toBeInTheDocument();
+    expect(screen.getByText(/check back later/i)).toBeInTheDocument();
+  });
+
+  it('displays upgrade trigger analysis', () => {
+    render(
+      <SubscriptionTierVisualizer 
+        tierData={mockTierData}
+        upgradeFlows={mockUpgradeFlows}
+      />
+    );
+    
+    expect(screen.getByText('Form Limit Reached')).toBeInTheDocument();
+    expect(screen.getByText('Wedding Season')).toBeInTheDocument();
+    expect(screen.getByText('Need AI Features')).toBeInTheDocument();
+  });
+
+  it('calculates and displays wedding season revenue impact', () => {
+    render(
+      <SubscriptionTierVisualizer 
+        tierData={mockTierData}
+        showWeddingContext={true}
+        isWeddingSeason={true}
+      />
+    );
+    
+    expect(screen.getByText(/wedding season bonus/i)).toBeInTheDocument();
+    expect(screen.getByTestId('seasonal-revenue-impact')).toBeInTheDocument();
+  });
+
+  it('is accessible with proper ARIA labels', () => {
+    render(<SubscriptionTierVisualizer tierData={mockTierData} />);
+    
+    expect(screen.getByRole('region', { name: /subscription tier visualizer/i })).toBeInTheDocument();
+    expect(screen.getAllByRole('tabpanel')).toHaveLength(expect.any(Number));
+    expect(screen.getByRole('tablist')).toBeInTheDocument();
+  });
+
+  it('supports keyboard navigation', () => {
+    render(<SubscriptionTierVisualizer tierData={mockTierData} />);
+    
+    const firstTab = screen.getByRole('tab', { name: /overview/i });
+    firstTab.focus();
+    
+    fireEvent.keyDown(firstTab, { key: 'ArrowRight' });
+    
+    const secondTab = screen.getByRole('tab', { name: /flows/i });
+    expect(document.activeElement).toBe(secondTab);
+  });
+
+  it('updates data when props change', async () => {
+    const { rerender } = render(<SubscriptionTierVisualizer tierData={mockTierData} />);
+    
+    const updatedData = [...mockTierData];
+    updatedData[0] = { ...updatedData[0], activeUsers: 300 };
+    
+    rerender(<SubscriptionTierVisualizer tierData={updatedData} />);
+    
+    await waitFor(() => {
+      expect(screen.getByText('300')).toBeInTheDocument();
+    });
+  });
+
+  it('displays tier health scores', () => {
+    render(<SubscriptionTierVisualizer tierData={mockTierData} />);
+    
+    expect(screen.getByTestId('tier-health-score-FREE')).toBeInTheDocument();
+    expect(screen.getByTestId('tier-health-score-STARTER')).toBeInTheDocument();
+    expect(screen.getByTestId('tier-health-score-PROFESSIONAL')).toBeInTheDocument();
+  });
+});

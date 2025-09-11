@@ -1,0 +1,519 @@
+/**
+ * WS-127: AI Smart Album Generation API Endpoint
+ * Generates intelligent photo albums using AI categorization and analysis
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { photoAIService } from '@/lib/ml/photo-ai-service';
+import { photoService } from '@/lib/services/photoService';
+import { z } from 'zod';
+
+const generateAlbumsSchema = z.object({
+  bucket_id: z.string(),
+  photo_ids: z.array(z.string()).optional(), // If not provided, use all photos in bucket
+  generation_criteria: z
+    .object({
+      max_albums: z.number().min(1).max(20).default(10),
+      min_photos_per_album: z.number().min(2).max(50).default(5),
+      categorization_strategy: z
+        .enum([
+          'chronological',
+          'thematic',
+          'people_based',
+          'venue_based',
+          'mixed',
+        ])
+        .default('mixed'),
+      include_highlights: z.boolean().default(true),
+      prefer_quality: z.boolean().default(true), // Prioritize higher quality photos
+      balance_albums: z.boolean().default(true), // Try to balance photo count across albums
+    })
+    .optional(),
+});
+
+const createAlbumSchema = z.object({
+  bucket_id: z.string(),
+  album_suggestion: z.object({
+    suggested_name: z.string(),
+    description: z.string(),
+    photo_ids: z.array(z.string()),
+    cover_photo_suggestion: z.string(),
+  }),
+  custom_name: z.string().optional(),
+  custom_description: z.string().optional(),
+});
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+
+    // Check authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await request.json();
+
+    // Check if this is album creation request
+    if (body.album_suggestion) {
+      return await createAlbumFromSuggestion(supabase, user, body);
+    }
+
+    // This is album generation request
+    const { bucket_id, photo_ids, generation_criteria } =
+      generateAlbumsSchema.parse(body);
+
+    // Check if bucket exists and user has access
+    const { data: bucket, error: bucketError } = await supabase
+      .from('photo_buckets')
+      .select('id, name, organization_id, created_by')
+      .eq('id', bucket_id)
+      .single();
+
+    if (bucketError || !bucket) {
+      return NextResponse.json(
+        { error: 'Photo bucket not found' },
+        { status: 404 },
+      );
+    }
+
+    // Check permissions
+    if (bucket.created_by !== user.id && !bucket.organization_id) {
+      return NextResponse.json(
+        { error: 'Access denied to bucket' },
+        { status: 403 },
+      );
+    }
+
+    // Get photos to analyze
+    let photosQuery = supabase
+      .from('photos')
+      .select('id, filename, file_path, quality_score, created_at, is_featured')
+      .eq('bucket_id', bucket_id);
+
+    if (photo_ids) {
+      photosQuery = photosQuery.in('id', photo_ids);
+    }
+
+    const { data: photos, error: photosError } = await photosQuery
+      .order('created_at', { ascending: false })
+      .limit(200); // Reasonable limit for album generation
+
+    if (photosError) {
+      return NextResponse.json(
+        { error: 'Failed to fetch photos' },
+        { status: 500 },
+      );
+    }
+
+    if (photos.length === 0) {
+      return NextResponse.json(
+        { error: 'No photos found in bucket' },
+        { status: 404 },
+      );
+    }
+
+    const criteria = {
+      max_albums: 10,
+      min_photos_per_album: 5,
+      categorization_strategy: 'mixed',
+      include_highlights: true,
+      prefer_quality: true,
+      balance_albums: true,
+      ...generation_criteria,
+    };
+
+    // Generate smart albums using AI
+    const albumSuggestions = await photoAIService.generateSmartAlbums({
+      bucket_id,
+      photos: photos.map((photo) => ({
+        id: photo.id,
+        albumId: undefined,
+        bucketId: bucket_id,
+        organizationId: bucket.organization_id,
+        filename: photo.filename,
+        originalFilename: photo.filename,
+        filePath: photo.file_path,
+        fileSizeBytes: 0,
+        mimeType: '',
+        width: 0,
+        height: 0,
+        thumbnailPath: undefined,
+        previewPath: undefined,
+        optimizedPath: undefined,
+        compressionRatio: undefined,
+        title: undefined,
+        description: undefined,
+        altText: undefined,
+        photographerCredit: undefined,
+        takenAt: undefined,
+        location: undefined,
+        sortOrder: 0,
+        isFeatured: photo.is_featured || false,
+        isApproved: false,
+        approvalStatus: 'pending',
+        viewCount: 0,
+        downloadCount: 0,
+        createdAt: photo.created_at,
+        updatedAt: photo.created_at,
+        uploadedBy: user.id,
+        approvedBy: undefined,
+        tags: [],
+      })),
+      generation_criteria: criteria,
+    });
+
+    // Enhance suggestions with additional metadata
+    const enhancedSuggestions = await Promise.all(
+      albumSuggestions.map(async (suggestion) => {
+        // Get cover photo details
+        const coverPhoto = photos.find(
+          (p) => p.id === suggestion.cover_photo_suggestion,
+        );
+
+        // Calculate album statistics
+        const albumPhotos = photos.filter((p) =>
+          suggestion.photo_ids.includes(p.id),
+        );
+        const avgQuality =
+          albumPhotos.length > 0
+            ? albumPhotos.reduce((sum, p) => sum + (p.quality_score || 7), 0) /
+              albumPhotos.length
+            : 7;
+
+        // Get time span
+        const photoTimes = albumPhotos.map((p) =>
+          new Date(p.created_at).getTime(),
+        );
+        const timeSpan =
+          photoTimes.length > 1
+            ? Math.max(...photoTimes) - Math.min(...photoTimes)
+            : 0;
+
+        return {
+          ...suggestion,
+          statistics: {
+            photo_count: suggestion.photo_ids.length,
+            average_quality: Math.round(avgQuality * 10) / 10,
+            time_span_hours: Math.round(timeSpan / (1000 * 60 * 60)),
+            featured_photos: albumPhotos.filter((p) => p.is_featured).length,
+          },
+          cover_photo_details: coverPhoto
+            ? {
+                id: coverPhoto.id,
+                filename: coverPhoto.filename,
+                quality_score: coverPhoto.quality_score,
+              }
+            : null,
+          generation_metadata: {
+            strategy_used: criteria.categorization_strategy,
+            ai_confidence: suggestion.confidence,
+            created_at: new Date().toISOString(),
+            generation_time_ms: 0, // Would track actual generation time
+          },
+        };
+      }),
+    );
+
+    // Store generation session
+    const sessionRecord = {
+      id: crypto.randomUUID(),
+      bucket_id,
+      generation_criteria: criteria,
+      suggestions_generated: enhancedSuggestions.length,
+      photos_analyzed: photos.length,
+      created_by: user.id,
+      suggestions: enhancedSuggestions,
+    };
+
+    const { error: sessionError } = await supabase
+      .from('album_generation_sessions')
+      .insert(sessionRecord);
+
+    if (sessionError) {
+      console.error('Failed to store generation session:', sessionError);
+      // Continue anyway
+    }
+
+    return NextResponse.json({
+      success: true,
+      bucket: {
+        id: bucket.id,
+        name: bucket.name,
+      },
+      generation_session: {
+        id: sessionRecord.id,
+        photos_analyzed: photos.length,
+        suggestions_generated: enhancedSuggestions.length,
+        criteria_used: criteria,
+      },
+      album_suggestions: enhancedSuggestions,
+      next_steps: {
+        create_album_endpoint: '/api/photos/ai/albums/generate',
+        modify_criteria:
+          'Adjust generation_criteria to regenerate with different settings',
+      },
+    });
+  } catch (error) {
+    console.error('Album generation error:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid request data', details: error.errors },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Album generation failed', message: error.message },
+      { status: 500 },
+    );
+  }
+}
+
+async function createAlbumFromSuggestion(supabase: any, user: any, body: any) {
+  const { bucket_id, album_suggestion, custom_name, custom_description } =
+    createAlbumSchema.parse(body);
+
+  // Check if bucket exists and user has access
+  const { data: bucket, error: bucketError } = await supabase
+    .from('photo_buckets')
+    .select('id, name, organization_id, created_by')
+    .eq('id', bucket_id)
+    .single();
+
+  if (bucketError || !bucket) {
+    return NextResponse.json(
+      { error: 'Photo bucket not found' },
+      { status: 404 },
+    );
+  }
+
+  // Check permissions
+  if (bucket.created_by !== user.id && !bucket.organization_id) {
+    return NextResponse.json(
+      { error: 'Access denied to bucket' },
+      { status: 403 },
+    );
+  }
+
+  // Verify all photos exist in the bucket
+  const { data: photos, error: photosError } = await supabase
+    .from('photos')
+    .select('id, filename')
+    .eq('bucket_id', bucket_id)
+    .in('id', album_suggestion.photo_ids);
+
+  if (photosError) {
+    return NextResponse.json(
+      { error: 'Failed to verify photos' },
+      { status: 500 },
+    );
+  }
+
+  if (photos.length !== album_suggestion.photo_ids.length) {
+    return NextResponse.json(
+      { error: 'Some photos not found in bucket' },
+      { status: 404 },
+    );
+  }
+
+  // Create the album
+  const albumData = {
+    bucket_id,
+    name: custom_name || album_suggestion.suggested_name,
+    description: custom_description || album_suggestion.description,
+    cover_photo_url: album_suggestion.cover_photo_suggestion, // Would get actual URL
+    sort_order: 0,
+    is_featured: false,
+    created_by: user.id,
+  };
+
+  const { data: album, error: albumError } = await supabase
+    .from('photo_albums')
+    .insert(albumData)
+    .select()
+    .single();
+
+  if (albumError) {
+    console.error('Failed to create album:', albumError);
+    return NextResponse.json(
+      { error: 'Failed to create album' },
+      { status: 500 },
+    );
+  }
+
+  // Associate photos with the album
+  const photoUpdates = album_suggestion.photo_ids.map((photoId) => ({
+    id: photoId,
+    album_id: album.id,
+  }));
+
+  const { error: updateError } = await supabase
+    .from('photos')
+    .upsert(photoUpdates, { onConflict: 'id' });
+
+  if (updateError) {
+    console.error('Failed to associate photos with album:', updateError);
+    // Try to clean up the created album
+    await supabase.from('photo_albums').delete().eq('id', album.id);
+
+    return NextResponse.json(
+      { error: 'Failed to associate photos with album' },
+      { status: 500 },
+    );
+  }
+
+  // Log album creation
+  await supabase.from('album_generation_logs').insert({
+    album_id: album.id,
+    bucket_id,
+    photos_added: album_suggestion.photo_ids.length,
+    ai_generated: true,
+    original_suggestion: album_suggestion,
+    created_by: user.id,
+  });
+
+  return NextResponse.json({
+    success: true,
+    album: {
+      id: album.id,
+      name: album.name,
+      description: album.description,
+      bucket_id: album.bucket_id,
+      photos_count: album_suggestion.photo_ids.length,
+      cover_photo_id: album_suggestion.cover_photo_suggestion,
+      created_at: album.created_at,
+      ai_generated: true,
+    },
+    photos_added: photos.map((p) => ({
+      id: p.id,
+      filename: p.filename,
+    })),
+  });
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+
+    // Check authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get query parameters
+    const { searchParams } = new URL(request.url);
+    const bucketId = searchParams.get('bucket_id');
+    const sessionId = searchParams.get('session_id');
+
+    if (sessionId) {
+      // Get specific generation session
+      const { data: session, error: sessionError } = await supabase
+        .from('album_generation_sessions')
+        .select('*')
+        .eq('id', sessionId)
+        .eq('created_by', user.id)
+        .single();
+
+      if (sessionError || !session) {
+        return NextResponse.json(
+          { error: 'Generation session not found' },
+          { status: 404 },
+        );
+      }
+
+      return NextResponse.json({
+        success: true,
+        session: {
+          id: session.id,
+          bucket_id: session.bucket_id,
+          generation_criteria: session.generation_criteria,
+          suggestions_generated: session.suggestions_generated,
+          photos_analyzed: session.photos_analyzed,
+          created_at: session.created_at,
+          suggestions: session.suggestions,
+        },
+      });
+    }
+
+    if (bucketId) {
+      // Get generation history for bucket
+      const { data: sessions, error: sessionsError } = await supabase
+        .from('album_generation_sessions')
+        .select(
+          'id, generation_criteria, suggestions_generated, photos_analyzed, created_at',
+        )
+        .eq('bucket_id', bucketId)
+        .eq('created_by', user.id)
+        .order('created_at', { ascending: false })
+        .limit(10);
+
+      if (sessionsError) {
+        return NextResponse.json(
+          { error: 'Failed to fetch generation history' },
+          { status: 500 },
+        );
+      }
+
+      return NextResponse.json({
+        success: true,
+        bucket_id: bucketId,
+        generation_history: sessions,
+        total_sessions: sessions.length,
+      });
+    }
+
+    // Get all generation sessions for user
+    const { data: allSessions, error: allSessionsError } = await supabase
+      .from('album_generation_sessions')
+      .select(
+        `
+        id, 
+        bucket_id, 
+        generation_criteria, 
+        suggestions_generated, 
+        photos_analyzed, 
+        created_at,
+        photo_buckets!inner(name)
+      `,
+      )
+      .eq('created_by', user.id)
+      .order('created_at', { ascending: false })
+      .limit(20);
+
+    if (allSessionsError) {
+      return NextResponse.json(
+        { error: 'Failed to fetch generation sessions' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      generation_sessions: allSessions.map((session) => ({
+        id: session.id,
+        bucket_id: session.bucket_id,
+        bucket_name: session.photo_buckets?.name,
+        suggestions_generated: session.suggestions_generated,
+        photos_analyzed: session.photos_analyzed,
+        created_at: session.created_at,
+      })),
+    });
+  } catch (error) {
+    console.error('Fetch album generation error:', error);
+    return NextResponse.json(
+      { error: 'Failed to fetch album generation data' },
+      { status: 500 },
+    );
+  }
+}

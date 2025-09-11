@@ -1,0 +1,157 @@
+# Specialized Docker Compose for Journey Builder Development
+# Usage: docker-compose -f docker-compose.journey-builder.yml up
+
+version: '3.8'
+
+services:
+  # Journey Builder Dev Server with hot reload
+  journey-builder:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+      args:
+        - JOURNEY_BUILDER_MODE=true
+    container_name: journey-builder-dev
+    ports:
+      - "3000:3000"      # Next.js app
+      - "9229:9229"      # Node.js debugger
+      - "3001:3001"      # React DevTools
+    environment:
+      - NODE_ENV=development
+      - NODE_OPTIONS=--inspect=0.0.0.0:9229
+      - NEXT_PUBLIC_JOURNEY_BUILDER_DEBUG=true
+      - REACT_FLOW_PRO_KEY=${REACT_FLOW_PRO_KEY:-}
+      # Feature flags
+      - FEATURE_JOURNEY_BUILDER=true
+      - FEATURE_JOURNEY_ANALYTICS=true
+      - FEATURE_JOURNEY_TEMPLATES=true
+      # Supabase
+      - NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
+      - NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+    volumes:
+      # Source code with hot reload
+      - ./src/components/journey-builder:/app/src/components/journey-builder
+      - ./src/app/(dashboard)/journeys:/app/src/app/(dashboard)/journeys
+      - ./src/app/api/journeys:/app/src/app/api/journeys
+      - ./src/lib/journey:/app/src/lib/journey
+      # Config and dependencies
+      - ./package.json:/app/package.json
+      - ./tsconfig.json:/app/tsconfig.json
+      - ./next.config.js:/app/next.config.js
+      - ./tailwind.config.js:/app/tailwind.config.js
+      # Persistent volumes
+      - journey_node_modules:/app/node_modules
+      - journey_next_cache:/app/.next
+    networks:
+      - journey-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/journeys"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # PostgreSQL with Journey Builder schema
+  journey-db:
+    image: postgres:15-alpine
+    container_name: journey-postgres
+    ports:
+      - "5433:5432"  # Different port to avoid conflicts
+    environment:
+      - POSTGRES_USER=journey
+      - POSTGRES_PASSWORD=journey123
+      - POSTGRES_DB=journey_builder
+    volumes:
+      - journey_postgres_data:/var/lib/postgresql/data
+      - ./supabase/migrations/013_journey_execution_system.sql:/docker-entrypoint-initdb.d/01_journey.sql
+      - ./supabase/migrations/013_journey_analytics_dashboard.sql:/docker-entrypoint-initdb.d/02_analytics.sql
+    networks:
+      - journey-network
+
+  # Redis for Journey Builder caching
+  journey-redis:
+    image: redis:7-alpine
+    container_name: journey-redis
+    ports:
+      - "6380:6379"  # Different port to avoid conflicts
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - journey_redis_data:/data
+    networks:
+      - journey-network
+
+  # Journey Builder Analytics Dashboard
+  journey-analytics:
+    image: grafana/grafana:latest
+    container_name: journey-analytics
+    ports:
+      - "3003:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_INSTALL_PLUGINS=redis-datasource
+    volumes:
+      - journey_grafana_data:/var/lib/grafana
+      - ./docker/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./docker/grafana/datasources:/etc/grafana/provisioning/datasources
+    networks:
+      - journey-network
+    profiles:
+      - analytics
+
+  # Journey Builder Test Runner
+  journey-tester:
+    build:
+      context: .
+      dockerfile: Dockerfile.playwright
+    container_name: journey-tester
+    environment:
+      - PLAYWRIGHT_BASE_URL=http://journey-builder:3000
+      - TEST_FOCUS=journey-builder
+      - CI=true
+    volumes:
+      - ./tests/journey-builder:/app/tests/journey-builder
+      - ./playwright-report:/app/playwright-report
+      - ./test-results:/app/test-results
+    networks:
+      - journey-network
+    depends_on:
+      journey-builder:
+        condition: service_healthy
+    profiles:
+      - testing
+    command: ["npx", "playwright", "test", "tests/journey-builder/"]
+
+  # Journey Builder Storybook
+  journey-storybook:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    container_name: journey-storybook
+    ports:
+      - "6006:6006"
+    environment:
+      - NODE_ENV=development
+    volumes:
+      - ./src/components/journey-builder:/app/src/components/journey-builder
+      - ./.storybook:/app/.storybook
+      - ./src/stories:/app/src/stories
+    networks:
+      - journey-network
+    profiles:
+      - storybook
+    command: ["npm", "run", "storybook"]
+
+networks:
+  journey-network:
+    driver: bridge
+    name: journey-builder-network
+
+volumes:
+  journey_postgres_data:
+  journey_redis_data:
+  journey_grafana_data:
+  journey_node_modules:
+  journey_next_cache:

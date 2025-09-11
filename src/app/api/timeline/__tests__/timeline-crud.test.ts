@@ -1,0 +1,325 @@
+/**
+ * Timeline CRUD API Tests - WS-160
+ * Tests for timeline creation, reading, updating, and deletion
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { GET as getTimelines, POST as createTimeline } from '../route';
+import { GET as getTimeline, PUT as updateTimeline, DELETE as deleteTimeline } from '../[id]/route';
+import { createClient } from '@/lib/supabase/server';
+// Mock dependencies
+jest.mock('@/lib/supabase/server');
+jest.mock('@/lib/validation/middleware');
+const mockCreateClient = createClient as jest.MockedFunction<typeof createClient>;
+describe('Timeline CRUD API', () => {
+  let mockSupabase: any;
+  let mockRequest: Partial<NextRequest>;
+  let mockUser: any;
+  let mockProfile: any;
+  let mockClient: any;
+  beforeEach(() => {
+    // Reset mocks
+    jest.clearAllMocks();
+    // Mock user data
+    mockUser = {
+      id: 'user-123',
+      email: 'test@example.com'
+    };
+    mockProfile = {
+      organization_id: 'org-123',
+      user_id: 'user-123'
+    mockClient = {
+      id: 'client-123',
+      name: 'John & Jane Doe'
+    // Mock Supabase client
+    mockSupabase = {
+      auth: {
+        getUser: jest.fn().mockResolvedValue({
+          data: { user: mockUser },
+          error: null
+        })
+      },
+      from: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      insert: jest.fn().mockReturnThis(),
+      update: jest.fn().mockReturnThis(),
+      delete: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      range: jest.fn().mockReturnThis(),
+      order: jest.fn().mockReturnThis(),
+      single: jest.fn(),
+      rpc: jest.fn(),
+      count: 'exact' as const
+    mockCreateClient.mockResolvedValue(mockSupabase);
+    // Mock request
+    mockRequest = {
+      json: jest.fn(),
+      nextUrl: { searchParams: new URLSearchParams() }
+  });
+  describe('GET /api/timeline - List timelines', () => {
+    beforeEach(() => {
+      // Mock validation middleware to pass through
+      const middleware = require('@/lib/validation/middleware');
+      middleware.withQueryValidation = jest.fn((schema, handler) => handler);
+    });
+    it('should successfully fetch timelines with pagination', async () => {
+      const mockTimelines = [
+        {
+          id: 'timeline-1',
+          name: 'John & Jane Wedding',
+          wedding_date: '2024-06-15',
+          status: 'draft',
+          clients: { id: 'client-1', name: 'John & Jane' }
+        },
+          id: 'timeline-2', 
+          name: 'Bob & Alice Wedding',
+          wedding_date: '2024-07-20',
+          status: 'approved',
+          clients: { id: 'client-2', name: 'Bob & Alice' }
+        }
+      ];
+      const mockStats = {
+        total_events: 5,
+        confirmed_events: 3,
+        total_vendors: 4,
+        confirmed_vendors: 2,
+        total_duration_hours: 8,
+        unresolved_conflicts: 1
+      };
+      // Mock profile lookup
+      mockSupabase.single.mockResolvedValueOnce({
+        data: mockProfile,
+        error: null
+      });
+      // Mock timelines query
+      mockSupabase.single.mockResolvedValue({
+        data: mockTimelines,
+        error: null,
+        count: 2
+      // Mock statistics RPC
+      mockSupabase.rpc.mockResolvedValue({
+        data: mockStats,
+      const query = { offset: 0, limit: 20, sort: 'updated_at', order: 'desc' };
+      const response = await getTimelines(mockRequest as NextRequest, query);
+      const responseData = await response.json();
+      expect(response.status).toBe(200);
+      expect(responseData.success).toBe(true);
+      expect(responseData.data).toHaveLength(2);
+      expect(responseData.pagination).toEqual({
+        offset: 0,
+        limit: 20,
+        total: 2,
+        has_more: false
+    it('should apply filters correctly', async () => {
+        data: [],
+        count: 0
+      const query = { 
+        client_id: 'client-123',
+        status: 'approved' as const,
+        limit: 10,
+        sort: 'wedding_date' as const,
+        order: 'asc' as const
+      await getTimelines(mockRequest as NextRequest, query);
+      expect(mockSupabase.eq).toHaveBeenCalledWith('client_id', 'client-123');
+      expect(mockSupabase.eq).toHaveBeenCalledWith('status', 'approved');
+      expect(mockSupabase.order).toHaveBeenCalledWith('wedding_date', { ascending: true });
+    it('should return 401 when user is not authenticated', async () => {
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: null },
+        error: { message: 'Not authenticated' }
+      expect(response.status).toBe(401);
+      expect((await response.json()).error).toBe('Authentication required');
+    it('should return 404 when user organization not found', async () => {
+        data: null,
+        error: { message: 'Profile not found' }
+      expect(response.status).toBe(404);
+      expect((await response.json()).error).toBe('User organization not found');
+  describe('POST /api/timeline - Create timeline', () => {
+      middleware.withSecureValidation = jest.fn((schema, handler) => 
+        (req: NextRequest, validatedData: any) => handler(req, validatedData)
+      );
+    it('should successfully create a timeline', async () => {
+      const timelineData = {
+        name: 'Wedding Day Timeline',
+        wedding_date: '2024-06-15',
+        timezone: 'America/New_York',
+        start_time: '10:00',
+        end_time: '23:00',
+        buffer_time_minutes: 15,
+        allow_vendor_edits: false,
+        require_approval: true
+      const createdTimeline = {
+        id: 'timeline-123',
+        ...timelineData,
+        version: 1,
+        status: 'draft',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      mockSupabase.single
+        .mockResolvedValueOnce({ data: mockProfile, error: null })
+        .mockResolvedValueOnce({ data: mockClient, error: null })
+        .mockResolvedValueOnce({ data: null, error: { message: 'No existing timeline' } })
+        .mockResolvedValueOnce({ data: createdTimeline, error: null });
+      // Mock timeline insertion
+      mockSupabase.insert.mockResolvedValue({
+        data: [createdTimeline],
+      const response = await createTimeline(mockRequest as NextRequest, timelineData);
+      expect(response.status).toBe(201);
+      expect(responseData.data.name).toBe(timelineData.name);
+      expect(responseData.data.status).toBe('draft');
+    it('should return 409 when timeline already exists for client', async () => {
+        wedding_date: '2024-06-15'
+        .mockResolvedValueOnce({ data: { id: 'existing-timeline' }, error: null });
+      expect(response.status).toBe(409);
+      expect(responseData.error).toBe('TIMELINE_EXISTS');
+      expect(responseData.existing_timeline_id).toBe('existing-timeline');
+    it('should return 404 when client not found', async () => {
+        client_id: 'nonexistent-client',
+        .mockResolvedValueOnce({ data: null, error: { message: 'Client not found' } });
+      expect((await response.json()).error).toBe('Client not found or access denied');
+  describe('GET /api/timeline/[id] - Get timeline details', () => {
+    const params = { id: 'timeline-123' };
+    it('should successfully fetch timeline details', async () => {
+      const timelineDetails = {
+        clients: { id: 'client-123', name: 'John & Jane' },
+        timeline_events: [
+          {
+            id: 'event-1',
+            title: 'Ceremony',
+            start_time: '2024-06-15T14:00:00Z',
+            end_time: '2024-06-15T15:00:00Z'
+          }
+        ],
+        timeline_collaborators: [
+            id: 'collab-1',
+            user_id: 'user-123',
+            role: 'owner',
+            can_edit: true
+        ]
+        total_events: 1,
+        confirmed_events: 1,
+        total_vendors: 2,
+        confirmed_vendors: 1,
+        unresolved_conflicts: 0
+      // Mock access verification
+        .mockResolvedValueOnce({ 
+          data: { 
+            ...timelineDetails,
+            timeline_collaborators: [{ user_id: 'user-123', role: 'owner', can_edit: true, status: 'active' }]
+          }, 
+          error: null 
+        .mockResolvedValueOnce({ data: timelineDetails, error: null })
+        .mockResolvedValueOnce({ data: mockStats, error: null });
+      mockSupabase.from.mockReturnValue({
+        select: mockSupabase.select,
+        eq: mockSupabase.eq
+      const response = await getTimeline(mockRequest as NextRequest, { params });
+      expect(responseData.data.id).toBe('timeline-123');
+      expect(responseData.data.timeline_events).toHaveLength(1);
+      expect(responseData.data.statistics.total_events).toBe(1);
+    it('should return 403 when user lacks access', async () => {
+      mockSupabase.single.mockResolvedValueOnce({ 
+        data: null, 
+        error: { message: 'Timeline not found' } 
+      expect(response.status).toBe(403);
+      expect((await response.json()).error).toContain('Timeline not found or access denied');
+  describe('PUT /api/timeline/[id] - Update timeline', () => {
+    it('should successfully update timeline', async () => {
+      const updateData = {
+        name: 'Updated Wedding Timeline',
+        status: 'review' as const
+      const updatedTimeline = {
+        ...updateData,
+        version: 2,
+      // Mock access verification and update
+            id: 'timeline-123',
+            timeline_collaborators: [{ user_id: 'user-123', role: 'owner', can_edit: true, status: 'active' }],
+            created_by: 'user-123'
+        .mockResolvedValueOnce({ data: { version: 1 }, error: null })
+        .mockResolvedValueOnce({ data: updatedTimeline, error: null })
+        .mockResolvedValueOnce({ data: { total_events: 1 }, error: null });
+      const response = await updateTimeline(mockRequest as NextRequest, { params }, updateData);
+      expect(responseData.data.name).toBe(updateData.name);
+      expect(responseData.data.version).toBe(2);
+    it('should prevent wedding date change when events exist', async () => {
+        wedding_date: '2024-07-15'
+        });
+      // Mock existing events
+        select: jest.fn().mockReturnValue({
+          eq: jest.fn().mockReturnValue({
+            limit: jest.fn().mockResolvedValue({
+              data: [{ id: 'event-1', start_time: '2024-06-15T14:00:00Z' }],
+              error: null
+            })
+          })
+      expect(response.status).toBe(400);
+      expect(responseData.error).toBe('DATE_CONFLICT');
+    it('should return 403 when user lacks edit permission', async () => {
+      const updateData = { name: 'Updated Timeline' };
+            timeline_collaborators: [{ user_id: 'user-123', role: 'viewer', can_edit: false, status: 'active' }],
+            created_by: 'other-user'
+      expect((await response.json()).error).toContain('Edit permission required');
+  describe('DELETE /api/timeline/[id] - Delete timeline', () => {
+    it('should successfully delete timeline', async () => {
+        .mockResolvedValueOnce({ data: { role: 'owner' }, error: null })
+        .mockResolvedValueOnce({ data: { is_published: false }, error: null });
+      // Mock event count
+          eq: jest.fn().mockResolvedValue({
+            count: 5
+        }),
+        delete: jest.fn().mockReturnValue({
+            error: null
+      const response = await deleteTimeline(mockRequest as NextRequest, { params });
+      expect(responseData.deleted_events_count).toBe(5);
+    it('should prevent deletion of published timeline', async () => {
+        .mockResolvedValueOnce({ data: { is_published: true }, error: null });
+      expect(responseData.error).toBe('TIMELINE_PUBLISHED');
+    it('should return 403 when user is not owner', async () => {
+            timeline_collaborators: [{ user_id: 'user-123', role: 'editor', can_edit: true, status: 'active' }],
+        .mockResolvedValueOnce({ data: { role: 'editor' }, error: null });
+      expect((await response.json()).error).toContain('Only timeline owners can delete');
+  describe('Error handling', () => {
+    it('should handle Supabase connection errors gracefully', async () => {
+      mockCreateClient.mockRejectedValue(new Error('Database connection failed'));
+      expect(response.status).toBe(500);
+      expect((await response.json()).error).toContain('Database connection failed');
+    it('should handle invalid timeline ID format', async () => {
+      const invalidParams = { id: 'invalid-id-format' };
+      
+        error: { message: 'Invalid UUID format' }
+      const response = await getTimeline(mockRequest as NextRequest, { params: invalidParams });
+    it('should handle concurrent update conflicts', async () => {
+      const params = { id: 'timeline-123' };
+        .mockResolvedValueOnce({ data: { version: 1 }, error: null });
+      // Mock update failure due to concurrent modification
+        update: jest.fn().mockReturnValue({
+            select: jest.fn().mockReturnValue({
+              single: jest.fn().mockResolvedValue({
+                data: null,
+                error: { message: 'Row was updated by another transaction' }
+              })
+      expect((await response.json()).error).toBe('Failed to update timeline');
+  describe('Input validation', () => {
+      middleware.withSecureValidation = jest.fn((schema, handler) => {
+        // Simulate validation by checking required fields
+        return (req: NextRequest, validatedData: any) => {
+          if (!validatedData.name || validatedData.name.length === 0) {
+            return NextResponse.json(
+              { error: 'Timeline name is required' },
+              { status: 400 }
+            );
+          if (validatedData.wedding_date && !/^\d{4}-\d{2}-\d{2}$/.test(validatedData.wedding_date)) {
+              { error: 'Invalid date format (YYYY-MM-DD)' },
+          return handler(req, validatedData);
+        };
+    it('should reject empty timeline name', async () => {
+      const invalidData = {
+        name: '',
+      const response = await createTimeline(mockRequest as NextRequest, invalidData);
+      expect((await response.json()).error).toBe('Timeline name is required');
+    it('should reject invalid date format', async () => {
+        name: 'Wedding Timeline',
+        wedding_date: '15/06/2024'
+      expect((await response.json()).error).toBe('Invalid date format (YYYY-MM-DD)');
+});

@@ -1,0 +1,372 @@
+{
+  "drag_drop_decision_matrix": {
+    "last_updated": "2025-01-20",
+    "production_status": "UPDATED_WITH_ACTUAL_USAGE",
+    "decision_framework": {
+      "complexity_threshold": {
+        "simple": "Basic reordering, file uploads, single constraint",
+        "moderate": "Multi-constraint sorting, nested categories, time dependencies", 
+        "complex": "Multi-dimensional constraints, real-time collaboration, accessibility critical",
+        "hybrid": "Combines multiple technologies - React Flow canvas + @dnd-kit interactions"
+      },
+      "wedding_industry_contexts": {
+        "form_builder": "complex - @dnd-kit",
+        "customer_journey_canvas": "hybrid - @xyflow/react + @dnd-kit",
+        "seating_arrangements": "complex - @dnd-kit", 
+        "task_management": "moderate - @hello-pangea/dnd",
+        "timeline_building": "moderate - @hello-pangea/dnd",
+        "photo_organization": "moderate - @dnd-kit + react-dnd (legacy)",
+        "budget_management": "moderate - @hello-pangea/dnd",
+        "vendor_priority_lists": "simple",
+        "document_organization": "simple"
+      }
+    },
+    "technology_recommendations": {
+      "@dnd-kit": {
+        "version": "^6.3.1 (core) + ^10.0.0 (sortable)",
+        "production_usage": "PRIMARY_MODERN_CHOICE",
+        "use_cases": [
+          "form_builder_drag_fields_from_palette",
+          "seating_arrangement_designer", 
+          "photo_gallery_organization",
+          "form_canvas_field_reordering",
+          "grid_layout_systems",
+          "customer_journey_node_palette_interactions"
+        ],
+        "actual_files": [
+          "FormBuilder.tsx",
+          "FormCanvas.tsx", 
+          "FieldPalette.tsx",
+          "SeatingChart.tsx",
+          "PhotoGallery.tsx"
+        ],
+        "wedding_industry_rationale": "Modern choice for complex wedding workflows - superior accessibility, mobile touch support, and collision detection for venue coordinator tablets",
+        "technical_benefits": [
+          "full_accessibility_support",
+          "mobile_touch_optimized",
+          "collision_detection_algorithms",
+          "custom_sensors_for_constraints",
+          "typescript_first_design",
+          "real_time_sync_compatible"
+        ],
+        "implementation_pattern": {
+          "sensors": ["PointerSensor", "KeyboardSensor", "TouchSensor"],
+          "collision_detection": "closestCenter",
+          "modifiers": ["restrictToVerticalAxis", "restrictToHorizontalAxis"],
+          "accessibility": "announcements + aria-live"
+        },
+        "wedding_specific_config": {
+          "form_builder_constraints": {
+            "field_type_conflicts": "prevent_invalid_combinations",
+            "grid_layout_snapping": "auto_align_to_grid",
+            "field_validation_dependencies": "highlight_related_fields"
+          },
+          "seating_constraints": {
+            "dietary_restrictions": "conflict_detection",
+            "accessibility_needs": "table_placement_validation",
+            "guest_relationships": "proximity_preferences"
+          },
+          "mobile_optimization": {
+            "touch_targets": "minimum_48px",
+            "drag_handles": "clearly_visible",
+            "feedback": "haptic_when_available"
+          }
+        }
+      },
+      "@hello-pangea/dnd": {
+        "version": "^18.0.1",
+        "production_usage": "MAINTAINED_FORK_OF_REACT_BEAUTIFUL_DND",
+        "use_cases": [
+          "task_board_kanban_workflows",
+          "budget_management_drag_drop",
+          "timeline_builder_event_scheduling",
+          "checklist_reordering",
+          "vendor_workflow_boards"
+        ],
+        "actual_files": [
+          "TaskBoard.tsx",
+          "BudgetManager.tsx",
+          "TimelineBuilder.tsx",
+          "VendorWorkflow.tsx"
+        ],
+        "wedding_industry_rationale": "Ideal for Kanban-style task management and linear timeline building - simpler than @dnd-kit for basic board layouts",
+        "technical_benefits": [
+          "simple_api_for_lists_and_boards",
+          "excellent_performance_for_large_lists", 
+          "smooth_animations_out_of_box",
+          "well_documented_patterns",
+          "stable_maintained_fork"
+        ],
+        "implementation_pattern": {
+          "drag_drop_context": "single_context_wrapper",
+          "droppable_areas": "defined_drop_zones",
+          "draggable_items": "individual_draggable_components"
+        },
+        "wedding_specific_config": {
+          "task_management": {
+            "status_workflow": "todo_in_progress_completed",
+            "priority_ordering": "drag_to_reorder_priority",
+            "vendor_assignment": "drag_tasks_between_vendors"
+          },
+          "timeline_building": {
+            "event_scheduling": "drag_events_to_time_slots",
+            "vendor_coordination": "timeline_conflict_detection",
+            "buffer_time_calculation": "auto_spacing_between_events"
+          }
+        }
+      },
+      "native_html5_drag": {
+        "use_cases": [
+          "photo_uploads_to_galleries",
+          "document_file_organization", 
+          "simple_vendor_contact_reordering",
+          "basic_task_list_management",
+          "file_attachment_drag_drop"
+        ],
+        "wedding_industry_rationale": "Simple photographer workflows don't need complex libraries - file uploads and basic organization should be lightweight",
+        "technical_benefits": [
+          "zero_bundle_size_impact",
+          "native_browser_performance",
+          "automatic_file_handling",
+          "built_in_visual_feedback"
+        ],
+        "implementation_pattern": {
+          "dragover": "preventDefault() + visual_feedback",
+          "drop": "file_handling + upload_queue",
+          "mobile_fallback": "file_input_click_trigger"
+        }
+      },
+      "@xyflow/react": {
+        "version": "^12.8.4",
+        "production_usage": "SPECIALIZED_NODE_BASED_WORKFLOWS",
+        "use_cases": [
+          "customer_journey_canvas_visualization",
+          "node_based_workflow_flows",
+          "visual_process_mapping",
+          "flow_diagram_creation",
+          "automated_journey_building"
+        ],
+        "actual_files": [
+          "JourneyCanvas.tsx",
+          "FlowDiagramBuilder.tsx",
+          "ProcessMapper.tsx"
+        ],
+        "wedding_industry_rationale": "Essential for visual journey building and flow diagrams - specialized for node-based interfaces that other DND libraries cannot handle",
+        "technical_benefits": [
+          "node_based_interface_unmatched",
+          "connection_handling_automatic",
+          "zoom_pan_built_in",
+          "custom_node_types_supported",
+          "layout_algorithms_included",
+          "typescript_support_excellent",
+          "auto_save_integration"
+        ],
+        "implementation_pattern": {
+          "nodes": "custom_wedding_nodes + default_nodes",
+          "edges": "custom_connection_types + smart_routing",
+          "controls": "minimap + zoom_controls + background",
+          "interactivity": "node_drag + connection_creation + selection"
+        },
+        "wedding_specific_config": {
+          "customer_journey_flows": {
+            "journey_milestones": "milestone_nodes + progress_edges",
+            "decision_points": "decision_nodes + conditional_branches",
+            "automated_flows": "trigger_nodes + action_sequences"
+          },
+          "hybrid_integration": {
+            "with_dnd_kit": "React Flow canvas + @dnd-kit palette interactions",
+            "palette_management": "@dnd-kit handles node palette dragging",
+            "canvas_management": "@xyflow/react handles node positioning and connections"
+          },
+          "mobile_considerations": {
+            "touch_targets": "larger_nodes_for_mobile",
+            "gestures": "pinch_zoom + pan_support",
+            "simplified_ui": "fewer_controls_on_small_screens"
+          }
+        }
+      },
+      "react_dnd": {
+        "status": "LEGACY - BEING_MIGRATED",
+        "production_usage": "LEGACY_PHOTO_ORGANIZATION",
+        "use_cases": [
+          "photo_group_management_legacy",
+          "gallery_organization_legacy"
+        ],
+        "actual_files": [
+          "PhotoGallery.tsx (legacy sections)",
+          "LegacyPhotoOrganizer.tsx"
+        ],
+        "migration_plan": {
+          "migrate_to": "@dnd-kit",
+          "timeline": "next_major_release",
+          "rationale": "Better mobile support and accessibility compliance needed"
+        }
+      },
+      "react_beautiful_dnd": {
+        "status": "DEPRECATED - DO NOT USE",
+        "migration_required": true,
+        "migration_to": "@hello-pangea/dnd",
+        "rationale": "No longer maintained, poor mobile support, accessibility issues - use maintained fork instead",
+        "migration_timeline": "completed",
+        "breaking_changes": [
+          "different_api_structure",
+          "sensor_configuration_required",
+          "collision_detection_setup_needed"
+        ]
+      }
+    },
+    "decision_tree": {
+      "step_1_interface_type": {
+        "question": "What type of interface is needed?",
+        "form_builder": "Complex form building with field palette → @dnd-kit",
+        "kanban_boards": "Task management, timeline building → @hello-pangea/dnd", 
+        "node_workflows": "Customer journey, flow diagrams → @xyflow/react",
+        "hybrid_canvas": "Node canvas + palette interactions → @xyflow/react + @dnd-kit",
+        "simple_lists": "Basic reordering, file uploads → native_html5_drag"
+      },
+      "step_2_production_patterns": {
+        "question": "Does this match existing production patterns?",
+        "forms_and_builders": "@dnd-kit (FormBuilder.tsx, FormCanvas.tsx pattern)",
+        "task_management": "@hello-pangea/dnd (TaskBoard.tsx, BudgetManager.tsx pattern)",
+        "journey_flows": "@xyflow/react + @dnd-kit hybrid (JourneyCanvas.tsx pattern)",
+        "photo_management": "@dnd-kit (migrating from react-dnd legacy)"
+      },
+      "step_3_mobile_and_accessibility": {
+        "question": "Mobile usage and accessibility requirements?",
+        "high_accessibility": "@dnd-kit (best screen reader + keyboard support)",
+        "simple_touch": "@hello-pangea/dnd (good mobile, simpler setup)",
+        "specialized_canvas": "@xyflow/react (with mobile optimizations)",
+        "basic_only": "native_html5_drag (limited accessibility)"
+      },
+      "approval_required": {
+        "note": "ALWAYS ASK USER BEFORE IMPLEMENTING",
+        "process": "Present decision matrix analysis with production context and get explicit approval",
+        "format": "Show use case, recommended technology based on existing patterns, and rationale - wait for confirmation",
+        "include_existing_files": "Reference actual production files using similar patterns"
+      }
+    },
+    "wedding_day_emergency_considerations": {
+      "timeline_changes": {
+        "technology": "@dnd-kit",
+        "rationale": "Coordinators need to quickly reschedule with constraint awareness",
+        "emergency_patterns": [
+          "bulk_timeline_shift",
+          "vendor_swap_handling",
+          "weather_delay_cascade_updates"
+        ]
+      },
+      "photo_prioritization": {
+        "technology": "@dnd-kit", 
+        "rationale": "Photographers need to quickly reorganize shot priorities",
+        "emergency_patterns": [
+          "must_have_vs_nice_to_have_sorting",
+          "family_photo_priority_changes",
+          "lighting_constraint_reordering"
+        ]
+      }
+    }
+  },
+  "current_usage_audit": {
+    "features_using_dnd_kit": {
+      "primary_modern_choice": true,
+      "production_files": [
+        "FormBuilder.tsx - drag fields from palette to canvas",
+        "FormCanvas.tsx - reorder form fields and sections", 
+        "FieldPalette.tsx - drag form field types",
+        "SeatingChart.tsx - drag guests between tables",
+        "PhotoGallery.tsx - photo organization (new sections)"
+      ],
+      "features": [
+        "Form Builder drag-drop (fields from palette)",
+        "Seating arrangement designer",
+        "Photo gallery organization (migrated sections)",
+        "Grid layout systems",
+        "Complex constraint handling"
+      ]
+    },
+    "features_using_hello_pangea_dnd": {
+      "maintained_fork": true,
+      "production_files": [
+        "TaskBoard.tsx - Kanban-style task management",
+        "BudgetManager.tsx - budget item drag-drop",
+        "TimelineBuilder.tsx - event scheduling",
+        "VendorWorkflow.tsx - workflow boards"
+      ],
+      "features": [
+        "Task management Kanban boards",
+        "Budget management drag-drop",
+        "Timeline building with event scheduling",
+        "Vendor workflow coordination"
+      ]
+    },
+    "features_using_xyflow_react": {
+      "specialized_node_workflows": true,
+      "production_files": [
+        "JourneyCanvas.tsx - customer journey visualization",
+        "NodePalette.tsx - node type palette (hybrid with @dnd-kit)",
+        "FlowDiagramBuilder.tsx - process flow creation"
+      ],
+      "features": [
+        "Customer journey canvas (hybrid approach)",
+        "Node-based workflow visualization",
+        "Process mapping and flow diagrams",
+        "Auto-save journey building"
+      ]
+    },
+    "legacy_migrations": {
+      "react_dnd": {
+        "status": "migrating_to_dnd_kit",
+        "remaining_files": [
+          "PhotoGallery.tsx (legacy sections)",
+          "LegacyPhotoOrganizer.tsx"
+        ],
+        "migration_timeline": "next_major_release"
+      },
+      "react_beautiful_dnd": {
+        "status": "migration_completed",
+        "migrated_to": "@hello-pangea/dnd",
+        "completed": "all legacy usage replaced"
+      }
+    }
+  },
+  "performance_benchmarks": {
+    "@dnd-kit": {
+      "version": "^6.3.1 (core) + ^10.0.0 (sortable)",
+      "bundle_size": "~45kb gzipped",
+      "mobile_performance": "excellent",
+      "accessibility_score": "100%",
+      "wedding_day_reliability": "production_proven",
+      "production_usage": "primary_modern_choice"
+    },
+    "@hello-pangea/dnd": {
+      "version": "^18.0.1",
+      "bundle_size": "~32kb gzipped",
+      "mobile_performance": "good",
+      "accessibility_score": "moderate",
+      "wedding_day_reliability": "proven_for_boards_and_lists",
+      "production_usage": "stable_for_kanban_workflows"
+    },
+    "@xyflow/react": {
+      "version": "^12.8.4", 
+      "bundle_size": "~280kb gzipped",
+      "mobile_performance": "good_with_optimization",
+      "accessibility_score": "moderate_needs_enhancement",
+      "wedding_day_reliability": "excellent_for_workflows",
+      "specialized_features": "node_based_interfaces_unmatched",
+      "production_usage": "specialized_canvas_workflows"
+    },
+    "react_dnd": {
+      "status": "legacy_migration_in_progress",
+      "bundle_size": "~25kb gzipped",
+      "mobile_performance": "limited",
+      "accessibility_score": "poor",
+      "migration_target": "@dnd-kit"
+    },
+    "native_html5": {
+      "bundle_size": "0kb (native)",
+      "mobile_performance": "good_with_fallbacks",
+      "accessibility_score": "limited",
+      "wedding_day_reliability": "simple_use_cases_only"
+    }
+  }
+}

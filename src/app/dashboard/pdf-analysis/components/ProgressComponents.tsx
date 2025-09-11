@@ -1,0 +1,358 @@
+'use client';
+
+import React from 'react';
+import { CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { cn } from '@/lib/utils';
+
+interface ProgressRingProps {
+  progress: number;
+  size?: 'sm' | 'md' | 'lg';
+  color?: 'blue' | 'green' | 'red' | 'yellow';
+  showPercentage?: boolean;
+}
+
+export function ProgressRing({
+  progress,
+  size = 'md',
+  color = 'blue',
+  showPercentage = true,
+}: ProgressRingProps) {
+  const sizeClasses = {
+    sm: 'h-8 w-8',
+    md: 'h-12 w-12',
+    lg: 'h-16 w-16',
+  };
+
+  const colorClasses = {
+    blue: 'text-blue-600',
+    green: 'text-green-600',
+    red: 'text-red-600',
+    yellow: 'text-yellow-600',
+  };
+
+  const textSizeClasses = {
+    sm: 'text-xs',
+    md: 'text-sm',
+    lg: 'text-base',
+  };
+
+  const radius = size === 'sm' ? 14 : size === 'md' ? 20 : 28;
+  const strokeWidth = size === 'sm' ? 3 : 4;
+  const circumference = 2 * Math.PI * radius;
+  const strokeDasharray = circumference;
+  const strokeDashoffset = circumference - (progress / 100) * circumference;
+
+  return (
+    <div
+      className={cn(
+        'relative inline-flex items-center justify-center',
+        sizeClasses[size],
+      )}
+    >
+      <svg className="h-full w-full transform -rotate-90" viewBox="0 0 64 64">
+        {/* Background circle */}
+        <circle
+          cx="32"
+          cy="32"
+          r={radius}
+          stroke="currentColor"
+          strokeWidth={strokeWidth}
+          fill="none"
+          className="text-gray-200"
+        />
+        {/* Progress circle */}
+        <circle
+          cx="32"
+          cy="32"
+          r={radius}
+          stroke="currentColor"
+          strokeWidth={strokeWidth}
+          fill="none"
+          strokeDasharray={strokeDasharray}
+          strokeDashoffset={strokeDashoffset}
+          strokeLinecap="round"
+          className={cn(
+            'transition-all duration-300 ease-in-out',
+            colorClasses[color],
+          )}
+        />
+      </svg>
+      {showPercentage && (
+        <span
+          className={cn(
+            'absolute inset-0 flex items-center justify-center font-medium',
+            textSizeClasses[size],
+            colorClasses[color],
+          )}
+        >
+          {Math.round(progress)}%
+        </span>
+      )}
+    </div>
+  );
+}
+
+interface ProgressBarProps {
+  progress: number;
+  color?: 'blue' | 'green' | 'red' | 'yellow';
+  size?: 'sm' | 'md' | 'lg';
+  showPercentage?: boolean;
+  label?: string;
+}
+
+export function ProgressBar({
+  progress,
+  color = 'blue',
+  size = 'md',
+  showPercentage = true,
+  label,
+}: ProgressBarProps) {
+  const sizeClasses = {
+    sm: 'h-2',
+    md: 'h-3',
+    lg: 'h-4',
+  };
+
+  const colorClasses = {
+    blue: 'bg-blue-600',
+    green: 'bg-green-600',
+    red: 'bg-red-600',
+    yellow: 'bg-yellow-600',
+  };
+
+  return (
+    <div className="space-y-1">
+      {(label || showPercentage) && (
+        <div className="flex justify-between text-sm">
+          {label && <span className="text-gray-700">{label}</span>}
+          {showPercentage && (
+            <span className="text-gray-600">{Math.round(progress)}%</span>
+          )}
+        </div>
+      )}
+      <div className={cn('w-full bg-gray-200 rounded-full', sizeClasses[size])}>
+        <div
+          className={cn(
+            'h-full rounded-full transition-all duration-300 ease-in-out',
+            colorClasses[color],
+          )}
+          style={{ width: `${Math.min(progress, 100)}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+interface StepIndicatorProps {
+  currentStep: number;
+  totalSteps: number;
+  steps: Array<{
+    id: string;
+    title: string;
+    description: string;
+    status: 'pending' | 'in-progress' | 'completed' | 'error';
+  }>;
+}
+
+export function StepIndicator({
+  currentStep,
+  totalSteps,
+  steps,
+}: StepIndicatorProps) {
+  return (
+    <div className="space-y-4">
+      {steps.map((step, index) => {
+        const stepNumber = index + 1;
+        const isActive = stepNumber === currentStep;
+        const isCompleted = stepNumber < currentStep;
+        const isError = step.status === 'error';
+
+        return (
+          <div key={step.id} className="flex items-start space-x-4">
+            <div className="flex-shrink-0">
+              <div
+                className={cn(
+                  'flex h-8 w-8 items-center justify-center rounded-full border-2',
+                  isCompleted && !isError && 'bg-green-600 border-green-600',
+                  isActive && !isError && 'border-blue-600 bg-white',
+                  isError && 'bg-red-600 border-red-600',
+                  !isActive &&
+                    !isCompleted &&
+                    !isError &&
+                    'border-gray-300 bg-white',
+                )}
+              >
+                {isCompleted && !isError && (
+                  <CheckCircle className="h-5 w-5 text-white" />
+                )}
+                {isActive && !isError && (
+                  <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
+                )}
+                {isError && <AlertCircle className="h-4 w-4 text-white" />}
+                {!isActive && !isCompleted && !isError && (
+                  <span className="text-sm font-medium text-gray-500">
+                    {stepNumber}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center space-x-2">
+                <p
+                  className={cn(
+                    'text-sm font-medium',
+                    isActive && 'text-blue-600',
+                    isCompleted && !isError && 'text-green-600',
+                    isError && 'text-red-600',
+                    !isActive && !isCompleted && !isError && 'text-gray-600',
+                  )}
+                >
+                  {step.title}
+                </p>
+
+                <Badge
+                  variant={
+                    isCompleted && !isError
+                      ? 'default'
+                      : isActive
+                        ? 'secondary'
+                        : isError
+                          ? 'destructive'
+                          : 'outline'
+                  }
+                  size="sm"
+                >
+                  {step.status === 'in-progress'
+                    ? 'Processing'
+                    : step.status === 'completed'
+                      ? 'Done'
+                      : step.status === 'error'
+                        ? 'Error'
+                        : 'Waiting'}
+                </Badge>
+              </div>
+
+              <p className="text-sm text-gray-500 mt-1">{step.description}</p>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+interface AnalysisMetricsProps {
+  metrics: {
+    fieldsExtracted: number;
+    confidenceScore: number;
+    processingTime: number;
+    dataQuality: 'high' | 'medium' | 'low';
+  };
+}
+
+export function AnalysisMetrics({ metrics }: AnalysisMetricsProps) {
+  const qualityColors = {
+    high: 'green',
+    medium: 'yellow',
+    low: 'red',
+  } as const;
+
+  const qualityLabels = {
+    high: 'High Quality',
+    medium: 'Medium Quality',
+    low: 'Low Quality',
+  };
+
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium text-gray-600">
+            Fields Extracted
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="pt-0">
+          <div className="text-2xl font-bold text-gray-900">
+            {metrics.fieldsExtracted}
+          </div>
+          <p className="text-xs text-gray-500">Wedding form fields</p>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium text-gray-600">
+            Confidence Score
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="pt-0">
+          <div className="flex items-center space-x-2">
+            <div className="text-2xl font-bold text-gray-900">
+              {metrics.confidenceScore}%
+            </div>
+            <ProgressRing
+              progress={metrics.confidenceScore}
+              size="sm"
+              color="green"
+              showPercentage={false}
+            />
+          </div>
+          <p className="text-xs text-gray-500">Analysis accuracy</p>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium text-gray-600">
+            Processing Time
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="pt-0">
+          <div className="text-2xl font-bold text-gray-900">
+            {metrics.processingTime}s
+          </div>
+          <p className="text-xs text-gray-500">Analysis duration</p>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium text-gray-600">
+            Data Quality
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="pt-0">
+          <div className="flex items-center space-x-2">
+            <Badge
+              variant={
+                metrics.dataQuality === 'high'
+                  ? 'default'
+                  : metrics.dataQuality === 'medium'
+                    ? 'secondary'
+                    : 'destructive'
+              }
+            >
+              {qualityLabels[metrics.dataQuality]}
+            </Badge>
+            <ProgressRing
+              progress={
+                metrics.dataQuality === 'high'
+                  ? 100
+                  : metrics.dataQuality === 'medium'
+                    ? 70
+                    : 40
+              }
+              size="sm"
+              color={qualityColors[metrics.dataQuality]}
+              showPercentage={false}
+            />
+          </div>
+          <p className="text-xs text-gray-500">Extraction quality</p>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}

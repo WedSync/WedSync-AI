@@ -1,0 +1,663 @@
+'use client';
+
+import React, { 
+  createContext, 
+  useContext, 
+  useReducer, 
+  useCallback, 
+  useRef, 
+  useEffect 
+} from 'react';
+import { usePerformanceMonitor, useMemoryOptimization } from '@/hooks/usePerformanceOptimization';
+
+// Cache levels
+type CacheLevel = 'memory' | 'session' | 'local' | 'indexed';
+
+interface CacheEntry<T = any> {
+  key: string;
+  data: T;
+  timestamp: number;
+  expiry: number;
+  level: CacheLevel;
+  size: number;
+  accessCount: number;
+  lastAccess: number;
+  tags: string[];
+  metadata: Record<string, any>;
+  version: number;
+}
+
+interface CacheMetrics {
+  hits: number;
+  misses: number;
+  evictions: number;
+  writeOperations: number;
+  backgroundSyncs: number;
+  totalSize: number;
+}
+
+interface CacheState {
+  memoryCache: Map<string, CacheEntry>;
+  metrics: CacheMetrics;
+  syncQueue: string[];
+  isBackgroundSyncing: boolean;
+  cacheConfig: CacheConfig;
+}
+
+interface CacheConfig {
+  maxMemorySize: number; // bytes
+  maxSessionSize: number; // bytes
+  maxLocalSize: number; // bytes
+  defaultTTL: number; // milliseconds
+  backgroundSyncInterval: number; // milliseconds
+  evictionStrategy: 'lru' | 'lfu' | 'fifo' | 'custom';
+  compressionEnabled: boolean;
+  encryptionEnabled: boolean;
+}
+
+type CacheAction = 
+  | { type: 'SET_ENTRY'; payload: CacheEntry }
+  | { type: 'DELETE_ENTRY'; payload: string }
+  | { type: 'UPDATE_METRICS'; payload: Partial<CacheMetrics> }
+  | { type: 'INVALIDATE_TAG'; payload: string }
+  | { type: 'CLEAR_LEVEL'; payload: CacheLevel }
+  | { type: 'ADD_TO_SYNC_QUEUE'; payload: string }
+  | { type: 'REMOVE_FROM_SYNC_QUEUE'; payload: string }
+  | { type: 'SET_BACKGROUND_SYNC'; payload: boolean }
+  | { type: 'UPDATE_CONFIG'; payload: Partial<CacheConfig> };
+
+const defaultConfig: CacheConfig = {
+  maxMemorySize: 50 * 1024 * 1024, // 50MB
+  maxSessionSize: 100 * 1024 * 1024, // 100MB
+  maxLocalSize: 500 * 1024 * 1024, // 500MB
+  defaultTTL: 5 * 60 * 1000, // 5 minutes
+  backgroundSyncInterval: 30 * 1000, // 30 seconds
+  evictionStrategy: 'lru',
+  compressionEnabled: true,
+  encryptionEnabled: false
+};
+
+const initialState: CacheState = {
+  memoryCache: new Map(),
+  metrics: {
+    hits: 0,
+    misses: 0,
+    evictions: 0,
+    writeOperations: 0,
+    backgroundSyncs: 0,
+    totalSize: 0
+  },
+  syncQueue: [],
+  isBackgroundSyncing: false,
+  cacheConfig: defaultConfig
+};
+
+function cacheReducer(state: CacheState, action: CacheAction): CacheState {
+  switch (action.type) {
+    case 'SET_ENTRY':
+      const newMemoryCache = new Map(state.memoryCache);
+      newMemoryCache.set(action.payload.key, action.payload);
+      
+      return {
+        ...state,
+        memoryCache: newMemoryCache,
+        metrics: {
+          ...state.metrics,
+          writeOperations: state.metrics.writeOperations + 1,
+          totalSize: state.metrics.totalSize + action.payload.size
+        }
+      };
+
+    case 'DELETE_ENTRY':
+      const deletedEntry = state.memoryCache.get(action.payload);
+      const updatedMemoryCache = new Map(state.memoryCache);
+      updatedMemoryCache.delete(action.payload);
+      
+      return {
+        ...state,
+        memoryCache: updatedMemoryCache,
+        metrics: {
+          ...state.metrics,
+          totalSize: deletedEntry 
+            ? state.metrics.totalSize - deletedEntry.size 
+            : state.metrics.totalSize
+        }
+      };
+
+    case 'UPDATE_METRICS':
+      return {
+        ...state,
+        metrics: { ...state.metrics, ...action.payload }
+      };
+
+    case 'INVALIDATE_TAG':
+      const filteredCache = new Map();
+      let sizeReduction = 0;
+      
+      for (const [key, entry] of state.memoryCache.entries()) {
+        if (!entry.tags.includes(action.payload)) {
+          filteredCache.set(key, entry);
+        } else {
+          sizeReduction += entry.size;
+        }
+      }
+      
+      return {
+        ...state,
+        memoryCache: filteredCache,
+        metrics: {
+          ...state.metrics,
+          totalSize: state.metrics.totalSize - sizeReduction,
+          evictions: state.metrics.evictions + (state.memoryCache.size - filteredCache.size)
+        }
+      };
+
+    case 'CLEAR_LEVEL':
+      if (action.payload === 'memory') {
+        return {
+          ...state,
+          memoryCache: new Map(),
+          metrics: {
+            ...state.metrics,
+            totalSize: 0,
+            evictions: state.metrics.evictions + state.memoryCache.size
+          }
+        };
+      }
+      return state;
+
+    case 'ADD_TO_SYNC_QUEUE':
+      return {
+        ...state,
+        syncQueue: state.syncQueue.includes(action.payload) 
+          ? state.syncQueue 
+          : [...state.syncQueue, action.payload]
+      };
+
+    case 'REMOVE_FROM_SYNC_QUEUE':
+      return {
+        ...state,
+        syncQueue: state.syncQueue.filter(key => key !== action.payload)
+      };
+
+    case 'SET_BACKGROUND_SYNC':
+      return {
+        ...state,
+        isBackgroundSyncing: action.payload
+      };
+
+    case 'UPDATE_CONFIG':
+      return {
+        ...state,
+        cacheConfig: { ...state.cacheConfig, ...action.payload }
+      };
+
+    default:
+      return state;
+  }
+}
+
+// Cache utilities
+class CacheUtils {
+  static calculateSize(data: any): number {
+    return new Blob([JSON.stringify(data)]).size;
+  }
+
+  static compress(data: any): string {
+    // Simple compression using JSON stringify
+    // In production, use a proper compression library
+    return JSON.stringify(data);
+  }
+
+  static decompress(compressedData: string): any {
+    return JSON.parse(compressedData);
+  }
+
+  static encrypt(data: any, key: string): string {
+    // Simple base64 encoding for demo
+    // In production, use proper encryption
+    return btoa(JSON.stringify(data));
+  }
+
+  static decrypt(encryptedData: string, key: string): any {
+    return JSON.parse(atob(encryptedData));
+  }
+
+  static isExpired(entry: CacheEntry): boolean {
+    return Date.now() > entry.expiry;
+  }
+
+  static shouldEvict(entry: CacheEntry, strategy: CacheConfig['evictionStrategy']): boolean {
+    const now = Date.now();
+    const age = now - entry.timestamp;
+    const lastAccessAge = now - entry.lastAccess;
+    
+    switch (strategy) {
+      case 'lru':
+        return lastAccessAge > 10 * 60 * 1000; // 10 minutes
+      case 'lfu':
+        return entry.accessCount < 3;
+      case 'fifo':
+        return age > 30 * 60 * 1000; // 30 minutes
+      default:
+        return false;
+    }
+  }
+}
+
+// Storage adapters
+class StorageAdapter {
+  static async setSession<T>(key: string, value: CacheEntry<T>): Promise<void> {
+    try {
+      sessionStorage.setItem(`cache_${key}`, JSON.stringify(value));
+    } catch (error) {
+      console.warn('Failed to write to session storage:', error);
+    }
+  }
+
+  static async getSession<T>(key: string): Promise<CacheEntry<T> | null> {
+    try {
+      const item = sessionStorage.getItem(`cache_${key}`);
+      return item ? JSON.parse(item) : null;
+    } catch (error) {
+      console.warn('Failed to read from session storage:', error);
+      return null;
+    }
+  }
+
+  static async setLocal<T>(key: string, value: CacheEntry<T>): Promise<void> {
+    try {
+      localStorage.setItem(`cache_${key}`, JSON.stringify(value));
+    } catch (error) {
+      console.warn('Failed to write to local storage:', error);
+    }
+  }
+
+  static async getLocal<T>(key: string): Promise<CacheEntry<T> | null> {
+    try {
+      const item = localStorage.getItem(`cache_${key}`);
+      return item ? JSON.parse(item) : null;
+    } catch (error) {
+      console.warn('Failed to read from local storage:', error);
+      return null;
+    }
+  }
+
+  static async setIndexed<T>(key: string, value: CacheEntry<T>): Promise<void> {
+    // IndexedDB implementation would go here
+    // For now, fall back to localStorage
+    return StorageAdapter.setLocal(key, value);
+  }
+
+  static async getIndexed<T>(key: string): Promise<CacheEntry<T> | null> {
+    // IndexedDB implementation would go here
+    // For now, fall back to localStorage
+    return StorageAdapter.getLocal(key);
+  }
+}
+
+// Context
+interface CacheContextValue {
+  state: CacheState;
+  get: <T>(key: string) => Promise<T | null>;
+  set: <T>(key: string, data: T, options?: CacheSetOptions) => Promise<void>;
+  delete: (key: string) => Promise<void>;
+  invalidateTag: (tag: string) => Promise<void>;
+  clear: (level?: CacheLevel) => Promise<void>;
+  getCacheMetrics: () => CacheMetrics;
+  updateConfig: (config: Partial<CacheConfig>) => void;
+  preload: <T>(keys: string[], fetcher: (key: string) => Promise<T>) => Promise<void>;
+}
+
+interface CacheSetOptions {
+  ttl?: number;
+  level?: CacheLevel;
+  tags?: string[];
+  metadata?: Record<string, any>;
+  syncToServer?: boolean;
+}
+
+const CacheContext = createContext<CacheContextValue | null>(null);
+
+export const IntelligentCacheProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [state, dispatch] = useReducer(cacheReducer, initialState);
+  const backgroundSyncInterval = useRef<NodeJS.Timeout>();
+  const { addTimer, addSubscription } = useMemoryOptimization();
+  const { logMetric } = usePerformanceMonitor('IntelligentCache');
+
+  // Background sync process
+  const runBackgroundSync = useCallback(async () => {
+    if (state.isBackgroundSyncing || state.syncQueue.length === 0) return;
+
+    dispatch({ type: 'SET_BACKGROUND_SYNC', payload: true });
+    
+    try {
+      const syncPromises = state.syncQueue.map(async (key) => {
+        try {
+          // Simulate background sync to server
+          const entry = state.memoryCache.get(key);
+          if (entry) {
+            // In real implementation, sync to server here
+            await new Promise(resolve => setTimeout(resolve, 100));
+            dispatch({ type: 'REMOVE_FROM_SYNC_QUEUE', payload: key });
+          }
+        } catch (error) {
+          console.warn(`Failed to sync cache key ${key}:`, error);
+        }
+      });
+
+      await Promise.allSettled(syncPromises);
+      
+      dispatch({ type: 'UPDATE_METRICS', payload: { 
+        backgroundSyncs: state.metrics.backgroundSyncs + 1 
+      }});
+      
+      logMetric('backgroundSyncCompleted', 1);
+    } finally {
+      dispatch({ type: 'SET_BACKGROUND_SYNC', payload: false });
+    }
+  }, [state.isBackgroundSyncing, state.syncQueue, state.memoryCache, state.metrics.backgroundSyncs, logMetric]);
+
+  // Memory management and eviction
+  const enforceMemoryLimits = useCallback(() => {
+    const { maxMemorySize, evictionStrategy } = state.cacheConfig;
+    
+    if (state.metrics.totalSize > maxMemorySize) {
+      const entries = Array.from(state.memoryCache.entries());
+      
+      // Sort by eviction criteria
+      entries.sort(([, a], [, b]) => {
+        switch (evictionStrategy) {
+          case 'lru':
+            return a.lastAccess - b.lastAccess;
+          case 'lfu':
+            return a.accessCount - b.accessCount;
+          case 'fifo':
+            return a.timestamp - b.timestamp;
+          default:
+            return a.lastAccess - b.lastAccess;
+        }
+      });
+
+      // Evict entries until under limit
+      let currentSize = state.metrics.totalSize;
+      for (const [key, entry] of entries) {
+        if (currentSize <= maxMemorySize * 0.8) break; // Leave 20% headroom
+        
+        dispatch({ type: 'DELETE_ENTRY', payload: key });
+        currentSize -= entry.size;
+      }
+    }
+  }, [state.cacheConfig, state.metrics.totalSize, state.memoryCache]);
+
+  // Initialize background processes
+  useEffect(() => {
+    // Background sync interval
+    backgroundSyncInterval.current = setInterval(
+      runBackgroundSync, 
+      state.cacheConfig.backgroundSyncInterval
+    );
+    
+    addTimer(backgroundSyncInterval.current);
+
+    // Memory cleanup interval
+    const memoryCleanupInterval = setInterval(enforceMemoryLimits, 60000); // 1 minute
+    addTimer(memoryCleanupInterval);
+
+    return () => {
+      if (backgroundSyncInterval.current) {
+        clearInterval(backgroundSyncInterval.current);
+      }
+      clearInterval(memoryCleanupInterval);
+    };
+  }, [runBackgroundSync, enforceMemoryLimits, state.cacheConfig.backgroundSyncInterval, addTimer]);
+
+  const get = useCallback(async <T>(key: string): Promise<T | null> => {
+    const startTime = performance.now();
+    
+    // Check memory cache first
+    let entry = state.memoryCache.get(key);
+    
+    if (entry && !CacheUtils.isExpired(entry)) {
+      // Update access metrics
+      entry.accessCount++;
+      entry.lastAccess = Date.now();
+      dispatch({ type: 'SET_ENTRY', payload: entry });
+      dispatch({ type: 'UPDATE_METRICS', payload: { hits: state.metrics.hits + 1 } });
+      
+      logMetric('cacheHit', performance.now() - startTime);
+      return entry.data as T;
+    }
+
+    // Try other cache levels
+    const cacheGetters = [
+      () => StorageAdapter.getSession<T>(key),
+      () => StorageAdapter.getLocal<T>(key),
+      () => StorageAdapter.getIndexed<T>(key)
+    ];
+
+    for (const getter of cacheGetters) {
+      try {
+        entry = await getter();
+        if (entry && !CacheUtils.isExpired(entry)) {
+          // Promote to memory cache
+          entry.accessCount++;
+          entry.lastAccess = Date.now();
+          dispatch({ type: 'SET_ENTRY', payload: entry });
+          dispatch({ type: 'UPDATE_METRICS', payload: { hits: state.metrics.hits + 1 } });
+          
+          logMetric('cacheHitLowerLevel', performance.now() - startTime);
+          return entry.data as T;
+        }
+      } catch (error) {
+        console.warn('Cache getter failed:', error);
+      }
+    }
+
+    // Cache miss
+    dispatch({ type: 'UPDATE_METRICS', payload: { misses: state.metrics.misses + 1 } });
+    logMetric('cacheMiss', performance.now() - startTime);
+    
+    return null;
+  }, [state.memoryCache, state.metrics.hits, state.metrics.misses, logMetric]);
+
+  const set = useCallback(async <T>(
+    key: string, 
+    data: T, 
+    options: CacheSetOptions = {}
+  ): Promise<void> => {
+    const {
+      ttl = state.cacheConfig.defaultTTL,
+      level = 'memory',
+      tags = [],
+      metadata = {},
+      syncToServer = false
+    } = options;
+
+    const size = CacheUtils.calculateSize(data);
+    const now = Date.now();
+    
+    const entry: CacheEntry<T> = {
+      key,
+      data,
+      timestamp: now,
+      expiry: now + ttl,
+      level,
+      size,
+      accessCount: 1,
+      lastAccess: now,
+      tags,
+      metadata,
+      version: 1
+    };
+
+    // Set in memory cache
+    dispatch({ type: 'SET_ENTRY', payload: entry });
+
+    // Set in other cache levels based on configuration
+    const setPromises: Promise<void>[] = [];
+
+    if (level === 'session' || level === 'local' || level === 'indexed') {
+      setPromises.push(StorageAdapter.setSession(key, entry));
+    }
+
+    if (level === 'local' || level === 'indexed') {
+      setPromises.push(StorageAdapter.setLocal(key, entry));
+    }
+
+    if (level === 'indexed') {
+      setPromises.push(StorageAdapter.setIndexed(key, entry));
+    }
+
+    await Promise.allSettled(setPromises);
+
+    if (syncToServer) {
+      dispatch({ type: 'ADD_TO_SYNC_QUEUE', payload: key });
+    }
+
+    logMetric('cacheSet', size);
+  }, [state.cacheConfig.defaultTTL, logMetric]);
+
+  const deleteEntry = useCallback(async (key: string): Promise<void> => {
+    dispatch({ type: 'DELETE_ENTRY', payload: key });
+    dispatch({ type: 'REMOVE_FROM_SYNC_QUEUE', payload: key });
+
+    // Remove from all storage levels
+    try {
+      sessionStorage.removeItem(`cache_${key}`);
+      localStorage.removeItem(`cache_${key}`);
+      // IndexedDB removal would go here
+    } catch (error) {
+      console.warn('Failed to remove from storage:', error);
+    }
+  }, []);
+
+  const invalidateTag = useCallback(async (tag: string): Promise<void> => {
+    dispatch({ type: 'INVALIDATE_TAG', payload: tag });
+    logMetric('tagInvalidation', 1);
+  }, [logMetric]);
+
+  const clear = useCallback(async (level?: CacheLevel): Promise<void> => {
+    if (level) {
+      dispatch({ type: 'CLEAR_LEVEL', payload: level });
+    } else {
+      // Clear all levels
+      dispatch({ type: 'CLEAR_LEVEL', payload: 'memory' });
+      
+      try {
+        // Clear storage
+        Object.keys(sessionStorage).forEach(key => {
+          if (key.startsWith('cache_')) {
+            sessionStorage.removeItem(key);
+          }
+        });
+        
+        Object.keys(localStorage).forEach(key => {
+          if (key.startsWith('cache_')) {
+            localStorage.removeItem(key);
+          }
+        });
+      } catch (error) {
+        console.warn('Failed to clear storage:', error);
+      }
+    }
+  }, []);
+
+  const getCacheMetrics = useCallback((): CacheMetrics => {
+    return { ...state.metrics };
+  }, [state.metrics]);
+
+  const updateConfig = useCallback((config: Partial<CacheConfig>) => {
+    dispatch({ type: 'UPDATE_CONFIG', payload: config });
+  }, []);
+
+  const preload = useCallback(async <T>(
+    keys: string[], 
+    fetcher: (key: string) => Promise<T>
+  ): Promise<void> => {
+    const preloadPromises = keys.map(async (key) => {
+      const cached = await get<T>(key);
+      if (!cached) {
+        try {
+          const data = await fetcher(key);
+          await set(key, data, { level: 'memory', syncToServer: false });
+        } catch (error) {
+          console.warn(`Failed to preload ${key}:`, error);
+        }
+      }
+    });
+
+    await Promise.allSettled(preloadPromises);
+    logMetric('preloadCompleted', keys.length);
+  }, [get, set, logMetric]);
+
+  const value: CacheContextValue = {
+    state,
+    get,
+    set,
+    delete: deleteEntry,
+    invalidateTag,
+    clear,
+    getCacheMetrics,
+    updateConfig,
+    preload
+  };
+
+  return (
+    <CacheContext.Provider value={value}>
+      {children}
+    </CacheContext.Provider>
+  );
+};
+
+export const useIntelligentCache = () => {
+  const context = useContext(CacheContext);
+  if (!context) {
+    throw new Error('useIntelligentCache must be used within IntelligentCacheProvider');
+  }
+  return context;
+};
+
+// Hook for cached data fetching
+export const useCachedData = <T>(
+  key: string,
+  fetcher: () => Promise<T>,
+  options: CacheSetOptions = {}
+) => {
+  const cache = useIntelligentCache();
+  const [data, setData] = React.useState<T | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState<Error | null>(null);
+
+  React.useEffect(() => {
+    const fetchData = async () => {
+      try {
+        setLoading(true);
+        setError(null);
+        
+        // Try cache first
+        const cached = await cache.get<T>(key);
+        if (cached) {
+          setData(cached);
+          setLoading(false);
+          return;
+        }
+
+        // Fetch fresh data
+        const fresh = await fetcher();
+        await cache.set(key, fresh, options);
+        setData(fresh);
+      } catch (err) {
+        setError(err as Error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchData();
+  }, [key, fetcher, cache, options]);
+
+  return { data, loading, error };
+};
+
+export default IntelligentCacheProvider;

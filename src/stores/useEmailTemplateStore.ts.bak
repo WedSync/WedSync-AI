@@ -1,0 +1,611 @@
+import { create } from 'zustand'
+import { devtools, persist, subscribeWithSelector } from 'zustand/middleware'
+import { 
+  EmailTemplateState, 
+  EmailGenerationConfig,
+  AIEmailVariant,
+  PersonalizationRule,
+  EmailPreviewData,
+  ABTestConfig,
+  ABTestResult,
+  VariantComparison,
+  ClientContext,
+  VendorContext,
+  AI_EMAIL_STAGES,
+  AI_EMAIL_TONES,
+  AI_EMAIL_ELEMENTS
+} from '@/types/ai-email'
+
+// Extended store interface with actions
+export interface EmailTemplateStoreState extends EmailTemplateState {
+  // Generation actions
+  updateGenerationConfig: (config: Partial<EmailGenerationConfig>) => void
+  generateTemplates: () => Promise<void>
+  cancelGeneration: () => void
+  setGenerationProgress: (progress: number) => void
+  setGenerationError: (error: string | null) => void
+  
+  // Variant management
+  selectVariant: (variant: AIEmailVariant | null) => void
+  updateVariant: (variantId: string, updates: Partial<AIEmailVariant>) => void
+  removeVariant: (variantId: string) => void
+  duplicateVariant: (variantId: string) => void
+  addVariant: (variant: AIEmailVariant) => void
+  
+  // Personalization actions
+  updatePersonalizationRule: (rule: PersonalizationRule) => void
+  removePersonalizationRule: (ruleId: string) => void
+  addPersonalizationRule: (rule: PersonalizationRule) => void
+  updateMergeTagValue: (token: string, value: string) => void
+  clearMergeTagValues: () => void
+  generatePreview: (variant: AIEmailVariant) => Promise<void>
+  setPreviewData: (data: EmailPreviewData | null) => void
+  
+  // A/B Testing actions
+  setABTestConfig: (config: ABTestConfig | null) => void
+  addABTestResult: (result: ABTestResult) => void
+  updateABTestResult: (testId: string, updates: Partial<ABTestResult>) => void
+  clearABTestResults: () => void
+  
+  // Variant comparison actions
+  addVariantComparison: (comparison: VariantComparison) => void
+  removeVariantComparison: (variantAId: string, variantBId: string) => void
+  clearVariantComparisons: () => void
+  
+  // UI state actions
+  setActiveStep: (step: EmailTemplateState['activeStep']) => void
+  setShowPreview: (show: boolean) => void
+  setPreviewMode: (mode: 'desktop' | 'mobile') => void
+  setDirty: (dirty: boolean) => void
+  markSaved: () => void
+  
+  // Utility actions
+  resetState: () => void
+  loadTemplate: (templateId: string) => Promise<void>
+  saveCurrentState: () => Promise<void>
+  
+  // Context management
+  setClientContext: (context: Partial<ClientContext>) => void
+  setVendorContext: (context: Partial<VendorContext>) => void
+  
+  // Bulk actions
+  selectMultipleVariants: (variantIds: string[]) => void
+  deleteSelectedVariants: () => void
+  exportVariants: (format: 'json' | 'csv' | 'html') => Promise<void>
+}
+
+// Default generation configuration
+const defaultGenerationConfig: EmailGenerationConfig = {
+  stage: 'inquiry',
+  tone: 'friendly',
+  elements: {
+    pricing: false,
+    timeline: false,
+    next_steps: true,
+    portfolio: false,
+    testimonials: false,
+    availability: false,
+  },
+  client_context: {
+    couple_names: '',
+  },
+  vendor_context: {
+    business_name: '',
+    primary_category: '',
+    specialties: [],
+    unique_selling_points: [],
+    availability_status: 'available',
+  },
+  variant_count: 5,
+}
+
+// Default personalization rules
+const defaultPersonalizationRules: PersonalizationRule[] = [
+  {
+    id: '1',
+    token: '{couple_names}',
+    display_name: 'Couple Names',
+    description: 'Names of the couple getting married',
+    default_value: '',
+    is_required: true,
+    data_source: 'client',
+    auto_populate: true,
+  },
+  {
+    id: '2',
+    token: '{wedding_date}',
+    display_name: 'Wedding Date',
+    description: 'Date of the wedding',
+    default_value: '',
+    is_required: false,
+    data_source: 'client',
+    auto_populate: true,
+  },
+  {
+    id: '3',
+    token: '{vendor_name}',
+    display_name: 'Vendor Name',
+    description: 'Name of the vendor/business',
+    default_value: '',
+    is_required: true,
+    data_source: 'vendor',
+    auto_populate: true,
+  },
+  {
+    id: '4',
+    token: '{venue_name}',
+    display_name: 'Venue Name',
+    description: 'Name of the wedding venue',
+    default_value: '',
+    is_required: false,
+    data_source: 'client',
+    auto_populate: false,
+  },
+]
+
+// Initial state
+const initialState: EmailTemplateState = {
+  generationConfig: null,
+  isGenerating: false,
+  generationProgress: 0,
+  generationError: null,
+  generatedVariants: [],
+  selectedVariant: null,
+  variantComparisons: [],
+  personalizationRules: defaultPersonalizationRules,
+  mergeTagValues: {},
+  previewData: null,
+  abTestConfig: null,
+  abTestResults: [],
+  activeStep: 'configure',
+  showPreview: false,
+  previewMode: 'desktop',
+  isDirty: false,
+  lastSaved: undefined,
+}
+
+// Local storage key
+const STORAGE_KEY = 'wedsync-ai-email-template-store'
+
+// Create the store
+export const useEmailTemplateStore = create<EmailTemplateStoreState>()(
+  devtools(
+    subscribeWithSelector(
+      persist(
+        (set, get) => ({
+          ...initialState,
+
+          // Generation actions
+          updateGenerationConfig: (config) => {
+            set(state => ({
+              generationConfig: state.generationConfig 
+                ? { ...state.generationConfig, ...config }
+                : { ...defaultGenerationConfig, ...config },
+              isDirty: true,
+            }))
+          },
+
+          generateTemplates: async () => {
+            const state = get()
+            if (!state.generationConfig) {
+              set({ generationError: 'Generation configuration is required' })
+              return
+            }
+
+            set({ 
+              isGenerating: true, 
+              generationProgress: 0,
+              generationError: null,
+              generatedVariants: [],
+            })
+
+            try {
+              // Call API to generate templates
+              const response = await fetch('/api/ai/generate-email-templates', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  config: state.generationConfig,
+                }),
+              })
+
+              if (!response.ok) {
+                throw new Error('Failed to generate templates')
+              }
+
+              const data = await response.json()
+              
+              set({
+                generatedVariants: data.variants || [],
+                isGenerating: false,
+                generationProgress: 100,
+                activeStep: 'select',
+                isDirty: true,
+              })
+            } catch (error) {
+              set({
+                isGenerating: false,
+                generationError: error instanceof Error ? error.message : 'Generation failed',
+                generationProgress: 0,
+              })
+            }
+          },
+
+          cancelGeneration: () => {
+            set({
+              isGenerating: false,
+              generationProgress: 0,
+              generationError: null,
+            })
+          },
+
+          setGenerationProgress: (progress) => {
+            set({ generationProgress: progress })
+          },
+
+          setGenerationError: (error) => {
+            set({ generationError: error })
+          },
+
+          // Variant management
+          selectVariant: (variant) => {
+            set({ 
+              selectedVariant: variant,
+              activeStep: variant ? 'personalize' : 'select',
+              isDirty: true,
+            })
+          },
+
+          updateVariant: (variantId, updates) => {
+            set(state => ({
+              generatedVariants: state.generatedVariants.map(v => 
+                v.id === variantId ? { ...v, ...updates } : v
+              ),
+              selectedVariant: state.selectedVariant?.id === variantId 
+                ? { ...state.selectedVariant, ...updates }
+                : state.selectedVariant,
+              isDirty: true,
+            }))
+          },
+
+          removeVariant: (variantId) => {
+            set(state => ({
+              generatedVariants: state.generatedVariants.filter(v => v.id !== variantId),
+              selectedVariant: state.selectedVariant?.id === variantId ? null : state.selectedVariant,
+              isDirty: true,
+            }))
+          },
+
+          duplicateVariant: (variantId) => {
+            set(state => {
+              const variant = state.generatedVariants.find(v => v.id === variantId)
+              if (!variant) return state
+
+              const duplicated: AIEmailVariant = {
+                ...variant,
+                id: `${variant.id}-copy-${Date.now()}`,
+                variant_number: state.generatedVariants.length + 1,
+              }
+
+              return {
+                generatedVariants: [...state.generatedVariants, duplicated],
+                isDirty: true,
+              }
+            })
+          },
+
+          addVariant: (variant) => {
+            set(state => ({
+              generatedVariants: [...state.generatedVariants, variant],
+              isDirty: true,
+            }))
+          },
+
+          // Personalization actions
+          updatePersonalizationRule: (rule) => {
+            set(state => ({
+              personalizationRules: state.personalizationRules.map(r => 
+                r.id === rule.id ? rule : r
+              ),
+              isDirty: true,
+            }))
+          },
+
+          removePersonalizationRule: (ruleId) => {
+            set(state => ({
+              personalizationRules: state.personalizationRules.filter(r => r.id !== ruleId),
+              isDirty: true,
+            }))
+          },
+
+          addPersonalizationRule: (rule) => {
+            set(state => ({
+              personalizationRules: [...state.personalizationRules, rule],
+              isDirty: true,
+            }))
+          },
+
+          updateMergeTagValue: (token, value) => {
+            set(state => ({
+              mergeTagValues: { ...state.mergeTagValues, [token]: value },
+              isDirty: true,
+            }))
+          },
+
+          clearMergeTagValues: () => {
+            set({ 
+              mergeTagValues: {},
+              isDirty: true,
+            })
+          },
+
+          generatePreview: async (variant) => {
+            set({ previewData: null })
+
+            try {
+              const state = get()
+              const response = await fetch('/api/ai/personalize-email', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  variant,
+                  personalization_rules: state.personalizationRules,
+                  merge_tag_values: state.mergeTagValues,
+                  client_data: state.generationConfig?.client_context,
+                }),
+              })
+
+              if (!response.ok) {
+                throw new Error('Failed to generate preview')
+              }
+
+              const previewData = await response.json()
+              set({ previewData, activeStep: 'preview' })
+            } catch (error) {
+              console.error('Preview generation failed:', error)
+              set({ generationError: 'Failed to generate preview' })
+            }
+          },
+
+          setPreviewData: (data) => {
+            set({ previewData: data })
+          },
+
+          // A/B Testing actions
+          setABTestConfig: (config) => {
+            set({ 
+              abTestConfig: config,
+              isDirty: true,
+            })
+          },
+
+          addABTestResult: (result) => {
+            set(state => ({
+              abTestResults: [...state.abTestResults, result],
+            }))
+          },
+
+          updateABTestResult: (testId, updates) => {
+            set(state => ({
+              abTestResults: state.abTestResults.map(r => 
+                r.test_id === testId ? { ...r, ...updates } : r
+              ),
+            }))
+          },
+
+          clearABTestResults: () => {
+            set({ abTestResults: [] })
+          },
+
+          // Variant comparison actions
+          addVariantComparison: (comparison) => {
+            set(state => ({
+              variantComparisons: [...state.variantComparisons, comparison],
+            }))
+          },
+
+          removeVariantComparison: (variantAId, variantBId) => {
+            set(state => ({
+              variantComparisons: state.variantComparisons.filter(c => 
+                !(c.variant_a_id === variantAId && c.variant_b_id === variantBId)
+              ),
+            }))
+          },
+
+          clearVariantComparisons: () => {
+            set({ variantComparisons: [] })
+          },
+
+          // UI state actions
+          setActiveStep: (step) => {
+            set({ activeStep: step })
+          },
+
+          setShowPreview: (show) => {
+            set({ showPreview: show })
+          },
+
+          setPreviewMode: (mode) => {
+            set({ previewMode: mode })
+          },
+
+          setDirty: (dirty) => {
+            set({ isDirty: dirty })
+          },
+
+          markSaved: () => {
+            set({ 
+              isDirty: false,
+              lastSaved: new Date(),
+            })
+          },
+
+          // Context management
+          setClientContext: (context) => {
+            set(state => ({
+              generationConfig: state.generationConfig ? {
+                ...state.generationConfig,
+                client_context: { ...state.generationConfig.client_context, ...context }
+              } : null,
+              isDirty: true,
+            }))
+          },
+
+          setVendorContext: (context) => {
+            set(state => ({
+              generationConfig: state.generationConfig ? {
+                ...state.generationConfig,
+                vendor_context: { ...state.generationConfig.vendor_context, ...context }
+              } : null,
+              isDirty: true,
+            }))
+          },
+
+          // Bulk actions
+          selectMultipleVariants: (variantIds) => {
+            // This could be extended for bulk operations
+            console.log('Bulk selecting variants:', variantIds)
+          },
+
+          deleteSelectedVariants: () => {
+            // Implementation for bulk delete
+            console.log('Bulk deleting selected variants')
+          },
+
+          exportVariants: async (format) => {
+            const state = get()
+            try {
+              const response = await fetch('/api/ai/export-variants', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  variants: state.generatedVariants,
+                  format,
+                }),
+              })
+
+              if (!response.ok) {
+                throw new Error('Export failed')
+              }
+
+              // Trigger download
+              const blob = await response.blob()
+              const url = URL.createObjectURL(blob)
+              const a = document.createElement('a')
+              a.href = url
+              a.download = `email-variants.${format}`
+              document.body.appendChild(a)
+              a.click()
+              document.body.removeChild(a)
+              URL.revokeObjectURL(url)
+            } catch (error) {
+              console.error('Export failed:', error)
+              set({ generationError: 'Export failed' })
+            }
+          },
+
+          // Utility actions
+          resetState: () => {
+            set({
+              ...initialState,
+              personalizationRules: defaultPersonalizationRules,
+            })
+          },
+
+          loadTemplate: async (templateId) => {
+            try {
+              const response = await fetch("/api/placeholder")
+              if (!response.ok) {
+                throw new Error('Failed to load template')
+              }
+              
+              const template = await response.json()
+              // Load template data into store
+              set({
+                generatedVariants: template.variants || [],
+                selectedVariant: template.selectedVariant || null,
+                generationConfig: template.config || null,
+                activeStep: 'select',
+                isDirty: false,
+              })
+            } catch (error) {
+              set({ generationError: 'Failed to load template' })
+            }
+          },
+
+          saveCurrentState: async () => {
+            try {
+              const state = get()
+              const response = await fetch('/api/ai/templates', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  variants: state.generatedVariants,
+                  selectedVariant: state.selectedVariant,
+                  config: state.generationConfig,
+                  personalizationRules: state.personalizationRules,
+                  mergeTagValues: state.mergeTagValues,
+                }),
+              })
+
+              if (!response.ok) {
+                throw new Error('Failed to save template')
+              }
+
+              get().markSaved()
+            } catch (error) {
+              set({ generationError: 'Failed to save template' })
+            }
+          },
+        }),
+        {
+          name: STORAGE_KEY,
+          // Only persist certain parts of the state
+          partialize: (state) => ({
+            generationConfig: state.generationConfig,
+            personalizationRules: state.personalizationRules,
+            mergeTagValues: state.mergeTagValues,
+            activeStep: state.activeStep,
+            previewMode: state.previewMode,
+          }),
+        }
+      )
+    ),
+    {
+      name: 'email-template-store',
+    }
+  )
+)
+
+// Helper selectors for common queries
+export const useGenerationConfig = () => 
+  useEmailTemplateStore(state => state.generationConfig)
+
+export const useGeneratedVariants = () => 
+  useEmailTemplateStore(state => state.generatedVariants)
+
+export const useSelectedVariant = () => 
+  useEmailTemplateStore(state => state.selectedVariant)
+
+export const useIsGenerating = () => 
+  useEmailTemplateStore(state => state.isGenerating)
+
+export const usePersonalizationRules = () => 
+  useEmailTemplateStore(state => state.personalizationRules)
+
+export const usePreviewData = () => 
+  useEmailTemplateStore(state => state.previewData)
+
+export const useActiveStep = () => 
+  useEmailTemplateStore(state => state.activeStep)
+
+// Helper function to initialize with default config
+export const initializeWithDefaults = (organizationId: string, userId: string) => {
+  const store = useEmailTemplateStore.getState()
+  if (!store.generationConfig) {
+    store.updateGenerationConfig(defaultGenerationConfig)
+  }
+}
+
+// Export constants for use in components
+export { AI_EMAIL_STAGES, AI_EMAIL_TONES, AI_EMAIL_ELEMENTS }

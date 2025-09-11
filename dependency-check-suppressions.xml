@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+    <!-- 
+    Dependency Check Suppressions for WedSync
+    
+    This file contains suppressions for false positive vulnerabilities
+    identified during security scanning. Each suppression should include:
+    - Clear reason for suppression
+    - Date of review
+    - Plans for addressing (if applicable)
+    -->
+    
+    <!-- Example suppression - remove when you have real ones -->
+    <!--
+    <suppress>
+        <notes><![CDATA[
+        This is a false positive because we don't use the vulnerable functionality
+        and the library is only used in development/testing.
+        Reviewed: 2025-09-04
+        ]]></notes>
+        <packageUrl regex="true">^pkg:npm/example\-package@.*</packageUrl>
+        <cve>CVE-2023-XXXXX</cve>
+    </suppress>
+    -->
+    
+    <!-- Suppress test/dev only vulnerabilities -->
+    <suppress>
+        <notes><![CDATA[
+        Development dependencies that don't affect production builds
+        Reviewed: 2025-09-04
+        ]]></notes>
+        <packageUrl regex="true">^pkg:npm/(@types/|@jest/|jest|webpack|@webpack/).*</packageUrl>
+        <vulnerabilityName>all</vulnerabilityName>
+    </suppress>
+    
+</suppressions>

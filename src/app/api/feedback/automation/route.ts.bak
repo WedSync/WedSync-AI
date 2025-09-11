@@ -1,0 +1,318 @@
+/**
+ * WS-236: User Feedback System - Follow-up Automation API
+ * 
+ * Handles follow-up automation triggers and status monitoring
+ * Provides manual trigger capabilities and automation analytics
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
+import { createClient } from '@/lib/supabase/server';
+import { rateLimit } from '@/lib/rate-limiter';
+import { followUpAutomation } from '@/lib/feedback/follow-up-automation';
+
+// Validation schemas
+const triggerAutomationSchema = z.object({
+  sessionId: z.string().uuid(),
+  npsScore: z.number().min(0).max(10).optional(),
+  sentimentScore: z.number().min(0).max(1).optional(),
+  sentimentCategory: z.enum(['positive', 'neutral', 'negative']).optional(),
+  overrideUrgency: z.enum(['low', 'medium', 'high', 'critical']).optional(),
+  weddingContext: z.object({
+    isWeddingSeason: z.boolean().optional(),
+    daysUntilWedding: z.number().min(0).optional(),
+    vendorType: z.string().optional(),
+    userTier: z.string().optional()
+  }).optional()
+});
+
+const automationQuerySchema = z.object({
+  userId: z.string().uuid().optional(),
+  sessionId: z.string().uuid().optional(),
+  status: z.enum(['pending', 'in_progress', 'completed', 'failed']).optional(),
+  actionType: z.string().optional(),
+  page: z.coerce.number().min(1).default(1),
+  limit: z.coerce.number().min(1).max(100).default(20)
+});
+
+export const dynamic = 'force-dynamic';
+
+/**
+ * POST /api/feedback/automation
+ * Manually trigger follow-up automation for a feedback session
+ */
+export async function POST(request: NextRequest) {
+  try {
+    // Rate limiting
+    const rateLimitResult = await rateLimit(request, { max: 30, windowMs: 60000 });
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { error: 'Too many automation requests' },
+        { status: 429, headers: rateLimitResult.headers }
+      );
+    }
+
+    const supabase = createClient();
+
+    // Check authentication
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validatedData = triggerAutomationSchema.parse(body);
+
+    console.log(`Manual automation trigger requested for session ${validatedData.sessionId}`);
+
+    try {
+      // Verify session exists and user has access
+      const { data: session, error: sessionError } = await supabase
+        .from('feedback_sessions')
+        .select(`
+          id,
+          user_id,
+          session_type,
+          completed_at,
+          overall_sentiment,
+          satisfaction_category,
+          nps_score
+        `)
+        .eq('id', validatedData.sessionId)
+        .single();
+
+      if (sessionError || !session) {
+        return NextResponse.json(
+          { error: 'Feedback session not found' },
+          { status: 404 }
+        );
+      }
+
+      if (session.user_id !== user.id) {
+        return NextResponse.json(
+          { error: 'Access denied to this feedback session' },
+          { status: 403 }
+        );
+      }
+
+      // Get user profile for wedding context
+      const { data: userProfile } = await supabase
+        .from('user_profiles')
+        .select('vendor_type, subscription_tier')
+        .eq('user_id', user.id)
+        .single();
+
+      // Prepare automation trigger
+      const trigger = {
+        sessionId: validatedData.sessionId,
+        userId: user.id,
+        npsScore: validatedData.npsScore || session.nps_score,
+        sentimentScore: validatedData.sentimentScore,
+        sentimentCategory: validatedData.sentimentCategory || 
+          (session.overall_sentiment ? 
+            (session.overall_sentiment > 0.6 ? 'positive' : 
+             session.overall_sentiment < 0.4 ? 'negative' : 'neutral') 
+            : undefined),
+        urgencyLevel: validatedData.overrideUrgency,
+        weddingContext: {
+          ...validatedData.weddingContext,
+          isWeddingSeason: validatedData.weddingContext?.isWeddingSeason ?? 
+            isCurrentlyWeddingSeason(),
+          vendorType: validatedData.weddingContext?.vendorType || 
+            userProfile?.vendor_type,
+          userTier: validatedData.weddingContext?.userTier || 
+            userProfile?.subscription_tier
+        }
+      };
+
+      // Execute follow-up automation
+      await followUpAutomation.processFeedbackTrigger(trigger);
+
+      // Get scheduled actions count
+      const { count: scheduledActionsCount } = await supabase
+        .from('feedback_follow_up_actions')
+        .select('*', { count: 'exact', head: true })
+        .eq('session_id', validatedData.sessionId)
+        .eq('action_status', 'pending');
+
+      return NextResponse.json({
+        success: true,
+        data: {
+          sessionId: validatedData.sessionId,
+          automationTriggered: true,
+          scheduledActions: scheduledActionsCount || 0,
+          trigger: {
+            ...trigger,
+            urgencyLevel: trigger.urgencyLevel || 'calculated'
+          }
+        },
+        message: 'Follow-up automation triggered successfully'
+      });
+
+    } catch (serviceError) {
+      console.error('Error triggering follow-up automation:', serviceError);
+      return NextResponse.json(
+        { error: 'Failed to trigger follow-up automation' },
+        { status: 500 }
+      );
+    }
+
+  } catch (error) {
+    console.error('POST /api/feedback/automation error:', error);
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid automation request', details: error.errors },
+        { status: 400 }
+      );
+    }
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * GET /api/feedback/automation
+ * Get follow-up automation status and scheduled actions
+ */
+export async function GET(request: NextRequest) {
+  try {
+    // Rate limiting
+    const rateLimitResult = await rateLimit(request, { max: 60, windowMs: 60000 });
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { error: 'Too many requests' },
+        { status: 429, headers: rateLimitResult.headers }
+      );
+    }
+
+    const supabase = createClient();
+
+    // Check authentication
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    // Parse query parameters
+    const url = new URL(request.url);
+    const queryParams = Object.fromEntries(url.searchParams.entries());
+    const { userId, sessionId, status, actionType, page, limit } = automationQuerySchema.parse(queryParams);
+
+    // Build query for follow-up actions
+    let query = supabase
+      .from('feedback_follow_up_actions')
+      .select(`
+        id,
+        session_id,
+        user_id,
+        action_type,
+        action_status,
+        scheduled_at,
+        started_at,
+        completed_at,
+        action_config,
+        wedding_priority,
+        execution_result,
+        created_at,
+        feedback_sessions (
+          session_type,
+          nps_score,
+          overall_sentiment,
+          satisfaction_category
+        )
+      `)
+      .eq('user_id', user.id)
+      .is('deleted_at', null);
+
+    // Apply filters
+    if (sessionId) query = query.eq('session_id', sessionId);
+    if (status) query = query.eq('action_status', status);
+    if (actionType) query = query.eq('action_type', actionType);
+
+    // Apply pagination and ordering
+    query = query
+      .order('wedding_priority', { ascending: false })
+      .order('scheduled_at', { ascending: true });
+
+    const offset = (page - 1) * limit;
+    query = query.range(offset, offset + limit - 1);
+
+    const { data: actions, error } = await query;
+
+    if (error) {
+      console.error('Error fetching automation actions:', error);
+      return NextResponse.json(
+        { error: 'Failed to fetch automation status' },
+        { status: 500 }
+      );
+    }
+
+    // Get summary statistics
+    const { data: statusCounts } = await supabase
+      .from('feedback_follow_up_actions')
+      .select('action_status')
+      .eq('user_id', user.id);
+
+    const statusSummary = statusCounts?.reduce((acc, item) => {
+      acc[item.action_status] = (acc[item.action_status] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>) || {};
+
+    // Get total count for pagination
+    const { count: totalCount } = await supabase
+      .from('feedback_follow_up_actions')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', user.id)
+      .is('deleted_at', null);
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        actions: actions || [],
+        summary: {
+          statusCounts: statusSummary,
+          totalActions: totalCount || 0,
+          pendingActions: statusSummary.pending || 0,
+          completedActions: statusSummary.completed || 0,
+          failedActions: statusSummary.failed || 0
+        },
+        pagination: {
+          page,
+          limit,
+          total: totalCount || 0,
+          pages: Math.ceil((totalCount || 0) / limit)
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('GET /api/feedback/automation error:', error);
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid query parameters', details: error.errors },
+        { status: 400 }
+      );
+    }
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * Check if current date is in wedding season (April-October)
+ */
+function isCurrentlyWeddingSeason(): boolean {
+  const currentMonth = new Date().getMonth() + 1; // 1-12
+  return currentMonth >= 4 && currentMonth <= 10;
+}

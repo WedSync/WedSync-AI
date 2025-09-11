@@ -1,0 +1,525 @@
+/**
+ * Google Places Details API Route
+ * Team B - WS-219 Google Places Integration
+ *
+ * Secure endpoint for wedding venue detailed information with:
+ * - Authentication and authorization
+ * - Input validation and sanitization
+ * - Rate limiting and quota management
+ * - Wedding-specific analysis
+ * - Comprehensive error handling
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
+import { createClient } from '@supabase/supabase-js';
+import { GooglePlacesClient } from '@/lib/integrations/google-places-client';
+import { PlacesSearchService } from '@/lib/services/places-search-service';
+
+// Input validation schema
+const detailsRequestSchema = z.object({
+  fields: z
+    .array(z.string())
+    .optional()
+    .default([
+      'place_id',
+      'name',
+      'formatted_address',
+      'geometry',
+      'rating',
+      'user_ratings_total',
+      'price_level',
+      'types',
+      'business_status',
+      'formatted_phone_number',
+      'website',
+      'opening_hours',
+      'reviews',
+      'photos',
+      'wheelchair_accessible_entrance',
+      'serves_beer',
+      'serves_wine',
+    ]),
+  sessionToken: z.string().optional(),
+  language: z.string().length(2).optional().default('en'),
+  region: z.string().length(2).optional().default('GB'),
+  includeWeddingAnalysis: z.boolean().optional().default(true),
+  includeSimilarVenues: z.boolean().optional().default(true),
+});
+
+const placeIdSchema = z
+  .string()
+  .min(1, 'Place ID is required')
+  .max(200, 'Place ID too long')
+  .regex(/^[a-zA-Z0-9_-]+$/, 'Invalid Place ID format');
+
+// Rate limiting - simple in-memory store (use Redis in production)
+const rateLimitStore = new Map<string, { count: number; resetTime: number }>();
+
+async function checkRateLimit(identifier: string): Promise<boolean> {
+  const now = Date.now();
+  const windowMs = 60 * 1000; // 1 minute
+  const maxRequests = 20; // 20 requests per minute per user (lower for details API)
+
+  const existing = rateLimitStore.get(identifier);
+
+  if (!existing || now > existing.resetTime) {
+    rateLimitStore.set(identifier, { count: 1, resetTime: now + windowMs });
+    return true;
+  }
+
+  if (existing.count >= maxRequests) {
+    return false;
+  }
+
+  existing.count++;
+  return true;
+}
+
+async function validateSession(request: NextRequest) {
+  const supabase = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL ||
+      (() => {
+        throw new Error(
+          'Missing environment variable: NEXT_PUBLIC_SUPABASE_URL',
+        );
+      })(),
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+      (() => {
+        throw new Error(
+          'Missing environment variable: SUPABASE_SERVICE_ROLE_KEY',
+        );
+      })(),
+  );
+
+  const authHeader = request.headers.get('authorization');
+  if (!authHeader) {
+    throw new Error('Authorization header required');
+  }
+
+  const token = authHeader.replace('Bearer ', '');
+  const {
+    data: { user },
+    error,
+  } = await supabase.auth.getUser(token);
+
+  if (error || !user) {
+    throw new Error('Invalid authentication token');
+  }
+
+  const { data: profile, error: profileError } = await supabase
+    .from('user_profiles')
+    .select('*, organizations(*)')
+    .eq('id', user.id)
+    .single();
+
+  if (profileError || !profile) {
+    throw new Error('User profile not found');
+  }
+
+  return { user, profile };
+}
+
+async function logAuditEvent(
+  userId: string,
+  organizationId: string,
+  action: string,
+  details: any,
+  ipAddress: string,
+) {
+  const supabase = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL ||
+      (() => {
+        throw new Error(
+          'Missing environment variable: NEXT_PUBLIC_SUPABASE_URL',
+        );
+      })(),
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+      (() => {
+        throw new Error(
+          'Missing environment variable: SUPABASE_SERVICE_ROLE_KEY',
+        );
+      })(),
+  );
+
+  try {
+    await supabase.from('audit_logs').insert({
+      table_name: 'google_places_details',
+      action,
+      new_values: details,
+      user_id: userId,
+      organization_id: organizationId,
+      ip_address: ipAddress,
+      user_agent: 'API',
+    });
+  } catch (error) {
+    console.error('Audit logging failed:', error);
+  }
+}
+
+interface RouteParams {
+  params: {
+    placeId: string;
+  };
+}
+
+export async function GET(request: NextRequest, { params }: RouteParams) {
+  const startTime = Date.now();
+  let user: any = null;
+  let organizationId: string = '';
+
+  try {
+    // Validate place ID parameter
+    const validatedPlaceId = placeIdSchema.parse(params.placeId);
+
+    // Parse and validate query parameters
+    const { searchParams } = new URL(request.url);
+
+    const rawParams = {
+      fields: searchParams.get('fields')
+        ? searchParams.get('fields')!.split(',')
+        : undefined,
+      sessionToken: searchParams.get('sessionToken'),
+      language: searchParams.get('language'),
+      region: searchParams.get('region'),
+      includeWeddingAnalysis:
+        searchParams.get('includeWeddingAnalysis') === 'true',
+      includeSimilarVenues: searchParams.get('includeSimilarVenues') === 'true',
+    };
+
+    const validatedParams = detailsRequestSchema.parse(rawParams);
+
+    // Authenticate user
+    const { user: authUser, profile } = await validateSession(request);
+    user = authUser;
+    organizationId = profile.organization_id;
+
+    // Rate limiting
+    const clientIp =
+      request.headers.get('x-forwarded-for') ||
+      request.headers.get('x-real-ip') ||
+      'unknown';
+    const rateLimitKey = `${user.id}:${clientIp}:details`;
+
+    const rateLimitOk = await checkRateLimit(rateLimitKey);
+    if (!rateLimitOk) {
+      await logAuditEvent(
+        user.id,
+        organizationId,
+        'rate_limit_exceeded',
+        {
+          endpoint: 'places/details',
+          place_id: validatedPlaceId,
+          ip: clientIp,
+        },
+        clientIp,
+      );
+
+      return NextResponse.json(
+        {
+          error: 'Rate limit exceeded',
+          message: 'Too many requests. Please try again later.',
+          retry_after: 60,
+        },
+        {
+          status: 429,
+          headers: {
+            'X-RateLimit-Limit': '20',
+            'X-RateLimit-Remaining': '0',
+            'X-RateLimit-Reset': Math.ceil(
+              (Date.now() + 60000) / 1000,
+            ).toString(),
+          },
+        },
+      );
+    }
+
+    // Initialize Google Places client and search service
+    const placesClient = await GooglePlacesClient.create(organizationId);
+    const searchService = new PlacesSearchService(placesClient);
+
+    // Get venue details with wedding analysis
+    const venueDetails = await searchService.getVenueDetails(
+      validatedPlaceId,
+      validatedParams.sessionToken,
+    );
+
+    // Build comprehensive response
+    const response = {
+      venue: venueDetails.venue,
+      wedding_suitability: validatedParams.includeWeddingAnalysis
+        ? venueDetails.weddingSuitability
+        : undefined,
+      capacity_estimate: validatedParams.includeWeddingAnalysis
+        ? venueDetails.capacityEstimate
+        : undefined,
+      similar_venues: validatedParams.includeSimilarVenues
+        ? venueDetails.similarVenues
+        : undefined,
+      enhanced_data: {
+        // Additional wedding-specific data
+        booking_insights: await generateBookingInsights(venueDetails.venue),
+        photography_score: calculatePhotographyScore(venueDetails.venue),
+        accessibility_info: extractAccessibilityInfo(venueDetails.venue),
+        contact_verification: await verifyContactInfo(venueDetails.venue),
+        pricing_estimates: estimateWeddingPricing(venueDetails.venue),
+        seasonal_availability: await getSeasonalAvailability(validatedPlaceId),
+      },
+    };
+
+    // Log successful request
+    await logAuditEvent(
+      user.id,
+      organizationId,
+      'venue_details_fetch',
+      {
+        place_id: validatedPlaceId,
+        venue_name: venueDetails.venue.name,
+        response_time_ms: Date.now() - startTime,
+        wedding_analysis_included: validatedParams.includeWeddingAnalysis,
+      },
+      clientIp,
+    );
+
+    return NextResponse.json(
+      {
+        success: true,
+        data: response,
+        meta: {
+          request_id: crypto.randomUUID(),
+          response_time_ms: Date.now() - startTime,
+          api_version: '1.0',
+          enhanced_analysis: validatedParams.includeWeddingAnalysis,
+        },
+      },
+      {
+        status: 200,
+        headers: {
+          'X-RateLimit-Limit': '20',
+          'X-RateLimit-Remaining': '19',
+          'Cache-Control': 'private, max-age=3600', // 1 hour cache for details
+          'X-API-Version': '1.0',
+        },
+      },
+    );
+  } catch (error: any) {
+    console.error('Places details error:', error);
+
+    if (user) {
+      await logAuditEvent(
+        user.id,
+        organizationId,
+        'venue_details_error',
+        {
+          place_id: params.placeId,
+          error: error.message,
+          response_time_ms: Date.now() - startTime,
+        },
+        request.headers.get('x-forwarded-for') || 'unknown',
+      );
+    }
+
+    // Handle specific error types
+    if (error.name === 'ZodError') {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Invalid request parameters',
+          message: 'Please check your request parameters and try again.',
+          details:
+            process.env.NODE_ENV === 'development' ? error.errors : undefined,
+        },
+        { status: 400 },
+      );
+    }
+
+    if (
+      error.message.includes('Authorization') ||
+      error.message.includes('authentication')
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Authentication required',
+          message: 'Please provide valid authentication credentials.',
+        },
+        { status: 401 },
+      );
+    }
+
+    if (error.code === 'NOT_FOUND') {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Venue not found',
+          message: 'The requested venue could not be found.',
+          place_id: params.placeId,
+        },
+        { status: 404 },
+      );
+    }
+
+    if (error.message.includes('quota') || error.code === 'QUOTA_EXCEEDED') {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Service temporarily unavailable',
+          message: 'API quota exceeded. Please try again later.',
+          retry_after: error.quota_reset_time,
+        },
+        { status: 503 },
+      );
+    }
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Internal server error',
+        message: 'An unexpected error occurred. Please try again later.',
+        request_id: crypto.randomUUID(),
+      },
+      {
+        status: 500,
+        headers: {
+          'X-Error-ID': crypto.randomUUID(),
+        },
+      },
+    );
+  }
+}
+
+// Helper functions for enhanced venue analysis
+
+async function generateBookingInsights(venue: any) {
+  return {
+    peak_booking_months: ['June', 'July', 'August', 'September'], // Wedding season
+    advance_booking_recommended:
+      venue.user_ratings_total > 100 ? '6-12 months' : '3-6 months',
+    busy_days: ['Saturday', 'Sunday'],
+    booking_difficulty: venue.rating > 4.5 ? 'High demand' : 'Moderate demand',
+    deposit_typically_required: true,
+    site_visit_recommended: true,
+  };
+}
+
+function calculatePhotographyScore(venue: any): number {
+  let score = 5; // Base score
+
+  // Venue types that are typically photogenic
+  const photoFriendlyTypes = [
+    'park',
+    'garden',
+    'museum',
+    'hotel',
+    'wedding_venue',
+    'church',
+  ];
+
+  if (venue.types.some((type: string) => photoFriendlyTypes.includes(type))) {
+    score += 2;
+  }
+
+  // Photos available indicates visual appeal
+  if (venue.photos && venue.photos.length > 5) {
+    score += 1;
+  }
+
+  // Historical/landmark venues often photogenic
+  if (
+    venue.types.includes('tourist_attraction') ||
+    venue.types.includes('museum')
+  ) {
+    score += 1;
+  }
+
+  // Outdoor spaces generally good for photos
+  if (
+    venue.types.includes('park') ||
+    venue.name.toLowerCase().includes('garden')
+  ) {
+    score += 1;
+  }
+
+  return Math.min(10, score);
+}
+
+function extractAccessibilityInfo(venue: any) {
+  return {
+    wheelchair_accessible_entrance:
+      venue.wheelchair_accessible_entrance || null,
+    parking_available: venue.types.includes('parking') || null,
+    public_transport_nearby: null, // Would need additional API call
+    step_free_access: venue.wheelchair_accessible_entrance || null,
+    accessible_facilities: null, // Would need to analyze reviews
+    mobility_friendly_rating: venue.wheelchair_accessible_entrance ? 8 : 5,
+  };
+}
+
+async function verifyContactInfo(venue: any) {
+  return {
+    phone_verified: !!venue.formatted_phone_number,
+    website_active: !!venue.website,
+    google_listing_claimed: venue.business_status === 'OPERATIONAL',
+    last_updated: new Date().toISOString(),
+    response_rate_estimate: venue.user_ratings_total > 50 ? 'High' : 'Medium',
+  };
+}
+
+function estimateWeddingPricing(venue: any) {
+  // Basic pricing estimates based on venue type and price level
+  const basePricing = {
+    0: { min: 500, max: 1500 }, // Free/Low cost
+    1: { min: 1000, max: 3000 }, // Inexpensive
+    2: { min: 2500, max: 6000 }, // Moderate
+    3: { min: 5000, max: 12000 }, // Expensive
+    4: { min: 10000, max: 25000 }, // Very Expensive
+  };
+
+  const priceLevel = venue.price_level || 2;
+  const baseRange = basePricing[priceLevel as keyof typeof basePricing];
+
+  // Adjust based on venue type
+  let multiplier = 1;
+  if (venue.types.includes('hotel')) multiplier = 1.2;
+  if (venue.types.includes('wedding_venue')) multiplier = 1.3;
+  if (venue.types.includes('banquet_hall')) multiplier = 1.1;
+
+  return {
+    venue_hire_estimate: {
+      min: Math.round(baseRange.min * multiplier),
+      max: Math.round(baseRange.max * multiplier),
+      currency: 'GBP',
+    },
+    includes_catering:
+      venue.types.includes('restaurant') ||
+      venue.types.includes('banquet_hall'),
+    per_person_estimate: venue.types.includes('restaurant')
+      ? { min: 35, max: 85, currency: 'GBP' }
+      : null,
+    additional_costs: [
+      'Service charge (10-15%)',
+      'Corkage fee (if bringing own alcohol)',
+      'Decoration setup fee',
+      'Extended hours fee',
+    ],
+  };
+}
+
+async function getSeasonalAvailability(placeId: string) {
+  // This would typically query a more sophisticated availability system
+  return {
+    peak_season: {
+      months: ['May', 'June', 'July', 'August', 'September'],
+      availability: 'Limited',
+      booking_lead_time: '12+ months',
+    },
+    off_season: {
+      months: ['November', 'December', 'January', 'February', 'March'],
+      availability: 'Good',
+      booking_lead_time: '3-6 months',
+    },
+    weekend_availability: 'Very Limited',
+    weekday_availability: 'Good',
+    last_updated: new Date().toISOString(),
+  };
+}

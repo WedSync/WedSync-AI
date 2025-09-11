@@ -1,0 +1,726 @@
+/**
+ * WS-171: Unit Tests for PWA Performance Optimizer
+ * Comprehensive tests for offline performance optimization
+ */
+
+import { PWAPerformanceOptimizer, PerformanceMetrics, OfflineCapabilities, OptimizationStrategy, PreloadConfig } from '../../../lib/pwa/performance-optimizer';
+import { PWACacheManager, CachePriority, WeddingDataType } from '../../../lib/pwa/cache-manager';
+import { PWAStorageOptimizer } from '../../../lib/pwa/storage-optimizer';
+
+// Mock Supabase client
+jest.mock('@supabase/supabase-js', () => ({
+  createClient: jest.fn(() => ({
+    from: jest.fn(() => ({
+      insert: jest.fn().mockResolvedValue({}),
+      select: jest.fn().mockResolvedValue({ data: [], error: null })
+    }))
+  }))
+}));
+
+// Mock performance API
+Object.defineProperty(global, 'performance', {
+  value: {
+    now: jest.fn(() => Date.now()),
+    memory: {
+      usedJSHeapSize: 1024 * 1024 * 10 // 10MB
+    }
+  },
+  writable: true
+});
+
+// Mock sessionStorage
+const mockSessionStorage = {
+  store: new Map<string, string>(),
+  getItem: jest.fn((key: string) => mockSessionStorage.store.get(key) || null),
+  setItem: jest.fn((key: string, value: string) => {
+    mockSessionStorage.store.set(key, value);
+  })
+};
+
+Object.defineProperty(global, 'sessionStorage', { value: mockSessionStorage });
+
+describe('PWAPerformanceOptimizer', () => {
+  let performanceOptimizer: PWAPerformanceOptimizer;
+  let mockCacheManager: jest.Mocked<PWACacheManager>;
+  let mockStorageOptimizer: jest.Mocked<PWAStorageOptimizer>;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockSessionStorage.store.clear();
+
+    // Create mocked cache manager
+    mockCacheManager = {
+      set: jest.fn().mockResolvedValue(true),
+      get: jest.fn().mockResolvedValue(null),
+      has: jest.fn().mockReturnValue(false),
+      delete: jest.fn().mockResolvedValue(true),
+      clear: jest.fn().mockResolvedValue(0),
+      invalidate: jest.fn().mockResolvedValue(0),
+      preloadWeddingData: jest.fn().mockResolvedValue(undefined),
+      getStats: jest.fn().mockReturnValue({
+        totalEntries: 10,
+        totalSize: 1024 * 1024,
+        hitRate: 85,
+        missRate: 15,
+        priorityDistribution: {
+          [CachePriority.CRITICAL]: 5,
+          [CachePriority.HIGH]: 3,
+          [CachePriority.MEDIUM]: 2
+        },
+        dataTypeDistribution: {
+          [WeddingDataType.TIMELINE]: 5,
+          [WeddingDataType.VENDORS]: 3,
+          [WeddingDataType.TASKS]: 2
+        },
+        memoryUsage: 1024 * 1024,
+        lastCleanup: Date.now()
+      }),
+      export: jest.fn().mockReturnValue([]),
+      destroy: jest.fn()
+    } as any;
+
+    // Create mocked storage optimizer
+    mockStorageOptimizer = {
+      getStorageQuota: jest.fn().mockResolvedValue({
+        quota: 50 * 1024 * 1024 * 1024,
+        usage: 5 * 1024 * 1024 * 1024,
+        available: 45 * 1024 * 1024 * 1024,
+        usagePercentage: 10
+      }),
+      getStorageBreakdown: jest.fn().mockResolvedValue({
+        cache: 2 * 1024 * 1024 * 1024,
+        indexedDB: 1 * 1024 * 1024 * 1024,
+        localStorage: 100 * 1024 * 1024,
+        webSQL: 0,
+        serviceWorker: 500 * 1024 * 1024,
+        other: 1.4 * 1024 * 1024 * 1024
+      }),
+      checkStorageHealth: jest.fn().mockResolvedValue([{
+        type: 'info' as const,
+        threshold: 0,
+        currentUsage: 10,
+        message: 'Storage usage is normal',
+        timestamp: Date.now()
+      }]),
+      performScheduledCleanup: jest.fn().mockResolvedValue({
+        freedBytes: 1024 * 1024,
+        deletedEntries: 5,
+        cleanupDuration: 1000,
+        success: true,
+        errors: []
+      }),
+      performEmergencyCleanup: jest.fn().mockResolvedValue({
+        freedBytes: 10 * 1024 * 1024,
+        deletedEntries: 50,
+        cleanupDuration: 5000,
+        success: true,
+        errors: []
+      }),
+      getStorageStatus: jest.fn().mockResolvedValue({
+        quota: {
+          quota: 50 * 1024 * 1024 * 1024,
+          usage: 5 * 1024 * 1024 * 1024,
+          available: 45 * 1024 * 1024 * 1024,
+          usagePercentage: 10
+        },
+        breakdown: {},
+        alerts: [],
+        lastCleanup: Date.now()
+      }),
+      triggerCleanup: jest.fn().mockResolvedValue({
+        freedBytes: 1024 * 1024,
+        deletedEntries: 5,
+        cleanupDuration: 1000,
+        success: true,
+        errors: []
+      }),
+      getConfig: jest.fn().mockReturnValue({
+        warningThreshold: 80,
+        criticalThreshold: 95,
+        autoCleanup: true,
+        cleanupInterval: 300000
+      }),
+      updateConfig: jest.fn(),
+      isCleanupInProgress: jest.fn().mockReturnValue(false),
+      destroy: jest.fn()
+    } as any;
+
+    performanceOptimizer = new PWAPerformanceOptimizer(mockCacheManager, mockStorageOptimizer);
+  });
+
+  describe('Initialization', () => {
+    test('should initialize with cache and storage managers', () => {
+      expect(performanceOptimizer).toBeDefined();
+      expect(performanceOptimizer.isOptimizationInProgress()).toBe(false);
+    });
+
+    test('should initialize performance metrics', () => {
+      const metrics = performanceOptimizer.getPerformanceMetrics();
+      
+      expect(metrics).toBeDefined();
+      expect(metrics.cacheHitRate).toBeDefined();
+      expect(metrics.averageResponseTime).toBeDefined();
+      expect(metrics.offlineCapabilityScore).toBeDefined();
+      expect(metrics.criticalDataAvailability).toBeDefined();
+      expect(metrics.storageOptimizationScore).toBeDefined();
+      expect(metrics.userExperienceScore).toBeDefined();
+    });
+
+    test('should initialize optimization strategies', async () => {
+      const opportunities = await performanceOptimizer.getOptimizationOpportunities();
+      
+      expect(Array.isArray(opportunities)).toBe(true);
+      expect(opportunities.length).toBeGreaterThanOrEqual(0);
+    });
+  });
+
+  describe('Performance Analysis', () => {
+    test('should analyze current performance', async () => {
+      const analysis = await performanceOptimizer.analyzePerformance();
+      
+      expect(analysis.metrics).toBeDefined();
+      expect(analysis.opportunities).toBeDefined();
+      expect(analysis.recommendations).toBeDefined();
+      expect(Array.isArray(analysis.opportunities)).toBe(true);
+      expect(Array.isArray(analysis.recommendations)).toBe(true);
+    });
+
+    test('should calculate cache hit rate from cache manager', async () => {
+      mockCacheManager.getStats.mockReturnValue({
+        ...mockCacheManager.getStats(),
+        hitRate: 92
+      });
+
+      const analysis = await performanceOptimizer.analyzePerformance();
+      expect(analysis.metrics.cacheHitRate).toBe(92);
+    });
+
+    test('should calculate storage optimization score', async () => {
+      mockStorageOptimizer.getStorageStatus.mockResolvedValue({
+        quota: {
+          quota: 50 * 1024 * 1024 * 1024,
+          usage: 5 * 1024 * 1024 * 1024, // 10% usage
+          available: 45 * 1024 * 1024 * 1024,
+          usagePercentage: 10
+        },
+        breakdown: {},
+        alerts: [],
+        lastCleanup: Date.now()
+      });
+
+      const analysis = await performanceOptimizer.analyzePerformance();
+      expect(analysis.metrics.storageOptimizationScore).toBe(100); // Low usage = high score
+    });
+  });
+
+  describe('Wedding Day Optimization', () => {
+    const mockPreloadConfig: PreloadConfig = {
+      weddingId: 'wedding-123',
+      weddingDate: new Date(Date.now() + 24 * 60 * 60 * 1000), // Tomorrow
+      criticalVendorIds: ['vendor-1', 'vendor-2'],
+      keyGuestIds: ['guest-1', 'guest-2'],
+      timelineEvents: ['ceremony', 'reception'],
+      emergencyContacts: ['contact-1', 'contact-2']
+    };
+
+    test('should optimize for wedding day successfully', async () => {
+      const result = await performanceOptimizer.optimizeForWedding(mockPreloadConfig);
+      
+      expect(result).toBe(true);
+      expect(mockCacheManager.set).toHaveBeenCalled();
+    });
+
+    test('should not start optimization if already in progress', async () => {
+      // Mock optimization in progress
+      (performanceOptimizer as any).isOptimizing = true;
+
+      const result = await performanceOptimizer.optimizeForWedding(mockPreloadConfig);
+      
+      expect(result).toBe(false);
+    });
+
+    test('should preload critical wedding data', async () => {
+      // Mock fetch methods to return test data
+      jest.spyOn(performanceOptimizer as any, 'fetchWeddingTimeline').mockResolvedValue({
+        events: ['ceremony', 'reception']
+      });
+      jest.spyOn(performanceOptimizer as any, 'fetchVendorData').mockResolvedValue({
+        name: 'Test Vendor',
+        contact: 'vendor@example.com'
+      });
+      jest.spyOn(performanceOptimizer as any, 'fetchEmergencyContacts').mockResolvedValue([
+        { name: 'Emergency Contact', phone: '911' }
+      ]);
+
+      const result = await performanceOptimizer.optimizeForWedding(mockPreloadConfig);
+      
+      expect(result).toBe(true);
+      expect(mockCacheManager.set).toHaveBeenCalledWith(
+        'wedding:wedding-123:timeline',
+        expect.any(Object),
+        expect.objectContaining({
+          priority: CachePriority.CRITICAL,
+          dataType: WeddingDataType.TIMELINE,
+          weddingId: 'wedding-123'
+        })
+      );
+    });
+
+    test('should handle wedding day optimization errors', async () => {
+      // Mock cache manager to throw error
+      mockCacheManager.set.mockRejectedValue(new Error('Cache error'));
+
+      const result = await performanceOptimizer.optimizeForWedding(mockPreloadConfig);
+      
+      expect(result).toBe(false);
+    });
+  });
+
+  describe('Cache Prioritization', () => {
+    test('should set wedding day priorities for imminent weddings', async () => {
+      const immediateWeddingConfig: PreloadConfig = {
+        ...mockPreloadConfig,
+        weddingDate: new Date(Date.now() + 2 * 60 * 60 * 1000) // 2 hours from now
+      };
+
+      const result = await performanceOptimizer.optimizeForWedding(immediateWeddingConfig);
+      
+      expect(result).toBe(true);
+      // Should have set wedding day priorities
+    });
+
+    test('should set wedding week priorities for upcoming weddings', async () => {
+      const weekWeddingConfig: PreloadConfig = {
+        ...mockPreloadConfig,
+        weddingDate: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000) // 3 days from now
+      };
+
+      const result = await performanceOptimizer.optimizeForWedding(weekWeddingConfig);
+      
+      expect(result).toBe(true);
+      // Should have set wedding week priorities
+    });
+
+    test('should set standard priorities for distant weddings', async () => {
+      const distantWeddingConfig: PreloadConfig = {
+        ...mockPreloadConfig,
+        weddingDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) // 30 days from now
+      };
+
+      const result = await performanceOptimizer.optimizeForWedding(distantWeddingConfig);
+      
+      expect(result).toBe(true);
+      // Should have set standard priorities
+    });
+  });
+
+  describe('Offline Capabilities Assessment', () => {
+    test('should assess offline capabilities', async () => {
+      mockCacheManager.has
+        .mockReturnValueOnce(true)  // timeline
+        .mockReturnValueOnce(true)  // vendors
+        .mockReturnValueOnce(false) // tasks
+        .mockReturnValueOnce(true)  // guests
+        .mockReturnValueOnce(false) // communications
+        .mockReturnValueOnce(false); // photos
+
+      const capabilities = await (performanceOptimizer as any).assessOfflineCapabilities();
+      
+      expect(capabilities.timeline).toBe(true);
+      expect(capabilities.vendors).toBe(true);
+      expect(capabilities.tasks).toBe(false);
+      expect(capabilities.guests).toBe(true);
+      expect(capabilities.communications).toBe(false);
+      expect(capabilities.photos).toBe(false);
+    });
+
+    test('should calculate offline capability score', async () => {
+      mockCacheManager.has
+        .mockReturnValueOnce(true)  // timeline (25 points)
+        .mockReturnValueOnce(true)  // vendors (20 points)
+        .mockReturnValueOnce(true)  // tasks (20 points)
+        .mockReturnValueOnce(true)  // communications (15 points)
+        .mockReturnValueOnce(false) // venues (0 points)
+        .mockReturnValueOnce(false); // guests (0 points)
+
+      const score = await (performanceOptimizer as any).calculateOfflineCapabilityScore();
+      
+      expect(score).toBe(80); // 25+20+20+15 = 80
+    });
+  });
+
+  describe('Performance Recommendations', () => {
+    test('should generate recommendations for low cache hit rate', async () => {
+      mockCacheManager.getStats.mockReturnValue({
+        ...mockCacheManager.getStats(),
+        hitRate: 60 // Low hit rate
+      });
+
+      const analysis = await performanceOptimizer.analyzePerformance();
+      
+      expect(analysis.recommendations).toContain(
+        'Implement more aggressive cache warming strategies'
+      );
+    });
+
+    test('should generate recommendations for low offline capability', async () => {
+      // Mock low offline capability
+      mockCacheManager.has.mockReturnValue(false);
+
+      const analysis = await performanceOptimizer.analyzePerformance();
+      
+      expect(analysis.recommendations).toContain(
+        'Increase offline data preloading for critical wedding workflows'
+      );
+    });
+
+    test('should generate recommendations for poor storage optimization', async () => {
+      mockStorageOptimizer.getStorageStatus.mockResolvedValue({
+        quota: {
+          quota: 50 * 1024 * 1024 * 1024,
+          usage: 45 * 1024 * 1024 * 1024, // 90% usage
+          available: 5 * 1024 * 1024 * 1024,
+          usagePercentage: 90
+        },
+        breakdown: {},
+        alerts: [],
+        lastCleanup: Date.now()
+      });
+
+      const analysis = await performanceOptimizer.analyzePerformance();
+      
+      expect(analysis.recommendations).toContain(
+        'Optimize storage usage with more aggressive cleanup policies'
+      );
+    });
+
+    test('should generate recommendations for slow response times', async () => {
+      // Mock slow response time measurement
+      jest.spyOn(performanceOptimizer as any, 'measureAverageResponseTime')
+        .mockResolvedValue(300); // 300ms
+
+      const analysis = await performanceOptimizer.analyzePerformance();
+      
+      expect(analysis.recommendations).toContain(
+        'Implement better caching strategies to reduce response times'
+      );
+    });
+  });
+
+  describe('Critical Data Availability', () => {
+    test('should calculate critical data availability', async () => {
+      mockCacheManager.has
+        .mockReturnValueOnce(true)  // timeline
+        .mockReturnValueOnce(false) // emergency:contacts
+        .mockReturnValueOnce(true)  // active-tasks
+        .mockReturnValueOnce(false); // critical-vendors
+
+      const availability = await (performanceOptimizer as any).calculateCriticalDataAvailability();
+      
+      expect(availability).toBe(50); // 2 out of 4 critical items available
+    });
+
+    test('should identify all critical data as available', async () => {
+      mockCacheManager.has.mockReturnValue(true); // All critical data available
+
+      const availability = await (performanceOptimizer as any).calculateCriticalDataAvailability();
+      
+      expect(availability).toBe(100);
+    });
+
+    test('should identify no critical data as available', async () => {
+      mockCacheManager.has.mockReturnValue(false); // No critical data available
+
+      const availability = await (performanceOptimizer as any).calculateCriticalDataAvailability();
+      
+      expect(availability).toBe(0);
+    });
+  });
+
+  describe('User Experience Score', () => {
+    test('should calculate user experience score', async () => {
+      // Set up good metrics
+      mockCacheManager.getStats.mockReturnValue({
+        ...mockCacheManager.getStats(),
+        hitRate: 90
+      });
+
+      const score = await (performanceOptimizer as any).calculateUserExperienceScore();
+      
+      expect(score).toBeGreaterThan(0);
+      expect(score).toBeLessThanOrEqual(100);
+    });
+
+    test('should weight different metrics appropriately', async () => {
+      // Mock perfect metrics
+      jest.spyOn(performanceOptimizer as any, 'measureAverageResponseTime')
+        .mockResolvedValue(50); // 50ms - excellent
+      
+      mockCacheManager.getStats.mockReturnValue({
+        ...mockCacheManager.getStats(),
+        hitRate: 95 // Excellent hit rate
+      });
+
+      const score = await (performanceOptimizer as any).calculateUserExperienceScore();
+      
+      expect(score).toBeGreaterThan(80); // Should be high score
+    });
+  });
+
+  describe('Data Preloading', () => {
+    beforeEach(() => {
+      // Mock all fetch methods to return test data
+      jest.spyOn(performanceOptimizer as any, 'fetchWeddingTimeline')
+        .mockResolvedValue({ events: ['ceremony'] });
+      jest.spyOn(performanceOptimizer as any, 'fetchVendorData')
+        .mockResolvedValue({ name: 'Vendor' });
+      jest.spyOn(performanceOptimizer as any, 'fetchEmergencyContacts')
+        .mockResolvedValue([{ name: 'Emergency' }]);
+      jest.spyOn(performanceOptimizer as any, 'fetchGuestData')
+        .mockResolvedValue([{ name: 'Guest' }]);
+      jest.spyOn(performanceOptimizer as any, 'fetchVenueData')
+        .mockResolvedValue({ name: 'Venue' });
+      jest.spyOn(performanceOptimizer as any, 'fetchActiveTasks')
+        .mockResolvedValue([{ task: 'Setup' }]);
+    });
+
+    test('should preload wedding timeline', async () => {
+      await (performanceOptimizer as any).preloadWeddingTimeline('wedding-123', ['ceremony']);
+      
+      expect(mockCacheManager.set).toHaveBeenCalledWith(
+        'wedding:wedding-123:timeline',
+        { events: ['ceremony'] },
+        expect.objectContaining({
+          priority: CachePriority.CRITICAL,
+          dataType: WeddingDataType.TIMELINE
+        })
+      );
+    });
+
+    test('should preload critical vendors', async () => {
+      await (performanceOptimizer as any).preloadCriticalVendors('wedding-123', ['vendor-1']);
+      
+      expect(mockCacheManager.set).toHaveBeenCalledWith(
+        'wedding:wedding-123:vendor:vendor-1',
+        { name: 'Vendor' },
+        expect.objectContaining({
+          priority: CachePriority.CRITICAL,
+          dataType: WeddingDataType.VENDORS
+        })
+      );
+    });
+
+    test('should preload emergency contacts', async () => {
+      await (performanceOptimizer as any).preloadEmergencyContacts(['contact-1']);
+      
+      expect(mockCacheManager.set).toHaveBeenCalledWith(
+        'emergency:contacts',
+        [{ name: 'Emergency' }],
+        expect.objectContaining({
+          priority: CachePriority.CRITICAL,
+          dataType: WeddingDataType.COMMUNICATIONS
+        })
+      );
+    });
+
+    test('should handle preload errors gracefully', async () => {
+      jest.spyOn(performanceOptimizer as any, 'fetchWeddingTimeline')
+        .mockRejectedValue(new Error('Network error'));
+
+      // Should not throw error
+      await expect((performanceOptimizer as any).preloadWeddingTimeline('wedding-123', ['ceremony']))
+        .resolves.not.toThrow();
+    });
+  });
+
+  describe('Performance Monitoring', () => {
+    test('should start performance monitoring', () => {
+      // Performance monitoring should be started during initialization
+      expect(performanceOptimizer).toBeDefined();
+    });
+
+    test('should track optimization events', async () => {
+      const result = await performanceOptimizer.optimizeForWedding(mockPreloadConfig);
+      
+      expect(result).toBe(true);
+      // Tracking would be verified through mocked Supabase calls
+    });
+  });
+
+  describe('Storage Integration', () => {
+    test('should optimize wedding day storage', async () => {
+      const result = await performanceOptimizer.optimizeForWedding(mockPreloadConfig);
+      
+      expect(result).toBe(true);
+      expect(mockStorageOptimizer.triggerCleanup).toHaveBeenCalledWith('scheduled');
+    });
+
+    test('should trigger storage cleanup before optimization', async () => {
+      const result = await performanceOptimizer.optimizeForWedding(mockPreloadConfig);
+      
+      expect(result).toBe(true);
+      expect(mockStorageOptimizer.triggerCleanup).toHaveBeenCalled();
+    });
+  });
+
+  describe('Error Handling', () => {
+    test('should handle cache manager errors during optimization', async () => {
+      mockCacheManager.set.mockRejectedValue(new Error('Cache error'));
+
+      const result = await performanceOptimizer.optimizeForWedding(mockPreloadConfig);
+      
+      expect(result).toBe(false);
+    });
+
+    test('should handle storage optimizer errors gracefully', async () => {
+      mockStorageOptimizer.triggerCleanup.mockRejectedValue(new Error('Storage error'));
+
+      const result = await performanceOptimizer.optimizeForWedding(mockPreloadConfig);
+      
+      expect(result).toBe(false);
+    });
+
+    test('should handle performance analysis errors', async () => {
+      mockCacheManager.getStats.mockImplementation(() => {
+        throw new Error('Stats error');
+      });
+
+      await expect(performanceOptimizer.analyzePerformance()).rejects.toThrow();
+    });
+  });
+
+  describe('Optimization Strategies', () => {
+    test('should identify relevant optimization opportunities', async () => {
+      // Mock low cache hit rate to trigger cache-related opportunities
+      mockCacheManager.getStats.mockReturnValue({
+        ...mockCacheManager.getStats(),
+        hitRate: 70 // Below 80% threshold
+      });
+
+      const opportunities = await performanceOptimizer.getOptimizationOpportunities();
+      
+      const cacheOpportunities = opportunities.filter(op => 
+        op.name.includes('Cache') || op.name.includes('cache')
+      );
+      
+      expect(cacheOpportunities.length).toBeGreaterThan(0);
+    });
+
+    test('should identify preloading opportunities for low offline scores', async () => {
+      // Mock low offline capability
+      mockCacheManager.has.mockReturnValue(false);
+
+      const opportunities = await performanceOptimizer.getOptimizationOpportunities();
+      
+      const preloadingOpportunities = opportunities.filter(op => 
+        op.name.includes('Preloading') || op.name.includes('preload')
+      );
+      
+      expect(preloadingOpportunities.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('Public API', () => {
+    test('should provide access to performance metrics', () => {
+      const metrics = performanceOptimizer.getPerformanceMetrics();
+      
+      expect(metrics).toBeDefined();
+      expect(typeof metrics.cacheHitRate).toBe('number');
+      expect(typeof metrics.averageResponseTime).toBe('number');
+      expect(typeof metrics.offlineCapabilityScore).toBe('number');
+    });
+
+    test('should provide optimization opportunities', async () => {
+      const opportunities = await performanceOptimizer.getOptimizationOpportunities();
+      
+      expect(Array.isArray(opportunities)).toBe(true);
+      opportunities.forEach(opportunity => {
+        expect(opportunity.name).toBeDefined();
+        expect(opportunity.description).toBeDefined();
+        expect(opportunity.priority).toBeDefined();
+        expect(opportunity.estimatedImpact).toBeDefined();
+      });
+    });
+
+    test('should expose optimization status', () => {
+      expect(performanceOptimizer.isOptimizationInProgress()).toBe(false);
+    });
+  });
+});
+
+describe('Performance Optimizer Factory', () => {
+  test('should create performance optimizer with dependencies', () => {
+    const mockCache = {} as PWACacheManager;
+    const mockStorage = {} as PWAStorageOptimizer;
+    
+    const { createPerformanceOptimizer } = require('../../../lib/pwa/performance-optimizer');
+    const optimizer = createPerformanceOptimizer(mockCache, mockStorage);
+    
+    expect(optimizer).toBeDefined();
+    expect(optimizer).toBeInstanceOf(PWAPerformanceOptimizer);
+  });
+});
+
+describe('Integration Scenarios', () => {
+  let performanceOptimizer: PWAPerformanceOptimizer;
+  let mockCacheManager: jest.Mocked<PWACacheManager>;
+  let mockStorageOptimizer: jest.Mocked<PWAStorageOptimizer>;
+
+  beforeEach(() => {
+    mockCacheManager = {
+      set: jest.fn().mockResolvedValue(true),
+      get: jest.fn().mockResolvedValue(null),
+      has: jest.fn().mockReturnValue(false),
+      getStats: jest.fn().mockReturnValue({
+        hitRate: 85,
+        totalEntries: 10,
+        totalSize: 1024 * 1024
+      }),
+      preloadWeddingData: jest.fn().mockResolvedValue(undefined)
+    } as any;
+
+    mockStorageOptimizer = {
+      getStorageStatus: jest.fn().mockResolvedValue({
+        quota: { usagePercentage: 10 },
+        breakdown: {},
+        alerts: [],
+        lastCleanup: Date.now()
+      }),
+      triggerCleanup: jest.fn().mockResolvedValue({
+        success: true,
+        freedBytes: 1024,
+        deletedEntries: 5,
+        cleanupDuration: 1000,
+        errors: []
+      })
+    } as any;
+
+    performanceOptimizer = new PWAPerformanceOptimizer(mockCacheManager, mockStorageOptimizer);
+  });
+
+  test('should coordinate between cache and storage optimizers', async () => {
+    const config: PreloadConfig = {
+      weddingId: 'test-wedding',
+      weddingDate: new Date(),
+      criticalVendorIds: ['vendor-1'],
+      keyGuestIds: ['guest-1'],
+      timelineEvents: ['ceremony'],
+      emergencyContacts: ['contact-1']
+    };
+
+    const result = await performanceOptimizer.optimizeForWedding(config);
+    
+    expect(result).toBe(true);
+    expect(mockCacheManager.set).toHaveBeenCalled();
+    expect(mockStorageOptimizer.triggerCleanup).toHaveBeenCalled();
+  });
+
+  test('should provide comprehensive performance analysis', async () => {
+    const analysis = await performanceOptimizer.analyzePerformance();
+    
+    expect(analysis.metrics).toBeDefined();
+    expect(analysis.opportunities).toBeDefined();
+    expect(analysis.recommendations).toBeDefined();
+    expect(typeof analysis.metrics.userExperienceScore).toBe('number');
+  });
+});

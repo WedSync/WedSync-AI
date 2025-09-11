@@ -1,0 +1,367 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { logger } from '@/lib/monitoring/structured-logger';
+
+const journeyLogger = logger.child({ component: 'wedme-journey-api' });
+
+export interface WedMeJourneyView {
+  vendorId: string;
+  vendorName: string;
+  vendorType: string;
+  coupleId: string;
+  coupleName: string;
+  journeyProgress: {
+    journeyId: string;
+    journeyName: string;
+    currentStep: string;
+    currentStepType: string;
+    completedSteps: string[];
+    totalSteps: number;
+    progressPercentage: number;
+    nextAction: string;
+    estimatedCompletion: Date;
+    status: 'active' | 'paused' | 'completed';
+  };
+  miniDashboard: {
+    title: string;
+    progress: number;
+    upcomingTasks: Array<{
+      id: string;
+      title: string;
+      dueDate: Date;
+      type: 'form' | 'meeting' | 'payment' | 'review' | 'document';
+      priority: 'low' | 'medium' | 'high';
+      completed: boolean;
+    }>;
+    recentActivity: Array<{
+      id: string;
+      action: string;
+      timestamp: Date;
+      type: 'message' | 'form_submission' | 'payment' | 'document' | 'milestone';
+      details?: string;
+    }>;
+    milestones: Array<{
+      id: string;
+      name: string;
+      date: Date;
+      completed: boolean;
+    }>;
+  };
+  communications: {
+    unreadMessages: number;
+    lastMessage?: {
+      content: string;
+      timestamp: Date;
+      from: 'vendor' | 'couple';
+    };
+  };
+}
+
+// GET /api/wedme/journeys - Get journey progress for a couple
+export async function GET(request: NextRequest) {
+  try {
+    const searchParams = request.nextUrl.searchParams;
+    const coupleId = searchParams.get('coupleId');
+    const vendorId = searchParams.get('vendorId');
+    
+    if (!coupleId) {
+      return NextResponse.json(
+        { error: 'Couple ID is required' },
+        { status: 400 }
+      );
+    }
+
+    const supabase = await createClient();
+    
+    // Get journey instances for this couple
+    const { data: journeys, error: journeyError } = await supabase
+      .from('journey_instances')
+      .select(`
+        id,
+        journey_id,
+        client_id,
+        organization_id,
+        state,
+        current_node_id,
+        variables,
+        started_at,
+        completed_at,
+        journey_definitions!inner (
+          id,
+          name,
+          canvas_data,
+          organization_id,
+          organizations!inner (
+            id,
+            name,
+            vendor_type
+          )
+        ),
+        journey_nodes (
+          id,
+          node_id,
+          node_type,
+          status,
+          started_at,
+          completed_at,
+          error_message
+        )
+      `)
+      .eq('client_id', coupleId)
+      .eq('state', 'active');
+
+    if (journeyError) {
+      journeyLogger.error('Failed to fetch journeys', { error: journeyError });
+      return NextResponse.json(
+        { error: 'Failed to fetch journey data' },
+        { status: 500 }
+      );
+    }
+
+    // If vendor ID specified, filter to that vendor
+    let filteredJourneys = journeys || [];
+    if (vendorId) {
+      filteredJourneys = filteredJourneys.filter(
+        j => j.journey_definitions?.organization_id === vendorId
+      );
+    }
+
+    // Transform to WedMe format
+    const wedMeJourneys: WedMeJourneyView[] = filteredJourneys.map(journey => {
+      const canvasData = journey.journey_definitions?.canvas_data as any;
+      const nodes = canvasData?.nodes || [];
+      const completedNodes = journey.journey_nodes?.filter(
+        (n: any) => n.status === 'completed'
+      ) || [];
+      
+      const currentNode = nodes.find(
+        (n: any) => n.id === journey.current_node_id
+      );
+      
+      const progressPercentage = nodes.length > 0 
+        ? Math.round((completedNodes.length / nodes.length) * 100)
+        : 0;
+
+      // Calculate estimated completion (mock - in production use actual timeline)
+      const estimatedDays = Math.max(30, nodes.length * 2);
+      const estimatedCompletion = new Date();
+      estimatedCompletion.setDate(estimatedCompletion.getDate() + estimatedDays);
+
+      // Generate upcoming tasks from journey nodes
+      const upcomingTasks = nodes
+        .filter((n: any) => {
+          const nodeStatus = journey.journey_nodes?.find(
+            (jn: any) => jn.node_id === n.id
+          );
+          return !nodeStatus || nodeStatus.status !== 'completed';
+        })
+        .slice(0, 5)
+        .map((n: any, idx: number) => {
+          const dueDate = new Date();
+          dueDate.setDate(dueDate.getDate() + (idx + 1) * 3);
+          
+          return {
+            id: n.id,
+            title: n.data?.label || 'Journey Step',
+            dueDate,
+            type: n.type === 'form' ? 'form' :
+                  n.type === 'meeting' ? 'meeting' :
+                  n.type === 'payment' ? 'payment' :
+                  n.type === 'review' ? 'review' : 'document' as any,
+            priority: idx === 0 ? 'high' : idx < 3 ? 'medium' : 'low' as any,
+            completed: false
+          };
+        });
+
+      // Generate recent activity (mock - in production use actual activity log)
+      const recentActivity = completedNodes
+        .slice(-5)
+        .reverse()
+        .map((n: any) => {
+          const node = nodes.find((node: any) => node.id === n.node_id);
+          return {
+            id: n.id,
+            action: `Completed: ${node?.data?.label || 'Journey step'}`,
+            timestamp: new Date(n.completed_at),
+            type: 'milestone' as any,
+            details: node?.data?.description
+          };
+        });
+
+      // Generate milestones
+      const milestones = [
+        {
+          id: '1',
+          name: 'Initial Consultation',
+          date: new Date(journey.started_at),
+          completed: completedNodes.length > 2
+        },
+        {
+          id: '2',
+          name: 'Contract Signed',
+          date: new Date(new Date(journey.started_at).getTime() + 7 * 24 * 60 * 60 * 1000),
+          completed: completedNodes.length > 5
+        },
+        {
+          id: '3',
+          name: 'Final Details',
+          date: new Date(estimatedCompletion.getTime() - 7 * 24 * 60 * 60 * 1000),
+          completed: false
+        },
+        {
+          id: '4',
+          name: 'Wedding Day',
+          date: estimatedCompletion,
+          completed: false
+        }
+      ];
+
+      return {
+        vendorId: journey.journey_definitions?.organization_id || '',
+        vendorName: journey.journey_definitions?.organizations?.name || 'Unknown Vendor',
+        vendorType: journey.journey_definitions?.organizations?.vendor_type || 'general',
+        coupleId: journey.client_id,
+        coupleName: journey.variables?.client_name || 'Unknown Couple',
+        journeyProgress: {
+          journeyId: journey.id,
+          journeyName: journey.journey_definitions?.name || 'Wedding Journey',
+          currentStep: currentNode?.data?.label || 'Unknown Step',
+          currentStepType: currentNode?.type || 'unknown',
+          completedSteps: completedNodes.map((n: any) => n.node_id),
+          totalSteps: nodes.length,
+          progressPercentage,
+          nextAction: upcomingTasks[0]?.title || 'Complete journey',
+          estimatedCompletion,
+          status: journey.state as any
+        },
+        miniDashboard: {
+          title: `${journey.journey_definitions?.name || 'Wedding Journey'} Progress`,
+          progress: progressPercentage,
+          upcomingTasks,
+          recentActivity,
+          milestones
+        },
+        communications: {
+          unreadMessages: 0, // Mock - integrate with real messaging
+          lastMessage: recentActivity.length > 0 ? {
+            content: recentActivity[0].action,
+            timestamp: recentActivity[0].timestamp,
+            from: 'vendor'
+          } : undefined
+        }
+      };
+    });
+
+    return NextResponse.json(wedMeJourneys);
+    
+  } catch (error) {
+    journeyLogger.error('WedMe journey API error', { error });
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+// POST /api/wedme/journeys/action - Perform action on journey (couple side)
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const { journeyId, action, data } = body;
+    
+    if (!journeyId || !action) {
+      return NextResponse.json(
+        { error: 'Journey ID and action are required' },
+        { status: 400 }
+      );
+    }
+
+    const supabase = await createClient();
+    
+    // Handle different actions
+    switch (action) {
+      case 'complete_task': {
+        const { nodeId } = data;
+        
+        // Update node status
+        const { error } = await supabase
+          .from('journey_nodes')
+          .update({
+            status: 'completed',
+            completed_at: new Date().toISOString()
+          })
+          .eq('journey_instance_id', journeyId)
+          .eq('node_id', nodeId);
+          
+        if (error) {
+          throw error;
+        }
+        
+        return NextResponse.json({ 
+          success: true,
+          message: 'Task completed successfully' 
+        });
+      }
+      
+      case 'submit_form': {
+        const { formId, formData } = data;
+        
+        // Store form submission
+        const { error } = await supabase
+          .from('form_submissions')
+          .insert({
+            form_id: formId,
+            journey_id: journeyId,
+            data: formData,
+            submitted_at: new Date().toISOString()
+          });
+          
+        if (error) {
+          throw error;
+        }
+        
+        return NextResponse.json({ 
+          success: true,
+          message: 'Form submitted successfully' 
+        });
+      }
+      
+      case 'send_message': {
+        const { message, vendorId } = data;
+        
+        // Store message (simplified - integrate with real messaging)
+        const { error } = await supabase
+          .from('messages')
+          .insert({
+            journey_id: journeyId,
+            sender_type: 'couple',
+            content: message,
+            vendor_id: vendorId,
+            created_at: new Date().toISOString()
+          });
+          
+        if (error) {
+          throw error;
+        }
+        
+        return NextResponse.json({ 
+          success: true,
+          message: 'Message sent successfully' 
+        });
+      }
+      
+      default:
+        return NextResponse.json(
+          { error: 'Invalid action' },
+          { status: 400 }
+        );
+    }
+    
+  } catch (error) {
+    journeyLogger.error('WedMe journey action error', { error });
+    return NextResponse.json(
+      { error: 'Failed to perform action' },
+      { status: 500 }
+    );
+  }
+}

@@ -1,0 +1,367 @@
+import React from 'react'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, generateWeddingTestData, expectWeddingData } from '../../../../tests/utils/test-utils'
+import { GuestListManager } from '@/components/guests/GuestListManager'
+
+// Mock Next.js navigation
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({
+    push: vi.fn(),
+    replace: vi.fn(),
+    prefetch: vi.fn(),
+  }),
+  useSearchParams: () => new URLSearchParams(),
+}))
+// Mock custom hooks
+vi.mock('@/hooks/useGuestSearch', () => ({
+  useGuestSearch: () => ({
+    guests: [],
+    searchQuery: '',
+    isSearching: false,
+    searchResults: [],
+    setSearchQuery: vi.fn(),
+    clearSearch: vi.fn(),
+vi.mock('@/hooks/useKeyboardShortcuts', () => ({
+  useKeyboardShortcuts: vi.fn(),
+vi.mock('@/hooks/useVirtualScrolling', () => ({
+  useVirtualScrolling: () => ({
+    containerRef: { current: null },
+    visibleItems: [],
+    scrollToIndex: vi.fn(),
+vi.mock('@/hooks/useGuestBulkOperations', () => ({
+  useBulkOperations: () => ({
+    selectedGuests: [],
+    isSelected: vi.fn(() => false),
+    toggleSelection: vi.fn(),
+    selectAll: vi.fn(),
+    clearSelection: vi.fn(),
+    bulkOperations: [],
+describe('GuestListManager', () => {
+  const mockGuests = [
+    generateWeddingTestData.guest({
+      id: 'guest-1',
+      name: 'Alice Johnson',
+      email: 'alice@example.com',
+      phone: '+1234567890',
+      rsvp_status: 'confirmed',
+      dietary_restrictions: 'vegetarian',
+      plus_one: true,
+      plus_one_name: 'Bob Johnson',
+      table_number: 5,
+      side: 'bride',
+      guest_type: 'family',
+    }),
+      id: 'guest-2',
+      name: 'Charlie Wilson',
+      email: 'charlie@example.com',
+      phone: '+0987654321',
+      rsvp_status: 'pending',
+      dietary_restrictions: 'gluten-free',
+      plus_one: false,
+      table_number: null,
+      side: 'groom',
+      guest_type: 'friend',
+      id: 'guest-3',
+      name: 'Diana Smith',
+      email: 'diana@example.com',
+      rsvp_status: 'declined',
+      guest_type: 'coworker',
+  ]
+  const defaultProps = {
+    coupleId: 'test-couple-id',
+    initialParams: {},
+    clientName: 'John & Jane Smith',
+    guests: mockGuests,
+    loading: false,
+    onGuestAdd: vi.fn(),
+    onGuestUpdate: vi.fn(),
+    onGuestDelete: vi.fn(),
+    onBulkOperation: vi.fn(),
+  }
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+  describe('Rendering', () => {
+    it('renders guest list with all required elements', () => {
+      render(<GuestListManager {...defaultProps} />)
+      // Check for main interface elements
+      expect(screen.getByText('Guest List for John & Jane Smith')).toBeInTheDocument()
+      expect(screen.getByRole('searchbox', { name: /search guests/i })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /add guest/i })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /import guests/i })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /export guests/i })).toBeInTheDocument()
+    })
+    it('displays wedding guest information correctly', () => {
+      // Verify guest data is displayed
+      expect(screen.getByText('Alice Johnson')).toBeInTheDocument()
+      expect(screen.getByText('Charlie Wilson')).toBeInTheDocument()
+      expect(screen.getByText('Diana Smith')).toBeInTheDocument()
+      expect(screen.getByText('alice@example.com')).toBeInTheDocument()
+      expect(screen.getByText('+1234567890')).toBeInTheDocument()
+    it('shows loading state correctly', () => {
+      render(<GuestListManager {...defaultProps} loading={true} />)
+      expect(screen.getByTestId('guest-list-loading')).toBeInTheDocument()
+    it('displays empty state when no guests', () => {
+      render(<GuestListManager {...defaultProps} guests={[]} />)
+      expect(screen.getByText(/no guests added yet/i)).toBeInTheDocument()
+      expect(screen.getByText(/add your first wedding guest/i)).toBeInTheDocument()
+    it('displays guest statistics', () => {
+      expect(screen.getByText('Total Guests: 4')).toBeInTheDocument() // 3 guests + 1 plus-one
+      expect(screen.getByText('Confirmed: 1')).toBeInTheDocument()
+      expect(screen.getByText('Pending: 1')).toBeInTheDocument()
+      expect(screen.getByText('Declined: 1')).toBeInTheDocument()
+  describe('Search Functionality', () => {
+    it('searches guests by name', async () => {
+      const searchInput = screen.getByRole('searchbox', { name: /search guests/i })
+      fireEvent.change(searchInput, { target: { value: 'Alice' } })
+      await waitFor(() => {
+        expect(screen.getByText('Alice Johnson')).toBeInTheDocument()
+        expect(screen.queryByText('Charlie Wilson')).not.toBeInTheDocument()
+      })
+    it('searches guests by email', async () => {
+      fireEvent.change(searchInput, { target: { value: 'charlie@example.com' } })
+        expect(screen.getByText('Charlie Wilson')).toBeInTheDocument()
+        expect(screen.queryByText('Alice Johnson')).not.toBeInTheDocument()
+    it('searches guests by dietary restrictions', async () => {
+      fireEvent.change(searchInput, { target: { value: 'vegetarian' } })
+    it('clears search results', async () => {
+      
+      const clearButton = screen.getByRole('button', { name: /clear search/i })
+      fireEvent.click(clearButton)
+        expect(searchInput).toHaveValue('')
+  describe('Filtering', () => {
+    it('filters guests by RSVP status', async () => {
+      const statusFilter = screen.getByRole('combobox', { name: /filter by rsvp status/i })
+      fireEvent.change(statusFilter, { target: { value: 'confirmed' } })
+        expect(screen.queryByText('Diana Smith')).not.toBeInTheDocument()
+    it('filters guests by wedding side', async () => {
+      const sideFilter = screen.getByRole('combobox', { name: /filter by side/i })
+      fireEvent.change(sideFilter, { target: { value: 'bride' } })
+        expect(screen.getByText('Diana Smith')).toBeInTheDocument()
+    it('filters guests by guest type', async () => {
+      const typeFilter = screen.getByRole('combobox', { name: /filter by guest type/i })
+      fireEvent.change(typeFilter, { target: { value: 'family' } })
+    it('filters guests with dietary restrictions', async () => {
+      const dietaryFilter = screen.getByRole('checkbox', { name: /has dietary restrictions/i })
+      fireEvent.click(dietaryFilter)
+    it('filters guests with plus ones', async () => {
+      const plusOneFilter = screen.getByRole('checkbox', { name: /has plus one/i })
+      fireEvent.click(plusOneFilter)
+    it('shows active filter indicators', () => {
+      render(<GuestListManager {...defaultProps} activeFilters={{ rsvp_status: 'confirmed', side: 'bride' }} />)
+      expect(screen.getByText('RSVP: Confirmed')).toBeInTheDocument()
+      expect(screen.getByText('Side: Bride')).toBeInTheDocument()
+    it('clears all filters', async () => {
+      render(<GuestListManager {...defaultProps} activeFilters={{ rsvp_status: 'confirmed' }} />)
+      const clearFiltersButton = screen.getByRole('button', { name: /clear all filters/i })
+      fireEvent.click(clearFiltersButton)
+        expect(screen.queryByText('RSVP: Confirmed')).not.toBeInTheDocument()
+  describe('View Options', () => {
+    it('switches between table and card views', async () => {
+      const cardViewButton = screen.getByRole('button', { name: /card view/i })
+      fireEvent.click(cardViewButton)
+        expect(screen.getByTestId('guest-cards-container')).toBeInTheDocument()
+      const tableViewButton = screen.getByRole('button', { name: /table view/i })
+      fireEvent.click(tableViewButton)
+        expect(screen.getByTestId('guest-table-container')).toBeInTheDocument()
+    it('switches to household view for family grouping', async () => {
+      const householdViewButton = screen.getByRole('button', { name: /household view/i })
+      fireEvent.click(householdViewButton)
+        expect(screen.getByTestId('household-view-container')).toBeInTheDocument()
+        expect(screen.getByText('Johnson Household')).toBeInTheDocument()
+    it('shows seating chart view', async () => {
+      const seatingViewButton = screen.getByRole('button', { name: /seating chart/i })
+      fireEvent.click(seatingViewButton)
+        expect(screen.getByTestId('seating-chart-container')).toBeInTheDocument()
+  describe('Sorting', () => {
+    it('sorts guests alphabetically by name', async () => {
+      const sortButton = screen.getByRole('button', { name: /sort by name/i })
+      fireEvent.click(sortButton)
+        const guestElements = screen.getAllByTestId(/guest-item-/)
+        expect(guestElements[0]).toHaveTextContent('Alice Johnson')
+        expect(guestElements[1]).toHaveTextContent('Charlie Wilson')
+        expect(guestElements[2]).toHaveTextContent('Diana Smith')
+    it('sorts guests by RSVP status', async () => {
+      const sortButton = screen.getByRole('button', { name: /sort by rsvp status/i })
+        expect(guestElements[0]).toHaveTextContent('Alice Johnson') // confirmed
+        expect(guestElements[1]).toHaveTextContent('Charlie Wilson') // pending
+        expect(guestElements[2]).toHaveTextContent('Diana Smith') // declined
+    it('sorts guests by table assignment', async () => {
+      const sortButton = screen.getByRole('button', { name: /sort by table/i })
+        // Alice has table 5, others unassigned
+    it('toggles sort direction', async () => {
+      render(<GuestListManager {...defaultProps} sortBy={{ field: 'name', direction: 'asc' }} />)
+        expect(guestElements[0]).toHaveTextContent('Diana Smith')
+        expect(guestElements[2]).toHaveTextContent('Alice Johnson')
+  describe('Guest Management Actions', () => {
+    it('opens add guest modal', async () => {
+      const addGuestButton = screen.getByRole('button', { name: /add guest/i })
+      fireEvent.click(addGuestButton)
+        expect(screen.getByRole('dialog', { name: /add guest/i })).toBeInTheDocument()
+    it('opens edit guest modal', async () => {
+      const editButton = screen.getAllByRole('button', { name: /edit guest/i })[0]
+      fireEvent.click(editButton)
+        expect(screen.getByRole('dialog', { name: /edit guest/i })).toBeInTheDocument()
+        expect(screen.getByDisplayValue('Alice Johnson')).toBeInTheDocument()
+    it('deletes guest with confirmation', async () => {
+      window.confirm = vi.fn(() => true)
+      const onGuestDelete = vi.fn()
+      render(<GuestListManager {...defaultProps} onGuestDelete={onGuestDelete} />)
+      const deleteButton = screen.getAllByRole('button', { name: /delete guest/i })[0]
+      fireEvent.click(deleteButton)
+        expect(window.confirm).toHaveBeenCalledWith(
+          'Are you sure you want to delete Alice Johnson from the guest list?'
+        )
+        expect(onGuestDelete).toHaveBeenCalledWith('guest-1')
+    it('sends RSVP reminder', async () => {
+      const reminderButton = screen.getAllByRole('button', { name: /send rsvp reminder/i })[0]
+      fireEvent.click(reminderButton)
+        expect(screen.getByText(/rsvp reminder sent to alice@example\.com/i)).toBeInTheDocument()
+  describe('Bulk Operations', () => {
+    it('selects multiple guests', async () => {
+      const checkboxes = screen.getAllByRole('checkbox', { name: /select guest/i })
+      fireEvent.click(checkboxes[0])
+      fireEvent.click(checkboxes[1])
+        expect(screen.getByText('2 guests selected')).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /bulk actions/i })).toBeInTheDocument()
+    it('selects all guests', async () => {
+      const selectAllCheckbox = screen.getByRole('checkbox', { name: /select all guests/i })
+      fireEvent.click(selectAllCheckbox)
+        expect(screen.getByText('3 guests selected')).toBeInTheDocument()
+    it('performs bulk RSVP reminder', async () => {
+      render(<GuestListManager {...defaultProps} selectedGuests={['guest-1', 'guest-2']} />)
+      const bulkActionsButton = screen.getByRole('button', { name: /bulk actions/i })
+      fireEvent.click(bulkActionsButton)
+      const reminderAction = screen.getByText('Send RSVP Reminders')
+      fireEvent.click(reminderAction)
+        expect(screen.getByText(/rsvp reminders sent to 2 guests/i)).toBeInTheDocument()
+    it('performs bulk table assignment', async () => {
+      render(<GuestListManager {...defaultProps} selectedGuests={['guest-2', 'guest-3']} />)
+      const tableAssignAction = screen.getByText('Assign to Table')
+      fireEvent.click(tableAssignAction)
+        expect(screen.getByRole('dialog', { name: /assign table/i })).toBeInTheDocument()
+      const tableInput = screen.getByLabelText(/table number/i)
+      fireEvent.change(tableInput, { target: { value: '8' } })
+      const assignButton = screen.getByRole('button', { name: /assign table/i })
+      fireEvent.click(assignButton)
+        expect(screen.getByText(/2 guests assigned to table 8/i)).toBeInTheDocument()
+    it('performs bulk export', async () => {
+      render(<GuestListManager {...defaultProps} selectedGuests={['guest-1', 'guest-2', 'guest-3']} />)
+      const exportAction = screen.getByText('Export Selected')
+      fireEvent.click(exportAction)
+        expect(screen.getByRole('dialog', { name: /export guests/i })).toBeInTheDocument()
+  describe('Import/Export', () => {
+    it('opens import wizard', async () => {
+      const importButton = screen.getByRole('button', { name: /import guests/i })
+      fireEvent.click(importButton)
+        expect(screen.getByRole('dialog', { name: /import guests/i })).toBeInTheDocument()
+        expect(screen.getByText(/upload csv file/i)).toBeInTheDocument()
+    it('opens export modal', async () => {
+      const exportButton = screen.getByRole('button', { name: /export guests/i })
+      fireEvent.click(exportButton)
+        expect(screen.getByRole('dialog', { name: /export guest list/i })).toBeInTheDocument()
+        expect(screen.getByText(/csv format/i)).toBeInTheDocument()
+        expect(screen.getByText(/pdf format/i)).toBeInTheDocument()
+    it('validates import data', async () => {
+      // Simulate file upload with invalid data
+      const fileInput = screen.getByLabelText(/upload file/i)
+      const invalidFile = new File(['invalid,data,format'], 'guests.csv', { type: 'text/csv' })
+      fireEvent.change(fileInput, { target: { files: [invalidFile] } })
+        expect(screen.getByText(/invalid file format/i)).toBeInTheDocument()
+        expect(screen.getByText(/required columns: name, email/i)).toBeInTheDocument()
+  describe('RSVP Management', () => {
+    it('updates RSVP status', async () => {
+      const onGuestUpdate = vi.fn()
+      render(<GuestListManager {...defaultProps} onGuestUpdate={onGuestUpdate} />)
+      const rsvpSelect = screen.getAllByRole('combobox', { name: /rsvp status/i })[0]
+      fireEvent.change(rsvpSelect, { target: { value: 'declined' } })
+        expect(onGuestUpdate).toHaveBeenCalledWith('guest-1', { rsvp_status: 'declined' })
+    it('shows RSVP deadline warnings', () => {
+      const guestWithDeadline = generateWeddingTestData.guest({
+        rsvp_deadline: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(), // Yesterday
+        rsvp_status: 'pending',
+      render(<GuestListManager {...defaultProps} guests={[guestWithDeadline]} />)
+      expect(screen.getByText(/rsvp overdue/i)).toBeInTheDocument()
+      expect(screen.getByTestId('overdue-rsvp-icon')).toBeInTheDocument()
+    it('tracks RSVP response rates', () => {
+      expect(screen.getByText('Response Rate: 67%')).toBeInTheDocument() // 2 responses out of 3 guests
+  describe('Accessibility', () => {
+    it('has proper ARIA labels for wedding guest context', () => {
+      expect(screen.getByRole('main', { name: /wedding guest list/i })).toBeInTheDocument()
+      expect(screen.getByRole('search', { name: /search wedding guests/i })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /add new wedding guest/i })).toBeInTheDocument()
+    it('supports keyboard navigation', async () => {
+      const firstGuest = screen.getByText('Alice Johnson')
+      firstGuest.focus()
+      fireEvent.keyDown(firstGuest, { key: 'ArrowDown' })
+        expect(screen.getByText('Charlie Wilson')).toHaveFocus()
+      fireEvent.keyDown(document.activeElement!, { key: ' ' })
+        expect(screen.getByText('1 guest selected')).toBeInTheDocument()
+    it('announces RSVP status changes', async () => {
+      const rsvpSelect = screen.getAllByRole('combobox', { name: /rsvp status/i })[1]
+      fireEvent.change(rsvpSelect, { target: { value: 'confirmed' } })
+        expect(screen.getByRole('status')).toHaveTextContent(
+          'Charlie Wilson RSVP status updated to confirmed'
+  describe('Performance', () => {
+    it('virtualizes large guest lists', () => {
+      const largeGuestList = Array.from({ length: 1000 }, (_, index) => 
+        generateWeddingTestData.guest({
+          id: `guest-${index}`,
+          name: `Guest ${index}`,
+        })
+      )
+      render(<GuestListManager {...defaultProps} guests={largeGuestList} />)
+      expect(screen.getByTestId('virtual-scroll-container')).toBeInTheDocument()
+      expect(screen.queryAllByTestId(/guest-item-/).length).toBeLessThan(50) // Only render visible items
+    it('debounces search input', async () => {
+      const mockSearch = vi.fn()
+      render(<GuestListManager {...defaultProps} onSearch={mockSearch} />)
+      fireEvent.change(searchInput, { target: { value: 'A' } })
+      fireEvent.change(searchInput, { target: { value: 'Al' } })
+      fireEvent.change(searchInput, { target: { value: 'Ali' } })
+      fireEvent.change(searchInput, { target: { value: 'Alic' } })
+      // Wait for debounce
+        expect(mockSearch).toHaveBeenCalledTimes(1)
+        expect(mockSearch).toHaveBeenCalledWith('Alice')
+      }, { timeout: 1000 })
+  describe('Data Validation', () => {
+    it('validates guest data structure', () => {
+      mockGuests.forEach(guest => {
+        expectWeddingData.toBeValidGuest(guest)
+    it('handles duplicate guest detection', async () => {
+      const duplicateGuest = generateWeddingTestData.guest({
+        email: 'alice@example.com', // Same as existing guest
+      const onGuestAdd = vi.fn()
+      render(<GuestListManager {...defaultProps} onGuestAdd={onGuestAdd} />)
+      // Fill form with duplicate email
+      const emailInput = screen.getByLabelText(/email/i)
+      fireEvent.change(emailInput, { target: { value: 'alice@example.com' } })
+      const submitButton = screen.getByRole('button', { name: /add guest/i })
+      fireEvent.click(submitButton)
+        expect(screen.getByText(/guest with this email already exists/i)).toBeInTheDocument()
+        expect(onGuestAdd).not.toHaveBeenCalled()
+    it('validates required fields', async () => {
+        expect(screen.getByText(/name is required/i)).toBeInTheDocument()
+    it('validates email format', async () => {
+      const nameInput = screen.getByLabelText(/name/i)
+      fireEvent.change(nameInput, { target: { value: 'Test Guest' } })
+      fireEvent.change(emailInput, { target: { value: 'invalid-email' } })
+        expect(screen.getByText(/invalid email format/i)).toBeInTheDocument()
+  describe('Error Handling', () => {
+    it('handles API errors gracefully', async () => {
+      const onGuestAdd = vi.fn().mockRejectedValue(new Error('API Error'))
+        expect(screen.getByText(/failed to add guest/i)).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /try again/i })).toBeInTheDocument()
+    it('shows error boundary for component crashes', () => {
+      const ErrorThrowingComponent = () => {
+        throw new Error('Test error')
+      }
+      render(
+        <GuestListManager 
+          {...defaultProps} 
+          renderGuest={() => <ErrorThrowingComponent />}
+        />
+      expect(screen.getByText(/something went wrong/i)).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /reload guest list/i })).toBeInTheDocument()
+})

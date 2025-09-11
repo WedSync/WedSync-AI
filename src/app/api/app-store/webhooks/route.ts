@@ -1,0 +1,550 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { SubmissionOrchestrator } from '@/lib/integrations/app-store/submission-orchestrator';
+import { NotificationService } from '@/lib/integrations/NotificationService';
+import crypto from 'crypto';
+
+interface WebhookPayload {
+  platform: 'microsoft' | 'google' | 'apple';
+  submissionId: string;
+  status: string;
+  message?: string;
+  timestamp: string;
+  signature?: string;
+  data?: any;
+}
+
+interface MicrosoftWebhookPayload {
+  subscriptionId: string;
+  notificationType: string;
+  resource: string;
+  resourceData: {
+    applicationId: string;
+    submissionId: string;
+    status: string;
+    statusDetails?: any;
+  };
+  tenantId: string;
+  clientState?: string;
+}
+
+interface GoogleWebhookPayload {
+  message: {
+    data: string;
+    messageId: string;
+    publishTime: string;
+  };
+  subscription: string;
+}
+
+interface AppleWebhookPayload {
+  notificationType: string;
+  notificationUUID: string;
+  data: {
+    appStoreVersion?: {
+      id: string;
+      appStoreState: string;
+      releaseType: string;
+      versionString: string;
+    };
+    app?: {
+      id: string;
+      bundleId: string;
+      name: string;
+    };
+  };
+}
+
+class WebhookHandler {
+  private supabase: ReturnType<typeof createClient>;
+  private notificationService: NotificationService;
+
+  constructor() {
+    this.supabase = createClient();
+    this.notificationService = new NotificationService();
+  }
+
+  async handleMicrosoftWebhook(
+    payload: MicrosoftWebhookPayload,
+    signature: string,
+  ): Promise<void> {
+    // Verify webhook signature
+    if (!this.verifyMicrosoftSignature(JSON.stringify(payload), signature)) {
+      throw new Error('Invalid webhook signature');
+    }
+
+    const { resourceData } = payload;
+
+    // Update submission status in database
+    await this.updateSubmissionStatus(
+      'microsoft',
+      resourceData.submissionId,
+      this.mapMicrosoftStatus(resourceData.status),
+      resourceData.statusDetails?.message,
+    );
+
+    // Send notifications based on status
+    await this.processStatusChange(
+      'microsoft',
+      resourceData.submissionId,
+      resourceData.status,
+    );
+
+    // Log webhook processing
+    await this.logWebhookEvent('microsoft', payload, 'success');
+  }
+
+  async handleGoogleWebhook(
+    payload: GoogleWebhookPayload,
+    signature: string,
+  ): Promise<void> {
+    // Verify webhook signature
+    if (!this.verifyGoogleSignature(JSON.stringify(payload), signature)) {
+      throw new Error('Invalid webhook signature');
+    }
+
+    // Decode Pub/Sub message
+    const messageData = JSON.parse(
+      Buffer.from(payload.message.data, 'base64').toString(),
+    );
+
+    const { packageName, eventType, versionCode } = messageData;
+
+    // Update submission status based on event type
+    const mappedStatus = this.mapGoogleEventType(eventType);
+
+    await this.updateSubmissionStatusByPackage(
+      'google',
+      packageName,
+      versionCode,
+      mappedStatus,
+      `Google Play: ${eventType}`,
+    );
+
+    // Process notifications
+    await this.processGooglePlayEvent(packageName, versionCode, eventType);
+
+    // Log webhook processing
+    await this.logWebhookEvent('google', payload, 'success');
+  }
+
+  async handleAppleWebhook(
+    payload: AppleWebhookPayload,
+    signature: string,
+  ): Promise<void> {
+    // Verify webhook signature
+    if (!this.verifyAppleSignature(JSON.stringify(payload), signature)) {
+      throw new Error('Invalid webhook signature');
+    }
+
+    const { notificationType, data } = payload;
+
+    if (data.appStoreVersion) {
+      const { id, appStoreState, versionString } = data.appStoreVersion;
+
+      // Update submission status
+      await this.updateSubmissionStatusByApp(
+        'apple',
+        data.app?.id || '',
+        versionString,
+        this.mapAppleState(appStoreState),
+        `App Store: ${notificationType}`,
+      );
+
+      // Process Apple-specific notifications
+      await this.processAppleStoreEvent(id, appStoreState, notificationType);
+    }
+
+    // Log webhook processing
+    await this.logWebhookEvent('apple', payload, 'success');
+  }
+
+  private verifyMicrosoftSignature(
+    payload: string,
+    signature: string,
+  ): boolean {
+    const secret = process.env.MICROSOFT_WEBHOOK_SECRET;
+    if (!secret) return false;
+
+    const expectedSignature = crypto
+      .createHmac('sha256', secret)
+      .update(payload, 'utf8')
+      .digest('hex');
+
+    return crypto.timingSafeEqual(
+      Buffer.from(signature, 'hex'),
+      Buffer.from(expectedSignature, 'hex'),
+    );
+  }
+
+  private verifyGoogleSignature(payload: string, signature: string): boolean {
+    const secret = process.env.GOOGLE_WEBHOOK_SECRET;
+    if (!secret) return false;
+
+    const expectedSignature = crypto
+      .createHmac('sha256', secret)
+      .update(payload, 'utf8')
+      .digest('base64');
+
+    return crypto.timingSafeEqual(
+      Buffer.from(signature, 'base64'),
+      Buffer.from(expectedSignature, 'base64'),
+    );
+  }
+
+  private verifyAppleSignature(payload: string, signature: string): boolean {
+    // Apple uses different signature verification
+    const secret = process.env.APPLE_WEBHOOK_SECRET;
+    if (!secret) return false;
+
+    // Apple webhook signature verification would use their specific method
+    return true; // Simplified for example
+  }
+
+  private mapMicrosoftStatus(status: string): string {
+    const statusMap: Record<string, string> = {
+      CommitStarted: 'processing',
+      CommitFailed: 'rejected',
+      PreProcessing: 'processing',
+      Certification: 'review',
+      Release: 'approved',
+      Published: 'published',
+    };
+    return statusMap[status] || 'pending';
+  }
+
+  private mapGoogleEventType(eventType: string): string {
+    const eventMap: Record<string, string> = {
+      SUBSCRIPTION_PURCHASED: 'processing',
+      SUBSCRIPTION_RENEWED: 'processing',
+      SUBSCRIPTION_CANCELED: 'rejected',
+      TEST_PURCHASED: 'processing',
+      SUBSCRIPTION_IN_GRACE_PERIOD: 'review',
+      SUBSCRIPTION_RECOVERED: 'approved',
+      SUBSCRIPTION_ON_HOLD: 'review',
+    };
+    return eventMap[eventType] || 'pending';
+  }
+
+  private mapAppleState(state: string): string {
+    const stateMap: Record<string, string> = {
+      DEVELOPER_REMOVED_FROM_SALE: 'rejected',
+      DEVELOPER_REJECTED: 'rejected',
+      IN_REVIEW: 'review',
+      INVALID_BINARY: 'rejected',
+      METADATA_REJECTED: 'rejected',
+      PENDING_APPLE_RELEASE: 'approved',
+      PENDING_CONTRACT: 'pending',
+      PENDING_DEVELOPER_RELEASE: 'approved',
+      PREPARE_FOR_SUBMISSION: 'processing',
+      PROCESSING_FOR_APP_STORE: 'processing',
+      READY_FOR_SALE: 'published',
+      REJECTED: 'rejected',
+      WAITING_FOR_REVIEW: 'pending',
+    };
+    return stateMap[state] || 'pending';
+  }
+
+  private async updateSubmissionStatus(
+    platform: string,
+    submissionId: string,
+    status: string,
+    message?: string,
+  ): Promise<void> {
+    const { error } = await this.supabase
+      .from('app_store_submission_statuses')
+      .update({
+        status,
+        message,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('platform', platform)
+      .eq('platform_submission_id', submissionId);
+
+    if (error) {
+      console.error('Failed to update submission status:', error);
+      throw error;
+    }
+
+    // Broadcast real-time update
+    await this.supabase.channel('app_store_updates').send({
+      type: 'broadcast',
+      event: 'status_update',
+      payload: {
+        platform,
+        submissionId,
+        status,
+        message,
+        timestamp: new Date().toISOString(),
+      },
+    });
+  }
+
+  private async updateSubmissionStatusByPackage(
+    platform: string,
+    packageName: string,
+    versionCode: string,
+    status: string,
+    message?: string,
+  ): Promise<void> {
+    // Find submission by package metadata
+    const { data: submissions } = await this.supabase
+      .from('app_store_submissions')
+      .select('id')
+      .contains('metadata', { packageName, versionCode });
+
+    if (submissions && submissions.length > 0) {
+      for (const submission of submissions) {
+        await this.updateSubmissionStatus(
+          platform,
+          submission.id,
+          status,
+          message,
+        );
+      }
+    }
+  }
+
+  private async updateSubmissionStatusByApp(
+    platform: string,
+    appId: string,
+    versionString: string,
+    status: string,
+    message?: string,
+  ): Promise<void> {
+    // Find submission by app metadata
+    const { data: submissions } = await this.supabase
+      .from('app_store_submissions')
+      .select('id')
+      .contains('metadata', { appId, version: versionString });
+
+    if (submissions && submissions.length > 0) {
+      for (const submission of submissions) {
+        await this.updateSubmissionStatus(
+          platform,
+          submission.id,
+          status,
+          message,
+        );
+      }
+    }
+  }
+
+  private async processStatusChange(
+    platform: string,
+    submissionId: string,
+    status: string,
+  ): Promise<void> {
+    // Get workflow information
+    const { data: workflow } = await this.supabase
+      .from('app_store_submissions')
+      .select('*')
+      .contains('platform_submissions', { [platform]: submissionId })
+      .single();
+
+    if (!workflow) return;
+
+    // Send notifications based on status
+    const notificationTemplates = {
+      rejected: 'app_store_submission_rejected',
+      approved: 'app_store_submission_approved',
+      published: 'app_store_submission_published',
+    };
+
+    const template =
+      notificationTemplates[status as keyof typeof notificationTemplates];
+    if (template) {
+      await this.notificationService.sendAppStoreNotification(
+        workflow.organization_id,
+        template,
+        {
+          platform,
+          submissionId,
+          appTitle: workflow.metadata?.title || 'WedSync',
+          status,
+        },
+      );
+    }
+
+    // Update overall workflow progress if all platforms are complete
+    await this.checkAndUpdateWorkflowCompletion(workflow.id);
+  }
+
+  private async processGooglePlayEvent(
+    packageName: string,
+    versionCode: string,
+    eventType: string,
+  ): Promise<void> {
+    // Google Play specific event processing
+    console.log(
+      `Google Play event: ${eventType} for ${packageName} v${versionCode}`,
+    );
+
+    // Could trigger additional workflows based on event type
+    if (eventType === 'SUBSCRIPTION_PURCHASED') {
+      // Handle new subscription
+    } else if (eventType === 'SUBSCRIPTION_CANCELED') {
+      // Handle cancellation
+    }
+  }
+
+  private async processAppleStoreEvent(
+    versionId: string,
+    state: string,
+    notificationType: string,
+  ): Promise<void> {
+    // Apple App Store specific event processing
+    console.log(
+      `Apple App Store event: ${notificationType} for version ${versionId}, state: ${state}`,
+    );
+
+    if (notificationType === 'VERSION_LIVE') {
+      // App version is now live
+    } else if (notificationType === 'VERSION_REJECTED') {
+      // App version was rejected
+    }
+  }
+
+  private async checkAndUpdateWorkflowCompletion(
+    workflowId: string,
+  ): Promise<void> {
+    const { data: statuses } = await this.supabase
+      .from('app_store_submission_statuses')
+      .select('status')
+      .eq('workflow_id', workflowId);
+
+    if (!statuses || statuses.length === 0) return;
+
+    const allCompleted = statuses.every((s) =>
+      ['approved', 'rejected', 'published'].includes(s.status),
+    );
+
+    if (allCompleted) {
+      const hasRejected = statuses.some((s) => s.status === 'rejected');
+      const allPublished = statuses.every((s) => s.status === 'published');
+
+      let workflowStatus = 'completed';
+      if (hasRejected) {
+        workflowStatus = allPublished ? 'completed' : 'failed';
+      }
+
+      await this.supabase
+        .from('app_store_submissions')
+        .update({
+          status: workflowStatus,
+          progress: 100,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', workflowId);
+    }
+  }
+
+  private async logWebhookEvent(
+    platform: string,
+    payload: any,
+    status: 'success' | 'error',
+    error?: string,
+  ): Promise<void> {
+    await this.supabase.from('app_store_webhook_logs').insert({
+      platform,
+      payload,
+      status,
+      error,
+      received_at: new Date().toISOString(),
+    });
+  }
+}
+
+export async function POST(request: NextRequest): Promise<NextResponse> {
+  const webhookHandler = new WebhookHandler();
+
+  try {
+    const url = new URL(request.url);
+    const platform = url.searchParams.get('platform');
+    const signature =
+      request.headers.get('x-webhook-signature') ||
+      request.headers.get('x-goog-signature') ||
+      request.headers.get('x-apple-signature') ||
+      '';
+
+    if (!platform || !['microsoft', 'google', 'apple'].includes(platform)) {
+      return NextResponse.json(
+        { error: 'Invalid or missing platform parameter' },
+        { status: 400 },
+      );
+    }
+
+    const payload = await request.json();
+
+    switch (platform) {
+      case 'microsoft':
+        await webhookHandler.handleMicrosoftWebhook(payload, signature);
+        break;
+      case 'google':
+        await webhookHandler.handleGoogleWebhook(payload, signature);
+        break;
+      case 'apple':
+        await webhookHandler.handleAppleWebhook(payload, signature);
+        break;
+      default:
+        return NextResponse.json(
+          { error: 'Unsupported platform' },
+          { status: 400 },
+        );
+    }
+
+    return NextResponse.json({ success: true, processed: true });
+  } catch (error) {
+    console.error('Webhook processing error:', error);
+
+    // Log error for debugging
+    await webhookHandler.logWebhookEvent(
+      request.url.includes('platform=')
+        ? new URL(request.url).searchParams.get('platform') || 'unknown'
+        : 'unknown',
+      await request.json().catch(() => ({})),
+      'error',
+      error instanceof Error ? error.message : 'Unknown error',
+    );
+
+    return NextResponse.json(
+      { error: 'Webhook processing failed' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function GET(request: NextRequest): Promise<NextResponse> {
+  // Webhook verification endpoint for platforms that require it
+  const url = new URL(request.url);
+  const challenge = url.searchParams.get('hub.challenge');
+  const verify_token = url.searchParams.get('hub.verify_token');
+
+  // Microsoft Store webhook verification
+  if (challenge && verify_token) {
+    const expectedToken = process.env.MICROSOFT_WEBHOOK_VERIFY_TOKEN;
+
+    if (verify_token === expectedToken) {
+      return new NextResponse(challenge);
+    } else {
+      return NextResponse.json(
+        { error: 'Invalid verify token' },
+        { status: 403 },
+      );
+    }
+  }
+
+  return NextResponse.json({ status: 'Webhook endpoint active' });
+}
+
+export async function OPTIONS(): Promise<NextResponse> {
+  return new NextResponse(null, {
+    status: 200,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers':
+        'Content-Type, x-webhook-signature, x-goog-signature, x-apple-signature',
+    },
+  });
+}

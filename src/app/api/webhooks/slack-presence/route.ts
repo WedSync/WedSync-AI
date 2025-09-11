@@ -1,0 +1,416 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
+import { createHmac, timingSafeEqual } from 'crypto';
+import { withSecureValidation } from '@/lib/validation/middleware';
+import { communicationBridge } from '@/lib/integrations/presence/communication-bridge';
+import {
+  logIntegrationActivity,
+  logIntegrationError,
+} from '@/lib/integrations/audit-logger';
+import { rateLimit } from '@/lib/security/rate-limiting';
+
+// Slack webhook validation schema
+const slackWebhookSchema = z.object({
+  token: z.string(),
+  team_id: z.string().optional(),
+  api_app_id: z.string().optional(),
+  event: z
+    .object({
+      type: z.string(),
+      user: z.string().optional(),
+      presence: z.string().optional(),
+      event_ts: z.string(),
+    })
+    .optional(),
+  type: z.string(),
+  event_id: z.string().optional(),
+  event_time: z.number().optional(),
+  challenge: z.string().optional(), // For URL verification
+  authed_users: z.array(z.string()).optional(),
+});
+
+// Teams webhook validation schema
+const teamsWebhookSchema = z.object({
+  subscriptionId: z.string(),
+  changeType: z.string(),
+  resource: z.string(),
+  resourceData: z.object({
+    id: z.string(),
+    presence: z
+      .object({
+        availability: z.string(),
+        activity: z.string(),
+      })
+      .optional(),
+  }),
+  clientState: z.string().optional(),
+  subscriptionExpirationDateTime: z.string(),
+});
+
+// Rate limiting: 200 presence updates per hour per user
+const presenceRateLimit = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 200,
+  keyGenerator: (req: NextRequest) => {
+    const body = req.body;
+    return body?.team_id || body?.user || req.ip || 'anonymous';
+  },
+  message: 'Too many presence webhook requests, please try again later',
+});
+
+/**
+ * POST /api/webhooks/slack-presence
+ * Handle Slack presence webhooks and Events API
+ */
+export const POST = withSecureValidation(
+  slackWebhookSchema,
+  async (
+    request: NextRequest,
+    validatedData: z.infer<typeof slackWebhookSchema>,
+  ) => {
+    try {
+      // Apply rate limiting
+      const rateLimitResult = await presenceRateLimit(request);
+      if (rateLimitResult) {
+        return rateLimitResult;
+      }
+
+      // Handle URL verification challenge (Slack Events API setup)
+      if (
+        validatedData.type === 'url_verification' &&
+        validatedData.challenge
+      ) {
+        console.log('Slack webhook URL verification requested');
+
+        return NextResponse.json(
+          {
+            challenge: validatedData.challenge,
+          },
+          { status: 200 },
+        );
+      }
+
+      // Validate Slack webhook signature
+      const isValidSignature = await validateSlackWebhookSignature(request);
+      if (!isValidSignature) {
+        await logIntegrationError(
+          'unknown',
+          'invalid_slack_webhook_signature',
+          new Error('Slack webhook signature verification failed'),
+        );
+
+        return NextResponse.json(
+          { error: 'Invalid webhook signature' },
+          { status: 403 },
+        );
+      }
+
+      // Handle event callback
+      if (validatedData.type === 'event_callback' && validatedData.event) {
+        const event = validatedData.event;
+
+        // Handle presence change events
+        if (event.type === 'presence_change' && event.user && event.presence) {
+          const slackStatusWebhook = {
+            token: validatedData.token,
+            teamId: validatedData.team_id || '',
+            apiAppId: validatedData.api_app_id || '',
+            event: {
+              type: event.type,
+              user: event.user,
+              presence: event.presence,
+              eventTs: event.event_ts,
+            },
+            type: validatedData.type,
+            eventId: validatedData.event_id || '',
+            eventTime: validatedData.event_time || 0,
+          };
+
+          // Process presence change through communication bridge
+          await communicationBridge.handleSlackStatusChange(slackStatusWebhook);
+
+          await logIntegrationActivity(
+            'unknown',
+            'slack_presence_webhook_processed',
+            {
+              userId: event.user,
+              presence: event.presence,
+              teamId: validatedData.team_id,
+              eventType: event.type,
+            },
+          );
+        }
+
+        return NextResponse.json({ ok: true }, { status: 200 });
+      }
+
+      // Handle app mentions, direct messages, etc.
+      if (
+        validatedData.event?.type === 'app_mention' ||
+        validatedData.event?.type === 'message'
+      ) {
+        // Could handle Slack app interactions here
+        console.log(
+          'Slack app interaction received:',
+          validatedData.event.type,
+        );
+
+        return NextResponse.json({ ok: true }, { status: 200 });
+      }
+
+      // Default response for unhandled event types
+      console.log('Unhandled Slack webhook event type:', validatedData.type);
+
+      return NextResponse.json(
+        {
+          ok: true,
+          message: 'Event received but not processed',
+        },
+        { status: 200 },
+      );
+    } catch (error) {
+      console.error('Slack presence webhook processing failed:', error);
+
+      await logIntegrationError(
+        'unknown',
+        'slack_webhook_processing_failed',
+        error,
+      );
+
+      return NextResponse.json(
+        {
+          error: 'Webhook processing failed',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        },
+        { status: 500 },
+      );
+    }
+  },
+);
+
+/**
+ * POST /api/webhooks/teams-presence
+ * Handle Microsoft Teams presence webhooks via Microsoft Graph
+ */
+export async function TEAMS_POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const validatedData = teamsWebhookSchema.parse(body);
+
+    // Apply rate limiting
+    const rateLimitResult = await presenceRateLimit(request);
+    if (rateLimitResult) {
+      return rateLimitResult;
+    }
+
+    // Validate Teams webhook
+    const isValidWebhook = await validateTeamsWebhook(request, validatedData);
+    if (!isValidWebhook) {
+      await logIntegrationError(
+        'unknown',
+        'invalid_teams_webhook',
+        new Error('Teams webhook validation failed'),
+      );
+
+      return NextResponse.json({ error: 'Invalid webhook' }, { status: 403 });
+    }
+
+    // Process Teams presence webhook
+    const teamsWebhook = {
+      subscriptionId: validatedData.subscriptionId,
+      changeType: validatedData.changeType,
+      resource: validatedData.resource,
+      resourceData: validatedData.resourceData,
+      subscriptionExpirationDateTime:
+        validatedData.subscriptionExpirationDateTime,
+      clientState: validatedData.clientState,
+    };
+
+    await communicationBridge.handleTeamsPresenceWebhook(teamsWebhook);
+
+    await logIntegrationActivity(
+      'unknown',
+      'teams_presence_webhook_processed',
+      {
+        subscriptionId: validatedData.subscriptionId,
+        changeType: validatedData.changeType,
+        presence: validatedData.resourceData.presence,
+      },
+    );
+
+    return NextResponse.json({ success: true }, { status: 200 });
+  } catch (error) {
+    console.error('Teams presence webhook processing failed:', error);
+
+    await logIntegrationError(
+      'unknown',
+      'teams_webhook_processing_failed',
+      error,
+    );
+
+    return NextResponse.json(
+      {
+        error: 'Webhook processing failed',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * GET /api/webhooks/slack-presence
+ * Handle Slack webhook verification and health checks
+ */
+export async function GET(request: NextRequest) {
+  try {
+    const searchParams = request.nextUrl.searchParams;
+    const challenge = searchParams.get('challenge');
+
+    // Handle challenge verification
+    if (challenge) {
+      console.log('Slack webhook challenge verification requested');
+
+      return NextResponse.json(
+        {
+          challenge: challenge,
+        },
+        { status: 200 },
+      );
+    }
+
+    // Health check endpoint
+    return NextResponse.json(
+      {
+        service: 'Slack Presence Webhook',
+        status: 'active',
+        timestamp: new Date().toISOString(),
+        endpoints: {
+          slack: '/api/webhooks/slack-presence',
+          teams: '/api/webhooks/teams-presence',
+        },
+      },
+      { status: 200 },
+    );
+  } catch (error) {
+    console.error('Slack webhook GET request failed:', error);
+
+    return NextResponse.json(
+      {
+        error: 'Webhook verification failed',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * OPTIONS /api/webhooks/slack-presence
+ * Handle CORS preflight requests
+ */
+export async function OPTIONS(request: NextRequest) {
+  return NextResponse.json(
+    {},
+    {
+      status: 200,
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Headers':
+          'Content-Type, X-Slack-Signature, X-Slack-Request-Timestamp',
+        'Access-Control-Max-Age': '86400',
+      },
+    },
+  );
+}
+
+// Slack webhook signature validation
+async function validateSlackWebhookSignature(
+  request: NextRequest,
+): Promise<boolean> {
+  try {
+    const slackSignature = request.headers.get('x-slack-signature');
+    const slackTimestamp = request.headers.get('x-slack-request-timestamp');
+    const signingSecret = process.env.SLACK_SIGNING_SECRET;
+
+    if (!slackSignature || !slackTimestamp || !signingSecret) {
+      console.error('Missing Slack webhook signature components');
+      return false;
+    }
+
+    // Check timestamp to prevent replay attacks (within 5 minutes)
+    const currentTimestamp = Math.floor(Date.now() / 1000);
+    const requestTimestamp = parseInt(slackTimestamp);
+
+    if (Math.abs(currentTimestamp - requestTimestamp) > 300) {
+      console.error('Slack webhook timestamp too old');
+      return false;
+    }
+
+    // Get request body
+    const body = await request.text();
+
+    // Create signature
+    const baseString = `v0:${slackTimestamp}:${body}`;
+    const expectedSignature = `v0=${createHmac('sha256', signingSecret)
+      .update(baseString)
+      .digest('hex')}`;
+
+    // Compare signatures using timing-safe comparison
+    const sigBuffer = Buffer.from(slackSignature);
+    const expectedBuffer = Buffer.from(expectedSignature);
+
+    if (sigBuffer.length !== expectedBuffer.length) {
+      return false;
+    }
+
+    return timingSafeEqual(sigBuffer, expectedBuffer);
+  } catch (error) {
+    console.error('Slack signature validation failed:', error);
+    return false;
+  }
+}
+
+// Teams webhook validation
+async function validateTeamsWebhook(
+  request: NextRequest,
+  data: z.infer<typeof teamsWebhookSchema>,
+): Promise<boolean> {
+  try {
+    // Validate client state if provided
+    const expectedClientState = process.env.TEAMS_WEBHOOK_CLIENT_STATE;
+
+    if (expectedClientState && data.clientState !== expectedClientState) {
+      console.error('Teams webhook client state mismatch');
+      return false;
+    }
+
+    // Validate subscription ID exists
+    if (!data.subscriptionId) {
+      console.error('Missing Teams subscription ID');
+      return false;
+    }
+
+    // Validate resource format
+    if (!data.resource || !data.resource.startsWith('/')) {
+      console.error('Invalid Teams resource format');
+      return false;
+    }
+
+    // Check if subscription is not expired
+    const expirationTime = new Date(data.subscriptionExpirationDateTime);
+    if (expirationTime < new Date()) {
+      console.error('Teams subscription expired');
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    console.error('Teams webhook validation failed:', error);
+    return false;
+  }
+}
+
+// Export additional webhook handlers for different platforms
+export { TEAMS_POST as TeamsWebhookHandler };

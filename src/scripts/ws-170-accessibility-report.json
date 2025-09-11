@@ -1,0 +1,94 @@
+{
+  "timestamp": "2025-08-28T08:08:03.437Z",
+  "component": "ReferralWidget",
+  "accessibility": {
+    "score": 90,
+    "wcagLevel": "AA",
+    "results": [
+      {
+        "name": "Semantic HTML Structure",
+        "description": "Component uses proper HTML semantic elements",
+        "requirement": "WCAG 1.3.1 Info and Relationships",
+        "passed": false
+      },
+      {
+        "name": "Keyboard Navigation",
+        "description": "All interactive elements are keyboard accessible",
+        "requirement": "WCAG 2.1.1 Keyboard",
+        "passed": true
+      },
+      {
+        "name": "Color Contrast",
+        "description": "Text meets 4.5:1 contrast ratio for normal text",
+        "requirement": "WCAG 1.4.3 Contrast (Minimum)",
+        "passed": true
+      },
+      {
+        "name": "Focus Indicators",
+        "description": "Visible focus indicators are provided",
+        "requirement": "WCAG 2.4.7 Focus Visible",
+        "passed": true
+      },
+      {
+        "name": "ARIA Labels",
+        "description": "Interactive elements have accessible names",
+        "requirement": "WCAG 4.1.2 Name, Role, Value",
+        "passed": true
+      },
+      {
+        "name": "Touch Target Size",
+        "description": "Interactive elements meet 44x44px minimum size",
+        "requirement": "WCAG 2.5.5 Target Size",
+        "passed": true
+      },
+      {
+        "name": "Screen Reader Support",
+        "description": "Content is accessible to screen readers",
+        "requirement": "WCAG 1.3.1 Info and Relationships",
+        "passed": true
+      },
+      {
+        "name": "Error Handling Accessibility",
+        "description": "Error states are announced to assistive technology",
+        "requirement": "WCAG 3.3.1 Error Identification",
+        "passed": true
+      },
+      {
+        "name": "Loading States",
+        "description": "Loading states are announced to assistive technology",
+        "requirement": "WCAG 1.3.5 Identify Input Purpose",
+        "passed": true
+      },
+      {
+        "name": "Alternative Text",
+        "description": "Non-text content has alternatives",
+        "requirement": "WCAG 1.1.1 Non-text Content",
+        "passed": true
+      }
+    ]
+  },
+  "responsive": {
+    "score": 100,
+    "results": [
+      {
+        "viewport": "Mobile (375px)",
+        "description": "Component works on mobile devices",
+        "passed": true
+      },
+      {
+        "viewport": "Tablet (768px)",
+        "description": "Component adapts to tablet viewports",
+        "passed": true
+      },
+      {
+        "viewport": "Desktop (1920px)",
+        "description": "Component looks good on large screens",
+        "passed": true
+      }
+    ]
+  },
+  "overall": {
+    "score": 95,
+    "compliant": true
+  }
+}

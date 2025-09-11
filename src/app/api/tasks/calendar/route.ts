@@ -1,0 +1,548 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { CalendarIntegrationService } from '@/lib/services/calendar-integration-service';
+
+export async function POST(request: NextRequest) {
+  try {
+    const { action, data } = await request.json();
+    const calendarService = new CalendarIntegrationService();
+
+    switch (action) {
+      case 'create_event_from_task':
+        const { taskId, mapping_type = 'deadline' } = data;
+
+        if (!taskId) {
+          return NextResponse.json(
+            { error: 'Task ID is required' },
+            { status: 400 },
+          );
+        }
+
+        const event = await calendarService.createEventFromTask(
+          taskId,
+          mapping_type,
+        );
+        return NextResponse.json({
+          success: true,
+          event,
+        });
+
+      case 'bulk_create_events':
+        const { taskIds, mapping_type: bulkMappingType = 'deadline' } = data;
+
+        if (!taskIds || !Array.isArray(taskIds) || taskIds.length === 0) {
+          return NextResponse.json(
+            { error: 'Task IDs array is required' },
+            { status: 400 },
+          );
+        }
+
+        const bulkResults = await calendarService.bulkCreateEventsFromTasks(
+          taskIds,
+          bulkMappingType,
+        );
+        return NextResponse.json({
+          success: true,
+          results: bulkResults,
+        });
+
+      case 'update_event':
+        const { eventId, updates } = data;
+
+        if (!eventId) {
+          return NextResponse.json(
+            { error: 'Event ID is required' },
+            { status: 400 },
+          );
+        }
+
+        await calendarService.updateCalendarEvent(eventId, updates);
+        return NextResponse.json({
+          success: true,
+          message: 'Event updated successfully',
+        });
+
+      case 'delete_event':
+        const { eventId: deleteEventId } = data;
+
+        if (!deleteEventId) {
+          return NextResponse.json(
+            { error: 'Event ID is required' },
+            { status: 400 },
+          );
+        }
+
+        await calendarService.deleteCalendarEvent(deleteEventId);
+        return NextResponse.json({
+          success: true,
+          message: 'Event deleted successfully',
+        });
+
+      case 'sync_all_deadlines':
+        const { weddingId: syncWeddingId } = data;
+
+        if (!syncWeddingId) {
+          return NextResponse.json(
+            { error: 'Wedding ID is required' },
+            { status: 400 },
+          );
+        }
+
+        await calendarService.syncAllTaskDeadlines(syncWeddingId);
+        return NextResponse.json({
+          success: true,
+          message: 'All task deadlines synced to calendar',
+        });
+
+      case 'update_sync_settings':
+        const { userId, provider, settings } = data;
+
+        if (!userId || !provider) {
+          return NextResponse.json(
+            { error: 'User ID and provider are required' },
+            { status: 400 },
+          );
+        }
+
+        await calendarService.updateCalendarSyncSettings(
+          userId,
+          provider,
+          settings,
+        );
+        return NextResponse.json({
+          success: true,
+          message: 'Sync settings updated successfully',
+        });
+
+      case 'oauth_callback':
+        // Handle OAuth callback from external calendar providers
+        const {
+          provider: oauthProvider,
+          code,
+          state,
+          userId: oauthUserId,
+        } = data;
+
+        const oauthResult = await handleOAuthCallback(
+          oauthProvider,
+          code,
+          state,
+          oauthUserId,
+        );
+        return NextResponse.json(oauthResult);
+
+      default:
+        return NextResponse.json(
+          { error: `Unknown action: ${action}` },
+          { status: 400 },
+        );
+    }
+  } catch (error) {
+    console.error('Calendar API error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const action = searchParams.get('action');
+    const weddingId = searchParams.get('weddingId');
+    const userId = searchParams.get('userId');
+    const startDate = searchParams.get('startDate');
+    const endDate = searchParams.get('endDate');
+
+    const calendarService = new CalendarIntegrationService();
+
+    switch (action) {
+      case 'get_events':
+        if (!weddingId || !startDate || !endDate) {
+          return NextResponse.json(
+            { error: 'Wedding ID, start date, and end date are required' },
+            { status: 400 },
+          );
+        }
+
+        const events = await calendarService.getCalendarEvents(
+          weddingId,
+          new Date(startDate),
+          new Date(endDate),
+          userId || undefined,
+        );
+
+        return NextResponse.json({
+          success: true,
+          events,
+        });
+
+      case 'get_sync_settings':
+        if (!userId) {
+          return NextResponse.json(
+            { error: 'User ID is required' },
+            { status: 400 },
+          );
+        }
+
+        const syncSettings =
+          await calendarService.getCalendarSyncSettings(userId);
+        return NextResponse.json({
+          success: true,
+          sync_settings: syncSettings,
+        });
+
+      case 'get_oauth_url':
+        const provider = searchParams.get('provider');
+        const redirectUri = searchParams.get('redirectUri');
+
+        if (!provider || !redirectUri) {
+          return NextResponse.json(
+            { error: 'Provider and redirect URI are required' },
+            { status: 400 },
+          );
+        }
+
+        const oauthUrl = generateOAuthUrl(provider, redirectUri, userId);
+        return NextResponse.json({
+          success: true,
+          oauth_url: oauthUrl,
+        });
+
+      case 'calendar_health':
+        if (!weddingId) {
+          return NextResponse.json(
+            { error: 'Wedding ID is required' },
+            { status: 400 },
+          );
+        }
+
+        const healthStatus = await checkCalendarIntegrationHealth(weddingId);
+        return NextResponse.json({
+          success: true,
+          health: healthStatus,
+        });
+
+      default:
+        return NextResponse.json(
+          { error: `Unknown action: ${action}` },
+          { status: 400 },
+        );
+    }
+  } catch (error) {
+    console.error('Calendar GET API error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+// Handle OAuth callback from external calendar providers
+async function handleOAuthCallback(
+  provider: string,
+  code: string,
+  state: string,
+  userId: string,
+) {
+  try {
+    switch (provider) {
+      case 'google':
+        return await handleGoogleOAuthCallback(code, state, userId);
+      case 'outlook':
+        return await handleOutlookOAuthCallback(code, state, userId);
+      default:
+        throw new Error(`Unsupported provider: ${provider}`);
+    }
+  } catch (error) {
+    console.error('OAuth callback error:', error);
+    return {
+      success: false,
+      error: 'Failed to complete OAuth authorization',
+    };
+  }
+}
+
+// Handle Google OAuth callback
+async function handleGoogleOAuthCallback(
+  code: string,
+  state: string,
+  userId: string,
+) {
+  try {
+    // Exchange code for tokens
+    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        client_id: process.env.GOOGLE_OAUTH_CLIENT_ID!,
+        client_secret: process.env.GOOGLE_OAUTH_CLIENT_SECRET!,
+        redirect_uri: process.env.GOOGLE_OAUTH_REDIRECT_URI!,
+      }),
+    });
+
+    if (!tokenResponse.ok) {
+      throw new Error('Failed to exchange code for tokens');
+    }
+
+    const tokens = await tokenResponse.json();
+
+    // Get user's calendar list
+    const calendarsResponse = await fetch(
+      'https://www.googleapis.com/calendar/v3/users/me/calendarList',
+      {
+        headers: {
+          Authorization: `Bearer ${tokens.access_token}`,
+        },
+      },
+    );
+
+    const calendarsData = await calendarsResponse.json();
+    const primaryCalendar = calendarsData.items.find((cal: any) => cal.primary);
+
+    if (!primaryCalendar) {
+      throw new Error('No primary calendar found');
+    }
+
+    // Save sync settings
+    const calendarService = new CalendarIntegrationService();
+    await calendarService.updateCalendarSyncSettings(userId, 'google', {
+      provider_account_id: primaryCalendar.id,
+      calendar_id: primaryCalendar.id,
+      calendar_name: primaryCalendar.summary,
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token,
+      expires_at: new Date(Date.now() + tokens.expires_in * 1000),
+      sync_enabled: true,
+      sync_direction: 'bidirectional',
+    });
+
+    return {
+      success: true,
+      message: 'Google Calendar connected successfully',
+      calendar_name: primaryCalendar.summary,
+    };
+  } catch (error) {
+    console.error('Google OAuth callback error:', error);
+    throw error;
+  }
+}
+
+// Handle Outlook OAuth callback
+async function handleOutlookOAuthCallback(
+  code: string,
+  state: string,
+  userId: string,
+) {
+  try {
+    // Exchange code for tokens
+    const tokenResponse = await fetch(
+      'https://login.microsoftonline.com/common/oauth2/v2.0/token',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code,
+          client_id: process.env.MICROSOFT_OAUTH_CLIENT_ID!,
+          client_secret: process.env.MICROSOFT_OAUTH_CLIENT_SECRET!,
+          redirect_uri: process.env.MICROSOFT_OAUTH_REDIRECT_URI!,
+          scope: 'https://graph.microsoft.com/calendars.readwrite',
+        }),
+      },
+    );
+
+    if (!tokenResponse.ok) {
+      throw new Error('Failed to exchange code for tokens');
+    }
+
+    const tokens = await tokenResponse.json();
+
+    // Get user's calendars
+    const calendarsResponse = await fetch(
+      'https://graph.microsoft.com/v1.0/me/calendars',
+      {
+        headers: {
+          Authorization: `Bearer ${tokens.access_token}`,
+        },
+      },
+    );
+
+    const calendarsData = await calendarsResponse.json();
+    const primaryCalendar = calendarsData.value.find(
+      (cal: any) => cal.isDefaultCalendar,
+    );
+
+    if (!primaryCalendar) {
+      throw new Error('No primary calendar found');
+    }
+
+    // Save sync settings
+    const calendarService = new CalendarIntegrationService();
+    await calendarService.updateCalendarSyncSettings(userId, 'outlook', {
+      provider_account_id: primaryCalendar.id,
+      calendar_id: primaryCalendar.id,
+      calendar_name: primaryCalendar.name,
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token,
+      expires_at: new Date(Date.now() + tokens.expires_in * 1000),
+      sync_enabled: true,
+      sync_direction: 'bidirectional',
+    });
+
+    return {
+      success: true,
+      message: 'Outlook Calendar connected successfully',
+      calendar_name: primaryCalendar.name,
+    };
+  } catch (error) {
+    console.error('Outlook OAuth callback error:', error);
+    throw error;
+  }
+}
+
+// Generate OAuth URL for calendar providers
+function generateOAuthUrl(
+  provider: string,
+  redirectUri: string,
+  userId?: string,
+): string {
+  const state = btoa(JSON.stringify({ userId, timestamp: Date.now() }));
+
+  switch (provider) {
+    case 'google':
+      const googleParams = new URLSearchParams({
+        client_id: process.env.GOOGLE_OAUTH_CLIENT_ID!,
+        redirect_uri: redirectUri,
+        response_type: 'code',
+        scope: 'https://www.googleapis.com/auth/calendar',
+        access_type: 'offline',
+        prompt: 'consent',
+        state,
+      });
+      return `https://accounts.google.com/o/oauth2/v2/auth?${googleParams}`;
+
+    case 'outlook':
+      const outlookParams = new URLSearchParams({
+        client_id: process.env.MICROSOFT_OAUTH_CLIENT_ID!,
+        redirect_uri: redirectUri,
+        response_type: 'code',
+        scope: 'https://graph.microsoft.com/calendars.readwrite',
+        state,
+      });
+      return `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?${outlookParams}`;
+
+    default:
+      throw new Error(`Unsupported provider: ${provider}`);
+  }
+}
+
+// Check calendar integration health
+async function checkCalendarIntegrationHealth(weddingId: string) {
+  try {
+    const calendarService = new CalendarIntegrationService();
+
+    // Get tasks without calendar events
+    const { data: unmappedTasks } = await calendarService['supabase']
+      .from('tasks')
+      .select(
+        `
+        id,
+        mapping:task_calendar_mappings(calendar_event_id)
+      `,
+      )
+      .eq('wedding_id', weddingId)
+      .neq('status', 'completed')
+      .is('mapping.calendar_event_id', null);
+
+    // Get failed sync attempts (would need a sync_log table)
+    const failedSyncs = 0; // Placeholder
+
+    // Get active calendar connections
+    const { data: activeConnections } = await calendarService['supabase']
+      .from('calendar_syncs')
+      .select('*')
+      .eq('sync_enabled', true);
+
+    return {
+      unmapped_tasks_count: unmappedTasks?.length || 0,
+      failed_syncs_count: failedSyncs,
+      active_connections_count: activeConnections?.length || 0,
+      health_score: calculateHealthScore(
+        unmappedTasks?.length || 0,
+        failedSyncs,
+        activeConnections?.length || 0,
+      ),
+      recommendations: generateHealthRecommendations(
+        unmappedTasks?.length || 0,
+        failedSyncs,
+        activeConnections?.length || 0,
+      ),
+    };
+  } catch (error) {
+    console.error('Calendar health check failed:', error);
+    return {
+      unmapped_tasks_count: 0,
+      failed_syncs_count: 0,
+      active_connections_count: 0,
+      health_score: 0,
+      recommendations: ['Health check failed - please contact support'],
+      error: 'Health check failed',
+    };
+  }
+}
+
+// Calculate calendar integration health score
+function calculateHealthScore(
+  unmappedTasks: number,
+  failedSyncs: number,
+  activeConnections: number,
+): number {
+  let score = 100;
+
+  // Penalty for unmapped tasks
+  score -= Math.min(unmappedTasks * 5, 30);
+
+  // Penalty for failed syncs
+  score -= Math.min(failedSyncs * 10, 40);
+
+  // Bonus for active connections
+  score += Math.min(activeConnections * 10, 20);
+
+  return Math.max(0, Math.min(100, score));
+}
+
+// Generate health recommendations
+function generateHealthRecommendations(
+  unmappedTasks: number,
+  failedSyncs: number,
+  activeConnections: number,
+): string[] {
+  const recommendations = [];
+
+  if (unmappedTasks > 0) {
+    recommendations.push(`Sync ${unmappedTasks} unmapped tasks to calendar`);
+  }
+
+  if (failedSyncs > 0) {
+    recommendations.push(`Resolve ${failedSyncs} failed sync attempts`);
+  }
+
+  if (activeConnections === 0) {
+    recommendations.push(
+      'Connect at least one external calendar (Google, Outlook)',
+    );
+  }
+
+  if (recommendations.length === 0) {
+    recommendations.push('Calendar integration is healthy ✅');
+  }
+
+  return recommendations;
+}

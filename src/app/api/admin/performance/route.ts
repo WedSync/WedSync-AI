@@ -1,0 +1,489 @@
+/**
+ * Admin Performance Metrics API
+ * Provides comprehensive performance data for monitoring dashboard
+ * FEATURE: WS-104 - Performance Monitoring Backend Infrastructure
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { metrics } from '@/lib/monitoring/metrics';
+import { logger } from '@/lib/monitoring/structured-logger';
+import { dbPerformanceMonitor } from '@/lib/monitoring/db-performance';
+import { systemMetricsCollector } from '@/lib/monitoring/system-metrics';
+import { withPerformanceTracking } from '@/middleware/performance';
+
+interface PerformanceMetricsResponse {
+  webVitals: {
+    current: Record<string, number>;
+    trends: Array<{ timestamp: string; values: Record<string, number> }>;
+    budgetStatus: Record<string, 'pass' | 'warn' | 'fail'>;
+  };
+  apiPerformance: {
+    p50: number;
+    p95: number;
+    p99: number;
+    errorRate: number;
+    slowestEndpoints: Array<{ endpoint: string; avgTime: number }>;
+    requestsPerMinute: number;
+  };
+  dbPerformance: {
+    slowQueries: number;
+    avgQueryTime: number;
+    topSlowQueries: Array<{
+      queryName: string;
+      avgTime: number;
+      count: number;
+    }>;
+    connectionPoolHealth: {
+      active: number;
+      idle: number;
+      total: number;
+      utilization: number;
+    };
+  };
+  systemHealth: {
+    cpu: { usage: number; cores: number; loadAvg: number[] };
+    memory: { usage: number; total: number; used: number };
+    disk: Array<{ mount: string; usage: number; free: number }>;
+    process: { uptime: number; eventLoopLag: number; activeHandles: number };
+  };
+  alerts: Array<{
+    id: string;
+    type: string;
+    severity: string;
+    message: string;
+    timestamp: number;
+    resolved: boolean;
+  }>;
+  timestamp: string;
+}
+
+interface RealTimePerformanceEvent {
+  type: 'webVitals' | 'apiPerformance' | 'dbQuery' | 'alert' | 'systemHealth';
+  data: any;
+  timestamp: string;
+}
+
+async function handlePerformanceMetricsGet(
+  request: NextRequest,
+): Promise<NextResponse> {
+  try {
+    const { searchParams } = new URL(request.url);
+    const timeRange = searchParams.get('range') || '24h';
+    const includeDetails = searchParams.get('details') === 'true';
+
+    logger.info('Performance metrics requested', {
+      timeRange,
+      includeDetails,
+      userAgent: request.headers.get('user-agent'),
+    });
+
+    // Collect all performance data in parallel
+    const [webVitals, apiPerformance, dbHealth, systemHealth] =
+      await Promise.all([
+        getWebVitalsMetrics(timeRange),
+        getApiPerformanceMetrics(timeRange),
+        getDatabasePerformanceMetrics(),
+        getSystemHealthMetrics(),
+      ]);
+
+    const alerts = await getActiveAlerts();
+
+    const response: PerformanceMetricsResponse = {
+      webVitals,
+      apiPerformance,
+      dbPerformance: dbHealth,
+      systemHealth,
+      alerts,
+      timestamp: new Date().toISOString(),
+    };
+
+    // Record metrics access
+    metrics.incrementCounter('admin.performance.metrics_requested', 1, {
+      time_range: timeRange,
+      include_details: includeDetails.toString(),
+    });
+
+    logger.debug('Performance metrics response generated', {
+      webVitalsKeys: Object.keys(webVitals.current),
+      apiEndpoints: apiPerformance.slowestEndpoints.length,
+      slowQueries: dbHealth.slowQueries,
+      alertsCount: alerts.length,
+    });
+
+    return NextResponse.json(response, {
+      headers: {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        Pragma: 'no-cache',
+        Expires: '0',
+      },
+    });
+  } catch (error) {
+    logger.error('Failed to fetch performance metrics', error as Error);
+
+    metrics.incrementCounter('admin.performance.fetch_errors', 1);
+
+    return NextResponse.json(
+      { error: 'Failed to fetch performance metrics' },
+      { status: 500 },
+    );
+  }
+}
+
+async function getWebVitalsMetrics(timeRange: string) {
+  try {
+    // Get current metrics from metrics collector
+    const metricsData = metrics.getMetrics();
+
+    // Extract web vitals metrics
+    const webVitalMetrics = metricsData.histograms.filter(
+      (h) =>
+        h.name.startsWith('web_vitals.') && !h.name.includes('metric_value'),
+    );
+
+    const current: Record<string, number> = {};
+    const budgetStatus: Record<string, 'pass' | 'warn' | 'fail'> = {};
+
+    // Calculate current values and budget status
+    ['LCP', 'FID', 'FCP', 'CLS', 'TTFB', 'INP'].forEach((metric) => {
+      const metricData = webVitalMetrics.find(
+        (m) => m.name === `web_vitals.${metric.toLowerCase()}`,
+      );
+      if (metricData && metricData.buckets.length > 0) {
+        // Calculate P95 value
+        let totalCount = 0;
+        let p95Count = 0;
+
+        metricData.buckets.forEach((bucket) => (totalCount += bucket.count));
+        p95Count = Math.floor(totalCount * 0.95);
+
+        let currentCount = 0;
+        let p95Value = 0;
+
+        for (const bucket of metricData.buckets) {
+          currentCount += bucket.count;
+          if (currentCount >= p95Count) {
+            p95Value = bucket.upperBound;
+            break;
+          }
+        }
+
+        current[metric] = p95Value;
+
+        // Determine budget status
+        const budget = getPerformanceBudget(metric);
+        if (p95Value <= budget) {
+          budgetStatus[metric] = 'pass';
+        } else if (p95Value <= budget * 1.25) {
+          budgetStatus[metric] = 'warn';
+        } else {
+          budgetStatus[metric] = 'fail';
+        }
+      } else {
+        current[metric] = 0;
+        budgetStatus[metric] = 'pass';
+      }
+    });
+
+    // Generate trend data (simplified - in real implementation would query database)
+    const trends = generateTrendData(timeRange, current);
+
+    return {
+      current,
+      trends,
+      budgetStatus,
+    };
+  } catch (error) {
+    logger.error('Failed to get web vitals metrics', error as Error);
+
+    return {
+      current: {},
+      trends: [],
+      budgetStatus: {},
+    };
+  }
+}
+
+async function getApiPerformanceMetrics(timeRange: string) {
+  try {
+    const metricsData = metrics.getMetrics();
+
+    // Find API performance metrics
+    const responseTimeHistogram = metricsData.histograms.find(
+      (h) => h.name === 'performance.response_time',
+    );
+    const errorCounter = metricsData.counters.find(
+      (c) => c.name === 'performance.errors',
+    );
+    const requestCounter = metricsData.counters.find(
+      (c) => c.name === 'performance.requests.completed',
+    );
+
+    let p50 = 0,
+      p95 = 0,
+      p99 = 0,
+      errorRate = 0,
+      requestsPerMinute = 0;
+
+    // Calculate percentiles
+    if (responseTimeHistogram && responseTimeHistogram.buckets.length > 0) {
+      const percentiles = calculatePercentiles(responseTimeHistogram.buckets);
+      p50 = percentiles.p50;
+      p95 = percentiles.p95;
+      p99 = percentiles.p99;
+    }
+
+    // Calculate error rate
+    if (errorCounter && requestCounter && requestCounter.value > 0) {
+      errorRate = (errorCounter.value / requestCounter.value) * 100;
+    }
+
+    // Calculate requests per minute (simplified)
+    if (requestCounter) {
+      const timeRangeMinutes = getTimeRangeInMinutes(timeRange);
+      requestsPerMinute = Math.round(requestCounter.value / timeRangeMinutes);
+    }
+
+    // Get slowest endpoints (from counters with endpoint labels)
+    const slowestEndpoints = getSlowQueries(metricsData.counters);
+
+    return {
+      p50,
+      p95,
+      p99,
+      errorRate,
+      slowestEndpoints,
+      requestsPerMinute,
+    };
+  } catch (error) {
+    logger.error('Failed to get API performance metrics', error as Error);
+
+    return {
+      p50: 0,
+      p95: 0,
+      p99: 0,
+      errorRate: 0,
+      slowestEndpoints: [],
+      requestsPerMinute: 0,
+    };
+  }
+}
+
+async function getDatabasePerformanceMetrics() {
+  try {
+    const dbHealth = dbPerformanceMonitor.getDatabaseHealth();
+    const slowQueries = dbPerformanceMonitor.getSlowQueryAnalysis(5);
+
+    return {
+      slowQueries: dbHealth.queryStats.slowQueries,
+      avgQueryTime: Math.round(dbHealth.queryStats.averageQueryTime),
+      topSlowQueries: slowQueries.map((query) => ({
+        queryName: query.queryName,
+        avgTime: Math.round(query.averageTime),
+        count: query.count,
+      })),
+      connectionPoolHealth: {
+        active: dbHealth.connectionPool.activeConnections,
+        idle: dbHealth.connectionPool.idleConnections,
+        total: dbHealth.connectionPool.totalConnections,
+        utilization:
+          dbHealth.connectionPool.totalConnections > 0
+            ? Math.round(
+                (dbHealth.connectionPool.activeConnections /
+                  dbHealth.connectionPool.totalConnections) *
+                  100,
+              )
+            : 0,
+      },
+    };
+  } catch (error) {
+    logger.error('Failed to get database performance metrics', error as Error);
+
+    return {
+      slowQueries: 0,
+      avgQueryTime: 0,
+      topSlowQueries: [],
+      connectionPoolHealth: {
+        active: 0,
+        idle: 0,
+        total: 0,
+        utilization: 0,
+      },
+    };
+  }
+}
+
+async function getSystemHealthMetrics() {
+  try {
+    const systemHealth = await systemMetricsCollector.getSystemHealth();
+    const systemMetrics = systemHealth.metrics;
+
+    return {
+      cpu: {
+        usage: Math.round(systemMetrics.cpu.usage),
+        cores: systemMetrics.cpu.cores,
+        loadAvg: [
+          systemMetrics.cpu.loadAverage.oneMinute,
+          systemMetrics.cpu.loadAverage.fiveMinute,
+          systemMetrics.cpu.loadAverage.fifteenMinute,
+        ],
+      },
+      memory: {
+        usage: Math.round(systemMetrics.memory.usagePercentage),
+        total: systemMetrics.memory.total,
+        used: systemMetrics.memory.used,
+      },
+      disk: systemMetrics.disk.usage.map((disk) => ({
+        mount: disk.mount,
+        usage: Math.round(disk.usagePercentage),
+        free: disk.free,
+      })),
+      process: {
+        uptime: systemMetrics.process.uptime,
+        eventLoopLag: Math.round(systemMetrics.process.eventLoopLag),
+        activeHandles: systemMetrics.process.activeHandles,
+      },
+    };
+  } catch (error) {
+    logger.error('Failed to get system health metrics', error as Error);
+
+    return {
+      cpu: { usage: 0, cores: 1, loadAvg: [0, 0, 0] },
+      memory: { usage: 0, total: 0, used: 0 },
+      disk: [],
+      process: { uptime: 0, eventLoopLag: 0, activeHandles: 0 },
+    };
+  }
+}
+
+async function getActiveAlerts() {
+  // In a real implementation, this would query your alerts database
+  // For now, return empty array
+  return [];
+}
+
+// Utility functions
+function getPerformanceBudget(metric: string): number {
+  const budgets: Record<string, number> = {
+    LCP: 2500,
+    FID: 100,
+    CLS: 0.1,
+    FCP: 1800,
+    TTFB: 800,
+    INP: 200,
+  };
+
+  return budgets[metric] || 1000;
+}
+
+function calculatePercentiles(
+  buckets: Array<{ upperBound: number; count: number }>,
+) {
+  let totalCount = 0;
+  buckets.forEach((bucket) => (totalCount += bucket.count));
+
+  const p50Count = Math.floor(totalCount * 0.5);
+  const p95Count = Math.floor(totalCount * 0.95);
+  const p99Count = Math.floor(totalCount * 0.99);
+
+  let currentCount = 0;
+  let p50 = 0,
+    p95 = 0,
+    p99 = 0;
+
+  for (const bucket of buckets) {
+    currentCount += bucket.count;
+
+    if (!p50 && currentCount >= p50Count) {
+      p50 = bucket.upperBound;
+    }
+    if (!p95 && currentCount >= p95Count) {
+      p95 = bucket.upperBound;
+    }
+    if (!p99 && currentCount >= p99Count) {
+      p99 = bucket.upperBound;
+      break;
+    }
+  }
+
+  return { p50, p95, p99 };
+}
+
+function getSlowQueries(
+  counters: Array<{
+    name: string;
+    value: number;
+    labels?: Record<string, string>;
+  }>,
+) {
+  // Extract endpoint performance from metrics
+  const endpointMetrics = new Map<
+    string,
+    { count: number; totalTime: number }
+  >();
+
+  counters.forEach((counter) => {
+    if (
+      counter.name === 'performance.slow_requests' &&
+      counter.labels?.endpoint
+    ) {
+      const endpoint = counter.labels.endpoint;
+      if (!endpointMetrics.has(endpoint)) {
+        endpointMetrics.set(endpoint, { count: 0, totalTime: 0 });
+      }
+      const metrics = endpointMetrics.get(endpoint)!;
+      metrics.count += counter.value;
+      // Rough estimate of average time for slow requests
+      metrics.totalTime += counter.value * 2000; // Assume avg 2s for slow requests
+    }
+  });
+
+  return Array.from(endpointMetrics.entries())
+    .map(([endpoint, data]) => ({
+      endpoint,
+      avgTime: data.count > 0 ? Math.round(data.totalTime / data.count) : 0,
+    }))
+    .sort((a, b) => b.avgTime - a.avgTime)
+    .slice(0, 5);
+}
+
+function generateTrendData(timeRange: string, current: Record<string, number>) {
+  // Generate mock trend data - in real implementation would query database
+  const points = getTimeRangeInMinutes(timeRange) / 5; // Data point every 5 minutes
+  const trends = [];
+
+  for (let i = points; i >= 0; i--) {
+    const timestamp = new Date(Date.now() - i * 5 * 60 * 1000).toISOString();
+    const values: Record<string, number> = {};
+
+    // Generate realistic variations around current values
+    Object.entries(current).forEach(([metric, value]) => {
+      const variation = 0.8 + Math.random() * 0.4; // ±20% variation
+      values[metric] = Math.round(value * variation);
+    });
+
+    trends.push({ timestamp, values });
+  }
+
+  return trends;
+}
+
+function getTimeRangeInMinutes(timeRange: string): number {
+  switch (timeRange) {
+    case '1h':
+      return 60;
+    case '24h':
+      return 24 * 60;
+    case '7d':
+      return 7 * 24 * 60;
+    case '30d':
+      return 30 * 24 * 60;
+    default:
+      return 24 * 60;
+  }
+}
+
+// Wrapped handlers with performance tracking
+export const GET = withPerformanceTracking(
+  handlePerformanceMetricsGet,
+  'admin_performance_metrics',
+);

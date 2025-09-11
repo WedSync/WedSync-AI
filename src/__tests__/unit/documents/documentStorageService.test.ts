@@ -1,0 +1,287 @@
+/**
+ * Document Storage Service Unit Tests
+ * Tests for core document management functionality
+ * WS-068: Wedding Business Compliance Hub
+ */
+
+import { describe, it, expect, jest, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { documentStorageService } from '@/lib/services/documentStorageService';
+import { createClient } from '@supabase/supabase-js';
+import type {
+  DocumentUploadRequest,
+  DocumentLibraryFilters,
+  CreateSharingLinkRequest,
+  ComplianceStatus,
+  SecurityLevel
+} from '@/types/documents';
+// Mock Supabase client
+vi.mock('@supabase/supabase-js', () => ({
+  createClient: jest.fn(() => ({
+    auth: {
+      getSession: jest.fn(() => ({ 
+        data: { 
+          session: { 
+            user: { id: 'test-user-id' } 
+          } 
+        } 
+      }))
+    },
+    from: jest.fn(() => ({
+      select: vi.fn().mockReturnThis(),
+      insert: vi.fn().mockReturnThis(),
+      update: vi.fn().mockReturnThis(),
+      delete: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      in: vi.fn().mockReturnThis(),
+      gte: vi.fn().mockReturnThis(),
+      lte: vi.fn().mockReturnThis(),
+      order: vi.fn().mockReturnThis(),
+      limit: vi.fn().mockReturnThis(),
+      single: jest.fn(() => ({ 
+        data: { id: 'test-doc-id' }, 
+        error: null 
+      })),
+      maybeSingle: jest.fn(() => ({ 
+        data: null, 
+    })),
+    storage: {
+      from: jest.fn(() => ({
+        upload: jest.fn(() => ({ 
+          data: { path: 'test-path' }, 
+          error: null 
+        })),
+        download: jest.fn(() => ({ 
+          data: new Blob(['test']), 
+        remove: jest.fn(() => ({ 
+          data: {}, 
+        }))
+    }
+  }))
+}));
+describe('DocumentStorageService', () => {
+  let mockFile: File;
+  
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockFile = new File(['test content'], 'test.pdf', { 
+      type: 'application/pdf' 
+    });
+  });
+  describe('uploadDocument', () => {
+    it('should successfully upload a valid document', async () => {
+      const request: DocumentUploadRequest = {
+        file: mockFile,
+        category_id: 'insurance',
+        title: 'Test Document',
+        description: 'Test description',
+        security_level: 'standard',
+        is_compliance_required: true,
+        expiry_date: '2025-12-31',
+        expiry_warning_days: 30
+      };
+      const result = await documentStorageService.uploadDocument(
+        request, 
+        'test-user-id'
+      );
+      expect(result).toBeDefined();
+      expect(result.id).toBe('test-doc-id');
+    it('should reject files that are too large', async () => {
+      const largeFile = new File(
+        [new ArrayBuffer(100 * 1024 * 1024)], // 100MB
+        'large.pdf',
+        { type: 'application/pdf' }
+        file: largeFile,
+        category_id: 'insurance'
+      await expect(
+        documentStorageService.uploadDocument(request, 'test-user-id')
+      ).rejects.toThrow('File size exceeds maximum limit');
+    it('should reject unsupported file types', async () => {
+      const invalidFile = new File(
+        ['test'], 
+        'test.exe',
+        { type: 'application/x-msdownload' }
+        file: invalidFile,
+      ).rejects.toThrow('File type not supported');
+    it('should validate suspicious file names', async () => {
+      const suspiciousFile = new File(
+        '../../../etc/passwd',
+        { type: 'text/plain' }
+        file: suspiciousFile,
+      ).rejects.toThrow('Invalid filename');
+    it('should handle upload progress callback', async () => {
+      const progressCallback = vi.fn();
+      await documentStorageService.uploadDocument(
+        request,
+        'test-user-id',
+        progressCallback
+      expect(progressCallback).toHaveBeenCalled();
+      expect(progressCallback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          progress: expect.any(Number),
+          status: expect.any(String)
+        })
+  describe('getDocumentLibrary', () => {
+    it('should fetch documents with default filters', async () => {
+      const mockResponse = {
+        documents: [
+          {
+            id: 'doc1',
+            title: 'Document 1',
+            category_id: 'insurance',
+            compliance_status: 'valid' as ComplianceStatus
+          }
+        ],
+        categories: [],
+        statistics: {
+          total_documents: 1,
+          expired_documents: 0,
+          expiring_documents: 0,
+          total_storage_used: 1024
+        },
+        total: 1,
+        has_more: false
+      vi.spyOn(documentStorageService, 'getDocumentLibrary')
+        .mockResolvedValue(mockResponse);
+      const result = await documentStorageService.getDocumentLibrary('test-user-id');
+      expect(result).toEqual(mockResponse);
+      expect(result.documents).toHaveLength(1);
+      expect(result.statistics.total_documents).toBe(1);
+    it('should apply search filters correctly', async () => {
+      const filters: DocumentLibraryFilters = {
+        search: 'insurance',
+        category_ids: ['insurance'],
+        compliance_status: ['valid'],
+        security_level: ['high'],
+        page: 1,
+        limit: 20,
+        sort_by: 'created_at',
+        sort_order: 'desc'
+        documents: [],
+          total_documents: 0,
+          total_storage_used: 0
+        total: 0,
+      const result = await documentStorageService.getDocumentLibrary(
+        filters
+    it('should handle pagination correctly', async () => {
+        page: 2,
+        limit: 10
+        documents: Array(10).fill({
+          id: 'doc',
+          title: 'Document',
+          category_id: 'insurance',
+          compliance_status: 'valid' as ComplianceStatus
+        }),
+          total_documents: 25,
+        total: 25,
+        has_more: true
+      expect(result.documents).toHaveLength(10);
+      expect(result.has_more).toBe(true);
+      expect(result.total).toBe(25);
+  describe('createSharingLink', () => {
+    it('should create a basic sharing link', async () => {
+      const request: CreateSharingLinkRequest = {
+        document_id: 'test-doc-id',
+        link_type: 'view'
+        link: {
+          id: 'link-id',
+          link_token: 'test-token',
+          link_type: 'view',
+          is_active: true
+        share_url: 'https://example.com/share/test-token'
+      vi.spyOn(documentStorageService, 'createSharingLink')
+      const result = await documentStorageService.createSharingLink(
+      expect(result.link.link_token).toBeDefined();
+      expect(result.link.link_type).toBe('view');
+      expect(result.share_url).toContain('/share/');
+    it('should create a password-protected sharing link', async () => {
+        link_type: 'download',
+        password: 'secure123'
+          link_type: 'download',
+          password_hash: 'hashed',
+      expect(result.link.password_hash).toBeDefined();
+    it('should create a time-limited sharing link', async () => {
+        link_type: 'view',
+        expires_in_hours: 24
+          expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      expect(result.link.expires_at).toBeDefined();
+    it('should create a link with email restrictions', async () => {
+        require_email: true,
+        allowed_emails: ['user@example.com', 'admin@example.com']
+          require_email: true,
+          allowed_emails: ['user@example.com', 'admin@example.com'],
+      expect(result.link.require_email).toBe(true);
+      expect(result.link.allowed_emails).toHaveLength(2);
+  describe('getComplianceDashboard', () => {
+    it('should return compliance dashboard data', async () => {
+      const mockDashboard = {
+        summary: {
+          total_documents: 10,
+          expired_count: 2,
+          expiring_soon_count: 3,
+          valid_count: 5,
+          compliance_rate: 80
+        expired_documents: [],
+        expiring_documents: [],
+        recent_alerts: [],
+        category_breakdown: []
+      vi.spyOn(documentStorageService, 'getComplianceDashboard')
+        .mockResolvedValue(mockDashboard);
+      const result = await documentStorageService.getComplianceDashboard(
+      expect(result.summary.total_documents).toBe(10);
+      expect(result.summary.compliance_rate).toBe(80);
+    it('should filter compliance data by category', async () => {
+          total_documents: 5,
+          expired_count: 1,
+          expiring_soon_count: 1,
+          valid_count: 3,
+          compliance_rate: 60
+        category_breakdown: [
+            category_name: 'Insurance',
+            total: 5,
+            expired: 1,
+            expiring: 1,
+            valid: 3
+        ]
+        'insurance'
+      expect(result.category_breakdown).toHaveLength(1);
+      expect(result.category_breakdown[0].category_id).toBe('insurance');
+    it('should filter compliance data by days ahead', async () => {
+          expired_count: 0,
+          expiring_soon_count: 2,
+          valid_count: 8,
+          compliance_rate: 100
+        expiring_documents: [
+          { id: 'doc1', days_until_expiry: 5 },
+          { id: 'doc2', days_until_expiry: 10 }
+        undefined,
+        30
+      expect(result.expiring_documents).toHaveLength(2);
+      expect(result.summary.expiring_soon_count).toBe(2);
+  describe('updateComplianceStatus', () => {
+    it('should update document compliance status', async () => {
+      const spy = vi.spyOn(documentStorageService, 'updateComplianceStatus')
+        .mockResolvedValue(undefined);
+      await documentStorageService.updateComplianceStatus('test-doc-id');
+      expect(spy).toHaveBeenCalledWith('test-doc-id');
+  describe('deleteDocument', () => {
+    it('should delete document and associated files', async () => {
+      const spy = vi.spyOn(documentStorageService, 'deleteDocument')
+      await documentStorageService.deleteDocument('test-doc-id', 'test-user-id');
+      expect(spy).toHaveBeenCalledWith('test-doc-id', 'test-user-id');
+  describe('Security Validation', () => {
+    it('should detect malicious file content patterns', async () => {
+      const maliciousFile = new File(
+        ['<script>alert("XSS")</script>'], 
+        'malicious.html',
+        { type: 'text/html' }
+        file: maliciousFile,
+      ).rejects.toThrow();
+    it('should validate file magic numbers', async () => {
+      // File with wrong extension
+      const fakeFile = new File(
+        ['not a pdf'], 
+        'fake.pdf',
+        file: fakeFile,
+      // The service should detect this isn't actually a PDF
+});

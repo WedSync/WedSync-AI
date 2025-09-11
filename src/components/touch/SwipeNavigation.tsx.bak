@@ -1,0 +1,310 @@
+'use client'
+
+import React, { useState, useRef, useCallback, useEffect } from 'react'
+import { cn } from '@/lib/utils'
+import { useHaptic } from '@/hooks/useTouch'
+
+interface NavigationPage {
+  id: string
+  title: string
+  content: React.ReactNode
+  priority?: 'critical' | 'primary' | 'secondary'
+}
+
+interface SwipeNavigationProps {
+  pages: NavigationPage[]
+  onPageChange: (index: number) => void
+  swipeThreshold?: number
+  hapticFeedback?: boolean
+  className?: string
+  showIndicators?: boolean
+  enableMomentum?: boolean
+  children?: React.ReactNode
+}
+
+export const SwipeNavigation: React.FC<SwipeNavigationProps> = ({
+  pages,
+  onPageChange,
+  swipeThreshold = 50,
+  hapticFeedback = true,
+  className,
+  showIndicators = true,
+  enableMomentum = true,
+  children
+}) => {
+  const [currentPage, setCurrentPage] = useState(0)
+  const [isTransitioning, setIsTransitioning] = useState(false)
+  const [touchStartX, setTouchStartX] = useState<number | null>(null)
+  const [touchStartTime, setTouchStartTime] = useState<number>(0)
+  const [translateX, setTranslateX] = useState(0)
+  const [isDragging, setIsDragging] = useState(false)
+  
+  const containerRef = useRef<HTMLDivElement>(null)
+  const pagesRef = useRef<HTMLDivElement>(null)
+  const haptics = useHaptic()
+
+  // Navigation functions
+  const goToPage = useCallback((pageIndex: number) => {
+    if (pageIndex < 0 || pageIndex >= pages.length || pageIndex === currentPage) return
+    
+    setIsTransitioning(true)
+    setCurrentPage(pageIndex)
+    setTranslateX(0)
+    
+    if (hapticFeedback) {
+      const page = pages[pageIndex]
+      const feedbackType = page.priority === 'critical' ? 'medium' : 'light'
+      haptics[feedbackType]()
+    }
+    
+    onPageChange(pageIndex)
+    
+    setTimeout(() => setIsTransitioning(false), 300)
+  }, [currentPage, pages, onPageChange, hapticFeedback, haptics])
+
+  const goToNextPage = useCallback(() => {
+    if (currentPage < pages.length - 1) {
+      goToPage(currentPage + 1)
+    }
+  }, [currentPage, pages.length, goToPage])
+
+  const goToPreviousPage = useCallback(() => {
+    if (currentPage > 0) {
+      goToPage(currentPage - 1)
+    }
+  }, [currentPage, goToPage])
+
+  // Touch event handlers
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    if (isTransitioning) return
+    
+    const touch = e.touches[0]
+    setTouchStartX(touch.clientX)
+    setTouchStartTime(Date.now())
+    setIsDragging(true)
+    setTranslateX(0)
+  }, [isTransitioning])
+
+  const handleTouchMove = useCallback((e: React.TouchEvent) => {
+    if (!touchStartX || isTransitioning || !isDragging) return
+    
+    const touch = e.touches[0]
+    const deltaX = touch.clientX - touchStartX
+    const maxTranslate = 100 // Maximum translate distance
+    
+    // Apply resistance at boundaries
+    let adjustedDeltaX = deltaX
+    
+    if ((currentPage === 0 && deltaX > 0) || (currentPage === pages.length - 1 && deltaX < 0)) {
+      adjustedDeltaX = deltaX * 0.3 // Apply resistance
+    }
+    
+    // Clamp translation
+    const clampedTranslate = Math.max(-maxTranslate, Math.min(maxTranslate, adjustedDeltaX))
+    setTranslateX(clampedTranslate)
+    
+    e.preventDefault() // Prevent scrolling
+  }, [touchStartX, isTransitioning, isDragging, currentPage, pages.length])
+
+  const handleTouchEnd = useCallback((e: React.TouchEvent) => {
+    if (!touchStartX || isTransitioning || !isDragging) return
+    
+    const touch = e.changedTouches[0]
+    const deltaX = touch.clientX - touchStartX
+    const deltaTime = Date.now() - touchStartTime
+    const velocity = Math.abs(deltaX) / deltaTime
+    
+    setIsDragging(false)
+    setTouchStartX(null)
+    
+    // Determine if swipe threshold is met
+    const shouldSwipe = Math.abs(deltaX) > swipeThreshold || (velocity > 0.5 && Math.abs(deltaX) > 20)
+    
+    if (shouldSwipe) {
+      if (deltaX > 0 && currentPage > 0) {
+        // Swipe right - go to previous page
+        goToPreviousPage()
+      } else if (deltaX < 0 && currentPage < pages.length - 1) {
+        // Swipe left - go to next page
+        goToNextPage()
+      } else {
+        // Reset position if at boundary
+        setTranslateX(0)
+      }
+    } else {
+      // Reset position if threshold not met
+      setTranslateX(0)
+    }
+  }, [touchStartX, isTransitioning, isDragging, touchStartTime, swipeThreshold, currentPage, pages.length, goToNextPage, goToPreviousPage])
+
+  // Keyboard navigation
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault()
+        goToPreviousPage()
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault()
+        goToNextPage()
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [goToNextPage, goToPreviousPage])
+
+  return (
+    <div 
+      ref={containerRef}
+      className={cn(
+        'relative overflow-hidden w-full h-full touch-manipulation',
+        'focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+        className
+      )}
+      tabIndex={0}
+      role="tablist"
+      aria-label="Swipe Navigation"
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+    >
+      {/* Pages container */}
+      <div 
+        ref={pagesRef}
+        className={cn(
+          'flex h-full transition-transform duration-300 ease-out',
+          {
+            'transition-none': isDragging,
+          }
+        )}
+        style={{
+          transform: `translateX(calc(-${currentPage * 100}% + ${translateX}px))`,
+          width: `${pages.length * 100}%`
+        }}
+      >
+        {pages.map((page, index) => (
+          <div
+            key={page.id}
+            className={cn(
+              'flex-shrink-0 h-full overflow-auto',
+              'focus:outline-none'
+            )}
+            style={{ width: `${100 / pages.length}%` }}
+            role="tabpanel"
+            aria-labelledby={`nav-indicator-${index}`}
+            aria-hidden={index !== currentPage}
+          >
+            <div className="h-full p-4">
+              <h2 className="text-xl font-semibold mb-4 sr-only">
+                {page.title}
+              </h2>
+              {page.content}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Page indicators */}
+      {showIndicators && pages.length > 1 && (
+        <div className="absolute bottom-4 left-0 right-0 flex justify-center space-x-2">
+          {pages.map((page, index) => (
+            <button
+              key={page.id}
+              id={`nav-indicator-${index}`}
+              onClick={() => goToPage(index)}
+              className={cn(
+                'w-2 h-2 rounded-full transition-all duration-200',
+                'focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+                'touch-manipulation min-w-[44px] min-h-[44px] flex items-center justify-center',
+                {
+                  'bg-blue-600': index === currentPage,
+                  'bg-gray-300': index !== currentPage,
+                }
+              )}
+              aria-label={`Go to ${page.title}`}
+              role="tab"
+              aria-selected={index === currentPage}
+            >
+              <span className={cn(
+                'block w-2 h-2 rounded-full transition-colors duration-200',
+                {
+                  'bg-blue-600': index === currentPage,
+                  'bg-gray-400': index !== currentPage,
+                }
+              )} />
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Swipe hints */}
+      {isDragging && (
+        <div className="absolute inset-0 flex items-center justify-between px-8 pointer-events-none">
+          {currentPage > 0 && translateX > 20 && (
+            <div className="text-blue-600 animate-pulse">
+              <span className="text-2xl">←</span>
+            </div>
+          )}
+          {currentPage < pages.length - 1 && translateX < -20 && (
+            <div className="text-blue-600 animate-pulse ml-auto">
+              <span className="text-2xl">→</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Development overlay */}
+      {process.env.NODE_ENV === 'development' && (
+        <div className="absolute top-2 left-2 bg-black/80 text-white text-xs px-2 py-1 rounded pointer-events-none">
+          Page {currentPage + 1} of {pages.length}
+          {isDragging && ` • Dragging: ${Math.round(translateX)}px`}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Pre-configured swipe navigation for wedding contexts
+export const WeddingSwipeNavigation: React.FC<Omit<SwipeNavigationProps, 'pages'> & {
+  photosContent?: React.ReactNode
+  scheduleContent?: React.ReactNode
+  clientsContent?: React.ReactNode
+}> = ({
+  photosContent,
+  scheduleContent,
+  clientsContent,
+  ...props
+}) => {
+  const weddingPages: NavigationPage[] = [
+    {
+      id: 'photos',
+      title: 'Photo Management',
+      priority: 'critical',
+      content: photosContent || <div className="text-center py-8">Photo management interface</div>
+    },
+    {
+      id: 'schedule',
+      title: 'Event Schedule',
+      priority: 'primary',
+      content: scheduleContent || <div className="text-center py-8">Event schedule interface</div>
+    },
+    {
+      id: 'clients',
+      title: 'Client Communication',
+      priority: 'primary',
+      content: clientsContent || <div className="text-center py-8">Client communication interface</div>
+    }
+  ]
+
+  return <SwipeNavigation pages={weddingPages} {...props} />
+}
+
+// Touch-optimized carousel component
+export const TouchCarousel: React.FC<SwipeNavigationProps> = (props) => (
+  <SwipeNavigation 
+    {...props} 
+    showIndicators={true}
+    enableMomentum={true}
+    className={cn('bg-white rounded-lg shadow-sm', props.className)}
+  />
+)

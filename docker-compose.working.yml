@@ -1,0 +1,93 @@
+version: '3.8'
+
+services:
+  # Simplified WedSync app with focused mounting
+  wedsync:
+    image: node:20-alpine
+    container_name: wedsync-working
+    working_dir: /app
+    ports:
+      - "3000:3000"
+    
+    environment:
+      - NODE_ENV=development
+      - HOSTNAME=0.0.0.0
+      - PORT=3000
+      - NEXTAUTH_URL=http://localhost:3000
+      - NEXT_PUBLIC_APP_URL=http://localhost:3000
+      - DATABASE_URL=postgresql://postgres.azhgptjkqiiqvvvhapml:postgres@aws-0-us-west-1.pooler.supabase.com:6543/postgres
+      - NEXT_PUBLIC_SUPABASE_URL=https://azhgptjkqiiqvvvhapml.supabase.co
+      - NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF6aGdwdGprcWlpcXZ2dmhhcG1sIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzUyMTk4MDUsImV4cCI6MjA1MDc5NTgwNX0.oXoH0zRHEI71mLIcuwXsxR_CWMkZL5JsVgE5BG9LzY0
+      - NEXT_PUBLIC_STORAGE_BUCKET=wedsync-uploads
+      - CHOKIDAR_USEPOLLING=true
+      - WATCHPACK_POLLING=true
+      - NEXT_TELEMETRY_DISABLED=1
+    
+    # Explicit startup sequence with path fixes
+    command: >
+      sh -c "
+        echo '=== WedSync Docker Startup - $(date) ===' &&
+        echo 'Working directory: $(pwd)' &&
+        echo 'Directory contents:' && ls -la &&
+        echo '=== Installing system dependencies ===' &&
+        apk add --no-cache python3 make g++ cairo-dev jpeg-dev pango-dev giflib-dev curl git &&
+        echo '=== Checking package.json ===' &&
+        if [ -f package.json ]; then
+          echo 'Found package.json' &&
+          head -10 package.json
+        else
+          echo 'ERROR: No package.json found!'
+          exit 1
+        fi &&
+        echo '=== Setting up Next.js config ===' &&
+        if [ -f next.config.simple.js ]; then
+          cp next.config.simple.js next.config.js || echo 'Config already exists, continuing'
+          echo 'Using Next.js config'
+        else
+          echo 'No simple config found, using default'
+        fi &&
+        echo '=== Installing npm packages ===' &&
+        npm install --legacy-peer-deps --loglevel=verbose &&
+        echo '=== Starting Next.js development server ===' &&
+        npm run dev -- --hostname 0.0.0.0 --port 3000
+      "
+    
+    # Mount only essential files, avoid nested structure
+    volumes:
+      # Core application files
+      - ./src:/app/src
+      - ./public:/app/public
+      - ./app:/app/app
+      - ./components:/app/components  
+      - ./lib:/app/lib
+      - ./hooks:/app/hooks
+      - ./utils:/app/utils
+      - ./types:/app/types
+      - ./styles:/app/styles
+      
+      # Config files
+      - ./package.json:/app/package.json
+      - ./next.config.js:/app/next.config.js
+      - ./next.config.simple.js:/app/next.config.simple.js
+      - ./tailwind.config.js:/app/tailwind.config.js
+      - ./tailwind.config.ts:/app/tailwind.config.ts
+      - ./tsconfig.json:/app/tsconfig.json
+      - ./middleware.ts:/app/middleware.ts
+      - ./.env.local:/app/.env.local
+      
+      # Preserve node_modules and .next as volumes
+      - wedsync_node_modules:/app/node_modules
+      - wedsync_next_cache:/app/.next
+    
+    restart: "no"  # Don't auto-restart while debugging
+    networks:
+      - wedsync-network
+
+networks:
+  wedsync-network:
+    driver: bridge
+    name: wedsync-network
+
+volumes:
+  wedsync_node_modules:
+  wedsync_next_cache:

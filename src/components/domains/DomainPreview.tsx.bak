@@ -1,0 +1,320 @@
+'use client';
+
+import { useState } from 'react';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { 
+  ExternalLink, 
+  Monitor, 
+  Smartphone, 
+  Tablet,
+  Eye,
+  Globe,
+  Sparkles,
+  Heart,
+  Camera,
+  Calendar
+} from 'lucide-react';
+
+interface DomainPreviewProps {
+  domain: string;
+  isCustomDomain: boolean;
+  className?: string;
+}
+
+export function DomainPreview({ 
+  domain, 
+  isCustomDomain, 
+  className = '' 
+}: DomainPreviewProps) {
+  const [viewMode, setViewMode] = useState<'desktop' | 'tablet' | 'mobile'>('desktop');
+  const [previewType, setPreviewType] = useState<'portal' | 'website'>('portal');
+
+  const getViewportClass = () => {
+    switch (viewMode) {
+      case 'desktop':
+        return 'w-full max-w-6xl';
+      case 'tablet':
+        return 'w-full max-w-2xl';
+      case 'mobile':
+        return 'w-full max-w-sm';
+      default:
+        return 'w-full max-w-6xl';
+    }
+  };
+
+  const getViewportIcon = (mode: string) => {
+    switch (mode) {
+      case 'desktop':
+        return <Monitor className="h-4 w-4" />;
+      case 'tablet':
+        return <Tablet className="h-4 w-4" />;
+      case 'mobile':
+        return <Smartphone className="h-4 w-4" />;
+      default:
+        return <Monitor className="h-4 w-4" />;
+    }
+  };
+
+  return (
+    <div className={`space-y-6 ${className}`}>
+      {/* Header */}
+      <div>
+        <h3 className="text-lg font-semibold text-gray-900 mb-2">Domain Preview</h3>
+        <p className="text-sm text-gray-600">
+          See how your {isCustomDomain ? 'custom domain' : 'default domain'} will look to your wedding clients
+        </p>
+      </div>
+
+      {/* Domain Info */}
+      <div className="flex items-center justify-between bg-gray-50 rounded-lg p-4">
+        <div className="flex items-center space-x-3">
+          <Globe className="h-5 w-5 text-gray-500" />
+          <div>
+            <div className="font-mono text-sm text-gray-900">{domain}</div>
+            <div className="text-xs text-gray-500">
+              {isCustomDomain ? 'Your custom domain' : 'Default WedSync domain'}
+            </div>
+          </div>
+        </div>
+        
+        <div className="flex items-center space-x-2">
+          {isCustomDomain && (
+            <Badge className="bg-primary-50 text-primary-700 border-primary-200">
+              <Sparkles className="h-3 w-3 mr-1" />
+              Custom
+            </Badge>
+          )}
+          
+          <Button variant="outline" size="sm" asChild>
+            <a 
+              href={`https://${domain}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center space-x-2"
+            >
+              <Eye className="h-4 w-4" />
+              <span>Visit Live</span>
+              <ExternalLink className="h-4 w-4" />
+            </a>
+          </Button>
+        </div>
+      </div>
+
+      {/* Preview Controls */}
+      <div className="flex items-center justify-between">
+        <Tabs value={previewType} onValueChange={(value) => setPreviewType(value as 'portal' | 'website')}>
+          <TabsList className="bg-gray-100">
+            <TabsTrigger value="portal">Client Portal</TabsTrigger>
+            <TabsTrigger value="website">Public Website</TabsTrigger>
+          </TabsList>
+        </Tabs>
+
+        <div className="flex items-center space-x-2">
+          <span className="text-sm text-gray-600">View:</span>
+          {['desktop', 'tablet', 'mobile'].map((mode) => (
+            <Button
+              key={mode}
+              variant={viewMode === mode ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setViewMode(mode as 'desktop' | 'tablet' | 'mobile')}
+              className="h-8 w-8 p-0"
+            >
+              {getViewportIcon(mode)}
+            </Button>
+          ))}
+        </div>
+      </div>
+
+      {/* Preview Frame */}
+      <div className="flex justify-center">
+        <div className={`${getViewportClass()} transition-all duration-300`}>
+          <div className="bg-white border border-gray-200 rounded-lg overflow-hidden shadow-lg">
+            {/* Browser Bar */}
+            <div className="bg-gray-100 px-4 py-2 border-b border-gray-200">
+              <div className="flex items-center space-x-2">
+                <div className="flex space-x-1">
+                  <div className="w-3 h-3 rounded-full bg-red-400"></div>
+                  <div className="w-3 h-3 rounded-full bg-yellow-400"></div>
+                  <div className="w-3 h-3 rounded-full bg-green-400"></div>
+                </div>
+                <div className="flex-1 bg-white rounded px-3 py-1 text-xs text-gray-600 font-mono">
+                  https://{domain}
+                </div>
+              </div>
+            </div>
+
+            {/* Preview Content */}
+            <div className="aspect-[16/10] bg-gradient-to-br from-gray-50 to-gray-100 relative overflow-hidden">
+              {previewType === 'portal' ? (
+                <ClientPortalPreview isCustomDomain={isCustomDomain} viewMode={viewMode} />
+              ) : (
+                <PublicWebsitePreview isCustomDomain={isCustomDomain} viewMode={viewMode} />
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Benefits Alert */}
+      {isCustomDomain ? (
+        <Alert className="border-success-200 bg-success-25">
+          <Sparkles className="h-4 w-4 text-success-600" />
+          <AlertDescription>
+            <div className="text-success-700">
+              <h4 className="font-medium mb-1">Professional Custom Domain Active!</h4>
+              <p className="text-sm">
+                Your clients will see your professional domain, building trust and reinforcing your brand 
+                throughout their wedding planning journey.
+              </p>
+            </div>
+          </AlertDescription>
+        </Alert>
+      ) : (
+        <Alert className="border-blue-200 bg-blue-25">
+          <Globe className="h-4 w-4 text-blue-600" />
+          <AlertDescription>
+            <div className="text-blue-700">
+              <h4 className="font-medium mb-1">Using Default WedSync Domain</h4>
+              <p className="text-sm">
+                Consider setting up a custom domain to enhance your professional image and build stronger 
+                client relationships with your own branded experience.
+              </p>
+            </div>
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {/* Features Showcase */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="bg-white border border-gray-200 rounded-lg p-4">
+          <div className="flex items-center space-x-2 mb-2">
+            <Heart className="h-4 w-4 text-pink-500" />
+            <span className="text-sm font-medium text-gray-900">Client Experience</span>
+          </div>
+          <p className="text-xs text-gray-600">
+            {isCustomDomain 
+              ? "Seamless branded experience from first contact to final photos"
+              : "Professional WedSync interface with option to upgrade to custom branding"
+            }
+          </p>
+        </div>
+
+        <div className="bg-white border border-gray-200 rounded-lg p-4">
+          <div className="flex items-center space-x-2 mb-2">
+            <Camera className="h-4 w-4 text-blue-500" />
+            <span className="text-sm font-medium text-gray-900">Portfolio Showcase</span>
+          </div>
+          <p className="text-xs text-gray-600">
+            Beautiful galleries and portfolios displayed under your domain for maximum impact
+          </p>
+        </div>
+
+        <div className="bg-white border border-gray-200 rounded-lg p-4">
+          <div className="flex items-center space-x-2 mb-2">
+            <Calendar className="h-4 w-4 text-green-500" />
+            <span className="text-sm font-medium text-gray-900">Planning Tools</span>
+          </div>
+          <p className="text-xs text-gray-600">
+            Timeline management, vendor coordination, and task tracking all under your brand
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ClientPortalPreview({ isCustomDomain, viewMode }: { isCustomDomain: boolean; viewMode: string }) {
+  return (
+    <div className="h-full p-6 space-y-4">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center space-x-3">
+          <div className={`w-8 h-8 ${isCustomDomain ? 'bg-primary-100' : 'bg-gray-200'} rounded-lg flex items-center justify-center`}>
+            <Camera className={`h-4 w-4 ${isCustomDomain ? 'text-primary-600' : 'text-gray-500'}`} />
+          </div>
+          <div>
+            <div className="text-sm font-medium text-gray-900">
+              {isCustomDomain ? 'Your Wedding Studio' : 'Wedding Studio Portal'}
+            </div>
+            <div className="text-xs text-gray-500">Client Portal</div>
+          </div>
+        </div>
+        {viewMode !== 'mobile' && (
+          <div className="text-xs text-gray-400">Welcome back, Sarah & Mike!</div>
+        )}
+      </div>
+
+      {/* Main Content */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="bg-white rounded-lg border border-gray-200 p-3">
+          <div className="flex items-center space-x-2 mb-2">
+            <Calendar className="h-4 w-4 text-green-500" />
+            <span className="text-sm font-medium">Wedding Timeline</span>
+          </div>
+          <div className="text-xs text-gray-600">
+            Next: Final venue walkthrough
+          </div>
+        </div>
+
+        <div className="bg-white rounded-lg border border-gray-200 p-3">
+          <div className="flex items-center space-x-2 mb-2">
+            <Camera className="h-4 w-4 text-blue-500" />
+            <span className="text-sm font-medium">Photo Gallery</span>
+          </div>
+          <div className="text-xs text-gray-600">
+            142 engagement photos ready
+          </div>
+        </div>
+      </div>
+
+      {/* Visual Elements */}
+      <div className="flex justify-center items-center flex-1">
+        <div className={`text-center ${isCustomDomain ? 'text-primary-600' : 'text-gray-400'}`}>
+          <Sparkles className="h-8 w-8 mx-auto mb-2" />
+          <div className="text-sm font-medium">
+            {isCustomDomain ? 'Your Professional Brand' : 'WedSync Portal'}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PublicWebsitePreview({ isCustomDomain, viewMode }: { isCustomDomain: boolean; viewMode: string }) {
+  return (
+    <div className="h-full p-6 space-y-4">
+      {/* Header */}
+      <div className="text-center space-y-2">
+        <div className={`text-lg font-bold ${isCustomDomain ? 'text-primary-600' : 'text-gray-700'}`}>
+          {isCustomDomain ? 'Your Wedding Studio' : 'Wedding Photography'}
+        </div>
+        {viewMode !== 'mobile' && (
+          <div className="text-xs text-gray-500">
+            Capturing your perfect moments
+          </div>
+        )}
+      </div>
+
+      {/* Sample Portfolio Grid */}
+      <div className="grid grid-cols-3 gap-2">
+        {[1, 2, 3, 4, 5, 6].map((i) => (
+          <div key={i} className="aspect-square bg-gray-200 rounded border"></div>
+        ))}
+      </div>
+
+      {/* Call to Action */}
+      <div className="text-center">
+        <div className={`inline-flex items-center px-3 py-1 rounded text-xs ${
+          isCustomDomain 
+            ? 'bg-primary-100 text-primary-700' 
+            : 'bg-gray-200 text-gray-600'
+        }`}>
+          Contact for Your Wedding
+        </div>
+      </div>
+    </div>
+  );
+}

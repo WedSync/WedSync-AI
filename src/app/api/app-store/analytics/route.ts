@@ -1,0 +1,628 @@
+/**
+ * WS-187: App Store Analytics Processing API
+ * Download metrics, conversion tracking, and performance analysis
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
+import { withSecureValidation } from '@/lib/validation/middleware';
+import { getServerSession } from 'next-auth/next';
+import { authOptions } from '@/app/api/auth/[...nextauth]/route';
+import { createClient } from '@/lib/supabase/server';
+
+const analyticsQuerySchema = z.object({
+  metric_type: z
+    .enum([
+      'downloads',
+      'revenue',
+      'rankings',
+      'reviews',
+      'conversions',
+      'keywords',
+      'competitors',
+    ])
+    .optional(),
+  platform: z.enum(['apple', 'google_play', 'microsoft']).optional(),
+  date_range: z
+    .object({
+      start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      end_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    })
+    .optional(),
+  granularity: z.enum(['daily', 'weekly', 'monthly']).default('daily'),
+  group_by: z.array(z.enum(['platform', 'metric_type', 'date'])).optional(),
+  limit: z.number().min(1).max(1000).default(100),
+});
+
+const analyticsEventSchema = z.object({
+  event_type: z.enum([
+    'store_view',
+    'download_start',
+    'download_complete',
+    'install_complete',
+    'first_launch',
+    'registration',
+  ]),
+  platform: z.enum(['apple', 'google_play', 'microsoft']),
+  user_attributes: z
+    .object({
+      country: z.string().optional(),
+      device_type: z.string().optional(),
+      os_version: z.string().optional(),
+      referrer: z.string().optional(),
+      campaign_id: z.string().optional(),
+    })
+    .optional(),
+  timestamp: z.string().datetime().optional(),
+  session_id: z.string().uuid().optional(),
+  user_id: z.string().uuid().optional(),
+});
+
+export const GET = withSecureValidation(
+  analyticsQuerySchema,
+  async (request: NextRequest, validatedData) => {
+    try {
+      const session = await getServerSession(authOptions);
+      if (!session?.user?.id) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: { code: 'UNAUTHORIZED', message: 'Authentication required' },
+          },
+          { status: 401 },
+        );
+      }
+
+      const supabase = await createClient();
+      const url = new URL(request.url);
+
+      // Get user's organization
+      const { data: profile } = await supabase
+        .from('user_profiles')
+        .select('organization_id')
+        .eq('user_id', session.user.id)
+        .single();
+
+      if (!profile?.organization_id) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: { code: 'FORBIDDEN', message: 'No organization access' },
+          },
+          { status: 403 },
+        );
+      }
+
+      // Parse query parameters
+      const metricType =
+        url.searchParams.get('metric_type') || validatedData.metric_type;
+      const platform =
+        url.searchParams.get('platform') || validatedData.platform;
+      const startDate =
+        url.searchParams.get('start_date') ||
+        validatedData.date_range?.start_date ||
+        getDefaultStartDate();
+      const endDate =
+        url.searchParams.get('end_date') ||
+        validatedData.date_range?.end_date ||
+        getDefaultEndDate();
+      const granularity =
+        (url.searchParams.get('granularity') as
+          | 'daily'
+          | 'weekly'
+          | 'monthly') || validatedData.granularity;
+
+      // Build base query for app store metrics
+      let metricsQuery = supabase
+        .from('app_store_metrics')
+        .select('*')
+        .eq('organization_id', profile.organization_id)
+        .gte('metric_date', startDate)
+        .lte('metric_date', endDate);
+
+      if (platform) {
+        metricsQuery = metricsQuery.eq('platform', platform);
+      }
+
+      if (metricType) {
+        metricsQuery = metricsQuery.eq('metric_type', metricType);
+      }
+
+      const { data: metrics, error: metricsError } = await metricsQuery
+        .order('metric_date', { ascending: true })
+        .limit(validatedData.limit);
+
+      if (metricsError) {
+        throw metricsError;
+      }
+
+      // Get keyword performance data if requested
+      let keywordData = null;
+      if (metricType === 'keywords' || !metricType) {
+        const { data: keywords, error: keywordsError } = await supabase
+          .from('keyword_performance')
+          .select('*')
+          .eq('organization_id', profile.organization_id)
+          .gte('last_updated', startDate)
+          .lte('last_updated', endDate)
+          .order('ranking_position', { ascending: true })
+          .limit(50);
+
+        if (!keywordsError) {
+          keywordData = keywords;
+        }
+      }
+
+      // Get competitor analysis if requested
+      let competitorData = null;
+      if (metricType === 'competitors' || !metricType) {
+        const { data: competitors, error: competitorError } = await supabase
+          .from('competitor_analysis')
+          .select('*')
+          .eq('organization_id', profile.organization_id)
+          .gte('analysis_date', startDate)
+          .lte('analysis_date', endDate)
+          .order('analysis_date', { ascending: false })
+          .limit(20);
+
+        if (!competitorError) {
+          competitorData = competitors;
+        }
+      }
+
+      // Process and aggregate data based on granularity
+      const processedMetrics = processMetricsByGranularity(
+        metrics || [],
+        granularity,
+      );
+      const summary = calculateMetricsSummary(metrics || []);
+
+      return NextResponse.json({
+        success: true,
+        data: {
+          period: {
+            start_date: startDate,
+            end_date: endDate,
+            granularity,
+          },
+          summary: {
+            total_downloads: summary.total_downloads,
+            total_revenue: summary.total_revenue,
+            avg_rating: summary.avg_rating,
+            conversion_rate: summary.conversion_rate,
+            top_performing_platform: summary.top_performing_platform,
+          },
+          metrics: processedMetrics,
+          keywords: keywordData ? processKeywordData(keywordData) : null,
+          competitors: competitorData
+            ? processCompetitorData(competitorData)
+            : null,
+          trends: calculateTrends(processedMetrics),
+          benchmarks: await getBenchmarkData(
+            supabase,
+            profile.organization_id,
+            platform,
+          ),
+        },
+      });
+    } catch (error) {
+      console.error('Analytics fetch error:', error);
+
+      return NextResponse.json(
+        {
+          success: false,
+          error: {
+            code: 'ANALYTICS_ERROR',
+            message:
+              error instanceof Error
+                ? error.message
+                : 'Failed to fetch analytics data',
+            timestamp: new Date().toISOString(),
+          },
+        },
+        { status: 500 },
+      );
+    }
+  },
+);
+
+export const POST = withSecureValidation(
+  analyticsEventSchema,
+  async (request: NextRequest, validatedData) => {
+    try {
+      const session = await getServerSession(authOptions);
+      if (!session?.user?.id) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: { code: 'UNAUTHORIZED', message: 'Authentication required' },
+          },
+          { status: 401 },
+        );
+      }
+
+      const supabase = await createClient();
+
+      // Get user's organization
+      const { data: profile } = await supabase
+        .from('user_profiles')
+        .select('organization_id')
+        .eq('user_id', session.user.id)
+        .single();
+
+      if (!profile?.organization_id) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: { code: 'FORBIDDEN', message: 'No organization access' },
+          },
+          { status: 403 },
+        );
+      }
+
+      // Create user acquisition funnel entry
+      const funnelData = {
+        organization_id: profile.organization_id,
+        platform: validatedData.platform,
+        funnel_date: new Date().toISOString().split('T')[0],
+        traffic_source: validatedData.user_attributes?.referrer || 'organic',
+        campaign_id: validatedData.user_attributes?.campaign_id,
+        stage: mapEventToFunnelStage(validatedData.event_type),
+        user_count: 1,
+        user_attributes: validatedData.user_attributes,
+        device_info: {
+          device_type: validatedData.user_attributes?.device_type,
+          os_version: validatedData.user_attributes?.os_version,
+        },
+      };
+
+      // Insert or update funnel data
+      const { data: existingEntry } = await supabase
+        .from('user_acquisition_funnel')
+        .select('id, user_count')
+        .eq('organization_id', profile.organization_id)
+        .eq('platform', validatedData.platform)
+        .eq('funnel_date', funnelData.funnel_date)
+        .eq('stage', funnelData.stage)
+        .eq('traffic_source', funnelData.traffic_source)
+        .single();
+
+      if (existingEntry) {
+        // Update existing entry
+        await supabase
+          .from('user_acquisition_funnel')
+          .update({ user_count: existingEntry.user_count + 1 })
+          .eq('id', existingEntry.id);
+      } else {
+        // Create new entry
+        await supabase.from('user_acquisition_funnel').insert(funnelData);
+      }
+
+      // Update daily metrics if this is a significant event
+      if (
+        ['download_complete', 'install_complete'].includes(
+          validatedData.event_type,
+        )
+      ) {
+        await updateDailyMetrics(
+          supabase,
+          profile.organization_id,
+          validatedData.platform,
+          validatedData.event_type,
+        );
+      }
+
+      return NextResponse.json({
+        success: true,
+        data: {
+          event_recorded: true,
+          timestamp: new Date().toISOString(),
+        },
+      });
+    } catch (error) {
+      console.error('Analytics event error:', error);
+
+      return NextResponse.json(
+        {
+          success: false,
+          error: {
+            code: 'EVENT_ERROR',
+            message:
+              error instanceof Error
+                ? error.message
+                : 'Failed to record analytics event',
+            timestamp: new Date().toISOString(),
+          },
+        },
+        { status: 500 },
+      );
+    }
+  },
+);
+
+/**
+ * Helper functions for analytics processing
+ */
+
+function getDefaultStartDate(): string {
+  const date = new Date();
+  date.setDate(date.getDate() - 30); // Default to 30 days ago
+  return date.toISOString().split('T')[0];
+}
+
+function getDefaultEndDate(): string {
+  return new Date().toISOString().split('T')[0];
+}
+
+function processMetricsByGranularity(metrics: any[], granularity: string) {
+  if (granularity === 'daily') {
+    return metrics;
+  }
+
+  // Aggregate data for weekly/monthly
+  const aggregated: Record<string, any> = {};
+
+  metrics.forEach((metric) => {
+    const date = new Date(metric.metric_date);
+    let key: string;
+
+    if (granularity === 'weekly') {
+      const startOfWeek = new Date(
+        date.getFullYear(),
+        date.getMonth(),
+        date.getDate() - date.getDay(),
+      );
+      key = startOfWeek.toISOString().split('T')[0];
+    } else {
+      // monthly
+      key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-01`;
+    }
+
+    if (!aggregated[key]) {
+      aggregated[key] = {
+        metric_date: key,
+        platform: metric.platform,
+        metric_type: metric.metric_type,
+        total_downloads: 0,
+        new_downloads: 0,
+        gross_revenue: 0,
+        net_revenue: 0,
+        average_rating: 0,
+        rating_count: 0,
+        conversion_rate: 0,
+      };
+    }
+
+    // Sum numeric values
+    aggregated[key].total_downloads += metric.total_downloads || 0;
+    aggregated[key].new_downloads += metric.new_downloads || 0;
+    aggregated[key].gross_revenue += metric.gross_revenue || 0;
+    aggregated[key].net_revenue += metric.net_revenue || 0;
+    aggregated[key].rating_count += metric.rating_count || 0;
+
+    // Average ratings need special handling
+    if (metric.average_rating && metric.rating_count) {
+      aggregated[key].average_rating =
+        (aggregated[key].average_rating * aggregated[key].rating_count +
+          metric.average_rating * metric.rating_count) /
+        (aggregated[key].rating_count + metric.rating_count);
+    }
+  });
+
+  return Object.values(aggregated).sort((a: any, b: any) =>
+    a.metric_date.localeCompare(b.metric_date),
+  );
+}
+
+function calculateMetricsSummary(metrics: any[]) {
+  if (!metrics.length) {
+    return {
+      total_downloads: 0,
+      total_revenue: 0,
+      avg_rating: 0,
+      conversion_rate: 0,
+      top_performing_platform: null,
+    };
+  }
+
+  const totalDownloads = metrics.reduce(
+    (sum, m) => sum + (m.total_downloads || 0),
+    0,
+  );
+  const totalRevenue = metrics.reduce(
+    (sum, m) => sum + (m.gross_revenue || 0),
+    0,
+  );
+  const avgRating =
+    metrics.reduce((sum, m) => sum + (m.average_rating || 0), 0) /
+    metrics.length;
+  const avgConversionRate =
+    metrics.reduce((sum, m) => sum + (m.conversion_rate || 0), 0) /
+    metrics.length;
+
+  // Find top performing platform
+  const platformPerformance: Record<string, number> = {};
+  metrics.forEach((m) => {
+    platformPerformance[m.platform] =
+      (platformPerformance[m.platform] || 0) + (m.total_downloads || 0);
+  });
+  const topPlatform = Object.entries(platformPerformance).sort(
+    ([, a], [, b]) => b - a,
+  )[0]?.[0];
+
+  return {
+    total_downloads: totalDownloads,
+    total_revenue: totalRevenue,
+    avg_rating: Math.round(avgRating * 100) / 100,
+    conversion_rate: Math.round(avgConversionRate * 10000) / 100, // Convert to percentage
+    top_performing_platform: topPlatform,
+  };
+}
+
+function processKeywordData(keywords: any[]) {
+  return {
+    top_keywords: keywords.slice(0, 10).map((k) => ({
+      keyword: k.keyword,
+      ranking_position: k.ranking_position,
+      search_volume: k.search_volume,
+      click_through_rate: k.click_through_rate,
+      trending_direction: k.trending_direction,
+    })),
+    performance_summary: {
+      total_keywords: keywords.length,
+      avg_position: Math.round(
+        keywords.reduce((sum, k) => sum + (k.ranking_position || 100), 0) /
+          keywords.length,
+      ),
+      top_10_keywords: keywords.filter((k) => k.ranking_position <= 10).length,
+      trending_up: keywords.filter((k) => k.trending_direction === 'up').length,
+    },
+  };
+}
+
+function processCompetitorData(competitors: any[]) {
+  return {
+    top_competitors: competitors.slice(0, 5).map((c) => ({
+      name: c.competitor_name,
+      market_position: c.market_position,
+      download_estimates: c.download_estimates,
+      rating_analysis: c.rating_analysis,
+      strengths: c.strengths,
+      weaknesses: c.weaknesses,
+    })),
+    market_insights: {
+      total_analyzed: competitors.length,
+      avg_market_position: Math.round(
+        competitors.reduce((sum, c) => sum + (c.market_position || 50), 0) /
+          competitors.length,
+      ),
+      opportunities: competitors
+        .reduce((acc, c) => acc.concat(c.opportunities || []), [])
+        .slice(0, 5),
+      threats: competitors
+        .reduce((acc, c) => acc.concat(c.threats || []), [])
+        .slice(0, 5),
+    },
+  };
+}
+
+function calculateTrends(metrics: any[]) {
+  if (metrics.length < 2) return null;
+
+  const latest = metrics[metrics.length - 1];
+  const previous = metrics[metrics.length - 2];
+
+  return {
+    downloads_change: calculatePercentageChange(
+      previous.total_downloads,
+      latest.total_downloads,
+    ),
+    revenue_change: calculatePercentageChange(
+      previous.gross_revenue,
+      latest.gross_revenue,
+    ),
+    rating_change: calculatePercentageChange(
+      previous.average_rating,
+      latest.average_rating,
+    ),
+    conversion_change: calculatePercentageChange(
+      previous.conversion_rate,
+      latest.conversion_rate,
+    ),
+  };
+}
+
+function calculatePercentageChange(oldValue: number, newValue: number): number {
+  if (!oldValue) return 0;
+  return Math.round(((newValue - oldValue) / oldValue) * 100);
+}
+
+function mapEventToFunnelStage(eventType: string): string {
+  const stageMap: Record<string, string> = {
+    store_view: 'impression',
+    download_start: 'click',
+    download_complete: 'download',
+    install_complete: 'install',
+    first_launch: 'first_use',
+    registration: 'registration',
+  };
+  return stageMap[eventType] || 'impression';
+}
+
+async function updateDailyMetrics(
+  supabase: any,
+  organizationId: string,
+  platform: string,
+  eventType: string,
+) {
+  const today = new Date().toISOString().split('T')[0];
+  const metricType =
+    eventType === 'download_complete' ? 'downloads' : 'conversions';
+
+  // Get existing metric entry
+  const { data: existing } = await supabase
+    .from('app_store_metrics')
+    .select('id, total_downloads, new_downloads')
+    .eq('organization_id', organizationId)
+    .eq('platform', platform)
+    .eq('metric_date', today)
+    .eq('metric_type', metricType)
+    .single();
+
+  if (existing) {
+    // Update existing entry
+    const updates: any = {};
+    if (eventType === 'download_complete') {
+      updates.total_downloads = (existing.total_downloads || 0) + 1;
+      updates.new_downloads = (existing.new_downloads || 0) + 1;
+    }
+
+    await supabase
+      .from('app_store_metrics')
+      .update(updates)
+      .eq('id', existing.id);
+  } else {
+    // Create new entry
+    const newEntry = {
+      organization_id: organizationId,
+      platform,
+      metric_date: today,
+      metric_type: metricType,
+      total_downloads: eventType === 'download_complete' ? 1 : 0,
+      new_downloads: eventType === 'download_complete' ? 1 : 0,
+    };
+
+    await supabase.from('app_store_metrics').insert(newEntry);
+  }
+}
+
+async function getBenchmarkData(
+  supabase: any,
+  organizationId: string,
+  platform?: string,
+) {
+  let query = supabase
+    .from('performance_benchmarks')
+    .select('*')
+    .eq('organization_id', organizationId)
+    .order('benchmark_date', { ascending: false });
+
+  if (platform) {
+    query = query.eq('platform', platform);
+  }
+
+  const { data: benchmarks, error } = await query.limit(10);
+
+  if (error || !benchmarks) {
+    return null;
+  }
+
+  return benchmarks.map((b) => ({
+    benchmark_type: b.benchmark_type,
+    target_value: b.target_value,
+    current_value: b.current_value,
+    performance_status: b.performance_status,
+    improvement_percentage: b.improvement_percentage,
+    industry_percentile: b.industry_percentile,
+  }));
+}

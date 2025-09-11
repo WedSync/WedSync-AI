@@ -1,0 +1,427 @@
+/**
+ * WS-208: AI Journey Patterns API Endpoint
+ * GET /api/ai/journey/patterns - Get vendor-specific journey patterns and templates
+ * Team B - Read-only endpoint with caching and performance optimization
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import {
+  GetPatternsRequestSchema,
+  validateVendorAccess,
+  validateSubscriptionTier,
+} from '@/lib/validation/journey-ai-schemas';
+import { withQueryValidation } from '@/lib/validation/middleware';
+import { defaultRateLimiter } from '@/lib/rate-limit';
+import type { SubscriptionTier } from '@/lib/rate-limit';
+
+// Initialize Supabase client
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    (() => {
+      throw new Error('Missing environment variable: NEXT_PUBLIC_SUPABASE_URL');
+    })(),
+  process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    (() => {
+      throw new Error(
+        'Missing environment variable: SUPABASE_SERVICE_ROLE_KEY',
+      );
+    })(),
+);
+
+// Rate limiting configuration for patterns (less restrictive - read-only)
+const PATTERNS_RATE_LIMITS: Record<
+  string,
+  { requests: number; window: number }
+> = {
+  FREE: { requests: 20, window: 3600 }, // 20 per hour
+  STARTER: { requests: 50, window: 3600 }, // 50 per hour
+  PROFESSIONAL: { requests: 200, window: 3600 }, // 200 per hour
+  SCALE: { requests: 500, window: 3600 }, // 500 per hour
+  ENTERPRISE: { requests: 1000, window: 3600 }, // 1000 per hour
+};
+
+// In-memory cache for patterns (30 minute TTL)
+interface CacheEntry {
+  data: any;
+  timestamp: number;
+  ttl: number;
+}
+
+const patternCache = new Map<string, CacheEntry>();
+const CACHE_TTL = 30 * 60 * 1000; // 30 minutes
+
+/**
+ * Get vendor-specific journey patterns and templates
+ * GET /api/ai/journey/patterns
+ */
+export const GET = withQueryValidation(
+  GetPatternsRequestSchema,
+  async (request: NextRequest, validatedQuery) => {
+    const startTime = Date.now();
+
+    try {
+      console.log(
+        '[AI Journey Patterns API] Fetching patterns for:',
+        validatedQuery.vendorType,
+      );
+
+      // 1. Authentication check (optional for patterns - public data)
+      const authHeader = request.headers.get('Authorization');
+      let user: any = null;
+      let subscriptionTier: string = 'FREE';
+      let organizationId: string | null = null;
+
+      if (authHeader) {
+        const {
+          data: { user: authUser },
+          error: authError,
+        } = await supabase.auth.getUser(authHeader.replace('Bearer ', ''));
+
+        if (!authError && authUser) {
+          user = authUser;
+
+          // Get organization and subscription info for authenticated users
+          const { data: profile } = await supabase
+            .from('user_profiles')
+            .select('organization_id')
+            .eq('user_id', user.id)
+            .single();
+
+          if (profile?.organization_id) {
+            organizationId = profile.organization_id;
+            const subscriptionInfo = await validateSubscriptionTier(
+              organizationId,
+              supabase,
+            );
+            subscriptionTier = subscriptionInfo.tier;
+          }
+        }
+      }
+
+      // 2. Rate limiting check (more lenient for read operations)
+      const rateLimitConfig = PATTERNS_RATE_LIMITS[subscriptionTier];
+      const identifier = user?.id || request.ip || 'anonymous';
+
+      const rateLimitResult = await defaultRateLimiter.checkLimit(
+        `ai_journey_patterns:${identifier}`,
+        {
+          requests: rateLimitConfig.requests,
+          window: rateLimitConfig.window * 1000,
+          tier: subscriptionTier as SubscriptionTier,
+          vendorType: validatedQuery.vendorType,
+        },
+      );
+
+      if (!rateLimitResult.success) {
+        return NextResponse.json(
+          {
+            error: 'RATE_LIMITED',
+            message:
+              'Too many pattern requests. Please wait before trying again.',
+            retryAfter: rateLimitResult.retryAfter,
+            limit: rateLimitConfig.requests,
+            window: 'per hour',
+            timestamp: new Date().toISOString(),
+          },
+          {
+            status: 429,
+            headers: {
+              'Retry-After': rateLimitResult.retryAfter?.toString() || '3600',
+              'X-RateLimit-Limit': rateLimitConfig.requests.toString(),
+              'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+            },
+          },
+        );
+      }
+
+      // 3. Check cache first
+      const cacheKey = `patterns:${validatedQuery.vendorType}:${validatedQuery.serviceLevel || 'all'}:${validatedQuery.timelineMonths || 'any'}:${validatedQuery.limit}`;
+      const cachedEntry = patternCache.get(cacheKey);
+
+      if (cachedEntry && Date.now() - cachedEntry.timestamp < cachedEntry.ttl) {
+        console.log('[AI Journey Patterns API] Returning cached patterns');
+
+        const response = NextResponse.json({
+          success: true,
+          data: cachedEntry.data,
+          meta: {
+            timestamp: new Date().toISOString(),
+            processingTime: Date.now() - startTime,
+            cached: true,
+            rateLimit: {
+              limit: rateLimitConfig.requests,
+              remaining: rateLimitResult.remaining,
+              resetTime: Math.ceil(
+                (Date.now() + rateLimitConfig.window * 1000) / 1000,
+              ),
+            },
+          },
+        });
+
+        // Add cache and rate limiting headers
+        response.headers.set('Cache-Control', 'public, max-age=1800'); // 30 minutes
+        response.headers.set('X-Cache', 'HIT');
+        response.headers.set(
+          'X-RateLimit-Limit',
+          rateLimitConfig.requests.toString(),
+        );
+        response.headers.set(
+          'X-RateLimit-Remaining',
+          rateLimitResult.remaining.toString(),
+        );
+
+        return response;
+      }
+
+      // 4. Query database for patterns
+      console.log('[AI Journey Patterns API] Querying database for patterns');
+
+      let query = supabase
+        .from('vendor_journey_patterns')
+        .select(
+          `
+          id,
+          vendor_type,
+          pattern_name,
+          pattern_description,
+          service_level,
+          pattern_data,
+          critical_touchpoints,
+          seasonal_adjustments,
+          timeline_requirements,
+          success_rate,
+          usage_frequency,
+          avg_client_satisfaction,
+          industry_standard,
+          best_practice_notes,
+          compliance_requirements,
+          created_at,
+          updated_at
+        `,
+        )
+        .eq('vendor_type', validatedQuery.vendorType)
+        .order('success_rate', { ascending: false })
+        .order('usage_frequency', { ascending: false });
+
+      // Apply optional filters
+      if (validatedQuery.serviceLevel) {
+        query = query.in('service_level', [validatedQuery.serviceLevel, 'all']);
+      }
+
+      if (validatedQuery.timelineMonths) {
+        query = query
+          .lte(
+            'timeline_requirements->min_weeks',
+            Math.floor(validatedQuery.timelineMonths * 4.33),
+          )
+          .gte(
+            'timeline_requirements->max_weeks',
+            Math.floor(validatedQuery.timelineMonths * 4.33),
+          );
+      }
+
+      query = query.limit(validatedQuery.limit);
+
+      const { data: patterns, error: patternsError } = await query;
+
+      if (patternsError) {
+        console.error(
+          '[AI Journey Patterns API] Database query failed:',
+          patternsError,
+        );
+        return NextResponse.json(
+          {
+            error: 'DATABASE_ERROR',
+            message: 'Failed to fetch journey patterns',
+            timestamp: new Date().toISOString(),
+          },
+          { status: 500 },
+        );
+      }
+
+      // 5. Get industry statistics for context
+      const { data: industryStats, error: statsError } = await supabase
+        .from('vendor_journey_patterns')
+        .select(
+          'vendor_type, success_rate, avg_client_satisfaction, usage_frequency',
+        )
+        .eq('vendor_type', validatedQuery.vendorType);
+
+      let industryAverages = {};
+      if (!statsError && industryStats?.length > 0) {
+        industryAverages = {
+          avgSuccessRate:
+            industryStats.reduce((sum, p) => sum + p.success_rate, 0) /
+            industryStats.length,
+          avgSatisfaction:
+            industryStats.reduce(
+              (sum, p) => sum + p.avg_client_satisfaction,
+              0,
+            ) / industryStats.length,
+          totalPatterns: industryStats.length,
+          mostPopularPattern:
+            industryStats.reduce((prev, current) =>
+              prev.usage_frequency > current.usage_frequency ? prev : current,
+            )?.pattern_name || 'N/A',
+        };
+      }
+
+      // 6. Get AI-generated patterns for comparison (Premium+ only)
+      let aiGeneratedPatterns: any[] = [];
+      if (['PROFESSIONAL', 'SCALE', 'ENTERPRISE'].includes(subscriptionTier)) {
+        const { data: aiPatterns } = await supabase
+          .from('ai_generated_journeys')
+          .select(
+            `
+            id,
+            vendor_type,
+            service_level,
+            wedding_timeline_months,
+            avg_completion_rate,
+            avg_satisfaction_score,
+            usage_count,
+            generated_structure
+          `,
+          )
+          .eq('vendor_type', validatedQuery.vendorType)
+          .eq('is_template', true)
+          .gte('avg_completion_rate', 0.7)
+          .gte('avg_satisfaction_score', 3.5)
+          .order('avg_completion_rate', { ascending: false })
+          .limit(Math.min(5, Math.floor(validatedQuery.limit / 2)));
+
+        aiGeneratedPatterns = aiPatterns || [];
+      }
+
+      // 7. Structure response data
+      const responseData = {
+        vendorType: validatedQuery.vendorType,
+        serviceLevel: validatedQuery.serviceLevel,
+        timelineMonths: validatedQuery.timelineMonths,
+        industryPatterns:
+          patterns?.map((pattern) => ({
+            id: pattern.id,
+            name: pattern.pattern_name,
+            description: pattern.pattern_description,
+            serviceLevel: pattern.service_level,
+            successRate: pattern.success_rate,
+            satisfactionScore: pattern.avg_client_satisfaction,
+            usageFrequency: pattern.usage_frequency,
+            isIndustryStandard: pattern.industry_standard,
+            timelineRequirements: pattern.timeline_requirements,
+            criticalTouchpoints: pattern.critical_touchpoints,
+            seasonalAdjustments: pattern.seasonal_adjustments,
+            bestPractices: pattern.best_practice_notes,
+            complianceRequirements: pattern.compliance_requirements,
+            patternData:
+              subscriptionTier !== 'FREE' ? pattern.pattern_data : null, // Hide detailed data for free tier
+            lastUpdated: pattern.updated_at,
+          })) || [],
+        aiGeneratedPatterns: aiGeneratedPatterns.map((pattern) => ({
+          id: pattern.id,
+          serviceLevel: pattern.service_level,
+          timelineMonths: pattern.wedding_timeline_months,
+          completionRate: pattern.avg_completion_rate,
+          satisfactionScore: pattern.avg_satisfaction_score,
+          usageCount: pattern.usage_count,
+          structure: pattern.generated_structure,
+        })),
+        industryAverages,
+        meta: {
+          totalPatterns: (patterns?.length || 0) + aiGeneratedPatterns.length,
+          industryPatterns: patterns?.length || 0,
+          aiPatterns: aiGeneratedPatterns.length,
+          subscriptionTier,
+          hasAIAccess: ['PROFESSIONAL', 'SCALE', 'ENTERPRISE'].includes(
+            subscriptionTier,
+          ),
+        },
+      };
+
+      // 8. Cache the response
+      patternCache.set(cacheKey, {
+        data: responseData,
+        timestamp: Date.now(),
+        ttl: CACHE_TTL,
+      });
+
+      // 9. Clean up old cache entries (basic cleanup)
+      if (patternCache.size > 1000) {
+        const now = Date.now();
+        for (const [key, entry] of patternCache.entries()) {
+          if (now - entry.timestamp > entry.ttl) {
+            patternCache.delete(key);
+          }
+        }
+      }
+
+      // 10. Return successful response
+      const response = NextResponse.json({
+        success: true,
+        data: responseData,
+        meta: {
+          timestamp: new Date().toISOString(),
+          processingTime: Date.now() - startTime,
+          cached: false,
+          rateLimit: {
+            limit: rateLimitConfig.requests,
+            remaining: rateLimitResult.remaining,
+            resetTime: Math.ceil(
+              (Date.now() + rateLimitConfig.window * 1000) / 1000,
+            ),
+          },
+        },
+      });
+
+      // Add cache and rate limiting headers
+      response.headers.set('Cache-Control', 'public, max-age=1800'); // 30 minutes
+      response.headers.set('X-Cache', 'MISS');
+      response.headers.set(
+        'X-RateLimit-Limit',
+        rateLimitConfig.requests.toString(),
+      );
+      response.headers.set(
+        'X-RateLimit-Remaining',
+        rateLimitResult.remaining.toString(),
+      );
+
+      console.log(
+        '[AI Journey Patterns API] Patterns fetched successfully:',
+        responseData.totalPatterns,
+      );
+      return response;
+    } catch (error) {
+      console.error('[AI Journey Patterns API] Request failed:', error);
+
+      const errorMessage =
+        error instanceof Error ? error.message : 'Unknown error occurred';
+
+      return NextResponse.json(
+        {
+          error: 'INTERNAL_ERROR',
+          message: 'Failed to fetch journey patterns',
+          details:
+            process.env.NODE_ENV === 'development' ? errorMessage : undefined,
+          timestamp: new Date().toISOString(),
+        },
+        { status: 500 },
+      );
+    }
+  },
+);
+
+/**
+ * Handle OPTIONS request for CORS
+ */
+export async function OPTIONS() {
+  return new NextResponse(null, {
+    status: 200,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      'Access-Control-Max-Age': '86400',
+    },
+  });
+}

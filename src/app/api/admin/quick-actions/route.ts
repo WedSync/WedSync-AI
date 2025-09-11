@@ -1,0 +1,220 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { emergencyControls } from '@/lib/admin/emergencyControls';
+import { adminAuditLogger } from '@/lib/admin/auditLogger';
+import { verifyAdminAccess } from '@/lib/admin/auth';
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+
+    // Verify admin authentication and permissions
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized access' },
+        { status: 401 },
+      );
+    }
+
+    // Verify admin-level permissions
+    const isAdmin = await verifyAdminAccess(user.id);
+    if (!isAdmin) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions' },
+        { status: 403 },
+      );
+    }
+
+    const body = await request.json();
+    const { action, mfaCode, ...actionData } = body;
+
+    if (!action) {
+      return NextResponse.json(
+        { error: 'Action is required' },
+        { status: 400 },
+      );
+    }
+
+    // Get client IP for audit logging
+    const clientIP =
+      request.headers.get('x-forwarded-for') ||
+      request.headers.get('x-real-ip') ||
+      'unknown';
+
+    // Verify MFA for critical actions
+    const criticalActions = [
+      'maintenance-mode',
+      'emergency-user-suspend',
+      'force-logout-all',
+    ];
+
+    if (criticalActions.includes(action)) {
+      if (!mfaCode) {
+        return NextResponse.json(
+          { error: 'MFA code required for this action' },
+          { status: 400 },
+        );
+      }
+
+      // TODO: Verify MFA code with authentication service
+      // const mfaValid = await verifyMfaCode(user.id, mfaCode);
+      // if (!mfaValid) {
+      //   return NextResponse.json(
+      //     { error: 'Invalid MFA code' },
+      //     { status: 400 }
+      //   );
+      // }
+    }
+
+    // Execute the requested action
+    let result;
+    let auditDetails: Record<string, any> = { clientIP, ...actionData };
+
+    switch (action) {
+      case 'maintenance-mode':
+        result = await emergencyControls.enableMaintenanceMode(
+          actionData.message || 'System maintenance in progress',
+        );
+        auditDetails.maintenanceMessage = actionData.message;
+        break;
+
+      case 'clear-cache':
+        result = await emergencyControls.clearSystemCache();
+        break;
+
+      case 'acknowledge-alerts':
+        result = await emergencyControls.acknowledgeAllAlerts(user.id);
+        break;
+
+      case 'emergency-user-suspend':
+        if (!actionData.userIdentifier || !actionData.reason) {
+          return NextResponse.json(
+            { error: 'User identifier and reason are required' },
+            { status: 400 },
+          );
+        }
+        result = await emergencyControls.suspendUser(
+          actionData.userIdentifier,
+          actionData.reason,
+          user.id,
+        );
+        auditDetails.targetUser = actionData.userIdentifier;
+        auditDetails.suspensionReason = actionData.reason;
+        break;
+
+      case 'force-logout-all':
+        result = await emergencyControls.forceLogoutAllUsers(user.id);
+        break;
+
+      case 'emergency-backup':
+        result = await emergencyControls.createEmergencyBackup();
+        break;
+
+      default:
+        return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
+    }
+
+    // Log the admin action for audit trail
+    await adminAuditLogger.logAction({
+      adminId: user.id,
+      adminEmail: user.email || 'unknown',
+      action,
+      status: result.success ? 'success' : 'failed',
+      details: auditDetails,
+      timestamp: new Date().toISOString(),
+      clientIP,
+      requiresMFA: criticalActions.includes(action),
+    });
+
+    if (result.success) {
+      return NextResponse.json({
+        success: true,
+        message: result.message,
+        data: result.data,
+      });
+    } else {
+      return NextResponse.json(
+        {
+          error: result.message || 'Action failed',
+          details: result.error,
+        },
+        { status: 500 },
+      );
+    }
+  } catch (error) {
+    console.error('Admin quick action error:', error);
+
+    // Log the failed attempt
+    try {
+      const body = await request.json();
+      const { data: user } = await createClient().auth.getUser();
+
+      if (user) {
+        await adminAuditLogger.logAction({
+          adminId: user.id,
+          adminEmail: user.email || 'unknown',
+          action: body.action || 'unknown',
+          status: 'error',
+          details: {
+            error: error instanceof Error ? error.message : 'Unknown error',
+            clientIP: request.headers.get('x-forwarded-for') || 'unknown',
+          },
+          timestamp: new Date().toISOString(),
+          clientIP: request.headers.get('x-forwarded-for') || 'unknown',
+          requiresMFA: false,
+        });
+      }
+    } catch (auditError) {
+      console.error('Failed to log audit entry:', auditError);
+    }
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+
+    // Verify admin authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized access' },
+        { status: 401 },
+      );
+    }
+
+    const isAdmin = await verifyAdminAccess(user.id);
+    if (!isAdmin) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions' },
+        { status: 403 },
+      );
+    }
+
+    // Get system status for admin dashboard
+    const systemStatus = await emergencyControls.getSystemStatus();
+
+    return NextResponse.json({
+      success: true,
+      data: systemStatus,
+    });
+  } catch (error) {
+    console.error('Get system status error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

@@ -1,0 +1,349 @@
+/**
+ * WS-153: Comprehensive E2E Tests for Wedding Day Photo Groups
+ * Tests emergency mode, offline sync, photographer integration, and PWA features
+ */
+
+import { test, expect, Page } from '@playwright/test';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { createClient } from '@supabase/supabase-js';
+// Test configuration
+const BASE_URL = process.env.TEST_URL || 'http://localhost:3000';
+const SUPABASE_URL = process.env.SUPABASE_URL!;
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY!;
+// Helper to simulate network conditions
+async function simulateNetworkCondition(page: Page, condition: 'offline' | 'slow' | 'fast') {
+  const client = await page.context().newCDPSession(page);
+  
+  switch (condition) {
+    case 'offline':
+      await client.send('Network.emulateNetworkConditions', {
+        offline: true,
+        downloadThroughput: 0,
+        uploadThroughput: 0,
+        latency: 0
+      });
+      break;
+    case 'slow':
+        offline: false,
+        downloadThroughput: 500 * 1024 / 8, // 500kb/s
+        uploadThroughput: 500 * 1024 / 8,
+        latency: 400 // 400ms latency
+    case 'fast':
+        downloadThroughput: -1,
+        uploadThroughput: -1,
+  }
+}
+test.describe('WedMe Wedding Day Photo Groups - Complete E2E', () => {
+  let supabase: unknown;
+  test.beforeAll(async () => {
+    // Initialize Supabase client for test data setup
+    supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+  });
+  test.beforeEach(async ({ page }) => {
+    // Set up test user session
+    await page.goto(BASE_URL);
+    await page.evaluate(() => {
+      localStorage.setItem('test_mode', 'true');
+      localStorage.setItem('wedding_id', 'test-wedding-123');
+    });
+  test.describe('Emergency Mode Features', () => {
+    test('should activate emergency mode under stress conditions', async ({ page }) => {
+      await page.goto(`${BASE_URL}/wedme/photo-groups`);
+      
+      // Simulate poor network
+      await simulateNetworkCondition(page, 'slow');
+      // Click emergency mode button
+      await page.click('[data-testid="activate-emergency"]');
+      // Verify emergency mode activated
+      await expect(page.locator('.emergency-mode-active')).toBeVisible();
+      await expect(page.locator('[data-testid="emergency-badge"]')).toContainText('EMERGENCY MODE');
+      // Verify simplified interface
+      await expect(page.locator('.simplified-controls')).toBeVisible();
+      await expect(page.locator('.advanced-features')).not.toBeVisible();
+      // Test offline backup creation
+      const backupCreated = await page.evaluate(() => {
+        return localStorage.getItem('emergency_backup') !== null;
+      expect(backupCreated).toBeTruthy();
+    test('should generate QR code for photographer access', async ({ page }) => {
+      // Wait for QR code generation
+      await expect(page.locator('[data-testid="photographer-qr"]')).toBeVisible();
+      // Verify QR code contains valid data
+      const qrData = await page.getAttribute('[data-testid="photographer-qr"]', 'data-value');
+      expect(qrData).toContain('photographer/emergency');
+      expect(qrData).toContain('token');
+    test('should handle photographer emergency access', async ({ page, context }) => {
+      // Couple activates emergency mode
+      const couplePage = page;
+      await couplePage.goto(`${BASE_URL}/wedme/photo-groups`);
+      await couplePage.click('[data-testid="activate-emergency"]');
+      // Get access token from QR
+      const qrData = await couplePage.getAttribute('[data-testid="photographer-qr"]', 'data-value');
+      const token = new URL(qrData!).searchParams.get('token');
+      // Photographer scans QR (simulate with new tab)
+      const photographerPage = await context.newPage();
+      await photographerPage.goto(`${BASE_URL}/photographer/emergency/${token}`);
+      // Verify photographer has access
+      await expect(photographerPage.locator('[data-testid="photo-groups-list"]')).toBeVisible();
+      await expect(photographerPage.locator('[data-testid="access-granted"]')).toContainText('Emergency Access Granted');
+      // Test real-time sync between couple and photographer
+      await photographerPage.click('[data-testid="complete-group-1"]');
+      // Verify update appears on couple's page
+      await couplePage.waitForSelector('[data-testid="group-1-completed"]');
+      await expect(couplePage.locator('[data-testid="group-1-status"]')).toContainText('Completed');
+  test.describe('Advanced Offline Sync', () => {
+    test('should work completely offline', async ({ page }) => {
+      // Load initial data
+      await page.waitForSelector('[data-testid="photo-groups-list"]');
+      // Go offline
+      await simulateNetworkCondition(page, 'offline');
+      await page.waitForSelector('[data-testid="offline-indicator"]');
+      // Make changes while offline
+      await page.click('[data-testid="add-guest-to-group"]');
+      await page.fill('[data-testid="guest-name"]', 'Uncle Bob');
+      await page.click('[data-testid="save-guest"]');
+      // Verify changes saved locally
+      await expect(page.locator('[data-testid="guest-uncle-bob"]')).toBeVisible();
+      // Check offline queue
+      const queuedChanges = await page.evaluate(() => {
+        return JSON.parse(localStorage.getItem('offline_changes') || '[]').length;
+      expect(queuedChanges).toBeGreaterThan(0);
+    test('should sync when returning online', async ({ page }) => {
+      // Make changes offline
+      await page.click('[data-testid="edit-group-time"]');
+      await page.fill('[data-testid="time-input"]', '14:30');
+      await page.click('[data-testid="save-time"]');
+      // Return online
+      await simulateNetworkCondition(page, 'fast');
+      // Wait for sync
+      await page.waitForSelector('[data-testid="sync-complete"]', { timeout: 10000 });
+      // Verify changes synced
+      const syncStatus = await page.textContent('[data-testid="sync-status"]');
+      expect(syncStatus).toBe('Synced');
+      // Verify no pending changes
+      const pendingChanges = await page.evaluate(() => {
+      expect(pendingChanges).toBe(0);
+    test('should handle conflict resolution', async ({ page, context }) => {
+      // Setup two devices editing same data
+      const device1 = page;
+      const device2 = await context.newPage();
+      await device1.goto(`${BASE_URL}/wedme/photo-groups`);
+      await device2.goto(`${BASE_URL}/wedme/photo-groups`);
+      // Both go offline
+      await simulateNetworkCondition(device1, 'offline');
+      await simulateNetworkCondition(device2, 'offline');
+      // Make conflicting changes
+      await device1.click('[data-testid="edit-group-1-location"]');
+      await device1.fill('[data-testid="location-input"]', 'Garden');
+      await device1.click('[data-testid="save-location"]');
+      await device2.click('[data-testid="edit-group-1-location"]');
+      await device2.fill('[data-testid="location-input"]', 'Beach');
+      await device2.click('[data-testid="save-location"]');
+      // Device1 comes online first
+      await simulateNetworkCondition(device1, 'fast');
+      await device1.waitForSelector('[data-testid="sync-complete"]');
+      // Device2 comes online - should detect conflict
+      await simulateNetworkCondition(device2, 'fast');
+      await device2.waitForSelector('[data-testid="conflict-detected"]');
+      // Resolve conflict
+      await device2.click('[data-testid="resolve-conflict"]');
+      await device2.click('[data-testid="keep-remote"]'); // Choose device1's change
+      // Verify both show same data
+      const location1 = await device1.textContent('[data-testid="group-1-location"]');
+      const location2 = await device2.textContent('[data-testid="group-1-location"]');
+      expect(location1).toBe(location2);
+  test.describe('PWA and App Store Features', () => {
+    test('should have valid PWA manifest', async ({ page }) => {
+      const response = await page.goto(`${BASE_URL}/manifest.json`);
+      expect(response?.status()).toBe(200);
+      const manifest = await response?.json();
+      // Required PWA fields
+      expect(manifest.name).toBe('WedMe - Wedding Planning');
+      expect(manifest.short_name).toBe('WedMe');
+      expect(manifest.display).toBe('standalone');
+      expect(manifest.start_url).toBe('/');
+      expect(manifest.theme_color).toBeDefined();
+      expect(manifest.background_color).toBeDefined();
+      // Required icons
+      const requiredSizes = ['192x192', '512x512'];
+      requiredSizes.forEach(size => {
+        const hasIcon = manifest.icons.some((icon: any) => icon.sizes === size);
+        expect(hasIcon).toBeTruthy();
+      // App store specific fields
+      expect(manifest.categories).toContain('photography');
+      expect(manifest.screenshots).toBeDefined();
+      expect(manifest.screenshots.length).toBeGreaterThan(0);
+    test('should register and activate service worker', async ({ page }) => {
+      // Wait for service worker registration
+      const swRegistered = await page.evaluate(async () => {
+        if ('serviceWorker' in navigator) {
+          const registration = await navigator.serviceWorker.ready;
+          return registration.active?.state === 'activated';
+        }
+        return false;
+      expect(swRegistered).toBeTruthy();
+      // Test service worker caching
+      await page.reload();
+      // Should load from cache (verify by checking network requests)
+      const cachedResponse = await page.evaluate(() => {
+        return performance.getEntriesByType('navigation')[0].transferSize === 0;
+      // Some assets should be from cache
+      expect(cachedResponse).toBeDefined();
+    test('should show install prompt on iOS', async ({ page }) => {
+      // Set iOS user agent
+      await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X)');
+      // Check for iOS install prompt
+      await expect(page.locator('[data-testid="ios-install-prompt"]')).toBeVisible();
+      await expect(page.locator('[data-testid="ios-install-instructions"]')).toContainText('Add to Home Screen');
+    test('should handle push notifications', async ({ page }) => {
+      // Grant notification permission
+      await page.context().grantPermissions(['notifications']);
+      // Subscribe to push notifications
+      await page.click('[data-testid="enable-notifications"]');
+      // Verify subscription created
+      const subscribed = await page.evaluate(async () => {
+        const registration = await navigator.serviceWorker.ready;
+        const subscription = await registration.pushManager.getSubscription();
+        return subscription !== null;
+      expect(subscribed).toBeTruthy();
+  test.describe('Mobile Performance', () => {
+    test('should meet Core Web Vitals thresholds', async ({ page }) => {
+      // Enable performance metrics
+      // Measure Core Web Vitals
+      const metrics = await page.evaluate(() => {
+        return new Promise((resolve) => {
+          new PerformanceObserver((list) => {
+            const entries = list.getEntries();
+            const metrics: any = {};
+            
+            entries.forEach((entry: any) => {
+              if (entry.name === 'LCP') {
+                metrics.LCP = entry.startTime;
+              } else if (entry.name === 'FID') {
+                metrics.FID = entry.processingStart - entry.startTime;
+              } else if (entry.name === 'CLS') {
+                metrics.CLS = entry.value;
+              }
+            });
+            resolve(metrics);
+          }).observe({ entryTypes: ['largest-contentful-paint', 'first-input', 'layout-shift'] });
+          
+          // Trigger some interactions
+          setTimeout(() => {
+            document.body.click();
+          }, 100);
+        });
+      // Assert Core Web Vitals meet thresholds
+      if (metrics.LCP) expect(metrics.LCP).toBeLessThan(2500); // 2.5 seconds
+      if (metrics.FID) expect(metrics.FID).toBeLessThan(100); // 100ms
+      if (metrics.CLS) expect(metrics.CLS).toBeLessThan(0.1); // 0.1
+    test('should optimize for mobile touch interactions', async ({ page }) => {
+      // Set mobile viewport
+      await page.setViewportSize({ width: 375, height: 812 });
+      // Test touch targets are large enough
+      const touchTargets = await page.$$('[data-testid*="button"]');
+      for (const target of touchTargets) {
+        const box = await target.boundingBox();
+        if (box) {
+          expect(box.width).toBeGreaterThanOrEqual(44); // iOS minimum
+          expect(box.height).toBeGreaterThanOrEqual(44);
+      }
+      // Test swipe gestures
+      await page.locator('[data-testid="photo-groups-list"]').swipe({ direction: 'left' });
+      await expect(page.locator('[data-testid="group-actions"]')).toBeVisible();
+    test('should handle battery optimization', async ({ page }) => {
+      // Simulate low battery
+      await page.evaluate(() => {
+        Object.defineProperty(navigator, 'getBattery', {
+          value: () => Promise.resolve({
+            level: 0.15, // 15% battery
+            charging: false
+          })
+      // Trigger battery check
+      // Should show battery warning
+      await expect(page.locator('[data-testid="low-battery-warning"]')).toBeVisible();
+      // Should enable battery saver mode
+      const batterySaverEnabled = await page.evaluate(() => {
+        return localStorage.getItem('battery_saver_mode') === 'true';
+      expect(batterySaverEnabled).toBeTruthy();
+  test.describe('Complete Wedding Day Workflow', () => {
+    test('should handle full wedding day scenario', async ({ page }) => {
+      // Morning setup
+      await page.goto(`${BASE_URL}/wedme/wedding-day`);
+      await expect(page.locator('[data-testid="wedding-day-dashboard"]')).toBeVisible();
+      // Check timeline
+      await page.click('[data-testid="view-timeline"]');
+      await expect(page.locator('[data-testid="timeline-events"]')).toBeVisible();
+      // Start first photo group
+      await page.click('[data-testid="start-event-getting-ready"]');
+      await expect(page.locator('[data-testid="active-event"]')).toContainText('Getting Ready');
+      // Complete photo group
+      await page.click('[data-testid="complete-event"]');
+      await expect(page.locator('[data-testid="event-completed"]')).toBeVisible();
+      // Handle venue WiFi issues (go offline)
+      await expect(page.locator('[data-testid="offline-mode"]')).toBeVisible();
+      // Continue working offline
+      await page.click('[data-testid="start-event-ceremony"]');
+      await page.click('[data-testid="add-last-minute-guest"]');
+      await page.fill('[data-testid="guest-name"]', 'Surprise Guest');
+      // Emergency situation
+      await expect(page.locator('[data-testid="emergency-mode"]')).toBeVisible();
+      // Share with photographer via QR
+      // Export backup
+      await page.click('[data-testid="export-backup"]');
+      const downloadPromise = page.waitForEvent('download');
+      const download = await downloadPromise;
+      expect(download.suggestedFilename()).toContain('wedding-photo-backup');
+      // Return online and sync
+      await page.waitForSelector('[data-testid="sync-complete"]');
+      // Verify all day's data is intact
+      const finalData = await page.evaluate(() => {
+        return {
+          completedGroups: document.querySelectorAll('[data-testid*="completed"]').length,
+          totalPhotos: localStorage.getItem('total_photos_taken'),
+          syncStatus: document.querySelector('[data-testid="sync-status"]')?.textContent
+        };
+      expect(finalData.completedGroups).toBeGreaterThan(0);
+      expect(finalData.syncStatus).toBe('Synced');
+});
+// Performance benchmark tests
+test.describe('Performance Benchmarks', () => {
+  test('should load photo groups under 2 seconds', async ({ page }) => {
+    const start = Date.now();
+    await page.goto(`${BASE_URL}/wedme/photo-groups`);
+    await page.waitForSelector('[data-testid="photo-groups-list"]');
+    const loadTime = Date.now() - start;
+    
+    expect(loadTime).toBeLessThan(2000);
+  test('should handle 100+ photo groups efficiently', async ({ page }) => {
+    // Create test data
+    const photoGroups = Array.from({ length: 100 }, (_, i) => ({
+      id: `group-${i}`,
+      name: `Group ${i}`,
+      guests: [`Guest ${i}A`, `Guest ${i}B`],
+      timeSlot: `${10 + Math.floor(i / 5)}:${(i % 5) * 12}0`
+    }));
+    // Load large dataset
+    await page.evaluate((groups) => {
+      localStorage.setItem('wedding_photo_groups', JSON.stringify(groups));
+    }, photoGroups);
+    await page.reload();
+    // Measure render performance
+    const renderTime = await page.evaluate(() => {
+      const start = performance.now();
+      document.querySelector('[data-testid="photo-groups-list"]');
+      return performance.now() - start;
+    expect(renderTime).toBeLessThan(500);
+    // Test scroll performance
+      const container = document.querySelector('[data-testid="photo-groups-list"]');
+      container?.scrollTo(0, container.scrollHeight);
+    // Should maintain 60fps scrolling
+    const fps = await page.evaluate(() => {
+      let frames = 0;
+      const countFrames = () => {
+        frames++;
+        requestAnimationFrame(countFrames);
+      };
+      countFrames();
+      return new Promise((resolve) => {
+        setTimeout(() => resolve(frames), 1000);
+    expect(fps).toBeGreaterThan(50); // Allow some variance from 60fps

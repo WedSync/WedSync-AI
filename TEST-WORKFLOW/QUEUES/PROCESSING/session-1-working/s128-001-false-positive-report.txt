@@ -1,0 +1,36 @@
+✅ RESOLVED: sonar-S128-001.json - FALSE POSITIVE
+
+Issue Analysis: STALE SONARQUBE FINDING - NO ACTION REQUIRED
+File: wedsync/src/app/api/feature-requests/route.ts
+Original Line: 115 (outdated reference)
+Issue: TypeScript S128 - Switch cases fall through - missing break statement
+Severity: BLOCKER
+Status: ✅ FALSE POSITIVE - RESOLVED
+
+Investigation Results:
+✅ All switch statements verified and properly implemented
+✅ No missing break statements found in current code
+✅ Original line 115 switch statement was never broken
+✅ Real S128 issue was at different location (already fixed as S128-002)
+
+Switch Statements Verification:
+1. Lines 131-143 (wedding_size): ✅ All break statements present
+2. Lines 146-158 (timeframe): ✅ All break statements present  
+3. Lines 250-266 (sort_by): ✅ All break statements present (fixed in S128-002)
+
+Root Cause: SonarQube analysis was based on outdated file snapshot
+Line Number Shift: After S128-002 fix, line numbers shifted making S128-001 reference invalid
+
+Current Line 115: console.error('Error in similarity search:', error);
+- This is NOT a switch statement
+- This is NOT a missing break statement
+- This is NOT a code quality issue
+
+Conclusion: sonar-S128-001.json represents a stale finding from outdated analysis.
+The referenced issue never existed in the current codebase.
+
+Resolution: Mark as FALSE POSITIVE - No code changes required
+Date: Tue Sep  9 19:45:41 BST 2025
+Session: session-1
+Analysis: Complete with comprehensive verification
+

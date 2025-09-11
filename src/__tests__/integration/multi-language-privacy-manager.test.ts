@@ -1,0 +1,385 @@
+/**
+ * Multi-Language Privacy Manager Integration Tests
+ * WS-149 Round 2: Testing cultural compliance and multi-language features
+ * Team E - Batch 12 - Round 2 Testing Suite
+ */
+
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { MultiLanguagePrivacyManager } from '@/lib/services/multi-language-privacy-manager';
+// Mock OpenAI
+vi.mock('openai', () => ({
+  default: jest.fn(() => ({
+    chat: {
+      completions: {
+        create: vi.fn()
+      }
+    }
+  }))
+}));
+// Mock Supabase
+vi.mock('@supabase/supabase-js', () => ({
+  createClient: jest.fn(() => ({
+    from: jest.fn(() => ({
+      insert: jest.fn(() => ({ select: jest.fn(() => ({ single: vi.fn() })) })),
+      select: jest.fn(() => ({ 
+        eq: jest.fn(() => ({ 
+          single: vi.fn(),
+          order: jest.fn(() => ({ limit: jest.fn(() => ({ single: vi.fn() })) }))
+        })) 
+      })),
+      upsert: vi.fn()
+    }))
+describe('Multi-Language Privacy Manager', () => {
+  let manager: MultiLanguagePrivacyManager;
+  
+  beforeEach(() => {
+    manager = new (MultiLanguagePrivacyManager as unknown)();
+    
+    // Mock OpenAI
+    (manager as unknown).openai = {
+      chat: {
+        completions: {
+          create: vi.fn()
+        }
+    };
+    // Mock Supabase
+    (manager as unknown).supabase = {
+      from: jest.fn(() => ({
+        insert: jest.fn(() => ({ 
+          select: jest.fn(() => ({ 
+            single: jest.fn(() => ({ data: { id: 'localized-notice-123' } })) 
+          })) 
+        })),
+        select: jest.fn(() => ({ 
+          eq: jest.fn(() => ({ 
+            single: jest.fn(() => ({ data: [] })),
+            order: jest.fn(() => ({ limit: jest.fn(() => ({ single: jest.fn(() => ({ data: {} })) })) }))
+        upsert: vi.fn()
+      }))
+    // Mock extension methods
+    (manager as unknown).legalFrameworkMapper.getApplicableFramework = vi.fn().mockResolvedValue({
+      framework_name: 'gdpr',
+      update_frequency: 12,
+      jurisdiction: 'EU'
+    });
+    (manager as unknown).culturalAdapter.adaptForCulture = vi.fn().mockResolvedValue({
+      adaptedContent: 'Culturally adapted content',
+      adaptations_applied: ['cultural_tone_adjustment', 'local_context_references']
+    (manager as unknown).translationEngine.translatePrivacyContent = vi.fn().mockResolvedValue({
+      title: 'Translated Privacy Notice',
+      summary: 'Translated summary',
+      detailed: 'Detailed translated content',
+      consentRequests: [],
+      rightsInfo: 'Your rights under GDPR'
+  });
+  afterEach(() => {
+    vi.clearAllMocks();
+  describe('Localized Privacy Notice Generation', () => {
+    const baseNotice = {
+      id: 'notice-123',
+      content: {
+        title: 'Privacy Notice',
+        sections: ['data_collection', 'data_use', 'data_sharing', 'user_rights']
+      },
+      language: 'en',
+      contact_info: {
+        email: 'privacy@wedsync.com',
+        data_protection_officer: { name: 'Jane Smith' }
+    const germanLocale = {
+      locale: 'de_DE',
+      language: 'de',
+      country: 'DE',
+      cultural_context: 'northern_european',
+      privacy_expectations: 'gdpr_strict'
+    const processingContext = {
+      processing_location: 'EU',
+      consent_requirements: { explicit: true, granular: true }
+    it('should generate culturally appropriate German privacy notice', async () => {
+      (manager as unknown).openai.chat.completions.create
+        .mockResolvedValue({
+          choices: [{ message: { content: 'Datenschutzerklärung - Wir behandeln Ihre Daten...' } }]
+        });
+      const result = await manager.generateLocalizedPrivacyNotice(
+        baseNotice,
+        germanLocale,
+        processingContext
+      );
+      expect(result.notice_id).toBe('notice-123_de_DE');
+      expect(result.target_locale).toEqual(germanLocale);
+      expect(result.applicable_framework.framework_name).toBe('gdpr');
+      expect(result.localized_content.title).toBe('Translated Privacy Notice');
+      expect(result.cultural_adaptations).toContain('cultural_tone_adjustment');
+      expect(result.cultural_adaptations).toContain('local_context_references');
+      expect(result.legal_validation.compliant).toBe(false); // Due to mocked validation
+      expect(result.readability_score).toBeGreaterThan(0);
+      expect(result.readability_score).toBeLessThanOrEqual(10);
+    it('should handle French Southern European cultural context', async () => {
+      const frenchLocale = {
+        locale: 'fr_FR',
+        language: 'fr',
+        country: 'FR',
+        cultural_context: 'southern_european',
+        privacy_expectations: 'gdpr_relationship_focused'
+      };
+          choices: [{ message: { content: 'Avis de Confidentialité - Nous valorisons votre confiance...' } }]
+        frenchLocale,
+      expect(result.target_locale.cultural_context).toBe('southern_european');
+      expect(result.consent_mechanisms.length).toBeGreaterThan(0);
+      expect(result.consent_mechanisms[0].cultural_adaptation).toContain('gdpr');
+    it('should support Eastern European languages with complex grammar', async () => {
+      const polishLocale = {
+        locale: 'pl_PL',
+        language: 'pl',
+        country: 'PL',
+        cultural_context: 'eastern_european',
+        privacy_expectations: 'gdpr_traditional'
+          choices: [{ message: { content: 'Polityka Prywatności - Szanujemy Państwa prywatność...' } }]
+        polishLocale,
+      expect(result.readability_score).toBeLessThan(8); // Complex language adjustment
+      expect(result.target_locale.language).toBe('pl');
+      expect(result.localized_content.contact_information).toBeDefined();
+    it('should validate legal accuracy with AI', async () => {
+      // Mock successful legal validation
+        .mockResolvedValueOnce({ // Translation
+          choices: [{ message: { content: 'Translated content' } }]
+        })
+        .mockResolvedValueOnce({ // Legal validation
+          choices: [{ message: { content: 'The content is compliant with GDPR requirements.' } }]
+      expect(result.legal_validation.compliant).toBe(true);
+      expect(result.compliance_certification).toBe(true);
+  describe('Cultural Consent Optimization', () => {
+    const consentRequest = {
+      id: 'consent-123',
+      purpose: 'marketing_personalization',
+      data_use: 'Personalized wedding recommendations',
+      benefits: 'Better service customization',
+      risks: 'Marketing communications'
+    it('should optimize consent for Northern European culture', async () => {
+      const nordicProfile = {
+        region: 'northern_europe',
+        privacy_expectations: 'transparency_focused',
+        communication_style: 'direct_minimal',
+        trust_factors: ['transparency', 'data_control']
+          choices: [{ 
+            message: { 
+              content: 'Clear, direct explanation of data usage for marketing purposes.' 
+            } 
+          }]
+      const result = await manager.optimizeConsentForCulture(consentRequest, nordicProfile);
+      expect(result.consent_request_id).toBe(consentRequest.id);
+      expect(result.cultural_profile).toEqual(nordicProfile);
+      expect(result.optimized_presentation.style).toBe('concise_functional');
+      expect(result.optimized_presentation.timing.timing).toBe('immediate_clear');
+      expect(result.optimized_presentation.visual_design.color_scheme).toBe('minimal_blue');
+      expect(result.optimized_presentation.visual_design.layout).toBe('clean_functional');
+      expect(result.expected_success_rate).toBeGreaterThan(0.7);
+      expect(result.compliance_notes).toContain('northern_europe');
+    it('should optimize consent for Southern European culture', async () => {
+      const mediterraneanProfile = {
+        region: 'southern_europe',
+        privacy_expectations: 'relationship_based',
+        communication_style: 'warm_detailed',
+        trust_factors: ['personal_connection', 'local_presence']
+              content: 'Warm, relationship-focused explanation emphasizing mutual benefit and trust.' 
+      const result = await manager.optimizeConsentForCulture(consentRequest, mediterraneanProfile);
+      expect(result.optimized_presentation.style).toBe('detailed_personal');
+      expect(result.optimized_presentation.timing.timing).toBe('relationship_established');
+      expect(result.optimized_presentation.trust_elements.personal_testimonials).toBe(true);
+      expect(result.optimized_presentation.trust_elements.local_presence_indicators).toBe(true);
+      expect(result.optimized_presentation.visual_design.color_scheme).toBe('warm_trustworthy');
+      expect(result.expected_success_rate).toBeLessThan(0.7); // More cautious culture
+      expect(result.cultural_risk_factors).toContain('trust_building_required');
+    it('should generate culturally appropriate explanations', async () => {
+      const profile = {
+        region: 'western_europe',
+        privacy_expectations: 'balanced',
+        communication_style: 'professional_friendly',
+        trust_factors: ['security', 'transparency']
+              content: 'Professional yet friendly explanation of data usage with clear benefits.' 
+      const result = await manager.optimizeConsentForCulture(consentRequest, profile);
+      expect(result.optimized_presentation.explanations).toContain('Professional yet friendly');
+      expect(result.optimized_presentation.trust_elements.security_badges).toBe(true);
+      expect(result.optimized_presentation.trust_elements.transparent_policies).toBe(true);
+  describe('Multi-Jurisdiction Compliance Monitoring', () => {
+    const organizationId = 'org-multi-123';
+    beforeEach(() => {
+      // Mock organization jurisdictions
+      (manager as unknown).supabase.from().select().eq().single.mockReturnValue({
+        data: { operational_jurisdictions: ['EU', 'UK', 'CH', 'NO'] }
+      });
+      // Mock compliance assessments
+      (manager as unknown).supabase.from().select().eq().eq().order().limit().single
+        .mockImplementation((orgId: string, framework: string) => {
+          const assessments: Record<string, any> = {
+            'gdpr': { compliance_score: 8.2, identified_gaps: ['data_retention_review'] },
+            'uk_gdpr': { compliance_score: 7.8, identified_gaps: ['transfer_documentation'] },
+            'swiss_dpa': { compliance_score: 9.1, identified_gaps: [] },
+            'norwegian_dpa': { compliance_score: 8.5, identified_gaps: ['consent_renewal'] }
+          };
+          
+          return Promise.resolve({
+            data: assessments[framework] || { compliance_score: 7.0, identified_gaps: ['assessment_required'] }
+          });
+    it('should monitor compliance across multiple jurisdictions', async () => {
+      const result = await manager.monitorMultiJurisdictionCompliance(organizationId);
+      expect(result.organization_id).toBe(organizationId);
+      expect(result.monitored_jurisdictions).toBe(4);
+      expect(result.jurisdiction_statuses).toHaveLength(4);
+      expect(result.overall_compliance_score).toBeGreaterThan(7);
+      expect(result.overall_compliance_score).toBeLessThanOrEqual(10);
+      expect(result.monitoring_updated_at).toBeInstanceOf(Date);
+    it('should identify cross-jurisdictional conflicts', async () => {
+      expect(result.cross_jurisdictional_conflicts).toBeInstanceOf(Array);
+      
+      // Should identify GDPR vs UK GDPR conflicts
+      const gdprConflict = result.cross_jurisdictional_conflicts.find(
+        conflict => conflict.jurisdictions.includes('EU') && conflict.jurisdictions.includes('UK')
+      if (gdprConflict) {
+        expect(gdprConflict.conflicting_requirements).toContain('data_transfer_mechanisms');
+        expect(gdprConflict.resolution_required).toBe(true);
+    it('should generate harmonization strategy', async () => {
+      expect(result.harmonization_strategy).toBeDefined();
+      expect(result.harmonization_strategy.approach).toMatch(/unified_compliance|highest_common_standard/);
+      expect(result.harmonization_strategy.timeline).toMatch(/90_days|180_days/);
+      expect(result.harmonization_strategy.required_changes).toBeInstanceOf(Array);
+    it('should extract priority actions', async () => {
+      // Mock high-risk scenario
+        .mockReturnValue({
+          data: { compliance_score: 3.2, identified_gaps: ['critical_vulnerability', 'data_breach_risk'] }
+      expect(result.priority_actions).toContain('address_high_risk_jurisdictions');
+      expect(result.high_risk_jurisdictions.length).toBeGreaterThan(0);
+    it('should calculate next review date based on risk', async () => {
+      expect(result.next_review_date).toBeInstanceOf(Date);
+      expect(result.next_review_date.getTime()).toBeGreaterThan(Date.now());
+      // High compliance should result in longer review intervals
+      if (result.overall_compliance_score >= 8) {
+        const monthsUntilReview = (result.next_review_date.getTime() - Date.now()) / (30 * 24 * 60 * 60 * 1000);
+        expect(monthsUntilReview).toBeGreaterThan(6);
+  describe('Bulk Privacy Notice Translation', () => {
+    it('should translate multiple notices to multiple languages', async () => {
+      const noticeIds = ['notice-1', 'notice-2', 'notice-3'];
+      const targetLanguages = ['de', 'fr', 'es', 'it'];
+      // Mock base notices
+      (manager as unknown).supabase.from().select().eq().single
+        .mockImplementation((noticeId: string) => ({
+          data: {
+            id: noticeId,
+            content: { title: `Notice ${noticeId}` },
+            language: 'en'
+          }
+        }));
+      // Mock translation
+      (manager as unknown).openai.chat.completations.create
+      const result = await manager.translatePrivacyNoticesBulk(noticeIds, targetLanguages);
+      expect(Object.keys(result)).toHaveLength(3);
+      expect(Object.keys(result['notice-1'])).toHaveLength(4);
+      for (const noticeId of noticeIds) {
+        for (const language of targetLanguages) {
+          expect(result[noticeId][language]).toBeDefined();
+          expect(result[noticeId][language].target_locale.language).toBe(language);
+    it('should handle translation failures gracefully', async () => {
+      const noticeIds = ['notice-invalid'];
+      const targetLanguages = ['de'];
+      // Mock missing notice
+        .mockResolvedValue({ data: null });
+      expect(result['notice-invalid']).toEqual({});
+  describe('Privacy Notice Compliance Scoring', () => {
+    it('should assess compliance scores across languages', async () => {
+      const noticeId = 'notice-scoring-test';
+      const languages = ['en', 'de', 'fr'];
+      // Mock localized notices with different compliance scores
+      (manager as unknown).supabase.from().select().eq().eq().single
+        .mockImplementation((baseNoticeId: string, language: string) => {
+          const scores: Record<string, any> = {
+            'en': { compliance_score: 9, legal_validation_status: true, cultural_adaptations: ['base'] },
+            'de': { compliance_score: 8, legal_validation_status: true, cultural_adaptations: ['cultural_tone'] },
+            'fr': { compliance_score: 7, legal_validation_status: false, cultural_adaptations: ['cultural_tone', 'local_context'] }
+            data: scores[language] || null
+      const result = await manager.assessPrivacyNoticeCompliance(noticeId, languages);
+      expect(result['en']).toBeGreaterThan(8);
+      expect(result['de']).toBeGreaterThan(7);
+      expect(result['fr']).toBeGreaterThan(6);
+    it('should handle missing translations', async () => {
+      const noticeId = 'notice-missing';
+      const languages = ['zh', 'ja']; // Unsupported languages
+      expect(result['zh']).toBe(0);
+      expect(result['ja']).toBe(0);
+  describe('Cultural Context Detection', () => {
+    it('should correctly map languages to cultural contexts', async () => {
+      const testCases = [
+        { language: 'da', expected: 'northern_european' },
+        { language: 'sv', expected: 'northern_european' },
+        { language: 'es', expected: 'southern_european' },
+        { language: 'it', expected: 'southern_european' },
+        { language: 'pl', expected: 'eastern_european' },
+        { language: 'cs', expected: 'eastern_european' },
+        { language: 'de', expected: 'western_european' },
+        { language: 'nl', expected: 'western_european' }
+      ];
+      for (const testCase of testCases) {
+        const context = (manager as unknown).getCulturalContext(testCase.language);
+        expect(context).toBe(testCase.expected);
+    it('should map languages to appropriate countries', async () => {
+        { language: 'de', expected: 'DE' },
+        { language: 'fr', expected: 'FR' },
+        { language: 'es', expected: 'ES' },
+        { language: 'pl', expected: 'PL' },
+        { language: 'unknown', expected: 'EU' }
+        const country = (manager as unknown).getCountryForLanguage(testCase.language);
+        expect(country).toBe(testCase.expected);
+  describe('Error Handling', () => {
+    it('should handle OpenAI API failures gracefully', async () => {
+        .mockRejectedValue(new Error('OpenAI API Error'));
+      const baseNotice = {
+        id: 'notice-error',
+        content: { title: 'Test Notice' },
+        language: 'en',
+        contact_info: {}
+      const locale = {
+        locale: 'de_DE',
+        language: 'de',
+        country: 'DE',
+        cultural_context: 'northern_european',
+        privacy_expectations: 'gdpr_strict'
+      await expect(manager.generateLocalizedPrivacyNotice(
+        locale,
+        { processing_location: 'EU', consent_requirements: {} }
+      )).rejects.toThrow('Privacy notice localization failed');
+    it('should handle database connection failures', async () => {
+      (manager as unknown).supabase.from.mockImplementation(() => {
+        throw new Error('Database connection failed');
+      await expect(manager.monitorMultiJurisdictionCompliance('org-test'))
+        .rejects.toThrow('Multi-jurisdiction compliance monitoring failed');
+    it('should handle invalid locale configurations', async () => {
+      const invalidLocale = {
+        locale: null,
+        language: '',
+        country: 'INVALID',
+        cultural_context: 'unknown',
+        privacy_expectations: 'undefined'
+      } as any;
+        id: 'notice-test',
+        content: {},
+        invalidLocale,
+      )).rejects.toThrow();
+  describe('Performance and Caching', () => {
+    it('should handle multiple concurrent translation requests', async () => {
+      const noticeIds = Array.from({ length: 10 }, (_, i) => `notice-${i}`);
+      const languages = ['de', 'fr', 'es'];
+      // Mock fast responses
+          data: { id: 'test', content: {}, language: 'en' }
+          choices: [{ message: { content: 'Fast translation' } }]
+      const startTime = Date.now();
+      const result = await manager.translatePrivacyNoticesBulk(noticeIds, languages);
+      const totalTime = Date.now() - startTime;
+      expect(Object.keys(result)).toHaveLength(10);
+      expect(totalTime).toBeLessThan(5000); // Should complete reasonably fast
+    it('should efficiently assess compliance for many languages', async () => {
+      const languages = [
+        'en', 'de', 'fr', 'es', 'it', 'nl', 'da', 'sv', 'no', 'fi',
+        'pl', 'cs', 'hu', 'ro', 'bg', 'hr', 'sl', 'sk', 'lt', 'lv', 'et'
+          data: { compliance_score: 8, legal_validation_status: true }
+      const result = await manager.assessPrivacyNoticeCompliance('notice-test', languages);
+      expect(Object.keys(result)).toHaveLength(languages.length);
+      expect(totalTime).toBeLessThan(3000); // Efficient batch processing
+});

@@ -1,0 +1,98 @@
+'use client';
+
+import { Fragment, forwardRef } from 'react';
+import { Menu, Transition } from '@headlessui/react';
+import { ChevronDownIcon } from '@heroicons/react/20/solid';
+import { cn } from '@/lib/utils';
+
+export const Dropdown = Menu;
+
+export const DropdownButton = forwardRef<
+  HTMLButtonElement,
+  React.ComponentPropsWithoutRef<typeof Menu.Button>
+>(({ className, children, ...props }, ref) => (
+  <Menu.Button
+    ref={ref}
+    className={cn(
+      'inline-flex w-full justify-center rounded-md bg-white px-3 py-2 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50',
+      className,
+    )}
+    {...props}
+  >
+    {children as React.ReactNode}
+    <ChevronDownIcon
+      className="-mr-1 h-5 w-5 text-gray-400"
+      aria-hidden="true"
+    />
+  </Menu.Button>
+));
+DropdownButton.displayName = 'DropdownButton';
+
+export const DropdownMenu = ({
+  children,
+  ...props
+}: React.ComponentPropsWithoutRef<typeof Menu.Items>) => (
+  <Transition
+    as={Fragment}
+    enter="transition ease-out duration-100"
+    enterFrom="transform opacity-0 scale-95"
+    enterTo="transform opacity-100 scale-100"
+    leave="transition ease-in duration-75"
+    leaveFrom="transform opacity-100 scale-100"
+    leaveTo="transform opacity-0 scale-95"
+  >
+    <Menu.Items
+      className="absolute right-0 z-10 mt-2 w-56 origin-top-right rounded-md bg-white shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none"
+      {...props}
+    >
+      {children}
+    </Menu.Items>
+  </Transition>
+);
+
+export const DropdownItem = forwardRef<
+  HTMLButtonElement,
+  React.ComponentPropsWithoutRef<typeof Menu.Item> & { href?: string }
+>(({ className, children, href, ...props }, ref) => (
+  <Menu.Item>
+    {({ active }) =>
+      href ? (
+        <a
+          href={href}
+          className={cn(
+            active ? 'bg-gray-100 text-gray-900' : 'text-gray-700',
+            'block px-4 py-2 text-sm',
+            className,
+          )}
+        >
+          {children as React.ReactNode}
+        </a>
+      ) : (
+        <button
+          ref={ref}
+          className={cn(
+            active ? 'bg-gray-100 text-gray-900' : 'text-gray-700',
+            'block w-full px-4 py-2 text-left text-sm',
+            className,
+          )}
+          {...props}
+        >
+          {children as React.ReactNode}
+        </button>
+      )
+    }
+  </Menu.Item>
+));
+DropdownItem.displayName = 'DropdownItem';
+
+export const DropdownLabel = ({
+  children,
+  className,
+  ...props
+}: React.HTMLAttributes<HTMLDivElement>) => (
+  <div className={cn('px-4 py-2 text-sm text-gray-700', className)} {...props}>
+    {children}
+  </div>
+);
+
+export const DropdownDivider = () => <hr className="my-1 border-gray-200" />;

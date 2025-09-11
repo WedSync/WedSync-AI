@@ -1,0 +1,80 @@
+/**
+ * WS-182 Real-time Churn Prediction API
+ * POST /api/churn/predict - Real-time churn risk scoring
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import ChurnPredictionEngine from '@/lib/ml/churn-prediction-engine';
+
+const churnEngine = new ChurnPredictionEngine();
+
+export async function POST(request: NextRequest) {
+  const startTime = performance.now();
+
+  try {
+    const body = await request.json();
+    const {
+      supplierId,
+      features,
+      explainability = true,
+      contextualFactors,
+    } = body;
+
+    if (!supplierId) {
+      return NextResponse.json(
+        { error: 'supplierId is required' },
+        { status: 400 },
+      );
+    }
+
+    // Perform churn risk prediction
+    const prediction = await churnEngine.predictChurnRisk(supplierId, features);
+
+    const response = {
+      supplierId: prediction.supplierId,
+      churnRisk: prediction.churnRisk,
+      riskLevel: prediction.riskLevel,
+      confidence: prediction.confidence,
+      riskFactors: explainability ? prediction.riskFactors : undefined,
+      interventionRecommendations: prediction.interventionRecommendations,
+      predictionTimestamp: prediction.predictionTimestamp,
+      modelVersion: prediction.modelVersion,
+      inferenceTimeMs: prediction.inferenceTimeMs,
+    };
+
+    return NextResponse.json(response, {
+      status: 200,
+      headers: {
+        'X-Inference-Time': prediction.inferenceTimeMs.toString(),
+        'X-Model-Version': prediction.modelVersion,
+        'Cache-Control': 'private, max-age=300', // 5 minute cache
+      },
+    });
+  } catch (error) {
+    console.error('Churn prediction API error:', error);
+
+    return NextResponse.json(
+      {
+        error: 'Churn prediction failed',
+        message: error instanceof Error ? error.message : 'Unknown error',
+        supplierId: null,
+        timestamp: new Date().toISOString(),
+      },
+      { status: 500 },
+    );
+  }
+}
+
+export async function GET(request: NextRequest) {
+  return NextResponse.json({
+    service: 'WS-182 Churn Prediction API',
+    version: '2.1.0',
+    endpoints: {
+      'POST /api/churn/predict': 'Real-time churn risk scoring',
+      'GET /api/churn/risk-scores': 'Batch churn risk analysis',
+      'PUT /api/churn/update-features': 'Update supplier features',
+      'GET /api/churn/risk-factors': 'Explain churn risk factors',
+    },
+    status: 'operational',
+  });
+}

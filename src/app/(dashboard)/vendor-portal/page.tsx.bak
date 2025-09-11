@@ -1,0 +1,355 @@
+'use client'
+
+import { useEffect, useState } from 'react'
+import { createClient } from '@/lib/supabase/client'
+import { useUser } from '@/hooks/useUser'
+import { redirect } from 'next/navigation'
+import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
+import { Tabs } from '@/components/ui/tabs'
+import { 
+  CalendarDaysIcon,
+  UserGroupIcon,
+  ChatBubbleBottomCenterTextIcon,
+  ChartBarIcon,
+  BellIcon,
+  ClockIcon,
+  CheckBadgeIcon,
+  StarIcon
+} from '@heroicons/react/20/solid'
+import { VendorDashboard } from '@/components/vendors/VendorDashboard'
+import { AssignedWeddings } from '@/components/vendors/AssignedWeddings'
+import { PerformanceScoring } from '@/components/vendors/PerformanceScoring'
+import { VendorCommunications } from '@/components/vendors/VendorCommunications'
+
+interface VendorProfile {
+  id: string
+  business_name: string
+  primary_category: string
+  average_rating: number
+  total_reviews: number
+  is_verified: boolean
+  profile_completion_score: number
+}
+
+interface WeddingAssignment {
+  id: string
+  wedding_id: string
+  couple_names: string
+  wedding_date: string
+  venue_name: string
+  status: 'active' | 'completed' | 'upcoming'
+  timeline_access: boolean
+  communication_enabled: boolean
+}
+
+export default function VendorPortalPage() {
+  const { user, loading } = useUser()
+  const [vendorProfile, setVendorProfile] = useState<VendorProfile | null>(null)
+  const [assignedWeddings, setAssignedWeddings] = useState<WeddingAssignment[]>([])
+  const [notifications, setNotifications] = useState<any[]>([])
+  const [activeTab, setActiveTab] = useState('dashboard')
+  const supabase = createClient()
+
+  useEffect(() => {
+    if (!loading && !user) {
+      redirect('/login')
+    }
+  }, [user, loading])
+
+  useEffect(() => {
+    if (user) {
+      loadVendorProfile()
+      loadAssignedWeddings()
+      loadNotifications()
+    }
+  }, [user])
+
+  async function loadVendorProfile() {
+    try {
+      const { data, error } = await supabase
+        .from('suppliers')
+        .select('*')
+        .eq('organization_id', user?.organization_id)
+        .single()
+
+      if (error) {
+        console.error('Error loading vendor profile:', error)
+        return
+      }
+
+      setVendorProfile(data)
+    } catch (error) {
+      console.error('Error in loadVendorProfile:', error)
+    }
+  }
+
+  async function loadAssignedWeddings() {
+    try {
+      const { data, error } = await supabase
+        .from('supplier_client_connections')
+        .select(`
+          *,
+          clients (
+            id,
+            first_name,
+            last_name,
+            partner_first_name,
+            partner_last_name,
+            wedding_date,
+            venue_name,
+            status
+          )
+        `)
+        .eq('supplier_id', vendorProfile?.id)
+        .eq('connection_status', 'active')
+
+      if (error) {
+        console.error('Error loading assigned weddings:', error)
+        return
+      }
+
+      const formattedWeddings = data?.map(connection => ({
+        id: connection.id,
+        wedding_id: connection.client_id,
+        couple_names: `${connection.clients?.first_name || ''} ${connection.clients?.last_name || ''}${
+          connection.clients?.partner_first_name ? ` & ${connection.clients?.partner_first_name} ${connection.clients?.partner_last_name || ''}` : ''
+        }`,
+        wedding_date: connection.clients?.wedding_date || '',
+        venue_name: connection.clients?.venue_name || 'TBD',
+        status: connection.clients?.status === 'completed' ? 'completed' : 
+                new Date(connection.clients?.wedding_date || '') > new Date() ? 'upcoming' : 'active',
+        timeline_access: connection.can_view_core_fields,
+        communication_enabled: true
+      })) || []
+
+      setAssignedWeddings(formattedWeddings)
+    } catch (error) {
+      console.error('Error in loadAssignedWeddings:', error)
+    }
+  }
+
+  async function loadNotifications() {
+    try {
+      const { data, error } = await supabase
+        .from('in_app_notifications')
+        .select('*')
+        .eq('recipient_id', user?.id)
+        .eq('is_read', false)
+        .order('created_at', { ascending: false })
+        .limit(10)
+
+      if (error) {
+        console.error('Error loading notifications:', error)
+        return
+      }
+
+      setNotifications(data || [])
+    } catch (error) {
+      console.error('Error in loadNotifications:', error)
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-screen">
+        <div className="animate-pulse text-lg">Loading vendor portal...</div>
+      </div>
+    )
+  }
+
+  if (!vendorProfile) {
+    return (
+      <div className="max-w-2xl mx-auto mt-16 text-center">
+        <div className="mb-6">
+          <UserGroupIcon className="size-16 mx-auto text-gray-300" />
+        </div>
+        <h1 className="text-2xl font-bold text-gray-900 mb-4">
+          Vendor Profile Not Found
+        </h1>
+        <p className="text-gray-600 mb-6">
+          You need to set up your vendor profile to access the vendor portal.
+        </p>
+        <Button href="/vendors/setup">
+          Create Vendor Profile
+        </Button>
+      </div>
+    )
+  }
+
+  const tabItems = [
+    {
+      key: 'dashboard',
+      name: 'Dashboard',
+      icon: ChartBarIcon,
+      component: <VendorDashboard 
+        profile={vendorProfile} 
+        weddings={assignedWeddings} 
+        notifications={notifications}
+      />
+    },
+    {
+      key: 'weddings',
+      name: 'My Weddings',
+      icon: CalendarDaysIcon,
+      badge: assignedWeddings.length,
+      component: <AssignedWeddings weddings={assignedWeddings} />
+    },
+    {
+      key: 'performance',
+      name: 'Performance',
+      icon: StarIcon,
+      component: <PerformanceScoring profile={vendorProfile} />
+    },
+    {
+      key: 'communications',
+      name: 'Communications',
+      icon: ChatBubbleBottomCenterTextIcon,
+      badge: notifications.length,
+      component: <VendorCommunications />
+    }
+  ]
+
+  return (
+    <div className="p-6">
+      {/* Header */}
+      <div className="mb-8">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-bold text-gray-900">
+              {vendorProfile.business_name}
+            </h1>
+            <div className="flex items-center gap-4 mt-2">
+              <Badge className="capitalize">
+                {vendorProfile.primary_category}
+              </Badge>
+              {vendorProfile.is_verified && (
+                <div className="flex items-center gap-1 text-blue-600">
+                  <CheckBadgeIcon className="size-4" />
+                  <span className="text-sm font-medium">Verified</span>
+                </div>
+              )}
+              {vendorProfile.average_rating > 0 && (
+                <div className="flex items-center gap-1">
+                  <StarIcon className="size-4 text-yellow-400" />
+                  <span className="text-sm font-medium">
+                    {vendorProfile.average_rating.toFixed(1)}
+                  </span>
+                  <span className="text-sm text-gray-500">
+                    ({vendorProfile.total_reviews} reviews)
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+          
+          <div className="flex items-center gap-3">
+            {notifications.length > 0 && (
+              <Button variant="outline" className="relative">
+                <BellIcon className="size-4" />
+                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center">
+                  {notifications.length}
+                </span>
+              </Button>
+            )}
+            <div className="text-right text-sm text-gray-500">
+              <div>Profile: {vendorProfile.profile_completion_score}% complete</div>
+              <div className="flex items-center gap-1 mt-1">
+                <ClockIcon className="size-3" />
+                Last updated: {new Date().toLocaleDateString()}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Quick Stats */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+        <Card className="p-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-600">Active Weddings</p>
+              <p className="text-2xl font-bold text-gray-900">
+                {assignedWeddings.filter(w => w.status === 'active').length}
+              </p>
+            </div>
+            <CalendarDaysIcon className="size-8 text-blue-600" />
+          </div>
+        </Card>
+
+        <Card className="p-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-600">Upcoming Weddings</p>
+              <p className="text-2xl font-bold text-gray-900">
+                {assignedWeddings.filter(w => w.status === 'upcoming').length}
+              </p>
+            </div>
+            <ClockIcon className="size-8 text-green-600" />
+          </div>
+        </Card>
+
+        <Card className="p-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-600">Average Rating</p>
+              <p className="text-2xl font-bold text-gray-900">
+                {vendorProfile.average_rating > 0 ? vendorProfile.average_rating.toFixed(1) : 'N/A'}
+              </p>
+            </div>
+            <StarIcon className="size-8 text-yellow-500" />
+          </div>
+        </Card>
+
+        <Card className="p-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-600">Total Reviews</p>
+              <p className="text-2xl font-bold text-gray-900">
+                {vendorProfile.total_reviews}
+              </p>
+            </div>
+            <ChatBubbleBottomCenterTextIcon className="size-8 text-purple-600" />
+          </div>
+        </Card>
+      </div>
+
+      {/* Tabs */}
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <div className="border-b border-gray-200">
+          <nav className="-mb-px flex space-x-8">
+            {tabItems.map((tab) => {
+              const Icon = tab.icon
+              return (
+                <button
+                  key={tab.key}
+                  onClick={() => setActiveTab(tab.key)}
+                  className={`
+                    flex items-center gap-2 py-4 px-1 border-b-2 font-medium text-sm whitespace-nowrap
+                    ${activeTab === tab.key
+                      ? 'border-purple-500 text-purple-600'
+                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                    }
+                  `}
+                >
+                  <Icon className="size-4" />
+                  {tab.name}
+                  {tab.badge && tab.badge > 0 && (
+                    <Badge className="ml-1 bg-red-100 text-red-600 text-xs">
+                      {tab.badge}
+                    </Badge>
+                  )}
+                </button>
+              )
+            })}
+          </nav>
+        </div>
+
+        <div className="mt-6">
+          {tabItems.find(tab => tab.key === activeTab)?.component}
+        </div>
+      </Tabs>
+    </div>
+  )
+}

@@ -1,0 +1,346 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { WhatsAppService } from '@/lib/services/whatsapp-service';
+import { createClient } from '@/lib/supabase/server';
+import { cookies } from 'next/headers';
+
+/**
+ * WhatsApp Business API Integration
+ * Handles sending messages and media uploads
+ */
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+
+    // Get user session
+    const cookieStore = await cookies();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 },
+      );
+    }
+
+    const body = await request.json();
+    const { action, ...data } = body;
+
+    // Initialize WhatsApp service for user
+    const whatsappService = await WhatsAppService.createWithUserConfig(user.id);
+
+    switch (action) {
+      case 'send_message':
+        return await handleSendMessage(whatsappService, data);
+
+      case 'send_template':
+        return await handleSendTemplate(whatsappService, data);
+
+      case 'upload_media':
+        return await handleUploadMedia(whatsappService, data);
+
+      case 'test_connection':
+        return await handleTestConnection(whatsappService);
+
+      case 'get_templates':
+        return await handleGetTemplates(supabase, user.id);
+
+      case 'validate_message':
+        return await handleValidateMessage(whatsappService, data);
+
+      default:
+        return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
+    }
+  } catch (error) {
+    console.error('WhatsApp API error:', error);
+    return NextResponse.json(
+      {
+        error: 'Internal server error',
+        details: error instanceof Error ? error.message : 'Unknown error',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+async function handleSendMessage(
+  whatsappService: WhatsAppService,
+  data: any,
+): Promise<NextResponse> {
+  const { to, message, media, replyTo } = data;
+
+  if (!to) {
+    return NextResponse.json(
+      { error: 'Recipient phone number is required' },
+      { status: 400 },
+    );
+  }
+
+  if (!message && !media) {
+    return NextResponse.json(
+      { error: 'Message content or media is required' },
+      { status: 400 },
+    );
+  }
+
+  const messageId = await whatsappService.sendMessage({
+    to,
+    message,
+    media,
+    replyTo,
+  });
+
+  return NextResponse.json({
+    success: true,
+    messageId,
+    timestamp: new Date().toISOString(),
+  });
+}
+
+async function handleSendTemplate(
+  whatsappService: WhatsAppService,
+  data: any,
+): Promise<NextResponse> {
+  const result = await whatsappService.sendTemplateMessage(data);
+
+  return NextResponse.json({
+    success: result.status === 'sent',
+    messageId: result.messageId,
+    error: result.error,
+    metrics: result.metrics,
+    timestamp: new Date().toISOString(),
+  });
+}
+
+async function handleUploadMedia(
+  whatsappService: WhatsAppService,
+  data: any,
+): Promise<NextResponse> {
+  const { file } = data;
+
+  if (!file || !file.buffer || !file.mimetype) {
+    return NextResponse.json(
+      { error: 'Valid file with buffer and mimetype is required' },
+      { status: 400 },
+    );
+  }
+
+  const mediaId = await whatsappService.uploadMedia(file);
+
+  return NextResponse.json({
+    success: true,
+    mediaId,
+    timestamp: new Date().toISOString(),
+  });
+}
+
+async function handleTestConnection(
+  whatsappService: WhatsAppService,
+): Promise<NextResponse> {
+  try {
+    // Send a test message to verify configuration
+    const testResult = await whatsappService.sendMessage({
+      to: '+1234567890', // Test number
+      message: 'WhatsApp configuration test',
+    });
+
+    return NextResponse.json({
+      success: true,
+      message: 'WhatsApp connection configured successfully',
+      testMessageId: testResult,
+    });
+  } catch (error) {
+    return NextResponse.json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Connection test failed',
+    });
+  }
+}
+
+async function handleGetTemplates(
+  supabase: any,
+  userId: string,
+): Promise<NextResponse> {
+  const { data: templates, error } = await supabase
+    .from('whatsapp_templates')
+    .select(
+      `
+      id,
+      template_name,
+      display_name,
+      category,
+      language_code,
+      body_text,
+      body_variables,
+      header_text,
+      header_variables,
+      footer_text,
+      is_approved_template,
+      approval_status,
+      usage_count,
+      created_at
+    `,
+    )
+    .eq('user_id', userId)
+    .eq('is_active', true)
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    return NextResponse.json(
+      { error: 'Failed to fetch templates' },
+      { status: 500 },
+    );
+  }
+
+  return NextResponse.json({
+    success: true,
+    templates,
+  });
+}
+
+async function handleValidateMessage(
+  whatsappService: WhatsAppService,
+  data: any,
+): Promise<NextResponse> {
+  const { template, config } = data;
+
+  if (!template) {
+    return NextResponse.json(
+      { error: 'Template is required for validation' },
+      { status: 400 },
+    );
+  }
+
+  const validation = whatsappService.validateWhatsAppMessage(template, config);
+  const metrics = whatsappService.calculateWhatsAppMetrics(
+    template,
+    config.media,
+  );
+
+  return NextResponse.json({
+    success: true,
+    validation,
+    metrics,
+    timestamp: new Date().toISOString(),
+  });
+}
+
+export async function GET(request: NextRequest) {
+  const { searchParams } = new URL(request.url);
+  const action = searchParams.get('action');
+
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 },
+      );
+    }
+
+    switch (action) {
+      case 'status':
+        return await handleGetStatus(supabase, user.id);
+
+      case 'analytics':
+        const startDate = searchParams.get('start_date');
+        const endDate = searchParams.get('end_date');
+        return await handleGetAnalytics(user.id, startDate, endDate);
+
+      case 'session_status':
+        const phoneNumber = searchParams.get('phone_number');
+        return await handleGetSessionStatus(user.id, phoneNumber);
+
+      default:
+        return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
+    }
+  } catch (error) {
+    console.error('WhatsApp GET API error:', error);
+    return NextResponse.json(
+      {
+        error: 'Internal server error',
+        details: error instanceof Error ? error.message : 'Unknown error',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+async function handleGetStatus(
+  supabase: any,
+  userId: string,
+): Promise<NextResponse> {
+  const { data: config, error } = await supabase
+    .from('whatsapp_configurations')
+    .select('phone_number, display_name, is_active, is_verified, created_at')
+    .eq('user_id', userId)
+    .eq('is_active', true)
+    .single();
+
+  if (error) {
+    return NextResponse.json({
+      configured: false,
+      error: 'No WhatsApp configuration found',
+    });
+  }
+
+  return NextResponse.json({
+    configured: true,
+    phone_number: config.phone_number,
+    display_name: config.display_name,
+    is_verified: config.is_verified,
+    configured_at: config.created_at,
+  });
+}
+
+async function handleGetAnalytics(
+  userId: string,
+  startDate: string | null,
+  endDate: string | null,
+): Promise<NextResponse> {
+  const whatsappService = await WhatsAppService.createWithUserConfig(userId);
+
+  const start = startDate
+    ? new Date(startDate)
+    : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); // 30 days ago
+  const end = endDate ? new Date(endDate) : new Date();
+
+  const analytics = await whatsappService.getAnalytics(userId, start, end);
+
+  return NextResponse.json({
+    success: true,
+    analytics,
+  });
+}
+
+async function handleGetSessionStatus(
+  userId: string,
+  phoneNumber: string | null,
+): Promise<NextResponse> {
+  if (!phoneNumber) {
+    return NextResponse.json(
+      { error: 'Phone number is required' },
+      { status: 400 },
+    );
+  }
+
+  const whatsappService = await WhatsAppService.createWithUserConfig(userId);
+  const isWithinWindow =
+    await whatsappService.checkMessagingWindow(phoneNumber);
+
+  return NextResponse.json({
+    success: true,
+    phone_number: phoneNumber,
+    within_session_window: isWithinWindow,
+    can_send_freeform: isWithinWindow,
+    requires_template: !isWithinWindow,
+  });
+}

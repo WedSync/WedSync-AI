@@ -1,0 +1,281 @@
+import { BaseNodeExecutor, NodeExecutorContext, NodeExecutorResult } from './index';
+import { createClient } from '@/lib/supabase/server';
+
+interface ReviewNodeConfig {
+  platform?: 'google' | 'facebook' | 'yelp' | 'weddingwire' | 'theknot' | 'custom';
+  reviewUrl?: string;
+  minRating?: number;
+  sendDelay?: number; // Days after wedding
+  followUpEnabled?: boolean;
+  followUpDays?: number;
+  incentiveOffered?: boolean;
+  incentiveDetails?: string;
+}
+
+export class ReviewNodeExecutor extends BaseNodeExecutor {
+  private supabase = createClient();
+
+  async execute(
+    context: NodeExecutorContext,
+    config: ReviewNodeConfig
+  ): Promise<NodeExecutorResult> {
+    try {
+      // Check if wedding date has passed
+      if (!this.isWeddingComplete(context, config)) {
+        return {
+          success: true,
+          output: {
+            skipped: true,
+            reason: 'Wedding not yet complete',
+          },
+        };
+      }
+
+      // Generate review request
+      const reviewRequest = await this.createReviewRequest(context, config);
+
+      // Send review request
+      await this.sendReviewRequest(context, reviewRequest, config);
+
+      // Schedule follow-up if enabled
+      if (config.followUpEnabled && config.followUpDays) {
+        await this.scheduleFollowUp(context, reviewRequest.id, config);
+      }
+
+      // Track review request
+      await this.trackReviewRequest(context, reviewRequest, config);
+
+      this.logger.info('Review request sent successfully', {
+        executionId: context.executionId,
+        stepId: context.stepId,
+        platform: config.platform,
+        clientId: context.clientData?.id,
+      });
+
+      return {
+        success: true,
+        output: {
+          requestId: reviewRequest.id,
+          platform: config.platform,
+          reviewUrl: reviewRequest.url,
+          sentAt: new Date().toISOString(),
+          followUpScheduled: config.followUpEnabled,
+        },
+      };
+
+    } catch (error) {
+      this.logger.error('Review node execution failed', {
+        executionId: context.executionId,
+        stepId: context.stepId,
+        error,
+      });
+
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Review request failed',
+      };
+    }
+  }
+
+  private isWeddingComplete(context: NodeExecutorContext, config: ReviewNodeConfig): boolean {
+    if (!context.clientData?.weddingDate) {
+      return false;
+    }
+
+    const weddingDate = new Date(context.clientData.weddingDate);
+    const today = new Date();
+    const daysSinceWedding = Math.floor((today.getTime() - weddingDate.getTime()) / (1000 * 60 * 60 * 24));
+
+    // Check if enough time has passed since the wedding
+    const requiredDelay = config.sendDelay || 3; // Default 3 days after wedding
+    return daysSinceWedding >= requiredDelay;
+  }
+
+  private async createReviewRequest(
+    context: NodeExecutorContext,
+    config: ReviewNodeConfig
+  ): Promise<any> {
+    const reviewUrl = this.getReviewUrl(context, config);
+    const personalizedUrl = await this.createPersonalizedUrl(reviewUrl, context);
+
+    const { data, error } = await this.supabase
+      .from('review_requests')
+      .insert({
+        client_id: context.clientData?.id,
+        vendor_id: context.vendorData?.id,
+        journey_execution_id: context.executionId,
+        platform: config.platform || 'custom',
+        review_url: personalizedUrl,
+        original_url: reviewUrl,
+        min_rating: config.minRating,
+        incentive_offered: config.incentiveOffered || false,
+        incentive_details: config.incentiveDetails,
+        status: 'sent',
+      })
+      .select()
+      .single();
+
+    if (error) {
+      throw new Error(`Failed to create review request: ${error.message}`);
+    }
+
+    return { ...data, url: personalizedUrl };
+  }
+
+  private getReviewUrl(context: NodeExecutorContext, config: ReviewNodeConfig): string {
+    if (config.reviewUrl) {
+      return config.reviewUrl;
+    }
+
+    // Generate platform-specific URLs
+    const vendorName = context.vendorData?.name || 'vendor';
+    const encodedName = encodeURIComponent(vendorName);
+
+    switch (config.platform) {
+      case 'google':
+        // This would be the actual Google Business Profile review URL
+        return `https://g.page/r/${context.variables.googlePlaceId}/review`;
+      
+      case 'facebook':
+        return `https://facebook.com/${context.variables.facebookPage}/reviews`;
+      
+      case 'yelp':
+        return `https://yelp.com/writeareview/biz/${context.variables.yelpBusinessId}`;
+      
+      case 'weddingwire':
+        return `https://www.weddingwire.com/reviews/${context.variables.weddingWireId}`;
+      
+      case 'theknot':
+        return `https://www.theknot.com/marketplace/${context.variables.theKnotId}/reviews`;
+      
+      default:
+        // Fallback to internal review system
+        const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://wedsync.com';
+        return `${baseUrl}/reviews/submit`;
+    }
+  }
+
+  private async createPersonalizedUrl(baseUrl: string, context: NodeExecutorContext): Promise<string> {
+    // Create a tracking token
+    const token = this.generateToken();
+
+    // Store the tracking information
+    const { error } = await this.supabase
+      .from('review_url_tracking')
+      .insert({
+        token,
+        original_url: baseUrl,
+        client_id: context.clientData?.id,
+        vendor_id: context.vendorData?.id,
+        created_at: new Date().toISOString(),
+      });
+
+    if (error) {
+      this.logger.warn('Failed to create tracking URL', { error });
+      return baseUrl;
+    }
+
+    // Return tracked URL
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://wedsync.com';
+    return `${appUrl}/review-redirect/${token}`;
+  }
+
+  private async sendReviewRequest(
+    context: NodeExecutorContext,
+    reviewRequest: any,
+    config: ReviewNodeConfig
+  ): Promise<void> {
+    const clientEmail = context.clientData?.email;
+    if (!clientEmail) {
+      throw new Error('Client email not available');
+    }
+
+    // Prepare email content
+    const emailContent = {
+      to: clientEmail,
+      subject: `Share your experience with ${context.vendorData?.name}`,
+      template_id: 'review_request',
+      template_data: {
+        client_name: context.clientData?.name,
+        vendor_name: context.vendorData?.name,
+        review_url: reviewRequest.url,
+        platform: config.platform,
+        incentive_offered: config.incentiveOffered,
+        incentive_details: config.incentiveDetails,
+        min_rating_message: config.minRating ? `We'd love a ${config.minRating}+ star review!` : '',
+      },
+    };
+
+    // Queue email
+    const { error } = await this.supabase
+      .from('email_queue')
+      .insert({
+        ...emailContent,
+        journey_execution_id: context.executionId,
+        review_request_id: reviewRequest.id,
+        scheduled_for: new Date().toISOString(),
+      });
+
+    if (error) {
+      throw new Error(`Failed to send review request: ${error.message}`);
+    }
+  }
+
+  private async scheduleFollowUp(
+    context: NodeExecutorContext,
+    reviewRequestId: string,
+    config: ReviewNodeConfig
+  ): Promise<void> {
+    if (!config.followUpDays) {
+      return;
+    }
+
+    const followUpDate = new Date();
+    followUpDate.setDate(followUpDate.getDate() + config.followUpDays);
+
+    const { error } = await this.supabase
+      .from('review_follow_ups')
+      .insert({
+        review_request_id: reviewRequestId,
+        journey_execution_id: context.executionId,
+        scheduled_for: followUpDate.toISOString(),
+        status: 'scheduled',
+      });
+
+    if (error) {
+      this.logger.warn('Failed to schedule review follow-up', {
+        executionId: context.executionId,
+        error,
+      });
+    }
+  }
+
+  private async trackReviewRequest(
+    context: NodeExecutorContext,
+    reviewRequest: any,
+    config: ReviewNodeConfig
+  ): Promise<void> {
+    const { error } = await this.supabase
+      .from('journey_review_tracking')
+      .insert({
+        execution_id: context.executionId,
+        step_id: context.stepId,
+        review_request_id: reviewRequest.id,
+        platform: config.platform,
+        sent_at: new Date().toISOString(),
+      });
+
+    if (error) {
+      this.logger.warn('Failed to track review request', {
+        executionId: context.executionId,
+        error,
+      });
+    }
+  }
+
+  private generateToken(): string {
+    return Array.from(crypto.getRandomValues(new Uint8Array(16)))
+      .map(b => b.toString(16).padStart(2, '0'))
+      .join('');
+  }
+}

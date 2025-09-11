@@ -1,0 +1,300 @@
+import { PaymentCalendarService, paymentCalendarService } from '@/lib/mobile/payment-calendar-service';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { PaymentSecurityManager } from '@/lib/security/payment-security';
+
+// Mock PaymentSecurityManager
+jest.mock('@/lib/security/payment-security');
+// Mock fetch
+global.fetch = jest.fn();
+const mockFetch = global.fetch as jest.MockedFunction<typeof fetch>;
+// Mock payment data
+const mockPaymentSchedule = {
+  id: 'payment-1',
+  weddingId: 'wedding-123',
+  title: 'Venue Final Payment',
+  description: 'Final payment for venue booking',
+  amount: 5000,
+  dueDate: '2024-08-15T00:00:00.000Z',
+  vendor: {
+    id: 'vendor-1',
+    name: 'Grand Ballroom',
+    category: 'Venue',
+    contact: {
+      email: 'info@grandballroom.com',
+      phone: '+1-555-0123'
+    }
+  },
+  status: 'pending' as const,
+  priority: 'high' as const,
+  reminderSettings: {
+    enabled: true,
+    daysBefore: [7, 3, 1],
+    notificationTypes: ['push', 'email'] as const
+  paymentMethod: {
+    type: 'transfer' as const,
+    reference: 'VENUE-2024-001'
+  createdAt: '2024-01-15T00:00:00.000Z',
+  updatedAt: '2024-01-15T00:00:00.000Z',
+  createdBy: 'user-123'
+};
+describe('PaymentCalendarService', () => {
+  let service: PaymentCalendarService;
+  let mockSecurityManager: jest.Mocked<PaymentSecurityManager>;
+  beforeEach(() => {
+    jest.clearAllMocks();
+    
+    service = new PaymentCalendarService();
+    mockSecurityManager = new PaymentSecurityManager() as jest.Mocked<PaymentSecurityManager>;
+    // Mock security manager methods
+    mockSecurityManager.encryptPaymentData.mockResolvedValue('encrypted-data');
+    mockSecurityManager.decryptPaymentData.mockResolvedValue({
+      amount: 5000,
+      vendor: mockPaymentSchedule.vendor
+    });
+    // Setup default successful fetch response
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ schedules: [mockPaymentSchedule] }),
+      text: async () => JSON.stringify({ schedules: [mockPaymentSchedule] }),
+      statusText: 'OK'
+    } as Response);
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+  describe('getPaymentSchedules', () => {
+    it('fetches payment schedules successfully', async () => {
+      const schedules = await service.getPaymentSchedules('wedding-123');
+      expect(mockFetch).toHaveBeenCalledWith(
+        '/api/payments/schedules?weddingId=wedding-123',
+        expect.objectContaining({
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          credentials: 'include'
+        })
+      );
+      expect(schedules).toEqual([mockPaymentSchedule]);
+    it('applies status filters correctly', async () => {
+      const filters = {
+        status: ['pending', 'overdue'] as const
+      };
+      await service.getPaymentSchedules('wedding-123', filters);
+        expect.stringContaining('status=pending&status=overdue'),
+        expect.any(Object)
+    it('applies priority filters correctly', async () => {
+        priority: ['high', 'critical'] as const
+        expect.stringContaining('priority=high&priority=critical'),
+    it('applies vendor filters correctly', async () => {
+        vendors: ['vendor-1', 'vendor-2']
+        expect.stringContaining('vendorId=vendor-1&vendorId=vendor-2'),
+    it('applies date range filters correctly', async () => {
+        dateRange: {
+          start: '2024-01-01T00:00:00.000Z',
+          end: '2024-12-31T23:59:59.999Z'
+        }
+        expect.stringContaining('startDate=2024-01-01T00:00:00.000Z&endDate=2024-12-31T23:59:59.999Z'),
+    it('processes payment schedules with status updates', async () => {
+      const overdueSchedule = {
+        ...mockPaymentSchedule,
+        id: 'payment-2',
+        dueDate: '2024-01-01T00:00:00.000Z', // Past date
+        status: 'pending'
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ schedules: [overdueSchedule] })
+      } as Response);
+      expect(schedules[0].status).toBe('overdue');
+    it('handles fetch errors gracefully', async () => {
+        ok: false,
+        statusText: 'Internal Server Error'
+      await expect(service.getPaymentSchedules('wedding-123')).rejects.toThrow(
+        'Failed to fetch payment schedules: Internal Server Error'
+    it('handles network errors gracefully', async () => {
+      mockFetch.mockRejectedValueOnce(new Error('Network error'));
+      await expect(service.getPaymentSchedules('wedding-123')).rejects.toThrow('Network error');
+  describe('createPaymentSchedule', () => {
+    const newPaymentData = {
+      weddingId: 'wedding-123',
+      title: 'Photography Deposit',
+      amount: 1500,
+      dueDate: '2024-09-01T00:00:00.000Z',
+      vendor: {
+        id: 'vendor-2',
+        name: 'Sunset Photography',
+        category: 'Photography'
+      },
+      status: 'upcoming' as const,
+      priority: 'medium' as const,
+      reminderSettings: {
+        enabled: true,
+        daysBefore: [14, 7, 3],
+        notificationTypes: ['push'] as const
+      createdBy: 'user-123'
+    };
+    it('creates payment schedule successfully', async () => {
+        json: async () => ({ schedule: { ...newPaymentData, id: 'payment-2' } })
+      const result = await service.createPaymentSchedule(newPaymentData);
+        '/api/payments/schedules',
+          method: 'POST',
+          credentials: 'include',
+          body: expect.stringContaining('"title":"Photography Deposit"')
+      expect(result).toEqual(expect.objectContaining({
+        title: 'Photography Deposit'
+      }));
+    it('encrypts sensitive payment data before creation', async () => {
+      await service.createPaymentSchedule(newPaymentData);
+      expect(mockSecurityManager.encryptPaymentData).toHaveBeenCalledWith({
+        amount: newPaymentData.amount,
+        vendor: newPaymentData.vendor,
+        paymentMethod: undefined
+      });
+    it('handles creation errors gracefully', async () => {
+        statusText: 'Bad Request'
+      await expect(service.createPaymentSchedule(newPaymentData)).rejects.toThrow(
+        'Failed to create payment schedule: Bad Request'
+  describe('updatePaymentSchedule', () => {
+    const updateData = {
+      status: 'paid' as const,
+      paidAmount: 5000,
+      paidDate: '2024-08-10T00:00:00.000Z',
+      paymentMethod: {
+        type: 'transfer' as const,
+        reference: 'TXN-12345'
+      }
+    it('updates payment schedule successfully', async () => {
+        json: async () => ({ schedule: { ...mockPaymentSchedule, ...updateData } })
+      const result = await service.updatePaymentSchedule('payment-1', updateData);
+        '/api/payments/schedules/payment-1',
+          method: 'PUT',
+      expect(result.status).toBe('paid');
+    it('encrypts payment completion data', async () => {
+      await service.updatePaymentSchedule('payment-1', updateData);
+        paidAmount: 5000,
+        paidDate: '2024-08-10T00:00:00.000Z',
+        paymentMethod: updateData.paymentMethod
+    it('handles update errors gracefully', async () => {
+        statusText: 'Not Found'
+      await expect(service.updatePaymentSchedule('payment-1', updateData)).rejects.toThrow(
+        'Failed to update payment schedule: Not Found'
+  describe('deletePaymentSchedule', () => {
+    it('deletes payment schedule successfully', async () => {
+        ok: true
+      await service.deletePaymentSchedule('payment-1');
+          method: 'DELETE',
+    it('handles deletion errors gracefully', async () => {
+        statusText: 'Forbidden'
+      await expect(service.deletePaymentSchedule('payment-1')).rejects.toThrow(
+        'Failed to delete payment schedule: Forbidden'
+  describe('getUpcomingReminders', () => {
+    it('fetches and filters upcoming reminders', async () => {
+      const reminderSchedule = {
+        dueDate: '2024-08-22T00:00:00.000Z', // 7 days from now (assuming today is 2024-08-15)
+        reminderSettings: {
+          enabled: true,
+          daysBefore: [7, 3, 1],
+          notificationTypes: ['push'] as const
+        json: async () => ({ schedules: [reminderSchedule] })
+      // Mock current date
+      const mockDate = new Date('2024-08-15T00:00:00.000Z');
+      jest.useFakeTimers().setSystemTime(mockDate);
+      const reminders = await service.getUpcomingReminders('wedding-123');
+      expect(reminders).toEqual([reminderSchedule]);
+      jest.useRealTimers();
+    it('excludes schedules with reminders disabled', async () => {
+      const noReminderSchedule = {
+          enabled: false,
+          daysBefore: [7],
+        json: async () => ({ schedules: [noReminderSchedule] })
+      expect(reminders).toEqual([]);
+  describe('sendPaymentReminders', () => {
+    it('sends reminders successfully', async () => {
+      const mockResponse = {
+        sent: 5,
+        failed: 0,
+        skipped: 2
+        json: async () => mockResponse
+      const result = await service.sendPaymentReminders('wedding-123');
+        '/api/payments/reminders/send',
+          body: JSON.stringify({ weddingId: 'wedding-123' })
+      expect(result).toEqual(mockResponse);
+  describe('getPaymentAnalytics', () => {
+    it('fetches payment analytics successfully', async () => {
+      const mockAnalytics = {
+        totalScheduled: 10000,
+        totalPaid: 6000,
+        totalPending: 3000,
+        totalOverdue: 1000,
+        averagePaymentAmount: 2000,
+        paymentsByVendorCategory: [
+          { category: 'Venue', amount: 5000, count: 1 },
+          { category: 'Photography', amount: 2500, count: 2 }
+        ],
+        paymentTimeline: [
+          { date: '2024-08-15', amount: 5000, type: 'due' as const },
+          { date: '2024-08-10', amount: 2000, type: 'paid' as const }
+        upcomingPayments: [
+          { date: '2024-08-20', count: 2, amount: 3000 }
+        ]
+        json: async () => mockAnalytics
+      const result = await service.getPaymentAnalytics('wedding-123');
+        '/api/payments/analytics?weddingId=wedding-123',
+      expect(result).toEqual(mockAnalytics);
+  describe('bulkUpdatePaymentSchedules', () => {
+    it('performs bulk updates successfully', async () => {
+      const updates = [
+        {
+          scheduleId: 'payment-1',
+          updates: { status: 'paid' as const }
+        },
+          scheduleId: 'payment-2',
+          updates: { priority: 'high' as const }
+      ];
+        successful: 2,
+        errors: []
+      const result = await service.bulkUpdatePaymentSchedules(updates);
+        '/api/payments/schedules/bulk',
+          body: JSON.stringify({ updates })
+  describe('exportPaymentSchedules', () => {
+    it('exports payment schedules as JSON', async () => {
+      const exportData = { schedules: [mockPaymentSchedule] };
+        json: async () => exportData
+      const result = await service.exportPaymentSchedules('wedding-123', 'json');
+        '/api/payments/export?weddingId=wedding-123&format=json',
+      expect(result).toBe(JSON.stringify(exportData, null, 2));
+    it('exports payment schedules as CSV', async () => {
+      const csvData = 'id,title,amount,dueDate\npayment-1,Venue Final Payment,5000,2024-08-15';
+        text: async () => csvData
+      const result = await service.exportPaymentSchedules('wedding-123', 'csv');
+      expect(result).toBe(csvData);
+  describe('syncOfflineUpdates', () => {
+    it('syncs offline updates successfully', async () => {
+      const offlineUpdates = [
+          type: 'update' as const,
+          data: { status: 'paid' },
+          timestamp: Date.now()
+        synced: 1,
+        conflicts: []
+      const result = await service.syncOfflineUpdates(offlineUpdates);
+        '/api/payments/sync',
+          body: JSON.stringify({ updates: offlineUpdates })
+  describe('updateReminderPreferences', () => {
+    it('updates reminder preferences successfully', async () => {
+      const preferences = {
+        globalEnabled: true,
+        defaultDaysBefore: [14, 7, 3, 1],
+        defaultNotificationTypes: ['push', 'email'] as const,
+        quietHours: {
+          start: '09:00',
+          end: '18:00'
+      await service.updateReminderPreferences('wedding-123', preferences);
+        '/api/payments/reminder-preferences',
+          body: JSON.stringify({
+            weddingId: 'wedding-123',
+            preferences
+          })
+  describe('Singleton Instance', () => {
+    it('exports a singleton instance', () => {
+      expect(paymentCalendarService).toBeInstanceOf(PaymentCalendarService);
+      expect(paymentCalendarService).toBe(paymentCalendarService);
+});

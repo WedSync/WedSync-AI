@@ -1,0 +1,510 @@
+'use client';
+
+import React, { useState, useEffect } from 'react';
+import { createClient } from '@supabase/supabase-js';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Badge } from '@/components/ui/badge';
+import {
+  Shield,
+  Download,
+  Trash2,
+  FileText,
+  Clock,
+  CheckCircle,
+  AlertCircle,
+  Info,
+  User,
+  Lock,
+  Database,
+  FileDown,
+  AlertTriangle,
+  RefreshCw,
+} from 'lucide-react';
+import ConsentManager from './ConsentManager';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+
+interface PrivacyRequest {
+  id: string;
+  request_type:
+    | 'access'
+    | 'erasure'
+    | 'portability'
+    | 'rectification'
+    | 'restriction';
+  status: 'pending' | 'processing' | 'completed' | 'rejected' | 'expired';
+  requested_at: string;
+  completed_at?: string;
+  deadline_at: string;
+  verification_required: boolean;
+}
+
+interface DataExport {
+  id: string;
+  created_at: string;
+  expires_at: string;
+  file_size: number;
+  status: 'generating' | 'ready' | 'expired';
+}
+
+export default function PrivacyDashboard() {
+  const [activeTab, setActiveTab] = useState('overview');
+  const [requests, setRequests] = useState<PrivacyRequest[]>([]);
+  const [exports, setExports] = useState<DataExport[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [exportFormat, setExportFormat] = useState<'json' | 'csv'>('json');
+  const supabase = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+  );
+
+  useEffect(() => {
+    loadPrivacyData();
+  }, []);
+
+  const loadPrivacyData = async () => {
+    try {
+      // Load privacy requests
+      const requestsResponse = await fetch('/api/privacy/requests');
+      if (requestsResponse.ok) {
+        const data = await requestsResponse.json();
+        setRequests(data.requests || []);
+      }
+
+      // Load data exports
+      const { data: exportData } = await supabase
+        .from('data_exports')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(5);
+
+      if (exportData) {
+        setExports(exportData);
+      }
+    } catch (error) {
+      console.error('Failed to load privacy data:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const requestDataExport = async () => {
+    try {
+      const response = await fetch('/api/privacy/requests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          request_type: 'portability',
+          format: exportFormat,
+          metadata: { format: exportFormat },
+        }),
+      });
+
+      if (!response.ok) throw new Error('Failed to request data export');
+
+      await loadPrivacyData();
+      alert(
+        "Data export requested. You will receive an email when it's ready.",
+      );
+    } catch (error) {
+      console.error('Export request failed:', error);
+      alert('Failed to request data export. Please try again.');
+    }
+  };
+
+  const requestDataDeletion = async () => {
+    if (deleteConfirmText !== 'DELETE') return;
+
+    setIsDeleting(true);
+    try {
+      const response = await fetch('/api/privacy/requests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          request_type: 'erasure',
+          metadata: {
+            confirmation: deleteConfirmText,
+            requested_via: 'privacy_dashboard',
+          },
+        }),
+      });
+
+      if (!response.ok) throw new Error('Failed to request account deletion');
+
+      alert(
+        'Account deletion requested. You will receive a confirmation email.',
+      );
+      setDeleteConfirmText('');
+    } catch (error) {
+      console.error('Deletion request failed:', error);
+      alert('Failed to request account deletion. Please try again.');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const downloadExport = async (exportId: string) => {
+    try {
+      window.open(`/api/privacy/export/${exportId}`, '_blank');
+    } catch (error) {
+      console.error('Download failed:', error);
+      alert('Failed to download export. Please try again.');
+    }
+  };
+
+  const getRequestIcon = (type: string) => {
+    switch (type) {
+      case 'access':
+        return <FileText className="h-4 w-4" />;
+      case 'erasure':
+        return <Trash2 className="h-4 w-4" />;
+      case 'portability':
+        return <Download className="h-4 w-4" />;
+      case 'rectification':
+        return <RefreshCw className="h-4 w-4" />;
+      case 'restriction':
+        return <Lock className="h-4 w-4" />;
+      default:
+        return <Info className="h-4 w-4" />;
+    }
+  };
+
+  const getStatusBadge = (status: string) => {
+    const variants: Record<
+      string,
+      'default' | 'secondary' | 'destructive' | 'outline'
+    > = {
+      pending: 'secondary',
+      processing: 'default',
+      completed: 'outline',
+      rejected: 'destructive',
+      expired: 'destructive',
+    };
+
+    return <Badge variant={variants[status] || 'default'}>{status}</Badge>;
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center p-8">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Privacy Center</h1>
+          <p className="text-muted-foreground">
+            Manage your data, privacy settings, and compliance requests
+          </p>
+        </div>
+        <Shield className="h-8 w-8 text-primary" />
+      </div>
+
+      <Tabs
+        value={activeTab}
+        onValueChange={setActiveTab}
+        className="space-y-4"
+      >
+        <TabsList className="grid w-full grid-cols-4">
+          <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="consent">Consent</TabsTrigger>
+          <TabsTrigger value="requests">Requests</TabsTrigger>
+          <TabsTrigger value="data">My Data</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="overview" className="space-y-4">
+          <div className="grid gap-4 md:grid-cols-3">
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">
+                  Privacy Score
+                </CardTitle>
+                <Shield className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">85%</div>
+                <p className="text-xs text-muted-foreground">
+                  Your data is well protected
+                </p>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">
+                  Active Consents
+                </CardTitle>
+                <CheckCircle className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">4/7</div>
+                <p className="text-xs text-muted-foreground">
+                  Manage in Consent tab
+                </p>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">
+                  Data Requests
+                </CardTitle>
+                <Clock className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">{requests.length}</div>
+                <p className="text-xs text-muted-foreground">
+                  {requests.filter((r) => r.status === 'pending').length}{' '}
+                  pending
+                </p>
+              </CardContent>
+            </Card>
+          </div>
+
+          <Alert>
+            <Info className="h-4 w-4" />
+            <AlertTitle>Your Privacy Rights</AlertTitle>
+            <AlertDescription>
+              Under GDPR/CCPA, you have the right to access, correct, export,
+              and delete your personal data. All requests are processed within
+              30 days and you'll be notified via email.
+            </AlertDescription>
+          </Alert>
+        </TabsContent>
+
+        <TabsContent value="consent">
+          <ConsentManager />
+        </TabsContent>
+
+        <TabsContent value="requests" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>Privacy Requests History</CardTitle>
+              <CardDescription>
+                Track the status of your data requests
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {requests.length === 0 ? (
+                <p className="text-center text-muted-foreground py-8">
+                  No privacy requests yet
+                </p>
+              ) : (
+                <div className="space-y-4">
+                  {requests.map((request) => (
+                    <div
+                      key={request.id}
+                      className="flex items-center justify-between p-4 border rounded-lg"
+                    >
+                      <div className="flex items-center gap-3">
+                        {getRequestIcon(request.request_type)}
+                        <div>
+                          <p className="font-medium capitalize">
+                            {request.request_type} Request
+                          </p>
+                          <p className="text-sm text-muted-foreground">
+                            Requested:{' '}
+                            {new Date(
+                              request.requested_at,
+                            ).toLocaleDateString()}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {getStatusBadge(request.status)}
+                        {request.status === 'pending' && (
+                          <p className="text-xs text-muted-foreground">
+                            Due:{' '}
+                            {new Date(request.deadline_at).toLocaleDateString()}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="data" className="space-y-4">
+          <div className="grid gap-4 md:grid-cols-2">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <FileDown className="h-5 w-5" />
+                  Export Your Data
+                </CardTitle>
+                <CardDescription>
+                  Download all your wedding planning data
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="export-format">Export Format</Label>
+                  <Select
+                    value={exportFormat}
+                    onValueChange={(v: 'json' | 'csv') => setExportFormat(v)}
+                  >
+                    <SelectTrigger id="export-format">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="json">JSON (Complete data)</SelectItem>
+                      <SelectItem value="csv">
+                        CSV (Spreadsheet compatible)
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <Button onClick={requestDataExport} className="w-full">
+                  <Download className="h-4 w-4 mr-2" />
+                  Request Data Export
+                </Button>
+
+                <p className="text-xs text-muted-foreground">
+                  Exports include: Profile, wedding details, guest list, vendor
+                  data, and all planning information
+                </p>
+              </CardContent>
+            </Card>
+
+            <Card className="border-red-200">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-red-600">
+                  <AlertTriangle className="h-5 w-5" />
+                  Delete Your Account
+                </CardTitle>
+                <CardDescription>
+                  Permanently remove all your data
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Alert className="border-red-200 mb-4">
+                  <AlertTriangle className="h-4 w-4 text-red-600" />
+                  <AlertDescription>
+                    This action cannot be undone. All your wedding data, guest
+                    information, and vendor connections will be permanently
+                    deleted.
+                  </AlertDescription>
+                </Alert>
+
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button variant="destructive" className="w-full">
+                      <Trash2 className="h-4 w-4 mr-2" />
+                      Delete My Account
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>
+                        Are you absolutely sure?
+                      </AlertDialogTitle>
+                      <AlertDialogDescription>
+                        This will permanently delete your account and all
+                        associated data. Type DELETE to confirm.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <Input
+                      placeholder="Type DELETE to confirm"
+                      value={deleteConfirmText}
+                      onChange={(e) => setDeleteConfirmText(e.target.value)}
+                      className="my-4"
+                    />
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={requestDataDeletion}
+                        disabled={deleteConfirmText !== 'DELETE' || isDeleting}
+                        className="bg-red-600 hover:bg-red-700"
+                      >
+                        {isDeleting ? 'Processing...' : 'Delete Account'}
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </CardContent>
+            </Card>
+          </div>
+
+          {exports.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Recent Data Exports</CardTitle>
+                <CardDescription>
+                  Your generated data exports (available for 7 days)
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-2">
+                  {exports.map((exp) => (
+                    <div
+                      key={exp.id}
+                      className="flex items-center justify-between p-3 border rounded"
+                    >
+                      <div>
+                        <p className="text-sm font-medium">
+                          Export from{' '}
+                          {new Date(exp.created_at).toLocaleDateString()}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          Expires:{' '}
+                          {new Date(exp.expires_at).toLocaleDateString()}
+                        </p>
+                      </div>
+                      {exp.status === 'ready' ? (
+                        <Button
+                          size="sm"
+                          onClick={() => downloadExport(exp.id)}
+                        >
+                          <Download className="h-4 w-4" />
+                        </Button>
+                      ) : (
+                        <Badge>Generating...</Badge>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}

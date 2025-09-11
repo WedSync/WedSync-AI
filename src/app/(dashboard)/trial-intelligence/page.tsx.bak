@@ -1,0 +1,55 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { TrialBusinessIntelligenceDashboard } from '@/components/trial/TrialBusinessIntelligenceDashboard';
+import { TrialUsageIntegration } from '@/lib/trial/TrialUsageIntegration';
+
+export default function TrialIntelligencePage() {
+  const [dashboardData, setDashboardData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const loadDashboardData = async () => {
+      try {
+        setLoading(true);
+        
+        // Initialize the integration service
+        const trialIntegration = new TrialUsageIntegration();
+        
+        // Generate comprehensive analytics data
+        const [businessIntelligence, crossTeamROI] = await Promise.all([
+          trialIntegration.generateBusinessIntelligence(),
+          trialIntegration.generateCrossTeamROI('trial-sample-id')
+        ]);
+
+        // Combine data for dashboard consumption
+        const combinedData = {
+          businessIntelligence,
+          crossTeamROI,
+          timestamp: new Date().toISOString()
+        };
+
+        setDashboardData(combinedData);
+      } catch (error) {
+        console.error('Error loading trial intelligence data:', error);
+        // Set empty data to show dashboard with mock data
+        setDashboardData({});
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadDashboardData();
+  }, []);
+
+  return (
+    <div className="min-h-screen bg-gray-50">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <TrialBusinessIntelligenceDashboard 
+          data={dashboardData}
+          loading={loading}
+        />
+      </div>
+    </div>
+  );
+}

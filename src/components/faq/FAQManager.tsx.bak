@@ -1,0 +1,574 @@
+'use client'
+
+import { useState, useEffect, useMemo } from 'react'
+import { 
+  Search, 
+  Filter, 
+  Plus, 
+  Edit3, 
+  Trash2, 
+  Eye, 
+  EyeOff, 
+  Star, 
+  StarOff, 
+  MoreHorizontal,
+  ChevronDown,
+  DragHandleDots2,
+  Check,
+  X
+} from 'lucide-react'
+import { faqService } from '@/lib/services/faqService'
+import type { FaqCategory, FaqItem, FaqManagerProps, FaqSortBy, FaqFilterBy } from '@/types/faq'
+import { WEDDING_FAQ_CATEGORIES } from '@/types/faq'
+
+export function FAQManager({ 
+  supplier_id, 
+  initial_categories = [], 
+  initial_faqs = [],
+  onCreateFaq,
+  onEditFaq,
+  onDataChange
+}: FaqManagerProps & {
+  onCreateFaq?: () => void
+  onEditFaq?: (faq: FaqItem) => void
+  onDataChange?: () => void
+}) {
+  const [faqs, setFaqs] = useState<FaqItem[]>(initial_faqs)
+  const [categories, setCategories] = useState<FaqCategory[]>(initial_categories)
+  const [loading, setLoading] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null)
+  const [sortBy, setSortBy] = useState<FaqSortBy>('created')
+  const [filterBy, setFilterBy] = useState<FaqFilterBy>('all')
+  const [showFilters, setShowFilters] = useState(false)
+  const [selectedFaqs, setSelectedFaqs] = useState<Set<string>>(new Set())
+  const [bulkAction, setBulkAction] = useState<string | null>(null)
+
+  // Load FAQs from service
+  useEffect(() => {
+    loadFaqs()
+  }, [selectedCategory, sortBy, filterBy])
+
+  const loadFaqs = async () => {
+    if (!supplier_id) return
+    
+    try {
+      setLoading(true)
+      // In a real implementation, we'd have a service method to get FAQs by category/filter
+      const popularFaqs = await faqService.getPopularFaqs(50) // Get all FAQs
+      setFaqs(popularFaqs)
+    } catch (error) {
+      console.error('Error loading FAQs:', error)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Filter and sort FAQs
+  const filteredFaqs = useMemo(() => {
+    let filtered = [...faqs]
+
+    // Apply search filter
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase()
+      filtered = filtered.filter(faq => 
+        faq.question.toLowerCase().includes(query) ||
+        faq.answer.toLowerCase().includes(query) ||
+        faq.tags.some(tag => tag.toLowerCase().includes(query))
+      )
+    }
+
+    // Apply category filter
+    if (selectedCategory) {
+      filtered = filtered.filter(faq => faq.category_id === selectedCategory)
+    }
+
+    // Apply status filter
+    switch (filterBy) {
+      case 'published':
+        filtered = filtered.filter(faq => faq.is_published)
+        break
+      case 'featured':
+        filtered = filtered.filter(faq => faq.is_featured)
+        break
+      case 'needs_review':
+        filtered = filtered.filter(faq => faq.help_score < 0)
+        break
+      case 'low_performance':
+        filtered = filtered.filter(faq => faq.view_count < 5 && faq.help_score < 2)
+        break
+    }
+
+    // Apply sorting
+    switch (sortBy) {
+      case 'alphabetical':
+        filtered.sort((a, b) => a.question.localeCompare(b.question))
+        break
+      case 'views':
+        filtered.sort((a, b) => b.view_count - a.view_count)
+        break
+      case 'helpfulness':
+        filtered.sort((a, b) => b.help_score - a.help_score)
+        break
+      case 'updated':
+        filtered.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
+        break
+      case 'created':
+      default:
+        filtered.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+        break
+    }
+
+    return filtered
+  }, [faqs, searchQuery, selectedCategory, sortBy, filterBy])
+
+  const handleTogglePublished = async (faq: FaqItem) => {
+    try {
+      await faqService.updateFaqItem({
+        id: faq.id,
+        is_published: !faq.is_published
+      })
+      loadFaqs()
+      onDataChange?.()
+    } catch (error) {
+      console.error('Error updating FAQ:', error)
+    }
+  }
+
+  const handleToggleFeatured = async (faq: FaqItem) => {
+    try {
+      await faqService.updateFaqItem({
+        id: faq.id,
+        is_featured: !faq.is_featured
+      })
+      loadFaqs()
+      onDataChange?.()
+    } catch (error) {
+      console.error('Error updating FAQ:', error)
+    }
+  }
+
+  const handleBulkAction = async (action: string) => {
+    if (selectedFaqs.size === 0) return
+
+    try {
+      setLoading(true)
+      const promises = Array.from(selectedFaqs).map(faqId => {
+        const faq = faqs.find(f => f.id === faqId)
+        if (!faq) return Promise.resolve()
+
+        switch (action) {
+          case 'publish':
+            return faqService.updateFaqItem({ id: faqId, is_published: true })
+          case 'unpublish':
+            return faqService.updateFaqItem({ id: faqId, is_published: false })
+          case 'feature':
+            return faqService.updateFaqItem({ id: faqId, is_featured: true })
+          case 'unfeature':
+            return faqService.updateFaqItem({ id: faqId, is_featured: false })
+          default:
+            return Promise.resolve()
+        }
+      })
+
+      await Promise.all(promises)
+      setSelectedFaqs(new Set())
+      setBulkAction(null)
+      loadFaqs()
+      onDataChange?.()
+    } catch (error) {
+      console.error('Error performing bulk action:', error)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const toggleFaqSelection = (faqId: string) => {
+    const newSelected = new Set(selectedFaqs)
+    if (newSelected.has(faqId)) {
+      newSelected.delete(faqId)
+    } else {
+      newSelected.add(faqId)
+    }
+    setSelectedFaqs(newSelected)
+  }
+
+  const selectAllFaqs = () => {
+    if (selectedFaqs.size === filteredFaqs.length) {
+      setSelectedFaqs(new Set())
+    } else {
+      setSelectedFaqs(new Set(filteredFaqs.map(f => f.id)))
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Search and Filters */}
+      <div className="bg-white border border-gray-200 rounded-xl p-6 shadow-xs">
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+          {/* Search */}
+          <div className="relative flex-1 max-w-md">
+            <div className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
+              <Search className="w-4 h-4 text-gray-400" />
+            </div>
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search FAQs..."
+              className="
+                w-full pl-10 pr-4 py-2.5
+                bg-white
+                border border-gray-300
+                rounded-lg
+                text-gray-900 placeholder-gray-500
+                shadow-xs
+                focus:outline-none focus:ring-4 focus:ring-primary-100
+                focus:border-primary-300
+                transition-all duration-200
+              "
+            />
+          </div>
+
+          {/* Filter Controls */}
+          <div className="flex items-center gap-3">
+            <select
+              value={selectedCategory || ''}
+              onChange={(e) => setSelectedCategory(e.target.value || null)}
+              className="
+                px-3 py-2
+                bg-white border border-gray-300 rounded-lg
+                text-sm text-gray-700
+                focus:outline-none focus:ring-4 focus:ring-primary-100
+                focus:border-primary-300
+              "
+            >
+              <option value="">All Categories</option>
+              {WEDDING_FAQ_CATEGORIES.map(cat => (
+                <option key={cat.slug} value={cat.slug}>
+                  {cat.name}
+                </option>
+              ))}
+            </select>
+
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as FaqSortBy)}
+              className="
+                px-3 py-2
+                bg-white border border-gray-300 rounded-lg
+                text-sm text-gray-700
+                focus:outline-none focus:ring-4 focus:ring-primary-100
+                focus:border-primary-300
+              "
+            >
+              <option value="created">Newest First</option>
+              <option value="updated">Recently Updated</option>
+              <option value="alphabetical">Alphabetical</option>
+              <option value="views">Most Viewed</option>
+              <option value="helpfulness">Most Helpful</option>
+            </select>
+
+            <button
+              onClick={() => setShowFilters(!showFilters)}
+              className={`
+                inline-flex items-center gap-2 px-3 py-2
+                border rounded-lg text-sm font-medium
+                transition-colors duration-200
+                ${showFilters
+                  ? 'bg-primary-50 border-primary-200 text-primary-700'
+                  : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'
+                }
+              `}
+            >
+              <Filter className="w-4 h-4" />
+              Filters
+            </button>
+          </div>
+        </div>
+
+        {/* Extended Filters */}
+        {showFilters && (
+          <div className="mt-4 pt-4 border-t border-gray-200">
+            <div className="flex flex-wrap gap-2">
+              {[
+                { key: 'all', label: 'All FAQs' },
+                { key: 'published', label: 'Published' },
+                { key: 'featured', label: 'Featured' },
+                { key: 'needs_review', label: 'Needs Review' },
+                { key: 'low_performance', label: 'Low Performance' }
+              ].map(({ key, label }) => (
+                <button
+                  key={key}
+                  onClick={() => setFilterBy(key as FaqFilterBy)}
+                  className={`
+                    px-3 py-1.5 rounded-full text-sm font-medium transition-colors
+                    ${filterBy === key
+                      ? 'bg-primary-100 text-primary-700 border border-primary-200'
+                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200 border border-transparent'
+                    }
+                  `}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Bulk Actions */}
+      {selectedFaqs.size > 0 && (
+        <div className="bg-primary-50 border border-primary-200 rounded-xl p-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <span className="text-sm font-medium text-primary-900">
+                {selectedFaqs.size} FAQ{selectedFaqs.size !== 1 ? 's' : ''} selected
+              </span>
+              
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => handleBulkAction('publish')}
+                  className="px-3 py-1.5 bg-success-600 hover:bg-success-700 text-white text-sm font-medium rounded-lg transition-colors"
+                >
+                  Publish
+                </button>
+                <button
+                  onClick={() => handleBulkAction('unpublish')}
+                  className="px-3 py-1.5 bg-gray-600 hover:bg-gray-700 text-white text-sm font-medium rounded-lg transition-colors"
+                >
+                  Unpublish
+                </button>
+                <button
+                  onClick={() => handleBulkAction('feature')}
+                  className="px-3 py-1.5 bg-warning-600 hover:bg-warning-700 text-white text-sm font-medium rounded-lg transition-colors"
+                >
+                  Feature
+                </button>
+              </div>
+            </div>
+            
+            <button
+              onClick={() => setSelectedFaqs(new Set())}
+              className="p-1 text-primary-600 hover:text-primary-800 transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* FAQ List */}
+      <div className="bg-white border border-gray-200 rounded-xl shadow-xs overflow-hidden">
+        {/* Header */}
+        <div className="px-6 py-4 bg-gray-50 border-b border-gray-200">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <input
+                type="checkbox"
+                checked={selectedFaqs.size === filteredFaqs.length && filteredFaqs.length > 0}
+                onChange={selectAllFaqs}
+                className="w-4 h-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500"
+              />
+              <span className="text-sm font-medium text-gray-900">
+                {filteredFaqs.length} FAQ{filteredFaqs.length !== 1 ? 's' : ''}
+              </span>
+            </div>
+            
+            {onCreateFaq && (
+              <button
+                onClick={onCreateFaq}
+                className="
+                  inline-flex items-center gap-2 px-3 py-1.5
+                  bg-primary-600 hover:bg-primary-700
+                  text-white text-sm font-medium
+                  rounded-lg transition-colors
+                "
+              >
+                <Plus className="w-4 h-4" />
+                Add FAQ
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* List Content */}
+        <div className="divide-y divide-gray-200">
+          {loading ? (
+            <div className="p-8 text-center">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600 mx-auto"></div>
+              <p className="mt-2 text-sm text-gray-500">Loading FAQs...</p>
+            </div>
+          ) : filteredFaqs.length === 0 ? (
+            <div className="p-8 text-center">
+              <BookOpen className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+              <h3 className="text-lg font-medium text-gray-900 mb-2">No FAQs found</h3>
+              <p className="text-gray-500 mb-4">
+                {searchQuery || selectedCategory || filterBy !== 'all'
+                  ? 'Try adjusting your search or filters'
+                  : 'Get started by creating your first FAQ'
+                }
+              </p>
+              {onCreateFaq && (
+                <button
+                  onClick={onCreateFaq}
+                  className="
+                    inline-flex items-center gap-2 px-4 py-2
+                    bg-primary-600 hover:bg-primary-700
+                    text-white font-medium text-sm
+                    rounded-lg transition-colors
+                  "
+                >
+                  <Plus className="w-4 h-4" />
+                  Create First FAQ
+                </button>
+              )}
+            </div>
+          ) : (
+            filteredFaqs.map((faq, index) => (
+              <FAQListItem
+                key={faq.id}
+                faq={faq}
+                isSelected={selectedFaqs.has(faq.id)}
+                onToggleSelect={() => toggleFaqSelection(faq.id)}
+                onEdit={() => onEditFaq?.(faq)}
+                onTogglePublished={() => handleTogglePublished(faq)}
+                onToggleFeatured={() => handleToggleFeatured(faq)}
+              />
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Individual FAQ List Item Component
+function FAQListItem({
+  faq,
+  isSelected,
+  onToggleSelect,
+  onEdit,
+  onTogglePublished,
+  onToggleFeatured
+}: {
+  faq: FaqItem
+  isSelected: boolean
+  onToggleSelect: () => void
+  onEdit: () => void
+  onTogglePublished: () => void
+  onToggleFeatured: () => void
+}) {
+  const [showActions, setShowActions] = useState(false)
+
+  return (
+    <div 
+      className={`
+        px-6 py-4 hover:bg-gray-25 transition-colors
+        ${isSelected ? 'bg-primary-25 border-l-4 border-l-primary-600' : ''}
+      `}
+    >
+      <div className="flex items-start gap-4">
+        <input
+          type="checkbox"
+          checked={isSelected}
+          onChange={onToggleSelect}
+          className="mt-1 w-4 h-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500"
+        />
+        
+        <div className="flex-1 min-w-0">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex-1">
+              <h3 className="text-sm font-medium text-gray-900 line-clamp-2">
+                {faq.question}
+              </h3>
+              <p className="mt-1 text-sm text-gray-500 line-clamp-2">
+                {faq.summary || faq.answer.substring(0, 120) + '...'}
+              </p>
+              
+              <div className="mt-3 flex items-center gap-4 text-xs text-gray-500">
+                <span className="flex items-center gap-1">
+                  <Eye className="w-3 h-3" />
+                  {faq.view_count} views
+                </span>
+                <span className="flex items-center gap-1">
+                  {faq.help_score >= 0 ? (
+                    <Check className="w-3 h-3 text-success-600" />
+                  ) : (
+                    <X className="w-3 h-3 text-error-600" />
+                  )}
+                  {faq.help_score} helpful
+                </span>
+                <span>
+                  {new Date(faq.updated_at).toLocaleDateString()}
+                </span>
+              </div>
+            </div>
+            
+            <div className="flex items-center gap-2">
+              {/* Status Badges */}
+              <div className="flex items-center gap-2">
+                {faq.is_featured && (
+                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-warning-50 text-warning-700 border border-warning-200">
+                    Featured
+                  </span>
+                )}
+                <span className={`
+                  inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
+                  ${faq.is_published
+                    ? 'bg-success-50 text-success-700 border border-success-200'
+                    : 'bg-gray-50 text-gray-700 border border-gray-200'
+                  }
+                `}>
+                  {faq.is_published ? 'Published' : 'Draft'}
+                </span>
+              </div>
+              
+              {/* Action Buttons */}
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={onToggleFeatured}
+                  className="p-1.5 text-gray-400 hover:text-warning-600 rounded transition-colors"
+                  title={faq.is_featured ? 'Remove from featured' : 'Add to featured'}
+                >
+                  {faq.is_featured ? (
+                    <Star className="w-4 h-4 fill-current" />
+                  ) : (
+                    <StarOff className="w-4 h-4" />
+                  )}
+                </button>
+                
+                <button
+                  onClick={onTogglePublished}
+                  className="p-1.5 text-gray-400 hover:text-blue-600 rounded transition-colors"
+                  title={faq.is_published ? 'Unpublish' : 'Publish'}
+                >
+                  {faq.is_published ? (
+                    <Eye className="w-4 h-4" />
+                  ) : (
+                    <EyeOff className="w-4 h-4" />
+                  )}
+                </button>
+                
+                <button
+                  onClick={onEdit}
+                  className="p-1.5 text-gray-400 hover:text-primary-600 rounded transition-colors"
+                  title="Edit FAQ"
+                >
+                  <Edit3 className="w-4 h-4" />
+                </button>
+                
+                <button
+                  onClick={() => setShowActions(!showActions)}
+                  className="p-1.5 text-gray-400 hover:text-gray-600 rounded transition-colors"
+                >
+                  <MoreHorizontal className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}

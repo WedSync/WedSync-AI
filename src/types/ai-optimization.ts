@@ -1,0 +1,326 @@
+/**
+ * AI Cost Optimization System Types
+ * Wedding Industry AI Cost Management
+ *
+ * Track and optimize AI costs with wedding season context
+ * Peak season (March-October): 1.6x cost multiplier
+ */
+
+export interface AIUsageMetrics {
+  id: string;
+  organizationId: string;
+  date: string;
+
+  // Cost breakdown by AI service type
+  photographyAI: {
+    apiCalls: number;
+    costPence: number; // Photography AI: £0.02/image processing
+    cacheHits: number;
+    cacheMisses: number;
+  };
+
+  contentGeneration: {
+    apiCalls: number;
+    costPence: number; // Content AI: £0.05/request
+    cacheHits: number;
+    cacheMisses: number;
+    modelUsage: {
+      gpt4: number; // High-quality, expensive
+      gpt35: number; // Good quality, cost-effective
+    };
+  };
+
+  chatbotInteractions: {
+    apiCalls: number;
+    costPence: number; // Chatbot: £0.01/message
+    cacheHits: number;
+    cacheMisses: number;
+  };
+
+  // Daily totals
+  totalApiCalls: number;
+  totalCostPence: number;
+  totalCacheHits: number;
+  totalCacheMisses: number;
+  cacheHitRate: number; // Percentage (0-100)
+
+  // Wedding season context
+  isWeddingSeason: boolean; // March-October
+  seasonMultiplier: number; // 1.6x during peak season
+  adjustedCostPence: number; // Cost with season multiplier applied
+}
+
+export interface WeddingSeasonProjection {
+  month: string;
+  isWeddingSeason: boolean;
+  multiplier: number;
+  baselineCostPence: number;
+  projectedCostPence: number;
+  bookingVolume: number; // Expected wedding bookings
+  aiIntensity: 'low' | 'medium' | 'high'; // AI usage based on services
+}
+
+export interface CacheMetrics {
+  totalRequests: number;
+  cacheHits: number;
+  cacheMisses: number;
+  hitRate: number; // Percentage
+  estimatedSavingsPence: number; // How much saved through caching
+  potentialSavingsPence: number; // Additional savings possible
+
+  // Cache performance by AI type
+  photographyCache: {
+    hitRate: number;
+    savingsPence: number;
+  };
+  contentCache: {
+    hitRate: number;
+    savingsPence: number;
+  };
+  chatbotCache: {
+    hitRate: number;
+    savingsPence: number;
+  };
+}
+
+export interface BudgetSettings {
+  id: string;
+  organizationId: string;
+
+  // Monthly budget limits (in pence)
+  monthlyBudgetPence: number;
+
+  // Alert thresholds
+  alertThresholds: {
+    warning: number; // 80% default
+    critical: number; // 90% default
+    emergency: number; // 95% default
+  };
+
+  // Auto-disable settings
+  autoDisable: {
+    enabled: boolean;
+    atPercentage: number; // 100% default - disable AI when budget exceeded
+    gracePeriod: number; // Hours before disabling (24h default)
+  };
+
+  // Wedding season adjustments
+  seasonalSettings: {
+    adjustBudgetForSeason: boolean;
+    peakSeasonMultiplier: number; // 1.6x default
+    preSeasonWarning: boolean; // Warn before March
+  };
+
+  // Notification preferences
+  notifications: {
+    email: boolean;
+    sms: boolean;
+    dashboard: boolean;
+    frequency: 'instant' | 'daily' | 'weekly';
+  };
+}
+
+export interface ModelSelectionConfig {
+  // Cost-quality optimization settings
+  photography: {
+    model: 'gpt-4-vision' | 'gpt-3.5-turbo'; // Vision models for photo AI
+    qualityThreshold: number; // When to use expensive model
+    costPerRequest: number; // In pence
+  };
+
+  contentGeneration: {
+    clientFacing: 'gpt-4' | 'gpt-3.5-turbo'; // Client emails, proposals
+    internal: 'gpt-4' | 'gpt-3.5-turbo'; // Internal notes, summaries
+    bulk: 'gpt-3.5-turbo' | 'gpt-3.5-turbo-instruct'; // Bulk operations
+  };
+
+  chatbot: {
+    model: 'gpt-4' | 'gpt-3.5-turbo';
+    fallbackModel: 'gpt-3.5-turbo';
+    contextLength: number; // Tokens
+  };
+}
+
+export interface OptimizationRecommendation {
+  id: string;
+  type: 'cache' | 'model' | 'batch' | 'seasonal' | 'budget';
+  priority: 'low' | 'medium' | 'high' | 'urgent';
+  title: string;
+  description: string;
+  potentialSavingsPence: number;
+  implementationDifficulty: 'easy' | 'medium' | 'hard';
+  estimatedTimeToImplement: string;
+
+  // Wedding-specific context
+  weddingContext: {
+    affectedServices: string[]; // e.g., ["Photography AI", "Email Generation"]
+    seasonalRelevance: boolean; // More important during peak season
+    clientImpact: 'none' | 'minimal' | 'moderate' | 'significant';
+  };
+
+  // Action required
+  action: {
+    buttonText: string;
+    actionType: 'configure' | 'enable' | 'upgrade' | 'contact';
+    parameters?: Record<string, any>;
+  };
+}
+
+export interface CostSavingsReport {
+  period: 'daily' | 'weekly' | 'monthly' | 'yearly';
+  startDate: string;
+  endDate: string;
+
+  baseline: {
+    totalCostPence: number;
+    avgDailyCostPence: number;
+  };
+
+  optimized: {
+    totalCostPence: number;
+    avgDailyCostPence: number;
+  };
+
+  savings: {
+    absolutePence: number;
+    percentage: number;
+    projectedAnnualSavingsPence: number;
+  };
+
+  // Savings breakdown
+  savingsByOptimization: {
+    caching: number;
+    modelSelection: number;
+    batchProcessing: number;
+    seasonalOptimization: number;
+  };
+
+  // Wedding industry context
+  weddingMetrics: {
+    weddingsProcessed: number;
+    avgCostPerWedding: number;
+    peakSeasonSavings: number;
+  };
+}
+
+export interface BatchProcessingJob {
+  id: string;
+  type: 'photo_processing' | 'content_generation' | 'email_batch';
+  status: 'queued' | 'processing' | 'completed' | 'failed';
+  priority: 'low' | 'normal' | 'high';
+
+  // Scheduling
+  scheduledFor: string; // ISO date
+  createdAt: string;
+  completedAt?: string;
+
+  // Cost optimization
+  estimatedCostPence: number;
+  actualCostPence?: number;
+  costSavingsVsImmediate: number; // Savings vs immediate processing
+
+  // Wedding context
+  weddingId?: string;
+  clientId?: string;
+  isClientFacing: boolean; // Higher priority for client-facing work
+
+  // Job details
+  items: number; // Number of items to process
+  processedItems: number;
+  failedItems: number;
+
+  metadata: Record<string, any>;
+}
+
+export interface AIOptimizationDashboardData {
+  currentUsage: AIUsageMetrics;
+  budgetSettings: BudgetSettings;
+  cacheMetrics: CacheMetrics;
+  modelConfig: ModelSelectionConfig;
+  recommendations: OptimizationRecommendation[];
+  recentSavings: CostSavingsReport;
+  upcomingJobs: BatchProcessingJob[];
+  seasonalProjections: WeddingSeasonProjection[];
+
+  // Alert states
+  budgetAlerts: {
+    level: 'none' | 'warning' | 'critical' | 'emergency';
+    message?: string;
+    remainingBudgetPence: number;
+    daysUntilReset: number;
+  };
+
+  // Wedding season status
+  seasonStatus: {
+    isCurrentlyPeakSeason: boolean;
+    nextSeasonStart?: string;
+    currentMultiplier: number;
+    recommendedActions: string[];
+  };
+}
+
+// Component props interfaces
+export interface CostOptimizationDashboardProps {
+  organizationId: string;
+  className?: string;
+}
+
+export interface WeddingSeasonCostProjectorProps {
+  projections: WeddingSeasonProjection[];
+  currentBudget: number;
+  onBudgetUpdate: (newBudget: number) => void;
+  className?: string;
+}
+
+export interface SmartCachingVisualizerProps {
+  metrics: CacheMetrics;
+  onOptimizeCache: () => void;
+  className?: string;
+}
+
+export interface BudgetAlertsManagerProps {
+  settings: BudgetSettings;
+  currentUsage: AIUsageMetrics;
+  onSettingsUpdate: (settings: Partial<BudgetSettings>) => void;
+  className?: string;
+}
+
+export interface ModelSelectionOptimizerProps {
+  config: ModelSelectionConfig;
+  costProjections: Record<string, number>;
+  onConfigUpdate: (config: Partial<ModelSelectionConfig>) => void;
+  className?: string;
+}
+
+export interface CostSavingsReporterProps {
+  report: CostSavingsReport;
+  period: 'daily' | 'weekly' | 'monthly' | 'yearly';
+  onPeriodChange: (period: 'daily' | 'weekly' | 'monthly' | 'yearly') => void;
+  className?: string;
+}
+
+// API response types
+export interface AIOptimizationAPIResponse {
+  success: boolean;
+  data?: AIOptimizationDashboardData;
+  error?: string;
+  timestamp: string;
+}
+
+export interface OptimizationActionResponse {
+  success: boolean;
+  message: string;
+  newEstimatedSavings?: number;
+  implementationSteps?: string[];
+}
+
+// Utility types
+export type AIServiceType = 'photography' | 'content' | 'chatbot';
+export type OptimizationType =
+  | 'cache'
+  | 'model'
+  | 'batch'
+  | 'seasonal'
+  | 'budget';
+export type WeddingSeason = 'peak' | 'low' | 'shoulder';
+export type CostTrend = 'increasing' | 'decreasing' | 'stable';

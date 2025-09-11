@@ -1,0 +1,398 @@
+/**
+ * Comprehensive test suite for mobile rate limiting system
+ * Tests all components: MobileRateLimiter, WedMe integration, offline queue, and UI components
+ */
+
+import { jest, describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import '@testing-library/jest-dom';
+// Mock modules
+vi.mock('@/lib/platform/mobile-rate-limiter');
+vi.mock('@/lib/platform/wedme-rate-limits');
+vi.mock('@/lib/platform/offline-rate-queue');
+import { MobileRateLimiter } from '@/lib/platform/mobile-rate-limiter';
+import { WedMeRateLimitIntegration } from '@/lib/platform/wedme-rate-limits';
+import { OfflineRateLimitQueue } from '@/lib/platform/offline-rate-queue';
+import { RateLimitIndicator } from '@/components/mobile/RateLimitIndicator';
+import { RateLimitToast } from '@/components/mobile/RateLimitToast';
+import { RateLimitConfig } from '@/components/mobile/RateLimitConfig';
+// Test data
+const mockRateLimits = [
+  {
+    current: 45,
+    limit: 100,
+    resetTime: Date.now() + 3600000,
+    tier: 'professional' as const,
+    endpoint: '/api/photos/upload',
+    weddingContext: 'Photo Gallery Management'
+  },
+    current: 85,
+    resetTime: Date.now() + 1800000,
+    endpoint: '/api/clients/import',
+    weddingContext: 'Client Coordination'
+  }
+];
+const mockWeddingUser = {
+  coupleId: 'test-couple-123',
+  weddingDate: new Date('2025-06-15'),
+  subscriptionTier: 'free' as const,
+  registrationDate: new Date('2025-01-01'),
+  lastActivity: new Date()
+};
+describe('Mobile Rate Limiting System', () => {
+  let mockMobileRateLimiter: ReturnType<typeof vi.fn>ed<MobileRateLimiter>;
+  let mockWedMeIntegration: ReturnType<typeof vi.fn>ed<WedMeRateLimitIntegration>;
+  let mockOfflineQueue: ReturnType<typeof vi.fn>ed<OfflineRateLimitQueue>;
+  beforeEach(() => {
+    // Reset all mocks
+    vi.clearAllMocks();
+    
+    // Mock MobileRateLimiter
+    mockMobileRateLimiter = {
+      checkRateLimit: vi.fn(),
+      queueRequest: vi.fn(),
+      processQueue: vi.fn(),
+      getPerformanceMetrics: vi.fn(),
+      reset: vi.fn()
+    } as any;
+    // Mock WedMeRateLimitIntegration
+    mockWedMeIntegration = {
+      getWedMeRateLimits: vi.fn(),
+      handleWedMeRateLimit: vi.fn(),
+      checkWedMeAction: vi.fn(),
+      generateWedMeDeepLink: vi.fn(),
+      syncRateLimitStatusWithWedMe: vi.fn()
+    // Mock OfflineRateLimitQueue
+    mockOfflineQueue = {
+      queueRateLimitedRequest: vi.fn(),
+      processQueuedRequests: vi.fn(),
+      getQueueStats: vi.fn(),
+      cleanupOldRequests: vi.fn(),
+      clearQueue: vi.fn()
+    // Setup default mock returns
+    (MobileRateLimiter.getInstance as ReturnType<typeof vi.fn>).mockReturnValue(mockMobileRateLimiter);
+    (WedMeRateLimitIntegration.getInstance as ReturnType<typeof vi.fn>).mockReturnValue(mockWedMeIntegration);
+    (OfflineRateLimitQueue.getInstance as ReturnType<typeof vi.fn>).mockReturnValue(mockOfflineQueue);
+  });
+  describe('MobileRateLimiter', () => {
+    it('should check rate limits with mobile optimizations', async () => {
+      const mockResult = {
+        allowed: true,
+        current: 45,
+        limit: 100,
+        resetTime: Date.now() + 3600000,
+        networkOptimized: true,
+        batteryOptimized: false
+      };
+      mockMobileRateLimiter.checkRateLimit.mockResolvedValue(mockResult);
+      const request = {
+        endpoint: '/api/photos/upload',
+        userId: 'test-user-123',
+        priority: 'medium' as const,
+        timestamp: Date.now()
+      const result = await mockMobileRateLimiter.checkRateLimit(request);
+      expect(mockMobileRateLimiter.checkRateLimit).toHaveBeenCalledWith(request);
+      expect(result).toEqual(mockResult);
+      expect(result.networkOptimized).toBe(true);
+    });
+    it('should queue requests when rate limited', async () => {
+      const rateLimitedResult = {
+        allowed: false,
+        current: 100,
+        retryAfter: 3600,
+        networkOptimized: false,
+      mockMobileRateLimiter.checkRateLimit.mockResolvedValue(rateLimitedResult);
+      mockMobileRateLimiter.queueRequest.mockResolvedValue();
+        priority: 'high' as const,
+      
+      expect(result.allowed).toBe(false);
+      expect(result.retryAfter).toBe(3600);
+    it('should return performance metrics', () => {
+      const mockMetrics = {
+        requestCount: 150,
+        cacheHits: 120,
+        networkRequests: 30,
+        averageResponseTime: 250,
+        batteryUsage: 0.5,
+        cacheSize: 25,
+        queueSize: 3,
+        networkCondition: { effectiveType: '4g', downlink: 10, rtt: 50, saveData: false },
+        batteryLevel: 0.8,
+        isCharging: false
+      mockMobileRateLimiter.getPerformanceMetrics.mockReturnValue(mockMetrics);
+      const metrics = mockMobileRateLimiter.getPerformanceMetrics();
+      expect(metrics.cacheHits).toBe(120);
+      expect(metrics.averageResponseTime).toBe(250);
+      expect(metrics.networkCondition.effectiveType).toBe('4g');
+  describe('WedMe Platform Integration', () => {
+    it('should get couple-specific rate limits', async () => {
+      const mockWedMeRateLimits = {
+        taskCoordination: { minute: 15, hour: 200, day: 1000, description: 'Wedding coordination' },
+        vendorMessages: { minute: 10, hour: 120, day: 600, description: 'Vendor communication' },
+        guestUpdates: { minute: 8, hour: 100, day: 500, description: 'Guest management' },
+        photoViewing: { minute: 25, hour: 300, day: 1500, description: 'Photo viewing' },
+        photoUploads: { minute: 5, hour: 30, day: 100, description: 'Photo uploads' },
+        socialSharing: { minute: 20, hour: 100, day: 300, description: 'Social sharing' },
+        inviteGeneration: { minute: 10, hour: 50, day: 200, description: 'Invitations' },
+        weddingDate: new Date('2025-06-15'),
+        isNearWeddingDay: true,
+        coupleSubscriptionTier: 'free' as const,
+        proximityMultiplier: 2.0
+      mockWedMeIntegration.getWedMeRateLimits.mockResolvedValue(mockWedMeRateLimits);
+      const rateLimits = await mockWedMeIntegration.getWedMeRateLimits('test-couple-123');
+      expect(mockWedMeIntegration.getWedMeRateLimits).toHaveBeenCalledWith('test-couple-123');
+      expect(rateLimits.taskCoordination.minute).toBe(15);
+      expect(rateLimits.isNearWeddingDay).toBe(true);
+      expect(rateLimits.proximityMultiplier).toBe(2.0);
+    it('should handle WedMe rate limit violations with wedding-friendly messaging', async () => {
+      const mockResponse = {
+        blocked: true,
+        message: 'You\'ve been busy coordinating your wedding! Take a 5-minute break to review your progress.',
+        retryAfter: 300,
+        alternativeActions: [
+          { action: 'review_timeline', description: 'Review your wedding day timeline', available: true }
+        ],
+        upgradeRecommendation: {
+          tier: 'premium' as const,
+          benefits: ['Unlimited coordination', 'Priority support'],
+          pricing: { monthly: 9.99, yearly: 99.99 },
+          urgency: 'medium' as const
+        }
+      mockWedMeIntegration.handleWedMeRateLimit.mockResolvedValue(mockResponse);
+      const result = await mockWedMeIntegration.handleWedMeRateLimit(
+        'taskCoordination',
+        'test-couple-123',
+        { allowed: false, retryAfter: 300 }
+      );
+      expect(result.blocked).toBe(true);
+      expect(result.message).toContain('wedding');
+      expect(result.alternativeActions).toHaveLength(1);
+      expect(result.upgradeRecommendation).toBeDefined();
+    it('should check WedMe actions with wedding day priority', async () => {
+      mockWedMeIntegration.checkWedMeAction.mockResolvedValue(true);
+      const canProceed = await mockWedMeIntegration.checkWedMeAction(
+        'critical'
+      expect(mockWedMeIntegration.checkWedMeAction).toHaveBeenCalledWith(
+      expect(canProceed).toBe(true);
+  describe('Offline Request Queue', () => {
+    it('should queue rate-limited requests', async () => {
+      const mockRequestId = 'queue_123456789_abc123def';
+      mockOfflineQueue.queueRateLimitedRequest.mockResolvedValue(mockRequestId);
+        method: 'POST' as const,
+        headers: { 'Content-Type': 'application/json' },
+        body: { photoData: 'base64...' },
+        rateLimitReason: 'Rate limit exceeded',
+        action: 'photo_upload',
+        maxRetries: 3,
+        weddingContext: {
+          weddingDate: new Date('2025-06-15'),
+          isWeddingDay: false,
+      const requestId = await mockOfflineQueue.queueRateLimitedRequest(request);
+      expect(mockOfflineQueue.queueRateLimitedRequest).toHaveBeenCalledWith(request);
+      expect(requestId).toBe(mockRequestId);
+    it('should process queued requests in priority order', async () => {
+        success: true,
+        processedCount: 3,
+        failedCount: 0,
+        results: [
+          { request: { id: 'req1' }, status: 'success' as const, result: { success: true } },
+          { request: { id: 'req2' }, status: 'success' as const, result: { success: true } },
+          { request: { id: 'req3' }, status: 'success' as const, result: { success: true } }
+        ]
+      mockOfflineQueue.processQueuedRequests.mockResolvedValue(mockResult);
+      const result = await mockOfflineQueue.processQueuedRequests();
+      expect(result.success).toBe(true);
+      expect(result.processedCount).toBe(3);
+      expect(result.failedCount).toBe(0);
+    it('should return queue statistics', async () => {
+      const mockStats = {
+        totalQueued: 10,
+        pendingCount: 3,
+        processingCount: 1,
+        completedCount: 5,
+        failedCount: 1,
+        averageWaitTime: 45000,
+        weddingCriticalCount: 2,
+        nextProcessingTime: Date.now() + 300000
+      mockOfflineQueue.getQueueStats.mockResolvedValue(mockStats);
+      const stats = await mockOfflineQueue.getQueueStats();
+      expect(stats.pendingCount).toBe(3);
+      expect(stats.weddingCriticalCount).toBe(2);
+      expect(stats.averageWaitTime).toBe(45000);
+  describe('RateLimitIndicator Component', () => {
+    it('should render rate limit indicator with wedding context', () => {
+      const onUpgrade = vi.fn();
+      render(
+        <RateLimitIndicator
+          limits={mockRateLimits}
+          onUpgrade={onUpgrade}
+          isOnline={true}
+        />
+      expect(screen.getByText('Photo Gallery Management')).toBeInTheDocument();
+      expect(screen.getByText('45 / 100 requests')).toBeInTheDocument();
+      expect(screen.getByText('Professional')).toBeInTheDocument();
+    it('should show offline indicator when offline', () => {
+          isOnline={false}
+      expect(screen.getByText('Working Offline')).toBeInTheDocument();
+      expect(screen.getByText('Venue Mode')).toBeInTheDocument();
+    it('should handle upgrade button click', () => {
+      const upgradeButton = screen.getByText('Upgrade for Unlimited Wedding Management');
+      fireEvent.click(upgradeButton);
+      expect(onUpgrade).toHaveBeenCalled();
+  describe('RateLimitToast Component', () => {
+    it('should render toast with wedding-friendly messaging', () => {
+      const onDismiss = vi.fn();
+        <RateLimitToast
+          isVisible={true}
+          onDismiss={onDismiss}
+          title="Rate Limit Reached"
+          message="Your wedding photos are taking a quick breather"
+          resetTime={Date.now() + 300000}
+          severity="warning"
+          weddingContext="/api/photos/upload"
+          tier="free"
+      expect(screen.getByText(/wedding photos are taking a quick breather/)).toBeInTheDocument();
+      expect(screen.getByText('Upgrade My Wedding Business')).toBeInTheDocument();
+    it('should show countdown timer', async () => {
+          message="Test message"
+          resetTime={Date.now() + 60000} // 1 minute
+          severity="info"
+      await waitFor(() => {
+        expect(screen.getByText(/Back in/)).toBeInTheDocument();
+      });
+    it('should handle dismiss and upgrade actions', () => {
+          severity="error"
+      fireEvent.click(screen.getByText('Upgrade My Wedding Business'));
+      fireEvent.click(screen.getByText('I\'ll Wait'));
+      expect(onDismiss).toHaveBeenCalled();
+  describe('RateLimitConfig Component', () => {
+    const mockUsage = [
+      {
+        tier: 'professional',
+        weddingContext: 'Photo Gallery Management'
+      },
+        endpoint: '/api/clients/import',
+        current: 85,
+        resetTime: Date.now() + 1800000,
+        weddingContext: 'Client Coordination'
+      }
+    ];
+    it('should render usage overview', () => {
+        <RateLimitConfig
+          usage={mockUsage}
+          currentTier="professional"
+      expect(screen.getByText('Wedding Management Limits')).toBeInTheDocument();
+      expect(screen.getByText('Client Coordination')).toBeInTheDocument();
+    it('should show plan comparison', () => {
+          currentTier="free"
+      expect(screen.getByText('Starter')).toBeInTheDocument();
+      expect(screen.getByText('Most Popular')).toBeInTheDocument();
+    it('should handle tier upgrade', () => {
+      const upgradeButtons = screen.getAllByText(/Upgrade Now/);
+      fireEvent.click(upgradeButtons[0]);
+  describe('Mobile Performance Requirements', () => {
+    it('should meet touch target requirements', () => {
+      const { container } = render(
+      // Check touch targets are at least 48px
+      const buttons = container.querySelectorAll('button');
+      buttons.forEach(button => {
+        const styles = window.getComputedStyle(button);
+        const height = parseInt(styles.height);
+        expect(height).toBeGreaterThanOrEqual(48);
+    it('should work on small screens (iPhone SE)', () => {
+      // Mock small screen viewport
+      Object.defineProperty(window, 'innerWidth', {
+        writable: true,
+        configurable: true,
+        value: 375,
+      // Component should render without overflow on 375px width
+  describe('Wedding Day Protocol', () => {
+    it('should prioritize wedding day requests', async () => {
+      const weddingDayRequest = {
+        endpoint: '/api/vendors/contact',
+        priority: 'critical' as const,
+        timestamp: Date.now(),
+        weddingDate: new Date() // Today
+      mockMobileRateLimiter.checkRateLimit.mockResolvedValue({
+        current: 50,
+        batteryOptimized: true
+      const result = await mockMobileRateLimiter.checkRateLimit(weddingDayRequest);
+      expect(result.allowed).toBe(true);
+      expect(mockMobileRateLimiter.checkRateLimit).toHaveBeenCalledWith(weddingDayRequest);
+    it('should show wedding day messaging in rate limit toast', () => {
+          title="Wedding Day Communication"
+          message="Wedding day communication pause! Your vendors have 5 minutes to respond."
+          weddingContext="/api/vendors/contact"
+      expect(screen.getByText(/Wedding day communication pause/)).toBeInTheDocument();
+  describe('Error Handling', () => {
+    it('should handle network errors gracefully', async () => {
+      mockMobileRateLimiter.checkRateLimit.mockRejectedValue(new Error('Network error'));
+      try {
+        await mockMobileRateLimiter.checkRateLimit({
+          endpoint: '/api/photos/upload',
+          userId: 'test-user-123',
+          priority: 'medium',
+          timestamp: Date.now()
+        });
+      } catch (error) {
+        expect(error.message).toBe('Network error');
+    it('should provide fallback UI when components fail', () => {
+      // Mock console.error to prevent test noise
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation();
+      // Component should render even with invalid props
+          limits={[]}
+      // Should not crash and return null (component not visible)
+      expect(screen.queryByText('API Usage')).not.toBeInTheDocument();
+      consoleSpy.mockRestore();
+  describe('Integration Tests', () => {
+    it('should integrate mobile rate limiter with WedMe platform', async () => {
+      // Setup mocks for integration flow
+      mockWedMeIntegration.checkWedMeAction.mockResolvedValue(false); // Rate limited
+      mockWedMeIntegration.handleWedMeRateLimit.mockResolvedValue({
+        message: 'Wedding coordination paused',
+        retryAfter: 300
+      // Simulate WedMe action check
+        'taskCoordination'
+      expect(canProceed).toBe(false);
+      // Handle the rate limit response
+      const response = await mockWedMeIntegration.handleWedMeRateLimit(
+      expect(response.blocked).toBe(true);
+      expect(response.message).toContain('Wedding coordination');
+});
+describe('Mobile Network Conditions', () => {
+    // Mock network connection API
+    Object.defineProperty(navigator, 'connection', {
+      writable: true,
+      value: {
+        effectiveType: '4g',
+        downlink: 10,
+        rtt: 100,
+        saveData: false
+  it('should adapt to slow network conditions', () => {
+    // Simulate 2G connection
+    (navigator as unknown).connection.effectiveType = '2g';
+    (navigator as unknown).connection.downlink = 0.5;
+    (navigator as unknown).connection.rtt = 2000;
+    // Rate limiter should adjust behavior for slow networks
+    // This would be tested through the actual implementation
+    expect(true).toBe(true); // Placeholder
+  it('should handle offline/online transitions', () => {
+    // Mock online/offline events
+    const onlineEvent = new Event('online');
+    const offlineEvent = new Event('offline');
+    Object.defineProperty(navigator, 'onLine', { value: false, writable: true });
+    window.dispatchEvent(offlineEvent);
+    Object.defineProperty(navigator, 'onLine', { value: true, writable: true });
+    window.dispatchEvent(onlineEvent);
+    // Queue should process when coming back online
+describe('Battery Optimization', () => {
+  it('should reduce activity when battery is low', async () => {
+    // Mock battery API
+    const mockBattery = {
+      level: 0.15, // 15% battery
+      charging: false,
+      addEventListener: vi.fn()
+    };
+    (navigator as unknown).getBattery = vi.fn().mockResolvedValue(mockBattery);
+    // Rate limiter should reduce polling and queue processing

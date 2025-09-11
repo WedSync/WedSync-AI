@@ -1,0 +1,137 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@/lib/supabase/server'
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = await createClient()
+    const { searchParams } = new URL(request.url)
+    
+    const includeHierarchy = searchParams.get('hierarchy') === 'true'
+    const searchTerm = searchParams.get('search')
+    const parentId = searchParams.get('parent_id')
+    const level = searchParams.get('level')
+
+    // If search term is provided, use the search function
+    if (searchTerm) {
+      const { data, error } = await supabase
+        .rpc('search_vendor_categories', { search_term: searchTerm })
+
+      if (error) throw error
+      return NextResponse.json(data)
+    }
+
+    // If hierarchy is requested, use the hierarchy function
+    if (includeHierarchy) {
+      const { data, error } = await supabase
+        .rpc('get_category_hierarchy')
+
+      if (error) throw error
+      return NextResponse.json(data)
+    }
+
+    // Standard category listing with optional filtering
+    let query = supabase
+      .from('vendor_categories')
+      .select(`
+        id,
+        name,
+        slug,
+        display_name,
+        description,
+        icon,
+        color,
+        parent_id,
+        category_level,
+        full_path,
+        sort_order,
+        is_active,
+        is_featured,
+        search_keywords,
+        created_at,
+        updated_at
+      `)
+      .eq('is_active', true)
+
+    // Filter by parent_id if specified
+    if (parentId) {
+      if (parentId === 'null') {
+        query = query.is('parent_id', null)
+      } else {
+        query = query.eq('parent_id', parentId)
+      }
+    }
+
+    // Filter by category level if specified
+    if (level) {
+      query = query.eq('category_level', parseInt(level))
+    }
+
+    const { data, error } = await query.order('sort_order')
+
+    if (error) {
+      throw error
+    }
+
+    return NextResponse.json(data)
+  } catch (error) {
+    console.error('Error fetching vendor categories:', error)
+    return NextResponse.json(
+      { error: 'Failed to fetch vendor categories' },
+      { status: 500 }
+    )
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = await createClient()
+    const body = await request.json()
+
+    // Check if user is admin
+    const { data: user } = await supabase.auth.getUser()
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('role')
+      .eq('id', user.id)
+      .single()
+
+    if (!userProfile || !['admin', 'super_admin'].includes(userProfile.role)) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    }
+
+    const { data, error } = await supabase
+      .from('vendor_categories')
+      .insert([{
+        name: body.name,
+        slug: body.slug,
+        display_name: body.display_name,
+        description: body.description,
+        icon: body.icon,
+        color: body.color,
+        parent_id: body.parent_id || null,
+        sort_order: body.sort_order || 0,
+        is_featured: body.is_featured || false,
+        search_keywords: body.search_keywords || [],
+        seo_title: body.seo_title,
+        seo_description: body.seo_description
+      }])
+      .select()
+      .single()
+
+    if (error) {
+      throw error
+    }
+
+    return NextResponse.json(data)
+  } catch (error) {
+    console.error('Error creating vendor category:', error)
+    return NextResponse.json(
+      { error: 'Failed to create vendor category' },
+      { status: 500 }
+    )
+  }
+}

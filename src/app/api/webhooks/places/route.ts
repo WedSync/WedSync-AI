@@ -1,0 +1,648 @@
+/**
+ * WS-219 Google Places Webhook Handler
+ * Team C - Round 1 Implementation
+ *
+ * Handles Google Places API webhooks for venue data updates,
+ * business hours changes, and real-time venue information sync.
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createHash, createHmac } from 'crypto';
+import { headers } from 'next/headers';
+import { PlacesWeddingSyncService } from '@/lib/integrations/places-wedding-sync';
+import { VenueCoordinationService } from '@/lib/services/venue-coordination-service';
+import { LocationServicesHub } from '@/lib/integrations/location-services-hub';
+import { createClient } from '@supabase/supabase-js';
+
+// Webhook payload interfaces
+interface GooglePlacesWebhookPayload {
+  notificationId: string;
+  notificationType:
+    | 'place_update'
+    | 'business_hours_update'
+    | 'reviews_update'
+    | 'photos_update';
+  placeId: string;
+  changeTimestamp: string;
+  changes?: {
+    fields: string[];
+    oldValues?: Record<string, any>;
+    newValues?: Record<string, any>;
+  };
+  metadata?: Record<string, any>;
+}
+
+interface VenueUpdateEvent {
+  weddingId: string;
+  venueId: string;
+  updateType: string;
+  changes: Record<string, any>;
+  processedAt: Date;
+  affectedSuppliers: string[];
+}
+
+// Rate limiting for webhook processing
+const webhookProcessingLimiter = new Map<string, number>();
+const RATE_LIMIT_WINDOW = 60 * 1000; // 1 minute
+const RATE_LIMIT_MAX_REQUESTS = 30;
+
+/**
+ * POST handler for Google Places webhooks
+ */
+export async function POST(request: NextRequest) {
+  const startTime = Date.now();
+
+  try {
+    // Rate limiting
+    const clientIp = request.headers.get('x-forwarded-for') || 'unknown';
+    if (!isWithinRateLimit(clientIp)) {
+      console.warn(`Rate limit exceeded for IP: ${clientIp}`);
+      return NextResponse.json(
+        { error: 'Rate limit exceeded' },
+        { status: 429 },
+      );
+    }
+
+    // Parse webhook payload
+    const payload: GooglePlacesWebhookPayload = await request.json();
+
+    console.log('Google Places webhook received:', {
+      notificationId: payload.notificationId,
+      type: payload.notificationType,
+      placeId: payload.placeId,
+      timestamp: payload.changeTimestamp,
+    });
+
+    // Verify webhook authenticity
+    const isValid = await verifyGooglePlacesWebhook(request, payload);
+    if (!isValid) {
+      console.error('Invalid Google Places webhook signature');
+      return NextResponse.json(
+        { error: 'Invalid webhook signature' },
+        { status: 401 },
+      );
+    }
+
+    // Initialize services
+    const supabaseUrl =
+      process.env.NEXT_PUBLIC_SUPABASE_URL ||
+      (() => {
+        throw new Error(
+          'Missing environment variable: NEXT_PUBLIC_SUPABASE_URL',
+        );
+      })();
+    const supabaseKey =
+      process.env.SUPABASE_SERVICE_ROLE_KEY ||
+      (() => {
+        throw new Error(
+          'Missing environment variable: SUPABASE_SERVICE_ROLE_KEY',
+        );
+      })();
+    const supabase = createClient(supabaseUrl, supabaseKey);
+
+    // Initialize Places Wedding Sync service
+    const placesSync = new PlacesWeddingSyncService(
+      {
+        apiUrl: 'https://maps.googleapis.com/maps/api/place',
+        timeout: 30000,
+        retryAttempts: 3,
+        rateLimitPerMinute: 100,
+      },
+      {
+        apiKey:
+          process.env.GOOGLE_PLACES_API_KEY ||
+          (() => {
+            throw new Error(
+              'Missing environment variable: GOOGLE_PLACES_API_KEY',
+            );
+          })(),
+        userId: 'system',
+        organizationId: 'system',
+      },
+      supabaseUrl,
+      supabaseKey,
+    );
+
+    // Process webhook based on notification type
+    let result: {
+      success: boolean;
+      affectedWeddings?: string[];
+      error?: string;
+    };
+
+    switch (payload.notificationType) {
+      case 'place_update':
+        result = await handlePlaceUpdate(payload, placesSync, supabase);
+        break;
+
+      case 'business_hours_update':
+        result = await handleBusinessHoursUpdate(payload, placesSync, supabase);
+        break;
+
+      case 'reviews_update':
+        result = await handleReviewsUpdate(payload, placesSync, supabase);
+        break;
+
+      case 'photos_update':
+        result = await handlePhotosUpdate(payload, placesSync, supabase);
+        break;
+
+      default:
+        console.warn(`Unknown notification type: ${payload.notificationType}`);
+        return NextResponse.json(
+          { message: 'Unknown notification type' },
+          { status: 200 },
+        );
+    }
+
+    // Log webhook processing
+    await logWebhookProcessing(supabase, {
+      notificationId: payload.notificationId,
+      notificationType: payload.notificationType,
+      placeId: payload.placeId,
+      processingTimeMs: Date.now() - startTime,
+      success: result.success,
+      affectedWeddings: result.affectedWeddings || [],
+      error: result.error,
+    });
+
+    if (result.success) {
+      return NextResponse.json({
+        message: 'Webhook processed successfully',
+        affectedWeddings: result.affectedWeddings?.length || 0,
+      });
+    } else {
+      console.error('Webhook processing failed:', result.error);
+      return NextResponse.json({ error: result.error }, { status: 500 });
+    }
+  } catch (error) {
+    console.error('Google Places webhook processing error:', error);
+
+    return NextResponse.json(
+      {
+        error: 'Internal server error',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * Handle place data updates
+ */
+async function handlePlaceUpdate(
+  payload: GooglePlacesWebhookPayload,
+  placesSync: PlacesWeddingSyncService,
+  supabase: any,
+): Promise<{ success: boolean; affectedWeddings?: string[]; error?: string }> {
+  try {
+    // Find weddings using this venue
+    const { data: affectedVenues, error } = await supabase
+      .from('wedding_venues')
+      .select('wedding_id, venue_id')
+      .eq('venue_id', payload.placeId);
+
+    if (error) {
+      return { success: false, error: 'Failed to fetch affected venues' };
+    }
+
+    if (!affectedVenues || affectedVenues.length === 0) {
+      return { success: true, affectedWeddings: [] };
+    }
+
+    const affectedWeddings: string[] = [];
+    const venueUpdates: VenueUpdateEvent[] = [];
+
+    // Process each affected wedding
+    for (const venue of affectedVenues) {
+      try {
+        // Trigger venue data refresh
+        const syncResult = await placesSync.monitorVenueAvailability(
+          venue.wedding_id,
+          venue.venue_id,
+        );
+
+        if (syncResult.success) {
+          affectedWeddings.push(venue.wedding_id);
+
+          venueUpdates.push({
+            weddingId: venue.wedding_id,
+            venueId: venue.venue_id,
+            updateType: 'place_data_update',
+            changes: payload.changes || {},
+            processedAt: new Date(),
+            affectedSuppliers: [], // Will be populated by venue coordination
+          });
+        } else {
+          console.warn(
+            `Failed to sync venue ${venue.venue_id} for wedding ${venue.wedding_id}:`,
+            syncResult.error,
+          );
+        }
+      } catch (venueError) {
+        console.error(
+          `Error processing venue update for wedding ${venue.wedding_id}:`,
+          venueError,
+        );
+      }
+    }
+
+    // Initialize venue coordination service
+    const venueCoordination = new VenueCoordinationService(
+      process.env.NEXT_PUBLIC_SUPABASE_URL ||
+        (() => {
+          throw new Error(
+            'Missing environment variable: NEXT_PUBLIC_SUPABASE_URL',
+          );
+        })(),
+      process.env.SUPABASE_SERVICE_ROLE_KEY ||
+        (() => {
+          throw new Error(
+            'Missing environment variable: SUPABASE_SERVICE_ROLE_KEY',
+          );
+        })(),
+      placesSync,
+    );
+
+    // Notify suppliers of venue changes
+    for (const update of venueUpdates) {
+      // This would trigger supplier notifications through the coordination service
+      await logVenueUpdateEvent(supabase, update);
+    }
+
+    return { success: true, affectedWeddings };
+  } catch (error) {
+    return {
+      success: false,
+      error: `Place update processing failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+    };
+  }
+}
+
+/**
+ * Handle business hours updates
+ */
+async function handleBusinessHoursUpdate(
+  payload: GooglePlacesWebhookPayload,
+  placesSync: PlacesWeddingSyncService,
+  supabase: any,
+): Promise<{ success: boolean; affectedWeddings?: string[]; error?: string }> {
+  try {
+    // Find weddings with this venue
+    const { data: affectedWeddings, error } = await supabase
+      .from('weddings')
+      .select('id, wedding_date, venue_id')
+      .eq('venue_id', payload.placeId);
+
+    if (error || !affectedWeddings) {
+      return { success: false, error: 'Failed to fetch affected weddings' };
+    }
+
+    const processedWeddings: string[] = [];
+
+    for (const wedding of affectedWeddings) {
+      // Validate business hours for wedding date
+      const hoursCheck = await placesSync.validateBusinessHours(
+        payload.placeId,
+        new Date(wedding.wedding_date),
+      );
+
+      if (hoursCheck.success && !hoursCheck.data.isOpen) {
+        // Venue is closed on wedding date - this is critical!
+        await createCriticalAlert(supabase, {
+          weddingId: wedding.id,
+          alertType: 'venue_closed_on_wedding_date',
+          severity: 'critical',
+          message: `Venue is closed on wedding date: ${wedding.wedding_date}`,
+          venueId: payload.placeId,
+          businessHours: hoursCheck.data.hours,
+        });
+
+        // Notify wedding coordinator immediately
+        await sendUrgentNotification(supabase, {
+          weddingId: wedding.id,
+          type: 'venue_hours_conflict',
+          title: 'URGENT: Venue Closed on Wedding Date',
+          message: `The venue for wedding ${wedding.id} is closed on the scheduled date. Immediate action required.`,
+        });
+      }
+
+      processedWeddings.push(wedding.id);
+    }
+
+    return { success: true, affectedWeddings: processedWeddings };
+  } catch (error) {
+    return {
+      success: false,
+      error: `Business hours update processing failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+    };
+  }
+}
+
+/**
+ * Handle reviews updates
+ */
+async function handleReviewsUpdate(
+  payload: GooglePlacesWebhookPayload,
+  placesSync: PlacesWeddingSyncService,
+  supabase: any,
+): Promise<{ success: boolean; affectedWeddings?: string[]; error?: string }> {
+  try {
+    // Find weddings using this venue
+    const { data: affectedVenues } = await supabase
+      .from('wedding_venues')
+      .select('wedding_id, venue_id')
+      .eq('venue_id', payload.placeId);
+
+    if (!affectedVenues || affectedVenues.length === 0) {
+      return { success: true, affectedWeddings: [] };
+    }
+
+    // Refresh venue reviews data
+    for (const venue of affectedVenues) {
+      await placesSync.monitorVenueAvailability(
+        venue.wedding_id,
+        venue.venue_id,
+      );
+    }
+
+    // Log reviews update for analytics
+    await supabase.from('venue_analytics_events').insert({
+      venue_id: payload.placeId,
+      event_type: 'reviews_updated',
+      event_data: payload.changes,
+      timestamp: new Date().toISOString(),
+    });
+
+    return {
+      success: true,
+      affectedWeddings: affectedVenues.map((v) => v.wedding_id),
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: `Reviews update processing failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+    };
+  }
+}
+
+/**
+ * Handle photos updates
+ */
+async function handlePhotosUpdate(
+  payload: GooglePlacesWebhookPayload,
+  placesSync: PlacesWeddingSyncService,
+  supabase: any,
+): Promise<{ success: boolean; affectedWeddings?: string[]; error?: string }> {
+  try {
+    // Find weddings using this venue
+    const { data: affectedVenues } = await supabase
+      .from('wedding_venues')
+      .select('wedding_id, venue_id')
+      .eq('venue_id', payload.placeId);
+
+    if (!affectedVenues || affectedVenues.length === 0) {
+      return { success: true, affectedWeddings: [] };
+    }
+
+    // Refresh venue photos
+    for (const venue of affectedVenues) {
+      // Get updated photos
+      const photosResult = await placesSync.getPlacePhotos(payload.placeId, 15);
+
+      if (photosResult.success) {
+        // Update venue photos in database
+        await supabase
+          .from('wedding_venues')
+          .update({
+            photos: photosResult.data,
+            photos_updated_at: new Date().toISOString(),
+          })
+          .eq('wedding_id', venue.wedding_id)
+          .eq('venue_id', venue.venue_id);
+      }
+    }
+
+    return {
+      success: true,
+      affectedWeddings: affectedVenues.map((v) => v.wedding_id),
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: `Photos update processing failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+    };
+  }
+}
+
+/**
+ * Verify Google Places webhook signature
+ */
+async function verifyGooglePlacesWebhook(
+  request: NextRequest,
+  payload: GooglePlacesWebhookPayload,
+): Promise<boolean> {
+  // Google Places API doesn't have standard webhook signatures like Stripe
+  // We'll implement basic verification using API key and timestamp validation
+
+  const apiKey = request.headers.get('x-api-key');
+  const timestamp = request.headers.get('x-timestamp');
+
+  // Verify API key matches
+  if (apiKey !== process.env.GOOGLE_PLACES_WEBHOOK_SECRET) {
+    return false;
+  }
+
+  // Verify timestamp is recent (within 5 minutes)
+  if (timestamp) {
+    const requestTime = parseInt(timestamp);
+    const currentTime = Math.floor(Date.now() / 1000);
+    const timeDiff = Math.abs(currentTime - requestTime);
+
+    if (timeDiff > 300) {
+      // 5 minutes
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Rate limiting helper
+ */
+function isWithinRateLimit(identifier: string): boolean {
+  const now = Date.now();
+  const windowStart = now - RATE_LIMIT_WINDOW;
+
+  // Clean up old entries
+  for (const [key, timestamp] of webhookProcessingLimiter.entries()) {
+    if (timestamp < windowStart) {
+      webhookProcessingLimiter.delete(key);
+    }
+  }
+
+  // Count requests in current window
+  let requestCount = 0;
+  const keyPrefix = identifier + ':';
+
+  for (const [key, timestamp] of webhookProcessingLimiter.entries()) {
+    if (key.startsWith(keyPrefix) && timestamp >= windowStart) {
+      requestCount++;
+    }
+  }
+
+  if (requestCount >= RATE_LIMIT_MAX_REQUESTS) {
+    return false;
+  }
+
+  // Record this request
+  webhookProcessingLimiter.set(`${identifier}:${now}`, now);
+  return true;
+}
+
+/**
+ * Log webhook processing results
+ */
+async function logWebhookProcessing(
+  supabase: any,
+  logData: {
+    notificationId: string;
+    notificationType: string;
+    placeId: string;
+    processingTimeMs: number;
+    success: boolean;
+    affectedWeddings: string[];
+    error?: string;
+  },
+): Promise<void> {
+  try {
+    await supabase.from('places_webhook_logs').insert({
+      notification_id: logData.notificationId,
+      notification_type: logData.notificationType,
+      place_id: logData.placeId,
+      processing_time_ms: logData.processingTimeMs,
+      success: logData.success,
+      affected_weddings: logData.affectedWeddings,
+      error_message: logData.error,
+      processed_at: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error('Failed to log webhook processing:', error);
+  }
+}
+
+/**
+ * Log venue update events
+ */
+async function logVenueUpdateEvent(
+  supabase: any,
+  event: VenueUpdateEvent,
+): Promise<void> {
+  try {
+    await supabase.from('venue_update_events').insert({
+      wedding_id: event.weddingId,
+      venue_id: event.venueId,
+      update_type: event.updateType,
+      changes: event.changes,
+      affected_suppliers: event.affectedSuppliers,
+      processed_at: event.processedAt.toISOString(),
+    });
+  } catch (error) {
+    console.error('Failed to log venue update event:', error);
+  }
+}
+
+/**
+ * Create critical alert for venue issues
+ */
+async function createCriticalAlert(
+  supabase: any,
+  alert: {
+    weddingId: string;
+    alertType: string;
+    severity: string;
+    message: string;
+    venueId: string;
+    businessHours?: string;
+  },
+): Promise<void> {
+  try {
+    await supabase.from('critical_alerts').insert({
+      wedding_id: alert.weddingId,
+      alert_type: alert.alertType,
+      severity: alert.severity,
+      message: alert.message,
+      venue_id: alert.venueId,
+      business_hours: alert.businessHours,
+      created_at: new Date().toISOString(),
+      acknowledged: false,
+    });
+  } catch (error) {
+    console.error('Failed to create critical alert:', error);
+  }
+}
+
+/**
+ * Send urgent notification to wedding coordinators
+ */
+async function sendUrgentNotification(
+  supabase: any,
+  notification: {
+    weddingId: string;
+    type: string;
+    title: string;
+    message: string;
+  },
+): Promise<void> {
+  try {
+    // Get wedding coordinator
+    const { data: wedding } = await supabase
+      .from('weddings')
+      .select('coordinator_id, couple_id')
+      .eq('id', notification.weddingId)
+      .single();
+
+    if (wedding) {
+      const recipients = [wedding.coordinator_id, wedding.couple_id].filter(
+        Boolean,
+      );
+
+      const notifications = recipients.map((recipientId) => ({
+        recipient_type:
+          wedding.coordinator_id === recipientId ? 'coordinator' : 'couple',
+        recipient_id: recipientId,
+        notification_type: notification.type,
+        priority: 'urgent',
+        title: notification.title,
+        message: notification.message,
+        data: { weddingId: notification.weddingId },
+        created_at: new Date().toISOString(),
+      }));
+
+      await supabase.from('notifications').insert(notifications);
+    }
+  } catch (error) {
+    console.error('Failed to send urgent notification:', error);
+  }
+}
+
+/**
+ * GET handler for webhook verification (if needed)
+ */
+export async function GET(request: NextRequest) {
+  const { searchParams } = new URL(request.url);
+  const challenge = searchParams.get('challenge');
+
+  if (challenge) {
+    // Return challenge for webhook verification
+    return NextResponse.json({ challenge });
+  }
+
+  return NextResponse.json({
+    service: 'Google Places Webhook Handler',
+    status: 'active',
+    timestamp: new Date().toISOString(),
+  });
+}

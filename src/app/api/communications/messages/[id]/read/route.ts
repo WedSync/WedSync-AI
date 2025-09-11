@@ -1,0 +1,106 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const { id } = await params;
+  try {
+    const supabase = await createClient();
+    const messageId = id;
+
+    if (!messageId) {
+      return NextResponse.json(
+        { error: 'Message ID is required' },
+        { status: 400 },
+      );
+    }
+
+    // Get user to verify access
+    const { data: user } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get message details
+    const { data: message } = await supabase
+      .from('messages')
+      .select('id, recipient_id, conversation_id, is_read')
+      .eq('id', messageId)
+      .single();
+
+    if (!message) {
+      return NextResponse.json({ error: 'Message not found' }, { status: 404 });
+    }
+
+    // Verify user is the recipient
+    if (message.recipient_id !== user.id) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
+
+    // If already read, return success
+    if (message.is_read) {
+      return NextResponse.json({ success: true, already_read: true });
+    }
+
+    // Mark message as read
+    const { error: updateError } = await supabase
+      .from('messages')
+      .update({
+        is_read: true,
+        read_at: new Date().toISOString(),
+      })
+      .eq('id', messageId);
+
+    if (updateError) {
+      console.error('Error marking message as read:', updateError);
+      return NextResponse.json(
+        { error: 'Failed to mark message as read' },
+        { status: 500 },
+      );
+    }
+
+    // Update unread count in conversation
+    // Need to determine if user is client or vendor to update the right counter
+    const { data: conversation } = await supabase
+      .from('conversations')
+      .select('client_id, vendor_id, unread_count_client, unread_count_vendor')
+      .eq('id', message.conversation_id)
+      .single();
+
+    if (conversation) {
+      const isClient = conversation.client_id === user.id;
+      const unreadCountField = isClient
+        ? 'unread_count_client'
+        : 'unread_count_vendor';
+      const currentCount = isClient
+        ? conversation.unread_count_client
+        : conversation.unread_count_vendor;
+
+      if (currentCount > 0) {
+        const { error: conversationError } = await supabase
+          .from('conversations')
+          .update({
+            [unreadCountField]: Math.max(0, currentCount - 1),
+          })
+          .eq('id', message.conversation_id);
+
+        if (conversationError) {
+          console.error(
+            'Error updating conversation unread count:',
+            conversationError,
+          );
+        }
+      }
+    }
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error('Error in message read PATCH:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

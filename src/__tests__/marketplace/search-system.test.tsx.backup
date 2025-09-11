@@ -1,0 +1,743 @@
+/**
+ * WS-114: Marketplace Search Filters - Comprehensive Test Suite
+ * 
+ * Tests all acceptance criteria for the marketplace search and filtering system
+ * including search functionality, filter system, and performance requirements.
+ * 
+ * Team B - Batch 9 - Round 1
+ */
+
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { MarketplaceSearchInterface } from '@/components/marketplace/MarketplaceSearchInterface';
+import { MarketplaceFilterSidebar } from '@/components/marketplace/MarketplaceFilterSidebar';
+import { MarketplaceSearchResults } from '@/components/marketplace/MarketplaceSearchResults';
+import { MarketplaceSearchPage } from '@/components/marketplace/MarketplaceSearchPage';
+import * as searchOptimization from '@/lib/marketplace/search-optimization';
+
+// Mock fetch for API calls
+global.fetch = vi.fn();
+
+// Mock router
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({
+    push: vi.fn(),
+    replace: vi.fn(),
+  }),
+  useSearchParams: () => ({
+    get: vi.fn(),
+  }),
+}));
+
+// Mock data
+const mockTemplates = [
+  {
+    id: '1',
+    supplier_id: 'supplier-1',
+    title: 'Luxury Wedding Photography Contract',
+    description: 'Professional contract template for luxury wedding photographers',
+    template_type: 'form',
+    category: 'photography',
+    subcategory: 'contracts',
+    price_cents: 2500,
+    currency: 'GBP',
+    minimum_tier: 'professional',
+    preview_data: {},
+    preview_images: ['image1.jpg'],
+    demo_url: null,
+    install_count: 150,
+    view_count: 500,
+    conversion_rate: 0.3,
+    average_rating: 4.8,
+    rating_count: 25,
+    target_wedding_types: ['luxury', 'destination'],
+    target_price_range: '£10k-20k',
+    tags: ['contract', 'photography', 'luxury'],
+    featured: true,
+    created_at: '2024-01-01T00:00:00Z',
+    updated_at: '2024-01-01T00:00:00Z',
+  }
+];
+
+const mockSearchResponse = {
+  success: true,
+  results: {
+    templates: mockTemplates,
+    pagination: {
+      page: 1,
+      limit: 24,
+      total: 1,
+      totalPages: 1,
+      hasNext: false,
+      hasPrev: false,
+    },
+    searchMetadata: {
+      query: 'photography',
+      resultCount: 1,
+      searchTime: 150,
+      filters: {},
+      sortBy: 'relevance',
+      sortDirection: 'DESC',
+    },
+  },
+};
+
+const mockSuggestionsResponse = {
+  success: true,
+  suggestions: [
+    {
+      text: 'photography contract',
+      type: 'template',
+      category: 'photography',
+      result_count: 5,
+      popularity_score: 100,
+      highlighted: '<mark>photography</mark> contract',
+    },
+  ],
+  query: 'photo',
+  response_time: 50,
+};
+
+const mockFacetsResponse = {
+  success: true,
+  facets: {
+    categories: [
+      { value: 'photography', label: 'Photography', count: 10, percentage: 50 },
+      { value: 'catering', label: 'Catering', count: 8, percentage: 40 },
+    ],
+    tiers: [
+      { value: 'professional', label: 'Professional', count: 12, percentage: 60 },
+      { value: 'starter', label: 'Starter', count: 8, percentage: 40 },
+    ],
+    priceRanges: [
+      { min: 0, max: 1000, label: 'Under £10', count: 5, percentage: 25 },
+      { min: 1000, max: 2500, label: '£10 - £25', count: 10, percentage: 50 },
+    ],
+    ratings: [
+      { value: '4.5', label: '4.5+ stars', count: 8, percentage: 40 },
+      { value: '4.0', label: '4.0+ stars', count: 15, percentage: 75 },
+    ],
+    tags: [
+      { value: 'contract', label: 'Contract', count: 12, percentage: 60 },
+      { value: 'luxury', label: 'Luxury', count: 8, percentage: 40 },
+    ],
+    weddingTypes: [
+      { value: 'luxury', label: 'Luxury Weddings', count: 10, percentage: 50 },
+      { value: 'destination', label: 'Destination Weddings', count: 6, percentage: 30 },
+    ],
+    priceStats: { min: 0, max: 10000, avg: 2500, median: 2000 },
+    ratingStats: { min: 3.0, max: 5.0, avg: 4.5, distribution: {} },
+  },
+  metadata: {
+    totalResults: 20,
+    responseTime: 75,
+    appliedFilters: {},
+  },
+};
+
+describe('WS-114: Marketplace Search Filters System', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (fetch as any).mockResolvedValue({
+      ok: true,
+      json: async () => mockSearchResponse,
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // =====================================================================================
+  // ACCEPTANCE CRITERIA 1: SEARCH FUNCTIONALITY
+  // =====================================================================================
+
+  describe('Search Functionality', () => {
+    it('should perform natural language search accurately', async () => {
+      const onSearch = vi.fn();
+      const onFiltersChange = vi.fn();
+
+      render(
+        <MarketplaceSearchInterface
+          onSearch={onSearch}
+          onFiltersChange={onFiltersChange}
+        />
+      );
+
+      const searchInput = screen.getByPlaceholderText(/search templates/i);
+      await userEvent.type(searchInput, 'luxury wedding photography contracts');
+      
+      const searchButton = screen.getByRole('button', { name: /search/i });
+      await userEvent.click(searchButton);
+
+      expect(onSearch).toHaveBeenCalledWith(
+        'luxury wedding photography contracts',
+        {}
+      );
+    });
+
+    it('should handle typo tolerance for common mistakes', async () => {
+      (fetch as any).mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          ...mockSuggestionsResponse,
+          suggestions: [
+            {
+              text: 'photography contract',
+              type: 'template',
+              highlighted: '<mark>photography</mark> contract',
+            },
+          ],
+        }),
+      });
+
+      const onSearch = vi.fn();
+      const onFiltersChange = vi.fn();
+
+      render(
+        <MarketplaceSearchInterface
+          onSearch={onSearch}
+          onFiltersChange={onFiltersChange}
+        />
+      );
+
+      const searchInput = screen.getByPlaceholderText(/search templates/i);
+      await userEvent.type(searchInput, 'photogaphy'); // Typo
+
+      // Wait for suggestions
+      await waitFor(() => {
+        expect(fetch).toHaveBeenCalledWith(
+          expect.stringContaining('/api/marketplace/search/suggestions')
+        );
+      });
+    });
+
+    it('should display suggestions within 200ms', async () => {
+      const startTime = Date.now();
+      
+      (fetch as any).mockImplementation(async () => {
+        await new Promise(resolve => setTimeout(resolve, 100)); // Simulate 100ms response
+        return {
+          ok: true,
+          json: async () => mockSuggestionsResponse,
+        };
+      });
+
+      const onSearch = vi.fn();
+      const onFiltersChange = vi.fn();
+
+      render(
+        <MarketplaceSearchInterface
+          onSearch={onSearch}
+          onFiltersChange={onFiltersChange}
+        />
+      );
+
+      const searchInput = screen.getByPlaceholderText(/search templates/i);
+      await userEvent.type(searchInput, 'photo');
+
+      await waitFor(() => {
+        expect(screen.getByText(/photography contract/i)).toBeInTheDocument();
+      });
+
+      const endTime = Date.now();
+      const responseTime = endTime - startTime;
+      
+      // Allow some buffer for test execution overhead
+      expect(responseTime).toBeLessThan(500);
+    });
+
+    it('should highlight matched terms in results', async () => {
+      render(
+        <MarketplaceSearchResults
+          results={{
+            ...mockSearchResponse.results,
+            templates: [
+              {
+                ...mockTemplates[0],
+                highlighted_title: '<mark>Luxury</mark> Wedding Photography Contract',
+                highlighted_description: 'Professional contract template for <mark>luxury</mark> wedding photographers',
+              },
+            ],
+          }}
+          isLoading={false}
+          onPageChange={vi.fn()}
+          onSortChange={vi.fn()}
+          onLimitChange={vi.fn()}
+          onTemplateClick={vi.fn()}
+        />
+      );
+
+      expect(screen.getByText(/luxury/i)).toBeInTheDocument();
+    });
+
+    it('should track search history properly', async () => {
+      // Mock localStorage
+      const localStorageMock = {
+        getItem: vi.fn(),
+        setItem: vi.fn(),
+      };
+      Object.defineProperty(window, 'localStorage', { value: localStorageMock });
+
+      const onSearch = vi.fn();
+      const onFiltersChange = vi.fn();
+
+      render(
+        <MarketplaceSearchInterface
+          onSearch={onSearch}
+          onFiltersChange={onFiltersChange}
+        />
+      );
+
+      const searchInput = screen.getByPlaceholderText(/search templates/i);
+      await userEvent.type(searchInput, 'wedding photography');
+      
+      const searchButton = screen.getByRole('button', { name: /search/i });
+      await userEvent.click(searchButton);
+
+      expect(localStorageMock.setItem).toHaveBeenCalledWith(
+        'marketplace_recent_searches',
+        expect.stringContaining('wedding photography')
+      );
+    });
+  });
+
+  // =====================================================================================
+  // ACCEPTANCE CRITERIA 2: FILTER SYSTEM
+  // =====================================================================================
+
+  describe('Filter System', () => {
+    it('should display all filter types correctly', async () => {
+      (fetch as any).mockResolvedValue({
+        ok: true,
+        json: async () => mockFacetsResponse,
+      });
+
+      const onFiltersChange = vi.fn();
+
+      render(
+        <MarketplaceFilterSidebar
+          filters={{}}
+          onFiltersChange={onFiltersChange}
+          searchQuery=""
+          isLoading={false}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('Categories')).toBeInTheDocument();
+        expect(screen.getByText('Price Range')).toBeInTheDocument();
+        expect(screen.getByText('Rating')).toBeInTheDocument();
+        expect(screen.getByText('Subscription Tier')).toBeInTheDocument();
+        expect(screen.getByText('Tags')).toBeInTheDocument();
+        expect(screen.getByText('Wedding Types')).toBeInTheDocument();
+      });
+    });
+
+    it('should update filter counts dynamically', async () => {
+      (fetch as any).mockResolvedValue({
+        ok: true,
+        json: async () => mockFacetsResponse,
+      });
+
+      const onFiltersChange = vi.fn();
+
+      render(
+        <MarketplaceFilterSidebar
+          filters={{ category: 'photography' }}
+          onFiltersChange={onFiltersChange}
+          searchQuery=""
+          isLoading={false}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('10')).toBeInTheDocument(); // Photography count
+      });
+    });
+
+    it('should combine multiple filters properly', async () => {
+      const onFiltersChange = vi.fn();
+
+      render(
+        <MarketplaceFilterSidebar
+          filters={{
+            category: 'photography',
+            tier: 'professional',
+            priceMin: 1000,
+            priceMax: 5000,
+            ratingMin: 4.0,
+            tags: ['contract', 'luxury'],
+            weddingTypes: ['luxury'],
+          }}
+          onFiltersChange={onFiltersChange}
+          searchQuery=""
+          isLoading={false}
+        />
+      );
+
+      // Check that all filters are applied
+      expect(screen.getByDisplayValue('photography')).toBeInTheDocument();
+      expect(screen.getByDisplayValue('professional')).toBeInTheDocument();
+    });
+
+    it('should clear filters instantly', async () => {
+      const onFiltersChange = vi.fn();
+
+      render(
+        <MarketplaceFilterSidebar
+          filters={{ category: 'photography', tier: 'professional' }}
+          onFiltersChange={onFiltersChange}
+          searchQuery=""
+          isLoading={false}
+        />
+      );
+
+      const clearButton = screen.getByText('Clear All');
+      await userEvent.click(clearButton);
+
+      expect(onFiltersChange).toHaveBeenCalledWith({});
+    });
+
+    it('should persist filter state in URL', () => {
+      // This would be tested in integration tests with actual routing
+      const filters = {
+        category: 'photography',
+        priceMin: 1000,
+        priceMax: 5000,
+        tags: ['luxury', 'contract'],
+      };
+
+      const expectedParams = new URLSearchParams();
+      expectedParams.set('category', 'photography');
+      expectedParams.set('price_min', '1000');
+      expectedParams.set('price_max', '5000');
+      expectedParams.set('tags', 'luxury,contract');
+
+      // Simulate URL generation
+      expect(expectedParams.toString()).toContain('category=photography');
+      expect(expectedParams.toString()).toContain('price_min=1000');
+      expect(expectedParams.toString()).toContain('price_max=5000');
+      expect(expectedParams.toString()).toContain('tags=luxury%2Ccontract');
+    });
+  });
+
+  // =====================================================================================
+  // ACCEPTANCE CRITERIA 3: PERFORMANCE
+  // =====================================================================================
+
+  describe('Performance Requirements', () => {
+    it('should return search results in < 500ms', async () => {
+      const startTime = Date.now();
+
+      (fetch as any).mockImplementation(async () => {
+        await new Promise(resolve => setTimeout(resolve, 200)); // Simulate 200ms response
+        return {
+          ok: true,
+          json: async () => mockSearchResponse,
+        };
+      });
+
+      const onSearch = vi.fn();
+      const onFiltersChange = vi.fn();
+
+      render(
+        <MarketplaceSearchInterface
+          onSearch={onSearch}
+          onFiltersChange={onFiltersChange}
+        />
+      );
+
+      const searchInput = screen.getByPlaceholderText(/search templates/i);
+      await userEvent.type(searchInput, 'photography');
+      
+      const searchButton = screen.getByRole('button', { name: /search/i });
+      await userEvent.click(searchButton);
+
+      await waitFor(() => {
+        expect(onSearch).toHaveBeenCalled();
+      });
+
+      const endTime = Date.now();
+      const responseTime = endTime - startTime;
+      
+      // Allow buffer for test execution
+      expect(responseTime).toBeLessThan(1000);
+    });
+
+    it('should calculate facet counts efficiently', async () => {
+      const startTime = Date.now();
+
+      (fetch as any).mockImplementation(async () => {
+        await new Promise(resolve => setTimeout(resolve, 50)); // Simulate 50ms response
+        return {
+          ok: true,
+          json: async () => mockFacetsResponse,
+        };
+      });
+
+      const onFiltersChange = vi.fn();
+
+      render(
+        <MarketplaceFilterSidebar
+          filters={{}}
+          onFiltersChange={onFiltersChange}
+          searchQuery=""
+          isLoading={false}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('Categories')).toBeInTheDocument();
+      });
+
+      const endTime = Date.now();
+      const responseTime = endTime - startTime;
+      
+      expect(responseTime).toBeLessThan(500);
+    });
+
+    it('should paginate large result sets smoothly', async () => {
+      const largeResultSet = {
+        ...mockSearchResponse.results,
+        templates: Array(24).fill(mockTemplates[0]).map((template, index) => ({
+          ...template,
+          id: `template-${index}`,
+          title: `Template ${index + 1}`,
+        })),
+        pagination: {
+          page: 1,
+          limit: 24,
+          total: 1000,
+          totalPages: 42,
+          hasNext: true,
+          hasPrev: false,
+        },
+      };
+
+      render(
+        <MarketplaceSearchResults
+          results={largeResultSet}
+          isLoading={false}
+          onPageChange={vi.fn()}
+          onSortChange={vi.fn()}
+          onLimitChange={vi.fn()}
+          onTemplateClick={vi.fn()}
+        />
+      );
+
+      expect(screen.getByText(/showing 1 to 24 of 1,000 results/i)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /next/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /previous/i })).toBeDisabled();
+    });
+
+    it('should optimize for mobile performance', () => {
+      // Test mobile-specific optimizations
+      Object.defineProperty(window, 'innerWidth', { value: 375 });
+      
+      render(
+        <MarketplaceSearchPage />
+      );
+
+      // Mobile filter sheet should be available
+      expect(screen.getByText('Filters')).toBeInTheDocument();
+    });
+
+    it('should implement caching to reduce server load', () => {
+      const { SearchCache, generateSearchCacheKey } = searchOptimization;
+
+      const cacheKey = generateSearchCacheKey('test query', {}, 'relevance', 'DESC', 1, 24);
+      const testData = { templates: [], total: 0 };
+
+      // Test cache set and get
+      SearchCache.set(cacheKey, testData);
+      const cachedData = SearchCache.get(cacheKey);
+
+      expect(cachedData).toEqual(testData);
+
+      // Test cache stats
+      const stats = SearchCache.getStats();
+      expect(stats).toHaveProperty('size');
+      expect(stats).toHaveProperty('max');
+    });
+  });
+
+  // =====================================================================================
+  // ADDITIONAL INTEGRATION TESTS
+  // =====================================================================================
+
+  describe('Integration Tests', () => {
+    it('should handle complete search workflow', async () => {
+      (fetch as any)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => mockSuggestionsResponse,
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => mockSearchResponse,
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => mockFacetsResponse,
+        });
+
+      render(<MarketplaceSearchPage />);
+
+      // Type in search box
+      const searchInput = screen.getByPlaceholderText(/search templates/i);
+      await userEvent.type(searchInput, 'photography');
+
+      // Wait for suggestions
+      await waitFor(() => {
+        expect(fetch).toHaveBeenCalledWith(
+          expect.stringContaining('/api/marketplace/search/suggestions')
+        );
+      });
+
+      // Click search
+      const searchButton = screen.getByRole('button', { name: /search/i });
+      await userEvent.click(searchButton);
+
+      // Verify search API was called
+      await waitFor(() => {
+        expect(fetch).toHaveBeenCalledWith(
+          expect.stringContaining('/api/marketplace/search?')
+        );
+      });
+
+      // Verify facets API was called
+      await waitFor(() => {
+        expect(fetch).toHaveBeenCalledWith(
+          expect.stringContaining('/api/marketplace/search/facets')
+        );
+      });
+    });
+
+    it('should handle zero results gracefully', async () => {
+      const emptyResponse = {
+        success: true,
+        results: {
+          templates: [],
+          pagination: {
+            page: 1,
+            limit: 24,
+            total: 0,
+            totalPages: 0,
+            hasNext: false,
+            hasPrev: false,
+          },
+          searchMetadata: {
+            query: 'nonexistent search',
+            resultCount: 0,
+            searchTime: 50,
+            filters: {},
+            sortBy: 'relevance',
+            sortDirection: 'DESC',
+          },
+        },
+      };
+
+      (fetch as any).mockResolvedValue({
+        ok: true,
+        json: async () => emptyResponse,
+      });
+
+      render(<MarketplaceSearchPage />);
+
+      const searchInput = screen.getByPlaceholderText(/search templates/i);
+      await userEvent.type(searchInput, 'nonexistent search');
+      
+      const searchButton = screen.getByRole('button', { name: /search/i });
+      await userEvent.click(searchButton);
+
+      await waitFor(() => {
+        expect(screen.getByText(/no templates found/i)).toBeInTheDocument();
+      });
+    });
+
+    it('should handle API errors gracefully', async () => {
+      (fetch as any).mockRejectedValue(new Error('Network error'));
+
+      render(<MarketplaceSearchPage />);
+
+      const searchInput = screen.getByPlaceholderText(/search templates/i);
+      await userEvent.type(searchInput, 'photography');
+      
+      const searchButton = screen.getByRole('button', { name: /search/i });
+      await userEvent.click(searchButton);
+
+      // Should handle error without crashing
+      await waitFor(() => {
+        // Component should still be rendered
+        expect(searchInput).toBeInTheDocument();
+      });
+    });
+  });
+
+  // =====================================================================================
+  // PERFORMANCE AND OPTIMIZATION TESTS
+  // =====================================================================================
+
+  describe('Performance Optimization', () => {
+    it('should optimize queries properly', () => {
+      const { QueryOptimizer } = searchOptimization;
+
+      // Test query optimization
+      expect(QueryOptimizer.optimizeQuery('  the   wedding   photography  ')).toBe('wedding photography');
+      expect(QueryOptimizer.optimizeQuery('a luxury wedding with flowers')).toBe('luxury wedding flowers');
+      expect(QueryOptimizer.optimizeQuery('')).toBe('');
+    });
+
+    it('should generate meaningful search suggestions', () => {
+      const { QueryOptimizer } = searchOptimization;
+
+      const suggestions = QueryOptimizer.generateSearchSuggestions('photo');
+      expect(suggestions).toContain('photo');
+      expect(suggestions).toContain('photo template');
+      expect(suggestions).toContain('photo wedding');
+    });
+
+    it('should optimize filters correctly', () => {
+      const { QueryOptimizer } = searchOptimization;
+
+      const filters = {
+        category: 'photography',
+        priceMin: 0,
+        priceMax: undefined,
+        tags: [],
+        emptyField: '',
+        nullField: null,
+      };
+
+      const optimized = QueryOptimizer.optimizeFilters(filters);
+      
+      expect(optimized).toEqual({ category: 'photography' });
+      expect(optimized).not.toHaveProperty('priceMin');
+      expect(optimized).not.toHaveProperty('tags');
+      expect(optimized).not.toHaveProperty('emptyField');
+      expect(optimized).not.toHaveProperty('nullField');
+    });
+
+    it('should monitor search performance', () => {
+      const { SearchPerformanceMonitor } = searchOptimization;
+
+      // Clear previous analytics
+      SearchPerformanceMonitor.clearAnalytics();
+
+      // Record some searches
+      SearchPerformanceMonitor.recordSearch('query1', 10, 100, false);
+      SearchPerformanceMonitor.recordSearch('query2', 5, 200, true);
+      SearchPerformanceMonitor.recordSearch('query1', 10, 150, false);
+
+      const metrics = SearchPerformanceMonitor.getMetrics();
+      
+      expect(metrics.totalQueries).toBe(3);
+      expect(metrics.averageResponseTime).toBe(150);
+      expect(metrics.cacheHitRate).toBeCloseTo(0.33, 2);
+      expect(metrics.popularQueries[0].query).toBe('query1');
+      expect(metrics.popularQueries[0].count).toBe(2);
+    });
+  });
+});

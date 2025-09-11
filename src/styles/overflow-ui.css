@@ -1,0 +1,58 @@
+/* Overflow UI Canvas Styles */
+.overflow-ui-canvas {
+  background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+}
+
+.overflow-ui-canvas .react-flow__controls {
+  background: rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+}
+
+.overflow-ui-canvas .react-flow__controls button {
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  transition: all 0.2s ease;
+}
+
+.overflow-ui-canvas .react-flow__controls button:hover {
+  background: rgba(99, 102, 241, 0.1);
+  transform: scale(1.05);
+}
+
+/* Beautiful edge animations */
+.react-flow__edge-path {
+  animation: flow 2s ease-in-out infinite;
+}
+
+@keyframes flow {
+  0%, 100% {
+    stroke-dasharray: 5, 5;
+    stroke-dashoffset: 0;
+  }
+  50% {
+    stroke-dashoffset: 10;
+  }
+}
+
+/* Node hover effects */
+.react-flow__node {
+  cursor: pointer;
+}
+
+/* Selection styles */
+.react-flow__node.selected {
+  outline: 2px solid #6366f1;
+  outline-offset: 4px;
+}
+
+/* Minimap styling */
+.react-flow__minimap {
+  background: rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 12px;
+}

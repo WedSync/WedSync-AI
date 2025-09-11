@@ -1,0 +1,233 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { getCurrentUser } from '@/lib/auth/server';
+
+export interface TestJourneyRequest {
+  testData: {
+    wedding_date: string;
+    couple_name: string;
+    email: string;
+    phone?: string;
+    booking_date?: string;
+  };
+}
+
+export interface TestJourneyResponse {
+  success: boolean;
+  executionId: string;
+  scheduledActions: Array<{
+    nodeId: string;
+    nodeName: string;
+    actionType: string;
+    scheduledFor: string;
+    calculatedDate: string;
+  }>;
+  errors?: string[];
+}
+
+export async function POST(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const user = await getCurrentUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const supabase = await createClient();
+    const journeyId = params.id;
+    const body: TestJourneyRequest = await request.json();
+
+    // Validate journey exists and user has access
+    const { data: journey, error: journeyError } = await supabase
+      .from('journeys')
+      .select('*')
+      .eq('id', journeyId)
+      .single();
+
+    if (journeyError || !journey) {
+      return NextResponse.json(
+        { error: 'Journey not found' },
+        { status: 404 }
+      );
+    }
+
+    // Get journey nodes
+    const { data: nodes, error: nodesError } = await supabase
+      .from('journey_nodes')
+      .select('*')
+      .eq('journey_id', journeyId);
+
+    if (nodesError || !nodes) {
+      return NextResponse.json(
+        { error: 'Failed to fetch journey nodes' },
+        { status: 500 }
+      );
+    }
+
+    // Create a test client record (temporary)
+    const testClient = {
+      id: `test-${Date.now()}`,
+      name: body.testData.couple_name,
+      email: body.testData.email,
+      phone: body.testData.phone,
+      wedding_date: body.testData.wedding_date,
+      booking_date: body.testData.booking_date || new Date().toISOString(),
+    };
+
+    // Create test execution
+    const { data: execution, error: executionError } = await supabase
+      .from('journey_executions')
+      .insert({
+        journey_id: journeyId,
+        client_id: testClient.id,
+        status: 'active',
+        metadata: {
+          is_test: true,
+          test_data: testClient,
+        },
+      })
+      .select()
+      .single();
+
+    if (executionError || !execution) {
+      return NextResponse.json(
+        { error: 'Failed to create test execution' },
+        { status: 500 }
+      );
+    }
+
+    // Calculate scheduled actions for timeline nodes
+    const scheduledActions = [];
+    const errors = [];
+
+    for (const node of nodes) {
+      if (node.type === 'timeline' && node.timeline_config) {
+        try {
+          const scheduledDate = calculateTimelineDate(
+            node.timeline_config,
+            new Date(body.testData.wedding_date),
+            new Date(testClient.booking_date)
+          );
+
+          // Create scheduled action
+          const { data: action, error: actionError } = await supabase
+            .from('journey_scheduled_actions')
+            .insert({
+              execution_id: execution.id,
+              node_id: node.id,
+              action_type: node.action_type || 'reminder',
+              scheduled_for: scheduledDate.toISOString(),
+              status: 'pending',
+            })
+            .select()
+            .single();
+
+          if (actionError) {
+            errors.push(`Failed to schedule action for node ${node.name}: ${actionError.message}`);
+          } else {
+            scheduledActions.push({
+              nodeId: node.node_id,
+              nodeName: node.name,
+              actionType: node.action_type || 'reminder',
+              scheduledFor: scheduledDate.toISOString(),
+              calculatedDate: formatScheduledDate(
+                scheduledDate,
+                node.timeline_config.anchor_type,
+                node.timeline_config.offset
+              ),
+            });
+          }
+        } catch (error) {
+          errors.push(`Error calculating schedule for node ${node.name}: ${error.message}`);
+        }
+      }
+    }
+
+    const response: TestJourneyResponse = {
+      success: errors.length === 0,
+      executionId: execution.id,
+      scheduledActions,
+      errors: errors.length > 0 ? errors : undefined,
+    };
+
+    return NextResponse.json(response);
+  } catch (error) {
+    console.error('Test journey error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+function calculateTimelineDate(
+  timelineConfig: any,
+  weddingDate: Date,
+  bookingDate: Date,
+  fixedDate?: Date
+): Date {
+  let anchor: Date;
+
+  switch (timelineConfig.anchor_type) {
+    case 'wedding_date':
+      anchor = weddingDate;
+      break;
+    case 'booking_date':
+      anchor = bookingDate;
+      break;
+    case 'fixed_date':
+      anchor = fixedDate || new Date();
+      break;
+    default:
+      throw new Error(`Unsupported anchor type: ${timelineConfig.anchor_type}`);
+  }
+
+  // Calculate offset
+  let targetDate = new Date(anchor);
+  const offsetValue = timelineConfig.offset.direction === 'before' 
+    ? -Math.abs(timelineConfig.offset.value)
+    : Math.abs(timelineConfig.offset.value);
+
+  switch (timelineConfig.offset.unit) {
+    case 'days':
+      targetDate.setDate(targetDate.getDate() + offsetValue);
+      break;
+    case 'weeks':
+      targetDate.setDate(targetDate.getDate() + (offsetValue * 7));
+      break;
+    case 'months':
+      targetDate.setMonth(targetDate.getMonth() + offsetValue);
+      break;
+    default:
+      throw new Error(`Unsupported offset unit: ${timelineConfig.offset.unit}`);
+  }
+
+  // Apply business day constraints
+  if (timelineConfig.skip_weekends && (targetDate.getDay() === 0 || targetDate.getDay() === 6)) {
+    // Move to next Monday
+    const daysToAdd = targetDate.getDay() === 0 ? 1 : 2; // Sunday -> Monday, Saturday -> Monday
+    targetDate.setDate(targetDate.getDate() + daysToAdd);
+  }
+
+  // Apply business hours
+  if (timelineConfig.business_hours) {
+    const [startHour, startMinute] = timelineConfig.business_hours.start.split(':').map(Number);
+    targetDate.setHours(startHour, startMinute, 0, 0);
+  }
+
+  return targetDate;
+}
+
+function formatScheduledDate(
+  scheduledDate: Date,
+  anchorType: string,
+  offset: any
+): string {
+  const direction = offset.direction === 'before' ? 'before' : 'after';
+  const value = offset.value;
+  const unit = offset.unit;
+  
+  return `${value} ${unit} ${direction} ${anchorType.replace('_', ' ')} (${scheduledDate.toLocaleDateString()})`;
+}

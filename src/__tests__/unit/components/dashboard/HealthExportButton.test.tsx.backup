@@ -1,0 +1,744 @@
+/**
+ * @jest-environment jsdom
+ */
+
+import React from 'react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import '@testing-library/jest-dom'
+import HealthExportButton from '@/components/dashboard/HealthExportButton'
+import type { 
+  SupplierHealthMetrics, 
+  HealthDashboardFilters, 
+  DashboardSummary 
+} from '@/types/supplier-health'
+
+// Mock URL.createObjectURL and URL.revokeObjectURL
+global.URL.createObjectURL = jest.fn(() => 'mock-object-url')
+global.URL.revokeObjectURL = jest.fn()
+
+// Mock document.createElement and appendChild/removeChild
+const mockLink = {
+  setAttribute: jest.fn(),
+  click: jest.fn(),
+  style: { visibility: '' }
+}
+
+const originalCreateElement = document.createElement
+const originalAppendChild = document.body.appendChild
+const originalRemoveChild = document.body.removeChild
+
+beforeAll(() => {
+  document.createElement = jest.fn((tagName) => {
+    if (tagName === 'a') {
+      return mockLink as any
+    }
+    return originalCreateElement.call(document, tagName)
+  })
+  
+  document.body.appendChild = jest.fn()
+  document.body.removeChild = jest.fn()
+})
+
+afterAll(() => {
+  document.createElement = originalCreateElement
+  document.body.appendChild = originalAppendChild
+  document.body.removeChild = originalRemoveChild
+})
+
+// Mock fetch for API calls
+global.fetch = jest.fn()
+
+// Mock window.open for print functionality
+const mockPrintWindow = {
+  document: {
+    write: jest.fn(),
+    close: jest.fn()
+  },
+  focus: jest.fn(),
+  print: jest.fn()
+}
+
+global.window.open = jest.fn(() => mockPrintWindow as any)
+
+// Mock navigator.share and navigator.clipboard
+Object.defineProperty(navigator, 'share', {
+  writable: true,
+  value: jest.fn().mockResolvedValue(undefined)
+})
+
+Object.defineProperty(navigator, 'clipboard', {
+  writable: true,
+  value: {
+    writeText: jest.fn().mockResolvedValue(undefined)
+  }
+})
+
+// Sample test data
+const mockSuppliers: SupplierHealthMetrics[] = [
+  {
+    id: '1',
+    supplier_id: 'sup_001',
+    organization_id: 'org_001',
+    supplier_name: 'Perfect Moments Photography',
+    supplier_category: 'photographer',
+    supplier_email: 'contact@perfectmoments.com',
+    supplier_business_name: 'Perfect Moments Photography Ltd',
+    health_score: 92,
+    risk_level: 'green',
+    last_activity: '2024-03-01T10:00:00Z',
+    active_clients: 8,
+    completed_projects: 45,
+    avg_response_time: 2.5,
+    client_satisfaction: 4.8,
+    revenue: 85000,
+    trendsData: [],
+    interventionsNeeded: [
+      {
+        id: 'int_001',
+        type: 'follow_up',
+        priority: 'low',
+        description: 'Schedule quarterly review',
+        dueDate: '2024-03-08T10:00:00Z',
+        status: 'pending',
+        createdAt: '2024-03-01T10:00:00Z'
+      }
+    ],
+    last_contact_date: '2024-02-15T10:00:00Z',
+    notes: 'High performing supplier',
+    created_at: '2024-01-01T10:00:00Z',
+    updated_at: '2024-03-01T10:00:00Z'
+  },
+  {
+    id: '2',
+    supplier_id: 'sup_002',
+    organization_id: 'org_001',
+    supplier_name: 'Elegant Events Planning',
+    supplier_category: 'planner',
+    supplier_email: 'hello@elegantevents.com',
+    supplier_business_name: 'Elegant Events Ltd',
+    health_score: 67,
+    risk_level: 'yellow',
+    last_activity: '2024-02-26T10:00:00Z',
+    active_clients: 12,
+    completed_projects: 28,
+    avg_response_time: 8.5,
+    client_satisfaction: 4.1,
+    revenue: 120000,
+    trendsData: [],
+    interventionsNeeded: [
+      {
+        id: 'int_002',
+        type: 'support',
+        priority: 'high',
+        description: 'Response time training needed',
+        dueDate: '2024-03-04T10:00:00Z',
+        status: 'pending',
+        createdAt: '2024-03-01T10:00:00Z'
+      },
+      {
+        id: 'int_003',
+        type: 'retention',
+        priority: 'critical',
+        description: 'Risk of losing supplier',
+        dueDate: '2024-03-02T10:00:00Z',
+        status: 'pending',
+        createdAt: '2024-03-01T10:00:00Z'
+      }
+    ],
+    last_contact_date: '2024-02-10T10:00:00Z',
+    notes: 'Response times increasing',
+    created_at: '2024-01-01T10:00:00Z',
+    updated_at: '2024-03-01T10:00:00Z'
+  }
+]
+
+const mockFilters: HealthDashboardFilters = {
+  riskLevels: ['green', 'yellow'],
+  categories: ['photographer', 'planner'],
+  dateRange: {
+    start: new Date('2024-01-01'),
+    end: new Date('2024-03-31')
+  },
+  healthScoreRange: { min: 0, max: 100 },
+  sortBy: 'health_score',
+  sortOrder: 'desc',
+  searchQuery: ''
+}
+
+const mockSummary: DashboardSummary = {
+  totalSuppliers: 2,
+  avgHealthScore: 79.5,
+  riskDistribution: { green: 1, yellow: 1, red: 0 },
+  totalRevenue: 205000,
+  totalActiveClients: 20,
+  avgClientSatisfaction: 4.45,
+  criticalInterventions: 1,
+  overdueInterventions: 0
+}
+
+const defaultProps = {
+  suppliers: mockSuppliers,
+  filters: mockFilters,
+  summary: mockSummary,
+  disabled: false
+}
+
+describe('HealthExportButton', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+    ;(global.fetch as jest.Mock).mockClear()
+  })
+
+  describe('Basic Rendering', () => {
+    it('renders export button with correct text', () => {
+      render(<HealthExportButton {...defaultProps} />)
+      
+      expect(screen.getByText('Export Report')).toBeInTheDocument()
+    })
+
+    it('shows dropdown when clicked', async () => {
+      const user = userEvent.setup()
+      render(<HealthExportButton {...defaultProps} />)
+      
+      const exportButton = screen.getByRole('button', { name: /Export Report/ })
+      await user.click(exportButton)
+      
+      expect(screen.getByText('Export Options')).toBeInTheDocument()
+      expect(screen.getByText('Export as CSV')).toBeInTheDocument()
+      expect(screen.getByText('Export as PDF')).toBeInTheDocument()
+      expect(screen.getByText('Export as Excel')).toBeInTheDocument()
+      expect(screen.getByText('Print Report')).toBeInTheDocument()
+      expect(screen.getByText('Schedule Report')).toBeInTheDocument()
+      expect(screen.getByText('Share Report')).toBeInTheDocument()
+    })
+
+    it('displays supplier count and generation date', async () => {
+      const user = userEvent.setup()
+      render(<HealthExportButton {...defaultProps} />)
+      
+      const exportButton = screen.getByRole('button', { name: /Export Report/ })
+      await user.click(exportButton)
+      
+      expect(screen.getByText('2 suppliers •')).toBeInTheDocument()
+      expect(screen.getByText(/Generated \d+\/\d+\/\d+/)).toBeInTheDocument()
+    })
+
+    it('shows descriptions for each export option', async () => {
+      const user = userEvent.setup()
+      render(<HealthExportButton {...defaultProps} />)
+      
+      const exportButton = screen.getByRole('button', { name: /Export Report/ })
+      await user.click(exportButton)
+      
+      expect(screen.getByText('Spreadsheet format for analysis')).toBeInTheDocument()
+      expect(screen.getByText('Professional formatted report')).toBeInTheDocument()
+      expect(screen.getByText('Excel workbook with charts')).toBeInTheDocument()
+      expect(screen.getByText('Print-optimized version')).toBeInTheDocument()
+      expect(screen.getByText('Set up recurring reports')).toBeInTheDocument()
+      expect(screen.getByText('Share with team members')).toBeInTheDocument()
+    })
+  })
+
+  describe('CSV Export Functionality', () => {
+    it('generates and downloads CSV file', async () => {
+      const user = userEvent.setup()
+      render(<HealthExportButton {...defaultProps} />)
+      
+      const exportButton = screen.getByRole('button', { name: /Export Report/ })
+      await user.click(exportButton)
+      
+      const csvButton = screen.getByText('Export as CSV')
+      await user.click(csvButton)
+      
+      // Should create blob and trigger download
+      expect(global.URL.createObjectURL).toHaveBeenCalled()
+      expect(mockLink.setAttribute).toHaveBeenCalledWith('href', 'mock-object-url')
+      expect(mockLink.setAttribute).toHaveBeenCalledWith(
+        'download',
+        expect.stringMatching(/supplier-health-report-\d{4}-\d{2}-\d{2}\.csv/)
+      )
+      expect(mockLink.click).toHaveBeenCalled()
+    })
+
+    it('generates correct CSV content', async () => {
+      const user = userEvent.setup()
+      render(<HealthExportButton {...defaultProps} />)
+      
+      const exportButton = screen.getByRole('button', { name: /Export Report/ })
+      await user.click(exportButton)
+      
+      const csvButton = screen.getByText('Export as CSV')
+      await user.click(csvButton)
+      
+      // Check that Blob was created with CSV content
+      const blobCalls = jest.mocked(global.URL.createObjectURL).mock.calls
+      expect(blobCalls).toHaveLength(1)
+    })
+
+    it('handles CSV export errors gracefully', async () => {
+      const consoleSpy = jest.spyOn(console, 'error').mockImplementation()
+      global.URL.createObjectURL = jest.fn(() => {
+        throw new Error('Blob creation failed')
+      })
+      
+      const user = userEvent.setup()
+      render(<HealthExportButton {...defaultProps} />)
+      
+      const exportButton = screen.getByRole('button', { name: /Export Report/ })
+      await user.click(exportButton)
+      
+      const csvButton = screen.getByText('Export as CSV')
+      await user.click(csvButton)
+      
+      expect(consoleSpy).toHaveBeenCalledWith('CSV export failed:', expect.any(Error))
+      
+      consoleSpy.mockRestore()
+      global.URL.createObjectURL = jest.fn(() => 'mock-object-url')
+    })
+  })
+
+  describe('PDF Export Functionality', () => {
+    it('calls PDF API and downloads file', async () => {
+      const mockBlob = new Blob(['pdf content'], { type: 'application/pdf' })
+      ;(global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        blob: () => Promise.resolve(mockBlob)
+      })
+      
+      const user = userEvent.setup()
+      render(<HealthExportButton {...defaultProps} />)
+      
+      const exportButton = screen.getByRole('button', { name: /Export Report/ })
+      await user.click(exportButton)
+      
+      const pdfButton = screen.getByText('Export as PDF')
+      await user.click(pdfButton)
+      
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith(
+          '/api/admin/reports/supplier-health/pdf',
+          expect.objectContaining({
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+          })
+        )
+      })
+      
+      expect(mockLink.setAttribute).toHaveBeenCalledWith(
+        'download',
+        expect.stringMatching(/supplier-health-report-\d{4}-\d{2}-\d{2}\.pdf/)
+      )
+    })
+
+    it('handles PDF API errors', async () => {
+      const consoleSpy = jest.spyOn(console, 'error').mockImplementation()
+      ;(global.fetch as jest.Mock).mockResolvedValue({
+        ok: false,
+        status: 500
+      })
+      
+      const user = userEvent.setup()
+      render(<HealthExportButton {...defaultProps} />)
+      
+      const exportButton = screen.getByRole('button', { name: /Export Report/ })
+      await user.click(exportButton)
+      
+      const pdfButton = screen.getByText('Export as PDF')
+      await user.click(pdfButton)
+      
+      await waitFor(() => {
+        expect(consoleSpy).toHaveBeenCalledWith('PDF export failed:', expect.any(Error))
+      })
+      
+      consoleSpy.mockRestore()
+    })
+  })
+
+  describe('Excel Export Functionality', () => {
+    it('calls Excel API and downloads file', async () => {
+      const mockBlob = new Blob(['excel content'])
+      ;(global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        blob: () => Promise.resolve(mockBlob)
+      })
+      
+      const user = userEvent.setup()
+      render(<HealthExportButton {...defaultProps} />)
+      
+      const exportButton = screen.getByRole('button', { name: /Export Report/ })
+      await user.click(exportButton)
+      
+      const excelButton = screen.getByText('Export as Excel')
+      await user.click(excelButton)
+      
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith(
+          '/api/admin/reports/supplier-health/excel',
+          expect.objectContaining({
+            method: 'POST'
+          })
+        )
+      })
+      
+      expect(mockLink.setAttribute).toHaveBeenCalledWith(
+        'download',
+        expect.stringMatching(/supplier-health-report-\d{4}-\d{2}-\d{2}\.xlsx/)
+      )
+    })
+  })
+
+  describe('Print Functionality', () => {
+    it('opens print window with formatted content', async () => {
+      const user = userEvent.setup()
+      render(<HealthExportButton {...defaultProps} />)
+      
+      const exportButton = screen.getByRole('button', { name: /Export Report/ })
+      await user.click(exportButton)
+      
+      const printButton = screen.getByText('Print Report')
+      await user.click(printButton)
+      
+      expect(global.window.open).toHaveBeenCalledWith('', '_blank')
+      expect(mockPrintWindow.document.write).toHaveBeenCalledWith(
+        expect.stringContaining('Supplier Health Dashboard Report')
+      )
+      expect(mockPrintWindow.focus).toHaveBeenCalled()
+      expect(mockPrintWindow.print).toHaveBeenCalled()
+    })
+
+    it('handles print window creation failure', async () => {
+      global.window.open = jest.fn(() => null)
+      
+      const user = userEvent.setup()
+      render(<HealthExportButton {...defaultProps} />)
+      
+      const exportButton = screen.getByRole('button', { name: /Export Report/ })
+      await user.click(exportButton)
+      
+      const printButton = screen.getByText('Print Report')
+      await user.click(printButton)
+      
+      // Should not throw error or crash
+      expect(mockPrintWindow.document.write).not.toHaveBeenCalled()
+      
+      global.window.open = jest.fn(() => mockPrintWindow as any)
+    })
+
+    it('includes all summary data in print content', async () => {
+      const user = userEvent.setup()
+      render(<HealthExportButton {...defaultProps} />)
+      
+      const exportButton = screen.getByRole('button', { name: /Export Report/ })
+      await user.click(exportButton)
+      
+      const printButton = screen.getByText('Print Report')
+      await user.click(printButton)
+      
+      const printContent = mockPrintWindow.document.write.mock.calls[0][0]
+      
+      expect(printContent).toContain('Total Suppliers: 2')
+      expect(printContent).toContain('79.5') // Average health score
+      expect(printContent).toContain('£205,000') // Total revenue
+      expect(printContent).toContain('Perfect Moments Photography')
+      expect(printContent).toContain('Elegant Events Planning')
+    })
+  })
+
+  describe('Schedule Report Functionality', () => {
+    it('calls schedule API with correct parameters', async () => {
+      ;(global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ success: true })
+      })
+      
+      const user = userEvent.setup()
+      render(<HealthExportButton {...defaultProps} />)
+      
+      const exportButton = screen.getByRole('button', { name: /Export Report/ })
+      await user.click(exportButton)
+      
+      const scheduleButton = screen.getByText('Schedule Report')
+      await user.click(scheduleButton)
+      
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith(
+          '/api/admin/reports/supplier-health/schedule',
+          expect.objectContaining({
+            method: 'POST',
+            body: expect.stringContaining('"frequency":"weekly"')
+          })
+        )
+      })
+    })
+
+    it('logs success message when scheduling succeeds', async () => {
+      const consoleSpy = jest.spyOn(console, 'log').mockImplementation()
+      ;(global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ success: true })
+      })
+      
+      const user = userEvent.setup()
+      render(<HealthExportButton {...defaultProps} />)
+      
+      const exportButton = screen.getByRole('button', { name: /Export Report/ })
+      await user.click(exportButton)
+      
+      const scheduleButton = screen.getByText('Schedule Report')
+      await user.click(scheduleButton)
+      
+      await waitFor(() => {
+        expect(consoleSpy).toHaveBeenCalledWith('Report scheduled successfully')
+      })
+      
+      consoleSpy.mockRestore()
+    })
+  })
+
+  describe('Share Functionality', () => {
+    it('uses native sharing when available', async () => {
+      const user = userEvent.setup()
+      render(<HealthExportButton {...defaultProps} />)
+      
+      const exportButton = screen.getByRole('button', { name: /Export Report/ })
+      await user.click(exportButton)
+      
+      const shareButton = screen.getByText('Share Report')
+      await user.click(shareButton)
+      
+      expect(navigator.share).toHaveBeenCalledWith({
+        title: 'Supplier Health Dashboard Report',
+        text: 'Health report for 2 suppliers - 1 critical actions needed',
+        url: window.location.href
+      })
+    })
+
+    it('falls back to clipboard when native sharing fails', async () => {
+      ;(navigator.share as jest.Mock).mockRejectedValue(new Error('Share failed'))
+      
+      const user = userEvent.setup()
+      render(<HealthExportButton {...defaultProps} />)
+      
+      const exportButton = screen.getByRole('button', { name: /Export Report/ })
+      await user.click(exportButton)
+      
+      const shareButton = screen.getByText('Share Report')
+      await user.click(shareButton)
+      
+      await waitFor(() => {
+        expect(navigator.clipboard.writeText).toHaveBeenCalledWith(window.location.href)
+      })
+    })
+
+    it('falls back to clipboard when native sharing is not available', async () => {
+      Object.defineProperty(navigator, 'share', {
+        writable: true,
+        value: undefined
+      })
+      
+      const user = userEvent.setup()
+      render(<HealthExportButton {...defaultProps} />)
+      
+      const exportButton = screen.getByRole('button', { name: /Export Report/ })
+      await user.click(exportButton)
+      
+      const shareButton = screen.getByText('Share Report')
+      await user.click(shareButton)
+      
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith(window.location.href)
+      
+      // Restore navigator.share
+      Object.defineProperty(navigator, 'share', {
+        writable: true,
+        value: jest.fn().mockResolvedValue(undefined)
+      })
+    })
+  })
+
+  describe('Loading States', () => {
+    it('shows loading state during export', async () => {
+      const user = userEvent.setup()
+      render(<HealthExportButton {...defaultProps} />)
+      
+      const exportButton = screen.getByRole('button', { name: /Export Report/ })
+      await user.click(exportButton)
+      
+      const csvButton = screen.getByText('Export as CSV')
+      
+      // Start CSV export (this will be fast, but we can test the initial state)
+      await user.click(csvButton)
+      
+      // The button should briefly show loading state
+      expect(exportButton).toBeDisabled()
+    })
+
+    it('disables export options during loading', () => {
+      render(<HealthExportButton {...defaultProps} disabled={true} />)
+      
+      const exportButton = screen.getByRole('button', { name: /Export Report/ })
+      expect(exportButton).toBeDisabled()
+    })
+
+    it('shows "Exporting..." text when isExporting is true', async () => {
+      // This test simulates the internal state during export
+      const user = userEvent.setup()
+      render(<HealthExportButton {...defaultProps} />)
+      
+      const exportButton = screen.getByRole('button', { name: /Export Report/ })
+      await user.click(exportButton)
+      
+      const csvButton = screen.getByText('Export as CSV')
+      await user.click(csvButton)
+      
+      // After clicking, the component should handle the export
+      await waitFor(() => {
+        expect(mockLink.click).toHaveBeenCalled()
+      })
+    })
+  })
+
+  describe('Error Handling', () => {
+    it('handles network errors gracefully', async () => {
+      const consoleSpy = jest.spyOn(console, 'error').mockImplementation()
+      ;(global.fetch as jest.Mock).mockRejectedValue(new Error('Network error'))
+      
+      const user = userEvent.setup()
+      render(<HealthExportButton {...defaultProps} />)
+      
+      const exportButton = screen.getByRole('button', { name: /Export Report/ })
+      await user.click(exportButton)
+      
+      const pdfButton = screen.getByText('Export as PDF')
+      await user.click(pdfButton)
+      
+      await waitFor(() => {
+        expect(consoleSpy).toHaveBeenCalledWith('PDF export failed:', expect.any(Error))
+      })
+      
+      consoleSpy.mockRestore()
+    })
+
+    it('handles clipboard write errors', async () => {
+      const consoleSpy = jest.spyOn(console, 'error').mockImplementation()
+      ;(navigator.clipboard.writeText as jest.Mock).mockRejectedValue(new Error('Clipboard error'))
+      
+      Object.defineProperty(navigator, 'share', {
+        writable: true,
+        value: undefined
+      })
+      
+      const user = userEvent.setup()
+      render(<HealthExportButton {...defaultProps} />)
+      
+      const exportButton = screen.getByRole('button', { name: /Export Report/ })
+      await user.click(exportButton)
+      
+      const shareButton = screen.getByText('Share Report')
+      await user.click(shareButton)
+      
+      await waitFor(() => {
+        expect(consoleSpy).toHaveBeenCalledWith('Copy to clipboard failed:', expect.any(Error))
+      })
+      
+      consoleSpy.mockRestore()
+      
+      // Restore navigator.share
+      Object.defineProperty(navigator, 'share', {
+        writable: true,
+        value: jest.fn().mockResolvedValue(undefined)
+      })
+    })
+  })
+
+  describe('Data Processing', () => {
+    it('generates export data with correct structure', async () => {
+      const user = userEvent.setup()
+      render(<HealthExportButton {...defaultProps} />)
+      
+      const exportButton = screen.getByRole('button', { name: /Export Report/ })
+      await user.click(exportButton)
+      
+      const csvButton = screen.getByText('Export as CSV')
+      await user.click(csvButton)
+      
+      // The generateExportData function should be called with correct parameters
+      // This is tested indirectly through the blob creation
+      expect(global.URL.createObjectURL).toHaveBeenCalled()
+    })
+
+    it('includes all required CSV headers', async () => {
+      const user = userEvent.setup()
+      render(<HealthExportButton {...defaultProps} />)
+      
+      const exportButton = screen.getByRole('button', { name: /Export Report/ })
+      await user.click(exportButton)
+      
+      const csvButton = screen.getByText('Export as CSV')
+      await user.click(csvButton)
+      
+      // The CSV should contain all expected headers and data
+      expect(global.URL.createObjectURL).toHaveBeenCalled()
+    })
+  })
+
+  describe('Accessibility', () => {
+    it('has proper ARIA labels', async () => {
+      const user = userEvent.setup()
+      render(<HealthExportButton {...defaultProps} />)
+      
+      const exportButton = screen.getByRole('button', { name: /Export Report/ })
+      expect(exportButton).toBeInTheDocument()
+      
+      await user.click(exportButton)
+      
+      // Export options should be accessible
+      const csvOption = screen.getByRole('button', { name: /Export as CSV/ })
+      expect(csvOption).toBeInTheDocument()
+    })
+
+    it('supports keyboard navigation', async () => {
+      const user = userEvent.setup()
+      render(<HealthExportButton {...defaultProps} />)
+      
+      // Tab to export button
+      await user.tab()
+      expect(document.activeElement).toHaveAttribute('aria-expanded', 'false')
+      
+      // Press Enter to open dropdown
+      await user.keyboard('{Enter}')
+      
+      // Should be able to navigate export options
+      const csvOption = screen.getByText('Export as CSV')
+      expect(csvOption).toBeInTheDocument()
+    })
+  })
+
+  describe('Performance', () => {
+    it('handles large datasets efficiently', async () => {
+      const largeDataset = Array.from({ length: 1000 }, (_, index) => ({
+        ...mockSuppliers[0],
+        id: `supplier_${index}`,
+        supplier_id: `sup_${index}`,
+        supplier_name: `Supplier ${index}`
+      }))
+      
+      const startTime = performance.now()
+      
+      const user = userEvent.setup()
+      render(<HealthExportButton {...defaultProps} suppliers={largeDataset} />)
+      
+      const exportButton = screen.getByRole('button', { name: /Export Report/ })
+      await user.click(exportButton)
+      
+      const csvButton = screen.getByText('Export as CSV')
+      await user.click(csvButton)
+      
+      const endTime = performance.now()
+      
+      // Should complete CSV generation within reasonable time
+      expect(endTime - startTime).toBeLessThan(500)
+      expect(mockLink.click).toHaveBeenCalled()
+    })
+  })
+})

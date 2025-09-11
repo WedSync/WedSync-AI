@@ -1,0 +1,17 @@
+{
+  "timestamp": "2025-09-03T09:32:38.749Z",
+  "stats": {
+    "totalFiles": 4756,
+    "errorFiles": 0,
+    "totalErrors": 0,
+    "totalWarnings": 0,
+    "scanDuration": 45257
+  },
+  "errors": [],
+  "warnings": [],
+  "summary": {
+    "errorsByCategory": {},
+    "mostProblematicFiles": [],
+    "healthScore": 100
+  }
+}

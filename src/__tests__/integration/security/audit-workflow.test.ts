@@ -1,0 +1,308 @@
+/**
+ * WS-177 Audit Logging System - Audit Workflow Integration Tests
+ * Team C - Unit tests for workflow integration hooks
+ */
+
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { 
+  AuditWorkflowIntegrator, 
+  WorkflowAuditHooks,
+  createAuditWorkflowIntegrator 
+} from '../../../lib/integrations/security/audit-workflow';
+import {
+  AuditEventType,
+  AuditSeverity,
+  WorkflowContext,
+  WeddingRole,
+  ErrorHandlingStrategy
+} from '../../../types/security-integration';
+// Mock audit logger service
+const mockAuditLogger = {
+  logEvent: vi.fn().mockResolvedValue(undefined),
+  logBulkEvents: vi.fn().mockResolvedValue(undefined),
+  queryEvents: vi.fn().mockResolvedValue([]),
+  getEventStats: vi.fn().mockResolvedValue({
+    totalEvents: 0,
+    eventsByType: {},
+    eventsBySeverity: {},
+    suspiciousActivityCount: 0,
+    recentAlerts: 0
+  })
+};
+describe('AuditWorkflowIntegrator', () => {
+  let integrator: AuditWorkflowIntegrator;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    integrator = new AuditWorkflowIntegrator(mockAuditLogger);
+  });
+  afterEach(() => {
+  describe('constructor', () => {
+    it('should initialize with audit logger service', () => {
+      const testIntegrator = new AuditWorkflowIntegrator(mockAuditLogger);
+      expect(testIntegrator).toBeInstanceOf(AuditWorkflowIntegrator);
+    });
+    it('should work without audit logger service', () => {
+      const testIntegrator = new AuditWorkflowIntegrator();
+    it('should initialize default hooks', () => {
+      // Default hooks initialization is tested through workflow execution
+  describe('executeWorkflowHooks', () => {
+    const mockUserInfo = {
+      userId: 'user-123',
+      userRole: WeddingRole.COUPLE,
+      ipAddress: '192.168.1.1',
+      userAgent: 'Mozilla/5.0',
+      sessionId: 'session-123'
+    };
+    const mockWeddingContext = {
+      weddingId: 'wedding-123',
+      weddingDate: new Date('2024-06-15'),
+      plannerIds: ['planner-1'],
+      vendorIds: ['vendor-1'],
+      helperIds: ['helper-1'],
+      privacyLevel: 'private' as const
+    it('should execute guest management workflow hooks', async () => {
+      const workflowData = {
+        action: 'bulk_invite',
+        guestData: [
+          { id: 'guest-1', name: 'John Doe', email: 'john@example.com' },
+          { id: 'guest-2', name: 'Jane Doe', email: 'jane@example.com' }
+        ],
+        ...mockUserInfo,
+        weddingId: 'wedding-123',
+        metadata: {
+          requestId: 'req-123',
+          source: 'ui',
+          success: true
+        }
+      };
+      await integrator.executeWorkflowHooks(
+        WorkflowContext.GUEST_MANAGEMENT,
+        workflowData,
+        AuditEventType.GUEST_LIST_MODIFIED,
+        mockUserInfo,
+        mockWeddingContext
+      );
+      expect(mockAuditLogger.logEvent).toHaveBeenCalled();
+      const auditEvent = mockAuditLogger.logEvent.mock.calls[0][0];
+      
+      expect(auditEvent.eventType).toBe(AuditEventType.GUEST_LIST_MODIFIED);
+      expect(auditEvent.workflowContext).toBe(WorkflowContext.GUEST_MANAGEMENT);
+      expect(auditEvent.userId).toBe('user-123');
+      expect(auditEvent.details.action).toBe('bulk_invite');
+      expect(auditEvent.details.guestCount).toBe(2);
+    it('should execute vendor coordination workflow hooks', async () => {
+        action: 'contract_signed',
+        vendorData: { id: 'vendor-1', type: 'photographer' },
+        contractData: { id: 'contract-1', value: 5000, status: 'signed' },
+          communicationType: 'email'
+        WorkflowContext.VENDOR_COORDINATION,
+        AuditEventType.VENDOR_CONTRACT_MODIFIED,
+      expect(auditEvent.eventType).toBe(AuditEventType.VENDOR_CONTRACT_MODIFIED);
+      expect(auditEvent.workflowContext).toBe(WorkflowContext.VENDOR_COORDINATION);
+      expect(auditEvent.details.contractValue).toBe(5000);
+      expect(auditEvent.details.vendorType).toBe('photographer');
+    it('should execute task assignment workflow hooks', async () => {
+        action: 'assign_task',
+        taskData: { id: 'task-1', type: 'photography', priority: 'high' },
+        assignmentData: { 
+          assignedTo: 'helper-1', 
+          previousAssignee: null,
+          permissionLevel: 'editor'
+        },
+        metadata: { requestId: 'req-123' }
+        WorkflowContext.TASK_ASSIGNMENT,
+        AuditEventType.TASK_STATUS_CHANGED,
+      expect(auditEvent.eventType).toBe(AuditEventType.TASK_STATUS_CHANGED);
+      expect(auditEvent.workflowContext).toBe(WorkflowContext.TASK_ASSIGNMENT);
+      expect(auditEvent.details.taskType).toBe('photography');
+      expect(auditEvent.details.assignedTo).toBe('helper-1');
+    it('should execute budget tracking workflow hooks', async () => {
+        action: 'update_budget',
+        budgetData: { 
+          id: 'budget-1', 
+          category: 'venue', 
+          amount: 15000,
+          previousAmount: 12000
+        WorkflowContext.BUDGET_TRACKING,
+        AuditEventType.BUDGET_UPDATED,
+      expect(auditEvent.eventType).toBe(AuditEventType.BUDGET_UPDATED);
+      expect(auditEvent.workflowContext).toBe(WorkflowContext.BUDGET_TRACKING);
+      expect(auditEvent.details.budgetCategory).toBe('venue');
+      expect(auditEvent.details.amount).toBe(15000);
+      expect(auditEvent.details.amountChange).toBe(3000);
+    it('should handle hooks without matching event type', async () => {
+        { action: 'test' },
+        AuditEventType.USER_LOGIN, // Not in guest management event types
+        mockUserInfo
+      // Should not call audit logger for non-matching event types
+      expect(mockAuditLogger.logEvent).not.toHaveBeenCalled();
+    it('should handle hooks for non-existent context', async () => {
+        'INVALID_CONTEXT' as WorkflowContext,
+        AuditEventType.GUEST_LIST_ACCESS,
+      // Should not throw error, just return early
+    it('should execute hooks asynchronously by default', async () => {
+        action: 'view_guests',
+        guestData: { id: 'guest-1' },
+      // This should complete quickly even if logging takes time
+      const startTime = Date.now();
+      const duration = Date.now() - startTime;
+      expect(duration).toBeLessThan(100); // Should be very quick for async execution
+  describe('registerWorkflowHook', () => {
+    it('should register custom workflow hook', async () => {
+      const customHook = vi.fn().mockResolvedValue({
+        id: 'test-event',
+        timestamp: new Date(),
+        eventType: AuditEventType.GUEST_LIST_ACCESS,
+        severity: AuditSeverity.LOW,
+        userId: 'user-123',
+        userRole: WeddingRole.COUPLE,
+        workflowContext: WorkflowContext.GUEST_MANAGEMENT,
+        ipAddress: '127.0.0.1',
+        userAgent: 'test',
+        sessionId: 'test-session',
+        details: { custom: true },
+      });
+      integrator.registerWorkflowHook(
+        WorkflowContext.PHOTO_SHARING,
+        customHook,
+        {
+          workflowContext: WorkflowContext.PHOTO_SHARING,
+          eventTypes: [AuditEventType.GUEST_LIST_ACCESS],
+          async: false,
+          errorHandling: ErrorHandlingStrategy.LOG_AND_CONTINUE
+        { test: 'data' },
+          userId: 'user-123',
+          userRole: WeddingRole.COUPLE,
+          ipAddress: '127.0.0.1',
+          userAgent: 'test',
+          sessionId: 'test-session'
+      expect(customHook).toHaveBeenCalledWith({ test: 'data' }, AuditEventType.GUEST_LIST_ACCESS);
+  describe('error handling', () => {
+    it('should handle audit logger errors gracefully', async () => {
+      mockAuditLogger.logEvent.mockRejectedValueOnce(new Error('Logging failed'));
+        action: 'test_action',
+        sessionId: 'session-123',
+      // Should not throw even if logging fails
+      await expect(integrator.executeWorkflowHooks(
+          sessionId: 'session-123'
+      )).resolves.not.toThrow();
+});
+describe('WorkflowAuditHooks convenience functions', () => {
+  const mockUserInfo = {
+    userId: 'user-123',
+    userRole: WeddingRole.COUPLE,
+    ipAddress: '192.168.1.1',
+    userAgent: 'Mozilla/5.0',
+    sessionId: 'session-123'
+  };
+  describe('auditGuestOperation', () => {
+    it('should audit guest operations', async () => {
+      await WorkflowAuditHooks.auditGuestOperation(
+        'add_guest',
+        { id: 'guest-1', name: 'John Doe' },
+        'wedding-123',
+        { source: 'ui' }
+      // Function should execute without error
+      // Internal audit logging is tested in integration tests
+  describe('auditVendorOperation', () => {
+    it('should audit vendor operations', async () => {
+      await WorkflowAuditHooks.auditVendorOperation(
+        'sign_contract',
+        { id: 'vendor-1', type: 'photographer' },
+        { id: 'contract-1', value: 5000 },
+  describe('auditTaskOperation', () => {
+    it('should audit task operations', async () => {
+      await WorkflowAuditHooks.auditTaskOperation(
+        'assign_task',
+        { id: 'task-1', type: 'photography' },
+        { assignedTo: 'helper-1' },
+  describe('auditBudgetOperation', () => {
+    it('should audit budget operations', async () => {
+      await WorkflowAuditHooks.auditBudgetOperation(
+        'update_budget',
+        { id: 'budget-1', category: 'venue', amount: 15000 },
+describe('createAuditWorkflowIntegrator factory', () => {
+  it('should create new integrator instance', () => {
+    const integrator = createAuditWorkflowIntegrator(mockAuditLogger);
+    expect(integrator).toBeInstanceOf(AuditWorkflowIntegrator);
+  it('should create integrator without audit logger', () => {
+    const integrator = createAuditWorkflowIntegrator();
+// Integration test with real workflow scenarios
+describe('Wedding workflow integration scenarios', () => {
+  it('should handle bulk guest import scenario', async () => {
+    const guestList = Array.from({ length: 150 }, (_, i) => ({
+      id: `guest-${i}`,
+      name: `Guest ${i}`,
+      email: `guest${i}@example.com`
+    }));
+    const workflowData = {
+      action: 'bulk_import',
+      guestData: guestList,
+      userId: 'couple-123',
+      sessionId: 'session-123',
+      metadata: {
+        requestId: 'bulk-import-123',
+        source: 'ui',
+        success: true,
+        affectedRecords: 150
+      }
+    await integrator.executeWorkflowHooks(
+      WorkflowContext.GUEST_MANAGEMENT,
+      workflowData,
+      AuditEventType.BULK_OPERATION,
+      {
+        userId: 'couple-123',
+        ipAddress: '192.168.1.1',
+        userAgent: 'Mozilla/5.0',
+        sessionId: 'session-123'
+    );
+    expect(mockAuditLogger.logEvent).toHaveBeenCalled();
+    const auditEvent = mockAuditLogger.logEvent.mock.calls[0][0];
+    expect(auditEvent.details.bulkOperation).toBe(true);
+    expect(auditEvent.details.guestCount).toBe(150);
+  it('should handle vendor contract modification', async () => {
+      action: 'modify_contract_terms',
+      vendorData: { id: 'vendor-photo-1', type: 'photographer' },
+      contractData: { 
+        id: 'contract-1', 
+        value: 7500, 
+        previousValue: 5000,
+        status: 'modified' 
+      },
+      userId: 'planner-123',
+      userRole: WeddingRole.WEDDING_PLANNER,
+      ipAddress: '10.0.0.1',
+      userAgent: 'Safari/14.1',
+      sessionId: 'planner-session-456',
+        requestId: 'contract-mod-789',
+        source: 'api',
+        previousValues: { value: 5000 },
+        newValues: { value: 7500 }
+      WorkflowContext.VENDOR_COORDINATION,
+      AuditEventType.VENDOR_CONTRACT_MODIFIED,
+        userId: 'planner-123',
+        userRole: WeddingRole.WEDDING_PLANNER,
+        ipAddress: '10.0.0.1',
+        userAgent: 'Safari/14.1',
+        sessionId: 'planner-session-456'
+    expect(auditEvent.severity).toBe(AuditSeverity.MEDIUM); // Contract modifications are medium severity
+    expect(auditEvent.details.contractValue).toBe(7500);
+  it('should handle task permission changes', async () => {
+      action: 'grant_edit_permission',
+      taskData: { id: 'task-decor-1', type: 'decoration', priority: 'medium' },
+      assignmentData: { 
+        assignedTo: 'helper-123',
+        previousAssignee: null,
+        permissionLevel: 'editor'
+      ipAddress: '192.168.1.10',
+      userAgent: 'Chrome/91.0',
+      sessionId: 'couple-session-789',
+      metadata: { requestId: 'perm-grant-456' }
+      WorkflowContext.TASK_ASSIGNMENT,
+      AuditEventType.PERMISSION_GRANTED,
+        ipAddress: '192.168.1.10',
+        userAgent: 'Chrome/91.0',
+        sessionId: 'couple-session-789'
+    expect(auditEvent.eventType).toBe(AuditEventType.PERMISSION_GRANTED);
+    expect(auditEvent.severity).toBe(AuditSeverity.HIGH); // Permission changes are high severity
+    expect(auditEvent.details.permissionLevel).toBe('editor');

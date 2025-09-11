@@ -1,0 +1,298 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { useRouter, useParams } from 'next/navigation';
+import { FieldMappingInterface } from '@/components/pdf/FieldMappingInterface';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { ArrowLeft, FileText, Download, RefreshCw } from 'lucide-react';
+import { createClient } from '@/lib/supabase/client';
+
+interface PDFImport {
+  id: string;
+  original_filename: string;
+  status: string;
+  ocr_confidence: number;
+  detected_fields: any[];
+  field_mapping: Record<string, string>;
+  page_count: number;
+  created_at: string;
+}
+
+export default function PDFMappingPage() {
+  const router = useRouter();
+  const params = useParams();
+  const pdfId = params.id as string;
+
+  const [pdfImport, setPdfImport] = useState<PDFImport | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const supabase = createClient();
+
+  useEffect(() => {
+    fetchPDFImport();
+  }, [pdfId]);
+
+  const fetchPDFImport = async () => {
+    try {
+      setLoading(true);
+      const { data, error: fetchError } = await supabase
+        .from('pdf_imports')
+        .select('*')
+        .eq('id', pdfId)
+        .single();
+
+      if (fetchError) {
+        throw new Error(`Failed to load PDF: ${fetchError.message}`);
+      }
+
+      if (!data) {
+        throw new Error('PDF not found');
+      }
+
+      setPdfImport(data);
+    } catch (err) {
+      console.error('Error fetching PDF import:', err);
+      setError(err instanceof Error ? err.message : 'Failed to load PDF');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleMappingUpdate = async (mapping: Record<string, string>) => {
+    if (!pdfImport) return;
+
+    try {
+      setSaving(true);
+      const { error: updateError } = await supabase
+        .from('pdf_imports')
+        .update({
+          field_mapping: mapping,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', pdfId);
+
+      if (updateError) {
+        throw new Error(`Failed to save mapping: ${updateError.message}`);
+      }
+
+      setPdfImport((prev) =>
+        prev ? { ...prev, field_mapping: mapping } : null,
+      );
+    } catch (err) {
+      console.error('Error saving mapping:', err);
+      setError(err instanceof Error ? err.message : 'Failed to save mapping');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleFieldsUpdate = async (fields: any[]) => {
+    if (!pdfImport) return;
+
+    try {
+      const { error: updateError } = await supabase
+        .from('pdf_imports')
+        .update({
+          detected_fields: fields,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', pdfId);
+
+      if (updateError) {
+        throw new Error(`Failed to update fields: ${updateError.message}`);
+      }
+
+      setPdfImport((prev) =>
+        prev ? { ...prev, detected_fields: fields } : null,
+      );
+    } catch (err) {
+      console.error('Error updating fields:', err);
+      setError(err instanceof Error ? err.message : 'Failed to update fields');
+    }
+  };
+
+  const handleCreateForm = async () => {
+    if (!pdfImport || !pdfImport.field_mapping) return;
+
+    try {
+      setSaving(true);
+
+      // Create a new form based on the mapping
+      const response = await fetch('/api/forms/create-from-pdf', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          pdfId: pdfImport.id,
+          mapping: pdfImport.field_mapping,
+          fields: pdfImport.detected_fields,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || 'Failed to create form');
+      }
+
+      const { formId } = await response.json();
+
+      // Update PDF with the generated form ID
+      await supabase
+        .from('pdf_imports')
+        .update({ generated_form_id: formId })
+        .eq('id', pdfId);
+
+      // Redirect to the new form
+      router.push(`/forms/${formId}`);
+    } catch (err) {
+      console.error('Error creating form:', err);
+      setError(err instanceof Error ? err.message : 'Failed to create form');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const getStatusBadge = (status: string) => {
+    switch (status) {
+      case 'completed':
+        return <Badge color="green">Processing Complete</Badge>;
+      case 'processing':
+        return <Badge color="yellow">Processing</Badge>;
+      case 'failed':
+        return <Badge color="red">Processing Failed</Badge>;
+      default:
+        return <Badge color="gray">Unknown</Badge>;
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <p className="text-base text-gray-600">Loading PDF mapping...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error || !pdfImport) {
+    return (
+      <div className="max-w-2xl mx-auto mt-8">
+        <div className="text-center p-8 bg-red-50 border border-red-200 rounded-lg">
+          <div className="text-red-600 mb-4">
+            <FileText className="h-12 w-12 mx-auto" />
+          </div>
+          <h3 className="text-xl font-bold tracking-tight text-gray-900">
+            Error Loading PDF
+          </h3>
+          <p className="text-base text-gray-600">
+            {error || 'PDF not found or failed to load'}
+          </p>
+          <Button onClick={() => router.push('/pdf/import')}>
+            <ArrowLeft className="h-4 w-4 mr-2" />
+            Back to PDF Import
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  if (pdfImport.status !== 'completed') {
+    return (
+      <div className="max-w-2xl mx-auto mt-8">
+        <div className="text-center p-8 bg-yellow-50 border border-yellow-200 rounded-lg">
+          <div className="text-yellow-600 mb-4">
+            <RefreshCw className="h-12 w-12 mx-auto animate-spin" />
+          </div>
+          <h3 className="text-xl font-bold tracking-tight text-gray-900">
+            PDF Still Processing
+          </h3>
+          <p className="text-base text-gray-600">
+            Field mapping will be available once OCR processing is complete.
+          </p>
+          <div className="flex gap-3 justify-center">
+            <Button onClick={fetchPDFImport} variant="outline">
+              <RefreshCw className="h-4 w-4 mr-2" />
+              Check Status
+            </Button>
+            <Button onClick={() => router.push('/pdf/import')}>
+              <ArrowLeft className="h-4 w-4 mr-2" />
+              Back to Import
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <Button
+            variant="ghost"
+            onClick={() => router.push('/pdf/import')}
+            className="flex items-center gap-2"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            Back
+          </Button>
+          <div>
+            <div className="flex items-center gap-2">
+              <FileText className="h-6 w-6 text-blue-600" />
+              <h1 className="text-3xl font-bold tracking-tight text-gray-900">
+                {pdfImport.original_filename}
+              </h1>
+              {getStatusBadge(pdfImport.status)}
+            </div>
+            <p className="text-base text-gray-600">
+              Uploaded {new Date(pdfImport.created_at).toLocaleDateString()} •
+              {pdfImport.detected_fields?.length || 0} fields detected •
+              {Math.round((pdfImport.ocr_confidence || 0) * 100)}% confidence
+            </p>
+          </div>
+        </div>
+
+        <div className="flex gap-2">
+          <Button variant="outline">
+            <Download className="h-4 w-4 mr-2" />
+            Download PDF
+          </Button>
+        </div>
+      </div>
+
+      {/* Error Display */}
+      {error && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+          <p className="text-base text-gray-600">{error}</p>
+        </div>
+      )}
+
+      {/* Loading Overlay */}
+      {saving && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 text-center">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-4"></div>
+            <p className="text-base text-gray-600">Saving changes...</p>
+          </div>
+        </div>
+      )}
+
+      {/* Field Mapping Interface */}
+      <FieldMappingInterface
+        pdfId={pdfImport.id}
+        detectedFields={pdfImport.detected_fields || []}
+        coreFieldMapping={pdfImport.field_mapping || {}}
+        onMappingUpdate={handleMappingUpdate}
+        onFieldsUpdate={handleFieldsUpdate}
+        onCreateForm={handleCreateForm}
+      />
+    </div>
+  );
+}

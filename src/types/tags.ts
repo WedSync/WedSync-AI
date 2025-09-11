@@ -1,0 +1,394 @@
+// Tag-related type definitions for WedSync
+
+export type TagColor =
+  | 'gray'
+  | 'red'
+  | 'orange'
+  | 'amber'
+  | 'yellow'
+  | 'lime'
+  | 'green'
+  | 'emerald'
+  | 'teal'
+  | 'cyan'
+  | 'sky'
+  | 'blue'
+  | 'indigo'
+  | 'violet'
+  | 'purple'
+  | 'fuchsia'
+  | 'pink'
+  | 'rose';
+
+export type TagCategory =
+  | 'relationship'
+  | 'venue'
+  | 'season'
+  | 'style'
+  | 'service'
+  | 'priority'
+  | 'custom';
+
+export interface Tag {
+  id: string;
+  name: string;
+  description: string | null;
+  color: TagColor;
+  category: TagCategory;
+  usage_count: number;
+  created_at: string;
+  updated_at: string;
+  supplier_id: string;
+}
+
+export interface ClientTag {
+  id: string;
+  client_id: string;
+  tag_id: string;
+  supplier_id: string;
+  created_at: string;
+  tag?: Tag;
+}
+
+export interface TagAnalytics {
+  tag: Tag;
+  usage_count: number;
+  growth_rate: number; // Percentage change over time period
+  last_used: string;
+  clients: number;
+  trend: 'up' | 'down' | 'stable';
+  period_data?: {
+    date: string;
+    count: number;
+  }[];
+}
+
+export interface TagFilterCriteria {
+  tagIds: string[];
+  logic: 'AND' | 'OR';
+}
+
+export interface TagSuggestion {
+  tag: Tag;
+  score: number; // Fuzzy search relevance score
+  reason?: string; // Why this tag was suggested
+}
+
+export interface TagColorConfig {
+  color: TagColor;
+  label: string;
+  textClass: string;
+  bgClass: string;
+  borderClass: string;
+  hoverClass?: string;
+}
+
+export interface TagCategoryConfig {
+  value: TagCategory;
+  label: string;
+  description: string;
+  icon?: string;
+  defaultColor?: TagColor;
+}
+
+// Common wedding-specific tags
+export const WEDDING_TAG_PRESETS = {
+  relationship: [
+    {
+      name: 'VIP Client',
+      color: 'purple' as TagColor,
+      description: 'High-priority client requiring special attention',
+    },
+    {
+      name: 'Referral',
+      color: 'green' as TagColor,
+      description: 'Client referred by another client',
+    },
+    {
+      name: 'Repeat Client',
+      color: 'blue' as TagColor,
+      description: 'Client who has booked services before',
+    },
+    {
+      name: 'Industry Professional',
+      color: 'indigo' as TagColor,
+      description: 'Client working in wedding industry',
+    },
+  ],
+  venue: [
+    {
+      name: 'Outdoor',
+      color: 'green' as TagColor,
+      description: 'Wedding at outdoor venue',
+    },
+    {
+      name: 'Indoor',
+      color: 'gray' as TagColor,
+      description: 'Wedding at indoor venue',
+    },
+    {
+      name: 'Destination',
+      color: 'cyan' as TagColor,
+      description: 'Destination wedding requiring travel',
+    },
+    {
+      name: 'Beach',
+      color: 'sky' as TagColor,
+      description: 'Beach or waterfront wedding',
+    },
+    {
+      name: 'Garden',
+      color: 'lime' as TagColor,
+      description: 'Garden or park wedding',
+    },
+  ],
+  season: [
+    {
+      name: 'Spring',
+      color: 'pink' as TagColor,
+      description: 'Spring wedding (Mar-May)',
+    },
+    {
+      name: 'Summer',
+      color: 'yellow' as TagColor,
+      description: 'Summer wedding (Jun-Aug)',
+    },
+    {
+      name: 'Autumn',
+      color: 'orange' as TagColor,
+      description: 'Autumn wedding (Sep-Nov)',
+    },
+    {
+      name: 'Winter',
+      color: 'blue' as TagColor,
+      description: 'Winter wedding (Dec-Feb)',
+    },
+  ],
+  style: [
+    {
+      name: 'Luxury',
+      color: 'purple' as TagColor,
+      description: 'High-end luxury wedding',
+    },
+    {
+      name: 'Budget',
+      color: 'gray' as TagColor,
+      description: 'Budget-conscious wedding',
+    },
+    {
+      name: 'Rustic',
+      color: 'amber' as TagColor,
+      description: 'Rustic or barn wedding style',
+    },
+    {
+      name: 'Modern',
+      color: 'indigo' as TagColor,
+      description: 'Modern contemporary wedding',
+    },
+    {
+      name: 'Traditional',
+      color: 'rose' as TagColor,
+      description: 'Traditional classic wedding',
+    },
+    {
+      name: 'Bohemian',
+      color: 'teal' as TagColor,
+      description: 'Boho or free-spirited wedding',
+    },
+  ],
+  service: [
+    {
+      name: 'Full Day',
+      color: 'blue' as TagColor,
+      description: 'Full day coverage',
+    },
+    {
+      name: 'Half Day',
+      color: 'cyan' as TagColor,
+      description: 'Half day coverage',
+    },
+    {
+      name: 'Elopement',
+      color: 'pink' as TagColor,
+      description: 'Small elopement ceremony',
+    },
+    {
+      name: 'Multi-Day',
+      color: 'violet' as TagColor,
+      description: 'Multi-day wedding events',
+    },
+  ],
+  priority: [
+    {
+      name: 'Urgent',
+      color: 'red' as TagColor,
+      description: 'Requires immediate attention',
+    },
+    {
+      name: 'High Priority',
+      color: 'orange' as TagColor,
+      description: 'High priority client or task',
+    },
+    {
+      name: 'Low Priority',
+      color: 'gray' as TagColor,
+      description: 'Low priority, can wait',
+    },
+    {
+      name: 'Follow Up',
+      color: 'yellow' as TagColor,
+      description: 'Needs follow-up action',
+    },
+  ],
+} as const;
+
+// Tag validation rules
+export const TAG_VALIDATION = {
+  name: {
+    minLength: 2,
+    maxLength: 30,
+    pattern: /^[a-zA-Z0-9\s\-_]+$/,
+    message:
+      'Tag name must be 2-30 characters, alphanumeric with spaces, dashes, or underscores',
+  },
+  description: {
+    maxLength: 200,
+    message: 'Description must be under 200 characters',
+  },
+  maxTagsPerClient: 20,
+  maxTagsPerSupplier: 100,
+  rateLimit: {
+    maxCreationsPerHour: 50,
+    message: 'Maximum 50 tags can be created per hour',
+  },
+} as const;
+
+// Helper functions for tag operations
+export const tagHelpers = {
+  /**
+   * Get color classes for a tag
+   */
+  getTagColorClasses: (color: TagColor): string => {
+    const colorMap: Record<TagColor, string> = {
+      gray: 'bg-gray-100 text-gray-800 border-gray-200',
+      red: 'bg-red-50 text-red-700 border-red-200',
+      orange: 'bg-orange-50 text-orange-700 border-orange-200',
+      amber: 'bg-amber-50 text-amber-700 border-amber-200',
+      yellow: 'bg-yellow-50 text-yellow-700 border-yellow-200',
+      lime: 'bg-lime-50 text-lime-700 border-lime-200',
+      green: 'bg-green-50 text-green-700 border-green-200',
+      emerald: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+      teal: 'bg-teal-50 text-teal-700 border-teal-200',
+      cyan: 'bg-cyan-50 text-cyan-700 border-cyan-200',
+      sky: 'bg-sky-50 text-sky-700 border-sky-200',
+      blue: 'bg-blue-50 text-blue-700 border-blue-200',
+      indigo: 'bg-indigo-50 text-indigo-700 border-indigo-200',
+      violet: 'bg-violet-50 text-violet-700 border-violet-200',
+      purple: 'bg-purple-50 text-purple-700 border-purple-200',
+      fuchsia: 'bg-fuchsia-50 text-fuchsia-700 border-fuchsia-200',
+      pink: 'bg-pink-50 text-pink-700 border-pink-200',
+      rose: 'bg-rose-50 text-rose-700 border-rose-200',
+    };
+    return colorMap[color] || colorMap.blue;
+  },
+
+  /**
+   * Validate tag name
+   */
+  validateTagName: (name: string): { valid: boolean; error?: string } => {
+    if (name.length < TAG_VALIDATION.name.minLength) {
+      return {
+        valid: false,
+        error: `Tag name must be at least ${TAG_VALIDATION.name.minLength} characters`,
+      };
+    }
+    if (name.length > TAG_VALIDATION.name.maxLength) {
+      return {
+        valid: false,
+        error: `Tag name must be under ${TAG_VALIDATION.name.maxLength} characters`,
+      };
+    }
+    if (!TAG_VALIDATION.name.pattern.test(name)) {
+      return { valid: false, error: TAG_VALIDATION.name.message };
+    }
+    return { valid: true };
+  },
+
+  /**
+   * Sanitize tag input for XSS prevention
+   */
+  sanitizeTagInput: (input: string): string => {
+    return input
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#x27;')
+      .replace(/\//g, '&#x2F;')
+      .trim();
+  },
+
+  /**
+   * Sort tags by various criteria
+   */
+  sortTags: (
+    tags: Tag[],
+    sortBy: 'name' | 'usage' | 'created' | 'category',
+  ): Tag[] => {
+    const sorted = [...tags];
+    switch (sortBy) {
+      case 'name':
+        return sorted.sort((a, b) => a.name.localeCompare(b.name));
+      case 'usage':
+        return sorted.sort((a, b) => b.usage_count - a.usage_count);
+      case 'created':
+        return sorted.sort(
+          (a, b) =>
+            new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+        );
+      case 'category':
+        return sorted.sort((a, b) => {
+          if (a.category === b.category) return a.name.localeCompare(b.name);
+          return a.category.localeCompare(b.category);
+        });
+      default:
+        return sorted;
+    }
+  },
+
+  /**
+   * Group tags by category
+   */
+  groupTagsByCategory: (tags: Tag[]): Record<TagCategory, Tag[]> => {
+    return tags.reduce(
+      (acc, tag) => {
+        if (!acc[tag.category]) acc[tag.category] = [];
+        acc[tag.category].push(tag);
+        return acc;
+      },
+      {} as Record<TagCategory, Tag[]>,
+    );
+  },
+
+  /**
+   * Check if tag color has sufficient contrast for accessibility
+   */
+  hasAccessibleContrast: (color: TagColor): boolean => {
+    // These colors have been pre-validated to meet WCAG AA standards
+    const accessibleColors: TagColor[] = [
+      'red',
+      'orange',
+      'amber',
+      'green',
+      'emerald',
+      'teal',
+      'cyan',
+      'blue',
+      'indigo',
+      'violet',
+      'purple',
+      'pink',
+      'rose',
+    ];
+    return accessibleColors.includes(color);
+  },
+};

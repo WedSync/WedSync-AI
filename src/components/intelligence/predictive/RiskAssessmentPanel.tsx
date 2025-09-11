@@ -1,0 +1,609 @@
+// WS-055: Risk Assessment Panel Component
+// Displays risk indicators and churn predictions for client portfolio
+
+'use client';
+
+import { useState, useMemo } from 'react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Progress } from '@/components/ui/progress';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import {
+  AlertTriangle,
+  XCircle,
+  Clock,
+  TrendingDown,
+  Users,
+  Target,
+  DollarSign,
+  Bell,
+  Shield,
+  Activity,
+} from 'lucide-react';
+
+import type { BookingPrediction } from '@/lib/ml/prediction/types';
+
+interface RiskAssessmentPanelProps {
+  predictions: BookingPrediction[];
+  riskThreshold?: number;
+}
+
+interface RiskMetrics {
+  totalAtRisk: number;
+  criticalRisk: number;
+  mediumRisk: number;
+  lowRisk: number;
+  totalRevenueAtRisk: number;
+  avgRiskScore: number;
+}
+
+interface RiskIndicator {
+  type: string;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  count: number;
+  description: string;
+  suggestedAction: string;
+}
+
+interface ClientRisk {
+  client_id: string;
+  riskScore: number;
+  riskLevel: 'low' | 'medium' | 'high' | 'critical';
+  riskIndicators: string[];
+  bookingProbability: number;
+  potentialRevenue: number;
+  daysSinceLastActivity: number;
+}
+
+export function RiskAssessmentPanel({
+  predictions,
+  riskThreshold = 0.3,
+}: RiskAssessmentPanelProps) {
+  const [selectedRiskLevel, setSelectedRiskLevel] = useState<string | null>(
+    null,
+  );
+  const [viewMode, setViewMode] = useState<
+    'overview' | 'clients' | 'indicators'
+  >('overview');
+
+  // Calculate client risk scores
+  const clientRisks = useMemo((): ClientRisk[] => {
+    return predictions.map((prediction) => {
+      // Calculate risk score based on multiple factors
+      let riskScore = 0;
+
+      // Low booking probability increases risk
+      if (prediction.probability < 0.3) riskScore += 0.4;
+      else if (prediction.probability < 0.5) riskScore += 0.2;
+
+      // Risk indicators contribute to score
+      const riskIndicators = prediction.risk_indicators || [];
+      riskIndicators.forEach((indicator) => {
+        switch (indicator.severity) {
+          case 'critical':
+            riskScore += 0.3;
+            break;
+          case 'high':
+            riskScore += 0.2;
+            break;
+          case 'medium':
+            riskScore += 0.1;
+            break;
+          case 'low':
+            riskScore += 0.05;
+            break;
+        }
+      });
+
+      // Low confidence increases risk
+      if (prediction.confidence < 0.6) riskScore += 0.1;
+
+      // Normalize risk score to 0-1 range
+      riskScore = Math.min(1, riskScore);
+
+      // Determine risk level
+      let riskLevel: 'low' | 'medium' | 'high' | 'critical';
+      if (riskScore >= 0.8) riskLevel = 'critical';
+      else if (riskScore >= 0.6) riskLevel = 'high';
+      else if (riskScore >= 0.4) riskLevel = 'medium';
+      else riskLevel = 'low';
+
+      return {
+        client_id: prediction.client_id,
+        riskScore,
+        riskLevel,
+        riskIndicators: riskIndicators.map((r) => r.type),
+        bookingProbability: prediction.probability,
+        potentialRevenue: prediction.probability * 15000, // Estimated revenue
+        daysSinceLastActivity: Math.floor(Math.random() * 30), // Mock data - would be real
+      };
+    });
+  }, [predictions]);
+
+  // Calculate risk metrics
+  const riskMetrics = useMemo((): RiskMetrics => {
+    if (!clientRisks.length) {
+      return {
+        totalAtRisk: 0,
+        criticalRisk: 0,
+        mediumRisk: 0,
+        lowRisk: 0,
+        totalRevenueAtRisk: 0,
+        avgRiskScore: 0,
+      };
+    }
+
+    const atRiskClients = clientRisks.filter(
+      (c) => c.riskScore >= riskThreshold,
+    );
+    const totalRiskScore = clientRisks.reduce((sum, c) => sum + c.riskScore, 0);
+    const revenueAtRisk = atRiskClients.reduce(
+      (sum, c) => sum + c.potentialRevenue,
+      0,
+    );
+
+    return {
+      totalAtRisk: atRiskClients.length,
+      criticalRisk: clientRisks.filter((c) => c.riskLevel === 'critical')
+        .length,
+      mediumRisk: clientRisks.filter(
+        (c) => c.riskLevel === 'high' || c.riskLevel === 'medium',
+      ).length,
+      lowRisk: clientRisks.filter((c) => c.riskLevel === 'low').length,
+      totalRevenueAtRisk: revenueAtRisk,
+      avgRiskScore: totalRiskScore / clientRisks.length,
+    };
+  }, [clientRisks, riskThreshold]);
+
+  // Analyze risk indicators
+  const riskIndicators = useMemo((): RiskIndicator[] => {
+    const indicatorCounts = clientRisks
+      .flatMap((c) => c.riskIndicators)
+      .reduce(
+        (acc, indicator) => {
+          acc[indicator] = (acc[indicator] || 0) + 1;
+          return acc;
+        },
+        {} as Record<string, number>,
+      );
+
+    const indicators = Object.entries(indicatorCounts).map(([type, count]) => {
+      let severity: 'low' | 'medium' | 'high' | 'critical';
+      let description: string;
+      let suggestedAction: string;
+
+      switch (type) {
+        case 'delayed_response':
+          severity = 'high';
+          description = 'Clients taking longer than expected to respond';
+          suggestedAction = 'Follow up with personalized outreach';
+          break;
+        case 'inactivity':
+          severity = 'medium';
+          description = 'Clients showing reduced engagement activity';
+          suggestedAction = 'Send re-engagement campaign';
+          break;
+        case 'low_engagement':
+          severity = 'medium';
+          description = 'Below-average engagement with content and services';
+          suggestedAction = 'Provide targeted content and value';
+          break;
+        default:
+          severity = 'low';
+          description = `Risk indicator: ${type.replace(/_/g, ' ')}`;
+          suggestedAction = 'Monitor and assess';
+      }
+
+      return {
+        type,
+        severity,
+        count,
+        description,
+        suggestedAction,
+      };
+    });
+
+    return indicators.sort((a, b) => b.count - a.count);
+  }, [clientRisks]);
+
+  const getRiskColor = (level: string) => {
+    switch (level) {
+      case 'critical':
+        return 'bg-red-500';
+      case 'high':
+        return 'bg-orange-500';
+      case 'medium':
+        return 'bg-yellow-500';
+      case 'low':
+        return 'bg-green-500';
+      default:
+        return 'bg-gray-500';
+    }
+  };
+
+  const getRiskBadge = (level: string) => {
+    switch (level) {
+      case 'critical':
+        return <Badge variant="destructive">Critical</Badge>;
+      case 'high':
+        return <Badge className="bg-orange-100 text-orange-800">High</Badge>;
+      case 'medium':
+        return <Badge className="bg-yellow-100 text-yellow-800">Medium</Badge>;
+      case 'low':
+        return <Badge className="bg-green-100 text-green-800">Low</Badge>;
+      default:
+        return <Badge variant="outline">Unknown</Badge>;
+    }
+  };
+
+  const getRiskIcon = (level: string) => {
+    switch (level) {
+      case 'critical':
+        return <XCircle className="h-4 w-4 text-red-500" />;
+      case 'high':
+        return <AlertTriangle className="h-4 w-4 text-orange-500" />;
+      case 'medium':
+        return <Clock className="h-4 w-4 text-yellow-500" />;
+      case 'low':
+        return <Shield className="h-4 w-4 text-green-500" />;
+      default:
+        return <Activity className="h-4 w-4 text-gray-500" />;
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Risk Overview Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <Card>
+          <CardContent className="p-4">
+            <div className="space-y-2">
+              <div className="flex items-center space-x-2">
+                <AlertTriangle className="h-4 w-4 text-red-500" />
+                <span className="text-sm text-muted-foreground">At Risk</span>
+              </div>
+              <p className="text-2xl font-bold">{riskMetrics.totalAtRisk}</p>
+              <p className="text-xs text-muted-foreground">
+                {(
+                  (riskMetrics.totalAtRisk / Math.max(1, clientRisks.length)) *
+                  100
+                ).toFixed(1)}
+                % of total
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="p-4">
+            <div className="space-y-2">
+              <div className="flex items-center space-x-2">
+                <XCircle className="h-4 w-4 text-red-600" />
+                <span className="text-sm text-muted-foreground">
+                  Critical Risk
+                </span>
+              </div>
+              <p className="text-2xl font-bold">{riskMetrics.criticalRisk}</p>
+              <p className="text-xs text-muted-foreground">
+                Immediate attention
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="p-4">
+            <div className="space-y-2">
+              <div className="flex items-center space-x-2">
+                <DollarSign className="h-4 w-4 text-orange-500" />
+                <span className="text-sm text-muted-foreground">
+                  Revenue at Risk
+                </span>
+              </div>
+              <p className="text-2xl font-bold">
+                ${(riskMetrics.totalRevenueAtRisk / 1000).toFixed(0)}K
+              </p>
+              <p className="text-xs text-muted-foreground">Potential loss</p>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="p-4">
+            <div className="space-y-2">
+              <div className="flex items-center space-x-2">
+                <Target className="h-4 w-4 text-blue-500" />
+                <span className="text-sm text-muted-foreground">
+                  Avg Risk Score
+                </span>
+              </div>
+              <p className="text-2xl font-bold">
+                {(riskMetrics.avgRiskScore * 100).toFixed(0)}
+              </p>
+              <p className="text-xs text-muted-foreground">Out of 100</p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* View Mode Selector */}
+      <div className="flex items-center space-x-2">
+        <Button
+          variant={viewMode === 'overview' ? 'default' : 'outline'}
+          size="sm"
+          onClick={() => setViewMode('overview')}
+        >
+          <Shield className="h-4 w-4 mr-1" />
+          Overview
+        </Button>
+        <Button
+          variant={viewMode === 'clients' ? 'default' : 'outline'}
+          size="sm"
+          onClick={() => setViewMode('clients')}
+        >
+          <Users className="h-4 w-4 mr-1" />
+          At-Risk Clients
+        </Button>
+        <Button
+          variant={viewMode === 'indicators' ? 'default' : 'outline'}
+          size="sm"
+          onClick={() => setViewMode('indicators')}
+        >
+          <Bell className="h-4 w-4 mr-1" />
+          Risk Indicators
+        </Button>
+      </div>
+
+      {/* Critical Risk Alert */}
+      {riskMetrics.criticalRisk > 0 && (
+        <Alert className="border-red-200 bg-red-50">
+          <AlertTriangle className="h-4 w-4 text-red-600" />
+          <AlertTitle className="text-red-800">Critical Risk Alert</AlertTitle>
+          <AlertDescription className="text-red-700">
+            {riskMetrics.criticalRisk} client
+            {riskMetrics.criticalRisk !== 1 ? 's' : ''} at critical risk of
+            churn. Immediate intervention recommended to prevent $
+            {(riskMetrics.totalRevenueAtRisk / 1000).toFixed(0)}K revenue loss.
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {/* Overview Mode */}
+      {viewMode === 'overview' && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Risk Level Distribution</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                {[
+                  {
+                    level: 'critical',
+                    count: riskMetrics.criticalRisk,
+                    color: 'bg-red-500',
+                  },
+                  {
+                    level: 'high',
+                    count: Math.floor(riskMetrics.mediumRisk * 0.4),
+                    color: 'bg-orange-500',
+                  },
+                  {
+                    level: 'medium',
+                    count: Math.floor(riskMetrics.mediumRisk * 0.6),
+                    color: 'bg-yellow-500',
+                  },
+                  {
+                    level: 'low',
+                    count: riskMetrics.lowRisk,
+                    color: 'bg-green-500',
+                  },
+                ].map((item) => (
+                  <div key={item.level} className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center space-x-2">
+                        <div
+                          className={`w-3 h-3 rounded-full ${item.color}`}
+                        ></div>
+                        <span className="capitalize">{item.level} Risk</span>
+                      </div>
+                      <span className="font-medium">{item.count}</span>
+                    </div>
+                    <Progress
+                      value={
+                        (item.count / Math.max(1, clientRisks.length)) * 100
+                      }
+                      className="h-2"
+                    />
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Risk Trend Analysis</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                <div className="text-center py-8">
+                  <TrendingDown className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                  <p className="text-muted-foreground">
+                    Risk trend analysis would be displayed here with historical
+                    data
+                  </p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* At-Risk Clients Mode */}
+      {viewMode === 'clients' && (
+        <Card>
+          <CardHeader>
+            <CardTitle>At-Risk Clients</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              {clientRisks
+                .filter((client) =>
+                  selectedRiskLevel
+                    ? client.riskLevel === selectedRiskLevel
+                    : client.riskScore >= riskThreshold,
+                )
+                .sort((a, b) => b.riskScore - a.riskScore)
+                .slice(0, 20)
+                .map((client) => (
+                  <div key={client.client_id} className="p-4 border rounded-lg">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center space-x-3">
+                        <div
+                          className={`w-3 h-8 rounded-full ${getRiskColor(client.riskLevel)}`}
+                        ></div>
+                        <div>
+                          <h4 className="font-medium">
+                            Client {client.client_id.slice(-8)}
+                          </h4>
+                          <p className="text-sm text-muted-foreground">
+                            {client.daysSinceLastActivity} days since last
+                            activity
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="text-right">
+                        <div className="flex items-center space-x-2 mb-1">
+                          {getRiskIcon(client.riskLevel)}
+                          {getRiskBadge(client.riskLevel)}
+                        </div>
+                        <p className="text-sm text-muted-foreground">
+                          Risk Score: {(client.riskScore * 100).toFixed(0)}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-3 text-sm">
+                      <div>
+                        <span className="text-muted-foreground">
+                          Booking Probability:
+                        </span>
+                        <p className="font-medium">
+                          {(client.bookingProbability * 100).toFixed(0)}%
+                        </p>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">
+                          Potential Revenue:
+                        </span>
+                        <p className="font-medium">
+                          ${(client.potentialRevenue / 1000).toFixed(1)}K
+                        </p>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">
+                          Risk Indicators:
+                        </span>
+                        <p className="font-medium">
+                          {client.riskIndicators.length}
+                        </p>
+                      </div>
+                    </div>
+
+                    {client.riskIndicators.length > 0 && (
+                      <div className="mt-3 pt-3 border-t">
+                        <p className="text-sm text-muted-foreground mb-2">
+                          Risk Factors:
+                        </p>
+                        <div className="flex flex-wrap gap-1">
+                          {client.riskIndicators.map((indicator, index) => (
+                            <Badge
+                              key={index}
+                              variant="outline"
+                              className="text-xs"
+                            >
+                              {indicator.replace(/_/g, ' ')}
+                            </Badge>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+
+              {clientRisks.filter((c) => c.riskScore >= riskThreshold)
+                .length === 0 && (
+                <div className="text-center py-8">
+                  <Shield className="h-12 w-12 text-green-500 mx-auto mb-4" />
+                  <p className="text-muted-foreground">
+                    No clients currently at high risk
+                  </p>
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Risk Indicators Mode */}
+      {viewMode === 'indicators' && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Risk Indicators Analysis</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              {riskIndicators.length === 0 ? (
+                <div className="text-center py-8">
+                  <Bell className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                  <p className="text-muted-foreground">
+                    No risk indicators detected
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {riskIndicators.map((indicator) => (
+                    <div key={indicator.type} className="p-4 border rounded-lg">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center space-x-3">
+                          {getRiskIcon(indicator.severity)}
+                          <div>
+                            <h4 className="font-medium capitalize">
+                              {indicator.type.replace(/_/g, ' ')}
+                            </h4>
+                            <p className="text-sm text-muted-foreground">
+                              {indicator.description}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="text-right">
+                          <p className="text-2xl font-bold">
+                            {indicator.count}
+                          </p>
+                          <p className="text-sm text-muted-foreground">
+                            clients affected
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between">
+                        {getRiskBadge(indicator.severity)}
+                        <div className="text-sm text-muted-foreground">
+                          <strong>Action:</strong> {indicator.suggestedAction}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}

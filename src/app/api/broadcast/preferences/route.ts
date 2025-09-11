@@ -1,0 +1,496 @@
+/**
+ * WS-205 Broadcast Preferences API Endpoint
+ * Comprehensive notification preference management with wedding industry context
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+
+const preferencesSchema = z.object({
+  systemBroadcasts: z.boolean().optional(),
+  businessBroadcasts: z.boolean().optional(),
+  collaborationBroadcasts: z.boolean().optional(),
+  weddingBroadcasts: z.boolean().optional(),
+  criticalOnly: z.boolean().optional(),
+  deliveryChannels: z
+    .array(z.enum(['realtime', 'email', 'sms', 'push', 'in_app']))
+    .optional(),
+  quietHours: z
+    .object({
+      enabled: z.boolean(),
+      start: z.string().regex(/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/), // HH:MM format
+      end: z.string().regex(/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/),
+      timezone: z.string(),
+    })
+    .optional(),
+  rolePreferences: z.record(z.any()).optional(),
+  weddingFilters: z
+    .object({
+      onlyActiveWeddings: z.boolean().optional(),
+      excludeCompletedWeddings: z.boolean().optional(),
+      prioritizeUrgentWeddings: z.boolean().optional(),
+      weddingSpecificTypes: z.array(z.string()).optional(),
+    })
+    .optional(),
+});
+
+/**
+ * GET - Retrieve user's broadcast preferences
+ */
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = createClient();
+
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get user profile for role-based recommendations
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('role, subscription_tier')
+      .eq('user_id', user.id)
+      .single();
+
+    // Get user preferences
+    const { data: preferences, error: prefError } = await supabase
+      .from('broadcast_preferences')
+      .select('*')
+      .eq('user_id', user.id)
+      .single();
+
+    // Get user's wedding contexts for filtering options
+    const { data: weddingContexts } = await supabase
+      .from('wedding_team')
+      .select(
+        `
+        role,
+        wedding:weddings!inner(
+          id,
+          couple_name,
+          wedding_date,
+          status
+        )
+      `,
+      )
+      .eq('user_id', user.id)
+      .eq('is_active', true);
+
+    if (prefError && prefError.code !== 'PGRST116') {
+      // Not found is OK
+      console.error('Preferences fetch error:', prefError);
+      return NextResponse.json(
+        { error: 'Failed to fetch preferences' },
+        { status: 500 },
+      );
+    }
+
+    // Generate role-based recommendations
+    const recommendations = generateRoleBasedRecommendations(
+      userProfile?.role || 'supplier',
+      userProfile?.subscription_tier || 'STARTER',
+    );
+
+    // Return preferences with defaults if none exist
+    const defaultPreferences = {
+      systemBroadcasts: true,
+      businessBroadcasts: true,
+      collaborationBroadcasts: true,
+      weddingBroadcasts: true,
+      criticalOnly: false,
+      deliveryChannels: ['realtime', 'in_app'],
+      quietHours: {
+        enabled: false,
+        start: '22:00',
+        end: '08:00',
+        timezone: 'UTC',
+      },
+      rolePreferences: {},
+      weddingFilters: {
+        onlyActiveWeddings: true,
+        excludeCompletedWeddings: false,
+        prioritizeUrgentWeddings: true,
+        weddingSpecificTypes: [],
+      },
+    };
+
+    const currentPreferences = preferences
+      ? {
+          systemBroadcasts: preferences.system_broadcasts,
+          businessBroadcasts: preferences.business_broadcasts,
+          collaborationBroadcasts: preferences.collaboration_broadcasts,
+          weddingBroadcasts: preferences.wedding_broadcasts,
+          criticalOnly: preferences.critical_only,
+          deliveryChannels: JSON.parse(preferences.delivery_channels as string),
+          quietHours: preferences.quiet_hours_start
+            ? {
+                enabled: true,
+                start: preferences.quiet_hours_start,
+                end: preferences.quiet_hours_end,
+                timezone: preferences.timezone || 'UTC',
+              }
+            : {
+                enabled: false,
+                start: '22:00',
+                end: '08:00',
+                timezone: preferences.timezone || 'UTC',
+              },
+          rolePreferences: preferences.role_preferences || {},
+          weddingFilters:
+            preferences.wedding_filters || defaultPreferences.weddingFilters,
+        }
+      : defaultPreferences;
+
+    return NextResponse.json({
+      preferences: currentPreferences,
+      recommendations,
+      weddingContexts:
+        weddingContexts?.map((wc) => ({
+          id: wc.wedding.id,
+          coupleName: wc.wedding.couple_name,
+          weddingDate: wc.wedding.wedding_date,
+          status: wc.wedding.status,
+          userRole: wc.role,
+        })) || [],
+      metadata: {
+        hasCustomPreferences: !!preferences,
+        lastUpdated: preferences?.updated_at,
+        userRole: userProfile?.role,
+        subscriptionTier: userProfile?.subscription_tier,
+      },
+    });
+  } catch (error) {
+    console.error('Get preferences error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * PUT - Update user's broadcast preferences
+ */
+export async function PUT(request: NextRequest) {
+  try {
+    const supabase = createClient();
+
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Parse and validate request
+    const body = await request.json();
+    const preferences = preferencesSchema.parse(body);
+
+    // Validate quiet hours logic
+    if (preferences.quietHours?.enabled) {
+      const { start, end, timezone } = preferences.quietHours;
+
+      // Validate timezone
+      try {
+        new Date().toLocaleString('en-US', { timeZone: timezone });
+      } catch {
+        return NextResponse.json(
+          {
+            error: 'Invalid timezone',
+            validTimezones: [
+              'UTC',
+              'America/New_York',
+              'America/Los_Angeles',
+              'Europe/London',
+              'Europe/Paris',
+              'Asia/Tokyo',
+            ],
+          },
+          { status: 400 },
+        );
+      }
+
+      // Validate time format
+      const timeRegex = /^([01]?[0-9]|2[0-3]):[0-5][0-9]$/;
+      if (!timeRegex.test(start) || !timeRegex.test(end)) {
+        return NextResponse.json(
+          {
+            error: 'Invalid time format. Use HH:MM format (e.g., 22:00)',
+          },
+          { status: 400 },
+        );
+      }
+    }
+
+    // Validate delivery channels
+    if (
+      preferences.deliveryChannels &&
+      preferences.deliveryChannels.length === 0
+    ) {
+      return NextResponse.json(
+        {
+          error: 'At least one delivery channel must be enabled',
+        },
+        { status: 400 },
+      );
+    }
+
+    // Get user profile for role validation
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('role, subscription_tier')
+      .eq('user_id', user.id)
+      .single();
+
+    // Validate premium features based on subscription tier
+    if (
+      preferences.deliveryChannels?.includes('sms') &&
+      !['PROFESSIONAL', 'SCALE', 'ENTERPRISE'].includes(
+        userProfile?.subscription_tier || '',
+      )
+    ) {
+      return NextResponse.json(
+        {
+          error: 'SMS notifications require Professional tier or higher',
+          upgradeRequired: true,
+        },
+        { status: 403 },
+      );
+    }
+
+    if (
+      preferences.deliveryChannels?.includes('push') &&
+      !['SCALE', 'ENTERPRISE'].includes(userProfile?.subscription_tier || '')
+    ) {
+      return NextResponse.json(
+        {
+          error: 'Push notifications require Scale tier or higher',
+          upgradeRequired: true,
+        },
+        { status: 403 },
+      );
+    }
+
+    // Prepare database update
+    const updateData: any = {
+      user_id: user.id,
+      updated_at: new Date().toISOString(),
+    };
+
+    if (preferences.systemBroadcasts !== undefined) {
+      updateData.system_broadcasts = preferences.systemBroadcasts;
+    }
+    if (preferences.businessBroadcasts !== undefined) {
+      updateData.business_broadcasts = preferences.businessBroadcasts;
+    }
+    if (preferences.collaborationBroadcasts !== undefined) {
+      updateData.collaboration_broadcasts = preferences.collaborationBroadcasts;
+    }
+    if (preferences.weddingBroadcasts !== undefined) {
+      updateData.wedding_broadcasts = preferences.weddingBroadcasts;
+    }
+    if (preferences.criticalOnly !== undefined) {
+      updateData.critical_only = preferences.criticalOnly;
+    }
+    if (preferences.deliveryChannels !== undefined) {
+      updateData.delivery_channels = JSON.stringify(
+        preferences.deliveryChannels,
+      );
+    }
+    if (preferences.quietHours !== undefined) {
+      if (preferences.quietHours.enabled) {
+        updateData.quiet_hours_start = preferences.quietHours.start;
+        updateData.quiet_hours_end = preferences.quietHours.end;
+        updateData.timezone = preferences.quietHours.timezone;
+      } else {
+        updateData.quiet_hours_start = null;
+        updateData.quiet_hours_end = null;
+        updateData.timezone = preferences.quietHours.timezone || 'UTC';
+      }
+    }
+    if (preferences.rolePreferences !== undefined) {
+      updateData.role_preferences = preferences.rolePreferences;
+    }
+    if (preferences.weddingFilters !== undefined) {
+      updateData.wedding_filters = preferences.weddingFilters;
+    }
+
+    // Upsert preferences
+    const { data: updatedPrefs, error: updateError } = await supabase
+      .from('broadcast_preferences')
+      .upsert(updateData)
+      .select()
+      .single();
+
+    if (updateError) {
+      console.error('Preferences update error:', updateError);
+      return NextResponse.json(
+        { error: 'Failed to update preferences' },
+        { status: 500 },
+      );
+    }
+
+    // Log significant preference changes for analytics
+    const significantChanges = [];
+    if (preferences.criticalOnly) {
+      significantChanges.push('enabled_critical_only');
+    }
+    if (preferences.quietHours?.enabled) {
+      significantChanges.push('enabled_quiet_hours');
+    }
+    if (preferences.deliveryChannels?.includes('sms')) {
+      significantChanges.push('enabled_sms');
+    }
+    if (preferences.deliveryChannels?.includes('push')) {
+      significantChanges.push('enabled_push');
+    }
+
+    if (significantChanges.length > 0) {
+      console.info('User updated notification preferences:', {
+        userId: user.id,
+        userRole: userProfile?.role,
+        changes: significantChanges,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    // Generate updated recommendations
+    const recommendations = generateRoleBasedRecommendations(
+      userProfile?.role || 'supplier',
+      userProfile?.subscription_tier || 'STARTER',
+    );
+
+    return NextResponse.json({
+      success: true,
+      preferences: {
+        systemBroadcasts: updatedPrefs.system_broadcasts,
+        businessBroadcasts: updatedPrefs.business_broadcasts,
+        collaborationBroadcasts: updatedPrefs.collaboration_broadcasts,
+        weddingBroadcasts: updatedPrefs.wedding_broadcasts,
+        criticalOnly: updatedPrefs.critical_only,
+        deliveryChannels: JSON.parse(updatedPrefs.delivery_channels as string),
+        quietHours: updatedPrefs.quiet_hours_start
+          ? {
+              enabled: true,
+              start: updatedPrefs.quiet_hours_start,
+              end: updatedPrefs.quiet_hours_end,
+              timezone: updatedPrefs.timezone || 'UTC',
+            }
+          : {
+              enabled: false,
+              start: '22:00',
+              end: '08:00',
+              timezone: updatedPrefs.timezone || 'UTC',
+            },
+        rolePreferences: updatedPrefs.role_preferences || {},
+        weddingFilters: updatedPrefs.wedding_filters || {},
+      },
+      recommendations,
+      savedAt: updatedPrefs.updated_at,
+    });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Validation error',
+          details: error.errors.map((e) => ({
+            field: e.path.join('.'),
+            message: e.message,
+          })),
+        },
+        { status: 400 },
+      );
+    }
+
+    console.error('Update preferences error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * Generate role-based preference recommendations
+ */
+function generateRoleBasedRecommendations(role: string, tier: string) {
+  const baseRecommendations = {
+    systemBroadcasts: true,
+    businessBroadcasts: true,
+    collaborationBroadcasts: true,
+    weddingBroadcasts: true,
+    criticalOnly: false,
+    deliveryChannels: ['realtime', 'in_app'],
+  };
+
+  const roleSpecific = {
+    photographer: {
+      ...baseRecommendations,
+      weddingBroadcasts: true,
+      deliveryChannels: ['realtime', 'in_app', 'email'],
+      quietHours: {
+        enabled: true,
+        start: '22:00',
+        end: '07:00',
+        timezone: 'local',
+      },
+    },
+    coordinator: {
+      ...baseRecommendations,
+      deliveryChannels: ['realtime', 'in_app', 'email', 'push'],
+      criticalOnly: false,
+    },
+    venue: {
+      ...baseRecommendations,
+      collaborationBroadcasts: true,
+      deliveryChannels: ['realtime', 'in_app'],
+    },
+    admin: {
+      systemBroadcasts: true,
+      businessBroadcasts: true,
+      collaborationBroadcasts: true,
+      weddingBroadcasts: true,
+      criticalOnly: false,
+      deliveryChannels: ['realtime', 'in_app', 'email', 'push'],
+    },
+  };
+
+  const tierEnhancements = {
+    PROFESSIONAL: {
+      deliveryChannels: ['realtime', 'in_app', 'email'],
+    },
+    SCALE: {
+      deliveryChannels: ['realtime', 'in_app', 'email', 'push'],
+    },
+    ENTERPRISE: {
+      deliveryChannels: ['realtime', 'in_app', 'email', 'push', 'sms'],
+    },
+  };
+
+  const recommendations = {
+    ...(roleSpecific[role as keyof typeof roleSpecific] || baseRecommendations),
+  };
+
+  // Apply tier enhancements
+  if (tierEnhancements[tier as keyof typeof tierEnhancements]) {
+    Object.assign(
+      recommendations,
+      tierEnhancements[tier as keyof typeof tierEnhancements],
+    );
+  }
+
+  return {
+    recommended: recommendations,
+    reasoning: {
+      role: `Optimized for ${role} workflow`,
+      tier: `Enhanced features available for ${tier} tier`,
+      weddingContext: 'Wedding industry best practices applied',
+    },
+  };
+}

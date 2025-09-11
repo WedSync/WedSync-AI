@@ -1,0 +1,910 @@
+/**
+ * Cross-Domain Authentication Coordinator
+ *
+ * Manages authentication across multiple domains and subdomains for enterprise
+ * wedding venues and hospitality groups with complex web architectures.
+ * Handles SSO token sharing, session synchronization, and secure cross-origin
+ * authentication for distributed wedding management systems.
+ *
+ * Common enterprise scenarios:
+ * - Multi-brand hotel chains with separate wedding domains (marriott-weddings.com, etc.)
+ * - Large venue groups with region-specific subdomains (ny.venues.com, la.venues.com)
+ * - White-label wedding platforms serving multiple venue clients
+ * - Corporate event management with separate client portals
+ *
+ * @author WedSync Enterprise Team C
+ * @version 1.0.0
+ */
+
+import { createClient } from '@supabase/supabase-js';
+import { Database } from '../../types/database';
+import {
+  IdentityProviderConnector,
+  AuthenticationResult,
+} from './IdentityProviderConnector';
+import * as jwt from 'jsonwebtoken';
+import { createHash, randomBytes, createHmac } from 'crypto';
+
+/**
+ * Cross-domain configuration
+ */
+export interface CrossDomainConfig {
+  primaryDomain: string; // Main authentication domain
+  trustedDomains: string[]; // Allowed domains for SSO
+  sessionCookieName: string; // Name of session cookie
+  tokenSigningKey: string; // JWT signing key
+  tokenExpirationMinutes: number; // Token expiration time
+  cookieDomain?: string; // Cookie domain (e.g., '.company.com')
+  secureCookies: boolean; // Use secure cookies (HTTPS only)
+  sameSitePolicy: 'strict' | 'lax' | 'none';
+  corsOrigins: string[]; // CORS allowed origins
+  enableMobileAppSupport: boolean; // Support mobile app authentication
+  mobileAppSchemes?: string[]; // Mobile app URL schemes
+}
+
+/**
+ * Cross-domain session token
+ */
+interface CrossDomainToken {
+  userId: string;
+  email: string;
+  providerId: string;
+  organizationId: string;
+  roles: string[];
+  sessionId: string;
+  issuedAt: number;
+  expiresAt: number;
+  domain: string;
+  ipAddress?: string;
+  userAgent?: string;
+}
+
+/**
+ * Authentication bridge request
+ */
+interface AuthBridgeRequest {
+  requestId: string;
+  sourceDomain: string;
+  targetDomain: string;
+  token: string;
+  timestamp: number;
+  signature: string;
+  redirectUrl?: string;
+}
+
+/**
+ * Domain authentication status
+ */
+interface DomainAuthStatus {
+  domain: string;
+  isAuthenticated: boolean;
+  userId?: string;
+  sessionId?: string;
+  lastActivity: Date;
+  roles?: string[];
+  organizationId?: string;
+}
+
+/**
+ * Session synchronization event
+ */
+interface SessionSyncEvent {
+  type: 'login' | 'logout' | 'refresh' | 'role_change';
+  userId: string;
+  sessionId: string;
+  sourceDomain: string;
+  timestamp: Date;
+  data?: Record<string, unknown>;
+}
+
+/**
+ * Cross-Domain Authentication Coordinator
+ *
+ * Orchestrates secure authentication across multiple domains while maintaining
+ * session consistency and enterprise security policies.
+ */
+export class CrossDomainAuthenticator {
+  private supabase: ReturnType<typeof createClient<Database>>;
+  private identityConnector: IdentityProviderConnector;
+  private config: CrossDomainConfig;
+  private activeSessions: Map<string, CrossDomainToken> = new Map();
+  private domainBridges: Map<string, string> = new Map(); // domain -> bridge endpoint
+
+  constructor(
+    supabaseUrl: string,
+    supabaseServiceKey: string,
+    identityConnector: IdentityProviderConnector,
+    config: CrossDomainConfig,
+  ) {
+    this.supabase = createClient<Database>(supabaseUrl, supabaseServiceKey);
+    this.identityConnector = identityConnector;
+    this.config = config;
+
+    this.validateConfiguration();
+    this.initializeDomainBridges();
+  }
+
+  /**
+   * Authenticate user and create cross-domain session
+   */
+  async authenticateAcrossDomains(
+    authResult: AuthenticationResult,
+    sourceDomain: string,
+    targetDomains?: string[],
+    clientInfo?: {
+      ipAddress: string;
+      userAgent: string;
+      isMobileApp?: boolean;
+    },
+  ): Promise<{
+    success: boolean;
+    token: string;
+    sessionId: string;
+    domainTokens: Record<string, string>;
+    redirectUrls?: Record<string, string>;
+    error?: string;
+  }> {
+    try {
+      if (!authResult.success || !authResult.userId) {
+        throw new Error('Authentication result is invalid');
+      }
+
+      console.log(
+        `Creating cross-domain session for user: ${authResult.email}`,
+      );
+
+      // Validate source domain
+      if (!this.isDomainTrusted(sourceDomain)) {
+        throw new Error(`Source domain not trusted: ${sourceDomain}`);
+      }
+
+      // Get user profile and organization
+      const userProfile = await this.getUserProfile(authResult.userId);
+      if (!userProfile) {
+        throw new Error('User profile not found');
+      }
+
+      // Create session ID
+      const sessionId = this.generateSessionId();
+
+      // Create primary cross-domain token
+      const primaryToken = this.createCrossDomainToken({
+        userId: authResult.userId,
+        email: authResult.email,
+        providerId: authResult.provider,
+        organizationId: userProfile.organization_id,
+        roles: userProfile.roles || [],
+        sessionId,
+        domain: sourceDomain,
+        ipAddress: clientInfo?.ipAddress,
+        userAgent: clientInfo?.userAgent,
+      });
+
+      // Store session in database
+      await this.storeSession({
+        id: sessionId,
+        user_id: authResult.userId,
+        provider_id: authResult.provider,
+        organization_id: userProfile.organization_id,
+        source_domain: sourceDomain,
+        ip_address: clientInfo?.ipAddress,
+        user_agent: clientInfo?.userAgent,
+        is_mobile_app: clientInfo?.isMobileApp || false,
+        created_at: new Date().toISOString(),
+        last_activity: new Date().toISOString(),
+        expires_at: new Date(
+          Date.now() + this.config.tokenExpirationMinutes * 60 * 1000,
+        ).toISOString(),
+        is_active: true,
+      });
+
+      // Cache active session
+      this.activeSessions.set(sessionId, primaryToken);
+
+      // Determine target domains
+      const domains =
+        targetDomains ||
+        this.config.trustedDomains.filter((d) => d !== sourceDomain);
+
+      // Create domain-specific tokens
+      const domainTokens: Record<string, string> = {
+        [sourceDomain]: this.signToken(primaryToken),
+      };
+
+      const redirectUrls: Record<string, string> = {};
+
+      // Generate tokens for other domains
+      for (const domain of domains) {
+        if (this.isDomainTrusted(domain)) {
+          const domainToken = this.createCrossDomainToken({
+            ...primaryToken,
+            domain,
+          });
+
+          domainTokens[domain] = this.signToken(domainToken);
+
+          // Create authentication bridge URL for domain
+          const bridgeUrl = this.createAuthenticationBridge(
+            sessionId,
+            sourceDomain,
+            domain,
+            domainTokens[domain],
+          );
+
+          redirectUrls[domain] = bridgeUrl;
+        }
+      }
+
+      // Send session sync event
+      await this.broadcastSessionEvent({
+        type: 'login',
+        userId: authResult.userId,
+        sessionId,
+        sourceDomain,
+        timestamp: new Date(),
+        data: {
+          email: authResult.email,
+          provider: authResult.provider,
+          organizationId: userProfile.organization_id,
+        },
+      });
+
+      console.log(
+        `Cross-domain session created: ${sessionId} for ${domains.length + 1} domains`,
+      );
+
+      return {
+        success: true,
+        token: domainTokens[sourceDomain],
+        sessionId,
+        domainTokens,
+        redirectUrls,
+      };
+    } catch (error) {
+      console.error('Cross-domain authentication failed:', error);
+      return {
+        success: false,
+        token: '',
+        sessionId: '',
+        domainTokens: {},
+        error: error instanceof Error ? error.message : 'Authentication failed',
+      };
+    }
+  }
+
+  /**
+   * Validate cross-domain token
+   */
+  async validateCrossDomainToken(
+    token: string,
+    domain: string,
+    clientInfo?: {
+      ipAddress: string;
+      userAgent: string;
+    },
+  ): Promise<{
+    isValid: boolean;
+    token?: CrossDomainToken;
+    error?: string;
+  }> {
+    try {
+      // Verify token signature
+      const decoded = this.verifyToken(token);
+
+      // Validate domain
+      if (decoded.domain !== domain) {
+        throw new Error('Token domain mismatch');
+      }
+
+      // Check if domain is trusted
+      if (!this.isDomainTrusted(domain)) {
+        throw new Error('Domain not trusted');
+      }
+
+      // Check token expiration
+      if (decoded.expiresAt < Date.now()) {
+        throw new Error('Token expired');
+      }
+
+      // Validate session exists and is active
+      const session = await this.getSession(decoded.sessionId);
+      if (!session || !session.is_active) {
+        throw new Error('Session not found or inactive');
+      }
+
+      // Optional: Validate IP address consistency
+      if (
+        clientInfo?.ipAddress &&
+        decoded.ipAddress &&
+        decoded.ipAddress !== clientInfo.ipAddress
+      ) {
+        console.warn(
+          `IP address mismatch for session ${decoded.sessionId}: ${decoded.ipAddress} vs ${clientInfo.ipAddress}`,
+        );
+        // Could be stricter based on security policy
+      }
+
+      // Update session last activity
+      await this.updateSessionActivity(decoded.sessionId, domain);
+
+      return {
+        isValid: true,
+        token: decoded,
+      };
+    } catch (error) {
+      console.error('Token validation failed:', error);
+      return {
+        isValid: false,
+        error:
+          error instanceof Error ? error.message : 'Token validation failed',
+      };
+    }
+  }
+
+  /**
+   * Handle authentication bridge request
+   */
+  async handleAuthenticationBridge(bridgeRequest: AuthBridgeRequest): Promise<{
+    success: boolean;
+    token?: string;
+    redirectUrl?: string;
+    error?: string;
+  }> {
+    try {
+      // Verify request signature
+      if (!this.verifyBridgeSignature(bridgeRequest)) {
+        throw new Error('Invalid bridge request signature');
+      }
+
+      // Check request age (prevent replay attacks)
+      if (Date.now() - bridgeRequest.timestamp > 5 * 60 * 1000) {
+        // 5 minutes
+        throw new Error('Bridge request expired');
+      }
+
+      // Validate domains
+      if (
+        !this.isDomainTrusted(bridgeRequest.sourceDomain) ||
+        !this.isDomainTrusted(bridgeRequest.targetDomain)
+      ) {
+        throw new Error('Untrusted domain in bridge request');
+      }
+
+      // Validate source token
+      const sourceValidation = await this.validateCrossDomainToken(
+        bridgeRequest.token,
+        bridgeRequest.sourceDomain,
+      );
+
+      if (!sourceValidation.isValid || !sourceValidation.token) {
+        throw new Error('Invalid source token');
+      }
+
+      // Create token for target domain
+      const targetToken = this.createCrossDomainToken({
+        ...sourceValidation.token,
+        domain: bridgeRequest.targetDomain,
+      });
+
+      const signedTargetToken = this.signToken(targetToken);
+
+      console.log(
+        `Authentication bridge successful: ${bridgeRequest.sourceDomain} -> ${bridgeRequest.targetDomain}`,
+      );
+
+      return {
+        success: true,
+        token: signedTargetToken,
+        redirectUrl: bridgeRequest.redirectUrl,
+      };
+    } catch (error) {
+      console.error('Authentication bridge failed:', error);
+      return {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : 'Bridge authentication failed',
+      };
+    }
+  }
+
+  /**
+   * Logout user from all domains
+   */
+  async logoutFromAllDomains(
+    sessionId: string,
+    sourceDomain: string,
+  ): Promise<{
+    success: boolean;
+    domainsNotified: string[];
+    errors: string[];
+  }> {
+    try {
+      console.log(`Logging out session ${sessionId} from all domains`);
+
+      // Get session info
+      const session = await this.getSession(sessionId);
+      if (!session) {
+        throw new Error('Session not found');
+      }
+
+      // Deactivate session in database
+      await this.supabase
+        .from('cross_domain_sessions')
+        .update({
+          is_active: false,
+          logged_out_at: new Date().toISOString(),
+          logout_source: sourceDomain,
+        })
+        .eq('id', sessionId);
+
+      // Remove from active sessions cache
+      this.activeSessions.delete(sessionId);
+
+      // Broadcast logout event to all domains
+      const domainsNotified: string[] = [];
+      const errors: string[] = [];
+
+      for (const domain of this.config.trustedDomains) {
+        try {
+          await this.notifyDomainLogout(domain, sessionId, sourceDomain);
+          domainsNotified.push(domain);
+        } catch (error) {
+          errors.push(`Failed to notify ${domain}: ${error}`);
+        }
+      }
+
+      // Send session sync event
+      await this.broadcastSessionEvent({
+        type: 'logout',
+        userId: session.user_id,
+        sessionId,
+        sourceDomain,
+        timestamp: new Date(),
+      });
+
+      console.log(
+        `Session ${sessionId} logged out from ${domainsNotified.length} domains`,
+      );
+
+      return {
+        success: true,
+        domainsNotified,
+        errors,
+      };
+    } catch (error) {
+      console.error('Cross-domain logout failed:', error);
+      return {
+        success: false,
+        domainsNotified: [],
+        errors: [error instanceof Error ? error.message : 'Logout failed'],
+      };
+    }
+  }
+
+  /**
+   * Get authentication status across domains
+   */
+  async getDomainAuthenticationStatus(
+    userId: string,
+  ): Promise<DomainAuthStatus[]> {
+    const statuses: DomainAuthStatus[] = [];
+
+    // Get active sessions for user
+    const { data: sessions } = await this.supabase
+      .from('cross_domain_sessions')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('is_active', true)
+      .gte('expires_at', new Date().toISOString());
+
+    const activeDomains = new Set<string>();
+
+    if (sessions) {
+      for (const session of sessions) {
+        // Check each trusted domain for this session
+        for (const domain of this.config.trustedDomains) {
+          const token = this.activeSessions.get(session.id);
+          if (token && token.domain === domain) {
+            activeDomains.add(domain);
+
+            statuses.push({
+              domain,
+              isAuthenticated: true,
+              userId: session.user_id,
+              sessionId: session.id,
+              lastActivity: new Date(session.last_activity),
+              organizationId: session.organization_id,
+            });
+          }
+        }
+      }
+    }
+
+    // Add unauthenticated domains
+    for (const domain of this.config.trustedDomains) {
+      if (!activeDomains.has(domain)) {
+        statuses.push({
+          domain,
+          isAuthenticated: false,
+          lastActivity: new Date(0),
+        });
+      }
+    }
+
+    return statuses;
+  }
+
+  /**
+   * Refresh tokens across all domains
+   */
+  async refreshTokensAcrossDomains(sessionId: string): Promise<{
+    success: boolean;
+    newTokens: Record<string, string>;
+    error?: string;
+  }> {
+    try {
+      const session = await this.getSession(sessionId);
+      if (!session || !session.is_active) {
+        throw new Error('Session not found or inactive');
+      }
+
+      const cachedToken = this.activeSessions.get(sessionId);
+      if (!cachedToken) {
+        throw new Error('Session not in cache');
+      }
+
+      // Extend session expiration
+      const newExpiresAt = new Date(
+        Date.now() + this.config.tokenExpirationMinutes * 60 * 1000,
+      );
+
+      await this.supabase
+        .from('cross_domain_sessions')
+        .update({
+          expires_at: newExpiresAt.toISOString(),
+          last_activity: new Date().toISOString(),
+        })
+        .eq('id', sessionId);
+
+      // Generate new tokens for all domains
+      const newTokens: Record<string, string> = {};
+
+      for (const domain of this.config.trustedDomains) {
+        const refreshedToken = this.createCrossDomainToken({
+          ...cachedToken,
+          domain,
+          expiresAt: newExpiresAt.getTime(),
+        });
+
+        newTokens[domain] = this.signToken(refreshedToken);
+      }
+
+      // Update cached session
+      this.activeSessions.set(sessionId, {
+        ...cachedToken,
+        expiresAt: newExpiresAt.getTime(),
+      });
+
+      // Broadcast refresh event
+      await this.broadcastSessionEvent({
+        type: 'refresh',
+        userId: session.user_id,
+        sessionId,
+        sourceDomain: this.config.primaryDomain,
+        timestamp: new Date(),
+      });
+
+      console.log(
+        `Tokens refreshed for session ${sessionId} across ${Object.keys(newTokens).length} domains`,
+      );
+
+      return {
+        success: true,
+        newTokens,
+      };
+    } catch (error) {
+      console.error('Token refresh failed:', error);
+      return {
+        success: false,
+        newTokens: {},
+        error: error instanceof Error ? error.message : 'Token refresh failed',
+      };
+    }
+  }
+
+  /**
+   * Clean up expired sessions
+   */
+  async cleanupExpiredSessions(): Promise<{
+    sessionsCleanedUp: number;
+    errors: string[];
+  }> {
+    const errors: string[] = [];
+    let sessionsCleanedUp = 0;
+
+    try {
+      // Find expired sessions
+      const { data: expiredSessions } = await this.supabase
+        .from('cross_domain_sessions')
+        .select('*')
+        .eq('is_active', true)
+        .lt('expires_at', new Date().toISOString());
+
+      if (!expiredSessions || expiredSessions.length === 0) {
+        return { sessionsCleanedUp: 0, errors: [] };
+      }
+
+      console.log(`Cleaning up ${expiredSessions.length} expired sessions`);
+
+      // Deactivate expired sessions
+      const { error } = await this.supabase
+        .from('cross_domain_sessions')
+        .update({
+          is_active: false,
+          logged_out_at: new Date().toISOString(),
+          logout_reason: 'expired',
+        })
+        .in(
+          'id',
+          expiredSessions.map((s) => s.id),
+        );
+
+      if (error) {
+        errors.push(`Database cleanup failed: ${error.message}`);
+      } else {
+        sessionsCleanedUp = expiredSessions.length;
+
+        // Remove from cache
+        for (const session of expiredSessions) {
+          this.activeSessions.delete(session.id);
+        }
+      }
+    } catch (error) {
+      errors.push(`Session cleanup failed: ${error}`);
+    }
+
+    return { sessionsCleanedUp, errors };
+  }
+
+  /**
+   * Validate configuration
+   */
+  private validateConfiguration(): void {
+    if (!this.config.primaryDomain) {
+      throw new Error('Primary domain is required');
+    }
+
+    if (
+      !this.config.trustedDomains ||
+      this.config.trustedDomains.length === 0
+    ) {
+      throw new Error('At least one trusted domain must be configured');
+    }
+
+    if (
+      !this.config.tokenSigningKey ||
+      this.config.tokenSigningKey.length < 32
+    ) {
+      throw new Error('Token signing key must be at least 32 characters');
+    }
+
+    if (
+      this.config.tokenExpirationMinutes <= 0 ||
+      this.config.tokenExpirationMinutes > 24 * 60
+    ) {
+      throw new Error('Token expiration must be between 1 minute and 24 hours');
+    }
+  }
+
+  /**
+   * Initialize domain bridge endpoints
+   */
+  private initializeDomainBridges(): void {
+    for (const domain of this.config.trustedDomains) {
+      this.domainBridges.set(domain, `https://${domain}/api/auth/bridge`);
+    }
+  }
+
+  /**
+   * Check if domain is trusted
+   */
+  private isDomainTrusted(domain: string): boolean {
+    return this.config.trustedDomains.includes(domain);
+  }
+
+  /**
+   * Generate secure session ID
+   */
+  private generateSessionId(): string {
+    return `xd_${Date.now()}_${randomBytes(16).toString('hex')}`;
+  }
+
+  /**
+   * Create cross-domain token
+   */
+  private createCrossDomainToken(params: {
+    userId: string;
+    email: string;
+    providerId: string;
+    organizationId: string;
+    roles: string[];
+    sessionId: string;
+    domain: string;
+    ipAddress?: string;
+    userAgent?: string;
+    expiresAt?: number;
+  }): CrossDomainToken {
+    const now = Date.now();
+
+    return {
+      userId: params.userId,
+      email: params.email,
+      providerId: params.providerId,
+      organizationId: params.organizationId,
+      roles: params.roles,
+      sessionId: params.sessionId,
+      issuedAt: now,
+      expiresAt:
+        params.expiresAt ??
+        now + this.config.tokenExpirationMinutes * 60 * 1000,
+      domain: params.domain,
+      ipAddress: params.ipAddress,
+      userAgent: params.userAgent,
+    };
+  }
+
+  /**
+   * Sign JWT token
+   */
+  private signToken(token: CrossDomainToken): string {
+    return jwt.sign(token, this.config.tokenSigningKey, {
+      algorithm: 'HS256',
+      expiresIn: `${this.config.tokenExpirationMinutes}m`,
+    });
+  }
+
+  /**
+   * Verify JWT token
+   */
+  private verifyToken(signedToken: string): CrossDomainToken {
+    return jwt.verify(
+      signedToken,
+      this.config.tokenSigningKey,
+    ) as CrossDomainToken;
+  }
+
+  /**
+   * Create authentication bridge URL
+   */
+  private createAuthenticationBridge(
+    sessionId: string,
+    sourceDomain: string,
+    targetDomain: string,
+    token: string,
+  ): string {
+    const bridgeRequest: AuthBridgeRequest = {
+      requestId: `bridge_${Date.now()}_${randomBytes(8).toString('hex')}`,
+      sourceDomain,
+      targetDomain,
+      token,
+      timestamp: Date.now(),
+      signature: '',
+    };
+
+    // Sign the bridge request
+    bridgeRequest.signature = this.createBridgeSignature(bridgeRequest);
+
+    const bridgeEndpoint = this.domainBridges.get(targetDomain);
+    if (!bridgeEndpoint) {
+      throw new Error(
+        `No bridge endpoint configured for domain: ${targetDomain}`,
+      );
+    }
+
+    return `${bridgeEndpoint}?request=${encodeURIComponent(JSON.stringify(bridgeRequest))}`;
+  }
+
+  /**
+   * Create bridge request signature
+   */
+  private createBridgeSignature(
+    request: Omit<AuthBridgeRequest, 'signature'>,
+  ): string {
+    const data = `${request.requestId}:${request.sourceDomain}:${request.targetDomain}:${request.token}:${request.timestamp}`;
+    return createHmac('sha256', this.config.tokenSigningKey)
+      .update(data)
+      .digest('hex');
+  }
+
+  /**
+   * Verify bridge request signature
+   */
+  private verifyBridgeSignature(request: AuthBridgeRequest): boolean {
+    const expectedSignature = this.createBridgeSignature({
+      requestId: request.requestId,
+      sourceDomain: request.sourceDomain,
+      targetDomain: request.targetDomain,
+      token: request.token,
+      timestamp: request.timestamp,
+    });
+
+    return request.signature === expectedSignature;
+  }
+
+  // Database helper methods
+  private async getUserProfile(userId: string): Promise<{
+    organization_id: string;
+    roles: string[];
+  } | null> {
+    const { data } = await this.supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('id', userId)
+      .single();
+
+    if (!data) return null;
+
+    // Get user roles
+    const { data: roleData } = await this.supabase
+      .from('user_roles')
+      .select('role_name')
+      .eq('user_id', userId);
+
+    return {
+      organization_id: data.organization_id,
+      roles: roleData?.map((r) => r.role_name) || [],
+    };
+  }
+
+  private async storeSession(session: any): Promise<void> {
+    await this.supabase.from('cross_domain_sessions').insert(session);
+  }
+
+  private async getSession(sessionId: string): Promise<any | null> {
+    const { data } = await this.supabase
+      .from('cross_domain_sessions')
+      .select('*')
+      .eq('id', sessionId)
+      .single();
+
+    return data;
+  }
+
+  private async updateSessionActivity(
+    sessionId: string,
+    domain: string,
+  ): Promise<void> {
+    await this.supabase
+      .from('cross_domain_sessions')
+      .update({
+        last_activity: new Date().toISOString(),
+        last_domain: domain,
+      })
+      .eq('id', sessionId);
+  }
+
+  private async broadcastSessionEvent(event: SessionSyncEvent): Promise<void> {
+    await this.supabase.from('session_sync_events').insert({
+      type: event.type,
+      user_id: event.userId,
+      session_id: event.sessionId,
+      source_domain: event.sourceDomain,
+      timestamp: event.timestamp.toISOString(),
+      data: event.data || {},
+    });
+  }
+
+  private async notifyDomainLogout(
+    domain: string,
+    sessionId: string,
+    sourceDomain: string,
+  ): Promise<void> {
+    // Implementation would send logout notification to domain
+    // Could be webhook, message queue, or direct API call
+    console.log(
+      `Notifying ${domain} of logout for session ${sessionId} from ${sourceDomain}`,
+    );
+  }
+}

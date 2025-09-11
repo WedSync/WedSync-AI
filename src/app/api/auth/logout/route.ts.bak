@@ -1,0 +1,16 @@
+/**
+ * Enterprise OAuth 2.0 Logout API Endpoint
+ * 
+ * Handles secure logout with comprehensive token cleanup
+ */
+
+import { NextRequest } from 'next/server';
+import { EnterpriseOAuthMiddleware } from '@/lib/auth/enterprise-oauth-system';
+import { withMediumSecurity } from '@/lib/comprehensive-security-middleware';
+
+async function handleLogout(request: NextRequest) {
+  return EnterpriseOAuthMiddleware.handleLogout(request);
+}
+
+// Apply enterprise security middleware
+export const POST = withMediumSecurity(handleLogout);

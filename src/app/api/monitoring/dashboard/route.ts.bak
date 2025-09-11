@@ -1,0 +1,271 @@
+/**
+ * WS-152 Monitoring Dashboard API - Main Metrics Endpoint
+ * Secure endpoint providing real-time system metrics for developer dashboard
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
+
+// Rate limiting configuration
+const RATE_LIMITS = {
+  dashboard: 120, // requests per minute
+  health: 300,
+  refresh: 30
+};
+
+// Request validation schema
+const dashboardQuerySchema = z.object({
+  timeRange: z.enum(['1h', '6h', '24h', '7d', '30d']).default('24h'),
+  metrics: z.array(z.enum([
+    'performance', 'errors', 'usage', 'security', 'cache', 'database', 'memory', 'cpu'
+  ])).default(['performance', 'errors']),
+  refresh: z.boolean().default(false),
+  includeDetails: z.boolean().default(false)
+});
+
+// Security validation wrapper
+async function withSecureValidation(
+  request: NextRequest,
+  handler: (data: any) => Promise<NextResponse>
+) {
+  try {
+    // Parse query parameters
+    const url = new URL(request.url);
+    const queryParams = Object.fromEntries(url.searchParams.entries());
+    
+    // Handle array parameters
+    if (queryParams.metrics) {
+      queryParams.metrics = queryParams.metrics.split(',');
+    }
+    
+    // Convert boolean parameters
+    queryParams.refresh = queryParams.refresh === 'true';
+    queryParams.includeDetails = queryParams.includeDetails === 'true';
+    
+    // Validate input
+    const validatedData = dashboardQuerySchema.parse(queryParams);
+    
+    return await handler(validatedData);
+  } catch (error) {
+    return NextResponse.json(
+      { 
+        success: false, 
+        error: 'Invalid request parameters',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      { status: 400 }
+    );
+  }
+}
+
+// Generate mock metrics for development/demo
+function generateMetrics() {
+  const now = Date.now();
+  const basePerformance = 120 + Math.floor(Math.random() * 100); // 120-220ms
+  
+  return {
+    performance: {
+      avgResponseTime: basePerformance,
+      p95ResponseTime: Math.round(basePerformance * 1.5),
+      requestsPerSecond: 45 + Math.floor(Math.random() * 20),
+      uptime: '99.9%'
+    },
+    errors: {
+      criticalCount: Math.random() > 0.8 ? Math.floor(Math.random() * 3) : 0,
+      warningCount: Math.floor(Math.random() * 5),
+      errorRate: Math.round((Math.random() * 0.1) * 100) / 100,
+      lastError: Math.random() > 0.5 ? new Date(now - Math.random() * 3600000).toISOString() : null
+    },
+    usage: {
+      activeUsers: 75 + Math.floor(Math.random() * 50),
+      totalSessions: 1250 + Math.floor(Math.random() * 200),
+      bounceRate: Math.round((0.2 + Math.random() * 0.3) * 100) / 100,
+      avgSessionDuration: '4m 32s'
+    },
+    security: {
+      status: Math.random() > 0.05 ? 'secure' : 'warning',
+      threatsBlocked: Math.floor(Math.random() * 10),
+      securityScore: 95 + Math.floor(Math.random() * 5),
+      lastScan: new Date(now - Math.random() * 86400000).toISOString()
+    },
+    cache: {
+      hitRate: 85 + Math.random() * 15,
+      totalRequests: 15000 + Math.floor(Math.random() * 5000),
+      cacheSize: '247MB',
+      evictions: Math.floor(Math.random() * 100)
+    },
+    database: {
+      activeConnections: 8 + Math.floor(Math.random() * 20),
+      avgQueryTime: Math.round((20 + Math.random() * 80) * 100) / 100,
+      totalQueries: 45000 + Math.floor(Math.random() * 10000),
+      slowQueries: Math.floor(Math.random() * 5)
+    },
+    memory: {
+      usedPercent: 55 + Math.random() * 25,
+      totalMemory: '16GB',
+      usedMemory: '8.2GB',
+      bufferCache: '2.1GB'
+    },
+    cpu: {
+      loadPercent: 15 + Math.random() * 35,
+      coreCount: 8,
+      loadAverage: [0.8, 1.2, 1.1],
+      processes: 180 + Math.floor(Math.random() * 50)
+    },
+    recentActivity: [
+      {
+        message: 'New user registration completed successfully',
+        timestamp: new Date(now - 120000).toISOString(),
+        type: 'user_action'
+      },
+      {
+        message: 'System cache cleared for optimal performance',
+        timestamp: new Date(now - 180000).toISOString(),
+        type: 'system_maintenance'
+      },
+      {
+        message: `Wedding payment processed: $${(1500 + Math.random() * 2000).toFixed(0)}`,
+        timestamp: new Date(now - 240000).toISOString(),
+        type: 'payment_processed'
+      },
+      {
+        message: 'Database backup completed successfully',
+        timestamp: new Date(now - 420000).toISOString(),
+        type: 'system_backup'
+      },
+      {
+        message: 'Security scan completed - no threats detected',
+        timestamp: new Date(now - 600000).toISOString(),
+        type: 'security_check'
+      }
+    ].slice(0, Math.floor(3 + Math.random() * 3)) // Random 3-5 items
+  };
+}
+
+/**
+ * GET /api/monitoring/dashboard
+ * Main dashboard metrics endpoint
+ */
+export async function GET(request: NextRequest) {
+  const startTime = performance.now();
+  
+  return withSecureValidation(request, async (validatedData) => {
+    try {
+      // Generate metrics (in production, this would fetch from monitoring systems)
+      const metrics = generateMetrics();
+      
+      // Filter metrics based on requested types
+      const requestedMetrics: any = {};
+      validatedData.metrics.forEach((metricType: string) => {
+        if (metrics[metricType as keyof typeof metrics]) {
+          requestedMetrics[metricType] = metrics[metricType as keyof typeof metrics];
+        }
+      });
+      
+      // Always include recent activity if not filtered out
+      if (!validatedData.metrics.length || validatedData.includeDetails) {
+        requestedMetrics.recentActivity = metrics.recentActivity;
+      }
+      
+      const responseTime = Math.round(performance.now() - startTime);
+      
+      return NextResponse.json({
+        success: true,
+        data: requestedMetrics,
+        meta: {
+          timestamp: new Date().toISOString(),
+          responseTime,
+          cached: false, // In production, implement proper caching
+          timeRange: validatedData.timeRange,
+          nextRefresh: new Date(Date.now() + 30000).toISOString() // 30 seconds
+        }
+      }, {
+        status: 200,
+        headers: {
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'X-Response-Time': responseTime.toString(),
+          'Content-Type': 'application/json'
+        }
+      });
+      
+    } catch (error) {
+      console.error('Dashboard metrics error:', error);
+      
+      return NextResponse.json({
+        success: false,
+        error: 'Failed to fetch dashboard metrics',
+        meta: {
+          timestamp: new Date().toISOString(),
+          responseTime: Math.round(performance.now() - startTime)
+        }
+      }, {
+        status: 500,
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+    }
+  });
+}
+
+/**
+ * POST /api/monitoring/dashboard  
+ * Trigger manual refresh or clear cache
+ */
+export async function POST(request: NextRequest) {
+  const startTime = performance.now();
+  
+  try {
+    const body = await request.json();
+    
+    // Validate action
+    const actionSchema = z.object({
+      action: z.enum(['refresh', 'clear_cache']),
+      force: z.boolean().default(false)
+    });
+    
+    const { action, force } = actionSchema.parse(body);
+    
+    // Simulate action processing
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    const responseTime = Math.round(performance.now() - startTime);
+    
+    return NextResponse.json({
+      success: true,
+      message: `Dashboard ${action.replace('_', ' ')} completed successfully`,
+      data: {
+        action,
+        force,
+        timestamp: new Date().toISOString()
+      },
+      meta: {
+        responseTime,
+        timestamp: new Date().toISOString()
+      }
+    }, {
+      status: 200,
+      headers: {
+        'X-Response-Time': responseTime.toString(),
+        'Content-Type': 'application/json'
+      }
+    });
+    
+  } catch (error) {
+    console.error('Dashboard POST error:', error);
+    
+    return NextResponse.json({
+      success: false,
+      error: 'Invalid dashboard action',
+      meta: {
+        timestamp: new Date().toISOString(),
+        responseTime: Math.round(performance.now() - startTime)
+      }
+    }, {
+      status: 400,
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+  }
+}

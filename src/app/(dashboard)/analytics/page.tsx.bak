@@ -1,0 +1,58 @@
+import { Suspense } from 'react'
+import { JourneyOverviewCards } from '@/components/analytics/JourneyOverviewCards'
+import { ConversionFunnelChart } from '@/components/analytics/ConversionFunnelChart'
+import { RevenueAttributionChart } from '@/components/analytics/RevenueAttributionChart'
+import { ActiveJourneysTable } from '@/components/analytics/ActiveJourneysTable'
+import { PerformanceMetricsChart } from '@/components/analytics/PerformanceMetricsChart'
+import { TimeframeSelector } from '@/components/analytics/TimeframeSelector'
+import { 
+  OverviewCardsSkeleton, 
+  ChartSkeleton, 
+  TableSkeleton 
+} from '@/components/analytics/Skeletons'
+
+export const metadata = {
+  title: 'Journey Analytics | WedSync',
+  description: 'Comprehensive analytics dashboard for journey performance tracking'
+}
+
+export default function AnalyticsDashboard() {
+  return (
+    <div className="space-y-8 p-8">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Journey Analytics</h1>
+          <p className="text-muted-foreground mt-1">
+            Track performance, optimize conversions, and drive revenue growth
+          </p>
+        </div>
+        <TimeframeSelector />
+      </div>
+      
+      {/* Overview Cards */}
+      <Suspense fallback={<OverviewCardsSkeleton />}>
+        <JourneyOverviewCards />
+      </Suspense>
+      
+      {/* Performance Timeline */}
+      <Suspense fallback={<ChartSkeleton />}>
+        <PerformanceMetricsChart />
+      </Suspense>
+      
+      {/* Conversion and Revenue Charts */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <Suspense fallback={<ChartSkeleton />}>
+          <ConversionFunnelChart />
+        </Suspense>
+        <Suspense fallback={<ChartSkeleton />}>
+          <RevenueAttributionChart />
+        </Suspense>
+      </div>
+      
+      {/* Active Journeys Table */}
+      <Suspense fallback={<TableSkeleton />}>
+        <ActiveJourneysTable />
+      </Suspense>
+    </div>
+  )
+}

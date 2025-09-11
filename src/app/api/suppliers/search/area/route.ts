@@ -1,0 +1,78 @@
+/**
+ * WS-116: Area-based Supplier Search API
+ * Search suppliers within specific geographic areas (city, state, country)
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { geographicSearchService } from '@/lib/services/geographic-search-service';
+
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+
+    // Extract and validate area parameters
+    const areaId = searchParams.get('areaId');
+    const areaType = searchParams.get('areaType') as
+      | 'city'
+      | 'state'
+      | 'country';
+
+    if (!areaId) {
+      return NextResponse.json(
+        { error: 'Area ID is required' },
+        { status: 400 },
+      );
+    }
+
+    if (!areaType || !['city', 'state', 'country'].includes(areaType)) {
+      return NextResponse.json(
+        { error: 'Area type must be one of: city, state, country' },
+        { status: 400 },
+      );
+    }
+
+    // Validate UUID format for areaId
+    const uuidRegex =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(areaId)) {
+      return NextResponse.json(
+        { error: 'Invalid area ID format' },
+        { status: 400 },
+      );
+    }
+
+    // Extract filter parameters
+    const category = searchParams.get('category') || undefined;
+
+    // Get suppliers in the specified area
+    const suppliers = await geographicSearchService.getSuppliersInArea(
+      areaId,
+      areaType,
+      category,
+    );
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        suppliers,
+        count: suppliers.length,
+        area: {
+          id: areaId,
+          type: areaType,
+          category: category || 'all',
+        },
+      },
+    });
+  } catch (error: any) {
+    console.error('Area search API error:', error);
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Failed to search suppliers in area',
+        message: error.message || 'Internal server error',
+      },
+      { status: 500 },
+    );
+  }
+}

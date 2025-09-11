@@ -1,0 +1,505 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { Calendar, DollarSign, Clock, TrendingUp } from 'lucide-react';
+import { PaymentCalendar } from '@/components/payments/PaymentCalendar';
+import { UpcomingPaymentsList } from '@/components/payments/UpcomingPaymentsList';
+import {
+  MarkAsPaidModal,
+  useMarkAsPaid,
+} from '@/components/payments/MarkAsPaidModal';
+import { Card } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { cn } from '@/lib/utils';
+
+interface PaymentScheduleItem {
+  id: string;
+  due_date: string;
+  vendor_id: string;
+  vendor_name: string;
+  amount: number;
+  currency: string;
+  status: 'upcoming' | 'due' | 'overdue' | 'paid';
+  description: string;
+  budget_category_id: string;
+  payment_method?: string;
+  invoice_url?: string;
+  paid_date?: string;
+  metadata?: Record<string, any>;
+}
+
+interface PaymentCalendarData {
+  payments: PaymentScheduleItem[];
+  totalAmount: number;
+  overdueCount: number;
+  dueCount: number;
+  weddingDate?: string;
+}
+
+export default function PaymentCalendarPage() {
+  // State management
+  const [paymentData, setPaymentData] = useState<PaymentCalendarData>({
+    payments: [],
+    totalAmount: 0,
+    overdueCount: 0,
+    dueCount: 0,
+  });
+  const [selectedDate, setSelectedDate] = useState<string>(
+    new Date().toISOString().split('T')[0],
+  );
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>('');
+
+  // Mark as paid modal management
+  const {
+    isModalOpen,
+    selectedPayment,
+    loading: modalLoading,
+    openModal,
+    closeModal,
+    confirmPayment,
+  } = useMarkAsPaid();
+
+  // Load payment schedule data
+  useEffect(() => {
+    const loadPaymentSchedule = async () => {
+      setLoading(true);
+      setError('');
+
+      try {
+        const token =
+          localStorage.getItem('sb-access-token') ||
+          sessionStorage.getItem('sb-access-token');
+
+        if (!token) {
+          throw new Error('Authentication required');
+        }
+
+        const response = await fetch('/api/payments/schedule', {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+
+        if (!response.ok) {
+          throw new Error('Failed to load payment schedule');
+        }
+
+        const data = await response.json();
+        setPaymentData(data);
+      } catch (err) {
+        console.error('Error loading payment schedule:', err);
+        setError(
+          err instanceof Error
+            ? err.message
+            : 'Failed to load payment schedule',
+        );
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadPaymentSchedule();
+  }, []);
+
+  // Handle mark as paid workflow
+  const handleMarkAsPaid = async (paymentId: string) => {
+    const payment = paymentData.payments.find((p) => p.id === paymentId);
+    if (payment) {
+      openModal(payment);
+    }
+  };
+
+  // Handle payment confirmation
+  const handlePaymentConfirmed = async (formData: any) => {
+    try {
+      await confirmPayment(formData);
+
+      // Refresh payment data after successful update
+      const token =
+        localStorage.getItem('sb-access-token') ||
+        sessionStorage.getItem('sb-access-token');
+
+      if (token) {
+        const response = await fetch('/api/payments/schedule', {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+
+        if (response.ok) {
+          const updatedData = await response.json();
+          setPaymentData(updatedData);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to confirm payment:', error);
+      throw error; // Re-throw to let modal handle the error
+    }
+  };
+
+  // Calculate summary statistics
+  const paymentSummary = {
+    totalPending: paymentData.payments
+      .filter((p) => p.status !== 'paid')
+      .reduce((sum, p) => sum + p.amount, 0),
+    overdueAmount: paymentData.payments
+      .filter((p) => p.status === 'overdue')
+      .reduce((sum, p) => sum + p.amount, 0),
+    dueThisWeek: paymentData.payments.filter((p) => {
+      if (p.status === 'paid') return false;
+      const daysUntilDue = Math.ceil(
+        (new Date(p.due_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24),
+      );
+      return daysUntilDue >= 0 && daysUntilDue <= 7;
+    }).length,
+  };
+
+  // Format amount helper
+  const formatAmount = (amount: number): string => {
+    return new Intl.NumberFormat('en-GB', {
+      style: 'currency',
+      currency: 'GBP',
+    }).format(amount / 100);
+  };
+
+  // Error state
+  if (error && !loading) {
+    return (
+      <div className="container mx-auto px-4 py-8 max-w-6xl">
+        <Card className="p-8 text-center border-red-200 bg-red-50">
+          <div className="text-red-600 mb-4">
+            <Calendar className="w-12 h-12 mx-auto mb-3" />
+            <h1 className="text-2xl font-bold mb-2">
+              Payment Calendar Unavailable
+            </h1>
+            <p className="text-lg">{error}</p>
+          </div>
+
+          <div className="space-y-3">
+            <Button
+              onClick={() => window.location.reload()}
+              className="bg-red-600 hover:bg-red-700 text-white"
+            >
+              Try Again
+            </Button>
+
+            <p className="text-sm text-gray-600">
+              Your payment data is safe. Please refresh to reload your wedding
+              payment schedule.
+            </p>
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
+  return (
+    <div className="container mx-auto px-4 py-6 lg:py-8 max-w-7xl">
+      {/* Page Header */}
+      <div className="mb-8">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h1 className="text-2xl lg:text-3xl font-bold text-gray-900">
+              Payment Calendar
+            </h1>
+            <p className="text-gray-600 mt-1">
+              Track your wedding vendor payment deadlines and manage your budget
+              timeline
+            </p>
+          </div>
+
+          {/* Quick Stats */}
+          <div className="hidden lg:flex items-center space-x-4">
+            {paymentSummary.overdueAmount > 0 && (
+              <Badge variant="destructive" className="text-sm">
+                {formatAmount(paymentSummary.overdueAmount)} overdue
+              </Badge>
+            )}
+
+            {paymentSummary.dueThisWeek > 0 && (
+              <Badge
+                variant="secondary"
+                className="bg-yellow-100 text-yellow-800 text-sm"
+              >
+                {paymentSummary.dueThisWeek} due this week
+              </Badge>
+            )}
+          </div>
+        </div>
+
+        {/* Mobile Stats */}
+        <div className="grid grid-cols-2 gap-3 lg:hidden">
+          <Card className="p-3 text-center">
+            <p className="text-lg font-bold text-gray-900">
+              {formatAmount(paymentSummary.totalPending)}
+            </p>
+            <p className="text-xs text-gray-600">Total Pending</p>
+          </Card>
+
+          {paymentSummary.overdueAmount > 0 && (
+            <Card className="p-3 text-center border-red-200 bg-red-50">
+              <p className="text-lg font-bold text-red-900">
+                {formatAmount(paymentSummary.overdueAmount)}
+              </p>
+              <p className="text-xs text-red-700">Overdue</p>
+            </Card>
+          )}
+        </div>
+      </div>
+
+      {/* Main Content Layout */}
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 lg:gap-8">
+        {/* Calendar Section */}
+        <div className="xl:col-span-2">
+          <PaymentCalendar
+            payments={paymentData.payments}
+            selectedDate={selectedDate}
+            onDateSelect={setSelectedDate}
+            loading={loading}
+            className="h-fit"
+          />
+
+          {/* Desktop Quick Actions */}
+          <div className="hidden lg:block mt-6">
+            <Card className="p-4">
+              <div className="flex items-center justify-between">
+                <h3 className="font-medium text-gray-900">Quick Actions</h3>
+                <div className="flex space-x-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      // TODO: Implement export functionality
+                    }}
+                  >
+                    📊 Export Schedule
+                  </Button>
+
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      // TODO: Implement reminder settings
+                    }}
+                  >
+                    🔔 Reminder Settings
+                  </Button>
+
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      // TODO: Navigate to budget overview
+                      window.location.href = '/budget';
+                    }}
+                  >
+                    📈 Budget Overview
+                  </Button>
+                </div>
+              </div>
+            </Card>
+          </div>
+        </div>
+
+        {/* Payments List Section */}
+        <div className="xl:col-span-1">
+          <UpcomingPaymentsList
+            payments={paymentData.payments}
+            onMarkPaid={handleMarkAsPaid}
+            onPaymentUpdate={(payment) => {
+              // Handle payment updates if needed
+              setPaymentData((prev) => ({
+                ...prev,
+                payments: prev.payments.map((p) =>
+                  p.id === payment.id ? payment : p,
+                ),
+              }));
+            }}
+            loading={loading}
+            weddingDate={paymentData.weddingDate}
+            className="h-fit"
+          />
+
+          {/* Mobile Quick Actions */}
+          <div className="lg:hidden mt-6">
+            <Card className="p-4">
+              <h3 className="font-medium text-gray-900 mb-3">Quick Actions</h3>
+              <div className="grid grid-cols-2 gap-2">
+                <Button variant="outline" size="sm" className="text-xs">
+                  📊 Export
+                </Button>
+                <Button variant="outline" size="sm" className="text-xs">
+                  🔔 Reminders
+                </Button>
+                <Button variant="outline" size="sm" className="text-xs">
+                  📈 Budget
+                </Button>
+                <Button variant="outline" size="sm" className="text-xs">
+                  📞 Support
+                </Button>
+              </div>
+            </Card>
+          </div>
+        </div>
+      </div>
+
+      {/* Wedding Planning Context Bar */}
+      {paymentData.weddingDate && (
+        <div className="mt-8">
+          <WeddingContextBar
+            weddingDate={paymentData.weddingDate}
+            paymentSummary={paymentSummary}
+            totalPayments={paymentData.payments.length}
+          />
+        </div>
+      )}
+
+      {/* Mark as Paid Modal */}
+      <MarkAsPaidModal
+        payment={selectedPayment}
+        open={isModalOpen}
+        onClose={closeModal}
+        onConfirm={handlePaymentConfirmed}
+        loading={modalLoading}
+      />
+    </div>
+  );
+}
+
+// Wedding Context Bar Component
+function WeddingContextBar({
+  weddingDate,
+  paymentSummary,
+  totalPayments,
+}: {
+  weddingDate: string;
+  paymentSummary: any;
+  totalPayments: number;
+}) {
+  const daysUntilWedding = Math.ceil(
+    (new Date(weddingDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24),
+  );
+  const isWeddingClose = daysUntilWedding <= 30;
+
+  const formatAmount = (amount: number): string => {
+    return new Intl.NumberFormat('en-GB', {
+      style: 'currency',
+      currency: 'GBP',
+    }).format(amount / 100);
+  };
+
+  return (
+    <Card
+      className={cn(
+        'p-4 lg:p-6 border-l-4',
+        isWeddingClose
+          ? 'border-l-amber-400 bg-amber-50/50'
+          : 'border-l-primary-400 bg-primary-50/50',
+      )}
+    >
+      <div className="flex items-center justify-between">
+        <div className="flex items-center space-x-4">
+          <div
+            className={cn(
+              'p-3 rounded-full',
+              isWeddingClose ? 'bg-amber-100' : 'bg-primary-100',
+            )}
+          >
+            <Calendar
+              className={cn(
+                'w-6 h-6',
+                isWeddingClose ? 'text-amber-600' : 'text-primary-600',
+              )}
+            />
+          </div>
+
+          <div>
+            <h3 className="font-semibold text-gray-900">
+              Your Wedding:{' '}
+              {new Date(weddingDate).toLocaleDateString('en-GB', {
+                weekday: 'long',
+                day: 'numeric',
+                month: 'long',
+                year: 'numeric',
+              })}
+            </h3>
+            <p
+              className={cn(
+                'text-sm font-medium',
+                isWeddingClose ? 'text-amber-700' : 'text-gray-600',
+              )}
+            >
+              {daysUntilWedding > 0
+                ? `${daysUntilWedding} days until your special day`
+                : daysUntilWedding === 0
+                  ? 'Your wedding is today! 🎉'
+                  : `${Math.abs(daysUntilWedding)} days since your wedding`}
+            </p>
+          </div>
+        </div>
+
+        {/* Payment Stats */}
+        <div className="hidden md:flex items-center space-x-6">
+          <div className="text-center">
+            <p className="text-2xl font-bold text-gray-900">
+              {formatAmount(paymentSummary.totalPending)}
+            </p>
+            <p className="text-xs text-gray-600">Pending Payments</p>
+          </div>
+
+          <div className="text-center">
+            <p className="text-2xl font-bold text-gray-900">{totalPayments}</p>
+            <p className="text-xs text-gray-600">Total Vendors</p>
+          </div>
+
+          {paymentSummary.dueThisWeek > 0 && (
+            <div className="text-center">
+              <p className="text-2xl font-bold text-yellow-700">
+                {paymentSummary.dueThisWeek}
+              </p>
+              <p className="text-xs text-yellow-600">Due This Week</p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Mobile Stats */}
+      <div className="md:hidden mt-4 pt-4 border-t border-gray-200">
+        <div className="grid grid-cols-3 gap-4 text-center">
+          <div>
+            <p className="text-lg font-bold text-gray-900">
+              {formatAmount(paymentSummary.totalPending)}
+            </p>
+            <p className="text-xs text-gray-600">Pending</p>
+          </div>
+          <div>
+            <p className="text-lg font-bold text-gray-900">{totalPayments}</p>
+            <p className="text-xs text-gray-600">Vendors</p>
+          </div>
+          {paymentSummary.dueThisWeek > 0 && (
+            <div>
+              <p className="text-lg font-bold text-yellow-700">
+                {paymentSummary.dueThisWeek}
+              </p>
+              <p className="text-xs text-yellow-600">Due Soon</p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Wedding Planning Encouragement */}
+      {isWeddingClose && (
+        <div className="mt-4 p-3 bg-white border border-amber-200 rounded-lg">
+          <p className="text-sm text-gray-800">
+            <strong>Almost there!</strong> Your wedding is approaching.
+            {paymentSummary.overdueAmount > 0 || paymentSummary.dueThisWeek > 0
+              ? ' Focus on completing pending payments to reduce pre-wedding stress.'
+              : ' All your vendor payments are on track - one less thing to worry about!'}
+          </p>
+        </div>
+      )}
+    </Card>
+  );
+}

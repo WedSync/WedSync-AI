@@ -1,0 +1,890 @@
+/**
+ * WS-212 Section Configuration System Types
+ * TypeScript interfaces for section visibility and permission management
+ * For wedding planners to customize dashboard section access per wedding
+ */
+
+// Valid section types that can be configured
+export type SectionType =
+  | 'timeline'
+  | 'budget'
+  | 'vendors'
+  | 'guests'
+  | 'photos'
+  | 'documents'
+  | 'tasks'
+  | 'contracts'
+  | 'payments'
+  | 'analytics';
+
+// Valid user roles in the wedding context
+export type UserRole =
+  | 'planner'
+  | 'couple'
+  | 'vendor'
+  | 'guest'
+  | 'admin'
+  | 'photographer'
+  | 'venue';
+
+/**
+ * Main section configuration interface
+ * Represents how a section is configured for a specific wedding
+ */
+export interface SectionConfiguration {
+  id: string;
+  weddingId: string;
+  sectionType: SectionType;
+  isVisible: boolean;
+  customSettings: Record<string, any>;
+  visibilityRules: Record<string, any>;
+  displayOrder: number;
+  customTitle?: string;
+  customDescription?: string;
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
+  updatedBy?: string;
+
+  // Populated when querying with permissions
+  permissions?: SectionPermission[];
+}
+
+/**
+ * Section permission interface
+ * Defines what a specific role can do with a section
+ */
+export interface SectionPermission {
+  id: string;
+  sectionConfigId: string;
+  userRole: UserRole;
+  canView: boolean;
+  canEdit: boolean;
+  canCreate: boolean;
+  canDelete: boolean;
+  canExport: boolean;
+  fieldRestrictions: FieldRestrictions;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Field-level restrictions for sensitive data
+ */
+export interface FieldRestrictions {
+  hideFields?: string[];
+  maskFields?: string[];
+  readOnlyFields?: string[];
+  customRestrictions?: Record<string, any>;
+}
+
+/**
+ * Effective permissions for a user on a section
+ * Calculated based on their role and any user-specific overrides
+ */
+export interface EffectivePermissions {
+  canView: boolean;
+  canEdit: boolean;
+  canCreate: boolean;
+  canDelete: boolean;
+  canExport: boolean;
+  fieldRestrictions: FieldRestrictions;
+  userRole: UserRole;
+}
+
+/**
+ * Section data with permissions applied
+ * What the user actually sees after filtering
+ */
+export interface SectionData<T = any> {
+  sectionType: SectionType;
+  isVisible: boolean;
+  data: T | null;
+  permissions: EffectivePermissions;
+  customSettings: Record<string, any>;
+  customTitle?: string;
+  customDescription?: string;
+  displayOrder: number;
+  message?: string;
+  error?: string;
+}
+
+/**
+ * Request to update section configuration
+ */
+export interface UpdateSectionConfigRequest {
+  weddingId: string;
+  sectionType: SectionType;
+  isVisible?: boolean;
+  displayOrder?: number;
+  customSettings?: Record<string, any>;
+  customTitle?: string;
+  customDescription?: string;
+  visibilityRules?: Record<string, any>;
+}
+
+/**
+ * Request to update section permissions
+ */
+export interface UpdateSectionPermissionsRequest {
+  sectionConfigId: string;
+  permissions: Array<{
+    userRole: UserRole;
+    canView: boolean;
+    canEdit: boolean;
+    canCreate: boolean;
+    canDelete: boolean;
+    canExport: boolean;
+    fieldRestrictions: FieldRestrictions;
+  }>;
+}
+
+/**
+ * Context for section configuration operations
+ * Information about the current user and wedding
+ */
+export interface ConfigContext {
+  userId: string;
+  userRole: UserRole;
+  weddingId: string;
+  organizationId?: string;
+}
+
+/**
+ * Section configuration template for different wedding types
+ */
+export interface SectionTemplate {
+  name: string;
+  description: string;
+  sections: Array<{
+    sectionType: SectionType;
+    isVisible: boolean;
+    displayOrder: number;
+    customSettings: Record<string, any>;
+    permissions: Record<UserRole, Partial<SectionPermission>>;
+  }>;
+}
+
+/**
+ * Default section configurations for different roles
+ */
+export const DEFAULT_SECTION_PERMISSIONS: Record<
+  SectionType,
+  Record<UserRole, Partial<SectionPermission>>
+> = {
+  timeline: {
+    planner: {
+      canView: true,
+      canEdit: true,
+      canCreate: true,
+      canDelete: true,
+      canExport: true,
+    },
+    couple: {
+      canView: true,
+      canEdit: true,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    },
+    vendor: {
+      canView: true,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    },
+    guest: {
+      canView: false,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    },
+    admin: {
+      canView: true,
+      canEdit: true,
+      canCreate: true,
+      canDelete: true,
+      canExport: true,
+    },
+    photographer: {
+      canView: true,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    },
+    venue: {
+      canView: true,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    },
+  },
+  budget: {
+    planner: {
+      canView: true,
+      canEdit: true,
+      canCreate: true,
+      canDelete: true,
+      canExport: true,
+    },
+    couple: {
+      canView: true,
+      canEdit: true,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+      fieldRestrictions: { hideFields: ['vendor_costs', 'profit_margins'] },
+    },
+    vendor: {
+      canView: false,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+      fieldRestrictions: { hideFields: ['all'] },
+    },
+    guest: {
+      canView: false,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    },
+    admin: {
+      canView: true,
+      canEdit: true,
+      canCreate: true,
+      canDelete: true,
+      canExport: true,
+    },
+    photographer: {
+      canView: false,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    },
+    venue: {
+      canView: false,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    },
+  },
+  vendors: {
+    planner: {
+      canView: true,
+      canEdit: true,
+      canCreate: true,
+      canDelete: true,
+      canExport: true,
+    },
+    couple: {
+      canView: true,
+      canEdit: true,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+      fieldRestrictions: { hideFields: ['commission_rates', 'internal_notes'] },
+    },
+    vendor: {
+      canView: true,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+      fieldRestrictions: { hideFields: ['commission_rates', 'internal_notes'] },
+    },
+    guest: {
+      canView: false,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    },
+    admin: {
+      canView: true,
+      canEdit: true,
+      canCreate: true,
+      canDelete: true,
+      canExport: true,
+    },
+    photographer: {
+      canView: true,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    },
+    venue: {
+      canView: true,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    },
+  },
+  guests: {
+    planner: {
+      canView: true,
+      canEdit: true,
+      canCreate: true,
+      canDelete: true,
+      canExport: true,
+    },
+    couple: {
+      canView: true,
+      canEdit: true,
+      canCreate: true,
+      canDelete: false,
+      canExport: true,
+    },
+    vendor: {
+      canView: false,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+      fieldRestrictions: { hideFields: ['all'] },
+    },
+    guest: {
+      canView: false,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    },
+    admin: {
+      canView: true,
+      canEdit: true,
+      canCreate: true,
+      canDelete: true,
+      canExport: true,
+    },
+    photographer: {
+      canView: false,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    },
+    venue: {
+      canView: false,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    },
+  },
+  photos: {
+    planner: {
+      canView: true,
+      canEdit: true,
+      canCreate: true,
+      canDelete: true,
+      canExport: true,
+    },
+    couple: {
+      canView: true,
+      canEdit: true,
+      canCreate: true,
+      canDelete: false,
+      canExport: true,
+    },
+    vendor: {
+      canView: true,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    },
+    guest: {
+      canView: false,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    },
+    admin: {
+      canView: true,
+      canEdit: true,
+      canCreate: true,
+      canDelete: true,
+      canExport: true,
+    },
+    photographer: {
+      canView: true,
+      canEdit: true,
+      canCreate: true,
+      canDelete: false,
+      canExport: true,
+    },
+    venue: {
+      canView: true,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    },
+  },
+  documents: {
+    planner: {
+      canView: true,
+      canEdit: true,
+      canCreate: true,
+      canDelete: true,
+      canExport: true,
+    },
+    couple: {
+      canView: true,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: true,
+    },
+    vendor: {
+      canView: true,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+      fieldRestrictions: { hideFields: ['legal_terms', 'internal_notes'] },
+    },
+    guest: {
+      canView: false,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    },
+    admin: {
+      canView: true,
+      canEdit: true,
+      canCreate: true,
+      canDelete: true,
+      canExport: true,
+    },
+    photographer: {
+      canView: true,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    },
+    venue: {
+      canView: true,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    },
+  },
+  tasks: {
+    planner: {
+      canView: true,
+      canEdit: true,
+      canCreate: true,
+      canDelete: true,
+      canExport: true,
+    },
+    couple: {
+      canView: true,
+      canEdit: true,
+      canCreate: true,
+      canDelete: false,
+      canExport: false,
+    },
+    vendor: {
+      canView: true,
+      canEdit: true,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    },
+    guest: {
+      canView: false,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    },
+    admin: {
+      canView: true,
+      canEdit: true,
+      canCreate: true,
+      canDelete: true,
+      canExport: true,
+    },
+    photographer: {
+      canView: true,
+      canEdit: true,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    },
+    venue: {
+      canView: true,
+      canEdit: true,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    },
+  },
+  contracts: {
+    planner: {
+      canView: true,
+      canEdit: true,
+      canCreate: true,
+      canDelete: true,
+      canExport: true,
+    },
+    couple: {
+      canView: true,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: true,
+      fieldRestrictions: { hideFields: ['legal_terms', 'commission_details'] },
+    },
+    vendor: {
+      canView: true,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+      fieldRestrictions: { hideFields: ['legal_terms', 'commission_details'] },
+    },
+    guest: {
+      canView: false,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    },
+    admin: {
+      canView: true,
+      canEdit: true,
+      canCreate: true,
+      canDelete: true,
+      canExport: true,
+    },
+    photographer: {
+      canView: true,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    },
+    venue: {
+      canView: true,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    },
+  },
+  payments: {
+    planner: {
+      canView: true,
+      canEdit: true,
+      canCreate: true,
+      canDelete: true,
+      canExport: true,
+    },
+    couple: {
+      canView: true,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: true,
+    },
+    vendor: {
+      canView: false,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+      fieldRestrictions: { hideFields: ['all'] },
+    },
+    guest: {
+      canView: false,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    },
+    admin: {
+      canView: true,
+      canEdit: true,
+      canCreate: true,
+      canDelete: true,
+      canExport: true,
+    },
+    photographer: {
+      canView: false,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    },
+    venue: {
+      canView: false,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    },
+  },
+  analytics: {
+    planner: {
+      canView: true,
+      canEdit: true,
+      canCreate: true,
+      canDelete: true,
+      canExport: true,
+    },
+    couple: {
+      canView: true,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    },
+    vendor: {
+      canView: false,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+      fieldRestrictions: { hideFields: ['all'] },
+    },
+    guest: {
+      canView: false,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    },
+    admin: {
+      canView: true,
+      canEdit: true,
+      canCreate: true,
+      canDelete: true,
+      canExport: true,
+    },
+    photographer: {
+      canView: false,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    },
+    venue: {
+      canView: false,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    },
+  },
+};
+
+/**
+ * Wedding planner-friendly section templates
+ */
+export const SECTION_TEMPLATES: SectionTemplate[] = [
+  {
+    name: 'Standard Wedding',
+    description: 'Default configuration suitable for most weddings',
+    sections: [
+      {
+        sectionType: 'timeline',
+        isVisible: true,
+        displayOrder: 0,
+        customSettings: { defaultView: 'day', showPrivateNotes: false },
+        permissions: DEFAULT_SECTION_PERMISSIONS.timeline,
+      },
+      {
+        sectionType: 'budget',
+        isVisible: true,
+        displayOrder: 1,
+        customSettings: { showTotals: true, showVendorCosts: false },
+        permissions: DEFAULT_SECTION_PERMISSIONS.budget,
+      },
+      {
+        sectionType: 'vendors',
+        isVisible: true,
+        displayOrder: 2,
+        customSettings: { showContactInfo: true, showContracts: false },
+        permissions: DEFAULT_SECTION_PERMISSIONS.vendors,
+      },
+      {
+        sectionType: 'tasks',
+        isVisible: true,
+        displayOrder: 3,
+        customSettings: { enableAssignments: true, showDeadlines: true },
+        permissions: DEFAULT_SECTION_PERMISSIONS.tasks,
+      },
+      {
+        sectionType: 'photos',
+        isVisible: true,
+        displayOrder: 4,
+        customSettings: { allowGuestUploads: false, showMetadata: false },
+        permissions: DEFAULT_SECTION_PERMISSIONS.photos,
+      },
+    ],
+  },
+  {
+    name: 'Private Wedding',
+    description: 'Maximum privacy - minimal visibility for vendors and guests',
+    sections: [
+      {
+        sectionType: 'timeline',
+        isVisible: true,
+        displayOrder: 0,
+        customSettings: { defaultView: 'week', showPrivateNotes: false },
+        permissions: {
+          ...DEFAULT_SECTION_PERMISSIONS.timeline,
+          vendor: {
+            ...DEFAULT_SECTION_PERMISSIONS.timeline.vendor,
+            canView: false,
+          },
+          guest: {
+            ...DEFAULT_SECTION_PERMISSIONS.timeline.guest,
+            canView: false,
+          },
+        },
+      },
+      {
+        sectionType: 'budget',
+        isVisible: false,
+        displayOrder: 1,
+        customSettings: { showTotals: false, showVendorCosts: false },
+        permissions: {
+          ...DEFAULT_SECTION_PERMISSIONS.budget,
+          vendor: {
+            ...DEFAULT_SECTION_PERMISSIONS.budget.vendor,
+            canView: false,
+          },
+          guest: {
+            ...DEFAULT_SECTION_PERMISSIONS.budget.guest,
+            canView: false,
+          },
+        },
+      },
+    ],
+  },
+  {
+    name: 'Collaborative Wedding',
+    description:
+      'High collaboration - vendors can contribute and edit relevant sections',
+    sections: [
+      {
+        sectionType: 'timeline',
+        isVisible: true,
+        displayOrder: 0,
+        customSettings: { defaultView: 'day', showPrivateNotes: true },
+        permissions: {
+          ...DEFAULT_SECTION_PERMISSIONS.timeline,
+          vendor: {
+            ...DEFAULT_SECTION_PERMISSIONS.timeline.vendor,
+            canEdit: true,
+          },
+          photographer: {
+            ...DEFAULT_SECTION_PERMISSIONS.timeline.photographer,
+            canEdit: true,
+          },
+        },
+      },
+      {
+        sectionType: 'tasks',
+        isVisible: true,
+        displayOrder: 1,
+        customSettings: { enableAssignments: true, vendorCanCreate: true },
+        permissions: {
+          ...DEFAULT_SECTION_PERMISSIONS.tasks,
+          vendor: {
+            ...DEFAULT_SECTION_PERMISSIONS.tasks.vendor,
+            canCreate: true,
+          },
+        },
+      },
+    ],
+  },
+];
+
+/**
+ * Helper function to get default permissions for a role and section
+ */
+export function getDefaultPermissions(
+  sectionType: SectionType,
+  userRole: UserRole,
+): Partial<SectionPermission> {
+  return (
+    DEFAULT_SECTION_PERMISSIONS[sectionType]?.[userRole] || {
+      canView: false,
+      canEdit: false,
+      canCreate: false,
+      canDelete: false,
+      canExport: false,
+    }
+  );
+}
+
+/**
+ * Helper function to check if a user role has any permissions for a section
+ */
+export function hasAnyPermission(permissions: EffectivePermissions): boolean {
+  return (
+    permissions.canView ||
+    permissions.canEdit ||
+    permissions.canCreate ||
+    permissions.canDelete ||
+    permissions.canExport
+  );
+}
+
+/**
+ * Helper function to merge field restrictions
+ */
+export function mergeFieldRestrictions(
+  ...restrictions: (FieldRestrictions | undefined)[]
+): FieldRestrictions {
+  const merged: FieldRestrictions = {};
+
+  restrictions.forEach((restriction) => {
+    if (!restriction) return;
+
+    if (restriction.hideFields) {
+      merged.hideFields = [
+        ...(merged.hideFields || []),
+        ...restriction.hideFields,
+      ];
+    }
+    if (restriction.maskFields) {
+      merged.maskFields = [
+        ...(merged.maskFields || []),
+        ...restriction.maskFields,
+      ];
+    }
+    if (restriction.readOnlyFields) {
+      merged.readOnlyFields = [
+        ...(merged.readOnlyFields || []),
+        ...restriction.readOnlyFields,
+      ];
+    }
+    if (restriction.customRestrictions) {
+      merged.customRestrictions = {
+        ...merged.customRestrictions,
+        ...restriction.customRestrictions,
+      };
+    }
+  });
+
+  return merged;
+}

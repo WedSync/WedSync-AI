@@ -1,0 +1,199 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { SMSService } from '@/lib/services/sms-service';
+import { z } from 'zod';
+
+// Configuration validation schema
+const configSchema = z.object({
+  account_sid_encrypted: z.string().optional(),
+  auth_token_encrypted: z.string().optional(),
+  phone_number: z.string().min(1, 'Phone number is required'),
+  is_active: z.boolean().optional().default(true),
+  webhook_url: z.string().url().optional(),
+  status_callback_url: z.string().url().optional(),
+  auto_opt_out: z.boolean().optional().default(true),
+  opt_out_keywords: z.array(z.string()).optional(),
+  opt_in_keywords: z.array(z.string()).optional(),
+  monthly_limit: z.number().min(0).optional().default(1000),
+  cost_per_message: z.number().min(0).optional().default(0.0075),
+});
+
+const testSchema = z.object({
+  test_phone: z.string().min(1, 'Test phone number is required'),
+  test_message: z
+    .string()
+    .optional()
+    .default('Test message from WedSync SMS configuration'),
+});
+
+/**
+ * GET /api/sms/config - Get SMS configuration
+ */
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 },
+      );
+    }
+
+    const { data: config, error } = await supabase
+      .from('sms_configurations')
+      .select('*')
+      .eq('user_id', user.id)
+      .single();
+
+    if (error) {
+      if (error.code === 'PGRST116') {
+        // No configuration found
+        return NextResponse.json({ configuration: null });
+      }
+      throw error;
+    }
+
+    // Don't return encrypted credentials
+    const safeConfig = {
+      ...config,
+      account_sid_encrypted: config.account_sid_encrypted
+        ? '***masked***'
+        : null,
+      auth_token_encrypted: config.auth_token_encrypted ? '***masked***' : null,
+    };
+
+    return NextResponse.json({ configuration: safeConfig });
+  } catch (error) {
+    console.error('SMS config get error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * POST /api/sms/config - Save SMS configuration
+ */
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 },
+      );
+    }
+
+    const body = await request.json();
+    const validatedData = configSchema.parse(body);
+
+    // Validate phone number format
+    const smsService = new SMSService();
+    if (!smsService.validatePhoneNumber(validatedData.phone_number)) {
+      return NextResponse.json(
+        { error: 'Invalid phone number format' },
+        { status: 400 },
+      );
+    }
+
+    // Format phone number
+    const formattedPhone = smsService['formatPhoneNumber'](
+      validatedData.phone_number,
+    );
+
+    // TODO: Encrypt credentials using Supabase Vault
+    // For now, we'll store them as-is (in production, use proper encryption)
+    const configData = {
+      ...validatedData,
+      phone_number: formattedPhone,
+      user_id: user.id,
+      updated_at: new Date().toISOString(),
+    };
+
+    const { data: config, error } = await supabase
+      .from('sms_configurations')
+      .upsert(configData)
+      .select()
+      .single();
+
+    if (error) {
+      throw error;
+    }
+
+    // Return safe config (mask credentials)
+    const safeConfig = {
+      ...config,
+      account_sid_encrypted: config.account_sid_encrypted
+        ? '***masked***'
+        : null,
+      auth_token_encrypted: config.auth_token_encrypted ? '***masked***' : null,
+    };
+
+    return NextResponse.json({
+      success: true,
+      configuration: safeConfig,
+    });
+  } catch (error) {
+    console.error('SMS config save error:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid configuration data', details: error.errors },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * DELETE /api/sms/config - Delete SMS configuration
+ */
+export async function DELETE(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 },
+      );
+    }
+
+    const { error } = await supabase
+      .from('sms_configurations')
+      .delete()
+      .eq('user_id', user.id);
+
+    if (error) {
+      throw error;
+    }
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error('SMS config delete error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

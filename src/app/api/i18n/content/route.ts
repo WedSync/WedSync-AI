@@ -1,0 +1,451 @@
+/**
+ * Dynamic Content Translation API Endpoint - WS-247 Multilingual Platform System
+ *
+ * Handles real-time content translation with wedding industry context.
+ * Supports variable substitution, cultural adaptation, and quality scoring.
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/client';
+import { Redis } from '@upstash/redis';
+import { z } from 'zod';
+import OpenAI from 'openai';
+import crypto from 'crypto';
+
+// Initialize services
+const redis = new Redis({
+  url: process.env.UPSTASH_REDIS_REST_URL!,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN!,
+});
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY!,
+});
+
+// Validation schemas
+const translateContentSchema = z.object({
+  content: z
+    .string()
+    .min(1, 'Content is required')
+    .max(10000, 'Content too long'),
+  source_locale: z
+    .string()
+    .regex(/^[a-z]{2}-[A-Z]{2}$/, 'Invalid source locale format'),
+  target_locale: z
+    .string()
+    .regex(/^[a-z]{2}-[A-Z]{2}$/, 'Invalid target locale format')
+    .optional(),
+  target_locales: z
+    .array(z.string().regex(/^[a-z]{2}-[A-Z]{2}$/, 'Invalid locale format'))
+    .optional(),
+  variables: z.record(z.any()).optional(),
+  wedding_context: z
+    .object({
+      ceremony_type: z
+        .enum(['religious', 'civil', 'spiritual', 'cultural_fusion'])
+        .optional(),
+      formality_level: z
+        .enum(['casual', 'semi_formal', 'formal', 'very_formal'])
+        .optional(),
+      cultural_backgrounds: z.array(z.string()).optional(),
+      venue_type: z
+        .enum(['indoor', 'outdoor', 'destination', 'home', 'religious_venue'])
+        .optional(),
+    })
+    .optional(),
+  quality_threshold: z.number().min(0).max(1).default(0.7),
+});
+
+const getCachedTranslationSchema = z.object({
+  content_hash: z.string().optional(),
+  source_locale: z
+    .string()
+    .regex(/^[a-z]{2}-[A-Z]{2}$/)
+    .optional(),
+  target_locale: z
+    .string()
+    .regex(/^[a-z]{2}-[A-Z]{2}$/)
+    .optional(),
+  include_history: z.boolean().default(false),
+});
+
+// Rate limiting helper
+async function checkRateLimit(
+  identifier: string,
+): Promise<{ success: boolean; reset?: number }> {
+  const key = `content_translation_rate_limit:${identifier}`;
+  const limit = 10; // requests per minute
+  const window = 60; // seconds
+
+  try {
+    const requests = await redis.incr(key);
+    if (requests === 1) {
+      await redis.expire(key, window);
+    }
+
+    if (requests > limit) {
+      const ttl = await redis.ttl(key);
+      return { success: false, reset: Date.now() + ttl * 1000 };
+    }
+
+    return { success: true };
+  } catch (error) {
+    console.error('Rate limit error:', error);
+    return { success: true }; // Fail open
+  }
+}
+
+// Response helper
+function createResponse(
+  success: boolean,
+  data: any = null,
+  error: any = null,
+  status: number = 200,
+) {
+  return NextResponse.json(
+    success
+      ? { success: true, data, timestamp: new Date().toISOString() }
+      : { success: false, error, timestamp: new Date().toISOString() },
+    { status },
+  );
+}
+
+/**
+ * POST - Translate content dynamically
+ */
+export async function POST(request: NextRequest) {
+  try {
+    // Rate limiting
+    const identifier =
+      request.headers.get('x-forwarded-for') ??
+      request.headers.get('x-real-ip') ??
+      request.headers.get('remote-addr') ??
+      'anonymous';
+    const rateLimitResult = await checkRateLimit(identifier);
+
+    if (!rateLimitResult.success) {
+      return createResponse(
+        false,
+        null,
+        {
+          code: 'RATE_LIMIT_EXCEEDED',
+          message: 'Too many requests. Please try again later.',
+          details: { reset_time: rateLimitResult.reset },
+        },
+        429,
+      );
+    }
+
+    // Authentication check
+    const supabase = createClient();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return createResponse(
+        false,
+        null,
+        {
+          code: 'AUTHENTICATION_REQUIRED',
+          message: 'Authentication required',
+        },
+        401,
+      );
+    }
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validationResult = translateContentSchema.safeParse(body);
+
+    if (!validationResult.success) {
+      return createResponse(
+        false,
+        null,
+        {
+          code: 'VALIDATION_ERROR',
+          message: 'Invalid translation request',
+          details: validationResult.error.flatten(),
+        },
+        400,
+      );
+    }
+
+    const {
+      content,
+      source_locale,
+      target_locale,
+      target_locales,
+      variables = {},
+      wedding_context = {},
+      quality_threshold,
+    } = validationResult.data;
+
+    // Process variables in content
+    let processedContent = content;
+    for (const [key, value] of Object.entries(variables)) {
+      const placeholder = `{{${key}}}`;
+      processedContent = processedContent.replace(
+        new RegExp(placeholder, 'g'),
+        String(value),
+      );
+    }
+
+    // Generate content hash for caching
+    const contentHash = crypto
+      .createHash('sha256')
+      .update(processedContent + source_locale)
+      .digest('hex');
+
+    // Determine target locales
+    const locales = target_locales || (target_locale ? [target_locale] : []);
+    if (locales.length === 0) {
+      return createResponse(
+        false,
+        null,
+        {
+          code: 'MISSING_TARGET_LOCALE',
+          message: 'Either target_locale or target_locales must be provided',
+        },
+        400,
+      );
+    }
+
+    const translations = [];
+
+    for (const locale of locales) {
+      try {
+        // Check cache first
+        const { data: cachedTranslation } = await supabase
+          .from('dynamic_content_translations')
+          .select('*')
+          .eq('content_hash', contentHash)
+          .eq('target_locale', locale)
+          .single();
+
+        if (cachedTranslation) {
+          translations.push({
+            target_locale: locale,
+            translated_content: cachedTranslation.translated_content,
+            quality_score: cachedTranslation.quality_score,
+            cultural_notes: cachedTranslation.cultural_notes || [],
+            from_cache: true,
+          });
+          continue;
+        }
+
+        // Create translation using OpenAI
+        const systemPrompt = `You are a professional wedding industry translator with expertise in cultural adaptation. Translate the following content from ${source_locale} to ${locale} with these requirements:
+
+1. Maintain the emotional tone appropriate for weddings
+2. Use culturally appropriate wedding terminology
+3. Consider the wedding context: ${JSON.stringify(wedding_context)}
+4. Preserve any placeholder variables exactly as {{variable_name}}
+5. Adapt cultural references appropriately
+
+Return a JSON object with:
+- translatedText: the translated content
+- confidence: score from 0-1 indicating translation quality
+- culturalNotes: array of cultural adaptations made
+- alternatives: array of alternative translations if applicable`;
+
+        const response = await openai.chat.completions.create({
+          model: 'gpt-4',
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: processedContent },
+          ],
+          temperature: 0.3,
+          max_tokens: 2000,
+        });
+
+        const translationResult = JSON.parse(
+          response.choices[0].message.content || '{}',
+        );
+
+        if (translationResult.confidence < quality_threshold) {
+          translations.push({
+            target_locale: locale,
+            error: 'Translation quality below threshold',
+            quality_score: translationResult.confidence,
+            quality_warning: true,
+            alternatives: translationResult.alternatives || [],
+          });
+          continue;
+        }
+
+        // Save to database
+        const translationRecord = {
+          content_hash: contentHash,
+          source_locale,
+          target_locale: locale,
+          original_content: processedContent,
+          translated_content: translationResult.translatedText,
+          wedding_context,
+          quality_score: Math.round(translationResult.confidence * 100),
+          cultural_notes: translationResult.culturalNotes || [],
+          alternatives: translationResult.alternatives || [],
+          user_id: user.id,
+        };
+
+        await supabase
+          .from('dynamic_content_translations')
+          .insert(translationRecord);
+
+        translations.push({
+          target_locale: locale,
+          translated_content: translationResult.translatedText,
+          quality_score: Math.round(translationResult.confidence * 100),
+          cultural_notes: translationResult.culturalNotes || [],
+          alternatives: translationResult.alternatives || [],
+          from_cache: false,
+        });
+      } catch (error) {
+        console.error(`Translation error for locale ${locale}:`, error);
+        translations.push({
+          target_locale: locale,
+          error: 'Translation failed',
+          details: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+    }
+
+    // Return single translation or array based on request
+    const result =
+      translations.length === 1
+        ? { translation: translations[0] }
+        : { translations };
+
+    return createResponse(true, result);
+  } catch (error) {
+    console.error('Content translation API error:', error);
+    return createResponse(
+      false,
+      null,
+      {
+        code: 'INTERNAL_ERROR',
+        message: 'Content translation failed',
+        details: error instanceof Error ? error.message : 'Unknown error',
+      },
+      500,
+    );
+  }
+}
+
+/**
+ * GET - Retrieve cached translations
+ */
+export async function GET(request: NextRequest) {
+  try {
+    // Authentication check
+    const supabase = createClient();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return createResponse(
+        false,
+        null,
+        {
+          code: 'AUTHENTICATION_REQUIRED',
+          message: 'Authentication required',
+        },
+        401,
+      );
+    }
+
+    // Parse and validate query parameters
+    const url = new URL(request.url);
+    const queryParams = Object.fromEntries(url.searchParams);
+
+    const validationResult = getCachedTranslationSchema.safeParse(queryParams);
+    if (!validationResult.success) {
+      return createResponse(
+        false,
+        null,
+        {
+          code: 'VALIDATION_ERROR',
+          message: 'Invalid query parameters',
+          details: validationResult.error.flatten(),
+        },
+        400,
+      );
+    }
+
+    const { content_hash, source_locale, target_locale, include_history } =
+      validationResult.data;
+
+    if (content_hash) {
+      // Get specific translation by hash
+      const { data: translation, error } = await supabase
+        .from('dynamic_content_translations')
+        .select('*')
+        .eq('content_hash', content_hash)
+        .single();
+
+      if (error || !translation) {
+        return createResponse(
+          false,
+          null,
+          {
+            code: 'NOT_FOUND',
+            message: 'Translation not found',
+          },
+          404,
+        );
+      }
+
+      let result: any = { data: translation };
+
+      if (include_history) {
+        const { data: history } = await supabase
+          .from('dynamic_content_translations')
+          .select('*')
+          .eq('content_hash', content_hash)
+          .order('created_at', { ascending: false });
+
+        result.history = history || [];
+      }
+
+      return createResponse(true, result);
+    }
+
+    // Filter by locale pairs
+    let query = supabase
+      .from('dynamic_content_translations')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(50);
+
+    if (source_locale) {
+      query = query.eq('source_locale', source_locale);
+    }
+
+    if (target_locale) {
+      query = query.eq('target_locale', target_locale);
+    }
+
+    const { data: translations, error } = await query;
+
+    if (error) {
+      throw error;
+    }
+
+    return createResponse(true, { data: translations || [] });
+  } catch (error) {
+    console.error('Get cached translations error:', error);
+    return createResponse(
+      false,
+      null,
+      {
+        code: 'INTERNAL_ERROR',
+        message: 'Failed to retrieve translations',
+        details: error instanceof Error ? error.message : 'Unknown error',
+      },
+      500,
+    );
+  }
+}

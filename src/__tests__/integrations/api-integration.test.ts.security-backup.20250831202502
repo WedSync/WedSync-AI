@@ -1,0 +1,433 @@
+// src/__tests__/integrations/api-integration.test.ts
+import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { NextRequest } from 'next/server';
+import { POST, GET } from '../../app/api/webhooks/route';
+import { apiEventSystem } from '../../lib/events/api-event-system';
+import { ConnectorFactory, ZapierConnector, StripeConnector } from '../../lib/integrations/api-connectors/base-connector';
+import { WebhookEventProcessor } from '../../lib/integrations/webhook-processor';
+
+// Mock services for testing
+class MockWebhookServer {
+  private endpoints: Map<string, { handler: Function; secret: string }> = new Map();
+  private receivedWebhooks: any[] = [];
+  addEndpoint(path: string, handler: Function, secret: string = 'test-secret') {
+    this.endpoints.set(path, { handler, secret });
+  }
+  async handleRequest(path: string, body: any, headers: any): Promise<{ status: number; body: any }> {
+    const endpoint = this.endpoints.get(path);
+    if (!endpoint) {
+      return { status: 404, body: { error: 'Endpoint not found' } };
+    }
+    this.receivedWebhooks.push({ path, body, headers, timestamp: new Date().toISOString() });
+    
+    try {
+      const result = await endpoint.handler(body, headers);
+      return { status: 200, body: result };
+    } catch (error) {
+      return { status: 500, body: { error: error instanceof Error ? error.message : 'Unknown error' } };
+  getReceivedWebhooks(): any[] {
+    return this.receivedWebhooks;
+  clear(): void {
+    this.receivedWebhooks = [];
+}
+class MockStripeAPI {
+  private customers: Map<string, any> = new Map();
+  private paymentIntents: Map<string, any> = new Map();
+  createCustomer(data: any): any {
+    const customer = {
+      id: `cus_${Math.random().toString(36).substr(2, 9)}`,
+      email: data.email,
+      name: data.name,
+      phone: data.phone,
+      metadata: data.metadata,
+      created: Math.floor(Date.now() / 1000),
+    };
+    this.customers.set(customer.id, customer);
+    return customer;
+  createPaymentIntent(data: any): any {
+    const paymentIntent = {
+      id: `pi_${Math.random().toString(36).substr(2, 9)}`,
+      amount: data.amount,
+      currency: data.currency,
+      status: 'requires_payment_method',
+    this.paymentIntents.set(paymentIntent.id, paymentIntent);
+    return paymentIntent;
+  retrieveCustomer(customerId: string): any | null {
+    return this.customers.get(customerId) || null;
+    this.customers.clear();
+    this.paymentIntents.clear();
+class MockZapierAPI {
+  private triggeredZaps: Array<{ zapId: string; data: any; timestamp: string }> = [];
+  triggerZap(zapId: string, data: any): any {
+    this.triggeredZaps.push({
+      zapId,
+      data,
+      timestamp: new Date().toISOString(),
+    });
+    return { success: true, id: `zap_${Date.now()}` };
+  getTriggeredZaps(): Array<{ zapId: string; data: any; timestamp: string }> {
+    return this.triggeredZaps;
+    this.triggeredZaps = [];
+class MockCalendlyAPI {
+  private scheduledEvents: any[] = [];
+  private eventTypes: any[] = [
+    {
+      uri: 'https://api.calendly.com/event_types/test-event-type',
+      name: 'Wedding Consultation',
+      duration: 60,
+      active: true,
+    },
+  ];
+  getUser(): any {
+    return {
+      resource: {
+        uri: 'https://api.calendly.com/users/test-user',
+        name: 'Test Wedding Planner',
+        email: 'planner@test.com',
+      },
+  listEventTypes(): any {
+      collection: this.eventTypes,
+      pagination: { count: this.eventTypes.length },
+  getScheduledEvents(startTime: string, endTime: string): any {
+    const filtered = this.scheduledEvents.filter(event => 
+      event.start_time >= startTime && event.start_time <= endTime
+    );
+      collection: filtered,
+      pagination: { count: filtered.length },
+  addScheduledEvent(event: any): void {
+    this.scheduledEvents.push(event);
+    this.scheduledEvents = [];
+// Test suites
+describe('API Integration Tests', () => {
+  let mockWebhookServer: MockWebhookServer;
+  let mockStripeAPI: MockStripeAPI;
+  let mockZapierAPI: MockZapierAPI;
+  let mockCalendlyAPI: MockCalendlyAPI;
+  beforeEach(() => {
+    mockWebhookServer = new MockWebhookServer();
+    mockStripeAPI = new MockStripeAPI();
+    mockZapierAPI = new MockZapierAPI();
+    mockCalendlyAPI = new MockCalendlyAPI();
+    // Clear event system
+    apiEventSystem.removeAllListeners();
+    // Mock fetch for external API calls
+    global.fetch = jest.fn() as jest.MockedFunction<typeof fetch>;
+  });
+  afterEach(() => {
+    mockWebhookServer.clear();
+    mockStripeAPI.clear();
+    mockZapierAPI.clear();
+    mockCalendlyAPI.clear();
+    jest.clearAllMocks();
+  describe('Webhook Processing', () => {
+    it('should process Stripe webhook correctly', async () => {
+      const stripePayload = {
+        id: 'evt_test_webhook',
+        object: 'event',
+        api_version: '2020-08-27',
+        created: 1691234567,
+        data: {
+          object: {
+            id: 'pi_test_payment_intent',
+            object: 'payment_intent',
+            amount: 50000,
+            currency: 'usd',
+            status: 'succeeded',
+            metadata: {
+              vendor_id: 'vendor_123',
+              wedding_date: '2024-06-15',
+              booking_id: 'booking_456',
+            },
+          },
+        },
+        livemode: false,
+        pending_webhooks: 1,
+        request: { id: 'req_test', idempotency_key: null },
+        type: 'payment_intent.succeeded',
+      };
+      const timestamp = Math.floor(Date.now() / 1000);
+      const signature = `t=${timestamp},v1=test_signature`;
+      const request = new NextRequest('http://localhost:3000/api/webhooks', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'stripe-signature': signature,
+        body: JSON.stringify(stripePayload),
+      });
+      const response = await POST(request);
+      const responseData = await response.json();
+      expect(response.status).toBe(200);
+      expect(responseData.success).toBe(true);
+      expect(responseData.data.event_id).toBe('evt_test_webhook');
+    it('should handle webhook signature verification failure', async () => {
+      const payload = { test: 'data' };
+          'stripe-signature': 'invalid_signature',
+        body: JSON.stringify(payload),
+      expect(response.status).toBe(401);
+      expect(responseData.success).toBe(false);
+      expect(responseData.error.code).toBe('INVALID_SIGNATURE');
+    it('should process Calendly webhook correctly', async () => {
+      const calendlyPayload = {
+        event: 'invitee.created',
+        time: '2024-01-15T10:00:00.000000Z',
+        payload: {
+          uuid: 'test-uuid-123',
+          email: 'bride@example.com',
+          name: 'Jane Doe',
+          scheduled_event: {
+            start_time: '2024-02-01T14:00:00.000000Z',
+            end_time: '2024-02-01T15:00:00.000000Z',
+            event_type: {
+              duration: 60,
+              name: 'Wedding Consultation',
+            location: {
+              join_url: 'https://calendly.com/join/test-meeting',
+          'x-calendly-webhook': 'true',
+        body: JSON.stringify(calendlyPayload),
+    it('should handle malformed JSON gracefully', async () => {
+        body: 'invalid json {',
+      expect(response.status).toBe(400);
+      expect(responseData.error.code).toBe('INVALID_PAYLOAD');
+  describe('API Connectors', () => {
+    it('should create Stripe customer correctly', async () => {
+      const mockFetch = global.fetch as jest.MockedFunction<typeof fetch>;
+      const mockCustomer = {
+        id: 'cus_test123',
+        email: 'vendor@test.com',
+        name: 'Test Vendor',
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => mockCustomer,
+        headers: new Headers(),
+      } as Response);
+      const connector = new StripeConnector('sk_test_123');
+      const vendorData = {
+        id: 'vendor_123',
+        type: 'photographer' as const,
+        contact: {
+          email: 'vendor@test.com',
+          phone: '+1234567890',
+        services: ['wedding-photography'],
+      const result = await connector.createCustomerForVendor(vendorData);
+      expect(result.success).toBe(true);
+      expect(result.data.email).toBe('vendor@test.com');
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.stripe.com/v1/customers',
+        expect.objectContaining({
+          method: 'POST',
+          headers: expect.objectContaining({
+            'Authorization': 'Bearer sk_test_123',
+          }),
+        })
+      );
+    it('should handle API rate limiting correctly', async () => {
+      mockFetch.mockRejectedValueOnce(new Error('Rate limited'));
+      const result = await connector.retrieveCustomer('cus_test123');
+      expect(result.success).toBe(false);
+      expect(result.error?.code).toBe('REQUEST_FAILED');
+    it('should trigger Zapier webhook correctly', async () => {
+        json: async () => ({ success: true }),
+      const connector = new ZapierConnector('test-api-key');
+      const bookingData = {
+        id: 'booking_123',
+        vendor_id: 'vendor_123',
+        couple_names: ['John Doe', 'Jane Smith'],
+        wedding_date: '2024-06-15',
+        venue: 'Grand Wedding Hall',
+        service_type: 'photography',
+        booking_status: 'booked' as const,
+        amount: 2500,
+        currency: 'USD',
+        created_at: '2024-01-15T10:00:00Z',
+        updated_at: '2024-01-15T10:00:00Z',
+      const result = await connector.triggerWeddingBooking('test-zap-id', bookingData);
+        'https://hooks.zapier.com/hooks/catch/test-zap-id',
+            'X-Api-Key': 'test-api-key',
+  describe('Event System', () => {
+    it('should publish and process events correctly', async () => {
+      let eventReceived = false;
+      let eventData: any = null;
+      // Register event handler
+      apiEventSystem.registerHandler({
+        eventType: 'test.event',
+        priority: 100,
+        handler: async (event) => {
+          eventReceived = true;
+          eventData = event;
+      // Publish test event
+      await apiEventSystem.publishEvent({
+        id: 'test-event-123',
+        type: 'test.event',
+        source: 'test',
+        data: { message: 'Hello, World!' },
+        timestamp: new Date().toISOString(),
+        metadata: {
+          priority: 'high',
+      // Wait for async processing
+      await new Promise(resolve => setTimeout(resolve, 100));
+      expect(eventReceived).toBe(true);
+      expect(eventData.id).toBe('test-event-123');
+      expect(eventData.data.message).toBe('Hello, World!');
+    it('should handle event processing errors gracefully', async () => {
+      // Register failing event handler
+        eventType: 'failing.event',
+        handler: async () => {
+          throw new Error('Handler failed');
+      // Publish event that will fail
+        id: 'failing-event-123',
+        type: 'failing.event',
+        data: { message: 'This will fail' },
+      // Event system should continue working despite the error
+      expect(true).toBe(true); // Test passes if no unhandled exceptions
+    it('should correlate events correctly', async () => {
+      const correlationId = 'correlation-123';
+      const receivedEvents: any[] = [];
+      // Register handler that tracks correlation
+        eventType: 'correlated.event',
+          receivedEvents.push(event);
+      // Publish multiple correlated events
+        id: 'event-1',
+        type: 'correlated.event',
+        data: { step: 1 },
+        correlation_id: correlationId,
+        id: 'event-2',
+        data: { step: 2 },
+        causation_id: 'event-1',
+      // Wait for processing
+      expect(receivedEvents).toHaveLength(2);
+      expect(receivedEvents[0].correlation_id).toBe(correlationId);
+      expect(receivedEvents[1].correlation_id).toBe(correlationId);
+      expect(receivedEvents[1].causation_id).toBe('event-1');
+  describe('Wedding Industry Workflows', () => {
+    it('should handle complete booking workflow', async () => {
+      const workflowEvents: any[] = [];
+      // Register handlers for workflow events
+      const eventTypes = ['booking.created', 'email.send', 'notification.send', 'calendar.block'];
+      eventTypes.forEach(type => {
+        apiEventSystem.registerHandler({
+          eventType: type,
+          priority: 100,
+          handler: async (event) => {
+            workflowEvents.push({ type: event.type, id: event.id });
+        });
+      // Simulate booking creation
+        id: 'booking-workflow-1',
+        type: 'booking.created',
+        source: 'booking_system',
+          booking_id: 'booking_123',
+          vendor_id: 'vendor_123',
+          couple_email: 'couple@example.com',
+          wedding_date: '2024-06-15',
+          service_start: '2024-06-15T14:00:00Z',
+          service_end: '2024-06-15T18:00:00Z',
+          amount: 2500,
+        correlation_id: 'booking-workflow-correlation',
+      // Wait for workflow to complete
+      await new Promise(resolve => setTimeout(resolve, 500));
+      // Verify workflow events were triggered
+      const eventTypesCaptured = workflowEvents.map(e => e.type);
+      expect(eventTypesCaptured).toContain('booking.created');
+      // Other events would be triggered by the booking.created handler
+    it('should handle payment workflow correctly', async () => {
+      const paymentEvents: any[] = [];
+        eventType: 'payment.received',
+          paymentEvents.push(event);
+      // Simulate payment received
+        id: 'payment-workflow-1',
+        type: 'payment.received',
+        source: 'stripe',
+          amount: 50000, // $500.00
+          currency: 'usd',
+          customer_email: 'couple@example.com',
+          payment_intent_id: 'pi_test123',
+      expect(paymentEvents).toHaveLength(1);
+      expect(paymentEvents[0].data.amount).toBe(50000);
+    it('should validate wedding date conflicts', async () => {
+      // This would typically involve checking vendor availability
+      const weddingDate = '2024-06-15';
+      const vendorId = 'vendor_123';
+      // Mock a booking conflict scenario
+      const conflictEvents: any[] = [];
+        eventType: 'booking.conflict',
+          conflictEvents.push(event);
+      // Simulate conflict detection
+        id: 'conflict-check-1',
+        type: 'booking.conflict',
+          vendor_id: vendorId,
+          wedding_date: weddingDate,
+          conflict_reason: 'Vendor already booked for this date',
+      expect(conflictEvents).toHaveLength(1);
+      expect(conflictEvents[0].data.conflict_reason).toContain('already booked');
+  describe('Error Handling and Resilience', () => {
+    it('should handle network timeouts gracefully', async () => {
+      mockFetch.mockRejectedValueOnce(new Error('Network timeout'));
+      expect(result.error?.message).toContain('Network timeout');
+    it('should retry failed operations with exponential backoff', async () => {
+      let attemptCount = 0;
+      
+      mockFetch.mockImplementation(async () => {
+        attemptCount++;
+        if (attemptCount < 3) {
+          throw new Error('Temporary failure');
+        }
+        return {
+          ok: true,
+          json: async () => ({ success: true }),
+          headers: new Headers(),
+        } as Response;
+      const connector = new ZapierConnector('test-key');
+      const result = await connector.triggerZap('test-zap', { test: 'data' });
+      expect(attemptCount).toBe(3); // Should have retried
+    it('should handle webhook delivery failures', async () => {
+      // Mock webhook endpoint that fails
+      mockWebhookServer.addEndpoint('/fail-endpoint', () => {
+        throw new Error('Webhook endpoint failed');
+      // This would typically be tested through the webhook notification system
+      const result = await mockWebhookServer.handleRequest(
+        '/fail-endpoint',
+        { test: 'data' },
+        {}
+      expect(result.status).toBe(500);
+      expect(result.body.error).toBe('Webhook endpoint failed');
+  describe('Performance and Load Testing', () => {
+    it('should handle high volume of events efficiently', async () => {
+      const startTime = Date.now();
+      const eventCount = 100;
+      const processedEvents: number[] = [];
+        eventType: 'load.test',
+          processedEvents.push(parseInt(event.data.index));
+      // Publish many events quickly
+      const publishPromises = Array.from({ length: eventCount }, (_, i) =>
+        apiEventSystem.publishEvent({
+          id: `load-test-${i}`,
+          type: 'load.test',
+          source: 'test',
+          data: { index: i },
+          timestamp: new Date().toISOString(),
+      await Promise.all(publishPromises);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      const endTime = Date.now();
+      const duration = endTime - startTime;
+      expect(processedEvents).toHaveLength(eventCount);
+      expect(duration).toBeLessThan(5000); // Should complete within 5 seconds
+    it('should respect rate limits', async () => {
+      // Test rate limiting functionality
+      // Mock rate limit headers
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 429,
+        json: async () => ({ error: 'Rate limited' }),
+        headers: new Headers({
+          'X-RateLimit-Remaining': '0',
+          'X-RateLimit-Reset': '1640995200',
+        }),
+      expect(result.error?.code).toBe('HTTP_429');
+});
+// Export mock classes for use in other test files
+export {
+  MockWebhookServer,
+  MockStripeAPI,
+  MockZapierAPI,
+  MockCalendlyAPI,
+};

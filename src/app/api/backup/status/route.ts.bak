@@ -1,0 +1,158 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createServerClient } from '@supabase/ssr';
+import { cookies } from 'next/headers';
+import { AutomatedBackupOrchestrator } from '@/lib/services/backup/AutomatedBackupOrchestrator';
+import { BackupValidationService } from '@/lib/services/backup/BackupValidationService';
+
+export const runtime = 'nodejs';
+
+export async function GET(request: NextRequest) {
+  try {
+    const cookieStore = await cookies();
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      {
+        cookies: {
+          getAll: () => cookieStore.getAll(),
+          setAll: (cookiesToSet) => {
+            cookiesToSet.forEach(({ name, value, options }) =>
+              cookieStore.set(name, value, options)
+            );
+          },
+        },
+      }
+    );
+
+    // Verify authentication
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { searchParams } = new URL(request.url);
+    const backupId = searchParams.get('backupId');
+    const organizationId = searchParams.get('organizationId');
+    const detailed = searchParams.get('detailed') === 'true';
+
+    if (backupId) {
+      // Get specific backup status
+      const validationService = new BackupValidationService(supabase);
+      const backupStatus = await validationService.getBackupStatus(backupId);
+
+      if (detailed) {
+        const detailedStatus = await validationService.getDetailedBackupStatus(backupId);
+        return NextResponse.json({
+          success: true,
+          backup: {
+            ...backupStatus,
+            ...detailedStatus,
+          },
+        });
+      }
+
+      return NextResponse.json({
+        success: true,
+        backup: backupStatus,
+      });
+    }
+
+    if (organizationId) {
+      // Get organization backup overview
+      const orchestrator = new AutomatedBackupOrchestrator(supabase);
+      const backupOverview = await orchestrator.getBackupOverview(organizationId);
+
+      return NextResponse.json({
+        success: true,
+        overview: backupOverview,
+      });
+    }
+
+    // Get system-wide backup status (admin only)
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('role')
+      .eq('id', user.id)
+      .single();
+
+    if (profile?.role !== 'admin') {
+      return NextResponse.json(
+        { error: 'Admin access required for system status' },
+        { status: 403 }
+      );
+    }
+
+    const orchestrator = new AutomatedBackupOrchestrator(supabase);
+    const systemStatus = await orchestrator.getSystemBackupStatus();
+
+    return NextResponse.json({
+      success: true,
+      systemStatus,
+    });
+
+  } catch (error) {
+    console.error('Backup status error:', error);
+    return NextResponse.json(
+      { error: 'Failed to retrieve backup status' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const cookieStore = await cookies();
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      {
+        cookies: {
+          getAll: () => cookieStore.getAll(),
+          setAll: (cookiesToSet) => {
+            cookiesToSet.forEach(({ name, value, options }) =>
+              cookieStore.set(name, value, options)
+            );
+          },
+        },
+      }
+    );
+
+    // Verify authentication
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const { backupId, status, progress, metadata } = body;
+
+    if (!backupId) {
+      return NextResponse.json(
+        { error: 'Backup ID is required' },
+        { status: 400 }
+      );
+    }
+
+    // Update backup status (typically called by backup processes)
+    const validationService = new BackupValidationService(supabase);
+    await validationService.updateBackupStatus({
+      backupId,
+      status,
+      progress: progress || 0,
+      metadata: metadata || {},
+      updatedAt: new Date(),
+    });
+
+    return NextResponse.json({
+      success: true,
+      message: 'Backup status updated successfully',
+    });
+
+  } catch (error) {
+    console.error('Update backup status error:', error);
+    return NextResponse.json(
+      { error: 'Failed to update backup status' },
+      { status: 500 }
+    );
+  }
+}

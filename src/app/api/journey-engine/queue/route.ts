@@ -1,0 +1,75 @@
+import { NextRequest, NextResponse } from 'next/server';
+import {
+  getQueueProcessor,
+  startQueueProcessor,
+  stopQueueProcessor,
+} from '@/lib/journey-engine/queue-processor';
+
+export async function GET(request: NextRequest) {
+  try {
+    const processor = getQueueProcessor();
+
+    const [metrics, queueStatus] = await Promise.all([
+      processor.getMetrics(),
+      processor.getQueueStatus(),
+    ]);
+
+    return NextResponse.json({
+      status: processor.isHealthy() ? 'healthy' : 'unhealthy',
+      is_running: processor.isHealthy(),
+      metrics,
+      queue_status: queueStatus,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error('Error getting queue status:', error);
+    return NextResponse.json(
+      { error: 'Failed to get queue status' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const { action } = body;
+
+    switch (action) {
+      case 'start':
+        await startQueueProcessor();
+        return NextResponse.json({
+          message: 'Queue processor started successfully',
+          status: 'started',
+        });
+
+      case 'stop':
+        await stopQueueProcessor();
+        return NextResponse.json({
+          message: 'Queue processor stopped successfully',
+          status: 'stopped',
+        });
+
+      case 'restart':
+        await stopQueueProcessor();
+        await new Promise((resolve) => setTimeout(resolve, 2000)); // Wait 2 seconds
+        await startQueueProcessor();
+        return NextResponse.json({
+          message: 'Queue processor restarted successfully',
+          status: 'restarted',
+        });
+
+      default:
+        return NextResponse.json(
+          { error: 'Invalid action. Use: start, stop, or restart' },
+          { status: 400 },
+        );
+    }
+  } catch (error) {
+    console.error('Error controlling queue processor:', error);
+    return NextResponse.json(
+      { error: 'Failed to control queue processor' },
+      { status: 500 },
+    );
+  }
+}

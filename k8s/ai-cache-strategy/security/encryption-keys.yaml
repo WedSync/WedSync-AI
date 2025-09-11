@@ -1,0 +1,496 @@
+# Data Encryption and Key Management for AI Cache Strategy
+# WS-241: Enterprise-grade encryption for wedding data protection
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: encryption-master-key
+  namespace: ai-cache-strategy
+  labels:
+    security.wedsync.com/encryption: "master-key"
+    security.wedsync.com/compliance: "soc2-gdpr"
+type: Opaque
+data:
+  # Base64 encoded master encryption key (rotate monthly)
+  master-key: V2VkU3luY01hc3RlcktleTIwMjVTZWN1cmU=
+  key-version: "v20250901"
+
+---
+# External Secrets Operator for AWS KMS integration
+apiVersion: external-secrets.io/v1beta1
+kind: SecretStore
+metadata:
+  name: aws-kms-secret-store
+  namespace: ai-cache-strategy
+spec:
+  provider:
+    aws:
+      service: KMS
+      region: us-east-1
+      role: arn:aws:iam::ACCOUNT:role/wedsync-kms-role
+      auth:
+        secretRef:
+          accessKeyId:
+            name: aws-credentials
+            key: access-key-id
+          secretAccessKey:
+            name: aws-credentials
+            key: secret-access-key
+
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: redis-encryption-keys
+  namespace: ai-cache-strategy
+spec:
+  refreshInterval: 15m
+  secretStoreRef:
+    name: aws-kms-secret-store
+    kind: SecretStore
+  target:
+    name: redis-encryption-keys
+    creationPolicy: Owner
+  data:
+  - secretKey: redis-master-key
+    remoteRef:
+      key: alias/wedsync-redis-encryption
+      property: master-key
+  - secretKey: redis-auth-token
+    remoteRef:
+      key: alias/wedsync-redis-auth
+      property: auth-token
+
+---
+# Encryption at Rest for Redis Cluster
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-encryption-config
+  namespace: ai-cache-strategy
+  labels:
+    security.wedsync.com/encryption: "at-rest"
+data:
+  redis-tls.conf: |
+    # TLS Configuration for Redis Cluster
+    port 0
+    tls-port 6380
+    tls-cert-file /tls/redis.crt
+    tls-key-file /tls/redis.key
+    tls-ca-cert-file /tls/ca.crt
+    tls-dh-params-file /tls/redis.dh
+    
+    # Client certificate requirements
+    tls-auth-clients yes
+    tls-protocols "TLSv1.2 TLSv1.3"
+    tls-ciphers ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-GCM-SHA256
+    tls-prefer-server-ciphers yes
+    
+    # Wedding data encryption settings
+    tls-session-caching no
+    tls-session-cache-size 5000
+    tls-session-cache-timeout 60
+    
+  encryption.conf: |
+    # Data Encryption Configuration
+    # All wedding data encrypted with AES-256-GCM
+    
+    # Memory encryption
+    memory-encryption yes
+    memory-encryption-key-derivation pbkdf2
+    memory-encryption-key-iterations 100000
+    
+    # RDB encryption
+    rdb-encryption yes
+    rdb-encryption-key-derivation pbkdf2
+    
+    # AOF encryption
+    aof-encryption yes
+    aof-encryption-key-derivation pbkdf2
+    
+    # Log encryption (sensitive wedding data in logs)
+    log-encryption yes
+
+---
+# TLS Certificate for Redis Cluster
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: redis-cluster-tls
+  namespace: ai-cache-strategy
+spec:
+  secretName: redis-cluster-tls-secret
+  issuerRef:
+    name: internal-ca-issuer
+    kind: ClusterIssuer
+  commonName: redis-cluster.ai-cache-strategy.svc.cluster.local
+  dnsNames:
+  - redis-cluster-0.redis-cluster-headless.ai-cache-strategy.svc.cluster.local
+  - redis-cluster-1.redis-cluster-headless.ai-cache-strategy.svc.cluster.local
+  - redis-cluster-2.redis-cluster-headless.ai-cache-strategy.svc.cluster.local
+  - redis-cluster-3.redis-cluster-headless.ai-cache-strategy.svc.cluster.local
+  - redis-cluster-4.redis-cluster-headless.ai-cache-strategy.svc.cluster.local
+  - redis-cluster-5.redis-cluster-headless.ai-cache-strategy.svc.cluster.local
+  duration: 2160h # 90 days
+  renewBefore: 360h # 15 days
+
+---
+# Encryption in Transit for Cross-Region Sync
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cache-sync-tls-config
+  namespace: ai-cache-strategy
+data:
+  grpc-tls.yaml: |
+    # gRPC TLS Configuration for Cross-Region Sync
+    tls:
+      cert_file: /tls/sync.crt
+      key_file: /tls/sync.key
+      ca_file: /tls/ca.crt
+      
+      # Client certificate verification
+      client_auth_type: require_and_verify_client_cert
+      
+      # Cipher suites (FIPS 140-2 compliant)
+      cipher_suites:
+        - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
+      
+      # Protocol versions
+      min_version: TLSv1.2
+      max_version: TLSv1.3
+      
+    # Wedding data encryption
+    data_encryption:
+      algorithm: AES-256-GCM
+      key_rotation_days: 30
+      compress_before_encrypt: true
+      
+    # Regional compliance
+    data_residency:
+      eu_keys_only_in_eu: true
+      us_keys_only_in_us: true
+      cross_border_encryption_required: true
+
+---
+# Key Rotation CronJob
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: encryption-key-rotation
+  namespace: ai-cache-strategy
+  labels:
+    security.wedsync.com/key-rotation: "automated"
+spec:
+  schedule: "0 2 1 * *"  # First day of every month at 2 AM
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: key-rotation-service
+          containers:
+          - name: key-rotation
+            image: wedsync/key-rotation:v1.0.0
+            command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Starting monthly key rotation..."
+              
+              # Generate new encryption keys
+              NEW_KEY=$(openssl rand -hex 32)
+              NEW_VERSION="v$(date +%Y%m%d)"
+              
+              # Update AWS KMS
+              aws kms encrypt \
+                --key-id alias/wedsync-master-key \
+                --plaintext "$NEW_KEY" \
+                --output text \
+                --query CiphertextBlob > /tmp/new-key.encrypted
+              
+              # Update Kubernetes secrets
+              kubectl create secret generic redis-encryption-keys-new \
+                --from-literal=master-key="$NEW_KEY" \
+                --from-literal=key-version="$NEW_VERSION" \
+                -n ai-cache-strategy
+              
+              # Rolling restart Redis with new keys
+              kubectl rollout restart statefulset/redis-cluster -n ai-cache-strategy
+              
+              # Wait for restart completion
+              kubectl rollout status statefulset/redis-cluster -n ai-cache-strategy --timeout=600s
+              
+              # Update secret reference
+              kubectl patch secret encryption-master-key \
+                --patch "{\"data\":{\"master-key\":\"$(echo -n $NEW_KEY | base64 -w0)\",\"key-version\":\"$(echo -n $NEW_VERSION | base64 -w0)\"}}" \
+                -n ai-cache-strategy
+              
+              # Clean up old keys (keep 2 versions for rollback)
+              kubectl delete secret redis-encryption-keys-old || true
+              kubectl create secret generic redis-encryption-keys-old \
+                --from-literal=backup-key="$(kubectl get secret redis-encryption-keys -o jsonpath='{.data.master-key}' | base64 -d)" \
+                -n ai-cache-strategy
+              
+              echo "Key rotation completed successfully"
+              
+              # Send notification
+              curl -X POST "$WEBHOOK_URL" \
+                -H 'Content-Type: application/json' \
+                -d "{\"text\":\"🔐 WedSync AI Cache: Monthly encryption key rotation completed for $(date +%B\ %Y)\"}"
+              
+            env:
+            - name: WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: security-alerts
+                  key: webhook-url
+            resources:
+              requests:
+                cpu: 100m
+                memory: 128Mi
+              limits:
+                cpu: 200m
+                memory: 256Mi
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 1000
+              allowPrivilegeEscalation: false
+          restartPolicy: OnFailure
+
+---
+# Sealed Secrets for GitOps
+apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  name: database-encryption-keys
+  namespace: ai-cache-strategy
+spec:
+  encryptedData:
+    # These would be encrypted with the sealed secrets controller
+    db-encryption-key: AgBy3i4OJSWK+PiTySYZZA9rO43cGHzMJ...
+    field-level-key: AgAKAoiQm+0DKjGKN+U2Y8L9K4cI9nGh7...
+    pii-encryption-key: AgCKsj0DT4o5rY7x8A9cPwKJcA5nG9mJ2...
+  template:
+    metadata:
+      name: database-encryption-keys
+      namespace: ai-cache-strategy
+    type: Opaque
+
+---
+# Vault Integration for Enterprise Key Management
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultAuth
+metadata:
+  name: wedding-data-vault-auth
+  namespace: ai-cache-strategy
+spec:
+  method: kubernetes
+  mount: kubernetes
+  kubernetes:
+    role: wedsync-ai-cache
+    serviceAccount: vault-auth
+    audiences:
+    - vault
+
+---
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultStaticSecret
+metadata:
+  name: wedding-encryption-keys
+  namespace: ai-cache-strategy
+spec:
+  type: kv-v2
+  mount: wedsync-secrets
+  path: ai-cache/encryption-keys
+  destination:
+    name: vault-encryption-keys
+    create: true
+  refreshAfter: 30s
+  vaultAuthRef: wedding-data-vault-auth
+
+---
+# Encryption Service Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: encryption-service
+  namespace: ai-cache-strategy
+  labels:
+    security.wedsync.com/service: "encryption"
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: encryption-service
+  template:
+    metadata:
+      labels:
+        app: encryption-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+    spec:
+      serviceAccountName: encryption-service
+      containers:
+      - name: encryption-service
+        image: wedsync/encryption-service:v1.0.0
+        ports:
+        - containerPort: 8080
+          name: http
+        - containerPort: 9092
+          name: grpc
+        env:
+        - name: ENCRYPTION_MODE
+          value: "AES-256-GCM"
+        - name: KEY_ROTATION_INTERVAL
+          value: "30d"
+        - name: COMPLIANCE_LEVEL
+          value: "SOC2_GDPR"
+        - name: WEDDING_DATA_CLASSIFICATION
+          value: "HIGHLY_SENSITIVE"
+        - name: REGION
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.annotations['topology.kubernetes.io/region']
+        volumeMounts:
+        - name: tls-certs
+          mountPath: /tls
+          readOnly: true
+        - name: encryption-keys
+          mountPath: /keys
+          readOnly: true
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+      volumes:
+      - name: tls-certs
+        secret:
+          secretName: encryption-service-tls
+      - name: encryption-keys
+        secret:
+          secretName: vault-encryption-keys
+
+---
+# HSM Integration for Enterprise Customers
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hsm-config
+  namespace: ai-cache-strategy
+  labels:
+    security.wedsync.com/hsm: "enabled"
+data:
+  hsm.conf: |
+    # Hardware Security Module Configuration
+    # For enterprise customers requiring FIPS 140-2 Level 3
+    
+    hsm:
+      enabled: true
+      provider: "AWS_CLOUDHSM"  # or "AZURE_DEDICATED_HSM"
+      
+      # HSM cluster configuration
+      cluster_id: "cluster-abcdef123456"
+      
+      # Key specifications for wedding data
+      wedding_data_key:
+        type: "AES"
+        size: 256
+        usage: ["encrypt", "decrypt"]
+        extractable: false
+        
+      vendor_data_key:
+        type: "AES"
+        size: 256
+        usage: ["encrypt", "decrypt"]
+        extractable: false
+        
+      # Compliance settings
+      audit_logging: true
+      key_rotation_enforcement: true
+      tamper_protection: true
+      
+      # Regional compliance
+      data_sovereignty:
+        eu_data_eu_keys: true
+        us_data_us_keys: true
+        cross_border_restrictions: true
+
+---
+# Data Classification for Encryption Policy
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: data-classification-policy
+  namespace: ai-cache-strategy
+data:
+  policy.yaml: |
+    # WedSync Data Classification and Encryption Policy
+    
+    data_classifications:
+      public:
+        encryption_required: false
+        examples: ["API documentation", "public pricing"]
+        
+      internal:
+        encryption_required: true
+        encryption_level: "AES-128"
+        examples: ["system logs", "performance metrics"]
+        
+      confidential:
+        encryption_required: true
+        encryption_level: "AES-256"
+        key_rotation_days: 90
+        examples: ["vendor business data", "financial information"]
+        
+      highly_sensitive:
+        encryption_required: true
+        encryption_level: "AES-256-GCM"
+        key_rotation_days: 30
+        field_level_encryption: true
+        hsm_required: true  # For enterprise customers
+        examples: ["wedding guest lists", "personal photos", "couple information"]
+        compliance: ["GDPR", "CCPA", "SOC2"]
+        
+    # Wedding-specific data handling
+    wedding_data_policy:
+      guest_information:
+        classification: "highly_sensitive"
+        retention_years: 7
+        right_to_deletion: true
+        cross_border_restrictions: true
+        
+      wedding_photos:
+        classification: "highly_sensitive"
+        encryption_at_rest: "AES-256-GCM"
+        encryption_in_transit: "TLS 1.3"
+        backup_encryption: "required"
+        
+      payment_information:
+        classification: "highly_sensitive"
+        pci_dss_compliance: true
+        tokenization_required: true
+        hsm_storage: true

@@ -1,0 +1,687 @@
+import { createClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+import crypto from 'crypto';
+
+export interface PlatformCredentials {
+  google?: {
+    api_key: string;
+    place_id: string;
+    client_id?: string;
+    client_secret?: string;
+  };
+  facebook?: {
+    access_token: string;
+    page_id: string;
+    app_secret: string;
+  };
+  yelp?: {
+    api_key: string;
+    business_id: string;
+  };
+  knot?: {
+    api_key: string;
+    vendor_id: string;
+  };
+  weddingwire?: {
+    api_key: string;
+    vendor_id: string;
+  };
+}
+
+export interface ReviewSubmission {
+  platform: string;
+  platform_review_id: string;
+  rating: number;
+  content: string;
+  reviewer_name: string;
+  reviewer_email?: string;
+  review_date: string;
+  review_url?: string;
+  metadata?: Record<string, any>;
+}
+
+const GoogleReviewSchema = z.object({
+  reviewId: z.string(),
+  rating: z.number().min(1).max(5),
+  comment: z.string(),
+  authorName: z.string(),
+  createTime: z.string(),
+  updateTime: z.string().optional(),
+});
+
+const FacebookReviewSchema = z.object({
+  id: z.string(),
+  rating: z.number().min(1).max(5),
+  review_text: z.string(),
+  reviewer: z.object({
+    name: z.string(),
+    id: z.string(),
+  }),
+  created_time: z.string(),
+});
+
+const YelpReviewSchema = z.object({
+  id: z.string(),
+  rating: z.number().min(1).max(5),
+  text: z.string(),
+  user: z.object({
+    name: z.string(),
+    id: z.string(),
+  }),
+  time_created: z.string(),
+});
+
+export class PlatformIntegrations {
+  private supabase = createClient();
+
+  /**
+   * Encrypt platform credentials for secure storage
+   */
+  private encryptCredentials(credentials: string, key: string): string {
+    const cipher = crypto.createCipher('aes-256-cbc', key);
+    let encrypted = cipher.update(credentials, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    return encrypted;
+  }
+
+  /**
+   * Decrypt platform credentials
+   */
+  private decryptCredentials(
+    encryptedCredentials: string,
+    key: string,
+  ): string {
+    const decipher = crypto.createDecipher('aes-256-cbc', key);
+    let decrypted = decipher.update(encryptedCredentials, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    return decrypted;
+  }
+
+  /**
+   * Store platform credentials securely
+   */
+  async storePlatformCredentials(
+    supplierId: string,
+    platform: string,
+    credentials: any,
+  ): Promise<void> {
+    const encryptionKey = process.env.PLATFORM_CREDENTIALS_KEY || 'default-key';
+    const encryptedCreds = this.encryptCredentials(
+      JSON.stringify(credentials),
+      encryptionKey,
+    );
+
+    const { error } = await this.supabase
+      .from('supplier_platform_integrations')
+      .upsert({
+        supplier_id: supplierId,
+        platform,
+        credentials: encryptedCreds,
+        is_active: true,
+        updated_at: new Date().toISOString(),
+      });
+
+    if (error) {
+      throw new Error(
+        `Failed to store ${platform} credentials: ${error.message}`,
+      );
+    }
+  }
+
+  /**
+   * Get platform credentials for a supplier
+   */
+  async getPlatformCredentials(
+    supplierId: string,
+    platform: string,
+  ): Promise<any> {
+    const { data, error } = await this.supabase
+      .from('supplier_platform_integrations')
+      .select('credentials')
+      .eq('supplier_id', supplierId)
+      .eq('platform', platform)
+      .eq('is_active', true)
+      .single();
+
+    if (error || !data) {
+      throw new Error(`No credentials found for platform: ${platform}`);
+    }
+
+    const encryptionKey = process.env.PLATFORM_CREDENTIALS_KEY || 'default-key';
+    return JSON.parse(this.decryptCredentials(data.credentials, encryptionKey));
+  }
+
+  /**
+   * Google My Business Integration
+   */
+  async fetchGoogleReviews(supplierId: string): Promise<ReviewSubmission[]> {
+    try {
+      const credentials = await this.getPlatformCredentials(
+        supplierId,
+        'google',
+      );
+      const { api_key, place_id } = credentials;
+
+      const response = await fetch(
+        `https://maps.googleapis.com/maps/api/place/details/json?place_id=${place_id}&fields=reviews&key=${api_key}`,
+        {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+
+      if (!response.ok) {
+        throw new Error(`Google API error: ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      if (data.status !== 'OK') {
+        throw new Error(`Google API error: ${data.status}`);
+      }
+
+      const reviews: ReviewSubmission[] =
+        data.result.reviews?.map((review: any) => ({
+          platform: 'google',
+          platform_review_id: review.author_name + '_' + review.time, // Google doesn't provide review ID
+          rating: review.rating,
+          content: review.text || '',
+          reviewer_name: review.author_name,
+          review_date: new Date(review.time * 1000).toISOString(),
+          review_url: review.author_url,
+          metadata: {
+            relative_time_description: review.relative_time_description,
+            profile_photo_url: review.profile_photo_url,
+            language: review.language,
+          },
+        })) || [];
+
+      return reviews;
+    } catch (error) {
+      console.error('Google reviews fetch failed:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Process Google webhook for new reviews
+   */
+  async processGoogleWebhook(payload: any): Promise<ReviewSubmission | null> {
+    try {
+      const validated = GoogleReviewSchema.parse(payload.review);
+
+      return {
+        platform: 'google',
+        platform_review_id: validated.reviewId,
+        rating: validated.rating,
+        content: validated.comment,
+        reviewer_name: validated.authorName,
+        review_date: validated.createTime,
+        metadata: {
+          account_name: payload.account?.name,
+          update_time: validated.updateTime,
+        },
+      };
+    } catch (error) {
+      console.error('Google webhook processing failed:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Facebook Pages Integration
+   */
+  async fetchFacebookReviews(supplierId: string): Promise<ReviewSubmission[]> {
+    try {
+      const credentials = await this.getPlatformCredentials(
+        supplierId,
+        'facebook',
+      );
+      const { access_token, page_id } = credentials;
+
+      const response = await fetch(
+        `https://graph.facebook.com/v18.0/${page_id}/ratings?access_token=${access_token}&fields=reviewer,rating,review_text,created_time,open_graph_story`,
+        {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+
+      if (!response.ok) {
+        throw new Error(`Facebook API error: ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      if (data.error) {
+        throw new Error(`Facebook API error: ${data.error.message}`);
+      }
+
+      const reviews: ReviewSubmission[] =
+        data.data?.map((review: any) => ({
+          platform: 'facebook',
+          platform_review_id:
+            review.open_graph_story?.id || `fb_${review.created_time}`,
+          rating: review.rating,
+          content: review.review_text || '',
+          reviewer_name: review.reviewer?.name || 'Anonymous',
+          review_date: review.created_time,
+          metadata: {
+            reviewer_id: review.reviewer?.id,
+            story_id: review.open_graph_story?.id,
+          },
+        })) || [];
+
+      return reviews;
+    } catch (error) {
+      console.error('Facebook reviews fetch failed:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Process Facebook webhook for new reviews
+   */
+  async processFacebookWebhook(payload: any): Promise<ReviewSubmission | null> {
+    try {
+      if (!payload.entry?.[0]?.changes?.[0]?.value) {
+        return null;
+      }
+
+      const reviewData = payload.entry[0].changes[0].value;
+
+      if (reviewData.item !== 'review' || reviewData.verb !== 'add') {
+        return null;
+      }
+
+      return {
+        platform: 'facebook',
+        platform_review_id: reviewData.review_id,
+        rating: reviewData.rating || 5, // Facebook uses recommendation_type
+        content: reviewData.review_text || '',
+        reviewer_name: reviewData.reviewer_name || 'Anonymous',
+        review_date: new Date(reviewData.created_time * 1000).toISOString(),
+        metadata: {
+          recommendation_type: reviewData.recommendation_type,
+          page_id: payload.entry[0].id,
+        },
+      };
+    } catch (error) {
+      console.error('Facebook webhook processing failed:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Yelp Business API Integration
+   */
+  async fetchYelpReviews(supplierId: string): Promise<ReviewSubmission[]> {
+    try {
+      const credentials = await this.getPlatformCredentials(supplierId, 'yelp');
+      const { api_key, business_id } = credentials;
+
+      const response = await fetch(
+        `https://api.yelp.com/v3/businesses/${business_id}/reviews`,
+        {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${api_key}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+
+      if (!response.ok) {
+        throw new Error(`Yelp API error: ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      const reviews: ReviewSubmission[] =
+        data.reviews?.map((review: any) => ({
+          platform: 'yelp',
+          platform_review_id: review.id,
+          rating: review.rating,
+          content: review.text,
+          reviewer_name: review.user.name,
+          review_date: review.time_created,
+          review_url: review.url,
+          metadata: {
+            user_id: review.user.id,
+            user_profile_url: review.user.profile_url,
+            user_image_url: review.user.image_url,
+          },
+        })) || [];
+
+      return reviews;
+    } catch (error) {
+      console.error('Yelp reviews fetch failed:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Process Yelp webhook for new reviews
+   */
+  async processYelpWebhook(payload: any): Promise<ReviewSubmission | null> {
+    try {
+      const validated = YelpReviewSchema.parse(payload.review);
+
+      return {
+        platform: 'yelp',
+        platform_review_id: validated.id,
+        rating: validated.rating,
+        content: validated.text,
+        reviewer_name: validated.user.name,
+        review_date: validated.time_created,
+        metadata: {
+          user_id: validated.user.id,
+          business_id: payload.business?.id,
+        },
+      };
+    } catch (error) {
+      console.error('Yelp webhook processing failed:', error);
+      return null;
+    }
+  }
+
+  /**
+   * The Knot Integration (placeholder - API details would depend on actual API)
+   */
+  async fetchKnotReviews(supplierId: string): Promise<ReviewSubmission[]> {
+    try {
+      const credentials = await this.getPlatformCredentials(supplierId, 'knot');
+      // Implementation would depend on The Knot's actual API
+
+      return [];
+    } catch (error) {
+      console.error('The Knot reviews fetch failed:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Wedding Wire Integration (placeholder - API details would depend on actual API)
+   */
+  async fetchWeddingWireReviews(
+    supplierId: string,
+  ): Promise<ReviewSubmission[]> {
+    try {
+      const credentials = await this.getPlatformCredentials(
+        supplierId,
+        'weddingwire',
+      );
+      // Implementation would depend on Wedding Wire's actual API
+
+      return [];
+    } catch (error) {
+      console.error('Wedding Wire reviews fetch failed:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Sync reviews from all connected platforms
+   */
+  async syncAllPlatformReviews(supplierId: string): Promise<{
+    synced: number;
+    errors: string[];
+  }> {
+    const results = { synced: 0, errors: [] as string[] };
+
+    // Get all active platform integrations
+    const { data: integrations } = await this.supabase
+      .from('supplier_platform_integrations')
+      .select('platform')
+      .eq('supplier_id', supplierId)
+      .eq('is_active', true);
+
+    if (!integrations?.length) {
+      return results;
+    }
+
+    // Sync each platform
+    for (const integration of integrations) {
+      try {
+        let reviews: ReviewSubmission[] = [];
+
+        switch (integration.platform) {
+          case 'google':
+            reviews = await this.fetchGoogleReviews(supplierId);
+            break;
+          case 'facebook':
+            reviews = await this.fetchFacebookReviews(supplierId);
+            break;
+          case 'yelp':
+            reviews = await this.fetchYelpReviews(supplierId);
+            break;
+          case 'knot':
+            reviews = await this.fetchKnotReviews(supplierId);
+            break;
+          case 'weddingwire':
+            reviews = await this.fetchWeddingWireReviews(supplierId);
+            break;
+        }
+
+        // Store new reviews
+        for (const review of reviews) {
+          await this.storeReview(supplierId, review);
+          results.synced++;
+        }
+      } catch (error) {
+        const errorMsg = `${integration.platform}: ${error instanceof Error ? error.message : 'Unknown error'}`;
+        results.errors.push(errorMsg);
+        console.error(
+          `Platform sync failed for ${integration.platform}:`,
+          error,
+        );
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Store a review from external platform
+   */
+  async storeReview(
+    supplierId: string,
+    reviewData: ReviewSubmission,
+  ): Promise<string> {
+    // Check if review already exists
+    const { data: existing } = await this.supabase
+      .from('reviews')
+      .select('id')
+      .eq('supplier_id', supplierId)
+      .eq('platform', reviewData.platform)
+      .eq('platform_review_id', reviewData.platform_review_id)
+      .single();
+
+    if (existing) {
+      return existing.id; // Already exists
+    }
+
+    // Calculate sentiment score (simple implementation)
+    const sentimentScore = this.calculateSimpleSentiment(reviewData.content);
+
+    const reviewRecord = {
+      id: crypto.randomUUID(),
+      supplier_id: supplierId,
+      platform: reviewData.platform,
+      platform_review_id: reviewData.platform_review_id,
+      rating: reviewData.rating,
+      content: reviewData.content,
+      reviewer_name: reviewData.reviewer_name,
+      reviewer_email: reviewData.reviewer_email,
+      verified: true, // Platform reviews are considered verified
+      status: 'approved',
+      sentiment_score: sentimentScore,
+      review_url: reviewData.review_url,
+      platform_metadata: reviewData.metadata || {},
+      created_at: reviewData.review_date,
+      updated_at: new Date().toISOString(),
+    };
+
+    const { data: review, error } = await this.supabase
+      .from('reviews')
+      .insert(reviewRecord)
+      .select('id')
+      .single();
+
+    if (error) {
+      throw new Error(`Failed to store review: ${error.message}`);
+    }
+
+    // Update supplier average rating
+    await this.updateSupplierRating(supplierId);
+
+    return review.id;
+  }
+
+  /**
+   * Update supplier's average rating
+   */
+  private async updateSupplierRating(supplierId: string): Promise<void> {
+    const { data } = await this.supabase
+      .from('reviews')
+      .select('rating')
+      .eq('supplier_id', supplierId)
+      .eq('status', 'approved');
+
+    if (data?.length) {
+      const averageRating =
+        data.reduce((sum, r) => sum + r.rating, 0) / data.length;
+      const reviewCount = data.length;
+
+      await this.supabase
+        .from('suppliers')
+        .update({
+          average_rating: averageRating,
+          review_count: reviewCount,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', supplierId);
+    }
+  }
+
+  /**
+   * Simple sentiment analysis (would be replaced with AI service)
+   */
+  private calculateSimpleSentiment(content: string): number {
+    const positiveWords = [
+      'excellent',
+      'amazing',
+      'wonderful',
+      'great',
+      'fantastic',
+      'perfect',
+      'love',
+      'best',
+      'outstanding',
+      'professional',
+    ];
+    const negativeWords = [
+      'terrible',
+      'awful',
+      'horrible',
+      'worst',
+      'bad',
+      'disappointing',
+      'unprofessional',
+      'poor',
+      'nightmare',
+    ];
+
+    const lowerContent = content.toLowerCase();
+
+    let positiveCount = 0;
+    let negativeCount = 0;
+
+    positiveWords.forEach((word) => {
+      if (lowerContent.includes(word)) positiveCount++;
+    });
+
+    negativeWords.forEach((word) => {
+      if (lowerContent.includes(word)) negativeCount++;
+    });
+
+    if (positiveCount > negativeCount) {
+      return Math.min(0.5 + positiveCount * 0.1, 1.0);
+    } else if (negativeCount > positiveCount) {
+      return Math.max(0.5 - negativeCount * 0.1, -1.0);
+    }
+
+    return 0.0; // Neutral
+  }
+
+  /**
+   * Test platform connection
+   */
+  async testPlatformConnection(
+    supplierId: string,
+    platform: string,
+  ): Promise<{ success: boolean; message: string }> {
+    try {
+      switch (platform) {
+        case 'google':
+          const googleReviews = await this.fetchGoogleReviews(supplierId);
+          return {
+            success: true,
+            message: `Connected successfully. Found ${googleReviews.length} reviews.`,
+          };
+
+        case 'facebook':
+          const facebookReviews = await this.fetchFacebookReviews(supplierId);
+          return {
+            success: true,
+            message: `Connected successfully. Found ${facebookReviews.length} reviews.`,
+          };
+
+        case 'yelp':
+          const yelpReviews = await this.fetchYelpReviews(supplierId);
+          return {
+            success: true,
+            message: `Connected successfully. Found ${yelpReviews.length} reviews.`,
+          };
+
+        default:
+          return {
+            success: false,
+            message: `Platform ${platform} not supported`,
+          };
+      }
+    } catch (error) {
+      return {
+        success: false,
+        message:
+          error instanceof Error ? error.message : 'Connection test failed',
+      };
+    }
+  }
+
+  /**
+   * Get platform integration status
+   */
+  async getPlatformStatus(supplierId: string): Promise<Record<string, any>> {
+    const { data: integrations } = await this.supabase
+      .from('supplier_platform_integrations')
+      .select('platform, is_active, updated_at, last_sync_at')
+      .eq('supplier_id', supplierId);
+
+    const status: Record<string, any> = {};
+
+    integrations?.forEach((integration) => {
+      status[integration.platform] = {
+        connected: integration.is_active,
+        last_updated: integration.updated_at,
+        last_synced: integration.last_sync_at,
+      };
+    });
+
+    return status;
+  }
+}

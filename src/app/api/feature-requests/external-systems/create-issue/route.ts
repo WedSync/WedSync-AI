@@ -1,0 +1,165 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import { productManagementIntegration } from '@/lib/integrations/external-systems/ProductManagementIntegration';
+import { userContextService } from '@/lib/feature-requests/services/UserContextEnrichmentService';
+import { z } from 'zod';
+
+// Validation schema
+const CreateExternalIssueSchema = z.object({
+  featureRequestId: z.string().uuid(),
+  system: z.enum(['linear', 'github', 'jira']),
+  config: z
+    .object({
+      linear: z
+        .object({
+          teamId: z.string(),
+          apiKey: z.string(),
+          webhookSecret: z.string(),
+          enabled: z.boolean(),
+        })
+        .optional(),
+      github: z
+        .object({
+          owner: z.string(),
+          repo: z.string(),
+          token: z.string(),
+          webhookSecret: z.string(),
+          enabled: z.boolean(),
+        })
+        .optional(),
+      jira: z
+        .object({
+          domain: z.string(),
+          email: z.string(),
+          apiToken: z.string(),
+          projectKey: z.string(),
+          webhookSecret: z.string(),
+          enabled: z.boolean(),
+        })
+        .optional(),
+      slack: z
+        .object({
+          botToken: z.string(),
+          channel: z.string(),
+          webhookUrl: z.string(),
+          enabled: z.boolean(),
+        })
+        .optional(),
+    })
+    .optional(),
+});
+
+/**
+ * POST /api/feature-requests/external-systems/create-issue
+ * Create issue in external product management tool
+ */
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+
+    // Authenticate user
+    const {
+      data: { session },
+      error: authError,
+    } = await supabase.auth.getSession();
+    if (authError || !session) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 },
+      );
+    }
+
+    // Validate request
+    const body = await request.json();
+    const validatedData = CreateExternalIssueSchema.parse(body);
+
+    // Get feature request
+    const { data: featureRequest, error: frError } = await supabase
+      .from('feature_requests')
+      .select('*')
+      .eq('id', validatedData.featureRequestId)
+      .single();
+
+    if (frError || !featureRequest) {
+      return NextResponse.json(
+        { error: 'Feature request not found' },
+        { status: 404 },
+      );
+    }
+
+    // Check if user has permission (admin or feature request creator)
+    if (featureRequest.user_id !== session.user.id) {
+      const { data: profile } = await supabase
+        .from('user_profiles')
+        .select('role')
+        .eq('id', session.user.id)
+        .single();
+
+      if (profile?.role !== 'admin') {
+        return NextResponse.json(
+          { error: 'Insufficient permissions' },
+          { status: 403 },
+        );
+      }
+    }
+
+    // Get user context for wedding industry enrichment
+    const userContext = await userContextService.enrichUserContext(
+      session.user.id,
+      featureRequest,
+    );
+
+    // Configure integration service
+    const integrationService = validatedData.config
+      ? new (
+          await import(
+            '@/lib/integrations/external-systems/ProductManagementIntegration'
+          )
+        ).ProductManagementIntegrationService(validatedData.config)
+      : productManagementIntegration;
+
+    // Create external issue
+    const result = await integrationService.createExternalIssue(
+      featureRequest,
+      userContext,
+      validatedData.system,
+    );
+
+    if (!result.success) {
+      return NextResponse.json(
+        {
+          error: 'Failed to create external issue',
+          details: result.error,
+        },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      externalIssue: result.externalIssue,
+      message: `Successfully created ${validatedData.system} issue`,
+    });
+  } catch (error) {
+    console.error('External issue creation error:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Invalid request data',
+          details: error.errors,
+        },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

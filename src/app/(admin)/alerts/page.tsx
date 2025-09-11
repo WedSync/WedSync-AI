@@ -1,0 +1,621 @@
+'use client';
+
+import React, { useState, useEffect, useCallback } from 'react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Clock,
+  MessageSquare,
+  Users,
+  Activity,
+  TrendingUp,
+  Zap,
+  Heart,
+  Filter,
+  Search,
+  MoreHorizontal,
+} from 'lucide-react';
+import { useToast } from '@/hooks/use-toast';
+
+interface AlertData {
+  id: string;
+  type:
+    | 'system'
+    | 'performance'
+    | 'security'
+    | 'wedding_emergency'
+    | 'vendor_critical';
+  severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL' | 'WEDDING_EMERGENCY';
+  title: string;
+  description: string;
+  source: string;
+  timestamp: Date;
+  status: 'active' | 'acknowledged' | 'resolved' | 'escalated';
+  acknowledgedBy?: string;
+  resolvedBy?: string;
+  weddingContext?: {
+    weddingId: string;
+    weddingDate: Date;
+    venue: string;
+    guestCount: number;
+    criticalityLevel: 'low' | 'medium' | 'high' | 'critical';
+  };
+  channels: string[];
+  escalationLevel: number;
+  metadata: Record<string, any>;
+}
+
+interface AlertStats {
+  total: number;
+  active: number;
+  critical: number;
+  resolved: number;
+  averageResolutionTime: number;
+  weddingEmergencies: number;
+}
+
+export default function AlertDashboard() {
+  const [alerts, setAlerts] = useState<AlertData[]>([]);
+  const [filteredAlerts, setFilteredAlerts] = useState<AlertData[]>([]);
+  const [stats, setStats] = useState<AlertStats>({
+    total: 0,
+    active: 0,
+    critical: 0,
+    resolved: 0,
+    averageResolutionTime: 0,
+    weddingEmergencies: 0,
+  });
+  const [loading, setLoading] = useState(true);
+  const [selectedSeverity, setSelectedSeverity] = useState<string>('all');
+  const [selectedStatus, setSelectedStatus] = useState<string>('all');
+  const [searchTerm, setSearchTerm] = useState('');
+  const [activeTab, setActiveTab] = useState('overview');
+  const { toast } = useToast();
+
+  // WebSocket connection for real-time updates
+  useEffect(() => {
+    const ws = new WebSocket(
+      process.env.NODE_ENV === 'production'
+        ? 'wss://app.wedsync.com/api/alerts/ws'
+        : 'ws://localhost:3000/api/alerts/ws',
+    );
+
+    ws.onopen = () => {
+      console.log('Alert WebSocket connected');
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+
+        switch (data.type) {
+          case 'alert_created':
+            handleNewAlert(data.alert);
+            break;
+          case 'alert_acknowledged':
+            handleAlertUpdate(data.alertId, {
+              status: 'acknowledged',
+              acknowledgedBy: data.acknowledgedBy,
+            });
+            break;
+          case 'alert_resolved':
+            handleAlertUpdate(data.alertId, {
+              status: 'resolved',
+              resolvedBy: data.resolvedBy,
+            });
+            break;
+          case 'stats_update':
+            setStats(data.stats);
+            break;
+        }
+      } catch (error) {
+        console.error('Error parsing WebSocket message:', error);
+      }
+    };
+
+    ws.onclose = () => {
+      console.log('Alert WebSocket disconnected');
+      // Attempt to reconnect after 5 seconds
+      setTimeout(() => {
+        window.location.reload();
+      }, 5000);
+    };
+
+    ws.onerror = (error) => {
+      console.error('Alert WebSocket error:', error);
+    };
+
+    return () => {
+      ws.close();
+    };
+  }, []);
+
+  // Load initial alerts
+  useEffect(() => {
+    loadAlerts();
+  }, []);
+
+  // Filter alerts based on search and filters
+  useEffect(() => {
+    let filtered = alerts;
+
+    if (searchTerm) {
+      filtered = filtered.filter(
+        (alert) =>
+          alert.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+          alert.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
+          alert.source.toLowerCase().includes(searchTerm.toLowerCase()),
+      );
+    }
+
+    if (selectedSeverity !== 'all') {
+      filtered = filtered.filter(
+        (alert) => alert.severity === selectedSeverity,
+      );
+    }
+
+    if (selectedStatus !== 'all') {
+      filtered = filtered.filter((alert) => alert.status === selectedStatus);
+    }
+
+    setFilteredAlerts(filtered);
+  }, [alerts, searchTerm, selectedSeverity, selectedStatus]);
+
+  const loadAlerts = async () => {
+    try {
+      setLoading(true);
+      const response = await fetch('/api/alerts?limit=100');
+      const data = await response.json();
+
+      if (data.success) {
+        setAlerts(
+          data.alerts.map((alert: any) => ({
+            ...alert,
+            timestamp: new Date(alert.timestamp),
+            weddingContext: alert.weddingContext
+              ? {
+                  ...alert.weddingContext,
+                  weddingDate: new Date(alert.weddingContext.weddingDate),
+                }
+              : undefined,
+          })),
+        );
+        setStats(data.stats);
+      }
+    } catch (error) {
+      console.error('Error loading alerts:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to load alerts. Please refresh the page.',
+        variant: 'destructive',
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleNewAlert = (alert: AlertData) => {
+    setAlerts((prev) => [alert, ...prev]);
+
+    // Show toast for critical alerts
+    if (['CRITICAL', 'WEDDING_EMERGENCY'].includes(alert.severity)) {
+      toast({
+        title: `${alert.severity} Alert`,
+        description: alert.title,
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleAlertUpdate = (alertId: string, updates: Partial<AlertData>) => {
+    setAlerts((prev) =>
+      prev.map((alert) =>
+        alert.id === alertId ? { ...alert, ...updates } : alert,
+      ),
+    );
+  };
+
+  const acknowledgeAlert = async (alertId: string) => {
+    try {
+      const response = await fetch(`/api/alerts/${alertId}/acknowledge`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      if (response.ok) {
+        toast({
+          title: 'Alert Acknowledged',
+          description: 'The alert has been acknowledged successfully.',
+        });
+      }
+    } catch (error) {
+      console.error('Error acknowledging alert:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to acknowledge alert.',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const resolveAlert = async (alertId: string) => {
+    try {
+      const response = await fetch(`/api/alerts/${alertId}/resolve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      if (response.ok) {
+        toast({
+          title: 'Alert Resolved',
+          description: 'The alert has been resolved successfully.',
+        });
+      }
+    } catch (error) {
+      console.error('Error resolving alert:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to resolve alert.',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const escalateAlert = async (alertId: string) => {
+    try {
+      const response = await fetch(`/api/alerts/${alertId}/escalate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      if (response.ok) {
+        toast({
+          title: 'Alert Escalated',
+          description: 'The alert has been escalated to the next level.',
+        });
+      }
+    } catch (error) {
+      console.error('Error escalating alert:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to escalate alert.',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const getSeverityColor = (severity: string) => {
+    switch (severity) {
+      case 'LOW':
+        return 'bg-blue-100 text-blue-800 border-blue-200';
+      case 'MEDIUM':
+        return 'bg-yellow-100 text-yellow-800 border-yellow-200';
+      case 'HIGH':
+        return 'bg-orange-100 text-orange-800 border-orange-200';
+      case 'CRITICAL':
+        return 'bg-red-100 text-red-800 border-red-200';
+      case 'WEDDING_EMERGENCY':
+        return 'bg-purple-100 text-purple-800 border-purple-200';
+      default:
+        return 'bg-gray-100 text-gray-800 border-gray-200';
+    }
+  };
+
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'active':
+        return 'bg-red-100 text-red-800 border-red-200';
+      case 'acknowledged':
+        return 'bg-yellow-100 text-yellow-800 border-yellow-200';
+      case 'resolved':
+        return 'bg-green-100 text-green-800 border-green-200';
+      case 'escalated':
+        return 'bg-purple-100 text-purple-800 border-purple-200';
+      default:
+        return 'bg-gray-100 text-gray-800 border-gray-200';
+    }
+  };
+
+  const getSeverityIcon = (severity: string) => {
+    switch (severity) {
+      case 'WEDDING_EMERGENCY':
+        return <Heart className="h-4 w-4 text-purple-600" />;
+      case 'CRITICAL':
+        return <AlertTriangle className="h-4 w-4 text-red-600" />;
+      case 'HIGH':
+        return <Zap className="h-4 w-4 text-orange-600" />;
+      default:
+        return <Activity className="h-4 w-4 text-blue-600" />;
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mx-auto"></div>
+          <p className="mt-4 text-gray-600">Loading alerts...</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-50 p-6">
+      <div className="max-w-7xl mx-auto space-y-6">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-bold text-gray-900">
+              Alert Dashboard
+            </h1>
+            <p className="mt-1 text-gray-600">
+              Monitor and manage system alerts in real-time
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1 px-3 py-1 bg-green-100 rounded-full">
+              <div className="h-2 w-2 bg-green-500 rounded-full animate-pulse"></div>
+              <span className="text-sm font-medium text-green-700">Live</span>
+            </div>
+            <Button variant="outline" onClick={loadAlerts}>
+              Refresh
+            </Button>
+          </div>
+        </div>
+
+        {/* Stats Overview */}
+        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-gray-600">Total Alerts</p>
+                  <p className="text-2xl font-bold">{stats.total}</p>
+                </div>
+                <Activity className="h-8 w-8 text-blue-600" />
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-gray-600">Active</p>
+                  <p className="text-2xl font-bold text-red-600">
+                    {stats.active}
+                  </p>
+                </div>
+                <AlertTriangle className="h-8 w-8 text-red-600" />
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-gray-600">Critical</p>
+                  <p className="text-2xl font-bold text-orange-600">
+                    {stats.critical}
+                  </p>
+                </div>
+                <Zap className="h-8 w-8 text-orange-600" />
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-gray-600">Resolved</p>
+                  <p className="text-2xl font-bold text-green-600">
+                    {stats.resolved}
+                  </p>
+                </div>
+                <CheckCircle2 className="h-8 w-8 text-green-600" />
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-gray-600">Wedding Emergency</p>
+                  <p className="text-2xl font-bold text-purple-600">
+                    {stats.weddingEmergencies}
+                  </p>
+                </div>
+                <Heart className="h-8 w-8 text-purple-600" />
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-gray-600">Avg Resolution</p>
+                  <p className="text-2xl font-bold">
+                    {Math.round(stats.averageResolutionTime / 60)}m
+                  </p>
+                </div>
+                <Clock className="h-8 w-8 text-gray-600" />
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Filters and Search */}
+        <Card>
+          <CardContent className="p-4">
+            <div className="flex flex-col sm:flex-row gap-4">
+              <div className="flex-1">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                  <input
+                    type="text"
+                    placeholder="Search alerts..."
+                    className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <select
+                className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                value={selectedSeverity}
+                onChange={(e) => setSelectedSeverity(e.target.value)}
+              >
+                <option value="all">All Severities</option>
+                <option value="LOW">Low</option>
+                <option value="MEDIUM">Medium</option>
+                <option value="HIGH">High</option>
+                <option value="CRITICAL">Critical</option>
+                <option value="WEDDING_EMERGENCY">Wedding Emergency</option>
+              </select>
+
+              <select
+                className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                value={selectedStatus}
+                onChange={(e) => setSelectedStatus(e.target.value)}
+              >
+                <option value="all">All Status</option>
+                <option value="active">Active</option>
+                <option value="acknowledged">Acknowledged</option>
+                <option value="resolved">Resolved</option>
+                <option value="escalated">Escalated</option>
+              </select>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Alerts Table */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5" />
+              Recent Alerts ({filteredAlerts.length})
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              {filteredAlerts.length === 0 ? (
+                <div className="text-center py-8">
+                  <CheckCircle2 className="h-12 w-12 text-green-500 mx-auto mb-4" />
+                  <h3 className="text-lg font-medium text-gray-900 mb-2">
+                    No alerts found
+                  </h3>
+                  <p className="text-gray-600">
+                    All systems are operating normally.
+                  </p>
+                </div>
+              ) : (
+                filteredAlerts.map((alert) => (
+                  <div
+                    key={alert.id}
+                    className={`border rounded-lg p-4 ${
+                      alert.status === 'active'
+                        ? 'border-red-200 bg-red-50'
+                        : alert.status === 'acknowledged'
+                          ? 'border-yellow-200 bg-yellow-50'
+                          : 'border-gray-200 bg-white'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-3 mb-2">
+                          {getSeverityIcon(alert.severity)}
+                          <h3 className="font-semibold text-gray-900">
+                            {alert.title}
+                          </h3>
+                          <Badge className={getSeverityColor(alert.severity)}>
+                            {alert.severity}
+                          </Badge>
+                          <Badge className={getStatusColor(alert.status)}>
+                            {alert.status}
+                          </Badge>
+                        </div>
+
+                        <p className="text-gray-700 mb-2">
+                          {alert.description}
+                        </p>
+
+                        <div className="flex items-center gap-4 text-sm text-gray-600">
+                          <span>Source: {alert.source}</span>
+                          <span>•</span>
+                          <span>{alert.timestamp.toLocaleString()}</span>
+                          {alert.weddingContext && (
+                            <>
+                              <span>•</span>
+                              <span className="flex items-center gap-1">
+                                <Heart className="h-3 w-3" />
+                                {alert.weddingContext.venue} -{' '}
+                                {alert.weddingContext.guestCount} guests
+                              </span>
+                            </>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-2 mt-2">
+                          {alert.channels.map((channel) => (
+                            <Badge
+                              key={channel}
+                              variant="outline"
+                              className="text-xs"
+                            >
+                              {channel}
+                            </Badge>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 ml-4">
+                        {alert.status === 'active' && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => acknowledgeAlert(alert.id)}
+                          >
+                            Acknowledge
+                          </Button>
+                        )}
+                        {alert.status === 'acknowledged' && (
+                          <Button
+                            size="sm"
+                            variant="primary"
+                            onClick={() => resolveAlert(alert.id)}
+                          >
+                            Resolve
+                          </Button>
+                        )}
+                        {['active', 'acknowledged'].includes(alert.status) && (
+                          <Button
+                            size="sm"
+                            variant="danger"
+                            onClick={() => escalateAlert(alert.id)}
+                          >
+                            Escalate
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}

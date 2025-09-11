@@ -1,0 +1,61 @@
+import { createClient } from '@/lib/supabase/server'
+import { redirect, notFound } from 'next/navigation'
+import DashboardTemplateBuilder from '@/components/dashboard-templates/DashboardTemplateBuilder'
+import { DashboardTemplateService } from '@/lib/services/dashboardTemplateService'
+
+interface EditTemplatePageProps {
+  params: Promise<{ id: string }>
+}
+
+export default async function EditTemplatePage({ params }: EditTemplatePageProps) {
+  const resolvedParams = await params
+  const supabase = await createClient()
+  
+  // Get current user
+  const { data: user } = await supabase.auth.getUser()
+  if (!user) {
+    redirect('/auth/login')
+  }
+
+  // Initialize template service and fetch existing template
+  const templateService = new DashboardTemplateService(supabase, user.id)
+  const existingTemplate = await templateService.getTemplateById(resolvedParams.id)
+  
+  if (!existingTemplate) {
+    notFound()
+  }
+
+  const handleSaveTemplate = async (template: any, sections: any[]) => {
+    'use server'
+    
+    const supabase = await createClient()
+    const { data: user } = await supabase.auth.getUser()
+    
+    if (!user) {
+      throw new Error('Not authenticated')
+    }
+
+    const templateService = new DashboardTemplateService(supabase, user.id)
+    await templateService.updateTemplate(resolvedParams.id, template, sections)
+    
+    // Redirect to template list on success
+    redirect('/dashboard-templates')
+  }
+
+  const handlePreviewTemplate = async (templateId: string) => {
+    'use server'
+    
+    redirect(`/dashboard-templates/${templateId}/preview`)
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-50">
+      <DashboardTemplateBuilder
+        supplierId={user.id}
+        existingTemplate={existingTemplate.template}
+        onSave={handleSaveTemplate}
+        onPreview={handlePreviewTemplate}
+      />
+    </div>
+  )
+}

@@ -1,0 +1,550 @@
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { testSupabase, testCleanup, testDataFactory, integrationHelpers } from '../../../../tests/integration/setup'
+
+// WS-092: Database Transaction Integration Tests
+// Critical for ensuring data consistency in wedding planning workflows
+
+describe('Database Transaction Integration', () => {
+  let testClient: any
+  let testVendor: any
+  let testJourney: any
+
+  beforeEach(async () => {
+    // Create test data
+    testClient = testDataFactory.createClient({
+      email: 'transaction-test@example.com',
+      wedding_date: '2025-10-20',
+    })
+    
+    testVendor = testDataFactory.createVendor({
+      business_name: 'Transaction Test Vendor',
+      category: 'catering',
+    })
+  })
+
+  afterEach(async () => {
+    await testCleanup.clearTestData()
+  })
+
+  describe('Complex Multi-Table Transactions', () => {
+    it('should handle client creation with all related entities atomically', async () => {
+      const clientWithRelations = {
+        ...testClient,
+        journey: {
+          name: 'Wedding Planning Journey',
+          status: 'active',
+          steps: [
+            { name: 'Initial Consultation', order: 1 },
+            { name: 'Venue Selection', order: 2 },
+            { name: 'Vendor Booking', order: 3 },
+          ],
+        },
+        tasks: [
+          { title: 'Book venue', due_date: '2025-03-01', priority: 'high' },
+          { title: 'Send save the dates', due_date: '2025-04-01', priority: 'medium' },
+        ],
+        budget_categories: [
+          { name: 'Venue', allocated: 15000 },
+          { name: 'Catering', allocated: 10000 },
+          { name: 'Photography', allocated: 5000 },
+        ],
+      }
+
+      // Start transaction
+      const { data: client, error: clientError } = await testSupabase
+        .from('clients')
+        .insert(testClient)
+        .select()
+        .single()
+
+      expect(clientError).toBeNull()
+      expect(client).toBeTruthy()
+
+      // Create journey
+      const { data: journey, error: journeyError } = await testSupabase
+        .from('journeys')
+        .insert({
+          client_id: client.id,
+          name: clientWithRelations.journey.name,
+          status: clientWithRelations.journey.status,
+        })
+        .select()
+        .single()
+
+      expect(journeyError).toBeNull()
+
+      // Create journey steps
+      const journeySteps = clientWithRelations.journey.steps.map(step => ({
+        journey_id: journey.id,
+        ...step,
+      }))
+
+      const { error: stepsError } = await testSupabase
+        .from('journey_steps')
+        .insert(journeySteps)
+
+      expect(stepsError).toBeNull()
+
+      // Create tasks
+      const tasks = clientWithRelations.tasks.map(task => ({
+        client_id: client.id,
+        ...task,
+      }))
+
+      const { error: tasksError } = await testSupabase
+        .from('tasks')
+        .insert(tasks)
+
+      expect(tasksError).toBeNull()
+
+      // Create budget categories
+      const budgetCategories = clientWithRelations.budget_categories.map(category => ({
+        client_id: client.id,
+        ...category,
+      }))
+
+      const { error: budgetError } = await testSupabase
+        .from('budget_categories')
+        .insert(budgetCategories)
+
+      expect(budgetError).toBeNull()
+
+      // Verify all data was created
+      const createdClient = await integrationHelpers.verifyDatabaseState('clients', { id: client.id })
+      const createdJourney = await integrationHelpers.verifyDatabaseState('journeys', { client_id: client.id })
+      const createdSteps = await integrationHelpers.verifyDatabaseState('journey_steps', { journey_id: journey.id })
+      const createdTasks = await integrationHelpers.verifyDatabaseState('tasks', { client_id: client.id })
+      const createdBudget = await integrationHelpers.verifyDatabaseState('budget_categories', { client_id: client.id })
+
+      expect(createdClient).toHaveLength(1)
+      expect(createdJourney).toHaveLength(1)
+      expect(createdSteps).toHaveLength(3)
+      expect(createdTasks).toHaveLength(2)
+      expect(createdBudget).toHaveLength(3)
+    })
+
+    it('should rollback entire transaction on partial failure', async () => {
+      // Attempt to create client with invalid foreign key reference
+      const invalidTransaction = async () => {
+        const { data: client } = await testSupabase
+          .from('clients')
+          .insert(testClient)
+          .select()
+          .single()
+
+        // This should fail due to invalid vendor_id
+        const { error } = await testSupabase
+          .from('vendor_bookings')
+          .insert({
+            client_id: client.id,
+            vendor_id: 'invalid-uuid-format', // Invalid UUID
+            service_date: '2025-10-20',
+          })
+
+        return error
+      }
+
+      const error = await invalidTransaction()
+      expect(error).toBeTruthy()
+
+      // Verify client was not created (transaction rolled back)
+      const clients = await integrationHelpers.verifyDatabaseState('clients', {
+        email: testClient.email,
+      })
+      expect(clients).toHaveLength(0)
+    })
+
+    it('should handle concurrent updates with optimistic locking', async () => {
+      // Create initial client
+      const { data: client } = await testSupabase
+        .from('clients')
+        .insert(testClient)
+        .select()
+        .single()
+
+      // Simulate concurrent updates
+      const update1 = testSupabase
+        .from('clients')
+        .update({ guest_count: 200 })
+        .eq('id', client.id)
+        .eq('updated_at', client.updated_at) // Optimistic locking
+
+      const update2 = testSupabase
+        .from('clients')
+        .update({ guest_count: 180 })
+        .eq('id', client.id)
+        .eq('updated_at', client.updated_at) // Same timestamp
+
+      const [result1, result2] = await Promise.allSettled([update1, update2])
+
+      // One should succeed, one should fail due to optimistic locking
+      const successes = [result1, result2].filter(r => r.status === 'fulfilled')
+      const failures = [result1, result2].filter(r => r.status === 'rejected')
+
+      expect(successes.length).toBeGreaterThan(0)
+      
+      // Verify final state
+      const finalClient = await integrationHelpers.verifyDatabaseState('clients', { id: client.id })
+      expect(finalClient).toHaveLength(1)
+      expect([180, 200]).toContain(finalClient[0].guest_count)
+    })
+  })
+
+  describe('Cascade Operations and Referential Integrity', () => {
+    it('should cascade delete client and all related data', async () => {
+      // Create client with related data
+      const { data: client } = await testSupabase
+        .from('clients')
+        .insert(testClient)
+        .select()
+        .single()
+
+      // Create related entities
+      const { data: journey } = await testSupabase
+        .from('journeys')
+        .insert(testDataFactory.createJourney(client.id))
+        .select()
+        .single()
+
+      await testSupabase.from('tasks').insert([
+        { client_id: client.id, title: 'Task 1', due_date: '2025-05-01' },
+        { client_id: client.id, title: 'Task 2', due_date: '2025-05-15' },
+      ])
+
+      await testSupabase.from('guest_lists').insert([
+        testDataFactory.createGuest(client.id, { first_name: 'Guest1' }),
+        testDataFactory.createGuest(client.id, { first_name: 'Guest2' }),
+      ])
+
+      // Soft delete client
+      await testSupabase
+        .from('clients')
+        .update({ status: 'deleted', deleted_at: new Date().toISOString() })
+        .eq('id', client.id)
+
+      // Verify cascade soft delete
+      const deletedJourney = await integrationHelpers.verifyDatabaseState('journeys', {
+        client_id: client.id,
+      })
+      expect(deletedJourney[0].status).toBe('deleted')
+
+      const deletedTasks = await integrationHelpers.verifyDatabaseState('tasks', {
+        client_id: client.id,
+      })
+      deletedTasks.forEach(task => {
+        expect(task.status).toBe('cancelled')
+      })
+
+      // Guest list should remain for historical records
+      const guests = await integrationHelpers.verifyDatabaseState('guest_lists', {
+        client_id: client.id,
+      })
+      expect(guests).toHaveLength(2)
+    })
+
+    it('should prevent orphaned records with foreign key constraints', async () => {
+      // Try to create a journey without a valid client
+      const { error } = await testSupabase
+        .from('journeys')
+        .insert({
+          client_id: '00000000-0000-0000-0000-000000000000', // Non-existent client
+          name: 'Orphaned Journey',
+          status: 'active',
+        })
+
+      expect(error).toBeTruthy()
+      expect(error.message).toMatch(/foreign key|violates/i)
+
+      // Verify journey was not created
+      const journeys = await integrationHelpers.verifyDatabaseState('journeys', {
+        name: 'Orphaned Journey',
+      })
+      expect(journeys).toHaveLength(0)
+    })
+
+    it('should handle complex vendor-client relationship updates', async () => {
+      // Create client and vendor
+      const { data: client } = await testSupabase
+        .from('clients')
+        .insert(testClient)
+        .select()
+        .single()
+
+      const { data: vendor } = await testSupabase
+        .from('vendors')
+        .insert(testVendor)
+        .select()
+        .single()
+
+      // Create booking
+      const { data: booking } = await testSupabase
+        .from('vendor_bookings')
+        .insert({
+          client_id: client.id,
+          vendor_id: vendor.id,
+          service_date: '2025-10-20',
+          status: 'confirmed',
+          total_amount: 5000,
+        })
+        .select()
+        .single()
+
+      // Create payment
+      await testSupabase
+        .from('payments')
+        .insert({
+          booking_id: booking.id,
+          amount: 1000,
+          status: 'completed',
+          payment_date: new Date().toISOString(),
+        })
+
+      // Update vendor status (should not affect existing bookings)
+      await testSupabase
+        .from('vendors')
+        .update({ status: 'inactive' })
+        .eq('id', vendor.id)
+
+      // Verify booking remains active
+      const activeBooking = await integrationHelpers.verifyDatabaseState('vendor_bookings', {
+        id: booking.id,
+      })
+      expect(activeBooking[0].status).toBe('confirmed')
+
+      // But new bookings should be prevented
+      const { error: newBookingError } = await testSupabase
+        .from('vendor_bookings')
+        .insert({
+          client_id: client.id,
+          vendor_id: vendor.id,
+          service_date: '2025-11-20',
+          status: 'pending',
+        })
+
+      expect(newBookingError).toBeTruthy()
+    })
+  })
+
+  describe('Database Triggers and Computed Fields', () => {
+    it('should automatically update computed fields on changes', async () => {
+      // Create client with budget
+      const { data: client } = await testSupabase
+        .from('clients')
+        .insert({ ...testClient, budget: 50000 })
+        .select()
+        .single()
+
+      // Add budget categories
+      await testSupabase.from('budget_categories').insert([
+        { client_id: client.id, name: 'Venue', allocated: 15000, spent: 5000 },
+        { client_id: client.id, name: 'Catering', allocated: 10000, spent: 8000 },
+        { client_id: client.id, name: 'Photography', allocated: 5000, spent: 0 },
+      ])
+
+      // Wait for trigger to update computed fields
+      await new Promise(resolve => setTimeout(resolve, 1000))
+
+      // Verify computed fields
+      const updatedClient = await integrationHelpers.verifyDatabaseState('clients', {
+        id: client.id,
+      })
+
+      expect(updatedClient[0].total_allocated).toBe(30000)
+      expect(updatedClient[0].total_spent).toBe(13000)
+      expect(updatedClient[0].budget_remaining).toBe(37000)
+    })
+
+    it('should trigger notification on payment milestone', async () => {
+      // Create booking with payment schedule
+      const { data: client } = await testSupabase
+        .from('clients')
+        .insert(testClient)
+        .select()
+        .single()
+
+      const { data: vendor } = await testSupabase
+        .from('vendors')
+        .insert(testVendor)
+        .select()
+        .single()
+
+      const { data: booking } = await testSupabase
+        .from('vendor_bookings')
+        .insert({
+          client_id: client.id,
+          vendor_id: vendor.id,
+          service_date: '2025-10-20',
+          status: 'confirmed',
+          total_amount: 10000,
+          payment_schedule: {
+            deposit: { amount: 2500, due_date: '2025-03-01' },
+            second_payment: { amount: 5000, due_date: '2025-07-01' },
+            final_payment: { amount: 2500, due_date: '2025-10-01' },
+          }
+        })
+        .select()
+        .single()
+
+      // Make deposit payment
+      await testSupabase.from('payments').insert({
+        booking_id: booking.id,
+        amount: 2500,
+        status: 'completed',
+        payment_type: 'deposit',
+      })
+
+      // Wait for trigger
+      await new Promise(resolve => setTimeout(resolve, 1000))
+
+      // Verify notification created
+      const notifications = await integrationHelpers.verifyDatabaseState('notifications', {
+        recipient_id: vendor.id,
+        type: 'payment_received',
+      })
+      expect(notifications).toHaveLength(1)
+      expect(notifications[0].metadata).toMatchObject({
+        amount: 2500,
+        payment_type: 'deposit',
+      })
+    })
+
+    it('should update guest count totals on RSVP changes', async () => {
+      // Create client with guests
+      const { data: client } = await testSupabase
+        .from('clients')
+        .insert(testClient)
+        .select()
+        .single()
+
+      // Add guests
+      const guests = [
+        { ...testDataFactory.createGuest(client.id), rsvp_status: 'pending' },
+        { ...testDataFactory.createGuest(client.id), rsvp_status: 'pending' },
+        { ...testDataFactory.createGuest(client.id), rsvp_status: 'pending' },
+      ]
+
+      const { data: insertedGuests } = await testSupabase
+        .from('guest_lists')
+        .insert(guests)
+        .select()
+
+      // Update RSVP statuses
+      await testSupabase
+        .from('guest_lists')
+        .update({ rsvp_status: 'confirmed', plus_one: true })
+        .eq('id', insertedGuests[0].id)
+
+      await testSupabase
+        .from('guest_lists')
+        .update({ rsvp_status: 'confirmed', plus_one: false })
+        .eq('id', insertedGuests[1].id)
+
+      await testSupabase
+        .from('guest_lists')
+        .update({ rsvp_status: 'declined' })
+        .eq('id', insertedGuests[2].id)
+
+      // Wait for triggers
+      await new Promise(resolve => setTimeout(resolve, 1000))
+
+      // Verify guest count updates
+      const updatedClient = await integrationHelpers.verifyDatabaseState('clients', {
+        id: client.id,
+      })
+
+      expect(updatedClient[0].guests_confirmed).toBe(3) // 2 guests + 1 plus-one
+      expect(updatedClient[0].guests_declined).toBe(1)
+      expect(updatedClient[0].guests_pending).toBe(0)
+    })
+  })
+
+  describe('Database Performance and Indexing', () => {
+    it('should efficiently query large datasets with proper indexing', async () => {
+      // Create many clients for performance testing
+      const clients = Array.from({ length: 100 }, (_, i) => 
+        testDataFactory.createClient({
+          email: `perf-test-${i}@example.com`,
+          wedding_date: `2025-${String((i % 12) + 1).padStart(2, '0')}-${String((i % 28) + 1).padStart(2, '0')}`,
+          created_at: new Date(Date.now() - i * 86400000).toISOString(), // Spread over 100 days
+        })
+      )
+
+      // Batch insert
+      await testSupabase.from('clients').insert(clients)
+
+      // Test indexed query performance
+      const startTime = performance.now()
+      
+      const { data: results } = await testSupabase
+        .from('clients')
+        .select('*')
+        .gte('wedding_date', '2025-06-01')
+        .lte('wedding_date', '2025-08-31')
+        .order('wedding_date', { ascending: true })
+        .limit(20)
+
+      const queryTime = performance.now() - startTime
+
+      // Query should be fast due to indexing
+      expect(queryTime).toBeLessThan(100) // Less than 100ms
+      expect(results).toBeTruthy()
+      expect(results.length).toBeLessThanOrEqual(20)
+    })
+
+    it('should handle complex joins efficiently', async () => {
+      // Create interconnected data
+      const { data: client } = await testSupabase
+        .from('clients')
+        .insert(testClient)
+        .select()
+        .single()
+
+      const vendors = Array.from({ length: 10 }, (_, i) =>
+        testDataFactory.createVendor({
+          business_name: `Vendor ${i}`,
+          category: ['photographer', 'florist', 'catering'][i % 3],
+        })
+      )
+
+      const { data: insertedVendors } = await testSupabase
+        .from('vendors')
+        .insert(vendors)
+        .select()
+
+      // Create bookings
+      const bookings = insertedVendors.slice(0, 5).map(vendor => ({
+        client_id: client.id,
+        vendor_id: vendor.id,
+        service_date: '2025-10-20',
+        status: 'confirmed',
+      }))
+
+      await testSupabase.from('vendor_bookings').insert(bookings)
+
+      // Complex join query
+      const startTime = performance.now()
+
+      const { data: joinResults } = await testSupabase
+        .from('clients')
+        .select(`
+          *,
+          vendor_bookings (
+            *,
+            vendors (
+              business_name,
+              category,
+              services
+            )
+          )
+        `)
+        .eq('id', client.id)
+        .single()
+
+      const queryTime = performance.now() - startTime
+
+      expect(queryTime).toBeLessThan(150) // Less than 150ms for complex join
+      expect(joinResults.vendor_bookings).toHaveLength(5)
+      expect(joinResults.vendor_bookings[0].vendors).toBeTruthy()
+    })
+  })
+})

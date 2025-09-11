@@ -1,0 +1,230 @@
+'use client';
+
+import React, { useState, useRef, useEffect } from 'react';
+import { cn } from '@/lib/utils';
+import { usePinchZoom, useTouchDrag } from '@/hooks/useTouch';
+import { ZoomIn, ZoomOut, RotateCw, X } from 'lucide-react';
+
+interface PinchZoomImageProps {
+  src: string;
+  alt: string;
+  className?: string;
+  maxScale?: number;
+  minScale?: number;
+  showControls?: boolean;
+  onClose?: () => void;
+}
+
+export function PinchZoomImage({
+  src,
+  alt,
+  className,
+  maxScale = 4,
+  minScale = 0.5,
+  showControls = true,
+  onClose,
+}: PinchZoomImageProps) {
+  const [currentScale, setCurrentScale] = useState(1);
+  const [position, setPosition] = useState({ x: 0, y: 0 });
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const imageRef = useRef<HTMLImageElement>(null);
+
+  // Pinch zoom handling
+  const { scale, handlers: pinchHandlers } = usePinchZoom({
+    minScale,
+    maxScale,
+    onPinch: (scale) => {
+      setCurrentScale(scale);
+    },
+    onPinchEnd: (scale) => {
+      setCurrentScale(scale);
+    },
+  });
+
+  // Drag handling for panning when zoomed
+  const { handlers: dragHandlers } = useTouchDrag({
+    onDragMove: (pos) => {
+      if (currentScale > 1) {
+        setPosition({
+          x: pos.x - (containerRef.current?.offsetWidth || 0) / 2,
+          y: pos.y - (containerRef.current?.offsetHeight || 0) / 2,
+        });
+      }
+    },
+  });
+
+  // Control functions
+  const zoomIn = () => {
+    const newScale = Math.min(currentScale * 1.5, maxScale);
+    setCurrentScale(newScale);
+  };
+
+  const zoomOut = () => {
+    const newScale = Math.max(currentScale / 1.5, minScale);
+    setCurrentScale(newScale);
+  };
+
+  const resetZoom = () => {
+    setCurrentScale(1);
+    setPosition({ x: 0, y: 0 });
+  };
+
+  const toggleFullscreen = () => {
+    if (!isFullscreen) {
+      containerRef.current?.requestFullscreen?.();
+      setIsFullscreen(true);
+    } else {
+      document.exitFullscreen?.();
+      setIsFullscreen(false);
+    }
+  };
+
+  // Double tap to zoom
+  const lastTapRef = useRef<number>(0);
+  const handleDoubleTap = (e: React.TouchEvent) => {
+    const now = Date.now();
+    const timeSinceLastTap = now - lastTapRef.current;
+
+    if (timeSinceLastTap < 300) {
+      // Double tap detected
+      if (currentScale === 1) {
+        setCurrentScale(2);
+      } else {
+        resetZoom();
+      }
+    }
+
+    lastTapRef.current = now;
+  };
+
+  // Keyboard controls
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      switch (e.key) {
+        case '+':
+        case '=':
+          zoomIn();
+          break;
+        case '-':
+        case '_':
+          zoomOut();
+          break;
+        case '0':
+          resetZoom();
+          break;
+        case 'Escape':
+          if (isFullscreen) {
+            toggleFullscreen();
+          } else {
+            onClose?.();
+          }
+          break;
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [currentScale, isFullscreen]);
+
+  return (
+    <div
+      ref={containerRef}
+      className={cn(
+        'relative overflow-hidden bg-black/5 rounded-lg',
+        isFullscreen && 'fixed inset-0 z-50 bg-black',
+        className,
+      )}
+      {...pinchHandlers}
+      {...(currentScale > 1 ? dragHandlers : {})}
+      onTouchEnd={handleDoubleTap}
+    >
+      {/* Image */}
+      <div
+        className="relative w-full h-full flex items-center justify-center"
+        style={{
+          transform: `scale(${currentScale}) translate(${position.x / currentScale}px, ${position.y / currentScale}px)`,
+          transition: 'transform 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94)',
+          cursor: currentScale > 1 ? 'move' : 'default',
+        }}
+      >
+        <img
+          ref={imageRef}
+          src={src}
+          alt={alt}
+          className="max-w-full max-h-full object-contain select-none"
+          draggable={false}
+        />
+      </div>
+
+      {/* Controls */}
+      {showControls && (
+        <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 flex items-center space-x-2 bg-white/90 backdrop-blur-sm rounded-full p-2 shadow-lg">
+          <button
+            onClick={zoomOut}
+            disabled={currentScale <= minScale}
+            className={cn(
+              'p-3 rounded-full transition-all',
+              'min-w-[44px] min-h-[44px]',
+              currentScale <= minScale
+                ? 'opacity-30 cursor-not-allowed'
+                : 'hover:bg-gray-100 active:bg-gray-200',
+            )}
+            aria-label="Zoom out"
+          >
+            <ZoomOut className="w-5 h-5" />
+          </button>
+
+          <div className="px-3 text-sm font-medium text-gray-700 min-w-[60px] text-center">
+            {Math.round(currentScale * 100)}%
+          </div>
+
+          <button
+            onClick={zoomIn}
+            disabled={currentScale >= maxScale}
+            className={cn(
+              'p-3 rounded-full transition-all',
+              'min-w-[44px] min-h-[44px]',
+              currentScale >= maxScale
+                ? 'opacity-30 cursor-not-allowed'
+                : 'hover:bg-gray-100 active:bg-gray-200',
+            )}
+            aria-label="Zoom in"
+          >
+            <ZoomIn className="w-5 h-5" />
+          </button>
+
+          <div className="w-px h-6 bg-gray-300" />
+
+          <button
+            onClick={resetZoom}
+            className="p-3 rounded-full hover:bg-gray-100 active:bg-gray-200 min-w-[44px] min-h-[44px]"
+            aria-label="Reset zoom"
+          >
+            <RotateCw className="w-5 h-5" />
+          </button>
+
+          {onClose && (
+            <>
+              <div className="w-px h-6 bg-gray-300" />
+              <button
+                onClick={onClose}
+                className="p-3 rounded-full hover:bg-gray-100 active:bg-gray-200 min-w-[44px] min-h-[44px]"
+                aria-label="Close"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Touch hint */}
+      {currentScale === 1 && !isFullscreen && (
+        <div className="absolute top-4 left-1/2 transform -translate-x-1/2 bg-black/70 text-white text-xs px-3 py-1.5 rounded-full">
+          Pinch to zoom • Double tap to zoom
+        </div>
+      )}
+    </div>
+  );
+}

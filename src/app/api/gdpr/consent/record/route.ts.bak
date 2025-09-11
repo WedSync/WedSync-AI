@@ -1,0 +1,97 @@
+/**
+ * GDPR Consent Recording API
+ * POST /api/gdpr/consent/record
+ * WS-149: Records user consent for various data processing purposes
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { gdprService } from '@/lib/services/gdpr-compliance-service';
+import { createClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+
+const ConsentRecordRequestSchema = z.object({
+  data_subject_id: z.string().uuid(),
+  data_subject_type: z.enum(['couple', 'guest', 'vendor', 'contact']),
+  purpose: z.string(),
+  legal_basis: z.enum([
+    'consent',
+    'contract',
+    'legal_obligation',
+    'vital_interests',
+    'public_task',
+    'legitimate_interests'
+  ]),
+  consent_given: z.boolean(),
+  consent_method: z.enum(['explicit', 'opt_in', 'implied']),
+  consent_evidence: z.object({
+    ip_address: z.string(),
+    timestamp: z.string(),
+    user_agent: z.string(),
+    method_details: z.record(z.any())
+  }),
+  data_categories: z.array(z.string()),
+  retention_period: z.string().optional(),
+  third_party_sharing: z.boolean().optional(),
+  marketing_consent: z.boolean().optional()
+});
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = createClient();
+    
+    // Check authentication
+    const {
+      data: { user },
+      error: authError
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validatedData = ConsentRecordRequestSchema.parse(body);
+
+    // Add evidence from request
+    const consentData = {
+      ...validatedData,
+      consent_evidence: {
+        ...validatedData.consent_evidence,
+        ip_address: request.headers.get('x-forwarded-for') || 
+                    request.headers.get('x-real-ip') || 
+                    'unknown',
+        user_agent: request.headers.get('user-agent') || 'unknown',
+        timestamp: new Date().toISOString()
+      }
+    };
+
+    // Record consent
+    const result = await gdprService.recordConsent(consentData);
+
+    // Return success response
+    return NextResponse.json({
+      success: true,
+      consent: result.consent,
+      message: 'Consent recorded successfully'
+    });
+    
+  } catch (error) {
+    console.error('Error recording consent:', error);
+    
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid request data', details: error.errors },
+        { status: 400 }
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Failed to record consent' },
+      { status: 500 }
+    );
+  }
+}

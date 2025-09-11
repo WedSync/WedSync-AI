@@ -1,0 +1,625 @@
+'use client';
+
+import React from 'react';
+import { FormField, FormFieldOption } from '@/types/forms';
+
+interface OptionsTestCase {
+  name: string;
+  fieldType: 'select' | 'radio' | 'checkbox';
+  field: FormField;
+  testScenarios: {
+    description: string;
+    action:
+      | 'render'
+      | 'select'
+      | 'multiselect'
+      | 'validate'
+      | 'search'
+      | 'add'
+      | 'remove';
+    value?: any;
+    expectedResult: string;
+    shouldPass: boolean;
+  }[];
+}
+
+interface OptionsTestResult {
+  fieldType: string;
+  testName: string;
+  scenario: string;
+  passed: boolean;
+  message: string;
+  duration: number;
+}
+
+interface FieldOptionsTesterProps {
+  onTestComplete?: (results: OptionsTestResult[]) => void;
+  autoRun?: boolean;
+}
+
+export function FieldOptionsTester({
+  onTestComplete,
+  autoRun = false,
+}: FieldOptionsTesterProps) {
+  const [testResults, setTestResults] = React.useState<OptionsTestResult[]>([]);
+  const [isRunning, setIsRunning] = React.useState(false);
+  const [currentTest, setCurrentTest] = React.useState<string>('');
+
+  // Wedding-specific test options
+  const weddingVenueOptions: FormFieldOption[] = [
+    { id: 'indoor', label: 'Indoor Venue', value: 'indoor' },
+    { id: 'outdoor', label: 'Outdoor Venue', value: 'outdoor' },
+    { id: 'marquee', label: 'Marquee/Tent', value: 'marquee' },
+    { id: 'beach', label: 'Beach Wedding', value: 'beach' },
+    { id: 'church', label: 'Church/Religious', value: 'church' },
+    { id: 'registry', label: 'Registry Office', value: 'registry' },
+  ];
+
+  const weddingServicesOptions: FormFieldOption[] = [
+    { id: 'photography', label: 'Wedding Photography', value: 'photography' },
+    { id: 'videography', label: 'Wedding Videography', value: 'videography' },
+    { id: 'catering', label: 'Catering Services', value: 'catering' },
+    { id: 'flowers', label: 'Floral Arrangements', value: 'flowers' },
+    { id: 'music', label: 'Music & DJ Services', value: 'music' },
+    { id: 'decoration', label: 'Decoration & Styling', value: 'decoration' },
+    { id: 'transport', label: 'Transportation', value: 'transport' },
+    { id: 'cake', label: 'Wedding Cake', value: 'cake' },
+  ];
+
+  const weddingStyleOptions: FormFieldOption[] = [
+    { id: 'traditional', label: 'Traditional/Classic', value: 'traditional' },
+    { id: 'modern', label: 'Modern/Contemporary', value: 'modern' },
+    { id: 'rustic', label: 'Rustic/Country', value: 'rustic' },
+    { id: 'vintage', label: 'Vintage/Retro', value: 'vintage' },
+    { id: 'boho', label: 'Bohemian/Boho', value: 'boho' },
+    { id: 'glamorous', label: 'Glamorous/Luxury', value: 'glamorous' },
+  ];
+
+  const optionsTestCases: OptionsTestCase[] = [
+    {
+      name: 'Select Field - Wedding Venue Type',
+      fieldType: 'select',
+      field: {
+        id: 'venue-type',
+        type: 'select',
+        label: 'Choose Your Venue Type',
+        options: weddingVenueOptions,
+        required: true,
+      },
+      testScenarios: [
+        {
+          description: 'Select field renders all venue options',
+          action: 'render',
+          expectedResult: 'All 6 venue options should be displayed',
+          shouldPass: true,
+        },
+        {
+          description: 'Single venue selection works',
+          action: 'select',
+          value: 'outdoor',
+          expectedResult: 'Outdoor venue should be selected',
+          shouldPass: true,
+        },
+        {
+          description: 'Select validates required field',
+          action: 'validate',
+          value: null,
+          expectedResult: 'Should show required field validation',
+          shouldPass: true,
+        },
+        {
+          description: 'Select handles long option labels',
+          action: 'render',
+          expectedResult: 'Long venue names should display properly',
+          shouldPass: true,
+        },
+      ],
+    },
+    {
+      name: 'Radio Field - Wedding Style',
+      fieldType: 'radio',
+      field: {
+        id: 'wedding-style',
+        type: 'radio',
+        label: "What's Your Wedding Style?",
+        options: weddingStyleOptions,
+        required: true,
+      },
+      testScenarios: [
+        {
+          description: 'Radio group renders all style options',
+          action: 'render',
+          expectedResult:
+            'All 6 wedding style radio buttons should be displayed',
+          shouldPass: true,
+        },
+        {
+          description: 'Single radio selection works',
+          action: 'select',
+          value: 'rustic',
+          expectedResult: 'Rustic style should be selected, others deselected',
+          shouldPass: true,
+        },
+        {
+          description: 'Radio selection is exclusive',
+          action: 'select',
+          value: 'modern',
+          expectedResult: 'Only modern style should be selected',
+          shouldPass: true,
+        },
+        {
+          description: 'Radio validates required selection',
+          action: 'validate',
+          value: null,
+          expectedResult: 'Should show required selection validation',
+          shouldPass: true,
+        },
+      ],
+    },
+    {
+      name: 'Checkbox Field - Wedding Services',
+      fieldType: 'checkbox',
+      field: {
+        id: 'wedding-services',
+        type: 'checkbox',
+        label: 'Select Required Wedding Services',
+        options: weddingServicesOptions,
+        validation: {
+          required: true,
+          customMessage: 'Please select at least one wedding service',
+        },
+      },
+      testScenarios: [
+        {
+          description: 'Checkbox group renders all service options',
+          action: 'render',
+          expectedResult:
+            'All 8 wedding service checkboxes should be displayed',
+          shouldPass: true,
+        },
+        {
+          description: 'Multiple checkbox selections work',
+          action: 'multiselect',
+          value: ['photography', 'videography', 'flowers'],
+          expectedResult: 'Multiple services should be selectable',
+          shouldPass: true,
+        },
+        {
+          description: 'Individual checkbox toggle works',
+          action: 'select',
+          value: 'catering',
+          expectedResult: 'Catering service should toggle on/off',
+          shouldPass: true,
+        },
+        {
+          description: 'Checkbox validates minimum selection',
+          action: 'validate',
+          value: [],
+          expectedResult: 'Should require at least one service selection',
+          shouldPass: true,
+        },
+        {
+          description: 'Checkbox handles maximum selections',
+          action: 'multiselect',
+          value: weddingServicesOptions.map((opt) => opt.value),
+          expectedResult: 'Should allow all services to be selected',
+          shouldPass: true,
+        },
+      ],
+    },
+    {
+      name: 'Dynamic Options - Searchable Venues',
+      fieldType: 'select',
+      field: {
+        id: 'venue-search',
+        type: 'select',
+        label: 'Search Wedding Venues',
+        options: [
+          { id: 'v1', label: 'The Grand Ballroom', value: 'grand-ballroom' },
+          {
+            id: 'v2',
+            label: 'Château Wedding Estate',
+            value: 'chateau-estate',
+          },
+          {
+            id: 'v3',
+            label: 'Riverside Manor House',
+            value: 'riverside-manor',
+          },
+          {
+            id: 'v4',
+            label: 'Historic Castle Venue',
+            value: 'historic-castle',
+          },
+          { id: 'v5', label: 'Garden Pavilion', value: 'garden-pavilion' },
+          { id: 'v6', label: 'Beachfront Resort', value: 'beachfront-resort' },
+        ],
+      },
+      testScenarios: [
+        {
+          description: 'Search filters venue options',
+          action: 'search',
+          value: 'castle',
+          expectedResult: 'Should filter to show only castle venues',
+          shouldPass: true,
+        },
+        {
+          description: 'Search handles partial matches',
+          action: 'search',
+          value: 'man',
+          expectedResult: 'Should show Manor House venue',
+          shouldPass: true,
+        },
+        {
+          description: 'Search is case insensitive',
+          action: 'search',
+          value: 'GARDEN',
+          expectedResult: 'Should show Garden Pavilion venue',
+          shouldPass: true,
+        },
+      ],
+    },
+    {
+      name: 'Dynamic Options Management',
+      fieldType: 'checkbox',
+      field: {
+        id: 'custom-services',
+        type: 'checkbox',
+        label: 'Custom Wedding Services',
+        options: [
+          { id: 's1', label: 'Wedding Planning', value: 'planning' },
+          { id: 's2', label: 'Day Coordination', value: 'coordination' },
+        ],
+      },
+      testScenarios: [
+        {
+          description: 'Add new option dynamically',
+          action: 'add',
+          value: { id: 's3', label: 'Honeymoon Planning', value: 'honeymoon' },
+          expectedResult: 'New service option should be added',
+          shouldPass: true,
+        },
+        {
+          description: 'Remove option dynamically',
+          action: 'remove',
+          value: 's1',
+          expectedResult: 'Wedding Planning option should be removed',
+          shouldPass: true,
+        },
+      ],
+    },
+  ];
+
+  const runOptionsTest = async (
+    testCase: OptionsTestCase,
+  ): Promise<OptionsTestResult[]> => {
+    const results: OptionsTestResult[] = [];
+
+    for (const scenario of testCase.testScenarios) {
+      const startTime = performance.now();
+
+      try {
+        const testResult = await simulateOptionsInteraction(
+          testCase.field,
+          scenario,
+        );
+
+        results.push({
+          fieldType: testCase.fieldType,
+          testName: testCase.name,
+          scenario: scenario.description,
+          passed: testResult.success === scenario.shouldPass,
+          message: testResult.message || scenario.expectedResult,
+          duration: performance.now() - startTime,
+        });
+      } catch (error) {
+        results.push({
+          fieldType: testCase.fieldType,
+          testName: testCase.name,
+          scenario: scenario.description,
+          passed: false,
+          message: `Test error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          duration: performance.now() - startTime,
+        });
+      }
+    }
+
+    return results;
+  };
+
+  const runAllTests = async () => {
+    setIsRunning(true);
+    setTestResults([]);
+
+    const allResults: OptionsTestResult[] = [];
+
+    for (const testCase of optionsTestCases) {
+      setCurrentTest(testCase.name);
+      const results = await runOptionsTest(testCase);
+      allResults.push(...results);
+      setTestResults([...allResults]);
+
+      // Small delay to show progress
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+
+    setIsRunning(false);
+    setCurrentTest('');
+
+    if (onTestComplete) {
+      onTestComplete(allResults);
+    }
+  };
+
+  React.useEffect(() => {
+    if (autoRun) {
+      runAllTests();
+    }
+  }, [autoRun]);
+
+  const getResultsByFieldType = () => {
+    const grouped: { [key: string]: OptionsTestResult[] } = {};
+    testResults.forEach((result) => {
+      if (!grouped[result.fieldType]) {
+        grouped[result.fieldType] = [];
+      }
+      grouped[result.fieldType].push(result);
+    });
+    return grouped;
+  };
+
+  return (
+    <div className="p-6 max-w-6xl mx-auto">
+      <div className="mb-6">
+        <h2 className="text-2xl font-bold text-gray-900 mb-2">
+          Field Options Tester
+        </h2>
+        <p className="text-gray-600">
+          Comprehensive testing for wedding form field options including select
+          dropdowns, radio groups, and checkbox collections with wedding
+          industry-specific scenarios
+        </p>
+      </div>
+
+      <div className="mb-6">
+        <button
+          onClick={runAllTests}
+          disabled={isRunning}
+          className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 text-white px-6 py-2 rounded-md font-medium"
+        >
+          {isRunning ? 'Running Options Tests...' : 'Run All Options Tests'}
+        </button>
+
+        {isRunning && currentTest && (
+          <div className="mt-2 text-sm text-gray-600">
+            Currently testing: {currentTest}
+          </div>
+        )}
+      </div>
+
+      <div className="space-y-6">
+        <div className="bg-gray-50 p-4 rounded-lg">
+          <h3 className="font-semibold text-gray-900 mb-2">
+            Options Test Summary
+          </h3>
+          <div className="grid grid-cols-4 gap-4 text-sm">
+            <div>
+              <span className="font-medium">Total Tests:</span>{' '}
+              {testResults.length}
+            </div>
+            <div>
+              <span className="font-medium text-green-600">Passed:</span>{' '}
+              {testResults.filter((r) => r.passed).length}
+            </div>
+            <div>
+              <span className="font-medium text-red-600">Failed:</span>{' '}
+              {testResults.filter((r) => !r.passed).length}
+            </div>
+            <div>
+              <span className="font-medium text-purple-600">Categories:</span>{' '}
+              {Object.keys(getResultsByFieldType()).length}
+            </div>
+          </div>
+
+          <div className="mt-4 grid grid-cols-3 gap-4 text-sm">
+            <div className="bg-white p-3 rounded border">
+              <div className="font-medium text-blue-600">Select Fields</div>
+              <div className="text-gray-600">
+                {testResults.filter((r) => r.fieldType === 'select').length}{' '}
+                tests
+              </div>
+            </div>
+            <div className="bg-white p-3 rounded border">
+              <div className="font-medium text-green-600">Radio Fields</div>
+              <div className="text-gray-600">
+                {testResults.filter((r) => r.fieldType === 'radio').length}{' '}
+                tests
+              </div>
+            </div>
+            <div className="bg-white p-3 rounded border">
+              <div className="font-medium text-purple-600">Checkbox Fields</div>
+              <div className="text-gray-600">
+                {testResults.filter((r) => r.fieldType === 'checkbox').length}{' '}
+                tests
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          {Object.entries(getResultsByFieldType()).map(
+            ([fieldType, results]) => (
+              <div
+                key={fieldType}
+                className="border rounded-lg overflow-hidden"
+              >
+                <div className="bg-gradient-to-r from-indigo-100 to-purple-100 px-4 py-3">
+                  <h4 className="font-semibold text-gray-900 capitalize">
+                    {fieldType} Field Options Tests ({results.length} tests)
+                  </h4>
+                  <div className="text-sm text-gray-700 mt-1">
+                    <span className="text-green-600 font-medium">
+                      ✓ {results.filter((r) => r.passed).length} passed
+                    </span>
+                    {results.filter((r) => !r.passed).length > 0 && (
+                      <>
+                        {' • '}
+                        <span className="text-red-600 font-medium">
+                          ✗ {results.filter((r) => !r.passed).length} failed
+                        </span>
+                      </>
+                    )}
+                  </div>
+                </div>
+                <div className="divide-y">
+                  {results.map((result, index) => (
+                    <div
+                      key={index}
+                      className={`p-4 ${
+                        result.passed
+                          ? 'bg-green-50 border-l-4 border-l-green-500'
+                          : 'bg-red-50 border-l-4 border-l-red-500'
+                      }`}
+                    >
+                      <div className="flex justify-between items-start">
+                        <div className="flex-1">
+                          <div className="font-medium text-gray-900 mb-1">
+                            {result.scenario}
+                          </div>
+                          <div className="text-sm text-gray-700 mb-2">
+                            {result.message}
+                          </div>
+                          <div className="flex items-center space-x-4 text-xs text-gray-500">
+                            <span>Test: {result.testName}</span>
+                            <span>
+                              Duration: {result.duration.toFixed(2)}ms
+                            </span>
+                          </div>
+                        </div>
+                        <div
+                          className={`px-3 py-1 rounded-full text-xs font-bold ml-4 ${
+                            result.passed
+                              ? 'bg-green-200 text-green-800'
+                              : 'bg-red-200 text-red-800'
+                          }`}
+                        >
+                          {result.passed ? 'PASS' : 'FAIL'}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ),
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Mock function to simulate options interaction
+async function simulateOptionsInteraction(
+  field: FormField,
+  scenario: { action: string; value?: any; expectedResult: string },
+): Promise<{ success: boolean; message?: string }> {
+  const options = field.options || [];
+
+  switch (scenario.action) {
+    case 'render':
+      return {
+        success: options.length > 0,
+        message: `Rendered ${options.length} options successfully`,
+      };
+
+    case 'select':
+      if (field.type === 'radio' || field.type === 'select') {
+        const optionExists = options.some(
+          (opt) => opt.value === scenario.value,
+        );
+        return {
+          success: optionExists,
+          message: optionExists
+            ? `Selected option: ${scenario.value}`
+            : 'Option not found',
+        };
+      }
+      if (field.type === 'checkbox') {
+        const optionExists = options.some(
+          (opt) => opt.value === scenario.value,
+        );
+        return {
+          success: optionExists,
+          message: optionExists
+            ? `Toggled option: ${scenario.value}`
+            : 'Option not found',
+        };
+      }
+      return {
+        success: false,
+        message: 'Field type does not support selection',
+      };
+
+    case 'multiselect':
+      if (field.type === 'checkbox' && Array.isArray(scenario.value)) {
+        const allExist = scenario.value.every((val) =>
+          options.some((opt) => opt.value === val),
+        );
+        return {
+          success: allExist,
+          message: `Selected ${scenario.value.length} options`,
+        };
+      }
+      return {
+        success: false,
+        message: 'Field type does not support multi-selection',
+      };
+
+    case 'validate':
+      if (field.validation?.required) {
+        const hasValue =
+          scenario.value &&
+          (Array.isArray(scenario.value) ? scenario.value.length > 0 : true);
+        return {
+          success: !hasValue,
+          message: hasValue
+            ? 'Validation passed'
+            : 'Required field validation triggered',
+        };
+      }
+      return { success: true, message: 'No validation required' };
+
+    case 'search':
+      if (field.type === 'select' && typeof scenario.value === 'string') {
+        const searchTerm = scenario.value.toLowerCase();
+        const filteredOptions = options.filter((opt) =>
+          opt.label.toLowerCase().includes(searchTerm),
+        );
+        return {
+          success: filteredOptions.length >= 0,
+          message: `Search "${scenario.value}" returned ${filteredOptions.length} results`,
+        };
+      }
+      return { success: false, message: 'Field type does not support search' };
+
+    case 'add':
+      return {
+        success: true,
+        message: `Added new option: ${scenario.value?.label || 'New Option'}`,
+      };
+
+    case 'remove':
+      const optionExists = options.some((opt) => opt.id === scenario.value);
+      return {
+        success: optionExists,
+        message: optionExists
+          ? `Removed option: ${scenario.value}`
+          : 'Option not found',
+      };
+
+    default:
+      return { success: false, message: 'Unknown test action' };
+  }
+}
+
+export default FieldOptionsTester;

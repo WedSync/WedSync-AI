@@ -1,0 +1,225 @@
+import * as React from 'react';
+import { cva, type VariantProps } from 'class-variance-authority';
+import { cn } from '@/lib/utils';
+
+const cardVariants = cva('rounded-lg bg-white text-gray-900', {
+  variants: {
+    variant: {
+      default: 'border border-gray-200 shadow-sm',
+      wedding:
+        'border border-rose-200 bg-gradient-to-br from-rose-50/50 to-white shadow-md hover:shadow-lg transition-shadow',
+      elegant:
+        'border border-purple-200 bg-gradient-to-br from-purple-50/50 to-white shadow-md hover:shadow-lg transition-shadow',
+      luxury:
+        'border border-amber-200 bg-gradient-to-br from-amber-50/50 to-white shadow-lg hover:shadow-xl transition-shadow',
+      elevated: 'shadow-lg hover:shadow-xl transition-shadow',
+      flat: 'border border-gray-200',
+      glass: 'bg-white/80 backdrop-blur-sm border border-white/20 shadow-xl',
+    },
+    padding: {
+      none: '',
+      xs: 'p-3',
+      sm: 'p-4',
+      md: 'p-6',
+      lg: 'p-8',
+      xl: 'p-10',
+    },
+    interactive: {
+      true: 'cursor-pointer hover:shadow-lg transition-all duration-200 active:scale-[0.99]',
+      false: '',
+    },
+  },
+  defaultVariants: {
+    variant: 'default',
+    padding: 'md',
+    interactive: false,
+  },
+});
+
+export interface CardProps
+  extends React.HTMLAttributes<HTMLDivElement>,
+    VariantProps<typeof cardVariants> {
+  asChild?: boolean;
+}
+
+const Card = React.forwardRef<HTMLDivElement, CardProps>(
+  ({ className, variant, padding, interactive, ...props }, ref) => (
+    <div
+      ref={ref}
+      className={cn(cardVariants({ variant, padding, interactive }), className)}
+      {...props}
+    />
+  ),
+);
+Card.displayName = 'Card';
+
+const CardHeader = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement> & { noPadding?: boolean }
+>(({ className, noPadding, ...props }, ref) => (
+  <div
+    ref={ref}
+    className={cn('flex flex-col space-y-1.5', !noPadding && 'p-6', className)}
+    {...props}
+  />
+));
+CardHeader.displayName = 'CardHeader';
+
+const CardTitle = React.forwardRef<
+  HTMLHeadingElement,
+  React.HTMLAttributes<HTMLHeadingElement> & {
+    as?: 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6';
+  }
+>(({ className, as: Comp = 'h3', ...props }, ref) => (
+  <Comp
+    ref={ref}
+    className={cn(
+      'text-lg font-semibold leading-tight tracking-tight text-gray-900',
+      className,
+    )}
+    {...props}
+  />
+));
+CardTitle.displayName = 'CardTitle';
+
+const CardDescription = React.forwardRef<
+  HTMLParagraphElement,
+  React.HTMLAttributes<HTMLParagraphElement>
+>(({ className, ...props }, ref) => (
+  <p ref={ref} className={cn('text-sm text-gray-600', className)} {...props} />
+));
+CardDescription.displayName = 'CardDescription';
+
+const CardContent = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement> & { noPadding?: boolean }
+>(({ className, noPadding, ...props }, ref) => (
+  <div
+    ref={ref}
+    className={cn(!noPadding && 'p-6 pt-0', className)}
+    {...props}
+  />
+));
+CardContent.displayName = 'CardContent';
+
+const CardFooter = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement> & { noPadding?: boolean }
+>(({ className, noPadding, ...props }, ref) => (
+  <div
+    ref={ref}
+    className={cn('flex items-center', !noPadding && 'p-6 pt-0', className)}
+    {...props}
+  />
+));
+CardFooter.displayName = 'CardFooter';
+
+// Wedding-specific card presets
+export const WeddingCard = React.forwardRef<
+  HTMLDivElement,
+  Omit<CardProps, 'variant'>
+>((props, ref) => <Card {...props} variant="wedding" ref={ref} />);
+WeddingCard.displayName = 'WeddingCard';
+
+export const ElegantCard = React.forwardRef<
+  HTMLDivElement,
+  Omit<CardProps, 'variant'>
+>((props, ref) => <Card {...props} variant="elegant" ref={ref} />);
+ElegantCard.displayName = 'ElegantCard';
+
+export const LuxuryCard = React.forwardRef<
+  HTMLDivElement,
+  Omit<CardProps, 'variant'>
+>((props, ref) => <Card {...props} variant="luxury" ref={ref} />);
+LuxuryCard.displayName = 'LuxuryCard';
+
+// Vendor-specific card component
+export interface VendorCardProps extends Omit<CardProps, 'variant'> {
+  vendorType: 'photographer' | 'venue' | 'florist' | 'caterer';
+  vendorName: string;
+  vendorDescription?: string;
+  rating?: number;
+  imageUrl?: string;
+}
+
+export const VendorCard = React.forwardRef<HTMLDivElement, VendorCardProps>(
+  (
+    {
+      vendorType,
+      vendorName,
+      vendorDescription,
+      rating,
+      imageUrl,
+      className,
+      children,
+      ...props
+    },
+    ref,
+  ) => {
+    const vendorColors = {
+      photographer:
+        'border-blue-200 bg-gradient-to-br from-blue-50/50 to-white',
+      venue: 'border-emerald-200 bg-gradient-to-br from-emerald-50/50 to-white',
+      florist: 'border-pink-200 bg-gradient-to-br from-pink-50/50 to-white',
+      caterer: 'border-orange-200 bg-gradient-to-br from-orange-50/50 to-white',
+    };
+
+    return (
+      <Card
+        ref={ref}
+        className={cn(
+          'border shadow-md hover:shadow-lg transition-shadow',
+          vendorColors[vendorType],
+          className,
+        )}
+        {...props}
+      >
+        {imageUrl && (
+          <div className="h-48 w-full rounded-t-lg overflow-hidden">
+            <img
+              src={imageUrl}
+              alt={vendorName}
+              className="h-full w-full object-cover"
+            />
+          </div>
+        )}
+        <CardHeader noPadding className="p-4">
+          <div className="flex items-start justify-between">
+            <div>
+              <CardTitle className="text-lg">{vendorName}</CardTitle>
+              {vendorDescription && (
+                <CardDescription className="mt-1">
+                  {vendorDescription}
+                </CardDescription>
+              )}
+            </div>
+            {rating && (
+              <div className="flex items-center text-yellow-500">
+                <svg className="h-4 w-4 fill-current" viewBox="0 0 20 20">
+                  <path d="M10 15l-5.878 3.09 1.123-6.545L.489 6.91l6.572-.955L10 0l2.939 5.955 6.572.955-4.756 4.635 1.123 6.545z" />
+                </svg>
+                <span className="ml-1 text-sm text-gray-600">{rating}</span>
+              </div>
+            )}
+          </div>
+        </CardHeader>
+        {children && (
+          <CardContent noPadding className="p-4 pt-0">
+            {children}
+          </CardContent>
+        )}
+      </Card>
+    );
+  },
+);
+VendorCard.displayName = 'VendorCard';
+
+export {
+  Card,
+  CardHeader,
+  CardFooter,
+  CardTitle,
+  CardDescription,
+  CardContent,
+  cardVariants,
+};

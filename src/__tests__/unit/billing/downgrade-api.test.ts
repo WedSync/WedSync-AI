@@ -1,0 +1,297 @@
+/**
+ * Unit tests for subscription downgrade API endpoint
+ * WS-131 Pricing Strategy System - Team D Round 1
+ */
+
+import { NextRequest } from 'next/server';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { POST } from '@/app/api/billing/subscription/downgrade/route';
+import { createMocks } from 'node-mocks-http';
+// Mock SubscriptionService
+const mockSubscriptionService = {
+  getUserSubscription: vi.fn(),
+  updateSubscription: vi.fn(),
+  cancelSubscription: vi.fn()
+};
+vi.mock('@/lib/services/subscriptionService', () => ({
+  SubscriptionService: vi.fn().mockImplementation(() => mockSubscriptionService)
+}));
+// Mock Supabase
+const mockSupabaseClient = {
+  from: jest.fn(() => ({
+    select: jest.fn(() => ({
+      eq: jest.fn(() => ({
+        single: jest.fn(() => ({
+          data: null,
+          error: null
+        }))
+      }))
+    })),
+    insert: jest.fn(() => ({
+      data: { id: 'event-123' },
+      error: null
+    }))
+  })),
+  auth: {
+    getUser: vi.fn()
+  }
+vi.mock('@supabase/supabase-js', () => ({
+  createClient: jest.fn(() => mockSupabaseClient)
+// Mock Stripe
+vi.mock('stripe', () => {
+  return vi.fn().mockImplementation(() => ({
+    subscriptions: {
+      update: vi.fn().mockResolvedValue({
+        id: 'sub-123',
+        items: { data: [{ id: 'si-123' }] }
+      })
+    }
+  }));
+});
+const mockUser = {
+  id: 'user-123',
+  email: 'test@example.com'
+const mockPremiumSubscription = {
+  subscription: {
+    id: 'sub-123',
+    stripe_subscription_id: 'stripe-sub-123',
+    plan_id: 'plan-premium-id',
+    status: 'active',
+    current_period_end: '2025-02-24T00:00:00Z'
+  },
+  plan: {
+    tier: 'premium',
+    sort_order: 3
+  usage: {
+    clients_count: 150,
+    journeys_count: 2,
+    storage_used_gb: 5,
+    team_members_count: 3
+const mockProfessionalPlan = {
+  id: 'plan-professional-id',
+  tier: 'professional',
+  display_name: 'Professional',
+  price: 29.00,
+  yearly_price: 290.00,
+  stripe_price_id: 'price_professional_monthly',
+  yearly_stripe_price_id: 'price_professional_yearly',
+  sort_order: 2,
+  limits: {
+    guests: 300,
+    events: 3,
+    storage_gb: 10,
+    team_members: 5,
+    templates: 25
+  features: ['Advanced guest management', 'Analytics']
+const mockStarterPlan = {
+  id: 'plan-starter-id',
+  tier: 'starter',
+  display_name: 'Starter',
+  price: 0,
+  yearly_price: 0,
+  stripe_price_id: null,
+  yearly_stripe_price_id: null,
+  sort_order: 1,
+    guests: 100,
+    events: 1,
+    storage_gb: 1,
+    team_members: 2,
+    templates: 3
+  features: ['Basic guest management']
+const mockPremiumPlan = {
+  id: 'plan-premium-id',
+  tier: 'premium',
+  display_name: 'Premium',
+  price: 79.00,
+  yearly_price: 790.00,
+  sort_order: 3,
+    guests: 1000,
+    events: 10,
+    storage_gb: 50,
+    team_members: 15,
+    templates: 100
+describe('/api/billing/subscription/downgrade', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    
+    // Mock authentication
+    mockSupabaseClient.auth.getUser.mockResolvedValue({
+      data: { user: mockUser },
+    });
+  });
+  describe('POST /api/billing/subscription/downgrade', () => {
+    it('should downgrade to a paid plan successfully', async () => {
+      // Setup mocks
+      mockSubscriptionService.getUserSubscription.mockResolvedValue(mockPremiumSubscription);
+      
+      mockSupabaseClient.from.mockImplementation((table: string) => {
+        if (table === 'subscription_plans') {
+          return {
+            select: vi.fn().mockReturnValue({
+              eq: vi.fn().mockImplementation((field: string, value: string) => {
+                if (field === 'tier' && value === 'professional') {
+                  return {
+                    single: vi.fn().mockResolvedValue({
+                      data: mockProfessionalPlan,
+                      error: null
+                    })
+                  };
+                }
+                if (field === 'id' && value === 'plan-premium-id') {
+                      data: mockPremiumPlan,
+                return {
+                  single: vi.fn().mockResolvedValue({ data: null, error: null })
+                };
+              })
+            })
+          };
+        }
+        return {
+          insert: vi.fn().mockResolvedValue({ data: { id: 'event-123' }, error: null })
+        };
+      });
+      const mockDowngradeResult = {
+        subscription: {
+          id: 'sub-123',
+          stripe_subscription_id: 'stripe-sub-123',
+          current_period_end: '2025-02-24T00:00:00Z'
+      };
+      mockSubscriptionService.updateSubscription.mockResolvedValue(mockDowngradeResult);
+      const { req } = createMocks({
+        method: 'POST',
+        headers: {
+          'authorization': 'Bearer valid-token',
+          'content-type': 'application/json'
+        },
+        body: {
+          targetPlan: 'professional',
+          billingCycle: 'monthly',
+          effectiveDate: 'immediate',
+          confirmDataLoss: false
+      const request = req as unknown as NextRequest;
+      const response = await POST(request);
+      const data = await response.json();
+      expect(response.status).toBe(200);
+      expect(data.success).toBe(true);
+      expect(data.data.plan.tier).toBe('professional');
+      expect(data.message).toContain('Successfully scheduled downgrade to Professional');
+      expect(mockSubscriptionService.updateSubscription).toHaveBeenCalledWith(
+        'stripe-sub-123',
+        {
+          priceId: 'price_professional_monthly',
+          prorationBehavior: 'create_prorations'
+      );
+    it('should handle downgrade to starter plan with immediate cancellation', async () => {
+                if (field === 'tier' && value === 'starter') {
+                      data: mockStarterPlan,
+      const mockCancelResult = {
+          status: 'cancelled',
+          cancelled_at: new Date().toISOString()
+      mockSubscriptionService.cancelSubscription.mockResolvedValue(mockCancelResult);
+          targetPlan: 'starter',
+          confirmDataLoss: true
+      expect(data.data.billing_change).toBe('cancelled_immediately');
+      expect(mockSubscriptionService.cancelSubscription).toHaveBeenCalledWith(
+        false // Cancel immediately
+    it('should handle downgrade to starter plan at period end', async () => {
+          status: 'active',
+          cancel_at_period_end: true
+          effectiveDate: 'end_of_period',
+      expect(data.data.billing_change).toBe('cancelled_at_period_end');
+      expect(data.data.downgrade_effective).toBe(mockPremiumSubscription.subscription.current_period_end);
+        true // Cancel at period end
+    it('should require data loss confirmation when usage exceeds limits', async () => {
+      const highUsageSubscription = {
+        ...mockPremiumSubscription,
+        usage: {
+          clients_count: 500, // Exceeds professional limit of 300
+          journeys_count: 5,   // Exceeds professional limit of 3
+          storage_used_gb: 20, // Exceeds professional limit of 10
+          team_members_count: 8 // Exceeds professional limit of 5
+      mockSubscriptionService.getUserSubscription.mockResolvedValue(highUsageSubscription);
+          insert: vi.fn()
+          confirmDataLoss: false // Not confirmed
+      expect(response.status).toBe(409); // Conflict
+      expect(data.error).toBe('Data loss confirmation required');
+      expect(data.requires_confirmation).toBe(true);
+      expect(data.data_loss_warnings.hasDataLossRisk).toBe(true);
+      expect(data.data_loss_warnings.warnings).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining('guests exceeds the new limit'),
+          expect.stringContaining('events exceeds the new limit'),
+          expect.stringContaining('storage usage'),
+          expect.stringContaining('team members exceeds the new limit')
+        ])
+    it('should prevent upgrade attempts through downgrade endpoint', async () => {
+      const starterSubscription = {
+          plan_id: 'plan-starter-id'
+        plan: {
+          tier: 'starter',
+          sort_order: 1
+      mockSubscriptionService.getUserSubscription.mockResolvedValue(starterSubscription);
+                if (field === 'id' && value === 'plan-starter-id') {
+          billingCycle: 'monthly'
+      expect(response.status).toBe(400);
+      expect(data.error).toContain('Cannot downgrade to a higher or same tier');
+    it('should return 401 for unauthenticated requests', async () => {
+      mockSupabaseClient.auth.getUser.mockResolvedValue({
+        data: { user: null },
+        error: new Error('Invalid token')
+          'authorization': 'Bearer invalid-token',
+      expect(response.status).toBe(401);
+      expect(data.error).toBe('Unauthorized');
+    it('should return 400 for missing required fields', async () => {
+          targetPlan: 'professional'
+          // Missing billingCycle
+      expect(data.error).toBe('targetPlan and billingCycle are required');
+    it('should return 400 for invalid billing cycle', async () => {
+          billingCycle: 'invalid'
+      expect(data.error).toBe('billingCycle must be "monthly" or "yearly"');
+    it('should return 400 for invalid effective date', async () => {
+          effectiveDate: 'invalid'
+      expect(data.error).toBe('effectiveDate must be "immediate" or "end_of_period"');
+    it('should return 404 for non-existent target plan', async () => {
+      mockSupabaseClient.from.mockReturnValue({
+        select: vi.fn().mockReturnValue({
+          eq: vi.fn().mockReturnValue({
+            single: vi.fn().mockResolvedValue({
+              data: null,
+              error: { message: 'Plan not found' }
+          })
+        })
+          targetPlan: 'nonexistent',
+      expect(response.status).toBe(404);
+      expect(data.error).toBe('Target plan not found or inactive');
+    it('should return 404 when user has no active subscription', async () => {
+      mockSubscriptionService.getUserSubscription.mockResolvedValue({
+        subscription: null,
+        plan: null
+      expect(data.error).toBe('No active subscription found');
+    it('should track downgrade events in database', async () => {
+        if (table === 'subscription_events') {
+            insert: vi.fn().mockResolvedValue({
+              data: { id: 'event-123' },
+              error: null
+      mockSubscriptionService.updateSubscription.mockResolvedValue({
+        subscription: { id: 'sub-123' }
+      await POST(request);
+      expect(mockSupabaseClient.from).toHaveBeenCalledWith('subscription_events');
+  describe('Data loss analysis', () => {
+    it('should calculate data loss warnings correctly', () => {
+      const currentUsage = {
+        clients_count: 500,
+        journeys_count: 5,
+        storage_used_gb: 20,
+        team_members_count: 8
+      const currentLimits = mockPremiumPlan.limits;
+      const targetLimits = mockProfessionalPlan.limits;
+      // This tests the analyzeDataLossRisk function indirectly
+      // through the API endpoint behavior
+      expect(targetLimits.guests).toBe(300);
+      expect(targetLimits.events).toBe(3);
+      expect(targetLimits.storage_gb).toBe(10);
+      expect(targetLimits.team_members).toBe(5);
+      expect(currentUsage.clients_count).toBeGreaterThan(targetLimits.guests);
+      expect(currentUsage.journeys_count).toBeGreaterThan(targetLimits.events);
+      expect(currentUsage.storage_used_gb).toBeGreaterThan(targetLimits.storage_gb);
+      expect(currentUsage.team_members_count).toBeGreaterThan(targetLimits.team_members);

@@ -1,0 +1,100 @@
+/**
+ * Field Extraction Export API Route
+ * WS-122: Automated Field Extraction from Documents
+ * POST /api/field-extraction/export
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { FieldExtractionService } from '@/lib/services/field-extraction-service';
+import { ExportRequest } from '@/types/field-extraction';
+
+export async function POST(request: NextRequest) {
+  try {
+    const body: ExportRequest = await request.json();
+    
+    // Validate required fields
+    if (!body.documentId || !body.format) {
+      return NextResponse.json(
+        { error: 'Document ID and format are required' },
+        { status: 400 }
+      );
+    }
+
+    // Validate format
+    const supportedFormats = ['json', 'csv', 'xml', 'excel', 'pdf', 'structured-json'];
+    if (!supportedFormats.includes(body.format)) {
+      return NextResponse.json(
+        { error: `Unsupported format. Supported formats: ${supportedFormats.join(', ')}` },
+        { status: 400 }
+      );
+    }
+
+    // Initialize field extraction service
+    const extractionService = new FieldExtractionService();
+
+    // Export extracted fields
+    const result = await extractionService.exportFields(body);
+
+    // Log export attempt
+    console.log('Field export completed:', {
+      documentId: body.documentId,
+      format: body.format,
+      success: result.success,
+      fileSize: result.size
+    });
+
+    if (result.success) {
+      // Set appropriate headers based on format
+      const headers = new Headers({
+        'Content-Type': getContentType(body.format),
+        'Content-Disposition': `attachment; filename="${result.fileName || 'export.' + body.format}"`
+      });
+
+      if (body.format === 'json' || body.format === 'structured-json') {
+        return NextResponse.json({
+          success: true,
+          data: result.data,
+          format: result.format,
+          fileName: result.fileName,
+          message: 'Fields exported successfully'
+        });
+      } else {
+        // For non-JSON formats, return the data as blob
+        return new NextResponse(result.data as ArrayBuffer, {
+          status: 200,
+          headers
+        });
+      }
+    } else {
+      return NextResponse.json({
+        success: false,
+        errors: result.errors,
+        message: 'Field export failed'
+      }, { status: 422 });
+    }
+
+  } catch (error: any) {
+    console.error('Field export API error:', error);
+    return NextResponse.json(
+      { 
+        success: false,
+        error: 'Internal server error',
+        message: error.message || 'Failed to export fields'
+      },
+      { status: 500 }
+    );
+  }
+}
+
+function getContentType(format: string): string {
+  const contentTypes: Record<string, string> = {
+    'json': 'application/json',
+    'structured-json': 'application/json',
+    'csv': 'text/csv',
+    'xml': 'application/xml',
+    'excel': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'pdf': 'application/pdf'
+  };
+  
+  return contentTypes[format] || 'application/octet-stream';
+}

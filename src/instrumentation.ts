@@ -1,0 +1,91 @@
+/**
+ * Next.js Instrumentation file
+ * Required for Sentry SDK initialization in Next.js 15
+ */
+
+export async function register() {
+  if (process.env.NEXT_RUNTIME === 'nodejs') {
+    // Server-side Sentry initialization
+    const { init } = await import('@sentry/nextjs');
+
+    init({
+      dsn: process.env.SENTRY_DSN,
+
+      // Performance Monitoring
+      tracesSampleRate: 1.0,
+
+      // Environment
+      environment: process.env.NODE_ENV,
+
+      // Release tracking
+      release: process.env.VERCEL_GIT_COMMIT_SHA || 'development',
+
+      // Server-side integrations
+      integrations: [
+        // new ProfilingIntegration(), // Commented out to reduce overhead
+      ],
+
+      // Wedding business context
+      beforeSend(event) {
+        // Don't send events in development
+        if (process.env.NODE_ENV === 'development') {
+          console.log('Sentry server event (dev):', event);
+          return null;
+        }
+
+        // Add server context
+        event.tags = {
+          ...event.tags,
+          business_type: 'wedding_services',
+          component: 'server_side',
+        };
+
+        // Add wedding-specific context
+        if (event.request) {
+          const url = event.request.url;
+          if (url?.includes('/api/clients')) {
+            event.tags.api_category = 'client_management';
+          } else if (url?.includes('/api/booking')) {
+            event.tags.api_category = 'booking_system';
+          } else if (url?.includes('/api/contracts')) {
+            event.tags.api_category = 'contract_management';
+          } else if (url?.includes('/api/communications')) {
+            event.tags.api_category = 'communication_system';
+          }
+        }
+
+        return event;
+      },
+
+      // Filter out noisy server errors
+      ignoreErrors: ['ECONNRESET', 'EPIPE', 'ECANCELED', 'Request timeout'],
+    });
+  }
+
+  if (process.env.NEXT_RUNTIME === 'edge') {
+    // Edge runtime Sentry initialization
+    const { init } = await import('@sentry/nextjs');
+
+    init({
+      dsn: process.env.SENTRY_DSN,
+      tracesSampleRate: 1.0,
+      environment: process.env.NODE_ENV,
+      release: process.env.VERCEL_GIT_COMMIT_SHA || 'development',
+
+      beforeSend(event) {
+        if (process.env.NODE_ENV === 'development') {
+          console.log('Sentry edge event (dev):', event);
+          return null;
+        }
+
+        event.tags = {
+          ...event.tags,
+          business_type: 'wedding_services',
+          component: 'edge_runtime',
+        };
+
+        return event;
+      },
+    });
+  }
+}

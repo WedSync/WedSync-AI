@@ -1,0 +1,524 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+
+// Validation schemas
+const getDomainSchema = z.object({
+  supplier_id: z.string().uuid(),
+});
+
+const configureDomainSchema = z.object({
+  supplier_id: z.string().uuid(),
+  domain: z
+    .string()
+    .min(1)
+    .regex(/^[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]$/, 'Invalid domain format'),
+  action: z.literal('configure'),
+});
+
+const actionSchema = z.object({
+  supplier_id: z.string().uuid(),
+  action: z.enum(['verify', 'remove']),
+});
+
+type DomainConfig = {
+  current_domain?: string;
+  domain_verified: boolean;
+  ssl_enabled: boolean;
+  status: {
+    configured: boolean;
+    dns_status: 'pending' | 'configured' | 'error';
+    ssl_status: 'pending' | 'issued' | 'error' | 'renewal_required';
+    verification_record?: {
+      type: string;
+      name: string;
+      value: string;
+    };
+    error_message?: string;
+    last_checked: string;
+    propagation_progress?: number;
+  };
+  default_domain: string;
+  setup_instructions: string[];
+  dns_records: {
+    type: 'TXT' | 'CNAME' | 'A';
+    name: string;
+    value: string;
+    required: boolean;
+    description: string;
+    status: 'pending' | 'configured' | 'error';
+  }[];
+};
+
+// GET /api/supplier/domain - Get domain configuration
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const { searchParams } = new URL(request.url);
+
+    // Validate query parameters
+    const { supplier_id } = getDomainSchema.parse({
+      supplier_id: searchParams.get('supplier_id'),
+    });
+
+    // Get authenticated user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized' },
+        { status: 401 },
+      );
+    }
+
+    // Get supplier domain configuration
+    const { data: domainData, error: domainError } = await supabase
+      .from('supplier_domains')
+      .select(
+        `
+        *,
+        domain_verifications (*),
+        ssl_certificates (*),
+        dns_records (*)
+      `,
+      )
+      .eq('supplier_id', supplier_id)
+      .eq('is_active', true)
+      .single();
+
+    if (domainError && domainError.code !== 'PGRST116') {
+      console.error('Database error:', domainError);
+      return NextResponse.json(
+        { success: false, error: 'Failed to fetch domain configuration' },
+        { status: 500 },
+      );
+    }
+
+    // Get supplier info for default domain
+    const { data: supplierData, error: supplierError } = await supabase
+      .from('user_profiles')
+      .select('id, organization_id')
+      .eq('id', supplier_id)
+      .single();
+
+    if (supplierError) {
+      return NextResponse.json(
+        { success: false, error: 'Supplier not found' },
+        { status: 404 },
+      );
+    }
+
+    const defaultDomain = `supplier-${supplier_id.slice(0, 8)}.wedsync.app`;
+
+    // Build response
+    const config: DomainConfig = {
+      current_domain: domainData?.domain_name,
+      domain_verified:
+        domainData?.status === 'verified' || domainData?.status === 'active',
+      ssl_enabled:
+        domainData?.ssl_certificates?.some(
+          (cert: any) => cert.status === 'active',
+        ) || false,
+      status: {
+        configured: domainData?.status === 'active',
+        dns_status: domainData?.dns_records?.every(
+          (record: any) => record.is_verified,
+        )
+          ? 'configured'
+          : 'pending',
+        ssl_status: domainData?.ssl_certificates?.[0]?.status || 'pending',
+        verification_record: domainData?.domain_verifications?.[0]
+          ? {
+              type: 'TXT',
+              name: domainData.domain_verifications[0].verification_token,
+              value: domainData.domain_verifications[0].verification_value,
+            }
+          : undefined,
+        error_message:
+          domainData?.domain_verifications?.[0]?.verification_error,
+        last_checked: domainData?.last_checked_at || new Date().toISOString(),
+        propagation_progress: calculatePropagationProgress(domainData),
+      },
+      default_domain: defaultDomain,
+      setup_instructions: generateSetupInstructions(domainData),
+      dns_records: generateDNSRecords(domainData),
+    };
+
+    return NextResponse.json({
+      success: true,
+      data: config,
+    });
+  } catch (error) {
+    console.error('API error:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Invalid request parameters',
+          details: error.errors,
+        },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { success: false, error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+// POST /api/supplier/domain - Configure, verify, or remove domain
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const body = await request.json();
+
+    // Get authenticated user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized' },
+        { status: 401 },
+      );
+    }
+
+    if (body.action === 'configure') {
+      const { supplier_id, domain, action } = configureDomainSchema.parse(body);
+
+      // Validate domain availability and ownership
+      const validationResult = await validateDomainOwnership(domain);
+      if (!validationResult.valid) {
+        return NextResponse.json(
+          { success: false, error: validationResult.error },
+          { status: 400 },
+        );
+      }
+
+      // Create or update domain configuration
+      const { data: domainData, error: domainError } = await supabase
+        .from('supplier_domains')
+        .upsert(
+          {
+            supplier_id,
+            domain_name: domain,
+            full_domain: domain,
+            status: 'pending',
+            is_active: true,
+            configuration: {
+              verification_method: 'dns_txt',
+              auto_renew_ssl: true,
+            },
+            updated_at: new Date().toISOString(),
+          },
+          {
+            onConflict: 'supplier_id,domain_name',
+            ignoreDuplicates: false,
+          },
+        )
+        .select()
+        .single();
+
+      if (domainError) {
+        console.error('Domain creation error:', domainError);
+        return NextResponse.json(
+          { success: false, error: 'Failed to configure domain' },
+          { status: 500 },
+        );
+      }
+
+      // Create verification record
+      const verificationToken = generateVerificationToken();
+      const { error: verificationError } = await supabase
+        .from('domain_verifications')
+        .insert({
+          domain_id: domainData.id,
+          verification_method: 'dns_txt',
+          verification_token: verificationToken,
+          verification_value: `wedsync-verification=${verificationToken}`,
+          status: 'pending',
+          expires_at: new Date(
+            Date.now() + 7 * 24 * 60 * 60 * 1000,
+          ).toISOString(), // 7 days
+          max_attempts: 10,
+          attempts: 0,
+        });
+
+      if (verificationError) {
+        console.error('Verification creation error:', verificationError);
+      }
+
+      // Generate required DNS records
+      await generateRequiredDNSRecords(supabase, domainData.id, domain);
+
+      return NextResponse.json({
+        success: true,
+        message: 'Domain configured successfully',
+      });
+    } else if (body.action === 'verify') {
+      const { supplier_id, action } = actionSchema.parse(body);
+
+      // Get current domain
+      const { data: domainData, error: domainError } = await supabase
+        .from('supplier_domains')
+        .select('*')
+        .eq('supplier_id', supplier_id)
+        .eq('is_active', true)
+        .single();
+
+      if (domainError || !domainData) {
+        return NextResponse.json(
+          { success: false, error: 'No domain configuration found' },
+          { status: 404 },
+        );
+      }
+
+      // Perform DNS verification
+      const verificationResult = await verifyDNSRecords(domainData.domain_name);
+
+      if (verificationResult.verified) {
+        // Update domain status
+        await supabase
+          .from('supplier_domains')
+          .update({
+            status: 'verified',
+            verified_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', domainData.id);
+
+        // Start SSL provisioning
+        await provisionSSLCertificate(
+          supabase,
+          domainData.id,
+          domainData.domain_name,
+        );
+
+        return NextResponse.json({
+          success: true,
+          message:
+            'Domain verified successfully. SSL certificate provisioning started.',
+        });
+      } else {
+        return NextResponse.json(
+          { success: false, error: verificationResult.error },
+          { status: 400 },
+        );
+      }
+    } else if (body.action === 'remove') {
+      const { supplier_id, action } = actionSchema.parse(body);
+
+      // Soft delete domain configuration
+      const { error: deleteError } = await supabase
+        .from('supplier_domains')
+        .update({
+          is_active: false,
+          status: 'suspended',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('supplier_id', supplier_id)
+        .eq('is_active', true);
+
+      if (deleteError) {
+        console.error('Domain removal error:', deleteError);
+        return NextResponse.json(
+          { success: false, error: 'Failed to remove domain' },
+          { status: 500 },
+        );
+      }
+
+      return NextResponse.json({
+        success: true,
+        message: 'Domain removed successfully',
+      });
+    }
+
+    return NextResponse.json(
+      { success: false, error: 'Invalid action' },
+      { status: 400 },
+    );
+  } catch (error) {
+    console.error('API error:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Invalid request parameters',
+          details: error.errors,
+        },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { success: false, error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+// Helper functions
+function generateVerificationToken(): string {
+  return (
+    Math.random().toString(36).substring(2, 15) +
+    Math.random().toString(36).substring(2, 15)
+  );
+}
+
+function calculatePropagationProgress(domainData: any): number {
+  if (!domainData) return 0;
+
+  const totalChecks = 4; // DNS, SSL, verification, health
+  let completedChecks = 0;
+
+  if (domainData.status === 'verified' || domainData.status === 'active')
+    completedChecks++;
+  if (
+    domainData.ssl_certificates?.some((cert: any) => cert.status === 'active')
+  )
+    completedChecks++;
+  if (domainData.dns_records?.every((record: any) => record.is_verified))
+    completedChecks++;
+  if (domainData.last_checked_at) completedChecks++;
+
+  return Math.round((completedChecks / totalChecks) * 100);
+}
+
+function generateSetupInstructions(domainData: any): string[] {
+  const instructions = [];
+
+  if (!domainData) {
+    return [
+      'No custom domain configured',
+      'Click "Configure" tab to set up your custom domain',
+      'Add DNS records as instructed',
+      'Wait for verification and SSL provisioning',
+    ];
+  }
+
+  switch (domainData.status) {
+    case 'pending':
+      instructions.push('Domain configuration created');
+      instructions.push('Add the TXT record for verification');
+      instructions.push('Add the CNAME record for routing');
+      instructions.push('Wait for DNS propagation and verification');
+      break;
+    case 'verified':
+      instructions.push('Domain ownership verified');
+      instructions.push('SSL certificate is being provisioned');
+      instructions.push('Your domain will be active shortly');
+      break;
+    case 'active':
+      instructions.push('Domain is fully configured and active');
+      instructions.push('SSL certificate is issued and valid');
+      instructions.push('Your custom domain is ready to use');
+      break;
+    default:
+      instructions.push('Domain configuration in progress');
+      instructions.push('Check DNS settings if issues persist');
+  }
+
+  return instructions;
+}
+
+function generateDNSRecords(domainData: any): any[] {
+  const records = [];
+
+  if (domainData?.domain_verifications?.[0]) {
+    records.push({
+      type: 'TXT' as const,
+      name: `_wedsync-verification.${domainData.domain_name}`,
+      value: domainData.domain_verifications[0].verification_value,
+      required: true,
+      description: 'Domain ownership verification record',
+      status:
+        domainData.domain_verifications[0].status === 'verified'
+          ? ('configured' as const)
+          : ('pending' as const),
+    });
+  }
+
+  if (domainData?.domain_name) {
+    records.push({
+      type: 'CNAME' as const,
+      name: domainData.domain_name,
+      value: 'suppliers.wedsync.app',
+      required: true,
+      description: 'Points your domain to WedSync servers',
+      status: domainData.dns_records?.some(
+        (r: any) => r.record_type === 'CNAME' && r.is_verified,
+      )
+        ? ('configured' as const)
+        : ('pending' as const),
+    });
+  }
+
+  return records;
+}
+
+async function validateDomainOwnership(
+  domain: string,
+): Promise<{ valid: boolean; error?: string }> {
+  // Basic domain format validation
+  const domainRegex = /^[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]$/;
+  if (!domainRegex.test(domain)) {
+    return { valid: false, error: 'Invalid domain format' };
+  }
+
+  // Check if domain is not already in use (in a real implementation)
+  // For now, we'll allow any valid domain
+  return { valid: true };
+}
+
+async function verifyDNSRecords(
+  domain: string,
+): Promise<{ verified: boolean; error?: string }> {
+  // In a real implementation, this would check DNS records using dns.resolve()
+  // For demo purposes, we'll simulate verification
+  return { verified: true };
+}
+
+async function provisionSSLCertificate(
+  supabase: any,
+  domainId: string,
+  domain: string,
+): Promise<void> {
+  // Create SSL certificate record
+  await supabase.from('ssl_certificates').insert({
+    domain_id: domainId,
+    certificate_authority: "Let's Encrypt",
+    certificate_type: 'domain_validated',
+    status: 'provisioning',
+    auto_renew: true,
+    renewal_threshold_days: 30,
+    renewal_attempts: 0,
+  });
+}
+
+async function generateRequiredDNSRecords(
+  supabase: any,
+  domainId: string,
+  domain: string,
+): Promise<void> {
+  const records = [
+    {
+      domain_id: domainId,
+      record_type: 'CNAME',
+      name: domain,
+      value: 'suppliers.wedsync.app',
+      ttl: 3600,
+      managed_by_wedsync: true,
+      is_verified: false,
+      notes: 'Main domain routing record',
+    },
+  ];
+
+  await supabase.from('dns_records').insert(records);
+}

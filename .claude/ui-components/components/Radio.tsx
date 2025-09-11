@@ -1,0 +1,1 @@
+import * as React from 'react'; export function Radio({ label, name, ...props }: React.InputHTMLAttributes<HTMLInputElement> & { label?: string; name: string }) { return (<label className='inline-flex items-center gap-2 text-sm'><input type='radio' name={name} className='h-4 w-4 border-border text-accent focus:ring-accent' {...props} />{label}</label>); }

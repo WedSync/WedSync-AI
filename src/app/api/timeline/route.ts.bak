@@ -1,0 +1,326 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@/lib/supabase/server'
+import { z } from 'zod'
+import { withSecureValidation, withQueryValidation } from '@/lib/validation/middleware'
+import { weddingValidationSchemas } from '@/lib/validations/wedding-forms'
+
+// =====================================================
+// VALIDATION SCHEMAS
+// =====================================================
+
+// Create timeline schema (extended from wedding timeline schema)
+const createTimelineSchema = z.object({
+  client_id: z.string().uuid('Invalid client ID'),
+  name: z.string().min(1, 'Timeline name is required').max(255, 'Timeline name too long'),
+  wedding_date: z.string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'Invalid date format (YYYY-MM-DD)')
+    .refine((dateStr) => {
+      const date = new Date(dateStr)
+      const now = new Date()
+      now.setHours(0, 0, 0, 0)
+      return date >= now
+    }, 'Wedding date cannot be in the past'),
+  timezone: z.string().max(50).default('Europe/London'),
+  start_time: z.string().regex(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/, 'Invalid time format (HH:MM)').default('08:00'),
+  end_time: z.string().regex(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/, 'Invalid time format (HH:MM)').default('23:00'),
+  buffer_time_minutes: z.number().min(0).max(60).default(15),
+  allow_vendor_edits: z.boolean().default(false),
+  require_approval: z.boolean().default(true),
+}).refine((data) => {
+  // Validate start_time is before end_time
+  const startTime = new Date(`2000-01-01 ${data.start_time}`)
+  const endTime = new Date(`2000-01-01 ${data.end_time}`)
+  return startTime < endTime
+}, 'Start time must be before end time')
+
+// Query parameters for listing timelines
+const listTimelinesQuerySchema = z.object({
+  client_id: z.string().uuid().optional(),
+  status: z.enum(['draft', 'review', 'approved', 'final']).optional(),
+  limit: z.string().transform(val => parseInt(val) || 20).pipe(z.number().min(1).max(100)).optional(),
+  offset: z.string().transform(val => parseInt(val) || 0).pipe(z.number().min(0)).optional(),
+  sort: z.enum(['created_at', 'updated_at', 'wedding_date', 'name']).default('updated_at'),
+  order: z.enum(['asc', 'desc']).default('desc')
+})
+
+// =====================================================
+// GET /api/timeline - List timelines
+// =====================================================
+
+export const GET = withQueryValidation(
+  listTimelinesQuerySchema,
+  async (request: NextRequest, query: z.infer<typeof listTimelinesQuerySchema>) => {
+    try {
+      const supabase = await createClient()
+      
+      // Get authenticated user
+      const { data: { user }, error: authError } = await supabase.auth.getUser()
+      
+      if (authError || !user) {
+        return NextResponse.json(
+          { error: 'Authentication required' },
+          { status: 401 }
+        )
+      }
+
+      // Get user's organization
+      const { data: profile, error: profileError } = await supabase
+        .from('user_profiles')
+        .select('organization_id')
+        .eq('user_id', user.id)
+        .single()
+
+      if (profileError || !profile?.organization_id) {
+        return NextResponse.json(
+          { error: 'User organization not found' },
+          { status: 404 }
+        )
+      }
+
+      // Build query
+      let timelineQuery = supabase
+        .from('wedding_timelines')
+        .select(`
+          id,
+          name,
+          wedding_date,
+          timezone,
+          start_time,
+          end_time,
+          buffer_time_minutes,
+          allow_vendor_edits,
+          require_approval,
+          version,
+          published_version,
+          is_published,
+          published_at,
+          status,
+          created_at,
+          updated_at,
+          clients:client_id (
+            id,
+            name,
+            email
+          )
+        `)
+        .eq('organization_id', profile.organization_id)
+        .range(query.offset || 0, (query.offset || 0) + (query.limit || 20) - 1)
+        .order(query.sort, { ascending: query.order === 'asc' })
+
+      // Apply filters
+      if (query.client_id) {
+        timelineQuery = timelineQuery.eq('client_id', query.client_id)
+      }
+      
+      if (query.status) {
+        timelineQuery = timelineQuery.eq('status', query.status)
+      }
+
+      const { data: timelines, error: timelinesError, count } = await timelineQuery
+
+      if (timelinesError) {
+        console.error('Error fetching timelines:', timelinesError)
+        return NextResponse.json(
+          { error: 'Failed to fetch timelines' },
+          { status: 500 }
+        )
+      }
+
+      // Get timeline statistics for each timeline
+      const timelinesWithStats = await Promise.all(
+        (timelines || []).map(async (timeline) => {
+          const { data: stats } = await supabase
+            .rpc('get_timeline_statistics', { p_timeline_id: timeline.id })
+            .single()
+
+          return {
+            ...timeline,
+            statistics: stats || {
+              total_events: 0,
+              confirmed_events: 0,
+              total_vendors: 0,
+              confirmed_vendors: 0,
+              total_duration_hours: 0,
+              unresolved_conflicts: 0
+            }
+          }
+        })
+      )
+
+      return NextResponse.json({
+        success: true,
+        data: timelinesWithStats,
+        pagination: {
+          offset: query.offset || 0,
+          limit: query.limit || 20,
+          total: count || 0,
+          has_more: (count || 0) > (query.offset || 0) + (query.limit || 20)
+        }
+      })
+
+    } catch (error) {
+      console.error('Timeline list error:', error)
+      return NextResponse.json(
+        { error: error instanceof Error ? error.message : 'Internal server error' },
+        { status: 500 }
+      )
+    }
+  }
+)
+
+// =====================================================
+// POST /api/timeline - Create new timeline
+// =====================================================
+
+export const POST = withSecureValidation(
+  createTimelineSchema,
+  async (request: NextRequest, validatedData: z.infer<typeof createTimelineSchema>) => {
+    try {
+      const supabase = await createClient()
+      
+      // Get authenticated user
+      const { data: { user }, error: authError } = await supabase.auth.getUser()
+      
+      if (authError || !user) {
+        return NextResponse.json(
+          { error: 'Authentication required' },
+          { status: 401 }
+        )
+      }
+
+      // Get user's organization and verify they have access to the client
+      const { data: profile, error: profileError } = await supabase
+        .from('user_profiles')
+        .select('organization_id')
+        .eq('user_id', user.id)
+        .single()
+
+      if (profileError || !profile?.organization_id) {
+        return NextResponse.json(
+          { error: 'User organization not found' },
+          { status: 404 }
+        )
+      }
+
+      // Verify client belongs to user's organization
+      const { data: client, error: clientError } = await supabase
+        .from('clients')
+        .select('id, organization_id, name')
+        .eq('id', validatedData.client_id)
+        .eq('organization_id', profile.organization_id)
+        .single()
+
+      if (clientError || !client) {
+        return NextResponse.json(
+          { error: 'Client not found or access denied' },
+          { status: 404 }
+        )
+      }
+
+      // Check if a timeline already exists for this client
+      const { data: existingTimeline } = await supabase
+        .from('wedding_timelines')
+        .select('id')
+        .eq('client_id', validatedData.client_id)
+        .single()
+
+      if (existingTimeline) {
+        return NextResponse.json(
+          { 
+            error: 'TIMELINE_EXISTS',
+            message: 'A timeline already exists for this client',
+            existing_timeline_id: existingTimeline.id
+          },
+          { status: 409 }
+        )
+      }
+
+      // Create the timeline
+      const { data: timeline, error: createError } = await supabase
+        .from('wedding_timelines')
+        .insert({
+          organization_id: profile.organization_id,
+          client_id: validatedData.client_id,
+          name: validatedData.name,
+          wedding_date: validatedData.wedding_date,
+          timezone: validatedData.timezone,
+          start_time: validatedData.start_time,
+          end_time: validatedData.end_time,
+          buffer_time_minutes: validatedData.buffer_time_minutes,
+          allow_vendor_edits: validatedData.allow_vendor_edits,
+          require_approval: validatedData.require_approval,
+          status: 'draft',
+          created_by: user.id,
+          updated_by: user.id
+        })
+        .select(`
+          id,
+          name,
+          wedding_date,
+          timezone,
+          start_time,
+          end_time,
+          buffer_time_minutes,
+          allow_vendor_edits,
+          require_approval,
+          version,
+          status,
+          created_at,
+          updated_at
+        `)
+        .single()
+
+      if (createError) {
+        console.error('Error creating timeline:', createError)
+        return NextResponse.json(
+          { error: 'Failed to create timeline' },
+          { status: 500 }
+        )
+      }
+
+      // Add the creating user as an owner collaborator
+      await supabase
+        .from('timeline_collaborators')
+        .insert({
+          timeline_id: timeline.id,
+          user_id: user.id,
+          role: 'owner',
+          can_edit: true,
+          can_comment: true,
+          can_share: true,
+          status: 'active',
+          accepted_at: new Date().toISOString()
+        })
+
+      return NextResponse.json({
+        success: true,
+        data: {
+          ...timeline,
+          client: {
+            id: client.id,
+            name: client.name
+          },
+          statistics: {
+            total_events: 0,
+            confirmed_events: 0,
+            total_vendors: 0,
+            confirmed_vendors: 0,
+            total_duration_hours: 0,
+            unresolved_conflicts: 0
+          }
+        }
+      }, { status: 201 })
+
+    } catch (error) {
+      console.error('Timeline creation error:', error)
+      return NextResponse.json(
+        { error: error instanceof Error ? error.message : 'Internal server error' },
+        { status: 500 }
+      )
+    }
+  }
+)
+
+// Configure runtime options
+export const runtime = 'nodejs'
+export const dynamic = 'force-dynamic'

@@ -1,0 +1,291 @@
+// Backup Dashboard Types and Interfaces for WS-178
+export interface BackupStatus {
+  id: string;
+  type: 'full' | 'incremental' | 'differential';
+  status: 'success' | 'running' | 'failed' | 'scheduled';
+  startTime: Date;
+  endTime?: Date;
+  duration?: number;
+  dataSize: number;
+  errorMessage?: string;
+  progress?: number;
+}
+
+export interface BackupMetrics {
+  totalBackups: number;
+  successRate: number;
+  averageDuration: number;
+  totalDataSize: number;
+  lastSuccessfulBackup?: Date;
+  nextScheduledBackup?: Date;
+  storageUsed: number;
+  storageLimit: number;
+}
+
+export interface BackupConfig {
+  id: string;
+  name: string;
+  type: 'full' | 'incremental' | 'differential';
+  schedule: {
+    frequency: 'daily' | 'weekly' | 'monthly';
+    time: string;
+    days?: number[];
+    timezone: string;
+  };
+  retention: {
+    count: number;
+    period: 'days' | 'weeks' | 'months';
+  };
+  dataTypes: BackupDataType[];
+  notifications: {
+    onSuccess: boolean;
+    onFailure: boolean;
+    email?: string;
+    webhook?: string;
+  };
+  enabled: boolean;
+}
+
+export interface BackupDataType {
+  id: string;
+  name: string;
+  description: string;
+  category: 'photos' | 'documents' | 'database' | 'user_data';
+  size?: number;
+  lastBackup?: Date;
+  enabled: boolean;
+  priority: 'high' | 'medium' | 'low';
+}
+
+export interface BackupHistoryEntry {
+  id: string;
+  configId: string;
+  configName: string;
+  type: BackupConfig['type'];
+  status: BackupStatus['status'];
+  startTime: Date;
+  endTime?: Date;
+  duration?: number;
+  dataSize: number;
+  dataTypes: string[];
+  errorMessage?: string;
+  canRestore: boolean;
+  downloadUrl?: string;
+}
+
+export interface RestoreRequest {
+  backupId: string;
+  dataTypes: string[];
+  targetLocation?: string;
+  overwriteExisting: boolean;
+  notifyOnComplete: boolean;
+}
+
+export interface BackupDashboardProps {
+  weddingId?: string;
+  userRole: 'admin' | 'couple' | 'vendor';
+  onConfigChange?: (config: BackupConfig) => void;
+  onRestore?: (request: RestoreRequest) => void;
+}
+
+export type BackupStatusFilter = 'all' | 'success' | 'failed' | 'running';
+export type BackupDateRange = '7d' | '30d' | '90d' | '1y' | 'custom';
+
+export interface BackupFilters {
+  status: BackupStatusFilter;
+  dateRange: BackupDateRange;
+  customStartDate?: Date;
+  customEndDate?: Date;
+  dataType?: string;
+  configId?: string;
+}
+
+// Error types for proper error handling
+export class BackupError extends Error {
+  constructor(
+    message: string,
+    public code: string,
+    public severity: 'low' | 'medium' | 'high' | 'critical' = 'medium'
+  ) {
+    super(message);
+    this.name = 'BackupError';
+  }
+}
+
+export interface BackupErrorBoundaryState {
+  hasError: boolean;
+  error?: BackupError;
+  errorInfo?: string;
+}
+
+// WS-191 Extensions for Backup Dashboard UI
+export interface RecoveryPoint {
+  id: string;
+  timestamp: Date;
+  type: 'automatic' | 'manual';
+  status: 'healthy' | 'corrupted';
+  size: number; // GB
+  description: string;
+}
+
+export interface BackupOperation {
+  id: string;
+  backup_id: string;
+  backup_type: 'full' | 'incremental' | 'archive' | 'manual';
+  timestamp: Date;
+  type: 'database' | 'files' | 'images' | 'full';
+  mode: 'automatic' | 'manual';
+  status: 'success' | 'failed' | 'running' | 'cancelled' | 'pending';
+  started_at: string;
+  completed_at?: string;
+  duration: number; // in minutes
+  size: number; // in GB
+  size_bytes?: number;
+  components_backed_up: string[];
+  integrity_verified: boolean;
+  storageLocation: string;
+  verified: boolean;
+  triggeredBy: string;
+  reason?: string;
+  components: string[];
+  priority: 'low' | 'normal' | 'high';
+}
+
+export interface ExtendedBackupStatus extends BackupStatus {
+  lastBackup: Date;
+  nextScheduled: Date;
+  storageUsage: {
+    used: number; // GB
+    total: number; // GB
+  };
+  health: 'healthy' | 'warning' | 'critical';
+}
+
+export interface RecoveryObjectives {
+  rto: number; // Recovery Time Objective in minutes
+  rpo: number; // Recovery Point Objective in minutes
+  retentionDays: number;
+}
+
+export interface BackupProgress {
+  operationId: string;
+  progress: number; // 0-100
+  currentStep: string;
+  estimatedCompletion: Date;
+}
+
+// Manual Backup Form Types
+export interface BackupFormData {
+  components: string[];
+  priority: 'low' | 'normal' | 'high';
+  reason: string;
+  includeUserData: boolean;
+  compressionLevel: 'none' | 'standard' | 'maximum';
+}
+
+export interface BackupComponent {
+  id: string;
+  label: string;
+  description: string;
+  icon: React.ReactNode;
+  estimatedSize: string;
+  estimatedTime: string;
+  critical: boolean;
+}
+
+export interface BackupOptions {
+  components: string[];
+  priority: 'low' | 'normal' | 'high';
+  reason: string;
+  includeUserData: boolean;
+  compressionLevel: 'none' | 'standard' | 'maximum';
+}
+
+// Component Props Interfaces for WS-191
+export interface BackupStatusCardProps {
+  status: ExtendedBackupStatus;
+  onRefresh: () => void;
+}
+
+export interface RecoveryPointTimelineProps {
+  recoveryPoints: RecoveryPoint[];
+}
+
+export interface ManualBackupFormProps {
+  onBackupTrigger: () => void;
+}
+
+export interface BackupHistoryTableProps {
+  operations?: BackupOperation[];
+  onDownload?: (operation: BackupOperation) => void;
+  onRestore?: (operation: BackupOperation) => void;
+}
+
+// Extended Dashboard Props for WS-191
+export interface ExtendedBackupDashboardProps extends BackupDashboardProps {
+  recentBackups: BackupOperation[];
+  nextScheduledBackup: Date;
+  recoveryObjectives: RecoveryObjectives;
+  currentBackupStatus?: BackupProgress;
+}
+
+// API Response Types (for Team B integration)
+export interface BackupAPIResponse {
+  success: boolean;
+  message?: string;
+  data?: any;
+  error?: string;
+}
+
+export interface ExtendedBackupMetrics extends BackupMetrics {
+  totalStorageUsed: number; // GB
+  averageBackupTime: number; // minutes
+  lastBackupTime: Date;
+}
+
+// Admin Access Control Types
+export interface AdminUser {
+  id: string;
+  email: string;
+  role: 'super_admin' | 'system_admin' | 'backup_operator';
+  permissions: BackupPermission[];
+}
+
+export interface BackupPermission {
+  resource: 'dashboard' | 'manual_backup' | 'restore' | 'download' | 'view_logs';
+  actions: ('read' | 'write' | 'execute')[];
+}
+
+// Audit Log Types
+export interface BackupAuditLog {
+  id: string;
+  timestamp: Date;
+  userId: string;
+  userEmail: string;
+  action: 'view_dashboard' | 'trigger_backup' | 'restore_backup' | 'download_backup';
+  resourceId?: string;
+  details: string;
+  ipAddress: string;
+  userAgent: string;
+}
+
+// Real-time Update Types
+export interface BackupRealtimeUpdate {
+  type: 'status_change' | 'progress_update' | 'completion' | 'error';
+  operationId: string;
+  data: any;
+  timestamp: Date;
+}
+
+// Error Types for WS-191
+export interface BackupUIError {
+  code: string;
+  message: string;
+  details?: any;
+  timestamp: Date;
+  context?: {
+    operationId?: string;
+    component?: string;
+    step?: string;
+  };
+}

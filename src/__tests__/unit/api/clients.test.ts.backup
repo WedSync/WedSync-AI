@@ -1,0 +1,867 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { NextRequest } from 'next/server'
+import { createMocks } from 'node-mocks-http'
+import { generateWeddingTestData } from '../../../../tests/utils/test-utils'
+
+// Mock Supabase
+const mockSupabase = {
+  auth: {
+    getUser: vi.fn(),
+  },
+  from: vi.fn(() => ({
+    select: vi.fn().mockReturnThis(),
+    insert: vi.fn().mockReturnThis(),
+    update: vi.fn().mockReturnThis(),
+    delete: vi.fn().mockReturnThis(),
+    eq: vi.fn().mockReturnThis(),
+    filter: vi.fn().mockReturnThis(),
+    order: vi.fn().mockReturnThis(),
+    range: vi.fn().mockReturnThis(),
+    single: vi.fn(),
+  })),
+}
+
+vi.mock('@/lib/supabase/server', () => ({
+  createClient: () => mockSupabase,
+}))
+
+// Mock rate limiting
+vi.mock('@/lib/rate-limit', () => ({
+  rateLimit: vi.fn(() => null),
+  rateLimitConfigs: {
+    api: { windowMs: 60000, max: 100 },
+  },
+}))
+
+// Mock validation schemas
+vi.mock('@/lib/validations/client', () => ({
+  createClientSchema: {
+    parse: vi.fn((data) => data),
+  },
+  updateClientSchema: {
+    parse: vi.fn((data) => data),
+  },
+  clientFilterSchema: {
+    parse: vi.fn((data) => data),
+  },
+}))
+
+describe('Clients API', () => {
+  const mockAuthUser = {
+    id: 'test-user-id',
+    email: 'photographer@studio.com',
+    role: 'photographer',
+  }
+
+  const mockProfile = {
+    user_id: 'test-user-id',
+    organization_id: 'studio-org-123',
+    role: 'photographer',
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    
+    // Setup default auth mock
+    mockSupabase.auth.getUser.mockResolvedValue({
+      data: { user: mockAuthUser },
+      error: null,
+    })
+
+    mockSupabase.from().select().eq().single.mockResolvedValue({
+      data: mockProfile,
+      error: null,
+    })
+  })
+
+  describe('GET /api/clients', () => {
+    it('returns wedding clients for authenticated photographer', async () => {
+      const mockClients = [
+        generateWeddingTestData.client({
+          id: 'client-1',
+          first_name: 'John',
+          last_name: 'Smith',
+          partner_first_name: 'Jane',
+          partner_last_name: 'Smith',
+          wedding_date: '2024-06-15',
+          venue_name: 'Beautiful Wedding Venue',
+          status: 'booked',
+        }),
+        generateWeddingTestData.client({
+          id: 'client-2',
+          first_name: 'Mike',
+          last_name: 'Johnson',
+          partner_first_name: 'Sarah',
+          partner_last_name: 'Johnson',
+          wedding_date: '2024-08-22',
+          venue_name: 'Garden Wedding Venue',
+          status: 'lead',
+        }),
+      ]
+
+      mockSupabase.from().select().eq().range.mockResolvedValue({
+        data: mockClients,
+        error: null,
+        count: mockClients.length,
+      })
+
+      const { req, res } = createMocks({
+        method: 'GET',
+        query: {
+          page: '1',
+          limit: '10',
+        },
+        headers: {
+          authorization: 'Bearer valid-token',
+        },
+      })
+
+      const handler = await import('@/app/api/clients/route')
+      await handler.GET(req as NextRequest)
+
+      expect(res._getStatusCode()).toBe(200)
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.data).toEqual(mockClients)
+      expect(responseData.pagination).toEqual({
+        page: 1,
+        limit: 10,
+        total: 2,
+        totalPages: 1,
+      })
+    })
+
+    it('filters wedding clients by status', async () => {
+      const bookedClients = [
+        generateWeddingTestData.client({
+          id: 'client-1',
+          status: 'booked',
+        }),
+      ]
+
+      mockSupabase.from().select().eq().filter().range.mockResolvedValue({
+        data: bookedClients,
+        error: null,
+        count: bookedClients.length,
+      })
+
+      const { req, res } = createMocks({
+        method: 'GET',
+        query: {
+          status: 'booked',
+          page: '1',
+          limit: '10',
+        },
+        headers: {
+          authorization: 'Bearer valid-token',
+        },
+      })
+
+      const handler = await import('@/app/api/clients/route')
+      await handler.GET(req as NextRequest)
+
+      expect(mockSupabase.from().filter).toHaveBeenCalledWith('status', 'eq', 'booked')
+      expect(res._getStatusCode()).toBe(200)
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.data).toEqual(bookedClients)
+    })
+
+    it('filters wedding clients by date range', async () => {
+      const { req, res } = createMocks({
+        method: 'GET',
+        query: {
+          wedding_date_from: '2024-01-01',
+          wedding_date_to: '2024-12-31',
+          page: '1',
+          limit: '10',
+        },
+        headers: {
+          authorization: 'Bearer valid-token',
+        },
+      })
+
+      const handler = await import('@/app/api/clients/route')
+      await handler.GET(req as NextRequest)
+
+      expect(mockSupabase.from().filter).toHaveBeenCalledWith(
+        'wedding_date',
+        'gte',
+        '2024-01-01'
+      )
+      expect(mockSupabase.from().filter).toHaveBeenCalledWith(
+        'wedding_date',
+        'lte',
+        '2024-12-31'
+      )
+    })
+
+    it('searches wedding clients by name and venue', async () => {
+      const { req, res } = createMocks({
+        method: 'GET',
+        query: {
+          search: 'Smith Wedding Venue',
+          page: '1',
+          limit: '10',
+        },
+        headers: {
+          authorization: 'Bearer valid-token',
+        },
+      })
+
+      const handler = await import('@/app/api/clients/route')
+      await handler.GET(req as NextRequest)
+
+      expect(mockSupabase.from().filter).toHaveBeenCalledWith(
+        'search_text',
+        'ilike',
+        '%Smith Wedding Venue%'
+      )
+    })
+
+    it('sorts wedding clients by wedding date', async () => {
+      const { req, res } = createMocks({
+        method: 'GET',
+        query: {
+          sort_by: 'wedding_date',
+          sort_order: 'asc',
+        },
+        headers: {
+          authorization: 'Bearer valid-token',
+        },
+      })
+
+      const handler = await import('@/app/api/clients/route')
+      await handler.GET(req as NextRequest)
+
+      expect(mockSupabase.from().order).toHaveBeenCalledWith('wedding_date', { ascending: true })
+    })
+
+    it('requires authentication for wedding client access', async () => {
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: null },
+        error: { message: 'Invalid token' },
+      })
+
+      const { req, res } = createMocks({
+        method: 'GET',
+        headers: {
+          authorization: 'Bearer invalid-token',
+        },
+      })
+
+      const handler = await import('@/app/api/clients/route')
+      await handler.GET(req as NextRequest)
+
+      expect(res._getStatusCode()).toBe(401)
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.error).toBe('Unauthorized')
+    })
+
+    it('enforces organization isolation for wedding clients', async () => {
+      const { req, res } = createMocks({
+        method: 'GET',
+        headers: {
+          authorization: 'Bearer valid-token',
+        },
+      })
+
+      const handler = await import('@/app/api/clients/route')
+      await handler.GET(req as NextRequest)
+
+      expect(mockSupabase.from().eq).toHaveBeenCalledWith('organization_id', 'studio-org-123')
+    })
+  })
+
+  describe('POST /api/clients', () => {
+    it('creates new wedding client successfully', async () => {
+      const newClientData = {
+        first_name: 'Emma',
+        last_name: 'Wilson',
+        partner_first_name: 'David',
+        partner_last_name: 'Wilson',
+        email: 'emma.david@email.com',
+        phone: '+1234567890',
+        wedding_date: '2024-09-15',
+        venue_name: 'Sunset Wedding Garden',
+        venue_address: '123 Garden St, Love City, LC 12345',
+        guest_count: 120,
+        budget: 45000,
+        package_name: 'Deluxe Photography Package',
+        package_price: 3500,
+        status: 'lead',
+        notes: 'Outdoor ceremony, reception indoors',
+      }
+
+      const createdClient = {
+        id: 'new-client-id',
+        organization_id: 'studio-org-123',
+        ...newClientData,
+        created_at: '2024-01-15T10:00:00Z',
+        updated_at: '2024-01-15T10:00:00Z',
+      }
+
+      mockSupabase.from().insert.mockResolvedValue({
+        data: [createdClient],
+        error: null,
+      })
+
+      const { req, res } = createMocks({
+        method: 'POST',
+        body: newClientData,
+        headers: {
+          authorization: 'Bearer valid-token',
+          'content-type': 'application/json',
+        },
+      })
+
+      const handler = await import('@/app/api/clients/route')
+      await handler.POST(req as NextRequest)
+
+      expect(mockSupabase.from().insert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ...newClientData,
+          organization_id: 'studio-org-123',
+          created_by: 'test-user-id',
+        })
+      )
+
+      expect(res._getStatusCode()).toBe(201)
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.data).toEqual(createdClient)
+      expect(responseData.message).toBe('Wedding client created successfully')
+    })
+
+    it('validates required wedding client fields', async () => {
+      const invalidClientData = {
+        first_name: '',
+        email: 'invalid-email',
+        wedding_date: 'invalid-date',
+      }
+
+      const { req, res } = createMocks({
+        method: 'POST',
+        body: invalidClientData,
+        headers: {
+          authorization: 'Bearer valid-token',
+          'content-type': 'application/json',
+        },
+      })
+
+      const handler = await import('@/app/api/clients/route')
+      await handler.POST(req as NextRequest)
+
+      expect(res._getStatusCode()).toBe(400)
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.error).toContain('validation')
+    })
+
+    it('prevents duplicate wedding client emails', async () => {
+      const duplicateClientData = {
+        first_name: 'John',
+        last_name: 'Smith',
+        email: 'existing@email.com',
+        wedding_date: '2024-06-15',
+      }
+
+      mockSupabase.from().insert.mockResolvedValue({
+        data: null,
+        error: { code: '23505', message: 'duplicate key value violates unique constraint' },
+      })
+
+      const { req, res } = createMocks({
+        method: 'POST',
+        body: duplicateClientData,
+        headers: {
+          authorization: 'Bearer valid-token',
+          'content-type': 'application/json',
+        },
+      })
+
+      const handler = await import('@/app/api/clients/route')
+      await handler.POST(req as NextRequest)
+
+      expect(res._getStatusCode()).toBe(409)
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.error).toBe('Client with this email already exists')
+    })
+
+    it('sanitizes wedding client input data', async () => {
+      const maliciousClientData = {
+        first_name: '<script>alert("xss")</script>John',
+        last_name: 'Smith<img src="x" onerror="alert(1)">',
+        email: 'john@email.com',
+        venue_name: 'Beautiful Venue</script><script>malicious()</script>',
+        notes: 'Notes with <iframe src="malicious.com"></iframe> content',
+        wedding_date: '2024-06-15',
+      }
+
+      const { req, res } = createMocks({
+        method: 'POST',
+        body: maliciousClientData,
+        headers: {
+          authorization: 'Bearer valid-token',
+          'content-type': 'application/json',
+        },
+      })
+
+      const handler = await import('@/app/api/clients/route')
+      await handler.POST(req as NextRequest)
+
+      // Verify that malicious content is sanitized
+      expect(mockSupabase.from().insert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          first_name: 'John', // Script tags removed
+          last_name: 'Smith', // Malicious HTML removed
+          venue_name: 'Beautiful Venue', // Script tags removed
+          notes: 'Notes with  content', // Iframe removed
+        })
+      )
+    })
+
+    it('creates wedding timeline when client is created', async () => {
+      const newClientData = {
+        first_name: 'Alice',
+        last_name: 'Brown',
+        wedding_date: '2024-07-20',
+        venue_name: 'Mountain View Venue',
+      }
+
+      const createdClient = {
+        id: 'new-client-id',
+        ...newClientData,
+      }
+
+      mockSupabase.from().insert.mockResolvedValue({
+        data: [createdClient],
+        error: null,
+      })
+
+      const { req, res } = createMocks({
+        method: 'POST',
+        body: newClientData,
+        headers: {
+          authorization: 'Bearer valid-token',
+          'content-type': 'application/json',
+        },
+      })
+
+      const handler = await import('@/app/api/clients/route')
+      await handler.POST(req as NextRequest)
+
+      // Verify wedding timeline creation
+      expect(mockSupabase.from).toHaveBeenCalledWith('wedding_timelines')
+      expect(res._getStatusCode()).toBe(201)
+    })
+  })
+
+  describe('PUT /api/clients/[id]', () => {
+    it('updates existing wedding client successfully', async () => {
+      const updateData = {
+        venue_name: 'Updated Wedding Venue',
+        guest_count: 150,
+        budget: 55000,
+        status: 'booked',
+        package_name: 'Premium Package',
+        package_price: 4500,
+      }
+
+      const updatedClient = {
+        id: 'client-1',
+        ...updateData,
+        updated_at: '2024-01-15T12:00:00Z',
+      }
+
+      mockSupabase.from().update().eq().select().single.mockResolvedValue({
+        data: updatedClient,
+        error: null,
+      })
+
+      const { req, res } = createMocks({
+        method: 'PUT',
+        body: updateData,
+        headers: {
+          authorization: 'Bearer valid-token',
+          'content-type': 'application/json',
+        },
+      })
+
+      const handler = await import('@/app/api/clients/[id]/route')
+      await handler.PUT(req as NextRequest, { params: { id: 'client-1' } })
+
+      expect(mockSupabase.from().update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ...updateData,
+          updated_at: expect.any(String),
+        })
+      )
+
+      expect(res._getStatusCode()).toBe(200)
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.data).toEqual(updatedClient)
+    })
+
+    it('validates wedding client ownership for updates', async () => {
+      const updateData = {
+        venue_name: 'Unauthorized Update',
+      }
+
+      mockSupabase.from().update().eq().select().single.mockResolvedValue({
+        data: null,
+        error: { code: 'PGRST116', message: 'Row not found' },
+      })
+
+      const { req, res } = createMocks({
+        method: 'PUT',
+        body: updateData,
+        headers: {
+          authorization: 'Bearer valid-token',
+        },
+      })
+
+      const handler = await import('@/app/api/clients/[id]/route')
+      await handler.PUT(req as NextRequest, { params: { id: 'unauthorized-client-id' } })
+
+      expect(res._getStatusCode()).toBe(404)
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.error).toBe('Wedding client not found')
+    })
+
+    it('prevents updating critical wedding dates too close to event', async () => {
+      const updateData = {
+        wedding_date: '2024-01-20', // Very close date
+        venue_name: 'Last Minute Venue Change',
+      }
+
+      const { req, res } = createMocks({
+        method: 'PUT',
+        body: updateData,
+        headers: {
+          authorization: 'Bearer valid-token',
+        },
+      })
+
+      const handler = await import('@/app/api/clients/[id]/route')
+      await handler.PUT(req as NextRequest, { params: { id: 'client-1' } })
+
+      expect(res._getStatusCode()).toBe(400)
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.error).toContain('wedding date cannot be changed')
+    })
+
+    it('tracks wedding client status changes', async () => {
+      const updateData = {
+        status: 'booked',
+        status_changed_reason: 'Contract signed and deposit received',
+      }
+
+      const { req, res } = createMocks({
+        method: 'PUT',
+        body: updateData,
+        headers: {
+          authorization: 'Bearer valid-token',
+        },
+      })
+
+      const handler = await import('@/app/api/clients/[id]/route')
+      await handler.PUT(req as NextRequest, { params: { id: 'client-1' } })
+
+      // Verify status change is tracked
+      expect(mockSupabase.from).toHaveBeenCalledWith('client_status_history')
+      expect(res._getStatusCode()).toBe(200)
+    })
+  })
+
+  describe('DELETE /api/clients/[id]', () => {
+    it('soft deletes wedding client with confirmation', async () => {
+      mockSupabase.from().update().eq().mockResolvedValue({
+        data: [{ id: 'client-1', deleted_at: '2024-01-15T14:00:00Z' }],
+        error: null,
+      })
+
+      const { req, res } = createMocks({
+        method: 'DELETE',
+        query: {
+          confirm: 'true',
+        },
+        headers: {
+          authorization: 'Bearer valid-token',
+        },
+      })
+
+      const handler = await import('@/app/api/clients/[id]/route')
+      await handler.DELETE(req as NextRequest, { params: { id: 'client-1' } })
+
+      expect(mockSupabase.from().update).toHaveBeenCalledWith({
+        deleted_at: expect.any(String),
+        deleted_by: 'test-user-id',
+        status: 'archived',
+      })
+
+      expect(res._getStatusCode()).toBe(200)
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.message).toBe('Wedding client archived successfully')
+    })
+
+    it('requires confirmation for wedding client deletion', async () => {
+      const { req, res } = createMocks({
+        method: 'DELETE',
+        headers: {
+          authorization: 'Bearer valid-token',
+        },
+      })
+
+      const handler = await import('@/app/api/clients/[id]/route')
+      await handler.DELETE(req as NextRequest, { params: { id: 'client-1' } })
+
+      expect(res._getStatusCode()).toBe(400)
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.error).toBe('Confirmation required for client deletion')
+    })
+
+    it('prevents deletion of wedding client with upcoming wedding', async () => {
+      const upcomingWeddingClient = {
+        id: 'client-1',
+        wedding_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), // 1 week from now
+        status: 'booked',
+      }
+
+      mockSupabase.from().select().eq().single.mockResolvedValue({
+        data: upcomingWeddingClient,
+        error: null,
+      })
+
+      const { req, res } = createMocks({
+        method: 'DELETE',
+        query: {
+          confirm: 'true',
+        },
+        headers: {
+          authorization: 'Bearer valid-token',
+        },
+      })
+
+      const handler = await import('@/app/api/clients/[id]/route')
+      await handler.DELETE(req as NextRequest, { params: { id: 'client-1' } })
+
+      expect(res._getStatusCode()).toBe(400)
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.error).toContain('upcoming wedding')
+    })
+  })
+
+  describe('Wedding-specific Features', () => {
+    it('calculates wedding countdown for clients', async () => {
+      const { req, res } = createMocks({
+        method: 'GET',
+        query: {
+          include_countdown: 'true',
+        },
+        headers: {
+          authorization: 'Bearer valid-token',
+        },
+      })
+
+      const handler = await import('@/app/api/clients/route')
+      await handler.GET(req as NextRequest)
+
+      expect(res._getStatusCode()).toBe(200)
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.data[0]).toHaveProperty('days_until_wedding')
+      expect(responseData.data[0]).toHaveProperty('wedding_countdown')
+    })
+
+    it('includes wedding progress tracking', async () => {
+      const { req, res } = createMocks({
+        method: 'GET',
+        query: {
+          include_progress: 'true',
+        },
+        headers: {
+          authorization: 'Bearer valid-token',
+        },
+      })
+
+      const handler = await import('@/app/api/clients/route')
+      await handler.GET(req as NextRequest)
+
+      expect(mockSupabase.from().select).toHaveBeenCalledWith(
+        expect.stringContaining('wedding_progress')
+      )
+    })
+
+    it('tracks wedding payment status', async () => {
+      const { req, res } = createMocks({
+        method: 'GET',
+        query: {
+          include_payments: 'true',
+        },
+        headers: {
+          authorization: 'Bearer valid-token',
+        },
+      })
+
+      const handler = await import('@/app/api/clients/route')
+      await handler.GET(req as NextRequest)
+
+      expect(mockSupabase.from().select).toHaveBeenCalledWith(
+        expect.stringContaining('payment_status')
+      )
+    })
+
+    it('generates wedding client analytics', async () => {
+      const { req, res } = createMocks({
+        method: 'GET',
+        query: {
+          analytics: 'true',
+        },
+        headers: {
+          authorization: 'Bearer valid-token',
+        },
+      })
+
+      const handler = await import('@/app/api/clients/route')
+      await handler.GET(req as NextRequest)
+
+      expect(res._getStatusCode()).toBe(200)
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.analytics).toEqual(
+        expect.objectContaining({
+          total_clients: expect.any(Number),
+          booked_weddings: expect.any(Number),
+          leads: expect.any(Number),
+          upcoming_weddings: expect.any(Number),
+          total_revenue: expect.any(Number),
+        })
+      )
+    })
+  })
+
+  describe('Performance and Optimization', () => {
+    it('implements pagination for large wedding client lists', async () => {
+      const { req, res } = createMocks({
+        method: 'GET',
+        query: {
+          page: '2',
+          limit: '50',
+        },
+        headers: {
+          authorization: 'Bearer valid-token',
+        },
+      })
+
+      const handler = await import('@/app/api/clients/route')
+      await handler.GET(req as NextRequest)
+
+      expect(mockSupabase.from().range).toHaveBeenCalledWith(50, 99) // Page 2, 50 per page
+    })
+
+    it('caches frequently accessed wedding client data', async () => {
+      const { req, res } = createMocks({
+        method: 'GET',
+        headers: {
+          authorization: 'Bearer valid-token',
+          'cache-control': 'max-age=300',
+        },
+      })
+
+      const handler = await import('@/app/api/clients/route')
+      await handler.GET(req as NextRequest)
+
+      expect(res.getHeader('cache-control')).toContain('max-age')
+    })
+
+    it('implements database query optimization for wedding searches', async () => {
+      const { req, res } = createMocks({
+        method: 'GET',
+        query: {
+          search: 'Smith',
+          status: 'booked',
+          wedding_date_from: '2024-01-01',
+        },
+        headers: {
+          authorization: 'Bearer valid-token',
+        },
+      })
+
+      const handler = await import('@/app/api/clients/route')
+      await handler.GET(req as NextRequest)
+
+      // Verify efficient query structure
+      expect(mockSupabase.from().select).toHaveBeenCalledWith(
+        expect.stringContaining('created_at')
+      )
+    })
+  })
+
+  describe('Error Handling and Validation', () => {
+    it('handles database connection failures gracefully', async () => {
+      mockSupabase.from().select.mockRejectedValue(
+        new Error('Connection to database failed')
+      )
+
+      const { req, res } = createMocks({
+        method: 'GET',
+        headers: {
+          authorization: 'Bearer valid-token',
+        },
+      })
+
+      const handler = await import('@/app/api/clients/route')
+      await handler.GET(req as NextRequest)
+
+      expect(res._getStatusCode()).toBe(500)
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.error).toBe('Internal server error')
+    })
+
+    it('validates wedding date formats and constraints', async () => {
+      const invalidDateData = {
+        first_name: 'John',
+        last_name: 'Smith',
+        wedding_date: '2020-01-01', // Past date
+      }
+
+      const { req, res } = createMocks({
+        method: 'POST',
+        body: invalidDateData,
+        headers: {
+          authorization: 'Bearer valid-token',
+        },
+      })
+
+      const handler = await import('@/app/api/clients/route')
+      await handler.POST(req as NextRequest)
+
+      expect(res._getStatusCode()).toBe(400)
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.error).toContain('wedding date cannot be in the past')
+    })
+
+    it('handles concurrent wedding client updates', async () => {
+      // Simulate optimistic concurrency conflict
+      mockSupabase.from().update().eq().select().single.mockResolvedValue({
+        data: null,
+        error: { code: '409', message: 'Resource was modified by another user' },
+      })
+
+      const updateData = {
+        venue_name: 'Updated Venue',
+        version: 1, // Stale version
+      }
+
+      const { req, res } = createMocks({
+        method: 'PUT',
+        body: updateData,
+        headers: {
+          authorization: 'Bearer valid-token',
+        },
+      })
+
+      const handler = await import('@/app/api/clients/[id]/route')
+      await handler.PUT(req as NextRequest, { params: { id: 'client-1' } })
+
+      expect(res._getStatusCode()).toBe(409)
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.error).toContain('modified by another user')
+    })
+  })
+})

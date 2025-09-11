@@ -1,0 +1,428 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { LTVPredictionEngine, BatchLTVPredictionResult, SegmentFilter } from '@/lib/analytics/ltv-prediction-engine';
+import { createClient } from '@supabase/supabase-js';
+
+interface BatchLTVRequest {
+  supplierIds?: string[];
+  segmentFilters?: SegmentFilter[];
+  maxBatchSize?: number;
+  includeBreakdown?: boolean;
+  backgroundProcessing?: boolean;
+}
+
+interface BatchLTVResponse {
+  batchId: string;
+  status: 'processing' | 'completed' | 'failed';
+  results?: BatchLTVPredictionResult;
+  progress?: {
+    processed: number;
+    total: number;
+    estimatedTimeRemaining: number;
+  };
+  downloadUrl?: string;
+  expiresAt?: string;
+}
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+const ltvEngine = new LTVPredictionEngine();
+
+// Authentication function
+async function authenticateRequest(request: NextRequest) {
+  try {
+    const authHeader = request.headers.get('Authorization');
+    if (!authHeader?.startsWith('Bearer ')) {
+      return null;
+    }
+
+    const token = authHeader.substring(7);
+    const { data: { user }, error } = await supabase.auth.getUser(token);
+    
+    if (error || !user) {
+      return null;
+    }
+
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('role, permissions')
+      .eq('id', user.id)
+      .single();
+
+    // Batch operations require higher permissions
+    const hasPermission = profile?.role === 'admin' || 
+                         profile?.role === 'executive' || 
+                         (profile?.permissions || []).includes('analytics:batch');
+
+    if (!hasPermission) {
+      return null;
+    }
+
+    return { userId: user.id, role: profile?.role || 'user' };
+  } catch (error) {
+    console.error('Batch LTV authentication error:', error);
+    return null;
+  }
+}
+
+// Get suppliers based on filters
+async function getSuppliersFromFilters(filters: SegmentFilter[]): Promise<string[]> {
+  let query = supabase.from('suppliers').select('id');
+
+  for (const filter of filters) {
+    if (filter.businessType?.length) {
+      query = query.in('business_type', filter.businessType);
+    }
+    if (filter.subscriptionTier?.length) {
+      query = query.in('subscription_tier', filter.subscriptionTier);
+    }
+    if (filter.acquisitionChannel?.length) {
+      query = query.in('acquisition_channel', filter.acquisitionChannel);
+    }
+    
+    // Revenue filters require join with transactions
+    if (filter.revenueMin !== undefined || filter.revenueMax !== undefined) {
+      const revenueQuery = supabase
+        .from('subscription_revenue')
+        .select('customer_id, net_revenue');
+      
+      if (filter.revenueMin !== undefined) {
+        revenueQuery.gte('net_revenue', filter.revenueMin);
+      }
+      if (filter.revenueMax !== undefined) {
+        revenueQuery.lte('net_revenue', filter.revenueMax);
+      }
+
+      const { data: revenueData } = await revenueQuery;
+      const revenueSupplierIds = revenueData?.map(r => r.customer_id) || [];
+      
+      if (revenueSupplierIds.length > 0) {
+        query = query.in('id', revenueSupplierIds);
+      } else {
+        return []; // No suppliers meet revenue criteria
+      }
+    }
+
+    // Activity filters
+    if (filter.monthsActiveMin !== undefined || filter.monthsActiveMax !== undefined) {
+      const cutoffMin = filter.monthsActiveMin 
+        ? new Date(Date.now() - filter.monthsActiveMin * 30 * 24 * 60 * 60 * 1000)
+        : new Date(0);
+      const cutoffMax = filter.monthsActiveMax 
+        ? new Date(Date.now() - filter.monthsActiveMax * 30 * 24 * 60 * 60 * 1000)
+        : new Date();
+
+      query = query.gte('created_at', cutoffMax.toISOString());
+      query = query.lte('created_at', cutoffMin.toISOString());
+    }
+  }
+
+  const { data, error } = await query.limit(10000); // Safety limit
+  if (error) throw error;
+
+  return data?.map(s => s.id) || [];
+}
+
+// Create batch processing job
+async function createBatchJob(
+  userId: string,
+  supplierIds: string[],
+  options: any
+): Promise<string> {
+  const batchId = `batch_ltv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  
+  await supabase
+    .from('batch_processing_jobs')
+    .insert({
+      batch_id: batchId,
+      job_type: 'ltv_prediction',
+      user_id: userId,
+      status: 'queued',
+      total_items: supplierIds.length,
+      processed_items: 0,
+      job_data: {
+        supplierIds,
+        options,
+        createdAt: new Date().toISOString()
+      },
+      created_at: new Date().toISOString()
+    });
+
+  return batchId;
+}
+
+// Process batch synchronously (for small batches)
+async function processBatchSync(
+  supplierIds: string[],
+  options: any
+): Promise<BatchLTVPredictionResult> {
+  const segmentFilters = options.segmentFilters || [];
+  return await ltvEngine.batchPredictLTV(supplierIds, segmentFilters);
+}
+
+// POST handler for batch LTV predictions
+export async function POST(request: NextRequest): Promise<NextResponse> {
+  try {
+    // Authentication
+    const auth = await authenticateRequest(request);
+    if (!auth) {
+      return NextResponse.json(
+        { error: 'Unauthorized. Batch operations require admin/executive permissions.' },
+        { status: 401 }
+      );
+    }
+
+    // Parse request
+    let body: BatchLTVRequest;
+    try {
+      body = await request.json();
+    } catch (error) {
+      return NextResponse.json(
+        { error: 'Invalid JSON request body' },
+        { status: 400 }
+      );
+    }
+
+    // Determine supplier list
+    let supplierIds: string[] = [];
+    
+    if (body.supplierIds?.length) {
+      supplierIds = body.supplierIds;
+    } else if (body.segmentFilters?.length) {
+      supplierIds = await getSuppliersFromFilters(body.segmentFilters);
+    } else {
+      return NextResponse.json(
+        { error: 'Either supplierIds or segmentFilters must be provided' },
+        { status: 400 }
+      );
+    }
+
+    // Validate batch size
+    const maxBatchSize = body.maxBatchSize || 1000;
+    if (supplierIds.length > maxBatchSize) {
+      return NextResponse.json(
+        { 
+          error: `Batch size ${supplierIds.length} exceeds maximum of ${maxBatchSize}`,
+          suggestion: 'Use smaller batches or enable background processing'
+        },
+        { status: 413 }
+      );
+    }
+
+    if (supplierIds.length === 0) {
+      return NextResponse.json(
+        { error: 'No suppliers found matching the specified criteria' },
+        { status: 404 }
+      );
+    }
+
+    // Decide processing mode
+    const backgroundProcessing = body.backgroundProcessing || supplierIds.length > 100;
+    
+    if (backgroundProcessing) {
+      // Create background job
+      const batchId = await createBatchJob(auth.userId, supplierIds, {
+        includeBreakdown: body.includeBreakdown || false,
+        segmentFilters: body.segmentFilters || []
+      });
+
+      // Return job reference
+      const response: BatchLTVResponse = {
+        batchId,
+        status: 'processing',
+        progress: {
+          processed: 0,
+          total: supplierIds.length,
+          estimatedTimeRemaining: supplierIds.length * 2 // 2 seconds per supplier estimate
+        }
+      };
+
+      return NextResponse.json(response, { status: 202 });
+
+    } else {
+      // Process synchronously
+      const results = await processBatchSync(supplierIds, {
+        includeBreakdown: body.includeBreakdown || false,
+        segmentFilters: body.segmentFilters || []
+      });
+
+      const batchId = `sync_${Date.now()}`;
+      const response: BatchLTVResponse = {
+        batchId,
+        status: 'completed',
+        results
+      };
+
+      // Audit logging
+      await supabase
+        .from('financial_audit_log')
+        .insert({
+          user_id: auth.userId,
+          action: 'ltv_batch_prediction',
+          resource_type: 'batch_operation',
+          details: {
+            supplierCount: supplierIds.length,
+            executionTime: results.executionTime,
+            averageLTV: results.averageLTV,
+            highValueSuppliers: results.highValueSuppliers
+          },
+          ip_address: request.headers.get('x-forwarded-for') || 'unknown'
+        });
+
+      return NextResponse.json(response, { status: 200 });
+    }
+
+  } catch (error) {
+    console.error('Batch LTV prediction error:', error);
+    
+    if (error instanceof Error) {
+      if (error.message.includes('timeout')) {
+        return NextResponse.json(
+          { 
+            error: 'Batch processing timeout. Please use background processing for large batches.',
+            suggestion: 'Set backgroundProcessing: true or reduce batch size'
+          },
+          { status: 408 }
+        );
+      }
+    }
+
+    return NextResponse.json(
+      { 
+        error: 'Internal server error during batch LTV prediction',
+        requestId: `batch-ltv-${Date.now()}`
+      },
+      { status: 500 }
+    );
+  }
+}
+
+// GET handler for batch job status
+export async function GET(request: NextRequest): Promise<NextResponse> {
+  try {
+    const auth = await authenticateRequest(request);
+    if (!auth) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    const { searchParams } = new URL(request.url);
+    const batchId = searchParams.get('batchId');
+
+    if (!batchId) {
+      return NextResponse.json(
+        { error: 'batchId query parameter is required' },
+        { status: 400 }
+      );
+    }
+
+    // Get batch job status
+    const { data: job, error } = await supabase
+      .from('batch_processing_jobs')
+      .select('*')
+      .eq('batch_id', batchId)
+      .eq('user_id', auth.userId) // Ensure user can only see their own jobs
+      .single();
+
+    if (error || !job) {
+      return NextResponse.json(
+        { error: 'Batch job not found' },
+        { status: 404 }
+      );
+    }
+
+    const response: BatchLTVResponse = {
+      batchId: job.batch_id,
+      status: job.status
+    };
+
+    // Add progress for active jobs
+    if (job.status === 'processing') {
+      const remainingItems = job.total_items - job.processed_items;
+      response.progress = {
+        processed: job.processed_items,
+        total: job.total_items,
+        estimatedTimeRemaining: remainingItems * 2
+      };
+    }
+
+    // Add results for completed jobs
+    if (job.status === 'completed' && job.results) {
+      response.results = job.results;
+      
+      // Generate download URL for large result sets
+      if (job.total_items > 100) {
+        response.downloadUrl = `/api/analytics/ltv/batch/download?batchId=${batchId}`;
+        response.expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24 hours
+      }
+    }
+
+    return NextResponse.json(response);
+
+  } catch (error) {
+    console.error('Batch status retrieval error:', error);
+    return NextResponse.json(
+      { error: 'Failed to retrieve batch status' },
+      { status: 500 }
+    );
+  }
+}
+
+// DELETE handler to cancel batch jobs
+export async function DELETE(request: NextRequest): Promise<NextResponse> {
+  try {
+    const auth = await authenticateRequest(request);
+    if (!auth) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    const { searchParams } = new URL(request.url);
+    const batchId = searchParams.get('batchId');
+
+    if (!batchId) {
+      return NextResponse.json(
+        { error: 'batchId query parameter is required' },
+        { status: 400 }
+      );
+    }
+
+    // Cancel the job
+    const { data, error } = await supabase
+      .from('batch_processing_jobs')
+      .update({ 
+        status: 'cancelled',
+        completed_at: new Date().toISOString()
+      })
+      .eq('batch_id', batchId)
+      .eq('user_id', auth.userId)
+      .in('status', ['queued', 'processing'])
+      .select()
+      .single();
+
+    if (error || !data) {
+      return NextResponse.json(
+        { error: 'Batch job not found or cannot be cancelled' },
+        { status: 404 }
+      );
+    }
+
+    return NextResponse.json({ 
+      message: 'Batch job cancelled successfully',
+      batchId: batchId
+    });
+
+  } catch (error) {
+    console.error('Batch cancellation error:', error);
+    return NextResponse.json(
+      { error: 'Failed to cancel batch job' },
+      { status: 500 }
+    );
+  }
+}

@@ -1,0 +1,426 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+import { HighPerformanceRSVPAnalytics } from '@/lib/analytics/high-performance-rsvp-analytics';
+
+// Validation schemas for Round 2
+const AnalyticsQuerySchema = z.object({
+  event_id: z.string().uuid().optional(),
+  type: z
+    .enum(['snapshot', 'trends', 'prediction', 'real_time', 'legacy'])
+    .optional(),
+  days: z.coerce.number().min(1).max(365).optional(),
+  refresh: z.enum(['true', 'false']).optional(),
+  start_date: z.string().optional(),
+  end_date: z.string().optional(),
+});
+
+// GET /api/rsvp/analytics - Get analytics for RSVP events (Round 2 Enhanced)
+export async function GET(req: NextRequest) {
+  const startTime = Date.now();
+
+  try {
+    const supabase = await createClient();
+    const searchParams = req.nextUrl.searchParams;
+
+    // Parse and validate parameters with Round 2 enhancements
+    const queryData = AnalyticsQuerySchema.parse({
+      event_id: searchParams.get('event_id'),
+      type: searchParams.get('type') || 'legacy', // Default to legacy for backward compatibility
+      days: searchParams.get('days') || '30',
+      refresh: searchParams.get('refresh') || 'false',
+      start_date: searchParams.get('start_date'),
+      end_date: searchParams.get('end_date'),
+    });
+
+    // Get current user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Round 2: High-Performance Analytics Routes
+    if (queryData.event_id && queryData.type !== 'legacy') {
+      // Verify event ownership
+      const { data: event, error: eventError } = await supabase
+        .from('rsvp_events')
+        .select('id, event_name, vendor_id')
+        .eq('id', queryData.event_id)
+        .eq('vendor_id', user.id)
+        .single();
+
+      if (eventError || !event) {
+        return NextResponse.json(
+          {
+            error: 'Event not found or unauthorized',
+          },
+          { status: 404 },
+        );
+      }
+
+      // Force refresh if requested
+      if (queryData.refresh === 'true') {
+        await HighPerformanceRSVPAnalytics.refreshAnalytics(queryData.event_id);
+      }
+
+      let responseData: any = {};
+
+      switch (queryData.type) {
+        case 'snapshot':
+          responseData =
+            await HighPerformanceRSVPAnalytics.getAnalyticsSnapshot(
+              queryData.event_id,
+            );
+          break;
+
+        case 'trends':
+          responseData = {
+            trends: await HighPerformanceRSVPAnalytics.getTrendData(
+              queryData.event_id,
+              queryData.days || 30,
+            ),
+            event_name: event.event_name,
+          };
+          break;
+
+        case 'prediction':
+          responseData = await HighPerformanceRSVPAnalytics.generatePrediction(
+            queryData.event_id,
+          );
+          break;
+
+        case 'real_time':
+          const [snapshot, responseStats] = await Promise.all([
+            HighPerformanceRSVPAnalytics.getAnalyticsSnapshot(
+              queryData.event_id,
+            ),
+            HighPerformanceRSVPAnalytics.getResponseStats(queryData.event_id),
+          ]);
+
+          responseData = {
+            ...snapshot,
+            response_stats: responseStats,
+            cache_status: 'live',
+          };
+          break;
+
+        default:
+          return NextResponse.json(
+            {
+              error: 'Invalid analytics type',
+            },
+            { status: 400 },
+          );
+      }
+
+      const processingTime = Date.now() - startTime;
+
+      return NextResponse.json({
+        data: responseData,
+        meta: {
+          event_id: queryData.event_id,
+          type: queryData.type,
+          processing_time_ms: processingTime,
+          timestamp: new Date().toISOString(),
+          performance_target_met: processingTime < 200,
+          version: 'round2',
+        },
+      });
+    }
+
+    // Round 1: Legacy Support (maintained for backward compatibility)
+    if (queryData.event_id) {
+      // Get analytics for specific event
+      const { data: event, error: eventError } = await supabase
+        .from('rsvp_events')
+        .select('id')
+        .eq('id', eventId)
+        .eq('vendor_id', user.id)
+        .single();
+
+      if (eventError || !event) {
+        return NextResponse.json(
+          { error: 'Event not found or unauthorized' },
+          { status: 404 },
+        );
+      }
+
+      // Get latest analytics
+      const { data: analytics, error } = await supabase
+        .from('rsvp_analytics')
+        .select('*')
+        .eq('event_id', eventId)
+        .order('date', { ascending: false })
+        .limit(1)
+        .single();
+
+      if (error && error.code !== 'PGRST116') {
+        console.error('Error fetching analytics:', error);
+        return NextResponse.json(
+          { error: 'Failed to fetch analytics' },
+          { status: 500 },
+        );
+      }
+
+      // Get historical data for trends
+      let historicalQuery = supabase
+        .from('rsvp_analytics')
+        .select('*')
+        .eq('event_id', eventId)
+        .order('date', { ascending: true });
+
+      if (startDate) {
+        historicalQuery = historicalQuery.gte('date', startDate);
+      }
+      if (endDate) {
+        historicalQuery = historicalQuery.lte('date', endDate);
+      }
+
+      const { data: historical } = await historicalQuery;
+
+      // Get response breakdown by source
+      const { data: responsesBySource } = await supabase
+        .from('rsvp_responses')
+        .select('response_source')
+        .eq('event_id', eventId);
+
+      const sourceCounts = responsesBySource?.reduce((acc: any, curr: any) => {
+        acc[curr.response_source] = (acc[curr.response_source] || 0) + 1;
+        return acc;
+      }, {});
+
+      // Get response timeline
+      const { data: responseTimeline } = await supabase
+        .from('rsvp_responses')
+        .select('responded_at, response_status')
+        .eq('event_id', eventId)
+        .order('responded_at', { ascending: true });
+
+      // Get dietary requirements summary
+      const { data: dietaryData } = await supabase
+        .from('rsvp_guest_details')
+        .select('dietary_restrictions, allergies')
+        .eq(
+          'response_id',
+          supabase.from('rsvp_responses').select('id').eq('event_id', eventId),
+        );
+
+      // Process dietary data
+      const dietarySummary: any = {};
+      const allergySummary: any = {};
+
+      dietaryData?.forEach((guest: any) => {
+        guest.dietary_restrictions?.forEach((restriction: string) => {
+          dietarySummary[restriction] = (dietarySummary[restriction] || 0) + 1;
+        });
+        guest.allergies?.forEach((allergy: string) => {
+          allergySummary[allergy] = (allergySummary[allergy] || 0) + 1;
+        });
+      });
+
+      return NextResponse.json({
+        current: analytics || {
+          total_invited: 0,
+          total_responded: 0,
+          total_attending: 0,
+          total_not_attending: 0,
+          total_maybe: 0,
+          total_waitlist: 0,
+          total_guests_confirmed: 0,
+          response_rate: 0,
+          avg_party_size: 0,
+        },
+        historical,
+        response_sources: sourceCounts,
+        response_timeline: responseTimeline,
+        dietary_summary: dietarySummary,
+        allergy_summary: allergySummary,
+      });
+    } else {
+      // Get analytics for all events
+      let query = supabase
+        .from('rsvp_events')
+        .select(
+          `
+          id,
+          event_name,
+          event_date,
+          rsvp_analytics (
+            total_invited,
+            total_responded,
+            total_attending,
+            response_rate,
+            total_guests_confirmed,
+            date
+          )
+        `,
+        )
+        .eq('vendor_id', user.id)
+        .order('event_date', { ascending: false });
+
+      if (startDate && endDate) {
+        query = query.gte('event_date', startDate).lte('event_date', endDate);
+      }
+
+      const { data: events, error } = await query;
+
+      if (error) {
+        console.error('Error fetching events analytics:', error);
+        return NextResponse.json(
+          { error: 'Failed to fetch analytics' },
+          { status: 500 },
+        );
+      }
+
+      // Process to get latest analytics for each event
+      const eventsWithAnalytics = events?.map((event: any) => {
+        const latestAnalytics = event.rsvp_analytics?.sort(
+          (a: any, b: any) =>
+            new Date(b.date).getTime() - new Date(a.date).getTime(),
+        )[0];
+
+        return {
+          ...event,
+          analytics: latestAnalytics || {
+            total_invited: 0,
+            total_responded: 0,
+            total_attending: 0,
+            response_rate: 0,
+            total_guests_confirmed: 0,
+          },
+        };
+      });
+
+      // Calculate overall statistics
+      const overallStats = eventsWithAnalytics?.reduce(
+        (acc: any, event: any) => {
+          acc.total_events++;
+          acc.total_invited += event.analytics.total_invited || 0;
+          acc.total_responded += event.analytics.total_responded || 0;
+          acc.total_attending += event.analytics.total_attending || 0;
+          acc.total_guests += event.analytics.total_guests_confirmed || 0;
+          return acc;
+        },
+        {
+          total_events: 0,
+          total_invited: 0,
+          total_responded: 0,
+          total_attending: 0,
+          total_guests: 0,
+        },
+      );
+
+      if (overallStats) {
+        overallStats.avg_response_rate =
+          overallStats.total_invited > 0
+            ? (
+                (overallStats.total_responded / overallStats.total_invited) *
+                100
+              ).toFixed(2)
+            : 0;
+      }
+
+      return NextResponse.json({
+        events: eventsWithAnalytics,
+        overall: overallStats,
+      });
+    }
+  } catch (error) {
+    const processingTime = Date.now() - startTime;
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Validation error',
+          details: error.issues,
+          processing_time_ms: processingTime,
+        },
+        { status: 400 },
+      );
+    }
+
+    console.error('Error in GET /api/rsvp/analytics:', error);
+    return NextResponse.json(
+      {
+        error: 'Internal server error',
+        processing_time_ms: processingTime,
+      },
+      { status: 500 },
+    );
+  }
+}
+
+// POST /api/rsvp/analytics/refresh - Manually refresh analytics (Round 2 Enhanced)
+export async function POST(req: NextRequest) {
+  try {
+    const supabase = await createClient();
+
+    // Get current user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await req.json();
+    const { event_id } = z.object({ event_id: z.string().uuid() }).parse(body);
+
+    // Verify event ownership
+    const { data: event, error: eventError } = await supabase
+      .from('rsvp_events')
+      .select('id, event_name')
+      .eq('id', event_id)
+      .eq('vendor_id', user.id)
+      .single();
+
+    if (eventError || !event) {
+      return NextResponse.json(
+        { error: 'Event not found or unauthorized' },
+        { status: 404 },
+      );
+    }
+
+    // Round 2: High-Performance Refresh
+    const startTime = Date.now();
+
+    await HighPerformanceRSVPAnalytics.refreshAnalytics(event_id);
+
+    // Get fresh snapshot to verify refresh
+    const freshSnapshot =
+      await HighPerformanceRSVPAnalytics.getAnalyticsSnapshot(event_id);
+    const refreshTime = Date.now() - startTime;
+
+    // Also update legacy analytics for backward compatibility
+    await supabase.rpc('update_rsvp_analytics', { p_event_id: event_id });
+
+    return NextResponse.json({
+      message: 'Analytics refreshed successfully',
+      refresh_time_ms: refreshTime,
+      performance_target_met: refreshTime < 500,
+      snapshot: freshSnapshot,
+      timestamp: new Date().toISOString(),
+      version: 'round2',
+    });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Validation error',
+          details: error.issues,
+        },
+        { status: 400 },
+      );
+    }
+
+    console.error('Error in POST /api/rsvp/analytics/refresh:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

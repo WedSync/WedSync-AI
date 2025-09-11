@@ -1,0 +1,15 @@
+{
+  "name": "wedsync-lib",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "library",
+  "sourceRoot": "src/lib",
+  "tags": ["scope:shared", "type:utils"],
+  "targets": {
+    "utils-analysis": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "find src/lib -name '*.ts' -o -name '*.tsx' | wc -l"
+      }
+    }
+  }
+}

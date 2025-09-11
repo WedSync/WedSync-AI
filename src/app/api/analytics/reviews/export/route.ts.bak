@@ -1,0 +1,264 @@
+/**
+ * @fileoverview Review Analytics Data Export API Endpoint
+ * WS-047: Review Collection System Analytics Dashboard & Testing Framework
+ * 
+ * Secure data export with PII protection and size limits
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import { rateLimit } from '@/lib/rate-limiter';
+
+const exportSchema = z.object({
+  format: z.enum(['csv', 'json']).default('csv'),
+  supplierId: z.string().uuid().optional(),
+  dateRange: z.object({
+    start: z.string().datetime(),
+    end: z.string().datetime()
+  }),
+  includeFields: z.array(z.enum([
+    'rating', 'review_text', 'platform', 'created_at', 
+    'response_time', 'sentiment_score'
+  ])).default(['rating', 'platform', 'created_at']),
+  maxRecords: z.number().min(1).max(10000).default(1000)
+});
+
+export async function POST(request: NextRequest) {
+  const startTime = performance.now();
+  
+  try {
+    // Rate limiting - stricter for exports
+    const rateLimitResult = await rateLimit(request, {
+      requests: 10,
+      window: 60 * 1000,
+      identifier: 'analytics-export'
+    });
+
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { error: 'Export rate limit exceeded' },
+        { status: 429 }
+      );
+    }
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validatedData = exportSchema.parse(body);
+
+    const { format, supplierId, dateRange, includeFields, maxRecords } = validatedData;
+
+    // Authentication
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
+    const { data: { session } } = await supabase.auth.getSession();
+
+    if (!session) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Authorization check
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('role, supplier_id')
+      .eq('id', session.user.id)
+      .single();
+
+    const hasAccess = userProfile?.role === 'admin' || 
+                     (userProfile?.role === 'supplier' && 
+                      (!supplierId || userProfile.supplier_id === supplierId));
+
+    if (!hasAccess) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
+
+    // Validate date range
+    const startDate = new Date(dateRange.start);
+    const endDate = new Date(dateRange.end);
+    const daysDiff = (endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24);
+    
+    if (daysDiff > 90) {
+      return NextResponse.json(
+        { error: 'Export date range cannot exceed 90 days' },
+        { status: 400 }
+      );
+    }
+
+    // Build secure query - no PII exposure
+    let query = supabase
+      .from('reviews')
+      .select(`
+        id,
+        rating,
+        ${includeFields.includes('review_text') ? 'LEFT(review_text, 200) as review_text_excerpt' : ''},
+        ${includeFields.includes('platform') ? 'platform' : ''},
+        ${includeFields.includes('created_at') ? 'created_at' : ''},
+        ${includeFields.includes('response_time') ? 'response_time' : ''},
+        ${includeFields.includes('sentiment_score') ? 'sentiment_score' : ''}
+      `)
+      .gte('created_at', dateRange.start)
+      .lte('created_at', dateRange.end)
+      .order('created_at', { ascending: false })
+      .limit(maxRecords);
+
+    // Apply supplier filter if specified
+    if (supplierId) {
+      query = query.eq('supplier_id', supplierId);
+    }
+
+    const { data: reviews, error: queryError } = await query;
+
+    if (queryError) {
+      console.error('Export query error:', queryError);
+      return NextResponse.json(
+        { error: 'Failed to fetch data for export' },
+        { status: 500 }
+      );
+    }
+
+    if (!reviews || reviews.length === 0) {
+      return NextResponse.json(
+        { error: 'No data available for the specified criteria' },
+        { status: 404 }
+      );
+    }
+
+    // Generate export data
+    let exportContent: string;
+    let contentType: string;
+    let filename: string;
+
+    if (format === 'csv') {
+      // Generate CSV
+      const headers = includeFields.map(field => {
+        switch (field) {
+          case 'review_text': return 'Review Excerpt';
+          case 'created_at': return 'Date';
+          case 'response_time': return 'Response Time (days)';
+          case 'sentiment_score': return 'Sentiment Score';
+          default: return field.charAt(0).toUpperCase() + field.slice(1);
+        }
+      });
+      
+      const csvRows = [
+        headers.join(','),
+        ...reviews.map(review => 
+          includeFields.map(field => {
+            let value = review[field === 'review_text' ? 'review_text_excerpt' : field];
+            if (value === null || value === undefined) value = '';
+            // Escape CSV values
+            if (typeof value === 'string' && (value.includes(',') || value.includes('"') || value.includes('\n'))) {
+              value = `"${value.replace(/"/g, '""')}"`;
+            }
+            return value;
+          }).join(',')
+        )
+      ];
+      
+      exportContent = csvRows.join('\n');
+      contentType = 'text/csv';
+      filename = `review-analytics-${new Date().toISOString().split('T')[0]}.csv`;
+    } else {
+      // Generate JSON
+      const sanitizedReviews = reviews.map(review => {
+        const sanitized: any = {};
+        includeFields.forEach(field => {
+          if (field === 'review_text') {
+            sanitized.reviewTextExcerpt = review.review_text_excerpt;
+          } else {
+            sanitized[field] = review[field];
+          }
+        });
+        return sanitized;
+      });
+
+      exportContent = JSON.stringify({
+        data: sanitizedReviews,
+        metadata: {
+          totalRecords: reviews.length,
+          dateRange: {
+            start: dateRange.start,
+            end: dateRange.end
+          },
+          exportedAt: new Date().toISOString(),
+          exportedBy: session.user.id
+        }
+      }, null, 2);
+      
+      contentType = 'application/json';
+      filename = `review-analytics-${new Date().toISOString().split('T')[0]}.json`;
+    }
+
+    // Log export activity (for audit trail)
+    await supabase
+      .from('export_logs')
+      .insert({
+        user_id: session.user.id,
+        export_type: 'review_analytics',
+        format,
+        record_count: reviews.length,
+        date_range_start: dateRange.start,
+        date_range_end: dateRange.end,
+        supplier_id: supplierId
+      });
+
+    // Return file as download
+    const response = new NextResponse(exportContent, {
+      status: 200,
+      headers: {
+        'Content-Type': contentType,
+        'Content-Disposition': `attachment; filename="${filename}"`,
+        'Content-Length': Buffer.byteLength(exportContent, 'utf8').toString(),
+        'X-Export-Records': reviews.length.toString(),
+        'X-Response-Time': `${Math.round(performance.now() - startTime)}ms`
+      }
+    });
+
+    return response;
+
+  } catch (error) {
+    console.error('Export API error:', error);
+    
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { 
+          error: 'Invalid request data',
+          details: error.issues 
+        },
+        { status: 400 }
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Export failed' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function GET(request: NextRequest) {
+  // Get export history for the user
+  const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
+  const { data: { session } } = await supabase.auth.getSession();
+
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const { data: exports, error } = await supabase
+    .from('export_logs')
+    .select('id, export_type, format, record_count, created_at')
+    .eq('user_id', session.user.id)
+    .eq('export_type', 'review_analytics')
+    .order('created_at', { ascending: false })
+    .limit(10);
+
+  if (error) {
+    return NextResponse.json(
+      { error: 'Failed to fetch export history' },
+      { status: 500 }
+    );
+  }
+
+  return NextResponse.json({ exports: exports || [] });
+}

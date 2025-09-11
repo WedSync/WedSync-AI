@@ -1,0 +1,230 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import { GoogleSearchConsoleService } from '@/lib/services/google-search-console';
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+
+    // Check authentication
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get supplier ID
+    const { data: supplier } = await supabase
+      .from('suppliers')
+      .select('id')
+      .eq('user_id', session.user.id)
+      .single();
+
+    if (!supplier) {
+      return NextResponse.json(
+        { error: 'Supplier not found' },
+        { status: 404 },
+      );
+    }
+
+    // Get SEO dashboard data
+    const { data: dashboardData, error: dashboardError } = await supabase
+      .from('seo_dashboard_overview')
+      .select('*')
+      .eq('supplier_id', supplier.id)
+      .single();
+
+    if (dashboardError && dashboardError.code !== 'PGRST116') {
+      throw dashboardError;
+    }
+
+    // Get recent keyword trends
+    const { data: keywordTrends, error: trendsError } = await supabase
+      .from('seo_keyword_trends')
+      .select('*')
+      .eq('supplier_id', supplier.id)
+      .order('search_volume', { ascending: false })
+      .limit(20);
+
+    if (trendsError) {
+      console.error('Error fetching keyword trends:', trendsError);
+    }
+
+    // Get recent organic traffic
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    const { data: organicTraffic, error: trafficError } = await supabase
+      .from('seo_organic_traffic')
+      .select('*')
+      .eq('supplier_id', supplier.id)
+      .gte('date', thirtyDaysAgo.toISOString().split('T')[0])
+      .order('date', { ascending: false });
+
+    if (trafficError) {
+      console.error('Error fetching organic traffic:', trafficError);
+    }
+
+    // Get competitor comparison
+    const { data: competitors, error: competitorError } = await supabase
+      .from('seo_competitors')
+      .select('*')
+      .eq('supplier_id', supplier.id)
+      .eq('is_tracked', true)
+      .order('organic_traffic_estimate', { ascending: false })
+      .limit(5);
+
+    if (competitorError) {
+      console.error('Error fetching competitors:', competitorError);
+    }
+
+    // Get recent technical audits
+    const { data: technicalAudits, error: auditError } = await supabase
+      .from('seo_technical_audits')
+      .select('*')
+      .eq('supplier_id', supplier.id)
+      .order('audit_date', { ascending: false })
+      .limit(1);
+
+    if (auditError) {
+      console.error('Error fetching technical audits:', auditError);
+    }
+
+    // Calculate SEO visibility score
+    const { data: visibilityScore } = await supabase.rpc(
+      'calculate_seo_visibility_score',
+      { p_supplier_id: supplier.id },
+    );
+
+    // Detect SEO opportunities
+    const { data: opportunities } = await supabase.rpc(
+      'detect_seo_opportunities',
+      { p_supplier_id: supplier.id },
+    );
+
+    return NextResponse.json({
+      dashboard: dashboardData || {
+        tracked_keywords: 0,
+        top3_rankings: 0,
+        top10_rankings: 0,
+        avg_position: 0,
+        featured_snippets: 0,
+        organic_sessions_30d: 0,
+        organic_users_30d: 0,
+        conversions_30d: 0,
+        avg_bounce_rate: 0,
+        revenue_attributed: 0,
+        technical_health_score: 0,
+      },
+      keywordTrends: keywordTrends || [],
+      organicTraffic: organicTraffic || [],
+      competitors: competitors || [],
+      technicalAudit: technicalAudits?.[0] || null,
+      visibilityScore: visibilityScore || 0,
+      opportunities: opportunities || [],
+    });
+  } catch (error) {
+    console.error('Error fetching SEO analytics:', error);
+    return NextResponse.json(
+      { error: 'Failed to fetch SEO analytics' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+
+    // Check authentication
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get supplier ID
+    const { data: supplier } = await supabase
+      .from('suppliers')
+      .select('id')
+      .eq('user_id', session.user.id)
+      .single();
+
+    if (!supplier) {
+      return NextResponse.json(
+        { error: 'Supplier not found' },
+        { status: 404 },
+      );
+    }
+
+    const body = await request.json();
+    const { action, data } = body;
+
+    switch (action) {
+      case 'track_keyword':
+        const { error: keywordError } = await supabase
+          .from('seo_keywords')
+          .insert({
+            supplier_id: supplier.id,
+            keyword: data.keyword,
+            keyword_type: data.keywordType || 'primary',
+            search_volume: data.searchVolume,
+            difficulty_score: data.difficultyScore,
+            location: data.location,
+            is_tracked: true,
+          });
+
+        if (keywordError) {
+          throw keywordError;
+        }
+
+        return NextResponse.json({ success: true });
+
+      case 'add_competitor':
+        const { error: competitorError } = await supabase
+          .from('seo_competitors')
+          .insert({
+            supplier_id: supplier.id,
+            competitor_domain: data.domain,
+            competitor_name: data.name,
+            is_tracked: true,
+          });
+
+        if (competitorError) {
+          throw competitorError;
+        }
+
+        return NextResponse.json({ success: true });
+
+      case 'refresh_data':
+        // Trigger materialized view refresh
+        const { error: refreshError } = await supabase.rpc(
+          'refresh_seo_materialized_views',
+        );
+
+        if (refreshError) {
+          throw refreshError;
+        }
+
+        return NextResponse.json({ success: true });
+
+      default:
+        return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
+    }
+  } catch (error) {
+    console.error('Error processing SEO action:', error);
+    return NextResponse.json(
+      { error: 'Failed to process action' },
+      { status: 500 },
+    );
+  }
+}

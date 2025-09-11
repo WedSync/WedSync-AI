@@ -1,0 +1,361 @@
+'use client';
+
+import React, { useState, useCallback } from 'react';
+import { Node } from 'reactflow';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { 
+  X, 
+  Settings, 
+  Save, 
+  Trash2,
+  Copy,
+  AlertCircle,
+  CheckCircle
+} from 'lucide-react';
+import { cn } from '@/lib/utils';
+
+// Import configuration forms for each node type
+import { TimelineNodeConfig } from './config/TimelineNodeConfig';
+import { EmailNodeConfig } from './config/EmailNodeConfig';
+import { SmsNodeConfig } from './config/SmsNodeConfig';
+import { FormNodeConfig } from './config/FormNodeConfig';
+import { MeetingNodeConfig } from './config/MeetingNodeConfig';
+import { ReviewNodeConfig } from './config/ReviewNodeConfig';
+import { ReferralNodeConfig } from './config/ReferralNodeConfig';
+import { ConditionNodeConfig } from './config/ConditionNodeConfig';
+import { SplitNodeConfig } from './config/SplitNodeConfig';
+
+interface NodeConfigPanelProps {
+  selectedNode: Node | null;
+  onUpdateNode: (nodeId: string, updates: Partial<Node>) => void;
+  onDeleteNode: (nodeId: string) => void;
+  onDuplicateNode: (nodeId: string) => void;
+  onClose: () => void;
+  className?: string;
+}
+
+const nodeTypeLabels = {
+  timeline: 'Timeline Event',
+  email: 'Email Message',
+  sms: 'SMS Message',
+  form: 'Form Collection',
+  meeting: 'Meeting/Consultation',
+  review: 'Review Request',
+  referral: 'Referral Generation',
+  condition: 'Conditional Logic',
+  split: 'A/B Test Split'
+};
+
+export function NodeConfigPanel({
+  selectedNode,
+  onUpdateNode,
+  onDeleteNode,
+  onDuplicateNode,
+  onClose,
+  className
+}: NodeConfigPanelProps) {
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [validationErrors, setValidationErrors] = useState<string[]>([]);
+
+  const handleConfigChange = useCallback((config: Record<string, any>) => {
+    if (!selectedNode) return;
+    
+    const updatedData = {
+      ...selectedNode.data,
+      config: { ...selectedNode.data.config, ...config }
+    };
+    
+    onUpdateNode(selectedNode.id, { data: updatedData });
+    setHasUnsavedChanges(true);
+    
+    // Clear validation errors when user makes changes
+    if (validationErrors.length > 0) {
+      setValidationErrors([]);
+    }
+  }, [selectedNode, onUpdateNode, validationErrors.length]);
+
+  const handleBasicInfoChange = useCallback((field: string, value: any) => {
+    if (!selectedNode) return;
+    
+    const updatedData = {
+      ...selectedNode.data,
+      [field]: value
+    };
+    
+    onUpdateNode(selectedNode.id, { data: updatedData });
+    setHasUnsavedChanges(true);
+  }, [selectedNode, onUpdateNode]);
+
+  const handleSave = useCallback(() => {
+    // Validate configuration
+    const errors: string[] = [];
+    
+    if (!selectedNode?.data.label?.trim()) {
+      errors.push('Node label is required');
+    }
+    
+    // Add node-specific validations
+    if (selectedNode?.type === 'email' && !selectedNode.data.config?.subject) {
+      errors.push('Email subject is required');
+    }
+    
+    if (selectedNode?.type === 'form' && !selectedNode.data.config?.formId) {
+      errors.push('Form selection is required');
+    }
+    
+    if (errors.length > 0) {
+      setValidationErrors(errors);
+      return;
+    }
+    
+    setHasUnsavedChanges(false);
+    setValidationErrors([]);
+    console.log('Node configuration saved');
+  }, [selectedNode]);
+
+  const handleDelete = useCallback(() => {
+    if (!selectedNode) return;
+    
+    const confirmed = window.confirm(
+      `Are you sure you want to delete "${selectedNode.data.label}"? This action cannot be undone.`
+    );
+    
+    if (confirmed) {
+      onDeleteNode(selectedNode.id);
+      onClose();
+    }
+  }, [selectedNode, onDeleteNode, onClose]);
+
+  const handleDuplicate = useCallback(() => {
+    if (!selectedNode) return;
+    onDuplicateNode(selectedNode.id);
+  }, [selectedNode, onDuplicateNode]);
+
+  const renderConfigForm = () => {
+    if (!selectedNode) return null;
+    
+    const props = {
+      config: selectedNode.data.config || {},
+      onChange: handleConfigChange
+    };
+    
+    switch (selectedNode.type) {
+      case 'timeline':
+        return <TimelineNodeConfig {...props} />;
+      case 'email':
+        return <EmailNodeConfig {...props} />;
+      case 'sms':
+        return <SmsNodeConfig {...props} />;
+      case 'form':
+        return <FormNodeConfig {...props} />;
+      case 'meeting':
+        return <MeetingNodeConfig {...props} />;
+      case 'review':
+        return <ReviewNodeConfig {...props} />;
+      case 'referral':
+        return <ReferralNodeConfig {...props} />;
+      case 'condition':
+        return <ConditionNodeConfig {...props} />;
+      case 'split':
+        return <SplitNodeConfig {...props} />;
+      default:
+        return (
+          <div className="text-center py-8 text-muted-foreground">
+            Configuration form not available for this node type.
+          </div>
+        );
+    }
+  };
+
+  if (!selectedNode) {
+    return (
+      <div className={cn(
+        'w-80 bg-card border-l flex-shrink-0 flex items-center justify-center',
+        className
+      )}>
+        <div className="text-center p-6">
+          <Settings className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+          <h3 className="font-semibold text-foreground mb-2">No Node Selected</h3>
+          <p className="text-sm text-muted-foreground">
+            Select a node on the canvas to configure its settings.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={cn('w-80 bg-card border-l flex-shrink-0 flex flex-col', className)}>
+      {/* Header */}
+      <div className="p-4 border-b flex items-center justify-between">
+        <div className="flex items-center space-x-2">
+          <Settings className="h-5 w-5 text-muted-foreground" />
+          <h2 className="font-semibold text-foreground">Node Configuration</h2>
+        </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onClose}
+          className="h-8 w-8 p-0"
+        >
+          <X className="h-4 w-4" />
+        </Button>
+      </div>
+
+      {/* Content */}
+      <div className="flex-1 overflow-y-auto">
+        <div className="p-4 space-y-6">
+          {/* Node Info */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm flex items-center justify-between">
+                <span>{nodeTypeLabels[selectedNode.type as keyof typeof nodeTypeLabels]}</span>
+                <Badge 
+                  variant={selectedNode.data.status === 'active' ? 'default' : 'secondary'}
+                  className="text-xs"
+                >
+                  {selectedNode.data.status || 'draft'}
+                </Badge>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {/* Node Label */}
+              <div>
+                <label className="text-sm font-medium text-foreground block mb-1">
+                  Node Label
+                </label>
+                <input
+                  type="text"
+                  value={selectedNode.data.label || ''}
+                  onChange={(e) => handleBasicInfoChange('label', e.target.value)}
+                  className="w-full px-3 py-2 border border-border rounded-md bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  placeholder="Enter node label..."
+                />
+              </div>
+
+              {/* Node Description */}
+              <div>
+                <label className="text-sm font-medium text-foreground block mb-1">
+                  Description (Optional)
+                </label>
+                <textarea
+                  value={selectedNode.data.description || ''}
+                  onChange={(e) => handleBasicInfoChange('description', e.target.value)}
+                  className="w-full px-3 py-2 border border-border rounded-md bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-none"
+                  rows={2}
+                  placeholder="Describe what this node does..."
+                />
+              </div>
+
+              {/* Node Status */}
+              <div>
+                <label className="text-sm font-medium text-foreground block mb-1">
+                  Status
+                </label>
+                <select
+                  value={selectedNode.data.status || 'draft'}
+                  onChange={(e) => handleBasicInfoChange('status', e.target.value)}
+                  className="w-full px-3 py-2 border border-border rounded-md bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                >
+                  <option value="draft">Draft</option>
+                  <option value="active">Active</option>
+                  <option value="disabled">Disabled</option>
+                </select>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Node-specific Configuration */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm">Configuration</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {renderConfigForm()}
+            </CardContent>
+          </Card>
+
+          {/* Validation Errors */}
+          {validationErrors.length > 0 && (
+            <Card className="border-destructive">
+              <CardContent className="pt-4">
+                <div className="flex items-start space-x-2">
+                  <AlertCircle className="h-4 w-4 text-destructive mt-0.5" />
+                  <div>
+                    <h4 className="text-sm font-medium text-destructive mb-1">
+                      Configuration Issues
+                    </h4>
+                    <ul className="text-sm text-destructive space-y-1">
+                      {validationErrors.map((error, index) => (
+                        <li key={index}>• {error}</li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Save Status */}
+          {hasUnsavedChanges && (
+            <Card className="border-yellow-200 bg-yellow-50">
+              <CardContent className="pt-4">
+                <div className="flex items-center space-x-2 text-yellow-800">
+                  <AlertCircle className="h-4 w-4" />
+                  <span className="text-sm">You have unsaved changes</span>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {!hasUnsavedChanges && validationErrors.length === 0 && (
+            <Card className="border-green-200 bg-green-50">
+              <CardContent className="pt-4">
+                <div className="flex items-center space-x-2 text-green-800">
+                  <CheckCircle className="h-4 w-4" />
+                  <span className="text-sm">Configuration saved</span>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      </div>
+
+      {/* Footer Actions */}
+      <div className="p-4 border-t space-y-2">
+        <Button
+          onClick={handleSave}
+          disabled={!hasUnsavedChanges}
+          className="w-full flex items-center justify-center space-x-2"
+        >
+          <Save className="h-4 w-4" />
+          <span>Save Configuration</span>
+        </Button>
+
+        <div className="grid grid-cols-2 gap-2">
+          <Button
+            variant="outline"
+            onClick={handleDuplicate}
+            className="flex items-center justify-center space-x-1"
+          >
+            <Copy className="h-3 w-3" />
+            <span>Duplicate</span>
+          </Button>
+
+          <Button
+            variant="outline"
+            onClick={handleDelete}
+            className="flex items-center justify-center space-x-1 text-destructive hover:text-destructive"
+          >
+            <Trash2 className="h-3 w-3" />
+            <span>Delete</span>
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default NodeConfigPanel;

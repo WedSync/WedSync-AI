@@ -1,0 +1,620 @@
+/**
+ * WS-116: Supplier Location Map Component
+ * Interactive map for displaying supplier locations, service areas, and search results
+ */
+
+'use client';
+
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { 
+  GoogleMap, 
+  LoadScript, 
+  Marker, 
+  Circle, 
+  InfoWindow,
+  Polygon
+} from '@react-google-maps/api';
+import { 
+  MapPin, 
+  Navigation, 
+  Target, 
+  Filter,
+  Maximize2,
+  Minimize2,
+  Layers,
+  Settings,
+  Star,
+  Shield
+} from 'lucide-react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
+import { Label } from '@/components/ui/label';
+import { GeographicSearchResult } from '@/lib/services/geographic-search-service';
+
+const libraries: ('places' | 'geometry')[] = ['places', 'geometry'];
+
+interface MapSupplier extends GeographicSearchResult {
+  // Additional map-specific properties
+  selected?: boolean;
+  highlight?: boolean;
+}
+
+interface MapLocation {
+  latitude: number;
+  longitude: number;
+  address?: string;
+}
+
+interface MapSettings {
+  showServiceAreas: boolean;
+  showSearchRadius: boolean;
+  showSupplierClusters: boolean;
+  mapType: 'roadmap' | 'satellite' | 'hybrid' | 'terrain';
+  showTraffic: boolean;
+  showTransit: boolean;
+}
+
+interface SupplierLocationMapProps {
+  suppliers: MapSupplier[];
+  searchCenter?: MapLocation;
+  searchRadius?: number; // in kilometers
+  selectedSupplierId?: string;
+  onSupplierSelect?: (supplier: MapSupplier) => void;
+  onSupplierClick?: (supplier: MapSupplier) => void;
+  onMapClick?: (location: { lat: number; lng: number }) => void;
+  onBoundsChanged?: (bounds: google.maps.LatLngBounds) => void;
+  height?: string;
+  width?: string;
+  showControls?: boolean;
+  showSettings?: boolean;
+  defaultZoom?: number;
+  className?: string;
+}
+
+const defaultMapSettings: MapSettings = {
+  showServiceAreas: true,
+  showSearchRadius: true,
+  showSupplierClusters: false,
+  mapType: 'roadmap',
+  showTraffic: false,
+  showTransit: false
+};
+
+const mapContainerStyle = {
+  width: '100%',
+  height: '500px'
+};
+
+const mapOptions: google.maps.MapOptions = {
+  disableDefaultUI: false,
+  zoomControl: true,
+  mapTypeControl: true,
+  scaleControl: true,
+  streetViewControl: false,
+  rotateControl: false,
+  fullscreenControl: true,
+  gestureHandling: 'cooperative'
+};
+
+export default function SupplierLocationMap({
+  suppliers = [],
+  searchCenter,
+  searchRadius,
+  selectedSupplierId,
+  onSupplierSelect,
+  onSupplierClick,
+  onMapClick,
+  onBoundsChanged,
+  height = '500px',
+  width = '100%',
+  showControls = true,
+  showSettings = false,
+  defaultZoom = 10,
+  className = ''
+}: SupplierLocationMapProps) {
+  const [map, setMap] = useState<google.maps.Map | null>(null);
+  const [settings, setSettings] = useState<MapSettings>(defaultMapSettings);
+  const [selectedSupplier, setSelectedSupplier] = useState<MapSupplier | null>(null);
+  const [infoWindowPosition, setInfoWindowPosition] = useState<google.maps.LatLng | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [currentLocation, setCurrentLocation] = useState<MapLocation | null>(null);
+  
+  const mapRef = useRef<google.maps.Map | null>(null);
+  const markersRef = useRef<Map<string, google.maps.Marker>>(new Map());
+
+  // Calculate map center and bounds
+  const getMapCenter = useCallback(() => {
+    if (searchCenter) {
+      return { lat: searchCenter.latitude, lng: searchCenter.longitude };
+    }
+
+    if (suppliers.length === 0) {
+      // Default to London
+      return { lat: 51.5074, lng: -0.1278 };
+    }
+
+    if (suppliers.length === 1) {
+      return { lat: suppliers[0].latitude, lng: suppliers[0].longitude };
+    }
+
+    // Calculate center of all suppliers
+    const bounds = new google.maps.LatLngBounds();
+    suppliers.forEach(supplier => {
+      bounds.extend({ lat: supplier.latitude, lng: supplier.longitude });
+    });
+
+    return bounds.getCenter().toJSON();
+  }, [suppliers, searchCenter]);
+
+  // Calculate appropriate zoom level
+  const getZoomLevel = useCallback(() => {
+    if (searchRadius) {
+      // Zoom based on search radius
+      if (searchRadius <= 5) return 13;
+      if (searchRadius <= 10) return 12;
+      if (searchRadius <= 25) return 10;
+      if (searchRadius <= 50) return 9;
+      if (searchRadius <= 100) return 8;
+      return 7;
+    }
+
+    return defaultZoom;
+  }, [searchRadius, defaultZoom]);
+
+  // Handle map load
+  const onMapLoad = useCallback((mapInstance: google.maps.Map) => {
+    setMap(mapInstance);
+    mapRef.current = mapInstance;
+
+    // Fit bounds if we have suppliers
+    if (suppliers.length > 1) {
+      const bounds = new google.maps.LatLngBounds();
+      suppliers.forEach(supplier => {
+        bounds.extend({ lat: supplier.latitude, lng: supplier.longitude });
+      });
+
+      // Add padding for search radius if present
+      if (searchRadius) {
+        const radiusInDegrees = searchRadius / 111; // Rough conversion km to degrees
+        bounds.extend({
+          lat: bounds.getCenter().lat() + radiusInDegrees,
+          lng: bounds.getCenter().lng() + radiusInDegrees
+        });
+        bounds.extend({
+          lat: bounds.getCenter().lat() - radiusInDegrees,
+          lng: bounds.getCenter().lng() - radiusInDegrees
+        });
+      }
+
+      mapInstance.fitBounds(bounds);
+    }
+  }, [suppliers, searchRadius]);
+
+  // Handle supplier marker click
+  const handleMarkerClick = useCallback((supplier: MapSupplier) => {
+    setSelectedSupplier(supplier);
+    setInfoWindowPosition(new google.maps.LatLng(supplier.latitude, supplier.longitude));
+    onSupplierSelect?.(supplier);
+  }, [onSupplierSelect]);
+
+  // Handle map click
+  const handleMapClick = useCallback((e: google.maps.MapMouseEvent) => {
+    if (e.latLng) {
+      const location = {
+        lat: e.latLng.lat(),
+        lng: e.latLng.lng()
+      };
+      onMapClick?.(location);
+    }
+    setSelectedSupplier(null);
+    setInfoWindowPosition(null);
+  }, [onMapClick]);
+
+  // Handle bounds changed
+  const handleBoundsChanged = useCallback(() => {
+    if (map && onBoundsChanged) {
+      const bounds = map.getBounds();
+      if (bounds) {
+        onBoundsChanged(bounds);
+      }
+    }
+  }, [map, onBoundsChanged]);
+
+  // Get current location
+  const getCurrentLocation = useCallback(() => {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const location = {
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude
+          };
+          setCurrentLocation(location);
+
+          if (map) {
+            map.setCenter({ lat: location.latitude, lng: location.longitude });
+            map.setZoom(12);
+          }
+        },
+        (error) => {
+          console.error('Error getting current location:', error);
+        }
+      );
+    }
+  }, [map]);
+
+  // Toggle fullscreen
+  const toggleFullscreen = useCallback(() => {
+    setIsFullscreen(!isFullscreen);
+  }, [isFullscreen]);
+
+  // Update map settings
+  const updateSettings = useCallback((newSettings: Partial<MapSettings>) => {
+    setSettings(prev => ({ ...prev, ...newSettings }));
+  }, []);
+
+  // Get marker icon for supplier
+  const getMarkerIcon = useCallback((supplier: MapSupplier) => {
+    const isSelected = supplier.supplierId === selectedSupplierId;
+    const baseColor = supplier.isVerified ? '#22c55e' : '#3b82f6';
+    const selectedColor = '#ef4444';
+    
+    return {
+      url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(`
+        <svg width="32" height="40" viewBox="0 0 32 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M16 0C7.16 0 0 7.16 0 16C0 28 16 40 16 40C16 40 32 28 32 16C32 7.16 24.84 0 16 0Z" fill="${isSelected ? selectedColor : baseColor}"/>
+          <circle cx="16" cy="16" r="8" fill="white"/>
+          ${supplier.isVerified ? 
+            '<path d="M12 16L14.5 18.5L20 13" stroke="' + baseColor + '" stroke-width="2" fill="none"/>' : 
+            '<circle cx="16" cy="16" r="4" fill="' + baseColor + '"/>'
+          }
+        </svg>
+      `)}`,
+      scaledSize: new google.maps.Size(32, 40),
+      anchor: new google.maps.Point(16, 40)
+    };
+  }, [selectedSupplierId]);
+
+  // Render supplier info window
+  const renderInfoWindow = () => {
+    if (!selectedSupplier || !infoWindowPosition) return null;
+
+    return (
+      <InfoWindow
+        position={infoWindowPosition}
+        onCloseClick={() => {
+          setSelectedSupplier(null);
+          setInfoWindowPosition(null);
+        }}
+        options={{
+          pixelOffset: new google.maps.Size(0, -40)
+        }}
+      >
+        <div className="p-2 max-w-xs">
+          <div className="flex items-start gap-3">
+            <Avatar className="h-12 w-12 flex-shrink-0">
+              <AvatarImage src={selectedSupplier.featuredImage} alt={selectedSupplier.businessName} />
+              <AvatarFallback>
+                {selectedSupplier.businessName.split(' ').map(w => w[0]).join('').toUpperCase()}
+              </AvatarFallback>
+            </Avatar>
+            
+            <div className="flex-1 min-w-0">
+              <h3 className="font-semibold text-sm leading-4">
+                {selectedSupplier.businessName}
+              </h3>
+              <p className="text-xs text-gray-600 mt-1">{selectedSupplier.category}</p>
+              
+              <div className="flex items-center gap-1 mt-2">
+                <div className="flex items-center">
+                  {[...Array(5)].map((_, i) => (
+                    <Star
+                      key={i}
+                      className={`h-3 w-3 ${
+                        i < Math.floor(selectedSupplier.rating)
+                          ? 'fill-yellow-400 text-yellow-400'
+                          : 'text-gray-300'
+                      }`}
+                    />
+                  ))}
+                </div>
+                <span className="text-xs font-medium">
+                  {selectedSupplier.rating.toFixed(1)}
+                </span>
+                <span className="text-xs text-gray-600">
+                  ({selectedSupplier.totalReviews})
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2 mt-2">
+                <Badge variant="outline" className="text-xs">
+                  {selectedSupplier.distance.toFixed(1)} km away
+                </Badge>
+                {selectedSupplier.isVerified && (
+                  <Badge variant="secondary" className="text-xs flex items-center gap-1">
+                    <Shield className="h-3 w-3" />
+                    Verified
+                  </Badge>
+                )}
+              </div>
+
+              <div className="flex gap-1 mt-3">
+                <Button
+                  size="sm"
+                  onClick={() => onSupplierClick?.(selectedSupplier)}
+                  className="text-xs px-2 py-1 h-6"
+                >
+                  View Profile
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    const url = `https://maps.google.com/maps?q=${selectedSupplier.latitude},${selectedSupplier.longitude}`;
+                    window.open(url, '_blank');
+                  }}
+                  className="text-xs px-2 py-1 h-6"
+                >
+                  <Navigation className="h-3 w-3" />
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </InfoWindow>
+    );
+  };
+
+  const customMapContainerStyle = {
+    ...mapContainerStyle,
+    height: isFullscreen ? '100vh' : height,
+    width: isFullscreen ? '100vw' : width
+  };
+
+  if (isFullscreen) {
+    customMapContainerStyle.position = 'fixed' as const;
+    customMapContainerStyle.top = '0';
+    customMapContainerStyle.left = '0';
+    customMapContainerStyle.zIndex = 9999;
+  }
+
+  return (
+    <div className={`relative ${className}`}>
+      <LoadScript
+        googleMapsApiKey={process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY!}
+        libraries={libraries}
+        loadingElement={
+          <div className="flex items-center justify-center h-full">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+          </div>
+        }
+      >
+        <div className="relative">
+          {/* Map Controls */}
+          {showControls && (
+            <div className="absolute top-4 left-4 z-10 space-y-2">
+              <Card className="p-2">
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={getCurrentLocation}
+                    title="Get current location"
+                  >
+                    <Target className="h-4 w-4" />
+                  </Button>
+                  
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={toggleFullscreen}
+                    title={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+                  >
+                    {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+                  </Button>
+
+                  {showSettings && (
+                    <div className="border-l pl-2 ml-2">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        title="Map settings"
+                      >
+                        <Settings className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              </Card>
+
+              {/* Map Legend */}
+              <Card className="p-3 max-w-xs">
+                <CardHeader className="p-0 pb-2">
+                  <CardTitle className="text-sm">Legend</CardTitle>
+                </CardHeader>
+                <CardContent className="p-0 space-y-2">
+                  <div className="flex items-center gap-2 text-xs">
+                    <div className="w-4 h-4 rounded-full bg-blue-500"></div>
+                    <span>Suppliers</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-xs">
+                    <div className="w-4 h-4 rounded-full bg-green-500"></div>
+                    <span>Verified Suppliers</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-xs">
+                    <div className="w-4 h-4 rounded-full bg-red-500"></div>
+                    <span>Selected Supplier</span>
+                  </div>
+                  {searchCenter && (
+                    <div className="flex items-center gap-2 text-xs">
+                      <div className="w-4 h-4 rounded-full bg-purple-500"></div>
+                      <span>Search Location</span>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+          )}
+
+          {/* Settings Panel */}
+          {showSettings && (
+            <Card className="absolute top-4 right-4 z-10 p-4 w-64">
+              <CardHeader className="p-0 pb-3">
+                <CardTitle className="text-sm flex items-center gap-2">
+                  <Layers className="h-4 w-4" />
+                  Map Settings
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="p-0 space-y-4">
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="service-areas" className="text-xs">Service Areas</Label>
+                    <Switch
+                      id="service-areas"
+                      checked={settings.showServiceAreas}
+                      onCheckedChange={(checked) => updateSettings({ showServiceAreas: checked })}
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="search-radius" className="text-xs">Search Radius</Label>
+                    <Switch
+                      id="search-radius"
+                      checked={settings.showSearchRadius}
+                      onCheckedChange={(checked) => updateSettings({ showSearchRadius: checked })}
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="traffic" className="text-xs">Traffic</Label>
+                    <Switch
+                      id="traffic"
+                      checked={settings.showTraffic}
+                      onCheckedChange={(checked) => updateSettings({ showTraffic: checked })}
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label className="text-xs">Map Type</Label>
+                    <Select
+                      value={settings.mapType}
+                      onValueChange={(value: any) => updateSettings({ mapType: value })}
+                    >
+                      <SelectTrigger className="h-8">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="roadmap">Roadmap</SelectItem>
+                        <SelectItem value="satellite">Satellite</SelectItem>
+                        <SelectItem value="hybrid">Hybrid</SelectItem>
+                        <SelectItem value="terrain">Terrain</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          <GoogleMap
+            mapContainerStyle={customMapContainerStyle}
+            center={getMapCenter()}
+            zoom={getZoomLevel()}
+            options={{
+              ...mapOptions,
+              mapTypeId: settings.mapType
+            }}
+            onLoad={onMapLoad}
+            onClick={handleMapClick}
+            onBoundsChanged={handleBoundsChanged}
+          >
+            {/* Search center marker */}
+            {searchCenter && (
+              <Marker
+                position={{ lat: searchCenter.latitude, lng: searchCenter.longitude }}
+                icon={{
+                  url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(`
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <circle cx="12" cy="12" r="8" fill="#8b5cf6"/>
+                      <circle cx="12" cy="12" r="4" fill="white"/>
+                      <circle cx="12" cy="12" r="2" fill="#8b5cf6"/>
+                    </svg>
+                  `)}`,
+                  scaledSize: new google.maps.Size(24, 24),
+                  anchor: new google.maps.Point(12, 12)
+                }}
+                title={searchCenter.address || 'Search Location'}
+              />
+            )}
+
+            {/* Search radius circle */}
+            {searchCenter && searchRadius && settings.showSearchRadius && (
+              <Circle
+                center={{ lat: searchCenter.latitude, lng: searchCenter.longitude }}
+                radius={searchRadius * 1000} // Convert km to meters
+                options={{
+                  fillColor: '#8b5cf6',
+                  fillOpacity: 0.1,
+                  strokeColor: '#8b5cf6',
+                  strokeOpacity: 0.4,
+                  strokeWeight: 2
+                }}
+              />
+            )}
+
+            {/* Current location marker */}
+            {currentLocation && (
+              <Marker
+                position={{ lat: currentLocation.latitude, lng: currentLocation.longitude }}
+                icon={{
+                  url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(`
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <circle cx="10" cy="10" r="8" fill="#3b82f6" stroke="white" stroke-width="2"/>
+                      <circle cx="10" cy="10" r="3" fill="white"/>
+                    </svg>
+                  `)}`,
+                  scaledSize: new google.maps.Size(20, 20),
+                  anchor: new google.maps.Point(10, 10)
+                }}
+                title="Your Location"
+              />
+            )}
+
+            {/* Supplier markers */}
+            {suppliers.map((supplier) => (
+              <React.Fragment key={supplier.supplierId}>
+                <Marker
+                  position={{ lat: supplier.latitude, lng: supplier.longitude }}
+                  icon={getMarkerIcon(supplier)}
+                  onClick={() => handleMarkerClick(supplier)}
+                  title={`${supplier.businessName} - ${supplier.distance.toFixed(1)}km away`}
+                />
+
+                {/* Service area circles */}
+                {settings.showServiceAreas && supplier.serviceRadius > 0 && (
+                  <Circle
+                    center={{ lat: supplier.latitude, lng: supplier.longitude }}
+                    radius={supplier.serviceRadius * 1609.344} // Convert miles to meters
+                    options={{
+                      fillColor: supplier.isVerified ? '#22c55e' : '#3b82f6',
+                      fillOpacity: 0.05,
+                      strokeColor: supplier.isVerified ? '#22c55e' : '#3b82f6',
+                      strokeOpacity: 0.2,
+                      strokeWeight: 1
+                    }}
+                  />
+                )}
+              </React.Fragment>
+            ))}
+
+            {renderInfoWindow()}
+          </GoogleMap>
+        </div>
+      </LoadScript>
+    </div>
+  );
+}

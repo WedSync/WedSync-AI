@@ -1,0 +1,565 @@
+/**
+ * WS-177 Audit Logging System - API Middleware Integration
+ * Team C - Seamless audit integration for API routes
+ * 
+ * This middleware provides transparent audit logging for all API routes
+ * without disrupting existing security validation patterns.
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { v4 as uuidv4 } from 'uuid';
+import { getServerSession } from 'next-auth';
+// import { authOptions } from '../../lib/auth/options'; // TODO: Configure when auth is available
+import { 
+  AuditEvent, 
+  AuditEventType, 
+  AuditSeverity, 
+  WorkflowContext,
+  WeddingRole,
+  ApiAuditContext,
+  AuditEventMetadata
+} from '../../types/security-integration';
+import { SecurityEventDetector } from '../../lib/integrations/security/security-event-detector';
+
+// API audit middleware function
+export function withAuditLogging<T extends any[]>(
+  handler: (request: NextRequest, ...args: T) => Promise<NextResponse>,
+  auditConfig?: ApiAuditConfig
+) {
+  return async (request: NextRequest, ...args: T): Promise<NextResponse> => {
+    const startTime = Date.now();
+    const requestId = uuidv4();
+    let response: NextResponse;
+    let auditEvent: AuditEvent | null = null;
+
+    try {
+      // Extract request context
+      const auditContext = await extractAuditContext(request, requestId);
+      
+      // Create pre-request audit event for sensitive operations
+      if (auditConfig?.preRequestAudit) {
+        auditEvent = await createPreRequestAuditEvent(request, auditContext, auditConfig);
+        await logAuditEvent(auditEvent);
+      }
+
+      // Execute the original handler
+      response = await handler(request, ...args);
+
+      // Create post-request audit event
+      const duration = Date.now() - startTime;
+      auditEvent = await createPostRequestAuditEvent(
+        request, 
+        response, 
+        auditContext, 
+        duration, 
+        auditConfig
+      );
+
+      // Log the audit event asynchronously to avoid blocking response
+      if (auditEvent) {
+        logAuditEventAsync(auditEvent);
+      }
+
+      return response;
+    } catch (error) {
+      // Log error audit event
+      const duration = Date.now() - startTime;
+      const errorAuditEvent = await createErrorAuditEvent(
+        request, 
+        error, 
+        extractAuditContext(request, requestId), 
+        duration, 
+        auditConfig
+      );
+
+      if (errorAuditEvent) {
+        logAuditEventAsync(errorAuditEvent);
+      }
+
+      throw error;
+    }
+  };
+}
+
+// Enhanced middleware wrapper with security event detection
+export function withSecureAuditLogging<T extends any[]>(
+  handler: (request: NextRequest, ...args: T) => Promise<NextResponse>,
+  auditConfig?: ApiAuditConfig
+) {
+  return async (request: NextRequest, ...args: T): Promise<NextResponse> => {
+    const auditedHandler = withAuditLogging(handler, auditConfig);
+    const response = await auditedHandler(request, ...args);
+
+    // Run security event detection in background
+    if (auditConfig?.enableSecurityDetection !== false) {
+      const auditContext = await extractAuditContext(request, uuidv4());
+      runSecurityDetectionAsync(request, response, auditContext, auditConfig);
+    }
+
+    return response;
+  };
+}
+
+// Extract audit context from request
+async function extractAuditContext(request: NextRequest, requestId: string): Promise<ExtendedAuditContext> {
+  const url = new URL(request.url);
+  const userAgent = request.headers.get('user-agent') || 'unknown';
+  const ipAddress = extractClientIP(request);
+  
+  // Get user session
+  const session = null; // TODO: await getServerSession(authOptions) when auth is configured
+  
+  // Extract wedding context from URL or headers
+  const weddingId = extractWeddingId(request);
+  
+  // Determine workflow context from route
+  const workflowContext = determineWorkflowContext(url.pathname);
+
+  return {
+    requestId,
+    userId: session?.user?.id || 'anonymous',
+    userRole: session?.user?.role as WeddingRole || WeddingRole.GUEST,
+    weddingId,
+    workflowContext,
+    ipAddress,
+    userAgent,
+    sessionId: session?.user?.sessionId || uuidv4(),
+    route: url.pathname,
+    method: request.method,
+    authenticated: !!session,
+    timestamp: new Date()
+  };
+}
+
+// Create pre-request audit event for sensitive operations
+async function createPreRequestAuditEvent(
+  request: NextRequest,
+  context: ExtendedAuditContext,
+  config?: ApiAuditConfig
+): Promise<AuditEvent> {
+  const eventType = determineEventTypeFromRequest(request, 'pre');
+  
+  return {
+    id: uuidv4(),
+    timestamp: new Date(),
+    eventType,
+    severity: config?.severity || AuditSeverity.LOW,
+    userId: context.userId,
+    userRole: context.userRole,
+    weddingId: context.weddingId,
+    workflowContext: context.workflowContext,
+    resourceType: config?.resourceType || 'api_endpoint',
+    ipAddress: context.ipAddress,
+    userAgent: context.userAgent,
+    sessionId: context.sessionId,
+    details: {
+      route: context.route,
+      method: context.method,
+      phase: 'pre_request',
+      queryParams: Object.fromEntries(new URL(request.url).searchParams),
+      headers: extractSafeHeaders(request),
+      contentType: request.headers.get('content-type'),
+      contentLength: request.headers.get('content-length')
+    },
+    metadata: {
+      requestId: context.requestId,
+      source: 'api',
+      success: true
+    }
+  };
+}
+
+// Create post-request audit event
+async function createPostRequestAuditEvent(
+  request: NextRequest,
+  response: NextResponse,
+  context: ExtendedAuditContext,
+  duration: number,
+  config?: ApiAuditConfig
+): Promise<AuditEvent> {
+  const eventType = determineEventTypeFromRequest(request, 'post');
+  const success = response.status < 400;
+  
+  // Extract request body for audit if configured
+  const requestBody = await extractRequestBody(request, config);
+  
+  return {
+    id: uuidv4(),
+    timestamp: new Date(),
+    eventType,
+    severity: determineSeverityFromResponse(response, config),
+    userId: context.userId,
+    userRole: context.userRole,
+    weddingId: context.weddingId,
+    workflowContext: context.workflowContext,
+    resourceType: config?.resourceType || 'api_endpoint',
+    ipAddress: context.ipAddress,
+    userAgent: context.userAgent,
+    sessionId: context.sessionId,
+    details: {
+      route: context.route,
+      method: context.method,
+      phase: 'post_request',
+      statusCode: response.status,
+      responseTime: duration,
+      requestBody: requestBody,
+      rateLimited: response.headers.get('x-ratelimit-remaining') === '0',
+      validationPassed: response.status !== 400 && response.status !== 422
+    },
+    metadata: {
+      requestId: context.requestId,
+      source: 'api',
+      duration,
+      success,
+      errorCode: success ? undefined : response.status.toString(),
+      errorMessage: success ? undefined : response.statusText
+    }
+  };
+}
+
+// Create error audit event
+async function createErrorAuditEvent(
+  request: NextRequest,
+  error: any,
+  context: Promise<ExtendedAuditContext>,
+  duration: number,
+  config?: ApiAuditConfig
+): Promise<AuditEvent> {
+  const resolvedContext = await context;
+  const eventType = determineEventTypeFromRequest(request, 'error');
+  
+  return {
+    id: uuidv4(),
+    timestamp: new Date(),
+    eventType,
+    severity: AuditSeverity.HIGH,
+    userId: resolvedContext.userId,
+    userRole: resolvedContext.userRole,
+    weddingId: resolvedContext.weddingId,
+    workflowContext: resolvedContext.workflowContext,
+    resourceType: config?.resourceType || 'api_endpoint',
+    ipAddress: resolvedContext.ipAddress,
+    userAgent: resolvedContext.userAgent,
+    sessionId: resolvedContext.sessionId,
+    details: {
+      route: resolvedContext.route,
+      method: resolvedContext.method,
+      phase: 'error',
+      errorType: error.name || 'UnknownError',
+      errorMessage: error.message,
+      errorStack: config?.includeStackTrace ? error.stack : undefined
+    },
+    metadata: {
+      requestId: resolvedContext.requestId,
+      source: 'api',
+      duration,
+      success: false,
+      errorCode: error.code || 'API_ERROR',
+      errorMessage: error.message
+    }
+  };
+}
+
+// Helper functions
+function extractClientIP(request: NextRequest): string {
+  const forwarded = request.headers.get('x-forwarded-for');
+  const realIP = request.headers.get('x-real-ip');
+  
+  if (forwarded) {
+    return forwarded.split(',')[0].trim();
+  }
+  
+  if (realIP) {
+    return realIP;
+  }
+  
+  return '0.0.0.0'; // TODO: Extract from x-forwarded-for or connection info
+}
+
+function extractWeddingId(request: NextRequest): string | undefined {
+  // Try to extract wedding ID from URL path
+  const url = new URL(request.url);
+  const pathSegments = url.pathname.split('/');
+  
+  // Look for wedding ID in common patterns
+  const weddingIndex = pathSegments.findIndex(segment => segment === 'weddings');
+  if (weddingIndex !== -1 && pathSegments[weddingIndex + 1]) {
+    return pathSegments[weddingIndex + 1];
+  }
+  
+  // Check query parameters
+  return url.searchParams.get('weddingId') || url.searchParams.get('wedding_id') || undefined;
+}
+
+function determineWorkflowContext(pathname: string): WorkflowContext {
+  if (pathname.includes('/guests')) return WorkflowContext.GUEST_MANAGEMENT;
+  if (pathname.includes('/vendors')) return WorkflowContext.VENDOR_COORDINATION;
+  if (pathname.includes('/tasks')) return WorkflowContext.TASK_ASSIGNMENT;
+  if (pathname.includes('/budget')) return WorkflowContext.BUDGET_TRACKING;
+  if (pathname.includes('/timeline')) return WorkflowContext.TIMELINE_PLANNING;
+  if (pathname.includes('/photos')) return WorkflowContext.PHOTO_SHARING;
+  
+  // Default fallback
+  return WorkflowContext.GUEST_MANAGEMENT;
+}
+
+function determineEventTypeFromRequest(request: NextRequest, phase: 'pre' | 'post' | 'error'): AuditEventType {
+  const url = new URL(request.url);
+  const method = request.method;
+  const path = url.pathname;
+
+  // Error phase always maps to failed authentication or unusual access
+  if (phase === 'error') {
+    return AuditEventType.UNUSUAL_ACCESS_PATTERN;
+  }
+
+  // Map based on route and method
+  if (path.includes('/guests')) {
+    return method === 'GET' ? AuditEventType.GUEST_LIST_ACCESS : AuditEventType.GUEST_LIST_MODIFIED;
+  }
+  
+  if (path.includes('/vendors')) {
+    return method === 'GET' ? AuditEventType.VENDOR_DATA_ACCESS : AuditEventType.VENDOR_CONTRACT_MODIFIED;
+  }
+  
+  if (path.includes('/tasks')) {
+    return method === 'GET' ? AuditEventType.TASK_DATA_ACCESS : AuditEventType.TASK_STATUS_CHANGED;
+  }
+  
+  if (path.includes('/budget')) {
+    return method === 'GET' ? AuditEventType.BUDGET_DATA_ACCESS : AuditEventType.BUDGET_UPDATED;
+  }
+  
+  if (path.includes('/auth/signin')) {
+    return AuditEventType.USER_LOGIN;
+  }
+  
+  if (path.includes('/auth/signout')) {
+    return AuditEventType.USER_LOGOUT;
+  }
+  
+  if (path.includes('/export')) {
+    return AuditEventType.DATA_EXPORT;
+  }
+
+  // Default to data access for GET, modification for others
+  return method === 'GET' ? AuditEventType.GUEST_LIST_ACCESS : AuditEventType.GUEST_LIST_MODIFIED;
+}
+
+function determineSeverityFromResponse(response: NextResponse, config?: ApiAuditConfig): AuditSeverity {
+  if (config?.severity) {
+    return config.severity;
+  }
+
+  if (response.status >= 500) return AuditSeverity.HIGH;
+  if (response.status >= 400) return AuditSeverity.MEDIUM;
+  if (response.status >= 200) return AuditSeverity.LOW;
+  
+  return AuditSeverity.LOW;
+}
+
+function extractSafeHeaders(request: NextRequest): Record<string, string> {
+  const safeHeaders = [
+    'content-type',
+    'content-length',
+    'accept',
+    'accept-encoding',
+    'accept-language',
+    'cache-control',
+    'user-agent'
+  ];
+
+  const headers: Record<string, string> = {};
+  safeHeaders.forEach(header => {
+    const value = request.headers.get(header);
+    if (value) {
+      headers[header] = value;
+    }
+  });
+
+  return headers;
+}
+
+async function extractRequestBody(request: NextRequest, config?: ApiAuditConfig): Promise<any> {
+  if (!config?.auditRequestBody) {
+    return undefined;
+  }
+
+  try {
+    // Clone request to avoid consuming the body
+    const clonedRequest = request.clone();
+    const contentType = request.headers.get('content-type');
+
+    if (contentType?.includes('application/json')) {
+      const body = await clonedRequest.json();
+      return sanitizeRequestBody(body, config);
+    }
+
+    if (contentType?.includes('application/x-www-form-urlencoded')) {
+      const formData = await clonedRequest.formData();
+      const body: Record<string, any> = {};
+      formData.forEach((value, key) => {
+        body[key] = value;
+      });
+      return sanitizeRequestBody(body, config);
+    }
+
+    return { contentType, bodyTruncated: true };
+  } catch {
+    return { error: 'Failed to parse request body' };
+  }
+}
+
+function sanitizeRequestBody(body: any, config?: ApiAuditConfig): any {
+  if (!body || typeof body !== 'object') {
+    return body;
+  }
+
+  const sensitiveFields = config?.sensitiveFields || [
+    'password', 'token', 'secret', 'key', 'authorization',
+    'ssn', 'social_security', 'credit_card', 'cvv'
+  ];
+
+  const sanitized = { ...body };
+  
+  sensitiveFields.forEach(field => {
+    if (field in sanitized) {
+      sanitized[field] = '[REDACTED]';
+    }
+  });
+
+  return sanitized;
+}
+
+// Async logging to avoid blocking requests
+async function logAuditEvent(event: AuditEvent): Promise<void> {
+  try {
+    // This would integrate with Team B's AuditLogger service
+    // For now, we'll log to console and implement proper logging later
+    console.log('Audit Event:', {
+      id: event.id,
+      type: event.eventType,
+      user: event.userId,
+      timestamp: event.timestamp,
+      context: event.workflowContext
+    });
+    
+    // TODO: Integrate with Team B's AuditLogger service
+    // await auditLoggerService.logEvent(event);
+  } catch (error) {
+    console.error('Failed to log audit event:', error);
+  }
+}
+
+function logAuditEventAsync(event: AuditEvent): void {
+  // Fire and forget - don't block the response
+  logAuditEvent(event).catch(error => {
+    console.error('Async audit logging failed:', error);
+  });
+}
+
+async function runSecurityDetectionAsync(
+  request: NextRequest,
+  response: NextResponse,
+  context: ExtendedAuditContext,
+  config?: ApiAuditConfig
+): Promise<void> {
+  try {
+    const detector = new SecurityEventDetector();
+    
+    // Create a minimal audit event for security analysis
+    const event: AuditEvent = {
+      id: uuidv4(),
+      timestamp: new Date(),
+      eventType: determineEventTypeFromRequest(request, 'post'),
+      severity: AuditSeverity.LOW,
+      userId: context.userId,
+      userRole: context.userRole,
+      weddingId: context.weddingId,
+      workflowContext: context.workflowContext,
+      ipAddress: context.ipAddress,
+      userAgent: context.userAgent,
+      sessionId: context.sessionId,
+      details: {
+        route: context.route,
+        method: context.method,
+        statusCode: response.status
+      },
+      metadata: {
+        requestId: context.requestId,
+        source: 'api',
+        success: response.status < 400
+      }
+    };
+
+    const detectionResult = await detector.analyzeEvent(event);
+    
+    if (detectionResult.requiresImmediateAttention) {
+      console.warn('Security event detected:', detectionResult);
+      // TODO: Integrate with Team C's suspicious activity handler
+    }
+  } catch (error) {
+    console.error('Security detection failed:', error);
+  }
+}
+
+// Configuration interface
+export interface ApiAuditConfig {
+  severity?: AuditSeverity;
+  resourceType?: string;
+  preRequestAudit?: boolean;
+  auditRequestBody?: boolean;
+  sensitiveFields?: string[];
+  enableSecurityDetection?: boolean;
+  includeStackTrace?: boolean;
+}
+
+// Extended audit context interface
+interface ExtendedAuditContext {
+  requestId: string;
+  userId: string;
+  userRole: WeddingRole;
+  weddingId?: string;
+  workflowContext: WorkflowContext;
+  ipAddress: string;
+  userAgent: string;
+  sessionId: string;
+  route: string;
+  method: string;
+  authenticated: boolean;
+  timestamp: Date;
+}
+
+// Route-specific audit configurations
+export const RouteAuditConfigs = {
+  guestManagement: {
+    severity: AuditSeverity.MEDIUM,
+    resourceType: 'guest_data',
+    auditRequestBody: true,
+    sensitiveFields: ['email', 'phone', 'address']
+  } as ApiAuditConfig,
+
+  vendorCoordination: {
+    severity: AuditSeverity.MEDIUM,
+    resourceType: 'vendor_data',
+    auditRequestBody: true,
+    sensitiveFields: ['contract_value', 'payment_terms']
+  } as ApiAuditConfig,
+
+  budgetTracking: {
+    severity: AuditSeverity.HIGH,
+    resourceType: 'budget_data',
+    auditRequestBody: true,
+    enableSecurityDetection: true
+  } as ApiAuditConfig,
+
+  dataExport: {
+    severity: AuditSeverity.HIGH,
+    resourceType: 'exported_data',
+    preRequestAudit: true,
+    enableSecurityDetection: true,
+    includeStackTrace: true
+  } as ApiAuditConfig
+};
+
+export default withAuditLogging;

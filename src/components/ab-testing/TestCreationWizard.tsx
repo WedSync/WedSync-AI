@@ -1,0 +1,601 @@
+'use client';
+
+import React, { useState } from 'react';
+import { Card } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { Slider } from '@/components/ui/slider';
+import { Badge } from '@/components/ui/badge';
+import { Plus, Trash2, ArrowLeft, ArrowRight, TestTube } from 'lucide-react';
+
+interface TestVariant {
+  id: string;
+  name: string;
+  content: {
+    subject?: string;
+    message?: string;
+    timing?: string;
+    channel?: string;
+  };
+  trafficPercentage: number;
+  isControl: boolean;
+}
+
+interface WeddingTemplate {
+  id: string;
+  name: string;
+  category: 'venue' | 'timeline' | 'payment' | 'followup';
+  subject: string;
+  message: string;
+  description: string;
+}
+
+const WEDDING_TEMPLATES: WeddingTemplate[] = [
+  {
+    id: '1',
+    name: 'Venue Confirmation - Formal',
+    category: 'venue',
+    subject: 'Wedding venue confirmation required',
+    message:
+      'Dear [Name], We need to confirm your venue selection for your wedding date...',
+    description: 'Professional, formal tone for venue confirmations',
+  },
+  {
+    id: '2',
+    name: 'Venue Confirmation - Casual',
+    category: 'venue',
+    subject: 'Your dream wedding venue awaits! 💍',
+    message: "Hi [Name], Let's lock in your perfect wedding venue...",
+    description: 'Friendly, casual tone with emoji',
+  },
+  {
+    id: '3',
+    name: 'Timeline Reminder - Urgent',
+    category: 'timeline',
+    subject: 'Important: Wedding timeline update needed',
+    message: 'We need to finalize your wedding timeline details...',
+    description: 'Urgent tone for time-sensitive updates',
+  },
+  {
+    id: '4',
+    name: 'Timeline Reminder - Gentle',
+    category: 'timeline',
+    subject: 'Gentle reminder about your wedding timeline',
+    message: 'Just a friendly reminder to review your wedding schedule...',
+    description: 'Soft, non-pressuring approach',
+  },
+];
+
+const METRICS_OPTIONS = [
+  {
+    value: 'open_rate',
+    label: 'Open Rate',
+    description: 'Email/message open percentage',
+  },
+  {
+    value: 'response_rate',
+    label: 'Response Rate',
+    description: 'Client response percentage',
+  },
+  {
+    value: 'engagement_rate',
+    label: 'Engagement Rate',
+    description: 'Link clicks and interactions',
+  },
+  {
+    value: 'conversion_rate',
+    label: 'Conversion Rate',
+    description: 'Booking or payment completion',
+  },
+  {
+    value: 'client_satisfaction',
+    label: 'Client Satisfaction',
+    description: 'Follow-up satisfaction scores',
+  },
+];
+
+export default function TestCreationWizard({
+  onComplete,
+  onCancel,
+}: {
+  onComplete: (test: any) => void;
+  onCancel: () => void;
+}) {
+  const [currentStep, setCurrentStep] = useState(1);
+  const [testName, setTestName] = useState('');
+  const [testDescription, setTestDescription] = useState('');
+  const [variants, setVariants] = useState<TestVariant[]>([
+    {
+      id: '1',
+      name: 'Control',
+      content: {},
+      trafficPercentage: 50,
+      isControl: true,
+    },
+    {
+      id: '2',
+      name: 'Variant A',
+      content: {},
+      trafficPercentage: 50,
+      isControl: false,
+    },
+  ]);
+  const [selectedMetrics, setSelectedMetrics] = useState<string[]>([
+    'open_rate',
+  ]);
+  const [confidenceLevel, setConfidenceLevel] = useState(95);
+  const [selectedTemplate, setSelectedTemplate] = useState<string>('');
+
+  const totalTraffic = variants.reduce(
+    (sum, v) => sum + v.trafficPercentage,
+    0,
+  );
+
+  const addVariant = () => {
+    const newId = (variants.length + 1).toString();
+    const newVariant: TestVariant = {
+      id: newId,
+      name: `Variant ${String.fromCharCode(64 + variants.length)}`,
+      content: {},
+      trafficPercentage: 0,
+      isControl: false,
+    };
+
+    // Redistribute traffic equally
+    const newTraffic = Math.floor(100 / (variants.length + 1));
+    const updatedVariants = variants.map((v) => ({
+      ...v,
+      trafficPercentage: newTraffic,
+    }));
+
+    setVariants([
+      ...updatedVariants,
+      { ...newVariant, trafficPercentage: newTraffic },
+    ]);
+  };
+
+  const removeVariant = (id: string) => {
+    if (variants.length <= 2) return;
+
+    const updatedVariants = variants.filter((v) => v.id !== id);
+    // Redistribute traffic equally
+    const newTraffic = Math.floor(100 / updatedVariants.length);
+    const redistributed = updatedVariants.map((v, index) => ({
+      ...v,
+      trafficPercentage:
+        index === 0
+          ? 100 - newTraffic * (updatedVariants.length - 1)
+          : newTraffic,
+    }));
+
+    setVariants(redistributed);
+  };
+
+  const updateVariant = (id: string, updates: Partial<TestVariant>) => {
+    setVariants(variants.map((v) => (v.id === id ? { ...v, ...updates } : v)));
+  };
+
+  const updateTrafficPercentage = (id: string, percentage: number) => {
+    setVariants(
+      variants.map((v) =>
+        v.id === id ? { ...v, trafficPercentage: percentage } : v,
+      ),
+    );
+  };
+
+  const setControlVariant = (id: string) => {
+    setVariants(variants.map((v) => ({ ...v, isControl: v.id === id })));
+  };
+
+  const applyTemplate = (templateId: string) => {
+    const template = WEDDING_TEMPLATES.find((t) => t.id === templateId);
+    if (!template) return;
+
+    // Apply template to control variant
+    const controlVariant = variants.find((v) => v.isControl);
+    if (controlVariant) {
+      updateVariant(controlVariant.id, {
+        content: {
+          subject: template.subject,
+          message: template.message,
+        },
+      });
+    }
+  };
+
+  const handleSubmit = () => {
+    const testData = {
+      name: testName,
+      description: testDescription,
+      variants: variants.map((v) => ({
+        name: v.name,
+        content: v.content,
+        traffic_percentage: v.trafficPercentage,
+        is_control: v.isControl,
+      })),
+      metrics: selectedMetrics,
+      confidence_level: confidenceLevel,
+    };
+
+    onComplete(testData);
+  };
+
+  const renderStep = () => {
+    switch (currentStep) {
+      case 1:
+        return (
+          <div className="space-y-6">
+            <div>
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                Test Details
+              </h3>
+              <div className="space-y-4">
+                <div>
+                  <Label htmlFor="testName">Test Name</Label>
+                  <Input
+                    id="testName"
+                    value={testName}
+                    onChange={(e) => setTestName(e.target.value)}
+                    placeholder="e.g., Venue Confirmation Subject Line Test"
+                    className="mt-1"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="testDescription">
+                    Description (Optional)
+                  </Label>
+                  <Textarea
+                    id="testDescription"
+                    value={testDescription}
+                    onChange={(e) => setTestDescription(e.target.value)}
+                    placeholder="Describe what you're testing and why..."
+                    className="mt-1"
+                    rows={3}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <h4 className="text-md font-medium text-gray-900 mb-3">
+                Wedding Communication Templates
+              </h4>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {WEDDING_TEMPLATES.map((template) => (
+                  <Card
+                    key={template.id}
+                    className={`p-4 cursor-pointer border-2 transition-colors ${
+                      selectedTemplate === template.id
+                        ? 'border-primary-600 bg-primary-50'
+                        : 'border-gray-200 hover:border-gray-300'
+                    }`}
+                    onClick={() => {
+                      setSelectedTemplate(template.id);
+                      applyTemplate(template.id);
+                    }}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <h5 className="font-medium text-sm">{template.name}</h5>
+                        <p className="text-xs text-gray-600 mt-1">
+                          {template.description}
+                        </p>
+                        <Badge variant="secondary" className="mt-2 text-xs">
+                          {template.category}
+                        </Badge>
+                      </div>
+                    </div>
+                    <div className="mt-3 p-2 bg-gray-50 rounded text-xs">
+                      <strong>Subject:</strong> {template.subject}
+                    </div>
+                  </Card>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+
+      case 2:
+        return (
+          <div className="space-y-6">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-gray-900">
+                Configure Variants
+              </h3>
+              <Button
+                onClick={addVariant}
+                variant="outline"
+                size="sm"
+                className="flex items-center gap-2"
+              >
+                <Plus className="h-4 w-4" />
+                Add Variant
+              </Button>
+            </div>
+
+            <div className="space-y-4">
+              {variants.map((variant, index) => (
+                <Card key={variant.id} className="p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-3">
+                      <Input
+                        value={variant.name}
+                        onChange={(e) =>
+                          updateVariant(variant.id, { name: e.target.value })
+                        }
+                        className="w-32 text-sm font-medium"
+                      />
+                      {variant.isControl ? (
+                        <Badge variant="secondary">Control</Badge>
+                      ) : (
+                        <Button
+                          onClick={() => setControlVariant(variant.id)}
+                          variant="ghost"
+                          size="sm"
+                          className="text-xs"
+                        >
+                          Make Control
+                        </Button>
+                      )}
+                    </div>
+                    {variants.length > 2 && (
+                      <Button
+                        onClick={() => removeVariant(variant.id)}
+                        variant="ghost"
+                        size="sm"
+                        className="text-red-600 hover:text-red-700"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <Label>Subject Line</Label>
+                      <Input
+                        value={variant.content.subject || ''}
+                        onChange={(e) =>
+                          updateVariant(variant.id, {
+                            content: {
+                              ...variant.content,
+                              subject: e.target.value,
+                            },
+                          })
+                        }
+                        placeholder="Enter subject line..."
+                        className="mt-1"
+                      />
+                    </div>
+                    <div>
+                      <Label>Communication Channel</Label>
+                      <Select
+                        value={variant.content.channel || ''}
+                        onValueChange={(value) =>
+                          updateVariant(variant.id, {
+                            content: { ...variant.content, channel: value },
+                          })
+                        }
+                      >
+                        <SelectTrigger className="mt-1">
+                          <SelectValue placeholder="Select channel" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="email">Email</SelectItem>
+                          <SelectItem value="sms">SMS</SelectItem>
+                          <SelectItem value="whatsapp">WhatsApp</SelectItem>
+                          <SelectItem value="phone">Phone Call</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+
+                  <div className="mt-4">
+                    <Label>Message Content</Label>
+                    <Textarea
+                      value={variant.content.message || ''}
+                      onChange={(e) =>
+                        updateVariant(variant.id, {
+                          content: {
+                            ...variant.content,
+                            message: e.target.value,
+                          },
+                        })
+                      }
+                      placeholder="Enter message content..."
+                      className="mt-1"
+                      rows={3}
+                    />
+                  </div>
+
+                  <div className="mt-4">
+                    <Label>
+                      Traffic Percentage: {variant.trafficPercentage}%
+                    </Label>
+                    <Slider
+                      value={[variant.trafficPercentage]}
+                      onValueChange={([value]) =>
+                        updateTrafficPercentage(variant.id, value)
+                      }
+                      max={100}
+                      step={1}
+                      className="mt-2"
+                    />
+                  </div>
+                </Card>
+              ))}
+            </div>
+
+            <div
+              className={`text-sm ${totalTraffic === 100 ? 'text-green-600' : 'text-red-600'}`}
+            >
+              Total Traffic: {totalTraffic}%{' '}
+              {totalTraffic !== 100 && '(Must equal 100%)'}
+            </div>
+          </div>
+        );
+
+      case 3:
+        return (
+          <div className="space-y-6">
+            <h3 className="text-lg font-semibold text-gray-900">
+              Success Metrics & Settings
+            </h3>
+
+            <div>
+              <Label>Success Metrics</Label>
+              <p className="text-sm text-gray-600 mb-3">
+                Select the metrics you want to track for this test
+              </p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {METRICS_OPTIONS.map((metric) => (
+                  <Card
+                    key={metric.value}
+                    className={`p-3 cursor-pointer border-2 transition-colors ${
+                      selectedMetrics.includes(metric.value)
+                        ? 'border-primary-600 bg-primary-50'
+                        : 'border-gray-200 hover:border-gray-300'
+                    }`}
+                    onClick={() => {
+                      if (selectedMetrics.includes(metric.value)) {
+                        setSelectedMetrics(
+                          selectedMetrics.filter((m) => m !== metric.value),
+                        );
+                      } else {
+                        setSelectedMetrics([...selectedMetrics, metric.value]);
+                      }
+                    }}
+                  >
+                    <h5 className="font-medium text-sm">{metric.label}</h5>
+                    <p className="text-xs text-gray-600 mt-1">
+                      {metric.description}
+                    </p>
+                  </Card>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <Label>Confidence Level: {confidenceLevel}%</Label>
+              <Slider
+                value={[confidenceLevel]}
+                onValueChange={([value]) => setConfidenceLevel(value)}
+                min={90}
+                max={99}
+                step={1}
+                className="mt-2"
+              />
+              <p className="text-sm text-gray-600 mt-1">
+                Higher confidence levels require more data but provide more
+                reliable results
+              </p>
+            </div>
+          </div>
+        );
+
+      default:
+        return null;
+    }
+  };
+
+  return (
+    <div className="max-w-4xl mx-auto p-6">
+      <div className="mb-8">
+        <div className="flex items-center gap-3 mb-4">
+          <div className="flex items-center justify-center w-10 h-10 rounded-full bg-primary-600 text-white">
+            <TestTube className="h-5 w-5" />
+          </div>
+          <div>
+            <h2 className="text-2xl font-bold text-gray-900">
+              Create A/B Test
+            </h2>
+            <p className="text-gray-600">
+              Optimize your wedding communication effectiveness
+            </p>
+          </div>
+        </div>
+
+        {/* Progress indicator */}
+        <div className="flex items-center justify-between mb-6">
+          {[1, 2, 3].map((step) => (
+            <div key={step} className="flex items-center">
+              <div
+                className={`flex items-center justify-center w-8 h-8 rounded-full text-sm font-medium ${
+                  currentStep >= step
+                    ? 'bg-primary-600 text-white'
+                    : 'bg-gray-200 text-gray-600'
+                }`}
+              >
+                {step}
+              </div>
+              <span
+                className={`ml-2 text-sm ${
+                  currentStep >= step ? 'text-primary-600' : 'text-gray-500'
+                }`}
+              >
+                {step === 1
+                  ? 'Test Details'
+                  : step === 2
+                    ? 'Variants'
+                    : 'Metrics'}
+              </span>
+              {step < 3 && <div className="ml-4 flex-1 h-0.5 bg-gray-200" />}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <Card className="p-6">
+        {renderStep()}
+
+        <div className="flex justify-between mt-8">
+          <div className="flex gap-2">
+            <Button onClick={onCancel} variant="outline">
+              Cancel
+            </Button>
+            {currentStep > 1 && (
+              <Button
+                onClick={() => setCurrentStep(currentStep - 1)}
+                variant="outline"
+                className="flex items-center gap-2"
+              >
+                <ArrowLeft className="h-4 w-4" />
+                Back
+              </Button>
+            )}
+          </div>
+
+          <div>
+            {currentStep < 3 ? (
+              <Button
+                onClick={() => setCurrentStep(currentStep + 1)}
+                disabled={currentStep === 1 && !testName}
+                className="flex items-center gap-2"
+              >
+                Next
+                <ArrowRight className="h-4 w-4" />
+              </Button>
+            ) : (
+              <Button
+                onClick={handleSubmit}
+                disabled={totalTraffic !== 100 || selectedMetrics.length === 0}
+                className="bg-primary-600 hover:bg-primary-700"
+              >
+                Create Test
+              </Button>
+            )}
+          </div>
+        </div>
+      </Card>
+    </div>
+  );
+}

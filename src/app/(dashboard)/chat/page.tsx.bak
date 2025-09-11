@@ -1,0 +1,45 @@
+import { Metadata } from 'next'
+import VendorChatInterface from '@/components/chat/VendorChatInterface'
+import { createClient } from '@/lib/supabase/server'
+import { redirect } from 'next/navigation'
+
+export const metadata: Metadata = {
+  title: 'Vendor Chat | WedSync',
+  description: 'Real-time communication with your wedding vendors',
+}
+
+export default async function VendorChatPage() {
+  const supabase = await createClient()
+  
+  // Check authentication
+  const { data: { user }, error } = await supabase.auth.getUser()
+  if (error || !user) {
+    redirect('/login')
+  }
+
+  // Get user's organization and active wedding
+  const { data: profile } = await supabase
+    .from('user_profiles')
+    .select('organization_id')
+    .eq('id', user.id)
+    .single()
+
+  const { data: clients } = await supabase
+    .from('clients')
+    .select('id, wedding_date')
+    .eq('organization_id', profile?.organization_id)
+    .eq('status', 'booked')
+    .order('wedding_date', { ascending: true })
+    .limit(1)
+
+  const activeClientId = clients?.[0]?.id
+
+  return (
+    <div className="h-full">
+      <VendorChatInterface 
+        clientId={activeClientId}
+        className="h-full"
+      />
+    </div>
+  )
+}

@@ -1,0 +1,101 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { rateLimit } from '@/lib/rate-limiter';
+
+export async function GET(request: NextRequest) {
+  try {
+    // Rate limiting
+    const rateLimitResult = await rateLimit.check(
+      request,
+      'review-status',
+      30,
+      '1 m',
+    );
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { success: false, error: 'Rate limit exceeded' },
+        { status: 429 },
+      );
+    }
+
+    const { searchParams } = new URL(request.url);
+    const coupleId = searchParams.get('coupleId');
+
+    if (!coupleId) {
+      return NextResponse.json(
+        { success: false, error: 'Couple ID required' },
+        { status: 400 },
+      );
+    }
+
+    const supabase = createClient();
+
+    // Get review tokens for the couple
+    const { data: reviewTokens, error: tokensError } = await supabase
+      .from('review_tokens')
+      .select(
+        `
+        *,
+        suppliers (
+          id,
+          business_name,
+          supplier_type
+        ),
+        reviews (
+          id,
+          rating,
+          review_text,
+          platforms,
+          created_at
+        )
+      `,
+      )
+      .eq('couple_id', coupleId)
+      .order('created_at', { ascending: false });
+
+    if (tokensError) {
+      console.error('Error fetching review tokens:', tokensError);
+      return NextResponse.json(
+        { success: false, error: 'Failed to fetch review statuses' },
+        { status: 500 },
+      );
+    }
+
+    // Transform data for frontend
+    const reviews =
+      reviewTokens?.map((token) => {
+        const hasReview = token.reviews && token.reviews.length > 0;
+        const review = hasReview ? token.reviews[0] : null;
+
+        return {
+          id: token.id,
+          supplierName: token.suppliers?.business_name || 'Unknown Supplier',
+          supplierType: token.suppliers?.supplier_type || 'supplier',
+          reviewToken: token.token,
+          status: hasReview
+            ? 'completed'
+            : new Date(token.expires_at) < new Date()
+              ? 'expired'
+              : 'pending',
+          submittedAt: review?.created_at
+            ? new Date(review.created_at)
+            : undefined,
+          expiresAt: new Date(token.expires_at),
+          rating: review?.rating,
+          reviewText: review?.review_text,
+          platforms: review?.platforms || [],
+        };
+      }) || [];
+
+    return NextResponse.json({
+      success: true,
+      reviews: reviews,
+    });
+  } catch (error) {
+    console.error('Error in review status API:', error);
+    return NextResponse.json(
+      { success: false, error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

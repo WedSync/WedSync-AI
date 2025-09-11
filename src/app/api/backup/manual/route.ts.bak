@@ -1,0 +1,150 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createServerClient } from '@supabase/ssr';
+import { cookies } from 'next/headers';
+import { DisasterRecoveryEngine } from '@/lib/services/backup/DisasterRecoveryEngine';
+import { BackupEncryptionService } from '@/lib/services/backup/BackupEncryptionService';
+import { DataPrioritizationService } from '@/lib/services/backup/DataPrioritizationService';
+
+export const runtime = 'nodejs';
+
+export async function POST(request: NextRequest) {
+  try {
+    const cookieStore = await cookies();
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      {
+        cookies: {
+          getAll: () => cookieStore.getAll(),
+          setAll: (cookiesToSet) => {
+            cookiesToSet.forEach(({ name, value, options }) =>
+              cookieStore.set(name, value, options)
+            );
+          },
+        },
+      }
+    );
+
+    // Verify authentication
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const { 
+      organizationId, 
+      backupType, 
+      weddingId, 
+      includeMediaFiles,
+      description
+    } = body;
+
+    // Validate required fields
+    if (!organizationId) {
+      return NextResponse.json(
+        { error: 'Organization ID is required' },
+        { status: 400 }
+      );
+    }
+
+    // Initialize services
+    const recoveryEngine = new DisasterRecoveryEngine(supabase);
+    const encryptionService = new BackupEncryptionService();
+    const prioritizationService = new DataPrioritizationService(supabase);
+
+    // Determine backup priority
+    let priority = 'NORMAL';
+    if (weddingId) {
+      priority = await prioritizationService.calculateWeddingPriority(weddingId);
+    } else {
+      priority = await prioritizationService.calculateOrganizationPriority(organizationId);
+    }
+
+    // Create backup configuration
+    const backupConfig = {
+      organizationId,
+      weddingId,
+      backupType: backupType || 'FULL',
+      priority,
+      includeMediaFiles: includeMediaFiles || false,
+      encryption: 'AES-256',
+      userId: user.id,
+      description: description || `Manual backup - ${new Date().toISOString()}`,
+      createdAt: new Date(),
+    };
+
+    // Execute manual backup
+    const backupResult = await recoveryEngine.createManualBackup(backupConfig);
+
+    return NextResponse.json({
+      success: true,
+      backupId: backupResult.backupId,
+      priority,
+      status: backupResult.status,
+      estimatedCompletion: backupResult.estimatedCompletion,
+      message: 'Manual backup initiated successfully',
+    });
+
+  } catch (error) {
+    console.error('Manual backup creation error:', error);
+    return NextResponse.json(
+      { error: 'Failed to create manual backup' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const cookieStore = await cookies();
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      {
+        cookies: {
+          getAll: () => cookieStore.getAll(),
+          setAll: (cookiesToSet) => {
+            cookiesToSet.forEach(({ name, value, options }) =>
+              cookieStore.set(name, value, options)
+            );
+          },
+        },
+      }
+    );
+
+    // Verify authentication
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { searchParams } = new URL(request.url);
+    const organizationId = searchParams.get('organizationId');
+    const limit = parseInt(searchParams.get('limit') || '20');
+    const offset = parseInt(searchParams.get('offset') || '0');
+
+    if (!organizationId) {
+      return NextResponse.json(
+        { error: 'Organization ID is required' },
+        { status: 400 }
+      );
+    }
+
+    const recoveryEngine = new DisasterRecoveryEngine(supabase);
+    const backups = await recoveryEngine.getManualBackups(organizationId, limit, offset);
+
+    return NextResponse.json({
+      success: true,
+      backups,
+      total: backups.length,
+    });
+
+  } catch (error) {
+    console.error('Get manual backups error:', error);
+    return NextResponse.json(
+      { error: 'Failed to retrieve manual backups' },
+      { status: 500 }
+    );
+  }
+}

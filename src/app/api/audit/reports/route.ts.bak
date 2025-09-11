@@ -1,0 +1,637 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import { z } from 'zod';
+
+const reportQuerySchema = z.object({
+  report_type: z.enum([
+    'compliance', 'security', 'performance', 'wedding_activity',
+    'vendor_activity', 'user_behavior', 'risk_assessment'
+  ]),
+  wedding_id: z.string().uuid().optional(),
+  vendor_id: z.string().uuid().optional(),
+  user_id: z.string().uuid().optional(),
+  date_range: z.enum(['24h', '7d', '30d', '90d', '1y', 'custom']).default('30d'),
+  start_date: z.string().datetime().optional(),
+  end_date: z.string().datetime().optional(),
+  format: z.enum(['json', 'csv', 'pdf']).default('json'),
+  include_details: z.boolean().default(false),
+  compliance_standards: z.array(z.enum(['GDPR', 'CCPA', 'PCI_DSS', 'SOX', 'HIPAA'])).optional()
+});
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
+    const { data: user } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const url = new URL(request.url);
+    const queryParams = Object.fromEntries(url.searchParams.entries());
+    
+    // Parse compliance standards if provided
+    if (queryParams.compliance_standards) {
+      queryParams.compliance_standards = queryParams.compliance_standards.split(',');
+    }
+    
+    // Convert boolean strings
+    if (queryParams.include_details === 'true') {
+      queryParams.include_details = true;
+    } else if (queryParams.include_details === 'false') {
+      queryParams.include_details = false;
+    }
+    
+    const query = reportQuerySchema.parse(queryParams);
+
+    // Calculate date range
+    const { startDate, endDate } = calculateDateRange(query);
+
+    // Generate report based on type
+    const report = await generateAuditReport(
+      query, startDate, endDate, supabase, user
+    );
+
+    // Format response based on requested format
+    if (query.format === 'csv') {
+      return new NextResponse(convertToCSV(report), {
+        headers: {
+          'Content-Type': 'text/csv',
+          'Content-Disposition': `attachment; filename="${query.report_type}_${Date.now()}.csv"`
+        }
+      });
+    }
+
+    if (query.format === 'pdf') {
+      // For PDF generation, you'd typically use a service like Puppeteer
+      // For now, return JSON with PDF generation instructions
+      return NextResponse.json({
+        message: 'PDF generation not implemented yet',
+        report_data: report,
+        pdf_instructions: 'Use a PDF generation service with the provided data'
+      });
+    }
+
+    return NextResponse.json({
+      report,
+      metadata: {
+        report_type: query.report_type,
+        generated_by: user.email,
+        generated_at: new Date().toISOString(),
+        date_range: {
+          start: startDate.toISOString(),
+          end: endDate.toISOString()
+        },
+        parameters: query
+      }
+    });
+
+  } catch (error) {
+    console.error('Audit report generation error:', error);
+    
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid query parameters', details: error.errors },
+        { status: 400 }
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+function calculateDateRange(query: any) {
+  let startDate: Date, endDate: Date;
+
+  if (query.date_range === 'custom' && query.start_date && query.end_date) {
+    startDate = new Date(query.start_date);
+    endDate = new Date(query.end_date);
+  } else {
+    endDate = new Date();
+    startDate = new Date();
+    
+    switch (query.date_range) {
+      case '24h':
+        startDate.setHours(startDate.getHours() - 24);
+        break;
+      case '7d':
+        startDate.setDate(startDate.getDate() - 7);
+        break;
+      case '30d':
+        startDate.setDate(startDate.getDate() - 30);
+        break;
+      case '90d':
+        startDate.setDate(startDate.getDate() - 90);
+        break;
+      case '1y':
+        startDate.setFullYear(startDate.getFullYear() - 1);
+        break;
+    }
+  }
+
+  return { startDate, endDate };
+}
+
+async function generateAuditReport(
+  query: any,
+  startDate: Date,
+  endDate: Date,
+  supabase: any,
+  user: any
+) {
+  switch (query.report_type) {
+    case 'compliance':
+      return await generateComplianceReport(query, startDate, endDate, supabase);
+    case 'security':
+      return await generateSecurityReport(query, startDate, endDate, supabase);
+    case 'performance':
+      return await generatePerformanceReport(query, startDate, endDate, supabase);
+    case 'wedding_activity':
+      return await generateWeddingActivityReport(query, startDate, endDate, supabase);
+    case 'vendor_activity':
+      return await generateVendorActivityReport(query, startDate, endDate, supabase);
+    case 'user_behavior':
+      return await generateUserBehaviorReport(query, startDate, endDate, supabase);
+    case 'risk_assessment':
+      return await generateRiskAssessmentReport(query, startDate, endDate, supabase);
+    default:
+      throw new Error(`Unknown report type: ${query.report_type}`);
+  }
+}
+
+async function generateComplianceReport(query: any, startDate: Date, endDate: Date, supabase: any) {
+  const report = {
+    summary: {},
+    data_access_events: [],
+    data_modifications: [],
+    user_consents: [],
+    data_retention_analysis: [],
+    compliance_violations: [],
+    recommendations: []
+  };
+
+  const baseQuery = supabase
+    .from('audit_logs_optimized')
+    .select('*')
+    .gte('timestamp', startDate.toISOString())
+    .lte('timestamp', endDate.toISOString());
+
+  // Data access events for GDPR/CCPA compliance
+  const { data: dataAccessEvents } = await baseQuery
+    .in('action', ['read', 'export', 'download'])
+    .in('resource_type', ['guest', 'user', 'payment', 'document'])
+    .order('timestamp', { ascending: false });
+
+  report.data_access_events = dataAccessEvents || [];
+
+  // Data modification events
+  const { data: dataModifications } = await baseQuery
+    .in('action', ['create', 'update', 'delete'])
+    .in('resource_type', ['guest', 'user', 'payment', 'document'])
+    .order('timestamp', { ascending: false });
+
+  report.data_modifications = dataModifications || [];
+
+  // Check for potential compliance violations
+  const violations = [];
+
+  // GDPR Right to be Forgotten violations
+  const deletionEvents = dataModifications.filter(e => e.action === 'delete' && e.resource_type === 'user');
+  if (deletionEvents.length > 0) {
+    for (const event of deletionEvents) {
+      // Check if associated data was also deleted within reasonable time
+      const associatedDataCheck = await supabase
+        .from('audit_logs_optimized')
+        .select('*')
+        .eq('user_id', event.resource_id)
+        .neq('action', 'delete')
+        .gt('timestamp', event.timestamp);
+
+      if (associatedDataCheck.data && associatedDataCheck.data.length > 0) {
+        violations.push({
+          type: 'GDPR_RIGHT_TO_BE_FORGOTTEN',
+          description: 'Associated user data still accessible after user deletion',
+          user_id: event.resource_id,
+          violation_timestamp: event.timestamp,
+          severity: 'high'
+        });
+      }
+    }
+  }
+
+  // Data retention violations
+  const oldDataEvents = await supabase
+    .from('audit_logs_optimized')
+    .select('*')
+    .lt('timestamp', new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString())
+    .in('resource_type', ['guest', 'payment', 'document'])
+    .limit(100);
+
+  if (oldDataEvents.data && oldDataEvents.data.length > 0) {
+    violations.push({
+      type: 'DATA_RETENTION',
+      description: 'Data older than retention policy detected',
+      count: oldDataEvents.data.length,
+      severity: 'medium'
+    });
+  }
+
+  report.compliance_violations = violations;
+
+  // Generate compliance recommendations
+  report.recommendations = generateComplianceRecommendations(report);
+
+  // Summary statistics
+  report.summary = {
+    total_data_access_events: dataAccessEvents?.length || 0,
+    total_data_modifications: dataModifications?.length || 0,
+    total_violations: violations.length,
+    high_severity_violations: violations.filter(v => v.severity === 'high').length,
+    compliance_score: calculateComplianceScore(report)
+  };
+
+  return report;
+}
+
+async function generateSecurityReport(query: any, startDate: Date, endDate: Date, supabase: any) {
+  const report = {
+    summary: {},
+    failed_logins: [],
+    suspicious_activities: [],
+    privilege_escalations: [],
+    data_breaches: [],
+    security_events: [],
+    recommendations: []
+  };
+
+  const baseQuery = supabase
+    .from('audit_logs_optimized')
+    .select('*')
+    .gte('timestamp', startDate.toISOString())
+    .lte('timestamp', endDate.toISOString());
+
+  // Failed login attempts
+  const { data: failedLogins } = await baseQuery
+    .eq('event_type', 'auth_failure')
+    .order('timestamp', { ascending: false });
+
+  report.failed_logins = failedLogins || [];
+
+  // High-risk security events
+  const { data: securityEvents } = await baseQuery
+    .gt('risk_score', 60)
+    .in('severity', ['error', 'critical'])
+    .order('risk_score', { ascending: false });
+
+  report.security_events = securityEvents || [];
+
+  // Suspicious activity detection
+  const suspiciousActivities = [];
+
+  // Multiple failed logins from same IP
+  const ipFailures = new Map();
+  failedLogins?.forEach(event => {
+    const ip = event.ip_address;
+    if (!ipFailures.has(ip)) ipFailures.set(ip, []);
+    ipFailures.get(ip).push(event);
+  });
+
+  for (const [ip, failures] of ipFailures.entries()) {
+    if (failures.length >= 5) {
+      suspiciousActivities.push({
+        type: 'MULTIPLE_FAILED_LOGINS',
+        description: `${failures.length} failed login attempts from IP ${ip}`,
+        ip_address: ip,
+        count: failures.length,
+        first_attempt: failures[0].timestamp,
+        last_attempt: failures[failures.length - 1].timestamp,
+        severity: failures.length >= 10 ? 'critical' : 'high'
+      });
+    }
+  }
+
+  // Unusual access patterns
+  const { data: accessPatterns } = await supabase.rpc('detect_unusual_access_patterns', {
+    start_date: startDate.toISOString(),
+    end_date: endDate.toISOString()
+  });
+
+  if (accessPatterns) {
+    suspiciousActivities.push(...accessPatterns);
+  }
+
+  report.suspicious_activities = suspiciousActivities;
+
+  // Security recommendations
+  report.recommendations = generateSecurityRecommendations(report);
+
+  // Summary
+  report.summary = {
+    total_failed_logins: failedLogins?.length || 0,
+    total_security_events: securityEvents?.length || 0,
+    total_suspicious_activities: suspiciousActivities.length,
+    critical_security_events: securityEvents?.filter(e => e.severity === 'critical').length || 0,
+    security_score: calculateSecurityScore(report)
+  };
+
+  return report;
+}
+
+async function generateWeddingActivityReport(query: any, startDate: Date, endDate: Date, supabase: any) {
+  const report = {
+    summary: {},
+    wedding_timeline: [],
+    vendor_interactions: [],
+    payment_activities: [],
+    guest_management: [],
+    critical_changes: [],
+    recommendations: []
+  };
+
+  let baseQuery = supabase
+    .from('audit_logs_optimized')
+    .select('*')
+    .gte('timestamp', startDate.toISOString())
+    .lte('timestamp', endDate.toISOString());
+
+  if (query.wedding_id) {
+    baseQuery = baseQuery.eq('wedding_id', query.wedding_id);
+  }
+
+  // Wedding timeline events
+  const { data: timelineEvents } = await baseQuery
+    .eq('resource_type', 'timeline')
+    .order('timestamp', { ascending: false });
+
+  report.wedding_timeline = timelineEvents || [];
+
+  // Vendor interaction analysis
+  const { data: vendorEvents } = await baseQuery
+    .eq('resource_type', 'vendor')
+    .order('timestamp', { ascending: false });
+
+  report.vendor_interactions = vendorEvents || [];
+
+  // Payment activities
+  const { data: paymentEvents } = await baseQuery
+    .eq('resource_type', 'payment')
+    .order('timestamp', { ascending: false });
+
+  report.payment_activities = paymentEvents || [];
+
+  // Guest management activities
+  const { data: guestEvents } = await baseQuery
+    .eq('resource_type', 'guest')
+    .order('timestamp', { ascending: false });
+
+  report.guest_management = guestEvents || [];
+
+  // Critical changes (high-risk events)
+  const { data: criticalEvents } = await baseQuery
+    .gt('risk_score', 70)
+    .order('risk_score', { ascending: false });
+
+  report.critical_changes = criticalEvents || [];
+
+  // Wedding-specific recommendations
+  report.recommendations = generateWeddingRecommendations(report, query.wedding_id, supabase);
+
+  // Summary statistics
+  report.summary = {
+    total_timeline_events: timelineEvents?.length || 0,
+    total_vendor_interactions: vendorEvents?.length || 0,
+    total_payment_activities: paymentEvents?.length || 0,
+    total_guest_changes: guestEvents?.length || 0,
+    critical_changes_count: criticalEvents?.length || 0,
+    activity_score: calculateWeddingActivityScore(report)
+  };
+
+  return report;
+}
+
+async function generateRiskAssessmentReport(query: any, startDate: Date, endDate: Date, supabase: any) {
+  const report = {
+    summary: {},
+    risk_distribution: {},
+    high_risk_events: [],
+    risk_trends: [],
+    user_risk_profiles: [],
+    mitigation_strategies: [],
+    recommendations: []
+  };
+
+  const baseQuery = supabase
+    .from('audit_logs_optimized')
+    .select('*')
+    .gte('timestamp', startDate.toISOString())
+    .lte('timestamp', endDate.toISOString());
+
+  // Risk distribution analysis
+  const { data: riskData } = await baseQuery;
+  const riskDistribution = {
+    low: 0,    // 0-25
+    medium: 0, // 26-50
+    high: 0,   // 51-75
+    critical: 0 // 76-100
+  };
+
+  riskData?.forEach(event => {
+    const risk = event.risk_score || 0;
+    if (risk <= 25) riskDistribution.low++;
+    else if (risk <= 50) riskDistribution.medium++;
+    else if (risk <= 75) riskDistribution.high++;
+    else riskDistribution.critical++;
+  });
+
+  report.risk_distribution = riskDistribution;
+
+  // High-risk events
+  const { data: highRiskEvents } = await baseQuery
+    .gt('risk_score', 60)
+    .order('risk_score', { ascending: false })
+    .limit(50);
+
+  report.high_risk_events = highRiskEvents || [];
+
+  // User risk profiles
+  const { data: userRiskProfiles } = await supabase.rpc('calculate_user_risk_profiles', {
+    start_date: startDate.toISOString(),
+    end_date: endDate.toISOString()
+  });
+
+  report.user_risk_profiles = userRiskProfiles || [];
+
+  // Risk mitigation strategies
+  report.mitigation_strategies = generateRiskMitigationStrategies(report);
+
+  // Risk assessment recommendations
+  report.recommendations = generateRiskRecommendations(report);
+
+  // Summary
+  report.summary = {
+    total_events_analyzed: riskData?.length || 0,
+    avg_risk_score: riskData?.reduce((sum, e) => sum + (e.risk_score || 0), 0) / (riskData?.length || 1),
+    high_risk_events_count: highRiskEvents?.length || 0,
+    critical_risk_events: riskDistribution.critical,
+    overall_risk_level: calculateOverallRiskLevel(riskDistribution)
+  };
+
+  return report;
+}
+
+// Helper functions for report generation
+function generateComplianceRecommendations(report: any): string[] {
+  const recommendations = [];
+
+  if (report.compliance_violations.length > 0) {
+    recommendations.push('Implement automated data retention policies');
+    recommendations.push('Add data deletion verification workflows');
+    recommendations.push('Enhance user consent tracking mechanisms');
+  }
+
+  if (report.data_access_events.length > 1000) {
+    recommendations.push('Consider implementing data access monitoring alerts');
+    recommendations.push('Add data access justification requirements');
+  }
+
+  return recommendations;
+}
+
+function generateSecurityRecommendations(report: any): string[] {
+  const recommendations = [];
+
+  if (report.failed_logins.length > 10) {
+    recommendations.push('Implement account lockout mechanisms');
+    recommendations.push('Add CAPTCHA after multiple failed attempts');
+  }
+
+  if (report.suspicious_activities.length > 0) {
+    recommendations.push('Enable real-time security monitoring');
+    recommendations.push('Implement IP-based access controls');
+  }
+
+  return recommendations;
+}
+
+function generateWeddingRecommendations(report: any, weddingId: string, supabase: any): string[] {
+  const recommendations = [];
+
+  if (report.critical_changes.length > 5) {
+    recommendations.push('Review change approval workflows for critical wedding data');
+    recommendations.push('Implement change notifications for couples');
+  }
+
+  if (report.payment_activities.length > 20) {
+    recommendations.push('Consider automated payment verification processes');
+    recommendations.push('Add payment anomaly detection');
+  }
+
+  return recommendations;
+}
+
+function generateRiskMitigationStrategies(report: any): string[] {
+  const strategies = [];
+
+  if (report.risk_distribution.critical > 0) {
+    strategies.push('Implement immediate escalation for critical risk events');
+    strategies.push('Add manual approval requirements for high-risk actions');
+  }
+
+  if (report.high_risk_events.length > 10) {
+    strategies.push('Enhance monitoring for frequently occurring high-risk event types');
+    strategies.push('Implement preventive controls for common risk scenarios');
+  }
+
+  return strategies;
+}
+
+function generateRiskRecommendations(report: any): string[] {
+  const recommendations = [];
+
+  const totalEvents = Object.values(report.risk_distribution).reduce((a: number, b: any) => a + b, 0);
+  const highRiskPercentage = ((report.risk_distribution.high + report.risk_distribution.critical) / totalEvents) * 100;
+
+  if (highRiskPercentage > 20) {
+    recommendations.push('Review and optimize risk scoring algorithms');
+    recommendations.push('Implement additional preventive controls');
+  }
+
+  return recommendations;
+}
+
+function calculateComplianceScore(report: any): number {
+  const baseScore = 100;
+  const violationPenalty = report.compliance_violations.length * 10;
+  const highSeverityPenalty = report.compliance_violations.filter((v: any) => v.severity === 'high').length * 15;
+  
+  return Math.max(0, baseScore - violationPenalty - highSeverityPenalty);
+}
+
+function calculateSecurityScore(report: any): number {
+  const baseScore = 100;
+  const failedLoginPenalty = Math.min(report.failed_logins.length * 2, 30);
+  const suspiciousPenalty = report.suspicious_activities.length * 10;
+  const criticalEventPenalty = report.security_events.filter((e: any) => e.severity === 'critical').length * 15;
+  
+  return Math.max(0, baseScore - failedLoginPenalty - suspiciousPenalty - criticalEventPenalty);
+}
+
+function calculateWeddingActivityScore(report: any): number {
+  let score = 0;
+  
+  // Positive indicators
+  if (report.wedding_timeline.length > 0) score += 25;
+  if (report.vendor_interactions.length > 0) score += 20;
+  if (report.payment_activities.length > 0) score += 20;
+  if (report.guest_management.length > 0) score += 15;
+  
+  // Negative indicators
+  score -= report.critical_changes.length * 5;
+  
+  return Math.max(0, Math.min(100, score));
+}
+
+function calculateOverallRiskLevel(distribution: any): string {
+  const total = Object.values(distribution).reduce((a: number, b: any) => a + b, 0);
+  const criticalPercentage = (distribution.critical / total) * 100;
+  const highPercentage = (distribution.high / total) * 100;
+  
+  if (criticalPercentage > 10) return 'CRITICAL';
+  if (criticalPercentage > 5 || highPercentage > 25) return 'HIGH';
+  if (highPercentage > 10) return 'MEDIUM';
+  return 'LOW';
+}
+
+function convertToCSV(data: any): string {
+  // Simple CSV conversion - in production, use a proper CSV library
+  if (!data || typeof data !== 'object') return '';
+  
+  const headers = Object.keys(data);
+  const csvRows = [headers.join(',')];
+  
+  // This is a simplified implementation
+  // In production, implement proper CSV conversion with nested object handling
+  csvRows.push(headers.map(header => JSON.stringify(data[header]) || '').join(','));
+  
+  return csvRows.join('\n');
+}
+
+// Additional report types can be implemented similarly
+async function generatePerformanceReport(query: any, startDate: Date, endDate: Date, supabase: any) {
+  // Implementation for performance reports
+  return { message: 'Performance report implementation pending' };
+}
+
+async function generateVendorActivityReport(query: any, startDate: Date, endDate: Date, supabase: any) {
+  // Implementation for vendor activity reports
+  return { message: 'Vendor activity report implementation pending' };
+}
+
+async function generateUserBehaviorReport(query: any, startDate: Date, endDate: Date, supabase: any) {
+  // Implementation for user behavior reports
+  return { message: 'User behavior report implementation pending' };
+}

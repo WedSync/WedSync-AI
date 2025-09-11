@@ -1,0 +1,136 @@
+export interface WeddingWebsite {
+  id: string;
+  client_id: string;
+  slug: string;
+  domain?: string;
+  is_published: boolean;
+  is_password_protected: boolean;
+  password_hash?: string;
+  template_id: string;
+  custom_css?: string;
+  primary_language: string;
+  supported_languages: string[];
+  seo_title?: string;
+  seo_description?: string;
+  seo_keywords?: string[];
+  og_image?: string;
+  created_at: Date;
+  updated_at: Date;
+  published_at?: Date;
+}
+
+export interface WeddingStory {
+  id: string;
+  website_id: string;
+  title: string;
+  content: string;
+  date?: Date;
+  image_url?: string;
+  order_index: number;
+}
+
+export interface WeddingPartyMember {
+  id: string;
+  website_id: string;
+  name: string;
+  role: 'bridesmaid' | 'groomsman' | 'maid_of_honor' | 'best_man' | 'flower_girl' | 'ring_bearer' | 'other';
+  bio?: string;
+  image_url?: string;
+  order_index: number;
+}
+
+export interface RegistryLink {
+  id: string;
+  website_id: string;
+  name: string;
+  url: string;
+  logo_url?: string;
+  description?: string;
+  order_index: number;
+}
+
+export interface TravelInfo {
+  id: string;
+  website_id: string;
+  title: string;
+  description: string;
+  address?: string;
+  map_url?: string;
+  category: 'accommodation' | 'transportation' | 'attraction' | 'venue' | 'other';
+  website_url?: string;
+  phone?: string;
+  order_index: number;
+}
+
+export interface WebsiteContent {
+  website_id: string;
+  hero_title?: string;
+  hero_subtitle?: string;
+  hero_image?: string;
+  hero_date?: Date;
+  welcome_message?: string;
+  venue_name?: string;
+  venue_address?: string;
+  ceremony_time?: string;
+  reception_time?: string;
+  dress_code?: string;
+  additional_info?: string;
+}
+
+export interface WebsiteTranslation {
+  id: string;
+  website_id: string;
+  language_code: string;
+  field_key: string;
+  translation: string;
+}
+
+export interface WebsiteTheme {
+  id: string;
+  name: string;
+  preview_url: string;
+  thumbnail_url: string;
+  default_colors: {
+    primary: string;
+    secondary: string;
+    accent: string;
+    text: string;
+    background: string;
+  };
+  default_fonts: {
+    heading: string;
+    body: string;
+  };
+  features: string[];
+  is_premium: boolean;
+}
+
+export interface SEOSettings {
+  title: string;
+  description: string;
+  keywords: string[];
+  og_title?: string;
+  og_description?: string;
+  og_image?: string;
+  twitter_card?: 'summary' | 'summary_large_image';
+  twitter_title?: string;
+  twitter_description?: string;
+  twitter_image?: string;
+  canonical_url?: string;
+  robots?: string;
+}
+
+export interface WebsiteAnalytics {
+  website_id: string;
+  page_views: number;
+  unique_visitors: number;
+  average_time_on_page: number;
+  bounce_rate: number;
+  top_referrers: string[];
+  device_breakdown: {
+    desktop: number;
+    mobile: number;
+    tablet: number;
+  };
+  location_breakdown: Record<string, number>;
+}

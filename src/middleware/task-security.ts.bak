@@ -1,0 +1,818 @@
+import { NextRequest } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { Database } from '@/types/database';
+import { z } from 'zod';
+
+const supabase = createClient<Database>(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+export interface AuthenticatedUser {
+  id: string;
+  email: string;
+  role: string;
+  organization_id: string;
+  permissions: string[];
+}
+
+export interface SecurityValidationResult {
+  valid: boolean;
+  user?: AuthenticatedUser;
+  message?: string;
+  status?: number;
+  audit_context?: {
+    ip_address: string;
+    user_agent: string;
+    request_id: string;
+  };
+}
+
+export interface RateLimitResult {
+  valid: boolean;
+  remaining: number;
+  reset_time: number;
+  message?: string;
+}
+
+export interface TaskOperationAudit {
+  user_id: string;
+  wedding_id: string;
+  action: string;
+  resource_type: 'task' | 'template' | 'dependency';
+  resource_id?: string;
+  data_snapshot?: Record<string, unknown>;
+  result_snapshot?: Record<string, unknown>;
+  ip_address: string;
+  user_agent: string;
+  request_id: string;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  created_at: string;
+}
+
+/**
+ * Revolutionary Task Security Middleware - WS-156
+ * Implements enterprise-grade security for task operations
+ * Addresses the 305+ unprotected endpoint vulnerability
+ */
+export class TaskSecurityMiddleware {
+  private rate_limit_cache: Map<string, { count: number; reset_time: number }> = new Map();
+
+  /**
+   * Comprehensive security validation for task operations
+   * Multi-layer security approach with defense in depth
+   */
+  async validateTaskAccess(
+    request: NextRequest,
+    wedding_id: string,
+    action: string,
+    resource_id?: string
+  ): Promise<SecurityValidationResult> {
+    const request_id = crypto.randomUUID();
+    const ip_address = this.getClientIP(request);
+    const user_agent = request.headers.get('user-agent') || 'unknown';
+
+    const audit_context = {
+      ip_address,
+      user_agent,
+      request_id
+    };
+
+    try {
+      // Layer 1: Authentication Validation
+      const auth_result = await this.validateAuthentication(request);
+      if (!auth_result.valid) {
+        await this.logSecurityEvent('auth_failure', {
+          action,
+          wedding_id,
+          reason: auth_result.message,
+          ip_address,
+          user_agent,
+          request_id
+        });
+        
+        return {
+          valid: false,
+          message: auth_result.message,
+          status: 401,
+          audit_context
+        };
+      }
+
+      // Layer 2: Authorization Validation  
+      const permission_result = await this.validatePermissions(
+        auth_result.user!,
+        wedding_id,
+        action,
+        resource_id
+      );
+      if (!permission_result.valid) {
+        await this.logSecurityEvent('authorization_failure', {
+          user_id: auth_result.user!.id,
+          action,
+          wedding_id,
+          resource_id,
+          reason: permission_result.message,
+          ip_address,
+          user_agent,
+          request_id
+        });
+
+        return {
+          valid: false,
+          message: permission_result.message,
+          status: 403,
+          audit_context
+        };
+      }
+
+      // Layer 3: Rate Limiting
+      const rate_limit_result = await this.checkRateLimit(
+        auth_result.user!.id,
+        action,
+        ip_address
+      );
+      if (!rate_limit_result.valid) {
+        await this.logSecurityEvent('rate_limit_exceeded', {
+          user_id: auth_result.user!.id,
+          action,
+          ip_address,
+          remaining: rate_limit_result.remaining,
+          reset_time: rate_limit_result.reset_time,
+          request_id
+        });
+
+        return {
+          valid: false,
+          message: rate_limit_result.message,
+          status: 429,
+          audit_context
+        };
+      }
+
+      // Layer 4: Input Validation Context
+      const context_result = await this.validateRequestContext(request, action);
+      if (!context_result.valid) {
+        return {
+          valid: false,
+          message: context_result.message,
+          status: 400,
+          audit_context
+        };
+      }
+
+      // Layer 5: Business Logic Validation
+      const business_result = await this.validateBusinessRules(
+        auth_result.user!,
+        wedding_id,
+        action
+      );
+      if (!business_result.valid) {
+        return {
+          valid: false,
+          message: business_result.message,
+          status: 422,
+          audit_context
+        };
+      }
+
+      return {
+        valid: true,
+        user: auth_result.user,
+        audit_context
+      };
+
+    } catch (error) {
+      console.error('Security validation error:', error);
+      
+      await this.logSecurityEvent('security_error', {
+        action,
+        wedding_id,
+        error: error.message,
+        ip_address,
+        user_agent,
+        request_id
+      });
+
+      return {
+        valid: false,
+        message: 'Security validation failed',
+        status: 500,
+        audit_context
+      };
+    }
+  }
+
+  /**
+   * Comprehensive audit logging for all task operations
+   * Creates forensic trail for security analysis
+   */
+  async auditTaskOperation(
+    operation: Omit<TaskOperationAudit, 'created_at'>
+  ): Promise<void> {
+    try {
+      const audit_record: TaskOperationAudit = {
+        ...operation,
+        created_at: new Date().toISOString()
+      };
+
+      // Store in audit log table
+      await supabase
+        .from('task_audit_logs')
+        .insert({
+          user_id: audit_record.user_id,
+          wedding_id: audit_record.wedding_id,
+          action: audit_record.action,
+          resource_type: audit_record.resource_type,
+          resource_id: audit_record.resource_id,
+          data_snapshot: audit_record.data_snapshot,
+          result_snapshot: audit_record.result_snapshot,
+          ip_address: audit_record.ip_address,
+          user_agent: audit_record.user_agent,
+          request_id: audit_record.request_id,
+          severity: audit_record.severity,
+          created_at: audit_record.created_at
+        });
+
+      // For high/critical severity, also log to security monitoring
+      if (audit_record.severity === 'high' || audit_record.severity === 'critical') {
+        await this.alertSecurityTeam(audit_record);
+      }
+
+    } catch (error) {
+      console.error('Audit logging failed:', error);
+      // Don't throw - audit failure shouldn't block operations
+    }
+  }
+
+  /**
+   * Validate Supabase JWT authentication
+   * Enhanced with session validation and user context loading
+   */
+  private async validateAuthentication(
+    request: NextRequest
+  ): Promise<{ valid: boolean; message?: string; user?: AuthenticatedUser }> {
+    try {
+      const auth_header = request.headers.get('authorization');
+      
+      if (!auth_header || !auth_header.startsWith('Bearer ')) {
+        return {
+          valid: false,
+          message: 'Missing or invalid authorization header'
+        };
+      }
+
+      const token = auth_header.split(' ')[1];
+      
+      // Validate JWT token with Supabase
+      const { data: { user }, error } = await supabase.auth.getUser(token);
+      
+      if (error || !user) {
+        return {
+          valid: false,
+          message: 'Invalid or expired authentication token'
+        };
+      }
+
+      // Load user profile with organization and permissions
+      const { data: profile, error: profile_error } = await supabase
+        .from('user_profiles')
+        .select(`
+          id,
+          email,
+          role,
+          organization_id,
+          permissions,
+          is_active,
+          last_login_at
+        `)
+        .eq('id', user.id)
+        .single();
+
+      if (profile_error || !profile) {
+        return {
+          valid: false,
+          message: 'User profile not found'
+        };
+      }
+
+      if (!profile.is_active) {
+        return {
+          valid: false,
+          message: 'User account is deactivated'
+        };
+      }
+
+      // Update last login
+      await this.updateLastLogin(user.id);
+
+      return {
+        valid: true,
+        user: {
+          id: user.id,
+          email: user.email!,
+          role: profile.role,
+          organization_id: profile.organization_id,
+          permissions: profile.permissions || []
+        }
+      };
+
+    } catch (error) {
+      console.error('Authentication validation error:', error);
+      return {
+        valid: false,
+        message: 'Authentication validation failed'
+      };
+    }
+  }
+
+  /**
+   * Validate user permissions for specific wedding and action
+   * Role-based access control with resource-level permissions
+   */
+  private async validatePermissions(
+    user: AuthenticatedUser,
+    wedding_id: string,
+    action: string,
+    resource_id?: string
+  ): Promise<{ valid: boolean; message?: string }> {
+    try {
+      // Check if user has access to this wedding
+      const wedding_access = await this.validateWeddingAccess(user, wedding_id);
+      if (!wedding_access) {
+        return {
+          valid: false,
+          message: 'Access denied to wedding'
+        };
+      }
+
+      // Check action-specific permissions
+      const action_permissions = this.getRequiredPermissions(action);
+      const user_permissions = new Set(user.permissions);
+
+      const has_permission = action_permissions.some(permission => 
+        user_permissions.has(permission) || 
+        user_permissions.has('tasks.admin') ||
+        user.role === 'admin'
+      );
+
+      if (!has_permission) {
+        return {
+          valid: false,
+          message: `Insufficient permissions for action: ${action}`
+        };
+      }
+
+      // Resource-specific validation
+      if (resource_id) {
+        const resource_access = await this.validateResourceAccess(
+          user,
+          resource_id,
+          wedding_id
+        );
+        if (!resource_access) {
+          return {
+            valid: false,
+            message: 'Access denied to resource'
+          };
+        }
+      }
+
+      return { valid: true };
+
+    } catch (error) {
+      console.error('Permission validation error:', error);
+      return {
+        valid: false,
+        message: 'Permission validation failed'
+      };
+    }
+  }
+
+  /**
+   * Advanced rate limiting with multiple tiers
+   * Prevents abuse and ensures system stability
+   */
+  private async checkRateLimit(
+    user_id: string,
+    action: string,
+    ip_address: string
+  ): Promise<RateLimitResult> {
+    const current_time = Date.now();
+    const window_size = 60 * 1000; // 1 minute
+    
+    // Different limits for different actions
+    const limits = {
+      'create_single_task': 10,  // 10 per minute
+      'create_bulk_tasks': 3,    // 3 per minute
+      'validate_timing': 30,     // 30 per minute
+      'get_templates': 60,       // 60 per minute
+      'default': 20              // 20 per minute default
+    };
+
+    const limit = limits[action as keyof typeof limits] || limits.default;
+    const cache_key = `${user_id}:${action}`;
+    
+    let rate_data = this.rate_limit_cache.get(cache_key);
+    
+    if (!rate_data || rate_data.reset_time < current_time) {
+      // Reset or initialize rate limit window
+      rate_data = {
+        count: 0,
+        reset_time: current_time + window_size
+      };
+    }
+
+    rate_data.count++;
+    this.rate_limit_cache.set(cache_key, rate_data);
+
+    const remaining = Math.max(0, limit - rate_data.count);
+
+    if (rate_data.count > limit) {
+      return {
+        valid: false,
+        remaining: 0,
+        reset_time: rate_data.reset_time,
+        message: `Rate limit exceeded for action: ${action}. Try again in ${Math.ceil((rate_data.reset_time - current_time) / 1000)} seconds.`
+      };
+    }
+
+    return {
+      valid: true,
+      remaining,
+      reset_time: rate_data.reset_time
+    };
+  }
+
+  /**
+   * Validate request context and structure
+   */
+  private async validateRequestContext(
+    request: NextRequest,
+    action: string
+  ): Promise<{ valid: boolean; message?: string }> {
+    try {
+      // Validate Content-Type for POST requests
+      if (request.method === 'POST') {
+        const content_type = request.headers.get('content-type');
+        if (!content_type || !content_type.includes('application/json')) {
+          return {
+            valid: false,
+            message: 'Invalid content type. Expected application/json'
+          };
+        }
+      }
+
+      // Validate request origin (basic CSRF protection)
+      const origin = request.headers.get('origin');
+      const referer = request.headers.get('referer');
+      const host = request.headers.get('host');
+
+      if (request.method === 'POST' && origin && host) {
+        const origin_url = new URL(origin);
+        if (origin_url.host !== host) {
+          return {
+            valid: false,
+            message: 'Invalid request origin'
+          };
+        }
+      }
+
+      return { valid: true };
+
+    } catch (error) {
+      console.error('Request context validation error:', error);
+      return {
+        valid: false,
+        message: 'Invalid request context'
+      };
+    }
+  }
+
+  /**
+   * Validate business rules and constraints
+   */
+  private async validateBusinessRules(
+    user: AuthenticatedUser,
+    wedding_id: string,
+    action: string
+  ): Promise<{ valid: boolean; message?: string }> {
+    try {
+      // Check if wedding is still active/not archived
+      const { data: wedding } = await supabase
+        .from('weddings')
+        .select('status, date')
+        .eq('id', wedding_id)
+        .single();
+
+      if (wedding?.status === 'archived') {
+        return {
+          valid: false,
+          message: 'Cannot perform operations on archived weddings'
+        };
+      }
+
+      // Check if wedding date has passed for certain actions
+      if (action.includes('create') && wedding?.date) {
+        const wedding_date = new Date(wedding.date);
+        if (wedding_date < new Date()) {
+          return {
+            valid: false,
+            message: 'Cannot create new tasks for past weddings'
+          };
+        }
+      }
+
+      return { valid: true };
+
+    } catch (error) {
+      console.error('Business rule validation error:', error);
+      return {
+        valid: false,
+        message: 'Business rule validation failed'
+      };
+    }
+  }
+
+  // Helper methods
+
+  private async validateWeddingAccess(user: AuthenticatedUser, wedding_id: string): Promise<boolean> {
+    try {
+      const { data: wedding } = await supabase
+        .from('weddings')
+        .select('organization_id, assigned_coordinators')
+        .eq('id', wedding_id)
+        .single();
+
+      if (!wedding) return false;
+
+      // Organization access
+      if (wedding.organization_id === user.organization_id) return true;
+
+      // Coordinator access
+      if (wedding.assigned_coordinators?.includes(user.id)) return true;
+
+      // Admin override
+      if (user.role === 'admin') return true;
+
+      return false;
+    } catch (error) {
+      console.error('Wedding access validation error:', error);
+      return false;
+    }
+  }
+
+  private async validateResourceAccess(
+    user: AuthenticatedUser,
+    resource_id: string,
+    wedding_id: string
+  ): Promise<boolean> {
+    try {
+      // Check if resource belongs to the wedding
+      const { data: resource } = await supabase
+        .from('workflow_tasks')
+        .select('wedding_id, assigned_to, created_by')
+        .eq('id', resource_id)
+        .single();
+
+      if (!resource) return false;
+
+      // Wedding match
+      if (resource.wedding_id !== wedding_id) return false;
+
+      // Task owner or assignee
+      if (resource.created_by === user.id || resource.assigned_to === user.id) return true;
+
+      // Admin override
+      if (user.role === 'admin') return true;
+
+      return false;
+    } catch (error) {
+      console.error('Resource access validation error:', error);
+      return false;
+    }
+  }
+
+  private getRequiredPermissions(action: string): string[] {
+    const permission_map = {
+      'create_single_task': ['tasks.create', 'tasks.write'],
+      'create_bulk_tasks': ['tasks.create', 'tasks.bulk', 'tasks.write'],
+      'validate_timing': ['tasks.read', 'tasks.validate'],
+      'get_templates': ['templates.read'],
+      'create_template': ['templates.create', 'templates.write'],
+      'update_task': ['tasks.write', 'tasks.update'],
+      'delete_task': ['tasks.delete', 'tasks.write'],
+      'view_analytics': ['tasks.read', 'analytics.read']
+    };
+
+    return permission_map[action as keyof typeof permission_map] || ['tasks.read'];
+  }
+
+  private getClientIP(request: NextRequest): string {
+    const forwarded = request.headers.get('x-forwarded-for');
+    const real_ip = request.headers.get('x-real-ip');
+    const remote_addr = request.headers.get('x-vercel-forwarded-for');
+    
+    if (forwarded) {
+      return forwarded.split(',')[0].trim();
+    }
+    
+    return real_ip || remote_addr || 'unknown';
+  }
+
+  private async updateLastLogin(user_id: string): Promise<void> {
+    try {
+      await supabase
+        .from('user_profiles')
+        .update({ last_login_at: new Date().toISOString() })
+        .eq('id', user_id);
+    } catch (error) {
+      console.error('Failed to update last login:', error);
+    }
+  }
+
+  private async logSecurityEvent(event_type: string, data: Record<string, unknown>): Promise<void> {
+    try {
+      await supabase
+        .from('security_events')
+        .insert({
+          event_type,
+          event_data: data,
+          created_at: new Date().toISOString()
+        });
+    } catch (error) {
+      console.error('Failed to log security event:', error);
+    }
+  }
+
+  private async alertSecurityTeam(audit_record: TaskOperationAudit): Promise<void> {
+    try {
+      // In production, this would integrate with alerting systems
+      console.warn('HIGH SEVERITY SECURITY EVENT:', {
+        user_id: audit_record.user_id,
+        action: audit_record.action,
+        severity: audit_record.severity,
+        ip_address: audit_record.ip_address,
+        request_id: audit_record.request_id
+      });
+      
+      // Could integrate with Slack, email, or security monitoring tools
+    } catch (error) {
+      console.error('Failed to alert security team:', error);
+    }
+  }
+
+  /**
+   * Template-specific security validation
+   * Extends task security for template operations
+   */
+  async validateTemplateAccess(
+    request: NextRequest,
+    organization_id: string,
+    action: string,
+    template_id?: string
+  ): Promise<SecurityValidationResult> {
+    try {
+      // Reuse existing authentication and authorization
+      const auth_result = await this.validateAuthentication(request);
+      if (!auth_result.valid) return auth_result;
+
+      const authz_result = await this.validatePermissions(auth_result.user!, action, organization_id);
+      if (!authz_result.valid) return authz_result;
+
+      // Template-specific validations
+      if (template_id) {
+        const template_access = await this.validateTemplateOwnership(auth_result.user!, template_id, organization_id);
+        if (!template_access.valid) return template_access;
+      }
+
+      // Organization access validation
+      if (auth_result.user!.organization_id !== organization_id && !auth_result.user!.permissions.includes('admin')) {
+        return {
+          valid: false,
+          message: 'Access denied: insufficient organization permissions',
+          status: 403
+        };
+      }
+
+      // Create audit context
+      const audit_context = {
+        ip_address: request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown',
+        user_agent: request.headers.get('user-agent') || 'unknown',
+        request_id: request.headers.get('x-request-id') || 'unknown'
+      };
+
+      return {
+        valid: true,
+        user: auth_result.user,
+        audit_context
+      };
+
+    } catch (error) {
+      console.error('Template security validation error:', error);
+      return {
+        valid: false,
+        message: 'Template security validation failed',
+        status: 500
+      };
+    }
+  }
+
+  /**
+   * Audit template operations
+   */
+  async auditTemplateOperation(audit_record: Omit<TaskOperationAudit, 'created_at'> & {
+    organization_id: string;
+  }): Promise<void> {
+    try {
+      const audit_data = {
+        ...audit_record,
+        created_at: new Date().toISOString()
+      };
+
+      // Store in audit log with organization context
+      const { error } = await supabase
+        .from('task_audit_log')
+        .insert({
+          ...audit_data,
+          metadata: {
+            organization_id: audit_record.organization_id,
+            template_operation: true
+          }
+        });
+
+      if (error) {
+        console.error('Failed to store template audit log:', error);
+      }
+
+      // Alert on critical operations
+      if (audit_record.severity === 'critical' || audit_record.severity === 'high') {
+        await this.alertSecurityTeam(audit_data);
+      }
+
+    } catch (error) {
+      console.error('Template audit logging error:', error);
+    }
+  }
+
+  /**
+   * Validate template ownership and access
+   */
+  private async validateTemplateOwnership(
+    user: AuthenticatedUser, 
+    template_id: string, 
+    organization_id: string
+  ): Promise<{ valid: boolean; message?: string }> {
+    try {
+      const { data: template } = await supabase
+        .from('task_templates')
+        .select('id, organization_id, is_public, created_by')
+        .eq('id', template_id)
+        .single();
+
+      if (!template) {
+        return {
+          valid: false,
+          message: 'Template not found'
+        };
+      }
+
+      // Public templates are accessible to all
+      if (template.is_public) {
+        return { valid: true };
+      }
+
+      // Organization templates
+      if (template.organization_id === organization_id) {
+        return { valid: true };
+      }
+
+      // Admin override
+      if (user.permissions.includes('admin')) {
+        return { valid: true };
+      }
+
+      // Creator access
+      if (template.created_by === user.id) {
+        return { valid: true };
+      }
+
+      return {
+        valid: false,
+        message: 'Access denied: insufficient template permissions'
+      };
+
+    } catch (error) {
+      console.error('Template ownership validation error:', error);
+      return {
+        valid: false,
+        message: 'Template access validation failed'
+      };
+    }
+  }
+}
+
+/**
+ * Singleton instance for dependency injection
+ */
+export const taskSecurityMiddleware = new TaskSecurityMiddleware();

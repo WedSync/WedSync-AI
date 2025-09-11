@@ -1,0 +1,494 @@
+/**
+ * Tests for WeddingWorkflowProtector - Core wedding workflow protection engine
+ * WS-198 Error Handling System - Team D Mobile & PWA Architecture
+ */
+
+import { WeddingWorkflowProtector, WeddingWorkflow, WorkflowExecutionResult } from '../../../lib/wedding/workflow-protector'
+
+// Mock IndexedDB
+const mockIndexedDB = {
+  open: jest.fn(),
+  deleteDatabase: jest.fn(),
+  cmp: jest.fn()
+}
+
+const mockDB = {
+  transaction: jest.fn(),
+  createObjectStore: jest.fn(),
+  close: jest.fn()
+}
+
+const mockTransaction = {
+  objectStore: jest.fn(),
+  oncomplete: null,
+  onerror: null
+}
+
+const mockStore = {
+  add: jest.fn(),
+  get: jest.fn(),
+  put: jest.fn(),
+  delete: jest.fn(),
+  clear: jest.fn(),
+  getAll: jest.fn()
+}
+
+Object.defineProperty(window, 'indexedDB', {
+  value: mockIndexedDB,
+  writable: true
+})
+
+// Mock Supabase client
+jest.mock('../../../lib/supabase/client', () => ({
+  supabase: {
+    channel: jest.fn(),
+    from: jest.fn(),
+    auth: {
+      getUser: jest.fn()
+    }
+  }
+}))
+
+describe('WeddingWorkflowProtector', () => {
+  let protector: WeddingWorkflowProtector
+  let mockWorkflow: WeddingWorkflow
+
+  beforeEach(() => {
+    jest.clearAllMocks()
+    
+    // Setup IndexedDB mocks
+    mockIndexedDB.open.mockImplementation(() => {
+      const request = {
+        onsuccess: null,
+        onerror: null,
+        onupgradeneeded: null,
+        result: mockDB
+      }
+      setTimeout(() => request.onsuccess?.({ target: { result: mockDB } }), 0)
+      return request
+    })
+    
+    mockDB.transaction.mockReturnValue(mockTransaction)
+    mockTransaction.objectStore.mockReturnValue(mockStore)
+    
+    protector = new WeddingWorkflowProtector()
+    
+    mockWorkflow = {
+      id: 'test-workflow-123',
+      type: 'photo_upload',
+      priority: 'critical',
+      weddingId: 'wedding-456',
+      weddingDate: '2024-06-15',
+      data: {
+        photoFile: 'ceremony-photo.jpg',
+        caption: 'First kiss',
+        timestamp: '2024-06-15T15:30:00Z'
+      },
+      metadata: {
+        isWeddingDay: true,
+        vendorType: 'photographer',
+        emergencyEscalation: true
+      }
+    }
+  })
+
+  describe('Workflow Execution', () => {
+    it('should execute workflow successfully with all protection layers', async () => {
+      const mockExecutionFunction = jest.fn().mockResolvedValue({
+        success: true,
+        data: 'Photo uploaded successfully'
+      })
+
+      const result = await protector.executeProtectedWorkflow(
+        mockWorkflow,
+        mockExecutionFunction
+      )
+
+      expect(result.success).toBe(true)
+      expect(result.data).toBe('Photo uploaded successfully')
+      expect(result.executionTime).toBeGreaterThan(0)
+      expect(result.retryCount).toBe(0)
+      expect(mockExecutionFunction).toHaveBeenCalledTimes(1)
+    })
+
+    it('should retry failed workflow according to priority', async () => {
+      let attemptCount = 0
+      const mockExecutionFunction = jest.fn().mockImplementation(async () => {
+        attemptCount++
+        if (attemptCount < 3) {
+          throw new Error('Network timeout')
+        }
+        return { success: true, data: 'Success on attempt 3' }
+      })
+
+      const result = await protector.executeProtectedWorkflow(
+        mockWorkflow,
+        mockExecutionFunction
+      )
+
+      expect(result.success).toBe(true)
+      expect(result.retryCount).toBe(2)
+      expect(mockExecutionFunction).toHaveBeenCalledTimes(3)
+    })
+
+    it('should escalate to emergency support for critical wedding day failures', async () => {
+      const mockExecutionFunction = jest.fn().mockRejectedValue(
+        new Error('Critical ceremony photo upload failed')
+      )
+
+      const emergencySpy = jest.spyOn(protector as any, 'escalateToEmergency')
+      emergencySpy.mockResolvedValue({ escalated: true, ticketId: 'EMG-123' })
+
+      const result = await protector.executeProtectedWorkflow(
+        mockWorkflow,
+        mockExecutionFunction
+      )
+
+      expect(result.success).toBe(false)
+      expect(result.emergencyEscalated).toBe(true)
+      expect(result.emergencyTicketId).toBe('EMG-123')
+      expect(emergencySpy).toHaveBeenCalled()
+    })
+
+    it('should queue workflow for offline execution when network unavailable', async () => {
+      // Mock offline state
+      Object.defineProperty(navigator, 'onLine', {
+        value: false,
+        writable: true
+      })
+
+      const mockExecutionFunction = jest.fn()
+      mockStore.add.mockResolvedValue('queue-key-123')
+
+      const result = await protector.executeProtectedWorkflow(
+        mockWorkflow,
+        mockExecutionFunction
+      )
+
+      expect(result.success).toBe(false)
+      expect(result.queued).toBe(true)
+      expect(result.queuedAt).toBeDefined()
+      expect(mockStore.add).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workflow: mockWorkflow,
+          queuedAt: expect.any(Number),
+          retryCount: 0
+        })
+      )
+    })
+  })
+
+  describe('Priority-Based Retry Logic', () => {
+    it('should retry critical workflows more aggressively', async () => {
+      const criticalWorkflow = {
+        ...mockWorkflow,
+        priority: 'critical' as const
+      }
+
+      let attemptCount = 0
+      const mockExecutionFunction = jest.fn().mockImplementation(async () => {
+        attemptCount++
+        throw new Error('Persistent failure')
+      })
+
+      const result = await protector.executeProtectedWorkflow(
+        criticalWorkflow,
+        mockExecutionFunction
+      )
+
+      // Critical workflows should get maximum retries (10)
+      expect(mockExecutionFunction).toHaveBeenCalledTimes(10)
+      expect(result.retryCount).toBe(9)
+    })
+
+    it('should retry low priority workflows conservatively', async () => {
+      const lowPriorityWorkflow = {
+        ...mockWorkflow,
+        priority: 'low' as const
+      }
+
+      let attemptCount = 0
+      const mockExecutionFunction = jest.fn().mockImplementation(async () => {
+        attemptCount++
+        throw new Error('Minor failure')
+      })
+
+      const result = await protector.executeProtectedWorkflow(
+        lowPriorityWorkflow,
+        mockExecutionFunction
+      )
+
+      // Low priority workflows should get fewer retries (3)
+      expect(mockExecutionFunction).toHaveBeenCalledTimes(3)
+      expect(result.retryCount).toBe(2)
+    })
+  })
+
+  describe('Wedding Day Detection', () => {
+    it('should detect when workflow is executed on actual wedding day', () => {
+      const today = new Date().toISOString().split('T')[0]
+      const weddingDayWorkflow = {
+        ...mockWorkflow,
+        weddingDate: today
+      }
+
+      const isWeddingDay = (protector as any).isWeddingDay(weddingDayWorkflow.weddingDate)
+      expect(isWeddingDay).toBe(true)
+    })
+
+    it('should apply emergency protocols on wedding day', async () => {
+      // Set up wedding day scenario
+      const today = new Date().toISOString().split('T')[0]
+      const weddingDayWorkflow = {
+        ...mockWorkflow,
+        weddingDate: today,
+        metadata: {
+          ...mockWorkflow.metadata,
+          isWeddingDay: true,
+          emergencyEscalation: true
+        }
+      }
+
+      const mockExecutionFunction = jest.fn().mockRejectedValue(
+        new Error('Wedding day failure')
+      )
+
+      const emergencySpy = jest.spyOn(protector as any, 'escalateToEmergency')
+      emergencySpy.mockResolvedValue({ escalated: true, ticketId: 'WED-123' })
+
+      await protector.executeProtectedWorkflow(
+        weddingDayWorkflow,
+        mockExecutionFunction
+      )
+
+      expect(emergencySpy).toHaveBeenCalledWith(
+        weddingDayWorkflow,
+        expect.any(Error),
+        expect.any(Number)
+      )
+    })
+  })
+
+  describe('Different Workflow Types', () => {
+    const workflowTypes = [
+      'photo_upload',
+      'timeline_update', 
+      'payment',
+      'emergency_comm',
+      'guest_management',
+      'vendor_coordination',
+      'couple_checkin'
+    ] as const
+
+    workflowTypes.forEach(type => {
+      it(`should handle ${type} workflow type correctly`, async () => {
+        const typedWorkflow = {
+          ...mockWorkflow,
+          type,
+          data: getTestDataForType(type)
+        }
+
+        const mockExecutionFunction = jest.fn().mockResolvedValue({
+          success: true,
+          data: `${type} completed`
+        })
+
+        const result = await protector.executeProtectedWorkflow(
+          typedWorkflow,
+          mockExecutionFunction
+        )
+
+        expect(result.success).toBe(true)
+        expect(result.workflowType).toBe(type)
+      })
+    })
+  })
+
+  describe('Error Recovery Patterns', () => {
+    it('should handle network timeouts with exponential backoff', async () => {
+      let attemptCount = 0
+      const delays: number[] = []
+      const originalSetTimeout = setTimeout
+
+      global.setTimeout = jest.fn().mockImplementation((callback, delay) => {
+        delays.push(delay)
+        return originalSetTimeout(callback, 0)
+      }) as any
+
+      const mockExecutionFunction = jest.fn().mockImplementation(async () => {
+        attemptCount++
+        if (attemptCount < 4) {
+          throw new Error('Network timeout')
+        }
+        return { success: true, data: 'Finally worked' }
+      })
+
+      await protector.executeProtectedWorkflow(
+        mockWorkflow,
+        mockExecutionFunction
+      )
+
+      // Check exponential backoff pattern
+      expect(delays[0]).toBe(1000) // First retry: 1s
+      expect(delays[1]).toBe(2000) // Second retry: 2s  
+      expect(delays[2]).toBe(4000) // Third retry: 4s
+
+      global.setTimeout = originalSetTimeout
+    })
+
+    it('should handle server errors differently from network errors', async () => {
+      const serverErrorWorkflow = { ...mockWorkflow }
+      
+      const mockExecutionFunction = jest.fn()
+        .mockRejectedValueOnce(new Error('500 Internal Server Error'))
+        .mockRejectedValueOnce(new Error('502 Bad Gateway'))
+        .mockResolvedValueOnce({ success: true, data: 'Server recovered' })
+
+      const result = await protector.executeProtectedWorkflow(
+        serverErrorWorkflow,
+        mockExecutionFunction
+      )
+
+      expect(result.success).toBe(true)
+      expect(result.retryCount).toBe(2)
+    })
+  })
+
+  describe('Offline Queue Management', () => {
+    beforeEach(() => {
+      Object.defineProperty(navigator, 'onLine', {
+        value: false,
+        writable: true
+      })
+    })
+
+    it('should queue multiple workflows when offline', async () => {
+      const workflows = [
+        { ...mockWorkflow, id: 'workflow-1', type: 'photo_upload' as const },
+        { ...mockWorkflow, id: 'workflow-2', type: 'timeline_update' as const },
+        { ...mockWorkflow, id: 'workflow-3', type: 'guest_management' as const }
+      ]
+
+      const mockExecutionFunction = jest.fn()
+      mockStore.add.mockResolvedValue('queue-key')
+
+      for (const workflow of workflows) {
+        await protector.executeProtectedWorkflow(workflow, mockExecutionFunction)
+      }
+
+      expect(mockStore.add).toHaveBeenCalledTimes(3)
+    })
+
+    it('should process queued workflows when coming back online', async () => {
+      // Setup queued workflows
+      const queuedWorkflows = [
+        {
+          workflow: { ...mockWorkflow, id: 'queued-1' },
+          queuedAt: Date.now() - 60000, // Queued 1 minute ago
+          retryCount: 0
+        }
+      ]
+
+      mockStore.getAll.mockResolvedValue(queuedWorkflows)
+      
+      const mockExecutionFunction = jest.fn().mockResolvedValue({
+        success: true,
+        data: 'Processed from queue'
+      })
+
+      // Come back online
+      Object.defineProperty(navigator, 'onLine', {
+        value: true,
+        writable: true
+      })
+
+      await protector.processOfflineQueue(mockExecutionFunction)
+
+      expect(mockExecutionFunction).toHaveBeenCalledWith(queuedWorkflows[0].workflow)
+      expect(mockStore.delete).toHaveBeenCalled()
+    })
+  })
+
+  describe('Real-time Sync Integration', () => {
+    it('should establish real-time sync channel for wedding coordination', async () => {
+      const { supabase } = require('../../../lib/supabase/client')
+      
+      const mockChannel = {
+        on: jest.fn(),
+        subscribe: jest.fn()
+      }
+      supabase.channel.mockReturnValue(mockChannel)
+
+      await protector.initializeRealTimeSync(mockWorkflow.weddingId)
+
+      expect(supabase.channel).toHaveBeenCalledWith(`wedding:${mockWorkflow.weddingId}`)
+      expect(mockChannel.on).toHaveBeenCalledWith(
+        'postgres_changes',
+        expect.any(Object),
+        expect.any(Function)
+      )
+    })
+  })
+
+  describe('Performance Monitoring', () => {
+    it('should track workflow execution performance', async () => {
+      const mockExecutionFunction = jest.fn().mockImplementation(async () => {
+        await new Promise(resolve => setTimeout(resolve, 100))
+        return { success: true, data: 'Performance test' }
+      })
+
+      const result = await protector.executeProtectedWorkflow(
+        mockWorkflow,
+        mockExecutionFunction
+      )
+
+      expect(result.executionTime).toBeGreaterThan(100)
+      expect(result.performanceMetrics).toBeDefined()
+    })
+
+    it('should detect slow workflows and apply optimizations', async () => {
+      const slowWorkflow = {
+        ...mockWorkflow,
+        type: 'photo_upload' as const,
+        data: {
+          ...mockWorkflow.data,
+          fileSize: 50 * 1024 * 1024 // 50MB file
+        }
+      }
+
+      const mockExecutionFunction = jest.fn().mockImplementation(async () => {
+        await new Promise(resolve => setTimeout(resolve, 200))
+        return { success: true, data: 'Slow operation completed' }
+      })
+
+      const result = await protector.executeProtectedWorkflow(
+        slowWorkflow,
+        mockExecutionFunction
+      )
+
+      expect(result.performanceOptimizationsApplied).toBeTruthy()
+    })
+  })
+})
+
+// Helper function to generate test data for different workflow types
+function getTestDataForType(type: WeddingWorkflow['type']) {
+  switch (type) {
+    case 'photo_upload':
+      return { photoFile: 'test.jpg', caption: 'Test photo' }
+    case 'timeline_update':
+      return { eventId: 'event-123', newTime: '15:30' }
+    case 'payment':
+      return { amount: 5000, description: 'Final payment' }
+    case 'emergency_comm':
+      return { message: 'Emergency at venue', recipients: ['vendor1', 'vendor2'] }
+    case 'guest_management':
+      return { guestId: 'guest-456', action: 'check_in' }
+    case 'vendor_coordination':
+      return { vendorId: 'vendor-789', status: 'ready', location: 'ceremony site' }
+    case 'couple_checkin':
+      return { coupleId: 'couple-012', milestone: 'getting_ready', status: 'completed' }
+    default:
+      return {}
+  }
+}

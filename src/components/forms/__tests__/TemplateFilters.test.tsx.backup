@@ -1,0 +1,514 @@
+import React from 'react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { TemplateFilters } from '../TemplateFilters'
+import { EmailTemplateFilters } from '@/types/email-template-library'
+
+describe('TemplateFilters', () => {
+  const mockFilters: EmailTemplateFilters = {
+    categories: [],
+    statuses: [],
+    showFavorites: false,
+    dateRange: undefined,
+    usageRange: undefined,
+    sortBy: 'created_at_desc'
+  }
+
+  const mockOnFiltersChange = jest.fn()
+  const mockOnClearFilters = jest.fn()
+
+  beforeEach(() => {
+    jest.clearAllMocks()
+  })
+
+  describe('Component Rendering', () => {
+    it('renders all filter sections', () => {
+      render(
+        <TemplateFilters
+          filters={mockFilters}
+          onFiltersChange={mockOnFiltersChange}
+          onClearFilters={mockOnClearFilters}
+        />
+      )
+
+      expect(screen.getByText('Categories')).toBeInTheDocument()
+      expect(screen.getByText('Status')).toBeInTheDocument()
+      expect(screen.getByText('Sort By')).toBeInTheDocument()
+      expect(screen.getByText('Date Range')).toBeInTheDocument()
+      expect(screen.getByText('Usage Count')).toBeInTheDocument()
+    })
+
+    it('displays clear filters button when filters are applied', () => {
+      const filtersWithValues = {
+        ...mockFilters,
+        categories: ['welcome'],
+        statuses: ['active']
+      }
+
+      render(
+        <TemplateFilters
+          filters={filtersWithValues}
+          onFiltersChange={mockOnFiltersChange}
+          onClearFilters={mockOnClearFilters}
+        />
+      )
+
+      expect(screen.getByRole('button', { name: /clear all filters/i })).toBeInTheDocument()
+    })
+
+    it('does not show clear filters button when no filters applied', () => {
+      render(
+        <TemplateFilters
+          filters={mockFilters}
+          onFiltersChange={mockOnFiltersChange}
+          onClearFilters={mockOnClearFilters}
+        />
+      )
+
+      expect(screen.queryByRole('button', { name: /clear all filters/i })).not.toBeInTheDocument()
+    })
+  })
+
+  describe('Category Filters', () => {
+    it('allows selecting categories', async () => {
+      const user = userEvent.setup()
+      render(
+        <TemplateFilters
+          filters={mockFilters}
+          onFiltersChange={mockOnFiltersChange}
+          onClearFilters={mockOnClearFilters}
+        />
+      )
+
+      const welcomeCheckbox = screen.getByRole('checkbox', { name: /welcome/i })
+      await user.click(welcomeCheckbox)
+
+      expect(mockOnFiltersChange).toHaveBeenCalledWith({
+        ...mockFilters,
+        categories: ['welcome']
+      })
+    })
+
+    it('allows deselecting categories', async () => {
+      const user = userEvent.setup()
+      const filtersWithCategory = {
+        ...mockFilters,
+        categories: ['welcome']
+      }
+
+      render(
+        <TemplateFilters
+          filters={filtersWithCategory}
+          onFiltersChange={mockOnFiltersChange}
+          onClearFilters={mockOnClearFilters}
+        />
+      )
+
+      const welcomeCheckbox = screen.getByRole('checkbox', { name: /welcome/i })
+      await user.click(welcomeCheckbox)
+
+      expect(mockOnFiltersChange).toHaveBeenCalledWith({
+        ...mockFilters,
+        categories: []
+      })
+    })
+
+    it('shows category counts', () => {
+      const templateCounts = {
+        welcome: 5,
+        payment_reminder: 3,
+        meeting_confirmation: 2,
+        thank_you: 1,
+        client_communication: 4
+      }
+
+      render(
+        <TemplateFilters
+          filters={mockFilters}
+          onFiltersChange={mockOnFiltersChange}
+          onClearFilters={mockOnClearFilters}
+          templateCounts={templateCounts}
+        />
+      )
+
+      expect(screen.getByText('5')).toBeInTheDocument() // welcome count
+      expect(screen.getByText('3')).toBeInTheDocument() // payment_reminder count
+      expect(screen.getByText('4')).toBeInTheDocument() // client_communication count
+    })
+  })
+
+  describe('Status Filters', () => {
+    it('allows selecting status filters', async () => {
+      const user = userEvent.setup()
+      render(
+        <TemplateFilters
+          filters={mockFilters}
+          onFiltersChange={mockOnFiltersChange}
+          onClearFilters={mockOnClearFilters}
+        />
+      )
+
+      const activeCheckbox = screen.getByRole('checkbox', { name: /active/i })
+      await user.click(activeCheckbox)
+
+      expect(mockOnFiltersChange).toHaveBeenCalledWith({
+        ...mockFilters,
+        statuses: ['active']
+      })
+    })
+
+    it('allows multiple status selections', async () => {
+      const user = userEvent.setup()
+      render(
+        <TemplateFilters
+          filters={mockFilters}
+          onFiltersChange={mockOnFiltersChange}
+          onClearFilters={mockOnClearFilters}
+        />
+      )
+
+      const activeCheckbox = screen.getByRole('checkbox', { name: /active/i })
+      const draftCheckbox = screen.getByRole('checkbox', { name: /draft/i })
+      
+      await user.click(activeCheckbox)
+      await user.click(draftCheckbox)
+
+      expect(mockOnFiltersChange).toHaveBeenCalledWith({
+        ...mockFilters,
+        statuses: ['active', 'draft']
+      })
+    })
+  })
+
+  describe('Favorites Filter', () => {
+    it('toggles favorites filter', async () => {
+      const user = userEvent.setup()
+      render(
+        <TemplateFilters
+          filters={mockFilters}
+          onFiltersChange={mockOnFiltersChange}
+          onClearFilters={mockOnClearFilters}
+        />
+      )
+
+      const favoritesSwitch = screen.getByRole('switch', { name: /show favorites only/i })
+      await user.click(favoritesSwitch)
+
+      expect(mockOnFiltersChange).toHaveBeenCalledWith({
+        ...mockFilters,
+        showFavorites: true
+      })
+    })
+  })
+
+  describe('Sort Options', () => {
+    it('changes sort order', async () => {
+      const user = userEvent.setup()
+      render(
+        <TemplateFilters
+          filters={mockFilters}
+          onFiltersChange={mockOnFiltersChange}
+          onClearFilters={mockOnClearFilters}
+        />
+      )
+
+      const sortSelect = screen.getByDisplayValue('Newest first')
+      await user.selectOptions(sortSelect, 'name_asc')
+
+      expect(mockOnFiltersChange).toHaveBeenCalledWith({
+        ...mockFilters,
+        sortBy: 'name_asc'
+      })
+    })
+
+    it('displays correct sort option labels', () => {
+      render(
+        <TemplateFilters
+          filters={mockFilters}
+          onFiltersChange={mockOnFiltersChange}
+          onClearFilters={mockOnClearFilters}
+        />
+      )
+
+      const sortSelect = screen.getByDisplayValue('Newest first')
+      expect(sortSelect).toBeInTheDocument()
+
+      // Check that all sort options are available
+      expect(screen.getByRole('option', { name: 'Newest first' })).toBeInTheDocument()
+      expect(screen.getByRole('option', { name: 'Oldest first' })).toBeInTheDocument()
+      expect(screen.getByRole('option', { name: 'Name A-Z' })).toBeInTheDocument()
+      expect(screen.getByRole('option', { name: 'Name Z-A' })).toBeInTheDocument()
+      expect(screen.getByRole('option', { name: 'Most used' })).toBeInTheDocument()
+      expect(screen.getByRole('option', { name: 'Least used' })).toBeInTheDocument()
+    })
+  })
+
+  describe('Date Range Filter', () => {
+    it('allows setting date range', async () => {
+      const user = userEvent.setup()
+      render(
+        <TemplateFilters
+          filters={mockFilters}
+          onFiltersChange={mockOnFiltersChange}
+          onClearFilters={mockOnClearFilters}
+        />
+      )
+
+      const fromInput = screen.getByLabelText(/from date/i)
+      const toInput = screen.getByLabelText(/to date/i)
+
+      await user.type(fromInput, '2025-01-01')
+      await user.type(toInput, '2025-01-31')
+
+      await waitFor(() => {
+        expect(mockOnFiltersChange).toHaveBeenCalledWith({
+          ...mockFilters,
+          dateRange: {
+            from: new Date('2025-01-01'),
+            to: new Date('2025-01-31')
+          }
+        })
+      })
+    })
+
+    it('clears date range when inputs are cleared', async () => {
+      const user = userEvent.setup()
+      const filtersWithDateRange = {
+        ...mockFilters,
+        dateRange: {
+          from: new Date('2025-01-01'),
+          to: new Date('2025-01-31')
+        }
+      }
+
+      render(
+        <TemplateFilters
+          filters={filtersWithDateRange}
+          onFiltersChange={mockOnFiltersChange}
+          onClearFilters={mockOnClearFilters}
+        />
+      )
+
+      const fromInput = screen.getByLabelText(/from date/i)
+      await user.clear(fromInput)
+
+      expect(mockOnFiltersChange).toHaveBeenCalledWith({
+        ...mockFilters,
+        dateRange: undefined
+      })
+    })
+  })
+
+  describe('Usage Range Filter', () => {
+    it('allows setting usage range', async () => {
+      const user = userEvent.setup()
+      render(
+        <TemplateFilters
+          filters={mockFilters}
+          onFiltersChange={mockOnFiltersChange}
+          onClearFilters={mockOnClearFilters}
+        />
+      )
+
+      const minInput = screen.getByLabelText(/minimum usage/i)
+      const maxInput = screen.getByLabelText(/maximum usage/i)
+
+      await user.type(minInput, '1')
+      await user.type(maxInput, '10')
+
+      await waitFor(() => {
+        expect(mockOnFiltersChange).toHaveBeenCalledWith({
+          ...mockFilters,
+          usageRange: {
+            min: 1,
+            max: 10
+          }
+        })
+      })
+    })
+
+    it('validates usage range inputs', async () => {
+      const user = userEvent.setup()
+      render(
+        <TemplateFilters
+          filters={mockFilters}
+          onFiltersChange={mockOnFiltersChange}
+          onClearFilters={mockOnClearFilters}
+        />
+      )
+
+      const minInput = screen.getByLabelText(/minimum usage/i)
+      const maxInput = screen.getByLabelText(/maximum usage/i)
+
+      // Test invalid range (min > max)
+      await user.type(minInput, '10')
+      await user.type(maxInput, '5')
+
+      expect(screen.getByText(/minimum must be less than maximum/i)).toBeInTheDocument()
+    })
+  })
+
+  describe('Filter Presets', () => {
+    it('applies popular templates preset', async () => {
+      const user = userEvent.setup()
+      render(
+        <TemplateFilters
+          filters={mockFilters}
+          onFiltersChange={mockOnFiltersChange}
+          onClearFilters={mockOnClearFilters}
+        />
+      )
+
+      const presetButton = screen.getByRole('button', { name: /popular templates/i })
+      await user.click(presetButton)
+
+      expect(mockOnFiltersChange).toHaveBeenCalledWith({
+        ...mockFilters,
+        usageRange: { min: 5, max: undefined },
+        sortBy: 'usage_count_desc'
+      })
+    })
+
+    it('applies recent templates preset', async () => {
+      const user = userEvent.setup()
+      render(
+        <TemplateFilters
+          filters={mockFilters}
+          onFiltersChange={mockOnFiltersChange}
+          onClearFilters={mockOnClearFilters}
+        />
+      )
+
+      const presetButton = screen.getByRole('button', { name: /recent templates/i })
+      await user.click(presetButton)
+
+      const thirtyDaysAgo = new Date()
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
+
+      expect(mockOnFiltersChange).toHaveBeenCalledWith({
+        ...mockFilters,
+        dateRange: {
+          from: expect.any(Date),
+          to: undefined
+        },
+        sortBy: 'created_at_desc'
+      })
+    })
+  })
+
+  describe('Clear Filters', () => {
+    it('calls onClearFilters when clear button is clicked', async () => {
+      const user = userEvent.setup()
+      const filtersWithValues = {
+        ...mockFilters,
+        categories: ['welcome'],
+        statuses: ['active'],
+        showFavorites: true
+      }
+
+      render(
+        <TemplateFilters
+          filters={filtersWithValues}
+          onFiltersChange={mockOnFiltersChange}
+          onClearFilters={mockOnClearFilters}
+        />
+      )
+
+      const clearButton = screen.getByRole('button', { name: /clear all filters/i })
+      await user.click(clearButton)
+
+      expect(mockOnClearFilters).toHaveBeenCalled()
+    })
+  })
+
+  describe('Collapsible Sections', () => {
+    it('toggles collapsible sections', async () => {
+      const user = userEvent.setup()
+      render(
+        <TemplateFilters
+          filters={mockFilters}
+          onFiltersChange={mockOnFiltersChange}
+          onClearFilters={mockOnClearFilters}
+        />
+      )
+
+      const categoryHeader = screen.getByRole('button', { name: /categories/i })
+      await user.click(categoryHeader)
+
+      // Should collapse the categories section
+      expect(screen.queryByRole('checkbox', { name: /welcome/i })).not.toBeInTheDocument()
+
+      // Click again to expand
+      await user.click(categoryHeader)
+      expect(screen.getByRole('checkbox', { name: /welcome/i })).toBeInTheDocument()
+    })
+  })
+
+  describe('Accessibility', () => {
+    it('has proper ARIA labels and roles', () => {
+      render(
+        <TemplateFilters
+          filters={mockFilters}
+          onFiltersChange={mockOnFiltersChange}
+          onClearFilters={mockOnClearFilters}
+        />
+      )
+
+      expect(screen.getByRole('region', { name: /template filters/i })).toBeInTheDocument()
+      expect(screen.getAllByRole('checkbox')).toHaveLength(expect.any(Number))
+      expect(screen.getByRole('switch')).toBeInTheDocument()
+      expect(screen.getByRole('combobox')).toBeInTheDocument()
+    })
+
+    it('supports keyboard navigation', async () => {
+      const user = userEvent.setup()
+      render(
+        <TemplateFilters
+          filters={mockFilters}
+          onFiltersChange={mockOnFiltersChange}
+          onClearFilters={mockOnClearFilters}
+        />
+      )
+
+      // Tab through filter controls
+      await user.tab()
+      expect(screen.getByRole('checkbox', { name: /welcome/i })).toHaveFocus()
+
+      await user.tab()
+      expect(screen.getByRole('checkbox', { name: /payment reminder/i })).toHaveFocus()
+    })
+  })
+
+  describe('Filter Count Display', () => {
+    it('shows active filter count', () => {
+      const filtersWithValues = {
+        ...mockFilters,
+        categories: ['welcome', 'payment_reminder'],
+        statuses: ['active'],
+        showFavorites: true
+      }
+
+      render(
+        <TemplateFilters
+          filters={filtersWithValues}
+          onFiltersChange={mockOnFiltersChange}
+          onClearFilters={mockOnClearFilters}
+        />
+      )
+
+      expect(screen.getByText('4 filters applied')).toBeInTheDocument()
+    })
+
+    it('does not show filter count when no filters applied', () => {
+      render(
+        <TemplateFilters
+          filters={mockFilters}
+          onFiltersChange={mockOnFiltersChange}
+          onClearFilters={mockOnClearFilters}
+        />
+      )
+
+      expect(screen.queryByText(/filters applied/i)).not.toBeInTheDocument()
+    })
+  })
+})

@@ -1,0 +1,510 @@
+import React from 'react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import '@testing-library/jest-dom';
+import { FieldManager } from '../FieldManager';
+import { FormField, FormFieldType } from '@/types/forms';
+
+// Mock nanoid
+jest.mock('nanoid', () => ({
+  nanoid: () => 'mock-id-' + Math.random().toString(36).substr(2, 9),
+}));
+
+// Test data
+const mockFields: FormField[] = [
+  {
+    id: 'field-1',
+    type: 'text',
+    label: 'First Name',
+    placeholder: 'Enter your first name',
+    required: true,
+    validation: { required: true, minLength: 2 },
+    order: 0,
+  },
+  {
+    id: 'field-2',
+    type: 'email',
+    label: 'Email Address',
+    placeholder: 'your.email@example.com',
+    required: true,
+    validation: {
+      required: true,
+      pattern: '^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$',
+    },
+    order: 1,
+  },
+  {
+    id: 'field-3',
+    type: 'select',
+    label: 'Country',
+    options: [
+      { id: '1', label: 'United States', value: 'us' },
+      { id: '2', label: 'Canada', value: 'ca' },
+      { id: '3', label: 'United Kingdom', value: 'uk' },
+    ],
+    order: 2,
+  },
+  {
+    id: 'field-4',
+    type: 'textarea',
+    label: 'Comments',
+    placeholder: 'Additional comments...',
+    validation: { maxLength: 500 },
+    order: 3,
+  },
+];
+
+describe('FieldManager', () => {
+  const defaultProps = {
+    fields: mockFields,
+    onFieldsUpdate: jest.fn(),
+    onFieldSelect: jest.fn(),
+    allowReorder: true,
+    showPreview: true,
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('Rendering', () => {
+    it('renders the field manager with correct title', () => {
+      render(<FieldManager {...defaultProps} />);
+
+      expect(screen.getByText('Field Manager')).toBeInTheDocument();
+      expect(screen.getByText('4 of 4 fields')).toBeInTheDocument();
+    });
+
+    it('renders search input', () => {
+      render(<FieldManager {...defaultProps} />);
+
+      expect(
+        screen.getByPlaceholderText('Search fields...'),
+      ).toBeInTheDocument();
+    });
+
+    it('renders filter dropdown', () => {
+      render(<FieldManager {...defaultProps} />);
+
+      expect(screen.getByRole('combobox')).toBeInTheDocument();
+      expect(screen.getByDisplayValue('All Types')).toBeInTheDocument();
+    });
+
+    it('renders quick add field buttons', () => {
+      render(<FieldManager {...defaultProps} />);
+
+      expect(screen.getByText('Quick Add Fields')).toBeInTheDocument();
+      expect(screen.getByText('Input Fields')).toBeInTheDocument();
+      expect(screen.getByText('Selection')).toBeInTheDocument();
+      expect(screen.getByText('Media & Files')).toBeInTheDocument();
+      expect(screen.getByText('Layout')).toBeInTheDocument();
+    });
+
+    it('renders all fields as cards', () => {
+      render(<FieldManager {...defaultProps} />);
+
+      mockFields.forEach((field) => {
+        expect(screen.getByText(field.label)).toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('Search Functionality', () => {
+    it('filters fields based on search term', async () => {
+      const user = userEvent.setup();
+      render(<FieldManager {...defaultProps} />);
+
+      const searchInput = screen.getByPlaceholderText('Search fields...');
+      await user.type(searchInput, 'email');
+
+      await waitFor(() => {
+        expect(screen.getByText('Email Address')).toBeInTheDocument();
+        expect(screen.queryByText('First Name')).not.toBeInTheDocument();
+        expect(screen.getByText('1 of 4 fields')).toBeInTheDocument();
+      });
+    });
+
+    it('shows no results message when search has no matches', async () => {
+      const user = userEvent.setup();
+      render(<FieldManager {...defaultProps} />);
+
+      const searchInput = screen.getByPlaceholderText('Search fields...');
+      await user.type(searchInput, 'nonexistent');
+
+      await waitFor(() => {
+        expect(
+          screen.getByText('No fields match your criteria'),
+        ).toBeInTheDocument();
+      });
+    });
+
+    it('clears search when input is emptied', async () => {
+      const user = userEvent.setup();
+      render(<FieldManager {...defaultProps} />);
+
+      const searchInput = screen.getByPlaceholderText('Search fields...');
+      await user.type(searchInput, 'email');
+      await user.clear(searchInput);
+
+      await waitFor(() => {
+        expect(screen.getByText('4 of 4 fields')).toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('Type Filtering', () => {
+    it('filters fields by type', async () => {
+      const user = userEvent.setup();
+      render(<FieldManager {...defaultProps} />);
+
+      const filterSelect = screen.getByRole('combobox');
+      await user.selectOptions(filterSelect, 'text');
+
+      await waitFor(() => {
+        expect(screen.getByText('First Name')).toBeInTheDocument();
+        expect(screen.queryByText('Email Address')).not.toBeInTheDocument();
+        expect(screen.getByText('1 of 4 fields')).toBeInTheDocument();
+      });
+    });
+
+    it('shows all fields when "All Types" is selected', async () => {
+      const user = userEvent.setup();
+      render(<FieldManager {...defaultProps} />);
+
+      const filterSelect = screen.getByRole('combobox');
+      await user.selectOptions(filterSelect, 'text');
+      await user.selectOptions(filterSelect, 'all');
+
+      await waitFor(() => {
+        expect(screen.getByText('4 of 4 fields')).toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('Field Operations', () => {
+    it('calls onFieldSelect when field is clicked', async () => {
+      const user = userEvent.setup();
+      const mockOnFieldSelect = jest.fn();
+      render(
+        <FieldManager {...defaultProps} onFieldSelect={mockOnFieldSelect} />,
+      );
+
+      const fieldCard = screen
+        .getByText('First Name')
+        .closest('[role="button"]');
+      if (fieldCard) {
+        await user.click(fieldCard);
+        expect(mockOnFieldSelect).toHaveBeenCalledWith(mockFields[0]);
+      }
+    });
+
+    it('adds new field when quick add button is clicked', async () => {
+      const user = userEvent.setup();
+      const mockOnFieldsUpdate = jest.fn();
+      render(
+        <FieldManager {...defaultProps} onFieldsUpdate={mockOnFieldsUpdate} />,
+      );
+
+      const textButton = screen.getByRole('button', { name: /Text/i });
+      await user.click(textButton);
+
+      expect(mockOnFieldsUpdate).toHaveBeenCalled();
+      const call = mockOnFieldsUpdate.mock.calls[0][0];
+      expect(call).toHaveLength(5); // Original 4 + 1 new field
+      expect(call[4].type).toBe('text');
+    });
+
+    it('duplicates field when duplicate button is clicked', async () => {
+      const user = userEvent.setup();
+      const mockOnFieldsUpdate = jest.fn();
+      render(
+        <FieldManager {...defaultProps} onFieldsUpdate={mockOnFieldsUpdate} />,
+      );
+
+      // Click on field to expand it first
+      const fieldCard = screen.getByText('First Name').closest('div');
+      if (fieldCard) {
+        const duplicateButton = fieldCard.querySelector('[title="Duplicate"]');
+        if (duplicateButton) {
+          await user.click(duplicateButton);
+
+          expect(mockOnFieldsUpdate).toHaveBeenCalled();
+          const call = mockOnFieldsUpdate.mock.calls[0][0];
+          expect(call).toHaveLength(5);
+          expect(call[4].label).toBe('First Name (Copy)');
+        }
+      }
+    });
+
+    it('deletes field when delete button is clicked', async () => {
+      const user = userEvent.setup();
+      const mockOnFieldsUpdate = jest.fn();
+      render(
+        <FieldManager {...defaultProps} onFieldsUpdate={mockOnFieldsUpdate} />,
+      );
+
+      // Find and click delete button
+      const deleteButtons = screen.getAllByRole('button');
+      const deleteButton = deleteButtons.find(
+        (btn) =>
+          btn.querySelector('svg')?.getAttribute('data-testid') === 'TrashIcon',
+      );
+
+      if (deleteButton) {
+        await user.click(deleteButton);
+
+        expect(mockOnFieldsUpdate).toHaveBeenCalled();
+        const call = mockOnFieldsUpdate.mock.calls[0][0];
+        expect(call).toHaveLength(3);
+      }
+    });
+
+    it('toggles field visibility', async () => {
+      const user = userEvent.setup();
+      const mockOnFieldsUpdate = jest.fn();
+      render(
+        <FieldManager {...defaultProps} onFieldsUpdate={mockOnFieldsUpdate} />,
+      );
+
+      // Find visibility toggle button
+      const visibilityButtons = screen.getAllByRole('button');
+      const visibilityButton = visibilityButtons.find(
+        (btn) =>
+          btn.querySelector('svg')?.getAttribute('data-testid') === 'EyeIcon',
+      );
+
+      if (visibilityButton) {
+        await user.click(visibilityButton);
+
+        expect(mockOnFieldsUpdate).toHaveBeenCalled();
+        const call = mockOnFieldsUpdate.mock.calls[0][0];
+        expect(call[0].conditionalLogic?.show).toBe(false);
+      }
+    });
+  });
+
+  describe('Field Preview', () => {
+    it('shows field preview when showPreview is true', () => {
+      render(<FieldManager {...defaultProps} showPreview={true} />);
+
+      // Expand a field card to see preview
+      const settingsButtons = screen.getAllByRole('button');
+      const settingsButton = settingsButtons.find(
+        (btn) =>
+          btn.querySelector('svg')?.getAttribute('data-testid') ===
+          'Cog6ToothIcon',
+      );
+
+      if (settingsButton) {
+        fireEvent.click(settingsButton);
+        expect(screen.getByText('Preview:')).toBeInTheDocument();
+      }
+    });
+
+    it('renders different field types correctly in preview', async () => {
+      const user = userEvent.setup();
+      render(<FieldManager {...defaultProps} showPreview={true} />);
+
+      // Expand the email field
+      const emailCard = screen.getByText('Email Address').closest('div');
+      if (emailCard) {
+        const settingsButton = emailCard.querySelector('[role="button"]');
+        if (settingsButton) {
+          await user.click(settingsButton);
+
+          // Should show email input in preview
+          const preview = screen.getByText('Preview:').closest('div');
+          expect(preview).toContainHTML('type="email"');
+        }
+      }
+    });
+  });
+
+  describe('Field Editing', () => {
+    it('updates field label when edited in expanded view', async () => {
+      const user = userEvent.setup();
+      const mockOnFieldsUpdate = jest.fn();
+      render(
+        <FieldManager {...defaultProps} onFieldsUpdate={mockOnFieldsUpdate} />,
+      );
+
+      // Expand first field
+      const settingsButtons = screen.getAllByRole('button');
+      const settingsButton = settingsButtons.find(
+        (btn) =>
+          btn.querySelector('svg')?.getAttribute('data-testid') ===
+          'Cog6ToothIcon',
+      );
+
+      if (settingsButton) {
+        await user.click(settingsButton);
+
+        const labelInput = screen.getByDisplayValue('First Name');
+        await user.clear(labelInput);
+        await user.type(labelInput, 'Updated Name');
+
+        expect(mockOnFieldsUpdate).toHaveBeenCalled();
+      }
+    });
+
+    it('toggles required field setting', async () => {
+      const user = userEvent.setup();
+      const mockOnFieldsUpdate = jest.fn();
+      render(
+        <FieldManager {...defaultProps} onFieldsUpdate={mockOnFieldsUpdate} />,
+      );
+
+      // Expand first field and toggle required
+      const settingsButtons = screen.getAllByRole('button');
+      const settingsButton = settingsButtons.find(
+        (btn) =>
+          btn.querySelector('svg')?.getAttribute('data-testid') ===
+          'Cog6ToothIcon',
+      );
+
+      if (settingsButton) {
+        await user.click(settingsButton);
+
+        const requiredSwitch = screen.getByRole('switch');
+        await user.click(requiredSwitch);
+
+        expect(mockOnFieldsUpdate).toHaveBeenCalled();
+      }
+    });
+  });
+
+  describe('Reordering', () => {
+    it('moves field up when move up button is clicked', async () => {
+      const user = userEvent.setup();
+      const mockOnFieldsUpdate = jest.fn();
+      render(
+        <FieldManager
+          {...defaultProps}
+          onFieldsUpdate={mockOnFieldsUpdate}
+          allowReorder={true}
+        />,
+      );
+
+      // Find move up button for second field
+      const moveUpButtons = screen.getAllByRole('button');
+      const moveUpButton = moveUpButtons.find(
+        (btn) =>
+          btn.querySelector('svg')?.getAttribute('data-testid') ===
+          'ChevronUpIcon',
+      );
+
+      if (moveUpButton) {
+        await user.click(moveUpButton);
+
+        expect(mockOnFieldsUpdate).toHaveBeenCalled();
+        // Verify field order was changed
+        const call = mockOnFieldsUpdate.mock.calls[0][0];
+        expect(call[0].order).toBe(0);
+        expect(call[1].order).toBe(1);
+      }
+    });
+
+    it('does not show reorder buttons when allowReorder is false', () => {
+      render(<FieldManager {...defaultProps} allowReorder={false} />);
+
+      const moveButtons = screen
+        .queryAllByRole('button')
+        .filter(
+          (btn) =>
+            btn.querySelector('svg')?.getAttribute('data-testid') ===
+              'ChevronUpIcon' ||
+            btn.querySelector('svg')?.getAttribute('data-testid') ===
+              'ChevronDownIcon',
+        );
+
+      expect(moveButtons).toHaveLength(0);
+    });
+  });
+
+  describe('Edge Cases', () => {
+    it('handles empty fields array', () => {
+      render(<FieldManager {...defaultProps} fields={[]} />);
+
+      expect(screen.getByText('0 of 0 fields')).toBeInTheDocument();
+      expect(screen.getByText('No fields added yet')).toBeInTheDocument();
+    });
+
+    it('handles fields without validation', () => {
+      const fieldsWithoutValidation: FormField[] = [
+        {
+          id: 'simple-field',
+          type: 'text',
+          label: 'Simple Field',
+          order: 0,
+        },
+      ];
+
+      render(
+        <FieldManager {...defaultProps} fields={fieldsWithoutValidation} />,
+      );
+
+      expect(screen.getByText('Simple Field')).toBeInTheDocument();
+    });
+
+    it('handles field selection when no onFieldSelect prop provided', async () => {
+      const user = userEvent.setup();
+      render(<FieldManager {...defaultProps} onFieldSelect={undefined} />);
+
+      const fieldCard = screen
+        .getByText('First Name')
+        .closest('[role="button"]');
+      if (fieldCard) {
+        // Should not throw error
+        await user.click(fieldCard);
+      }
+    });
+  });
+
+  describe('Performance', () => {
+    it('debounces search input', async () => {
+      const user = userEvent.setup();
+      render(<FieldManager {...defaultProps} />);
+
+      const searchInput = screen.getByPlaceholderText('Search fields...');
+
+      // Type multiple characters quickly
+      await user.type(searchInput, 'test', { delay: 50 });
+
+      // Should only filter once after typing is complete
+      await waitFor(
+        () => {
+          expect(
+            screen.getByText('No fields match your criteria'),
+          ).toBeInTheDocument();
+        },
+        { timeout: 1000 },
+      );
+    });
+  });
+
+  describe('Accessibility', () => {
+    it('has proper ARIA labels', () => {
+      render(<FieldManager {...defaultProps} />);
+
+      expect(screen.getByPlaceholderText('Search fields...')).toHaveAttribute(
+        'type',
+        'text',
+      );
+      expect(screen.getByRole('combobox')).toBeInTheDocument();
+    });
+
+    it('supports keyboard navigation', async () => {
+      const user = userEvent.setup();
+      render(<FieldManager {...defaultProps} />);
+
+      const searchInput = screen.getByPlaceholderText('Search fields...');
+      searchInput.focus();
+
+      expect(searchInput).toHaveFocus();
+
+      // Tab to next focusable element
+      await user.tab();
+      expect(screen.getByRole('combobox')).toHaveFocus();
+    });
+  });
+});

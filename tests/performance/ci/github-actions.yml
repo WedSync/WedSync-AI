@@ -1,0 +1,337 @@
+# GitHub Actions Workflow for Performance Testing
+# File: .github/workflows/performance-tests.yml
+name: WedSync Performance Tests
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Run performance tests daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Test environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+      test_suites:
+        description: 'Test suites to run (comma-separated)'
+        required: false
+        default: 'wedding-day-load,mobile-performance,api-performance'
+      parallel_execution:
+        description: 'Run tests in parallel'
+        required: false
+        default: true
+        type: boolean
+
+env:
+  NODE_VERSION: '18'
+  POSTGRES_VERSION: '15'
+
+jobs:
+  performance-tests:
+    name: Performance Tests (${{ matrix.environment }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ github.event.inputs.environment && fromJson(format('["{0}"]', github.event.inputs.environment)) || fromJson('["staging"]') }}
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: wedsync_test
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: wedsync_performance_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.npm
+            ~/.cache
+            node_modules
+            */*/node_modules
+          key: ${{ runner.os }}-performance-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-performance-
+
+      - name: Install dependencies
+        run: |
+          cd wedsync
+          npm ci
+          npx playwright install --with-deps
+
+      - name: Setup test database
+        run: |
+          cd wedsync
+          cp .env.example .env.test
+          echo "DATABASE_URL=postgresql://wedsync_test:test_password@localhost:5432/wedsync_performance_test" >> .env.test
+          echo "REDIS_URL=redis://localhost:6379" >> .env.test
+          npm run db:test:setup
+
+      - name: Build application
+        run: |
+          cd wedsync
+          npm run build
+
+      - name: Start application in background
+        run: |
+          cd wedsync
+          npm start &
+          sleep 30  # Wait for application to start
+          
+          # Health check
+          curl -f http://localhost:3000/api/health || exit 1
+          echo "✅ Application is running"
+
+      - name: Run performance tests
+        run: |
+          cd wedsync
+          
+          # Parse test suites from input
+          TEST_SUITES="${{ github.event.inputs.test_suites || 'wedding-day-load,mobile-performance,api-performance' }}"
+          PARALLEL="${{ github.event.inputs.parallel_execution || true }}"
+          ENVIRONMENT="${{ matrix.environment }}"
+          
+          echo "Running performance tests:"
+          echo "- Environment: $ENVIRONMENT"
+          echo "- Test Suites: $TEST_SUITES"
+          echo "- Parallel: $PARALLEL"
+          
+          # Create performance test command
+          npx tsx tests/performance/runner/performance-test-runner.ts \
+            --environment="$ENVIRONMENT" \
+            --suites="$TEST_SUITES" \
+            --parallel="$PARALLEL" \
+            --report-formats="json,html,junit" \
+            --webhook-url="${{ secrets.SLACK_WEBHOOK_URL }}" \
+            --slack-channel="#performance-alerts"
+        env:
+          PERFORMANCE_TEST_ENVIRONMENT: ${{ matrix.environment }}
+          BASE_URL: ${{ matrix.environment == 'staging' && 'https://staging.wedsync.com' || 'http://localhost:3000' }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+      - name: Upload performance reports
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: performance-reports-${{ matrix.environment }}
+          path: wedsync/test-results/performance/
+          retention-days: 30
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: performance-test-results-${{ matrix.environment }}
+          path: |
+            wedsync/test-results/
+            wedsync/playwright-report/
+          retention-days: 7
+
+      - name: Publish test results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Performance Tests (${{ matrix.environment }})
+          path: wedsync/test-results/performance/performance-junit-*.xml
+          reporter: java-junit
+          fail-on-error: false
+
+      - name: Performance regression check
+        if: github.event_name == 'pull_request'
+        run: |
+          cd wedsync
+          
+          # Compare performance with main branch
+          echo "🔍 Checking for performance regressions..."
+          
+          # Download baseline performance data from main branch
+          # (This would typically fetch from a performance database or artifact storage)
+          
+          # Run regression analysis
+          npx tsx tests/performance/scripts/regression-check.ts \
+            --baseline-branch=main \
+            --current-results=test-results/performance/ \
+            --threshold=10  # 10% regression threshold
+          
+          echo "✅ Regression check complete"
+
+      - name: Comment PR with performance results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            
+            try {
+              // Read performance report
+              const reportDir = 'wedsync/test-results/performance/';
+              const files = fs.readdirSync(reportDir);
+              const jsonFile = files.find(f => f.startsWith('performance-report-') && f.endsWith('.json'));
+              
+              if (jsonFile) {
+                const reportPath = path.join(reportDir, jsonFile);
+                const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+                const summary = report.summary;
+                
+                const comment = `## 🚀 Performance Test Results
+                
+**Summary:**
+- ✅ Tests Passed: ${summary.passedTests}/${summary.totalTests}
+- ⏱️ Duration: ${(summary.totalDuration / 1000 / 60).toFixed(1)} minutes
+- 📊 Performance Status: ${summary.performanceRegression ? '⚠️ Regression Detected' : '✅ Stable'}
+
+**Key Metrics:**
+${report.reports.map(r => 
+  `- **${r.testName}**: ${r.passed ? '✅' : '❌'} (${(r.duration / 1000).toFixed(1)}s)`
+).join('\n')}
+
+**Detailed Reports:** Check the artifacts section for full HTML and JSON reports.
+
+${summary.performanceRegression ? '⚠️ **Performance regression detected!** Please review the detailed reports.' : ''}
+`;
+                
+                github.rest.issues.createComment({
+                  issue_number: context.issue.number,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  body: comment
+                });
+              }
+            } catch (error) {
+              console.error('Failed to post performance results:', error);
+            }
+
+      - name: Slack notification on failure
+        if: failure() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+        uses: 8398a7/action-slack@v3
+        with:
+          status: failure
+          channel: '#performance-alerts'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          fields: repo,message,commit,author,action,eventName,ref,workflow
+          custom_payload: |
+            {
+              attachments: [{
+                color: 'danger',
+                title: '🚨 Performance Tests Failed',
+                text: `Performance tests failed on ${process.env.AS_REF}`,
+                fields: [{
+                  title: 'Repository',
+                  value: process.env.AS_REPO,
+                  short: true
+                }, {
+                  title: 'Environment',
+                  value: '${{ matrix.environment }}',
+                  short: true
+                }]
+              }]
+            }
+
+  performance-trend-analysis:
+    name: Performance Trend Analysis
+    runs-on: ubuntu-latest
+    needs: performance-tests
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Download performance reports
+        uses: actions/download-artifact@v3
+        with:
+          name: performance-reports-staging
+          path: performance-reports/
+
+      - name: Generate trend analysis
+        run: |
+          cd wedsync
+          npm ci
+          
+          # Run trend analysis
+          npx tsx tests/performance/scripts/trend-analysis.ts \
+            --reports-dir="../performance-reports" \
+            --output="performance-trends.json"
+          
+          echo "📈 Trend analysis complete"
+
+      - name: Upload trend data
+        uses: actions/upload-artifact@v3
+        with:
+          name: performance-trends
+          path: wedsync/performance-trends.json
+
+      - name: Update performance dashboard
+        run: |
+          echo "📊 Updating performance dashboard..."
+          # This would typically update a performance monitoring dashboard
+          # or database with the latest performance metrics
+
+  performance-alert:
+    name: Performance Alert Check
+    runs-on: ubuntu-latest
+    needs: performance-tests
+    if: always()
+    
+    steps:
+      - name: Check for critical performance issues
+        run: |
+          # This job would check for critical performance regressions
+          # and alert the team if immediate action is required
+          echo "🔍 Checking for critical performance issues..."
+          
+          # Example: Check if response times exceeded critical thresholds
+          # Example: Check if error rates spiked above acceptable levels
+          # Example: Check if throughput dropped significantly
+          
+          echo "✅ Performance alert check complete"

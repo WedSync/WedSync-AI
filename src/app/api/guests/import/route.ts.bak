@@ -1,0 +1,456 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@/lib/supabase/server'
+import { z } from 'zod'
+import Papa from 'papaparse'
+
+const importRequestSchema = z.object({
+  couple_id: z.string().uuid(),
+  import_type: z.enum(['csv', 'google_contacts', 'manual', 'excel']),
+  column_mapping: z.record(z.string()).optional(),
+  duplicate_handling: z.enum(['skip', 'merge', 'create_anyway']).default('skip'),
+  household_grouping: z.boolean().default(true)
+})
+
+// POST /api/guests/import - Import guests from various sources
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = await createClient()
+    const { data: user } = await supabase.auth.getUser()
+    
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
+    const formData = await request.formData()
+    const file = formData.get('file') as File
+    const metaDataStr = formData.get('metadata') as string
+    
+    if (!file || !metaDataStr) {
+      return NextResponse.json({ error: 'File and metadata required' }, { status: 400 })
+    }
+
+    const metadata = JSON.parse(metaDataStr)
+    const validatedData = importRequestSchema.parse(metadata)
+
+    // Get user's organization
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', user.id)
+      .single()
+
+    if (!profile?.organization_id) {
+      return NextResponse.json({ error: 'No organization found' }, { status: 400 })
+    }
+
+    // Verify couple belongs to user's organization
+    const { data: client } = await supabase
+      .from('clients')
+      .select('id, first_name, last_name')
+      .eq('id', validatedData.couple_id)
+      .eq('organization_id', profile.organization_id)
+      .single()
+
+    if (!client) {
+      return NextResponse.json({ error: 'Client not found' }, { status: 404 })
+    }
+
+    // Create import session
+    const { data: importSession, error: sessionError } = await supabase
+      .from('guest_import_sessions')
+      .insert({
+        couple_id: validatedData.couple_id,
+        import_type: validatedData.import_type,
+        file_name: `${Date.now()}-${file.name}`,
+        original_file_name: file.name,
+        file_size: file.size,
+        mapping_config: validatedData.column_mapping || {}
+      })
+      .select()
+      .single()
+
+    if (sessionError || !importSession) {
+      console.error('Error creating import session:', sessionError)
+      return NextResponse.json({ error: 'Failed to create import session' }, { status: 500 })
+    }
+
+    try {
+      // Parse file based on type
+      let parsedData: any[] = []
+      
+      if (validatedData.import_type === 'csv') {
+        parsedData = await parseCSVFile(file)
+      } else if (validatedData.import_type === 'excel') {
+        parsedData = await parseExcelFile(file)
+      } else {
+        throw new Error(`Import type ${validatedData.import_type} not yet implemented`)
+      }
+
+      // Update session with total rows
+      await supabase
+        .from('guest_import_sessions')
+        .update({ total_rows: parsedData.length })
+        .eq('id', importSession.id)
+
+      // Process guests with column mapping
+      const processedGuests = await processImportData(
+        parsedData,
+        validatedData.column_mapping || {},
+        validatedData.couple_id,
+        importSession.id
+      )
+
+      // Import guests with duplicate detection
+      const importResults = await importGuestsWithDuplicateHandling(
+        supabase,
+        processedGuests,
+        validatedData.duplicate_handling,
+        importSession.id
+      )
+
+      // Create households if enabled
+      if (validatedData.household_grouping && importResults.successful_guests.length > 0) {
+        await createHouseholdsFromImport(supabase, importResults.successful_guests)
+      }
+
+      // Update import session with results
+      const performanceMetrics = {
+        processing_time_ms: Date.now() - new Date(importSession.created_at).getTime(),
+        file_size_mb: (file.size / (1024 * 1024)).toFixed(2),
+        batch_size: 100,
+        batches_processed: Math.ceil(parsedData.length / 100)
+      }
+
+      await supabase
+        .from('guest_import_sessions')
+        .update({
+          status: 'completed',
+          completed_at: new Date().toISOString(),
+          successful_imports: importResults.successful_count,
+          failed_imports: importResults.failed_count,
+          processed_rows: parsedData.length,
+          performance_metrics: performanceMetrics,
+          error_log: importResults.errors
+        })
+        .eq('id', importSession.id)
+
+      return NextResponse.json({
+        success: true,
+        import_session_id: importSession.id,
+        total_clients: parsedData.length,
+        successful_imports: importResults.successful_count,
+        failed_imports: importResults.failed_count,
+        errors: importResults.errors,
+        performance_metrics: performanceMetrics,
+        households_created: importResults.households_created || 0
+      })
+
+    } catch (processingError) {
+      console.error('Error processing import:', processingError)
+      
+      // Update session status to failed
+      await supabase
+        .from('guest_import_sessions')
+        .update({
+          status: 'failed',
+          completed_at: new Date().toISOString(),
+          error_log: [{
+            row: 0,
+            field: 'processing',
+            message: processingError instanceof Error ? processingError.message : 'Processing failed',
+            value: ''
+          }]
+        })
+        .eq('id', importSession.id)
+
+      return NextResponse.json({
+        success: false,
+        error: 'Import processing failed',
+        import_session_id: importSession.id
+      }, { status: 500 })
+    }
+
+  } catch (error) {
+    console.error('Error in POST /api/guests/import:', error)
+    
+    if (error instanceof z.ZodError) {
+      return NextResponse.json({
+        error: 'Validation failed',
+        details: error.errors
+      }, { status: 400 })
+    }
+
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+  }
+}
+
+async function parseCSVFile(file: File): Promise<any[]> {
+  return new Promise((resolve, reject) => {
+    const text = file.stream()
+    const reader = text.getReader()
+    let csvContent = ''
+
+    const readStream = async () => {
+      try {
+        const { done, value } = await reader.read()
+        if (done) {
+          Papa.parse(csvContent, {
+            header: true,
+            skipEmptyLines: true,
+            transformHeader: (header) => header.toLowerCase().trim().replace(/[^a-z0-9]/g, '_'),
+            complete: (results) => {
+              resolve(results.data as any[])
+            },
+            error: (error) => reject(new Error(`CSV parsing failed: ${error.message}`))
+          })
+          return
+        }
+        
+        csvContent += new TextDecoder().decode(value)
+        await readStream()
+      } catch (error) {
+        reject(error)
+      }
+    }
+
+    readStream()
+  })
+}
+
+async function parseExcelFile(file: File): Promise<any[]> {
+  try {
+    const XLSX = await import('xlsx')
+    const buffer = await file.arrayBuffer()
+    const workbook = XLSX.read(buffer, { type: 'array' })
+    const sheetName = workbook.SheetNames[0]
+    const worksheet = workbook.Sheets[sheetName]
+    
+    const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as any[][]
+    
+    if (jsonData.length < 2) {
+      throw new Error('Excel file must contain at least a header row and one data row')
+    }
+
+    const headers = jsonData[0].map((h: any) => h?.toString().toLowerCase().trim().replace(/[^a-z0-9]/g, '_') || '')
+    const rows = jsonData.slice(1)
+
+    return rows.map((row: any[]) => {
+      const record: any = {}
+      headers.forEach((header: string, index: number) => {
+        const value = row[index]?.toString().trim()
+        if (value) {
+          record[header] = value
+        }
+      })
+      return record
+    }).filter(record => Object.keys(record).length > 0)
+
+  } catch (error) {
+    throw new Error(`Excel parsing failed: ${error instanceof Error ? error.message : 'Unknown error'}`)
+  }
+}
+
+async function processImportData(
+  rawData: any[],
+  columnMapping: Record<string, string>,
+  coupleId: string,
+  sessionId: string
+): Promise<any[]> {
+  return rawData.map((row, index) => {
+    const processedRow: any = {
+      couple_id: coupleId,
+      original_row_index: index + 1
+    }
+
+    // Apply column mapping
+    Object.entries(columnMapping).forEach(([sourceColumn, targetField]) => {
+      if (row[sourceColumn] !== undefined) {
+        let value = row[sourceColumn]
+        
+        // Type conversions
+        if (targetField === 'plus_one') {
+          value = ['yes', 'true', '1', 'y'].includes(value.toString().toLowerCase())
+        } else if (targetField === 'table_number') {
+          const num = parseInt(value)
+          value = isNaN(num) ? null : num
+        } else if (targetField === 'tags' && typeof value === 'string') {
+          value = value.split(',').map(tag => tag.trim()).filter(Boolean)
+        }
+        
+        processedRow[targetField] = value
+      }
+    })
+
+    // Set defaults
+    processedRow.category = processedRow.category || 'family'
+    processedRow.side = processedRow.side || 'mutual'
+    processedRow.age_group = processedRow.age_group || 'adult'
+    processedRow.rsvp_status = processedRow.rsvp_status || 'pending'
+    processedRow.plus_one = processedRow.plus_one || false
+    processedRow.tags = processedRow.tags || []
+
+    return processedRow
+  })
+}
+
+async function importGuestsWithDuplicateHandling(
+  supabase: any,
+  guests: any[],
+  duplicateHandling: string,
+  sessionId: string
+): Promise<{
+  successful_count: number
+  failed_count: number
+  successful_guests: any[]
+  errors: any[]
+}> {
+  const results = {
+    successful_count: 0,
+    failed_count: 0,
+    successful_guests: [],
+    errors: []
+  }
+
+  for (const guest of guests) {
+    try {
+      // Check for duplicates if not creating anyway
+      let duplicates: any[] = []
+      if (duplicateHandling !== 'create_anyway') {
+        const { data } = await supabase.rpc('find_duplicate_guests', {
+          couple_id_param: guest.couple_id,
+          email_param: guest.email,
+          first_name_param: guest.first_name,
+          last_name_param: guest.last_name,
+          phone_param: guest.phone
+        })
+        duplicates = data || []
+      }
+
+      if (duplicates.length > 0 && duplicates[0].match_score >= 70) {
+        if (duplicateHandling === 'skip') {
+          // Log as skipped
+          await supabase
+            .from('guest_import_history')
+            .insert({
+              import_session_id: sessionId,
+              guest_id: duplicates[0].guest_id,
+              action: 'skipped',
+              original_data: guest,
+              error_message: `Duplicate found: ${duplicates[0].guest_name}`
+            })
+          
+          results.errors.push({
+            row: guest.original_row_index,
+            field: 'duplicate',
+            message: `Skipped duplicate: ${duplicates[0].guest_name}`,
+            value: `${guest.first_name} ${guest.last_name}`
+          })
+          continue
+        } else if (duplicateHandling === 'merge') {
+          // Update existing guest
+          const updateData = { ...guest }
+          delete updateData.couple_id
+          delete updateData.original_row_index
+          
+          const { data: updatedGuest } = await supabase
+            .from('guests')
+            .update(updateData)
+            .eq('id', duplicates[0].guest_id)
+            .select()
+            .single()
+
+          if (updatedGuest) {
+            results.successful_guests.push(updatedGuest)
+            results.successful_count++
+          }
+          continue
+        }
+      }
+
+      // Create new guest
+      const guestData = { ...guest }
+      delete guestData.original_row_index
+
+      const { data: newGuest, error } = await supabase
+        .from('guests')
+        .insert(guestData)
+        .select()
+        .single()
+
+      if (error) {
+        throw error
+      }
+
+      // Log success
+      await supabase
+        .from('guest_import_history')
+        .insert({
+          import_session_id: sessionId,
+          guest_id: newGuest.id,
+          action: 'created',
+          processed_data: guestData
+        })
+
+      results.successful_guests.push(newGuest)
+      results.successful_count++
+
+    } catch (error) {
+      results.failed_count++
+      results.errors.push({
+        row: guest.original_row_index,
+        field: 'import',
+        message: error instanceof Error ? error.message : 'Unknown error',
+        value: `${guest.first_name} ${guest.last_name}`
+      })
+
+      // Log error
+      await supabase
+        .from('guest_import_history')
+        .insert({
+          import_session_id: sessionId,
+          action: 'error',
+          original_data: guest,
+          error_message: error instanceof Error ? error.message : 'Unknown error'
+        })
+    }
+  }
+
+  return results
+}
+
+async function createHouseholdsFromImport(supabase: any, guests: any[]): Promise<number> {
+  const householdGroups = new Map<string, any[]>()
+  
+  // Group guests by last name and address
+  guests.forEach(guest => {
+    const key = `${guest.last_name.toLowerCase()}-${JSON.stringify(guest.address || {})}`
+    if (!householdGroups.has(key)) {
+      householdGroups.set(key, [])
+    }
+    householdGroups.get(key)?.push(guest)
+  })
+
+  let householdsCreated = 0
+  
+  // Create households for groups with multiple guests
+  for (const [key, householdGuests] of householdGroups.entries()) {
+    if (householdGuests.length > 1) {
+      try {
+        const householdName = `${householdGuests[0].first_name} ${householdGuests[0].last_name} Family`
+        
+        const { data: householdId } = await supabase.rpc('create_household_from_guests', {
+          guest_ids: householdGuests.map(g => g.id),
+          household_name: householdName
+        })
+
+        if (householdId) {
+          householdsCreated++
+        }
+      } catch (error) {
+        console.error('Error creating household:', error)
+      }
+    }
+  }
+
+  return householdsCreated
+}

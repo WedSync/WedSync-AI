@@ -1,0 +1,432 @@
+import { 
+  ReferralEngine, 
+  generateReferralCode, 
+  detectFraudulentConversion, 
+  generateQRCode 
+} from '@/lib/referrals/referral-engine';
+
+// Mock supabase client
+jest.mock('@/lib/supabase/server', () => ({
+  createClient: jest.fn(() => ({
+    from: jest.fn(() => ({
+      insert: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      single: jest.fn().mockResolvedValue({ data: mockProgram, error: null }),
+      update: jest.fn().mockReturnThis(),
+      upsert: jest.fn().mockResolvedValue({ data: {}, error: null }),
+      gte: jest.fn().mockReturnThis(),
+      is: jest.fn().mockReturnThis(),
+      lt: jest.fn().mockReturnThis(),
+      not: jest.fn().mockReturnThis(),
+      order: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis()
+    })),
+    auth: {
+      getUser: jest.fn().mockResolvedValue({ 
+        data: { user: { id: 'user-123' } }, 
+        error: null 
+      })
+    }
+  }))
+}));
+
+// Mock QRCode library
+jest.mock('qrcode', () => ({
+  toDataURL: jest.fn().mockResolvedValue('data:image/png;base64,mockQRCode')
+}));
+
+// Mock nanoid
+jest.mock('nanoid', () => ({
+  nanoid: jest.fn(() => 'MOCK12345')
+}));
+
+const mockProgram = {
+  id: 'program-123',
+  supplier_id: 'supplier-123',
+  name: 'Test Referral Program',
+  reward_type: 'monetary',
+  referrer_reward_amount: 50,
+  referee_reward_amount: 25,
+  milestone_rewards: { 3: 50, 5: 100, 10: 250 },
+  attribution_window_days: 90,
+  is_active: true,
+  created_at: new Date().toISOString()
+};
+
+const mockReferralCode = {
+  id: 'code-123',
+  code: 'MOCK12345',
+  program_id: 'program-123',
+  couple_id: 'couple-123',
+  landing_page_url: 'https://wedsync.com/refer/supplier/MOCK12345',
+  qr_code_url: 'data:image/png;base64,mockQRCode',
+  total_clicks: 0,
+  total_conversions: 0,
+  status: 'active',
+  created_at: new Date().toISOString()
+};
+
+describe('Referral Engine', () => {
+  let referralEngine: ReferralEngine;
+
+  beforeEach(() => {
+    referralEngine = new ReferralEngine();
+    jest.clearAllMocks();
+  });
+
+  describe('createProgram', () => {
+    it('should create a referral program successfully', async () => {
+      const programData = {
+        name: 'Test Program',
+        rewardType: 'monetary' as const,
+        referrerRewardAmount: 50,
+        refereeRewardAmount: 25,
+        milestoneRewards: { 3: 50, 5: 100 },
+        attributionWindowDays: 90
+      };
+
+      const result = await referralEngine.createProgram('supplier-123', programData);
+      
+      expect(result).toBeDefined();
+      expect(result.name).toBe(programData.name);
+      expect(result.reward_type).toBe(programData.rewardType);
+    });
+
+    it('should handle program creation errors', async () => {
+      const mockSupabase = require('@/lib/supabase/server').createClient();
+      mockSupabase.from().insert().select().single.mockResolvedValueOnce({ 
+        data: null, 
+        error: new Error('Database error') 
+      });
+
+      const programData = {
+        name: 'Test Program',
+        rewardType: 'monetary' as const,
+        referrerRewardAmount: 50,
+        refereeRewardAmount: 25
+      };
+
+      await expect(
+        referralEngine.createProgram('supplier-123', programData)
+      ).rejects.toThrow('Database error');
+    });
+  });
+
+  describe('trackClick', () => {
+    it('should track a click successfully', async () => {
+      const mockSupabase = require('@/lib/supabase/server').createClient();
+      mockSupabase.from().select().eq().single.mockResolvedValueOnce({ 
+        data: mockReferralCode, 
+        error: null 
+      });
+      mockSupabase.from().insert().select().single.mockResolvedValueOnce({
+        data: { id: 'conversion-123' },
+        error: null
+      });
+
+      const result = await referralEngine.trackClick('MOCK12345', {
+        ipAddress: '192.168.1.1',
+        userAgent: 'Mozilla/5.0 Test Browser'
+      });
+
+      expect(result).toBeDefined();
+      expect(result.id).toBe('conversion-123');
+    });
+
+    it('should reject invalid referral codes', async () => {
+      const mockSupabase = require('@/lib/supabase/server').createClient();
+      mockSupabase.from().select().eq().single.mockResolvedValueOnce({ 
+        data: null, 
+        error: new Error('Not found') 
+      });
+
+      await expect(
+        referralEngine.trackClick('INVALID', {
+          ipAddress: '192.168.1.1',
+          userAgent: 'Mozilla/5.0 Test Browser'
+        })
+      ).rejects.toThrow('Invalid referral code');
+    });
+
+    it('should reject inactive referral codes', async () => {
+      const inactiveCode = { ...mockReferralCode, status: 'disabled' };
+      const mockSupabase = require('@/lib/supabase/server').createClient();
+      mockSupabase.from().select().eq().single.mockResolvedValueOnce({ 
+        data: inactiveCode, 
+        error: null 
+      });
+
+      await expect(
+        referralEngine.trackClick('MOCK12345', {
+          ipAddress: '192.168.1.1',
+          userAgent: 'Mozilla/5.0 Test Browser'
+        })
+      ).rejects.toThrow('Referral code is not active');
+    });
+  });
+
+  describe('processConversion', () => {
+    it('should process a conversion successfully', async () => {
+      const mockSupabase = require('@/lib/supabase/server').createClient();
+      const codeWithProgram = {
+        ...mockReferralCode,
+        referral_programs: mockProgram
+      };
+      
+      mockSupabase.from().select().eq().single
+        .mockResolvedValueOnce({ data: codeWithProgram, error: null }) // referral code lookup
+        .mockResolvedValueOnce({ // recent click lookup
+          data: {
+            id: 'click-123',
+            referral_code_id: 'code-123',
+            ip_address: '192.168.1.1',
+            user_agent: 'Mozilla/5.0 Test Browser',
+            click_timestamp: new Date().toISOString()
+          },
+          error: null
+        });
+
+      mockSupabase.from().update().eq().select().single.mockResolvedValueOnce({
+        data: { id: 'conversion-123', reward_amount: 50 },
+        error: null
+      });
+
+      const result = await referralEngine.processConversion('MOCK12345', {
+        referredEmail: 'referred@example.com',
+        coupleId: 'couple-456'
+      });
+
+      expect(result).toBeDefined();
+      expect(result.reward_amount).toBe(50);
+    });
+
+    it('should block fraudulent conversions', async () => {
+      const mockSupabase = require('@/lib/supabase/server').createClient();
+      const codeWithProgram = {
+        ...mockReferralCode,
+        referral_programs: mockProgram
+      };
+      
+      mockSupabase.from().select().eq().single
+        .mockResolvedValueOnce({ data: codeWithProgram, error: null })
+        .mockResolvedValueOnce({
+          data: {
+            id: 'click-123',
+            referral_code_id: 'code-123',
+            ip_address: '192.168.1.1',
+            user_agent: 'bot',
+            click_timestamp: new Date().toISOString()
+          },
+          error: null
+        });
+
+      // Mock fraud detection to return high fraud score
+      mockSupabase.from().select().eq().gte.mockResolvedValueOnce({ 
+        count: 5 // High IP count 
+      });
+
+      await expect(
+        referralEngine.processConversion('MOCK12345', {
+          referredEmail: 'suspicious@example.com'
+        })
+      ).rejects.toThrow('Conversion blocked due to fraud detection');
+    });
+  });
+
+  describe('generateReferralCode', () => {
+    it('should generate unique referral codes', async () => {
+      const mockSupabase = require('@/lib/supabase/server').createClient();
+      mockSupabase.from().select().eq().single
+        .mockResolvedValueOnce({ data: null, error: null }) // First check: code is unique
+        .mockResolvedValueOnce({ // Program supplier lookup
+          data: { supplier_id: 'supplier-123' },
+          error: null
+        })
+        .mockResolvedValueOnce({ // Supplier slug lookup
+          data: { slug: 'test-supplier' },
+          error: null
+        });
+      
+      mockSupabase.from().insert().select().single.mockResolvedValueOnce({
+        data: mockReferralCode,
+        error: null
+      });
+
+      const result = await generateReferralCode('couple-123', 'program-123');
+      
+      expect(result).toBeDefined();
+      expect(result.code).toBe('MOCK12345');
+      expect(result.landing_page_url).toContain('test-supplier');
+      expect(result.qr_code_url).toBe('data:image/png;base64,mockQRCode');
+    });
+
+    it('should handle database errors during code generation', async () => {
+      const mockSupabase = require('@/lib/supabase/server').createClient();
+      mockSupabase.from().insert().select().single.mockResolvedValueOnce({
+        data: null,
+        error: new Error('Database constraint violation')
+      });
+
+      await expect(
+        generateReferralCode('couple-123', 'program-123')
+      ).rejects.toThrow('Database constraint violation');
+    });
+  });
+
+  describe('detectFraudulentConversion', () => {
+    it('should detect fraudulent conversions', async () => {
+      const mockSupabase = require('@/lib/supabase/server').createClient();
+      
+      // Mock multiple conversions from same IP (high fraud score)
+      mockSupabase.from().select().eq().gte.mockResolvedValueOnce({ count: 5 });
+      // Mock no recent click (direct URL manipulation)
+      mockSupabase.from().select().eq().gte().single.mockResolvedValueOnce({ 
+        data: null, 
+        error: null 
+      });
+
+      const result = await detectFraudulentConversion(
+        'code-123', 
+        '192.168.1.1', 
+        'suspicious-bot'
+      );
+
+      expect(result.isFraud).toBe(true);
+      expect(result.score).toBeGreaterThanOrEqual(70);
+      expect(result.reasons).toContain('Multiple conversions from same IP');
+      expect(result.reasons).toContain('Conversion without recent click');
+      expect(result.reasons).toContain('Suspicious user agent');
+    });
+
+    it('should pass legitimate conversions', async () => {
+      const mockSupabase = require('@/lib/supabase/server').createClient();
+      
+      // Mock legitimate IP usage
+      mockSupabase.from().select().eq().gte.mockResolvedValueOnce({ count: 1 });
+      // Mock recent click exists
+      mockSupabase.from().select().eq().gte().single.mockResolvedValueOnce({
+        data: { click_timestamp: new Date().toISOString() },
+        error: null
+      });
+
+      const result = await detectFraudulentConversion(
+        'code-123',
+        '192.168.1.1',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      );
+
+      expect(result.isFraud).toBe(false);
+      expect(result.score).toBeLessThan(70);
+      expect(result.reasons.length).toBeLessThanOrEqual(1);
+    });
+
+    it('should calculate milestone rewards correctly', () => {
+      const milestoneRewards = { 3: 50, 5: 100, 10: 250 };
+      
+      // Helper function to calculate milestone reward
+      const calculateMilestoneReward = (referrals: number, rewards: Record<number, number>) => {
+        const eligibleMilestones = Object.entries(rewards)
+          .filter(([milestone]) => referrals >= parseInt(milestone))
+          .sort(([a], [b]) => parseInt(b) - parseInt(a));
+        
+        return eligibleMilestones.length > 0 ? eligibleMilestones[0][1] : 0;
+      };
+
+      expect(calculateMilestoneReward(5, milestoneRewards)).toBe(100);
+      expect(calculateMilestoneReward(3, milestoneRewards)).toBe(50);
+      expect(calculateMilestoneReward(10, milestoneRewards)).toBe(250);
+      expect(calculateMilestoneReward(2, milestoneRewards)).toBe(0);
+    });
+  });
+
+  describe('generateQRCode', () => {
+    it('should generate QR code successfully', async () => {
+      const QRCode = require('qrcode');
+      const landingUrl = 'https://wedsync.com/refer/supplier/MOCK12345';
+      
+      const result = await generateQRCode(landingUrl);
+      
+      expect(result).toBe('data:image/png;base64,mockQRCode');
+      expect(QRCode.toDataURL).toHaveBeenCalledWith(landingUrl, {
+        errorCorrectionLevel: 'M',
+        type: 'image/png',
+        quality: 0.92,
+        margin: 1,
+        color: {
+          dark: '#010599FF',
+          light: '#FFBF60FF'
+        }
+      });
+    });
+
+    it('should handle QR code generation errors', async () => {
+      const QRCode = require('qrcode');
+      QRCode.toDataURL.mockRejectedValueOnce(new Error('QR generation failed'));
+      
+      await expect(
+        generateQRCode('https://wedsync.com/refer/supplier/MOCK12345')
+      ).rejects.toThrow('QR generation failed');
+    });
+  });
+
+  describe('sendInvitations', () => {
+    it('should send invitations to eligible couples', async () => {
+      const mockSupabase = require('@/lib/supabase/server').createClient();
+      
+      // Mock program lookup
+      mockSupabase.from().select().eq().single
+        .mockResolvedValueOnce({ data: mockProgram, error: null })
+        .mockResolvedValueOnce({ // Eligible couples lookup
+          data: [
+            {
+              id: 'couple-1',
+              email: 'couple1@example.com',
+              name: 'John & Jane',
+              wedding_date: '2024-01-01'
+            },
+            {
+              id: 'couple-2', 
+              email: 'couple2@example.com',
+              name: 'Bob & Alice',
+              wedding_date: '2024-02-01'
+            }
+          ],
+          error: null
+        });
+
+      // Mock existing referral codes
+      mockSupabase.from().select().eq()
+        .mockResolvedValueOnce({ data: null, error: null }) // No existing code for couple-1
+        .mockResolvedValueOnce({ data: mockReferralCode, error: null }); // Existing code for couple-2
+
+      const result = await referralEngine.sendInvitations('program-123', 'immediate');
+      
+      expect(result).toBeGreaterThan(0);
+      // Should have attempted to send invitations to eligible couples
+    });
+
+    it('should handle cases with no eligible couples', async () => {
+      const mockSupabase = require('@/lib/supabase/server').createClient();
+      
+      mockSupabase.from().select().eq().single
+        .mockResolvedValueOnce({ data: mockProgram, error: null })
+        .mockResolvedValueOnce({ data: [], error: null }); // No eligible couples
+
+      const result = await referralEngine.sendInvitations('program-123', 'immediate');
+      
+      expect(result).toBe(0);
+    });
+  });
+});
+
+describe('QRCodeGenerator', () => {
+  it('should generate referral QR codes', async () => {
+    const { QRCodeGenerator } = require('@/lib/referrals/referral-engine');
+    const generator = new QRCodeGenerator();
+    
+    const result = await generator.generateReferralQR('https://example.com/refer/ABC123');
+    
+    expect(result).toBe('data:image/png;base64,mockQRCode');
+  });
+});

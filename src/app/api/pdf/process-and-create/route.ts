@@ -1,0 +1,433 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { generateSecureId } from '@/lib/crypto-utils';
+import { OptimizedProcessor } from '@/lib/ocr/optimized-processor';
+import {
+  withUploadSecurity,
+  SecurityContext,
+} from '@/lib/comprehensive-security-middleware';
+import { DatabaseOptimizer } from '@/lib/database-optimizer';
+import { z } from 'zod';
+
+// Optimized PDF processing configuration
+const PDF_PROCESSING_CONFIG = {
+  MAX_FILE_SIZE: 10 * 1024 * 1024, // 10MB
+  SUPPORTED_MIME_TYPE: 'application/pdf',
+  PROCESSING_TIMEOUT: 120 * 1000, // 2 minutes
+  CACHE_TTL: 30 * 60 * 1000, // 30 minutes for processing results
+};
+
+// PDF processing options schema
+const processingOptionsSchema = z.object({
+  formTitle: z.string().min(1).max(200).optional(),
+  formDescription: z.string().max(1000).optional(),
+  extractFields: z.boolean().default(true),
+  enableOCR: z.boolean().default(true),
+  confidenceThreshold: z.number().min(0).max(1).default(0.7),
+  language: z.string().default('en'),
+  createDraft: z.boolean().default(true),
+});
+
+// Field mapping for PDF-extracted fields to form fields
+function mapPDFFieldsToFormFields(extractedFields: any[]): any[] {
+  return extractedFields.map((field: any, index: number) => {
+    // Determine field type based on field name and content
+    let fieldType = 'text';
+    const fieldName = field.name?.toLowerCase() || '';
+    const fieldValue = field.value?.toLowerCase() || '';
+
+    // Email detection
+    if (
+      fieldName.includes('email') ||
+      /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/.test(fieldValue)
+    ) {
+      fieldType = 'email';
+    }
+    // Phone detection
+    else if (
+      fieldName.includes('phone') ||
+      fieldName.includes('tel') ||
+      /\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/.test(fieldValue)
+    ) {
+      fieldType = 'phone';
+    }
+    // Date detection
+    else if (
+      fieldName.includes('date') ||
+      fieldName.includes('birthday') ||
+      /\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4}/.test(fieldValue)
+    ) {
+      fieldType = 'date';
+    }
+    // Checkbox/boolean detection
+    else if (
+      fieldName.includes('agree') ||
+      fieldName.includes('consent') ||
+      fieldValue.includes('yes') ||
+      fieldValue.includes('no')
+    ) {
+      fieldType = 'checkbox';
+    }
+    // Large text areas
+    else if (
+      (field.value && field.value.length > 100) ||
+      fieldName.includes('message') ||
+      fieldName.includes('comment')
+    ) {
+      fieldType = 'textarea';
+    }
+    // Number detection
+    else if (
+      fieldName.includes('age') ||
+      fieldName.includes('count') ||
+      fieldName.includes('number') ||
+      /^\d+$/.test(fieldValue)
+    ) {
+      fieldType = 'number';
+    }
+
+    return {
+      id: `field_${index + 1}`,
+      type: fieldType,
+      label: field.label || field.name || `Field ${index + 1}`,
+      name: field.name || `field_${index + 1}`,
+      required: false,
+      placeholder:
+        fieldType === 'email'
+          ? 'Enter email address'
+          : fieldType === 'phone'
+            ? 'Enter phone number'
+            : fieldType === 'date'
+              ? 'Select date'
+              : `Enter ${field.label || field.name || 'value'}`,
+      validation: {
+        required: false,
+        ...(fieldType === 'email' && {
+          pattern: '^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$',
+        }),
+        ...(fieldType === 'phone' && { pattern: '^[\\+]?[1-9][\\d]{0,15}$' }),
+        ...(field.value &&
+          field.value.length > 10 && {
+            maxLength: Math.min(field.value.length * 2, 500),
+          }),
+      },
+      defaultValue: field.value || '',
+      options: fieldType === 'checkbox' ? ['Yes', 'No'] : undefined,
+      extracted: true,
+      confidence: field.confidence || 0.8,
+      position: field.position || { x: 0, y: index * 50 },
+      order: index,
+    };
+  });
+}
+
+// POST /api/pdf/process-and-create - Process PDF and create form with security middleware
+async function handlePDFProcessingAndFormCreation(
+  request: NextRequest,
+  context: SecurityContext,
+): Promise<NextResponse> {
+  try {
+    const supabase = await createClient();
+
+    // Parse multipart form data
+    const formData = await request.formData();
+    const file = formData.get('file') as File;
+    const optionsStr = formData.get('options') as string;
+
+    if (!file) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'PDF file is required',
+        },
+        { status: 400 },
+      );
+    }
+
+    // Optimized file validation
+    if (file.type !== PDF_PROCESSING_CONFIG.SUPPORTED_MIME_TYPE) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Only PDF files are allowed',
+        },
+        { status: 400 },
+      );
+    }
+
+    if (file.size > PDF_PROCESSING_CONFIG.MAX_FILE_SIZE) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: `PDF file must be smaller than ${PDF_PROCESSING_CONFIG.MAX_FILE_SIZE / 1024 / 1024}MB`,
+        },
+        { status: 413 },
+      );
+    }
+
+    // Parse processing options
+    let options;
+    try {
+      const parsedOptions = optionsStr ? JSON.parse(optionsStr) : {};
+      options = processingOptionsSchema.parse(parsedOptions);
+    } catch (error) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Invalid processing options',
+        },
+        { status: 400 },
+      );
+    }
+
+    // Process PDF with optimized processor
+    const pdfBuffer = Buffer.from(await file.arrayBuffer());
+    const processor = new OptimizedProcessor();
+
+    let processingResult;
+    try {
+      processingResult = await processor.processPDFWithProgress(
+        pdfBuffer,
+        (progress) => {
+          // Progress updates could be sent via WebSocket in the future
+          console.log(
+            `Processing progress: ${progress.currentPage}/${progress.totalPages}`,
+          );
+        },
+      );
+    } catch (processingError) {
+      console.error('PDF processing error:', processingError);
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            'Failed to process PDF. Please ensure the PDF is valid and not password protected.',
+        },
+        { status: 500 },
+      );
+    }
+
+    if (!processingResult || processingResult.text.length < 10) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Could not extract meaningful content from PDF',
+        },
+        { status: 422 },
+      );
+    }
+
+    // Extract form fields from processed text (this would be enhanced with better field detection)
+    const extractedFields = [];
+    const textLines = processingResult.text
+      .split('\n')
+      .filter((line) => line.trim().length > 0);
+
+    // Simple field extraction logic - this could be enhanced with ML
+    for (let i = 0; i < textLines.length; i++) {
+      const line = textLines[i].trim();
+
+      // Look for patterns that suggest form fields
+      if (line.includes(':') && line.length < 100) {
+        const [label, ...valueParts] = line.split(':');
+        const value = valueParts.join(':').trim();
+
+        if (label.trim() && label.length > 2) {
+          extractedFields.push({
+            name: label.trim().toLowerCase().replace(/\s+/g, '_'),
+            label: label.trim(),
+            value: value || '',
+            confidence: 0.8,
+            position: { x: 0, y: i * 20 },
+          });
+        }
+      }
+      // Look for standalone labels that might be field labels
+      else if (
+        line.length < 50 &&
+        line.length > 3 &&
+        !line.includes('.') &&
+        i < textLines.length - 1
+      ) {
+        const nextLine = textLines[i + 1]?.trim();
+        if (nextLine && nextLine.length < 100) {
+          extractedFields.push({
+            name: line.toLowerCase().replace(/\s+/g, '_'),
+            label: line,
+            value: nextLine,
+            confidence: 0.6,
+            position: { x: 0, y: i * 20 },
+          });
+          i++; // Skip next line since we used it as value
+        }
+      }
+    }
+
+    if (extractedFields.length === 0) {
+      // If no structured fields found, create a general text area field
+      extractedFields.push({
+        name: 'extracted_content',
+        label: 'Extracted Content',
+        value: processingResult.text.substring(0, 500),
+        confidence: 0.5,
+        position: { x: 0, y: 0 },
+      });
+    }
+
+    // Convert extracted fields to form fields
+    const formFields = mapPDFFieldsToFormFields(extractedFields);
+
+    // Create form structure
+    const formId = generateSecureId(16);
+    const formTitle = options.formTitle || `Form from ${file.name}`;
+    const formDescription =
+      options.formDescription || `Auto-generated from PDF: ${file.name}`;
+
+    const formStructure = {
+      id: formId,
+      title: formTitle,
+      description: formDescription,
+      sections: [
+        {
+          id: 'section_1',
+          title: 'Extracted Fields',
+          description: 'Fields automatically extracted from your PDF',
+          fields: formFields,
+          order: 0,
+        },
+      ],
+      settings: {
+        allowMultipleSubmissions: false,
+        requireLogin: false,
+        successMessage: 'Thank you for your submission!',
+        enableNotifications: true,
+        enableAutoSave: true,
+        theme: {
+          primaryColor: '#3B82F6',
+          backgroundColor: '#FFFFFF',
+          textColor: '#1F2937',
+        },
+      },
+      status: options.createDraft ? 'draft' : 'published',
+      is_published: !options.createDraft,
+      created_by: context.user.id,
+      organization_id: context.user.organizationId,
+      metadata: {
+        source: 'pdf_import',
+        originalFileName: file.name,
+        fileSize: file.size,
+        processingTime: processingResult.processingTime,
+        fieldsExtracted: extractedFields.length,
+        ocrConfidence: processingResult.confidence,
+        processedAt: new Date().toISOString(),
+      },
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    // Save form to database
+    const { data: createdForm, error: formError } = await supabase
+      .from('forms')
+      .insert(formStructure)
+      .select()
+      .single();
+
+    if (formError) {
+      console.error('Form creation error:', formError);
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Failed to create form from PDF',
+        },
+        { status: 500 },
+      );
+    }
+
+    // Optimized logging for analytics (async to not block response)
+    supabase
+      .from('pdf_processing_logs')
+      .insert({
+        user_id: context.user.id,
+        form_id: formId,
+        file_name: file.name,
+        file_size: file.size,
+        processing_time: processingResult.processingTime,
+        fields_extracted: extractedFields.length,
+        confidence_score: processingResult.confidence,
+        status: 'success',
+        request_id: context.requestId,
+        created_at: new Date().toISOString(),
+      })
+      .then(() => {
+        console.log(`PDF processing logged for form ${formId}`);
+      })
+      .catch((error) => {
+        console.warn('Failed to log PDF processing (non-critical):', error);
+      });
+
+    return NextResponse.json(
+      {
+        success: true,
+        data: {
+          form: createdForm,
+          processing: {
+            fieldsExtracted: extractedFields.length,
+            processingTime: processingResult.processingTime,
+            confidence: processingResult.confidence,
+            pageCount: processingResult.pageCount,
+          },
+          extractedFields: formFields,
+          preview: {
+            title: formTitle,
+            description: formDescription,
+            fieldCount: formFields.length,
+            status: formStructure.status,
+          },
+        },
+        message: `Successfully created form with ${formFields.length} extracted fields`,
+      },
+      { status: 201 },
+    );
+  } catch (error) {
+    console.error('PDF processing and form creation error:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Invalid processing options',
+          details: error.errors.map((err) => ({
+            field: err.path.join('.'),
+            message: err.message,
+          })),
+        },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      {
+        success: false,
+        error:
+          'PDF processing failed. Please try again or contact support if the issue persists.',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+export const POST = withUploadSecurity(
+  handlePDFProcessingAndFormCreation,
+  processingOptionsSchema,
+);
+
+// GET /api/pdf/process-and-create - Not allowed
+export async function GET() {
+  return NextResponse.json(
+    {
+      success: false,
+      error: 'Method not allowed',
+    },
+    { status: 405 },
+  );
+}

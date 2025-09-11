@@ -1,0 +1,496 @@
+'use client';
+
+/**
+ * WS-244 Real-Time Collaboration System - CollaborationToolbar
+ * Team A - Collaboration Controls and Settings Toolbar
+ *
+ * Provides sharing controls, permission management, and collaboration settings
+ * Untitled UI design with mobile-responsive layout and accessibility
+ */
+
+import React, { useState, useRef } from 'react';
+import {
+  Share2,
+  UserPlus,
+  Settings,
+  Link2,
+  Users,
+  Download,
+  History,
+  MessageCircle,
+  Bell,
+  Wifi,
+  WifiOff,
+  AlertCircle,
+  CheckCircle,
+  Loader,
+} from 'lucide-react';
+import {
+  CollaborationToolbarProps,
+  ConnectionStatus,
+  SyncStatus,
+  DocumentPermissions,
+} from '@/types/collaboration';
+
+/**
+ * CollaborationToolbar - Main collaboration controls toolbar
+ *
+ * Features:
+ * - Share document with permission controls
+ * - Invite users with role assignment
+ * - Real-time connection status indicators
+ * - Collaboration settings and preferences
+ * - Mobile-responsive with collapsible sections
+ * - WCAG 2.1 AA accessibility compliance
+ */
+export const CollaborationToolbar: React.FC<CollaborationToolbarProps> = ({
+  sessionId,
+  permissions,
+  onInviteUser,
+  onShareDocument,
+  connectionStatus = ConnectionStatus.DISCONNECTED,
+  syncStatus = SyncStatus.OFFLINE,
+  collaboratorCount = 0,
+  className = '',
+  compact = false,
+  showConnectionStatus = true,
+  enableComments = true,
+  enableHistory = true,
+}) => {
+  const [isShareMenuOpen, setIsShareMenuOpen] = useState(false);
+  const [isSettingsMenuOpen, setIsSettingsMenuOpen] = useState(false);
+  const [shareLink, setShareLink] = useState('');
+  const [linkCopied, setLinkCopied] = useState(false);
+
+  const shareMenuRef = useRef<HTMLDivElement>(null);
+  const settingsMenuRef = useRef<HTMLDivElement>(null);
+
+  // Handle click outside menus to close them
+  React.useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        shareMenuRef.current &&
+        !shareMenuRef.current.contains(event.target as Node)
+      ) {
+        setIsShareMenuOpen(false);
+      }
+      if (
+        settingsMenuRef.current &&
+        !settingsMenuRef.current.contains(event.target as Node)
+      ) {
+        setIsSettingsMenuOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // Generate share link
+  const generateShareLink = () => {
+    const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
+    return `${baseUrl}/collaborate/${sessionId}`;
+  };
+
+  // Copy share link to clipboard
+  const copyShareLink = async () => {
+    const link = generateShareLink();
+    setShareLink(link);
+
+    try {
+      await navigator.clipboard.writeText(link);
+      setLinkCopied(true);
+      setTimeout(() => setLinkCopied(false), 2000);
+    } catch (error) {
+      console.error('Failed to copy link:', error);
+    }
+  };
+
+  // Get connection status icon and color
+  const getConnectionIndicator = () => {
+    switch (connectionStatus) {
+      case ConnectionStatus.CONNECTED:
+      case ConnectionStatus.AUTHENTICATED:
+        return {
+          icon: Wifi,
+          color: 'text-success-600',
+          bgColor: 'bg-success-50',
+        };
+      case ConnectionStatus.CONNECTING:
+      case ConnectionStatus.RECONNECTING:
+        return {
+          icon: Loader,
+          color: 'text-warning-600',
+          bgColor: 'bg-warning-50',
+        };
+      case ConnectionStatus.FAILED:
+      case ConnectionStatus.UNAUTHORIZED:
+        return {
+          icon: AlertCircle,
+          color: 'text-error-600',
+          bgColor: 'bg-error-50',
+        };
+      default:
+        return { icon: WifiOff, color: 'text-gray-500', bgColor: 'bg-gray-50' };
+    }
+  };
+
+  // Get sync status indicator
+  const getSyncIndicator = () => {
+    switch (syncStatus) {
+      case SyncStatus.SYNCED:
+        return { icon: CheckCircle, text: 'Saved', color: 'text-success-600' };
+      case SyncStatus.SYNCING:
+        return { icon: Loader, text: 'Saving...', color: 'text-warning-600' };
+      case SyncStatus.ERROR:
+        return { icon: AlertCircle, text: 'Error', color: 'text-error-600' };
+      default:
+        return { icon: AlertCircle, text: 'Offline', color: 'text-gray-500' };
+    }
+  };
+
+  const connectionIndicator = getConnectionIndicator();
+  const syncIndicator = getSyncIndicator();
+
+  return (
+    <div
+      className={`
+      flex items-center justify-between px-4 py-3 
+      bg-white border-b border-gray-200 
+      ${compact ? 'px-3 py-2' : ''}
+      ${className}
+    `}
+    >
+      {/* Left Section - Main Actions */}
+      <div className="flex items-center space-x-2">
+        {/* Invite Users Button */}
+        {permissions.share && (
+          <button
+            onClick={onInviteUser}
+            className="
+              flex items-center space-x-2 px-3 py-2
+              bg-primary-600 hover:bg-primary-700 text-white
+              font-medium text-sm rounded-lg
+              transition-all duration-200
+              focus:outline-none focus:ring-4 focus:ring-primary-100
+              disabled:opacity-50 disabled:cursor-not-allowed
+            "
+            aria-label="Invite users to collaborate"
+          >
+            <UserPlus className="w-4 h-4" />
+            <span className="hidden sm:inline">Invite</span>
+          </button>
+        )}
+
+        {/* Share Document Button */}
+        <div className="relative" ref={shareMenuRef}>
+          <button
+            onClick={() => setIsShareMenuOpen(!isShareMenuOpen)}
+            className="
+              flex items-center space-x-2 px-3 py-2
+              bg-white hover:bg-gray-50 text-gray-700
+              font-medium text-sm rounded-lg border border-gray-300
+              transition-all duration-200
+              focus:outline-none focus:ring-4 focus:ring-primary-100
+            "
+            aria-label="Share document"
+            aria-expanded={isShareMenuOpen}
+            aria-haspopup="true"
+          >
+            <Share2 className="w-4 h-4" />
+            <span className="hidden sm:inline">Share</span>
+          </button>
+
+          {/* Share Menu Dropdown */}
+          {isShareMenuOpen && (
+            <div className="absolute top-full mt-2 left-0 w-72 bg-white rounded-xl shadow-lg border border-gray-200 z-50">
+              <div className="p-4">
+                <h3 className="font-semibold text-gray-900 mb-3">
+                  Share this document
+                </h3>
+
+                {/* Copy Link */}
+                <div className="flex items-center space-x-2 mb-4">
+                  <input
+                    type="text"
+                    value={shareLink || generateShareLink()}
+                    readOnly
+                    className="flex-1 px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm"
+                    placeholder="Share link will appear here"
+                  />
+                  <button
+                    onClick={copyShareLink}
+                    className={`
+                      px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200
+                      focus:outline-none focus:ring-4 focus:ring-primary-100
+                      ${
+                        linkCopied
+                          ? 'bg-success-50 text-success-700 border border-success-200'
+                          : 'bg-primary-600 hover:bg-primary-700 text-white'
+                      }
+                    `}
+                  >
+                    {linkCopied ? (
+                      <CheckCircle className="w-4 h-4" />
+                    ) : (
+                      <Link2 className="w-4 h-4" />
+                    )}
+                  </button>
+                </div>
+
+                {/* Permission Levels */}
+                <div className="space-y-2">
+                  <p className="text-sm font-medium text-gray-700">
+                    Access level:
+                  </p>
+
+                  <label className="flex items-center space-x-3">
+                    <input
+                      type="radio"
+                      name="access-level"
+                      value="view"
+                      className="text-primary-600 focus:ring-primary-100"
+                      defaultChecked
+                    />
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">
+                        Can view
+                      </p>
+                      <p className="text-xs text-gray-500">Read-only access</p>
+                    </div>
+                  </label>
+
+                  <label className="flex items-center space-x-3">
+                    <input
+                      type="radio"
+                      name="access-level"
+                      value="comment"
+                      className="text-primary-600 focus:ring-primary-100"
+                    />
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">
+                        Can comment
+                      </p>
+                      <p className="text-xs text-gray-500">
+                        Add comments and suggestions
+                      </p>
+                    </div>
+                  </label>
+
+                  <label className="flex items-center space-x-3">
+                    <input
+                      type="radio"
+                      name="access-level"
+                      value="edit"
+                      className="text-primary-600 focus:ring-primary-100"
+                    />
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">
+                        Can edit
+                      </p>
+                      <p className="text-xs text-gray-500">
+                        Full editing permissions
+                      </p>
+                    </div>
+                  </label>
+                </div>
+
+                {/* Action Buttons */}
+                <div className="flex items-center justify-end space-x-2 mt-4 pt-3 border-t border-gray-200">
+                  <button
+                    onClick={() => setIsShareMenuOpen(false)}
+                    className="px-3 py-2 text-sm font-medium text-gray-600 hover:text-gray-700"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => {
+                      onShareDocument();
+                      setIsShareMenuOpen(false);
+                    }}
+                    className="px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium rounded-lg"
+                  >
+                    Share
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Additional Actions */}
+        {!compact && (
+          <>
+            {/* Comments */}
+            {enableComments && permissions.comment && (
+              <button
+                className="
+                  flex items-center space-x-2 px-3 py-2
+                  text-gray-600 hover:text-gray-700 hover:bg-gray-50
+                  font-medium text-sm rounded-lg
+                  transition-all duration-200
+                  focus:outline-none focus:ring-4 focus:ring-gray-100
+                "
+                aria-label="Toggle comments"
+              >
+                <MessageCircle className="w-4 h-4" />
+                <span className="hidden lg:inline">Comments</span>
+              </button>
+            )}
+
+            {/* History */}
+            {enableHistory && permissions.read && (
+              <button
+                className="
+                  flex items-center space-x-2 px-3 py-2
+                  text-gray-600 hover:text-gray-700 hover:bg-gray-50
+                  font-medium text-sm rounded-lg
+                  transition-all duration-200
+                  focus:outline-none focus:ring-4 focus:ring-gray-100
+                "
+                aria-label="View document history"
+              >
+                <History className="w-4 h-4" />
+                <span className="hidden lg:inline">History</span>
+              </button>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Right Section - Status and Settings */}
+      <div className="flex items-center space-x-3">
+        {/* Collaborator Count */}
+        {collaboratorCount > 0 && (
+          <div className="flex items-center space-x-1 text-sm text-gray-600">
+            <Users className="w-4 h-4" />
+            <span className="font-medium">{collaboratorCount}</span>
+            <span className="hidden sm:inline">
+              {collaboratorCount === 1 ? 'collaborator' : 'collaborators'}
+            </span>
+          </div>
+        )}
+
+        {/* Connection Status */}
+        {showConnectionStatus && (
+          <div className="flex items-center space-x-2">
+            {/* Connection Indicator */}
+            <div
+              className={`
+              flex items-center space-x-1 px-2 py-1 rounded-lg
+              ${connectionIndicator.bgColor}
+            `}
+            >
+              <connectionIndicator.icon
+                className={`w-3 h-3 ${connectionIndicator.color} ${
+                  connectionStatus === ConnectionStatus.CONNECTING
+                    ? 'animate-spin'
+                    : ''
+                }`}
+              />
+              <span
+                className={`text-xs font-medium ${connectionIndicator.color} hidden sm:inline`}
+              >
+                {connectionStatus.replace('_', ' ').toLowerCase()}
+              </span>
+            </div>
+
+            {/* Sync Status */}
+            <div className="flex items-center space-x-1">
+              <syncIndicator.icon
+                className={`w-3 h-3 ${syncIndicator.color} ${
+                  syncStatus === SyncStatus.SYNCING ? 'animate-spin' : ''
+                }`}
+              />
+              <span
+                className={`text-xs font-medium ${syncIndicator.color} hidden md:inline`}
+              >
+                {syncIndicator.text}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* Settings Menu */}
+        <div className="relative" ref={settingsMenuRef}>
+          <button
+            onClick={() => setIsSettingsMenuOpen(!isSettingsMenuOpen)}
+            className="
+              flex items-center justify-center w-8 h-8
+              text-gray-500 hover:text-gray-700 hover:bg-gray-100
+              rounded-lg transition-all duration-200
+              focus:outline-none focus:ring-4 focus:ring-gray-100
+            "
+            aria-label="Collaboration settings"
+            aria-expanded={isSettingsMenuOpen}
+            aria-haspopup="true"
+          >
+            <Settings className="w-4 h-4" />
+          </button>
+
+          {/* Settings Menu Dropdown */}
+          {isSettingsMenuOpen && (
+            <div className="absolute top-full mt-2 right-0 w-64 bg-white rounded-xl shadow-lg border border-gray-200 z-50">
+              <div className="p-4">
+                <h3 className="font-semibold text-gray-900 mb-3">
+                  Collaboration settings
+                </h3>
+
+                {/* Notification Settings */}
+                <div className="space-y-3">
+                  <label className="flex items-center justify-between">
+                    <span className="text-sm text-gray-700">
+                      Show user cursors
+                    </span>
+                    <input
+                      type="checkbox"
+                      className="rounded text-primary-600 focus:ring-primary-100"
+                      defaultChecked
+                    />
+                  </label>
+
+                  <label className="flex items-center justify-between">
+                    <span className="text-sm text-gray-700">
+                      Sound notifications
+                    </span>
+                    <input
+                      type="checkbox"
+                      className="rounded text-primary-600 focus:ring-primary-100"
+                    />
+                  </label>
+
+                  <label className="flex items-center justify-between">
+                    <span className="text-sm text-gray-700">
+                      Show join/leave alerts
+                    </span>
+                    <input
+                      type="checkbox"
+                      className="rounded text-primary-600 focus:ring-primary-100"
+                      defaultChecked
+                    />
+                  </label>
+                </div>
+
+                {/* Export Options */}
+                <div className="mt-4 pt-3 border-t border-gray-200">
+                  <button
+                    className="
+                      flex items-center space-x-2 w-full px-3 py-2
+                      text-gray-700 hover:bg-gray-50 rounded-lg
+                      font-medium text-sm transition-all duration-200
+                    "
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>Export document</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default CollaborationToolbar;

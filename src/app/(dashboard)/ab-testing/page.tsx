@@ -1,0 +1,297 @@
+'use client';
+
+import React, { useState, useEffect } from 'react';
+import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
+import { TestTube, Plus, RefreshCw } from 'lucide-react';
+import TestCreationWizard from '@/components/ab-testing/TestCreationWizard';
+import ABTestDashboard from '@/components/analytics/ab-tests/ABTestDashboard';
+import { toast } from 'sonner';
+
+interface ABTest {
+  id: string;
+  name: string;
+  description?: string;
+  status: 'draft' | 'running' | 'paused' | 'completed';
+  created_at: string;
+  started_at?: string;
+  ended_at?: string;
+  variants: ABTestVariant[];
+  metrics: string[];
+  confidence_level: number;
+  statistical_significance?: number;
+  winner_variant_id?: string;
+  organization_id: string;
+}
+
+interface ABTestVariant {
+  id: string;
+  test_id: string;
+  name: string;
+  content: any;
+  traffic_percentage: number;
+  conversions: number;
+  total_exposures: number;
+  conversion_rate: number;
+  is_control: boolean;
+}
+
+export default function ABTestingPage() {
+  const [showWizard, setShowWizard] = useState(false);
+  const [tests, setTests] = useState<ABTest[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetchTests();
+  }, []);
+
+  const fetchTests = async () => {
+    try {
+      setLoading(true);
+      const response = await fetch('/api/ab-testing/tests');
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch tests');
+      }
+
+      const data = await response.json();
+      setTests(data.tests || []);
+    } catch (error) {
+      console.error('Error fetching tests:', error);
+      toast.error('Failed to load A/B tests');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCreateTest = async (testData: any) => {
+    try {
+      const response = await fetch('/api/ab-testing/tests', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(testData),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to create test');
+      }
+
+      const data = await response.json();
+      setTests([data.test, ...tests]);
+      setShowWizard(false);
+      toast.success('A/B test created successfully!');
+    } catch (error: any) {
+      console.error('Error creating test:', error);
+      toast.error(error.message || 'Failed to create A/B test');
+    }
+  };
+
+  const handleTestAction = async (
+    testId: string,
+    action: 'start' | 'pause' | 'stop',
+  ) => {
+    try {
+      const response = await fetch(`/api/ab-testing/tests/${testId}/actions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ action }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || `Failed to ${action} test`);
+      }
+
+      const data = await response.json();
+      setTests(
+        tests.map((test) =>
+          test.id === testId ? { ...test, ...data.test } : test,
+        ),
+      );
+
+      toast.success(
+        `Test ${action === 'start' ? 'started' : action === 'pause' ? 'paused' : 'stopped'} successfully!`,
+      );
+    } catch (error: any) {
+      console.error(`Error ${action}ing test:`, error);
+      toast.error(error.message || `Failed to ${action} test`);
+    }
+  };
+
+  if (showWizard) {
+    return (
+      <TestCreationWizard
+        onComplete={handleCreateTest}
+        onCancel={() => setShowWizard(false)}
+      />
+    );
+  }
+
+  return (
+    <div className="p-6">
+      <div className="mb-8">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="flex items-center gap-3 mb-2">
+              <div className="flex items-center justify-center w-10 h-10 rounded-full bg-primary-600 text-white">
+                <TestTube className="h-5 w-5" />
+              </div>
+              <h1 className="text-3xl font-bold text-gray-900">A/B Testing</h1>
+            </div>
+            <p className="text-gray-600">
+              Optimize your wedding communication effectiveness through
+              scientific testing
+            </p>
+          </div>
+
+          <div className="flex gap-3">
+            <Button
+              onClick={fetchTests}
+              variant="outline"
+              className="flex items-center gap-2"
+              disabled={loading}
+            >
+              <RefreshCw
+                className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`}
+              />
+              Refresh
+            </Button>
+            <Button
+              onClick={() => setShowWizard(true)}
+              className="flex items-center gap-2 bg-primary-600 hover:bg-primary-700"
+            >
+              <Plus className="h-4 w-4" />
+              Create Test
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="space-y-4">
+          {[1, 2, 3].map((i) => (
+            <Card key={i} className="p-6">
+              <div className="animate-pulse space-y-4">
+                <div className="h-4 bg-gray-200 rounded w-1/4"></div>
+                <div className="h-3 bg-gray-200 rounded w-1/2"></div>
+                <div className="grid grid-cols-3 gap-4">
+                  <div className="h-16 bg-gray-200 rounded"></div>
+                  <div className="h-16 bg-gray-200 rounded"></div>
+                  <div className="h-16 bg-gray-200 rounded"></div>
+                </div>
+              </div>
+            </Card>
+          ))}
+        </div>
+      ) : (
+        <>
+          {tests.length === 0 ? (
+            <Card className="p-12 text-center">
+              <div className="mx-auto w-16 h-16 bg-primary-100 rounded-full flex items-center justify-center mb-6">
+                <TestTube className="h-8 w-8 text-primary-600" />
+              </div>
+              <h3 className="text-xl font-semibold text-gray-900 mb-3">
+                Start optimizing your wedding communications
+              </h3>
+              <p className="text-gray-600 mb-6 max-w-md mx-auto">
+                Create your first A/B test to discover which messages, subject
+                lines, and channels work best for your clients.
+              </p>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8 max-w-2xl mx-auto">
+                <div className="text-center">
+                  <div className="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center mx-auto mb-3">
+                    <span className="text-green-600 font-bold">1</span>
+                  </div>
+                  <h4 className="font-medium text-gray-900">Create Test</h4>
+                  <p className="text-sm text-gray-600">
+                    Set up variants and choose metrics
+                  </p>
+                </div>
+                <div className="text-center">
+                  <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center mx-auto mb-3">
+                    <span className="text-blue-600 font-bold">2</span>
+                  </div>
+                  <h4 className="font-medium text-gray-900">Collect Data</h4>
+                  <p className="text-sm text-gray-600">
+                    Monitor real-time results
+                  </p>
+                </div>
+                <div className="text-center">
+                  <div className="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center mx-auto mb-3">
+                    <span className="text-purple-600 font-bold">3</span>
+                  </div>
+                  <h4 className="font-medium text-gray-900">Optimize</h4>
+                  <p className="text-sm text-gray-600">
+                    Apply winning variants
+                  </p>
+                </div>
+              </div>
+              <Button
+                onClick={() => setShowWizard(true)}
+                size="lg"
+                className="bg-primary-600 hover:bg-primary-700"
+              >
+                <Plus className="h-5 w-5 mr-2" />
+                Create Your First A/B Test
+              </Button>
+            </Card>
+          ) : (
+            <ABTestDashboard
+              tests={tests}
+              onTestAction={handleTestAction}
+              onRefresh={fetchTests}
+            />
+          )}
+        </>
+      )}
+
+      {/* Quick Tips */}
+      {tests.length > 0 && (
+        <Card className="mt-8 p-6 bg-gradient-to-r from-primary-50 to-purple-50 border-primary-200">
+          <h3 className="font-semibold text-primary-900 mb-3">
+            💡 A/B Testing Best Practices
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+            <div>
+              <h4 className="font-medium text-primary-800">Test Duration</h4>
+              <p className="text-primary-700">
+                Run tests for at least 7 days to account for weekly patterns in
+                client behavior.
+              </p>
+            </div>
+            <div>
+              <h4 className="font-medium text-primary-800">Sample Size</h4>
+              <p className="text-primary-700">
+                Ensure each variant receives at least 100 exposures for reliable
+                results.
+              </p>
+            </div>
+            <div>
+              <h4 className="font-medium text-primary-800">
+                Statistical Significance
+              </h4>
+              <p className="text-primary-700">
+                Wait for 95% confidence before making decisions based on test
+                results.
+              </p>
+            </div>
+            <div>
+              <h4 className="font-medium text-primary-800">
+                One Variable at a Time
+              </h4>
+              <p className="text-primary-700">
+                Test one element (subject, message, timing) to clearly identify
+                what drives results.
+              </p>
+            </div>
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}

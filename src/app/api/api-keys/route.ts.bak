@@ -1,0 +1,133 @@
+// /api/api-keys/route.ts
+// WS-072: API Key Management Routes
+// Handles CRUD operations for API keys
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import { apiKeyService, APIKeyCreateInput } from '@/lib/services/apiKeyService';
+import { createAPIError, createAPIResponse } from '@/lib/auth/apiKeyAuth';
+
+// GET /api/api-keys - List all API keys for the authenticated user
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = createServerComponentClient({ cookies });
+    
+    // Verify authentication
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return createAPIError('Unauthorized', 'AUTH_REQUIRED', 401);
+    }
+
+    // Get query parameters
+    const url = new URL(request.url);
+    const includeUsage = url.searchParams.get('include_usage') === 'true';
+
+    // List API keys
+    const apiKeys = await apiKeyService.listAPIKeys();
+
+    // Include usage statistics if requested
+    if (includeUsage) {
+      const keysWithUsage = await Promise.all(
+        apiKeys.map(async (key) => {
+          try {
+            const usage = await apiKeyService.getUsageAnalytics(key.id);
+            return { ...key, usage };
+          } catch (error) {
+            console.error(`Failed to get usage for key ${key.id}:`, error);
+            return key;
+          }
+        })
+      );
+      
+      return createAPIResponse(keysWithUsage);
+    }
+
+    return createAPIResponse(apiKeys);
+  } catch (error) {
+    console.error('Failed to list API keys:', error);
+    return createAPIError(
+      'Failed to list API keys',
+      'LIST_FAILED',
+      500,
+      error instanceof Error ? error.message : 'Unknown error'
+    );
+  }
+}
+
+// POST /api/api-keys - Create a new API key
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = createServerComponentClient({ cookies });
+    
+    // Verify authentication
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return createAPIError('Unauthorized', 'AUTH_REQUIRED', 401);
+    }
+
+    // Parse request body
+    const body = await request.json();
+    
+    // Validate required fields
+    if (!body.name || !body.scopes || !Array.isArray(body.scopes)) {
+      return createAPIError(
+        'Missing required fields: name and scopes',
+        'VALIDATION_ERROR',
+        400
+      );
+    }
+
+    // Validate scopes
+    const availableScopes = await apiKeyService.getAvailableScopes();
+    const availableScopeNames = availableScopes.map(s => s.scope);
+    
+    const invalidScopes = body.scopes.filter(
+      (scope: string) => !availableScopeNames.includes(scope)
+    );
+    
+    if (invalidScopes.length > 0) {
+      return createAPIError(
+        `Invalid scopes: ${invalidScopes.join(', ')}`,
+        'INVALID_SCOPES',
+        400,
+        { invalidScopes, availableScopes: availableScopeNames }
+      );
+    }
+
+    // Create API key input
+    const createInput: APIKeyCreateInput = {
+      name: body.name,
+      description: body.description,
+      integrationType: body.integrationType,
+      scopes: body.scopes,
+      expiresIn: body.expiresIn,
+      rateLimitPerMinute: body.rateLimitPerMinute,
+      rateLimitPerHour: body.rateLimitPerHour,
+      rateLimitPerDay: body.rateLimitPerDay,
+      allowedIps: body.allowedIps,
+      allowedOrigins: body.allowedOrigins
+    };
+
+    // Create the API key
+    const result = await apiKeyService.createAPIKey(createInput);
+
+    return createAPIResponse(
+      {
+        apiKey: result.apiKey,
+        plainKey: result.plainKey,
+        warning: 'Store this key securely. You will not be able to view it again.'
+      },
+      undefined
+    );
+    
+  } catch (error) {
+    console.error('Failed to create API key:', error);
+    return createAPIError(
+      'Failed to create API key',
+      'CREATE_FAILED',
+      500,
+      error instanceof Error ? error.message : 'Unknown error'
+    );
+  }
+}

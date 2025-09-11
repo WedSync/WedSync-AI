@@ -1,0 +1,432 @@
+# Network Security Policies for AI Cache Strategy System
+# WS-241: Enterprise-grade network security with VPC isolation
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: wedsync-security
+  labels:
+    security.wedsync.com/compliance: "soc2-gdpr"
+    security.wedsync.com/level: "critical"
+
+---
+# NetworkPolicy for AI Cache Strategy isolation
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ai-cache-security-policy
+  namespace: ai-cache-strategy
+  labels:
+    security.wedsync.com/type: "network-isolation"
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  
+  # Ingress rules - only allow specific traffic
+  ingress:
+  # Allow from load balancer
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+    ports:
+    - protocol: TCP
+      port: 8080
+    - protocol: TCP
+      port: 6379
+      
+  # Allow from monitoring namespace
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: wedsync-monitoring
+    ports:
+    - protocol: TCP
+      port: 9090
+    - protocol: TCP
+      port: 8080
+      
+  # Allow cross-region cache sync (encrypted)
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          security.wedsync.com/region-trust: "true"
+    ports:
+    - protocol: TCP
+      port: 9092  # gRPC sync service
+      
+  # Egress rules - restrict outbound traffic
+  egress:
+  # DNS resolution
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+      
+  # Redis cluster communication
+  - to:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: redis-cluster
+    ports:
+    - protocol: TCP
+      port: 6379
+    - protocol: TCP
+      port: 16379
+      
+  # Cross-region sync (encrypted)
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443  # HTTPS/gRPC over TLS
+      
+  # Monitoring and logging
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: wedsync-monitoring
+    ports:
+    - protocol: TCP
+      port: 9090
+    - protocol: TCP
+      port: 9093
+
+---
+# Pod Security Policy for AI Cache components
+apiVersion: policy/v1beta1
+kind: PodSecurityPolicy
+metadata:
+  name: ai-cache-security-policy
+  namespace: ai-cache-strategy
+  annotations:
+    security.wedsync.com/audit: "required"
+spec:
+  privileged: false
+  allowPrivilegeEscalation: false
+  requiredDropCapabilities:
+    - ALL
+  volumes:
+    - 'configMap'
+    - 'emptyDir'
+    - 'projected'
+    - 'secret'
+    - 'downwardAPI'
+    - 'persistentVolumeClaim'
+  runAsUser:
+    rule: 'MustRunAsNonRoot'
+  supplementalGroups:
+    rule: 'MustRunAs'
+    ranges:
+      - min: 1000
+        max: 65535
+  fsGroup:
+    rule: 'MustRunAs'
+    ranges:
+      - min: 1000
+        max: 65535
+  readOnlyRootFilesystem: false
+  seLinux:
+    rule: RunAsAny
+
+---
+# Security Context Constraints
+apiVersion: security.openshift.io/v1
+kind: SecurityContextConstraints
+metadata:
+  name: ai-cache-security-scc
+  annotations:
+    security.wedsync.com/compliance: "soc2-requirements"
+allowHostDirVolumePlugin: false
+allowHostIPC: false
+allowHostNetwork: false
+allowHostPID: false
+allowHostPorts: false
+allowPrivilegedContainer: false
+allowedCapabilities: []
+defaultAddCapabilities: []
+requiredDropCapabilities:
+- ALL
+fsGroup:
+  type: MustRunAs
+  ranges:
+  - min: 1000
+    max: 65535
+runAsUser:
+  type: MustRunAsNonRoot
+seLinuxContext:
+  type: MustRunAs
+users: []
+groups:
+- system:serviceaccounts:ai-cache-strategy
+
+---
+# Service Mesh Security (Istio)
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: ai-cache-mtls
+  namespace: ai-cache-strategy
+spec:
+  mtls:
+    mode: STRICT  # Require mTLS for all communication
+
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: ai-cache-authz
+  namespace: ai-cache-strategy
+spec:
+  rules:
+  # Allow Redis cluster internal communication
+  - from:
+    - source:
+        principals: ["cluster.local/ns/ai-cache-strategy/sa/redis-cluster"]
+    to:
+    - operation:
+        ports: ["6379", "16379"]
+        
+  # Allow AI cache service to access Redis
+  - from:
+    - source:
+        principals: ["cluster.local/ns/ai-cache-strategy/sa/ai-cache-service"]
+    to:
+    - operation:
+        ports: ["6379"]
+        
+  # Allow cache sync between regions
+  - from:
+    - source:
+        principals: ["cluster.local/ns/ai-cache-strategy/sa/cache-sync-service"]
+    to:
+    - operation:
+        ports: ["9092"]
+        methods: ["POST", "GET"]
+        
+  # Allow monitoring
+  - from:
+    - source:
+        namespaces: ["wedsync-monitoring"]
+    to:
+    - operation:
+        ports: ["8080", "9090"]
+        methods: ["GET"]
+        paths: ["/metrics", "/health"]
+
+---
+# WAF Rules for Application Layer Protection
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: waf-protection
+  namespace: ai-cache-strategy
+spec:
+  configPatches:
+  - applyTo: HTTP_FILTER
+    match:
+      context: SIDECAR_INBOUND
+      listener:
+        filterChain:
+          filter:
+            name: "envoy.filters.network.http_connection_manager"
+    patch:
+      operation: INSERT_BEFORE
+      value:
+        name: envoy.filters.http.wasm
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.http.wasm.v3.Wasm
+          config:
+            name: "waf_filter"
+            root_id: "waf_filter"
+            configuration:
+              "@type": type.googleapis.com/google.protobuf.StringValue
+              value: |
+                {
+                  "rules": [
+                    {
+                      "id": 1,
+                      "description": "Block SQL injection attempts",
+                      "regex": "(?i)(union.*select|select.*from|insert.*into|delete.*from|update.*set)",
+                      "action": "DENY"
+                    },
+                    {
+                      "id": 2,
+                      "description": "Block XSS attempts",
+                      "regex": "(?i)(<script|javascript:|vbscript:|on\\w+\\s*=)",
+                      "action": "DENY"
+                    },
+                    {
+                      "id": 3,
+                      "description": "Rate limit per IP",
+                      "type": "RATE_LIMIT",
+                      "rate": "100/minute",
+                      "action": "DELAY"
+                    },
+                    {
+                      "id": 4,
+                      "description": "Wedding day protection - higher rate limits",
+                      "condition": "header['X-Wedding-Day'] == 'true'",
+                      "rate": "500/minute",
+                      "action": "ALLOW"
+                    }
+                  ]
+                }
+
+---
+# DDoS Protection Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ddos-protection-config
+  namespace: ai-cache-strategy
+data:
+  nginx.conf: |
+    # DDoS Protection for Wedding Day Traffic
+    
+    # Rate limiting zones
+    limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
+    limit_req_zone $binary_remote_addr zone=cache:10m rate=50r/s;
+    limit_req_zone $binary_remote_addr zone=wedding_day:10m rate=100r/s;
+    
+    # Connection limiting
+    limit_conn_zone $binary_remote_addr zone=conn_limit_per_ip:10m;
+    limit_conn_zone $server_name zone=conn_limit_per_server:10m;
+    
+    # Wedding season detection and adaptive limits
+    map $time_iso8601 $wedding_season {
+        ~^(\d{4})-0[4-9]- 1;  # April-September
+        ~^(\d{4})-1[0-0]- 1;   # October
+        default 0;
+    }
+    
+    # Weekend detection (Friday-Sunday are peak wedding days)
+    map $time_iso8601 $weekend {
+        ~T0[5-7] 1;  # Friday-Sunday
+        default 0;
+    }
+    
+    server {
+        listen 80;
+        server_name ai-cache.wedsync.com;
+        
+        # Basic DDoS protection
+        client_max_body_size 10M;
+        client_body_timeout 10s;
+        client_header_timeout 10s;
+        
+        # Apply different rate limits based on season/day
+        location /api/cache {
+            if ($weekend) {
+                limit_req zone=wedding_day burst=50 nodelay;
+            }
+            if ($wedding_season) {
+                limit_req zone=wedding_day burst=30 nodelay;
+            }
+            limit_req zone=cache burst=20 nodelay;
+            
+            # Connection limits
+            limit_conn conn_limit_per_ip 20;
+            limit_conn conn_limit_per_server 1000;
+            
+            proxy_pass http://ai-cache-service;
+        }
+        
+        location /health {
+            limit_req zone=api burst=5 nodelay;
+            allow all;
+            proxy_pass http://ai-cache-service;
+        }
+        
+        # Block common attack patterns
+        location ~* \.(php|asp|aspx|jsp)$ {
+            deny all;
+        }
+        
+        # Security headers
+        add_header X-Frame-Options "DENY" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-XSS-Protection "1; mode=block" always;
+        add_header Strict-Transport-Security "max-age=31536000; includeSubdomains" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    }
+
+---
+# Certificate Management with cert-manager
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ai-cache-tls-cert
+  namespace: ai-cache-strategy
+spec:
+  secretName: ai-cache-tls-secret
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+  - ai-cache.wedsync.com
+  - ai-cache-us.wedsync.com
+  - ai-cache-eu.wedsync.com
+  - ai-cache-ap.wedsync.com
+
+---
+# Network Security Monitoring
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: network-security-monitor
+  namespace: ai-cache-strategy
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: network-security-monitor
+  namespace: ai-cache-strategy
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: network-security-monitor
+  template:
+    metadata:
+      labels:
+        app: network-security-monitor
+    spec:
+      serviceAccountName: network-security-monitor
+      containers:
+      - name: security-monitor
+        image: wedsync/network-security-monitor:v1.0.0
+        ports:
+        - containerPort: 8080
+        env:
+        - name: MONITOR_INTERFACES
+          value: "eth0,eth1"
+        - name: ALERT_WEBHOOK
+          valueFrom:
+            secretKeyRef:
+              name: security-alerts
+              key: webhook-url
+        - name: ANOMALY_THRESHOLD
+          value: "95"  # 95th percentile
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: tmp
+        emptyDir: {}

@@ -1,0 +1,356 @@
+/**
+ * WS-255 Emergency Deployment Rollback API Endpoint
+ * Team B: Backend Infrastructure & API Endpoints
+ * 
+ * MISSION CRITICAL: This endpoint must execute rollbacks within 60 seconds
+ * Handles Saturday wedding day emergencies with maximum security and logging
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { DeploymentManager } from '@/lib/services/DeploymentManager';
+import { requireAuth } from '@/lib/auth/server';
+import { createClient } from '@/lib/supabase/server';
+import { RollbackRequest, RollbackResponse, DeploymentError } from '@/types/deployment';
+
+// Initialize deployment manager
+let deploymentManager: DeploymentManager | null = null;
+
+function getDeploymentManager(): DeploymentManager {
+  if (!deploymentManager) {
+    deploymentManager = new DeploymentManager({
+      healthCheckInterval: 30000,
+      maxRollbackAttempts: 30,
+      rollbackTimeoutMs: 30000
+    });
+  }
+  return deploymentManager;
+}
+
+/**
+ * POST /api/admin/deployment/rollback
+ * 
+ * Execute emergency deployment rollback
+ * REQUIRES: Admin authentication + confirmation code
+ */
+export async function POST(request: NextRequest): Promise<NextResponse<RollbackResponse>> {
+  const rollbackStart = Date.now();
+  const timestamp = new Date().toISOString();
+  
+  try {
+    // 1. Authenticate and authorize user
+    const user = await requireAuth();
+    if (!user) {
+      return NextResponse.json({
+        success: false,
+        error: 'Authentication required',
+        timestamp
+      }, { status: 401 });
+    }
+
+    // 2. Verify admin role
+    const supabase = await createClient();
+    const { data: userProfile, error: profileError } = await supabase
+      .from('user_profiles')
+      .select('role')
+      .eq('id', user.id)
+      .single();
+
+    if (profileError || userProfile?.role !== 'admin') {
+      console.warn(`Unauthorized rollback attempt by user ${user.id}`, {
+        userId: user.id,
+        userRole: userProfile?.role,
+        timestamp,
+        ip: request.headers.get('x-forwarded-for') || 'unknown'
+      });
+
+      return NextResponse.json({
+        success: false,
+        error: 'Admin privileges required for deployment rollback',
+        timestamp
+      }, { status: 403 });
+    }
+
+    // 3. Parse and validate request body
+    let rollbackRequest: RollbackRequest;
+    try {
+      rollbackRequest = await request.json();
+    } catch (parseError) {
+      return NextResponse.json({
+        success: false,
+        error: 'Invalid JSON in request body',
+        timestamp
+      }, { status: 400 });
+    }
+
+    const { deploymentId, confirmationCode, reason } = rollbackRequest;
+
+    // 4. Validate required fields
+    if (!deploymentId || !confirmationCode) {
+      return NextResponse.json({
+        success: false,
+        error: 'Missing required fields: deploymentId and confirmationCode',
+        timestamp
+      }, { status: 400 });
+    }
+
+    // 5. Verify confirmation code (critical security check)
+    if (confirmationCode !== 'EMERGENCY_ROLLBACK_CONFIRMED') {
+      console.error(`Invalid rollback confirmation code attempt`, {
+        userId: user.id,
+        providedCode: confirmationCode ? 'REDACTED' : 'NONE',
+        expectedCode: 'EMERGENCY_ROLLBACK_CONFIRMED',
+        deploymentId,
+        timestamp
+      });
+
+      return NextResponse.json({
+        success: false,
+        error: 'Invalid confirmation code. Required: EMERGENCY_ROLLBACK_CONFIRMED',
+        timestamp
+      }, { status: 400 });
+    }
+
+    // 6. Wedding day protection checks
+    const now = new Date();
+    const isWeddingDay = now.getDay() === 6; // Saturday
+    const currentHour = now.getHours();
+    const isWeddingHours = isWeddingDay && currentHour >= 8 && currentHour <= 22;
+
+    if (isWeddingHours) {
+      console.warn(`🚨 SATURDAY WEDDING DAY ROLLBACK INITIATED`, {
+        userId: user.id,
+        deploymentId,
+        reason: reason || 'No reason provided',
+        hour: currentHour,
+        timestamp,
+        urgency: 'MAXIMUM'
+      });
+
+      // Log critical wedding day rollback for additional monitoring
+      await supabase.from('deployment_logs').insert({
+        deployment_id: deploymentId,
+        version: 'rollback-target',
+        state: 'rollback',
+        rollback_reason: `SATURDAY EMERGENCY: ${reason || 'Wedding day rollback'}`,
+        metadata: {
+          initiated_by: user.id,
+          wedding_day_rollback: true,
+          hour: currentHour,
+          confirmation_code: 'VERIFIED'
+        }
+      });
+    }
+
+    // 7. Rate limiting check for rollback operations
+    const rateLimitKey = `rollback_${user.id}`;
+    const { data: recentRollbacks } = await supabase
+      .from('deployment_rollbacks')
+      .select('created_at')
+      .eq('initiated_by', user.id)
+      .gte('created_at', new Date(Date.now() - 300000).toISOString()) // Last 5 minutes
+      .limit(2);
+
+    if (recentRollbacks && recentRollbacks.length >= 2) {
+      return NextResponse.json({
+        success: false,
+        error: 'Rate limit exceeded: Maximum 2 rollbacks per 5 minutes',
+        timestamp
+      }, { status: 429 });
+    }
+
+    // 8. Execute rollback with comprehensive error handling
+    const manager = getDeploymentManager();
+    
+    console.log(`🔄 Starting rollback to deployment ${deploymentId}`, {
+      userId: user.id,
+      reason: reason || 'Emergency rollback via admin panel',
+      isWeddingDay,
+      isWeddingHours,
+      timestamp
+    });
+
+    try {
+      const rollbackSuccess = await manager.rollbackDeployment(
+        deploymentId,
+        user.id,
+        reason || 'Emergency rollback via admin panel'
+      );
+
+      if (rollbackSuccess) {
+        const rollbackDuration = Date.now() - rollbackStart;
+        
+        console.log(`✅ Rollback completed successfully`, {
+          deploymentId,
+          userId: user.id,
+          duration: `${rollbackDuration}ms`,
+          timestamp
+        });
+
+        const successResponse: RollbackResponse = {
+          success: true,
+          message: 'Deployment rollback completed successfully',
+          deploymentId,
+          timestamp,
+          metadata: {
+            duration: rollbackDuration,
+            isWeddingDay,
+            initiatedBy: user.id
+          }
+        };
+
+        return NextResponse.json(successResponse, {
+          status: 200,
+          headers: {
+            'X-Rollback-Success': 'true',
+            'X-Rollback-Duration': `${rollbackDuration}ms`,
+            'X-Wedding-Day': isWeddingDay ? 'true' : 'false'
+          }
+        });
+
+      } else {
+        throw new DeploymentError(
+          'ROLLBACK_TIMEOUT',
+          'Rollback failed to complete within timeout period',
+          { deploymentId, timeoutMs: 30000 }
+        );
+      }
+
+    } catch (rollbackError) {
+      console.error(`❌ Rollback failed for deployment ${deploymentId}`, {
+        error: rollbackError instanceof Error ? rollbackError.message : 'Unknown error',
+        userId: user.id,
+        deploymentId,
+        duration: `${Date.now() - rollbackStart}ms`,
+        timestamp
+      });
+
+      // Log rollback failure for post-incident analysis
+      await supabase.from('deployment_logs').insert({
+        deployment_id: deploymentId,
+        version: 'rollback-failed',
+        state: 'error',
+        rollback_reason: `ROLLBACK FAILED: ${rollbackError instanceof Error ? rollbackError.message : 'Unknown error'}`,
+        metadata: {
+          initiated_by: user.id,
+          error_details: rollbackError instanceof Error ? rollbackError.message : 'Unknown error',
+          wedding_day_failure: isWeddingHours
+        }
+      });
+
+      const errorResponse: RollbackResponse = {
+        success: false,
+        error: rollbackError instanceof DeploymentError 
+          ? rollbackError.message 
+          : 'Rollback operation failed',
+        timestamp,
+        metadata: {
+          deploymentId,
+          errorCode: rollbackError instanceof DeploymentError ? rollbackError.code : 'UNKNOWN_ERROR',
+          duration: Date.now() - rollbackStart
+        }
+      };
+
+      return NextResponse.json(errorResponse, { 
+        status: 500,
+        headers: {
+          'X-Rollback-Success': 'false',
+          'X-Rollback-Duration': `${Date.now() - rollbackStart}ms`
+        }
+      });
+    }
+
+  } catch (error) {
+    console.error('Critical rollback endpoint failure:', error);
+    
+    const criticalErrorResponse: RollbackResponse = {
+      success: false,
+      error: error instanceof Error ? error.message : 'Critical rollback system failure',
+      timestamp,
+      metadata: {
+        duration: Date.now() - rollbackStart,
+        criticalFailure: true
+      }
+    };
+
+    return NextResponse.json(criticalErrorResponse, { 
+      status: 500,
+      headers: {
+        'X-Rollback-Success': 'false',
+        'X-Critical-Failure': 'true'
+      }
+    });
+  }
+}
+
+/**
+ * GET /api/admin/deployment/rollback
+ * 
+ * Get rollback history and available rollback targets
+ */
+export async function GET(request: NextRequest): Promise<NextResponse> {
+  try {
+    // Authenticate admin user
+    const user = await requireAuth();
+    if (!user) {
+      return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
+    }
+
+    const supabase = await createClient();
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('role')
+      .eq('id', user.id)
+      .single();
+
+    if (userProfile?.role !== 'admin') {
+      return NextResponse.json({ error: 'Admin privileges required' }, { status: 403 });
+    }
+
+    const manager = getDeploymentManager();
+
+    // Get recent rollback history
+    const { data: rollbackHistory } = await supabase
+      .from('deployment_rollbacks')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(10);
+
+    // Get available deployment targets
+    const deploymentHistory = await manager.getDeploymentHistory(10);
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        rollbackHistory: rollbackHistory || [],
+        availableTargets: deploymentHistory,
+        currentDeployment: await manager.getCurrentDeployment()
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Failed to get rollback information:', error);
+    
+    return NextResponse.json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to get rollback information'
+    }, { status: 500 });
+  }
+}
+
+/**
+ * OPTIONS /api/admin/deployment/rollback
+ * 
+ * CORS preflight handler
+ */
+export async function OPTIONS(): Promise<NextResponse> {
+  return new NextResponse(null, {
+    status: 200,
+    headers: {
+      'Allow': 'POST, GET, OPTIONS',
+      'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      'Access-Control-Max-Age': '3600'
+    }
+  });
+}

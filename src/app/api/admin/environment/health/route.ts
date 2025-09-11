@@ -1,0 +1,389 @@
+/**
+ * WS-194 Environment Health Check API
+ * Team B - Backend/API Focus
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import {
+  deploymentValidator,
+  validateDeployment,
+  generateValidationReport,
+} from '@/lib/environment/deployment-validator';
+import {
+  runComplianceAssessment,
+  generateComplianceReport,
+  emergencyWeddingComplianceCheck,
+} from '@/lib/environment/compliance-checker';
+import { logger } from '@/lib/monitoring/structured-logger';
+import { metrics } from '@/lib/monitoring/metrics';
+
+export async function GET(request: NextRequest) {
+  const startTime = Date.now();
+
+  try {
+    const url = new URL(request.url);
+    const check = url.searchParams.get('check') || 'all';
+    const environment = url.searchParams.get('environment') || 'production';
+    const format = url.searchParams.get('format') || 'json';
+
+    logger.info('Health check requested', {
+      check,
+      environment,
+      format,
+      userAgent: request.headers.get('user-agent'),
+      ip: request.ip,
+    });
+
+    let healthData: any = {};
+
+    switch (check) {
+      case 'deployment':
+        const deploymentResult = await validateDeployment(environment);
+
+        healthData = {
+          type: 'deployment',
+          environment,
+          overall: deploymentResult.overall,
+          score: deploymentResult.score,
+          criticalIssues: deploymentResult.criticalIssues,
+          warnings: deploymentResult.warnings,
+          weddingDayCompatible: deploymentResult.weddingDayCompatible,
+          peakSeasonReady: deploymentResult.peakSeasonReady,
+          deploymentBlocked: deploymentResult.deploymentBlocked,
+          blockingReasons: deploymentResult.blockingReasons,
+          checks: deploymentResult.checks.map((check) => ({
+            type: check.type,
+            name: check.name,
+            status: check.status,
+            severity: check.severity,
+            message: check.message,
+            responseTime: check.responseTime,
+            remediation: check.remediation,
+          })),
+        };
+
+        if (format === 'report') {
+          const report = generateValidationReport(deploymentResult);
+          return new NextResponse(report, {
+            status:
+              deploymentResult.overall === 'ready'
+                ? 200
+                : deploymentResult.overall === 'warning'
+                  ? 200
+                  : 503,
+            headers: {
+              'Content-Type': 'text/plain',
+              'X-Health-Status': deploymentResult.overall,
+              'X-Health-Score': deploymentResult.score.toString(),
+              'X-Deployment-Blocked':
+                deploymentResult.deploymentBlocked.toString(),
+            },
+          });
+        }
+        break;
+
+      case 'compliance':
+        const complianceResult = await runComplianceAssessment(environment);
+
+        healthData = {
+          type: 'compliance',
+          environment,
+          overall: complianceResult.overall,
+          weddingDataProtectionScore:
+            complianceResult.weddingDataProtectionScore,
+          paymentSecurityScore: complianceResult.paymentSecurityScore,
+          byFramework: complianceResult.byFramework,
+          checks: complianceResult.checks.map((check) => ({
+            framework: check.framework,
+            checkType: check.checkType,
+            name: check.name,
+            status: check.status,
+            severity: check.severity,
+            score: check.score,
+            findings: check.findings,
+            recommendations: check.recommendations,
+          })),
+        };
+
+        if (format === 'report') {
+          const report = generateComplianceReport(complianceResult);
+          return new NextResponse(report, {
+            status:
+              complianceResult.overall.status === 'compliant'
+                ? 200
+                : complianceResult.overall.status === 'partial'
+                  ? 200
+                  : 503,
+            headers: {
+              'Content-Type': 'text/plain',
+              'X-Compliance-Status': complianceResult.overall.status,
+              'X-Compliance-Score': complianceResult.overall.score.toString(),
+              'X-Critical-Issues':
+                complianceResult.overall.criticalIssues.toString(),
+            },
+          });
+        }
+        break;
+
+      case 'wedding_emergency':
+        const emergencyResult = await emergencyWeddingComplianceCheck();
+
+        healthData = {
+          type: 'wedding_emergency',
+          safe: emergencyResult.safe,
+          criticalIssues: emergencyResult.criticalIssues,
+          warnings: emergencyResult.warnings,
+          timestamp: new Date().toISOString(),
+          environment,
+        };
+        break;
+
+      case 'all':
+      default:
+        // Run all health checks
+        const [deployment, compliance] = await Promise.allSettled([
+          validateDeployment(environment),
+          runComplianceAssessment(environment),
+        ]);
+
+        const deploymentData =
+          deployment.status === 'fulfilled' ? deployment.value : null;
+        const complianceData =
+          compliance.status === 'fulfilled' ? compliance.value : null;
+
+        healthData = {
+          type: 'comprehensive',
+          environment,
+          timestamp: new Date().toISOString(),
+          deployment: deploymentData
+            ? {
+                overall: deploymentData.overall,
+                score: deploymentData.score,
+                criticalIssues: deploymentData.criticalIssues,
+                warnings: deploymentData.warnings,
+                weddingDayCompatible: deploymentData.weddingDayCompatible,
+                peakSeasonReady: deploymentData.peakSeasonReady,
+                deploymentBlocked: deploymentData.deploymentBlocked,
+              }
+            : { error: 'Deployment check failed' },
+          compliance: complianceData
+            ? {
+                overall: complianceData.overall,
+                weddingDataProtectionScore:
+                  complianceData.weddingDataProtectionScore,
+                paymentSecurityScore: complianceData.paymentSecurityScore,
+              }
+            : { error: 'Compliance check failed' },
+          summary: {
+            overallHealth:
+              deploymentData?.overall === 'ready' &&
+              complianceData?.overall.status === 'compliant'
+                ? 'healthy'
+                : 'issues',
+            deploymentReady: deploymentData?.overall === 'ready',
+            complianceReady: complianceData?.overall.status === 'compliant',
+            weddingCompatible:
+              deploymentData?.weddingDayCompatible &&
+              (complianceData?.weddingDataProtectionScore || 0) >= 80,
+          },
+        };
+        break;
+    }
+
+    // Track metrics
+    metrics.incrementCounter('api.environment.health_check', 1, {
+      check,
+      environment,
+      status:
+        healthData.summary?.overallHealth || healthData.overall || 'unknown',
+    });
+
+    metrics.recordHistogram(
+      'api.environment.health_check_duration',
+      Date.now() - startTime,
+    );
+
+    // Determine HTTP status code
+    let statusCode = 200;
+    if (check === 'deployment' && healthData.overall === 'blocked') {
+      statusCode = 503;
+    } else if (
+      check === 'compliance' &&
+      healthData.overall?.status === 'non_compliant'
+    ) {
+      statusCode = 503;
+    } else if (check === 'wedding_emergency' && !healthData.safe) {
+      statusCode = 503;
+    } else if (
+      check === 'all' &&
+      healthData.summary?.overallHealth === 'issues'
+    ) {
+      statusCode = 207; // Multi-status
+    }
+
+    return NextResponse.json(
+      {
+        success: true,
+        data: healthData,
+      },
+      {
+        status: statusCode,
+        headers: {
+          'X-Health-Check': check,
+          'X-Environment': environment,
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+        },
+      },
+    );
+  } catch (error) {
+    logger.error('Health check failed', error as Error, {
+      endpoint: '/api/admin/environment/health',
+      duration: Date.now() - startTime,
+    });
+
+    metrics.incrementCounter('api.environment.health_check_failed', 1);
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: {
+          message: 'Health check failed',
+          details: error instanceof Error ? error.message : 'Unknown error',
+        },
+      },
+      { status: 500 },
+    );
+  }
+}
+
+export async function POST(request: NextRequest) {
+  const startTime = Date.now();
+
+  try {
+    const body = await request.json();
+    const {
+      checks = ['deployment', 'compliance'],
+      environment = 'production',
+      includeDetails = false,
+    } = body;
+
+    logger.info('Custom health check requested', {
+      checks,
+      environment,
+      includeDetails,
+      userAgent: request.headers.get('user-agent'),
+      ip: request.ip,
+    });
+
+    const results: any = {
+      timestamp: new Date().toISOString(),
+      environment,
+      checks: {},
+    };
+
+    // Run requested checks
+    for (const checkType of checks) {
+      try {
+        switch (checkType) {
+          case 'deployment':
+            const deploymentResult = await validateDeployment(environment);
+            results.checks.deployment = {
+              overall: deploymentResult.overall,
+              score: deploymentResult.score,
+              weddingDayCompatible: deploymentResult.weddingDayCompatible,
+              peakSeasonReady: deploymentResult.peakSeasonReady,
+              ...(includeDetails
+                ? {
+                    checks: deploymentResult.checks,
+                    blockingReasons: deploymentResult.blockingReasons,
+                  }
+                : {}),
+            };
+            break;
+
+          case 'compliance':
+            const complianceResult = await runComplianceAssessment(environment);
+            results.checks.compliance = {
+              overall: complianceResult.overall,
+              weddingDataProtectionScore:
+                complianceResult.weddingDataProtectionScore,
+              paymentSecurityScore: complianceResult.paymentSecurityScore,
+              ...(includeDetails
+                ? {
+                    byFramework: complianceResult.byFramework,
+                    checks: complianceResult.checks,
+                  }
+                : {}),
+            };
+            break;
+
+          case 'wedding_emergency':
+            const emergencyResult = await emergencyWeddingComplianceCheck();
+            results.checks.wedding_emergency = emergencyResult;
+            break;
+
+          default:
+            results.checks[checkType] = {
+              error: `Unknown check type: ${checkType}`,
+            };
+        }
+      } catch (error) {
+        results.checks[checkType] = {
+          error: error instanceof Error ? error.message : 'Check failed',
+        };
+      }
+    }
+
+    // Calculate overall status
+    const hasErrors = Object.values(results.checks).some(
+      (check: any) =>
+        check.error ||
+        check.overall === 'blocked' ||
+        check.overall?.status === 'non_compliant' ||
+        check.safe === false,
+    );
+
+    results.summary = {
+      status: hasErrors ? 'issues' : 'healthy',
+      checksRun: checks.length,
+      checksSuccessful:
+        checks.length -
+        Object.values(results.checks).filter((check: any) => check.error)
+          .length,
+    };
+
+    metrics.incrementCounter('api.environment.custom_health_check', 1, {
+      environment,
+      checks_count: checks.length.toString(),
+      status: results.summary.status,
+    });
+
+    return NextResponse.json(
+      {
+        success: true,
+        data: results,
+      },
+      {
+        status: hasErrors ? 207 : 200,
+      },
+    );
+  } catch (error) {
+    logger.error('Custom health check failed', error as Error, {
+      endpoint: '/api/admin/environment/health',
+      duration: Date.now() - startTime,
+    });
+
+    metrics.incrementCounter('api.environment.custom_health_check_failed', 1);
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: {
+          message: 'Custom health check failed',
+          details: error instanceof Error ? error.message : 'Unknown error',
+        },
+      },
+      { status: 500 },
+    );
+  }
+}

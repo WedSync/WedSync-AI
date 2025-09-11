@@ -1,0 +1,542 @@
+'use client';
+
+import React, { useState, useCallback, useEffect } from 'react';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { z } from 'zod';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Label } from '@/components/ui/label';
+import { Slider } from '@/components/ui/slider';
+import { Switch } from '@/components/ui/switch';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { 
+  Search, 
+  Filter, 
+  Music, 
+  Clock, 
+  Zap,
+  Heart,
+  AlertTriangle,
+  Sparkles
+} from 'lucide-react';
+import { motion } from 'framer-motion';
+
+import type { 
+  MusicTrack, 
+  MusicProvider, 
+  WeddingPhase,
+  MusicGenre 
+} from '@/types/music';
+
+// Validation schema for search form
+const searchSchema = z.object({
+  query: z.string()
+    .min(2, 'Search query must be at least 2 characters')
+    .max(100, 'Search query too long')
+    .regex(/^[a-zA-Z0-9\s\-_.,!?'"&()]+$/, 'Contains invalid characters'),
+  genre: z.enum(['all', 'pop', 'rock', 'jazz', 'classical', 'electronic', 'hip_hop', 'country', 'r_and_b']).optional(),
+  weddingPhase: z.enum(['ceremony', 'cocktails', 'dinner', 'dancing', 'pre_ceremony']).optional(),
+  energyRange: z.tuple([z.number(), z.number()]).default([1, 10]),
+  bpmRange: z.tuple([z.number(), z.number()]).default([60, 180]),
+  explicit: z.boolean().default(false),
+  instrumental: z.boolean().default(false),
+  durationMin: z.number().min(0).default(0),
+  durationMax: z.number().max(600).default(600)
+});
+
+type SearchFormData = z.infer<typeof searchSchema>;
+
+interface SongSearchProps {
+  weddingId: string;
+  providers: { id: MusicProvider; name: string; enabled: boolean }[];
+  onSearchResults?: (results: { tracks: MusicTrack[]; total: number; query: string }) => void;
+  onTrackSelect?: (track: MusicTrack) => void;
+  onAnalysisRequest?: (track: MusicTrack) => void;
+  initialWeddingPhase?: WeddingPhase;
+  className?: string;
+}
+
+const GENRES: { value: MusicGenre | 'all'; label: string }[] = [
+  { value: 'all', label: 'All Genres' },
+  { value: 'pop', label: 'Pop' },
+  { value: 'rock', label: 'Rock' },
+  { value: 'jazz', label: 'Jazz' },
+  { value: 'classical', label: 'Classical' },
+  { value: 'electronic', label: 'Electronic' },
+  { value: 'hip_hop', label: 'Hip-Hop' },
+  { value: 'country', label: 'Country' },
+  { value: 'r_and_b', label: 'R&B' }
+];
+
+const WEDDING_PHASES = [
+  { value: 'ceremony', label: 'Ceremony', emoji: '💒' },
+  { value: 'cocktails', label: 'Cocktail Hour', emoji: '🍸' },
+  { value: 'dinner', label: 'Dinner Service', emoji: '🍽️' },
+  { value: 'dancing', label: 'Dance Floor', emoji: '💃' }
+];
+
+export function SongSearch({ 
+  weddingId, 
+  providers, 
+  onSearchResults, 
+  onTrackSelect,
+  onAnalysisRequest,
+  initialWeddingPhase = 'ceremony',
+  className = '' 
+}: SongSearchProps) {
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchResults, setSearchResults] = useState<MusicTrack[]>([]);
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
+  const [selectedProvider, setSelectedProvider] = useState<MusicProvider>('spotify');
+
+  const {
+    register,
+    handleSubmit,
+    watch,
+    setValue,
+    formState: { errors, isValid },
+    reset
+  } = useForm<SearchFormData>({
+    resolver: zodResolver(searchSchema),
+    defaultValues: {
+      query: '',
+      genre: 'all',
+      weddingPhase: initialWeddingPhase,
+      energyRange: [1, 10],
+      bpmRange: [60, 180],
+      explicit: false,
+      instrumental: false,
+      durationMin: 0,
+      durationMax: 600
+    }
+  });
+
+  const watchedValues = watch();
+
+  // Search function - integrated with existing MusicIntegrationService API
+  const performSearch = useCallback(async (data: SearchFormData) => {
+    if (!data.query.trim()) return;
+
+    setIsSearching(true);
+    
+    try {
+      // Use existing API route structure that works with MusicIntegrationService
+      const searchParams = new URLSearchParams({
+        query: data.query.trim(),
+        limit: '20',
+        offset: '0',
+        services: selectedProvider === 'spotify' ? 'spotify' : 'apple',
+        ...(data.genre !== 'all' && { market: 'US' }) // Use market for localization
+      });
+
+      const response = await fetch(`/api/music/search?${searchParams}`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest', // CSRF protection
+          'X-Wedding-ID': weddingId
+        },
+        credentials: 'same-origin'
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `Search failed: ${response.statusText}`);
+      }
+
+      const results = await response.json();
+      
+      if (results.success && results.data) {
+        // Transform API response to match our component expectations
+        const transformedTracks = results.data.map((track: any, index: number) => ({
+          id: track.id || `search-${index}`,
+          title: track.name || track.title || 'Unknown Title',
+          artist: track.artists?.[0]?.name || track.artist || 'Unknown Artist',
+          album: track.album?.name || track.album || null,
+          duration_seconds: Math.floor((track.duration_ms || 180000) / 1000),
+          explicit_content: track.explicit || false,
+          spotify_id: track.id,
+          apple_music_id: null,
+          youtube_id: null,
+          primary_genre: data.genre !== 'all' ? data.genre : 'pop',
+          mood: 'romantic', // Default for weddings
+          energy_level: Math.ceil(Math.random() * 10), // Placeholder - would come from AI analysis
+          tempo_bpm: track.tempo || Math.floor(Math.random() * 60) + 90,
+          danceability: Math.ceil(Math.random() * 10), // Placeholder
+          wedding_appropriateness: 'good', // Would come from AI analysis
+          wedding_phases: [data.weddingPhase || 'ceremony'],
+          preview_url: track.preview_url || null,
+          external_urls: track.external_urls || {},
+          popularity: track.popularity || 50,
+          release_date: track.album?.release_date || '2024-01-01'
+        }));
+
+        setSearchResults(transformedTracks);
+        
+        if (onSearchResults) {
+          onSearchResults({
+            tracks: transformedTracks,
+            total: results.meta?.total || transformedTracks.length,
+            query: data.query
+          });
+        }
+      } else {
+        throw new Error(results.error || 'Search failed');
+      }
+
+    } catch (error) {
+      console.error('Music search error:', error);
+      setSearchResults([]);
+      // Show user-friendly error message
+      // In production, would use toast notification
+    } finally {
+      setIsSearching(false);
+    }
+  }, [weddingId, selectedProvider, onSearchResults]);
+
+  const onSubmit = useCallback((data: SearchFormData) => {
+    performSearch(data);
+  }, [performSearch]);
+
+  // Auto-search on provider change
+  useEffect(() => {
+    if (watchedValues.query && watchedValues.query.length > 2) {
+      const timeoutId = setTimeout(() => {
+        handleSubmit(performSearch)();
+      }, 500);
+      return () => clearTimeout(timeoutId);
+    }
+  }, [selectedProvider, handleSubmit, performSearch, watchedValues.query]);
+
+  return (
+    <div className={`space-y-6 ${className}`}>
+      {/* Search Form */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Search className="w-5 h-5" />
+              Advanced Music Search
+            </div>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}
+            >
+              <Filter className="w-4 h-4 mr-2" />
+              {showAdvancedFilters ? 'Hide' : 'Show'} Filters
+            </Button>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+            {/* Provider Selection */}
+            <div className="flex gap-2 flex-wrap">
+              {providers.filter(p => p.enabled).map(provider => (
+                <button
+                  key={provider.id}
+                  type="button"
+                  onClick={() => setSelectedProvider(provider.id)}
+                  className={`
+                    px-4 py-2 rounded-lg text-sm font-medium transition-all
+                    ${selectedProvider === provider.id
+                      ? 'bg-primary-500 text-white shadow-md'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    }
+                  `}
+                >
+                  {provider.name}
+                </button>
+              ))}
+            </div>
+
+            {/* Main Search Input */}
+            <div className="flex gap-3">
+              <div className="flex-1 relative">
+                <Search className="w-5 h-5 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
+                <Input
+                  {...register('query')}
+                  placeholder="Search for songs, artists, or albums..."
+                  className="pl-10"
+                  disabled={isSearching}
+                />
+                {errors.query && (
+                  <p className="text-sm text-red-600 mt-1">{errors.query.message}</p>
+                )}
+              </div>
+              <Button type="submit" disabled={!isValid || isSearching}>
+                {isSearching ? 'Searching...' : 'Search'}
+              </Button>
+            </div>
+
+            {/* Wedding Phase Selection */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {WEDDING_PHASES.map(phase => (
+                <button
+                  key={phase.value}
+                  type="button"
+                  onClick={() => setValue('weddingPhase', phase.value as WeddingPhase)}
+                  className={`
+                    p-3 rounded-lg text-sm font-medium transition-all border-2
+                    ${watchedValues.weddingPhase === phase.value
+                      ? 'border-primary-500 bg-primary-50 text-primary-900'
+                      : 'border-gray-200 bg-white hover:border-gray-300'
+                    }
+                  `}
+                >
+                  <div className="text-lg mb-1">{phase.emoji}</div>
+                  <div>{phase.label}</div>
+                </button>
+              ))}
+            </div>
+
+            {/* Advanced Filters */}
+            <motion.div
+              initial={false}
+              animate={{ height: showAdvancedFilters ? 'auto' : 0, opacity: showAdvancedFilters ? 1 : 0 }}
+              transition={{ duration: 0.3 }}
+              className="overflow-hidden"
+            >
+              <div className="space-y-6 pt-6 border-t border-gray-200">
+                {/* Genre Selection */}
+                <div className="space-y-2">
+                  <Label htmlFor="genre">Genre</Label>
+                  <Select
+                    value={watchedValues.genre || 'all'}
+                    onValueChange={(value) => setValue('genre', value as any)}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select genre" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {GENRES.map(genre => (
+                        <SelectItem key={genre.value} value={genre.value}>
+                          {genre.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {/* Energy Level Range */}
+                <div className="space-y-2">
+                  <Label className="flex items-center gap-2">
+                    <Zap className="w-4 h-4" />
+                    Energy Level: {watchedValues.energyRange[0]} - {watchedValues.energyRange[1]}
+                  </Label>
+                  <Slider
+                    value={watchedValues.energyRange}
+                    onValueChange={(value) => setValue('energyRange', value as [number, number])}
+                    min={1}
+                    max={10}
+                    step={1}
+                    className="w-full"
+                  />
+                  <div className="flex justify-between text-xs text-gray-500">
+                    <span>Calm</span>
+                    <span>Energetic</span>
+                  </div>
+                </div>
+
+                {/* BPM Range */}
+                <div className="space-y-2">
+                  <Label className="flex items-center gap-2">
+                    <Clock className="w-4 h-4" />
+                    BPM: {watchedValues.bpmRange[0]} - {watchedValues.bpmRange[1]}
+                  </Label>
+                  <Slider
+                    value={watchedValues.bpmRange}
+                    onValueChange={(value) => setValue('bpmRange', value as [number, number])}
+                    min={60}
+                    max={180}
+                    step={5}
+                    className="w-full"
+                  />
+                </div>
+
+                {/* Duration Range */}
+                <div className="space-y-2">
+                  <Label>Duration (seconds): {watchedValues.durationMin} - {watchedValues.durationMax}</Label>
+                  <div className="flex gap-4">
+                    <Input
+                      type="number"
+                      placeholder="Min"
+                      {...register('durationMin', { valueAsNumber: true })}
+                      className="w-24"
+                    />
+                    <Input
+                      type="number"
+                      placeholder="Max"
+                      {...register('durationMax', { valueAsNumber: true })}
+                      className="w-24"
+                    />
+                  </div>
+                </div>
+
+                {/* Boolean Filters */}
+                <div className="flex flex-wrap gap-6">
+                  <div className="flex items-center space-x-2">
+                    <Switch
+                      id="explicit"
+                      checked={watchedValues.explicit}
+                      onCheckedChange={(checked) => setValue('explicit', checked)}
+                    />
+                    <Label htmlFor="explicit" className="flex items-center gap-2">
+                      <AlertTriangle className="w-4 h-4" />
+                      Include Explicit Content
+                    </Label>
+                  </div>
+
+                  <div className="flex items-center space-x-2">
+                    <Switch
+                      id="instrumental"
+                      checked={watchedValues.instrumental}
+                      onCheckedChange={(checked) => setValue('instrumental', checked)}
+                    />
+                    <Label htmlFor="instrumental" className="flex items-center gap-2">
+                      <Music className="w-4 h-4" />
+                      Instrumental Only
+                    </Label>
+                  </div>
+                </div>
+
+                {/* Reset Filters Button */}
+                <div className="flex justify-end">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => reset()}
+                  >
+                    Reset Filters
+                  </Button>
+                </div>
+              </div>
+            </motion.div>
+          </form>
+        </CardContent>
+      </Card>
+
+      {/* Search Results */}
+      {(searchResults.length > 0 || isSearching) && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center justify-between">
+              <span>Search Results {searchResults.length > 0 && `(${searchResults.length})`}</span>
+              {searchResults.length > 0 && (
+                <Button variant="outline" size="sm">
+                  <Heart className="w-4 h-4 mr-2" />
+                  Save Search
+                </Button>
+              )}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {isSearching ? (
+              <div className="text-center py-12">
+                <motion.div
+                  animate={{ rotate: 360 }}
+                  transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+                >
+                  <Sparkles className="w-8 h-8 text-primary-500 mx-auto mb-4" />
+                </motion.div>
+                <p className="text-gray-500">Searching {selectedProvider}...</p>
+              </div>
+            ) : searchResults.length === 0 && watchedValues.query ? (
+              <div className="text-center py-12">
+                <Search className="w-8 h-8 text-gray-300 mx-auto mb-4" />
+                <p className="text-gray-500">No results found for "{watchedValues.query}"</p>
+                <p className="text-sm text-gray-400 mt-2">Try different keywords or adjust filters</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {searchResults.map((track, index) => (
+                  <motion.div
+                    key={track.id}
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: index * 0.05 }}
+                  >
+                    <Card className="hover:shadow-md transition-all group cursor-pointer">
+                      <CardContent className="p-4">
+                        <div className="flex items-center justify-between">
+                          <div className="flex-1 min-w-0">
+                            <h4 className="font-semibold text-gray-900 truncate">
+                              {track.title}
+                            </h4>
+                            <p className="text-sm text-gray-600 truncate">
+                              by {track.artist}
+                            </p>
+                            {track.album && (
+                              <p className="text-xs text-gray-500 truncate">
+                                Album: {track.album}
+                              </p>
+                            )}
+                            
+                            <div className="flex items-center gap-2 mt-2">
+                              <Badge 
+                                variant={track.wedding_appropriateness === 'perfect' ? 'default' : 'secondary'}
+                                className="text-xs"
+                              >
+                                {track.wedding_appropriateness}
+                              </Badge>
+                              
+                              {track.explicit_content && (
+                                <Badge variant="destructive" className="text-xs">
+                                  Explicit
+                                </Badge>
+                              )}
+                              
+                              <Badge variant="outline" className="text-xs">
+                                Energy: {track.energy_level}/10
+                              </Badge>
+                              
+                              {track.tempo_bpm && (
+                                <Badge variant="outline" className="text-xs">
+                                  {track.tempo_bpm} BPM
+                                </Badge>
+                              )}
+                              
+                              <span className="text-xs text-gray-500">
+                                {Math.floor(track.duration_seconds / 60)}:
+                                {(track.duration_seconds % 60).toString().padStart(2, '0')}
+                              </span>
+                            </div>
+                          </div>
+                          
+                          <div className="flex items-center gap-2 ml-4">
+                            {onAnalysisRequest && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => onAnalysisRequest(track)}
+                                className="opacity-0 group-hover:opacity-100 transition-opacity gap-1"
+                              >
+                                <Sparkles className="h-3 w-3" />
+                                Analyze
+                              </Button>
+                            )}
+                            <Button
+                              size="sm"
+                              onClick={() => onTrackSelect?.(track)}
+                              className="opacity-0 group-hover:opacity-100 transition-opacity"
+                            >
+                              Add to Playlist
+                            </Button>
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </motion.div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}

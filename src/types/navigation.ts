@@ -1,0 +1,66 @@
+/**
+ * WS-038: Navigation Type Definitions
+ * TypeScript definitions for navigation system
+ */
+
+export * from '@/lib/navigation/roleBasedAccess';
+
+export interface NavigationConfig {
+  maxBreadcrumbs: number;
+  enableAnalytics: boolean;
+  enableKeyboardShortcuts: boolean;
+  mobileBreakpoint: number;
+  searchDebounceMs: number;
+  cacheExpiryMs: number;
+}
+
+export interface NavigationTheme {
+  primaryColor: string;
+  secondaryColor: string;
+  backgroundColor: string;
+  textColor: string;
+  activeColor: string;
+  hoverColor: string;
+  borderColor: string;
+  shadowColor: string;
+}
+
+export interface KeyboardShortcut {
+  key: string;
+  modifier?: 'ctrl' | 'cmd' | 'alt' | 'shift';
+  action: string;
+  description: string;
+  handler: () => void;
+}
+
+export interface NavigationError {
+  code: string;
+  message: string;
+  timestamp: number;
+  context?: Record<string, any>;
+}
+
+export interface NavigationCache {
+  key: string;
+  data: any;
+  expiry: number;
+  version: string;
+}
+
+export type NavigationEventType =
+  | 'page_view'
+  | 'navigation_click'
+  | 'search'
+  | 'command_palette'
+  | 'breadcrumb_click'
+  | 'mobile_nav'
+  | 'keyboard_shortcut'
+  | 'error';
+
+export interface NavigationTrackingEvent {
+  type: NavigationEventType;
+  data: Record<string, any>;
+  timestamp: number;
+  sessionId: string;
+  userId?: string;
+}

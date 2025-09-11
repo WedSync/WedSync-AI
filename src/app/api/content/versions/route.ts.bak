@@ -1,0 +1,774 @@
+/**
+ * WS-223 Content Versioning and Publishing Workflow API
+ * Team B - Content versioning, revision history, and publishing workflow
+ * 
+ * Features:
+ * - Complete version history with diff tracking
+ * - Publishing workflow with approval process
+ * - Content rollback capabilities
+ * - Change tracking and audit trails
+ * - Scheduled publishing
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { Database } from '@/types/database';
+import { z } from 'zod';
+import DOMPurify from 'isomorphic-dompurify';
+
+const supabase = createClient<Database>(
+  process.env.NEXT_PUBLIC_SUPABASE_URL || (() => { throw new Error("Missing environment variable: NEXT_PUBLIC_SUPABASE_URL") })(),
+  process.env.SUPABASE_SERVICE_ROLE_KEY || (() => { throw new Error("Missing environment variable: SUPABASE_SERVICE_ROLE_KEY") })()
+);
+
+// Validation schemas
+const CreateVersionSchema = z.object({
+  content_id: z.string().uuid(),
+  version_note: z.string().optional(),
+  is_major_version: z.boolean().default(false),
+  organization_id: z.string().uuid(),
+});
+
+const PublishWorkflowSchema = z.object({
+  content_id: z.string().uuid(),
+  action: z.enum(['submit', 'review', 'approve', 'reject', 'publish', 'schedule']),
+  note: z.string().optional(),
+  scheduled_at: z.string().datetime().optional(),
+  organization_id: z.string().uuid(),
+});
+
+const RollbackVersionSchema = z.object({
+  content_id: z.string().uuid(),
+  target_version: z.number().int().positive(),
+  rollback_note: z.string().optional(),
+  organization_id: z.string().uuid(),
+});
+
+// Helper functions
+function calculateContentDiff(oldContent: string, newContent: string): any {
+  // Simple diff calculation - in production, consider using a more sophisticated diff library
+  const changes = {
+    additions: 0,
+    deletions: 0,
+    modifications: 0,
+    characters_added: Math.max(0, newContent.length - oldContent.length),
+    characters_removed: Math.max(0, oldContent.length - newContent.length),
+  };
+  
+  // Word-level diff analysis
+  const oldWords = oldContent.split(/\s+/);
+  const newWords = newContent.split(/\s+/);
+  
+  changes.additions = Math.max(0, newWords.length - oldWords.length);
+  changes.deletions = Math.max(0, oldWords.length - newWords.length);
+  changes.modifications = Math.min(oldWords.length, newWords.length);
+  
+  return changes;
+}
+
+function extractContentStats(content: string): any {
+  const plainText = content.replace(/<[^>]*>/g, '');
+  const wordCount = plainText.split(/\s+/).filter(word => word.length > 0).length;
+  const charCount = plainText.length;
+  const readingTime = Math.ceil(wordCount / 200); // Average reading speed
+  
+  return {
+    word_count: wordCount,
+    character_count: charCount,
+    reading_time_minutes: readingTime,
+    paragraph_count: (content.match(/<p>/g) || []).length,
+    heading_count: (content.match(/<h[1-6]>/g) || []).length,
+    image_count: (content.match(/<img/g) || []).length,
+    link_count: (content.match(/<a/g) || []).length,
+  };
+}
+
+/**
+ * GET /api/content/versions - Get version history for content
+ */
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const contentId = searchParams.get('content_id');
+    const organizationId = searchParams.get('organization_id');
+    const includeContent = searchParams.get('include_content') === 'true';
+    const page = parseInt(searchParams.get('page') || '1');
+    const limit = Math.min(parseInt(searchParams.get('limit') || '20'), 100);
+    const offset = (page - 1) * limit;
+    
+    if (!contentId || !organizationId) {
+      return NextResponse.json(
+        { error: 'Content ID and Organization ID are required' },
+        { status: 400 }
+      );
+    }
+    
+    // Verify content ownership
+    const { data: content, error: contentError } = await supabase
+      .from('content_items')
+      .select('organization_id, title, status')
+      .eq('id', contentId)
+      .single();
+    
+    if (contentError || !content) {
+      return NextResponse.json(
+        { error: 'Content not found' },
+        { status: 404 }
+      );
+    }
+    
+    if (content.organization_id !== organizationId) {
+      return NextResponse.json(
+        { error: 'Unauthorized to access this content' },
+        { status: 403 }
+      );
+    }
+    
+    // Build query for versions
+    let selectFields = `
+      id,
+      version_number,
+      version_note,
+      is_major_version,
+      change_summary,
+      content_size_bytes,
+      word_count,
+      reading_time_minutes,
+      created_by,
+      created_at
+    `;
+    
+    if (includeContent) {
+      selectFields += `,
+        title,
+        rich_content,
+        plain_content,
+        metadata
+      `;
+    }
+    
+    const { data: versions, error: versionsError } = await supabase
+      .from('content_versions')
+      .select(selectFields)
+      .eq('content_id', contentId)
+      .order('version_number', { ascending: false })
+      .range(offset, offset + limit - 1);
+    
+    if (versionsError) {
+      console.error('Versions fetch error:', versionsError);
+      return NextResponse.json(
+        { error: 'Failed to fetch versions' },
+        { status: 500 }
+      );
+    }
+    
+    // Get total count
+    const { count } = await supabase
+      .from('content_versions')
+      .select('*', { count: 'exact', head: true })
+      .eq('content_id', contentId);
+    
+    // Get current workflow status
+    const { data: workflow } = await supabase
+      .from('content_workflow')
+      .select('*')
+      .eq('content_id', contentId)
+      .single();
+    
+    return NextResponse.json({
+      success: true,
+      data: {
+        content_info: {
+          id: contentId,
+          title: content.title,
+          status: content.status,
+          workflow: workflow || null,
+        },
+        versions: versions || [],
+        pagination: {
+          page,
+          limit,
+          total: count || 0,
+          total_pages: Math.ceil((count || 0) / limit),
+        }
+      }
+    });
+    
+  } catch (error) {
+    console.error('Versions API GET error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * POST /api/content/versions - Create a new version
+ */
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+    
+    // Validate input
+    const validationResult = CreateVersionSchema.safeParse(body);
+    if (!validationResult.success) {
+      return NextResponse.json(
+        { 
+          error: 'Validation failed', 
+          details: validationResult.error.errors 
+        },
+        { status: 400 }
+      );
+    }
+    
+    const {
+      content_id,
+      version_note,
+      is_major_version,
+      organization_id,
+    } = validationResult.data;
+    
+    // Get current content
+    const { data: currentContent, error: contentError } = await supabase
+      .from('content_items')
+      .select('*')
+      .eq('id', content_id)
+      .single();
+    
+    if (contentError || !currentContent) {
+      return NextResponse.json(
+        { error: 'Content not found' },
+        { status: 404 }
+      );
+    }
+    
+    if (currentContent.organization_id !== organization_id) {
+      return NextResponse.json(
+        { error: 'Unauthorized to create version for this content' },
+        { status: 403 }
+      );
+    }
+    
+    // Get the latest version to determine next version number
+    const { data: latestVersion } = await supabase
+      .from('content_versions')
+      .select('version_number, rich_content, plain_content')
+      .eq('content_id', content_id)
+      .order('version_number', { ascending: false })
+      .limit(1)
+      .single();
+    
+    const nextVersionNumber = (latestVersion?.version_number || 0) + 1;
+    
+    // Calculate change summary if there's a previous version
+    let changeSummary: any = {};
+    if (latestVersion) {
+      changeSummary = calculateContentDiff(
+        latestVersion.rich_content || '',
+        currentContent.rich_content || ''
+      );
+    }
+    
+    // Extract content statistics
+    const contentStats = extractContentStats(currentContent.rich_content || '');
+    const contentSizeBytes = Buffer.byteLength(
+      (currentContent.rich_content || '') + (currentContent.plain_content || ''),
+      'utf8'
+    );
+    
+    // Create new version
+    const versionData = {
+      content_id,
+      version_number: nextVersionNumber,
+      title: currentContent.title,
+      rich_content: currentContent.rich_content,
+      plain_content: currentContent.plain_content,
+      metadata: currentContent.metadata || {},
+      version_note: version_note || `Version ${nextVersionNumber}`,
+      is_major_version,
+      change_summary: changeSummary,
+      content_size_bytes: contentSizeBytes,
+      word_count: contentStats.word_count,
+      reading_time_minutes: contentStats.reading_time_minutes,
+      created_by: organization_id, // This should be user_id from auth
+      created_at: new Date().toISOString(),
+    };
+    
+    const { data: newVersion, error: versionError } = await supabase
+      .from('content_versions')
+      .insert(versionData)
+      .select()
+      .single();
+    
+    if (versionError) {
+      console.error('Version creation error:', versionError);
+      return NextResponse.json(
+        { error: 'Failed to create version' },
+        { status: 500 }
+      );
+    }
+    
+    // Update content version number
+    const { error: updateError } = await supabase
+      .from('content_items')
+      .update({
+        version: nextVersionNumber,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', content_id);
+    
+    if (updateError) {
+      console.error('Content version update error:', updateError);
+      // Non-fatal error
+    }
+    
+    return NextResponse.json({
+      success: true,
+      data: {
+        version: newVersion,
+        change_summary: changeSummary,
+        content_stats: contentStats,
+        message: 'Version created successfully'
+      }
+    }, { status: 201 });
+    
+  } catch (error) {
+    console.error('Version API POST error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * PUT /api/content/versions - Handle publishing workflow actions
+ */
+export async function PUT(request: NextRequest) {
+  try {
+    const body = await request.json();
+    
+    // Validate input
+    const validationResult = PublishWorkflowSchema.safeParse(body);
+    if (!validationResult.success) {
+      return NextResponse.json(
+        { 
+          error: 'Validation failed', 
+          details: validationResult.error.errors 
+        },
+        { status: 400 }
+      );
+    }
+    
+    const {
+      content_id,
+      action,
+      note,
+      scheduled_at,
+      organization_id,
+    } = validationResult.data;
+    
+    // Verify content ownership
+    const { data: content, error: contentError } = await supabase
+      .from('content_items')
+      .select('organization_id, status, title')
+      .eq('id', content_id)
+      .single();
+    
+    if (contentError || !content) {
+      return NextResponse.json(
+        { error: 'Content not found' },
+        { status: 404 }
+      );
+    }
+    
+    if (content.organization_id !== organization_id) {
+      return NextResponse.json(
+        { error: 'Unauthorized to modify workflow for this content' },
+        { status: 403 }
+      );
+    }
+    
+    // Get or create workflow record
+    let { data: workflow, error: workflowFetchError } = await supabase
+      .from('content_workflow')
+      .select('*')
+      .eq('content_id', content_id)
+      .single();
+    
+    if (workflowFetchError && workflowFetchError.code === 'PGRST116') {
+      // Create new workflow record
+      const { data: newWorkflow, error: createError } = await supabase
+        .from('content_workflow')
+        .insert({
+          content_id,
+          workflow_status: 'draft',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .select()
+        .single();
+      
+      if (createError) {
+        console.error('Workflow creation error:', createError);
+        return NextResponse.json(
+          { error: 'Failed to create workflow' },
+          { status: 500 }
+        );
+      }
+      
+      workflow = newWorkflow;
+    } else if (workflowFetchError) {
+      console.error('Workflow fetch error:', workflowFetchError);
+      return NextResponse.json(
+        { error: 'Failed to fetch workflow' },
+        { status: 500 }
+      );
+    }
+    
+    // Process workflow action
+    let workflowUpdate: any = {
+      updated_at: new Date().toISOString(),
+    };
+    let contentUpdate: any = {
+      updated_at: new Date().toISOString(),
+    };
+    
+    switch (action) {
+      case 'submit':
+        if (workflow!.workflow_status !== 'draft') {
+          return NextResponse.json(
+            { error: 'Content must be in draft status to submit' },
+            { status: 400 }
+          );
+        }
+        workflowUpdate.workflow_status = 'submitted';
+        workflowUpdate.submitted_by = organization_id; // Should be user_id
+        workflowUpdate.submitted_at = new Date().toISOString();
+        workflowUpdate.submission_note = note;
+        contentUpdate.status = 'review';
+        break;
+        
+      case 'review':
+        if (workflow!.workflow_status !== 'submitted') {
+          return NextResponse.json(
+            { error: 'Content must be submitted for review' },
+            { status: 400 }
+          );
+        }
+        workflowUpdate.workflow_status = 'in_review';
+        workflowUpdate.reviewed_by = organization_id; // Should be user_id
+        workflowUpdate.reviewed_at = new Date().toISOString();
+        workflowUpdate.review_note = note;
+        break;
+        
+      case 'approve':
+        if (workflow!.workflow_status !== 'in_review') {
+          return NextResponse.json(
+            { error: 'Content must be under review to approve' },
+            { status: 400 }
+          );
+        }
+        workflowUpdate.workflow_status = 'approved';
+        workflowUpdate.approved_by = organization_id; // Should be user_id
+        workflowUpdate.approved_at = new Date().toISOString();
+        break;
+        
+      case 'reject':
+        if (!['submitted', 'in_review'].includes(workflow!.workflow_status)) {
+          return NextResponse.json(
+            { error: 'Content must be submitted or under review to reject' },
+            { status: 400 }
+          );
+        }
+        workflowUpdate.workflow_status = 'rejected';
+        workflowUpdate.reviewed_by = organization_id; // Should be user_id
+        workflowUpdate.reviewed_at = new Date().toISOString();
+        workflowUpdate.rejection_reason = note;
+        contentUpdate.status = 'draft';
+        break;
+        
+      case 'publish':
+        if (workflow!.workflow_status !== 'approved') {
+          return NextResponse.json(
+            { error: 'Content must be approved to publish' },
+            { status: 400 }
+          );
+        }
+        workflowUpdate.workflow_status = 'published';
+        workflowUpdate.published_at = new Date().toISOString();
+        contentUpdate.status = 'published';
+        contentUpdate.publish_at = new Date().toISOString();
+        break;
+        
+      case 'schedule':
+        if (workflow!.workflow_status !== 'approved') {
+          return NextResponse.json(
+            { error: 'Content must be approved to schedule' },
+            { status: 400 }
+          );
+        }
+        if (!scheduled_at) {
+          return NextResponse.json(
+            { error: 'scheduled_at is required for scheduling' },
+            { status: 400 }
+          );
+        }
+        workflowUpdate.workflow_status = 'approved'; // Keep as approved until published
+        contentUpdate.status = 'scheduled';
+        contentUpdate.publish_at = scheduled_at;
+        break;
+        
+      default:
+        return NextResponse.json(
+          { error: `Unknown workflow action: ${action}` },
+          { status: 400 }
+        );
+    }
+    
+    // Update workflow
+    const { data: updatedWorkflow, error: workflowUpdateError } = await supabase
+      .from('content_workflow')
+      .update(workflowUpdate)
+      .eq('content_id', content_id)
+      .select()
+      .single();
+    
+    if (workflowUpdateError) {
+      console.error('Workflow update error:', workflowUpdateError);
+      return NextResponse.json(
+        { error: 'Failed to update workflow' },
+        { status: 500 }
+      );
+    }
+    
+    // Update content status if needed
+    if (Object.keys(contentUpdate).length > 1) {
+      const { error: contentUpdateError } = await supabase
+        .from('content_items')
+        .update(contentUpdate)
+        .eq('id', content_id);
+      
+      if (contentUpdateError) {
+        console.error('Content status update error:', contentUpdateError);
+        // Non-fatal error
+      }
+    }
+    
+    return NextResponse.json({
+      success: true,
+      data: {
+        workflow: updatedWorkflow,
+        action_performed: action,
+        message: `Content ${action} completed successfully`
+      }
+    });
+    
+  } catch (error) {
+    console.error('Workflow API PUT error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * PATCH /api/content/versions - Rollback to a previous version
+ */
+export async function PATCH(request: NextRequest) {
+  try {
+    const body = await request.json();
+    
+    // Validate input
+    const validationResult = RollbackVersionSchema.safeParse(body);
+    if (!validationResult.success) {
+      return NextResponse.json(
+        { 
+          error: 'Validation failed', 
+          details: validationResult.error.errors 
+        },
+        { status: 400 }
+      );
+    }
+    
+    const {
+      content_id,
+      target_version,
+      rollback_note,
+      organization_id,
+    } = validationResult.data;
+    
+    // Verify content ownership
+    const { data: content, error: contentError } = await supabase
+      .from('content_items')
+      .select('*')
+      .eq('id', content_id)
+      .single();
+    
+    if (contentError || !content) {
+      return NextResponse.json(
+        { error: 'Content not found' },
+        { status: 404 }
+      );
+    }
+    
+    if (content.organization_id !== organization_id) {
+      return NextResponse.json(
+        { error: 'Unauthorized to rollback this content' },
+        { status: 403 }
+      );
+    }
+    
+    // Get target version
+    const { data: targetVersion, error: versionError } = await supabase
+      .from('content_versions')
+      .select('*')
+      .eq('content_id', content_id)
+      .eq('version_number', target_version)
+      .single();
+    
+    if (versionError || !targetVersion) {
+      return NextResponse.json(
+        { error: `Version ${target_version} not found` },
+        { status: 404 }
+      );
+    }
+    
+    // Create backup of current content as new version before rollback
+    const currentVersionNumber = content.version + 1;
+    const backupVersionData = {
+      content_id,
+      version_number: currentVersionNumber,
+      title: content.title,
+      rich_content: content.rich_content,
+      plain_content: content.plain_content,
+      metadata: content.metadata || {},
+      version_note: `Pre-rollback backup - Version ${currentVersionNumber}`,
+      is_major_version: false,
+      change_summary: { type: 'backup', rollback_target: target_version },
+      content_size_bytes: Buffer.byteLength(
+        (content.rich_content || '') + (content.plain_content || ''),
+        'utf8'
+      ),
+      created_by: organization_id, // Should be user_id from auth
+      created_at: new Date().toISOString(),
+    };
+    
+    const { error: backupError } = await supabase
+      .from('content_versions')
+      .insert(backupVersionData);
+    
+    if (backupError) {
+      console.error('Backup version creation error:', backupError);
+      return NextResponse.json(
+        { error: 'Failed to create backup version' },
+        { status: 500 }
+      );
+    }
+    
+    // Rollback content to target version
+    const rollbackUpdate = {
+      title: targetVersion.title,
+      rich_content: targetVersion.rich_content,
+      plain_content: targetVersion.plain_content,
+      metadata: targetVersion.metadata || {},
+      version: currentVersionNumber,
+      status: 'draft', // Reset to draft after rollback
+      updated_at: new Date().toISOString(),
+    };
+    
+    const { data: rolledBackContent, error: rollbackError } = await supabase
+      .from('content_items')
+      .update(rollbackUpdate)
+      .eq('id', content_id)
+      .select()
+      .single();
+    
+    if (rollbackError) {
+      console.error('Content rollback error:', rollbackError);
+      return NextResponse.json(
+        { error: 'Failed to rollback content' },
+        { status: 500 }
+      );
+    }
+    
+    // Create rollback version entry
+    const rollbackVersionNumber = currentVersionNumber + 1;
+    const rollbackVersionData = {
+      content_id,
+      version_number: rollbackVersionNumber,
+      title: targetVersion.title,
+      rich_content: targetVersion.rich_content,
+      plain_content: targetVersion.plain_content,
+      metadata: targetVersion.metadata || {},
+      version_note: rollback_note || `Rolled back to version ${target_version}`,
+      is_major_version: true,
+      change_summary: { 
+        type: 'rollback', 
+        target_version,
+        rollback_timestamp: new Date().toISOString()
+      },
+      content_size_bytes: targetVersion.content_size_bytes || 0,
+      word_count: targetVersion.word_count || 0,
+      reading_time_minutes: targetVersion.reading_time_minutes || 0,
+      created_by: organization_id, // Should be user_id from auth
+      created_at: new Date().toISOString(),
+    };
+    
+    const { data: rollbackVersion, error: rollbackVersionError } = await supabase
+      .from('content_versions')
+      .insert(rollbackVersionData)
+      .select()
+      .single();
+    
+    if (rollbackVersionError) {
+      console.error('Rollback version creation error:', rollbackVersionError);
+      // Non-fatal error
+    }
+    
+    // Update content version to rollback version number
+    const { error: finalUpdateError } = await supabase
+      .from('content_items')
+      .update({ version: rollbackVersionNumber })
+      .eq('id', content_id);
+    
+    if (finalUpdateError) {
+      console.error('Final version update error:', finalUpdateError);
+      // Non-fatal error
+    }
+    
+    // Reset workflow to draft
+    const { error: workflowResetError } = await supabase
+      .from('content_workflow')
+      .update({
+        workflow_status: 'draft',
+        updated_at: new Date().toISOString(),
+      })
+      .eq('content_id', content_id);
+    
+    if (workflowResetError) {
+      console.error('Workflow reset error:', workflowResetError);
+      // Non-fatal error
+    }
+    
+    return NextResponse.json({
+      success: true,
+      data: {
+        content: rolledBackContent,
+        rollback_version: rollbackVersion,
+        target_version,
+        backup_version_created: currentVersionNumber,
+        message: `Content successfully rolled back to version ${target_version}`
+      }
+    });
+    
+  } catch (error) {
+    console.error('Rollback API PATCH error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}

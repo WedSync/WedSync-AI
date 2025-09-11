@@ -1,0 +1,596 @@
+/**
+ * @fileoverview Test suite for Okta Integration
+ * Tests OAuth2, JWKS validation, and Okta-specific authentication flows
+ * @version 1.0.0
+ * @author WedSync Development Team
+ */
+
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { OktaConnector } from '../OktaConnector';
+import type { 
+  OktaConfiguration,
+  OktaAuthenticationResult,
+  OktaUserProfile,
+  PasswordlessAuthRequest
+} from '../OktaConnector';
+
+// Mock node-fetch
+global.fetch = vi.fn();
+
+// Mock jose for JWT verification
+vi.mock('jose', () => ({
+  jwtVerify: vi.fn(),
+  createRemoteJWKSet: vi.fn(),
+  importJWK: vi.fn()
+}));
+
+describe('OktaConnector', () => {
+  let oktaConnector: OktaConnector;
+  let mockConfig: OktaConfiguration;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    
+    mockConfig = {
+      domain: 'dev-12345.okta.com',
+      clientId: 'okta-client-id',
+      clientSecret: 'okta-client-secret',
+      redirectUri: 'https://app.wedsync.com/auth/callback',
+      scopes: ['openid', 'profile', 'email', 'groups'],
+      authorizationServerId: 'default',
+      apiToken: 'okta-api-token',
+      features: {
+        jitProvisioning: true,
+        groupSync: true,
+        mfaEnforcement: true,
+        sessionManagement: true
+      }
+    };
+
+    oktaConnector = new OktaConnector(mockConfig);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('OAuth2 Flow', () => {
+    it('should generate correct authorization URL', () => {
+      const state = 'random-state-value';
+      const nonce = 'random-nonce-value';
+
+      const authUrl = oktaConnector.getAuthorizationUrl(state, nonce);
+
+      expect(authUrl).toContain(`https://${mockConfig.domain}/oauth2/v1/authorize`);
+      expect(authUrl).toContain(`client_id=${mockConfig.clientId}`);
+      expect(authUrl).toContain(`redirect_uri=${encodeURIComponent(mockConfig.redirectUri)}`);
+      expect(authUrl).toContain(`state=${state}`);
+      expect(authUrl).toContain(`nonce=${nonce}`);
+      expect(authUrl).toContain('response_type=code');
+      expect(authUrl).toContain('scope=openid%20profile%20email%20groups');
+    });
+
+    it('should exchange authorization code for tokens', async () => {
+      const mockTokenResponse = {
+        access_token: 'mock-access-token',
+        id_token: 'mock-id-token',
+        token_type: 'Bearer',
+        expires_in: 3600,
+        scope: 'openid profile email'
+      };
+
+      vi.mocked(fetch).mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(mockTokenResponse)
+      } as Response);
+
+      const result = await oktaConnector.exchangeCodeForTokens('auth-code', 'state');
+
+      expect(result.success).toBe(true);
+      expect(result.tokens?.accessToken).toBe('mock-access-token');
+      expect(result.tokens?.idToken).toBe('mock-id-token');
+      
+      expect(fetch).toHaveBeenCalledWith(
+        `https://${mockConfig.domain}/oauth2/v1/token`,
+        expect.objectContaining({
+          method: 'POST',
+          headers: expect.objectContaining({
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'application/json'
+          })
+        })
+      );
+    });
+
+    it('should handle token exchange errors', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce({
+        ok: false,
+        status: 400,
+        json: () => Promise.resolve({
+          error: 'invalid_grant',
+          error_description: 'The authorization code is invalid or expired'
+        })
+      } as Response);
+
+      const result = await oktaConnector.exchangeCodeForTokens('invalid-code', 'state');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('invalid_grant');
+    });
+  });
+
+  describe('JWT Token Validation', () => {
+    it('should validate ID token successfully', async () => {
+      const mockPayload = {
+        sub: 'okta-user-123',
+        email: 'user@example.com',
+        name: 'Test User',
+        preferred_username: 'testuser',
+        groups: ['Everyone', 'Wedding Vendors'],
+        iss: `https://${mockConfig.domain}/oauth2/default`,
+        aud: mockConfig.clientId,
+        exp: Math.floor(Date.now() / 1000) + 3600,
+        iat: Math.floor(Date.now() / 1000)
+      };
+
+      const mockJWKS = vi.fn();
+      vi.mocked(require('jose').createRemoteJWKSet).mockReturnValue(mockJWKS);
+      vi.mocked(require('jose').jwtVerify).mockResolvedValue({
+        payload: mockPayload,
+        protectedHeader: { alg: 'RS256', kid: 'mock-kid' }
+      });
+
+      const result = await oktaConnector.validateIdToken('mock-id-token');
+
+      expect(result.valid).toBe(true);
+      expect(result.payload?.sub).toBe('okta-user-123');
+      expect(result.payload?.email).toBe('user@example.com');
+    });
+
+    it('should reject invalid ID tokens', async () => {
+      vi.mocked(require('jose').jwtVerify).mockRejectedValue(
+        new Error('JWT signature verification failed')
+      );
+
+      const result = await oktaConnector.validateIdToken('invalid-token');
+
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('signature verification failed');
+    });
+
+    it('should validate token expiration', async () => {
+      const expiredPayload = {
+        sub: 'okta-user-123',
+        exp: Math.floor(Date.now() / 1000) - 3600, // Expired 1 hour ago
+        iat: Math.floor(Date.now() / 1000) - 7200
+      };
+
+      vi.mocked(require('jose').jwtVerify).mockRejectedValue(
+        new Error('JWT expired')
+      );
+
+      const result = await oktaConnector.validateIdToken('expired-token');
+
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain('expired');
+    });
+  });
+
+  describe('User Profile Management', () => {
+    it('should fetch user profile from Okta API', async () => {
+      const mockUserProfile = {
+        id: 'okta-user-123',
+        status: 'ACTIVE',
+        created: '2024-01-01T00:00:00.000Z',
+        activated: '2024-01-01T00:00:00.000Z',
+        profile: {
+          email: 'user@example.com',
+          firstName: 'Test',
+          lastName: 'User',
+          login: 'user@example.com',
+          businessType: 'photographer',
+          department: 'Photography'
+        }
+      };
+
+      vi.mocked(fetch).mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(mockUserProfile)
+      } as Response);
+
+      const profile = await oktaConnector.getUserProfile('okta-user-123');
+
+      expect(profile).toBeDefined();
+      expect(profile?.email).toBe('user@example.com');
+      expect(profile?.firstName).toBe('Test');
+      expect(profile?.businessType).toBe('photographer');
+
+      expect(fetch).toHaveBeenCalledWith(
+        `https://${mockConfig.domain}/api/v1/users/okta-user-123`,
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            'Authorization': `SSWS ${mockConfig.apiToken}`
+          })
+        })
+      );
+    });
+
+    it('should update user profile', async () => {
+      const updates = {
+        firstName: 'Updated',
+        lastName: 'User',
+        businessType: 'venue'
+      };
+
+      vi.mocked(fetch).mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ id: 'okta-user-123', profile: updates })
+      } as Response);
+
+      const result = await oktaConnector.updateUserProfile('okta-user-123', updates);
+
+      expect(result.success).toBe(true);
+      expect(fetch).toHaveBeenCalledWith(
+        `https://${mockConfig.domain}/api/v1/users/okta-user-123`,
+        expect.objectContaining({
+          method: 'POST',
+          headers: expect.objectContaining({
+            'Authorization': `SSWS ${mockConfig.apiToken}`,
+            'Content-Type': 'application/json'
+          }),
+          body: JSON.stringify({ profile: updates })
+        })
+      );
+    });
+  });
+
+  describe('Passwordless Authentication', () => {
+    it('should initiate passwordless authentication', async () => {
+      const request: PasswordlessAuthRequest = {
+        username: 'user@example.com',
+        factorType: 'email'
+      };
+
+      const mockResponse = {
+        stateToken: 'state-token-123',
+        status: 'MFA_ENROLL',
+        factorResult: 'WAITING',
+        _embedded: {
+          factor: {
+            id: 'factor-id-123',
+            factorType: 'email',
+            profile: { email: 'user@example.com' }
+          }
+        }
+      };
+
+      vi.mocked(fetch).mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(mockResponse)
+      } as Response);
+
+      const result = await oktaConnector.initiatePasswordlessAuth(request);
+
+      expect(result.success).toBe(true);
+      expect(result.stateToken).toBe('state-token-123');
+      expect(result.factorId).toBe('factor-id-123');
+    });
+
+    it('should verify passwordless authentication', async () => {
+      const mockResponse = {
+        status: 'SUCCESS',
+        sessionToken: 'session-token-123',
+        _embedded: {
+          user: {
+            id: 'okta-user-123',
+            profile: {
+              email: 'user@example.com',
+              firstName: 'Test',
+              lastName: 'User'
+            }
+          }
+        }
+      };
+
+      vi.mocked(fetch).mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(mockResponse)
+      } as Response);
+
+      const result = await oktaConnector.verifyPasswordlessAuth('factor-id', 'verification-code');
+
+      expect(result.success).toBe(true);
+      expect(result.sessionToken).toBe('session-token-123');
+      expect(result.user?.id).toBe('okta-user-123');
+    });
+  });
+
+  describe('Group Management', () => {
+    it('should fetch user groups', async () => {
+      const mockGroups = [
+        {
+          id: 'group-1',
+          profile: {
+            name: 'Wedding Vendors',
+            description: 'All wedding vendors'
+          }
+        },
+        {
+          id: 'group-2',
+          profile: {
+            name: 'Photographers',
+            description: 'Photography vendors'
+          }
+        }
+      ];
+
+      vi.mocked(fetch).mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(mockGroups)
+      } as Response);
+
+      const groups = await oktaConnector.getUserGroups('okta-user-123');
+
+      expect(groups).toHaveLength(2);
+      expect(groups[0]).toBe('Wedding Vendors');
+      expect(groups[1]).toBe('Photographers');
+    });
+
+    it('should assign user to group', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce({
+        ok: true,
+        status: 204
+      } as Response);
+
+      const result = await oktaConnector.assignUserToGroup('okta-user-123', 'group-1');
+
+      expect(result.success).toBe(true);
+      expect(fetch).toHaveBeenCalledWith(
+        `https://${mockConfig.domain}/api/v1/groups/group-1/users/okta-user-123`,
+        expect.objectContaining({
+          method: 'PUT',
+          headers: expect.objectContaining({
+            'Authorization': `SSWS ${mockConfig.apiToken}`
+          })
+        })
+      );
+    });
+  });
+
+  describe('Just-in-Time Provisioning', () => {
+    it('should provision new user from token', async () => {
+      const tokenPayload = {
+        sub: 'new-user-123',
+        email: 'newuser@example.com',
+        name: 'New User',
+        groups: ['Wedding Vendors'],
+        businessType: 'florist'
+      };
+
+      const result = await oktaConnector.provisionUserFromToken(tokenPayload);
+
+      expect(result.success).toBe(true);
+      expect(result.user?.email).toBe('newuser@example.com');
+      expect(result.user?.businessType).toBe('florist');
+      expect(result.user?.groups).toContain('Wedding Vendors');
+    });
+
+    it('should handle provisioning for existing users', async () => {
+      const tokenPayload = {
+        sub: 'existing-user-123',
+        email: 'existing@example.com',
+        name: 'Existing User',
+        groups: ['Wedding Vendors', 'Venues']
+      };
+
+      const result = await oktaConnector.provisionUserFromToken(tokenPayload);
+
+      expect(result.success).toBe(true);
+      expect(result.action).toBe('updated');
+    });
+  });
+
+  describe('Session Management', () => {
+    it('should create session from token', async () => {
+      const mockSessionResponse = {
+        id: 'session-123',
+        userId: 'okta-user-123',
+        login: 'user@example.com',
+        status: 'ACTIVE',
+        expiresAt: '2024-12-31T23:59:59.000Z'
+      };
+
+      vi.mocked(fetch).mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(mockSessionResponse)
+      } as Response);
+
+      const session = await oktaConnector.createSessionFromToken('session-token-123');
+
+      expect(session?.id).toBe('session-123');
+      expect(session?.userId).toBe('okta-user-123');
+      expect(session?.status).toBe('ACTIVE');
+    });
+
+    it('should refresh session', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({
+          id: 'session-123',
+          expiresAt: '2024-12-31T23:59:59.000Z'
+        })
+      } as Response);
+
+      const result = await oktaConnector.refreshSession('session-123');
+
+      expect(result.success).toBe(true);
+      expect(fetch).toHaveBeenCalledWith(
+        `https://${mockConfig.domain}/api/v1/sessions/session-123/lifecycle/refresh`,
+        expect.objectContaining({ method: 'POST' })
+      );
+    });
+
+    it('should close session', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce({
+        ok: true,
+        status: 204
+      } as Response);
+
+      const result = await oktaConnector.closeSession('session-123');
+
+      expect(result.success).toBe(true);
+      expect(fetch).toHaveBeenCalledWith(
+        `https://${mockConfig.domain}/api/v1/sessions/session-123`,
+        expect.objectContaining({ method: 'DELETE' })
+      );
+    });
+  });
+
+  describe('Wedding Industry Integration', () => {
+    it('should authenticate wedding vendor with business context', async () => {
+      const mockTokenResponse = {
+        access_token: 'vendor-access-token',
+        id_token: 'vendor-id-token'
+      };
+
+      const mockUserProfile = {
+        id: 'vendor-123',
+        profile: {
+          email: 'contact@weddingvenue.com',
+          firstName: 'Grand',
+          lastName: 'Ballroom',
+          businessType: 'venue',
+          businessName: 'Grand Ballroom Events',
+          verificationStatus: 'verified',
+          serviceTypes: ['reception', 'ceremony'],
+          capacity: 200,
+          location: 'New York, NY'
+        }
+      };
+
+      vi.mocked(fetch)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve(mockTokenResponse)
+        } as Response)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve(mockUserProfile)
+        } as Response);
+
+      const mockPayload = {
+        sub: 'vendor-123',
+        email: 'contact@weddingvenue.com',
+        businessType: 'venue',
+        groups: ['Wedding Vendors', 'Venues']
+      };
+
+      vi.mocked(require('jose').jwtVerify).mockResolvedValue({
+        payload: mockPayload
+      });
+
+      const result = await oktaConnector.authenticate({
+        grantType: 'authorization_code',
+        code: 'auth-code'
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.user?.businessType).toBe('venue');
+      expect(result.user?.businessName).toBe('Grand Ballroom Events');
+      expect(result.user?.serviceTypes).toContain('reception');
+    });
+
+    it('should handle vendor profile validation', async () => {
+      const vendorProfile = {
+        email: 'photographer@example.com',
+        businessType: 'photographer',
+        businessName: 'Amazing Photography',
+        portfolioUrl: 'https://amazingphoto.com',
+        yearsExperience: 5,
+        specialties: ['wedding', 'portrait', 'event']
+      };
+
+      const validation = oktaConnector.validateVendorProfile(vendorProfile);
+
+      expect(validation.isValid).toBe(true);
+      expect(validation.businessCategory).toBe('photography');
+      expect(validation.requiredDocuments).toContain('business_license');
+      expect(validation.profileCompleteness).toBeGreaterThan(80);
+    });
+  });
+
+  describe('Error Handling', () => {
+    it('should handle network errors gracefully', async () => {
+      vi.mocked(fetch).mockRejectedValue(new Error('Network error'));
+
+      const result = await oktaConnector.exchangeCodeForTokens('code', 'state');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Network error');
+    });
+
+    it('should handle rate limiting', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce({
+        ok: false,
+        status: 429,
+        headers: new Headers({
+          'X-Rate-Limit-Remaining': '0',
+          'X-Rate-Limit-Reset': String(Date.now() + 60000)
+        })
+      } as Response);
+
+      const result = await oktaConnector.getUserProfile('user-123');
+
+      expect(result).toBeNull();
+      // Should implement retry logic or exponential backoff
+    });
+
+    it('should handle authentication state errors', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce({
+        ok: false,
+        status: 400,
+        json: () => Promise.resolve({
+          errorCode: 'E0000004',
+          errorSummary: 'Authentication failed'
+        })
+      } as Response);
+
+      const result = await oktaConnector.initiatePasswordlessAuth({
+        username: 'invalid@example.com',
+        factorType: 'email'
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.errorCode).toBe('E0000004');
+    });
+  });
+
+  describe('Health Check', () => {
+    it('should perform health check successfully', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({
+          status: 'UP',
+          checks: {
+            'db': { status: 'UP' },
+            'auth': { status: 'UP' }
+          }
+        })
+      } as Response);
+
+      const result = await oktaConnector.healthCheck();
+
+      expect(result.healthy).toBe(true);
+      expect(result.status).toBe('UP');
+    });
+
+    it('should detect unhealthy service', async () => {
+      vi.mocked(fetch).mockRejectedValue(new Error('Service unavailable'));
+
+      const result = await oktaConnector.healthCheck();
+
+      expect(result.healthy).toBe(false);
+      expect(result.error).toContain('Service unavailable');
+    });
+  });
+});

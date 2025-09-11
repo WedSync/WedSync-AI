@@ -1,0 +1,331 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { ConversionOptimizer } from '@/lib/services/conversion-optimizer';
+import { z } from 'zod';
+
+const OptimizationQuerySchema = z.object({
+  type: z
+    .enum(['recommendations', 'funnel-analysis', 'optimal-timing'])
+    .optional(),
+  date_from: z.string().datetime().optional(),
+  date_to: z.string().datetime().optional(),
+  invitation_type: z
+    .enum(['vendor_to_couple', 'couple_to_vendor', 'vendor_to_vendor'])
+    .optional(),
+  channel: z.enum(['email', 'sms', 'whatsapp']).optional(),
+});
+
+/**
+ * GET /api/viral/optimization
+ * Get optimization recommendations and analysis
+ */
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+
+    // Check authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Authentication required', code: 'AUTH_REQUIRED' },
+        { status: 401 },
+      );
+    }
+
+    const url = new URL(request.url);
+    const queryParams = {
+      type: url.searchParams.get('type') || 'recommendations',
+      date_from: url.searchParams.get('date_from'),
+      date_to: url.searchParams.get('date_to'),
+      invitation_type: url.searchParams.get('invitation_type'),
+      channel: url.searchParams.get('channel'),
+    };
+
+    // Validate query parameters
+    const validatedParams = OptimizationQuerySchema.parse(queryParams);
+
+    const optimizer = new ConversionOptimizer(supabase);
+
+    switch (validatedParams.type) {
+      case 'recommendations': {
+        const recommendations =
+          await optimizer.generateOptimizationRecommendations(user.id);
+
+        return NextResponse.json({
+          success: true,
+          data: {
+            recommendations,
+            generated_at: new Date().toISOString(),
+            total_recommendations: recommendations.length,
+            high_priority_count: recommendations.filter(
+              (r) => r.priority === 'high',
+            ).length,
+          },
+          metadata: {
+            user_id: user.id,
+            analysis_period: '90 days',
+          },
+        });
+      }
+
+      case 'funnel-analysis': {
+        const dateFrom =
+          validatedParams.date_from ||
+          new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+        const dateTo = validatedParams.date_to || new Date().toISOString();
+
+        const funnelAnalysis = await optimizer.analyzeConversionFunnel(
+          user.id,
+          {
+            from: dateFrom,
+            to: dateTo,
+          },
+        );
+
+        return NextResponse.json({
+          success: true,
+          data: {
+            funnel_stages: funnelAnalysis,
+            analysis_period: {
+              from: dateFrom,
+              to: dateTo,
+            },
+            total_stages: funnelAnalysis.length,
+            biggest_bottleneck: funnelAnalysis.sort(
+              (a, b) => b.drop_off_rate - a.drop_off_rate,
+            )[0],
+          },
+        });
+      }
+
+      case 'optimal-timing': {
+        if (!validatedParams.invitation_type || !validatedParams.channel) {
+          return NextResponse.json(
+            {
+              error:
+                'invitation_type and channel are required for timing optimization',
+              code: 'MISSING_PARAMS',
+            },
+            { status: 400 },
+          );
+        }
+
+        const optimalTiming = await optimizer.getOptimalSendingTime(
+          user.id,
+          validatedParams.invitation_type,
+          validatedParams.channel,
+        );
+
+        return NextResponse.json({
+          success: true,
+          data: {
+            optimal_timing: optimalTiming,
+            invitation_type: validatedParams.invitation_type,
+            channel: validatedParams.channel,
+            recommendation: `Send ${validatedParams.invitation_type} invitations via ${validatedParams.channel} on ${
+              [
+                'Sunday',
+                'Monday',
+                'Tuesday',
+                'Wednesday',
+                'Thursday',
+                'Friday',
+                'Saturday',
+              ][optimalTiming.dayOfWeek]
+            } at ${optimalTiming.hour}:00 for best results`,
+          },
+        });
+      }
+
+      default:
+        return NextResponse.json(
+          { error: 'Invalid optimization type', code: 'INVALID_TYPE' },
+          { status: 400 },
+        );
+    }
+  } catch (error) {
+    console.error('Optimization API error:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Invalid query parameters',
+          code: 'VALIDATION_ERROR',
+          details: error.errors,
+        },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      {
+        error: 'Failed to get optimization data',
+        code: 'OPTIMIZATION_ERROR',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+const CreateTestSchema = z.object({
+  name: z.string().min(1).max(100),
+  test_type: z.enum(['template', 'timing', 'channel', 'subject']),
+  start_date: z.string().datetime(),
+  end_date: z.string().datetime().optional(),
+  variants: z
+    .array(
+      z.object({
+        name: z.string().min(1).max(50),
+        variant_key: z.string().min(1).max(20),
+        traffic_allocation: z.number().min(0).max(100),
+        configuration: z.record(z.any()),
+        is_control: z.boolean(),
+      }),
+    )
+    .min(2)
+    .max(5),
+  target_metrics: z.array(z.string()).min(1),
+  minimum_sample_size: z.number().min(10).max(10000),
+  confidence_level: z.number().min(0.8).max(0.99),
+});
+
+/**
+ * POST /api/viral/optimization
+ * Create a new A/B test for conversion optimization
+ */
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+
+    // Check authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Authentication required', code: 'AUTH_REQUIRED' },
+        { status: 401 },
+      );
+    }
+
+    const body = await request.json();
+    const validatedData = CreateTestSchema.parse(body);
+
+    const optimizer = new ConversionOptimizer(supabase);
+    const test = await optimizer.createConversionTest({
+      ...validatedData,
+      created_by: user.id,
+      status: 'draft',
+    });
+
+    return NextResponse.json(
+      {
+        success: true,
+        data: test,
+        message: 'A/B test created successfully',
+      },
+      { status: 201 },
+    );
+  } catch (error) {
+    console.error('Create A/B test error:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Invalid test data',
+          code: 'VALIDATION_ERROR',
+          details: error.errors,
+        },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      {
+        error: 'Failed to create A/B test',
+        code: 'TEST_CREATION_ERROR',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+const PersonalizationSchema = z.object({
+  invitation_data: z.object({
+    recipient_email: z.string().email(),
+    recipient_name: z.string().optional(),
+    invitation_type: z.enum([
+      'vendor_to_couple',
+      'couple_to_vendor',
+      'vendor_to_vendor',
+    ]),
+    channel: z.enum(['email', 'sms', 'whatsapp']),
+    wedding_context: z.record(z.any()).optional(),
+  }),
+});
+
+/**
+ * PUT /api/viral/optimization
+ * Apply personalization rules to invitation data
+ */
+export async function PUT(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+
+    // Check authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Authentication required', code: 'AUTH_REQUIRED' },
+        { status: 401 },
+      );
+    }
+
+    const body = await request.json();
+    const validatedData = PersonalizationSchema.parse(body);
+
+    const optimizer = new ConversionOptimizer(supabase);
+    const personalizedData = await optimizer.applyPersonalization(
+      validatedData.invitation_data,
+      user.id,
+    );
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        original: validatedData.invitation_data,
+        personalized: personalizedData,
+        applied_rules: personalizedData._applied_rules || [],
+      },
+      message: 'Personalization applied successfully',
+    });
+  } catch (error) {
+    console.error('Personalization error:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Invalid invitation data',
+          code: 'VALIDATION_ERROR',
+          details: error.errors,
+        },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      {
+        error: 'Failed to apply personalization',
+        code: 'PERSONALIZATION_ERROR',
+      },
+      { status: 500 },
+    );
+  }
+}

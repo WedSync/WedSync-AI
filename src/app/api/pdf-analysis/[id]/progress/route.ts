@@ -1,0 +1,227 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+
+interface RouteParams {
+  params: {
+    id: string;
+  };
+}
+
+export async function GET(request: NextRequest, { params }: RouteParams) {
+  try {
+    const supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+
+    // Check authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const analysisId = params.id;
+
+    // Get analysis with user verification
+    const { data: analysis, error } = await supabase
+      .from('pdf_analyses')
+      .select('*')
+      .eq('id', analysisId)
+      .eq('user_id', user.id)
+      .single();
+
+    if (error || !analysis) {
+      return NextResponse.json(
+        { error: 'Analysis not found' },
+        { status: 404 },
+      );
+    }
+
+    // Map database fields to frontend expected format
+    const progressResponse = {
+      analysisId: analysis.id,
+      status: analysis.status,
+      currentStage: analysis.current_stage || 'upload',
+      stageProgress: analysis.stage_progress || 0,
+      overallProgress: calculateOverallProgress(
+        analysis.current_stage,
+        analysis.stage_progress,
+      ),
+      processingTime: analysis.processing_time || 0,
+      extractedFields: analysis.extracted_fields || [],
+      fieldsCount: analysis.fields_count || 0,
+      confidenceScore: analysis.confidence_score || 0,
+      errorMessage: analysis.error_message,
+      createdAt: analysis.created_at,
+      completedAt: analysis.completed_at,
+      stages: [
+        {
+          id: 'upload',
+          title: 'File Upload',
+          description: 'Uploading your wedding form to secure servers',
+          status: 'completed',
+          progress: 100,
+        },
+        {
+          id: 'pdf_parsing',
+          title: 'PDF Analysis',
+          description: 'Reading and analyzing the document structure',
+          status: getStageStatus(
+            'pdf_parsing',
+            analysis.current_stage,
+            analysis.status,
+          ),
+          progress:
+            analysis.current_stage === 'pdf_parsing'
+              ? analysis.stage_progress
+              : isStageCompleted('pdf_parsing', analysis.current_stage)
+                ? 100
+                : 0,
+          estimatedDuration: 30,
+        },
+        {
+          id: 'vision_analysis',
+          title: 'Visual Recognition',
+          description: 'Using AI to identify form layouts and visual elements',
+          status: getStageStatus(
+            'vision_analysis',
+            analysis.current_stage,
+            analysis.status,
+          ),
+          progress:
+            analysis.current_stage === 'vision_analysis'
+              ? analysis.stage_progress
+              : isStageCompleted('vision_analysis', analysis.current_stage)
+                ? 100
+                : 0,
+          estimatedDuration: 45,
+        },
+        {
+          id: 'field_extraction',
+          title: 'Data Extraction',
+          description: 'Extracting client details and wedding preferences',
+          status: getStageStatus(
+            'field_extraction',
+            analysis.current_stage,
+            analysis.status,
+          ),
+          progress:
+            analysis.current_stage === 'field_extraction'
+              ? analysis.stage_progress
+              : isStageCompleted('field_extraction', analysis.current_stage)
+                ? 100
+                : 0,
+          estimatedDuration: 60,
+        },
+        {
+          id: 'validation',
+          title: 'Quality Check',
+          description: 'Validating extracted data for accuracy',
+          status: getStageStatus(
+            'validation',
+            analysis.current_stage,
+            analysis.status,
+          ),
+          progress:
+            analysis.current_stage === 'validation'
+              ? analysis.stage_progress
+              : isStageCompleted('validation', analysis.current_stage)
+                ? 100
+                : 0,
+          estimatedDuration: 15,
+        },
+      ],
+    };
+
+    return NextResponse.json(progressResponse);
+  } catch (error) {
+    console.error('Progress fetch error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+function calculateOverallProgress(
+  currentStage: string,
+  stageProgress: number,
+): number {
+  const stageWeights = {
+    upload: 10,
+    pdf_parsing: 20,
+    vision_analysis: 30,
+    field_extraction: 40,
+    validation: 10,
+    completed: 100,
+  };
+
+  const stageOrder = [
+    'upload',
+    'pdf_parsing',
+    'vision_analysis',
+    'field_extraction',
+    'validation',
+    'completed',
+  ];
+  const currentStageIndex = stageOrder.indexOf(currentStage);
+
+  if (currentStageIndex === -1) return 0;
+
+  let totalProgress = 0;
+
+  // Add progress from completed stages
+  for (let i = 0; i < currentStageIndex; i++) {
+    totalProgress += stageWeights[stageOrder[i] as keyof typeof stageWeights];
+  }
+
+  // Add current stage progress
+  const currentStageWeight =
+    stageWeights[currentStage as keyof typeof stageWeights] || 0;
+  totalProgress += (currentStageWeight * stageProgress) / 100;
+
+  return Math.round(totalProgress);
+}
+
+function getStageStatus(
+  stage: string,
+  currentStage: string,
+  analysisStatus: string,
+): 'pending' | 'in-progress' | 'completed' | 'error' {
+  if (analysisStatus === 'failed') {
+    return 'error';
+  }
+
+  if (stage === currentStage) {
+    return 'in-progress';
+  }
+
+  if (isStageCompleted(stage, currentStage)) {
+    return 'completed';
+  }
+
+  return 'pending';
+}
+
+function isStageCompleted(stage: string, currentStage: string): boolean {
+  const stageOrder = [
+    'upload',
+    'pdf_parsing',
+    'vision_analysis',
+    'field_extraction',
+    'validation',
+    'completed',
+  ];
+  const stageIndex = stageOrder.indexOf(stage);
+  const currentIndex = stageOrder.indexOf(currentStage);
+
+  return currentIndex > stageIndex;
+}
+
+export async function POST(request: NextRequest) {
+  return NextResponse.json({ error: 'Method not allowed' }, { status: 405 });
+}

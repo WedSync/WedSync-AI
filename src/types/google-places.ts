@@ -1,0 +1,326 @@
+/**
+ * Google Places API Integration Types
+ * Team B - WS-219 Google Places Integration
+ *
+ * Comprehensive type definitions for wedding venue management
+ */
+
+// Core Google Places API Response Types
+export interface GooglePlaceResult {
+  place_id: string;
+  name: string;
+  formatted_address?: string;
+  geometry: {
+    location: {
+      lat: number;
+      lng: number;
+    };
+    viewport?: {
+      northeast: { lat: number; lng: number };
+      southwest: { lat: number; lng: number };
+    };
+  };
+  types: string[];
+  business_status?: 'OPERATIONAL' | 'CLOSED_TEMPORARILY' | 'CLOSED_PERMANENTLY';
+  rating?: number;
+  user_ratings_total?: number;
+  price_level?: 0 | 1 | 2 | 3 | 4;
+  photos?: GooglePlacePhoto[];
+  opening_hours?: {
+    open_now?: boolean;
+    periods?: Array<{
+      close: { day: number; time: string };
+      open: { day: number; time: string };
+    }>;
+    weekday_text?: string[];
+  };
+  reviews?: GooglePlaceReview[];
+  vicinity?: string;
+
+  // Wedding-specific enhancements
+  weddingScore?: number;
+  weddingRelevance?: string;
+  weddingFeatures?: string[];
+  enhancedWeddingAnalysis?: {
+    suitabilityScore: number;
+    capacityMatch: string;
+    recommendedUse: string[];
+    considerations: string[];
+    budgetAlignment?: string;
+  };
+  categorySpecificFeatures?: {
+    [key: string]: string[];
+  };
+  distanceFromSearch?: string;
+}
+
+export interface GooglePlacePhoto {
+  photo_reference: string;
+  height: number;
+  width: number;
+  html_attributions: string[];
+}
+
+export interface GooglePlaceReview {
+  author_name: string;
+  author_url?: string;
+  language: string;
+  profile_photo_url: string;
+  rating: number;
+  text: string;
+  time: number;
+}
+
+// Request Types
+export interface GooglePlacesSearchRequest {
+  query: string;
+  type?: 'text_search' | 'autocomplete';
+  location?: { lat: number; lng: number };
+  radius?: number;
+  placeTypes?: string[];
+  country?: string;
+  sessionToken?: string;
+}
+
+export interface GooglePlaceDetailsRequest {
+  placeId: string;
+  fields?: string[];
+  sessionToken?: string;
+}
+
+export interface GoogleNearbySearchRequest {
+  location: { lat: number; lng: number };
+  radius: number;
+  type?: string;
+  keyword?: string;
+}
+
+export interface PlaceAutocompleteRequest {
+  input: string;
+  sessionToken?: string;
+  location?: { lat: number; lng: number };
+  radius?: number;
+  types?: string[];
+}
+
+// Response Types
+export interface PlacesSearchResponse {
+  results: GooglePlaceResult[];
+  status: string;
+  next_page_token?: string;
+  error_message?: string;
+}
+
+export interface PlaceDetailsResponse {
+  result: GooglePlaceDetailsResult;
+  status: string;
+  error_message?: string;
+}
+
+export interface PlaceAutocompleteResponse {
+  predictions: Array<{
+    place_id: string;
+    description: string;
+    structured_formatting: {
+      main_text: string;
+      secondary_text: string;
+    };
+    types: string[];
+  }>;
+  status: string;
+}
+
+export interface GooglePlaceDetailsResult extends GooglePlaceResult {
+  formatted_phone_number?: string;
+  international_phone_number?: string;
+  website?: string;
+  url?: string;
+  utc_offset?: number;
+  adr_address?: string;
+
+  // Wedding-specific analysis
+  weddingAnalysis?: {
+    overallScore: number;
+    ceremonyScore: number;
+    receptionScore: number;
+    photographyScore: number;
+    accessibilityScore: number;
+    capacityEstimate: {
+      ceremony: string;
+      reception: string;
+      cocktailHour?: string;
+    };
+    recommendedFor: string[];
+    considerations: string[];
+  };
+
+  weddingInsights?: {
+    budgetAlignment: string;
+    capacityMatch: string;
+    seasonalConsiderations: string[];
+    vendorRecommendations: string[];
+    bookingTips: string[];
+    weatherBackupPlans?: string[];
+    restrictionsAndPolicies?: string[];
+    capacityRecommendations?: {
+      optimal: number;
+      maximum: number;
+      comfortable: number;
+      notes: string[];
+    };
+  };
+}
+
+// Wedding-specific Types
+export interface WeddingVenueSearchRequest {
+  query: string;
+  location?: { lat: number; lng: number };
+  radius?: number;
+  weddingPreferences?: {
+    ceremonyType?: 'indoor' | 'outdoor' | 'beach' | 'church' | 'garden';
+    receptionType?: 'same_venue' | 'separate_venue' | 'outdoor';
+    guestCount?: number;
+    budget?: 'budget' | 'moderate' | 'premium' | 'luxury';
+    season?: 'spring' | 'summer' | 'fall' | 'winter';
+    style?: 'rustic' | 'elegant' | 'modern' | 'vintage' | 'bohemian';
+  };
+  filters?: {
+    minRating?: number;
+    maxDistance?: number;
+    priceLevel?: number[];
+    amenities?: string[];
+  };
+  sortBy?: 'relevance' | 'rating' | 'distance' | 'weddingScore';
+  sortOrder?: 'asc' | 'desc';
+}
+
+export interface VenueCategorySearchRequest {
+  category:
+    | 'hotel'
+    | 'restaurant'
+    | 'park'
+    | 'beach'
+    | 'church'
+    | 'barn'
+    | 'castle';
+  location: { lat: number; lng: number };
+  radius?: number;
+  weddingContext?: {
+    eventType?: 'ceremony' | 'reception' | 'both' | 'destination_wedding';
+    guestCount?: number;
+  };
+}
+
+export interface WeddingVenueDetails {
+  success: boolean;
+  venue?: GooglePlaceDetailsResult;
+  error?: string;
+  warnings?: string[];
+}
+
+export interface VenueSearchResult {
+  success: boolean;
+  venues?: GooglePlaceResult[];
+  error?: string;
+  message?: string;
+  warnings?: string[];
+}
+
+// Configuration Types
+export interface GooglePlacesClientConfig {
+  apiKey?: string;
+  organization_id: string;
+  language?: string;
+  region?: string;
+  quota_limit?: number;
+  rate_limit_per_minute?: number;
+  cache_ttl_days?: number;
+  retry_attempts?: number;
+  retry_delay_ms?: number;
+}
+
+// Error Handling
+export class GooglePlacesError extends Error {
+  code:
+    | 'API_KEY_INVALID'
+    | 'QUOTA_EXCEEDED'
+    | 'RATE_LIMITED'
+    | 'NETWORK_ERROR'
+    | 'INVALID_REQUEST'
+    | 'NOT_FOUND'
+    | 'PERMISSION_DENIED'
+    | 'UNKNOWN_ERROR';
+  details?: any;
+  retry_after?: number; // seconds
+  quota_reset_time?: string; // ISO string
+
+  constructor(error: {
+    code: GooglePlacesError['code'];
+    message: string;
+    details?: any;
+    retry_after?: number;
+    quota_reset_time?: string;
+  }) {
+    super(error.message);
+    this.name = 'GooglePlacesError';
+    this.code = error.code;
+    this.details = error.details;
+    this.retry_after = error.retry_after;
+    this.quota_reset_time = error.quota_reset_time;
+  }
+}
+
+// Rate Limiting Types
+export interface RateLimitInfo {
+  requests_remaining: number;
+  reset_time: number; // timestamp
+  quota_used_today: number;
+  quota_limit: number;
+}
+
+// Analytics Types
+export interface VenueAnalytics {
+  totalSearches: number;
+  successfulSearches: number;
+  cacheHits: number;
+  averageResponseTime: number;
+  topSearchTerms: Array<{ term: string; count: number }>;
+  venueTypeDistribution: { [key: string]: number };
+  searchSuccessRate: number;
+}
+
+// Wedding Place Assignment Types
+export interface WeddingPlaceAssignment {
+  id: string;
+  couple_id: string;
+  supplier_id: string;
+  place_id: string;
+  wedding_role:
+    | 'ceremony_venue'
+    | 'reception_venue'
+    | 'accommodation'
+    | 'rehearsal_venue'
+    | 'vendor_meeting'
+    | 'getting_ready_location';
+  is_primary: boolean;
+  booking_status: 'considering' | 'contacted' | 'booked' | 'rejected';
+  notes?: string;
+  added_at: string;
+  updated_at?: string;
+}
+
+export interface CreateWeddingPlaceRequest {
+  coupleId: string;
+  placeId: string;
+  weddingRole: WeddingPlaceAssignment['wedding_role'];
+  isPrimary?: boolean;
+  bookingStatus?: WeddingPlaceAssignment['booking_status'];
+  notes?: string;
+}
+
+export interface UpdateWeddingPlaceRequest {
+  id: string;
+  bookingStatus?: WeddingPlaceAssignment['booking_status'];
+  isPrimary?: boolean;
+  notes?: string;
+}

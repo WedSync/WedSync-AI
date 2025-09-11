@@ -1,0 +1,245 @@
+export { default as MobileSectionConfig } from './MobileSectionConfig';
+export type { MobileSectionConfiguration } from './MobileSectionConfig';
+
+// Default configuration for new mobile sections
+export const DEFAULT_MOBILE_CONFIG: MobileSectionConfiguration = {
+  visibility: {
+    hidden: false,
+    collapsible: true,
+    priorityOrder: 50,
+    autoHide: {
+      enabled: false,
+      conditions: [],
+    },
+  },
+  breakpoints: {
+    mobile: {
+      enabled: true,
+      maxWidth: 768,
+      layout: 'stack',
+      columns: 1,
+    },
+    tablet: {
+      enabled: true,
+      minWidth: 768,
+      maxWidth: 1024,
+      layout: 'grid',
+      columns: 2,
+    },
+    portrait: {
+      layout: 'compact',
+      headerStyle: 'fixed',
+    },
+    landscape: {
+      layout: 'sidebar',
+      splitView: false,
+    },
+  },
+  gestures: {
+    enabled: true,
+    swipeActions: {
+      left: 'none',
+      right: 'none',
+      up: 'none',
+      down: 'none',
+    },
+    longPressActions: {
+      enabled: false,
+      duration: 500,
+      action: 'none',
+    },
+    pinchZoom: {
+      enabled: false,
+      minScale: 0.5,
+      maxScale: 3.0,
+    },
+    doubleTap: {
+      enabled: false,
+      action: 'none',
+    },
+  },
+  performance: {
+    lazyLoading: true,
+    virtualScrolling: false,
+    imageOptimization: {
+      enabled: true,
+      quality: 80,
+      format: 'auto',
+      sizes: ['320w', '640w', '1024w'],
+    },
+    prefetchNextSection: false,
+    cacheStrategy: 'memory',
+    maxMemoryUsage: 64,
+  },
+  animations: {
+    enabled: true,
+    enterAnimation: 'fade',
+    exitAnimation: 'fade',
+    duration: 300,
+    easing: 'ease-out',
+    reducedMotion: true,
+    parallaxEffect: {
+      enabled: false,
+      intensity: 0.1,
+    },
+  },
+  accessibility: {
+    focusManagement: true,
+    screenReaderSupport: true,
+    highContrast: false,
+    largeText: false,
+    tapTargetSize: 44,
+    voiceOver: {
+      enabled: true,
+      customDescriptions: {},
+    },
+    colorBlindness: {
+      enabled: false,
+      type: 'none',
+    },
+  },
+  offline: {
+    enabled: false,
+    cacheContent: false,
+    fallbackContent: '',
+    syncStrategy: 'background',
+    conflictResolution: 'server_wins',
+  },
+  deviceSettings: {
+    hapticFeedback: {
+      enabled: true,
+      intensity: 'medium',
+      patterns: {
+        tap: true,
+        success: true,
+        error: true,
+        warning: true,
+      },
+    },
+    notificationStyle: 'toast',
+    batteryOptimization: {
+      enabled: true,
+      reducedAnimations: true,
+      lowerRefreshRate: false,
+      dimBacklight: false,
+    },
+  },
+};
+
+// Configuration validation utilities
+export const validateMobileConfig = (
+  config: Partial<MobileSectionConfiguration>,
+): string[] => {
+  const errors: string[] = [];
+
+  // Validate breakpoints
+  if (
+    config.breakpoints?.mobile?.maxWidth &&
+    config.breakpoints?.mobile?.maxWidth < 320
+  ) {
+    errors.push('Mobile max width should be at least 320px');
+  }
+
+  // Validate performance settings
+  if (
+    config.performance?.maxMemoryUsage &&
+    config.performance.maxMemoryUsage < 16
+  ) {
+    errors.push('Max memory usage should be at least 16MB');
+  }
+
+  // Validate accessibility
+  if (
+    config.accessibility?.tapTargetSize &&
+    config.accessibility.tapTargetSize < 24
+  ) {
+    errors.push('Tap target size should be at least 24px for accessibility');
+  }
+
+  // Validate animations
+  if (
+    config.animations?.duration &&
+    (config.animations.duration < 100 || config.animations.duration > 2000)
+  ) {
+    errors.push('Animation duration should be between 100ms and 2000ms');
+  }
+
+  return errors;
+};
+
+// Mobile device detection utilities
+export const getMobileDeviceInfo = () => {
+  if (typeof window === 'undefined') return null;
+
+  const userAgent = navigator.userAgent;
+  const platform = navigator.platform;
+
+  return {
+    isMobile:
+      /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+        userAgent,
+      ),
+    isIOS: /iPad|iPhone|iPod/.test(userAgent),
+    isAndroid: /Android/.test(userAgent),
+    isTablet:
+      /iPad/.test(userAgent) ||
+      (platform === 'MacIntel' && navigator.maxTouchPoints > 1),
+    screenWidth: window.innerWidth,
+    screenHeight: window.innerHeight,
+    pixelRatio: window.devicePixelRatio || 1,
+    orientation:
+      window.innerWidth > window.innerHeight ? 'landscape' : 'portrait',
+    hasTouch: 'ontouchstart' in window || navigator.maxTouchPoints > 0,
+    supportsHaptics: 'vibrate' in navigator,
+    supportsServiceWorker: 'serviceWorker' in navigator,
+    connectionType: (navigator as any).connection?.effectiveType || 'unknown',
+  };
+};
+
+// Performance monitoring for mobile sections
+export class MobileSectionPerformanceMonitor {
+  private metrics = new Map<string, any>();
+
+  startTiming(sectionId: string, operation: string) {
+    const key = `${sectionId}:${operation}`;
+    this.metrics.set(key, { startTime: performance.now() });
+  }
+
+  endTiming(sectionId: string, operation: string) {
+    const key = `${sectionId}:${operation}`;
+    const entry = this.metrics.get(key);
+    if (entry) {
+      entry.duration = performance.now() - entry.startTime;
+      entry.endTime = performance.now();
+    }
+    return entry?.duration || 0;
+  }
+
+  getMetrics(sectionId?: string) {
+    if (sectionId) {
+      const filtered = new Map();
+      for (const [key, value] of this.metrics.entries()) {
+        if (key.startsWith(sectionId + ':')) {
+          filtered.set(key, value);
+        }
+      }
+      return filtered;
+    }
+    return this.metrics;
+  }
+
+  clearMetrics(sectionId?: string) {
+    if (sectionId) {
+      for (const key of this.metrics.keys()) {
+        if (key.startsWith(sectionId + ':')) {
+          this.metrics.delete(key);
+        }
+      }
+    } else {
+      this.metrics.clear();
+    }
+  }
+}
+
+// Global performance monitor instance
+export const mobilePerformanceMonitor = new MobileSectionPerformanceMonitor();

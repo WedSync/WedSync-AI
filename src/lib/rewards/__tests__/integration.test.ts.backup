@@ -1,0 +1,331 @@
+/**
+ * WS-170 Viral Optimization System - Integration Tests
+ * End-to-end integration tests for the complete reward system
+ */
+
+import { ViralRewardEngine } from '../reward-engine'
+import { EligibilityValidator } from '../eligibility-validator'
+import { TierManager } from '../tier-manager'
+import { RewardWorkflowAutomation } from '../workflow-automation'
+import { SecurityValidator } from '../security-validator'
+
+// Mock Supabase and dependencies for integration testing
+jest.mock('@/lib/supabase/server')
+jest.mock('@/lib/rate-limiter')
+
+describe('WS-170 Viral Reward System Integration', () => {
+  describe('Complete Reward Processing Workflow', () => {
+    it('should process a complete viral reward workflow end-to-end', async () => {
+      const referrerId = 'referrer-test-id'
+      const refereeId = 'referee-test-id'
+      const conversionEvent = {
+        type: 'subscription' as const,
+        value: 200,
+        metadata: { source: 'viral_campaign' }
+      }
+
+      // Execute complete workflow
+      const workflowResult = await RewardWorkflowAutomation.processRewardWorkflow(
+        referrerId,
+        refereeId,
+        conversionEvent
+      )
+
+      expect(workflowResult.status).toBe('completed')
+      expect(workflowResult.rewards_processed).toBe(2) // Referrer + Referee
+      expect(workflowResult.total_rewards_distributed).toBeGreaterThan(0)
+      expect(workflowResult.processing_time_ms).toBeLessThan(5000) // Under 5 seconds
+    }, 10000)
+
+    it('should handle fraud detection in complete workflow', async () => {
+      const fraudulentReferrerId = 'fraud-referrer-id'
+      const refereeId = 'referee-test-id'
+      const conversionEvent = {
+        type: 'signup' as const,
+        metadata: { 
+          suspicious: true,
+          rapidFire: true 
+        }
+      }
+
+      const workflowResult = await RewardWorkflowAutomation.processRewardWorkflow(
+        fraudulentReferrerId,
+        refereeId,
+        conversionEvent
+      )
+
+      expect(['fraud_detected', 'failed', 'pending_review']).toContain(workflowResult.status)
+      expect(workflowResult.rewards_processed).toBe(0)
+    }, 10000)
+
+    it('should maintain data consistency across all components', async () => {
+      const referrerId = 'consistency-referrer'
+      const refereeId = 'consistency-referee'
+
+      // Test data consistency between reward calculation and distribution
+      const rewardCalculation = await ViralRewardEngine.calculateViralReward(
+        referrerId,
+        refereeId,
+        'subscription',
+        150
+      )
+
+      const distributionResult = await ViralRewardEngine.processDoubleIncentive(
+        referrerId,
+        refereeId,
+        rewardCalculation
+      )
+
+      expect(distributionResult.total_distributed).toBe(rewardCalculation.total_system_cost)
+      expect(distributionResult.referrer_distribution.amount).toBe(rewardCalculation.referrer_reward.final_amount)
+      expect(distributionResult.referee_distribution.amount).toBe(rewardCalculation.referee_reward.final_amount)
+    }, 10000)
+  })
+
+  describe('Performance Integration Tests', () => {
+    it('should handle high-volume reward processing efficiently', async () => {
+      const rewardRequests = []
+      
+      // Generate 25 reward requests
+      for (let i = 0; i < 25; i++) {
+        rewardRequests.push({
+          referrer_id: `referrer-${i}`,
+          referee_id: `referee-${i}`,
+          conversion_event: {
+            type: 'signup' as const,
+            value: 50 + (i * 10)
+          }
+        })
+      }
+
+      const startTime = Date.now()
+      const batchResult = await RewardWorkflowAutomation.processBatchRewards(rewardRequests)
+      const totalTime = Date.now() - startTime
+
+      expect(batchResult.total_processed).toBe(25)
+      expect(batchResult.successful).toBeGreaterThan(15) // At least 60% success rate
+      expect(totalTime).toBeLessThan(10000) // Under 10 seconds for 25 rewards
+    }, 15000)
+
+    it('should maintain performance under concurrent load', async () => {
+      const concurrentPromises = []
+      
+      // Create 10 concurrent reward calculations
+      for (let i = 0; i < 10; i++) {
+        concurrentPromises.push(
+          ViralRewardEngine.calculateViralReward(
+            `concurrent-referrer-${i}`,
+            `concurrent-referee-${i}`,
+            'subscription',
+            100
+          )
+        )
+      }
+
+      const startTime = Date.now()
+      const results = await Promise.all(concurrentPromises)
+      const totalTime = Date.now() - startTime
+
+      expect(results).toHaveLength(10)
+      expect(totalTime).toBeLessThan(2000) // All calculations under 2 seconds
+      
+      // Verify all results are valid
+      results.forEach(result => {
+        expect(result.referrer_reward.final_amount).toBeGreaterThan(0)
+        expect(result.referee_reward.final_amount).toBeGreaterThan(0)
+        expect(result.viral_multiplier).toBeGreaterThan(1.0)
+      })
+    }, 10000)
+  })
+
+  describe('Security Integration Tests', () => {
+    it('should prevent reward processing for failed security validation', async () => {
+      const maliciousReferrerId = 'malicious-referrer'
+      const refereeId = 'normal-referee'
+      const suspiciousEvent = {
+        type: 'revenue_share' as const,
+        value: 10000, // Unusually high value
+        metadata: {
+          injectionAttempt: '<script>alert("xss")</script>',
+          sqlInjection: "'; DROP TABLE rewards; --"
+        }
+      }
+
+      const workflowResult = await RewardWorkflowAutomation.processRewardWorkflow(
+        maliciousReferrerId,
+        refereeId,
+        suspiciousEvent
+      )
+
+      expect(['fraud_detected', 'failed']).toContain(workflowResult.status)
+      expect(workflowResult.rewards_processed).toBe(0)
+      expect(workflowResult.validation_result.fraud_risk_score).toBeGreaterThan(0.7)
+    }, 10000)
+
+    it('should maintain transaction integrity during failures', async () => {
+      // This test would verify rollback mechanisms work correctly
+      // For now, we'll test the basic structure
+      
+      const result = await SecurityValidator.preventDoubleRewarding(
+        'test-referral-id',
+        'signup',
+        'test-referrer-id'
+      )
+
+      expect(result.is_prevented).toBeDefined()
+      expect(typeof result.is_prevented).toBe('boolean')
+    })
+  })
+
+  describe('Component Integration Tests', () => {
+    it('should integrate tier management with reward calculations', async () => {
+      const userId = 'tier-integration-user'
+      
+      // Get user tier
+      const userTier = await TierManager.calculateUserTier(userId)
+      expect(['bronze', 'silver', 'gold', 'platinum', 'viral_champion']).toContain(userTier)
+
+      // Calculate rewards based on tier
+      const rewardCalculation = await ViralRewardEngine.calculateViralReward(
+        userId,
+        'referee-id',
+        'subscription',
+        200
+      )
+
+      // Rewards should reflect tier multipliers
+      expect(rewardCalculation.referrer_reward.tier_multiplier).toBeGreaterThan(1.0)
+      expect(rewardCalculation.viral_multiplier).toBeGreaterThan(1.0)
+    }, 10000)
+
+    it('should integrate eligibility validation with reward processing', async () => {
+      const referrerId = 'eligible-referrer'
+      const refereeId = 'eligible-referee'
+
+      // Validate eligibility
+      const eligibilityResult = await EligibilityValidator.validateViralEligibility(
+        referrerId,
+        refereeId,
+        'subscription',
+        100
+      )
+
+      if (eligibilityResult.is_eligible) {
+        // Should be able to calculate rewards
+        const rewardCalculation = await ViralRewardEngine.calculateViralReward(
+          referrerId,
+          refereeId,
+          'subscription',
+          100
+        )
+
+        expect(rewardCalculation.referrer_reward.final_amount).toBeGreaterThan(0)
+        expect(rewardCalculation.referee_reward.final_amount).toBeGreaterThan(0)
+      } else {
+        // Should not process rewards for ineligible referrals
+        expect(eligibilityResult.recommended_action).toBeOneOf(['deny', 'manual_review', 'flag_for_investigation'])
+      }
+    }, 10000)
+  })
+
+  describe('Error Handling Integration', () => {
+    it('should gracefully handle database connection failures', async () => {
+      // Mock database failure
+      const originalCreateClient = require('@/lib/supabase/server').createClient
+      require('@/lib/supabase/server').createClient = jest.fn().mockImplementation(() => {
+        throw new Error('Database connection failed')
+      })
+
+      try {
+        const workflowResult = await RewardWorkflowAutomation.processRewardWorkflow(
+          'test-referrer',
+          'test-referee',
+          { type: 'signup' }
+        )
+
+        expect(workflowResult.status).toBe('failed')
+        expect(workflowResult.error_message).toContain('error')
+      } catch (error) {
+        expect(error.message).toContain('failed')
+      } finally {
+        // Restore original function
+        require('@/lib/supabase/server').createClient = originalCreateClient
+      }
+    }, 10000)
+
+    it('should handle partial system failures gracefully', async () => {
+      // Test system resilience when individual components fail
+      const workflowResult = await RewardWorkflowAutomation.processRewardWorkflow(
+        'resilience-referrer',
+        'resilience-referee',
+        { type: 'subscription', value: 100 }
+      )
+
+      // System should either succeed or fail gracefully
+      expect(['completed', 'failed', 'pending_review']).toContain(workflowResult.status)
+      expect(workflowResult.processing_time_ms).toBeGreaterThan(0)
+    }, 10000)
+  })
+
+  describe('Data Validation Integration', () => {
+    it('should validate reward calculations across all components', async () => {
+      const referrerId = 'validation-referrer'
+      const refereeId = 'validation-referee'
+      const conversionValue = 300
+
+      const rewardCalculation = await ViralRewardEngine.calculateViralReward(
+        referrerId,
+        refereeId,
+        'revenue_share',
+        conversionValue
+      )
+
+      // Validate calculation consistency
+      const expectedTotal = 
+        rewardCalculation.referrer_reward.final_amount + 
+        rewardCalculation.referee_reward.final_amount + 
+        rewardCalculation.network_effect_bonus
+
+      expect(Math.abs(rewardCalculation.total_system_cost - expectedTotal)).toBeLessThan(0.01)
+
+      // Validate reward amounts are reasonable
+      expect(rewardCalculation.referrer_reward.final_amount).toBeLessThan(conversionValue)
+      expect(rewardCalculation.referee_reward.final_amount).toBeLessThan(conversionValue / 2)
+    }, 10000)
+
+    it('should maintain audit trail consistency', async () => {
+      const workflowResult = await RewardWorkflowAutomation.processRewardWorkflow(
+        'audit-referrer',
+        'audit-referee',
+        { type: 'milestone', value: 150 }
+      )
+
+      // Verify audit data exists and is consistent
+      expect(workflowResult.workflow_id).toBeDefined()
+      expect(workflowResult.processing_time_ms).toBeGreaterThan(0)
+      
+      if (workflowResult.distribution_result) {
+        expect(workflowResult.distribution_result.distribution_timestamp).toBeInstanceOf(Date)
+        expect(workflowResult.distribution_result.total_distributed).toBeGreaterThan(0)
+      }
+    }, 10000)
+  })
+})
+
+// Custom Jest matcher
+expect.extend({
+  toBeOneOf(received, validOptions) {
+    const pass = validOptions.includes(received)
+    if (pass) {
+      return {
+        message: () => `expected ${received} not to be one of ${validOptions.join(', ')}`,
+        pass: true,
+      }
+    } else {
+      return {
+        message: () => `expected ${received} to be one of ${validOptions.join(', ')}`,
+        pass: false,
+      }
+    }
+  },
+})

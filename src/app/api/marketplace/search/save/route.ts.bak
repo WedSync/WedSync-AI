@@ -1,0 +1,461 @@
+/**
+ * WS-114: Marketplace Save Search API Endpoint
+ * 
+ * POST /api/marketplace/search/save
+ * GET /api/marketplace/search/save (list saved searches)
+ * DELETE /api/marketplace/search/save (delete saved search)
+ * 
+ * Allows users to save their search queries and filters for quick access,
+ * with notification options for new matching templates.
+ * 
+ * Team B - Batch 9 - Round 1
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_KEY!
+);
+
+// =====================================================================================
+// REQUEST/RESPONSE INTERFACES
+// =====================================================================================
+
+interface SavedSearchFilters {
+  category?: string;
+  subcategory?: string;
+  priceMin?: number;
+  priceMax?: number;
+  ratingMin?: number;
+  tier?: string;
+  tags?: string[];
+  weddingTypes?: string[];
+}
+
+interface SaveSearchRequest {
+  name: string;
+  query: string;
+  filters: SavedSearchFilters;
+  notify_on_new_results?: boolean;
+  notification_frequency?: 'immediate' | 'daily' | 'weekly';
+}
+
+interface SavedSearch {
+  id: string;
+  user_id: string;
+  name: string;
+  search_query: string;
+  filters: SavedSearchFilters;
+  notify_on_new_results: boolean;
+  notification_frequency: string;
+  last_result_count: number;
+  last_checked: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface SavedSearchResponse {
+  success: boolean;
+  saved_search?: SavedSearch;
+  saved_searches?: SavedSearch[];
+  error?: string;
+}
+
+// =====================================================================================
+// API HANDLERS
+// =====================================================================================
+
+export async function POST(request: NextRequest) {
+  try {
+    // Verify user authentication
+    const authCheck = await verifyUserAuth(request);
+    if (!authCheck.valid) {
+      return NextResponse.json(
+        { success: false, error: authCheck.error },
+        { status: authCheck.status || 401 }
+      );
+    }
+
+    const body: SaveSearchRequest = await request.json();
+
+    // Validate request body
+    const validation = validateSaveSearchRequest(body);
+    if (!validation.valid) {
+      return NextResponse.json(
+        { success: false, error: validation.error },
+        { status: 400 }
+      );
+    }
+
+    // Check if user has reached the maximum number of saved searches
+    const { count: existingCount } = await supabase
+      .from('marketplace_saved_searches')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', authCheck.userId);
+
+    const MAX_SAVED_SEARCHES = 20; // Reasonable limit
+    if ((existingCount || 0) >= MAX_SAVED_SEARCHES) {
+      return NextResponse.json(
+        { 
+          success: false, 
+          error: `You can save up to ${MAX_SAVED_SEARCHES} searches. Please delete some existing searches first.` 
+        },
+        { status: 400 }
+      );
+    }
+
+    // Get current result count for this search
+    const currentResultCount = await getCurrentResultCount(body.query, body.filters);
+
+    // Create saved search record
+    const { data: savedSearch, error } = await supabase
+      .from('marketplace_saved_searches')
+      .insert({
+        user_id: authCheck.userId,
+        name: body.name.trim(),
+        search_query: body.query.trim(),
+        filters: body.filters,
+        notify_on_new_results: body.notify_on_new_results || false,
+        notification_frequency: body.notification_frequency || 'weekly',
+        last_result_count: currentResultCount,
+        last_checked: new Date().toISOString()
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Save search error:', error);
+      
+      if (error.code === '23505') { // Unique constraint violation
+        return NextResponse.json(
+          { success: false, error: 'You already have a saved search with this name.' },
+          { status: 400 }
+        );
+      }
+      
+      return NextResponse.json(
+        { success: false, error: 'Failed to save search. Please try again.' },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      saved_search: savedSearch
+    });
+
+  } catch (error) {
+    console.error('Save search API error:', error);
+    
+    return NextResponse.json(
+      { success: false, error: 'Failed to save search. Please try again.' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    // Verify user authentication
+    const authCheck = await verifyUserAuth(request);
+    if (!authCheck.valid) {
+      return NextResponse.json(
+        { success: false, error: authCheck.error },
+        { status: authCheck.status || 401 }
+      );
+    }
+
+    const { searchParams } = request.nextUrl;
+    const searchId = searchParams.get('id');
+
+    if (searchId) {
+      // Get specific saved search
+      const { data: savedSearch, error } = await supabase
+        .from('marketplace_saved_searches')
+        .select('*')
+        .eq('user_id', authCheck.userId)
+        .eq('id', searchId)
+        .single();
+
+      if (error || !savedSearch) {
+        return NextResponse.json(
+          { success: false, error: 'Saved search not found.' },
+          { status: 404 }
+        );
+      }
+
+      return NextResponse.json({
+        success: true,
+        saved_search: savedSearch
+      });
+    } else {
+      // Get all saved searches for user
+      const { data: savedSearches, error } = await supabase
+        .from('marketplace_saved_searches')
+        .select('*')
+        .eq('user_id', authCheck.userId)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('Get saved searches error:', error);
+        return NextResponse.json(
+          { success: false, error: 'Failed to retrieve saved searches.' },
+          { status: 500 }
+        );
+      }
+
+      return NextResponse.json({
+        success: true,
+        saved_searches: savedSearches || []
+      });
+    }
+
+  } catch (error) {
+    console.error('Get saved searches API error:', error);
+    
+    return NextResponse.json(
+      { success: false, error: 'Failed to retrieve saved searches. Please try again.' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function DELETE(request: NextRequest) {
+  try {
+    // Verify user authentication
+    const authCheck = await verifyUserAuth(request);
+    if (!authCheck.valid) {
+      return NextResponse.json(
+        { success: false, error: authCheck.error },
+        { status: authCheck.status || 401 }
+      );
+    }
+
+    const { searchParams } = request.nextUrl;
+    const searchId = searchParams.get('id');
+
+    if (!searchId) {
+      return NextResponse.json(
+        { success: false, error: 'Search ID is required.' },
+        { status: 400 }
+      );
+    }
+
+    // Delete saved search (RLS ensures only user's own searches can be deleted)
+    const { error } = await supabase
+      .from('marketplace_saved_searches')
+      .delete()
+      .eq('user_id', authCheck.userId)
+      .eq('id', searchId);
+
+    if (error) {
+      console.error('Delete saved search error:', error);
+      return NextResponse.json(
+        { success: false, error: 'Failed to delete saved search.' },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({
+      success: true
+    });
+
+  } catch (error) {
+    console.error('Delete saved search API error:', error);
+    
+    return NextResponse.json(
+      { success: false, error: 'Failed to delete saved search. Please try again.' },
+      { status: 500 }
+    );
+  }
+}
+
+// =====================================================================================
+// HELPER FUNCTIONS
+// =====================================================================================
+
+async function verifyUserAuth(request: NextRequest): Promise<{
+  valid: boolean;
+  error?: string;
+  status?: number;
+  userId?: string;
+}> {
+  try {
+    const authHeader = request.headers.get('Authorization');
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return {
+        valid: false,
+        error: 'Authorization header required',
+        status: 401
+      };
+    }
+
+    const token = authHeader.substring(7);
+    
+    // Verify token with Supabase
+    const { data: { user }, error } = await supabase.auth.getUser(token);
+    
+    if (error || !user) {
+      return {
+        valid: false,
+        error: 'Invalid or expired token',
+        status: 401
+      };
+    }
+
+    return { valid: true, userId: user.id };
+
+  } catch (error) {
+    console.error('Auth verification error:', error);
+    return {
+      valid: false,
+      error: 'Authentication verification failed',
+      status: 500
+    };
+  }
+}
+
+function validateSaveSearchRequest(body: SaveSearchRequest): {
+  valid: boolean;
+  error?: string;
+} {
+  if (!body.name || typeof body.name !== 'string' || body.name.trim().length === 0) {
+    return { valid: false, error: 'Search name is required.' };
+  }
+
+  if (body.name.trim().length > 100) {
+    return { valid: false, error: 'Search name must be 100 characters or less.' };
+  }
+
+  if (!body.query || typeof body.query !== 'string') {
+    body.query = ''; // Allow empty queries
+  }
+
+  if (body.query.length > 500) {
+    return { valid: false, error: 'Search query must be 500 characters or less.' };
+  }
+
+  if (!body.filters || typeof body.filters !== 'object') {
+    body.filters = {};
+  }
+
+  // Validate notification frequency if provided
+  if (body.notification_frequency && 
+      !['immediate', 'daily', 'weekly'].includes(body.notification_frequency)) {
+    return { valid: false, error: 'Invalid notification frequency.' };
+  }
+
+  // Validate numeric filters
+  if (body.filters.priceMin !== undefined && 
+      (typeof body.filters.priceMin !== 'number' || body.filters.priceMin < 0)) {
+    return { valid: false, error: 'Invalid minimum price.' };
+  }
+
+  if (body.filters.priceMax !== undefined && 
+      (typeof body.filters.priceMax !== 'number' || body.filters.priceMax < 0)) {
+    return { valid: false, error: 'Invalid maximum price.' };
+  }
+
+  if (body.filters.ratingMin !== undefined && 
+      (typeof body.filters.ratingMin !== 'number' || 
+       body.filters.ratingMin < 0 || body.filters.ratingMin > 5)) {
+    return { valid: false, error: 'Invalid minimum rating.' };
+  }
+
+  return { valid: true };
+}
+
+async function getCurrentResultCount(query: string, filters: SavedSearchFilters): Promise<number> {
+  try {
+    let countQuery = supabase
+      .from('marketplace_templates')
+      .select('*', { count: 'exact', head: true })
+      .eq('status', 'active');
+
+    // Apply the same filters as the main search
+    if (query && query.length > 0) {
+      countQuery = countQuery.textSearch('search_vector', query, { 
+        type: 'websearch',
+        config: 'english'
+      });
+    }
+
+    if (filters.category) {
+      countQuery = countQuery.eq('category', filters.category);
+    }
+    
+    if (filters.subcategory) {
+      countQuery = countQuery.eq('subcategory', filters.subcategory);
+    }
+    
+    if (filters.priceMin !== undefined) {
+      countQuery = countQuery.gte('price_cents', filters.priceMin);
+    }
+    
+    if (filters.priceMax !== undefined) {
+      countQuery = countQuery.lte('price_cents', filters.priceMax);
+    }
+    
+    if (filters.ratingMin !== undefined) {
+      countQuery = countQuery.gte('average_rating', filters.ratingMin);
+    }
+    
+    if (filters.tier) {
+      countQuery = countQuery.eq('minimum_tier', filters.tier);
+    }
+    
+    if (filters.tags && filters.tags.length > 0) {
+      countQuery = countQuery.overlaps('tags', filters.tags);
+    }
+    
+    if (filters.weddingTypes && filters.weddingTypes.length > 0) {
+      countQuery = countQuery.overlaps('target_wedding_types', filters.weddingTypes);
+    }
+
+    const { count, error } = await countQuery;
+
+    if (error) {
+      console.error('Result count query error:', error);
+      return 0;
+    }
+
+    return count || 0;
+
+  } catch (error) {
+    console.error('Current result count error:', error);
+    return 0;
+  }
+}
+
+// Database schema for saved searches (to be created in migration):
+const savedSearchesSchema = `
+CREATE TABLE IF NOT EXISTS marketplace_saved_searches (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  name VARCHAR(100) NOT NULL,
+  search_query TEXT NOT NULL DEFAULT '',
+  filters JSONB DEFAULT '{}',
+  notify_on_new_results BOOLEAN DEFAULT false,
+  notification_frequency VARCHAR(20) DEFAULT 'weekly' CHECK (notification_frequency IN ('immediate', 'daily', 'weekly')),
+  last_result_count INTEGER DEFAULT 0,
+  last_checked TIMESTAMP WITH TIME ZONE,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  UNIQUE(user_id, name)
+);
+
+CREATE INDEX idx_marketplace_saved_searches_user ON marketplace_saved_searches(user_id, created_at DESC);
+CREATE INDEX idx_marketplace_saved_searches_notifications ON marketplace_saved_searches(notify_on_new_results, last_checked) WHERE notify_on_new_results = true;
+
+-- Enable RLS
+ALTER TABLE marketplace_saved_searches ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies
+CREATE POLICY "Users can manage their own saved searches" ON marketplace_saved_searches
+  FOR ALL USING (auth.uid()::text = user_id::text);
+
+-- Grant permissions  
+GRANT SELECT, INSERT, UPDATE, DELETE ON marketplace_saved_searches TO authenticated;
+`;

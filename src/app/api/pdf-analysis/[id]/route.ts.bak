@@ -1,0 +1,250 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import { z } from 'zod';
+
+interface RouteParams {
+  params: {
+    id: string;
+  };
+}
+
+// Schema for field updates
+const updateFieldsSchema = z.object({
+  extractedFields: z.array(z.object({
+    id: z.string(),
+    name: z.string(),
+    type: z.string(),
+    value: z.string(),
+    confidence: z.number().min(0).max(100),
+    category: z.string(),
+    required: z.boolean(),
+    wedding_context: z.object({
+      importance: z.enum(['critical', 'important', 'optional']),
+      tips: z.array(z.string()),
+      related_fields: z.array(z.string())
+    }).optional()
+  }))
+});
+
+export async function GET(request: NextRequest, { params }: RouteParams) {
+  try {
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
+    
+    // Check authentication
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    const analysisId = params.id;
+
+    // Get analysis with user verification
+    const { data: analysis, error } = await supabase
+      .from('pdf_analyses')
+      .select('*')
+      .eq('id', analysisId)
+      .eq('user_id', user.id)
+      .single();
+
+    if (error || !analysis) {
+      return NextResponse.json(
+        { error: 'Analysis not found' },
+        { status: 404 }
+      );
+    }
+
+    // Get download URL for the PDF if needed
+    let downloadUrl = null;
+    if (analysis.storage_path) {
+      const { data } = supabase.storage
+        .from('pdf-analysis')
+        .getPublicUrl(analysis.storage_path);
+      downloadUrl = data.publicUrl;
+    }
+
+    // Format response
+    const response = {
+      id: analysis.id,
+      fileName: analysis.original_filename,
+      status: analysis.status,
+      processingTime: analysis.processing_time,
+      extractedFields: analysis.extracted_fields || [],
+      fieldsCount: analysis.fields_count || 0,
+      confidenceScore: analysis.confidence_score || 0,
+      errorMessage: analysis.error_message,
+      createdAt: analysis.created_at,
+      completedAt: analysis.completed_at,
+      fileSize: analysis.file_size,
+      downloadUrl,
+      currentStage: analysis.current_stage,
+      stageProgress: analysis.stage_progress
+    };
+
+    return NextResponse.json(response);
+
+  } catch (error) {
+    console.error('Analysis fetch error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function PATCH(request: NextRequest, { params }: RouteParams) {
+  try {
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
+    
+    // Check authentication
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    const analysisId = params.id;
+    const body = await request.json();
+
+    // Validate request body
+    const validation = updateFieldsSchema.safeParse(body);
+    if (!validation.success) {
+      return NextResponse.json(
+        { error: 'Invalid field data', details: validation.error.errors },
+        { status: 400 }
+      );
+    }
+
+    const { extractedFields } = validation.data;
+
+    // Verify user owns this analysis
+    const { data: existingAnalysis } = await supabase
+      .from('pdf_analyses')
+      .select('id')
+      .eq('id', analysisId)
+      .eq('user_id', user.id)
+      .single();
+
+    if (!existingAnalysis) {
+      return NextResponse.json(
+        { error: 'Analysis not found' },
+        { status: 404 }
+      );
+    }
+
+    // Calculate new confidence score
+    const newConfidenceScore = Math.round(
+      extractedFields.reduce((sum, field) => sum + field.confidence, 0) / 
+      extractedFields.length
+    );
+
+    // Update the analysis
+    const { data: updatedAnalysis, error: updateError } = await supabase
+      .from('pdf_analyses')
+      .update({
+        extracted_fields: extractedFields,
+        fields_count: extractedFields.length,
+        confidence_score: newConfidenceScore,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', analysisId)
+      .select()
+      .single();
+
+    if (updateError) {
+      console.error('Analysis update error:', updateError);
+      return NextResponse.json(
+        { error: 'Failed to update analysis' },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({
+      message: 'Analysis updated successfully',
+      fieldsCount: extractedFields.length,
+      confidenceScore: newConfidenceScore
+    });
+
+  } catch (error) {
+    console.error('Analysis update error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function DELETE(request: NextRequest, { params }: RouteParams) {
+  try {
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
+    
+    // Check authentication
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    const analysisId = params.id;
+
+    // Get analysis to verify ownership and get storage path
+    const { data: analysis, error } = await supabase
+      .from('pdf_analyses')
+      .select('storage_path')
+      .eq('id', analysisId)
+      .eq('user_id', user.id)
+      .single();
+
+    if (error || !analysis) {
+      return NextResponse.json(
+        { error: 'Analysis not found' },
+        { status: 404 }
+      );
+    }
+
+    // Delete the PDF file from storage
+    if (analysis.storage_path) {
+      const { error: storageError } = await supabase.storage
+        .from('pdf-analysis')
+        .remove([analysis.storage_path]);
+
+      if (storageError) {
+        console.error('Storage deletion error:', storageError);
+        // Continue with database deletion even if file deletion fails
+      }
+    }
+
+    // Delete the analysis record
+    const { error: deleteError } = await supabase
+      .from('pdf_analyses')
+      .delete()
+      .eq('id', analysisId)
+      .eq('user_id', user.id);
+
+    if (deleteError) {
+      console.error('Analysis deletion error:', deleteError);
+      return NextResponse.json(
+        { error: 'Failed to delete analysis' },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({
+      message: 'Analysis deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('Analysis deletion error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}

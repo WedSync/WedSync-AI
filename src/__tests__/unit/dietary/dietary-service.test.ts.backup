@@ -1,0 +1,408 @@
+/**
+ * WS-152: Dietary Service Unit Tests
+ * Critical: Tests for life-threatening allergy handling
+ */
+
+import { describe, it, expect, jest, beforeEach, afterEach } from '@jest/globals';
+import { dietaryService } from '@/lib/services/dietaryService';
+import {
+  DietarySeverity,
+  DietaryType,
+  AllergenType,
+  DietaryRequirement,
+  DietaryMatrix,
+} from '@/types/dietary';
+
+// Mock Supabase client
+jest.mock('@supabase/supabase-js', () => ({
+  createClient: jest.fn(() => ({
+    from: jest.fn(() => ({
+      insert: jest.fn().mockResolvedValue({ data: mockRequirement, error: null }),
+      update: jest.fn().mockResolvedValue({ data: mockRequirement, error: null }),
+      select: jest.fn().mockResolvedValue({ data: [mockRequirement], error: null }),
+      eq: jest.fn().mockReturnThis(),
+      single: jest.fn().mockResolvedValue({ data: mockRequirement, error: null }),
+      order: jest.fn().mockReturnThis(),
+    })),
+  })),
+}));
+
+const mockRequirement: DietaryRequirement = {
+  id: '123e4567-e89b-12d3-a456-426614174000',
+  guest_id: '987fcdeb-51a2-43d1-9f01-123456789abc',
+  type: DietaryType.ALLERGY,
+  severity: DietarySeverity.LIFE_THREATENING,
+  allergen: AllergenType.PEANUTS,
+  description: 'Severe peanut allergy - anaphylaxis risk',
+  medical_notes: 'Carries EpiPen at all times',
+  emergency_medication: 'EpiPen',
+  emergency_contact: {
+    name: 'Jane Doe',
+    phone: '+1234567890',
+    relationship: 'Mother',
+  },
+  cross_contamination_risk: true,
+  kitchen_alert_required: true,
+  created_at: new Date(),
+  updated_at: new Date(),
+  verified_by: undefined,
+  verified_at: undefined,
+};
+
+describe('DietaryService - Critical Allergy Handling', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  describe('createDietaryRequirement', () => {
+    it('should enforce emergency contact for life-threatening allergies', async () => {
+      const invalidData = {
+        guest_id: '987fcdeb-51a2-43d1-9f01-123456789abc',
+        type: DietaryType.ALLERGY,
+        severity: DietarySeverity.LIFE_THREATENING,
+        allergen: AllergenType.PEANUTS,
+        description: 'Severe peanut allergy',
+        cross_contamination_risk: true,
+        // Missing emergency_contact
+      };
+
+      await expect(
+        dietaryService.createDietaryRequirement(invalidData as any, 'user-123')
+      ).rejects.toThrow('Critical validation failed');
+    });
+
+    it('should set kitchen_alert_required for critical severities', async () => {
+      const criticalRequirement = {
+        guest_id: '987fcdeb-51a2-43d1-9f01-123456789abc',
+        type: DietaryType.ALLERGY,
+        severity: DietarySeverity.LIFE_THREATENING,
+        allergen: AllergenType.SHELLFISH,
+        description: 'Severe shellfish allergy',
+        emergency_contact: {
+          name: 'John Smith',
+          phone: '+1987654321',
+          relationship: 'Spouse',
+        },
+        emergency_medication: 'EpiPen',
+        cross_contamination_risk: true,
+      };
+
+      const result = await dietaryService.createDietaryRequirement(
+        criticalRequirement,
+        'user-123'
+      );
+
+      expect(result.kitchen_alert_required).toBe(true);
+    });
+
+    it('should handle cross-contamination risks properly', async () => {
+      const crossContaminationRequirement = {
+        guest_id: '987fcdeb-51a2-43d1-9f01-123456789abc',
+        type: DietaryType.ALLERGY,
+        severity: DietarySeverity.MODERATE,
+        allergen: AllergenType.GLUTEN,
+        description: 'Celiac disease',
+        cross_contamination_risk: true,
+      };
+
+      const result = await dietaryService.createDietaryRequirement(
+        crossContaminationRequirement,
+        'user-123'
+      );
+
+      expect(result.kitchen_alert_required).toBe(true);
+    });
+  });
+
+  describe('generateDietaryMatrix', () => {
+    it('should generate matrix within 2 seconds for 500 guests', async () => {
+      // Mock 500 guests with various dietary requirements
+      const mockRequirements = Array(500).fill(null).map((_, index) => ({
+        id: `req-${index}`,
+        guest_id: `guest-${index}`,
+        type: index % 3 === 0 ? DietaryType.ALLERGY : DietaryType.PREFERENCE,
+        severity: index % 10 === 0 ? DietarySeverity.LIFE_THREATENING : DietarySeverity.MODERATE,
+        allergen: index % 5 === 0 ? AllergenType.PEANUTS : AllergenType.GLUTEN,
+        description: `Requirement ${index}`,
+        cross_contamination_risk: index % 7 === 0,
+        guests: {
+          id: `guest-${index}`,
+          first_name: `Guest`,
+          last_name: `${index}`,
+          table_number: Math.floor(index / 10) + 1,
+          couple_id: 'couple-123',
+        },
+      }));
+
+      jest.spyOn(dietaryService as any, 'supabase', 'get').mockReturnValue({
+        from: jest.fn().mockReturnValue({
+          select: jest.fn().mockReturnValue({
+            eq: jest.fn().mockResolvedValue({ data: mockRequirements, error: null }),
+          }),
+        }),
+      });
+
+      const startTime = Date.now();
+      const matrix = await dietaryService.generateDietaryMatrix('couple-123');
+      const generationTime = Date.now() - startTime;
+
+      expect(generationTime).toBeLessThan(2000);
+      expect(matrix.guest_count).toBe(500);
+      expect(matrix.critical_alerts).toBeDefined();
+      expect(matrix.dietary_summary).toBeDefined();
+      expect(matrix.allergen_matrix).toBeDefined();
+    });
+
+    it('should correctly identify and prioritize critical alerts', async () => {
+      const mockRequirements = [
+        {
+          ...mockRequirement,
+          severity: DietarySeverity.LIFE_THREATENING,
+          allergen: AllergenType.PEANUTS,
+          guests: {
+            first_name: 'Critical',
+            last_name: 'Guest',
+            table_number: 1,
+          },
+        },
+        {
+          ...mockRequirement,
+          id: 'req-2',
+          severity: DietarySeverity.MILD,
+          allergen: AllergenType.LACTOSE,
+          guests: {
+            first_name: 'Mild',
+            last_name: 'Guest',
+            table_number: 2,
+          },
+        },
+      ];
+
+      jest.spyOn(dietaryService as any, 'supabase', 'get').mockReturnValue({
+        from: jest.fn().mockReturnValue({
+          select: jest.fn().mockReturnValue({
+            eq: jest.fn().mockResolvedValue({ data: mockRequirements, error: null }),
+          }),
+        }),
+      });
+
+      const matrix = await dietaryService.generateDietaryMatrix('couple-123');
+
+      expect(matrix.critical_alerts[0].severity).toBe(DietarySeverity.LIFE_THREATENING);
+      expect(matrix.critical_alerts[0].guest_name).toBe('Critical Guest');
+      expect(matrix.dietary_summary.life_threatening_count).toBe(1);
+    });
+
+    it('should analyze cross-contamination risks correctly', async () => {
+      const mockRequirements = [
+        {
+          ...mockRequirement,
+          allergen: AllergenType.PEANUTS,
+          cross_contamination_risk: true,
+          guests: { 
+            first_name: 'Nut', 
+            last_name: 'Allergy',
+            table_number: 1,
+          },
+        },
+        {
+          ...mockRequirement,
+          id: 'req-2',
+          allergen: AllergenType.TREE_NUTS,
+          cross_contamination_risk: true,
+          guests: {
+            first_name: 'Tree Nut',
+            last_name: 'Allergy',
+            table_number: 1, // Same table!
+          },
+        },
+      ];
+
+      jest.spyOn(dietaryService as any, 'supabase', 'get').mockReturnValue({
+        from: jest.fn().mockReturnValue({
+          select: jest.fn().mockReturnValue({
+            eq: jest.fn().mockResolvedValue({ data: mockRequirements, error: null }),
+          }),
+        }),
+      });
+
+      const matrix = await dietaryService.generateDietaryMatrix('couple-123');
+      
+      expect(matrix.allergen_matrix.cross_contamination_map.high_risk_combinations).toHaveLength(1);
+      expect(matrix.allergen_matrix.cross_contamination_map.high_risk_combinations[0]).toMatchObject({
+        allergen1: AllergenType.PEANUTS,
+        allergen2: AllergenType.TREE_NUTS,
+        risk_level: 'HIGH',
+      });
+    });
+  });
+
+  describe('generateCatererExport', () => {
+    it('should include all critical medical alerts in export', async () => {
+      const mockMatrix: DietaryMatrix = {
+        couple_id: 'couple-123',
+        event_date: new Date(),
+        guest_count: 100,
+        critical_alerts: [
+          {
+            guest_id: 'guest-1',
+            guest_name: 'John Doe',
+            table_number: 1,
+            allergen: AllergenType.PEANUTS,
+            severity: DietarySeverity.LIFE_THREATENING,
+            description: 'Severe peanut allergy',
+            cross_contamination_risk: true,
+            emergency_medication: 'EpiPen',
+          },
+        ],
+        dietary_summary: {
+          total_dietary_requirements: 10,
+          life_threatening_count: 1,
+          severe_count: 2,
+          moderate_count: 3,
+          by_type: { [DietaryType.ALLERGY]: 6 },
+          by_allergen: { [AllergenType.PEANUTS]: 1 },
+          cross_contamination_risks: 1,
+        },
+        allergen_matrix: {
+          allergens: [AllergenType.PEANUTS],
+          affected_guests: {
+            [AllergenType.PEANUTS]: [{
+              guest_id: 'guest-1',
+              guest_name: 'John Doe',
+              table_number: 1,
+              severity: DietarySeverity.LIFE_THREATENING,
+              requires_epipen: true,
+            }],
+          },
+          cross_contamination_map: {
+            high_risk_combinations: [],
+            shared_equipment_concerns: ['Dedicated nut-free preparation area required'],
+            preparation_warnings: ['Airborne allergen risk: PEANUTS'],
+          },
+        },
+        kitchen_instructions: {
+          preparation_zones: [],
+          equipment_requirements: [],
+          cross_contamination_protocols: [],
+          service_sequence: [],
+          emergency_procedures: [],
+        },
+        emergency_contacts: [{
+          name: 'Jane Doe',
+          phone: '+1234567890',
+          relationship: 'Mother',
+          guest_name: 'John Doe',
+          guest_id: 'guest-1',
+        }],
+        generated_at: new Date(),
+      };
+
+      jest.spyOn(dietaryService, 'generateDietaryMatrix').mockResolvedValue(mockMatrix);
+      jest.spyOn(dietaryService as any, 'supabase', 'get').mockReturnValue({
+        from: jest.fn().mockReturnValue({
+          select: jest.fn().mockReturnValue({
+            eq: jest.fn().mockReturnValue({
+              single: jest.fn().mockResolvedValue({
+                data: { 
+                  names: 'John & Jane',
+                  event_date: '2024-06-15',
+                  venue: 'Grand Hotel',
+                },
+                error: null,
+              }),
+            }),
+          }),
+        }),
+      });
+
+      const exportData = await dietaryService.generateCatererExport('couple-123', 'JSON');
+
+      expect(exportData.critical_medical_alerts).toHaveLength(1);
+      expect(exportData.critical_medical_alerts[0].severity).toBe(DietarySeverity.LIFE_THREATENING);
+      expect(exportData.emergency_procedures).toBeDefined();
+      expect(exportData.emergency_procedures.anaphylaxis_protocol).toBeDefined();
+      expect(exportData.contact_sheet).toHaveLength(1);
+    });
+
+    it('should generate proper kitchen cards with severity indicators', async () => {
+      const mockMatrix = {
+        critical_alerts: [
+          {
+            guest_id: 'guest-1',
+            guest_name: 'Critical Guest',
+            table_number: 1,
+            allergen: AllergenType.SHELLFISH,
+            severity: DietarySeverity.LIFE_THREATENING,
+            description: 'Anaphylactic reaction to shellfish',
+            cross_contamination_risk: true,
+            emergency_medication: 'EpiPen',
+          },
+          {
+            guest_id: 'guest-2',
+            guest_name: 'Moderate Guest',
+            table_number: 2,
+            allergen: AllergenType.GLUTEN,
+            severity: DietarySeverity.MODERATE,
+            description: 'Gluten intolerance',
+            cross_contamination_risk: false,
+          },
+        ],
+      };
+
+      const kitchenCards = (dietaryService as any).generateKitchenCards(mockMatrix);
+
+      expect(kitchenCards).toHaveLength(2);
+      expect(kitchenCards[0].severity_indicator).toBe('CRITICAL');
+      expect(kitchenCards[0].plate_marking).toBe('🔴🔴🔴');
+      expect(kitchenCards[0].special_instructions).toContain('⚠️ LIFE-THREATENING ALLERGY');
+      expect(kitchenCards[1].severity_indicator).toBe('HIGH');
+      expect(kitchenCards[1].plate_marking).toBe('🟡');
+    });
+  });
+});
+
+describe('DietaryService - Performance Tests', () => {
+  it('should handle concurrent requirement creation efficiently', async () => {
+    const requirements = Array(50).fill(null).map((_, i) => ({
+      guest_id: `guest-${i}`,
+      type: DietaryType.ALLERGY,
+      severity: DietarySeverity.MODERATE,
+      allergen: AllergenType.MILK,
+      description: `Lactose intolerance ${i}`,
+      cross_contamination_risk: false,
+    }));
+
+    const startTime = Date.now();
+    const promises = requirements.map(req => 
+      dietaryService.createDietaryRequirement(req, 'user-123')
+    );
+    
+    await Promise.all(promises);
+    const duration = Date.now() - startTime;
+
+    // Should handle 50 concurrent creations in under 5 seconds
+    expect(duration).toBeLessThan(5000);
+  });
+
+  it('should cache dietary matrix for performance', async () => {
+    const coupleId = 'couple-performance-test';
+    
+    // First call - should generate
+    const start1 = Date.now();
+    await dietaryService.generateDietaryMatrix(coupleId);
+    const duration1 = Date.now() - start1;
+
+    // Second call - should be cached
+    const start2 = Date.now();
+    await dietaryService.generateDietaryMatrix(coupleId);
+    const duration2 = Date.now() - start2;
+
+    // Cached version should be significantly faster
+    expect(duration2).toBeLessThan(duration1 / 2);
+  });
+});

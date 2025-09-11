@@ -1,0 +1,283 @@
+import { SyncCoordinator, NetworkQualityLevel } from '@/lib/offline/sync-coordinator';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { NetworkMonitor } from '@/lib/offline/network-monitor';
+import { StorageOptimizer } from '@/lib/pwa/storage-optimizer';
+import { SyncEventType, SyncPriority } from '@/lib/offline/background-sync';
+
+// Mock dependencies
+vi.mock('@/lib/offline/network-monitor');
+vi.mock('@/lib/pwa/storage-optimizer');
+vi.mock('@/lib/offline/background-sync');
+const mockNetworkMonitor = {
+  getCurrentState: vi.fn(),
+  startMonitoring: vi.fn(),
+  stopMonitoring: vi.fn(),
+  on: vi.fn(),
+  removeAllListeners: vi.fn(),
+  testCurrentConnection: vi.fn(),
+};
+const mockStorageOptimizer = {
+  analyzeStorage: vi.fn(),
+  optimizeStorage: vi.fn(),
+  clearCache: vi.fn(),
+const mockSyncEventManager = {
+  scheduleSync: vi.fn(),
+  processEvent: vi.fn(),
+  getQueuedEvents: vi.fn().mockReturnValue([]),
+(NetworkMonitor as ReturnType<typeof vi.fn>).mockImplementation(() => mockNetworkMonitor);
+(StorageOptimizer as ReturnType<typeof vi.fn>).mockImplementation(() => mockStorageOptimizer);
+describe('SyncCoordinator', () => {
+  let syncCoordinator: SyncCoordinator;
+  beforeEach(() => {
+    syncCoordinator = new SyncCoordinator();
+    vi.clearAllMocks();
+    
+    // Default network state
+    mockNetworkMonitor.getCurrentState.mockReturnValue({
+      isOnline: true,
+      quality: 'excellent' as NetworkQualityLevel,
+      metrics: {
+        bandwidth: 10,
+        latency: 50,
+        packetLoss: 0,
+        stability: 0.95,
+      },
+      venueProfile: null,
+      lastUpdated: Date.now(),
+    });
+    // Mock storage analysis
+    mockStorageOptimizer.analyzeStorage.mockResolvedValue({
+      totalSize: 1000000,
+      usedSize: 500000,
+      availableSize: 500000,
+      categories: {
+        images: 200000,
+        documents: 150000,
+        cache: 100000,
+        userData: 50000,
+      recommendations: [],
+  });
+  afterEach(() => {
+    syncCoordinator.destroy();
+  describe('initialization', () => {
+    it('should initialize with network monitoring', () => {
+      expect(mockNetworkMonitor.startMonitoring).toHaveBeenCalled();
+      expect(mockNetworkMonitor.on).toHaveBeenCalledWith('state-change', expect.any(Function));
+    it('should set initial sync strategy based on network quality', () => {
+      const strategy = syncCoordinator.getCurrentStrategy();
+      expect(strategy.maxConcurrentSyncs).toBe(5);
+      expect(strategy.batchSize).toBe(50);
+      expect(strategy.compressionLevel).toBe(6);
+  describe('coordinateSync', () => {
+    it('should coordinate sync with excellent network quality', async () => {
+      const syncOperation = {
+        id: 'test-sync-1',
+        type: SyncEventType.CLIENT_DATA_SYNC,
+        data: { clientId: 'client-1', updates: ['timeline', 'vendors'] },
+        priority: SyncPriority.MEDIUM,
+        weddingId: 'wedding-123',
+      };
+      mockSyncEventManager.scheduleSync.mockResolvedValue('sync-event-1');
+      const result = await syncCoordinator.coordinateSync(syncOperation);
+      expect(result.success).toBe(true);
+      expect(result.syncEventId).toBe('sync-event-1');
+      expect(result.strategy).toEqual(expect.objectContaining({
+        maxConcurrentSyncs: 5,
+        batchSize: 50,
+      }));
+    it('should adapt strategy for poor network conditions', async () => {
+      mockNetworkMonitor.getCurrentState.mockReturnValue({
+        isOnline: true,
+        quality: 'poor' as NetworkQualityLevel,
+        metrics: {
+          bandwidth: 0.5,
+          latency: 800,
+          packetLoss: 5,
+          stability: 0.6,
+        },
+        venueProfile: {
+          name: 'Remote Barn Venue',
+          averageBandwidth: 1,
+          reliabilityScore: 0.6,
+          peakHours: ['18:00-22:00'],
+        lastUpdated: Date.now(),
+      });
+        id: 'test-sync-2',
+        type: SyncEventType.VENDOR_COMMUNICATION,
+        data: { vendorId: 'vendor-1' },
+        priority: SyncPriority.HIGH,
+      expect(result.strategy.maxConcurrentSyncs).toBe(1);
+      expect(result.strategy.batchSize).toBe(5);
+      expect(result.strategy.compressionLevel).toBe(9);
+    it('should handle offline scenarios', async () => {
+        isOnline: false,
+        quality: 'offline' as NetworkQualityLevel,
+          bandwidth: 0,
+          latency: Infinity,
+          packetLoss: 100,
+          stability: 0,
+        venueProfile: null,
+        id: 'test-sync-3',
+        data: { clientId: 'client-1' },
+        priority: SyncPriority.LOW,
+      expect(result.strategy.enableOfflineMode).toBe(true);
+      expect(result.delayUntilOnline).toBe(true);
+    it('should apply wedding context optimizations', async () => {
+      const eventDayOperation = {
+        id: 'event-day-sync',
+        type: SyncEventType.GUEST_LIST_UPDATE,
+        data: { guestId: 'guest-1', status: 'arrived' },
+        priority: SyncPriority.CRITICAL,
+        isEventDay: true,
+      const result = await syncCoordinator.coordinateSync(eventDayOperation);
+      expect(result.strategy.priorityBoost).toBe(true);
+      expect(result.weddingOptimizations).toEqual(
+        expect.objectContaining({
+          isEventDay: true,
+          optimizations: expect.arrayContaining(['priority_boost', 'reduced_batching']),
+        })
+      );
+    it('should handle coordination errors gracefully', async () => {
+      mockSyncEventManager.scheduleSync.mockRejectedValue(new Error('Scheduling failed'));
+        id: 'failing-sync',
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Scheduling failed');
+  describe('optimizeForWeddingContext', () => {
+    it('should optimize for event day scenarios', () => {
+      const baseStrategy = {
+        maxConcurrentSyncs: 3,
+        batchSize: 20,
+        retryDelay: 1000,
+        compressionLevel: 6,
+      const optimized = syncCoordinator.optimizeForWeddingContext(
+        baseStrategy,
+        SyncEventType.GUEST_LIST_UPDATE,
+        SyncPriority.HIGH,
+        { weddingId: 'wedding-123', isEventDay: true }
+      expect(optimized.strategy.maxConcurrentSyncs).toBeGreaterThan(baseStrategy.maxConcurrentSyncs);
+      expect(optimized.strategy.retryDelay).toBeLessThan(baseStrategy.retryDelay);
+      expect(optimized.weddingOptimizations?.isEventDay).toBe(true);
+    it('should optimize for vendor communications', () => {
+        SyncEventType.VENDOR_COMMUNICATION,
+        { weddingId: 'wedding-123', vendorCritical: true }
+      expect(optimized.strategy.prioritizeRealTime).toBe(true);
+      expect(optimized.weddingOptimizations?.optimizations).toContain('vendor_priority');
+    it('should handle guest-impact scenarios', () => {
+        SyncPriority.MEDIUM,
+        { weddingId: 'wedding-123', guestImpact: true }
+      expect(optimized.weddingOptimizations?.optimizations).toContain('guest_impact_handling');
+  describe('determineQualityLevel', () => {
+    it('should correctly identify excellent network quality', () => {
+      const metrics = {
+        latency: 100,
+        packetLoss: 0.5,
+      const quality = syncCoordinator.determineQualityLevel(metrics);
+      expect(quality).toBe('excellent');
+    it('should correctly identify poor network quality', () => {
+        bandwidth: 0.5,
+        latency: 800,
+        packetLoss: 8,
+        stability: 0.5,
+      expect(quality).toBe('poor');
+    it('should handle edge cases in network metrics', () => {
+        bandwidth: 0,
+        latency: Infinity,
+        packetLoss: 100,
+        stability: 0,
+      expect(quality).toBe('offline');
+  describe('storage optimization integration', () => {
+    it('should check storage before large sync operations', async () => {
+      const largeOperation = {
+        id: 'large-sync',
+        type: SyncEventType.MEDIA_UPLOAD,
+        data: { files: new Array(100).fill({ size: 5000000 }) }, // 100 x 5MB files
+      await syncCoordinator.coordinateSync(largeOperation);
+      expect(mockStorageOptimizer.analyzeStorage).toHaveBeenCalled();
+    it('should trigger storage optimization when space is low', async () => {
+      mockStorageOptimizer.analyzeStorage.mockResolvedValue({
+        totalSize: 1000000,
+        usedSize: 950000,
+        availableSize: 50000,
+        categories: {
+          images: 500000,
+          documents: 300000,
+          cache: 100000,
+          userData: 50000,
+        recommendations: ['clear_old_cache', 'compress_images'],
+      const operation = {
+        id: 'storage-heavy-sync',
+        data: { fileSize: 100000 },
+      const result = await syncCoordinator.coordinateSync(operation);
+      expect(mockStorageOptimizer.optimizeStorage).toHaveBeenCalled();
+      expect(result.storageOptimizations).toBeDefined();
+  describe('network state change handling', () => {
+    it('should update strategy when network quality changes', () => {
+      const networkStateChangeCallback = mockNetworkMonitor.on.mock.calls
+        .find(call => call[0] === 'state-change')?.[1];
+      expect(networkStateChangeCallback).toBeDefined();
+      // Simulate network quality change
+      const newNetworkState = {
+        quality: 'good' as NetworkQualityLevel,
+          bandwidth: 3,
+          latency: 200,
+          packetLoss: 2,
+          stability: 0.8,
+      networkStateChangeCallback(newNetworkState);
+      const currentStrategy = syncCoordinator.getCurrentStrategy();
+      expect(currentStrategy.maxConcurrentSyncs).toBe(3);
+      expect(currentStrategy.batchSize).toBe(30);
+    it('should pause sync operations when going offline', () => {
+      const offlineState = {
+      networkStateChangeCallback(offlineState);
+      expect(currentStrategy.enableOfflineMode).toBe(true);
+  describe('getCurrentStrategy', () => {
+    it('should return current sync strategy', () => {
+      expect(strategy).toEqual(expect.objectContaining({
+        maxConcurrentSyncs: expect.any(Number),
+        batchSize: expect.any(Number),
+        retryDelay: expect.any(Number),
+        compressionLevel: expect.any(Number),
+  describe('getCoordinationStats', () => {
+    it('should return coordination statistics', async () => {
+      // Coordinate a few sync operations
+      await syncCoordinator.coordinateSync({
+        id: 'sync-1',
+        data: {},
+        id: 'sync-2',
+      const stats = syncCoordinator.getCoordinationStats();
+      expect(stats).toEqual(expect.objectContaining({
+        totalCoordinated: expect.any(Number),
+        successfulCoordinations: expect.any(Number),
+        failedCoordinations: expect.any(Number),
+        averageCoordinationTime: expect.any(Number),
+        currentNetworkQuality: expect.any(String),
+        activeStrategy: expect.any(Object),
+      expect(stats.totalCoordinated).toBeGreaterThan(0);
+  describe('destroy', () => {
+    it('should cleanup resources on destroy', () => {
+      syncCoordinator.destroy();
+      expect(mockNetworkMonitor.stopMonitoring).toHaveBeenCalled();
+      expect(mockNetworkMonitor.removeAllListeners).toHaveBeenCalled();
+    it('should handle multiple destroy calls gracefully', () => {
+      syncCoordinator.destroy(); // Should not throw
+      expect(mockNetworkMonitor.stopMonitoring).toHaveBeenCalledTimes(1);
+  describe('error handling and edge cases', () => {
+    it('should handle network monitor failures', async () => {
+      mockNetworkMonitor.getCurrentState.mockImplementation(() => {
+        throw new Error('Network monitor error');
+        id: 'test-sync',
+      // Should use fallback strategy
+      expect(result.strategy).toBeDefined();
+    it('should handle storage analyzer failures', async () => {
+      mockStorageOptimizer.analyzeStorage.mockRejectedValue(new Error('Storage analysis failed'));
+        data: { fileSize: 1000000 },
+      expect(result.storageOptimizations?.error).toBe('Storage analysis failed');
+    it('should handle invalid sync operations', async () => {
+      const invalidOperation = {
+        id: '',
+        type: null as any,
+        data: undefined,
+        priority: 'invalid' as any,
+      const result = await syncCoordinator.coordinateSync(invalidOperation);
+      expect(result.error).toBeDefined();
+});

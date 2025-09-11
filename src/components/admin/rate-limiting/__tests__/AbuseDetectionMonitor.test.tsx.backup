@@ -1,0 +1,283 @@
+import React from 'react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import '@testing-library/jest-dom';
+import { AbuseDetectionMonitor } from '../AbuseDetectionMonitor';
+import { AbusePattern, ThreatLevel, AbuseResponse } from '@/types/rate-limiting';
+
+const mockAbusePatterns: AbusePattern[] = [
+  {
+    id: '1',
+    patternType: 'credential_stuffing',
+    description: 'Multiple failed login attempts from same IP',
+    severity: ThreatLevel.HIGH,
+    detectionCount: 15,
+    lastDetected: new Date('2025-01-20T10:30:00Z'),
+    affectedEndpoints: ['/api/auth/login', '/api/auth/register'],
+    sourceIPs: ['192.168.1.100', '192.168.1.101'],
+    userAgent: 'Bot/1.0',
+    isWeddingRelated: false,
+    blockedRequests: 45,
+    response: AbuseResponse.TEMPORARY_BLOCK
+  },
+  {
+    id: '2',
+    patternType: 'supplier_scraping',
+    description: 'Systematic scraping of wedding supplier data',
+    severity: ThreatLevel.CRITICAL,
+    detectionCount: 8,
+    lastDetected: new Date('2025-01-20T11:45:00Z'),
+    affectedEndpoints: ['/api/suppliers', '/api/suppliers/search'],
+    sourceIPs: ['10.0.0.50'],
+    userAgent: 'ScrapingBot/2.0',
+    isWeddingRelated: true,
+    blockedRequests: 120,
+    response: AbuseResponse.PERMANENT_BLOCK
+  }
+];
+
+describe('AbuseDetectionMonitor', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  });
+
+  it('renders abuse detection monitor with patterns', () => {
+    render(<AbuseDetectionMonitor patterns={mockAbusePatterns} />);
+    
+    expect(screen.getByText('Abuse Detection Monitor')).toBeInTheDocument();
+    expect(screen.getByText('credential_stuffing')).toBeInTheDocument();
+    expect(screen.getByText('supplier_scraping')).toBeInTheDocument();
+  });
+
+  it('displays threat level badges with correct colors', () => {
+    render(<AbuseDetectionMonitor patterns={mockAbusePatterns} />);
+    
+    const highThreatBadge = screen.getByText('HIGH');
+    const criticalThreatBadge = screen.getByText('CRITICAL');
+    
+    expect(highThreatBadge).toBeInTheDocument();
+    expect(criticalThreatBadge).toBeInTheDocument();
+  });
+
+  it('shows wedding-related patterns with special indicators', () => {
+    render(<AbuseDetectionMonitor patterns={mockAbusePatterns} />);
+    
+    expect(screen.getByText(/wedding supplier data/i)).toBeInTheDocument();
+    expect(screen.getAllByTestId('wedding-icon')).toHaveLength(1);
+  });
+
+  it('displays abuse response actions correctly', () => {
+    render(<AbuseDetectionMonitor patterns={mockAbusePatterns} />);
+    
+    expect(screen.getByText('TEMPORARY_BLOCK')).toBeInTheDocument();
+    expect(screen.getByText('PERMANENT_BLOCK')).toBeInTheDocument();
+  });
+
+  it('handles pattern details expansion', () => {
+    render(<AbuseDetectionMonitor patterns={mockAbusePatterns} />);
+    
+    const expandButton = screen.getAllByLabelText(/expand details/i)[0];
+    fireEvent.click(expandButton);
+    
+    expect(screen.getByText('192.168.1.100')).toBeInTheDocument();
+    expect(screen.getByText('Bot/1.0')).toBeInTheDocument();
+  });
+
+  it('filters patterns by threat level', () => {
+    render(<AbuseDetectionMonitor patterns={mockAbusePatterns} />);
+    
+    const filterDropdown = screen.getByRole('combobox', { name: /filter by threat level/i });
+    fireEvent.change(filterDropdown, { target: { value: 'CRITICAL' } });
+    
+    expect(screen.getByText('supplier_scraping')).toBeInTheDocument();
+    expect(screen.queryByText('credential_stuffing')).not.toBeInTheDocument();
+  });
+
+  it('filters patterns by wedding relevance', () => {
+    render(<AbuseDetectionMonitor patterns={mockAbusePatterns} />);
+    
+    const weddingFilterCheckbox = screen.getByRole('checkbox', { name: /wedding related only/i });
+    fireEvent.click(weddingFilterCheckbox);
+    
+    expect(screen.getByText('supplier_scraping')).toBeInTheDocument();
+    expect(screen.queryByText('credential_stuffing')).not.toBeInTheDocument();
+  });
+
+  it('handles pattern blocking action', async () => {
+    const mockOnBlock = jest.fn();
+    render(<AbuseDetectionMonitor patterns={mockAbusePatterns} onBlockPattern={mockOnBlock} />);
+    
+    const blockButton = screen.getAllByText(/block/i).find(btn => 
+      btn.closest('button')?.getAttribute('aria-label')?.includes('block pattern')
+    );
+    
+    if (blockButton) {
+      fireEvent.click(blockButton);
+      expect(mockOnBlock).toHaveBeenCalledWith('1');
+    }
+  });
+
+  it('handles pattern allowlisting action', async () => {
+    const mockOnAllowlist = jest.fn();
+    render(<AbuseDetectionMonitor patterns={mockAbusePatterns} onAllowlistPattern={mockOnAllowlist} />);
+    
+    const allowlistButton = screen.getAllByText(/allow/i).find(btn => 
+      btn.closest('button')?.getAttribute('aria-label')?.includes('allowlist pattern')
+    );
+    
+    if (allowlistButton) {
+      fireEvent.click(allowlistButton);
+      expect(mockOnAllowlist).toHaveBeenCalledWith('1');
+    }
+  });
+
+  it('auto-refreshes patterns when enabled', async () => {
+    const mockOnRefresh = jest.fn();
+    render(
+      <AbuseDetectionMonitor 
+        patterns={mockAbusePatterns} 
+        autoRefresh={true}
+        onRefresh={mockOnRefresh}
+        refreshInterval={5000}
+      />
+    );
+    
+    jest.advanceTimersByTime(5000);
+    
+    await waitFor(() => {
+      expect(mockOnRefresh).toHaveBeenCalled();
+    });
+  });
+
+  it('displays pattern statistics correctly', () => {
+    render(<AbuseDetectionMonitor patterns={mockAbusePatterns} />);
+    
+    expect(screen.getByText('15')).toBeInTheDocument(); // Detection count
+    expect(screen.getByText('8')).toBeInTheDocument(); // Detection count
+    expect(screen.getByText('45')).toBeInTheDocument(); // Blocked requests
+    expect(screen.getByText('120')).toBeInTheDocument(); // Blocked requests
+  });
+
+  it('shows empty state when no patterns exist', () => {
+    render(<AbuseDetectionMonitor patterns={[]} />);
+    
+    expect(screen.getByText(/no abuse patterns detected/i)).toBeInTheDocument();
+    expect(screen.getByText(/your system is currently secure/i)).toBeInTheDocument();
+  });
+
+  it('handles loading state correctly', () => {
+    render(<AbuseDetectionMonitor patterns={mockAbusePatterns} isLoading={true} />);
+    
+    expect(screen.getByText(/loading abuse patterns/i)).toBeInTheDocument();
+    expect(screen.getByTestId('loading-spinner')).toBeInTheDocument();
+  });
+
+  it('handles error state correctly', () => {
+    render(
+      <AbuseDetectionMonitor 
+        patterns={mockAbusePatterns} 
+        error="Failed to load abuse patterns"
+      />
+    );
+    
+    expect(screen.getByText(/failed to load abuse patterns/i)).toBeInTheDocument();
+  });
+
+  it('sorts patterns by different criteria', () => {
+    render(<AbuseDetectionMonitor patterns={mockAbusePatterns} />);
+    
+    const sortDropdown = screen.getByRole('combobox', { name: /sort by/i });
+    fireEvent.change(sortDropdown, { target: { value: 'severity' } });
+    
+    const patternCards = screen.getAllByTestId('abuse-pattern-card');
+    expect(patternCards[0]).toHaveTextContent('supplier_scraping'); // CRITICAL first
+    expect(patternCards[1]).toHaveTextContent('credential_stuffing'); // HIGH second
+  });
+
+  it('displays real-time updates indicator when enabled', () => {
+    render(<AbuseDetectionMonitor patterns={mockAbusePatterns} realTimeUpdates={true} />);
+    
+    expect(screen.getByText('Live')).toBeInTheDocument();
+    expect(screen.getByTestId('live-indicator')).toHaveClass('animate-pulse');
+  });
+
+  it('formats last detection time correctly', () => {
+    render(<AbuseDetectionMonitor patterns={mockAbusePatterns} />);
+    
+    // Should show relative time like "2 hours ago"
+    expect(screen.getByText(/ago$/)).toBeInTheDocument();
+  });
+
+  it('displays affected endpoints with proper formatting', () => {
+    render(<AbuseDetectionMonitor patterns={mockAbusePatterns} />);
+    
+    const expandButton = screen.getAllByLabelText(/expand details/i)[0];
+    fireEvent.click(expandButton);
+    
+    expect(screen.getByText('/api/auth/login')).toBeInTheDocument();
+    expect(screen.getByText('/api/auth/register')).toBeInTheDocument();
+  });
+
+  it('shows severity distribution chart', () => {
+    render(<AbuseDetectionMonitor patterns={mockAbusePatterns} />);
+    
+    expect(screen.getByTestId('severity-distribution-chart')).toBeInTheDocument();
+  });
+
+  it('is accessible with proper ARIA labels', () => {
+    render(<AbuseDetectionMonitor patterns={mockAbusePatterns} />);
+    
+    expect(screen.getByRole('region', { name: /abuse detection monitor/i })).toBeInTheDocument();
+    expect(screen.getAllByRole('button')).toHaveLength(greaterThan(0));
+    expect(screen.getByRole('list')).toHaveAttribute('aria-label', 'Abuse patterns');
+  });
+
+  it('handles keyboard navigation for pattern actions', () => {
+    render(<AbuseDetectionMonitor patterns={mockAbusePatterns} />);
+    
+    const firstPatternCard = screen.getAllByTestId('abuse-pattern-card')[0];
+    const blockButton = firstPatternCard.querySelector('button[aria-label*="block"]');
+    
+    blockButton?.focus();
+    fireEvent.keyDown(blockButton!, { key: 'Enter' });
+    
+    expect(blockButton).toHaveBeenCalled;
+  });
+
+  it('displays bulk action controls when patterns are selected', () => {
+    render(<AbuseDetectionMonitor patterns={mockAbusePatterns} />);
+    
+    const selectCheckbox = screen.getAllByRole('checkbox', { name: /select pattern/i })[0];
+    fireEvent.click(selectCheckbox);
+    
+    expect(screen.getByText(/1 pattern selected/i)).toBeInTheDocument();
+    expect(screen.getByText(/bulk actions/i)).toBeInTheDocument();
+  });
+
+  it('handles wedding season context correctly', () => {
+    const weddingSeasonPatterns = mockAbusePatterns.map(pattern => ({
+      ...pattern,
+      isWeddingRelated: true
+    }));
+    
+    render(
+      <AbuseDetectionMonitor 
+        patterns={weddingSeasonPatterns} 
+        showWeddingContext={true}
+        isWeddingSeason={true}
+      />
+    );
+    
+    expect(screen.getByText(/peak wedding season/i)).toBeInTheDocument();
+    expect(screen.getAllByTestId('wedding-icon')).toHaveLength(weddingSeasonPatterns.length);
+  });
+
+  function greaterThan(value: number) {
+    return expect.any(Number);
+  }
+});

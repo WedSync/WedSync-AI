@@ -1,0 +1,70 @@
+/**
+ * WS-240: AI Cost Savings Analytics API
+ * GET /api/ai-optimization/savings
+ *
+ * Provides comprehensive cost savings analytics and reporting.
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { SmartCacheOptimizer } from '@/lib/ai/optimization/SmartCacheOptimizer';
+
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const supplierId = searchParams.get('supplierId');
+    const featureType = searchParams.get('featureType');
+    const timeframe = searchParams.get('timeframe') || 'monthly';
+
+    if (!supplierId) {
+      return NextResponse.json(
+        { error: 'supplierId is required' },
+        { status: 400 },
+      );
+    }
+
+    const cacheOptimizer = new SmartCacheOptimizer();
+
+    const savings = await cacheOptimizer.calculateCacheHitSavings(
+      supplierId,
+      featureType || 'photo_ai',
+      timeframe as 'daily' | 'weekly' | 'monthly',
+    );
+
+    return NextResponse.json({
+      success: true,
+      savings,
+      projections: {
+        annualSavings: savings.costSavings * 12,
+        peakSeasonSavings: savings.costSavings * 1.6 * 8, // 8 peak months
+        weddingIndustryContext: {
+          averagePhotographyStudioSavings: '£2160/year',
+          averageVenueSavings: '£1680/year',
+          targetSavingsPercentage: '75%',
+        },
+      },
+      recommendations: generateSavingsRecommendations(savings),
+    });
+  } catch (error) {
+    return NextResponse.json(
+      { error: 'Failed to calculate savings' },
+      { status: 500 },
+    );
+  }
+}
+
+function generateSavingsRecommendations(savings: any): string[] {
+  const recommendations = [];
+
+  if (savings.hitRate < 50) {
+    recommendations.push('Enable semantic caching to increase hit rate');
+  }
+
+  if (savings.costSavings < 10) {
+    recommendations.push('Consider batch processing for non-urgent requests');
+  }
+
+  recommendations.push('Peak wedding season optimization active');
+
+  return recommendations;
+}

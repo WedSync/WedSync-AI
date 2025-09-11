@@ -1,0 +1,101 @@
+/**
+ * Field Extraction API Route
+ * WS-122: Automated Field Extraction from Documents
+ * POST /api/field-extraction/extract
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { FieldExtractionService } from '@/lib/services/field-extraction-service';
+import { ExtractionRequest } from '@/types/field-extraction';
+
+export async function POST(request: NextRequest) {
+  try {
+    const body: ExtractionRequest = await request.json();
+
+    // Validate required fields
+    if (!body.documentId) {
+      return NextResponse.json(
+        { error: 'Document ID is required' },
+        { status: 400 },
+      );
+    }
+
+    // Initialize field extraction service
+    const extractionService = new FieldExtractionService();
+
+    // Extract fields from document
+    const result = await extractionService.extractFields(body);
+
+    // Log extraction attempt
+    console.log('Field extraction completed:', {
+      documentId: body.documentId,
+      success: result.success,
+      processingTime: result.processingTime,
+      fieldCount: result.document?.totalFields || 0,
+    });
+
+    if (result.success) {
+      return NextResponse.json({
+        success: true,
+        data: result.document,
+        processingTime: result.processingTime,
+        message: 'Fields extracted successfully',
+      });
+    } else {
+      return NextResponse.json(
+        {
+          success: false,
+          errors: result.errors,
+          processingTime: result.processingTime,
+          message: 'Field extraction failed',
+        },
+        { status: 422 },
+      );
+    }
+  } catch (error: any) {
+    console.error('Field extraction API error:', error);
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Internal server error',
+        message: error.message || 'Failed to extract fields',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const documentId = searchParams.get('documentId');
+
+    if (!documentId) {
+      return NextResponse.json(
+        { error: 'Document ID is required' },
+        { status: 400 },
+      );
+    }
+
+    const extractionService = new FieldExtractionService();
+
+    // Get extraction results for document
+    const results = await extractionService.getExtractionResults(documentId);
+
+    return NextResponse.json({
+      success: true,
+      data: results,
+      message: 'Extraction results retrieved successfully',
+    });
+  } catch (error: any) {
+    console.error('Get extraction results error:', error);
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Internal server error',
+        message: error.message || 'Failed to get extraction results',
+      },
+      { status: 500 },
+    );
+  }
+}

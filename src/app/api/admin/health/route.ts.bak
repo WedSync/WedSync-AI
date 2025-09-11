@@ -1,0 +1,394 @@
+/**
+ * WS-227: Admin System Health API Endpoint
+ * Comprehensive system health monitoring for administrators
+ * Requires admin authentication and returns detailed health metrics
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { healthMonitor, SystemHealth } from '@/lib/services/health-monitor';
+import { rateLimit } from '@/lib/middleware/rate-limiting';
+
+// Rate limit: 30 requests per minute for health checks
+const healthRateLimit = rateLimit({
+  interval: 60 * 1000, // 1 minute
+  uniqueTokenPerInterval: 500, // Max 500 unique users per minute
+});
+
+export async function GET(request: NextRequest) {
+  const startTime = Date.now();
+  const requestId = crypto.randomUUID();
+
+  try {
+    // Rate limiting
+    const rateLimitResult = await healthRateLimit(request, 30);
+    if ('error' in rateLimitResult) {
+      return NextResponse.json(
+        { 
+          success: false, 
+          error: 'Rate limit exceeded',
+          message: 'Too many health check requests. Please try again later.',
+          requestId
+        },
+        { status: 429 }
+      );
+    }
+
+    // Authentication - require admin access
+    const supabase = createClient();
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Authentication required',
+          message: 'Please log in to access health monitoring',
+          requestId
+        },
+        { status: 401 }
+      );
+    }
+
+    // Check if user is admin
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('role, organization_id')
+      .eq('id', user.id)
+      .single();
+
+    if (!profile || (profile.role !== 'admin' && profile.role !== 'owner')) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Insufficient permissions',
+          message: 'Admin access required for system health monitoring',
+          requestId
+        },
+        { status: 403 }
+      );
+    }
+
+    // Get query parameters
+    const searchParams = request.nextUrl.searchParams;
+    const includeMetrics = searchParams.get('metrics') !== 'false'; // Default true
+    const includeHistory = searchParams.get('history') === 'true'; // Default false
+    const service = searchParams.get('service'); // Filter by specific service
+
+    // Perform comprehensive health check
+    const healthData = await healthMonitor.performHealthCheck();
+
+    // Add request metadata
+    const responseData = {
+      success: true,
+      data: healthData,
+      meta: {
+        requestId,
+        responseTime: Date.now() - startTime,
+        requestedBy: user.id,
+        organization: profile.organization_id,
+        timestamp: new Date().toISOString(),
+        version: '2.0.0'
+      }
+    };
+
+    // Add historical data if requested
+    if (includeHistory) {
+      const historyData = await getHealthHistory(supabase, service);
+      responseData.data = {
+        ...responseData.data,
+        history: historyData
+      };
+    }
+
+    // Add detailed metrics if requested
+    if (includeMetrics) {
+      const metricsData = await getDetailedMetrics(supabase);
+      responseData.data = {
+        ...responseData.data,
+        detailedMetrics: metricsData
+      };
+    }
+
+    // Filter by service if specified
+    if (service && responseData.data.services[service as keyof typeof responseData.data.services]) {
+      responseData.data = {
+        ...responseData.data,
+        services: {
+          [service]: responseData.data.services[service as keyof typeof responseData.data.services]
+        }
+      };
+    }
+
+    // Log admin access for audit trail
+    await logHealthAccess(supabase, user.id, profile.organization_id, {
+      service,
+      includeMetrics,
+      includeHistory,
+      responseTime: Date.now() - startTime
+    });
+
+    // Determine HTTP status based on health
+    const overallStatus = getOverallHealthStatus(healthData);
+    const httpStatus = overallStatus === 'healthy' ? 200 : 
+                      overallStatus === 'degraded' ? 206 : 503;
+
+    return NextResponse.json(responseData, {
+      status: httpStatus,
+      headers: {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'X-Health-Status': overallStatus,
+        'X-Response-Time': `${Date.now() - startTime}ms`,
+        'X-Request-ID': requestId,
+        'Content-Type': 'application/json'
+      }
+    });
+
+  } catch (error) {
+    console.error('Admin health check failed:', error, { requestId });
+
+    const errorResponse = {
+      success: false,
+      error: 'Health check failed',
+      message: error instanceof Error ? error.message : 'Unknown error occurred',
+      requestId,
+      meta: {
+        timestamp: new Date().toISOString(),
+        responseTime: Date.now() - startTime
+      }
+    };
+
+    return NextResponse.json(errorResponse, {
+      status: 500,
+      headers: {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'X-Health-Status': 'down',
+        'X-Request-ID': requestId
+      }
+    });
+  }
+}
+
+/**
+ * Get overall health status from SystemHealth data
+ */
+function getOverallHealthStatus(health: SystemHealth): 'healthy' | 'degraded' | 'down' {
+  // Check if any critical services are down
+  const criticalServices = ['database', 'supabase'];
+  const criticalDown = criticalServices.some(service => 
+    health.services[service as keyof typeof health.services]?.status === 'down'
+  );
+
+  if (criticalDown) return 'down';
+
+  // Check if any services are down or degraded
+  const anyDown = Object.values(health.services).some(service => service.status === 'down');
+  if (anyDown) return 'degraded';
+
+  const anyDegraded = Object.values(health.services).some(service => service.status === 'degraded');
+  if (anyDegraded) return 'degraded';
+
+  // Check infrastructure thresholds
+  if (health.infrastructure.cpuUsage > 90 || 
+      health.infrastructure.memoryUsage > 90 ||
+      health.infrastructure.diskSpace > 95) {
+    return 'degraded';
+  }
+
+  // Check API health
+  if (health.apiHealth.errorRate > 10) return 'degraded';
+  if (health.apiHealth.errorRate > 5) return 'degraded';
+
+  return 'healthy';
+}
+
+/**
+ * Get health history for trending analysis
+ */
+async function getHealthHistory(supabase: any, service?: string | null) {
+  try {
+    let query = supabase
+      .from('health_checks')
+      .select('service, status, latency, checked_at')
+      .gte('checked_at', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
+      .order('checked_at', { ascending: false })
+      .limit(1000);
+
+    if (service) {
+      query = query.eq('service', service);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+      console.error('Error fetching health history:', error);
+      return { error: 'Failed to fetch history data' };
+    }
+
+    // Group by service and calculate trends
+    const history = data?.reduce((acc: any, check: any) => {
+      if (!acc[check.service]) {
+        acc[check.service] = [];
+      }
+      acc[check.service].push({
+        status: check.status,
+        latency: check.latency,
+        timestamp: check.checked_at
+      });
+      return acc;
+    }, {});
+
+    return {
+      period: '24h',
+      dataPoints: data?.length || 0,
+      services: history || {}
+    };
+
+  } catch (error) {
+    console.error('Health history fetch failed:', error);
+    return { error: 'Failed to fetch history data' };
+  }
+}
+
+/**
+ * Get detailed system metrics
+ */
+async function getDetailedMetrics(supabase: any) {
+  try {
+    const { data, error } = await supabase
+      .from('system_metrics')
+      .select('metric_type, value, metadata, recorded_at')
+      .gte('recorded_at', new Date(Date.now() - 60 * 60 * 1000).toISOString()) // Last hour
+      .order('recorded_at', { ascending: false })
+      .limit(500);
+
+    if (error) {
+      console.error('Error fetching detailed metrics:', error);
+      return { error: 'Failed to fetch metrics data' };
+    }
+
+    // Group metrics by type for easier consumption
+    const metrics = data?.reduce((acc: any, metric: any) => {
+      if (!acc[metric.metric_type]) {
+        acc[metric.metric_type] = [];
+      }
+      acc[metric.metric_type].push({
+        value: metric.value,
+        metadata: metric.metadata,
+        timestamp: metric.recorded_at
+      });
+      return acc;
+    }, {});
+
+    return {
+      period: '1h',
+      dataPoints: data?.length || 0,
+      metrics: metrics || {}
+    };
+
+  } catch (error) {
+    console.error('Detailed metrics fetch failed:', error);
+    return { error: 'Failed to fetch metrics data' };
+  }
+}
+
+/**
+ * Log health monitoring access for audit trail
+ */
+async function logHealthAccess(
+  supabase: any, 
+  userId: string, 
+  organizationId: string,
+  metadata: any
+) {
+  try {
+    await supabase
+      .from('audit_logs')
+      .insert({
+        user_id: userId,
+        organization_id: organizationId,
+        action: 'health_check_access',
+        resource_type: 'system_health',
+        resource_id: 'admin_health_monitor',
+        metadata: {
+          endpoint: '/api/admin/health',
+          ...metadata,
+          timestamp: new Date().toISOString()
+        }
+      });
+  } catch (error) {
+    console.error('Failed to log health access:', error);
+    // Don't throw - this shouldn't fail the health check
+  }
+}
+
+/**
+ * POST endpoint for triggering manual health checks
+ */
+export async function POST(request: NextRequest) {
+  const startTime = Date.now();
+  const requestId = crypto.randomUUID();
+
+  try {
+    // Authentication - require admin access
+    const supabase = createClient();
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json(
+        { success: false, error: 'Authentication required', requestId },
+        { status: 401 }
+      );
+    }
+
+    // Check admin permissions
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('role, organization_id')
+      .eq('id', user.id)
+      .single();
+
+    if (!profile || (profile.role !== 'admin' && profile.role !== 'owner')) {
+      return NextResponse.json(
+        { success: false, error: 'Admin access required', requestId },
+        { status: 403 }
+      );
+    }
+
+    // Parse request body
+    const body = await request.json();
+    const { services, forceRefresh = true } = body;
+
+    // Trigger manual health check
+    const healthData = await healthMonitor.performHealthCheck();
+
+    // Log manual health check trigger
+    await logHealthAccess(supabase, user.id, profile.organization_id, {
+      action: 'manual_health_check',
+      services,
+      forceRefresh,
+      responseTime: Date.now() - startTime
+    });
+
+    return NextResponse.json({
+      success: true,
+      data: healthData,
+      meta: {
+        requestId,
+        triggeredBy: user.id,
+        responseTime: Date.now() - startTime,
+        timestamp: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    console.error('Manual health check failed:', error, { requestId });
+
+    return NextResponse.json({
+      success: false,
+      error: 'Manual health check failed',
+      message: error instanceof Error ? error.message : 'Unknown error',
+      requestId
+    }, { status: 500 });
+  }
+}

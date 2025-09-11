@@ -1,0 +1,335 @@
+export interface MiddlewareRoute {
+  path: string;
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
+  summary: string;
+  description: string;
+  tags: string[];
+  parameters?: any[];
+  requestBody?: any;
+  responses: any;
+  authRequirement: AuthRequirement;
+  rateLimit?: RateLimitConfig;
+}
+
+export type AuthRequirement = 'none' | 'jwt' | 'session' | 'both' | 'admin';
+
+export interface RateLimitConfig {
+  requests: number;
+  window: number; // in seconds
+  userType?: 'couple' | 'supplier' | 'coordinator' | 'admin';
+}
+
+export interface MiddlewareConfig {
+  authentication: AuthConfig;
+  rateLimiting: RateLimitingConfig;
+  integration: IntegrationConfig;
+  mobile: MobileConfig;
+}
+
+export interface AuthConfig {
+  jwtSecret: string;
+  sessionExpiry: number;
+  refreshThreshold: number;
+  weddingPermissions: {
+    [userType: string]: string[];
+  };
+}
+
+export interface RateLimitingConfig {
+  redis: {
+    url: string;
+    keyPrefix: string;
+  };
+  limits: {
+    [userType: string]: {
+      requests: number;
+      window: number;
+    };
+  };
+  peakSeasonMultiplier: number;
+}
+
+export interface IntegrationConfig {
+  circuitBreaker: {
+    errorThreshold: number;
+    timeout: number;
+    retryAttempts: number;
+  };
+  services: {
+    [serviceName: string]: {
+      url: string;
+      timeout: number;
+      retries: number;
+    };
+  };
+}
+
+export interface MobileConfig {
+  optimization: {
+    imageCompression: boolean;
+    payloadReduction: boolean;
+    cacheStrategy: string;
+  };
+  pwa: {
+    serviceWorker: boolean;
+    backgroundSync: boolean;
+    pushNotifications: boolean;
+  };
+}
+
+export interface TestScenario {
+  name: string;
+  description: string;
+  setup: () => Promise<void>;
+  execute: () => Promise<TestResult>;
+  cleanup: () => Promise<void>;
+}
+
+export interface TestResult {
+  success: boolean;
+  duration: number;
+  metrics: {
+    responseTime: number;
+    errorRate: number;
+    throughput: number;
+  };
+  errors?: string[];
+}
+
+export interface LoadTestScenario {
+  name: string;
+  concurrentUsers: number;
+  duration: number;
+  rampUpTime: number;
+  scenarios: UserScenario[];
+}
+
+export interface UserScenario {
+  userType: 'couple' | 'supplier' | 'coordinator' | 'admin';
+  actions: UserAction[];
+  weight: number; // Percentage of users following this scenario
+}
+
+export interface UserAction {
+  type: 'request' | 'wait' | 'think';
+  endpoint?: string;
+  method?: string;
+  payload?: any;
+  duration?: number; // For wait/think actions
+}
+
+export interface PerformanceMetrics {
+  responseTime: {
+    p50: number;
+    p95: number;
+    p99: number;
+  };
+  throughput: number;
+  errorRate: number;
+  concurrentUsers: number;
+  memoryUsage: {
+    used: number;
+    total: number;
+  };
+  cpuUsage: number;
+}
+
+export interface WeddingTestData {
+  couples: CoupleTestData[];
+  suppliers: SupplierTestData[];
+  weddings: WeddingTestDataEntry[];
+  coordinators: CoordinatorTestData[];
+}
+
+export interface CoupleTestData {
+  id: string;
+  email: string;
+  weddingDate: string;
+  status: 'planning' | 'active' | 'completed';
+  budget: number;
+  location: string;
+}
+
+export interface SupplierTestData {
+  id: string;
+  name: string;
+  category:
+    | 'photography'
+    | 'catering'
+    | 'venue'
+    | 'flowers'
+    | 'music'
+    | 'other';
+  availability: { [date: string]: 'available' | 'booked' | 'unavailable' };
+  pricing: {
+    basePrice: number;
+    packages: PackageTestData[];
+  };
+}
+
+export interface PackageTestData {
+  id: string;
+  name: string;
+  price: number;
+  features: string[];
+}
+
+export interface WeddingTestDataEntry {
+  id: string;
+  coupleId: string;
+  suppliersBooked: string[];
+  timeline: TimelineEventTestData[];
+  status: 'planning' | 'confirmed' | 'in-progress' | 'completed';
+}
+
+export interface TimelineEventTestData {
+  id: string;
+  time: string;
+  event: string;
+  type: 'ceremony' | 'reception' | 'photo' | 'catering' | 'other';
+  supplierId?: string;
+}
+
+export interface CoordinatorTestData {
+  id: string;
+  name: string;
+  weddingsManaged: string[];
+  specialties: string[];
+}
+
+export interface APIEndpointTest {
+  endpoint: string;
+  method: string;
+  description: string;
+  testCases: APITestCase[];
+}
+
+export interface APITestCase {
+  name: string;
+  setup?: () => Promise<void>;
+  request: {
+    headers?: { [key: string]: string };
+    body?: any;
+    query?: { [key: string]: string };
+  };
+  expectedResponse: {
+    status: number;
+    body?: any;
+    headers?: { [key: string]: string };
+  };
+  cleanup?: () => Promise<void>;
+}
+
+export interface SecurityTestCase {
+  name: string;
+  description: string;
+  test: () => Promise<SecurityTestResult>;
+}
+
+export interface SecurityTestResult {
+  passed: boolean;
+  vulnerabilities: SecurityVulnerability[];
+  recommendations: string[];
+}
+
+export interface SecurityVulnerability {
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  type: string;
+  description: string;
+  endpoint?: string;
+  impact: string;
+}
+
+export interface CrossTeamIntegrationTest {
+  name: string;
+  teams: ('frontend' | 'backend' | 'integration' | 'mobile')[];
+  description: string;
+  test: () => Promise<IntegrationTestResult>;
+}
+
+export interface IntegrationTestResult {
+  success: boolean;
+  teamResults: {
+    [team: string]: {
+      passed: boolean;
+      errors: string[];
+    };
+  };
+  overallHealth: 'excellent' | 'good' | 'fair' | 'poor';
+}
+
+export interface WeddingScenarioTest {
+  scenario: string;
+  description: string;
+  participants: {
+    couples: number;
+    suppliers: number;
+    coordinators: number;
+  };
+  duration: number;
+  expectedOutcome: string;
+  test: () => Promise<WeddingScenarioResult>;
+}
+
+export interface WeddingScenarioResult {
+  success: boolean;
+  participantExperience: {
+    [userType: string]: {
+      satisfaction: number; // 1-10 scale
+      completionRate: number; // Percentage
+      errors: string[];
+    };
+  };
+  systemPerformance: PerformanceMetrics;
+  businessMetrics: {
+    bookingsCompleted: number;
+    paymentsProcessed: number;
+    notificationsSent: number;
+    errorsEncountered: number;
+  };
+}
+
+export interface DocumentationHealth {
+  coverage: number; // Percentage of endpoints documented
+  accuracy: number; // Percentage of documentation that's accurate
+  freshness: number; // Days since last update
+  completeness: {
+    examples: boolean;
+    errorCodes: boolean;
+    authentication: boolean;
+    rateLimit: boolean;
+  };
+}
+
+export interface QualityMetrics {
+  testCoverage: number;
+  performanceScore: number;
+  securityScore: number;
+  documentationHealth: DocumentationHealth;
+  crossTeamIntegration: number;
+  weddingReadiness: number; // How ready for wedding day traffic
+}
+
+export interface QAReport {
+  timestamp: string;
+  version: string;
+  summary: {
+    overallHealth: 'excellent' | 'good' | 'fair' | 'poor';
+    criticalIssues: number;
+    recommendations: string[];
+  };
+  testResults: {
+    authentication: TestResult;
+    rateLimiting: TestResult;
+    integration: TestResult;
+    mobile: TestResult;
+    loadTesting: TestResult;
+  };
+  metrics: QualityMetrics;
+  weddingReadiness: {
+    peakSeasonReady: boolean;
+    emergencyProcedures: boolean;
+    monitoringConfigured: boolean;
+    backupSystemsReady: boolean;
+  };
+}

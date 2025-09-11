@@ -1,0 +1,231 @@
+/**
+ * Guest Music Request Form Component
+ * Feature ID: WS-128
+ * Public form for wedding guests to request songs
+ */
+
+'use client';
+
+import React, { useState } from 'react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { 
+  Music, 
+  Heart, 
+  Send,
+  CheckCircle,
+  AlertCircle
+} from 'lucide-react';
+import type { GuestRequestMusicRequest } from '@/types/music';
+
+interface GuestRequestFormProps {
+  playlistId: string;
+  playlistName?: string;
+  coupleNames?: string;
+}
+
+export default function GuestRequestForm({ 
+  playlistId, 
+  playlistName = "Wedding Playlist",
+  coupleNames = "the Happy Couple"
+}: GuestRequestFormProps) {
+  const [formData, setFormData] = useState<GuestRequestMusicRequest>({
+    guest_name: '',
+    guest_email: '',
+    track_title: '',
+    artist_name: '',
+    special_message: '',
+    dedication: ''
+  });
+
+  const [loading, setLoading] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+
+    try {
+      const response = await fetch('/api/music/guest-requests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          playlist_id: playlistId,
+          ...formData
+        })
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        setSubmitted(true);
+        
+        // Reset form
+        setFormData({
+          guest_name: '',
+          guest_email: '',
+          track_title: '',
+          artist_name: '',
+          special_message: '',
+          dedication: ''
+        });
+      } else {
+        setError(data.error || 'Failed to submit request');
+      }
+    } catch (err) {
+      setError('Something went wrong. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleChange = (field: keyof GuestRequestMusicRequest, value: string) => {
+    setFormData(prev => ({
+      ...prev,
+      [field]: value
+    }));
+  };
+
+  if (submitted) {
+    return (
+      <Card className="max-w-md mx-auto">
+        <CardContent className="p-6 text-center">
+          <CheckCircle className="h-12 w-12 text-green-500 mx-auto mb-4" />
+          <h3 className="text-lg font-semibold mb-2">Request Submitted!</h3>
+          <p className="text-muted-foreground mb-4">
+            Thank you for your song request! {coupleNames} will review it and may add it to their wedding playlist.
+          </p>
+          <Button 
+            onClick={() => setSubmitted(false)}
+            variant="outline"
+          >
+            Submit Another Request
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="max-w-md mx-auto">
+      <CardHeader className="text-center">
+        <div className="mx-auto mb-2">
+          <Music className="h-8 w-8 text-primary" />
+        </div>
+        <CardTitle className="flex items-center justify-center gap-2">
+          <Heart className="h-5 w-5 text-red-500" />
+          Request a Song
+        </CardTitle>
+        <p className="text-sm text-muted-foreground">
+          Help make {coupleNames}' special day even more memorable by requesting a song for "{playlistName}"
+        </p>
+      </CardHeader>
+
+      <CardContent>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          {error && (
+            <Alert variant="destructive">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          )}
+
+          <div>
+            <label className="text-sm font-medium mb-2 block">
+              Your Name *
+            </label>
+            <Input
+              required
+              value={formData.guest_name}
+              onChange={(e) => handleChange('guest_name', e.target.value)}
+              placeholder="Enter your full name"
+            />
+          </div>
+
+          <div>
+            <label className="text-sm font-medium mb-2 block">
+              Email (optional)
+            </label>
+            <Input
+              type="email"
+              value={formData.guest_email || ''}
+              onChange={(e) => handleChange('guest_email', e.target.value)}
+              placeholder="your@email.com"
+            />
+            <p className="text-xs text-muted-foreground mt-1">
+              We'll only use this to follow up if needed
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4">
+            <div>
+              <label className="text-sm font-medium mb-2 block">
+                Song Title *
+              </label>
+              <Input
+                required
+                value={formData.track_title}
+                onChange={(e) => handleChange('track_title', e.target.value)}
+                placeholder="Perfect"
+              />
+            </div>
+
+            <div>
+              <label className="text-sm font-medium mb-2 block">
+                Artist *
+              </label>
+              <Input
+                required
+                value={formData.artist_name}
+                onChange={(e) => handleChange('artist_name', e.target.value)}
+                placeholder="Ed Sheeran"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="text-sm font-medium mb-2 block">
+              Why this song? (optional)
+            </label>
+            <Textarea
+              value={formData.special_message || ''}
+              onChange={(e) => handleChange('special_message', e.target.value)}
+              placeholder="This song reminds me of your first dance at the family reunion..."
+              rows={3}
+            />
+          </div>
+
+          <div>
+            <label className="text-sm font-medium mb-2 block">
+              Dedication Message (optional)
+            </label>
+            <Textarea
+              value={formData.dedication || ''}
+              onChange={(e) => handleChange('dedication', e.target.value)}
+              placeholder="To the most amazing couple - may your love story continue to inspire us all!"
+              rows={2}
+            />
+          </div>
+
+          <Button 
+            type="submit" 
+            disabled={loading}
+            className="w-full gap-2"
+          >
+            <Send className="h-4 w-4" />
+            {loading ? 'Sending...' : 'Submit Request'}
+          </Button>
+
+          <p className="text-xs text-center text-muted-foreground">
+            Your song request will be reviewed by {coupleNames}. Not all requests may be added to the final playlist.
+          </p>
+        </form>
+      </CardContent>
+    </Card>
+  );
+}

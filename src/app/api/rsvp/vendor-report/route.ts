@@ -1,0 +1,305 @@
+/**
+ * WS-057 Vendor Reporting Dashboard API
+ * Generates comprehensive RSVP reports for vendors
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const clientId = searchParams.get('clientId');
+    const vendorType = searchParams.get('vendorType') || 'all';
+    const format = searchParams.get('format') || 'json';
+
+    if (!clientId) {
+      return NextResponse.json(
+        { error: 'clientId parameter required' },
+        { status: 400 },
+      );
+    }
+
+    const supabase = await createClient();
+
+    // Get client wedding details
+    const { data: client, error: clientError } = await supabase
+      .from('clients')
+      .select('name, wedding_date, venue_name, email')
+      .eq('id', clientId)
+      .single();
+
+    if (clientError || !client) {
+      throw new Error(`Client not found: ${clientId}`);
+    }
+
+    // Get RSVP data
+    const { data: rsvpData, error: rsvpError } = await supabase
+      .from('rsvp_responses')
+      .select(
+        `
+        id,
+        attending,
+        meal_preference,
+        dietary_restrictions,
+        plus_one_count,
+        notes,
+        responded_at,
+        guests!inner(name, email, phone)
+      `,
+      )
+      .eq('client_id', clientId)
+      .order('responded_at', { ascending: false });
+
+    if (rsvpError) {
+      throw new Error(`Failed to fetch RSVP data: ${rsvpError.message}`);
+    }
+
+    // Generate vendor-specific reports
+    const report = generateVendorReport(client, rsvpData || [], vendorType);
+
+    // Format response based on requested format
+    if (format === 'csv') {
+      const csv = convertToCSV(report);
+      return new NextResponse(csv, {
+        headers: {
+          'Content-Type': 'text/csv',
+          'Content-Disposition': `attachment; filename="rsvp-report-${clientId}-${new Date().toISOString()}.csv"`,
+        },
+      });
+    } else if (format === 'pdf') {
+      // PDF generation would be implemented here
+      return NextResponse.json(
+        {
+          error: 'PDF export coming soon',
+          message: 'Use format=csv for now',
+        },
+        { status: 501 },
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      report,
+      generated: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error('Vendor Report Error:', error);
+
+    return NextResponse.json(
+      {
+        error: 'Failed to generate vendor report',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+function generateVendorReport(
+  client: any,
+  rsvpData: any[],
+  vendorType: string,
+) {
+  const attending = rsvpData.filter((r) => r.attending === true);
+  const declined = rsvpData.filter((r) => r.attending === false);
+  const pending = rsvpData.filter((r) => r.attending === null);
+
+  const totalGuests = attending.reduce(
+    (sum, r) => sum + 1 + (r.plus_one_count || 0),
+    0,
+  );
+
+  const report: any = {
+    wedding: {
+      coupleName: client.name,
+      weddingDate: client.wedding_date,
+      venue: client.venue_name,
+      contactEmail: client.email,
+    },
+    summary: {
+      totalInvited: rsvpData.length,
+      totalResponded: attending.length + declined.length,
+      totalAttending: attending.length,
+      totalDeclined: declined.length,
+      totalPending: pending.length,
+      totalGuestCount: totalGuests,
+      responseRate:
+        Math.round(
+          ((attending.length + declined.length) / rsvpData.length) * 100,
+        ) + '%',
+    },
+  };
+
+  // Vendor-specific data
+  switch (vendorType) {
+    case 'catering':
+      report.catering = {
+        mealPreferences: getMealPreferenceCounts(attending),
+        dietaryRestrictions: getDietaryRestrictionsList(attending),
+        totalMeals: totalGuests,
+        specialRequests: getSpecialRequests(attending),
+      };
+      break;
+
+    case 'venue':
+      report.venue = {
+        expectedGuests: totalGuests,
+        tableRequirements: Math.ceil(totalGuests / 8), // 8 per table
+        accessibilityNeeds: getAccessibilityNeeds(attending),
+        parkingSpaces: Math.ceil(totalGuests * 0.6), // 60% drive
+      };
+      break;
+
+    case 'photography':
+      report.photography = {
+        totalGuests: totalGuests,
+        groupShotCount: Math.ceil(totalGuests / 20),
+        timelineConsiderations: getTimelineConsiderations(attending),
+      };
+      break;
+
+    case 'all':
+    default:
+      report.catering = {
+        mealPreferences: getMealPreferenceCounts(attending),
+        dietaryRestrictions: getDietaryRestrictionsList(attending),
+        totalMeals: totalGuests,
+      };
+      report.venue = {
+        expectedGuests: totalGuests,
+        tableRequirements: Math.ceil(totalGuests / 8),
+      };
+      report.guestList = attending.map((r) => ({
+        name: r.guests.name,
+        email: r.guests.email,
+        phone: r.guests.phone,
+        plusOnes: r.plus_one_count,
+        mealPreference: r.meal_preference,
+        dietaryRestrictions: r.dietary_restrictions,
+        notes: r.notes,
+      }));
+  }
+
+  return report;
+}
+
+function getMealPreferenceCounts(attending: any[]) {
+  const counts: Record<string, number> = {
+    standard: 0,
+    vegetarian: 0,
+    vegan: 0,
+    'gluten-free': 0,
+    other: 0,
+  };
+
+  attending.forEach((r) => {
+    const pref = r.meal_preference || 'standard';
+    const guestCount = 1 + (r.plus_one_count || 0);
+
+    if (counts[pref] !== undefined) {
+      counts[pref] += guestCount;
+    } else {
+      counts.other += guestCount;
+    }
+  });
+
+  return counts;
+}
+
+function getDietaryRestrictionsList(attending: any[]) {
+  const restrictions = new Map<string, number>();
+
+  attending.forEach((r) => {
+    if (r.dietary_restrictions && Array.isArray(r.dietary_restrictions)) {
+      r.dietary_restrictions.forEach((restriction: string) => {
+        restrictions.set(restriction, (restrictions.get(restriction) || 0) + 1);
+      });
+    }
+  });
+
+  return Array.from(restrictions.entries()).map(([restriction, count]) => ({
+    restriction,
+    guestCount: count,
+  }));
+}
+
+function getSpecialRequests(attending: any[]) {
+  return attending
+    .filter((r) => r.notes && r.notes.trim() !== '')
+    .map((r) => ({
+      guest: r.guests.name,
+      request: r.notes,
+    }));
+}
+
+function getAccessibilityNeeds(attending: any[]) {
+  // Check notes for accessibility keywords
+  const keywords = ['wheelchair', 'accessible', 'mobility', 'assistance'];
+  return attending
+    .filter((r) => {
+      if (!r.notes) return false;
+      const notesLower = r.notes.toLowerCase();
+      return keywords.some((k) => notesLower.includes(k));
+    })
+    .map((r) => ({
+      guest: r.guests.name,
+      needs: r.notes,
+    }));
+}
+
+function getTimelineConsiderations(attending: any[]) {
+  // Extract timeline-related notes
+  const timeKeywords = ['early', 'late', 'leave', 'arrive', 'time'];
+  return attending
+    .filter((r) => {
+      if (!r.notes) return false;
+      const notesLower = r.notes.toLowerCase();
+      return timeKeywords.some((k) => notesLower.includes(k));
+    })
+    .map((r) => ({
+      guest: r.guests.name,
+      consideration: r.notes,
+    }));
+}
+
+function convertToCSV(report: any): string {
+  const lines: string[] = [];
+
+  // Header
+  lines.push(`RSVP Report - ${report.wedding.coupleName}`);
+  lines.push(`Wedding Date: ${report.wedding.weddingDate}`);
+  lines.push(`Venue: ${report.wedding.venue}`);
+  lines.push('');
+
+  // Summary
+  lines.push('SUMMARY');
+  lines.push(`Total Invited,${report.summary.totalInvited}`);
+  lines.push(`Total Attending,${report.summary.totalAttending}`);
+  lines.push(`Total Guest Count,${report.summary.totalGuestCount}`);
+  lines.push(`Response Rate,${report.summary.responseRate}`);
+  lines.push('');
+
+  // Guest List
+  if (report.guestList) {
+    lines.push('GUEST LIST');
+    lines.push(
+      'Name,Email,Phone,Plus Ones,Meal Preference,Dietary Restrictions,Notes',
+    );
+    report.guestList.forEach((guest: any) => {
+      lines.push(
+        [
+          guest.name,
+          guest.email || '',
+          guest.phone || '',
+          guest.plusOnes || 0,
+          guest.mealPreference || '',
+          (guest.dietaryRestrictions || []).join(';'),
+          guest.notes || '',
+        ].join(','),
+      );
+    });
+  }
+
+  return lines.join('\n');
+}

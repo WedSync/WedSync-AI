@@ -1,0 +1,715 @@
+/**
+ * Review Request Email Templates
+ * WS-047: Review Collection System
+ *
+ * Professional email templates for requesting reviews from couples
+ */
+
+export interface ReviewRequestTemplate {
+  subject: string;
+  html: string;
+  text: string;
+  variables: string[];
+}
+
+/**
+ * Primary review request template - sent 10 days after wedding
+ */
+export const primaryReviewRequestTemplate: ReviewRequestTemplate = {
+  subject: 'How was your wedding experience with {{supplier_name}}? ✨',
+
+  html: `
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Share Your Wedding Experience</title>
+        <style>
+            body {
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                line-height: 1.6;
+                color: #333;
+                max-width: 600px;
+                margin: 0 auto;
+                padding: 20px;
+                background-color: #f8f9fa;
+            }
+            .container {
+                background-color: white;
+                border-radius: 12px;
+                padding: 40px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            }
+            .header {
+                text-align: center;
+                margin-bottom: 30px;
+                padding-bottom: 20px;
+                border-bottom: 2px solid #e9ecef;
+            }
+            .header h1 {
+                color: #6f42c1;
+                margin: 0;
+                font-size: 28px;
+                font-weight: 600;
+            }
+            .greeting {
+                font-size: 18px;
+                color: #495057;
+                margin-bottom: 25px;
+            }
+            .content {
+                font-size: 16px;
+                line-height: 1.7;
+                color: #495057;
+                margin-bottom: 30px;
+            }
+            .cta-section {
+                text-align: center;
+                margin: 35px 0;
+            }
+            .cta-button {
+                display: inline-block;
+                background: linear-gradient(135deg, #6f42c1 0%, #5a32a3 100%);
+                color: white;
+                text-decoration: none;
+                padding: 16px 40px;
+                border-radius: 50px;
+                font-weight: 600;
+                font-size: 16px;
+                text-transform: uppercase;
+                letter-spacing: 1px;
+                box-shadow: 0 4px 15px rgba(111, 66, 193, 0.3);
+                transition: all 0.3s ease;
+            }
+            .cta-button:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 6px 20px rgba(111, 66, 193, 0.4);
+            }
+            .value-proposition {
+                background-color: #f8f9fa;
+                border-left: 4px solid #6f42c1;
+                padding: 20px;
+                margin: 25px 0;
+                border-radius: 0 8px 8px 0;
+            }
+            .value-proposition h3 {
+                margin: 0 0 10px 0;
+                color: #6f42c1;
+                font-size: 18px;
+            }
+            .value-proposition ul {
+                margin: 10px 0;
+                padding-left: 20px;
+            }
+            .value-proposition li {
+                margin-bottom: 8px;
+                color: #495057;
+            }
+            .footer {
+                margin-top: 40px;
+                padding-top: 20px;
+                border-top: 1px solid #e9ecef;
+                text-align: center;
+                font-size: 14px;
+                color: #6c757d;
+            }
+            .unsubscribe {
+                margin-top: 20px;
+                font-size: 12px;
+                color: #adb5bd;
+            }
+            .unsubscribe a {
+                color: #6c757d;
+                text-decoration: underline;
+            }
+            .social-proof {
+                background-color: #e8f5e8;
+                border: 1px solid #c3e6c3;
+                border-radius: 8px;
+                padding: 15px;
+                margin: 20px 0;
+                text-align: center;
+            }
+            .social-proof p {
+                margin: 0;
+                color: #2d5a2d;
+                font-weight: 500;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>✨ Share Your Wedding Experience</h1>
+            </div>
+            
+            <div class="greeting">
+                Dear {{couple_names}},
+            </div>
+            
+            <div class="content">
+                <p>Congratulations on your beautiful wedding on {{wedding_date}}! We hope your special day was everything you dreamed of and more.</p>
+                
+                <p>At {{supplier_name}}, we're committed to creating magical moments for couples like you, and we'd love to hear about your experience with our services.</p>
+            </div>
+
+            <div class="social-proof">
+                <p>🌟 Join thousands of happy couples who have shared their wedding stories</p>
+            </div>
+            
+            <div class="value-proposition">
+                <h3>Why Your Review Matters:</h3>
+                <ul>
+                    <li><strong>Help future couples</strong> find the perfect wedding vendors</li>
+                    <li><strong>Share your joy</strong> and inspire other couples planning their big day</li>
+                    <li><strong>Support local businesses</strong> who make weddings extraordinary</li>
+                    <li><strong>Takes less than 2 minutes</strong> - it's quick and easy!</li>
+                </ul>
+            </div>
+            
+            <div class="cta-section">
+                <a href="{{review_url}}" class="cta-button" style="color: white;">
+                    Share Your Experience
+                </a>
+            </div>
+            
+            <div class="content">
+                <p>Your honest feedback helps us continue providing exceptional service and helps other couples make informed decisions for their special day.</p>
+                
+                <p>Thank you for choosing {{supplier_name}} to be part of your wedding story. We're honored to have been there for your special day!</p>
+                
+                <p>With warm wishes,<br>
+                The {{supplier_name}} Team</p>
+            </div>
+            
+            <div class="footer">
+                <p>This email was sent to you because you recently used services from {{supplier_name}}.</p>
+                <div class="unsubscribe">
+                    <p><a href="{{unsubscribe_url}}">Unsubscribe from these emails</a></p>
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+  `,
+
+  text: `
+Dear {{couple_names}},
+
+Congratulations on your beautiful wedding on {{wedding_date}}! We hope your special day was everything you dreamed of and more.
+
+At {{supplier_name}}, we're committed to creating magical moments for couples like you, and we'd love to hear about your experience with our services.
+
+WHY YOUR REVIEW MATTERS:
+• Help future couples find the perfect wedding vendors
+• Share your joy and inspire other couples planning their big day  
+• Support local businesses who make weddings extraordinary
+• Takes less than 2 minutes - it's quick and easy!
+
+Please take a moment to share your experience:
+{{review_url}}
+
+Your honest feedback helps us continue providing exceptional service and helps other couples make informed decisions for their special day.
+
+Thank you for choosing {{supplier_name}} to be part of your wedding story. We're honored to have been there for your special day!
+
+With warm wishes,
+The {{supplier_name}} Team
+
+---
+This email was sent to you because you recently used services from {{supplier_name}}.
+To unsubscribe from these emails: {{unsubscribe_url}}
+  `,
+
+  variables: [
+    'couple_names',
+    'wedding_date',
+    'supplier_name',
+    'review_url',
+    'unsubscribe_url',
+  ],
+};
+
+/**
+ * Thank you template - sent after review submission
+ */
+export const thankYouTemplate: ReviewRequestTemplate = {
+  subject: 'Thank you for your wonderful review! 💕',
+
+  html: `
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Thank You!</title>
+        <style>
+            body {
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                line-height: 1.6;
+                color: #333;
+                max-width: 600px;
+                margin: 0 auto;
+                padding: 20px;
+                background-color: #f8f9fa;
+            }
+            .container {
+                background-color: white;
+                border-radius: 12px;
+                padding: 40px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+                text-align: center;
+            }
+            .header {
+                margin-bottom: 30px;
+            }
+            .header h1 {
+                color: #28a745;
+                margin: 0;
+                font-size: 28px;
+                font-weight: 600;
+            }
+            .heart-icon {
+                font-size: 48px;
+                margin: 20px 0;
+                color: #dc3545;
+            }
+            .content {
+                font-size: 16px;
+                line-height: 1.7;
+                color: #495057;
+                margin-bottom: 30px;
+                text-align: left;
+            }
+            .highlight {
+                background-color: #fff3cd;
+                border: 1px solid #ffeaa7;
+                border-radius: 8px;
+                padding: 20px;
+                margin: 20px 0;
+            }
+            .footer {
+                margin-top: 30px;
+                padding-top: 20px;
+                border-top: 1px solid #e9ecef;
+                font-size: 14px;
+                color: #6c757d;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>Thank You So Much!</h1>
+                <div class="heart-icon">💕</div>
+            </div>
+            
+            <div class="content">
+                <p>Dear {{couple_names}},</p>
+                
+                <p>We're absolutely thrilled to have received your review! Your kind words mean the world to us and truly brighten our day.</p>
+                
+                <div class="highlight">
+                    <p><strong>Your review helps future couples</strong> discover amazing wedding vendors and makes the wedding planning journey easier for everyone. Thank you for taking the time to share your experience!</p>
+                </div>
+                
+                <p>It was an honor to be part of your special day on {{wedding_date}}. Seeing couples like you celebrate their love is exactly why we do what we do.</p>
+                
+                <p>We hope your marriage is filled with endless joy, laughter, and beautiful moments together.</p>
+                
+                <p>With heartfelt gratitude,<br>
+                The {{supplier_name}} Team</p>
+            </div>
+            
+            <div class="footer">
+                <p>{{supplier_name}} • Creating magical wedding moments</p>
+            </div>
+        </div>
+    </body>
+    </html>
+  `,
+
+  text: `
+Dear {{couple_names}},
+
+Thank you so much for your wonderful review! 💕
+
+We're absolutely thrilled to have received your review! Your kind words mean the world to us and truly brighten our day.
+
+Your review helps future couples discover amazing wedding vendors and makes the wedding planning journey easier for everyone. Thank you for taking the time to share your experience!
+
+It was an honor to be part of your special day on {{wedding_date}}. Seeing couples like you celebrate their love is exactly why we do what we do.
+
+We hope your marriage is filled with endless joy, laughter, and beautiful moments together.
+
+With heartfelt gratitude,
+The {{supplier_name}} Team
+
+{{supplier_name}} • Creating magical wedding moments
+  `,
+
+  variables: ['couple_names', 'wedding_date', 'supplier_name'],
+};
+
+/**
+ * Follow-up template - sent 2 weeks after initial request if no response
+ */
+export const followUpTemplate: ReviewRequestTemplate = {
+  subject: 'Quick favor - 2 minutes to help future couples? 🌟',
+
+  html: `
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Quick Favor</title>
+        <style>
+            body {
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                line-height: 1.6;
+                color: #333;
+                max-width: 600px;
+                margin: 0 auto;
+                padding: 20px;
+                background-color: #f8f9fa;
+            }
+            .container {
+                background-color: white;
+                border-radius: 12px;
+                padding: 40px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            }
+            .header {
+                text-align: center;
+                margin-bottom: 30px;
+            }
+            .header h1 {
+                color: #6f42c1;
+                margin: 0;
+                font-size: 24px;
+                font-weight: 600;
+            }
+            .content {
+                font-size: 16px;
+                line-height: 1.7;
+                color: #495057;
+                margin-bottom: 25px;
+            }
+            .cta-section {
+                text-align: center;
+                margin: 30px 0;
+            }
+            .cta-button {
+                display: inline-block;
+                background: linear-gradient(135deg, #17a2b8 0%, #138496 100%);
+                color: white;
+                text-decoration: none;
+                padding: 14px 35px;
+                border-radius: 50px;
+                font-weight: 600;
+                font-size: 15px;
+                box-shadow: 0 4px 15px rgba(23, 162, 184, 0.3);
+            }
+            .quick-stats {
+                background-color: #f1f8ff;
+                border: 1px solid #b8daff;
+                border-radius: 8px;
+                padding: 20px;
+                margin: 25px 0;
+                text-align: center;
+            }
+            .quick-stats h3 {
+                margin: 0 0 10px 0;
+                color: #0056b3;
+                font-size: 18px;
+            }
+            .footer {
+                margin-top: 30px;
+                padding-top: 20px;
+                border-top: 1px solid #e9ecef;
+                text-align: center;
+                font-size: 14px;
+                color: #6c757d;
+            }
+            .unsubscribe {
+                margin-top: 15px;
+                font-size: 12px;
+                color: #adb5bd;
+            }
+            .unsubscribe a {
+                color: #6c757d;
+                text-decoration: underline;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>🌟 Quick Favor?</h1>
+            </div>
+            
+            <div class="content">
+                <p>Hi {{couple_names}},</p>
+                
+                <p>We hope you're still glowing from your beautiful wedding on {{wedding_date}}! ✨</p>
+                
+                <p>We sent a quick message a couple weeks ago, but wedding bliss can make emails easy to miss (totally understandable!).</p>
+                
+                <p>If you have just <strong>2 minutes</strong>, would you mind sharing a quick review of your experience with {{supplier_name}}? It would mean the world to us and really helps other couples planning their big day.</p>
+            </div>
+
+            <div class="quick-stats">
+                <h3>Your review helps couples like:</h3>
+                <p><strong>"Finding the perfect photographer was so stressful until I read real reviews from other couples!"</strong><br>
+                <em>- Sarah & Mike, married last month</em></p>
+            </div>
+            
+            <div class="cta-section">
+                <a href="{{review_url}}" class="cta-button" style="color: white;">
+                    Leave a Quick Review
+                </a>
+            </div>
+            
+            <div class="content">
+                <p>No pressure if you're too busy enjoying married life - we totally get it! But if you have a moment, we'd be incredibly grateful.</p>
+                
+                <p>Thanks for being amazing clients!</p>
+                
+                <p>Best wishes,<br>
+                The {{supplier_name}} Team</p>
+            </div>
+            
+            <div class="footer">
+                <div class="unsubscribe">
+                    <p><a href="{{unsubscribe_url}}">Unsubscribe from these emails</a></p>
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+  `,
+
+  text: `
+Hi {{couple_names}},
+
+We hope you're still glowing from your beautiful wedding on {{wedding_date}}! ✨
+
+We sent a quick message a couple weeks ago, but wedding bliss can make emails easy to miss (totally understandable!).
+
+If you have just 2 minutes, would you mind sharing a quick review of your experience with {{supplier_name}}? It would mean the world to us and really helps other couples planning their big day.
+
+YOUR REVIEW HELPS COUPLES LIKE:
+"Finding the perfect photographer was so stressful until I read real reviews from other couples!"
+- Sarah & Mike, married last month
+
+Leave a quick review: {{review_url}}
+
+No pressure if you're too busy enjoying married life - we totally get it! But if you have a moment, we'd be incredibly grateful.
+
+Thanks for being amazing clients!
+
+Best wishes,
+The {{supplier_name}} Team
+
+---
+To unsubscribe from these emails: {{unsubscribe_url}}
+  `,
+
+  variables: [
+    'couple_names',
+    'wedding_date',
+    'supplier_name',
+    'review_url',
+    'unsubscribe_url',
+  ],
+};
+
+/**
+ * Reminder template - final gentle reminder after 4 weeks
+ */
+export const reminderTemplate: ReviewRequestTemplate = {
+  subject: 'Last chance to share your wedding story 📝',
+
+  html: `
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Final Reminder</title>
+        <style>
+            body {
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                line-height: 1.6;
+                color: #333;
+                max-width: 600px;
+                margin: 0 auto;
+                padding: 20px;
+                background-color: #f8f9fa;
+            }
+            .container {
+                background-color: white;
+                border-radius: 12px;
+                padding: 40px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            }
+            .header {
+                text-align: center;
+                margin-bottom: 25px;
+            }
+            .header h1 {
+                color: #6f42c1;
+                margin: 0;
+                font-size: 22px;
+                font-weight: 600;
+            }
+            .content {
+                font-size: 15px;
+                line-height: 1.7;
+                color: #495057;
+                margin-bottom: 20px;
+            }
+            .cta-section {
+                text-align: center;
+                margin: 25px 0;
+            }
+            .cta-button {
+                display: inline-block;
+                background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+                color: white;
+                text-decoration: none;
+                padding: 12px 30px;
+                border-radius: 50px;
+                font-weight: 600;
+                font-size: 14px;
+                box-shadow: 0 4px 15px rgba(40, 167, 69, 0.3);
+            }
+            .gentle-note {
+                background-color: #f8f9fa;
+                border-left: 3px solid #6c757d;
+                padding: 15px 20px;
+                margin: 20px 0;
+                font-style: italic;
+                color: #6c757d;
+            }
+            .footer {
+                margin-top: 25px;
+                padding-top: 15px;
+                border-top: 1px solid #e9ecef;
+                text-align: center;
+                font-size: 13px;
+                color: #6c757d;
+            }
+            .unsubscribe {
+                margin-top: 15px;
+                font-size: 12px;
+                color: #adb5bd;
+            }
+            .unsubscribe a {
+                color: #6c757d;
+                text-decoration: underline;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>📝 Your Wedding Story</h1>
+            </div>
+            
+            <div class="content">
+                <p>Hi {{couple_names}},</p>
+                
+                <p>We hope married life is treating you wonderfully! It's been a month since your gorgeous wedding on {{wedding_date}}, and we're still smiling thinking about your special day.</p>
+                
+                <p>This will be our last email asking for a review - we promise! We just wanted to give you one final opportunity to share your experience with {{supplier_name}} if you'd like to help other couples.</p>
+            </div>
+
+            <div class="gentle-note">
+                <p>"We know life gets busy after the wedding, but if you have just a minute to share your experience, it would mean so much to us and future couples."</p>
+            </div>
+            
+            <div class="cta-section">
+                <a href="{{review_url}}" class="cta-button" style="color: white;">
+                    Share Your Experience
+                </a>
+            </div>
+            
+            <div class="content">
+                <p>If reviews aren't your thing, no worries at all! We're just grateful we got to be part of your special day.</p>
+                
+                <p>Wishing you both a lifetime of happiness together!</p>
+                
+                <p>With love and best wishes,<br>
+                The {{supplier_name}} Team</p>
+            </div>
+            
+            <div class="footer">
+                <p><em>This is our final email about reviews - you won't hear from us again about this!</em></p>
+                <div class="unsubscribe">
+                    <p><a href="{{unsubscribe_url}}">Unsubscribe from all emails</a></p>
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+  `,
+
+  text: `
+Hi {{couple_names}},
+
+We hope married life is treating you wonderfully! It's been a month since your gorgeous wedding on {{wedding_date}}, and we're still smiling thinking about your special day.
+
+This will be our last email asking for a review - we promise! We just wanted to give you one final opportunity to share your experience with {{supplier_name}} if you'd like to help other couples.
+
+"We know life gets busy after the wedding, but if you have just a minute to share your experience, it would mean so much to us and future couples."
+
+Share your experience: {{review_url}}
+
+If reviews aren't your thing, no worries at all! We're just grateful we got to be part of your special day.
+
+Wishing you both a lifetime of happiness together!
+
+With love and best wishes,
+The {{supplier_name}} Team
+
+---
+This is our final email about reviews - you won't hear from us again about this!
+To unsubscribe from all emails: {{unsubscribe_url}}
+  `,
+
+  variables: [
+    'couple_names',
+    'wedding_date',
+    'supplier_name',
+    'review_url',
+    'unsubscribe_url',
+  ],
+};
+
+/**
+ * Template registry for easy access
+ */
+export const emailTemplates = {
+  review_request: primaryReviewRequestTemplate,
+  thank_you: thankYouTemplate,
+  follow_up: followUpTemplate,
+  reminder: reminderTemplate,
+};
+
+/**
+ * Get template by type
+ */
+export function getEmailTemplate(
+  type: keyof typeof emailTemplates,
+): ReviewRequestTemplate {
+  const template = emailTemplates[type];
+  if (!template) {
+    throw new Error(`Email template not found: ${type}`);
+  }
+  return template;
+}
+
+export default emailTemplates;

@@ -1,0 +1,242 @@
+/**
+ * @vitest-environment jsdom
+ */
+
+import React from 'react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { SeatingArrangementResponsive } from '@/components/seating/SeatingArrangementResponsive';
+import { type Guest, type Table } from '@/types/seating';
+// Mock the toast hook
+vi.mock('@/hooks/use-toast', () => ({
+  useToast: () => ({
+    toast: vi.fn(),
+  }),
+}));
+// Mock ResizeObserver
+global.ResizeObserver = vi.fn().mockImplementation(() => ({
+  observe: vi.fn(),
+  unobserve: vi.fn(),
+  disconnect: vi.fn(),
+// Mock window.matchMedia
+Object.defineProperty(window, 'matchMedia', {
+  writable: true,
+  value: vi.fn().mockImplementation(query => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  })),
+});
+// Mock CSS imports
+vi.mock('@/styles/seating.css', () => ({}));
+const mockGuests: Guest[] = [
+  {
+    id: 'guest-1',
+    name: 'John Doe',
+    priority: 'vip',
+    dietaryRequirements: ['vegetarian'],
+    accessibilityRequirements: ['wheelchair'],
+  },
+    id: 'guest-2',
+    name: 'Jane Smith',
+    priority: 'family',
+    dietaryRequirements: ['gluten-free'],
+    assignedTableId: 'table-1',
+];
+const mockTables: Table[] = [
+    id: 'table-1',
+    name: 'Head Table',
+    capacity: 8,
+    shape: 'round',
+    position: { x: 100, y: 100 },
+    isActive: true,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+describe('SeatingArrangementResponsive', () => {
+  const defaultProps = {
+    initialGuests: mockGuests,
+    initialTables: mockTables,
+    readonly: false,
+  };
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Mock window.innerWidth for desktop view
+    Object.defineProperty(window, 'innerWidth', {
+      writable: true,
+      configurable: true,
+      value: 1920,
+    });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  describe('Desktop Layout', () => {
+    it('renders main layout components', () => {
+      render(<SeatingArrangementResponsive {...defaultProps} />);
+      
+      // Should render guest list sidebar
+      expect(screen.getByRole('textbox', { name: /search guests/i })).toBeInTheDocument();
+      // Should render seating controls
+      expect(screen.getByText(/seating conflict/i)).toBeInTheDocument();
+      // Should render table toolbar
+      expect(screen.getByRole('button', { name: /add table/i })).toBeInTheDocument();
+    it('displays guest information correctly', () => {
+      expect(screen.getByText('John Doe')).toBeInTheDocument();
+      expect(screen.getByText('Jane Smith')).toBeInTheDocument();
+    it('displays table information correctly', () => {
+      expect(screen.getByText('Head Table')).toBeInTheDocument();
+    it('handles table addition', async () => {
+      const onSave = vi.fn();
+      render(<SeatingArrangementResponsive {...defaultProps} onSave={onSave} />);
+      // Find and click the round table quick add button
+      const roundTableButton = screen.getByRole('button', { name: /add round table/i });
+      fireEvent.click(roundTableButton);
+      await waitFor(() => {
+        // Should see a new table in the interface
+        expect(screen.getByText('Table 2')).toBeInTheDocument();
+      });
+    it('handles guest assignment', async () => {
+      // This would require more complex DnD testing setup
+      // For now, we'll test the state management logic
+      const guestChips = screen.getAllByText(/john doe|jane smith/i);
+      expect(guestChips).toHaveLength(2);
+  describe('Mobile Layout', () => {
+    beforeEach(() => {
+      // Mock mobile viewport
+      Object.defineProperty(window, 'innerWidth', {
+        writable: true,
+        configurable: true,
+        value: 375,
+    it('renders mobile interface on small screens', () => {
+      // Should render mobile seating interface
+      expect(screen.getByText('Seating Arrangements')).toBeInTheDocument();
+      // Should have mobile-specific elements
+      const tabButtons = screen.getAllByRole('button');
+      expect(tabButtons.some(button => button.textContent?.includes('Guests'))).toBe(true);
+      expect(tabButtons.some(button => button.textContent?.includes('Tables'))).toBe(true);
+  describe('Conflict Detection', () => {
+    it('detects capacity conflicts', async () => {
+      const conflictTable: Table = {
+        ...mockTables[0],
+        capacity: 1, // Very small capacity
+      };
+      const conflictGuests: Guest[] = [
+        { ...mockGuests[0], assignedTableId: 'table-1' },
+        { ...mockGuests[1], assignedTableId: 'table-1' },
+      ];
+      render(
+        <SeatingArrangementResponsive
+          initialGuests={conflictGuests}
+          initialTables={[conflictTable]}
+          readonly={false}
+        />
+      );
+      // Should detect and display capacity conflict
+        expect(screen.getByText(/capacity/i)).toBeInTheDocument();
+    it('detects guest relationship conflicts', async () => {
+        {
+          ...mockGuests[0],
+          assignedTableId: 'table-1',
+          conflictsWith: ['guest-2'],
+        },
+          ...mockGuests[1],
+          assignedTableId: 'table-1', // Same table as conflicting guest
+          initialTables={mockTables}
+        expect(screen.getByText(/relationship conflict/i)).toBeInTheDocument();
+  describe('Readonly Mode', () => {
+    it('disables modifications in readonly mode', () => {
+      render(<SeatingArrangementResponsive {...defaultProps} readonly={true} />);
+      // Add table buttons should be disabled or not present
+      const addButtons = screen.queryAllByRole('button', { name: /add/i });
+      addButtons.forEach(button => {
+        expect(button).toBeDisabled();
+    it('hides modification controls in readonly mode', () => {
+      // Should not show delete or edit options
+      expect(screen.queryByText(/delete/i)).not.toBeInTheDocument();
+  describe('Save and Load Operations', () => {
+    it('calls onSave with correct parameters', async () => {
+      // Trigger save action (this would require opening save dialog)
+      const saveButton = screen.getByRole('button', { name: /save arrangement/i });
+      fireEvent.click(saveButton);
+      // Fill in arrangement name and save
+      const nameInput = screen.getByRole('textbox', { name: /arrangement name/i });
+      fireEvent.change(nameInput, { target: { value: 'Test Arrangement' } });
+      const confirmSaveButton = screen.getByRole('button', { name: /save arrangement/i });
+      fireEvent.click(confirmSaveButton);
+        expect(onSave).toHaveBeenCalledWith(
+          expect.any(Array), // tables
+          expect.any(Object), // assignments
+          'Test Arrangement'
+        );
+    it('handles save errors gracefully', async () => {
+      const onSave = vi.fn().mockRejectedValue(new Error('Save failed'));
+      // Attempt to save
+      // Should handle error without crashing
+        expect(onSave).toHaveBeenCalled();
+  describe('Table Management', () => {
+    it('allows table duplication', async () => {
+      // Select a table first (this would require clicking on table)
+      // Then look for duplicate option
+      const tables = screen.getAllByText(/head table/i);
+      expect(tables.length).toBeGreaterThan(0);
+    it('allows table deletion', async () => {
+      // Should be able to delete tables
+    it('handles table position updates', () => {
+      // Table position updates would be handled through drag events
+      // This tests that the component renders without errors
+  describe('Accessibility', () => {
+    it('has proper ARIA labels for interactive elements', () => {
+      // Check for accessible form elements
+      expect(screen.getByRole('textbox', { name: /search guests/i })).toHaveAccessibleName();
+      // Check for accessible buttons
+      const buttons = screen.getAllByRole('button');
+      buttons.forEach(button => {
+        expect(button).toHaveAccessibleName();
+    it('supports keyboard navigation', () => {
+      // Test that focusable elements can receive focus
+      const searchInput = screen.getByRole('textbox', { name: /search guests/i });
+      searchInput.focus();
+      expect(searchInput).toHaveFocus();
+  describe('Error Handling', () => {
+    it('handles missing guest data gracefully', () => {
+      render(<SeatingArrangementResponsive initialGuests={[]} initialTables={mockTables} />);
+      // Should render without crashing
+      expect(screen.getByText(/no guests found/i)).toBeInTheDocument();
+    it('handles missing table data gracefully', () => {
+      render(<SeatingArrangementResponsive initialGuests={mockGuests} initialTables={[]} />);
+      expect(screen.getByText(/no tables created/i)).toBeInTheDocument();
+    it('handles malformed data gracefully', () => {
+      const malformedGuests = [
+          id: 'guest-1',
+          name: '', // Empty name
+      ] as Guest[];
+      expect(() => {
+        render(<SeatingArrangementResponsive initialGuests={malformedGuests} initialTables={[]} />);
+      }).not.toThrow();
+  describe('Performance', () => {
+    it('handles large numbers of guests efficiently', () => {
+      const manyGuests: Guest[] = Array.from({ length: 100 }, (_, i) => ({
+        id: `guest-${i}`,
+        name: `Guest ${i}`,
+        priority: 'friend',
+      }));
+      const renderTime = performance.now();
+      render(<SeatingArrangementResponsive initialGuests={manyGuests} initialTables={mockTables} />);
+      const endTime = performance.now();
+      // Should render in reasonable time (less than 100ms)
+      expect(endTime - renderTime).toBeLessThan(100);
+    it('handles large numbers of tables efficiently', () => {
+      const manyTables: Table[] = Array.from({ length: 50 }, (_, i) => ({
+        id: `table-${i}`,
+        name: `Table ${i}`,
+        capacity: 8,
+        shape: 'round' as const,
+        position: { x: i * 150, y: 100 },
+        isActive: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        render(<SeatingArrangementResponsive initialGuests={mockGuests} initialTables={manyTables} />);

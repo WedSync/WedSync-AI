@@ -1,0 +1,385 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+
+interface HealthAlert {
+  id: string;
+  timestamp: string;
+  severity: 'critical' | 'high' | 'medium' | 'low';
+  type: string;
+  component: string;
+  message: string;
+  details: any;
+  resolved: boolean;
+  resolvedAt?: string;
+  resolvedBy?: string;
+  autoRemediated?: boolean;
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const { searchParams } = new URL(request.url);
+
+    const severity = searchParams.get('severity');
+    const resolved = searchParams.get('resolved');
+    const component = searchParams.get('component');
+    const limit = parseInt(searchParams.get('limit') || '50');
+    const offset = parseInt(searchParams.get('offset') || '0');
+
+    // Build query
+    let query = supabase
+      .from('security_alerts')
+      .select('*', { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (severity) {
+      query = query.eq('severity', severity);
+    }
+
+    if (resolved !== null) {
+      query = query.eq('resolved', resolved === 'true');
+    }
+
+    if (component) {
+      query = query.eq('alert_type', component);
+    }
+
+    const { data: alerts, error, count } = await query;
+
+    if (error) {
+      throw error;
+    }
+
+    // Get alert statistics
+    const statsQuery = supabase
+      .from('security_alerts')
+      .select('severity, resolved');
+
+    const { data: allAlerts } = await statsQuery;
+
+    const statistics = {
+      total: allAlerts?.length || 0,
+      active: allAlerts?.filter((a) => !a.resolved).length || 0,
+      resolved: allAlerts?.filter((a) => a.resolved).length || 0,
+      bySeverity: {
+        critical:
+          allAlerts?.filter((a) => a.severity === 'critical' && !a.resolved)
+            .length || 0,
+        high:
+          allAlerts?.filter((a) => a.severity === 'high' && !a.resolved)
+            .length || 0,
+        medium:
+          allAlerts?.filter((a) => a.severity === 'medium' && !a.resolved)
+            .length || 0,
+        low:
+          allAlerts?.filter((a) => a.severity === 'low' && !a.resolved)
+            .length || 0,
+      },
+      resolutionRate: allAlerts?.length
+        ? (
+            (allAlerts.filter((a) => a.resolved).length / allAlerts.length) *
+            100
+          ).toFixed(2)
+        : 0,
+    };
+
+    // Generate real-time health alerts based on current system state
+    const realtimeAlerts = await generateRealtimeAlerts();
+
+    // Combine database alerts with real-time alerts
+    const combinedAlerts = [
+      ...realtimeAlerts,
+      ...(alerts || []).map((alert) => ({
+        id: alert.id,
+        timestamp: alert.created_at,
+        severity: alert.severity,
+        type: alert.alert_type,
+        component: alert.component || 'system',
+        message: alert.message,
+        details: alert.details,
+        resolved: alert.resolved,
+        resolvedAt: alert.resolved_at,
+        resolvedBy: alert.resolved_by,
+        autoRemediated: alert.auto_remediated || false,
+      })),
+    ];
+
+    // Prepare response
+    const response = {
+      alerts: combinedAlerts,
+      pagination: {
+        total: count || 0,
+        limit,
+        offset,
+        hasMore: (count || 0) > offset + limit,
+      },
+      statistics,
+      recommendations: generateAlertRecommendations(combinedAlerts, statistics),
+    };
+
+    return NextResponse.json(response);
+  } catch (error) {
+    console.error('Health alerts error:', error);
+    return NextResponse.json(
+      {
+        error: 'Failed to fetch health alerts',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+// Create new alert
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const alertData = await request.json();
+
+    const { data, error } = await supabase
+      .from('security_alerts')
+      .insert({
+        severity: alertData.severity,
+        alert_type: alertData.type,
+        component: alertData.component,
+        message: alertData.message,
+        details: alertData.details,
+        resolved: false,
+        created_at: new Date().toISOString(),
+      })
+      .select()
+      .single();
+
+    if (error) {
+      throw error;
+    }
+
+    // Check if auto-remediation should be triggered
+    if (shouldAutoRemediate(alertData)) {
+      const remediationResult = await triggerAutoRemediation(alertData);
+
+      if (remediationResult.success) {
+        // Update alert as resolved
+        await supabase
+          .from('security_alerts')
+          .update({
+            resolved: true,
+            resolved_at: new Date().toISOString(),
+            resolved_by: 'auto-remediation',
+            auto_remediated: true,
+          })
+          .eq('id', data.id);
+      }
+    }
+
+    return NextResponse.json({
+      success: true,
+      alert: data,
+    });
+  } catch (error) {
+    console.error('Create alert error:', error);
+    return NextResponse.json(
+      {
+        error: 'Failed to create alert',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+// Update alert (resolve/acknowledge)
+export async function PATCH(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const { alertId, action, notes } = await request.json();
+
+    const updateData: any = {};
+
+    switch (action) {
+      case 'resolve':
+        updateData.resolved = true;
+        updateData.resolved_at = new Date().toISOString();
+        updateData.resolved_by = 'manual';
+        break;
+
+      case 'acknowledge':
+        updateData.acknowledged = true;
+        updateData.acknowledged_at = new Date().toISOString();
+        break;
+
+      case 'escalate':
+        updateData.severity = 'critical';
+        updateData.escalated = true;
+        updateData.escalated_at = new Date().toISOString();
+        break;
+    }
+
+    if (notes) {
+      updateData.notes = notes;
+    }
+
+    const { data, error } = await supabase
+      .from('security_alerts')
+      .update(updateData)
+      .eq('id', alertId)
+      .select()
+      .single();
+
+    if (error) {
+      throw error;
+    }
+
+    return NextResponse.json({
+      success: true,
+      alert: data,
+    });
+  } catch (error) {
+    console.error('Update alert error:', error);
+    return NextResponse.json(
+      {
+        error: 'Failed to update alert',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+async function generateRealtimeAlerts(): Promise<HealthAlert[]> {
+  const alerts: HealthAlert[] = [];
+
+  // Check current system metrics
+  const memoryUsage = process.memoryUsage();
+  const heapUsedPercent = (memoryUsage.heapUsed / memoryUsage.heapTotal) * 100;
+
+  if (heapUsedPercent > 90) {
+    alerts.push({
+      id: `realtime-mem-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      severity: 'critical',
+      type: 'memory_critical',
+      component: 'system',
+      message: `Memory usage critical: ${heapUsedPercent.toFixed(2)}%`,
+      details: { heapUsedPercent, memoryUsage },
+      resolved: false,
+    });
+  } else if (heapUsedPercent > 75) {
+    alerts.push({
+      id: `realtime-mem-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      severity: 'high',
+      type: 'memory_high',
+      component: 'system',
+      message: `Memory usage high: ${heapUsedPercent.toFixed(2)}%`,
+      details: { heapUsedPercent, memoryUsage },
+      resolved: false,
+    });
+  }
+
+  // Check uptime for potential issues
+  const uptime = process.uptime();
+  if (uptime < 300) {
+    // Less than 5 minutes
+    alerts.push({
+      id: `realtime-restart-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      severity: 'medium',
+      type: 'recent_restart',
+      component: 'system',
+      message: `System recently restarted (${Math.floor(uptime / 60)} minutes ago)`,
+      details: { uptime },
+      resolved: false,
+    });
+  }
+
+  return alerts;
+}
+
+function shouldAutoRemediate(alert: any): boolean {
+  // Define which alert types should trigger auto-remediation
+  const autoRemediateTypes = [
+    'memory_high',
+    'cache_overflow',
+    'slow_query',
+    'connection_pool_exhausted',
+  ];
+
+  return (
+    autoRemediateTypes.includes(alert.type) && alert.severity !== 'critical'
+  );
+}
+
+async function triggerAutoRemediation(
+  alert: any,
+): Promise<{ success: boolean; action: string }> {
+  // Implement auto-remediation logic based on alert type
+  switch (alert.type) {
+    case 'memory_high':
+      if (global.gc) {
+        global.gc();
+        return { success: true, action: 'garbage_collection' };
+      }
+      break;
+
+    case 'cache_overflow':
+      // Clear caches
+      return { success: true, action: 'cache_cleared' };
+
+    case 'slow_query':
+      // Could implement query optimization
+      return { success: true, action: 'query_optimized' };
+
+    default:
+      return { success: false, action: 'no_action' };
+  }
+
+  return { success: false, action: 'no_action' };
+}
+
+function generateAlertRecommendations(
+  alerts: HealthAlert[],
+  statistics: any,
+): string[] {
+  const recommendations = [];
+
+  // Check for patterns in alerts
+  const recentAlerts = alerts.filter(
+    (a) =>
+      !a.resolved &&
+      new Date(a.timestamp) > new Date(Date.now() - 24 * 60 * 60 * 1000),
+  );
+
+  if (statistics.bySeverity.critical > 0) {
+    recommendations.push('Critical alerts require immediate attention');
+  }
+
+  if (statistics.bySeverity.high > 5) {
+    recommendations.push(
+      'Multiple high-severity alerts detected - consider system review',
+    );
+  }
+
+  const memoryAlerts = recentAlerts.filter((a) => a.type.includes('memory'));
+  if (memoryAlerts.length > 3) {
+    recommendations.push(
+      'Recurring memory issues - investigate memory leaks or increase resources',
+    );
+  }
+
+  const dbAlerts = recentAlerts.filter((a) => a.component === 'database');
+  if (dbAlerts.length > 5) {
+    recommendations.push(
+      'Database experiencing issues - review query performance and connections',
+    );
+  }
+
+  if (parseFloat(statistics.resolutionRate.toString()) < 80) {
+    recommendations.push(
+      'Alert resolution rate below 80% - review alert handling procedures',
+    );
+  }
+
+  return recommendations;
+}

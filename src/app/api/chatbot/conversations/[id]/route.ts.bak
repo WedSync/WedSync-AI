@@ -1,0 +1,291 @@
+// ==========================================
+// WS-243: AI Chatbot - Individual Conversation API
+// GET /api/chatbot/conversations/[id] - Get conversation details
+// PUT /api/chatbot/conversations/[id] - Update conversation
+// DELETE /api/chatbot/conversations/[id] - Delete conversation
+// ==========================================
+
+import { NextRequest, NextResponse } from 'next/server';
+import { getAuthenticatedUser, checkRateLimit, createAuthErrorResponse, createRateLimitResponse, createNotFoundResponse, canAccessChatbot } from '@/lib/auth/chatbot-auth';
+import { chatbotDB } from '@/lib/database/chatbot-database-service';
+import { validateAndSanitize, UpdateConversationSchema, UUIDSchema } from '@/lib/validation/chatbot-schemas';
+
+// ==========================================
+// GET - Get conversation details with messages
+// ==========================================
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    // Authentication
+    const user = await getAuthenticatedUser();
+    if (!user || !canAccessChatbot(user)) {
+      return createAuthErrorResponse('Access denied. Chatbot feature required.');
+    }
+
+    // Rate limiting
+    const rateLimit = checkRateLimit(`conversation:get:${user.id}`, 30, 60000);
+    if (!rateLimit.allowed) {
+      return createRateLimitResponse(rateLimit);
+    }
+
+    // Validate conversation ID
+    const conversationId = validateAndSanitize(UUIDSchema, params.id);
+
+    // Fetch conversation
+    const conversation = await chatbotDB.getConversation(
+      conversationId,
+      user.organization_id
+    );
+
+    if (!conversation) {
+      return createNotFoundResponse('Conversation not found');
+    }
+
+    // Fetch recent messages (last 50)
+    const messagesResult = await chatbotDB.getMessages(
+      conversationId,
+      user.organization_id,
+      { page: 1, limit: 50 }
+    );
+
+    // Get wedding context
+    const context = await chatbotDB.getWeddingContext(
+      user.organization_id,
+      conversation.wedding_id || undefined,
+      conversation.client_id || undefined
+    );
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        conversation,
+        messages: messagesResult.messages,
+        context,
+        analytics: {
+          total_messages: conversation.total_messages,
+          total_tokens: conversation.total_tokens_used,
+          last_activity: conversation.last_activity_at,
+        },
+      },
+      meta: {
+        timestamp: new Date().toISOString(),
+        rate_limit: {
+          remaining: rateLimit.remaining,
+          reset_time: rateLimit.resetTime,
+        },
+      },
+    });
+
+  } catch (error) {
+    console.error(`GET /api/chatbot/conversations/${params.id} error:`, error);
+    
+    // Handle validation errors
+    if (error.message.includes('Invalid UUID')) {
+      return NextResponse.json({
+        error: 'Invalid conversation ID',
+        code: 'INVALID_ID',
+        timestamp: new Date().toISOString(),
+      }, { status: 400 });
+    }
+
+    return NextResponse.json({
+      error: 'Failed to fetch conversation',
+      code: 'FETCH_FAILED',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      timestamp: new Date().toISOString(),
+    }, { status: 500 });
+  }
+}
+
+// ==========================================
+// PUT - Update conversation
+// ==========================================
+export async function PUT(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    // Authentication
+    const user = await getAuthenticatedUser();
+    if (!user || !canAccessChatbot(user)) {
+      return createAuthErrorResponse('Access denied. Chatbot feature required.');
+    }
+
+    // Rate limiting
+    const rateLimit = checkRateLimit(`conversation:update:${user.id}`, 10, 60000);
+    if (!rateLimit.allowed) {
+      return createRateLimitResponse(rateLimit);
+    }
+
+    // Validate conversation ID
+    const conversationId = validateAndSanitize(UUIDSchema, params.id);
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validatedData = validateAndSanitize(UpdateConversationSchema, body);
+
+    // Check if conversation exists and user has access
+    const existingConversation = await chatbotDB.getConversation(
+      conversationId,
+      user.organization_id
+    );
+
+    if (!existingConversation) {
+      return createNotFoundResponse('Conversation not found');
+    }
+
+    // Update conversation
+    const updatedConversation = await chatbotDB.updateConversation(
+      conversationId,
+      user.organization_id,
+      validatedData
+    );
+
+    // Log conversation update
+    console.log(`Conversation updated: ${conversationId} by user ${user.id}`);
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        conversation: updatedConversation,
+        changes: validatedData,
+      },
+      meta: {
+        timestamp: new Date().toISOString(),
+        rate_limit: {
+          remaining: rateLimit.remaining,
+          reset_time: rateLimit.resetTime,
+        },
+      },
+    });
+
+  } catch (error) {
+    console.error(`PUT /api/chatbot/conversations/${params.id} error:`, error);
+    
+    // Handle validation errors
+    if (error.message.includes('Validation failed')) {
+      return NextResponse.json({
+        error: 'Invalid request data',
+        code: 'VALIDATION_ERROR',
+        details: error.message,
+        timestamp: new Date().toISOString(),
+      }, { status: 400 });
+    }
+
+    if (error.message.includes('Invalid UUID')) {
+      return NextResponse.json({
+        error: 'Invalid conversation ID',
+        code: 'INVALID_ID',
+        timestamp: new Date().toISOString(),
+      }, { status: 400 });
+    }
+
+    return NextResponse.json({
+      error: 'Failed to update conversation',
+      code: 'UPDATE_FAILED',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      timestamp: new Date().toISOString(),
+    }, { status: 500 });
+  }
+}
+
+// ==========================================
+// DELETE - Soft delete conversation
+// ==========================================
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    // Authentication
+    const user = await getAuthenticatedUser();
+    if (!user || !canAccessChatbot(user)) {
+      return createAuthErrorResponse('Access denied. Chatbot feature required.');
+    }
+
+    // Rate limiting
+    const rateLimit = checkRateLimit(`conversation:delete:${user.id}`, 5, 60000);
+    if (!rateLimit.allowed) {
+      return createRateLimitResponse(rateLimit);
+    }
+
+    // Validate conversation ID
+    const conversationId = validateAndSanitize(UUIDSchema, params.id);
+
+    // Check if conversation exists and user has access
+    const existingConversation = await chatbotDB.getConversation(
+      conversationId,
+      user.organization_id
+    );
+
+    if (!existingConversation) {
+      return createNotFoundResponse('Conversation not found');
+    }
+
+    // Prevent deletion of escalated conversations
+    if (existingConversation.status === 'escalated') {
+      return NextResponse.json({
+        error: 'Cannot delete escalated conversation',
+        code: 'ESCALATED_CONVERSATION',
+        details: 'Escalated conversations must be resolved before deletion',
+        timestamp: new Date().toISOString(),
+      }, { status: 400 });
+    }
+
+    // Soft delete conversation
+    await chatbotDB.deleteConversation(conversationId, user.organization_id);
+
+    // Log conversation deletion
+    console.log(`Conversation deleted: ${conversationId} by user ${user.id}`);
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        message: 'Conversation deleted successfully',
+        conversation_id: conversationId,
+        deleted_at: new Date().toISOString(),
+      },
+      meta: {
+        timestamp: new Date().toISOString(),
+        rate_limit: {
+          remaining: rateLimit.remaining,
+          reset_time: rateLimit.resetTime,
+        },
+      },
+    });
+
+  } catch (error) {
+    console.error(`DELETE /api/chatbot/conversations/${params.id} error:`, error);
+    
+    if (error.message.includes('Invalid UUID')) {
+      return NextResponse.json({
+        error: 'Invalid conversation ID',
+        code: 'INVALID_ID',
+        timestamp: new Date().toISOString(),
+      }, { status: 400 });
+    }
+
+    return NextResponse.json({
+      error: 'Failed to delete conversation',
+      code: 'DELETE_FAILED',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      timestamp: new Date().toISOString(),
+    }, { status: 500 });
+  }
+}
+
+// ==========================================
+// OPTIONS - CORS preflight
+// ==========================================
+export async function OPTIONS() {
+  return new NextResponse(null, {
+    status: 200,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, PUT, DELETE, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    },
+  });
+}

@@ -1,0 +1,925 @@
+import { headers } from 'next/headers';
+import { NextRequest, NextResponse } from 'next/server';
+import Stripe from 'stripe';
+import { createClient } from '@supabase/supabase-js';
+import { EmailService } from '@/lib/email/service';
+import { generateSecureToken } from '@/lib/crypto-utils';
+import { auditPayment } from '@/lib/security-audit-logger';
+
+// Initialize Stripe with proper error handling
+if (!process.env.STRIPE_SECRET_KEY) {
+  throw new Error('STRIPE_SECRET_KEY is not configured');
+}
+
+if (!process.env.STRIPE_WEBHOOK_SECRET) {
+  throw new Error('STRIPE_WEBHOOK_SECRET is not configured');
+}
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+  apiVersion: '2024-12-18.acacia',
+});
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+);
+
+const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+export async function POST(request: NextRequest) {
+  const startTime = Date.now();
+  const requestId = generateSecureToken(16);
+
+  // Enhanced security logging for webhooks
+  const auditLog = {
+    timestamp: new Date().toISOString(),
+    requestId: requestId,
+    action: 'stripe_webhook_received',
+    clientIP:
+      request.headers.get('x-forwarded-for') ||
+      request.headers.get('x-real-ip') ||
+      'unknown',
+    userAgent: request.headers.get('user-agent') || 'unknown',
+  };
+
+  console.log('WEBHOOK_AUDIT:', JSON.stringify(auditLog));
+
+  const body = await request.text();
+
+  // Validate request size to prevent DoS attacks
+  if (body.length > 50000) {
+    // 50KB limit for webhooks
+    console.error('Webhook payload too large:', body.length);
+    return NextResponse.json({ error: 'Payload too large' }, { status: 413 });
+  }
+
+  const headersList = await headers();
+  const signature = headersList.get('stripe-signature');
+
+  if (!signature) {
+    console.error('Missing stripe-signature header');
+    return NextResponse.json(
+      { error: 'Missing stripe-signature header' },
+      { status: 400 },
+    );
+  }
+
+  let event: Stripe.Event;
+
+  try {
+    event = stripe.webhooks.constructEvent(body, signature, webhookSecret);
+
+    // Log successful webhook receipt
+    await auditPayment.webhookReceived(
+      {
+        event_id: event.id,
+        event_type: event.type,
+        request_id: requestId,
+      },
+      request,
+    );
+  } catch (err: unknown) {
+    const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+    console.error(`Webhook signature verification failed: ${errorMessage}`);
+
+    // Log invalid webhook attempt - potential security issue
+    await auditPayment.webhookInvalid(
+      {
+        error: errorMessage,
+        signature_provided: !!signature,
+        request_id: requestId,
+        body_length: body.length,
+      },
+      request,
+    );
+
+    return NextResponse.json(
+      { error: `Webhook Error: ${errorMessage}` },
+      { status: 400 },
+    );
+  }
+
+  // Idempotency check - prevent duplicate processing
+  try {
+    const { data: existingEvent } = await supabase
+      .from('webhook_events')
+      .select('id')
+      .eq('stripe_event_id', event.id)
+      .single();
+
+    if (existingEvent) {
+      console.log(`Event ${event.id} already processed, skipping`);
+      return NextResponse.json({ received: true });
+    }
+  } catch (error) {
+    // If error is not "no rows", then it's a real error
+    if (error instanceof Error && !error.message.includes('no rows')) {
+      console.error('Error checking webhook event:', error);
+      return NextResponse.json({ error: 'Database error' }, { status: 500 });
+    }
+  }
+
+  try {
+    // Start a transaction by recording the event first
+    const { error: eventError } = await supabase.from('webhook_events').insert({
+      stripe_event_id: event.id,
+      event_type: event.type,
+      payload: event,
+      status: 'processing',
+    });
+
+    if (eventError) {
+      // If insert fails due to unique constraint, event was already processed
+      if (eventError.message.includes('duplicate')) {
+        console.log(`Event ${event.id} already being processed`);
+        return NextResponse.json({ received: true });
+      }
+      throw eventError;
+    }
+
+    // Process the event based on type
+    switch (event.type) {
+      case 'checkout.session.completed': {
+        await handleCheckoutSessionCompleted(
+          event.data.object as Stripe.Checkout.Session,
+        );
+        break;
+      }
+
+      case 'customer.subscription.created': {
+        await handleSubscriptionCreated(
+          event.data.object as Stripe.Subscription,
+        );
+        break;
+      }
+
+      case 'customer.subscription.updated': {
+        await handleSubscriptionUpdated(
+          event.data.object as Stripe.Subscription,
+        );
+        break;
+      }
+
+      case 'customer.subscription.deleted': {
+        await handleSubscriptionDeleted(
+          event.data.object as Stripe.Subscription,
+        );
+        break;
+      }
+
+      case 'invoice.payment_succeeded': {
+        await handleInvoicePaymentSucceeded(
+          event.data.object as Stripe.Invoice,
+        );
+        break;
+      }
+
+      case 'invoice.payment_failed': {
+        await handleInvoicePaymentFailed(event.data.object as Stripe.Invoice);
+        break;
+      }
+
+      case 'customer.subscription.trial_will_end': {
+        await handleTrialWillEnd(event.data.object as Stripe.Subscription);
+        break;
+      }
+
+      case 'payment_method.attached': {
+        await handlePaymentMethodAttached(
+          event.data.object as Stripe.PaymentMethod,
+        );
+        break;
+      }
+
+      case 'payment_method.detached': {
+        await handlePaymentMethodDetached(
+          event.data.object as Stripe.PaymentMethod,
+        );
+        break;
+      }
+
+      case 'payment_intent.succeeded': {
+        await handlePaymentIntentSucceeded(
+          event.data.object as Stripe.PaymentIntent,
+        );
+        break;
+      }
+
+      case 'payment_intent.payment_failed': {
+        await handlePaymentIntentFailed(
+          event.data.object as Stripe.PaymentIntent,
+        );
+        break;
+      }
+
+      default:
+        console.log(`Unhandled event type: ${event.type}`);
+    }
+
+    // Mark event as successfully processed
+    await supabase
+      .from('webhook_events')
+      .update({ status: 'completed' })
+      .eq('stripe_event_id', event.id);
+
+    // Log successful processing
+    const successLog = {
+      ...auditLog,
+      action: 'stripe_webhook_success',
+      eventType: event.type,
+      eventId: event.id,
+      processingTime: Date.now() - startTime,
+    };
+    console.log('WEBHOOK_AUDIT:', JSON.stringify(successLog));
+
+    const response = NextResponse.json({ received: true });
+
+    // Add security headers to webhook responses
+    response.headers.set('X-Content-Type-Options', 'nosniff');
+    response.headers.set(
+      'Cache-Control',
+      'no-cache, no-store, must-revalidate',
+    );
+    response.headers.set('X-Frame-Options', 'DENY');
+
+    return response;
+  } catch (error: unknown) {
+    const errorMessage =
+      error instanceof Error ? error.message : 'Unknown error';
+    console.error('Webhook handler error:', errorMessage, error);
+
+    // Mark event as failed
+    await supabase
+      .from('webhook_events')
+      .update({
+        status: 'failed',
+        error: errorMessage,
+      })
+      .eq('stripe_event_id', event.id);
+
+    return NextResponse.json(
+      { error: 'Webhook handler failed' },
+      { status: 500 },
+    );
+  }
+}
+
+async function handleCheckoutSessionCompleted(
+  session: Stripe.Checkout.Session,
+) {
+  if (session.mode === 'subscription' && session.subscription) {
+    const subscription = await stripe.subscriptions.retrieve(
+      session.subscription as string,
+      { expand: ['items.data.price.product'] },
+    );
+
+    const customerId = session.customer as string;
+    const customer = await stripe.customers.retrieve(customerId);
+
+    const email = 'email' in customer ? customer.email : session.customer_email;
+
+    const product = subscription.items.data[0]?.price
+      ?.product as Stripe.Product;
+    const tier = mapProductToTier(product?.metadata?.tier || 'STARTER');
+    const priceAmount = subscription.items.data[0]?.price?.unit_amount || 0;
+
+    // Find organization by email
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('email', email)
+      .single();
+
+    if (!userProfile?.organization_id) {
+      throw new Error(`No organization found for email: ${email}`);
+    }
+
+    // Update organization subscription info
+    const { error: updateError } = await supabase
+      .from('organizations')
+      .update({
+        stripe_customer_id: customerId,
+        stripe_subscription_id: subscription.id,
+        subscription_status: subscription.status,
+        pricing_tier: tier,
+        trial_ends_at: subscription.trial_end
+          ? new Date(subscription.trial_end * 1000).toISOString()
+          : null,
+      })
+      .eq('id', userProfile.organization_id);
+
+    if (updateError) {
+      throw updateError;
+    }
+
+    // Record subscription history
+    await supabase.from('subscription_history').insert({
+      organization_id: userProfile.organization_id,
+      stripe_subscription_id: subscription.id,
+      stripe_customer_id: customerId,
+      status: subscription.status,
+      pricing_tier: tier,
+      price_amount: priceAmount,
+      currency: subscription.currency,
+      interval:
+        subscription.items.data[0]?.price?.recurring?.interval || 'month',
+      current_period_start: new Date(
+        subscription.current_period_start * 1000,
+      ).toISOString(),
+      current_period_end: new Date(
+        subscription.current_period_end * 1000,
+      ).toISOString(),
+      trial_start: subscription.trial_start
+        ? new Date(subscription.trial_start * 1000).toISOString()
+        : null,
+      trial_end: subscription.trial_end
+        ? new Date(subscription.trial_end * 1000).toISOString()
+        : null,
+    });
+
+    // Send payment confirmation email
+    if (email) {
+      await EmailService.sendPaymentNotification({
+        recipientEmail: email,
+        recipientName: 'name' in customer ? customer.name || email : email,
+        paymentType: 'received',
+        amount: (priceAmount / 100).toFixed(2), // Convert from cents
+        currency: subscription.currency.toUpperCase(),
+        clientName: 'name' in customer ? customer.name || email : email,
+        clientId: customerId,
+        invoiceId: subscription.latest_invoice as string,
+        organizationId: userProfile.organization_id,
+        organizationName: tier + ' Plan',
+      });
+
+      console.log(`Payment confirmation email sent to ${email}`);
+    }
+
+    console.log(
+      `Subscription created for organization ${userProfile.organization_id}: ${tier} tier`,
+    );
+  } else if (
+    session.mode === 'payment' &&
+    session.metadata?.purchase_type === 'template'
+  ) {
+    // Handle marketplace template purchase
+    await handleMarketplacePurchaseCompleted(session);
+  }
+}
+
+async function handleSubscriptionCreated(subscription: Stripe.Subscription) {
+  const product = subscription.items.data[0]?.price?.product as Stripe.Product;
+  const tier = mapProductToTier(product?.metadata?.tier || 'STARTER');
+
+  // Find organization by stripe subscription ID
+  const { data: org } = await supabase
+    .from('organizations')
+    .select('id')
+    .eq('stripe_customer_id', subscription.customer)
+    .single();
+
+  if (!org) {
+    console.error(
+      `No organization found for customer: ${subscription.customer}`,
+    );
+    return;
+  }
+
+  await supabase
+    .from('organizations')
+    .update({
+      subscription_status: subscription.status,
+      pricing_tier: tier,
+    })
+    .eq('id', org.id);
+
+  console.log(`Subscription created: ${subscription.id}`);
+}
+
+async function handleSubscriptionUpdated(subscription: Stripe.Subscription) {
+  const product = subscription.items.data[0]?.price?.product as Stripe.Product;
+  const newTier = mapProductToTier(product?.metadata?.tier || 'STARTER');
+
+  // Get current tier for comparison
+  const { data: currentOrg } = await supabase
+    .from('organizations')
+    .select('id, pricing_tier, email')
+    .eq('stripe_subscription_id', subscription.id)
+    .single();
+
+  if (!currentOrg) {
+    console.error(`No organization found for subscription: ${subscription.id}`);
+    return;
+  }
+
+  const oldTier = currentOrg.pricing_tier;
+  const isUpgrade = getTierLevel(newTier) > getTierLevel(oldTier);
+  const isDowngrade = getTierLevel(newTier) < getTierLevel(oldTier);
+
+  // Update organization with new tier and adjusted limits
+  const tierLimits = getTierLimits(newTier);
+
+  const { error: updateError } = await supabase
+    .from('organizations')
+    .update({
+      subscription_status: subscription.status,
+      pricing_tier: newTier,
+      feature_limits: subscription.status === 'active' ? null : tierLimits,
+      tier_limits: tierLimits,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('stripe_subscription_id', subscription.id);
+
+  if (updateError) {
+    console.error('Error updating subscription:', updateError);
+    throw updateError;
+  }
+
+  // Record the change in subscription history
+  await supabase.from('subscription_history').insert({
+    organization_id: currentOrg.id,
+    stripe_subscription_id: subscription.id,
+    stripe_customer_id: subscription.customer as string,
+    status: subscription.status,
+    pricing_tier: newTier,
+    previous_tier: oldTier,
+    change_type: isUpgrade ? 'upgrade' : isDowngrade ? 'downgrade' : 'update',
+    price_amount: subscription.items.data[0]?.price?.unit_amount || 0,
+    currency: subscription.currency,
+    interval: subscription.items.data[0]?.price?.recurring?.interval || 'month',
+    current_period_start: new Date(
+      subscription.current_period_start * 1000,
+    ).toISOString(),
+    current_period_end: new Date(
+      subscription.current_period_end * 1000,
+    ).toISOString(),
+  });
+
+  // Send notification email about tier change
+  if (currentOrg.email && (isUpgrade || isDowngrade)) {
+    // Use payment notification for tier changes
+    const changeType = isUpgrade ? 'Upgrade' : 'Downgrade';
+    await EmailService.sendPaymentNotification({
+      recipientEmail: currentOrg.email,
+      recipientName: currentOrg.email,
+      paymentType: 'received',
+      amount: (subscription.items.data[0]?.price?.unit_amount || 0) / 100 + '',
+      currency: subscription.currency.toUpperCase(),
+      clientName: `${changeType}: ${oldTier} → ${newTier}`,
+      clientId: subscription.customer as string,
+      organizationId: currentOrg.id,
+      organizationName: `${newTier} Plan`,
+    });
+
+    console.log(`Tier change notification sent: ${oldTier} → ${newTier}`);
+  }
+
+  // If downgrade, check if current usage exceeds new limits
+  if (isDowngrade) {
+    await enforceDowngradeLimits(currentOrg.id, tierLimits);
+  }
+
+  console.log(
+    `Subscription updated: ${subscription.id} - ${oldTier} → ${newTier}`,
+  );
+}
+
+// Helper functions for tier management
+function getTierLevel(tier: string): number {
+  const levels: Record<string, number> = {
+    FREE: 0,
+    STARTER: 1,
+    PROFESSIONAL: 2,
+    ENTERPRISE: 3,
+  };
+  return levels[tier] || 0;
+}
+
+function getTierLimits(tier: string): any {
+  const limits: Record<string, any> = {
+    FREE: {
+      max_forms: 1,
+      max_responses: 50,
+      max_pdf_uploads: 5,
+      max_team_members: 1,
+      storage_gb: 0.5,
+    },
+    STARTER: {
+      max_forms: 10,
+      max_responses: 1000,
+      max_pdf_uploads: 50,
+      max_team_members: 3,
+      storage_gb: 5,
+    },
+    PROFESSIONAL: {
+      max_forms: 100,
+      max_responses: 10000,
+      max_pdf_uploads: 500,
+      max_team_members: 10,
+      storage_gb: 50,
+    },
+    ENTERPRISE: {
+      max_forms: -1, // unlimited
+      max_responses: -1,
+      max_pdf_uploads: -1,
+      max_team_members: -1,
+      storage_gb: 500,
+    },
+  };
+  return limits[tier] || limits['FREE'];
+}
+
+async function enforceDowngradeLimits(organizationId: string, newLimits: any) {
+  // Check current usage against new limits
+  const { data: usage } = await supabase
+    .from('organization_usage')
+    .select('*')
+    .eq('organization_id', organizationId)
+    .single();
+
+  if (!usage) return;
+
+  // Disable forms if over limit
+  if (newLimits.max_forms > 0 && usage.form_count > newLimits.max_forms) {
+    // Mark excess forms as archived
+    const { data: forms } = await supabase
+      .from('forms')
+      .select('id')
+      .eq('organization_id', organizationId)
+      .eq('status', 'active')
+      .order('created_at', { ascending: false })
+      .limit(usage.form_count - newLimits.max_forms);
+
+    if (forms) {
+      const formIds = forms.map((f) => f.id);
+      await supabase
+        .from('forms')
+        .update({ status: 'archived', archived_reason: 'tier_downgrade' })
+        .in('id', formIds);
+    }
+  }
+
+  // Log the enforcement action
+  await supabase.from('tier_enforcement_logs').insert({
+    organization_id: organizationId,
+    action: 'downgrade_enforcement',
+    old_usage: usage,
+    new_limits: newLimits,
+    timestamp: new Date().toISOString(),
+  });
+}
+
+async function handleSubscriptionDeleted(subscription: Stripe.Subscription) {
+  const { error: updateError } = await supabase
+    .from('organizations')
+    .update({
+      subscription_status: 'canceled',
+      pricing_tier: 'FREE',
+    })
+    .eq('stripe_subscription_id', subscription.id);
+
+  if (updateError) {
+    console.error('Error canceling subscription:', updateError);
+    throw updateError;
+  }
+
+  console.log(`Subscription canceled: ${subscription.id}`);
+}
+
+async function handleInvoicePaymentSucceeded(invoice: Stripe.Invoice) {
+  // Find organization
+  const { data: org } = await supabase
+    .from('organizations')
+    .select('id')
+    .eq('stripe_customer_id', invoice.customer)
+    .single();
+
+  if (!org) {
+    console.error(`No organization found for customer: ${invoice.customer}`);
+    return;
+  }
+
+  // Record payment in payment history
+  const { error: insertError } = await supabase.from('payment_history').insert({
+    organization_id: org.id,
+    stripe_invoice_id: invoice.id,
+    stripe_payment_intent_id: invoice.payment_intent as string | null,
+    stripe_subscription_id: invoice.subscription as string | null,
+    customer_id: invoice.customer as string,
+    amount: invoice.amount_paid,
+    currency: invoice.currency,
+    status: 'succeeded',
+    description: invoice.description || 'Subscription payment',
+    metadata: invoice.metadata,
+  });
+
+  if (insertError) {
+    console.error('Error logging payment:', insertError);
+  }
+
+  // Record invoice
+  await supabase.from('invoices').insert({
+    organization_id: org.id,
+    stripe_invoice_id: invoice.id,
+    stripe_customer_id: invoice.customer as string,
+    stripe_subscription_id: invoice.subscription as string | null,
+    invoice_number: invoice.number || invoice.id,
+    status: invoice.status || 'paid',
+    amount_due: invoice.amount_due,
+    amount_paid: invoice.amount_paid,
+    currency: invoice.currency,
+    paid_at: invoice.status_transitions?.paid_at
+      ? new Date(invoice.status_transitions.paid_at * 1000).toISOString()
+      : null,
+    period_start: invoice.period_start
+      ? new Date(invoice.period_start * 1000).toISOString()
+      : null,
+    period_end: invoice.period_end
+      ? new Date(invoice.period_end * 1000).toISOString()
+      : null,
+    invoice_pdf: invoice.invoice_pdf,
+    hosted_invoice_url: invoice.hosted_invoice_url,
+  });
+
+  console.log(`Payment succeeded for invoice: ${invoice.id}`);
+}
+
+async function handleInvoicePaymentFailed(invoice: Stripe.Invoice) {
+  // Find organization
+  const { data: org } = await supabase
+    .from('organizations')
+    .select('id, email')
+    .eq('stripe_customer_id', invoice.customer)
+    .single();
+
+  if (!org) {
+    console.error(`No organization found for customer: ${invoice.customer}`);
+    return;
+  }
+
+  // Record failed payment
+  const { error: insertError } = await supabase.from('payment_history').insert({
+    organization_id: org.id,
+    stripe_invoice_id: invoice.id,
+    customer_id: invoice.customer as string,
+    amount: invoice.amount_due,
+    currency: invoice.currency,
+    status: 'failed',
+    description: invoice.description || 'Failed payment attempt',
+    metadata: invoice.metadata,
+  });
+
+  if (insertError) {
+    console.error('Error logging failed payment:', insertError);
+  }
+
+  // Get retry count
+  const { data: retryData } = await supabase
+    .from('payment_retries')
+    .select('retry_count')
+    .eq('stripe_invoice_id', invoice.id)
+    .single();
+
+  const retryCount = retryData?.retry_count || 0;
+
+  // Update or insert retry record
+  await supabase.from('payment_retries').upsert({
+    stripe_invoice_id: invoice.id,
+    organization_id: org.id,
+    retry_count: retryCount + 1,
+    next_retry_at: calculateNextRetryTime(retryCount + 1),
+    last_attempted_at: new Date().toISOString(),
+  });
+
+  // Update organization status based on retry count
+  const newStatus = retryCount >= 3 ? 'suspended' : 'past_due';
+
+  const { error: updateError } = await supabase
+    .from('organizations')
+    .update({
+      subscription_status: newStatus,
+      // Limit features for past_due accounts
+      feature_limits:
+        retryCount >= 2
+          ? {
+              max_forms: 1,
+              max_responses: 10,
+              max_pdf_uploads: 0,
+            }
+          : null,
+    })
+    .eq('stripe_customer_id', invoice.customer);
+
+  if (updateError) {
+    console.error('Error updating organization status:', updateError);
+  }
+
+  // Send payment failed email with retry information
+  if (org.email) {
+    await EmailService.sendPaymentFailedNotification({
+      customerEmail: org.email,
+      invoiceAmount: invoice.amount_due,
+      currency: invoice.currency,
+      retryCount: retryCount + 1,
+      nextRetryDate: calculateNextRetryTime(retryCount + 1),
+      accountStatus: newStatus,
+    });
+  }
+
+  console.log(
+    `Payment failed for invoice: ${invoice.id}, retry count: ${retryCount + 1}`,
+  );
+}
+
+// Helper function to calculate retry timing
+function calculateNextRetryTime(retryCount: number): string {
+  const retryDelays = [
+    1 * 24 * 60 * 60 * 1000, // 1 day
+    3 * 24 * 60 * 60 * 1000, // 3 days
+    5 * 24 * 60 * 60 * 1000, // 5 days
+    7 * 24 * 60 * 60 * 1000, // 7 days
+  ];
+
+  const delay = retryDelays[Math.min(retryCount - 1, retryDelays.length - 1)];
+  return new Date(Date.now() + delay).toISOString();
+}
+
+async function handleTrialWillEnd(subscription: Stripe.Subscription) {
+  // Send notification email about trial ending
+  const customer = await stripe.customers.retrieve(
+    subscription.customer as string,
+  );
+
+  if ('email' in customer && customer.email) {
+    // TODO: Implement trial ending email
+    console.log(`Trial ending soon for customer: ${customer.email}`);
+  }
+}
+
+async function handlePaymentMethodAttached(
+  paymentMethod: Stripe.PaymentMethod,
+) {
+  if (!paymentMethod.customer) return;
+
+  // Find organization
+  const { data: org } = await supabase
+    .from('organizations')
+    .select('id')
+    .eq('stripe_customer_id', paymentMethod.customer)
+    .single();
+
+  if (!org) {
+    console.error(
+      `No organization found for customer: ${paymentMethod.customer}`,
+    );
+    return;
+  }
+
+  // Store payment method reference (never store full card details)
+  await supabase.from('payment_methods').insert({
+    organization_id: org.id,
+    stripe_payment_method_id: paymentMethod.id,
+    stripe_customer_id: paymentMethod.customer as string,
+    type: paymentMethod.type,
+    brand: paymentMethod.card?.brand,
+    last4: paymentMethod.card?.last4,
+    exp_month: paymentMethod.card?.exp_month,
+    exp_year: paymentMethod.card?.exp_year,
+  });
+
+  console.log(`Payment method attached: ${paymentMethod.id}`);
+}
+
+async function handlePaymentMethodDetached(
+  paymentMethod: Stripe.PaymentMethod,
+) {
+  // Remove payment method from database
+  await supabase
+    .from('payment_methods')
+    .delete()
+    .eq('stripe_payment_method_id', paymentMethod.id);
+
+  console.log(`Payment method detached: ${paymentMethod.id}`);
+}
+
+import { mapLegacyTier } from '@/lib/stripe-config';
+
+// Helper function to map product tier to database enum
+function mapProductToTier(tier: string): 'FREE' | 'PROFESSIONAL' | 'SCALE' {
+  const mapped = mapLegacyTier(tier);
+
+  // Map our new tier names to database enums
+  switch (mapped) {
+    case 'PRO':
+      return 'PROFESSIONAL';
+    case 'BUSINESS':
+      return 'SCALE'; // Map Business to Scale in database
+    case 'FREE':
+    default:
+      return 'FREE';
+  }
+}
+
+// WS-115: Marketplace purchase completion handlers
+async function handleMarketplacePurchaseCompleted(
+  session: Stripe.Checkout.Session,
+) {
+  try {
+    const purchaseId = session.metadata?.purchase_id;
+    if (!purchaseId) {
+      console.error('No purchase_id found in session metadata');
+      return;
+    }
+
+    // Call purchase completion API
+    const completionData = {
+      purchase_id: purchaseId,
+      stripe_payment_intent_id: session.payment_intent as string,
+      stripe_session_id: session.id,
+      payment_status: 'succeeded' as const,
+      amount_paid: session.amount_total,
+      currency: session.currency?.toUpperCase(),
+    };
+
+    // Make internal API call to complete purchase
+    const response = await fetch(
+      `${process.env.NEXT_PUBLIC_APP_URL}/api/marketplace/purchase/complete`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.INTERNAL_API_KEY || '',
+        },
+        body: JSON.stringify(completionData),
+      },
+    );
+
+    if (!response.ok) {
+      console.error('Purchase completion failed:', await response.text());
+      throw new Error('Purchase completion API call failed');
+    }
+
+    const result = await response.json();
+    console.log(`Marketplace purchase completed: ${purchaseId}`, result);
+  } catch (error) {
+    console.error('Marketplace purchase completion error:', error);
+    throw error;
+  }
+}
+
+async function handlePaymentIntentSucceeded(
+  paymentIntent: Stripe.PaymentIntent,
+) {
+  // Check if this is a marketplace purchase
+  const purchaseId = paymentIntent.metadata?.purchase_id;
+  if (purchaseId && paymentIntent.metadata?.purchase_type === 'template') {
+    console.log(`Processing marketplace purchase payment: ${purchaseId}`);
+
+    // The purchase will be completed via the checkout.session.completed event
+    // This handler is for additional processing or backup handling
+  } else {
+    console.log(
+      `Payment succeeded for non-marketplace purchase: ${paymentIntent.id}`,
+    );
+  }
+}
+
+async function handlePaymentIntentFailed(paymentIntent: Stripe.PaymentIntent) {
+  // Check if this is a marketplace purchase
+  const purchaseId = paymentIntent.metadata?.purchase_id;
+  if (purchaseId && paymentIntent.metadata?.purchase_type === 'template') {
+    try {
+      // Call purchase completion API with failure
+      const completionData = {
+        purchase_id: purchaseId,
+        stripe_payment_intent_id: paymentIntent.id,
+        payment_status: 'failed' as const,
+        amount_paid: paymentIntent.amount,
+        currency: paymentIntent.currency.toUpperCase(),
+      };
+
+      const response = await fetch(
+        `${process.env.NEXT_PUBLIC_APP_URL}/api/marketplace/purchase/complete`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': process.env.INTERNAL_API_KEY || '',
+          },
+          body: JSON.stringify(completionData),
+        },
+      );
+
+      if (!response.ok) {
+        console.error(
+          'Purchase failure processing failed:',
+          await response.text(),
+        );
+      } else {
+        console.log(`Marketplace purchase failure processed: ${purchaseId}`);
+      }
+    } catch (error) {
+      console.error('Payment intent failure handling error:', error);
+    }
+  }
+}

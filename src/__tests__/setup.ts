@@ -1,0 +1,404 @@
+/**
+ * Jest test setup file for WS-198 Error Handling System tests
+ * Team D Mobile & PWA Architecture
+ */
+
+import '@testing-library/jest-dom';
+
+// Mock Web APIs that aren't available in Jest environment
+Object.defineProperty(window, 'matchMedia', {
+  writable: true,
+  value: vi.fn().mockImplementation((query) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  })),
+});
+
+// Mock IntersectionObserver
+global.IntersectionObserver = class IntersectionObserver {
+  constructor() {}
+  disconnect() {}
+  observe() {}
+  unobserve() {}
+};
+
+// Mock ResizeObserver
+global.ResizeObserver = class ResizeObserver {
+  constructor() {}
+  disconnect() {}
+  observe() {}
+  unobserve() {}
+};
+
+// Mock Service Worker APIs
+Object.defineProperty(window, 'navigator', {
+  value: {
+    ...window.navigator,
+    serviceWorker: {
+      register: vi.fn(),
+      ready: Promise.resolve({
+        sync: {
+          register: vi.fn(),
+        },
+      }),
+      controller: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    },
+  },
+  writable: true,
+});
+
+// Mock Network Information API
+Object.defineProperty(window.navigator, 'connection', {
+  value: {
+    effectiveType: '4g',
+    downlink: 10,
+    rtt: 50,
+    saveData: false,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  },
+  writable: true,
+});
+
+// Mock Battery API
+Object.defineProperty(window.navigator, 'getBattery', {
+  value: jest.fn(() =>
+    Promise.resolve({
+      level: 0.8,
+      charging: false,
+      chargingTime: Infinity,
+      dischargingTime: 3600,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }),
+  ),
+  writable: true,
+});
+
+// Mock Geolocation API
+Object.defineProperty(window.navigator, 'geolocation', {
+  value: {
+    getCurrentPosition: vi.fn(),
+    watchPosition: vi.fn(),
+    clearWatch: vi.fn(),
+  },
+  writable: true,
+});
+
+// Mock IndexedDB for browser environment
+const mockIndexedDB = {
+  open: jest.fn(() => {
+    const request = {
+      onsuccess: null,
+      onerror: null,
+      onupgradeneeded: null,
+      result: {
+        transaction: jest.fn(() => ({
+          objectStore: jest.fn(() => ({
+            add: vi.fn(),
+            get: vi.fn(),
+            put: vi.fn(),
+            delete: vi.fn(),
+            getAll: vi.fn(),
+            clear: vi.fn(),
+          })),
+          oncomplete: null,
+          onerror: null,
+        })),
+        createObjectStore: vi.fn(),
+        close: vi.fn(),
+      },
+    };
+    return request;
+  }),
+  deleteDatabase: vi.fn(),
+};
+
+Object.defineProperty(window, 'indexedDB', {
+  value: mockIndexedDB,
+  writable: true,
+});
+
+// Mock File and Blob APIs for photo upload tests
+global.File = class File extends Blob {
+  constructor(bits, filename, options = {}) {
+    super(bits, options);
+    this.name = filename;
+    this.lastModified = options.lastModified || Date.now();
+  }
+};
+
+global.FileReader = class FileReader {
+  constructor() {
+    this.onload = null;
+    this.onerror = null;
+    this.readyState = 0;
+  }
+
+  readAsDataURL(file) {
+    setTimeout(() => {
+      this.result = `data:${file.type};base64,mock-file-data`;
+      if (this.onload) this.onload({ target: this });
+    }, 0);
+  }
+
+  readAsArrayBuffer(file) {
+    setTimeout(() => {
+      this.result = new ArrayBuffer(file.size);
+      if (this.onload) this.onload({ target: this });
+    }, 0);
+  }
+};
+
+// Mock URL.createObjectURL for file handling
+global.URL = {
+  ...global.URL,
+  createObjectURL: jest.fn(() => 'mock-object-url'),
+  revokeObjectURL: vi.fn(),
+};
+
+// Mock Canvas API for image compression tests
+global.HTMLCanvasElement.prototype.getContext = jest.fn(() => ({
+  drawImage: vi.fn(),
+  getImageData: jest.fn(() => ({
+    data: new Uint8ClampedArray(4),
+    width: 1,
+    height: 1,
+  })),
+  putImageData: vi.fn(),
+  canvas: {
+    toBlob: jest.fn((callback, type, quality) => {
+      callback(new Blob(['compressed'], { type: type || 'image/jpeg' }));
+    }),
+    toDataURL: jest.fn(() => 'data:image/jpeg;base64,compressed-data'),
+  },
+}));
+
+// Mock Image constructor for image processing
+global.Image = class Image {
+  constructor() {
+    this.onload = null;
+    this.onerror = null;
+    this.crossOrigin = null;
+    setTimeout(() => {
+      this.width = 1920;
+      this.height = 1080;
+      this.naturalWidth = 1920;
+      this.naturalHeight = 1080;
+      if (this.onload) this.onload();
+    }, 0);
+  }
+};
+
+// Mock Performance API for timing measurements
+Object.defineProperty(window, 'performance', {
+  value: {
+    now: jest.fn(() => Date.now()),
+    mark: vi.fn(),
+    measure: vi.fn(),
+    getEntriesByType: jest.fn(() => []),
+    getEntriesByName: jest.fn(() => []),
+  },
+  writable: true,
+});
+
+// Mock Notification API
+Object.defineProperty(window, 'Notification', {
+  value: class Notification {
+    constructor(title, options) {
+      this.title = title;
+      this.body = options?.body;
+      this.icon = options?.icon;
+      this.onclick = null;
+      this.onshow = null;
+      this.onerror = null;
+      this.onclose = null;
+    }
+
+    static permission = 'granted';
+    static requestPermission = jest.fn(() => Promise.resolve('granted'));
+
+    close() {}
+  },
+  writable: true,
+});
+
+// Mock Vibration API for mobile haptic feedback
+Object.defineProperty(window.navigator, 'vibrate', {
+  value: jest.fn(() => true),
+  writable: true,
+});
+
+// Mock Push Notification APIs
+Object.defineProperty(window, 'PushManager', {
+  value: {
+    supportedContentEncodings: ['aes128gcm'],
+  },
+  writable: true,
+});
+
+// Mock RequestIdleCallback for performance optimization
+global.requestIdleCallback = jest.fn((callback) => {
+  return setTimeout(
+    () =>
+      callback({
+        didTimeout: false,
+        timeRemaining: () => 50,
+      }),
+    0,
+  );
+});
+
+global.cancelIdleCallback = vi.fn();
+
+// Mock crypto API for secure operations
+Object.defineProperty(window, 'crypto', {
+  value: {
+    getRandomValues: jest.fn((array) => {
+      for (let i = 0; i < array.length; i++) {
+        array[i] = Math.floor(Math.random() * 256);
+      }
+      return array;
+    }),
+    randomUUID: jest.fn(() => 'mock-uuid-123'),
+  },
+  writable: true,
+});
+
+// Mock Clipboard API
+Object.defineProperty(window.navigator, 'clipboard', {
+  value: {
+    writeText: jest.fn(() => Promise.resolve()),
+    readText: jest.fn(() => Promise.resolve('')),
+  },
+  writable: true,
+});
+
+// Mock Touch Events for mobile testing
+global.TouchEvent = class TouchEvent extends Event {
+  constructor(type, options = {}) {
+    super(type, options);
+    this.touches = options.touches || [];
+    this.targetTouches = options.targetTouches || [];
+    this.changedTouches = options.changedTouches || [];
+  }
+};
+
+// Mock Device Motion/Orientation for mobile testing
+global.DeviceMotionEvent = class DeviceMotionEvent extends Event {
+  constructor(type, options = {}) {
+    super(type, options);
+    this.acceleration = options.acceleration || null;
+    this.accelerationIncludingGravity =
+      options.accelerationIncludingGravity || null;
+    this.rotationRate = options.rotationRate || null;
+    this.interval = options.interval || 0;
+  }
+};
+
+// Suppress console warnings in tests unless explicitly testing them
+const originalError = console.error;
+const originalWarn = console.warn;
+
+beforeAll(() => {
+  console.error = vi.fn();
+  console.warn = vi.fn();
+});
+
+afterAll(() => {
+  console.error = originalError;
+  console.warn = originalWarn;
+});
+
+// Global test utilities
+global.createMockFile = (name, size = 1024, type = 'image/jpeg') => {
+  return new File(['mock file content'.repeat(size / 16)], name, { type });
+};
+
+global.createMockError = (message, code = 'UNKNOWN_ERROR') => {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+};
+
+global.simulateNetworkCondition = (condition) => {
+  const conditions = {
+    offline: { onLine: false, effectiveType: undefined, downlink: 0, rtt: 0 },
+    slow2g: {
+      onLine: true,
+      effectiveType: 'slow-2g',
+      downlink: 0.5,
+      rtt: 2000,
+    },
+    '2g': { onLine: true, effectiveType: '2g', downlink: 0.25, rtt: 1800 },
+    '3g': { onLine: true, effectiveType: '3g', downlink: 1.5, rtt: 500 },
+    '4g': { onLine: true, effectiveType: '4g', downlink: 10, rtt: 100 },
+    excellent: { onLine: true, effectiveType: '4g', downlink: 20, rtt: 50 },
+  };
+
+  const config = conditions[condition] || conditions['4g'];
+
+  Object.defineProperty(navigator, 'onLine', {
+    value: config.onLine,
+    writable: true,
+  });
+
+  if (navigator.connection) {
+    Object.assign(navigator.connection, {
+      effectiveType: config.effectiveType,
+      downlink: config.downlink,
+      rtt: config.rtt,
+    });
+  }
+};
+
+global.simulateBatteryLevel = (level, charging = false) => {
+  if (navigator.getBattery) {
+    navigator.getBattery.mockResolvedValue({
+      level,
+      charging,
+      chargingTime: charging ? 3600 : Infinity,
+      dischargingTime: charging ? Infinity : 7200,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+  }
+};
+
+// Wedding-specific test utilities
+global.createWeddingDayScenario = (options = {}) => {
+  const today = new Date().toISOString().split('T')[0];
+
+  return {
+    isWeddingDay: true,
+    weddingDate: options.weddingDate || today,
+    weddingId: options.weddingId || 'wedding-123',
+    vendorType: options.vendorType || 'photographer',
+    isEmergency: options.isEmergency || false,
+    batteryLevel: options.batteryLevel || 0.8,
+    networkQuality: options.networkQuality || 'good',
+  };
+};
+
+global.createEmergencyScenario = () => {
+  return createWeddingDayScenario({
+    isEmergency: true,
+    batteryLevel: 0.15,
+    networkQuality: 'poor',
+  });
+};
+
+// Cleanup after each test
+afterEach(() => {
+  jest.clearAllTimers();
+  localStorage.clear();
+  sessionStorage.clear();
+});

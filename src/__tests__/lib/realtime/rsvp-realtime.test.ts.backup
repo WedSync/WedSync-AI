@@ -1,0 +1,165 @@
+/**
+ * @jest-environment jsdom
+ */
+
+import { RSVPRealtimeManager } from '@/lib/realtime/rsvp-realtime'
+
+// Mock Supabase
+const mockChannel = {
+  on: jest.fn().mockReturnThis(),
+  subscribe: jest.fn().mockReturnThis(),
+  send: jest.fn().mockResolvedValue({}),
+}
+
+const mockSupabase = {
+  channel: jest.fn().mockReturnValue(mockChannel),
+  removeChannel: jest.fn().mockResolvedValue({}),
+}
+
+jest.mock('@supabase/auth-helpers-nextjs', () => ({
+  createClientComponentClient: () => mockSupabase,
+}))
+
+describe('RSVPRealtimeManager', () => {
+  let manager: RSVPRealtimeManager
+
+  beforeEach(() => {
+    manager = new RSVPRealtimeManager()
+    jest.clearAllMocks()
+  })
+
+  afterEach(() => {
+    manager.unsubscribeAll()
+  })
+
+  describe('subscribeToRSVPResponses', () => {
+    it('should create subscription with correct configuration', async () => {
+      const config = {
+        eventId: 'test-event-123',
+        onResponse: jest.fn(),
+        onError: jest.fn(),
+        onSubscribed: jest.fn(),
+        onUnsubscribed: jest.fn(),
+      }
+
+      await manager.subscribeToRSVPResponses(config)
+
+      expect(mockSupabase.channel).toHaveBeenCalledWith('rsvp-responses-test-event-123')
+      expect(mockChannel.on).toHaveBeenCalledWith(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'rsvp_responses',
+          filter: 'event_id=eq.test-event-123'
+        },
+        expect.any(Function)
+      )
+      expect(mockChannel.subscribe).toHaveBeenCalled()
+    })
+
+    it('should handle subscription errors', async () => {
+      const config = {
+        eventId: 'test-event-123',
+        onResponse: jest.fn(),
+        onError: jest.fn(),
+      }
+
+      mockChannel.subscribe.mockImplementationOnce((callback) => {
+        callback('CHANNEL_ERROR')
+        return mockChannel
+      })
+
+      await manager.subscribeToRSVPResponses(config)
+
+      // Verify error handling is triggered
+      expect(config.onError).toHaveBeenCalled()
+    })
+
+    it('should process RSVP events correctly', async () => {
+      const config = {
+        eventId: 'test-event-123',
+        onResponse: jest.fn(),
+      }
+
+      const mockPayload = {
+        eventType: 'INSERT',
+        new: {
+          id: 'response-123',
+          event_id: 'test-event-123',
+          guest_name: 'John Doe',
+          status: 'attending',
+          created_at: '2025-01-22T10:00:00Z'
+        }
+      }
+
+      mockChannel.on.mockImplementationOnce((event, config, callback) => {
+        callback(mockPayload)
+        return mockChannel
+      })
+
+      await manager.subscribeToRSVPResponses(config)
+
+      expect(config.onResponse).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'INSERT',
+          record: mockPayload.new,
+          eventId: expect.any(String)
+        })
+      )
+    })
+  })
+
+  describe('unsubscribeFromRSVPResponses', () => {
+    it('should remove subscription correctly', async () => {
+      const eventId = 'test-event-123'
+      const config = {
+        eventId,
+        onResponse: jest.fn(),
+      }
+
+      await manager.subscribeToRSVPResponses(config)
+      await manager.unsubscribeFromRSVPResponses(eventId)
+
+      expect(mockSupabase.removeChannel).toHaveBeenCalled()
+    })
+  })
+
+  describe('broadcastRSVPEvent', () => {
+    it('should broadcast custom events', async () => {
+      const eventId = 'test-event-123'
+      const customData = { message: 'Test broadcast' }
+
+      await manager.broadcastRSVPEvent(eventId, customData)
+
+      expect(mockSupabase.channel).toHaveBeenCalledWith('rsvp-admin-test-event-123')
+      expect(mockChannel.send).toHaveBeenCalledWith({
+        type: 'broadcast',
+        event: 'rsvp_admin_update',
+        payload: {
+          eventId,
+          timestamp: expect.any(String),
+          data: customData
+        }
+      })
+    })
+  })
+
+  describe('connection management', () => {
+    it('should track connection status', () => {
+      const status = manager.getConnectionStatus()
+      expect(['connecting', 'connected', 'disconnected']).toContain(status)
+    })
+
+    it('should track active subscriptions', async () => {
+      expect(manager.getActiveSubscriptions()).toBe(0)
+
+      await manager.subscribeToRSVPResponses({
+        eventId: 'test-event-123',
+        onResponse: jest.fn(),
+      })
+
+      expect(manager.getActiveSubscriptions()).toBe(1)
+    })
+  })
+})

@@ -1,0 +1,491 @@
+// Individual FAQ Management API - Feature ID: WS-070
+// Handles individual FAQ operations by ID (GET, PUT, DELETE)
+
+import { createClient } from '@supabase/supabase-js'
+import { cookies } from 'next/headers'
+import { NextRequest, NextResponse } from 'next/server'
+import type { Database } from '@/lib/database.types'
+import type { UpdateFaqItemRequest, UpdateFaqCategoryRequest } from '@/types/faq'
+
+export const dynamic = 'force-dynamic'
+
+// GET /api/faq/[id] - Get individual FAQ by ID
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const supabase = createRouteHandlerClient<Database>({ cookies })
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+    
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 }
+      )
+    }
+
+    const faqId = id
+    const { searchParams } = new URL(request.url)
+    const type = searchParams.get('type') || 'faq' // 'faq' or 'category'
+
+    // Get supplier ID from authenticated user
+    const { data: supplier } = await supabase
+      .from('suppliers')
+      .select('id')
+      .eq('user_id', user.id)
+      .single()
+
+    if (!supplier) {
+      return NextResponse.json(
+        { error: 'Supplier not found' },
+        { status: 404 }
+      )
+    }
+
+    if (type === 'category') {
+      // Get FAQ category
+      const { data: category, error } = await supabase
+        .from('faq_categories')
+        .select('*')
+        .eq('id', faqId)
+        .eq('supplier_id', supplier.id)
+        .single()
+
+      if (error) {
+        return NextResponse.json(
+          { error: 'Category not found' },
+          { status: 404 }
+        )
+      }
+
+      return NextResponse.json({ category })
+    } else {
+      // Get FAQ item with category details
+      const { data: faq, error } = await supabase
+        .from('faq_items')
+        .select(`
+          *,
+          faq_categories (
+            id,
+            name,
+            slug
+          )
+        `)
+        .eq('id', faqId)
+        .eq('supplier_id', supplier.id)
+        .single()
+
+      if (error) {
+        return NextResponse.json(
+          { error: 'FAQ not found' },
+          { status: 404 }
+        )
+      }
+
+      return NextResponse.json({ 
+        faq: {
+          ...faq,
+          category_name: faq.faq_categories?.name,
+          category_slug: faq.faq_categories?.slug
+        }
+      })
+    }
+  } catch (error) {
+    console.error('FAQ GET error:', error)
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}
+
+// PUT /api/faq/[id] - Update FAQ or category
+export async function PUT(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const supabase = createRouteHandlerClient<Database>({ cookies })
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+    
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 }
+      )
+    }
+
+    const faqId = id
+    const body = await request.json()
+    const { type, ...updateData } = body
+
+    // Get supplier ID from authenticated user
+    const { data: supplier } = await supabase
+      .from('suppliers')
+      .select('id')
+      .eq('user_id', user.id)
+      .single()
+
+    if (!supplier) {
+      return NextResponse.json(
+        { error: 'Supplier not found' },
+        { status: 404 }
+      )
+    }
+
+    if (type === 'category') {
+      // Update FAQ category
+      const { id, ...categoryUpdates } = updateData as UpdateFaqCategoryRequest
+      
+      const { data: category, error } = await supabase
+        .from('faq_categories')
+        .update(categoryUpdates)
+        .eq('id', faqId)
+        .eq('supplier_id', supplier.id)
+        .select()
+        .single()
+
+      if (error) {
+        return NextResponse.json(
+          { error: 'Failed to update category', details: error.message },
+          { status: 400 }
+        )
+      }
+
+      return NextResponse.json({ category })
+    } else {
+      // Update FAQ item
+      const { id, ...faqUpdates } = updateData as UpdateFaqItemRequest
+      
+      // Validate required fields if provided
+      if (faqUpdates.question && faqUpdates.question.trim().length < 10) {
+        return NextResponse.json(
+          { error: 'Question must be at least 10 characters long' },
+          { status: 400 }
+        )
+      }
+
+      if (faqUpdates.answer && faqUpdates.answer.trim().length < 20) {
+        return NextResponse.json(
+          { error: 'Answer must be at least 20 characters long' },
+          { status: 400 }
+        )
+      }
+
+      const { data: faq, error } = await supabase
+        .from('faq_items')
+        .update(faqUpdates)
+        .eq('id', faqId)
+        .eq('supplier_id', supplier.id)
+        .select(`
+          *,
+          faq_categories (
+            id,
+            name,
+            slug
+          )
+        `)
+        .single()
+
+      if (error) {
+        return NextResponse.json(
+          { error: 'Failed to update FAQ', details: error.message },
+          { status: 400 }
+        )
+      }
+
+      return NextResponse.json({ 
+        faq: {
+          ...faq,
+          category_name: faq.faq_categories?.name,
+          category_slug: faq.faq_categories?.slug
+        }
+      })
+    }
+  } catch (error) {
+    console.error('FAQ PUT error:', error)
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}
+
+// DELETE /api/faq/[id] - Delete FAQ or category
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const supabase = createRouteHandlerClient<Database>({ cookies })
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+    
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 }
+      )
+    }
+
+    const faqId = id
+    const { searchParams } = new URL(request.url)
+    const type = searchParams.get('type') || 'faq' // 'faq' or 'category'
+
+    // Get supplier ID from authenticated user
+    const { data: supplier } = await supabase
+      .from('suppliers')
+      .select('id')
+      .eq('user_id', user.id)
+      .single()
+
+    if (!supplier) {
+      return NextResponse.json(
+        { error: 'Supplier not found' },
+        { status: 404 }
+      )
+    }
+
+    if (type === 'category') {
+      // Check if category has FAQs
+      const { data: faqsInCategory, error: checkError } = await supabase
+        .from('faq_items')
+        .select('id')
+        .eq('category_id', faqId)
+        .limit(1)
+
+      if (checkError) {
+        return NextResponse.json(
+          { error: 'Failed to check category usage' },
+          { status: 500 }
+        )
+      }
+
+      if (faqsInCategory && faqsInCategory.length > 0) {
+        return NextResponse.json(
+          { error: 'Cannot delete category with existing FAQs' },
+          { status: 400 }
+        )
+      }
+
+      // Delete category
+      const { error } = await supabase
+        .from('faq_categories')
+        .delete()
+        .eq('id', faqId)
+        .eq('supplier_id', supplier.id)
+
+      if (error) {
+        return NextResponse.json(
+          { error: 'Failed to delete category' },
+          { status: 400 }
+        )
+      }
+
+      return NextResponse.json({ success: true })
+    } else {
+      // Delete FAQ item
+      const { error } = await supabase
+        .from('faq_items')
+        .delete()
+        .eq('id', faqId)
+        .eq('supplier_id', supplier.id)
+
+      if (error) {
+        return NextResponse.json(
+          { error: 'Failed to delete FAQ' },
+          { status: 400 }
+        )
+      }
+
+      return NextResponse.json({ success: true })
+    }
+  } catch (error) {
+    console.error('FAQ DELETE error:', error)
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}
+
+// PATCH /api/faq/[id] - Partial updates and special operations
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const supabase = createRouteHandlerClient<Database>({ cookies })
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+    
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 }
+      )
+    }
+
+    const faqId = id
+    const body = await request.json()
+    const { action, ...data } = body
+
+    // Get supplier ID from authenticated user
+    const { data: supplier } = await supabase
+      .from('suppliers')
+      .select('id')
+      .eq('user_id', user.id)
+      .single()
+
+    if (!supplier) {
+      return NextResponse.json(
+        { error: 'Supplier not found' },
+        { status: 404 }
+      )
+    }
+
+    switch (action) {
+      case 'toggle_published':
+        return handleTogglePublished(supabase, supplier.id, faqId)
+      
+      case 'toggle_featured':
+        return handleToggleFeatured(supabase, supplier.id, faqId)
+      
+      case 'update_sort_order':
+        return handleUpdateSortOrder(supabase, supplier.id, faqId, data.sort_order)
+      
+      case 'bulk_update':
+        return handleBulkUpdate(supabase, supplier.id, data.faq_ids, data.updates)
+      
+      default:
+        return NextResponse.json(
+          { error: 'Invalid action' },
+          { status: 400 }
+        )
+    }
+  } catch (error) {
+    console.error('FAQ PATCH error:', error)
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}
+
+// Helper Functions for PATCH operations
+
+async function handleTogglePublished(supabase: any, supplier_id: string, faq_id: string) {
+  // First get current state
+  const { data: currentFaq } = await supabase
+    .from('faq_items')
+    .select('is_published')
+    .eq('id', faq_id)
+    .eq('supplier_id', supplier_id)
+    .single()
+
+  if (!currentFaq) {
+    return NextResponse.json(
+      { error: 'FAQ not found' },
+      { status: 404 }
+    )
+  }
+
+  // Toggle the published state
+  const { data: faq, error } = await supabase
+    .from('faq_items')
+    .update({ is_published: !currentFaq.is_published })
+    .eq('id', faq_id)
+    .eq('supplier_id', supplier_id)
+    .select()
+    .single()
+
+  if (error) {
+    return NextResponse.json(
+      { error: 'Failed to update FAQ' },
+      { status: 400 }
+    )
+  }
+
+  return NextResponse.json({ faq })
+}
+
+async function handleToggleFeatured(supabase: any, supplier_id: string, faq_id: string) {
+  // First get current state
+  const { data: currentFaq } = await supabase
+    .from('faq_items')
+    .select('is_featured')
+    .eq('id', faq_id)
+    .eq('supplier_id', supplier_id)
+    .single()
+
+  if (!currentFaq) {
+    return NextResponse.json(
+      { error: 'FAQ not found' },
+      { status: 404 }
+    )
+  }
+
+  // Toggle the featured state
+  const { data: faq, error } = await supabase
+    .from('faq_items')
+    .update({ is_featured: !currentFaq.is_featured })
+    .eq('id', faq_id)
+    .eq('supplier_id', supplier_id)
+    .select()
+    .single()
+
+  if (error) {
+    return NextResponse.json(
+      { error: 'Failed to update FAQ' },
+      { status: 400 }
+    )
+  }
+
+  return NextResponse.json({ faq })
+}
+
+async function handleUpdateSortOrder(
+  supabase: any, 
+  supplier_id: string, 
+  faq_id: string, 
+  sort_order: number
+) {
+  const { data: faq, error } = await supabase
+    .from('faq_items')
+    .update({ sort_order })
+    .eq('id', faq_id)
+    .eq('supplier_id', supplier_id)
+    .select()
+    .single()
+
+  if (error) {
+    return NextResponse.json(
+      { error: 'Failed to update sort order' },
+      { status: 400 }
+    )
+  }
+
+  return NextResponse.json({ faq })
+}
+
+async function handleBulkUpdate(
+  supabase: any, 
+  supplier_id: string, 
+  faq_ids: string[], 
+  updates: Record<string, any>
+) {
+  const { data: faqs, error } = await supabase
+    .from('faq_items')
+    .update(updates)
+    .in('id', faq_ids)
+    .eq('supplier_id', supplier_id)
+    .select()
+
+  if (error) {
+    return NextResponse.json(
+      { error: 'Failed to bulk update FAQs' },
+      { status: 400 }
+    )
+  }
+
+  return NextResponse.json({ faqs })
+}

@@ -1,0 +1,62 @@
+{
+  "last_updated": "2025-01-25T10:00:00Z",
+  "total_features": 210,
+  "completed_features": 144,
+  "in_progress_features": 12,
+  "testing_features": 0,
+  "production_ready": 1,
+  "overall_progress": 68.6,
+  "active_teams": ["Team A", "Team B", "Team C", "Team D", "Team E"],
+  "current_batch": "2025-08-24-batch14",
+  "features": [
+    {
+      "feature_id": "WS-031",
+      "name": "Client List Views",
+      "status": "completed",
+      "completion_date": "2025-01-20",
+      "team": "Team A",
+      "category": "core",
+      "testing_status": "needs-testing",
+      "production_ready": false,
+      "tech_stack": ["Next.js", "React", "Supabase", "PostgreSQL"],
+      "description": "Advanced client list management with filtering, sorting, and bulk operations",
+      "batch": "batch1",
+      "round": "round3"
+    },
+    {
+      "feature_id": "WS-131",
+      "name": "Pricing Strategy System",
+      "status": "completed",
+      "completion_date": "2025-01-22",
+      "team": "Team D",
+      "category": "billing",
+      "testing_status": "passed",
+      "production_ready": true,
+      "tech_stack": ["Stripe", "A/B Testing", "Analytics"],
+      "description": "Advanced pricing strategy engine with A/B testing and optimization",
+      "batch": "batch10",
+      "round": "round3"
+    }
+  ],
+  "recent_completions": [
+    {
+      "feature_id": "WS-144",
+      "name": "Offline Functionality",
+      "completed_date": "2025-01-24",
+      "team": "Team E"
+    }
+  ],
+  "testing_pipeline": {
+    "needs_testing": 143,
+    "in_testing": 0,
+    "testing_passed": 1,
+    "testing_failed": 0
+  },
+  "team_progress": {
+    "Team A": {"completed": 29, "in_progress": 2, "completion_rate": 93.5},
+    "Team B": {"completed": 28, "in_progress": 3, "completion_rate": 90.3},
+    "Team C": {"completed": 30, "in_progress": 2, "completion_rate": 93.8},
+    "Team D": {"completed": 29, "in_progress": 3, "completion_rate": 90.6},
+    "Team E": {"completed": 28, "in_progress": 2, "completion_rate": 93.3}
+  }
+}

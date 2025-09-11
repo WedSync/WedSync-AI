@@ -1,0 +1,25 @@
+import Stripe from 'stripe';
+
+export const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
+  apiVersion: '2024-12-18.acacia',
+});
+
+export const STRIPE_CONFIG = {
+  publishableKey: process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!,
+  secretKey: process.env.STRIPE_SECRET_KEY!,
+  webhookSecret: process.env.STRIPE_WEBHOOK_SECRET!,
+  currency: 'gbp',
+  country: 'GB',
+} as const;
+
+export const STRIPE_PRICES = {
+  BASIC_PLAN: process.env.STRIPE_BASIC_PLAN_PRICE_ID!,
+  PRO_PLAN: process.env.STRIPE_PRO_PLAN_PRICE_ID!,
+  PREMIUM_PLAN: process.env.STRIPE_PREMIUM_PLAN_PRICE_ID!,
+} as const;
+
+export const STRIPE_PRODUCTS = {
+  BASIC_PLAN: process.env.STRIPE_BASIC_PLAN_PRODUCT_ID!,
+  PRO_PLAN: process.env.STRIPE_PRO_PLAN_PRODUCT_ID!,
+  PREMIUM_PLAN: process.env.STRIPE_PREMIUM_PLAN_PRODUCT_ID!,
+} as const;

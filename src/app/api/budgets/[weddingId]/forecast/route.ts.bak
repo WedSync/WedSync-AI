@@ -1,0 +1,286 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import { z } from 'zod';
+
+const ForecastQuerySchema = z.object({
+  method: z.enum(['linear', 'exponential', 'seasonal']).optional().default('linear'),
+  horizon_months: z.number().min(1).max(24).optional().default(12)
+});
+
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { weddingId: string } }
+) {
+  try {
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
+    const weddingId = params.weddingId;
+    const { searchParams } = new URL(request.url);
+    
+    // Validate input
+    const queryValidation = ForecastQuerySchema.safeParse({
+      method: searchParams.get('method') || 'linear',
+      horizon_months: searchParams.get('horizon_months') 
+        ? parseInt(searchParams.get('horizon_months')!) 
+        : 12
+    });
+
+    if (!queryValidation.success) {
+      return NextResponse.json(
+        { error: 'Invalid query parameters', details: queryValidation.error.errors },
+        { status: 400 }
+      );
+    }
+
+    const { method, horizon_months } = queryValidation.data;
+
+    // Check authentication
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Check user has access to this wedding
+    const { data: teamMember, error: teamError } = await supabase
+      .from('wedding_team_members')
+      .select('role')
+      .eq('wedding_id', weddingId)
+      .eq('user_id', user.id)
+      .single();
+
+    if (teamError || !teamMember) {
+      return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+    }
+
+    // Fetch wedding date for timeline context
+    const { data: wedding, error: weddingError } = await supabase
+      .from('weddings')
+      .select('wedding_date, total_budget')
+      .eq('id', weddingId)
+      .single();
+
+    if (weddingError) {
+      return NextResponse.json(
+        { error: 'Wedding not found' },
+        { status: 404 }
+      );
+    }
+
+    // Fetch historical spending data
+    const { data: transactions, error: transactionsError } = await supabase
+      .from('budget_transactions')
+      .select(`
+        id, amount, transaction_date, created_at,
+        budget_categories (name, budgeted_amount)
+      `)
+      .eq('wedding_id', weddingId)
+      .order('transaction_date', { ascending: true });
+
+    if (transactionsError) {
+      console.error('Transactions fetch error:', transactionsError);
+      return NextResponse.json(
+        { error: 'Failed to fetch transaction data' },
+        { status: 500 }
+      );
+    }
+
+    // Fetch budget categories for analysis
+    const { data: categories, error: categoriesError } = await supabase
+      .from('budget_categories')
+      .select('id, name, budgeted_amount, spent_amount, priority')
+      .eq('wedding_id', weddingId)
+      .eq('is_active', true);
+
+    if (categoriesError) {
+      return NextResponse.json(
+        { error: 'Failed to fetch budget categories' },
+        { status: 500 }
+      );
+    }
+
+    // Calculate monthly spending trend
+    const monthlySpending = new Map<string, number>();
+    const now = new Date();
+    const startDate = new Date(now.getFullYear(), now.getMonth() - 11, 1); // Last 12 months
+
+    transactions?.forEach(transaction => {
+      const transactionDate = new Date(transaction.transaction_date);
+      if (transactionDate >= startDate) {
+        const monthKey = `${transactionDate.getFullYear()}-${String(transactionDate.getMonth() + 1).padStart(2, '0')}`;
+        const amount = Math.abs(parseFloat(transaction.amount));
+        monthlySpending.set(monthKey, (monthlySpending.get(monthKey) || 0) + amount);
+      }
+    });
+
+    // Generate projection data
+    const projectionData = [];
+    const spendingValues = Array.from(monthlySpending.values());
+    const avgMonthlySpending = spendingValues.length > 0 
+      ? spendingValues.reduce((sum, val) => sum + val, 0) / spendingValues.length 
+      : 0;
+
+    // Calculate trend (simple linear regression)
+    let trend = 0;
+    if (spendingValues.length > 1) {
+      const n = spendingValues.length;
+      const sumX = (n * (n - 1)) / 2; // Sum of indices
+      const sumY = spendingValues.reduce((sum, val) => sum + val, 0);
+      const sumXY = spendingValues.reduce((sum, val, index) => sum + (val * index), 0);
+      const sumX2 = (n * (n - 1) * (2 * n - 1)) / 6; // Sum of squares of indices
+      
+      trend = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+    }
+
+    // Generate monthly projections
+    const totalBudget = parseFloat(wedding.total_budget) || 0;
+    const currentSpent = categories?.reduce((sum, cat) => sum + parseFloat(cat.spent_amount), 0) || 0;
+    let cumulativeProjected = currentSpent;
+
+    for (let i = 0; i < horizon_months; i++) {
+      const projectedMonth = new Date(now.getFullYear(), now.getMonth() + i, 1);
+      const monthName = projectedMonth.toLocaleString('default', { month: 'short', year: '2-digit' });
+      
+      // Calculate projected spending for this month
+      let projectedMonthlySpend = avgMonthlySpending;
+      
+      switch (method) {
+        case 'linear':
+          projectedMonthlySpend = Math.max(0, avgMonthlySpending + (trend * i));
+          break;
+        case 'exponential':
+          projectedMonthlySpend = avgMonthlySpending * Math.pow(1 + (trend / avgMonthlySpending), i);
+          break;
+        case 'seasonal':
+          // Simple seasonal adjustment (increase spending closer to wedding date)
+          const weddingDate = new Date(wedding.wedding_date);
+          const monthsToWedding = Math.max(1, (weddingDate.getTime() - projectedMonth.getTime()) / (1000 * 60 * 60 * 24 * 30));
+          const seasonalMultiplier = monthsToWedding <= 3 ? 1.5 : monthsToWedding <= 6 ? 1.2 : 1.0;
+          projectedMonthlySpend = avgMonthlySpending * seasonalMultiplier;
+          break;
+      }
+
+      cumulativeProjected += projectedMonthlySpend;
+
+      projectionData.push({
+        month: monthName,
+        actual: i === 0 ? currentSpent : null, // Only show actual for current month
+        projected: Math.round(cumulativeProjected),
+        confidence: Math.max(50, 95 - (i * 5)) // Confidence decreases over time
+      });
+    }
+
+    // Generate smart recommendations
+    const recommendations = [];
+    const projectedTotal = cumulativeProjected;
+    const variance = projectedTotal - totalBudget;
+
+    // Budget overrun warning
+    if (variance > 0) {
+      recommendations.push({
+        title: 'Budget Overrun Alert',
+        description: `You're projected to exceed your budget by $${variance.toLocaleString()}. Consider reallocating funds or reducing expenses.`,
+        urgency: variance > totalBudget * 0.1 ? 'high' : 'medium',
+        savings: Math.min(variance, totalBudget * 0.05)
+      });
+    }
+
+    // Category-specific recommendations
+    categories?.forEach(category => {
+      const spent = parseFloat(category.spent_amount);
+      const budgeted = parseFloat(category.budgeted_amount);
+      const utilizationRate = budgeted > 0 ? spent / budgeted : 0;
+
+      if (utilizationRate > 0.9) {
+        recommendations.push({
+          title: `${category.name} Near Limit`,
+          description: `You've used ${Math.round(utilizationRate * 100)}% of your ${category.name} budget. Consider monitoring future expenses carefully.`,
+          urgency: utilizationRate > 1 ? 'high' : 'medium',
+          category: category.name
+        });
+      } else if (utilizationRate < 0.5 && budgeted > 1000) {
+        recommendations.push({
+          title: `${category.name} Underutilized`,
+          description: `Only ${Math.round(utilizationRate * 100)}% of your ${category.name} budget has been used. You may be able to reallocate some funds.`,
+          urgency: 'low',
+          category: category.name,
+          savings: budgeted * 0.2 // Suggest reallocating 20%
+        });
+      }
+    });
+
+    // Spending pace recommendation
+    const weddingDate = new Date(wedding.wedding_date);
+    const daysToWedding = Math.max(0, (weddingDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+    const monthsToWedding = daysToWedding / 30;
+    
+    if (monthsToWedding > 0 && avgMonthlySpending > 0) {
+      const recommendedMonthlySpend = (totalBudget - currentSpent) / monthsToWedding;
+      const spendingPaceDiff = avgMonthlySpending - recommendedMonthlySpend;
+      
+      if (Math.abs(spendingPaceDiff) > recommendedMonthlySpend * 0.2) {
+        recommendations.push({
+          title: spendingPaceDiff > 0 ? 'Spending Too Quickly' : 'Underspending',
+          description: spendingPaceDiff > 0 
+            ? `Your current spending pace ($${avgMonthlySpending.toLocaleString()}/month) is above the recommended $${recommendedMonthlySpend.toLocaleString()}/month.`
+            : `You're spending below the recommended pace. Consider if you're on track for your wedding plans.`,
+          urgency: Math.abs(spendingPaceDiff) > recommendedMonthlySpend * 0.4 ? 'medium' : 'low'
+        });
+      }
+    }
+
+    // Sort recommendations by urgency
+    const urgencyOrder = { 'high': 3, 'medium': 2, 'low': 1 };
+    recommendations.sort((a, b) => urgencyOrder[b.urgency] - urgencyOrder[a.urgency]);
+
+    const forecastData = {
+      projectionData,
+      recommendations: recommendations.slice(0, 8), // Limit to top 8 recommendations
+      finalProjection: {
+        totalBudget,
+        projectedSpending: Math.round(projectedTotal),
+        variance: Math.round(variance),
+        confidenceLevel: Math.round(85 - Math.min(25, horizon_months * 2)) // Confidence decreases with horizon
+      },
+      methodology: {
+        method,
+        dataPoints: transactions?.length || 0,
+        historicalMonths: monthlySpending.size,
+        avgMonthlySpending: Math.round(avgMonthlySpending),
+        trend: Math.round(trend * 100) / 100
+      }
+    };
+
+    // Log activity
+    await supabase.from('audit_logs').insert({
+      user_id: user.id,
+      wedding_id: weddingId,
+      action: 'generate_budget_forecast',
+      resource_type: 'budget_forecast',
+      resource_id: weddingId,
+      metadata: { 
+        method,
+        horizon_months,
+        projected_total: Math.round(projectedTotal),
+        recommendations_count: recommendations.length
+      }
+    });
+
+    return NextResponse.json({
+      success: true,
+      data: forecastData,
+      meta: {
+        method,
+        horizon_months,
+        generated_at: new Date().toISOString(),
+        wedding_date: wedding.wedding_date
+      }
+    });
+
+  } catch (error) {
+    console.error('Budget forecast API error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}

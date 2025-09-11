@@ -1,0 +1,414 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { validateAuth } from '@/lib/auth-middleware';
+import { autoPopulationService } from '@/lib/services/auto-population-service';
+import { z } from 'zod';
+import { rateLimit } from '@/lib/rate-limit';
+import { 
+  PopulateRequestSchema,
+  WeddingDataUpdateSchema,
+  validateCoreFields,
+  sanitizeInput,
+  RATE_LIMITS
+} from '@/lib/validations/auto-population-schemas';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL || (() => { throw new Error("Missing environment variable: NEXT_PUBLIC_SUPABASE_URL") })(),
+  process.env.SUPABASE_SERVICE_ROLE_KEY || (() => { throw new Error("Missing environment variable: SUPABASE_SERVICE_ROLE_KEY") })()
+);
+
+// Rate limiter for auto-population - 10 requests per minute per user
+const autoPopulationRateLimiter = rateLimit({
+  windowMs: RATE_LIMITS.populate.windowMs,
+  max: RATE_LIMITS.populate.requests,
+  message: RATE_LIMITS.populate.message,
+  keyGenerator: (req: NextRequest) => {
+    // Use user ID for authenticated requests
+    const authHeader = req.headers.get('authorization');
+    if (authHeader) {
+      return `auto-pop:${authHeader}`;
+    }
+    // Fallback to IP
+    const forwarded = req.headers.get('x-forwarded-for');
+    const realIp = req.headers.get('x-real-ip');
+    return `auto-pop-ip:${forwarded?.split(',')[0] || realIp || '127.0.0.1'}`;
+  }
+});
+
+/**
+ * POST /api/auto-population/populate
+ * Core auto-population endpoint: match form fields and populate with couple's wedding data
+ */
+export async function POST(request: NextRequest) {
+  const startTime = Date.now();
+  
+  try {
+    // Rate limiting - strict limits for auto-population
+    const rateLimitResult = await autoPopulationRateLimiter(request);
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { 
+          success: false,
+          error: 'Too many auto-population requests', 
+          retryAfter: rateLimitResult.retryAfter 
+        },
+        { 
+          status: 429,
+          headers: {
+            'X-RateLimit-Limit': rateLimitResult.limit.toString(),
+            'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+            'X-RateLimit-Reset': new Date(rateLimitResult.reset).toISOString(),
+            'Retry-After': rateLimitResult.retryAfter?.toString() || '60'
+          }
+        }
+      );
+    }
+    
+    // Authentication - Required for all auto-population operations
+    const authResult = await validateAuth(request);
+    if (!authResult.success || !authResult.user) {
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized - Authentication required' },
+        { status: 401 }
+      );
+    }
+
+    // Parse and validate request with comprehensive security schemas
+    const body = await request.json();
+    const validationResult = PopulateRequestSchema.safeParse(body);
+    
+    if (!validationResult.success) {
+      return NextResponse.json(
+        { 
+          success: false,
+          error: 'Invalid request data - Validation failed', 
+          details: validationResult.error.errors.map(e => ({
+            field: e.path.join('.'),
+            message: e.message,
+            code: e.code
+          }))
+        },
+        { status: 400 }
+      );
+    }
+    
+    const { formId, clientId, formFields, populationPreferences } = validationResult.data;
+
+    // Performance check - Reject requests with too many fields to prevent DoS
+    if (formFields.length > 200) {
+      return NextResponse.json(
+        { success: false, error: 'Too many form fields - Maximum 200 allowed' },
+        { status: 400 }
+      );
+    }
+
+    // Get user organization for multi-tenant security
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', authResult.user.id)
+      .single();
+
+    if (!profile?.organization_id) {
+      return NextResponse.json(
+        { success: false, error: 'Organization not found - Contact support' },
+        { status: 403 }
+      );
+    }
+
+    // Verify vendor access to client data
+    const access = await autoPopulationService.checkVendorAccess(
+      profile.organization_id,
+      clientId
+    );
+
+    if (!access.canRead) {
+      return NextResponse.json(
+        { success: false, error: 'No access to client wedding data' },
+        { status: 403 }
+      );
+    }
+
+    // Get or create wedding data for this client
+    const weddingData = await autoPopulationService.getOrCreateWeddingData(clientId);
+    
+    if (!weddingData) {
+      return NextResponse.json(
+        { success: false, error: 'Could not access wedding data - Please try again' },
+        { status: 500 }
+      );
+    }
+
+    // Auto-detect field mappings using fuzzy matching algorithms
+    const detectedMappings = await autoPopulationService.autoDetectMappings(
+      formId,
+      formFields
+    );
+
+    // Performance optimization: Store mappings asynchronously if they don't exist
+    if (detectedMappings.length > 0) {
+      // Don't await - process in background for better performance
+      autoPopulationService.createFormFieldMappings(formId, detectedMappings)
+        .catch(error => console.error('Background mapping creation failed:', error));
+    }
+
+    // Get core field values for this form and wedding
+    const coreFieldValues = await autoPopulationService.getCoreFieldsForForm(
+      formId,
+      weddingData.id
+    );
+
+    // Apply population preferences and filters
+    const filteredMappings = detectedMappings.filter(mapping => {
+      if (populationPreferences?.minimumConfidence && 
+          mapping.confidence < populationPreferences.minimumConfidence) {
+        return false;
+      }
+      return true;
+    });
+
+    // Map core field values to form fields with confidence scoring
+    const populatedFields: Record<string, {
+      value: any;
+      confidence: number;
+      source: 'existing' | 'new';
+      coreFieldKey: string;
+      transformationApplied?: string;
+    }> = {};
+
+    for (const mapping of filteredMappings) {
+      const coreValue = coreFieldValues[mapping.core_field_key];
+      if (coreValue !== undefined && coreValue !== null) {
+        populatedFields[mapping.form_field_id] = {
+          value: coreValue,
+          confidence: mapping.confidence,
+          source: 'existing',
+          coreFieldKey: mapping.core_field_key,
+          transformationApplied: mapping.transformation_rule
+        };
+      }
+    }
+
+    // Create population session for tracking and feedback
+    const sessionId = await autoPopulationService.createPopulationSession(
+      clientId,
+      profile.organization_id,
+      formId,
+      populatedFields
+    );
+
+    // Calculate comprehensive stats
+    const fieldsDetected = detectedMappings.length;
+    const fieldsPopulated = Object.keys(populatedFields).length;
+    const averageConfidence = fieldsDetected > 0
+      ? Math.round((detectedMappings.reduce((acc, m) => acc + m.confidence, 0) / fieldsDetected) * 100) / 100
+      : 0;
+
+    // Performance monitoring
+    const processingTime = Date.now() - startTime;
+    
+    // Log slow requests for optimization
+    if (processingTime > 3000) { // >3 seconds is too slow
+      console.warn(`Slow auto-population: ${processingTime}ms for ${fieldsDetected} fields`);
+    }
+
+    // Success response with comprehensive data
+    return NextResponse.json({
+      success: true,
+      sessionId,
+      weddingId: weddingData.id,
+      populatedFields,
+      stats: {
+        fieldsDetected,
+        fieldsPopulated,
+        fieldsSkipped: fieldsDetected - fieldsPopulated,
+        averageConfidence,
+        processingTimeMs: processingTime,
+        accuracyPrediction: averageConfidence > 0.8 ? 0.9 : 0.7 // ML placeholder
+      },
+      mappings: filteredMappings.map(m => ({
+        fieldId: m.form_field_id,
+        coreFieldKey: m.core_field_key,
+        confidence: m.confidence,
+        transformationApplied: m.transformation_rule
+      }))
+    },
+    {
+      headers: {
+        'X-RateLimit-Limit': rateLimitResult.limit.toString(),
+        'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+        'X-RateLimit-Reset': new Date(rateLimitResult.reset).toISOString()
+      }
+    });
+
+  } catch (error) {
+    // Never expose internal error details for security
+    console.error('Auto-population error:', error);
+    
+    // Handle Zod validation errors specifically
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { 
+          success: false,
+          error: 'Invalid request data',
+          details: error.errors.map(e => ({
+            field: e.path.join('.'),
+            message: e.message,
+            code: e.code
+          }))
+        },
+        { status: 400 }
+      );
+    }
+
+    // Generic error response
+    return NextResponse.json(
+      { success: false, error: 'Failed to populate form - Please try again' },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * PUT /api/auto-population/populate
+ * Save populated values back to core wedding data
+ */
+export async function PUT(request: NextRequest) {
+  try {
+    // Rate limiting
+    const rateLimitResult = await autoPopulationRateLimiter(request);
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { 
+          success: false,
+          error: 'Too many requests', 
+          retryAfter: rateLimitResult.retryAfter 
+        },
+        { 
+          status: 429,
+          headers: {
+            'X-RateLimit-Limit': rateLimitResult.limit.toString(),
+            'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+            'X-RateLimit-Reset': new Date(rateLimitResult.reset).toISOString(),
+            'Retry-After': rateLimitResult.retryAfter?.toString() || '60'
+          }
+        }
+      );
+    }
+    
+    // Authentication
+    const authResult = await validateAuth(request);
+    if (!authResult.success || !authResult.user) {
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    // Parse and validate request
+    const body = await request.json();
+    const validationResult = WeddingDataUpdateSchema.safeParse(body);
+    
+    if (!validationResult.success) {
+      return NextResponse.json(
+        { 
+          success: false,
+          error: 'Invalid update data',
+          details: validationResult.error.errors.map(e => ({
+            field: e.path.join('.'),
+            message: e.message
+          }))
+        },
+        { status: 400 }
+      );
+    }
+    
+    const { weddingId, updates, source = 'form_submission' } = validationResult.data;
+
+    // Validate core fields data
+    const coreFieldValidation = validateCoreFields(updates);
+    if (!coreFieldValidation.success) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Invalid wedding data format',
+          details: coreFieldValidation.error.errors.map(e => ({
+            field: e.path.join('.'),
+            message: e.message
+          }))
+        },
+        { status: 400 }
+      );
+    }
+
+    // Check vendor access
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', authResult.user.id)
+      .single();
+
+    if (!profile?.organization_id) {
+      return NextResponse.json(
+        { success: false, error: 'Organization not found' },
+        { status: 403 }
+      );
+    }
+
+    // Verify write access to wedding data
+    const access = await autoPopulationService.checkVendorAccess(
+      profile.organization_id,
+      weddingId
+    );
+
+    if (!access.canWrite) {
+      return NextResponse.json(
+        { success: false, error: 'No write access to wedding data' },
+        { status: 403 }
+      );
+    }
+
+    // Sanitize all string inputs
+    const sanitizedUpdates: Record<string, any> = {};
+    for (const [key, value] of Object.entries(updates)) {
+      if (typeof value === 'string') {
+        sanitizedUpdates[key] = sanitizeInput(value);
+      } else {
+        sanitizedUpdates[key] = value;
+      }
+    }
+
+    // Update core fields
+    const success = await autoPopulationService.updateCoreFields(
+      weddingId,
+      sanitizedUpdates,
+      source
+    );
+
+    if (!success) {
+      return NextResponse.json(
+        { success: false, error: 'Failed to update wedding data' },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: 'Wedding data updated successfully'
+    },
+    {
+      headers: {
+        'X-RateLimit-Limit': rateLimitResult.limit.toString(),
+        'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+        'X-RateLimit-Reset': new Date(rateLimitResult.reset).toISOString()
+      }
+    });
+
+  } catch (error) {
+    console.error('Update wedding data error:', error);
+    return NextResponse.json(
+      { success: false, error: 'Failed to update wedding data' },
+      { status: 500 }
+    );
+  }
+}

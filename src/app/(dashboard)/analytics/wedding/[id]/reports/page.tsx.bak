@@ -1,0 +1,110 @@
+import { Suspense } from 'react';
+import { notFound } from 'next/navigation';
+import ReportBuilder from '@/components/analytics/wedding/ReportBuilder';
+import { createClient } from '@/lib/supabase/server';
+import { RefreshCw } from 'lucide-react';
+
+interface WeddingReportsPageProps {
+  params: Promise<{ id: string }>;
+}
+
+// Loading component for the report builder
+function ReportBuilderLoading() {
+  return (
+    <div className="h-screen flex">
+      <div className="w-80 border-r bg-background p-6">
+        <div className="space-y-6">
+          <div>
+            <div className="h-6 bg-muted animate-pulse rounded-lg mb-2" />
+            <div className="h-4 bg-muted animate-pulse rounded-lg w-3/4" />
+          </div>
+          {Array.from({ length: 8 }).map((_, i) => (
+            <div key={i} className="space-y-2">
+              <div className="h-16 bg-muted animate-pulse rounded-lg" />
+            </div>
+          ))}
+        </div>
+      </div>
+      
+      <div className="flex-1 flex flex-col">
+        <div className="p-6 border-b">
+          <div className="flex items-center justify-between">
+            <div className="h-8 bg-muted animate-pulse rounded-lg w-1/3" />
+            <div className="flex gap-2">
+              <div className="h-8 bg-muted animate-pulse rounded-lg w-20" />
+              <div className="h-8 bg-muted animate-pulse rounded-lg w-24" />
+            </div>
+          </div>
+        </div>
+        
+        <div className="flex-1 p-6 bg-muted/20 flex items-center justify-center">
+          <div className="flex items-center space-x-2">
+            <RefreshCw className="h-6 w-6 animate-spin" />
+            <span>Loading report builder...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Wedding verification component
+async function WeddingReportBuilder({ weddingId }: { weddingId: string }) {
+  const supabase = await createClient();
+
+  // Verify wedding exists and user has access
+  const { data: wedding, error } = await supabase
+    .from('wedding_events')
+    .select('id, wedding_name, bride_name, groom_name, wedding_date, planning_status')
+    .eq('id', weddingId)
+    .single();
+
+  if (error || !wedding) {
+    notFound();
+  }
+
+  const handleSaveReport = async (report: any) => {
+    // Here you would save the report to the database
+    console.log('Saving report:', report);
+    // Implementation would include:
+    // 1. Save report metadata to custom_reports table
+    // 2. Save widget configurations
+    // 3. Update user's saved reports list
+  };
+
+  return (
+    <ReportBuilder 
+      weddingId={weddingId}
+      onSave={handleSaveReport}
+    />
+  );
+}
+
+export async function generateMetadata({ params }: WeddingReportsPageProps) {
+  const { id: weddingId } = await params;
+  const supabase = await createClient();
+
+  const { data: wedding } = await supabase
+    .from('wedding_events')
+    .select('wedding_name, bride_name, groom_name')
+    .eq('id', weddingId)
+    .single();
+
+  const weddingName = wedding?.wedding_name || 
+    `${wedding?.bride_name || 'Bride'} & ${wedding?.groom_name || 'Groom'}'s Wedding`;
+
+  return {
+    title: `${weddingName} Report Builder | WedSync`,
+    description: 'Create custom analytics reports with drag-and-drop widgets for comprehensive wedding planning insights'
+  };
+}
+
+export default async function WeddingReportsPage({ params }: WeddingReportsPageProps) {
+  const { id: weddingId } = await params;
+
+  return (
+    <Suspense fallback={<ReportBuilderLoading />}>
+      <WeddingReportBuilder weddingId={weddingId} />
+    </Suspense>
+  );
+}

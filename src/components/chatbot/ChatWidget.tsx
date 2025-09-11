@@ -1,0 +1,464 @@
+'use client';
+
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import {
+  MessageCircle,
+  X,
+  Minus,
+  Shield,
+  AlertCircle,
+  Maximize2,
+  Move,
+  Settings,
+} from 'lucide-react';
+import {
+  ChatWidgetProps,
+  ChatWidgetState,
+  CHAT_CONSTANTS,
+} from '@/types/chatbot';
+import { useChat } from '@/hooks/useChat';
+import { MessageBubble } from './MessageBubble';
+import { TypingIndicator } from './TypingIndicator';
+import { ChatInput } from './ChatInput';
+import { cn } from '@/lib/utils';
+
+// Default configuration following Untitled UI design system
+const defaultProps: Required<ChatWidgetProps> = {
+  position: 'bottom-right',
+  initialMessage: 'Hi! How can I help you with your wedding business today?',
+  contextHint: '',
+  minimized: false,
+  theme: 'light',
+  disabled: false,
+  showSecurityIndicator: true,
+  allowFileUploads: true,
+  maxFileSize: CHAT_CONSTANTS.MAX_FILE_SIZE,
+  allowedFileTypes: CHAT_CONSTANTS.ALLOWED_FILE_TYPES,
+};
+
+export function ChatWidget(props: ChatWidgetProps = {}) {
+  const config = { ...defaultProps, ...props };
+
+  // Widget state management
+  const [state, setState] = useState<ChatWidgetState>({
+    isOpen: false,
+    isMinimized: config.minimized,
+    position: { x: undefined, y: undefined },
+    isDragging: false,
+    hasUnreadMessages: false,
+    isTyping: false,
+    error: null,
+    securityWarning: null,
+  });
+
+  // Chat functionality
+  const {
+    messages,
+    conversationId,
+    isConnected,
+    isTyping,
+    error,
+    securityWarning,
+    sendMessage,
+    clearHistory,
+    reconnect,
+    dismissError,
+    dismissSecurityWarning,
+    canSendMessage,
+    requestsRemaining,
+  } = useChat();
+
+  // Refs for DOM manipulation
+  const widgetRef = useRef<HTMLDivElement>(null);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<HTMLDivElement>(null);
+
+  // Position calculation based on screen size and config
+  const getPositionStyles = useCallback(() => {
+    const baseClasses = 'fixed z-50 transition-all duration-300 ease-out';
+
+    switch (config.position) {
+      case 'bottom-right':
+        return `${baseClasses} bottom-6 right-6`;
+      case 'bottom-left':
+        return `${baseClasses} bottom-6 left-6`;
+      case 'top-right':
+        return `${baseClasses} top-24 right-6`;
+      case 'top-left':
+        return `${baseClasses} top-24 left-6`;
+      default:
+        return `${baseClasses} bottom-6 right-6`;
+    }
+  }, [config.position]);
+
+  // Handle widget open/close
+  const toggleWidget = useCallback(() => {
+    setState((prev) => ({
+      ...prev,
+      isOpen: !prev.isOpen,
+      hasUnreadMessages: prev.isOpen ? false : prev.hasUnreadMessages,
+    }));
+  }, []);
+
+  // Handle minimize/maximize
+  const toggleMinimize = useCallback(() => {
+    setState((prev) => ({
+      ...prev,
+      isMinimized: !prev.isMinimized,
+    }));
+  }, []);
+
+  // Close widget completely
+  const closeWidget = useCallback(() => {
+    setState((prev) => ({
+      ...prev,
+      isOpen: false,
+      hasUnreadMessages: false,
+    }));
+  }, []);
+
+  // Handle drag functionality
+  const handleDragStart = useCallback((e: React.MouseEvent) => {
+    if (!dragRef.current) return;
+
+    setState((prev) => ({ ...prev, isDragging: true }));
+
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const rect = widgetRef.current?.getBoundingClientRect();
+
+    const handleDragMove = (moveEvent: MouseEvent) => {
+      if (!rect) return;
+
+      const deltaX = moveEvent.clientX - startX;
+      const deltaY = moveEvent.clientY - startY;
+
+      setState((prev) => ({
+        ...prev,
+        position: {
+          x: rect.left + deltaX,
+          y: rect.top + deltaY,
+        },
+      }));
+    };
+
+    const handleDragEnd = () => {
+      setState((prev) => ({ ...prev, isDragging: false }));
+      document.removeEventListener('mousemove', handleDragMove);
+      document.removeEventListener('mouseup', handleDragEnd);
+    };
+
+    document.addEventListener('mousemove', handleDragMove);
+    document.addEventListener('mouseup', handleDragEnd);
+  }, []);
+
+  // Handle new messages to show unread indicator
+  useEffect(() => {
+    if (messages.length > 0 && !state.isOpen) {
+      const lastMessage = messages[messages.length - 1];
+      if (lastMessage.role === 'assistant') {
+        setState((prev) => ({ ...prev, hasUnreadMessages: true }));
+      }
+    }
+  }, [messages, state.isOpen]);
+
+  // Sync typing state
+  useEffect(() => {
+    setState((prev) => ({ ...prev, isTyping }));
+  }, [isTyping]);
+
+  // Sync error states
+  useEffect(() => {
+    setState((prev) => ({ ...prev, error, securityWarning }));
+  }, [error, securityWarning]);
+
+  // Auto-scroll to bottom when new messages arrive
+  useEffect(() => {
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTo({
+        top: chatContainerRef.current.scrollHeight,
+        behavior: 'smooth',
+      });
+    }
+  }, [messages, isTyping]);
+
+  // Render floating chat button when widget is closed
+  const ChatButton = () => (
+    <motion.button
+      whileHover={{ scale: 1.05 }}
+      whileTap={{ scale: 0.95 }}
+      onClick={toggleWidget}
+      disabled={config.disabled}
+      className={cn(
+        'relative flex items-center justify-center',
+        'w-14 h-14 rounded-full shadow-lg',
+        'bg-primary-600 hover:bg-primary-700',
+        'text-white transition-all duration-200',
+        'focus:outline-none focus:ring-4 focus:ring-primary-100',
+        config.disabled && 'opacity-50 cursor-not-allowed',
+      )}
+      aria-label="Open chat"
+    >
+      <MessageCircle className="w-6 h-6" />
+
+      {/* Unread indicator */}
+      {state.hasUnreadMessages && (
+        <motion.div
+          initial={{ scale: 0 }}
+          animate={{ scale: 1 }}
+          className="absolute -top-1 -right-1 w-4 h-4 bg-error-500 rounded-full flex items-center justify-center"
+        >
+          <div className="w-2 h-2 bg-white rounded-full" />
+        </motion.div>
+      )}
+
+      {/* Connection status indicator */}
+      <div
+        className={cn(
+          'absolute -bottom-1 -right-1 w-3 h-3 rounded-full border-2 border-white',
+          isConnected ? 'bg-success-500' : 'bg-error-500',
+        )}
+      />
+    </motion.button>
+  );
+
+  // Render main chat interface
+  const ChatInterface = () => (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.9, y: 20 }}
+      animate={{ opacity: 1, scale: 1, y: 0 }}
+      exit={{ opacity: 0, scale: 0.9, y: 20 }}
+      className={cn(
+        'bg-white rounded-2xl shadow-xl border border-gray-200',
+        'w-96 max-w-[calc(100vw-2rem)] overflow-hidden',
+        state.isMinimized ? 'h-auto' : 'h-[600px]',
+      )}
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between p-4 bg-gray-50 border-b border-gray-200">
+        <div className="flex items-center gap-3">
+          {/* Drag handle */}
+          <div
+            ref={dragRef}
+            onMouseDown={handleDragStart}
+            className="cursor-move p-1 hover:bg-gray-200 rounded"
+          >
+            <Move className="w-4 h-4 text-gray-400" />
+          </div>
+
+          <div>
+            <h3 className="font-semibold text-gray-900 text-sm">
+              WedSync Assistant
+            </h3>
+            <div className="flex items-center gap-2 text-xs text-gray-500">
+              <div
+                className={cn(
+                  'w-2 h-2 rounded-full',
+                  isConnected ? 'bg-success-500' : 'bg-error-500',
+                )}
+              />
+              {isConnected ? 'Online' : 'Connecting...'}
+              {config.showSecurityIndicator && (
+                <>
+                  <span>•</span>
+                  <Shield className="w-3 h-3" />
+                  <span>Secured</span>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1">
+          <button
+            onClick={toggleMinimize}
+            className="p-1 hover:bg-gray-200 rounded text-gray-400 hover:text-gray-600"
+            aria-label={state.isMinimized ? 'Maximize' : 'Minimize'}
+          >
+            {state.isMinimized ? (
+              <Maximize2 className="w-4 h-4" />
+            ) : (
+              <Minus className="w-4 h-4" />
+            )}
+          </button>
+          <button
+            onClick={closeWidget}
+            className="p-1 hover:bg-gray-200 rounded text-gray-400 hover:text-gray-600"
+            aria-label="Close chat"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* Messages area (hidden when minimized) */}
+      {!state.isMinimized && (
+        <>
+          {/* Error/Warning Messages */}
+          {(state.error || state.securityWarning) && (
+            <div className="p-4 border-b border-gray-200">
+              {state.error && (
+                <div className="mb-2 p-3 bg-error-50 border border-error-200 rounded-lg flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 text-error-600 flex-shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <p className="text-sm text-error-800">{state.error}</p>
+                    <button
+                      onClick={dismissError}
+                      className="text-xs text-error-600 hover:text-error-700 underline mt-1"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {state.securityWarning && (
+                <div className="mb-2 p-3 bg-warning-50 border border-warning-200 rounded-lg flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 text-warning-600 flex-shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <p className="text-sm text-warning-800">
+                      {state.securityWarning}
+                    </p>
+                    <button
+                      onClick={dismissSecurityWarning}
+                      className="text-xs text-warning-600 hover:text-warning-700 underline mt-1"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Rate limiting info */}
+          <div className="px-4 py-2 bg-blue-50 border-b border-gray-200 text-xs text-blue-800">
+            {requestsRemaining} messages remaining •
+            <span className="ml-1">
+              Conversation ID: {conversationId.slice(-8)}
+            </span>
+          </div>
+
+          {/* Chat messages */}
+          <div
+            ref={chatContainerRef}
+            className="flex-1 overflow-y-auto p-4 space-y-4 h-96"
+          >
+            {/* Initial message */}
+            {messages.length === 0 && config.initialMessage && (
+              <MessageBubble
+                message={{
+                  id: 'initial',
+                  conversation_id: conversationId,
+                  role: 'assistant',
+                  content: config.initialMessage,
+                  ai_metadata: {},
+                  tokens_used: 0,
+                  response_time_ms: 0,
+                  wedding_context: {},
+                  is_edited: false,
+                  is_flagged: false,
+                  created_at: new Date().toISOString(),
+                  updated_at: new Date().toISOString(),
+                }}
+                isBot={true}
+                showAvatar={true}
+              />
+            )}
+
+            {/* Message history */}
+            {messages.map((message, index) => (
+              <MessageBubble
+                key={message.id}
+                message={message}
+                isBot={message.role === 'assistant'}
+                showAvatar={true}
+                showTimestamp={true}
+                isLatest={index === messages.length - 1}
+              />
+            ))}
+
+            {/* Typing indicator */}
+            <TypingIndicator
+              isVisible={state.isTyping}
+              aiName="WedSync Assistant"
+              showProgress={true}
+            />
+          </div>
+
+          {/* Chat input */}
+          <ChatInput
+            onSendMessage={sendMessage}
+            disabled={!canSendMessage || config.disabled}
+            placeholder="Type your message... (messages are encrypted)"
+            maxLength={CHAT_CONSTANTS.MAX_MESSAGE_LENGTH}
+            allowAttachments={config.allowFileUploads}
+            isLoading={state.isTyping}
+            remainingRequests={requestsRemaining}
+          />
+        </>
+      )}
+    </motion.div>
+  );
+
+  // Don't render if disabled and not already open
+  if (config.disabled && !state.isOpen) {
+    return null;
+  }
+
+  return (
+    <div
+      ref={widgetRef}
+      className={getPositionStyles()}
+      style={
+        state.position.x && state.position.y
+          ? {
+              left: state.position.x,
+              top: state.position.y,
+              right: 'auto',
+              bottom: 'auto',
+            }
+          : undefined
+      }
+    >
+      <AnimatePresence mode="wait">
+        {state.isOpen ? (
+          <ChatInterface key="chat-interface" />
+        ) : (
+          <ChatButton key="chat-button" />
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+// Responsive wrapper for mobile
+export function ResponsiveChatWidget(props: ChatWidgetProps) {
+  const [isMobile, setIsMobile] = useState(false);
+
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
+
+  // Mobile-specific configuration
+  if (isMobile) {
+    return (
+      <ChatWidget
+        {...props}
+        position="bottom-right"
+        // Mobile chat takes full width
+      />
+    );
+  }
+
+  return <ChatWidget {...props} />;
+}
+
+export default ChatWidget;

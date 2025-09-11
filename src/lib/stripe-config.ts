@@ -1,0 +1,446 @@
+// Stripe Configuration for WedSync Payment System
+// Defines subscription tiers and feature gates
+// CORRECTED VERSION: 5 Tiers with GBP Pricing
+
+export type SubscriptionTier =
+  | 'FREE'
+  | 'STARTER'
+  | 'PROFESSIONAL'
+  | 'SCALE'
+  | 'ENTERPRISE';
+
+export interface TierFeatures {
+  logins: number; // -1 for unlimited
+  forms: number; // -1 for unlimited
+  pdfImport: boolean;
+  aiChatbot: boolean;
+  emailAutomation: boolean | 'full';
+  smsReady?: boolean;
+  reviewCollection?: boolean;
+  marketplaceSell?: boolean;
+  referralSystem?: boolean;
+  apiAccess: boolean | 'full';
+  sonicscribe?: boolean;
+  venueFeatures?: boolean;
+  whiteLabel?: boolean;
+  directoryListing: false | 'basic' | 'premium' | 'featured';
+  badge?: string;
+  branding: boolean | string; // false or "Powered by WedSync"
+}
+
+export interface TierDefinition {
+  id: SubscriptionTier;
+  name: string;
+  description: string;
+  monthlyPrice: number; // in GBP
+  annualPrice: number; // in GBP
+  currency: 'GBP';
+  stripePriceIdMonthly?: string;
+  stripePriceIdAnnual?: string;
+  features: TierFeatures;
+  highlights: string[];
+  popular?: boolean;
+}
+
+// CORRECTED: 5-tier structure with GBP pricing
+export const SUBSCRIPTION_TIERS: Record<SubscriptionTier, TierDefinition> = {
+  FREE: {
+    id: 'FREE',
+    name: 'Free',
+    description: 'Perfect for trying out WedSync',
+    monthlyPrice: 0,
+    annualPrice: 0,
+    currency: 'GBP',
+    features: {
+      logins: 1,
+      forms: 1, // Can't create new ones after trial
+      pdfImport: false,
+      aiChatbot: false,
+      emailAutomation: false,
+      apiAccess: false,
+      directoryListing: false,
+      branding: 'Powered by WedSync',
+    },
+    highlights: [
+      '1 user login',
+      '1 form (created during trial)',
+      'Basic features only',
+      'Community support',
+      'Powered by WedSync branding',
+    ],
+  },
+  STARTER: {
+    id: 'STARTER',
+    name: 'Starter',
+    description: 'Great for solo wedding vendors',
+    monthlyPrice: 19, // £19/month
+    annualPrice: 190, // £190/year (2 months free)
+    currency: 'GBP',
+    stripePriceIdMonthly: process.env.STRIPE_STARTER_MONTHLY_PRICE_ID || '',
+    stripePriceIdAnnual: process.env.STRIPE_STARTER_ANNUAL_PRICE_ID || '',
+    features: {
+      logins: 2,
+      forms: -1, // Unlimited
+      pdfImport: true, // ✅ Session B feature enabled!
+      aiChatbot: false,
+      emailAutomation: true, // Email only
+      smsReady: true, // Bring own Twilio
+      apiAccess: false,
+      directoryListing: 'basic',
+      branding: false, // No WedSync branding
+    },
+    highlights: [
+      '2 user logins',
+      'Unlimited forms',
+      '✅ PDF import & parsing',
+      'Email automation',
+      'SMS ready (bring own Twilio)',
+      'Remove WedSync branding',
+      'Basic directory listing',
+    ],
+  },
+  PROFESSIONAL: {
+    id: 'PROFESSIONAL',
+    name: 'Professional',
+    description: 'Everything you need to scale your wedding business',
+    monthlyPrice: 49, // £49/month - SWEET SPOT
+    annualPrice: 490, // £490/year
+    currency: 'GBP',
+    stripePriceIdMonthly:
+      process.env.STRIPE_PROFESSIONAL_MONTHLY_PRICE_ID || '',
+    stripePriceIdAnnual: process.env.STRIPE_PROFESSIONAL_ANNUAL_PRICE_ID || '',
+    features: {
+      logins: 3,
+      forms: -1,
+      pdfImport: true,
+      aiChatbot: true, // ✅ Major differentiator
+      emailAutomation: 'full', // Email + SMS + WhatsApp
+      reviewCollection: true,
+      marketplaceSell: true,
+      apiAccess: false,
+      directoryListing: 'premium',
+      badge: 'Pro',
+      branding: false,
+    },
+    highlights: [
+      '3 user logins',
+      'Unlimited forms',
+      '✅ AI-powered chatbot',
+      'PDF import & parsing',
+      'Full email + SMS + WhatsApp',
+      'Review collection system',
+      'Sell on marketplace',
+      'Premium directory listing',
+      'Pro badge',
+    ],
+    popular: true,
+  },
+  SCALE: {
+    id: 'SCALE',
+    name: 'Scale',
+    description: 'For established wedding businesses',
+    monthlyPrice: 79, // £79/month
+    annualPrice: 790, // £790/year
+    currency: 'GBP',
+    stripePriceIdMonthly: process.env.STRIPE_SCALE_MONTHLY_PRICE_ID || '',
+    stripePriceIdAnnual: process.env.STRIPE_SCALE_ANNUAL_PRICE_ID || '',
+    features: {
+      logins: 5,
+      forms: -1,
+      pdfImport: true,
+      aiChatbot: true,
+      emailAutomation: 'full',
+      reviewCollection: true,
+      marketplaceSell: true,
+      referralSystem: true,
+      apiAccess: true,
+      sonicscribe: true,
+      directoryListing: 'featured',
+      badge: 'Elite',
+      branding: false,
+    },
+    highlights: [
+      '5 user logins',
+      'Everything in Professional',
+      '✅ API access',
+      'Referral system',
+      'SonicScribe integration',
+      'Featured directory listing',
+      'Elite badge',
+      'Priority support',
+    ],
+  },
+  ENTERPRISE: {
+    id: 'ENTERPRISE',
+    name: 'Enterprise',
+    description: 'For agencies and wedding venues',
+    monthlyPrice: 149, // £149/month
+    annualPrice: 1490, // £1490/year
+    currency: 'GBP',
+    stripePriceIdMonthly: process.env.STRIPE_ENTERPRISE_MONTHLY_PRICE_ID || '',
+    stripePriceIdAnnual: process.env.STRIPE_ENTERPRISE_ANNUAL_PRICE_ID || '',
+    features: {
+      logins: -1, // Unlimited
+      forms: -1,
+      pdfImport: true,
+      aiChatbot: true,
+      emailAutomation: 'full',
+      reviewCollection: true,
+      marketplaceSell: true,
+      referralSystem: true,
+      apiAccess: 'full',
+      sonicscribe: true,
+      venueFeatures: true, // Menu, dietary, tables
+      whiteLabel: true,
+      directoryListing: 'featured',
+      badge: 'Enterprise',
+      branding: false,
+    },
+    highlights: [
+      'Unlimited user logins',
+      'Everything in Scale',
+      'Venue management features',
+      'White-label options',
+      'Full API access',
+      'Custom integrations',
+      'Dedicated account manager',
+      'Enterprise badge',
+    ],
+  },
+};
+
+// Map old tier names to new structure for backward compatibility
+export function mapLegacyTier(tier: string): SubscriptionTier {
+  const upperTier = tier.toUpperCase();
+  switch (upperTier) {
+    case 'FREE':
+      return 'FREE';
+    case 'STARTER':
+      return 'STARTER';
+    case 'PROFESSIONAL':
+    case 'PRO':
+      return 'PROFESSIONAL';
+    case 'SCALE':
+      return 'SCALE';
+    case 'ENTERPRISE':
+    case 'BUSINESS':
+      return 'ENTERPRISE';
+    default:
+      return 'FREE';
+  }
+}
+
+// Feature gate helper functions for new tier structure
+export function canCreateForm(
+  tier: SubscriptionTier,
+  currentFormCount: number,
+): boolean {
+  const tierDef = SUBSCRIPTION_TIERS[tier];
+  if (tierDef.features.forms === -1) return true;
+  return currentFormCount < tierDef.features.forms;
+}
+
+export function canUsePdfImport(tier: SubscriptionTier): boolean {
+  // PDF import available from STARTER tier and above
+  return SUBSCRIPTION_TIERS[tier].features.pdfImport;
+}
+
+export function canUseAiChatbot(tier: SubscriptionTier): boolean {
+  // AI chatbot available from PROFESSIONAL tier and above
+  return SUBSCRIPTION_TIERS[tier].features.aiChatbot;
+}
+
+export function canUseApiAccess(tier: SubscriptionTier): boolean {
+  // API access available from SCALE tier and above
+  return (
+    SUBSCRIPTION_TIERS[tier].features.apiAccess === true ||
+    SUBSCRIPTION_TIERS[tier].features.apiAccess === 'full'
+  );
+}
+
+export function getLoginLimit(tier: SubscriptionTier): number {
+  return SUBSCRIPTION_TIERS[tier].features.logins;
+}
+
+// Get upgrade path suggestions for new 5-tier structure
+export function getUpgradePath(
+  currentTier: SubscriptionTier,
+  requiredFeature: string,
+): {
+  suggestedTier: SubscriptionTier;
+  reason: string;
+  price: string;
+} | null {
+  if (currentTier === 'ENTERPRISE') return null; // Already at highest tier
+
+  switch (requiredFeature) {
+    case 'pdfImport':
+      if (currentTier === 'FREE') {
+        return {
+          suggestedTier: 'STARTER',
+          reason: 'Upgrade to Starter to unlock PDF import and unlimited forms',
+          price: '£19/month',
+        };
+      }
+      break;
+
+    case 'aiChatbot':
+      if (currentTier === 'FREE' || currentTier === 'STARTER') {
+        return {
+          suggestedTier: 'PROFESSIONAL',
+          reason:
+            'Upgrade to Professional for AI-powered chatbot and full automation',
+          price: '£49/month',
+        };
+      }
+      break;
+
+    case 'apiAccess':
+      if (['FREE', 'STARTER', 'PROFESSIONAL'].includes(currentTier)) {
+        return {
+          suggestedTier: 'SCALE',
+          reason: 'Upgrade to Scale for API access and advanced features',
+          price: '£79/month',
+        };
+      }
+      break;
+
+    case 'whiteLabel':
+    case 'venueFeatures':
+      if (currentTier !== 'ENTERPRISE') {
+        return {
+          suggestedTier: 'ENTERPRISE',
+          reason: 'Upgrade to Enterprise for white-label and venue management',
+          price: '£149/month',
+        };
+      }
+      break;
+
+    case 'moreForms':
+      if (currentTier === 'FREE') {
+        return {
+          suggestedTier: 'STARTER',
+          reason: 'Upgrade to Starter for unlimited forms',
+          price: '£19/month',
+        };
+      }
+      break;
+
+    case 'moreLogins':
+      const tierOrder = [
+        'FREE',
+        'STARTER',
+        'PROFESSIONAL',
+        'SCALE',
+        'ENTERPRISE',
+      ];
+      const currentIndex = tierOrder.indexOf(currentTier);
+      if (currentIndex < tierOrder.length - 1) {
+        const nextTier = tierOrder[currentIndex + 1] as SubscriptionTier;
+        return {
+          suggestedTier: nextTier,
+          reason: `Upgrade to ${SUBSCRIPTION_TIERS[nextTier].name} for ${SUBSCRIPTION_TIERS[nextTier].features.logins === -1 ? 'unlimited' : SUBSCRIPTION_TIERS[nextTier].features.logins} logins`,
+          price: `£${SUBSCRIPTION_TIERS[nextTier].monthlyPrice}/month`,
+        };
+      }
+      break;
+  }
+
+  return null;
+}
+
+// Check if a feature is available for a tier
+export function isFeatureAvailable(
+  tier: SubscriptionTier,
+  feature: keyof TierFeatures,
+): boolean {
+  const value = SUBSCRIPTION_TIERS[tier].features[feature];
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value === -1 || value > 0;
+  if (typeof value === 'string') return value !== false;
+  return false;
+}
+
+// Format pricing for display (GBP)
+export function formatPrice(
+  price: number,
+  billingCycle: 'monthly' | 'annual' = 'monthly',
+): string {
+  if (price === 0) return 'Free';
+
+  if (billingCycle === 'annual') {
+    const monthlyEquivalent = Math.round(price / 12);
+    return `£${monthlyEquivalent}/mo`;
+  }
+
+  return `£${price}/mo`;
+}
+
+// Get price ID for Stripe checkout
+export function getStripePriceId(
+  tier: SubscriptionTier,
+  billingCycle: 'monthly' | 'annual',
+): string | null {
+  const tierDef = SUBSCRIPTION_TIERS[tier];
+
+  if (tier === 'FREE') return null;
+
+  if (billingCycle === 'annual') {
+    return tierDef.stripePriceIdAnnual || null;
+  }
+
+  return tierDef.stripePriceIdMonthly || null;
+}
+
+// Trial management interface
+export interface TrialStatus {
+  isActive: boolean;
+  trialTier: SubscriptionTier;
+  trialEndDate: Date;
+  daysRemaining: number;
+}
+
+// Create a new trial user with 30-day Professional features
+export function createTrialUser(email: string): {
+  email: string;
+  subscription_tier: SubscriptionTier;
+  trial_tier: SubscriptionTier;
+  trial_end: Date;
+  trial_active: boolean;
+} {
+  const trialEnd = new Date();
+  trialEnd.setDate(trialEnd.getDate() + 30);
+
+  return {
+    email,
+    subscription_tier: 'FREE', // After trial
+    trial_tier: 'PROFESSIONAL', // During trial
+    trial_end: trialEnd,
+    trial_active: true,
+  };
+}
+
+// Check if user is in trial period
+export function checkTrialStatus(
+  trialEnd: Date | string,
+  trialTier?: SubscriptionTier,
+): TrialStatus {
+  const endDate = typeof trialEnd === 'string' ? new Date(trialEnd) : trialEnd;
+  const now = new Date();
+  const isActive = endDate > now;
+  const daysRemaining = isActive
+    ? Math.ceil((endDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
+    : 0;
+
+  return {
+    isActive,
+    trialTier: trialTier || 'PROFESSIONAL',
+    trialEndDate: endDate,
+    daysRemaining,
+  };
+}
+
+// Feature availability checks
+export function canUseJourneyAutomation(tier: SubscriptionTier): boolean {
+  return tier === 'PROFESSIONAL' || tier === 'ENTERPRISE';
+}

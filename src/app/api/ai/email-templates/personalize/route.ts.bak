@@ -1,0 +1,433 @@
+/**
+ * Email Template Personalization API Endpoint - WS-206
+ * 
+ * Secure endpoint for personalizing email templates with client data and merge tags
+ * Implements comprehensive security, authentication, and data validation
+ * 
+ * POST /api/ai/email-templates/personalize
+ * 
+ * Team B - Backend Implementation - 2025-01-20
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { getServerSession } from 'next-auth/next';
+import { authOptions } from '@/lib/auth/config';
+import { withSecureValidation } from '@/lib/validation/middleware';
+import { createClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+
+// ====================================================================
+// REQUEST VALIDATION SCHEMA
+// ====================================================================
+
+const PersonalizeTemplateRequestSchema = z.object({
+  templateId: z.string().uuid('Invalid template ID format'),
+  variantId: z.string().uuid('Invalid variant ID format').optional(),
+  clientId: z.string().uuid('Invalid client ID format').optional(),
+  personalizationData: z.object({
+    client_name: z.string().max(100).optional(),
+    partner_name: z.string().max(100).optional(),
+    wedding_date: z.string().max(50).optional(),
+    venue_name: z.string().max(200).optional(),
+    vendor_name: z.string().max(100).optional(),
+    contact_phone: z.string().max(20).optional(),
+    contact_email: z.string().email().max(100).optional(),
+    guest_count: z.string().max(10).optional(),
+    event_time: z.string().max(20).optional(),
+    special_requests: z.string().max(500).optional(),
+    budget_range: z.string().max(50).optional(),
+    preferred_style: z.string().max(100).optional(),
+    timeline_stage: z.string().max(50).optional(),
+    next_step: z.string().max(200).optional(),
+    // Custom fields
+    custom_fields: z.record(z.string().max(200)).optional(),
+  }),
+  previewMode: z.boolean().default(false), // True for preview, false for actual send
+  testEmail: z.string().email().optional(), // For sending test emails
+});
+
+type PersonalizeTemplateRequest = z.infer<typeof PersonalizeTemplateRequestSchema>;
+
+// ====================================================================
+// EMAIL PERSONALIZATION ENGINE
+// ====================================================================
+
+class EmailPersonalizationEngine {
+  
+  /**
+   * Personalize template with merge tags
+   */
+  static personalizeTemplate(
+    subject: string,
+    body: string,
+    personalizationData: PersonalizeTemplateRequest['personalizationData']
+  ): { subject: string; body: string; mergeTagsReplaced: string[] } {
+    
+    const mergeTagsReplaced: string[] = [];
+    
+    // Create merge tag replacement map
+    const replacements = new Map<string, string>();
+    
+    // Standard merge tags
+    if (personalizationData.client_name) {
+      replacements.set('{{client_name}}', this.sanitizeContent(personalizationData.client_name));
+      replacements.set('{{Client_Name}}', this.sanitizeContent(personalizationData.client_name));
+      replacements.set('{{CLIENT_NAME}}', this.sanitizeContent(personalizationData.client_name.toUpperCase()));
+    }
+    
+    if (personalizationData.partner_name) {
+      replacements.set('{{partner_name}}', this.sanitizeContent(personalizationData.partner_name));
+      replacements.set('{{Partner_Name}}', this.sanitizeContent(personalizationData.partner_name));
+    }
+    
+    if (personalizationData.wedding_date) {
+      const formattedDate = this.formatWeddingDate(personalizationData.wedding_date);
+      replacements.set('{{wedding_date}}', formattedDate);
+      replacements.set('{{Wedding_Date}}', formattedDate);
+    }
+    
+    if (personalizationData.venue_name) {
+      replacements.set('{{venue_name}}', this.sanitizeContent(personalizationData.venue_name));
+      replacements.set('{{Venue_Name}}', this.sanitizeContent(personalizationData.venue_name));
+    }
+    
+    if (personalizationData.vendor_name) {
+      replacements.set('{{vendor_name}}', this.sanitizeContent(personalizationData.vendor_name));
+      replacements.set('{{Vendor_Name}}', this.sanitizeContent(personalizationData.vendor_name));
+    }
+    
+    if (personalizationData.contact_phone) {
+      replacements.set('{{contact_phone}}', this.sanitizeContent(personalizationData.contact_phone));
+    }
+    
+    if (personalizationData.contact_email) {
+      replacements.set('{{contact_email}}', this.sanitizeContent(personalizationData.contact_email));
+    }
+    
+    if (personalizationData.guest_count) {
+      replacements.set('{{guest_count}}', this.sanitizeContent(personalizationData.guest_count));
+    }
+    
+    if (personalizationData.event_time) {
+      replacements.set('{{event_time}}', this.sanitizeContent(personalizationData.event_time));
+    }
+    
+    if (personalizationData.special_requests) {
+      replacements.set('{{special_requests}}', this.sanitizeContent(personalizationData.special_requests));
+    }
+    
+    if (personalizationData.budget_range) {
+      replacements.set('{{budget_range}}', this.sanitizeContent(personalizationData.budget_range));
+    }
+    
+    if (personalizationData.preferred_style) {
+      replacements.set('{{preferred_style}}', this.sanitizeContent(personalizationData.preferred_style));
+    }
+    
+    if (personalizationData.timeline_stage) {
+      replacements.set('{{timeline_stage}}', this.sanitizeContent(personalizationData.timeline_stage));
+    }
+    
+    if (personalizationData.next_step) {
+      replacements.set('{{next_step}}', this.sanitizeContent(personalizationData.next_step));
+    }
+    
+    // Custom fields
+    if (personalizationData.custom_fields) {
+      Object.entries(personalizationData.custom_fields).forEach(([key, value]) => {
+        const sanitizedKey = key.replace(/[^a-zA-Z0-9_]/g, '').toLowerCase();
+        replacements.set(`{{${sanitizedKey}}}`, this.sanitizeContent(value));
+      });
+    }
+    
+    // Apply replacements to subject and body
+    let personalizedSubject = subject;
+    let personalizedBody = body;
+    
+    replacements.forEach((value, mergeTag) => {
+      const regex = new RegExp(this.escapeRegex(mergeTag), 'gi');
+      
+      if (personalizedSubject.includes(mergeTag)) {
+        personalizedSubject = personalizedSubject.replace(regex, value);
+        mergeTagsReplaced.push(mergeTag);
+      }
+      
+      if (personalizedBody.includes(mergeTag)) {
+        personalizedBody = personalizedBody.replace(regex, value);
+        if (!mergeTagsReplaced.includes(mergeTag)) {
+          mergeTagsReplaced.push(mergeTag);
+        }
+      }
+    });
+    
+    // Handle conditional content (if any)
+    personalizedBody = this.processConditionalContent(personalizedBody, personalizationData);
+    
+    return {
+      subject: personalizedSubject,
+      body: personalizedBody,
+      mergeTagsReplaced,
+    };
+  }
+  
+  /**
+   * Sanitize content to prevent XSS
+   */
+  private static sanitizeContent(content: string): string {
+    return content
+      .replace(/[<>\"'&]/g, (match) => {
+        const entities: Record<string, string> = {
+          '<': '&lt;',
+          '>': '&gt;',
+          '"': '&quot;',
+          "'": '&#x27;',
+          '&': '&amp;',
+        };
+        return entities[match] || match;
+      })
+      .trim();
+  }
+  
+  /**
+   * Format wedding date for display
+   */
+  private static formatWeddingDate(dateString: string): string {
+    try {
+      const date = new Date(dateString);
+      if (isNaN(date.getTime())) {
+        return dateString; // Return original if invalid
+      }
+      
+      return date.toLocaleDateString('en-US', {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric'
+      });
+    } catch {
+      return dateString;
+    }
+  }
+  
+  /**
+   * Escape special regex characters
+   */
+  private static escapeRegex(text: string): string {
+    return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+  
+  /**
+   * Process conditional content in templates
+   */
+  private static processConditionalContent(
+    body: string,
+    data: PersonalizeTemplateRequest['personalizationData']
+  ): string {
+    // Handle {{#if field}}content{{/if}} patterns
+    const conditionalRegex = /\{\{#if\s+(\w+)\}\}([\s\S]*?)\{\{\/if\}\}/gi;
+    
+    return body.replace(conditionalRegex, (match, fieldName, content) => {
+      const fieldValue = (data as any)[fieldName];
+      return fieldValue && fieldValue.trim() ? content : '';
+    });
+  }
+}
+
+// ====================================================================
+// MAIN API HANDLER
+// ====================================================================
+
+async function personalizeTemplateHandler(
+  request: NextRequest,
+  validatedData: PersonalizeTemplateRequest
+): Promise<NextResponse> {
+  
+  try {
+    // 1. Authentication Check
+    const session = await getServerSession(authOptions);
+    if (!session?.user?.id) {
+      return NextResponse.json(
+        { 
+          error: 'UNAUTHORIZED', 
+          message: 'Authentication required to personalize templates',
+          timestamp: new Date().toISOString()
+        },
+        { status: 401 }
+      );
+    }
+    
+    // 2. Get User's Organization and Verify Access
+    const supabase = await createClient();
+    
+    const { data: userProfile, error: profileError } = await supabase
+      .from('user_profiles')
+      .select('organization_id, supplier_id')
+      .eq('user_id', session.user.id)
+      .single();
+    
+    if (profileError || !userProfile?.supplier_id) {
+      return NextResponse.json(
+        { 
+          error: 'FORBIDDEN', 
+          message: 'User must be associated with a wedding vendor account',
+          timestamp: new Date().toISOString()
+        },
+        { status: 403 }
+      );
+    }
+    
+    // 3. Retrieve Template (with access control)
+    let templateQuery = supabase
+      .from('email_templates')
+      .select(`
+        id, template_name, subject, body, merge_tags, supplier_id,
+        email_template_variants (
+          id, variant_label, subject, body
+        )
+      `)
+      .eq('id', validatedData.templateId)
+      .eq('supplier_id', userProfile.supplier_id)
+      .eq('is_active', true)
+      .single();
+    
+    const { data: template, error: templateError } = await templateQuery;
+    
+    if (templateError || !template) {
+      return NextResponse.json(
+        { 
+          error: 'TEMPLATE_NOT_FOUND', 
+          message: 'Template not found or access denied',
+          timestamp: new Date().toISOString()
+        },
+        { status: 404 }
+      );
+    }
+    
+    // 4. Select Template or Variant
+    let selectedTemplate = {
+      subject: template.subject,
+      body: template.body,
+      id: template.id,
+    };
+    
+    if (validatedData.variantId && template.email_template_variants) {
+      const variant = template.email_template_variants.find(
+        v => v.id === validatedData.variantId
+      );
+      
+      if (variant) {
+        selectedTemplate = {
+          subject: variant.subject,
+          body: variant.body,
+          id: variant.id,
+        };
+      }
+    }
+    
+    // 5. Verify Client Access (if clientId provided)
+    if (validatedData.clientId) {
+      const { data: client, error: clientError } = await supabase
+        .from('clients')
+        .select('id, organization_id, partner_name')
+        .eq('id', validatedData.clientId)
+        .eq('organization_id', userProfile.organization_id)
+        .single();
+      
+      if (clientError || !client) {
+        return NextResponse.json(
+          { 
+            error: 'CLIENT_NOT_FOUND', 
+            message: 'Client not found or access denied',
+            timestamp: new Date().toISOString()
+          },
+          { status: 404 }
+        );
+      }
+      
+      // Auto-populate client data if not provided
+      if (!validatedData.personalizationData.partner_name && client.partner_name) {
+        validatedData.personalizationData.partner_name = client.partner_name;
+      }
+    }
+    
+    // 6. Personalize Template
+    const personalizedResult = EmailPersonalizationEngine.personalizeTemplate(
+      selectedTemplate.subject,
+      selectedTemplate.body,
+      validatedData.personalizationData
+    );
+    
+    // 7. Log Usage (if not preview mode)
+    if (!validatedData.previewMode) {
+      await supabase.from('email_template_usage_log').insert({
+        template_id: template.id,
+        variant_id: validatedData.variantId || null,
+        supplier_id: userProfile.supplier_id,
+        client_id: validatedData.clientId || null,
+        usage_context: 'manual_send',
+        personalization_data: validatedData.personalizationData,
+        recipient_email: validatedData.testEmail || null,
+        subject_used: personalizedResult.subject,
+        body_length: personalizedResult.body.length,
+        delivery_status: validatedData.testEmail ? 'sent' : null,
+      });
+    }
+    
+    // 8. Success Response
+    return NextResponse.json({
+      success: true,
+      data: {
+        templateId: template.id,
+        variantId: validatedData.variantId,
+        templateName: template.template_name,
+        personalizedContent: {
+          subject: personalizedResult.subject,
+          body: personalizedResult.body,
+        },
+        personalization: {
+          mergeTagsReplaced: personalizedResult.mergeTagsReplaced,
+          totalReplacements: personalizedResult.mergeTagsReplaced.length,
+          availableMergeTags: template.merge_tags || [],
+        },
+        metadata: {
+          isPreview: validatedData.previewMode,
+          clientId: validatedData.clientId,
+          bodyLength: personalizedResult.body.length,
+          subjectLength: personalizedResult.subject.length,
+        }
+      },
+      timestamp: new Date().toISOString(),
+      requestId: crypto.randomUUID(),
+    });
+    
+  } catch (error) {
+    console.error('Email template personalization error:', error);
+    
+    return NextResponse.json(
+      {
+        error: 'INTERNAL_ERROR',
+        message: 'An unexpected error occurred while personalizing template',
+        timestamp: new Date().toISOString(),
+        requestId: crypto.randomUUID(),
+      },
+      { status: 500 }
+    );
+  }
+}
+
+// ====================================================================
+// EXPORT SECURE HANDLER
+// ====================================================================
+
+export const POST = withSecureValidation(
+  PersonalizeTemplateRequestSchema,
+  personalizeTemplateHandler
+);
+
+// Method not allowed for other HTTP methods
+export async function GET() {
+  return NextResponse.json(
+    { error: 'METHOD_NOT_ALLOWED', message: 'GET method not supported' },
+    { status: 405 }
+  );
+}

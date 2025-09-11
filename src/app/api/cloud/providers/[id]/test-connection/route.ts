@@ -1,0 +1,287 @@
+/**
+ * Cloud Provider Connection Testing API
+ * POST /api/cloud/providers/[id]/test-connection - Test provider connectivity
+ * WS-257 Team B Implementation
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { MultiCloudOrchestrationService } from '@/lib/services/cloud-orchestration-service';
+import { testConnectionRequestSchema } from '@/lib/validations/cloud-infrastructure';
+import { z } from 'zod';
+
+// Rate limiting - more restrictive for connection testing
+const RATE_LIMIT = { requests: 20, windowMs: 60000 }; // 20 requests per minute
+
+const requestCounts = new Map<string, { count: number; resetTime: number }>();
+
+function checkRateLimit(clientId: string): boolean {
+  const now = Date.now();
+  const current = requestCounts.get(clientId);
+
+  if (!current || now > current.resetTime) {
+    requestCounts.set(clientId, {
+      count: 1,
+      resetTime: now + RATE_LIMIT.windowMs,
+    });
+    return true;
+  }
+
+  if (current.count >= RATE_LIMIT.requests) {
+    return false;
+  }
+
+  current.count++;
+  return true;
+}
+
+function getClientId(request: NextRequest): string {
+  const forwarded = request.headers.get('x-forwarded-for');
+  const ip = forwarded ? forwarded.split(',')[0] : request.ip || 'unknown';
+  return `ip:${ip}`;
+}
+
+async function getUserFromAuth(request: NextRequest) {
+  try {
+    const supabase = createClient();
+    const {
+      data: { user },
+      error,
+    } = await supabase.auth.getUser();
+
+    if (error || !user) {
+      throw new Error('Authentication required');
+    }
+
+    const { data: userData, error: userError } = await supabase
+      .from('users')
+      .select('organization_id, role, permissions')
+      .eq('id', user.id)
+      .single();
+
+    if (userError || !userData) {
+      throw new Error('User not found');
+    }
+
+    return {
+      userId: user.id,
+      email: user.email!,
+      organizationId: userData.organization_id,
+      role: userData.role,
+      permissions: userData.permissions || [],
+    };
+  } catch (error) {
+    throw new Error('Authentication failed');
+  }
+}
+
+interface RouteParams {
+  params: {
+    id: string;
+  };
+}
+
+/**
+ * POST /api/cloud/providers/[id]/test-connection
+ * Test connectivity to a specific cloud provider
+ */
+export async function POST(request: NextRequest, { params }: RouteParams) {
+  const startTime = Date.now();
+
+  try {
+    // Rate limiting
+    const clientId = getClientId(request);
+    if (!checkRateLimit(clientId)) {
+      return NextResponse.json(
+        {
+          error: 'Rate limit exceeded',
+          retryAfter: Math.ceil(RATE_LIMIT.windowMs / 1000),
+        },
+        {
+          status: 429,
+          headers: {
+            'Retry-After': Math.ceil(RATE_LIMIT.windowMs / 1000).toString(),
+          },
+        },
+      );
+    }
+
+    // Authentication
+    const user = await getUserFromAuth(request);
+
+    // Check permissions - viewers can test connections
+    if (
+      !['owner', 'admin', 'manager', 'engineer', 'viewer'].includes(user.role)
+    ) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions' },
+        { status: 403 },
+      );
+    }
+
+    const { id: providerId } = params;
+
+    if (!providerId || providerId.trim() === '') {
+      return NextResponse.json(
+        { error: 'Provider ID is required' },
+        { status: 400 },
+      );
+    }
+
+    // Parse request body (optional parameters)
+    let testParams = {
+      timeout: 10000,
+      includeRegions: true,
+      includeServices: false,
+    };
+
+    try {
+      const body = await request.json();
+      testParams = testConnectionRequestSchema.parse(body);
+    } catch (parseError) {
+      // Use default parameters if body is empty or invalid
+      if (parseError instanceof z.ZodError) {
+        return NextResponse.json(
+          {
+            error: 'Invalid request parameters',
+            details: parseError.errors.map((e) => ({
+              field: e.path.join('.'),
+              message: e.message,
+            })),
+          },
+          { status: 400 },
+        );
+      }
+    }
+
+    // Create orchestration service
+    const orchestrationService = new MultiCloudOrchestrationService({
+      organizationId: user.organizationId,
+      userId: user.userId,
+    });
+
+    // Get provider
+    const provider = await orchestrationService.getCloudProvider(providerId);
+
+    // Test connection
+    const connectionResult = await provider.testConnection(testParams.timeout);
+
+    // Get additional information if requested and connection successful
+    let regions: string[] = [];
+    let services: Array<{
+      id: string;
+      name: string;
+      displayName: string;
+      category: string;
+      isAvailable: boolean;
+    }> = [];
+
+    if (connectionResult.success) {
+      try {
+        if (testParams.includeRegions) {
+          const regionList = await provider.listRegions();
+          regions = regionList.map((r) => r.name);
+        }
+
+        if (testParams.includeServices) {
+          const serviceList = await provider.listServices();
+          services = serviceList;
+        }
+      } catch (error) {
+        // Don't fail the entire request if these additional calls fail
+        console.warn('Failed to get additional provider information:', error);
+      }
+    }
+
+    // Update provider status in database
+    const supabase = createClient();
+    await supabase
+      .from('cloud_providers')
+      .update({
+        last_sync_at: new Date().toISOString(),
+        sync_status: connectionResult.success ? 'synced' : 'error',
+        error_message: connectionResult.error || null,
+      })
+      .eq('id', providerId)
+      .eq('organization_id', user.organizationId);
+
+    // Prepare response
+    const response = {
+      success: connectionResult.success,
+      latencyMs: connectionResult.latencyMs,
+      testDurationMs: Date.now() - startTime,
+      ...(connectionResult.error && { error: connectionResult.error }),
+      ...(connectionResult.details && { details: connectionResult.details }),
+      ...(regions.length > 0 && { regions }),
+      ...(services.length > 0 && { services }),
+      metadata: {
+        providerId,
+        testTimestamp: new Date().toISOString(),
+        testParameters: testParams,
+      },
+    };
+
+    // Audit log
+    console.log('Connection test completed:', {
+      action: 'TEST_CLOUD_PROVIDER_CONNECTION',
+      resourceType: 'cloud_provider',
+      resourceId: providerId,
+      success: connectionResult.success,
+      latencyMs: connectionResult.latencyMs,
+      testDurationMs: response.testDurationMs,
+      userId: user.userId,
+      organizationId: user.organizationId,
+    });
+
+    return NextResponse.json(response);
+  } catch (error) {
+    const testDurationMs = Date.now() - startTime;
+
+    console.error('Error testing cloud provider connection:', error);
+
+    if (error instanceof Error) {
+      if (error.message.includes('Authentication')) {
+        return NextResponse.json({ error: error.message }, { status: 401 });
+      }
+      if (
+        error.message.includes('permission') ||
+        error.message.includes('Insufficient')
+      ) {
+        return NextResponse.json({ error: error.message }, { status: 403 });
+      }
+      if (error.message.includes('not found')) {
+        return NextResponse.json(
+          { error: 'Provider not found' },
+          { status: 404 },
+        );
+      }
+      if (
+        error.message.includes('timeout') ||
+        error.message.includes('connection')
+      ) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: 'Connection timeout or network error',
+            testDurationMs,
+            details: { originalError: error.message },
+          },
+          { status: 502 },
+        );
+      }
+    }
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Connection test failed',
+        testDurationMs,
+        details: {
+          errorType: 'internal_error',
+          message: 'An internal error occurred during connection testing',
+        },
+      },
+      { status: 500 },
+    );
+  }
+}

@@ -1,0 +1,508 @@
+'use client'
+
+import React, { useState, useMemo, useCallback } from 'react'
+import { motion, AnimatePresence } from 'framer-motion';
+import { 
+  Sparkles, 
+  ChevronDown, 
+  ChevronUp, 
+  Check, 
+  X, 
+  Clock, 
+  Shield, 
+  AlertCircle,
+  TrendingUp,
+  Download,
+  RefreshCw,
+  Eye
+} from 'lucide-react'
+
+// Untitled UI components
+import { Button } from '@/components/untitled-ui/button'
+import { Badge } from '@/components/untitled-ui/badge'
+import { Progress } from '@/components/untitled-ui/progress'
+
+// UI components
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Separator } from '@/components/ui/separator'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+
+// Context and types
+import { useAutoPopulationContext } from './AutoPopulationProvider'
+import { type ConfidenceLevel } from '@/types/auto-population'
+
+// Utilities
+import { cn } from '@/lib/utils'
+
+interface PopulationStatusBannerProps {
+  className?: string
+  showDetailedStats?: boolean
+  collapsible?: boolean
+  autoExpand?: boolean
+  onExportAuditLog?: () => void
+  compactMode?: boolean
+}
+
+// Get confidence level styling
+const getConfidenceStyle = (level: ConfidenceLevel) => {
+  switch (level) {
+    case 'high':
+      return {
+        bg: 'bg-green-100',
+        text: 'text-green-800',
+        badge: 'bg-green-500 text-white',
+        icon: '🟢'
+      }
+    case 'medium':
+      return {
+        bg: 'bg-yellow-100',
+        text: 'text-yellow-800',
+        badge: 'bg-yellow-500 text-white',
+        icon: '🟡'
+      }
+    case 'low':
+      return {
+        bg: 'bg-orange-100',
+        text: 'text-orange-800',
+        badge: 'bg-orange-500 text-white',
+        icon: '🟠'
+      }
+  }
+}
+
+// Convert confidence score to level
+const getConfidenceLevel = (score: number): ConfidenceLevel => {
+  if (score >= 0.9) return 'high'
+  if (score >= 0.7) return 'medium'
+  return 'low'
+}
+
+// Format time duration
+const formatDuration = (ms: number): string => {
+  if (ms < 1000) return `${ms}ms`
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
+  return `${(ms / 60000).toFixed(1)}min`
+}
+
+export function PopulationStatusBanner({
+  className,
+  showDetailedStats = true,
+  collapsible = true,
+  autoExpand = false,
+  onExportAuditLog,
+  compactMode = false
+}: PopulationStatusBannerProps) {
+  const {
+    session,
+    populationData,
+    isLoading,
+    getSessionSummary,
+    exportAuditLog,
+    grantConsent,
+    clearSession
+  } = useAutoPopulationContext()
+
+  const [isExpanded, setIsExpanded] = useState(autoExpand)
+  const [isExporting, setIsExporting] = useState(false)
+
+  // Calculate population statistics
+  const stats = useMemo(() => {
+    if (!session || populationData.size === 0) {
+      return {
+        total: 0,
+        populated: 0,
+        accepted: 0,
+        rejected: 0,
+        pending: 0,
+        highConfidence: 0,
+        mediumConfidence: 0,
+        lowConfidence: 0,
+        sensitive: 0,
+        averageConfidence: 0,
+        completionRate: 0
+      }
+    }
+
+    const dataArray = Array.from(populationData.values())
+    
+    const total = dataArray.length
+    const populated = dataArray.length
+    const accepted = dataArray.filter(d => d.status === 'accepted').length
+    const rejected = dataArray.filter(d => d.status === 'rejected').length
+    const pending = dataArray.filter(d => d.status === 'pending').length
+    
+    const highConfidence = dataArray.filter(d => d.confidenceScore >= 0.9).length
+    const mediumConfidence = dataArray.filter(d => d.confidenceScore >= 0.7 && d.confidenceScore < 0.9).length
+    const lowConfidence = dataArray.filter(d => d.confidenceScore < 0.7).length
+    
+    const sensitive = dataArray.filter(d => d.isSensitive).length
+    const averageConfidence = dataArray.reduce((sum, d) => sum + d.confidenceScore, 0) / dataArray.length
+    const completionRate = total > 0 ? (accepted / total) * 100 : 0
+
+    return {
+      total,
+      populated,
+      accepted,
+      rejected,
+      pending,
+      highConfidence,
+      mediumConfidence,
+      lowConfidence,
+      sensitive,
+      averageConfidence,
+      completionRate
+    }
+  }, [session, populationData])
+
+  // Session summary
+  const sessionSummary = useMemo(() => {
+    return getSessionSummary()
+  }, [getSessionSummary])
+
+  // Accept all high confidence suggestions
+  const handleAcceptAllHighConfidence = useCallback(() => {
+    const highConfidenceFields = Array.from(populationData.entries())
+      .filter(([_, data]) => data.confidenceScore >= 0.9 && data.status === 'pending')
+    
+    // In a real implementation, you'd batch these operations
+    highConfidenceFields.forEach(([fieldId, _]) => {
+      // acceptPopulation(fieldId) - would need to be available from context
+    })
+  }, [populationData])
+
+  // Clear all population data
+  const handleClearAll = useCallback(() => {
+    clearSession()
+  }, [clearSession])
+
+  // Export audit log
+  const handleExportAuditLog = useCallback(async () => {
+    setIsExporting(true)
+    
+    try {
+      const auditData = exportAuditLog()
+      
+      // Create and download file
+      const blob = new Blob([auditData], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `auto-population-audit-${sessionSummary.sessionId.slice(0, 8)}-${new Date().toISOString().split('T')[0]}.json`
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      URL.revokeObjectURL(url)
+      
+      onExportAuditLog?.()
+    } catch (error) {
+      console.error('Failed to export audit log:', error)
+    } finally {
+      setIsExporting(false)
+    }
+  }, [exportAuditLog, sessionSummary.sessionId, onExportAuditLog])
+
+  // Don't render if no session or no population data
+  if (!session || stats.total === 0) {
+    return null
+  }
+
+  return (
+    <TooltipProvider>
+      <Card className={cn(
+        "border-blue-200 bg-gradient-to-r from-blue-50 via-indigo-50 to-purple-50",
+        "shadow-sm hover:shadow-md transition-all duration-300",
+        className
+      )}>
+        <CardHeader className={cn("pb-3", compactMode && "pb-2")}>
+          <div className="flex items-center justify-between">
+            <CardTitle className="flex items-center gap-2 text-base font-semibold text-blue-900">
+              <motion.div
+                animate={{ rotate: 360 }}
+                transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+              >
+                <Sparkles className="h-5 w-5 text-blue-600" />
+              </motion.div>
+              
+              {compactMode ? (
+                <span>Auto-Fill: {stats.populated} suggestions</span>
+              ) : (
+                <span>Smart Auto-Fill Active</span>
+              )}
+            </CardTitle>
+
+            <div className="flex items-center gap-2">
+              {/* Quick Stats */}
+              <div className="flex items-center gap-1">
+                <Badge className="bg-blue-500 text-white text-xs">
+                  {stats.populated} suggestions
+                </Badge>
+                <Badge className="bg-green-500 text-white text-xs">
+                  {Math.round(stats.averageConfidence * 100)}% avg
+                </Badge>
+              </div>
+
+              {/* Expand/Collapse Button */}
+              {collapsible && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setIsExpanded(!isExpanded)}
+                  className="h-8 w-8 p-0 text-blue-700 hover:bg-blue-100"
+                  aria-label={isExpanded ? 'Collapse details' : 'Expand details'}
+                >
+                  {isExpanded ? (
+                    <ChevronUp className="h-4 w-4" />
+                  ) : (
+                    <ChevronDown className="h-4 w-4" />
+                  )}
+                </Button>
+              )}
+            </div>
+          </div>
+
+          {/* Compact Summary */}
+          {!compactMode && (
+            <div className="space-y-2">
+              <p className="text-sm text-blue-700">
+                Found <strong>{stats.populated}</strong> auto-fill suggestions for your wedding form
+                {stats.highConfidence > 0 && (
+                  <span> • <strong>{stats.highConfidence}</strong> high confidence</span>
+                )}
+              </p>
+
+              {/* Progress Bar */}
+              <div className="flex items-center gap-3">
+                <div className="flex-1">
+                  <div className="flex justify-between text-xs text-blue-600 mb-1">
+                    <span>Completion Progress</span>
+                    <span>{Math.round(stats.completionRate)}%</span>
+                  </div>
+                  <Progress 
+                    value={stats.completionRate} 
+                    className="h-2"
+                  />
+                </div>
+                
+                {isLoading && (
+                  <Clock className="h-4 w-4 animate-spin text-blue-500" />
+                )}
+              </div>
+            </div>
+          )}
+        </CardHeader>
+
+        <AnimatePresence>
+          {isExpanded && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              transition={{ duration: 0.3, ease: "easeInOut" }}
+            >
+              <CardContent className="pt-0 space-y-4">
+                {/* Detailed Statistics */}
+                {showDetailedStats && (
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <div className="bg-white rounded-lg p-3 border border-blue-100">
+                      <div className="text-2xl font-bold text-green-600">
+                        {stats.accepted}
+                      </div>
+                      <div className="text-xs text-gray-600">Accepted</div>
+                    </div>
+                    
+                    <div className="bg-white rounded-lg p-3 border border-blue-100">
+                      <div className="text-2xl font-bold text-orange-600">
+                        {stats.pending}
+                      </div>
+                      <div className="text-xs text-gray-600">Pending Review</div>
+                    </div>
+                    
+                    <div className="bg-white rounded-lg p-3 border border-blue-100">
+                      <div className="text-2xl font-bold text-blue-600">
+                        {Math.round(stats.averageConfidence * 100)}%
+                      </div>
+                      <div className="text-xs text-gray-600">Avg Confidence</div>
+                    </div>
+                    
+                    <div className="bg-white rounded-lg p-3 border border-blue-100">
+                      <div className="text-2xl font-bold text-purple-600">
+                        {stats.sensitive}
+                      </div>
+                      <div className="text-xs text-gray-600 flex items-center gap-1">
+                        <Shield className="h-3 w-3" />
+                        Sensitive
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Confidence Breakdown */}
+                <div className="space-y-3">
+                  <h4 className="font-medium text-blue-900">Confidence Distribution</h4>
+                  
+                  <div className="space-y-2">
+                    {(['high', 'medium', 'low'] as const).map((level) => {
+                      const count = stats[`${level}Confidence`]
+                      const style = getConfidenceStyle(level)
+                      const percentage = stats.total > 0 ? (count / stats.total) * 100 : 0
+                      
+                      return (
+                        <div key={level} className="flex items-center gap-3">
+                          <div className="w-16 text-sm capitalize font-medium text-gray-700">
+                            {style.icon} {level}
+                          </div>
+                          <div className="flex-1">
+                            <div className="flex justify-between items-center mb-1">
+                              <div className={cn("h-2 bg-gray-200 rounded-full flex-1 mr-2")}>
+                                <div 
+                                  className={cn("h-full rounded-full transition-all duration-500", style.badge.split(' ')[0])}
+                                  style={{ width: `${percentage}%` }}
+                                />
+                              </div>
+                              <Badge className={cn("text-xs", style.badge)}>
+                                {count}
+                              </Badge>
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+
+                <Separator />
+
+                {/* Action Buttons */}
+                <div className="flex flex-wrap items-center gap-2">
+                  {stats.highConfidence > 0 && (
+                    <Button
+                      size="sm"
+                      onClick={handleAcceptAllHighConfidence}
+                      className="bg-green-600 hover:bg-green-700 text-white"
+                    >
+                      <Check className="h-3 w-3 mr-1" />
+                      Accept All High Confidence ({stats.highConfidence})
+                    </Button>
+                  )}
+
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setIsExpanded(false)}
+                  >
+                    <Eye className="h-3 w-3 mr-1" />
+                    Review Individual Fields
+                  </Button>
+
+                  {onExportAuditLog && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleExportAuditLog}
+                      disabled={isExporting}
+                    >
+                      {isExporting ? (
+                        <RefreshCw className="h-3 w-3 mr-1 animate-spin" />
+                      ) : (
+                        <Download className="h-3 w-3 mr-1" />
+                      )}
+                      Export Audit Log
+                    </Button>
+                  )}
+
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleClearAll}
+                    className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                  >
+                    <X className="h-3 w-3 mr-1" />
+                    Clear All
+                  </Button>
+                </div>
+
+                {/* Session Information */}
+                <div className="bg-white bg-opacity-50 rounded-lg p-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <h5 className="font-medium text-blue-900">Session Information</h5>
+                    <Badge variant="outline" className="text-xs">
+                      Session ID: {sessionSummary.sessionId.slice(0, 8)}...
+                    </Badge>
+                  </div>
+                  
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-xs">
+                    <div>
+                      <span className="text-gray-600">Duration:</span>
+                      <div className="font-medium">
+                        {formatDuration(sessionSummary.sessionDuration)}
+                      </div>
+                    </div>
+                    
+                    <div>
+                      <span className="text-gray-600">Total Events:</span>
+                      <div className="font-medium">
+                        {sessionSummary.totalEvents}
+                      </div>
+                    </div>
+                    
+                    <div>
+                      <span className="text-gray-600">Security Score:</span>
+                      <div className={cn(
+                        "font-medium",
+                        sessionSummary.securityScore >= 80 ? "text-green-600" :
+                        sessionSummary.securityScore >= 60 ? "text-yellow-600" :
+                        "text-red-600"
+                      )}>
+                        {sessionSummary.securityScore}/100
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Consent Status */}
+                  <div className="flex items-center gap-2 pt-2 border-t border-blue-100">
+                    <div className={cn(
+                      "flex items-center gap-1 text-xs px-2 py-1 rounded-full",
+                      session.hasUserConsent 
+                        ? "bg-green-100 text-green-800" 
+                        : "bg-yellow-100 text-yellow-800"
+                    )}>
+                      <Shield className="h-3 w-3" />
+                      {session.hasUserConsent ? 'Consent Granted' : 'Consent Required'}
+                    </div>
+                    
+                    {stats.sensitive > 0 && (
+                      <Tooltip>
+                        <TooltipTrigger>
+                          <div className="flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-amber-100 text-amber-800">
+                            <AlertCircle className="h-3 w-3" />
+                            {stats.sensitive} sensitive
+                          </div>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          <p>These fields contain sensitive information and are encrypted</p>
+                        </TooltipContent>
+                      </Tooltip>
+                    )}
+                  </div>
+                </div>
+
+                {/* Wedding Context */}
+                <div className="bg-purple-50 rounded-lg p-3">
+                  <div className="flex items-center gap-2 mb-2">
+                    <TrendingUp className="h-4 w-4 text-purple-600" />
+                    <h5 className="font-medium text-purple-900">Impact</h5>
+                  </div>
+                  <p className="text-sm text-purple-700">
+                    Smart auto-fill has potentially saved you{' '}
+                    <strong>{Math.round((stats.populated * 2) / 60)} minutes</strong>{' '}
+                    of form filling time, helping you focus on planning your perfect wedding day.
+                  </p>
+                </div>
+              </CardContent>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </Card>
+    </TooltipProvider>
+  )
+}

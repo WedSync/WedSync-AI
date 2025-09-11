@@ -1,0 +1,300 @@
+export interface LTVMetrics {
+  averageLTV: number;
+  medianLTV: number;
+  totalCustomers: number;
+  totalRevenue: number;
+  averagePaybackPeriod: number;
+  churnRate: number;
+  lastCalculated: Date;
+}
+
+export interface LTVSegment {
+  id: string;
+  name: string;
+  type: 'vendor_type' | 'plan_tier' | 'acquisition_channel' | 'geographic' | 'custom';
+  averageLTV: number;
+  customerCount: number;
+  totalRevenue: number;
+  churnRate: number;
+  acquisitionCost: number;
+  paybackPeriod: number;
+  ltvCacRatio: number;
+  confidenceInterval: {
+    lower: number;
+    upper: number;
+    confidence: number;
+  };
+}
+
+export interface LTVSegmentAnalysis {
+  segments: LTVSegment[];
+  comparison: {
+    bestPerforming: LTVSegment;
+    worstPerforming: LTVSegment;
+    statisticalSignificance: boolean;
+    pValue: number;
+  };
+  trends: {
+    period: string;
+    growth: number;
+    direction: 'up' | 'down' | 'stable';
+  };
+}
+
+export interface ChannelCACRatio {
+  channel: string;
+  channelType: 'organic' | 'paid_search' | 'social_media' | 'referral' | 'direct' | 'partnership';
+  totalSpend: number;
+  customersAcquired: number;
+  cac: number;
+  averageLTV: number;
+  ltvCacRatio: number;
+  paybackPeriod: number;
+  roi: number;
+  monthlyTrend: Array<{
+    month: string;
+    cac: number;
+    ltv: number;
+    ratio: number;
+  }>;
+}
+
+export interface LTVPredictionModel {
+  modelId: string;
+  modelType: 'cohort_based' | 'probabilistic' | 'machine_learning' | 'regression';
+  name: string;
+  accuracy: number;
+  lastTrained: Date;
+  predictions: LTVPrediction[];
+  validation: ModelValidation;
+}
+
+export interface LTVPrediction {
+  customerId?: string;
+  segmentId: string;
+  predictedLTV: number;
+  confidenceInterval: ConfidenceInterval;
+  timeHorizon: number; // months
+  factors: PredictionFactor[];
+  createdAt: Date;
+}
+
+export interface ConfidenceInterval {
+  lower: number;
+  upper: number;
+  confidence: number; // percentage 0-100
+}
+
+export interface PredictionFactor {
+  name: string;
+  weight: number;
+  impact: 'positive' | 'negative' | 'neutral';
+  value: number;
+}
+
+export interface ModelValidation {
+  testPeriod: {
+    start: Date;
+    end: Date;
+  };
+  actualVsPredicted: Array<{
+    customerId: string;
+    predicted: number;
+    actual: number;
+    error: number;
+    errorPercentage: number;
+  }>;
+  metrics: {
+    mae: number; // Mean Absolute Error
+    mse: number; // Mean Squared Error
+    rmse: number; // Root Mean Squared Error
+    r2: number; // R-squared
+  };
+}
+
+export interface ModelAccuracyMetrics {
+  overall: number;
+  bySegment: Record<string, number>;
+  byTimeHorizon: Record<number, number>;
+  trend: Array<{
+    period: string;
+    accuracy: number;
+  }>;
+}
+
+export interface ValidationResult {
+  modelId: string;
+  validationDate: Date;
+  accuracy: number;
+  passed: boolean;
+  issues: string[];
+}
+
+export interface ChannelCACData {
+  channel: string;
+  monthlySpend: number;
+  customersAcquired: number;
+  cac: number;
+  efficiency: number;
+  trend: 'improving' | 'declining' | 'stable';
+}
+
+export interface LTVCACRatio {
+  segmentId: string;
+  channel: string;
+  ltv: number;
+  cac: number;
+  ratio: number;
+  isHealthy: boolean;
+  targetRatio: number;
+  variance: number;
+}
+
+export interface RatioThreshold {
+  segmentType: string;
+  channel: string;
+  minRatio: number;
+  targetRatio: number;
+  maxRatio: number;
+  alertLevel: 'green' | 'yellow' | 'red';
+}
+
+export interface PaybackAnalysis {
+  segmentId: string;
+  channel: string;
+  paybackPeriod: number; // months
+  isAcceptable: boolean;
+  targetPayback: number;
+  variance: number;
+  monthlyContribution: number;
+}
+
+export interface LTVDistributionData {
+  totalCustomers: number;
+  distribution: Array<{
+    range: string;
+    count: number;
+    percentage: number;
+    cumulativePercentage: number;
+  }>;
+  statistics: {
+    mean: number;
+    median: number;
+    mode: number;
+    standardDeviation: number;
+    skewness: number;
+    kurtosis: number;
+  };
+}
+
+export interface PercentileData {
+  percentile: number;
+  value: number;
+  customerCount: number;
+  revenueContribution: number;
+}
+
+export interface OutlierAnalysis {
+  highValueOutliers: Array<{
+    customerId: string;
+    ltv: number;
+    segment: string;
+    zScore: number;
+  }>;
+  lowValueOutliers: Array<{
+    customerId: string;
+    ltv: number;
+    segment: string;
+    zScore: number;
+  }>;
+  outlierImpact: {
+    revenueContribution: number;
+    percentageOfTotal: number;
+  };
+}
+
+export interface SegmentDistribution {
+  segmentId: string;
+  segmentName: string;
+  distribution: LTVDistributionData;
+  percentiles: PercentileData[];
+  comparison: {
+    vsOverall: number; // percentage difference
+    rank: number;
+  };
+}
+
+export interface LTVDashboardData {
+  metrics: LTVMetrics;
+  segmentAnalysis: LTVSegmentAnalysis;
+  cacRatios: ChannelCACRatio[];
+  predictiveModels: LTVPredictionModel[];
+  distributionData: LTVDistributionData;
+  lastUpdated: Date;
+}
+
+export interface LTVFilters {
+  dateRange: {
+    start: Date;
+    end: Date;
+  };
+  segments: string[];
+  channels: string[];
+  vendorTypes: string[];
+  planTiers: string[];
+  minLTV?: number;
+  maxLTV?: number;
+}
+
+export interface LTVExportData {
+  format: 'csv' | 'excel' | 'pdf' | 'json';
+  data: LTVDashboardData;
+  filters: LTVFilters;
+  generatedAt: Date;
+  generatedBy: string;
+}
+
+// Wedding-specific LTV types
+export interface WeddingVendorLTV extends LTVSegment {
+  vendorType: 'photographer' | 'venue' | 'caterer' | 'florist' | 'dj' | 'planner' | 'other';
+  seasonality: {
+    peakMonths: string[];
+    lowMonths: string[];
+    seasonalMultiplier: number;
+  };
+  weddingCount: number;
+  averageWeddingValue: number;
+  repeatBookingRate: number;
+}
+
+export interface WeddingMarketSegment {
+  budgetTier: 'budget' | 'mid_tier' | 'luxury' | 'ultra_luxury';
+  geography: string;
+  weddingSize: 'intimate' | 'medium' | 'large' | 'mega';
+  averageLTV: number;
+  marketPenetration: number;
+  growthRate: number;
+}
+
+// API Response types
+export interface LTVAnalyticsResponse {
+  success: boolean;
+  data: LTVDashboardData;
+  error?: string;
+  warnings?: string[];
+}
+
+export interface LTVSegmentResponse {
+  success: boolean;
+  data: LTVSegmentAnalysis;
+  error?: string;
+}
+
+export interface LTVPredictionResponse {
+  success: boolean;
+  data: {
+    predictions: LTVPrediction[];
+    models: LTVPredictionModel[];
+  };
+  error?: string;
+}

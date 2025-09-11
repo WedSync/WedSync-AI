@@ -1,0 +1,450 @@
+/**
+ * WS-155 Round 2: Integration Tests
+ * Team C - Advanced Integration & Analytics Validation
+ */
+
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { MultiProviderFailover } from '@/lib/services/multi-provider-failover';
+import { DeliveryOptimizationService } from '@/lib/services/delivery-optimization-service';
+import { AdvancedWebhookHandler } from '@/lib/services/advanced-webhook-handler';
+import { ProviderAnalyticsService } from '@/lib/services/provider-analytics-service';
+import { SmartRetryLogic } from '@/lib/services/smart-retry-logic';
+import { EngagementAnalyticsService } from '@/lib/services/engagement-analytics-service';
+import { GuestCommunicationInsightsService } from '@/lib/services/guest-communication-insights';
+import { ABTestingIntegrationService } from '@/lib/services/ab-testing-integration';
+describe('WS-155 Round 2: Advanced Integration Tests', () => {
+  
+  describe('Multi-Provider Failover', () => {
+    let failoverService: MultiProviderFailover;
+    
+    beforeEach(() => {
+      failoverService = new MultiProviderFailover({
+        maxRetries: 3,
+        retryDelay: 100,
+        healthCheckInterval: 5000
+      });
+    });
+    afterEach(() => {
+      failoverService.destroy();
+    it('should failover to alternative provider on primary failure', async () => {
+      // Create mock providers
+      const primaryProvider = {
+        name: 'primary',
+        type: 'email' as const,
+        priority: 100,
+        healthy: true,
+        lastHealthCheck: new Date(),
+        successRate: 0.95,
+        avgResponseTime: 500,
+        send: vi.fn().mockRejectedValueOnce(new Error('Provider error')),
+        healthCheck: vi.fn().mockResolvedValue(true)
+      };
+      
+      const secondaryProvider = {
+        name: 'secondary',
+        priority: 90,
+        successRate: 0.93,
+        avgResponseTime: 600,
+        send: vi.fn().mockResolvedValue({
+          success: true,
+          messageId: 'msg123',
+          provider: 'secondary'
+        }),
+      failoverService.registerProvider('email', primaryProvider);
+      failoverService.registerProvider('email', secondaryProvider);
+      const message = {
+        id: 'test123',
+        to: 'guest@example.com',
+        subject: 'Test',
+        body: 'Test message',
+        priority: 'normal' as const
+      const result = await failoverService.send(message);
+      expect(result.success).toBe(true);
+      expect(result.provider).toBe('secondary');
+      expect(result.failoverUsed).toBe(true);
+      expect(primaryProvider.send).toHaveBeenCalledTimes(1);
+      expect(secondaryProvider.send).toHaveBeenCalledTimes(1);
+    it('should track provider health and statistics', async () => {
+      const provider = {
+        name: 'test-provider',
+          messageId: 'msg123'
+      failoverService.registerProvider('email', provider);
+        id: 'test456',
+        priority: 'high' as const
+      await failoverService.send(message);
+      const stats = failoverService.getProviderStats('test-provider');
+      expect(stats).toBeDefined();
+      expect(stats.totalAttempts).toBe(1);
+      expect(stats.successCount).toBe(1);
+  });
+  describe('Delivery Optimization', () => {
+    let optimizationService: DeliveryOptimizationService;
+      optimizationService = new DeliveryOptimizationService({
+        enableAI: true,
+        minHistoryForPrediction: 2
+      optimizationService.destroy();
+    it('should calculate optimal send time based on engagement history', async () => {
+      const context = {
+        guestId: 'guest123',
+        messageType: 'reminder' as const,
+        weddingDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+        timezone: 'America/New_York',
+        previousEngagements: [
+          {
+            messageId: 'msg1',
+            sentAt: new Date('2025-01-01T10:00:00'),
+            openedAt: new Date('2025-01-01T10:15:00')
+          },
+            messageId: 'msg2',
+            sentAt: new Date('2025-01-05T14:00:00'),
+            openedAt: new Date('2025-01-05T14:30:00')
+            messageId: 'msg3',
+            sentAt: new Date('2025-01-10T10:00:00'),
+            openedAt: new Date('2025-01-10T10:10:00')
+          }
+        ],
+        urgency: 'normal' as const
+      const optimalTime = await optimizationService.calculateOptimalTime(context);
+      expect(optimalTime).toBeDefined();
+      expect(optimalTime.confidence).toBeGreaterThan(0);
+      expect(optimalTime.reasoning).toHaveLength(5);
+      expect(optimalTime.alternativeWindows).toBeDefined();
+    it('should apply urgency modifiers correctly', async () => {
+      const urgentContext = {
+        guestId: 'guest456',
+        messageType: 'update' as const,
+        weddingDate: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000),
+        previousEngagements: [],
+        urgency: 'urgent' as const
+      const optimalTime = await optimizationService.calculateOptimalTime(urgentContext);
+      // Urgent messages should be scheduled immediately
+      const timeDiff = optimalTime.startTime.getTime() - Date.now();
+      expect(timeDiff).toBeLessThan(60000); // Within 1 minute
+  describe('Advanced Webhook Handler', () => {
+    let webhookHandler: AdvancedWebhookHandler;
+      webhookHandler = new AdvancedWebhookHandler();
+      webhookHandler.destroy();
+    it('should process SendGrid webhook events', async () => {
+      const headers = {
+        'x-twilio-email-event-webhook-signature': 'test-signature',
+        'x-twilio-email-event-webhook-timestamp': Date.now().toString()
+      const body = [
+        {
+          event: 'delivered',
+          sg_message_id: 'msg123',
+          email: 'guest@example.com',
+          timestamp: Date.now() / 1000
+        },
+          event: 'open',
+          timestamp: (Date.now() + 1000) / 1000
+        }
+      ];
+      const result = await webhookHandler.handleWebhook(
+        'sendgrid',
+        headers,
+        body,
+        JSON.stringify(body)
+      );
+      expect(result.events).toHaveLength(2);
+      expect(result.events![0].type).toBe('delivered');
+      expect(result.events![1].type).toBe('opened');
+    it('should handle critical events immediately', async () => {
+      let criticalEventHandled = false;
+      webhookHandler.on('critical:event', (event) => {
+        criticalEventHandled = true;
+        expect(event.type).toBe('bounced');
+      const body = {
+        event: 'bounce',
+        sg_message_id: 'msg456',
+        email: 'invalid@example.com',
+        timestamp: Date.now() / 1000,
+        type: 'blocked',
+        reason: 'Invalid email'
+      await webhookHandler.handleWebhook(
+        {},
+        [body],
+        JSON.stringify([body])
+      expect(criticalEventHandled).toBe(true);
+  describe('Provider Analytics', () => {
+    let analyticsService: ProviderAnalyticsService;
+      analyticsService = new ProviderAnalyticsService({
+        retentionDays: 90,
+        alertThresholds: {
+          deliveryRate: 0.95,
+          bounceRate: 0.05,
+          complaintRate: 0.001,
+          failureRate: 0.02
+      analyticsService.destroy();
+    it('should track provider metrics accurately', () => {
+      // Track multiple events
+      const events = [
+        { provider: 'sendgrid', type: 'sent' as const, timestamp: new Date(), messageId: 'msg1' },
+        { provider: 'sendgrid', type: 'delivered' as const, timestamp: new Date(), messageId: 'msg1' },
+        { provider: 'sendgrid', type: 'opened' as const, timestamp: new Date(), messageId: 'msg1' },
+        { provider: 'twilio', type: 'sent' as const, timestamp: new Date(), messageId: 'msg2' },
+        { provider: 'twilio', type: 'failed' as const, timestamp: new Date(), messageId: 'msg2' }
+      events.forEach(event => analyticsService.trackEvent(event));
+      const sendgridMetrics = analyticsService.getProviderMetrics(
+        new Date(Date.now() - 60000),
+        new Date()
+      expect(sendgridMetrics).toBeDefined();
+      expect(sendgridMetrics!.volume.sent).toBe(1);
+      expect(sendgridMetrics!.volume.delivered).toBe(1);
+      expect(sendgridMetrics!.volume.opened).toBe(1);
+      expect(sendgridMetrics!.rates.deliveryRate).toBe(1);
+    it('should generate comparative analysis', () => {
+      // Add sample data for multiple providers
+      ['sendgrid', 'twilio', 'resend'].forEach(provider => {
+        for (let i = 0; i < 10; i++) {
+          analyticsService.trackEvent({
+            provider,
+            type: 'sent',
+            timestamp: new Date(),
+            messageId: `${provider}_${i}`
+          });
+      const analysis = analyticsService.getComparativeAnalysis(
+        ['sendgrid', 'twilio', 'resend'],
+        new Date(Date.now() - 3600000),
+      expect(analysis.providers).toHaveLength(3);
+      expect(analysis.bestPerformer).toBeDefined();
+      expect(analysis.insights.length).toBeGreaterThan(0);
+      expect(analysis.recommendations.length).toBeGreaterThan(0);
+  describe('Smart Retry Logic', () => {
+    let retryLogic: SmartRetryLogic;
+      retryLogic = new SmartRetryLogic();
+      retryLogic.destroy();
+    it('should analyze failure and determine retry strategy', () => {
+        id: 'msg789',
+        provider: 'sendgrid',
+        recipient: 'guest@example.com',
+        content: {
+          subject: 'Test',
+          body: 'Test message'
+        priority: 'normal' as const,
+        originalSentAt: new Date()
+        messageId: 'msg789',
+        failureType: 'network_error' as const,
+        timestamp: new Date(),
+        attemptNumber: 1,
+        isPermanent: false
+      const decision = retryLogic.analyzeFailure(message, context);
+      expect(decision.shouldRetry).toBe(true);
+      expect(decision.delayMs).toBeGreaterThan(0);
+      expect(decision.strategy).toBe('network_error');
+    it('should not retry permanent failures', () => {
+        id: 'msg999',
+        recipient: 'invalid@example.com',
+        messageId: 'msg999',
+        failureType: 'invalid_recipient' as const,
+        isPermanent: true
+      expect(decision.shouldRetry).toBe(false);
+      expect(decision.reason).toContain('does not allow retry');
+  describe('Engagement Analytics', () => {
+    let engagementService: EngagementAnalyticsService;
+      engagementService = new EngagementAnalyticsService();
+      engagementService.destroy();
+    it('should track engagement events and calculate scores', () => {
+          id: 'evt1',
+          messageId: 'msg1',
+          guestId: 'guest1',
+          weddingId: 'wedding1',
+          type: 'sent' as const,
+          timestamp: new Date()
+          id: 'evt2',
+          type: 'opened' as const,
+          id: 'evt3',
+          type: 'clicked' as const,
+      events.forEach(event => engagementService.trackEngagement(event));
+      const profile = engagementService.getGuestProfile('guest1');
+      expect(profile).toBeDefined();
+      expect(profile!.totalMessagesSent).toBe(1);
+      expect(profile!.totalOpens).toBe(1);
+      expect(profile!.totalClicks).toBe(1);
+      expect(profile!.engagementScore).toBeGreaterThan(0);
+    it('should generate tracking pixels and tracked links', () => {
+      const pixel = engagementService.generateTrackingPixel('msg123', 'guest456');
+      expect(pixel).toContain('<img');
+      expect(pixel).toContain('track/open');
+      const trackedLink = engagementService.generateTrackedLink(
+        'https://example.com/rsvp',
+        'msg123',
+        'guest456'
+      expect(trackedLink).toContain('track/click');
+      expect(trackedLink).toContain('mid=msg123');
+      expect(trackedLink).toContain('gid=guest456');
+  describe('Guest Communication Insights', () => {
+    let insightsService: GuestCommunicationInsightsService;
+      insightsService = new GuestCommunicationInsightsService();
+      insightsService.destroy();
+    it('should analyze guest communication patterns', () => {
+      const guestData = [
+          communications: [
+            {
+              type: 'invitation',
+              sentAt: new Date('2025-01-01T10:00:00'),
+              openedAt: new Date('2025-01-01T10:30:00'),
+              clickedAt: new Date('2025-01-01T10:35:00'),
+              channel: 'email' as const,
+              contentLength: 500,
+              hasImages: true,
+              linkCount: 3
+            },
+              type: 'reminder',
+              sentAt: new Date('2025-01-05T14:00:00'),
+              openedAt: new Date('2025-01-05T15:00:00'),
+              contentLength: 300,
+              hasImages: false,
+              linkCount: 2
+            }
+          ]
+      insightsService.analyzeGuestCommunications(guestData);
+      const pattern = insightsService.getGuestPattern('guest1');
+      expect(pattern).toBeDefined();
+      expect(pattern!.preferredChannel).toBeDefined();
+      expect(pattern!.engagementHistory.totalInteractions).toBe(2);
+    it('should generate wedding communication metrics', () => {
+      const guestData = Array.from({ length: 10 }, (_, i) => ({
+        guestId: `guest${i}`,
+        weddingId: 'wedding1',
+        communications: [
+            type: 'invitation',
+            sentAt: new Date(),
+            openedAt: i < 7 ? new Date() : undefined,
+            channel: 'email' as const,
+            contentLength: 500,
+            hasImages: true,
+            linkCount: 3
+        ]
+      }));
+      const metrics = insightsService.getWeddingMetrics('wedding1');
+      expect(metrics).toBeDefined();
+      expect(metrics!.guestCoverage).toBe(100);
+      expect(metrics!.overallHealth).toBeGreaterThan(0);
+  describe('A/B Testing Integration', () => {
+    let abTestService: ABTestingIntegrationService;
+      abTestService = new ABTestingIntegrationService();
+      abTestService.destroy();
+    it('should create and run A/B tests', () => {
+      const test = abTestService.createTest({
+        name: 'Subject Line Test',
+        description: 'Testing engagement with different subject lines',
+        type: 'subject_line',
+        status: 'draft',
+        startDate: new Date(),
+        targetAudience: {
+          size: 1000
+        variants: [
+            id: 'variant_a',
+            name: 'Variant A',
+            allocation: 50,
+            content: {
+              subjectLine: "You're Invited!"
+            metrics: {} as any,
+            status: 'active'
+            id: 'variant_b',
+            name: 'Variant B',
+              subjectLine: "Save the Date - John & Jane's Wedding"
+        settings: {
+          minSampleSize: 100,
+          confidenceLevel: 0.95,
+          autoSelectWinner: true,
+          winnerCriteria: 'open_rate'
+      expect(test.id).toBeDefined();
+      expect(test.variants).toHaveLength(2);
+      expect(test.metrics.powerAnalysis.requiredSampleSize).toBeGreaterThan(0);
+      // Start the test
+      abTestService.startTest(test.id);
+      // Record events
+      for (let i = 0; i < 100; i++) {
+        const variantId = i % 2 === 0 ? 'variant_a' : 'variant_b';
+        abTestService.recordEvent(test.id, variantId, 'sent');
+        abTestService.recordEvent(test.id, variantId, 'delivered');
+        
+        // Variant B gets more opens
+        if (variantId === 'variant_b' || Math.random() > 0.7) {
+          abTestService.recordEvent(test.id, variantId, 'opened');
+      }
+      const result = abTestService.getTestResults(test.id);
+      expect(result).toBeDefined();
+      expect(result!.winner).toBeDefined();
+      expect(result!.confidence).toBeGreaterThan(0);
+      expect(result!.insights.length).toBeGreaterThan(0);
+    it('should calculate statistical significance', () => {
+        name: 'Click Rate Test',
+        description: 'Testing different CTAs',
+        type: 'content',
+          size: 500
+            id: 'control',
+            name: 'Control',
+              bodyContent: 'Click here to RSVP'
+            id: 'test',
+            name: 'Test',
+              bodyContent: 'RSVP Now - Limited Seats Available'
+          minSampleSize: 200,
+          autoSelectWinner: false,
+          winnerCriteria: 'click_rate'
+      // Simulate clear winner scenario
+      for (let i = 0; i < 250; i++) {
+        abTestService.recordEvent(test.id, 'control', 'sent');
+        abTestService.recordEvent(test.id, 'control', 'delivered');
+        abTestService.recordEvent(test.id, 'test', 'sent');
+        abTestService.recordEvent(test.id, 'test', 'delivered');
+        // Control: 20% click rate
+        if (i % 5 === 0) {
+          abTestService.recordEvent(test.id, 'control', 'clicked');
+        // Test: 35% click rate
+        if (i % 3 === 0) {
+          abTestService.recordEvent(test.id, 'test', 'clicked');
+      expect(result!.winner.id).toBe('test');
+      expect(result!.improvement.relative).toBeGreaterThan(50);
+      expect(result!.confidence).toBeGreaterThan(0.9);
+  describe('Integration: Full Communication Flow', () => {
+    it('should handle complete communication workflow', async () => {
+      // Initialize all services
+      const failover = new MultiProviderFailover();
+      const optimization = new DeliveryOptimizationService();
+      const webhooks = new AdvancedWebhookHandler();
+      const analytics = new ProviderAnalyticsService();
+      const retry = new SmartRetryLogic();
+      const engagement = new EngagementAnalyticsService();
+      // Create provider
+          messageId: 'msg_integration_test'
+      failover.registerProvider('email', provider);
+      // Calculate optimal send time
+      const optimalTime = await optimization.calculateOptimalTime({
+        guestId: 'guest_integration',
+        messageType: 'invitation',
+        weddingDate: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
+        urgency: 'normal'
+      // Send message
+      const result = await failover.send({
+        id: 'msg_integration',
+        subject: 'Wedding Invitation',
+        body: 'You are invited!',
+        type: 'email',
+        priority: 'normal'
+      // Track analytics
+      analytics.trackEvent({
+        provider: 'test-provider',
+        type: 'sent',
+        messageId: 'msg_integration'
+      // Track engagement
+      engagement.trackEngagement({
+        id: 'eng_1',
+        messageId: 'msg_integration',
+        weddingId: 'wedding_integration',
+        timestamp: new Date()
+      // Simulate webhook callback
+      await webhooks.handleWebhook(
+        [{
+          sg_message_id: 'msg_integration',
+        }],
+        ''
+      // Clean up
+      failover.destroy();
+      optimization.destroy();
+      webhooks.destroy();
+      analytics.destroy();
+      retry.destroy();
+      engagement.destroy();
+});

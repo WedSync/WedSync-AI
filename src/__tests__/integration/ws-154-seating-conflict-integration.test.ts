@@ -1,0 +1,360 @@
+/**
+ * WS-154 Seating Arrangements Integration & Conflict Management
+ * Comprehensive integration tests for Team C deliverables
+ * 
+ * Tests the integration between:
+ * - RelationshipConflictValidator
+ * - GuestSeatingBridge  
+ * - RelationshipManagementService
+ * - Real-time conflict monitoring
+ * - Guest management system integration
+ */
+
+import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/test'
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { createClient } from '@supabase/supabase-js'
+import { 
+  RelationshipConflictValidator,
+  createRelationshipConflictValidator 
+} from '@/lib/services/relationship-conflict-validator'
+  GuestSeatingBridge,
+  createGuestSeatingBridge 
+} from '@/lib/services/guest-seating-bridge'
+  RelationshipManagementService,
+  createRelationshipManagementService 
+} from '@/lib/services/relationship-management-service'
+import { createGuestService } from '@/lib/services/guestService'
+import guestSyncManager from '@/lib/realtime/guest-sync'
+// Test configuration
+const TEST_TIMEOUT = 30000 // 30 seconds for integration tests
+const PERFORMANCE_THRESHOLD = 500 // 500ms requirement from WS-154
+// Test data setup
+interface TestContext {
+  supabase: ReturnType<typeof createClient>
+  conflictValidator: RelationshipConflictValidator
+  seatingBridge: GuestSeatingBridge
+  relationshipService: RelationshipManagementService
+  guestService: any
+  testCoupleId: string
+  testGuests: any[]
+  cleanup: () => Promise<void>
+}
+let testContext: TestContext
+describe('WS-154 Seating Conflict Integration Tests', () => {
+  
+  beforeAll(async () => {
+    // Initialize test environment
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!
+    )
+    // Initialize services
+    const conflictValidator = await createRelationshipConflictValidator()
+    const seatingBridge = await createGuestSeatingBridge()  
+    const relationshipService = await createRelationshipManagementService()
+    const guestService = await createGuestService()
+    // Create test couple and guests
+    const { testCoupleId, testGuests, cleanup } = await setupTestData(supabase)
+    testContext = {
+      supabase,
+      conflictValidator,
+      seatingBridge,
+      relationshipService,
+      guestService,
+      testCoupleId,
+      testGuests,
+      cleanup
+    }
+  }, TEST_TIMEOUT)
+  afterAll(async () => {
+    if (testContext?.cleanup) {
+      await testContext.cleanup()
+  })
+  describe('Core Integration: Conflict Detection', () => {
+    
+    test('detects conflicts in real-time during assignment', async () => {
+      const startTime = Date.now()
+      // Setup: Create incompatible guests
+      const [guestA, guestB] = testContext.testGuests.slice(0, 2)
+      
+      // Create incompatible relationship
+      await testContext.relationshipService.createRelationship(
+        testContext.testCoupleId,
+        {
+          guest_id_1: guestA.id,
+          guest_id_2: guestB.id,
+          relationship_type: 'divorced',
+          conflict_severity: 'incompatible',
+          notes: 'Divorced couple - cannot be seated together'
+        }
+      )
+      // Test: Assign both guests to same table
+      const seatingResult = await testContext.seatingBridge.executeSeatingOperation(
+          type: 'assign',
+          guest_ids: [guestA.id, guestB.id],
+          table_number: 1,
+          validate_conflicts: true
+      const validationTime = Date.now() - startTime
+      // Assertions
+      expect(seatingResult.success).toBe(true)
+      expect(seatingResult.conflicts_detected).toBeTruthy()
+      expect(seatingResult.conflicts_detected?.has_conflicts).toBe(true)
+      expect(seatingResult.conflicts_detected?.conflicts).toHaveLength(1)
+      expect(seatingResult.conflicts_detected?.conflicts[0].severity).toBe('incompatible')
+      expect(seatingResult.warnings).toContain('Conflicts detected at table 1')
+      // Performance requirement: <500ms
+      expect(validationTime).toBeLessThan(PERFORMANCE_THRESHOLD)
+      expect(seatingResult.performance_metrics.validation_time_ms).toBeLessThan(PERFORMANCE_THRESHOLD)
+    }, TEST_TIMEOUT)
+    test('suggests alternative seating when conflicts detected', async () => {
+      // Setup: Create guests with preference to be apart
+      const [guestC, guestD] = testContext.testGuests.slice(2, 4)
+          guest_id_1: guestC.id,
+          guest_id_2: guestD.id,
+          relationship_type: 'conflict',
+          conflict_severity: 'prefer_apart',
+          notes: 'Work conflict - prefer separate tables'
+      // Test: Validate seating and get suggestions
+      const conflictResult = await testContext.conflictValidator.validateSeatingConflict(
+        [guestC.id, guestD.id],
+        2 // Same table
+      const suggestionTime = Date.now() - startTime
+      expect(conflictResult.has_conflicts).toBe(true)
+      expect(conflictResult.resolution_suggestions).toHaveLength(1)
+      expect(conflictResult.resolution_suggestions[0].type).toBe('swap_guest')
+      expect(conflictResult.resolution_suggestions[0].affected_guests).toContain(guestD.id)
+      expect(conflictResult.resolution_suggestions[0].confidence).toBeGreaterThan(30)
+      expect(conflictResult.resolution_suggestions[0].suggested_changes).toHaveLength(1)
+      // Performance check
+      expect(suggestionTime).toBeLessThan(PERFORMANCE_THRESHOLD)
+  describe('Service Integration: Guest Management Bridge', () => {
+    test('synchronizes guest changes with seating assignments', async () => {
+      const guest = testContext.testGuests[4]
+      // Setup: Assign guest to table
+      await testContext.seatingBridge.executeSeatingOperation(
+          guest_ids: [guest.id],
+          table_number: 3,
+          validate_conflicts: false
+      // Test: Update guest RSVP to declined
+      const syncPromise = new Promise((resolve) => {
+        const timeout = setTimeout(() => resolve('timeout'), 2000)
+        
+        testContext.seatingBridge.subscribeToGuestUpdates(testContext.testCoupleId)
+        // Monitor for sync completion
+        const checkSync = async () => {
+          const assignments = await testContext.supabase
+            .from('seating_assignments')
+            .select('*')
+            .eq('guest_id', guest.id)
+          if (assignments.data?.length === 0) {
+            clearTimeout(timeout)
+            resolve('synced')
+          }
+        // Update guest RSVP
+        testContext.supabase
+          .from('guests')
+          .update({ rsvp_status: 'declined' })
+          .eq('id', guest.id)
+          .then(() => {
+            // Check for sync after a brief delay
+            setTimeout(checkSync, 500)
+          })
+      })
+      const result = await syncPromise
+      expect(result).toBe('synced')
+      // Verify seating assignment was removed
+      const { data: finalAssignments } = await testContext.supabase
+        .from('seating_assignments')
+        .select('*')
+        .eq('guest_id', guest.id)
+      expect(finalAssignments).toHaveLength(0)
+    test('handles bulk seating operations efficiently', async () => {
+      const bulkGuests = testContext.testGuests.slice(5, 15) // 10 guests
+      // Test: Bulk assign guests to table
+      const bulkResult = await testContext.seatingBridge.executeSeatingOperation(
+          type: 'bulk_assign',
+          guest_ids: bulkGuests.map(g => g.id),
+          table_number: 4,
+      const operationTime = Date.now() - startTime
+      expect(bulkResult.success).toBe(true)
+      expect(bulkResult.affected_assignments).toHaveLength(10)
+      expect(bulkResult.errors).toHaveLength(0)
+      // Performance: Bulk operations should be efficient
+      expect(operationTime).toBeLessThan(2000) // 2 seconds for 10 guests
+      expect(bulkResult.performance_metrics.operation_time_ms).toBeLessThan(2000)
+  describe('Real-time Integration: Live Conflict Monitoring', () => {
+    test('broadcasts real-time conflict alerts', async () => {
+      const [guestE, guestF] = testContext.testGuests.slice(15, 17)
+      // Setup: Create conflict relationship
+          guest_id_1: guestE.id,
+          guest_id_2: guestF.id,
+          relationship_type: 'estranged',
+          conflict_severity: 'avoid',
+          notes: 'Family estrangement - avoid same table'
+      // Test: Monitor for real-time conflict alerts
+      const alertPromise = new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('No alert received')), 3000)
+        const subscriptionId = guestSyncManager.subscribeToIntegrationUpdates((event) => {
+          if (event.data?.conflict_detected && event.metadata?.source === 'seating') {
+            guestSyncManager.unsubscribe(subscriptionId)
+            resolve(event)
+        })
+        // Trigger conflict by assigning to same table
+        testContext.seatingBridge.executeSeatingOperation(
+          testContext.testCoupleId,
+          {
+            type: 'assign',
+            guest_ids: [guestE.id, guestF.id],
+            table_number: 5,
+            validate_conflicts: true
+        )
+      const alertEvent = await alertPromise
+      expect(alertEvent).toBeDefined()
+      // @ts-ignore
+      expect(alertEvent.data.conflict_detected).toBe(true)
+      // @ts-ignore  
+      expect(alertEvent.data.severity_score).toBeGreaterThan(0)
+    test('updates seating plan in real-time', async () => {
+      const guest = testContext.testGuests[17]
+      // Setup: Subscribe to seating plan updates
+      const updatePromise = new Promise((resolve) => {
+        const timeout = setTimeout(() => resolve('timeout'), 3000)
+        const subscriptionId = guestSyncManager.subscribeToGuestUpdates(
+          (event) => {
+            if (event.type === 'guest_updated' && event.metadata?.integration_updates?.includes('website')) {
+              clearTimeout(timeout)
+              guestSyncManager.unsubscribe(subscriptionId)
+              resolve('updated')
+            }
+          },
+          { includeWebsite: true }
+        // Trigger update
+        setTimeout(() => {
+          testContext.seatingBridge.executeSeatingOperation(
+            testContext.testCoupleId,
+            {
+              type: 'assign',
+              guest_ids: [guest.id],
+              table_number: 6,
+              validate_conflicts: false
+          )
+        }, 100)
+      const result = await updatePromise
+      expect(result).toBe('updated')
+  describe('Performance Integration: System-wide Performance', () => {
+    test('validates entire seating plan within performance limits', async () => {
+      // Setup: Create complex seating plan with multiple tables
+      const allGuests = testContext.testGuests.slice(0, 20)
+      // Assign guests to 4 different tables (5 guests each)
+      for (let tableNum = 1; tableNum <= 4; tableNum++) {
+        const tableGuests = allGuests.slice((tableNum - 1) * 5, tableNum * 5)
+        await testContext.seatingBridge.executeSeatingOperation(
+            type: 'bulk_assign',
+            guest_ids: tableGuests.map(g => g.id),
+            table_number: tableNum + 10, // Offset to avoid conflicts with other tests
+            validate_conflicts: false // Skip for setup
+      }
+      // Test: Validate entire seating plan
+      const planValidation = await testContext.conflictValidator.validateEntireSeatingPlan(
+        testContext.testCoupleId
+      expect(planValidation.tables.size).toBeGreaterThan(0)
+      expect(planValidation.validation_time_ms).toBeLessThan(2000) // 2 seconds for full plan
+      expect(validationTime).toBeLessThan(3000) // 3 seconds including setup
+      // Each table validation should be under performance threshold
+      for (const [tableNum, result] of planValidation.tables.entries()) {
+        expect(result.performance_metrics.validation_time_ms).toBeLessThan(PERFORMANCE_THRESHOLD)
+    test('handles concurrent operations efficiently', async () => {
+      const concurrentGuests = testContext.testGuests.slice(20, 25)
+      // Test: Execute multiple concurrent seating operations
+      const operations = concurrentGuests.map((guest, index) => 
+            guest_ids: [guest.id],
+            table_number: 20 + index,
+      const results = await Promise.all(operations)
+      const totalTime = Date.now() - startTime
+      expect(results).toHaveLength(5)
+      results.forEach(result => {
+        expect(result.success).toBe(true)
+      // Concurrent operations should not take significantly longer than sequential
+      expect(totalTime).toBeLessThan(3000) // 3 seconds for 5 concurrent operations
+  describe('Error Handling Integration', () => {
+    test('handles invalid guest IDs gracefully', async () => {
+      const invalidGuestId = 'invalid-uuid-format'
+      // Test: Attempt seating operation with invalid guest ID
+      const result = await testContext.seatingBridge.executeSeatingOperation(
+          guest_ids: [invalidGuestId],
+          table_number: 99,
+      expect(result.success).toBe(false)
+      expect(result.errors).toHaveLength(1)
+      expect(result.errors[0]).toContain('uuid')
+    test('prevents unauthorized access to relationship data', async () => {
+      const unauthorizedCoupleId = 'unauthorized-couple-id'
+      const guestId = testContext.testGuests[0].id
+      // Test: Attempt to validate conflicts for unauthorized couple
+      await expect(
+        testContext.conflictValidator.validateSeatingConflict(
+          unauthorizedCoupleId,
+          [guestId]
+      ).rejects.toThrow(/Unauthorized access|not found/)
+  describe('Data Consistency Integration', () => {
+    test('maintains data integrity across services', async () => {
+      const guest = testContext.testGuests[25]
+      // Test: Create relationship, assign seating, then delete guest
+          guest_id_1: guest.id,
+          guest_id_2: testContext.testGuests[26].id,
+          relationship_type: 'friends',
+          conflict_severity: 'prefer_together'
+          table_number: 30,
+      // Delete guest
+      await testContext.supabase
+        .from('guests')
+        .delete()
+        .eq('id', guest.id)
+      // Verify cleanup: seating assignments should be removed
+      const { data: remainingAssignments } = await testContext.supabase
+      expect(remainingAssignments).toHaveLength(0)
+      // Relationships involving deleted guest should be handled appropriately
+      const { data: relationships } = await testContext.supabase
+        .from('guest_relationships')
+        .or(`guest_id_1.eq.${guest.id},guest_id_2.eq.${guest.id}`)
+      // Depending on implementation, relationships might be deleted or marked inactive
+      expect(relationships?.length || 0).toBeLessThanOrEqual(1)
+})
+ * Test data setup helper
+async function setupTestData(supabase: ReturnType<typeof createClient>): Promise<{
+}> {
+  const testTimestamp = Date.now()
+  const testCoupleId = `test-couple-${testTimestamp}`
+  // Create test couple
+  await supabase.from('couples').insert({
+    id: testCoupleId,
+    partner1_name: 'Test Partner 1',
+    partner2_name: 'Test Partner 2',
+    wedding_date: '2024-12-31',
+    created_at: new Date().toISOString()
+  // Create test guests
+  const testGuests = []
+  for (let i = 0; i < 30; i++) {
+    const guest = {
+      id: `test-guest-${testTimestamp}-${i}`,
+      couple_id: testCoupleId,
+      first_name: `TestGuest${i}`,
+      last_name: `Lastname${i}`,
+      email: `testguest${i}@test.com`,
+      category: i % 2 === 0 ? 'family' : 'friends',
+      side: i % 3 === 0 ? 'partner1' : i % 3 === 1 ? 'partner2' : 'mutual',
+      rsvp_status: 'attending',
+      created_at: new Date().toISOString()
+    testGuests.push(guest)
+  }
+  await supabase.from('guests').insert(testGuests)
+  // Cleanup function
+  const cleanup = async () => {
+    try {
+      // Clean up in reverse order to handle foreign key constraints
+      await supabase.from('seating_assignments').delete().eq('couple_id', testCoupleId)
+      await supabase.from('guest_relationships').delete().eq('couple_id', testCoupleId)
+      await supabase.from('guests').delete().eq('couple_id', testCoupleId)
+      await supabase.from('couples').delete().eq('id', testCoupleId)
+    } catch (error) {
+      console.warn('Cleanup error:', error)
+  return { testCoupleId, testGuests, cleanup }

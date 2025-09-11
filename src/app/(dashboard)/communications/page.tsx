@@ -1,0 +1,122 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { MessagingLayout } from '@/components/messaging/MessagingLayout';
+import { createClient } from '@/lib/supabase/client';
+
+export default function CommunicationsPage() {
+  const [user, setUser] = useState<any>(null);
+  const [userProfile, setUserProfile] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+
+  const supabase = createClient();
+
+  useEffect(() => {
+    async function loadUserData() {
+      try {
+        // Get current user
+        const {
+          data: { user },
+          error: userError,
+        } = await supabase.auth.getUser();
+
+        if (userError || !user) {
+          console.error('No authenticated user:', userError);
+          return;
+        }
+
+        setUser(user);
+
+        // Get user profile
+        const { data: profile, error: profileError } = await supabase
+          .from('user_profiles')
+          .select(
+            `
+            *,
+            organization:organizations!user_profiles_organization_id_fkey (
+              id,
+              name,
+              pricing_tier
+            )
+          `,
+          )
+          .eq('user_id', user.id)
+          .single();
+
+        if (profileError) {
+          console.error('Error loading user profile:', profileError);
+          return;
+        }
+
+        setUserProfile(profile);
+      } catch (error) {
+        console.error('Error loading user data:', error);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    loadUserData();
+  }, [supabase]);
+
+  if (loading) {
+    return (
+      <div className="h-screen flex items-center justify-center">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+      </div>
+    );
+  }
+
+  if (!user || !userProfile) {
+    return (
+      <div className="h-screen flex items-center justify-center">
+        <div className="text-center">
+          <h2 className="text-xl font-semibold text-gray-900 mb-2">
+            Authentication Required
+          </h2>
+          <p className="text-gray-600 mb-4">
+            Please log in to access the communications system.
+          </p>
+          <a
+            href="/auth/login"
+            className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700"
+          >
+            Log In
+          </a>
+        </div>
+      </div>
+    );
+  }
+
+  if (!userProfile.organization_id) {
+    return (
+      <div className="h-screen flex items-center justify-center">
+        <div className="text-center">
+          <h2 className="text-xl font-semibold text-gray-900 mb-2">
+            Organization Required
+          </h2>
+          <p className="text-gray-600 mb-4">
+            You need to be part of an organization to use the communications
+            system.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Determine user type based on role
+  const userType = ['OWNER', 'ADMIN'].includes(userProfile.role)
+    ? 'vendor'
+    : 'client';
+
+  return (
+    <div className="h-screen bg-white">
+      <MessagingLayout
+        organizationId={userProfile.organization_id}
+        currentUserId={user.id}
+        currentUserType={userType}
+        showActivityFeed={true}
+      />
+    </div>
+  );
+}

@@ -1,0 +1,686 @@
+import React from 'react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { axe, toHaveNoViolations } from 'jest-axe';
+import { ChatInput } from '../ChatInput';
+
+expect.extend(toHaveNoViolations);
+
+// Mock motion
+jest.mock('motion', () => ({
+  motion: {
+    div: 'div',
+    button: 'button',
+  },
+  AnimatePresence: ({ children }: { children: React.ReactNode }) => children,
+}));
+
+// Mock file validation
+jest.mock('@/lib/security/file-validation', () => ({
+  validateFileUpload: jest.fn((file) =>
+    Promise.resolve({
+      isValid: file.size <= 5 * 1024 * 1024 && file.type.startsWith('image/'),
+      error:
+        file.size > 5 * 1024 * 1024
+          ? 'File too large'
+          : !file.type.startsWith('image/')
+            ? 'Invalid file type'
+            : null,
+    }),
+  ),
+}));
+
+describe('ChatInput', () => {
+  const defaultProps = {
+    onSendMessage: jest.fn(),
+    disabled: false,
+    placeholder: 'Type your message...',
+    maxLength: 500,
+    allowAttachments: true,
+    isLoading: false,
+    remainingRequests: 10,
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('Basic Rendering', () => {
+    it('renders textarea with correct placeholder', () => {
+      render(<ChatInput {...defaultProps} />);
+
+      const textarea = screen.getByPlaceholderText('Type your message...');
+      expect(textarea).toBeInTheDocument();
+    });
+
+    it('renders with custom placeholder when disabled', () => {
+      render(<ChatInput {...defaultProps} disabled={true} />);
+
+      const textarea = screen.getByPlaceholderText('Chat disabled...');
+      expect(textarea).toBeInTheDocument();
+    });
+
+    it('shows send button', () => {
+      render(<ChatInput {...defaultProps} />);
+
+      const sendButton = screen.getByTitle('Send message');
+      expect(sendButton).toBeInTheDocument();
+    });
+
+    it('shows file attachment button when allowed', () => {
+      render(<ChatInput {...defaultProps} allowAttachments={true} />);
+
+      const attachButton = screen.getByTitle('Attach file');
+      expect(attachButton).toBeInTheDocument();
+    });
+
+    it('hides file attachment button when not allowed', () => {
+      render(<ChatInput {...defaultProps} allowAttachments={false} />);
+
+      const attachButton = screen.queryByTitle('Attach file');
+      expect(attachButton).not.toBeInTheDocument();
+    });
+
+    it('displays character counter', () => {
+      render(<ChatInput {...defaultProps} />);
+
+      expect(screen.getByText('500')).toBeInTheDocument();
+    });
+
+    it('shows requests remaining', () => {
+      render(<ChatInput {...defaultProps} remainingRequests={5} />);
+
+      expect(screen.getByText('5 requests remaining')).toBeInTheDocument();
+    });
+
+    it('shows rate limit warning when no requests remaining', () => {
+      render(<ChatInput {...defaultProps} remainingRequests={0} />);
+
+      expect(screen.getByText('Rate limit reached')).toBeInTheDocument();
+    });
+  });
+
+  describe('Text Input Behavior', () => {
+    it('updates character counter as user types', async () => {
+      const user = userEvent.setup();
+      render(<ChatInput {...defaultProps} />);
+
+      const textarea = screen.getByPlaceholderText('Type your message...');
+
+      await user.type(textarea, 'Hello');
+
+      expect(screen.getByText('495')).toBeInTheDocument(); // 500 - 5
+    });
+
+    it('prevents typing beyond maxLength', async () => {
+      const user = userEvent.setup();
+      render(<ChatInput {...defaultProps} maxLength={10} />);
+
+      const textarea = screen.getByPlaceholderText('Type your message...');
+
+      await user.type(textarea, '12345678901234567890'); // 20 chars
+
+      expect(textarea).toHaveValue('1234567890'); // Only 10 chars
+      expect(screen.getByText('0')).toBeInTheDocument();
+    });
+
+    it('auto-resizes textarea as content grows', async () => {
+      const user = userEvent.setup();
+      render(<ChatInput {...defaultProps} />);
+
+      const textarea = screen.getByPlaceholderText('Type your message...');
+
+      const initialHeight = textarea.style.height;
+
+      await user.type(textarea, 'Line 1\nLine 2\nLine 3\nLine 4\nLine 5');
+
+      // Height should have changed (exact value depends on CSS)
+      expect(textarea.style.height).not.toBe(initialHeight);
+    });
+
+    it('shows suggested questions when textarea is empty', () => {
+      const suggestedQuestions = [
+        'How do I create a wedding timeline?',
+        'What vendors do I need to book?',
+        'How much should I budget for flowers?',
+      ];
+
+      render(
+        <ChatInput {...defaultProps} suggestedQuestions={suggestedQuestions} />,
+      );
+
+      expect(screen.getByText('Suggested questions:')).toBeInTheDocument();
+      expect(
+        screen.getByText('How do I create a wedding timeline?'),
+      ).toBeInTheDocument();
+    });
+
+    it('hides suggested questions when user starts typing', async () => {
+      const user = userEvent.setup();
+      const suggestedQuestions = ['Test question'];
+
+      render(
+        <ChatInput {...defaultProps} suggestedQuestions={suggestedQuestions} />,
+      );
+
+      expect(screen.getByText('Test question')).toBeInTheDocument();
+
+      const textarea = screen.getByPlaceholderText('Type your message...');
+      await user.type(textarea, 'Hello');
+
+      expect(screen.queryByText('Test question')).not.toBeInTheDocument();
+    });
+
+    it('fills suggestion when clicked', async () => {
+      const user = userEvent.setup();
+      const suggestedQuestions = ['How do I create a timeline?'];
+
+      render(
+        <ChatInput {...defaultProps} suggestedQuestions={suggestedQuestions} />,
+      );
+
+      const suggestion = screen.getByText('How do I create a timeline?');
+      await user.click(suggestion);
+
+      const textarea = screen.getByPlaceholderText('Type your message...');
+      expect(textarea).toHaveValue('How do I create a timeline?');
+    });
+  });
+
+  describe('File Upload', () => {
+    it('opens file dialog when attachment button clicked', async () => {
+      const user = userEvent.setup();
+      render(<ChatInput {...defaultProps} />);
+
+      const attachButton = screen.getByTitle('Attach file');
+
+      // Create a mock file input
+      const fileInput = screen
+        .getByRole('textbox')
+        .parentElement?.parentElement?.querySelector('input[type="file"]');
+      const clickSpy = jest
+        .spyOn(fileInput as HTMLElement, 'click')
+        .mockImplementation();
+
+      await user.click(attachButton);
+
+      expect(clickSpy).toHaveBeenCalled();
+    });
+
+    it('validates and accepts valid files', async () => {
+      const mockOnFileUpload = jest.fn();
+      render(<ChatInput {...defaultProps} onFileUpload={mockOnFileUpload} />);
+
+      const fileInput = screen
+        .getByRole('textbox')
+        .parentElement?.parentElement?.querySelector(
+          'input[type="file"]',
+        ) as HTMLInputElement;
+
+      const validFile = new File(['image content'], 'test.jpg', {
+        type: 'image/jpeg',
+      });
+
+      fireEvent.change(fileInput, {
+        target: { files: [validFile] },
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText('1 file attached')).toBeInTheDocument();
+        expect(screen.getByText('test.jpg')).toBeInTheDocument();
+      });
+    });
+
+    it('rejects invalid files and shows error', async () => {
+      const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
+      render(<ChatInput {...defaultProps} />);
+
+      const fileInput = screen
+        .getByRole('textbox')
+        .parentElement?.parentElement?.querySelector(
+          'input[type="file"]',
+        ) as HTMLInputElement;
+
+      // Create a file that's too large
+      const invalidFile = new File(
+        ['x'.repeat(10 * 1024 * 1024)],
+        'large.txt',
+        { type: 'text/plain' },
+      );
+
+      fireEvent.change(fileInput, {
+        target: { files: [invalidFile] },
+      });
+
+      await waitFor(() => {
+        expect(consoleSpy).toHaveBeenCalledWith(
+          'File validation errors:',
+          expect.arrayContaining([expect.stringContaining('large.txt')]),
+        );
+      });
+
+      consoleSpy.mockRestore();
+    });
+
+    it('displays file attachments with remove option', async () => {
+      const user = userEvent.setup();
+      render(<ChatInput {...defaultProps} />);
+
+      const fileInput = screen
+        .getByRole('textbox')
+        .parentElement?.parentElement?.querySelector(
+          'input[type="file"]',
+        ) as HTMLInputElement;
+
+      const validFile = new File(['content'], 'test.jpg', {
+        type: 'image/jpeg',
+      });
+
+      fireEvent.change(fileInput, {
+        target: { files: [validFile] },
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText('test.jpg')).toBeInTheDocument();
+      });
+
+      // Remove file
+      const removeButton = screen.getByRole('button', { name: '' }); // X button
+      await user.click(removeButton);
+
+      expect(screen.queryByText('test.jpg')).not.toBeInTheDocument();
+    });
+
+    it('supports drag and drop upload', async () => {
+      render(<ChatInput {...defaultProps} />);
+
+      const container = screen
+        .getByRole('textbox')
+        .closest('[class*="p-4"]') as HTMLElement;
+
+      const validFile = new File(['content'], 'dropped.jpg', {
+        type: 'image/jpeg',
+      });
+
+      fireEvent.dragOver(container, {
+        dataTransfer: { files: [validFile] },
+      });
+
+      expect(screen.getByText('Drop files here to attach')).toBeInTheDocument();
+
+      fireEvent.drop(container, {
+        dataTransfer: { files: [validFile] },
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText('dropped.jpg')).toBeInTheDocument();
+      });
+    });
+
+    it('limits to maximum number of files', async () => {
+      render(<ChatInput {...defaultProps} />);
+
+      const fileInput = screen
+        .getByRole('textbox')
+        .parentElement?.parentElement?.querySelector(
+          'input[type="file"]',
+        ) as HTMLInputElement;
+
+      // Create 6 files (limit is 5)
+      const files = Array.from(
+        { length: 6 },
+        (_, i) => new File(['content'], `file${i}.jpg`, { type: 'image/jpeg' }),
+      );
+
+      fireEvent.change(fileInput, {
+        target: { files },
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText('5 files attached')).toBeInTheDocument();
+        expect(screen.queryByText('file5.jpg')).not.toBeInTheDocument(); // 6th file excluded
+      });
+    });
+  });
+
+  describe('Send Functionality', () => {
+    it('sends message when send button clicked', async () => {
+      const user = userEvent.setup();
+      const mockOnSendMessage = jest.fn();
+      render(<ChatInput {...defaultProps} onSendMessage={mockOnSendMessage} />);
+
+      const textarea = screen.getByPlaceholderText('Type your message...');
+      const sendButton = screen.getByTitle('Send message');
+
+      await user.type(textarea, 'Test message');
+      await user.click(sendButton);
+
+      expect(mockOnSendMessage).toHaveBeenCalledWith('Test message', []);
+    });
+
+    it('sends message when Enter pressed', async () => {
+      const user = userEvent.setup();
+      const mockOnSendMessage = jest.fn();
+      render(<ChatInput {...defaultProps} onSendMessage={mockOnSendMessage} />);
+
+      const textarea = screen.getByPlaceholderText('Type your message...');
+
+      await user.type(textarea, 'Test message');
+      await user.keyboard('{Enter}');
+
+      expect(mockOnSendMessage).toHaveBeenCalledWith('Test message', []);
+    });
+
+    it('does not send on Shift+Enter', async () => {
+      const user = userEvent.setup();
+      const mockOnSendMessage = jest.fn();
+      render(<ChatInput {...defaultProps} onSendMessage={mockOnSendMessage} />);
+
+      const textarea = screen.getByPlaceholderText('Type your message...');
+
+      await user.type(textarea, 'Line 1');
+      await user.keyboard('{Shift>}{Enter}{/Shift}');
+      await user.type(textarea, 'Line 2');
+
+      expect(textarea).toHaveValue('Line 1\nLine 2');
+      expect(mockOnSendMessage).not.toHaveBeenCalled();
+    });
+
+    it('clears input after successful send', async () => {
+      const user = userEvent.setup();
+      const mockOnSendMessage = jest.fn().mockResolvedValue(undefined);
+      render(<ChatInput {...defaultProps} onSendMessage={mockOnSendMessage} />);
+
+      const textarea = screen.getByPlaceholderText('Type your message...');
+
+      await user.type(textarea, 'Test message');
+      await user.click(screen.getByTitle('Send message'));
+
+      await waitFor(() => {
+        expect(textarea).toHaveValue('');
+        expect(screen.getByText('500')).toBeInTheDocument(); // Character counter reset
+      });
+    });
+
+    it('does not clear input if send fails', async () => {
+      const user = userEvent.setup();
+      const mockOnSendMessage = jest
+        .fn()
+        .mockRejectedValue(new Error('Send failed'));
+      const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
+
+      render(<ChatInput {...defaultProps} onSendMessage={mockOnSendMessage} />);
+
+      const textarea = screen.getByPlaceholderText('Type your message...');
+
+      await user.type(textarea, 'Test message');
+      await user.click(screen.getByTitle('Send message'));
+
+      await waitFor(() => {
+        expect(textarea).toHaveValue('Test message');
+        expect(consoleSpy).toHaveBeenCalled();
+      });
+
+      consoleSpy.mockRestore();
+    });
+
+    it('sends attachments with message', async () => {
+      const user = userEvent.setup();
+      const mockOnSendMessage = jest.fn().mockResolvedValue(undefined);
+      render(<ChatInput {...defaultProps} onSendMessage={mockOnSendMessage} />);
+
+      // Add file
+      const fileInput = screen
+        .getByRole('textbox')
+        .parentElement?.parentElement?.querySelector(
+          'input[type="file"]',
+        ) as HTMLInputElement;
+      const validFile = new File(['content'], 'test.jpg', {
+        type: 'image/jpeg',
+      });
+
+      fireEvent.change(fileInput, {
+        target: { files: [validFile] },
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText('test.jpg')).toBeInTheDocument();
+      });
+
+      // Send with message
+      const textarea = screen.getByPlaceholderText('Type your message...');
+      await user.type(textarea, 'Here is my photo');
+      await user.click(screen.getByTitle('Send message'));
+
+      expect(mockOnSendMessage).toHaveBeenCalledWith('Here is my photo', [
+        validFile,
+      ]);
+    });
+
+    it('prevents sending when disabled', async () => {
+      const user = userEvent.setup();
+      const mockOnSendMessage = jest.fn();
+      render(
+        <ChatInput
+          {...defaultProps}
+          disabled={true}
+          onSendMessage={mockOnSendMessage}
+        />,
+      );
+
+      const textarea = screen.getByPlaceholderText('Chat disabled...');
+      const sendButton = screen.getByTitle('Send message');
+
+      expect(textarea).toBeDisabled();
+      expect(sendButton).toBeDisabled();
+
+      await user.type(textarea, 'Test'); // Should not work
+      await user.click(sendButton);
+
+      expect(mockOnSendMessage).not.toHaveBeenCalled();
+    });
+
+    it('prevents sending when loading', async () => {
+      const user = userEvent.setup();
+      const mockOnSendMessage = jest.fn();
+      render(
+        <ChatInput
+          {...defaultProps}
+          isLoading={true}
+          onSendMessage={mockOnSendMessage}
+        />,
+      );
+
+      const textarea = screen.getByPlaceholderText('Type your message...');
+      const sendButton = screen.getByTitle('Send message');
+
+      await user.type(textarea, 'Test message');
+      await user.click(sendButton);
+
+      expect(sendButton).toBeDisabled();
+      expect(mockOnSendMessage).not.toHaveBeenCalled();
+    });
+
+    it('prevents sending empty messages', async () => {
+      const user = userEvent.setup();
+      const mockOnSendMessage = jest.fn();
+      render(<ChatInput {...defaultProps} onSendMessage={mockOnSendMessage} />);
+
+      const sendButton = screen.getByTitle('Send message');
+
+      await user.click(sendButton);
+
+      expect(mockOnSendMessage).not.toHaveBeenCalled();
+    });
+
+    it('allows sending with only attachments', async () => {
+      const user = userEvent.setup();
+      const mockOnSendMessage = jest.fn().mockResolvedValue(undefined);
+      render(<ChatInput {...defaultProps} onSendMessage={mockOnSendMessage} />);
+
+      // Add file without message
+      const fileInput = screen
+        .getByRole('textbox')
+        .parentElement?.parentElement?.querySelector(
+          'input[type="file"]',
+        ) as HTMLInputElement;
+      const validFile = new File(['content'], 'test.jpg', {
+        type: 'image/jpeg',
+      });
+
+      fireEvent.change(fileInput, {
+        target: { files: [validFile] },
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText('test.jpg')).toBeInTheDocument();
+      });
+
+      const sendButton = screen.getByTitle('Send message');
+      await user.click(sendButton);
+
+      expect(mockOnSendMessage).toHaveBeenCalledWith('', [validFile]);
+    });
+  });
+
+  describe('Keyboard Shortcuts', () => {
+    it('hides suggestions on Escape', async () => {
+      const user = userEvent.setup();
+      const suggestedQuestions = ['Test question'];
+
+      render(
+        <ChatInput {...defaultProps} suggestedQuestions={suggestedQuestions} />,
+      );
+
+      expect(screen.getByText('Test question')).toBeInTheDocument();
+
+      const textarea = screen.getByPlaceholderText('Type your message...');
+      await user.type(textarea, '{Escape}');
+
+      expect(screen.queryByText('Test question')).not.toBeInTheDocument();
+    });
+
+    it('shows keyboard shortcut hint', () => {
+      render(<ChatInput {...defaultProps} />);
+
+      expect(screen.getByText('Enter')).toBeInTheDocument();
+      expect(screen.getByText('to send')).toBeInTheDocument();
+    });
+  });
+
+  describe('Security Features', () => {
+    it('displays security message', () => {
+      render(<ChatInput {...defaultProps} />);
+
+      expect(
+        screen.getByText('Messages encrypted & secured'),
+      ).toBeInTheDocument();
+    });
+
+    it('shows security icon', () => {
+      render(<ChatInput {...defaultProps} />);
+
+      const securityIcon = screen.getByText(
+        'Messages encrypted & secured',
+      ).previousElementSibling;
+      expect(securityIcon).toBeInTheDocument();
+    });
+  });
+
+  describe('Accessibility', () => {
+    it('has no accessibility violations', async () => {
+      const { container } = render(<ChatInput {...defaultProps} />);
+      const results = await axe(container);
+      expect(results).toHaveNoViolations();
+    });
+
+    it('has no accessibility violations with attachments', async () => {
+      const { container } = render(<ChatInput {...defaultProps} />);
+
+      // Add attachment
+      const fileInput = container.querySelector(
+        'input[type="file"]',
+      ) as HTMLInputElement;
+      const validFile = new File(['content'], 'test.jpg', {
+        type: 'image/jpeg',
+      });
+
+      fireEvent.change(fileInput, {
+        target: { files: [validFile] },
+      });
+
+      await waitFor(async () => {
+        const results = await axe(container);
+        expect(results).toHaveNoViolations();
+      });
+    });
+
+    it('maintains proper focus management', async () => {
+      const user = userEvent.setup();
+      render(<ChatInput {...defaultProps} />);
+
+      const textarea = screen.getByPlaceholderText('Type your message...');
+
+      // Should auto-focus on mount
+      expect(textarea).toHaveFocus();
+
+      // Tab should move to attachment button
+      await user.tab();
+      expect(screen.getByTitle('Attach file')).toHaveFocus();
+
+      // Tab should move to send button
+      await user.tab();
+      expect(screen.getByTitle('Send message')).toHaveFocus();
+    });
+
+    it('has proper ARIA labels', () => {
+      render(<ChatInput {...defaultProps} />);
+
+      const sendButton = screen.getByTitle('Send message');
+      const attachButton = screen.getByTitle('Attach file');
+
+      expect(sendButton).toHaveAttribute('title', 'Send message');
+      expect(attachButton).toHaveAttribute('title', 'Attach file');
+    });
+  });
+
+  describe('Loading States', () => {
+    it('shows loading spinner when isLoading', () => {
+      render(<ChatInput {...defaultProps} isLoading={true} />);
+
+      const sendButton = screen.getByTitle('Send message');
+      const spinner = sendButton.querySelector('.animate-spin');
+
+      expect(spinner).toBeInTheDocument();
+    });
+
+    it('shows normal send icon when not loading', () => {
+      render(<ChatInput {...defaultProps} isLoading={false} />);
+
+      const sendButton = screen.getByTitle('Send message');
+      const sendIcon = sendButton.querySelector('svg:not(.animate-spin)');
+
+      expect(sendIcon).toBeInTheDocument();
+    });
+  });
+
+  describe('Responsive Behavior', () => {
+    it('adapts to mobile viewports', () => {
+      // Mock mobile viewport
+      Object.defineProperty(window, 'innerWidth', {
+        writable: true,
+        configurable: true,
+        value: 375,
+      });
+
+      render(<ChatInput {...defaultProps} />);
+
+      const textarea = screen.getByPlaceholderText('Type your message...');
+      expect(textarea).toBeInTheDocument();
+
+      // Should still function normally on mobile
+      const sendButton = screen.getByTitle('Send message');
+      expect(sendButton).toBeInTheDocument();
+    });
+  });
+});

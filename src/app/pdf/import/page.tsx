@@ -1,0 +1,280 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import { PDFUploader } from '@/components/pdf/PDFUploader';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import {
+  FileText,
+  Eye,
+  Trash2,
+  Plus,
+  RefreshCw,
+  Sparkles,
+  Clock,
+  Target,
+  Shield,
+  Wand2,
+  CheckCircle,
+  TrendingUp,
+  ArrowRight,
+} from 'lucide-react';
+
+interface PDFImport {
+  id: string;
+  original_filename: string;
+  file_size: number;
+  file_path: string;
+  upload_status: 'uploaded' | 'processing' | 'processed' | 'failed';
+  processing_id?: string;
+  created_at: string;
+  processed_at?: string;
+}
+
+export default function PDFImportPage() {
+  const router = useRouter();
+  const [uploads, setUploads] = useState<PDFImport[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [showFeatures, setShowFeatures] = useState(uploads.length === 0);
+
+  const handleUploadComplete = (uploadId: string) => {
+    // Navigate to field mapping page
+    router.push(`/pdf/${uploadId}/mapping`);
+  };
+
+  const handleUploadStart = (uploadId: string) => {
+    console.log('Upload started:', uploadId);
+    // Could add to a local state for tracking if needed
+  };
+
+  const features = [
+    {
+      icon: <Wand2 className="w-6 h-6" />,
+      title: 'AI-Powered Field Detection',
+      description:
+        'Our advanced OCR technology automatically identifies form fields with 80%+ accuracy',
+      color: 'text-purple-600',
+    },
+    {
+      icon: <Clock className="w-6 h-6" />,
+      title: 'Lightning Fast Processing',
+      description:
+        'Transform your PDF contracts into digital forms in under 60 seconds',
+      color: 'text-blue-600',
+    },
+    {
+      icon: <Target className="w-6 h-6" />,
+      title: 'Wedding-Specific Intelligence',
+      description:
+        'Trained on wedding industry forms for maximum accuracy and relevance',
+      color: 'text-pink-600',
+    },
+    {
+      icon: <Shield className="w-6 h-6" />,
+      title: 'Enterprise Security',
+      description:
+        'Bank-level encryption and secure processing for your sensitive documents',
+      color: 'text-green-600',
+    },
+  ];
+
+  const stats = [
+    {
+      label: 'Time Saved',
+      value: '2-3 hours',
+      subtitle: 'per form conversion',
+    },
+    { label: 'Accuracy Rate', value: '85%+', subtitle: 'field detection' },
+    { label: 'Processing Speed', value: '<60 sec', subtitle: 'typical PDF' },
+    { label: 'File Support', value: '50MB', subtitle: 'maximum size' },
+  ];
+
+  const steps = [
+    {
+      number: '1',
+      title: 'Upload PDF',
+      description: 'Drop your wedding contract, questionnaire, or form',
+      icon: <FileText className="w-5 h-5" />,
+    },
+    {
+      number: '2',
+      title: 'AI Analysis',
+      description:
+        'Our system analyzes and detects all form fields automatically',
+      icon: <Sparkles className="w-5 h-5" />,
+    },
+    {
+      number: '3',
+      title: 'Review & Map',
+      description: 'Quickly review detected fields and make any adjustments',
+      icon: <CheckCircle className="w-5 h-5" />,
+    },
+    {
+      number: '4',
+      title: 'Generate Form',
+      description: 'Get a beautiful, mobile-friendly form ready for clients',
+      icon: <TrendingUp className="w-5 h-5" />,
+    },
+  ];
+
+  return (
+    <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      {/* Header */}
+      <div className="text-center mb-12">
+        <Badge color="blue" className="mb-4">
+          <Sparkles className="w-4 h-4 mr-2" />
+          Revolutionary PDF Import
+        </Badge>
+
+        <h1 className="text-3xl font-bold tracking-tight text-gray-900">
+          Transform PDFs into Digital Forms
+        </h1>
+
+        <p className="text-base text-gray-600">
+          Upload your wedding contracts and questionnaires, and watch our AI
+          instantly convert them into beautiful, client-ready digital forms.
+        </p>
+      </div>
+
+      {/* Stats */}
+      {showFeatures && (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-6 mb-12">
+            {stats.map((stat, index) => (
+              <div key={index} className="text-center">
+                <div className="text-2xl font-bold text-blue-600 mb-1">
+                  {stat.value}
+                </div>
+                <div className="text-sm font-medium text-gray-900 mb-1">
+                  {stat.label}
+                </div>
+                <div className="text-xs text-gray-500">{stat.subtitle}</div>
+              </div>
+            ))}
+          </div>
+
+          <hr className="border-gray-200" />
+        </>
+      )}
+
+      {/* Upload Section */}
+      <div className="mb-12">
+        <div className="text-center mb-8">
+          <h2 className="text-2xl font-bold tracking-tight text-gray-900">
+            Ready to Get Started?
+          </h2>
+          <p className="text-base text-gray-600">
+            Upload your first PDF and experience the magic of automated form
+            creation
+          </p>
+        </div>
+
+        <PDFUploader
+          onUploadComplete={handleUploadComplete}
+          onUploadStart={handleUploadStart}
+          className="mb-8"
+        />
+      </div>
+
+      {showFeatures && (
+        <>
+          <hr className="border-gray-200" />
+
+          {/* How it Works */}
+          <div className="mb-12">
+            <div className="text-center mb-8">
+              <h2 className="text-2xl font-bold tracking-tight text-gray-900">
+                How It Works
+              </h2>
+              <p className="text-base text-gray-600">
+                From PDF upload to client-ready form in just 4 simple steps
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
+              {steps.map((step, index) => (
+                <div key={index} className="text-center">
+                  <div className="relative mb-4">
+                    <div className="w-12 h-12 bg-blue-600 text-white rounded-full flex items-center justify-center mx-auto mb-2">
+                      {step.icon}
+                    </div>
+                    <div className="absolute -top-1 -right-1 w-6 h-6 bg-blue-100 text-blue-600 text-sm font-bold rounded-full flex items-center justify-center">
+                      {step.number}
+                    </div>
+                  </div>
+
+                  <h3 className="font-semibold text-gray-900 mb-2">
+                    {step.title}
+                  </h3>
+                  <p className="text-sm text-gray-600">{step.description}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <hr className="border-gray-200" />
+
+          {/* Features */}
+          <div className="mb-12">
+            <div className="text-center mb-8">
+              <h2 className="text-2xl font-bold tracking-tight text-gray-900">
+                Why Choose Our PDF Import?
+              </h2>
+              <p className="text-base text-gray-600">
+                Built specifically for wedding professionals with cutting-edge
+                AI technology
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+              {features.map((feature, index) => (
+                <div
+                  key={index}
+                  className="flex items-start space-x-4 p-6 bg-white border border-gray-200 rounded-xl hover:shadow-md transition-shadow"
+                >
+                  <div className={`flex-shrink-0 ${feature.color}`}>
+                    {feature.icon}
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-gray-900 mb-2">
+                      {feature.title}
+                    </h3>
+                    <p className="text-gray-600">{feature.description}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Bottom CTA */}
+          <div className="text-center bg-gradient-to-br from-blue-50 to-indigo-100 rounded-2xl p-8">
+            <h3 className="text-xl font-bold tracking-tight text-gray-900">
+              Ready to Revolutionize Your Workflow?
+            </h3>
+            <p className="text-base text-gray-600">
+              Join thousands of wedding professionals who have already
+              transformed their client onboarding process with our AI-powered
+              PDF import.
+            </p>
+
+            <div className="flex flex-col sm:flex-row gap-4 justify-center items-center">
+              <div className="flex items-center text-sm text-gray-500">
+                <Shield className="w-4 h-4 mr-2" />
+                Secure & Private
+              </div>
+              <div className="flex items-center text-sm text-gray-500">
+                <Clock className="w-4 h-4 mr-2" />
+                Save 2-3 Hours Per Form
+              </div>
+              <div className="flex items-center text-sm text-gray-500">
+                <Target className="w-4 h-4 mr-2" />
+                85%+ Accuracy Rate
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}

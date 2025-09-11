@@ -1,0 +1,30 @@
+import React, { useEffect, useRef, ReactNode } from 'react';
+
+interface AutoSaveFormWrapperProps {
+  children: ReactNode;
+  formData: any;
+  onSave?: (data: any) => void;
+  saveInterval?: number;
+}
+
+export function AutoSaveFormWrapper({
+  children,
+  formData,
+  onSave,
+  saveInterval = 5000,
+}: AutoSaveFormWrapperProps) {
+  const previousData = useRef(formData);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (JSON.stringify(previousData.current) !== JSON.stringify(formData)) {
+        onSave?.(formData);
+        previousData.current = formData;
+      }
+    }, saveInterval);
+
+    return () => clearInterval(interval);
+  }, [formData, onSave, saveInterval]);
+
+  return <>{children}</>;
+}

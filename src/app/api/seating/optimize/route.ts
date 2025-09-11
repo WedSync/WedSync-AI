@@ -1,0 +1,149 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+import { seatingOptimizationEngine } from '@/lib/algorithms/seating-optimization';
+import {
+  verifyCoupleAccess,
+  withSecureValidation,
+} from '@/lib/validation/middleware';
+
+// Validation schema for seating optimization
+const seatingOptimizationSchema = z.object({
+  couple_id: z.string().uuid(),
+  guest_count: z.number().min(1).max(500),
+  table_count: z.number().min(1).max(50),
+  table_configurations: z.array(
+    z.object({
+      table_number: z.number().int().positive(),
+      capacity: z.number().int().min(2).max(20),
+      table_shape: z.enum(['round', 'rectangular', 'square']).default('round'),
+      location_notes: z.string().optional(),
+      special_requirements: z.string().optional(),
+    }),
+  ),
+  relationship_preferences: z
+    .object({
+      prioritize_families: z.boolean().default(true),
+      separate_conflicting_guests: z.boolean().default(true),
+      balance_age_groups: z.boolean().default(true),
+      consider_dietary_needs: z.boolean().default(true),
+    })
+    .optional(),
+  optimization_level: z
+    .enum(['basic', 'standard', 'advanced'])
+    .default('standard'),
+});
+
+// POST /api/seating/optimize - Generate optimal seating arrangement
+export const POST = withSecureValidation(
+  seatingOptimizationSchema,
+  async (
+    request: NextRequest,
+    validatedData: z.infer<typeof seatingOptimizationSchema>,
+  ) => {
+    try {
+      const supabase = await createClient();
+
+      // Verify couple ownership
+      await verifyCoupleAccess(request, validatedData.couple_id);
+
+      // Get guest data with relationships
+      const { data: guests, error: guestsError } = await supabase
+        .from('guests')
+        .select(
+          `
+          id,
+          first_name,
+          last_name,
+          category,
+          side,
+          age_group,
+          plus_one,
+          dietary_restrictions,
+          special_needs,
+          household_id,
+          tags
+        `,
+        )
+        .eq('couple_id', validatedData.couple_id)
+        .eq('rsvp_status', 'attending');
+
+      if (guestsError || !guests) {
+        return NextResponse.json(
+          { error: 'Failed to fetch guest data' },
+          { status: 500 },
+        );
+      }
+
+      // Get guest relationships
+      const { data: relationships, error: relationshipsError } = await supabase
+        .from('guest_relationships')
+        .select('*')
+        .eq('couple_id', validatedData.couple_id);
+
+      if (relationshipsError) {
+        console.warn('Failed to fetch relationships:', relationshipsError);
+      }
+
+      // Run optimization algorithm
+      const optimizationResult = await seatingOptimizationEngine.optimize({
+        guests,
+        relationships: relationships || [],
+        tableConfigurations: validatedData.table_configurations,
+        preferences: validatedData.relationship_preferences || {},
+        optimizationLevel: validatedData.optimization_level,
+      });
+
+      // Save the arrangement
+      const { data: savedArrangement, error: saveError } = await supabase
+        .from('seating_arrangements')
+        .insert({
+          couple_id: validatedData.couple_id,
+          arrangement_name: `Optimization ${new Date().toISOString().split('T')[0]}`,
+          arrangement_data: optimizationResult.arrangement,
+          optimization_score: optimizationResult.score,
+          conflicts: optimizationResult.conflicts,
+          metadata: {
+            algorithm_version: '1.0',
+            optimization_level: validatedData.optimization_level,
+            processing_time_ms: optimizationResult.processingTime,
+            guest_count: guests.length,
+            table_count: validatedData.table_count,
+          },
+        })
+        .select()
+        .single();
+
+      if (saveError) {
+        console.error('Failed to save arrangement:', saveError);
+        return NextResponse.json(
+          { error: 'Failed to save arrangement' },
+          { status: 500 },
+        );
+      }
+
+      return NextResponse.json({
+        success: true,
+        arrangement_id: savedArrangement.id,
+        optimization_score: optimizationResult.score,
+        conflicts: optimizationResult.conflicts,
+        arrangement: optimizationResult.arrangement,
+        processing_time_ms: optimizationResult.processingTime,
+        recommendations: optimizationResult.recommendations,
+      });
+    } catch (error) {
+      console.error('Seating optimization error:', error);
+      return NextResponse.json(
+        {
+          error:
+            error instanceof Error ? error.message : 'Internal server error',
+        },
+        { status: 500 },
+      );
+    }
+  },
+);
+
+// Configure rate limiting - max 10 requests per minute
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';

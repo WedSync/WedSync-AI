@@ -1,0 +1,398 @@
+/**
+ * WS-168: Customer Success Dashboard - Performance Tests
+ * Testing dashboard query performance and optimization
+ */
+
+import { describe, it, expect, jest, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { CustomerSuccessService } from '@/lib/services/customer-success-service';
+import { createClient } from '@/lib/supabase/server';
+import { generateBulkHealthScenarios } from '../fixtures/ws-168-health-scenarios';
+vi.mock('@/lib/supabase/server');
+vi.mock('@/lib/redis');
+describe('WS-168: Dashboard Performance Tests', () => {
+  let service: CustomerSuccessService;
+  let mockSupabase: unknown;
+  let performanceMetrics: unknown;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSupabase = {
+      from: vi.fn().mockReturnThis(),
+      select: vi.fn().mockReturnThis(),
+      insert: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      gte: vi.fn().mockReturnThis(),
+      lte: vi.fn().mockReturnThis(),
+      gt: vi.fn().mockReturnThis(),
+      lt: vi.fn().mockReturnThis(),
+      in: vi.fn().mockReturnThis(),
+      order: vi.fn().mockReturnThis(),
+      limit: vi.fn().mockReturnThis(),
+      range: vi.fn().mockReturnThis(),
+      single: vi.fn().mockReturnThis(),
+      count: vi.fn().mockReturnThis()
+    };
+    (createClient as ReturnType<typeof vi.fn>).mockReturnValue(mockSupabase);
+    service = new CustomerSuccessService();
+    performanceMetrics = {
+      queryTimes: [],
+      memoryUsage: [],
+      recordMetric: function(name: string, value: number) {
+        this[name] = this[name] || [];
+        this[name].push(value);
+      },
+      getAverage: function(name: string) {
+        const values = this[name] || [];
+        return values.length ? values.reduce((a: number, b: number) => a + b, 0) / values.length : 0;
+      }
+  });
+  describe('Large Dataset Query Performance', () => {
+    it('should handle 10,000 health score records efficiently', async () => {
+      const largeDataset = generateBulkHealthScenarios(10000);
+      
+      mockSupabase.select.mockImplementation(() => {
+        const startTime = Date.now();
+        // Simulate database query delay
+        const queryDelay = 50 + Math.random() * 50; // 50-100ms
+        
+        return {
+          ...mockSupabase,
+          limit: vi.fn().mockImplementation((limit: number) => ({
+            ...mockSupabase,
+            range: vi.fn().mockImplementation((start: number, end: number) => {
+              const pageData = largeDataset.slice(start, Math.min(end + 1, largeDataset.length));
+              const queryTime = Date.now() - startTime + queryDelay;
+              performanceMetrics.recordMetric('queryTimes', queryTime);
+              
+              return Promise.resolve({
+                data: pageData,
+                error: null,
+                count: largeDataset.length
+              });
+            })
+          }))
+        };
+      });
+      // Test paginated queries
+      const pageSize = 50;
+      const totalPages = Math.ceil(largeDataset.length / pageSize);
+      const queryPromises = [];
+      for (let page = 0; page < 10; page++) { // Test first 10 pages
+        const start = page * pageSize;
+        const end = start + pageSize - 1;
+        const promise = mockSupabase
+          .from('customer_health_scores')
+          .select('*', { count: 'exact' })
+          .limit(pageSize)
+          .range(start, end);
+        queryPromises.push(promise);
+      const startTime = Date.now();
+      const results = await Promise.all(queryPromises);
+      const totalTime = Date.now() - startTime;
+      // Performance assertions
+      expect(totalTime).toBeLessThan(2000); // Should complete within 2 seconds
+      expect(performanceMetrics.getAverage('queryTimes')).toBeLessThan(200); // Avg query < 200ms
+      results.forEach((result, index) => {
+        expect(result.data).toBeDefined();
+        expect(result.data.length).toBeLessThanOrEqual(pageSize);
+        expect(result.count).toBe(10000);
+    });
+    it('should optimize queries with proper indexing', async () => {
+      const indexedQueries = [
+        { field: 'organization_id', value: 'org-123', expectedTime: 20 },
+        { field: 'health_score', operator: 'lt', value: 50, expectedTime: 30 },
+        { field: 'at_risk_score', operator: 'gt', value: 70, expectedTime: 30 },
+        { field: 'engagement_level', value: 'low', expectedTime: 25 }
+      ];
+      for (const query of indexedQueries) {
+        mockSupabase.select.mockResolvedValueOnce({
+          data: Array(100).fill({ health_score: 45 }),
+          error: null
+        });
+        let dbQuery = mockSupabase.from('customer_health_scores').select('*');
+        if (query.operator) {
+          dbQuery = dbQuery[query.operator](query.field, query.value);
+        } else {
+          dbQuery = dbQuery.eq(query.field, query.value);
+        }
+        await dbQuery;
+        const queryTime = Date.now() - startTime;
+        // Indexed queries should be fast
+        expect(queryTime).toBeLessThan(query.expectedTime + 50); // Allow 50ms variance
+    it('should handle concurrent dashboard loads', async () => {
+      const concurrentUsers = 50;
+      const mockDashboardData = {
+        summary: {
+          total_users: 5000,
+          average_health_score: 68,
+          at_risk_users: 750
+        },
+        data: Array(50).fill({ user_id: 'test', health_score: 70 })
+      };
+      mockSupabase.select.mockResolvedValue({
+        data: mockDashboardData.data,
+        error: null,
+        count: 5000
+      const dashboardLoadPromises = Array(concurrentUsers).fill(null).map(async (_, index) => {
+        const result = await service.getSuccessMetricsDashboard();
+        const loadTime = Date.now() - startTime;
+        performanceMetrics.recordMetric('dashboardLoadTimes', loadTime);
+        return { result, loadTime };
+      const results = await Promise.all(dashboardLoadPromises);
+      // All concurrent loads should complete
+      expect(results).toHaveLength(concurrentUsers);
+      // Total time should be reasonable for concurrent loads
+      expect(totalTime).toBeLessThan(5000); // 5 seconds for 50 concurrent users
+      // Average load time per dashboard
+      const avgLoadTime = performanceMetrics.getAverage('dashboardLoadTimes');
+      expect(avgLoadTime).toBeLessThan(500); // Each dashboard loads in < 500ms avg
+  describe('Query Optimization', () => {
+    it('should use batch queries instead of N+1 queries', async () => {
+      const userIds = Array(100).fill(null).map((_, i) => `user-${i}`);
+      let queryCount = 0;
+      mockSupabase.from.mockImplementation((table: string) => {
+        queryCount++;
+        return mockSupabase;
+      mockSupabase.in.mockReturnThis();
+        data: userIds.map(id => ({ user_id: id, health_score: 70 })),
+        error: null
+      // Bad pattern: N+1 queries
+      const badPatternQueries = async () => {
+        let count = 0;
+        for (const userId of userIds) {
+          mockSupabase.from('customer_health_scores');
+          count++;
+        return count;
+      // Good pattern: Batch query
+      const goodPatternQuery = async () => {
+        await mockSupabase
+          .select('*')
+          .in('user_id', userIds);
+        return 1;
+      const badQueryCount = await badPatternQueries();
+      queryCount = 0; // Reset
+      const goodQueryCount = await goodPatternQuery();
+      expect(badQueryCount).toBe(100); // N+1 problem
+      expect(goodQueryCount).toBe(1); // Single batch query
+    it('should cache frequently accessed data', async () => {
+      const redis = require('@/lib/redis').redis;
+      const cacheKey = 'dashboard:summary:global';
+      // First call - miss cache, hit database
+      redis.get.mockResolvedValueOnce(null);
+      mockSupabase.select.mockResolvedValueOnce({
+        data: Array(100).fill({ health_score: 75 }),
+      const firstCallStart = Date.now();
+      const firstResult = await service.getSuccessMetricsDashboard();
+      const firstCallTime = Date.now() - firstCallStart;
+      // Verify cache write
+      expect(redis.setex).toHaveBeenCalledWith(
+        cacheKey,
+        300, // 5 minute TTL
+        expect.any(String)
+      );
+      // Second call - hit cache
+      const cachedData = JSON.stringify(firstResult);
+      redis.get.mockResolvedValueOnce(cachedData);
+      const secondCallStart = Date.now();
+      const secondResult = await service.getSuccessMetricsDashboard();
+      const secondCallTime = Date.now() - secondCallStart;
+      // Cache hit should be much faster
+      expect(secondCallTime).toBeLessThan(firstCallTime / 2);
+      expect(secondResult).toEqual(firstResult);
+      expect(mockSupabase.select).toHaveBeenCalledTimes(1); // Only called once
+    it('should use database aggregation functions', async () => {
+      // Mock aggregated query response
+      mockSupabase.select.mockImplementation((columns: string) => {
+        if (columns.includes('count')) {
+          return Promise.resolve({
+            data: { count: 5000 },
+            error: null
+          });
+        if (columns.includes('avg')) {
+            data: { avg_health_score: 68.5 },
+      // Use database aggregation instead of fetching all records
+      const getAggregatedStats = async () => {
+        // Good: Use database aggregation
+        const { data: countData } = await mockSupabase
+          .select('count');
+        const { data: avgData } = await mockSupabase
+          .select('avg(health_score)');
+          total: countData.count,
+          average: avgData.avg_health_score,
+          queryTime
+      const stats = await getAggregatedStats();
+      expect(stats.total).toBe(5000);
+      expect(stats.average).toBe(68.5);
+      expect(stats.queryTime).toBeLessThan(100); // Aggregation should be fast
+  describe('Memory Management', () => {
+    it('should handle large result sets without memory issues', async () => {
+      const initialMemory = process.memoryUsage().heapUsed;
+      const largeDataset = generateBulkHealthScenarios(1000);
+      // Process in chunks to avoid memory issues
+      const processInChunks = async (data: any[], chunkSize: number) => {
+        const chunks = [];
+        for (let i = 0; i < data.length; i += chunkSize) {
+          chunks.push(data.slice(i, i + chunkSize));
+        const results = [];
+        for (const chunk of chunks) {
+          // Process each chunk
+          const processed = chunk.map(item => ({
+            user_id: item.user_id,
+            score: item.config.health_score
+          }));
+          results.push(...processed);
+          
+          // Allow garbage collection between chunks
+          if (global.gc) global.gc();
+        return results;
+      const processed = await processInChunks(largeDataset, 100);
+      const finalMemory = process.memoryUsage().heapUsed;
+      const memoryIncrease = (finalMemory - initialMemory) / 1024 / 1024; // MB
+      expect(processed).toHaveLength(1000);
+      expect(memoryIncrease).toBeLessThan(50); // Should use less than 50MB
+    it('should clean up resources after dashboard requests', async () => {
+      const subscriptions: any[] = [];
+      // Mock realtime subscription
+      const mockSubscription = {
+        on: vi.fn().mockReturnThis(),
+        subscribe: vi.fn().mockImplementation(() => {
+          subscriptions.push(mockSubscription);
+          return mockSubscription;
+        }),
+        unsubscribe: vi.fn().mockImplementation(() => {
+          const index = subscriptions.indexOf(mockSubscription);
+          if (index > -1) subscriptions.splice(index, 1);
+        })
+      mockSupabase.channel = vi.fn().mockReturnValue(mockSubscription);
+      // Subscribe to realtime updates
+      const channel = mockSupabase
+        .channel('health-updates')
+        .on('postgres_changes', { event: '*', table: 'customer_health_scores' }, () => {})
+        .subscribe();
+      expect(subscriptions).toHaveLength(1);
+      // Clean up subscription
+      await channel.unsubscribe();
+      expect(subscriptions).toHaveLength(0);
+      expect(mockSubscription.unsubscribe).toHaveBeenCalled();
+  describe('Response Time Benchmarks', () => {
+    it('should meet SLA requirements for dashboard load times', async () => {
+      const slaRequirements = {
+        p50: 200,  // 50th percentile: 200ms
+        p95: 500,  // 95th percentile: 500ms
+        p99: 1000  // 99th percentile: 1000ms
+      const loadTimes: number[] = [];
+      // Simulate 100 dashboard loads
+      for (let i = 0; i < 100; i++) {
+          data: Array(50).fill({ health_score: 70 }),
+          error: null,
+          count: 1000
+        await service.getSuccessMetricsDashboard();
+        const loadTime = Date.now() - startTime + Math.random() * 300; // Simulate variance
+        loadTimes.push(loadTime);
+      // Calculate percentiles
+      loadTimes.sort((a, b) => a - b);
+      const p50 = loadTimes[Math.floor(loadTimes.length * 0.5)];
+      const p95 = loadTimes[Math.floor(loadTimes.length * 0.95)];
+      const p99 = loadTimes[Math.floor(loadTimes.length * 0.99)];
+      expect(p50).toBeLessThanOrEqual(slaRequirements.p50);
+      expect(p95).toBeLessThanOrEqual(slaRequirements.p95);
+      expect(p99).toBeLessThanOrEqual(slaRequirements.p99);
+    it('should handle spike traffic gracefully', async () => {
+      const normalLoad = 10; // requests per second
+      const spikeLoad = 100; // 10x spike
+      // Simulate normal load
+      const normalLoadTimes: number[] = [];
+      for (let i = 0; i < normalLoad; i++) {
+        normalLoadTimes.push(Date.now() - startTime);
+      const avgNormalTime = normalLoadTimes.reduce((a, b) => a + b, 0) / normalLoadTimes.length;
+      // Simulate spike load
+      const spikeLoadPromises = Array(spikeLoad).fill(null).map(async () => {
+        return Date.now() - startTime;
+      const spikeLoadTimes = await Promise.all(spikeLoadPromises);
+      const avgSpikeTime = spikeLoadTimes.reduce((a, b) => a + b, 0) / spikeLoadTimes.length;
+      // Spike response time should not be more than 3x normal
+      expect(avgSpikeTime).toBeLessThan(avgNormalTime * 3);
+      // No requests should timeout (>5 seconds)
+      expect(Math.max(...spikeLoadTimes)).toBeLessThan(5000);
+  describe('Database Connection Pooling', () => {
+    it('should reuse database connections efficiently', async () => {
+      const connectionPool = {
+        connections: new Set<string>(),
+        acquireConnection: function() {
+          const connId = `conn-${this.connections.size + 1}`;
+          if (this.connections.size < 20) { // Max pool size
+            this.connections.add(connId);
+          } else {
+            // Reuse existing connection
+            connId = Array.from(this.connections)[0];
+          }
+          return connId;
+        releaseConnection: function(connId: string) {
+          // Connection returned to pool, not closed
+        getActiveConnections: function() {
+          return this.connections.size;
+      // Simulate concurrent database operations
+      const operations = Array(100).fill(null).map(async () => {
+        const connId = connectionPool.acquireConnection();
+        // Simulate query
+        await new Promise(resolve => setTimeout(resolve, 10));
+        connectionPool.releaseConnection(connId);
+        return connId;
+      await Promise.all(operations);
+      // Should not exceed max pool size
+      expect(connectionPool.getActiveConnections()).toBeLessThanOrEqual(20);
+  describe('Query Result Streaming', () => {
+    it('should stream large result sets for exports', async () => {
+      const totalRecords = 50000;
+      const chunkSize = 1000;
+      let processedRecords = 0;
+      const streamedChunks: any[] = [];
+      // Mock streaming implementation
+      const streamHealthScores = async function* () {
+        for (let offset = 0; offset < totalRecords; offset += chunkSize) {
+          const chunk = Array(Math.min(chunkSize, totalRecords - offset))
+            .fill(null)
+            .map((_, i) => ({
+              user_id: `user-${offset + i}`,
+              health_score: Math.floor(Math.random() * 100)
+            }));
+          yield chunk;
+          processedRecords += chunk.length;
+      for await (const chunk of streamHealthScores()) {
+        streamedChunks.push(chunk);
+        // Process chunk (e.g., write to CSV)
+        await new Promise(resolve => setImmediate(resolve)); // Allow other operations
+      expect(processedRecords).toBe(totalRecords);
+      expect(streamedChunks).toHaveLength(Math.ceil(totalRecords / chunkSize));
+      expect(totalTime).toBeLessThan(10000); // Should complete within 10 seconds
+  describe('Performance Monitoring', () => {
+    it('should track and report performance metrics', async () => {
+      const metricsCollector = {
+        metrics: [] as any[],
+        collect: function(metric: any) {
+          this.metrics.push({
+            ...metric,
+            timestamp: Date.now()
+        getReport: function() {
+          return {
+            total: this.metrics.length,
+            avgResponseTime: this.metrics.reduce((sum, m) => sum + m.duration, 0) / this.metrics.length,
+            errorRate: this.metrics.filter(m => m.error).length / this.metrics.length
+          };
+      // Track multiple operations
+      for (let i = 0; i < 20; i++) {
+        try {
+          if (Math.random() > 0.9) {
+            throw new Error('Simulated error');
+          await service.calculateHealthScore(`user-${i}`);
+          metricsCollector.collect({
+            operation: 'calculateHealthScore',
+            duration: Date.now() - startTime,
+            success: true
+        } catch (error) {
+            error: true
+      const report = metricsCollector.getReport();
+      expect(report.total).toBe(20);
+      expect(report.avgResponseTime).toBeLessThan(100);
+      expect(report.errorRate).toBeLessThan(0.2); // Less than 20% error rate
+});

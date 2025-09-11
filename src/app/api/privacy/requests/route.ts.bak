@@ -1,0 +1,302 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@supabase/supabase-js'
+import { dataSubjectRights, DATA_SUBJECT_REQUEST_TYPES } from '@/lib/compliance/gdpr/data-subject-rights'
+import { auditLogger } from '@/lib/compliance/audit/tamper-proof-logging'
+import { z } from 'zod'
+import { rateLimit } from '@/lib/rate-limit'
+
+// Request validation schema
+const privacyRequestSchema = z.object({
+  requestType: z.enum(Object.values(DATA_SUBJECT_REQUEST_TYPES) as [string, ...string[]]),
+  purpose: z.string().min(10).max(500).optional(),
+  verificationMethod: z.enum(['email', 'phone', 'identity_document']).optional().default('email'),
+  metadata: z.record(z.any()).optional().default({})
+})
+
+const verificationSchema = z.object({
+  requestId: z.string().uuid(),
+  verificationToken: z.string().uuid()
+})
+
+export async function POST(request: NextRequest) {
+  try {
+    // Rate limiting - 5 privacy requests per hour per user
+    const rateLimitResult = await rateLimit.check('privacy_request', request, { max: 5, window: 3600 })
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { 
+          error: 'Rate limit exceeded', 
+          message: 'You can only submit 5 privacy requests per hour' 
+        },
+        { status: 429 }
+      )
+    }
+
+    const supabase = createClientComponentClient()
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
+    const body = await request.json()
+    
+    // Validate request body
+    const validatedData = privacyRequestSchema.parse(body)
+
+    // Collect request context
+    const requestContext = {
+      ip: request.headers.get('x-forwarded-for') || 
+          request.headers.get('x-real-ip') || 
+          'unknown',
+      userAgent: request.headers.get('user-agent') || 'unknown',
+      requestId: crypto.randomUUID(),
+      timestamp: new Date().toISOString()
+    }
+
+    // Enhanced metadata
+    const enhancedMetadata = {
+      ...validatedData.metadata,
+      ...requestContext,
+      verification_method: validatedData.verificationMethod,
+      purpose: validatedData.purpose
+    }
+
+    // Submit the privacy request
+    const privacyRequest = await dataSubjectRights.submitRequest(
+      user.id,
+      validatedData.requestType as any,
+      enhancedMetadata
+    )
+
+    // Log the request submission for audit trail
+    await auditLogger.logPrivacyEvent({
+      action: 'REQUEST_SUBMITTED',
+      userId: user.id,
+      requestType: validatedData.requestType,
+      requestId: privacyRequest.id,
+      riskLevel: validatedData.requestType === 'erasure' ? 'high' : 'medium',
+      metadata: {
+        verification_method: validatedData.verificationMethod,
+        user_initiated: true
+      },
+      context: {
+        ip_address: requestContext.ip,
+        user_agent: requestContext.userAgent,
+        request_id: requestContext.requestId
+      }
+    })
+
+    // Return sanitized response
+    return NextResponse.json({
+      success: true,
+      request: {
+        id: privacyRequest.id,
+        type: privacyRequest.request_type,
+        status: privacyRequest.status,
+        submitted_at: privacyRequest.requested_at,
+        verification_required: true,
+        estimated_completion: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) // 30 days from now
+      },
+      message: 'Privacy request submitted successfully. Please check your email for verification instructions.'
+    }, { status: 201 })
+
+  } catch (error) {
+    console.error('Privacy request submission error:', error)
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { 
+          error: 'Invalid request data', 
+          details: error.errors 
+        },
+        { status: 400 }
+      )
+    }
+
+    // Log failed attempt
+    try {
+      await auditLogger.logSecurityViolation({
+        violationType: 'PRIVACY_REQUEST_FAILURE',
+        severity: 'medium',
+        actorId: 'unknown',
+        description: 'Failed privacy request submission',
+        preventedAction: 'privacy_request_creation',
+        metadata: { error: error.message }
+      })
+    } catch (logError) {
+      console.error('Failed to log privacy request failure:', logError)
+    }
+
+    return NextResponse.json(
+      { error: 'Failed to submit privacy request' },
+      { status: 500 }
+    )
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = createClientComponentClient()
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
+    // Get query parameters
+    const { searchParams } = new URL(request.url)
+    const status = searchParams.get('status')
+    const requestType = searchParams.get('type')
+    const limit = Math.min(parseInt(searchParams.get('limit') || '10'), 50)
+    const offset = parseInt(searchParams.get('offset') || '0')
+
+    // Build query
+    let query = supabase
+      .from('privacy_requests')
+      .select(`
+        id,
+        request_type,
+        status,
+        requested_at,
+        completed_at,
+        is_verified,
+        metadata
+      `)
+      .eq('user_id', user.id)
+      .order('requested_at', { ascending: false })
+      .range(offset, offset + limit - 1)
+
+    if (status) {
+      query = query.eq('status', status)
+    }
+    if (requestType) {
+      query = query.eq('request_type', requestType)
+    }
+
+    const { data: requests, error } = await query
+
+    if (error) {
+      throw error
+    }
+
+    // Log data access for audit trail
+    await auditLogger.logDataAccess({
+      userId: user.id,
+      accessedBy: user.id,
+      resourceType: 'privacy_requests',
+      resourceId: 'user_requests',
+      purpose: 'user_dashboard_view',
+      dataTypes: ['privacy_request_data'],
+      context: {
+        ip_address: request.headers.get('x-forwarded-for') || 'unknown',
+        user_agent: request.headers.get('user-agent') || 'unknown'
+      }
+    })
+
+    // Sanitize response data
+    const sanitizedRequests = requests?.map(req => ({
+      id: req.id,
+      type: req.request_type,
+      status: req.status,
+      submitted_at: req.requested_at,
+      completed_at: req.completed_at,
+      is_verified: req.is_verified,
+      can_download: req.status === 'completed' && req.request_type === 'portability'
+    }))
+
+    return NextResponse.json({
+      requests: sanitizedRequests,
+      pagination: {
+        limit,
+        offset,
+        total: sanitizedRequests?.length || 0
+      }
+    })
+
+  } catch (error) {
+    console.error('Failed to fetch privacy requests:', error)
+    return NextResponse.json(
+      { error: 'Failed to fetch requests' },
+      { status: 500 }
+    )
+  }
+}
+
+// Handle request verification
+export async function PATCH(request: NextRequest) {
+  try {
+    const body = await request.json()
+    const { requestId, verificationToken } = verificationSchema.parse(body)
+
+    const supabase = createClientComponentClient()
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
+    // Verify the request belongs to the user
+    const { data: request, error: fetchError } = await supabase
+      .from('privacy_requests')
+      .select('user_id, request_type, status')
+      .eq('id', requestId)
+      .single()
+
+    if (fetchError || !request) {
+      return NextResponse.json({ error: 'Request not found' }, { status: 404 })
+    }
+
+    if (request.user_id !== user.id) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    }
+
+    // Verify the request
+    const isVerified = await dataSubjectRights.verifyRequest(requestId, verificationToken)
+
+    if (isVerified) {
+      // Log successful verification
+      await auditLogger.logPrivacyEvent({
+        action: 'REQUEST_VERIFIED',
+        userId: user.id,
+        requestType: request.request_type,
+        requestId,
+        riskLevel: 'low',
+        metadata: {
+          verification_successful: true,
+          verification_time: new Date().toISOString()
+        },
+        context: {
+          ip_address: request.headers.get('x-forwarded-for') || 'unknown',
+          user_agent: request.headers.get('user-agent') || 'unknown'
+        }
+      })
+
+      return NextResponse.json({
+        success: true,
+        message: 'Request verified successfully. Processing will begin shortly.',
+        status: 'processing'
+      })
+    } else {
+      return NextResponse.json(
+        { error: 'Invalid verification token or request expired' },
+        { status: 400 }
+      )
+    }
+
+  } catch (error) {
+    console.error('Request verification error:', error)
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid verification data', details: error.errors },
+        { status: 400 }
+      )
+    }
+
+    return NextResponse.json(
+      { error: 'Verification failed' },
+      { status: 500 }
+    )
+  }
+}

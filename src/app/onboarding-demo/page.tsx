@@ -1,0 +1,14 @@
+import { OnboardingDemo } from '@/components/OnboardingDemo';
+
+export default function OnboardingDemoPage() {
+  return (
+    <div className="min-h-screen bg-zinc-50">
+      <OnboardingDemo />
+    </div>
+  );
+}
+
+export const metadata = {
+  title: 'WedSync Onboarding Demo',
+  description: 'Experience the WedSync onboarding system',
+};

@@ -1,0 +1,298 @@
+/**
+ * Cloud Provider Resource Sync API
+ * POST /api/cloud/providers/[id]/sync - Sync provider resources
+ * WS-257 Team B Implementation
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { MultiCloudOrchestrationService } from '@/lib/services/cloud-orchestration-service';
+import { syncResourcesRequestSchema } from '@/lib/validations/cloud-infrastructure';
+import type { ResourceType } from '@/types/cloud-infrastructure';
+import { z } from 'zod';
+
+// Rate limiting - very restrictive for sync operations
+const RATE_LIMIT = { requests: 5, windowMs: 300000 }; // 5 requests per 5 minutes
+const requestCounts = new Map<string, { count: number; resetTime: number }>();
+
+function checkRateLimit(clientId: string): boolean {
+  const now = Date.now();
+  const current = requestCounts.get(clientId);
+
+  if (!current || now > current.resetTime) {
+    requestCounts.set(clientId, {
+      count: 1,
+      resetTime: now + RATE_LIMIT.windowMs,
+    });
+    return true;
+  }
+
+  if (current.count >= RATE_LIMIT.requests) {
+    return false;
+  }
+
+  current.count++;
+  return true;
+}
+
+function getClientId(request: NextRequest): string {
+  const forwarded = request.headers.get('x-forwarded-for');
+  const ip = forwarded ? forwarded.split(',')[0] : request.ip || 'unknown';
+  return `ip:${ip}`;
+}
+
+async function getUserFromAuth(request: NextRequest) {
+  const supabase = (await import('@/lib/supabase/server')).createClient();
+  const {
+    data: { user },
+    error,
+  } = await supabase.auth.getUser();
+
+  if (error || !user) {
+    throw new Error('Authentication required');
+  }
+
+  const { data: userData, error: userError } = await supabase
+    .from('users')
+    .select('organization_id, role, permissions')
+    .eq('id', user.id)
+    .single();
+
+  if (userError || !userData) {
+    throw new Error('User not found');
+  }
+
+  return {
+    userId: user.id,
+    email: user.email!,
+    organizationId: userData.organization_id,
+    role: userData.role,
+    permissions: userData.permissions || [],
+  };
+}
+
+interface RouteParams {
+  params: { id: string };
+}
+
+/**
+ * POST /api/cloud/providers/[id]/sync
+ * Sync resources from a cloud provider
+ */
+export async function POST(request: NextRequest, { params }: RouteParams) {
+  const syncStartTime = Date.now();
+
+  try {
+    // Rate limiting
+    const clientId = getClientId(request);
+    if (!checkRateLimit(clientId)) {
+      return NextResponse.json(
+        {
+          error:
+            'Rate limit exceeded. Resource sync is limited to 5 requests per 5 minutes.',
+          retryAfter: Math.ceil(RATE_LIMIT.windowMs / 1000),
+        },
+        {
+          status: 429,
+          headers: {
+            'Retry-After': Math.ceil(RATE_LIMIT.windowMs / 1000).toString(),
+          },
+        },
+      );
+    }
+
+    // Authentication
+    const user = await getUserFromAuth(request);
+
+    // Check permissions - only admins and managers can trigger sync
+    if (!['owner', 'admin', 'manager'].includes(user.role)) {
+      return NextResponse.json(
+        {
+          error:
+            'Insufficient permissions. Only owners, admins, and managers can sync resources.',
+        },
+        { status: 403 },
+      );
+    }
+
+    const { id: providerId } = params;
+
+    if (!providerId?.trim()) {
+      return NextResponse.json(
+        { error: 'Provider ID is required' },
+        { status: 400 },
+      );
+    }
+
+    // Parse and validate request body
+    let syncOptions = {
+      dryRun: false,
+      resourceTypes: undefined as ResourceType[] | undefined,
+      regions: undefined as string[] | undefined,
+      syncMetrics: true,
+      syncCosts: true,
+    };
+
+    try {
+      const body = await request.json();
+      syncOptions = syncResourcesRequestSchema.parse(body);
+    } catch (parseError) {
+      if (parseError instanceof z.ZodError) {
+        return NextResponse.json(
+          {
+            error: 'Invalid sync parameters',
+            details: parseError.errors.map((e) => ({
+              field: e.path.join('.'),
+              message: e.message,
+            })),
+          },
+          { status: 400 },
+        );
+      }
+      // Use default options if no body provided
+    }
+
+    // Create orchestration service
+    const orchestrationService = new MultiCloudOrchestrationService({
+      organizationId: user.organizationId,
+      userId: user.userId,
+    });
+
+    // Get provider
+    const provider = await orchestrationService.getCloudProvider(providerId);
+    const providerConfig = provider.getProvider();
+
+    // Start sync operation
+    const syncResult = await provider.syncResources({
+      resourceTypes: syncOptions.resourceTypes,
+      regions: syncOptions.regions,
+      dryRun: syncOptions.dryRun,
+    });
+
+    // Update provider sync status in database
+    const supabase = (await import('@/lib/supabase/server')).createClient();
+    await supabase
+      .from('cloud_providers')
+      .update({
+        last_sync_at: new Date().toISOString(),
+        sync_status: syncResult.success ? 'synced' : 'error',
+        error_message:
+          syncResult.errors.length > 0 ? syncResult.errors.join('; ') : null,
+      })
+      .eq('id', providerId)
+      .eq('organization_id', user.organizationId);
+
+    // Prepare detailed response
+    const response = {
+      providerId,
+      providerName: providerConfig.name,
+      providerType: providerConfig.providerType,
+      syncResult: {
+        success: syncResult.success,
+        resourcesDiscovered: syncResult.resourcesDiscovered,
+        resourcesCreated: syncResult.resourcesCreated,
+        resourcesUpdated: syncResult.resourcesUpdated,
+        resourcesDeleted: syncResult.resourcesDeleted,
+        errors: syncResult.errors,
+        syncDurationMs: syncResult.syncDurationMs,
+      },
+      syncOptions,
+      syncMetadata: {
+        initiatedBy: user.userId,
+        initiatedAt: new Date(syncStartTime).toISOString(),
+        completedAt: new Date().toISOString(),
+        totalDurationMs: Date.now() - syncStartTime,
+        dryRun: syncOptions.dryRun,
+      },
+      summary: {
+        totalOperations: syncResult.resourcesDiscovered,
+        successfulOperations:
+          syncResult.resourcesCreated + syncResult.resourcesUpdated,
+        failedOperations: syncResult.errors.length,
+        skippedOperations:
+          syncResult.resourcesDiscovered -
+          syncResult.resourcesCreated -
+          syncResult.resourcesUpdated,
+      },
+    };
+
+    // Audit log
+    console.log('Resource sync completed:', {
+      action: 'SYNC_CLOUD_PROVIDER_RESOURCES',
+      resourceType: 'cloud_provider',
+      resourceId: providerId,
+      success: syncResult.success,
+      resourcesDiscovered: syncResult.resourcesDiscovered,
+      resourcesCreated: syncResult.resourcesCreated,
+      resourcesUpdated: syncResult.resourcesUpdated,
+      resourcesDeleted: syncResult.resourcesDeleted,
+      errorCount: syncResult.errors.length,
+      syncDurationMs: syncResult.syncDurationMs,
+      totalDurationMs: response.syncMetadata.totalDurationMs,
+      userId: user.userId,
+      organizationId: user.organizationId,
+      dryRun: syncOptions.dryRun,
+    });
+
+    // Return appropriate status code
+    const statusCode = syncResult.success
+      ? syncResult.errors.length > 0
+        ? 207
+        : 200 // 207 Multi-Status if some operations failed
+      : 502; // 502 Bad Gateway if sync failed
+
+    return NextResponse.json(response, { status: statusCode });
+  } catch (error) {
+    const totalDurationMs = Date.now() - syncStartTime;
+
+    console.error('Error during resource sync:', error);
+
+    if (error instanceof Error) {
+      if (error.message.includes('Authentication')) {
+        return NextResponse.json({ error: error.message }, { status: 401 });
+      }
+      if (
+        error.message.includes('permission') ||
+        error.message.includes('Insufficient')
+      ) {
+        return NextResponse.json({ error: error.message }, { status: 403 });
+      }
+      if (error.message.includes('not found')) {
+        return NextResponse.json(
+          { error: 'Provider not found' },
+          { status: 404 },
+        );
+      }
+      if (
+        error.message.includes('timeout') ||
+        error.message.includes('connection')
+      ) {
+        return NextResponse.json(
+          {
+            error: 'Sync failed due to connection timeout or network error',
+            syncMetadata: {
+              totalDurationMs,
+              failedAt: new Date().toISOString(),
+            },
+            details: { originalError: error.message },
+          },
+          { status: 502 },
+        );
+      }
+    }
+
+    return NextResponse.json(
+      {
+        error: 'Resource sync failed',
+        syncMetadata: {
+          totalDurationMs,
+          failedAt: new Date().toISOString(),
+        },
+        details: {
+          errorType: 'internal_error',
+          message: 'An internal error occurred during resource synchronization',
+        },
+      },
+      { status: 500 },
+    );
+  }
+}

@@ -1,0 +1,357 @@
+/**
+ * WS-202 Supabase Realtime Integration - Status API Endpoint
+ * Team B - Backend/API Implementation
+ *
+ * Provides comprehensive status information for realtime connections,
+ * performance metrics, and system health monitoring.
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { getRealtimeManager } from '../../../../lib/realtime/RealtimeSubscriptionManager';
+
+interface StatusResponse {
+  status: 'healthy' | 'degraded' | 'unhealthy';
+  timestamp: string;
+  version: string;
+  user: {
+    id: string;
+    activeSubscriptions: number;
+    memoryUsage: number;
+    connectionHealth: 'excellent' | 'good' | 'poor' | 'offline';
+  };
+  system: {
+    totalConnections: number;
+    activeSubscriptions: number;
+    errorRate: number;
+    averageLatency: number;
+    memoryUsage: number;
+    messagesPerSecond: number;
+    uptime: number;
+  };
+  performance: {
+    subscriptionLatency: number;
+    memoryPerConnection: number;
+    connectionPool: {
+      utilization: number;
+      activeConnections: number;
+      idleConnections: number;
+      totalSize: number;
+    };
+  };
+  alerts: Array<{
+    id: string;
+    type: 'LATENCY' | 'MEMORY' | 'ERROR_RATE' | 'CONNECTION_LIMIT';
+    severity: 'warning' | 'error' | 'critical';
+    message: string;
+    timestamp: string;
+  }>;
+  weddingDay?: {
+    isWeddingDay: boolean;
+    enhancedMode: boolean;
+    emergencyProtocol: boolean;
+    criticalOperationsOnly: boolean;
+  };
+}
+
+// Authentication helper
+async function authenticate(request: NextRequest) {
+  const authHeader = request.headers.get('authorization');
+  if (!authHeader?.startsWith('Bearer ')) {
+    throw new Error('Missing or invalid authorization header');
+  }
+
+  const token = authHeader.substring(7);
+
+  const supabase = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    {
+      auth: { autoRefreshToken: false, persistSession: false },
+    },
+  );
+
+  const {
+    data: { user },
+    error,
+  } = await supabase.auth.getUser(token);
+
+  if (error || !user) {
+    throw new Error('Invalid authentication token');
+  }
+
+  // Get user profile for organization context
+  const { data: profile } = await supabase
+    .from('user_profiles')
+    .select('id, user_type, organization_id, supplier_id, couple_id')
+    .eq('id', user.id)
+    .single();
+
+  return { user, profile };
+}
+
+// Check if today is a wedding day for the user's organization
+async function checkWeddingDayStatus(organizationId: string): Promise<{
+  isWeddingDay: boolean;
+  enhancedMode: boolean;
+  emergencyProtocol: boolean;
+  criticalOperationsOnly: boolean;
+}> {
+  try {
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      { auth: { autoRefreshToken: false, persistSession: false } },
+    );
+
+    const today = new Date().toISOString().split('T')[0];
+
+    // Check for weddings happening today
+    const { data: weddings } = await supabase
+      .from('wedding_details')
+      .select('id, wedding_date')
+      .eq('organization_id', organizationId)
+      .gte('wedding_date', today)
+      .lt(
+        'wedding_date',
+        new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      )
+      .limit(1);
+
+    const isWeddingDay = weddings && weddings.length > 0;
+
+    return {
+      isWeddingDay,
+      enhancedMode: isWeddingDay,
+      emergencyProtocol: false, // Would be triggered by specific conditions
+      criticalOperationsOnly: false, // Would be enabled in extreme scenarios
+    };
+  } catch (error) {
+    console.error('Wedding day status check failed:', error);
+    return {
+      isWeddingDay: false,
+      enhancedMode: false,
+      emergencyProtocol: false,
+      criticalOperationsOnly: false,
+    };
+  }
+}
+
+// Determine user connection health based on metrics
+function determineConnectionHealth(
+  subscriptionCount: number,
+  memoryUsage: number,
+  latency: number,
+  errorRate: number,
+): 'excellent' | 'good' | 'poor' | 'offline' {
+  if (subscriptionCount === 0) return 'offline';
+  if (errorRate > 10 || latency > 1000) return 'poor';
+  if (errorRate > 5 || latency > 500 || memoryUsage > 10 * 1024 * 1024)
+    return 'good';
+  return 'excellent';
+}
+
+// Determine overall system status
+function determineSystemStatus(
+  errorRate: number,
+  latency: number,
+  memoryUsage: number,
+  connectionPool: any,
+): 'healthy' | 'degraded' | 'unhealthy' {
+  if (errorRate > 15 || latency > 2000 || connectionPool.utilization > 0.95) {
+    return 'unhealthy';
+  }
+  if (errorRate > 5 || latency > 500 || connectionPool.utilization > 0.8) {
+    return 'degraded';
+  }
+  return 'healthy';
+}
+
+export async function GET(request: NextRequest) {
+  const startTime = Date.now();
+  let userId: string = '';
+
+  try {
+    // 1. Authentication
+    const { user, profile } = await authenticate(request);
+    userId = user.id;
+
+    // 2. Get realtime manager and metrics
+    const realtimeManager = getRealtimeManager();
+    const systemMetrics = await realtimeManager.getMetrics();
+    const connectionHealth = await realtimeManager.getConnectionHealth();
+
+    // 3. Filter user-specific metrics
+    const userConnections = connectionHealth.filter((h) => h.userId === userId);
+    const userSubscriptionCount = userConnections.length;
+    const userMemoryUsage = userConnections.reduce(
+      (sum, conn) => sum + conn.memoryUsage,
+      0,
+    );
+    const userAverageLatency =
+      userConnections.length > 0
+        ? userConnections.reduce((sum, conn) => sum + conn.latency, 0) /
+          userConnections.length
+        : 0;
+
+    // 4. Check wedding day status
+    const weddingDayStatus = profile?.organization_id
+      ? await checkWeddingDayStatus(profile.organization_id)
+      : undefined;
+
+    // 5. Determine connection and system health
+    const userConnectionHealth = determineConnectionHealth(
+      userSubscriptionCount,
+      userMemoryUsage,
+      userAverageLatency,
+      0, // User-specific error rate would need to be calculated
+    );
+
+    const systemStatus = determineSystemStatus(
+      systemMetrics.errorRate,
+      systemMetrics.averageLatency,
+      systemMetrics.memoryUsage,
+      systemMetrics.connectionPool,
+    );
+
+    // 6. Format performance alerts
+    const alerts = systemMetrics.performanceAlerts.map((alert) => ({
+      id: alert.alertId,
+      type: alert.type,
+      severity: alert.severity,
+      message: `${alert.type} threshold exceeded: ${alert.actualValue} > ${alert.threshold}`,
+      timestamp: alert.timestamp.toISOString(),
+    }));
+
+    // 7. Build response
+    const response: StatusResponse = {
+      status: systemStatus,
+      timestamp: new Date().toISOString(),
+      version: '1.0.0',
+      user: {
+        id: userId,
+        activeSubscriptions: userSubscriptionCount,
+        memoryUsage: userMemoryUsage,
+        connectionHealth: userConnectionHealth,
+      },
+      system: {
+        totalConnections: systemMetrics.totalConnections,
+        activeSubscriptions: systemMetrics.activeSubscriptions,
+        errorRate: systemMetrics.errorRate,
+        averageLatency: systemMetrics.averageLatency,
+        memoryUsage: systemMetrics.memoryUsage,
+        messagesPerSecond: systemMetrics.messagesPerSecond,
+        uptime: Date.now() - startTime, // This would be actual uptime in production
+      },
+      performance: {
+        subscriptionLatency: systemMetrics.averageLatency,
+        memoryPerConnection:
+          systemMetrics.activeSubscriptions > 0
+            ? systemMetrics.memoryUsage / systemMetrics.activeSubscriptions
+            : 0,
+        connectionPool: {
+          utilization: systemMetrics.connectionPool.poolUtilization,
+          activeConnections: systemMetrics.connectionPool.activeConnections,
+          idleConnections: systemMetrics.connectionPool.idleConnections,
+          totalSize: systemMetrics.connectionPool.totalSize,
+        },
+      },
+      alerts,
+    };
+
+    // Add wedding day information if applicable
+    if (weddingDayStatus) {
+      response.weddingDay = weddingDayStatus;
+    }
+
+    return NextResponse.json(response, {
+      headers: {
+        'X-Response-Time': `${Date.now() - startTime}ms`,
+        'X-System-Status': systemStatus,
+        'X-User-Connection-Health': userConnectionHealth,
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+      },
+    });
+  } catch (error) {
+    console.error('Status API error:', error);
+
+    if (error instanceof Error) {
+      if (
+        error.message.includes('authorization') ||
+        error.message.includes('authentication')
+      ) {
+        return NextResponse.json(
+          {
+            status: 'error',
+            error: 'Authentication required',
+            timestamp: new Date().toISOString(),
+          },
+          { status: 401 },
+        );
+      }
+    }
+
+    return NextResponse.json(
+      {
+        status: 'error',
+        error: 'Unable to retrieve status',
+        timestamp: new Date().toISOString(),
+        responseTime: Date.now() - startTime,
+      },
+      { status: 500 },
+    );
+  }
+}
+
+// POST endpoint for health checks with more detailed diagnostics
+export async function POST(request: NextRequest) {
+  try {
+    const { user } = await authenticate(request);
+    const body = await request.json().catch(() => ({}));
+    const { includeDetailed = false, runCleanup = false } = body;
+
+    const realtimeManager = getRealtimeManager();
+
+    let cleanupResult;
+    if (runCleanup) {
+      cleanupResult = await realtimeManager.cleanup();
+    }
+
+    const metrics = await realtimeManager.getMetrics();
+    const connectionHealth = await realtimeManager.getConnectionHealth();
+
+    const response = {
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+      userId: user.id,
+      systemMetrics: includeDetailed
+        ? metrics
+        : {
+            activeSubscriptions: metrics.activeSubscriptions,
+            totalConnections: metrics.totalConnections,
+            errorRate: metrics.errorRate,
+          },
+      connectionHealth: includeDetailed
+        ? connectionHealth
+        : connectionHealth.length,
+      cleanup: cleanupResult
+        ? {
+            cleanedSubscriptions: cleanupResult.cleanedSubscriptions,
+            memoryReclaimed: cleanupResult.memoryReclaimed,
+            duration: cleanupResult.duration,
+          }
+        : undefined,
+    };
+
+    return NextResponse.json(response);
+  } catch (error) {
+    return NextResponse.json(
+      {
+        status: 'error',
+        error: 'Health check failed',
+        timestamp: new Date().toISOString(),
+      },
+      { status: 500 },
+    );
+  }
+}

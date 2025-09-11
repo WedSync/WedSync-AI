@@ -1,0 +1,674 @@
+// WS-161: Supplier Google Calendar Integration API
+import { NextRequest, NextResponse } from 'next/server'
+import { SupplierGoogleCalendarService } from '@/lib/calendar/supplier-google-calendar-service'
+import { createClient } from '@/lib/supabase/server'
+import { z } from 'zod'
+
+const GoogleCalendarSetupSchema = z.object({
+  supplier_id: z.string(),
+  organization_id: z.string(),
+  oauth_code: z.string(),
+  sync_settings: z.object({
+    auto_sync_enabled: z.boolean().default(true),
+    conflict_resolution: z.enum(['manual', 'auto_reschedule', 'notify_only']).default('manual'),
+    sync_window_days: z.number().min(7).max(90).default(30),
+    sync_categories: z.array(z.string()).default(['all']),
+    notification_preferences: z.object({
+      sync_errors: z.boolean().default(true),
+      conflict_alerts: z.boolean().default(true),
+      schedule_updates: z.boolean().default(true)
+    }).default({})
+  }).default({})
+})
+
+const GoogleCalendarSyncSchema = z.object({
+  supplier_ids: z.array(z.string()),
+  organization_id: z.string(),
+  force_sync: z.boolean().default(false),
+  sync_window_days: z.number().min(1).max(90).default(30)
+})
+
+const GoogleCalendarUpdateSchema = z.object({
+  supplier_id: z.string(),
+  organization_id: z.string(),
+  sync_settings: z.object({
+    sync_enabled: z.boolean().optional(),
+    auto_sync_enabled: z.boolean().optional(),
+    conflict_resolution: z.enum(['manual', 'auto_reschedule', 'notify_only']).optional(),
+    sync_window_days: z.number().min(7).max(90).optional(),
+    sync_categories: z.array(z.string()).optional(),
+    notification_preferences: z.object({
+      sync_errors: z.boolean().optional(),
+      conflict_alerts: z.boolean().optional(),
+      schedule_updates: z.boolean().optional()
+    }).optional()
+  })
+})
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = await createClient()
+    
+    const { data: { user }, error: userError } = await supabase.auth.getUser()
+    
+    if (userError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      )
+    }
+
+    const body = await request.json()
+    const url = new URL(request.url)
+    const action = url.searchParams.get('action') || 'setup'
+
+    switch (action) {
+      case 'setup':
+        return await handleGoogleCalendarSetup(body, user.id)
+      
+      case 'sync':
+        return await handleGoogleCalendarSync(body, user.id)
+      
+      default:
+        return NextResponse.json(
+          { error: 'Invalid action' },
+          { status: 400 }
+        )
+    }
+
+  } catch (error) {
+    console.error('Google Calendar API Error:', error)
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}
+
+async function handleGoogleCalendarSetup(body: any, userId: string) {
+  try {
+    const validatedData = GoogleCalendarSetupSchema.parse(body)
+    const { supplier_id, organization_id, oauth_code, sync_settings } = validatedData
+
+    const supabase = await createClient()
+
+    // Verify user has access to the organization
+    const { data: orgMembership } = await supabase
+      .from('organization_members')
+      .select('role')
+      .eq('organization_id', organization_id)
+      .eq('user_id', userId)
+      .single()
+
+    if (!orgMembership || !['admin', 'planner', 'coordinator'].includes(orgMembership.role)) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions' },
+        { status: 403 }
+      )
+    }
+
+    // Verify supplier exists and user has access
+    const { data: supplier } = await supabase
+      .from('suppliers')
+      .select('id, name, email, organization_id')
+      .eq('id', supplier_id)
+      .eq('organization_id', organization_id)
+      .single()
+
+    if (!supplier) {
+      return NextResponse.json(
+        { error: 'Supplier not found' },
+        { status: 404 }
+      )
+    }
+
+    // Set up Google Calendar sync
+    const result = await SupplierGoogleCalendarService.setupSupplierGoogleCalendarSync(
+      supplier_id,
+      organization_id,
+      oauth_code,
+      sync_settings
+    )
+
+    if (!result.success) {
+      return NextResponse.json(
+        { error: result.error || 'Failed to set up Google Calendar sync' },
+        { status: 400 }
+      )
+    }
+
+    // Log the setup
+    await supabase.from('supplier_calendar_activity_log').insert({
+      supplier_id,
+      organization_id,
+      activity_type: 'google_calendar_setup',
+      details: {
+        calendar_sync_id: result.calendar_sync_id,
+        sync_settings,
+        setup_by: userId
+      },
+      created_at: new Date().toISOString()
+    })
+
+    return NextResponse.json({
+      success: true,
+      message: 'Google Calendar sync set up successfully',
+      calendar_sync_id: result.calendar_sync_id,
+      supplier: {
+        id: supplier.id,
+        name: supplier.name
+      }
+    })
+
+  } catch (validationError) {
+    return NextResponse.json(
+      { error: 'Invalid request data', details: validationError },
+      { status: 400 }
+    )
+  }
+}
+
+async function handleGoogleCalendarSync(body: any, userId: string) {
+  try {
+    const validatedData = GoogleCalendarSyncSchema.parse(body)
+    const { supplier_ids, organization_id, force_sync, sync_window_days } = validatedData
+
+    const supabase = await createClient()
+
+    // Verify user has access to the organization
+    const { data: orgMembership } = await supabase
+      .from('organization_members')
+      .select('role')
+      .eq('organization_id', organization_id)
+      .eq('user_id', userId)
+      .single()
+
+    if (!orgMembership || !['admin', 'planner', 'coordinator'].includes(orgMembership.role)) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions' },
+        { status: 403 }
+      )
+    }
+
+    // Get suppliers and their schedule events
+    const { data: suppliers, error: suppliersError } = await supabase
+      .from('suppliers')
+      .select(`
+        id, name, email, company_name, phone, role,
+        notification_preferences
+      `)
+      .in('id', supplier_ids)
+      .eq('organization_id', organization_id)
+
+    if (suppliersError || !suppliers || suppliers.length === 0) {
+      return NextResponse.json(
+        { error: 'No valid suppliers found' },
+        { status: 404 }
+      )
+    }
+
+    // Get schedule events for the sync window
+    const windowStart = new Date()
+    const windowEnd = new Date(Date.now() + sync_window_days * 24 * 60 * 60 * 1000)
+
+    const { data: scheduleEvents, error: eventsError } = await supabase
+      .from('supplier_schedule_events')
+      .select(`
+        *,
+        wedding:weddings!inner(
+          id, couple_names, wedding_date,
+          planner_name, planner_email
+        )
+      `)
+      .eq('organization_id', organization_id)
+      .in('supplier_id', supplier_ids)
+      .gte('start_time', windowStart.toISOString())
+      .lte('start_time', windowEnd.toISOString())
+      .neq('status', 'cancelled')
+
+    if (eventsError) {
+      return NextResponse.json(
+        { error: 'Failed to fetch schedule events' },
+        { status: 500 }
+      )
+    }
+
+    // Group events by supplier
+    const supplierSchedules = suppliers.map(supplier => {
+      const supplierEvents = (scheduleEvents || [])
+        .filter(event => event.supplier_id === supplier.id)
+        .map(event => ({
+          id: event.id,
+          title: event.title,
+          description: event.description,
+          start_time: new Date(event.start_time),
+          end_time: new Date(event.end_time),
+          location: event.location,
+          venue_name: event.venue_name,
+          venue_address: event.venue_address,
+          setup_time: event.setup_time ? new Date(event.setup_time) : undefined,
+          breakdown_time: event.breakdown_time ? new Date(event.breakdown_time) : undefined,
+          supplier_role: event.supplier_role,
+          special_instructions: event.special_instructions,
+          contact_person: event.contact_person,
+          contact_phone: event.contact_phone,
+          contact_email: event.contact_email,
+          wedding_date: new Date(event.wedding.wedding_date),
+          couple_names: event.wedding.couple_names,
+          planner_name: event.wedding.planner_name,
+          planner_email: event.wedding.planner_email,
+          priority: event.priority as 'low' | 'medium' | 'high' | 'critical',
+          status: event.status as 'draft' | 'confirmed' | 'updated' | 'cancelled',
+          created_at: new Date(event.created_at),
+          updated_at: new Date(event.updated_at)
+        }))
+
+      const supplierContact = {
+        id: supplier.id,
+        email: supplier.email,
+        name: supplier.name,
+        company_name: supplier.company_name,
+        phone: supplier.phone,
+        role: supplier.role,
+        preferences: supplier.notification_preferences || {
+          email_notifications: true,
+          sms_notifications: false,
+          whatsapp_notifications: false,
+          reminder_hours: [24, 2],
+          preferred_contact_method: 'email'
+        }
+      }
+
+      return {
+        supplier: supplierContact,
+        scheduleEvents: supplierEvents
+      }
+    })
+
+    // Perform bulk sync to Google Calendar
+    const syncResult = await SupplierGoogleCalendarService.bulkSyncSuppliersToGoogleCalendar(
+      supplierSchedules,
+      organization_id
+    )
+
+    // Log the sync operation
+    await supabase.from('supplier_calendar_activity_log').insert({
+      supplier_id: null, // Bulk operation
+      organization_id,
+      activity_type: 'bulk_google_calendar_sync',
+      details: {
+        supplier_count: supplier_ids.length,
+        sync_result: syncResult,
+        sync_window_days,
+        force_sync,
+        initiated_by: userId
+      },
+      created_at: new Date().toISOString()
+    })
+
+    return NextResponse.json({
+      success: true,
+      message: 'Google Calendar sync completed',
+      sync_result: syncResult,
+      summary: {
+        total_suppliers: syncResult.total_suppliers,
+        successful_syncs: syncResult.successful_syncs,
+        failed_syncs: syncResult.failed_syncs,
+        total_events_synced: syncResult.total_events_synced,
+        total_conflicts: syncResult.total_conflicts
+      }
+    })
+
+  } catch (validationError) {
+    return NextResponse.json(
+      { error: 'Invalid request data', details: validationError },
+      { status: 400 }
+    )
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = await createClient()
+    
+    const { data: { user }, error: userError } = await supabase.auth.getUser()
+    
+    if (userError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      )
+    }
+
+    const url = new URL(request.url)
+    const organizationId = url.searchParams.get('organization_id')
+    const supplierId = url.searchParams.get('supplier_id')
+    const action = url.searchParams.get('action') || 'status'
+
+    if (!organizationId) {
+      return NextResponse.json(
+        { error: 'Organization ID required' },
+        { status: 400 }
+      )
+    }
+
+    // Verify user has access to the organization
+    const { data: orgMembership } = await supabase
+      .from('organization_members')
+      .select('role')
+      .eq('organization_id', organizationId)
+      .eq('user_id', user.id)
+      .single()
+
+    if (!orgMembership) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions' },
+        { status: 403 }
+      )
+    }
+
+    switch (action) {
+      case 'status':
+        if (!supplierId) {
+          return NextResponse.json(
+            { error: 'Supplier ID required for status check' },
+            { status: 400 }
+          )
+        }
+
+        const status = await SupplierGoogleCalendarService.getSupplierCalendarSyncStatus(
+          supplierId,
+          organizationId
+        )
+
+        return NextResponse.json({
+          success: true,
+          supplier_id: supplierId,
+          calendar_sync_status: status
+        })
+
+      case 'oauth_url':
+        // Generate Google OAuth URL for supplier calendar access
+        const googleOAuthUrl = `https://accounts.google.com/o/oauth2/v2/auth?${new URLSearchParams({
+          client_id: process.env.GOOGLE_OAUTH_CLIENT_ID!,
+          redirect_uri: process.env.GOOGLE_OAUTH_REDIRECT_URI!,
+          response_type: 'code',
+          scope: 'https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/userinfo.email',
+          access_type: 'offline',
+          prompt: 'consent',
+          state: JSON.stringify({
+            type: 'supplier_calendar_setup',
+            supplier_id: supplierId,
+            organization_id: organizationId
+          })
+        })}`
+
+        return NextResponse.json({
+          success: true,
+          oauth_url: googleOAuthUrl
+        })
+
+      case 'sync_history':
+        const limit = parseInt(url.searchParams.get('limit') || '50')
+        const offset = parseInt(url.searchParams.get('offset') || '0')
+
+        let historyQuery = supabase
+          .from('supplier_calendar_sync_log')
+          .select(`
+            *,
+            supplier:suppliers(name, email, company_name)
+          `)
+          .eq('organization_id', organizationId)
+          .eq('provider', 'google')
+          .order('synced_at', { ascending: false })
+          .range(offset, offset + limit - 1)
+
+        if (supplierId) {
+          historyQuery = historyQuery.eq('supplier_id', supplierId)
+        }
+
+        const { data: syncHistory, error: historyError } = await historyQuery
+
+        if (historyError) {
+          return NextResponse.json(
+            { error: 'Failed to fetch sync history' },
+            { status: 500 }
+          )
+        }
+
+        return NextResponse.json({
+          success: true,
+          sync_history: syncHistory || [],
+          pagination: {
+            limit,
+            offset,
+            has_more: (syncHistory?.length || 0) === limit
+          }
+        })
+
+      case 'conflicts':
+        const conflictsLimit = parseInt(url.searchParams.get('limit') || '50')
+        const conflictsOffset = parseInt(url.searchParams.get('offset') || '0')
+        const status_filter = url.searchParams.get('status') || 'pending'
+
+        let conflictsQuery = supabase
+          .from('supplier_calendar_conflicts')
+          .select(`
+            *,
+            supplier:suppliers(name, email, company_name),
+            schedule_event:supplier_schedule_events(
+              title, start_time, end_time,
+              wedding:weddings(couple_names)
+            )
+          `)
+          .eq('organization_id', organizationId)
+          .eq('resolution_status', status_filter)
+          .order('created_at', { ascending: false })
+          .range(conflictsOffset, conflictsOffset + conflictsLimit - 1)
+
+        if (supplierId) {
+          conflictsQuery = conflictsQuery.eq('supplier_id', supplierId)
+        }
+
+        const { data: conflicts, error: conflictsError } = await conflictsQuery
+
+        if (conflictsError) {
+          return NextResponse.json(
+            { error: 'Failed to fetch calendar conflicts' },
+            { status: 500 }
+          )
+        }
+
+        return NextResponse.json({
+          success: true,
+          conflicts: conflicts || [],
+          pagination: {
+            limit: conflictsLimit,
+            offset: conflictsOffset,
+            has_more: (conflicts?.length || 0) === conflictsLimit
+          }
+        })
+
+      default:
+        return NextResponse.json(
+          { error: 'Invalid action' },
+          { status: 400 }
+        )
+    }
+
+  } catch (error) {
+    console.error('Google Calendar API Error:', error)
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}
+
+export async function PUT(request: NextRequest) {
+  try {
+    const supabase = await createClient()
+    
+    const { data: { user }, error: userError } = await supabase.auth.getUser()
+    
+    if (userError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      )
+    }
+
+    const body = await request.json()
+    
+    let validatedData
+    try {
+      validatedData = GoogleCalendarUpdateSchema.parse(body)
+    } catch (validationError) {
+      return NextResponse.json(
+        { error: 'Invalid request data', details: validationError },
+        { status: 400 }
+      )
+    }
+
+    const { supplier_id, organization_id, sync_settings } = validatedData
+
+    // Verify user has access to the organization
+    const { data: orgMembership } = await supabase
+      .from('organization_members')
+      .select('role')
+      .eq('organization_id', organization_id)
+      .eq('user_id', user.id)
+      .single()
+
+    if (!orgMembership || !['admin', 'planner', 'coordinator'].includes(orgMembership.role)) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions' },
+        { status: 403 }
+      )
+    }
+
+    // Update calendar sync settings
+    const { error: updateError } = await supabase
+      .from('supplier_calendar_syncs')
+      .update({
+        ...sync_settings,
+        updated_at: new Date().toISOString()
+      })
+      .eq('supplier_id', supplier_id)
+      .eq('organization_id', organization_id)
+      .eq('provider', 'google')
+
+    if (updateError) {
+      return NextResponse.json(
+        { error: 'Failed to update calendar sync settings' },
+        { status: 500 }
+      )
+    }
+
+    // Log the update
+    await supabase.from('supplier_calendar_activity_log').insert({
+      supplier_id,
+      organization_id,
+      activity_type: 'google_calendar_settings_update',
+      details: {
+        updated_settings: sync_settings,
+        updated_by: user.id
+      },
+      created_at: new Date().toISOString()
+    })
+
+    return NextResponse.json({
+      success: true,
+      message: 'Calendar sync settings updated successfully'
+    })
+
+  } catch (error) {
+    console.error('Google Calendar API Error:', error)
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}
+
+export async function DELETE(request: NextRequest) {
+  try {
+    const supabase = await createClient()
+    
+    const { data: { user }, error: userError } = await supabase.auth.getUser()
+    
+    if (userError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      )
+    }
+
+    const url = new URL(request.url)
+    const organizationId = url.searchParams.get('organization_id')
+    const supplierId = url.searchParams.get('supplier_id')
+
+    if (!organizationId || !supplierId) {
+      return NextResponse.json(
+        { error: 'Organization ID and Supplier ID required' },
+        { status: 400 }
+      )
+    }
+
+    // Verify user has access to the organization
+    const { data: orgMembership } = await supabase
+      .from('organization_members')
+      .select('role')
+      .eq('organization_id', organizationId)
+      .eq('user_id', user.id)
+      .single()
+
+    if (!orgMembership || !['admin', 'planner', 'coordinator'].includes(orgMembership.role)) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions' },
+        { status: 403 }
+      )
+    }
+
+    // Disable calendar sync
+    const { error: deleteError } = await supabase
+      .from('supplier_calendar_syncs')
+      .update({
+        sync_enabled: false,
+        updated_at: new Date().toISOString()
+      })
+      .eq('supplier_id', supplierId)
+      .eq('organization_id', organizationId)
+      .eq('provider', 'google')
+
+    if (deleteError) {
+      return NextResponse.json(
+        { error: 'Failed to disable calendar sync' },
+        { status: 500 }
+      )
+    }
+
+    // Log the disconnection
+    await supabase.from('supplier_calendar_activity_log').insert({
+      supplier_id: supplierId,
+      organization_id: organizationId,
+      activity_type: 'google_calendar_disconnect',
+      details: {
+        disconnected_by: user.id
+      },
+      created_at: new Date().toISOString()
+    })
+
+    return NextResponse.json({
+      success: true,
+      message: 'Google Calendar sync disabled successfully'
+    })
+
+  } catch (error) {
+    console.error('Google Calendar API Error:', error)
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}

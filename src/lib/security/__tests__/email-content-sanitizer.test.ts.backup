@@ -1,0 +1,432 @@
+import {
+  sanitizeEmailHtml,
+  sanitizeSubjectLine,
+  validateMergeFields,
+  processMergeFields,
+  validateEmailTemplateContent,
+  sanitizeEmailTemplate,
+  MergeField,
+  EmailTemplateContent
+} from '../email-content-sanitizer'
+
+describe('Email Content Sanitizer', () => {
+  describe('sanitizeEmailHtml', () => {
+    it('should sanitize basic HTML content', () => {
+      const html = '<p>Hello <strong>world</strong>!</p>'
+      const result = sanitizeEmailHtml(html)
+      expect(result).toBe('<p>Hello <strong>world</strong>!</p>')
+    })
+
+    it('should remove script tags', () => {
+      const html = '<p>Hello</p><script>alert("xss")</script><p>World</p>'
+      const result = sanitizeEmailHtml(html)
+      expect(result).not.toContain('<script>')
+      expect(result).not.toContain('alert')
+      expect(result).toContain('<p>Hello</p>')
+      expect(result).toContain('<p>World</p>')
+    })
+
+    it('should remove javascript: protocol', () => {
+      const html = '<a href="javascript:alert(\'xss\')">Click me</a>'
+      const result = sanitizeEmailHtml(html)
+      expect(result).not.toContain('javascript:')
+    })
+
+    it('should remove event handlers', () => {
+      const html = '<div onclick="alert(\'xss\')">Click me</div>'
+      const result = sanitizeEmailHtml(html)
+      expect(result).not.toContain('onclick')
+      expect(result).not.toContain('alert')
+    })
+
+    it('should preserve safe attributes', () => {
+      const html = '<a href="https://example.com" title="Link">Link</a>'
+      const result = sanitizeEmailHtml(html)
+      expect(result).toContain('href="https://example.com"')
+      expect(result).toContain('title="Link"')
+    })
+
+    it('should sanitize CSS in style attributes', () => {
+      const html = '<p style="color: red; background: url(javascript:alert(1))">Text</p>'
+      const result = sanitizeEmailHtml(html)
+      expect(result).toContain('color: red')
+      expect(result).not.toContain('javascript:')
+    })
+
+    it('should throw error for invalid input', () => {
+      expect(() => sanitizeEmailHtml('')).toThrow('Invalid HTML content provided')
+      expect(() => sanitizeEmailHtml(null as any)).toThrow('Invalid HTML content provided')
+      expect(() => sanitizeEmailHtml(123 as any)).toThrow('Invalid HTML content provided')
+    })
+
+    it('should handle complex HTML structures', () => {
+      const html = `
+        <div style="font-family: Arial">
+          <h1>Title</h1>
+          <p>Paragraph with <strong>bold</strong> and <em>italic</em> text.</p>
+          <ul>
+            <li>Item 1</li>
+            <li>Item 2</li>
+          </ul>
+          <table width="100%">
+            <tr>
+              <td>Cell 1</td>
+              <td>Cell 2</td>
+            </tr>
+          </table>
+        </div>
+      `
+      const result = sanitizeEmailHtml(html)
+      expect(result).toContain('<h1>Title</h1>')
+      expect(result).toContain('<strong>bold</strong>')
+      expect(result).toContain('<em>italic</em>')
+      expect(result).toContain('<ul>')
+      expect(result).toContain('<table')
+    })
+
+    it('should remove dangerous CSS expressions', () => {
+      const html = '<div style="width: expression(alert(\'xss\'))">Content</div>'
+      const result = sanitizeEmailHtml(html)
+      expect(result).not.toContain('expression(')
+      expect(result).not.toContain('alert')
+    })
+
+    it('should allow safe email-specific attributes', () => {
+      const html = '<img src="https://example.com/image.jpg" alt="Image" width="100" height="50">'
+      const result = sanitizeEmailHtml(html)
+      expect(result).toContain('src="https://example.com/image.jpg"')
+      expect(result).toContain('alt="Image"')
+      expect(result).toContain('width="100"')
+      expect(result).toContain('height="50"')
+    })
+  })
+
+  describe('sanitizeSubjectLine', () => {
+    it('should sanitize basic subject line', () => {
+      const subject = 'Welcome to WedSync!'
+      const result = sanitizeSubjectLine(subject)
+      expect(result).toBe('Welcome to WedSync!')
+    })
+
+    it('should remove HTML tags', () => {
+      const subject = 'Welcome <script>alert("xss")</script> to WedSync!'
+      const result = sanitizeSubjectLine(subject)
+      expect(result).toBe('Welcome  to WedSync!')
+      expect(result).not.toContain('<script>')
+    })
+
+    it('should remove javascript protocol', () => {
+      const subject = 'Click javascript:alert("xss") here'
+      const result = sanitizeSubjectLine(subject)
+      expect(result).not.toContain('javascript:')
+    })
+
+    it('should replace line breaks with spaces', () => {
+      const subject = 'Line 1\nLine 2\rLine 3\tLine 4'
+      const result = sanitizeSubjectLine(subject)
+      expect(result).toBe('Line 1 Line 2 Line 3 Line 4')
+    })
+
+    it('should truncate long subject lines', () => {
+      const longSubject = 'A'.repeat(600)
+      const result = sanitizeSubjectLine(longSubject)
+      expect(result).toHaveLength(500)
+      expect(result).toEndWith('...')
+    })
+
+    it('should throw error for invalid input', () => {
+      expect(() => sanitizeSubjectLine('')).toThrow('Invalid subject line provided')
+      expect(() => sanitizeSubjectLine(null as any)).toThrow('Invalid subject line provided')
+    })
+  })
+
+  describe('validateMergeFields', () => {
+    const validMergeFields: MergeField[] = [
+      {
+        key: 'client_name',
+        label: 'Client Name',
+        description: 'Client full name',
+        type: 'text',
+        required: true
+      },
+      {
+        key: 'wedding_date',
+        label: 'Wedding Date',
+        description: 'Wedding ceremony date',
+        type: 'date',
+        required: false
+      }
+    ]
+
+    it('should validate correct merge fields', () => {
+      const result = validateMergeFields(validMergeFields)
+      expect(result).toHaveLength(2)
+      expect(result[0]).toEqual(validMergeFields[0])
+    })
+
+    it('should throw error for non-array input', () => {
+      expect(() => validateMergeFields('not an array' as any)).toThrow('Merge fields must be an array')
+      expect(() => validateMergeFields(null as any)).toThrow('Merge fields must be an array')
+    })
+
+    it('should throw error for invalid field key format', () => {
+      const invalidFields = [
+        { key: '123invalid', label: 'Invalid', description: '', type: 'text', required: false }
+      ]
+      expect(() => validateMergeFields(invalidFields)).toThrow('Invalid merge field key')
+    })
+
+    it('should throw error for duplicate keys', () => {
+      const duplicateFields = [
+        { key: 'client_name', label: 'Name 1', description: '', type: 'text', required: false },
+        { key: 'client_name', label: 'Name 2', description: '', type: 'text', required: false }
+      ]
+      expect(() => validateMergeFields(duplicateFields)).toThrow('Duplicate merge field key: client_name')
+    })
+
+    it('should validate field types', () => {
+      const result = validateMergeFields([
+        { key: 'email_field', label: 'Email', description: '', type: 'email', required: false },
+        { key: 'phone_field', label: 'Phone', description: '', type: 'phone', required: false },
+        { key: 'url_field', label: 'URL', description: '', type: 'url', required: false },
+        { key: 'currency_field', label: 'Currency', description: '', type: 'currency', required: false }
+      ])
+      expect(result).toHaveLength(4)
+      expect(result[0].type).toBe('email')
+      expect(result[1].type).toBe('phone')
+      expect(result[2].type).toBe('url')
+      expect(result[3].type).toBe('currency')
+    })
+  })
+
+  describe('processMergeFields', () => {
+    const allowedFields: MergeField[] = [
+      { key: 'client_name', label: 'Client Name', description: '', type: 'text' },
+      { key: 'wedding_date', label: 'Wedding Date', description: '', type: 'date' },
+      { key: 'email', label: 'Email', description: '', type: 'email' },
+      { key: 'phone', label: 'Phone', description: '', type: 'phone' },
+      { key: 'website', label: 'Website', description: '', type: 'url' },
+      { key: 'amount', label: 'Amount', description: '', type: 'currency' }
+    ]
+
+    const mergeData = {
+      client_name: 'John & Jane Doe',
+      wedding_date: '2024-06-15',
+      email: 'john@example.com',
+      phone: '+1-555-123-4567',
+      website: 'https://johnandjane.com',
+      amount: '$2,500.00',
+      unauthorized_field: '<script>alert("xss")</script>'
+    }
+
+    it('should process basic merge fields', () => {
+      const template = 'Hello {{client_name}}, your wedding is on {{wedding_date}}!'
+      const result = processMergeFields(template, mergeData, allowedFields)
+      expect(result).toBe('Hello John &amp; Jane Doe, your wedding is on 2024-06-15!')
+    })
+
+    it('should handle missing merge data', () => {
+      const template = 'Hello {{client_name}}, your venue is {{venue_name}}!'
+      const result = processMergeFields(template, mergeData, allowedFields)
+      expect(result).toBe('Hello John &amp; Jane Doe, your venue is !')
+    })
+
+    it('should ignore unauthorized fields', () => {
+      const template = 'Hello {{client_name}}, {{unauthorized_field}}!'
+      const result = processMergeFields(template, mergeData, allowedFields)
+      expect(result).toBe('Hello John &amp; Jane Doe, {{unauthorized_field}}!')
+    })
+
+    it('should sanitize text fields for XSS', () => {
+      const maliciousData = {
+        client_name: '<script>alert("xss")</script>John'
+      }
+      const template = 'Hello {{client_name}}!'
+      const result = processMergeFields(template, maliciousData, allowedFields)
+      expect(result).toBe('Hello &lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;John!')
+    })
+
+    it('should sanitize email fields', () => {
+      const template = 'Email: {{email}}'
+      const result = processMergeFields(template, mergeData, allowedFields)
+      expect(result).toBe('Email: john@example.com')
+    })
+
+    it('should sanitize phone fields', () => {
+      const template = 'Phone: {{phone}}'
+      const result = processMergeFields(template, mergeData, allowedFields)
+      expect(result).toBe('Phone: +1-555-123-4567')
+    })
+
+    it('should validate URL fields', () => {
+      const template = 'Website: {{website}}'
+      const result = processMergeFields(template, mergeData, allowedFields)
+      expect(result).toBe('Website: https://johnandjane.com')
+    })
+
+    it('should handle invalid URLs', () => {
+      const invalidData = { website: 'javascript:alert("xss")' }
+      const template = 'Website: {{website}}'
+      const result = processMergeFields(template, invalidData, allowedFields)
+      expect(result).toBe('Website: ') // Invalid URLs should be removed
+    })
+
+    it('should sanitize currency fields', () => {
+      const template = 'Amount: {{amount}}'
+      const result = processMergeFields(template, mergeData, allowedFields)
+      expect(result).toBe('Amount: $2,500.00')
+    })
+
+    it('should return empty string for invalid template', () => {
+      const result = processMergeFields('', mergeData, allowedFields)
+      expect(result).toBe('')
+      
+      const nullResult = processMergeFields(null as any, mergeData, allowedFields)
+      expect(nullResult).toBe('')
+    })
+  })
+
+  describe('validateEmailTemplateContent', () => {
+    const validContent: EmailTemplateContent = {
+      name: 'Test Template',
+      description: 'A test template',
+      category: 'client_communication',
+      subject_template: 'Hello {{client_name}}',
+      html_content: '<p>Welcome to our service!</p>',
+      text_content: 'Welcome to our service!',
+      merge_fields: [
+        { key: 'client_name', label: 'Client Name', description: '', type: 'text' }
+      ]
+    }
+
+    it('should validate correct template content', () => {
+      const result = validateEmailTemplateContent(validContent)
+      expect(result).toEqual(validContent)
+    })
+
+    it('should throw error for missing required fields', () => {
+      const invalidContent = { ...validContent, name: '' }
+      expect(() => validateEmailTemplateContent(invalidContent)).toThrow('Email template validation failed')
+    })
+
+    it('should throw error for invalid category', () => {
+      const invalidContent = { ...validContent, category: 'invalid_category' as any }
+      expect(() => validateEmailTemplateContent(invalidContent)).toThrow('Email template validation failed')
+    })
+
+    it('should handle optional fields', () => {
+      const minimalContent = {
+        name: 'Minimal Template',
+        category: 'client_communication' as const,
+        subject_template: 'Subject',
+        html_content: '<p>Content</p>',
+      }
+      const result = validateEmailTemplateContent(minimalContent)
+      expect(result.merge_fields).toEqual([])
+      expect(result.text_content).toBeUndefined()
+    })
+
+    it('should validate subject line length', () => {
+      const longSubject = 'A'.repeat(600)
+      const invalidContent = { ...validContent, subject_template: longSubject }
+      expect(() => validateEmailTemplateContent(invalidContent)).toThrow('Email template validation failed')
+    })
+
+    it('should validate HTML content is not empty', () => {
+      const invalidContent = { ...validContent, html_content: '' }
+      expect(() => validateEmailTemplateContent(invalidContent)).toThrow('Email template validation failed')
+    })
+  })
+
+  describe('sanitizeEmailTemplate', () => {
+    const inputTemplate: EmailTemplateContent = {
+      name: '  Test Template  ',
+      description: '  A test template  ',
+      category: 'client_communication',
+      subject_template: 'Hello {{client_name}}!',
+      html_content: '<p>Welcome <script>alert("xss")</script> to WedSync!</p>',
+      merge_fields: [
+        { key: 'client_name', label: 'Client Name', description: '', type: 'text' }
+      ]
+    }
+
+    it('should sanitize all template content', () => {
+      const result = sanitizeEmailTemplate(inputTemplate)
+      
+      expect(result.name).toBe('Test Template') // trimmed
+      expect(result.description).toBe('A test template') // trimmed
+      expect(result.subject_template).toBe('Hello {{client_name}}!')
+      expect(result.html_content).toContain('<p>Welcome')
+      expect(result.html_content).not.toContain('<script>')
+      expect(result.html_content).not.toContain('alert')
+    })
+
+    it('should generate plain text if not provided', () => {
+      const result = sanitizeEmailTemplate(inputTemplate)
+      expect(result.text_content).toContain('Welcome')
+      expect(result.text_content).not.toContain('<p>')
+      expect(result.text_content).not.toContain('<script>')
+    })
+
+    it('should preserve provided plain text content', () => {
+      const templateWithText = {
+        ...inputTemplate,
+        text_content: '  Custom plain text  '
+      }
+      const result = sanitizeEmailTemplate(templateWithText)
+      expect(result.text_content).toBe('Custom plain text')
+    })
+
+    it('should validate merge fields', () => {
+      const result = sanitizeEmailTemplate(inputTemplate)
+      expect(result.merge_fields).toHaveLength(1)
+      expect(result.merge_fields[0].key).toBe('client_name')
+    })
+
+    it('should handle invalid merge fields', () => {
+      const templateWithInvalidFields = {
+        ...inputTemplate,
+        merge_fields: [
+          { key: '123invalid', label: 'Invalid', description: '', type: 'text' }
+        ]
+      }
+      expect(() => sanitizeEmailTemplate(templateWithInvalidFields)).toThrow('Invalid merge field')
+    })
+  })
+
+  describe('HTML to Text Conversion', () => {
+    it('should convert HTML to plain text correctly', () => {
+      const html = '<p>Paragraph 1</p><p>Paragraph 2</p><br><h1>Heading</h1><ul><li>Item 1</li><li>Item 2</li></ul>'
+      const template = { 
+        ...{
+          name: 'Test',
+          category: 'client_communication' as const,
+          subject_template: 'Subject',
+          html_content: html
+        }
+      }
+      const result = sanitizeEmailTemplate(template)
+      
+      expect(result.text_content).toContain('Paragraph 1')
+      expect(result.text_content).toContain('Paragraph 2')
+      expect(result.text_content).toContain('Heading')
+      expect(result.text_content).toContain('Item 1')
+      expect(result.text_content).not.toContain('<p>')
+      expect(result.text_content).not.toContain('<h1>')
+      expect(result.text_content).not.toContain('<ul>')
+    })
+
+    it('should handle HTML entities', () => {
+      const html = '<p>Price: &dollar;100 &amp; up</p>'
+      const template = {
+        name: 'Test',
+        category: 'client_communication' as const,
+        subject_template: 'Subject',
+        html_content: html
+      }
+      const result = sanitizeEmailTemplate(template)
+      
+      expect(result.text_content).toContain('Price: $100 & up')
+    })
+  })
+})

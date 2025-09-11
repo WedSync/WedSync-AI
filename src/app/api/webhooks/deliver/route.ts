@@ -1,0 +1,601 @@
+/**
+ * WS-201: Webhook Delivery API Route
+ * Team B - Backend/API Implementation
+ *
+ * API endpoint for manual webhook delivery and testing:
+ * - Manual webhook delivery trigger
+ * - Webhook endpoint testing
+ * - Delivery status monitoring
+ * - Emergency webhook delivery
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { z } from 'zod';
+import { getWebhookManager } from '@/lib/webhooks/webhook-manager';
+import { rateLimit } from '@/lib/rate-limit';
+
+// ================================================
+// VALIDATION SCHEMAS
+// ================================================
+
+const deliveryRequestSchema = z.object({
+  delivery_id: z.string().uuid('Invalid delivery ID format'),
+});
+
+const testWebhookSchema = z.object({
+  endpoint_url: z.string().url('Invalid endpoint URL'),
+  event_type: z.string().min(1, 'Event type is required'),
+  test_payload: z.record(z.any()).optional(),
+  timeout_seconds: z.number().min(5).max(60).default(30),
+});
+
+const triggerWebhookSchema = z.object({
+  event_type: z.string().min(1, 'Event type is required'),
+  payload: z.record(z.any()),
+  metadata: z
+    .object({
+      client_id: z.string().uuid().optional(),
+      wedding_id: z.string().optional(),
+      is_business_critical: z.boolean().default(false),
+      is_wedding_day: z.boolean().default(false),
+      source: z.string().optional(),
+    })
+    .optional(),
+});
+
+// ================================================
+// AUTHENTICATION
+// ================================================
+
+async function authenticate(request: NextRequest): Promise<{
+  isValid: boolean;
+  organizationId?: string;
+  userId?: string;
+  error?: string;
+}> {
+  try {
+    const authorization = request.headers.get('authorization');
+    if (!authorization?.startsWith('Bearer ')) {
+      return {
+        isValid: false,
+        error: 'Missing or invalid authorization header',
+      };
+    }
+
+    const token = authorization.slice(7);
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+
+    const {
+      data: { user },
+      error,
+    } = await supabase.auth.getUser(token);
+    if (error || !user) {
+      return { isValid: false, error: 'Invalid authentication token' };
+    }
+
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('id', user.id)
+      .single();
+
+    if (!profile?.organization_id) {
+      return {
+        isValid: false,
+        error: 'User not associated with an organization',
+      };
+    }
+
+    return {
+      isValid: true,
+      organizationId: profile.organization_id,
+      userId: user.id,
+    };
+  } catch (error) {
+    return { isValid: false, error: 'Authentication failed' };
+  }
+}
+
+// ================================================
+// RATE LIMITING
+// ================================================
+
+const deliveryRateLimit = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 10, // 10 delivery requests per minute
+  message: 'Too many delivery requests, please try again later',
+});
+
+const testRateLimit = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 5, // 5 test requests per minute
+  message: 'Too many test requests, please try again later',
+});
+
+// ================================================
+// POST - Manual webhook delivery
+// ================================================
+
+export async function POST(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const action = searchParams.get('action') || 'deliver';
+
+    // Different rate limits for different actions
+    const rateLimitResult =
+      action === 'test'
+        ? await testRateLimit(request)
+        : await deliveryRateLimit(request);
+
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { error: rateLimitResult.error },
+        { status: 429 },
+      );
+    }
+
+    // Authentication
+    const auth = await authenticate(request);
+    if (!auth.isValid) {
+      return NextResponse.json({ error: auth.error }, { status: 401 });
+    }
+
+    const body = await request.json();
+
+    switch (action) {
+      case 'deliver':
+        return await handleManualDelivery(body, auth);
+      case 'test':
+        return await handleTestWebhook(body, auth);
+      case 'trigger':
+        return await handleTriggerWebhook(body, auth);
+      default:
+        return NextResponse.json(
+          {
+            error: 'Invalid action. Supported actions: deliver, test, trigger',
+          },
+          { status: 400 },
+        );
+    }
+  } catch (error) {
+    console.error('POST /api/webhooks/deliver error:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Invalid request data',
+          details: error.errors,
+        },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Webhook delivery request failed' },
+      { status: 500 },
+    );
+  }
+}
+
+// ================================================
+// MANUAL DELIVERY HANDLER
+// ================================================
+
+async function handleManualDelivery(
+  body: any,
+  auth: { organizationId: string; userId: string },
+): Promise<NextResponse> {
+  const validatedData = deliveryRequestSchema.parse(body);
+
+  const supabase = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  );
+
+  // Verify delivery belongs to organization
+  const { data: delivery, error } = await supabase
+    .from('webhook_deliveries')
+    .select('*, webhook_endpoints!inner(organization_id)')
+    .eq('id', validatedData.delivery_id)
+    .eq('webhook_endpoints.organization_id', auth.organizationId)
+    .single();
+
+  if (error || !delivery) {
+    return NextResponse.json(
+      { error: 'Webhook delivery not found' },
+      { status: 404 },
+    );
+  }
+
+  // Check if delivery is in a state that can be manually delivered
+  if (!['failed', 'pending', 'retrying'].includes(delivery.status)) {
+    return NextResponse.json(
+      {
+        error: 'Delivery cannot be manually triggered',
+        current_status: delivery.status,
+      },
+      { status: 409 },
+    );
+  }
+
+  try {
+    // Initialize webhook manager
+    const webhookManager = getWebhookManager(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      process.env.WEBHOOK_SECRET!,
+    );
+
+    await webhookManager.initialize();
+
+    // Attempt manual delivery
+    const result = await webhookManager.deliverWebhook(
+      validatedData.delivery_id,
+    );
+
+    return NextResponse.json({
+      success: true,
+      delivery_result: {
+        success: result.success,
+        status: result.status,
+        response_status: result.responseStatus,
+        response_time: result.responseTime,
+        error: result.error,
+        retry_scheduled: result.retryScheduled,
+        next_retry_at: result.nextRetryAt,
+      },
+      message: result.success
+        ? 'Webhook delivered successfully'
+        : 'Webhook delivery failed',
+    });
+  } catch (error) {
+    console.error('Manual delivery failed:', error);
+    return NextResponse.json(
+      { error: 'Manual delivery failed: ' + error.message },
+      { status: 500 },
+    );
+  }
+}
+
+// ================================================
+// WEBHOOK TEST HANDLER
+// ================================================
+
+async function handleTestWebhook(
+  body: any,
+  auth: { organizationId: string; userId: string },
+): Promise<NextResponse> {
+  const validatedData = testWebhookSchema.parse(body);
+
+  const supabase = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  );
+
+  // Check if endpoint exists and belongs to organization
+  const { data: endpoint } = await supabase
+    .from('webhook_endpoints')
+    .select('*')
+    .eq('organization_id', auth.organizationId)
+    .eq('endpoint_url', validatedData.endpoint_url)
+    .single();
+
+  const testPayload = validatedData.test_payload || {
+    test: true,
+    event_type: validatedData.event_type,
+    timestamp: new Date().toISOString(),
+    organization_id: auth.organizationId,
+    data: {
+      message: 'This is a test webhook from WedSync',
+      test_id: `test_${Date.now()}`,
+      user_id: auth.userId,
+    },
+  };
+
+  const startTime = Date.now();
+
+  try {
+    // Create test delivery headers
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'User-Agent': 'WedSync-Webhooks/1.0 (Test)',
+      'X-Webhook-Event-Type': validatedData.event_type,
+      'X-Webhook-Test': 'true',
+      'X-Webhook-Organization-ID': auth.organizationId,
+    };
+
+    // Add signature if endpoint exists
+    if (endpoint) {
+      const { WebhookSecurity } = await import(
+        '@/lib/webhooks/webhook-security'
+      );
+      const security = new WebhookSecurity({ secret: endpoint.secret_key });
+      const signature = security.generateSignature(JSON.stringify(testPayload));
+      headers['X-Webhook-Signature-256'] = `sha256=${signature.signature}`;
+      headers['X-Webhook-Timestamp'] = signature.timestamp.toString();
+    }
+
+    // Perform test delivery
+    const controller = new AbortController();
+    const timeoutId = setTimeout(
+      () => controller.abort(),
+      validatedData.timeout_seconds * 1000,
+    );
+
+    const response = await fetch(validatedData.endpoint_url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(testPayload),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+    const responseTime = Date.now() - startTime;
+    const responseBody = await response.text();
+
+    // Log test result
+    await supabase.from('webhook_deliveries').insert({
+      event_id: `test_${Date.now()}`,
+      webhook_endpoint_id: endpoint?.id || null,
+      organization_id: auth.organizationId,
+      event_type: validatedData.event_type,
+      payload: testPayload,
+      signature: headers['X-Webhook-Signature-256'] || '',
+      status: response.ok ? 'delivered' : 'failed',
+      priority: 5,
+      attempt_count: 1,
+      max_retries: 0,
+      scheduled_at: new Date().toISOString(),
+      response_status: response.status,
+      response_body: responseBody.substring(0, 1000), // Limit response body length
+      response_time_ms: responseTime,
+      completed_at: new Date().toISOString(),
+      metadata: {
+        test: true,
+        user_id: auth.userId,
+        endpoint_url: validatedData.endpoint_url,
+      },
+    });
+
+    return NextResponse.json({
+      success: true,
+      test_result: {
+        success: response.ok,
+        response_status: response.status,
+        response_time: responseTime,
+        response_headers: Object.fromEntries(response.headers.entries()),
+        response_body: responseBody.substring(0, 500), // Truncate for response
+        endpoint_found: !!endpoint,
+        signature_included: !!headers['X-Webhook-Signature-256'],
+      },
+      message: response.ok
+        ? 'Webhook test completed successfully'
+        : 'Webhook test completed with errors',
+    });
+  } catch (error) {
+    const responseTime = Date.now() - startTime;
+    const errorMessage =
+      error.name === 'AbortError' ? 'Request timeout' : error.message;
+
+    // Log failed test
+    await supabase
+      .from('webhook_deliveries')
+      .insert({
+        event_id: `test_${Date.now()}`,
+        webhook_endpoint_id: endpoint?.id || null,
+        organization_id: auth.organizationId,
+        event_type: validatedData.event_type,
+        payload: testPayload,
+        signature: '',
+        status: 'failed',
+        priority: 5,
+        attempt_count: 1,
+        max_retries: 0,
+        scheduled_at: new Date().toISOString(),
+        error_message: errorMessage,
+        response_time_ms: responseTime,
+        failed_at: new Date().toISOString(),
+        metadata: {
+          test: true,
+          user_id: auth.userId,
+          endpoint_url: validatedData.endpoint_url,
+        },
+      })
+      .catch(() => {}); // Ignore logging failures
+
+    return NextResponse.json({
+      success: false,
+      test_result: {
+        success: false,
+        response_time: responseTime,
+        error: errorMessage,
+        endpoint_found: !!endpoint,
+        signature_included: false,
+      },
+      message: 'Webhook test failed: ' + errorMessage,
+    });
+  }
+}
+
+// ================================================
+// WEBHOOK TRIGGER HANDLER
+// ================================================
+
+async function handleTriggerWebhook(
+  body: any,
+  auth: { organizationId: string; userId: string },
+): Promise<NextResponse> {
+  const validatedData = triggerWebhookSchema.parse(body);
+
+  try {
+    // Initialize webhook manager
+    const webhookManager = getWebhookManager(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      process.env.WEBHOOK_SECRET!,
+    );
+
+    await webhookManager.initialize();
+
+    // Trigger webhook for the event
+    const result = await webhookManager.triggerWebhook({
+      eventType: validatedData.event_type,
+      organizationId: auth.organizationId,
+      payload: validatedData.payload,
+      metadata: {
+        ...validatedData.metadata,
+        triggeredBy: auth.userId,
+        manualTrigger: true,
+        timestamp: new Date().toISOString(),
+      },
+    });
+
+    return NextResponse.json({
+      success: result.success,
+      trigger_result: {
+        triggered_endpoints: result.triggeredEndpoints,
+        failed_endpoints: result.failedEndpoints,
+        delivery_ids: result.deliveryIds,
+        errors: result.errors,
+      },
+      message: result.success
+        ? `Webhook triggered successfully for ${result.triggeredEndpoints} endpoint(s)`
+        : 'Webhook trigger failed',
+    });
+  } catch (error) {
+    console.error('Webhook trigger failed:', error);
+    return NextResponse.json(
+      { error: 'Webhook trigger failed: ' + error.message },
+      { status: 500 },
+    );
+  }
+}
+
+// ================================================
+// GET - Delivery status
+// ================================================
+
+export async function GET(request: NextRequest) {
+  try {
+    const rateLimitResult = await deliveryRateLimit(request);
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { error: rateLimitResult.error },
+        { status: 429 },
+      );
+    }
+
+    const auth = await authenticate(request);
+    if (!auth.isValid) {
+      return NextResponse.json({ error: auth.error }, { status: 401 });
+    }
+
+    const { searchParams } = new URL(request.url);
+    const deliveryId = searchParams.get('delivery_id');
+
+    if (!deliveryId) {
+      return NextResponse.json(
+        { error: 'Delivery ID is required' },
+        { status: 400 },
+      );
+    }
+
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+
+    // Get delivery status with endpoint information
+    const { data: delivery, error } = await supabase
+      .from('webhook_deliveries')
+      .select(
+        `
+        *,
+        webhook_endpoints!inner(
+          id,
+          endpoint_url,
+          organization_id,
+          description,
+          integration_type,
+          is_active
+        )
+      `,
+      )
+      .eq('id', deliveryId)
+      .eq('webhook_endpoints.organization_id', auth.organizationId)
+      .single();
+
+    if (error || !delivery) {
+      return NextResponse.json(
+        { error: 'Webhook delivery not found' },
+        { status: 404 },
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        delivery_id: delivery.id,
+        event_id: delivery.event_id,
+        event_type: delivery.event_type,
+        status: delivery.status,
+        priority: delivery.priority,
+        attempt_count: delivery.attempt_count,
+        max_retries: delivery.max_retries,
+        scheduled_at: delivery.scheduled_at,
+        next_retry_at: delivery.next_retry_at,
+        response_status: delivery.response_status,
+        response_time_ms: delivery.response_time_ms,
+        error_message: delivery.error_message,
+        created_at: delivery.created_at,
+        completed_at: delivery.completed_at,
+        failed_at: delivery.failed_at,
+        endpoint: {
+          id: delivery.webhook_endpoints.id,
+          url: maskEndpointUrl(delivery.webhook_endpoints.endpoint_url),
+          description: delivery.webhook_endpoints.description,
+          integration_type: delivery.webhook_endpoints.integration_type,
+          is_active: delivery.webhook_endpoints.is_active,
+        },
+      },
+    });
+  } catch (error) {
+    console.error('GET /api/webhooks/deliver error:', error);
+    return NextResponse.json(
+      { error: 'Failed to fetch delivery status' },
+      { status: 500 },
+    );
+  }
+}
+
+// ================================================
+// UTILITY FUNCTIONS
+// ================================================
+
+function maskEndpointUrl(url: string): string {
+  try {
+    const urlObj = new URL(url);
+    const parts = urlObj.pathname.split('/');
+    if (parts.length > 2) {
+      // Mask middle parts of the path
+      const masked = parts.map((part, index) => {
+        if (index > 0 && index < parts.length - 1 && part.length > 4) {
+          return (
+            part.slice(0, 2) +
+            '*'.repeat(Math.max(part.length - 4, 2)) +
+            part.slice(-2)
+          );
+        }
+        return part;
+      });
+      urlObj.pathname = masked.join('/');
+    }
+    return urlObj.toString();
+  } catch {
+    return url; // Return original if parsing fails
+  }
+}

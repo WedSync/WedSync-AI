@@ -1,0 +1,540 @@
+/**
+ * LocationPicker Component
+ * Interactive map-based venue selection for WedSync wedding planning
+ * Uses Google Maps with drag-and-drop location selection
+ * Mobile-optimized with touch interactions
+ */
+
+'use client';
+
+import React, { useState, useCallback, useEffect, useRef } from 'react';
+import {
+  MapPin,
+  Navigation,
+  Crosshair,
+  Search,
+  Layers,
+  ZoomIn,
+  ZoomOut,
+  RotateCcw,
+  Loader2,
+} from 'lucide-react';
+import { useGeolocation } from '@/hooks/useGeolocation';
+import { useGooglePlaces } from '@/hooks/useGooglePlaces';
+import { GooglePlacesAutocomplete } from './GooglePlacesAutocomplete';
+import type {
+  LocationPickerProps,
+  LocationCoordinates,
+  PlaceDetails,
+  VenueSearchFilters,
+} from '@/types/google-places';
+
+// Map configuration constants
+const DEFAULT_ZOOM = 15;
+const MIN_ZOOM = 10;
+const MAX_ZOOM = 20;
+const DEFAULT_CENTER: LocationCoordinates = { lat: 40.7128, lng: -74.006 }; // NYC as fallback
+
+/**
+ * Map marker component for venues
+ */
+function VenueMarker({
+  position,
+  title,
+  isSelected = false,
+  onClick,
+}: {
+  position: LocationCoordinates;
+  title: string;
+  isSelected?: boolean;
+  onClick?: () => void;
+}) {
+  return (
+    <div
+      className={`
+        absolute transform -translate-x-1/2 -translate-y-full cursor-pointer
+        transition-all duration-200 hover:scale-110
+        ${isSelected ? 'z-20' : 'z-10'}
+      `}
+      style={{
+        left: '50%',
+        top: '50%',
+      }}
+      onClick={onClick}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          onClick?.();
+        }
+      }}
+      aria-label={`Select venue: ${title}`}
+    >
+      {/* Marker Pin */}
+      <div
+        className={`
+          w-8 h-8 rounded-full border-2 bg-white shadow-lg
+          flex items-center justify-center
+          ${
+            isSelected
+              ? 'border-primary-600 bg-primary-600'
+              : 'border-gray-300 hover:border-primary-400'
+          }
+        `}
+      >
+        <MapPin
+          size={16}
+          className={isSelected ? 'text-white' : 'text-gray-600'}
+        />
+      </div>
+
+      {/* Marker Stem */}
+      <div
+        className={`
+          w-1 h-4 mx-auto
+          ${isSelected ? 'bg-primary-600' : 'bg-gray-300'}
+        `}
+      />
+
+      {/* Venue Label */}
+      <div
+        className={`
+          absolute top-full left-1/2 transform -translate-x-1/2 mt-2
+          px-2 py-1 rounded bg-black/80 text-white text-xs whitespace-nowrap
+          transition-opacity duration-200
+          ${isSelected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}
+        `}
+      >
+        {title}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Map controls component
+ */
+function MapControls({
+  zoom,
+  onZoomIn,
+  onZoomOut,
+  onResetView,
+  onToggleCurrentLocation,
+  isLoadingLocation,
+}: {
+  zoom: number;
+  onZoomIn: () => void;
+  onZoomOut: () => void;
+  onResetView: () => void;
+  onToggleCurrentLocation: () => void;
+  isLoadingLocation: boolean;
+}) {
+  return (
+    <div className="absolute right-4 bottom-20 flex flex-col bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden">
+      {/* Zoom In */}
+      <button
+        onClick={onZoomIn}
+        disabled={zoom >= MAX_ZOOM}
+        className="p-3 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors border-b border-gray-100"
+        aria-label="Zoom in"
+      >
+        <ZoomIn size={20} />
+      </button>
+
+      {/* Zoom Out */}
+      <button
+        onClick={onZoomOut}
+        disabled={zoom <= MIN_ZOOM}
+        className="p-3 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors border-b border-gray-100"
+        aria-label="Zoom out"
+      >
+        <ZoomOut size={20} />
+      </button>
+
+      {/* Current Location */}
+      <button
+        onClick={onToggleCurrentLocation}
+        disabled={isLoadingLocation}
+        className="p-3 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors border-b border-gray-100"
+        aria-label="Go to current location"
+      >
+        {isLoadingLocation ? (
+          <Loader2 size={20} className="animate-spin" />
+        ) : (
+          <Navigation size={20} />
+        )}
+      </button>
+
+      {/* Reset View */}
+      <button
+        onClick={onResetView}
+        className="p-3 hover:bg-gray-50 transition-colors"
+        aria-label="Reset map view"
+      >
+        <RotateCcw size={20} />
+      </button>
+    </div>
+  );
+}
+
+/**
+ * LocationPicker Component
+ * Interactive map for venue location selection with search integration
+ */
+export function LocationPicker({
+  center = DEFAULT_CENTER,
+  zoom: initialZoom = DEFAULT_ZOOM,
+  selectedLocation,
+  onLocationSelect,
+  onPlaceSelect,
+  showCurrentLocationButton = true,
+  showNearbyVenues = true,
+  venueFilters,
+  className = '',
+  height = '400px',
+}: LocationPickerProps) {
+  // State
+  const [mapCenter, setMapCenter] = useState<LocationCoordinates>(center);
+  const [mapZoom, setMapZoom] = useState(initialZoom);
+  const [isDragging, setIsDragging] = useState(false);
+  const [nearbyVenues, setNearbyVenues] = useState<PlaceDetails[]>([]);
+  const [selectedVenue, setSelectedVenue] = useState<PlaceDetails | null>(null);
+  const [showSearch, setShowSearch] = useState(false);
+
+  // Hooks
+  const {
+    coordinates,
+    loading: locationLoading,
+    getCurrentPosition,
+  } = useGeolocation();
+  const { searchNearby, isSearchingNearby } = useGooglePlaces();
+
+  // Refs
+  const mapRef = useRef<HTMLDivElement>(null);
+  const isDraggingRef = useRef(false);
+
+  /**
+   * Search for nearby venues
+   */
+  const searchNearbyVenues = useCallback(
+    async (searchCenter: LocationCoordinates) => {
+      if (!showNearbyVenues) return;
+
+      try {
+        const results = await searchNearby({
+          location: searchCenter,
+          radius: 2000, // 2km radius
+          venue_type: venueFilters?.venue_types?.[0],
+          min_rating: 4.0, // Only show highly rated venues
+        });
+
+        // Convert GooglePlace to PlaceDetails (simplified)
+        const venues: PlaceDetails[] = results.map((place) => ({
+          ...place,
+          formatted_phone_number: undefined,
+          international_phone_number: undefined,
+          website: undefined,
+          url: undefined,
+          opening_hours: undefined,
+          photos: undefined,
+          reviews: undefined,
+          editorial_summary: undefined,
+        }));
+
+        setNearbyVenues(venues);
+      } catch (error) {
+        console.error('Failed to search nearby venues:', error);
+      }
+    },
+    [showNearbyVenues, venueFilters, searchNearby],
+  );
+
+  /**
+   * Handle map click/tap
+   */
+  const handleMapClick = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      if (isDraggingRef.current) return;
+
+      const rect = event.currentTarget.getBoundingClientRect();
+      const x = event.clientX - rect.left;
+      const y = event.clientY - rect.top;
+
+      // Convert pixel coordinates to lat/lng (simplified calculation)
+      // In production, this would use the Google Maps API
+      const lat =
+        mapCenter.lat +
+        ((rect.height / 2 - y) / rect.height) * 0.01 * (mapZoom / DEFAULT_ZOOM);
+      const lng =
+        mapCenter.lng +
+        ((x - rect.width / 2) / rect.width) * 0.01 * (mapZoom / DEFAULT_ZOOM);
+
+      const newLocation: LocationCoordinates = { lat, lng };
+
+      onLocationSelect?.(newLocation);
+
+      // Search for nearby venues at the selected location
+      searchNearbyVenues(newLocation);
+    },
+    [mapCenter, mapZoom, onLocationSelect, searchNearbyVenues],
+  );
+
+  /**
+   * Handle venue marker click
+   */
+  const handleVenueClick = useCallback(
+    (venue: PlaceDetails) => {
+      setSelectedVenue(venue);
+      onPlaceSelect?.(venue);
+      onLocationSelect?.(venue.geometry.location);
+    },
+    [onPlaceSelect, onLocationSelect],
+  );
+
+  /**
+   * Map controls handlers
+   */
+  const handleZoomIn = useCallback(() => {
+    setMapZoom((prev) => Math.min(MAX_ZOOM, prev + 1));
+  }, []);
+
+  const handleZoomOut = useCallback(() => {
+    setMapZoom((prev) => Math.max(MIN_ZOOM, prev - 1));
+  }, []);
+
+  const handleResetView = useCallback(() => {
+    setMapCenter(center);
+    setMapZoom(initialZoom);
+    setSelectedVenue(null);
+  }, [center, initialZoom]);
+
+  const handleCurrentLocation = useCallback(async () => {
+    try {
+      const position = await getCurrentPosition();
+      setMapCenter(position);
+      onLocationSelect?.(position);
+      searchNearbyVenues(position);
+    } catch (error) {
+      console.error('Failed to get current location:', error);
+    }
+  }, [getCurrentPosition, onLocationSelect, searchNearbyVenues]);
+
+  /**
+   * Handle search selection
+   */
+  const handleSearchSelect = useCallback(
+    (place: PlaceDetails) => {
+      const location = place.geometry.location;
+      setMapCenter(location);
+      setSelectedVenue(place);
+      onLocationSelect?.(location);
+      onPlaceSelect?.(place);
+      setShowSearch(false);
+      searchNearbyVenues(location);
+    },
+    [onLocationSelect, onPlaceSelect, searchNearbyVenues],
+  );
+
+  /**
+   * Initialize nearby venues search
+   */
+  useEffect(() => {
+    searchNearbyVenues(mapCenter);
+  }, [searchNearbyVenues, mapCenter]);
+
+  /**
+   * Update center when coordinates change
+   */
+  useEffect(() => {
+    if (coordinates && showCurrentLocationButton) {
+      setMapCenter(coordinates);
+    }
+  }, [coordinates, showCurrentLocationButton]);
+
+  return (
+    <div
+      className={`relative bg-gray-100 rounded-lg overflow-hidden ${className}`}
+    >
+      {/* Search Overlay */}
+      {showSearch && (
+        <div className="absolute inset-0 z-30 bg-white">
+          <div className="p-4">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-900">
+                Search Venues
+              </h3>
+              <button
+                onClick={() => setShowSearch(false)}
+                className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                ✕
+              </button>
+            </div>
+            <GooglePlacesAutocomplete
+              placeholder="Search for venues, addresses, or landmarks..."
+              onSelect={handleSearchSelect}
+              className="mb-4"
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Search Button */}
+      <button
+        onClick={() => setShowSearch(true)}
+        className="absolute top-4 left-4 z-20 bg-white hover:bg-gray-50 rounded-lg p-3 shadow-lg border border-gray-200 transition-colors"
+        aria-label="Search venues"
+      >
+        <Search size={20} />
+      </button>
+
+      {/* Map Container */}
+      <div
+        ref={mapRef}
+        className="relative w-full bg-gray-200 cursor-crosshair select-none"
+        style={{ height }}
+        onClick={handleMapClick}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            handleMapClick(e as any);
+          }
+        }}
+        aria-label="Interactive map - click to select location"
+      >
+        {/* Map Background Pattern */}
+        <div
+          className="absolute inset-0 opacity-10"
+          style={{
+            backgroundImage: `
+              repeating-linear-gradient(
+                0deg,
+                transparent,
+                transparent 10px,
+                #000 10px,
+                #000 11px
+              ),
+              repeating-linear-gradient(
+                90deg,
+                transparent,
+                transparent 10px,
+                #000 10px,
+                #000 11px
+              )
+            `,
+          }}
+        />
+
+        {/* Center Crosshair */}
+        <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 pointer-events-none">
+          <Crosshair size={24} className="text-gray-400" />
+        </div>
+
+        {/* Selected Location Marker */}
+        {selectedLocation && (
+          <div
+            className="absolute transform -translate-x-1/2 -translate-y-full z-30"
+            style={{
+              left: '50%',
+              top: '50%',
+            }}
+          >
+            <div className="w-6 h-6 bg-primary-600 border-2 border-white rounded-full shadow-lg animate-pulse" />
+            <div className="w-1 h-4 bg-primary-600 mx-auto" />
+          </div>
+        )}
+
+        {/* Nearby Venue Markers */}
+        {nearbyVenues.map((venue, index) => (
+          <VenueMarker
+            key={venue.place_id}
+            position={venue.geometry.location}
+            title={venue.name}
+            isSelected={selectedVenue?.place_id === venue.place_id}
+            onClick={() => handleVenueClick(venue)}
+          />
+        ))}
+
+        {/* Loading Overlay */}
+        {isSearchingNearby && (
+          <div className="absolute inset-0 bg-black/20 flex items-center justify-center">
+            <div className="bg-white rounded-lg p-4 shadow-lg flex items-center gap-3">
+              <Loader2 size={20} className="animate-spin text-primary-600" />
+              <span className="text-sm font-medium">Finding venues...</span>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Map Controls */}
+      <MapControls
+        zoom={mapZoom}
+        onZoomIn={handleZoomIn}
+        onZoomOut={handleZoomOut}
+        onResetView={handleResetView}
+        onToggleCurrentLocation={handleCurrentLocation}
+        isLoadingLocation={locationLoading}
+      />
+
+      {/* Current Location Indicator */}
+      {coordinates && (
+        <div className="absolute bottom-4 left-4 bg-white rounded-lg shadow-lg border border-gray-200 px-3 py-2">
+          <div className="flex items-center gap-2 text-sm">
+            <div className="w-2 h-2 bg-blue-500 rounded-full" />
+            <span className="text-gray-600">Current location</span>
+          </div>
+        </div>
+      )}
+
+      {/* Selected Venue Info */}
+      {selectedVenue && (
+        <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 bg-white rounded-lg shadow-lg border border-gray-200 p-4 max-w-sm">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <h4 className="font-semibold text-gray-900 truncate">
+                {selectedVenue.name}
+              </h4>
+              <p className="text-sm text-gray-600 truncate mt-1">
+                {selectedVenue.formatted_address}
+              </p>
+              {selectedVenue.rating && (
+                <div className="flex items-center gap-1 mt-2">
+                  <div className="flex items-center gap-1">
+                    {[...Array(5)].map((_, i) => (
+                      <div
+                        key={i}
+                        className={`w-3 h-3 rounded-full ${
+                          i < Math.floor(selectedVenue.rating || 0)
+                            ? 'bg-yellow-400'
+                            : 'bg-gray-200'
+                        }`}
+                      />
+                    ))}
+                  </div>
+                  <span className="text-xs text-gray-500 ml-1">
+                    {selectedVenue.rating?.toFixed(1)}
+                  </span>
+                </div>
+              )}
+            </div>
+            <button
+              onClick={() => setSelectedVenue(null)}
+              className="text-gray-400 hover:text-gray-600 transition-colors"
+              aria-label="Close venue info"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Zoom Level Indicator */}
+      <div className="absolute top-4 right-4 bg-black/60 text-white px-2 py-1 rounded text-sm">
+        Zoom: {mapZoom}
+      </div>
+    </div>
+  );
+}
+
+export default LocationPicker;

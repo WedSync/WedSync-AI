@@ -1,0 +1,359 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import { z } from 'zod';
+import { TaskCreateInput, TaskFilter, WorkflowTask } from '@/types/workflow';
+
+const CreateTaskSchema = z.object({
+  title: z.string().min(1).max(255),
+  description: z.string().optional(),
+  wedding_id: z.string().uuid(),
+  category: z.enum([
+    'venue_management',
+    'vendor_coordination',
+    'client_management',
+    'logistics',
+    'design',
+    'photography',
+    'catering',
+    'florals',
+    'music',
+    'transportation',
+  ]),
+  priority: z.enum(['low', 'medium', 'high', 'critical']).default('medium'),
+  assigned_to: z.string().uuid().optional(),
+  estimated_duration: z.number().min(0.25).max(168), // 15 minutes to 1 week
+  buffer_time: z.number().min(0).max(48).default(0),
+  deadline: z.string().datetime(),
+  dependencies: z
+    .array(
+      z.object({
+        predecessor_task_id: z.string().uuid(),
+        dependency_type: z.enum([
+          'finish_to_start',
+          'start_to_start',
+          'finish_to_finish',
+          'start_to_finish',
+        ]),
+        lag_time: z.number().default(0),
+      }),
+    )
+    .optional(),
+});
+
+const FilterSchema = z.object({
+  status: z
+    .array(
+      z.enum([
+        'todo',
+        'in_progress',
+        'review',
+        'completed',
+        'blocked',
+        'cancelled',
+      ]),
+    )
+    .optional(),
+  priority: z.array(z.enum(['low', 'medium', 'high', 'critical'])).optional(),
+  category: z
+    .array(
+      z.enum([
+        'venue_management',
+        'vendor_coordination',
+        'client_management',
+        'logistics',
+        'design',
+        'photography',
+        'catering',
+        'florals',
+        'music',
+        'transportation',
+      ]),
+    )
+    .optional(),
+  assigned_to: z.array(z.string().uuid()).optional(),
+  wedding_id: z.string().uuid().optional(),
+  deadline_from: z.string().datetime().optional(),
+  deadline_to: z.string().datetime().optional(),
+  is_overdue: z.boolean().optional(),
+  is_critical_path: z.boolean().optional(),
+  limit: z.number().min(1).max(100).default(50),
+  offset: z.number().min(0).default(0),
+});
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+    const { searchParams } = new URL(request.url);
+
+    // Parse and validate filters
+    const filterParams = Object.fromEntries(searchParams.entries());
+
+    // Convert array parameters
+    ['status', 'priority', 'category', 'assigned_to'].forEach((key) => {
+      if (filterParams[key]) {
+        filterParams[key] = filterParams[key].split(',');
+      }
+    });
+
+    // Convert boolean parameters
+    ['is_overdue', 'is_critical_path'].forEach((key) => {
+      if (filterParams[key]) {
+        filterParams[key] = filterParams[key] === 'true';
+      }
+    });
+
+    // Convert numeric parameters
+    ['limit', 'offset'].forEach((key) => {
+      if (filterParams[key]) {
+        filterParams[key] = parseInt(filterParams[key]);
+      }
+    });
+
+    const filters = FilterSchema.parse(filterParams);
+
+    // Get current team member
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { data: teamMember } = await supabase
+      .from('team_members')
+      .select('id')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!teamMember) {
+      return NextResponse.json(
+        { error: 'Team member not found' },
+        { status: 404 },
+      );
+    }
+
+    // Build query
+    let query = supabase
+      .from('workflow_tasks')
+      .select(
+        `
+        *,
+        assigned_to_member:team_members!workflow_tasks_assigned_to_fkey(
+          id, name, email, role, avatar_url
+        ),
+        created_by_member:team_members!workflow_tasks_created_by_fkey(
+          id, name, email, role, avatar_url
+        ),
+        assigned_by_member:team_members!workflow_tasks_assigned_by_fkey(
+          id, name, email, role, avatar_url
+        ),
+        dependencies_as_successor:task_dependencies!task_dependencies_successor_task_id_fkey(
+          id, predecessor_task_id, dependency_type, lag_time
+        ),
+        dependencies_as_predecessor:task_dependencies!task_dependencies_predecessor_task_id_fkey(
+          id, successor_task_id, dependency_type, lag_time
+        )
+      `,
+      )
+      .order('deadline', { ascending: true });
+
+    // Apply filters
+    if (filters.wedding_id) {
+      query = query.eq('wedding_id', filters.wedding_id);
+    }
+
+    if (filters.status) {
+      query = query.in('status', filters.status);
+    }
+
+    if (filters.priority) {
+      query = query.in('priority', filters.priority);
+    }
+
+    if (filters.category) {
+      query = query.in('category', filters.category);
+    }
+
+    if (filters.assigned_to) {
+      query = query.in('assigned_to', filters.assigned_to);
+    }
+
+    if (filters.deadline_from) {
+      query = query.gte('deadline', filters.deadline_from);
+    }
+
+    if (filters.deadline_to) {
+      query = query.lte('deadline', filters.deadline_to);
+    }
+
+    if (filters.is_overdue) {
+      query = query.lt('deadline', new Date().toISOString());
+      query = query.not('status', 'in', '(completed,cancelled)');
+    }
+
+    if (filters.is_critical_path !== undefined) {
+      query = query.eq('is_critical_path', filters.is_critical_path);
+    }
+
+    // Apply pagination
+    query = query.range(filters.offset, filters.offset + filters.limit - 1);
+
+    const { data: tasks, error, count } = await query;
+
+    if (error) {
+      console.error('Error fetching tasks:', error);
+      return NextResponse.json(
+        { error: 'Failed to fetch tasks' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({
+      tasks,
+      total: count,
+      limit: filters.limit,
+      offset: filters.offset,
+    });
+  } catch (error) {
+    console.error('GET /api/workflow/tasks error:', error);
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid filters', details: error.errors },
+        { status: 400 },
+      );
+    }
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+    const body = await request.json();
+
+    // Validate input
+    const taskData = CreateTaskSchema.parse(body);
+
+    // Get current team member
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { data: teamMember } = await supabase
+      .from('team_members')
+      .select('id')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!teamMember) {
+      return NextResponse.json(
+        { error: 'Team member not found' },
+        { status: 404 },
+      );
+    }
+
+    // Verify wedding access
+    const { data: wedding } = await supabase
+      .from('weddings')
+      .select('id')
+      .eq('id', taskData.wedding_id)
+      .single();
+
+    if (!wedding) {
+      return NextResponse.json({ error: 'Wedding not found' }, { status: 404 });
+    }
+
+    // Create task
+    const { data: task, error: taskError } = await supabase
+      .from('workflow_tasks')
+      .insert({
+        title: taskData.title,
+        description: taskData.description,
+        wedding_id: taskData.wedding_id,
+        category: taskData.category,
+        priority: taskData.priority,
+        assigned_to: taskData.assigned_to,
+        assigned_by: teamMember.id,
+        created_by: teamMember.id,
+        estimated_duration: taskData.estimated_duration,
+        buffer_time: taskData.buffer_time,
+        deadline: taskData.deadline,
+      })
+      .select(
+        `
+        *,
+        assigned_to_member:team_members!workflow_tasks_assigned_to_fkey(
+          id, name, email, role, avatar_url
+        ),
+        created_by_member:team_members!workflow_tasks_created_by_fkey(
+          id, name, email, role, avatar_url
+        ),
+        assigned_by_member:team_members!workflow_tasks_assigned_by_fkey(
+          id, name, email, role, avatar_url
+        )
+      `,
+      )
+      .single();
+
+    if (taskError) {
+      console.error('Error creating task:', taskError);
+      return NextResponse.json(
+        { error: 'Failed to create task' },
+        { status: 500 },
+      );
+    }
+
+    // Create dependencies if provided
+    if (taskData.dependencies && taskData.dependencies.length > 0) {
+      const dependencyInserts = taskData.dependencies.map((dep) => ({
+        predecessor_task_id: dep.predecessor_task_id,
+        successor_task_id: task.id,
+        dependency_type: dep.dependency_type,
+        lag_time: dep.lag_time,
+      }));
+
+      const { error: depError } = await supabase
+        .from('task_dependencies')
+        .insert(dependencyInserts);
+
+      if (depError) {
+        console.error('Error creating dependencies:', depError);
+        // Continue without failing - dependencies can be added later
+      }
+    }
+
+    // Recalculate critical path for the wedding
+    await supabase.rpc('calculate_critical_path', {
+      wedding_uuid: taskData.wedding_id,
+    });
+
+    return NextResponse.json({ task }, { status: 201 });
+  } catch (error) {
+    console.error('POST /api/workflow/tasks error:', error);
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid task data', details: error.errors },
+        { status: 400 },
+      );
+    }
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

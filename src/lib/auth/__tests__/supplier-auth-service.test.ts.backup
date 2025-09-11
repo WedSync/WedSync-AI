@@ -1,0 +1,752 @@
+import { SupplierAuthService } from '../supplier-auth-service'
+import { SupplierRegistrationData, SupplierLoginResult, SupplierUser } from '@/types/supplier-communication'
+import { createClient } from '@/lib/supabase/server'
+import bcrypt from 'bcryptjs'
+import jwt from 'jsonwebtoken'
+
+// Mock dependencies
+jest.mock('@/lib/supabase/server')
+jest.mock('bcryptjs')
+jest.mock('jsonwebtoken')
+jest.mock('crypto', () => ({
+  randomBytes: jest.fn(() => ({
+    toString: jest.fn(() => 'mock-token')
+  })),
+  createHash: jest.fn(() => ({
+    update: jest.fn().mockReturnThis(),
+    digest: jest.fn(() => 'mock-hash')
+  }))
+}))
+
+// Mock data
+const mockRegistrationData: SupplierRegistrationData = {
+  supplier_id: 'supplier-1',
+  email: 'john@photography.com',
+  password: 'SecurePassword123!',
+  phone: '+1234567890',
+  emergency_contact: {
+    name: 'Jane Doe',
+    phone: '+0987654321',
+    relationship: 'spouse'
+  },
+  notification_preferences: {
+    email_notifications: true,
+    sms_notifications: false,
+    push_notifications: true,
+    notification_frequency: 'immediate',
+    notification_types: ['schedule_updates', 'messages']
+  }
+}
+
+const mockSupplierUser: SupplierUser = {
+  id: 'user-123',
+  supplier_id: 'supplier-1',
+  email: 'john@photography.com',
+  name: 'John Doe',
+  company_name: 'John Photography',
+  role: 'photographer',
+  permissions: ['read_schedule', 'update_availability'],
+  organization_id: 'org-1'
+}
+
+const mockSupabaseClient = {
+  from: jest.fn().mockReturnThis(),
+  select: jest.fn().mockReturnThis(),
+  insert: jest.fn().mockReturnThis(),
+  update: jest.fn().mockReturnThis(),
+  upsert: jest.fn().mockReturnThis(),
+  eq: jest.fn().mockReturnThis(),
+  single: jest.fn(),
+  data: null,
+  error: null
+}
+
+const mockBcrypt = bcrypt as jest.Mocked<typeof bcrypt>
+const mockJwt = jwt as jest.Mocked<typeof jwt>
+
+describe('SupplierAuthService', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (createClient as jest.Mock).mockReturnValue(mockSupabaseClient);
+    mockBcrypt.hash.mockResolvedValue('hashed-password');
+    mockBcrypt.compare.mockResolvedValue(true);
+    mockJwt.sign.mockReturnValue('jwt-token');
+    mockJwt.verify.mockReturnValue({ user_id: 'user-123' } as any)
+  })
+
+  describe('registerSupplier', () => {
+    it('should register supplier successfully', async () => {
+      // Mock supplier exists check
+      mockSupabaseClient.single
+        .mockResolvedValueOnce({
+          data: { id: 'supplier-1', organization_id: 'org-1' },
+          error: null
+        })
+        // Mock email uniqueness check
+        .mockResolvedValueOnce({
+          data: null,
+          error: null
+        })
+        // Mock user creation
+        .mkResolvedValueOnce({
+          data: { id: 'user-123' },
+          error: null
+        })
+
+      const result = await SupplierAuthService.registerSupplier(
+        mockRegistrationData,
+        'org-1'
+      )
+
+      expect(result.success).toBe(true)
+      expect(result.user_id).toBe('user-123')
+      expect(result.email_verification_required).toBe(true)
+      expect(mockBcrypt.hash).toHaveBeenCalledWith('SecurePassword123!', 12)
+      expect(mockSupabaseClient.insert).toHaveBeenCalledWith({
+        supplier_id: 'supplier-1',
+        organization_id: 'org-1',
+        email: 'john@photography.com',
+        password_hash: 'hashed-password',
+        phone: '+1234567890',
+        emergency_contact: mockRegistrationData.emergency_contact,
+        notification_preferences: mockRegistrationData.notification_preferences,
+        email_verification_token: expect.any(String),
+        email_verification_expires: expect.any(String),
+        account_status: 'pending_verification',
+        created_at: expect.any(String)
+      })
+    })
+
+    it('should handle duplicate email registration', async () => {
+      mockSupabaseClient.single
+        .mockResolvedValueOnce({
+          data: { id: 'supplier-1' },
+          error: null
+        })
+        .mockResolvedValueOnce({
+          data: { email: 'john@photography.com' }, // Email already exists
+          error: null
+        })
+
+      const result = await SupplierAuthService.registerSupplier(
+        mockRegistrationData,
+        'org-1'
+      )
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('Email address is already registered')
+    })
+
+    it('should handle non-existent supplier', async () => {
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: null,
+        error: null
+      })
+
+      const result = await SupplierAuthService.registerSupplier(
+        mockRegistrationData,
+        'org-1'
+      )
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('Supplier not found')
+    })
+
+    it('should validate password strength', async () => {
+      const weakPasswordData = {
+        ...mockRegistrationData,
+        password: '123'
+      }
+
+      const result = await SupplierAuthService.registerSupplier(
+        weakPasswordData,
+        'org-1'
+      )
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('Password must be at least 8 characters')
+    })
+
+    it('should validate email format', async () => {
+      const invalidEmailData = {
+        ...mockRegistrationData,
+        email: 'invalid-email'
+      }
+
+      const result = await SupplierAuthService.registerSupplier(
+        invalidEmailData,
+        'org-1'
+      )
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('Invalid email format')
+    })
+  })
+
+  describe('authenticateSupplier', () => {
+    const mockMetadata = {
+      ip_address: '192.168.1.1',
+      user_agent: 'Mozilla/5.0',
+      device_type: 'desktop' as const
+    }
+
+    it('should authenticate supplier successfully', async () => {
+      mockSupabaseClient.single
+        .mockResolvedValueOnce({
+          data: {
+            id: 'user-123',
+            supplier_id: 'supplier-1',
+            email: 'john@photography.com',
+            password_hash: 'hashed-password',
+            account_status: 'active',
+            email_verified: true,
+            failed_login_attempts: 0,
+            two_fa_enabled: false
+          },
+          error: null
+        })
+        .mockResolvedValueOnce({
+          data: mockSupplierUser,
+          error: null
+        })
+        // Mock session creation
+        .mockResolvedValueOnce({
+          data: {
+            id: 'session-123',
+            session_token: 'session-token',
+            expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+          },
+          error: null
+        })
+
+      const result = await SupplierAuthService.authenticateSupplier(
+        'john@photography.com',
+        'SecurePassword123!',
+        mockMetadata
+      )
+
+      expect(result.success).toBe(true)
+      expect(result.user).toEqual(mockSupplierUser)
+      expect(result.access_token).toBe('jwt-token')
+      expect(result.session).toBeDefined()
+      expect(mockBcrypt.compare).toHaveBeenCalledWith('SecurePassword123!', 'hashed-password')
+    })
+
+    it('should handle incorrect password', async () => {
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: {
+          id: 'user-123',
+          password_hash: 'hashed-password',
+          account_status: 'active',
+          email_verified: true,
+          failed_login_attempts: 0
+        },
+        error: null
+      })
+
+      mockBcrypt.compare.mockResolvedValueOnce(false)
+
+      const result = await SupplierAuthService.authenticateSupplier(
+        'john@photography.com',
+        'WrongPassword',
+        mockMetadata
+      )
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('Invalid email or password')
+      // Should increment failed attempts
+      expect(mockSupabaseClient.update).toHaveBeenCalledWith({
+        failed_login_attempts: 1,
+        last_failed_login: expect.any(String)
+      })
+    })
+
+    it('should handle account lockout after multiple failed attempts', async () => {
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: {
+          id: 'user-123',
+          password_hash: 'hashed-password',
+          account_status: 'active',
+          email_verified: true,
+          failed_login_attempts: 4 // One more will trigger lockout
+        },
+        error: null
+      })
+
+      mockBcrypt.compare.mockResolvedValueOnce(false)
+
+      const result = await SupplierAuthService.authenticateSupplier(
+        'john@photography.com',
+        'WrongPassword',
+        mockMetadata
+      )
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('Account temporarily locked')
+      expect(mockSupabaseClient.update).toHaveBeenCalledWith({
+        failed_login_attempts: 5,
+        account_locked_until: expect.any(String),
+        last_failed_login: expect.any(String)
+      })
+    })
+
+    it('should handle unverified email', async () => {
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: {
+          id: 'user-123',
+          password_hash: 'hashed-password',
+          account_status: 'pending_verification',
+          email_verified: false
+        },
+        error: null
+      })
+
+      const result = await SupplierAuthService.authenticateSupplier(
+        'john@photography.com',
+        'SecurePassword123!',
+        mockMetadata
+      )
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('Email verification required')
+      expect(result.email_verification_required).toBe(true)
+    })
+
+    it('should handle 2FA requirement', async () => {
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: {
+          id: 'user-123',
+          password_hash: 'hashed-password',
+          account_status: 'active',
+          email_verified: true,
+          failed_login_attempts: 0,
+          two_fa_enabled: true
+        },
+        error: null
+      })
+
+      const result = await SupplierAuthService.authenticateSupplier(
+        'john@photography.com',
+        'SecurePassword123!',
+        mockMetadata
+      )
+
+      expect(result.success).toBe(false)
+      expect(result.requires_2fa).toBe(true)
+      expect(result.two_fa_token).toBeDefined()
+    })
+
+    it('should handle non-existent user', async () => {
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: null,
+        error: null
+      })
+
+      const result = await SupplierAuthService.authenticateSupplier(
+        'nonexistent@email.com',
+        'password',
+        mockMetadata
+      )
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('Invalid email or password')
+    })
+  })
+
+  describe('verifyEmail', () => {
+    it('should verify email successfully', async () => {
+      mockSupabaseClient.single
+        .mockResolvedValueOnce({
+          data: {
+            id: 'user-123',
+            email_verification_token: 'mock-token',
+            email_verification_expires: new Date(Date.now() + 60000).toISOString()
+          },
+          error: null
+        })
+        .mockResolvedValueOnce({
+          data: { id: 'user-123', email_verified: true },
+          error: null
+        })
+
+      const result = await SupplierAuthService.verifyEmail('mock-token')
+
+      expect(result.success).toBe(true)
+      expect(mockSupabaseClient.update).toHaveBeenCalledWith({
+        email_verified: true,
+        email_verification_token: null,
+        email_verification_expires: null,
+        account_status: 'active',
+        email_verified_at: expect.any(String)
+      })
+    })
+
+    it('should handle expired verification token', async () => {
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: {
+          id: 'user-123',
+          email_verification_token: 'mock-token',
+          email_verification_expires: new Date(Date.now() - 60000).toISOString() // Expired
+        },
+        error: null
+      })
+
+      const result = await SupplierAuthService.verifyEmail('mock-token')
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('Verification token has expired')
+    })
+
+    it('should handle invalid verification token', async () => {
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: null,
+        error: null
+      })
+
+      const result = await SupplierAuthService.verifyEmail('invalid-token')
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('Invalid verification token')
+    })
+  })
+
+  describe('validateSession', () => {
+    it('should validate active session successfully', async () => {
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: {
+          id: 'session-123',
+          user_id: 'user-123',
+          expires_at: new Date(Date.now() + 60000).toISOString(),
+          is_active: true,
+          user: mockSupplierUser
+        },
+        error: null
+      })
+
+      const result = await SupplierAuthService.validateSession('session-token')
+
+      expect(result.valid).toBe(true)
+      expect(result.user).toEqual(mockSupplierUser)
+    })
+
+    it('should handle expired session', async () => {
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: {
+          id: 'session-123',
+          user_id: 'user-123',
+          expires_at: new Date(Date.now() - 60000).toISOString(), // Expired
+          is_active: true
+        },
+        error: null
+      })
+
+      const result = await SupplierAuthService.validateSession('session-token')
+
+      expect(result.valid).toBe(false)
+      expect(result.error).toContain('Session has expired')
+      expect(mockSupabaseClient.update).toHaveBeenCalledWith({
+        is_active: false,
+        ended_at: expect.any(String)
+      })
+    })
+
+    it('should handle invalid session', async () => {
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: null,
+        error: null
+      })
+
+      const result = await SupplierAuthService.validateSession('invalid-token')
+
+      expect(result.valid).toBe(false)
+      expect(result.error).toContain('Invalid session')
+    })
+
+    it('should handle inactive session', async () => {
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: {
+          id: 'session-123',
+          is_active: false
+        },
+        error: null
+      })
+
+      const result = await SupplierAuthService.validateSession('session-token')
+
+      expect(result.valid).toBe(false)
+      expect(result.error).toContain('Session is no longer active')
+    })
+  })
+
+  describe('requestPasswordReset', () => {
+    it('should send password reset email', async () => {
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: {
+          id: 'user-123',
+          email: 'john@photography.com',
+          account_status: 'active'
+        },
+        error: null
+      })
+
+      const result = await SupplierAuthService.requestPasswordReset('john@photography.com')
+
+      expect(result.success).toBe(true)
+      expect(mockSupabaseClient.update).toHaveBeenCalledWith({
+        password_reset_token: expect.any(String),
+        password_reset_expires: expect.any(String)
+      })
+    })
+
+    it('should handle non-existent email', async () => {
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: null,
+        error: null
+      })
+
+      const result = await SupplierAuthService.requestPasswordReset('nonexistent@email.com')
+
+      // Should still return success for security (don't reveal if email exists)
+      expect(result.success).toBe(true)
+      expect(result.message).toContain('If an account with that email exists')
+    })
+
+    it('should handle inactive accounts', async () => {
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: {
+          id: 'user-123',
+          email: 'john@photography.com',
+          account_status: 'disabled'
+        },
+        error: null
+      })
+
+      const result = await SupplierAuthService.requestPasswordReset('john@photography.com')
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('Account is disabled')
+    })
+  })
+
+  describe('resetPassword', () => {
+    it('should reset password successfully', async () => {
+      mockSupabaseClient.single
+        .mockResolvedValueOnce({
+          data: {
+            id: 'user-123',
+            password_reset_token: 'mock-token',
+            password_reset_expires: new Date(Date.now() + 60000).toISOString()
+          },
+          error: null
+        })
+        .mockResolvedValueOnce({
+          data: { id: 'user-123' },
+          error: null
+        })
+
+      const result = await SupplierAuthService.resetPassword('mock-token', 'NewPassword123!')
+
+      expect(result.success).toBe(true)
+      expect(mockBcrypt.hash).toHaveBeenCalledWith('NewPassword123!', 12)
+      expect(mockSupabaseClient.update).toHaveBeenCalledWith({
+        password_hash: 'hashed-password',
+        password_reset_token: null,
+        password_reset_expires: null,
+        failed_login_attempts: 0,
+        account_locked_until: null,
+        password_updated_at: expect.any(String)
+      })
+    })
+
+    it('should handle expired reset token', async () => {
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: {
+          id: 'user-123',
+          password_reset_token: 'mock-token',
+          password_reset_expires: new Date(Date.now() - 60000).toISOString() // Expired
+        },
+        error: null
+      })
+
+      const result = await SupplierAuthService.resetPassword('mock-token', 'NewPassword123!')
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('Reset token has expired')
+    })
+
+    it('should validate new password strength', async () => {
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: {
+          id: 'user-123',
+          password_reset_token: 'mock-token',
+          password_reset_expires: new Date(Date.now() + 60000).toISOString()
+        },
+        error: null
+      })
+
+      const result = await SupplierAuthService.resetPassword('mock-token', 'weak')
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('Password must be at least 8 characters')
+    })
+  })
+
+  describe('logoutSupplier', () => {
+    it('should logout successfully', async () => {
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: { id: 'session-123', is_active: true },
+        error: null
+      })
+
+      const result = await SupplierAuthService.logoutSupplier('session-token')
+
+      expect(result.success).toBe(true)
+      expect(mockSupabaseClient.update).toHaveBeenCalledWith({
+        is_active: false,
+        ended_at: expect.any(String)
+      })
+    })
+
+    it('should handle invalid session token', async () => {
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: null,
+        error: null
+      })
+
+      const result = await SupplierAuthService.logoutSupplier('invalid-token')
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('Invalid session')
+    })
+  })
+
+  describe('security validations', () => {
+    it('should validate password strength requirements', () => {
+      const weakPasswords = [
+        '123',
+        'password',
+        '12345678',
+        'PASSWORD',
+        'Password',
+        'password123'
+      ]
+
+      weakPasswords.forEach(password => {
+        expect(SupplierAuthService.validatePasswordStrength(password)).toBe(false)
+      })
+
+      const strongPasswords = [
+        'SecurePassword123!',
+        'My$ecur3P@ssw0rd',
+        'C0mpl3x!Pass'
+      ]
+
+      strongPasswords.forEach(password => {
+        expect(SupplierAuthService.validatePasswordStrength(password)).toBe(true)
+      })
+    })
+
+    it('should validate email format', () => {
+      const invalidEmails = [
+        'invalid',
+        '@domain.com',
+        'test@',
+        'test.domain.com',
+        'test..test@domain.com'
+      ]
+
+      invalidEmails.forEach(email => {
+        expect(SupplierAuthService.validateEmailFormat(email)).toBe(false)
+      })
+
+      const validEmails = [
+        'test@domain.com',
+        'user.name+tag@example.co.uk',
+        'supplier123@wedding-venue.org'
+      ]
+
+      validEmails.forEach(email => {
+        expect(SupplierAuthService.validateEmailFormat(email)).toBe(true)
+      })
+    })
+
+    it('should check for suspicious login patterns', () => {
+      const suspiciousPatterns = [
+        { ip_address: '1.2.3.4', failed_attempts_from_ip: 5 },
+        { user_agent: 'Bot/1.0', automated_request: true },
+        { login_frequency: 'too_high', requests_per_minute: 10 }
+      ]
+
+      suspiciousPatterns.forEach(pattern => {
+        expect(SupplierAuthService.checkSuspiciousActivity(pattern)).toBe(true)
+      })
+    })
+  })
+
+  describe('error handling', () => {
+    it('should handle database connection errors', async () => {
+      mockSupabaseClient.single.mockRejectedValue(new Error('Database connection failed'))
+
+      const result = await SupplierAuthService.authenticateSupplier(
+        'john@photography.com',
+        'password',
+        {
+          ip_address: '127.0.0.1',
+          user_agent: 'test',
+          device_type: 'desktop'
+        }
+      )
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('Database connection failed')
+    })
+
+    it('should handle bcrypt hashing errors', async () => {
+      mockBcrypt.hash.mockRejectedValueOnce(new Error('Hashing failed'))
+
+      const result = await SupplierAuthService.registerSupplier(
+        mockRegistrationData,
+        'org-1'
+      )
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('Hashing failed')
+    })
+
+    it('should handle JWT token generation errors', async () => {
+      mockSupabaseClient.single
+        .mockResolvedValueOnce({
+          data: {
+            id: 'user-123',
+            password_hash: 'hashed-password',
+            account_status: 'active',
+            email_verified: true,
+            failed_login_attempts: 0,
+            two_fa_enabled: false
+          },
+          error: null
+        })
+        .mockResolvedValueOnce({
+          data: mockSupplierUser,
+          error: null
+        })
+
+      mockJwt.sign.mockImplementationOnce(() => {
+        throw new Error('JWT signing failed')
+      })
+
+      const result = await SupplierAuthService.authenticateSupplier(
+        'john@photography.com',
+        'SecurePassword123!',
+        {
+          ip_address: '127.0.0.1',
+          user_agent: 'test',
+          device_type: 'desktop'
+        }
+      )
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('JWT signing failed')
+    })
+  })
+})

@@ -1,0 +1,332 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { TaskAnalyticsService } from '@/lib/services/task-analytics-service';
+
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const action = searchParams.get('action');
+    const weddingId = searchParams.get('weddingId');
+    const days = searchParams.get('days');
+    
+    const analyticsService = new TaskAnalyticsService();
+
+    switch (action) {
+      case 'wedding_progress':
+        if (!weddingId) {
+          return NextResponse.json(
+            { error: 'Wedding ID is required' },
+            { status: 400 }
+          );
+        }
+
+        const analytics = await analyticsService.getWeddingProgressMetrics(weddingId);
+        return NextResponse.json({
+          success: true,
+          analytics
+        });
+
+      case 'team_performance':
+        const teamMetrics = await analyticsService.getTeamPerformanceMetrics(weddingId || undefined);
+        return NextResponse.json({
+          success: true,
+          team_metrics: teamMetrics
+        });
+
+      case 'trend_data':
+        if (!weddingId) {
+          return NextResponse.json(
+            { error: 'Wedding ID is required' },
+            { status: 400 }
+          );
+        }
+
+        const trendDays = days ? parseInt(days) : 30;
+        const trendData = await analyticsService.getTaskTrendData(weddingId, trendDays);
+        return NextResponse.json({
+          success: true,
+          trend_data: trendData
+        });
+
+      case 'predictive_analytics':
+        if (!weddingId) {
+          return NextResponse.json(
+            { error: 'Wedding ID is required' },
+            { status: 400 }
+          );
+        }
+
+        const predictiveAnalytics = await analyticsService.getPredictiveAnalytics(weddingId);
+        return NextResponse.json({
+          success: true,
+          predictive_analytics: predictiveAnalytics
+        });
+
+      case 'export_analytics':
+        if (!weddingId) {
+          return NextResponse.json(
+            { error: 'Wedding ID is required' },
+            { status: 400 }
+          );
+        }
+
+        const exportData = await generateAnalyticsExport(weddingId, analyticsService);
+        return NextResponse.json({
+          success: true,
+          export_data: exportData,
+          generated_at: new Date().toISOString()
+        });
+
+      default:
+        return NextResponse.json(
+          { error: `Unknown action: ${action}` },
+          { status: 400 }
+        );
+    }
+  } catch (error) {
+    console.error('Analytics API error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const { action, data } = await request.json();
+    const analyticsService = new TaskAnalyticsService();
+
+    switch (action) {
+      case 'refresh_analytics':
+        const { weddingId } = data;
+        
+        if (!weddingId) {
+          return NextResponse.json(
+            { error: 'Wedding ID is required' },
+            { status: 400 }
+          );
+        }
+
+        // Refresh all analytics data
+        const [analytics, teamMetrics, trendData, predictiveAnalytics] = await Promise.all([
+          analyticsService.getWeddingProgressMetrics(weddingId),
+          analyticsService.getTeamPerformanceMetrics(weddingId),
+          analyticsService.getTaskTrendData(weddingId, 30),
+          analyticsService.getPredictiveAnalytics(weddingId)
+        ]);
+
+        return NextResponse.json({
+          success: true,
+          data: {
+            analytics,
+            team_metrics: teamMetrics,
+            trend_data: trendData,
+            predictive_analytics: predictiveAnalytics
+          },
+          refreshed_at: new Date().toISOString()
+        });
+
+      case 'generate_report':
+        const { weddingId: reportWeddingId, format = 'json', includeCharts = false } = data;
+        
+        if (!reportWeddingId) {
+          return NextResponse.json(
+            { error: 'Wedding ID is required' },
+            { status: 400 }
+          );
+        }
+
+        const report = await generateComprehensiveReport(reportWeddingId, analyticsService, format, includeCharts);
+        
+        return NextResponse.json({
+          success: true,
+          report,
+          format,
+          generated_at: new Date().toISOString()
+        });
+
+      case 'schedule_analytics_job':
+        const { jobType, schedule, weddingIds } = data;
+        
+        // This would integrate with a job scheduler in a real implementation
+        // For now, we'll just acknowledge the request
+        return NextResponse.json({
+          success: true,
+          job: {
+            id: `analytics_job_${Date.now()}`,
+            type: jobType,
+            schedule,
+            wedding_ids: weddingIds,
+            created_at: new Date().toISOString(),
+            status: 'scheduled'
+          }
+        });
+
+      default:
+        return NextResponse.json(
+          { error: `Unknown action: ${action}` },
+          { status: 400 }
+        );
+    }
+  } catch (error) {
+    console.error('Analytics POST API error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+// Helper function to generate comprehensive analytics export
+async function generateAnalyticsExport(weddingId: string, analyticsService: TaskAnalyticsService) {
+  try {
+    const [analytics, teamMetrics, trendData, predictiveAnalytics] = await Promise.all([
+      analyticsService.getWeddingProgressMetrics(weddingId),
+      analyticsService.getTeamPerformanceMetrics(weddingId),
+      analyticsService.getTaskTrendData(weddingId, 60), // 60 days for export
+      analyticsService.getPredictiveAnalytics(weddingId)
+    ]);
+
+    return {
+      wedding_analytics: analytics,
+      team_performance: teamMetrics,
+      trend_data: trendData,
+      predictive_insights: predictiveAnalytics,
+      summary: {
+        completion_rate: analytics.progress_metrics.completion_rate,
+        risk_level: analytics.risk_level,
+        days_until_wedding: analytics.days_until_wedding,
+        total_tasks: analytics.progress_metrics.total_tasks,
+        completed_tasks: analytics.progress_metrics.completed_tasks,
+        overdue_tasks: analytics.progress_metrics.overdue_tasks,
+        team_efficiency_avg: teamMetrics.length > 0 
+          ? teamMetrics.reduce((sum, m) => sum + m.efficiency_score, 0) / teamMetrics.length 
+          : 0,
+        velocity: analytics.progress_metrics.velocity,
+        estimated_completion: analytics.completion_forecast
+      },
+      export_metadata: {
+        generated_at: new Date().toISOString(),
+        wedding_id: weddingId,
+        data_period_days: 60,
+        version: '1.0'
+      }
+    };
+  } catch (error) {
+    console.error('Failed to generate analytics export:', error);
+    throw error;
+  }
+}
+
+// Helper function to generate comprehensive report
+async function generateComprehensiveReport(
+  weddingId: string, 
+  analyticsService: TaskAnalyticsService, 
+  format: string,
+  includeCharts: boolean
+) {
+  try {
+    const exportData = await generateAnalyticsExport(weddingId, analyticsService);
+    
+    const report = {
+      title: `Wedding Progress Analytics Report - ${exportData.wedding_analytics.wedding_name}`,
+      generated_at: new Date().toISOString(),
+      wedding_date: exportData.wedding_analytics.wedding_date,
+      days_until_wedding: exportData.wedding_analytics.days_until_wedding,
+      
+      executive_summary: {
+        overall_progress: `${Math.round(exportData.summary.completion_rate)}% complete`,
+        risk_assessment: exportData.summary.risk_level,
+        key_metrics: {
+          total_tasks: exportData.summary.total_tasks,
+          completed_tasks: exportData.summary.completed_tasks,
+          overdue_tasks: exportData.summary.overdue_tasks,
+          team_efficiency: `${Math.round(exportData.summary.team_efficiency_avg)}%`,
+          current_velocity: `${exportData.summary.velocity.toFixed(1)} tasks/week`
+        }
+      },
+
+      detailed_analytics: exportData.wedding_analytics,
+      team_performance: exportData.team_performance,
+      predictive_insights: exportData.predictive_insights,
+
+      recommendations: generateRecommendations(exportData),
+      
+      appendices: {
+        trend_data: exportData.trend_data,
+        category_breakdown: exportData.wedding_analytics.category_breakdown,
+        deadline_analysis: exportData.wedding_analytics.deadline_analytics
+      }
+    };
+
+    // Format-specific processing
+    if (format === 'pdf') {
+      // In a real implementation, this would generate a PDF
+      return {
+        ...report,
+        format: 'pdf',
+        download_url: `/api/reports/download/${weddingId}/analytics.pdf`
+      };
+    } else if (format === 'csv') {
+      // In a real implementation, this would generate CSV files
+      return {
+        ...report,
+        format: 'csv',
+        files: [
+          { name: 'summary.csv', url: `/api/reports/download/${weddingId}/summary.csv` },
+          { name: 'team_performance.csv', url: `/api/reports/download/${weddingId}/team.csv` },
+          { name: 'trends.csv', url: `/api/reports/download/${weddingId}/trends.csv` }
+        ]
+      };
+    }
+
+    return report;
+  } catch (error) {
+    console.error('Failed to generate comprehensive report:', error);
+    throw error;
+  }
+}
+
+// Helper function to generate actionable recommendations
+function generateRecommendations(exportData: any): string[] {
+  const recommendations: string[] = [];
+  const analytics = exportData.wedding_analytics;
+  const summary = exportData.summary;
+
+  // Progress-based recommendations
+  if (summary.completion_rate < 50 && analytics.days_until_wedding < 30) {
+    recommendations.push('🚨 URGENT: Consider adding additional resources or extending timeline. Less than 50% complete with 30 days remaining.');
+  }
+
+  if (summary.overdue_tasks > 0) {
+    recommendations.push(`📅 Address ${summary.overdue_tasks} overdue tasks immediately to prevent cascading delays.`);
+  }
+
+  // Velocity recommendations
+  if (summary.velocity < 2 && analytics.days_until_wedding < 14) {
+    recommendations.push('⚡ Increase task completion velocity by enabling parallel work streams or adding team members.');
+  }
+
+  // Team efficiency recommendations
+  if (summary.team_efficiency_avg < 70) {
+    recommendations.push('👥 Review team workload distribution and provide additional support to struggling team members.');
+  }
+
+  // Risk-based recommendations
+  if (analytics.risk_level === 'high' || analytics.risk_level === 'critical') {
+    recommendations.push('⚠️ Implement daily standups and consider bringing in experienced wedding coordinators.');
+  }
+
+  // Category-specific recommendations
+  const underperformingCategories = analytics.category_breakdown.filter(cat => cat.completion_rate < 30);
+  if (underperformingCategories.length > 0) {
+    recommendations.push(`📊 Focus immediate attention on underperforming categories: ${underperformingCategories.map(c => c.category).join(', ')}`);
+  }
+
+  // If no specific issues, provide positive reinforcement
+  if (recommendations.length === 0) {
+    recommendations.push('✅ Project is on track! Continue current pace and monitor for any emerging bottlenecks.');
+  }
+
+  return recommendations;
+}

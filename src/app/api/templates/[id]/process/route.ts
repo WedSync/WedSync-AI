@@ -1,0 +1,124 @@
+/**
+ * Template Processing API
+ * WS-235: Support Operations Ticket Management System
+ *
+ * Handles template processing with variable substitution
+ * Routes: POST /api/templates/[id]/process
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import TemplateManager from '@/lib/support/template-manager';
+import { z } from 'zod';
+
+// Validation schema for processing request
+const ProcessTemplateSchema = z.object({
+  variables: z.record(z.string()),
+  ticket_id: z.string().optional(),
+  validate_only: z.boolean().default(false),
+});
+
+// Initialize template manager
+const templateManager = new TemplateManager();
+
+/**
+ * POST /api/templates/[id]/process - Process template with variables
+ */
+export async function POST(
+  request: NextRequest,
+  { params }: { params: { id: string } },
+) {
+  try {
+    const supabase = createServerComponentClient({ cookies });
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get user tier for template access
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select(
+        `
+        id,
+        role,
+        organizations!inner(
+          id,
+          subscription_tier
+        )
+      `,
+      )
+      .eq('id', user.id)
+      .single();
+
+    if (!profile) {
+      return NextResponse.json(
+        { error: 'User profile not found' },
+        { status: 404 },
+      );
+    }
+
+    const userTier = profile.organizations.subscription_tier || 'free';
+
+    // Parse and validate request body
+    const body = await request.json();
+    const { variables, ticket_id, validate_only } =
+      ProcessTemplateSchema.parse(body);
+
+    // Process template with variables
+    const processedTemplate = await templateManager.processTemplate(
+      params.id,
+      variables,
+      user.id,
+      userTier,
+      ticket_id,
+    );
+
+    if (!processedTemplate) {
+      return NextResponse.json(
+        { error: 'Template not found or processing failed' },
+        { status: 404 },
+      );
+    }
+
+    // If validation only, don't track usage
+    if (validate_only) {
+      return NextResponse.json({
+        validation: {
+          is_valid: processedTemplate.missing_variables.length === 0,
+          missing_variables: processedTemplate.missing_variables,
+          variables_replaced: processedTemplate.variables_replaced,
+        },
+        preview: {
+          subject: processedTemplate.subject,
+          content: processedTemplate.content.substring(0, 200) + '...', // Preview first 200 chars
+        },
+      });
+    }
+
+    // Return fully processed template
+    return NextResponse.json({
+      processed_template: processedTemplate,
+      usage_tracked: !!ticket_id,
+    });
+  } catch (error) {
+    console.error('POST /api/templates/[id]/process error:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid processing request', details: error.errors },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

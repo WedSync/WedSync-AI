@@ -1,0 +1,604 @@
+/**
+ * Support Tickets API Endpoints
+ * WS-235: Support Operations Ticket Management System
+ *
+ * Handles CRUD operations for support tickets with:
+ * - AI-powered ticket creation and classification
+ * - Intelligent routing and assignment
+ * - Tier-based access control
+ * - Wedding industry specific handling
+ * - Real-time SLA monitoring
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
+import { supabase } from '@/lib/supabase';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import { TicketManager } from '@/lib/support/ticket-manager';
+import { ticketRouter } from '@/lib/support/ticket-router';
+import { slaMonitor } from '@/lib/support/sla-monitor';
+
+// Validation schemas
+const CreateTicketSchema = z.object({
+  subject: z
+    .string()
+    .min(5, 'Subject must be at least 5 characters')
+    .max(200, 'Subject too long'),
+  description: z
+    .string()
+    .min(10, 'Description must be at least 10 characters')
+    .max(5000, 'Description too long'),
+  priority: z.enum(['critical', 'high', 'medium', 'low']).optional(),
+  category: z.string().optional(),
+  vendorType: z
+    .enum([
+      'photographer',
+      'videographer',
+      'dj',
+      'florist',
+      'caterer',
+      'venue',
+      'planner',
+      'other',
+    ])
+    .optional(),
+  weddingDate: z.string().datetime().optional(),
+  isWeddingEmergency: z.boolean().optional(),
+  tags: z.array(z.string()).optional(),
+  attachments: z
+    .array(
+      z.object({
+        filename: z.string(),
+        url: z.string(),
+        size: z.number(),
+        mimeType: z.string(),
+      }),
+    )
+    .optional(),
+  requestedLanguage: z.string().optional(),
+  clientId: z.string().uuid().optional(),
+  urgencyKeywords: z.array(z.string()).optional(),
+});
+
+const GetTicketsSchema = z.object({
+  status: z
+    .enum(['open', 'in_progress', 'pending_response', 'resolved', 'closed'])
+    .optional(),
+  priority: z.enum(['critical', 'high', 'medium', 'low']).optional(),
+  category: z.string().optional(),
+  assignedAgentId: z.string().uuid().optional(),
+  userTier: z
+    .enum(['free', 'starter', 'professional', 'scale', 'enterprise'])
+    .optional(),
+  isWeddingEmergency: z.boolean().optional(),
+  escalationLevel: z.number().min(0).max(3).optional(),
+  createdAfter: z.string().datetime().optional(),
+  createdBefore: z.string().datetime().optional(),
+  limit: z.number().min(1).max(100).default(25),
+  offset: z.number().min(0).default(0),
+  sortBy: z
+    .enum(['created_at', 'updated_at', 'priority', 'escalation_level'])
+    .default('created_at'),
+  sortOrder: z.enum(['asc', 'desc']).default('desc'),
+  search: z.string().optional(),
+});
+
+// Initialize services
+const ticketManager = new TicketManager();
+
+/**
+ * POST /api/tickets - Create new support ticket
+ */
+export async function POST(request: NextRequest) {
+  try {
+    const supabaseClient = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+
+    // Get authenticated user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabaseClient.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validatedData = CreateTicketSchema.parse(body);
+
+    console.log(`Creating support ticket for user ${user.id}`);
+
+    // Create ticket using TicketManager
+    const ticket = await ticketManager.createTicket({
+      userId: user.id,
+      subject: validatedData.subject,
+      description: validatedData.description,
+      priority: validatedData.priority,
+      category: validatedData.category,
+      vendorType: validatedData.vendorType,
+      weddingDate: validatedData.weddingDate
+        ? new Date(validatedData.weddingDate)
+        : undefined,
+      isWeddingEmergency: validatedData.isWeddingEmergency || false,
+      tags: validatedData.tags || [],
+      attachments: validatedData.attachments || [],
+      requestedLanguage: validatedData.requestedLanguage,
+      clientId: validatedData.clientId,
+      urgencyKeywords: validatedData.urgencyKeywords || [],
+    });
+
+    // Return created ticket with classification and routing info
+    const response = {
+      ticket,
+      classification: ticket.aiClassification,
+      routing: ticket.routingInfo,
+      sla: {
+        responseDeadline: ticket.responseDeadline,
+        resolutionDeadline: ticket.resolutionDeadline,
+        isWeddingEmergency: ticket.isWeddingEmergency,
+      },
+    };
+
+    console.log(`Ticket created successfully: ${ticket.smartTicketId}`);
+
+    return NextResponse.json(response, { status: 201 });
+  } catch (error) {
+    console.error('Error creating support ticket:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Validation failed',
+          details: error.errors.map((e) => ({
+            field: e.path.join('.'),
+            message: e.message,
+          })),
+        },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Failed to create ticket' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * GET /api/tickets - Get tickets with filtering and pagination
+ */
+export async function GET(request: NextRequest) {
+  try {
+    const supabaseClient = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+
+    // Get authenticated user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabaseClient.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Parse query parameters
+    const { searchParams } = new URL(request.url);
+    const queryParams = Object.fromEntries(searchParams.entries());
+
+    // Convert query params to proper types
+    const processedParams = {
+      ...queryParams,
+      limit: queryParams.limit ? parseInt(queryParams.limit) : undefined,
+      offset: queryParams.offset ? parseInt(queryParams.offset) : undefined,
+      escalationLevel: queryParams.escalationLevel
+        ? parseInt(queryParams.escalationLevel)
+        : undefined,
+      isWeddingEmergency: queryParams.isWeddingEmergency === 'true',
+    };
+
+    const validatedParams = GetTicketsSchema.parse(processedParams);
+
+    console.log(
+      `Fetching tickets for user ${user.id} with filters:`,
+      validatedParams,
+    );
+
+    // Build query
+    let query = supabaseClient
+      .from('support_tickets')
+      .select(
+        `
+        *,
+        user_profiles!support_tickets_user_id_fkey (
+          full_name,
+          email,
+          user_tier,
+          organization_id
+        ),
+        support_agents!support_tickets_assigned_agent_id_fkey (
+          full_name,
+          email,
+          specialties,
+          wedding_expertise_level
+        ),
+        ticket_messages!ticket_messages_ticket_id_fkey (
+          id,
+          message_content,
+          message_type,
+          is_internal,
+          created_at,
+          author_type,
+          author_id
+        ),
+        ticket_sla_events!ticket_sla_events_ticket_id_fkey (
+          event_type,
+          created_at,
+          notes
+        )
+      `,
+      )
+      .eq('user_id', user.id);
+
+    // Apply filters
+    if (validatedParams.status) {
+      query = query.eq('status', validatedParams.status);
+    }
+
+    if (validatedParams.priority) {
+      query = query.eq('priority', validatedParams.priority);
+    }
+
+    if (validatedParams.category) {
+      query = query.eq('category', validatedParams.category);
+    }
+
+    if (validatedParams.assignedAgentId) {
+      query = query.eq('assigned_agent_id', validatedParams.assignedAgentId);
+    }
+
+    if (validatedParams.isWeddingEmergency !== undefined) {
+      query = query.eq(
+        'is_wedding_emergency',
+        validatedParams.isWeddingEmergency,
+      );
+    }
+
+    if (validatedParams.escalationLevel !== undefined) {
+      query = query.eq('escalation_level', validatedParams.escalationLevel);
+    }
+
+    if (validatedParams.createdAfter) {
+      query = query.gte('created_at', validatedParams.createdAfter);
+    }
+
+    if (validatedParams.createdBefore) {
+      query = query.lte('created_at', validatedParams.createdBefore);
+    }
+
+    // Add search functionality
+    if (validatedParams.search) {
+      query = query.or(
+        `subject.ilike.%${validatedParams.search}%,description.ilike.%${validatedParams.search}%,smart_ticket_id.ilike.%${validatedParams.search}%`,
+      );
+    }
+
+    // Apply sorting
+    query = query.order(validatedParams.sortBy, {
+      ascending: validatedParams.sortOrder === 'asc',
+    });
+
+    // Apply pagination
+    query = query.range(
+      validatedParams.offset,
+      validatedParams.offset + validatedParams.limit - 1,
+    );
+
+    const { data: tickets, error, count } = await query;
+
+    if (error) {
+      console.error('Error fetching tickets:', error);
+      return NextResponse.json(
+        { error: 'Failed to fetch tickets' },
+        { status: 500 },
+      );
+    }
+
+    // Enhance tickets with SLA status
+    const enhancedTickets = await Promise.all(
+      (tickets || []).map(async (ticket) => {
+        try {
+          const slaStatus = await slaMonitor.getTicketSLAStatus(ticket.id);
+          return {
+            ...ticket,
+            slaStatus,
+            messageCount: ticket.ticket_messages?.length || 0,
+            lastActivity:
+              ticket.ticket_messages?.[0]?.created_at || ticket.updated_at,
+          };
+        } catch (error) {
+          console.error(
+            `Failed to get SLA status for ticket ${ticket.id}:`,
+            error,
+          );
+          return {
+            ...ticket,
+            messageCount: ticket.ticket_messages?.length || 0,
+            lastActivity:
+              ticket.ticket_messages?.[0]?.created_at || ticket.updated_at,
+          };
+        }
+      }),
+    );
+
+    // Get summary statistics
+    const { data: stats } = await supabaseClient
+      .from('support_tickets')
+      .select('status, priority, is_wedding_emergency')
+      .eq('user_id', user.id);
+
+    const summary = {
+      total: stats?.length || 0,
+      byStatus: {
+        open: stats?.filter((t) => t.status === 'open').length || 0,
+        inProgress:
+          stats?.filter((t) => t.status === 'in_progress').length || 0,
+        resolved: stats?.filter((t) => t.status === 'resolved').length || 0,
+        closed: stats?.filter((t) => t.status === 'closed').length || 0,
+      },
+      byPriority: {
+        critical: stats?.filter((t) => t.priority === 'critical').length || 0,
+        high: stats?.filter((t) => t.priority === 'high').length || 0,
+        medium: stats?.filter((t) => t.priority === 'medium').length || 0,
+        low: stats?.filter((t) => t.priority === 'low').length || 0,
+      },
+      weddingEmergencies:
+        stats?.filter((t) => t.is_wedding_emergency).length || 0,
+    };
+
+    const response = {
+      tickets: enhancedTickets,
+      pagination: {
+        offset: validatedParams.offset,
+        limit: validatedParams.limit,
+        total: count || 0,
+        hasMore: (count || 0) > validatedParams.offset + validatedParams.limit,
+      },
+      summary,
+      filters: validatedParams,
+    };
+
+    return NextResponse.json(response);
+  } catch (error) {
+    console.error('Error fetching tickets:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Invalid query parameters',
+          details: error.errors.map((e) => ({
+            field: e.path.join('.'),
+            message: e.message,
+          })),
+        },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Failed to fetch tickets' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * PUT /api/tickets - Bulk update tickets (admin only)
+ */
+export async function PUT(request: NextRequest) {
+  try {
+    const supabaseClient = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+
+    // Get authenticated user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabaseClient.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Check if user is admin/agent
+    const { data: profile } = await supabaseClient
+      .from('user_profiles')
+      .select('role, permissions')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!profile || !['admin', 'support_agent'].includes(profile.role)) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions' },
+        { status: 403 },
+      );
+    }
+
+    // Parse bulk update request
+    const body = await request.json();
+    const { ticketIds, updates } = body;
+
+    if (!ticketIds || !Array.isArray(ticketIds) || ticketIds.length === 0) {
+      return NextResponse.json(
+        { error: 'Invalid ticket IDs' },
+        { status: 400 },
+      );
+    }
+
+    if (!updates || typeof updates !== 'object') {
+      return NextResponse.json({ error: 'Invalid updates' }, { status: 400 });
+    }
+
+    console.log(
+      `Bulk updating ${ticketIds.length} tickets by ${profile.role} ${user.id}`,
+    );
+
+    // Perform bulk update
+    const { data: updatedTickets, error } = await supabaseClient
+      .from('support_tickets')
+      .update({
+        ...updates,
+        updated_at: new Date().toISOString(),
+      })
+      .in('id', ticketIds)
+      .select();
+
+    if (error) {
+      console.error('Error bulk updating tickets:', error);
+      return NextResponse.json(
+        { error: 'Failed to update tickets' },
+        { status: 500 },
+      );
+    }
+
+    // Record bulk update events
+    await Promise.all(
+      ticketIds.map(async (ticketId: string) => {
+        try {
+          await supabaseClient.from('ticket_sla_events').insert({
+            ticket_id: ticketId,
+            event_type: 'bulk_update',
+            agent_id: profile.role === 'support_agent' ? user.id : null,
+            event_data: updates,
+            notes: `Bulk update by ${profile.role} ${user.id}`,
+          });
+        } catch (error) {
+          console.error(
+            `Failed to record bulk update event for ticket ${ticketId}:`,
+            error,
+          );
+        }
+      }),
+    );
+
+    return NextResponse.json({
+      success: true,
+      updatedCount: updatedTickets?.length || 0,
+      tickets: updatedTickets,
+    });
+  } catch (error) {
+    console.error('Error in bulk ticket update:', error);
+    return NextResponse.json(
+      { error: 'Failed to update tickets' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * DELETE /api/tickets - Bulk delete tickets (admin only)
+ */
+export async function DELETE(request: NextRequest) {
+  try {
+    const supabaseClient = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+
+    // Get authenticated user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabaseClient.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Check if user is admin
+    const { data: profile } = await supabaseClient
+      .from('user_profiles')
+      .select('role, permissions')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!profile || profile.role !== 'admin') {
+      return NextResponse.json(
+        { error: 'Admin access required' },
+        { status: 403 },
+      );
+    }
+
+    // Parse delete request
+    const { searchParams } = new URL(request.url);
+    const ticketIds = searchParams.get('ids')?.split(',') || [];
+
+    if (ticketIds.length === 0) {
+      return NextResponse.json(
+        { error: 'No ticket IDs provided' },
+        { status: 400 },
+      );
+    }
+
+    console.log(`Admin ${user.id} deleting ${ticketIds.length} tickets`);
+
+    // Soft delete tickets (mark as deleted, don't actually remove)
+    const { data: deletedTickets, error } = await supabaseClient
+      .from('support_tickets')
+      .update({
+        status: 'deleted',
+        deleted_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .in('id', ticketIds)
+      .select();
+
+    if (error) {
+      console.error('Error deleting tickets:', error);
+      return NextResponse.json(
+        { error: 'Failed to delete tickets' },
+        { status: 500 },
+      );
+    }
+
+    // Record deletion events
+    await Promise.all(
+      ticketIds.map(async (ticketId: string) => {
+        try {
+          await supabaseClient.from('ticket_sla_events').insert({
+            ticket_id: ticketId,
+            event_type: 'deletion',
+            agent_id: user.id,
+            notes: `Ticket deleted by admin ${user.id}`,
+          });
+        } catch (error) {
+          console.error(
+            `Failed to record deletion event for ticket ${ticketId}:`,
+            error,
+          );
+        }
+      }),
+    );
+
+    return NextResponse.json({
+      success: true,
+      deletedCount: deletedTickets?.length || 0,
+    });
+  } catch (error) {
+    console.error('Error in bulk ticket deletion:', error);
+    return NextResponse.json(
+      { error: 'Failed to delete tickets' },
+      { status: 500 },
+    );
+  }
+}

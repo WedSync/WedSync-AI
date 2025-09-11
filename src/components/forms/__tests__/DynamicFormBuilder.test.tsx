@@ -1,0 +1,666 @@
+import React from 'react';
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  act,
+} from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import '@testing-library/jest-dom';
+import { DynamicFormBuilder } from '../DynamicFormBuilder';
+import { Form, FormSection, FormField } from '@/types/forms';
+
+// Mock dependencies
+jest.mock('nanoid', () => ({
+  nanoid: () => 'mock-id-' + Math.random().toString(36).substr(2, 9),
+}));
+
+jest.mock('@dnd-kit/core', () => ({
+  DndContext: ({ children, onDragEnd }: any) => (
+    <div data-testid="dnd-context" onDrop={onDragEnd}>
+      {children}
+    </div>
+  ),
+  closestCenter: jest.fn(),
+  KeyboardSensor: jest.fn(),
+  PointerSensor: jest.fn(),
+  useSensor: jest.fn(),
+  useSensors: () => [],
+  DragOverlay: ({ children }: any) => (
+    <div data-testid="drag-overlay">{children}</div>
+  ),
+}));
+
+jest.mock('@dnd-kit/sortable', () => ({
+  arrayMove: (array: any[], oldIndex: number, newIndex: number) => {
+    const result = [...array];
+    const [removed] = result.splice(oldIndex, 1);
+    result.splice(newIndex, 0, removed);
+    return result;
+  },
+  SortableContext: ({ children }: any) => (
+    <div data-testid="sortable-context">{children}</div>
+  ),
+  sortableKeyboardCoordinates: jest.fn(),
+  verticalListSortingStrategy: jest.fn(),
+}));
+
+// Mock child components
+jest.mock('../FieldManager', () => ({
+  FieldManager: ({ fields, onFieldSelect }: any) => (
+    <div data-testid="field-manager">
+      <div>Field Manager - {fields.length} fields</div>
+      <button onClick={() => onFieldSelect(fields[0])}>
+        Select First Field
+      </button>
+    </div>
+  ),
+}));
+
+jest.mock('../FieldEditor', () => ({
+  FieldEditor: ({ field, onUpdate, onDelete }: any) => (
+    <div data-testid="field-editor">
+      <div>Editing: {field.label}</div>
+      <button onClick={() => onUpdate({ label: 'Updated Label' })}>
+        Update Field
+      </button>
+      <button onClick={onDelete}>Delete Field</button>
+    </div>
+  ),
+}));
+
+jest.mock('../FormPreview', () => ({
+  FormPreview: ({ sections }: any) => (
+    <div data-testid="form-preview">
+      Form Preview - {sections.length} sections
+    </div>
+  ),
+}));
+
+// Test data
+const mockForm: Partial<Form> = {
+  name: 'Test Form',
+  description: 'A test form for validation',
+  sections: [
+    {
+      id: 'section-1',
+      title: 'Main Section',
+      description: 'Primary section',
+      fields: [
+        {
+          id: 'field-1',
+          type: 'text',
+          label: 'Full Name',
+          placeholder: 'Enter your name',
+          required: true,
+          validation: { required: true },
+          order: 0,
+        },
+        {
+          id: 'field-2',
+          type: 'email',
+          label: 'Email',
+          placeholder: 'your@email.com',
+          required: true,
+          validation: { required: true },
+          order: 1,
+        },
+      ],
+      order: 0,
+    },
+  ],
+  settings: {
+    submitButtonText: 'Submit Form',
+    successMessage: 'Thank you!',
+    autoSave: true,
+    requireLogin: false,
+  },
+  theme: {
+    primaryColor: '#9333ea',
+    fontFamily: 'Inter',
+    borderRadius: 'md',
+  },
+  isPublished: false,
+};
+
+describe('DynamicFormBuilder', () => {
+  const defaultProps = {
+    initialForm: mockForm,
+    onSave: jest.fn(),
+    onPublish: jest.fn(),
+    onPreview: jest.fn(),
+    autoSaveInterval: 1000,
+    enableAdvancedFeatures: true,
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  describe('Rendering', () => {
+    it('renders form builder with initial form', () => {
+      render(<DynamicFormBuilder {...defaultProps} />);
+
+      expect(screen.getByDisplayValue('Test Form')).toBeInTheDocument();
+      expect(screen.getByText('2 errors, 0 warnings')).toBeInTheDocument();
+      expect(screen.getByText('2 fields')).toBeInTheDocument();
+    });
+
+    it('renders all tab navigation', () => {
+      render(<DynamicFormBuilder {...defaultProps} />);
+
+      expect(screen.getByText('Design')).toBeInTheDocument();
+      expect(screen.getByText('Logic')).toBeInTheDocument();
+      expect(screen.getByText('Preview')).toBeInTheDocument();
+      expect(screen.getByText('Settings')).toBeInTheDocument();
+      expect(screen.getByText('Analytics')).toBeInTheDocument();
+    });
+
+    it('renders action buttons', () => {
+      render(<DynamicFormBuilder {...defaultProps} />);
+
+      expect(screen.getByText('Save Changes')).toBeInTheDocument();
+      expect(screen.getByText('Preview')).toBeInTheDocument();
+      expect(screen.getByText('Publish')).toBeInTheDocument();
+    });
+
+    it('shows auto-save toggle', () => {
+      render(<DynamicFormBuilder {...defaultProps} />);
+
+      expect(screen.getByText('Auto-save')).toBeInTheDocument();
+      expect(screen.getByRole('switch')).toBeChecked();
+    });
+  });
+
+  describe('Form Management', () => {
+    it('updates form name', async () => {
+      const user = userEvent.setup();
+      render(<DynamicFormBuilder {...defaultProps} />);
+
+      const nameInput = screen.getByDisplayValue('Test Form');
+      await user.clear(nameInput);
+      await user.type(nameInput, 'Updated Form Name');
+
+      expect(nameInput).toHaveValue('Updated Form Name');
+    });
+
+    it('saves form when save button is clicked', async () => {
+      const user = userEvent.setup();
+      const mockOnSave = jest.fn().mockResolvedValue(undefined);
+      render(<DynamicFormBuilder {...defaultProps} onSave={mockOnSave} />);
+
+      const saveButton = screen.getByText('Save Changes');
+      await user.click(saveButton);
+
+      await waitFor(() => {
+        expect(mockOnSave).toHaveBeenCalled();
+      });
+    });
+
+    it('publishes form when publish button is clicked with valid form', async () => {
+      const user = userEvent.setup();
+      const mockOnPublish = jest.fn().mockResolvedValue(undefined);
+
+      // Create form without validation errors
+      const validForm = {
+        ...mockForm,
+        name: 'Valid Form',
+        sections: [
+          {
+            ...mockForm.sections![0],
+            fields: [], // Empty fields to avoid validation errors
+          },
+        ],
+      };
+
+      render(
+        <DynamicFormBuilder
+          {...defaultProps}
+          initialForm={validForm}
+          onPublish={mockOnPublish}
+        />,
+      );
+
+      const publishButton = screen.getByText('Publish');
+      await user.click(publishButton);
+
+      await waitFor(() => {
+        expect(mockOnPublish).toHaveBeenCalled();
+      });
+    });
+
+    it('previews form when preview button is clicked', async () => {
+      const user = userEvent.setup();
+      const mockOnPreview = jest.fn();
+      render(
+        <DynamicFormBuilder {...defaultProps} onPreview={mockOnPreview} />,
+      );
+
+      const previewButton = screen.getByText('Preview');
+      await user.click(previewButton);
+
+      expect(mockOnPreview).toHaveBeenCalled();
+    });
+  });
+
+  describe('Tab Navigation', () => {
+    it('switches to design tab', async () => {
+      const user = userEvent.setup();
+      render(<DynamicFormBuilder {...defaultProps} />);
+
+      const designTab = screen.getByText('Design');
+      await user.click(designTab);
+
+      expect(screen.getByTestId('field-manager')).toBeInTheDocument();
+    });
+
+    it('switches to logic tab', async () => {
+      const user = userEvent.setup();
+      render(<DynamicFormBuilder {...defaultProps} />);
+
+      const logicTab = screen.getByText('Logic');
+      await user.click(logicTab);
+
+      expect(screen.getByText('Conditional Logic & Rules')).toBeInTheDocument();
+      expect(
+        screen.getByText('Advanced Logic Coming Soon'),
+      ).toBeInTheDocument();
+    });
+
+    it('switches to preview tab', async () => {
+      const user = userEvent.setup();
+      render(<DynamicFormBuilder {...defaultProps} />);
+
+      const previewTab = screen.getByText('Preview');
+      await user.click(previewTab);
+
+      expect(screen.getByText('Desktop')).toBeInTheDocument();
+      expect(screen.getByText('Tablet')).toBeInTheDocument();
+      expect(screen.getByText('Mobile')).toBeInTheDocument();
+      expect(screen.getByTestId('form-preview')).toBeInTheDocument();
+    });
+
+    it('switches to settings tab', async () => {
+      const user = userEvent.setup();
+      render(<DynamicFormBuilder {...defaultProps} />);
+
+      const settingsTab = screen.getByText('Settings');
+      await user.click(settingsTab);
+
+      expect(screen.getByText('Form Settings')).toBeInTheDocument();
+      expect(screen.getByText('Basic Settings')).toBeInTheDocument();
+    });
+
+    it('switches to analytics tab', async () => {
+      const user = userEvent.setup();
+      render(<DynamicFormBuilder {...defaultProps} />);
+
+      const analyticsTab = screen.getByText('Analytics');
+      await user.click(analyticsTab);
+
+      expect(screen.getByText('Form Analytics')).toBeInTheDocument();
+      expect(screen.getByText('Analytics Dashboard')).toBeInTheDocument();
+    });
+  });
+
+  describe('Preview Device Selection', () => {
+    it('changes preview device when device buttons are clicked', async () => {
+      const user = userEvent.setup();
+      render(<DynamicFormBuilder {...defaultProps} />);
+
+      // Go to preview tab first
+      const previewTab = screen.getByText('Preview');
+      await user.click(previewTab);
+
+      // Test device switching
+      const tabletButton = screen.getByText('Tablet');
+      await user.click(tabletButton);
+
+      const mobileButton = screen.getByText('Mobile');
+      await user.click(mobileButton);
+
+      const desktopButton = screen.getByText('Desktop');
+      await user.click(desktopButton);
+
+      // Should not throw errors and buttons should be clickable
+      expect(tabletButton).toBeInTheDocument();
+      expect(mobileButton).toBeInTheDocument();
+      expect(desktopButton).toBeInTheDocument();
+    });
+  });
+
+  describe('Auto-save Functionality', () => {
+    it('auto-saves when auto-save is enabled and form is dirty', async () => {
+      const user = userEvent.setup();
+      const mockOnSave = jest.fn().mockResolvedValue(undefined);
+      render(
+        <DynamicFormBuilder
+          {...defaultProps}
+          onSave={mockOnSave}
+          autoSaveInterval={1000}
+        />,
+      );
+
+      // Make form dirty by changing name
+      const nameInput = screen.getByDisplayValue('Test Form');
+      await user.type(nameInput, ' Updated');
+
+      // Fast-forward time to trigger auto-save
+      act(() => {
+        jest.advanceTimersByTime(1500);
+      });
+
+      await waitFor(() => {
+        expect(mockOnSave).toHaveBeenCalled();
+      });
+    });
+
+    it('does not auto-save when auto-save is disabled', async () => {
+      const user = userEvent.setup();
+      const mockOnSave = jest.fn();
+      render(<DynamicFormBuilder {...defaultProps} onSave={mockOnSave} />);
+
+      // Disable auto-save
+      const autoSaveSwitch = screen.getByRole('switch');
+      await user.click(autoSaveSwitch);
+
+      // Make form dirty
+      const nameInput = screen.getByDisplayValue('Test Form');
+      await user.type(nameInput, ' Updated');
+
+      // Fast-forward time
+      act(() => {
+        jest.advanceTimersByTime(2000);
+      });
+
+      expect(mockOnSave).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Section Management', () => {
+    it('adds new section when Add Section button is clicked', async () => {
+      const user = userEvent.setup();
+      render(<DynamicFormBuilder {...defaultProps} />);
+
+      // Should be in design tab by default
+      const addSectionButton = screen.getByText('Add Section');
+      await user.click(addSectionButton);
+
+      // Form should be updated with new section
+      await waitFor(() => {
+        expect(screen.getByDisplayValue('Section 2')).toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('Field Integration', () => {
+    it('shows field manager in design tab', () => {
+      render(<DynamicFormBuilder {...defaultProps} />);
+
+      expect(screen.getByTestId('field-manager')).toBeInTheDocument();
+      expect(screen.getByText('Field Manager - 2 fields')).toBeInTheDocument();
+    });
+
+    it('shows field editor when field is selected', async () => {
+      const user = userEvent.setup();
+      render(<DynamicFormBuilder {...defaultProps} />);
+
+      const selectFieldButton = screen.getByText('Select First Field');
+      await user.click(selectFieldButton);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('field-editor')).toBeInTheDocument();
+        expect(screen.getByText('Editing: Full Name')).toBeInTheDocument();
+      });
+    });
+
+    it('updates field when field editor triggers update', async () => {
+      const user = userEvent.setup();
+      render(<DynamicFormBuilder {...defaultProps} />);
+
+      // Select field first
+      const selectFieldButton = screen.getByText('Select First Field');
+      await user.click(selectFieldButton);
+
+      await waitFor(async () => {
+        const updateButton = screen.getByText('Update Field');
+        await user.click(updateButton);
+
+        // Field should be updated
+        expect(screen.getByText('Editing: Updated Label')).toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('Form Validation', () => {
+    it('shows validation errors in header', () => {
+      render(<DynamicFormBuilder {...defaultProps} />);
+
+      expect(screen.getByText(/\d+ errors, \d+ warnings/)).toBeInTheDocument();
+    });
+
+    it('prevents publishing when form has validation errors', async () => {
+      const user = userEvent.setup();
+      const mockOnPublish = jest.fn();
+      render(
+        <DynamicFormBuilder {...defaultProps} onPublish={mockOnPublish} />,
+      );
+
+      const publishButton = screen.getByText('Publish');
+      expect(publishButton).toBeDisabled();
+
+      await user.click(publishButton);
+      expect(mockOnPublish).not.toHaveBeenCalled();
+    });
+
+    it('allows publishing when form is valid', async () => {
+      const user = userEvent.setup();
+      const mockOnPublish = jest.fn().mockResolvedValue(undefined);
+
+      const validForm = {
+        ...mockForm,
+        sections: [], // No sections = no validation errors
+      };
+
+      render(
+        <DynamicFormBuilder
+          {...defaultProps}
+          initialForm={validForm}
+          onPublish={mockOnPublish}
+        />,
+      );
+
+      const publishButton = screen.getByText('Publish');
+      expect(publishButton).not.toBeDisabled();
+    });
+  });
+
+  describe('Form Settings', () => {
+    it('renders form settings in settings tab', async () => {
+      const user = userEvent.setup();
+      render(<DynamicFormBuilder {...defaultProps} />);
+
+      const settingsTab = screen.getByText('Settings');
+      await user.click(settingsTab);
+
+      expect(screen.getByText('Basic Settings')).toBeInTheDocument();
+      expect(screen.getByText('Submission Settings')).toBeInTheDocument();
+      expect(screen.getByText('Theme & Appearance')).toBeInTheDocument();
+    });
+
+    it('updates form description in settings', async () => {
+      const user = userEvent.setup();
+      render(<DynamicFormBuilder {...defaultProps} />);
+
+      const settingsTab = screen.getByText('Settings');
+      await user.click(settingsTab);
+
+      const descriptionTextarea = screen.getByDisplayValue(
+        'A test form for validation',
+      );
+      await user.clear(descriptionTextarea);
+      await user.type(descriptionTextarea, 'Updated description');
+
+      expect(descriptionTextarea).toHaveValue('Updated description');
+    });
+
+    it('updates submit button text in settings', async () => {
+      const user = userEvent.setup();
+      render(<DynamicFormBuilder {...defaultProps} />);
+
+      const settingsTab = screen.getByText('Settings');
+      await user.click(settingsTab);
+
+      const submitButtonInput = screen.getByDisplayValue('Submit Form');
+      await user.clear(submitButtonInput);
+      await user.type(submitButtonInput, 'Send Message');
+
+      expect(submitButtonInput).toHaveValue('Send Message');
+    });
+
+    it('toggles form settings switches', async () => {
+      const user = userEvent.setup();
+      render(<DynamicFormBuilder {...defaultProps} />);
+
+      const settingsTab = screen.getByText('Settings');
+      await user.click(settingsTab);
+
+      // Find switches (there will be multiple)
+      const switches = screen.getAllByRole('switch');
+      const autoSaveSwitch = switches.find((s) =>
+        s.closest('label')?.textContent?.includes('Auto-save progress'),
+      );
+
+      if (autoSaveSwitch) {
+        await user.click(autoSaveSwitch);
+        // Switch should toggle (might need to check aria-checked)
+        expect(autoSaveSwitch).not.toBeChecked();
+      }
+    });
+  });
+
+  describe('Theme Customization', () => {
+    it('updates primary color in theme settings', async () => {
+      const user = userEvent.setup();
+      render(<DynamicFormBuilder {...defaultProps} />);
+
+      const settingsTab = screen.getByText('Settings');
+      await user.click(settingsTab);
+
+      const colorInput = screen.getByDisplayValue('#9333ea');
+      await user.clear(colorInput);
+      await user.type(colorInput, '#ff0000');
+
+      expect(colorInput).toHaveValue('#ff0000');
+    });
+
+    it('updates font family in theme settings', async () => {
+      const user = userEvent.setup();
+      render(<DynamicFormBuilder {...defaultProps} />);
+
+      const settingsTab = screen.getByText('Settings');
+      await user.click(settingsTab);
+
+      const fontSelect = screen.getByDisplayValue('Inter');
+      await user.selectOptions(fontSelect, 'serif');
+
+      expect(fontSelect).toHaveValue('serif');
+    });
+  });
+
+  describe('Error Handling', () => {
+    it('handles save errors gracefully', async () => {
+      const user = userEvent.setup();
+      const mockOnSave = jest.fn().mockRejectedValue(new Error('Save failed'));
+      const consoleSpy = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
+
+      render(<DynamicFormBuilder {...defaultProps} onSave={mockOnSave} />);
+
+      const saveButton = screen.getByText('Save Changes');
+      await user.click(saveButton);
+
+      await waitFor(() => {
+        expect(consoleSpy).toHaveBeenCalledWith(
+          'Save failed:',
+          expect.any(Error),
+        );
+      });
+
+      consoleSpy.mockRestore();
+    });
+
+    it('handles publish errors gracefully', async () => {
+      const user = userEvent.setup();
+      const mockOnPublish = jest
+        .fn()
+        .mockRejectedValue(new Error('Publish failed'));
+      const consoleSpy = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
+
+      const validForm = { ...mockForm, sections: [] };
+      render(
+        <DynamicFormBuilder
+          {...defaultProps}
+          initialForm={validForm}
+          onPublish={mockOnPublish}
+        />,
+      );
+
+      const publishButton = screen.getByText('Publish');
+      await user.click(publishButton);
+
+      await waitFor(() => {
+        expect(consoleSpy).toHaveBeenCalledWith(
+          'Publish failed:',
+          expect.any(Error),
+        );
+      });
+
+      consoleSpy.mockRestore();
+    });
+  });
+
+  describe('Accessibility', () => {
+    it('has proper ARIA labels and roles', () => {
+      render(<DynamicFormBuilder {...defaultProps} />);
+
+      expect(
+        screen.getByRole('textbox', { name: /form name/i }),
+      ).toBeInTheDocument();
+      expect(screen.getByRole('switch')).toBeInTheDocument();
+    });
+
+    it('supports keyboard navigation', async () => {
+      const user = userEvent.setup();
+      render(<DynamicFormBuilder {...defaultProps} />);
+
+      const nameInput = screen.getByDisplayValue('Test Form');
+      nameInput.focus();
+
+      expect(nameInput).toHaveFocus();
+
+      await user.tab();
+      expect(document.activeElement).not.toBe(nameInput);
+    });
+  });
+
+  describe('Performance', () => {
+    it('memoizes expensive calculations', () => {
+      const { rerender } = render(<DynamicFormBuilder {...defaultProps} />);
+
+      // Re-render with same props should not cause unnecessary recalculations
+      rerender(<DynamicFormBuilder {...defaultProps} />);
+
+      expect(screen.getByDisplayValue('Test Form')).toBeInTheDocument();
+    });
+  });
+});

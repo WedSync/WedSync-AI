@@ -1,0 +1,370 @@
+/**
+ * WS-236: User Feedback System - Session Start API
+ * 
+ * Handles starting new feedback collection sessions
+ * Creates personalized questions based on user context and wedding industry needs
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
+import { createClient } from '@/lib/supabase/server';
+import { rateLimit } from '@/lib/rate-limiter';
+import { feedbackCollector } from '@/lib/feedback/feedback-collector';
+
+// Validation schemas
+const startSessionSchema = z.object({
+  triggerType: z.enum(['manual', 'automatic']),
+  feedbackType: z.enum(['nps', 'csat', 'ces', 'feature', 'onboarding', 'churn', 'general']),
+  context: z.object({
+    featureName: z.string().optional(),
+    page: z.string().optional(),
+    userAction: z.string().optional(),
+    triggerReason: z.string().optional()
+  }).optional(),
+  deviceInfo: z.object({
+    type: z.string().optional(),
+    browser: z.string().optional(),
+    userAgent: z.string().optional(),
+    screenResolution: z.string().optional()
+  }).optional()
+});
+
+export const dynamic = 'force-dynamic';
+
+/**
+ * POST /api/feedback/session/start
+ * Start a new feedback collection session
+ */
+export async function POST(request: NextRequest) {
+  try {
+    // Rate limiting - stricter for session creation
+    const rateLimitResult = await rateLimit(request, { max: 20, windowMs: 60000 });
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { error: 'Too many session requests' },
+        { status: 429, headers: rateLimitResult.headers }
+      );
+    }
+
+    const supabase = createClient();
+
+    // Check authentication
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validatedData = startSessionSchema.parse(body);
+
+    console.log(`Starting feedback session for user ${user.id}:`, {
+      type: validatedData.feedbackType,
+      trigger: validatedData.triggerType,
+      context: validatedData.context
+    });
+
+    try {
+      // Import feedback fatigue prevention service
+      const { feedbackFatigueService } = await import('@/lib/rate-limiter');
+
+      // Check feedback eligibility with wedding industry rules
+      const eligibilityCheck = await feedbackFatigueService.checkFeedbackEligibility(
+        user.id,
+        validatedData.feedbackType,
+        {
+          weddingId: validatedData.context?.weddingId,
+          isWeddingDay: validatedData.context?.isWeddingDay || false,
+          userTier: validatedData.context?.userTier,
+          daysSinceLastFeedback: validatedData.context?.daysSinceLastFeedback
+        }
+      );
+
+      // If not eligible, record attempt and return appropriate response
+      if (!eligibilityCheck.eligible) {
+        await feedbackFatigueService.recordFeedbackAttempt(
+          user.id,
+          validatedData.feedbackType,
+          'blocked',
+          {
+            blockReason: eligibilityCheck.reason,
+            skipReasons: eligibilityCheck.skipReasons,
+            weddingContext: eligibilityCheck.weddingContextRules
+          }
+        );
+
+        return NextResponse.json({
+          success: false,
+          error: 'Feedback not available at this time',
+          details: {
+            reason: eligibilityCheck.reason,
+            skipReasons: eligibilityCheck.skipReasons,
+            nextEligibleAt: eligibilityCheck.nextEligibleAt?.toISOString(),
+            weddingProtections: eligibilityCheck.weddingContextRules
+          },
+          message: 'Thank you for your willingness to provide feedback. To ensure the best experience during your wedding journey, we\'ve temporarily paused feedback collection.'
+        }, { status: 403 });
+      }
+
+      // Prepare session request with enhanced context
+      const sessionRequest = {
+        userId: user.id,
+        feedbackType: validatedData.feedbackType,
+        triggerReason: validatedData.context?.triggerReason || validatedData.triggerType,
+        context: {
+          ...validatedData.context,
+          timestamp: new Date().toISOString(),
+          referrer: request.headers.get('referer'),
+          userAgent: request.headers.get('user-agent'),
+          eligibilityContext: eligibilityCheck.weddingContextRules
+        },
+        userAgent: request.headers.get('user-agent') || undefined,
+        referrer: request.headers.get('referer') || undefined,
+        deviceInfo: validatedData.deviceInfo
+      };
+
+      // Start feedback session using FeedbackCollector service
+      const session = await feedbackCollector.startFeedbackSession(sessionRequest);
+
+      // Record successful session start
+      await feedbackFatigueService.recordFeedbackAttempt(
+        user.id,
+        validatedData.feedbackType,
+        'collected',
+        {
+          sessionId: session.id,
+          weddingContext: eligibilityCheck.weddingContextRules
+        }
+      );
+
+      // Calculate estimated completion time based on questions
+      const estimatedTimeMinutes = Math.ceil(session.questions.length * 0.5); // 30 seconds per question
+
+      // Get appropriate incentive
+      const incentive = getSessionIncentive(validatedData.feedbackType, session.userType, session.userTier);
+
+      // Get user's feedback fatigue analysis for additional context
+      const fatigueAnalysis = await feedbackFatigueService.getFeedbackFatigueAnalysis(user.id);
+
+      // Format questions for frontend
+      const formattedQuestions = session.questions.map(q => ({
+        key: q.key,
+        type: q.type,
+        text: q.text,
+        required: q.required,
+        order: q.order,
+        scale: q.scale,
+        labels: q.labels,
+        choices: q.choices,
+        dependsOn: q.dependsOn,
+        helpText: q.helpText,
+        placeholder: q.placeholder,
+        maxLength: q.maxLength,
+        multiple: q.multiple
+      }));
+
+      // Return session details with fatigue context
+      const response = {
+        success: true,
+        data: {
+          sessionId: session.id,
+          feedbackType: session.type,
+          questions: formattedQuestions,
+          estimatedTimeMinutes,
+          incentive,
+          userContext: {
+            userType: session.userType,
+            userTier: session.userTier,
+            accountAge: session.accountAgeDays,
+            isNewUser: session.accountAgeDays <= 7,
+            fatigueLevel: fatigueAnalysis.fatigueLevel,
+            feedbackStats: fatigueAnalysis.stats
+          },
+          sessionContext: {
+            startedAt: session.startedAt.toISOString(),
+            triggerReason: session.triggerReason,
+            pageUrl: session.pageUrl,
+            deviceType: session.deviceType,
+            weddingProtections: eligibilityCheck.weddingContextRules,
+            eligibilityScore: eligibilityCheck.skipReasons.length === 0 ? 'excellent' : 'good'
+          }
+        },
+        message: 'Feedback session started successfully'
+      };
+
+      return NextResponse.json(response, { status: 201 });
+
+    } catch (serviceError) {
+      console.error('Error starting feedback session:', serviceError);
+      
+      // Record error attempt
+      try {
+        const { feedbackFatigueService } = await import('@/lib/rate-limiter');
+        await feedbackFatigueService.recordFeedbackAttempt(
+          user.id,
+          validatedData.feedbackType,
+          'error',
+          {
+            blockReason: serviceError instanceof Error ? serviceError.message : 'Unknown error'
+          }
+        );
+      } catch (recordError) {
+        console.error('Failed to record error attempt:', recordError);
+      }
+      
+      // Handle specific service errors
+      if (serviceError instanceof Error) {
+        if (serviceError.message.includes('not eligible')) {
+          return NextResponse.json(
+            { 
+              error: 'User not eligible for feedback at this time', 
+              details: serviceError.message,
+              message: 'Thank you for your patience. Feedback collection is temporarily unavailable to ensure the best user experience.'
+            },
+            { status: 403 }
+          );
+        }
+        if (serviceError.message.includes('rate limit')) {
+          return NextResponse.json(
+            { 
+              error: 'Feedback rate limit exceeded', 
+              details: serviceError.message,
+              message: 'To prevent feedback fatigue, please wait before requesting another feedback session.'
+            },
+            { status: 429 }
+          );
+        }
+      }
+
+      return NextResponse.json(
+        { error: 'Failed to start feedback session' },
+        { status: 500 }
+      );
+    }
+
+  } catch (error) {
+    console.error('POST /api/feedback/session/start error:', error);
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid session request', details: error.errors },
+        { status: 400 }
+      );
+    }
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * Get appropriate incentive based on feedback type, user type, and tier
+ */
+function getSessionIncentive(
+  feedbackType: string, 
+  userType: string, 
+  userTier: string
+): any {
+  // Define incentives based on context
+  const incentiveMatrix = {
+    nps: {
+      supplier: {
+        free: { type: 'feature_preview', description: 'Early access to new supplier tools' },
+        starter: { type: 'priority_support', description: '30 days priority support' },
+        professional: { type: 'referral_bonus', description: '$50 credit for referrals' },
+        scale: { type: 'custom_training', description: 'Free 1-on-1 platform training' },
+        enterprise: { type: 'account_review', description: 'Quarterly business review session' }
+      },
+      couple: {
+        free: { type: 'feature_preview', description: 'Early access to new planning tools' },
+        starter: { type: 'priority_support', description: '30 days priority support' },
+        professional: { type: 'discount', description: '15% off premium features' },
+        scale: { type: 'custom_planning', description: 'Free wedding planning consultation' },
+        enterprise: { type: 'concierge_service', description: 'Dedicated wedding coordinator' }
+      }
+    },
+    csat: {
+      supplier: {
+        free: { type: 'priority_support', description: '14 days priority support' },
+        starter: { type: 'feature_preview', description: 'Beta access to upcoming features' },
+        professional: { type: 'marketplace_boost', description: 'Featured listing for 30 days' },
+        scale: { type: 'api_credits', description: '1000 free API calls' },
+        enterprise: { type: 'dedicated_success', description: 'Dedicated success manager check-in' }
+      },
+      couple: {
+        free: { type: 'priority_support', description: '14 days priority support' },
+        starter: { type: 'template_access', description: 'Free premium template pack' },
+        professional: { type: 'discount', description: '10% off next billing cycle' },
+        scale: { type: 'planning_tools', description: 'Free advanced planning tools for 60 days' },
+        enterprise: { type: 'white_glove', description: 'White-glove setup assistance' }
+      }
+    },
+    feature: {
+      supplier: {
+        free: { type: 'feature_preview', description: 'See your suggestion in development' },
+        starter: { type: 'priority_support', description: '7 days priority support' },
+        professional: { type: 'roadmap_influence', description: 'Vote on feature roadmap' },
+        scale: { type: 'beta_access', description: 'First access to new features' },
+        enterprise: { type: 'custom_feature', description: 'Custom feature consideration' }
+      },
+      couple: {
+        free: { type: 'feature_preview', description: 'See your suggestion in development' },
+        starter: { type: 'priority_support', description: '7 days priority support' },
+        professional: { type: 'template_credit', description: 'Free template of choice' },
+        scale: { type: 'planning_consultation', description: 'Free planning consultation' },
+        enterprise: { type: 'custom_workflow', description: 'Custom workflow setup' }
+      }
+    },
+    onboarding: null, // No incentive for onboarding feedback
+    churn: {
+      supplier: {
+        free: { type: 'retention_offer', description: '3 months free Starter plan' },
+        starter: { type: 'retention_offer', description: '2 months free Professional plan' },
+        professional: { type: 'retention_offer', description: '1 month free Scale plan' },
+        scale: { type: 'retention_call', description: 'Executive retention call' },
+        enterprise: { type: 'custom_solution', description: 'Custom retention solution' }
+      },
+      couple: {
+        free: { type: 'retention_offer', description: '6 months free premium features' },
+        starter: { type: 'retention_offer', description: '3 months free upgrade' },
+        professional: { type: 'retention_consultation', description: 'Free wedding consultation' },
+        scale: { type: 'retention_call', description: 'Wedding planning expert call' },
+        enterprise: { type: 'concierge_retention', description: 'Dedicated planning support' }
+      }
+    },
+    general: {
+      supplier: {
+        free: { type: 'priority_support', description: '7 days priority support' },
+        starter: { type: 'priority_support', description: '14 days priority support' },
+        professional: { type: 'feature_preview', description: 'Early feature access' },
+        scale: { type: 'training_session', description: 'Free training session' },
+        enterprise: { type: 'success_review', description: 'Success manager review' }
+      },
+      couple: {
+        free: { type: 'priority_support', description: '7 days priority support' },
+        starter: { type: 'priority_support', description: '14 days priority support' },
+        professional: { type: 'template_access', description: 'Free template pack' },
+        scale: { type: 'planning_consultation', description: 'Free consultation' },
+        enterprise: { type: 'white_glove', description: 'Dedicated support session' }
+      }
+    }
+  };
+
+  try {
+    const typeIncentives = incentiveMatrix[feedbackType as keyof typeof incentiveMatrix];
+    if (!typeIncentives) return null;
+
+    const userTypeIncentives = typeIncentives[userType as keyof typeof typeIncentives];
+    if (!userTypeIncentives) return null;
+
+    const tierIncentive = userTypeIncentives[userTier as keyof typeof userTypeIncentives];
+    return tierIncentive || null;
+
+  } catch (error) {
+    console.error('Error getting session incentive:', error);
+    return null;
+  }
+}

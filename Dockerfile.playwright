@@ -1,0 +1,22 @@
+# Playwright testing container for Journey Builder
+FROM mcr.microsoft.com/playwright:v1.54.0-jammy
+
+WORKDIR /app
+
+# Install Node.js dependencies
+COPY package.json package-lock.json ./
+RUN npm ci --legacy-peer-deps
+
+# Copy test files
+COPY playwright.config.ts ./
+COPY tests ./tests
+COPY src ./src
+
+# Install Playwright browsers
+RUN npx playwright install --with-deps
+
+# Create directories for test results
+RUN mkdir -p playwright-report test-results
+
+# Run tests by default
+CMD ["npx", "playwright", "test"]

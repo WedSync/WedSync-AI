@@ -1,0 +1,667 @@
+import React from 'react';
+import { render, screen, waitFor, act } from '@testing-library/react';
+import { axe, toHaveNoViolations } from 'jest-axe';
+import { TypingIndicator, WeddingTypingIndicator } from '../TypingIndicator';
+
+expect.extend(toHaveNoViolations);
+
+// Mock motion
+jest.mock('motion', () => ({
+  motion: {
+    div: 'div',
+    span: 'span',
+  },
+  AnimatePresence: ({ children }: { children: React.ReactNode }) => children,
+}));
+
+describe('TypingIndicator', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  describe('Basic Rendering', () => {
+    it('renders when isVisible is true', () => {
+      render(<TypingIndicator isVisible={true} />);
+
+      expect(
+        screen.getByText('WedSync Assistant is thinking...'),
+      ).toBeInTheDocument();
+    });
+
+    it('does not render when isVisible is false', () => {
+      const { container } = render(<TypingIndicator isVisible={false} />);
+
+      expect(container.firstChild).toBeNull();
+    });
+
+    it('renders with custom AI name', () => {
+      render(<TypingIndicator isVisible={true} aiName="Custom Assistant" />);
+
+      expect(
+        screen.getByText('Custom Assistant is thinking...'),
+      ).toBeInTheDocument();
+    });
+
+    it('shows avatar with bot icon', () => {
+      render(<TypingIndicator isVisible={true} />);
+
+      const avatar = screen
+        .getByRole('generic')
+        .querySelector('.w-8.h-8.rounded-full');
+      expect(avatar).toBeInTheDocument();
+      expect(avatar).toHaveClass('bg-primary-100', 'text-primary-600');
+    });
+
+    it('displays animated typing dots', () => {
+      render(<TypingIndicator isVisible={true} />);
+
+      const dots = screen
+        .getAllByRole('generic')
+        .filter(
+          (el) =>
+            el.classList.contains('w-2') &&
+            el.classList.contains('h-2') &&
+            el.classList.contains('bg-primary-400'),
+        );
+      expect(dots).toHaveLength(3);
+    });
+  });
+
+  describe('Custom Messages', () => {
+    it('displays custom message when provided', () => {
+      const customMessage = 'Analyzing your wedding requirements...';
+
+      render(
+        <TypingIndicator isVisible={true} customMessage={customMessage} />,
+      );
+
+      expect(screen.getByText(customMessage)).toBeInTheDocument();
+      expect(
+        screen.queryByText('WedSync Assistant is thinking...'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('shows typing dots when no custom message', () => {
+      render(<TypingIndicator isVisible={true} />);
+
+      const dots = screen
+        .getAllByRole('generic')
+        .filter(
+          (el) => el.classList.contains('w-2') && el.classList.contains('h-2'),
+        );
+      expect(dots.length).toBeGreaterThan(0);
+    });
+
+    it('hides typing dots when custom message provided', () => {
+      render(
+        <TypingIndicator isVisible={true} customMessage="Custom message" />,
+      );
+
+      expect(screen.getByText('Custom message')).toBeInTheDocument();
+      const dots = screen
+        .queryAllByRole('generic')
+        .filter(
+          (el) => el.classList.contains('w-2') && el.classList.contains('h-2'),
+        );
+      expect(dots).toHaveLength(0);
+    });
+  });
+
+  describe('Progress Display', () => {
+    it('shows progress bar when showProgress and estimatedTime provided', () => {
+      render(
+        <TypingIndicator
+          isVisible={true}
+          showProgress={true}
+          estimatedTime={5}
+        />,
+      );
+
+      expect(screen.getByText('Processing...')).toBeInTheDocument();
+      expect(screen.getByText('0%')).toBeInTheDocument();
+
+      const progressBar = screen
+        .getByRole('generic')
+        .querySelector('.bg-primary-500.h-1');
+      expect(progressBar).toBeInTheDocument();
+    });
+
+    it('does not show progress bar when showProgress false', () => {
+      render(
+        <TypingIndicator
+          isVisible={true}
+          showProgress={false}
+          estimatedTime={5}
+        />,
+      );
+
+      expect(screen.queryByText('Processing...')).not.toBeInTheDocument();
+    });
+
+    it('does not show progress bar when no estimatedTime', () => {
+      render(<TypingIndicator isVisible={true} showProgress={true} />);
+
+      expect(screen.queryByText('Processing...')).not.toBeInTheDocument();
+    });
+
+    it('updates progress over time', () => {
+      render(
+        <TypingIndicator
+          isVisible={true}
+          showProgress={true}
+          estimatedTime={10}
+        />,
+      );
+
+      expect(screen.getByText('0%')).toBeInTheDocument();
+
+      // Fast forward time
+      act(() => {
+        jest.advanceTimersByTime(1000); // 1 second
+      });
+
+      // Progress should have updated (exact value depends on calculation)
+      expect(screen.queryByText('0%')).not.toBeInTheDocument();
+    });
+
+    it('stops progress at 90% until response arrives', () => {
+      render(
+        <TypingIndicator
+          isVisible={true}
+          showProgress={true}
+          estimatedTime={1}
+        />,
+      );
+
+      // Fast forward to well beyond estimated time
+      act(() => {
+        jest.advanceTimersByTime(5000);
+      });
+
+      // Should not reach 100%
+      expect(screen.queryByText('100%')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('Estimated Time Display', () => {
+    it('shows estimated time when provided', () => {
+      render(<TypingIndicator isVisible={true} estimatedTime={5} />);
+
+      expect(screen.getByText('~5s')).toBeInTheDocument();
+    });
+
+    it('does not show estimated time when not provided', () => {
+      render(<TypingIndicator isVisible={true} />);
+
+      expect(screen.queryByText(/~\d+s/)).not.toBeInTheDocument();
+    });
+  });
+
+  describe('Dynamic Messages', () => {
+    it('cycles through thinking messages', async () => {
+      render(<TypingIndicator isVisible={true} aiName="Test Assistant" />);
+
+      expect(
+        screen.getByText('Test Assistant is thinking...'),
+      ).toBeInTheDocument();
+
+      // Fast forward to next message cycle
+      act(() => {
+        jest.advanceTimersByTime(2000);
+      });
+
+      await waitFor(() => {
+        expect(
+          screen.getByText('Analyzing your wedding context...'),
+        ).toBeInTheDocument();
+      });
+
+      // Fast forward to next cycle
+      act(() => {
+        jest.advanceTimersByTime(2000);
+      });
+
+      await waitFor(() => {
+        expect(
+          screen.getByText('Preparing personalized response...'),
+        ).toBeInTheDocument();
+      });
+    });
+
+    it('stops cycling when not visible', async () => {
+      const { rerender } = render(<TypingIndicator isVisible={true} />);
+
+      expect(
+        screen.getByText('WedSync Assistant is thinking...'),
+      ).toBeInTheDocument();
+
+      // Hide indicator
+      rerender(<TypingIndicator isVisible={false} />);
+
+      // Fast forward time
+      act(() => {
+        jest.advanceTimersByTime(5000);
+      });
+
+      // Should not be visible
+      expect(screen.queryByText(/thinking/)).not.toBeInTheDocument();
+    });
+
+    it('resets message when becoming visible again', async () => {
+      const { rerender } = render(<TypingIndicator isVisible={true} />);
+
+      // Fast forward to change message
+      act(() => {
+        jest.advanceTimersByTime(2000);
+      });
+
+      await waitFor(() => {
+        expect(
+          screen.getByText('Analyzing your wedding context...'),
+        ).toBeInTheDocument();
+      });
+
+      // Hide and show again
+      rerender(<TypingIndicator isVisible={false} />);
+      rerender(<TypingIndicator isVisible={true} />);
+
+      // Should reset to first message
+      expect(
+        screen.getByText('WedSync Assistant is thinking...'),
+      ).toBeInTheDocument();
+    });
+  });
+
+  describe('Status Indicator', () => {
+    it('shows spinning loading indicator', () => {
+      render(<TypingIndicator isVisible={true} />);
+
+      const statusText = screen.getByText('AI is generating response');
+      expect(statusText).toBeInTheDocument();
+
+      const spinner = statusText.parentElement?.querySelector(
+        '.border-primary-300.border-t-primary-600',
+      );
+      expect(spinner).toBeInTheDocument();
+    });
+
+    it('shows pulsing activity indicator', () => {
+      render(<TypingIndicator isVisible={true} />);
+
+      const pulseIndicator = screen
+        .getByRole('generic')
+        .querySelector('.absolute.-bottom-2.left-11');
+      expect(pulseIndicator).toBeInTheDocument();
+      expect(pulseIndicator).toHaveClass('w-2', 'h-2', 'bg-primary-400');
+    });
+  });
+
+  describe('Accessibility', () => {
+    it('has no accessibility violations', async () => {
+      const { container } = render(<TypingIndicator isVisible={true} />);
+      const results = await axe(container);
+      expect(results).toHaveNoViolations();
+    });
+
+    it('has no accessibility violations with progress bar', async () => {
+      const { container } = render(
+        <TypingIndicator
+          isVisible={true}
+          showProgress={true}
+          estimatedTime={5}
+        />,
+      );
+      const results = await axe(container);
+      expect(results).toHaveNoViolations();
+    });
+
+    it('provides meaningful text for screen readers', () => {
+      render(<TypingIndicator isVisible={true} />);
+
+      expect(screen.getByText('AI is generating response')).toBeInTheDocument();
+      expect(
+        screen.getByText('WedSync Assistant is thinking...'),
+      ).toBeInTheDocument();
+    });
+  });
+
+  describe('Performance', () => {
+    it('cleans up timers on unmount', () => {
+      const { unmount } = render(<TypingIndicator isVisible={true} />);
+
+      const timerCount = jest.getTimerCount();
+
+      unmount();
+
+      // Timers should be cleaned up
+      expect(jest.getTimerCount()).toBeLessThan(timerCount);
+    });
+
+    it('handles rapid visibility changes', () => {
+      const { rerender } = render(<TypingIndicator isVisible={false} />);
+
+      // Rapidly toggle visibility
+      for (let i = 0; i < 10; i++) {
+        rerender(<TypingIndicator isVisible={i % 2 === 0} />);
+      }
+
+      // Should not throw errors
+      expect(
+        screen.queryByText('WedSync Assistant is thinking...'),
+      ).toBeInTheDocument();
+    });
+  });
+});
+
+describe('WeddingTypingIndicator', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  describe('Wedding Context Messages', () => {
+    it('shows timeline context message', () => {
+      const weddingContext = {
+        taskType: 'timeline',
+        urgency: 'medium' as const,
+      };
+
+      render(
+        <WeddingTypingIndicator
+          isVisible={true}
+          weddingContext={weddingContext}
+        />,
+      );
+
+      expect(
+        screen.getByText('Analyzing your wedding timeline...'),
+      ).toBeInTheDocument();
+    });
+
+    it('shows vendor context message', () => {
+      const weddingContext = {
+        taskType: 'vendor',
+        urgency: 'high' as const,
+      };
+
+      render(
+        <WeddingTypingIndicator
+          isVisible={true}
+          weddingContext={weddingContext}
+        />,
+      );
+
+      expect(
+        screen.getByText('Checking vendor recommendations...'),
+      ).toBeInTheDocument();
+    });
+
+    it('shows budget context message', () => {
+      const weddingContext = {
+        taskType: 'budget',
+        urgency: 'low' as const,
+      };
+
+      render(
+        <WeddingTypingIndicator
+          isVisible={true}
+          weddingContext={weddingContext}
+        />,
+      );
+
+      expect(
+        screen.getByText('Calculating budget insights...'),
+      ).toBeInTheDocument();
+    });
+
+    it('shows guest context message', () => {
+      const weddingContext = {
+        taskType: 'guest',
+        urgency: 'medium' as const,
+      };
+
+      render(
+        <WeddingTypingIndicator
+          isVisible={true}
+          weddingContext={weddingContext}
+        />,
+      );
+
+      expect(
+        screen.getByText('Processing guest management data...'),
+      ).toBeInTheDocument();
+    });
+
+    it('shows planning context message', () => {
+      const weddingContext = {
+        taskType: 'planning',
+        urgency: 'high' as const,
+      };
+
+      render(
+        <WeddingTypingIndicator
+          isVisible={true}
+          weddingContext={weddingContext}
+        />,
+      );
+
+      expect(
+        screen.getByText('Creating your planning recommendations...'),
+      ).toBeInTheDocument();
+    });
+
+    it('shows emergency context message', () => {
+      const weddingContext = {
+        taskType: 'emergency',
+        urgency: 'critical' as const,
+      };
+
+      render(
+        <WeddingTypingIndicator
+          isVisible={true}
+          weddingContext={weddingContext}
+        />,
+      );
+
+      expect(
+        screen.getByText('Prioritizing your urgent request...'),
+      ).toBeInTheDocument();
+    });
+
+    it('falls back to default when no context provided', () => {
+      render(<WeddingTypingIndicator isVisible={true} />);
+
+      expect(
+        screen.getByText('WedSync Assistant is thinking...'),
+      ).toBeInTheDocument();
+    });
+
+    it('falls back to default for unknown task type', () => {
+      const weddingContext = {
+        taskType: 'unknown',
+        urgency: 'medium' as const,
+      };
+
+      render(
+        <WeddingTypingIndicator
+          isVisible={true}
+          weddingContext={weddingContext}
+        />,
+      );
+
+      expect(
+        screen.getByText('WedSync Assistant is thinking...'),
+      ).toBeInTheDocument();
+    });
+  });
+
+  describe('Urgency-Based Timing', () => {
+    it('shows faster time for critical urgency', () => {
+      const weddingContext = {
+        taskType: 'emergency',
+        urgency: 'critical' as const,
+      };
+
+      render(
+        <WeddingTypingIndicator
+          isVisible={true}
+          weddingContext={weddingContext}
+        />,
+      );
+
+      expect(screen.getByText('~2s')).toBeInTheDocument();
+    });
+
+    it('shows fast time for high urgency', () => {
+      const weddingContext = {
+        taskType: 'vendor',
+        urgency: 'high' as const,
+      };
+
+      render(
+        <WeddingTypingIndicator
+          isVisible={true}
+          weddingContext={weddingContext}
+        />,
+      );
+
+      expect(screen.getByText('~5s')).toBeInTheDocument();
+    });
+
+    it('shows medium time for medium urgency', () => {
+      const weddingContext = {
+        taskType: 'budget',
+        urgency: 'medium' as const,
+      };
+
+      render(
+        <WeddingTypingIndicator
+          isVisible={true}
+          weddingContext={weddingContext}
+        />,
+      );
+
+      expect(screen.getByText('~8s')).toBeInTheDocument();
+    });
+
+    it('shows slower time for low urgency', () => {
+      const weddingContext = {
+        taskType: 'planning',
+        urgency: 'low' as const,
+      };
+
+      render(
+        <WeddingTypingIndicator
+          isVisible={true}
+          weddingContext={weddingContext}
+        />,
+      );
+
+      expect(screen.getByText('~12s')).toBeInTheDocument();
+    });
+
+    it('uses provided estimatedTime over urgency when explicitly set', () => {
+      const weddingContext = {
+        taskType: 'emergency',
+        urgency: 'critical' as const,
+      };
+
+      render(
+        <WeddingTypingIndicator
+          isVisible={true}
+          weddingContext={weddingContext}
+          estimatedTime={15}
+        />,
+      );
+
+      expect(screen.getByText('~15s')).toBeInTheDocument();
+    });
+
+    it('falls back to props estimatedTime when no urgency', () => {
+      const weddingContext = {
+        taskType: 'timeline',
+      };
+
+      render(
+        <WeddingTypingIndicator
+          isVisible={true}
+          weddingContext={weddingContext}
+          estimatedTime={7}
+        />,
+      );
+
+      expect(screen.getByText('~7s')).toBeInTheDocument();
+    });
+  });
+
+  describe('Combined Features', () => {
+    it('shows context message with urgency timing and progress', () => {
+      const weddingContext = {
+        taskType: 'vendor',
+        urgency: 'high' as const,
+      };
+
+      render(
+        <WeddingTypingIndicator
+          isVisible={true}
+          weddingContext={weddingContext}
+          showProgress={true}
+        />,
+      );
+
+      expect(
+        screen.getByText('Checking vendor recommendations...'),
+      ).toBeInTheDocument();
+      expect(screen.getByText('~5s')).toBeInTheDocument();
+      expect(screen.getByText('Processing...')).toBeInTheDocument();
+    });
+
+    it('inherits all base TypingIndicator props', () => {
+      const weddingContext = {
+        taskType: 'budget',
+        urgency: 'medium' as const,
+      };
+
+      render(
+        <WeddingTypingIndicator
+          isVisible={true}
+          weddingContext={weddingContext}
+          aiName="Wedding Planner AI"
+        />,
+      );
+
+      expect(
+        screen.getByText('Calculating budget insights...'),
+      ).toBeInTheDocument();
+    });
+  });
+
+  describe('Accessibility', () => {
+    it('maintains accessibility with wedding context', async () => {
+      const weddingContext = {
+        taskType: 'timeline',
+        urgency: 'high' as const,
+      };
+
+      const { container } = render(
+        <WeddingTypingIndicator
+          isVisible={true}
+          weddingContext={weddingContext}
+          showProgress={true}
+        />,
+      );
+
+      const results = await axe(container);
+      expect(results).toHaveNoViolations();
+    });
+  });
+});

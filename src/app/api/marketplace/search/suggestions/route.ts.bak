@@ -1,0 +1,435 @@
+/**
+ * WS-114: Marketplace Search Suggestions API Endpoint
+ * 
+ * GET /api/marketplace/search/suggestions
+ * 
+ * Provides intelligent autocomplete suggestions based on user input,
+ * template titles, categories, tags, and previous search history.
+ * 
+ * Team B - Batch 9 - Round 1
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_KEY!
+);
+
+// =====================================================================================
+// REQUEST/RESPONSE INTERFACES
+// =====================================================================================
+
+interface SuggestionItem {
+  text: string;
+  type: 'template' | 'category' | 'tag' | 'search_history';
+  category?: string;
+  result_count?: number;
+  popularity_score?: number;
+  highlighted?: string;
+}
+
+interface SuggestionsResponse {
+  success: boolean;
+  suggestions?: SuggestionItem[];
+  query?: string;
+  response_time?: number;
+  error?: string;
+}
+
+// =====================================================================================
+// API HANDLERS
+// =====================================================================================
+
+export async function GET(request: NextRequest) {
+  const startTime = Date.now();
+
+  try {
+    const { searchParams } = request.nextUrl;
+    
+    const query = searchParams.get('q')?.trim() || '';
+    const maxSuggestions = Math.min(
+      parseInt(searchParams.get('limit') || '10'),
+      20
+    );
+
+    // Require minimum query length to avoid too broad suggestions
+    if (query.length < 2) {
+      return NextResponse.json({
+        success: true,
+        suggestions: [],
+        query,
+        response_time: Date.now() - startTime
+      });
+    }
+
+    // Get user context for personalized suggestions
+    const authHeader = request.headers.get('Authorization');
+    let userId: string | null = null;
+    if (authHeader?.startsWith('Bearer ')) {
+      const { data: user } = await supabase.auth.getUser(authHeader.substring(7));
+      userId = user?.id || null;
+    }
+
+    // Generate suggestions from multiple sources
+    const suggestions = await generateSuggestions(query, maxSuggestions, userId);
+
+    const response: SuggestionsResponse = {
+      success: true,
+      suggestions,
+      query,
+      response_time: Date.now() - startTime
+    };
+
+    // Add cache headers for performance
+    const cacheHeaders = {
+      'Cache-Control': 'public, max-age=300, stale-while-revalidate=600',
+      'Vary': 'Authorization'
+    };
+
+    return NextResponse.json(response, { headers: cacheHeaders });
+
+  } catch (error) {
+    console.error('Search suggestions API error:', error);
+    
+    return NextResponse.json(
+      { 
+        success: false, 
+        error: 'Failed to generate suggestions. Please try again.' 
+      },
+      { status: 500 }
+    );
+  }
+}
+
+// =====================================================================================
+// HELPER FUNCTIONS
+// =====================================================================================
+
+async function generateSuggestions(
+  query: string, 
+  maxSuggestions: number,
+  userId: string | null
+): Promise<SuggestionItem[]> {
+  const suggestions: SuggestionItem[] = [];
+  
+  try {
+    // 1. Get template title suggestions (highest priority)
+    const templateSuggestions = await getTemplateTitleSuggestions(query, Math.ceil(maxSuggestions * 0.4));
+    suggestions.push(...templateSuggestions);
+
+    // 2. Get category suggestions
+    const categorySuggestions = await getCategorySuggestions(query, Math.ceil(maxSuggestions * 0.2));
+    suggestions.push(...categorySuggestions);
+
+    // 3. Get tag suggestions
+    const tagSuggestions = await getTagSuggestions(query, Math.ceil(maxSuggestions * 0.2));
+    suggestions.push(...tagSuggestions);
+
+    // 4. Get search history suggestions (personalized if user is authenticated)
+    const historySuggestions = await getSearchHistorySuggestions(query, Math.ceil(maxSuggestions * 0.2), userId);
+    suggestions.push(...historySuggestions);
+
+    // 5. Deduplicate and sort by relevance
+    const uniqueSuggestions = deduplicateAndSort(suggestions, query);
+    
+    // 6. Apply highlighting
+    const highlightedSuggestions = uniqueSuggestions.map(suggestion => ({
+      ...suggestion,
+      highlighted: highlightMatch(suggestion.text, query)
+    }));
+
+    return highlightedSuggestions.slice(0, maxSuggestions);
+
+  } catch (error) {
+    console.error('Error generating suggestions:', error);
+    return [];
+  }
+}
+
+async function getTemplateTitleSuggestions(query: string, limit: number): Promise<SuggestionItem[]> {
+  try {
+    const { data, error } = await supabase
+      .from('marketplace_templates')
+      .select('title, category, install_count, average_rating')
+      .eq('status', 'active')
+      .ilike('title', `%${query}%`)
+      .order('install_count', { ascending: false })
+      .order('average_rating', { ascending: false })
+      .limit(limit);
+
+    if (error) {
+      console.error('Template title suggestions error:', error);
+      return [];
+    }
+
+    return data.map((template): SuggestionItem => ({
+      text: template.title,
+      type: 'template',
+      category: template.category,
+      popularity_score: template.install_count + (template.average_rating * 10)
+    }));
+
+  } catch (error) {
+    console.error('Template title suggestions error:', error);
+    return [];
+  }
+}
+
+async function getCategorySuggestions(query: string, limit: number): Promise<SuggestionItem[]> {
+  try {
+    const { data, error } = await supabase
+      .from('marketplace_categories')
+      .select('name, slug, template_count')
+      .eq('is_active', true)
+      .ilike('name', `%${query}%`)
+      .order('template_count', { ascending: false })
+      .limit(limit);
+
+    if (error) {
+      console.error('Category suggestions error:', error);
+      return [];
+    }
+
+    return data.map((category): SuggestionItem => ({
+      text: category.name,
+      type: 'category',
+      category: category.slug,
+      result_count: category.template_count,
+      popularity_score: category.template_count
+    }));
+
+  } catch (error) {
+    console.error('Category suggestions error:', error);
+    return [];
+  }
+}
+
+async function getTagSuggestions(query: string, limit: number): Promise<SuggestionItem[]> {
+  try {
+    // Use a raw query to search within arrays
+    const { data, error } = await supabase.rpc('get_tag_suggestions', {
+      search_term: query,
+      max_results: limit
+    });
+
+    if (error) {
+      // Fallback to a simpler approach if the RPC doesn't exist
+      const { data: templates, error: fallbackError } = await supabase
+        .from('marketplace_templates')
+        .select('tags, category, install_count')
+        .eq('status', 'active')
+        .not('tags', 'is', null);
+
+      if (fallbackError || !templates) {
+        return [];
+      }
+
+      // Extract matching tags from the results
+      const tagCounts: { [key: string]: { count: number; popularity: number; category?: string } } = {};
+      
+      templates.forEach(template => {
+        if (template.tags) {
+          template.tags.forEach((tag: string) => {
+            if (tag.toLowerCase().includes(query.toLowerCase())) {
+              if (!tagCounts[tag]) {
+                tagCounts[tag] = { count: 0, popularity: 0, category: template.category };
+              }
+              tagCounts[tag].count++;
+              tagCounts[tag].popularity += template.install_count || 0;
+            }
+          });
+        }
+      });
+
+      return Object.entries(tagCounts)
+        .sort(([, a], [, b]) => b.popularity - a.popularity)
+        .slice(0, limit)
+        .map(([tag, data]): SuggestionItem => ({
+          text: tag,
+          type: 'tag',
+          category: data.category,
+          result_count: data.count,
+          popularity_score: data.popularity
+        }));
+    }
+
+    return data.map((item: any): SuggestionItem => ({
+      text: item.tag,
+      type: 'tag',
+      result_count: item.template_count,
+      popularity_score: item.total_installs
+    }));
+
+  } catch (error) {
+    console.error('Tag suggestions error:', error);
+    return [];
+  }
+}
+
+async function getSearchHistorySuggestions(
+  query: string, 
+  limit: number, 
+  userId: string | null
+): Promise<SuggestionItem[]> {
+  try {
+    let historyQuery = supabase
+      .from('marketplace_search_analytics')
+      .select('search_query, result_count')
+      .ilike('search_query', `%${query}%`)
+      .gt('result_count', 0) // Only suggest searches that returned results
+      .order('search_timestamp', { ascending: false });
+
+    // If user is authenticated, prioritize their own search history
+    if (userId) {
+      const { data: userHistory, error: userError } = await historyQuery
+        .eq('user_id', userId)
+        .limit(Math.ceil(limit / 2));
+
+      if (!userError && userHistory && userHistory.length > 0) {
+        const userSuggestions = userHistory.map((search): SuggestionItem => ({
+          text: search.search_query,
+          type: 'search_history',
+          result_count: search.result_count,
+          popularity_score: 100 // Higher priority for user's own history
+        }));
+
+        // Get additional popular searches to fill remaining slots
+        const remainingSlots = limit - userSuggestions.length;
+        if (remainingSlots > 0) {
+          const { data: popularHistory, error: popularError } = await supabase
+            .from('marketplace_search_analytics')
+            .select('search_query, result_count, COUNT(*) as frequency')
+            .ilike('search_query', `%${query}%`)
+            .gt('result_count', 0)
+            .gte('search_timestamp', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()) // Last 30 days
+            .limit(remainingSlots);
+
+          if (!popularError && popularHistory) {
+            const popularSuggestions = popularHistory.map((search): SuggestionItem => ({
+              text: search.search_query,
+              type: 'search_history',
+              result_count: search.result_count,
+              popularity_score: search.frequency || 1
+            }));
+
+            return [...userSuggestions, ...popularSuggestions];
+          }
+        }
+
+        return userSuggestions;
+      }
+    }
+
+    // Fallback to popular searches from all users
+    const { data: popularSearches, error } = await supabase
+      .from('marketplace_search_analytics')
+      .select('search_query, result_count, COUNT(*) as frequency')
+      .ilike('search_query', `%${query}%`)
+      .gt('result_count', 0)
+      .gte('search_timestamp', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()) // Last 30 days
+      .limit(limit);
+
+    if (error || !popularSearches) {
+      return [];
+    }
+
+    return popularSearches.map((search): SuggestionItem => ({
+      text: search.search_query,
+      type: 'search_history',
+      result_count: search.result_count,
+      popularity_score: search.frequency || 1
+    }));
+
+  } catch (error) {
+    console.error('Search history suggestions error:', error);
+    return [];
+  }
+}
+
+function deduplicateAndSort(suggestions: SuggestionItem[], query: string): SuggestionItem[] {
+  const seen = new Set<string>();
+  const unique = suggestions.filter(suggestion => {
+    const key = suggestion.text.toLowerCase();
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+
+  // Sort by relevance score combining multiple factors
+  return unique.sort((a, b) => {
+    // Exact match gets highest priority
+    const aExact = a.text.toLowerCase() === query.toLowerCase() ? 1000 : 0;
+    const bExact = b.text.toLowerCase() === query.toLowerCase() ? 1000 : 0;
+    
+    // Starts with match gets second priority
+    const aStartsWith = a.text.toLowerCase().startsWith(query.toLowerCase()) ? 500 : 0;
+    const bStartsWith = b.text.toLowerCase().startsWith(query.toLowerCase()) ? 500 : 0;
+    
+    // Type priority: template > category > tag > history
+    const typePriority = { template: 100, category: 75, tag: 50, search_history: 25 };
+    const aTypePriority = typePriority[a.type] || 0;
+    const bTypePriority = typePriority[b.type] || 0;
+    
+    // Popularity score
+    const aPopularity = a.popularity_score || 0;
+    const bPopularity = b.popularity_score || 0;
+    
+    const aScore = aExact + aStartsWith + aTypePriority + Math.min(aPopularity, 100);
+    const bScore = bExact + bStartsWith + bTypePriority + Math.min(bPopularity, 100);
+    
+    return bScore - aScore;
+  });
+}
+
+function highlightMatch(text: string, query: string): string {
+  if (!query || query.length === 0) {
+    return text;
+  }
+
+  // Simple highlighting - could be enhanced with more sophisticated algorithms
+  const regex = new RegExp(`(${escapeRegex(query)})`, 'gi');
+  return text.replace(regex, '<mark>$1</mark>');
+}
+
+function escapeRegex(string: string): string {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// =====================================================================================
+// DATABASE FUNCTION CREATION (if not already exists)
+// =====================================================================================
+
+// Note: This would ideally be in a migration, but including here for reference
+const createTagSuggestionsFunction = `
+CREATE OR REPLACE FUNCTION get_tag_suggestions(
+  search_term TEXT,
+  max_results INTEGER DEFAULT 10
+)
+RETURNS TABLE(
+  tag TEXT,
+  template_count BIGINT,
+  total_installs BIGINT
+) AS $$
+BEGIN
+  RETURN QUERY
+  SELECT 
+    unnest(tags) as tag,
+    COUNT(*) as template_count,
+    SUM(install_count) as total_installs
+  FROM marketplace_templates
+  WHERE status = 'active'
+  AND tags IS NOT NULL
+  AND EXISTS (
+    SELECT 1 FROM unnest(tags) t WHERE t ILIKE '%' || search_term || '%'
+  )
+  GROUP BY unnest(tags)
+  HAVING unnest(tags) ILIKE '%' || search_term || '%'
+  ORDER BY total_installs DESC, template_count DESC
+  LIMIT max_results;
+END;
+$$ LANGUAGE plpgsql;
+`;

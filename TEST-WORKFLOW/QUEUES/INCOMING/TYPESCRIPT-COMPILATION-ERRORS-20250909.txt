@@ -1,0 +1,20 @@
+wedsync/src/components/booking/VenueSelector.tsx(45,12): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
+wedsync/src/services/api/GuestService.ts(123,23): error TS2794: Expected 1 arguments, but got 0. An argument for 'guestId' was not provided.
+wedsync/src/hooks/usePaymentProcessor.ts(67,8): error TS2322: Type 'Promise<PaymentResult>' is not assignable to type 'PaymentResult'.
+wedsync/src/utils/validation/FormValidator.ts(234,15): error TS2339: Property 'isValid' does not exist on type 'ValidationResult'.
+wedsync/src/components/planning/TimelineBuilder.tsx(156,9): error TS2345: Argument of type 'Date | null' is not assignable to parameter of type 'Date'.
+wedsync/src/services/email/EmailQueueService.ts(89,18): error TS2794: Expected 2 arguments, but got 1. An argument for 'priority' was not provided.
+wedsync/src/components/vendor/VendorRating.tsx(78,12): error TS2322: Type 'number | undefined' is not assignable to type 'number'.
+wedsync/src/lib/auth/PermissionChecker.ts(145,5): error TS2345: Argument of type 'UserRole[]' is not assignable to parameter of type 'UserRole'.
+wedsync/src/hooks/useWeddingData.ts(234,17): error TS2339: Property 'weddingDate' does not exist on type 'WeddingInfo'.
+wedsync/src/components/guests/GuestListUpload.tsx(123,8): error TS2322: Type 'File[]' is not assignable to type 'File'.
+wedsync/src/services/notifications/SMSService.ts(67,12): error TS2794: Expected 'await' expression.
+wedsync/src/utils/image/ImageResizer.ts(89,15): error TS2345: Argument of type 'Buffer | undefined' is not assignable to parameter of type 'Buffer'.
+wedsync/src/components/menu/DietaryRestrictions.tsx(156,9): error TS2322: Type 'string[]' is not assignable to type 'string'.
+wedsync/src/hooks/useVendorSearch.ts(78,23): error TS2339: Property 'category' does not exist on type 'VendorSearchResult'.
+wedsync/src/services/calendar/CalendarSync.ts(145,18): error TS2794: Expected 1 arguments, but got 0.
+wedsync/src/components/dashboard/MetricsWidget.tsx(234,12): error TS2322: Type 'ChartData | null' is not assignable to type 'ChartData'.
+wedsync/src/lib/database/QueryBuilder.ts(123,8): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'QueryParams'.
+wedsync/src/hooks/useRealtimeUpdates.ts(67,15): error TS2339: Property 'connectionStatus' does not exist on type 'RealtimeState'.
+wedsync/src/components/forms/ContactForm.tsx(89,9): error TS2322: Type 'FormData | undefined' is not assignable to type 'FormData'.
+wedsync/src/services/storage/FileUploadService.ts(156,12): error TS2794: Expected 'await' expression in async function.

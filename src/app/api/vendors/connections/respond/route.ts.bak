@@ -1,0 +1,149 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { createServerClient } from '@supabase/ssr'
+import { cookies } from 'next/headers'
+
+export async function POST(request: NextRequest) {
+  try {
+    // CRITICAL SECURITY FIX - Authentication required before processing vendor responses
+    const cookieStore = await cookies()
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL || (() => { throw new Error("Missing environment variable: NEXT_PUBLIC_SUPABASE_URL") })(),
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || (() => { throw new Error("Missing environment variable: NEXT_PUBLIC_SUPABASE_ANON_KEY") })(),
+      {
+        cookies: {
+          get(name: string) {
+            return cookieStore.get(name)?.value
+          },
+        },
+      }
+    )
+
+    // Check authentication - CRITICAL SECURITY REQUIREMENT
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized - Authentication required' }, { status: 401 })
+    }
+
+    const { request_id, response } = await request.json()
+
+    if (!request_id || !response) {
+      return NextResponse.json({ error: 'Request ID and response are required' }, { status: 400 })
+    }
+
+    if (!['accepted', 'declined'].includes(response)) {
+      return NextResponse.json({ error: 'Response must be either "accepted" or "declined"' }, { status: 400 })
+    }
+
+    // Get the connection request details
+    const { data: connectionRequest, error: requestError } = await supabase
+      .from('vendor_connection_requests')
+      .select(`
+        id,
+        from_vendor_id,
+        to_vendor_id,
+        from_business_name,
+        to_business_name,
+        status
+      `)
+      .eq('id', request_id)
+      .eq('status', 'pending')
+      .single()
+
+    if (requestError || !connectionRequest) {
+      return NextResponse.json({ error: 'Connection request not found or already processed' }, { status: 404 })
+    }
+
+    // Update the request status
+    const { error: updateError } = await supabase
+      .from('vendor_connection_requests')
+      .update({
+        status: response,
+        responded_at: new Date().toISOString()
+      })
+      .eq('id', request_id)
+
+    if (updateError) {
+      console.error('Error updating connection request:', updateError)
+      return NextResponse.json({ error: 'Failed to update connection request' }, { status: 500 })
+    }
+
+    // If accepted, create the bidirectional connection
+    if (response === 'accepted') {
+      // Create connections in both directions
+      const connectionsToInsert = [
+        {
+          vendor_id: connectionRequest.from_vendor_id,
+          connected_vendor_id: connectionRequest.to_vendor_id,
+          status: 'accepted',
+          connection_type: 'mutual',
+          created_at: new Date().toISOString(),
+          connected_at: new Date().toISOString()
+        },
+        {
+          vendor_id: connectionRequest.to_vendor_id,
+          connected_vendor_id: connectionRequest.from_vendor_id,
+          status: 'accepted',
+          connection_type: 'mutual',
+          created_at: new Date().toISOString(),
+          connected_at: new Date().toISOString()
+        }
+      ]
+
+      const { error: connectionError } = await supabase
+        .from('vendor_connections')
+        .insert(connectionsToInsert)
+
+      if (connectionError) {
+        console.error('Error creating vendor connections:', connectionError)
+        // Rollback the request status update
+        await supabase
+          .from('vendor_connection_requests')
+          .update({ status: 'pending' })
+          .eq('id', request_id)
+        
+        return NextResponse.json({ error: 'Failed to create connection' }, { status: 500 })
+      }
+
+      // Update vendor network statistics
+      try {
+        // Increment connection count for both vendors
+        const { error: statsError1 } = await supabase.rpc('increment_vendor_connections', {
+          vendor_id: connectionRequest.from_vendor_id
+        })
+        
+        const { error: statsError2 } = await supabase.rpc('increment_vendor_connections', {
+          vendor_id: connectionRequest.to_vendor_id
+        })
+
+        if (statsError1 || statsError2) {
+          console.warn('Failed to update vendor network statistics:', statsError1 || statsError2)
+          // Don't fail the request for this, just log it
+        }
+      } catch (error) {
+        console.warn('Failed to update network statistics:', error)
+      }
+
+      // TODO: Send notification to the requester about acceptance
+      // This could be implemented with a notification service or email
+
+      return NextResponse.json({ 
+        success: true,
+        message: `Connection ${response} successfully`,
+        connection_created: true,
+        from_vendor: connectionRequest.from_business_name,
+        to_vendor: connectionRequest.to_business_name
+      })
+    }
+
+    // For declined requests
+    return NextResponse.json({ 
+      success: true,
+      message: `Connection request ${response} successfully`,
+      connection_created: false
+    })
+
+  } catch (error) {
+    console.error('Error responding to connection request:', error)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+  }
+}

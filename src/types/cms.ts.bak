@@ -1,0 +1,132 @@
+export interface CMSContent {
+  id: string;
+  title: string;
+  slug: string;
+  content: string;
+  content_type: 'page' | 'blog' | 'template' | 'snippet';
+  status: 'draft' | 'published' | 'archived';
+  meta_title?: string;
+  meta_description?: string;
+  featured_image?: string;
+  tags?: string[];
+  author_id: string;
+  organization_id: string;
+  created_at: string;
+  updated_at: string;
+  published_at?: string;
+  version: number;
+  seo_score?: number;
+  mobile_optimized: boolean;
+}
+
+export interface CMSMedia {
+  id: string;
+  filename: string;
+  original_name: string;
+  mime_type: string;
+  size: number;
+  width?: number;
+  height?: number;
+  url: string;
+  thumbnail_url?: string;
+  compressed_url?: string;
+  alt_text?: string;
+  organization_id: string;
+  uploaded_by: string;
+  compression_ratio?: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CMSCache {
+  id: string;
+  key: string;
+  content_id?: string;
+  data: Record<string, any>;
+  expires_at: string;
+  hit_count: number;
+  organization_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CMSPerformanceMetric {
+  id: string;
+  metric_type: 'upload_time' | 'compression_ratio' | 'cache_hit_rate' | 'load_time' | 'mobile_score';
+  value: number;
+  metadata?: Record<string, any>;
+  content_id?: string;
+  media_id?: string;
+  organization_id: string;
+  created_at: string;
+}
+
+export interface ContentEditorProps {
+  content?: CMSContent;
+  onSave: (content: Partial<CMSContent>) => Promise<void>;
+  onPreview?: (content: Partial<CMSContent>) => void;
+  mobileOptimized?: boolean;
+  disabled?: boolean;
+}
+
+export interface MediaManagerProps {
+  onUpload?: (files: File[]) => Promise<CMSMedia[]>;
+  onSelect?: (media: CMSMedia[]) => void;
+  allowMultiple?: boolean;
+  acceptTypes?: string[];
+  maxFileSize?: number;
+  enableCompression?: boolean;
+  mobileOptimized?: boolean;
+}
+
+export interface PerformanceMonitorProps {
+  contentId?: string;
+  mediaId?: string;
+  onMetricUpdate?: (metric: CMSPerformanceMetric) => void;
+  realTime?: boolean;
+}
+
+export interface CacheManagerOptions {
+  ttl?: number;
+  maxSize?: number;
+  compressionEnabled?: boolean;
+  mobileOptimization?: boolean;
+}
+
+export interface CMSConfig {
+  maxFileSize: number;
+  allowedMimeTypes: string[];
+  compressionQuality: number;
+  cacheTimeout: number;
+  mobileBreakpoint: number;
+  enableRealTimeUpdates: boolean;
+  performanceMonitoring: boolean;
+}
+
+export interface ContentUploadResponse {
+  success: boolean;
+  content?: CMSContent;
+  media?: CMSMedia[];
+  performance_metrics?: CMSPerformanceMetric[];
+  error?: string;
+}
+
+export interface ContentSearchParams {
+  query?: string;
+  content_type?: CMSContent['content_type'];
+  status?: CMSContent['status'];
+  tags?: string[];
+  author_id?: string;
+  limit?: number;
+  offset?: number;
+  mobile_optimized?: boolean;
+}
+
+export interface MobileCMSFeatures {
+  touchOptimized: boolean;
+  offlineEditing: boolean;
+  gestureSupport: boolean;
+  responsiveImages: boolean;
+  adaptiveUI: boolean;
+  performanceMode: 'fast' | 'balanced' | 'quality';
+}

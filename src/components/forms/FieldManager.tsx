@@ -1,0 +1,696 @@
+'use client';
+
+import React, { useState, useCallback, useMemo } from 'react';
+import {
+  FormField,
+  FormFieldType,
+  FormFieldOption,
+  FIELD_TEMPLATES,
+} from '@/types/forms';
+import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
+import { Switch } from '@/components/ui/switch';
+import {
+  PlusIcon,
+  TrashIcon,
+  DuplicateIcon,
+  EyeIcon,
+  EyeSlashIcon,
+  ChevronUpIcon,
+  ChevronDownIcon,
+  Cog6ToothIcon,
+  MagnifyingGlassIcon,
+  FunnelIcon,
+} from '@heroicons/react/24/outline';
+import { nanoid } from 'nanoid';
+
+interface FieldManagerProps {
+  fields: FormField[];
+  onFieldsUpdate: (fields: FormField[]) => void;
+  onFieldSelect?: (field: FormField) => void;
+  selectedFieldId?: string;
+  allowReorder?: boolean;
+  showPreview?: boolean;
+}
+
+interface FieldManagerState {
+  searchTerm: string;
+  filterType: FormFieldType | 'all';
+  showHidden: boolean;
+  sortBy: 'order' | 'name' | 'type' | 'created';
+  viewMode: 'list' | 'grid' | 'compact';
+}
+
+export function FieldManager({
+  fields,
+  onFieldsUpdate,
+  onFieldSelect,
+  selectedFieldId,
+  allowReorder = true,
+  showPreview = false,
+}: FieldManagerProps) {
+  const [state, setState] = useState<FieldManagerState>({
+    searchTerm: '',
+    filterType: 'all',
+    showHidden: false,
+    sortBy: 'order',
+    viewMode: 'list',
+  });
+
+  const [expandedFields, setExpandedFields] = useState<Set<string>>(new Set());
+
+  // Filter and sort fields based on current state
+  const processedFields = useMemo(() => {
+    let filtered = fields.filter((field) => {
+      // Search filter
+      if (
+        state.searchTerm &&
+        !field.label.toLowerCase().includes(state.searchTerm.toLowerCase())
+      ) {
+        return false;
+      }
+
+      // Type filter
+      if (state.filterType !== 'all' && field.type !== state.filterType) {
+        return false;
+      }
+
+      // Hidden fields filter
+      if (!state.showHidden && field.conditionalLogic?.show === false) {
+        return false;
+      }
+
+      return true;
+    });
+
+    // Sort fields
+    filtered.sort((a, b) => {
+      switch (state.sortBy) {
+        case 'name':
+          return a.label.localeCompare(b.label);
+        case 'type':
+          return a.type.localeCompare(b.type);
+        case 'order':
+        default:
+          return (a.order || 0) - (b.order || 0);
+      }
+    });
+
+    return filtered;
+  }, [fields, state]);
+
+  // Field operations
+  const handleAddField = useCallback(
+    (type: FormFieldType) => {
+      const template = FIELD_TEMPLATES[type];
+      const newField: FormField = {
+        id: nanoid(),
+        ...template,
+        order: Math.max(...fields.map((f) => f.order || 0), -1) + 1,
+      } as FormField;
+
+      const updatedFields = [...fields, newField];
+      onFieldsUpdate(updatedFields);
+
+      if (onFieldSelect) {
+        onFieldSelect(newField);
+      }
+    },
+    [fields, onFieldsUpdate, onFieldSelect],
+  );
+
+  const handleDuplicateField = useCallback(
+    (field: FormField) => {
+      const duplicatedField: FormField = {
+        ...field,
+        id: nanoid(),
+        label: `${field.label} (Copy)`,
+        order: Math.max(...fields.map((f) => f.order || 0), -1) + 1,
+      };
+
+      const updatedFields = [...fields, duplicatedField];
+      onFieldsUpdate(updatedFields);
+    },
+    [fields, onFieldsUpdate],
+  );
+
+  const handleDeleteField = useCallback(
+    (fieldId: string) => {
+      const updatedFields = fields.filter((field) => field.id !== fieldId);
+      onFieldsUpdate(updatedFields);
+    },
+    [fields, onFieldsUpdate],
+  );
+
+  const handleToggleFieldVisibility = useCallback(
+    (fieldId: string) => {
+      const updatedFields = fields.map((field) =>
+        field.id === fieldId
+          ? {
+              ...field,
+              conditionalLogic: {
+                ...field.conditionalLogic,
+                show: !(field.conditionalLogic?.show ?? true),
+              },
+            }
+          : field,
+      );
+      onFieldsUpdate(updatedFields);
+    },
+    [fields, onFieldsUpdate],
+  );
+
+  const handleMoveField = useCallback(
+    (fieldId: string, direction: 'up' | 'down') => {
+      if (!allowReorder) return;
+
+      const fieldIndex = fields.findIndex((f) => f.id === fieldId);
+      if (fieldIndex === -1) return;
+
+      const newIndex = direction === 'up' ? fieldIndex - 1 : fieldIndex + 1;
+      if (newIndex < 0 || newIndex >= fields.length) return;
+
+      const updatedFields = [...fields];
+      [updatedFields[fieldIndex], updatedFields[newIndex]] = [
+        updatedFields[newIndex],
+        updatedFields[fieldIndex],
+      ];
+
+      // Update order values
+      updatedFields.forEach((field, index) => {
+        field.order = index;
+      });
+
+      onFieldsUpdate(updatedFields);
+    },
+    [fields, onFieldsUpdate, allowReorder],
+  );
+
+  const handleUpdateField = useCallback(
+    (fieldId: string, updates: Partial<FormField>) => {
+      const updatedFields = fields.map((field) =>
+        field.id === fieldId ? { ...field, ...updates } : field,
+      );
+      onFieldsUpdate(updatedFields);
+    },
+    [fields, onFieldsUpdate],
+  );
+
+  const toggleFieldExpanded = useCallback((fieldId: string) => {
+    setExpandedFields((prev) => {
+      const newSet = new Set(prev);
+      if (newSet.has(fieldId)) {
+        newSet.delete(fieldId);
+      } else {
+        newSet.add(fieldId);
+      }
+      return newSet;
+    });
+  }, []);
+
+  // Field type options for quick add
+  const fieldTypeGroups = {
+    'Input Fields': [
+      'text',
+      'email',
+      'tel',
+      'textarea',
+      'number',
+      'date',
+      'time',
+    ] as FormFieldType[],
+    Selection: ['select', 'radio', 'checkbox'] as FormFieldType[],
+    'Media & Files': ['file', 'image', 'signature'] as FormFieldType[],
+    Layout: ['heading', 'paragraph', 'divider'] as FormFieldType[],
+  };
+
+  return (
+    <div className="h-full flex flex-col bg-white">
+      {/* Header */}
+      <div className="p-4 border-b bg-gray-50">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-semibold text-gray-900">Field Manager</h3>
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-gray-500">
+              {processedFields.length} of {fields.length} fields
+            </span>
+          </div>
+        </div>
+
+        {/* Search and Filters */}
+        <div className="flex flex-col sm:flex-row gap-2">
+          <div className="relative flex-1">
+            <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+            <input
+              type="text"
+              placeholder="Search fields..."
+              value={state.searchTerm}
+              onChange={(e) =>
+                setState((prev) => ({ ...prev, searchTerm: e.target.value }))
+              }
+              className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500 text-sm"
+            />
+          </div>
+
+          <div className="flex gap-2">
+            <select
+              value={state.filterType}
+              onChange={(e) =>
+                setState((prev) => ({
+                  ...prev,
+                  filterType: e.target.value as FormFieldType | 'all',
+                }))
+              }
+              className="px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500 text-sm"
+            >
+              <option value="all">All Types</option>
+              {Object.values(fieldTypeGroups)
+                .flat()
+                .map((type) => (
+                  <option key={type} value={type}>
+                    {type.charAt(0).toUpperCase() + type.slice(1)}
+                  </option>
+                ))}
+            </select>
+
+            <button
+              onClick={() =>
+                setState((prev) => ({ ...prev, showHidden: !prev.showHidden }))
+              }
+              className={`px-3 py-2 border rounded-md text-sm ${
+                state.showHidden
+                  ? 'bg-purple-50 border-purple-300 text-purple-700'
+                  : 'border-gray-300 text-gray-700'
+              }`}
+            >
+              <FunnelIcon className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Quick Add Field Buttons */}
+      <div className="p-4 border-b">
+        <h4 className="text-sm font-medium text-gray-700 mb-3">
+          Quick Add Fields
+        </h4>
+        <div className="space-y-2">
+          {Object.entries(fieldTypeGroups).map(([groupName, types]) => (
+            <div key={groupName}>
+              <p className="text-xs text-gray-500 mb-1">{groupName}</p>
+              <div className="flex flex-wrap gap-1">
+                {types.map((type) => (
+                  <Button
+                    key={type}
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleAddField(type)}
+                    className="text-xs"
+                  >
+                    <PlusIcon className="h-3 w-3 mr-1" />
+                    {type.charAt(0).toUpperCase() + type.slice(1)}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Fields List */}
+      <div className="flex-1 overflow-y-auto p-4">
+        <div className="space-y-2">
+          {processedFields.length === 0 ? (
+            <div className="text-center py-8 text-gray-500">
+              <p className="text-sm">
+                {state.searchTerm || state.filterType !== 'all'
+                  ? 'No fields match your criteria'
+                  : 'No fields added yet'}
+              </p>
+            </div>
+          ) : (
+            processedFields.map((field) => (
+              <FieldCard
+                key={field.id}
+                field={field}
+                isSelected={selectedFieldId === field.id}
+                isExpanded={expandedFields.has(field.id)}
+                onSelect={() => onFieldSelect?.(field)}
+                onToggleExpanded={() => toggleFieldExpanded(field.id)}
+                onUpdate={(updates) => handleUpdateField(field.id, updates)}
+                onDuplicate={() => handleDuplicateField(field)}
+                onDelete={() => handleDeleteField(field.id)}
+                onToggleVisibility={() => handleToggleFieldVisibility(field.id)}
+                onMoveUp={
+                  allowReorder
+                    ? () => handleMoveField(field.id, 'up')
+                    : undefined
+                }
+                onMoveDown={
+                  allowReorder
+                    ? () => handleMoveField(field.id, 'down')
+                    : undefined
+                }
+                showPreview={showPreview}
+              />
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+interface FieldCardProps {
+  field: FormField;
+  isSelected: boolean;
+  isExpanded: boolean;
+  onSelect: () => void;
+  onToggleExpanded: () => void;
+  onUpdate: (updates: Partial<FormField>) => void;
+  onDuplicate: () => void;
+  onDelete: () => void;
+  onToggleVisibility: () => void;
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
+  showPreview: boolean;
+}
+
+function FieldCard({
+  field,
+  isSelected,
+  isExpanded,
+  onSelect,
+  onToggleExpanded,
+  onUpdate,
+  onDuplicate,
+  onDelete,
+  onToggleVisibility,
+  onMoveUp,
+  onMoveDown,
+  showPreview,
+}: FieldCardProps) {
+  const isVisible = field.conditionalLogic?.show ?? true;
+
+  return (
+    <Card
+      className={`p-3 cursor-pointer transition-all ${
+        isSelected
+          ? 'ring-2 ring-purple-500 border-purple-300'
+          : 'hover:border-gray-300'
+      } ${!isVisible ? 'opacity-60' : ''}`}
+      onClick={onSelect}
+    >
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3 min-w-0 flex-1">
+          <div className="flex-shrink-0">
+            <span
+              className={`inline-flex items-center justify-center w-8 h-8 rounded-md text-xs font-medium ${getFieldTypeColor(
+                field.type,
+              )}`}
+            >
+              {field.type.charAt(0).toUpperCase()}
+            </span>
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <p className="text-sm font-medium text-gray-900 truncate">
+                {field.label}
+              </p>
+              {field.required && (
+                <span className="text-red-500 text-xs">*</span>
+              )}
+              {!isVisible && <EyeSlashIcon className="h-4 w-4 text-gray-400" />}
+            </div>
+            <p className="text-xs text-gray-500">
+              {field.type} • Order: {field.order || 0}
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1 ml-3">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleVisibility();
+            }}
+            className="h-8 w-8 p-0"
+          >
+            {isVisible ? (
+              <EyeIcon className="h-4 w-4" />
+            ) : (
+              <EyeSlashIcon className="h-4 w-4" />
+            )}
+          </Button>
+
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleExpanded();
+            }}
+            className="h-8 w-8 p-0"
+          >
+            <Cog6ToothIcon className="h-4 w-4" />
+          </Button>
+
+          {onMoveUp && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={(e) => {
+                e.stopPropagation();
+                onMoveUp();
+              }}
+              className="h-8 w-8 p-0"
+            >
+              <ChevronUpIcon className="h-4 w-4" />
+            </Button>
+          )}
+
+          {onMoveDown && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={(e) => {
+                e.stopPropagation();
+                onMoveDown();
+              }}
+              className="h-8 w-8 p-0"
+            >
+              <ChevronDownIcon className="h-4 w-4" />
+            </Button>
+          )}
+
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDuplicate();
+            }}
+            className="h-8 w-8 p-0"
+          >
+            <DuplicateIcon className="h-4 w-4" />
+          </Button>
+
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
+            className="h-8 w-8 p-0 text-red-500 hover:bg-red-50"
+          >
+            <TrashIcon className="h-4 w-4" />
+          </Button>
+        </div>
+      </div>
+
+      {isExpanded && (
+        <div className="mt-3 pt-3 border-t border-gray-200">
+          <div className="grid grid-cols-2 gap-3 text-xs">
+            <div>
+              <label className="block text-gray-600 mb-1">Label</label>
+              <input
+                type="text"
+                value={field.label}
+                onChange={(e) => onUpdate({ label: e.target.value })}
+                onClick={(e) => e.stopPropagation()}
+                className="w-full px-2 py-1 border border-gray-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-purple-500"
+              />
+            </div>
+
+            {field.placeholder !== undefined && (
+              <div>
+                <label className="block text-gray-600 mb-1">Placeholder</label>
+                <input
+                  type="text"
+                  value={field.placeholder || ''}
+                  onChange={(e) => onUpdate({ placeholder: e.target.value })}
+                  onClick={(e) => e.stopPropagation()}
+                  className="w-full px-2 py-1 border border-gray-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-purple-500"
+                />
+              </div>
+            )}
+
+            <div className="col-span-2">
+              <label className="flex items-center gap-2">
+                <Switch
+                  checked={field.validation?.required || false}
+                  onCheckedChange={(checked) =>
+                    onUpdate({
+                      validation: { ...field.validation, required: checked },
+                    })
+                  }
+                />
+                <span className="text-xs text-gray-600">Required field</span>
+              </label>
+            </div>
+          </div>
+
+          {showPreview && (
+            <div className="mt-3 p-2 bg-gray-50 rounded border">
+              <p className="text-xs text-gray-600 mb-1">Preview:</p>
+              <FieldPreview field={field} />
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function FieldPreview({ field }: { field: FormField }) {
+  const renderPreview = () => {
+    switch (field.type) {
+      case 'text':
+      case 'email':
+      case 'tel':
+      case 'number':
+        return (
+          <input
+            type={field.type}
+            placeholder={field.placeholder}
+            disabled
+            className="w-full px-2 py-1 border border-gray-300 rounded text-xs bg-white"
+          />
+        );
+      case 'textarea':
+        return (
+          <textarea
+            placeholder={field.placeholder}
+            disabled
+            rows={2}
+            className="w-full px-2 py-1 border border-gray-300 rounded text-xs bg-white resize-none"
+          />
+        );
+      case 'select':
+        return (
+          <select
+            disabled
+            className="w-full px-2 py-1 border border-gray-300 rounded text-xs bg-white"
+          >
+            <option>{field.placeholder || 'Select an option...'}</option>
+            {field.options?.map((option) => (
+              <option key={option.id} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        );
+      case 'radio':
+        return (
+          <div className="space-y-1">
+            {field.options?.slice(0, 2).map((option) => (
+              <label
+                key={option.id}
+                className="flex items-center gap-1 text-xs"
+              >
+                <input
+                  type="radio"
+                  name={field.id}
+                  disabled
+                  className="h-3 w-3"
+                />
+                {option.label}
+              </label>
+            ))}
+          </div>
+        );
+      case 'checkbox':
+        return (
+          <div className="space-y-1">
+            {field.options?.slice(0, 2).map((option) => (
+              <label
+                key={option.id}
+                className="flex items-center gap-1 text-xs"
+              >
+                <input type="checkbox" disabled className="h-3 w-3" />
+                {option.label}
+              </label>
+            ))}
+          </div>
+        );
+      case 'heading':
+        return <h4 className="font-medium text-sm">{field.label}</h4>;
+      case 'paragraph':
+        return <p className="text-xs text-gray-600">{field.label}</p>;
+      case 'divider':
+        return <hr className="border-gray-300" />;
+      default:
+        return (
+          <div className="px-2 py-1 border border-gray-300 rounded text-xs bg-gray-50">
+            {field.type} field
+          </div>
+        );
+    }
+  };
+
+  return (
+    <div>
+      {field.type !== 'heading' &&
+        field.type !== 'paragraph' &&
+        field.type !== 'divider' && (
+          <label className="block text-xs font-medium text-gray-700 mb-1">
+            {field.label}
+            {field.validation?.required && (
+              <span className="text-red-500 ml-1">*</span>
+            )}
+          </label>
+        )}
+      {renderPreview()}
+      {field.helperText && (
+        <p className="text-xs text-gray-500 mt-1">{field.helperText}</p>
+      )}
+    </div>
+  );
+}
+
+function getFieldTypeColor(type: FormFieldType): string {
+  const colorMap: Record<string, string> = {
+    text: 'bg-blue-100 text-blue-800',
+    email: 'bg-green-100 text-green-800',
+    tel: 'bg-yellow-100 text-yellow-800',
+    textarea: 'bg-blue-100 text-blue-800',
+    select: 'bg-purple-100 text-purple-800',
+    radio: 'bg-purple-100 text-purple-800',
+    checkbox: 'bg-purple-100 text-purple-800',
+    date: 'bg-indigo-100 text-indigo-800',
+    time: 'bg-indigo-100 text-indigo-800',
+    file: 'bg-orange-100 text-orange-800',
+    number: 'bg-cyan-100 text-cyan-800',
+    heading: 'bg-gray-100 text-gray-800',
+    paragraph: 'bg-gray-100 text-gray-800',
+    divider: 'bg-gray-100 text-gray-800',
+    image: 'bg-pink-100 text-pink-800',
+    signature: 'bg-red-100 text-red-800',
+  };
+
+  return colorMap[type] || 'bg-gray-100 text-gray-800';
+}

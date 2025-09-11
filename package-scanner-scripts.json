@@ -1,0 +1,44 @@
+{
+  "scripts": {
+    "type:check": "tsc --noEmit --strict --target ES2017",
+    "type:check:incremental": "tsc --noEmit --strict --target ES2017 --incremental",
+    "type:scan": "node scripts/typescript-scanner.js",
+    "type:scan:enterprise": "node scripts/enterprise-typescript-scanner.js",
+    "type:scan:full": "node scripts/enterprise-typescript-scanner.js --full",
+    "type:scan:fast": "node scripts/enterprise-typescript-scanner.js --incremental",
+    
+    "lint:ts": "eslint . --ext .ts,.tsx --format stylish",
+    "lint:ts:json": "eslint . --ext .ts,.tsx --format json > eslint-report.json",
+    "lint:fix": "eslint . --ext .ts,.tsx --fix",
+    
+    "code:analyze": "npm run type:check && npm run lint:ts",
+    "code:health": "npm run type:scan:enterprise",
+    "code:quality": "npm run code:analyze && npm run code:health",
+    
+    "deadcode:find": "npx ts-prune | head -50",
+    "bundle:analyze": "npx next build --debug && npx next-bundle-analyzer",
+    
+    "security:scan": "npx audit-ci --config .audit-ci.json",
+    "deps:check": "npx npm-check-updates -u --target minor",
+    
+    "scan:sonar": "sonar-scanner -Dsonar.projectKey=wedsync -Dsonar.sources=src",
+    "scan:codeclimate": "codeclimate analyze --format json > codeclimate.json",
+    
+    "ci:quality-gate": "npm run type:check && npm run lint:ts && npm run security:scan"
+  },
+  
+  "devDependencies-recommended": {
+    "@typescript-eslint/parser": "^6.0.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "eslint": "^8.0.0",
+    "eslint-plugin-import": "^2.28.0",
+    "eslint-plugin-react": "^7.33.0",
+    "eslint-plugin-react-hooks": "^4.6.0",
+    "eslint-plugin-sonarjs": "^0.20.0",
+    "ts-prune": "^0.10.0",
+    "typescript": "^5.0.0",
+    "sonarqube-scanner": "^3.0.0",
+    "audit-ci": "^6.0.0",
+    "npm-check-updates": "^16.0.0"
+  }
+}

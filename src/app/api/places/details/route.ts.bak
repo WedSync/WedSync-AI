@@ -1,0 +1,54 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { Client } from '@googlemaps/google-maps-services-js';
+
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const placeId = searchParams.get('place_id');
+
+    if (!placeId) {
+      return NextResponse.json(
+        { error: 'Place ID is required' },
+        { status: 400 }
+      );
+    }
+
+    if (!process.env.GOOGLE_MAPS_API_KEY) {
+      return NextResponse.json(
+        { error: 'Google Maps API not configured' },
+        { status: 500 }
+      );
+    }
+
+    const client = new Client({});
+
+    // Get place details
+    const response = await client.placeDetails({
+      params: {
+        place_id: placeId,
+        key: process.env.GOOGLE_MAPS_API_KEY,
+        fields: [
+          'place_id',
+          'name',
+          'formatted_address',
+          'geometry/location',
+          'types',
+          'address_components'
+        ]
+      }
+    });
+
+    return NextResponse.json({
+      success: true,
+      result: response.data.result
+    });
+
+  } catch (error: any) {
+    console.error('Place details error:', error);
+    
+    return NextResponse.json(
+      { error: 'Failed to get place details' },
+      { status: 500 }
+    );
+  }
+}

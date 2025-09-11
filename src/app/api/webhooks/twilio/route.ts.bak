@@ -1,0 +1,105 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { journeyServiceBridge } from '@/lib/services/journey-service-bridge';
+import { smsServiceConnector } from '@/lib/services/sms-connector';
+import { createHash, createHmac } from 'crypto';
+
+/**
+ * Twilio Webhook Handler
+ * Processes SMS delivery status updates and incoming messages
+ */
+export async function POST(request: NextRequest) {
+  try {
+    const formData = await request.formData();
+    const body: Record<string, string> = {};
+    
+    // Convert FormData to object (Twilio sends as form-encoded)
+    for (const [key, value] of formData.entries()) {
+      body[key] = value.toString();
+    }
+
+    console.log('Twilio webhook received:', body);
+
+    // Verify webhook signature (if configured)
+    if (process.env.TWILIO_AUTH_TOKEN) {
+      const signature = request.headers.get('x-twilio-signature');
+      if (signature && !verifyTwilioSignature(request.url, body, signature, process.env.TWILIO_AUTH_TOKEN)) {
+        console.error('Invalid Twilio webhook signature');
+        return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
+      }
+    }
+
+    // Handle different types of Twilio webhooks
+    if (body.MessageSid && body.MessageStatus) {
+      // SMS status callback
+      await journeyServiceBridge.handleServiceWebhook('twilio', body);
+    } else if (body.MessageSid && body.Body) {
+      // Incoming SMS message
+      const response = await smsServiceConnector.handleIncomingSMS(body as any);
+      
+      if (response.response_message) {
+        // Return TwiML response
+        return new NextResponse(
+          `<?xml version="1.0" encoding="UTF-8"?>
+           <Response>
+             <Message>${response.response_message}</Message>
+           </Response>`,
+          {
+            status: 200,
+            headers: { 'Content-Type': 'text/xml' }
+          }
+        );
+      }
+    }
+
+    return NextResponse.json({ success: true });
+
+  } catch (error) {
+    console.error('Twilio webhook error:', error);
+    return NextResponse.json(
+      { error: 'Webhook processing failed' },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * Verify Twilio webhook signature
+ */
+function verifyTwilioSignature(
+  url: string,
+  params: Record<string, string>,
+  signature: string,
+  authToken: string
+): boolean {
+  try {
+    // Create the signature string
+    let signatureString = url;
+    const sortedKeys = Object.keys(params).sort();
+    
+    for (const key of sortedKeys) {
+      signatureString += key + params[key];
+    }
+
+    // Generate expected signature
+    const expectedSignature = createHmac('sha1', authToken)
+      .update(signatureString)
+      .digest('base64');
+
+    return expectedSignature === signature;
+  } catch (error) {
+    console.error('Signature verification error:', error);
+    return false;
+  }
+}
+
+// Handle preflight requests
+export async function OPTIONS() {
+  return new NextResponse(null, {
+    status: 200,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, x-twilio-signature',
+    },
+  });
+}

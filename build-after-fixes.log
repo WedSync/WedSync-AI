@@ -1,0 +1,55 @@
+
+> wedsync@0.1.0 build
+> next build
+
+   ▲ Next.js 15.4.6
+   - Environments: .env.local
+   - Experiments (use with caution):
+     ✓ optimizeCss
+     ✓ reactCompiler
+
+   Creating an optimized production build ...
+Failed to compile.
+
+./src/components/ui/badge.tsx
+Module not found: Can't resolve '../catalyst/badge'
+
+https://nextjs.org/docs/messages/module-not-found
+
+Import trace for requested module:
+./src/app/pdf/import/page.tsx
+
+./src/components/ui/card.tsx
+Module not found: Can't resolve '../catalyst/card'
+
+https://nextjs.org/docs/messages/module-not-found
+
+Import trace for requested module:
+./src/app/login/page.tsx
+
+./src/components/ui/input.tsx
+Module not found: Can't resolve '../catalyst/input'
+
+https://nextjs.org/docs/messages/module-not-found
+
+Import trace for requested module:
+./src/app/login/page.tsx
+
+./src/components/ui/badge.tsx
+Module not found: Can't resolve '../catalyst/badge'
+
+https://nextjs.org/docs/messages/module-not-found
+
+Import trace for requested module:
+./src/app/forms/[slug]/receipt/page.tsx
+
+./src/components/ui/card.tsx
+Module not found: Can't resolve '../catalyst/card'
+
+https://nextjs.org/docs/messages/module-not-found
+
+Import trace for requested module:
+./src/app/forms/[slug]/page.tsx
+
+
+> Build failed because of webpack errors

@@ -1,0 +1,72 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { supabaseAdmin } from '@/lib/database/supabase-admin';
+
+interface AnalyticsEvent {
+  eventName: string;
+  properties: Record<string, any>;
+  sessionId: string;
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const body: AnalyticsEvent = await req.json();
+    const { eventName, properties, sessionId } = body;
+
+    // Validate required fields
+    if (!eventName || !sessionId) {
+      return NextResponse.json(
+        { error: 'Missing required fields: eventName and sessionId' },
+        { status: 400 },
+      );
+    }
+
+    // Extract user context from headers or session
+    const userAgent = req.headers.get('user-agent') || '';
+    const ip = req.ip || req.headers.get('x-forwarded-for') || 'unknown';
+
+    // Store analytics event in database
+    const { error } = await supabaseAdmin.from('analytics_events').insert({
+      event_name: eventName,
+      properties: properties || {},
+      session_id: sessionId,
+      user_agent: userAgent,
+      ip_address: ip,
+      timestamp: new Date().toISOString(),
+      created_at: new Date().toISOString(),
+    });
+
+    if (error) {
+      console.error('Failed to store analytics event:', error);
+      return NextResponse.json(
+        { error: 'Failed to store analytics event' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json(
+      { success: true, message: 'Analytics event tracked successfully' },
+      { status: 200 },
+    );
+  } catch (error) {
+    console.error('Analytics tracking error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+// Handle OPTIONS for CORS
+export async function OPTIONS() {
+  return NextResponse.json(
+    {},
+    {
+      status: 200,
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      },
+    },
+  );
+}

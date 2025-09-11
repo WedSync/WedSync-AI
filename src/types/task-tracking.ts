@@ -1,0 +1,212 @@
+/**
+ * WS-159: Enhanced Task Tracking Types
+ * Extends existing workflow task types with tracking capabilities
+ */
+
+// Enhanced task status with tracking-specific states
+export type TaskTrackingStatus =
+  | 'pending'
+  | 'accepted'
+  | 'in_progress'
+  | 'blocked'
+  | 'review'
+  | 'completed'
+  | 'cancelled';
+
+// Task priority levels for tracking
+export type TaskPriority = 'low' | 'medium' | 'high' | 'critical';
+
+// Enhanced workflow task with tracking extensions
+export interface EnhancedWorkflowTask {
+  id: string;
+  title: string;
+  description?: string;
+  wedding_id: string;
+  category: TaskCategory;
+  priority: TaskPriority;
+  status: TaskTrackingStatus;
+  assigned_to?: string;
+  assigned_by: string;
+  created_by: string;
+  estimated_duration: number; // hours
+  buffer_time: number; // hours
+  deadline: string; // ISO datetime
+  start_date?: string; // ISO datetime
+  completion_date?: string; // ISO datetime
+  progress_percentage: number; // 0-100
+  is_critical_path: boolean;
+  notes?: string;
+  attachments: string[];
+  created_at: string;
+  updated_at: string;
+
+  // WS-159 Tracking enhancements
+  tracking_enabled: boolean;
+  last_progress_update?: string; // ISO datetime
+  photo_evidence: TaskPhotoEvidence[];
+  status_history: TaskStatusHistoryEntry[];
+  completion_verification: TaskCompletionVerification;
+}
+
+// Photo evidence for task completion
+export interface TaskPhotoEvidence {
+  id: string;
+  task_id: string;
+  file_name: string;
+  file_url: string;
+  file_size: number;
+  content_type: string;
+  uploaded_by: string;
+  upload_date: string; // ISO datetime
+  description?: string;
+  is_completion_proof: boolean;
+  verification_status: 'pending' | 'approved' | 'rejected';
+  verified_by?: string;
+  verified_at?: string;
+}
+
+// Task status history tracking
+export interface TaskStatusHistoryEntry {
+  id: string;
+  task_id: string;
+  previous_status: TaskTrackingStatus;
+  new_status: TaskTrackingStatus;
+  updated_by: string;
+  updated_at: string;
+  comment?: string;
+  progress_percentage?: number;
+  photo_evidence_ids?: string[];
+  automated_change: boolean;
+}
+
+// Task completion verification
+export interface TaskCompletionVerification {
+  verified: boolean;
+  verified_by?: string;
+  verified_at?: string;
+  verification_notes?: string;
+  requires_photo_evidence: boolean;
+  photo_evidence_provided: boolean;
+  verification_status: 'not_required' | 'pending' | 'approved' | 'rejected';
+}
+
+// API request/response types
+export interface TaskStatusUpdateRequest {
+  assignment_id: string;
+  new_status: TaskTrackingStatus;
+  progress_percentage?: number;
+  notes?: string;
+  completion_photos?: string[]; // Photo URLs
+  verification_required?: boolean;
+}
+
+export interface TaskProgressUpdateRequest {
+  assignment_id: string;
+  progress_percentage: number;
+  status_notes?: string;
+  milestone_reached?: string;
+  estimated_completion?: string; // ISO datetime
+  blocking_issues?: string;
+}
+
+export interface TaskStatusUpdateResponse {
+  success: boolean;
+  task: EnhancedWorkflowTask;
+  status_history_id: string;
+  notifications_sent: number;
+  real_time_events_triggered: string[];
+}
+
+export interface TaskProgressUpdateResponse {
+  success: boolean;
+  task: EnhancedWorkflowTask;
+  progress_history: TaskProgressHistory[];
+  completion_estimate: string; // ISO datetime
+  bottleneck_analysis: TaskBottleneckAnalysis;
+}
+
+// Progress tracking
+export interface TaskProgressHistory {
+  id: string;
+  task_id: string;
+  progress_percentage: number;
+  recorded_by: string;
+  recorded_at: string;
+  notes?: string;
+  milestone?: string;
+  estimated_completion?: string;
+}
+
+// Analytics and reporting
+export interface TaskBottleneckAnalysis {
+  is_bottleneck: boolean;
+  days_in_current_status: number;
+  blocking_tasks_count: number;
+  impact_score: number;
+  recommendations: string[];
+}
+
+export interface TaskCompletionAnalytics {
+  total_tasks: number;
+  completed_tasks: number;
+  in_progress_tasks: number;
+  overdue_tasks: number;
+  completion_rate: number;
+  average_completion_time: number; // hours
+  bottlenecks: TaskBottleneckAnalysis[];
+}
+
+// Real-time event types
+export interface TaskTrackingRealtimeEvent {
+  type:
+    | 'task_status_changed'
+    | 'task_progress_updated'
+    | 'task_completed'
+    | 'task_photo_uploaded';
+  task_id: string;
+  wedding_id: string;
+  data: {
+    previous_status?: TaskTrackingStatus;
+    new_status?: TaskTrackingStatus;
+    progress_percentage?: number;
+    updated_by: string;
+    timestamp: string;
+    photo_evidence?: TaskPhotoEvidence;
+  };
+  recipients: string[]; // User IDs to notify
+}
+
+// File upload validation
+export interface PhotoUploadValidation {
+  max_file_size: number; // bytes
+  allowed_types: string[];
+  max_files_per_task: number;
+  require_description: boolean;
+  auto_verify_completion: boolean;
+}
+
+// Task category enum (from existing schema)
+export type TaskCategory =
+  | 'venue_management'
+  | 'vendor_coordination'
+  | 'client_management'
+  | 'logistics'
+  | 'design'
+  | 'photography'
+  | 'catering'
+  | 'florals'
+  | 'music'
+  | 'transportation';
+
+// Permission checks
+export interface TaskTrackingPermissions {
+  can_update_status: boolean;
+  can_update_progress: boolean;
+  can_upload_photos: boolean;
+  can_verify_completion: boolean;
+  can_view_history: boolean;
+  can_delete_task: boolean;
+  is_assigned_helper: boolean;
+  is_task_creator: boolean;
+  is_wedding_coordinator: boolean;
+}

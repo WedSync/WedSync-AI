@@ -1,0 +1,654 @@
+/**
+ * WS-177 Security Reports - Comprehensive Security Reporting Interface
+ * Team D Round 1 Implementation - Ultra Hard Thinking Standards
+ *
+ * Security reporting and analytics for luxury wedding platform
+ * Celebrity client compliance and audit reporting
+ */
+
+'use client';
+
+import React, { useState, useEffect, useCallback } from 'react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { DatePickerWithRange } from '@/components/ui/date-picker-with-range';
+import {
+  FileText,
+  Download,
+  Calendar,
+  TrendingUp,
+  Shield,
+  Star,
+  AlertTriangle,
+  CheckCircle,
+  Clock,
+  Users,
+  BarChart3,
+  PieChart,
+} from 'lucide-react';
+import { SecurityMetrics } from '@/lib/security/SecurityMetrics';
+import { AlertingService } from '@/lib/security/AlertingService';
+import {
+  SecuritySeverity,
+  ThreatLevel,
+} from '@/lib/security/SecurityLayerInterface';
+
+interface SecurityReportsProps {
+  organizationId: string;
+  userRole: string;
+  hasCelebrityAccess?: boolean;
+}
+
+interface SecurityReport {
+  reportId: string;
+  reportType: string;
+  generatedAt: string;
+  summary: {
+    totalThreats: number;
+    resolvedIncidents: number;
+    complianceScore: number;
+    celebrityEvents: number;
+  };
+  recommendations: string[];
+  nextReview: string;
+}
+
+interface SecurityScore {
+  overall: number;
+  threat: number;
+  compliance: number;
+  performance: number;
+  celebrity: number;
+  breakdown: Record<string, number>;
+  recommendations: string[];
+}
+
+interface AlertStatistics {
+  totalAlerts: number;
+  alertsBySeverity: Record<SecuritySeverity, number>;
+  alertsByType: Record<string, number>;
+  celebrityAlerts: number;
+  averageResponseTime: number;
+  acknowledgmentRate: number;
+}
+
+const SecurityReports: React.FC<SecurityReportsProps> = ({
+  organizationId,
+  userRole,
+  hasCelebrityAccess = false,
+}) => {
+  const [activeTab, setActiveTab] = useState<
+    'overview' | 'reports' | 'analytics' | 'compliance'
+  >('overview');
+  const [selectedPeriod, setSelectedPeriod] = useState<
+    'daily' | 'weekly' | 'monthly'
+  >('weekly');
+  const [dateRange, setDateRange] = useState<{ from: Date; to: Date }>({
+    from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+    to: new Date(),
+  });
+
+  const [securityScore, setSecurityScore] = useState<SecurityScore | null>(
+    null,
+  );
+  const [reports, setReports] = useState<SecurityReport[]>([]);
+  const [alertStats, setAlertStats] = useState<AlertStatistics | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isGenerating, setIsGenerating] = useState(false);
+
+  const [metricsService] = useState(() => new SecurityMetrics());
+  const [alertingService] = useState(() => new AlertingService());
+
+  // Load data on component mount and when filters change
+  useEffect(() => {
+    const loadReportData = async () => {
+      try {
+        setIsLoading(true);
+
+        const [score, statistics] = await Promise.all([
+          metricsService.getSecurityScore(organizationId),
+          alertingService.getAlertStatistics(organizationId, {
+            start: dateRange.from.toISOString(),
+            end: dateRange.to.toISOString(),
+          }),
+        ]);
+
+        setSecurityScore(score);
+        setAlertStats(statistics);
+      } catch (error) {
+        console.error('Failed to load report data:', error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    loadReportData();
+  }, [organizationId, dateRange, metricsService, alertingService]);
+
+  const generateReport = useCallback(async () => {
+    try {
+      setIsGenerating(true);
+      const report = await metricsService.generateSecurityReport(
+        organizationId,
+        selectedPeriod,
+      );
+      setReports((prev) => [report, ...prev]);
+    } catch (error) {
+      console.error('Failed to generate report:', error);
+    } finally {
+      setIsGenerating(false);
+    }
+  }, [organizationId, selectedPeriod, metricsService]);
+
+  const downloadReport = useCallback((report: SecurityReport) => {
+    // Implementation would generate and download report file
+    const blob = new Blob([JSON.stringify(report, null, 2)], {
+      type: 'application/json',
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `security-report-${report.reportId}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, []);
+
+  const getScoreColor = (score: number) => {
+    if (score >= 90) return 'text-green-600';
+    if (score >= 70) return 'text-yellow-600';
+    return 'text-red-600';
+  };
+
+  const getScoreStatus = (
+    score: number,
+  ): 'excellent' | 'good' | 'fair' | 'poor' => {
+    if (score >= 95) return 'excellent';
+    if (score >= 85) return 'good';
+    if (score >= 70) return 'fair';
+    return 'poor';
+  };
+
+  const renderOverviewTab = () => (
+    <div className="space-y-6">
+      {/* Security Score */}
+      {securityScore && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center">
+              <Shield className="h-5 w-5 mr-2" />
+              Overall Security Score
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center justify-between mb-6">
+              <div className="text-center">
+                <div
+                  className={`text-4xl font-bold ${getScoreColor(securityScore.overall)}`}
+                >
+                  {securityScore.overall}
+                </div>
+                <div className="text-sm text-gray-500 capitalize">
+                  {getScoreStatus(securityScore.overall)}
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4 flex-1 ml-8">
+                <div className="text-center">
+                  <div
+                    className={`text-xl font-bold ${getScoreColor(securityScore.threat)}`}
+                  >
+                    {securityScore.threat}
+                  </div>
+                  <div className="text-xs text-gray-500">Threat Detection</div>
+                </div>
+                <div className="text-center">
+                  <div
+                    className={`text-xl font-bold ${getScoreColor(securityScore.compliance)}`}
+                  >
+                    {securityScore.compliance}
+                  </div>
+                  <div className="text-xs text-gray-500">Compliance</div>
+                </div>
+                <div className="text-center">
+                  <div
+                    className={`text-xl font-bold ${getScoreColor(securityScore.performance)}`}
+                  >
+                    {securityScore.performance}
+                  </div>
+                  <div className="text-xs text-gray-500">Performance</div>
+                </div>
+                {hasCelebrityAccess && (
+                  <div className="text-center">
+                    <div
+                      className={`text-xl font-bold ${getScoreColor(securityScore.celebrity)}`}
+                    >
+                      {securityScore.celebrity}
+                    </div>
+                    <div className="text-xs text-gray-500 flex items-center justify-center">
+                      <Star className="h-3 w-3 mr-1" />
+                      Celebrity
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {securityScore.recommendations.length > 0 && (
+              <div className="border-t pt-4">
+                <h4 className="font-medium text-gray-900 mb-2">
+                  Recommendations
+                </h4>
+                <ul className="space-y-1">
+                  {securityScore.recommendations
+                    .slice(0, 3)
+                    .map((rec, index) => (
+                      <li
+                        key={index}
+                        className="text-sm text-gray-600 flex items-start"
+                      >
+                        <AlertTriangle className="h-3 w-3 mr-2 mt-0.5 text-yellow-500" />
+                        {rec}
+                      </li>
+                    ))}
+                </ul>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Alert Statistics */}
+      {alertStats && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center">
+                <BarChart3 className="h-5 w-5 mr-2" />
+                Alert Summary
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-3">
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-gray-600">Total Alerts</span>
+                  <span className="font-bold">{alertStats.totalAlerts}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-gray-600 flex items-center">
+                    <Star className="h-3 w-3 mr-1" />
+                    Celebrity Alerts
+                  </span>
+                  <Badge
+                    variant={
+                      alertStats.celebrityAlerts > 0
+                        ? 'destructive'
+                        : 'secondary'
+                    }
+                  >
+                    {alertStats.celebrityAlerts}
+                  </Badge>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-gray-600 flex items-center">
+                    <Clock className="h-3 w-3 mr-1" />
+                    Avg Response Time
+                  </span>
+                  <span className="font-bold">
+                    {alertStats.averageResponseTime}min
+                  </span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-gray-600">
+                    Acknowledgment Rate
+                  </span>
+                  <Badge
+                    variant={
+                      alertStats.acknowledgmentRate > 80
+                        ? 'default'
+                        : 'secondary'
+                    }
+                  >
+                    {alertStats.acknowledgmentRate}%
+                  </Badge>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center">
+                <PieChart className="h-5 w-5 mr-2" />
+                Alerts by Severity
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-2">
+                {Object.entries(alertStats.alertsBySeverity).map(
+                  ([severity, count]) => (
+                    <div
+                      key={severity}
+                      className="flex items-center justify-between"
+                    >
+                      <div className="flex items-center">
+                        <div
+                          className={`w-3 h-3 rounded-full mr-2 ${
+                            severity === 'critical'
+                              ? 'bg-red-500'
+                              : severity === 'high'
+                                ? 'bg-orange-500'
+                                : severity === 'medium'
+                                  ? 'bg-yellow-500'
+                                  : severity === 'low'
+                                    ? 'bg-blue-500'
+                                    : 'bg-gray-500'
+                          }`}
+                        />
+                        <span className="text-sm capitalize">{severity}</span>
+                      </div>
+                      <span className="font-bold">{count}</span>
+                    </div>
+                  ),
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+    </div>
+  );
+
+  const renderReportsTab = () => (
+    <div className="space-y-6">
+      {/* Report Generation */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center">
+            <FileText className="h-5 w-5 mr-2" />
+            Generate Security Report
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center space-x-4">
+            <div className="flex-1">
+              <Select
+                value={selectedPeriod}
+                onValueChange={(value: any) => setSelectedPeriod(value)}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select report period" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="daily">Daily Report</SelectItem>
+                  <SelectItem value="weekly">Weekly Report</SelectItem>
+                  <SelectItem value="monthly">Monthly Report</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <Button
+              onClick={generateReport}
+              disabled={isGenerating}
+              className="flex items-center"
+            >
+              {isGenerating ? (
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2" />
+              ) : (
+                <FileText className="h-4 w-4 mr-2" />
+              )}
+              Generate Report
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Recent Reports */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Recent Security Reports</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {reports.length === 0 ? (
+            <div className="text-center py-8 text-gray-500">
+              <FileText className="h-12 w-12 mx-auto mb-2 text-gray-300" />
+              No reports generated yet
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {reports.map((report) => (
+                <div key={report.reportId} className="border rounded-lg p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <div>
+                      <h4 className="font-medium text-gray-900 capitalize">
+                        {report.reportType} Security Report
+                      </h4>
+                      <p className="text-sm text-gray-500">
+                        Generated:{' '}
+                        {new Date(report.generatedAt).toLocaleString()}
+                      </p>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => downloadReport(report)}
+                      className="flex items-center"
+                    >
+                      <Download className="h-4 w-4 mr-1" />
+                      Download
+                    </Button>
+                  </div>
+
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-3">
+                    <div className="text-center">
+                      <div className="font-bold text-red-600">
+                        {report.summary.totalThreats}
+                      </div>
+                      <div className="text-xs text-gray-500">Total Threats</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="font-bold text-green-600">
+                        {report.summary.resolvedIncidents}
+                      </div>
+                      <div className="text-xs text-gray-500">Resolved</div>
+                    </div>
+                    <div className="text-center">
+                      <div
+                        className={`font-bold ${getScoreColor(report.summary.complianceScore)}`}
+                      >
+                        {report.summary.complianceScore}%
+                      </div>
+                      <div className="text-xs text-gray-500">Compliance</div>
+                    </div>
+                    {hasCelebrityAccess && (
+                      <div className="text-center">
+                        <div className="font-bold text-purple-600 flex items-center justify-center">
+                          <Star className="h-3 w-3 mr-1" />
+                          {report.summary.celebrityEvents}
+                        </div>
+                        <div className="text-xs text-gray-500">
+                          Celebrity Events
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {report.recommendations.length > 0 && (
+                    <div className="border-t pt-3">
+                      <h5 className="text-sm font-medium text-gray-700 mb-2">
+                        Key Recommendations
+                      </h5>
+                      <ul className="text-xs text-gray-600 space-y-1">
+                        {report.recommendations
+                          .slice(0, 2)
+                          .map((rec, index) => (
+                            <li key={index} className="flex items-start">
+                              <CheckCircle className="h-3 w-3 mr-1 mt-0.5 text-blue-500" />
+                              {rec}
+                            </li>
+                          ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+
+  const renderAnalyticsTab = () => (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center">
+            <TrendingUp className="h-5 w-5 mr-2" />
+            Security Analytics
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="text-center py-8 text-gray-500">
+            <BarChart3 className="h-12 w-12 mx-auto mb-2 text-gray-300" />
+            <p>Analytics charts and trending data</p>
+            <p className="text-sm">
+              Implementation would include interactive charts
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+
+  const renderComplianceTab = () => (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center">
+            <Shield className="h-5 w-5 mr-2" />
+            Compliance Dashboard
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {securityScore && (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <div className="text-center p-4 border rounded-lg">
+                <div
+                  className={`text-2xl font-bold ${getScoreColor(securityScore.breakdown.compliance_adherence || 0)}`}
+                >
+                  {securityScore.breakdown.compliance_adherence || 0}%
+                </div>
+                <div className="text-sm text-gray-600 mt-1">
+                  GDPR Compliance
+                </div>
+              </div>
+              <div className="text-center p-4 border rounded-lg">
+                <div
+                  className={`text-2xl font-bold ${getScoreColor(securityScore.breakdown.data_integrity || 0)}`}
+                >
+                  {securityScore.breakdown.data_integrity || 0}%
+                </div>
+                <div className="text-sm text-gray-600 mt-1">SOC 2 Controls</div>
+              </div>
+              <div className="text-center p-4 border rounded-lg">
+                <div
+                  className={`text-2xl font-bold ${getScoreColor(securityScore.breakdown.encryption_coverage || 0)}`}
+                >
+                  {securityScore.breakdown.encryption_coverage || 0}%
+                </div>
+                <div className="text-sm text-gray-600 mt-1">CCPA Privacy</div>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+        <span className="ml-2 text-gray-600">Loading security reports...</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Security Reports</h1>
+          <p className="text-sm text-gray-600">
+            Comprehensive security analytics and compliance reporting
+          </p>
+        </div>
+        {hasCelebrityAccess && (
+          <Badge variant="secondary" className="bg-purple-100 text-purple-800">
+            <Star className="h-3 w-3 mr-1" />
+            Celebrity Access
+          </Badge>
+        )}
+      </div>
+
+      {/* Date Range Selector */}
+      <Card>
+        <CardContent className="pt-6">
+          <div className="flex items-center space-x-4">
+            <Calendar className="h-5 w-5 text-gray-500" />
+            <DatePickerWithRange
+              date={{ from: dateRange.from, to: dateRange.to }}
+              onDateChange={(range) => {
+                if (range?.from && range?.to) {
+                  setDateRange({ from: range.from, to: range.to });
+                }
+              }}
+            />
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Tab Navigation */}
+      <div className="border-b">
+        <nav className="-mb-px flex space-x-8">
+          {[
+            { id: 'overview', label: 'Overview', icon: BarChart3 },
+            { id: 'reports', label: 'Reports', icon: FileText },
+            { id: 'analytics', label: 'Analytics', icon: TrendingUp },
+            { id: 'compliance', label: 'Compliance', icon: Shield },
+          ].map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              onClick={() => setActiveTab(id as any)}
+              className={`flex items-center py-2 px-1 border-b-2 font-medium text-sm ${
+                activeTab === id
+                  ? 'border-blue-500 text-blue-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+              }`}
+            >
+              <Icon className="h-4 w-4 mr-2" />
+              {label}
+            </button>
+          ))}
+        </nav>
+      </div>
+
+      {/* Tab Content */}
+      {activeTab === 'overview' && renderOverviewTab()}
+      {activeTab === 'reports' && renderReportsTab()}
+      {activeTab === 'analytics' && renderAnalyticsTab()}
+      {activeTab === 'compliance' && renderComplianceTab()}
+    </div>
+  );
+};
+
+export default SecurityReports;

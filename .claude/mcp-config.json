@@ -1,0 +1,78 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/skyphotography/CODE/WedSync AI"],
+      "description": "File system operations for WedSync project directory"
+    },
+    "playwright": {
+      "command": "npx", 
+      "args": ["-y", "@executeautomation/playwright-mcp-server"],
+      "description": "Automated testing and E2E test execution"
+    },
+    "sequential-thinking": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+      "description": "Structured problem-solving and step-by-step reasoning"
+    },
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "context7-mcp"],
+      "description": "Up-to-date library documentation and code examples"
+    },
+    "supabase": {
+      "command": "npx",
+      "args": ["-y", "@supabase/mcp-server-supabase", "--project-ref", "azhgptjkqiiqvvvhapml"],
+      "env": {
+        "SUPABASE_URL": "https://azhgptjkqiiqvvvhapml.supabase.co",
+        "SUPABASE_SERVICE_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF6aGdwdGprcWlpcXZ2dmhhcG1sIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTczNDk3MjYyMSwiZXhwIjoyMDUwNTQ4NjIxfQ.3_x2N0z1qJGhLqKCv4tQr6SJgvJOcE8L7G5f4Z9lxjM",
+        "SUPABASE_PROJECT_REF": "azhgptjkqiiqvvvhapml"
+      },
+      "description": "Supabase project management, migrations, Edge Functions, branch operations"
+    },
+    "postgres": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-postgres"],
+      "env": {
+        "POSTGRES_CONNECTION_STRING": "postgresql://postgres:rL3GFzPqcWFi8ATf@db.azhgptjkqiiqvvvhapml.supabase.co:5432/postgres"
+      },
+      "description": "Direct PostgreSQL access for database operations and queries"
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": ""
+      },
+      "description": "GitHub repository management, PR automation, issue tracking"
+    },
+    "vercel": {
+      "command": "npx",
+      "args": ["-y", "@vercel/mcp-server"],
+      "env": {
+        "VERCEL_TOKEN": "",
+        "VERCEL_PROJECT_ID": "",
+        "VERCEL_ORG_ID": ""
+      },
+      "description": "Deployment automation, preview environments, logs"
+    },
+    "slack": {
+      "command": "npx",
+      "args": ["-y", "@korotovsky/slack-mcp-server"],
+      "env": {
+        "SLACK_BOT_TOKEN": "",
+        "SLACK_APP_TOKEN": "",
+        "SLACK_CHANNEL_ID": ""
+      },
+      "description": "Development team notifications and alerts"
+    },
+    "memory": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"],
+      "env": {
+        "MEMORY_FILE_PATH": "/Users/skyphotography/.local/share/mcp-servers/wedsync-memory.json"
+      },
+      "description": "Persistent memory for WedSync project knowledge and wedding industry context"
+    }
+  }
+}

@@ -1,0 +1,550 @@
+'use client';
+
+import React, { useState, useEffect, useCallback } from 'react';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Progress } from '@/components/ui/progress';
+import { Textarea } from '@/components/ui/textarea';
+import { 
+  Sparkles, 
+  AlertTriangle, 
+  CheckCircle, 
+  XCircle,
+  Music,
+  Heart,
+  Shield,
+  Brain,
+  X,
+  RefreshCw
+} from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+
+import type { MusicTrack, WeddingPhase } from '@/types/music';
+
+interface AppropriatenessScore {
+  score: number; // 0-10 scale (10 = most appropriate)
+  category: WeddingPhase;
+  reasoning: string[];
+  flags: {
+    explicit: boolean;
+    controversial: boolean;
+    energy_mismatch: boolean;
+    cultural_sensitivity: boolean;
+  };
+  confidence: number; // 0-1 scale
+  alternatives?: MusicTrack[];
+  analysis_timestamp: string;
+}
+
+interface AppropriatenessCheckerProps {
+  track: MusicTrack;
+  weddingCategory: WeddingPhase;
+  onScoreUpdate?: (score: AppropriatenessScore) => void;
+  onClose?: () => void;
+  autoCheck?: boolean;
+  className?: string;
+}
+
+const CATEGORY_THRESHOLDS = {
+  ceremony: { minScore: 8, maxEnergy: 6 },
+  cocktails: { minScore: 7, maxEnergy: 7 },
+  dinner: { minScore: 6, maxEnergy: 6 },
+  dancing: { minScore: 5, maxEnergy: 10 }
+};
+
+const CATEGORY_DESCRIPTIONS = {
+  ceremony: {
+    name: 'Wedding Ceremony',
+    description: 'Sacred, emotional, family-friendly atmosphere',
+    requirements: ['No explicit content', 'Appropriate lyrics', 'Respectful tone', 'Moderate energy']
+  },
+  cocktails: {
+    name: 'Cocktail Hour',
+    description: 'Sophisticated background ambiance for mingling',
+    requirements: ['Conversation-friendly', 'Classy atmosphere', 'Broad appeal', 'Background appropriate']
+  },
+  dinner: {
+    name: 'Dinner Service',
+    description: 'Pleasant dining atmosphere for all ages',
+    requirements: ['Background music', 'Family-friendly', 'Non-intrusive', 'Dining appropriate']
+  },
+  dancing: {
+    name: 'Dance Floor',
+    description: 'High-energy celebration music',
+    requirements: ['Dance-worthy', 'Crowd engagement', 'High energy', 'Party atmosphere']
+  }
+};
+
+export function AppropriatenessChecker({
+  track,
+  weddingCategory,
+  onScoreUpdate,
+  onClose,
+  autoCheck = true,
+  className = ''
+}: AppropriatenessCheckerProps) {
+  const [score, setScore] = useState<AppropriatenessScore | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [overrideScore, setOverrideScore] = useState<number | null>(null);
+  const [overrideReason, setOverrideReason] = useState('');
+  const [showOverride, setShowOverride] = useState(false);
+
+  // Analyze track appropriateness
+  const analyzeTrack = useCallback(async () => {
+    setIsAnalyzing(true);
+    
+    try {
+      const response = await fetch('/api/music/analyze-appropriateness', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          track_id: track.id,
+          track_title: track.title,
+          track_artist: track.artist,
+          wedding_category: weddingCategory,
+          explicit_content: track.explicit_content,
+          energy_level: track.energy_level,
+          mood: track.mood,
+          genres: [track.primary_genre, ...(track.secondary_genres || [])],
+          lyrics_analysis_requested: true
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Analysis failed: ${response.statusText}`);
+      }
+
+      const analysis = await response.json();
+      
+      // Create appropriateness score from analysis
+      const appropriatenessScore: AppropriatenessScore = {
+        score: analysis.score || calculateHeuristicScore(track, weddingCategory),
+        category: weddingCategory,
+        reasoning: analysis.reasoning || generateHeuristicReasoning(track, weddingCategory),
+        flags: {
+          explicit: track.explicit_content,
+          controversial: analysis.controversial_content || false,
+          energy_mismatch: checkEnergyMismatch(track, weddingCategory),
+          cultural_sensitivity: analysis.cultural_issues || false
+        },
+        confidence: analysis.confidence || 0.8,
+        alternatives: analysis.alternatives || [],
+        analysis_timestamp: new Date().toISOString()
+      };
+
+      setScore(appropriatenessScore);
+      
+      if (onScoreUpdate) {
+        onScoreUpdate(appropriatenessScore);
+      }
+
+    } catch (error) {
+      console.error('Appropriateness analysis error:', error);
+      
+      // Fallback to heuristic analysis
+      const fallbackScore: AppropriatenessScore = {
+        score: calculateHeuristicScore(track, weddingCategory),
+        category: weddingCategory,
+        reasoning: generateHeuristicReasoning(track, weddingCategory),
+        flags: {
+          explicit: track.explicit_content,
+          controversial: false,
+          energy_mismatch: checkEnergyMismatch(track, weddingCategory),
+          cultural_sensitivity: false
+        },
+        confidence: 0.6,
+        alternatives: [],
+        analysis_timestamp: new Date().toISOString()
+      };
+
+      setScore(fallbackScore);
+      
+      if (onScoreUpdate) {
+        onScoreUpdate(fallbackScore);
+      }
+    } finally {
+      setIsAnalyzing(false);
+    }
+  }, [track, weddingCategory, onScoreUpdate]);
+
+  // Auto-analyze on mount
+  useEffect(() => {
+    if (autoCheck) {
+      analyzeTrack();
+    }
+  }, [autoCheck, analyzeTrack]);
+
+  // Apply DJ override
+  const applyOverride = useCallback(() => {
+    if (overrideScore === null || !overrideReason.trim()) return;
+
+    const overriddenScore: AppropriatenessScore = {
+      ...score!,
+      score: overrideScore,
+      reasoning: [
+        ...score!.reasoning,
+        `DJ Override: ${overrideReason.trim()}`
+      ],
+      confidence: 1.0, // Full confidence in DJ decision
+      analysis_timestamp: new Date().toISOString()
+    };
+
+    setScore(overriddenScore);
+    setShowOverride(false);
+    
+    if (onScoreUpdate) {
+      onScoreUpdate(overriddenScore);
+    }
+  }, [overrideScore, overrideReason, score, onScoreUpdate]);
+
+  // Score color and status
+  const getScoreDisplay = (scoreValue: number) => {
+    if (scoreValue >= 8) return { color: 'text-green-600', bg: 'bg-green-100', status: 'Perfect', icon: CheckCircle };
+    if (scoreValue >= 6) return { color: 'text-blue-600', bg: 'bg-blue-100', status: 'Good', icon: CheckCircle };
+    if (scoreValue >= 4) return { color: 'text-yellow-600', bg: 'bg-yellow-100', status: 'Acceptable', icon: AlertTriangle };
+    return { color: 'text-red-600', bg: 'bg-red-100', status: 'Poor Fit', icon: XCircle };
+  };
+
+  const scoreDisplay = score ? getScoreDisplay(score.score) : null;
+
+  return (
+    <AnimatePresence>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4"
+        onClick={onClose}
+      >
+        <motion.div
+          initial={{ scale: 0.9, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          exit={{ scale: 0.9, opacity: 0 }}
+          onClick={(e) => e.stopPropagation()}
+          className={`bg-white rounded-2xl shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto ${className}`}
+        >
+          <div className="p-6">
+            {/* Header */}
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-primary-100 rounded-lg">
+                  <Sparkles className="w-6 h-6 text-primary-600" />
+                </div>
+                <div>
+                  <h2 className="text-xl font-bold text-gray-900">Wedding Appropriateness Analysis</h2>
+                  <p className="text-sm text-gray-600">AI-powered suitability assessment</p>
+                </div>
+              </div>
+              <Button variant="ghost" size="sm" onClick={onClose}>
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
+
+            {/* Track Info */}
+            <Card className="mb-6">
+              <CardHeader className="pb-4">
+                <div className="flex items-start gap-3">
+                  <div className="p-2 bg-gray-100 rounded-lg">
+                    <Music className="w-5 h-5 text-gray-600" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <CardTitle className="text-lg truncate">{track.title}</CardTitle>
+                    <CardDescription className="truncate">by {track.artist}</CardDescription>
+                    {track.album && (
+                      <p className="text-sm text-gray-500 truncate mt-1">Album: {track.album}</p>
+                    )}
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="flex flex-wrap gap-2">
+                  <Badge variant="outline">
+                    {track.primary_genre}
+                  </Badge>
+                  <Badge variant="outline">
+                    Energy: {track.energy_level}/10
+                  </Badge>
+                  <Badge variant="outline">
+                    {Math.floor(track.duration_seconds / 60)}:{(track.duration_seconds % 60).toString().padStart(2, '0')}
+                  </Badge>
+                  {track.explicit_content && (
+                    <Badge variant="destructive">Explicit</Badge>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Category Context */}
+            <Card className="mb-6">
+              <CardHeader className="pb-4">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Heart className="w-4 h-4" />
+                  Wedding Context: {CATEGORY_DESCRIPTIONS[weddingCategory].name}
+                </CardTitle>
+                <CardDescription>
+                  {CATEGORY_DESCRIPTIONS[weddingCategory].description}
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-2">
+                  <p className="text-sm font-medium text-gray-700">Key Requirements:</p>
+                  <div className="flex flex-wrap gap-2">
+                    {CATEGORY_DESCRIPTIONS[weddingCategory].requirements.map((req, index) => (
+                      <Badge key={index} variant="secondary" className="text-xs">
+                        {req}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Analysis Results */}
+            {isAnalyzing ? (
+              <Card>
+                <CardContent className="py-12">
+                  <div className="text-center">
+                    <motion.div
+                      animate={{ rotate: 360 }}
+                      transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+                      className="inline-block"
+                    >
+                      <Brain className="w-8 h-8 text-primary-500 mb-4" />
+                    </motion.div>
+                    <h3 className="font-semibold text-gray-900 mb-2">Analyzing Track...</h3>
+                    <p className="text-sm text-gray-600">Using AI to assess wedding appropriateness</p>
+                  </div>
+                </CardContent>
+              </Card>
+            ) : score && scoreDisplay ? (
+              <div className="space-y-6">
+                {/* Score Display */}
+                <Card>
+                  <CardContent className="py-6">
+                    <div className="text-center">
+                      <div className={`inline-flex items-center gap-3 px-6 py-4 rounded-2xl ${scoreDisplay.bg} mb-4`}>
+                        <scoreDisplay.icon className={`w-8 h-8 ${scoreDisplay.color}`} />
+                        <div>
+                          <div className={`text-3xl font-bold ${scoreDisplay.color}`}>
+                            {score.score}/10
+                          </div>
+                          <div className={`text-sm font-medium ${scoreDisplay.color}`}>
+                            {scoreDisplay.status}
+                          </div>
+                        </div>
+                      </div>
+                      
+                      <Progress value={score.score * 10} className="w-full mb-2" />
+                      
+                      <p className="text-sm text-gray-600">
+                        Confidence: {Math.round(score.confidence * 100)}%
+                      </p>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* Detailed Analysis */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base flex items-center gap-2">
+                      <Shield className="w-4 h-4" />
+                      Detailed Analysis
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    {/* Flags */}
+                    {(score.flags.explicit || score.flags.controversial || score.flags.energy_mismatch || score.flags.cultural_sensitivity) && (
+                      <div className="space-y-2">
+                        <p className="text-sm font-medium text-gray-700">Considerations:</p>
+                        <div className="space-y-2">
+                          {score.flags.explicit && (
+                            <div className="flex items-center gap-2 text-sm text-red-600">
+                              <AlertTriangle className="w-4 h-4" />
+                              Contains explicit content
+                            </div>
+                          )}
+                          {score.flags.controversial && (
+                            <div className="flex items-center gap-2 text-sm text-yellow-600">
+                              <AlertTriangle className="w-4 h-4" />
+                              May contain controversial themes
+                            </div>
+                          )}
+                          {score.flags.energy_mismatch && (
+                            <div className="flex items-center gap-2 text-sm text-blue-600">
+                              <AlertTriangle className="w-4 h-4" />
+                              Energy level may not match wedding phase
+                            </div>
+                          )}
+                          {score.flags.cultural_sensitivity && (
+                            <div className="flex items-center gap-2 text-sm text-orange-600">
+                              <AlertTriangle className="w-4 h-4" />
+                              Cultural sensitivity considerations
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Reasoning */}
+                    <div className="space-y-2">
+                      <p className="text-sm font-medium text-gray-700">AI Analysis:</p>
+                      <div className="space-y-1">
+                        {score.reasoning.map((reason, index) => (
+                          <div key={index} className="flex items-start gap-2 text-sm text-gray-600">
+                            <div className="w-1.5 h-1.5 bg-gray-400 rounded-full mt-2 flex-shrink-0" />
+                            {reason}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* DJ Override Section */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base flex items-center justify-between">
+                      <span>DJ Override</span>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setShowOverride(!showOverride)}
+                      >
+                        {showOverride ? 'Cancel' : 'Override Score'}
+                      </Button>
+                    </CardTitle>
+                  </CardHeader>
+                  {showOverride && (
+                    <CardContent className="space-y-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          Override Score (0-10):
+                        </label>
+                        <input
+                          type="range"
+                          min="0"
+                          max="10"
+                          step="0.5"
+                          value={overrideScore || score.score}
+                          onChange={(e) => setOverrideScore(parseFloat(e.target.value))}
+                          className="w-full"
+                        />
+                        <div className="flex justify-between text-xs text-gray-500 mt-1">
+                          <span>0</span>
+                          <span className="font-medium">{overrideScore || score.score}</span>
+                          <span>10</span>
+                        </div>
+                      </div>
+                      
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          Reason for Override:
+                        </label>
+                        <Textarea
+                          value={overrideReason}
+                          onChange={(e) => setOverrideReason(e.target.value)}
+                          placeholder="Explain why you're overriding the AI analysis..."
+                          rows={3}
+                        />
+                      </div>
+                      
+                      <Button
+                        onClick={applyOverride}
+                        disabled={overrideScore === null || !overrideReason.trim()}
+                        className="w-full"
+                      >
+                        Apply Override
+                      </Button>
+                    </CardContent>
+                  )}
+                </Card>
+
+                {/* Actions */}
+                <div className="flex gap-3 pt-4 border-t border-gray-200">
+                  <Button
+                    variant="outline"
+                    onClick={analyzeTrack}
+                    disabled={isAnalyzing}
+                    className="flex-1"
+                  >
+                    <RefreshCw className="w-4 h-4 mr-2" />
+                    Re-analyze
+                  </Button>
+                  <Button onClick={onClose} className="flex-1">
+                    Done
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <Card>
+                <CardContent className="py-12 text-center">
+                  <Button onClick={analyzeTrack} disabled={isAnalyzing}>
+                    <Sparkles className="w-4 h-4 mr-2" />
+                    Start Analysis
+                  </Button>
+                </CardContent>
+              </Card>
+            )}
+          </div>
+        </motion.div>
+      </motion.div>
+    </AnimatePresence>
+  );
+}
+
+// Helper functions
+function calculateHeuristicScore(track: MusicTrack, category: WeddingPhase): number {
+  const threshold = CATEGORY_THRESHOLDS[category];
+  let score = 8; // Start with good score
+  
+  // Penalize explicit content heavily for ceremony/cocktails/dinner
+  if (track.explicit_content && category !== 'dancing') {
+    score -= 4;
+  }
+  
+  // Check energy level appropriateness
+  if (track.energy_level > threshold.maxEnergy) {
+    score -= Math.min(3, track.energy_level - threshold.maxEnergy);
+  }
+  
+  // Bonus for high wedding appropriateness
+  if (track.wedding_appropriateness === 'perfect') {
+    score += 1;
+  } else if (track.wedding_appropriateness === 'inappropriate') {
+    score -= 3;
+  }
+  
+  return Math.max(0, Math.min(10, score));
+}
+
+function generateHeuristicReasoning(track: MusicTrack, category: WeddingPhase): string[] {
+  const reasons: string[] = [];
+  const threshold = CATEGORY_THRESHOLDS[category];
+  
+  if (track.explicit_content) {
+    reasons.push('Track contains explicit content which may not be suitable for all wedding guests');
+  }
+  
+  if (track.energy_level > threshold.maxEnergy) {
+    reasons.push(`Energy level (${track.energy_level}/10) is higher than typical for ${category} events`);
+  }
+  
+  if (track.wedding_appropriateness === 'perfect') {
+    reasons.push('Track has been consistently rated as perfect for weddings');
+  }
+  
+  if (track.wedding_usage_count > 100) {
+    reasons.push(`Popular wedding choice (used in ${track.wedding_usage_count} weddings)`);
+  }
+  
+  return reasons.length > 0 ? reasons : ['Basic heuristic analysis applied'];
+}
+
+function checkEnergyMismatch(track: MusicTrack, category: WeddingPhase): boolean {
+  const threshold = CATEGORY_THRESHOLDS[category];
+  return track.energy_level > threshold.maxEnergy + 2;
+}

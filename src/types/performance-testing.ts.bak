@@ -1,0 +1,191 @@
+export type TestType = 'load' | 'stress' | 'spike' | 'endurance';
+
+export type TestStatus = 'idle' | 'running' | 'completed' | 'failed' | 'cancelled';
+
+export type MetricType = 'response_time' | 'throughput' | 'error_rate' | 'concurrent_users';
+
+export interface PerformanceMetric {
+  timestamp: string;
+  value: number;
+  unit: string;
+}
+
+export interface ResponseTimeMetrics {
+  p50: number;
+  p95: number;
+  p99: number;
+  average: number;
+  min: number;
+  max: number;
+}
+
+export interface TestConfiguration {
+  id: string;
+  name: string;
+  type: TestType;
+  targetUrl: string;
+  duration: number; // in seconds
+  userCount: number;
+  rampUpTime: number; // in seconds
+  thresholds: {
+    responseTime: {
+      p95: number;
+      p99: number;
+    };
+    errorRate: number; // percentage
+    throughput: number; // requests per second
+  };
+  tags: string[];
+  environment: string;
+}
+
+export interface RunningTest {
+  id: string;
+  configId: string;
+  name: string;
+  type: TestType;
+  status: TestStatus;
+  startTime: string;
+  estimatedEndTime: string;
+  progress: number; // percentage 0-100
+  currentUsers: number;
+  targetUsers: number;
+  currentMetrics: {
+    responseTime: ResponseTimeMetrics;
+    throughput: number;
+    errorRate: number;
+    totalRequests: number;
+    errorCount: number;
+  };
+  thresholdBreaches: ThresholdBreach[];
+}
+
+export interface ThresholdBreach {
+  id: string;
+  metric: MetricType;
+  threshold: number;
+  actualValue: number;
+  timestamp: string;
+  severity: 'warning' | 'critical';
+}
+
+export interface PerformanceTestRun {
+  id: string;
+  configId: string;
+  name: string;
+  type: TestType;
+  status: TestStatus;
+  startTime: string;
+  endTime?: string;
+  duration: number; // actual duration in seconds
+  environment: string;
+  tags: string[];
+  results: {
+    responseTime: ResponseTimeMetrics;
+    throughput: {
+      average: number;
+      peak: number;
+      requests: number;
+    };
+    errorRate: number;
+    totalRequests: number;
+    errorCount: number;
+    concurrentUsers: {
+      peak: number;
+      average: number;
+    };
+  };
+  thresholdBreaches: ThresholdBreach[];
+  passed: boolean;
+  cicdInfo?: {
+    buildId: string;
+    branch: string;
+    commit: string;
+    triggeredBy: string;
+  };
+}
+
+export interface TestResultFilters {
+  type?: TestType;
+  environment?: string;
+  status?: TestStatus;
+  dateRange?: {
+    start: string;
+    end: string;
+  };
+  passed?: boolean;
+  tags?: string[];
+}
+
+export interface PaginationConfig {
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
+export interface PerformanceTestDashboardProps {
+  testRuns: PerformanceTestRun[];
+  activeTests: RunningTest[];
+  realTimeUpdates: boolean;
+  onRefresh: () => void;
+}
+
+export interface TestExecutionPanelProps {
+  availableTests: TestConfiguration[];
+  onTestTrigger: (config: TestConfiguration) => Promise<void>;
+  runningTests: RunningTest[];
+  onTestStop: (testId: string) => Promise<void>;
+  loading?: boolean;
+}
+
+export interface PerformanceMetricsChartProps {
+  testResults: PerformanceTestRun[];
+  metricType: MetricType;
+  timeRange: string;
+  showThresholds?: boolean;
+  height?: number;
+}
+
+export interface TestResultsTableProps {
+  testResults: PerformanceTestRun[];
+  pagination: PaginationConfig;
+  filters: TestResultFilters;
+  onFiltersChange: (filters: TestResultFilters) => void;
+  onPageChange: (page: number) => void;
+  onExport: (format: 'csv' | 'json') => void;
+  loading?: boolean;
+}
+
+export interface TestProgressIndicatorProps {
+  runningTest: RunningTest;
+  showMetrics?: boolean;
+  compact?: boolean;
+}
+
+export interface PerformanceAlert {
+  id: string;
+  testId: string;
+  type: 'threshold_breach' | 'test_failure' | 'system_error';
+  severity: 'info' | 'warning' | 'error' | 'critical';
+  message: string;
+  timestamp: string;
+  acknowledged?: boolean;
+}
+
+export interface TestEnvironment {
+  id: string;
+  name: string;
+  url: string;
+  type: 'development' | 'staging' | 'production';
+  active: boolean;
+}
+
+export interface PerformanceThreshold {
+  id: string;
+  name: string;
+  metric: MetricType;
+  operator: 'lt' | 'lte' | 'gt' | 'gte' | 'eq';
+  value: number;
+  severity: 'warning' | 'critical';
+  enabled: boolean;
+}

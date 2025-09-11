@@ -1,0 +1,163 @@
+/**
+ * Lazy-loaded components for performance optimization
+ * Reduces initial bundle size by loading heavy components on demand
+ */
+
+import dynamic from 'next/dynamic';
+import { ComponentType } from 'react';
+import { Loader2 } from 'lucide-react';
+
+// Loading component for better UX during lazy load
+const LoadingComponent = () => (
+  <div className="flex items-center justify-center min-h-[200px]">
+    <Loader2 className="h-8 w-8 animate-spin text-gray-500" />
+  </div>
+);
+
+// Form Builder Components (Heavy: @dnd-kit)
+export const FormBuilder = dynamic(
+  () => import('@/components/forms/FormBuilder').then((mod) => mod.FormBuilder),
+  {
+    loading: LoadingComponent,
+    ssr: false, // Form builder is client-only
+  },
+);
+
+export const OptimizedFormBuilder = dynamic(
+  () =>
+    import('@/components/forms/OptimizedFormBuilder').then(
+      (mod) => mod.default,
+    ),
+  {
+    loading: LoadingComponent,
+    ssr: false,
+  },
+);
+
+export const FormPreview = dynamic(
+  () => import('@/components/forms/FormPreview').then((mod) => mod.default),
+  {
+    loading: LoadingComponent,
+  },
+);
+
+// PDF Components (Heavy: react-pdf, pdf-lib)
+export const PDFViewer = dynamic(
+  () => import('@/components/pdf/PDFViewer').then((mod) => mod.default),
+  {
+    loading: LoadingComponent,
+    ssr: false,
+  },
+);
+
+export const PDFImport = dynamic(
+  () => import('@/components/pdf/PDFImportFlow').then((mod) => mod.default),
+  {
+    loading: LoadingComponent,
+    ssr: false,
+  },
+);
+
+// Admin Dashboard Components
+export const AdminDashboard = dynamic(
+  () =>
+    import('@/app/(dashboard)/admin-dashboard/page').then((mod) => mod.default),
+  {
+    loading: LoadingComponent,
+  },
+);
+
+// Chart Components (if using)
+export const AnalyticsCharts = dynamic(
+  () =>
+    import('@/components/charts/AnalyticsCharts').then((mod) => mod.default),
+  {
+    loading: LoadingComponent,
+    ssr: false,
+  },
+);
+
+// Stripe Components
+export const StripeCheckout = dynamic(
+  () =>
+    import('@/components/payment/StripeCheckout').then((mod) => mod.default),
+  {
+    loading: LoadingComponent,
+    ssr: false,
+  },
+);
+
+export const PricingTable = dynamic(
+  () => import('@/app/pricing/page').then((mod) => mod.default),
+  {
+    loading: LoadingComponent,
+  },
+);
+
+// Email Template Editor
+export const EmailTemplateEditor = dynamic(
+  () => import('@/components/email/TemplateEditor').then((mod) => mod.default),
+  {
+    loading: LoadingComponent,
+    ssr: false,
+  },
+);
+
+// Heavy Modal Components
+export const ClientDetailsModal = dynamic(
+  () =>
+    import('@/components/modals/ClientDetailsModal').then((mod) => mod.default),
+  {
+    loading: LoadingComponent,
+  },
+);
+
+export const FormEditorModal = dynamic(
+  () =>
+    import('@/components/modals/FormEditorModal').then((mod) => mod.default),
+  {
+    loading: LoadingComponent,
+  },
+);
+
+// Utility function to create lazy component with custom loading
+export function createLazyComponent<T extends ComponentType<any>>(
+  importFn: () => Promise<{ default: T } | T>,
+  options?: {
+    loading?: ComponentType;
+    ssr?: boolean;
+  },
+) {
+  return dynamic(importFn as any, {
+    loading: options?.loading || LoadingComponent,
+    ssr: options?.ssr !== false,
+  });
+}
+
+// Pre-load critical components (call after initial render)
+export const preloadCriticalComponents = () => {
+  // Pre-load components that are likely to be used soon
+  import('@/components/forms/FormBuilder');
+  import('@/components/forms/FormPreview');
+};
+
+// Pre-load route-specific components
+export const preloadRouteComponents = (route: string) => {
+  switch (route) {
+    case '/forms':
+      import('@/components/forms/FormBuilder');
+      import('@/components/forms/FormPreview');
+      break;
+    case '/pdf':
+      import('@/components/pdf/PDFViewer');
+      import('@/components/pdf/PDFImportFlow');
+      break;
+    case '/pricing':
+      import('@/app/pricing/page');
+      import('@/components/payment/StripeCheckout');
+      break;
+    case '/admin-dashboard':
+      import('@/app/(dashboard)/admin-dashboard/page');
+      break;
+  }
+};

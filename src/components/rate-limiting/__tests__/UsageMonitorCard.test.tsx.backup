@@ -1,0 +1,94 @@
+import React from 'react';
+import { render, screen, fireEvent } from '@testing-library/react';
+import '@testing-library/jest-dom';
+import { UsageMonitorCard } from '../UsageMonitorCard';
+import { UsageMetric, UsageStatus } from '@/types/rate-limiting';
+
+const mockMetric: UsageMetric = {
+  id: 'monthly-requests',
+  name: 'Monthly Requests',
+  currentValue: 1250,
+  limit: 5000,
+  percentage: 25,
+  status: UsageStatus.SAFE,
+  trend: 5.2,
+  unit: 'requests',
+  description: 'Total API requests this month',
+  lastUpdated: new Date('2025-01-20T10:30:00Z'),
+  weddingSeasonMultiplier: 1.5
+};
+
+describe('UsageMonitorCard', () => {
+  it('renders usage metric correctly', () => {
+    render(<UsageMonitorCard metric={mockMetric} />);
+    
+    expect(screen.getByText('Monthly Requests')).toBeInTheDocument();
+    expect(screen.getByText('1,250')).toBeInTheDocument();
+    expect(screen.getByText('/ 5,000')).toBeInTheDocument();
+    expect(screen.getByText('25%')).toBeInTheDocument();
+  });
+
+  it('displays status badge with correct color', () => {
+    render(<UsageMonitorCard metric={mockMetric} />);
+    
+    const statusBadge = screen.getByText('SAFE');
+    expect(statusBadge).toBeInTheDocument();
+    expect(statusBadge.closest('.badge')).toHaveClass('bg-green-100');
+  });
+
+  it('shows trend indicator correctly', () => {
+    render(<UsageMonitorCard metric={mockMetric} />);
+    
+    expect(screen.getByText('+5.2%')).toBeInTheDocument();
+    expect(screen.getByTestId('trend-up-icon')).toBeInTheDocument();
+  });
+
+  it('displays wedding season multiplier when applicable', () => {
+    render(<UsageMonitorCard metric={mockMetric} showWeddingContext={true} />);
+    
+    expect(screen.getByText('1.5x')).toBeInTheDocument();
+    expect(screen.getByText(/wedding season/i)).toBeInTheDocument();
+  });
+
+  it('renders in compact mode', () => {
+    render(<UsageMonitorCard metric={mockMetric} compactMode={true} />);
+    
+    expect(screen.getByTestId('usage-card')).toHaveClass('compact');
+    expect(screen.queryByText(mockMetric.description)).not.toBeInTheDocument();
+  });
+
+  it('handles different usage statuses', () => {
+    const highUsageMetric = { ...mockMetric, status: UsageStatus.HIGH, percentage: 85 };
+    const { rerender } = render(<UsageMonitorCard metric={highUsageMetric} />);
+    
+    expect(screen.getByText('HIGH')).toBeInTheDocument();
+    
+    const criticalUsageMetric = { ...mockMetric, status: UsageStatus.CRITICAL, percentage: 95 };
+    rerender(<UsageMonitorCard metric={criticalUsageMetric} />);
+    
+    expect(screen.getByText('CRITICAL')).toBeInTheDocument();
+  });
+
+  it('shows refresh functionality when enabled', () => {
+    const mockOnRefresh = jest.fn();
+    render(<UsageMonitorCard metric={mockMetric} onRefresh={mockOnRefresh} />);
+    
+    const refreshButton = screen.getByLabelText(/refresh/i);
+    fireEvent.click(refreshButton);
+    
+    expect(mockOnRefresh).toHaveBeenCalledWith(mockMetric.id);
+  });
+
+  it('displays last updated timestamp', () => {
+    render(<UsageMonitorCard metric={mockMetric} />);
+    
+    expect(screen.getByText(/last updated/i)).toBeInTheDocument();
+  });
+
+  it('is accessible with proper ARIA labels', () => {
+    render(<UsageMonitorCard metric={mockMetric} />);
+    
+    expect(screen.getByRole('region')).toHaveAttribute('aria-label', 'Monthly Requests usage metric');
+    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '25');
+  });
+});

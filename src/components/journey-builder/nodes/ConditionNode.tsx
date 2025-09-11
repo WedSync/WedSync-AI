@@ -1,0 +1,16 @@
+'use client';
+
+import React from 'react';
+import { NodeProps } from '@xyflow/react';
+import { GitBranch } from 'lucide-react';
+import { BaseNode } from './BaseNode';
+
+export function ConditionNode(props: NodeProps) {
+  return (
+    <BaseNode
+      {...props}
+      icon={<GitBranch className="h-4 w-4" />}
+      color="bg-orange-500"
+    />
+  );
+}

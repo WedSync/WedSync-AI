@@ -1,0 +1,5 @@
+
+> wedsync@0.1.0 typecheck
+> tsc --noEmit
+
+node_modules/jest-diff/node_modules/pretty-format/build/index.d.ts(28,19): error TS1005: '}' expected.

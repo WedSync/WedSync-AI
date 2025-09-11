@@ -1,0 +1,561 @@
+'use client';
+
+import React, { useState, useEffect, Suspense } from 'react';
+import { useRouter } from 'next/navigation';
+import { 
+  SwatchIcon,
+  ArrowLeftIcon,
+  ExclamationTriangleIcon,
+  CheckCircleIcon,
+  CloudArrowUpIcon
+} from '@heroicons/react/20/solid';
+import { Button } from '@/components/ui/button-untitled';
+import { Card } from '@/components/ui/card-untitled';
+import { Badge } from '@/components/ui/badge';
+import LogoUploader from '@/components/branding/LogoUploader';
+import CSSEditor from '@/components/branding/CSSEditor';
+import { useBrandTheme } from '@/hooks/useBrandTheme';
+import { createClient } from '@/lib/supabase/client';
+import { cn } from '@/lib/utils';
+
+// Loading component
+function BrandingPageLoading() {
+  return (
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <div className="animate-pulse">
+        <div className="h-8 bg-gray-200 rounded w-1/4 mb-4"></div>
+        <div className="h-4 bg-gray-200 rounded w-1/2 mb-8"></div>
+        <div className="grid lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-2 space-y-6">
+            <div className="bg-gray-200 rounded-lg h-96"></div>
+            <div className="bg-gray-200 rounded-lg h-64"></div>
+          </div>
+          <div className="bg-gray-200 rounded-lg h-96"></div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Main branding settings page
+function BrandingSettingsContent() {
+  const router = useRouter();
+  const supabase = createClient();
+  
+  // State
+  const [user, setUser] = useState<any>(null);
+  const [supplierId, setSupplierId] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState('colors');
+  const [unsavedWarning, setUnsavedWarning] = useState(false);
+  
+  // Brand theme hook
+  const {
+    theme,
+    loading,
+    saving,
+    error,
+    isDirty,
+    updateTheme,
+    saveTheme,
+    loadTheme,
+    resetTheme,
+    applyPreset,
+    generateCSSVariables
+  } = useBrandTheme(supplierId || undefined);
+
+  // Wedding style presets
+  const weddingPresets = [
+    { 
+      id: 'elegant', 
+      name: 'Elegant Classic',
+      colors: { primary: '#8B4513', secondary: '#D4AF37', accent: '#F5F5DC' },
+      description: 'Traditional elegance with warm golds and browns'
+    },
+    { 
+      id: 'modern', 
+      name: 'Modern Minimal', 
+      colors: { primary: '#2563EB', secondary: '#64748B', accent: '#F1F5F9' },
+      description: 'Clean, contemporary design with cool blues'
+    },
+    { 
+      id: 'romantic', 
+      name: 'Romantic Rose',
+      colors: { primary: '#EC4899', secondary: '#F97316', accent: '#FEF3C7' },
+      description: 'Soft, romantic colors with pink and warm tones'
+    },
+    { 
+      id: 'luxury', 
+      name: 'Luxury Gold',
+      colors: { primary: '#7C2D12', secondary: '#D97706', accent: '#FEF3C7' },
+      description: 'Premium feel with rich golds and deep reds'
+    }
+  ];
+
+  // Load user data and initialize
+  useEffect(() => {
+    async function initializePage() {
+      try {
+        const { data: user } = await supabase.auth.getUser();
+        if (!user) {
+          router.push('/login');
+          return;
+        }
+
+        setUser(user);
+        
+        // Get supplier ID from user metadata or organizations
+        const { data: orgData, error: orgError } = await supabase
+          .from('organizations')
+          .select('id')
+          .eq('owner_id', user.id)
+          .single();
+
+        if (orgError) {
+          console.error('Failed to load organization:', orgError);
+          return;
+        }
+
+        setSupplierId(orgData.id);
+      } catch (error) {
+        console.error('Failed to initialize branding page:', error);
+      }
+    }
+
+    initializePage();
+  }, [supabase, router]);
+
+  // Handle unsaved changes warning
+  useEffect(() => {
+    setUnsavedWarning(isDirty && !saving);
+  }, [isDirty, saving]);
+
+  // Handle logo upload
+  const handleLogoUpload = async (file: File, dataUrl: string) => {
+    try {
+      // Upload to Supabase Storage
+      const fileExt = file.name.split('.').pop();
+      const fileName = `${supplierId}/logo-${Date.now()}.${fileExt}`;
+      
+      const { data, error } = await supabase.storage
+        .from('branding')
+        .upload(fileName, file, {
+          cacheControl: '3600',
+          upsert: false
+        });
+
+      if (error) throw error;
+
+      // Get public URL
+      const { data: publicUrlData } = supabase.storage
+        .from('branding')
+        .getPublicUrl(data.path);
+
+      // Update theme with new logo URL
+      updateTheme({ logo_url: publicUrlData.publicUrl });
+    } catch (error) {
+      console.error('Logo upload failed:', error);
+      throw new Error('Failed to upload logo. Please try again.');
+    }
+  };
+
+  // Handle logo removal
+  const handleLogoRemove = async () => {
+    updateTheme({ logo_url: '' });
+  };
+
+  // Handle save
+  const handleSave = async () => {
+    try {
+      await saveTheme();
+      setUnsavedWarning(false);
+    } catch (error) {
+      console.error('Failed to save branding:', error);
+    }
+  };
+
+  // Handle CSS update
+  const handleCSSUpdate = (css: string, isValid: boolean) => {
+    updateTheme({ custom_css: css });
+  };
+
+  if (loading || !theme) {
+    return <BrandingPageLoading />;
+  }
+
+  return (
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-8">
+        <div className="flex items-center space-x-4">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => router.back()}
+            className="flex items-center space-x-2"
+          >
+            <ArrowLeftIcon className="h-4 w-4" />
+            <span>Back to Settings</span>
+          </Button>
+          
+          <div className="h-6 w-px bg-gray-300" />
+          
+          <div className="flex items-center space-x-3">
+            <SwatchIcon className="h-8 w-8 text-purple-600" />
+            <div>
+              <h1 className="text-2xl font-bold text-gray-900">
+                Branding & Theme
+              </h1>
+              <p className="text-sm text-gray-600">
+                Customize your client portal with your wedding business branding
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center space-x-3">
+          {unsavedWarning && (
+            <div className="flex items-center space-x-2 text-warning-600">
+              <ExclamationTriangleIcon className="h-5 w-5" />
+              <span className="text-sm font-medium">Unsaved changes</span>
+            </div>
+          )}
+          
+          <Button
+            variant="ghost"
+            onClick={resetTheme}
+            disabled={saving}
+          >
+            Reset to Default
+          </Button>
+          
+          <Button
+            variant="primary"
+            onClick={handleSave}
+            loading={saving}
+            disabled={!isDirty}
+            className="flex items-center space-x-2"
+          >
+            {saving ? (
+              <>
+                <CloudArrowUpIcon className="h-4 w-4 animate-spin" />
+                <span>Saving...</span>
+              </>
+            ) : (
+              <>
+                <CloudArrowUpIcon className="h-4 w-4" />
+                <span>Save Branding</span>
+              </>
+            )}
+          </Button>
+        </div>
+      </div>
+
+      {/* Error Alert */}
+      {error && (
+        <div className="mb-6 bg-error-50 border border-error-200 rounded-lg p-4">
+          <div className="flex items-start space-x-3">
+            <ExclamationTriangleIcon className="h-5 w-5 text-error-500 flex-shrink-0 mt-0.5" />
+            <div>
+              <h3 className="font-medium text-error-800">Error</h3>
+              <p className="text-sm text-error-700 mt-1">{error}</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Main Content */}
+      <div className="grid lg:grid-cols-3 gap-8">
+        {/* Configuration Panel */}
+        <div className="lg:col-span-2 space-y-6">
+          
+          {/* Wedding Style Presets */}
+          <Card className="p-6">
+            <h3 className="text-lg font-semibold mb-4">Wedding Style Presets</h3>
+            <p className="text-sm text-gray-600 mb-4">
+              Choose a preset that matches your photography style, then customize further below.
+            </p>
+            
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {weddingPresets.map((preset) => (
+                <div
+                  key={preset.id}
+                  className={cn(
+                    "p-4 border rounded-lg cursor-pointer transition-all",
+                    theme.wedding_style === preset.id 
+                      ? "border-primary-500 bg-primary-50 ring-2 ring-primary-100"
+                      : "border-gray-200 hover:border-gray-300 hover:bg-gray-50"
+                  )}
+                  onClick={() => applyPreset(preset.id)}
+                >
+                  <div className="flex items-center justify-between mb-3">
+                    <h4 className="font-medium text-gray-900">{preset.name}</h4>
+                    {theme.wedding_style === preset.id && (
+                      <CheckCircleIcon className="h-5 w-5 text-primary-600" />
+                    )}
+                  </div>
+                  
+                  <div className="flex space-x-2 mb-2">
+                    {Object.values(preset.colors).map((color, index) => (
+                      <div
+                        key={index}
+                        className="w-8 h-8 rounded-full border border-gray-200"
+                        style={{ backgroundColor: color }}
+                      />
+                    ))}
+                  </div>
+                  
+                  <p className="text-xs text-gray-600">{preset.description}</p>
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          {/* Logo Upload */}
+          <Card className="p-6">
+            <h3 className="text-lg font-semibold mb-4">Business Logo</h3>
+            <p className="text-sm text-gray-600 mb-4">
+              Upload your business logo to appear on client forms, emails, and communications.
+            </p>
+            
+            <LogoUploader
+              onUpload={handleLogoUpload}
+              onRemove={handleLogoRemove}
+              currentLogoUrl={theme.logo_url}
+              disabled={saving}
+            />
+          </Card>
+
+          {/* Color Customization */}
+          <Card className="p-6">
+            <h3 className="text-lg font-semibold mb-4">Brand Colors</h3>
+            <p className="text-sm text-gray-600 mb-4">
+              Customize your primary and secondary colors to match your brand identity.
+            </p>
+            
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+              <div className="space-y-2">
+                <label className="block text-sm font-medium text-gray-700">
+                  Primary Color
+                </label>
+                <div className="flex items-center space-x-3">
+                  <input
+                    type="color"
+                    value={theme.primary_color}
+                    onChange={(e) => updateTheme({ primary_color: e.target.value })}
+                    className="w-12 h-12 rounded-lg border border-gray-300 cursor-pointer"
+                    disabled={saving}
+                  />
+                  <input
+                    type="text"
+                    value={theme.primary_color}
+                    onChange={(e) => updateTheme({ primary_color: e.target.value })}
+                    className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-300"
+                    placeholder="#7F56D9"
+                    disabled={saving}
+                  />
+                </div>
+              </div>
+              
+              <div className="space-y-2">
+                <label className="block text-sm font-medium text-gray-700">
+                  Secondary Color
+                </label>
+                <div className="flex items-center space-x-3">
+                  <input
+                    type="color"
+                    value={theme.secondary_color || theme.primary_color}
+                    onChange={(e) => updateTheme({ secondary_color: e.target.value })}
+                    className="w-12 h-12 rounded-lg border border-gray-300 cursor-pointer"
+                    disabled={saving}
+                  />
+                  <input
+                    type="text"
+                    value={theme.secondary_color || ''}
+                    onChange={(e) => updateTheme({ secondary_color: e.target.value })}
+                    className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-300"
+                    placeholder="#6941C6"
+                    disabled={saving}
+                  />
+                </div>
+              </div>
+            </div>
+          </Card>
+
+          {/* Advanced CSS */}
+          <Card className="p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold">Advanced Styling</h3>
+              <Badge variant="secondary">Professional</Badge>
+            </div>
+            <p className="text-sm text-gray-600 mb-4">
+              Add custom CSS to further personalize your client portal appearance.
+            </p>
+            
+            <CSSEditor
+              value={theme.custom_css || ''}
+              onChange={handleCSSUpdate}
+              disabled={saving}
+            />
+          </Card>
+
+        </div>
+
+        {/* Live Preview */}
+        <div className="lg:col-span-1">
+          <div className="sticky top-6">
+            <Card className="p-4">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="font-semibold">Live Preview</h3>
+                <Badge variant="outline" className="text-xs">
+                  Client View
+                </Badge>
+              </div>
+              
+              {/* Preview Content */}
+              <div 
+                className="border rounded-lg overflow-hidden"
+                style={generateCSSVariables()}
+              >
+                {/* Header Preview */}
+                <div 
+                  className="p-4 text-white"
+                  style={{ 
+                    backgroundColor: theme.primary_color,
+                    backgroundImage: theme.background_pattern && theme.background_pattern !== 'none' 
+                      ? `var(--bg-pattern, none)` : undefined
+                  }}
+                >
+                  {theme.logo_url && (
+                    <img 
+                      src={theme.logo_url} 
+                      alt="Logo Preview" 
+                      className="h-8 mb-2"
+                      onError={(e) => (e.currentTarget.style.display = 'none')}
+                    />
+                  )}
+                  <h2 className="font-bold text-lg">{theme.name}</h2>
+                  <p className="text-sm opacity-90">Client Dashboard</p>
+                </div>
+                
+                {/* Content Preview */}
+                <div 
+                  className="p-4 space-y-4"
+                  style={{ 
+                    backgroundColor: theme.background_color,
+                    color: theme.text_color
+                  }}
+                >
+                  {/* Card Preview */}
+                  <div 
+                    className="p-4 border rounded-lg"
+                    style={{ 
+                      backgroundColor: theme.surface_color,
+                      borderColor: theme.border_color,
+                      borderRadius: `${theme.border_radius}px`
+                    }}
+                  >
+                    <h3 className="font-medium mb-2">Wedding Timeline</h3>
+                    <p className="text-sm opacity-75 mb-3">
+                      Track your wedding planning progress
+                    </p>
+                    <div 
+                      className="px-3 py-1.5 rounded text-white text-sm inline-block"
+                      style={{ 
+                        backgroundColor: theme.primary_color,
+                        borderRadius: `${theme.border_radius * 0.5}px`
+                      }}
+                    >
+                      View Details
+                    </div>
+                  </div>
+
+                  {/* Progress Bar Preview */}
+                  <div 
+                    className="p-3 border rounded"
+                    style={{ 
+                      backgroundColor: theme.surface_color,
+                      borderColor: theme.border_color
+                    }}
+                  >
+                    <div className="flex items-center justify-between text-sm">
+                      <span>Budget Progress</span>
+                      <span style={{ color: theme.secondary_color }}>
+                        £12,500 / £25,000
+                      </span>
+                    </div>
+                    <div 
+                      className="mt-2 h-2 rounded-full"
+                      style={{ backgroundColor: theme.border_color }}
+                    >
+                      <div 
+                        className="h-full rounded-full"
+                        style={{ 
+                          backgroundColor: theme.primary_color,
+                          width: '50%'
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Color Swatches */}
+                  <div className="flex space-x-2">
+                    {[theme.primary_color, theme.secondary_color, theme.accent_color].map((color, index) => (
+                      <div 
+                        key={index}
+                        className="w-6 h-6 rounded border border-gray-200"
+                        style={{ backgroundColor: color || '#E5E7EB' }}
+                      />
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Preview Info */}
+              <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                <div className="flex items-start space-x-2">
+                  <CheckCircleIcon className="h-5 w-5 text-blue-500 flex-shrink-0 mt-0.5" />
+                  <div className="text-sm">
+                    <p className="font-medium text-blue-800">
+                      Real-time Preview
+                    </p>
+                    <p className="text-blue-700 mt-1">
+                      Changes appear instantly as you customize your branding.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </Card>
+          </div>
+        </div>
+      </div>
+
+      {/* Wedding Industry Tips */}
+      <Card className="mt-8 p-6 bg-purple-50 border-purple-200">
+        <div className="flex items-start space-x-3">
+          <SwatchIcon className="h-6 w-6 text-purple-600 flex-shrink-0 mt-0.5" />
+          <div>
+            <h3 className="font-medium text-purple-800 mb-2">
+              Professional Wedding Branding Tips
+            </h3>
+            <ul className="text-sm text-purple-700 space-y-1">
+              <li>• Use elegant, readable fonts that reflect your photography style</li>
+              <li>• Choose colors that complement rather than compete with wedding photos</li>
+              <li>• Keep your logo simple and recognizable at small sizes</li>
+              <li>• Ensure sufficient contrast for accessibility and readability</li>
+              <li>• Your branding appears on client forms, emails, and all communications</li>
+            </ul>
+          </div>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// Main exported component with Suspense
+export default function BrandingSettingsPage() {
+  return (
+    <Suspense fallback={<BrandingPageLoading />}>
+      <BrandingSettingsContent />
+    </Suspense>
+  );
+}

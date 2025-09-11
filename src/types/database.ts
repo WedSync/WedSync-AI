@@ -1,0 +1,698 @@
+export interface FormField {
+  id: string;
+  type: string;
+  label: string;
+  placeholder?: string;
+  required?: boolean;
+  validation?: Record<string, unknown>;
+  options?: string[];
+}
+
+export interface FormSection {
+  id: string;
+  title: string;
+  description?: string;
+  fields: string[];
+}
+
+export interface PortfolioImage {
+  id: string;
+  url: string;
+  alt?: string;
+  category?: string;
+}
+
+export interface Certification {
+  id: string;
+  name: string;
+  issuer: string;
+  date: string;
+  url?: string;
+}
+
+export interface PaymentScheduleItem {
+  id: string;
+  amount: number;
+  due_date: string;
+  description: string;
+  status: 'pending' | 'paid' | 'overdue';
+}
+
+export interface ActivityLogEntry {
+  id: string;
+  timestamp: string;
+  action: string;
+  actor: string;
+  details: Record<string, unknown>;
+}
+
+export interface Database {
+  public: {
+    Tables: {
+      organizations: {
+        Row: {
+          id: string;
+          name: string;
+          slug: string;
+          domain: string | null;
+          pricing_tier:
+            | 'FREE'
+            | 'STARTER'
+            | 'PROFESSIONAL'
+            | 'SCALE'
+            | 'ENTERPRISE';
+          max_users: number;
+          max_forms: number;
+          max_submissions: number;
+          max_journeys: number;
+          max_sms_credits: number;
+          logo_url: string | null;
+          primary_color: string;
+          secondary_color: string;
+          settings: Record<string, unknown>;
+          features: Record<string, unknown>;
+          billing_email: string | null;
+          billing_address: Record<string, unknown> | null;
+          stripe_customer_id: string | null;
+          stripe_subscription_id: string | null;
+          subscription_status: string | null;
+          trial_ends_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: Omit<
+          Database['public']['Tables']['organizations']['Row'],
+          'id' | 'created_at' | 'updated_at'
+        > & {
+          id?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<
+          Database['public']['Tables']['organizations']['Insert']
+        >;
+      };
+      user_profiles: {
+        Row: {
+          id: string;
+          user_id: string;
+          organization_id: string | null;
+          role: 'OWNER' | 'ADMIN' | 'MEMBER' | 'VIEWER';
+          first_name: string | null;
+          last_name: string | null;
+          display_name: string;
+          avatar_url: string | null;
+          phone: string | null;
+          timezone: string;
+          preferences: Record<string, unknown>;
+          notification_settings: Record<string, unknown>;
+          last_active_at: string | null;
+          onboarding_completed: boolean;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: Omit<
+          Database['public']['Tables']['user_profiles']['Row'],
+          'id' | 'display_name' | 'created_at' | 'updated_at'
+        > & {
+          id?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<
+          Database['public']['Tables']['user_profiles']['Insert']
+        >;
+      };
+      forms: {
+        Row: {
+          id: string;
+          organization_id: string;
+          name: string;
+          description: string | null;
+          slug: string;
+          fields: FormField[];
+          sections: FormSection[];
+          logic: Record<string, unknown>;
+          settings: Record<string, unknown>;
+          theme_config: Record<string, unknown>;
+          notification_settings: Record<string, unknown>;
+          is_published: boolean;
+          is_archived: boolean;
+          is_template: boolean;
+          embed_enabled: boolean;
+          embed_code: string | null;
+          allowed_domains: string[] | null;
+          view_count: number;
+          submission_count: number;
+          completion_rate: number | null;
+          created_by: string | null;
+          tags: string[] | null;
+          category: string | null;
+          created_at: string;
+          updated_at: string;
+          published_at: string | null;
+        };
+        Insert: Omit<
+          Database['public']['Tables']['forms']['Row'],
+          'id' | 'created_at' | 'updated_at'
+        > & {
+          id?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<Database['public']['Tables']['forms']['Insert']>;
+      };
+      form_submissions: {
+        Row: {
+          id: string;
+          form_id: string;
+          organization_id: string;
+          data: Record<string, unknown>;
+          files: Record<string, unknown>[];
+          metadata: Record<string, unknown>;
+          ip_address: string | null;
+          user_agent: string | null;
+          referrer: string | null;
+          device_info: Record<string, unknown> | null;
+          status: 'pending' | 'reviewed' | 'processed' | 'archived';
+          reviewed_by: string | null;
+          reviewed_at: string | null;
+          tags: string[] | null;
+          notes: string | null;
+          internal_notes: string | null;
+          contact_id: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: Omit<
+          Database['public']['Tables']['form_submissions']['Row'],
+          'id' | 'created_at' | 'updated_at'
+        > & {
+          id?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<
+          Database['public']['Tables']['form_submissions']['Insert']
+        >;
+      };
+      contacts: {
+        Row: {
+          id: string;
+          organization_id: string;
+          first_name: string | null;
+          last_name: string | null;
+          email: string | null;
+          phone: string | null;
+          partner_first_name: string | null;
+          partner_last_name: string | null;
+          partner_email: string | null;
+          partner_phone: string | null;
+          wedding_date: string | null;
+          wedding_venue: string | null;
+          wedding_location: Record<string, unknown> | null;
+          guest_count: number | null;
+          budget_range: string | null;
+          status: string;
+          source: string | null;
+          tags: string[] | null;
+          custom_fields: Record<string, unknown>;
+          current_journey_id: string | null;
+          journey_stage: string | null;
+          external_ids: Record<string, unknown>;
+          created_at: string;
+          updated_at: string;
+          last_contacted_at: string | null;
+        };
+        Insert: Omit<
+          Database['public']['Tables']['contacts']['Row'],
+          'id' | 'created_at' | 'updated_at'
+        > & {
+          id?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<Database['public']['Tables']['contacts']['Insert']>;
+      };
+      suppliers: {
+        Row: {
+          id: string;
+          organization_id: string;
+          business_name: string;
+          slug: string;
+          business_type: string | null;
+          primary_category: string;
+          secondary_categories: string[] | null;
+          email: string;
+          phone: string | null;
+          website: string | null;
+          address_line1: string | null;
+          address_line2: string | null;
+          city: string | null;
+          county: string | null;
+          country: string;
+          postcode: string | null;
+          latitude: number | null;
+          longitude: number | null;
+          service_radius_miles: number;
+          nationwide_coverage: boolean;
+          description: string | null;
+          about_us: string | null;
+          years_in_business: number | null;
+          team_size: number | null;
+          price_range: string | null;
+          starting_price: number | null;
+          payment_methods: string[] | null;
+          instagram_handle: string | null;
+          facebook_url: string | null;
+          pinterest_url: string | null;
+          portfolio_images: PortfolioImage[];
+          featured_image: string | null;
+          is_verified: boolean;
+          verification_date: string | null;
+          insurance_verified: boolean;
+          certifications: Certification[];
+          average_rating: number;
+          total_reviews: number;
+          response_time_hours: number | null;
+          response_rate: number | null;
+          is_marketplace_vendor: boolean;
+          commission_rate: number;
+          total_sales: number;
+          profile_completion_score: number;
+          is_published: boolean;
+          tags: string[] | null;
+          seo_title: string | null;
+          seo_description: string | null;
+          created_at: string;
+          updated_at: string;
+          last_active_at: string | null;
+        };
+        Insert: Omit<
+          Database['public']['Tables']['suppliers']['Row'],
+          'id' | 'created_at' | 'updated_at'
+        > & {
+          id?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<Database['public']['Tables']['suppliers']['Insert']>;
+      };
+      clients: {
+        Row: {
+          id: string;
+          organization_id: string;
+          first_name: string | null;
+          last_name: string | null;
+          partner_first_name: string | null;
+          partner_last_name: string | null;
+          email: string | null;
+          phone: string | null;
+          wedding_date: string | null;
+          venue_name: string | null;
+          venue_address: string | null;
+          guest_count: number | null;
+          budget_range: string | null;
+          status: string;
+          booking_stage: string | null;
+          lead_source: string | null;
+          lead_date: string;
+          booking_date: string | null;
+          package_name: string | null;
+          package_price: number | null;
+          deposit_amount: number | null;
+          balance_due: number | null;
+          payment_schedule: PaymentScheduleItem[];
+          current_journey_id: string | null;
+          journey_stage: string | null;
+          last_contact_date: string | null;
+          next_action_date: string | null;
+          next_action_type: string | null;
+          is_wedme_connected: boolean;
+          wedme_couple_id: string | null;
+          wedme_invite_sent_at: string | null;
+          wedme_connected_at: string | null;
+          form_responses: Record<string, unknown>;
+          documents: Record<string, unknown>[];
+          contracts: Record<string, unknown>[];
+          notes: string | null;
+          internal_notes: string | null;
+          activity_log: ActivityLogEntry[];
+          tags: string[] | null;
+          custom_fields: any;
+          import_source: string | null;
+          import_id: string | null;
+          import_date: string | null;
+          created_at: string;
+          updated_at: string;
+          created_by: string | null;
+          last_modified_by: string | null;
+        };
+        Insert: Omit<
+          Database['public']['Tables']['clients']['Row'],
+          'id' | 'created_at' | 'updated_at'
+        > & {
+          id?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<Database['public']['Tables']['clients']['Insert']>;
+      };
+      supplier_client_connections: {
+        Row: {
+          id: string;
+          supplier_id: string;
+          client_id: string;
+          organization_id: string;
+          connection_type: string;
+          connection_status: string;
+          connected_at: string;
+          completed_at: string | null;
+          can_view_core_fields: boolean;
+          can_edit_core_fields: boolean;
+          shared_fields: string[] | null;
+          last_interaction_at: string | null;
+          interaction_count: number;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: Omit<
+          Database['public']['Tables']['supplier_client_connections']['Row'],
+          'id' | 'created_at' | 'updated_at'
+        > & {
+          id?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<
+          Database['public']['Tables']['supplier_client_connections']['Insert']
+        >;
+      };
+      vendor_categories: {
+        Row: {
+          id: string;
+          name: string;
+          slug: string;
+          parent_id: string | null;
+          display_name: string;
+          description: string | null;
+          icon: string | null;
+          color: string | null;
+          sort_order: number;
+          is_active: boolean;
+          is_featured: boolean;
+          seo_title: string | null;
+          seo_description: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: Omit<
+          Database['public']['Tables']['vendor_categories']['Row'],
+          'id' | 'created_at' | 'updated_at'
+        > & {
+          id?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<
+          Database['public']['Tables']['vendor_categories']['Insert']
+        >;
+      };
+      client_activities: {
+        Row: {
+          id: string;
+          client_id: string;
+          organization_id: string;
+          activity_type: string;
+          activity_title: string | null;
+          activity_description: string | null;
+          related_entity_type: string | null;
+          related_entity_id: string | null;
+          performed_by: string | null;
+          performed_by_name: string | null;
+          metadata: any;
+          created_at: string;
+        };
+        Insert: Omit<
+          Database['public']['Tables']['client_activities']['Row'],
+          'id' | 'created_at'
+        > & {
+          id?: string;
+          created_at?: string;
+        };
+        Update: Partial<
+          Database['public']['Tables']['client_activities']['Insert']
+        >;
+      };
+      messages: {
+        Row: {
+          id: string;
+          conversation_id: string;
+          sender_id: string;
+          sender_type: 'client' | 'vendor' | 'system';
+          sender_name: string;
+          sender_avatar_url: string | null;
+          recipient_id: string;
+          recipient_type: 'client' | 'vendor';
+          organization_id: string;
+          message_type:
+            | 'text'
+            | 'file'
+            | 'system_notification'
+            | 'form_update'
+            | 'booking_update';
+          content: string;
+          metadata: Record<string, unknown> | null;
+          attachments: any[] | null;
+          is_read: boolean;
+          read_at: string | null;
+          is_system_message: boolean;
+          reply_to_message_id: string | null;
+          thread_id: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: Omit<
+          Database['public']['Tables']['messages']['Row'],
+          'id' | 'created_at' | 'updated_at'
+        > & {
+          id?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<Database['public']['Tables']['messages']['Insert']>;
+      };
+      conversations: {
+        Row: {
+          id: string;
+          client_id: string;
+          vendor_id: string;
+          organization_id: string;
+          subject: string | null;
+          status: 'active' | 'archived' | 'closed';
+          last_message_at: string;
+          last_message_preview: string | null;
+          unread_count_client: number;
+          unread_count_vendor: number;
+          client_typing: boolean;
+          vendor_typing: boolean;
+          client_last_seen: string | null;
+          vendor_last_seen: string | null;
+          metadata: Record<string, unknown> | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: Omit<
+          Database['public']['Tables']['conversations']['Row'],
+          'id' | 'created_at' | 'updated_at'
+        > & {
+          id?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<
+          Database['public']['Tables']['conversations']['Insert']
+        >;
+      };
+      email_notifications: {
+        Row: {
+          id: string;
+          organization_id: string;
+          recipient_email: string;
+          recipient_name: string | null;
+          recipient_id: string | null;
+          recipient_type: 'client' | 'vendor' | 'admin';
+          sender_id: string | null;
+          sender_name: string | null;
+          template_type: string;
+          template_id: string | null;
+          subject: string;
+          html_content: string;
+          text_content: string | null;
+          variables: Record<string, unknown> | null;
+          status:
+            | 'pending'
+            | 'sent'
+            | 'delivered'
+            | 'failed'
+            | 'bounced'
+            | 'spam';
+          provider: 'sendgrid' | 'resend';
+          provider_id: string | null;
+          provider_response: Record<string, unknown> | null;
+          sent_at: string | null;
+          delivered_at: string | null;
+          opened_at: string | null;
+          clicked_at: string | null;
+          error_message: string | null;
+          retry_count: number;
+          priority: 'low' | 'normal' | 'high' | 'urgent';
+          scheduled_for: string | null;
+          metadata: Record<string, unknown> | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: Omit<
+          Database['public']['Tables']['email_notifications']['Row'],
+          'id' | 'created_at' | 'updated_at'
+        > & {
+          id?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<
+          Database['public']['Tables']['email_notifications']['Insert']
+        >;
+      };
+      activity_feeds: {
+        Row: {
+          id: string;
+          organization_id: string;
+          entity_type:
+            | 'client'
+            | 'vendor'
+            | 'form'
+            | 'message'
+            | 'booking'
+            | 'payment';
+          entity_id: string;
+          activity_type: string;
+          title: string;
+          description: string | null;
+          actor_id: string | null;
+          actor_name: string | null;
+          actor_type: 'client' | 'vendor' | 'system';
+          target_user_ids: string[] | null;
+          is_public: boolean;
+          icon: string | null;
+          color: string | null;
+          data: Record<string, unknown> | null;
+          read_by: string[] | null;
+          created_at: string;
+        };
+        Insert: Omit<
+          Database['public']['Tables']['activity_feeds']['Row'],
+          'id' | 'created_at'
+        > & {
+          id?: string;
+          created_at?: string;
+        };
+        Update: Partial<
+          Database['public']['Tables']['activity_feeds']['Insert']
+        >;
+      };
+      notification_preferences: {
+        Row: {
+          id: string;
+          user_id: string;
+          organization_id: string;
+          email_notifications: boolean;
+          push_notifications: boolean;
+          sms_notifications: boolean;
+          in_app_notifications: boolean;
+          marketing_emails: boolean;
+          notification_types: Record<string, boolean>;
+          quiet_hours_start: string | null;
+          quiet_hours_end: string | null;
+          timezone: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: Omit<
+          Database['public']['Tables']['notification_preferences']['Row'],
+          'id' | 'created_at' | 'updated_at'
+        > & {
+          id?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<
+          Database['public']['Tables']['notification_preferences']['Insert']
+        >;
+      };
+    };
+    Views: {};
+    Functions: {};
+    Enums: {
+      pricing_tier:
+        | 'FREE'
+        | 'STARTER'
+        | 'PROFESSIONAL'
+        | 'SCALE'
+        | 'ENTERPRISE';
+      user_role: 'OWNER' | 'ADMIN' | 'MEMBER' | 'VIEWER';
+      form_field_type:
+        | 'text'
+        | 'email'
+        | 'tel'
+        | 'textarea'
+        | 'select'
+        | 'radio'
+        | 'checkbox'
+        | 'date'
+        | 'time'
+        | 'file'
+        | 'number'
+        | 'heading'
+        | 'paragraph'
+        | 'divider'
+        | 'image'
+        | 'signature';
+      submission_status: 'pending' | 'reviewed' | 'processed' | 'archived';
+      journey_status: 'draft' | 'active' | 'completed' | 'archived';
+      communication_channel: 'email' | 'sms' | 'whatsapp' | 'in_app';
+      integration_type:
+        | 'tave'
+        | 'lightblue'
+        | 'honeybook'
+        | 'google'
+        | 'outlook'
+        | 'stripe';
+      message_type:
+        | 'text'
+        | 'file'
+        | 'system_notification'
+        | 'form_update'
+        | 'booking_update';
+      sender_type: 'client' | 'vendor' | 'system';
+      conversation_status: 'active' | 'archived' | 'closed';
+      email_status:
+        | 'pending'
+        | 'sent'
+        | 'delivered'
+        | 'failed'
+        | 'bounced'
+        | 'spam';
+      email_provider: 'sendgrid' | 'resend';
+      notification_priority: 'low' | 'normal' | 'high' | 'urgent';
+      entity_type:
+        | 'client'
+        | 'vendor'
+        | 'form'
+        | 'message'
+        | 'booking'
+        | 'payment';
+      actor_type: 'client' | 'vendor' | 'system';
+    };
+  };
+}

@@ -1,0 +1,169 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+/**
+ * GET /api/billing/tiers
+ * Retrieve available subscription tiers with pricing and features
+ * Supports both monthly and yearly billing cycles
+ */
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const billingCycle = searchParams.get('cycle') || 'monthly';
+    const includeInactive = searchParams.get('include_inactive') === 'true';
+
+    // Validate billing cycle
+    if (!['monthly', 'yearly'].includes(billingCycle)) {
+      return NextResponse.json(
+        { error: 'Invalid billing cycle. Must be "monthly" or "yearly"' },
+        { status: 400 }
+      );
+    }
+
+    // Fetch subscription plans from database
+    let query = supabase
+      .from('subscription_plans')
+      .select(`
+        id,
+        name,
+        display_name,
+        description,
+        tier,
+        price,
+        yearly_price,
+        currency,
+        billing_interval,
+        trial_days,
+        tagline,
+        is_popular,
+        is_featured,
+        badge_text,
+        badge_variant,
+        limits,
+        features,
+        sort_order,
+        created_at,
+        updated_at
+      `)
+      .order('sort_order', { ascending: true });
+
+    if (!includeInactive) {
+      query = query.eq('is_active', true);
+    }
+
+    const { data: plans, error } = await query;
+
+    if (error) {
+      console.error('Database error fetching plans:', error);
+      return NextResponse.json(
+        { error: 'Failed to fetch subscription plans' },
+        { status: 500 }
+      );
+    }
+
+    // Transform plans to match frontend interface
+    const transformedPlans = plans?.map(plan => ({
+      id: plan.name, // Use name as ID for frontend compatibility
+      tier: plan.tier,
+      name: plan.display_name,
+      tagline: plan.tagline,
+      price: {
+        monthly: plan.price,
+        yearly: plan.yearly_price,
+        currency: plan.currency
+      },
+      featured: plan.is_featured,
+      popular: plan.is_popular,
+      badge: plan.badge_text ? {
+        text: plan.badge_text,
+        variant: plan.badge_variant
+      } : undefined,
+      limits: plan.limits,
+      features: plan.features?.map((feature: string, index: number) => ({
+        id: `${plan.name}_feature_${index}`,
+        name: feature,
+        included: true
+      })) || [],
+      cta: {
+        primary: getPrimaryCTA(plan.name, plan.price),
+        secondary: getSecondaryCTA(plan.name)
+      },
+      stripe_price_id: billingCycle === 'yearly' ? plan.yearly_stripe_price_id : plan.stripe_price_id,
+      trial_days: plan.trial_days
+    })) || [];
+
+    // Calculate savings for yearly billing
+    const plansWithSavings = transformedPlans.map(plan => {
+      if (billingCycle === 'yearly' && plan.price.monthly > 0) {
+        const yearlyDiscount = Math.round(
+          ((plan.price.monthly * 12 - plan.price.yearly) / (plan.price.monthly * 12)) * 100
+        );
+        return {
+          ...plan,
+          savings: yearlyDiscount > 0 ? {
+            percentage: yearlyDiscount,
+            amount: (plan.price.monthly * 12) - plan.price.yearly
+          } : undefined
+        };
+      }
+      return plan;
+    });
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        plans: plansWithSavings,
+        billing_cycle: billingCycle,
+        total_plans: plansWithSavings.length,
+        has_trial: plansWithSavings.some(plan => (plan.trial_days || 0) > 0)
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Tiers API error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * Helper function to get primary CTA text based on plan
+ */
+function getPrimaryCTA(planName: string, price: number): string {
+  switch (planName) {
+    case 'starter':
+      return 'Start Free';
+    case 'professional':
+    case 'premium':
+      return price > 0 ? 'Start 14-day trial' : 'Get Started';
+    case 'enterprise':
+      return 'Contact Sales';
+    default:
+      return 'Get Started';
+  }
+}
+
+/**
+ * Helper function to get secondary CTA text based on plan
+ */
+function getSecondaryCTA(planName: string): string | undefined {
+  switch (planName) {
+    case 'starter':
+      return 'No credit card required';
+    case 'professional':
+    case 'premium':
+      return 'Cancel anytime';
+    case 'enterprise':
+      return 'Schedule demo';
+    default:
+      return undefined;
+  }
+}

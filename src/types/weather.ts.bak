@@ -1,0 +1,271 @@
+/**
+ * Weather Integration Types for WedSync
+ * Real-time weather data for outdoor wedding planning
+ */
+
+export interface OpenWeatherMapResponse {
+  lat: number
+  lon: number
+  timezone: string
+  timezone_offset: number
+  current: CurrentWeather
+  minutely?: MinutelyWeather[]
+  hourly?: HourlyWeather[]
+  daily?: DailyWeather[]
+  alerts?: WeatherAlert[]
+}
+
+export interface CurrentWeather {
+  dt: number
+  sunrise: number
+  sunset: number
+  temp: number
+  feels_like: number
+  pressure: number
+  humidity: number
+  dew_point: number
+  uvi: number
+  clouds: number
+  visibility: number
+  wind_speed: number
+  wind_deg: number
+  wind_gust?: number
+  weather: WeatherDescription[]
+}
+
+export interface MinutelyWeather {
+  dt: number
+  precipitation: number
+}
+
+export interface HourlyWeather {
+  dt: number
+  temp: number
+  feels_like: number
+  pressure: number
+  humidity: number
+  dew_point: number
+  uvi: number
+  clouds: number
+  visibility: number
+  wind_speed: number
+  wind_deg: number
+  wind_gust?: number
+  weather: WeatherDescription[]
+  pop: number
+  rain?: { '1h': number }
+  snow?: { '1h': number }
+}
+
+export interface DailyWeather {
+  dt: number
+  sunrise: number
+  sunset: number
+  moonrise: number
+  moonset: number
+  moon_phase: number
+  summary: string
+  temp: {
+    day: number
+    min: number
+    max: number
+    night: number
+    eve: number
+    morn: number
+  }
+  feels_like: {
+    day: number
+    night: number
+    eve: number
+    morn: number
+  }
+  pressure: number
+  humidity: number
+  dew_point: number
+  wind_speed: number
+  wind_deg: number
+  wind_gust?: number
+  weather: WeatherDescription[]
+  clouds: number
+  pop: number
+  rain?: number
+  snow?: number
+  uvi: number
+}
+
+export interface WeatherDescription {
+  id: number
+  main: string
+  description: string
+  icon: string
+}
+
+export interface WeatherAlert {
+  sender_name: string
+  event: string
+  start: number
+  end: number
+  description: string
+  tags: string[]
+}
+
+export interface WeddingWeatherData {
+  id: string
+  weddingId: string
+  venue: {
+    name: string
+    lat: number
+    lon: number
+    address: string
+  }
+  current: CurrentWeather
+  hourlyForecast: HourlyWeather[]
+  dailyForecast: DailyWeather[]
+  alerts: WeatherAlert[]
+  weddingDate: string
+  isOutdoor: boolean
+  weatherDependentEvents: string[]
+  backupPlans: WeatherBackupPlan[]
+  settings: WeatherSettings
+  lastUpdated: string
+  cacheExpiry: string
+}
+
+export interface WeatherBackupPlan {
+  id: string
+  name: string
+  description: string
+  triggers: WeatherTrigger[]
+  actions: BackupAction[]
+  estimatedCost?: number
+  vendorsInvolved: string[]
+  timeToImplement: number
+  priority: 'low' | 'medium' | 'high' | 'critical'
+}
+
+export interface WeatherTrigger {
+  type: 'temperature' | 'precipitation' | 'wind' | 'visibility' | 'alert'
+  condition: 'above' | 'below' | 'equals' | 'contains'
+  value: number | string
+  timeframe: 'current' | '1h' | '3h' | '6h' | '12h' | '24h'
+}
+
+export interface BackupAction {
+  type: 'notify' | 'relocate' | 'reschedule' | 'equipment' | 'vendor'
+  description: string
+  assignedTo?: string
+  estimatedDuration: number
+  dependencies: string[]
+}
+
+export interface WeatherSettings {
+  alertThresholds: {
+    precipitation: number
+    windSpeed: number
+    temperature: {
+      min: number
+      max: number
+    }
+    visibility: number
+    uvIndex: number
+  }
+  notifications: {
+    email: boolean
+    sms: boolean
+    push: boolean
+    webNotifications: boolean
+  }
+  checkFrequency: 'hourly' | 'every6h' | 'daily'
+  leadTime: {
+    minHours: number
+    maxDays: number
+  }
+  autoTriggerBackups: boolean
+}
+
+export interface WeatherHistoryPattern {
+  month: number
+  day: number
+  historicalData: {
+    avgTemp: number
+    avgHumidity: number
+    avgPrecipitation: number
+    avgWindSpeed: number
+    commonConditions: string[]
+    extremeEvents: Array<{
+      year: number
+      condition: string
+      severity: 'minor' | 'moderate' | 'severe' | 'extreme'
+    }>
+  }
+  confidence: number
+  yearsOfData: number
+}
+
+export interface WeatherAnalytics {
+  weddingId: string
+  venue: {
+    name: string
+    coordinates: { lat: number; lon: number }
+  }
+  weddingDate: string
+  risk: {
+    overall: 'low' | 'medium' | 'high' | 'extreme'
+    precipitation: number
+    temperature: number
+    wind: number
+    visibility: number
+  }
+  recommendations: WeatherRecommendation[]
+  optimalScheduling: {
+    ceremony: string
+    photography: string[]
+    reception: string
+  }
+  historicalContext: WeatherHistoryPattern
+  confidence: number
+}
+
+export interface WeatherRecommendation {
+  type: 'equipment' | 'timing' | 'backup' | 'vendor' | 'logistics'
+  title: string
+  description: string
+  priority: 'low' | 'medium' | 'high' | 'critical'
+  estimatedCost?: number
+  implementationTime: number
+  affectedEvents: string[]
+}
+
+export interface WeatherNotification {
+  id: string
+  weddingId: string
+  type: 'forecast' | 'alert' | 'reminder' | 'escalation'
+  severity: 'info' | 'warning' | 'error' | 'critical'
+  title: string
+  message: string
+  weatherData: Partial<CurrentWeather | WeatherAlert>
+  timestamp: string
+  recipient: string
+  channel: 'email' | 'sms' | 'push' | 'web'
+  acknowledged: boolean
+  acknowledgedAt?: string
+  acknowledgedBy?: string
+}
+
+export interface WeatherApiResponse<T = any> {
+  success: boolean
+  data?: T
+  error?: string
+  timestamp: string
+  cacheHit: boolean
+  source: 'openweathermap' | 'cache' | 'fallback'
+}
+
+export interface WeatherCacheEntry {
+  key: string
+  data: OpenWeatherMapResponse
+  timestamp: string
+  expiry: string
+  hits: number
+  lastAccessed: string
+}

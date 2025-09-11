@@ -1,0 +1,915 @@
+/**
+ * @fileoverview Test suite for Wedding Team Directory Sync
+ * Tests wedding team member management, RSVP tracking, and platform integration
+ * @version 1.0.0
+ * @author WedSync Development Team
+ */
+
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { WeddingTeamDirectorySync } from '../WeddingTeamDirectorySync';
+import type { 
+  TeamDirectoryConfiguration,
+  WeddingTeamMember,
+  RSVPTrackingSystem,
+  PlatformIntegration,
+  TeamMemberInvitation
+} from '../WeddingTeamDirectorySync';
+
+// Mock Supabase
+vi.mock('@supabase/supabase-js');
+const mockSupabase = {
+  from: vi.fn(() => ({
+    select: vi.fn(() => ({
+      eq: vi.fn(() => ({
+        single: vi.fn(() => ({ data: null, error: null })),
+        order: vi.fn(() => ({ data: [], error: null }))
+      })),
+      in: vi.fn(() => ({ data: [], error: null })),
+      contains: vi.fn(() => ({ data: [], error: null }))
+    })),
+    insert: vi.fn(() => ({ data: null, error: null })),
+    update: vi.fn(() => ({
+      eq: vi.fn(() => ({ data: null, error: null }))
+    })),
+    upsert: vi.fn(() => ({ data: null, error: null })),
+    delete: vi.fn(() => ({
+      eq: vi.fn(() => ({ data: null, error: null }))
+    }))
+  })),
+  channel: vi.fn(() => ({
+    on: vi.fn().mockReturnThis(),
+    subscribe: vi.fn()
+  }))
+};
+
+vi.mocked(require('@supabase/supabase-js').createClient).mockReturnValue(mockSupabase);
+
+// Mock node-fetch
+global.fetch = vi.fn();
+
+// Mock node-cron for RSVP reminders
+vi.mock('node-cron', () => ({
+  schedule: vi.fn(),
+  destroy: vi.fn()
+}));
+
+describe('WeddingTeamDirectorySync', () => {
+  let teamDirectorySync: WeddingTeamDirectorySync;
+  let mockConfig: TeamDirectoryConfiguration;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    
+    mockConfig = {
+      supportedPlatforms: [
+        {
+          platformId: 'wedding_planning_pro',
+          name: 'Wedding Planning Pro',
+          apiEndpoint: 'https://api.weddingplanningpro.com/v1',
+          authMethod: 'api_key',
+          features: ['team_management', 'rsvp_tracking', 'timeline_sync', 'document_sharing'],
+          syncInterval: '*/15 * * * *' // Every 15 minutes
+        },
+        {
+          platformId: 'venue_coordinator',
+          name: 'Venue Coordinator System',
+          apiEndpoint: 'https://api.venuecoordinator.com/v2',
+          authMethod: 'oauth2',
+          features: ['staff_management', 'event_coordination', 'resource_booking'],
+          syncInterval: '0 */2 * * *' // Every 2 hours
+        },
+        {
+          platformId: 'vendor_network',
+          name: 'Vendor Network Hub',
+          apiEndpoint: 'https://api.vendornetwork.com/v1',
+          authMethod: 'jwt_bearer',
+          features: ['vendor_coordination', 'service_scheduling', 'communication_hub'],
+          syncInterval: '0 * * * *' // Every hour
+        }
+      ],
+      teamMemberRoles: {
+        'lead_planner': {
+          permissions: ['full_access', 'team_management', 'client_communication', 'vendor_coordination'],
+          responsibilities: ['timeline_oversight', 'budget_management', 'quality_assurance'],
+          hierarchyLevel: 1
+        },
+        'assistant_planner': {
+          permissions: ['timeline_management', 'vendor_communication', 'document_access'],
+          responsibilities: ['detail_coordination', 'vendor_follow_up', 'timeline_updates'],
+          hierarchyLevel: 2
+        },
+        'day_coordinator': {
+          permissions: ['timeline_execution', 'vendor_coordination', 'emergency_management'],
+          responsibilities: ['day_of_coordination', 'vendor_management', 'timeline_execution'],
+          hierarchyLevel: 2
+        },
+        'vendor_specialist': {
+          permissions: ['vendor_communication', 'service_coordination', 'timeline_input'],
+          responsibilities: ['vendor_liaison', 'service_quality', 'timeline_coordination'],
+          hierarchyLevel: 3
+        }
+      },
+      rsvpTrackingFeatures: {
+        enabled: true,
+        trackingMethods: ['email', 'sms', 'app_notification', 'phone_call'],
+        reminderSchedule: [
+          { days: 30, method: 'email' },
+          { days: 14, method: 'email' },
+          { days: 7, method: 'sms' },
+          { days: 3, method: 'phone_call' },
+          { days: 1, method: 'app_notification' }
+        ],
+        responseOptions: ['attending', 'not_attending', 'maybe', 'no_response'],
+        customQuestions: true,
+        dietaryTracking: true,
+        guestCountTracking: true
+      },
+      invitationManagement: {
+        enabled: true,
+        invitationTypes: ['save_the_date', 'formal_invitation', 'rsvp_reminder', 'thank_you'],
+        deliveryMethods: ['email', 'sms', 'postal_mail', 'app_notification'],
+        templateCustomization: true,
+        batchProcessing: true,
+        deliveryTracking: true
+      }
+    };
+
+    teamDirectorySync = new WeddingTeamDirectorySync('fake-url', 'fake-key', mockConfig);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('Team Member Management', () => {
+    it('should sync wedding team members across platforms', async () => {
+      const weddingTeamMembers: WeddingTeamMember[] = [
+        {
+          memberId: 'planner-sarah',
+          weddingId: 'wedding-123',
+          personalInfo: {
+            firstName: 'Sarah',
+            lastName: 'Johnson',
+            email: 'sarah@weddingplanning.com',
+            phone: '+1-555-123-4567',
+            title: 'Lead Wedding Planner'
+          },
+          role: 'lead_planner',
+          responsibilities: ['timeline_oversight', 'budget_management', 'client_communication'],
+          availability: {
+            timezone: 'America/New_York',
+            workingHours: { start: '09:00', end: '18:00' },
+            weekdays: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
+            emergencyContact: true
+          },
+          specializations: ['luxury_weddings', 'destination_weddings', 'multi_cultural_ceremonies'],
+          currentWeddings: 8,
+          maxCapacity: 12,
+          platformAccess: ['wedding_planning_pro', 'venue_coordinator']
+        },
+        {
+          memberId: 'coordinator-mike',
+          weddingId: 'wedding-123',
+          personalInfo: {
+            firstName: 'Mike',
+            lastName: 'Davis',
+            email: 'mike@weddingplanning.com',
+            phone: '+1-555-987-6543',
+            title: 'Day-of Coordinator'
+          },
+          role: 'day_coordinator',
+          responsibilities: ['day_of_coordination', 'vendor_management', 'timeline_execution'],
+          availability: {
+            timezone: 'America/New_York',
+            flexibleSchedule: true,
+            weekendAvailable: true,
+            emergencyContact: true
+          },
+          specializations: ['day_of_coordination', 'vendor_management', 'crisis_management'],
+          currentWeddings: 5,
+          maxCapacity: 8,
+          platformAccess: ['wedding_planning_pro', 'vendor_network']
+        },
+        {
+          memberId: 'assistant-jenny',
+          weddingId: 'wedding-123',
+          personalInfo: {
+            firstName: 'Jenny',
+            lastName: 'Wu',
+            email: 'jenny@weddingplanning.com',
+            phone: '+1-555-456-7890',
+            title: 'Assistant Planner'
+          },
+          role: 'assistant_planner',
+          responsibilities: ['detail_coordination', 'vendor_follow_up', 'timeline_updates'],
+          availability: {
+            timezone: 'America/New_York',
+            workingHours: { start: '10:00', end: '19:00' },
+            weekdays: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
+          },
+          specializations: ['detail_management', 'vendor_coordination', 'timeline_management'],
+          currentWeddings: 12,
+          maxCapacity: 15,
+          platformAccess: ['wedding_planning_pro']
+        }
+      ];
+
+      // Mock successful platform sync
+      vi.mocked(fetch)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ synced_members: 3, status: 'success' })
+        } as Response)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ coordinator_access_granted: true })
+        } as Response)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ vendor_network_integrated: true })
+        } as Response);
+
+      const syncResult = await teamDirectorySync.syncTeamMembers(weddingTeamMembers);
+
+      expect(syncResult.success).toBe(true);
+      expect(syncResult.totalMembers).toBe(3);
+      expect(syncResult.syncedPlatforms).toBe(3);
+      expect(syncResult.hierarchyEstablished).toBe(true);
+      expect(syncResult.permissionsConfigured).toBe(true);
+    });
+
+    it('should handle team member role assignments', async () => {
+      const roleAssignment = {
+        memberId: 'planner-sarah',
+        weddingId: 'wedding-123',
+        newRole: 'lead_planner',
+        effectiveDate: new Date('2024-02-01'),
+        reassignmentReason: 'promotion',
+        previousRole: 'assistant_planner',
+        responsibilityTransfer: {
+          currentWeddings: ['wedding-456', 'wedding-789'],
+          ongoingTasks: ['vendor_coordination', 'timeline_updates'],
+          clientRelationships: ['couple-123', 'couple-456']
+        }
+      };
+
+      const assignmentResult = await teamDirectorySync.assignTeamMemberRole(roleAssignment);
+
+      expect(assignmentResult.success).toBe(true);
+      expect(assignmentResult.roleUpdated).toBe(true);
+      expect(assignmentResult.permissionsGranted).toContain('full_access');
+      expect(assignmentResult.responsibilitiesTransferred).toBe(true);
+      expect(assignmentResult.clientNotificationSent).toBe(true);
+    });
+
+    it('should manage team member availability and workload', async () => {
+      const workloadManagement = {
+        memberId: 'coordinator-mike',
+        currentWorkload: {
+          activeWeddings: 5,
+          upcomingDeadlines: 12,
+          weeklyHours: 45,
+          stressLevel: 'moderate'
+        },
+        availabilityWindow: {
+          startDate: new Date('2024-06-01'),
+          endDate: new Date('2024-08-31'),
+          maxNewAssignments: 3
+        },
+        skillsAssessment: {
+          dayOfCoordination: 'expert',
+          vendorManagement: 'advanced',
+          crisisManagement: 'expert',
+          budgetManagement: 'intermediate'
+        }
+      };
+
+      const workloadResult = await teamDirectorySync.manageTeamMemberWorkload(workloadManagement);
+
+      expect(workloadResult.capacityAvailable).toBe(true);
+      expect(workloadResult.recommendedAssignments).toBeGreaterThan(0);
+      expect(workloadResult.skillMatch).toBeDefined();
+      expect(workloadResult.workloadBalanced).toBe(true);
+    });
+  });
+
+  describe('RSVP Tracking System', () => {
+    it('should implement comprehensive RSVP tracking', async () => {
+      const rsvpSystem: RSVPTrackingSystem = {
+        weddingId: 'wedding-123',
+        guestList: [
+          {
+            guestId: 'guest-001',
+            name: 'John & Mary Smith',
+            email: 'john.mary@email.com',
+            phone: '+1-555-111-2222',
+            category: 'family',
+            plusOneAllowed: true,
+            dietaryRestrictions: ['vegetarian'],
+            rsvpStatus: 'pending'
+          },
+          {
+            guestId: 'guest-002',
+            name: 'Robert Johnson',
+            email: 'rob.johnson@email.com',
+            category: 'friend',
+            plusOneAllowed: false,
+            rsvpStatus: 'attending',
+            responseDate: new Date('2024-01-15')
+          },
+          {
+            guestId: 'guest-003',
+            name: 'Sarah & David Wilson',
+            email: 'sarah.david@email.com',
+            phone: '+1-555-333-4444',
+            category: 'colleague',
+            plusOneAllowed: true,
+            specialRequests: ['child seating', 'early departure'],
+            rsvpStatus: 'not_attending',
+            responseDate: new Date('2024-01-10')
+          }
+        ],
+        weddingDate: new Date('2024-06-15'),
+        rsvpDeadline: new Date('2024-05-15'),
+        reminderSchedule: true,
+        trackingMetrics: {
+          totalInvited: 150,
+          responded: 89,
+          attending: 134,
+          notAttending: 16,
+          noResponse: 61
+        }
+      };
+
+      const trackingResult = await teamDirectorySync.implementRSVPTracking(rsvpSystem);
+
+      expect(trackingResult.success).toBe(true);
+      expect(trackingResult.guestsTracked).toBe(3);
+      expect(trackingResult.responseRate).toBe(67); // 89/134 * 100
+      expect(trackingResult.remindersScheduled).toBe(true);
+      expect(trackingResult.dietaryRequirementsTracked).toBe(1);
+    });
+
+    it('should send automated RSVP reminders', async () => {
+      const reminderConfig = {
+        weddingId: 'wedding-123',
+        reminderType: 'rsvp_deadline_approaching',
+        targetGuests: ['guest-001', 'guest-004', 'guest-007'],
+        reminderContent: {
+          subject: 'RSVP Reminder: Sarah & Mike\'s Wedding',
+          message: 'We\'re excited to celebrate with you! Please confirm your attendance by May 15th.',
+          personalizeMessage: true,
+          includeWeddingDetails: true,
+          includeVenueInfo: true
+        },
+        deliveryMethod: 'email',
+        scheduledDate: new Date('2024-05-01T10:00:00Z')
+      };
+
+      // Mock successful reminder sending
+      vi.mocked(fetch).mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ 
+          reminders_sent: 3, 
+          delivery_status: 'success',
+          failed_deliveries: 0 
+        })
+      } as Response);
+
+      const reminderResult = await teamDirectorySync.sendRSVPReminders(reminderConfig);
+
+      expect(reminderResult.success).toBe(true);
+      expect(reminderResult.remindersSent).toBe(3);
+      expect(reminderResult.failedDeliveries).toBe(0);
+      expect(reminderResult.deliveryMethod).toBe('email');
+    });
+
+    it('should analyze RSVP response patterns', async () => {
+      const responseAnalysis = await teamDirectorySync.analyzeRSVPPatterns('wedding-123', {
+        analysisTimeframe: { 
+          start: new Date('2024-01-01'), 
+          end: new Date('2024-01-31') 
+        },
+        segmentBy: ['guest_category', 'invitation_method', 'reminder_count'],
+        includeComparisons: true
+      });
+
+      expect(responseAnalysis.overallResponseRate).toBeDefined();
+      expect(responseAnalysis.categoryBreakdown).toBeDefined();
+      expect(responseAnalysis.responseTimeline).toBeDefined();
+      expect(responseAnalysis.reminderEffectiveness).toBeDefined();
+      expect(responseAnalysis.predictions).toBeDefined();
+    });
+  });
+
+  describe('Invitation Management', () => {
+    it('should manage wedding invitation lifecycle', async () => {
+      const invitationCampaign = {
+        weddingId: 'wedding-123',
+        campaignType: 'formal_invitation',
+        guestSegments: [
+          {
+            segmentName: 'immediate_family',
+            guestIds: ['guest-001', 'guest-002', 'guest-003'],
+            invitationTemplate: 'formal_family_template',
+            deliveryMethod: 'postal_mail',
+            personalMessage: 'We would be honored by your presence at our special day'
+          },
+          {
+            segmentName: 'close_friends',
+            guestIds: ['guest-004', 'guest-005', 'guest-006'],
+            invitationTemplate: 'elegant_friends_template',
+            deliveryMethod: 'email',
+            personalMessage: 'Can\'t wait to celebrate with you!'
+          },
+          {
+            segmentName: 'colleagues',
+            guestIds: ['guest-007', 'guest-008', 'guest-009'],
+            invitationTemplate: 'professional_template',
+            deliveryMethod: 'email',
+            personalMessage: 'We would love to have you join our celebration'
+          }
+        ],
+        scheduledSendDate: new Date('2024-04-01T09:00:00Z'),
+        rsvpDeadline: new Date('2024-05-15'),
+        trackingEnabled: true
+      };
+
+      const invitationResult = await teamDirectorySync.launchInvitationCampaign(invitationCampaign);
+
+      expect(invitationResult.success).toBe(true);
+      expect(invitationResult.totalInvitations).toBe(9);
+      expect(invitationResult.segmentsProcessed).toBe(3);
+      expect(invitationResult.deliveryMethodsUsed).toBe(2);
+      expect(invitationResult.trackingEnabled).toBe(true);
+    });
+
+    it('should track invitation delivery and engagement', async () => {
+      const deliveryTracking = await teamDirectorySync.trackInvitationDelivery('wedding-123', {
+        trackingTimeframe: { 
+          start: new Date('2024-04-01'), 
+          end: new Date('2024-04-07') 
+        },
+        metrics: ['delivery_rate', 'open_rate', 'click_rate', 'response_rate'],
+        segmentBreakdown: true
+      });
+
+      expect(deliveryTracking.totalSent).toBeDefined();
+      expect(deliveryTracking.deliveryRate).toBeGreaterThan(90);
+      expect(deliveryTracking.engagementMetrics).toBeDefined();
+      expect(deliveryTracking.segmentPerformance).toBeDefined();
+      expect(deliveryTracking.failedDeliveries).toBeDefined();
+    });
+
+    it('should handle invitation customization and personalization', async () => {
+      const customization = {
+        invitationId: 'invitation-456',
+        customizations: {
+          coupleNames: 'Sarah & Michael',
+          weddingDate: 'Saturday, June 15th, 2024',
+          venueName: 'Grand Ballroom Events',
+          venueAddress: '123 Event Plaza, San Francisco, CA',
+          ceremonyTime: '4:00 PM',
+          receptionTime: '6:00 PM',
+          dressCode: 'Cocktail Attire',
+          specialInstructions: 'Shuttle service available from nearby hotels'
+        },
+        personalization: {
+          guestName: 'Mr. & Mrs. Johnson',
+          personalMessage: 'We can\'t imagine celebrating without you there!',
+          sharedMemories: 'Looking forward to creating more memories together',
+          roleInWedding: 'family_friends'
+        },
+        designElements: {
+          colorScheme: 'sage_green_gold',
+          font: 'elegant_serif',
+          motifs: ['floral_border', 'gold_accents'],
+          photos: ['engagement_photo.jpg']
+        }
+      };
+
+      const customizationResult = await teamDirectorySync.customizeInvitation(customization);
+
+      expect(customizationResult.success).toBe(true);
+      expect(customizationResult.templateGenerated).toBe(true);
+      expect(customizationResult.personalizationApplied).toBe(true);
+      expect(customizationResult.designElementsIntegrated).toBe(4);
+      expect(customizationResult.previewAvailable).toBe(true);
+    });
+  });
+
+  describe('Platform Integration', () => {
+    it('should integrate with wedding planning platforms', async () => {
+      const platformIntegration: PlatformIntegration = {
+        weddingId: 'wedding-123',
+        targetPlatform: 'wedding_planning_pro',
+        integrationScope: {
+          teamMembers: true,
+          rsvpTracking: true,
+          timelineSync: true,
+          documentSharing: true,
+          communicationHub: true
+        },
+        dataMapping: {
+          teamMembers: {
+            'lead_planner': 'primary_coordinator',
+            'assistant_planner': 'secondary_coordinator',
+            'day_coordinator': 'event_manager',
+            'vendor_specialist': 'vendor_liaison'
+          },
+          rsvpStatus: {
+            'attending': 'confirmed',
+            'not_attending': 'declined',
+            'maybe': 'tentative',
+            'no_response': 'pending'
+          }
+        },
+        syncFrequency: '*/15 * * * *', // Every 15 minutes
+        conflictResolution: 'wedsync_priority'
+      };
+
+      const integrationResult = await teamDirectorySync.integratePlatform(platformIntegration);
+
+      expect(integrationResult.success).toBe(true);
+      expect(integrationResult.featuresEnabled).toBe(5);
+      expect(integrationResult.dataMappingApplied).toBe(true);
+      expect(integrationResult.syncScheduleEstablished).toBe(true);
+      expect(integrationResult.conflictResolutionConfigured).toBe(true);
+    });
+
+    it('should sync timeline and milestone data', async () => {
+      const timelineSync = {
+        weddingId: 'wedding-123',
+        timeline: {
+          milestones: [
+            {
+              id: 'milestone-1',
+              title: 'Final Guest Count Due',
+              dueDate: new Date('2024-05-15'),
+              responsible: 'lead_planner',
+              status: 'pending',
+              dependencies: ['rsvp_deadline']
+            },
+            {
+              id: 'milestone-2',
+              title: 'Final Menu Selection',
+              dueDate: new Date('2024-05-20'),
+              responsible: 'assistant_planner',
+              status: 'in_progress',
+              dependencies: ['guest_count_confirmed']
+            },
+            {
+              id: 'milestone-3',
+              title: 'Vendor Final Coordination Meeting',
+              dueDate: new Date('2024-06-01'),
+              responsible: 'day_coordinator',
+              status: 'not_started',
+              dependencies: ['menu_finalized', 'timeline_confirmed']
+            }
+          ],
+          weddingDayTimeline: [
+            {
+              time: '14:00',
+              event: 'Vendor Setup Begins',
+              responsible: ['day_coordinator', 'vendor_specialist'],
+              location: 'venue_main_hall'
+            },
+            {
+              time: '16:00',
+              event: 'Ceremony Begins',
+              responsible: ['lead_planner'],
+              location: 'ceremony_space'
+            },
+            {
+              time: '18:00',
+              event: 'Reception Begins',
+              responsible: ['day_coordinator'],
+              location: 'reception_hall'
+            }
+          ]
+        },
+        syncTargets: ['wedding_planning_pro', 'venue_coordinator']
+      };
+
+      const timelineResult = await teamDirectorySync.syncWeddingTimeline(timelineSync);
+
+      expect(timelineResult.success).toBe(true);
+      expect(timelineResult.milestonesSynced).toBe(3);
+      expect(timelineResult.timelineEventsSynced).toBe(3);
+      expect(timelineResult.platformsSynced).toBe(2);
+      expect(timelineResult.responsibilityAssignmentsCleared).toBe(true);
+    });
+
+    it('should handle cross-platform team communication', async () => {
+      const communicationSetup = {
+        weddingId: 'wedding-123',
+        communicationChannels: [
+          {
+            channelId: 'general-planning',
+            channelName: 'General Wedding Planning',
+            participants: ['planner-sarah', 'assistant-jenny', 'coordinator-mike'],
+            platforms: ['wedding_planning_pro', 'vendor_network'],
+            permissions: ['read', 'write', 'share_files']
+          },
+          {
+            channelId: 'vendor-coordination',
+            channelName: 'Vendor Coordination',
+            participants: ['coordinator-mike', 'vendor_specialist'],
+            platforms: ['vendor_network'],
+            permissions: ['read', 'write', 'schedule_meetings']
+          },
+          {
+            channelId: 'client-updates',
+            channelName: 'Client Updates',
+            participants: ['planner-sarah', 'assistant-jenny'],
+            platforms: ['wedding_planning_pro'],
+            permissions: ['read', 'write', 'send_notifications']
+          }
+        ],
+        notificationRules: {
+          urgentUpdates: 'immediate',
+          timelineChanges: 'within_1_hour',
+          vendorMessages: 'within_2_hours',
+          clientQuestions: 'within_30_minutes'
+        }
+      };
+
+      const communicationResult = await teamDirectorySync.setupCrossPlatformCommunication(communicationSetup);
+
+      expect(communicationResult.success).toBe(true);
+      expect(communicationResult.channelsCreated).toBe(3);
+      expect(communicationResult.platformIntegrations).toBe(2);
+      expect(communicationResult.notificationRulesApplied).toBe(4);
+      expect(communicationResult.participantsNotified).toBe(true);
+    });
+  });
+
+  describe('Wedding Industry Specific Features', () => {
+    it('should manage wedding party hierarchies and responsibilities', async () => {
+      const weddingPartyManagement = {
+        weddingId: 'wedding-123',
+        brideParty: [
+          {
+            memberId: 'maid-of-honor',
+            name: 'Jennifer Best Friend',
+            role: 'maid_of_honor',
+            responsibilities: ['bridal_shower_planning', 'bachelorette_coordination', 'ceremony_support'],
+            contact: { email: 'jennifer@email.com', phone: '+1-555-101-2020' }
+          },
+          {
+            memberId: 'bridesmaid-1',
+            name: 'Lisa Sister',
+            role: 'bridesmaid',
+            responsibilities: ['ceremony_support', 'reception_assistance'],
+            contact: { email: 'lisa@email.com', phone: '+1-555-202-3030' }
+          }
+        ],
+        groomParty: [
+          {
+            memberId: 'best-man',
+            name: 'Tom Best Man',
+            role: 'best_man',
+            responsibilities: ['bachelor_party_planning', 'ceremony_support', 'speech_giving'],
+            contact: { email: 'tom@email.com', phone: '+1-555-303-4040' }
+          },
+          {
+            memberId: 'groomsman-1',
+            name: 'Mark Brother',
+            role: 'groomsman',
+            responsibilities: ['ceremony_support', 'reception_assistance'],
+            contact: { email: 'mark@email.com', phone: '+1-555-404-5050' }
+          }
+        ],
+        familyRoles: [
+          {
+            memberId: 'mother-bride',
+            name: 'Patricia Mother',
+            role: 'mother_of_bride',
+            responsibilities: ['family_coordination', 'tradition_oversight'],
+            contact: { email: 'patricia@email.com', phone: '+1-555-505-6060' }
+          }
+        ],
+        coordinationNeeds: {
+          fittingSchedules: true,
+          rehearsalCoordination: true,
+          dayOfTasks: true,
+          communicationPreferences: true
+        }
+      };
+
+      const partyResult = await teamDirectorySync.manageWeddingParty(weddingPartyManagement);
+
+      expect(partyResult.success).toBe(true);
+      expect(partyResult.bridePartyMembers).toBe(2);
+      expect(partyResult.groomPartyMembers).toBe(2);
+      expect(partyResult.familyRoles).toBe(1);
+      expect(partyResult.totalResponsibilities).toBeGreaterThan(0);
+      expect(partyResult.coordinationSystemsEnabled).toBe(4);
+    });
+
+    it('should coordinate multi-cultural wedding requirements', async () => {
+      const multiCulturalCoordination = {
+        weddingId: 'wedding-123',
+        culturalElements: [
+          {
+            culture: 'indian',
+            ceremonies: ['mehendi', 'sangeet', 'ceremony', 'reception'],
+            requirements: {
+              specialVendors: ['henna_artist', 'indian_caterer', 'dj_bollywood'],
+              customTiming: { mehendi: '4_hours', sangeet: '6_hours', ceremony: '3_hours' },
+              traditionalElements: ['mandap', 'fire_ceremony', 'garland_exchange'],
+              dietaryConsiderations: ['vegetarian_options', 'halal_options']
+            }
+          },
+          {
+            culture: 'irish',
+            ceremonies: ['ceremony', 'reception'],
+            requirements: {
+              traditionalElements: ['handfasting', 'claddagh_rings', 'celtic_music'],
+              specialVendors: ['celtic_musicians', 'traditional_baker'],
+              customTiming: { ceremony: '45_minutes', reception: '5_hours' }
+            }
+          }
+        ],
+        coordinationChallenges: {
+          languageRequirements: ['english', 'hindi', 'gaelic_translator'],
+          timelineIntegration: 'sequential_ceremonies',
+          vendorCoordination: 'specialized_requirements',
+          guestEducation: 'cultural_ceremony_guides'
+        }
+      };
+
+      const culturalResult = await teamDirectorySync.coordinateMultiCulturalWedding(multiCulturalCoordination);
+
+      expect(culturalResult.success).toBe(true);
+      expect(culturalResult.culturesAccommodated).toBe(2);
+      expect(culturalResult.ceremoniesCoordinated).toBe(6);
+      expect(culturalResult.specialistVendorsRequired).toBeGreaterThan(0);
+      expect(culturalResult.timelineComplexity).toBe('high');
+      expect(culturalResult.coordinationPlan).toBeDefined();
+    });
+
+    it('should manage destination wedding logistics', async () => {
+      const destinationWeddingLogistics = {
+        weddingId: 'wedding-123',
+        destination: {
+          location: 'Tuscany, Italy',
+          venue: 'Villa Spectacular',
+          localTimeZone: 'Europe/Rome',
+          language: 'italian',
+          currency: 'EUR'
+        },
+        guestLogistics: {
+          totalGuests: 85,
+          internationalGuests: 70,
+          accommodationNeeds: {
+            hotelBlocks: ['Hotel Tuscany', 'Villa Guest House'],
+            shuttleService: true,
+            airportTransfers: true
+          },
+          travelRequirements: {
+            passportRequired: true,
+            visaInformation: 'provided',
+            travelInsurance: 'recommended',
+            healthRequirements: 'covid_vaccination'
+          }
+        },
+        localCoordination: {
+          localWeddingPlanner: 'Tuscany Wedding Specialists',
+          translationServices: true,
+          localVendors: {
+            catering: 'local_tuscan_cuisine',
+            photography: 'destination_specialists',
+            floristry: 'local_seasonal_flowers'
+          },
+          legalRequirements: {
+            marriageLicense: 'italian_civil_ceremony',
+            documentation: 'apostille_required',
+            witnesses: 'local_officials'
+          }
+        }
+      };
+
+      const destinationResult = await teamDirectorySync.manageDestinationWedding(destinationWeddingLogistics);
+
+      expect(destinationResult.success).toBe(true);
+      expect(destinationResult.logisticsComplexity).toBe('high');
+      expect(destinationResult.guestTravelPlanned).toBe(true);
+      expect(destinationResult.localCoordinationEstablished).toBe(true);
+      expect(destinationResult.legalRequirementsMet).toBe(true);
+      expect(destinationResult.translationServicesArranged).toBe(true);
+    });
+  });
+
+  describe('Analytics and Reporting', () => {
+    it('should generate team performance analytics', async () => {
+      const teamAnalytics = await teamDirectorySync.generateTeamAnalytics('wedding-123', {
+        analysisPeriod: { start: new Date('2024-01-01'), end: new Date('2024-06-15') },
+        metrics: ['task_completion', 'response_times', 'client_satisfaction', 'collaboration_effectiveness'],
+        includeComparisons: true
+      });
+
+      expect(teamAnalytics.teamEfficiencyScore).toBeDefined();
+      expect(teamAnalytics.taskCompletionRate).toBeGreaterThan(85);
+      expect(teamAnalytics.averageResponseTime).toBeDefined();
+      expect(teamAnalytics.clientSatisfactionScore).toBeDefined();
+      expect(teamAnalytics.collaborationMetrics).toBeDefined();
+    });
+
+    it('should track RSVP and invitation campaign effectiveness', async () => {
+      const campaignAnalytics = await teamDirectorySync.analyzeCampaignEffectiveness('wedding-123', {
+        campaigns: ['save_the_date', 'formal_invitation', 'rsvp_reminders'],
+        metrics: ['delivery_rate', 'open_rate', 'response_rate', 'conversion_rate'],
+        segmentAnalysis: ['guest_category', 'delivery_method', 'timing']
+      });
+
+      expect(campaignAnalytics.overallEffectiveness).toBeDefined();
+      expect(campaignAnalytics.campaignBreakdown).toBeDefined();
+      expect(campaignAnalytics.segmentPerformance).toBeDefined();
+      expect(campaignAnalytics.optimizationRecommendations).toBeDefined();
+    });
+  });
+
+  describe('Error Handling and Recovery', () => {
+    it('should handle platform integration failures gracefully', async () => {
+      vi.mocked(fetch).mockRejectedValue(new Error('Platform API unavailable'));
+
+      const syncResult = await teamDirectorySync.syncTeamMembers([{
+        memberId: 'test-member',
+        weddingId: 'wedding-123',
+        role: 'assistant_planner'
+      } as WeddingTeamMember]);
+
+      expect(syncResult.success).toBe(false);
+      expect(syncResult.errors).toBeDefined();
+      expect(syncResult.failedPlatforms).toBeGreaterThan(0);
+      expect(syncResult.retryRecommended).toBe(true);
+    });
+
+    it('should recover from RSVP tracking failures', async () => {
+      const rsvpRecovery = await teamDirectorySync.recoverRSVPData('wedding-123', {
+        failureType: 'data_corruption',
+        affectedGuests: ['guest-001', 'guest-002'],
+        backupAvailable: true,
+        partialDataRecovery: true
+      });
+
+      expect(rsvpRecovery.success).toBe(true);
+      expect(rsvpRecovery.dataRecovered).toBe(true);
+      expect(rsvpRecovery.guestsRestored).toBe(2);
+      expect(rsvpRecovery.trackingResumed).toBe(true);
+    });
+
+    it('should validate team member data integrity', async () => {
+      const invalidTeamMember = {
+        memberId: 'invalid-member',
+        weddingId: 'wedding-123',
+        personalInfo: {
+          firstName: '',  // Empty name
+          email: 'invalid-email-format',
+          phone: 'invalid-phone'
+        },
+        role: 'unknown_role'
+      } as WeddingTeamMember;
+
+      const validationResult = await teamDirectorySync.validateTeamMember(invalidTeamMember);
+
+      expect(validationResult.valid).toBe(false);
+      expect(validationResult.validationErrors).toBeDefined();
+      expect(validationResult.validationErrors?.firstName).toContain('required');
+      expect(validationResult.validationErrors?.email).toContain('invalid format');
+      expect(validationResult.validationErrors?.role).toContain('unknown role');
+    });
+  });
+
+  describe('Security and Privacy', () => {
+    it('should ensure guest data privacy compliance', async () => {
+      const privacyCompliance = await teamDirectorySync.validatePrivacyCompliance('wedding-123', {
+        dataTypes: ['personal_info', 'contact_details', 'dietary_restrictions', 'rsvp_responses'],
+        consentObtained: true,
+        dataProcessingPurpose: 'wedding_planning_communication',
+        dataRetentionPeriod: 24, // months
+        thirdPartySharing: ['venue_coordinator', 'catering_service']
+      });
+
+      expect(privacyCompliance.compliant).toBe(true);
+      expect(privacyCompliance.consentDocumented).toBe(true);
+      expect(privacyCompliance.dataMinimizationApplied).toBe(true);
+      expect(privacyCompliance.retentionPolicyDefined).toBe(true);
+    });
+
+    it('should secure team member authentication', async () => {
+      const authSecurity = await teamDirectorySync.validateTeamMemberAuth('planner-sarah', {
+        authMethod: 'multi_factor',
+        platformAccess: ['wedding_planning_pro', 'venue_coordinator'],
+        permissionLevel: 'full_access',
+        sessionTimeout: 8 // hours
+      });
+
+      expect(authSecurity.authenticated).toBe(true);
+      expect(authSecurity.mfaEnabled).toBe(true);
+      expect(authSecurity.platformAccessVerified).toBe(true);
+      expect(authSecurity.permissionsValidated).toBe(true);
+    });
+  });
+});

@@ -1,0 +1,545 @@
+/**
+ * WS-147: Authentication Security Service Unit Tests
+ * Tests for password validation, MFA, device fingerprinting, and rate limiting
+ */
+
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { AuthSecurityService, SecurityEventType } from '@/lib/services/auth-security-service';
+
+// Mock Supabase client
+vi.mock('@/lib/supabase/client', () => ({
+  supabase: {
+    from: vi.fn(() => ({
+      select: vi.fn(() => ({
+        eq: vi.fn(() => ({
+          single: vi.fn(() => Promise.resolve({ data: null, error: null }))
+        }))
+      })),
+      update: vi.fn(() => ({
+        eq: vi.fn(() => Promise.resolve({ data: null, error: null }))
+      })),
+      insert: vi.fn(() => Promise.resolve({ data: null, error: null }))
+    })),
+    rpc: vi.fn(() => Promise.resolve({ data: null, error: null }))
+  }
+}));
+
+describe('WS-147: Authentication Security Service', () => {
+  describe('Password Strength Validation', () => {
+    it('should validate strong passwords correctly', () => {
+      const result = AuthSecurityService.validatePasswordStrength('MySecure!Password123$');
+      
+      expect(result.meetsRequirements).toBe(true);
+      expect(result.requirements.minLength).toBe(true);
+      expect(result.requirements.hasUpperCase).toBe(true);
+      expect(result.requirements.hasLowerCase).toBe(true);
+      expect(result.requirements.hasNumbers).toBe(true);
+      expect(result.requirements.hasSpecialChars).toBe(true);
+      expect(result.requirements.notCommon).toBe(true);
+      expect(result.score).toBeGreaterThanOrEqual(4);
+    });
+
+    it('should reject weak passwords', () => {
+      const weakPasswords = [
+        'password',
+        '123456789',
+        'qwertyuiop',
+        'short'
+      ];
+
+      weakPasswords.forEach(password => {
+        const result = AuthSecurityService.validatePasswordStrength(password);
+        expect(result.meetsRequirements).toBe(false);
+        expect(result.score).toBeLessThan(3);
+      });
+    });
+
+    it('should provide helpful feedback for password improvements', () => {
+      const result = AuthSecurityService.validatePasswordStrength('weakpassword');
+      
+      expect(result.meetsRequirements).toBe(false);
+      expect(result.feedback.suggestions).toContain('Add at least one uppercase letter');
+      expect(result.feedback.suggestions).toContain('Add at least one number');
+      expect(result.feedback.suggestions).toContain('Add at least one special character');
+    });
+
+    it('should detect commonly used passwords', () => {
+      const commonPasswords = ['password123', 'qwerty', 'admin', 'welcome'];
+      
+      commonPasswords.forEach(password => {
+        const result = AuthSecurityService.validatePasswordStrength(password);
+        expect(result.requirements.notCommon).toBe(false);
+        expect(result.feedback.warning).toContain('commonly used password');
+      });
+    });
+
+    it('should enforce minimum password length', () => {
+      const shortPassword = 'Sh0rt!';
+      const result = AuthSecurityService.validatePasswordStrength(shortPassword);
+      
+      expect(result.requirements.minLength).toBe(false);
+      expect(result.feedback.suggestions).toContain('Password must be at least 12 characters long');
+    });
+  });
+
+  describe('Device Fingerprinting', () => {
+    it('should generate consistent fingerprints for the same device', () => {
+      const headers = new Headers({
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124',
+        'accept-language': 'en-US,en;q=0.9',
+        'accept-encoding': 'gzip, deflate, br'
+      });
+      
+      const req1 = new Request('https://test.com', { headers });
+      const req2 = new Request('https://test.com', { headers });
+      
+      const fingerprint1 = AuthSecurityService.generateDeviceFingerprint(req1);
+      const fingerprint2 = AuthSecurityService.generateDeviceFingerprint(req2);
+      
+      expect(fingerprint1.fingerprint).toBe(fingerprint2.fingerprint);
+    });
+
+    it('should generate different fingerprints for different devices', () => {
+      const headers1 = new Headers({
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124'
+      });
+      
+      const headers2 = new Headers({
+        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15'
+      });
+      
+      const req1 = new Request('https://test.com', { headers: headers1 });
+      const req2 = new Request('https://test.com', { headers: headers2 });
+      
+      const fingerprint1 = AuthSecurityService.generateDeviceFingerprint(req1);
+      const fingerprint2 = AuthSecurityService.generateDeviceFingerprint(req2);
+      
+      expect(fingerprint1.fingerprint).not.toBe(fingerprint2.fingerprint);
+    });
+
+    it('should correctly detect device types', () => {
+      const desktopUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124';
+      const mobileUA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) Mobile/15E148';
+      const tabletUA = 'Mozilla/5.0 (iPad; CPU OS 14_6 like Mac OS X) Safari/604.1';
+      
+      const desktopReq = new Request('https://test.com', {
+        headers: new Headers({ 'user-agent': desktopUA })
+      });
+      const mobileReq = new Request('https://test.com', {
+        headers: new Headers({ 'user-agent': mobileUA })
+      });
+      const tabletReq = new Request('https://test.com', {
+        headers: new Headers({ 'user-agent': tabletUA })
+      });
+      
+      expect(AuthSecurityService.generateDeviceFingerprint(desktopReq).deviceType).toBe('desktop');
+      expect(AuthSecurityService.generateDeviceFingerprint(mobileReq).deviceType).toBe('mobile');
+      expect(AuthSecurityService.generateDeviceFingerprint(tabletReq).deviceType).toBe('tablet');
+    });
+
+    it('should parse browser information correctly', () => {
+      const chromeUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124';
+      const firefoxUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Firefox/89.0';
+      const safariUA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Version/14.1.1 Safari/605.1.15';
+      
+      const chromeReq = new Request('https://test.com', {
+        headers: new Headers({ 'user-agent': chromeUA })
+      });
+      const firefoxReq = new Request('https://test.com', {
+        headers: new Headers({ 'user-agent': firefoxUA })
+      });
+      const safariReq = new Request('https://test.com', {
+        headers: new Headers({ 'user-agent': safariUA })
+      });
+      
+      const chromeFingerprint = AuthSecurityService.generateDeviceFingerprint(chromeReq);
+      const firefoxFingerprint = AuthSecurityService.generateDeviceFingerprint(firefoxReq);
+      const safariFingerprint = AuthSecurityService.generateDeviceFingerprint(safariReq);
+      
+      expect(chromeFingerprint.browserInfo.name).toBe('Chrome');
+      expect(chromeFingerprint.browserInfo.engine).toBe('Blink');
+      
+      expect(firefoxFingerprint.browserInfo.name).toBe('Firefox');
+      expect(firefoxFingerprint.browserInfo.engine).toBe('Gecko');
+      
+      expect(safariFingerprint.browserInfo.name).toBe('Safari');
+      expect(safariFingerprint.browserInfo.engine).toBe('WebKit');
+    });
+
+    it('should parse OS information correctly', () => {
+      const windowsUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124';
+      const macUA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15';
+      const androidUA = 'Mozilla/5.0 (Linux; Android 11; Pixel 5) Chrome/91.0.4472.120';
+      const iosUA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) Mobile/15E148';
+      
+      const windowsReq = new Request('https://test.com', {
+        headers: new Headers({ 'user-agent': windowsUA })
+      });
+      const macReq = new Request('https://test.com', {
+        headers: new Headers({ 'user-agent': macUA })
+      });
+      const androidReq = new Request('https://test.com', {
+        headers: new Headers({ 'user-agent': androidUA })
+      });
+      const iosReq = new Request('https://test.com', {
+        headers: new Headers({ 'user-agent': iosUA })
+      });
+      
+      expect(AuthSecurityService.generateDeviceFingerprint(windowsReq).osInfo.name).toBe('Windows');
+      expect(AuthSecurityService.generateDeviceFingerprint(macReq).osInfo.name).toBe('macOS');
+      expect(AuthSecurityService.generateDeviceFingerprint(androidReq).osInfo.name).toBe('Android');
+      expect(AuthSecurityService.generateDeviceFingerprint(iosReq).osInfo.name).toBe('iOS');
+    });
+  });
+
+  describe('MFA Setup and Verification', () => {
+    it('should generate MFA setup with secret and QR code', () => {
+      const userEmail = 'test@example.com';
+      const result = AuthSecurityService.generateMFASetup(userEmail);
+      
+      expect(result.secret).toBeDefined();
+      expect(result.secret).toHaveLength(32);
+      expect(result.qrCodeUrl).toContain('https://chart.googleapis.com/chart');
+      expect(result.qrCodeUrl).toContain(encodeURIComponent(userEmail));
+      expect(result.backupCodes).toHaveLength(10);
+    });
+
+    it('should generate unique backup codes', () => {
+      const result = AuthSecurityService.generateMFASetup('test@example.com');
+      const uniqueCodes = new Set(result.backupCodes);
+      
+      expect(uniqueCodes.size).toBe(10);
+      result.backupCodes.forEach(code => {
+        expect(code).toMatch(/^[A-Z0-9]{4}-[A-Z0-9]{4}$/);
+      });
+    });
+
+    it('should verify valid TOTP codes', () => {
+      const secret = 'TESTSECRET12345678901234567890AB';
+      const validCode = AuthSecurityService['generateTOTPCode'](
+        secret,
+        Math.floor(Date.now() / 1000 / 30)
+      );
+      
+      const result = AuthSecurityService.verifyTOTPCode(secret, validCode);
+      expect(result).toBe(true);
+    });
+
+    it('should reject invalid TOTP codes', () => {
+      const secret = 'TESTSECRET12345678901234567890AB';
+      const invalidCode = '000000';
+      
+      const result = AuthSecurityService.verifyTOTPCode(secret, invalidCode);
+      expect(result).toBe(false);
+    });
+
+    it('should handle TOTP time window tolerance', () => {
+      const secret = 'TESTSECRET12345678901234567890AB';
+      const currentCounter = Math.floor(Date.now() / 1000 / 30);
+      
+      // Generate code for previous time window
+      const previousCode = AuthSecurityService['generateTOTPCode'](secret, currentCounter - 1);
+      
+      // Should still be valid within tolerance window
+      const result = AuthSecurityService.verifyTOTPCode(secret, previousCode);
+      expect(result).toBe(true);
+    });
+  });
+
+  describe('Rate Limiting', () => {
+    it('should check rate limits correctly', async () => {
+      const mockRateLimitResponse = {
+        allowed: true,
+        remaining_attempts: 4,
+        reset_time: new Date(Date.now() + 900000).toISOString(),
+        locked: false
+      };
+      
+      vi.mocked(supabase.rpc).mockResolvedValueOnce({
+        data: mockRateLimitResponse,
+        error: null
+      });
+      
+      const result = await AuthSecurityService.checkRateLimit('test@example.com', 'login');
+      
+      expect(result.allowed).toBe(true);
+      expect(result.remainingAttempts).toBe(4);
+      expect(result.locked).toBe(false);
+    });
+
+    it('should handle rate limit exceeded', async () => {
+      const mockRateLimitResponse = {
+        allowed: false,
+        remaining_attempts: 0,
+        reset_time: new Date(Date.now() + 1800000).toISOString(),
+        locked: true
+      };
+      
+      vi.mocked(supabase.rpc).mockResolvedValueOnce({
+        data: mockRateLimitResponse,
+        error: null
+      });
+      
+      const result = await AuthSecurityService.checkRateLimit('test@example.com', 'login');
+      
+      expect(result.allowed).toBe(false);
+      expect(result.remainingAttempts).toBe(0);
+      expect(result.locked).toBe(true);
+      expect(result.lockDuration).toBeDefined();
+    });
+
+    it('should handle rate limit check errors gracefully', async () => {
+      vi.mocked(supabase.rpc).mockRejectedValueOnce(new Error('Database error'));
+      
+      const result = await AuthSecurityService.checkRateLimit('test@example.com', 'login');
+      
+      // Should default to allowing the attempt if check fails
+      expect(result.allowed).toBe(true);
+      expect(result.remainingAttempts).toBe(5);
+      expect(result.locked).toBe(false);
+    });
+  });
+
+  describe('Security Event Logging', () => {
+    it('should log security events with correct severity', async () => {
+      const event = {
+        userId: 'user-123',
+        eventType: SecurityEventType.LOGIN_SUCCESS,
+        severity: 'low' as const,
+        eventData: {
+          timestamp: new Date().toISOString(),
+          ipAddress: '192.168.1.1'
+        }
+      };
+      
+      await AuthSecurityService.logSecurityEvent(event);
+      
+      expect(supabase.rpc).toHaveBeenCalledWith('log_security_event', expect.objectContaining({
+        p_user_id: event.userId,
+        p_event_type: event.eventType,
+        p_severity: event.severity,
+        p_event_data: event.eventData
+      }));
+    });
+
+    it('should trigger alerts for high severity events', async () => {
+      const consoleSpy = vi.spyOn(console, 'log');
+      
+      // Mock alert configuration
+      vi.mocked(supabase.from).mockReturnValueOnce({
+        select: vi.fn(() => ({
+          eq: vi.fn(() => ({
+            single: vi.fn(() => Promise.resolve({
+              data: {
+                email_alerts: true,
+                alert_email: 'admin@example.com',
+                push_alerts: true
+              },
+              error: null
+            }))
+          }))
+        }))
+      } as any);
+      
+      const event = {
+        userId: 'user-123',
+        eventType: SecurityEventType.ACCOUNT_LOCKED,
+        severity: 'high' as const,
+        eventData: {
+          reason: 'Too many failed login attempts'
+        }
+      };
+      
+      await AuthSecurityService.logSecurityEvent(event);
+      
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Security alert sent'));
+      consoleSpy.mockRestore();
+    });
+  });
+
+  describe('Device Trust Management', () => {
+    it('should trust a device successfully', async () => {
+      const result = await AuthSecurityService.trustDevice(
+        'user-123',
+        'device-fingerprint-abc',
+        'Sarah's iPhone'
+      );
+      
+      expect(result.success).toBe(true);
+      expect(result.trustToken).toBeDefined();
+      expect(result.trustToken).toHaveLength(64); // 32 bytes hex = 64 chars
+    });
+
+    it('should revoke device trust', async () => {
+      const result = await AuthSecurityService.revokeDeviceTrust(
+        'user-123',
+        'device-fingerprint-abc'
+      );
+      
+      expect(result).toBe(true);
+      expect(supabase.from).toHaveBeenCalled();
+    });
+
+    it('should check if device is trusted', async () => {
+      vi.mocked(supabase.from).mockReturnValueOnce({
+        select: vi.fn(() => ({
+          eq: vi.fn(() => ({
+            eq: vi.fn(() => ({
+              single: vi.fn(() => Promise.resolve({
+                data: {
+                  trusted: true,
+                  trust_expires_at: new Date(Date.now() + 86400000).toISOString()
+                },
+                error: null
+              }))
+            }))
+          }))
+        }))
+      } as any);
+      
+      const isTrusted = await AuthSecurityService.isDeviceTrusted(
+        'user-123',
+        'device-fingerprint-abc'
+      );
+      
+      expect(isTrusted).toBe(true);
+    });
+
+    it('should revoke expired device trust', async () => {
+      vi.mocked(supabase.from).mockReturnValueOnce({
+        select: vi.fn(() => ({
+          eq: vi.fn(() => ({
+            eq: vi.fn(() => ({
+              single: vi.fn(() => Promise.resolve({
+                data: {
+                  trusted: true,
+                  trust_expires_at: new Date(Date.now() - 86400000).toISOString() // Expired
+                },
+                error: null
+              }))
+            }))
+          }))
+        }))
+      } as any);
+      
+      const isTrusted = await AuthSecurityService.isDeviceTrusted(
+        'user-123',
+        'device-fingerprint-abc'
+      );
+      
+      expect(isTrusted).toBe(false);
+    });
+  });
+
+  describe('Account Lock Management', () => {
+    it('should lock an account with duration', async () => {
+      const result = await AuthSecurityService.lockAccount(
+        'user-123',
+        'Too many failed login attempts',
+        1800000 // 30 minutes
+      );
+      
+      expect(result).toBe(true);
+      expect(supabase.from).toHaveBeenCalled();
+    });
+
+    it('should unlock an account', async () => {
+      const result = await AuthSecurityService.unlockAccount('user-123');
+      
+      expect(result).toBe(true);
+      expect(supabase.from).toHaveBeenCalled();
+    });
+
+    it('should check if account is locked', async () => {
+      vi.mocked(supabase.from).mockReturnValueOnce({
+        select: vi.fn(() => ({
+          eq: vi.fn(() => ({
+            single: vi.fn(() => Promise.resolve({
+              data: {
+                account_locked: true,
+                locked_until: new Date(Date.now() + 1800000).toISOString()
+              },
+              error: null
+            }))
+          }))
+        }))
+      } as any);
+      
+      const isLocked = await AuthSecurityService.isAccountLocked('user-123');
+      
+      expect(isLocked).toBe(true);
+    });
+
+    it('should auto-unlock expired account locks', async () => {
+      vi.mocked(supabase.from).mockReturnValueOnce({
+        select: vi.fn(() => ({
+          eq: vi.fn(() => ({
+            single: vi.fn(() => Promise.resolve({
+              data: {
+                account_locked: true,
+                locked_until: new Date(Date.now() - 1000).toISOString() // Already expired
+              },
+              error: null
+            }))
+          }))
+        }))
+      } as any);
+      
+      const isLocked = await AuthSecurityService.isAccountLocked('user-123');
+      
+      expect(isLocked).toBe(false);
+    });
+  });
+
+  describe('Risk Score Calculation', () => {
+    it('should calculate user risk score', async () => {
+      vi.mocked(supabase.rpc).mockResolvedValueOnce({
+        data: 45,
+        error: null
+      });
+      
+      const score = await AuthSecurityService.calculateRiskScore('user-123');
+      
+      expect(score).toBe(45);
+      expect(score).toBeGreaterThanOrEqual(0);
+      expect(score).toBeLessThanOrEqual(100);
+    });
+
+    it('should handle risk score calculation errors', async () => {
+      vi.mocked(supabase.rpc).mockRejectedValueOnce(new Error('Database error'));
+      
+      const score = await AuthSecurityService.calculateRiskScore('user-123');
+      
+      expect(score).toBe(0);
+    });
+  });
+
+  describe('Authentication Attempt Recording', () => {
+    it('should record successful authentication attempts', async () => {
+      await AuthSecurityService.recordAuthAttempt(
+        'test@example.com',
+        true,
+        'login',
+        '192.168.1.1',
+        'Mozilla/5.0',
+        'device-fingerprint-123'
+      );
+      
+      expect(supabase.from).toHaveBeenCalledWith('auth_security.auth_attempts');
+    });
+
+    it('should record failed authentication attempts with reason', async () => {
+      await AuthSecurityService.recordAuthAttempt(
+        'test@example.com',
+        false,
+        'login',
+        '192.168.1.1',
+        'Mozilla/5.0',
+        'device-fingerprint-123',
+        'Invalid credentials'
+      );
+      
+      expect(supabase.from).toHaveBeenCalledWith('auth_security.auth_attempts');
+    });
+  });
+});

@@ -1,0 +1,372 @@
+/**
+ * WS-168: Health Intervention API Routes
+ * Handles automated notifications and admin alerts for at-risk suppliers
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { healthInterventionService } from '@/lib/services/health-intervention-service';
+import { z } from 'zod';
+
+// Request validation schemas
+const processInterventionSchema = z.object({
+  supplierId: z.string().uuid(),
+  organizationId: z.string().uuid(),
+  forceNotification: z.boolean().optional()
+});
+
+const batchProcessSchema = z.object({
+  organizationId: z.string().uuid(),
+  supplierIds: z.array(z.string().uuid()).optional(),
+  limit: z.number().min(1).max(100).optional()
+});
+
+const updateTrackingSchema = z.object({
+  notificationId: z.string().uuid(),
+  event: z.enum(['opened', 'clicked', 'responded']),
+  metadata: z.record(z.any()).optional()
+});
+
+const acknowledgeAlertSchema = z.object({
+  alertId: z.string().uuid(),
+  acknowledgedBy: z.string()
+});
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+    
+    // Check authentication
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    const { searchParams } = new URL(request.url);
+    const action = searchParams.get('action');
+
+    switch (action) {
+      case 'metrics': {
+        const organizationId = searchParams.get('organizationId');
+        const startDate = searchParams.get('startDate');
+        const endDate = searchParams.get('endDate');
+
+        if (!organizationId) {
+          return NextResponse.json(
+            { error: 'Organization ID required' },
+            { status: 400 }
+          );
+        }
+
+        const metrics = await healthInterventionService.getInterventionMetrics(
+          organizationId,
+          startDate ? new Date(startDate) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+          endDate ? new Date(endDate) : new Date()
+        );
+
+        return NextResponse.json({ metrics });
+      }
+
+      case 'alerts': {
+        const organizationId = searchParams.get('organizationId');
+        const status = searchParams.get('status');
+        const limit = parseInt(searchParams.get('limit') || '50');
+
+        if (!organizationId) {
+          return NextResponse.json(
+            { error: 'Organization ID required' },
+            { status: 400 }
+          );
+        }
+
+        // Fetch admin alerts
+        let query = supabase
+          .from('admin_alerts')
+          .select('*')
+          .eq('organization_id', organizationId)
+          .order('created_at', { ascending: false })
+          .limit(limit);
+
+        if (status === 'unacknowledged') {
+          query = query.eq('acknowledged', false);
+        }
+
+        const { data: alerts, error } = await query;
+
+        if (error) {
+          throw error;
+        }
+
+        return NextResponse.json({ alerts });
+      }
+
+      case 'notifications': {
+        const supplierId = searchParams.get('supplierId');
+        const organizationId = searchParams.get('organizationId');
+        const status = searchParams.get('status');
+        const limit = parseInt(searchParams.get('limit') || '50');
+
+        let query = supabase
+          .from('intervention_notifications')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(limit);
+
+        if (supplierId) {
+          query = query.eq('supplier_id', supplierId);
+        }
+        if (organizationId) {
+          query = query.eq('organization_id', organizationId);
+        }
+        if (status) {
+          query = query.eq('status', status);
+        }
+
+        const { data: notifications, error } = await query;
+
+        if (error) {
+          throw error;
+        }
+
+        return NextResponse.json({ notifications });
+      }
+
+      case 'health-summary': {
+        const organizationId = searchParams.get('organizationId');
+        
+        if (!organizationId) {
+          return NextResponse.json(
+            { error: 'Organization ID required' },
+            { status: 400 }
+          );
+        }
+
+        // Get organization health summary
+        const { data: suppliers, error: suppliersError } = await supabase
+          .from('organization_members')
+          .select('user_id')
+          .eq('organization_id', organizationId)
+          .eq('role', 'supplier')
+          .eq('status', 'active');
+
+        if (suppliersError) {
+          throw suppliersError;
+        }
+
+        // Get health scores for all suppliers
+        const healthScores = await Promise.all(
+          suppliers.map(async (s) => {
+            try {
+              const result = await healthInterventionService.processHealthIntervention(
+                s.user_id,
+                organizationId,
+                false
+              );
+              return {
+                supplierId: s.user_id,
+                healthScore: result.healthScore || 0,
+                riskLevel: result.riskLevel || 'unknown'
+              };
+            } catch {
+              return {
+                supplierId: s.user_id,
+                healthScore: 0,
+                riskLevel: 'unknown'
+              };
+            }
+          })
+        );
+
+        // Calculate summary statistics
+        const summary = {
+          totalSuppliers: suppliers.length,
+          criticalRisk: healthScores.filter(s => s.riskLevel === 'critical').length,
+          highRisk: healthScores.filter(s => s.riskLevel === 'high').length,
+          mediumRisk: healthScores.filter(s => s.riskLevel === 'medium').length,
+          lowRisk: healthScores.filter(s => s.riskLevel === 'low').length,
+          averageHealthScore: healthScores.reduce((acc, s) => acc + s.healthScore, 0) / suppliers.length || 0
+        };
+
+        return NextResponse.json({ summary, details: healthScores });
+      }
+
+      default:
+        return NextResponse.json(
+          { error: 'Invalid action parameter' },
+          { status: 400 }
+        );
+    }
+  } catch (error) {
+    console.error('Error in health intervention GET:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+    
+    // Check authentication
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    const body = await request.json();
+    const { action, ...data } = body;
+
+    switch (action) {
+      case 'process-intervention': {
+        const validation = processInterventionSchema.safeParse(data);
+        if (!validation.success) {
+          return NextResponse.json(
+            { error: 'Invalid request data', details: validation.error },
+            { status: 400 }
+          );
+        }
+
+        const result = await healthInterventionService.processHealthIntervention(
+          validation.data.supplierId,
+          validation.data.organizationId,
+          validation.data.forceNotification
+        );
+
+        return NextResponse.json(result);
+      }
+
+      case 'batch-process': {
+        const validation = batchProcessSchema.safeParse(data);
+        if (!validation.success) {
+          return NextResponse.json(
+            { error: 'Invalid request data', details: validation.error },
+            { status: 400 }
+          );
+        }
+
+        const result = await healthInterventionService.batchProcessInterventions(
+          validation.data.organizationId,
+          validation.data.supplierIds
+        );
+
+        return NextResponse.json(result);
+      }
+
+      case 'update-tracking': {
+        const validation = updateTrackingSchema.safeParse(data);
+        if (!validation.success) {
+          return NextResponse.json(
+            { error: 'Invalid request data', details: validation.error },
+            { status: 400 }
+          );
+        }
+
+        await healthInterventionService.updateNotificationTracking(
+          validation.data.notificationId,
+          validation.data.event,
+          validation.data.metadata
+        );
+
+        return NextResponse.json({ success: true });
+      }
+
+      case 'acknowledge-alert': {
+        const validation = acknowledgeAlertSchema.safeParse(data);
+        if (!validation.success) {
+          return NextResponse.json(
+            { error: 'Invalid request data', details: validation.error },
+            { status: 400 }
+          );
+        }
+
+        const { error } = await supabase
+          .from('admin_alerts')
+          .update({
+            acknowledged: true,
+            acknowledged_by: validation.data.acknowledgedBy,
+            acknowledged_at: new Date().toISOString()
+          })
+          .eq('id', validation.data.alertId);
+
+        if (error) {
+          throw error;
+        }
+
+        return NextResponse.json({ success: true });
+      }
+
+      case 'test-intervention': {
+        // Test endpoint for development
+        const { supplierId, organizationId } = data;
+        
+        if (!supplierId || !organizationId) {
+          return NextResponse.json(
+            { error: 'Supplier ID and Organization ID required' },
+            { status: 400 }
+          );
+        }
+
+        // Force a test intervention
+        const result = await healthInterventionService.processHealthIntervention(
+          supplierId,
+          organizationId,
+          true // Force notification for testing
+        );
+
+        return NextResponse.json({
+          success: true,
+          test: true,
+          result
+        });
+      }
+
+      default:
+        return NextResponse.json(
+          { error: 'Invalid action' },
+          { status: 400 }
+        );
+    }
+  } catch (error) {
+    console.error('Error in health intervention POST:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+// Webhook endpoint for email tracking
+export async function PUT(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const { event, data } = body;
+
+    // Handle email tracking events (opens, clicks)
+    if (event === 'email.opened' || event === 'email.clicked') {
+      const notificationId = data.metadata?.notificationId;
+      if (notificationId) {
+        await healthInterventionService.updateNotificationTracking(
+          notificationId,
+          event === 'email.opened' ? 'opened' : 'clicked',
+          data
+        );
+      }
+    }
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error('Error in health intervention webhook:', error);
+    return NextResponse.json(
+      { error: 'Webhook processing failed' },
+      { status: 500 }
+    );
+  }
+}

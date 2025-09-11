@@ -1,0 +1,389 @@
+# WS-232 ML System - Alert Rules
+# Comprehensive alerting for ML prediction services and wedding industry metrics
+
+groups:
+  - name: ml_model_performance
+    rules:
+      # Wedding Trends Model Alerts
+      - alert: WeddingTrendsAccuracyLow
+        expr: ml_model_accuracy{model="wedding-trends"} < 75
+        for: 5m
+        labels:
+          severity: critical
+          model: wedding-trends
+          alert_type: accuracy
+        annotations:
+          summary: "Wedding Trends model accuracy is below threshold"
+          description: "Wedding Trends prediction accuracy is {{ $value }}%, which is below the 75% minimum threshold."
+          runbook_url: "https://docs.wedsync.com/ml/troubleshooting/accuracy"
+          impact: "Wedding trend predictions may be unreliable, affecting vendor recommendations"
+
+      - alert: WeddingTrendsResponseTimeSlow
+        expr: ml_model_response_time_seconds{model="wedding-trends"} > 0.2
+        for: 2m
+        labels:
+          severity: warning
+          model: wedding-trends
+          alert_type: performance
+        annotations:
+          summary: "Wedding Trends model response time is slow"
+          description: "Wedding Trends model response time is {{ $value }}s, exceeding 200ms threshold."
+          runbook_url: "https://docs.wedsync.com/ml/troubleshooting/performance"
+
+      # Budget Optimizer Alerts
+      - alert: BudgetOptimizerAccuracyLow
+        expr: ml_model_accuracy{model="budget-optimizer"} < 80
+        for: 5m
+        labels:
+          severity: critical
+          model: budget-optimizer
+          alert_type: accuracy
+        annotations:
+          summary: "Budget Optimizer accuracy is critically low"
+          description: "Budget Optimizer accuracy is {{ $value }}%, below 80% threshold. Financial recommendations may be inaccurate."
+          runbook_url: "https://docs.wedsync.com/ml/troubleshooting/budget-optimizer"
+          impact: "Wedding budget recommendations may be incorrect, affecting customer financial planning"
+
+      - alert: BudgetOptimizerResponseTimeSlow
+        expr: ml_model_response_time_seconds{model="budget-optimizer"} > 0.3
+        for: 2m
+        labels:
+          severity: warning
+          model: budget-optimizer
+          alert_type: performance
+        annotations:
+          summary: "Budget Optimizer response time exceeds threshold"
+          description: "Budget Optimizer response time is {{ $value }}s, exceeding 300ms threshold."
+
+      # Vendor Performance Model Alerts
+      - alert: VendorPerformanceAccuracyLow
+        expr: ml_model_accuracy{model="vendor-performance"} < 78
+        for: 5m
+        labels:
+          severity: critical
+          model: vendor-performance
+          alert_type: accuracy
+        annotations:
+          summary: "Vendor Performance model accuracy is low"
+          description: "Vendor Performance prediction accuracy is {{ $value }}%, below 78% threshold."
+          impact: "Vendor recommendations and risk assessments may be unreliable"
+
+      # Churn Risk Model Alerts
+      - alert: ChurnRiskAccuracyLow
+        expr: ml_model_accuracy{model="churn-risk"} < 82
+        for: 5m
+        labels:
+          severity: critical
+          model: churn-risk
+          alert_type: accuracy
+        annotations:
+          summary: "Churn Risk model accuracy is critically low"
+          description: "Churn Risk prediction accuracy is {{ $value }}%, below 82% threshold."
+          impact: "Customer retention predictions may be unreliable, affecting business decisions"
+
+      - alert: ChurnRiskHighErrorRate
+        expr: ml_model_error_rate{model="churn-risk"} > 0.005
+        for: 3m
+        labels:
+          severity: warning
+          model: churn-risk
+          alert_type: reliability
+        annotations:
+          summary: "Churn Risk model error rate is high"
+          description: "Churn Risk model error rate is {{ $value }}, exceeding 0.5% threshold."
+
+      # Revenue Forecaster Alerts
+      - alert: RevenueForecasterAccuracyLow
+        expr: ml_model_accuracy{model="revenue-forecaster"} < 85
+        for: 5m
+        labels:
+          severity: critical
+          model: revenue-forecaster
+          alert_type: accuracy
+        annotations:
+          summary: "Revenue Forecaster accuracy is below critical threshold"
+          description: "Revenue Forecaster accuracy is {{ $value }}%, below 85% minimum for financial predictions."
+          impact: "Revenue projections may be inaccurate, affecting business planning and investor reporting"
+
+  - name: ml_infrastructure
+    rules:
+      # API Service Health
+      - alert: MLAPIDown
+        expr: up{job="ml-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: ml-api
+          alert_type: availability
+        annotations:
+          summary: "ML API service is down"
+          description: "ML API service has been down for more than 1 minute."
+          runbook_url: "https://docs.wedsync.com/ml/troubleshooting/api-down"
+          impact: "All ML predictions are unavailable, affecting core wedding planning features"
+
+      - alert: MLAPIHighLatency
+        expr: ml_api_request_duration_seconds{quantile="0.95"} > 1.0
+        for: 5m
+        labels:
+          severity: warning
+          service: ml-api
+          alert_type: performance
+        annotations:
+          summary: "ML API has high latency"
+          description: "95th percentile latency is {{ $value }}s, exceeding 1s threshold."
+
+      - alert: MLAPIHighErrorRate
+        expr: rate(ml_api_errors_total[5m]) / rate(ml_api_requests_total[5m]) > 0.01
+        for: 3m
+        labels:
+          severity: critical
+          service: ml-api
+          alert_type: reliability
+        annotations:
+          summary: "ML API error rate is high"
+          description: "ML API error rate is {{ $value | humanizePercentage }}, exceeding 1% threshold."
+          impact: "Wedding planning features may be experiencing frequent failures"
+
+      # Database Health
+      - alert: MLDatabaseDown
+        expr: up{job="postgres"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: postgres
+          alert_type: availability
+        annotations:
+          summary: "ML database is down"
+          description: "ML PostgreSQL database has been down for more than 2 minutes."
+          impact: "ML models cannot access training data or store predictions"
+
+      - alert: MLDatabaseHighConnections
+        expr: postgres_stat_database_numbackends{datname="ml_predictions"} > 80
+        for: 5m
+        labels:
+          severity: warning
+          service: postgres
+          alert_type: resource
+        annotations:
+          summary: "ML database has high connection count"
+          description: "ML database has {{ $value }} active connections, approaching limit."
+
+      # Redis Cache Health
+      - alert: MLRedisDown
+        expr: up{job="redis"} == 0
+        for: 1m
+        labels:
+          severity: warning
+          service: redis
+          alert_type: availability
+        annotations:
+          summary: "ML Redis cache is down"
+          description: "ML Redis cache has been down for more than 1 minute."
+          impact: "ML predictions will be slower without caching"
+
+      - alert: MLRedisHighMemoryUsage
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.9
+        for: 5m
+        labels:
+          severity: warning
+          service: redis
+          alert_type: resource
+        annotations:
+          summary: "ML Redis memory usage is high"
+          description: "Redis memory usage is {{ $value | humanizePercentage }}, approaching limit."
+
+  - name: wedding_business_metrics
+    rules:
+      # Wedding Season Traffic
+      - alert: WeddingSeasonHighLoad
+        expr: ml_wedding_season_requests_per_minute > 1000
+        for: 5m
+        labels:
+          severity: warning
+          alert_type: business
+          category: wedding-season
+        annotations:
+          summary: "High load detected during wedding season"
+          description: "Wedding season requests are {{ $value }}/minute, indicating peak demand."
+          impact: "May need to scale ML infrastructure for wedding season traffic"
+
+      - alert: WeddingSeasonPredictionErrors
+        expr: rate(ml_wedding_season_prediction_errors[10m]) > 10
+        for: 3m
+        labels:
+          severity: critical
+          alert_type: business
+          category: wedding-season
+        annotations:
+          summary: "High error rate in wedding season predictions"
+          description: "Wedding season prediction errors: {{ $value }}/minute."
+          impact: "Seasonal wedding planning features may be unreliable"
+
+      # Regional Performance Issues
+      - alert: RegionalPredictionImbalance
+        expr: |
+          (
+            max(ml_regional_predictions_per_minute) by (region) - 
+            min(ml_regional_predictions_per_minute) by (region)
+          ) / max(ml_regional_predictions_per_minute) by (region) > 0.8
+        for: 10m
+        labels:
+          severity: warning
+          alert_type: business
+          category: regional
+        annotations:
+          summary: "Regional prediction load imbalance detected"
+          description: "Significant imbalance in regional prediction loads detected."
+          impact: "Some regions may experience slower ML predictions"
+
+      # Vendor Marketplace Issues
+      - alert: VendorRecommendationErrors
+        expr: rate(ml_vendor_recommendation_errors[5m]) > 5
+        for: 3m
+        labels:
+          severity: critical
+          alert_type: business
+          category: vendor-marketplace
+        annotations:
+          summary: "High error rate in vendor recommendations"
+          description: "Vendor recommendation errors: {{ $value }}/minute."
+          impact: "Couples may not receive accurate vendor recommendations"
+
+      # Customer Journey Analytics
+      - alert: CustomerJourneyPredictionDrift
+        expr: |
+          abs(
+            ml_customer_journey_conversion_rate - 
+            ml_customer_journey_conversion_rate offset 24h
+          ) / ml_customer_journey_conversion_rate offset 24h > 0.3
+        for: 15m
+        labels:
+          severity: warning
+          alert_type: business
+          category: customer-journey
+        annotations:
+          summary: "Customer journey prediction drift detected"
+          description: "Customer journey conversion predictions have drifted {{ $value | humanizePercentage }} from yesterday."
+          impact: "Customer journey optimization may need recalibration"
+
+  - name: ml_data_quality
+    rules:
+      # Data Pipeline Issues
+      - alert: MLDataPipelineFailure
+        expr: ml_data_pipeline_last_success_timestamp < (time() - 86400)
+        for: 0m
+        labels:
+          severity: critical
+          alert_type: data_quality
+          category: pipeline
+        annotations:
+          summary: "ML data pipeline has not run successfully in 24 hours"
+          description: "Last successful ML data pipeline run was {{ $value | humanizeTimestamp }}."
+          impact: "ML models may be training on stale data"
+
+      - alert: MLDataQualityDrop
+        expr: ml_data_quality_score < 0.8
+        for: 10m
+        labels:
+          severity: warning
+          alert_type: data_quality
+          category: quality
+        annotations:
+          summary: "ML data quality score has dropped"
+          description: "Data quality score is {{ $value }}, below 0.8 threshold."
+          impact: "ML model accuracy may be affected by poor data quality"
+
+      # Wedding Data Specific Quality Issues
+      - alert: WeddingDataAnomalyDetected
+        expr: ml_wedding_data_anomaly_score > 0.9
+        for: 5m
+        labels:
+          severity: warning
+          alert_type: data_quality
+          category: wedding-data
+        annotations:
+          summary: "Anomaly detected in wedding data"
+          description: "Wedding data anomaly score is {{ $value }}, indicating unusual patterns."
+          impact: "Wedding predictions may be affected by data anomalies"
+
+  - name: model_training
+    rules:
+      # Training Job Failures
+      - alert: ModelTrainingFailed
+        expr: ml_training_job_status{status="failed"} > 0
+        for: 0m
+        labels:
+          severity: critical
+          alert_type: training
+          category: job-failure
+        annotations:
+          summary: "ML model training job failed"
+          description: "Model training job for {{ $labels.model }} has failed."
+          runbook_url: "https://docs.wedsync.com/ml/troubleshooting/training-failure"
+          impact: "Model may not have latest training data"
+
+      - alert: ModelTrainingStuck
+        expr: ml_training_job_duration_seconds > 14400  # 4 hours
+        for: 0m
+        labels:
+          severity: warning
+          alert_type: training
+          category: performance
+        annotations:
+          summary: "ML model training is taking too long"
+          description: "Model training for {{ $labels.model }} has been running for {{ $value }} seconds."
+          impact: "Training resources may be stuck or inefficient"
+
+      # Model Deployment Issues
+      - alert: ModelDeploymentFailed
+        expr: ml_model_deployment_status{status="failed"} > 0
+        for: 0m
+        labels:
+          severity: critical
+          alert_type: deployment
+          category: failure
+        annotations:
+          summary: "ML model deployment failed"
+          description: "Deployment of {{ $labels.model }} model failed."
+          impact: "New model version is not available for predictions"
+
+  - name: business_impact
+    rules:
+      # Revenue Impact Alerts
+      - alert: RevenueImpactFromMLErrors
+        expr: ml_estimated_revenue_impact_gbp_per_hour > 1000
+        for: 5m
+        labels:
+          severity: critical
+          alert_type: business_impact
+          category: revenue
+        annotations:
+          summary: "ML errors are causing significant revenue impact"
+          description: "Estimated revenue impact from ML errors: £{{ $value }}/hour."
+          impact: "Immediate action required to prevent business loss"
+
+      # Customer Experience Impact
+      - alert: CustomerExperienceImpact
+        expr: ml_customer_satisfaction_score < 4.0
+        for: 10m
+        labels:
+          severity: warning
+          alert_type: business_impact
+          category: customer-experience
+        annotations:
+          summary: "Customer satisfaction affected by ML performance"
+          description: "Customer satisfaction score is {{ $value }}/5, below 4.0 threshold."
+          impact: "ML issues may be affecting customer wedding planning experience"
+
+      # Wedding Day Critical Alerts
+      - alert: WeddingDayMLFailure
+        expr: ml_wedding_day_active_count > 0 and ml_api_availability < 0.99
+        for: 1m
+        labels:
+          severity: critical
+          alert_type: business_impact
+          category: wedding-day
+        annotations:
+          summary: "ML system issues during active wedding days"
+          description: "{{ $labels.ml_wedding_day_active_count }} weddings are active and ML availability is {{ $value | humanizePercentage }}."
+          impact: "CRITICAL: ML failures during wedding days affect couples' special moments"

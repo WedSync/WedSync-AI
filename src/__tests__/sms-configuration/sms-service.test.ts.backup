@@ -1,0 +1,331 @@
+import { describe, it, expect, jest, beforeEach } from '@jest/globals'
+import { SMSService } from '@/lib/services/sms-service'
+import type { SMSTemplate, SMSConfiguration } from '@/types/sms'
+
+// Mock Twilio
+jest.mock('twilio', () => ({
+  default: jest.fn(() => ({
+    messages: {
+      create: jest.fn().mockResolvedValue({
+        sid: 'test-message-sid',
+        status: 'queued'
+      })
+    }
+  }))
+}))
+
+// Mock Supabase client
+jest.mock('@/lib/supabase/server', () => ({
+  createClient: jest.fn(() => ({
+    from: jest.fn().mockReturnThis(),
+    select: jest.fn().mockReturnThis(),
+    eq: jest.fn().mockReturnThis(),
+    single: jest.fn().mockResolvedValue({ data: null, error: null }),
+    insert: jest.fn().mockResolvedValue({ data: null, error: null }),
+    update: jest.fn().mockReturnThis(),
+    upsert: jest.fn().mockResolvedValue({ data: null, error: null }),
+    rpc: jest.fn().mockResolvedValue({ data: null, error: null })
+  }))
+}))
+
+describe('SMSService', () => {
+  let smsService: SMSService
+  
+  const mockConfiguration: SMSConfiguration = {
+    id: 'test-config-id',
+    user_id: 'test-user-id',
+    account_sid_encrypted: 'AC123456789012345678901234567890',
+    auth_token_encrypted: 'auth_token_123456789',
+    phone_number: '+1234567890',
+    is_active: true,
+    auto_opt_out: true,
+    opt_out_keywords: ['STOP', 'QUIT'],
+    opt_in_keywords: ['START', 'YES'],
+    monthly_limit: 1000,
+    monthly_usage: 50,
+    cost_per_message: 0.0075,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  }
+
+  const mockTemplate: SMSTemplate = {
+    id: 'test-template-id',
+    name: 'Test Template',
+    content: 'Hi {{client_first_name}}, your payment of {{amount}} is due on {{due_date}}. Reply STOP to opt out.',
+    category: 'payment_reminder',
+    status: 'active',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    user_id: 'test-user-id',
+    created_by: 'test-user-id',
+    usage_count: 0,
+    is_favorite: false,
+    variables: ['client_first_name', 'amount', 'due_date'],
+    character_count: 88,
+    segment_count: 1,
+    character_limit: 160,
+    opt_out_required: true,
+    tcpa_compliant: true,
+    consent_required: true,
+    metadata: {}
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks()
+    smsService = new SMSService(mockConfiguration)
+  })
+
+  describe('SMS Metrics Calculation', () => {
+    it('should calculate metrics for short message', () => {
+      const content = 'Hello world!'
+      const metrics = smsService.calculateSMSMetrics(content)
+      
+      expect(metrics.character_count).toBe(12)
+      expect(metrics.segment_count).toBe(1)
+      expect(metrics.encoding).toBe('GSM 7-bit')
+      expect(metrics.has_unicode).toBe(false)
+      expect(metrics.estimated_cost).toBe(0.0075)
+    })
+
+    it('should calculate metrics for long message', () => {
+      const content = 'A'.repeat(200) // 200 characters
+      const metrics = smsService.calculateSMSMetrics(content)
+      
+      expect(metrics.character_count).toBe(200)
+      expect(metrics.segment_count).toBe(2) // 200 chars = 2 segments (153 chars each for concatenated)
+      expect(metrics.encoding).toBe('GSM 7-bit')
+      expect(metrics.estimated_cost).toBe(0.015) // 2 segments * 0.0075
+    })
+
+    it('should calculate metrics for unicode message', () => {
+      const content = 'Hello 🎉 Unicode!'
+      const metrics = smsService.calculateSMSMetrics(content)
+      
+      expect(metrics.has_unicode).toBe(true)
+      expect(metrics.encoding).toBe('UCS-2')
+      expect(metrics.character_limit).toBe(70) // Unicode limit
+    })
+  })
+
+  describe('Message Validation', () => {
+    it('should validate compliant message', () => {
+      const content = 'Payment due. Reply STOP to opt out.'
+      const validation = smsService.validateSMSMessage(content, mockTemplate)
+      
+      expect(validation.isValid).toBe(true)
+      expect(validation.errors).toHaveLength(0)
+      expect(validation.compliance_issues).toHaveLength(0)
+    })
+
+    it('should detect missing opt-out language', () => {
+      const content = 'Payment due tomorrow.'
+      const template = { ...mockTemplate, opt_out_required: true }
+      const validation = smsService.validateSMSMessage(content, template)
+      
+      expect(validation.compliance_issues).toContain(
+        expect.stringContaining('opt-out instructions')
+      )
+    })
+
+    it('should detect message too long', () => {
+      const content = 'A'.repeat(2000) // Too long
+      const validation = smsService.validateSMSMessage(content)
+      
+      expect(validation.isValid).toBe(false)
+      expect(validation.errors).toContain(
+        expect.stringContaining('maximum length')
+      )
+    })
+
+    it('should warn about high cost messages', () => {
+      const content = 'A'.repeat(800) // High cost message (multiple segments)
+      const validation = smsService.validateSMSMessage(content)
+      
+      expect(validation.warnings).toContain(
+        expect.stringContaining('High cost message')
+      )
+    })
+  })
+
+  describe('Phone Number Validation', () => {
+    it('should validate US phone numbers', () => {
+      expect(smsService.validatePhoneNumber('+12345678901')).toBe(true)
+      expect(smsService.validatePhoneNumber('(234) 567-8901')).toBe(true)
+      expect(smsService.validatePhoneNumber('234-567-8901')).toBe(true)
+    })
+
+    it('should validate international phone numbers', () => {
+      expect(smsService.validatePhoneNumber('+447911123456')).toBe(true) // UK
+      expect(smsService.validatePhoneNumber('+33123456789')).toBe(true) // France
+    })
+
+    it('should reject invalid phone numbers', () => {
+      expect(smsService.validatePhoneNumber('123')).toBe(false) // Too short
+      expect(smsService.validatePhoneNumber('abc')).toBe(false) // Not numeric
+      expect(smsService.validatePhoneNumber('')).toBe(false) // Empty
+    })
+
+    it('should format phone numbers correctly', () => {
+      expect(smsService['formatPhoneNumber']('2345678901')).toBe('+12345678901')
+      expect(smsService['formatPhoneNumber']('+12345678901')).toBe('+12345678901')
+      expect(smsService['formatPhoneNumber']('447911123456')).toBe('+447911123456')
+    })
+  })
+
+  describe('Template Interpolation', () => {
+    it('should interpolate variables correctly', async () => {
+      const content = 'Hi {{client_first_name}}, your payment of {{amount}} is due.'
+      const variables = {
+        client_first_name: 'John',
+        amount: '$500'
+      }
+      
+      const result = await smsService['interpolateTemplate'](content, variables)
+      
+      expect(result).toBe('Hi John, your payment of $500 is due.')
+    })
+
+    it('should handle missing variables', async () => {
+      const content = 'Hi {{client_first_name}}, your payment of {{amount}} is due.'
+      const variables = {
+        client_first_name: 'John'
+        // amount is missing
+      }
+      
+      const result = await smsService['interpolateTemplate'](content, variables)
+      
+      expect(result).toBe('Hi John, your payment of  is due.')
+    })
+
+    it('should remove unmatched placeholders', async () => {
+      const content = 'Hi {{client_first_name}}, {{unknown_field}} test.'
+      const variables = {
+        client_first_name: 'John'
+      }
+      
+      const result = await smsService['interpolateTemplate'](content, variables)
+      
+      expect(result).toBe('Hi John,  test.')
+    })
+  })
+
+  describe('Template Message Sending', () => {
+    it('should send template message successfully', async () => {
+      const config = {
+        to: '+12345678901',
+        template: mockTemplate,
+        variables: {
+          client_first_name: 'John',
+          amount: '$500',
+          due_date: '2024-01-15'
+        },
+        consent_verified: true
+      }
+
+      const result = await smsService.sendTemplateMessage(config)
+      
+      expect(result.status).toBe('sent')
+      expect(result.messageId).toBe('test-message-sid')
+      expect(result.metrics).toBeDefined()
+    })
+
+    it('should reject sending to opted-out number', async () => {
+      // Mock opt-out check to return true
+      jest.spyOn(smsService, 'checkOptOutStatus').mockResolvedValue(true)
+      
+      const config = {
+        to: '+12345678901',
+        content: 'Test message',
+        consent_verified: true
+      }
+
+      const result = await smsService.sendTemplateMessage(config)
+      
+      expect(result.status).toBe('failed')
+      expect(result.error).toContain('opted out')
+    })
+
+    it('should allow bypassing opt-out for emergency messages', async () => {
+      // Mock opt-out check to return true
+      jest.spyOn(smsService, 'checkOptOutStatus').mockResolvedValue(true)
+      
+      const config = {
+        to: '+12345678901',
+        content: 'Emergency notification',
+        consent_verified: true,
+        bypass_opt_out: true
+      }
+
+      const result = await smsService.sendTemplateMessage(config)
+      
+      expect(result.status).toBe('sent')
+    })
+  })
+
+  describe('Compliance Features', () => {
+    it('should process opt-out correctly', async () => {
+      const mockSupabase = {
+        from: jest.fn().mockReturnThis(),
+        upsert: jest.fn().mockResolvedValue({ error: null })
+      }
+      
+      await smsService.processOptOut('+12345678901', 'test-user-id', 'sms')
+      
+      // Verify the opt-out was processed (would check database call in real test)
+      expect(mockSupabase.from).toHaveBeenCalledWith('sms_opt_outs')
+    })
+
+    it('should check opt-out status', async () => {
+      const isOptedOut = await smsService.checkOptOutStatus('+12345678901')
+      
+      // With mocked implementation, should return false
+      expect(typeof isOptedOut).toBe('boolean')
+    })
+  })
+
+  describe('Analytics', () => {
+    it('should calculate analytics correctly', async () => {
+      const startDate = new Date('2024-01-01')
+      const endDate = new Date('2024-01-31')
+      
+      const analytics = await smsService.getAnalytics('test-user-id', startDate, endDate)
+      
+      expect(analytics).toHaveProperty('period')
+      expect(analytics).toHaveProperty('metrics')
+      expect(analytics.period.start).toEqual(startDate)
+      expect(analytics.period.end).toEqual(endDate)
+      expect(analytics.metrics).toHaveProperty('messages_sent')
+      expect(analytics.metrics).toHaveProperty('delivery_rate')
+      expect(analytics.metrics).toHaveProperty('total_cost')
+    })
+  })
+
+  describe('Character Encoding', () => {
+    it('should detect GSM 7-bit characters', () => {
+      const gsmContent = 'Hello world! 123 @£$¥'
+      const metrics = smsService.calculateSMSMetrics(gsmContent)
+      
+      expect(metrics.has_unicode).toBe(false)
+      expect(metrics.encoding).toBe('GSM 7-bit')
+      expect(metrics.character_limit).toBe(160)
+    })
+
+    it('should detect Unicode characters', () => {
+      const unicodeContent = 'Hello 🌟 world!'
+      const metrics = smsService.calculateSMSMetrics(unicodeContent)
+      
+      expect(metrics.has_unicode).toBe(true)
+      expect(metrics.encoding).toBe('UCS-2')
+      expect(metrics.character_limit).toBe(70)
+    })
+
+    it('should handle smart quotes correctly', () => {
+      const smartQuotesContent = `"Hello" and 'world'`
+      const validation = smsService.validateSMSMessage(smartQuotesContent)
+      
+      expect(validation.warnings).toContain(
+        expect.stringContaining('smart quotes')
+      )
+    })
+  })
+})

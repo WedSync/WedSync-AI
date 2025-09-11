@@ -1,0 +1,667 @@
+/**
+ * @vitest-environment node
+ */
+
+import { describe, it, expect, vi, beforeEach, Mock } from 'vitest';
+import {
+  getEmailTemplates,
+  createEmailTemplate,
+  updateEmailTemplate,
+  deleteEmailTemplate,
+  bulkUpdateTemplates,
+  incrementUsageCount,
+  getTemplateById,
+  duplicateTemplate
+} from '../email-templates'
+import { createClient } from '@/lib/supabase/server'
+import { revalidatePath } from 'next/cache'
+
+// Mock dependencies
+vi.mock('@/lib/supabase/server', () => ({
+  createClient: vi.fn()
+}))
+
+vi.mock('next/cache', () => ({
+  revalidatePath: vi.fn()
+}))
+
+const mockSupabase = {
+  auth: {
+    getUser: vi.fn()
+  },
+  from: vi.fn(),
+  rpc: vi.fn()
+}
+
+const mockQuery = {
+  select: vi.fn().mockReturnThis(),
+  eq: vi.fn().mockReturnThis(),
+  in: vi.fn().mockReturnThis(),
+  or: vi.fn().mockReturnThis(),
+  gte: vi.fn().mockReturnThis(),
+  lte: vi.fn().mockReturnThis(),
+  order: vi.fn().mockReturnThis(),
+  range: vi.fn().mockReturnThis(),
+  insert: vi.fn().mockReturnThis(),
+  update: vi.fn().mockReturnThis(),
+  delete: vi.fn().mockReturnThis(),
+  single: vi.fn().mockReturnThis()
+}
+
+const mockUser = {
+  id: 'user-123',
+  email: 'test@example.com'
+}
+
+const mockTemplate = {
+  id: 'template-123',
+  name: 'Test Template',
+  subject: 'Test Subject',
+  content: '<p>Test Content</p>',
+  category: 'client_communication',
+  status: 'active',
+  created_at: '2025-01-15T10:00:00Z',
+  updated_at: '2025-01-15T10:00:00Z',
+  user_id: 'user-123',
+  usage_count: 5,
+  is_favorite: false,
+  variables: ['client_name'],
+  metadata: {
+    author_name: 'Test User'
+  },
+  profiles: {
+    full_name: 'Test User'
+  }
+}
+
+describe('Email Templates Server Actions', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+    
+    // Mock Supabase client
+    ;(createClient as jest.Mock).mockResolvedValue(mockSupabase)
+    
+    // Mock authenticated user
+    mockSupabase.auth.getUser.mockResolvedValue({
+      data: { user: mockUser },
+      error: null
+    })
+
+    // Reset query chain
+    mockSupabase.from.mockReturnValue(mockQuery)
+    Object.keys(mockQuery).forEach(key => {
+      if (typeof mockQuery[key as keyof typeof mockQuery] === 'function') {
+        ;(mockQuery[key as keyof typeof mockQuery] as jest.Mock).mockReturnValue(mockQuery)
+      }
+    })
+  })
+
+  describe('getEmailTemplates', () => {
+    it('should fetch templates with default parameters', async () => {
+      mockQuery.select.mockResolvedValue({
+        data: [mockTemplate],
+        error: null,
+        count: 1
+      })
+
+      const result = await getEmailTemplates()
+
+      expect(mockSupabase.from).toHaveBeenCalledWith('email_templates')
+      expect(mockQuery.select).toHaveBeenCalledWith(
+        expect.stringContaining('profiles!created_by'),
+        { count: 'exact' }
+      )
+      expect(mockQuery.eq).toHaveBeenCalledWith('user_id', 'user-123')
+      expect(mockQuery.order).toHaveBeenCalledWith('created_at', { ascending: false })
+      expect(result.templates).toHaveLength(1)
+      expect(result.totalCount).toBe(1)
+      expect(result.totalPages).toBe(1)
+    })
+
+    it('should apply search filter', async () => {
+      mockQuery.select.mockResolvedValue({
+        data: [mockTemplate],
+        error: null,
+        count: 1
+      })
+
+      await getEmailTemplates({ search: 'welcome' })
+
+      expect(mockQuery.or).toHaveBeenCalledWith('name.ilike.%welcome%,subject.ilike.%welcome%,content.ilike.%welcome%')
+    })
+
+    it('should apply category filters', async () => {
+      mockQuery.select.mockResolvedValue({
+        data: [mockTemplate],
+        error: null,
+        count: 1
+      })
+
+      await getEmailTemplates({ categories: ['client_communication', 'payment_reminder'] })
+
+      expect(mockQuery.in).toHaveBeenCalledWith('category', ['client_communication', 'payment_reminder'])
+    })
+
+    it('should apply status filters', async () => {
+      mockQuery.select.mockResolvedValue({
+        data: [mockTemplate],
+        error: null,
+        count: 1
+      })
+
+      await getEmailTemplates({ statuses: ['active', 'draft'] })
+
+      expect(mockQuery.in).toHaveBeenCalledWith('status', ['active', 'draft'])
+    })
+
+    it('should apply favorites filter', async () => {
+      mockQuery.select.mockResolvedValue({
+        data: [mockTemplate],
+        error: null,
+        count: 1
+      })
+
+      await getEmailTemplates({ showFavorites: true })
+
+      expect(mockQuery.eq).toHaveBeenCalledWith('is_favorite', true)
+    })
+
+    it('should apply date range filters', async () => {
+      mockQuery.select.mockResolvedValue({
+        data: [mockTemplate],
+        error: null,
+        count: 1
+      })
+
+      const fromDate = new Date('2025-01-01')
+      const toDate = new Date('2025-01-31')
+
+      await getEmailTemplates({
+        dateRange: { from: fromDate, to: toDate }
+      })
+
+      expect(mockQuery.gte).toHaveBeenCalledWith('created_at', fromDate.toISOString())
+      expect(mockQuery.lte).toHaveBeenCalledWith('created_at', toDate.toISOString())
+    })
+
+    it('should apply usage range filters', async () => {
+      mockQuery.select.mockResolvedValue({
+        data: [mockTemplate],
+        error: null,
+        count: 1
+      })
+
+      await getEmailTemplates({
+        usageRange: { min: 1, max: 10 }
+      })
+
+      expect(mockQuery.gte).toHaveBeenCalledWith('usage_count', 1)
+      expect(mockQuery.lte).toHaveBeenCalledWith('usage_count', 10)
+    })
+
+    it('should apply sorting', async () => {
+      mockQuery.select.mockResolvedValue({
+        data: [mockTemplate],
+        error: null,
+        count: 1
+      })
+
+      await getEmailTemplates({ sortBy: 'name_asc' })
+
+      expect(mockQuery.order).toHaveBeenCalledWith('name', { ascending: true })
+    })
+
+    it('should handle pagination', async () => {
+      mockQuery.select.mockResolvedValue({
+        data: [mockTemplate],
+        error: null,
+        count: 50
+      })
+
+      await getEmailTemplates({ page: 2, limit: 20 })
+
+      expect(mockQuery.range).toHaveBeenCalledWith(20, 39) // (page-1) * limit to page*limit-1
+    })
+
+    it('should throw error when user is not authenticated', async () => {
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: null },
+        error: new Error('Not authenticated')
+      })
+
+      await expect(getEmailTemplates()).rejects.toThrow('User not authenticated')
+    })
+
+    it('should handle database errors', async () => {
+      mockQuery.select.mockResolvedValue({
+        data: null,
+        error: new Error('Database error'),
+        count: null
+      })
+
+      await expect(getEmailTemplates()).rejects.toThrow('Database error')
+    })
+  })
+
+  describe('createEmailTemplate', () => {
+    const templateData = {
+      name: 'New Template',
+      subject: 'New Subject',
+      content: '<p>New Content</p>',
+      category: 'client_communication' as const,
+      status: 'draft' as const
+    }
+
+    it('should create a new template', async () => {
+      mockQuery.select.mockResolvedValue({
+        data: { ...mockTemplate, ...templateData },
+        error: null
+      })
+
+      const result = await createEmailTemplate(templateData)
+
+      expect(mockSupabase.from).toHaveBeenCalledWith('email_templates')
+      expect(mockQuery.insert).toHaveBeenCalledWith({
+        ...templateData,
+        user_id: 'user-123',
+        created_by: 'user-123',
+        usage_count: 0,
+        is_favorite: false
+      })
+      expect(revalidatePath).toHaveBeenCalledWith('/dashboard/email-templates')
+      expect(result.name).toBe(templateData.name)
+    })
+
+    it('should handle default status', async () => {
+      mockQuery.select.mockResolvedValue({
+        data: { ...mockTemplate, ...templateData },
+        error: null
+      })
+
+      const dataWithoutStatus = { ...templateData }
+      delete (dataWithoutStatus as any).status
+
+      await createEmailTemplate(dataWithoutStatus)
+
+      expect(mockQuery.insert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: 'draft'
+        })
+      )
+    })
+
+    it('should throw error when user is not authenticated', async () => {
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: null },
+        error: new Error('Not authenticated')
+      })
+
+      await expect(createEmailTemplate(templateData)).rejects.toThrow('User not authenticated')
+    })
+
+    it('should handle database errors', async () => {
+      mockQuery.select.mockResolvedValue({
+        data: null,
+        error: new Error('Insert failed')
+      })
+
+      await expect(createEmailTemplate(templateData)).rejects.toThrow('Insert failed')
+    })
+  })
+
+  describe('updateEmailTemplate', () => {
+    const updates = {
+      name: 'Updated Template',
+      subject: 'Updated Subject'
+    }
+
+    it('should update an existing template', async () => {
+      mockQuery.select.mockResolvedValue({
+        data: { ...mockTemplate, ...updates },
+        error: null
+      })
+
+      const result = await updateEmailTemplate('template-123', updates)
+
+      expect(mockSupabase.from).toHaveBeenCalledWith('email_templates')
+      expect(mockQuery.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ...updates,
+          updated_at: expect.any(String)
+        })
+      )
+      expect(mockQuery.eq).toHaveBeenCalledWith('id', 'template-123')
+      expect(mockQuery.eq).toHaveBeenCalledWith('user_id', 'user-123')
+      expect(revalidatePath).toHaveBeenCalledWith('/dashboard/email-templates')
+      expect(result.name).toBe(updates.name)
+    })
+
+    it('should throw error when user is not authenticated', async () => {
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: null },
+        error: new Error('Not authenticated')
+      })
+
+      await expect(updateEmailTemplate('template-123', updates)).rejects.toThrow('User not authenticated')
+    })
+
+    it('should handle database errors', async () => {
+      mockQuery.select.mockResolvedValue({
+        data: null,
+        error: new Error('Update failed')
+      })
+
+      await expect(updateEmailTemplate('template-123', updates)).rejects.toThrow('Update failed')
+    })
+  })
+
+  describe('deleteEmailTemplate', () => {
+    it('should delete a template', async () => {
+      mockQuery.delete.mockResolvedValue({
+        error: null
+      })
+
+      await deleteEmailTemplate('template-123')
+
+      expect(mockSupabase.from).toHaveBeenCalledWith('email_templates')
+      expect(mockQuery.delete).toHaveBeenCalled()
+      expect(mockQuery.eq).toHaveBeenCalledWith('id', 'template-123')
+      expect(mockQuery.eq).toHaveBeenCalledWith('user_id', 'user-123')
+      expect(revalidatePath).toHaveBeenCalledWith('/dashboard/email-templates')
+    })
+
+    it('should throw error when user is not authenticated', async () => {
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: null },
+        error: new Error('Not authenticated')
+      })
+
+      await expect(deleteEmailTemplate('template-123')).rejects.toThrow('User not authenticated')
+    })
+
+    it('should handle database errors', async () => {
+      mockQuery.delete.mockResolvedValue({
+        error: new Error('Delete failed')
+      })
+
+      await expect(deleteEmailTemplate('template-123')).rejects.toThrow('Delete failed')
+    })
+  })
+
+  describe('bulkUpdateTemplates', () => {
+    const templateIds = ['template-1', 'template-2']
+
+    it('should perform bulk delete', async () => {
+      mockQuery.delete.mockResolvedValue({ error: null })
+
+      const action = { type: 'delete' as const, templateIds }
+      await bulkUpdateTemplates(action)
+
+      expect(mockQuery.delete).toHaveBeenCalled()
+      expect(mockQuery.in).toHaveBeenCalledWith('id', templateIds)
+      expect(mockQuery.eq).toHaveBeenCalledWith('user_id', 'user-123')
+      expect(revalidatePath).toHaveBeenCalledWith('/dashboard/email-templates')
+    })
+
+    it('should perform bulk activate', async () => {
+      mockQuery.update.mockResolvedValue({ error: null })
+
+      const action = { type: 'activate' as const, templateIds }
+      await bulkUpdateTemplates(action)
+
+      expect(mockQuery.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: 'active',
+          updated_at: expect.any(String)
+        })
+      )
+      expect(mockQuery.in).toHaveBeenCalledWith('id', templateIds)
+      expect(mockQuery.eq).toHaveBeenCalledWith('user_id', 'user-123')
+    })
+
+    it('should perform bulk archive', async () => {
+      mockQuery.update.mockResolvedValue({ error: null })
+
+      const action = { type: 'archive' as const, templateIds }
+      await bulkUpdateTemplates(action)
+
+      expect(mockQuery.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: 'archived',
+          updated_at: expect.any(String)
+        })
+      )
+    })
+
+    it('should handle move to existing folder', async () => {
+      mockQuery.update.mockResolvedValue({ error: null })
+
+      const action = { 
+        type: 'move_folder' as const, 
+        templateIds,
+        metadata: { folderId: 'folder-123' }
+      }
+      await bulkUpdateTemplates(action)
+
+      expect(mockQuery.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          folder_id: 'folder-123',
+          updated_at: expect.any(String)
+        })
+      )
+    })
+
+    it('should handle export action', async () => {
+      const action = { type: 'export' as const, templateIds }
+      
+      // Should not throw error for export action
+      await expect(bulkUpdateTemplates(action)).resolves.toBeUndefined()
+    })
+
+    it('should throw error for unknown action type', async () => {
+      const action = { type: 'unknown' as any, templateIds }
+      
+      await expect(bulkUpdateTemplates(action)).rejects.toThrow('Unknown bulk action: unknown')
+    })
+
+    it('should throw error when user is not authenticated', async () => {
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: null },
+        error: new Error('Not authenticated')
+      })
+
+      const action = { type: 'delete' as const, templateIds }
+      await expect(bulkUpdateTemplates(action)).rejects.toThrow('User not authenticated')
+    })
+  })
+
+  describe('incrementUsageCount', () => {
+    it('should increment usage count', async () => {
+      mockSupabase.rpc.mockResolvedValue({ error: null })
+
+      await incrementUsageCount('template-123')
+
+      expect(mockSupabase.rpc).toHaveBeenCalledWith('increment_template_usage', {
+        template_id: 'template-123',
+        user_id: 'user-123'
+      })
+      expect(revalidatePath).toHaveBeenCalledWith('/dashboard/email-templates')
+    })
+
+    it('should throw error when user is not authenticated', async () => {
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: null },
+        error: new Error('Not authenticated')
+      })
+
+      await expect(incrementUsageCount('template-123')).rejects.toThrow('User not authenticated')
+    })
+
+    it('should handle database errors', async () => {
+      mockSupabase.rpc.mockResolvedValue({ error: new Error('RPC failed') })
+
+      await expect(incrementUsageCount('template-123')).rejects.toThrow('RPC failed')
+    })
+  })
+
+  describe('getTemplateById', () => {
+    it('should fetch template by ID', async () => {
+      mockQuery.single.mockResolvedValue({
+        data: mockTemplate,
+        error: null
+      })
+
+      const result = await getTemplateById('template-123')
+
+      expect(mockSupabase.from).toHaveBeenCalledWith('email_templates')
+      expect(mockQuery.eq).toHaveBeenCalledWith('id', 'template-123')
+      expect(mockQuery.eq).toHaveBeenCalledWith('user_id', 'user-123')
+      expect(result).toEqual({
+        ...mockTemplate,
+        variables: mockTemplate.variables,
+        metadata: {
+          ...mockTemplate.metadata,
+          author_name: mockTemplate.profiles.full_name
+        }
+      })
+    })
+
+    it('should return null when template not found', async () => {
+      mockQuery.single.mockResolvedValue({
+        data: null,
+        error: { code: 'PGRST116' } // Not found error
+      })
+
+      const result = await getTemplateById('non-existent')
+
+      expect(result).toBeNull()
+    })
+
+    it('should throw error for other database errors', async () => {
+      mockQuery.single.mockResolvedValue({
+        data: null,
+        error: new Error('Database error')
+      })
+
+      await expect(getTemplateById('template-123')).rejects.toThrow('Database error')
+    })
+
+    it('should throw error when user is not authenticated', async () => {
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: null },
+        error: new Error('Not authenticated')
+      })
+
+      await expect(getTemplateById('template-123')).rejects.toThrow('User not authenticated')
+    })
+  })
+
+  describe('duplicateTemplate', () => {
+    it('should duplicate a template', async () => {
+      // Mock getTemplateById
+      mockQuery.single.mockResolvedValueOnce({
+        data: mockTemplate,
+        error: null
+      })
+
+      // Mock createEmailTemplate
+      mockQuery.select.mockResolvedValueOnce({
+        data: {
+          ...mockTemplate,
+          id: 'new-template-id',
+          name: 'Test Template (Copy)',
+          status: 'draft'
+        },
+        error: null
+      })
+
+      const result = await duplicateTemplate('template-123')
+
+      expect(result.name).toBe('Test Template (Copy)')
+      expect(result.status).toBe('draft')
+      expect(result.id).toBe('new-template-id')
+    })
+
+    it('should use custom name suffix', async () => {
+      mockQuery.single.mockResolvedValueOnce({
+        data: mockTemplate,
+        error: null
+      })
+
+      mockQuery.select.mockResolvedValueOnce({
+        data: {
+          ...mockTemplate,
+          name: 'Test Template - Backup',
+          status: 'draft'
+        },
+        error: null
+      })
+
+      const result = await duplicateTemplate('template-123', ' - Backup')
+
+      expect(result.name).toBe('Test Template - Backup')
+    })
+
+    it('should throw error when original template not found', async () => {
+      mockQuery.single.mockResolvedValueOnce({
+        data: null,
+        error: { code: 'PGRST116' }
+      })
+
+      await expect(duplicateTemplate('non-existent')).rejects.toThrow('Template not found')
+    })
+  })
+
+  describe('Error Handling', () => {
+    it('should handle Supabase client creation errors', async () => {
+      ;(createClient as jest.Mock).mockRejectedValue(new Error('Supabase connection failed'))
+
+      await expect(getEmailTemplates()).rejects.toThrow('Supabase connection failed')
+    })
+
+    it('should handle auth errors gracefully', async () => {
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: null },
+        error: { message: 'JWT expired' }
+      })
+
+      await expect(getEmailTemplates()).rejects.toThrow('User not authenticated')
+    })
+  })
+
+  describe('Data Transformation', () => {
+    it('should transform template data correctly', async () => {
+      const rawTemplate = {
+        ...mockTemplate,
+        variables: null, // Test null variables
+        metadata: null,  // Test null metadata
+        profiles: null   // Test null profiles
+      }
+
+      mockQuery.select.mockResolvedValue({
+        data: [rawTemplate],
+        error: null,
+        count: 1
+      })
+
+      const result = await getEmailTemplates()
+
+      expect(result.templates[0].variables).toEqual([])
+      expect(result.templates[0].metadata).toEqual({
+        author_name: undefined
+      })
+    })
+
+    it('should handle pagination calculations correctly', async () => {
+      mockQuery.select.mockResolvedValue({
+        data: [],
+        error: null,
+        count: 100
+      })
+
+      const result = await getEmailTemplates({ limit: 25 })
+
+      expect(result.totalPages).toBe(4) // Math.ceil(100 / 25)
+    })
+  })
+})

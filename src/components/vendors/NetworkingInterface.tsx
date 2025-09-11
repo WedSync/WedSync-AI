@@ -1,0 +1,741 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { Card } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '@/components/ui/dialog';
+import {
+  UserIcon,
+  TrophyIcon,
+  GlobeAltIcon,
+  ChartBarIcon,
+  LightBulbIcon,
+  ShareIcon,
+  HeartIcon,
+  EyeIcon,
+  CalendarIcon,
+  MapPinIcon,
+  StarIcon,
+  CheckBadgeIcon,
+  HandRaisedIcon,
+  ChatBubbleLeftRightIcon,
+  ArrowTrendingUpIcon,
+  UsersIcon,
+} from '@heroicons/react/24/outline';
+import {
+  StarIcon as StarIconSolid,
+  CheckIcon,
+} from '@heroicons/react/20/solid';
+
+interface VendorProfile {
+  id: string;
+  business_name: string;
+  primary_category: string;
+  secondary_categories: string[];
+  city: string;
+  county: string;
+  description: string;
+  years_in_business: number;
+  team_size: number;
+  average_rating: number;
+  total_reviews: number;
+  is_verified: boolean;
+  featured_image?: string;
+  portfolio_images: string[];
+  total_weddings: number;
+  response_time_hours: number;
+  response_rate: number;
+  repeat_customer_rate: number;
+  recommendation_rate: number;
+  price_range: string;
+  starting_price: number;
+  service_radius_miles: number;
+  certifications: string[];
+  achievements: string[];
+  specialties: string[];
+  instagram_handle?: string;
+  website?: string;
+}
+
+interface NetworkingRecommendation {
+  id: string;
+  vendor: VendorProfile;
+  reason: string;
+  score: number;
+  mutual_connections: number;
+  shared_clients: number;
+  complementary_services: boolean;
+  geographic_overlap: boolean;
+  similar_rating_tier: boolean;
+}
+
+interface ReferralOpportunity {
+  id: string;
+  client_name: string;
+  wedding_date: string;
+  venue_name: string;
+  budget_range: string;
+  services_needed: string[];
+  location: string;
+  description: string;
+  referral_fee_percentage?: number;
+  priority: 'high' | 'medium' | 'low';
+  expires_at: string;
+}
+
+interface NetworkingEvent {
+  id: string;
+  title: string;
+  description: string;
+  event_type: 'virtual' | 'in_person' | 'hybrid';
+  date: string;
+  location?: string;
+  organizer: string;
+  attendee_count: number;
+  max_attendees: number;
+  is_registered: boolean;
+  categories_focus: string[];
+  networking_score: number;
+}
+
+interface Props {
+  currentVendorId: string;
+  organizationId: string;
+  currentVendorProfile: VendorProfile;
+}
+
+export function NetworkingInterface({
+  currentVendorId,
+  organizationId,
+  currentVendorProfile,
+}: Props) {
+  const [activeTab, setActiveTab] = useState<
+    'recommendations' | 'referrals' | 'events' | 'insights'
+  >('recommendations');
+  const [recommendations, setRecommendations] = useState<
+    NetworkingRecommendation[]
+  >([]);
+  const [referralOpportunities, setReferralOpportunities] = useState<
+    ReferralOpportunity[]
+  >([]);
+  const [networkingEvents, setNetworkingEvents] = useState<NetworkingEvent[]>(
+    [],
+  );
+  const [selectedVendor, setSelectedVendor] = useState<VendorProfile | null>(
+    null,
+  );
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetchRecommendations();
+    fetchReferralOpportunities();
+    fetchNetworkingEvents();
+  }, []);
+
+  const fetchRecommendations = async () => {
+    try {
+      const response = await fetch('/api/placeholder');
+      if (response.ok) {
+        const data = await response.json();
+        setRecommendations(data.recommendations || []);
+      }
+    } catch (error) {
+      console.error('Failed to fetch recommendations:', error);
+    }
+  };
+
+  const fetchReferralOpportunities = async () => {
+    try {
+      const response = await fetch('/api/placeholder');
+      if (response.ok) {
+        const data = await response.json();
+        setReferralOpportunities(data.opportunities || []);
+      }
+    } catch (error) {
+      console.error('Failed to fetch referral opportunities:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchNetworkingEvents = async () => {
+    try {
+      const response = await fetch('/api/placeholder');
+      if (response.ok) {
+        const data = await response.json();
+        setNetworkingEvents(data.events || []);
+      }
+    } catch (error) {
+      console.error('Failed to fetch networking events:', error);
+    }
+  };
+
+  const connectToVendor = async (targetVendorId: string) => {
+    try {
+      const response = await fetch('/api/vendors/connections/request', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from_vendor_id: currentVendorId,
+          to_vendor_id: targetVendorId,
+          message: `Hi! I found your profile through the networking recommendations. I'd love to connect and explore collaboration opportunities.`,
+        }),
+      });
+
+      if (response.ok) {
+        fetchRecommendations(); // Refresh to update connection status
+      }
+    } catch (error) {
+      console.error('Failed to send connection request:', error);
+    }
+  };
+
+  const applyForReferral = async (opportunityId: string) => {
+    try {
+      const response = await fetch('/api/vendors/networking/referrals/apply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          vendor_id: currentVendorId,
+          opportunity_id: opportunityId,
+        }),
+      });
+
+      if (response.ok) {
+        fetchReferralOpportunities(); // Refresh opportunities
+      }
+    } catch (error) {
+      console.error('Failed to apply for referral:', error);
+    }
+  };
+
+  const registerForEvent = async (eventId: string) => {
+    try {
+      const response = await fetch('/api/vendors/networking/events/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          vendor_id: currentVendorId,
+          event_id: eventId,
+        }),
+      });
+
+      if (response.ok) {
+        fetchNetworkingEvents(); // Refresh events
+      }
+    } catch (error) {
+      console.error('Failed to register for event:', error);
+    }
+  };
+
+  const getScoreColor = (score: number) => {
+    if (score >= 80) return 'text-green-600 bg-green-50';
+    if (score >= 60) return 'text-yellow-600 bg-yellow-50';
+    return 'text-red-600 bg-red-50';
+  };
+
+  const getPriorityColor = (priority: string) => {
+    switch (priority) {
+      case 'high':
+        return 'bg-red-100 text-red-700 border-red-200';
+      case 'medium':
+        return 'bg-yellow-100 text-yellow-700 border-yellow-200';
+      case 'low':
+        return 'bg-green-100 text-green-700 border-green-200';
+      default:
+        return 'bg-gray-100 text-gray-700 border-gray-200';
+    }
+  };
+
+  const formatDate = (dateString: string) => {
+    return new Date(dateString).toLocaleDateString('en-GB', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+    });
+  };
+
+  const formatDateTime = (dateString: string) => {
+    return new Date(dateString).toLocaleDateString('en-GB', {
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-bold">Networking Hub</h2>
+          <p className="text-gray-600">
+            Smart networking tools and opportunities for wedding professionals
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Badge variant="secondary" className="flex items-center gap-1">
+            <ArrowTrendingUpIcon className="size-4" />
+            Network Score: 85
+          </Badge>
+          <Badge variant="outline" className="flex items-center gap-1">
+            <TrophyIcon className="size-4" />
+            Level: Expert Networker
+          </Badge>
+        </div>
+      </div>
+
+      {/* Tab Navigation */}
+      <div className="border-b border-gray-200">
+        <nav className="flex space-x-8">
+          {['recommendations', 'referrals', 'events', 'insights'].map((tab) => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab as any)}
+              className={`py-2 px-1 border-b-2 font-medium text-sm capitalize ${
+                activeTab === tab
+                  ? 'border-blue-500 text-blue-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+              }`}
+            >
+              {tab === 'recommendations' && 'Smart Recommendations'}
+              {tab === 'referrals' && 'Referral Opportunities'}
+              {tab === 'events' && 'Networking Events'}
+              {tab === 'insights' && 'Network Insights'}
+            </button>
+          ))}
+        </nav>
+      </div>
+
+      {/* Recommendations Tab */}
+      {activeTab === 'recommendations' && (
+        <div className="space-y-6">
+          {loading ? (
+            <div className="text-center py-12">
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto"></div>
+              <p className="mt-4 text-gray-600">Analyzing your network...</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {recommendations.map((rec) => (
+                <Card
+                  key={rec.id}
+                  className="p-6 hover:shadow-lg transition-shadow"
+                >
+                  <div className="flex items-start justify-between mb-4">
+                    <div className="flex items-center gap-3">
+                      <div className="size-12 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white font-bold">
+                        {rec.vendor.business_name.charAt(0)}
+                      </div>
+                      <div>
+                        <h3 className="font-semibold">
+                          {rec.vendor.business_name}
+                        </h3>
+                        <p className="text-sm text-gray-600">
+                          {rec.vendor.primary_category}
+                        </p>
+                      </div>
+                    </div>
+                    <Badge
+                      className={`${getScoreColor(rec.score)} font-medium`}
+                    >
+                      {rec.score}% Match
+                    </Badge>
+                  </div>
+
+                  <p className="text-sm text-gray-700 mb-4">{rec.reason}</p>
+
+                  <div className="grid grid-cols-2 gap-4 mb-4 text-sm">
+                    <div className="flex items-center gap-2">
+                      <UsersIcon className="size-4 text-gray-400" />
+                      <span>{rec.mutual_connections} mutual connections</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <HeartIcon className="size-4 text-gray-400" />
+                      <span>{rec.shared_clients} shared clients</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <MapPinIcon className="size-4 text-gray-400" />
+                      <span>
+                        {rec.vendor.city}, {rec.vendor.county}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <StarIconSolid className="size-4 text-yellow-400" />
+                      <span>
+                        {rec.vendor.average_rating.toFixed(1)} (
+                        {rec.vendor.total_reviews})
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-2 mb-4">
+                    {rec.complementary_services && (
+                      <Badge variant="secondary" className="text-xs">
+                        Complementary Services
+                      </Badge>
+                    )}
+                    {rec.geographic_overlap && (
+                      <Badge variant="secondary" className="text-xs">
+                        Same Area
+                      </Badge>
+                    )}
+                    {rec.similar_rating_tier && (
+                      <Badge variant="secondary" className="text-xs">
+                        Similar Quality
+                      </Badge>
+                    )}
+                  </div>
+
+                  <div className="flex gap-2">
+                    <Dialog>
+                      <DialogTrigger asChild>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setSelectedVendor(rec.vendor)}
+                        >
+                          <EyeIcon className="size-4 mr-1" />
+                          View Profile
+                        </Button>
+                      </DialogTrigger>
+                      <DialogContent className="max-w-2xl">
+                        <DialogHeader>
+                          <DialogTitle>{rec.vendor.business_name}</DialogTitle>
+                        </DialogHeader>
+                        {selectedVendor && (
+                          <div className="space-y-4">
+                            <div className="flex items-start gap-4">
+                              <div className="size-16 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white font-bold text-xl">
+                                {selectedVendor.business_name.charAt(0)}
+                              </div>
+                              <div className="flex-1">
+                                <div className="flex items-center gap-2 mb-1">
+                                  <h3 className="text-xl font-semibold">
+                                    {selectedVendor.business_name}
+                                  </h3>
+                                  {selectedVendor.is_verified && (
+                                    <CheckBadgeIcon className="size-5 text-blue-500" />
+                                  )}
+                                </div>
+                                <p className="text-gray-600">
+                                  {selectedVendor.primary_category}
+                                </p>
+                                <div className="flex items-center gap-4 mt-2 text-sm text-gray-500">
+                                  <span>
+                                    {selectedVendor.years_in_business}+ years
+                                    experience
+                                  </span>
+                                  <span>
+                                    {selectedVendor.total_weddings}+ weddings
+                                  </span>
+                                  <span>
+                                    £{selectedVendor.starting_price}+ starting
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-4">
+                              <div className="space-y-2">
+                                <h4 className="font-medium">Performance</h4>
+                                <div className="text-sm text-gray-600">
+                                  <p>
+                                    Response time:{' '}
+                                    {selectedVendor.response_time_hours}h
+                                  </p>
+                                  <p>
+                                    Response rate:{' '}
+                                    {selectedVendor.response_rate}%
+                                  </p>
+                                  <p>
+                                    Repeat customers:{' '}
+                                    {selectedVendor.repeat_customer_rate}%
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="space-y-2">
+                                <h4 className="font-medium">Service Area</h4>
+                                <div className="text-sm text-gray-600">
+                                  <p>
+                                    {selectedVendor.city},{' '}
+                                    {selectedVendor.county}
+                                  </p>
+                                  <p>
+                                    {selectedVendor.service_radius_miles} mile
+                                    radius
+                                  </p>
+                                </div>
+                              </div>
+                            </div>
+
+                            {selectedVendor.description && (
+                              <div>
+                                <h4 className="font-medium mb-2">About</h4>
+                                <p className="text-sm text-gray-600">
+                                  {selectedVendor.description}
+                                </p>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </DialogContent>
+                    </Dialog>
+                    <Button
+                      size="sm"
+                      onClick={() => connectToVendor(rec.vendor.id)}
+                    >
+                      <ShareIcon className="size-4 mr-1" />
+                      Connect
+                    </Button>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Referrals Tab */}
+      {activeTab === 'referrals' && (
+        <div className="space-y-4">
+          <Card className="p-4">
+            <h3 className="font-semibold mb-4">
+              Available Referral Opportunities
+            </h3>
+            {referralOpportunities.length === 0 ? (
+              <div className="text-center py-8 text-gray-500">
+                <HandRaisedIcon className="size-12 mx-auto mb-3 text-gray-300" />
+                <p>No referral opportunities available</p>
+                <p className="text-sm mt-1">
+                  Check back later for new opportunities
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {referralOpportunities.map((opportunity) => (
+                  <div
+                    key={opportunity.id}
+                    className="p-4 border border-gray-200 rounded-lg"
+                  >
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 mb-2">
+                          <h4 className="font-medium">
+                            {opportunity.client_name}
+                          </h4>
+                          <Badge
+                            className={`text-xs ${getPriorityColor(opportunity.priority)}`}
+                          >
+                            {opportunity.priority} priority
+                          </Badge>
+                          {opportunity.referral_fee_percentage && (
+                            <Badge variant="secondary" className="text-xs">
+                              {opportunity.referral_fee_percentage}% referral
+                              fee
+                            </Badge>
+                          )}
+                        </div>
+                        <div className="grid grid-cols-2 gap-4 mb-3 text-sm text-gray-600">
+                          <div className="flex items-center gap-2">
+                            <CalendarIcon className="size-4" />
+                            <span>{formatDate(opportunity.wedding_date)}</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <MapPinIcon className="size-4" />
+                            <span>{opportunity.location}</span>
+                          </div>
+                        </div>
+                        <p className="text-sm text-gray-700 mb-2">
+                          {opportunity.description}
+                        </p>
+                        <div className="flex flex-wrap gap-1 mb-3">
+                          {opportunity.services_needed.map((service) => (
+                            <Badge
+                              key={service}
+                              variant="outline"
+                              className="text-xs"
+                            >
+                              {service}
+                            </Badge>
+                          ))}
+                        </div>
+                        <p className="text-xs text-gray-500">
+                          Budget: {opportunity.budget_range} • Expires:{' '}
+                          {formatDate(opportunity.expires_at)}
+                        </p>
+                      </div>
+                      <Button
+                        onClick={() => applyForReferral(opportunity.id)}
+                        size="sm"
+                      >
+                        Apply
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+        </div>
+      )}
+
+      {/* Events Tab */}
+      {activeTab === 'events' && (
+        <div className="space-y-4">
+          <Card className="p-4">
+            <h3 className="font-semibold mb-4">Upcoming Networking Events</h3>
+            {networkingEvents.length === 0 ? (
+              <div className="text-center py-8 text-gray-500">
+                <CalendarIcon className="size-12 mx-auto mb-3 text-gray-300" />
+                <p>No upcoming events</p>
+                <p className="text-sm mt-1">
+                  New networking events will appear here
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {networkingEvents.map((event) => (
+                  <Card key={event.id} className="p-4">
+                    <div className="flex items-start justify-between mb-3">
+                      <div>
+                        <h4 className="font-medium">{event.title}</h4>
+                        <p className="text-sm text-gray-600">
+                          {event.organizer}
+                        </p>
+                      </div>
+                      <Badge
+                        variant={
+                          event.event_type === 'virtual'
+                            ? 'secondary'
+                            : 'outline'
+                        }
+                        className="text-xs"
+                      >
+                        {event.event_type}
+                      </Badge>
+                    </div>
+                    <p className="text-sm text-gray-700 mb-3">
+                      {event.description}
+                    </p>
+                    <div className="flex items-center justify-between text-sm text-gray-500 mb-3">
+                      <span>{formatDateTime(event.date)}</span>
+                      <span>
+                        {event.attendee_count}/{event.max_attendees} attending
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap gap-1 mb-3">
+                      {event.categories_focus.map((category) => (
+                        <Badge
+                          key={category}
+                          variant="outline"
+                          className="text-xs"
+                        >
+                          {category}
+                        </Badge>
+                      ))}
+                    </div>
+                    <Button
+                      onClick={() => registerForEvent(event.id)}
+                      disabled={event.is_registered}
+                      size="sm"
+                      className="w-full"
+                    >
+                      {event.is_registered ? (
+                        <>
+                          <CheckIcon className="size-4 mr-1" />
+                          Registered
+                        </>
+                      ) : (
+                        'Register'
+                      )}
+                    </Button>
+                  </Card>
+                ))}
+              </div>
+            )}
+          </Card>
+        </div>
+      )}
+
+      {/* Insights Tab */}
+      {activeTab === 'insights' && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <Card className="p-6">
+            <h3 className="font-semibold mb-4 flex items-center gap-2">
+              <ChartBarIcon className="size-5 text-blue-500" />
+              Network Analytics
+            </h3>
+            <div className="space-y-4">
+              <div className="flex justify-between items-center">
+                <span className="text-sm text-gray-600">Total Connections</span>
+                <span className="font-medium">42</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-sm text-gray-600">
+                  Connection Growth (30d)
+                </span>
+                <span className="font-medium text-green-600">+8 (23%)</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-sm text-gray-600">Network Reach</span>
+                <span className="font-medium">1,247 vendors</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-sm text-gray-600">
+                  Referrals Received
+                </span>
+                <span className="font-medium">15</span>
+              </div>
+            </div>
+          </Card>
+
+          <Card className="p-6">
+            <h3 className="font-semibold mb-4 flex items-center gap-2">
+              <LightBulbIcon className="size-5 text-yellow-500" />
+              Networking Tips
+            </h3>
+            <div className="space-y-3">
+              <div className="p-3 bg-blue-50 rounded-lg">
+                <p className="text-sm font-medium text-blue-900">
+                  💡 Tip of the day
+                </p>
+                <p className="text-sm text-blue-700 mt-1">
+                  Photographers who connect with 5+ florists see 40% more
+                  referrals
+                </p>
+              </div>
+              <div className="p-3 bg-green-50 rounded-lg">
+                <p className="text-sm font-medium text-green-900">
+                  📈 Growth Opportunity
+                </p>
+                <p className="text-sm text-green-700 mt-1">
+                  Connect with venue coordinators to expand your network reach
+                </p>
+              </div>
+              <div className="p-3 bg-purple-50 rounded-lg">
+                <p className="text-sm font-medium text-purple-900">
+                  🎯 Recommended Action
+                </p>
+                <p className="text-sm text-purple-700 mt-1">
+                  Attend next week's virtual networking event for photographers
+                </p>
+              </div>
+            </div>
+          </Card>
+        </div>
+      )}
+    </div>
+  );
+}

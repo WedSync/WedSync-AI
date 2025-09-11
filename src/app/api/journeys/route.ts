@@ -1,0 +1,183 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { Database } from '@/types/database';
+import { getServerSession } from 'next-auth';
+import { authOptions } from '@/lib/auth';
+
+const supabase = createClient<Database>(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+);
+
+// GET /api/journeys - List journey canvases
+export async function GET(request: NextRequest) {
+  try {
+    const session = await getServerSession(authOptions);
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const url = new URL(request.url);
+    const status = url.searchParams.get('status');
+    const action = url.searchParams.get('action');
+    const limit = parseInt(url.searchParams.get('limit') || '50');
+    const offset = parseInt(url.searchParams.get('offset') || '0');
+
+    // Get node templates
+    if (action === 'templates') {
+      const { data: templates, error } = await supabase
+        .from('journey_node_templates')
+        .select('*')
+        .eq('is_active', true)
+        .order('category', { ascending: true });
+
+      if (error) {
+        console.error('Failed to fetch templates:', error);
+        return NextResponse.json(
+          { error: 'Failed to fetch templates' },
+          { status: 500 },
+        );
+      }
+
+      return NextResponse.json({ templates: templates || [] });
+    }
+
+    // Get user's journey canvases
+    let query = supabase
+      .from('journey_canvases')
+      .select(
+        `
+        id,
+        name,
+        description,
+        status,
+        canvas_data,
+        canvas_config,
+        execution_count,
+        last_executed_at,
+        created_at,
+        updated_at
+      `,
+      )
+      .eq('created_by', session.user.id)
+      .order('updated_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (status) {
+      query = query.eq('status', status);
+    }
+
+    const { data: canvases, error } = await query;
+
+    if (error) {
+      console.error('Failed to fetch canvases:', error);
+      return NextResponse.json(
+        { error: 'Failed to fetch journey canvases' },
+        { status: 500 },
+      );
+    }
+
+    // Get total count for pagination
+    const { count } = await supabase
+      .from('journey_canvases')
+      .select('*', { count: 'exact', head: true })
+      .eq('created_by', session.user.id);
+
+    return NextResponse.json({
+      canvases: canvases || [],
+      pagination: {
+        limit,
+        offset,
+        total: count || 0,
+      },
+    });
+  } catch (error) {
+    console.error('Journey listing error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+// POST /api/journeys - Create a new journey canvas
+export async function POST(request: NextRequest) {
+  try {
+    const session = await getServerSession(authOptions);
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const { name, description, canvas_data, canvas_config, form_id } = body;
+
+    // Validation
+    if (!name || !canvas_data) {
+      return NextResponse.json(
+        { error: 'Missing required fields: name, canvas_data' },
+        { status: 400 },
+      );
+    }
+
+    // Validate canvas_data structure
+    if (!canvas_data.nodes || !Array.isArray(canvas_data.nodes)) {
+      return NextResponse.json(
+        { error: 'canvas_data must contain a nodes array' },
+        { status: 400 },
+      );
+    }
+
+    if (!canvas_data.edges || !Array.isArray(canvas_data.edges)) {
+      return NextResponse.json(
+        { error: 'canvas_data must contain an edges array' },
+        { status: 400 },
+      );
+    }
+
+    // Create journey canvas
+    const { data: canvas, error: canvasError } = await supabase
+      .from('journey_canvases')
+      .insert({
+        name,
+        description,
+        canvas_data: {
+          nodes: canvas_data.nodes || [],
+          edges: canvas_data.edges || [],
+          viewport: canvas_data.viewport || { x: 0, y: 0, zoom: 1 },
+          metadata: canvas_data.metadata || {},
+        },
+        canvas_config: canvas_config || {
+          grid: { enabled: true, size: 20 },
+          snap: { enabled: true, threshold: 10 },
+          validation: { strict: false },
+        },
+        form_id,
+        status: 'draft',
+        created_by: session.user.id,
+      })
+      .select()
+      .single();
+
+    if (canvasError) {
+      console.error('Failed to create canvas:', canvasError);
+      return NextResponse.json(
+        { error: 'Failed to create journey canvas' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json(
+      {
+        canvas,
+        message: 'Journey canvas created successfully',
+      },
+      { status: 201 },
+    );
+  } catch (error) {
+    console.error('Journey creation error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

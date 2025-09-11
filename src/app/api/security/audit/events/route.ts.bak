@@ -1,0 +1,413 @@
+/**
+ * WS-177 Security Audit Events API Route
+ * Team D Round 1 Implementation - Ultra Hard Security Standards
+ * 
+ * Comprehensive audit event logging endpoint with celebrity protection
+ * Multi-layered security validation and compliance enforcement
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { AuditSecurityManager } from '@/lib/security/AuditSecurityManager';
+import { SecurityMonitoringService } from '@/lib/security/SecurityMonitoringService';
+import { WeddingSecurityContext, SecuritySeverity, ThreatLevel } from '@/lib/security/SecurityLayerInterface';
+import { z } from 'zod';
+
+const auditEventSchema = z.object({
+  event_type: z.enum([
+    'login_attempt',
+    'data_access',
+    'data_modification',
+    'celebrity_access',
+    'vendor_activity',
+    'compliance_violation',
+    'threat_detected',
+    'incident_response',
+    'policy_change',
+    'emergency_access'
+  ]),
+  severity: z.enum(['low', 'medium', 'high', 'critical']),
+  threat_level: z.enum(['none', 'low', 'medium', 'high', 'critical']).optional(),
+  organization_id: z.string().uuid(),
+  client_id: z.string().uuid().optional(),
+  vendor_id: z.string().uuid().optional(),
+  user_id: z.string().uuid().optional(),
+  celebrity_client: z.boolean().default(false),
+  celebrity_tier: z.enum(['standard', 'vip', 'celebrity']).optional(),
+  event_details: z.object({
+    action: z.string(),
+    resource: z.string().optional(),
+    ip_address: z.string().optional(),
+    user_agent: z.string().optional(),
+    location: z.string().optional(),
+    additional_context: z.record(z.any()).optional()
+  }),
+  compliance_flags: z.object({
+    gdpr_relevant: z.boolean().default(false),
+    soc2_relevant: z.boolean().default(false),
+    ccpa_relevant: z.boolean().default(false),
+    pci_relevant: z.boolean().default(false)
+  }).optional()
+});
+
+export async function POST(request: NextRequest) {
+  const auditManager = new AuditSecurityManager();
+  const monitoringService = new SecurityMonitoringService();
+  
+  try {
+    const supabase = createClient();
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      await auditManager.logSecurityEvent({
+        event_type: 'unauthorized_access',
+        severity: 'high',
+        organization_id: 'unknown',
+        event_details: {
+          action: 'audit_event_post_unauthorized',
+          ip_address: request.ip || 'unknown',
+          user_agent: request.headers.get('user-agent') || 'unknown'
+        }
+      });
+      
+      return NextResponse.json(
+        { error: 'Unauthorized access to security audit endpoint' },
+        { status: 401 }
+      );
+    }
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validatedEvent = auditEventSchema.parse(body);
+
+    // Create wedding security context
+    const context: WeddingSecurityContext = {
+      userId: user.id,
+      organizationId: validatedEvent.organization_id,
+      clientId: validatedEvent.client_id,
+      vendorId: validatedEvent.vendor_id,
+      userRole: user.app_metadata?.role || 'user',
+      celebrityTier: validatedEvent.celebrity_tier || 'standard',
+      permissions: user.app_metadata?.permissions || [],
+      sessionId: user.app_metadata?.session_id || 'unknown',
+      ipAddress: request.ip || 'unknown',
+      userAgent: request.headers.get('user-agent') || 'unknown'
+    };
+
+    // Multi-layered security validation
+    const securityValidation = await auditManager.validateSecurityContext(context);
+    if (!securityValidation.isValid) {
+      await auditManager.logSecurityEvent({
+        event_type: 'security_validation_failed',
+        severity: 'critical',
+        organization_id: validatedEvent.organization_id,
+        user_id: user.id,
+        event_details: {
+          action: 'audit_event_security_validation_failed',
+          validation_errors: securityValidation.errors,
+          ip_address: context.ipAddress,
+          user_agent: context.userAgent
+        }
+      });
+      
+      return NextResponse.json(
+        { error: 'Security validation failed', details: securityValidation.errors },
+        { status: 403 }
+      );
+    }
+
+    // Celebrity client protection
+    if (validatedEvent.celebrity_client || validatedEvent.celebrity_tier === 'celebrity') {
+      const celebrityAccess = await auditManager.validateCelebrityAccess(context);
+      if (!celebrityAccess) {
+        await auditManager.logSecurityEvent({
+          event_type: 'celebrity_unauthorized_access',
+          severity: 'critical',
+          organization_id: validatedEvent.organization_id,
+          user_id: user.id,
+          celebrity_client: true,
+          event_details: {
+            action: 'celebrity_audit_access_denied',
+            attempted_event: validatedEvent.event_type,
+            ip_address: context.ipAddress,
+            user_agent: context.userAgent
+          }
+        });
+        
+        return NextResponse.json(
+          { error: 'Insufficient privileges for celebrity client audit access' },
+          { status: 403 }
+        );
+      }
+    }
+
+    // Log the audit event through AuditSecurityManager
+    const auditResult = await auditManager.logSecurityEvent({
+      event_type: validatedEvent.event_type,
+      severity: validatedEvent.severity as SecuritySeverity,
+      threat_level: validatedEvent.threat_level as ThreatLevel,
+      organization_id: validatedEvent.organization_id,
+      client_id: validatedEvent.client_id,
+      vendor_id: validatedEvent.vendor_id,
+      user_id: validatedEvent.user_id || user.id,
+      celebrity_client: validatedEvent.celebrity_client,
+      celebrity_tier: validatedEvent.celebrity_tier,
+      event_details: validatedEvent.event_details,
+      compliance_flags: validatedEvent.compliance_flags
+    });
+
+    // Real-time monitoring integration
+    await monitoringService.processSecurityEvent({
+      id: auditResult.eventId,
+      type: validatedEvent.event_type,
+      severity: validatedEvent.severity as SecuritySeverity,
+      celebrityClient: validatedEvent.celebrity_client,
+      organizationId: validatedEvent.organization_id,
+      timestamp: new Date().toISOString(),
+      context: context
+    });
+
+    // Trigger alerts for high-severity events
+    if (validatedEvent.severity === 'critical' || validatedEvent.severity === 'high') {
+      await monitoringService.triggerSecurityAlert({
+        type: validatedEvent.event_type,
+        severity: validatedEvent.severity as SecuritySeverity,
+        celebrityClient: validatedEvent.celebrity_client,
+        organizationId: validatedEvent.organization_id,
+        message: `${validatedEvent.event_type} detected with ${validatedEvent.severity} severity`,
+        context: validatedEvent.event_details
+      });
+    }
+
+    // Wedding business context validation
+    if (validatedEvent.client_id) {
+      const { data: client, error: clientError } = await supabase
+        .from('clients')
+        .select('id, organization_id, celebrity_tier')
+        .eq('id', validatedEvent.client_id)
+        .eq('organization_id', validatedEvent.organization_id)
+        .single();
+
+      if (clientError || !client) {
+        await auditManager.logSecurityEvent({
+          event_type: 'invalid_client_context',
+          severity: 'medium',
+          organization_id: validatedEvent.organization_id,
+          user_id: user.id,
+          event_details: {
+            action: 'invalid_client_audit_context',
+            attempted_client_id: validatedEvent.client_id,
+            error: clientError?.message || 'Client not found'
+          }
+        });
+        
+        return NextResponse.json(
+          { error: 'Invalid wedding client context' },
+          { status: 400 }
+        );
+      }
+
+      // Validate celebrity tier consistency
+      if (client.celebrity_tier !== validatedEvent.celebrity_tier) {
+        await auditManager.logSecurityEvent({
+          event_type: 'celebrity_tier_mismatch',
+          severity: 'high',
+          organization_id: validatedEvent.organization_id,
+          client_id: validatedEvent.client_id,
+          user_id: user.id,
+          celebrity_client: true,
+          event_details: {
+            action: 'celebrity_tier_validation_failed',
+            expected_tier: client.celebrity_tier,
+            provided_tier: validatedEvent.celebrity_tier
+          }
+        });
+        
+        return NextResponse.json(
+          { error: 'Celebrity tier validation failed' },
+          { status: 400 }
+        );
+      }
+    }
+
+    // Compliance processing
+    if (validatedEvent.compliance_flags) {
+      await auditManager.processComplianceEvent({
+        eventId: auditResult.eventId,
+        organizationId: validatedEvent.organization_id,
+        complianceFlags: validatedEvent.compliance_flags,
+        eventType: validatedEvent.event_type,
+        severity: validatedEvent.severity as SecuritySeverity
+      });
+    }
+
+    return NextResponse.json({
+      success: true,
+      event_id: auditResult.eventId,
+      timestamp: auditResult.timestamp,
+      organization_id: validatedEvent.organization_id,
+      compliance_processed: !!validatedEvent.compliance_flags,
+      monitoring_active: true,
+      celebrity_protection: validatedEvent.celebrity_client,
+      message: 'Security audit event logged successfully'
+    }, { status: 201 });
+
+  } catch (error) {
+    console.error('Security audit event API error:', error);
+
+    // Log the API error as a security event
+    try {
+      await auditManager.logSecurityEvent({
+        event_type: 'api_error',
+        severity: 'high',
+        organization_id: 'system',
+        event_details: {
+          action: 'audit_event_api_error',
+          error: error instanceof Error ? error.message : 'Unknown error',
+          endpoint: '/api/security/audit/events',
+          method: 'POST'
+        }
+      });
+    } catch (logError) {
+      console.error('Failed to log audit API error:', logError);
+    }
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { 
+          error: 'Validation error', 
+          details: error.errors,
+          message: 'Security audit event validation failed'
+        },
+        { status: 400 }
+      );
+    }
+
+    return NextResponse.json(
+      { 
+        error: 'Internal server error',
+        message: 'Failed to process security audit event'
+      },
+      { status: 500 }
+    );
+  }
+}
+
+export async function GET(request: NextRequest) {
+  const auditManager = new AuditSecurityManager();
+  
+  try {
+    const supabase = createClient();
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized access' },
+        { status: 401 }
+      );
+    }
+
+    const { searchParams } = new URL(request.url);
+    const organizationId = searchParams.get('organization_id');
+    const eventType = searchParams.get('event_type');
+    const severity = searchParams.get('severity');
+    const celebrityOnly = searchParams.get('celebrity_only') === 'true';
+    const limit = parseInt(searchParams.get('limit') || '50');
+    const offset = parseInt(searchParams.get('offset') || '0');
+
+    if (!organizationId) {
+      return NextResponse.json(
+        { error: 'Organization ID required' },
+        { status: 400 }
+      );
+    }
+
+    // Validate organization access
+    const hasAccess = await auditManager.validateOrganizationAccess(user.id, organizationId);
+    if (!hasAccess) {
+      await auditManager.logSecurityEvent({
+        event_type: 'unauthorized_access',
+        severity: 'high',
+        organization_id: organizationId,
+        user_id: user.id,
+        event_details: {
+          action: 'audit_events_unauthorized_access',
+          attempted_organization: organizationId
+        }
+      });
+      
+      return NextResponse.json(
+        { error: 'Unauthorized organization access' },
+        { status: 403 }
+      );
+    }
+
+    // Build query filters
+    let query = supabase
+      .from('audit_logs')
+      .select('*')
+      .eq('organization_id', organizationId)
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (eventType) {
+      query = query.eq('event_type', eventType);
+    }
+
+    if (severity) {
+      query = query.eq('severity', severity);
+    }
+
+    if (celebrityOnly) {
+      query = query.eq('celebrity_client', true);
+    }
+
+    const { data: auditEvents, error: queryError } = await query;
+
+    if (queryError) {
+      throw queryError;
+    }
+
+    // Log the audit query for security tracking
+    await auditManager.logSecurityEvent({
+      event_type: 'data_access',
+      severity: 'low',
+      organization_id: organizationId,
+      user_id: user.id,
+      event_details: {
+        action: 'audit_events_query',
+        filters: {
+          event_type: eventType,
+          severity: severity,
+          celebrity_only: celebrityOnly,
+          limit: limit,
+          offset: offset
+        }
+      }
+    });
+
+    return NextResponse.json({
+      success: true,
+      events: auditEvents,
+      total_count: auditEvents?.length || 0,
+      filters: {
+        organization_id: organizationId,
+        event_type: eventType,
+        severity: severity,
+        celebrity_only: celebrityOnly
+      },
+      pagination: {
+        limit: limit,
+        offset: offset
+      }
+    });
+
+  } catch (error) {
+    console.error('Get audit events API error:', error);
+    
+    return NextResponse.json(
+      { error: 'Failed to retrieve audit events' },
+      { status: 500 }
+    );
+  }
+}

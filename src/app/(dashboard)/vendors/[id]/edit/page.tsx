@@ -1,0 +1,535 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import { createClient } from '@/lib/supabase/client';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import {
+  ArrowLeftIcon,
+  BuildingStorefrontIcon,
+  UserIcon,
+  GlobeAltIcon,
+  CurrencyPoundIcon,
+  TagIcon,
+  CheckIcon,
+  PhotoIcon,
+  SparklesIcon,
+} from '@heroicons/react/20/solid';
+import { Database } from '@/types/database';
+import { VendorPageProps, extractParams } from '@/types/next15-params';
+
+type Vendor = Database['public']['Tables']['vendors']['Row'];
+type VendorCategory = Database['public']['Tables']['vendor_categories']['Row'];
+
+export default async function EditVendorPage({ params }: VendorPageProps) {
+  // Extract async params - Next.js 15 requirement
+  const resolvedParams = await extractParams(params);
+  const router = useRouter();
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [vendor, setVendor] = useState<Vendor | null>(null);
+  const [categories, setCategories] = useState<VendorCategory[]>([]);
+  const [formData, setFormData] = useState({
+    business_name: '',
+    category_id: '',
+    contact_name: '',
+    email: '',
+    phone: '',
+    website: '',
+    address: '',
+    location: '',
+    description: '',
+    services: [] as string[],
+    price_range: '',
+    minimum_spend: '',
+    maximum_capacity: '',
+    is_marketplace_vendor: false,
+    status: 'active',
+    internal_notes: '',
+  });
+  const [newService, setNewService] = useState('');
+
+  useEffect(() => {
+    loadVendor();
+    loadCategories();
+  }, [resolvedParams.id]);
+
+  const loadCategories = async () => {
+    const supabase = await createClient();
+    const { data } = await supabase
+      .from('vendor_categories')
+      .select('*')
+      .order('name');
+
+    if (data) {
+      setCategories(data);
+    }
+  };
+
+  const loadVendor = async () => {
+    setLoading(true);
+    try {
+      const supabase = await createClient();
+      const { data, error } = await supabase
+        .from('vendors')
+        .select('*')
+        .eq('id', resolvedParams.id)
+        .single();
+
+      if (error) throw error;
+
+      if (data) {
+        setVendor(data);
+        setFormData({
+          business_name: data.business_name || '',
+          category_id: data.category_id || '',
+          contact_name: data.contact_name || '',
+          email: data.email || '',
+          phone: data.phone || '',
+          website: data.website || '',
+          address: data.address || '',
+          location: data.location || '',
+          description: data.description || '',
+          services: data.services || [],
+          price_range: data.price_range || '',
+          minimum_spend: data.minimum_spend?.toString() || '',
+          maximum_capacity: data.maximum_capacity?.toString() || '',
+          is_marketplace_vendor: data.is_marketplace_vendor || false,
+          status: data.status || 'active',
+          internal_notes: data.internal_notes || '',
+        });
+      }
+    } catch (error) {
+      console.error('Error loading vendor:', error);
+      alert('Failed to load vendor data');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+
+    try {
+      const supabase = await createClient();
+      const { data: user } = await supabase.auth.getUser();
+
+      if (!user) {
+        throw new Error('Not authenticated');
+      }
+
+      const updateData = {
+        ...formData,
+        minimum_spend: formData.minimum_spend
+          ? parseFloat(formData.minimum_spend)
+          : null,
+        maximum_capacity: formData.maximum_capacity
+          ? parseInt(formData.maximum_capacity)
+          : null,
+        updated_at: new Date().toISOString(),
+      };
+
+      const { error } = await supabase
+        .from('vendors')
+        .update(updateData)
+        .eq('id', resolvedParams.id);
+
+      if (error) throw error;
+
+      router.push(`/vendors/${resolvedParams.id}`);
+    } catch (error) {
+      console.error('Error updating vendor:', error);
+      alert('Failed to update vendor. Please try again.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleChange = (
+    e: React.ChangeEvent<
+      HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
+    >,
+  ) => {
+    const { name, value, type } = e.target;
+    if (type === 'checkbox') {
+      const target = e.target as HTMLInputElement;
+      setFormData((prev) => ({
+        ...prev,
+        [name]: target.checked,
+      }));
+    } else {
+      setFormData((prev) => ({
+        ...prev,
+        [name]: value,
+      }));
+    }
+  };
+
+  const handleSwitchChange = (name: string) => (checked: boolean) => {
+    setFormData((prev) => ({
+      ...prev,
+      [name]: checked,
+    }));
+  };
+
+  const addService = () => {
+    if (newService.trim()) {
+      setFormData((prev) => ({
+        ...prev,
+        services: [...prev.services, newService.trim()],
+      }));
+      setNewService('');
+    }
+  };
+
+  const removeService = (index: number) => {
+    setFormData((prev) => ({
+      ...prev,
+      services: prev.services.filter((_, i) => i !== index),
+    }));
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-600 mx-auto"></div>
+          <p className="mt-4 text-sm text-zinc-500">Loading vendor data...</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-4xl">
+      <div className="mb-6">
+        <Button href={`/vendors/${resolvedParams.id}`} plain>
+          <ArrowLeftIcon />
+          Back to Vendor
+        </Button>
+      </div>
+
+      <div className="mb-8">
+        <h1 className="text-3xl font-bold tracking-tight text-gray-900">
+          Edit Vendor
+        </h1>
+        <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+          Update vendor information and services
+        </p>
+      </div>
+
+      <form onSubmit={handleSubmit} className="space-y-8">
+        <div className="space-y-2">
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 mb-4">
+              <BuildingStorefrontIcon className="size-5 text-zinc-500" />
+              <h3 className="text-lg font-medium">Business Information</h3>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="space-y-2">
+                <Label>Business Name</Label>
+                <Input
+                  name="business_name"
+                  value={formData.business_name}
+                  onChange={handleChange}
+                  required
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label>Category</Label>
+                <select
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  name="category_id"
+                  value={formData.category_id}
+                  onChange={handleChange}
+                  required
+                >
+                  <option value="">Select category</option>
+                  {categories.map((cat) => (
+                    <option key={cat.id} value={cat.id}>
+                      {cat.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Location</Label>
+                <Input
+                  name="location"
+                  value={formData.location}
+                  onChange={handleChange}
+                  placeholder="e.g., London, UK"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label>Price Range</Label>
+                <select
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  name="price_range"
+                  value={formData.price_range}
+                  onChange={handleChange}
+                >
+                  <option value="">Select price range</option>
+                  <option value="budget">Budget (£)</option>
+                  <option value="moderate">Moderate (££)</option>
+                  <option value="premium">Premium (£££)</option>
+                  <option value="luxury">Luxury (££££)</option>
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Minimum Spend</Label>
+                <div className="relative">
+                  <CurrencyPoundIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                  <Input
+                    type="number"
+                    name="minimum_spend"
+                    value={formData.minimum_spend}
+                    onChange={handleChange}
+                    min="0"
+                    step="0.01"
+                    placeholder="0.00"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Maximum Capacity</Label>
+                <Input
+                  type="number"
+                  name="maximum_capacity"
+                  value={formData.maximum_capacity}
+                  onChange={handleChange}
+                  min="0"
+                  placeholder="e.g., 200 guests"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Description</Label>
+              <textarea
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                name="description"
+                value={formData.description}
+                onChange={handleChange}
+                rows={3}
+                placeholder="Brief description of the vendor's services and specialties"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>Full Address</Label>
+              <textarea
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                name="address"
+                value={formData.address}
+                onChange={handleChange}
+                rows={2}
+                placeholder="Complete business address"
+              />
+            </div>
+          </div>
+        </div>
+
+        <hr className="border-gray-200" />
+
+        <div className="space-y-2">
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 mb-4">
+              <UserIcon className="size-5 text-zinc-500" />
+              <h3 className="text-lg font-medium">Contact Information</h3>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="space-y-2">
+                <Label>Contact Name</Label>
+                <Input
+                  name="contact_name"
+                  value={formData.contact_name}
+                  onChange={handleChange}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label>Email</Label>
+                <Input
+                  type="email"
+                  name="email"
+                  value={formData.email}
+                  onChange={handleChange}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label>Phone</Label>
+                <Input
+                  type="tel"
+                  name="phone"
+                  value={formData.phone}
+                  onChange={handleChange}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label>Website</Label>
+                <div className="relative">
+                  <GlobeAltIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                  <Input
+                    type="url"
+                    name="website"
+                    value={formData.website}
+                    onChange={handleChange}
+                    placeholder="https://example.com"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <hr className="border-gray-200" />
+
+        <div className="space-y-2">
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 mb-4">
+              <SparklesIcon className="size-5 text-zinc-500" />
+              <h3 className="text-lg font-medium">Services</h3>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Services Offered</Label>
+              <p className="text-sm text-gray-500">
+                Add specific services this vendor provides
+              </p>
+              <div className="mt-2 space-y-2">
+                <div className="flex gap-2">
+                  <Input
+                    value={newService}
+                    onChange={(e) => setNewService(e.target.value)}
+                    placeholder="e.g., Wedding Photography, Engagement Shoots"
+                    onKeyPress={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        addService();
+                      }
+                    }}
+                  />
+                  <Button type="button" onClick={addService} outline>
+                    Add
+                  </Button>
+                </div>
+                {formData.services.length > 0 && (
+                  <div className="flex flex-wrap gap-2 mt-3">
+                    {formData.services.map((service, index) => (
+                      <div
+                        key={index}
+                        className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-purple-100 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300 text-sm"
+                      >
+                        {service}
+                        <button
+                          type="button"
+                          onClick={() => removeService(index)}
+                          className="ml-1 hover:text-purple-900 dark:hover:text-purple-100"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <hr className="border-gray-200" />
+
+        <div className="space-y-2">
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 mb-4">
+              <TagIcon className="size-5 text-zinc-500" />
+              <h3 className="text-lg font-medium">Settings</h3>
+            </div>
+
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label>Marketplace Vendor</Label>
+                  <p className="text-sm text-gray-500">
+                    This vendor is part of the WedSync marketplace
+                  </p>
+                </div>
+                <input
+                  type="checkbox"
+                  name="is_marketplace_vendor"
+                  checked={formData.is_marketplace_vendor}
+                  onChange={handleSwitchChange('is_marketplace_vendor')}
+                  className="h-4 w-4 text-purple-600 focus:ring-purple-500 rounded"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label>Status</Label>
+                <select
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  name="status"
+                  value={formData.status}
+                  onChange={handleChange}
+                >
+                  <option value="active">Active</option>
+                  <option value="inactive">Inactive</option>
+                  <option value="pending">Pending Review</option>
+                  <option value="verified">Verified</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <hr className="border-gray-200" />
+
+        <div className="space-y-2">
+          <Label>Internal Notes</Label>
+          <p className="text-sm text-gray-500">
+            Private notes only visible to your team
+          </p>
+          <textarea
+            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+            name="internal_notes"
+            value={formData.internal_notes}
+            onChange={handleChange}
+            rows={4}
+            className="bg-amber-50 dark:bg-amber-900/10"
+          />
+        </div>
+
+        <div className="flex justify-end gap-3 pt-4">
+          <Button href={`/vendors/${resolvedParams.id}`} outline>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={saving}>
+            {saving ? (
+              <>
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                Saving...
+              </>
+            ) : (
+              <>
+                <CheckIcon />
+                Save Changes
+              </>
+            )}
+          </Button>
+        </div>
+      </form>
+    </div>
+  );
+}

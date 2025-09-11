@@ -1,0 +1,13 @@
+import nextConfig from '../../../next.config'
+import pkg from '../../../package.json'
+
+describe('Build System', () => {
+  it('should have Next.js configured', () => {
+    expect(nextConfig).toBeDefined()
+  })
+  
+  it('should have required dependencies', () => {
+    expect(pkg.dependencies.next).toBeDefined()
+    expect(pkg.dependencies.react).toBeDefined()
+  })
+})

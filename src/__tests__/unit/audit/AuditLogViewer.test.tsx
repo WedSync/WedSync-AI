@@ -1,0 +1,155 @@
+import React from 'react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import '@testing-library/jest-dom';
+import { AuditLogViewer } from '@/components/admin/AuditLogViewer';
+import type { AuditEvent, AuditSearchFilters } from '@/types/audit';
+
+// Mock Supabase client
+jest.mock('@supabase/auth-helpers-nextjs', () => ({
+  createClientComponentClient: jest.fn(() => ({
+    auth: {
+      getUser: jest.fn().mockResolvedValue({ data: { user: { id: 'test-user' } } })
+    },
+    from: jest.fn(() => ({
+      select: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      order: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      range: jest.fn().mockResolvedValue({
+        data: [],
+        count: 0,
+        error: null
+      })
+    }))
+  }))
+}));
+// Mock data
+const mockAuditEvents: AuditEvent[] = [
+  {
+    id: '1',
+    user_id: 'user-123',
+    action: 'LOGIN',
+    resource_type: 'USER',
+    risk_level: 'LOW',
+    description: 'User logged in successfully',
+    metadata: {
+      ip_address: '192.168.1.100',
+      user_agent: 'Mozilla/5.0 Chrome/91.0'
+    created_at: new Date().toISOString()
+  },
+    id: '2',
+    user_id: 'user-456',
+    action: 'CREATE',
+    resource_type: 'WEDDING',
+    risk_level: 'MEDIUM',
+    description: 'Created new wedding',
+      wedding_context: { wedding_id: 'wedding-789' }
+    created_at: new Date(Date.now() - 60000).toISOString()
+    id: '3',
+    user_id: 'user-789',
+    action: 'DELETE',
+    resource_type: 'GUEST',
+    risk_level: 'HIGH',
+    description: 'Deleted guest record',
+      ip_address: '192.168.1.200',
+      wedding_context: { wedding_id: 'wedding-123' }
+    created_at: new Date(Date.now() - 120000).toISOString()
+  }
+];
+describe('AuditLogViewer', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+  it('renders audit log viewer with header', async () => {
+    render(<AuditLogViewer />);
+    
+    expect(screen.getByText('Audit Log Viewer')).toBeInTheDocument();
+    expect(screen.getByText('Monitor user activities and system events across your wedding platform')).toBeInTheDocument();
+  it('shows live updates indicator when realTimeUpdates is enabled', async () => {
+    render(<AuditLogViewer realTimeUpdates={true} />);
+    expect(screen.getByText('Live Updates')).toBeInTheDocument();
+    expect(screen.getByText('Live Updates')).toHaveClass('bg-green-100');
+  it('does not show live updates indicator when realTimeUpdates is disabled', async () => {
+    render(<AuditLogViewer realTimeUpdates={false} />);
+    expect(screen.queryByText('Live Updates')).not.toBeInTheDocument();
+  it('renders mock audit log entries', async () => {
+    await waitFor(() => {
+      expect(screen.getByText('user-123')).toBeInTheDocument();
+      expect(screen.getByText('User logged in')).toBeInTheDocument();
+    });
+  it('displays risk level badges correctly', async () => {
+      const lowRiskBadge = screen.getByText('LOW');
+      const mediumRiskBadge = screen.getByText('MEDIUM');
+      
+      expect(lowRiskBadge).toBeInTheDocument();
+      expect(lowRiskBadge).toHaveClass('bg-green-100');
+      expect(mediumRiskBadge).toBeInTheDocument();
+      expect(mediumRiskBadge).toHaveClass('bg-yellow-100');
+  it('expands row when expand button is clicked', async () => {
+      const expandButton = screen.getAllByRole('button', { name: /expand details/i })[0];
+      fireEvent.click(expandButton);
+      expect(screen.getByText('Event Details')).toBeInTheDocument();
+      expect(screen.getByText('Event ID:')).toBeInTheDocument();
+  it('collapses row when collapse button is clicked', async () => {
+      const collapseButton = screen.getByRole('button', { name: /collapse details/i });
+      fireEvent.click(collapseButton);
+      expect(screen.queryByText('Event Details')).not.toBeInTheDocument();
+  it('formats action descriptions correctly', async () => {
+      expect(screen.getByText('Created wedding')).toBeInTheDocument();
+  it('displays metadata in expanded view', async () => {
+      expect(screen.getByText('Metadata')).toBeInTheDocument();
+      expect(screen.getByText('192.168.1.100')).toBeInTheDocument();
+  it('handles virtualization correctly', async () => {
+    const container = await screen.findByText('Audit Log Viewer');
+    expect(container).toBeInTheDocument();
+    // Test scroll behavior
+    const scrollContainer = container.closest('.h-96.overflow-auto');
+    expect(scrollContainer).toBeInTheDocument();
+  it('applies compact mode when enabled', async () => {
+    render(<AuditLogViewer compact={true} />);
+  it('applies initial filters correctly', async () => {
+    const initialFilters: Partial<AuditSearchFilters> = {
+      risk_level: 'HIGH',
+      action: 'DELETE'
+    };
+    render(<AuditLogViewer initialFilters={initialFilters} />);
+    // Component should render with filters applied
+      expect(screen.getByText('Audit Log Viewer')).toBeInTheDocument();
+  it('shows empty state when no logs are found', async () => {
+    // Mock empty response
+    const mockSupabase = require('@supabase/auth-helpers-nextjs').createClientComponentClient();
+    mockSupabase.from.mockReturnValue({
+      expect(screen.getByText('No audit logs found matching your criteria.')).toBeInTheDocument();
+  it('handles error state correctly', async () => {
+    // Mock error response
+      range: jest.fn().mockRejectedValue(new Error('Database error'))
+      expect(screen.getByText(/Error loading audit logs/)).toBeInTheDocument();
+  it('renders loading skeleton initially', () => {
+    // Should show loading skeleton before data loads
+    const loadingElements = screen.getAllByRole('generic');
+    expect(loadingElements.length).toBeGreaterThan(0);
+  it('formats timestamps correctly', async () => {
+      const timeElements = screen.getAllByText(/\d+:\d+:\d+ (AM|PM)/);
+      expect(timeElements.length).toBeGreaterThan(0);
+  it('handles scroll events for virtualization', async () => {
+      const scrollContainer = document.querySelector('.h-96.overflow-auto');
+      if (scrollContainer) {
+        fireEvent.scroll(scrollContainer, { target: { scrollTop: 100 } });
+      }
+    // Component should handle scroll without errors
+  it('shows actions panel when showActions is true', async () => {
+    render(<AuditLogViewer showActions={true} />);
+      // Actions should be visible via expand functionality
+      expect(expandButton).toBeInTheDocument();
+  it('uses custom item height for expanded rows', async () => {
+    // Expanded row should have more content
+  it('maintains expanded state across data updates', async () => {
+    // State should persist
+    expect(screen.getByText('Event Details')).toBeInTheDocument();
+  it('handles dark mode classes correctly', async () => {
+      const container = screen.getByText('Audit Log Viewer').closest('div');
+      expect(container).toHaveClass('dark:bg-gray-900');
+  it('applies proper ARIA labels for accessibility', async () => {
+      expect(expandButton).toHaveAttribute('aria-label', 'Expand details');
+});

@@ -1,0 +1,472 @@
+'use server';
+
+import { createClient } from '@/lib/supabase/server';
+import { revalidatePath } from 'next/cache';
+import { sanitizeEmailTemplate } from '@/lib/security/email-content-sanitizer';
+import { z } from 'zod';
+
+// Types
+export interface EmailTemplate {
+  id: string;
+  name: string;
+  subject: string;
+  content: string;
+  category:
+    | 'welcome'
+    | 'payment_reminder'
+    | 'meeting_confirmation'
+    | 'thank_you'
+    | 'client_communication'
+    | 'custom';
+  status: 'active' | 'draft' | 'archived';
+  created_at: string;
+  updated_at: string;
+  user_id: string;
+  usage_count: number;
+  is_favorite: boolean;
+  variables: string[];
+  metadata: {
+    author_name?: string;
+    description?: string;
+    tags?: string[];
+  };
+  profiles?: {
+    full_name: string;
+  };
+}
+
+export interface EmailTemplateFilters {
+  search?: string;
+  categories?: string[];
+  statuses?: string[];
+  showFavorites?: boolean;
+  dateRange?: {
+    from: Date;
+    to?: Date;
+  };
+  usageRange?: {
+    min?: number;
+    max?: number;
+  };
+  sortBy?: string;
+  page?: number;
+  limit?: number;
+}
+
+export interface BulkAction {
+  type:
+    | 'activate'
+    | 'archive'
+    | 'delete'
+    | 'move_folder'
+    | 'export'
+    | 'create_folder';
+  templateIds: string[];
+  metadata?: {
+    folderId?: string;
+    folderName?: string;
+    format?: string;
+  };
+}
+
+// Validation schemas
+const createTemplateSchema = z.object({
+  name: z
+    .string()
+    .min(1, 'Name is required')
+    .max(200, 'Name must be 200 characters or less'),
+  subject: z
+    .string()
+    .min(1, 'Subject is required')
+    .max(500, 'Subject must be 500 characters or less'),
+  content: z.string().min(1, 'Content is required'),
+  category: z.enum([
+    'welcome',
+    'payment_reminder',
+    'meeting_confirmation',
+    'thank_you',
+    'client_communication',
+    'custom',
+  ]),
+  status: z.enum(['active', 'draft', 'archived']).optional().default('draft'),
+  description: z.string().optional(),
+  variables: z.array(z.string()).optional().default([]),
+});
+
+const updateTemplateSchema = createTemplateSchema
+  .partial()
+  .omit({ status: true });
+
+// Get authenticated user
+async function getAuthenticatedUser() {
+  const supabase = await createClient();
+  const {
+    data: { user },
+    error,
+  } = await supabase.auth.getUser();
+
+  if (error || !user) {
+    throw new Error('User not authenticated');
+  }
+
+  return user;
+}
+
+// Server Actions
+export async function getEmailTemplates(filters: EmailTemplateFilters = {}) {
+  const user = await getAuthenticatedUser();
+  const supabase = await createClient();
+
+  const {
+    search,
+    categories = [],
+    statuses = [],
+    showFavorites = false,
+    dateRange,
+    usageRange,
+    sortBy = 'created_at_desc',
+    page = 1,
+    limit = 20,
+  } = filters;
+
+  let query = supabase
+    .from('email_templates')
+    .select(
+      `
+      *,
+      profiles!created_by (
+        full_name
+      )
+    `,
+      { count: 'exact' },
+    )
+    .eq('user_id', user.id);
+
+  // Apply filters
+  if (search) {
+    query = query.or(
+      `name.ilike.%${search}%,subject.ilike.%${search}%,content.ilike.%${search}%`,
+    );
+  }
+
+  if (categories.length > 0) {
+    query = query.in('category', categories);
+  }
+
+  if (statuses.length > 0) {
+    query = query.in('status', statuses);
+  }
+
+  if (showFavorites) {
+    query = query.eq('is_favorite', true);
+  }
+
+  if (dateRange?.from) {
+    query = query.gte('created_at', dateRange.from.toISOString());
+  }
+
+  if (dateRange?.to) {
+    query = query.lte('created_at', dateRange.to.toISOString());
+  }
+
+  if (usageRange?.min) {
+    query = query.gte('usage_count', usageRange.min);
+  }
+
+  if (usageRange?.max) {
+    query = query.lte('usage_count', usageRange.max);
+  }
+
+  // Apply sorting
+  const [field, direction] = sortBy.split('_');
+  const ascending = direction === 'asc';
+  query = query.order(field, { ascending });
+
+  // Apply pagination
+  const from = (page - 1) * limit;
+  const to = from + limit - 1;
+  query = query.range(from, to);
+
+  const { data, error, count } = await query;
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  // Transform data
+  const templates = (data || []).map((template) => ({
+    ...template,
+    variables: template.variables || [],
+    metadata: {
+      ...template.metadata,
+      author_name: template.profiles?.full_name,
+    },
+  }));
+
+  return {
+    templates,
+    totalCount: count || 0,
+    totalPages: Math.ceil((count || 0) / limit),
+  };
+}
+
+export async function getTemplateById(id: string) {
+  const user = await getAuthenticatedUser();
+  const supabase = await createClient();
+
+  const { data, error } = await supabase
+    .from('email_templates')
+    .select(
+      `
+      *,
+      profiles!created_by (
+        full_name
+      )
+    `,
+    )
+    .eq('id', id)
+    .eq('user_id', user.id)
+    .single();
+
+  if (error) {
+    if (error.code === 'PGRST116') {
+      return null;
+    }
+    throw new Error(error.message);
+  }
+
+  return {
+    ...data,
+    variables: data.variables || [],
+    metadata: {
+      ...data.metadata,
+      author_name: data.profiles?.full_name,
+    },
+  };
+}
+
+export async function createEmailTemplate(
+  templateData: z.infer<typeof createTemplateSchema>,
+) {
+  const user = await getAuthenticatedUser();
+  const supabase = await createClient();
+
+  // Validate input
+  const validatedData = createTemplateSchema.parse(templateData);
+
+  // Sanitize content
+  const sanitizedTemplate = sanitizeEmailTemplate({
+    name: validatedData.name,
+    category: validatedData.category,
+    subject_template: validatedData.subject,
+    html_content: validatedData.content,
+    description: validatedData.description,
+  });
+
+  const { data, error } = await supabase
+    .from('email_templates')
+    .insert({
+      name: sanitizedTemplate.name,
+      subject: sanitizedTemplate.subject_template,
+      content: sanitizedTemplate.html_content,
+      category: sanitizedTemplate.category,
+      status: validatedData.status || 'draft',
+      user_id: user.id,
+      created_by: user.id,
+      usage_count: 0,
+      is_favorite: false,
+      variables: validatedData.variables,
+      metadata: {
+        description: sanitizedTemplate.description,
+      },
+    })
+    .select()
+    .single();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  revalidatePath('/dashboard/email-templates');
+  return data;
+}
+
+export async function updateEmailTemplate(
+  id: string,
+  updates: z.infer<typeof updateTemplateSchema>,
+) {
+  const user = await getAuthenticatedUser();
+  const supabase = await createClient();
+
+  // Validate input
+  const validatedData = updateTemplateSchema.parse(updates);
+
+  // Sanitize content if provided
+  let sanitizedUpdates = { ...validatedData };
+  if (validatedData.content || validatedData.subject || validatedData.name) {
+    const sanitizedTemplate = sanitizeEmailTemplate({
+      name: validatedData.name || '',
+      category: validatedData.category || 'custom',
+      subject_template: validatedData.subject || '',
+      html_content: validatedData.content || '',
+      description: validatedData.description,
+    });
+
+    sanitizedUpdates = {
+      ...sanitizedUpdates,
+      name: sanitizedTemplate.name || validatedData.name,
+      subject: sanitizedTemplate.subject_template || validatedData.subject,
+      content: sanitizedTemplate.html_content || validatedData.content,
+    };
+  }
+
+  const { data, error } = await supabase
+    .from('email_templates')
+    .update({
+      ...sanitizedUpdates,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', id)
+    .eq('user_id', user.id)
+    .select()
+    .single();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  revalidatePath('/dashboard/email-templates');
+  return data;
+}
+
+export async function deleteEmailTemplate(id: string) {
+  const user = await getAuthenticatedUser();
+  const supabase = await createClient();
+
+  const { error } = await supabase
+    .from('email_templates')
+    .delete()
+    .eq('id', id)
+    .eq('user_id', user.id);
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  revalidatePath('/dashboard/email-templates');
+}
+
+export async function duplicateTemplate(
+  id: string,
+  nameSuffix: string = ' (Copy)',
+) {
+  const originalTemplate = await getTemplateById(id);
+
+  if (!originalTemplate) {
+    throw new Error('Template not found');
+  }
+
+  return createEmailTemplate({
+    name: originalTemplate.name + nameSuffix,
+    subject: originalTemplate.subject,
+    content: originalTemplate.content,
+    category: originalTemplate.category,
+    status: 'draft',
+    variables: originalTemplate.variables,
+  });
+}
+
+export async function bulkUpdateTemplates(action: BulkAction) {
+  const user = await getAuthenticatedUser();
+  const supabase = await createClient();
+
+  const { type, templateIds, metadata } = action;
+
+  switch (type) {
+    case 'delete':
+      const { error: deleteError } = await supabase
+        .from('email_templates')
+        .delete()
+        .in('id', templateIds)
+        .eq('user_id', user.id);
+
+      if (deleteError) {
+        throw new Error(deleteError.message);
+      }
+      break;
+
+    case 'activate':
+      const { error: activateError } = await supabase
+        .from('email_templates')
+        .update({
+          status: 'active',
+          updated_at: new Date().toISOString(),
+        })
+        .in('id', templateIds)
+        .eq('user_id', user.id);
+
+      if (activateError) {
+        throw new Error(activateError.message);
+      }
+      break;
+
+    case 'archive':
+      const { error: archiveError } = await supabase
+        .from('email_templates')
+        .update({
+          status: 'archived',
+          updated_at: new Date().toISOString(),
+        })
+        .in('id', templateIds)
+        .eq('user_id', user.id);
+
+      if (archiveError) {
+        throw new Error(archiveError.message);
+      }
+      break;
+
+    case 'move_folder':
+      if (!metadata?.folderId) {
+        throw new Error('Folder ID is required for move operation');
+      }
+
+      const { error: moveError } = await supabase
+        .from('email_templates')
+        .update({
+          folder_id: metadata.folderId,
+          updated_at: new Date().toISOString(),
+        })
+        .in('id', templateIds)
+        .eq('user_id', user.id);
+
+      if (moveError) {
+        throw new Error(moveError.message);
+      }
+      break;
+
+    case 'export':
+      // Export functionality would be handled client-side
+      break;
+
+    default:
+      throw new Error(`Unknown bulk action: ${type}`);
+  }
+
+  revalidatePath('/dashboard/email-templates');
+}
+
+export async function incrementUsageCount(templateId: string) {
+  const user = await getAuthenticatedUser();
+  const supabase = await createClient();
+
+  const { error } = await supabase.rpc('increment_template_usage', {
+    template_id: templateId,
+    user_id: user.id,
+  });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  revalidatePath('/dashboard/email-templates');
+}

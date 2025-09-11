@@ -1,0 +1,645 @@
+/**
+ * Performance Health Check API Endpoint - WS-173 Backend Performance Optimization
+ * Team B - Round 1 Implementation
+ * Provides comprehensive system health monitoring
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { performanceCacheManager } from '@/lib/cache/performance-cache-manager';
+import { connectionPool } from '@/lib/database/connection-pool';
+import { CacheService } from '@/lib/cache/redis-client';
+import { metricsTracker } from '@/lib/performance/metrics-tracker';
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
+interface HealthStatus {
+  status: 'healthy' | 'degraded' | 'unhealthy';
+  timestamp: string;
+  responseTime: number;
+  checks: {
+    database: HealthCheck;
+    cache: HealthCheck;
+    connectionPool: HealthCheck;
+    system: HealthCheck;
+    api: HealthCheck;
+  };
+  summary: {
+    totalChecks: number;
+    passedChecks: number;
+    failedChecks: number;
+    overallHealth: number; // percentage
+  };
+}
+
+interface HealthCheck {
+  status: 'pass' | 'warn' | 'fail';
+  responseTime?: number;
+  details?: any;
+  error?: string;
+  lastChecked: string;
+}
+
+/**
+ * GET /api/performance/health
+ * Comprehensive health check for all system components
+ */
+export async function GET(request: NextRequest) {
+  const startTime = Date.now();
+  const checks: HealthStatus['checks'] = {
+    database: { status: 'fail', lastChecked: new Date().toISOString() },
+    cache: { status: 'fail', lastChecked: new Date().toISOString() },
+    connectionPool: { status: 'fail', lastChecked: new Date().toISOString() },
+    system: { status: 'fail', lastChecked: new Date().toISOString() },
+    api: { status: 'fail', lastChecked: new Date().toISOString() },
+  };
+
+  try {
+    // Parse query parameters
+    const searchParams = request.nextUrl.searchParams;
+    const includeDetails = searchParams.get('details') === 'true';
+    const componentsParam = searchParams.get('components');
+    const components = componentsParam ? componentsParam.split(',') : ['all'];
+
+    // Run health checks in parallel
+    const healthPromises: Promise<void>[] = [];
+
+    if (components.includes('all') || components.includes('database')) {
+      healthPromises.push(checkDatabaseHealth(checks, includeDetails));
+    }
+
+    if (components.includes('all') || components.includes('cache')) {
+      healthPromises.push(checkCacheHealth(checks, includeDetails));
+    }
+
+    if (components.includes('all') || components.includes('connectionPool')) {
+      healthPromises.push(checkConnectionPoolHealth(checks, includeDetails));
+    }
+
+    if (components.includes('all') || components.includes('system')) {
+      healthPromises.push(checkSystemHealth(checks, includeDetails));
+    }
+
+    if (components.includes('all') || components.includes('api')) {
+      healthPromises.push(checkAPIHealth(checks, includeDetails));
+    }
+
+    // Wait for all checks to complete (with timeout)
+    await Promise.allSettled(healthPromises);
+
+    // Calculate overall health
+    const totalChecks = Object.keys(checks).length;
+    const passedChecks = Object.values(checks).filter(
+      (check) => check.status === 'pass',
+    ).length;
+    const warnChecks = Object.values(checks).filter(
+      (check) => check.status === 'warn',
+    ).length;
+    const failedChecks = Object.values(checks).filter(
+      (check) => check.status === 'fail',
+    ).length;
+
+    // Determine overall status
+    let overallStatus: 'healthy' | 'degraded' | 'unhealthy' = 'healthy';
+    if (failedChecks > 0) {
+      overallStatus = failedChecks > totalChecks / 2 ? 'unhealthy' : 'degraded';
+    } else if (warnChecks > 0) {
+      overallStatus = 'degraded';
+    }
+
+    const responseTime = Date.now() - startTime;
+    const healthStatus: HealthStatus = {
+      status: overallStatus,
+      timestamp: new Date().toISOString(),
+      responseTime,
+      checks,
+      summary: {
+        totalChecks,
+        passedChecks: passedChecks + warnChecks, // Warnings count as passing
+        failedChecks,
+        overallHealth: Math.round(
+          ((passedChecks + warnChecks * 0.5) / totalChecks) * 100,
+        ),
+      },
+    };
+
+    // Track this health check
+    await metricsTracker
+      .trackAPICall('/api/performance/health', 'GET', responseTime, 200, {
+        cacheHit: false,
+      })
+      .catch((err) => console.warn('Failed to track health check:', err));
+
+    const statusCode =
+      overallStatus === 'healthy'
+        ? 200
+        : overallStatus === 'degraded'
+          ? 200
+          : 503;
+
+    return NextResponse.json(healthStatus, {
+      status: statusCode,
+      headers: {
+        'Cache-Control': 'no-cache, no-store, max-age=0',
+        'X-Health-Status': overallStatus,
+        'X-Response-Time': responseTime.toString(),
+      },
+    });
+  } catch (error) {
+    const responseTime = Date.now() - startTime;
+    console.error('Health check failed:', error);
+
+    const errorStatus: HealthStatus = {
+      status: 'unhealthy',
+      timestamp: new Date().toISOString(),
+      responseTime,
+      checks,
+      summary: {
+        totalChecks: Object.keys(checks).length,
+        passedChecks: 0,
+        failedChecks: Object.keys(checks).length,
+        overallHealth: 0,
+      },
+    };
+
+    return NextResponse.json(errorStatus, {
+      status: 503,
+      headers: {
+        'X-Health-Status': 'unhealthy',
+        'X-Response-Time': responseTime.toString(),
+      },
+    });
+  }
+}
+
+/**
+ * POST /api/performance/health
+ * Trigger specific health checks or maintenance actions
+ */
+export async function POST(request: NextRequest) {
+  const startTime = Date.now();
+
+  try {
+    const body = await request.json();
+    const { action, component } = body;
+
+    let result: any = {};
+
+    switch (action) {
+      case 'deep-check':
+        // Run comprehensive health check with detailed diagnostics
+        result = await runDeepHealthCheck(component);
+        break;
+
+      case 'repair':
+        // Attempt to repair unhealthy components
+        result = await repairUnhealthyComponents(component);
+        break;
+
+      case 'reset-connections':
+        // Reset connection pools
+        const poolHealth = await connectionPool.healthCheck();
+        result = {
+          message: 'Connection pools checked',
+          poolHealth,
+        };
+        break;
+
+      default:
+        return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
+    }
+
+    const responseTime = Date.now() - startTime;
+
+    return NextResponse.json({
+      success: true,
+      action,
+      component,
+      result,
+      meta: {
+        responseTime,
+        timestamp: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    const responseTime = Date.now() - startTime;
+    console.error('Health check POST error:', error);
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : 'Internal server error',
+        meta: { responseTime },
+      },
+      { status: 500 },
+    );
+  }
+}
+
+// Health check functions
+
+async function checkDatabaseHealth(
+  checks: HealthStatus['checks'],
+  includeDetails: boolean,
+): Promise<void> {
+  const startTime = Date.now();
+
+  try {
+    const supabase = await createClient();
+
+    // Test basic connectivity
+    const { data, error } = await supabase
+      .from('organizations')
+      .select('count', { count: 'exact', head: true })
+      .limit(1);
+
+    const responseTime = Date.now() - startTime;
+
+    if (error) {
+      checks.database = {
+        status: 'fail',
+        responseTime,
+        error: error.message,
+        lastChecked: new Date().toISOString(),
+      };
+      return;
+    }
+
+    // Check response time
+    let status: 'pass' | 'warn' | 'fail' = 'pass';
+    if (responseTime > 2000) {
+      status = 'fail';
+    } else if (responseTime > 1000) {
+      status = 'warn';
+    }
+
+    let details: any = { responseTime };
+
+    if (includeDetails) {
+      // Get additional database metrics
+      const { data: tableStats } = await supabase
+        .rpc('get_table_stats')
+        .limit(5);
+
+      details = {
+        ...details,
+        connectionTest: 'passed',
+        tableStats: tableStats?.slice(0, 5) || [],
+      };
+    }
+
+    checks.database = {
+      status,
+      responseTime,
+      details,
+      lastChecked: new Date().toISOString(),
+    };
+  } catch (error) {
+    checks.database = {
+      status: 'fail',
+      responseTime: Date.now() - startTime,
+      error: error instanceof Error ? error.message : 'Unknown error',
+      lastChecked: new Date().toISOString(),
+    };
+  }
+}
+
+async function checkCacheHealth(
+  checks: HealthStatus['checks'],
+  includeDetails: boolean,
+): Promise<void> {
+  const startTime = Date.now();
+
+  try {
+    const cacheHealth = await performanceCacheManager.healthCheck();
+    const redisHealth = await CacheService.healthCheck();
+
+    const responseTime = Date.now() - startTime;
+
+    let status: 'pass' | 'warn' | 'fail' = 'pass';
+    const issues: string[] = [];
+
+    if (redisHealth.status !== 'healthy') {
+      status = 'fail';
+      issues.push('Redis connection failed');
+    } else if (cacheHealth.status === 'degraded') {
+      status = 'warn';
+      issues.push(...cacheHealth.issues);
+    } else if (cacheHealth.status === 'unhealthy') {
+      status = 'fail';
+      issues.push(...cacheHealth.issues);
+    }
+
+    let details: any = {
+      redis: redisHealth,
+      cache: {
+        status: cacheHealth.status,
+        hitRatio: cacheHealth.hitRatio,
+        latency: cacheHealth.latency,
+      },
+    };
+
+    if (includeDetails) {
+      const analytics = await performanceCacheManager.getAnalytics('1h');
+      details.analytics = analytics;
+    }
+
+    checks.cache = {
+      status,
+      responseTime,
+      details: issues.length > 0 ? { ...details, issues } : details,
+      lastChecked: new Date().toISOString(),
+    };
+  } catch (error) {
+    checks.cache = {
+      status: 'fail',
+      responseTime: Date.now() - startTime,
+      error: error instanceof Error ? error.message : 'Unknown error',
+      lastChecked: new Date().toISOString(),
+    };
+  }
+}
+
+async function checkConnectionPoolHealth(
+  checks: HealthStatus['checks'],
+  includeDetails: boolean,
+): Promise<void> {
+  const startTime = Date.now();
+
+  try {
+    const poolHealth = await connectionPool.healthCheck();
+    const poolStats = await connectionPool.getPoolStatistics();
+
+    const responseTime = Date.now() - startTime;
+
+    let status: 'pass' | 'warn' | 'fail' = 'pass';
+    const issues: string[] = [];
+
+    if (!poolHealth.healthy) {
+      status = 'fail';
+      poolHealth.pools.forEach((pool) => {
+        if (!pool.healthy) {
+          issues.push(...pool.issues);
+        }
+      });
+    } else {
+      // Check for warning conditions
+      const totalPools = poolHealth.pools.length;
+      const unhealthyPools = poolHealth.pools.filter((p) => !p.healthy).length;
+
+      if (unhealthyPools > 0 && unhealthyPools < totalPools) {
+        status = 'warn';
+        issues.push(`${unhealthyPools}/${totalPools} pools unhealthy`);
+      }
+    }
+
+    let details: any = {
+      healthy: poolHealth.healthy,
+      pools: poolHealth.pools.map((p) => ({
+        name: p.name,
+        healthy: p.healthy,
+        connections: p.totalConnections,
+      })),
+    };
+
+    if (includeDetails) {
+      details.statistics = poolStats;
+    }
+
+    checks.connectionPool = {
+      status,
+      responseTime,
+      details: issues.length > 0 ? { ...details, issues } : details,
+      lastChecked: new Date().toISOString(),
+    };
+  } catch (error) {
+    checks.connectionPool = {
+      status: 'fail',
+      responseTime: Date.now() - startTime,
+      error: error instanceof Error ? error.message : 'Unknown error',
+      lastChecked: new Date().toISOString(),
+    };
+  }
+}
+
+async function checkSystemHealth(
+  checks: HealthStatus['checks'],
+  includeDetails: boolean,
+): Promise<void> {
+  const startTime = Date.now();
+
+  try {
+    const systemMetrics = await metricsTracker.trackSystemMetrics();
+    const responseTime = Date.now() - startTime;
+
+    let status: 'pass' | 'warn' | 'fail' = 'pass';
+    const issues: string[] = [];
+
+    // Check memory usage
+    if (systemMetrics.memoryUsage > 0.9) {
+      status = 'fail';
+      issues.push(
+        `Critical memory usage: ${(systemMetrics.memoryUsage * 100).toFixed(1)}%`,
+      );
+    } else if (systemMetrics.memoryUsage > 0.8) {
+      status = 'warn';
+      issues.push(
+        `High memory usage: ${(systemMetrics.memoryUsage * 100).toFixed(1)}%`,
+      );
+    }
+
+    // Check error rate
+    if (systemMetrics.errorRate > 0.1) {
+      status = 'fail';
+      issues.push(
+        `High error rate: ${(systemMetrics.errorRate * 100).toFixed(1)}%`,
+      );
+    } else if (systemMetrics.errorRate > 0.05) {
+      status = 'warn';
+      issues.push(
+        `Elevated error rate: ${(systemMetrics.errorRate * 100).toFixed(1)}%`,
+      );
+    }
+
+    // Check average response time
+    if (systemMetrics.averageResponseTime > 5000) {
+      status = 'fail';
+      issues.push(
+        `Very slow response time: ${systemMetrics.averageResponseTime}ms`,
+      );
+    } else if (systemMetrics.averageResponseTime > 2000) {
+      status = 'warn';
+      issues.push(`Slow response time: ${systemMetrics.averageResponseTime}ms`);
+    }
+
+    let details: any = {
+      memory: `${(systemMetrics.memoryUsage * 100).toFixed(1)}%`,
+      cpu: `${systemMetrics.cpuUsage.toFixed(1)}%`,
+      errorRate: `${(systemMetrics.errorRate * 100).toFixed(2)}%`,
+      avgResponseTime: `${systemMetrics.averageResponseTime.toFixed(0)}ms`,
+      cacheHitRatio: `${(systemMetrics.cacheHitRatio * 100).toFixed(1)}%`,
+    };
+
+    if (includeDetails) {
+      details.fullMetrics = systemMetrics;
+    }
+
+    checks.system = {
+      status,
+      responseTime,
+      details: issues.length > 0 ? { ...details, issues } : details,
+      lastChecked: new Date().toISOString(),
+    };
+  } catch (error) {
+    checks.system = {
+      status: 'fail',
+      responseTime: Date.now() - startTime,
+      error: error instanceof Error ? error.message : 'Unknown error',
+      lastChecked: new Date().toISOString(),
+    };
+  }
+}
+
+async function checkAPIHealth(
+  checks: HealthStatus['checks'],
+  includeDetails: boolean,
+): Promise<void> {
+  const startTime = Date.now();
+
+  try {
+    const performanceSummary = await metricsTracker.getPerformanceSummary('1h');
+    const responseTime = Date.now() - startTime;
+
+    let status: 'pass' | 'warn' | 'fail' = 'pass';
+    const issues: string[] = [];
+
+    // Check API performance metrics
+    if (performanceSummary.api.errorRate > 0.1) {
+      status = 'fail';
+      issues.push(
+        `High API error rate: ${(performanceSummary.api.errorRate * 100).toFixed(1)}%`,
+      );
+    } else if (performanceSummary.api.errorRate > 0.05) {
+      status = 'warn';
+      issues.push(
+        `Elevated API error rate: ${(performanceSummary.api.errorRate * 100).toFixed(1)}%`,
+      );
+    }
+
+    if (performanceSummary.api.averageResponseTime > 2000) {
+      status = 'fail';
+      issues.push(
+        `Slow API response time: ${performanceSummary.api.averageResponseTime.toFixed(0)}ms`,
+      );
+    } else if (performanceSummary.api.averageResponseTime > 1000) {
+      status = 'warn';
+      issues.push(
+        `Elevated API response time: ${performanceSummary.api.averageResponseTime.toFixed(0)}ms`,
+      );
+    }
+
+    let details: any = {
+      totalRequests: performanceSummary.api.totalRequests,
+      averageResponseTime: `${performanceSummary.api.averageResponseTime.toFixed(0)}ms`,
+      errorRate: `${(performanceSummary.api.errorRate * 100).toFixed(2)}%`,
+      slowRequests: performanceSummary.api.slowRequests,
+    };
+
+    if (includeDetails) {
+      const slowEndpoints = await metricsTracker.getSlowEndpoints(5);
+      details.slowEndpoints = slowEndpoints;
+    }
+
+    checks.api = {
+      status,
+      responseTime,
+      details: issues.length > 0 ? { ...details, issues } : details,
+      lastChecked: new Date().toISOString(),
+    };
+  } catch (error) {
+    checks.api = {
+      status: 'fail',
+      responseTime: Date.now() - startTime,
+      error: error instanceof Error ? error.message : 'Unknown error',
+      lastChecked: new Date().toISOString(),
+    };
+  }
+}
+
+async function runDeepHealthCheck(component?: string): Promise<any> {
+  // Implement deep health checks with more detailed diagnostics
+  const deepChecks: any = {
+    timestamp: new Date().toISOString(),
+    type: 'deep_check',
+  };
+
+  if (!component || component === 'database') {
+    // Deep database check
+    try {
+      const supabase = await createClient();
+
+      // Check multiple database operations
+      const [countResult, schemaResult] = await Promise.allSettled([
+        supabase
+          .from('organizations')
+          .select('count', { count: 'exact', head: true }),
+        supabase.rpc('get_schema_info'),
+      ]);
+
+      deepChecks.database = {
+        basicQuery: countResult.status === 'fulfilled' ? 'passed' : 'failed',
+        schemaAccess: schemaResult.status === 'fulfilled' ? 'passed' : 'failed',
+        details: {
+          countError:
+            countResult.status === 'rejected'
+              ? countResult.reason.message
+              : null,
+          schemaError:
+            schemaResult.status === 'rejected'
+              ? schemaResult.reason.message
+              : null,
+        },
+      };
+    } catch (error) {
+      deepChecks.database = {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      };
+    }
+  }
+
+  return deepChecks;
+}
+
+async function repairUnhealthyComponents(component?: string): Promise<any> {
+  const repairs: any = {
+    timestamp: new Date().toISOString(),
+    actions: [],
+  };
+
+  try {
+    if (!component || component === 'cache') {
+      // Clear problematic cache entries
+      await performanceCacheManager.invalidateByTags(['stale']);
+      repairs.actions.push('Cache cleared');
+    }
+
+    if (!component || component === 'connectionPool') {
+      // Could implement connection pool repair logic here
+      repairs.actions.push('Connection pools checked');
+    }
+
+    if (!component || component === 'system') {
+      // Trigger garbage collection if needed
+      if (global.gc) {
+        global.gc();
+        repairs.actions.push('Garbage collection triggered');
+      }
+    }
+
+    return repairs;
+  } catch (error) {
+    repairs.error = error instanceof Error ? error.message : 'Unknown error';
+    return repairs;
+  }
+}

@@ -1,0 +1,900 @@
+'use client'
+
+import React, { useState, useEffect } from 'react'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
+import { Badge } from '@/components/ui/badge'
+import { Progress } from '@/components/ui/progress'
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { useToast } from '@/hooks/use-toast'
+import { 
+  Upload, 
+  X, 
+  Check, 
+  AlertCircle, 
+  FileText, 
+  Shield, 
+  Award,
+  Building,
+  CreditCard,
+  Phone,
+  Mail,
+  MapPin,
+  Calendar,
+  ExternalLink,
+  Eye,
+  Download,
+  Clock,
+  CheckCircle,
+  XCircle
+} from 'lucide-react'
+
+interface VerificationDocument {
+  id?: string
+  type: 'insurance' | 'license' | 'certification' | 'registration' | 'other'
+  name: string
+  file_url: string
+  expiry_date?: string
+  verification_status?: 'pending' | 'approved' | 'rejected'
+  rejection_reason?: string
+}
+
+interface BusinessVerification {
+  company_house_number?: string
+  vat_registration?: string
+  trading_address: {
+    street: string
+    city: string
+    postcode: string
+    country: string
+  }
+  contact_verification: {
+    phone: string
+    email: string
+    website?: string
+  }
+}
+
+interface VerificationData {
+  documents: VerificationDocument[]
+  business_verification: BusinessVerification
+  additional_info?: string
+}
+
+const DOCUMENT_TYPES = [
+  { value: 'insurance', label: 'Business Insurance', required: true, description: 'Public liability insurance certificate' },
+  { value: 'license', label: 'Professional License', required: false, description: 'Professional licensing documents' },
+  { value: 'certification', label: 'Professional Certifications', required: false, description: 'Industry certifications and qualifications' },
+  { value: 'registration', label: 'Business Registration', required: true, description: 'Company House registration or similar' },
+  { value: 'other', label: 'Other Documents', required: false, description: 'Additional supporting documents' }
+]
+
+export function VerificationWorkflow({ profileId, currentStatus = 'unverified' }: { profileId: string, currentStatus?: string }) {
+  const [verificationData, setVerificationData] = useState<VerificationData>({
+    documents: [],
+    business_verification: {
+      trading_address: {
+        street: '',
+        city: '',
+        postcode: '',
+        country: 'United Kingdom'
+      },
+      contact_verification: {
+        phone: '',
+        email: ''
+      }
+    }
+  })
+  
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [uploadingFiles, setUploadingFiles] = useState(false)
+  const [currentStep, setCurrentStep] = useState(1)
+  
+  const { toast } = useToast()
+  
+  useEffect(() => {
+    loadExistingVerification()
+  }, [profileId])
+  
+  const loadExistingVerification = async () => {
+    try {
+      // Load existing verification data if available
+      // This would fetch from API in real implementation
+    } catch (error) {
+      console.error('Error loading verification data:', error)
+    }
+  }
+  
+  const handleFileUpload = async (file: File, documentType: string) => {
+    setUploadingFiles(true)
+    try {
+      const base64 = await fileToBase64(file)
+      
+      // Upload document
+      const response = await fetch(`/api/directory/suppliers/${profileId}/media`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'document',
+          file: base64,
+          fileName: file.name,
+          mimeType: file.type,
+          category: documentType
+        })
+      })
+      
+      const result = await response.json()
+      
+      if (response.ok) {
+        // Add document to verification data
+        const newDocument: VerificationDocument = {
+          type: documentType as any,
+          name: file.name,
+          file_url: result.fileUrl
+        }
+        
+        setVerificationData(prev => ({
+          ...prev,
+          documents: [...prev.documents, newDocument]
+        }))
+        
+        toast({
+          title: 'Document uploaded',
+          description: 'Your document has been uploaded successfully.'
+        })
+      } else {
+        throw new Error(result.error || 'Upload failed')
+      }
+    } catch (error) {
+      console.error('Upload error:', error)
+      toast({
+        title: 'Upload failed',
+        description: 'Failed to upload document. Please try again.',
+        variant: 'destructive'
+      })
+    } finally {
+      setUploadingFiles(false)
+    }
+  }
+  
+  const fileToBase64 = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.readAsDataURL(file)
+      reader.onload = () => resolve(reader.result as string)
+      reader.onerror = error => reject(error)
+    })
+  }
+  
+  const removeDocument = (index: number) => {
+    setVerificationData(prev => ({
+      ...prev,
+      documents: prev.documents.filter((_, i) => i !== index)
+    }))
+  }
+  
+  const submitForVerification = async () => {
+    // Validate required documents
+    const requiredTypes = DOCUMENT_TYPES.filter(type => type.required).map(type => type.value)
+    const uploadedTypes = verificationData.documents.map(doc => doc.type)
+    const missingTypes = requiredTypes.filter(type => !uploadedTypes.includes(type))
+    
+    if (missingTypes.length > 0) {
+      toast({
+        title: 'Missing required documents',
+        description: `Please upload: ${missingTypes.map(type => 
+          DOCUMENT_TYPES.find(dt => dt.value === type)?.label
+        ).join(', ')}`,
+        variant: 'destructive'
+      })
+      return
+    }
+    
+    // Validate business information
+    if (!verificationData.business_verification.trading_address.street ||
+        !verificationData.business_verification.trading_address.city ||
+        !verificationData.business_verification.contact_verification.email) {
+      toast({
+        title: 'Incomplete business information',
+        description: 'Please complete all required business verification fields.',
+        variant: 'destructive'
+      })
+      return
+    }
+    
+    setIsSubmitting(true)
+    try {
+      const response = await fetch(`/api/directory/suppliers/${profileId}/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(verificationData)
+      })
+      
+      const result = await response.json()
+      
+      if (response.ok) {
+        toast({
+          title: 'Verification submitted',
+          description: result.message
+        })
+      } else {
+        throw new Error(result.error || 'Submission failed')
+      }
+    } catch (error) {
+      console.error('Verification submission error:', error)
+      toast({
+        title: 'Submission failed',
+        description: 'Failed to submit verification. Please try again.',
+        variant: 'destructive'
+      })
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+  
+  const calculateProgress = () => {
+    let progress = 0
+    
+    // Documents progress (40%)
+    const requiredDocTypes = DOCUMENT_TYPES.filter(type => type.required)
+    const uploadedRequiredDocs = verificationData.documents.filter(doc => 
+      requiredDocTypes.some(type => type.value === doc.type)
+    )
+    progress += (uploadedRequiredDocs.length / requiredDocTypes.length) * 40
+    
+    // Business info progress (40%)
+    const businessFields = [
+      verificationData.business_verification.trading_address.street,
+      verificationData.business_verification.trading_address.city,
+      verificationData.business_verification.trading_address.postcode,
+      verificationData.business_verification.contact_verification.email,
+      verificationData.business_verification.contact_verification.phone
+    ]
+    const completedFields = businessFields.filter(field => field && field.trim() !== '').length
+    progress += (completedFields / businessFields.length) * 40
+    
+    // Additional info progress (20%)
+    if (verificationData.additional_info && verificationData.additional_info.trim() !== '') {
+      progress += 20
+    }
+    
+    return Math.round(progress)
+  }
+  
+  if (currentStatus === 'pending') {
+    return <VerificationPendingView profileId={profileId} />
+  }
+  
+  if (currentStatus === 'verified') {
+    return <VerificationCompletedView profileId={profileId} />
+  }
+  
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="flex items-center space-x-2">
+                <Shield className="w-5 h-5" />
+                <span>Business Verification</span>
+              </CardTitle>
+              <CardDescription>
+                Get your business verified to build trust and increase bookings
+              </CardDescription>
+            </div>
+            
+            <Badge variant="outline" className="bg-blue-50 text-blue-700">
+              Step {currentStep} of 3
+            </Badge>
+          </div>
+          
+          <div className="space-y-2">
+            <div className="flex justify-between text-sm">
+              <span>Verification Progress</span>
+              <span>{calculateProgress()}%</span>
+            </div>
+            <Progress value={calculateProgress()} className="h-2" />
+          </div>
+        </CardHeader>
+      </Card>
+      
+      {/* Benefits */}
+      <Card className="bg-green-50 border-green-200">
+        <CardHeader>
+          <CardTitle className="text-green-900">Verification Benefits</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="flex items-center space-x-3">
+              <Award className="w-5 h-5 text-green-600" />
+              <span className="text-green-800">Verified badge on profile</span>
+            </div>
+            <div className="flex items-center space-x-3">
+              <Shield className="w-5 h-5 text-green-600" />
+              <span className="text-green-800">Increased client trust</span>
+            </div>
+            <div className="flex items-center space-x-3">
+              <CheckCircle className="w-5 h-5 text-green-600" />
+              <span className="text-green-800">Higher search ranking</span>
+            </div>
+            <div className="flex items-center space-x-3">
+              <Building className="w-5 h-5 text-green-600" />
+              <span className="text-green-800">Access to premium features</span>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+      
+      {/* Verification Steps */}
+      <Tabs value={currentStep.toString()} onValueChange={(value) => setCurrentStep(parseInt(value))} className="w-full">
+        <TabsList className="grid w-full grid-cols-3">
+          <TabsTrigger value="1" className="text-left">
+            <div className="flex items-center space-x-2">
+              <FileText className="w-4 h-4" />
+              <span>Documents</span>
+            </div>
+          </TabsTrigger>
+          <TabsTrigger value="2" className="text-left">
+            <div className="flex items-center space-x-2">
+              <Building className="w-4 h-4" />
+              <span>Business Info</span>
+            </div>
+          </TabsTrigger>
+          <TabsTrigger value="3" className="text-left">
+            <div className="flex items-center space-x-2">
+              <Check className="w-4 h-4" />
+              <span>Review & Submit</span>
+            </div>
+          </TabsTrigger>
+        </TabsList>
+        
+        <TabsContent value="1" className="space-y-6">
+          <DocumentUploadSection
+            documents={verificationData.documents}
+            onFileUpload={handleFileUpload}
+            onRemoveDocument={removeDocument}
+            uploadingFiles={uploadingFiles}
+          />
+        </TabsContent>
+        
+        <TabsContent value="2" className="space-y-6">
+          <BusinessInformationSection
+            businessInfo={verificationData.business_verification}
+            onUpdate={(updates) => setVerificationData(prev => ({
+              ...prev,
+              business_verification: { ...prev.business_verification, ...updates }
+            }))}
+          />
+        </TabsContent>
+        
+        <TabsContent value="3" className="space-y-6">
+          <ReviewSubmissionSection
+            verificationData={verificationData}
+            onAdditionalInfoChange={(info) => setVerificationData(prev => ({ ...prev, additional_info: info }))}
+            onSubmit={submitForVerification}
+            isSubmitting={isSubmitting}
+          />
+        </TabsContent>
+      </Tabs>
+      
+      {/* Navigation */}
+      <div className="flex justify-between">
+        <Button
+          variant="outline"
+          onClick={() => setCurrentStep(Math.max(1, currentStep - 1))}
+          disabled={currentStep === 1}
+        >
+          Previous
+        </Button>
+        
+        {currentStep < 3 ? (
+          <Button
+            onClick={() => setCurrentStep(Math.min(3, currentStep + 1))}
+          >
+            Next
+          </Button>
+        ) : (
+          <Button
+            onClick={submitForVerification}
+            disabled={isSubmitting || calculateProgress() < 80}
+            className="bg-green-600 hover:bg-green-700"
+          >
+            {isSubmitting ? 'Submitting...' : 'Submit for Verification'}
+          </Button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// Document Upload Section
+function DocumentUploadSection({ documents, onFileUpload, onRemoveDocument, uploadingFiles }: any) {
+  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>, documentType: string) => {
+    const file = event.target.files?.[0]
+    if (file) {
+      onFileUpload(file, documentType)
+    }
+  }
+  
+  return (
+    <div className="space-y-6">
+      {DOCUMENT_TYPES.map((docType, index) => {
+        const uploadedDoc = documents.find((doc: VerificationDocument) => doc.type === docType.value)
+        const isRequired = docType.required
+        
+        return (
+          <Card key={index} className={isRequired && !uploadedDoc ? 'border-orange-200 bg-orange-50' : ''}>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-lg flex items-center space-x-2">
+                    <span>{docType.label}</span>
+                    {isRequired && <Badge variant="secondary" className="text-xs">Required</Badge>}
+                  </CardTitle>
+                  <CardDescription>{docType.description}</CardDescription>
+                </div>
+                
+                {uploadedDoc && (
+                  <Badge className="bg-green-100 text-green-800">
+                    <Check className="w-3 h-3 mr-1" />
+                    Uploaded
+                  </Badge>
+                )}
+              </div>
+            </CardHeader>
+            
+            <CardContent>
+              {uploadedDoc ? (
+                <div className="flex items-center justify-between p-3 border rounded-lg">
+                  <div className="flex items-center space-x-3">
+                    <FileText className="w-6 h-6 text-muted-foreground" />
+                    <div>
+                      <p className="font-medium">{uploadedDoc.name}</p>
+                      <p className="text-sm text-muted-foreground">
+                        Uploaded • {uploadedDoc.file_url ? 'Ready for review' : 'Processing...'}
+                      </p>
+                    </div>
+                  </div>
+                  
+                  <div className="flex items-center space-x-2">
+                    <Button variant="outline" size="sm" asChild>
+                      <a href={uploadedDoc.file_url} target="_blank">
+                        <Eye className="w-4 h-4 mr-2" />
+                        View
+                      </a>
+                    </Button>
+                    <Button 
+                      variant="destructive" 
+                      size="sm"
+                      onClick={() => onRemoveDocument(documents.indexOf(uploadedDoc))}
+                    >
+                      <X className="w-4 h-4" />
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="border-2 border-dashed border-muted-foreground rounded-lg p-6 text-center">
+                  <Upload className="w-8 h-8 mx-auto text-muted-foreground mb-3" />
+                  <div className="space-y-2">
+                    <Label htmlFor={`upload-${docType.value}`} className="cursor-pointer">
+                      <Button variant="outline" size="sm" disabled={uploadingFiles}>
+                        {uploadingFiles ? 'Uploading...' : 'Choose File'}
+                      </Button>
+                    </Label>
+                    <Input
+                      id={`upload-${docType.value}`}
+                      type="file"
+                      accept=".pdf,.jpg,.jpeg,.png"
+                      className="hidden"
+                      onChange={(e) => handleFileSelect(e, docType.value)}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      PDF, JPG, PNG up to 10MB
+                    </p>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )
+      })}
+      
+      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+        <h4 className="font-semibold text-blue-900 mb-2">Document Guidelines</h4>
+        <ul className="text-blue-700 text-sm space-y-1">
+          <li>• Documents must be clear and fully visible</li>
+          <li>• All text should be legible</li>
+          <li>• Documents should be current and not expired</li>
+          <li>• Business name on documents must match your profile</li>
+        </ul>
+      </div>
+    </div>
+  )
+}
+
+// Business Information Section
+function BusinessInformationSection({ businessInfo, onUpdate }: any) {
+  return (
+    <div className="space-y-6">
+      {/* Company Information */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Company Registration</CardTitle>
+          <CardDescription>Official business registration details</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="company_house">Companies House Number</Label>
+              <Input
+                id="company_house"
+                placeholder="12345678"
+                value={businessInfo.company_house_number || ''}
+                onChange={(e) => onUpdate({ company_house_number: e.target.value })}
+              />
+            </div>
+            
+            <div className="space-y-2">
+              <Label htmlFor="vat_reg">VAT Registration Number</Label>
+              <Input
+                id="vat_reg"
+                placeholder="GB123456789"
+                value={businessInfo.vat_registration || ''}
+                onChange={(e) => onUpdate({ vat_registration: e.target.value })}
+              />
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+      
+      {/* Trading Address */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Trading Address *</CardTitle>
+          <CardDescription>Primary business address</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2 md:col-span-2">
+              <Label htmlFor="street">Street Address *</Label>
+              <Input
+                id="street"
+                placeholder="123 Business Street"
+                value={businessInfo.trading_address.street}
+                onChange={(e) => onUpdate({
+                  trading_address: { ...businessInfo.trading_address, street: e.target.value }
+                })}
+              />
+            </div>
+            
+            <div className="space-y-2">
+              <Label htmlFor="city">City *</Label>
+              <Input
+                id="city"
+                placeholder="London"
+                value={businessInfo.trading_address.city}
+                onChange={(e) => onUpdate({
+                  trading_address: { ...businessInfo.trading_address, city: e.target.value }
+                })}
+              />
+            </div>
+            
+            <div className="space-y-2">
+              <Label htmlFor="postcode">Postcode *</Label>
+              <Input
+                id="postcode"
+                placeholder="SW1A 1AA"
+                value={businessInfo.trading_address.postcode}
+                onChange={(e) => onUpdate({
+                  trading_address: { ...businessInfo.trading_address, postcode: e.target.value }
+                })}
+              />
+            </div>
+            
+            <div className="space-y-2 md:col-span-2">
+              <Label htmlFor="country">Country</Label>
+              <Input
+                id="country"
+                value={businessInfo.trading_address.country}
+                onChange={(e) => onUpdate({
+                  trading_address: { ...businessInfo.trading_address, country: e.target.value }
+                })}
+                disabled
+              />
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+      
+      {/* Contact Verification */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Contact Verification *</CardTitle>
+          <CardDescription>We'll verify these contact details</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="verify_email">Business Email *</Label>
+              <Input
+                id="verify_email"
+                type="email"
+                placeholder="business@example.com"
+                value={businessInfo.contact_verification.email}
+                onChange={(e) => onUpdate({
+                  contact_verification: { ...businessInfo.contact_verification, email: e.target.value }
+                })}
+              />
+            </div>
+            
+            <div className="space-y-2">
+              <Label htmlFor="verify_phone">Business Phone *</Label>
+              <Input
+                id="verify_phone"
+                placeholder="+44 20 1234 5678"
+                value={businessInfo.contact_verification.phone}
+                onChange={(e) => onUpdate({
+                  contact_verification: { ...businessInfo.contact_verification, phone: e.target.value }
+                })}
+              />
+            </div>
+            
+            <div className="space-y-2 md:col-span-2">
+              <Label htmlFor="verify_website">Business Website</Label>
+              <Input
+                id="verify_website"
+                type="url"
+                placeholder="https://www.example.com"
+                value={businessInfo.contact_verification.website || ''}
+                onChange={(e) => onUpdate({
+                  contact_verification: { ...businessInfo.contact_verification, website: e.target.value }
+                })}
+              />
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+// Review and Submission Section
+function ReviewSubmissionSection({ verificationData, onAdditionalInfoChange, onSubmit, isSubmitting }: any) {
+  return (
+    <div className="space-y-6">
+      {/* Summary */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Verification Summary</CardTitle>
+          <CardDescription>Review your information before submitting</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div>
+            <h4 className="font-semibold mb-2">Documents ({verificationData.documents.length})</h4>
+            <div className="space-y-1">
+              {verificationData.documents.map((doc: VerificationDocument, index: number) => (
+                <div key={index} className="flex items-center space-x-2">
+                  <Check className="w-4 h-4 text-green-600" />
+                  <span className="text-sm">{doc.name} ({doc.type})</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          
+          <div>
+            <h4 className="font-semibold mb-2">Business Address</h4>
+            <p className="text-sm text-muted-foreground">
+              {verificationData.business_verification.trading_address.street}<br />
+              {verificationData.business_verification.trading_address.city}, {verificationData.business_verification.trading_address.postcode}<br />
+              {verificationData.business_verification.trading_address.country}
+            </p>
+          </div>
+          
+          <div>
+            <h4 className="font-semibold mb-2">Contact Details</h4>
+            <div className="space-y-1 text-sm text-muted-foreground">
+              <p className="flex items-center">
+                <Mail className="w-4 h-4 mr-2" />
+                {verificationData.business_verification.contact_verification.email}
+              </p>
+              <p className="flex items-center">
+                <Phone className="w-4 h-4 mr-2" />
+                {verificationData.business_verification.contact_verification.phone}
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+      
+      {/* Additional Information */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Additional Information</CardTitle>
+          <CardDescription>Any additional details you'd like to share</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Textarea
+            placeholder="Tell us about your business, special circumstances, or anything else relevant to your verification..."
+            value={verificationData.additional_info || ''}
+            onChange={(e) => onAdditionalInfoChange(e.target.value)}
+            rows={4}
+          />
+        </CardContent>
+      </Card>
+      
+      {/* Terms and Submit */}
+      <Card>
+        <CardContent className="pt-6">
+          <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-4">
+            <div className="flex items-start space-x-3">
+              <AlertCircle className="w-5 h-5 text-yellow-600 mt-0.5" />
+              <div className="text-yellow-800">
+                <h4 className="font-semibold mb-1">Verification Process</h4>
+                <p className="text-sm">
+                  Our team will review your submission within 3-5 business days. You'll receive an email 
+                  notification with the verification result. If approved, your profile will display a verified badge.
+                </p>
+              </div>
+            </div>
+          </div>
+          
+          <div className="space-y-4">
+            <div className="flex items-start space-x-2">
+              <input type="checkbox" id="terms" className="mt-1" required />
+              <Label htmlFor="terms" className="text-sm">
+                I confirm that all information provided is accurate and I agree to the 
+                <a href="/terms" className="text-primary hover:underline ml-1">Terms of Service</a> and 
+                <a href="/privacy" className="text-primary hover:underline ml-1">Privacy Policy</a>.
+              </Label>
+            </div>
+            
+            <Button 
+              onClick={onSubmit} 
+              disabled={isSubmitting}
+              className="w-full bg-green-600 hover:bg-green-700"
+              size="lg"
+            >
+              {isSubmitting ? (
+                <div className="flex items-center space-x-2">
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                  <span>Submitting for Verification...</span>
+                </div>
+              ) : (
+                <div className="flex items-center space-x-2">
+                  <Shield className="w-4 h-4" />
+                  <span>Submit for Verification</span>
+                </div>
+              )}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+// Verification Pending View
+function VerificationPendingView({ profileId }: { profileId: string }) {
+  return (
+    <Card className="bg-yellow-50 border-yellow-200">
+      <CardHeader>
+        <CardTitle className="flex items-center space-x-2 text-yellow-900">
+          <Clock className="w-5 h-5" />
+          <span>Verification In Progress</span>
+        </CardTitle>
+        <CardDescription className="text-yellow-700">
+          Your verification is currently being reviewed by our team
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="space-y-4">
+          <div className="flex items-center space-x-4">
+            <div className="flex-1">
+              <div className="flex items-center space-x-2 mb-2">
+                <Check className="w-4 h-4 text-green-600" />
+                <span className="text-sm font-medium">Documents submitted</span>
+              </div>
+              <div className="flex items-center space-x-2 mb-2">
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-yellow-600"></div>
+                <span className="text-sm font-medium">Under review</span>
+              </div>
+              <div className="flex items-center space-x-2 text-muted-foreground">
+                <div className="w-4 h-4 border-2 border-muted-foreground rounded-full"></div>
+                <span className="text-sm">Verification complete</span>
+              </div>
+            </div>
+          </div>
+          
+          <div className="bg-white rounded-lg p-4">
+            <h4 className="font-semibold mb-2">What happens next?</h4>
+            <ul className="text-sm space-y-2 text-muted-foreground">
+              <li className="flex items-start space-x-2">
+                <div className="w-2 h-2 bg-blue-600 rounded-full mt-1.5"></div>
+                <span>Our verification team will review your documents (1-2 days)</span>
+              </li>
+              <li className="flex items-start space-x-2">
+                <div className="w-2 h-2 bg-blue-600 rounded-full mt-1.5"></div>
+                <span>We may contact you for additional information if needed</span>
+              </li>
+              <li className="flex items-start space-x-2">
+                <div className="w-2 h-2 bg-blue-600 rounded-full mt-1.5"></div>
+                <span>You'll receive an email notification with the result</span>
+              </li>
+            </ul>
+          </div>
+          
+          <p className="text-sm text-yellow-700">
+            <strong>Submitted:</strong> {new Date().toLocaleDateString()} • 
+            <strong> Expected completion:</strong> {new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toLocaleDateString()}
+          </p>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+// Verification Completed View
+function VerificationCompletedView({ profileId }: { profileId: string }) {
+  return (
+    <Card className="bg-green-50 border-green-200">
+      <CardHeader>
+        <CardTitle className="flex items-center space-x-2 text-green-900">
+          <CheckCircle className="w-5 h-5" />
+          <span>Verification Complete</span>
+        </CardTitle>
+        <CardDescription className="text-green-700">
+          Congratulations! Your business has been successfully verified
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="space-y-4">
+          <div className="flex items-center justify-between p-4 bg-white rounded-lg">
+            <div className="flex items-center space-x-3">
+              <Shield className="w-8 h-8 text-green-600" />
+              <div>
+                <h4 className="font-semibold">Verified Business Badge</h4>
+                <p className="text-sm text-muted-foreground">Now displayed on your profile</p>
+              </div>
+            </div>
+            <Badge className="bg-green-100 text-green-800">
+              <Award className="w-3 h-3 mr-1" />
+              Verified
+            </Badge>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="text-center p-3">
+              <div className="text-2xl font-bold text-green-600">+85%</div>
+              <p className="text-sm text-muted-foreground">More client trust</p>
+            </div>
+            <div className="text-center p-3">
+              <div className="text-2xl font-bold text-green-600">+60%</div>
+              <p className="text-sm text-muted-foreground">Higher search ranking</p>
+            </div>
+          </div>
+          
+          <div className="flex space-x-3">
+            <Button variant="outline" asChild>
+              <a href={`/directory/profile/${profileId}`} target="_blank">
+                <Eye className="w-4 h-4 mr-2" />
+                View Public Profile
+              </a>
+            </Button>
+            <Button asChild>
+              <a href="/dashboard/profile">
+                <Edit className="w-4 h-4 mr-2" />
+                Manage Profile
+              </a>
+            </Button>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}

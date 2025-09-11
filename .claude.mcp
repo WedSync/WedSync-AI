@@ -1,0 +1,417 @@
+# WedSync Development MCP Configuration
+# Complete MCP server setup for new machine deployment
+# Last Updated: 2025-01-22
+
+{
+  "mcpServers": {
+    // === CORE DEVELOPMENT TOOLS (REQUIRED) ===
+    
+    "filesystem": {
+      "command": "mcp-server-filesystem",
+      "args": ["/Users/skyphotography/CODE/WedSync AI"],
+      "description": "File system operations for WedSync project directory"
+    },
+    
+    "playwright": {
+      "command": "npx", 
+      "args": ["@playwright/mcp"],
+      "description": "Automated testing and E2E test execution"
+    },
+    
+    "sequential-thinking": {
+      "command": "mcp-server-sequential-thinking",
+      "args": [],
+      "description": "Structured problem-solving and step-by-step reasoning"
+    },
+    
+    "browsermcp": {
+      "command": "npx",
+      "args": ["@browsermcp/mcp"],
+      "description": "Interactive browser automation for testing and debugging"
+    },
+    
+    "biome": {
+      "command": "node",
+      "args": ["/Users/skyphotography/.local/share/mcp-servers/biome-mcp-server/dist/biome-mcp-server.js"],
+      "description": "Fast code formatting and linting using Biome via dedicated MCP server"
+    },
+    
+    
+    "serena": {
+      "command": "/Users/skyphotography/.local/bin/uvx",
+      "args": [
+        "--from", "git+https://github.com/oraios/serena",
+        "serena", "start-mcp-server",
+        "--project", "/Users/skyphotography/CODE/WedSync AI"
+      ],
+      "env": {
+        "PATH": "${HOME}/.local/bin:${PATH}"
+      },
+      "description": "Intelligent code analysis and semantic editing with TypeScript support"
+    },
+    
+    // === DOCUMENTATION & REFERENCE ===
+    
+    "ref": {
+      "transport": "http",
+      "url": "https://api.ref.tools/mcp?apiKey=ref-1529c407b838a5ad5620",
+      "description": "Up-to-date library documentation and code examples"
+    },
+    
+    // === DATABASE ACCESS ===
+    
+    "supabase": {
+      "command": "npx",
+      "args": ["-y", "@supabase/mcp-server-supabase", "--project-ref", "azhgptjkqiiqvvvhapml"],
+      "env": {
+        "SUPABASE_URL": "${NEXT_PUBLIC_SUPABASE_URL}",
+        "SUPABASE_SERVICE_KEY": "${SUPABASE_SERVICE_ROLE_KEY}",
+        "SUPABASE_PROJECT_REF": "azhgptjkqiiqvvvhapml"
+      },
+      "description": "Supabase project management, migrations, Edge Functions, branch operations"
+    },
+    
+    "postgres": {
+      "command": "mcp-server-postgres",
+      "args": [],
+      "env": {
+        "DATABASE_URL": "${DATABASE_URL}",
+        "POSTGRES_CONNECTION_STRING": "${DATABASE_URL}"
+      },
+      "description": "Direct PostgreSQL access for database operations and queries"
+    },
+    
+    // === DESIGN SYSTEM & UI COMPONENTS ===
+    
+    "magicui": {
+      "command": "npx",
+      "args": ["@magicuidesign/cli@latest", "mcp-server"],
+      "description": "Magic UI component library with WedSync brand integration"
+    },
+    
+    // === TESTING & AUTOMATION ===
+    
+    "swagger": {
+      "command": "node", 
+      "args": ["/Users/skyphotography/.local/share/mcp-servers/swagger-mcp/build/index.js"],
+      "cwd": "/Users/skyphotography/CODE/WedSync AI",
+      "description": "Advanced Swagger MCP server for API documentation, testing and MCP tool generation"
+    },
+    
+    "octomind": {
+      "command": "npx",
+      "args": ["-y", "@octomind/octomind-mcp@latest"],
+      "env": {
+        "APIKEY": "${OCTOMIND_API_KEY}"
+      },
+      "description": "Automated E2E test generation and management"
+    },
+    
+    "apify": {
+      "command": "npx",
+      "args": ["@apify/mcp-server@latest"],
+      "env": {
+        "APIFY_TOKEN": "${APIFY_TOKEN}"
+      },
+      "description": "Web automation, scraping, and data collection for competitive analysis"
+    },
+    
+    // === VERSION CONTROL & DEPLOYMENT ===
+    
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_TOKEN": "${GITHUB_PERSONAL_ACCESS_TOKEN}",
+        "GH_TOKEN": "${GITHUB_PERSONAL_ACCESS_TOKEN}"
+      },
+      "description": "GitHub repository management, PR automation, issue tracking"
+    },
+    
+    "vercel": {
+      "command": "npx",
+      "args": ["-y", "@vercel/mcp-server"],
+      "env": {
+        "VERCEL_TOKEN": "${VERCEL_TOKEN}",
+        "VERCEL_PROJECT_ID": "${VERCEL_PROJECT_ID}",
+        "VERCEL_ORG_ID": "${VERCEL_ORG_ID}"
+      },
+      "description": "Deployment automation, preview environments, logs"
+    },
+    
+    // === PAYMENT & COMMUNICATION ===
+    
+    "stripe": {
+      "command": "npx",
+      "args": ["-y", "stripe-mcp-server"],
+      "env": {
+        "STRIPE_SECRET_KEY": "${STRIPE_SECRET_KEY}",
+        "STRIPE_WEBHOOK_SECRET": "${STRIPE_WEBHOOK_ENDPOINT_SECRET}"
+      },
+      "description": "Payment processing for wedding vendor subscriptions"
+    },
+    
+    "twilio": {
+      "command": "npx",
+      "args": ["-y", "@twilio/alpha-mcp-server"],
+      "env": {
+        "TWILIO_ACCOUNT_SID": "${TWILIO_ACCOUNT_SID}",
+        "TWILIO_AUTH_TOKEN": "${TWILIO_AUTH_TOKEN}",
+        "TWILIO_PHONE_NUMBER": "${TWILIO_PHONE_NUMBER}"
+      },
+      "description": "SMS notifications for wedding day coordination"
+    },
+    
+    "whatsapp": {
+      "command": "node",
+      "args": ["/Users/skyphotography/.local/share/mcp-servers/ycloud-whatsapp-mcp-server/build/index.js"],
+      "env": {
+        "API_BASE_URL": "https://api.ycloud.com/v2",
+        "API_HEADERS": "X-API-Key:${YCLOUD_API_KEY}"
+      },
+      "description": "WhatsApp Business Platform for customer communication workflows"
+    },
+    
+    "slack": {
+      "command": "npx",
+      "args": ["-y", "@korotovsky/slack-mcp-server"],
+      "env": {
+        "SLACK_BOT_TOKEN": "${SLACK_BOT_TOKEN}",
+        "SLACK_APP_TOKEN": "${SLACK_APP_TOKEN}",
+        "SLACK_CHANNEL_ID": "${SLACK_CHANNEL_ID}"
+      },
+      "description": "Development team notifications and alerts"
+    },
+    
+    // === AI & CONTENT GENERATION ===
+    
+    "openai": {
+      "command": "npx",
+      "args": ["-y", "@openai/mcp-server"],
+      "env": {
+        "OPENAI_API_KEY": "${OPENAI_API_KEY}",
+        "OPENAI_ORG_ID": "${OPENAI_ORG_ID}"
+      },
+      "description": "AI-powered content generation and wedding planning assistance"
+    },
+    
+    // === MONITORING & SECURITY ===
+    
+    "posthog": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote@latest"],
+      "env": {
+        "POSTHOG_AUTH_HEADER": "${POSTHOG_API_KEY}",
+        "POSTHOG_REMOTE_MCP_URL": "https://mcp.posthog.com/mcp"
+      },
+      "description": "Analytics, feature flags, A/B testing for conversion optimization"
+    },
+    
+    "bugsnag": {
+      "command": "npx",
+      "args": ["-y", "bugsnag-mcp-server"],
+      "env": {
+        "BUGSNAG_API_KEY": "${BUGSNAG_API_KEY}"
+      },
+      "description": "Error tracking and monitoring for wedding day reliability"
+    },
+    
+    "monitoring": {
+      "command": "npx",
+      "args": ["-y", "@victoriametrics/mcp-server"],
+      "env": {
+        "METRICS_URL": "${METRICS_URL}",
+        "METRICS_API_KEY": "${METRICS_API_KEY}"
+      },
+      "description": "Real-time monitoring and performance metrics"
+    },
+    
+    "mcp-scan": {
+      "command": "uvx",
+      "args": ["mcp-scan@latest", "proxy", "--config", "${HOME}/.mcp-scan/guardrails_config.yml"],
+      "env": {
+        "PATH": "${HOME}/.local/bin:${PATH}",
+        "MCP_SCAN_CONFIG": "${HOME}/.mcp-scan/guardrails_config.yml"
+      },
+      "description": "Security monitoring, vulnerability detection, compliance enforcement"
+    },
+    
+    "semgrep": {
+      "command": "uvx",
+      "args": ["semgrep", "lsp"],
+      "env": {
+        "PATH": "${HOME}/.local/bin:${PATH}",
+        "SEMGREP_RULES": "auto"
+      },
+      "description": "Static code analysis with security rules and OWASP compliance"
+    },
+    
+    // === UTILITY TOOLS ===
+    
+    "notify": {
+      "command": "uvx",
+      "args": ["mcp-server-notify"],
+      "env": {
+        "PATH": "${HOME}/.local/bin:${PATH}"
+      },
+      "description": "Desktop notifications for task completion alerts"
+    },
+    
+    "docker": {
+      "command": "docker",
+      "args": ["run", "--rm", "-i", "docker/mcp-server"],
+      "env": {
+        "DOCKER_HOST": "unix:///var/run/docker.sock"
+      },
+      "description": "Container management and isolated execution environments"
+    },
+    
+    "jmeter": {
+      "command": "python3",
+      "args": ["/Users/skyphotography/.local/share/mcp-servers/jmeter-mcp-server/main.py"],
+      "cwd": "/Users/skyphotography/.local/share/mcp-servers/jmeter-mcp-server",
+      "env": {
+        "PATH": "${HOME}/.local/bin:${PATH}",
+        "JMETER_HOME": "/opt/homebrew/Cellar/jmeter/5.6.3/libexec",
+        "JMETER_BIN": "/opt/homebrew/bin/jmeter"
+      },
+      "description": "JMeter performance testing with AI-powered test execution and analysis"
+    },
+    
+    // === AI CODE REVIEW ===
+    
+    "ai-code-reviewer": {
+      "command": "node",
+      "args": ["mcp-servers/ai-code-reviewer-mcp/dist/index.js"],
+      "cwd": "/Users/skyphotography/CODE/WedSync AI",
+      "env": {},
+      "description": "AI-powered code review with security analysis and wedding industry context"
+    },
+    
+    // === MEMORY & KNOWLEDGE ===
+    
+    "memory": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"],
+      "env": {
+        "MEMORY_FILE_PATH": "/Users/skyphotography/.local/share/mcp-servers/wedsync-memory.json"
+      },
+      "description": "Persistent memory for WedSync project knowledge and wedding industry context"
+    }
+  },
+  
+  // === CONFIGURATION SETTINGS ===
+  
+  "settings": {
+    "autoStart": [
+      "filesystem", 
+      "playwright", 
+      "sequential-thinking", 
+      "browsermcp", 
+      "biome",
+      "ref",
+      "memory",
+      "supabase",
+      "postgres",
+      "posthog",
+      "bugsnag",
+      "mcp-scan",
+      "swagger"
+    ],
+    "recommended": [
+      "serena",
+      "magicui",
+      "swagger",
+      "octomind",
+      "github", 
+      "vercel", 
+      "stripe",
+      "slack",
+      "semgrep", 
+      "ai-code-reviewer"
+    ],
+    "optional": [
+      "apify",
+      "docker", 
+      "twilio", 
+      "whatsapp",
+      "openai", 
+      "monitoring", 
+      "notify"
+    ],
+    "wedding-industry-specific": [
+      "stripe",
+      "twilio", 
+      "whatsapp",
+      "posthog",
+      "bugsnag",
+      "openai",
+      "magicui"
+    ]
+  },
+  
+  // === ENVIRONMENT VARIABLES REQUIRED ===
+  
+  "environmentVariables": {
+    "required": {
+      "DATABASE_URL": "PostgreSQL connection string for WedSync database",
+      "NEXT_PUBLIC_SUPABASE_URL": "Supabase project URL",
+      "SUPABASE_SERVICE_ROLE_KEY": "Supabase service role key",
+      "GITHUB_PERSONAL_ACCESS_TOKEN": "GitHub token for repository access"
+    },
+    "tier1-critical": {
+      "POSTHOG_API_KEY": "PostHog personal API key for analytics and feature flags",
+      "BUGSNAG_API_KEY": "Bugsnag personal access token for error tracking"
+    },
+    "tier2-highvalue": {
+      "OCTOMIND_API_KEY": "Octomind API key for automated E2E test generation"
+    },
+    "optional": {
+      "VERCEL_TOKEN": "Vercel deployment token",
+      "STRIPE_SECRET_KEY": "Stripe payments secret key",
+      "TWILIO_ACCOUNT_SID": "Twilio SMS account SID",
+      "YCLOUD_API_KEY": "YCloud API key for WhatsApp Business Platform",
+      "OPENAI_API_KEY": "OpenAI API key for AI features",
+      "SLACK_BOT_TOKEN": "Slack workspace bot token",
+      "APIFY_TOKEN": "Apify web automation token"
+    }
+  },
+  
+  // === SETUP INSTRUCTIONS FOR NEW MACHINE ===
+  
+  "setupInstructions": {
+    "step1": "Install required dependencies: Node.js, Python, uvx, Docker",
+    "step2": "Set up environment variables in shell profile (.zshrc or .bashrc)",
+    "step3": "Run: claude mcp install --config .claude.mcp",
+    "step4": "Verify installation: claude mcp list",
+    "step5": "Test core servers: filesystem, playwright, ref, sequential-thinking",
+    "step6": "Configure database connections: supabase and postgres",
+    "step7": "Set up GitHub CLI authentication",
+    "step8": "Install Magic UI: npx @magicuidesign/cli@latest install claude",
+    "step9": "Restart Claude Code to activate all MCP servers"
+  },
+  
+  // === WEDDING INDUSTRY CONTEXT ===
+  
+  "weddingIndustryNotes": {
+    "primaryUseCase": "B2B SaaS platform for wedding vendor coordination and management",
+    "targetUsers": "Wedding photographers, venues, caterers, planners, and service providers",
+    "keyFeatures": "Vendor coordination, timeline management, client communication, photo sharing",
+    "brandColors": {
+      "primary": "#F0A1AA",
+      "professional": "#343D4D", 
+      "celebration": "#FFD23F",
+      "information": "#65DEF1",
+      "neutral": "#7D98A1"
+    },
+    "designSystem": "/WORKFLOW-V2-DRAFT/09-UI-UX-SPECIALIST/WEDSYNC-BRANDING-GUIDE.md"
+  },
+  
+  // === VERSION INFO ===
+  
+  "version": "1.0.0",
+  "lastUpdated": "2025-01-22",
+  "compatibleWith": "Claude Code v1.0+",
+  "projectPath": "/Users/skyphotography/CODE/WedSync AI",
+  "documentation": "CLAUDE.md"
+}

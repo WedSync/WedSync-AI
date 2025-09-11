@@ -1,0 +1,569 @@
+// WS-161: Supplier Schedule Feedback API
+import { NextRequest, NextResponse } from 'next/server';
+import {
+  SupplierScheduleFeedbackService,
+  SupplierFeedback,
+  ConflictReport,
+} from '@/lib/feedback/supplier-schedule-feedback-service';
+import { createClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+
+const SupplierFeedbackSchema = z.object({
+  supplier_id: z.string(),
+  organization_id: z.string(),
+  schedule_event_id: z.string(),
+  feedback_type: z.enum([
+    'conflict',
+    'availability',
+    'suggestion',
+    'concern',
+    'confirmation',
+  ]),
+  priority: z.enum(['low', 'medium', 'high', 'critical']).default('medium'),
+
+  subject: z.string().min(3).max(200),
+  description: z.string().min(10).max(2000),
+  conflict_reason: z.string().optional(),
+
+  original_start_time: z.string().datetime(),
+  original_end_time: z.string().datetime(),
+  suggested_start_time: z.string().datetime().optional(),
+  suggested_end_time: z.string().datetime().optional(),
+  flexible_hours: z.number().min(0).max(48).optional(),
+
+  alternative_dates: z
+    .array(
+      z.object({
+        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        start_time: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/),
+        end_time: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/),
+        notes: z.string().optional(),
+        preference_score: z.number().min(0).max(1),
+      }),
+    )
+    .optional(),
+
+  response_urgency: z
+    .enum(['immediate', 'same_day', 'within_24h', 'flexible'])
+    .default('within_24h'),
+  preferred_contact_method: z
+    .enum(['email', 'sms', 'phone', 'whatsapp'])
+    .default('email'),
+
+  affects_other_vendors: z.boolean().default(false),
+  requires_couple_approval: z.boolean().default(false),
+  budget_implications: z
+    .object({
+      additional_cost: z.number(),
+      cost_reason: z.string(),
+    })
+    .optional(),
+});
+
+const ConflictReportSchema = z.object({
+  supplier_id: z.string(),
+  schedule_event_id: z.string(),
+  organization_id: z.string(),
+  conflict_type: z.enum([
+    'double_booking',
+    'travel_time',
+    'equipment_conflict',
+    'personal_unavailable',
+    'other',
+  ]),
+  conflict_details: z.object({
+    conflicting_event: z
+      .object({
+        title: z.string(),
+        start_time: z.string(),
+        end_time: z.string(),
+        location: z.string().optional(),
+      })
+      .optional(),
+    travel_time_needed: z.number().optional(),
+    equipment_required: z.array(z.string()).optional(),
+    availability_window: z
+      .object({
+        available_from: z.string(),
+        available_until: z.string(),
+      })
+      .optional(),
+    other_details: z.string().optional(),
+  }),
+  suggested_solutions: z.array(
+    z.object({
+      solution_type: z.enum([
+        'reschedule',
+        'partial_availability',
+        'equipment_rental',
+        'subcontractor',
+      ]),
+      description: z.string(),
+      implementation_notes: z.string().optional(),
+      additional_cost: z.number().optional(),
+    }),
+  ),
+  urgency_level: z
+    .enum(['low', 'medium', 'high', 'critical'])
+    .default('medium'),
+});
+
+const FeedbackResponseSchema = z.object({
+  feedback_id: z.string(),
+  organization_id: z.string(),
+  responder_role: z.enum(['planner', 'coordinator', 'admin', 'couple']),
+  response_type: z.enum([
+    'acknowledge',
+    'counter_propose',
+    'accept',
+    'reject',
+    'request_more_info',
+  ]),
+  response_message: z.string().min(10).max(1000),
+
+  counter_proposal: z
+    .object({
+      new_start_time: z.string().datetime().optional(),
+      new_end_time: z.string().datetime().optional(),
+      new_location: z.string().optional(),
+      compensation: z
+        .object({
+          amount: z.number(),
+          reason: z.string(),
+        })
+        .optional(),
+      conditions: z.array(z.string()).optional(),
+    })
+    .optional(),
+
+  requires_followup: z.boolean().default(false),
+  followup_deadline: z.string().datetime().optional(),
+  assigned_to: z.string().optional(),
+});
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser();
+
+    if (userError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const url = new URL(request.url);
+    const action = url.searchParams.get('action') || 'submit_feedback';
+
+    switch (action) {
+      case 'submit_feedback':
+        return await handleSubmitFeedback(body, user.id);
+
+      case 'submit_conflict':
+        return await handleSubmitConflictReport(body, user.id);
+
+      case 'respond_to_feedback':
+        return await handleRespondToFeedback(body, user.id);
+
+      default:
+        return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
+    }
+  } catch (error) {
+    console.error('Supplier Feedback API Error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+async function handleSubmitFeedback(body: any, userId: string) {
+  try {
+    const validatedData = SupplierFeedbackSchema.parse(body);
+
+    const supabase = await createClient();
+
+    // Verify user has access to the organization and supplier
+    const { data: orgMembership } = await supabase
+      .from('organization_members')
+      .select('role')
+      .eq('organization_id', validatedData.organization_id)
+      .eq('user_id', userId)
+      .single();
+
+    // Allow suppliers to submit their own feedback or staff to submit on behalf
+    const { data: supplierUser } = await supabase
+      .from('suppliers')
+      .select('id, email')
+      .eq('id', validatedData.supplier_id)
+      .eq('organization_id', validatedData.organization_id)
+      .single();
+
+    const hasAccess =
+      orgMembership ||
+      (supplierUser &&
+        (await checkIfUserIsSupplier(userId, validatedData.supplier_id)));
+
+    if (!hasAccess) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions' },
+        { status: 403 },
+      );
+    }
+
+    // Convert validated data to feedback format
+    const feedbackData: Omit<
+      SupplierFeedback,
+      'id' | 'submitted_at' | 'status' | 'submitted_by_supplier'
+    > = {
+      ...validatedData,
+      original_start_time: new Date(validatedData.original_start_time),
+      original_end_time: new Date(validatedData.original_end_time),
+      suggested_start_time: validatedData.suggested_start_time
+        ? new Date(validatedData.suggested_start_time)
+        : undefined,
+      suggested_end_time: validatedData.suggested_end_time
+        ? new Date(validatedData.suggested_end_time)
+        : undefined,
+    };
+
+    const result = await SupplierScheduleFeedbackService.submitSupplierFeedback(
+      feedbackData,
+      userId,
+    );
+
+    if (!result.success) {
+      return NextResponse.json(
+        { error: result.error || 'Failed to submit feedback' },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: 'Feedback submitted successfully',
+      feedback_id: result.feedback_id,
+    });
+  } catch (validationError) {
+    return NextResponse.json(
+      { error: 'Invalid feedback data', details: validationError },
+      { status: 400 },
+    );
+  }
+}
+
+async function handleSubmitConflictReport(body: any, userId: string) {
+  try {
+    const validatedData = ConflictReportSchema.parse(body);
+
+    const supabase = await createClient();
+
+    // Verify user has access
+    const { data: orgMembership } = await supabase
+      .from('organization_members')
+      .select('role')
+      .eq('organization_id', validatedData.organization_id)
+      .eq('user_id', userId)
+      .single();
+
+    const { data: supplierUser } = await supabase
+      .from('suppliers')
+      .select('id, email')
+      .eq('id', validatedData.supplier_id)
+      .eq('organization_id', validatedData.organization_id)
+      .single();
+
+    const hasAccess =
+      orgMembership ||
+      (supplierUser &&
+        (await checkIfUserIsSupplier(userId, validatedData.supplier_id)));
+
+    if (!hasAccess) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions' },
+        { status: 403 },
+      );
+    }
+
+    const result = await SupplierScheduleFeedbackService.submitConflictReport(
+      validatedData,
+      validatedData.organization_id,
+      userId,
+    );
+
+    if (!result.success) {
+      return NextResponse.json(
+        { error: result.error || 'Failed to submit conflict report' },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: 'Conflict report submitted successfully',
+      feedback_id: result.feedback_id,
+      conflict_id: result.conflict_id,
+    });
+  } catch (validationError) {
+    return NextResponse.json(
+      { error: 'Invalid conflict report data', details: validationError },
+      { status: 400 },
+    );
+  }
+}
+
+async function handleRespondToFeedback(body: any, userId: string) {
+  try {
+    const validatedData = FeedbackResponseSchema.parse(body);
+
+    const supabase = await createClient();
+
+    // Verify user has access to respond (staff only)
+    const { data: orgMembership } = await supabase
+      .from('organization_members')
+      .select('role')
+      .eq('organization_id', validatedData.organization_id)
+      .eq('user_id', userId)
+      .single();
+
+    if (
+      !orgMembership ||
+      !['admin', 'planner', 'coordinator'].includes(orgMembership.role)
+    ) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions to respond to feedback' },
+        { status: 403 },
+      );
+    }
+
+    const responseData = {
+      ...validatedData,
+      responder_id: userId,
+      followup_deadline: validatedData.followup_deadline
+        ? new Date(validatedData.followup_deadline)
+        : undefined,
+    };
+
+    const result = await SupplierScheduleFeedbackService.respondToFeedback(
+      validatedData.feedback_id,
+      responseData,
+      validatedData.organization_id,
+    );
+
+    if (!result.success) {
+      return NextResponse.json(
+        { error: result.error || 'Failed to respond to feedback' },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: 'Response submitted successfully',
+      response_id: result.response_id,
+    });
+  } catch (validationError) {
+    return NextResponse.json(
+      { error: 'Invalid response data', details: validationError },
+      { status: 400 },
+    );
+  }
+}
+
+async function checkIfUserIsSupplier(
+  userId: string,
+  supplierId: string,
+): Promise<boolean> {
+  try {
+    const supabase = await createClient();
+    const { data: user } = await supabase
+      .from('users')
+      .select('email')
+      .eq('id', userId)
+      .single();
+
+    if (!user) return false;
+
+    const { data: supplier } = await supabase
+      .from('suppliers')
+      .select('email')
+      .eq('id', supplierId)
+      .single();
+
+    return user.email === supplier?.email;
+  } catch (error) {
+    console.error('Failed to check if user is supplier:', error);
+    return false;
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser();
+
+    if (userError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const url = new URL(request.url);
+    const organizationId = url.searchParams.get('organization_id');
+    const action = url.searchParams.get('action') || 'list';
+
+    if (!organizationId) {
+      return NextResponse.json(
+        { error: 'Organization ID required' },
+        { status: 400 },
+      );
+    }
+
+    // Verify user has access to the organization
+    const { data: orgMembership } = await supabase
+      .from('organization_members')
+      .select('role')
+      .eq('organization_id', organizationId)
+      .eq('user_id', user.id)
+      .single();
+
+    if (!orgMembership) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions' },
+        { status: 403 },
+      );
+    }
+
+    switch (action) {
+      case 'list':
+        const filters = {
+          supplier_id: url.searchParams.get('supplier_id') || undefined,
+          schedule_event_id:
+            url.searchParams.get('schedule_event_id') || undefined,
+          status: url.searchParams.get('status') || undefined,
+          feedback_type: url.searchParams.get('feedback_type') || undefined,
+          priority: url.searchParams.get('priority') || undefined,
+          limit: parseInt(url.searchParams.get('limit') || '50'),
+          offset: parseInt(url.searchParams.get('offset') || '0'),
+        };
+
+        const feedback = await SupplierScheduleFeedbackService.getFeedback(
+          organizationId,
+          filters,
+        );
+
+        return NextResponse.json({
+          success: true,
+          ...feedback,
+        });
+
+      case 'stats':
+        const supplierId = url.searchParams.get('supplier_id') || undefined;
+        const fromDate = url.searchParams.get('from')
+          ? new Date(url.searchParams.get('from')!)
+          : undefined;
+        const toDate = url.searchParams.get('to')
+          ? new Date(url.searchParams.get('to')!)
+          : undefined;
+
+        const dateRange =
+          fromDate && toDate ? { from: fromDate, to: toDate } : undefined;
+
+        const stats = await SupplierScheduleFeedbackService.getFeedbackStats(
+          organizationId,
+          supplierId,
+          dateRange,
+        );
+
+        return NextResponse.json({
+          success: true,
+          stats,
+        });
+
+      default:
+        return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
+    }
+  } catch (error) {
+    console.error('Supplier Feedback API Error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function PUT(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser();
+
+    if (userError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const { feedback_id, organization_id, status, notes } = body;
+
+    if (!feedback_id || !organization_id || !status) {
+      return NextResponse.json(
+        {
+          error:
+            'Missing required fields: feedback_id, organization_id, status',
+        },
+        { status: 400 },
+      );
+    }
+
+    // Verify user has access to update feedback
+    const { data: orgMembership } = await supabase
+      .from('organization_members')
+      .select('role')
+      .eq('organization_id', organization_id)
+      .eq('user_id', user.id)
+      .single();
+
+    if (
+      !orgMembership ||
+      !['admin', 'planner', 'coordinator'].includes(orgMembership.role)
+    ) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions' },
+        { status: 403 },
+      );
+    }
+
+    const result = await SupplierScheduleFeedbackService.updateFeedbackStatus(
+      feedback_id,
+      status,
+      notes,
+      user.id,
+    );
+
+    if (!result.success) {
+      return NextResponse.json(
+        { error: result.error || 'Failed to update feedback status' },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: 'Feedback status updated successfully',
+    });
+  } catch (error) {
+    console.error('Supplier Feedback API Error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

@@ -1,0 +1,429 @@
+'use client';
+
+import { useState, useCallback, useMemo, useEffect } from 'react';
+import { MessageSquare, AlertCircle, Wifi, WifiOff } from 'lucide-react';
+import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
+import { ChannelIndicator } from './ChannelIndicator';
+import { MessageQueue } from './MessageQueue';
+import { useChannelSubscription } from '@/hooks/useChannelSubscription';
+import { toast } from '@/hooks/use-toast';
+import { cn } from '@/lib/utils';
+import type { ChannelInfo, ChannelMessage } from '@/types/websocket';
+
+interface ChannelManagerProps {
+  userId: string;
+  userType: 'supplier' | 'couple';
+  maxChannels?: number;
+  onChannelSwitch?: (channelName: string) => void;
+}
+
+export function ChannelManager({ 
+  userId, 
+  userType, 
+  maxChannels = 3,
+  onChannelSwitch 
+}: ChannelManagerProps) {
+  const [activeChannels, setActiveChannels] = useState<ChannelInfo[]>([]);
+  const [currentChannel, setCurrentChannel] = useState<string | null>(null);
+  const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  
+  // Channel subscription management
+  const { 
+    subscribeToChannel, 
+    unsubscribeFromChannel, 
+    getChannelList,
+    channelList,
+    isConnected,
+    sendMessage,
+    updateChannelActivity
+  } = useChannelSubscription({ userId, userType });
+  
+  // Monitor online status
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+  
+  // Auto-join relevant channels based on user context
+  useEffect(() => {
+    const initializeChannels = async () => {
+      try {
+        const channels = await getChannelList();
+        
+        // For suppliers: auto-join dashboard and active wedding channels
+        if (userType === 'supplier') {
+          const supplierChannels = channels.filter(ch => 
+            (ch.scope === 'supplier' && ch.entityId === userId) ||
+            (ch.scope === 'wedding' && ch.type === 'wedding')
+          ).slice(0, maxChannels);
+          
+          await Promise.all(
+            supplierChannels.map(channel => 
+              subscribeToChannel(channel.name)
+            )
+          );
+          
+          setActiveChannels(supplierChannels);
+          if (supplierChannels.length > 0) {
+            setCurrentChannel(supplierChannels[0].name);
+          }
+        }
+        
+        // For couples: auto-join their wedding channels
+        if (userType === 'couple') {
+          const coupleChannels = channels.filter(ch => 
+            (ch.scope === 'couple' && ch.entityId === userId) ||
+            (ch.scope === 'wedding')
+          );
+          
+          await Promise.all(
+            coupleChannels.map(channel => 
+              subscribeToChannel(channel.name)
+            )
+          );
+          
+          setActiveChannels(coupleChannels);
+          if (coupleChannels.length > 0) {
+            setCurrentChannel(coupleChannels[0].name);
+          }
+        }
+        
+      } catch (error) {
+        console.error('Failed to initialize channels:', error);
+        toast({
+          title: "Channel initialization failed",
+          description: "Failed to load channels. Please refresh the page.",
+          variant: "destructive"
+        });
+      }
+    };
+    
+    initializeChannels();
+  }, [userId, userType, maxChannels, subscribeToChannel, getChannelList]);
+  
+  // Handle channel switching with performance optimization
+  const handleChannelSwitch = useCallback(async (channelName: string) => {
+    if (channelName === currentChannel) return;
+    
+    const startTime = performance.now();
+    
+    try {
+      // Subscribe to new channel if not already subscribed
+      const channel = activeChannels.find(ch => ch.name === channelName);
+      if (!channel) {
+        await subscribeToChannel(channelName);
+        // Add to active channels
+        const newChannel = channelList.find(ch => ch.name === channelName);
+        if (newChannel) {
+          setActiveChannels(prev => [...prev, newChannel]);
+        }
+      }
+      
+      setCurrentChannel(channelName);
+      
+      // Clear unread count for switched channel
+      setUnreadCounts(prev => ({ ...prev, [channelName]: 0 }));
+      
+      // Notify parent component
+      onChannelSwitch?.(channelName);
+      
+      // Update last activity timestamp
+      await updateChannelActivity(channelName);
+      
+      // Performance check - should be under 200ms
+      const switchTime = performance.now() - startTime;
+      if (switchTime > 200) {
+        console.warn(`Channel switch took ${switchTime.toFixed(2)}ms - exceeds 200ms target`);
+      }
+      
+    } catch (error) {
+      console.error('Failed to switch channel:', error);
+      toast({
+        title: "Channel switch failed",
+        description: "Failed to switch to the selected channel.",
+        variant: "destructive"
+      });
+    }
+  }, [currentChannel, activeChannels, channelList, subscribeToChannel, onChannelSwitch, updateChannelActivity]);
+  
+  // Handle new messages for unread count
+  const handleNewMessage = useCallback((channelName: string, message: ChannelMessage) => {
+    if (channelName !== currentChannel) {
+      setUnreadCounts(prev => ({
+        ...prev,
+        [channelName]: (prev[channelName] || 0) + 1
+      }));
+      
+      // Show toast notification for non-current channel with priority handling
+      const isUrgent = message.priority === 'urgent';
+      const isEmergency = message.messageType === 'emergency';
+      
+      if (isUrgent || isEmergency) {
+        toast({
+          title: isEmergency ? "🚨 Emergency Message" : "⚡ Urgent Message",
+          description: `${getChannelDisplayName(channelName)}: ${message.message.substring(0, 50)}...`,
+          variant: isEmergency ? "destructive" : "default",
+          duration: isEmergency ? 10000 : 5000, // Emergency messages stay longer
+          action: {
+            altText: "Go to channel",
+            onClick: () => handleChannelSwitch(channelName)
+          }
+        });
+      } else {
+        toast({
+          title: `New message in ${getChannelDisplayName(channelName)}`,
+          description: message.message.substring(0, 50) + '...',
+          duration: 3000,
+          action: {
+            altText: "View",
+            onClick: () => handleChannelSwitch(channelName)
+          }
+        });
+      }
+    }
+  }, [currentChannel, handleChannelSwitch]);
+  
+  // Wedding-specific channel display names
+  const getChannelDisplayName = (channelName: string): string => {
+    const [scope, entity, id] = channelName.split(':');
+    
+    switch (scope) {
+      case 'supplier':
+        if (entity === 'dashboard') return 'Dashboard';
+        if (entity === 'wedding') return `Wedding ${id.slice(0, 8)}`;
+        return `${entity} ${id.slice(0, 8)}`;
+      case 'couple':
+        if (entity === 'wedding') return 'My Wedding';
+        if (entity === 'planning') return 'Planning';
+        return entity;
+      case 'collaboration':
+        return `Team ${id.slice(0, 8)}`;
+      default:
+        return channelName;
+    }
+  };
+  
+  // Channel organization for wedding industry UI
+  const organizedChannels = useMemo(() => {
+    const groups: Record<string, ChannelInfo[]> = {
+      primary: [],
+      weddings: [],
+      collaboration: [],
+      emergency: []
+    };
+    
+    activeChannels.forEach(channel => {
+      // Emergency channels always go to emergency group
+      if (channel.type === 'emergency' || channel.name.includes('emergency')) {
+        groups.emergency.push(channel);
+      } else if (channel.scope === 'supplier' && channel.entity === 'dashboard') {
+        groups.primary.push(channel);
+      } else if (channel.scope === 'supplier' && channel.entity === 'wedding') {
+        groups.weddings.push(channel);
+      } else if (channel.scope === 'couple') {
+        groups.primary.push(channel);
+      } else if (channel.scope === 'collaboration') {
+        groups.collaboration.push(channel);
+      } else {
+        groups.primary.push(channel);
+      }
+    });
+    
+    // Sort weddings by most recent activity
+    groups.weddings.sort((a, b) => {
+      const aTime = a.lastActivity?.getTime() || 0;
+      const bTime = b.lastActivity?.getTime() || 0;
+      return bTime - aTime;
+    });
+    
+    return groups;
+  }, [activeChannels]);
+  
+  // Handle message delivered from queue
+  const handleMessageDelivered = useCallback((messageId: string) => {
+    toast({
+      title: "Message delivered",
+      description: "Queued message was successfully delivered.",
+      duration: 2000
+    });
+  }, []);
+  
+  return (
+    <Card className="h-full border-r flex flex-col">
+      <CardHeader className="pb-3 flex-shrink-0">
+        <CardTitle className="flex items-center justify-between">
+          <span className="flex items-center space-x-2">
+            <MessageSquare className="h-5 w-5" />
+            <span>Channels</span>
+          </span>
+          <div className="flex items-center space-x-2">
+            {/* Connection Status */}
+            <Badge 
+              variant={isConnected && isOnline ? "default" : "destructive"}
+              className="text-xs"
+            >
+              <div className="flex items-center space-x-1">
+                {isOnline ? 
+                  <Wifi className="h-3 w-3" /> : 
+                  <WifiOff className="h-3 w-3" />
+                }
+                <span>
+                  {!isOnline ? "Offline" : isConnected ? "Connected" : "Connecting..."}
+                </span>
+              </div>
+            </Badge>
+          </div>
+        </CardTitle>
+      </CardHeader>
+      
+      <CardContent className="flex-1 overflow-y-auto space-y-4">
+        {/* Message Queue - show when offline or has queued messages */}
+        <MessageQueue
+          channelId={currentChannel || 'default'}
+          isOnline={isOnline && isConnected}
+          onMessageDelivered={handleMessageDelivered}
+        />
+        
+        {/* Emergency Channels - Always at top when present */}
+        {organizedChannels.emergency.length > 0 && (
+          <div>
+            <h4 className="font-medium text-sm text-red-600 mb-2 flex items-center space-x-1">
+              <AlertCircle className="h-4 w-4" />
+              <span>Emergency</span>
+            </h4>
+            <div className="space-y-1">
+              {organizedChannels.emergency.map(channel => (
+                <ChannelIndicator
+                  key={channel.name}
+                  channelName={channel.name}
+                  displayName={getChannelDisplayName(channel.name)}
+                  isActive={currentChannel === channel.name}
+                  unreadCount={unreadCounts[channel.name] || 0}
+                  lastMessage={channel.lastActivity}
+                  onClick={() => handleChannelSwitch(channel.name)}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Primary Channels */}
+        {organizedChannels.primary.length > 0 && (
+          <div>
+            <h4 className="font-medium text-sm text-gray-600 dark:text-gray-300 mb-2">
+              Primary
+            </h4>
+            <div className="space-y-1">
+              {organizedChannels.primary.map(channel => (
+                <ChannelIndicator
+                  key={channel.name}
+                  channelName={channel.name}
+                  displayName={getChannelDisplayName(channel.name)}
+                  isActive={currentChannel === channel.name}
+                  unreadCount={unreadCounts[channel.name] || 0}
+                  lastMessage={channel.lastActivity}
+                  onClick={() => handleChannelSwitch(channel.name)}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+        
+        {/* Wedding Channels */}
+        {organizedChannels.weddings.length > 0 && (
+          <div>
+            <h4 className="font-medium text-sm text-gray-600 dark:text-gray-300 mb-2">
+              Weddings
+            </h4>
+            <div className="space-y-1">
+              {organizedChannels.weddings.map(channel => (
+                <ChannelIndicator
+                  key={channel.name}
+                  channelName={channel.name}
+                  displayName={getChannelDisplayName(channel.name)}
+                  isActive={currentChannel === channel.name}
+                  unreadCount={unreadCounts[channel.name] || 0}
+                  lastMessage={channel.lastActivity}
+                  onClick={() => handleChannelSwitch(channel.name)}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+        
+        {/* Collaboration Channels */}
+        {organizedChannels.collaboration.length > 0 && (
+          <div>
+            <h4 className="font-medium text-sm text-gray-600 dark:text-gray-300 mb-2">
+              Collaboration
+            </h4>
+            <div className="space-y-1">
+              {organizedChannels.collaboration.map(channel => (
+                <ChannelIndicator
+                  key={channel.name}
+                  channelName={channel.name}
+                  displayName={getChannelDisplayName(channel.name)}
+                  isActive={currentChannel === channel.name}
+                  unreadCount={unreadCounts[channel.name] || 0}
+                  lastMessage={channel.lastActivity}
+                  onClick={() => handleChannelSwitch(channel.name)}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+        
+        {/* Channel Limit Warning */}
+        {activeChannels.length >= maxChannels && (
+          <Alert>
+            <AlertCircle className="h-4 w-4" />
+            <AlertTitle>Channel Limit Reached</AlertTitle>
+            <AlertDescription>
+              You have reached the maximum number of channels ({maxChannels}). 
+              {maxChannels === 3 && (
+                <span> Upgrade to Professional for more channels.</span>
+              )}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {/* No Channels State */}
+        {activeChannels.length === 0 && (
+          <div className="text-center py-8">
+            <MessageSquare className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+            <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">
+              No channels available
+            </h3>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+              {userType === 'supplier' 
+                ? "You'll see channels here when you're assigned to weddings."
+                : "Your wedding channels will appear here."}
+            </p>
+          </div>
+        )}
+
+        {/* Offline Notice */}
+        {!isOnline && (
+          <Alert>
+            <WifiOff className="h-4 w-4" />
+            <AlertTitle>You're offline</AlertTitle>
+            <AlertDescription>
+              Messages will be queued and delivered when connection is restored.
+            </AlertDescription>
+          </Alert>
+        )}
+      </CardContent>
+    </Card>
+  );
+}

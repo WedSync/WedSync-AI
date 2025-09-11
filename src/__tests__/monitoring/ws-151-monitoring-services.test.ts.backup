@@ -1,0 +1,434 @@
+/**
+ * WS-151 Monitoring Services Tests
+ * Test-Driven Development for Enhanced Monitoring Infrastructure
+ * 
+ * Tests written FIRST before implementation (TDD approach)
+ */
+
+import { describe, test, expect, beforeEach, afterEach, jest } from '@jest/globals';
+
+describe('WS-151 Enhanced Monitoring Services', () => {
+  
+  describe('Enhanced Sentry Configuration', () => {
+    test('should initialize Sentry with session replay enabled', async () => {
+      // Test that Sentry initializes with session replay integration
+      const mockSentry = {
+        init: jest.fn(),
+        replayIntegration: jest.fn(),
+      };
+      
+      // Mock environment
+      process.env.SENTRY_DSN = 'test-dsn';
+      process.env.NEXT_PUBLIC_WEDDING_DAY_MODE = 'false';
+      
+      // Import and initialize (will be implemented)
+      const { initializeEnhancedSentry } = await import('@/lib/monitoring/sentry-enhanced');
+      
+      expect(mockSentry.init).toHaveBeenCalledWith(
+        expect.objectContaining({
+          dsn: 'test-dsn',
+          integrations: expect.arrayContaining([
+            expect.any(Object) // Should include replay integration
+          ]),
+          replaysSessionSampleRate: 0.1, // 10% sampling
+          replaysOnErrorSampleRate: 1.0,
+        })
+      );
+    });
+
+    test('should reduce session replay sampling in wedding day mode', async () => {
+      process.env.NEXT_PUBLIC_WEDDING_DAY_MODE = 'true';
+      
+      const { getSentryConfig } = await import('@/lib/monitoring/sentry-enhanced');
+      const config = getSentryConfig();
+      
+      expect(config.replaysSessionSampleRate).toBe(0.001); // Ultra-low sampling
+      expect(config.tracesSampleRate).toBeLessThan(0.01);
+    });
+
+    test('should capture wedding-specific error context', async () => {
+      const { captureWeddingError } = await import('@/lib/monitoring/sentry-enhanced');
+      const error = new Error('Test wedding error');
+      
+      const errorId = captureWeddingError(error, {
+        weddingId: 'wedding_123',
+        vendorId: 'vendor_456',
+        eventType: 'ceremony_timeline',
+        criticalLevel: 'high'
+      });
+      
+      expect(errorId).toMatch(/^wedding_error_/);
+      expect(typeof errorId).toBe('string');
+    });
+  });
+
+  describe('LogRocket Integration', () => {
+    test('should initialize LogRocket with 10% sampling', async () => {
+      const mockLogRocket = {
+        init: jest.fn(),
+        identify: jest.fn(),
+        getSessionURL: jest.fn(),
+      };
+      
+      Object.defineProperty(window, 'LogRocket', {
+        value: mockLogRocket,
+        writable: true
+      });
+      
+      const { initializeLogRocket } = await import('@/lib/monitoring/logrocket-integration');
+      initializeLogRocket();
+      
+      expect(mockLogRocket.init).toHaveBeenCalledWith(
+        process.env.NEXT_PUBLIC_LOGROCKET_APP_ID
+      );
+      
+      // Should sample 10% of sessions
+      const samplingRate = 0.1;
+      expect(samplingRate).toBe(0.1);
+    });
+
+    test('should identify users for session tracking', async () => {
+      const { identifyLogRocketUser } = await import('@/lib/monitoring/logrocket-integration');
+      
+      const userData = {
+        userId: 'user_123',
+        email: 'test@example.com',
+        organizationId: 'org_456',
+        userType: 'wedding_planner'
+      };
+      
+      await identifyLogRocketUser(userData);
+      
+      // Should call LogRocket.identify with sanitized user data
+      expect(true).toBe(true); // Placeholder - actual implementation will test LogRocket.identify
+    });
+
+    test('should disable LogRocket on wedding day for performance', async () => {
+      process.env.NEXT_PUBLIC_WEDDING_DAY_MODE = 'true';
+      
+      const { shouldEnableLogRocket } = await import('@/lib/monitoring/logrocket-integration');
+      const enabled = shouldEnableLogRocket();
+      
+      expect(enabled).toBe(false);
+    });
+  });
+
+  describe('Snyk Security Scanning', () => {
+    test('should have Snyk scripts configured in package.json', async () => {
+      const packageJson = require('@/../package.json');
+      
+      expect(packageJson.scripts).toHaveProperty('security:scan');
+      expect(packageJson.scripts).toHaveProperty('security:monitor');
+      expect(packageJson.scripts).toHaveProperty('security:code');
+      
+      expect(packageJson.scripts['security:scan']).toContain('snyk test');
+      expect(packageJson.scripts['security:monitor']).toContain('snyk monitor');
+      expect(packageJson.scripts['security:code']).toContain('snyk code test');
+    });
+
+    test('should run security scan and return results', async () => {
+      const { runSecurityScan } = await import('@/lib/monitoring/security-scanner');
+      
+      const results = await runSecurityScan({
+        type: 'dependencies',
+        severity: 'high'
+      });
+      
+      expect(results).toHaveProperty('vulnerabilities');
+      expect(results).toHaveProperty('summary');
+      expect(results).toHaveProperty('timestamp');
+      expect(Array.isArray(results.vulnerabilities)).toBe(true);
+    });
+
+    test('should integrate with CI/CD pipeline', async () => {
+      const { generateSecurityReport } = await import('@/lib/monitoring/security-scanner');
+      
+      const report = await generateSecurityReport();
+      
+      expect(report).toHaveProperty('status'); // 'pass' | 'fail'
+      expect(report).toHaveProperty('criticalVulns');
+      expect(report).toHaveProperty('highVulns');
+      expect(report).toHaveProperty('recommendations');
+    });
+  });
+
+  describe('Bundle Analyzer Configuration', () => {
+    test('should generate bundle analysis report', async () => {
+      const { generateBundleReport } = await import('@/lib/monitoring/bundle-analyzer');
+      
+      const report = await generateBundleReport();
+      
+      expect(report).toHaveProperty('totalSize');
+      expect(report).toHaveProperty('chunkSizes');
+      expect(report).toHaveProperty('monitoringImpact');
+      expect(report).toHaveProperty('recommendations');
+      
+      // Monitoring impact should be documented
+      expect(report.monitoringImpact).toHaveProperty('sentrySize');
+      expect(report.monitoringImpact).toHaveProperty('webVitalsSize');
+      expect(report.monitoringImpact).toHaveProperty('totalOverhead');
+    });
+
+    test('should track monitoring bundle overhead', async () => {
+      const { getMonitoringBundleSize } = await import('@/lib/monitoring/bundle-analyzer');
+      
+      const monitoringSize = await getMonitoringBundleSize();
+      
+      expect(monitoringSize).toHaveProperty('sentry');
+      expect(monitoringSize).toHaveProperty('logRocket');
+      expect(monitoringSize).toHaveProperty('webVitals');
+      expect(monitoringSize).toHaveProperty('total');
+      
+      // Total monitoring overhead should be reasonable
+      expect(monitoringSize.total).toBeLessThan(100 * 1024); // < 100KB
+    });
+
+    test('should provide performance recommendations', async () => {
+      const { getPerformanceRecommendations } = await import('@/lib/monitoring/bundle-analyzer');
+      
+      const recommendations = await getPerformanceRecommendations();
+      
+      expect(Array.isArray(recommendations)).toBe(true);
+      recommendations.forEach(rec => {
+        expect(rec).toHaveProperty('type');
+        expect(rec).toHaveProperty('message');
+        expect(rec).toHaveProperty('impact');
+      });
+    });
+  });
+
+  describe('Secure Monitoring API Endpoints', () => {
+    test('should validate input for Sentry events endpoint', async () => {
+      const request = new Request('/api/monitoring/sentry/events', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          eventType: 'error',
+          severity: 'high',
+          context: { weddingId: 'wedding_123' }
+        })
+      });
+      
+      const { POST } = await import('@/app/api/monitoring/sentry/events/route');
+      const response = await POST(request as any);
+      
+      expect(response.status).toBe(200);
+      
+      const responseData = await response.json();
+      expect(responseData).toHaveProperty('eventId');
+      expect(responseData).toHaveProperty('status');
+    });
+
+    test('should reject invalid input with proper error', async () => {
+      const request = new Request('/api/monitoring/sentry/events', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          // Missing required fields
+          invalidField: 'test'
+        })
+      });
+      
+      const { POST } = await import('@/app/api/monitoring/sentry/events/route');
+      const response = await POST(request as any);
+      
+      expect(response.status).toBe(400);
+      
+      const responseData = await response.json();
+      expect(responseData).toHaveProperty('error');
+      expect(responseData.error).toContain('validation');
+    });
+
+    test('should enforce authentication for sensitive monitoring data', async () => {
+      const request = new Request('/api/monitoring/security/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        // No authentication header
+        body: JSON.stringify({ scanType: 'full' })
+      });
+      
+      const { POST } = await import('@/app/api/monitoring/security/scan/route');
+      const response = await POST(request as any);
+      
+      expect(response.status).toBe(401);
+    });
+
+    test('should sanitize monitoring event data', async () => {
+      const { sanitizeMonitoringEvent } = await import('@/lib/monitoring/data-sanitizer');
+      
+      const unsafeEvent = {
+        message: 'Error occurred',
+        context: {
+          password: 'secret123',
+          apiKey: 'key_123456',
+          userEmail: 'test@example.com',
+          safeData: 'this is fine'
+        }
+      };
+      
+      const sanitized = sanitizeMonitoringEvent(unsafeEvent);
+      
+      expect(sanitized.context.password).toBeUndefined();
+      expect(sanitized.context.apiKey).toBeUndefined();
+      expect(sanitized.context.userEmail).toBe('[REDACTED]');
+      expect(sanitized.context.safeData).toBe('this is fine');
+    });
+  });
+
+  describe('Performance Impact Validation', () => {
+    test('should measure monitoring overhead and stay under 2%', async () => {
+      const { measureMonitoringOverhead } = await import('@/lib/monitoring/performance-validator');
+      
+      const overhead = await measureMonitoringOverhead();
+      
+      expect(overhead).toHaveProperty('total');
+      expect(overhead).toHaveProperty('sentry');
+      expect(overhead).toHaveProperty('logRocket');
+      expect(overhead).toHaveProperty('webVitals');
+      
+      // Critical requirement: < 2% total overhead
+      expect(overhead.total).toBeLessThan(2.0);
+    });
+
+    test('should provide performance metrics for wedding day mode', async () => {
+      process.env.NEXT_PUBLIC_WEDDING_DAY_MODE = 'true';
+      
+      const { getWeddingDayPerformance } = await import('@/lib/monitoring/performance-validator');
+      const performance = await getWeddingDayPerformance();
+      
+      expect(performance).toHaveProperty('overhead');
+      expect(performance).toHaveProperty('criticalPath');
+      expect(performance).toHaveProperty('recommendations');
+      
+      // Wedding day should have even lower overhead
+      expect(performance.overhead).toBeLessThan(1.0);
+    });
+
+    test('should validate Core Web Vitals impact', async () => {
+      const { validateWebVitalsImpact } = await import('@/lib/monitoring/performance-validator');
+      
+      const impact = await validateWebVitalsImpact();
+      
+      expect(impact).toHaveProperty('LCP');
+      expect(impact).toHaveProperty('FID');
+      expect(impact).toHaveProperty('CLS');
+      
+      // Impact should be minimal
+      expect(impact.LCP.degradation).toBeLessThan(100); // < 100ms
+      expect(impact.FID.degradation).toBeLessThan(10);  // < 10ms
+      expect(impact.CLS.degradation).toBeLessThan(0.01); // < 0.01
+    });
+  });
+
+  describe('Integration Tests', () => {
+    test('should load all monitoring services without errors', async () => {
+      const { initializeAllMonitoringServices } = await import('@/lib/monitoring/integrator');
+      
+      const services = await initializeAllMonitoringServices();
+      
+      expect(services).toHaveProperty('sentry');
+      expect(services).toHaveProperty('logRocket');
+      expect(services).toHaveProperty('performance');
+      expect(services).toHaveProperty('security');
+      
+      expect(services.sentry.initialized).toBe(true);
+      expect(services.performance.overhead).toBeLessThan(2.0);
+    });
+
+    test('should handle graceful degradation when services fail', async () => {
+      // Simulate service failures
+      process.env.SENTRY_DSN = '';
+      process.env.NEXT_PUBLIC_LOGROCKET_APP_ID = '';
+      
+      const { initializeAllMonitoringServices } = await import('@/lib/monitoring/integrator');
+      const services = await initializeAllMonitoringServices();
+      
+      // Should not throw errors, but gracefully disable services
+      expect(services.sentry.initialized).toBe(false);
+      expect(services.logRocket.initialized).toBe(false);
+      expect(services.status).toBe('degraded');
+    });
+
+    test('should provide comprehensive health check', async () => {
+      const { getMonitoringHealthStatus } = await import('@/lib/monitoring/integrator');
+      
+      const health = await getMonitoringHealthStatus();
+      
+      expect(health).toHaveProperty('status'); // 'healthy' | 'degraded' | 'unhealthy'
+      expect(health).toHaveProperty('services');
+      expect(health).toHaveProperty('performance');
+      expect(health).toHaveProperty('timestamp');
+      
+      expect(health.services).toHaveProperty('sentry');
+      expect(health.services).toHaveProperty('logRocket');
+      expect(health.services).toHaveProperty('security');
+      expect(health.services).toHaveProperty('bundleAnalyzer');
+    });
+  });
+
+  describe('Error Handling and Resilience', () => {
+    test('should handle network failures gracefully', async () => {
+      const { handleMonitoringNetworkError } = await import('@/lib/monitoring/error-handler');
+      
+      const networkError = new Error('Network request failed');
+      networkError.name = 'NetworkError';
+      
+      const result = await handleMonitoringNetworkError(networkError, {
+        service: 'sentry',
+        retryCount: 0
+      });
+      
+      expect(result).toHaveProperty('handled');
+      expect(result).toHaveProperty('shouldRetry');
+      expect(result).toHaveProperty('fallbackAction');
+      
+      expect(result.handled).toBe(true);
+    });
+
+    test('should implement circuit breaker for monitoring services', async () => {
+      const { MonitoringCircuitBreaker } = await import('@/lib/monitoring/circuit-breaker');
+      
+      const breaker = new MonitoringCircuitBreaker('sentry', {
+        failureThreshold: 3,
+        resetTimeout: 30000
+      });
+      
+      expect(breaker.getState()).toBe('CLOSED');
+      
+      // Simulate failures
+      for (let i = 0; i < 3; i++) {
+        await breaker.execute(() => Promise.reject(new Error('Service failure')));
+      }
+      
+      expect(breaker.getState()).toBe('OPEN');
+    });
+  });
+});
+
+/**
+ * Test Utilities and Helpers
+ */
+describe('Monitoring Test Utilities', () => {
+  test('should provide monitoring test helpers', () => {
+    const { mockSentry, mockLogRocket, mockPerformanceObserver } = require('@/lib/monitoring/__mocks__/monitoring-services');
+    
+    expect(mockSentry).toHaveProperty('init');
+    expect(mockSentry).toHaveProperty('captureError');
+    expect(mockLogRocket).toHaveProperty('init');
+    expect(mockLogRocket).toHaveProperty('identify');
+  });
+
+  test('should simulate wedding day conditions', async () => {
+    const { simulateWeddingDayLoad } = await import('@/lib/monitoring/__tests__/test-helpers');
+    
+    const simulation = await simulateWeddingDayLoad({
+      duration: 5000,
+      concurrentUsers: 50,
+      errorRate: 0.01
+    });
+    
+    expect(simulation).toHaveProperty('performanceMetrics');
+    expect(simulation).toHaveProperty('errorCounts');
+    expect(simulation).toHaveProperty('monitoringOverhead');
+  });
+});

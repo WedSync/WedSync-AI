@@ -1,0 +1,202 @@
+/**
+ * WS-236: User Feedback System - Analytics API
+ * 
+ * Provides comprehensive analytics data for feedback system
+ * Including NPS trends, sentiment analysis, and wedding industry insights
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
+import { createClient } from '@/lib/supabase/server';
+import { rateLimit } from '@/lib/rate-limiter';
+import { analyticsEngine } from '@/lib/feedback/analytics-engine';
+
+// Validation schemas
+const analyticsQuerySchema = z.object({
+  period: z.enum(['daily', 'weekly', 'monthly', 'quarterly', 'yearly']).default('monthly'),
+  vendorType: z.string().optional(),
+  includeComparisons: z.coerce.boolean().default(false),
+  includeForecasting: z.coerce.boolean().default(false)
+});
+
+export const dynamic = 'force-dynamic';
+
+/**
+ * GET /api/feedback/analytics
+ * Get comprehensive feedback analytics
+ */
+export async function GET(request: NextRequest) {
+  try {
+    // Rate limiting
+    const rateLimitResult = await rateLimit(request, { max: 30, windowMs: 60000 });
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { error: 'Too many analytics requests' },
+        { status: 429, headers: rateLimitResult.headers }
+      );
+    }
+
+    const supabase = createClient();
+
+    // Check authentication
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    // Get user profile and organization
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('organization_id, role')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!userProfile?.organization_id) {
+      return NextResponse.json(
+        { error: 'User organization not found' },
+        { status: 403 }
+      );
+    }
+
+    // Parse and validate query parameters
+    const url = new URL(request.url);
+    const queryParams = Object.fromEntries(url.searchParams.entries());
+    const { 
+      period, 
+      vendorType, 
+      includeComparisons, 
+      includeForecasting 
+    } = analyticsQuerySchema.parse(queryParams);
+
+    console.log(`Generating ${period} analytics for organization ${userProfile.organization_id}`);
+
+    try {
+      // Generate primary analytics
+      const analytics = await analyticsEngine.generateAnalytics(
+        period, 
+        userProfile.organization_id, 
+        vendorType
+      );
+
+      // Calculate key insights
+      const insights = generateKeyInsights(analytics);
+
+      // Get real-time alerts
+      const alerts = await getAnalyticsAlerts(userProfile.organization_id);
+
+      return NextResponse.json({
+        success: true,
+        data: {
+          analytics,
+          insights,
+          alerts,
+          generatedAt: new Date().toISOString(),
+          organization_id: userProfile.organization_id,
+          filters: {
+            period,
+            vendorType
+          }
+        }
+      });
+
+    } catch (serviceError) {
+      console.error('Error generating analytics:', serviceError);
+      return NextResponse.json(
+        { error: 'Failed to generate analytics' },
+        { status: 500 }
+      );
+    }
+
+  } catch (error) {
+    console.error('GET /api/feedback/analytics error:', error);
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid query parameters', details: error.errors },
+        { status: 400 }
+      );
+    }
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * Generate key insights from analytics data
+ */
+function generateKeyInsights(analytics: any): any[] {
+  const insights = [];
+
+  // NPS insights
+  if (analytics.npsMetrics.overallScore < 30) {
+    insights.push({
+      type: 'alert',
+      category: 'nps',
+      title: 'Low NPS Score Detected',
+      description: `Current NPS of ${analytics.npsMetrics.overallScore} is below industry standard`,
+      severity: 'high',
+      actionRequired: true
+    });
+  }
+
+  // Sentiment insights
+  if (analytics.sentimentMetrics.negativePercentage > 30) {
+    insights.push({
+      type: 'warning',
+      category: 'sentiment',
+      title: 'High Negative Sentiment',
+      description: `${analytics.sentimentMetrics.negativePercentage.toFixed(1)}% of feedback is negative`,
+      severity: 'medium',
+      actionRequired: true
+    });
+  }
+
+  // Follow-up effectiveness insights
+  if (analytics.followUpMetrics.effectivenessMetrics.resolutionRate < 0.8) {
+    insights.push({
+      type: 'warning',
+      category: 'follow_up',
+      title: 'Low Follow-up Resolution Rate',
+      description: `Only ${(analytics.followUpMetrics.effectivenessMetrics.resolutionRate * 100).toFixed(1)}% resolution rate`,
+      severity: 'medium',
+      actionRequired: true
+    });
+  }
+
+  return insights;
+}
+
+/**
+ * Get analytics alerts for organization
+ */
+async function getAnalyticsAlerts(organizationId: string): Promise<any[]> {
+  try {
+    const supabase = createClient();
+
+    const { data: alerts } = await supabase
+      .from('feedback_follow_up_actions')
+      .select('*')
+      .eq('action_status', 'failed')
+      .eq('wedding_priority', true)
+      .gte('created_at', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
+      .limit(5);
+
+    return alerts?.map(alert => ({
+      id: alert.id,
+      type: 'follow_up_failure',
+      title: 'Follow-up Action Failed',
+      description: `Wedding priority follow-up failed: ${alert.action_type}`,
+      severity: 'high',
+      timestamp: alert.created_at,
+      actionRequired: true
+    })) || [];
+
+  } catch (error) {
+    console.error('Error fetching analytics alerts:', error);
+    return [];
+  }
+}

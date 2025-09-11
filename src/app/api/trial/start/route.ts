@@ -1,0 +1,190 @@
+/**
+ * WS-167 Trial Management API - Start Trial Endpoint with Enhanced Security
+ * POST /api/trial/start - Initiate 14-day trial with comprehensive security measures
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import { TrialService } from '../../../../lib/trial/TrialService';
+import { SubscriptionService } from '../../../../lib/services/subscriptionService';
+import { StartTrialSchema } from '../../../../types/trial';
+import { stripe } from '../../../../lib/stripe/config';
+import { z } from 'zod';
+import {
+  withRateLimit,
+  trialStartLimiter,
+} from '../../../../lib/middleware/rateLimiter';
+import {
+  withEnhancedAuth,
+  EnhancedJWTValidator,
+} from '../../../../lib/middleware/jwtValidation';
+
+async function handler(
+  request: NextRequest,
+  context: { user: any; session: any },
+) {
+  try {
+    const supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+
+    // User authentication already verified by enhanced JWT middleware
+    const user = context.user;
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validationResult = StartTrialSchema.safeParse(body);
+
+    if (!validationResult.success) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Invalid request data',
+          details: validationResult.error.issues,
+        },
+        { status: 400 },
+      );
+    }
+
+    const { plan_tier, onboarding_data } = validationResult.data;
+
+    // Initialize services
+    const subscriptionService = new SubscriptionService(supabase, stripe);
+    const trialService = new TrialService(supabase, subscriptionService);
+
+    // Check for existing active trial or subscription
+    const existingSubscription = await subscriptionService.getUserSubscription(
+      user.id,
+    );
+    if (
+      existingSubscription &&
+      ['active', 'trialing'].includes(existingSubscription.status)
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'User already has an active subscription or trial',
+          existing_status: existingSubscription.status,
+        },
+        { status: 409 },
+      );
+    }
+
+    // Start the trial
+    const trialResult = await trialService.startTrial(
+      user.id,
+      plan_tier,
+      onboarding_data,
+    );
+
+    // Log successful trial start
+    console.log(`Trial started for user ${user.id}:`, {
+      trial_id: trialResult.trial_id,
+      plan_tier,
+      business_type: onboarding_data.business_type,
+    });
+
+    return NextResponse.json(trialResult, { status: 201 });
+  } catch (error) {
+    console.error('Error starting trial:', error);
+
+    // Handle specific error types
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Validation failed',
+          details: error.issues,
+        },
+        { status: 400 },
+      );
+    }
+
+    if (error instanceof Error) {
+      // Handle known business logic errors
+      if (error.message.includes('already has an active trial')) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: 'Active trial already exists',
+            message: error.message,
+          },
+          { status: 409 },
+        );
+      }
+
+      if (
+        error.message.includes('Plan') &&
+        error.message.includes('not found')
+      ) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: 'Invalid plan selected',
+            message: error.message,
+          },
+          { status: 400 },
+        );
+      }
+    }
+
+    // Generic error response
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Failed to start trial',
+        message: 'An unexpected error occurred while starting your trial',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+// Export POST handler with comprehensive security middleware
+export const POST = async (request: NextRequest) => {
+  return withRateLimit(trialStartLimiter)(request, async (req) => {
+    return withEnhancedAuth()(req, handler);
+  });
+};
+
+// Handle unsupported methods with rate limiting
+export async function GET(request: NextRequest) {
+  return withRateLimit(trialStartLimiter)(request, async () => {
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Method not allowed',
+        message: 'POST method required for trial creation',
+      },
+      { status: 405, headers: { Allow: 'POST' } },
+    );
+  });
+}
+
+export async function PUT(request: NextRequest) {
+  return withRateLimit(trialStartLimiter)(request, async () => {
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Method not allowed',
+        message: 'POST method required for trial creation',
+      },
+      { status: 405, headers: { Allow: 'POST' } },
+    );
+  });
+}
+
+export async function DELETE(request: NextRequest) {
+  return withRateLimit(trialStartLimiter)(request, async () => {
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Method not allowed',
+        message: 'POST method required for trial creation',
+      },
+      { status: 405, headers: { Allow: 'POST' } },
+    );
+  });
+}

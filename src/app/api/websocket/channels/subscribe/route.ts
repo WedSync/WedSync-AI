@@ -1,0 +1,573 @@
+/**
+ * WebSocket Channel Subscription API - WS-203 Team B Implementation
+ *
+ * Manages user subscriptions to WebSocket channels with wedding context validation.
+ * Supports connection tracking, permission validation, and offline message delivery.
+ *
+ * Wedding Industry Features:
+ * - Wedding-specific permission validation (suppliers can't access wrong weddings)
+ * - Connection limit enforcement by subscription tier
+ * - Automatic offline message queue initialization
+ * - Supplier multi-wedding channel management
+ * - Real-time subscription status updates
+ */
+
+import { NextRequest } from 'next/server';
+import { z } from 'zod';
+import { withSecureValidation } from '@/lib/validation/middleware';
+import { createClient } from '@/lib/supabase/server';
+import { ChannelManager } from '@/lib/websocket/channel-manager';
+import { rateLimitService } from '@/lib/rate-limit';
+import { logger } from '@/lib/monitoring/logger';
+
+// ================================================
+// VALIDATION SCHEMA
+// ================================================
+
+const channelSubscriptionSchema = z.object({
+  channelName: z
+    .string()
+    .min(1, 'Channel name is required')
+    .regex(
+      /^(supplier|couple|collaboration|form|journey|admin):[a-zA-Z0-9_-]+:[a-f0-9-]{36}$/,
+      'Channel name must follow pattern: {scope}:{entity}:{entityId}',
+    ),
+  connectionId: z.string().min(1, 'Connection ID is required'),
+  metadata: z.record(z.any()).optional().default({}),
+
+  // Optional filters for message delivery
+  messageFilters: z
+    .object({
+      eventTypes: z.array(z.string()).optional(),
+      priorities: z.array(z.number().int().min(1).max(10)).optional(),
+      categories: z
+        .array(
+          z.enum([
+            'general',
+            'form_response',
+            'journey_update',
+            'timeline_change',
+            'payment',
+            'urgent',
+          ]),
+        )
+        .optional(),
+    })
+    .optional(),
+
+  // Request historical messages on subscribe
+  includeHistory: z.boolean().optional().default(false),
+  historyLimit: z.number().int().min(1).max(100).optional().default(50),
+});
+
+type ChannelSubscriptionRequest = z.infer<typeof channelSubscriptionSchema>;
+
+// ================================================
+// SUBSCRIPTION HANDLER
+// ================================================
+
+export const POST = withSecureValidation(
+  channelSubscriptionSchema,
+  async (request: NextRequest, validatedData: ChannelSubscriptionRequest) => {
+    const startTime = Date.now();
+
+    try {
+      // Get authenticated user
+      const supabase = createClient();
+      const {
+        data: { user },
+        error: authError,
+      } = await supabase.auth.getUser();
+
+      if (authError || !user) {
+        logger.warn('Unauthorized channel subscription attempt', {
+          channelName: validatedData.channelName,
+          connectionId: validatedData.connectionId,
+          ip: request.ip,
+        });
+
+        return Response.json(
+          {
+            error: 'UNAUTHORIZED',
+            message: 'Authentication required to subscribe to channels',
+            code: 'AUTH_REQUIRED',
+          },
+          { status: 401 },
+        );
+      }
+
+      // Rate limiting for subscription requests
+      const rateLimitKey = `websocket:subscribe:${user.id}`;
+      const allowed = await rateLimitService.checkLimit(
+        rateLimitKey,
+        100,
+        3600,
+      ); // 100 subscriptions per hour
+
+      if (!allowed) {
+        logger.warn('Channel subscription rate limit exceeded', {
+          userId: user.id,
+          channelName: validatedData.channelName,
+          connectionId: validatedData.connectionId,
+        });
+
+        return Response.json(
+          {
+            error: 'RATE_LIMITED',
+            message: 'Subscription rate limit exceeded. Try again later.',
+            code: 'RATE_LIMIT_EXCEEDED',
+            retryAfter: 3600,
+          },
+          { status: 429 },
+        );
+      }
+
+      // Get user profile
+      const { data: userProfile, error: profileError } = await supabase
+        .from('user_profiles')
+        .select('*')
+        .eq('user_id', user.id)
+        .single();
+
+      if (profileError || !userProfile) {
+        logger.error('Failed to get user profile for channel subscription', {
+          error: profileError?.message,
+          userId: user.id,
+          channelName: validatedData.channelName,
+        });
+
+        return Response.json(
+          {
+            error: 'PROFILE_ERROR',
+            message: 'Unable to validate user permissions',
+            code: 'PROFILE_FETCH_FAILED',
+          },
+          { status: 400 },
+        );
+      }
+
+      // Validate channel exists and user has permission
+      const { data: hasPermission, error: permissionError } =
+        await supabase.rpc('validate_websocket_channel_permission', {
+          user_uuid: user.id,
+          channel_name_param: validatedData.channelName,
+          operation_type: 'subscribe',
+        });
+
+      if (permissionError || !hasPermission) {
+        logger.warn('Channel subscription permission denied', {
+          userId: user.id,
+          channelName: validatedData.channelName,
+          permissionError: permissionError?.message,
+          hasPermission,
+        });
+
+        return Response.json(
+          {
+            error: 'FORBIDDEN',
+            message: 'Insufficient permissions to subscribe to this channel',
+            code: 'PERMISSION_DENIED',
+            channelName: validatedData.channelName,
+          },
+          { status: 403 },
+        );
+      }
+
+      // Check subscription limits based on tier
+      const subscriptionCheck = await validateSubscriptionLimits(
+        user.id,
+        userProfile,
+        supabase,
+      );
+      if (!subscriptionCheck.allowed) {
+        return Response.json(
+          {
+            error: 'SUBSCRIPTION_LIMIT',
+            message: subscriptionCheck.message,
+            code: 'SUBSCRIPTION_LIMIT_EXCEEDED',
+            currentPlan: subscriptionCheck.currentTier,
+            currentSubscriptions: subscriptionCheck.currentCount,
+            maxSubscriptions: subscriptionCheck.maxAllowed,
+            upgradeUrl: '/pricing',
+          },
+          { status: 402 },
+        );
+      }
+
+      // Initialize Channel Manager
+      const channelManager = new ChannelManager({
+        supabaseClient: supabase,
+        maxConnectionsPerUser: 50,
+        messageRateLimit: 100,
+        enableMetrics: true,
+      });
+
+      // Create subscription
+      const subscription = await channelManager.subscribeToChannel(
+        validatedData.channelName,
+        user.id,
+        validatedData.connectionId,
+        {
+          ...validatedData.metadata,
+          subscribedViaApi: true,
+          userAgent: request.headers.get('user-agent'),
+          ipAddress: request.ip,
+          messageFilters: validatedData.messageFilters,
+          subscriptionTier: userProfile.organization_id
+            ? await getOrganizationTier(userProfile.organization_id, supabase)
+            : 'FREE',
+        },
+      );
+
+      // Get historical messages if requested
+      let historicalMessages = [];
+      if (validatedData.includeHistory) {
+        historicalMessages = await getHistoricalMessages(
+          validatedData.channelName,
+          user.id,
+          validatedData.historyLimit!,
+          supabase,
+        );
+      }
+
+      // Initialize offline message queue for this user
+      await initializeOfflineMessageQueue(
+        user.id,
+        validatedData.channelName,
+        supabase,
+      );
+
+      const latency = Date.now() - startTime;
+
+      // Success logging with wedding context
+      logger.info('WebSocket channel subscription created', {
+        subscriptionId: subscription.id,
+        channelName: validatedData.channelName,
+        userId: user.id,
+        connectionId: validatedData.connectionId,
+        organizationId: userProfile.organization_id,
+        includeHistory: validatedData.includeHistory,
+        historicalCount: historicalMessages.length,
+        latency: `${latency}ms`,
+        performance:
+          latency < 300
+            ? 'excellent'
+            : latency < 500
+              ? 'good'
+              : 'needs_optimization',
+      });
+
+      // Return subscription details
+      return Response.json(
+        {
+          success: true,
+          subscription: {
+            id: subscription.id,
+            channelId: subscription.channelId,
+            channelName: validatedData.channelName,
+            userId: subscription.userId,
+            connectionId: subscription.connectionId,
+            subscribedAt: subscription.subscribedAt,
+            active: subscription.active,
+            metadata: subscription.metadata,
+          },
+          channel: {
+            name: validatedData.channelName,
+            websocketUrl: `ws://localhost:8082?userId=${user.id}&channelName=${validatedData.channelName}&token=${generateConnectionToken(user.id)}`,
+          },
+          historicalMessages:
+            historicalMessages.length > 0 ? historicalMessages : undefined,
+          offlineMessageQueue: {
+            initialized: true,
+            queueKey: `offline:messages:${user.id}:${validatedData.channelName}`,
+          },
+          performance: {
+            latency: `${latency}ms`,
+            target: '<300ms',
+          },
+        },
+        {
+          status: 201,
+          headers: {
+            'X-Subscription-ID': subscription.id,
+            'X-Channel-Name': validatedData.channelName,
+            'X-Performance-Latency': `${latency}ms`,
+          },
+        },
+      );
+    } catch (error) {
+      const latency = Date.now() - startTime;
+
+      logger.error('WebSocket channel subscription failed', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+        stack: error instanceof Error ? error.stack : undefined,
+        channelName: validatedData.channelName,
+        connectionId: validatedData.connectionId,
+        latency: `${latency}ms`,
+        requestData: validatedData,
+      });
+
+      // Determine error type and response
+      if (error instanceof Error) {
+        if (error.message.includes('Channel not found')) {
+          return Response.json(
+            {
+              error: 'CHANNEL_NOT_FOUND',
+              message: 'The specified channel does not exist or is inactive',
+              code: 'CHANNEL_NOT_FOUND',
+              channelName: validatedData.channelName,
+            },
+            { status: 404 },
+          );
+        }
+
+        if (error.message.includes('Channel at maximum capacity')) {
+          return Response.json(
+            {
+              error: 'CHANNEL_FULL',
+              message: 'Channel has reached maximum subscriber capacity',
+              code: 'CHANNEL_CAPACITY_EXCEEDED',
+              channelName: validatedData.channelName,
+            },
+            { status: 409 },
+          );
+        }
+
+        if (error.message.includes('already subscribed')) {
+          return Response.json(
+            {
+              error: 'ALREADY_SUBSCRIBED',
+              message: 'User is already subscribed to this channel',
+              code: 'DUPLICATE_SUBSCRIPTION',
+              channelName: validatedData.channelName,
+            },
+            { status: 409 },
+          );
+        }
+      }
+
+      return Response.json(
+        {
+          error: 'SUBSCRIPTION_FAILED',
+          message: 'Failed to create channel subscription',
+          code: 'SUBSCRIPTION_ERROR',
+          channelName: validatedData.channelName,
+          details: process.env.NODE_ENV === 'development' ? error : undefined,
+        },
+        { status: 500 },
+      );
+    }
+  },
+);
+
+// ================================================
+// HELPER FUNCTIONS
+// ================================================
+
+/**
+ * Validate subscription limits based on user tier
+ */
+async function validateSubscriptionLimits(
+  userId: string,
+  userProfile: any,
+  supabase: any,
+): Promise<{
+  allowed: boolean;
+  message?: string;
+  currentTier?: string;
+  currentCount?: number;
+  maxAllowed?: number;
+}> {
+  // Get current subscription count
+  const { count: currentCount, error: countError } = await supabase
+    .from('channel_subscriptions')
+    .select('*', { count: 'exact', head: true })
+    .eq('user_id', userId)
+    .eq('active', true);
+
+  if (countError) {
+    logger.warn('Unable to count current subscriptions', {
+      error: countError.message,
+      userId,
+    });
+    return { allowed: true }; // Err on the side of allowing
+  }
+
+  // Get subscription limits based on tier
+  let maxSubscriptions = 3; // Default for free users
+  let currentTier = 'FREE';
+
+  if (userProfile.organization_id) {
+    const { data: organization, error } = await supabase
+      .from('organizations')
+      .select('pricing_tier, subscription_status, features')
+      .eq('id', userProfile.organization_id)
+      .single();
+
+    if (!error && organization) {
+      currentTier = organization.pricing_tier;
+
+      // Define subscription limits by tier
+      const subscriptionLimits: Record<string, number> = {
+        FREE: 3,
+        STARTER: 10,
+        PROFESSIONAL: 25,
+        SCALE: 100,
+        ENTERPRISE: 500,
+      };
+
+      maxSubscriptions =
+        subscriptionLimits[organization.pricing_tier] ||
+        subscriptionLimits['FREE'];
+
+      // Check if subscription is active
+      if (
+        organization.subscription_status !== 'active' &&
+        organization.subscription_status !== 'trialing'
+      ) {
+        return {
+          allowed: false,
+          message: 'Active subscription required for channel subscriptions',
+          currentTier,
+          currentCount: currentCount || 0,
+          maxAllowed: maxSubscriptions,
+        };
+      }
+    }
+  }
+
+  const current = currentCount || 0;
+
+  if (current >= maxSubscriptions) {
+    return {
+      allowed: false,
+      message: `Subscription limit reached (${maxSubscriptions} channels for ${currentTier} tier)`,
+      currentTier,
+      currentCount: current,
+      maxAllowed: maxSubscriptions,
+    };
+  }
+
+  return {
+    allowed: true,
+    currentTier,
+    currentCount: current,
+    maxAllowed: maxSubscriptions,
+  };
+}
+
+/**
+ * Get organization tier
+ */
+async function getOrganizationTier(
+  organizationId: string,
+  supabase: any,
+): Promise<string> {
+  const { data: organization, error } = await supabase
+    .from('organizations')
+    .select('pricing_tier')
+    .eq('id', organizationId)
+    .single();
+
+  return !error && organization ? organization.pricing_tier : 'FREE';
+}
+
+/**
+ * Get historical messages for the channel
+ */
+async function getHistoricalMessages(
+  channelName: string,
+  userId: string,
+  limit: number,
+  supabase: any,
+): Promise<any[]> {
+  try {
+    // Get channel ID first
+    const { data: channel, error: channelError } = await supabase
+      .from('websocket_channels')
+      .select('id')
+      .eq('channel_name', channelName)
+      .eq('active', true)
+      .single();
+
+    if (channelError || !channel) {
+      return [];
+    }
+
+    // Get recent messages from the queue that were successfully delivered
+    const { data: messages, error: messagesError } = await supabase
+      .from('channel_message_queue')
+      .select('*')
+      .eq('channel_id', channel.id)
+      .eq('delivered', true)
+      .order('created_at', { ascending: false })
+      .limit(limit);
+
+    if (messagesError) {
+      logger.warn('Failed to fetch historical messages', {
+        error: messagesError.message,
+        channelName,
+        userId,
+      });
+      return [];
+    }
+
+    return (messages || []).reverse(); // Return in chronological order
+  } catch (error) {
+    logger.error('Error fetching historical messages', {
+      error: error instanceof Error ? error.message : error,
+      channelName,
+      userId,
+    });
+    return [];
+  }
+}
+
+/**
+ * Initialize offline message queue for user
+ */
+async function initializeOfflineMessageQueue(
+  userId: string,
+  channelName: string,
+  supabase: any,
+): Promise<void> {
+  try {
+    // Check if user has any pending messages in the queue
+    const { data: pendingMessages, error } = await supabase
+      .from('channel_message_queue')
+      .select('count(*)')
+      .eq('recipient_id', userId)
+      .eq('delivered', false)
+      .eq('failed', false)
+      .single();
+
+    if (!error && pendingMessages) {
+      logger.info('User has pending offline messages', {
+        userId,
+        channelName,
+        pendingCount: pendingMessages.count,
+      });
+    }
+  } catch (error) {
+    logger.warn('Failed to check offline message queue', {
+      error: error instanceof Error ? error.message : error,
+      userId,
+      channelName,
+    });
+  }
+}
+
+/**
+ * Generate connection token for WebSocket authentication
+ */
+function generateConnectionToken(userId: string): string {
+  // In production, this would be a proper JWT token with expiration
+  // For now, using a simple base64 encoded user ID with timestamp
+  const tokenData = {
+    userId,
+    timestamp: Date.now(),
+    type: 'websocket_connection',
+  };
+
+  return Buffer.from(JSON.stringify(tokenData)).toString('base64');
+}

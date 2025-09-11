@@ -1,0 +1,239 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createWhatsAppPrivacyControls } from '@/lib/whatsapp/privacy-controls';
+import { z } from 'zod';
+
+// Validation schemas
+const optInSchema = z.object({
+  phoneNumber: z.string().min(10),
+  consentType: z.enum(['marketing', 'transactional', 'all']),
+  source: z.string().min(1),
+  metadata: z.record(z.any()).optional(),
+});
+
+const optOutSchema = z.object({
+  phoneNumber: z.string().min(10),
+  reason: z.string().optional(),
+  source: z.string().default('user_request'),
+  metadata: z.record(z.any()).optional(),
+});
+
+const checkStatusSchema = z.object({
+  phoneNumber: z.string().min(10),
+});
+
+const validatePermissionSchema = z.object({
+  phoneNumber: z.string().min(10),
+  messageType: z.enum(['marketing', 'transactional', 'customer_service']),
+});
+
+const dataExportSchema = z.object({
+  phoneNumber: z.string().min(10),
+});
+
+const dataDeletionSchema = z.object({
+  phoneNumber: z.string().min(10),
+  requestedBy: z.string().min(1),
+});
+
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const { action } = body;
+
+    const privacyControls = createWhatsAppPrivacyControls();
+    const clientIP =
+      request.headers.get('x-forwarded-for') ||
+      request.headers.get('x-real-ip') ||
+      request.ip ||
+      'unknown';
+    const userAgent = request.headers.get('user-agent') || 'unknown';
+
+    switch (action) {
+      case 'opt_in': {
+        const validatedData = optInSchema.parse(body);
+        const result = await privacyControls.recordOptIn(
+          validatedData.phoneNumber,
+          validatedData.consentType,
+          validatedData.source,
+          clientIP,
+          userAgent,
+          validatedData.metadata,
+        );
+
+        return NextResponse.json(
+          {
+            success: result.success,
+            message: result.success
+              ? 'Opt-in recorded successfully'
+              : result.error,
+          },
+          { status: result.success ? 200 : 500 },
+        );
+      }
+
+      case 'opt_out': {
+        const validatedData = optOutSchema.parse(body);
+        const result = await privacyControls.recordOptOut(
+          validatedData.phoneNumber,
+          validatedData.reason,
+          validatedData.source,
+          clientIP,
+          userAgent,
+          validatedData.metadata,
+        );
+
+        return NextResponse.json(
+          {
+            success: result.success,
+            message: result.success
+              ? 'Opt-out recorded successfully'
+              : result.error,
+          },
+          { status: result.success ? 200 : 500 },
+        );
+      }
+
+      case 'check_status': {
+        const validatedData = checkStatusSchema.parse(body);
+        const result = await privacyControls.checkOptInStatus(
+          validatedData.phoneNumber,
+        );
+
+        return NextResponse.json(
+          {
+            success: result.success,
+            status: result.status,
+            consentType: result.consentType,
+            expiresAt: result.expiresAt,
+            error: result.error,
+          },
+          { status: result.success ? 200 : 500 },
+        );
+      }
+
+      case 'validate_permission': {
+        const validatedData = validatePermissionSchema.parse(body);
+        const result = await privacyControls.validateMessagePermission(
+          validatedData.phoneNumber,
+          validatedData.messageType,
+        );
+
+        return NextResponse.json({
+          allowed: result.allowed,
+          reason: result.reason,
+        });
+      }
+
+      case 'export_data': {
+        const validatedData = dataExportSchema.parse(body);
+        const result = await privacyControls.exportUserData(
+          validatedData.phoneNumber,
+        );
+
+        if (result.success) {
+          return NextResponse.json({
+            success: true,
+            data: result.data,
+          });
+        } else {
+          return NextResponse.json(
+            {
+              success: false,
+              error: result.error,
+            },
+            { status: 500 },
+          );
+        }
+      }
+
+      case 'delete_data': {
+        const validatedData = dataDeletionSchema.parse(body);
+        const result = await privacyControls.processDataDeletion(
+          validatedData.phoneNumber,
+          validatedData.requestedBy,
+        );
+
+        return NextResponse.json(
+          {
+            success: result.success,
+            message: result.success
+              ? 'Data deletion processed successfully'
+              : result.error,
+          },
+          { status: result.success ? 200 : 500 },
+        );
+      }
+
+      case 'audit_trail': {
+        const validatedData = checkStatusSchema.parse(body);
+        const result = await privacyControls.getConsentAuditTrail(
+          validatedData.phoneNumber,
+        );
+
+        return NextResponse.json(
+          {
+            success: result.success,
+            logs: result.logs,
+            error: result.error,
+          },
+          { status: result.success ? 200 : 500 },
+        );
+      }
+
+      default:
+        return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
+    }
+  } catch (error) {
+    console.error('WhatsApp privacy API error:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Invalid request data',
+          details: error.errors,
+        },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+// Get opt-in status (GET method for simple status checks)
+export async function GET(request: NextRequest) {
+  try {
+    const searchParams = request.nextUrl.searchParams;
+    const phoneNumber = searchParams.get('phoneNumber');
+
+    if (!phoneNumber) {
+      return NextResponse.json(
+        { error: 'Phone number is required' },
+        { status: 400 },
+      );
+    }
+
+    const privacyControls = createWhatsAppPrivacyControls();
+    const result = await privacyControls.checkOptInStatus(phoneNumber);
+
+    return NextResponse.json(
+      {
+        success: result.success,
+        status: result.status,
+        consentType: result.consentType,
+        expiresAt: result.expiresAt,
+        error: result.error,
+      },
+      { status: result.success ? 200 : 500 },
+    );
+  } catch (error) {
+    console.error('WhatsApp privacy GET API error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

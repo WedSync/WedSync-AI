@@ -1,0 +1,328 @@
+/**
+ * Field Extraction Service Tests
+ * WS-122: Automated Field Extraction from Documents
+ * Team E - Batch 9 - Round 2
+ */
+
+import { FieldExtractionService } from '@/lib/services/field-extraction-service';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { 
+  ExtractionRequest, 
+  ExtractionTemplate, 
+  FieldDefinition,
+  ExportRequest 
+} from '@/types/field-extraction';
+// Mock Supabase
+const mockSupabase = {
+  from: vi.fn().mockReturnThis(),
+  select: vi.fn().mockReturnThis(),
+  insert: vi.fn().mockReturnThis(),
+  update: vi.fn().mockReturnThis(),
+  delete: vi.fn().mockReturnThis(),
+  upsert: vi.fn().mockReturnThis(),
+  eq: vi.fn().mockReturnThis(),
+  single: vi.fn().mockReturnThis(),
+  order: vi.fn().mockReturnThis(),
+  limit: vi.fn().mockReturnThis(),
+};
+// Mock Tesseract
+vi.mock('tesseract.js', () => ({
+  createWorker: jest.fn(() => ({
+    loadLanguage: vi.fn(),
+    initialize: vi.fn(),
+    recognize: jest.fn(() => ({ data: { text: 'Mock OCR text' } })),
+    terminate: vi.fn()
+  }))
+}));
+// Mock PDF-JS
+vi.mock('pdfjs-dist', () => ({
+  getDocument: jest.fn(() => ({
+    promise: Promise.resolve({
+      numPages: 1,
+      getPage: jest.fn(() => ({
+        getTextContent: jest.fn(() => ({
+          items: [{ str: 'Mock PDF text' }]
+        }))
+      }))
+    })
+vi.mock('@supabase/supabase-js', () => ({
+  createClient: jest.fn(() => mockSupabase)
+describe('FieldExtractionService', () => {
+  let service: FieldExtractionService;
+  
+  const mockTemplate: ExtractionTemplate = {
+    id: 'template-1',
+    name: 'Invoice Template',
+    description: 'Template for invoice extraction',
+    documentType: 'invoice',
+    fields: [
+      {
+        id: 'field-1',
+        name: 'Invoice Number',
+        type: 'text',
+        required: true,
+        pattern: /INV-\d{4,}/,
+        aliases: ['Invoice #', 'Invoice No.', 'Inv Number']
+      },
+        id: 'field-2',
+        name: 'Total Amount',
+        type: 'currency',
+        pattern: /\$\d+\.?\d{0,2}/,
+        aliases: ['Total', 'Amount Due', 'Grand Total']
+        id: 'field-3',
+        name: 'Due Date',
+        type: 'date',
+        required: false,
+        aliases: ['Payment Due', 'Due By']
+      }
+    ],
+    isActive: true,
+    createdAt: '2025-01-01T00:00:00Z',
+    updatedAt: '2025-01-01T00:00:00Z'
+  };
+  const mockDocument = {
+    id: 'doc-1',
+    mime_type: 'application/pdf',
+    file_path: '/path/to/document.pdf',
+    category_id: 'invoice'
+  beforeEach(() => {
+    vi.clearAllMocks();
+    service = new FieldExtractionService();
+    
+    // Mock successful database responses
+    mockSupabase.from.mockReturnValue(mockSupabase);
+    mockSupabase.select.mockReturnValue(mockSupabase);
+    mockSupabase.eq.mockReturnValue(mockSupabase);
+    mockSupabase.single.mockResolvedValue({ data: mockDocument, error: null });
+  });
+  afterEach(async () => {
+    await service.cleanup();
+  describe('extractFields', () => {
+    it('should successfully extract fields from a document', async () => {
+      // Mock template loading
+      mockSupabase.single.mockResolvedValueOnce({ data: mockTemplate, error: null });
+      
+      // Mock document loading
+      mockSupabase.single.mockResolvedValueOnce({ data: mockDocument, error: null });
+      // Mock saving results
+      mockSupabase.upsert.mockResolvedValue({ error: null });
+      const request: ExtractionRequest = {
+        documentId: 'doc-1',
+        templateId: 'template-1',
+        options: { 
+          ocr: false,
+          fuzzyMatching: true,
+          confidenceThreshold: 0.8
+        }
+      };
+      const result = await service.extractFields(request);
+      expect(result.success).toBe(true);
+      expect(result.document).toBeDefined();
+      expect(result.document?.fields).toBeDefined();
+      expect(result.processingTime).toBeGreaterThan(0);
+    });
+    it('should handle document not found error', async () => {
+      mockSupabase.single.mockResolvedValue({ data: null, error: { message: 'Document not found' } });
+        documentId: 'non-existent-doc',
+        templateId: 'template-1'
+      expect(result.success).toBe(false);
+      expect(result.errors).toBeDefined();
+      expect(result.errors?.[0].message).toContain('Document not found');
+    it('should extract common fields when no template is provided', async () => {
+      // Mock template auto-detection (returns null for auto-detection)
+      mockSupabase.select.mockResolvedValueOnce({ data: null, error: null });
+        options: { ocr: false }
+      expect(result.document?.fields.length).toBeGreaterThan(0);
+    it('should achieve >90% accuracy for field detection', async () => {
+        options: { fuzzyMatching: true }
+      expect(result.document?.averageConfidence).toBeGreaterThan(0.9);
+    it('should handle OCR extraction for image documents', async () => {
+      const imageDocument = {
+        ...mockDocument,
+        mime_type: 'image/png',
+        file_path: '/path/to/image.png'
+      mockSupabase.single.mockResolvedValueOnce({ data: imageDocument, error: null });
+        options: { ocr: true }
+  describe('exportFields', () => {
+    const mockExtractedDocument = {
+      id: 'extracted-1',
+      documentId: 'doc-1',
+      status: 'completed' as const,
+      fields: [
+        {
+          fieldId: 'field-1',
+          name: 'Invoice Number',
+          value: 'INV-1234',
+          originalValue: 'INV-1234',
+          type: 'text' as const,
+          confidence: 0.95,
+          confidenceLevel: 'very-high' as const,
+          validationStatus: 'valid' as const,
+          extractedAt: '2025-01-01T00:00:00Z'
+        },
+          fieldId: 'field-2',
+          name: 'Total Amount',
+          value: 150.00,
+          originalValue: '$150.00',
+          type: 'currency' as const,
+          confidence: 0.92,
+      ],
+      totalFields: 2,
+      successfulFields: 2,
+      failedFields: 0,
+      averageConfidence: 0.935,
+      extractionTime: 1200,
+      createdAt: '2025-01-01T00:00:00Z',
+      updatedAt: '2025-01-01T00:00:00Z'
+    };
+    beforeEach(() => {
+      // Mock getExtractionResults
+      mockSupabase.single.mockResolvedValue({ 
+        data: mockExtractedDocument, 
+        error: null 
+      });
+      // Mock save export record
+      mockSupabase.insert.mockResolvedValue({ error: null });
+    it('should export fields to JSON format', async () => {
+      const request: ExportRequest = {
+        documentId: 'extracted-1',
+        format: 'json',
+        options: { includeMetadata: true }
+      const result = await service.exportFields(request);
+      expect(result.format).toBe('json');
+      expect(result.fileName).toContain('extraction_');
+      expect(result.fileName).toContain('.json');
+      expect(typeof result.data).toBe('string');
+      const parsedData = JSON.parse(result.data as string);
+      expect(parsedData.fields).toHaveLength(2);
+      expect(parsedData.averageConfidence).toBe(0.935);
+    it('should export fields to structured JSON format', async () => {
+        format: 'structured-json',
+        options: { includeValidation: true }
+      expect(result.format).toBe('structured-json');
+      expect(parsedData['Invoice Number']).toBeDefined();
+      expect(parsedData['Total Amount']).toBeDefined();
+      expect(parsedData['Invoice Number'].value).toBe('INV-1234');
+      expect(parsedData['Total Amount'].value).toBe(150.00);
+    it('should export fields to CSV format', async () => {
+        format: 'csv',
+      expect(result.format).toBe('csv');
+      expect(result.data).toContain('Field Name,Value,Type,Confidence,Validation Status');
+      expect(result.data).toContain('Invoice Number,"INV-1234"');
+      expect(result.data).toContain('Total Amount,"150"');
+    it('should export fields to XML format', async () => {
+        format: 'xml',
+      expect(result.format).toBe('xml');
+      expect(result.data).toContain('<?xml version="1.0" encoding="UTF-8"?>');
+      expect(result.data).toContain('<extraction>');
+      expect(result.data).toContain('<fields>');
+      expect(result.data).toContain('<name>Invoice Number</name>');
+      expect(result.data).toContain('<value>INV-1234</value>');
+    it('should handle export for non-existent document', async () => {
+      mockSupabase.single.mockResolvedValue({ data: null, error: null });
+        documentId: 'non-existent',
+        format: 'json'
+      expect(result.errors).toContain('Document not found');
+  describe('Template Management', () => {
+    it('should create a new extraction template', async () => {
+      const newTemplate = {
+        name: 'Contract Template',
+        description: 'Template for contract extraction',
+        documentType: 'contract',
+        fields: [
+          {
+            id: 'field-1',
+            name: 'Contract Number',
+            type: 'text' as const,
+            required: true,
+            pattern: /CT-\d{4,}/
+          }
+        ]
+      // Mock template creation
+      mockSupabase.insert.mockResolvedValueOnce({ 
+        data: { id: 'template-2', ...newTemplate }, 
+      // Mock field definitions creation
+      mockSupabase.insert.mockResolvedValueOnce({ error: null });
+      // Mock getTemplate call
+      mockSupabase.single.mockResolvedValueOnce({ 
+      const result = await service.createTemplate(newTemplate);
+      expect(result).toBeDefined();
+      expect(result.id).toBe('template-2');
+      expect(result.name).toBe('Contract Template');
+    it('should get templates with filters', async () => {
+      mockSupabase.order.mockResolvedValue({ 
+        data: [mockTemplate], 
+      const templates = await service.getTemplates({
+        documentType: 'invoice',
+        isActive: true
+      expect(templates).toHaveLength(1);
+      expect(templates[0].name).toBe('Invoice Template');
+    it('should update an existing template', async () => {
+      const updates = {
+        name: 'Updated Invoice Template',
+        description: 'Updated description'
+      // Mock template update
+      mockSupabase.update.mockResolvedValueOnce({ error: null });
+        data: { ...mockTemplate, ...updates }, 
+      const result = await service.updateTemplate('template-1', updates);
+      expect(result.name).toBe('Updated Invoice Template');
+      expect(result.description).toBe('Updated description');
+    it('should delete a template', async () => {
+      mockSupabase.delete.mockResolvedValue({ error: null });
+      await expect(service.deleteTemplate('template-1')).resolves.not.toThrow();
+    it('should check if template is in use', async () => {
+      mockSupabase.limit.mockResolvedValue({ 
+        data: [{ id: 'extracted-1' }], 
+      const isInUse = await service.isTemplateInUse('template-1');
+      expect(isInUse).toBe(true);
+  describe('Error Handling', () => {
+    it('should handle OCR initialization errors gracefully', async () => {
+      // Mock OCR error
+      vi.mock('tesseract.js', () => ({
+        createWorker: jest.fn(() => {
+          throw new Error('OCR initialization failed');
+        })
+      }));
+    it('should handle validation errors properly', async () => {
+      const templateWithValidation: ExtractionTemplate = {
+        ...mockTemplate,
+            name: 'Email',
+            type: 'email',
+            validation: [
+              {
+                type: 'pattern',
+                value: '^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$',
+                message: 'Invalid email format'
+              }
+            ]
+      mockSupabase.single.mockResolvedValueOnce({ data: templateWithValidation, error: null });
+      // Should have validation results
+      expect(result.document?.fields[0].validationStatus).toBeDefined();
+    it('should retry extraction on failure', async () => {
+      let callCount = 0;
+      mockSupabase.single.mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return Promise.resolve({ data: null, error: { message: 'Temporary error' } });
+        return Promise.resolve({ data: mockDocument, error: null });
+        options: { maxRetries: 2 }
+      // Should eventually succeed after retry
+      expect(callCount).toBeGreaterThan(1);
+  describe('Performance Requirements', () => {
+    it('should complete field extraction within reasonable time', async () => {
+      const startTime = Date.now();
+      const processingTime = Date.now() - startTime;
+      expect(processingTime).toBeLessThan(5000); // Should complete within 5 seconds
+    it('should handle large documents efficiently', async () => {
+      const largeDocument = {
+        file_size: 10 * 1024 * 1024 // 10MB
+      mockSupabase.single.mockResolvedValueOnce({ data: largeDocument, error: null });
+      expect(result.processingTime).toBeLessThan(30000); // Should complete within 30 seconds for large docs
+  describe('Resource Management', () => {
+    it('should cleanup resources properly', async () => {
+      const service = new FieldExtractionService();
+      // Initialize OCR (simulate usage)
+      await service.extractFields(request);
+      // Cleanup should not throw
+      await expect(service.cleanup()).resolves.not.toThrow();
+});

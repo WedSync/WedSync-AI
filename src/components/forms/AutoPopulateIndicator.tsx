@@ -1,0 +1,139 @@
+'use client';
+
+import React from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import {
+  CheckCircleIcon,
+  SparklesIcon,
+  ExclamationTriangleIcon,
+} from '@heroicons/react/24/outline';
+import { cn } from '@/lib/utils';
+
+interface AutoPopulateIndicatorProps {
+  status: 'idle' | 'detecting' | 'populating' | 'completed' | 'error';
+  fieldsDetected?: number;
+  fieldsPopulated?: number;
+  confidence?: number;
+  error?: string;
+  sourcePDF?: string;
+  onRetry?: () => void;
+}
+
+export function AutoPopulateIndicator({
+  status,
+  fieldsDetected = 0,
+  fieldsPopulated = 0,
+  confidence = 0,
+  error,
+  sourcePDF,
+  onRetry,
+}: AutoPopulateIndicatorProps) {
+  const getStatusConfig = () => {
+    switch (status) {
+      case 'detecting':
+        return {
+          icon: (
+            <motion.div
+              animate={{ rotate: 360 }}
+              transition={{ duration: 2, repeat: Infinity, ease: 'linear' }}
+            >
+              <SparklesIcon className="h-5 w-5 text-blue-500" />
+            </motion.div>
+          ),
+          message: 'Detecting core fields...',
+          bgColor: 'bg-blue-50',
+          borderColor: 'border-blue-200',
+          textColor: 'text-blue-700',
+        };
+
+      case 'populating':
+        return {
+          icon: (
+            <motion.div
+              animate={{ scale: [1, 1.2, 1] }}
+              transition={{ duration: 0.5, repeat: Infinity }}
+            >
+              <SparklesIcon className="h-5 w-5 text-indigo-500" />
+            </motion.div>
+          ),
+          message: `Auto-populating ${fieldsPopulated} of ${fieldsDetected} fields...`,
+          bgColor: 'bg-indigo-50',
+          borderColor: 'border-indigo-200',
+          textColor: 'text-indigo-700',
+        };
+
+      case 'completed':
+        return {
+          icon: <CheckCircleIcon className="h-5 w-5 text-green-500" />,
+          message: `Successfully populated ${fieldsPopulated} fields`,
+          bgColor: 'bg-green-50',
+          borderColor: 'border-green-200',
+          textColor: 'text-green-700',
+        };
+
+      case 'error':
+        return {
+          icon: <ExclamationTriangleIcon className="h-5 w-5 text-red-500" />,
+          message: error || 'Failed to auto-populate fields',
+          bgColor: 'bg-red-50',
+          borderColor: 'border-red-200',
+          textColor: 'text-red-700',
+        };
+
+      default:
+        return null;
+    }
+  };
+
+  const config = getStatusConfig();
+
+  if (!config || status === 'idle') {
+    return null;
+  }
+
+  return (
+    <AnimatePresence mode="wait">
+      <motion.div
+        initial={{ opacity: 0, y: -10 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: -10 }}
+        transition={{ duration: 0.2 }}
+        className={cn(
+          'flex items-center justify-between px-4 py-3 rounded-lg border',
+          config.bgColor,
+          config.borderColor,
+        )}
+      >
+        <div className="flex items-center space-x-3">
+          {config.icon}
+          <div className="flex flex-col">
+            <span className={cn('text-sm font-medium', config.textColor)}>
+              {config.message}
+            </span>
+            {status === 'completed' && confidence > 0 && (
+              <span className="text-xs text-gray-500 mt-0.5">
+                Confidence: {Math.round(confidence * 100)}%
+                {sourcePDF && ` • Source: ${sourcePDF}`}
+              </span>
+            )}
+          </div>
+        </div>
+
+        {status === 'error' && onRetry && (
+          <button
+            onClick={onRetry}
+            className="text-sm font-medium text-red-600 hover:text-red-700 focus:outline-none"
+          >
+            Retry
+          </button>
+        )}
+
+        {status === 'completed' && fieldsDetected > fieldsPopulated && (
+          <span className="text-xs text-gray-500">
+            {fieldsDetected - fieldsPopulated} fields need manual review
+          </span>
+        )}
+      </motion.div>
+    </AnimatePresence>
+  );
+}

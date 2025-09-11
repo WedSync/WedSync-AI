@@ -1,0 +1,169 @@
+# Daily Health Check Automation
+# WedSync WS-168: Customer Success Dashboard Implementation
+#
+# Runs daily health scoring and intervention generation
+
+name: Daily Customer Health Check
+
+on:
+  schedule:
+    # Run at 2 AM UTC every day
+    - cron: '0 2 * * *'
+  workflow_dispatch: # Allow manual trigger
+    inputs:
+      debug:
+        description: 'Enable debug mode'
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+    environment: production
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: wedsync/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ./wedsync
+        run: npm ci
+
+      - name: Run Daily Health Check
+        working-directory: ./wedsync
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          HEALTH_CHECK_DEBUG: ${{ inputs.debug || 'false' }}
+        run: |
+          echo "Starting daily health check automation..."
+          
+          # Call the Supabase Edge Function
+          RESPONSE=$(curl -s -X POST \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Content-Type: application/json" \
+            -H "x-start-time: $(date +%s%3N)" \
+            "$SUPABASE_URL/functions/v1/daily-health-automation" \
+            -d '{"source": "github-actions", "debug": "'$HEALTH_CHECK_DEBUG'"}')
+          
+          echo "Response: $RESPONSE"
+          
+          # Check if the request was successful
+          SUCCESS=$(echo $RESPONSE | jq -r '.success // false')
+          
+          if [ "$SUCCESS" = "true" ]; then
+            echo "✅ Daily health check completed successfully"
+            
+            # Extract summary information
+            TOTAL=$(echo $RESPONSE | jq -r '.summary.totalSuppliers // 0')
+            CALCULATED=$(echo $RESPONSE | jq -r '.summary.healthScoresCalculated // 0')
+            INTERVENTIONS=$(echo $RESPONSE | jq -r '.summary.interventionsCreated // 0')
+            CRITICAL=$(echo $RESPONSE | jq -r '.summary.criticalAlerts // 0')
+            AVG_SCORE=$(echo $RESPONSE | jq -r '.summary.averageHealthScore // 0')
+            
+            echo "📊 Summary:"
+            echo "  - Total suppliers: $TOTAL"
+            echo "  - Health scores calculated: $CALCULATED"
+            echo "  - Interventions created: $INTERVENTIONS"
+            echo "  - Critical alerts: $CRITICAL"
+            echo "  - Average health score: $AVG_SCORE"
+            
+            # Set output variables for potential follow-up actions
+            echo "total_suppliers=$TOTAL" >> $GITHUB_OUTPUT
+            echo "interventions_created=$INTERVENTIONS" >> $GITHUB_OUTPUT
+            echo "critical_alerts=$CRITICAL" >> $GITHUB_OUTPUT
+            echo "average_health_score=$AVG_SCORE" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Daily health check failed"
+            ERROR=$(echo $RESPONSE | jq -r '.error // "Unknown error"')
+            echo "Error: $ERROR"
+            exit 1
+          fi
+
+      - name: Send Slack Notification (Success)
+        if: success()
+        uses: 8398a7/action-slack@v3
+        with:
+          status: custom
+          custom_payload: |
+            {
+              "channel": "#customer-success",
+              "username": "Health Check Bot",
+              "icon_emoji": ":health_worker:",
+              "attachments": [{
+                "color": "good",
+                "title": "✅ Daily Health Check Completed",
+                "fields": [
+                  {
+                    "title": "Suppliers Processed",
+                    "value": "${{ steps.health-check.outputs.total_suppliers }}",
+                    "short": true
+                  },
+                  {
+                    "title": "Interventions Created",
+                    "value": "${{ steps.health-check.outputs.interventions_created }}",
+                    "short": true
+                  },
+                  {
+                    "title": "Critical Alerts",
+                    "value": "${{ steps.health-check.outputs.critical_alerts }}",
+                    "short": true
+                  },
+                  {
+                    "title": "Average Health Score",
+                    "value": "${{ steps.health-check.outputs.average_health_score }}/100",
+                    "short": true
+                  }
+                ],
+                "footer": "WedSync Customer Success Dashboard",
+                "ts": ${{ github.event.repository.updated_at }}
+              }]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Send Slack Notification (Failure)
+        if: failure()
+        uses: 8398a7/action-slack@v3
+        with:
+          status: failure
+          fields: repo,message,commit,author,action,eventName,ref,workflow
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # Optional: Generate health report and send to stakeholders
+  generate-report:
+    needs: health-check
+    runs-on: ubuntu-latest
+    if: success() && (github.event.inputs.debug == 'true' || github.event.schedule == '0 8 * * 1') # Monday morning
+    
+    steps:
+      - name: Generate Weekly Health Report
+        run: |
+          echo "📈 Generating weekly customer health report..."
+          # In production, this would generate and email a detailed report
+          echo "Report generation would happen here"
+
+  # Optional: Alert on critical health issues
+  critical-alerts:
+    needs: health-check
+    runs-on: ubuntu-latest
+    if: success() && steps.health-check.outputs.critical_alerts > 0
+    
+    steps:
+      - name: Process Critical Alerts
+        run: |
+          echo "🚨 Processing ${{ steps.health-check.outputs.critical_alerts }} critical alerts"
+          # In production, this would:
+          # - Send immediate notifications to account managers
+          # - Create high-priority support tickets
+          # - Schedule urgent follow-up calls
+          echo "Critical alert processing would happen here"

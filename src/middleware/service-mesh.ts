@@ -1,0 +1,829 @@
+import { Redis } from 'ioredis';
+import { EventEmitter } from 'events';
+
+interface ServiceRegistration {
+  serviceId: string;
+  serviceName: string;
+  version: string;
+  endpoints: string[];
+  healthCheck: string;
+  metadata: Record<string, any>;
+  lastHeartbeat: Date;
+  status: 'healthy' | 'degraded' | 'unhealthy';
+  tags: string[];
+}
+
+interface MessagePayload {
+  messageId: string;
+  fromService: string;
+  toService: string;
+  eventType: string;
+  data: any;
+  timestamp: Date;
+  priority: 'high' | 'normal' | 'low';
+  retryCount: number;
+  maxRetries: number;
+  ttl?: number; // Time to live in seconds
+  correlationId?: string;
+  weddingId?: string;
+  supplierId?: string;
+}
+
+interface ServiceDiscoveryQuery {
+  serviceName?: string;
+  tag?: string;
+  status?: 'healthy' | 'degraded' | 'unhealthy';
+  version?: string;
+}
+
+interface LoadBalancingOptions {
+  strategy: 'round-robin' | 'least-connections' | 'random' | 'weighted';
+  healthCheckRequired: boolean;
+}
+
+export class ServiceMesh extends EventEmitter {
+  private redis: Redis;
+  private pubsub: Redis; // Separate Redis connection for pub/sub
+  private services: Map<string, ServiceRegistration>;
+  private messageQueues: Map<string, MessagePayload[]>;
+  private serviceConnections: Map<string, number>; // For least-connections load balancing
+  private roundRobinCounters: Map<string, number>; // For round-robin load balancing
+  private healthCheckInterval: NodeJS.Timeout;
+
+  constructor() {
+    super();
+    this.redis = new Redis(process.env.REDIS_URL!);
+    this.pubsub = new Redis(process.env.REDIS_URL!); // Separate connection for pub/sub
+    this.services = new Map();
+    this.messageQueues = new Map();
+    this.serviceConnections = new Map();
+    this.roundRobinCounters = new Map();
+    this.initializeServiceMesh();
+  }
+
+  private async initializeServiceMesh(): Promise<void> {
+    try {
+      // Subscribe to service registration events
+      await this.pubsub.subscribe(
+        'service:register',
+        'service:deregister',
+        'service:heartbeat',
+        'service:health_update',
+        'wedding:events',
+      );
+
+      this.pubsub.on('message', async (channel, message) => {
+        await this.handleServiceEvent(channel, JSON.parse(message));
+      });
+
+      // Load existing service registrations from Redis
+      await this.loadExistingServices();
+
+      // Start health monitoring
+      this.startHealthMonitoring();
+
+      // Start message processing
+      this.startMessageProcessing();
+
+      console.info(`[ServiceMesh] Service mesh initialized successfully`);
+    } catch (error) {
+      console.error(`[ServiceMesh] Failed to initialize service mesh:`, error);
+      throw error;
+    }
+  }
+
+  private async loadExistingServices(): Promise<void> {
+    try {
+      const serviceKeys = await this.redis.keys('service:*');
+
+      for (const key of serviceKeys) {
+        if (key.includes(':heartbeat:') || key.includes(':health:')) continue;
+
+        const serviceData = await this.redis.hgetall(key);
+        if (serviceData.serviceId) {
+          const service: ServiceRegistration = {
+            serviceId: serviceData.serviceId,
+            serviceName: serviceData.serviceName,
+            version: serviceData.version,
+            endpoints: JSON.parse(serviceData.endpoints || '[]'),
+            healthCheck: serviceData.healthCheck,
+            metadata: JSON.parse(serviceData.metadata || '{}'),
+            lastHeartbeat: new Date(serviceData.lastHeartbeat),
+            status: serviceData.status as 'healthy' | 'degraded' | 'unhealthy',
+            tags: JSON.parse(serviceData.tags || '[]'),
+          };
+
+          this.services.set(service.serviceId, service);
+          this.serviceConnections.set(service.serviceId, 0);
+        }
+      }
+
+      console.info(
+        `[ServiceMesh] Loaded ${this.services.size} existing services`,
+      );
+    } catch (error) {
+      console.error(`[ServiceMesh] Failed to load existing services:`, error);
+    }
+  }
+
+  private async handleServiceEvent(
+    channel: string,
+    message: any,
+  ): Promise<void> {
+    try {
+      switch (channel) {
+        case 'service:register':
+          await this.handleServiceRegistration(message);
+          break;
+        case 'service:deregister':
+          await this.handleServiceDeregistration(message);
+          break;
+        case 'service:heartbeat':
+          await this.handleServiceHeartbeat(message);
+          break;
+        case 'service:health_update':
+          await this.handleServiceHealthUpdate(message);
+          break;
+        case 'wedding:events':
+          await this.handleWeddingEvent(message);
+          break;
+        default:
+          console.warn(`[ServiceMesh] Unknown channel: ${channel}`);
+      }
+    } catch (error) {
+      console.error(`[ServiceMesh] Error handling service event:`, {
+        channel,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  private async handleServiceRegistration(
+    serviceData: ServiceRegistration,
+  ): Promise<void> {
+    this.services.set(serviceData.serviceId, {
+      ...serviceData,
+      lastHeartbeat: new Date(),
+      status: 'healthy',
+    });
+
+    this.serviceConnections.set(serviceData.serviceId, 0);
+
+    // Persist to Redis
+    await this.redis.hset(`service:${serviceData.serviceId}`, {
+      serviceId: serviceData.serviceId,
+      serviceName: serviceData.serviceName,
+      version: serviceData.version,
+      endpoints: JSON.stringify(serviceData.endpoints),
+      healthCheck: serviceData.healthCheck,
+      metadata: JSON.stringify(serviceData.metadata),
+      lastHeartbeat: new Date().toISOString(),
+      status: 'healthy',
+      tags: JSON.stringify(serviceData.tags || []),
+    });
+
+    this.emit('service:registered', serviceData);
+
+    console.info(
+      `[ServiceMesh] Service registered: ${serviceData.serviceName}`,
+      {
+        serviceId: serviceData.serviceId,
+        version: serviceData.version,
+        endpoints: serviceData.endpoints,
+      },
+    );
+  }
+
+  private async handleServiceDeregistration(message: {
+    serviceId: string;
+  }): Promise<void> {
+    const service = this.services.get(message.serviceId);
+    if (service) {
+      this.services.delete(message.serviceId);
+      this.serviceConnections.delete(message.serviceId);
+
+      // Remove from Redis
+      await this.redis.del(`service:${message.serviceId}`);
+      await this.redis.del(`service:heartbeat:${message.serviceId}`);
+
+      this.emit('service:deregistered', service);
+
+      console.info(
+        `[ServiceMesh] Service deregistered: ${service.serviceName}`,
+        {
+          serviceId: message.serviceId,
+        },
+      );
+    }
+  }
+
+  private async handleServiceHeartbeat(message: {
+    serviceId: string;
+  }): Promise<void> {
+    const service = this.services.get(message.serviceId);
+    if (service) {
+      service.lastHeartbeat = new Date();
+
+      // Update heartbeat in Redis
+      await this.redis.set(
+        `service:heartbeat:${message.serviceId}`,
+        new Date().toISOString(),
+        'EX',
+        120, // Expire after 2 minutes
+      );
+    }
+  }
+
+  private async handleServiceHealthUpdate(message: {
+    serviceId: string;
+    status: 'healthy' | 'degraded' | 'unhealthy';
+  }): Promise<void> {
+    const service = this.services.get(message.serviceId);
+    if (service) {
+      service.status = message.status;
+
+      // Update status in Redis
+      await this.redis.hset(
+        `service:${message.serviceId}`,
+        'status',
+        message.status,
+      );
+
+      this.emit('service:health_changed', {
+        serviceId: message.serviceId,
+        status: message.status,
+      });
+    }
+  }
+
+  private async handleWeddingEvent(message: any): Promise<void> {
+    // Route wedding-specific events through the service mesh
+    await this.routeWeddingEvent(
+      message.weddingId,
+      message.eventType,
+      message.eventData,
+    );
+  }
+
+  async registerService(
+    registration: Omit<ServiceRegistration, 'lastHeartbeat' | 'status'>,
+  ): Promise<void> {
+    const serviceRegistration: ServiceRegistration = {
+      ...registration,
+      lastHeartbeat: new Date(),
+      status: 'healthy',
+    };
+
+    await this.pubsub.publish(
+      'service:register',
+      JSON.stringify(serviceRegistration),
+    );
+  }
+
+  async deregisterService(serviceId: string): Promise<void> {
+    await this.pubsub.publish(
+      'service:deregister',
+      JSON.stringify({ serviceId }),
+    );
+  }
+
+  async sendHeartbeat(serviceId: string): Promise<void> {
+    await this.pubsub.publish(
+      'service:heartbeat',
+      JSON.stringify({ serviceId }),
+    );
+  }
+
+  async updateServiceHealth(
+    serviceId: string,
+    status: 'healthy' | 'degraded' | 'unhealthy',
+  ): Promise<void> {
+    await this.pubsub.publish(
+      'service:health_update',
+      JSON.stringify({ serviceId, status }),
+    );
+  }
+
+  async sendMessage(
+    message: Omit<MessagePayload, 'messageId' | 'timestamp' | 'retryCount'>,
+  ): Promise<string> {
+    const fullMessage: MessagePayload = {
+      ...message,
+      messageId: crypto.randomUUID(),
+      timestamp: new Date(),
+      retryCount: 0,
+    };
+
+    // Validate target service exists and is healthy
+    const targetServices = await this.discoverServices({
+      serviceName: message.toService,
+    });
+    if (targetServices.length === 0) {
+      throw new Error(`Target service not found: ${message.toService}`);
+    }
+
+    // Add to appropriate queue based on priority
+    const queueKey = `${message.toService}:${message.priority}`;
+
+    if (!this.messageQueues.has(queueKey)) {
+      this.messageQueues.set(queueKey, []);
+    }
+
+    this.messageQueues.get(queueKey)!.push(fullMessage);
+
+    // Store in Redis for persistence
+    await this.redis.lpush(
+      `message_queue:${queueKey}`,
+      JSON.stringify(fullMessage),
+    );
+
+    // Set TTL if specified
+    if (fullMessage.ttl) {
+      await this.redis.expire(`message_queue:${queueKey}`, fullMessage.ttl);
+    }
+
+    // Emit event for immediate processing if service is online
+    const healthyServices = targetServices.filter(
+      (s) => s.status === 'healthy',
+    );
+    if (healthyServices.length > 0) {
+      this.emit('message', fullMessage);
+    }
+
+    console.info(`[ServiceMesh] Message queued`, {
+      messageId: fullMessage.messageId,
+      fromService: fullMessage.fromService,
+      toService: fullMessage.toService,
+      eventType: fullMessage.eventType,
+      priority: fullMessage.priority,
+    });
+
+    return fullMessage.messageId;
+  }
+
+  async discoverServices(
+    query: ServiceDiscoveryQuery = {},
+  ): Promise<ServiceRegistration[]> {
+    let services = Array.from(this.services.values());
+
+    // Filter by service name
+    if (query.serviceName) {
+      services = services.filter((s) => s.serviceName === query.serviceName);
+    }
+
+    // Filter by tag
+    if (query.tag) {
+      services = services.filter((s) => s.tags.includes(query.tag));
+    }
+
+    // Filter by status
+    if (query.status) {
+      services = services.filter((s) => s.status === query.status);
+    }
+
+    // Filter by version
+    if (query.version) {
+      services = services.filter((s) => s.version === query.version);
+    }
+
+    return services;
+  }
+
+  async selectService(
+    serviceName: string,
+    options: LoadBalancingOptions = {
+      strategy: 'round-robin',
+      healthCheckRequired: true,
+    },
+  ): Promise<ServiceRegistration | null> {
+    let services = await this.discoverServices({ serviceName });
+
+    // Filter by health if required
+    if (options.healthCheckRequired) {
+      services = services.filter((s) => s.status === 'healthy');
+    }
+
+    if (services.length === 0) {
+      return null;
+    }
+
+    switch (options.strategy) {
+      case 'round-robin':
+        return this.selectRoundRobin(serviceName, services);
+
+      case 'least-connections':
+        return this.selectLeastConnections(services);
+
+      case 'random':
+        return services[Math.floor(Math.random() * services.length)];
+
+      case 'weighted':
+        return this.selectWeighted(services);
+
+      default:
+        return services[0];
+    }
+  }
+
+  private selectRoundRobin(
+    serviceName: string,
+    services: ServiceRegistration[],
+  ): ServiceRegistration {
+    const counter = this.roundRobinCounters.get(serviceName) || 0;
+    const selectedService = services[counter % services.length];
+    this.roundRobinCounters.set(serviceName, counter + 1);
+    return selectedService;
+  }
+
+  private selectLeastConnections(
+    services: ServiceRegistration[],
+  ): ServiceRegistration {
+    let selectedService = services[0];
+    let minConnections =
+      this.serviceConnections.get(selectedService.serviceId) || 0;
+
+    for (const service of services) {
+      const connections = this.serviceConnections.get(service.serviceId) || 0;
+      if (connections < minConnections) {
+        selectedService = service;
+        minConnections = connections;
+      }
+    }
+
+    return selectedService;
+  }
+
+  private selectWeighted(services: ServiceRegistration[]): ServiceRegistration {
+    // Simple weighted selection based on inverse error rate
+    const weights = services.map((s) => {
+      const errorRate = s.metadata.errorRate || 0;
+      return Math.max(0.1, 1 - errorRate); // Minimum weight of 0.1
+    });
+
+    const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+    const random = Math.random() * totalWeight;
+
+    let currentWeight = 0;
+    for (let i = 0; i < services.length; i++) {
+      currentWeight += weights[i];
+      if (random <= currentWeight) {
+        return services[i];
+      }
+    }
+
+    return services[services.length - 1];
+  }
+
+  async incrementServiceConnections(serviceId: string): Promise<void> {
+    const current = this.serviceConnections.get(serviceId) || 0;
+    this.serviceConnections.set(serviceId, current + 1);
+  }
+
+  async decrementServiceConnections(serviceId: string): Promise<void> {
+    const current = this.serviceConnections.get(serviceId) || 0;
+    this.serviceConnections.set(serviceId, Math.max(0, current - 1));
+  }
+
+  private startHealthMonitoring(): void {
+    this.healthCheckInterval = setInterval(async () => {
+      await this.performHealthChecks();
+    }, 30000); // Check every 30 seconds
+
+    console.info(`[ServiceMesh] Health monitoring started`);
+  }
+
+  private async performHealthChecks(): Promise<void> {
+    const now = new Date();
+    const staleThreshold = 60000; // 1 minute
+
+    // SENIOR CODE REVIEWER FIX: Use Array.from for Map iteration to avoid downlevelIteration requirement
+    for (const [serviceId, service] of Array.from(this.services.entries())) {
+      const timeSinceHeartbeat =
+        now.getTime() - service.lastHeartbeat.getTime();
+
+      if (timeSinceHeartbeat > staleThreshold) {
+        // Check if service is still responding
+        const isHealthy = await this.checkServiceHealth(service);
+
+        if (!isHealthy) {
+          if (service.status !== 'unhealthy') {
+            console.warn(
+              `[ServiceMesh] Service marked unhealthy: ${service.serviceName}`,
+              {
+                serviceId,
+                timeSinceHeartbeat,
+              },
+            );
+
+            await this.updateServiceHealth(serviceId, 'unhealthy');
+          }
+        }
+      } else if (
+        service.status === 'unhealthy' &&
+        timeSinceHeartbeat < staleThreshold
+      ) {
+        // Service has recovered
+        console.info(
+          `[ServiceMesh] Service recovered: ${service.serviceName}`,
+          { serviceId },
+        );
+        await this.updateServiceHealth(serviceId, 'healthy');
+      }
+    }
+  }
+
+  private async checkServiceHealth(
+    service: ServiceRegistration,
+  ): Promise<boolean> {
+    try {
+      if (!service.healthCheck) return false;
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+
+      const response = await fetch(service.healthCheck, {
+        method: 'GET',
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+      return response.ok;
+    } catch (error) {
+      console.debug(
+        `[ServiceMesh] Health check failed for ${service.serviceName}:`,
+        {
+          serviceId: service.serviceId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+      );
+      return false;
+    }
+  }
+
+  private startMessageProcessing(): void {
+    // Process high priority queue every 100ms
+    setInterval(() => this.processMessageQueue('high'), 100);
+
+    // Process normal priority queue every 500ms
+    setInterval(() => this.processMessageQueue('normal'), 500);
+
+    // Process low priority queue every 2000ms
+    setInterval(() => this.processMessageQueue('low'), 2000);
+
+    console.info(`[ServiceMesh] Message processing started`);
+  }
+
+  private async processMessageQueue(
+    priority: 'high' | 'normal' | 'low',
+  ): Promise<void> {
+    try {
+      // Process messages for all services at this priority level
+      // SENIOR CODE REVIEWER FIX: Use Array.from for Map iteration to avoid downlevelIteration requirement
+      for (const [serviceId, service] of Array.from(this.services.entries())) {
+        if (service.status !== 'healthy') continue;
+
+        const queueKey = `${service.serviceName}:${priority}`;
+        const messages = this.messageQueues.get(queueKey);
+
+        if (!messages || messages.length === 0) continue;
+
+        // Process one message per iteration to prevent blocking
+        const message = messages.shift();
+        if (message) {
+          try {
+            await this.deliverMessage(message, service);
+
+            // Remove from Redis queue
+            await this.redis.lrem(
+              `message_queue:${queueKey}`,
+              1,
+              JSON.stringify(message),
+            );
+          } catch (error) {
+            message.retryCount++;
+
+            if (message.retryCount < message.maxRetries) {
+              // Put back in queue for retry
+              messages.unshift(message);
+              console.warn(
+                `[ServiceMesh] Message delivery failed, retrying: ${message.messageId}`,
+                {
+                  error:
+                    error instanceof Error ? error.message : 'Unknown error',
+                  retryCount: message.retryCount,
+                  maxRetries: message.maxRetries,
+                },
+              );
+            } else {
+              // Send to dead letter queue
+              await this.sendToDeadLetterQueue(message);
+              console.error(
+                `[ServiceMesh] Message failed after max retries: ${message.messageId}`,
+                {
+                  fromService: message.fromService,
+                  toService: message.toService,
+                  eventType: message.eventType,
+                  retryCount: message.retryCount,
+                },
+              );
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error(
+        `[ServiceMesh] Message queue processing error for ${priority}:`,
+        {
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+      );
+    }
+  }
+
+  private async deliverMessage(
+    message: MessagePayload,
+    targetService: ServiceRegistration,
+  ): Promise<void> {
+    // Select an endpoint for the service
+    const endpoint = targetService.endpoints[0]; // Simple selection - could be improved
+
+    if (!endpoint) {
+      throw new Error(
+        `No endpoints available for service: ${targetService.serviceName}`,
+      );
+    }
+
+    // Increment connection count for load balancing
+    await this.incrementServiceConnections(targetService.serviceId);
+
+    try {
+      const response = await fetch(`${endpoint}/messages`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Service-Mesh': 'true',
+          'X-Message-Id': message.messageId,
+          'X-Correlation-Id': message.correlationId || message.messageId,
+        },
+        body: JSON.stringify({
+          messageId: message.messageId,
+          fromService: message.fromService,
+          eventType: message.eventType,
+          data: message.data,
+          timestamp: message.timestamp,
+          correlationId: message.correlationId,
+          weddingId: message.weddingId,
+          supplierId: message.supplierId,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Message delivery failed: HTTP ${response.status}`);
+      }
+
+      console.info(`[ServiceMesh] Message delivered successfully`, {
+        messageId: message.messageId,
+        toService: message.toService,
+        endpoint,
+      });
+    } finally {
+      // Decrement connection count
+      await this.decrementServiceConnections(targetService.serviceId);
+    }
+  }
+
+  async routeWeddingEvent(
+    weddingId: string,
+    eventType: string,
+    eventData: any,
+  ): Promise<void> {
+    const weddingEventMessage = {
+      fromService: 'wedding-coordinator',
+      toService: 'notification-service',
+      eventType: `wedding.${eventType}`,
+      data: {
+        weddingId,
+        eventType,
+        ...eventData,
+        timestamp: new Date().toISOString(),
+      },
+      priority: 'normal' as const,
+      maxRetries: 3,
+      weddingId,
+    };
+
+    await this.sendMessage(weddingEventMessage);
+
+    // Also route to analytics service for wedding insights
+    const analyticsMessage = {
+      fromService: 'wedding-coordinator',
+      toService: 'analytics-service',
+      eventType: 'wedding.analytics.event',
+      data: {
+        weddingId,
+        eventType,
+        ...eventData,
+        timestamp: new Date().toISOString(),
+      },
+      priority: 'low' as const,
+      maxRetries: 1,
+      weddingId,
+    };
+
+    await this.sendMessage(analyticsMessage);
+
+    // Route supplier-specific events
+    if (eventData.supplierId) {
+      const supplierMessage = {
+        fromService: 'wedding-coordinator',
+        toService: 'supplier-service',
+        eventType: `supplier.wedding.${eventType}`,
+        data: {
+          weddingId,
+          supplierId: eventData.supplierId,
+          eventType,
+          ...eventData,
+          timestamp: new Date().toISOString(),
+        },
+        priority: 'high' as const,
+        maxRetries: 3,
+        weddingId,
+        supplierId: eventData.supplierId,
+      };
+
+      await this.sendMessage(supplierMessage);
+    }
+
+    console.info(`[ServiceMesh] Wedding event routed`, {
+      weddingId,
+      eventType,
+      supplierId: eventData.supplierId,
+    });
+  }
+
+  private async sendToDeadLetterQueue(message: MessagePayload): Promise<void> {
+    const dlqKey = `dlq:${message.toService}`;
+    await this.redis.lpush(
+      dlqKey,
+      JSON.stringify({
+        ...message,
+        failedAt: new Date().toISOString(),
+        finalError: 'Max retries exceeded',
+      }),
+    );
+
+    // Keep DLQ entries for 7 days
+    await this.redis.expire(dlqKey, 7 * 24 * 60 * 60);
+  }
+
+  async getServiceMetrics(): Promise<any> {
+    const services = Array.from(this.services.values());
+    const healthyCount = services.filter((s) => s.status === 'healthy').length;
+    const degradedCount = services.filter(
+      (s) => s.status === 'degraded',
+    ).length;
+    const unhealthyCount = services.filter(
+      (s) => s.status === 'unhealthy',
+    ).length;
+
+    const queues = {};
+    // SENIOR CODE REVIEWER FIX: Use Array.from for Map iteration to avoid downlevelIteration requirement
+    for (const [queueKey] of Array.from(this.messageQueues.entries())) {
+      queues[queueKey] = await this.redis.llen(`message_queue:${queueKey}`);
+    }
+
+    return {
+      totalServices: services.length,
+      healthyServices: healthyCount,
+      degradedServices: degradedCount,
+      unhealthyServices: unhealthyCount,
+      messageQueues: queues,
+      connections: Object.fromEntries(this.serviceConnections),
+    };
+  }
+
+  async getDeadLetterQueueStats(): Promise<any> {
+    const dlqStats = {};
+
+    for (const [serviceId, service] of this.services) {
+      const dlqKey = `dlq:${service.serviceName}`;
+      dlqStats[service.serviceName] = await this.redis.llen(dlqKey);
+    }
+
+    return dlqStats;
+  }
+
+  async shutdown(): Promise<void> {
+    if (this.healthCheckInterval) {
+      clearInterval(this.healthCheckInterval);
+    }
+
+    await this.redis.disconnect();
+    await this.pubsub.disconnect();
+
+    console.info(`[ServiceMesh] Service mesh shut down successfully`);
+  }
+}
+
+// Export singleton instance
+export const serviceMesh = new ServiceMesh();

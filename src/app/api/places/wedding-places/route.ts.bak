@@ -1,0 +1,558 @@
+/**
+ * Wedding Places Management API Route
+ * Team B - WS-219 Google Places Integration
+ * 
+ * CRUD operations for managing venue assignments to weddings:
+ * - POST: Assign venue to wedding with role and status
+ * - GET: Retrieve wedding venue assignments
+ * - PUT: Update venue assignment details
+ * - DELETE: Remove venue from wedding
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
+import { createClient } from '@supabase/supabase-js';
+
+const venueRoleSchema = z.enum([
+  'ceremony_venue',
+  'reception_venue', 
+  'cocktail_venue',
+  'accommodation',
+  'getting_ready_location',
+  'photo_shoot_location',
+  'rehearsal_dinner',
+  'brunch_venue',
+  'after_party',
+  'vendor_meeting_location',
+  'other'
+]);
+
+const bookingStatusSchema = z.enum([
+  'considering',
+  'shortlisted',
+  'contacted',
+  'site_visit_scheduled',
+  'site_visit_completed',
+  'quote_requested',
+  'quote_received',
+  'under_negotiation',
+  'contract_sent',
+  'deposit_paid',
+  'booked',
+  'confirmed',
+  'rejected',
+  'cancelled'
+]);
+
+const addWeddingPlaceSchema = z.object({
+  coupleId: z.string().uuid('Invalid couple ID'),
+  placeId: z.string().min(1, 'Place ID is required'),
+  venueRole: venueRoleSchema,
+  bookingStatus: bookingStatusSchema.optional().default('considering'),
+  bookingDate: z.string().optional(),
+  eventStartTime: z.string().optional(),
+  eventEndTime: z.string().optional(),
+  guestCount: z.number().int().min(1).max(1000).optional(),
+  estimatedCost: z.number().min(0).optional(),
+  actualCost: z.number().min(0).optional(),
+  depositAmount: z.number().min(0).optional(),
+  depositPaidDate: z.string().optional(),
+  venueContactName: z.string().optional(),
+  venueContactEmail: z.string().email().optional(),
+  venueContactPhone: z.string().optional(),
+  bookingReference: z.string().optional(),
+  notes: z.string().optional(),
+  clientRating: z.number().int().min(1).max(5).optional(),
+  clientFeedback: z.string().optional(),
+  photographerNotes: z.string().optional(),
+  setupTime: z.string().optional(),
+  breakdownTime: z.string().optional(),
+  accessibilityRequirements: z.string().optional(),
+  specialRequests: z.string().optional(),
+  timelinePosition: z.number().int().min(1).optional(),
+  travelTimeMinutes: z.number().int().min(0).optional(),
+  priorityLevel: z.number().int().min(1).max(5).optional().default(3),
+  isBackupOption: z.boolean().optional().default(false),
+  isConfirmed: z.boolean().optional().default(false)
+});
+
+const getWeddingPlacesSchema = z.object({
+  coupleId: z.string().uuid().optional(),
+  organizationId: z.string().uuid().optional(),
+  venueRole: venueRoleSchema.optional(),
+  bookingStatus: bookingStatusSchema.optional(),
+  includeBackups: z.boolean().optional().default(false),
+  sortBy: z.enum(['timeline_position', 'booking_date', 'priority_level', 'created_at']).optional().default('timeline_position')
+});
+
+const updateWeddingPlaceSchema = z.object({
+  id: z.string().uuid('Invalid wedding place ID'),
+  bookingStatus: bookingStatusSchema.optional(),
+  bookingDate: z.string().optional(),
+  eventStartTime: z.string().optional(),
+  eventEndTime: z.string().optional(),
+  guestCount: z.number().int().min(1).max(1000).optional(),
+  estimatedCost: z.number().min(0).optional(),
+  actualCost: z.number().min(0).optional(),
+  depositAmount: z.number().min(0).optional(),
+  depositPaidDate: z.string().optional(),
+  venueContactName: z.string().optional(),
+  venueContactEmail: z.string().email().optional(),
+  venueContactPhone: z.string().optional(),
+  bookingReference: z.string().optional(),
+  notes: z.string().optional(),
+  clientRating: z.number().int().min(1).max(5).optional(),
+  clientFeedback: z.string().optional(),
+  photographerNotes: z.string().optional(),
+  setupTime: z.string().optional(),
+  breakdownTime: z.string().optional(),
+  accessibilityRequirements: z.string().optional(),
+  specialRequests: z.string().optional(),
+  timelinePosition: z.number().int().min(1).optional(),
+  travelTimeMinutes: z.number().int().min(0).optional(),
+  priorityLevel: z.number().int().min(1).max(5).optional(),
+  isBackupOption: z.boolean().optional(),
+  isConfirmed: z.boolean().optional()
+});
+
+async function validateSession(request: NextRequest) {
+  const supabase = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL || (() => { throw new Error("Missing environment variable: NEXT_PUBLIC_SUPABASE_URL") })(),
+    process.env.SUPABASE_SERVICE_ROLE_KEY || (() => { throw new Error("Missing environment variable: SUPABASE_SERVICE_ROLE_KEY") })()
+  );
+
+  const authHeader = request.headers.get('authorization');
+  if (!authHeader) {
+    throw new Error('Authorization header required');
+  }
+
+  const token = authHeader.replace('Bearer ', '');
+  const { data: { user }, error } = await supabase.auth.getUser(token);
+
+  if (error || !user) {
+    throw new Error('Invalid authentication token');
+  }
+
+  const { data: profile, error: profileError } = await supabase
+    .from('user_profiles')
+    .select('*, organizations(*)')
+    .eq('id', user.id)
+    .single();
+
+  if (profileError || !profile) {
+    throw new Error('User profile not found');
+  }
+
+  return { user, profile, supabase };
+}
+
+async function logAuditEvent(
+  supabase: any,
+  userId: string,
+  organizationId: string,
+  action: string,
+  details: any,
+  ipAddress: string
+) {
+  try {
+    await supabase.from('audit_logs').insert({
+      table_name: 'wedding_places',
+      action,
+      new_values: details,
+      user_id: userId,
+      organization_id: organizationId,
+      ip_address: ipAddress,
+      user_agent: 'API'
+    });
+  } catch (error) {
+    console.error('Audit logging failed:', error);
+  }
+}
+
+// POST - Add venue to wedding
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const validatedData = addWeddingPlaceSchema.parse(body);
+    
+    const { user, profile, supabase } = await validateSession(request);
+    const clientIp = request.headers.get('x-forwarded-for') || 'unknown';
+
+    // Verify the couple belongs to the user's organization
+    const { data: couple, error: coupleError } = await supabase
+      .from('couples')
+      .select('id, supplier_id')
+      .eq('id', validatedData.coupleId)
+      .single();
+
+    if (coupleError || !couple) {
+      return NextResponse.json({
+        success: false,
+        error: 'Couple not found'
+      }, { status: 404 });
+    }
+
+    // Check if the venue is already assigned to this couple with the same role (and not as backup)
+    if (!validatedData.isBackupOption) {
+      const { data: existingVenue } = await supabase
+        .from('wedding_places')
+        .select('id')
+        .eq('couple_id', validatedData.coupleId)
+        .eq('venue_role', validatedData.venueRole)
+        .eq('is_backup_option', false)
+        .single();
+
+      if (existingVenue) {
+        return NextResponse.json({
+          success: false,
+          error: 'A venue is already assigned for this role',
+          message: `This couple already has a ${validatedData.venueRole} assigned. Set as backup option or remove the existing venue first.`
+        }, { status: 409 });
+      }
+    }
+
+    // Add the venue to the wedding
+    const { data: newWeddingPlace, error: insertError } = await supabase
+      .from('wedding_places')
+      .insert({
+        couple_id: validatedData.coupleId,
+        place_id: validatedData.placeId,
+        organization_id: profile.organization_id,
+        venue_role: validatedData.venueRole,
+        booking_status: validatedData.bookingStatus,
+        booking_date: validatedData.bookingDate,
+        event_start_time: validatedData.eventStartTime,
+        event_end_time: validatedData.eventEndTime,
+        guest_count: validatedData.guestCount,
+        estimated_cost: validatedData.estimatedCost,
+        actual_cost: validatedData.actualCost,
+        deposit_amount: validatedData.depositAmount,
+        deposit_paid_date: validatedData.depositPaidDate,
+        venue_contact_name: validatedData.venueContactName,
+        venue_contact_email: validatedData.venueContactEmail,
+        venue_contact_phone: validatedData.venueContactPhone,
+        booking_reference: validatedData.bookingReference,
+        notes: validatedData.notes,
+        client_rating: validatedData.clientRating,
+        client_feedback: validatedData.clientFeedback,
+        photographer_notes: validatedData.photographerNotes,
+        setup_time: validatedData.setupTime,
+        breakdown_time: validatedData.breakdownTime,
+        accessibility_requirements: validatedData.accessibilityRequirements,
+        special_requests: validatedData.specialRequests,
+        timeline_position: validatedData.timelinePosition,
+        travel_time_minutes: validatedData.travelTimeMinutes,
+        added_by_user_id: user.id,
+        priority_level: validatedData.priorityLevel,
+        is_backup_option: validatedData.isBackupOption,
+        is_confirmed: validatedData.isConfirmed
+      })
+      .select('*')
+      .single();
+
+    if (insertError) {
+      console.error('Insert error:', insertError);
+      return NextResponse.json({
+        success: false,
+        error: 'Failed to add venue to wedding',
+        details: insertError.message
+      }, { status: 500 });
+    }
+
+    // Get venue details from cache for response
+    const { data: venueDetails } = await supabase
+      .from('google_places_cache')
+      .select('*')
+      .eq('place_id', validatedData.placeId)
+      .single();
+
+    // Log audit event
+    await logAuditEvent(
+      supabase,
+      user.id,
+      profile.organization_id,
+      'venue_added_to_wedding',
+      {
+        wedding_place_id: newWeddingPlace.id,
+        couple_id: validatedData.coupleId,
+        place_id: validatedData.placeId,
+        venue_role: validatedData.venueRole,
+        venue_name: venueDetails?.name
+      },
+      clientIp
+    );
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        wedding_place: newWeddingPlace,
+        venue_details: venueDetails
+      },
+      message: 'Venue successfully added to wedding'
+    }, { status: 201 });
+
+  } catch (error: any) {
+    console.error('Add wedding place error:', error);
+
+    if (error.name === 'ZodError') {
+      return NextResponse.json({
+        success: false,
+        error: 'Invalid request data',
+        details: process.env.NODE_ENV === 'development' ? error.errors : undefined
+      }, { status: 400 });
+    }
+
+    return NextResponse.json({
+      success: false,
+      error: 'Failed to add venue to wedding',
+      message: error.message
+    }, { status: 500 });
+  }
+}
+
+// GET - Retrieve wedding venues
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    
+    const rawParams = {
+      coupleId: searchParams.get('coupleId'),
+      organizationId: searchParams.get('organizationId'),
+      venueRole: searchParams.get('venueRole'),
+      bookingStatus: searchParams.get('bookingStatus'),
+      includeBackups: searchParams.get('includeBackups') === 'true',
+      sortBy: searchParams.get('sortBy')
+    };
+
+    const validatedParams = getWeddingPlacesSchema.parse(rawParams);
+    const { user, profile, supabase } = await validateSession(request);
+
+    // Build query
+    let query = supabase
+      .from('wedding_venues_summary')
+      .select(`
+        *,
+        google_places_cache:place_id (
+          name, formatted_address, rating, phone_number, website_url,
+          latitude, longitude, place_types, estimated_capacity,
+          has_parking, wheelchair_accessible, outdoor_space
+        )
+      `);
+
+    // Apply filters
+    if (validatedParams.coupleId) {
+      query = query.eq('couple_id', validatedParams.coupleId);
+    } else {
+      // If no specific couple, show all for the organization
+      query = query.eq('organization_id', profile.organization_id);
+    }
+
+    if (validatedParams.venueRole) {
+      query = query.eq('venue_role', validatedParams.venueRole);
+    }
+
+    if (validatedParams.bookingStatus) {
+      query = query.eq('booking_status', validatedParams.bookingStatus);
+    }
+
+    if (!validatedParams.includeBackups) {
+      query = query.eq('is_backup_option', false);
+    }
+
+    // Apply sorting
+    if (validatedParams.sortBy === 'timeline_position') {
+      query = query.order('timeline_position', { nullsFirst: false });
+    } else if (validatedParams.sortBy === 'booking_date') {
+      query = query.order('booking_date', { nullsFirst: false });
+    } else if (validatedParams.sortBy === 'priority_level') {
+      query = query.order('priority_level', { ascending: false });
+    } else {
+      query = query.order('created_at', { ascending: false });
+    }
+
+    const { data: weddingVenues, error } = await query;
+
+    if (error) {
+      throw error;
+    }
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        wedding_venues: weddingVenues || [],
+        total_count: weddingVenues?.length || 0,
+        filters_applied: validatedParams
+      }
+    });
+
+  } catch (error: any) {
+    console.error('Get wedding places error:', error);
+
+    return NextResponse.json({
+      success: false,
+      error: 'Failed to retrieve wedding venues',
+      message: error.message
+    }, { status: 500 });
+  }
+}
+
+// PUT - Update venue assignment
+export async function PUT(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const validatedData = updateWeddingPlaceSchema.parse(body);
+    
+    const { user, profile, supabase } = await validateSession(request);
+    const clientIp = request.headers.get('x-forwarded-for') || 'unknown';
+
+    // Verify the wedding place belongs to the user's organization
+    const { data: existingPlace, error: fetchError } = await supabase
+      .from('wedding_places')
+      .select('*, google_places_cache:place_id(name)')
+      .eq('id', validatedData.id)
+      .eq('organization_id', profile.organization_id)
+      .single();
+
+    if (fetchError || !existingPlace) {
+      return NextResponse.json({
+        success: false,
+        error: 'Wedding venue assignment not found'
+      }, { status: 404 });
+    }
+
+    // Prepare update data (only include provided fields)
+    const updateData: any = {};
+    Object.keys(validatedData).forEach(key => {
+      if (key !== 'id' && validatedData[key as keyof typeof validatedData] !== undefined) {
+        // Convert camelCase to snake_case for database
+        const dbKey = key.replace(/([A-Z])/g, '_$1').toLowerCase();
+        updateData[dbKey] = validatedData[key as keyof typeof validatedData];
+      }
+    });
+
+    // Update the wedding place
+    const { data: updatedPlace, error: updateError } = await supabase
+      .from('wedding_places')
+      .update(updateData)
+      .eq('id', validatedData.id)
+      .select('*')
+      .single();
+
+    if (updateError) {
+      throw updateError;
+    }
+
+    // Log audit event
+    await logAuditEvent(
+      supabase,
+      user.id,
+      profile.organization_id,
+      'wedding_venue_updated',
+      {
+        wedding_place_id: validatedData.id,
+        venue_name: existingPlace.google_places_cache?.name,
+        changes: updateData
+      },
+      clientIp
+    );
+
+    return NextResponse.json({
+      success: true,
+      data: updatedPlace,
+      message: 'Venue assignment updated successfully'
+    });
+
+  } catch (error: any) {
+    console.error('Update wedding place error:', error);
+
+    if (error.name === 'ZodError') {
+      return NextResponse.json({
+        success: false,
+        error: 'Invalid update data',
+        details: process.env.NODE_ENV === 'development' ? error.errors : undefined
+      }, { status: 400 });
+    }
+
+    return NextResponse.json({
+      success: false,
+      error: 'Failed to update venue assignment',
+      message: error.message
+    }, { status: 500 });
+  }
+}
+
+// DELETE - Remove venue from wedding
+export async function DELETE(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const weddingPlaceId = searchParams.get('id');
+
+    if (!weddingPlaceId) {
+      return NextResponse.json({
+        success: false,
+        error: 'Wedding place ID is required'
+      }, { status: 400 });
+    }
+
+    const { user, profile, supabase } = await validateSession(request);
+    const clientIp = request.headers.get('x-forwarded-for') || 'unknown';
+
+    // Get venue details before deletion for audit log
+    const { data: existingPlace, error: fetchError } = await supabase
+      .from('wedding_places')
+      .select(`
+        *,
+        google_places_cache:place_id(name),
+        couples:couple_id(id)
+      `)
+      .eq('id', weddingPlaceId)
+      .eq('organization_id', profile.organization_id)
+      .single();
+
+    if (fetchError || !existingPlace) {
+      return NextResponse.json({
+        success: false,
+        error: 'Wedding venue assignment not found'
+      }, { status: 404 });
+    }
+
+    // Delete the wedding place
+    const { error: deleteError } = await supabase
+      .from('wedding_places')
+      .delete()
+      .eq('id', weddingPlaceId);
+
+    if (deleteError) {
+      throw deleteError;
+    }
+
+    // Log audit event
+    await logAuditEvent(
+      supabase,
+      user.id,
+      profile.organization_id,
+      'venue_removed_from_wedding',
+      {
+        wedding_place_id: weddingPlaceId,
+        venue_name: existingPlace.google_places_cache?.name,
+        venue_role: existingPlace.venue_role,
+        couple_id: existingPlace.couple_id
+      },
+      clientIp
+    );
+
+    return NextResponse.json({
+      success: true,
+      message: 'Venue successfully removed from wedding'
+    });
+
+  } catch (error: any) {
+    console.error('Delete wedding place error:', error);
+
+    return NextResponse.json({
+      success: false,
+      error: 'Failed to remove venue from wedding',
+      message: error.message
+    }, { status: 500 });
+  }
+}

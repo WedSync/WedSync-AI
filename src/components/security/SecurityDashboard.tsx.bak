@@ -1,0 +1,423 @@
+/**
+ * WS-177 Security Dashboard - Real-time Security Monitoring Interface
+ * Team D Round 1 Implementation - Ultra Hard Thinking Standards
+ * 
+ * Real-time security dashboard for luxury wedding platform
+ * Celebrity client monitoring and threat visualization
+ */
+
+'use client';
+
+import React, { useState, useEffect, useCallback } from 'react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { AlertTriangle, Shield, Users, Clock, Activity, Star, AlertCircle, CheckCircle } from 'lucide-react';
+import { SecurityMonitoringService } from '@/lib/security/SecurityMonitoringService';
+import { SecurityMetrics } from '@/lib/security/SecurityMetrics';
+import { AlertingService } from '@/lib/security/AlertingService';
+import { ThreatLevel, SecuritySeverity } from '@/lib/security/SecurityLayerInterface';
+
+interface SecurityDashboardProps {
+  organizationId: string;
+  userRole: string;
+  hasCelebrityAccess?: boolean;
+}
+
+interface SecurityMetrics {
+  activeThreats: number;
+  threatsByLevel: Record<ThreatLevel, number>;
+  incidentsToday: number;
+  celebrityThreats: number;
+  complianceViolations: number;
+  vendorViolations: number;
+  averageResponseTime: number;
+  systemHealth: 'healthy' | 'warning' | 'critical';
+  lastUpdated: string;
+}
+
+interface MonitoringAlert {
+  id: string;
+  type: string;
+  severity: SecuritySeverity;
+  title: string;
+  message: string;
+  celebrityClient: boolean;
+  timestamp: string;
+  acknowledged: boolean;
+  escalated: boolean;
+}
+
+const SecurityDashboard: React.FC<SecurityDashboardProps> = ({
+  organizationId,
+  userRole,
+  hasCelebrityAccess = false
+}) => {
+  const [metrics, setMetrics] = useState<SecurityMetrics | null>(null);
+  const [alerts, setAlerts] = useState<MonitoringAlert[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [monitoringService] = useState(() => new SecurityMonitoringService());
+  const [metricsService] = useState(() => new SecurityMetrics());
+  const [alertingService] = useState(() => new AlertingService());
+
+  // Initialize services and load data
+  useEffect(() => {
+    const initializeServices = async () => {
+      try {
+        setIsLoading(true);
+        
+        // Initialize services
+        await Promise.all([
+          monitoringService.startMonitoring(),
+          metricsService.startMetricCollection(),
+          alertingService.initialize()
+        ]);
+
+        // Load initial data
+        const dashboardData = await monitoringService.getSecurityDashboardData(organizationId);
+        setMetrics(dashboardData.metrics);
+        setAlerts(dashboardData.recentAlerts);
+
+        // Subscribe to real-time updates
+        monitoringService.subscribeToMetrics('dashboard', setMetrics);
+        monitoringService.subscribeToAlerts('dashboard', (alert) => {
+          setAlerts(prev => [alert, ...prev.slice(0, 49)]);
+        });
+
+      } catch (error) {
+        console.error('Dashboard initialization failed:', error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    initializeServices();
+
+    // Cleanup on unmount
+    return () => {
+      monitoringService.unsubscribeFromMetrics('dashboard');
+      monitoringService.unsubscribeFromAlerts('dashboard');
+    };
+  }, [organizationId, monitoringService, metricsService, alertingService]);
+
+  const acknowledgeAlert = useCallback(async (alertId: string) => {
+    try {
+      await alertingService.acknowledgeAlert(alertId, 'current-user-id');
+      setAlerts(prev => 
+        prev.map(alert => 
+          alert.id === alertId 
+            ? { ...alert, acknowledged: true }
+            : alert
+        )
+      );
+    } catch (error) {
+      console.error('Failed to acknowledge alert:', error);
+    }
+  }, [alertingService]);
+
+  const refreshData = useCallback(async () => {
+    try {
+      const dashboardData = await monitoringService.getSecurityDashboardData(organizationId);
+      setMetrics(dashboardData.metrics);
+      setAlerts(dashboardData.recentAlerts);
+    } catch (error) {
+      console.error('Failed to refresh data:', error);
+    }
+  }, [organizationId, monitoringService]);
+
+  const getHealthIcon = (health: string) => {
+    switch (health) {
+      case 'healthy':
+        return <CheckCircle className="h-5 w-5 text-green-500" />;
+      case 'warning':
+        return <AlertTriangle className="h-5 w-5 text-yellow-500" />;
+      case 'critical':
+        return <AlertCircle className="h-5 w-5 text-red-500" />;
+      default:
+        return <Activity className="h-5 w-5 text-gray-500" />;
+    }
+  };
+
+  const getSeverityColor = (severity: SecuritySeverity) => {
+    switch (severity) {
+      case 'critical':
+        return 'bg-red-100 text-red-800 border-red-200';
+      case 'high':
+        return 'bg-orange-100 text-orange-800 border-orange-200';
+      case 'medium':
+        return 'bg-yellow-100 text-yellow-800 border-yellow-200';
+      case 'low':
+        return 'bg-blue-100 text-blue-800 border-blue-200';
+      default:
+        return 'bg-gray-100 text-gray-800 border-gray-200';
+    }
+  };
+
+  const getThreatLevelColor = (level: ThreatLevel) => {
+    switch (level) {
+      case 'critical':
+        return 'text-red-600';
+      case 'high':
+        return 'text-orange-600';
+      case 'medium':
+        return 'text-yellow-600';
+      case 'low':
+        return 'text-blue-600';
+      default:
+        return 'text-gray-600';
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+        <span className="ml-2 text-gray-600">Loading security dashboard...</span>
+      </div>
+    );
+  }
+
+  if (!metrics) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="text-center">
+          <AlertTriangle className="h-12 w-12 text-red-500 mx-auto mb-4" />
+          <p className="text-gray-600">Failed to load security metrics</p>
+          <Button onClick={refreshData} variant="outline" className="mt-2">
+            Retry
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Security Dashboard</h1>
+          <p className="text-sm text-gray-600">
+            Last updated: {new Date(metrics.lastUpdated).toLocaleString()}
+          </p>
+        </div>
+        <div className="flex items-center space-x-2">
+          {hasCelebrityAccess && (
+            <Badge variant="secondary" className="bg-purple-100 text-purple-800">
+              <Star className="h-3 w-3 mr-1" />
+              Celebrity Access
+            </Badge>
+          )}
+          <div className="flex items-center space-x-1">
+            {getHealthIcon(metrics.systemHealth)}
+            <span className="text-sm font-medium">
+              System {metrics.systemHealth}
+            </span>
+          </div>
+          <Button onClick={refreshData} variant="outline" size="sm">
+            <Activity className="h-4 w-4 mr-1" />
+            Refresh
+          </Button>
+        </div>
+      </div>
+
+      {/* Key Metrics Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <Card className="border-l-4 border-l-red-500">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-gray-600 flex items-center">
+              <AlertTriangle className="h-4 w-4 mr-2" />
+              Active Threats
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-red-600">{metrics.activeThreats}</div>
+            {metrics.celebrityThreats > 0 && (
+              <Badge variant="destructive" className="mt-1">
+                <Star className="h-3 w-3 mr-1" />
+                {metrics.celebrityThreats} Celebrity
+              </Badge>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="border-l-4 border-l-blue-500">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-gray-600 flex items-center">
+              <Shield className="h-4 w-4 mr-2" />
+              Incidents Today
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-blue-600">{metrics.incidentsToday}</div>
+            <p className="text-xs text-gray-500 mt-1">
+              Avg response: {metrics.averageResponseTime}s
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card className="border-l-4 border-l-yellow-500">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-gray-600 flex items-center">
+              <Users className="h-4 w-4 mr-2" />
+              Vendor Violations
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-yellow-600">{metrics.vendorViolations}</div>
+            <p className="text-xs text-gray-500 mt-1">Time/access violations</p>
+          </CardContent>
+        </Card>
+
+        <Card className="border-l-4 border-l-orange-500">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-gray-600 flex items-center">
+              <AlertCircle className="h-4 w-4 mr-2" />
+              Compliance Issues
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-orange-600">{metrics.complianceViolations}</div>
+            <p className="text-xs text-gray-500 mt-1">Regulation violations</p>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Threat Level Breakdown */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center">
+            <AlertTriangle className="h-5 w-5 mr-2" />
+            Threat Level Distribution
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-5 gap-4">
+            {Object.entries(metrics.threatsByLevel).map(([level, count]) => (
+              <div key={level} className="text-center">
+                <div className={`text-lg font-bold ${getThreatLevelColor(level as ThreatLevel)}`}>
+                  {count}
+                </div>
+                <div className="text-xs text-gray-500 capitalize">{level}</div>
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Recent Alerts */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center justify-between">
+            <div className="flex items-center">
+              <AlertCircle className="h-5 w-5 mr-2" />
+              Recent Security Alerts
+            </div>
+            <Badge variant="outline">{alerts.length} alerts</Badge>
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {alerts.length === 0 ? (
+            <div className="text-center py-8 text-gray-500">
+              <CheckCircle className="h-12 w-12 mx-auto mb-2 text-green-500" />
+              No recent security alerts
+            </div>
+          ) : (
+            <div className="space-y-3 max-h-96 overflow-y-auto">
+              {alerts.slice(0, 20).map((alert) => (
+                <div
+                  key={alert.id}
+                  className={`p-3 border rounded-lg ${
+                    alert.acknowledged ? 'bg-gray-50 opacity-75' : 'bg-white'
+                  }`}
+                >
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1">
+                      <div className="flex items-center space-x-2 mb-1">
+                        <Badge className={getSeverityColor(alert.severity)}>
+                          {alert.severity}
+                        </Badge>
+                        {alert.celebrityClient && (
+                          <Badge variant="secondary" className="bg-purple-100 text-purple-800">
+                            <Star className="h-3 w-3 mr-1" />
+                            Celebrity
+                          </Badge>
+                        )}
+                        {alert.escalated && (
+                          <Badge variant="destructive">
+                            Escalated
+                          </Badge>
+                        )}
+                      </div>
+                      <h4 className="font-medium text-gray-900">{alert.title}</h4>
+                      <p className="text-sm text-gray-600 mt-1">{alert.message}</p>
+                      <div className="flex items-center space-x-4 mt-2 text-xs text-gray-500">
+                        <span className="flex items-center">
+                          <Clock className="h-3 w-3 mr-1" />
+                          {new Date(alert.timestamp).toLocaleString()}
+                        </span>
+                        <span>Type: {alert.type}</span>
+                      </div>
+                    </div>
+                    <div className="ml-4">
+                      {!alert.acknowledged && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => acknowledgeAlert(alert.id)}
+                        >
+                          Acknowledge
+                        </Button>
+                      )}
+                      {alert.acknowledged && (
+                        <Badge variant="outline" className="text-green-600 border-green-600">
+                          <CheckCircle className="h-3 w-3 mr-1" />
+                          Acknowledged
+                        </Badge>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Celebrity Protection Status (if applicable) */}
+      {hasCelebrityAccess && metrics.celebrityThreats > 0 && (
+        <Card className="border-purple-200 bg-purple-50">
+          <CardHeader>
+            <CardTitle className="flex items-center text-purple-800">
+              <Star className="h-5 w-5 mr-2" />
+              Celebrity Client Protection Status
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-purple-700">Active Celebrity Threats</span>
+                <Badge variant="destructive">{metrics.celebrityThreats}</Badge>
+              </div>
+              <div className="text-xs text-purple-600 bg-purple-100 p-2 rounded">
+                <AlertTriangle className="h-4 w-4 inline mr-1" />
+                Enhanced monitoring is active for celebrity clients. All threats are being tracked with elevated priority.
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* System Status Footer */}
+      <div className="flex items-center justify-between text-sm text-gray-500 pt-4 border-t">
+        <span>WedSync Security Dashboard - Ultra Hard Protection</span>
+        <span className="flex items-center">
+          <Activity className="h-4 w-4 mr-1" />
+          Real-time monitoring active
+        </span>
+      </div>
+    </div>
+  );
+};
+
+export default SecurityDashboard;

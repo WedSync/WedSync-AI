@@ -1,0 +1,684 @@
+/**
+ * WS-235: AI-Powered Support Ticket Categorization & Routing API
+ * 
+ * Provides intelligent categorization and routing for support tickets using:
+ * - Pattern matching for common wedding industry issues
+ * - OpenAI GPT-4 for complex classification
+ * - Wedding context analysis
+ * - Automatic agent assignment recommendations
+ * - Priority scoring based on wedding dates and issue severity
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import OpenAI from 'openai';
+
+// Initialize OpenAI client
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+// Wedding industry specific patterns for ticket classification
+const WEDDING_PATTERNS = {
+  // Technical Issues
+  'website_down': {
+    keywords: ['website', 'down', 'not loading', 'error 500', 'server error', 'can\'t access'],
+    category: 'technical',
+    subcategory: 'website',
+    priority: 'critical',
+    sla_level: 1,
+    requires_dev: true
+  },
+  'payment_failed': {
+    keywords: ['payment', 'failed', 'declined', 'stripe', 'billing', 'invoice', 'charge'],
+    category: 'billing',
+    subcategory: 'payment_processing', 
+    priority: 'high',
+    sla_level: 2,
+    requires_dev: false
+  },
+  'form_not_working': {
+    keywords: ['form', 'submit', 'not working', 'validation', 'error', 'can\'t save'],
+    category: 'technical',
+    subcategory: 'forms',
+    priority: 'high',
+    sla_level: 2,
+    requires_dev: true
+  },
+  
+  // Wedding Day Critical Issues
+  'wedding_day_emergency': {
+    keywords: ['wedding day', 'emergency', 'urgent', 'today', 'ceremony', 'reception'],
+    category: 'wedding_day',
+    subcategory: 'emergency',
+    priority: 'critical',
+    sla_level: 1,
+    requires_wedding_specialist: true
+  },
+  'guest_list_crisis': {
+    keywords: ['guest list', 'rsvp', 'seating', 'dietary', 'allergy', 'last minute'],
+    category: 'guest_management',
+    subcategory: 'wedding_day',
+    priority: 'high',
+    sla_level: 1,
+    requires_wedding_specialist: true
+  },
+  'vendor_no_show': {
+    keywords: ['vendor', 'no show', 'cancelled', 'missing', 'photographer', 'caterer', 'florist'],
+    category: 'vendor_management',
+    subcategory: 'emergency',
+    priority: 'critical',
+    sla_level: 1,
+    requires_wedding_specialist: true
+  },
+  
+  // Account & Access Issues
+  'login_issues': {
+    keywords: ['login', 'password', 'forgot', 'reset', 'access', 'locked out'],
+    category: 'account',
+    subcategory: 'authentication',
+    priority: 'medium',
+    sla_level: 3,
+    requires_dev: false
+  },
+  'account_setup': {
+    keywords: ['setup', 'onboarding', 'getting started', 'how to', 'tutorial'],
+    category: 'onboarding',
+    subcategory: 'account_setup',
+    priority: 'low',
+    sla_level: 4,
+    requires_dev: false
+  },
+  
+  // Integration Issues
+  'crm_sync': {
+    keywords: ['tave', 'honeybook', 'sync', 'integration', 'import', 'export'],
+    category: 'integrations',
+    subcategory: 'crm',
+    priority: 'medium',
+    sla_level: 3,
+    requires_dev: true
+  },
+  'calendar_sync': {
+    keywords: ['calendar', 'google calendar', 'sync', 'appointments', 'scheduling'],
+    category: 'integrations',
+    subcategory: 'calendar',
+    priority: 'medium',
+    sla_level: 3,
+    requires_dev: false
+  },
+  
+  // Feature Requests
+  'feature_request': {
+    keywords: ['feature', 'request', 'enhancement', 'suggestion', 'could you add'],
+    category: 'feature_request',
+    subcategory: 'enhancement',
+    priority: 'low',
+    sla_level: 5,
+    requires_dev: true
+  },
+  
+  // Billing & Subscription
+  'billing_question': {
+    keywords: ['billing', 'subscription', 'upgrade', 'downgrade', 'refund', 'pricing'],
+    category: 'billing',
+    subcategory: 'subscription',
+    priority: 'medium',
+    sla_level: 3,
+    requires_dev: false
+  }
+};
+
+// Calculate wedding day urgency scoring
+function calculateWeddingUrgency(description: string, weddingDate?: string): {
+  urgencyScore: number;
+  isWeddingDayIssue: boolean;
+  hoursUntilWedding?: number;
+} {
+  const now = new Date();
+  
+  // Check for wedding day keywords
+  const weddingDayKeywords = ['wedding day', 'today', 'ceremony', 'reception', 'urgent', 'emergency'];
+  const hasWeddingDayKeywords = weddingDayKeywords.some(keyword => 
+    description.toLowerCase().includes(keyword)
+  );
+  
+  // If no wedding date provided but has wedding day keywords
+  if (!weddingDate && hasWeddingDayKeywords) {
+    return { urgencyScore: 9, isWeddingDayIssue: true };
+  }
+  
+  // Calculate time until wedding
+  if (weddingDate) {
+    const wedding = new Date(weddingDate);
+    const hoursUntilWedding = (wedding.getTime() - now.getTime()) / (1000 * 60 * 60);
+    
+    // Wedding is today or within 24 hours
+    if (hoursUntilWedding <= 24 && hoursUntilWedding > 0) {
+      return { 
+        urgencyScore: 10, 
+        isWeddingDayIssue: true, 
+        hoursUntilWedding: Math.round(hoursUntilWedding) 
+      };
+    }
+    
+    // Wedding is within 48 hours
+    if (hoursUntilWedding <= 48 && hoursUntilWedding > 24) {
+      return { 
+        urgencyScore: 8, 
+        isWeddingDayIssue: false, 
+        hoursUntilWedding: Math.round(hoursUntilWedding) 
+      };
+    }
+    
+    // Wedding is within 1 week
+    if (hoursUntilWedding <= 168 && hoursUntilWedding > 48) {
+      return { 
+        urgencyScore: 6, 
+        isWeddingDayIssue: false, 
+        hoursUntilWedding: Math.round(hoursUntilWedding) 
+      };
+    }
+  }
+  
+  // Default urgency
+  return { urgencyScore: 3, isWeddingDayIssue: false };
+}
+
+// Pattern matching classification
+function classifyByPattern(subject: string, description: string): {
+  patternMatch?: string;
+  category?: string;
+  subcategory?: string;
+  priority?: string;
+  slaLevel?: number;
+  requiresDev?: boolean;
+  requiresWeddingSpecialist?: boolean;
+  confidence: number;
+} {
+  const text = `${subject} ${description}`.toLowerCase();
+  
+  let bestMatch = null;
+  let maxScore = 0;
+  
+  Object.entries(WEDDING_PATTERNS).forEach(([patternKey, pattern]) => {
+    const matchCount = pattern.keywords.filter(keyword => 
+      text.includes(keyword.toLowerCase())
+    ).length;
+    
+    if (matchCount > 0) {
+      const score = matchCount / pattern.keywords.length;
+      if (score > maxScore) {
+        maxScore = score;
+        bestMatch = { patternKey, pattern, score };
+      }
+    }
+  });
+  
+  if (bestMatch && bestMatch.score >= 0.3) {
+    return {
+      patternMatch: bestMatch.patternKey,
+      category: bestMatch.pattern.category,
+      subcategory: bestMatch.pattern.subcategory,
+      priority: bestMatch.pattern.priority,
+      slaLevel: bestMatch.pattern.sla_level,
+      requiresDev: bestMatch.pattern.requires_dev,
+      requiresWeddingSpecialist: bestMatch.pattern.requires_wedding_specialist,
+      confidence: Math.round(bestMatch.score * 100)
+    };
+  }
+  
+  return { confidence: 0 };
+}
+
+// OpenAI-powered classification for complex cases
+async function classifyWithAI(subject: string, description: string, userTier: string): Promise<{
+  category: string;
+  subcategory: string;
+  priority: string;
+  slaLevel: number;
+  reasoning: string;
+  confidence: number;
+}> {
+  const prompt = `You are an AI assistant for WedSync, a wedding industry SaaS platform. 
+  Classify this support ticket and provide wedding industry context.
+
+  Subject: "${subject}"
+  Description: "${description}"
+  User Tier: ${userTier}
+
+  Wedding Industry Context:
+  - Photographers, venues, florists, caterers use WedSync to manage their wedding business
+  - Wedding days (especially Saturdays) are critical - any issues must be resolved immediately
+  - Common issues: website problems, payment processing, guest list management, vendor coordination
+  - Peak wedding season is April-October with highest volume May-September
+
+  Classify into:
+  CATEGORY: technical, billing, wedding_day, guest_management, vendor_management, account, onboarding, integrations, feature_request
+  SUBCATEGORY: Be specific to the wedding context
+  PRIORITY: critical (wedding day/business stopping), high (affecting business), medium (inconvenience), low (questions/requests)
+  SLA_LEVEL: 1 (1 hour), 2 (4 hours), 3 (24 hours), 4 (48 hours), 5 (1 week)
+
+  Respond in JSON format only:
+  {
+    "category": "",
+    "subcategory": "",
+    "priority": "",
+    "sla_level": 1-5,
+    "reasoning": "Brief explanation of classification",
+    "confidence": 0-100
+  }`;
+
+  try {
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4',
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.1,
+      max_tokens: 500
+    });
+
+    const result = JSON.parse(response.choices[0].message.content || '{}');
+    return {
+      category: result.category || 'general',
+      subcategory: result.subcategory || 'support',
+      priority: result.priority || 'medium',
+      slaLevel: result.sla_level || 3,
+      reasoning: result.reasoning || 'AI classification',
+      confidence: result.confidence || 50
+    };
+  } catch (error) {
+    console.error('OpenAI classification error:', error);
+    // Fallback classification
+    return {
+      category: 'general',
+      subcategory: 'support',
+      priority: 'medium',
+      slaLevel: 3,
+      reasoning: 'Fallback due to AI error',
+      confidence: 25
+    };
+  }
+}
+
+// Find best available agent for ticket assignment
+async function recommendAgent(
+  supabase: any,
+  classification: any,
+  organizationId: string,
+  urgencyData: any
+): Promise<{
+  recommendedAgentId?: string;
+  assignmentReason: string;
+  alternativeAgents: string[];
+}> {
+  try {
+    // Get available agents for this organization
+    const { data: agents, error } = await supabase
+      .from('support_agents')
+      .select(`
+        id,
+        user_id,
+        skills,
+        is_available,
+        is_wedding_day_specialist,
+        current_ticket_count,
+        max_concurrent_tickets,
+        satisfaction_score,
+        specialties
+      `)
+      .eq('organization_id', organizationId)
+      .eq('is_available', true)
+      .lt('current_ticket_count', supabase.raw('max_concurrent_tickets'));
+
+    if (error || !agents?.length) {
+      return {
+        assignmentReason: 'No available agents found',
+        alternativeAgents: []
+      };
+    }
+
+    // Score agents based on various factors
+    const scoredAgents = agents.map(agent => {
+      let score = 0;
+
+      // Base score from satisfaction rating
+      score += (agent.satisfaction_score || 3) * 10;
+
+      // Wedding day specialist bonus for urgent issues
+      if (urgencyData.isWeddingDayIssue && agent.is_wedding_day_specialist) {
+        score += 50;
+      }
+
+      // Skills matching
+      const agentSkills = agent.skills || [];
+      if (agentSkills.includes(classification.category)) {
+        score += 30;
+      }
+      if (agentSkills.includes(classification.subcategory)) {
+        score += 20;
+      }
+
+      // Workload factor (prefer agents with fewer tickets)
+      const workloadRatio = agent.current_ticket_count / agent.max_concurrent_tickets;
+      score += (1 - workloadRatio) * 15;
+
+      // Priority matching
+      if (classification.priority === 'critical' && agent.is_wedding_day_specialist) {
+        score += 25;
+      }
+
+      // Technical skills for dev issues
+      if (classification.requiresDev && agentSkills.includes('technical')) {
+        score += 40;
+      }
+
+      return {
+        ...agent,
+        score: Math.round(score)
+      };
+    });
+
+    // Sort by score (highest first)
+    scoredAgents.sort((a, b) => b.score - a.score);
+
+    const bestAgent = scoredAgents[0];
+    const alternatives = scoredAgents.slice(1, 4).map(a => a.id);
+
+    let reason = `Best match based on `;
+    const reasons = [];
+    
+    if (urgencyData.isWeddingDayIssue && bestAgent.is_wedding_day_specialist) {
+      reasons.push('wedding day specialist');
+    }
+    if (bestAgent.skills?.includes(classification.category)) {
+      reasons.push('category expertise');
+    }
+    if (bestAgent.satisfaction_score >= 4) {
+      reasons.push('high satisfaction score');
+    }
+    if (bestAgent.current_ticket_count < bestAgent.max_concurrent_tickets / 2) {
+      reasons.push('low workload');
+    }
+
+    reason += reasons.join(', ') || 'availability';
+
+    return {
+      recommendedAgentId: bestAgent.id,
+      assignmentReason: reason,
+      alternativeAgents: alternatives
+    };
+
+  } catch (error) {
+    console.error('Agent recommendation error:', error);
+    return {
+      assignmentReason: 'Error in agent recommendation system',
+      alternativeAgents: []
+    };
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const cookieStore = cookies();
+    const supabase = createRouteHandlerClient({ cookies: () => cookieStore });
+
+    // Authenticate user
+    const { data: { session }, error: authError } = await supabase.auth.getSession();
+    if (authError || !session) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Parse request body
+    const body = await request.json();
+    const { 
+      subject, 
+      description, 
+      organizationId, 
+      weddingDate,
+      userTier = 'STARTER',
+      userId,
+      requestAutoAssignment = false 
+    } = body;
+
+    // Validation
+    if (!subject || !description || !organizationId) {
+      return NextResponse.json({ 
+        error: 'Missing required fields: subject, description, organizationId' 
+      }, { status: 400 });
+    }
+
+    // Get user's organization access
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', session.user.id)
+      .single();
+
+    if (!userProfile || userProfile.organization_id !== organizationId) {
+      return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+    }
+
+    // Step 1: Calculate wedding urgency
+    const urgencyData = calculateWeddingUrgency(description, weddingDate);
+
+    // Step 2: Try pattern matching first
+    const patternResult = classifyByPattern(subject, description);
+
+    let classification;
+    let classificationMethod = 'pattern';
+
+    // Step 3: Use AI if pattern matching confidence is low
+    if (patternResult.confidence < 70) {
+      const aiResult = await classifyWithAI(subject, description, userTier);
+      classification = {
+        category: aiResult.category,
+        subcategory: aiResult.subcategory,
+        priority: aiResult.priority,
+        slaLevel: aiResult.slaLevel,
+        requiresDev: false, // Set based on category
+        requiresWeddingSpecialist: urgencyData.isWeddingDayIssue || aiResult.category === 'wedding_day',
+        confidence: aiResult.confidence,
+        reasoning: aiResult.reasoning
+      };
+      classificationMethod = 'ai';
+    } else {
+      classification = patternResult;
+    }
+
+    // Adjust priority based on wedding urgency
+    if (urgencyData.isWeddingDayIssue && classification.priority !== 'critical') {
+      classification.priority = 'critical';
+      classification.slaLevel = 1;
+      classification.requiresWeddingSpecialist = true;
+    }
+
+    // Step 4: Get agent recommendation if requested
+    let agentRecommendation = null;
+    if (requestAutoAssignment) {
+      agentRecommendation = await recommendAgent(
+        supabase,
+        classification,
+        organizationId,
+        urgencyData
+      );
+    }
+
+    // Step 5: Calculate SLA deadline
+    const now = new Date();
+    let slaHours;
+    switch (classification.slaLevel) {
+      case 1: slaHours = 1; break;
+      case 2: slaHours = 4; break;
+      case 3: slaHours = 24; break;
+      case 4: slaHours = 48; break;
+      case 5: slaHours = 168; break; // 1 week
+      default: slaHours = 24;
+    }
+
+    const slaDeadline = new Date(now.getTime() + (slaHours * 60 * 60 * 1000));
+
+    // Step 6: Store classification result
+    const { data: classificationRecord, error: storeError } = await supabase
+      .from('ticket_classifications')
+      .insert({
+        organization_id: organizationId,
+        user_id: userId || session.user.id,
+        subject,
+        description,
+        category: classification.category,
+        subcategory: classification.subcategory,
+        priority: classification.priority,
+        sla_level: classification.slaLevel,
+        urgency_score: urgencyData.urgencyScore,
+        is_wedding_day_issue: urgencyData.isWeddingDayIssue,
+        hours_until_wedding: urgencyData.hoursUntilWedding,
+        classification_method: classificationMethod,
+        confidence_score: classification.confidence,
+        requires_dev: classification.requiresDev,
+        requires_wedding_specialist: classification.requiresWeddingSpecialist,
+        recommended_agent_id: agentRecommendation?.recommendedAgentId,
+        assignment_reasoning: agentRecommendation?.assignmentReason,
+        sla_deadline: slaDeadline.toISOString(),
+        wedding_date: weddingDate || null
+      })
+      .select()
+      .single();
+
+    if (storeError) {
+      console.error('Classification storage error:', storeError);
+    }
+
+    // Return comprehensive classification result
+    return NextResponse.json({
+      success: true,
+      classification: {
+        category: classification.category,
+        subcategory: classification.subcategory,
+        priority: classification.priority,
+        slaLevel: classification.slaLevel,
+        slaDeadline: slaDeadline.toISOString(),
+        confidence: classification.confidence,
+        method: classificationMethod,
+        reasoning: classification.reasoning || `Classified via ${classificationMethod}`
+      },
+      urgency: {
+        urgencyScore: urgencyData.urgencyScore,
+        isWeddingDayIssue: urgencyData.isWeddingDayIssue,
+        hoursUntilWedding: urgencyData.hoursUntilWedding
+      },
+      requirements: {
+        requiresDev: classification.requiresDev,
+        requiresWeddingSpecialist: classification.requiresWeddingSpecialist
+      },
+      agentRecommendation: agentRecommendation || null,
+      classificationId: classificationRecord?.id
+    }, { status: 200 });
+
+  } catch (error) {
+    console.error('AI categorization error:', error);
+    return NextResponse.json({ 
+      error: 'Classification failed', 
+      details: error instanceof Error ? error.message : 'Unknown error'
+    }, { status: 500 });
+  }
+}
+
+// GET endpoint for retrieving classification patterns and stats
+export async function GET(request: NextRequest) {
+  try {
+    const cookieStore = cookies();
+    const supabase = createRouteHandlerClient({ cookies: () => cookieStore });
+
+    // Authenticate user
+    const { data: { session }, error: authError } = await supabase.auth.getSession();
+    if (authError || !session) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { searchParams } = new URL(request.url);
+    const action = searchParams.get('action');
+
+    if (action === 'patterns') {
+      // Return available classification patterns
+      const patterns = Object.entries(WEDDING_PATTERNS).map(([key, pattern]) => ({
+        id: key,
+        name: key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()),
+        category: pattern.category,
+        subcategory: pattern.subcategory,
+        priority: pattern.priority,
+        slaLevel: pattern.sla_level,
+        keywords: pattern.keywords,
+        requiresDev: pattern.requires_dev || false,
+        requiresWeddingSpecialist: pattern.requires_wedding_specialist || false
+      }));
+
+      return NextResponse.json({ patterns });
+    }
+
+    if (action === 'stats') {
+      // Get classification statistics
+      const { data: userProfile } = await supabase
+        .from('user_profiles')
+        .select('organization_id')
+        .eq('user_id', session.user.id)
+        .single();
+
+      if (!userProfile?.organization_id) {
+        return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+      }
+
+      const { data: stats } = await supabase
+        .from('ticket_classifications')
+        .select('category, priority, classification_method, confidence_score')
+        .eq('organization_id', userProfile.organization_id)
+        .gte('created_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()); // Last 30 days
+
+      const categoryStats = {};
+      const priorityStats = {};
+      const methodStats = {};
+      let totalConfidence = 0;
+      let confidenceCount = 0;
+
+      stats?.forEach(record => {
+        // Category distribution
+        categoryStats[record.category] = (categoryStats[record.category] || 0) + 1;
+        
+        // Priority distribution  
+        priorityStats[record.priority] = (priorityStats[record.priority] || 0) + 1;
+        
+        // Method distribution
+        methodStats[record.classification_method] = (methodStats[record.classification_method] || 0) + 1;
+        
+        // Average confidence
+        if (record.confidence_score) {
+          totalConfidence += record.confidence_score;
+          confidenceCount++;
+        }
+      });
+
+      return NextResponse.json({
+        stats: {
+          totalClassifications: stats?.length || 0,
+          categoryDistribution: categoryStats,
+          priorityDistribution: priorityStats,
+          methodDistribution: methodStats,
+          averageConfidence: confidenceCount > 0 ? Math.round(totalConfidence / confidenceCount) : 0
+        }
+      });
+    }
+
+    return NextResponse.json({ 
+      message: 'AI Categorization Service',
+      availableActions: ['patterns', 'stats'],
+      version: '1.0.0'
+    });
+
+  } catch (error) {
+    console.error('GET categorization error:', error);
+    return NextResponse.json({ 
+      error: 'Request failed', 
+      details: error instanceof Error ? error.message : 'Unknown error'
+    }, { status: 500 });
+  }
+}

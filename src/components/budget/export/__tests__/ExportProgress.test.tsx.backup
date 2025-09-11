@@ -1,0 +1,312 @@
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { jest } from '@jest/globals';
+import { ExportProgress } from '../ExportProgress';
+import type { ExportProgressProps } from '@/types/budget-export';
+
+const defaultProps: ExportProgressProps = {
+  exportId: 'export-123',
+  status: 'preparing',
+  progress: 0,
+  message: 'Preparing export...',
+  onComplete: jest.fn(),
+  onCancel: jest.fn(),
+  onRetry: jest.fn()
+};
+
+describe('ExportProgress', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('renders preparing state correctly', () => {
+    render(<ExportProgress {...defaultProps} />);
+    
+    expect(screen.getByText('Preparing Export')).toBeInTheDocument();
+    expect(screen.getByText('Preparing export...')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Cancel Export' })).toBeInTheDocument();
+  });
+
+  it('renders generating state with progress', () => {
+    render(
+      <ExportProgress 
+        {...defaultProps} 
+        status="generating" 
+        progress={45}
+        message="Generating PDF report..."
+      />
+    );
+    
+    expect(screen.getByText('Generating Report')).toBeInTheDocument();
+    expect(screen.getByText('Generating PDF report...')).toBeInTheDocument();
+    expect(screen.getByText('45%')).toBeInTheDocument();
+    
+    // Check that progress bar shows correct value
+    const progressBar = screen.getByRole('progressbar');
+    expect(progressBar).toHaveAttribute('aria-valuenow', '45');
+  });
+
+  it('renders completed state', () => {
+    render(
+      <ExportProgress 
+        {...defaultProps} 
+        status="completed" 
+        progress={100}
+        message="Export completed successfully!"
+      />
+    );
+    
+    expect(screen.getByText('Export Complete')).toBeInTheDocument();
+    expect(screen.getByText('Export completed successfully!')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Download Report' })).toBeInTheDocument();
+  });
+
+  it('renders failed state with retry option', () => {
+    render(
+      <ExportProgress 
+        {...defaultProps} 
+        status="failed" 
+        message="Export failed due to network error"
+      />
+    );
+    
+    expect(screen.getByText('Export Failed')).toBeInTheDocument();
+    expect(screen.getByText('Export failed due to network error')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry Export' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
+  });
+
+  it('renders cancelled state', () => {
+    render(
+      <ExportProgress 
+        {...defaultProps} 
+        status="cancelled" 
+        message="Export was cancelled by user"
+      />
+    );
+    
+    expect(screen.getByText('Export Cancelled')).toBeInTheDocument();
+    expect(screen.getByText('Export was cancelled by user')).toBeInTheDocument();
+  });
+
+  it('calls onCancel when cancel button is clicked', () => {
+    render(<ExportProgress {...defaultProps} />);
+    
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel Export' }));
+    
+    expect(defaultProps.onCancel).toHaveBeenCalledWith();
+  });
+
+  it('calls onRetry when retry button is clicked', () => {
+    render(
+      <ExportProgress 
+        {...defaultProps} 
+        status="failed" 
+        message="Export failed"
+      />
+    );
+    
+    fireEvent.click(screen.getByRole('button', { name: 'Retry Export' }));
+    
+    expect(defaultProps.onRetry).toHaveBeenCalledWith();
+  });
+
+  it('calls onComplete when download button is clicked', () => {
+    render(
+      <ExportProgress 
+        {...defaultProps} 
+        status="completed" 
+        message="Export completed"
+      />
+    );
+    
+    fireEvent.click(screen.getByRole('button', { name: 'Download Report' }));
+    
+    expect(defaultProps.onComplete).toHaveBeenCalledWith('https://example.com/download');
+  });
+
+  it('shows animated progress bar during generation', () => {
+    render(
+      <ExportProgress 
+        {...defaultProps} 
+        status="generating" 
+        progress={30}
+      />
+    );
+    
+    const progressBar = screen.getByRole('progressbar');
+    expect(progressBar).toHaveClass('transition-all');
+    expect(progressBar).toHaveAttribute('aria-valuenow', '30');
+    expect(progressBar).toHaveAttribute('aria-valuemin', '0');
+    expect(progressBar).toHaveAttribute('aria-valuemax', '100');
+  });
+
+  it('shows step-by-step progress indicators', () => {
+    render(
+      <ExportProgress 
+        {...defaultProps} 
+        status="generating" 
+        progress={60}
+      />
+    );
+    
+    // Should show progress steps
+    expect(screen.getByText('1. Gathering data')).toBeInTheDocument();
+    expect(screen.getByText('2. Processing categories')).toBeInTheDocument();
+    expect(screen.getByText('3. Generating charts')).toBeInTheDocument();
+    expect(screen.getByText('4. Creating document')).toBeInTheDocument();
+    
+    // Steps should be marked as completed based on progress
+    const step1 = screen.getByText('1. Gathering data').closest('div');
+    const step2 = screen.getByText('2. Processing categories').closest('div');
+    const step3 = screen.getByText('3. Generating charts').closest('div');
+    
+    expect(step1).toHaveClass('text-green-600'); // Completed
+    expect(step2).toHaveClass('text-green-600'); // Completed
+    expect(step3).toHaveClass('text-blue-600'); // In progress
+  });
+
+  it('displays estimated time remaining', () => {
+    render(
+      <ExportProgress 
+        {...defaultProps} 
+        status="generating" 
+        progress={40}
+        message="Generating report... (~30 seconds remaining)"
+      />
+    );
+    
+    expect(screen.getByText('Generating report... (~30 seconds remaining)')).toBeInTheDocument();
+  });
+
+  it('handles missing progress prop gracefully', () => {
+    const propsWithoutProgress = {
+      ...defaultProps,
+      progress: undefined
+    };
+    
+    render(<ExportProgress {...propsWithoutProgress} />);
+    
+    // Should not crash and should show indeterminate progress
+    expect(screen.getByText('Preparing Export')).toBeInTheDocument();
+  });
+
+  it('shows success icon for completed state', () => {
+    render(
+      <ExportProgress 
+        {...defaultProps} 
+        status="completed" 
+      />
+    );
+    
+    // Check for success icon (CheckCircle from Lucide)
+    const successIcon = screen.getByTestId('success-icon');
+    expect(successIcon).toBeInTheDocument();
+    expect(successIcon).toHaveClass('text-green-600');
+  });
+
+  it('shows error icon for failed state', () => {
+    render(
+      <ExportProgress 
+        {...defaultProps} 
+        status="failed" 
+      />
+    );
+    
+    // Check for error icon (XCircle from Lucide)
+    const errorIcon = screen.getByTestId('error-icon');
+    expect(errorIcon).toBeInTheDocument();
+    expect(errorIcon).toHaveClass('text-red-600');
+  });
+
+  it('shows spinning loader for generating state', () => {
+    render(
+      <ExportProgress 
+        {...defaultProps} 
+        status="generating" 
+      />
+    );
+    
+    // Check for loading icon (Loader2 from Lucide)
+    const loadingIcon = screen.getByTestId('loading-icon');
+    expect(loadingIcon).toBeInTheDocument();
+    expect(loadingIcon).toHaveClass('animate-spin');
+  });
+
+  it('handles rapid status changes', () => {
+    const { rerender } = render(<ExportProgress {...defaultProps} status="preparing" />);
+    
+    expect(screen.getByText('Preparing Export')).toBeInTheDocument();
+    
+    rerender(<ExportProgress {...defaultProps} status="generating" progress={50} />);
+    expect(screen.getByText('Generating Report')).toBeInTheDocument();
+    
+    rerender(<ExportProgress {...defaultProps} status="completed" />);
+    expect(screen.getByText('Export Complete')).toBeInTheDocument();
+  });
+
+  it('disables buttons appropriately based on state', () => {
+    render(
+      <ExportProgress 
+        {...defaultProps} 
+        status="generating" 
+        progress={50}
+      />
+    );
+    
+    const cancelButton = screen.getByRole('button', { name: 'Cancel Export' });
+    expect(cancelButton).not.toBeDisabled();
+  });
+
+  it('handles long export IDs without layout issues', () => {
+    const longExportId = 'very-long-export-id-that-might-break-layout-if-not-handled-properly-123456789';
+    
+    render(<ExportProgress {...defaultProps} exportId={longExportId} />);
+    
+    // Should render without layout issues
+    expect(screen.getByText('Preparing Export')).toBeInTheDocument();
+  });
+
+  it('shows appropriate ARIA labels for accessibility', () => {
+    render(
+      <ExportProgress 
+        {...defaultProps} 
+        status="generating" 
+        progress={75}
+      />
+    );
+    
+    const progressBar = screen.getByRole('progressbar');
+    expect(progressBar).toHaveAttribute('aria-label', 'Export progress');
+    
+    const cancelButton = screen.getByRole('button', { name: 'Cancel Export' });
+    expect(cancelButton).toHaveAttribute('aria-label', 'Cancel the current export');
+  });
+
+  it('handles zero progress correctly', () => {
+    render(
+      <ExportProgress 
+        {...defaultProps} 
+        status="generating" 
+        progress={0}
+      />
+    );
+    
+    expect(screen.getByText('0%')).toBeInTheDocument();
+    const progressBar = screen.getByRole('progressbar');
+    expect(progressBar).toHaveAttribute('aria-valuenow', '0');
+  });
+
+  it('handles 100% progress correctly', () => {
+    render(
+      <ExportProgress 
+        {...defaultProps} 
+        status="generating" 
+        progress={100}
+      />
+    );
+    
+    expect(screen.getByText('100%')).toBeInTheDocument();
+    const progressBar = screen.getByRole('progressbar');
+    expect(progressBar).toHaveAttribute('aria-valuenow', '100');
+  });
+});

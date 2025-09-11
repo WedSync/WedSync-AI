@@ -1,0 +1,319 @@
+/**
+ * WS-190 Evidence Preservation Service - Comprehensive Test Suite
+ * Tests forensic evidence handling with legal admissibility standards
+ */
+
+import { describe, test, expect, beforeEach, afterEach, jest } from '@jest/globals'
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { createClient } from '@supabase/supabase-js'
+import EvidencePreservationService from '@/lib/security/evidence-preservation'
+import crypto from 'crypto'
+// Mock dependencies
+jest.mock('@supabase/supabase-js')
+jest.mock('crypto')
+describe('WS-190 Evidence Preservation Service', () => {
+  let evidenceService: EvidencePreservationService
+  let mockSupabase: any
+  let mockCrypto: any
+  const mockOrganizationId = '550e8400-e29b-41d4-a716-446655440000'
+  beforeEach(() => {
+    mockSupabase = {
+      from: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      insert: jest.fn().mockReturnThis(),
+      update: jest.fn().mockReturnThis(),
+      delete: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      single: jest.fn().mockResolvedValue({ data: {}, error: null }),
+      storage: {
+        from: jest.fn().mockReturnThis(),
+        upload: jest.fn().mockResolvedValue({ data: { path: 'evidence/test.json' }, error: null }),
+        download: jest.fn().mockResolvedValue({ data: new Blob(), error: null }),
+        remove: jest.fn().mockResolvedValue({ data: null, error: null })
+      }
+    }
+    mockCrypto = {
+      createHash: jest.fn().mockReturnValue({
+        update: jest.fn().mockReturnThis(),
+        digest: jest.fn().mockReturnValue('mocked_hash_123')
+      }),
+      createCipher: jest.fn().mockReturnValue({
+        update: jest.fn().mockReturnValue('encrypted_'),
+        final: jest.fn().mockReturnValue('_data')
+      createDecipher: jest.fn().mockReturnValue({
+        update: jest.fn().mockReturnValue('decrypted_'),
+      randomBytes: jest.fn().mockReturnValue(Buffer.from('random_key_data'))
+    ;(createClient as jest.MockedFunction<typeof createClient>).mockReturnValue(mockSupabase)
+    ;(crypto as any).createHash = mockCrypto.createHash
+    ;(crypto as any).createCipher = mockCrypto.createCipher
+    ;(crypto as any).createDecipher = mockCrypto.createDecipher
+    ;(crypto as any).randomBytes = mockCrypto.randomBytes
+    evidenceService = new EvidencePreservationService(mockOrganizationId)
+  })
+  afterEach(() => {
+    jest.clearAllMocks()
+  describe('Evidence Collection with Chain of Custody', () => {
+    test('should collect evidence with cryptographic integrity verification', async () => {
+      const evidenceData = {
+        type: 'system_logs',
+        description: 'Authentication failure logs from compromised account',
+        sourceSystem: 'authentication_service',
+        collectionMethod: 'automated_export',
+        data: {
+          failedLogins: [
+            { timestamp: '2025-01-20T10:00:00Z', ip: '192.168.1.100', user: 'photographer@venue.com' },
+            { timestamp: '2025-01-20T10:01:00Z', ip: '192.168.1.100', user: 'photographer@venue.com' }
+          ],
+          suspiciousPatterns: ['Multiple rapid login attempts', 'Unknown IP range']
+        }
+      mockSupabase.insert.mockResolvedValue({
+          id: 'evidence-auth-123',
+          integrity_hash: 'mocked_hash_123',
+          chain_of_custody_id: 'custody-456',
+          encryption_key_id: 'key-789',
+          storage_path: 'evidence/incident-123/auth-logs.json'
+        },
+        error: null
+      })
+      const result = await evidenceService.collectEvidence(
+        'incident-123',
+        evidenceData,
+        'forensics-officer-1'
+      )
+      expect(result.evidenceId).toBe('evidence-auth-123')
+      expect(result.integrityHash).toBe('mocked_hash_123')
+      expect(result.chainOfCustodyId).toBe('custody-456')
+      expect(mockCrypto.createHash).toHaveBeenCalledWith('sha256')
+    })
+    test('should establish proper chain of custody for legal admissibility', async () => {
+        type: 'database_snapshot',
+        description: 'Guest payment data before breach containment',
+        sourceSystem: 'payment_database',
+        collectionMethod: 'manual_export',
+          affectedRecords: 150,
+          dataTypes: ['credit_card_last4', 'billing_addresses', 'transaction_ids'],
+          exportTimestamp: '2025-01-20T11:30:00Z'
+      mockSupabase.insert
+        .mockResolvedValueOnce({
+          data: { id: 'custody-789' },
+          error: null
+        })
+          data: { id: 'evidence-payment-456' },
+        'incident-payment-breach',
+        'senior-investigator'
+      // Verify chain of custody entry was created
+      expect(mockSupabase.insert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          custody_id: expect.any(String),
+          evidence_id: expect.any(String),
+          action: 'collected',
+          performed_by: 'senior-investigator',
+          timestamp: expect.any(String),
+          digital_signature: expect.any(String)
+    test('should encrypt sensitive evidence data', async () => {
+      const sensitiveEvidenceData = {
+        type: 'guest_personal_data',
+        description: 'Wedding guest personal information exposed in breach',
+        sourceSystem: 'guest_management',
+        collectionMethod: 'emergency_export',
+          exposedGuests: [
+            { name: 'John Smith', email: 'john@example.com', phone: '+44123456789' },
+            { name: 'Jane Doe', email: 'jane@example.com', phone: '+44987654321' }
+          weddingId: 'wedding-sensitive-123',
+          exposureTimestamp: '2025-01-20T14:45:00Z'
+          id: 'evidence-sensitive-789',
+          encrypted_data: 'encrypted_sensitive_data',
+          encryption_algorithm: 'AES-256-GCM'
+        'incident-gdpr-breach',
+        sensitiveEvidenceData,
+        'data-protection-officer'
+      expect(mockCrypto.createCipher).toHaveBeenCalledWith('aes-256-gcm', expect.any(Buffer))
+      expect(result.evidenceId).toBeDefined()
+  describe('Evidence Integrity Verification', () => {
+    test('should verify evidence integrity using cryptographic hashes', async () => {
+      const evidenceId = 'evidence-integrity-test'
+      
+      mockSupabase.select.mockResolvedValue({
+          id: evidenceId,
+          integrity_hash: 'original_hash_123',
+          encrypted_data: 'encrypted_evidence_content',
+          encryption_key_id: 'key-456',
+          evidence_data: JSON.stringify({
+            type: 'network_logs',
+            data: { connections: ['192.168.1.1', '192.168.1.2'] }
+          })
+      // Mock hash verification - should match original
+      mockCrypto.createHash.mockReturnValue({
+        digest: jest.fn().mockReturnValue('original_hash_123')
+      const verification = await evidenceService.verifyEvidence(evidenceId)
+      expect(verification.isValid).toBe(true)
+      expect(verification.integrityMaintained).toBe(true)
+      expect(verification.originalHash).toBe('original_hash_123')
+      expect(verification.currentHash).toBe('original_hash_123')
+    test('should detect evidence tampering', async () => {
+      const evidenceId = 'evidence-tampered-test'
+          encrypted_data: 'tampered_encrypted_content',
+            type: 'system_logs',
+            data: { logs: ['modified log entry'] }
+      // Mock hash verification - different from original (indicates tampering)
+        digest: jest.fn().mockReturnValue('different_hash_456')
+      expect(verification.isValid).toBe(false)
+      expect(verification.integrityMaintained).toBe(false)
+      expect(verification.tamperingDetected).toBe(true)
+  describe('Chain of Custody Management', () => {
+    test('should track evidence access and modifications', async () => {
+      const evidenceId = 'evidence-custody-test'
+      const accessingUser = 'investigator-jane'
+      const action = 'viewed'
+        data: { id: 'custody-entry-123' },
+      await evidenceService.updateChainOfCustody(
+        evidenceId,
+        accessingUser,
+        action,
+        'Reviewing evidence for incident analysis'
+          evidence_id: evidenceId,
+          action: action,
+          performed_by: accessingUser,
+          notes: 'Reviewing evidence for incident analysis',
+    test('should provide complete audit trail for legal proceedings', async () => {
+      const evidenceId = 'evidence-legal-123'
+        data: [
+          {
+            action: 'collected',
+            performed_by: 'forensics-officer-1',
+            timestamp: '2025-01-20T10:00:00Z',
+            notes: 'Initial evidence collection from compromised system',
+            digital_signature: 'sig_123'
+          },
+            action: 'viewed',
+            performed_by: 'investigator-senior',
+            timestamp: '2025-01-20T11:30:00Z',
+            notes: 'Evidence review for incident classification',
+            digital_signature: 'sig_456'
+            action: 'analyzed',
+            performed_by: 'security-analyst-2',
+            timestamp: '2025-01-20T14:15:00Z',
+            notes: 'Technical analysis of security breach patterns',
+            digital_signature: 'sig_789'
+          }
+        ],
+      const auditTrail = await evidenceService.getChainOfCustody(evidenceId)
+      expect(auditTrail.length).toBe(3)
+      expect(auditTrail[0].action).toBe('collected')
+      expect(auditTrail[2].action).toBe('analyzed')
+      expect(auditTrail.every(entry => entry.digital_signature)).toBe(true)
+  describe('Evidence Storage and Retrieval', () => {
+    test('should securely store large evidence files', async () => {
+      const largeEvidenceData = {
+        type: 'system_backup',
+        description: 'Full system backup before containment actions',
+        sourceSystem: 'infrastructure',
+        collectionMethod: 'automated_backup',
+        data: new Blob(['large backup file content'], { type: 'application/octet-stream' })
+      mockSupabase.storage.from().upload.mockResolvedValue({
+        data: { path: 'evidence/incident-123/system-backup.tar.gz' },
+        largeEvidenceData,
+        'system-administrator'
+      expect(mockSupabase.storage.from).toHaveBeenCalledWith('evidence')
+      expect(result.storagePath).toBeDefined()
+    test('should retrieve evidence with access logging', async () => {
+      const evidenceId = 'evidence-retrieval-test'
+      const retrievingUser = 'legal-counsel'
+          storage_path: 'evidence/incident-456/financial-logs.json',
+          encrypted_data: 'encrypted_evidence_content'
+      mockSupabase.storage.from().download.mockResolvedValue({
+        data: new Blob(['evidence content']),
+      const retrievedEvidence = await evidenceService.retrieveEvidence(evidenceId, retrievingUser)
+      expect(retrievedEvidence.content).toBeDefined()
+          action: 'retrieved',
+          performed_by: retrievingUser
+  describe('Evidence Retention and Destruction', () => {
+    test('should enforce evidence retention policies', async () => {
+      const retentionDate = new Date()
+      retentionDate.setFullYear(retentionDate.getFullYear() + 7) // 7 year retention
+            id: 'evidence-retention-test',
+            incident_id: 'incident-456',
+            retention_until: retentionDate.toISOString(),
+            legal_hold: false
+      const retentionCheck = await evidenceService.checkRetentionCompliance()
+      expect(retentionCheck.compliantEvidence).toContain('evidence-retention-test')
+      expect(retentionCheck.expiredEvidence).toHaveLength(0)
+    test('should securely destroy evidence after retention period', async () => {
+      const expiredEvidenceId = 'evidence-expired-123'
+      const pastDate = new Date()
+      pastDate.setFullYear(pastDate.getFullYear() - 8) // 8 years ago
+          id: expiredEvidenceId,
+          retention_until: pastDate.toISOString(),
+          legal_hold: false,
+          storage_path: 'evidence/expired/logs.json'
+      mockSupabase.storage.from().remove.mockResolvedValue({
+        data: null,
+      const destruction = await evidenceService.secureDestruction(expiredEvidenceId, 'compliance-officer')
+      expect(destruction.success).toBe(true)
+      expect(destruction.destructionMethod).toBe('secure_overwrite')
+      expect(mockSupabase.storage.from().remove).toHaveBeenCalledWith(['evidence/expired/logs.json'])
+    test('should prevent destruction of evidence under legal hold', async () => {
+      const legalHoldEvidenceId = 'evidence-legal-hold-123'
+          id: legalHoldEvidenceId,
+          legal_hold: true,
+          legal_hold_reason: 'Ongoing litigation - Smith vs VenueXYZ'
+      await expect(
+        evidenceService.secureDestruction(legalHoldEvidenceId, 'compliance-officer')
+      ).rejects.toThrow('Cannot destroy evidence under legal hold')
+  describe('Wedding-Specific Evidence Handling', () => {
+    test('should handle wedding photo evidence with special considerations', async () => {
+      const weddingPhotoEvidence = {
+        type: 'digital_photos',
+        description: 'Wedding photos potentially compromised in photographer account breach',
+        sourceSystem: 'photo_storage',
+        collectionMethod: 'selective_export',
+          weddingId: 'wedding-photo-breach-123',
+          photographerId: 'photographer-456',
+          compromisedPhotos: 247,
+          photoMetadata: [
+            { filename: 'ceremony-001.jpg', size: 5242880, timestamp: '2025-01-19T15:30:00Z' },
+            { filename: 'reception-045.jpg', size: 4194304, timestamp: '2025-01-19T20:15:00Z' }
+          privacyLevel: 'high'
+          id: 'evidence-wedding-photos',
+          special_handling: 'privacy_sensitive',
+          access_restrictions: 'senior_investigators_only'
+        'incident-photo-breach',
+        weddingPhotoEvidence,
+        'privacy-officer'
+      expect(result.specialHandling).toBe('privacy_sensitive')
+    test('should handle guest payment data with PCI DSS compliance', async () => {
+      const paymentEvidence = {
+        type: 'payment_data',
+        description: 'Credit card transaction logs from venue payment system',
+        sourceSystem: 'payment_gateway',
+        collectionMethod: 'pci_compliant_export',
+          transactionCount: 45,
+          affectedCardTypes: ['visa', 'mastercard'],
+          merchantId: 'VENUE_MERCHANT_123',
+          pcidssLevel: 'level_1',
+          maskedPanSample: '4***-****-****-1234'
+        paymentEvidence,
+        'pci-compliance-officer'
+      expect(result.complianceFlags).toContain('PCI_DSS')
+      expect(result.accessRestrictions).toContain('payment_qualified_personnel_only')
+  describe('Integration with Incident Response System', () => {
+    test('should automatically collect evidence during P1 incident creation', async () => {
+      const p1IncidentId = 'incident-p1-auto-evidence'
+      // Mock automatic evidence collection trigger
+          auto_evidence_collection: true,
+          evidence_types: ['system_logs', 'network_traffic', 'user_activity']
+      const autoCollection = await evidenceService.autoCollectEvidence(p1IncidentId)
+      expect(autoCollection.collectedEvidence).toHaveLength(3)
+      expect(autoCollection.collectedEvidence).toContainEqual(
+        expect.objectContaining({ type: 'system_logs' })
+    test('should provide evidence summary for incident reporting', async () => {
+      const incidentId = 'incident-evidence-summary'
+          { type: 'system_logs', status: 'verified', collection_timestamp: '2025-01-20T10:00:00Z' },
+          { type: 'network_traffic', status: 'verified', collection_timestamp: '2025-01-20T10:05:00Z' },
+          { type: 'user_activity', status: 'pending_verification', collection_timestamp: '2025-01-20T10:10:00Z' }
+      const summary = await evidenceService.getIncidentEvidenceSummary(incidentId)
+      expect(summary.totalEvidence).toBe(3)
+      expect(summary.verifiedEvidence).toBe(2)
+      expect(summary.pendingEvidence).toBe(1)
+      expect(summary.legalAdmissibility).toBe(true)
+})

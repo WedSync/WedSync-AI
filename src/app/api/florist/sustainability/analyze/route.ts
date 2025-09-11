@@ -1,0 +1,234 @@
+// Sustainability Analysis API Route - WS-253 Team B
+// Carbon footprint analysis and sustainability recommendations for floral selections
+import { NextRequest, NextResponse } from 'next/server';
+import {
+  withSecureValidation,
+  CommonSchemas,
+  getUserFromRequest,
+} from '@/lib/security/withSecureValidation';
+import { FloristIntelligenceService } from '@/lib/florist/florist-intelligence-service';
+import { z } from 'zod';
+
+const SustainabilityAnalysisSchema = z.object({
+  flower_selections: z
+    .array(
+      z.object({
+        flower_id: CommonSchemas.UUID,
+        quantity: z.number().min(1).max(1000),
+      }),
+    )
+    .min(1)
+    .max(50), // Limit to 50 different flower types for performance
+  wedding_location: z.object({
+    lat: z.number().min(-90).max(90),
+    lng: z.number().min(-180).max(180),
+    region: z.string().max(100),
+  }),
+  wedding_date: z.string().datetime().optional(),
+  include_alternatives: z.boolean().default(true),
+  analysis_options: z
+    .object({
+      include_carbon_footprint: z.boolean().default(true),
+      include_local_sourcing: z.boolean().default(true),
+      include_certifications: z.boolean().default(true),
+      include_recommendations: z.boolean().default(true),
+    })
+    .optional(),
+});
+
+export const POST = withSecureValidation(
+  SustainabilityAnalysisSchema,
+  async (validatedData, request: NextRequest) => {
+    try {
+      const user = await getUserFromRequest(request);
+      if (!user) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: 'Unauthorized',
+            code: 'UNAUTHORIZED',
+          },
+          { status: 401 },
+        );
+      }
+
+      // Validate flower selections don't exceed reasonable limits
+      const totalFlowers = validatedData.flower_selections.reduce(
+        (sum, selection) => sum + selection.quantity,
+        0,
+      );
+      if (totalFlowers > 10000) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: 'Total flower quantity exceeds maximum limit of 10,000',
+            code: 'QUANTITY_LIMIT_EXCEEDED',
+          },
+          { status: 400 },
+        );
+      }
+
+      const floristService = new FloristIntelligenceService();
+      const analysis = await floristService.analyzeSustainability(
+        validatedData.flower_selections,
+        validatedData.wedding_location,
+        user.id,
+      );
+
+      // Add additional metadata
+      const enhancedAnalysis = {
+        ...analysis,
+        metadata: {
+          analyzed_at: new Date().toISOString(),
+          total_selections: validatedData.flower_selections.length,
+          total_flowers: totalFlowers,
+          location: validatedData.wedding_location,
+          wedding_date: validatedData.wedding_date,
+          user_preferences: validatedData.analysis_options,
+        },
+      };
+
+      return NextResponse.json(enhancedAnalysis);
+    } catch (error) {
+      console.error('Sustainability analysis API error:', error);
+
+      // Handle specific error types
+      if (error.message.includes('rate limit')) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: 'Rate limit exceeded. Please try again later.',
+            code: 'RATE_LIMIT_EXCEEDED',
+          },
+          { status: 429 },
+        );
+      }
+
+      if (error.message.includes('flower not found')) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: 'One or more flowers not found in database',
+            code: 'FLOWER_NOT_FOUND',
+          },
+          { status: 404 },
+        );
+      }
+
+      return NextResponse.json(
+        {
+          success: false,
+          error: error.message || 'Internal server error',
+          code: 'SUSTAINABILITY_ANALYSIS_FAILED',
+        },
+        { status: 500 },
+      );
+    }
+  },
+  {
+    rateLimit: { maxRequests: 20, windowMs: 60 * 60 * 1000 }, // 20 requests per hour
+    requireAuth: true,
+    auditAction: 'sustainability_analysis',
+  },
+);
+
+// GET method for sustainability guidelines and tips
+export async function GET(request: NextRequest) {
+  try {
+    const user = await getUserFromRequest(request);
+    if (!user) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Unauthorized',
+        },
+        { status: 401 },
+      );
+    }
+
+    const { searchParams } = new URL(request.url);
+    const region = searchParams.get('region') || 'US';
+    const season = searchParams.get('season') || 'spring';
+
+    // Return sustainability guidelines and best practices
+    const guidelines = {
+      success: true,
+      sustainability_guidelines: {
+        carbon_footprint: {
+          low_impact_threshold: 0.5, // kg CO2 per stem
+          high_impact_threshold: 1.5,
+          description:
+            'Carbon footprint measured in kg CO2 equivalent per stem',
+        },
+        local_sourcing: {
+          local_radius_km: 100,
+          benefits: [
+            'Reduced transportation emissions',
+            'Fresher flowers with longer vase life',
+            'Support for local agriculture',
+            'Lower costs and better availability',
+          ],
+        },
+        certifications: {
+          organic: 'Grown without synthetic pesticides or fertilizers',
+          fair_trade: 'Ensures fair wages and working conditions',
+          carbon_neutral: 'Carbon emissions offset through verified programs',
+          sustainable:
+            'Meets environmental and social sustainability standards',
+        },
+        seasonal_benefits: {
+          spring: ['Tulips', 'Daffodils', 'Cherry blossoms', 'Lilacs'],
+          summer: ['Sunflowers', 'Zinnias', 'Marigolds', 'Lavender'],
+          fall: ['Chrysanthemums', 'Dahlias', 'Asters', 'Solidago'],
+          winter: ['Evergreens', 'Holly', 'Amaryllis', 'Poinsettias'],
+        },
+        best_practices: [
+          'Choose seasonal flowers for your wedding date',
+          'Prioritize locally grown options when available',
+          'Look for organic and fair-trade certifications',
+          'Consider flower longevity for arrangements',
+          'Plan for flower reuse (ceremony to reception)',
+          'Compost flowers after the event',
+        ],
+        impact_scoring: {
+          excellent: { min: 0.8, description: 'Highly sustainable choices' },
+          good: {
+            min: 0.6,
+            description: 'Good sustainability with room for improvement',
+          },
+          fair: {
+            min: 0.4,
+            description: 'Average sustainability, consider alternatives',
+          },
+          poor: {
+            min: 0.0,
+            description:
+              'High environmental impact, significant improvements needed',
+          },
+        },
+      },
+      region_specific: {
+        region: region,
+        local_flower_season: season,
+        estimated_local_availability: 0.7, // Mock data - in production this would be real
+        regional_recommendations: [
+          `Focus on ${season} flowers for best availability in ${region}`,
+          'Consider local flower farms within 100km radius',
+          'Check with local growers for seasonal specialties',
+        ],
+      },
+      generated_at: new Date().toISOString(),
+    };
+
+    return NextResponse.json(guidelines);
+  } catch (error) {
+    console.error('Sustainability guidelines GET error:', error);
+    return NextResponse.json(
+      {
+        success: false,
+        error: error.message || 'Internal server error',
+      },
+      { status: 500 },
+    );
+  }
+}

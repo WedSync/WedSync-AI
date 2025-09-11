@@ -1,0 +1,544 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@/lib/supabase/server'
+import rateLimit from '@/lib/rate-limit'
+import { isValidUUID } from '@/lib/security/input-validation'
+
+// Rate limiting for status checks
+const statusRateLimit = rateLimit({
+  interval: 60 * 1000, // 1 minute
+  uniqueTokenPerInterval: 500
+})
+
+interface CampaignStatus {
+  campaign_id: string
+  status: string
+  created_at: string
+  scheduled_for?: string
+  started_at?: string
+  completed_at?: string
+  total_recipients: number
+  queued_count: number
+  sent_count: number
+  delivered_count: number
+  failed_count: number
+  opened_count: number
+  clicked_count: number
+  channels: string[]
+  template_type: string
+  priority: string
+  test_mode: boolean
+  
+  // Detailed breakdown by channel
+  email_stats?: {
+    total: number
+    pending: number
+    queued: number
+    sent: number
+    delivered: number
+    opened: number
+    clicked: number
+    failed: number
+    bounced: number
+    spam: number
+  }
+  
+  sms_stats?: {
+    total: number
+    pending: number
+    queued: number
+    sent: number
+    delivered: number
+    failed: number
+    undelivered: number
+    total_cost: number
+    total_segments: number
+  }
+  
+  // Recent recipients status
+  recent_recipients?: Array<{
+    recipient_id: string
+    recipient_name: string
+    recipient_email?: string
+    recipient_phone?: string
+    channels: string[]
+    email_status?: string
+    sms_status?: string
+    email_sent_at?: string
+    sms_sent_at?: string
+    email_delivered_at?: string
+    sms_delivered_at?: string
+    email_opened_at?: string
+    email_clicked_at?: string
+    email_error_message?: string
+    sms_error_message?: string
+  }>
+  
+  errors?: Array<{
+    recipient_id: string
+    recipient_name: string
+    channel: string
+    error_message: string
+    occurred_at: string
+  }>
+  
+  metadata?: Record<string, any>
+}
+
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    // Rate limiting
+    const identifier = request.ip || 'anonymous'
+    const { success } = await statusRateLimit.check(100, identifier)
+    
+    if (!success) {
+      return NextResponse.json(
+        { error: 'Too many status requests' },
+        { status: 429 }
+      )
+    }
+
+    const campaignId = params.id
+    
+    if (!campaignId) {
+      return NextResponse.json(
+        { error: 'Campaign ID is required' },
+        { status: 400 }
+      )
+    }
+
+    const supabase = await createClient()
+    const { searchParams } = new URL(request.url)
+    
+    // Get query parameters
+    const includeRecipients = searchParams.get('include_recipients') === 'true'
+    const includeErrors = searchParams.get('include_errors') === 'true'
+    const recipientLimit = Math.min(parseInt(searchParams.get('recipient_limit') || '50'), 100)
+
+    // Get and verify user
+    const { data: user } = await supabase.auth.getUser()
+    if (!user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      )
+    }
+
+    // Get user profile
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', user.id)
+      .single()
+
+    if (!userProfile?.organization_id) {
+      return NextResponse.json(
+        { error: 'Organization not found' },
+        { status: 404 }
+      )
+    }
+
+    // Get campaign details
+    const { data: campaign, error: campaignError } = await supabase
+      .from('communication_campaigns')
+      .select('*')
+      .eq('id', campaignId)
+      .eq('organization_id', userProfile.organization_id)
+      .single()
+
+    if (campaignError || !campaign) {
+      return NextResponse.json(
+        { error: 'Campaign not found' },
+        { status: 404 }
+      )
+    }
+
+    const status: CampaignStatus = {
+      campaign_id: campaign.id,
+      status: campaign.status,
+      created_at: campaign.created_at,
+      scheduled_for: campaign.scheduled_for,
+      started_at: campaign.started_at,
+      completed_at: campaign.completed_at,
+      total_recipients: campaign.total_recipients,
+      queued_count: campaign.queued_count || 0,
+      sent_count: campaign.sent_count || 0,
+      delivered_count: campaign.delivered_count || 0,
+      failed_count: campaign.failed_count || 0,
+      opened_count: campaign.opened_count || 0,
+      clicked_count: campaign.clicked_count || 0,
+      channels: campaign.channels || [],
+      template_type: campaign.template_type,
+      priority: campaign.priority,
+      test_mode: campaign.test_mode || false,
+      metadata: campaign.metadata
+    }
+
+    // Get email statistics if email channel is used
+    if (campaign.channels.includes('email')) {
+      const emailStats = await supabase
+        .from('email_notifications')
+        .select('status')
+        .eq('organization_id', userProfile.organization_id)
+        .or(`metadata->>campaign_id.eq.${campaignId},template_type.eq.bulk_${campaignId}`)
+
+      const emailStatusCounts = (emailStats.data || []).reduce((acc: any, notification) => {
+        acc[notification.status] = (acc[notification.status] || 0) + 1
+        return acc
+      }, {})
+
+      status.email_stats = {
+        total: emailStats.data?.length || 0,
+        pending: emailStatusCounts.pending || 0,
+        queued: emailStatusCounts.queued || 0,
+        sent: emailStatusCounts.sent || 0,
+        delivered: emailStatusCounts.delivered || 0,
+        opened: emailStatusCounts.opened || 0,
+        clicked: emailStatusCounts.clicked || 0,
+        failed: emailStatusCounts.failed || 0,
+        bounced: emailStatusCounts.bounced || 0,
+        spam: emailStatusCounts.spam || 0
+      }
+    }
+
+    // Get SMS statistics if SMS channel is used
+    if (campaign.channels.includes('sms')) {
+      const { data: smsStats } = await supabase
+        .from('sms_notifications')
+        .select('status, cost, segments')
+        .eq('organization_id', userProfile.organization_id)
+        .eq('campaign_id', campaignId)
+
+      const smsStatusCounts = (smsStats || []).reduce((acc: any, notification) => {
+        acc[notification.status] = (acc[notification.status] || 0) + 1
+        acc.total_cost = (acc.total_cost || 0) + (notification.cost || 0)
+        acc.total_segments = (acc.total_segments || 0) + (notification.segments || 1)
+        return acc
+      }, { total_cost: 0, total_segments: 0 })
+
+      status.sms_stats = {
+        total: smsStats?.length || 0,
+        pending: smsStatusCounts.pending || 0,
+        queued: smsStatusCounts.queued || 0,
+        sent: smsStatusCounts.sent || 0,
+        delivered: smsStatusCounts.delivered || 0,
+        failed: smsStatusCounts.failed || 0,
+        undelivered: smsStatusCounts.undelivered || 0,
+        total_cost: smsStatusCounts.total_cost,
+        total_segments: smsStatusCounts.total_segments
+      }
+    }
+
+    // Get recent recipients status if requested
+    if (includeRecipients) {
+      const { data: recipients } = await supabase
+        .from('bulk_message_recipients')
+        .select('*')
+        .eq('campaign_id', campaignId)
+        .order('created_at', { ascending: false })
+        .limit(recipientLimit)
+
+      status.recent_recipients = (recipients || []).map(recipient => ({
+        recipient_id: recipient.recipient_id,
+        recipient_name: recipient.recipient_name,
+        recipient_email: recipient.recipient_email,
+        recipient_phone: recipient.recipient_phone,
+        channels: recipient.channels || [],
+        email_status: recipient.email_status,
+        sms_status: recipient.sms_status,
+        email_sent_at: recipient.email_sent_at,
+        sms_sent_at: recipient.sms_sent_at,
+        email_delivered_at: recipient.email_delivered_at,
+        sms_delivered_at: recipient.sms_delivered_at,
+        email_opened_at: recipient.email_opened_at,
+        email_clicked_at: recipient.email_clicked_at,
+        email_error_message: recipient.email_error_message,
+        sms_error_message: recipient.sms_error_message
+      }))
+    }
+
+    // Get error details if requested
+    if (includeErrors) {
+      const errors: CampaignStatus['errors'] = []
+
+      // Get email errors
+      if (campaign.channels.includes('email')) {
+        const { data: emailErrors } = await supabase
+          .from('email_notifications')
+          .select('recipient_id, recipient_name, error_message, created_at')
+          .eq('organization_id', userProfile.organization_id)
+          .or(`metadata->>campaign_id.eq.${campaignId},template_type.eq.bulk_${campaignId}`)
+          .in('status', ['failed', 'bounced'])
+          .not('error_message', 'is', null)
+          .order('created_at', { ascending: false })
+          .limit(50)
+
+        errors.push(...(emailErrors || []).map(error => ({
+          recipient_id: error.recipient_id || 'unknown',
+          recipient_name: error.recipient_name || 'Unknown',
+          channel: 'email',
+          error_message: error.error_message,
+          occurred_at: error.created_at
+        })))
+      }
+
+      // Get SMS errors
+      if (campaign.channels.includes('sms')) {
+        const { data: smsErrors } = await supabase
+          .from('sms_notifications')
+          .select('recipient_id, recipient_name, error_message, created_at')
+          .eq('organization_id', userProfile.organization_id)
+          .eq('campaign_id', campaignId)
+          .eq('status', 'failed')
+          .not('error_message', 'is', null)
+          .order('created_at', { ascending: false })
+          .limit(50)
+
+        errors.push(...(smsErrors || []).map(error => ({
+          recipient_id: error.recipient_id || 'unknown',
+          recipient_name: error.recipient_name || 'Unknown',
+          channel: 'sms',
+          error_message: error.error_message,
+          occurred_at: error.created_at
+        })))
+      }
+
+      // Sort errors by occurrence time (most recent first)
+      status.errors = errors.sort((a, b) => 
+        new Date(b.occurred_at).getTime() - new Date(a.occurred_at).getTime()
+      ).slice(0, 50)
+    }
+
+    return NextResponse.json(status)
+
+  } catch (error) {
+    console.error('Error in status GET:', error)
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}
+
+// Update campaign status or retry failed messages
+export async function POST(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    // Rate limiting
+    const identifier = request.ip || 'anonymous'
+    const { success } = await statusRateLimit.check(10, identifier)
+    
+    if (!success) {
+      return NextResponse.json(
+        { error: 'Too many status update requests' },
+        { status: 429 }
+      )
+    }
+
+    const campaignId = params.id
+    
+    if (!campaignId) {
+      return NextResponse.json(
+        { error: 'Campaign ID is required' },
+        { status: 400 }
+      )
+    }
+
+    const supabase = await createClient()
+    
+    // Get and verify user
+    const { data: user } = await supabase.auth.getUser()
+    if (!user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      )
+    }
+
+    // Get user profile
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('organization_id, role')
+      .eq('user_id', user.id)
+      .single()
+
+    if (!userProfile?.organization_id) {
+      return NextResponse.json(
+        { error: 'Organization not found' },
+        { status: 404 }
+      )
+    }
+
+    // Check permissions
+    if (!['OWNER', 'ADMIN', 'MEMBER'].includes(userProfile.role)) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions' },
+        { status: 403 }
+      )
+    }
+
+    const { action, recipient_ids } = await request.json()
+
+    // Verify campaign exists
+    const { data: campaign } = await supabase
+      .from('communication_campaigns')
+      .select('*')
+      .eq('id', campaignId)
+      .eq('organization_id', userProfile.organization_id)
+      .single()
+
+    if (!campaign) {
+      return NextResponse.json(
+        { error: 'Campaign not found' },
+        { status: 404 }
+      )
+    }
+
+    let result: any = { action }
+
+    switch (action) {
+      case 'retry_failed':
+        // Retry failed email messages
+        const failedEmailQuery = supabase
+          .from('email_notifications')
+          .update({ 
+            status: 'queued',
+            retry_count: supabase.rpc('increment', { x: 1 })
+          })
+          .eq('organization_id', userProfile.organization_id)
+          .or(`metadata->>campaign_id.eq.${campaignId},template_type.eq.bulk_${campaignId}`)
+          .eq('status', 'failed')
+
+        if (recipient_ids && recipient_ids.length > 0) {
+          failedEmailQuery.in('recipient_id', recipient_ids)
+        }
+
+        const { count: retriedEmails } = await failedEmailQuery.select('*', { count: 'exact', head: true })
+
+        // Retry failed SMS messages
+        const failedSMSQuery = supabase
+          .from('sms_notifications')
+          .update({ 
+            status: 'queued',
+            retry_count: supabase.rpc('increment', { x: 1 })
+          })
+          .eq('organization_id', userProfile.organization_id)
+          .eq('campaign_id', campaignId)
+          .eq('status', 'failed')
+
+        if (recipient_ids && recipient_ids.length > 0) {
+          failedSMSQuery.in('recipient_id', recipient_ids)
+        }
+
+        const { count: retriedSMS } = await failedSMSQuery.select('*', { count: 'exact', head: true })
+
+        result.retried_emails = retriedEmails || 0
+        result.retried_sms = retriedSMS || 0
+        result.message = `Retried ${(retriedEmails || 0) + (retriedSMS || 0)} failed messages`
+        break
+
+      case 'cancel_pending':
+        // Cancel pending messages
+        await Promise.all([
+          supabase
+            .from('email_notifications')
+            .update({ status: 'failed', error_message: 'Cancelled by user' })
+            .eq('organization_id', userProfile.organization_id)
+            .or(`metadata->>campaign_id.eq.${campaignId},template_type.eq.bulk_${campaignId}`)
+            .in('status', ['pending', 'queued']),
+
+          supabase
+            .from('sms_notifications')
+            .update({ status: 'failed', error_message: 'Cancelled by user' })
+            .eq('organization_id', userProfile.organization_id)
+            .eq('campaign_id', campaignId)
+            .in('status', ['pending', 'queued'])
+        ])
+
+        // Update campaign status
+        await supabase
+          .from('communication_campaigns')
+          .update({ 
+            status: 'cancelled',
+            completed_at: new Date().toISOString()
+          })
+          .eq('id', campaignId)
+
+        result.message = 'Pending messages cancelled successfully'
+        break
+
+      case 'refresh_stats':
+        // Recalculate campaign statistics
+        const [
+          { data: emailStats },
+          { data: smsStats },
+          { data: recipientStats }
+        ] = await Promise.all([
+          supabase
+            .from('email_notifications')
+            .select('status, opened_at, clicked_at')
+            .eq('organization_id', userProfile.organization_id)
+            .or(`metadata->>campaign_id.eq.${campaignId},template_type.eq.bulk_${campaignId}`),
+
+          supabase
+            .from('sms_notifications')
+            .select('status')
+            .eq('organization_id', userProfile.organization_id)
+            .eq('campaign_id', campaignId),
+
+          supabase
+            .from('bulk_message_recipients')
+            .select('email_status, sms_status, email_opened_at, email_clicked_at')
+            .eq('campaign_id', campaignId)
+        ])
+
+        // Calculate stats
+        const emailStatusCounts = (emailStats || []).reduce((acc: any, email) => {
+          acc[email.status] = (acc[email.status] || 0) + 1
+          if (email.opened_at) acc.opened = (acc.opened || 0) + 1
+          if (email.clicked_at) acc.clicked = (acc.clicked || 0) + 1
+          return acc
+        }, {})
+
+        const smsStatusCounts = (smsStats || []).reduce((acc: any, sms) => {
+          acc[sms.status] = (acc[sms.status] || 0) + 1
+          return acc
+        }, {})
+
+        // Update campaign with fresh stats
+        await supabase
+          .from('communication_campaigns')
+          .update({
+            sent_count: (emailStatusCounts.sent || 0) + (smsStatusCounts.sent || 0),
+            delivered_count: (emailStatusCounts.delivered || 0) + (smsStatusCounts.delivered || 0),
+            failed_count: (emailStatusCounts.failed || 0) + (smsStatusCounts.failed || 0),
+            opened_count: emailStatusCounts.opened || 0,
+            clicked_count: emailStatusCounts.clicked || 0
+          })
+          .eq('id', campaignId)
+
+        result.message = 'Campaign statistics refreshed successfully'
+        result.stats = { emailStatusCounts, smsStatusCounts }
+        break
+
+      default:
+        return NextResponse.json(
+          { error: 'Invalid action' },
+          { status: 400 }
+        )
+    }
+
+    return NextResponse.json(result)
+
+  } catch (error) {
+    console.error('Error in status POST:', error)
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}

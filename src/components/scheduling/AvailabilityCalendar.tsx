@@ -1,0 +1,647 @@
+'use client';
+
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
+import { Calendar, momentLocalizer, View, Views } from 'react-big-calendar';
+import moment from 'moment-timezone';
+import {
+  ChevronLeft,
+  ChevronRight,
+  Calendar as CalendarIcon,
+  Clock,
+  Globe,
+  Filter,
+  RefreshCw,
+  AlertCircle,
+  CheckCircle,
+  X,
+} from 'lucide-react';
+import { Button } from '@/components/ui/button-untitled';
+import { Card } from '@/components/ui/card-untitled';
+import { Badge } from '@/components/ui/badge';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { cn } from '@/lib/utils';
+import 'react-big-calendar/lib/css/react-big-calendar.css';
+
+// Setup moment localizer for react-big-calendar
+const localizer = momentLocalizer(moment);
+
+// Types
+interface TimeSlot {
+  id: string;
+  start: Date;
+  end: Date;
+  isAvailable: boolean;
+  meetingType?: MeetingType;
+  isSelected?: boolean;
+  bookingId?: string;
+  clientName?: string;
+  status?: 'confirmed' | 'pending' | 'cancelled';
+}
+
+interface MeetingType {
+  id: string;
+  name: string;
+  duration_minutes: number;
+  color: string;
+  is_active: boolean;
+}
+
+interface AvailabilitySchedule {
+  day_of_week: number;
+  start_time: string;
+  end_time: string;
+  is_available: boolean;
+  timezone: string;
+}
+
+interface ExistingBooking {
+  id: string;
+  scheduled_at: string;
+  duration_minutes: number;
+  client_name: string;
+  meeting_type_name: string;
+  status: 'confirmed' | 'pending' | 'cancelled' | 'completed' | 'no_show';
+  color: string;
+}
+
+interface AvailabilityCalendarProps {
+  // Calendar configuration
+  supplierId: string;
+  timezone?: string;
+  availability: AvailabilitySchedule[];
+  meetingTypes: MeetingType[];
+  existingBookings?: ExistingBooking[];
+
+  // Booking constraints
+  minNoticeHours?: number;
+  advanceBookingDays?: number;
+  bufferTimeMinutes?: number;
+
+  // Event handlers
+  onSlotSelect?: (slot: TimeSlot) => void;
+  onSlotDeselect?: () => void;
+  onDateChange?: (date: Date) => void;
+  onViewChange?: (view: View) => void;
+
+  // UI configuration
+  selectedMeetingType?: MeetingType;
+  isSelectable?: boolean;
+  showBookings?: boolean;
+  compactMode?: boolean;
+  className?: string;
+}
+
+// Timezone options
+const timezoneOptions = [
+  { value: 'Europe/London', label: 'London (GMT/BST)' },
+  { value: 'Europe/Dublin', label: 'Dublin (GMT/BST)' },
+  { value: 'Europe/Paris', label: 'Paris (CET/CEST)' },
+  { value: 'Europe/Berlin', label: 'Berlin (CET/CEST)' },
+  { value: 'America/New_York', label: 'New York (EST/EDT)' },
+  { value: 'America/Los_Angeles', label: 'Los Angeles (PST/PDT)' },
+  { value: 'Asia/Dubai', label: 'Dubai (GST)' },
+  { value: 'Australia/Sydney', label: 'Sydney (AEST/AEDT)' },
+];
+
+export default function AvailabilityCalendar({
+  supplierId,
+  timezone = 'Europe/London',
+  availability = [],
+  meetingTypes = [],
+  existingBookings = [],
+  minNoticeHours = 24,
+  advanceBookingDays = 30,
+  bufferTimeMinutes = 15,
+  onSlotSelect,
+  onSlotDeselect,
+  onDateChange,
+  onViewChange,
+  selectedMeetingType,
+  isSelectable = false,
+  showBookings = true,
+  compactMode = false,
+  className,
+}: AvailabilityCalendarProps) {
+  // State
+  const [currentDate, setCurrentDate] = useState(new Date());
+  const [currentView, setCurrentView] = useState<View>(Views.WEEK);
+  const [selectedSlot, setSelectedSlot] = useState<TimeSlot | null>(null);
+  const [displayTimezone, setDisplayTimezone] = useState(timezone);
+  const [isLoading, setLoading] = useState(false);
+  const [filterStatus, setFilterStatus] = useState<string>('all');
+
+  // Set moment timezone
+  useEffect(() => {
+    moment.tz.setDefault(displayTimezone);
+  }, [displayTimezone]);
+
+  // Generate available time slots based on availability schedule
+  const availableSlots = useMemo(() => {
+    if (!selectedMeetingType || availability.length === 0) return [];
+
+    const slots: TimeSlot[] = [];
+    const now = moment().tz(displayTimezone);
+    const minBookingTime = now.clone().add(minNoticeHours, 'hours');
+    const maxBookingTime = now.clone().add(advanceBookingDays, 'days');
+
+    // Generate slots for the next month from current date
+    const startDate = moment(currentDate).tz(displayTimezone).startOf('month');
+    const endDate = moment(currentDate).tz(displayTimezone).endOf('month');
+
+    for (
+      let date = startDate.clone();
+      date.isBefore(endDate);
+      date.add(1, 'day')
+    ) {
+      const dayOfWeek = date.day(); // 0 = Sunday
+      const dayAvailability = availability.find(
+        (a) => a.day_of_week === dayOfWeek && a.is_available,
+      );
+
+      if (!dayAvailability) continue;
+
+      const dayStart = date
+        .clone()
+        .hour(parseInt(dayAvailability.start_time.split(':')[0]))
+        .minute(parseInt(dayAvailability.start_time.split(':')[1]))
+        .second(0);
+
+      const dayEnd = date
+        .clone()
+        .hour(parseInt(dayAvailability.end_time.split(':')[0]))
+        .minute(parseInt(dayAvailability.end_time.split(':')[1]))
+        .second(0);
+
+      // Generate slots every 30 minutes (or meeting duration, whichever is smaller)
+      const slotInterval = Math.min(30, selectedMeetingType.duration_minutes);
+
+      for (
+        let slotStart = dayStart.clone();
+        slotStart
+          .clone()
+          .add(selectedMeetingType.duration_minutes, 'minutes')
+          .isSameOrBefore(dayEnd);
+        slotStart.add(slotInterval, 'minutes')
+      ) {
+        const slotEnd = slotStart
+          .clone()
+          .add(selectedMeetingType.duration_minutes, 'minutes');
+
+        // Skip if slot is in the past or beyond booking window
+        if (
+          slotStart.isBefore(minBookingTime) ||
+          slotStart.isAfter(maxBookingTime)
+        ) {
+          continue;
+        }
+
+        // Check for conflicts with existing bookings
+        const hasConflict = existingBookings.some((booking) => {
+          const bookingStart = moment(booking.scheduled_at).tz(displayTimezone);
+          const bookingEnd = bookingStart
+            .clone()
+            .add(booking.duration_minutes, 'minutes');
+
+          return (
+            (booking.status === 'confirmed' || booking.status === 'pending') &&
+            slotStart.isBefore(bookingEnd) &&
+            slotEnd.isAfter(bookingStart)
+          );
+        });
+
+        if (!hasConflict) {
+          slots.push({
+            id: `slot-${slotStart.format('YYYY-MM-DD-HH-mm')}`,
+            start: slotStart.toDate(),
+            end: slotEnd.toDate(),
+            isAvailable: true,
+            meetingType: selectedMeetingType,
+          });
+        }
+      }
+    }
+
+    return slots;
+  }, [
+    selectedMeetingType,
+    availability,
+    existingBookings,
+    currentDate,
+    displayTimezone,
+    minNoticeHours,
+    advanceBookingDays,
+  ]);
+
+  // Convert existing bookings to calendar events
+  const bookingEvents = useMemo(() => {
+    if (!showBookings) return [];
+
+    return existingBookings
+      .filter((booking) => {
+        if (filterStatus === 'all') return true;
+        return booking.status === filterStatus;
+      })
+      .map((booking) => ({
+        id: booking.id,
+        title: `${booking.client_name} - ${booking.meeting_type_name}`,
+        start: moment(booking.scheduled_at).tz(displayTimezone).toDate(),
+        end: moment(booking.scheduled_at)
+          .tz(displayTimezone)
+          .add(booking.duration_minutes, 'minutes')
+          .toDate(),
+        resource: {
+          type: 'booking',
+          booking,
+          isAvailable: false,
+          status: booking.status,
+        },
+      }));
+  }, [existingBookings, showBookings, displayTimezone, filterStatus]);
+
+  // Combine available slots and bookings for calendar display
+  const allEvents = useMemo(() => {
+    const slotEvents = availableSlots.map((slot) => ({
+      id: slot.id,
+      title: isSelectable ? 'Available' : slot.meetingType?.name || 'Available',
+      start: slot.start,
+      end: slot.end,
+      resource: {
+        type: 'available',
+        slot,
+        isAvailable: true,
+      },
+    }));
+
+    return [...slotEvents, ...bookingEvents];
+  }, [availableSlots, bookingEvents, isSelectable]);
+
+  // Event styling
+  const eventStyleGetter = useCallback(
+    (event: any) => {
+      const resource = event.resource;
+
+      if (resource.type === 'available') {
+        const isSelected = selectedSlot?.id === resource.slot.id;
+        return {
+          style: {
+            backgroundColor: isSelected
+              ? '#10B981'
+              : selectedMeetingType?.color || '#E5E7EB',
+            borderColor: isSelected
+              ? '#059669'
+              : selectedMeetingType?.color || '#D1D5DB',
+            color: isSelected ? 'white' : '#374151',
+            border: '1px solid',
+            borderRadius: '4px',
+            fontSize: '12px',
+            fontWeight: isSelected ? '600' : '500',
+            cursor: isSelectable ? 'pointer' : 'default',
+            opacity: isSelectable ? 1 : 0.7,
+          },
+        };
+      } else {
+        // Existing booking styling
+        const booking = resource.booking;
+        let backgroundColor = booking.color || '#6B7280';
+        let borderColor = backgroundColor;
+        let textColor = 'white';
+
+        switch (booking.status) {
+          case 'confirmed':
+            backgroundColor = '#10B981';
+            borderColor = '#059669';
+            break;
+          case 'pending':
+            backgroundColor = '#F59E0B';
+            borderColor = '#D97706';
+            break;
+          case 'cancelled':
+            backgroundColor = '#EF4444';
+            borderColor = '#DC2626';
+            break;
+          case 'completed':
+            backgroundColor = '#8B5CF6';
+            borderColor = '#7C3AED';
+            break;
+        }
+
+        return {
+          style: {
+            backgroundColor,
+            borderColor,
+            color: textColor,
+            border: '1px solid',
+            borderRadius: '4px',
+            fontSize: '12px',
+            fontWeight: '500',
+          },
+        };
+      }
+    },
+    [selectedSlot, selectedMeetingType, isSelectable],
+  );
+
+  // Handle slot selection
+  const handleSelectEvent = useCallback(
+    (event: any) => {
+      if (!isSelectable) return;
+
+      const resource = event.resource;
+      if (resource.type === 'available') {
+        const slot = resource.slot;
+        if (selectedSlot?.id === slot.id) {
+          // Deselect
+          setSelectedSlot(null);
+          onSlotDeselect?.();
+        } else {
+          // Select
+          setSelectedSlot(slot);
+          onSlotSelect?.(slot);
+        }
+      }
+    },
+    [isSelectable, selectedSlot, onSlotSelect, onSlotDeselect],
+  );
+
+  // Navigation handlers
+  const handleNavigate = useCallback(
+    (newDate: Date) => {
+      setCurrentDate(newDate);
+      onDateChange?.(newDate);
+    },
+    [onDateChange],
+  );
+
+  const handleViewChange = useCallback(
+    (newView: View) => {
+      setCurrentView(newView);
+      onViewChange?.(newView);
+    },
+    [onViewChange],
+  );
+
+  // Custom toolbar
+  const CustomToolbar = ({ date, view, onNavigate, onView }: any) => (
+    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6 p-4 bg-gray-50 rounded-lg">
+      <div className="flex items-center gap-3">
+        <div className="flex items-center border border-gray-300 rounded-lg overflow-hidden">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => onNavigate('PREV')}
+            className="rounded-none"
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => onNavigate('TODAY')}
+            className="rounded-none border-x border-gray-300"
+          >
+            Today
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => onNavigate('NEXT')}
+            className="rounded-none"
+          >
+            <ChevronRight className="h-4 w-4" />
+          </Button>
+        </div>
+
+        <h2 className="text-lg font-semibold">
+          {moment(date).tz(displayTimezone).format('MMMM YYYY')}
+        </h2>
+      </div>
+
+      <div className="flex items-center gap-3">
+        {showBookings && (
+          <Select value={filterStatus} onValueChange={setFilterStatus}>
+            <SelectTrigger className="w-32">
+              <Filter className="h-4 w-4 mr-2" />
+              <SelectValue placeholder="Filter" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All</SelectItem>
+              <SelectItem value="confirmed">Confirmed</SelectItem>
+              <SelectItem value="pending">Pending</SelectItem>
+              <SelectItem value="cancelled">Cancelled</SelectItem>
+            </SelectContent>
+          </Select>
+        )}
+
+        <Select value={displayTimezone} onValueChange={setDisplayTimezone}>
+          <SelectTrigger className="w-48">
+            <Globe className="h-4 w-4 mr-2" />
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {timezoneOptions.map((tz) => (
+              <SelectItem key={tz.value} value={tz.value}>
+                {tz.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        <div className="flex border border-gray-300 rounded-lg overflow-hidden">
+          {[Views.MONTH, Views.WEEK, Views.DAY].map((viewOption) => (
+            <Button
+              key={viewOption}
+              variant={view === viewOption ? 'primary' : 'ghost'}
+              size="sm"
+              onClick={() => onView(viewOption)}
+              className="rounded-none"
+            >
+              {viewOption}
+            </Button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+
+  // Loading state
+  if (isLoading) {
+    return (
+      <Card className={cn('p-6', className)}>
+        <div className="flex items-center justify-center h-96">
+          <div className="flex items-center gap-3">
+            <RefreshCw className="h-6 w-6 animate-spin text-primary-600" />
+            <span className="text-gray-600">Loading calendar...</span>
+          </div>
+        </div>
+      </Card>
+    );
+  }
+
+  // No meeting type selected for selectable calendar
+  if (isSelectable && !selectedMeetingType) {
+    return (
+      <Card className={cn('p-6', className)}>
+        <div className="text-center py-12">
+          <CalendarIcon className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+          <h3 className="text-lg font-medium text-gray-900 mb-2">
+            Select a Meeting Type
+          </h3>
+          <p className="text-gray-600">
+            Choose a meeting type to see available time slots
+          </p>
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <div className={cn('space-y-4', className)}>
+      {/* Header with selected slot info */}
+      {isSelectable && selectedSlot && (
+        <Card className="p-4 bg-success-50 border-success-200">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <CheckCircle className="h-5 w-5 text-success-600" />
+              <div>
+                <p className="font-medium text-success-900">
+                  Selected:{' '}
+                  {moment(selectedSlot.start)
+                    .tz(displayTimezone)
+                    .format('dddd, MMMM D, YYYY')}
+                </p>
+                <p className="text-sm text-success-700">
+                  {moment(selectedSlot.start)
+                    .tz(displayTimezone)
+                    .format('h:mm A')}{' '}
+                  -
+                  {moment(selectedSlot.end)
+                    .tz(displayTimezone)
+                    .format('h:mm A')}{' '}
+                  ({displayTimezone})
+                </p>
+              </div>
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setSelectedSlot(null);
+                onSlotDeselect?.();
+              }}
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+        </Card>
+      )}
+
+      {/* Legend */}
+      <div className="flex flex-wrap items-center gap-4 p-4 bg-gray-50 rounded-lg">
+        <div className="flex items-center gap-2">
+          <div
+            className="w-3 h-3 rounded"
+            style={{ backgroundColor: selectedMeetingType?.color || '#E5E7EB' }}
+          />
+          <span className="text-sm">Available</span>
+        </div>
+        {isSelectable && (
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 rounded bg-success-500" />
+            <span className="text-sm">Selected</span>
+          </div>
+        )}
+        {showBookings && (
+          <>
+            <div className="flex items-center gap-2">
+              <div className="w-3 h-3 rounded bg-success-500" />
+              <span className="text-sm">Confirmed</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="w-3 h-3 rounded bg-warning-500" />
+              <span className="text-sm">Pending</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="w-3 h-3 rounded bg-error-500" />
+              <span className="text-sm">Cancelled</span>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Calendar */}
+      <Card className="p-4">
+        <Calendar
+          localizer={localizer}
+          events={allEvents}
+          startAccessor="start"
+          endAccessor="end"
+          date={currentDate}
+          view={currentView}
+          onNavigate={handleNavigate}
+          onView={handleViewChange}
+          onSelectEvent={handleSelectEvent}
+          eventPropGetter={eventStyleGetter}
+          components={{
+            toolbar: CustomToolbar,
+          }}
+          style={{
+            height: compactMode ? 400 : 600,
+            fontSize: '14px',
+          }}
+          views={[Views.MONTH, Views.WEEK, Views.DAY]}
+          step={30}
+          timeslots={2}
+          min={new Date(2024, 0, 1, 7, 0, 0)} // 7 AM
+          max={new Date(2024, 0, 1, 20, 0, 0)} // 8 PM
+          formats={{
+            timeGutterFormat: 'HH:mm',
+            eventTimeRangeFormat: ({ start, end }: any) =>
+              `${moment(start).format('HH:mm')} - ${moment(end).format('HH:mm')}`,
+            agendaTimeRangeFormat: ({ start, end }: any) =>
+              `${moment(start).format('HH:mm')} - ${moment(end).format('HH:mm')}`,
+          }}
+          dayLayoutAlgorithm="no-overlap"
+        />
+      </Card>
+
+      {/* Stats */}
+      {!compactMode && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+          <Card className="p-4 text-center">
+            <div className="text-2xl font-bold text-primary-600">
+              {availableSlots.length}
+            </div>
+            <div className="text-sm text-gray-600">Available Slots</div>
+          </Card>
+
+          <Card className="p-4 text-center">
+            <div className="text-2xl font-bold text-success-600">
+              {existingBookings.filter((b) => b.status === 'confirmed').length}
+            </div>
+            <div className="text-sm text-gray-600">Confirmed</div>
+          </Card>
+
+          <Card className="p-4 text-center">
+            <div className="text-2xl font-bold text-warning-600">
+              {existingBookings.filter((b) => b.status === 'pending').length}
+            </div>
+            <div className="text-sm text-gray-600">Pending</div>
+          </Card>
+
+          <Card className="p-4 text-center">
+            <div className="text-2xl font-bold text-gray-600">
+              {moment().tz(displayTimezone).format('HH:mm')}
+            </div>
+            <div className="text-sm text-gray-600">Current Time</div>
+          </Card>
+        </div>
+      )}
+    </div>
+  );
+}

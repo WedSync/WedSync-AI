@@ -1,0 +1,72 @@
+'use client';
+
+import { useEffect } from 'react';
+import {
+  initWebVitals,
+  monitorResourceLoading,
+} from '@/lib/monitoring/performance';
+
+export function MonitoringProvider({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  useEffect(() => {
+    // Initialize Web Vitals tracking
+    initWebVitals();
+
+    // Start monitoring resource loading
+    monitorResourceLoading();
+
+    // Initialize client-side error tracking
+    window.addEventListener('unhandledrejection', (event) => {
+      // Log unhandled promise rejections
+      console.error('Unhandled promise rejection:', event.reason);
+
+      // Send to monitoring
+      fetch('/api/analytics/client-errors', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'unhandled_rejection',
+          error: event.reason?.toString(),
+          timestamp: Date.now(),
+          url: window.location.href,
+          userAgent: navigator.userAgent,
+        }),
+      }).catch(console.error);
+    });
+
+    // Track page navigation timing
+    const observer = new PerformanceObserver((list) => {
+      list.getEntries().forEach((entry) => {
+        if (entry.entryType === 'navigation') {
+          const navEntry = entry as PerformanceNavigationTiming;
+
+          // Send navigation timing data
+          fetch('/api/analytics/navigation-timing', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              page: window.location.pathname,
+              domContentLoaded:
+                navEntry.domContentLoadedEventEnd -
+                navEntry.domContentLoadedEventStart,
+              loadComplete: navEntry.loadEventEnd - navEntry.loadEventStart,
+              responseTime: navEntry.responseEnd - navEntry.requestStart,
+              timestamp: Date.now(),
+            }),
+          }).catch(console.error);
+        }
+      });
+    });
+
+    observer.observe({ entryTypes: ['navigation'] });
+
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
+
+  return <>{children}</>;
+}

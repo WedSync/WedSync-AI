@@ -1,0 +1,146 @@
+/**
+ * WedSync P0 Security: Decryption Test API Endpoint
+ * 
+ * SECURITY LEVEL: P0 - CRITICAL
+ * PURPOSE: Test decryption functionality
+ * 
+ * @description API endpoint for testing field-level decryption
+ * @version 2.0.0
+ */
+
+import { NextRequest, NextResponse } from 'next/server'
+import { weddingEncryptionEngine } from '@/lib/security/encryption'
+import { createClient } from '@supabase/supabase-js'
+
+// Store encrypted data in memory for testing (in production, this would be from DB)
+let testEncryptedData: any = null
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = createClientComponentClient()
+    
+    // Get authenticated user
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      )
+    }
+
+    // Get tenant ID from user profile
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('id', session.user.id)
+      .single()
+    
+    const tenantId = profile?.organization_id || session.user.id
+
+    // Create test data if not exists
+    if (!testEncryptedData) {
+      // Encrypt test data first
+      const encryptedName = await weddingEncryptionEngine.encryptField(
+        tenantId,
+        'guestName',
+        'John Doe'
+      )
+
+      const encryptedEmail = await weddingEncryptionEngine.encryptField(
+        tenantId,
+        'email',
+        'john@example.com'
+      )
+
+      const encryptedPhone = await weddingEncryptionEngine.encryptField(
+        tenantId,
+        'phone',
+        '+1234567890'
+      )
+
+      testEncryptedData = {
+        guestName: encryptedName,
+        email: encryptedEmail,
+        phone: encryptedPhone,
+      }
+    }
+
+    // Decrypt the data
+    const decryptedName = await weddingEncryptionEngine.decryptField(testEncryptedData.guestName)
+    const decryptedEmail = await weddingEncryptionEngine.decryptField(testEncryptedData.email)
+    const decryptedPhone = await weddingEncryptionEngine.decryptField(testEncryptedData.phone)
+
+    // Get performance metrics
+    const metrics = weddingEncryptionEngine.getPerformanceMetrics()
+
+    return NextResponse.json({
+      success: true,
+      tenantId,
+      guestName: decryptedName,
+      email: decryptedEmail,
+      phone: decryptedPhone,
+      performance: {
+        encryptionMetrics: metrics.encrypt || { avg: 0, max: 0, count: 0 },
+        decryptionMetrics: metrics.decrypt || { avg: 0, max: 0, count: 0 },
+        compliance: {
+          maxLatencyMs: 100,
+          actualAvgMs: metrics.decrypt?.avg || 0,
+          withinCompliance: (metrics.decrypt?.avg || 0) < 100
+        }
+      }
+    })
+  } catch (error) {
+    console.error('Decryption test failed:', error)
+    return NextResponse.json(
+      { 
+        error: 'Decryption test failed',
+        message: process.env.NODE_ENV === 'development' ? error.message : undefined
+      },
+      { status: 500 }
+    )
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = createClientComponentClient()
+    
+    // Get authenticated user
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      )
+    }
+
+    // Accept encrypted data to decrypt
+    const body = await request.json()
+    const { encryptedData } = body
+
+    if (!encryptedData || !encryptedData.encrypted || !encryptedData.metadata) {
+      return NextResponse.json(
+        { error: 'Invalid encrypted data format' },
+        { status: 400 }
+      )
+    }
+
+    // Decrypt the provided data
+    const decrypted = await weddingEncryptionEngine.decryptField(encryptedData)
+
+    return NextResponse.json({
+      success: true,
+      decrypted,
+      metadata: encryptedData.metadata
+    })
+  } catch (error) {
+    console.error('Decryption failed:', error)
+    return NextResponse.json(
+      { 
+        error: 'Decryption failed',
+        message: process.env.NODE_ENV === 'development' ? error.message : undefined
+      },
+      { status: 500 }
+    )
+  }
+}

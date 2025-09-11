@@ -1,0 +1,534 @@
+'use client';
+
+import React, { useState, useEffect } from 'react';
+import { 
+  AlertTriangle, 
+  Clock, 
+  Users, 
+  TrendingUp, 
+  Filter, 
+  Search,
+  RefreshCw,
+  Eye,
+  X,
+  Calendar,
+  MapPin,
+  User,
+  Zap
+} from 'lucide-react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Badge } from '@/components/ui/badge';
+import { 
+  Select, 
+  SelectContent, 
+  SelectItem, 
+  SelectTrigger, 
+  SelectValue 
+} from '@/components/ui/select';
+import { 
+  Dialog, 
+  DialogContent, 
+  DialogHeader, 
+  DialogTitle 
+} from '@/components/ui/dialog';
+
+interface ErrorEvent {
+  id: string;
+  message: string;
+  type: string;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  count: number;
+  firstSeen: string;
+  lastSeen: string;
+  affectedUsers: number;
+  weddingContext?: {
+    weddingDate?: string;
+    clientId?: string;
+    vendorType?: string;
+    urgency?: string;
+  };
+  environment: string;
+  endpoint?: string;
+  stackTrace?: string;
+  userAgent?: string;
+  resolved: boolean;
+}
+
+interface ErrorStats {
+  totalErrors24h: number;
+  errorRate: number;
+  affectedUsers: number;
+  criticalErrors: number;
+  weddingImpactErrors: number;
+  topErrorTypes: { name: string; count: number }[];
+}
+
+export default function ErrorDashboard() {
+  const [errors, setErrors] = useState<ErrorEvent[]>([]);
+  const [stats, setStats] = useState<ErrorStats>({
+    totalErrors24h: 0,
+    errorRate: 0,
+    affectedUsers: 0,
+    criticalErrors: 0,
+    weddingImpactErrors: 0,
+    topErrorTypes: []
+  });
+  const [selectedError, setSelectedError] = useState<ErrorEvent | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [severityFilter, setSeverityFilter] = useState<string>('all');
+  const [timeRange, setTimeRange] = useState<string>('24h');
+  const [autoRefresh, setAutoRefresh] = useState(true);
+
+  // Load error data
+  useEffect(() => {
+    loadErrorData();
+    
+    if (autoRefresh) {
+      const interval = setInterval(loadErrorData, 30000); // Refresh every 30 seconds
+      return () => clearInterval(interval);
+    }
+  }, [timeRange, autoRefresh]);
+
+  const loadErrorData = async () => {
+    setLoading(true);
+    try {
+      // Mock data for demo - in real implementation, this would call /api/errors/dashboard
+      const mockStats: ErrorStats = {
+        totalErrors24h: 157,
+        errorRate: 2.3,
+        affectedUsers: 23,
+        criticalErrors: 3,
+        weddingImpactErrors: 8,
+        topErrorTypes: [
+          { name: 'ValidationError', count: 45 },
+          { name: 'NetworkError', count: 32 },
+          { name: 'AuthenticationError', count: 28 },
+          { name: 'TimeoutError', count: 22 }
+        ]
+      };
+
+      const mockErrors: ErrorEvent[] = [
+        {
+          id: 'err_1',
+          message: 'Failed to upload wedding photos',
+          type: 'NetworkError',
+          severity: 'critical',
+          count: 15,
+          firstSeen: new Date(Date.now() - 3600000).toISOString(),
+          lastSeen: new Date(Date.now() - 300000).toISOString(),
+          affectedUsers: 8,
+          weddingContext: {
+            weddingDate: '2025-01-25',
+            vendorType: 'photographer',
+            urgency: 'critical'
+          },
+          environment: 'production',
+          endpoint: '/api/photos/upload',
+          resolved: false
+        },
+        {
+          id: 'err_2',
+          message: 'Vendor availability check timeout',
+          type: 'TimeoutError',
+          severity: 'high',
+          count: 7,
+          firstSeen: new Date(Date.now() - 7200000).toISOString(),
+          lastSeen: new Date(Date.now() - 600000).toISOString(),
+          affectedUsers: 5,
+          weddingContext: {
+            weddingDate: '2025-02-14',
+            vendorType: 'venue',
+            urgency: 'high'
+          },
+          environment: 'production',
+          endpoint: '/api/vendors/availability',
+          resolved: false
+        },
+        {
+          id: 'err_3',
+          message: 'Guest RSVP form validation failed',
+          type: 'ValidationError',
+          severity: 'medium',
+          count: 23,
+          firstSeen: new Date(Date.now() - 10800000).toISOString(),
+          lastSeen: new Date(Date.now() - 1200000).toISOString(),
+          affectedUsers: 15,
+          environment: 'production',
+          endpoint: '/api/rsvp/submit',
+          resolved: false
+        }
+      ];
+
+      setStats(mockStats);
+      setErrors(mockErrors);
+    } catch (error) {
+      console.error('Failed to load error data:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const filteredErrors = errors.filter(error => {
+    const matchesSearch = error.message.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                         error.type.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesSeverity = severityFilter === 'all' || error.severity === severityFilter;
+    return matchesSearch && matchesSeverity;
+  });
+
+  const getSeverityColor = (severity: string) => {
+    switch (severity) {
+      case 'critical': return 'bg-red-100 text-red-800 border-red-200';
+      case 'high': return 'bg-orange-100 text-orange-800 border-orange-200';
+      case 'medium': return 'bg-yellow-100 text-yellow-800 border-yellow-200';
+      case 'low': return 'bg-blue-100 text-blue-800 border-blue-200';
+      default: return 'bg-gray-100 text-gray-800 border-gray-200';
+    }
+  };
+
+  const getUrgencyIcon = (error: ErrorEvent) => {
+    if (error.weddingContext?.urgency === 'critical') return <Zap className="h-4 w-4 text-red-500" />;
+    if (error.severity === 'critical') return <AlertTriangle className="h-4 w-4 text-red-500" />;
+    return null;
+  };
+
+  const formatRelativeTime = (dateString: string) => {
+    const date = new Date(dateString);
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    if (diffHours < 24) return `${diffHours}h ago`;
+    return date.toLocaleDateString();
+  };
+
+  const getDaysUntilWedding = (weddingDate?: string) => {
+    if (!weddingDate) return null;
+    const days = Math.ceil((new Date(weddingDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+    return days;
+  };
+
+  return (
+    <div className="container mx-auto p-6 space-y-6">
+      {/* Header */}
+      <div className="flex justify-between items-center">
+        <div>
+          <h1 className="text-3xl font-bold">Error Monitoring Dashboard</h1>
+          <p className="text-muted-foreground">Real-time error tracking and wedding impact analysis</p>
+        </div>
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={loadErrorData}
+            disabled={loading}
+          >
+            <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
+            Refresh
+          </Button>
+          <Button
+            variant={autoRefresh ? "primary" : "outline"}
+            size="sm"
+            onClick={() => setAutoRefresh(!autoRefresh)}
+          >
+            Auto-refresh {autoRefresh ? 'ON' : 'OFF'}
+          </Button>
+        </div>
+      </div>
+
+      {/* Stats Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium">Total Errors (24h)</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-red-600">{stats.totalErrors24h}</div>
+            <p className="text-xs text-muted-foreground">
+              <TrendingUp className="h-3 w-3 inline mr-1" />
+              {stats.errorRate}% error rate
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium">Affected Users</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-orange-600">{stats.affectedUsers}</div>
+            <p className="text-xs text-muted-foreground">
+              <Users className="h-3 w-3 inline mr-1" />
+              Unique users affected
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium">Critical Errors</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-red-500">{stats.criticalErrors}</div>
+            <p className="text-xs text-muted-foreground">
+              <AlertTriangle className="h-3 w-3 inline mr-1" />
+              Requires immediate attention
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium">Wedding Impact</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-purple-600">{stats.weddingImpactErrors}</div>
+            <p className="text-xs text-muted-foreground">
+              <Calendar className="h-3 w-3 inline mr-1" />
+              Wedding-related errors
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Filters and Search */}
+      <Card>
+        <CardContent className="pt-6">
+          <div className="flex flex-wrap gap-4 items-center">
+            <div className="flex-1 min-w-[200px]">
+              <div className="relative">
+                <Search className="h-4 w-4 absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  placeholder="Search errors..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="pl-10"
+                />
+              </div>
+            </div>
+            <Select value={severityFilter} onValueChange={setSeverityFilter}>
+              <SelectTrigger className="w-[150px]">
+                <SelectValue placeholder="Severity" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Severities</SelectItem>
+                <SelectItem value="critical">Critical</SelectItem>
+                <SelectItem value="high">High</SelectItem>
+                <SelectItem value="medium">Medium</SelectItem>
+                <SelectItem value="low">Low</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select value={timeRange} onValueChange={setTimeRange}>
+              <SelectTrigger className="w-[120px]">
+                <SelectValue placeholder="Time Range" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="1h">Last Hour</SelectItem>
+                <SelectItem value="24h">Last 24h</SelectItem>
+                <SelectItem value="7d">Last 7 days</SelectItem>
+                <SelectItem value="30d">Last 30 days</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Error List */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Recent Errors ({filteredErrors.length})</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {loading ? (
+            <div className="text-center py-8">
+              <RefreshCw className="h-8 w-8 animate-spin mx-auto mb-4 text-muted-foreground" />
+              <p className="text-muted-foreground">Loading error data...</p>
+            </div>
+          ) : filteredErrors.length === 0 ? (
+            <div className="text-center py-8">
+              <AlertTriangle className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
+              <p className="text-muted-foreground">No errors found matching your filters</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {filteredErrors.map((error) => {
+                const daysUntilWedding = getDaysUntilWedding(error.weddingContext?.weddingDate);
+                
+                return (
+                  <div
+                    key={error.id}
+                    className="border rounded-lg p-4 hover:shadow-md transition-shadow cursor-pointer"
+                    onClick={() => setSelectedError(error)}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 mb-2">
+                          {getUrgencyIcon(error)}
+                          <h3 className="font-semibold truncate">{error.message}</h3>
+                          <Badge className={getSeverityColor(error.severity)}>
+                            {error.severity.toUpperCase()}
+                          </Badge>
+                        </div>
+                        
+                        <div className="flex flex-wrap gap-4 text-sm text-muted-foreground mb-2">
+                          <span className="flex items-center gap-1">
+                            <AlertTriangle className="h-3 w-3" />
+                            {error.type}
+                          </span>
+                          <span className="flex items-center gap-1">
+                            <TrendingUp className="h-3 w-3" />
+                            {error.count} occurrences
+                          </span>
+                          <span className="flex items-center gap-1">
+                            <Users className="h-3 w-3" />
+                            {error.affectedUsers} users
+                          </span>
+                          <span className="flex items-center gap-1">
+                            <Clock className="h-3 w-3" />
+                            Last seen {formatRelativeTime(error.lastSeen)}
+                          </span>
+                        </div>
+
+                        {error.weddingContext && (
+                          <div className="flex items-center gap-4 text-sm">
+                            <Badge variant="outline" className="text-purple-600 border-purple-200">
+                              <Calendar className="h-3 w-3 mr-1" />
+                              Wedding Context
+                            </Badge>
+                            <span className="text-muted-foreground">
+                              {error.weddingContext.vendorType}
+                            </span>
+                            {daysUntilWedding !== null && (
+                              <span className={`font-medium ${
+                                daysUntilWedding <= 1 ? 'text-red-600' :
+                                daysUntilWedding <= 7 ? 'text-orange-600' : 'text-gray-600'
+                              }`}>
+                                {daysUntilWedding <= 0 ? 'Wedding Today!' :
+                                 daysUntilWedding === 1 ? 'Wedding Tomorrow!' :
+                                 `${daysUntilWedding} days until wedding`}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                      
+                      <Button variant="outline" size="sm">
+                        <Eye className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Error Detail Modal */}
+      <Dialog open={selectedError !== null} onOpenChange={() => setSelectedError(null)}>
+        <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              {selectedError && getUrgencyIcon(selectedError)}
+              Error Details
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setSelectedError(null)}
+                className="ml-auto"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </DialogTitle>
+          </DialogHeader>
+          
+          {selectedError && (
+            <div className="space-y-6">
+              {/* Error Summary */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <h4 className="font-semibold mb-2">Error Information</h4>
+                  <div className="space-y-2 text-sm">
+                    <div><strong>Message:</strong> {selectedError.message}</div>
+                    <div><strong>Type:</strong> {selectedError.type}</div>
+                    <div>
+                      <strong>Severity:</strong>
+                      <Badge className={`ml-2 ${getSeverityColor(selectedError.severity)}`}>
+                        {selectedError.severity.toUpperCase()}
+                      </Badge>
+                    </div>
+                    <div><strong>Environment:</strong> {selectedError.environment}</div>
+                    <div><strong>Endpoint:</strong> {selectedError.endpoint || 'Unknown'}</div>
+                  </div>
+                </div>
+                
+                <div>
+                  <h4 className="font-semibold mb-2">Impact & Timing</h4>
+                  <div className="space-y-2 text-sm">
+                    <div><strong>Occurrences:</strong> {selectedError.count}</div>
+                    <div><strong>Affected Users:</strong> {selectedError.affectedUsers}</div>
+                    <div><strong>First Seen:</strong> {new Date(selectedError.firstSeen).toLocaleString()}</div>
+                    <div><strong>Last Seen:</strong> {new Date(selectedError.lastSeen).toLocaleString()}</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Wedding Context */}
+              {selectedError.weddingContext && (
+                <div>
+                  <h4 className="font-semibold mb-2 flex items-center gap-2">
+                    <Calendar className="h-4 w-4 text-purple-600" />
+                    Wedding Context
+                  </h4>
+                  <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
+                    <div className="grid grid-cols-2 gap-4 text-sm">
+                      <div><strong>Vendor Type:</strong> {selectedError.weddingContext.vendorType}</div>
+                      <div><strong>Wedding Date:</strong> {selectedError.weddingContext.weddingDate || 'Not specified'}</div>
+                      <div><strong>Urgency Level:</strong> {selectedError.weddingContext.urgency}</div>
+                      <div><strong>Client ID:</strong> {selectedError.weddingContext.clientId || 'Unknown'}</div>
+                    </div>
+                    {selectedError.weddingContext.weddingDate && (
+                      <div className="mt-3 p-3 bg-white rounded border">
+                        <strong>Wedding Timeline Impact:</strong>
+                        <span className={`ml-2 font-medium ${
+                          getDaysUntilWedding(selectedError.weddingContext.weddingDate)! <= 1 ? 'text-red-600' : 'text-gray-600'
+                        }`}>
+                          {getDaysUntilWedding(selectedError.weddingContext.weddingDate)! <= 0 ? 
+                            '🚨 Wedding is TODAY - Critical Priority!' :
+                            `⏰ ${getDaysUntilWedding(selectedError.weddingContext.weddingDate)} days until wedding`
+                          }
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Stack Trace */}
+              {selectedError.stackTrace && (
+                <div>
+                  <h4 className="font-semibold mb-2">Stack Trace</h4>
+                  <pre className="bg-gray-100 border rounded-lg p-4 text-xs overflow-auto max-h-60 font-mono">
+                    {selectedError.stackTrace}
+                  </pre>
+                </div>
+              )}
+
+              {/* Action Buttons */}
+              <div className="flex gap-2 pt-4 border-t">
+                <Button className="flex-1">Mark as Resolved</Button>
+                <Button variant="outline" className="flex-1">Investigate</Button>
+                <Button variant="outline">Create Issue</Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}

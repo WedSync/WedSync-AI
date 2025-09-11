@@ -1,0 +1,196 @@
+/**
+ * Image Optimization Utilities Unit Tests - WS-079 Photo Gallery System
+ */
+
+import {
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+  getOptimizedImageUrl,
+  getResponsiveImageUrls,
+  generateSrcSet,
+  generateSizes,
+  generateBlurPlaceholder,
+  getImageMetadata,
+  calculateOptimalDimensions
+} from '@/lib/utils/image-optimization';
+import { Photo } from '@/types/photos';
+import { createClient } from '@supabase/supabase-js';
+// Mock Supabase client
+vi.mock('@supabase/supabase-js');
+const mockSupabase = {
+  storage: {
+    from: jest.fn(() => ({
+      getPublicUrl: jest.fn((path: string) => ({
+        data: { publicUrl: `https://example.com${path}` }
+      }))
+    }))
+  }
+};
+(createClient as ReturnType<typeof vi.fn>).mockReturnValue(mockSupabase);
+describe('Image Optimization Utilities', () => {
+  const mockPhoto: Photo = {
+    id: 'photo-1',
+    bucketId: 'bucket-1',
+    organizationId: 'org-1',
+    filename: 'test.jpg',
+    filePath: '/photos/test.jpg',
+    thumbnailPath: '/photos/thumbs/test_thumb.jpg',
+    previewPath: '/photos/previews/test_preview.jpg',
+    optimizedPath: '/photos/optimized/test_opt.jpg',
+    width: 2048,
+    height: 1536,
+    sortOrder: 0,
+    isFeatured: false,
+    isApproved: true,
+    approvalStatus: 'approved',
+    viewCount: 0,
+    downloadCount: 0,
+    createdAt: '2024-01-01T00:00:00Z',
+    updatedAt: '2024-01-01T00:00:00Z',
+    uploadedBy: 'user-1',
+    tags: []
+  };
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+  describe('getOptimizedImageUrl', () => {
+    it('should return thumbnail URL for thumbnail quality', () => {
+      const url = getOptimizedImageUrl(mockPhoto, 'thumbnail');
+      expect(url).toBe('https://example.com/photos/thumbs/test_thumb.jpg');
+    });
+    it('should return preview URL for preview quality', () => {
+      const url = getOptimizedImageUrl(mockPhoto, 'preview');
+      expect(url).toBe('https://example.com/photos/previews/test_preview.jpg');
+    it('should return optimized URL for optimized quality', () => {
+      const url = getOptimizedImageUrl(mockPhoto, 'optimized');
+      expect(url).toBe('https://example.com/photos/optimized/test_opt.jpg');
+    it('should return original URL for original quality', () => {
+      const url = getOptimizedImageUrl(mockPhoto, 'original');
+      expect(url).toBe('https://example.com/photos/test.jpg');
+    it('should fallback to original if specific quality not available', () => {
+      const photoWithoutThumbnail = {
+        ...mockPhoto,
+        thumbnailPath: undefined
+      };
+      const url = getOptimizedImageUrl(photoWithoutThumbnail, 'thumbnail');
+    it('should apply transformations when provided', () => {
+      const url = getOptimizedImageUrl(mockPhoto, 'preview', {
+        width: 400,
+        height: 300,
+        quality: 85,
+        format: 'webp'
+      });
+      
+      expect(url).toContain('width=400');
+      expect(url).toContain('height=300');
+      expect(url).toContain('quality=85');
+      expect(url).toContain('format=webp');
+  describe('getResponsiveImageUrls', () => {
+    it('should return URLs for different screen sizes', () => {
+      const urls = getResponsiveImageUrls(mockPhoto);
+      expect(urls).toHaveProperty('mobile');
+      expect(urls).toHaveProperty('tablet');
+      expect(urls).toHaveProperty('desktop');
+      expect(urls).toHaveProperty('original');
+      expect(urls.mobile).toContain('width=400');
+      expect(urls.tablet).toContain('width=800');
+      expect(urls.desktop).toContain('width=1200');
+  describe('generateSrcSet', () => {
+    it('should generate valid srcSet string', () => {
+      const srcSet = generateSrcSet(mockPhoto);
+      expect(srcSet).toContain('400w');
+      expect(srcSet).toContain('800w');
+      expect(srcSet).toContain('1200w');
+      expect(srcSet).toContain('2048w');
+      expect(srcSet).toMatch(/,\s*/); // Should have comma separators
+  describe('generateSizes', () => {
+    it('should generate default sizes string', () => {
+      const sizes = generateSizes();
+      expect(sizes).toContain('(max-width: 640px) 100vw');
+      expect(sizes).toContain('(max-width: 1024px) 50vw');
+      expect(sizes).toContain('33vw');
+    it('should use custom breakpoints when provided', () => {
+      const sizes = generateSizes({
+        mobile: '90vw',
+        tablet: '45vw',
+        desktop: '30vw'
+      expect(sizes).toContain('90vw');
+      expect(sizes).toContain('45vw');
+      expect(sizes).toContain('30vw');
+  describe('generateBlurPlaceholder', () => {
+    it('should return a data URL for blur placeholder', () => {
+      const placeholder = generateBlurPlaceholder(mockPhoto);
+      expect(placeholder).toStartWith('data:image/jpeg;base64,');
+      expect(placeholder.length).toBeGreaterThan(50);
+  describe('getImageMetadata', () => {
+    it('should calculate aspect ratio and orientation for landscape image', () => {
+      const metadata = getImageMetadata(mockPhoto);
+      expect(metadata.aspectRatio).toBeCloseTo(2048 / 1536);
+      expect(metadata.isLandscape).toBe(true);
+      expect(metadata.isPortrait).toBe(false);
+      expect(metadata.isSquare).toBe(false);
+      expect(metadata.megapixels).toBeCloseTo(3.1);
+    it('should identify portrait image correctly', () => {
+      const portraitPhoto = {
+        width: 1536,
+        height: 2048
+      const metadata = getImageMetadata(portraitPhoto);
+      expect(metadata.isPortrait).toBe(true);
+      expect(metadata.isLandscape).toBe(false);
+    it('should identify square image correctly', () => {
+      const squarePhoto = {
+        width: 1000,
+        height: 1000
+      const metadata = getImageMetadata(squarePhoto);
+      expect(metadata.isSquare).toBe(true);
+      expect(metadata.aspectRatio).toBe(1);
+    it('should handle missing dimensions', () => {
+      const photoNoDimensions = {
+        width: undefined,
+        height: undefined
+      const metadata = getImageMetadata(photoNoDimensions);
+      expect(metadata.megapixels).toBeUndefined();
+  describe('calculateOptimalDimensions', () => {
+    it('should calculate cover dimensions for landscape photo in portrait container', () => {
+      const dimensions = calculateOptimalDimensions(400, 600, mockPhoto, 'cover');
+      expect(dimensions.width).toBeCloseTo(800); // 600 * (2048/1536)
+      expect(dimensions.height).toBe(600);
+    it('should calculate cover dimensions for portrait photo in landscape container', () => {
+      const dimensions = calculateOptimalDimensions(800, 400, portraitPhoto, 'cover');
+      expect(dimensions.width).toBe(800);
+      expect(dimensions.height).toBeCloseTo(1066.67); // 800 / (1536/2048)
+    it('should calculate contain dimensions correctly', () => {
+      const dimensions = calculateOptimalDimensions(800, 600, mockPhoto, 'contain');
+      expect(dimensions.height).toBeCloseTo(600); // 800 * (1536/2048)
+    it('should handle missing photo dimensions', () => {
+      const dimensions = calculateOptimalDimensions(400, 300, photoNoDimensions, 'cover');
+      expect(dimensions.width).toBe(400);
+      expect(dimensions.height).toBe(300);
+  describe('URL parameter handling', () => {
+    it('should handle multiple transform parameters correctly', () => {
+        width: 800,
+        height: 600,
+        resize: 'cover',
+        format: 'webp',
+        quality: 90
+      const urlObj = new URL(url);
+      const params = urlObj.searchParams;
+      expect(params.get('width')).toBe('800');
+      expect(params.get('height')).toBe('600');
+      expect(params.get('resize')).toBe('cover');
+      expect(params.get('format')).toBe('webp');
+      expect(params.get('quality')).toBe('90');
+    it('should not add transform parameters when none provided', () => {
+      expect(url).not.toContain('?');
+      expect(url).not.toContain('&');
+  describe('Edge cases', () => {
+    it('should handle photo with no optimization paths', () => {
+      const basicPhoto = {
+        thumbnailPath: undefined,
+        previewPath: undefined,
+        optimizedPath: undefined
+      const url = getOptimizedImageUrl(basicPhoto, 'thumbnail');
+    it('should generate srcSet even with missing optimization paths', () => {
+      const srcSet = generateSrcSet(basicPhoto);
+      expect(srcSet).toBeTruthy();
+      expect(srcSet).toContain('photos/test.jpg');
+});

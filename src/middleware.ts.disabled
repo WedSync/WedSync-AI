@@ -1,0 +1,98 @@
+import { type NextRequest, NextResponse } from 'next/server';
+
+// TODO: Create these modules when implementing full middleware functionality
+// import { updateSession } from '@/lib/supabase/middleware'
+// import { CSRFTokenService } from '@/lib/csrf-token-edge'
+// import { rateLimitService } from '@/lib/rate-limiter'
+// import { createRateLimitErrorResponse, withRateLimitHeaders } from '@/lib/rate-limiter/headers'
+// import { ddosProtection } from '@/lib/security/ddos-protection'
+// import { withSecurityHeaders, handleCorsPreflightRequest } from '@/lib/security/security-headers'
+// import { inputSanitizationMiddleware } from '@/lib/security/input-sanitization-middleware'
+// import { logger } from '@/lib/monitoring/edge-logger'
+// import { metrics } from '@/lib/monitoring/metrics'
+// import { authMiddleware } from '@/middleware/auth'
+
+export async function middleware(request: NextRequest) {
+  const path = request.nextUrl.pathname;
+
+  // Handle CORS preflight requests
+  if (request.method === 'OPTIONS') {
+    return new NextResponse(null, { status: 200 });
+  }
+
+  // Protected routes that require authentication
+  const protectedRoutes = [
+    '/dashboard',
+    '/clients',
+    '/vendors',
+    '/communications',
+    '/forms',
+    '/settings',
+    '/billing',
+  ];
+
+  // API routes that require authentication (except webhooks)
+  const protectedApiRoutes = [
+    '/api/clients',
+    '/api/suppliers',
+    '/api/vendor-categories',
+    '/api/communications',
+    '/api/stripe/create-checkout-session',
+    '/api/auth/mfa',
+    '/api/payments',
+    '/api/contracts',
+    '/api/vendor-payments',
+    '/api/api-keys',
+    '/api/billing',
+    '/api/team/permissions',
+  ];
+
+  // Public API routes that bypass authentication
+  const publicApiRoutes = ['/api/stripe/webhook', '/api/health'];
+
+  // Check if the current path needs protection
+  const isProtectedRoute = protectedRoutes.some((route) =>
+    path.startsWith(route),
+  );
+  const isProtectedApiRoute = protectedApiRoutes.some((route) =>
+    path.startsWith(route),
+  );
+  const isPublicApiRoute = publicApiRoutes.some((route) =>
+    path.startsWith(route),
+  );
+
+  // Skip protection for public API routes
+  if (isPublicApiRoute) {
+    return NextResponse.next();
+  }
+
+  // TODO: Implement full authentication when auth modules are available
+  // For now, allow all requests to pass through
+  if (isProtectedRoute || isProtectedApiRoute) {
+    console.log('Protected route accessed:', path);
+    // In full implementation, check authentication here
+    // For now, allow access
+  }
+
+  // Add basic security headers
+  const response = NextResponse.next();
+  response.headers.set('X-Frame-Options', 'DENY');
+  response.headers.set('X-Content-Type-Options', 'nosniff');
+  response.headers.set('X-XSS-Protection', '1; mode=block');
+
+  return response;
+}
+
+export const config = {
+  matcher: [
+    /*
+     * Match all request paths except:
+     * - _next/static (static files)
+     * - _next/image (image optimization files)
+     * - favicon.ico (favicon file)
+     * - images - .svg, .png, .jpg, .jpeg, .gif, .webp
+     * - public files
+     */
+    '/((?!_next/static|_next/image|favicon.ico|public|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+  ],
+};

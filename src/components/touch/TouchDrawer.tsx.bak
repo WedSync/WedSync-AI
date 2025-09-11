@@ -1,0 +1,454 @@
+'use client'
+
+import React, { useState, useRef, useCallback, useEffect } from 'react'
+import { cn } from '@/lib/utils'
+import { useHapticFeedback } from '@/hooks/useHapticFeedback'
+
+interface TouchDrawerProps {
+  isOpen?: boolean
+  onOpenChange?: (open: boolean) => void
+  children: React.ReactNode
+  direction?: 'top' | 'bottom' | 'left' | 'right'
+  size?: 'sm' | 'md' | 'lg' | 'full'
+  className?: string
+  overlayClassName?: string
+  enableSwipeToClose?: boolean
+  enableSwipeToOpen?: boolean
+  swipeThreshold?: number
+  momentumThreshold?: number
+  dampening?: number
+  snapPoints?: number[] // Percentage points where drawer can snap
+  onSnapToPoint?: (point: number) => void
+  backdrop?: boolean
+  modal?: boolean
+  trigger?: React.ReactNode
+}
+
+export const TouchDrawer: React.FC<TouchDrawerProps> = ({
+  isOpen = false,
+  onOpenChange,
+  children,
+  direction = 'bottom',
+  size = 'md',
+  className,
+  overlayClassName,
+  enableSwipeToClose = true,
+  enableSwipeToOpen = false,
+  swipeThreshold = 50,
+  momentumThreshold = 0.3,
+  dampening = 0.8,
+  snapPoints = [0, 50, 100], // Closed, half-open, full-open
+  onSnapToPoint,
+  backdrop = true,
+  modal = true,
+  trigger
+}) => {
+  const [isDragging, setIsDragging] = useState(false)
+  const [currentPosition, setCurrentPosition] = useState(isOpen ? 100 : 0)
+  const [dragPosition, setDragPosition] = useState(0)
+  const [velocity, setVelocity] = useState(0)
+  const [isAnimating, setIsAnimating] = useState(false)
+
+  const drawerRef = useRef<HTMLDivElement>(null)
+  const overlayRef = useRef<HTMLDivElement>(null)
+  const touchStartRef = useRef<{ x: number; y: number; time: number } | null>(null)
+  const lastTouchRef = useRef<{ x: number; y: number; time: number } | null>(null)
+  const animationFrameRef = useRef<number | null>(null)
+
+  const haptics = useHapticFeedback()
+
+  // Size configurations
+  const sizeConfig = {
+    sm: { bottom: 'h-1/3', top: 'h-1/3', left: 'w-80', right: 'w-80' },
+    md: { bottom: 'h-1/2', top: 'h-1/2', left: 'w-96', right: 'w-96' },
+    lg: { bottom: 'h-2/3', top: 'h-2/3', left: 'w-1/2', right: 'w-1/2' },
+    full: { bottom: 'h-full', top: 'h-full', left: 'w-full', right: 'w-full' }
+  }
+
+  // Animation with momentum physics
+  const animateToPosition = useCallback((targetPosition: number, initialVelocity = 0) => {
+    let currentPos = currentPosition
+    let currentVel = initialVelocity
+    const springConstant = 0.1
+    const damping = dampening
+
+    const animate = () => {
+      const force = (targetPosition - currentPos) * springConstant
+      currentVel += force
+      currentVel *= damping
+      currentPos += currentVel
+
+      setCurrentPosition(currentPos)
+
+      // Check if animation is complete (close enough to target with low velocity)
+      if (Math.abs(targetPosition - currentPos) < 0.5 && Math.abs(currentVel) < 0.1) {
+        setCurrentPosition(targetPosition)
+        setIsAnimating(false)
+        setVelocity(0)
+        
+        // Haptic feedback on snap
+        if (targetPosition === 100) {
+          haptics.success()
+        } else if (targetPosition === 0) {
+          haptics.light()
+        }
+
+        onSnapToPoint?.(targetPosition)
+        return
+      }
+
+      animationFrameRef.current = requestAnimationFrame(animate)
+    }
+
+    setIsAnimating(true)
+    animate()
+  }, [currentPosition, dampening, haptics, onSnapToPoint])
+
+  // Find nearest snap point
+  const findNearestSnapPoint = useCallback((position: number, vel: number) => {
+    let targetSnap = snapPoints.reduce((prev, curr) => 
+      Math.abs(curr - position) < Math.abs(prev - position) ? curr : prev
+    )
+
+    // Apply momentum to snap point selection
+    if (Math.abs(vel) > momentumThreshold) {
+      if (vel > 0) {
+        // Moving towards open, find next higher snap point
+        const higherSnapPoints = snapPoints.filter(point => point > position)
+        if (higherSnapPoints.length > 0) {
+          targetSnap = Math.min(...higherSnapPoints)
+        }
+      } else {
+        // Moving towards closed, find next lower snap point
+        const lowerSnapPoints = snapPoints.filter(point => point < position)
+        if (lowerSnapPoints.length > 0) {
+          targetSnap = Math.max(...lowerSnapPoints)
+        }
+      }
+    }
+
+    return targetSnap
+  }, [snapPoints, momentumThreshold])
+
+  // Touch event handlers
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    if (isAnimating) return
+
+    const touch = e.touches[0]
+    const startPos = {
+      x: touch.clientX,
+      y: touch.clientY,
+      time: Date.now()
+    }
+
+    touchStartRef.current = startPos
+    lastTouchRef.current = startPos
+    setIsDragging(true)
+    setDragPosition(currentPosition)
+
+    // Cancel any ongoing animation
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current)
+    }
+  }, [isAnimating, currentPosition])
+
+  const handleTouchMove = useCallback((e: React.TouchEvent) => {
+    if (!isDragging || !touchStartRef.current) return
+
+    const touch = e.touches[0]
+    const currentTouch = {
+      x: touch.clientX,
+      y: touch.clientY,
+      time: Date.now()
+    }
+
+    // Calculate movement delta based on direction
+    let delta = 0
+    const containerSize = direction === 'bottom' || direction === 'top' 
+      ? window.innerHeight 
+      : window.innerWidth
+
+    switch (direction) {
+      case 'bottom':
+        delta = (touchStartRef.current.y - currentTouch.y) / containerSize * 100
+        break
+      case 'top':
+        delta = (currentTouch.y - touchStartRef.current.y) / containerSize * 100
+        break
+      case 'right':
+        delta = (touchStartRef.current.x - currentTouch.x) / containerSize * 100
+        break
+      case 'left':
+        delta = (currentTouch.x - touchStartRef.current.x) / containerSize * 100
+        break
+    }
+
+    // Calculate velocity
+    if (lastTouchRef.current) {
+      const timeDelta = currentTouch.time - lastTouchRef.current.time
+      const posDelta = delta - (dragPosition - currentPosition)
+      setVelocity(timeDelta > 0 ? posDelta / timeDelta : 0)
+    }
+
+    const newPosition = Math.max(0, Math.min(100, dragPosition + delta))
+    setCurrentPosition(newPosition)
+    lastTouchRef.current = currentTouch
+
+    // Provide haptic feedback at snap points
+    if (snapPoints.some(point => Math.abs(point - newPosition) < 2)) {
+      haptics.light()
+    }
+
+    e.preventDefault()
+  }, [isDragging, dragPosition, currentPosition, direction, haptics, snapPoints])
+
+  const handleTouchEnd = useCallback(() => {
+    if (!isDragging) return
+
+    setIsDragging(false)
+    touchStartRef.current = null
+    lastTouchRef.current = null
+
+    const targetSnap = findNearestSnapPoint(currentPosition, velocity)
+    
+    // Update open state
+    const wasOpen = currentPosition > 50
+    const willBeOpen = targetSnap > 50
+    
+    if (wasOpen !== willBeOpen) {
+      onOpenChange?.(willBeOpen)
+    }
+
+    animateToPosition(targetSnap, velocity)
+  }, [isDragging, currentPosition, velocity, findNearestSnapPoint, onOpenChange, animateToPosition])
+
+  // Handle external open state changes
+  useEffect(() => {
+    if (!isDragging && !isAnimating) {
+      const targetPosition = isOpen ? Math.max(...snapPoints) : Math.min(...snapPoints)
+      if (Math.abs(currentPosition - targetPosition) > 1) {
+        animateToPosition(targetPosition)
+      }
+    }
+  }, [isOpen, isDragging, isAnimating, snapPoints, currentPosition, animateToPosition])
+
+  // Cleanup animation frame on unmount
+  useEffect(() => {
+    return () => {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current)
+      }
+    }
+  }, [])
+
+  // Calculate transform based on direction and position
+  const getTransform = useCallback(() => {
+    const translateValue = `${100 - currentPosition}%`
+    
+    switch (direction) {
+      case 'bottom':
+        return `translateY(${translateValue})`
+      case 'top':
+        return `translateY(-${translateValue})`
+      case 'right':
+        return `translateX(${translateValue})`
+      case 'left':
+        return `translateX(-${translateValue})`
+      default:
+        return ''
+    }
+  }, [direction, currentPosition])
+
+  // Position classes based on direction
+  const getPositionClasses = useCallback(() => {
+    const baseClasses = 'fixed z-50 bg-white shadow-xl'
+    const sizeClass = sizeConfig[size][direction]
+    
+    switch (direction) {
+      case 'bottom':
+        return `${baseClasses} ${sizeClass} left-0 right-0 bottom-0 rounded-t-2xl`
+      case 'top':
+        return `${baseClasses} ${sizeClass} left-0 right-0 top-0 rounded-b-2xl`
+      case 'right':
+        return `${baseClasses} ${sizeClass} top-0 bottom-0 right-0 rounded-l-2xl`
+      case 'left':
+        return `${baseClasses} ${sizeClass} top-0 bottom-0 left-0 rounded-r-2xl`
+      default:
+        return baseClasses
+    }
+  }, [direction, size])
+
+  // Handle trigger click
+  const handleTriggerClick = useCallback(() => {
+    onOpenChange?.(!isOpen)
+  }, [isOpen, onOpenChange])
+
+  // Handle backdrop click
+  const handleBackdropClick = useCallback(() => {
+    if (modal && enableSwipeToClose) {
+      onOpenChange?.(false)
+    }
+  }, [modal, enableSwipeToClose, onOpenChange])
+
+  // Handle escape key
+  useEffect(() => {
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isOpen && modal) {
+        onOpenChange?.(false)
+      }
+    }
+
+    if (isOpen) {
+      document.addEventListener('keydown', handleEscape)
+      return () => document.removeEventListener('keydown', handleEscape)
+    }
+  }, [isOpen, modal, onOpenChange])
+
+  return (
+    <>
+      {/* Trigger */}
+      {trigger && (
+        <div onClick={handleTriggerClick} className="cursor-pointer">
+          {trigger}
+        </div>
+      )}
+
+      {/* Backdrop */}
+      {backdrop && currentPosition > 0 && (
+        <div
+          ref={overlayRef}
+          className={cn(
+            'fixed inset-0 z-40 transition-opacity duration-300',
+            'bg-black/50 backdrop-blur-sm',
+            overlayClassName
+          )}
+          style={{
+            opacity: currentPosition / 100,
+            pointerEvents: currentPosition > 0 ? 'auto' : 'none'
+          }}
+          onClick={handleBackdropClick}
+        />
+      )}
+
+      {/* Drawer */}
+      <div
+        ref={drawerRef}
+        className={cn(
+          getPositionClasses(),
+          'touch-manipulation select-none',
+          'transition-transform duration-0', // We handle transitions manually
+          className
+        )}
+        style={{
+          transform: getTransform(),
+          pointerEvents: currentPosition > 0 ? 'auto' : 'none'
+        }}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        role="dialog"
+        aria-hidden={currentPosition === 0}
+      >
+        {/* Drag Handle */}
+        <div className={cn(
+          'flex justify-center items-center py-2',
+          {
+            'order-first': direction === 'bottom',
+            'order-last': direction === 'top',
+            'flex-col h-full w-8': direction === 'left' || direction === 'right'
+          }
+        )}>
+          <div className={cn(
+            'bg-gray-300 rounded-full cursor-grab active:cursor-grabbing',
+            {
+              'w-12 h-1': direction === 'bottom' || direction === 'top',
+              'w-1 h-12': direction === 'left' || direction === 'right'
+            }
+          )} />
+        </div>
+
+        {/* Content */}
+        <div className={cn(
+          'flex-1 overflow-auto',
+          {
+            'p-4': direction === 'bottom' || direction === 'top',
+            'px-4 py-2': direction === 'left' || direction === 'right'
+          }
+        )}>
+          {children}
+        </div>
+
+        {/* Snap point indicators (development only) */}
+        {process.env.NODE_ENV === 'development' && (
+          <div className="absolute top-2 right-2 text-xs bg-black/80 text-white px-2 py-1 rounded pointer-events-none">
+            Position: {Math.round(currentPosition)}%
+            {isDragging && ` • Velocity: ${velocity.toFixed(2)}`}
+          </div>
+        )}
+      </div>
+    </>
+  )
+}
+
+// Specialized drawers for wedding professional contexts
+export const PhotoDrawer: React.FC<Omit<TouchDrawerProps, 'direction' | 'size'>> = (props) => (
+  <TouchDrawer
+    direction="bottom"
+    size="lg"
+    snapPoints={[0, 40, 80, 100]}
+    className="bg-gray-900 text-white"
+    {...props}
+  />
+)
+
+export const ClientContactDrawer: React.FC<Omit<TouchDrawerProps, 'direction' | 'size'>> = (props) => (
+  <TouchDrawer
+    direction="right"
+    size="md"
+    snapPoints={[0, 100]}
+    className="bg-blue-50 border-l border-blue-200"
+    {...props}
+  />
+)
+
+export const ScheduleDrawer: React.FC<Omit<TouchDrawerProps, 'direction' | 'size'>> = (props) => (
+  <TouchDrawer
+    direction="top"
+    size="sm"
+    snapPoints={[0, 50, 100]}
+    className="bg-green-50 border-b border-green-200"
+    {...props}
+  />
+)
+
+export const EmergencyDrawer: React.FC<Omit<TouchDrawerProps, 'direction' | 'size'>> = (props) => (
+  <TouchDrawer
+    direction="bottom"
+    size="full"
+    snapPoints={[0, 100]}
+    className="bg-red-600 text-white"
+    backdrop={true}
+    modal={true}
+    {...props}
+  />
+)
+
+// Hook for drawer state management
+export const useDrawerState = (initialOpen = false) => {
+  const [isOpen, setIsOpen] = useState(initialOpen)
+  const [snapPosition, setSnapPosition] = useState(0)
+
+  const open = useCallback(() => setIsOpen(true), [])
+  const close = useCallback(() => setIsOpen(false), [])
+  const toggle = useCallback(() => setIsOpen(prev => !prev), [])
+
+  return {
+    isOpen,
+    setIsOpen,
+    open,
+    close,
+    toggle,
+    snapPosition,
+    setSnapPosition
+  }
+}

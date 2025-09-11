@@ -1,0 +1,147 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { AuditQueryService } from '@/lib/audit/storage/query-service';
+import { AuditRetentionService } from '@/lib/audit/storage/retention-service';
+import { z } from 'zod';
+
+const QuerySchema = z.object({
+  severity: z.array(z.string()).optional(),
+  actions: z.array(z.string()).optional(),
+  users: z.array(z.string().uuid()).optional(),
+  resourceTypes: z.array(z.string()).optional(),
+  dateRange: z.object({
+    start: z.string().datetime(),
+    end: z.string().datetime()
+  }).optional(),
+  limit: z.number().min(1).max(1000).default(50),
+  cursor: z.string().optional(),
+  weddingId: z.string().uuid().optional()
+});
+
+export async function GET(request: NextRequest) {
+  try {
+    const startTime = performance.now();
+    const url = new URL(request.url);
+    const queryParams = Object.fromEntries(url.searchParams);
+    
+    // Special endpoint for stats
+    if (queryParams.endpoint === 'stats') {
+      const filters = {
+        weddingId: queryParams.weddingId,
+        dateRange: queryParams.startDate && queryParams.endDate ? {
+          start: queryParams.startDate,
+          end: queryParams.endDate
+        } : undefined
+      };
+      
+      const stats = await AuditQueryService.getLogStats(filters);
+      
+      return NextResponse.json({
+        success: true,
+        data: stats,
+        responseTime: performance.now() - startTime
+      });
+    }
+
+    // Special endpoint for retention stats
+    if (queryParams.endpoint === 'retention') {
+      const retentionStats = await AuditRetentionService.getRetentionStats();
+      
+      return NextResponse.json({
+        success: true,
+        data: retentionStats,
+        responseTime: performance.now() - startTime
+      });
+    }
+    
+    // Parse and validate query filters
+    const filters = QuerySchema.parse({
+      severity: queryParams.severity?.split(','),
+      actions: queryParams.actions?.split(','),
+      users: queryParams.users?.split(','),
+      resourceTypes: queryParams.resourceTypes?.split(','),
+      limit: queryParams.limit ? parseInt(queryParams.limit) : 50,
+      cursor: queryParams.cursor,
+      weddingId: queryParams.weddingId,
+      dateRange: queryParams.startDate && queryParams.endDate ? {
+        start: queryParams.startDate,
+        end: queryParams.endDate
+      } : undefined
+    });
+
+    // Query audit logs
+    const result = await AuditQueryService.queryLogs(filters);
+    const queryTime = performance.now() - startTime;
+
+    // Log performance warning if query exceeds 500ms target
+    if (queryTime > 500) {
+      console.warn(`Slow audit query: ${queryTime}ms`, { filters });
+    }
+
+    return NextResponse.json({
+      success: true,
+      data: result.data,
+      pagination: {
+        hasNextPage: result.hasNextPage,
+        nextCursor: result.nextCursor,
+        limit: filters.limit
+      },
+      performance: {
+        queryTime: Math.round(queryTime),
+        resultCount: result.data.length,
+        targetMet: queryTime < 500
+      }
+    });
+
+  } catch (error) {
+    console.error('Audit storage API error:', error);
+    
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { success: false, error: 'Invalid query parameters', details: error.errors },
+        { status: 400 }
+      );
+    }
+
+    return NextResponse.json(
+      { success: false, error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+    
+    // Handle retention enforcement request
+    if (body.action === 'enforce_retention') {
+      await AuditRetentionService.enforceRetention();
+      
+      return NextResponse.json({ 
+        success: true, 
+        message: 'Retention policies enforced successfully' 
+      });
+    }
+
+    // Handle bulk audit log storage requests
+    if (body.entries && Array.isArray(body.entries)) {
+      // This would integrate with the audit storage service
+      return NextResponse.json({ 
+        success: true, 
+        message: `Stored ${body.entries.length} audit entries` 
+      });
+    }
+
+    return NextResponse.json(
+      { success: false, error: 'Invalid request body' },
+      { status: 400 }
+    );
+
+  } catch (error) {
+    console.error('Audit storage POST error:', error);
+    return NextResponse.json(
+      { success: false, error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}

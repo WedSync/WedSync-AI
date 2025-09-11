@@ -1,0 +1,420 @@
+# WedSync Ultra-Stable Development Environment
+# Predictive monitoring, auto-recovery, and intelligent resource management
+
+services:
+  # WedSync Application with Advanced Monitoring
+  wedsync:
+    image: node:20-alpine
+    container_name: wedsync-ultra
+    hostname: wedsync-app
+    
+    ports:
+      - "3000:3000"
+    
+    environment:
+      # Core settings
+      - NODE_ENV=development
+      - HOSTNAME=0.0.0.0
+      - PORT=3000
+      
+      # Database
+      - DATABASE_URL=postgresql://postgres.azhgptjkqiiqvvvhapml:postgres@aws-0-us-west-1.pooler.supabase.com:6543/postgres
+      - NEXT_PUBLIC_SUPABASE_URL=https://azhgptjkqiiqvvvhapml.supabase.co
+      - NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF6aGdwdGprcWlpcXZ2dmhhcG1sIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzUyMTk4MDUsImV4cCI6MjA1MDc5NTgwNX0.oXoH0zRHEI71mLIcuwXsxR_CWMkZL5JsVgE5BG9LzY0
+      - NEXT_PUBLIC_STORAGE_BUCKET=wedsync-uploads
+      - NEXTAUTH_URL=http://localhost:3000
+      - NEXT_PUBLIC_APP_URL=http://localhost:3000
+      
+      # Performance optimization
+      - NODE_OPTIONS=--max-old-space-size=6144 --max-semi-space-size=1024 --expose-gc
+      - NEXT_PUBLIC_ENABLE_REALTIME_SYNC=true
+      - NEXT_TELEMETRY_DISABLED=1
+      
+      # Advanced file watching with intelligent polling
+      - CHOKIDAR_USEPOLLING=true
+      - WATCHPACK_POLLING=true
+      - CHOKIDAR_INTERVAL=500  # Faster polling for better responsiveness
+      - CHOKIDAR_BINARYINTERVAL=1000
+      - CHOKIDAR_AWAITWRITEFINISH_STABILITYTHRESHOLD=500
+      
+      # Development metrics collection
+      - COLLECT_DEV_METRICS=true
+      - METRICS_ENDPOINT=http://prometheus:9090
+      - ENABLE_PERFORMANCE_MONITORING=true
+    
+    working_dir: /app
+    
+    # Ultra-stable startup with comprehensive error handling
+    command: |
+      sh -c "
+        set -e
+        
+        # Enhanced logging
+        export PS4='+ [\$(date +'%H:%M:%S')] '
+        
+        echo '🚀 Starting Ultra-Stable WedSync Environment...'
+        
+        # System resource check
+        echo '📊 System Resources:'
+        echo '  CPU cores: \$(nproc)'
+        echo '  Memory: \$(free -h | grep Mem | awk '{print \$2}')'
+        echo '  Disk: \$(df -h /app | tail -1 | awk '{print \$4}' | head -1) available'
+        
+        # Install system dependencies with retry logic
+        echo '📦 Installing system dependencies with retry...'
+        for i in 1 2 3; do
+          if apk add --no-cache --update \
+            python3 py3-pip make g++ \
+            cairo-dev jpeg-dev pango-dev giflib-dev pixman-dev \
+            curl git bash procps htop \
+            pkgconfig libffi-dev \
+            ca-certificates wget; then
+            echo '✅ System dependencies installed on attempt \$i'
+            break
+          else
+            echo '⚠️  Attempt \$i failed, retrying...'
+            sleep 5
+          fi
+        done
+        
+        # Memory management
+        echo '🧠 Configuring memory management...'
+        echo 'vm.overcommit_memory=1' >> /etc/sysctl.conf || true
+        
+        # Setup enhanced Next.js config
+        echo '🔧 Setting up enhanced configuration...'
+        if [ -f next.config.bulletproof.js ]; then
+          cp next.config.bulletproof.js next.config.js
+          echo '✅ Using bulletproof Next.js config'
+        elif [ -f next.config.simple.js ]; then
+          cp next.config.simple.js next.config.js
+          echo '✅ Using simple Next.js config'
+        fi
+        
+        # Smart npm installation with fallback strategies
+        echo '📚 Smart npm installation...'
+        
+        # Strategy 1: Clean install
+        if [ ! -d node_modules ] || [ package.json -nt node_modules ]; then
+          echo '🧹 Fresh installation required'
+          
+          # Memory optimization for npm
+          npm config set fetch-retry-mintimeout 20000
+          npm config set fetch-retry-maxtimeout 120000
+          npm config set fetch-timeout 600000
+          
+          # Try multiple installation strategies
+          for strategy in 'legacy-peer-deps' 'force legacy-peer-deps' 'no-optional legacy-peer-deps'; do
+            echo '🔄 Trying npm install with: \$strategy'
+            if npm install --\$strategy --no-audit --progress=true; then
+              echo '✅ npm install succeeded with: \$strategy'
+              break
+            else
+              echo '⚠️  Strategy \$strategy failed, trying next...'
+              rm -rf node_modules package-lock.json 2>/dev/null || true
+            fi
+          done
+        else
+          echo '⚡ Dependencies already installed'
+        fi
+        
+        # Performance tuning
+        echo '⚡ Applying performance optimizations...'
+        
+        # Create optimized .next directory
+        mkdir -p .next/cache
+        chmod -R 755 .next
+        
+        # Setup development metrics collection
+        echo '📊 Starting metrics collection...'
+        cat > /tmp/collect-metrics.sh << 'EOF'
+#!/bin/bash
+while true; do
+  {
+    echo \"wedsync_memory_usage \$(cat /proc/meminfo | grep MemAvailable | awk '{print \$2}')\"
+    echo \"wedsync_cpu_usage \$(top -bn1 | grep 'Cpu(s)' | awk '{print \$2}' | sed 's/%us,//')\"
+    echo \"wedsync_build_time \$(date +%s)\"
+  } > /tmp/metrics.prom
+  sleep 10
+done &
+EOF
+        chmod +x /tmp/collect-metrics.sh
+        /tmp/collect-metrics.sh &
+        
+        # Start Next.js with enhanced monitoring
+        echo '🌐 Starting Next.js with performance monitoring...'
+        exec npm run dev -- --hostname 0.0.0.0 --port 3000
+      "
+    
+    volumes:
+      # Optimized volume mounts for better performance
+      - ./src:/app/src:cached
+      - ./public:/app/public:cached
+      - ./styles:/app/styles:cached
+      - ./components:/app/components:cached
+      - ./lib:/app/lib:cached
+      - ./hooks:/app/hooks:cached
+      - ./utils:/app/utils:cached
+      - ./types:/app/types:cached
+      - ./app:/app/app:cached
+      
+      # Configuration files
+      - ./package.json:/app/package.json:ro
+      - ./next.config.js:/app/next.config.js:cached
+      - ./next.config.bulletproof.js:/app/next.config.bulletproof.js:ro
+      - ./tailwind.config.js:/app/tailwind.config.js:ro
+      - ./tsconfig.json:/app/tsconfig.json:ro
+      - ./.env.local:/app/.env.local:ro
+      
+      # High-performance persistent volumes
+      - wedsync_node_modules_ultra:/app/node_modules
+      - wedsync_next_cache_ultra:/app/.next
+      - wedsync_npm_cache_ultra:/root/.npm
+      
+      # Metrics and logs
+      - wedsync_metrics:/tmp/metrics
+      - wedsync_logs_ultra:/app/logs
+    
+    restart: unless-stopped
+    
+    # Advanced health checks with performance metrics
+    healthcheck:
+      test: |
+        # Multi-dimensional health check
+        curl -f http://localhost:3000/api/health 2>/dev/null &&
+        [ \$(free | awk 'NR==2{print int(\$3*100/\$2)}') -lt 90 ] &&
+        [ \$(top -bn1 | grep 'load average' | awk '{print \$10}' | sed 's/,//') \< 4.0 ] ||
+        (echo '❌ Health check failed' && exit 1)
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+    
+    # Resource limits with intelligent scaling
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+          cpus: '6.0'
+        reservations:
+          memory: 3G
+          cpus: '2.0'
+    
+    networks:
+      - wedsync-ultra-network
+    
+    labels:
+      - "wedsync.service=app"
+      - "wedsync.environment=ultra-stable"
+      - "prometheus.scrape=true"
+      - "prometheus.port=3000"
+
+  # Resource Watchdog - Intelligent monitoring and auto-recovery
+  resource-watchdog:
+    image: prom/node-exporter:latest
+    container_name: wedsync-watchdog
+    
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)(\$|/)'
+    
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    
+    ports:
+      - "9100:9100"
+    
+    restart: unless-stopped
+    networks:
+      - wedsync-ultra-network
+
+  # Prometheus - Advanced metrics collection
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: wedsync-prometheus
+    
+    ports:
+      - "9090:9090"
+    
+    volumes:
+      - ./monitoring/prometheus-ultra.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data_ultra:/prometheus
+    
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--storage.tsdb.retention.time=7d'
+    
+    restart: unless-stopped
+    networks:
+      - wedsync-ultra-network
+
+  # Grafana - Real-time performance dashboard
+  grafana:
+    image: grafana/grafana:latest
+    container_name: wedsync-grafana-ultra
+    
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=wedsync123
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
+    
+    ports:
+      - "3001:3000"
+    
+    volumes:
+      - grafana_data_ultra:/var/lib/grafana
+      - ./monitoring/grafana-dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana-datasources:/etc/grafana/provisioning/datasources:ro
+    
+    depends_on:
+      - prometheus
+    
+    restart: unless-stopped
+    networks:
+      - wedsync-ultra-network
+
+  # AlertManager - Intelligent alerting system
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: wedsync-alertmanager
+    
+    ports:
+      - "9093:9093"
+    
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+      - '--web.external-url=http://localhost:9093'
+    
+    restart: unless-stopped
+    networks:
+      - wedsync-ultra-network
+
+  # cAdvisor - Container monitoring
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: wedsync-cadvisor
+    
+    ports:
+      - "8080:8080"
+    
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    
+    privileged: true
+    restart: unless-stopped
+    networks:
+      - wedsync-ultra-network
+
+  # Smart Auto-Recovery Agent
+  auto-recovery:
+    image: node:20-alpine
+    container_name: wedsync-auto-recovery
+    
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./scripts:/scripts:ro
+    
+    working_dir: /scripts
+    
+    command: |
+      sh -c "
+        apk add --no-cache curl docker-cli &&
+        while true; do
+          ./auto-recovery-agent.sh
+          sleep 30
+        done
+      "
+    
+    restart: unless-stopped
+    networks:
+      - wedsync-ultra-network
+    
+    depends_on:
+      - wedsync
+      - prometheus
+
+  # Development Metrics Collector
+  dev-metrics:
+    image: node:20-alpine
+    container_name: wedsync-dev-metrics
+    
+    volumes:
+      - wedsync_metrics:/metrics
+      - ./monitoring/dev-metrics.js:/app/dev-metrics.js:ro
+    
+    working_dir: /app
+    
+    command: |
+      sh -c "
+        apk add --no-cache curl &&
+        npm init -y &&
+        npm install express prom-client &&
+        node dev-metrics.js
+      "
+    
+    ports:
+      - "9091:9091"
+    
+    restart: unless-stopped
+    networks:
+      - wedsync-ultra-network
+
+networks:
+  wedsync-ultra-network:
+    driver: bridge
+    name: wedsync-ultra-network
+    ipam:
+      config:
+        - subnet: 172.21.0.0/16
+
+volumes:
+  # Application data
+  wedsync_node_modules_ultra:
+    driver: local
+    name: wedsync_node_modules_ultra
+  
+  wedsync_next_cache_ultra:
+    driver: local
+    name: wedsync_next_cache_ultra
+  
+  wedsync_npm_cache_ultra:
+    driver: local
+    name: wedsync_npm_cache_ultra
+  
+  wedsync_logs_ultra:
+    driver: local
+    name: wedsync_logs_ultra
+  
+  wedsync_metrics:
+    driver: local
+    name: wedsync_metrics_ultra
+  
+  # Monitoring data
+  prometheus_data_ultra:
+    driver: local
+    name: prometheus_data_ultra
+  
+  grafana_data_ultra:
+    driver: local
+    name: grafana_data_ultra
+  
+  alertmanager_data:
+    driver: local
+    name: alertmanager_data_ultra

@@ -1,0 +1,715 @@
+/**
+ * Microsoft Azure Active Directory Integration
+ * 
+ * Enterprise SSO integration with Microsoft Azure AD and Microsoft 365.
+ * Enables wedding venues, hospitality groups, and corporate event planners
+ * using Microsoft's cloud identity platform to authenticate their teams
+ * seamlessly with WedSync.
+ * 
+ * Common enterprise scenarios:
+ * - Large hotel chains using Microsoft 365 for wedding coordination
+ * - Corporate event management companies with Azure AD tenants
+ * - Wedding venues integrated with Microsoft Teams and Office 365
+ * - Enterprise customers requiring conditional access policies
+ * 
+ * @author WedSync Enterprise Team C
+ * @version 1.0.0
+ */
+
+import { IdentityProviderConfig, AuthenticationResult, EnterpriseUserAttributes } from './IdentityProviderConnector';
+import { ConfidentialClientApplication, PublicClientApplication, AuthenticationProvider, AzureUserProfile, Client } from '@azure/msal-node';
+import { Client as GraphClient } from '@microsoft/microsoft-graph-client';
+import { User, Group, DirectoryObject } from '@microsoft/microsoft-graph-types';
+import * as jwt from 'jsonwebtoken';
+import fetch from 'node-fetch';
+
+/**
+ * Azure AD configuration
+ */
+interface AzureADConfig {
+  tenantId: string;           // Azure AD tenant ID
+  clientId: string;           // Application (client) ID
+  clientSecret: string;       // Client secret
+  redirectUri: string;        // Redirect URI
+  scopes: string[];          // Microsoft Graph scopes
+  authority?: string;         // Custom authority URL
+  cloudInstance?: string;     // Azure cloud instance
+  tenantName?: string;        // Friendly tenant name
+}
+
+/**
+ * Azure AD token response
+ */
+interface AzureTokenResponse {
+  access_token: string;
+  token_type: string;
+  expires_in: number;
+  refresh_token?: string;
+  id_token?: string;
+  scope: string;
+}
+
+/**
+ * Azure AD ID token claims
+ */
+interface AzureIdTokenClaims {
+  iss: string;
+  aud: string;
+  iat: number;
+  exp: number;
+  sub: string;
+  oid: string;              // Object ID in Azure AD
+  tid: string;              // Tenant ID
+  upn: string;              // User Principal Name
+  email?: string;
+  name: string;
+  given_name: string;
+  family_name: string;
+  preferred_username: string;
+  roles?: string[];
+  groups?: string[];
+  [key: string]: unknown;
+}
+
+/**
+ * Extended user profile from Microsoft Graph
+ */
+interface AzureUserProfile extends User {
+  memberOf?: DirectoryObject[];
+  directReports?: User[];
+  manager?: User;
+  licenseDetails?: any[];
+  extensions?: Record<string, unknown>;
+}
+
+/**
+ * Conditional access policy evaluation
+ */
+interface ConditionalAccessEvaluation {
+  isCompliant: boolean;
+  policies: Array<{
+    id: string;
+    displayName: string;
+    state: 'enabled' | 'disabled' | 'enabledForReportingButNotEnforced';
+    result: 'success' | 'failure' | 'notApplied';
+    conditions?: any;
+  }>;
+  deviceInfo?: {
+    isManaged: boolean;
+    isCompliant: boolean;
+    trustType: string;
+  };
+}
+
+/**
+ * Microsoft Azure AD Integration Service
+ * 
+ * Handles authentication via OAuth2, OpenID Connect with Azure AD
+ * and provides Microsoft Graph API integration for user management.
+ */
+export class AzureADIntegration {
+  private config: AzureADConfig;
+  private msalApp: ConfidentialClientApplication;
+  private graphClient?: Client;
+  private readonly maxRetries = 3;
+  private readonly timeout = 15000; // 15 seconds for Graph API calls
+
+  constructor(azureConfig: AzureADConfig) {
+    this.config = azureConfig;
+    this.initializeMSAL();
+  }
+
+  /**
+   * Initialize Microsoft Authentication Library (MSAL)
+   */
+  private initializeMSAL(): void {
+    const clientConfig = {
+      auth: {
+        clientId: this.config.clientId,
+        clientSecret: this.config.clientSecret,
+        authority: this.config.authority || 
+          `https://login.microsoftonline.com/${this.config.tenantId}`
+      },
+      system: {
+        loggerOptions: {
+          loggerCallback: (level: any, message: string) => {
+            if (level <= 2) { // Error and Warning levels
+              console.error(`MSAL: ${message}`);
+            }
+          },
+          piiLoggingEnabled: false,
+          logLevel: 3 // Info level
+        }
+      }
+    };
+
+    this.msalApp = new ConfidentialClientApplication(clientConfig);
+  }
+
+  /**
+   * Authenticate user via OAuth2 authorization code flow
+   */
+  async authenticateOAuth2(
+    provider: IdentityProviderConfig,
+    authCode: string,
+    codeChallenge?: string
+  ): Promise<AuthenticationResult> {
+    try {
+      console.log('Starting Azure AD OAuth2 authentication...');
+      
+      // Step 1: Exchange authorization code for tokens
+      const tokenResponse = await this.msalApp.acquireTokenByCode({
+        code: authCode,
+        scopes: this.config.scopes,
+        redirectUri: this.config.redirectUri,
+        codeChallenge
+      });
+      
+      if (!tokenResponse?.accessToken) {
+        throw new Error('No access token received');
+      }
+      
+      // Step 2: Initialize Microsoft Graph client
+      this.initializeGraphClient(tokenResponse.accessToken);
+      
+      // Step 3: Get user profile from Microsoft Graph
+      const userProfile = await this.getUserProfile(tokenResponse.account?.homeAccountId);
+      if (!userProfile) {
+        throw new Error('Unable to retrieve user profile');
+      }
+      
+      // Step 4: Get user groups and roles
+      const [userGroups, userRoles] = await Promise.all([
+        this.getUserGroups(userProfile.id!),
+        this.getUserRoles(userProfile.id!)
+      ]);
+      
+      // Step 5: Evaluate conditional access policies if required
+      const conditionalAccess = await this.evaluateConditionalAccess(
+        userProfile.id!,
+        provider
+      );
+      
+      if (!conditionalAccess.isCompliant) {
+        return {
+          success: false,
+          email: userProfile.mail || userProfile.userPrincipalName || '',
+          attributes: {},
+          provider: provider.id,
+          error: 'Conditional access policy requirements not met',
+          errorCode: 'CONDITIONAL_ACCESS_BLOCKED'
+        };
+      }
+      
+      // Step 6: Map Azure AD attributes to WedSync format
+      const enterpriseAttributes = this.mapAzureUserToEnterprise(
+        userProfile,
+        userGroups,
+        userRoles,
+        provider
+      );
+      
+      console.log(`Azure AD OAuth2 authentication successful for: ${userProfile.mail || userProfile.userPrincipalName}`);
+      
+      return {
+        success: true,
+        userId: userProfile.id!,
+        email: userProfile.mail || userProfile.userPrincipalName || '',
+        displayName: userProfile.displayName || 
+                    `${userProfile.givenName || ''} ${userProfile.surname || ''}`.trim(),
+        attributes: enterpriseAttributes,
+        provider: provider.id,
+        sessionToken: tokenResponse.accessToken,
+        refreshToken: tokenResponse.refreshToken || undefined,
+        expiresAt: tokenResponse.expiresOn || undefined
+      };
+      
+    } catch (error) {
+      console.error('Azure AD OAuth2 authentication failed:', error);
+      return {
+        success: false,
+        email: '',
+        attributes: {},
+        provider: provider.id,
+        error: error instanceof Error ? error.message : 'Azure AD authentication failed',
+        errorCode: 'AZURE_AD_OAUTH2_ERROR'
+      };
+    }
+  }
+
+  /**
+   * Authenticate using device code flow
+   * Useful for mobile apps and scenarios without web browser
+   */
+  async authenticateDeviceCode(
+    provider: IdentityProviderConfig,
+    onDeviceCodeReceived?: (deviceCodeInfo: any) => void
+  ): Promise<AuthenticationResult> {
+    try {
+      console.log('Starting Azure AD device code authentication...');
+      
+      const deviceCodeRequest = {
+        scopes: this.config.scopes,
+        deviceCodeCallback: (response: any) => {
+          console.log(`Device code: ${response.userCode}`);
+          console.log(`Please visit: ${response.verificationUri}`);
+          if (onDeviceCodeReceived) {
+            onDeviceCodeReceived(response);
+          }
+        }
+      };
+      
+      const tokenResponse = await this.msalApp.acquireTokenByDeviceCode(deviceCodeRequest);
+      
+      if (!tokenResponse?.accessToken) {
+        throw new Error('No access token received from device code flow');
+      }
+      
+      // Initialize Graph client and get user profile
+      this.initializeGraphClient(tokenResponse.accessToken);
+      const userProfile = await this.getUserProfile(tokenResponse.account?.homeAccountId);
+      
+      if (!userProfile) {
+        throw new Error('Unable to retrieve user profile');
+      }
+      
+      // Get groups and roles
+      const [userGroups, userRoles] = await Promise.all([
+        this.getUserGroups(userProfile.id!),
+        this.getUserRoles(userProfile.id!)
+      ]);
+      
+      const enterpriseAttributes = this.mapAzureUserToEnterprise(
+        userProfile,
+        userGroups,
+        userRoles,
+        provider
+      );
+      
+      console.log(`Azure AD device code authentication successful for: ${userProfile.mail || userProfile.userPrincipalName}`);
+      
+      return {
+        success: true,
+        userId: userProfile.id!,
+        email: userProfile.mail || userProfile.userPrincipalName || '',
+        displayName: userProfile.displayName || 
+                    `${userProfile.givenName || ''} ${userProfile.surname || ''}`.trim(),
+        attributes: enterpriseAttributes,
+        provider: provider.id,
+        sessionToken: tokenResponse.accessToken,
+        refreshToken: tokenResponse.refreshToken || undefined,
+        expiresAt: tokenResponse.expiresOn || undefined
+      };
+      
+    } catch (error) {
+      console.error('Azure AD device code authentication failed:', error);
+      return {
+        success: false,
+        email: '',
+        attributes: {},
+        provider: provider.id,
+        error: error instanceof Error ? error.message : 'Device code authentication failed',
+        errorCode: 'AZURE_AD_DEVICE_CODE_ERROR'
+      };
+    }
+  }
+
+  /**
+   * Validate Azure AD ID token
+   */
+  async validateIdToken(
+    idToken: string,
+    provider: IdentityProviderConfig
+  ): Promise<AuthenticationResult> {
+    try {
+      console.log('Validating Azure AD ID token...');
+      
+      // Get Azure AD JWKS for signature verification
+      const jwksUrl = `https://login.microsoftonline.com/${this.config.tenantId}/discovery/v2.0/keys`;
+      const jwksResponse = await fetch(jwksUrl, { timeout: this.timeout });
+      const jwks = await jwksResponse.json();
+      
+      // Decode token to get key ID
+      const unverified = jwt.decode(idToken, { complete: true }) as any;
+      if (!unverified || !unverified.header.kid) {
+        throw new Error('Invalid ID token format');
+      }
+      
+      // Find matching key for verification
+      const key = jwks.keys.find((k: any) => k.kid === unverified.header.kid);
+      if (!key) {
+        throw new Error('Unable to find matching key for token verification');
+      }
+      
+      // Verify token signature and claims
+      const verified = jwt.verify(idToken, this.constructJWKSCert(key), {
+        algorithms: ['RS256'],
+        audience: this.config.clientId,
+        issuer: `https://login.microsoftonline.com/${this.config.tenantId}/v2.0`
+      }) as AzureIdTokenClaims;
+      
+      // Get additional user details from Graph API if access token available
+      let userProfile: AzureUserProfile | null = null;
+      let userGroups: Group[] = [];
+      let userRoles: string[] = [];
+      
+      if (this.graphClient) {
+        try {
+          userProfile = await this.getUserProfile(verified.oid);
+          if (userProfile) {
+            [userGroups, userRoles] = await Promise.all([
+              this.getUserGroups(userProfile.id!),
+              this.getUserRoles(userProfile.id!)
+            ]);
+          }
+        } catch (error) {
+          console.warn('Could not retrieve extended user profile:', error);
+        }
+      }
+      
+      // Map token claims to enterprise attributes
+      const enterpriseAttributes: EnterpriseUserAttributes = {
+        employeeId: verified.oid,
+        department: userProfile?.department || undefined,
+        jobTitle: userProfile?.jobTitle || undefined,
+        manager: userProfile?.manager?.displayName || undefined,
+        location: userProfile?.officeLocation || undefined,
+        phone: userProfile?.mobilePhone || userProfile?.businessPhones?.[0] || undefined,
+        groups: userGroups.map(g => g.displayName || g.id!),
+        roles: [...(verified.roles || []), ...userRoles],
+        customAttributes: {
+          azureObjectId: verified.oid,
+          tenantId: verified.tid,
+          userPrincipalName: verified.upn,
+          preferredUsername: verified.preferred_username,
+          tokenClaims: verified
+        }
+      };
+      
+      console.log(`Azure AD ID token validation successful for: ${verified.email || verified.upn}`);
+      
+      return {
+        success: true,
+        userId: verified.oid,
+        email: verified.email || verified.upn,
+        displayName: verified.name,
+        attributes: enterpriseAttributes,
+        provider: provider.id
+      };
+      
+    } catch (error) {
+      console.error('Azure AD ID token validation failed:', error);
+      return {
+        success: false,
+        email: '',
+        attributes: {},
+        provider: provider.id,
+        error: error instanceof Error ? error.message : 'ID token validation failed',
+        errorCode: 'AZURE_AD_TOKEN_ERROR'
+      };
+    }
+  }
+
+  /**
+   * Generate OAuth2 authorization URL for Azure AD
+   */
+  generateAuthorizationUrl(
+    state?: string,
+    codeChallenge?: string,
+    domain?: string
+  ): {
+    url: string;
+    state: string;
+  } {
+    const generatedState = state || this.generateRandomString(32);
+    
+    let authUrl = `https://login.microsoftonline.com/${this.config.tenantId}/oauth2/v2.0/authorize?` +
+      `client_id=${encodeURIComponent(this.config.clientId)}` +
+      `&response_type=code` +
+      `&redirect_uri=${encodeURIComponent(this.config.redirectUri)}` +
+      `&response_mode=query` +
+      `&scope=${encodeURIComponent(this.config.scopes.join(' '))}` +
+      `&state=${encodeURIComponent(generatedState)}`;
+    
+    // Add PKCE support
+    if (codeChallenge) {
+      authUrl += `&code_challenge=${encodeURIComponent(codeChallenge)}`;
+      authUrl += `&code_challenge_method=S256`;
+    }
+    
+    // Add domain hint for specific tenant
+    if (domain) {
+      authUrl += `&domain_hint=${encodeURIComponent(domain)}`;
+    }
+    
+    return {
+      url: authUrl,
+      state: generatedState
+    };
+  }
+
+  /**
+   * Synchronize users and groups from Azure AD
+   */
+  async synchronizeDirectory(
+    provider: IdentityProviderConfig,
+    options: {
+      batchSize?: number;
+      includeGroups?: boolean;
+      includeGuests?: boolean;
+      onProgress?: (processed: number, total: number) => void;
+    } = {}
+  ): Promise<{
+    usersProcessed: number;
+    groupsProcessed: number;
+    errors: string[];
+  }> {
+    if (!this.graphClient) {
+      throw new Error('Microsoft Graph client not initialized');
+    }
+    
+    const results = {
+      usersProcessed: 0,
+      groupsProcessed: 0,
+      errors: [] as string[]
+    };
+    
+    try {
+      // Sync users
+      console.log('Synchronizing users from Azure AD...');
+      
+      const users = await this.graphClient
+        .users
+        .get({
+          $top: options.batchSize || 100,
+          $filter: options.includeGuests ? undefined : "userType eq 'Member'"
+        });
+      
+      if (users.value) {
+        for (const user of users.value) {
+          try {
+            // Get user groups
+            const groups = await this.getUserGroups(user.id!);
+            const roles = await this.getUserRoles(user.id!);
+            
+            const enterpriseAttributes = this.mapAzureUserToEnterprise(
+              user,
+              groups,
+              roles,
+              provider
+            );
+            
+            // Process user (would integrate with WedSync user management)
+            console.log(`Processing user: ${user.mail || user.userPrincipalName}`);
+            results.usersProcessed++;
+            
+            if (options.onProgress) {
+              options.onProgress(results.usersProcessed, users.value!.length);
+            }
+            
+          } catch (error) {
+            results.errors.push(`Failed to process user ${user.userPrincipalName}: ${error}`);
+          }
+        }
+      }
+      
+      // Sync groups if requested
+      if (options.includeGroups) {
+        console.log('Synchronizing groups from Azure AD...');
+        
+        const groups = await this.graphClient.groups.get();
+        if (groups.value) {
+          for (const group of groups.value) {
+            try {
+              // Process group (would integrate with WedSync role management)
+              console.log(`Processing group: ${group.displayName}`);
+              results.groupsProcessed++;
+            } catch (error) {
+              results.errors.push(`Failed to process group ${group.displayName}: ${error}`);
+            }
+          }
+        }
+      }
+      
+    } catch (error) {
+      results.errors.push(`Directory synchronization failed: ${error}`);
+    }
+    
+    return results;
+  }
+
+  /**
+   * Initialize Microsoft Graph client with access token
+   */
+  private initializeGraphClient(accessToken: string): void {
+    const authProvider: AuthenticationProvider = {
+      getAccessToken: async () => accessToken
+    };
+    
+    this.graphClient = Client.initWithMiddleware({
+      authProvider,
+      defaultVersion: 'v1.0'
+    });
+  }
+
+  /**
+   * Get user profile from Microsoft Graph
+   */
+  private async getUserProfile(userIdOrPrincipalName?: string): Promise<AzureUserProfile | null> {
+    if (!this.graphClient) {
+      throw new Error('Microsoft Graph client not initialized');
+    }
+    
+    try {
+      const userId = userIdOrPrincipalName || 'me';
+      const user = await this.graphClient
+        .users(userId)
+        .get({
+          $expand: 'manager,directReports',
+          $select: [
+            'id', 'displayName', 'givenName', 'surname', 'mail', 'userPrincipalName',
+            'jobTitle', 'department', 'companyName', 'officeLocation', 'mobilePhone',
+            'businessPhones', 'employeeId', 'userType', 'accountEnabled'
+          ].join(',')
+        });
+      
+      return user as AzureUserProfile;
+    } catch (error) {
+      console.error('Failed to get user profile:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Get user's group memberships
+   */
+  private async getUserGroups(userId: string): Promise<Group[]> {
+    if (!this.graphClient) return [];
+    
+    try {
+      const groups = await this.graphClient
+        .users(userId)
+        .memberOf
+        .get({
+          $filter: "microsoft.graph.group ne null"
+        });
+      
+      return (groups.value || []) as Group[];
+    } catch (error) {
+      console.error('Failed to get user groups:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Get user's application roles
+   */
+  private async getUserRoles(userId: string): Promise<string[]> {
+    if (!this.graphClient) return [];
+    
+    try {
+      const assignments = await this.graphClient
+        .users(userId)
+        .appRoleAssignments
+        .get();
+      
+      return assignments.value?.map(a => a.id || '') || [];
+    } catch (error) {
+      console.error('Failed to get user roles:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Evaluate conditional access policies
+   */
+  private async evaluateConditionalAccess(
+    userId: string,
+    provider: IdentityProviderConfig
+  ): Promise<ConditionalAccessEvaluation> {
+    // Simplified conditional access evaluation
+    // In production, would integrate with Azure AD Conditional Access APIs
+    return {
+      isCompliant: true,
+      policies: [],
+      deviceInfo: {
+        isManaged: false,
+        isCompliant: true,
+        trustType: 'unknown'
+      }
+    };
+  }
+
+  /**
+   * Map Azure AD user to WedSync enterprise attributes
+   */
+  private mapAzureUserToEnterprise(
+    user: AzureUserProfile,
+    groups: Group[],
+    roles: string[],
+    provider: IdentityProviderConfig
+  ): EnterpriseUserAttributes {
+    const groupNames = groups.map(g => g.displayName || g.id!);
+    const mappedRoles = this.mapGroupsToRoles(groupNames, provider);
+    
+    return {
+      employeeId: user.employeeId || user.id,
+      department: user.department || undefined,
+      jobTitle: user.jobTitle || undefined,
+      manager: user.manager?.displayName || undefined,
+      location: user.officeLocation || undefined,
+      phone: user.mobilePhone || user.businessPhones?.[0] || undefined,
+      groups: groupNames,
+      roles: [...mappedRoles, ...roles],
+      customAttributes: {
+        azureObjectId: user.id,
+        userPrincipalName: user.userPrincipalName,
+        userType: user.userType,
+        companyName: user.companyName,
+        accountEnabled: user.accountEnabled,
+        directReports: user.directReports?.map(dr => dr.displayName) || []
+      }
+    };
+  }
+
+  /**
+   * Map Azure AD groups to WedSync roles
+   */
+  private mapGroupsToRoles(groupNames: string[], provider: IdentityProviderConfig): string[] {
+    const roles: string[] = [];
+    
+    if (provider.groupMapping) {
+      for (const [azureGroup, wedSyncRole] of Object.entries(provider.groupMapping)) {
+        if (groupNames.some(group => group.toLowerCase().includes(azureGroup.toLowerCase()))) {
+          roles.push(wedSyncRole);
+        }
+      }
+    }
+    
+    return roles;
+  }
+
+  /**
+   * Generate random string for security purposes
+   */
+  private generateRandomString(length: number): string {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    let result = '';
+    for (let i = 0; i < length; i++) {
+      result += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return result;
+  }
+
+  /**
+   * Construct certificate from JWKS key for JWT verification
+   */
+  private constructJWKSCert(key: any): string {
+    // Simplified JWKS cert construction
+    // In production, would use proper JWKS library like node-jwks-rsa
+    if (key.x5c && key.x5c[0]) {
+      return `-----BEGIN CERTIFICATE-----\n${key.x5c[0]}\n-----END CERTIFICATE-----`;
+    }
+    throw new Error('Unable to construct certificate from JWKS key');
+  }
+}

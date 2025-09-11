@@ -1,0 +1,433 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { VerificationOrchestrator, VerificationType } from '@/lib/integrations/verification/verification-orchestrator';
+import { Logger } from '@/lib/logging/Logger';
+import { createClient } from '@/lib/supabase/server';
+
+const logger = new Logger('VerificationTriggerAPI');
+
+export interface VerificationTriggerRequest {
+  supplier_id: string;
+  verification_type: string;
+  documents?: Array<{
+    type: string;
+    url: string;
+    filename: string;
+    uploaded_at: string;
+  }>;
+  priority?: 'low' | 'medium' | 'high' | 'urgent';
+  metadata?: Record<string, any>;
+}
+
+export interface VerificationTriggerResponse {
+  success: boolean;
+  data: {
+    workflow_id: string;
+    verification_type: string;
+    status: string;
+    estimated_completion: string;
+    next_steps: string[];
+  };
+  errors?: Array<{
+    code: string;
+    message: string;
+    field?: string;
+  }>;
+}
+
+// POST /api/integrations/verification/trigger - Initiate verification process
+export async function POST(request: NextRequest) {
+  try {
+    logger.info('Processing verification trigger request');
+
+    // Parse request body
+    const body: VerificationTriggerRequest = await request.json();
+
+    // Validate request
+    const validationErrors = validateTriggerRequest(body);
+    if (validationErrors.length > 0) {
+      return NextResponse.json({
+        success: false,
+        errors: validationErrors
+      }, { status: 400 });
+    }
+
+    // Check supplier exists and is authorized
+    const supplierCheck = await validateSupplier(body.supplier_id);
+    if (!supplierCheck.valid) {
+      return NextResponse.json({
+        success: false,
+        errors: [{ code: 'SUPPLIER_NOT_FOUND', message: 'Supplier not found or unauthorized' }]
+      }, { status: 404 });
+    }
+
+    // Check if verification is already in progress
+    const existingWorkflow = await checkExistingVerification(body.supplier_id, body.verification_type);
+    if (existingWorkflow) {
+      return NextResponse.json({
+        success: false,
+        errors: [{
+          code: 'VERIFICATION_IN_PROGRESS',
+          message: 'Verification already in progress for this type',
+          field: 'verification_type'
+        }]
+      }, { status: 409 });
+    }
+
+    // Map verification type
+    const verificationType = mapVerificationType(body.verification_type);
+    if (!verificationType) {
+      return NextResponse.json({
+        success: false,
+        errors: [{
+          code: 'INVALID_VERIFICATION_TYPE',
+          message: 'Unsupported verification type',
+          field: 'verification_type'
+        }]
+      }, { status: 400 });
+    }
+
+    // Store documents if provided
+    if (body.documents && body.documents.length > 0) {
+      await storeVerificationDocuments(body.supplier_id, body.documents, body.verification_type);
+    }
+
+    // Initiate verification workflow
+    const orchestrator = new VerificationOrchestrator();
+    const workflow = await orchestrator.orchestrateVerificationProcess(
+      body.supplier_id,
+      verificationType
+    );
+
+    // Calculate estimated completion
+    const estimatedCompletion = calculateEstimatedCompletion(verificationType, body.priority);
+
+    // Determine next steps
+    const nextSteps = determineInitialNextSteps(verificationType, body.documents);
+
+    // Log verification initiation
+    await logVerificationTrigger(body, workflow.id);
+
+    const response: VerificationTriggerResponse = {
+      success: true,
+      data: {
+        workflow_id: workflow.id,
+        verification_type: body.verification_type,
+        status: workflow.state,
+        estimated_completion: estimatedCompletion.toISOString(),
+        next_steps: nextSteps
+      }
+    };
+
+    logger.info('Verification workflow initiated successfully', {
+      workflowId: workflow.id,
+      supplierId: body.supplier_id,
+      verificationType: body.verification_type
+    });
+
+    return NextResponse.json(response);
+
+  } catch (error) {
+    logger.error('Failed to trigger verification process', error);
+
+    return NextResponse.json({
+      success: false,
+      errors: [{
+        code: 'INTERNAL_ERROR',
+        message: 'Failed to initiate verification process'
+      }]
+    }, { status: 500 });
+  }
+}
+
+// GET /api/integrations/verification/trigger - Get available verification types and requirements
+export async function GET() {
+  try {
+    logger.info('Getting verification types and requirements');
+
+    const verificationTypes = [
+      {
+        type: 'business_registration',
+        name: 'Business Registration',
+        description: 'Verify business registration and legal status',
+        required_documents: [
+          'certificate_of_incorporation',
+          'business_registration_certificate'
+        ],
+        estimated_duration: '24-48 hours',
+        supported_countries: ['UK', 'US', 'CA', 'AU']
+      },
+      {
+        type: 'insurance_policy',
+        name: 'Insurance Policy',
+        description: 'Validate insurance coverage and policy details',
+        required_documents: [
+          'insurance_certificate',
+          'policy_schedule'
+        ],
+        estimated_duration: '12-24 hours',
+        supported_providers: ['AXA', 'Hiscox', 'Simply Business', 'Direct Line']
+      },
+      {
+        type: 'professional_license',
+        name: 'Professional License',
+        description: 'Verify professional qualifications and certifications',
+        required_documents: [
+          'license_certificate',
+          'qualification_certificates'
+        ],
+        estimated_duration: '2-5 business days',
+        supported_industries: ['Photography', 'Catering', 'Beauty', 'Music']
+      },
+      {
+        type: 'background_check',
+        name: 'Background Check',
+        description: 'Enhanced verification including background screening',
+        required_documents: [
+          'dbs_certificate',
+          'identity_documents'
+        ],
+        estimated_duration: '3-7 business days',
+        requirements: ['Enhanced DBS check within 2 years']
+      }
+    ];
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        verification_types: verificationTypes,
+        supported_file_formats: ['.pdf', '.jpg', '.jpeg', '.png'],
+        max_file_size: '10MB',
+        requirements: {
+          document_quality: 'High resolution, clearly readable text',
+          document_age: 'Documents must be current and not expired',
+          authentication: 'Original documents or certified copies required'
+        }
+      }
+    });
+
+  } catch (error) {
+    logger.error('Failed to get verification types', error);
+    return NextResponse.json({
+      success: false,
+      error: 'Failed to get verification types'
+    }, { status: 500 });
+  }
+}
+
+// Helper functions
+function validateTriggerRequest(body: VerificationTriggerRequest): Array<{ code: string; message: string; field?: string }> {
+  const errors: Array<{ code: string; message: string; field?: string }> = [];
+
+  if (!body.supplier_id) {
+    errors.push({ code: 'MISSING_FIELD', message: 'supplier_id is required', field: 'supplier_id' });
+  }
+
+  if (!body.verification_type) {
+    errors.push({ code: 'MISSING_FIELD', message: 'verification_type is required', field: 'verification_type' });
+  }
+
+  if (body.priority && !['low', 'medium', 'high', 'urgent'].includes(body.priority)) {
+    errors.push({ code: 'INVALID_VALUE', message: 'priority must be low, medium, high, or urgent', field: 'priority' });
+  }
+
+  // Validate documents if provided
+  if (body.documents) {
+    body.documents.forEach((doc, index) => {
+      if (!doc.type) {
+        errors.push({ code: 'MISSING_FIELD', message: `Document ${index + 1} type is required`, field: `documents[${index}].type` });
+      }
+      if (!doc.url) {
+        errors.push({ code: 'MISSING_FIELD', message: `Document ${index + 1} URL is required`, field: `documents[${index}].url` });
+      }
+      if (!doc.filename) {
+        errors.push({ code: 'MISSING_FIELD', message: `Document ${index + 1} filename is required`, field: `documents[${index}].filename` });
+      }
+    });
+  }
+
+  return errors;
+}
+
+async function validateSupplier(supplierId: string): Promise<{ valid: boolean; supplier?: any }> {
+  try {
+    const supabase = createClient();
+    const { data: supplier, error } = await supabase
+      .from('suppliers')
+      .select('id, name, status')
+      .eq('id', supplierId)
+      .single();
+
+    if (error || !supplier) {
+      return { valid: false };
+    }
+
+    // Check if supplier is active
+    if (supplier.status !== 'active') {
+      return { valid: false };
+    }
+
+    return { valid: true, supplier };
+  } catch (error) {
+    logger.error('Failed to validate supplier', error);
+    return { valid: false };
+  }
+}
+
+async function checkExistingVerification(supplierId: string, verificationType: string): Promise<boolean> {
+  try {
+    const supabase = createClient();
+    const { data, error } = await supabase
+      .from('verification_workflows')
+      .select('id')
+      .eq('supplier_id', supplierId)
+      .eq('verification_type', verificationType)
+      .in('state', ['pending', 'in_progress', 'awaiting_external'])
+      .limit(1);
+
+    if (error) {
+      logger.error('Failed to check existing verification', error);
+      return false;
+    }
+
+    return data && data.length > 0;
+  } catch (error) {
+    logger.error('Failed to check existing verification', error);
+    return false;
+  }
+}
+
+function mapVerificationType(type: string): VerificationType | null {
+  const typeMap: Record<string, VerificationType> = {
+    'business_registration': VerificationType.BUSINESS_REGISTRATION,
+    'insurance_policy': VerificationType.INSURANCE_POLICY,
+    'professional_license': VerificationType.PROFESSIONAL_LICENSE,
+    'background_check': VerificationType.BACKGROUND_CHECK,
+    'document_authentication': VerificationType.DOCUMENT_AUTHENTICATION
+  };
+
+  return typeMap[type] || null;
+}
+
+async function storeVerificationDocuments(
+  supplierId: string,
+  documents: Array<{ type: string; url: string; filename: string; uploaded_at: string }>,
+  verificationType: string
+): Promise<void> {
+  try {
+    const supabase = createClient();
+    const documentRecords = documents.map(doc => ({
+      id: crypto.randomUUID(),
+      supplier_id: supplierId,
+      verification_type: verificationType,
+      document_type: doc.type,
+      file_url: doc.url,
+      filename: doc.filename,
+      uploaded_at: new Date(doc.uploaded_at).toISOString(),
+      status: 'uploaded',
+      created_at: new Date().toISOString()
+    }));
+
+    const { error } = await supabase
+      .from('verification_documents')
+      .insert(documentRecords);
+
+    if (error) {
+      throw error;
+    }
+
+    logger.info('Verification documents stored', {
+      supplierId,
+      verificationType,
+      documentCount: documents.length
+    });
+  } catch (error) {
+    logger.error('Failed to store verification documents', error);
+    throw error;
+  }
+}
+
+function calculateEstimatedCompletion(verificationType: VerificationType, priority?: string): Date {
+  const baseHours: Record<VerificationType, number> = {
+    [VerificationType.BUSINESS_REGISTRATION]: 48,
+    [VerificationType.INSURANCE_POLICY]: 24,
+    [VerificationType.PROFESSIONAL_LICENSE]: 120, // 5 days
+    [VerificationType.BACKGROUND_CHECK]: 168, // 7 days
+    [VerificationType.DOCUMENT_AUTHENTICATION]: 12
+  };
+
+  let hours = baseHours[verificationType] || 48;
+
+  // Adjust based on priority
+  switch (priority) {
+    case 'urgent':
+      hours = Math.max(hours * 0.5, 2); // Minimum 2 hours
+      break;
+    case 'high':
+      hours = hours * 0.75;
+      break;
+    case 'low':
+      hours = hours * 1.5;
+      break;
+    // 'medium' uses base hours
+  }
+
+  return new Date(Date.now() + hours * 60 * 60 * 1000);
+}
+
+function determineInitialNextSteps(
+  verificationType: VerificationType,
+  documents?: Array<{ type: string; url: string; filename: string; uploaded_at: string }>
+): string[] {
+  const nextSteps: string[] = [];
+
+  if (!documents || documents.length === 0) {
+    nextSteps.push('Upload required verification documents');
+    nextSteps.push('Ensure documents are clear and readable');
+  } else {
+    nextSteps.push('Document review in progress');
+    nextSteps.push('External verification services contacted');
+  }
+
+  // Add type-specific steps
+  switch (verificationType) {
+    case VerificationType.BUSINESS_REGISTRATION:
+      nextSteps.push('Companies House lookup initiated');
+      nextSteps.push('Tax compliance check scheduled');
+      break;
+    case VerificationType.INSURANCE_POLICY:
+      nextSteps.push('Insurance provider validation in progress');
+      nextSteps.push('Policy coverage verification started');
+      break;
+    case VerificationType.PROFESSIONAL_LICENSE:
+      nextSteps.push('Professional board verification initiated');
+      break;
+    case VerificationType.BACKGROUND_CHECK:
+      nextSteps.push('Background screening service contacted');
+      nextSteps.push('DBS check validation in progress');
+      break;
+  }
+
+  nextSteps.push('You will receive email updates on progress');
+  return nextSteps;
+}
+
+async function logVerificationTrigger(request: VerificationTriggerRequest, workflowId: string): Promise<void> {
+  try {
+    const supabase = createClient();
+    await supabase
+      .from('verification_trigger_logs')
+      .insert({
+        id: crypto.randomUUID(),
+        workflow_id: workflowId,
+        supplier_id: request.supplier_id,
+        verification_type: request.verification_type,
+        priority: request.priority || 'medium',
+        document_count: request.documents?.length || 0,
+        metadata: request.metadata || {},
+        created_at: new Date().toISOString()
+      });
+  } catch (error) {
+    logger.error('Failed to log verification trigger', error);
+    // Don't throw error as main process was successful
+  }
+}

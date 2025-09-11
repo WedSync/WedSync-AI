@@ -1,0 +1,212 @@
+'use client'
+
+import React, { useRef, useCallback, useState } from 'react'
+import { cn } from '@/lib/utils'
+
+interface GestureEvent {
+  type: 'swipe' | 'pinch' | 'tap' | 'longpress' | 'doubletap'
+  direction?: 'up' | 'down' | 'left' | 'right'
+  scale?: number
+  velocity?: number
+  touches: number
+  position: { x: number; y: number }
+}
+
+interface TouchGestureHandlerProps {
+  children: React.ReactNode
+  onGesture?: (event: GestureEvent) => void
+  onSwipeUp?: () => void
+  onSwipeDown?: () => void
+  onSwipeLeft?: () => void
+  onSwipeRight?: () => void
+  onPinchZoom?: (scale: number) => void
+  onDoubleTap?: (position: { x: number; y: number }) => void
+  onLongPress?: (position: { x: number; y: number }) => void
+  className?: string
+  disabled?: boolean
+  preventDefaultScroll?: boolean
+}
+
+export const TouchGestureHandler: React.FC<TouchGestureHandlerProps> = ({
+  children,
+  onGesture,
+  onSwipeUp,
+  onSwipeDown,
+  onSwipeLeft,
+  onSwipeRight,
+  onPinchZoom,
+  onDoubleTap,
+  onLongPress,
+  className,
+  disabled = false,
+  preventDefaultScroll = false
+}) => {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const touchesRef = useRef<Map<number, { x: number; y: number; timestamp: number }>>(new Map())
+  const gestureStateRef = useRef({
+    isTracking: false,
+    startTime: 0,
+    lastTapTime: 0,
+    tapCount: 0,
+    longPressTimeout: null as NodeJS.Timeout | null,
+  })
+
+  const [isGesturing, setIsGesturing] = useState(false)
+
+  const SWIPE_THRESHOLD = 50
+  const LONG_PRESS_DURATION = 500
+  const DOUBLE_TAP_DELAY = 300
+
+  const handleTouchStart = useCallback((event: React.TouchEvent) => {
+    if (disabled) return
+
+    const touches = Array.from(event.touches).map(touch => ({
+      id: touch.identifier,
+      x: touch.clientX,
+      y: touch.clientY,
+      timestamp: Date.now()
+    }))
+
+    if (preventDefaultScroll) {
+      event.preventDefault()
+    }
+
+    touchesRef.current.clear()
+    touches.forEach(touch => {
+      touchesRef.current.set(touch.id, touch)
+    })
+
+    gestureStateRef.current.isTracking = true
+    gestureStateRef.current.startTime = Date.now()
+    setIsGesturing(true)
+
+    // Setup long press for single touch
+    if (touches.length === 1) {
+      const touch = touches[0]
+      gestureStateRef.current.longPressTimeout = setTimeout(() => {
+        if (gestureStateRef.current.isTracking) {
+          const gestureEvent: GestureEvent = {
+            type: 'longpress',
+            touches: 1,
+            position: { x: touch.x, y: touch.y }
+          }
+          
+          onGesture?.(gestureEvent)
+          onLongPress?.({ x: touch.x, y: touch.y })
+        }
+      }, LONG_PRESS_DURATION)
+    }
+  }, [disabled, preventDefaultScroll, onGesture, onLongPress])
+
+  const handleTouchMove = useCallback((event: React.TouchEvent) => {
+    if (disabled || !gestureStateRef.current.isTracking) return
+
+    const touches = Array.from(event.touches).map(touch => ({
+      id: touch.identifier,
+      x: touch.clientX,
+      y: touch.clientY,
+      timestamp: Date.now()
+    }))
+
+    touches.forEach(touch => {
+      touchesRef.current.set(touch.id, touch)
+    })
+
+    // Clear long press on move
+    if (gestureStateRef.current.longPressTimeout) {
+      clearTimeout(gestureStateRef.current.longPressTimeout)
+      gestureStateRef.current.longPressTimeout = null
+    }
+  }, [disabled])
+
+  const handleTouchEnd = useCallback((event: React.TouchEvent) => {
+    if (disabled) return
+
+    const gestureState = gestureStateRef.current
+    if (gestureState.longPressTimeout) {
+      clearTimeout(gestureState.longPressTimeout)
+      gestureState.longPressTimeout = null
+    }
+    setIsGesturing(false)
+
+    if (!gestureState.isTracking) return
+
+    const remainingTouches = Array.from(event.touches).map(touch => ({
+      id: touch.identifier,
+      x: touch.clientX,
+      y: touch.clientY,
+      timestamp: Date.now()
+    }))
+    
+    if (remainingTouches.length === 0) {
+      gestureState.isTracking = false
+      
+      const allTouches = Array.from(touchesRef.current.values())
+      
+      if (allTouches.length === 1) {
+        const touch = allTouches[0]
+        const endTime = Date.now()
+        const duration = endTime - gestureState.startTime
+        
+        // Check for tap gestures
+        if (duration < 200) {
+          const now = Date.now()
+          
+          if (now - gestureState.lastTapTime < DOUBLE_TAP_DELAY) {
+            gestureState.tapCount++
+            
+            if (gestureState.tapCount === 2) {
+              const gestureEvent: GestureEvent = {
+                type: 'doubletap',
+                touches: 1,
+                position: { x: touch.x, y: touch.y }
+              }
+              
+              onGesture?.(gestureEvent)
+              onDoubleTap?.({ x: touch.x, y: touch.y })
+              gestureState.tapCount = 0
+            }
+          } else {
+            gestureState.tapCount = 1
+          }
+          
+          gestureState.lastTapTime = now
+        }
+      }
+      
+      touchesRef.current.clear()
+    }
+  }, [disabled, onGesture, onDoubleTap])
+
+  return (
+    <div
+      ref={containerRef}
+      className={cn(
+        'relative',
+        {
+          'touch-none': disabled,
+          'select-none': isGesturing,
+        },
+        className
+      )}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+      onTouchCancel={handleTouchEnd}
+    >
+      {children}
+      
+      {isGesturing && (
+        <div className="absolute inset-0 bg-blue-500/5 pointer-events-none transition-opacity duration-150" />
+      )}
+    </div>
+  )
+}
+
+export const PhotoGestureHandler: React.FC<TouchGestureHandlerProps> = (props) => (
+  <TouchGestureHandler {...props} />
+)
+
+export const ScheduleGestureHandler: React.FC<TouchGestureHandlerProps> = (props) => (
+  <TouchGestureHandler {...props} />
+)

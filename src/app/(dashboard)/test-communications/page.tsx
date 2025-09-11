@@ -1,0 +1,366 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { createClient } from '@/lib/supabase/client';
+import {
+  useRealtimeMessages,
+  useRealtimeActivityFeed,
+} from '@/lib/supabase/realtime';
+import { ActivityService } from '@/lib/activity/service';
+import { EmailService } from '@/lib/email/service';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { ActivityFeed } from '@/components/messaging/ActivityFeed';
+
+export default function TestCommunicationsPage() {
+  const [user, setUser] = useState<any>(null);
+  const [userProfile, setUserProfile] = useState<any>(null);
+  const [testMessage, setTestMessage] = useState('');
+  const [testConversationId, setTestConversationId] = useState('');
+  const [testResults, setTestResults] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const supabase = createClient();
+
+  // Test realtime hooks (only if we have a conversation ID)
+  const { messages, sendMessage } = useRealtimeMessages(testConversationId);
+  const { activities, createActivity } = useRealtimeActivityFeed(
+    userProfile?.organization_id || '',
+    user?.id,
+  );
+
+  useEffect(() => {
+    async function loadUserData() {
+      try {
+        const {
+          data: { user },
+          error: userError,
+        } = await supabase.auth.getUser();
+
+        if (userError || !user) {
+          addTestResult('❌ No authenticated user found');
+          return;
+        }
+
+        setUser(user);
+        addTestResult('✅ User authenticated successfully');
+
+        const { data: profile, error: profileError } = await supabase
+          .from('user_profiles')
+          .select('*')
+          .eq('user_id', user.id)
+          .single();
+
+        if (profileError) {
+          addTestResult('❌ Error loading user profile');
+          return;
+        }
+
+        setUserProfile(profile);
+        addTestResult('✅ User profile loaded successfully');
+
+        if (profile.organization_id) {
+          addTestResult('✅ Organization ID found: ' + profile.organization_id);
+        } else {
+          addTestResult('❌ No organization ID found');
+        }
+      } catch (error) {
+        addTestResult('❌ Error: ' + (error as Error).message);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    loadUserData();
+  }, [supabase]);
+
+  const addTestResult = (result: string) => {
+    setTestResults((prev) => [
+      ...prev,
+      `${new Date().toLocaleTimeString()}: ${result}`,
+    ]);
+  };
+
+  const testDatabaseConnection = async () => {
+    try {
+      addTestResult('🔄 Testing database connection...');
+
+      const { data, error } = await supabase
+        .from('user_profiles')
+        .select('count')
+        .limit(1);
+
+      if (error) {
+        addTestResult('❌ Database connection failed: ' + error.message);
+      } else {
+        addTestResult('✅ Database connection successful');
+      }
+    } catch (error) {
+      addTestResult('❌ Database test error: ' + (error as Error).message);
+    }
+  };
+
+  const testCreateConversation = async () => {
+    try {
+      addTestResult('🔄 Testing conversation creation...');
+
+      if (!userProfile?.organization_id) {
+        addTestResult('❌ No organization ID available');
+        return;
+      }
+
+      const response = await fetch('/api/communications/conversations', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          client_id: user.id,
+          vendor_id: user.id, // Self-conversation for testing
+          organization_id: userProfile.organization_id,
+          subject: 'Test Conversation',
+          initial_message: 'This is a test message',
+        }),
+      });
+
+      if (!response.ok) {
+        addTestResult(
+          '❌ Failed to create conversation: ' + response.statusText,
+        );
+        return;
+      }
+
+      const data = await response.json();
+      setTestConversationId(data.conversation.id);
+      addTestResult('✅ Conversation created: ' + data.conversation.id);
+    } catch (error) {
+      addTestResult(
+        '❌ Conversation creation error: ' + (error as Error).message,
+      );
+    }
+  };
+
+  const testSendMessage = async () => {
+    if (!testConversationId || !testMessage.trim()) {
+      addTestResult('❌ Need conversation ID and message content');
+      return;
+    }
+
+    try {
+      addTestResult('🔄 Testing message sending...');
+
+      const message = await sendMessage(testMessage);
+      if (message) {
+        addTestResult('✅ Message sent via realtime: ' + message.id);
+        setTestMessage('');
+      } else {
+        addTestResult('❌ Failed to send message via realtime');
+      }
+    } catch (error) {
+      addTestResult('❌ Message sending error: ' + (error as Error).message);
+    }
+  };
+
+  const testCreateActivity = async () => {
+    if (!userProfile?.organization_id) {
+      addTestResult('❌ No organization ID available');
+      return;
+    }
+
+    try {
+      addTestResult('🔄 Testing activity creation...');
+
+      const activity = await createActivity({
+        organization_id: userProfile.organization_id,
+        entity_type: 'client',
+        entity_id: user.id,
+        activity_type: 'system_notification',
+        title: 'Test Activity',
+        description:
+          'This is a test activity created at ' +
+          new Date().toLocaleTimeString(),
+        actor_id: user.id,
+        actor_name: userProfile.display_name,
+        actor_type: 'system',
+        target_user_ids: null,
+        is_public: true,
+        icon: 'test-tube',
+        color: '#3b82f6',
+        data: { test: true },
+        read_by: null,
+      });
+
+      if (activity) {
+        addTestResult('✅ Activity created via realtime: ' + activity.id);
+      } else {
+        addTestResult('❌ Failed to create activity via realtime');
+      }
+    } catch (error) {
+      addTestResult('❌ Activity creation error: ' + (error as Error).message);
+    }
+  };
+
+  const testEmailService = async () => {
+    if (!userProfile?.organization_id) {
+      addTestResult('❌ No organization ID available');
+      return;
+    }
+
+    try {
+      addTestResult('🔄 Testing email service...');
+
+      const response = await fetch('/api/communications/notifications/email', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          recipient_email: user.email,
+          recipient_name: userProfile.display_name,
+          recipient_id: user.id,
+          recipient_type: 'vendor',
+          template_type: 'test_notification',
+          subject: 'Test Email Notification',
+          html_content:
+            '<h1>Test Email</h1><p>This is a test email sent at ' +
+            new Date().toLocaleString() +
+            '</p>',
+          text_content:
+            'Test Email: This is a test email sent at ' +
+            new Date().toLocaleString(),
+          organization_id: userProfile.organization_id,
+          priority: 'normal',
+        }),
+      });
+
+      if (!response.ok) {
+        addTestResult('❌ Failed to send test email: ' + response.statusText);
+        return;
+      }
+
+      const data = await response.json();
+      addTestResult('✅ Test email sent: ' + data.notification.id);
+    } catch (error) {
+      addTestResult('❌ Email service error: ' + (error as Error).message);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-50 p-8">
+      <div className="max-w-6xl mx-auto">
+        <h1 className="text-3xl font-bold text-gray-900 mb-8">
+          Communications System Test Page
+        </h1>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+          {/* Test Controls */}
+          <div className="space-y-6">
+            <div className="bg-white p-6 rounded-lg shadow">
+              <h2 className="text-xl font-semibold mb-4">System Tests</h2>
+              <div className="space-y-4">
+                <Button onClick={testDatabaseConnection} className="w-full">
+                  Test Database Connection
+                </Button>
+
+                <Button onClick={testCreateConversation} className="w-full">
+                  Create Test Conversation
+                </Button>
+
+                <Button onClick={testCreateActivity} className="w-full">
+                  Create Test Activity
+                </Button>
+
+                <Button onClick={testEmailService} className="w-full">
+                  Test Email Service
+                </Button>
+              </div>
+            </div>
+
+            {/* Message Testing */}
+            {testConversationId && (
+              <div className="bg-white p-6 rounded-lg shadow">
+                <h2 className="text-xl font-semibold mb-4">Message Testing</h2>
+                <div className="space-y-4">
+                  <p className="text-sm text-gray-600">
+                    Conversation ID: {testConversationId}
+                  </p>
+
+                  <div className="flex space-x-2">
+                    <Input
+                      value={testMessage}
+                      onChange={(e) => setTestMessage(e.target.value)}
+                      placeholder="Type a test message..."
+                      className="flex-1"
+                    />
+                    <Button onClick={testSendMessage}>Send</Button>
+                  </div>
+
+                  <div className="max-h-40 overflow-y-auto bg-gray-50 p-3 rounded">
+                    <h3 className="font-medium mb-2">
+                      Messages ({messages.length})
+                    </h3>
+                    {messages.map((message) => (
+                      <div key={message.id} className="text-sm py-1">
+                        <span className="font-medium">
+                          {message.sender_name}:
+                        </span>{' '}
+                        {message.content}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Test Results */}
+            <div className="bg-white p-6 rounded-lg shadow">
+              <h2 className="text-xl font-semibold mb-4">Test Results</h2>
+              <div className="max-h-60 overflow-y-auto bg-gray-900 text-green-400 p-4 rounded font-mono text-sm">
+                {testResults.map((result, index) => (
+                  <div key={index} className="mb-1">
+                    {result}
+                  </div>
+                ))}
+                {testResults.length === 0 && (
+                  <div className="text-gray-500">No test results yet...</div>
+                )}
+              </div>
+
+              <Button
+                onClick={() => setTestResults([])}
+                variant="ghost"
+                size="sm"
+                className="mt-2"
+              >
+                Clear Results
+              </Button>
+            </div>
+          </div>
+
+          {/* Activity Feed */}
+          <div className="bg-white p-6 rounded-lg shadow">
+            <h2 className="text-xl font-semibold mb-4">Live Activity Feed</h2>
+            {userProfile?.organization_id ? (
+              <ActivityFeed
+                organizationId={userProfile.organization_id}
+                userId={user?.id}
+                showFilters={false}
+                maxItems={20}
+              />
+            ) : (
+              <p className="text-gray-500">No organization ID available</p>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

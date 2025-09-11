@@ -1,0 +1,344 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { PerformanceGate } from '../../../../../../lib/ci-cd/performance-gate';
+
+interface StatusResponse {
+  buildId: string;
+  validationId?: string;
+  status: 'not_found' | 'queued' | 'running' | 'passed' | 'failed' | 'blocked';
+  progress?: number; // 0-100
+  metrics?: any;
+  violations?: any[];
+  recommendation?: string;
+  startedAt?: string;
+  completedAt?: string;
+  duration?: number; // milliseconds
+  environment?: string;
+  nextCheck?: string; // When to check again for running validations
+}
+
+/**
+ * GET /api/ci-cd/performance/status/[buildId]
+ * Returns the current status of a performance validation
+ * 
+ * Used by:
+ * - CI/CD pipelines to monitor validation progress
+ * - Dashboard to display validation status
+ * - Automated systems polling for completion
+ */
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { buildId: string } }
+): Promise<NextResponse> {
+  try {
+    const buildId = params.buildId;
+    
+    if (!buildId) {
+      return NextResponse.json(
+        {
+          error: 'buildId parameter is required',
+          timestamp: new Date().toISOString()
+        },
+        { status: 400 }
+      );
+    }
+
+    console.log(`🔍 Checking status for build: ${buildId}`);
+
+    // 1. Initialize performance gate to access validation results
+    const performanceGate = new PerformanceGate(
+      process.env.GITHUB_TOKEN,
+      process.env.VERCEL_TOKEN,
+      process.env.MONITORING_WEBHOOK_URL
+    );
+
+    // 2. Look for validation results by buildId
+    // Note: In a real implementation, this would query a database or cache
+    // For now, we simulate finding validation results
+    const validationResult = await findValidationByBuildId(buildId);
+
+    if (!validationResult) {
+      const notFoundResponse: StatusResponse = {
+        buildId,
+        status: 'not_found'
+      };
+
+      return NextResponse.json(notFoundResponse, { status: 404 });
+    }
+
+    // 3. Prepare status response
+    const response: StatusResponse = {
+      buildId,
+      validationId: validationResult.validationId,
+      status: validationResult.status,
+      progress: validationResult.progress,
+      metrics: validationResult.metrics,
+      violations: validationResult.violations,
+      recommendation: validationResult.recommendation,
+      startedAt: validationResult.startedAt,
+      completedAt: validationResult.completedAt,
+      duration: validationResult.duration,
+      environment: validationResult.environment,
+      nextCheck: validationResult.status === 'running' ? 
+        new Date(Date.now() + 30000).toISOString() : // Check again in 30 seconds
+        undefined
+    };
+
+    console.log(`✅ Status retrieved for ${buildId}: ${response.status}`);
+
+    return NextResponse.json(response, { status: 200 });
+
+  } catch (error) {
+    console.error(`❌ Failed to get status for build ${params.buildId}:`, error);
+
+    const errorResponse = {
+      buildId: params.buildId,
+      error: 'Failed to retrieve validation status',
+      details: error instanceof Error ? error.message : 'Unknown error',
+      timestamp: new Date().toISOString()
+    };
+
+    return NextResponse.json(errorResponse, { status: 500 });
+  }
+}
+
+/**
+ * POST /api/ci-cd/performance/status/[buildId]
+ * Updates the status of a running performance validation
+ * (Used internally by the performance testing system)
+ */
+export async function POST(
+  request: NextRequest,
+  { params }: { params: { buildId: string } }
+): Promise<NextResponse> {
+  try {
+    const buildId = params.buildId;
+    const updates = await request.json();
+
+    console.log(`📝 Updating status for build: ${buildId}`);
+
+    // Validate authorization for status updates
+    const authHeader = request.headers.get('authorization');
+    if (!authHeader || !isValidInternalToken(authHeader)) {
+      return NextResponse.json(
+        {
+          error: 'Unauthorized - Internal API access required',
+          timestamp: new Date().toISOString()
+        },
+        { status: 401 }
+      );
+    }
+
+    // Update validation status
+    await updateValidationStatus(buildId, updates);
+
+    console.log(`✅ Status updated for ${buildId}`);
+
+    return NextResponse.json({
+      buildId,
+      updated: true,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error(`❌ Failed to update status for build ${params.buildId}:`, error);
+
+    return NextResponse.json({
+      buildId: params.buildId,
+      error: 'Failed to update validation status',
+      details: error instanceof Error ? error.message : 'Unknown error',
+      timestamp: new Date().toISOString()
+    }, { status: 500 });
+  }
+}
+
+/**
+ * DELETE /api/ci-cd/performance/status/[buildId]
+ * Cancels a running performance validation
+ */
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: { buildId: string } }
+): Promise<NextResponse> {
+  try {
+    const buildId = params.buildId;
+
+    console.log(`🛑 Cancelling validation for build: ${buildId}`);
+
+    // Check authorization
+    const authHeader = request.headers.get('authorization');
+    if (!authHeader || !isValidInternalToken(authHeader)) {
+      return NextResponse.json(
+        {
+          error: 'Unauthorized - Admin access required',
+          timestamp: new Date().toISOString()
+        },
+        { status: 401 }
+      );
+    }
+
+    // Cancel the validation
+    const cancelled = await cancelValidation(buildId);
+
+    if (!cancelled) {
+      return NextResponse.json({
+        buildId,
+        error: 'Validation not found or already completed',
+        timestamp: new Date().toISOString()
+      }, { status: 404 });
+    }
+
+    console.log(`✅ Validation cancelled for ${buildId}`);
+
+    return NextResponse.json({
+      buildId,
+      cancelled: true,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error(`❌ Failed to cancel validation for build ${params.buildId}:`, error);
+
+    return NextResponse.json({
+      buildId: params.buildId,
+      error: 'Failed to cancel validation',
+      details: error instanceof Error ? error.message : 'Unknown error',
+      timestamp: new Date().toISOString()
+    }, { status: 500 });
+  }
+}
+
+/**
+ * Helper functions
+ * In production, these would interact with a database or cache
+ */
+
+async function findValidationByBuildId(buildId: string): Promise<any> {
+  // Mock implementation - in production, query database/cache
+  
+  // Simulate different validation states based on buildId pattern
+  const mockValidations: Record<string, any> = {
+    'build_running': {
+      validationId: `val_${buildId}_${Date.now()}`,
+      status: 'running',
+      progress: 65,
+      startedAt: new Date(Date.now() - 120000).toISOString(), // 2 minutes ago
+      environment: 'staging'
+    },
+    'build_passed': {
+      validationId: `val_${buildId}_${Date.now()}`,
+      status: 'passed',
+      progress: 100,
+      metrics: {
+        responseTime: 1850,
+        errorRate: 0.005,
+        throughput: 120,
+        coreWebVitals: {
+          LCP: 2200,
+          FID: 85,
+          CLS: 0.08,
+          TTFB: 650
+        }
+      },
+      startedAt: new Date(Date.now() - 300000).toISOString(), // 5 minutes ago
+      completedAt: new Date(Date.now() - 60000).toISOString(), // 1 minute ago
+      duration: 240000, // 4 minutes
+      environment: 'production'
+    },
+    'build_failed': {
+      validationId: `val_${buildId}_${Date.now()}`,
+      status: 'blocked',
+      progress: 100,
+      violations: [
+        {
+          metric: 'responseTime',
+          threshold: 2000,
+          actual: 3500,
+          severity: 'error',
+          impact: 'Wedding couples may experience slow page loads during critical planning'
+        },
+        {
+          metric: 'LCP',
+          threshold: 2500,
+          actual: 4200,
+          severity: 'error',
+          impact: 'Photo gallery loading may frustrate photographers during portfolio updates'
+        }
+      ],
+      recommendation: 'Optimize database queries and implement caching; Optimize images and implement lazy loading for faster content rendering',
+      startedAt: new Date(Date.now() - 400000).toISOString(), // 6.5 minutes ago
+      completedAt: new Date(Date.now() - 100000).toISOString(), // 1.5 minutes ago
+      duration: 300000, // 5 minutes
+      environment: 'production'
+    }
+  };
+
+  // Check for exact matches first
+  if (mockValidations[buildId]) {
+    return mockValidations[buildId];
+  }
+
+  // Check for pattern matches
+  if (buildId.includes('running')) {
+    return mockValidations['build_running'];
+  }
+  if (buildId.includes('failed') || buildId.includes('blocked')) {
+    return mockValidations['build_failed'];
+  }
+  if (buildId.includes('passed') || buildId.includes('success')) {
+    return mockValidations['build_passed'];
+  }
+
+  // Generate a realistic mock based on buildId
+  const isRunning = Math.random() < 0.3; // 30% chance of running
+  const isPassed = Math.random() < 0.7; // 70% chance of passing when not running
+
+  if (isRunning) {
+    return {
+      validationId: `val_${buildId}_${Date.now()}`,
+      status: 'running',
+      progress: Math.floor(Math.random() * 80) + 10, // 10-90%
+      startedAt: new Date(Date.now() - Math.random() * 300000).toISOString(), // Up to 5 minutes ago
+      environment: Math.random() < 0.5 ? 'staging' : 'production'
+    };
+  }
+
+  if (isPassed) {
+    return mockValidations['build_passed'];
+  } else {
+    return mockValidations['build_failed'];
+  }
+}
+
+async function updateValidationStatus(buildId: string, updates: any): Promise<void> {
+  // In production, update database/cache
+  console.log(`📝 Mock update for ${buildId}:`, updates);
+}
+
+async function cancelValidation(buildId: string): Promise<boolean> {
+  // In production, cancel running validation and update status
+  console.log(`🛑 Mock cancellation for ${buildId}`);
+  return true;
+}
+
+function isValidInternalToken(authHeader: string): boolean {
+  // In production, validate internal API token
+  const token = authHeader.replace('Bearer ', '');
+  const validToken = process.env.INTERNAL_API_TOKEN || 'internal-token-123';
+  return token === validToken;
+}
+
+/**
+ * OPTIONS /api/ci-cd/performance/status/[buildId]
+ * CORS preflight handling
+ */
+export async function OPTIONS(): Promise<NextResponse> {
+  return new NextResponse(null, {
+    status: 200,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-API-Key',
+      'Access-Control-Max-Age': '86400',
+    },
+  });
+}

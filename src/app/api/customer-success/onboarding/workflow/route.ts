@@ -1,0 +1,428 @@
+/**
+ * WS-133: Onboarding Workflow API
+ * API endpoints for managing user onboarding workflows
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { getServerSession } from 'next-auth/next';
+import { authOptions } from '@/lib/auth/config';
+import { customerSuccessService } from '@/lib/services/customer-success-service';
+import { rateLimit } from '@/lib/ratelimit';
+
+/**
+ * GET /api/customer-success/onboarding/workflow
+ * Get current user's onboarding workflow status
+ */
+export async function GET(request: NextRequest) {
+  // Apply rate limiting
+  const identifier = request.ip ?? 'anonymous';
+  const { success } = await rateLimit.limit(identifier);
+
+  if (!success) {
+    return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  }
+
+  try {
+    const session = await getServerSession(authOptions);
+    if (!session?.user) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 },
+      );
+    }
+
+    // Get user's current workflow status
+    const workflowStatus =
+      await customerSuccessService.getCustomerSuccessStatus(session.user.id);
+
+    // Mock workflow data structure for demonstration
+    const mockWorkflow = {
+      id: `workflow-${session.user.id}`,
+      name: 'Wedding Planner Onboarding',
+      description: 'Complete your setup to unlock all WedSync features',
+      userType: 'wedding_planner' as const,
+      currentStageId: 'setup-stage',
+      completionPercentage: 65,
+      status: 'in_progress' as const,
+      startedAt: new Date(Date.now() - 86400000 * 3), // 3 days ago
+      estimatedCompletionDate: new Date(Date.now() + 86400000 * 2), // 2 days from now
+      isActive: true,
+      stages: [
+        {
+          id: 'welcome-stage',
+          name: 'welcome',
+          title: 'Welcome & Getting Started',
+          description: 'Learn the basics and set up your profile',
+          order: 1,
+          status: 'completed' as const,
+          completedAt: new Date(Date.now() - 86400000 * 2),
+          estimatedTimeMinutes: 30,
+          successWeight: 0.2,
+          autoAdvance: true,
+          completionCriteria: ['Profile completed', 'Welcome tour finished'],
+          triggers: [
+            {
+              type: 'time_based' as const,
+              config: { delayMinutes: 0 },
+            },
+          ],
+          tasks: [
+            {
+              id: 'welcome-1',
+              title: 'Complete Your Profile',
+              description: 'Add your business details and profile information',
+              type: 'form' as const,
+              status: 'completed' as const,
+              estimatedMinutes: 15,
+              required: true,
+              dependencies: [],
+              successCriteria: ['All required fields completed'],
+              helpResources: [
+                {
+                  type: 'tutorial' as const,
+                  title: 'Setting Up Your Profile',
+                  url: '/help/profile-setup',
+                  duration: 5,
+                },
+              ],
+              completedAt: new Date(Date.now() - 86400000 * 2),
+              attempts: 1,
+              automationTrigger: 'profile_completed',
+            },
+            {
+              id: 'welcome-2',
+              title: 'Take the Welcome Tour',
+              description: 'Learn about key features and navigation',
+              type: 'tutorial' as const,
+              status: 'completed' as const,
+              estimatedMinutes: 15,
+              required: true,
+              dependencies: ['welcome-1'],
+              successCriteria: ['Tour completed', 'Key features shown'],
+              helpResources: [
+                {
+                  type: 'video' as const,
+                  title: 'WedSync Overview',
+                  url: '/help/welcome-video',
+                  duration: 10,
+                },
+              ],
+              completedAt: new Date(Date.now() - 86400000 * 2),
+              attempts: 1,
+              automationTrigger: 'welcome_tour_completed',
+            },
+          ],
+        },
+        {
+          id: 'setup-stage',
+          name: 'setup',
+          title: 'Business Setup',
+          description: 'Configure your business settings and preferences',
+          order: 2,
+          status: 'in_progress' as const,
+          estimatedTimeMinutes: 45,
+          successWeight: 0.3,
+          autoAdvance: false,
+          completionCriteria: [
+            'Business settings configured',
+            'First client added',
+          ],
+          triggers: [
+            {
+              type: 'action_based' as const,
+              config: { triggerEvent: 'profile_completed' },
+            },
+          ],
+          tasks: [
+            {
+              id: 'setup-1',
+              title: 'Configure Business Settings',
+              description: 'Set up your business hours, services, and pricing',
+              type: 'form' as const,
+              status: 'completed' as const,
+              estimatedMinutes: 20,
+              required: true,
+              dependencies: [],
+              successCriteria: ['Business hours set', 'Services added'],
+              helpResources: [
+                {
+                  type: 'article' as const,
+                  title: 'Business Configuration Guide',
+                  url: '/help/business-setup',
+                  duration: 8,
+                },
+              ],
+              completedAt: new Date(Date.now() - 86400000 * 1),
+              attempts: 1,
+              automationTrigger: 'business_settings_completed',
+            },
+            {
+              id: 'setup-2',
+              title: 'Add Your First Client',
+              description: 'Create a client profile to start managing weddings',
+              type: 'action' as const,
+              status: 'in_progress' as const,
+              estimatedMinutes: 25,
+              required: true,
+              dependencies: ['setup-1'],
+              successCriteria: ['Client created', 'Wedding date set'],
+              helpResources: [
+                {
+                  type: 'tutorial' as const,
+                  title: 'Adding Clients',
+                  url: '/help/client-management',
+                  duration: 12,
+                },
+              ],
+              attempts: 2,
+              lastAttemptAt: new Date(Date.now() - 86400000 * 0.5),
+              automationTrigger: 'first_client_added',
+            },
+          ],
+        },
+        {
+          id: 'features-stage',
+          name: 'feature_exploration',
+          title: 'Feature Exploration',
+          description: 'Discover and try key platform features',
+          order: 3,
+          status: 'locked' as const,
+          estimatedTimeMinutes: 60,
+          successWeight: 0.3,
+          autoAdvance: false,
+          completionCriteria: ['Core features used', 'First task completed'],
+          triggers: [
+            {
+              type: 'action_based' as const,
+              config: { triggerEvent: 'first_client_added' },
+            },
+          ],
+          tasks: [
+            {
+              id: 'features-1',
+              title: 'Create a Task List',
+              description: 'Set up your first wedding task list',
+              type: 'action' as const,
+              status: 'pending' as const,
+              estimatedMinutes: 20,
+              required: true,
+              dependencies: [],
+              successCriteria: ['Task list created', 'Tasks added'],
+              helpResources: [
+                {
+                  type: 'video' as const,
+                  title: 'Task Management Basics',
+                  url: '/help/task-management',
+                  duration: 15,
+                },
+              ],
+              attempts: 0,
+              automationTrigger: 'first_task_list_created',
+            },
+            {
+              id: 'features-2',
+              title: 'Set Up Communication Hub',
+              description: 'Configure client communication preferences',
+              type: 'integration' as const,
+              status: 'pending' as const,
+              estimatedMinutes: 15,
+              required: false,
+              dependencies: ['features-1'],
+              successCriteria: ['Communication settings configured'],
+              helpResources: [
+                {
+                  type: 'article' as const,
+                  title: 'Communication Setup',
+                  url: '/help/communication',
+                  duration: 8,
+                },
+              ],
+              attempts: 0,
+              automationTrigger: 'communication_configured',
+            },
+            {
+              id: 'features-3',
+              title: 'Explore Collaboration Tools',
+              description: 'Try team features and supplier connections',
+              type: 'tutorial' as const,
+              status: 'pending' as const,
+              estimatedMinutes: 25,
+              required: false,
+              dependencies: [],
+              successCriteria: ['Team features explored', 'Supplier connected'],
+              helpResources: [
+                {
+                  type: 'tutorial' as const,
+                  title: 'Collaboration Features',
+                  url: '/help/collaboration',
+                  duration: 20,
+                },
+              ],
+              attempts: 0,
+              automationTrigger: 'collaboration_explored',
+            },
+          ],
+        },
+        {
+          id: 'mastery-stage',
+          name: 'mastery',
+          title: 'Mastery & Success',
+          description:
+            'Master advanced features and achieve your first milestones',
+          order: 4,
+          status: 'locked' as const,
+          estimatedTimeMinutes: 90,
+          successWeight: 0.2,
+          autoAdvance: true,
+          completionCriteria: [
+            'Advanced features used',
+            'Success milestone achieved',
+          ],
+          triggers: [
+            {
+              type: 'score_based' as const,
+              config: { minScore: 75, component: 'feature_adoption' },
+            },
+          ],
+          tasks: [
+            {
+              id: 'mastery-1',
+              title: 'Complete Your First Wedding',
+              description: 'Successfully manage a wedding from start to finish',
+              type: 'verification' as const,
+              status: 'pending' as const,
+              estimatedMinutes: 60,
+              required: true,
+              dependencies: [],
+              successCriteria: [
+                'Wedding completed',
+                'All tasks finished',
+                'Client satisfied',
+              ],
+              helpResources: [
+                {
+                  type: 'documentation' as const,
+                  title: 'Wedding Management Best Practices',
+                  url: '/help/wedding-management',
+                  duration: 30,
+                },
+              ],
+              attempts: 0,
+              automationTrigger: 'first_wedding_completed',
+            },
+            {
+              id: 'mastery-2',
+              title: 'Achieve Power User Status',
+              description: 'Unlock advanced features through consistent usage',
+              type: 'verification' as const,
+              status: 'pending' as const,
+              estimatedMinutes: 30,
+              required: false,
+              dependencies: ['mastery-1'],
+              successCriteria: [
+                'Power user criteria met',
+                'Advanced features unlocked',
+              ],
+              helpResources: [
+                {
+                  type: 'article' as const,
+                  title: 'Becoming a Power User',
+                  url: '/help/power-user',
+                  duration: 15,
+                },
+              ],
+              attempts: 0,
+              automationTrigger: 'power_user_achieved',
+            },
+          ],
+        },
+      ],
+    };
+
+    return NextResponse.json({
+      success: true,
+      data: mockWorkflow,
+    });
+  } catch (error) {
+    console.error('Onboarding workflow API error:', error);
+    return NextResponse.json(
+      {
+        error: 'Failed to load workflow',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * PATCH /api/customer-success/onboarding/workflow
+ * Update workflow status or settings
+ */
+export async function PATCH(request: NextRequest) {
+  // Apply rate limiting
+  const identifier = request.ip ?? 'anonymous';
+  const { success } = await rateLimit.limit(identifier, {
+    requests: 30,
+    window: '1m',
+  });
+
+  if (!success) {
+    return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  }
+
+  try {
+    const session = await getServerSession(authOptions);
+    if (!session?.user) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 },
+      );
+    }
+
+    const { action, workflowId, settings } = await request.json();
+
+    // Validate request
+    if (!action || !workflowId) {
+      return NextResponse.json(
+        { error: 'Missing required parameters' },
+        { status: 400 },
+      );
+    }
+
+    // Process workflow update
+    let result;
+    switch (action) {
+      case 'pause':
+      case 'resume':
+      case 'reset':
+        // Handle workflow state changes
+        result = {
+          action,
+          workflowId,
+          message: `Workflow ${action}d successfully`,
+        };
+        break;
+      case 'update_settings':
+        // Handle settings update
+        result = { action, settings, message: 'Settings updated successfully' };
+        break;
+      default:
+        return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
+    }
+
+    return NextResponse.json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    console.error('Workflow update API error:', error);
+    return NextResponse.json(
+      {
+        error: 'Failed to update workflow',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+      { status: 500 },
+    );
+  }
+}

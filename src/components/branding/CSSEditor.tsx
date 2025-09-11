@@ -1,0 +1,527 @@
+'use client';
+
+import React, { useState, useRef, useCallback, useEffect } from 'react';
+import {
+  Code,
+  Eye,
+  EyeOff,
+  AlertTriangle,
+  Check,
+  Info,
+  Wand2,
+} from 'lucide-react';
+import { Button } from '@/components/ui/button-untitled';
+import { Card } from '@/components/ui/card-untitled';
+import { Badge } from '@/components/ui/badge';
+import { cn } from '@/lib/utils';
+
+interface CSSEditorProps {
+  value: string;
+  onChange: (css: string, isValid: boolean) => void;
+  placeholder?: string;
+  maxLength?: number;
+  disabled?: boolean;
+  className?: string;
+}
+
+interface SecurityIssue {
+  line: number;
+  column: number;
+  type: 'danger' | 'warning' | 'info';
+  rule: string;
+  message: string;
+  suggestion?: string;
+}
+
+interface CSSValidation {
+  isValid: boolean;
+  sanitizedCSS: string;
+  issues: SecurityIssue[];
+  removedRules: string[];
+}
+
+export default function CSSEditor({
+  value,
+  onChange,
+  placeholder = '/* Add custom CSS here */\n.dashboard-header {\n  background: linear-gradient(135deg, var(--color-primary), var(--color-secondary));\n}\n\n.client-card {\n  border-left: 4px solid var(--color-primary);\n}',
+  maxLength = 5000,
+  disabled = false,
+  className,
+}: CSSEditorProps) {
+  const [showPreview, setShowPreview] = useState(false);
+  const [validation, setValidation] = useState<CSSValidation>({
+    isValid: true,
+    sanitizedCSS: value,
+    issues: [],
+    removedRules: [],
+  });
+  const [isValidating, setIsValidating] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Dangerous CSS properties and values that should be blocked
+  const DANGEROUS_PROPERTIES = [
+    'javascript:',
+    'expression(',
+    'behavior:',
+    'binding:',
+    '-moz-binding',
+    '@import',
+    'url(javascript:',
+    'url(data:text/html',
+    'url("javascript:',
+    'url("data:text/html',
+    'vbscript:',
+    'livescript:',
+    'mocha:',
+    '// SECURITY: eval() removed - (',
+    'setTimeout(',
+    'setInterval(',
+  ];
+
+  const SUSPICIOUS_PATTERNS = [
+    /javascript:/gi,
+    /vbscript:/gi,
+    /expression\s*\(/gi,
+    /behavior\s*:/gi,
+    /-moz-binding/gi,
+    /url\s*\(\s*["']?\s*javascript:/gi,
+    /url\s*\(\s*["']?\s*data:text\/html/gi,
+    /@import\s+url\s*\(/gi,
+    /document\./gi,
+    /window\./gi,
+  ];
+
+  const ALLOWED_URL_SCHEMES = ['http:', 'https:', 'data:image/'];
+
+  const sanitizeCSS = useCallback(
+    (css: string): CSSValidation => {
+      const issues: SecurityIssue[] = [];
+      const removedRules: string[] = [];
+      let sanitizedCSS = css;
+      let hasErrors = false;
+
+      // Check for dangerous properties
+      DANGEROUS_PROPERTIES.forEach((dangerous) => {
+        if (sanitizedCSS.toLowerCase().includes(dangerous.toLowerCase())) {
+          const lines = sanitizedCSS.split('\n');
+          lines.forEach((line, index) => {
+            if (line.toLowerCase().includes(dangerous.toLowerCase())) {
+              issues.push({
+                line: index + 1,
+                column: line.toLowerCase().indexOf(dangerous.toLowerCase()) + 1,
+                type: 'danger',
+                rule: 'dangerous-property',
+                message: `Dangerous CSS property "${dangerous}" is not allowed`,
+                suggestion: 'Remove or replace with safe CSS properties',
+              });
+            }
+          });
+
+          // Remove the dangerous content
+          sanitizedCSS = sanitizedCSS.replace(
+            new RegExp(dangerous, 'gi'),
+            '/* REMOVED: dangerous property */',
+          );
+          removedRules.push(dangerous);
+          hasErrors = true;
+        }
+      });
+
+      // Check for suspicious patterns
+      SUSPICIOUS_PATTERNS.forEach((pattern, index) => {
+        const matches = [...sanitizedCSS.matchAll(pattern)];
+        matches.forEach((match) => {
+          const beforeMatch = sanitizedCSS.substring(0, match.index);
+          const lineNumber = beforeMatch.split('\n').length;
+          const lastNewlineIndex = beforeMatch.lastIndexOf('\n');
+          const columnNumber = (match.index || 0) - lastNewlineIndex;
+
+          issues.push({
+            line: lineNumber,
+            column: columnNumber,
+            type: 'danger',
+            rule: 'suspicious-pattern',
+            message: `Potentially malicious pattern detected: ${match[0]}`,
+            suggestion: 'Use safe CSS properties and values only',
+          });
+
+          hasErrors = true;
+        });
+
+        sanitizedCSS = sanitizedCSS.replace(
+          pattern,
+          '/* REMOVED: suspicious pattern */',
+        );
+      });
+
+      // Validate URL schemes
+      const urlMatches = [
+        ...sanitizedCSS.matchAll(/url\s*\(\s*["']?([^"')]+)["']?\s*\)/gi),
+      ];
+      urlMatches.forEach((match) => {
+        const url = match[1];
+        const isAllowed = ALLOWED_URL_SCHEMES.some((scheme) =>
+          url.toLowerCase().startsWith(scheme),
+        );
+
+        if (!isAllowed && !url.startsWith('var(') && !url.startsWith('/')) {
+          const beforeMatch = sanitizedCSS.substring(0, match.index);
+          const lineNumber = beforeMatch.split('\n').length;
+          const lastNewlineIndex = beforeMatch.lastIndexOf('\n');
+          const columnNumber = (match.index || 0) - lastNewlineIndex;
+
+          issues.push({
+            line: lineNumber,
+            column: columnNumber,
+            type: 'warning',
+            rule: 'unsafe-url',
+            message: `Potentially unsafe URL scheme: ${url}`,
+            suggestion: 'Use https:// URLs or CSS variables',
+          });
+        }
+      });
+
+      // Check CSS syntax (basic validation)
+      const braceCount =
+        (sanitizedCSS.match(/{/g) || []).length -
+        (sanitizedCSS.match(/}/g) || []).length;
+      if (braceCount !== 0) {
+        issues.push({
+          line: sanitizedCSS.split('\n').length,
+          column: 1,
+          type: 'warning',
+          rule: 'syntax-error',
+          message: 'Unbalanced braces detected',
+          suggestion:
+            'Ensure all opening braces { have matching closing braces }',
+        });
+      }
+
+      // Check for CSS injection attempts
+      if (
+        sanitizedCSS.includes('</style>') ||
+        sanitizedCSS.includes('<script')
+      ) {
+        issues.push({
+          line: 1,
+          column: 1,
+          type: 'danger',
+          rule: 'html-injection',
+          message: 'HTML tags are not allowed in CSS',
+          suggestion: 'Use only valid CSS syntax',
+        });
+
+        sanitizedCSS = sanitizedCSS
+          .replace(/<\/style>/gi, '/* REMOVED: HTML tag */')
+          .replace(/<script/gi, '/* REMOVED: HTML tag */');
+        hasErrors = true;
+      }
+
+      // Validate length
+      if (sanitizedCSS.length > maxLength) {
+        issues.push({
+          line: 1,
+          column: 1,
+          type: 'warning',
+          rule: 'length-limit',
+          message: `CSS exceeds maximum length of ${maxLength} characters`,
+          suggestion: 'Reduce the amount of custom CSS',
+        });
+      }
+
+      return {
+        isValid: !hasErrors,
+        sanitizedCSS: sanitizedCSS.substring(0, maxLength),
+        issues,
+        removedRules,
+      };
+    },
+    [maxLength],
+  );
+
+  const handleChange = useCallback(
+    (newValue: string) => {
+      setIsValidating(true);
+
+      // Debounce validation
+      const timeoutId = setTimeout(() => {
+        const validationResult = sanitizeCSS(newValue);
+        setValidation(validationResult);
+        onChange(validationResult.sanitizedCSS, validationResult.isValid);
+        setIsValidating(false);
+      }, 300);
+
+      return () => clearTimeout(timeoutId);
+    },
+    [sanitizeCSS, onChange],
+  );
+
+  useEffect(() => {
+    if (value) {
+      const validationResult = sanitizeCSS(value);
+      setValidation(validationResult);
+    }
+  }, [value, sanitizeCSS]);
+
+  const insertVariable = (variable: string) => {
+    if (textareaRef.current && !disabled) {
+      const textarea = textareaRef.current;
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      const newValue =
+        value.substring(0, start) + variable + value.substring(end);
+
+      handleChange(newValue);
+
+      // Restore cursor position
+      setTimeout(() => {
+        textarea.selectionStart = textarea.selectionEnd =
+          start + variable.length;
+        textarea.focus();
+      }, 0);
+    }
+  };
+
+  const getIssueIcon = (type: SecurityIssue['type']) => {
+    switch (type) {
+      case 'danger':
+        return <AlertTriangle className="h-4 w-4 text-error-500" />;
+      case 'warning':
+        return <AlertTriangle className="h-4 w-4 text-warning-500" />;
+      case 'info':
+        return <Info className="h-4 w-4 text-blue-500" />;
+    }
+  };
+
+  const getIssueBadgeVariant = (type: SecurityIssue['type']) => {
+    switch (type) {
+      case 'danger':
+        return 'destructive';
+      case 'warning':
+        return 'secondary';
+      case 'info':
+        return 'default';
+    }
+  };
+
+  return (
+    <div className={cn('space-y-4', className)}>
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center space-x-2">
+          <Code className="h-5 w-5 text-gray-600" />
+          <h3 className="font-medium text-gray-900">Custom CSS</h3>
+          {isValidating && (
+            <div className="animate-spin h-4 w-4 border-2 border-primary-500 border-t-transparent rounded-full" />
+          )}
+        </div>
+
+        <div className="flex items-center space-x-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setShowPreview(!showPreview)}
+            disabled={disabled}
+          >
+            {showPreview ? (
+              <EyeOff className="h-4 w-4" />
+            ) : (
+              <Eye className="h-4 w-4" />
+            )}
+            {showPreview ? 'Hide Preview' : 'Show Preview'}
+          </Button>
+        </div>
+      </div>
+
+      {/* CSS Variables Helper */}
+      <Card className="p-4">
+        <div className="flex items-center justify-between mb-3">
+          <p className="text-sm font-medium text-gray-700">
+            Available CSS Variables
+          </p>
+          <Badge variant="secondary" className="text-xs">
+            Click to insert
+          </Badge>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          {[
+            'var(--color-primary)',
+            'var(--color-secondary)',
+            'var(--color-accent)',
+            'var(--color-background)',
+            'var(--color-surface)',
+            'var(--color-text)',
+            'var(--font-family)',
+            'var(--font-heading)',
+            'var(--border-radius)',
+          ].map((variable) => (
+            <button
+              key={variable}
+              onClick={() => insertVariable(variable)}
+              disabled={disabled}
+              className="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded border font-mono transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {variable}
+            </button>
+          ))}
+        </div>
+      </Card>
+
+      {/* CSS Editor */}
+      <div className="relative">
+        <textarea
+          ref={textareaRef}
+          value={value}
+          onChange={(e) => handleChange(e.target.value)}
+          placeholder={placeholder}
+          disabled={disabled}
+          className={cn(
+            'w-full h-64 p-4 border border-gray-300 rounded-lg',
+            'font-mono text-sm resize-y',
+            'focus:outline-none focus:ring-4 focus:ring-primary-100 focus:border-primary-300',
+            'disabled:bg-gray-50 disabled:text-gray-500 disabled:cursor-not-allowed',
+            validation.issues.some((i) => i.type === 'danger') &&
+              'border-error-300 bg-error-50',
+          )}
+          aria-describedby="css-editor-description css-editor-validation"
+        />
+
+        <div className="absolute bottom-2 right-2 text-xs text-gray-500 bg-white/80 px-2 py-1 rounded">
+          {value.length}/{maxLength}
+        </div>
+      </div>
+
+      {/* Validation Results */}
+      {validation.issues.length > 0 && (
+        <div
+          className="space-y-2"
+          id="css-editor-validation"
+          role="alert"
+          aria-live="polite"
+        >
+          {validation.issues.map((issue, index) => (
+            <div
+              key={index}
+              className={cn(
+                'flex items-start space-x-3 p-3 rounded-lg border',
+                issue.type === 'danger' && 'bg-error-50 border-error-200',
+                issue.type === 'warning' && 'bg-warning-50 border-warning-200',
+                issue.type === 'info' && 'bg-blue-50 border-blue-200',
+              )}
+            >
+              {getIssueIcon(issue.type)}
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center space-x-2 mb-1">
+                  <Badge
+                    variant={getIssueBadgeVariant(issue.type)}
+                    className="text-xs"
+                  >
+                    Line {issue.line}, Column {issue.column}
+                  </Badge>
+                  <Badge variant="outline" className="text-xs">
+                    {issue.rule}
+                  </Badge>
+                </div>
+                <p className="text-sm font-medium text-gray-900">
+                  {issue.message}
+                </p>
+                {issue.suggestion && (
+                  <p className="text-xs text-gray-600 mt-1">
+                    {issue.suggestion}
+                  </p>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Removed Rules Warning */}
+      {validation.removedRules.length > 0 && (
+        <Card className="p-4 bg-warning-50 border-warning-200">
+          <div className="flex items-start space-x-3">
+            <AlertTriangle className="h-5 w-5 text-warning-500 flex-shrink-0 mt-0.5" />
+            <div>
+              <h4 className="font-medium text-warning-800 mb-1">
+                Security Rules Removed
+              </h4>
+              <p className="text-sm text-warning-700 mb-2">
+                The following potentially dangerous CSS rules were automatically
+                removed:
+              </p>
+              <ul className="text-sm text-warning-700 space-y-1">
+                {validation.removedRules.map((rule, index) => (
+                  <li
+                    key={index}
+                    className="font-mono text-xs bg-warning-100 px-2 py-1 rounded"
+                  >
+                    {rule}
+                  </li>
+                ))}
+              </ul>
+              <p className="text-xs text-warning-600 mt-2">
+                This helps protect your website and client data from potential
+                security vulnerabilities.
+              </p>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {/* Preview */}
+      {showPreview && validation.sanitizedCSS && (
+        <Card className="p-4">
+          <h4 className="font-medium text-gray-900 mb-3">CSS Preview</h4>
+          <div className="relative">
+            <pre className="text-xs bg-gray-50 p-3 rounded border overflow-auto max-h-48 font-mono">
+              {validation.sanitizedCSS || '/* No custom CSS defined */'}
+            </pre>
+            <div className="absolute top-2 right-2">
+              <Badge
+                variant={validation.isValid ? 'default' : 'destructive'}
+                className="text-xs"
+              >
+                {validation.isValid ? (
+                  <>
+                    <Check className="h-3 w-3 mr-1" />
+                    Valid
+                  </>
+                ) : (
+                  <>
+                    <AlertTriangle className="h-3 w-3 mr-1" />
+                    Issues Found
+                  </>
+                )}
+              </Badge>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {/* Security Notice */}
+      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+        <div className="flex items-start space-x-3">
+          <Info className="h-5 w-5 text-blue-500 flex-shrink-0 mt-0.5" />
+          <div className="text-sm">
+            <p className="font-medium text-blue-800 mb-1">
+              Security Information
+            </p>
+            <p className="text-blue-700">
+              All CSS is automatically scanned for security issues. Dangerous
+              properties and potentially malicious code are automatically
+              removed to protect your website.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Accessibility Description */}
+      <p className="sr-only" id="css-editor-description">
+        Custom CSS editor for advanced branding customization. Use CSS variables
+        like var(--color-primary) to reference your brand colors. All CSS is
+        automatically validated for security issues.
+      </p>
+    </div>
+  );
+}

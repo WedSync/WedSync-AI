@@ -1,0 +1,141 @@
+{
+  "name": "wedsync",
+  "$schema": "./node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "sourceRoot": "src",
+  "targets": {
+    "build": {
+      "executor": "@nx/next:build",
+      "outputs": ["{projectRoot}/.next"],
+      "defaultConfiguration": "production",
+      "options": {},
+      "configurations": {
+        "development": {
+          "outputPath": "{projectRoot}/.next"
+        },
+        "production": {
+          "outputPath": "{projectRoot}/.next"
+        }
+      }
+    },
+    "serve": {
+      "executor": "@nx/next:server",
+      "defaultConfiguration": "development",
+      "options": {
+        "buildTarget": "wedsync:build",
+        "dev": true,
+        "port": 3000
+      },
+      "configurations": {
+        "development": {
+          "buildTarget": "wedsync:build:development",
+          "dev": true
+        },
+        "production": {
+          "buildTarget": "wedsync:build:production",
+          "dev": false
+        }
+      }
+    },
+    "export": {
+      "executor": "@nx/next:export",
+      "options": {
+        "buildTarget": "wedsync:build:production"
+      }
+    },
+    "test": {
+      "executor": "@nx/vite:test",
+      "outputs": ["{projectRoot}/coverage"],
+      "options": {
+        "config": "{projectRoot}/vitest.config.ts",
+        "reportsDirectory": "../coverage/wedsync"
+      }
+    },
+    "test:watch": {
+      "executor": "@nx/vite:test",
+      "options": {
+        "config": "{projectRoot}/vitest.config.ts",
+        "watch": true
+      }
+    },
+    "test:coverage": {
+      "executor": "@nx/vite:test",
+      "outputs": ["{projectRoot}/coverage"],
+      "options": {
+        "config": "{projectRoot}/vitest.config.ts",
+        "coverage": true
+      }
+    },
+    "test:integration": {
+      "executor": "@nx/vite:test",
+      "outputs": ["{projectRoot}/coverage"],
+      "options": {
+        "config": "{projectRoot}/vitest.integration.config.ts"
+      }
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "outputs": ["{options.outputFile}"],
+      "options": {
+        "lintFilePatterns": ["{projectRoot}/**/*.{ts,tsx,js,jsx}"]
+      }
+    },
+    "lint:fix": {
+      "executor": "@nx/eslint:lint",
+      "options": {
+        "lintFilePatterns": ["{projectRoot}/**/*.{ts,tsx,js,jsx}"],
+        "fix": true
+      }
+    },
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsc --project tsconfig.build.json --noEmit --skipLibCheck"
+      }
+    },
+    "typecheck:fast": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsc --noEmit --skipLibCheck --incremental"
+      }
+    },
+    "e2e": {
+      "executor": "@nx/playwright:playwright",
+      "outputs": ["{workspaceRoot}/dist/.playwright"],
+      "options": {
+        "config": "{projectRoot}/playwright.config.ts"
+      }
+    },
+    "analyze": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "cross-env ANALYZE=true npm run build"
+      }
+    },
+    "db:generate": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "supabase gen types typescript --project-id azhgptjkqiiqvvvhapml --schema public > src/types/database.types.ts"
+      }
+    },
+    "db:reset": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "supabase db reset --linked"
+      }
+    },
+    "db:migrate": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "supabase migration up --linked"
+      }
+    },
+    "db:seed": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "supabase seed --linked"
+      }
+    }
+  },
+  "tags": ["scope:root", "type:app"]
+}

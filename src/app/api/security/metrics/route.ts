@@ -1,0 +1,133 @@
+// WS-147 Security Metrics API - Advanced Threat Detection Analytics
+import { NextRequest, NextResponse } from 'next/server';
+import { supabase } from '@/lib/supabase/server';
+import { SecurityMonitoringService } from '@/lib/security/advanced-threat-detection';
+
+export async function GET(request: NextRequest) {
+  try {
+    // Get current date ranges for metrics calculation
+    const now = new Date();
+    const last24Hours = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const last7Days = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const last30Days = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+    // Calculate security metrics
+    const [
+      totalThreatsResult,
+      blockedAttacksResult,
+      suspiciousActivitiesResult,
+      activeAlertsResult,
+      responseTimeResult,
+    ] = await Promise.all([
+      // Total threats detected in last 7 days
+      supabase
+        .from('security_audit_log')
+        .select('id', { count: 'exact' })
+        .in('event_type', [
+          'threat_detected',
+          'suspicious_activity',
+          'behavior_anomaly',
+        ])
+        .gte('created_at', last7Days.toISOString()),
+
+      // Blocked attacks in last 7 days
+      supabase
+        .from('security_audit_log')
+        .select('id', { count: 'exact' })
+        .eq('event_type', 'threat_detected')
+        .contains('event_data', { blocked: true })
+        .gte('created_at', last7Days.toISOString()),
+
+      // Suspicious activities in last 24 hours
+      supabase
+        .from('security_audit_log')
+        .select('id', { count: 'exact' })
+        .eq('event_type', 'suspicious_activity')
+        .gte('created_at', last24Hours.toISOString()),
+
+      // Active security alerts
+      supabase
+        .from('security_alerts')
+        .select('id', { count: 'exact' })
+        .eq('status', 'active'),
+
+      // Average response time calculation
+      supabase
+        .from('security_alerts')
+        .select('created_at, acknowledged_at')
+        .not('acknowledged_at', 'is', null)
+        .gte('created_at', last7Days.toISOString())
+        .limit(100),
+    ]);
+
+    // Calculate average response time
+    let avgResponseTime = '0s';
+    if (responseTimeResult.data && responseTimeResult.data.length > 0) {
+      const responseTimes = responseTimeResult.data
+        .filter((alert) => alert.acknowledged_at)
+        .map((alert) => {
+          const created = new Date(alert.created_at).getTime();
+          const acknowledged = new Date(alert.acknowledged_at!).getTime();
+          return acknowledged - created;
+        });
+
+      if (responseTimes.length > 0) {
+        const avgMs =
+          responseTimes.reduce((a, b) => a + b, 0) / responseTimes.length;
+        if (avgMs < 60000) {
+          avgResponseTime = `${Math.round(avgMs / 1000)}s`;
+        } else {
+          avgResponseTime = `${Math.round(avgMs / 60000)}m`;
+        }
+      }
+    }
+
+    // Calculate overall system risk score
+    const riskScoreResult = await supabase
+      .from('user_security_profiles')
+      .select('risk_score')
+      .not('risk_score', 'is', null);
+
+    let systemRiskScore = 0;
+    if (riskScoreResult.data && riskScoreResult.data.length > 0) {
+      const avgRisk =
+        riskScoreResult.data.reduce(
+          (sum, profile) => sum + (profile.risk_score || 0),
+          0,
+        ) / riskScoreResult.data.length;
+      systemRiskScore = Math.round(avgRisk);
+    }
+
+    const metrics = {
+      totalThreats: totalThreatsResult.count || 0,
+      blockedAttacks: blockedAttacksResult.count || 0,
+      suspiciousActivities: suspiciousActivitiesResult.count || 0,
+      activeAlerts: activeAlertsResult.count || 0,
+      avgResponseTime,
+      riskScore: systemRiskScore,
+    };
+
+    // Log metrics access
+    await SecurityMonitoringService.logSecurityEvent(
+      null, // System access
+      'metrics_access',
+      'low',
+      { endpoint: '/api/security/metrics', timestamp: now.toISOString() },
+      request,
+    );
+
+    return NextResponse.json(metrics);
+  } catch (error) {
+    console.error('Error fetching security metrics:', error);
+
+    // Return fallback metrics if database is unavailable
+    return NextResponse.json({
+      totalThreats: 0,
+      blockedAttacks: 0,
+      suspiciousActivities: 0,
+      activeAlerts: 0,
+      avgResponseTime: '0s',
+      riskScore: 0,
+    });
+  }
+}

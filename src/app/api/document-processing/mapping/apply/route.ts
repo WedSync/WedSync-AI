@@ -1,0 +1,536 @@
+/**
+ * Apply Smart Mapping API Endpoint
+ * POST /api/document-processing/mapping/apply
+ * Applies confirmed field mappings to create structured data
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { SmartMappingService } from '@/lib/services/smart-mapping-service';
+import { FieldExtractionService } from '@/lib/services/field-extraction-service';
+import { auth } from '@/lib/auth';
+import { createClient } from '@supabase/supabase-js';
+import { z } from 'zod';
+
+// Request validation schema
+const ApplyMappingSchema = z.object({
+  documentId: z.string().min(1),
+  mappings: z.array(
+    z.object({
+      sourceFieldId: z.string(),
+      targetFieldId: z.string(),
+      confidence: z.number().min(0).max(1).optional(),
+      confirmed: z.boolean().optional(),
+    }),
+  ),
+  targetTableName: z.string().optional(),
+  options: z
+    .object({
+      createRecord: z.boolean().optional(),
+      updateExisting: z.boolean().optional(),
+      validateData: z.boolean().optional(),
+      generateForm: z.boolean().optional(),
+    })
+    .optional(),
+});
+
+interface MappedData {
+  [key: string]: any;
+}
+
+export async function POST(request: NextRequest) {
+  const startTime = Date.now();
+
+  try {
+    // Authenticate user
+    const session = await auth();
+    if (!session?.user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Parse and validate request
+    const body = await request.json();
+    const validatedData = ApplyMappingSchema.parse(body);
+
+    // Initialize services
+    const fieldExtractionService = new FieldExtractionService();
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    );
+
+    // Get extracted fields from the document
+    const extractionResult = await fieldExtractionService.getExtractionResults(
+      validatedData.documentId,
+    );
+    if (!extractionResult || !extractionResult.fields) {
+      return NextResponse.json(
+        {
+          error: 'Document not found or extraction not complete',
+          code: 'EXTRACTION_NOT_FOUND',
+        },
+        { status: 404 },
+      );
+    }
+
+    // Apply the mappings to create structured data
+    const mappedData: MappedData = {};
+    const appliedMappings: Array<{
+      sourceFieldId: string;
+      targetFieldId: string;
+      sourceValue: any;
+      transformedValue: any;
+      status: 'success' | 'warning' | 'error';
+      message?: string;
+    }> = [];
+
+    for (const mapping of validatedData.mappings) {
+      const sourceField = extractionResult.fields.find(
+        (f) => f.fieldId === mapping.sourceFieldId,
+      );
+
+      if (!sourceField) {
+        appliedMappings.push({
+          sourceFieldId: mapping.sourceFieldId,
+          targetFieldId: mapping.targetFieldId,
+          sourceValue: null,
+          transformedValue: null,
+          status: 'error',
+          message: 'Source field not found',
+        });
+        continue;
+      }
+
+      try {
+        // Transform the value based on target field requirements
+        const transformedValue = await transformFieldValue(
+          sourceField.value,
+          sourceField.type,
+          mapping.targetFieldId,
+        );
+
+        // Validate the transformed value if requested
+        if (validatedData.options?.validateData) {
+          const validationResult = validateTransformedValue(
+            transformedValue,
+            mapping.targetFieldId,
+          );
+          if (!validationResult.isValid) {
+            appliedMappings.push({
+              sourceFieldId: mapping.sourceFieldId,
+              targetFieldId: mapping.targetFieldId,
+              sourceValue: sourceField.value,
+              transformedValue,
+              status: 'warning',
+              message: `Validation warning: ${validationResult.message}`,
+            });
+            continue;
+          }
+        }
+
+        mappedData[mapping.targetFieldId] = transformedValue;
+        appliedMappings.push({
+          sourceFieldId: mapping.sourceFieldId,
+          targetFieldId: mapping.targetFieldId,
+          sourceValue: sourceField.value,
+          transformedValue,
+          status: 'success',
+        });
+      } catch (error: any) {
+        appliedMappings.push({
+          sourceFieldId: mapping.sourceFieldId,
+          targetFieldId: mapping.targetFieldId,
+          sourceValue: sourceField.value,
+          transformedValue: null,
+          status: 'error',
+          message: `Transformation error: ${error.message}`,
+        });
+      }
+    }
+
+    // Calculate success metrics
+    const successfulMappings = appliedMappings.filter(
+      (m) => m.status === 'success',
+    );
+    const warningMappings = appliedMappings.filter(
+      (m) => m.status === 'warning',
+    );
+    const errorMappings = appliedMappings.filter((m) => m.status === 'error');
+
+    const successRate =
+      appliedMappings.length > 0
+        ? successfulMappings.length / appliedMappings.length
+        : 0;
+
+    // Create database record if requested
+    let recordId: string | null = null;
+    if (validatedData.options?.createRecord && successfulMappings.length > 0) {
+      try {
+        const tableName =
+          validatedData.targetTableName || 'client_data_extracted';
+
+        const recordData = {
+          ...mappedData,
+          user_id: session.user.id,
+          source_document_id: validatedData.documentId,
+          extraction_accuracy: successRate,
+          created_at: new Date().toISOString(),
+        };
+
+        const { data: createdRecord, error: insertError } = await supabase
+          .from(tableName)
+          .insert(recordData)
+          .select('id')
+          .single();
+
+        if (insertError) {
+          console.error('Failed to create record:', insertError);
+        } else {
+          recordId = createdRecord.id;
+        }
+      } catch (recordError) {
+        console.error('Error creating database record:', recordError);
+      }
+    }
+
+    // Generate form structure if requested
+    let formStructure = null;
+    if (validatedData.options?.generateForm) {
+      formStructure = generateFormStructure(mappedData, appliedMappings);
+    }
+
+    // Save applied mapping for learning
+    try {
+      await supabase.from('applied_mappings').insert({
+        document_id: validatedData.documentId,
+        user_id: session.user.id,
+        mappings: validatedData.mappings,
+        success_rate: successRate,
+        applied_data: mappedData,
+        created_at: new Date().toISOString(),
+      });
+    } catch (saveError) {
+      console.error('Error saving applied mapping:', saveError);
+    }
+
+    // Log mapping application for monitoring
+    console.log(
+      `Smart mapping applied for document ${validatedData.documentId}:`,
+      {
+        successRate,
+        successfulMappings: successfulMappings.length,
+        warningMappings: warningMappings.length,
+        errorMappings: errorMappings.length,
+        processingTime: Date.now() - startTime,
+        userId: session.user.id,
+        recordCreated: !!recordId,
+      },
+    );
+
+    // Return results
+    return NextResponse.json({
+      success: true,
+      data: {
+        mappedData,
+        appliedMappings,
+        recordId,
+        formStructure,
+        metrics: {
+          totalMappings: appliedMappings.length,
+          successfulMappings: successfulMappings.length,
+          warningMappings: warningMappings.length,
+          errorMappings: errorMappings.length,
+          successRate: Math.round(successRate * 100) / 100,
+          processingTime: Date.now() - startTime,
+        },
+      },
+    });
+  } catch (error) {
+    console.error('Apply mapping error:', error);
+
+    // Handle validation errors
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Invalid request data',
+          details: error.errors,
+          code: 'VALIDATION_ERROR',
+        },
+        { status: 400 },
+      );
+    }
+
+    // Handle service errors
+    if (error instanceof Error) {
+      return NextResponse.json(
+        {
+          error: 'Failed to apply mappings',
+          message: error.message,
+          code: 'APPLICATION_ERROR',
+        },
+        { status: 500 },
+      );
+    }
+
+    // Generic error
+    return NextResponse.json(
+      {
+        error: 'Internal server error',
+        code: 'INTERNAL_ERROR',
+      },
+      { status: 500 },
+    );
+  } finally {
+    // Log processing time for monitoring
+    const processingTime = Date.now() - startTime;
+    console.log(`Apply mapping API call completed in ${processingTime}ms`);
+  }
+}
+
+/**
+ * Transform field value based on target field requirements
+ */
+async function transformFieldValue(
+  value: any,
+  sourceType: string,
+  targetFieldId: string,
+): Promise<any> {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  const valueStr = value.toString().trim();
+  if (!valueStr) {
+    return null;
+  }
+
+  // Transform based on target field type
+  switch (targetFieldId) {
+    case 'wedding_date':
+    case 'ceremony_time':
+      // Parse and standardize date/time
+      const parsedDate = new Date(valueStr);
+      if (isNaN(parsedDate.getTime())) {
+        throw new Error(`Invalid date format: ${valueStr}`);
+      }
+      return parsedDate.toISOString();
+
+    case 'primary_email':
+      // Validate and normalize email
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(valueStr)) {
+        throw new Error(`Invalid email format: ${valueStr}`);
+      }
+      return valueStr.toLowerCase();
+
+    case 'primary_phone':
+      // Normalize phone number
+      const phoneDigits = valueStr.replace(/\D/g, '');
+      if (phoneDigits.length < 10) {
+        throw new Error(`Invalid phone number: ${valueStr}`);
+      }
+      // Format as (XXX) XXX-XXXX for US numbers
+      if (phoneDigits.length === 10) {
+        return `(${phoneDigits.slice(0, 3)}) ${phoneDigits.slice(3, 6)}-${phoneDigits.slice(6)}`;
+      }
+      return valueStr; // Return original for international numbers
+
+    case 'guest_count':
+      // Convert to integer
+      const guestCount = parseInt(valueStr, 10);
+      if (isNaN(guestCount) || guestCount < 0) {
+        throw new Error(`Invalid guest count: ${valueStr}`);
+      }
+      return guestCount;
+
+    case 'budget':
+      // Parse currency value
+      const budgetStr = valueStr.replace(/[$,]/g, '');
+      const budget = parseFloat(budgetStr);
+      if (isNaN(budget) || budget < 0) {
+        throw new Error(`Invalid budget amount: ${valueStr}`);
+      }
+      return budget;
+
+    case 'bride_name':
+    case 'groom_name':
+    case 'venue_name':
+      // Capitalize names properly
+      return valueStr.replace(/\b\w/g, (char) => char.toUpperCase());
+
+    case 'venue_address':
+      // Standardize address format
+      return valueStr.replace(/\s+/g, ' ').trim();
+
+    default:
+      return valueStr;
+  }
+}
+
+/**
+ * Validate transformed value
+ */
+function validateTransformedValue(
+  value: any,
+  targetFieldId: string,
+): { isValid: boolean; message?: string } {
+  if (value === null || value === undefined) {
+    // Check if field is required
+    const requiredFields = [
+      'bride_name',
+      'groom_name',
+      'wedding_date',
+      'primary_email',
+      'primary_phone',
+    ];
+    if (requiredFields.includes(targetFieldId)) {
+      return { isValid: false, message: 'Required field cannot be empty' };
+    }
+    return { isValid: true };
+  }
+
+  switch (targetFieldId) {
+    case 'primary_email':
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(value.toString())) {
+        return { isValid: false, message: 'Invalid email format' };
+      }
+      break;
+
+    case 'guest_count':
+      if (typeof value !== 'number' || value < 1 || value > 10000) {
+        return {
+          isValid: false,
+          message: 'Guest count should be between 1 and 10,000',
+        };
+      }
+      break;
+
+    case 'budget':
+      if (typeof value !== 'number' || value < 0 || value > 10000000) {
+        return {
+          isValid: false,
+          message: 'Budget should be a positive amount under $10M',
+        };
+      }
+      break;
+
+    case 'wedding_date':
+      const weddingDate = new Date(value);
+      const now = new Date();
+      if (weddingDate < now) {
+        return {
+          isValid: false,
+          message: 'Wedding date should be in the future',
+        };
+      }
+      break;
+  }
+
+  return { isValid: true };
+}
+
+/**
+ * Generate form structure for UI
+ */
+function generateFormStructure(mappedData: MappedData, appliedMappings: any[]) {
+  const formSections = [
+    {
+      id: 'basic_info',
+      title: 'Basic Information',
+      fields: ['bride_name', 'groom_name', 'wedding_date'],
+    },
+    {
+      id: 'contact_info',
+      title: 'Contact Information',
+      fields: ['primary_email', 'primary_phone'],
+    },
+    {
+      id: 'venue_info',
+      title: 'Venue Information',
+      fields: ['venue_name', 'venue_address'],
+    },
+    {
+      id: 'details',
+      title: 'Wedding Details',
+      fields: ['guest_count', 'budget', 'ceremony_time'],
+    },
+  ];
+
+  return formSections
+    .map((section) => ({
+      ...section,
+      fields: section.fields
+        .filter((fieldId) => mappedData.hasOwnProperty(fieldId))
+        .map((fieldId) => {
+          const mapping = appliedMappings.find(
+            (m) => m.targetFieldId === fieldId,
+          );
+          return {
+            id: fieldId,
+            label: getFieldLabel(fieldId),
+            value: mappedData[fieldId],
+            type: getFieldType(fieldId),
+            status: mapping?.status || 'success',
+            confidence: mapping?.confidence || 1,
+            required: isFieldRequired(fieldId),
+          };
+        }),
+    }))
+    .filter((section) => section.fields.length > 0);
+}
+
+function getFieldLabel(fieldId: string): string {
+  const labels: { [key: string]: string } = {
+    bride_name: 'Bride Name',
+    groom_name: 'Groom Name',
+    wedding_date: 'Wedding Date',
+    venue_name: 'Venue Name',
+    venue_address: 'Venue Address',
+    primary_email: 'Primary Email',
+    primary_phone: 'Primary Phone',
+    guest_count: 'Guest Count',
+    budget: 'Budget',
+    ceremony_time: 'Ceremony Time',
+  };
+  return (
+    labels[fieldId] ||
+    fieldId.replace(/_/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase())
+  );
+}
+
+function getFieldType(fieldId: string): string {
+  const types: { [key: string]: string } = {
+    bride_name: 'text',
+    groom_name: 'text',
+    wedding_date: 'date',
+    venue_name: 'text',
+    venue_address: 'textarea',
+    primary_email: 'email',
+    primary_phone: 'tel',
+    guest_count: 'number',
+    budget: 'currency',
+    ceremony_time: 'time',
+  };
+  return types[fieldId] || 'text';
+}
+
+function isFieldRequired(fieldId: string): boolean {
+  const requiredFields = [
+    'bride_name',
+    'groom_name',
+    'wedding_date',
+    'primary_email',
+    'primary_phone',
+  ];
+  return requiredFields.includes(fieldId);
+}
+
+export async function GET(request: NextRequest) {
+  return NextResponse.json(
+    {
+      error: 'Method not allowed',
+      message: 'Use POST to apply field mappings',
+    },
+    { status: 405 },
+  );
+}

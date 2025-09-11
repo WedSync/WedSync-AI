@@ -1,0 +1,495 @@
+/**
+ * WS-109: Payout Processing API Endpoint
+ * 
+ * POST /api/marketplace/commission/process-payouts
+ * 
+ * Triggers automated monthly payout processing for eligible creators.
+ * Restricted to admin users only for security.
+ * 
+ * Team B - Batch 8 - Round 2
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { payoutProcessingService } from '@/lib/services/payoutProcessingService';
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_KEY!
+);
+
+// =====================================================================================
+// REQUEST/RESPONSE INTERFACES
+// =====================================================================================
+
+interface ProcessPayoutsRequest {
+  period_start?: string; // ISO date string
+  period_end?: string;   // ISO date string
+  creator_ids?: string[];
+  dry_run?: boolean;
+  force_retry_failed?: boolean;
+}
+
+interface ProcessPayoutsResponse {
+  success: boolean;
+  job_id?: string;
+  results?: {
+    processed: number;
+    succeeded: number;
+    failed: number;
+    skipped: number;
+    total_amount_cents: number;
+    errors: Array<{ creator_id: string; error: string }>;
+  };
+  error?: string;
+}
+
+// =====================================================================================
+// API HANDLERS
+// =====================================================================================
+
+export async function POST(request: NextRequest) {
+  try {
+    // Admin authentication check
+    const authCheck = await verifyAdminAccess(request);
+    if (!authCheck.valid) {
+      return NextResponse.json(
+        { 
+          success: false, 
+          error: authCheck.error 
+        },
+        { status: authCheck.status || 403 }
+      );
+    }
+
+    // Parse request body
+    const body: ProcessPayoutsRequest = await request.json();
+
+    // Validate request
+    const validation = validatePayoutRequest(body);
+    if (!validation.valid) {
+      return NextResponse.json(
+        { 
+          success: false, 
+          error: validation.error 
+        },
+        { status: 400 }
+      );
+    }
+
+    // Parse date ranges
+    let periodStart: Date | undefined;
+    let periodEnd: Date | undefined;
+    
+    if (body.period_start) {
+      periodStart = new Date(body.period_start);
+      if (isNaN(periodStart.getTime())) {
+        return NextResponse.json(
+          { success: false, error: 'Invalid period_start date format' },
+          { status: 400 }
+        );
+      }
+    }
+    
+    if (body.period_end) {
+      periodEnd = new Date(body.period_end);
+      if (isNaN(periodEnd.getTime())) {
+        return NextResponse.json(
+          { success: false, error: 'Invalid period_end date format' },
+          { status: 400 }
+        );
+      }
+    }
+
+    // Handle dry run mode
+    if (body.dry_run) {
+      const dryRunResults = await performDryRun(periodStart, periodEnd, body.creator_ids);
+      return NextResponse.json({
+        success: true,
+        results: dryRunResults
+      });
+    }
+
+    // Handle failed payout retry
+    if (body.force_retry_failed) {
+      const retryResults = await payoutProcessingService.retryFailedPayouts();
+      
+      return NextResponse.json({
+        success: true,
+        results: {
+          processed: retryResults.retried,
+          succeeded: retryResults.succeeded,
+          failed: retryResults.failed,
+          skipped: 0,
+          total_amount_cents: 0,
+          errors: []
+        }
+      });
+    }
+
+    // Log payout processing start
+    await logPayoutProcessingEvent('payout_processing_started', {
+      period_start: periodStart?.toISOString(),
+      period_end: periodEnd?.toISOString(),
+      creator_count: body.creator_ids?.length || 'all',
+      initiated_by: authCheck.userId
+    });
+
+    // Process payouts
+    const results = await payoutProcessingService.processMonthlyPayouts(
+      periodStart,
+      periodEnd,
+      body.creator_ids
+    );
+
+    // Calculate total amount processed
+    const totalAmountCents = await calculateTotalPayoutAmount(
+      periodStart || new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1),
+      periodEnd || new Date(new Date().getFullYear(), new Date().getMonth(), 1),
+      body.creator_ids
+    );
+
+    // Log completion
+    await logPayoutProcessingEvent('payout_processing_completed', {
+      ...results,
+      total_amount_cents: totalAmountCents,
+      initiated_by: authCheck.userId
+    });
+
+    const response: ProcessPayoutsResponse = {
+      success: true,
+      results: {
+        ...results,
+        total_amount_cents: totalAmountCents
+      }
+    };
+
+    return NextResponse.json(response);
+
+  } catch (error) {
+    console.error('Payout processing API error:', error);
+
+    // Log error
+    await logPayoutProcessingEvent('payout_processing_error', {
+      error: error instanceof Error ? error.message : 'Unknown error'
+    });
+
+    return NextResponse.json(
+      { 
+        success: false, 
+        error: 'Failed to process payouts. Please try again or check logs.' 
+      },
+      { status: 500 }
+    );
+  }
+}
+
+// GET endpoint for payout processing status
+export async function GET(request: NextRequest) {
+  try {
+    const authCheck = await verifyAdminAccess(request);
+    if (!authCheck.valid) {
+      return NextResponse.json(
+        { success: false, error: authCheck.error },
+        { status: authCheck.status || 403 }
+      );
+    }
+
+    const { searchParams } = request.nextUrl;
+    const jobId = searchParams.get('job_id');
+    const status = searchParams.get('status') || 'all';
+    const limit = parseInt(searchParams.get('limit') || '10');
+
+    // Get recent payout processing jobs
+    const { data: payoutJobs, error } = await supabase
+      .from('marketplace_payout_processing_logs')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(limit);
+
+    if (error) {
+      throw new Error(`Failed to fetch payout jobs: ${error.message}`);
+    }
+
+    // Get overall payout statistics
+    const stats = await getPayoutStatistics();
+
+    return NextResponse.json({
+      success: true,
+      payout_jobs: payoutJobs || [],
+      statistics: stats
+    });
+
+  } catch (error) {
+    console.error('Payout status API error:', error);
+    
+    return NextResponse.json(
+      { success: false, error: 'Failed to get payout status' },
+      { status: 500 }
+    );
+  }
+}
+
+// =====================================================================================
+// HELPER FUNCTIONS
+// =====================================================================================
+
+async function verifyAdminAccess(request: NextRequest): Promise<{ 
+  valid: boolean; 
+  error?: string; 
+  status?: number;
+  userId?: string; 
+}> {
+  try {
+    const authHeader = request.headers.get('Authorization');
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return { 
+        valid: false, 
+        error: 'Authorization header required', 
+        status: 401 
+      };
+    }
+
+    const token = authHeader.substring(7);
+    
+    // Verify token with Supabase
+    const { data: { user }, error } = await supabase.auth.getUser(token);
+    
+    if (error || !user) {
+      return { 
+        valid: false, 
+        error: 'Invalid or expired token', 
+        status: 401 
+      };
+    }
+
+    // Check if user has admin role
+    const { data: profile, error: profileError } = await supabase
+      .from('profiles')
+      .select('role')
+      .eq('id', user.id)
+      .single();
+
+    if (profileError || !profile) {
+      return { 
+        valid: false, 
+        error: 'User profile not found', 
+        status: 404 
+      };
+    }
+
+    if (profile.role !== 'admin' && profile.role !== 'super_admin') {
+      return { 
+        valid: false, 
+        error: 'Admin access required', 
+        status: 403 
+      };
+    }
+
+    return { valid: true, userId: user.id };
+
+  } catch (error) {
+    console.error('Admin verification error:', error);
+    return { 
+      valid: false, 
+      error: 'Authentication verification failed', 
+      status: 500 
+    };
+  }
+}
+
+function validatePayoutRequest(body: any): { valid: boolean; error?: string } {
+  // Basic validation
+  if (body.period_start && body.period_end) {
+    const start = new Date(body.period_start);
+    const end = new Date(body.period_end);
+    
+    if (start >= end) {
+      return { valid: false, error: 'period_start must be before period_end' };
+    }
+    
+    // Don't allow processing future periods
+    if (end > new Date()) {
+      return { valid: false, error: 'Cannot process payouts for future periods' };
+    }
+  }
+
+  if (body.creator_ids && (!Array.isArray(body.creator_ids) || body.creator_ids.length === 0)) {
+    return { valid: false, error: 'creator_ids must be a non-empty array when provided' };
+  }
+
+  if (body.creator_ids && body.creator_ids.length > 100) {
+    return { valid: false, error: 'Cannot process more than 100 creators at once' };
+  }
+
+  return { valid: true };
+}
+
+async function performDryRun(
+  periodStart?: Date,
+  periodEnd?: Date,
+  creatorIds?: string[]
+): Promise<any> {
+  try {
+    // Default to previous month if no period specified
+    if (!periodStart || !periodEnd) {
+      const now = new Date();
+      periodEnd = new Date(now.getFullYear(), now.getMonth(), 1);
+      periodStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    }
+
+    // Get payout summaries without processing
+    let query = supabase
+      .from('marketplace_commission_records')
+      .select('creator_id, creator_earnings_cents')
+      .gte('created_at', periodStart.toISOString())
+      .lt('created_at', periodEnd.toISOString());
+
+    if (creatorIds && creatorIds.length > 0) {
+      query = query.in('creator_id', creatorIds);
+    }
+
+    const { data: commissionData, error } = await query;
+
+    if (error) {
+      throw new Error(`Failed to fetch commission data: ${error.message}`);
+    }
+
+    // Group by creator and calculate totals
+    const creatorTotals = new Map<string, number>();
+    
+    for (const record of commissionData || []) {
+      const creatorId = record.creator_id;
+      const earnings = record.creator_earnings_cents || 0;
+      
+      creatorTotals.set(creatorId, (creatorTotals.get(creatorId) || 0) + earnings);
+    }
+
+    // Filter by minimum threshold
+    const MINIMUM_THRESHOLD = 2000; // £20 in pence
+    const eligibleCreators = Array.from(creatorTotals.entries())
+      .filter(([_, amount]) => amount >= MINIMUM_THRESHOLD);
+
+    const totalAmount = eligibleCreators.reduce((sum, [_, amount]) => sum + amount, 0);
+
+    return {
+      processed: eligibleCreators.length,
+      succeeded: 0, // Dry run
+      failed: 0,
+      skipped: creatorTotals.size - eligibleCreators.length,
+      total_amount_cents: totalAmount,
+      errors: [],
+      eligible_creators: eligibleCreators.map(([creator_id, amount]) => ({
+        creator_id,
+        payout_amount_cents: amount
+      }))
+    };
+
+  } catch (error) {
+    console.error('Dry run error:', error);
+    throw error;
+  }
+}
+
+async function calculateTotalPayoutAmount(
+  periodStart: Date,
+  periodEnd: Date,
+  creatorIds?: string[]
+): Promise<number> {
+  try {
+    let query = supabase
+      .from('marketplace_creator_payouts')
+      .select('net_payout_cents')
+      .gte('payout_period_start', periodStart.toISOString())
+      .lt('payout_period_end', periodEnd.toISOString())
+      .eq('status', 'paid');
+
+    if (creatorIds && creatorIds.length > 0) {
+      query = query.in('creator_id', creatorIds);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+      console.error('Error calculating total payout amount:', error);
+      return 0;
+    }
+
+    return (data || []).reduce((sum, payout) => sum + (payout.net_payout_cents || 0), 0);
+
+  } catch (error) {
+    console.error('Error in calculateTotalPayoutAmount:', error);
+    return 0;
+  }
+}
+
+async function getPayoutStatistics(): Promise<any> {
+  try {
+    // Get current month stats
+    const currentMonth = new Date();
+    const monthStart = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), 1);
+    
+    const { data: monthlyStats, error } = await supabase
+      .from('marketplace_creator_payouts')
+      .select('status, net_payout_cents')
+      .gte('created_at', monthStart.toISOString());
+
+    if (error) {
+      throw error;
+    }
+
+    const stats = {
+      monthly_total_cents: 0,
+      monthly_paid_count: 0,
+      monthly_failed_count: 0,
+      monthly_pending_count: 0
+    };
+
+    for (const payout of monthlyStats || []) {
+      stats.monthly_total_cents += payout.net_payout_cents || 0;
+      
+      switch (payout.status) {
+        case 'paid':
+          stats.monthly_paid_count++;
+          break;
+        case 'failed':
+          stats.monthly_failed_count++;
+          break;
+        case 'pending':
+        case 'processing':
+          stats.monthly_pending_count++;
+          break;
+      }
+    }
+
+    return stats;
+
+  } catch (error) {
+    console.error('Error getting payout statistics:', error);
+    return {
+      monthly_total_cents: 0,
+      monthly_paid_count: 0,
+      monthly_failed_count: 0,
+      monthly_pending_count: 0
+    };
+  }
+}
+
+async function logPayoutProcessingEvent(eventType: string, eventData: any): Promise<void> {
+  try {
+    const { error } = await supabase
+      .from('marketplace_payout_processing_logs')
+      .insert({
+        event_type: eventType,
+        event_data: eventData,
+        created_at: new Date().toISOString()
+      });
+
+    if (error) {
+      console.error('Failed to log payout processing event:', error);
+    }
+
+  } catch (error) {
+    console.error('Error logging payout processing event:', error);
+  }
+}

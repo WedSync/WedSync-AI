@@ -1,0 +1,238 @@
+'use client';
+
+import { create } from 'zustand';
+import { Node, Edge } from '@xyflow/react';
+
+interface CanvasData {
+  nodes: Node[];
+  edges: Edge[];
+  viewport?: { x: number; y: number; zoom: number };
+  metadata?: Record<string, any>;
+}
+
+interface CanvasState {
+  nodes: Node[];
+  edges: Edge[];
+  isDirty: boolean;
+  lastSaved: Date | null;
+  canvasId: string | null;
+  isLoading: boolean;
+  isSaving: boolean;
+  error: string | null;
+  
+  // Actions
+  setNodes: (nodes: Node[]) => void;
+  setEdges: (edges: Edge[]) => void;
+  updateCanvas: (updates: Partial<{ nodes: Node[]; edges: Edge[] }>) => void;
+  saveCanvas: (data: { nodes: Node[]; edges: Edge[] }) => void;
+  resetCanvas: () => void;
+  setCanvasId: (id: string) => void;
+  
+  // API Actions
+  loadCanvas: (id: string) => Promise<void>;
+  saveToDatabase: (id?: string) => Promise<void>;
+  autoSave: (id: string) => Promise<void>;
+  createCanvas: (name: string, description?: string) => Promise<string>;
+}
+
+export const useCanvasStore = create<CanvasState>((set, get) => ({
+  nodes: [],
+  edges: [],
+  isDirty: false,
+  lastSaved: null,
+  canvasId: null,
+  isLoading: false,
+  isSaving: false,
+  error: null,
+
+  setNodes: (nodes) => set({ nodes, isDirty: true }),
+  
+  setEdges: (edges) => set({ edges, isDirty: true }),
+  
+  updateCanvas: (updates) => set((state) => ({
+    ...state,
+    ...updates,
+    isDirty: true,
+  })),
+  
+  saveCanvas: (data) => set({
+    nodes: data.nodes,
+    edges: data.edges,
+    isDirty: false,
+    lastSaved: new Date(),
+  }),
+  
+  resetCanvas: () => set({
+    nodes: [],
+    edges: [],
+    isDirty: false,
+    lastSaved: null,
+    canvasId: null,
+    error: null,
+  }),
+  
+  setCanvasId: (id) => set({ canvasId: id }),
+  
+  // Load canvas from database
+  loadCanvas: async (id: string) => {
+    set({ isLoading: true, error: null });
+    try {
+      const response = await fetch(`/api/journeys/${id}`);
+      if (!response.ok) {
+        throw new Error('Failed to load canvas');
+      }
+      
+      const data = await response.json();
+      const canvasData = data.canvas_data || {};
+      
+      set({
+        canvasId: id,
+        nodes: canvasData.nodes || [],
+        edges: canvasData.edges || [],
+        isDirty: false,
+        lastSaved: data.updated_at ? new Date(data.updated_at) : null,
+        isLoading: false,
+      });
+    } catch (error) {
+      set({ 
+        error: error instanceof Error ? error.message : 'Failed to load canvas',
+        isLoading: false 
+      });
+      throw error;
+    }
+  },
+  
+  // Save canvas to database
+  saveToDatabase: async (id?: string) => {
+    const state = get();
+    const canvasId = id || state.canvasId;
+    
+    if (!canvasId) {
+      throw new Error('No canvas ID provided');
+    }
+    
+    set({ isSaving: true, error: null });
+    
+    try {
+      const canvasData: CanvasData = {
+        nodes: state.nodes,
+        edges: state.edges,
+        viewport: { x: 0, y: 0, zoom: 1 },
+        metadata: {},
+      };
+      
+      const response = await fetch(`/api/journeys/${canvasId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          canvas_data: canvasData,
+        }),
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to save canvas');
+      }
+      
+      set({
+        isDirty: false,
+        lastSaved: new Date(),
+        isSaving: false,
+      });
+    } catch (error) {
+      set({ 
+        error: error instanceof Error ? error.message : 'Failed to save canvas',
+        isSaving: false 
+      });
+      throw error;
+    }
+  },
+  
+  // Auto-save canvas without version increment
+  autoSave: async (id: string) => {
+    const state = get();
+    
+    if (!state.isDirty) return;
+    
+    try {
+      const canvasData: CanvasData = {
+        nodes: state.nodes,
+        edges: state.edges,
+        viewport: { x: 0, y: 0, zoom: 1 },
+        metadata: {},
+      };
+      
+      const response = await fetch(`/api/journeys/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          canvas_data: canvasData,
+        }),
+      });
+      
+      if (!response.ok) {
+        console.error('Auto-save failed');
+        return;
+      }
+      
+      set({
+        isDirty: false,
+        lastSaved: new Date(),
+      });
+    } catch (error) {
+      console.error('Auto-save error:', error);
+    }
+  },
+  
+  // Create a new canvas
+  createCanvas: async (name: string, description?: string) => {
+    set({ isLoading: true, error: null });
+    
+    try {
+      const state = get();
+      const canvasData: CanvasData = {
+        nodes: state.nodes.length > 0 ? state.nodes : [
+          {
+            id: 'start-1',
+            type: 'start',
+            position: { x: 100, y: 200 },
+            data: { label: 'Journey Start' },
+          },
+        ],
+        edges: state.edges,
+        viewport: { x: 0, y: 0, zoom: 1 },
+        metadata: {},
+      };
+      
+      const response = await fetch('/api/journeys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name,
+          description,
+          canvas_data: canvasData,
+        }),
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to create canvas');
+      }
+      
+      const data = await response.json();
+      
+      set({
+        canvasId: data.canvas.id,
+        isDirty: false,
+        lastSaved: new Date(),
+        isLoading: false,
+      });
+      
+      return data.canvas.id;
+    } catch (error) {
+      set({ 
+        error: error instanceof Error ? error.message : 'Failed to create canvas',
+        isLoading: false 
+      });
+      throw error;
+    }
+  },
+}));

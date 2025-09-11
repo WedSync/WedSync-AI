@@ -1,0 +1,153 @@
+import { Suspense } from 'react';
+import { redirect } from 'next/navigation';
+import { createClient } from '@/lib/supabase/server';
+import { verifyAdminAccess } from '@/lib/admin/auth';
+import { AdminMonitoringDashboard } from '@/components/admin/monitoring/AdminMonitoringDashboard';
+
+export const metadata = {
+  title: 'Admin Monitoring - WedSync',
+  description: 'Real-time system monitoring and analytics for administrators',
+};
+
+export default async function AdminMonitoringPage() {
+  // Server-side admin authentication
+  const supabase = await createClient();
+  const {
+    data: { user },
+    error,
+  } = await supabase.auth.getUser();
+
+  if (!user || error) {
+    redirect('/login');
+  }
+
+  // Verify admin access with comprehensive checks
+  const hasAdminAccess = await verifyAdminAccess(user.id);
+  if (!hasAdminAccess) {
+    redirect('/dashboard?error=admin_access_required');
+  }
+
+  // Get admin user profile for additional context
+  const { data: profile } = await supabase
+    .from('user_profiles')
+    .select(
+      `
+      id,
+      email,
+      role,
+      full_name,
+      admin_permissions,
+      mfa_enabled,
+      last_login_at
+    `,
+    )
+    .eq('id', user.id)
+    .single();
+
+  if (!profile || !['admin', 'super_admin'].includes(profile.role)) {
+    redirect('/dashboard?error=insufficient_permissions');
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-25">
+      {/* Admin Access Banner */}
+      <div className="bg-primary-600 text-white px-4 py-2">
+        <div className="max-w-7xl mx-auto flex items-center justify-between text-sm">
+          <div className="flex items-center space-x-2">
+            <div className="flex items-center space-x-1">
+              <svg
+                className="w-4 h-4"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"
+                />
+              </svg>
+              <span>Admin Mode Active</span>
+            </div>
+            <span>•</span>
+            <span>
+              {profile.role === 'super_admin'
+                ? 'Super Administrator'
+                : 'Administrator'}
+            </span>
+            <span>•</span>
+            <span>{profile.full_name || profile.email}</span>
+          </div>
+          <div className="text-xs opacity-90">System Monitoring Dashboard</div>
+        </div>
+      </div>
+
+      {/* Main Dashboard Content */}
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="mb-8">
+          <h1 className="text-3xl font-bold text-gray-900">
+            System Monitoring Dashboard
+          </h1>
+          <p className="mt-2 text-lg text-gray-600">
+            Real-time monitoring and analytics for WedSync platform operations
+          </p>
+        </div>
+
+        <Suspense
+          fallback={
+            <div className="space-y-8">
+              {/* Loading skeleton */}
+              <div className="border-b border-gray-200">
+                <nav className="-mb-px flex space-x-8" aria-label="Tabs">
+                  {[1, 2, 3, 4, 5].map((i) => (
+                    <div
+                      key={i}
+                      className="h-10 bg-gray-200 rounded w-32 animate-pulse"
+                    />
+                  ))}
+                </nav>
+              </div>
+              <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
+                {[1, 2, 3, 4].map((i) => (
+                  <div
+                    key={i}
+                    className="bg-white rounded-xl border border-gray-200 shadow-xs p-6 animate-pulse"
+                  >
+                    <div className="h-4 bg-gray-200 rounded w-3/4 mb-2"></div>
+                    <div className="h-8 bg-gray-200 rounded w-1/2"></div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          }
+        >
+          <AdminMonitoringDashboard userId={user.id} userProfile={profile} />
+        </Suspense>
+      </div>
+
+      {/* Security Footer */}
+      <div className="bg-gray-50 border-t border-gray-200 px-4 py-4 mt-12">
+        <div className="max-w-7xl mx-auto flex items-center justify-between text-xs text-gray-500">
+          <div>
+            Admin session monitored and logged. All actions are audited for
+            security compliance.
+          </div>
+          <div className="flex items-center space-x-4">
+            <span>Session: {user.id.slice(0, 8)}...</span>
+            <span>Role: {profile.role}</span>
+            {profile.mfa_enabled && (
+              <span className="inline-flex items-center px-2 py-1 rounded-full text-xs bg-success-100 text-success-800">
+                MFA ✓
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Enable static optimization for better performance
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;

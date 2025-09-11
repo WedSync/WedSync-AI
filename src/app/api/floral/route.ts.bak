@@ -1,0 +1,115 @@
+// WS-129: AI-Powered Floral Arrangement and Recommendation System
+// Main API endpoint for floral operations
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { getCurrentUser } from '@/lib/auth/server';
+
+export async function GET(request: NextRequest) {
+  try {
+    const user = await getCurrentUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const supabase = createClient();
+    const { searchParams } = new URL(request.url);
+    const action = searchParams.get('action');
+
+    switch (action) {
+      case 'flowers':
+        return await getFlowers(supabase, searchParams);
+      case 'themes':
+        return await getThemes(supabase);
+      case 'templates':
+        return await getTemplates(supabase, searchParams);
+      default:
+        return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
+    }
+  } catch (error) {
+    console.error('Floral API error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+async function getFlowers(supabase: any, searchParams: URLSearchParams) {
+  const season = searchParams.get('season');
+  const style = searchParams.get('style');
+  const colors = searchParams.get('colors')?.split(',');
+  const maxCost = searchParams.get('maxCost');
+
+  let query = supabase
+    .from('flowers')
+    .select('*')
+    .eq('is_active', true);
+
+  if (season && season !== 'any') {
+    query = query.overlaps('theme_compatibility', [season]);
+  }
+
+  if (style) {
+    query = query.overlaps('style_tags', [style]);
+  }
+
+  if (colors && colors.length > 0) {
+    query = query.overlaps('primary_colors', colors);
+  }
+
+  if (maxCost) {
+    query = query.lte('base_cost_per_stem', parseFloat(maxCost));
+  }
+
+  const { data: flowers, error } = await query.order('common_name');
+
+  if (error) {
+    throw new Error(`Failed to fetch flowers: ${error.message}`);
+  }
+
+  return NextResponse.json({ flowers });
+}
+
+async function getThemes(supabase: any) {
+  const { data: themes, error } = await supabase
+    .from('wedding_theme_profiles')
+    .select('*')
+    .order('popularity_score', { ascending: false });
+
+  if (error) {
+    throw new Error(`Failed to fetch themes: ${error.message}`);
+  }
+
+  return NextResponse.json({ themes });
+}
+
+async function getTemplates(supabase: any, searchParams: URLSearchParams) {
+  const arrangementType = searchParams.get('type');
+  const style = searchParams.get('style');
+  const season = searchParams.get('season');
+
+  let query = supabase
+    .from('floral_arrangement_templates')
+    .select('*');
+
+  if (arrangementType) {
+    query = query.eq('arrangement_type', arrangementType);
+  }
+
+  if (style) {
+    query = query.eq('style_category', style);
+  }
+
+  if (season && season !== 'any') {
+    query = query.eq('season', season);
+  }
+
+  const { data: templates, error } = await query.order('user_rating', { ascending: false });
+
+  if (error) {
+    throw new Error(`Failed to fetch templates: ${error.message}`);
+  }
+
+  return NextResponse.json({ templates });
+}

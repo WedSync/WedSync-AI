@@ -1,0 +1,727 @@
+/**
+ * WS-190 Security Alerts API - Integration Test Suite
+ * Tests webhook processing, automated threat evaluation, and alert handling
+ */
+
+import { describe, test, expect, beforeEach, afterEach, jest } from '@jest/globals'
+import { NextRequest } from 'next/server'
+import { POST, GET } from '@/app/api/security/alerts/route'
+import { createClient } from '@/utils/supabase/server'
+import crypto from 'crypto'
+
+// Mock dependencies
+jest.mock('@/utils/supabase/server')
+jest.mock('@/lib/security/incident-response-system')
+jest.mock('@/lib/rate-limit')
+jest.mock('crypto')
+
+describe('WS-190 Security Alerts API', () => {
+  let mockSupabase: any
+  let mockRequest: Partial<NextRequest>
+  let mockCrypto: any
+
+  beforeEach(() => {
+    mockSupabase = {
+      auth: {
+        getUser: jest.fn()
+      },
+      from: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      insert: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      single: jest.fn().mockReturnThis(),
+      order: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      gte: jest.fn().mockReturnThis()
+    }
+
+    mockCrypto = {
+      createHmac: jest.fn().mockReturnValue({
+        update: jest.fn().mockReturnThis(),
+        digest: jest.fn().mockReturnValue('valid_signature_hash')
+      }),
+      timingSafeEqual: jest.fn().mockReturnValue(true)
+    }
+
+    ;(createClient as jest.MockedFunction<typeof createClient>).mockReturnValue(mockSupabase)
+    ;(crypto as any).createHmac = mockCrypto.createHmac
+    ;(crypto as any).timingSafeEqual = mockCrypto.timingSafeEqual
+
+    mockRequest = {
+      ip: '192.168.1.100',
+      json: jest.fn(),
+      url: 'http://localhost:3000/api/security/alerts',
+      headers: new Headers()
+    }
+
+    // Mock environment variables
+    process.env.CLOUDFLARE_WEBHOOK_SECRET = 'test_cloudflare_secret'
+    process.env.AWS_GUARDDUTY_WEBHOOK_SECRET = 'test_aws_secret'
+    process.env.DEFAULT_ORGANIZATION_ID = 'default-org-123'
+  })
+
+  afterEach(() => {
+    jest.clearAllMocks()
+    delete process.env.CLOUDFLARE_WEBHOOK_SECRET
+    delete process.env.AWS_GUARDDUTY_WEBHOOK_SECRET
+    delete process.env.DEFAULT_ORGANIZATION_ID
+  })
+
+  describe('POST /api/security/alerts - Webhook Alert Processing', () => {
+    test('should process valid webhook alert from Cloudflare WAF', async () => {
+      const cloudflareAlert = {
+        sourceSystem: 'cloudflare_waf',
+        alertType: 'sql_injection_attempt',
+        severity: 'high',
+        title: 'SQL injection attempt blocked on wedding form',
+        description: 'Multiple SQL injection attempts detected on guest registration form for upcoming Saturday wedding',
+        rawData: {
+          ip: '203.0.113.45',
+          userAgent: 'SQLMap/1.0',
+          blockedRequests: 15,
+          targetUrl: '/guest-registration',
+          weddingId: 'wedding-cloudflare-123'
+        },
+        potentialWeddingImpact: true
+      }
+
+      mockRequest.headers = new Headers({
+        'x-webhook-signature': 'sha256=valid_signature_hash'
+      })
+      mockRequest.json = jest.fn().mockResolvedValue(cloudflareAlert)
+
+      // Mock webhook signature validation
+      mockCrypto.timingSafeEqual.mockReturnValue(true)
+
+      // Mock incident response system
+      const mockIncidentSystem = {
+        processSecurityAlert: jest.fn().mockResolvedValue({
+          alert: {
+            id: 'alert-cloudflare-123',
+            processing_status: 'incident_created',
+            processed_at: new Date().toISOString()
+          },
+          incidentCreated: {
+            id: 'incident-waf-123',
+            incident_reference: 'INC-2025-WAF-001',
+            severity: 'P2',
+            status: 'detected'
+          },
+          autoContained: true
+        })
+      }
+
+      // Mock rate limiting (allow webhook)
+      const { rateLimit } = require('@/lib/rate-limit')
+      rateLimit.mockResolvedValue({ success: true, remaining: 999 })
+
+      const response = await POST(mockRequest as NextRequest)
+      const responseData = await response.json()
+
+      expect(response.status).toBe(201)
+      expect(responseData.success).toBe(true)
+      expect(responseData.incidentCreated).toBe(true)
+      expect(responseData.incident.reference).toBe('INC-2025-WAF-001')
+      expect(responseData.incident.autoContainmentExecuted).toBe(true)
+      expect(console.log).toHaveBeenCalledWith(
+        expect.stringContaining('🔗 Processing webhook alert from cloudflare_waf')
+      )
+    })
+
+    test('should reject webhook with invalid signature', async () => {
+      const suspiciousAlert = {
+        sourceSystem: 'cloudflare_waf',
+        alertType: 'fake_alert',
+        severity: 'critical',
+        title: 'Suspicious activity',
+        description: 'This could be a malicious webhook attempt',
+        rawData: {}
+      }
+
+      mockRequest.headers = new Headers({
+        'x-webhook-signature': 'sha256=invalid_signature_hash'
+      })
+      mockRequest.json = jest.fn().mockResolvedValue(suspiciousAlert)
+
+      // Mock signature validation failure
+      mockCrypto.timingSafeEqual.mockReturnValue(false)
+
+      const response = await POST(mockRequest as NextRequest)
+      const responseData = await response.json()
+
+      expect(response.status).toBe(401)
+      expect(responseData.error).toBe('Invalid webhook signature')
+      expect(console.warn).toHaveBeenCalledWith(
+        expect.stringContaining('🚨 Invalid webhook signature from cloudflare_waf')
+      )
+    })
+
+    test('should process AWS GuardDuty threat intelligence alert', async () => {
+      const guardDutyAlert = {
+        sourceSystem: 'aws_guardduty',
+        alertType: 'malware_detected',
+        severity: 'critical',
+        title: 'Malware detected on wedding photo storage server',
+        description: 'GuardDuty has detected malware on the EC2 instance hosting wedding photo storage, potentially affecting photographer uploads',
+        rawData: {
+          instanceId: 'i-0123456789abcdef0',
+          malwareType: 'Trojan.Generic',
+          affectedServices: ['photo_storage', 'image_processing'],
+          severityScore: 8.5,
+          organizationId: 'org-guardduty-456'
+        },
+        potentialWeddingImpact: true
+      }
+
+      mockRequest.headers = new Headers({
+        'x-webhook-signature': 'sha256=aws_valid_signature'
+      })
+      mockRequest.json = jest.fn().mockResolvedValue(guardDutyAlert)
+
+      // Mock incident escalation for critical malware
+      const mockIncidentSystem = {
+        processSecurityAlert: jest.fn().mockResolvedValue({
+          alert: {
+            id: 'alert-guardduty-456',
+            processing_status: 'incident_created'
+          },
+          incidentCreated: {
+            id: 'incident-malware-789',
+            incident_reference: 'INC-2025-MAL-001',
+            severity: 'P1', // Escalated due to photo storage impact
+            status: 'detected'
+          },
+          autoContained: true
+        })
+      }
+
+      const response = await POST(mockRequest as NextRequest)
+      const responseData = await response.json()
+
+      expect(response.status).toBe(201)
+      expect(responseData.incidentCreated).toBe(true)
+      expect(responseData.incident.severity).toBe('P1')
+      expect(responseData.incident.emergencyResponse).toBe(true)
+      expect(console.log).toHaveBeenCalledWith(
+        expect.stringContaining('🚨 Alert escalated to incident:'),
+        expect.objectContaining({
+          weddingImpact: true,
+          isWeddingDay: expect.any(Boolean)
+        })
+      )
+    })
+
+    test('should handle authenticated API alert submission', async () => {
+      const manualAlert = {
+        sourceSystem: 'manual_report',
+        alertType: 'suspicious_activity',
+        severity: 'medium',
+        title: 'Photographer reports suspicious login attempts',
+        description: 'Wedding photographer reports multiple failed login attempts to their account from unknown location during venue setup',
+        rawData: {
+          photographerId: 'photographer-789',
+          suspiciousIPs: ['198.51.100.42', '203.0.113.67'],
+          attemptCount: 8,
+          timeWindow: '15 minutes'
+        },
+        potentialWeddingImpact: false
+      }
+
+      // Remove webhook signature header for authenticated request
+      mockRequest.headers = new Headers({
+        'authorization': 'Bearer valid_jwt_token'
+      })
+      mockRequest.json = jest.fn().mockResolvedValue(manualAlert)
+
+      // Mock authenticated user
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: { id: 'security-analyst-123' } },
+        error: null
+      })
+
+      mockSupabase.from.mockImplementation((table) => {
+        if (table === 'user_profiles') {
+          return {
+            select: jest.fn().mockReturnThis(),
+            eq: jest.fn().mockReturnThis(),
+            single: jest.fn().mockResolvedValue({
+              data: {
+                organization_id: 'org-manual-123',
+                full_name: 'Security Analyst'
+              },
+              error: null
+            })
+          }
+        }
+        return mockSupabase
+      })
+
+      const mockIncidentSystem = {
+        processSecurityAlert: jest.fn().mockResolvedValue({
+          alert: {
+            id: 'alert-manual-789',
+            processing_status: 'false_positive'
+          },
+          incidentCreated: null,
+          autoContained: false
+        })
+      }
+
+      const response = await POST(mockRequest as NextRequest)
+      const responseData = await response.json()
+
+      expect(response.status).toBe(200)
+      expect(responseData.incidentCreated).toBe(false)
+      expect(responseData.message).toContain('no incident created')
+      expect(console.log).toHaveBeenCalledWith(
+        expect.stringContaining('ℹ️  Security alert processed - no incident created'),
+        expect.objectContaining({
+          reason: 'Did not match threat detection rules or classified as false positive'
+        })
+      )
+    })
+
+    test('should enforce rate limiting for high-volume webhook sources', async () => {
+      const { rateLimit } = require('@/lib/rate-limit')
+      rateLimit.mockResolvedValue({
+        success: false,
+        remaining: 0,
+        retryAfter: 60
+      })
+
+      mockRequest.headers = new Headers({
+        'x-webhook-signature': 'sha256=valid_signature'
+      })
+
+      const response = await POST(mockRequest as NextRequest)
+      const responseData = await response.json()
+
+      expect(response.status).toBe(429)
+      expect(responseData.error).toBe('Rate limit exceeded')
+      expect(responseData.retryAfter).toBe(60)
+    })
+
+    test('should handle organization extraction from webhook alert data', async () => {
+      const alertWithOrgData = {
+        sourceSystem: 'stripe_radar',
+        alertType: 'payment_fraud',
+        severity: 'high',
+        title: 'Fraudulent payment attempt detected',
+        description: 'Multiple declined payment attempts from same card on venue booking',
+        rawData: {
+          organizationId: 'org-extracted-456', // Organization in alert data
+          merchantId: 'venue_merchant_123',
+          declinedAmount: 2500.00,
+          cardLast4: '1234'
+        },
+        potentialWeddingImpact: true
+      }
+
+      mockRequest.headers = new Headers({
+        'x-webhook-signature': 'sha256=stripe_signature'
+      })
+      mockRequest.json = jest.fn().mockResolvedValue(alertWithOrgData)
+
+      // Mock organization extraction logic
+      const response = await POST(mockRequest as NextRequest)
+
+      expect(response.status).toBe(201)
+      // Verify organization was extracted from alert data
+    })
+  })
+
+  describe('GET /api/security/alerts - List Alerts', () => {
+    test('should list alerts with filtering and summary statistics', async () => {
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: { id: 'security-viewer-123' } },
+        error: null
+      })
+
+      mockSupabase.from.mockImplementation((table) => {
+        if (table === 'user_profiles') {
+          return {
+            select: jest.fn().mockReturnThis(),
+            eq: jest.fn().mockReturnThis(),
+            single: jest.fn().mockResolvedValue({
+              data: {
+                organization_id: 'org-123',
+                role: 'security_analyst'
+              },
+              error: null
+            })
+          }
+        }
+
+        if (table === 'security_alerts') {
+          return {
+            select: jest.fn().mockReturnThis(),
+            eq: jest.fn().mockReturnThis(),
+            gte: jest.fn().mockReturnThis(),
+            order: jest.fn().mockReturnThis(),
+            limit: jest.fn().mockResolvedValue({
+              data: [
+                {
+                  id: 'alert-1',
+                  source_system: 'cloudflare_waf',
+                  alert_type: 'sql_injection',
+                  severity: 'high',
+                  title: 'SQL injection blocked',
+                  processing_status: 'incident_created',
+                  saturday_alert: false,
+                  potential_wedding_impact: true,
+                  processing_duration_ms: 1200
+                },
+                {
+                  id: 'alert-2',
+                  source_system: 'aws_guardduty',
+                  alert_type: 'malware',
+                  severity: 'critical',
+                  title: 'Malware detected',
+                  processing_status: 'false_positive',
+                  saturday_alert: true,
+                  potential_wedding_impact: false,
+                  processing_duration_ms: 850
+                }
+              ],
+              error: null
+            })
+          }
+        }
+
+        return mockSupabase
+      })
+
+      mockRequest.url = 'http://localhost:3000/api/security/alerts?hours=24&limit=50'
+
+      const response = await GET(mockRequest as NextRequest)
+      const responseData = await response.json()
+
+      expect(response.status).toBe(200)
+      expect(responseData.alerts).toHaveLength(2)
+      expect(responseData.summary.totalAlerts).toBe(2)
+      expect(responseData.summary.incidentsCreated).toBe(1)
+      expect(responseData.summary.falsePositives).toBe(1)
+      expect(responseData.summary.saturdayAlerts).toBe(1)
+      expect(responseData.summary.weddingImpactAlerts).toBe(1)
+      expect(responseData.summary.averageProcessingTime).toBe(1025) // Average of 1200 and 850
+      expect(responseData.summary.alertsBySource).toEqual({
+        'cloudflare_waf': 1,
+        'aws_guardduty': 1
+      })
+    })
+
+    test('should filter alerts by source system and severity', async () => {
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: { id: 'user-123' } },
+        error: null
+      })
+
+      mockSupabase.from.mockImplementation((table) => {
+        if (table === 'user_profiles') {
+          return {
+            select: jest.fn().mockReturnThis(),
+            eq: jest.fn().mockReturnThis(),
+            single: jest.fn().mockResolvedValue({
+              data: { organization_id: 'org-123', role: 'admin' },
+              error: null
+            })
+          }
+        }
+
+        if (table === 'security_alerts') {
+          return {
+            select: jest.fn().mockReturnThis(),
+            eq: jest.fn().mockImplementation((field, value) => {
+              if (field === 'source_system' && value === 'cloudflare_waf') {
+                return mockSupabase
+              }
+              if (field === 'severity' && value === 'critical') {
+                return mockSupabase
+              }
+              return mockSupabase
+            }),
+            gte: jest.fn().mockReturnThis(),
+            order: jest.fn().mockReturnThis(),
+            limit: jest.fn().mockResolvedValue({
+              data: [
+                {
+                  id: 'filtered-alert-1',
+                  source_system: 'cloudflare_waf',
+                  severity: 'critical',
+                  title: 'Critical WAF alert'
+                }
+              ],
+              error: null
+            })
+          }
+        }
+
+        return mockSupabase
+      })
+
+      mockRequest.url = 'http://localhost:3000/api/security/alerts?sourceSystem=cloudflare_waf&severity=critical'
+
+      const response = await GET(mockRequest as NextRequest)
+      const responseData = await response.json()
+
+      expect(response.status).toBe(200)
+      expect(responseData.alerts).toHaveLength(1)
+      expect(responseData.alerts[0].source_system).toBe('cloudflare_waf')
+      expect(responseData.alerts[0].severity).toBe('critical')
+    })
+
+    test('should require authentication for alert listing', async () => {
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: null },
+        error: new Error('No user found')
+      })
+
+      const response = await GET(mockRequest as NextRequest)
+      const responseData = await response.json()
+
+      expect(response.status).toBe(401)
+      expect(responseData.error).toBe('Unauthorized')
+    })
+
+    test('should respect time window limits for alert retrieval', async () => {
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: { id: 'user-123' } },
+        error: null
+      })
+
+      mockSupabase.from.mockImplementation((table) => {
+        if (table === 'user_profiles') {
+          return {
+            select: jest.fn().mockReturnThis(),
+            eq: jest.fn().mockReturnThis(),
+            single: jest.fn().mockResolvedValue({
+              data: { organization_id: 'org-123', role: 'admin' },
+              error: null
+            })
+          }
+        }
+
+        if (table === 'security_alerts') {
+          return {
+            select: jest.fn().mockReturnThis(),
+            eq: jest.fn().mockReturnThis(),
+            gte: jest.fn().mockImplementation((field, value) => {
+              const hoursBack = new Date(value)
+              const now = new Date()
+              const hoursDiff = (now.getTime() - hoursBack.getTime()) / (1000 * 60 * 60)
+              expect(hoursDiff).toBeLessThanOrEqual(168) // Max 1 week
+              return mockSupabase
+            }),
+            order: jest.fn().mockReturnThis(),
+            limit: jest.fn().mockResolvedValue({ data: [], error: null })
+          }
+        }
+
+        return mockSupabase
+      })
+
+      mockRequest.url = 'http://localhost:3000/api/security/alerts?hours=72' // 3 days
+
+      const response = await GET(mockRequest as NextRequest)
+      expect(response.status).toBe(200)
+    })
+  })
+
+  describe('Alert Validation and Error Handling', () => {
+    test('should validate alert schema with comprehensive checks', async () => {
+      const invalidAlert = {
+        sourceSystem: '', // Empty string not allowed
+        alertType: 'a', // Too short
+        severity: 'super_critical', // Invalid severity
+        title: 'Short', // Too short
+        description: 'Also short' // Too short
+      }
+
+      mockRequest.headers = new Headers({
+        'authorization': 'Bearer valid_token'
+      })
+      mockRequest.json = jest.fn().mockResolvedValue(invalidAlert)
+
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: { id: 'user-123' } },
+        error: null
+      })
+
+      const response = await POST(mockRequest as NextRequest)
+      const responseData = await response.json()
+
+      expect(response.status).toBe(400)
+      expect(responseData.error).toBe('Validation failed')
+      expect(responseData.details).toBeDefined()
+      expect(responseData.details.length).toBeGreaterThan(0)
+    })
+
+    test('should handle database errors gracefully', async () => {
+      const validAlert = {
+        sourceSystem: 'test_system',
+        alertType: 'test_alert',
+        severity: 'medium',
+        title: 'Test alert for error handling',
+        description: 'This alert is used to test database error handling scenarios'
+      }
+
+      mockRequest.headers = new Headers({
+        'authorization': 'Bearer valid_token'
+      })
+      mockRequest.json = jest.fn().mockResolvedValue(validAlert)
+
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: { id: 'user-123' } },
+        error: null
+      })
+
+      // Mock database error
+      const mockIncidentSystem = {
+        processSecurityAlert: jest.fn().mockRejectedValue(
+          new Error('Database connection timeout')
+        )
+      }
+
+      const response = await POST(mockRequest as NextRequest)
+      const responseData = await response.json()
+
+      expect(response.status).toBe(500)
+      expect(responseData.error).toBe('Failed to process security alert')
+      expect(console.error).toHaveBeenCalledWith(
+        'Security alert processing error:',
+        expect.any(Error)
+      )
+    })
+
+    test('should sanitize error messages in production', async () => {
+      const originalEnv = process.env.NODE_ENV
+      process.env.NODE_ENV = 'production'
+
+      const validAlert = {
+        sourceSystem: 'production_system',
+        alertType: 'production_alert',
+        severity: 'high',
+        title: 'Production alert with sensitive error',
+        description: 'This will cause an error with sensitive information'
+      }
+
+      mockRequest.headers = new Headers({
+        'authorization': 'Bearer valid_token'
+      })
+      mockRequest.json = jest.fn().mockResolvedValue(validAlert)
+
+      mockSupabase.auth.getUser.mockRejectedValue(
+        new Error('Database credentials: user=admin password=secret123')
+      )
+
+      const response = await POST(mockRequest as NextRequest)
+      const responseData = await response.json()
+
+      expect(response.status).toBe(500)
+      expect(responseData.details).toBeUndefined() // No sensitive details in production
+      expect(responseData.error).toBe('Failed to process security alert')
+
+      process.env.NODE_ENV = originalEnv
+    })
+  })
+
+  describe('Wedding-Specific Alert Processing', () => {
+    test('should escalate venue-related security alerts', async () => {
+      const venueAlert = {
+        sourceSystem: 'venue_management',
+        alertType: 'unauthorized_access',
+        severity: 'high',
+        title: 'Unauthorized access to venue booking system',
+        description: 'Multiple unauthorized access attempts detected on venue management system during peak wedding season',
+        rawData: {
+          venueId: 'venue-premium-123',
+          suspiciousActivities: [
+            'Failed admin login attempts',
+            'Unusual booking modification patterns',
+            'Access from suspicious IP ranges'
+          ],
+          activeBookings: 15,
+          upcomingWeddings: 8
+        },
+        potentialWeddingImpact: true
+      }
+
+      mockRequest.headers = new Headers({
+        'x-webhook-signature': 'sha256=venue_webhook_sig'
+      })
+      mockRequest.json = jest.fn().mockResolvedValue(venueAlert)
+
+      const mockIncidentSystem = {
+        processSecurityAlert: jest.fn().mockResolvedValue({
+          alert: {
+            id: 'alert-venue-123',
+            processing_status: 'incident_created'
+          },
+          incidentCreated: {
+            id: 'incident-venue-456',
+            incident_reference: 'INC-2025-VENUE-001',
+            severity: 'P1', // Escalated due to venue impact
+            status: 'detected'
+          },
+          autoContained: true
+        })
+      }
+
+      const response = await POST(mockRequest as NextRequest)
+      const responseData = await response.json()
+
+      expect(response.status).toBe(201)
+      expect(responseData.incident.severity).toBe('P1')
+      expect(responseData.message).toContain('with automated containment')
+    })
+
+    test('should handle Saturday (wedding day) alert processing with special care', async () => {
+      // Mock Saturday
+      const mockSaturday = new Date('2025-01-25T10:00:00Z') // Saturday
+      jest.spyOn(Date, 'now').mockReturnValue(mockSaturday.getTime())
+
+      const saturdayAlert = {
+        sourceSystem: 'payment_system',
+        alertType: 'service_disruption',
+        severity: 'high',
+        title: 'Payment processing delays during wedding day',
+        description: 'Payment gateway experiencing high latency affecting venue final payments on Saturday morning',
+        rawData: {
+          affectedVenues: ['venue-saturday-1', 'venue-saturday-2'],
+          averageDelay: '45 seconds',
+          failureRate: '12%'
+        },
+        potentialWeddingImpact: true
+      }
+
+      const mockIncidentSystem = {
+        processSecurityAlert: jest.fn().mockResolvedValue({
+          alert: {
+            id: 'alert-saturday-789',
+            processing_status: 'incident_created',
+            saturday_alert: true
+          },
+          incidentCreated: {
+            id: 'incident-saturday-123',
+            incident_reference: 'INC-2025-SAT-001',
+            severity: 'P1', // Auto-escalated for Saturday
+            status: 'detected'
+          },
+          autoContained: true
+        })
+      }
+
+      const response = await POST(mockRequest as NextRequest)
+      const responseData = await response.json()
+
+      expect(response.status).toBe(201)
+      expect(responseData.incident.emergencyResponse).toBe(true)
+      expect(console.log).toHaveBeenCalledWith(
+        expect.stringContaining('🚨 Alert escalated to incident:'),
+        expect.objectContaining({
+          isWeddingDay: true
+        })
+      )
+    })
+  })
+})

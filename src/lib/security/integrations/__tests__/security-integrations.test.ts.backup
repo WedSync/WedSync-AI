@@ -1,0 +1,985 @@
+/**
+ * WS-190: Comprehensive Tests for Security Integrations
+ * 
+ * Test suite for all security integration components including SIEM connectors,
+ * notification systems, compliance tools, and webhook handlers.
+ */
+
+import { describe, test, expect, beforeEach, afterEach, vi, type MockedFunction } from 'vitest';
+import { IncidentOrchestrator, IncidentSeverity, WeddingIncidentType } from '../incident-orchestrator';
+import { SplunkIntegration } from '../siem-connectors/splunk-integration';
+import { QRadarIntegration } from '../siem-connectors/qradar-integration';
+import { ArcSightIntegration } from '../siem-connectors/arcsight-integration';
+import { SlackEmergencyNotifier } from '../notification-systems/slack-emergency';
+import { TeamsAlertsNotifier } from '../notification-systems/teams-alerts';
+import { EmailBlastNotifier } from '../notification-systems/email-blast';
+import { SMSEmergencyNotifier } from '../notification-systems/sms-emergency';
+import { PagerDutyIntegration } from '../notification-systems/pagerduty-integration';
+import { GDPRAutomation } from '../compliance-tools/gdpr-automation';
+import { AuditIntegration } from '../compliance-tools/audit-integration';
+import { WebhookSecurityHandler } from '../webhook-security';
+
+// Mock external dependencies
+vi.mock('resend', () => ({
+  Resend: vi.fn(() => ({
+    emails: {
+      send: vi.fn().mockResolvedValue({ data: { id: 'test-email-id' } })
+    }
+  }))
+}));
+
+vi.mock('twilio', () => ({
+  Twilio: vi.fn(() => ({
+    messages: {
+      create: vi.fn().mockResolvedValue({ 
+        sid: 'test-sms-sid', 
+        status: 'queued',
+        price: '0.05'
+      })
+    },
+    api: {
+      accounts: vi.fn(() => ({
+        fetch: vi.fn().mockResolvedValue({ status: 'active' }),
+        balance: {
+          fetch: vi.fn().mockResolvedValue({ balance: '10.00', currency: 'USD' })
+        }
+      }))
+    }
+  }))
+}));
+
+// Mock fetch for external API calls
+const mockFetch = vi.fn();
+global.fetch = mockFetch as MockedFunction<typeof fetch>;
+
+describe('WS-190 Security Integrations', () => {
+  // Test data fixtures
+  const mockIncident = {
+    id: 'test-incident-123',
+    severity: IncidentSeverity.CRITICAL,
+    type: WeddingIncidentType.PAYMENT_FRAUD,
+    title: 'Test Payment Fraud Incident',
+    description: 'Test incident for security integration testing',
+    source: 'test-system',
+    timestamp: new Date('2025-01-20T10:00:00Z'),
+    weddingId: 'wedding-456',
+    supplierId: 'supplier-789',
+    venueId: 'venue-101',
+    affectedUsers: ['user-1', 'user-2', 'user-3'],
+    metadata: {
+      test: true,
+      fraudScore: 95,
+      transactionId: 'txn-abc123'
+    }
+  };
+
+  beforeEach(() => {
+    // Reset all mocks before each test
+    vi.clearAllMocks();
+    mockFetch.mockReset();
+    
+    // Mock successful HTTP responses by default
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({ success: true }),
+      text: vi.fn().mockResolvedValue('ok')
+    } as any);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('IncidentOrchestrator', () => {
+    let orchestrator: IncidentOrchestrator;
+
+    beforeEach(() => {
+      orchestrator = new IncidentOrchestrator({
+        weddingDayMode: false,
+        maxConcurrentIncidents: 10,
+        responseTimeoutMs: 5000
+      });
+    });
+
+    test('should process incident successfully', async () => {
+      const result = await orchestrator.processIncident(mockIncident);
+
+      expect(result.processed).toBe(true);
+      expect(result.incidentId).toBe(mockIncident.id);
+      expect(result.errors).toHaveLength(0);
+      expect(result.responses.length).toBeGreaterThan(0);
+    });
+
+    test('should handle wedding day emergency mode', async () => {
+      orchestrator.enableWeddingDayMode();
+      
+      const result = await orchestrator.processIncident(mockIncident);
+
+      expect(result.processed).toBe(true);
+      expect(orchestrator.getStatus().weddingDayMode).toBe(true);
+    });
+
+    test('should enforce concurrent incident limits', async () => {
+      const orchestrator = new IncidentOrchestrator({
+        maxConcurrentIncidents: 1
+      });
+
+      // First incident should succeed
+      const result1 = orchestrator.processIncident(mockIncident);
+      
+      // Second incident should fail due to limit
+      const mockIncident2 = { ...mockIncident, id: 'test-incident-456' };
+      const result2 = await orchestrator.processIncident(mockIncident2);
+
+      expect(result2.processed).toBe(false);
+      expect(result2.errors[0]).toContain('Maximum concurrent incidents exceeded');
+    });
+
+    test('should validate incident data schema', async () => {
+      const invalidIncident = {
+        id: '', // Invalid empty ID
+        severity: 'invalid' as any,
+        type: WeddingIncidentType.PAYMENT_FRAUD
+      };
+
+      const result = await orchestrator.processIncident(invalidIncident);
+
+      expect(result.processed).toBe(false);
+      expect(result.errors.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('SIEM Integrations', () => {
+    describe('SplunkIntegration', () => {
+      let splunk: SplunkIntegration;
+
+      beforeEach(() => {
+        splunk = new SplunkIntegration();
+      });
+
+      test('should send incident to Splunk HEC', async () => {
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: vi.fn().mockResolvedValue({ text: 'Success', code: 0 })
+        } as any);
+
+        const result = await splunk.sendIncident(mockIncident);
+
+        expect(result.text).toBe('Success');
+        expect(result.code).toBe(0);
+        expect(mockFetch).toHaveBeenCalledWith(
+          expect.stringContaining('/services/collector'),
+          expect.objectContaining({
+            method: 'POST',
+            headers: expect.objectContaining({
+              'Content-Type': 'application/json'
+            })
+          })
+        );
+      });
+
+      test('should handle Splunk API errors', async () => {
+        mockFetch.mockRejectedValueOnce(new Error('Network error'));
+
+        await expect(splunk.sendIncident(mockIncident)).rejects.toThrow('Failed to send incident to Splunk');
+      });
+
+      test('should test connection successfully', async () => {
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          status: 200
+        } as any);
+
+        const result = await splunk.testConnection();
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('QRadarIntegration', () => {
+      let qradar: QRadarIntegration;
+
+      beforeEach(() => {
+        qradar = new QRadarIntegration();
+      });
+
+      test('should send incident to QRadar', async () => {
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: vi.fn().mockResolvedValue({ event_id: 'qr-123' })
+        } as any);
+
+        const result = await qradar.sendIncident(mockIncident);
+
+        expect(result.status_code).toBe(200);
+        expect(mockFetch).toHaveBeenCalledWith(
+          expect.stringContaining('/api/siem/events'),
+          expect.objectContaining({
+            method: 'POST',
+            headers: expect.objectContaining({
+              'SEC': expect.any(String)
+            })
+          })
+        );
+      });
+
+      test('should create offense for critical incidents', async () => {
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: vi.fn().mockResolvedValue({ id: 123, status: 'OPEN' })
+        } as any);
+
+        const result = await qradar.createOffense(mockIncident);
+
+        expect(result.status_code).toBe(200);
+        expect(result.data?.status).toBe('OPEN');
+      });
+
+      test('should handle QRadar authentication errors', async () => {
+        mockFetch.mockResolvedValueOnce({
+          ok: false,
+          status: 401,
+          text: vi.fn().mockResolvedValue('Unauthorized')
+        } as any);
+
+        await expect(qradar.sendIncident(mockIncident)).rejects.toThrow('QRadar API error: 401');
+      });
+    });
+
+    describe('ArcSightIntegration', () => {
+      let arcsight: ArcSightIntegration;
+
+      beforeEach(() => {
+        arcsight = new ArcSightIntegration();
+      });
+
+      test('should send incident to ArcSight ESM', async () => {
+        // Mock login response
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: vi.fn().mockResolvedValue({ log: { return: 'session-token' } })
+        } as any);
+
+        // Mock event submission response
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: vi.fn().mockResolvedValue({ eventId: 'as-123' })
+        } as any);
+
+        const result = await arcsight.sendIncident(mockIncident);
+
+        expect(result.success).toBe(true);
+        expect(result.eventId).toBe('as-123');
+        expect(mockFetch).toHaveBeenCalledTimes(2); // Login + Event
+      });
+
+      test('should handle session management', async () => {
+        const sessionStatus = arcsight.getSessionStatus();
+        expect(sessionStatus.hasSession).toBe(false);
+        expect(sessionStatus.isValid).toBe(false);
+      });
+
+      test('should test connection with login', async () => {
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: vi.fn().mockResolvedValue({ log: { return: 'session-token' } })
+        } as any);
+
+        const result = await arcsight.testConnection();
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Notification Systems', () => {
+    describe('SlackEmergencyNotifier', () => {
+      let slack: SlackEmergencyNotifier;
+
+      beforeEach(() => {
+        slack = new SlackEmergencyNotifier();
+      });
+
+      test('should send critical alert to Slack', async () => {
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          text: vi.fn().mockResolvedValue('ok')
+        } as any);
+
+        const result = await slack.sendCriticalAlert(mockIncident);
+
+        expect(result.ok).toBe(true);
+        expect(mockFetch).toHaveBeenCalledWith(
+          expect.any(String),
+          expect.objectContaining({
+            method: 'POST',
+            headers: expect.objectContaining({
+              'Content-Type': 'application/json'
+            }),
+            body: expect.stringContaining('CRITICAL WEDDING SECURITY INCIDENT')
+          })
+        );
+      });
+
+      test('should send wedding day alert', async () => {
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          text: vi.fn().mockResolvedValue('ok')
+        } as any);
+
+        const result = await slack.sendWeddingDayAlert(
+          mockIncident,
+          '2025-01-20',
+          5
+        );
+
+        expect(result.ok).toBe(true);
+        expect(mockFetch).toHaveBeenCalledWith(
+          expect.any(String),
+          expect.objectContaining({
+            body: expect.stringContaining('WEDDING DAY SECURITY INCIDENT')
+          })
+        );
+      });
+
+      test('should handle Slack webhook failures', async () => {
+        mockFetch.mockRejectedValueOnce(new Error('Network error'));
+
+        const result = await slack.sendCriticalAlert(mockIncident);
+
+        expect(result.ok).toBe(false);
+        expect(result.error).toContain('Network error');
+      });
+    });
+
+    describe('TeamsAlertsNotifier', () => {
+      let teams: TeamsAlertsNotifier;
+
+      beforeEach(() => {
+        teams = new TeamsAlertsNotifier();
+      });
+
+      test('should send critical alert to Teams', async () => {
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          text: vi.fn().mockResolvedValue('1')
+        } as any);
+
+        const result = await teams.sendCriticalAlert(mockIncident);
+
+        expect(result.status).toBe(200);
+        expect(mockFetch).toHaveBeenCalledWith(
+          expect.any(String),
+          expect.objectContaining({
+            method: 'POST',
+            body: expect.stringContaining('CRITICAL WEDDING SECURITY INCIDENT')
+          })
+        );
+      });
+
+      test('should create proper adaptive card format', async () => {
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          text: vi.fn().mockResolvedValue('1')
+        } as any);
+
+        await teams.sendCriticalAlert(mockIncident);
+
+        const callArgs = mockFetch.mock.calls[0][1] as RequestInit;
+        const body = JSON.parse(callArgs.body as string);
+
+        expect(body['@type']).toBe('MessageCard');
+        expect(body.sections).toBeDefined();
+        expect(body.potentialAction).toBeDefined();
+      });
+    });
+
+    describe('EmailBlastNotifier', () => {
+      let email: EmailBlastNotifier;
+
+      beforeEach(() => {
+        email = new EmailBlastNotifier();
+      });
+
+      test('should send critical alert emails', async () => {
+        const recipients = [
+          { email: 'user1@example.com', name: 'User 1' },
+          { email: 'user2@example.com', name: 'User 2' }
+        ];
+
+        const result = await email.sendCriticalAlert(mockIncident, recipients);
+
+        expect(result.sent).toBe(2);
+        expect(result.failed).toBe(0);
+        expect(result.results).toHaveLength(2);
+      });
+
+      test('should handle email sending errors', async () => {
+        const mockResend = {
+          emails: {
+            send: vi.fn().mockRejectedValue(new Error('Email service error'))
+          }
+        };
+
+        // Mock the Resend constructor to return our mock
+        const MockResend = vi.mocked(require('resend').Resend);
+        MockResend.mockImplementation(() => mockResend as any);
+
+        const recipients = [{ email: 'user@example.com' }];
+        const result = await email.sendCriticalAlert(mockIncident, recipients);
+
+        expect(result.failed).toBe(1);
+        expect(result.sent).toBe(0);
+      });
+    });
+
+    describe('SMSEmergencyNotifier', () => {
+      let sms: SMSEmergencyNotifier;
+
+      beforeEach(() => {
+        sms = new SMSEmergencyNotifier();
+      });
+
+      test('should send emergency SMS alerts', async () => {
+        const recipients = [
+          { phoneNumber: '+1234567890', name: 'User 1', role: 'emergency' as const },
+          { phoneNumber: '+0987654321', name: 'User 2', role: 'security' as const }
+        ];
+
+        const result = await sms.sendEmergencyAlert(mockIncident, recipients);
+
+        expect(result.sent + result.queued).toBe(2);
+        expect(result.failed).toBe(0);
+        expect(result.totalCost).toBe(0.1); // 2 messages @ $0.05 each
+      });
+
+      test('should respect rate limiting', async () => {
+        const recipients = Array.from({ length: 5 }, (_, i) => ({
+          phoneNumber: `+123456789${i}`,
+          name: `User ${i + 1}`
+        }));
+
+        const startTime = Date.now();
+        await sms.sendEmergencyAlert(mockIncident, recipients);
+        const endTime = Date.now();
+
+        // Should take at least 4 seconds due to rate limiting (1 second between messages)
+        expect(endTime - startTime).toBeGreaterThanOrEqual(4000);
+      });
+
+      test('should get account info', async () => {
+        const accountInfo = await sms.getAccountInfo();
+
+        expect(accountInfo.balance).toBeDefined();
+        expect(accountInfo.currency).toBeDefined();
+        expect(accountInfo.status).toBe('active');
+      });
+    });
+
+    describe('PagerDutyIntegration', () => {
+      let pagerduty: PagerDutyIntegration;
+
+      beforeEach(() => {
+        pagerduty = new PagerDutyIntegration();
+      });
+
+      test('should create critical incident in PagerDuty', async () => {
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: vi.fn().mockResolvedValue({ 
+            status: 'success',
+            dedup_key: 'wedsync-test-incident-123'
+          })
+        } as any);
+
+        const result = await pagerduty.createCriticalIncident(mockIncident);
+
+        expect(result.status).toBe('success');
+        expect(result.dedup_key).toBe('wedsync-test-incident-123');
+        expect(mockFetch).toHaveBeenCalledWith(
+          'https://events.pagerduty.com/v2/enqueue',
+          expect.objectContaining({
+            method: 'POST',
+            body: expect.stringContaining('"event_action":"trigger"')
+          })
+        );
+      });
+
+      test('should create wedding day emergency with enhanced context', async () => {
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: vi.fn().mockResolvedValue({ status: 'success' })
+        } as any);
+
+        const result = await pagerduty.createWeddingDayEmergency(
+          mockIncident,
+          '2025-01-20',
+          'Test Venue',
+          'coordinator@venue.com'
+        );
+
+        expect(result.status).toBe('success');
+        
+        const callArgs = mockFetch.mock.calls[0][1] as RequestInit;
+        const body = JSON.parse(callArgs.body as string);
+        
+        expect(body.payload.custom_details.wedding_day_emergency).toBe(true);
+        expect(body.payload.custom_details.venue_name).toBe('Test Venue');
+      });
+
+      test('should resolve incident', async () => {
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: vi.fn().mockResolvedValue({ status: 'success' })
+        } as any);
+
+        const result = await pagerduty.resolveIncident(mockIncident, 'Resolved after investigation');
+
+        expect(result.status).toBe('success');
+        
+        const callArgs = mockFetch.mock.calls[0][1] as RequestInit;
+        const body = JSON.parse(callArgs.body as string);
+        
+        expect(body.event_action).toBe('resolve');
+        expect(body.payload.custom_details.resolution_notes).toBe('Resolved after investigation');
+      });
+    });
+  });
+
+  describe('Compliance Tools', () => {
+    describe('GDPRAutomation', () => {
+      let gdpr: GDPRAutomation;
+
+      beforeEach(() => {
+        gdpr = new GDPRAutomation();
+      });
+
+      test('should process data breach for GDPR compliance', async () => {
+        const dataBreachIncident = {
+          ...mockIncident,
+          type: WeddingIncidentType.DATA_BREACH,
+          severity: IncidentSeverity.CRITICAL
+        };
+
+        const result = await gdpr.processDataBreach(dataBreachIncident);
+
+        expect(result.notificationRequired).toBe(true);
+        expect(result.severityAssessment.requiresNotification).toBe(true);
+        expect(result.actionsRequired.length).toBeGreaterThan(0);
+        expect(result.deadlines.supervisoryAuthority).toBeDefined();
+      });
+
+      test('should handle subject access request', async () => {
+        const result = await gdpr.handleSubjectAccessRequest('user-123', {
+          email: 'user@example.com',
+          requestType: 'access'
+        });
+
+        expect(result.requestId).toMatch(/^SAR-/);
+        expect(result.status).toBe('acknowledged');
+        expect(result.estimatedResponseTime).toBe('30 days');
+      });
+
+      test('should handle right to be forgotten request', async () => {
+        const result = await gdpr.handleRightToBeForgotten('user-123', {
+          email: 'user@example.com',
+          reason: 'No longer using service'
+        });
+
+        expect(result.requestId).toMatch(/^RTBF-/);
+        expect(typeof result.canDelete).toBe('boolean');
+        expect(Array.isArray(result.restrictions)).toBe(true);
+      });
+
+      test('should generate compliance report', async () => {
+        const result = await gdpr.generateComplianceReport(
+          mockIncident.id,
+          'breach_notification'
+        );
+
+        expect(result.reportId).toMatch(/^RPT-BREACH_NOTIFICATION-/);
+        expect(result.content).toContain('breach notification');
+        expect(result.attachments.length).toBeGreaterThan(0);
+      });
+    });
+
+    describe('AuditIntegration', () => {
+      let audit: AuditIntegration;
+
+      beforeEach(() => {
+        audit = new AuditIntegration();
+      });
+
+      test('should log security incident', async () => {
+        const auditId = await audit.logIncident(mockIncident);
+
+        expect(auditId).toMatch(/^audit-/);
+      });
+
+      test('should log wedding day incident with enhanced context', async () => {
+        const auditId = await audit.logWeddingDayIncident(mockIncident);
+
+        expect(auditId).toMatch(/^audit-/);
+      });
+
+      test('should log access events', async () => {
+        const auditId = await audit.logAccessEvent(
+          'user-123',
+          'login_attempt',
+          '/api/auth/login',
+          'success',
+          { ip_address: '192.168.1.1' }
+        );
+
+        expect(auditId).toMatch(/^access-/);
+      });
+
+      test('should log data processing for GDPR', async () => {
+        const auditId = await audit.logDataProcessing(
+          'data_export',
+          'personal_data',
+          'user-123',
+          'consent',
+          'user_request'
+        );
+
+        expect(auditId).toMatch(/^data-/);
+      });
+
+      test('should generate compliance report', async () => {
+        const startDate = new Date('2025-01-01');
+        const endDate = new Date('2025-01-20');
+
+        const report = await audit.generateComplianceReport(
+          startDate,
+          endDate,
+          'security_incidents'
+        );
+
+        expect(report.id).toMatch(/^compliance-report-/);
+        expect(report.period.start).toEqual(startDate);
+        expect(report.period.end).toEqual(endDate);
+        expect(report.summary.total_events).toBeGreaterThan(0);
+        expect(report.recommendations.length).toBeGreaterThan(0);
+      });
+
+      test('should get audit metrics', async () => {
+        const metrics = await audit.getAuditMetrics();
+
+        expect(typeof metrics.events_logged_24h).toBe('number');
+        expect(typeof metrics.critical_events_24h).toBe('number');
+        expect(typeof metrics.compliance_score).toBe('number');
+        expect(metrics.compliance_score).toBeGreaterThanOrEqual(0);
+        expect(metrics.compliance_score).toBeLessThanOrEqual(100);
+      });
+    });
+  });
+
+  describe('WebhookSecurityHandler', () => {
+    let webhook: WebhookSecurityHandler;
+
+    beforeEach(() => {
+      webhook = new WebhookSecurityHandler();
+    });
+
+    test('should process valid webhook request', async () => {
+      const payload = JSON.stringify({
+        type: 'security.attack',
+        severity: 'high',
+        description: 'DDoS attack detected'
+      });
+
+      const headers = {
+        'x-signature': 'valid-signature',
+        'x-timestamp': Math.floor(Date.now() / 1000).toString(),
+        'cf-webhook-auth': 'present'
+      };
+
+      const result = await webhook.processWebhookRequest(
+        payload,
+        headers,
+        '192.168.1.1',
+        'test-user-agent'
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.eventId).toBeDefined();
+      expect(result.statusCode).toBe(200);
+    });
+
+    test('should reject oversized payloads', async () => {
+      const largePayload = 'x'.repeat(2 * 1024 * 1024); // 2MB payload
+
+      const result = await webhook.processWebhookRequest(
+        largePayload,
+        {},
+        '192.168.1.1',
+        'test-user-agent'
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Payload too large');
+      expect(result.statusCode).toBe(413);
+    });
+
+    test('should enforce rate limiting', async () => {
+      const payload = JSON.stringify({ type: 'test' });
+      const headers = {
+        'x-signature': 'valid-signature',
+        'x-timestamp': Math.floor(Date.now() / 1000).toString()
+      };
+
+      // Send many requests from same IP
+      const promises = Array.from({ length: 150 }, () =>
+        webhook.processWebhookRequest(payload, headers, '192.168.1.1', 'test')
+      );
+
+      const results = await Promise.all(promises);
+      
+      // Some should be rate limited
+      const rateLimited = results.filter(r => r.statusCode === 429);
+      expect(rateLimited.length).toBeGreaterThan(0);
+    });
+
+    test('should validate webhook signatures', async () => {
+      const payload = JSON.stringify({ type: 'test' });
+      const headers = {
+        'x-signature': 'invalid-signature',
+        'x-timestamp': Math.floor(Date.now() / 1000).toString()
+      };
+
+      const result = await webhook.processWebhookRequest(
+        payload,
+        headers,
+        '192.168.1.1',
+        'test-user-agent'
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Invalid signature');
+      expect(result.statusCode).toBe(401);
+    });
+
+    test('should parse Cloudflare security alerts', async () => {
+      const payload = JSON.stringify({
+        type: 'security.attack',
+        severity: 'high',
+        description: 'DDoS attack from multiple IPs',
+        source_ip: '1.2.3.4',
+        ray_id: 'cf-ray-123',
+        country: 'US'
+      });
+
+      const headers = {
+        'cf-webhook-auth': 'present',
+        'x-signature': 'valid-signature',
+        'x-timestamp': Math.floor(Date.now() / 1000).toString()
+      };
+
+      const result = await webhook.processWebhookRequest(
+        payload,
+        headers,
+        '173.245.48.1', // Cloudflare IP
+        'test-user-agent'
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.eventId).toBeDefined();
+    });
+
+    test('should get processing statistics', () => {
+      const stats = webhook.getStatistics();
+
+      expect(typeof stats.totalProcessed).toBe('number');
+      expect(typeof stats.successfullyProcessed).toBe('number');
+      expect(typeof stats.errors).toBe('number');
+      expect(typeof stats.incidentsCreated).toBe('number');
+      expect(typeof stats.averageProcessingTime).toBe('number');
+    });
+
+    test('should manage webhook sources', () => {
+      const testSource = {
+        name: 'test-source',
+        secretKey: 'secret-123',
+        enabled: true,
+        ipWhitelist: ['192.168.1.1'],
+        eventTypes: ['test.event'],
+        signatureValidation: 'hmac-sha256' as const,
+        customHeaders: { 'X-Test-Auth': 'required' }
+      };
+
+      webhook.addWebhookSource(testSource);
+      
+      const sources = webhook.getWebhookSources();
+      const addedSource = sources.find(s => s.name === 'test-source');
+      
+      expect(addedSource).toBeDefined();
+      expect(addedSource?.enabled).toBe(true);
+
+      const removed = webhook.removeWebhookSource('test-source');
+      expect(removed).toBe(true);
+    });
+  });
+
+  describe('Integration Performance Tests', () => {
+    test('should handle high-volume incident processing', async () => {
+      const orchestrator = new IncidentOrchestrator({
+        maxConcurrentIncidents: 100,
+        responseTimeoutMs: 1000
+      });
+
+      const incidents = Array.from({ length: 50 }, (_, i) => ({
+        ...mockIncident,
+        id: `test-incident-${i}`,
+        title: `Test Incident ${i}`
+      }));
+
+      const startTime = Date.now();
+      const promises = incidents.map(incident => 
+        orchestrator.processIncident(incident)
+      );
+      
+      const results = await Promise.all(promises);
+      const endTime = Date.now();
+
+      const processingTime = endTime - startTime;
+      const averageTimePerIncident = processingTime / incidents.length;
+
+      expect(processingTime).toBeLessThan(30000); // Should complete within 30 seconds
+      expect(averageTimePerIncident).toBeLessThan(1000); // Average under 1 second per incident
+      expect(results.filter(r => r.processed).length).toBe(incidents.length);
+    });
+
+    test('should maintain performance under load', async () => {
+      const webhook = new WebhookSecurityHandler();
+      const testPayload = JSON.stringify({ type: 'test', data: 'performance-test' });
+      const testHeaders = {
+        'x-signature': 'test-signature',
+        'x-timestamp': Math.floor(Date.now() / 1000).toString()
+      };
+
+      const promises = Array.from({ length: 100 }, (_, i) =>
+        webhook.processWebhookRequest(
+          testPayload,
+          testHeaders,
+          `192.168.1.${i % 254 + 1}`, // Different IPs to avoid rate limiting
+          'performance-test'
+        )
+      );
+
+      const startTime = Date.now();
+      const results = await Promise.all(promises);
+      const endTime = Date.now();
+
+      const totalTime = endTime - startTime;
+      const averageTime = totalTime / results.length;
+
+      expect(totalTime).toBeLessThan(10000); // Should complete within 10 seconds
+      expect(averageTime).toBeLessThan(200); // Average under 200ms per request
+    });
+  });
+
+  describe('Error Handling and Resilience', () => {
+    test('should handle network failures gracefully', async () => {
+      mockFetch.mockRejectedValue(new Error('Network unavailable'));
+
+      const orchestrator = new IncidentOrchestrator();
+      const result = await orchestrator.processIncident(mockIncident);
+
+      // Should still succeed overall even if some integrations fail
+      expect(result.processed).toBe(true);
+      expect(result.responses.some(r => !r.success)).toBe(true);
+    });
+
+    test('should implement retry logic for failed requests', async () => {
+      // First two calls fail, third succeeds
+      mockFetch
+        .mockRejectedValueOnce(new Error('Timeout'))
+        .mockRejectedValueOnce(new Error('Timeout'))
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: vi.fn().mockResolvedValue({ success: true })
+        } as any);
+
+      const splunk = new SplunkIntegration();
+      const result = await splunk.sendIncident(mockIncident);
+
+      expect(result.text).toBe('Success');
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+    });
+
+    test('should handle malformed webhook payloads', async () => {
+      const webhook = new WebhookSecurityHandler();
+      const malformedPayload = '{ invalid json';
+
+      const result = await webhook.processWebhookRequest(
+        malformedPayload,
+        {},
+        '192.168.1.1',
+        'test-user-agent'
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Unexpected');
+      expect(result.statusCode).toBe(500);
+    });
+  });
+
+  describe('Configuration and Management', () => {
+    test('should allow runtime configuration updates', () => {
+      const orchestrator = new IncidentOrchestrator();
+      
+      orchestrator.enableWeddingDayMode();
+      expect(orchestrator.getStatus().weddingDayMode).toBe(true);
+      
+      orchestrator.disableWeddingDayMode();
+      expect(orchestrator.getStatus().weddingDayMode).toBe(false);
+    });
+
+    test('should provide comprehensive status information', () => {
+      const orchestrator = new IncidentOrchestrator();
+      const status = orchestrator.getStatus();
+
+      expect(status.activeIncidents).toBeDefined();
+      expect(status.weddingDayMode).toBeDefined();
+      expect(status.integrations).toBeDefined();
+      expect(status.integrations.siem).toBeDefined();
+      expect(status.integrations.notifications).toBeDefined();
+      expect(status.integrations.compliance).toBeDefined();
+    });
+
+    test('should maintain integration health monitoring', async () => {
+      const pagerduty = new PagerDutyIntegration();
+      
+      mockFetch
+        .mockResolvedValueOnce({ // Test event
+          ok: true,
+          status: 200,
+          json: vi.fn().mockResolvedValue({ status: 'success' })
+        } as any)
+        .mockResolvedValueOnce({ // Resolve test event
+          ok: true, 
+          status: 200,
+          json: vi.fn().mockResolvedValue({ status: 'success' })
+        } as any);
+
+      const health = await pagerduty.getServiceHealth();
+
+      expect(health.events_api).toBe(true);
+      expect(health.overall).toBe(true);
+    });
+  });
+});

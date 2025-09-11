@@ -1,0 +1,744 @@
+'use server';
+
+import { createClient } from '@/lib/supabase/server';
+import { revalidatePath } from 'next/cache';
+import { z } from 'zod';
+import { SMSService } from '@/lib/services/sms-service';
+import type {
+  SMSTemplate,
+  SMSTemplateFilters,
+  SMSBulkAction,
+  SMSConfiguration,
+  SMSValidationResult,
+} from '@/types/sms';
+
+// Validation schemas (extending email template patterns)
+const createSMSTemplateSchema = z.object({
+  name: z
+    .string()
+    .min(1, 'Name is required')
+    .max(200, 'Name must be 200 characters or less'),
+  content: z
+    .string()
+    .min(1, 'Content is required')
+    .max(1600, 'Content must be 1600 characters or less'),
+  category: z.enum([
+    'welcome',
+    'payment_reminder',
+    'meeting_confirmation',
+    'thank_you',
+    'client_communication',
+    'custom',
+  ]),
+  status: z.enum(['active', 'draft', 'archived']).optional().default('draft'),
+  description: z.string().optional(),
+  variables: z.array(z.string()).optional().default([]),
+
+  // SMS-specific validation
+  opt_out_required: z.boolean().optional().default(true),
+  tcpa_compliant: z.boolean().optional().default(false),
+  consent_required: z.boolean().optional().default(true),
+});
+
+const updateSMSTemplateSchema = createSMSTemplateSchema
+  .partial()
+  .omit({ status: true });
+
+// Get authenticated user
+async function getAuthenticatedUser() {
+  const supabase = await createClient();
+  const {
+    data: { user },
+    error,
+  } = await supabase.auth.getUser();
+
+  if (error || !user) {
+    throw new Error('User not authenticated');
+  }
+
+  return user;
+}
+
+// Server Actions
+
+/**
+ * Get SMS templates with filtering (extending email template patterns)
+ */
+export async function getSMSTemplates(filters: SMSTemplateFilters = {}) {
+  const user = await getAuthenticatedUser();
+  const supabase = await createClient();
+
+  const {
+    search,
+    categories = [],
+    statuses = [],
+    showFavorites = false,
+    dateRange,
+    usageRange,
+    characterRange,
+    complianceFilter = 'all',
+    sortBy = 'created_at_desc',
+    page = 1,
+    limit = 20,
+  } = filters;
+
+  let query = supabase
+    .from('sms_templates')
+    .select(
+      `
+      *,
+      profiles!created_by (
+        full_name
+      )
+    `,
+      { count: 'exact' },
+    )
+    .eq('user_id', user.id);
+
+  // Apply filters
+  if (search) {
+    query = query.or(`name.ilike.%${search}%,content.ilike.%${search}%`);
+  }
+
+  if (categories.length > 0) {
+    query = query.in('category', categories);
+  }
+
+  if (statuses.length > 0) {
+    query = query.in('status', statuses);
+  }
+
+  if (showFavorites) {
+    query = query.eq('is_favorite', true);
+  }
+
+  if (dateRange?.from) {
+    query = query.gte('created_at', dateRange.from.toISOString());
+  }
+
+  if (dateRange?.to) {
+    query = query.lte('created_at', dateRange.to.toISOString());
+  }
+
+  if (usageRange?.min) {
+    query = query.gte('usage_count', usageRange.min);
+  }
+
+  if (usageRange?.max) {
+    query = query.lte('usage_count', usageRange.max);
+  }
+
+  if (characterRange?.min) {
+    query = query.gte('character_count', characterRange.min);
+  }
+
+  if (characterRange?.max) {
+    query = query.lte('character_count', characterRange.max);
+  }
+
+  // Compliance filtering
+  if (complianceFilter === 'tcpa_compliant') {
+    query = query.eq('tcpa_compliant', true);
+  } else if (complianceFilter === 'needs_review') {
+    query = query.eq('tcpa_compliant', false);
+  }
+
+  // Apply sorting
+  const [field, direction] = sortBy.split('_');
+  const ascending = direction === 'asc';
+  query = query.order(field, { ascending });
+
+  // Apply pagination
+  const from = (page - 1) * limit;
+  const to = from + limit - 1;
+  query = query.range(from, to);
+
+  const { data, error, count } = await query;
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  // Transform data
+  const templates = (data || []).map((template) => ({
+    ...template,
+    variables: template.variables || [],
+    metadata: {
+      ...template.metadata,
+      author_name: template.profiles?.full_name,
+    },
+  }));
+
+  return {
+    templates,
+    totalCount: count || 0,
+    totalPages: Math.ceil((count || 0) / limit),
+  };
+}
+
+/**
+ * Get SMS template by ID
+ */
+export async function getSMSTemplateById(id: string) {
+  const user = await getAuthenticatedUser();
+  const supabase = await createClient();
+
+  const { data, error } = await supabase
+    .from('sms_templates')
+    .select(
+      `
+      *,
+      profiles!created_by (
+        full_name
+      )
+    `,
+    )
+    .eq('id', id)
+    .eq('user_id', user.id)
+    .single();
+
+  if (error) {
+    if (error.code === 'PGRST116') {
+      return null;
+    }
+    throw new Error(error.message);
+  }
+
+  return {
+    ...data,
+    variables: data.variables || [],
+    metadata: {
+      ...data.metadata,
+      author_name: data.profiles?.full_name,
+    },
+  };
+}
+
+/**
+ * Create new SMS template
+ */
+export async function createSMSTemplate(
+  templateData: z.infer<typeof createSMSTemplateSchema>,
+) {
+  const user = await getAuthenticatedUser();
+  const supabase = await createClient();
+
+  // Validate input
+  const validatedData = createSMSTemplateSchema.parse(templateData);
+
+  // Calculate SMS metrics
+  const smsService = new SMSService();
+  const metrics = smsService.calculateSMSMetrics(validatedData.content);
+
+  // Validate compliance
+  const validation = smsService.validateSMSMessage(validatedData.content);
+  if (!validation.isValid && validation.errors.length > 0) {
+    throw new Error(
+      `Template validation failed: ${validation.errors.join(', ')}`,
+    );
+  }
+
+  const { data, error } = await supabase
+    .from('sms_templates')
+    .insert({
+      name: validatedData.name,
+      content: validatedData.content,
+      category: validatedData.category,
+      status: validatedData.status || 'draft',
+      user_id: user.id,
+      created_by: user.id,
+      usage_count: 0,
+      is_favorite: false,
+      variables: validatedData.variables,
+
+      // SMS-specific fields (calculated automatically)
+      character_count: metrics.character_count,
+      segment_count: metrics.segment_count,
+      character_limit: metrics.character_limit,
+
+      // Compliance fields
+      opt_out_required: validatedData.opt_out_required,
+      tcpa_compliant: validatedData.tcpa_compliant,
+      consent_required: validatedData.consent_required,
+
+      metadata: {
+        description: validatedData.description,
+        compliance_notes: validation.compliance_issues?.join('; '),
+        warnings: validation.warnings?.join('; '),
+      },
+    })
+    .select()
+    .single();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  revalidatePath('/dashboard/sms-templates');
+  return data;
+}
+
+/**
+ * Update SMS template
+ */
+export async function updateSMSTemplate(
+  id: string,
+  updates: z.infer<typeof updateSMSTemplateSchema>,
+) {
+  const user = await getAuthenticatedUser();
+  const supabase = await createClient();
+
+  // Validate input
+  const validatedData = updateSMSTemplateSchema.parse(updates);
+
+  // If content is being updated, recalculate metrics
+  let additionalUpdates = {};
+  if (validatedData.content) {
+    const smsService = new SMSService();
+    const metrics = smsService.calculateSMSMetrics(validatedData.content);
+    const validation = smsService.validateSMSMessage(validatedData.content);
+
+    additionalUpdates = {
+      character_count: metrics.character_count,
+      segment_count: metrics.segment_count,
+      metadata: {
+        ...validatedData.metadata,
+        compliance_notes: validation.compliance_issues?.join('; '),
+        warnings: validation.warnings?.join('; '),
+      },
+    };
+  }
+
+  const { data, error } = await supabase
+    .from('sms_templates')
+    .update({
+      ...validatedData,
+      ...additionalUpdates,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', id)
+    .eq('user_id', user.id)
+    .select()
+    .single();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  revalidatePath('/dashboard/sms-templates');
+  return data;
+}
+
+/**
+ * Delete SMS template
+ */
+export async function deleteSMSTemplate(id: string) {
+  const user = await getAuthenticatedUser();
+  const supabase = await createClient();
+
+  const { error } = await supabase
+    .from('sms_templates')
+    .delete()
+    .eq('id', id)
+    .eq('user_id', user.id);
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  revalidatePath('/dashboard/sms-templates');
+}
+
+/**
+ * Duplicate SMS template
+ */
+export async function duplicateSMSTemplate(
+  id: string,
+  nameSuffix: string = ' (Copy)',
+) {
+  const originalTemplate = await getSMSTemplateById(id);
+
+  if (!originalTemplate) {
+    throw new Error('Template not found');
+  }
+
+  return createSMSTemplate({
+    name: originalTemplate.name + nameSuffix,
+    content: originalTemplate.content,
+    category: originalTemplate.category,
+    status: 'draft',
+    variables: originalTemplate.variables,
+    opt_out_required: originalTemplate.opt_out_required,
+    tcpa_compliant: originalTemplate.tcpa_compliant,
+    consent_required: originalTemplate.consent_required,
+  });
+}
+
+/**
+ * Bulk update SMS templates
+ */
+export async function bulkUpdateSMSTemplates(action: SMSBulkAction) {
+  const user = await getAuthenticatedUser();
+  const supabase = await createClient();
+
+  const { type, templateIds, metadata } = action;
+
+  switch (type) {
+    case 'delete':
+      const { error: deleteError } = await supabase
+        .from('sms_templates')
+        .delete()
+        .in('id', templateIds)
+        .eq('user_id', user.id);
+
+      if (deleteError) {
+        throw new Error(deleteError.message);
+      }
+      break;
+
+    case 'activate':
+      const { error: activateError } = await supabase
+        .from('sms_templates')
+        .update({
+          status: 'active',
+          updated_at: new Date().toISOString(),
+        })
+        .in('id', templateIds)
+        .eq('user_id', user.id);
+
+      if (activateError) {
+        throw new Error(activateError.message);
+      }
+      break;
+
+    case 'archive':
+      const { error: archiveError } = await supabase
+        .from('sms_templates')
+        .update({
+          status: 'archived',
+          updated_at: new Date().toISOString(),
+        })
+        .in('id', templateIds)
+        .eq('user_id', user.id);
+
+      if (archiveError) {
+        throw new Error(archiveError.message);
+      }
+      break;
+
+    case 'mark_compliant':
+      const { error: complianceError } = await supabase
+        .from('sms_templates')
+        .update({
+          tcpa_compliant: metadata?.tcpa_compliant || true,
+          opt_out_required: metadata?.opt_out_required || true,
+          updated_at: new Date().toISOString(),
+        })
+        .in('id', templateIds)
+        .eq('user_id', user.id);
+
+      if (complianceError) {
+        throw new Error(complianceError.message);
+      }
+      break;
+
+    case 'export':
+      // Export functionality would be handled client-side
+      break;
+
+    default:
+      throw new Error(`Unknown bulk action: ${type}`);
+  }
+
+  revalidatePath('/dashboard/sms-templates');
+}
+
+/**
+ * Validate SMS template content
+ */
+export async function validateSMSTemplate(
+  content: string,
+  templateData?: Partial<SMSTemplate>,
+): Promise<SMSValidationResult> {
+  const smsService = new SMSService();
+
+  return smsService.validateSMSMessage(content, templateData as SMSTemplate);
+}
+
+/**
+ * Get SMS configuration for user
+ */
+export async function getSMSConfiguration(): Promise<SMSConfiguration | null> {
+  const user = await getAuthenticatedUser();
+  const supabase = await createClient();
+
+  const { data, error } = await supabase
+    .from('sms_configurations')
+    .select('*')
+    .eq('user_id', user.id)
+    .single();
+
+  if (error) {
+    if (error.code === 'PGRST116') {
+      return null;
+    }
+    throw new Error(error.message);
+  }
+
+  return data;
+}
+
+/**
+ * Save SMS configuration
+ */
+export async function saveSMSConfiguration(
+  configData: Partial<SMSConfiguration>,
+) {
+  const user = await getAuthenticatedUser();
+  const supabase = await createClient();
+
+  // Validate phone number format
+  if (configData.phone_number) {
+    const smsService = new SMSService();
+    if (!smsService.validatePhoneNumber(configData.phone_number)) {
+      throw new Error('Invalid phone number format');
+    }
+
+    // Format phone number
+    configData.phone_number = smsService['formatPhoneNumber'](
+      configData.phone_number,
+    );
+  }
+
+  const { data, error } = await supabase
+    .from('sms_configurations')
+    .upsert({
+      ...configData,
+      user_id: user.id,
+      updated_at: new Date().toISOString(),
+    })
+    .select()
+    .single();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  revalidatePath('/dashboard/sms-configuration');
+  return data;
+}
+
+/**
+ * Test SMS configuration
+ */
+export async function testSMSConfiguration(
+  testPhone: string,
+  testMessage: string = 'Test message from WedSync SMS configuration',
+) {
+  const user = await getAuthenticatedUser();
+
+  try {
+    const smsService = await SMSService.createWithUserConfig(user.id);
+
+    const result = await smsService.sendTemplateMessage({
+      to: testPhone,
+      content: testMessage,
+      consent_verified: true,
+      bypass_opt_out: true, // Test message
+    });
+
+    return {
+      success: result.status === 'sent',
+      messageId: result.messageId,
+      error: result.error,
+      metrics: result.metrics,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * Get SMS template statistics
+ */
+export async function getSMSTemplateStats() {
+  const user = await getAuthenticatedUser();
+  const supabase = await createClient();
+
+  const { data: templates, error } = await supabase
+    .from('sms_templates')
+    .select('*')
+    .eq('user_id', user.id);
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  const totalTemplates = templates?.length || 0;
+  const activeTemplates =
+    templates?.filter((t) => t.status === 'active').length || 0;
+  const draftTemplates =
+    templates?.filter((t) => t.status === 'draft').length || 0;
+  const archivedTemplates =
+    templates?.filter((t) => t.status === 'archived').length || 0;
+  const favoriteTemplates = templates?.filter((t) => t.is_favorite).length || 0;
+  const compliantTemplates =
+    templates?.filter((t) => t.tcpa_compliant).length || 0;
+  const totalUsage = templates?.reduce((sum, t) => sum + t.usage_count, 0) || 0;
+  const totalCharacters =
+    templates?.reduce((sum, t) => sum + t.character_count, 0) || 0;
+  const totalSegments =
+    templates?.reduce((sum, t) => sum + t.segment_count, 0) || 0;
+
+  // Estimate total cost (rough calculation)
+  const totalCost = totalSegments * 0.0075; // $0.0075 per segment
+
+  return {
+    totalTemplates,
+    activeTemplates,
+    draftTemplates,
+    archivedTemplates,
+    favoriteTemplates,
+    compliantTemplates,
+    totalUsage,
+    totalCharacters,
+    totalSegments,
+    totalCost,
+    complianceRate:
+      totalTemplates > 0 ? compliantTemplates / totalTemplates : 0,
+  };
+}
+
+/**
+ * Increment SMS template usage count
+ */
+export async function incrementSMSTemplateUsage(templateId: string) {
+  const user = await getAuthenticatedUser();
+  const supabase = await createClient();
+
+  const { error } = await supabase.rpc('increment_sms_template_usage', {
+    template_id: templateId,
+    user_id: user.id,
+  });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  revalidatePath('/dashboard/sms-templates');
+}
+
+/**
+ * Get SMS merge fields (extending email template patterns)
+ */
+export async function getSMSMergeFields() {
+  // SMS merge fields with character limit considerations
+  return [
+    {
+      key: 'client_first_name',
+      label: 'Client First Name',
+      description: 'First name of the client',
+      type: 'text' as const,
+      category: 'Client',
+      max_length: 50,
+      sms_safe: true,
+    },
+    {
+      key: 'client_full_name',
+      label: 'Client Full Name',
+      description: 'Full name of the client',
+      type: 'text' as const,
+      category: 'Client',
+      max_length: 100,
+      sms_safe: true,
+    },
+    {
+      key: 'vendor_name',
+      label: 'Vendor Name',
+      description: 'Name of the wedding vendor',
+      type: 'text' as const,
+      category: 'Vendor',
+      max_length: 100,
+      sms_safe: true,
+    },
+    {
+      key: 'event_date',
+      label: 'Event Date',
+      description: 'Wedding or event date',
+      type: 'date' as const,
+      category: 'Event',
+      sms_safe: true,
+    },
+    {
+      key: 'event_time',
+      label: 'Event Time',
+      description: 'Wedding or event time',
+      type: 'text' as const,
+      category: 'Event',
+      max_length: 20,
+      sms_safe: true,
+    },
+    {
+      key: 'event_location',
+      label: 'Event Location',
+      description: 'Wedding or event location',
+      type: 'text' as const,
+      category: 'Event',
+      max_length: 100,
+      sms_safe: false, // May be too long for SMS
+    },
+    {
+      key: 'amount',
+      label: 'Amount',
+      description: 'Payment amount',
+      type: 'currency' as const,
+      category: 'Payment',
+      sms_safe: true,
+    },
+    {
+      key: 'due_date',
+      label: 'Due Date',
+      description: 'Payment due date',
+      type: 'date' as const,
+      category: 'Payment',
+      sms_safe: true,
+    },
+    {
+      key: 'form_url',
+      label: 'Form URL',
+      description: 'Link to form',
+      type: 'url' as const,
+      category: 'Links',
+      sms_safe: false, // URLs can be long
+    },
+    {
+      key: 'payment_url',
+      label: 'Payment URL',
+      description: 'Link to payment page',
+      type: 'url' as const,
+      category: 'Links',
+      sms_safe: false, // URLs can be long
+    },
+  ];
+}
+
+// Export for compatibility with email template patterns
+export const smsTemplateActions = {
+  getSMSTemplates,
+  getSMSTemplateById,
+  createSMSTemplate,
+  updateSMSTemplate,
+  deleteSMSTemplate,
+  duplicateSMSTemplate,
+  bulkUpdateSMSTemplates,
+  validateSMSTemplate,
+  getSMSConfiguration,
+  saveSMSConfiguration,
+  testSMSConfiguration,
+  getSMSTemplateStats,
+  incrementSMSTemplateUsage,
+  getSMSMergeFields,
+};

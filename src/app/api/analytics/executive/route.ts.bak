@@ -1,0 +1,237 @@
+import { NextRequest } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { getExecutiveMetrics, subscribeToMetricsUpdates } from '@/lib/analytics/executiveMetrics';
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
+export async function GET(request: NextRequest) {
+  const searchParams = request.nextUrl.searchParams;
+  const accept = request.headers.get('accept');
+  
+  // Check if this is a Server-Sent Events request
+  if (accept === 'text/event-stream') {
+    return handleSSE(request);
+  }
+
+  try {
+    const supabase = await createClient();
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    
+    if (authError || !user) {
+      return Response.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get user's organization
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('id', user.id)
+      .single();
+
+    if (!profile?.organization_id) {
+      return Response.json({ error: 'Organization not found' }, { status: 403 });
+    }
+
+    // Parse query parameters
+    const startDate = searchParams.get('start') || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    const endDate = searchParams.get('end') || new Date().toISOString();
+    const refresh = searchParams.get('refresh') === 'true';
+
+    // Get executive metrics
+    const metrics = await getExecutiveMetrics(
+      profile.organization_id,
+      startDate,
+      endDate,
+      { forceRefresh: refresh }
+    );
+
+    return Response.json(metrics, {
+      headers: {
+        'Cache-Control': 'private, no-cache, no-store, max-age=0',
+        'Content-Type': 'application/json',
+      },
+    });
+
+  } catch (error) {
+    console.error('Executive metrics API error:', error);
+    return Response.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+async function handleSSE(request: NextRequest) {
+  const searchParams = request.nextUrl.searchParams;
+  
+  try {
+    const supabase = await createClient();
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    
+    if (authError || !user) {
+      return new Response('Unauthorized', { status: 401 });
+    }
+
+    // Get user's organization
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('id', user.id)
+      .single();
+
+    if (!profile?.organization_id) {
+      return new Response('Organization not found', { status: 403 });
+    }
+
+    const startDate = searchParams.get('start') || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    const endDate = searchParams.get('end') || new Date().toISOString();
+
+    // Create SSE stream
+    const stream = new TransformStream();
+    const writer = stream.writable.getWriter();
+
+    // SSE headers
+    const headers = {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-store, no-transform',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Headers': 'Cache-Control',
+    };
+
+    // Send initial data
+    const initialMetrics = await getExecutiveMetrics(
+      profile.organization_id,
+      startDate,
+      endDate
+    );
+
+    await writer.write(
+      new TextEncoder().encode(`data: ${JSON.stringify(initialMetrics)}\n\n`)
+    );
+
+    // Set up real-time subscription
+    let cleanup: (() => void) | null = null;
+    
+    try {
+      cleanup = subscribeToMetricsUpdates(
+        profile.organization_id,
+        async (updatedMetrics) => {
+          try {
+            await writer.write(
+              new TextEncoder().encode(`data: ${JSON.stringify(updatedMetrics)}\n\n`)
+            );
+          } catch (writeError) {
+            console.error('SSE write error:', writeError);
+            cleanup?.();
+          }
+        }
+      );
+
+      // Keep connection alive
+      const keepAlive = setInterval(async () => {
+        try {
+          await writer.write(
+            new TextEncoder().encode(`event: heartbeat\ndata: ${Date.now()}\n\n`)
+          );
+        } catch (heartbeatError) {
+          console.error('SSE heartbeat error:', heartbeatError);
+          clearInterval(keepAlive);
+          cleanup?.();
+        }
+      }, 30000); // Every 30 seconds
+
+      // Handle client disconnect
+      request.signal.addEventListener('abort', () => {
+        clearInterval(keepAlive);
+        cleanup?.();
+        writer.close();
+      });
+
+    } catch (subscriptionError) {
+      console.error('SSE subscription error:', subscriptionError);
+      await writer.write(
+        new TextEncoder().encode(`event: error\ndata: ${JSON.stringify({ error: 'Subscription failed' })}\n\n`)
+      );
+      cleanup?.();
+      writer.close();
+    }
+
+    return new Response(stream.readable, { headers });
+
+  } catch (error) {
+    console.error('SSE setup error:', error);
+    return new Response(
+      `event: error\ndata: ${JSON.stringify({ error: 'Internal server error' })}\n\n`,
+      {
+        status: 500,
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+        },
+      }
+    );
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    
+    if (authError || !user) {
+      return Response.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get user's organization
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('id', user.id)
+      .single();
+
+    if (!profile?.organization_id) {
+      return Response.json({ error: 'Organization not found' }, { status: 403 });
+    }
+
+    const body = await request.json();
+    const { action, parameters } = body;
+
+    switch (action) {
+      case 'refresh-cache':
+        // Force refresh all cached metrics
+        const refreshedMetrics = await getExecutiveMetrics(
+          profile.organization_id,
+          parameters?.startDate,
+          parameters?.endDate,
+          { forceRefresh: true }
+        );
+        return Response.json({ success: true, data: refreshedMetrics });
+
+      case 'export-data':
+        // Export metrics data (could be CSV, Excel, etc.)
+        const exportData = await getExecutiveMetrics(
+          profile.organization_id,
+          parameters?.startDate,
+          parameters?.endDate
+        );
+        
+        return Response.json({
+          success: true,
+          downloadUrl: `/api/analytics/executive/export?format=${parameters?.format || 'json'}`,
+          data: exportData
+        });
+
+      default:
+        return Response.json({ error: 'Invalid action' }, { status: 400 });
+    }
+
+  } catch (error) {
+    console.error('Executive metrics POST error:', error);
+    return Response.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}

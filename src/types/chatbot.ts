@@ -1,0 +1,513 @@
+// ==========================================
+// WS-243: AI Chatbot Integration System Types
+// ==========================================
+
+export interface ChatbotConversation {
+  id: string;
+  organization_id: string;
+  user_id?: string | null;
+  client_id?: string | null;
+  wedding_id?: string | null;
+  title: string;
+  status: 'active' | 'archived' | 'escalated' | 'closed';
+  context_data: Record<string, any>;
+  total_messages: number;
+  total_tokens_used: number;
+  created_at: string;
+  updated_at: string;
+  last_activity_at: string;
+  deleted_at?: string | null;
+}
+
+export interface ChatbotMessage {
+  id: string;
+  conversation_id: string;
+  role: 'user' | 'assistant' | 'system' | 'function';
+  content: string;
+  ai_metadata: Record<string, any>;
+  tokens_used: number;
+  response_time_ms: number;
+  wedding_context: Record<string, any>;
+  is_edited: boolean;
+  is_flagged: boolean;
+  flag_reason?: string | null;
+  created_at: string;
+  updated_at: string;
+  deleted_at?: string | null;
+}
+
+export interface ChatbotPrompt {
+  id: string;
+  organization_id?: string | null;
+  type: string;
+  name: string;
+  description?: string | null;
+  content: string;
+  wedding_context_template: Record<string, any>;
+  variables: string[];
+  usage_count: number;
+  version: number;
+  is_active: boolean;
+  parent_prompt_id?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ChatbotAnalytics {
+  id: string;
+  conversation_id: string;
+  organization_id: string;
+  avg_response_time_ms: number;
+  total_tokens_cost: number;
+  message_count: number;
+  satisfaction_rating?: number | null;
+  satisfaction_feedback?: string | null;
+  escalated_to_human: boolean;
+  escalation_reason?: string | null;
+  escalated_at?: string | null;
+  resolved_by_human: boolean;
+  resolution_time_minutes: number;
+  led_to_booking: boolean;
+  led_to_upsell: boolean;
+  inquiry_category?: string | null;
+  session_duration_minutes: number;
+  user_agent?: string | null;
+  referrer_url?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// ==========================================
+// API Request/Response Types
+// ==========================================
+
+export interface CreateConversationRequest {
+  title?: string;
+  client_id?: string;
+  wedding_id?: string;
+  context_data?: Record<string, any>;
+}
+
+export interface UpdateConversationRequest {
+  title?: string;
+  status?: 'active' | 'archived' | 'escalated' | 'closed';
+  context_data?: Record<string, any>;
+}
+
+export interface CreateMessageRequest {
+  content: string;
+  role?: 'user' | 'system';
+  wedding_context?: Record<string, any>;
+}
+
+export interface ConversationWithMessages extends ChatbotConversation {
+  messages: ChatbotMessage[];
+  analytics?: ChatbotAnalytics;
+}
+
+export interface ConversationListResponse {
+  conversations: ChatbotConversation[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+export interface MessageListResponse {
+  messages: ChatbotMessage[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+// ==========================================
+// AI Service Types
+// ==========================================
+
+export interface AIServiceRequest {
+  message: string;
+  conversation_history: ChatbotMessage[];
+  user_context: UserContext;
+  wedding_context?: WeddingContext;
+}
+
+export interface AIServiceResponse {
+  content: string;
+  tokens_used: number;
+  response_time_ms: number;
+  metadata: {
+    model: string;
+    temperature: number;
+    prompt_tokens: number;
+    completion_tokens: number;
+    finish_reason: string;
+  };
+}
+
+export interface UserContext {
+  user_id: string;
+  organization_id: string;
+  user_role: string;
+  current_page?: string;
+  session_data?: Record<string, any>;
+}
+
+export interface WeddingContext {
+  couple_names?: string;
+  wedding_date?: string;
+  venue_name?: string;
+  budget_range?: string;
+  guest_count?: number;
+  services_needed?: string[];
+  current_timeline_status?: string;
+  vendor_relationships?: Record<string, any>;
+}
+
+// ==========================================
+// Validation Schemas (Zod)
+// ==========================================
+
+export const ConversationStatus = [
+  'active',
+  'archived',
+  'escalated',
+  'closed',
+] as const;
+export const MessageRole = ['user', 'assistant', 'system', 'function'] as const;
+
+// Error Types
+export interface ChatbotAPIError {
+  error: string;
+  code: string;
+  details?: Record<string, any>;
+  timestamp: string;
+}
+
+// Rate limiting types
+export interface RateLimitInfo {
+  remaining: number;
+  reset: number;
+  limit: number;
+}
+
+// ==========================================
+// Frontend UI Component Types
+// ==========================================
+
+// Chat Widget Props and State
+export interface ChatWidgetProps {
+  position?: 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left';
+  initialMessage?: string;
+  contextHint?: string;
+  minimized?: boolean;
+  theme?: 'light' | 'dark' | 'auto';
+  disabled?: boolean;
+  showSecurityIndicator?: boolean;
+  allowFileUploads?: boolean;
+  maxFileSize?: number;
+  allowedFileTypes?: string[];
+}
+
+export interface ChatWidgetState {
+  isOpen: boolean;
+  isMinimized: boolean;
+  position: { x?: number; y?: number };
+  isDragging: boolean;
+  hasUnreadMessages: boolean;
+  isTyping: boolean;
+  error: string | null;
+  securityWarning: string | null;
+}
+
+// Message Bubble Component Types
+export interface MessageBubbleProps {
+  message: ChatbotMessage;
+  isBot: boolean;
+  showAvatar?: boolean;
+  showTimestamp?: boolean;
+  isLatest?: boolean;
+  onResend?: () => void;
+  onCopy?: () => void;
+}
+
+export interface MessageBubbleState {
+  isHovered: boolean;
+  showActions: boolean;
+  isCopied: boolean;
+}
+
+// Typing Indicator Component Types
+export interface TypingIndicatorProps {
+  isVisible: boolean;
+  aiName?: string;
+  showProgress?: boolean;
+  estimatedTime?: number;
+  customMessage?: string;
+}
+
+// Chat Input Component Types
+export interface ChatInputProps {
+  onSendMessage: (message: string, attachments?: File[]) => Promise<void>;
+  disabled?: boolean;
+  placeholder?: string;
+  maxLength?: number;
+  allowAttachments?: boolean;
+  suggestedQuestions?: string[];
+  isLoading?: boolean;
+  remainingRequests?: number;
+  onFileUpload?: (files: File[]) => Promise<void>;
+}
+
+export interface ChatInputState {
+  message: string;
+  attachments: File[];
+  showSuggestions: boolean;
+  isComposing: boolean;
+  charactersRemaining: number;
+  dragover: boolean;
+}
+
+// File Attachment Types
+export interface MessageAttachment {
+  id: string;
+  name: string;
+  type: string;
+  size: number;
+  url?: string;
+  uploadStatus: 'pending' | 'uploading' | 'uploaded' | 'error';
+  securityValidated: boolean;
+}
+
+// Chat Hook Types
+export interface UseChatReturn {
+  // State
+  messages: ChatbotMessage[];
+  conversationId: string;
+  isConnected: boolean;
+  isTyping: boolean;
+  error: string | null;
+  securityWarning: string | null;
+
+  // Actions
+  sendMessage: (content: string, attachments?: File[]) => Promise<void>;
+  clearHistory: () => void;
+  reconnect: () => void;
+  setTyping: (isTyping: boolean) => void;
+  dismissError: () => void;
+  dismissSecurityWarning: () => void;
+
+  // Rate limiting
+  canSendMessage: boolean;
+  requestsRemaining: number;
+  resetTime: Date | null;
+
+  // Conversation management
+  loadConversationHistory: () => Promise<void>;
+  exportConversation: () => Promise<void>;
+}
+
+export interface UseChatConfig {
+  autoConnect?: boolean;
+  persistMessages?: boolean;
+  maxMessages?: number;
+  reconnectInterval?: number;
+  typingTimeout?: number;
+  rateLimitConfig?: RateLimitConfig;
+  securityConfig?: SecurityConfig;
+}
+
+// Rate Limiting Configuration
+export interface RateLimitConfig {
+  maxRequests: number;
+  windowMs: number;
+  warningThreshold?: number;
+}
+
+export interface RateLimitState {
+  canMakeRequest: boolean;
+  requestsRemaining: number;
+  resetTime: Date | null;
+  warningShown: boolean;
+}
+
+// Security Configuration
+export interface SecurityConfig {
+  maxMessageLength: number;
+  allowedFileTypes: string[];
+  maxFileSize: number;
+  sanitizeOutput: boolean;
+  validateInput: boolean;
+  logSecurityEvents: boolean;
+}
+
+// WebSocket Message Types for Real-time Communication
+export interface WebSocketMessage {
+  type: 'message' | 'typing' | 'connection' | 'error' | 'heartbeat';
+  payload: any;
+  timestamp: Date;
+  conversationId?: string;
+}
+
+export interface TypingMessage {
+  type: 'typing';
+  payload: {
+    isTyping: boolean;
+    estimatedTime?: number;
+  };
+}
+
+export interface ConnectionMessage {
+  type: 'connection';
+  payload: {
+    status: 'connected' | 'disconnected' | 'reconnecting';
+    reason?: string;
+  };
+}
+
+// Chat Provider Context for Global State Management
+export interface ChatContextValue {
+  // Global chat state
+  isGlobalChatOpen: boolean;
+  setGlobalChatOpen: (open: boolean) => void;
+
+  // Conversation management
+  activeConversationId: string | null;
+  conversations: ChatbotConversation[];
+
+  // Settings
+  chatSettings: ChatSettings;
+  updateChatSettings: (settings: Partial<ChatSettings>) => void;
+
+  // Notifications
+  unreadCount: number;
+  markAsRead: (conversationId: string) => void;
+}
+
+export interface ChatSettings {
+  soundEnabled: boolean;
+  notificationsEnabled: boolean;
+  theme: 'light' | 'dark' | 'auto';
+  position: 'bottom-right' | 'bottom-left';
+  autoMinimize: boolean;
+  keepHistory: boolean;
+  language: string;
+}
+
+// Validation Result Types for Security
+export interface ValidationResult {
+  isValid: boolean;
+  error?: string;
+  warnings?: string[];
+}
+
+export interface FileValidationResult extends ValidationResult {
+  fileInfo?: {
+    name: string;
+    size: number;
+    type: string;
+    extension: string;
+  };
+}
+
+// Security Incident Types
+export interface SecurityIncident {
+  id: string;
+  type:
+    | 'rate_limit'
+    | 'xss_attempt'
+    | 'injection_attempt'
+    | 'invalid_file'
+    | 'authentication_failed';
+  userId?: string;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  description: string;
+  metadata?: Record<string, any>;
+  timestamp: Date;
+  resolved: boolean;
+}
+
+// Constants for Chat System
+export const CHAT_CONSTANTS = {
+  MAX_MESSAGE_LENGTH: 1000,
+  MAX_FILE_SIZE: 5 * 1024 * 1024, // 5MB
+  ALLOWED_FILE_TYPES: ['image/jpeg', 'image/png', 'application/pdf'],
+  DEFAULT_MODEL: 'gpt-4' as const,
+  RECONNECT_INTERVAL: 5000, // 5 seconds
+  TYPING_TIMEOUT: 3000, // 3 seconds
+  MESSAGE_BATCH_SIZE: 50,
+  MAX_CONVERSATION_HISTORY: 100,
+} as const;
+
+export const SUBSCRIPTION_LIMITS = {
+  FREE: { messageLimit: 5, fileUploadAllowed: false, maxFileSize: 0 },
+  STARTER: {
+    messageLimit: 20,
+    fileUploadAllowed: true,
+    maxFileSize: 1024 * 1024,
+  }, // 1MB
+  PROFESSIONAL: {
+    messageLimit: 100,
+    fileUploadAllowed: true,
+    maxFileSize: 5 * 1024 * 1024,
+  }, // 5MB
+  SCALE: {
+    messageLimit: 500,
+    fileUploadAllowed: true,
+    maxFileSize: 10 * 1024 * 1024,
+  }, // 10MB
+  ENTERPRISE: {
+    messageLimit: -1,
+    fileUploadAllowed: true,
+    maxFileSize: 25 * 1024 * 1024,
+  }, // 25MB
+} as const;
+
+// Type Guards for Runtime Type Checking
+export const isChatMessage = (obj: any): obj is ChatbotMessage => {
+  return (
+    obj &&
+    typeof obj.id === 'string' &&
+    typeof obj.content === 'string' &&
+    obj.created_at
+  );
+};
+
+export const isValidChatRole = (
+  role: string,
+): role is ChatbotMessage['role'] => {
+  return MessageRole.includes(role as any);
+};
+
+export const isValidSecuritySeverity = (
+  severity: string,
+): severity is SecurityIncident['severity'] => {
+  return ['low', 'medium', 'high', 'critical'].includes(severity);
+};
+
+// Error Classes for Better Error Handling
+export class ChatError extends Error {
+  constructor(
+    message: string,
+    public code: string,
+    public severity: SecurityIncident['severity'] = 'medium',
+  ) {
+    super(message);
+    this.name = 'ChatError';
+  }
+}
+
+export class SecurityError extends ChatError {
+  constructor(message: string, code: string) {
+    super(message, code, 'high');
+    this.name = 'SecurityError';
+  }
+}
+
+export class RateLimitError extends ChatError {
+  constructor(
+    message: string,
+    public resetTime: Date,
+  ) {
+    super(message, 'RATE_LIMIT_EXCEEDED', 'medium');
+    this.name = 'RateLimitError';
+  }
+}

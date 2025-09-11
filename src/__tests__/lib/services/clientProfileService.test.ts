@@ -1,0 +1,259 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { ClientProfileService } from '@/lib/services/clientProfileService'
+import { createClient } from '@/lib/supabase/server'
+
+// Mock Supabase
+vi.mock('@/lib/supabase/server')
+describe('ClientProfileService', () => {
+  let service: ClientProfileService
+  let mockSupabase: any
+  beforeEach(() => {
+    // Setup mock Supabase client
+    mockSupabase = {
+      auth: {
+        getUser: vi.fn().mockResolvedValue({
+          data: {
+            user: {
+              id: 'test-user-id',
+              email: 'test@example.com'
+            }
+          }
+        })
+      },
+      from: vi.fn().mockReturnThis(),
+      select: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      gte: vi.fn().mockReturnThis(),
+      lte: vi.fn().mockReturnThis(),
+      or: vi.fn().mockReturnThis(),
+      single: vi.fn().mockReturnThis(),
+      update: vi.fn().mockReturnThis(),
+      insert: vi.fn().mockReturnThis(),
+      range: vi.fn().mockReturnThis(),
+      order: vi.fn().mockReturnThis(),
+      limit: vi.fn().mockReturnThis(),
+      rpc: vi.fn()
+    }
+    vi.mocked(createClient).mockResolvedValue(mockSupabase)
+    
+    service = new ClientProfileService()
+  })
+  afterEach(() => {
+    vi.clearAllMocks()
+  describe('getCompleteProfile', () => {
+    it('should fetch comprehensive client profile with all relations', async () => {
+      const mockProfile = {
+        id: 'client-123',
+        first_name: 'John',
+        last_name: 'Doe',
+        partner_first_name: 'Jane',
+        partner_last_name: 'Smith',
+        email: 'john@example.com',
+        wedding_date: '2025-06-15',
+        ceremony_venue_name: 'St. Mary Cathedral',
+        reception_venue_name: 'Grand Ballroom',
+        guest_count_estimated: 150,
+        budget_total: 35000,
+        profile_completion_score: 85,
+        client_activities: [
+          {
+            id: 'activity-1',
+            activity_type: 'profile_updated',
+            activity_title: 'Profile Updated',
+            created_at: '2025-01-20T10:00:00Z'
+        ],
+        client_notes: [
+            id: 'note-1',
+            content: 'Prefers garden theme',
+            note_type: 'preference',
+            visibility: 'public'
+        client_documents: [
+            id: 'doc-1',
+            document_name: 'Contract',
+            document_type: 'contract',
+            file_size: 1024000
+        ]
+      }
+      mockSupabase.single.mockResolvedValue({ data: mockProfile, error: null })
+      
+      // Mock communications query
+      mockSupabase.from.mockImplementation((table) => {
+        if (table === 'client_communications') {
+          return {
+            ...mockSupabase,
+            limit: vi.fn().mockResolvedValue({
+              data: [
+                {
+                  id: 'comm-1',
+                  communication_type: 'email',
+                  subject: 'Wedding Planning Update'
+                }
+              ],
+              error: null
+            })
+        }
+        if (table === 'client_milestones') {
+            order: vi.fn().mockResolvedValue({
+                  id: 'milestone-1',
+                  milestone_name: 'Venue Booking',
+                  target_date: '2025-02-01'
+        return mockSupabase
+      })
+      const result = await service.getCompleteProfile('client-123')
+      expect(result).toBeTruthy()
+      expect(result?.id).toBe('client-123')
+      expect(result?.first_name).toBe('John')
+      expect(result?.client_activities).toHaveLength(1)
+      expect(result?.client_notes).toHaveLength(1)
+      expect(result?.client_documents).toHaveLength(1)
+      expect(result?.communications).toHaveLength(1)
+      expect(result?.milestones).toHaveLength(1)
+    })
+    it('should handle errors gracefully', async () => {
+      mockSupabase.single.mockResolvedValue({ 
+        data: null, 
+        error: new Error('Database error') 
+      expect(result).toBeNull()
+  describe('updateWeddingDetails', () => {
+    it('should update wedding details and track activity', async () => {
+      const weddingDetails = {
+        wedding_date: '2025-07-20',
+        ceremony_venue_name: 'Beach Resort',
+        ceremony_time: '16:00',
+        reception_venue_name: 'Beach Pavilion',
+        reception_time: '18:30',
+        wedding_theme: 'Tropical Paradise'
+      mockSupabase.single.mockResolvedValue({
+        data: { id: 'client-123', ...weddingDetails },
+        error: null
+      // Mock user profile for activity tracking
+        if (table === 'user_profiles') {
+            single: vi.fn().mockResolvedValue({
+              data: { 
+                first_name: 'Test',
+                organization_id: 'org-123'
+              }
+        if (table === 'client_activities') {
+            insert: vi.fn().mockResolvedValue({ error: null })
+      const result = await service.updateWeddingDetails('client-123', weddingDetails)
+      expect(result.success).toBe(true)
+      expect(result.data).toMatchObject(weddingDetails)
+    it('should validate wedding details', async () => {
+      const invalidDetails = {
+        ceremony_venue_name: 'A'.repeat(256), // Too long
+        ceremony_time: 'invalid-time'
+      const result = await service.updateWeddingDetails('client-123', invalidDetails as unknown)
+      expect(result.success).toBe(false)
+      expect(result.error).toBeDefined()
+  describe('updateGuestDetails', () => {
+    it('should update guest information', async () => {
+      const guestDetails = {
+        guest_count_estimated: 200,
+        guest_count_confirmed: 180,
+        guest_count_children: 20,
+        plus_ones_allowed: true,
+        guest_list: [
+            name: 'John Smith',
+            email: 'john@example.com',
+            dietary_requirements: 'Vegetarian',
+            rsvp_status: 'confirmed' as const
+        data: { id: 'client-123', ...guestDetails },
+      const result = await service.updateGuestDetails('client-123', guestDetails)
+      expect(result.data?.guest_count_estimated).toBe(200)
+  describe('updateBudgetDetails', () => {
+    it('should update budget information', async () => {
+      const budgetDetails = {
+        budget_total: 50000,
+        budget_spent: 15000,
+        budget_categories: {
+          venue: 15000,
+          catering: 10000,
+          photography: 5000,
+          flowers: 3000
+        },
+        payment_status: 'partial' as const
+        data: { id: 'client-123', ...budgetDetails },
+      const result = await service.updateBudgetDetails('client-123', budgetDetails)
+      expect(result.data?.budget_total).toBe(50000)
+  describe('updateProfileCompletionScore', () => {
+    it('should calculate profile completion score', async () => {
+      mockSupabase.rpc.mockResolvedValue({
+        data: 85,
+      const score = await service.updateProfileCompletionScore('client-123')
+      expect(score).toBe(85)
+      expect(mockSupabase.rpc).toHaveBeenCalledWith(
+        'calculate_profile_completion_score',
+        { client_id: 'client-123' }
+      )
+  describe('getActivityFeed', () => {
+    it('should fetch activity feed with pagination', async () => {
+      const mockActivities = [
+        {
+          id: 'activity-1',
+          activity_type: 'profile_updated',
+          created_at: '2025-01-20T10:00:00Z'
+          id: 'activity-2',
+          activity_type: 'document_uploaded',
+          created_at: '2025-01-20T09:00:00Z'
+      ]
+      mockSupabase.range.mockResolvedValue({
+        data: mockActivities,
+      const activities = await service.getActivityFeed('client-123', 10, 0)
+      expect(activities).toHaveLength(2)
+      expect(mockSupabase.order).toHaveBeenCalledWith('created_at', { ascending: false })
+      expect(mockSupabase.range).toHaveBeenCalledWith(0, 9)
+  describe('searchClients', () => {
+    it('should search clients with filters', async () => {
+      const filters = {
+        query: 'Smith',
+        status: 'booked',
+        weddingDateFrom: '2025-01-01',
+        weddingDateTo: '2025-12-31',
+        organizationId: 'org-123'
+      const mockClients = [
+          id: 'client-1',
+          first_name: 'Jane',
+          last_name: 'Smith',
+          wedding_date: '2025-06-15'
+        data: mockClients,
+      const results = await service.searchClients(filters, 20, 0)
+      expect(results).toHaveLength(1)
+      expect(mockSupabase.eq).toHaveBeenCalledWith('organization_id', 'org-123')
+      expect(mockSupabase.eq).toHaveBeenCalledWith('status', 'booked')
+      expect(mockSupabase.gte).toHaveBeenCalledWith('wedding_date', '2025-01-01')
+      expect(mockSupabase.lte).toHaveBeenCalledWith('wedding_date', '2025-12-31')
+  describe('getUpcomingMilestones', () => {
+    it('should fetch upcoming milestones within specified days', async () => {
+      const mockMilestones = [
+          id: 'milestone-1',
+          milestone_name: 'Final Guest Count',
+          target_date: '2025-02-01',
+          is_completed: false
+          id: 'milestone-2',
+          milestone_name: 'Catering Tasting',
+          target_date: '2025-02-15',
+      mockSupabase.order.mockResolvedValue({
+        data: mockMilestones,
+      const milestones = await service.getUpcomingMilestones('client-123', 30)
+      expect(milestones).toHaveLength(2)
+      expect(mockSupabase.eq).toHaveBeenCalledWith('is_completed', false)
+      expect(mockSupabase.order).toHaveBeenCalledWith('target_date', { ascending: true })
+  describe('Performance', () => {
+    it('should execute queries efficiently', async () => {
+        data: { id: 'client-123' },
+      const startTime = performance.now()
+      await service.getCompleteProfile('client-123')
+      const endTime = performance.now()
+      // Should be fast even with mocked operations
+      expect(endTime - startTime).toBeLessThan(100)
+    it('should batch related queries when possible', async () => {
+        data: {
+          id: 'client-123',
+          client_activities: [],
+          client_notes: [],
+          client_documents: []
+      // Should use select with joins for efficiency
+      expect(mockSupabase.select).toHaveBeenCalledWith(
+        expect.stringContaining('client_activities')
+        expect.stringContaining('client_notes')
+})

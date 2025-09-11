@@ -1,0 +1,184 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createServerClient } from '@supabase/ssr';
+import { cookies } from 'next/headers';
+import { AutomatedBackupOrchestrator } from '@/lib/services/backup/AutomatedBackupOrchestrator';
+import { WeddingDateBackupPriority } from '@/lib/services/backup/WeddingDateBackupPriority';
+
+export const runtime = 'nodejs';
+
+export async function POST(request: NextRequest) {
+  try {
+    const cookieStore = await cookies();
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      {
+        cookies: {
+          getAll: () => cookieStore.getAll(),
+          setAll: (cookiesToSet) => {
+            cookiesToSet.forEach(({ name, value, options }) =>
+              cookieStore.set(name, value, options),
+            );
+          },
+        },
+      },
+    );
+
+    // Verify authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const { schedule, organizationId, backupType } = body;
+
+    // Validate required fields
+    if (!schedule || !organizationId) {
+      return NextResponse.json(
+        { error: 'Schedule and organization ID are required' },
+        { status: 400 },
+      );
+    }
+
+    // Initialize backup orchestrator
+    const orchestrator = new AutomatedBackupOrchestrator(supabase);
+    const priorityService = new WeddingDateBackupPriority(supabase);
+
+    // Determine backup priority based on upcoming weddings
+    const priority =
+      await priorityService.calculateOrganizationPriority(organizationId);
+
+    // Schedule the automated backup
+    const backupResult = await orchestrator.scheduleBackup({
+      organizationId,
+      schedule,
+      backupType: backupType || 'FULL',
+      priority,
+      userId: user.id,
+    });
+
+    return NextResponse.json({
+      success: true,
+      backupId: backupResult.backupId,
+      scheduledAt: backupResult.scheduledAt,
+      priority: priority,
+      message: 'Automated backup scheduled successfully',
+    });
+  } catch (error) {
+    console.error('Automated backup scheduling error:', error);
+    return NextResponse.json(
+      { error: 'Failed to schedule automated backup' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const cookieStore = await cookies();
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      {
+        cookies: {
+          getAll: () => cookieStore.getAll(),
+          setAll: (cookiesToSet) => {
+            cookiesToSet.forEach(({ name, value, options }) =>
+              cookieStore.set(name, value, options),
+            );
+          },
+        },
+      },
+    );
+
+    // Verify authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { searchParams } = new URL(request.url);
+    const organizationId = searchParams.get('organizationId');
+
+    if (!organizationId) {
+      return NextResponse.json(
+        { error: 'Organization ID is required' },
+        { status: 400 },
+      );
+    }
+
+    const orchestrator = new AutomatedBackupOrchestrator(supabase);
+    const schedules = await orchestrator.getScheduledBackups(organizationId);
+
+    return NextResponse.json({
+      success: true,
+      schedules,
+    });
+  } catch (error) {
+    console.error('Get scheduled backups error:', error);
+    return NextResponse.json(
+      { error: 'Failed to retrieve scheduled backups' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function DELETE(request: NextRequest) {
+  try {
+    const cookieStore = await cookies();
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      {
+        cookies: {
+          getAll: () => cookieStore.getAll(),
+          setAll: (cookiesToSet) => {
+            cookiesToSet.forEach(({ name, value, options }) =>
+              cookieStore.set(name, value, options),
+            );
+          },
+        },
+      },
+    );
+
+    // Verify authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { searchParams } = new URL(request.url);
+    const scheduleId = searchParams.get('scheduleId');
+
+    if (!scheduleId) {
+      return NextResponse.json(
+        { error: 'Schedule ID is required' },
+        { status: 400 },
+      );
+    }
+
+    const orchestrator = new AutomatedBackupOrchestrator(supabase);
+    await orchestrator.cancelScheduledBackup(scheduleId);
+
+    return NextResponse.json({
+      success: true,
+      message: 'Backup schedule cancelled successfully',
+    });
+  } catch (error) {
+    console.error('Cancel backup schedule error:', error);
+    return NextResponse.json(
+      { error: 'Failed to cancel backup schedule' },
+      { status: 500 },
+    );
+  }
+}

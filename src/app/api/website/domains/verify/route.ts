@@ -1,0 +1,243 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { dns } from 'dns';
+import { promisify } from 'util';
+
+const resolveTxt = promisify(dns.resolveTxt);
+const resolveCname = promisify(dns.resolveCname);
+
+export interface DomainVerificationResult {
+  verified: boolean;
+  records: {
+    type: string;
+    verified: boolean;
+    current_value?: string;
+    expected_value: string;
+    error?: string;
+  }[];
+  ssl_ready: boolean;
+}
+
+// POST /api/website/domains/verify - Verify domain ownership
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const { domain_id } = body;
+
+    if (!domain_id) {
+      return NextResponse.json(
+        { error: 'Domain ID is required' },
+        { status: 400 },
+      );
+    }
+
+    const supabase = await createClient();
+
+    // Get domain details
+    const { data: domain, error: domainError } = await supabase
+      .from('custom_domains')
+      .select('*')
+      .eq('id', domain_id)
+      .single();
+
+    if (domainError || !domain) {
+      return NextResponse.json({ error: 'Domain not found' }, { status: 404 });
+    }
+
+    // Perform verification
+    const verificationResult = await verifyDomainOwnership(
+      domain.domain,
+      domain.verification_token,
+    );
+
+    // Update domain status based on verification
+    const newStatus = verificationResult.verified ? 'active' : 'pending';
+    const sslStatus = verificationResult.ssl_ready ? 'active' : 'pending';
+
+    const { error: updateError } = await supabase
+      .from('custom_domains')
+      .update({
+        status: newStatus,
+        ssl_status: sslStatus,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', domain_id);
+
+    if (updateError) {
+      console.error('Error updating domain status:', updateError);
+    }
+
+    // If verified, initiate SSL certificate provisioning
+    if (verificationResult.verified) {
+      await initiateSSLProvisioning(domain.domain);
+    }
+
+    return NextResponse.json({
+      domain_id,
+      domain: domain.domain,
+      verification: verificationResult,
+    });
+  } catch (error) {
+    console.error('Error in POST /api/website/domains/verify:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+async function verifyDomainOwnership(
+  domain: string,
+  verificationToken: string,
+): Promise<DomainVerificationResult> {
+  const results: DomainVerificationResult = {
+    verified: false,
+    records: [],
+    ssl_ready: false,
+  };
+
+  try {
+    // Verify TXT record for domain ownership
+    const txtRecordName = `_wedsync-verification.${domain}`;
+    try {
+      const txtRecords = await resolveTxt(txtRecordName);
+      const flatRecords = txtRecords.flat();
+      const hasValidToken = flatRecords.includes(verificationToken);
+
+      results.records.push({
+        type: 'TXT',
+        verified: hasValidToken,
+        current_value: flatRecords.join(', '),
+        expected_value: verificationToken,
+      });
+    } catch (error) {
+      results.records.push({
+        type: 'TXT',
+        verified: false,
+        expected_value: verificationToken,
+        error: 'TXT record not found',
+      });
+    }
+
+    // Verify CNAME record for traffic routing
+    const subdomain = domain.split('.')[0];
+    try {
+      const cnameRecords = await resolveCname(subdomain);
+      const hasValidCname =
+        cnameRecords.includes('wedsync.app') ||
+        cnameRecords.includes('wedsync.app.');
+
+      results.records.push({
+        type: 'CNAME',
+        verified: hasValidCname,
+        current_value: cnameRecords.join(', '),
+        expected_value: 'wedsync.app',
+      });
+    } catch (error) {
+      results.records.push({
+        type: 'CNAME',
+        verified: false,
+        expected_value: 'wedsync.app',
+        error: 'CNAME record not found',
+      });
+    }
+
+    // Check if all required records are verified
+    const requiredRecords = results.records.filter(
+      (r) => r.type === 'TXT' || r.type === 'CNAME',
+    );
+    results.verified = requiredRecords.every((r) => r.verified);
+
+    // SSL is ready if CNAME is properly configured
+    const cnameRecord = results.records.find((r) => r.type === 'CNAME');
+    results.ssl_ready = cnameRecord?.verified || false;
+  } catch (error) {
+    console.error('Error verifying domain ownership:', error);
+  }
+
+  return results;
+}
+
+async function initiateSSLProvisioning(domain: string): Promise<void> {
+  try {
+    // In a real implementation, this would integrate with a service like:
+    // - Let's Encrypt via ACME protocol
+    // - Cloudflare SSL
+    // - AWS Certificate Manager
+    // - Or another SSL provider
+
+    console.log(`Initiating SSL provisioning for domain: ${domain}`);
+
+    // Mock SSL provisioning - replace with actual implementation
+    const sslProvisioningData = {
+      domain,
+      provider: 'lets-encrypt',
+      status: 'provisioning',
+      initiated_at: new Date().toISOString(),
+    };
+
+    // Store SSL provisioning status
+    const supabase = await createClient();
+    await supabase.from('ssl_certificates').upsert({
+      domain,
+      status: 'provisioning',
+      provider: 'lets-encrypt',
+      created_at: new Date().toISOString(),
+    });
+
+    // In production, trigger background job for SSL certificate generation
+    // This could be done via:
+    // - Queue system (Bull, Agenda, etc.)
+    // - Background function (Vercel Edge Functions, AWS Lambda)
+    // - External service webhook
+  } catch (error) {
+    console.error('Error initiating SSL provisioning:', error);
+  }
+}
+
+// GET /api/website/domains/verify - Check verification status
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const domainId = searchParams.get('domain_id');
+
+    if (!domainId) {
+      return NextResponse.json(
+        { error: 'Domain ID is required' },
+        { status: 400 },
+      );
+    }
+
+    const supabase = await createClient();
+
+    const { data: domain, error } = await supabase
+      .from('custom_domains')
+      .select('*')
+      .eq('id', domainId)
+      .single();
+
+    if (error || !domain) {
+      return NextResponse.json({ error: 'Domain not found' }, { status: 404 });
+    }
+
+    // Get SSL certificate status
+    const { data: sslCert } = await supabase
+      .from('ssl_certificates')
+      .select('*')
+      .eq('domain', domain.domain)
+      .single();
+
+    return NextResponse.json({
+      domain: {
+        ...domain,
+        ssl_certificate: sslCert,
+      },
+    });
+  } catch (error) {
+    console.error('Error in GET /api/website/domains/verify:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

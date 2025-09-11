@@ -1,0 +1,440 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { rateLimit, rateLimitConfigs } from '@/lib/rate-limit';
+import { z } from 'zod';
+
+const progressionAnalysisSchema = z.object({
+  dateFrom: z.string().datetime().optional(),
+  dateTo: z.string().datetime().optional(),
+  status: z.string().optional(),
+  stage: z.string().optional(),
+  includeClosed: z.boolean().default(false),
+  groupBy: z.enum(['day', 'week', 'month']).default('week'),
+});
+
+// Get lead progression analytics
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const { data: user } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!profile?.organization_id) {
+      return NextResponse.json(
+        { error: 'No organization found' },
+        { status: 400 },
+      );
+    }
+
+    const searchParams = Object.fromEntries(request.nextUrl.searchParams);
+    const validatedParams = progressionAnalysisSchema.parse(searchParams);
+
+    const dateFrom =
+      validatedParams.dateFrom ||
+      new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    const dateTo = validatedParams.dateTo || new Date().toISOString();
+
+    // Get status progression data
+    let statusQuery = supabase
+      .from('lead_status_history')
+      .select(
+        `
+        *,
+        client:clients!inner (
+          id,
+          first_name,
+          last_name,
+          status,
+          lead_score,
+          lead_grade,
+          created_at,
+          wedding_date
+        ),
+        changed_by_user:user_profiles!lead_status_history_changed_by_fkey (
+          first_name,
+          last_name
+        )
+      `,
+      )
+      .eq('organization_id', profile.organization_id)
+      .gte('status_changed_at', dateFrom)
+      .lte('status_changed_at', dateTo)
+      .order('status_changed_at', { ascending: true });
+
+    if (validatedParams.status) {
+      statusQuery = statusQuery.eq('new_status', validatedParams.status);
+    }
+
+    if (!validatedParams.includeClosed) {
+      statusQuery = statusQuery.not('new_status', 'in', '(won,lost,archived)');
+    }
+
+    const { data: statusHistory, error: historyError } = await statusQuery;
+
+    if (historyError) {
+      console.error('Error fetching status history:', historyError);
+      return NextResponse.json(
+        { error: 'Failed to fetch progression data' },
+        { status: 500 },
+      );
+    }
+
+    // Get current pipeline statistics
+    const { data: pipelineStats, error: pipelineError } = await supabase
+      .from('clients')
+      .select(
+        `
+        status,
+        lead_score,
+        lead_grade,
+        lifecycle_stage,
+        created_at,
+        days_in_pipeline,
+        probability_to_close,
+        estimated_value
+      `,
+      )
+      .eq('organization_id', profile.organization_id)
+      .not('status', 'in', validatedParams.includeClosed ? '()' : '(archived)');
+
+    if (pipelineError) {
+      console.error('Error fetching pipeline stats:', pipelineError);
+      return NextResponse.json(
+        { error: 'Failed to fetch pipeline statistics' },
+        { status: 500 },
+      );
+    }
+
+    // Get lifecycle stages for the organization
+    const { data: lifecycleStages, error: stagesError } = await supabase
+      .from('lead_lifecycle_stages')
+      .select('*')
+      .eq('organization_id', profile.organization_id)
+      .order('stage_order');
+
+    if (stagesError) {
+      console.error('Error fetching lifecycle stages:', stagesError);
+      return NextResponse.json(
+        { error: 'Failed to fetch lifecycle stages' },
+        { status: 500 },
+      );
+    }
+
+    // Calculate progression analytics
+    const analytics = {
+      overview: {
+        totalLeads: pipelineStats?.length || 0,
+        activeLeads:
+          pipelineStats?.filter(
+            (lead) => !['won', 'lost', 'archived'].includes(lead.status),
+          ).length || 0,
+        averageTimeInPipeline: 0,
+        totalEstimatedValue: 0,
+        averageProbabilityToClose: 0,
+      },
+      statusDistribution: {} as Record<string, number>,
+      gradeDistribution: {} as Record<string, number>,
+      stageDistribution: {} as Record<string, number>,
+      conversionFunnel: [] as Array<{
+        stage: string;
+        count: number;
+        conversionRate: number;
+      }>,
+      timeInStage: {} as Record<
+        string,
+        { average: number; median: number; max: number }
+      >,
+      progressionTrends: [] as Array<{ date: string; [key: string]: any }>,
+      velocityMetrics: {
+        averageTimeToClose: 0,
+        averageTimePerStage: {} as Record<string, number>,
+        bottlenecks: [] as Array<{
+          stage: string;
+          averageTime: number;
+          impactScore: number;
+        }>,
+      },
+    };
+
+    if (pipelineStats) {
+      // Overview calculations
+      const totalDays = pipelineStats.reduce(
+        (sum, lead) => sum + (lead.days_in_pipeline || 0),
+        0,
+      );
+      analytics.overview.averageTimeInPipeline =
+        pipelineStats.length > 0
+          ? Math.round(totalDays / pipelineStats.length)
+          : 0;
+
+      analytics.overview.totalEstimatedValue = pipelineStats.reduce(
+        (sum, lead) => sum + (lead.estimated_value || 0),
+        0,
+      );
+
+      const probabilitySum = pipelineStats.reduce(
+        (sum, lead) => sum + (lead.probability_to_close || 0),
+        0,
+      );
+      analytics.overview.averageProbabilityToClose =
+        pipelineStats.length > 0
+          ? Math.round(probabilitySum / pipelineStats.length)
+          : 0;
+
+      // Distribution calculations
+      pipelineStats.forEach((lead) => {
+        analytics.statusDistribution[lead.status] =
+          (analytics.statusDistribution[lead.status] || 0) + 1;
+        analytics.gradeDistribution[lead.lead_grade || 'F'] =
+          (analytics.gradeDistribution[lead.lead_grade || 'F'] || 0) + 1;
+        if (lead.lifecycle_stage) {
+          analytics.stageDistribution[lead.lifecycle_stage] =
+            (analytics.stageDistribution[lead.lifecycle_stage] || 0) + 1;
+        }
+      });
+    }
+
+    // Calculate time in stage analytics from status history
+    if (statusHistory) {
+      const stageTimeMap = new Map<string, number[]>();
+
+      statusHistory.forEach((entry) => {
+        if (entry.time_in_previous_status_hours && entry.previous_status) {
+          if (!stageTimeMap.has(entry.previous_status)) {
+            stageTimeMap.set(entry.previous_status, []);
+          }
+          stageTimeMap
+            .get(entry.previous_status)!
+            .push(entry.time_in_previous_status_hours);
+        }
+      });
+
+      stageTimeMap.forEach((times, stage) => {
+        times.sort((a, b) => a - b);
+        const average = Math.round(
+          times.reduce((sum, time) => sum + time, 0) / times.length,
+        );
+        const median =
+          times.length % 2 === 0
+            ? Math.round(
+                (times[times.length / 2 - 1] + times[times.length / 2]) / 2,
+              )
+            : times[Math.floor(times.length / 2)];
+        const max = Math.max(...times);
+
+        analytics.timeInStage[stage] = { average, median, max };
+        analytics.velocityMetrics.averageTimePerStage[stage] = average;
+      });
+
+      // Identify bottlenecks
+      Object.entries(analytics.timeInStage).forEach(([stage, times]) => {
+        if (times.average > 168) {
+          // More than a week
+          analytics.velocityMetrics.bottlenecks.push({
+            stage,
+            averageTime: times.average,
+            impactScore: Math.min(Math.round(times.average / 24), 10), // Days to impact score
+          });
+        }
+      });
+
+      analytics.velocityMetrics.bottlenecks.sort(
+        (a, b) => b.impactScore - a.impactScore,
+      );
+    }
+
+    // Calculate conversion funnel
+    if (lifecycleStages) {
+      let previousCount = analytics.overview.totalLeads;
+
+      lifecycleStages.forEach((stage) => {
+        const stageCount = analytics.stageDistribution[stage.stage_name] || 0;
+        const conversionRate =
+          previousCount > 0 ? (stageCount / previousCount) * 100 : 0;
+
+        analytics.conversionFunnel.push({
+          stage: stage.stage_name,
+          count: stageCount,
+          conversionRate: Math.round(conversionRate * 100) / 100,
+        });
+
+        previousCount = stageCount;
+      });
+    }
+
+    // Calculate progression trends by grouping status changes
+    if (statusHistory) {
+      const trendMap = new Map<string, any>();
+
+      statusHistory.forEach((entry) => {
+        let dateKey: string;
+        const date = new Date(entry.status_changed_at);
+
+        switch (validatedParams.groupBy) {
+          case 'day':
+            dateKey = date.toISOString().split('T')[0];
+            break;
+          case 'week':
+            const startOfWeek = new Date(date);
+            startOfWeek.setDate(date.getDate() - date.getDay());
+            dateKey = startOfWeek.toISOString().split('T')[0];
+            break;
+          case 'month':
+            dateKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+            break;
+        }
+
+        if (!trendMap.has(dateKey)) {
+          trendMap.set(dateKey, {
+            date: dateKey,
+            totalChanges: 0,
+            statusChanges: {} as Record<string, number>,
+          });
+        }
+
+        const trend = trendMap.get(dateKey)!;
+        trend.totalChanges++;
+        trend.statusChanges[entry.new_status] =
+          (trend.statusChanges[entry.new_status] || 0) + 1;
+      });
+
+      analytics.progressionTrends = Array.from(trendMap.values()).sort(
+        (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
+      );
+    }
+
+    return NextResponse.json({
+      analytics,
+      rawData: {
+        statusHistory: statusHistory?.slice(0, 100), // Limit response size
+        lifecycleStages,
+        dateRange: { from: dateFrom, to: dateTo },
+      },
+    });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Validation error', details: error.errors },
+        { status: 400 },
+      );
+    }
+    console.error('Error analyzing lead progression:', error);
+    return NextResponse.json(
+      { error: 'Failed to analyze lead progression' },
+      { status: 500 },
+    );
+  }
+}
+
+const automationRuleSchema = z.object({
+  ruleName: z.string().min(1),
+  triggerConditions: z.object({
+    timeInStage: z.number().optional(),
+    scoreThreshold: z.number().optional(),
+    activityCount: z.number().optional(),
+    inactivityDays: z.number().optional(),
+    customFields: z.record(z.any()).optional(),
+  }),
+  actions: z.array(
+    z.object({
+      type: z.enum([
+        'status_change',
+        'assign_user',
+        'send_notification',
+        'create_task',
+        'update_priority',
+      ]),
+      parameters: z.record(z.any()),
+    }),
+  ),
+  isActive: z.boolean().default(true),
+  priority: z.number().default(0),
+});
+
+// Create or update progression automation rules
+export async function POST(request: NextRequest) {
+  try {
+    // Apply rate limiting
+    const rateLimitResult = await rateLimit(request, rateLimitConfigs.api);
+    if (rateLimitResult) return rateLimitResult;
+
+    const supabase = await createClient();
+    const { data: user } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!profile?.organization_id) {
+      return NextResponse.json(
+        { error: 'No organization found' },
+        { status: 400 },
+      );
+    }
+
+    const body = await request.json();
+    const validatedData = automationRuleSchema.parse(body);
+
+    // For now, we'll store automation rules as scoring rules with a special type
+    // In a full implementation, you'd want a dedicated automation_rules table
+    const { error: insertError } = await supabase
+      .from('lead_scoring_rules')
+      .insert({
+        organization_id: profile.organization_id,
+        rule_name: validatedData.ruleName,
+        rule_type: 'automation',
+        trigger_event: 'progression_check',
+        trigger_conditions: validatedData.triggerConditions,
+        score_change: 0, // No score change for automation rules
+        is_active: validatedData.isActive,
+        priority: validatedData.priority,
+        description: `Automation rule: ${validatedData.actions.map((a) => a.type).join(', ')}`,
+        created_by: user.id,
+      });
+
+    if (insertError) {
+      console.error('Error creating automation rule:', insertError);
+      return NextResponse.json(
+        { error: 'Failed to create automation rule' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: 'Progression automation rule created successfully',
+      rule: {
+        name: validatedData.ruleName,
+        active: validatedData.isActive,
+        actions: validatedData.actions.length,
+      },
+    });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Validation error', details: error.errors },
+        { status: 400 },
+      );
+    }
+    console.error('Error creating progression automation:', error);
+    return NextResponse.json(
+      { error: 'Failed to create automation rule' },
+      { status: 500 },
+    );
+  }
+}

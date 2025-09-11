@@ -1,0 +1,474 @@
+/**
+ * Outlook Sync Status Component
+ * Real-time sync progress visualization for wedding professionals
+ *
+ * Features:
+ * - Real-time sync progress with live updates
+ * - Event count statistics (synced, pending, conflicts)
+ * - Sync history timeline with detailed logs
+ * - Manual sync trigger controls
+ * - Wedding-specific event type breakdowns
+ */
+
+'use client';
+
+import React, { useState, useCallback } from 'react';
+import { Button } from '@/components/untitled-ui/Button';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/untitled-ui/Card';
+import { Badge } from '@/components/untitled-ui/Badge';
+import { Progress } from '@/components/untitled-ui/Progress';
+import {
+  Calendar,
+  RefreshCw,
+  CheckCircle2,
+  XCircle,
+  Clock,
+  Pause,
+  Play,
+  AlertTriangle,
+  TrendingUp,
+  Users,
+  MapPin,
+  Camera,
+  Heart,
+} from 'lucide-react';
+import {
+  OutlookSyncStatusProps,
+  OutlookSyncStatus as SyncStatusType,
+  SyncProgress,
+} from '@/types/outlook';
+import { useOutlookSync } from '@/hooks/useOutlookSync';
+
+export function OutlookSyncStatus({
+  syncStatus,
+  onPause,
+  onResume,
+  onCancel,
+  showDetails = true,
+  className = '',
+}: OutlookSyncStatusProps) {
+  const { syncEvents, pauseSync, resumeSync } = useOutlookSync();
+  const [isManualSyncing, setIsManualSyncing] = useState(false);
+
+  const handleManualSync = useCallback(async () => {
+    setIsManualSyncing(true);
+    try {
+      // Mock event data - in real implementation, fetch from WedSync
+      const mockEvents = [
+        {
+          id: '1',
+          title: 'Client Consultation - Sarah & John',
+          type: 'consultation' as const,
+        },
+        {
+          id: '2',
+          title: 'Venue Visit - Ashridge House',
+          type: 'venue_visit' as const,
+        },
+        {
+          id: '3',
+          title: 'Wedding Day - Sarah & John',
+          type: 'wedding_ceremony' as const,
+        },
+      ];
+      await syncEvents(mockEvents);
+    } finally {
+      setIsManualSyncing(false);
+    }
+  }, [syncEvents]);
+
+  const getStatusColor = (status: SyncStatusType['status']) => {
+    switch (status) {
+      case 'completed':
+        return 'text-success-600 bg-success-50 border-success-200';
+      case 'failed':
+        return 'text-error-600 bg-error-50 border-error-200';
+      case 'syncing':
+        return 'text-primary-600 bg-primary-50 border-primary-200';
+      case 'paused':
+        return 'text-warning-600 bg-warning-50 border-warning-200';
+      default:
+        return 'text-gray-600 bg-gray-50 border-gray-200';
+    }
+  };
+
+  const getStatusIcon = (status: SyncStatusType['status']) => {
+    switch (status) {
+      case 'completed':
+        return <CheckCircle2 className="w-4 h-4" />;
+      case 'failed':
+        return <XCircle className="w-4 h-4" />;
+      case 'syncing':
+        return <RefreshCw className="w-4 h-4 animate-spin" />;
+      case 'paused':
+        return <Pause className="w-4 h-4" />;
+      default:
+        return <Clock className="w-4 h-4" />;
+    }
+  };
+
+  const getWeddingEventIcon = (type: string) => {
+    switch (type) {
+      case 'consultation':
+      case 'client_meeting':
+        return <Users className="w-4 h-4 text-primary-600" />;
+      case 'venue_visit':
+        return <MapPin className="w-4 h-4 text-blue-600" />;
+      case 'wedding_ceremony':
+      case 'wedding_reception':
+        return <Heart className="w-4 h-4 text-rose-600" />;
+      case 'engagement_shoot':
+        return <Camera className="w-4 h-4 text-purple-600" />;
+      default:
+        return <Calendar className="w-4 h-4 text-gray-600" />;
+    }
+  };
+
+  const progressPercentage =
+    syncStatus.progress.total > 0
+      ? Math.round(
+          (syncStatus.progress.processed / syncStatus.progress.total) * 100,
+        )
+      : 0;
+
+  const estimatedTimeRemaining = syncStatus.progress.estimatedTimeRemaining
+    ? `${Math.round(syncStatus.progress.estimatedTimeRemaining / 1000)}s`
+    : null;
+
+  return (
+    <div className={`space-y-6 ${className}`}>
+      {/* Status Overview */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-3">
+              <CardTitle className="text-lg">Sync Status</CardTitle>
+              <Badge className={`${getStatusColor(syncStatus.status)} border`}>
+                {getStatusIcon(syncStatus.status)}
+                <span className="ml-1 capitalize">{syncStatus.status}</span>
+              </Badge>
+            </div>
+            <div className="flex space-x-2">
+              {syncStatus.status === 'syncing' && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    pauseSync();
+                    onPause?.();
+                  }}
+                >
+                  <Pause className="w-4 h-4 mr-1" />
+                  Pause
+                </Button>
+              )}
+              {syncStatus.status === 'paused' && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    resumeSync();
+                    onResume?.();
+                  }}
+                >
+                  <Play className="w-4 h-4 mr-1" />
+                  Resume
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleManualSync}
+                disabled={isManualSyncing || syncStatus.isRunning}
+              >
+                <RefreshCw
+                  className={`w-4 h-4 mr-1 ${isManualSyncing ? 'animate-spin' : ''}`}
+                />
+                Sync Now
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {/* Progress Bar */}
+          {syncStatus.isRunning && (
+            <div className="space-y-2">
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-600">
+                  {syncStatus.progress.currentAction}
+                </span>
+                <span className="text-gray-900 font-medium">
+                  {progressPercentage}%
+                </span>
+              </div>
+              <Progress value={progressPercentage} className="h-2" />
+              <div className="flex justify-between text-xs text-gray-500">
+                <span>
+                  {syncStatus.progress.processed} of {syncStatus.progress.total}{' '}
+                  processed
+                </span>
+                {estimatedTimeRemaining && (
+                  <span>{estimatedTimeRemaining} remaining</span>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Statistics Grid */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="bg-success-50 border border-success-200 rounded-lg p-3">
+              <div className="flex items-center space-x-2">
+                <CheckCircle2 className="w-4 h-4 text-success-600" />
+                <span className="text-xs font-medium text-success-700">
+                  Synced
+                </span>
+              </div>
+              <p className="text-xl font-bold text-success-900 mt-1">
+                {syncStatus.progress.created + syncStatus.progress.updated}
+              </p>
+            </div>
+
+            <div className="bg-primary-50 border border-primary-200 rounded-lg p-3">
+              <div className="flex items-center space-x-2">
+                <Clock className="w-4 h-4 text-primary-600" />
+                <span className="text-xs font-medium text-primary-700">
+                  Pending
+                </span>
+              </div>
+              <p className="text-xl font-bold text-primary-900 mt-1">
+                {syncStatus.progress.total - syncStatus.progress.processed}
+              </p>
+            </div>
+
+            <div className="bg-warning-50 border border-warning-200 rounded-lg p-3">
+              <div className="flex items-center space-x-2">
+                <AlertTriangle className="w-4 h-4 text-warning-600" />
+                <span className="text-xs font-medium text-warning-700">
+                  Conflicts
+                </span>
+              </div>
+              <p className="text-xl font-bold text-warning-900 mt-1">
+                {syncStatus.conflicts.length}
+              </p>
+            </div>
+
+            <div className="bg-error-50 border border-error-200 rounded-lg p-3">
+              <div className="flex items-center space-x-2">
+                <XCircle className="w-4 h-4 text-error-600" />
+                <span className="text-xs font-medium text-error-700">
+                  Errors
+                </span>
+              </div>
+              <p className="text-xl font-bold text-error-900 mt-1">
+                {syncStatus.progress.errors}
+              </p>
+            </div>
+          </div>
+
+          {/* Last Sync Info */}
+          {syncStatus.lastSyncTime && (
+            <div className="flex items-center justify-between text-sm text-gray-600 pt-2 border-t">
+              <span>
+                Last sync: {new Date(syncStatus.lastSyncTime).toLocaleString()}
+              </span>
+              <Badge variant="outline" className="text-xs">
+                <TrendingUp className="w-3 h-3 mr-1" />
+                Auto-sync enabled
+              </Badge>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Detailed View */}
+      {showDetails && (
+        <>
+          {/* Event Breakdown */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">Event Types</CardTitle>
+              <CardDescription>
+                Breakdown by wedding event categories
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-3">
+                {/* Mock event type data */}
+                {[
+                  {
+                    type: 'consultation',
+                    label: 'Client Consultations',
+                    count: 12,
+                    synced: 10,
+                  },
+                  {
+                    type: 'venue_visit',
+                    label: 'Venue Visits',
+                    count: 8,
+                    synced: 8,
+                  },
+                  {
+                    type: 'wedding_ceremony',
+                    label: 'Wedding Ceremonies',
+                    count: 5,
+                    synced: 4,
+                  },
+                  {
+                    type: 'engagement_shoot',
+                    label: 'Engagement Shoots',
+                    count: 15,
+                    synced: 13,
+                  },
+                  {
+                    type: 'vendor_meeting',
+                    label: 'Vendor Meetings',
+                    count: 20,
+                    synced: 18,
+                  },
+                ].map((eventType) => (
+                  <div
+                    key={eventType.type}
+                    className="flex items-center justify-between py-2"
+                  >
+                    <div className="flex items-center space-x-3">
+                      {getWeddingEventIcon(eventType.type)}
+                      <span className="font-medium text-gray-900">
+                        {eventType.label}
+                      </span>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <span className="text-sm text-gray-600">
+                        {eventType.synced}/{eventType.count}
+                      </span>
+                      <div className="w-16 bg-gray-200 rounded-full h-2">
+                        <div
+                          className="bg-primary-600 h-2 rounded-full"
+                          style={{
+                            width: `${(eventType.synced / eventType.count) * 100}%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Sync History */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">Recent Activity</CardTitle>
+              <CardDescription>
+                Latest sync operations and results
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-3">
+                {/* Mock sync history */}
+                {[
+                  {
+                    id: '1',
+                    timestamp: new Date(Date.now() - 5 * 60 * 1000),
+                    action: 'Manual sync completed',
+                    result: 'success',
+                    details: '15 events synced, 2 updated',
+                  },
+                  {
+                    id: '2',
+                    timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000),
+                    action: 'Auto sync completed',
+                    result: 'success',
+                    details: '3 new consultations added',
+                  },
+                  {
+                    id: '3',
+                    timestamp: new Date(Date.now() - 6 * 60 * 60 * 1000),
+                    action: 'Sync failed',
+                    result: 'error',
+                    details: 'Microsoft API rate limit reached',
+                  },
+                  {
+                    id: '4',
+                    timestamp: new Date(Date.now() - 24 * 60 * 60 * 1000),
+                    action: 'Conflict resolved',
+                    result: 'warning',
+                    details: 'Wedding time updated in both calendars',
+                  },
+                ].map((activity) => (
+                  <div
+                    key={activity.id}
+                    className="flex items-start space-x-3 pb-3 border-b border-gray-100 last:border-0"
+                  >
+                    <div
+                      className={`mt-1 p-1 rounded-full ${
+                        activity.result === 'success'
+                          ? 'bg-success-100'
+                          : activity.result === 'error'
+                            ? 'bg-error-100'
+                            : 'bg-warning-100'
+                      }`}
+                    >
+                      {activity.result === 'success' ? (
+                        <CheckCircle2 className="w-3 h-3 text-success-600" />
+                      ) : activity.result === 'error' ? (
+                        <XCircle className="w-3 h-3 text-error-600" />
+                      ) : (
+                        <AlertTriangle className="w-3 h-3 text-warning-600" />
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-gray-900">
+                        {activity.action}
+                      </p>
+                      <p className="text-sm text-gray-600">
+                        {activity.details}
+                      </p>
+                      <p className="text-xs text-gray-500 mt-1">
+                        {activity.timestamp.toLocaleString()}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        </>
+      )}
+
+      {/* Conflicts Alert */}
+      {syncStatus.conflicts.length > 0 && (
+        <Card className="border-warning-200 bg-warning-50">
+          <CardContent className="pt-6">
+            <div className="flex items-start space-x-3">
+              <AlertTriangle className="w-5 h-5 text-warning-600 mt-0.5" />
+              <div className="flex-1">
+                <h4 className="font-medium text-warning-900">
+                  {syncStatus.conflicts.length} Conflict
+                  {syncStatus.conflicts.length > 1 ? 's' : ''} Require Attention
+                </h4>
+                <p className="text-sm text-warning-700 mt-1">
+                  Some events have scheduling conflicts that need manual
+                  resolution.
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-3 border-warning-300 text-warning-700 hover:bg-warning-100"
+                >
+                  Resolve Conflicts
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,1 @@
+# TEAM E - WS-212: **ConfigTests**, **PermissionTests** - EXECUTE!

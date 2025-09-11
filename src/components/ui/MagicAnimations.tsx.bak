@@ -1,0 +1,345 @@
+'use client';
+
+import { motion, AnimatePresence } from 'framer-motion';
+import { useState, useEffect, ReactNode } from 'react';
+import { CheckCircle, Sparkles, Heart, Star, Zap } from 'lucide-react';
+import { cn } from '@/lib/utils';
+
+// Floating particles animation
+export function FloatingParticles({ count = 20 }: { count?: number }) {
+  return (
+    <div className="fixed inset-0 pointer-events-none z-0">
+      {Array.from({ length: count }).map((_, i) => (
+        <motion.div
+          key={i}
+          className="absolute w-2 h-2 bg-purple-300 rounded-full opacity-30"
+          initial={{
+            x: Math.random() * window.innerWidth,
+            y: window.innerHeight + 20,
+          }}
+          animate={{
+            y: -20,
+            x: Math.random() * window.innerWidth,
+          }}
+          transition={{
+            duration: Math.random() * 10 + 10,
+            repeat: Infinity,
+            ease: "linear",
+            delay: Math.random() * 5,
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+// Success celebration component
+export function SuccessCelebration({ 
+  show, 
+  onComplete,
+  type = 'checkmark',
+  message = 'Success!'
+}: {
+  show: boolean;
+  onComplete?: () => void;
+  type?: 'checkmark' | 'hearts' | 'stars' | 'confetti';
+  message?: string;
+}) {
+  const iconMap = {
+    checkmark: CheckCircle,
+    hearts: Heart,
+    stars: Star,
+    confetti: Sparkles
+  };
+
+  const Icon = iconMap[type];
+
+  return (
+    <AnimatePresence>
+      {show && (
+        <motion.div
+          className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          onAnimationComplete={() => onComplete && setTimeout(onComplete, 1000)}
+        >
+          {/* Background overlay */}
+          <motion.div
+            className="absolute inset-0 bg-black bg-opacity-20"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          />
+          
+          {/* Main success icon */}
+          <motion.div
+            className="relative bg-white rounded-full p-8 shadow-2xl"
+            initial={{ scale: 0, rotate: -180 }}
+            animate={{ scale: 1, rotate: 0 }}
+            exit={{ scale: 0, rotate: 180 }}
+            transition={{ type: "spring", damping: 15, stiffness: 300 }}
+          >
+            <Icon className="h-16 w-16 text-green-500" />
+          </motion.div>
+
+          {/* Floating elements */}
+          {type === 'confetti' && (
+            <>
+              {Array.from({ length: 12 }).map((_, i) => (
+                <motion.div
+                  key={i}
+                  className="absolute w-4 h-4 bg-gradient-to-r from-purple-400 to-pink-400 rounded"
+                  initial={{
+                    x: 0,
+                    y: 0,
+                    scale: 0,
+                    rotate: 0,
+                  }}
+                  animate={{
+                    x: (Math.random() - 0.5) * 400,
+                    y: (Math.random() - 0.5) * 400,
+                    scale: [0, 1, 0],
+                    rotate: Math.random() * 360,
+                  }}
+                  transition={{
+                    duration: 2,
+                    delay: i * 0.1,
+                    ease: "easeOut"
+                  }}
+                />
+              ))}
+            </>
+          )}
+
+          {/* Success message */}
+          <motion.div
+            className="absolute top-full mt-8 text-center"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.5 }}
+          >
+            <h3 className="text-2xl font-bold text-white mb-2">{message}</h3>
+            <p className="text-white opacity-80">Your action was completed successfully</p>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+// Shimmer loading effect
+export function ShimmerLoader({ className }: { className?: string }) {
+  return (
+    <div className={cn("animate-pulse", className)}>
+      <div className="relative overflow-hidden bg-gray-200 rounded">
+        <motion.div
+          className="absolute inset-0 bg-gradient-to-r from-transparent via-white to-transparent"
+          initial={{ x: "-100%" }}
+          animate={{ x: "100%" }}
+          transition={{
+            duration: 1.5,
+            repeat: Infinity,
+            ease: "linear"
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
+// Micro-interaction button
+export function MagicButton({
+  children,
+  onClick,
+  variant = 'primary',
+  disabled = false,
+  loading = false,
+  className = '',
+  ...props
+}: {
+  children: ReactNode;
+  onClick?: () => void;
+  variant?: 'primary' | 'secondary' | 'success' | 'danger';
+  disabled?: boolean;
+  loading?: boolean;
+  className?: string;
+  [key: string]: any;
+}) {
+  const [isPressed, setIsPressed] = useState(false);
+
+  const variants = {
+    primary: 'bg-purple-600 hover:bg-purple-700 text-white',
+    secondary: 'bg-gray-600 hover:bg-gray-700 text-white',
+    success: 'bg-green-600 hover:bg-green-700 text-white',
+    danger: 'bg-red-600 hover:bg-red-700 text-white'
+  };
+
+  return (
+    <motion.button
+      className={cn(
+        'relative px-6 py-3 rounded-lg font-medium transition-all duration-200 overflow-hidden',
+        variants[variant],
+        disabled && 'opacity-50 cursor-not-allowed',
+        className
+      )}
+      whileHover={{ scale: disabled ? 1 : 1.02 }}
+      whileTap={{ scale: disabled ? 1 : 0.98 }}
+      onMouseDown={() => setIsPressed(true)}
+      onMouseUp={() => setIsPressed(false)}
+      onMouseLeave={() => setIsPressed(false)}
+      onClick={onClick}
+      disabled={disabled || loading}
+      {...props}
+    >
+      {/* Ripple effect */}
+      <AnimatePresence>
+        {isPressed && (
+          <motion.div
+            className="absolute inset-0 bg-white opacity-20 rounded-full"
+            initial={{ scale: 0 }}
+            animate={{ scale: 4 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.6 }}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Loading spinner */}
+      {loading && (
+        <motion.div
+          className="absolute inset-0 flex items-center justify-center"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+        >
+          <Zap className="h-5 w-5 animate-spin" />
+        </motion.div>
+      )}
+
+      {/* Button content */}
+      <motion.span
+        className={cn('flex items-center gap-2', loading && 'opacity-0')}
+        layout
+      >
+        {children}
+      </motion.span>
+    </motion.button>
+  );
+}
+
+// Smooth page transitions
+export function PageTransition({ children }: { children: ReactNode }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -20 }}
+      transition={{ duration: 0.3, ease: "easeInOut" }}
+    >
+      {children}
+    </motion.div>
+  );
+}
+
+// Stagger animation for lists
+export function StaggeredList({ 
+  children, 
+  className,
+  staggerDelay = 0.1 
+}: { 
+  children: ReactNode[]; 
+  className?: string;
+  staggerDelay?: number;
+}) {
+  return (
+    <motion.div
+      className={className}
+      initial="hidden"
+      animate="visible"
+      variants={{
+        hidden: { opacity: 0 },
+        visible: {
+          opacity: 1,
+          transition: {
+            staggerChildren: staggerDelay
+          }
+        }
+      }}
+    >
+      {Array.isArray(children) ? children.map((child, index) => (
+        <motion.div
+          key={index}
+          variants={{
+            hidden: { opacity: 0, y: 20 },
+            visible: { opacity: 1, y: 0 }
+          }}
+        >
+          {child}
+        </motion.div>
+      )) : children}
+    </motion.div>
+  );
+}
+
+// Floating action button with magnetic effect
+export function FloatingActionButton({
+  children,
+  onClick,
+  className = ''
+}: {
+  children: ReactNode;
+  onClick?: () => void;
+  className?: string;
+}) {
+  return (
+    <motion.button
+      className={cn(
+        'fixed bottom-6 right-6 bg-purple-600 text-white p-4 rounded-full shadow-lg z-40',
+        'hover:shadow-xl transition-shadow duration-200',
+        className
+      )}
+      whileHover={{ scale: 1.1 }}
+      whileTap={{ scale: 0.9 }}
+      drag
+      dragConstraints={{ left: 0, right: 0, top: 0, bottom: 0 }}
+      dragElastic={0.1}
+      onClick={onClick}
+    >
+      {children}
+    </motion.button>
+  );
+}
+
+// Progress indicator with smooth animation
+export function AnimatedProgress({ 
+  value, 
+  max = 100,
+  color = 'purple',
+  showLabel = true 
+}: {
+  value: number;
+  max?: number;
+  color?: string;
+  showLabel?: boolean;
+}) {
+  const percentage = (value / max) * 100;
+
+  return (
+    <div className="w-full">
+      {showLabel && (
+        <div className="flex justify-between mb-2">
+          <span className="text-sm font-medium text-gray-700">Progress</span>
+          <span className="text-sm text-gray-500">{Math.round(percentage)}%</span>
+        </div>
+      )}
+      <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+        <motion.div
+          className={`h-full bg-${color}-600 rounded-full`}
+          initial={{ width: 0 }}
+          animate={{ width: `${percentage}%` }}
+          transition={{ duration: 1, ease: "easeOut" }}
+        />
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,461 @@
+// WS-229 Admin Quick Actions - Notification Preferences API
+// Manage admin notification preferences and settings
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { adminNotificationService } from '@/lib/services/admin-notification-service';
+import { Logger } from '@/lib/logging/Logger';
+import { z } from 'zod';
+
+const logger = new Logger('AdminNotificationPreferencesAPI');
+
+// Notification channel schema
+const notificationChannelSchema = z.object({
+  email: z.boolean().optional(),
+  sms: z.boolean().optional(),
+  push: z.boolean().optional(),
+  inApp: z.boolean().optional(),
+});
+
+// Preference update schema
+const preferencesUpdateSchema = z.object({
+  channels: notificationChannelSchema.optional(),
+  emergencyChannels: notificationChannelSchema.optional(),
+  emailAddress: z.string().email().optional(),
+  phoneNumber: z.string().min(10).max(20).optional(),
+  timezone: z.string().optional(),
+  quietHours: z
+    .object({
+      enabled: z.boolean(),
+      startTime: z.string().regex(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/), // HH:MM format
+      endTime: z.string().regex(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/),
+      timezone: z.string().optional(),
+    })
+    .optional(),
+  priorityThreshold: z.enum(['low', 'normal', 'high', 'critical']).optional(),
+  notificationTypes: z
+    .object({
+      action_completed: z.boolean().optional(),
+      system_alert: z.boolean().optional(),
+      wedding_emergency: z.boolean().optional(),
+      integration_failure: z.boolean().optional(),
+    })
+    .optional(),
+  autoMarkAsRead: z.boolean().optional(),
+  digestMode: z
+    .object({
+      enabled: z.boolean(),
+      frequency: z.enum(['hourly', 'daily', 'weekly']),
+      time: z
+        .string()
+        .regex(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/)
+        .optional(), // For daily/weekly
+    })
+    .optional(),
+});
+
+export async function GET(request: NextRequest) {
+  try {
+    // Get authenticated user
+    const supabase = createClient();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized', code: 'AUTH_REQUIRED' },
+        { status: 401 },
+      );
+    }
+
+    // Check if user has admin privileges
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('role')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!profile?.role || !['admin', 'super_admin'].includes(profile.role)) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions', code: 'INSUFFICIENT_PERMISSIONS' },
+        { status: 403 },
+      );
+    }
+
+    // Get target admin ID (defaults to current user)
+    const url = new URL(request.url);
+    const targetAdminId = url.searchParams.get('adminUserId') || user.id;
+
+    // Only super admins can view other admin preferences
+    if (targetAdminId !== user.id && profile.role !== 'super_admin') {
+      return NextResponse.json(
+        {
+          error: 'Cannot access other admin preferences',
+          code: 'ACCESS_DENIED',
+        },
+        { status: 403 },
+      );
+    }
+
+    // Get preferences
+    const preferences =
+      await adminNotificationService.getNotificationPreferences(targetAdminId);
+
+    logger.info('Notification preferences retrieved', {
+      requestedBy: user.id,
+      targetAdmin: targetAdminId,
+    });
+
+    return NextResponse.json({
+      success: true,
+      preferences,
+    });
+  } catch (error) {
+    logger.error('Failed to get notification preferences', error);
+
+    return NextResponse.json(
+      {
+        error: 'Failed to get preferences',
+        code: 'GET_FAILED',
+        details: error instanceof Error ? error.message : 'Unknown error',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+export async function PUT(request: NextRequest) {
+  try {
+    // Parse and validate request body
+    const body = await request.json();
+    const validatedData = preferencesUpdateSchema.parse(body);
+
+    // Get authenticated user
+    const supabase = createClient();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized', code: 'AUTH_REQUIRED' },
+        { status: 401 },
+      );
+    }
+
+    // Check if user has admin privileges
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('role')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!profile?.role || !['admin', 'super_admin'].includes(profile.role)) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions', code: 'INSUFFICIENT_PERMISSIONS' },
+        { status: 403 },
+      );
+    }
+
+    // Get target admin ID from URL or body (defaults to current user)
+    const url = new URL(request.url);
+    const targetAdminId =
+      url.searchParams.get('adminUserId') || body.adminUserId || user.id;
+
+    // Only super admins can update other admin preferences
+    if (targetAdminId !== user.id && profile.role !== 'super_admin') {
+      return NextResponse.json(
+        {
+          error: 'Cannot update other admin preferences',
+          code: 'ACCESS_DENIED',
+        },
+        { status: 403 },
+      );
+    }
+
+    // Validate phone number format if provided
+    if (validatedData.phoneNumber) {
+      const phoneRegex = /^[\+]?[1-9][\d]{0,15}$/;
+      if (!phoneRegex.test(validatedData.phoneNumber.replace(/\D/g, ''))) {
+        return NextResponse.json(
+          { error: 'Invalid phone number format', code: 'INVALID_PHONE' },
+          { status: 400 },
+        );
+      }
+    }
+
+    // Validate email format if provided
+    if (validatedData.emailAddress) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(validatedData.emailAddress)) {
+        return NextResponse.json(
+          { error: 'Invalid email format', code: 'INVALID_EMAIL' },
+          { status: 400 },
+        );
+      }
+    }
+
+    // Update preferences
+    await adminNotificationService.updateNotificationPreferences(
+      targetAdminId,
+      validatedData,
+    );
+
+    // Get updated preferences to return
+    const updatedPreferences =
+      await adminNotificationService.getNotificationPreferences(targetAdminId);
+
+    logger.info('Notification preferences updated', {
+      updatedBy: user.id,
+      targetAdmin: targetAdminId,
+      changes: Object.keys(validatedData),
+    });
+
+    return NextResponse.json({
+      success: true,
+      preferences: updatedPreferences,
+      message: 'Notification preferences updated successfully',
+    });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Invalid request data',
+          code: 'VALIDATION_ERROR',
+          details: error.errors,
+        },
+        { status: 400 },
+      );
+    }
+
+    logger.error('Failed to update notification preferences', error);
+
+    return NextResponse.json(
+      {
+        error: 'Failed to update preferences',
+        code: 'UPDATE_FAILED',
+        details: error instanceof Error ? error.message : 'Unknown error',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+// Test notification preferences
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const { testType = 'all', channels } = body;
+
+    // Get authenticated user
+    const supabase = createClient();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized', code: 'AUTH_REQUIRED' },
+        { status: 401 },
+      );
+    }
+
+    // Check if user has admin privileges
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('role')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!profile?.role || !['admin', 'super_admin'].includes(profile.role)) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions', code: 'INSUFFICIENT_PERMISSIONS' },
+        { status: 403 },
+      );
+    }
+
+    // Create test notification
+    const testNotification = {
+      adminUserId: user.id,
+      title: 'Test Notification - WedSync Admin',
+      message:
+        'This is a test notification to verify your notification preferences are working correctly.',
+      priority: 'normal' as const,
+      type: 'system_alert' as const,
+      data: {
+        test: true,
+        testType,
+        timestamp: new Date().toISOString(),
+      },
+      channels,
+    };
+
+    // Send test notification
+    const notificationId =
+      await adminNotificationService.sendNotification(testNotification);
+
+    logger.info('Test notification sent', {
+      requestedBy: user.id,
+      notificationId,
+      testType,
+      channels,
+    });
+
+    return NextResponse.json({
+      success: true,
+      notificationId,
+      message: 'Test notification sent successfully',
+      testDetails: {
+        type: testType,
+        channels: channels || 'all enabled',
+        sentAt: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    logger.error('Failed to send test notification', error);
+
+    return NextResponse.json(
+      {
+        error: 'Failed to send test notification',
+        code: 'TEST_FAILED',
+        details: error instanceof Error ? error.message : 'Unknown error',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+// Get notification statistics
+export async function PATCH(request: NextRequest) {
+  try {
+    // Get authenticated user
+    const supabase = createClient();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized', code: 'AUTH_REQUIRED' },
+        { status: 401 },
+      );
+    }
+
+    // Check if user has admin privileges
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('role')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!profile?.role || !['admin', 'super_admin'].includes(profile.role)) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions', code: 'INSUFFICIENT_PERMISSIONS' },
+        { status: 403 },
+      );
+    }
+
+    // Get notification statistics
+    const { data: stats, error: statsError } = await supabase.rpc(
+      'get_admin_notification_stats',
+      { admin_id: user.id },
+    );
+
+    if (statsError) {
+      throw new Error(
+        `Failed to get notification stats: ${statsError.message}`,
+      );
+    }
+
+    // Get recent notification history for trends
+    const recentNotifications =
+      await adminNotificationService.getNotificationHistory(user.id, {
+        limit: 100,
+      });
+
+    // Calculate delivery rates
+    const deliveryStats = recentNotifications.reduce(
+      (acc, notification) => {
+        acc.total++;
+        if (
+          notification.email_status === 'sent' ||
+          notification.email_status === 'delivered'
+        )
+          acc.emailSuccess++;
+        if (
+          notification.sms_status === 'sent' ||
+          notification.sms_status === 'delivered'
+        )
+          acc.smsSuccess++;
+        if (
+          notification.push_status === 'sent' ||
+          notification.push_status === 'delivered'
+        )
+          acc.pushSuccess++;
+        if (notification.in_app_shown_at) acc.inAppSuccess++;
+        return acc;
+      },
+      {
+        total: 0,
+        emailSuccess: 0,
+        smsSuccess: 0,
+        pushSuccess: 0,
+        inAppSuccess: 0,
+      },
+    );
+
+    return NextResponse.json({
+      success: true,
+      statistics: {
+        ...stats,
+        deliveryRates: {
+          email:
+            deliveryStats.total > 0
+              ? (
+                  (deliveryStats.emailSuccess / deliveryStats.total) *
+                  100
+                ).toFixed(1)
+              : '0',
+          sms:
+            deliveryStats.total > 0
+              ? (
+                  (deliveryStats.smsSuccess / deliveryStats.total) *
+                  100
+                ).toFixed(1)
+              : '0',
+          push:
+            deliveryStats.total > 0
+              ? (
+                  (deliveryStats.pushSuccess / deliveryStats.total) *
+                  100
+                ).toFixed(1)
+              : '0',
+          inApp:
+            deliveryStats.total > 0
+              ? (
+                  (deliveryStats.inAppSuccess / deliveryStats.total) *
+                  100
+                ).toFixed(1)
+              : '0',
+        },
+        recentActivity: recentNotifications.slice(0, 10),
+      },
+    });
+  } catch (error) {
+    logger.error('Failed to get notification statistics', error);
+
+    return NextResponse.json(
+      {
+        error: 'Failed to get statistics',
+        code: 'STATS_FAILED',
+        details: error instanceof Error ? error.message : 'Unknown error',
+      },
+      { status: 500 },
+    );
+  }
+}

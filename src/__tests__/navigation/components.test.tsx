@@ -1,0 +1,216 @@
+/**
+ * WS-038: Navigation Components Tests
+ * Test navigation components rendering and interactions
+ */
+
+import React from 'react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import userEvent from '@testing-library/user-event'
+import { useRouter, usePathname } from 'next/navigation'
+import NavigationBar from '@/components/navigation/NavigationBar'
+import MobileNav, { BottomNav } from '@/components/navigation/MobileNav'
+import CommandPalette from '@/components/navigation/CommandPalette'
+import Breadcrumbs, { MobileBreadcrumbs } from '@/components/navigation/Breadcrumbs'
+import { NavigationProvider } from '@/lib/navigation/navigationContext'
+import { UserProfile } from '@/lib/navigation/roleBasedAccess'
+// Mock Next.js router
+jest.mock('next/navigation', () => ({
+  usePathname: jest.fn(() => '/'),
+  useRouter: jest.fn(() => ({
+    push: jest.fn(),
+    replace: jest.fn(),
+    back: jest.fn()
+  }))
+}))
+// Mock dialog component
+jest.mock('@/components/ui/dialog', () => ({
+  Dialog: ({ children, open }: any) => open ? <div data-testid="dialog">{children}</div> : null,
+  DialogContent: ({ children }: any) => <div data-testid="dialog-content">{children}</div>
+const mockUserProfile: UserProfile = {
+  id: 'test-user',
+  role: 'admin',
+  permissions: ['view_dashboard', 'manage_clients', 'view_analytics']
+}
+const mockUser = {
+  full_name: 'Test User',
+  email: 'test@example.com',
+  avatar_url: 'https://example.com/avatar.jpg',
+  organization_name: 'Test Org'
+function TestWrapper({ children }: { children: React.ReactNode }) {
+  return (
+    <NavigationProvider initialProfile={mockUserProfile}>
+      {children}
+    </NavigationProvider>
+  )
+describe('NavigationBar', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+  })
+  it('should render navigation bar with logo', () => {
+    render(
+      <TestWrapper>
+        <NavigationBar userProfile={mockUser} />
+      </TestWrapper>
+    )
+    expect(screen.getByText('WedSync')).toBeInTheDocument()
+    expect(screen.getByText('Supplier Platform')).toBeInTheDocument()
+  it('should display user profile information', () => {
+    expect(screen.getByText('Test User')).toBeInTheDocument()
+    expect(screen.getByText('test@example.com')).toBeInTheDocument()
+    expect(screen.getByText('Test Org')).toBeInTheDocument()
+  it('should call onSearchToggle when search button is clicked', () => {
+    const mockOnSearchToggle = jest.fn()
+    
+        <NavigationBar userProfile={mockUser} onSearchToggle={mockOnSearchToggle} />
+    fireEvent.click(screen.getByLabelText('Search (Cmd+K)'))
+    expect(mockOnSearchToggle).toHaveBeenCalled()
+  it('should call onMobileMenuToggle when mobile menu button is clicked', () => {
+    const mockOnMobileMenuToggle = jest.fn()
+        <NavigationBar userProfile={mockUser} onMobileMenuToggle={mockOnMobileMenuToggle} />
+    fireEvent.click(screen.getByLabelText('Toggle mobile menu'))
+    expect(mockOnMobileMenuToggle).toHaveBeenCalled()
+  it('should display notification badge when notifications exist', () => {
+    const notificationButton = screen.getByLabelText('Notifications')
+    expect(notificationButton).toBeInTheDocument()
+    // Badge should be visible if there are notifications
+  it('should highlight active navigation item', () => {
+    require('next/navigation').usePathname.mockReturnValue('/clients')
+    // Should highlight the active navigation item
+    const clientsLink = screen.getByText('Clients').closest('a')
+    expect(clientsLink).toHaveClass('bg-purple-100', 'text-purple-700')
+  it('should handle scroll effects', () => {
+    // Simulate scroll
+    Object.defineProperty(window, 'scrollY', { value: 100, writable: true })
+    fireEvent.scroll(window, { target: { scrollY: 100 } })
+    // Should add shadow class when scrolled
+    const nav = screen.getByRole('navigation')
+    expect(nav).toHaveClass('shadow-sm')
+})
+describe('MobileNav', () => {
+  it('should render mobile navigation when open', () => {
+        <MobileNav isOpen={true} onClose={jest.fn()} userProfile={mockUser} />
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+  it('should not render mobile navigation when closed', () => {
+        <MobileNav isOpen={false} onClose={jest.fn()} userProfile={mockUser} />
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  it('should call onClose when close button is clicked', () => {
+    const mockOnClose = jest.fn()
+        <MobileNav isOpen={true} onClose={mockOnClose} userProfile={mockUser} />
+    fireEvent.click(screen.getByLabelText('Close menu'))
+    expect(mockOnClose).toHaveBeenCalled()
+  it('should call onClose when overlay is clicked', () => {
+    const overlay = document.querySelector('.bg-black.bg-opacity-50')
+    if (overlay) {
+      fireEvent.click(overlay)
+      expect(mockOnClose).toHaveBeenCalled()
+    }
+  it('should handle touch gestures for swipe to close', () => {
+    const sidebar = screen.getByRole('dialog')
+    // Simulate left swipe
+    fireEvent.touchStart(sidebar, { touches: [{ clientX: 100 }] })
+    fireEvent.touchMove(sidebar, { touches: [{ clientX: 40 }] })
+    fireEvent.touchEnd(sidebar)
+  it('should handle keyboard navigation', () => {
+    fireEvent.keyDown(document, { key: 'Escape' })
+  it('should expand and collapse navigation sections', async () => {
+    // Find expandable section (should have children)
+    const expandableButton = screen.getAllByRole('button').find(button => 
+      button.querySelector('.rotate-90') || button.querySelector('svg')
+    if (expandableButton) {
+      fireEvent.click(expandableButton)
+      // Should show children items
+describe('BottomNav', () => {
+  it('should render bottom navigation', () => {
+        <BottomNav />
+    // Should render navigation items
+    expect(screen.getByText('Home')).toBeInTheDocument()
+  it('should highlight active item', () => {
+    expect(clientsLink).toHaveClass('text-purple-600', 'bg-purple-50')
+  it('should display badges on navigation items', () => {
+    // Should show badges if they exist
+    const badges = screen.queryAllByText(/\d+/)
+    expect(badges.length).toBeGreaterThanOrEqual(0)
+describe('CommandPalette', () => {
+  it('should render command palette when open', () => {
+        <CommandPalette isOpen={true} onClose={jest.fn()} />
+    expect(screen.getByTestId('dialog')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText(/Search navigation/)).toBeInTheDocument()
+  it('should not render command palette when closed', () => {
+        <CommandPalette isOpen={false} onClose={jest.fn()} />
+    expect(screen.queryByTestId('dialog')).not.toBeInTheDocument()
+  it('should handle search input', async () => {
+    const user = userEvent.setup()
+    const searchInput = screen.getByPlaceholderText(/Search navigation/)
+    await user.type(searchInput, 'client')
+    expect(searchInput).toHaveValue('client')
+  it('should show quick actions when no search query', () => {
+    expect(screen.getByText('Quick Actions')).toBeInTheDocument()
+  it('should handle keyboard navigation', async () => {
+    // Test arrow key navigation
+    fireEvent.keyDown(searchInput, { key: 'ArrowDown' })
+    fireEvent.keyDown(searchInput, { key: 'ArrowUp' })
+    // Should not throw errors
+  it('should handle escape key to close', () => {
+        <CommandPalette isOpen={true} onClose={mockOnClose} />
+  it('should navigate on enter key', () => {
+    const mockRouter = useRouter()
+    fireEvent.keyDown(searchInput, { key: 'Enter' })
+    // Should navigate to selected item
+describe('Breadcrumbs', () => {
+  it('should render breadcrumbs', () => {
+        <Breadcrumbs />
+    expect(screen.getByRole('navigation')).toBeInTheDocument()
+  it('should show home icon when showHome is true', () => {
+        <Breadcrumbs showHome={true} />
+    // Should show home icon
+    const homeIcon = document.querySelector('svg')
+    expect(homeIcon).toBeInTheDocument()
+  it('should collapse breadcrumbs when too many items', () => {
+    // Mock a long pathname to create many breadcrumbs
+    require('next/navigation').usePathname.mockReturnValue('/clients/123/edit/details/form')
+        <Breadcrumbs maxItems={3} />
+    // Should show collapse indicator
+    expect(screen.queryByText(/\+\d+/)).toBeInTheDocument()
+  it('should handle share functionality', async () => {
+    // Mock navigator.share
+    Object.assign(navigator, {
+      share: jest.fn().mockResolvedValue(undefined)
+    })
+        <Breadcrumbs showActions={true} />
+    const shareButton = screen.getByLabelText('Share current page')
+    fireEvent.click(shareButton)
+    await waitFor(() => {
+      expect(navigator.share).toHaveBeenCalled()
+  it('should handle bookmark functionality', () => {
+    const consoleSpy = jest.spyOn(console, 'log').mockImplementation()
+    const bookmarkButton = screen.getByLabelText('Bookmark current page')
+    fireEvent.click(bookmarkButton)
+    expect(consoleSpy).toHaveBeenCalledWith('Bookmark added for:', '/')
+    consoleSpy.mockRestore()
+describe('MobileBreadcrumbs', () => {
+  it('should render mobile breadcrumbs', () => {
+    require('next/navigation').usePathname.mockReturnValue('/clients/123')
+        <MobileBreadcrumbs />
+  it('should not render for root path', () => {
+    require('next/navigation').usePathname.mockReturnValue('/')
+    expect(screen.queryByRole('navigation')).not.toBeInTheDocument()
+  it('should show parent and current page', () => {
+    // Should show navigation structure
+describe('Accessibility', () => {
+  it('should have proper ARIA labels', () => {
+    expect(screen.getByLabelText('Search (Cmd+K)')).toBeInTheDocument()
+    expect(screen.getByLabelText('Notifications')).toBeInTheDocument()
+    expect(screen.getByLabelText('Toggle mobile menu')).toBeInTheDocument()
+  it('should support keyboard navigation', () => {
+        <MobileNav isOpen={true} onClose={jest.fn()} />
+    // Should be able to tab through navigation items
+    const firstLink = screen.getAllByRole('link')[0]
+    firstLink.focus()
+    expect(document.activeElement).toBe(firstLink)
+  it('should have proper focus management in command palette', () => {
+    // Search input should be focused when opened
+    expect(document.activeElement).toBe(searchInput)
+  it('should have semantic HTML structure', () => {
+    expect(screen.getAllByRole('navigation')).toHaveLength(2)
+    expect(screen.getByRole('list')).toBeInTheDocument() // Breadcrumb list

@@ -1,0 +1,605 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import { z } from 'zod';
+// import { WeddingSemanticAnalyzer } from '@/lib/ai/feature-management/wedding-semantic-analyzer';
+// import { IntelligentRICEScorer } from '@/lib/ai/feature-management/intelligent-rice-scorer';
+// import { ContentAnalysisPipeline } from '@/lib/ai/feature-management/content-analysis-pipeline';
+
+// Temporary placeholder implementations
+class WeddingSemanticAnalyzer {
+  async analyze(text: string) {
+    return { categories: [], urgency: 'medium', semanticScore: 0.5 };
+  }
+}
+class IntelligentRICEScorer {
+  async calculateScore(data: any) {
+    return { reach: 5, impact: 5, confidence: 5, effort: 5, score: 25 };
+  }
+}
+class ContentAnalysisPipeline {
+  async process(content: string) {
+    return { sentiment: 'neutral', topics: [], urgency: 'medium' };
+  }
+}
+import { AIPerformanceMonitor } from '@/lib/ai/feature-management/monitoring/performance-monitor';
+import { Logger } from '@/lib/logging/Logger';
+import { rateLimit } from '@/lib/rate-limiter';
+
+const logger = new Logger('FeatureRequestAnalyzer');
+
+// Request validation schema
+const AnalyzeRequestSchema = z.object({
+  title: z.string().min(10).max(200),
+  description: z.string().min(20).max(2000),
+  user_role: z
+    .enum([
+      'photographer',
+      'venue',
+      'planner',
+      'florist',
+      'caterer',
+      'couple',
+      'admin',
+    ])
+    .optional(),
+  category: z
+    .enum([
+      'forms',
+      'timeline',
+      'guest-management',
+      'payments',
+      'integration',
+      'mobile',
+      'analytics',
+      'communication',
+    ])
+    .optional(),
+  urgency_signals: z.array(z.string()).optional(),
+  context: z
+    .object({
+      user_tier: z
+        .enum(['free', 'starter', 'professional', 'scale', 'enterprise'])
+        .optional(),
+      organization_size: z
+        .enum(['solo', 'small', 'medium', 'large', 'enterprise'])
+        .optional(),
+      seasonal_context: z.enum(['peak', 'shoulder', 'off']).optional(),
+    })
+    .optional(),
+});
+
+type AnalyzeRequest = z.infer<typeof AnalyzeRequestSchema>;
+
+interface AnalysisResponse {
+  id: string;
+  semantic_analysis: {
+    intent: string;
+    entities: Record<string, any>;
+    confidence: number;
+    duplicate_likelihood: number;
+    similar_requests: Array<{
+      id: string;
+      title: string;
+      similarity_score: number;
+    }>;
+  };
+  rice_score: {
+    reach: number;
+    impact: number;
+    confidence: number;
+    effort: number;
+    total_score: number;
+    priority_level: 'low' | 'medium' | 'high' | 'critical';
+    reasoning: string;
+  };
+  content_insights: {
+    sentiment_score: number;
+    emotional_intensity: number;
+    pain_points: string[];
+    stakeholders: string[];
+    business_context: string;
+    success_criteria: string[];
+  };
+  recommendations: {
+    action: 'implement' | 'consider' | 'decline' | 'merge' | 'clarify';
+    priority: number;
+    estimated_effort: string;
+    suggested_timeline: string;
+    implementation_notes: string[];
+    wedding_industry_impact: string;
+  };
+  metadata: {
+    processing_time_ms: number;
+    ai_confidence: number;
+    cost_cents: number;
+    tokens_used: number;
+  };
+}
+
+export async function POST(request: NextRequest) {
+  const performanceMonitor = new AIPerformanceMonitor();
+  const startTime = Date.now();
+  let totalTokensUsed = 0;
+  let totalCostCents = 0;
+
+  try {
+    // Rate limiting
+    const rateLimitResult = await rateLimit('ai-feature-analysis', 10, 60); // 10 requests per minute
+    if (rateLimitResult.error) {
+      return NextResponse.json(
+        {
+          error: 'Rate limit exceeded',
+          retryAfter: rateLimitResult.retryAfter,
+        },
+        { status: 429 },
+      );
+    }
+
+    // Authentication
+    const supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+    const {
+      data: { session },
+      error: sessionError,
+    } = await supabase.auth.getSession();
+
+    if (sessionError || !session) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get user profile and organization
+    const { data: profile, error: profileError } = await supabase
+      .from('user_profiles')
+      .select('*, organizations(*)')
+      .eq('user_id', session.user.id)
+      .single();
+
+    if (profileError || !profile) {
+      logger.error('Failed to fetch user profile', {
+        error: profileError,
+        userId: session.user.id,
+      });
+      return NextResponse.json(
+        { error: 'User profile not found' },
+        { status: 404 },
+      );
+    }
+
+    // Check tier permissions for AI features
+    const userTier = profile.organizations?.tier || 'free';
+    if (!['professional', 'scale', 'enterprise'].includes(userTier)) {
+      return NextResponse.json(
+        { error: 'AI feature analysis requires Professional tier or higher' },
+        { status: 403 },
+      );
+    }
+
+    // Validate request body
+    const body = await request.json();
+    const validatedRequest = AnalyzeRequestSchema.parse(body);
+
+    // Initialize AI components
+    const semanticAnalyzer = new WeddingSemanticAnalyzer();
+    const riceScorer = new IntelligentRICEScorer();
+    const contentPipeline = new ContentAnalysisPipeline();
+
+    logger.info('Starting feature request analysis', {
+      title: validatedRequest.title,
+      userId: session.user.id,
+      organizationId: profile.organization_id,
+      tier: userTier,
+    });
+
+    // Create feature request record
+    const { data: featureRequest, error: insertError } = await supabase
+      .from('feature_requests')
+      .insert([
+        {
+          title: validatedRequest.title,
+          description: validatedRequest.description,
+          user_id: session.user.id,
+          organization_id: profile.organization_id,
+          user_role: validatedRequest.user_role || profile.role,
+          category: validatedRequest.category,
+          status: 'analyzing',
+          metadata: {
+            urgency_signals: validatedRequest.urgency_signals || [],
+            context: validatedRequest.context || {},
+          },
+        },
+      ])
+      .select()
+      .single();
+
+    if (insertError) {
+      logger.error('Failed to create feature request', { error: insertError });
+      return NextResponse.json(
+        { error: 'Failed to create feature request' },
+        { status: 500 },
+      );
+    }
+
+    // Perform semantic analysis
+    const semanticStartTime = Date.now();
+    const semanticAnalysis = await semanticAnalyzer.analyzeFeatureRequest({
+      title: validatedRequest.title,
+      description: validatedRequest.description,
+      user_context: {
+        role: validatedRequest.user_role || profile.role,
+        organization_size:
+          validatedRequest.context?.organization_size || 'small',
+        tier: userTier,
+      },
+    });
+
+    // Record semantic analysis metrics
+    await performanceMonitor.recordMetric({
+      component: 'semantic-analyzer',
+      operation: 'analyze_feature_request',
+      duration: Date.now() - semanticStartTime,
+      success: true,
+      tokens_used: semanticAnalysis.metadata?.tokens_used || 0,
+      cost_cents: semanticAnalysis.metadata?.cost_cents || 0,
+      tier: userTier,
+      user_id: session.user.id,
+      organization_id: profile.organization_id,
+    });
+
+    totalTokensUsed += semanticAnalysis.metadata?.tokens_used || 0;
+    totalCostCents += semanticAnalysis.metadata?.cost_cents || 0;
+
+    // Perform RICE scoring
+    const riceStartTime = Date.now();
+    const riceScore = await riceScorer.calculateRICEScore({
+      title: validatedRequest.title,
+      description: validatedRequest.description,
+      category:
+        validatedRequest.category || semanticAnalysis.predicted_category,
+      user_role: validatedRequest.user_role || profile.role,
+      urgency_signals: validatedRequest.urgency_signals || [],
+      historical_context: {
+        similar_requests_count: semanticAnalysis.similar_requests?.length || 0,
+        user_tier: userTier,
+      },
+    });
+
+    // Record RICE scoring metrics
+    await performanceMonitor.recordMetric({
+      component: 'rice-scorer',
+      operation: 'calculate_rice_score',
+      duration: Date.now() - riceStartTime,
+      success: true,
+      tokens_used: riceScore.metadata?.tokens_used || 0,
+      cost_cents: riceScore.metadata?.cost_cents || 0,
+      tier: userTier,
+      user_id: session.user.id,
+      organization_id: profile.organization_id,
+    });
+
+    totalTokensUsed += riceScore.metadata?.tokens_used || 0;
+    totalCostCents += riceScore.metadata?.cost_cents || 0;
+
+    // Perform content analysis
+    const contentStartTime = Date.now();
+    const contentAnalysis = await contentPipeline.analyzeContent({
+      title: validatedRequest.title,
+      description: validatedRequest.description,
+      context: {
+        user_role: validatedRequest.user_role || profile.role,
+        business_context: 'wedding_vendor_platform',
+        stakeholders: ['vendors', 'couples', 'admin'],
+      },
+    });
+
+    // Record content analysis metrics
+    await performanceMonitor.recordMetric({
+      component: 'content-pipeline',
+      operation: 'analyze_content',
+      duration: Date.now() - contentStartTime,
+      success: true,
+      tokens_used: contentAnalysis.metadata?.tokens_used || 0,
+      cost_cents: contentAnalysis.metadata?.cost_cents || 0,
+      tier: userTier,
+      user_id: session.user.id,
+      organization_id: profile.organization_id,
+    });
+
+    totalTokensUsed += contentAnalysis.metadata?.tokens_used || 0;
+    totalCostCents += contentAnalysis.metadata?.cost_cents || 0;
+
+    // Generate recommendations
+    const recommendations = generateRecommendations(
+      semanticAnalysis,
+      riceScore,
+      contentAnalysis,
+      userTier,
+    );
+
+    // Update feature request with analysis results
+    const { error: updateError } = await supabase
+      .from('feature_requests')
+      .update({
+        status: 'analyzed',
+        rice_score: riceScore.total_score,
+        priority_level: riceScore.priority_level,
+        semantic_analysis: semanticAnalysis,
+        content_insights: contentAnalysis,
+        recommendations: recommendations,
+        processing_metadata: {
+          processing_time_ms: Date.now() - startTime,
+          tokens_used: totalTokensUsed,
+          cost_cents: totalCostCents,
+          ai_confidence:
+            (semanticAnalysis.confidence +
+              riceScore.confidence +
+              contentAnalysis.confidence) /
+            3,
+        },
+        analyzed_at: new Date().toISOString(),
+      })
+      .eq('id', featureRequest.id);
+
+    if (updateError) {
+      logger.error('Failed to update feature request with analysis', {
+        error: updateError,
+      });
+    }
+
+    // Prepare response
+    const response: AnalysisResponse = {
+      id: featureRequest.id,
+      semantic_analysis: {
+        intent: semanticAnalysis.intent,
+        entities: semanticAnalysis.entities,
+        confidence: semanticAnalysis.confidence,
+        duplicate_likelihood: semanticAnalysis.duplicate_likelihood,
+        similar_requests: semanticAnalysis.similar_requests || [],
+      },
+      rice_score: {
+        reach: riceScore.reach,
+        impact: riceScore.impact,
+        confidence: riceScore.confidence,
+        effort: riceScore.effort,
+        total_score: riceScore.total_score,
+        priority_level: riceScore.priority_level,
+        reasoning: riceScore.reasoning,
+      },
+      content_insights: {
+        sentiment_score: contentAnalysis.sentiment.score,
+        emotional_intensity: contentAnalysis.emotional_intensity,
+        pain_points: contentAnalysis.pain_points,
+        stakeholders: contentAnalysis.stakeholder_impact.map(
+          (s) => s.stakeholder,
+        ),
+        business_context: contentAnalysis.business_context.description,
+        success_criteria: contentAnalysis.success_criteria,
+      },
+      recommendations,
+      metadata: {
+        processing_time_ms: Date.now() - startTime,
+        ai_confidence:
+          (semanticAnalysis.confidence +
+            riceScore.confidence +
+            contentAnalysis.confidence) /
+          3,
+        cost_cents: totalCostCents,
+        tokens_used: totalTokensUsed,
+      },
+    };
+
+    logger.info('Feature request analysis completed', {
+      requestId: featureRequest.id,
+      processingTime: Date.now() - startTime,
+      totalCost: totalCostCents,
+      totalTokens: totalTokensUsed,
+      priorityLevel: riceScore.priority_level,
+    });
+
+    return NextResponse.json(response, { status: 200 });
+  } catch (error) {
+    const processingTime = Date.now() - startTime;
+
+    logger.error('Feature request analysis failed', {
+      error: error instanceof Error ? error.message : 'Unknown error',
+      processingTime,
+    });
+
+    // Record failure metrics
+    try {
+      const supabase = createClient(
+        process.env.SUPABASE_URL!,
+        process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      );
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      if (session) {
+        await performanceMonitor.recordMetric({
+          component: 'semantic-analyzer',
+          operation: 'analyze_feature_request',
+          duration: processingTime,
+          success: false,
+          error_message:
+            error instanceof Error ? error.message : 'Unknown error',
+          tier: 'unknown',
+          user_id: session.user.id,
+          organization_id: 'unknown',
+        });
+      }
+    } catch (metricsError) {
+      logger.error('Failed to record failure metrics', { error: metricsError });
+    }
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid request data', details: error.errors },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      {
+        error: 'Analysis failed',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * Generate recommendations based on analysis results
+ */
+function generateRecommendations(
+  semanticAnalysis: any,
+  riceScore: any,
+  contentAnalysis: any,
+  userTier: string,
+): AnalysisResponse['recommendations'] {
+  let action: 'implement' | 'consider' | 'decline' | 'merge' | 'clarify' =
+    'consider';
+  let priority = riceScore.total_score;
+  let estimatedEffort = 'Medium';
+  let suggestedTimeline = '2-4 weeks';
+  const implementationNotes: string[] = [];
+
+  // Decision logic based on RICE score and duplicate detection
+  if (riceScore.total_score >= 80) {
+    action = 'implement';
+    priority = riceScore.total_score;
+    estimatedEffort = riceScore.effort > 7 ? 'High' : 'Medium';
+    suggestedTimeline = riceScore.effort > 7 ? '4-8 weeks' : '2-4 weeks';
+  } else if (riceScore.total_score >= 60) {
+    action = 'consider';
+    implementationNotes.push(
+      'Monitor for additional similar requests to increase priority',
+    );
+  } else if (riceScore.total_score < 40) {
+    action = 'decline';
+    implementationNotes.push(
+      'Low priority - revisit if multiple similar requests received',
+    );
+  }
+
+  // Duplicate handling
+  if (semanticAnalysis.duplicate_likelihood > 0.8) {
+    action = 'merge';
+    implementationNotes.push(
+      'High likelihood of duplicate - merge with existing request',
+    );
+  }
+
+  // Clarity assessment
+  if (contentAnalysis.clarity_score < 0.6) {
+    action = 'clarify';
+    implementationNotes.push(
+      'Request lacks clarity - reach out for more details',
+    );
+  }
+
+  // Tier-specific considerations
+  if (['scale', 'enterprise'].includes(userTier)) {
+    priority = Math.min(priority + 10, 100); // Boost priority for higher tiers
+    implementationNotes.push(`Premium tier user - elevated priority`);
+  }
+
+  // Wedding industry specific impact
+  const weddingImpactScore = calculateWeddingIndustryImpact(
+    semanticAnalysis,
+    contentAnalysis,
+  );
+  let weddingIndustryImpact = 'Low impact on wedding workflow efficiency';
+
+  if (weddingImpactScore > 8) {
+    weddingIndustryImpact =
+      'Critical impact - directly addresses core wedding vendor pain points';
+    if (action === 'consider') action = 'implement';
+  } else if (weddingImpactScore > 6) {
+    weddingIndustryImpact =
+      'High impact - improves wedding planning efficiency significantly';
+  } else if (weddingImpactScore > 4) {
+    weddingIndustryImpact =
+      'Medium impact - enhances wedding vendor capabilities';
+  }
+
+  // Seasonal considerations
+  const currentMonth = new Date().getMonth() + 1;
+  const isPeakSeason = currentMonth >= 5 && currentMonth <= 10;
+
+  if (isPeakSeason && weddingImpactScore > 6) {
+    priority = Math.min(priority + 15, 100);
+    suggestedTimeline = 'Rush - within 2 weeks';
+    implementationNotes.push(
+      'Peak wedding season - expedited timeline recommended',
+    );
+  }
+
+  return {
+    action,
+    priority,
+    estimated_effort: estimatedEffort,
+    suggested_timeline: suggestedTimeline,
+    implementation_notes: implementationNotes,
+    wedding_industry_impact: weddingIndustryImpact,
+  };
+}
+
+/**
+ * Calculate wedding industry impact score
+ */
+function calculateWeddingIndustryImpact(
+  semanticAnalysis: any,
+  contentAnalysis: any,
+): number {
+  let score = 0;
+
+  // Wedding-specific keywords boost
+  const weddingKeywords = [
+    'timeline',
+    'guest',
+    'venue',
+    'photographer',
+    'vendor',
+    'couple',
+    'rsvp',
+    'seating',
+    'catering',
+    'flowers',
+    'music',
+    'ceremony',
+  ];
+
+  const text =
+    `${semanticAnalysis.intent} ${contentAnalysis.pain_points.join(' ')}`.toLowerCase();
+  const keywordMatches = weddingKeywords.filter((keyword) =>
+    text.includes(keyword),
+  ).length;
+  score += keywordMatches * 0.5;
+
+  // Pain point severity
+  const criticalPainPoints = [
+    'time consuming',
+    'manual work',
+    'error prone',
+    'difficult',
+    'confusing',
+  ];
+  const painPointText = contentAnalysis.pain_points.join(' ').toLowerCase();
+  const criticalMatches = criticalPainPoints.filter((pain) =>
+    painPointText.includes(pain),
+  ).length;
+  score += criticalMatches * 1.5;
+
+  // Stakeholder impact
+  const affectedStakeholders = contentAnalysis.stakeholder_impact.length;
+  score += affectedStakeholders * 0.8;
+
+  // Emotional intensity (wedding stress factor)
+  score += contentAnalysis.emotional_intensity * 0.3;
+
+  return Math.min(score, 10); // Cap at 10
+}

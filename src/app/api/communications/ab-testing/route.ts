@@ -1,0 +1,412 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+
+// WS-155: A/B Testing Engine for Message Variants
+const abTestSchema = z.object({
+  name: z.string().min(1).max(200),
+  description: z.string().optional(),
+  variants: z
+    .array(
+      z.object({
+        id: z.string(),
+        name: z.string(),
+        subject: z.string().optional(),
+        content: z.string(),
+        weight: z.number().min(0).max(100).default(50), // Percentage of recipients
+      }),
+    )
+    .min(2)
+    .max(5),
+  recipients: z.array(
+    z.object({
+      id: z.string(),
+      email: z.string().email().optional(),
+      phone: z.string().optional(),
+      metadata: z.record(z.any()).optional(),
+    }),
+  ),
+  testingConfig: z.object({
+    sampleSize: z.number().min(10).max(1000).default(100),
+    confidenceLevel: z.number().min(90).max(99.9).default(95),
+    minimumConversions: z.number().min(1).default(10),
+    testDurationHours: z.number().min(1).max(168).default(24),
+    primaryMetric: z
+      .enum(['open_rate', 'click_rate', 'conversion_rate'])
+      .default('open_rate'),
+    automaticWinner: z.boolean().default(true),
+  }),
+  schedule: z.object({
+    startAt: z.string().datetime(),
+    endAt: z.string().datetime().optional(),
+  }),
+});
+
+export async function POST(req: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const { data: user } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await req.json();
+    const validatedData = abTestSchema.parse(body);
+
+    // Validate variant weights sum to 100
+    const totalWeight = validatedData.variants.reduce(
+      (sum, v) => sum + v.weight,
+      0,
+    );
+    if (Math.abs(totalWeight - 100) > 0.01) {
+      return NextResponse.json(
+        { error: 'Variant weights must sum to 100%' },
+        { status: 400 },
+      );
+    }
+
+    // Create A/B test campaign
+    const { data: abTest, error: testError } = await supabase
+      .from('ab_test_campaigns')
+      .insert({
+        organization_id: user.id,
+        name: validatedData.name,
+        description: validatedData.description,
+        status: 'draft',
+        variants: validatedData.variants,
+        testing_config: validatedData.testingConfig,
+        schedule: validatedData.schedule,
+        total_recipients: validatedData.recipients.length,
+        created_by: user.id,
+      })
+      .select()
+      .single();
+
+    if (testError) throw testError;
+
+    // Randomly assign recipients to variants based on weights
+    const variantAssignments = assignRecipientsToVariants(
+      validatedData.recipients,
+      validatedData.variants,
+    );
+
+    // Create variant groups
+    for (const [variantId, recipients] of Object.entries(variantAssignments)) {
+      const { error: variantError } = await supabase
+        .from('ab_test_variant_groups')
+        .insert({
+          ab_test_id: abTest.id,
+          variant_id: variantId,
+          recipients: recipients,
+          recipient_count: (recipients as any[]).length,
+        });
+
+      if (variantError) throw variantError;
+    }
+
+    // If automatic winner is enabled, schedule winner determination
+    if (validatedData.testingConfig.automaticWinner) {
+      const winnerDetermination = new Date(validatedData.schedule.startAt);
+      winnerDetermination.setHours(
+        winnerDetermination.getHours() +
+          validatedData.testingConfig.testDurationHours,
+      );
+
+      await supabase.from('ab_test_winner_jobs').insert({
+        ab_test_id: abTest.id,
+        scheduled_for: winnerDetermination.toISOString(),
+        status: 'pending',
+      });
+    }
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        id: abTest.id,
+        name: abTest.name,
+        variantCount: validatedData.variants.length,
+        recipientCount: validatedData.recipients.length,
+        startAt: validatedData.schedule.startAt,
+        estimatedWinnerAt: new Date(
+          new Date(validatedData.schedule.startAt).getTime() +
+            validatedData.testingConfig.testDurationHours * 3600000,
+        ).toISOString(),
+      },
+    });
+  } catch (error) {
+    console.error('A/B testing error:', error);
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid test data', details: error.errors },
+        { status: 400 },
+      );
+    }
+    return NextResponse.json(
+      { error: 'Failed to create A/B test' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function GET(req: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const { data: user } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const url = new URL(req.url);
+    const testId = url.searchParams.get('testId');
+    const status = url.searchParams.get('status');
+
+    if (testId) {
+      // Get specific A/B test with results
+      const { data: test, error } = await supabase
+        .from('ab_test_campaigns')
+        .select(
+          `
+          *,
+          ab_test_results(*)
+        `,
+        )
+        .eq('id', testId)
+        .eq('organization_id', user.id)
+        .single();
+
+      if (error) throw error;
+
+      // Calculate current metrics
+      const metrics = await calculateTestMetrics(supabase, testId);
+
+      return NextResponse.json({
+        success: true,
+        data: {
+          ...test,
+          currentMetrics: metrics,
+        },
+      });
+    } else {
+      // List all A/B tests
+      let query = supabase
+        .from('ab_test_campaigns')
+        .select('*')
+        .eq('organization_id', user.id)
+        .order('created_at', { ascending: false });
+
+      if (status) {
+        query = query.eq('status', status);
+      }
+
+      const { data, error } = await query;
+
+      if (error) throw error;
+
+      return NextResponse.json({
+        success: true,
+        data,
+      });
+    }
+  } catch (error) {
+    console.error('Get A/B test error:', error);
+    return NextResponse.json(
+      { error: 'Failed to fetch A/B tests' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function PATCH(req: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const { data: user } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { testId, action, winnerId } = await req.json();
+
+    if (!testId || !action) {
+      return NextResponse.json(
+        { error: 'Test ID and action are required' },
+        { status: 400 },
+      );
+    }
+
+    // Get the test
+    const { data: test, error: testError } = await supabase
+      .from('ab_test_campaigns')
+      .select('*')
+      .eq('id', testId)
+      .eq('organization_id', user.id)
+      .single();
+
+    if (testError || !test) {
+      return NextResponse.json({ error: 'Test not found' }, { status: 404 });
+    }
+
+    let updateData: any = {};
+
+    switch (action) {
+      case 'start':
+        if (test.status !== 'draft') {
+          return NextResponse.json(
+            { error: 'Test can only be started from draft status' },
+            { status: 400 },
+          );
+        }
+        updateData = {
+          status: 'running',
+          started_at: new Date().toISOString(),
+        };
+        break;
+
+      case 'pause':
+        if (test.status !== 'running') {
+          return NextResponse.json(
+            { error: 'Only running tests can be paused' },
+            { status: 400 },
+          );
+        }
+        updateData = { status: 'paused' };
+        break;
+
+      case 'resume':
+        if (test.status !== 'paused') {
+          return NextResponse.json(
+            { error: 'Only paused tests can be resumed' },
+            { status: 400 },
+          );
+        }
+        updateData = { status: 'running' };
+        break;
+
+      case 'complete':
+        if (!['running', 'paused'].includes(test.status)) {
+          return NextResponse.json(
+            { error: 'Invalid test status for completion' },
+            { status: 400 },
+          );
+        }
+
+        // Determine winner if not provided
+        const winnerVariantId =
+          winnerId || (await determineWinner(supabase, testId));
+
+        updateData = {
+          status: 'completed',
+          completed_at: new Date().toISOString(),
+          winner_variant_id: winnerVariantId,
+        };
+        break;
+
+      default:
+        return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
+    }
+
+    // Update the test
+    const { error: updateError } = await supabase
+      .from('ab_test_campaigns')
+      .update(updateData)
+      .eq('id', testId);
+
+    if (updateError) throw updateError;
+
+    return NextResponse.json({
+      success: true,
+      message: `Test ${action}ed successfully`,
+    });
+  } catch (error) {
+    console.error('Update A/B test error:', error);
+    return NextResponse.json(
+      { error: 'Failed to update A/B test' },
+      { status: 500 },
+    );
+  }
+}
+
+// Helper function to assign recipients to variants
+function assignRecipientsToVariants(recipients: any[], variants: any[]) {
+  const assignments: Record<string, any[]> = {};
+  variants.forEach((v) => (assignments[v.id] = []));
+
+  const shuffled = [...recipients].sort(() => Math.random() - 0.5);
+  let currentIndex = 0;
+
+  for (const variant of variants) {
+    const count = Math.floor(recipients.length * (variant.weight / 100));
+    const variantRecipients = shuffled.slice(
+      currentIndex,
+      currentIndex + count,
+    );
+    assignments[variant.id] = variantRecipients;
+    currentIndex += count;
+  }
+
+  // Assign remaining recipients to last variant
+  if (currentIndex < shuffled.length) {
+    const lastVariant = variants[variants.length - 1];
+    assignments[lastVariant.id].push(...shuffled.slice(currentIndex));
+  }
+
+  return assignments;
+}
+
+// Helper function to calculate test metrics
+async function calculateTestMetrics(supabase: any, testId: string) {
+  const { data: results } = await supabase
+    .from('ab_test_results')
+    .select('*')
+    .eq('ab_test_id', testId);
+
+  if (!results || results.length === 0) return {};
+
+  const metrics: Record<string, any> = {};
+
+  for (const result of results) {
+    if (!metrics[result.variant_id]) {
+      metrics[result.variant_id] = {
+        sent: 0,
+        opened: 0,
+        clicked: 0,
+        converted: 0,
+      };
+    }
+
+    metrics[result.variant_id].sent++;
+    if (result.opened_at) metrics[result.variant_id].opened++;
+    if (result.clicked_at) metrics[result.variant_id].clicked++;
+    if (result.converted_at) metrics[result.variant_id].converted++;
+  }
+
+  // Calculate rates
+  for (const variantId in metrics) {
+    const m = metrics[variantId];
+    m.openRate = m.sent > 0 ? (m.opened / m.sent) * 100 : 0;
+    m.clickRate = m.opened > 0 ? (m.clicked / m.opened) * 100 : 0;
+    m.conversionRate = m.sent > 0 ? (m.converted / m.sent) * 100 : 0;
+  }
+
+  return metrics;
+}
+
+// Helper function to determine winner
+async function determineWinner(supabase: any, testId: string) {
+  const metrics = await calculateTestMetrics(supabase, testId);
+
+  let bestVariant = null;
+  let bestRate = -1;
+
+  for (const [variantId, variantMetrics] of Object.entries(metrics)) {
+    const rate = (variantMetrics as any).conversionRate;
+    if (rate > bestRate) {
+      bestRate = rate;
+      bestVariant = variantId;
+    }
+  }
+
+  return bestVariant;
+}

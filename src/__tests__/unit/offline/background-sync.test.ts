@@ -1,0 +1,211 @@
+import { SyncEventManager, BackgroundSyncEvent, SyncEventType, SyncPriority } from '@/lib/offline/background-sync';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { EventEmitter } from 'events';
+
+// Mock Service Worker registration
+const mockServiceWorker = {
+  ready: Promise.resolve({
+    sync: {
+      register: vi.fn().mockResolvedValue(undefined),
+    },
+  }),
+};
+Object.defineProperty(global, 'navigator', {
+  value: {
+    serviceWorker: mockServiceWorker,
+  },
+  writable: true,
+});
+// Mock IndexedDB
+const mockIndexedDB = {
+  open: vi.fn().mockImplementation(() => {
+    const request = new EventTarget();
+    setTimeout(() => {
+      const event = new Event('success');
+      Object.defineProperty(event, 'target', {
+        value: {
+          result: {
+            transaction: vi.fn().mockReturnValue({
+              objectStore: vi.fn().mockReturnValue({
+                add: vi.fn(),
+                get: vi.fn(),
+                delete: vi.fn(),
+                put: vi.fn(),
+              }),
+            }),
+          },
+        },
+      });
+      request.dispatchEvent(event);
+    }, 0);
+    return request;
+Object.defineProperty(global, 'indexedDB', {
+  value: mockIndexedDB,
+describe('SyncEventManager', () => {
+  let syncEventManager: SyncEventManager;
+  beforeEach(() => {
+    syncEventManager = new SyncEventManager();
+    vi.clearAllMocks();
+  });
+  afterEach(() => {
+    syncEventManager.destroy();
+  describe('scheduleSync', () => {
+    it('should schedule a basic sync event', async () => {
+      const eventData = { clientId: 'client-1', updates: ['timeline'] };
+      
+      const eventId = await syncEventManager.scheduleSync(
+        SyncEventType.CLIENT_DATA_SYNC,
+        eventData
+      );
+      expect(eventId).toBeDefined();
+      expect(typeof eventId).toBe('string');
+    });
+    it('should schedule event with wedding context and priority', async () => {
+      const eventData = { vendorId: 'vendor-1', communication: 'urgent-update' };
+        SyncEventType.VENDOR_COMMUNICATION,
+        eventData,
+        {
+          priority: SyncPriority.HIGH,
+          weddingId: 'wedding-123',
+          scheduledAt: Date.now() + 5000,
+        }
+      const events = syncEventManager.getQueuedEvents();
+      const scheduledEvent = events.find(e => e.id === eventId);
+      expect(scheduledEvent).toBeDefined();
+      expect(scheduledEvent?.priority).toBe(SyncPriority.HIGH);
+      expect(scheduledEvent?.weddingId).toBe('wedding-123');
+    it('should apply event day priority boost', async () => {
+      const mockIsEventDay = vi.spyOn(syncEventManager as any, 'isEventDay').mockReturnValue(true);
+        SyncEventType.GUEST_LIST_UPDATE,
+        { guestCount: 150 },
+        { weddingId: 'wedding-123' }
+      const event = events.find(e => e.id === eventId);
+      expect(event?.priority).toBe(SyncPriority.CRITICAL);
+      mockIsEventDay.mockRestore();
+    it('should handle scheduling errors gracefully', async () => {
+      const mockServiceWorkerReady = vi.spyOn(navigator.serviceWorker, 'ready', 'get');
+      mockServiceWorkerReady.mockRejectedValueOnce(new Error('ServiceWorker not available'));
+        { test: 'data' }
+      mockServiceWorkerReady.mockRestore();
+  describe('processEvent', () => {
+    it('should process event and emit success', async () => {
+      const successCallback = vi.fn();
+      syncEventManager.on('sync-success', successCallback);
+      const event: BackgroundSyncEvent = {
+        id: 'test-event-1',
+        type: SyncEventType.CLIENT_DATA_SYNC,
+        data: { clientId: 'client-1' },
+        priority: SyncPriority.MEDIUM,
+        createdAt: Date.now(),
+        attempts: 0,
+        maxRetries: 3,
+      };
+      await syncEventManager.processEvent(event);
+      expect(successCallback).toHaveBeenCalledWith(expect.objectContaining({
+        eventId: 'test-event-1',
+      }));
+    it('should handle processing failures and retry', async () => {
+      const failureCallback = vi.fn();
+      syncEventManager.on('sync-failure', failureCallback);
+      // Mock API to fail
+      const mockFetch = vi.spyOn(global, 'fetch');
+      mockFetch.mockRejectedValueOnce(new Error('Network error'));
+        id: 'test-event-2',
+        type: SyncEventType.VENDOR_COMMUNICATION,
+        data: { vendorId: 'vendor-1' },
+        priority: SyncPriority.HIGH,
+      expect(event.attempts).toBe(1);
+      expect(event.lastError).toBeDefined();
+      mockFetch.mockRestore();
+    it('should escalate critical failures on event day', async () => {
+      const escalationCallback = vi.fn();
+      syncEventManager.on('sync-escalation', escalationCallback);
+        id: 'critical-event',
+        type: SyncEventType.GUEST_LIST_UPDATE,
+        data: { guestId: 'guest-1', status: 'confirmed' },
+        priority: SyncPriority.CRITICAL,
+        attempts: 3,
+        weddingId: 'wedding-123',
+      expect(escalationCallback).toHaveBeenCalledWith(expect.objectContaining({
+        eventId: 'critical-event',
+        reason: 'max_retries_exceeded',
+        isEventDay: true,
+  describe('cancelSync', () => {
+    it('should cancel queued event', async () => {
+      const cancelled = await syncEventManager.cancelSync(eventId);
+      expect(cancelled).toBe(true);
+      expect(events.find(e => e.id === eventId)).toBeUndefined();
+    it('should return false for non-existent event', async () => {
+      const cancelled = await syncEventManager.cancelSync('non-existent-id');
+      expect(cancelled).toBe(false);
+  describe('getQueuedEvents', () => {
+    it('should return events sorted by priority and scheduled time', async () => {
+      await syncEventManager.scheduleSync(SyncEventType.CLIENT_DATA_SYNC, {}, {
+        priority: SyncPriority.LOW,
+        scheduledAt: Date.now() + 2000,
+      await syncEventManager.scheduleSync(SyncEventType.VENDOR_COMMUNICATION, {}, {
+        scheduledAt: Date.now() + 1000,
+      await syncEventManager.scheduleSync(SyncEventType.GUEST_LIST_UPDATE, {}, {
+        scheduledAt: Date.now() + 3000,
+      expect(events).toHaveLength(3);
+      expect(events[0].priority).toBe(SyncPriority.CRITICAL);
+      expect(events[1].priority).toBe(SyncPriority.HIGH);
+      expect(events[2].priority).toBe(SyncPriority.LOW);
+    it('should filter events by wedding ID', async () => {
+        weddingId: 'wedding-1',
+        weddingId: 'wedding-2',
+      const wedding1Events = syncEventManager.getQueuedEvents('wedding-1');
+      const wedding2Events = syncEventManager.getQueuedEvents('wedding-2');
+      expect(wedding1Events).toHaveLength(1);
+      expect(wedding2Events).toHaveLength(1);
+      expect(wedding1Events[0].weddingId).toBe('wedding-1');
+      expect(wedding2Events[0].weddingId).toBe('wedding-2');
+  describe('pauseAllSync and resumeAllSync', () => {
+    it('should pause and resume sync processing', async () => {
+      await syncEventManager.scheduleSync(SyncEventType.CLIENT_DATA_SYNC, {});
+      syncEventManager.pauseAllSync();
+      expect(syncEventManager.isPaused()).toBe(true);
+      syncEventManager.resumeAllSync();
+      expect(syncEventManager.isPaused()).toBe(false);
+  describe('clearAllEvents', () => {
+    it('should clear all events and reset state', async () => {
+      await syncEventManager.scheduleSync(SyncEventType.VENDOR_COMMUNICATION, {});
+      expect(syncEventManager.getQueuedEvents()).toHaveLength(2);
+      await syncEventManager.clearAllEvents();
+      expect(syncEventManager.getQueuedEvents()).toHaveLength(0);
+  describe('Wedding context helpers', () => {
+    beforeEach(() => {
+      // Mock Date.now for consistent testing
+      vi.spyOn(Date, 'now').mockReturnValue(1640995200000); // 2022-01-01 00:00:00
+    afterEach(() => {
+      vi.restoreAllMocks();
+    it('should detect event day correctly', () => {
+      const eventDate = new Date('2022-01-01T10:00:00Z').getTime();
+      const isEventDay = (syncEventManager as unknown).isEventDay('wedding-123', eventDate);
+      expect(isEventDay).toBe(true);
+    it('should detect non-event day correctly', () => {
+      const eventDate = new Date('2022-01-02T10:00:00Z').getTime();
+      expect(isEventDay).toBe(false);
+    it('should boost priority for critical operations on event day', () => {
+      const boostedPriority = (syncEventManager as unknown).boostPriorityForEventDay(
+        SyncPriority.MEDIUM,
+        true
+      expect(boostedPriority).toBe(SyncPriority.CRITICAL);
+    it('should not boost priority for non-critical operations', () => {
+      const originalPriority = (syncEventManager as unknown).boostPriorityForEventDay(
+        SyncPriority.LOW,
+      expect(originalPriority).toBe(SyncPriority.LOW);
+  describe('Error handling and edge cases', () => {
+    it('should handle concurrent event scheduling', async () => {
+      const promises = Array.from({ length: 10 }, (_, i) =>
+        syncEventManager.scheduleSync(SyncEventType.CLIENT_DATA_SYNC, { id: i })
+      const eventIds = await Promise.all(promises);
+      expect(eventIds).toHaveLength(10);
+      expect(new Set(eventIds).size).toBe(10); // All IDs should be unique
+    it('should handle invalid event data gracefully', async () => {
+        null as any
+      expect(event?.data).toBeNull();
+    it('should cleanup resources on destroy', async () => {
+      const removeAllListenersSpy = vi.spyOn(syncEventManager, 'removeAllListeners');
+      syncEventManager.destroy();
+      expect(removeAllListenersSpy).toHaveBeenCalled();

@@ -1,0 +1,525 @@
+/**
+ * Data Integrity and Validation Tests for Guest List Builder
+ * Team E - Batch 13 - WS-151 Guest List Builder Data Validation Testing
+ * 
+ * Testing Requirements:
+ * - Bulk operation data integrity
+ * - Duplicate detection accuracy
+ * - Data validation rules enforcement
+ * - Constraint validation
+ * - Transaction rollback scenarios
+ * - Edge case handling
+ */
+
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from '@jest/globals'
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { createClient } from '@supabase/supabase-js'
+import { Database } from '@/types/database'
+// Test configuration
+const TEST_SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!
+const TEST_SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+// Test data
+let supabase: ReturnType<typeof createClient<Database>>
+let testUser: any
+let testClient: any
+let testGuests: any[] = []
+describe('Guest Data Integrity and Validation Tests', () => {
+  beforeAll(async () => {
+    supabase = createClient<Database>(TEST_SUPABASE_URL, TEST_SUPABASE_ANON_KEY)
+    
+    // Create test user and client
+    const { data: { user }, error: authError } = await supabase.auth.signUp({
+      email: `integrity-test-${Date.now()}@example.com`,
+      password: 'testpassword123',
+    })
+    expect(authError).toBeNull()
+    expect(user).toBeTruthy()
+    testUser = user
+    // Create test client
+    const { data: client, error: clientError } = await supabase
+      .from('clients')
+      .insert({
+        first_name: 'Integrity',
+        last_name: 'TestCouple',
+        email: testUser.email,
+        wedding_date: '2025-12-31'
+      })
+      .select()
+      .single()
+    expect(clientError).toBeNull()
+    expect(client).toBeTruthy()
+    testClient = client
+  })
+  afterAll(async () => {
+    // Cleanup
+    if (testClient) {
+      await supabase.from('guests').delete().eq('couple_id', testClient.id)
+      await supabase.from('guest_import_sessions').delete().eq('couple_id', testClient.id)
+      await supabase.from('clients').delete().eq('id', testClient.id)
+    }
+    if (testUser) {
+      await supabase.auth.signOut()
+  beforeEach(async () => {
+    // Clean up existing test guests
+    await supabase.from('guests').delete().eq('couple_id', testClient.id)
+    testGuests = []
+  describe('Duplicate Detection', () => {
+    it('should detect exact duplicate guests by email', async () => {
+      // Create first guest
+      const { data: firstGuest, error: firstError } = await supabase
+        .from('guests')
+        .insert({
+          couple_id: testClient.id,
+          first_name: 'John',
+          last_name: 'Doe',
+          email: 'john.doe@example.com',
+          category: 'family'
+        })
+        .select()
+        .single()
+      expect(firstError).toBeNull()
+      testGuests.push(firstGuest)
+      // Attempt to create duplicate guest with same email
+      const { data: duplicateGuest, error: duplicateError } = await supabase
+          first_name: 'Johnny',
+          last_name: 'Smith',
+          email: 'john.doe@example.com', // Same email
+          category: 'friends'
+      // Should either prevent insertion or flag as duplicate
+      if (duplicateError) {
+        expect(duplicateError.message).toMatch(/unique|duplicate|constraint/i)
+      } else {
+        // If insertion succeeds, verify duplicate detection logic
+        const { data: allGuests } = await supabase
+          .from('guests')
+          .select('*')
+          .eq('couple_id', testClient.id)
+          .eq('email', 'john.doe@example.com')
+        expect(allGuests?.length).toBe(2) // Both records exist
+        
+        // Test duplicate detection algorithm
+        const duplicatesByEmail = allGuests?.reduce((acc, guest) => {
+          acc[guest.email] = (acc[guest.email] || 0) + 1
+          return acc
+        }, {} as Record<string, number>)
+        expect(duplicatesByEmail['john.doe@example.com']).toBe(2)
+      }
+    it('should detect potential duplicates by name similarity', async () => {
+      const similarGuests = [
+        { first_name: 'John', last_name: 'Smith', email: 'john.smith@example.com' },
+        { first_name: 'Jon', last_name: 'Smith', email: 'jon.smith@gmail.com' },
+        { first_name: 'John', last_name: 'Smyth', email: 'john.smyth@yahoo.com' },
+        { first_name: 'Johnny', last_name: 'Smith', email: 'johnny@example.com' }
+      ]
+      // Insert all similar guests
+      for (const guest of similarGuests) {
+        const { data, error } = await supabase
+          .insert({
+            couple_id: testClient.id,
+            ...guest,
+            category: 'friends'
+          })
+          .select()
+          .single()
+        expect(error).toBeNull()
+        testGuests.push(data)
+      // Test fuzzy matching algorithm
+      const { data: allGuests } = await supabase
+        .select('*')
+        .eq('couple_id', testClient.id)
+      // Implement Levenshtein distance or similar algorithm for duplicate detection
+      const findSimilarGuests = (guests: any[], threshold = 0.8) => {
+        const similar = []
+        for (let i = 0; i < guests.length; i++) {
+          for (let j = i + 1; j < guests.length; j++) {
+            const guest1 = guests[i]
+            const guest2 = guests[j]
+            
+            const name1 = `${guest1.first_name} ${guest1.last_name}`.toLowerCase()
+            const name2 = `${guest2.first_name} ${guest2.last_name}`.toLowerCase()
+            // Simplified similarity check (in real implementation, use proper fuzzy matching)
+            const similarity = calculateSimilarity(name1, name2)
+            if (similarity >= threshold) {
+              similar.push({ guest1, guest2, similarity })
+            }
+          }
+        }
+        return similar
+      const similarMatches = findSimilarGuests(allGuests)
+      expect(similarMatches.length).toBeGreaterThan(0)
+      // Log similar matches for verification
+      console.log('Similar guest matches found:', similarMatches.length)
+    it('should handle household-level duplicate detection', async () => {
+      // Create household
+      const { data: household, error: householdError } = await supabase
+        .from('households')
+          name: 'Smith Family',
+          address: '123 Main St, City, State 12345'
+      expect(householdError).toBeNull()
+      // Add family members
+      const familyMembers = [
+        { first_name: 'John', last_name: 'Smith', email: 'john@smith.com' },
+        { first_name: 'Jane', last_name: 'Smith', email: 'jane@smith.com' },
+        { first_name: 'John', last_name: 'Smith', email: 'john.smith.jr@gmail.com' } // Potential duplicate
+      for (const member of familyMembers) {
+            household_id: household.id,
+            ...member,
+            category: 'family'
+      // Detect household duplicates
+      const { data: householdGuests } = await supabase
+        .eq('household_id', household.id)
+      const nameCounts = householdGuests?.reduce((acc, guest) => {
+        const fullName = `${guest.first_name} ${guest.last_name}`
+        acc[fullName] = (acc[fullName] || 0) + 1
+        return acc
+      }, {} as Record<string, number>)
+      expect(nameCounts?.['John Smith']).toBe(2)
+    it('should validate phone number duplicates with format normalization', async () => {
+      const guestsWithPhones = [
+        { first_name: 'Alice', last_name: 'Johnson', phone: '555-123-4567' },
+        { first_name: 'Bob', last_name: 'Wilson', phone: '(555) 123-4567' },
+        { first_name: 'Charlie', last_name: 'Brown', phone: '5551234567' },
+        { first_name: 'Diana', last_name: 'Davis', phone: '+1-555-123-4567' }
+      for (const guest of guestsWithPhones) {
+      // Normalize phone numbers and check for duplicates
+      const normalizePhone = (phone: string): string => {
+        return phone.replace(/[\D]/g, '').replace(/^1/, '')
+        .not('phone', 'is', null)
+      const phoneNumbers = allGuests?.map(guest => ({
+        guest,
+        normalizedPhone: normalizePhone(guest.phone)
+      }))
+      const phoneCounts = phoneNumbers?.reduce((acc, { normalizedPhone }) => {
+        acc[normalizedPhone] = (acc[normalizedPhone] || 0) + 1
+      expect(phoneCounts?.['5551234567']).toBe(4) // All should normalize to same number
+  describe('Bulk Operation Data Integrity', () => {
+    beforeEach(async () => {
+      // Create test dataset for bulk operations
+      const bulkTestGuests = Array.from({ length: 50 }, (_, i) => ({
+        couple_id: testClient.id,
+        first_name: `BulkTest${i + 1}`,
+        last_name: `Guest${Math.floor(i / 5) + 1}`,
+        email: `bulktest${i + 1}@example.com`,
+        category: ['family', 'friends', 'work', 'other'][i % 4],
+        side: ['partner1', 'partner2', 'mutual'][i % 3],
+        rsvp_status: 'pending'
+      const { data, error } = await supabase
+        .insert(bulkTestGuests)
+      expect(error).toBeNull()
+      testGuests = data || []
+    it('should maintain data integrity during bulk category updates', async () => {
+      const guestsToUpdate = testGuests.slice(0, 20)
+      const guestIds = guestsToUpdate.map(g => g.id)
+      // Perform bulk category update
+      const { error: updateError } = await supabase
+        .update({ 
+          category: 'family',
+          updated_at: new Date().toISOString()
+        .in('id', guestIds)
+      expect(updateError).toBeNull()
+      // Verify all updates were applied correctly
+      const { data: updatedGuests, error: fetchError } = await supabase
+      expect(fetchError).toBeNull()
+      expect(updatedGuests?.length).toBe(20)
+      updatedGuests?.forEach(guest => {
+        expect(guest.category).toBe('family')
+        expect(new Date(guest.updated_at).getTime()).toBeGreaterThan(
+          new Date(guest.created_at).getTime()
+        )
+      // Verify other guests were not affected
+      const { data: untouchedGuests } = await supabase
+        .not('id', 'in', `(${guestIds.map(id => `'${id}'`).join(',')})`)
+      untouchedGuests?.forEach(guest => {
+        expect(guest.category).not.toBe('family')
+    it('should handle partial failures in bulk operations gracefully', async () => {
+      const guestsToUpdate = testGuests.slice(0, 10)
+      
+      // Introduce some invalid data in the batch
+      const updates = guestsToUpdate.map((guest, index) => ({
+        id: guest.id,
+        category: index < 5 ? 'friends' : 'invalid_category', // Invalid category for some
+        rsvp_status: index < 8 ? 'yes' : 'invalid_status' // Invalid RSVP status for some
+      // Execute bulk update and expect partial success
+      let successCount = 0
+      let errorCount = 0
+      for (const update of updates) {
+        try {
+          const { error } = await supabase
+            .from('guests')
+            .update({
+              category: update.category,
+              rsvp_status: update.rsvp_status
+            })
+            .eq('id', update.id)
+          if (error) {
+            errorCount++
+          } else {
+            successCount++
+        } catch (error) {
+          errorCount++
+      // Verify partial success
+      expect(successCount).toBeGreaterThan(0)
+      expect(errorCount).toBeGreaterThan(0)
+      expect(successCount + errorCount).toBe(updates.length)
+      // Verify database integrity maintained
+      const { data: finalState } = await supabase
+        .in('id', guestsToUpdate.map(g => g.id))
+      finalState?.forEach(guest => {
+        // Valid categories should be preserved
+        expect(['family', 'friends', 'work', 'other']).toContain(guest.category)
+        expect(['pending', 'yes', 'no', 'maybe']).toContain(guest.rsvp_status)
+    it('should maintain referential integrity during bulk deletions', async () => {
+      // Create related data (dietary requirements)
+      const guestsWithDietaryReqs = testGuests.slice(0, 10)
+      const dietaryReqs = guestsWithDietaryReqs.map(guest => ({
+        guest_id: guest.id,
+        requirement_type: 'vegetarian',
+        severity: 'mild',
+        notes: 'Test dietary requirement'
+      const { data: createdReqs, error: reqError } = await supabase
+        .from('dietary_requirements')
+        .insert(dietaryReqs)
+      expect(reqError).toBeNull()
+      // Perform bulk guest deletion
+      const guestIdsToDelete = guestsWithDietaryReqs.slice(0, 5).map(g => g.id)
+      const { error: deleteError } = await supabase
+        .delete()
+        .in('id', guestIdsToDelete)
+      expect(deleteError).toBeNull()
+      // Verify guests were deleted
+      const { data: remainingGuests } = await supabase
+      expect(remainingGuests?.length).toBe(0)
+      // Verify referential integrity (dietary requirements should be cascaded or handled)
+      const { data: remainingReqs } = await supabase
+        .in('guest_id', guestIdsToDelete)
+      // Depending on database setup, these should either be cascaded or prevented
+      expect(remainingReqs?.length).toBe(0) // Assuming CASCADE DELETE
+    it('should validate constraints during bulk table assignments', async () => {
+      const guestsToAssign = testGuests.slice(0, 25)
+      // Test table capacity constraints (assuming max 10 guests per table)
+      const tableAssignments = guestsToAssign.map((guest, index) => ({
+        table_number: Math.floor(index / 10) + 1 // Tables 1, 2, 3
+      let assignmentErrors = []
+      for (const assignment of tableAssignments) {
+        const { error } = await supabase
+          .update({ table_number: assignment.table_number })
+          .eq('id', assignment.id)
+        if (error) {
+          assignmentErrors.push(error)
+      // Verify table assignments
+      const { data: assignedGuests } = await supabase
+        .in('id', guestsToAssign.map(g => g.id))
+        .not('table_number', 'is', null)
+      // Check table capacity distribution
+      const tableDistribution = assignedGuests?.reduce((acc, guest) => {
+        acc[guest.table_number] = (acc[guest.table_number] || 0) + 1
+      }, {} as Record<number, number>)
+      // Verify reasonable distribution
+      Object.values(tableDistribution || {}).forEach(count => {
+        expect(count).toBeLessThanOrEqual(15) // Allow some flexibility
+  describe('Data Validation Rules', () => {
+    it('should enforce required field validations', async () => {
+      const invalidGuests = [
+        { last_name: 'NoFirstName', email: 'test1@example.com' }, // Missing first_name
+        { first_name: 'NoLastName', email: 'test2@example.com' }, // Missing last_name
+        { first_name: 'Both', last_name: 'Present' }, // Missing couple_id implicitly
+      for (const invalidGuest of invalidGuests) {
+            ...invalidGuest,
+            category: 'other'
+        if (invalidGuest.last_name === 'NoFirstName' || invalidGuest.first_name === 'NoLastName') {
+          expect(error).not.toBeNull()
+          expect(error?.message).toMatch(/not-null|required|constraint/i)
+    it('should validate email format constraints', async () => {
+      const emailTestCases = [
+        { email: 'valid@example.com', shouldPass: true },
+        { email: 'also.valid+tag@domain.co.uk', shouldPass: true },
+        { email: 'invalid-email', shouldPass: false },
+        { email: '@invalid.com', shouldPass: false },
+        { email: 'missing-domain@', shouldPass: false },
+        { email: '', shouldPass: true }, // Empty email might be allowed
+      for (const testCase of emailTestCases) {
+            first_name: 'Email',
+            last_name: 'Test',
+            email: testCase.email,
+        if (testCase.shouldPass) {
+          expect(error).toBeNull()
+          if (data) testGuests.push(data)
+        } else {
+          expect(error?.message).toMatch(/email|format|constraint|check/i)
+    it('should validate enumerated field constraints', async () => {
+      const categoryTests = [
+        { category: 'family', shouldPass: true },
+        { category: 'friends', shouldPass: true },
+        { category: 'work', shouldPass: true },
+        { category: 'other', shouldPass: true },
+        { category: 'invalid_category', shouldPass: false },
+      for (const test of categoryTests) {
+            first_name: 'Category',
+            email: `category${Date.now()}@example.com`,
+            category: test.category
+        if (test.shouldPass) {
+      // Test RSVP status enumeration
+      const rsvpTests = [
+        { rsvp_status: 'pending', shouldPass: true },
+        { rsvp_status: 'yes', shouldPass: true },
+        { rsvp_status: 'no', shouldPass: true },
+        { rsvp_status: 'maybe', shouldPass: true },
+        { rsvp_status: 'invalid_status', shouldPass: false },
+      for (const test of rsvpTests) {
+            first_name: 'RSVP',
+            email: `rsvp${Date.now()}@example.com`,
+            category: 'other',
+            rsvp_status: test.rsvp_status
+    it('should validate foreign key constraints', async () => {
+      // Test invalid couple_id
+      const { data: invalidCoupleGuest, error: invalidCoupleError } = await supabase
+          couple_id: 'non-existent-couple-id',
+          first_name: 'Invalid',
+          last_name: 'Couple',
+          email: 'invalid@example.com',
+          category: 'other'
+      expect(invalidCoupleError).not.toBeNull()
+      expect(invalidCoupleError?.message).toMatch(/foreign key|constraint|violates/i)
+      // Test invalid household_id
+      const { data: validGuest } = await supabase
+          first_name: 'Valid',
+          last_name: 'Guest',
+          email: 'valid@example.com',
+      testGuests.push(validGuest)
+      const { data: invalidHouseholdGuest, error: invalidHouseholdError } = await supabase
+        .update({
+          household_id: 'non-existent-household-id'
+        .eq('id', validGuest.id)
+      expect(invalidHouseholdError).not.toBeNull()
+  describe('Transaction Rollback Scenarios', () => {
+    it('should rollback failed bulk operations maintaining consistency', async () => {
+      const testGuestsForTransaction = testGuests.slice(0, 10)
+      const originalGuestData = await supabase
+        .in('id', testGuestsForTransaction.map(g => g.id))
+      // Simulate a transaction that should fail partway through
+      const updates = testGuestsForTransaction.map((guest, index) => ({
+        category: index < 5 ? 'friends' : 'invalid_category',
+        rsvp_status: 'yes'
+      // In a real scenario, this would be wrapped in a transaction
+      // For testing purposes, we'll simulate the behavior
+      let partialSuccess = false
+      try {
+        for (let i = 0; i < updates.length; i++) {
+          const update = updates[i]
+            partialSuccess = i > 0 // Some updates succeeded before failure
+            throw error
+      } catch (error) {
+        // Verify partial updates occurred (demonstrating need for transactions)
+        const { data: currentState } = await supabase
+          .in('id', testGuestsForTransaction.map(g => g.id))
+        if (partialSuccess) {
+          // Some records were updated before the failure
+          const changedRecords = currentState?.filter(guest => 
+            guest.category !== originalGuestData.data?.find(orig => orig.id === guest.id)?.category
+          )
+          expect(changedRecords?.length).toBeGreaterThan(0)
+    it('should handle concurrent modification conflicts', async () => {
+      const testGuest = testGuests[0]
+      // Simulate concurrent modifications
+      const modification1 = supabase
+          category: 'friends',
+        .eq('id', testGuest.id)
+      const modification2 = supabase
+          category: 'work',
+      // Execute concurrently
+      const results = await Promise.allSettled([modification1, modification2])
+      // Both should succeed in this case, but last one wins
+      results.forEach(result => {
+        expect(result.status).toBe('fulfilled')
+      // Verify final state
+      const { data: finalGuest } = await supabase
+      expect(['friends', 'work']).toContain(finalGuest?.category)
+  describe('Edge Cases and Boundary Conditions', () => {
+    it('should handle maximum field length constraints', async () => {
+      const longString = 'a'.repeat(1000) // Very long string
+          first_name: longString,
+          last_name: 'Test',
+          email: 'long@example.com',
+      // Should either truncate or reject based on database constraints
+      if (error) {
+        expect(error.message).toMatch(/length|constraint|too long/i)
+        expect(data.first_name.length).toBeLessThanOrEqual(255) // Common varchar limit
+    it('should handle special characters and Unicode in names', async () => {
+      const unicodeGuests = [
+        { first_name: 'José', last_name: 'García', email: 'jose@example.com' },
+        { first_name: '李', last_name: '明', email: 'li.ming@example.com' },
+        { first_name: 'François', last_name: 'Müller', email: 'francois@example.com' },
+        { first_name: 'Αλέξανδρος', last_name: 'Παπαδόπουλος', email: 'alex@example.com' },
+        { first_name: 'العربية', last_name: 'الاسم', email: 'arabic@example.com' }
+      for (const guest of unicodeGuests) {
+        expect(data.first_name).toBe(guest.first_name)
+        expect(data.last_name).toBe(guest.last_name)
+    it('should handle null and empty string values appropriately', async () => {
+      const nullTestCases = [
+        { 
+          first_name: 'Null', 
+          last_name: 'Test', 
+          email: null, 
+          phone: null,
+          dietary_restrictions: null 
+        },
+          first_name: 'Empty', 
+          email: '', 
+          phone: '',
+          dietary_restrictions: '' 
+      for (const testCase of nullTestCases) {
+            ...testCase,
+        // Verify null/empty handling
+        if (testCase.email === null) {
+          expect(data.email).toBeNull()
+        } else if (testCase.email === '') {
+          expect(data.email === '' || data.email === null).toBeTruthy()
+    it('should validate complex data relationships', async () => {
+      // Create guest with plus one
+      const { data: guestWithPlusOne, error: guestError } = await supabase
+          first_name: 'Primary',
+          email: 'primary@example.com',
+          plus_one: true,
+          plus_one_name: 'Plus One Guest'
+      expect(guestError).toBeNull()
+      testGuests.push(guestWithPlusOne)
+      // Verify plus one logic
+      expect(guestWithPlusOne.plus_one).toBe(true)
+      expect(guestWithPlusOne.plus_one_name).toBe('Plus One Guest')
+      // Test invalid plus one scenarios
+      const { data: invalidPlusOne, error: invalidError } = await supabase
+          last_name: 'PlusOne',
+          plus_one: false,
+          plus_one_name: 'Should Not Exist' // Name without plus_one enabled
+      // Depending on business rules, this might be allowed or rejected
+      if (invalidError) {
+        expect(invalidError.message).toMatch(/constraint|check|plus_one/i)
+        // If allowed, verify the constraint handling
+        expect(invalidPlusOne.plus_one_name).toBeTruthy()
+        testGuests.push(invalidPlusOne)
+})
+// Utility function for similarity calculation
+function calculateSimilarity(str1: string, str2: string): number {
+  // Simplified Levenshtein distance-based similarity
+  const maxLength = Math.max(str1.length, str2.length)
+  if (maxLength === 0) return 1
+  
+  const distance = levenshteinDistance(str1, str2)
+  return (maxLength - distance) / maxLength
+}
+function levenshteinDistance(str1: string, str2: string): number {
+  const matrix = []
+  for (let i = 0; i <= str2.length; i++) {
+    matrix[i] = [i]
+  }
+  for (let j = 0; j <= str1.length; j++) {
+    matrix[0][j] = j
+  for (let i = 1; i <= str2.length; i++) {
+    for (let j = 1; j <= str1.length; j++) {
+      if (str2.charAt(i - 1) === str1.charAt(j - 1)) {
+        matrix[i][j] = matrix[i - 1][j - 1]
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j - 1] + 1,
+          matrix[i][j - 1] + 1,
+          matrix[i - 1][j] + 1
+  return matrix[str2.length][str1.length]

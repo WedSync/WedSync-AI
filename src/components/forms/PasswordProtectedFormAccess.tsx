@@ -1,0 +1,208 @@
+'use client';
+
+import React, { useState } from 'react';
+import { Button } from '@/components/ui/button';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Lock, Eye, EyeOff, AlertCircle, Shield } from 'lucide-react';
+import { toast } from 'sonner';
+import { cn } from '@/lib/utils';
+
+interface PasswordProtectedFormAccessProps {
+  formSlug: string;
+  formTitle: string;
+  vendorBranding?: {
+    primary?: string;
+    secondary?: string;
+    text?: string;
+    accent?: string;
+  };
+}
+
+export default function PasswordProtectedFormAccess({
+  formSlug,
+  formTitle,
+  vendorBranding,
+}: PasswordProtectedFormAccessProps) {
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [isVerifying, setIsVerifying] = useState(false);
+  const [error, setError] = useState('');
+  const [attempts, setAttempts] = useState(0);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    if (!password.trim()) {
+      setError('Please enter a password');
+      return;
+    }
+
+    setIsVerifying(true);
+    setError('');
+
+    try {
+      const response = await fetch('/api/forms/verify-password', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          slug: formSlug,
+          password: password,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (response.ok && result.success) {
+        // Password is correct, redirect to form with token
+        const token = result.token;
+        window.location.href = `/forms/${formSlug}?token=${token}`;
+      } else {
+        setAttempts((prev) => prev + 1);
+        setError(result.error || 'Incorrect password. Please try again.');
+        setPassword('');
+
+        // Show warning after multiple attempts
+        if (attempts >= 2) {
+          toast.error(
+            'Multiple incorrect attempts. Please contact the form owner if you need help.',
+          );
+        }
+      }
+    } catch (error) {
+      console.error('Password verification error:', error);
+      setError('Unable to verify password. Please try again.');
+    } finally {
+      setIsVerifying(false);
+    }
+  };
+
+  return (
+    <Card className="w-full max-w-md mx-auto">
+      <CardHeader className="text-center">
+        <div className="mx-auto w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center mb-4">
+          <Lock className="w-6 h-6 text-blue-600" />
+        </div>
+        <CardTitle className="text-xl">Password Protected Form</CardTitle>
+        <CardDescription>{formTitle}</CardDescription>
+      </CardHeader>
+
+      <CardContent>
+        <form onSubmit={handleSubmit} className="space-y-6">
+          <div className="space-y-2">
+            <Label htmlFor="password">Enter Password</Label>
+            <div className="relative">
+              <Input
+                id="password"
+                type={showPassword ? 'text' : 'password'}
+                value={password}
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                  if (error) setError('');
+                }}
+                placeholder="Form password"
+                className={cn(
+                  'pr-10',
+                  error && 'border-red-500 focus-visible:ring-red-500',
+                )}
+                style={
+                  vendorBranding?.primary
+                    ? ({
+                        '--tw-ring-color': vendorBranding.primary,
+                      } as any)
+                    : {}
+                }
+                disabled={isVerifying}
+                autoFocus
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute inset-y-0 right-0 pr-3 flex items-center"
+                disabled={isVerifying}
+              >
+                {showPassword ? (
+                  <EyeOff className="h-4 w-4 text-gray-400 hover:text-gray-600" />
+                ) : (
+                  <Eye className="h-4 w-4 text-gray-400 hover:text-gray-600" />
+                )}
+              </button>
+            </div>
+
+            {error && (
+              <div className="flex items-center gap-2 text-sm text-red-600">
+                <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                <span>{error}</span>
+              </div>
+            )}
+          </div>
+
+          <Button
+            type="submit"
+            className="w-full"
+            disabled={isVerifying || !password.trim()}
+            style={{
+              backgroundColor: vendorBranding?.primary,
+              color: vendorBranding?.text,
+            }}
+          >
+            {isVerifying ? (
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                Verifying...
+              </div>
+            ) : (
+              'Access Form'
+            )}
+          </Button>
+
+          {attempts > 0 && attempts < 3 && (
+            <div className="text-sm text-amber-600 text-center">
+              Attempt {attempts}/3
+            </div>
+          )}
+
+          {attempts >= 3 && (
+            <div className="p-3 bg-red-50 rounded-lg">
+              <div className="flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 text-red-600 flex-shrink-0 mt-0.5" />
+                <div className="text-sm text-red-800">
+                  <p className="font-medium">Too many attempts</p>
+                  <p>
+                    Please contact the form owner for assistance accessing this
+                    form.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+        </form>
+
+        {/* Security notice */}
+        <div className="mt-6 pt-4 border-t">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Shield className="w-4 h-4" />
+            <span>This form is password protected for your security</span>
+          </div>
+        </div>
+
+        {/* Help text */}
+        <div className="mt-4 text-center">
+          <p className="text-sm text-muted-foreground">
+            Don't have the password? Contact your wedding vendor directly for
+            access.
+          </p>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}

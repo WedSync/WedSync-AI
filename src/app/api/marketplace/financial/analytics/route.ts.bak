@@ -1,0 +1,353 @@
+/**
+ * WS-109: Financial Analytics API Endpoint
+ * 
+ * GET /api/marketplace/financial/analytics
+ * 
+ * Provides comprehensive financial analytics including revenue metrics,
+ * creator performance data, and commission insights for admin reporting.
+ * 
+ * Team B - Batch 8 - Round 2
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { financialDataProcessingService } from '@/lib/services/financialDataProcessingService';
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_KEY!
+);
+
+// =====================================================================================
+// REQUEST/RESPONSE INTERFACES
+// =====================================================================================
+
+interface FinancialAnalyticsResponse {
+  success: boolean;
+  analytics?: {
+    period_start: string;
+    period_end: string;
+    total_revenue_cents: number;
+    total_commission_paid_cents: number;
+    total_creators_paid: number;
+    average_sale_amount_cents: number;
+    top_performing_creators: Array<{
+      creator_id: string;
+      creator_name?: string;
+      earnings_cents: number;
+      sales_count: number;
+    }>;
+    revenue_by_tier: Record<string, number>;
+    monthly_trends?: Array<{
+      month: string;
+      revenue_cents: number;
+      commission_cents: number;
+      sales_count: number;
+    }>;
+  };
+  data_integrity?: {
+    valid: boolean;
+    issues: Array<{
+      type: string;
+      description: string;
+      count: number;
+    }>;
+  };
+  error?: string;
+}
+
+// =====================================================================================
+// API HANDLERS
+// =====================================================================================
+
+export async function GET(request: NextRequest) {
+  try {
+    // Admin authentication check
+    const authCheck = await verifyAdminAccess(request);
+    if (!authCheck.valid) {
+      return NextResponse.json(
+        { 
+          success: false, 
+          error: authCheck.error 
+        },
+        { status: authCheck.status || 403 }
+      );
+    }
+
+    const { searchParams } = request.nextUrl;
+    
+    // Parse query parameters
+    const periodStartStr = searchParams.get('period_start');
+    const periodEndStr = searchParams.get('period_end');
+    const includeIntegrity = searchParams.get('include_integrity') === 'true';
+    const includeTrends = searchParams.get('include_trends') === 'true';
+    
+    // Default to current month if no period specified
+    let periodStart: Date;
+    let periodEnd: Date;
+    
+    if (periodStartStr && periodEndStr) {
+      periodStart = new Date(periodStartStr);
+      periodEnd = new Date(periodEndStr);
+      
+      if (isNaN(periodStart.getTime()) || isNaN(periodEnd.getTime())) {
+        return NextResponse.json(
+          { success: false, error: 'Invalid date format. Use ISO 8601 format.' },
+          { status: 400 }
+        );
+      }
+      
+      if (periodStart >= periodEnd) {
+        return NextResponse.json(
+          { success: false, error: 'period_start must be before period_end' },
+          { status: 400 }
+        );
+      }
+    } else {
+      // Default to current month
+      const now = new Date();
+      periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
+      periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    }
+
+    // Generate financial analytics
+    const analytics = await financialDataProcessingService.generateFinancialAnalytics(
+      periodStart,
+      periodEnd
+    );
+
+    if (!analytics) {
+      return NextResponse.json(
+        { success: false, error: 'Failed to generate financial analytics' },
+        { status: 500 }
+      );
+    }
+
+    // Enhance with creator names
+    const enhancedCreators = await enhanceCreatorData(analytics.top_performing_creators);
+
+    // Get monthly trends if requested
+    let monthlyTrends = undefined;
+    if (includeTrends) {
+      monthlyTrends = await getMonthlyTrends(periodStart, periodEnd);
+    }
+
+    // Check data integrity if requested
+    let dataIntegrity = undefined;
+    if (includeIntegrity) {
+      dataIntegrity = await financialDataProcessingService.validateFinancialDataIntegrity(
+        periodStart,
+        periodEnd
+      );
+    }
+
+    const response: FinancialAnalyticsResponse = {
+      success: true,
+      analytics: {
+        period_start: analytics.period_start.toISOString(),
+        period_end: analytics.period_end.toISOString(),
+        total_revenue_cents: analytics.total_revenue_cents,
+        total_commission_paid_cents: analytics.total_commission_paid_cents,
+        total_creators_paid: analytics.total_creators_paid,
+        average_sale_amount_cents: analytics.average_sale_amount_cents,
+        top_performing_creators: enhancedCreators,
+        revenue_by_tier: analytics.revenue_by_tier,
+        monthly_trends: monthlyTrends
+      },
+      data_integrity: dataIntegrity
+    };
+
+    return NextResponse.json(response);
+
+  } catch (error) {
+    console.error('Financial analytics API error:', error);
+    
+    return NextResponse.json(
+      { 
+        success: false, 
+        error: 'Failed to generate financial analytics. Please try again.' 
+      },
+      { status: 500 }
+    );
+  }
+}
+
+// =====================================================================================
+// HELPER FUNCTIONS
+// =====================================================================================
+
+async function verifyAdminAccess(request: NextRequest): Promise<{ 
+  valid: boolean; 
+  error?: string; 
+  status?: number;
+  userId?: string; 
+}> {
+  try {
+    const authHeader = request.headers.get('Authorization');
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return { 
+        valid: false, 
+        error: 'Authorization header required', 
+        status: 401 
+      };
+    }
+
+    const token = authHeader.substring(7);
+    
+    // Verify token with Supabase
+    const { data: { user }, error } = await supabase.auth.getUser(token);
+    
+    if (error || !user) {
+      return { 
+        valid: false, 
+        error: 'Invalid or expired token', 
+        status: 401 
+      };
+    }
+
+    // Check if user has admin role
+    const { data: profile, error: profileError } = await supabase
+      .from('profiles')
+      .select('role')
+      .eq('id', user.id)
+      .single();
+
+    if (profileError || !profile) {
+      return { 
+        valid: false, 
+        error: 'User profile not found', 
+        status: 404 
+      };
+    }
+
+    if (profile.role !== 'admin' && profile.role !== 'super_admin' && profile.role !== 'finance_admin') {
+      return { 
+        valid: false, 
+        error: 'Admin access required for financial analytics', 
+        status: 403 
+      };
+    }
+
+    return { valid: true, userId: user.id };
+
+  } catch (error) {
+    console.error('Admin verification error:', error);
+    return { 
+      valid: false, 
+      error: 'Authentication verification failed', 
+      status: 500 
+    };
+  }
+}
+
+async function enhanceCreatorData(
+  creators: Array<{
+    creator_id: string;
+    earnings_cents: number;
+    sales_count: number;
+  }>
+): Promise<Array<{
+  creator_id: string;
+  creator_name?: string;
+  earnings_cents: number;
+  sales_count: number;
+}>> {
+  try {
+    if (creators.length === 0) {
+      return [];
+    }
+
+    const creatorIds = creators.map(c => c.creator_id);
+    
+    const { data: profiles, error } = await supabase
+      .from('suppliers')
+      .select('id, business_name, first_name, last_name')
+      .in('id', creatorIds);
+
+    if (error) {
+      console.error('Creator data enhancement error:', error);
+      return creators; // Return original data if enhancement fails
+    }
+
+    const profileMap = new Map(
+      profiles?.map(p => [
+        p.id, 
+        p.business_name || `${p.first_name || ''} ${p.last_name || ''}`.trim()
+      ]) || []
+    );
+
+    return creators.map(creator => ({
+      ...creator,
+      creator_name: profileMap.get(creator.creator_id) || 'Unknown Creator'
+    }));
+
+  } catch (error) {
+    console.error('Creator data enhancement error:', error);
+    return creators;
+  }
+}
+
+async function getMonthlyTrends(
+  periodStart: Date,
+  periodEnd: Date
+): Promise<Array<{
+  month: string;
+  revenue_cents: number;
+  commission_cents: number;
+  sales_count: number;
+}>> {
+  try {
+    // Generate month labels for the period
+    const months: string[] = [];
+    const current = new Date(periodStart);
+    
+    while (current < periodEnd) {
+      months.push(`${current.getFullYear()}-${String(current.getMonth() + 1).padStart(2, '0')}`);
+      current.setMonth(current.getMonth() + 1);
+    }
+
+    const trends: Array<{
+      month: string;
+      revenue_cents: number;
+      commission_cents: number;
+      sales_count: number;
+    }> = [];
+
+    for (const month of months) {
+      const [year, monthNum] = month.split('-').map(Number);
+      const monthStart = new Date(year, monthNum - 1, 1);
+      const monthEnd = new Date(year, monthNum, 1);
+
+      // Get revenue data for the month
+      const { data: revenueData, error: revenueError } = await supabase
+        .from('marketplace_revenue_records')
+        .select('gross_amount_cents')
+        .gte('sale_timestamp', monthStart.toISOString())
+        .lt('sale_timestamp', monthEnd.toISOString());
+
+      // Get commission data for the month
+      const { data: commissionData, error: commissionError } = await supabase
+        .from('marketplace_commission_records')
+        .select('creator_earnings_cents')
+        .gte('calculated_at', monthStart.toISOString())
+        .lt('calculated_at', monthEnd.toISOString());
+
+      const monthRevenue = revenueData?.reduce((sum, record) => sum + record.gross_amount_cents, 0) || 0;
+      const monthCommission = commissionData?.reduce((sum, record) => sum + record.creator_earnings_cents, 0) || 0;
+      const salesCount = revenueData?.length || 0;
+
+      trends.push({
+        month,
+        revenue_cents: monthRevenue,
+        commission_cents: monthCommission,
+        sales_count: salesCount
+      });
+    }
+
+    return trends;
+
+  } catch (error) {
+    console.error('Monthly trends calculation error:', error);
+    return [];
+  }
+}

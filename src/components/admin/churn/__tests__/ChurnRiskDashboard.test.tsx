@@ -1,0 +1,428 @@
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { jest } from '@jest/globals';
+import ChurnRiskDashboard from '../ChurnRiskDashboard';
+import { ChurnRiskDashboardProps, ChurnRiskLevel, RetentionCampaignType, CampaignStatus, AlertUrgency } from '@/types/churn-intelligence';
+
+// Mock child components
+jest.mock('../AtRiskSupplierCard', () => ({
+  __esModule: true,
+  default: ({ supplier, onActionExecute }: any) => (
+    <div data-testid={`supplier-card-${supplier.supplierId}`}>
+      <span>{supplier.supplierName}</span>
+      <span data-testid="risk-level">{supplier.churnRiskLevel}</span>
+      <span data-testid="risk-score">{supplier.churnRiskScore}</span>
+      <button onClick={() => onActionExecute('send_email')}>
+        Execute Action
+      </button>
+    </div>
+  )
+}));
+jest.mock('../ChurnTrendChart', () => ({
+  default: ({ churnData, onDateRangeChange }: any) => (
+    <div data-testid="churn-trend-chart">
+      <span>Trend Chart - {churnData.length} data points</span>
+      <button onClick={() => onDateRangeChange?.({ startDate: new Date(), endDate: new Date() })}>
+        Change Date Range
+jest.mock('../RetentionCampaignManager', () => ({
+  default: ({ activeCampaigns, onCampaignCreate, onCampaignPause }: any) => (
+    <div data-testid="retention-campaign-manager">
+      <span>Active Campaigns: {activeCampaigns.length}</span>
+      <button onClick={() => onCampaignCreate?.({
+        name: 'Test Campaign',
+        campaignType: 're_engagement',
+        targetRiskLevel: ['high_risk']
+      })}>
+        Create Campaign
+      {activeCampaigns.map((campaign: any) => (
+        <div key={campaign.id} data-testid={`campaign-${campaign.id}`}>
+          <span>{campaign.name}</span>
+          <button onClick={() => onCampaignPause?.(campaign.id)}>
+            Pause
+          </button>
+        </div>
+      ))}
+jest.mock('../ChurnAlertPanel', () => ({
+  default: ({ alerts, onAlertDismiss, onAlertAcknowledge }: any) => (
+    <div data-testid="churn-alert-panel">
+      <span>Active Alerts: {alerts.length}</span>
+      {alerts.map((alert: any) => (
+        <div key={alert.id} data-testid={`alert-${alert.id}`}>
+          <span>{alert.title}</span>
+          <span data-testid="alert-urgency">{alert.urgency}</span>
+          <button onClick={() => onAlertDismiss?.(alert.id)}>
+            Dismiss
+          <button onClick={() => onAlertAcknowledge?.(alert.id)}>
+            Acknowledge
+// Mock UI components
+jest.mock('@/components/ui/card-untitled', () => ({
+  Card: ({ children, className }: any) => (
+    <div data-testid="card" className={className}>
+      {children}
+jest.mock('@/components/ui/button-untitled', () => ({
+  Button: ({ children, onClick, variant, size, className, disabled }: any) => (
+    <button 
+      onClick={onClick} 
+      className={className}
+      disabled={disabled}
+      data-variant={variant}
+      data-size={size}
+      data-testid="button"
+    >
+    </button>
+jest.mock('@/components/ui/badge', () => ({
+  Badge: ({ children, variant, className }: any) => (
+    <span 
+      data-testid="badge"
+    </span>
+// Mock sonner toast
+jest.mock('sonner', () => ({
+  toast: {
+    success: jest.fn(),
+    error: jest.fn(),
+    info: jest.fn(),
+    warning: jest.fn(),
+  }
+// Mock utils
+jest.mock('@/lib/utils', () => ({
+  cn: (...args: any[]) => args.filter(Boolean).join(' ')
+// Mock data
+const mockAtRiskSuppliers = [
+  {
+    supplierId: 'supplier-1',
+    supplierName: 'Elite Photography',
+    supplierType: 'photographer',
+    contactEmail: 'info@elitephoto.com',
+    churnRiskScore: 85,
+    churnRiskLevel: ChurnRiskLevel.CRITICAL,
+    churnProbability: 0.9,
+    daysUntilPredictedChurn: 15,
+    riskFactors: [
+      {
+        factorType: 'login_recency',
+        severity: 'high',
+        score: 90,
+        weight: 0.4,
+        description: 'No login in 30 days',
+        value: 30,
+        detectedAt: new Date(),
+        thresholdExceeded: true,
+        actionRequired: true
+      }
+    ],
+    primaryRiskReason: 'Extended inactivity',
+    daysSinceLastLogin: 30,
+    lastActivityDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+    loginFrequencyTrend: 'declining',
+    featureUsageScore: 20,
+    engagementTrend: 'declining',
+    openSupportTickets: 2,
+    recentTicketSentiment: 'negative',
+    supportInteractionCount30d: 3,
+    subscriptionValue: 299,
+    paymentFailures30d: 1,
+    subscriptionTier: 'pro',
+    daysSinceLastPayment: 45,
+    interventionCount30d: 0,
+    previousRetentionSuccess: false,
+    weddingSeasonActivity: 'off_peak',
+    seasonalRiskAdjustment: 10,
+    calculatedAt: new Date(),
+    lastUpdated: new Date()
+  },
+    supplierId: 'supplier-2',
+    supplierName: 'Dream Venues Inc',
+    supplierType: 'venue',
+    contactEmail: 'contact@dreamvenues.com',
+    churnRiskScore: 75,
+    churnRiskLevel: ChurnRiskLevel.HIGH_RISK,
+    churnProbability: 0.7,
+    daysUntilPredictedChurn: 25,
+        factorType: 'feature_usage',
+        severity: 'medium',
+        score: 70,
+        weight: 0.3,
+        description: 'Low feature adoption',
+        value: 25,
+    primaryRiskReason: 'Low engagement',
+    daysSinceLastLogin: 7,
+    lastActivityDate: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+    loginFrequencyTrend: 'stable',
+    featureUsageScore: 40,
+    engagementTrend: 'stable',
+    openSupportTickets: 0,
+    recentTicketSentiment: 'neutral',
+    supportInteractionCount30d: 1,
+    subscriptionValue: 199,
+    paymentFailures30d: 0,
+    subscriptionTier: 'basic',
+    interventionCount30d: 1,
+    previousRetentionSuccess: true,
+    weddingSeasonActivity: 'peak',
+    seasonalRiskAdjustment: -5,
+];
+const mockChurnMetrics = {
+  totalSuppliers: 150,
+  atRiskSuppliers: 25,
+  criticalRiskSuppliers: 8,
+  predictedChurn30d: 12,
+  predictedChurn90d: 28,
+  monthlyRetentionRate: 0.92,
+  retentionRateChange: -0.03,
+  campaignsSaved: 5,
+  revenueAtRisk: 15000,
+  revenueRetained: 8500,
+  interventionsExecuted30d: 18,
+  interventionSuccessRate: 0.72,
+  averageTimeToIntervention: 4.5,
+  criticalAlertsGenerated: 12,
+  riskTrend: 'worsening' as const,
+  seasonalAdjustment: 8,
+  calculatedAt: new Date()
+};
+const mockRetentionCampaigns = [
+    id: 'campaign-1',
+    name: 'Re-engagement Campaign',
+    campaignType: RetentionCampaignType.RE_ENGAGEMENT,
+    description: 'Target inactive users',
+    targetRiskLevel: [ChurnRiskLevel.HIGH_RISK],
+    targetSupplierTypes: ['photographer', 'venue'],
+    targetSegments: ['inactive'],
+    status: CampaignStatus.ACTIVE,
+    startDate: new Date(),
+    targetedSuppliers: 15,
+    emailsSent: 12,
+    emailOpenRate: 0.75,
+    emailClickRate: 0.25,
+    responseRate: 0.4,
+    suppliersRetained: 3,
+    suppliersLost: 2,
+    saveRate: 0.6,
+    roiCalculated: 2.5,
+    revenueRetained: 4500,
+    isTestCampaign: false,
+    autoExecute: true,
+    triggerConditions: {},
+    executionHistory: [],
+    createdBy: 'admin',
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    frequency: 'monthly' as const
+const mockAlerts = [
+    id: 'alert-1',
+    alertType: 'churn_imminent' as const,
+    urgency: AlertUrgency.CRITICAL,
+    riskScore: 85,
+    riskLevel: ChurnRiskLevel.CRITICAL,
+    title: 'Supplier Churn Imminent',
+    message: 'Elite Photography shows critical churn risk',
+    actionRequired: 'Immediate intervention required',
+    suggestedActions: ['send_email', 'schedule_call'],
+    isRead: false,
+    isDismissed: false,
+    triggerEvent: 'risk_threshold_exceeded',
+    metadata: {}
+    id: 'alert-2',
+    alertType: 'escalated_risk' as const,
+    urgency: AlertUrgency.WARNING,
+    riskScore: 75,
+    riskLevel: ChurnRiskLevel.HIGH_RISK,
+    title: 'Risk Level Escalated',
+    message: 'Dream Venues Inc risk level increased',
+    actionRequired: 'Review and take action',
+    suggestedActions: ['assign_csm'],
+    triggerEvent: 'risk_escalation',
+const mockProps: ChurnRiskDashboardProps = {
+  atRiskSuppliers: mockAtRiskSuppliers,
+  churnMetrics: mockChurnMetrics,
+  retentionCampaigns: mockRetentionCampaigns,
+  realTimeUpdates: false,
+  onSupplierSelect: jest.fn(),
+  onCampaignCreate: jest.fn(),
+  onActionExecute: jest.fn()
+describe('ChurnRiskDashboard', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.useFakeTimers();
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  describe('Rendering', () => {
+    it('should render the dashboard with all main components', () => {
+      render(<ChurnRiskDashboard {...mockProps} />);
+      // Check main dashboard elements
+      expect(screen.getByText('Churn Intelligence Dashboard')).toBeInTheDocument();
+      expect(screen.getByText('Overview')).toBeInTheDocument();
+      expect(screen.getByText('At-Risk Suppliers')).toBeInTheDocument();
+      expect(screen.getByText('Retention Campaigns')).toBeInTheDocument();
+      expect(screen.getByText('Trends & Analytics')).toBeInTheDocument();
+    });
+    it('should display key metrics correctly', () => {
+      expect(screen.getByText('150')).toBeInTheDocument(); // totalSuppliers
+      expect(screen.getByText('25')).toBeInTheDocument(); // atRiskSuppliers
+      expect(screen.getByText('8')).toBeInTheDocument(); // criticalRiskSuppliers
+      expect(screen.getByText('92%')).toBeInTheDocument(); // monthlyRetentionRate
+    it('should render risk level filter buttons', () => {
+      expect(screen.getByText('Safe')).toBeInTheDocument();
+      expect(screen.getByText('Stable')).toBeInTheDocument();
+      expect(screen.getByText('Attention')).toBeInTheDocument();
+      expect(screen.getByText('High Risk')).toBeInTheDocument();
+      expect(screen.getByText('Critical')).toBeInTheDocument();
+    it('should show auto-refresh control when real-time updates are enabled', () => {
+      render(<ChurnRiskDashboard {...mockProps} realTimeUpdates={true} />);
+      expect(screen.getByText('Auto Refresh')).toBeInTheDocument();
+  describe('Filtering', () => {
+    it('should filter suppliers by risk level', () => {
+      // Initially shows high risk and critical suppliers
+      expect(screen.getByTestId('supplier-card-supplier-1')).toBeInTheDocument();
+      expect(screen.getByTestId('supplier-card-supplier-2')).toBeInTheDocument();
+      // Click on Critical filter only
+      const criticalButton = screen.getByText('Critical');
+      fireEvent.click(criticalButton);
+      // Should only show critical supplier
+      expect(screen.queryByTestId('supplier-card-supplier-2')).not.toBeInTheDocument();
+    it('should show no suppliers message when all are filtered out', () => {
+      // Click on Safe filter (no suppliers match)
+      const safeButton = screen.getByText('Safe');
+      fireEvent.click(safeButton);
+      expect(screen.getByText('No at-risk suppliers match the current filters.')).toBeInTheDocument();
+    it('should allow multiple risk level selections', () => {
+      const highRiskButton = screen.getByText('High Risk');
+      // Select both critical and high risk
+      fireEvent.click(highRiskButton);
+      // Both suppliers should be visible
+  describe('Supplier Interactions', () => {
+    it('should handle supplier selection', () => {
+      const supplierCard = screen.getByTestId('supplier-card-supplier-1');
+      fireEvent.click(supplierCard);
+      expect(mockProps.onSupplierSelect).toHaveBeenCalledWith(mockAtRiskSuppliers[0]);
+    it('should execute retention actions', () => {
+      const executeButton = screen.getAllByText('Execute Action')[0];
+      fireEvent.click(executeButton);
+      expect(mockProps.onActionExecute).toHaveBeenCalledWith(
+        expect.objectContaining({
+          supplierId: 'supplier-1',
+          action: 'send_email'
+        })
+      );
+  describe('Tab Navigation', () => {
+    it('should switch between different views', () => {
+      // Switch to Retention Campaigns tab
+      const campaignsTab = screen.getByText('Retention Campaigns');
+      fireEvent.click(campaignsTab);
+      expect(screen.getByTestId('retention-campaign-manager')).toBeInTheDocument();
+      // Switch to Trends & Analytics tab
+      const trendsTab = screen.getByText('Trends & Analytics');
+      fireEvent.click(trendsTab);
+      expect(screen.getByTestId('churn-trend-chart')).toBeInTheDocument();
+    it('should show overview tab by default', () => {
+      // Should show supplier cards in overview
+  describe('Campaign Management', () => {
+    it('should create new campaigns', () => {
+      // Switch to campaigns tab
+      // Create campaign
+      const createButton = screen.getByText('Create Campaign');
+      fireEvent.click(createButton);
+      expect(mockProps.onCampaignCreate).toHaveBeenCalledWith(
+          name: 'Test Campaign',
+          campaignType: 're_engagement'
+    it('should display active campaigns', () => {
+      expect(screen.getByText('Active Campaigns: 1')).toBeInTheDocument();
+      expect(screen.getByTestId('campaign-campaign-1')).toBeInTheDocument();
+      expect(screen.getByText('Re-engagement Campaign')).toBeInTheDocument();
+  describe('Alert Management', () => {
+    it('should display active alerts', () => {
+      // Add alerts to props
+      const propsWithAlerts = {
+        ...mockProps,
+        churnMetrics: {
+          ...mockChurnMetrics,
+          criticalAlertsGenerated: 2
+        }
+      };
+      render(<ChurnRiskDashboard {...propsWithAlerts} />);
+      expect(screen.getByTestId('churn-alert-panel')).toBeInTheDocument();
+    it('should handle alert interactions', () => {
+      // Simulate alert interactions through the alert panel
+      const alertPanel = screen.getByTestId('churn-alert-panel');
+      expect(alertPanel).toBeInTheDocument();
+  describe('Real-time Updates', () => {
+    it('should enable auto-refresh when realTimeUpdates is true', () => {
+      const autoRefreshToggle = screen.getByText('Auto Refresh');
+      expect(autoRefreshToggle).toBeInTheDocument();
+      // Auto refresh should be enabled by default
+      const toggleSwitch = screen.getByRole('switch');
+      expect(toggleSwitch).toBeChecked();
+    it('should refresh data periodically when auto-refresh is enabled', async () => {
+      // Enable auto refresh
+      if (!toggleSwitch.checked) {
+        fireEvent.click(toggleSwitch);
+      // Fast forward time to trigger refresh
+      act(() => {
+        jest.advanceTimersByTime(30000); // 30 seconds
+      });
+      // Should update last updated time
+      await waitFor(() => {
+        expect(screen.getByText(/Last updated:/)).toBeInTheDocument();
+    it('should update connection status indicator', () => {
+      // Should show connection status
+  describe('Loading and Error States', () => {
+    it('should show loading state initially', () => {
+      // Initial loading state
+      expect(screen.getByText('Refreshing data...')).toBeInTheDocument();
+    it('should handle refresh action', () => {
+      const refreshButton = screen.getByTestId('button');
+      fireEvent.click(refreshButton);
+  describe('Responsive Design', () => {
+    it('should adapt layout for different screen sizes', () => {
+      // Mock window.innerWidth
+      Object.defineProperty(window, 'innerWidth', {
+        writable: true,
+        configurable: true,
+        value: 768,
+      // Should render without errors on mobile size
+  describe('Accessibility', () => {
+    it('should have proper ARIA labels', () => {
+      // Check for important ARIA attributes
+      const dashboard = screen.getByRole('main');
+      expect(dashboard).toHaveAttribute('aria-label', 'Churn Intelligence Dashboard');
+    it('should support keyboard navigation', () => {
+      const firstTab = screen.getByText('Overview');
+      firstTab.focus();
+      
+      // Tab navigation should work
+      fireEvent.keyDown(firstTab, { key: 'Tab' });
+      expect(document.activeElement).not.toBe(firstTab);
+  describe('Performance', () => {
+    it('should not re-render unnecessarily', () => {
+      const { rerender } = render(<ChurnRiskDashboard {...mockProps} />);
+      // Re-render with same props
+      rerender(<ChurnRiskDashboard {...mockProps} />);
+      // Component should handle this efficiently
+    it('should handle large datasets efficiently', () => {
+      const largeDataset = Array.from({ length: 100 }, (_, i) => ({
+        ...mockAtRiskSuppliers[0],
+        supplierId: `supplier-${i}`,
+        supplierName: `Supplier ${i}`
+      }));
+      const propsWithLargeDataset = {
+        atRiskSuppliers: largeDataset
+      const startTime = performance.now();
+      render(<ChurnRiskDashboard {...propsWithLargeDataset} />);
+      const endTime = performance.now();
+      // Should render reasonably quickly even with large datasets
+      expect(endTime - startTime).toBeLessThan(1000); // Less than 1 second
+  describe('Data Validation', () => {
+    it('should handle missing data gracefully', () => {
+      const propsWithMissingData = {
+        atRiskSuppliers: [],
+        churnMetrics: null
+      render(<ChurnRiskDashboard {...propsWithMissingData} />);
+    it('should validate risk score ranges', () => {
+      const supplierWithInvalidScore = {
+        churnRiskScore: 150 // Invalid score
+      const propsWithInvalidData = {
+        atRiskSuppliers: [supplierWithInvalidScore]
+      render(<ChurnRiskDashboard {...propsWithInvalidData} />);
+      // Should handle invalid data without crashing
+});

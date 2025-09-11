@@ -1,0 +1,363 @@
+/**
+ * WS-130: AI Photographer Matching API Endpoint
+ * Matches couples with photographers based on style, preferences, and compatibility
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { photographerMatchingAlgorithm } from '@/lib/ml/photographer-matching-algorithm';
+import { z } from 'zod';
+
+const matchingRequestSchema = z.object({
+  couple_preferences: z.object({
+    style_preference: z.enum([
+      'romantic',
+      'modern',
+      'vintage',
+      'boho',
+      'classic',
+      'artistic',
+      'photojournalistic',
+    ]),
+    mood_preference: z.enum([
+      'dreamy',
+      'elegant',
+      'fun',
+      'intimate',
+      'dramatic',
+      'natural',
+    ]),
+    priority_factors: z.array(
+      z.enum([
+        'style',
+        'experience',
+        'personality',
+        'budget',
+        'availability',
+        'location',
+      ]),
+    ),
+    must_have_shots: z.array(z.string()),
+    avoid_elements: z.array(z.string()).optional(),
+  }),
+  wedding_details: z.object({
+    date: z.string(),
+    venue_location: z.string(),
+    venue_type: z.string(),
+    guest_count: z.number().min(10).max(500),
+    budget_range: z.object({
+      min: z.number().min(0),
+      max: z.number().min(0),
+      currency: z.string().default('USD'),
+    }),
+    duration_hours: z.number().min(4).max(12),
+    special_requirements: z.array(z.string()).optional(),
+  }),
+  couple_profile: z.object({
+    personality_traits: z.array(z.string()),
+    communication_style: z.enum([
+      'formal',
+      'casual',
+      'friendly',
+      'professional',
+    ]),
+    experience_level: z.enum([
+      'first_time',
+      'some_experience',
+      'very_experienced',
+    ]),
+    decision_making: z.enum([
+      'collaborative',
+      'bride_led',
+      'groom_led',
+      'family_involved',
+    ]),
+  }),
+  reference_photos: z.array(z.string()).optional(),
+  previous_photographers: z.array(z.string()).optional(),
+});
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+
+    // Check authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const matchingRequest = matchingRequestSchema.parse(body);
+
+    // Find matching photographers using AI
+    const matchingResult =
+      await photographerMatchingAlgorithm.findMatchingPhotographers(
+        matchingRequest,
+      );
+
+    // Store matching session in database
+    const { data: sessionData, error: sessionError } = await supabase
+      .from('photographer_matching_sessions')
+      .insert({
+        id: matchingResult.request_id,
+        user_id: user.id,
+        matching_request: matchingRequest,
+        matching_result: matchingResult,
+        created_at: new Date().toISOString(),
+      })
+      .select()
+      .single();
+
+    if (sessionError) {
+      console.error('Failed to store matching session:', sessionError);
+      // Continue anyway - results are still returned
+    }
+
+    // Format response for client
+    const formattedMatches = matchingResult.top_matches.map((match) => ({
+      photographer: {
+        id: match.photographer.id,
+        name: match.photographer.basic_info.name,
+        business_name: match.photographer.basic_info.business_name,
+        location: match.photographer.basic_info.location,
+        years_experience: match.photographer.basic_info.years_experience,
+        primary_style: match.photographer.style_analysis.primary_style,
+        pricing_tier: match.photographer.business_details.pricing_tier,
+        base_price: match.photographer.business_details.base_package_price,
+        average_rating: match.photographer.client_feedback.average_rating,
+        total_reviews: match.photographer.client_feedback.total_reviews,
+        sample_work:
+          match.photographer.portfolio_analysis.sample_work_urls.slice(0, 3),
+      },
+      match_score: match.match_score,
+      compatibility: {
+        style_alignment: Math.round(
+          match.compatibility_breakdown.style_alignment * 10,
+        ),
+        personality_fit: Math.round(
+          match.compatibility_breakdown.personality_fit * 10,
+        ),
+        experience_relevance: Math.round(
+          match.compatibility_breakdown.experience_relevance * 10,
+        ),
+        budget_compatibility: Math.round(
+          match.compatibility_breakdown.budget_compatibility * 10,
+        ),
+        availability_match: Math.round(
+          match.compatibility_breakdown.availability_match * 10,
+        ),
+        location_convenience: Math.round(
+          match.compatibility_breakdown.location_convenience * 10,
+        ),
+      },
+      strengths: match.strengths,
+      potential_concerns: match.potential_concerns,
+      recommended_package: match.recommended_package,
+      ai_analysis: match.ai_analysis,
+      style_evidence: match.style_evidence.slice(0, 3), // Top 3 evidence pieces
+    }));
+
+    return NextResponse.json({
+      success: true,
+      matching_session: {
+        id: matchingResult.request_id,
+        total_analyzed: matchingResult.total_photographers_analyzed,
+        matches_found: matchingResult.top_matches.length,
+        search_criteria: {
+          style: matchingRequest.couple_preferences.style_preference,
+          budget_range: matchingRequest.wedding_details.budget_range,
+          location: matchingRequest.wedding_details.venue_location,
+          wedding_date: matchingRequest.wedding_details.date,
+        },
+        generated_at: matchingResult.generated_at,
+      },
+      top_matches: formattedMatches,
+      alternative_suggestions: matchingResult.alternative_suggestions,
+      next_steps: [
+        'Review photographer portfolios in detail',
+        'Read client testimonials and reviews',
+        'Schedule consultations with top 2-3 matches',
+        'Compare packages and pricing options',
+        'Make final selection based on overall fit',
+      ],
+    });
+  } catch (error) {
+    console.error('Photographer matching error:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid request data', details: error.errors },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Photographer matching failed', message: error.message },
+      { status: 500 },
+    );
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+
+    // Check authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { searchParams } = new URL(request.url);
+    const sessionId = searchParams.get('session_id');
+    const photographerId = searchParams.get('photographer_id');
+
+    if (sessionId) {
+      // Get specific matching session
+      const { data: session, error: sessionError } = await supabase
+        .from('photographer_matching_sessions')
+        .select('*')
+        .eq('id', sessionId)
+        .eq('user_id', user.id)
+        .single();
+
+      if (sessionError || !session) {
+        return NextResponse.json(
+          { error: 'Matching session not found' },
+          { status: 404 },
+        );
+      }
+
+      return NextResponse.json({
+        success: true,
+        session: {
+          id: session.id,
+          created_at: session.created_at,
+          matching_request: session.matching_request,
+          matching_result: session.matching_result,
+        },
+      });
+    }
+
+    if (photographerId) {
+      // Get detailed photographer profile
+      // This would typically query the photographers table
+      // For now, return a not implemented response
+      return NextResponse.json(
+        { error: 'Photographer profile endpoint not yet implemented' },
+        { status: 501 },
+      );
+    }
+
+    // Get all matching sessions for user
+    const { data: sessions, error: sessionsError } = await supabase
+      .from('photographer_matching_sessions')
+      .select('id, created_at, matching_request, matching_result')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false })
+      .limit(20);
+
+    if (sessionsError) {
+      return NextResponse.json(
+        { error: 'Failed to fetch matching sessions' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      sessions: sessions.map((session) => ({
+        id: session.id,
+        created_at: session.created_at,
+        style_preference:
+          session.matching_request.couple_preferences.style_preference,
+        budget_range: session.matching_request.wedding_details.budget_range,
+        matches_found: session.matching_result.top_matches?.length || 0,
+        top_match: session.matching_result.top_matches?.[0]
+          ? {
+              photographer_name:
+                session.matching_result.top_matches[0].photographer.basic_info
+                  .name,
+              match_score: session.matching_result.top_matches[0].match_score,
+            }
+          : null,
+      })),
+    });
+  } catch (error) {
+    console.error('Fetch matching data error:', error);
+    return NextResponse.json(
+      { error: 'Failed to fetch matching data' },
+      { status: 500 },
+    );
+  }
+}
+
+// Additional endpoint for style compatibility analysis
+export async function PUT(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+
+    // Check authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const { action, couple_preferences, photographer_portfolio } = body;
+
+    if (action === 'analyze_style_compatibility') {
+      if (!couple_preferences || !photographer_portfolio) {
+        return NextResponse.json(
+          {
+            error: 'Couple preferences and photographer portfolio are required',
+          },
+          { status: 400 },
+        );
+      }
+
+      const compatibility =
+        await photographerMatchingAlgorithm.analyzeStyleCompatibility(
+          couple_preferences,
+          photographer_portfolio,
+        );
+
+      return NextResponse.json({
+        success: true,
+        style_compatibility: {
+          overall_alignment: compatibility.overall_alignment,
+          style_breakdown: compatibility.style_breakdown,
+          specific_matches: compatibility.specific_matches,
+          style_gaps: compatibility.style_gaps,
+          recommendation:
+            compatibility.overall_alignment >= 8
+              ? 'Excellent style match - highly recommended'
+              : compatibility.overall_alignment >= 6
+                ? 'Good style alignment with some flexibility needed'
+                : 'Limited style alignment - consider alternative photographers',
+        },
+      });
+    }
+
+    return NextResponse.json(
+      { error: 'Invalid action specified' },
+      { status: 400 },
+    );
+  } catch (error) {
+    console.error('Style analysis error:', error);
+    return NextResponse.json(
+      { error: 'Style analysis failed' },
+      { status: 500 },
+    );
+  }
+}

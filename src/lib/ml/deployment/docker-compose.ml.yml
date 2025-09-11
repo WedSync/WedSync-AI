@@ -1,0 +1,261 @@
+# WS-232 Predictive Modeling System - Production Deployment
+# Scalable ML infrastructure with monitoring and alerting
+
+version: '3.8'
+
+services:
+  # ML API Service
+  ml-api:
+    build:
+      context: ../../..
+      dockerfile: src/lib/ml/deployment/Dockerfile.ml-api
+    container_name: wedsync-ml-api
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - ML_API_PORT=3001
+      - ML_CACHE_ENABLED=true
+      - ML_CACHE_TTL=300
+      - ML_LOG_LEVEL=info
+      - ML_METRICS_ENABLED=true
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://ml_user:${ML_DB_PASSWORD}@postgres:5432/ml_predictions
+      - MONITORING_ENABLED=true
+      - PROMETHEUS_PORT=9090
+    ports:
+      - "3001:3001"
+      - "9090:9090"  # Prometheus metrics
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - ml-models:/app/models
+      - ml-logs:/app/logs
+    networks:
+      - ml-network
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "1.0"
+        reservations:
+          memory: 1G
+          cpus: "0.5"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Model Training Service
+  ml-trainer:
+    build:
+      context: ../../..
+      dockerfile: src/lib/ml/deployment/Dockerfile.ml-trainer
+    container_name: wedsync-ml-trainer
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - TRAINING_ENABLED=true
+      - TRAINING_SCHEDULE=0 2 * * *  # Daily at 2 AM
+      - DATABASE_URL=postgresql://ml_user:${ML_DB_PASSWORD}@postgres:5432/ml_predictions
+      - REDIS_URL=redis://redis:6379
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_REGION=${AWS_REGION}
+      - S3_BUCKET=${ML_MODELS_BUCKET}
+    volumes:
+      - ml-models:/app/models
+      - ml-training-data:/app/data
+      - ml-logs:/app/logs
+    networks:
+      - ml-network
+    depends_on:
+      - postgres
+      - redis
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "2.0"
+        reservations:
+          memory: 2G
+          cpus: "1.0"
+
+  # PostgreSQL Database for ML Data
+  postgres:
+    image: postgres:15-alpine
+    container_name: wedsync-ml-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=ml_predictions
+      - POSTGRES_USER=ml_user
+      - POSTGRES_PASSWORD=${ML_DB_PASSWORD}
+      - POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256
+    ports:
+      - "5433:5432"  # Different port to avoid conflicts
+    volumes:
+      - ml-postgres-data:/var/lib/postgresql/data
+      - ./init-ml-db.sql:/docker-entrypoint-initdb.d/init-ml-db.sql
+    networks:
+      - ml-network
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "0.5"
+
+  # Redis for Caching and Queues
+  redis:
+    image: redis:7-alpine
+    container_name: wedsync-ml-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
+    ports:
+      - "6380:6379"  # Different port to avoid conflicts
+    volumes:
+      - ml-redis-data:/data
+    networks:
+      - ml-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.25"
+
+  # Prometheus Monitoring
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: wedsync-ml-prometheus
+    restart: unless-stopped
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ml-prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    networks:
+      - ml-network
+    depends_on:
+      - ml-api
+
+  # Grafana Dashboard
+  grafana:
+    image: grafana/grafana:latest
+    container_name: wedsync-ml-grafana
+    restart: unless-stopped
+    ports:
+      - "3002:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel,grafana-worldmap-panel
+    volumes:
+      - ml-grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources
+    networks:
+      - ml-network
+    depends_on:
+      - prometheus
+
+  # AlertManager for Notifications
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: wedsync-ml-alertmanager
+    restart: unless-stopped
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+      - ml-alertmanager-data:/alertmanager
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+      - '--web.external-url=http://localhost:9093'
+    networks:
+      - ml-network
+
+  # ML Model Registry Service
+  ml-registry:
+    build:
+      context: ../../..
+      dockerfile: src/lib/ml/deployment/Dockerfile.ml-registry
+    container_name: wedsync-ml-registry
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - REGISTRY_PORT=3003
+      - DATABASE_URL=postgresql://ml_user:${ML_DB_PASSWORD}@postgres:5432/ml_predictions
+      - AWS_S3_BUCKET=${ML_MODELS_BUCKET}
+    ports:
+      - "3003:3003"
+    volumes:
+      - ml-models:/app/models
+    networks:
+      - ml-network
+    depends_on:
+      - postgres
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.25"
+
+  # Nginx Load Balancer
+  nginx:
+    image: nginx:alpine
+    container_name: wedsync-ml-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./nginx/ssl:/etc/nginx/ssl
+      - ml-logs:/var/log/nginx
+    networks:
+      - ml-network
+    depends_on:
+      - ml-api
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.1"
+
+volumes:
+  ml-postgres-data:
+  ml-redis-data:
+  ml-prometheus-data:
+  ml-grafana-data:
+  ml-alertmanager-data:
+  ml-models:
+  ml-training-data:
+  ml-logs:
+
+networks:
+  ml-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+# Production deployment notes:
+# 1. Set strong passwords in .env file
+# 2. Configure SSL certificates in nginx/ssl/
+# 3. Set up AWS credentials for S3 model storage
+# 4. Configure alerting channels in alertmanager.yml
+# 5. Customize Grafana dashboards as needed
+# 6. Run health checks before going live
+# 7. Set up log aggregation (ELK stack recommended)
+# 8. Configure backup strategy for ML models and data
+# 9. Set up CI/CD pipeline for model updates
+# 10. Monitor resource usage and scale as needed

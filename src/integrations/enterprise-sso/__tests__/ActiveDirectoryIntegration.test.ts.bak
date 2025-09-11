@@ -1,0 +1,561 @@
+/**
+ * @fileoverview Test suite for Active Directory Integration
+ * Tests LDAP/AD connectivity, authentication, and user synchronization
+ * @version 1.0.0
+ * @author WedSync Development Team
+ */
+
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { ActiveDirectoryIntegration } from '../ActiveDirectoryIntegration';
+import type { 
+  ADConfiguration,
+  ADUser,
+  ADAuthenticationResult,
+  BulkSyncResult
+} from '../ActiveDirectoryIntegration';
+
+// Mock ldapjs
+vi.mock('ldapjs', () => ({
+  createClient: vi.fn(() => ({
+    bind: vi.fn(),
+    search: vi.fn(),
+    unbind: vi.fn(),
+    on: vi.fn(),
+    destroy: vi.fn()
+  }))
+}));
+
+// Mock pool
+vi.mock('generic-pool', () => ({
+  createPool: vi.fn(() => ({
+    acquire: vi.fn(),
+    release: vi.fn(),
+    destroy: vi.fn(),
+    clear: vi.fn()
+  }))
+}));
+
+describe('ActiveDirectoryIntegration', () => {
+  let adIntegration: ActiveDirectoryIntegration;
+  let mockConfig: ADConfiguration;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    
+    mockConfig = {
+      url: 'ldap://ad.example.com:389',
+      baseDN: 'DC=example,DC=com',
+      username: 'CN=service,DC=example,DC=com',
+      password: 'service-password',
+      userSearchBase: 'OU=Users,DC=example,DC=com',
+      groupSearchBase: 'OU=Groups,DC=example,DC=com',
+      userFilter: '(&(objectClass=user)(sAMAccountName={username}))',
+      groupFilter: '(&(objectClass=group)(member={userDN}))',
+      attributes: {
+        username: 'sAMAccountName',
+        email: 'mail',
+        firstName: 'givenName',
+        lastName: 'sn',
+        displayName: 'displayName',
+        groups: 'memberOf'
+      },
+      poolOptions: {
+        min: 1,
+        max: 10,
+        acquireTimeoutMillis: 30000,
+        idleTimeoutMillis: 300000
+      }
+    };
+
+    adIntegration = new ActiveDirectoryIntegration(mockConfig);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('Connection Management', () => {
+    it('should initialize connection pool successfully', async () => {
+      const result = await adIntegration.initialize();
+      
+      expect(result.success).toBe(true);
+      expect(result.message).toContain('initialized successfully');
+    });
+
+    it('should test LDAP connection', async () => {
+      const mockClient = {
+        bind: vi.fn().mockImplementation((dn, password, callback) => {
+          callback(null);
+        }),
+        unbind: vi.fn().mockImplementation((callback) => callback()),
+        on: vi.fn()
+      };
+
+      vi.mocked(require('ldapjs').createClient).mockReturnValue(mockClient);
+
+      const result = await adIntegration.testConnection();
+
+      expect(result.success).toBe(true);
+      expect(mockClient.bind).toHaveBeenCalledWith(
+        mockConfig.username,
+        mockConfig.password,
+        expect.any(Function)
+      );
+    });
+
+    it('should handle connection failures gracefully', async () => {
+      const mockClient = {
+        bind: vi.fn().mockImplementation((dn, password, callback) => {
+          callback(new Error('Connection refused'));
+        }),
+        on: vi.fn()
+      };
+
+      vi.mocked(require('ldapjs').createClient).mockReturnValue(mockClient);
+
+      const result = await adIntegration.testConnection();
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Connection refused');
+    });
+  });
+
+  describe('User Authentication', () => {
+    it('should authenticate user successfully', async () => {
+      const mockClient = {
+        bind: vi.fn(),
+        search: vi.fn(),
+        unbind: vi.fn(),
+        on: vi.fn()
+      };
+
+      // Mock successful user search
+      mockClient.search.mockImplementation((base, options, callback) => {
+        const mockEntry = {
+          dn: 'CN=Test User,OU=Users,DC=example,DC=com',
+          attributes: [
+            { type: 'sAMAccountName', values: ['testuser'] },
+            { type: 'mail', values: ['test@example.com'] },
+            { type: 'givenName', values: ['Test'] },
+            { type: 'sn', values: ['User'] },
+            { type: 'displayName', values: ['Test User'] },
+            { type: 'memberOf', values: ['CN=Domain Users,CN=Groups,DC=example,DC=com'] }
+          ]
+        };
+
+        const mockRes = {
+          on: vi.fn().mockImplementation((event, callback) => {
+            if (event === 'searchEntry') {
+              callback(mockEntry);
+            } else if (event === 'end') {
+              callback({ status: 0 });
+            }
+          })
+        };
+
+        callback(null, mockRes);
+      });
+
+      // Mock successful bind for user authentication
+      mockClient.bind
+        .mockImplementationOnce((dn, password, callback) => callback(null)) // Service account
+        .mockImplementationOnce((dn, password, callback) => callback(null)); // User authentication
+
+      vi.mocked(require('ldapjs').createClient).mockReturnValue(mockClient);
+
+      const result = await adIntegration.authenticate('testuser', 'password123');
+
+      expect(result.success).toBe(true);
+      expect(result.user?.username).toBe('testuser');
+      expect(result.user?.email).toBe('test@example.com');
+      expect(result.user?.groups).toContain('CN=Domain Users,CN=Groups,DC=example,DC=com');
+    });
+
+    it('should handle invalid credentials', async () => {
+      const mockClient = {
+        bind: vi.fn(),
+        search: vi.fn(),
+        unbind: vi.fn(),
+        on: vi.fn()
+      };
+
+      // Mock user found but authentication failed
+      mockClient.search.mockImplementation((base, options, callback) => {
+        const mockEntry = {
+          dn: 'CN=Test User,OU=Users,DC=example,DC=com',
+          attributes: [{ type: 'sAMAccountName', values: ['testuser'] }]
+        };
+
+        const mockRes = {
+          on: vi.fn().mockImplementation((event, callback) => {
+            if (event === 'searchEntry') callback(mockEntry);
+            else if (event === 'end') callback({ status: 0 });
+          })
+        };
+
+        callback(null, mockRes);
+      });
+
+      mockClient.bind
+        .mockImplementationOnce((dn, password, callback) => callback(null)) // Service account
+        .mockImplementationOnce((dn, password, callback) => {
+          callback(new Error('InvalidCredentials'));
+        }); // User authentication fails
+
+      vi.mocked(require('ldapjs').createClient).mockReturnValue(mockClient);
+
+      const result = await adIntegration.authenticate('testuser', 'wrongpassword');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Invalid credentials');
+    });
+
+    it('should handle user not found', async () => {
+      const mockClient = {
+        bind: vi.fn(),
+        search: vi.fn(),
+        unbind: vi.fn(),
+        on: vi.fn()
+      };
+
+      // Mock empty search result
+      mockClient.search.mockImplementation((base, options, callback) => {
+        const mockRes = {
+          on: vi.fn().mockImplementation((event, callback) => {
+            if (event === 'end') callback({ status: 0 });
+          })
+        };
+        callback(null, mockRes);
+      });
+
+      mockClient.bind.mockImplementationOnce((dn, password, callback) => callback(null));
+
+      vi.mocked(require('ldapjs').createClient).mockReturnValue(mockClient);
+
+      const result = await adIntegration.authenticate('nonexistent', 'password');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('User not found');
+    });
+  });
+
+  describe('User Search and Retrieval', () => {
+    it('should search users by criteria', async () => {
+      const mockClient = {
+        bind: vi.fn().mockImplementationOnce((dn, password, callback) => callback(null)),
+        search: vi.fn(),
+        unbind: vi.fn(),
+        on: vi.fn()
+      };
+
+      mockClient.search.mockImplementation((base, options, callback) => {
+        const mockEntry = {
+          dn: 'CN=Jane Doe,OU=Users,DC=example,DC=com',
+          attributes: [
+            { type: 'sAMAccountName', values: ['jane.doe'] },
+            { type: 'mail', values: ['jane@example.com'] },
+            { type: 'givenName', values: ['Jane'] },
+            { type: 'sn', values: ['Doe'] },
+            { type: 'displayName', values: ['Jane Doe'] }
+          ]
+        };
+
+        const mockRes = {
+          on: vi.fn().mockImplementation((event, callback) => {
+            if (event === 'searchEntry') callback(mockEntry);
+            else if (event === 'end') callback({ status: 0 });
+          })
+        };
+
+        callback(null, mockRes);
+      });
+
+      vi.mocked(require('ldapjs').createClient).mockReturnValue(mockClient);
+
+      const users = await adIntegration.searchUsers({ email: 'jane@example.com' });
+
+      expect(users).toHaveLength(1);
+      expect(users[0].username).toBe('jane.doe');
+      expect(users[0].email).toBe('jane@example.com');
+    });
+
+    it('should get user by distinguished name', async () => {
+      const mockClient = {
+        bind: vi.fn().mockImplementationOnce((dn, password, callback) => callback(null)),
+        search: vi.fn(),
+        unbind: vi.fn(),
+        on: vi.fn()
+      };
+
+      const userDN = 'CN=John Smith,OU=Users,DC=example,DC=com';
+
+      mockClient.search.mockImplementation((base, options, callback) => {
+        const mockEntry = {
+          dn: userDN,
+          attributes: [
+            { type: 'sAMAccountName', values: ['john.smith'] },
+            { type: 'mail', values: ['john@example.com'] },
+            { type: 'displayName', values: ['John Smith'] }
+          ]
+        };
+
+        const mockRes = {
+          on: vi.fn().mockImplementation((event, callback) => {
+            if (event === 'searchEntry') callback(mockEntry);
+            else if (event === 'end') callback({ status: 0 });
+          })
+        };
+
+        callback(null, mockRes);
+      });
+
+      vi.mocked(require('ldapjs').createClient).mockReturnValue(mockClient);
+
+      const user = await adIntegration.getUserByDN(userDN);
+
+      expect(user).toBeDefined();
+      expect(user?.username).toBe('john.smith');
+      expect(user?.email).toBe('john@example.com');
+    });
+  });
+
+  describe('Group Operations', () => {
+    it('should get user groups', async () => {
+      const userDN = 'CN=Test User,OU=Users,DC=example,DC=com';
+      
+      const mockClient = {
+        bind: vi.fn().mockImplementationOnce((dn, password, callback) => callback(null)),
+        search: vi.fn(),
+        unbind: vi.fn(),
+        on: vi.fn()
+      };
+
+      mockClient.search.mockImplementation((base, options, callback) => {
+        const mockEntry = {
+          dn: 'CN=Developers,OU=Groups,DC=example,DC=com',
+          attributes: [
+            { type: 'cn', values: ['Developers'] },
+            { type: 'description', values: ['Development Team'] }
+          ]
+        };
+
+        const mockRes = {
+          on: vi.fn().mockImplementation((event, callback) => {
+            if (event === 'searchEntry') callback(mockEntry);
+            else if (event === 'end') callback({ status: 0 });
+          })
+        };
+
+        callback(null, mockRes);
+      });
+
+      vi.mocked(require('ldapjs').createClient).mockReturnValue(mockClient);
+
+      const groups = await adIntegration.getUserGroups(userDN);
+
+      expect(groups).toContain('CN=Developers,OU=Groups,DC=example,DC=com');
+    });
+
+    it('should validate group membership', async () => {
+      const userDN = 'CN=Test User,OU=Users,DC=example,DC=com';
+      const groupDN = 'CN=Admins,OU=Groups,DC=example,DC=com';
+
+      const mockClient = {
+        bind: vi.fn().mockImplementationOnce((dn, password, callback) => callback(null)),
+        search: vi.fn(),
+        unbind: vi.fn(),
+        on: vi.fn()
+      };
+
+      // Mock finding the group with the user as member
+      mockClient.search.mockImplementation((base, options, callback) => {
+        const mockEntry = {
+          dn: groupDN,
+          attributes: [
+            { type: 'member', values: [userDN] }
+          ]
+        };
+
+        const mockRes = {
+          on: vi.fn().mockImplementation((event, callback) => {
+            if (event === 'searchEntry') callback(mockEntry);
+            else if (event === 'end') callback({ status: 0 });
+          })
+        };
+
+        callback(null, mockRes);
+      });
+
+      vi.mocked(require('ldapjs').createClient).mockReturnValue(mockClient);
+
+      const isMember = await adIntegration.isUserInGroup(userDN, groupDN);
+
+      expect(isMember).toBe(true);
+    });
+  });
+
+  describe('Bulk Synchronization', () => {
+    it('should perform bulk user synchronization', async () => {
+      const mockClient = {
+        bind: vi.fn().mockImplementationOnce((dn, password, callback) => callback(null)),
+        search: vi.fn(),
+        unbind: vi.fn(),
+        on: vi.fn()
+      };
+
+      // Mock multiple users
+      const mockUsers = [
+        {
+          dn: 'CN=User1,OU=Users,DC=example,DC=com',
+          attributes: [
+            { type: 'sAMAccountName', values: ['user1'] },
+            { type: 'mail', values: ['user1@example.com'] }
+          ]
+        },
+        {
+          dn: 'CN=User2,OU=Users,DC=example,DC=com',
+          attributes: [
+            { type: 'sAMAccountName', values: ['user2'] },
+            { type: 'mail', values: ['user2@example.com'] }
+          ]
+        }
+      ];
+
+      mockClient.search.mockImplementation((base, options, callback) => {
+        const mockRes = {
+          on: vi.fn().mockImplementation((event, callback) => {
+            if (event === 'searchEntry') {
+              mockUsers.forEach(user => callback(user));
+            } else if (event === 'end') {
+              callback({ status: 0 });
+            }
+          })
+        };
+        callback(null, mockRes);
+      });
+
+      vi.mocked(require('ldapjs').createClient).mockReturnValue(mockClient);
+
+      const result = await adIntegration.bulkSyncUsers();
+
+      expect(result.success).toBe(true);
+      expect(result.totalUsers).toBe(2);
+      expect(result.syncedUsers).toBe(2);
+      expect(result.errors).toHaveLength(0);
+    });
+
+    it('should handle bulk sync with partial failures', async () => {
+      const mockClient = {
+        bind: vi.fn().mockImplementationOnce((dn, password, callback) => callback(null)),
+        search: vi.fn(),
+        unbind: vi.fn(),
+        on: vi.fn()
+      };
+
+      // Mock user with missing required attributes
+      mockClient.search.mockImplementation((base, options, callback) => {
+        const mockEntry = {
+          dn: 'CN=Incomplete User,OU=Users,DC=example,DC=com',
+          attributes: [
+            { type: 'sAMAccountName', values: ['incomplete'] }
+            // Missing email attribute
+          ]
+        };
+
+        const mockRes = {
+          on: vi.fn().mockImplementation((event, callback) => {
+            if (event === 'searchEntry') callback(mockEntry);
+            else if (event === 'end') callback({ status: 0 });
+          })
+        };
+        callback(null, mockRes);
+      });
+
+      vi.mocked(require('ldapjs').createClient).mockReturnValue(mockClient);
+
+      const result = await adIntegration.bulkSyncUsers();
+
+      expect(result.success).toBe(true);
+      expect(result.totalUsers).toBe(1);
+      expect(result.errors.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('Wedding Vendor Integration', () => {
+    it('should authenticate wedding vendor with business verification', async () => {
+      const mockClient = {
+        bind: vi.fn(),
+        search: vi.fn(),
+        unbind: vi.fn(),
+        on: vi.fn()
+      };
+
+      // Mock vendor user with business attributes
+      mockClient.search.mockImplementation((base, options, callback) => {
+        const mockEntry = {
+          dn: 'CN=Wedding Photographer,OU=Vendors,DC=example,DC=com',
+          attributes: [
+            { type: 'sAMAccountName', values: ['photographer1'] },
+            { type: 'mail', values: ['contact@photographystudio.com'] },
+            { type: 'givenName', values: ['Wedding'] },
+            { type: 'sn', values: ['Photographer'] },
+            { type: 'department', values: ['Photography'] },
+            { type: 'title', values: ['Lead Photographer'] },
+            { type: 'memberOf', values: ['CN=Wedding Vendors,CN=Groups,DC=example,DC=com'] }
+          ]
+        };
+
+        const mockRes = {
+          on: vi.fn().mockImplementation((event, callback) => {
+            if (event === 'searchEntry') callback(mockEntry);
+            else if (event === 'end') callback({ status: 0 });
+          })
+        };
+
+        callback(null, mockRes);
+      });
+
+      mockClient.bind
+        .mockImplementationOnce((dn, password, callback) => callback(null))
+        .mockImplementationOnce((dn, password, callback) => callback(null));
+
+      vi.mocked(require('ldapjs').createClient).mockReturnValue(mockClient);
+
+      const result = await adIntegration.authenticate('photographer1', 'password123');
+
+      expect(result.success).toBe(true);
+      expect(result.user?.department).toBe('Photography');
+      expect(result.user?.title).toBe('Lead Photographer');
+      expect(result.user?.groups).toContain('CN=Wedding Vendors,CN=Groups,DC=example,DC=com');
+    });
+  });
+
+  describe('Error Handling and Recovery', () => {
+    it('should handle LDAP server unavailable', async () => {
+      vi.mocked(require('ldapjs').createClient).mockImplementation(() => {
+        throw new Error('ECONNREFUSED');
+      });
+
+      const result = await adIntegration.testConnection();
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('ECONNREFUSED');
+    });
+
+    it('should handle timeout scenarios', async () => {
+      const mockClient = {
+        bind: vi.fn().mockImplementation((dn, password, callback) => {
+          // Simulate timeout by not calling callback
+        }),
+        on: vi.fn()
+      };
+
+      vi.mocked(require('ldapjs').createClient).mockReturnValue(mockClient);
+
+      const result = await adIntegration.testConnection();
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('timeout');
+    }, 10000);
+  });
+});

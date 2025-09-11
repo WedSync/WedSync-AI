@@ -1,0 +1,74 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { verifyAdminAccess } from '@/lib/admin/auth';
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+
+    // Verify admin authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized access' },
+        { status: 401 },
+      );
+    }
+
+    const isAdmin = await verifyAdminAccess(user.id);
+    if (!isAdmin) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions' },
+        { status: 403 },
+      );
+    }
+
+    // Fetch all system feature settings
+    const { data: features, error } = await supabase
+      .from('system_settings')
+      .select('key, value')
+      .like('key', 'feature_%');
+
+    if (error) {
+      return NextResponse.json(
+        { error: 'Failed to fetch feature states' },
+        { status: 500 },
+      );
+    }
+
+    // Transform to key-value pairs
+    const featureStates: Record<string, boolean> = {};
+    features?.forEach((feature) => {
+      const featureKey = feature.key.replace('feature_', '');
+      try {
+        const parsedValue = JSON.parse(feature.value);
+        featureStates[featureKey] = parsedValue.enabled;
+      } catch {
+        featureStates[featureKey] = false;
+      }
+    });
+
+    // Default feature states for features not in database
+    const defaultFeatures = {
+      messaging_system: true,
+      form_submissions: true,
+      user_registration: true,
+      payment_processing: true,
+      file_uploads: true,
+      api_endpoints: true,
+    };
+
+    const result = { ...defaultFeatures, ...featureStates };
+
+    return NextResponse.json(result);
+  } catch (error) {
+    console.error('System features fetch error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

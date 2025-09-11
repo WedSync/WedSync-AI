@@ -1,0 +1,235 @@
+/**
+ * WS-158: Bulk Category Processing API Endpoint
+ * Handles bulk categorization with AI optimization
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
+import { createClient } from '@supabase/supabase-js';
+import { categoryOptimization } from '@/lib/services/categoryOptimization';
+import { categoryAnalytics } from '@/lib/analytics/category-performance/categoryAnalytics';
+
+// Input validation schema
+const BulkCategoryRequestSchema = z.object({
+  eventId: z.string(),
+  taskIds: z.array(z.string()).optional(),
+  options: z.object({
+    optimizeDistribution: z.boolean().default(true),
+    resolveConflicts: z.boolean().default(true),
+    applyML: z.boolean().default(true),
+    includeAnalytics: z.boolean().default(true),
+  }).optional(),
+});
+
+// Initialize Supabase client
+function getSupabaseClient(req: NextRequest) {
+  const authHeader = req.headers.get('authorization');
+  const token = authHeader?.replace('Bearer ', '');
+  
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      global: {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      },
+    }
+  );
+}
+
+/**
+ * POST /api/tasks/categories/bulk
+ * Process bulk category assignments
+ */
+export async function POST(req: NextRequest) {
+  try {
+    const supabase = getSupabaseClient(req);
+    
+    // Validate request body
+    const body = await req.json();
+    const validated = BulkCategoryRequestSchema.parse(body);
+    
+    // Get user context
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    // Verify event ownership
+    const { data: event, error: eventError } = await supabase
+      .from('events')
+      .select('id, organization_id')
+      .eq('id', validated.eventId)
+      .single();
+
+    if (eventError || !event) {
+      return NextResponse.json(
+        { error: 'Event not found' },
+        { status: 404 }
+      );
+    }
+
+    // Check user permissions
+    const { data: membership } = await supabase
+      .from('organization_members')
+      .select('role')
+      .eq('organization_id', event.organization_id)
+      .eq('user_id', user.id)
+      .single();
+
+    if (!membership || !['owner', 'admin', 'member'].includes(membership.role)) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions' },
+        { status: 403 }
+      );
+    }
+
+    // Fetch tasks to categorize
+    let tasksQuery = supabase
+      .from('tasks')
+      .select('*')
+      .eq('event_id', validated.eventId);
+
+    if (validated.taskIds && validated.taskIds.length > 0) {
+      tasksQuery = tasksQuery.in('id', validated.taskIds);
+    }
+
+    const { data: tasks, error: tasksError } = await tasksQuery;
+
+    if (tasksError || !tasks || tasks.length === 0) {
+      return NextResponse.json(
+        { error: 'No tasks found' },
+        { status: 404 }
+      );
+    }
+
+    // Process bulk categorization
+    const processingResult = await categoryOptimization.processBulkCategories({
+      tasks: tasks.map(t => ({
+        id: t.id,
+        title: t.title,
+        description: t.description,
+        currentCategory: t.category_id,
+        timeSlot: t.time_slot,
+        dependencies: t.dependencies,
+        helperSkills: t.required_skills,
+      })),
+      options: validated.options,
+    });
+
+    // Get analytics if requested
+    let analytics = null;
+    if (validated.options?.includeAnalytics) {
+      analytics = await categoryAnalytics.getComparativeAnalytics();
+    }
+
+    // Log the operation
+    await supabase.from('audit_logs').insert({
+      event_id: validated.eventId,
+      user_id: user.id,
+      action: 'bulk_category_processing',
+      details: {
+        tasksProcessed: processingResult.processed,
+        tasksOptimized: processingResult.optimized,
+        conflicts: processingResult.conflicts.length,
+      },
+      created_at: new Date().toISOString(),
+    });
+
+    return NextResponse.json({
+      success: true,
+      processed: processingResult.processed,
+      optimized: processingResult.optimized,
+      conflicts: processingResult.conflicts,
+      recommendations: processingResult.recommendations,
+      processingTime: processingResult.processingTime,
+      analytics,
+    });
+  } catch (error) {
+    console.error('Bulk category processing error:', error);
+    
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid request', details: error.errors },
+        { status: 400 }
+      );
+    }
+    
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * GET /api/tasks/categories/bulk
+ * Get bulk processing status and analytics
+ */
+export async function GET(req: NextRequest) {
+  try {
+    const supabase = getSupabaseClient(req);
+    
+    const searchParams = req.nextUrl.searchParams;
+    const eventId = searchParams.get('eventId');
+    const period = searchParams.get('period') as 'hour' | 'day' | 'week' | 'month' || 'day';
+    
+    if (!eventId) {
+      return NextResponse.json(
+        { error: 'Event ID required' },
+        { status: 400 }
+      );
+    }
+
+    // Verify authentication
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    // Get category distribution
+    const { data: tasks } = await supabase
+      .from('tasks')
+      .select('category_id')
+      .eq('event_id', eventId);
+
+    const distribution = tasks?.reduce((acc, task) => {
+      acc[task.category_id] = (acc[task.category_id] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>) || {};
+
+    // Get balancing recommendations
+    const balancing = await categoryAnalytics.getBalancingRecommendations(distribution);
+
+    // Get category metrics
+    const categories = Object.keys(distribution);
+    const metricsPromises = categories.map(cat => 
+      categoryAnalytics.calculateCategoryMetrics(cat, period)
+    );
+    const metrics = await Promise.all(metricsPromises);
+
+    // Get comparative analytics
+    const comparative = await categoryAnalytics.getComparativeAnalytics();
+
+    return NextResponse.json({
+      distribution,
+      balancing,
+      metrics,
+      comparative,
+    });
+  } catch (error) {
+    console.error('Get bulk status error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}

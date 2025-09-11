@@ -1,0 +1,290 @@
+import { TimelineCalculator } from '../../lib/timeline/calculator';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { Event, Vendor, Location, Resource, Timeline } from '../../types/timeline';
+import { generateKnownGoodEvents, generateConflictScenarios, generateOptimalSchedules } from './accuracy-test-data';
+
+describe('Timeline Algorithm Accuracy Tests', () => {
+  let calculator: TimelineCalculator;
+  
+  beforeEach(() => {
+    calculator = new TimelineCalculator();
+  });
+  describe('Conflict Detection Accuracy', () => {
+    test('should detect all time overlap conflicts with 100% accuracy', async () => {
+      const testScenarios = generateConflictScenarios();
+      
+      for (const scenario of testScenarios) {
+        const result = await calculator.calculateTimeline(scenario.events);
+        
+        // Validate expected conflicts are detected
+        const detectedConflicts = result.overlaps.filter(o => o.severity === 'conflict');
+        expect(detectedConflicts).toHaveLength(scenario.expectedConflicts.length);
+        // Check no false positives
+        for (const detected of detectedConflicts) {
+          const expectedConflict = scenario.expectedConflicts.find(expected =>
+            expected.eventIds.sort().join(',') === detected.eventIds.sort().join(',')
+          );
+          expect(expectedConflict).toBeDefined();
+        }
+        // Check no false negatives
+        for (const expected of scenario.expectedConflicts) {
+          const detectedConflict = detectedConflicts.find(detected =>
+            detected.eventIds.sort().join(',') === expected.eventIds.sort().join(',')
+          expect(detectedConflict).toBeDefined();
+      }
+    });
+    test('should correctly classify conflict severity', async () => {
+      const events: Event[] = [
+        {
+          id: 'ceremony',
+          title: 'Wedding Ceremony',
+          start: new Date('2024-06-01T14:00:00Z'),
+          end: new Date('2024-06-01T15:00:00Z'),
+          duration: 60,
+          type: 'ceremony',
+          priority: 5,
+          location: 'main-chapel',
+          vendors: ['photographer-1'],
+          resources: ['sound-system'],
+          dependencies: [],
+          flexibility: 0.1
+        },
+          id: 'photos-same-location',
+          title: 'Family Photos',
+          start: new Date('2024-06-01T14:30:00Z'),
+          end: new Date('2024-06-01T15:30:00Z'),
+          type: 'photos',
+          priority: 3,
+          location: 'main-chapel', // Same location = conflict
+          vendors: ['photographer-1'], // Same vendor = conflict
+          resources: [],
+          flexibility: 0.5
+          id: 'prep-different-location',
+          title: 'Preparation',
+          start: new Date('2024-06-01T14:45:00Z'),
+          end: new Date('2024-06-01T15:15:00Z'),
+          duration: 30,
+          type: 'preparation',
+          priority: 2,
+          location: 'bridal-suite', // Different location = warning only
+          vendors: [],
+          flexibility: 0.8
+      ];
+      const result = await calculator.calculateTimeline(events);
+      // Should detect 1 conflict (ceremony vs photos - same location + vendor)
+      const conflicts = result.overlaps.filter(o => o.severity === 'conflict');
+      expect(conflicts).toHaveLength(1);
+      expect(conflicts[0].eventIds).toEqual(['ceremony', 'photos-same-location']);
+      // Should detect 2 warnings (time overlaps with different locations)
+      const warnings = result.overlaps.filter(o => o.severity === 'warning');
+      expect(warnings).toHaveLength(2);
+    test('should detect vendor double-booking conflicts', async () => {
+      const vendor: Vendor = {
+        id: 'photographer-1',
+        name: 'John Photography',
+        type: 'photographer',
+        availability: [
+          { start: new Date('2024-06-01T10:00:00Z'), end: new Date('2024-06-01T18:00:00Z') }
+        ],
+        travelTime: 30,
+        setupTime: 15,
+        capabilities: ['ceremony', 'portrait', 'candid'],
+        cost: 2500
+      };
+          title: 'Ceremony',
+          location: 'chapel',
+          id: 'reception',
+          title: 'Reception',
+          start: new Date('2024-06-01T14:30:00Z'), // Overlaps with ceremony
+          type: 'reception',
+          priority: 4,
+          location: 'ballroom',
+          flexibility: 0.3
+      const vendorResult = await calculator.calculateVendorAvailability([vendor], events);
+      expect(vendorResult.conflicts).toHaveLength(1);
+      expect(vendorResult.conflicts[0].vendorId).toBe('photographer-1');
+      expect(vendorResult.conflicts[0].conflictingEvents).toEqual(['ceremony', 'reception']);
+  describe('Scheduling Optimization Accuracy', () => {
+    test('should optimize schedule without losing any events', async () => {
+      const originalEvents = generateKnownGoodEvents(50);
+      const result = await calculator.calculateTimeline(originalEvents);
+      // All events should be preserved
+      expect(result.events).toHaveLength(originalEvents.length);
+      expect(result.optimizedSchedule).toHaveLength(originalEvents.length);
+      // All event IDs should be preserved
+      const originalIds = originalEvents.map(e => e.id).sort();
+      const optimizedIds = result.optimizedSchedule.map(e => e.id).sort();
+      expect(optimizedIds).toEqual(originalIds);
+    test('should maintain event duration during optimization', async () => {
+      const events = generateKnownGoodEvents(20);
+      const originalDurations = new Map(events.map(e => [e.id, e.duration]));
+      for (const optimizedEvent of result.optimizedSchedule) {
+        const originalDuration = originalDurations.get(optimizedEvent.id);
+        expect(optimizedEvent.duration).toBe(originalDuration);
+        // Verify start/end times match duration
+        const actualDuration = (optimizedEvent.end.getTime() - optimizedEvent.start.getTime()) / (60 * 1000);
+        expect(Math.abs(actualDuration - optimizedEvent.duration)).toBeLessThan(1); // 1 minute tolerance
+    test('should respect event dependencies in optimization', async () => {
+          id: 'setup',
+          title: 'Venue Setup',
+          start: new Date('2024-06-01T12:00:00Z'),
+          end: new Date('2024-06-01T13:00:00Z'),
+          flexibility: 0.2
+          dependencies: ['setup'], // Must come after setup
+          start: new Date('2024-06-01T16:00:00Z'),
+          end: new Date('2024-06-01T20:00:00Z'),
+          duration: 240,
+          dependencies: ['ceremony'], // Must come after ceremony
+      const schedule = result.optimizedSchedule;
+      // Find optimized events
+      const setup = schedule.find(e => e.id === 'setup')!;
+      const ceremony = schedule.find(e => e.id === 'ceremony')!;
+      const reception = schedule.find(e => e.id === 'reception')!;
+      // Verify dependency order is maintained
+      expect(setup.end.getTime()).toBeLessThanOrEqual(ceremony.start.getTime());
+      expect(ceremony.end.getTime()).toBeLessThanOrEqual(reception.start.getTime());
+    test('should find optimal schedule with genetic algorithm', async () => {
+      const events = generateKnownGoodEvents(30);
+      const optimizationOptions = {
+        populationSize: 20,
+        generations: 50,
+        mutationRate: 0.1
+      const result = await calculator.optimizeWithGeneticAlgorithm(events, optimizationOptions);
+      // Should achieve high fitness score
+      expect(result.fitnessScore).toBeGreaterThan(0.7);
+      // Should converge within generation limit
+      expect(result.generation).toBeLessThanOrEqual(optimizationOptions.generations);
+      expect(result.optimizedEvents).toHaveLength(events.length);
+      // Verify optimized schedule is feasible
+      const validationResult = await calculator.calculateTimeline(result.optimizedEvents);
+      const criticalConflicts = validationResult.overlaps.filter(o => o.severity === 'conflict');
+      expect(criticalConflicts.length).toBeLessThan(events.length * 0.1); // Less than 10% conflicts
+  describe('Travel Time Accuracy', () => {
+    test('should calculate realistic travel times between locations', async () => {
+      const locations: Location[] = [
+          id: 'church',
+          name: 'St. Mary Church',
+          address: '123 Church St, City, State',
+          coordinates: { lat: 40.7128, lng: -74.0060 },
+          capacity: 200,
+          amenities: ['parking', 'sound_system'],
+          restrictions: []
+          id: 'reception-hall',
+          name: 'Grand Reception Hall',
+          address: '456 Party Ave, City, State',
+          coordinates: { lat: 40.7589, lng: -73.9851 }, // ~5 miles away
+          capacity: 300,
+          amenities: ['catering', 'bar', 'parking'],
+          location: 'church',
+          start: new Date('2024-06-01T15:15:00Z'), // 15 minutes after ceremony
+          duration: 285,
+          location: 'reception-hall',
+          dependencies: ['ceremony'],
+      const result = await calculator.validateTravelTimes(events);
+      expect(result.travelValidation).toHaveLength(1);
+      const validation = result.travelValidation[0];
+      expect(validation.fromEvent).toBe('ceremony');
+      expect(validation.toEvent).toBe('reception');
+      expect(validation.travelTime).toBeGreaterThan(10); // Should be realistic travel time
+      expect(validation.travelTime).toBeLessThan(45); // But not excessive
+      // With only 15 minutes between events, should be infeasible
+      expect(validation.feasible).toBe(false);
+      expect(result.conflicts).toHaveLength(1);
+    test('should account for vendor setup and travel time', async () => {
+        id: 'caterer',
+        name: 'Elite Catering',
+        type: 'catering',
+          { start: new Date('2024-06-01T10:00:00Z'), end: new Date('2024-06-01T22:00:00Z') }
+        travelTime: 20, // 20 minutes travel time
+        setupTime: 45,  // 45 minutes setup time
+        capabilities: ['full-service', 'buffet', 'plated'],
+        cost: 8000
+          id: 'cocktail-hour',
+          title: 'Cocktail Hour',
+          start: new Date('2024-06-01T15:00:00Z'),
+          end: new Date('2024-06-01T16:00:00Z'),
+          location: 'garden',
+          vendors: ['caterer'],
+          flexibility: 0.4
+          id: 'dinner',
+          title: 'Wedding Dinner',
+          start: new Date('2024-06-01T16:30:00Z'), // 30 minutes later
+          end: new Date('2024-06-01T18:00:00Z'),
+          duration: 90,
+          location: 'ballroom', // Different location
+          vendors: ['caterer'], // Same vendor
+      const result = await calculator.calculateVendorAvailability([vendor], events);
+      // Should detect conflict due to insufficient time for travel + setup
+      // Available time: 30 minutes, Required time: 20 (travel) + 45 (setup) = 65 minutes
+      expect(result.conflicts[0].vendorId).toBe('caterer');
+      expect(result.conflicts[0].conflictingEvents).toContain('cocktail-hour');
+      expect(result.conflicts[0].conflictingEvents).toContain('dinner');
+  describe('Data Integrity Validation', () => {
+    test('should preserve all event properties during processing', async () => {
+      const originalEvents = generateKnownGoodEvents(25);
+      for (const originalEvent of originalEvents) {
+        const processedEvent = result.events.find(e => e.id === originalEvent.id);
+        expect(processedEvent).toBeDefined();
+        // Core properties should be preserved
+        expect(processedEvent!.id).toBe(originalEvent.id);
+        expect(processedEvent!.title).toBe(originalEvent.title);
+        expect(processedEvent!.type).toBe(originalEvent.type);
+        expect(processedEvent!.priority).toBe(originalEvent.priority);
+        expect(processedEvent!.duration).toBe(originalEvent.duration);
+        expect(processedEvent!.location).toBe(originalEvent.location);
+        expect(processedEvent!.vendors).toEqual(originalEvent.vendors);
+        expect(processedEvent!.resources).toEqual(originalEvent.resources);
+        expect(processedEvent!.dependencies).toEqual(originalEvent.dependencies);
+        expect(processedEvent!.flexibility).toBe(originalEvent.flexibility);
+    test('should maintain time consistency across all operations', async () => {
+      for (const event of result.events) {
+        // Start time should be before end time
+        expect(event.start.getTime()).toBeLessThan(event.end.getTime());
+        // Duration should match time difference (within 1 minute tolerance)
+        const actualDuration = (event.end.getTime() - event.start.getTime()) / (60 * 1000);
+        expect(Math.abs(actualDuration - event.duration)).toBeLessThan(1);
+        // Times should be valid dates
+        expect(isNaN(event.start.getTime())).toBe(false);
+        expect(isNaN(event.end.getTime())).toBe(false);
+    test('should validate resource allocation accuracy', async () => {
+      const resources: Resource[] = [
+          id: 'sound-system',
+          name: 'Professional Sound System',
+          type: 'sound_system',
+          quantity: 2, // Only 2 available
+          availability: [
+            { start: new Date('2024-06-01T10:00:00Z'), end: new Date('2024-06-01T22:00:00Z') }
+          ],
+          setupTime: 30,
+          breakdownTime: 15,
+          transportable: true,
+          cost: 500
+      const events = generateKnownGoodEvents(10).map(event => ({
+        ...event,
+        resources: ['sound-system'] // All events need sound system
+      }));
+      const result = await calculator.resolveResourceConflicts(events, resources);
+      // Should have resource allocation for sound-system
+      const soundSystemAllocation = result.conflictResolution.find(r => r.resource === 'sound-system');
+      expect(soundSystemAllocation).toBeDefined();
+      // Should not allocate more than available quantity (2) at any given time
+      const assignments = soundSystemAllocation!.assignments;
+      // Check for time overlaps in assignments
+      for (let i = 0; i < assignments.length; i++) {
+        const currentAssignment = assignments[i];
+        let overlappingCount = 1; // Count current assignment
+        for (let j = 0; j < assignments.length; j++) {
+          if (i === j) continue;
+          
+          const otherAssignment = assignments[j];
+          const currentStart = currentAssignment.timeSlot.start.getTime();
+          const currentEnd = currentAssignment.timeSlot.end.getTime();
+          const otherStart = otherAssignment.timeSlot.start.getTime();
+          const otherEnd = otherAssignment.timeSlot.end.getTime();
+          // Check for overlap
+          if (currentStart < otherEnd && currentEnd > otherStart) {
+            overlappingCount++;
+          }
+        // Should not exceed resource quantity
+        expect(overlappingCount).toBeLessThanOrEqual(resources[0].quantity);
+});

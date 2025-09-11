@@ -1,0 +1,1708 @@
+// Integration type definitions for WS-156 Task Creation System Integration Services
+
+export interface IntegrationConfig {
+  apiUrl: string;
+  timeout?: number;
+  retryAttempts?: number;
+  rateLimitPerMinute?: number;
+}
+
+export interface IntegrationCredentials {
+  userId: string;
+  organizationId: string;
+  provider: string;
+  apiKey: string;
+  accessToken?: string;
+  refreshToken?: string;
+  expiresAt?: number;
+  scopes?: string[];
+}
+
+export interface IntegrationResponse<T = any> {
+  success: boolean;
+  data?: T;
+  error?: string;
+}
+
+export interface HealthCheck {
+  status: 'healthy' | 'unhealthy' | 'degraded';
+  lastChecked: Date;
+  responseTime: number;
+  error?: string;
+}
+
+export interface ServiceMetrics {
+  totalRequests: number;
+  successfulRequests: number;
+  failedRequests: number;
+  averageResponseTime: number;
+  lastRequestAt?: Date;
+}
+
+// Calendar Integration Types
+export interface CalendarEventInput {
+  title: string;
+  description?: string;
+  startTime: Date;
+  endTime: Date;
+  location?: string;
+  attendees?: Array<{
+    email: string;
+    name?: string;
+  }>;
+}
+
+export interface CalendarEvent extends CalendarEventInput {
+  id: string;
+  htmlLink?: string;
+  source?: string;
+  created?: Date;
+  updated?: Date;
+}
+
+export interface AvailabilityResult {
+  busy: Array<{
+    start: string;
+    end: string;
+  }>;
+  available: Array<{
+    start: string;
+    end: string;
+  }>;
+}
+
+// Weather Integration Types
+export interface WeatherConfig extends IntegrationConfig {
+  units?: 'metric' | 'imperial';
+}
+
+export interface WeatherData {
+  location: string;
+  current: {
+    temperature: number;
+    condition: string;
+    humidity: number;
+    windSpeed: number;
+    description: string;
+  };
+  forecast: Array<{
+    date: string;
+    high: number;
+    low: number;
+    condition: string;
+    precipitation: number;
+    description: string;
+  }>;
+}
+
+export interface WeatherAlert {
+  id: string;
+  type: 'severe_weather' | 'high_wind' | 'precipitation' | 'temperature';
+  severity: 'minor' | 'moderate' | 'severe' | 'extreme';
+  title: string;
+  description: string;
+  startTime: Date;
+  endTime?: Date;
+  areas: string[];
+}
+
+// Places Integration Types
+export interface PlacesSearchCriteria {
+  query?: string;
+  location: {
+    latitude: number;
+    longitude: number;
+  };
+  radius: number;
+  type?: string;
+  priceLevel?: 1 | 2 | 3 | 4;
+  minRating?: number;
+}
+
+export interface PlaceDetails {
+  id: string;
+  name: string;
+  address: string;
+  location: {
+    latitude: number;
+    longitude: number;
+  };
+  rating?: number;
+  phoneNumber?: string;
+  website?: string;
+  category: string;
+  photos?: string[];
+  businessHours?: Array<{
+    day: number;
+    open: string;
+    close: string;
+  }>;
+  reviews?: Array<{
+    author: string;
+    rating: number;
+    text: string;
+    date: Date;
+  }>;
+}
+
+// Database Integration Types
+export interface IntegrationEvent {
+  id?: string;
+  userId: string;
+  organizationId: string;
+  provider: string;
+  externalId: string;
+  title: string;
+  description?: string;
+  startTime: Date;
+  endTime: Date;
+  location?: string;
+  attendees?: string[];
+  syncStatus: 'pending' | 'synced' | 'failed' | 'conflict';
+  syncError?: string;
+  lastSyncAt: Date;
+  createdAt?: Date;
+  updatedAt?: Date;
+}
+
+export interface AuditLogEntry {
+  id?: string;
+  userId: string;
+  organizationId: string;
+  action: string;
+  resourceId?: string;
+  resourceType?: string;
+  details: Record<string, any>;
+  ipAddress?: string;
+  userAgent?: string;
+  timestamp: Date;
+}
+
+// Error Types
+export class IntegrationError extends Error {
+  constructor(
+    message: string,
+    public code: string,
+    public category: string,
+    public originalError?: Error,
+  ) {
+    super(message);
+    this.name = 'IntegrationError';
+  }
+}
+
+export enum ErrorCategory {
+  AUTHENTICATION = 'AUTHENTICATION',
+  AUTHORIZATION = 'AUTHORIZATION',
+  VALIDATION = 'VALIDATION',
+  EXTERNAL_API = 'EXTERNAL_API',
+  NETWORK = 'NETWORK',
+  RATE_LIMIT = 'RATE_LIMIT',
+  SYSTEM = 'SYSTEM',
+}
+
+export enum ErrorSeverity {
+  LOW = 'LOW',
+  MEDIUM = 'MEDIUM',
+  HIGH = 'HIGH',
+  CRITICAL = 'CRITICAL',
+}
+
+export interface CategorizedError {
+  code: string;
+  userMessage: string;
+  category: ErrorCategory;
+  severity: ErrorSeverity;
+}
+
+// WS-165: Payment Calendar Integration Types
+export interface HealthCheckResult {
+  status: 'healthy' | 'degraded' | 'unhealthy';
+  responseTime: number;
+  uptime: number;
+  lastCheck: Date;
+  details?: Record<string, any>;
+}
+
+export interface ServiceHealthStatus extends HealthCheckResult {
+  serviceName: string;
+}
+
+export interface IntegrationHealthDashboard {
+  overallHealth: 'healthy' | 'degraded' | 'unhealthy';
+  services: ServiceHealthStatus[];
+  performanceMetrics: {
+    averageResponseTime: number;
+    successRate: number;
+    notificationDeliveryRate: number;
+    cashFlowAccuracy: number;
+  };
+  recentSyncResults: PaymentCalendarSyncResult[];
+}
+
+export interface PaymentCalendarSyncResult {
+  success: boolean;
+  totalEvents: number;
+  processedEvents: number;
+  errors: string[];
+  nextSyncAt: Date;
+  processingTime: number;
+  performanceMetrics?: {
+    serviceTimings: Record<string, number>;
+    memoryUsage?: number;
+    cacheHitRate?: number;
+  };
+}
+
+export interface VendorPayment {
+  id: string;
+  vendorId: string;
+  vendorName: string;
+  amount: number;
+  currency: string;
+  dueDate: Date;
+  status: 'pending' | 'overdue' | 'paid' | 'cancelled';
+  category: string;
+  description?: string;
+  invoiceNumber?: string;
+  contractId?: string;
+  paymentMethod?: string;
+  accountDetails?: string;
+}
+
+export interface BudgetUpdate {
+  totalAllocated: number;
+  totalSpent: number;
+  remaining: number;
+  categoryBreakdown: Record<
+    string,
+    {
+      allocated: number;
+      spent: number;
+      remaining: number;
+    }
+  >;
+}
+
+export interface CashFlowProjection {
+  projectedOutflows: Array<{
+    date: Date;
+    amount: number;
+    category: string;
+    vendor?: string;
+  }>;
+  liquidityGaps: Array<{
+    date: Date;
+    amount: number;
+    severity: 'low' | 'medium' | 'high';
+  }>;
+  recommendations: string[];
+}
+
+export interface NotificationChannel {
+  type: 'email' | 'sms' | 'push' | 'in_app';
+  enabled: boolean;
+  config?: Record<string, any>;
+}
+
+export interface NotificationTemplate {
+  id: string;
+  name: string;
+  subject: string;
+  body: string;
+  type: 'email' | 'sms' | 'push' | 'in_app';
+  priority: 'low' | 'normal' | 'high' | 'urgent';
+  tags: string[];
+  variables: string[];
+}
+
+export interface NotificationResult {
+  sent: number;
+  failed: number;
+  details: Array<{
+    recipientId: string;
+    channel: 'email' | 'sms' | 'push' | 'in_app';
+    status: 'sent' | 'failed' | 'pending';
+    templateId?: string;
+    error?: string;
+  }>;
+}
+
+export interface ReminderSchedule {
+  days: number;
+  sent: boolean;
+  scheduledAt: Date;
+  channels: Array<'email' | 'sms' | 'push' | 'in_app'>;
+}
+
+export interface VendorSyncResult {
+  success: boolean;
+  syncedPayments: VendorPayment[];
+  errors: string[];
+  metadata?: {
+    totalProcessed: number;
+    totalSkipped: number;
+    processingTime: number;
+  };
+}
+
+export interface CircuitBreakerState {
+  state: 'closed' | 'open' | 'half-open';
+  failureCount: number;
+  lastFailureTime: Date | null;
+  nextAttemptTime: Date | null;
+}
+
+export interface RateLimiterState {
+  tokens: number;
+  lastRefill: Date;
+  windowStart: Date;
+}
+
+export interface IntegrationMetrics {
+  requestCount: number;
+  successCount: number;
+  failureCount: number;
+  averageResponseTime: number;
+  lastRequestTime: Date;
+  circuitBreakerState: CircuitBreakerState;
+  rateLimiterState: RateLimiterState;
+}
+
+// WS-201: Webhook Integration Types
+export interface WebhookDelivery {
+  id: string;
+  webhookUrl: string;
+  eventType: string;
+  payload: Record<string, any>;
+  timestamp: Date;
+  organizationId: string;
+  retryCount: number;
+  maxRetries: number;
+  status?: 'pending' | 'sent' | 'failed' | 'cancelled';
+  signature?: string;
+  lastAttempt?: Date;
+  nextAttempt?: Date;
+  error?: string;
+}
+
+export interface WebhookEndpoint {
+  id: string;
+  url: string;
+  organizationId: string;
+  secretKey: string;
+  eventTypes: string[];
+  isActive: boolean;
+  createdAt: Date;
+  lastHealthCheck?: Date;
+  healthStatus?: 'healthy' | 'degraded' | 'unhealthy';
+  metadata?: Record<string, any>;
+}
+
+export interface WebhookFailureDetails {
+  webhookId: string;
+  endpointUrl: string;
+  eventType: string;
+  attemptCount: number;
+  lastError: string;
+  failureTime: Date;
+  httpStatusCode?: number;
+  responseTime?: number;
+  isWeddingWeekend: boolean;
+}
+
+export interface DeliveryResult {
+  success: boolean;
+  httpStatusCode?: number;
+  responseTime: number;
+  error?: string;
+  attempts: number;
+  timestamp: Date;
+}
+
+export interface HealthReport {
+  overallHealth: 'healthy' | 'degraded' | 'critical';
+  totalEndpoints: number;
+  healthyEndpoints: number;
+  degradedEndpoints: number;
+  unhealthyEndpoints: number;
+  averageResponseTime: number;
+  recommendations: string[];
+  criticalIssues: string[];
+  timestamp: Date;
+  endpointStatuses: Array<{
+    endpointId: string;
+    url: string;
+    status: 'healthy' | 'degraded' | 'unhealthy';
+    responseTime: number;
+    lastCheck: Date;
+    consecutiveFailures: number;
+    trend: 'stable' | 'increasing' | 'decreasing';
+  }>;
+}
+
+export interface MockServer {
+  url: string;
+  port: number;
+  isRunning: boolean;
+  requestCount: number;
+  stop: () => Promise<void>;
+}
+
+export interface PerformanceResult {
+  totalRequests: number;
+  successfulRequests: number;
+  failedRequests: number;
+  averageResponseTime: number;
+  p95ResponseTime: number;
+  successRate: number;
+  errorRate: number;
+  timestamp: Date;
+}
+
+// Wedding Industry Workflow Types
+export interface WeddingData {
+  id: string;
+  coupleNames: string[];
+  weddingDate: Date;
+  venue: string;
+  guestCount: number;
+  budget: number;
+  services: Record<string, any>;
+}
+
+export interface CRMIntegrationConfig {
+  crmType: 'tave' | 'honeybook' | 'lightblue' | 'studio-ninja';
+  apiEndpoint: string;
+  credentials: Record<string, any>;
+  mapping: Record<string, string>;
+}
+
+export interface VenuePricing {
+  basePrice: number;
+  additionalGuestFee: number;
+  setupFee: number;
+  cleanupFee: number;
+  currency: string;
+}
+
+export interface SetupRequirement {
+  category: string;
+  requirements: string[];
+  timeframe: string;
+  dependencies: string[];
+}
+
+// WS-243: AI Chatbot Integration System Types
+
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  timestamp: Date;
+  context?: ChatContext;
+  metadata?: Record<string, any>;
+}
+
+export interface ChatContext {
+  userId: string;
+  organizationId: string;
+  conversationId: string;
+  weddingId?: string;
+  vendorType?:
+    | 'photographer'
+    | 'venue'
+    | 'florist'
+    | 'catering'
+    | 'planning'
+    | 'other';
+  previousMessages: number;
+  sessionId: string;
+  ipAddress?: string;
+  userAgent?: string;
+  knowledgeBaseRefs?: string[];
+}
+
+export interface ChatCompletionOptions {
+  maxTokens?: number;
+  temperature?: number;
+  streaming?: boolean;
+  model?: string;
+  functions?: ChatFunction[];
+  weddingContext?: WeddingContext;
+}
+
+export interface ChatFunction {
+  name: string;
+  description: string;
+  parameters: any;
+  handler: (args: any, context: ChatContext) => Promise<any>;
+}
+
+export interface WeddingContext {
+  weddingDate?: string;
+  venueName?: string;
+  guestCount?: number;
+  budget?: number;
+  planningStage?: 'early' | 'planning' | 'details' | 'final' | 'day-of';
+  priorityLevel?: 'low' | 'medium' | 'high' | 'critical';
+}
+
+export interface TokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  cost: number;
+}
+
+export interface StreamingChatResponse {
+  id: string;
+  delta: string;
+  finished: boolean;
+  tokenUsage?: TokenUsage;
+  confidence?: number;
+}
+
+export interface KnowledgeBaseQuery {
+  query: string;
+  context: ChatContext;
+  maxResults?: number;
+  threshold?: number;
+  filters?: Record<string, any>;
+  semanticSearch?: boolean;
+}
+
+export interface KnowledgeBaseResult {
+  id: string;
+  content: string;
+  score: number;
+  source: string;
+  title?: string;
+  url?: string;
+  metadata: Record<string, any>;
+  relevanceToWedding?: number;
+}
+
+export interface KnowledgeBaseEnrichment {
+  originalQuery: string;
+  enrichedResults: KnowledgeBaseResult[];
+  totalResults: number;
+  searchTime: number;
+  cacheHit: boolean;
+}
+
+export interface SupportTicket {
+  id: string;
+  title: string;
+  description: string;
+  priority: 'low' | 'medium' | 'high' | 'urgent';
+  status: 'open' | 'in_progress' | 'resolved' | 'closed';
+  assigneeId?: string;
+  organizationId: string;
+  conversationId: string;
+  conversationHistory: ChatMessage[];
+  metadata: Record<string, any>;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface SupportHandoffRequest {
+  conversationId: string;
+  context: ChatContext;
+  messages: ChatMessage[];
+  reason: string;
+  urgency: 'low' | 'medium' | 'high';
+  suggestedAssignee?: string;
+  weddingEmergency?: boolean;
+}
+
+export interface HandoffResult {
+  ticket: SupportTicket;
+  estimatedResponseTime: number;
+  assignedAgent?: {
+    id: string;
+    name: string;
+    specialties: string[];
+  };
+  handoffMessage: string;
+}
+
+export interface RealtimeMessage {
+  id: string;
+  conversationId: string;
+  message: ChatMessage;
+  deliveryStatus: 'sent' | 'delivered' | 'read' | 'failed';
+  timestamp: Date;
+  retryCount?: number;
+}
+
+export interface ConnectionStatus {
+  connected: boolean;
+  lastHeartbeat: Date;
+  reconnectAttempts: number;
+  channels: string[];
+  latency?: number;
+}
+
+export interface RealtimeSubscription {
+  conversationId: string;
+  channel: string;
+  subscribed: boolean;
+  messageCallback?: (message: RealtimeMessage) => void;
+  typingCallback?: (isTyping: boolean, userId: string) => void;
+  errorCallback?: (error: Error) => void;
+}
+
+export interface BroadcastOptions {
+  priority?: 'low' | 'medium' | 'high';
+  requiresDeliveryConfirmation?: boolean;
+  weddingDayPriority?: boolean;
+}
+
+export interface OpenAIConfig extends IntegrationConfig {
+  apiKey: string;
+  organizationId?: string;
+  model: string;
+  maxTokens: number;
+  temperature: number;
+  dailyTokenLimit: number;
+  monthlyTokenLimit: number;
+  rateLimits: {
+    requestsPerMinute: number;
+    tokensPerMinute: number;
+    maxConcurrentRequests: number;
+  };
+  circuitBreaker: {
+    failureThreshold: number;
+    recoveryTimeout: number;
+    monitoringPeriod: number;
+  };
+  security: {
+    enablePIIRedaction: boolean;
+    enableContentFiltering: boolean;
+    enablePromptInjectionProtection: boolean;
+    maxInputLength: number;
+  };
+}
+
+export interface KnowledgeBaseConfig extends IntegrationConfig {
+  supabaseUrl: string;
+  serviceKey: string;
+  embeddingModel: string;
+  vectorDimensions: number;
+  searchTimeout: number;
+  cacheConfig: {
+    enabled: boolean;
+    ttl: number;
+    maxEntries: number;
+  };
+}
+
+export interface SupportIntegrationConfig extends IntegrationConfig {
+  supabaseUrl: string;
+  serviceKey: string;
+  notificationConfig: {
+    enabled: boolean;
+    emailTemplates: Record<string, string>;
+    slackWebhook?: string;
+  };
+  autoAssignment: {
+    enabled: boolean;
+    algorithm: 'round_robin' | 'skill_based' | 'load_balanced';
+  };
+}
+
+export interface RealtimeConfig extends IntegrationConfig {
+  supabaseUrl: string;
+  anonKey: string;
+  heartbeatInterval: number;
+  reconnectConfig: {
+    maxAttempts: number;
+    baseDelay: number;
+    maxDelay: number;
+    backoffMultiplier: number;
+  };
+}
+
+export interface AIChatbotConfig {
+  openai: OpenAIConfig;
+  knowledgeBase: KnowledgeBaseConfig;
+  support: SupportIntegrationConfig;
+  realtime: RealtimeConfig;
+  general: {
+    conversationTimeout: number;
+    maxConversationLength: number;
+    weddingDayProtocol: boolean;
+    enableAnalytics: boolean;
+    debugMode: boolean;
+  };
+}
+
+export interface ConversationAnalytics {
+  conversationId: string;
+  userId: string;
+  organizationId: string;
+  messageCount: number;
+  averageResponseTime: number;
+  userSatisfactionScore?: number;
+  escalatedToHuman: boolean;
+  weddingRelated: boolean;
+  startTime: Date;
+  endTime?: Date;
+  tokensUsed: number;
+  cost: number;
+}
+
+export interface AIPerformanceMetrics {
+  responseAccuracy: number;
+  averageConfidence: number;
+  escalationRate: number;
+  userSatisfaction: number;
+  uptime: number;
+  errorRate: number;
+  averageTokensPerResponse: number;
+  averageCostPerConversation: number;
+}
+
+export interface IntegrationHealthStatus {
+  service: string;
+  status: 'healthy' | 'degraded' | 'unhealthy' | 'unknown';
+  lastChecked: Date;
+  responseTime: number;
+  errorRate: number;
+  details: Record<string, any>;
+}
+
+export interface SystemHealthDashboard {
+  overall: 'healthy' | 'degraded' | 'unhealthy';
+  services: IntegrationHealthStatus[];
+  activeConversations: number;
+  dailyUsage: {
+    conversations: number;
+    tokens: number;
+    cost: number;
+  };
+  weddingDayMode: boolean;
+  lastUpdated: Date;
+}
+
+// WS-252: Music Database Integration Types
+export interface MusicTrack {
+  id: string;
+  title: string;
+  artist: string;
+  album: string;
+  duration: number; // milliseconds
+  previewUrl?: string;
+  spotifyId?: string;
+  appleMusicId?: string;
+  imageUrl?: string;
+  externalUrls: {
+    spotify?: string;
+    appleMusic?: string;
+  };
+  popularity?: number;
+  explicit?: boolean;
+  genre?: string;
+  releaseDate?: string;
+}
+
+export interface PlaylistUpdate {
+  type: 'track_added' | 'track_removed' | 'reordered' | 'metadata_updated';
+  playlist_id: string;
+  user_id: string;
+  changes: {
+    trackId?: string;
+    position?: number;
+    newPosition?: number;
+    metadata?: {
+      name?: string;
+      description?: string;
+    };
+  };
+}
+
+export interface AppropriatenessAnalysis {
+  score: number; // 0-100
+  reasons: string[];
+  recommendation:
+    | 'highly_recommended'
+    | 'recommended'
+    | 'caution'
+    | 'not_recommended';
+  tags: string[];
+  ceremonies: {
+    ceremony: boolean;
+    reception: boolean;
+    cocktailHour: boolean;
+  };
+}
+
+export interface SongResolution {
+  confidence: number; // 0-100
+  possibleMatches: {
+    artist: string;
+    title: string;
+    album?: string;
+    likelihood: number;
+  }[];
+  interpretation: string;
+  searchQueries: string[];
+}
+
+// WS-246: Vendor Performance Analytics System Types
+
+export interface VendorDataSource {
+  id: string;
+  name: string;
+  type: 'CRM' | 'CALENDAR' | 'PAYMENT' | 'REVIEW' | 'BOOKING' | 'CUSTOM';
+  vendor_id: string;
+  organization_id: string;
+  authentication: IntegrationAuth;
+  status: IntegrationStatus;
+  last_sync: string;
+  error_count: number;
+  config: Record<string, unknown>;
+  rate_limit?: RateLimit;
+  webhook_url?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IntegrationAuth {
+  type: 'API_KEY' | 'OAUTH2' | 'BASIC' | 'BEARER' | 'CUSTOM';
+  credentials: Record<string, string>;
+  expires_at?: string;
+  refresh_token?: string;
+  scope?: string[];
+}
+
+export interface IntegrationStatus {
+  connected: boolean;
+  last_health_check: string;
+  health: 'HEALTHY' | 'WARNING' | 'ERROR' | 'UNKNOWN';
+  message?: string;
+  retry_count: number;
+  next_retry?: string;
+}
+
+export interface RateLimit {
+  requests_per_minute: number;
+  requests_per_hour: number;
+  requests_per_day: number;
+  current_usage: {
+    minute: number;
+    hour: number;
+    day: number;
+  };
+  reset_times: {
+    minute: string;
+    hour: string;
+    day: string;
+  };
+}
+
+export interface PerformanceMetric {
+  id: string;
+  vendor_id: string;
+  organization_id: string;
+  data_source_id: string;
+  metric_type: MetricType;
+  metric_name: string;
+  value: number;
+  unit: string;
+  context: WeddingMetricsContext;
+  timestamp: string;
+  metadata: Record<string, unknown>;
+}
+
+export type MetricType =
+  | 'RESPONSE_TIME'
+  | 'SATISFACTION_SCORE'
+  | 'BOOKING_CONVERSION'
+  | 'PAYMENT_SUCCESS'
+  | 'COMMUNICATION_FREQUENCY'
+  | 'DELIVERY_TIME'
+  | 'QUALITY_RATING'
+  | 'REFERRAL_COUNT'
+  | 'REPEAT_BUSINESS'
+  | 'SEASONAL_PERFORMANCE';
+
+export interface WeddingMetricsContext {
+  wedding_id?: string;
+  wedding_date?: string;
+  season: 'SPRING' | 'SUMMER' | 'FALL' | 'WINTER';
+  venue_type?: string;
+  guest_count?: number;
+  budget_tier: 'BUDGET' | 'MID_RANGE' | 'LUXURY' | 'ULTRA_LUXURY';
+  priority: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  is_wedding_week: boolean;
+  is_weekend: boolean;
+}
+
+export interface DataSyncJob {
+  id: string;
+  data_source_id: string;
+  job_type: SyncJobType;
+  status: JobStatus;
+  scheduled_at: string;
+  started_at?: string;
+  completed_at?: string;
+  error?: string;
+  retry_count: number;
+  max_retries: number;
+  progress: SyncProgress;
+  config: SyncConfig;
+}
+
+export type SyncJobType =
+  | 'FULL_SYNC'
+  | 'INCREMENTAL_SYNC'
+  | 'WEBHOOK_PROCESS'
+  | 'HEALTH_CHECK'
+  | 'METRIC_CALCULATION';
+
+export type JobStatus =
+  | 'PENDING'
+  | 'RUNNING'
+  | 'COMPLETED'
+  | 'FAILED'
+  | 'CANCELLED'
+  | 'RETRYING';
+
+export interface SyncProgress {
+  total_records: number;
+  processed_records: number;
+  success_records: number;
+  failed_records: number;
+  start_time: string;
+  estimated_completion?: string;
+}
+
+export interface SyncConfig {
+  batch_size: number;
+  timeout_ms: number;
+  retry_strategy: 'LINEAR' | 'EXPONENTIAL' | 'FIXED';
+  retry_delay_ms: number;
+  data_validation: boolean;
+  conflict_resolution: 'SOURCE_WINS' | 'DESTINATION_WINS' | 'MERGE' | 'MANUAL';
+}
+
+export interface BenchmarkData {
+  id: string;
+  metric_type: MetricType;
+  industry: string;
+  vendor_category: string;
+  region?: string;
+  season?: string;
+  benchmark_value: number;
+  percentile_25: number;
+  percentile_50: number;
+  percentile_75: number;
+  percentile_90: number;
+  sample_size: number;
+  data_source: string;
+  collected_at: string;
+}
+
+// Wedding Industry Specific Integration Types
+
+export interface TaveIntegration {
+  studio_id: string;
+  api_key: string;
+  webhook_secret: string;
+  sync_contacts: boolean;
+  sync_jobs: boolean;
+  sync_invoices: boolean;
+  last_sync_timestamp?: string;
+}
+
+export interface LightBlueIntegration {
+  venue_id: string;
+  login_credentials: {
+    username: string;
+    password: string;
+  };
+  scraping_config: {
+    booking_url: string;
+    calendar_selector: string;
+    rate_limit_ms: number;
+  };
+  proxy_config?: {
+    enabled: boolean;
+    endpoints: string[];
+  };
+}
+
+export interface ReviewPlatformIntegration {
+  platform: 'GOOGLE' | 'YELP' | 'KNOT' | 'WEDDINGWIRE' | 'FACEBOOK';
+  business_id: string;
+  api_credentials: Record<string, string>;
+  sync_frequency: number;
+  rating_threshold: number;
+  response_tracking: boolean;
+}
+
+export interface CalendarAnalyticsIntegration {
+  provider: 'GOOGLE' | 'OUTLOOK' | 'APPLE' | 'CUSTOM';
+  calendar_id: string;
+  oauth_tokens: {
+    access_token: string;
+    refresh_token: string;
+    expires_at: string;
+  };
+  sync_events: boolean;
+  track_response_times: boolean;
+  business_hours: {
+    start: string;
+    end: string;
+    timezone: string;
+  };
+}
+
+export interface PaymentAnalyticsIntegration {
+  provider: 'STRIPE' | 'SQUARE' | 'PAYPAL' | 'QUICKBOOKS';
+  account_id: string;
+  webhook_endpoints: string[];
+  track_metrics: {
+    success_rate: boolean;
+    processing_time: boolean;
+    chargeback_rate: boolean;
+    revenue_trends: boolean;
+  };
+}
+
+export interface IntegrationHealthCheckResult {
+  id: string;
+  data_source_id: string;
+  check_type: 'CONNECTIVITY' | 'AUTHENTICATION' | 'DATA_QUALITY' | 'RATE_LIMIT';
+  status: 'PASS' | 'WARN' | 'FAIL';
+  message: string;
+  checked_at: string;
+  response_time_ms?: number;
+  next_check: string;
+}
+
+export interface DataQualityReport {
+  data_source_id: string;
+  total_records: number;
+  valid_records: number;
+  invalid_records: number;
+  duplicate_records: number;
+  missing_fields: string[];
+  data_freshness: {
+    oldest_record: string;
+    newest_record: string;
+    average_age_hours: number;
+  };
+  quality_score: number;
+  generated_at: string;
+}
+
+// WS-250: API Gateway Management System Types
+
+export interface ExternalAPIConfig extends IntegrationConfig {
+  apiUrl: string;
+  authMethod: 'api-key' | 'oauth2' | 'bearer' | 'basic';
+  rateLimiting: {
+    requestsPerSecond: number;
+    burstLimit: number;
+  };
+  timeout: number;
+  retryAttempts: number;
+  enableCircuitBreaker: boolean;
+  enableHealthChecks: boolean;
+  enableMetrics: boolean;
+}
+
+export interface APIVersion {
+  version: string;
+  apiId: string;
+  schemaUrl: string;
+  endpoints: any[];
+  deprecationDate: string | null;
+  migrationGuide: string;
+  breakingChanges: string[];
+  backwardCompatible: boolean;
+}
+
+export interface VersionCompatibilityMatrix {
+  [version: string]: {
+    [targetVersion: string]: {
+      compatible: boolean;
+      breakingChanges?: string[];
+    };
+  };
+}
+
+export interface APIUsageMetrics {
+  requestCount: number;
+  errorCount: number;
+  averageResponseTime: number;
+  lastUsed: Date;
+}
+
+export interface TransformationSchema {
+  schemaId: string;
+  name: string;
+  version: string;
+  sourceFormat: string;
+  targetFormat: string;
+  fieldMappings: Record<string, string>;
+  validationRules: Record<string, any>;
+  customTransformers: Record<string, string>;
+}
+
+export interface PlatformAdapter {
+  adapterId: string;
+  platformName: string;
+  apiVersion: string;
+  fieldMappings: Record<string, string>;
+  rateLimiting: {
+    requestsPerMinute: number;
+    burstLimit: number;
+  };
+}
+
+export interface CustomTransformer {
+  name: string;
+  handler: (value: any) => any;
+}
+
+export interface VendorAPI {
+  apiId: string;
+  name: string;
+  category: string;
+  baseUrl: string;
+  version: string;
+  authMethod: string;
+  credentials?: any;
+  endpoints: Record<string, string>;
+  dataMapping: Record<string, string>;
+  qualityMetrics: Record<string, any>;
+}
+
+export interface RoutingRule {
+  ruleId: string;
+  name: string;
+  priority: number;
+  conditions: any;
+  actions: any;
+  metadata: any;
+}
+
+export interface VendorHealth {
+  healthy: boolean;
+  responseTime: number;
+  errorRate: number;
+  lastChecked: Date;
+  lastError?: string;
+}
+
+export interface RoutingMetrics {
+  totalRequests: number;
+  routingDecisions: Record<string, number>;
+  averageRoutingTime: number;
+}
+
+export interface PaymentGateway {
+  gatewayId: string;
+  name: string;
+  provider: string;
+  version: string;
+  credentials: any;
+  supportedFeatures: string[];
+  supportedPaymentMethods: string[];
+  currencies: string[];
+  fees: any;
+  limits: any;
+}
+
+export interface CalendarProvider {
+  providerId: string;
+  name: string;
+  provider: string;
+  version: string;
+  credentials: any;
+  scopes: string[];
+  capabilities: string[];
+  rateLimiting: {
+    requestsPerSecond: number;
+    dailyQuota?: number;
+  };
+  webhookSupport: boolean;
+  realTimeSyncSupport: boolean;
+}
+
+export interface WeddingCalendarEvent {
+  id: string;
+  eventId: string;
+  providerId: string;
+  calendarId: string;
+  weddingId: string;
+  eventType: string;
+  title: string;
+  description?: string;
+  startTime: string;
+  endTime: string;
+  location?: any;
+  attendees?: any[];
+  weddingDetails?: any;
+  vendors?: any[];
+  reminders?: any[];
+}
+
+export interface CalendarSync {
+  syncId: string;
+  vendorId: string;
+  providerId: string;
+  calendarId: string;
+  syncType: 'bidirectional' | 'unidirectional';
+  syncStatus: 'active' | 'paused' | 'error';
+  lastSyncAt: Date;
+}
+
+export interface ReviewPlatform {
+  platformId: string;
+  name: string;
+  platform: string;
+  version: string;
+  credentials: ReviewPlatformCredentials;
+  capabilities: string[];
+  rateLimiting: {
+    requestsPerSecond: number;
+    dailyQuota?: number;
+  };
+  webhookSupport: boolean;
+  realTimeMonitoring: boolean;
+  supportedFeatures: any;
+}
+
+export interface ReviewPlatformCredentials {
+  userId?: string;
+  apiKey?: string;
+  clientId?: string;
+  clientSecret?: string;
+  accessToken?: string;
+  refreshToken?: string;
+}
+
+export interface Review {
+  id: string;
+  platformId: string;
+  businessId: string;
+  author: string;
+  rating: number;
+  text: string;
+  date: Date;
+  response?: string;
+  photos?: string[];
+  verified: boolean;
+}
+
+export interface ReviewMonitoring {
+  monitoringId: string;
+  vendorId: string;
+  platforms: string[];
+  rules: any;
+  notifications: any;
+  status: 'active' | 'paused';
+}
+
+export interface ServiceRegistry {
+  services: Map<string, any>;
+  healthStatus: Map<string, VendorHealth>;
+}
+
+export interface TrafficRoutingRule {
+  ruleId: string;
+  conditions: any;
+  actions: any;
+  priority: number;
+}
+
+export interface OrchestrationMetrics {
+  totalServices: number;
+  healthyServices: number;
+  requestCount: number;
+  averageResponseTime: number;
+  errorRate: number;
+}
+
+export interface WeddingContext {
+  weddingId?: string;
+  weddingDate?: string;
+  urgency?: 'low' | 'medium' | 'high' | 'emergency';
+  isWeddingDay?: boolean;
+}
+
+export interface LoadBalancingStrategy {
+  strategy: 'round_robin' | 'weighted' | 'least_connections' | 'geographic';
+  config: any;
+}
+
+// WS-342: Advanced Form Builder Engine Integration Types
+// Wedding Industry Focus Types
+
+export type FormIntegrationProvider =
+  | 'tave'
+  | 'honeybook'
+  | 'lightblue'
+  | 'pixieset'
+  | 'seventeen'
+  | 'shootproof'
+  | 'google_calendar'
+  | 'outlook'
+  | 'stripe'
+  | 'quickbooks'
+  | 'xero'
+  | 'resend'
+  | 'twilio'
+  | 'zoom'
+  | 'calendly';
+
+export interface FormSubmission {
+  id: string;
+  form_id: string;
+  organization_id: string;
+  submitted_by?: string;
+  submission_data: Record<string, any>;
+  client_info: WeddingClientInfo;
+  wedding_details?: WeddingDetails;
+  timestamp: string;
+  ip_address?: string;
+  user_agent?: string;
+  referrer?: string;
+  utm_parameters?: Record<string, string>;
+}
+
+export interface WeddingClientInfo {
+  name: string;
+  email: string;
+  phone?: string;
+  partner_name?: string;
+  wedding_date?: string;
+  venue_name?: string;
+  guest_count?: number;
+  budget_range?: 'economy' | 'mid-range' | 'luxury' | 'ultra-luxury';
+  service_type: WeddingServiceType;
+  preferred_contact_method?: 'email' | 'phone' | 'text';
+  timezone?: string;
+  referral_source?: string;
+  special_requests?: string;
+}
+
+export interface WeddingDetails {
+  ceremony_location?: string;
+  reception_location?: string;
+  wedding_style?: WeddingStyle;
+  season?: 'spring' | 'summer' | 'fall' | 'winter';
+  timeline?: WeddingTimelineEvent[];
+  special_requirements?: string[];
+  dietary_restrictions?: string[];
+  accessibility_needs?: string[];
+  cultural_considerations?: string;
+  weather_backup_plan?: string;
+}
+
+export interface WeddingTimelineEvent {
+  time: string;
+  event: string;
+  location?: string;
+  duration?: number;
+  vendor_involved?: string[];
+}
+
+export interface FormIntegrationConfig {
+  provider: FormIntegrationProvider;
+  enabled: boolean;
+  priority: number; // 1 = highest, 10 = lowest
+  config: ProviderConfig;
+  field_mappings: FieldMapping[];
+  triggers: IntegrationTrigger[];
+  retry_policy: RetryPolicy;
+  wedding_specific_rules?: WeddingIntegrationRules;
+  rate_limits?: {
+    requests_per_minute: number;
+    requests_per_hour: number;
+    requests_per_day: number;
+  };
+  webhook_config?: {
+    url: string;
+    secret: string;
+    events: WebhookEventType[];
+    signature_verification: boolean;
+  };
+}
+
+export interface FieldMapping {
+  source_field: string;
+  target_field: string;
+  transformation?: string; // JavaScript function as string
+  required: boolean;
+  wedding_context?: 'client' | 'wedding' | 'service' | 'timeline' | 'payment';
+  data_type?: 'string' | 'number' | 'date' | 'boolean' | 'array' | 'object';
+  default_value?: any;
+}
+
+export interface IntegrationTrigger {
+  condition: string; // JavaScript expression
+  delay?: number; // ms
+  depends_on?: string[]; // Other integration IDs that must complete first
+  max_retries?: number;
+  webhook_url?: string;
+}
+
+export interface RetryPolicy {
+  max_attempts: number;
+  backoff_strategy: 'linear' | 'exponential' | 'fixed';
+  base_delay: number; // ms
+  max_delay: number; // ms
+  wedding_day_override?: {
+    max_attempts: number;
+    base_delay: number;
+    escalate_to_manual?: boolean;
+  };
+  failure_escalation?: {
+    email_after_attempts: number;
+    sms_after_attempts: number;
+    emergency_contact_after_attempts: number;
+  };
+}
+
+export interface WeddingIntegrationRules {
+  block_on_wedding_day?: boolean;
+  priority_boost_for_urgent?: boolean;
+  require_manual_approval?: boolean;
+  preserve_wedding_date?: boolean;
+  weekend_mode?: 'read-only' | 'emergency-only' | 'normal';
+  seasonal_adjustments?: {
+    peak_season_priority_boost: boolean;
+    off_season_batch_processing: boolean;
+  };
+}
+
+export type ProviderConfig =
+  | TaveConfig
+  | HoneyBookConfig
+  | LightBlueConfig
+  | PixiesetConfig
+  | GoogleCalendarConfig
+  | StripeConfig
+  | ResendConfig
+  | TwilioConfig;
+
+export interface TaveConfig {
+  api_key: string;
+  base_url?: string;
+  studio_id?: string;
+  default_job_type?: string;
+  custom_fields?: Record<string, string>;
+}
+
+export interface HoneyBookConfig {
+  client_id: string;
+  client_secret: string;
+  access_token?: string;
+  refresh_token?: string;
+  token_expires_at?: string;
+  scopes: string[];
+  project_pipeline_id?: string;
+}
+
+export interface LightBlueConfig {
+  username: string;
+  password: string; // Encrypted
+  base_url: string;
+  session_timeout?: number;
+  captcha_solver?: string;
+  user_agent?: string;
+}
+
+export interface PixiesetConfig {
+  api_key: string;
+  gallery_template_id?: string;
+  auto_create_galleries?: boolean;
+  watermark_settings?: {
+    enabled: boolean;
+    position: string;
+    opacity: number;
+  };
+}
+
+export interface GoogleCalendarConfig {
+  client_id: string;
+  client_secret: string;
+  access_token?: string;
+  refresh_token?: string;
+  calendar_id?: string;
+  timezone: string;
+  default_event_duration: number; // minutes
+}
+
+export interface StripeConfig {
+  secret_key: string;
+  publishable_key: string;
+  webhook_secret: string;
+  connect_account_id?: string;
+  default_currency: string;
+  automatic_tax?: boolean;
+}
+
+export interface ResendConfig {
+  api_key: string;
+  from_email: string;
+  reply_to_email?: string;
+  template_ids?: Record<string, string>;
+  tracking?: {
+    opens: boolean;
+    clicks: boolean;
+    deliveries: boolean;
+  };
+}
+
+export interface TwilioConfig {
+  account_sid: string;
+  auth_token: string;
+  phone_number: string;
+  messaging_service_sid?: string;
+  status_callback_url?: string;
+}
+
+export interface FormIntegrationResult {
+  integration_id: string;
+  provider: FormIntegrationProvider;
+  status: 'success' | 'failed' | 'partial' | 'pending';
+  records_created?: number;
+  records_updated?: number;
+  records_failed?: number;
+  error_message?: string;
+  error_code?: string;
+  execution_time: number; // ms
+  retry_count: number;
+  wedding_context?: WeddingIntegrationContext;
+  provider_response?: any;
+  sync_details?: SyncDetails;
+}
+
+export interface WeddingIntegrationContext {
+  affects_wedding_day: boolean;
+  urgency_level: 'low' | 'medium' | 'high' | 'critical';
+  wedding_date?: string;
+  days_until_wedding?: number;
+  is_weekend_wedding?: boolean;
+  service_criticality?: 'essential' | 'important' | 'nice-to-have';
+}
+
+export interface FormIntegrationStatus {
+  form_id: string;
+  organization_id: string;
+  total_integrations: number;
+  completed_integrations: number;
+  failed_integrations: number;
+  pending_integrations: number;
+  overall_status: 'processing' | 'completed' | 'partial_failure' | 'failed';
+  results: FormIntegrationResult[];
+  started_at: string;
+  completed_at?: string;
+  estimated_completion?: string;
+  wedding_context?: {
+    is_wedding_weekend: boolean;
+    upcoming_weddings_count: number;
+    critical_integrations_healthy: boolean;
+  };
+}
+
+export interface OAuthTokens {
+  access_token: string;
+  refresh_token?: string;
+  expires_at: string;
+  token_type: string;
+  scope?: string;
+  provider_account_id?: string;
+  provider_account_name?: string;
+}
+
+export interface OAuthState {
+  csrf_token: string;
+  return_url?: string;
+  organization_id: string;
+  provider: FormIntegrationProvider;
+  expires_at: string;
+}
+
+export interface BatchJob {
+  id: string;
+  organization_id: string;
+  provider: FormIntegrationProvider;
+  operation: 'sync' | 'import' | 'export' | 'validate' | 'cleanup';
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+  filters: BatchJobFilters;
+  options: BatchJobOptions;
+  progress: BatchJobProgress;
+  results?: BatchJobResults;
+  created_at: string;
+  started_at?: string;
+  completed_at?: string;
+  error_message?: string;
+}
+
+export interface BatchJobFilters {
+  date_range?: {
+    start: string;
+    end: string;
+  };
+  record_types?: string[];
+  updated_since?: string;
+  status_filter?: string[];
+  wedding_date_range?: {
+    start: string;
+    end: string;
+  };
+  service_types?: WeddingServiceType[];
+}
+
+export interface BatchJobOptions {
+  chunk_size: number;
+  max_parallel: number;
+  timeout: number; // ms
+  retry_failed: boolean;
+  notify_on_completion: boolean;
+  preserve_order: boolean;
+  wedding_season_optimizations?: {
+    increase_timeout_multiplier: number;
+    reduce_parallelism_on_weekends: boolean;
+    priority_boost_urgent_weddings: boolean;
+  };
+}
+
+export interface BatchJobProgress {
+  total_records: number;
+  processed_records: number;
+  failed_records: number;
+  skipped_records: number;
+  progress_percentage: number;
+  current_batch: number;
+  total_batches: number;
+  estimated_completion?: string;
+  processing_rate: number; // records per minute
+}
+
+export interface BatchJobResults {
+  successful_operations: number;
+  failed_operations: number;
+  partial_operations: number;
+  total_execution_time: number;
+  average_operation_time: number;
+  errors_summary: Array<{
+    error_type: string;
+    count: number;
+    sample_message: string;
+  }>;
+  performance_metrics: {
+    peak_memory_usage: number;
+    cpu_utilization: number;
+    network_requests: number;
+    cache_hit_rate: number;
+  };
+}

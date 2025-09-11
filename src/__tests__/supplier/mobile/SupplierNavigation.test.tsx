@@ -1,0 +1,86 @@
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { useRouter, usePathname } from 'next/navigation';
+import { SupplierMobileNavigation } from '@/components/supplier/mobile/SupplierNavigation';
+import { useSupplierNotifications } from '@/hooks/useSupplierNotifications';
+
+// Mock the hooks
+jest.mock('next/navigation', () => ({
+  useRouter: jest.fn(),
+  usePathname: jest.fn(),
+}));
+jest.mock('@/hooks/useSupplierNotifications', () => ({
+  useSupplierNotifications: jest.fn(),
+// Mock navigator.vibrate
+Object.assign(navigator, {
+  vibrate: jest.fn(),
+});
+const mockPush = jest.fn();
+const mockUseRouter = useRouter as jest.MockedFunction<typeof useRouter>;
+const mockUsePathname = usePathname as jest.MockedFunction<typeof usePathname>;
+const mockUseSupplierNotifications = useSupplierNotifications as jest.MockedFunction<typeof useSupplierNotifications>;
+describe('SupplierMobileNavigation', () => {
+  beforeEach(() => {
+    mockUseRouter.mockReturnValue({
+      push: mockPush,
+      back: jest.fn(),
+      forward: jest.fn(),
+      refresh: jest.fn(),
+      replace: jest.fn(),
+      prefetch: jest.fn(),
+    });
+    
+    mockUsePathname.mockReturnValue('/supplier-portal');
+    mockUseSupplierNotifications.mockReturnValue({
+      notifications: [],
+      unreadCount: 0,
+      loading: false,
+      error: null,
+      refetch: jest.fn(),
+      markAsRead: jest.fn(),
+      markAllAsRead: jest.fn(),
+      deleteNotification: jest.fn(),
+      requestNotificationPermission: jest.fn(),
+      getNotificationsByType: jest.fn(),
+      getUrgentNotifications: jest.fn(),
+  });
+  afterEach(() => {
+    jest.clearAllMocks();
+  it('renders all navigation items', () => {
+    render(<SupplierMobileNavigation />);
+    expect(screen.getByLabelText('Home')).toBeInTheDocument();
+    expect(screen.getByLabelText('Schedule')).toBeInTheDocument();
+    expect(screen.getByLabelText('Timeline')).toBeInTheDocument();
+    expect(screen.getByLabelText('QR Scan')).toBeInTheDocument();
+    expect(screen.getByLabelText('Profile')).toBeInTheDocument();
+  it('highlights active navigation item', () => {
+    mockUsePathname.mockReturnValue('/supplier-portal/schedule');
+    const scheduleButton = screen.getByLabelText('Schedule');
+    expect(scheduleButton).toHaveClass('text-pink-600', 'bg-pink-50');
+  it('navigates to correct routes when clicked', async () => {
+    fireEvent.click(scheduleButton);
+    await waitFor(() => {
+      expect(mockPush).toHaveBeenCalledWith('/supplier-portal/schedule');
+  it('shows notification badge when there are unread notifications', () => {
+      unreadCount: 5,
+    const homeButton = screen.getByLabelText('Home');
+    const badge = homeButton.querySelector('.bg-red-500');
+    expect(badge).toBeInTheDocument();
+    expect(badge).toHaveTextContent('5');
+  it('shows 99+ for notification counts over 99', () => {
+      unreadCount: 150,
+    expect(badge).toHaveTextContent('99+');
+  it('provides haptic feedback on navigation', async () => {
+      expect(navigator.vibrate).toHaveBeenCalledWith(10);
+  it('meets accessibility standards', () => {
+    const buttons = screen.getAllByRole('button');
+    buttons.forEach(button => {
+      // Check minimum touch target size (44px)
+      const styles = window.getComputedStyle(button);
+      const minWidth = parseInt(styles.minWidth, 10);
+      const minHeight = parseInt(styles.minHeight, 10);
+      
+      expect(minWidth).toBeGreaterThanOrEqual(44);
+      expect(minHeight).toBeGreaterThanOrEqual(44);
+      // Check for aria-label
+      expect(button).toHaveAttribute('aria-label');

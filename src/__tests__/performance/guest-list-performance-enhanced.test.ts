@@ -1,0 +1,489 @@
+/**
+ * Enhanced Performance Tests for Guest List Builder with Large Datasets
+ * Team E - Batch 13 - WS-151 Guest List Builder Performance Testing (Enhanced)
+ * 
+ * FOCUS AREAS:
+ * - 500+ guest handling with sub-2-second response times
+ * - Memory usage optimization and leak detection
+ * - Virtual scrolling performance validation
+ * - Concurrent operation performance
+ * - Real-time update performance with large datasets
+ * - Search and filter performance benchmarks
+ * - Mobile performance optimization validation
+ * - Progressive loading and chunked processing
+ */
+
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { createClient } from '@supabase/supabase-js'
+import { Database } from '@/types/database'
+import Papa from 'papaparse'
+import { performance } from 'perf_hooks'
+// Enhanced performance test configuration
+const TEST_SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!
+const TEST_SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
+// Strict performance benchmarks for production readiness
+const ENHANCED_PERFORMANCE_BENCHMARKS = {
+  // Core loading performance
+  GUEST_LIST_LOAD_TIME_500: 1500, // 1.5 seconds for 500 guests
+  GUEST_LIST_LOAD_TIME_1000: 2000, // 2 seconds for 1000 guests
+  GUEST_LIST_LOAD_TIME_2000: 3000, // 3 seconds for 2000 guests
+  
+  // Search and filter performance
+  SEARCH_RESPONSE_TIME_LARGE: 300, // 300ms for search in large datasets
+  FILTER_RESPONSE_TIME_LARGE: 200, // 200ms for filter in large datasets
+  COMBINED_FILTER_TIME: 500, // 500ms for multiple filters
+  // Bulk operation performance
+  BULK_UPDATE_TIME_100: 2000, // 2 seconds for 100 guest updates
+  BULK_DELETE_TIME_100: 1500, // 1.5 seconds for 100 guest deletions
+  BULK_IMPORT_TIME_PER_GUEST: 20, // 20ms per guest max
+  // Memory usage limits
+  MEMORY_USAGE_500_GUESTS: 50, // 50MB max for 500 guests
+  MEMORY_USAGE_1000_GUESTS: 80, // 80MB max for 1000 guests
+  MEMORY_LEAK_THRESHOLD: 20, // 20MB max increase after operations
+  // Rendering and UI performance
+  VIRTUAL_SCROLL_RENDER_TIME: 50, // 50ms for viewport rendering
+  DRAG_DROP_RESPONSE_TIME: 100, // 100ms for drag operation
+  VIEW_SWITCH_TIME: 300, // 300ms for view mode changes
+  // Real-time performance
+  REAL_TIME_UPDATE_LATENCY: 200, // 200ms for real-time updates
+  CONCURRENT_OPERATION_TIME: 3000, // 3 seconds for 10 concurrent operations
+  // Mobile performance (stricter limits)
+  MOBILE_LOAD_TIME_500: 2000, // 2 seconds on mobile
+  MOBILE_SCROLL_PERFORMANCE: 16.67, // 60fps = 16.67ms per frame
+  MOBILE_TOUCH_RESPONSE: 100, // 100ms for touch responses
+  // Network performance
+  API_RESPONSE_TIME_95TH_PERCENTILE: 1000, // 95th percentile under 1 second
+  OFFLINE_SYNC_TIME: 5000, // 5 seconds to sync after reconnection
+  // Progressive loading
+  INITIAL_RENDER_TIME: 500, // 500ms for initial page render
+  PROGRESSIVE_CHUNK_SIZE: 50, // Load 50 guests per chunk
+  PROGRESSIVE_CHUNK_TIME: 100 // 100ms per chunk
+}
+// Memory monitoring utilities
+class MemoryMonitor {
+  private initialHeap: number = 0
+  private measurements: Array<{ timestamp: number; heapUsed: number; operation: string }> = []
+  start() {
+    this.initialHeap = this.getCurrentHeapSize()
+    this.measurements = []
+  }
+  measure(operation: string) {
+    const heapUsed = this.getCurrentHeapSize()
+    this.measurements.push({
+      timestamp: Date.now(),
+      heapUsed,
+      operation
+    })
+  getMemoryUsage(): { currentMB: number; increaseMB: number; measurements: any[] } {
+    const currentHeap = this.getCurrentHeapSize()
+    return {
+      currentMB: Math.round(currentHeap),
+      increaseMB: Math.round(currentHeap - this.initialHeap),
+      measurements: this.measurements.map(m => ({
+        ...m,
+        heapMB: Math.round(m.heapUsed)
+      }))
+    }
+  private getCurrentHeapSize(): number {
+    if (process.memoryUsage) {
+      return process.memoryUsage().heapUsed / 1024 / 1024 // Convert to MB
+    return 0
+  reset() {
+    this.start()
+// Performance metrics collector
+class PerformanceCollector {
+  private metrics: Map<string, number[]> = new Map()
+  recordMetric(name: string, value: number) {
+    if (!this.metrics.has(name)) {
+      this.metrics.set(name, [])
+    this.metrics.get(name)!.push(value)
+  getStats(name: string): { avg: number; min: number; max: number; p95: number; count: number } {
+    const values = this.metrics.get(name) || []
+    if (values.length === 0) {
+      return { avg: 0, min: 0, max: 0, p95: 0, count: 0 }
+    const sorted = [...values].sort((a, b) => a - b)
+    const p95Index = Math.ceil(sorted.length * 0.95) - 1
+      avg: values.reduce((a, b) => a + b, 0) / values.length,
+      min: sorted[0],
+      max: sorted[sorted.length - 1],
+      p95: sorted[p95Index],
+      count: values.length
+  getAllStats() {
+    const results: Record<string, any> = {}
+    for (const [name] of this.metrics) {
+      results[name] = this.getStats(name)
+    return results
+    this.metrics.clear()
+// Test data generators with performance optimizations
+const generateOptimizedGuestData = (count: number, options: any = {}) => {
+  const categories = ['family', 'friends', 'work', 'other']
+  const sides = ['partner1', 'partner2', 'mutual']
+  const rsvpStatuses = ['pending', 'yes', 'no', 'maybe']
+  const ageGroups = ['adult', 'child', 'infant']
+  // Use efficient generation to avoid memory issues
+  const guests = []
+  for (let i = 0; i < count; i++) {
+    guests.push({
+      first_name: `${options.prefix || 'PerfTest'}${i}`,
+      last_name: `Guest${Math.floor(i / 100)}`, // Group by 100s
+      email: `perf.test.${i}@example.com`,
+      phone: `555-${String(i + 1000).padStart(4, '0')}`,
+      category: categories[i % 4],
+      side: sides[i % 3],
+      plus_one: i % 7 === 0, // ~14% have plus ones
+      plus_one_name: i % 7 === 0 ? `Plus${i}` : null,
+      dietary_restrictions: i % 15 === 0 ? 'Vegetarian' : null,
+      table_number: i % 25 === 0 ? Math.floor(i / 8) + 1 : null,
+      notes: i % 50 === 0 ? `Performance test note ${i}` : null,
+      rsvp_status: rsvpStatuses[i % 4],
+      age_group: i % 20 === 0 ? ageGroups[1] : (i % 30 === 0 ? ageGroups[2] : ageGroups[0]),
+      household_id: i % 12 === 0 ? `household-${Math.floor(i / 12)}` : null,
+      ...options.overrides
+  return guests
+// Test environment setup
+let supabase: ReturnType<typeof createClient<Database>>
+let testUser: any
+let testClient: any
+let memoryMonitor: MemoryMonitor
+let performanceCollector: PerformanceCollector
+let performanceResults: any = {}
+describe('Enhanced Guest List Performance Tests', () => {
+  beforeAll(async () => {
+    // Initialize test environment
+    supabase = createClient<Database>(TEST_SUPABASE_URL, TEST_SUPABASE_SERVICE_KEY)
+    memoryMonitor = new MemoryMonitor()
+    performanceCollector = new PerformanceCollector()
+    
+    // Create test user and client
+    const testUserEmail = `perf-enhanced-test-${Date.now()}@example.com`
+    const testPassword = 'EnhancedPerformanceTest123!'
+    const { data: { user }, error: authError } = await supabase.auth.admin.createUser({
+      email: testUserEmail,
+      password: testPassword,
+      email_confirm: true
+    expect(authError).toBeNull()
+    expect(user).toBeTruthy()
+    testUser = user
+    const { data: client, error: clientError } = await supabase
+      .from('clients')
+      .insert({
+        first_name: 'Enhanced',
+        last_name: 'PerformanceTest',
+        email: testUser.email,
+        wedding_date: '2025-12-31',
+        created_by: testUser.id
+      })
+      .select()
+      .single()
+    expect(clientError).toBeNull()
+    expect(client).toBeTruthy()
+    testClient = client
+    console.log('✅ Enhanced performance test environment initialized')
+  })
+  afterAll(async () => {
+    // Cleanup and report final results
+    if (testClient) {
+      await supabase.from('guests').delete().eq('couple_id', testClient.id)
+      await supabase.from('clients').delete().eq('id', testClient.id)
+    if (testUser) {
+      await supabase.auth.admin.deleteUser(testUser.id)
+    // Generate comprehensive performance report
+    console.log('\n=== ENHANCED PERFORMANCE TEST RESULTS ===')
+    console.log('Performance Statistics:', JSON.stringify(performanceCollector.getAllStats(), null, 2))
+    console.log('Final Memory Usage:', memoryMonitor.getMemoryUsage())
+    console.log('Complete Results:', JSON.stringify(performanceResults, null, 2))
+  beforeEach(() => {
+    memoryMonitor.start()
+    performanceCollector.reset()
+  describe('Large Dataset Creation and Optimization', () => {
+    it('should create and optimize 2000 guest dataset efficiently', async () => {
+      const guestCount = 2000
+      memoryMonitor.measure('before-generation')
+      
+      const startTime = performance.now()
+      const guests = generateOptimizedGuestData(guestCount, { prefix: 'Massive' })
+      const generationTime = performance.now() - startTime
+      memoryMonitor.measure('after-generation')
+      expect(generationTime).toBeLessThan(1000) // Under 1 second for generation
+      // Batch insert for optimal performance
+      const batchSize = 100
+      const batches = []
+      for (let i = 0; i < guests.length; i += batchSize) {
+        batches.push(guests.slice(i, i + batchSize))
+      }
+      const insertStartTime = performance.now()
+      let totalInserted = 0
+      for (const batch of batches) {
+        const batchStartTime = performance.now()
+        const { data, error } = await supabase
+          .from('guests')
+          .insert(batch.map(guest => ({
+            ...guest,
+            couple_id: testClient.id
+          })))
+          .select('id')
+        const batchTime = performance.now() - batchStartTime
+        performanceCollector.recordMetric('batch_insert_time', batchTime)
+        expect(error).toBeNull()
+        totalInserted += data?.length || 0
+        
+        memoryMonitor.measure(`batch-${batches.indexOf(batch) + 1}`)
+      const insertTime = performance.now() - insertStartTime
+      expect(totalInserted).toBe(guestCount)
+      expect(insertTime).toBeLessThan(60000) // Under 60 seconds total
+      const memoryUsage = memoryMonitor.getMemoryUsage()
+      expect(memoryUsage.increaseMB).toBeLessThan(ENHANCED_PERFORMANCE_BENCHMARKS.MEMORY_USAGE_1000_GUESTS)
+      performanceResults.massiveDatasetCreation = {
+        guestCount,
+        generationTime,
+        insertTime,
+        timePerGuest: insertTime / guestCount,
+        batchCount: batches.length,
+        memoryIncrease: memoryUsage.increaseMB,
+        batchStats: performanceCollector.getStats('batch_insert_time')
+      console.log(`✅ Created ${guestCount} guests in ${insertTime.toFixed(2)}ms (${(insertTime / guestCount).toFixed(2)}ms/guest)`)
+  describe('Progressive Loading Performance', () => {
+    it('should load guests progressively with optimal chunk performance', async () => {
+      const chunkSize = ENHANCED_PERFORMANCE_BENCHMARKS.PROGRESSIVE_CHUNK_SIZE
+      const maxChunks = 10 // Test first 10 chunks (500 guests)
+      const initialRenderStart = performance.now()
+      // Simulate initial render
+      const { data: initialChunk, error } = await supabase
+        .from('guests')
+        .select('*')
+        .eq('couple_id', testClient.id)
+        .range(0, chunkSize - 1)
+        .order('created_at')
+      const initialRenderTime = performance.now() - initialRenderStart
+      expect(error).toBeNull()
+      expect(initialChunk?.length).toBe(chunkSize)
+      expect(initialRenderTime).toBeLessThan(ENHANCED_PERFORMANCE_BENCHMARKS.INITIAL_RENDER_TIME)
+      performanceCollector.recordMetric('initial_render', initialRenderTime)
+      // Test progressive chunk loading
+      for (let chunkIndex = 1; chunkIndex < maxChunks; chunkIndex++) {
+        const chunkStart = performance.now()
+        const { data: chunk, error: chunkError } = await supabase
+          .select('*')
+          .eq('couple_id', testClient.id)
+          .range(chunkIndex * chunkSize, (chunkIndex + 1) * chunkSize - 1)
+          .order('created_at')
+        const chunkTime = performance.now() - chunkStart
+        expect(chunkError).toBeNull()
+        expect(chunkTime).toBeLessThan(ENHANCED_PERFORMANCE_BENCHMARKS.PROGRESSIVE_CHUNK_TIME)
+        performanceCollector.recordMetric('chunk_load', chunkTime)
+        memoryMonitor.measure(`chunk-${chunkIndex}`)
+      const chunkStats = performanceCollector.getStats('chunk_load')
+      performanceResults.progressiveLoading = {
+        initialRenderTime,
+        chunkCount: maxChunks - 1,
+        chunkStats,
+        memoryUsage: memoryUsage.increaseMB
+      console.log(`✅ Progressive loading: Initial ${initialRenderTime.toFixed(2)}ms, Avg chunk ${chunkStats.avg.toFixed(2)}ms`)
+    it('should maintain performance during infinite scroll simulation', async () => {
+      const scrollChunkSize = 20
+      const scrollSimulations = 25 // Simulate 25 scroll events
+      for (let scroll = 0; scroll < scrollSimulations; scroll++) {
+        const scrollStart = performance.now()
+        // Simulate viewport change during scroll
+        const offset = scroll * scrollChunkSize
+        const { data: viewportData, error } = await supabase
+          .select('id, first_name, last_name, category, rsvp_status')
+          .range(offset, offset + scrollChunkSize - 1)
+          .order('last_name')
+        const scrollTime = performance.now() - scrollStart
+        expect(scrollTime).toBeLessThan(ENHANCED_PERFORMANCE_BENCHMARKS.VIRTUAL_SCROLL_RENDER_TIME)
+        performanceCollector.recordMetric('scroll_render', scrollTime)
+        // Simulate small delay between scroll events
+        await new Promise(resolve => setTimeout(resolve, 10))
+      const scrollStats = performanceCollector.getStats('scroll_render')
+      performanceResults.infiniteScroll = {
+        scrollCount: scrollSimulations,
+        avgScrollTime: scrollStats.avg,
+        maxScrollTime: scrollStats.max,
+        p95ScrollTime: scrollStats.p95
+      // Verify 60fps performance (16.67ms per frame)
+      expect(scrollStats.p95).toBeLessThan(ENHANCED_PERFORMANCE_BENCHMARKS.MOBILE_SCROLL_PERFORMANCE)
+  describe('Search and Filter Performance at Scale', () => {
+    it('should maintain fast search performance with 2000 guests', async () => {
+      const searchQueries = [
+        'Massive1', 'Guest5', '@example.com', '555-2000', 
+        'family', 'performance', 'note', 'vegetarian'
+      ]
+      for (const query of searchQueries) {
+        const searchStart = performance.now()
+        // Complex search across multiple fields
+        const { data: searchResults, error } = await supabase
+          .select('id, first_name, last_name, email, category, notes')
+          .or(`first_name.ilike.%${query}%,last_name.ilike.%${query}%,email.ilike.%${query}%,notes.ilike.%${query}%,category.ilike.%${query}%`)
+          .limit(100)
+        const searchTime = performance.now() - searchStart
+        expect(searchTime).toBeLessThan(ENHANCED_PERFORMANCE_BENCHMARKS.SEARCH_RESPONSE_TIME_LARGE)
+        performanceCollector.recordMetric('search_performance', searchTime)
+        console.log(`Search "${query}": ${searchTime.toFixed(2)}ms (${searchResults?.length || 0} results)`)
+      const searchStats = performanceCollector.getStats('search_performance')
+      performanceResults.searchPerformance = {
+        queryCount: searchQueries.length,
+        avgSearchTime: searchStats.avg,
+        maxSearchTime: searchStats.max,
+        p95SearchTime: searchStats.p95
+      expect(searchStats.p95).toBeLessThan(ENHANCED_PERFORMANCE_BENCHMARKS.SEARCH_RESPONSE_TIME_LARGE)
+    it('should handle complex multi-filter combinations efficiently', async () => {
+      const filterCombinations = [
+        { category: 'family', side: 'partner1' },
+        { category: 'friends', rsvp_status: 'yes' },
+        { side: 'partner2', rsvp_status: 'pending', plus_one: true },
+        { category: 'work', rsvp_status: 'no' },
+        { age_group: 'adult', category: 'family', side: 'mutual' }
+      for (const filters of filterCombinations) {
+        const filterStart = performance.now()
+        let query = supabase
+        // Apply filters dynamically
+        Object.entries(filters).forEach(([key, value]) => {
+          query = query.eq(key, value)
+        })
+        const { data: filteredResults, error } = await query.limit(200)
+        const filterTime = performance.now() - filterStart
+        expect(filterTime).toBeLessThan(ENHANCED_PERFORMANCE_BENCHMARKS.FILTER_RESPONSE_TIME_LARGE)
+        performanceCollector.recordMetric('filter_performance', filterTime)
+        console.log(`Filter ${JSON.stringify(filters)}: ${filterTime.toFixed(2)}ms (${filteredResults?.length || 0} results)`)
+      const filterStats = performanceCollector.getStats('filter_performance')
+      performanceResults.filterPerformance = {
+        combinationCount: filterCombinations.length,
+        avgFilterTime: filterStats.avg,
+        maxFilterTime: filterStats.max,
+        p95FilterTime: filterStats.p95
+      expect(filterStats.p95).toBeLessThan(ENHANCED_PERFORMANCE_BENCHMARKS.FILTER_RESPONSE_TIME_LARGE)
+  describe('Bulk Operations Performance', () => {
+    it('should handle large bulk updates with optimal performance', async () => {
+      const bulkSizes = [50, 100, 200, 500]
+      for (const bulkSize of bulkSizes) {
+        // Get guests for bulk update
+        const { data: guestsForUpdate } = await supabase
+          .limit(bulkSize)
+        const guestIds = guestsForUpdate?.map(g => g.id) || []
+        const bulkUpdateStart = performance.now()
+        // Perform bulk update
+        const { error } = await supabase
+          .update({ 
+            category: 'friends',
+            notes: `Bulk updated ${Date.now()}`
+          })
+          .in('id', guestIds)
+        const bulkUpdateTime = performance.now() - bulkUpdateStart
+        performanceCollector.recordMetric(`bulk_update_${bulkSize}`, bulkUpdateTime)
+        console.log(`Bulk update ${bulkSize} guests: ${bulkUpdateTime.toFixed(2)}ms (${(bulkUpdateTime / bulkSize).toFixed(2)}ms/guest)`)
+        // Verify performance benchmark
+        if (bulkSize === 100) {
+          expect(bulkUpdateTime).toBeLessThan(ENHANCED_PERFORMANCE_BENCHMARKS.BULK_UPDATE_TIME_100)
+        }
+      performanceResults.bulkUpdates = {
+        results: bulkSizes.map(size => ({
+          size,
+          stats: performanceCollector.getStats(`bulk_update_${size}`)
+        }))
+    it('should handle concurrent bulk operations without performance degradation', async () => {
+      const concurrentOps = 10
+      const opsPerBatch = 20
+      const concurrentPromises = []
+      const concurrentStart = performance.now()
+      for (let i = 0; i < concurrentOps; i++) {
+        const promise = (async () => {
+          const { data: guests } = await supabase
+            .from('guests')
+            .select('id')
+            .eq('couple_id', testClient.id)
+            .range(i * opsPerBatch, (i + 1) * opsPerBatch - 1)
+          const guestIds = guests?.map(g => g.id) || []
+          
+          const opStart = performance.now()
+          const { error } = await supabase
+            .update({ notes: `Concurrent op ${i} - ${Date.now()}` })
+            .in('id', guestIds)
+          const opTime = performance.now() - opStart
+          expect(error).toBeNull()
+          return { opIndex: i, time: opTime, guestCount: guestIds.length }
+        })()
+        concurrentPromises.push(promise)
+      const results = await Promise.all(concurrentPromises)
+      const totalConcurrentTime = performance.now() - concurrentStart
+      expect(totalConcurrentTime).toBeLessThan(ENHANCED_PERFORMANCE_BENCHMARKS.CONCURRENT_OPERATION_TIME)
+      const avgOpTime = results.reduce((sum, r) => sum + r.time, 0) / results.length
+      performanceResults.concurrentOperations = {
+        operationCount: concurrentOps,
+        totalTime: totalConcurrentTime,
+        avgOperationTime: avgOpTime,
+        maxOperationTime: Math.max(...results.map(r => r.time)),
+        results
+      console.log(`✅ Concurrent ops: ${concurrentOps} ops in ${totalConcurrentTime.toFixed(2)}ms (avg ${avgOpTime.toFixed(2)}ms/op)`)
+  describe('Memory Usage and Leak Detection', () => {
+    it('should maintain optimal memory usage during large operations', async () => {
+      memoryMonitor.reset()
+      // Perform memory-intensive operations
+      const operations = [
+        async () => {
+          const { data } = await supabase
+            .select('*')
+          return data?.length || 0
+        },
+          // Simulate complex data processing
+            .limit(1000)
+          return data?.map(guest => ({
+            fullName: `${guest.first_name} ${guest.last_name}`,
+            displayCategory: guest.category.toUpperCase(),
+            hasSpecialNeeds: !!guest.dietary_restrictions,
+            formattedPhone: guest.phone?.replace(/(\d{3})(\d{3})(\d{4})/, '($1) $2-$3')
+          })).length || 0
+          // Simulate large data aggregation
+            .select('category, rsvp_status, age_group, plus_one')
+          const stats = data?.reduce((acc, guest) => {
+            acc[guest.category] = (acc[guest.category] || 0) + 1
+            acc[`${guest.rsvp_status}_rsvp`] = (acc[`${guest.rsvp_status}_rsvp`] || 0) + 1
+            return acc
+          }, {} as Record<string, number>)
+          return Object.keys(stats || {}).length
+      for (let i = 0; i < operations.length; i++) {
+        memoryMonitor.measure(`before-operation-${i}`)
+        const result = await operations[i]()
+        memoryMonitor.measure(`after-operation-${i}`)
+        expect(result).toBeGreaterThan(0)
+        // Force garbage collection if available
+        if (global.gc) {
+          global.gc()
+          memoryMonitor.measure(`after-gc-${i}`)
+      const finalMemoryUsage = memoryMonitor.getMemoryUsage()
+      expect(finalMemoryUsage.increaseMB).toBeLessThan(ENHANCED_PERFORMANCE_BENCHMARKS.MEMORY_LEAK_THRESHOLD)
+      performanceResults.memoryUsage = {
+        finalIncrease: finalMemoryUsage.increaseMB,
+        measurements: finalMemoryUsage.measurements,
+        operationCount: operations.length
+      console.log(`✅ Memory usage after operations: +${finalMemoryUsage.increaseMB.toFixed(2)}MB`)
+  describe('Mobile Performance Optimization', () => {
+    it('should meet mobile performance benchmarks', async () => {
+      // Simulate mobile-optimized queries (smaller payloads)
+      const mobileOptimizedFields = 'id, first_name, last_name, category, rsvp_status'
+      const mobileLoadStart = performance.now()
+      // Load first page for mobile
+      const { data: mobileGuests, error } = await supabase
+        .select(mobileOptimizedFields)
+        .limit(50)
+        .order('last_name')
+      const mobileLoadTime = performance.now() - mobileLoadStart
+      expect(mobileLoadTime).toBeLessThan(ENHANCED_PERFORMANCE_BENCHMARKS.MOBILE_LOAD_TIME_500)
+      // Simulate mobile pagination performance
+      const paginationTimes = []
+      for (let page = 1; page < 10; page++) {
+        const pageStart = performance.now()
+        const { data: pageData } = await supabase
+          .select(mobileOptimizedFields)
+          .range(page * 20, (page + 1) * 20 - 1)
+        const pageTime = performance.now() - pageStart
+        paginationTimes.push(pageTime)
+        expect(pageTime).toBeLessThan(ENHANCED_PERFORMANCE_BENCHMARKS.MOBILE_TOUCH_RESPONSE)
+      performanceResults.mobilePerformance = {
+        initialLoadTime: mobileLoadTime,
+        avgPaginationTime: paginationTimes.reduce((a, b) => a + b, 0) / paginationTimes.length,
+        maxPaginationTime: Math.max(...paginationTimes),
+        pageCount: paginationTimes.length
+      console.log(`✅ Mobile performance: Initial load ${mobileLoadTime.toFixed(2)}ms, Avg pagination ${performanceResults.mobilePerformance.avgPaginationTime.toFixed(2)}ms`)
+})

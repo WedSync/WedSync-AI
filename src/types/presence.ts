@@ -1,0 +1,427 @@
+// Core presence types for WedSync presence tracking system
+
+export type PresenceStatus = 'online' | 'busy' | 'idle' | 'away' | 'offline';
+export type PresenceVisibility = 'everyone' | 'team' | 'contacts' | 'nobody';
+export type DeviceType = 'desktop' | 'mobile' | 'tablet';
+
+export interface PresenceState {
+  userId: string;
+  status: PresenceStatus;
+  customStatus?: string | null;
+  customEmoji?: string | null;
+  currentPage?: string | null;
+  lastActivity: string; // ISO string for Supabase compatibility
+  isTyping?: boolean;
+  device?: DeviceType;
+  isManualOverride?: boolean;
+  location?: string;
+  businessHours?: boolean;
+  updatedAt?: string; // ISO string
+}
+
+// Privacy and permission settings for presence tracking
+export interface PresenceSettings {
+  userId: string;
+  visibility: PresenceVisibility;
+  appearOffline: boolean;
+  allowActivityTracking: boolean;
+  showCurrentPage: boolean;
+  showCustomStatus: boolean;
+  allowTypingIndicators: boolean;
+  blockedUsers?: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+// Presence permissions and relationship context
+export interface PresencePermissions {
+  canViewPresence: boolean;
+  canViewActivity: boolean;
+  canViewCustomStatus: boolean;
+  canViewCurrentPage: boolean;
+  relationshipType:
+    | 'same_organization'
+    | 'same_wedding'
+    | 'contact'
+    | 'blocked'
+    | 'none';
+}
+
+// Wedding-specific presence context (enhanced)
+export interface WeddingPresenceContext {
+  weddingId?: string;
+  weddingDate?: Date;
+  role:
+    | 'photographer'
+    | 'venue_coordinator'
+    | 'planner'
+    | 'vendor'
+    | 'supplier'
+    | 'couple';
+  venueLocation?: string;
+  ceremonyTime?: Date;
+  receptionTime?: Date;
+  isWeddingDay: boolean;
+  priorityLevel: 'low' | 'medium' | 'high' | 'critical';
+  customStatusTemplates?: Array<{
+    emoji: string;
+    text: string;
+    duration?: number; // minutes
+  }>;
+}
+
+// Component-specific interfaces for UI components
+export interface PresenceIndicatorProps {
+  userId: string;
+  size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl';
+  showLabel?: boolean;
+  showActivity?: boolean;
+  showCustomStatus?: boolean;
+  position?: 'top-right' | 'bottom-right' | 'top-left' | 'bottom-left';
+  onClick?: () => void;
+  className?: string;
+  context?: 'wedding' | 'organization' | 'global';
+  contextId?: string;
+}
+
+export interface PresenceListProps {
+  context: 'wedding' | 'organization' | 'global';
+  contextId?: string;
+  showOfflineUsers?: boolean;
+  groupByStatus?: boolean;
+  maxUsers?: number;
+  allowCustomStatus?: boolean;
+  onUserClick?: (userId: string) => void;
+  className?: string;
+}
+
+export interface ActivityTrackerProps {
+  enabled?: boolean;
+  trackMouse?: boolean;
+  trackKeyboard?: boolean;
+  trackFocus?: boolean;
+  idleTimeout?: number; // milliseconds
+  awayTimeout?: number; // milliseconds
+  onStatusChange?: (status: PresenceStatus) => void;
+}
+
+export interface PresenceSettingsProps {
+  userId: string;
+  onSave?: (settings: PresenceSettings) => void;
+  onCancel?: () => void;
+  className?: string;
+}
+
+// Hook return types
+export interface UsePresenceOptions {
+  channelName: string;
+  userId: string;
+  trackActivity?: boolean;
+  updateInterval?: number; // milliseconds
+  context?: 'wedding' | 'organization' | 'global';
+  contextId?: string;
+}
+
+export interface UsePresenceReturn {
+  presenceState: Record<string, PresenceState[]>; // All users in channel
+  myStatus: PresenceStatus;
+  updateStatus: (status: Partial<PresenceState>) => Promise<void>;
+  setCustomStatus: (status: string, emoji?: string) => Promise<void>;
+  trackActivity: () => void;
+  isLoading: boolean;
+  error: Error | null;
+  channelStatus: 'connected' | 'connecting' | 'disconnected';
+}
+
+export interface OAuth2Credentials {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: Date;
+  scope: string;
+  provider: 'google' | 'microsoft' | 'slack';
+  tokenType?: string;
+}
+
+export interface IntegrationCredentials {
+  id: string;
+  userId: string;
+  provider: 'google_calendar' | 'outlook' | 'slack' | 'teams' | 'zoom';
+  credentials: string; // encrypted OAuth2Credentials
+  isActive: boolean;
+  lastSync?: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface IntegrationHealthStatus {
+  provider: string;
+  status: 'healthy' | 'degraded' | 'failed';
+  lastCheck: Date;
+  lastSync?: Date;
+  error?: string;
+  responseTime?: number;
+  successRate?: number;
+}
+
+export interface SlackOAuth {
+  accessToken: string;
+  refreshToken?: string;
+  teamId: string;
+  userId: string;
+  scope: string;
+  expiresAt?: Date;
+}
+
+export interface TeamsWebhook {
+  subscriptionId: string;
+  changeType: string;
+  resource: string;
+  clientState?: string;
+  subscriptionExpirationDateTime: string;
+  resourceData: {
+    id: string;
+    presence?: {
+      availability: string;
+      activity: string;
+    };
+  };
+}
+
+export interface SlackStatusWebhook {
+  token: string;
+  teamId: string;
+  apiAppId: string;
+  event: {
+    type: string;
+    user: string;
+    presence: string;
+    eventTs: string;
+  };
+  type: string;
+  eventId: string;
+  eventTime: number;
+}
+
+export interface ZoomMeetingWebhook {
+  event: string;
+  payload: {
+    account_id: string;
+    object: {
+      uuid: string;
+      id: number;
+      host_id: string;
+      topic: string;
+      type: number;
+      start_time: string;
+      duration: number;
+      timezone: string;
+      participants?: Array<{
+        user_id: string;
+        user_name: string;
+        join_time: string;
+        leave_time?: string;
+      }>;
+    };
+  };
+}
+
+export interface TeamsMeetingWebhook {
+  subscriptionId: string;
+  changeType: string;
+  resource: string;
+  resourceData: {
+    id: string;
+    organizer: {
+      user: {
+        id: string;
+        displayName: string;
+      };
+    };
+    subject: string;
+    start: {
+      dateTime: string;
+      timeZone: string;
+    };
+    end: {
+      dateTime: string;
+      timeZone: string;
+    };
+    isOnlineMeeting: boolean;
+    onlineMeetingProvider: string;
+  };
+}
+
+export interface GoogleMeetWebhook {
+  kind: string;
+  etag: string;
+  id: string;
+  summary: string;
+  start: {
+    dateTime: string;
+    timeZone: string;
+  };
+  end: {
+    dateTime: string;
+    timeZone: string;
+  };
+  attendees: Array<{
+    email: string;
+    displayName?: string;
+    responseStatus: string;
+  }>;
+  conferenceData?: {
+    conferenceSolution: {
+      name: string;
+      iconUri: string;
+    };
+    conferenceId: string;
+    entryPoints: Array<{
+      entryPointType: string;
+      uri: string;
+      label?: string;
+    }>;
+  };
+}
+
+export interface NotificationUrgency {
+  level: 'low' | 'medium' | 'high' | 'urgent';
+  respectDoNotDisturb: boolean;
+  deferIfBusy: boolean;
+  maxDelay: number; // minutes
+}
+
+export interface Notification {
+  id: string;
+  title: string;
+  message: string;
+  type:
+    | 'timeline_update'
+    | 'general_update'
+    | 'emergency_coordination'
+    | 'system_notification';
+  urgency: NotificationUrgency;
+  createdAt: Date;
+  scheduledFor?: Date;
+  metadata?: Record<string, any>;
+}
+
+export interface IntegrationFailure {
+  id: string;
+  userId: string;
+  provider: string;
+  error: string;
+  timestamp: Date;
+  resolved: boolean;
+  recoveryAttempts: number;
+}
+
+export interface IntegrationHealthReport {
+  userId: string;
+  timestamp: Date;
+  integrations: {
+    calendar: {
+      status: 'healthy' | 'degraded' | 'failed';
+      lastSync: Date;
+      error?: string;
+    };
+    slack: {
+      status: 'healthy' | 'degraded' | 'failed';
+      lastSync: Date;
+      error?: string;
+    };
+    videoConference: {
+      status: 'healthy' | 'degraded' | 'failed';
+      lastSync: Date;
+      error?: string;
+    };
+  };
+  overallHealth: 'healthy' | 'degraded' | 'critical';
+  recommendations: string[];
+}
+
+export interface SlackStatus {
+  emoji: string;
+  text: string;
+  expiration?: number;
+}
+
+export type IntegrationType =
+  | 'google_calendar'
+  | 'outlook'
+  | 'slack'
+  | 'teams'
+  | 'zoom'
+  | 'google_meet';
+
+export interface HealthDashboardData {
+  totalIntegrations: number;
+  healthyIntegrations: number;
+  degradedIntegrations: number;
+  failedIntegrations: number;
+  averageResponseTime: number;
+  uptime: number;
+  recentFailures: IntegrationFailure[];
+  topUsers: Array<{
+    userId: string;
+    integrationCount: number;
+    healthScore: number;
+  }>;
+}
+
+export interface MeetingStatus {
+  platform: 'zoom' | 'teams' | 'google_meet' | 'other';
+  status: 'starting' | 'in_progress' | 'ended';
+  meetingId: string;
+  startTime: Date;
+  endTime?: Date;
+  participants: string[];
+  isWeddingRelated: boolean;
+  topic?: string;
+  organizer?: string;
+}
+
+// Wedding-specific presence context
+export interface WeddingPresenceContext {
+  weddingId?: string;
+  weddingDate?: Date;
+  role:
+    | 'photographer'
+    | 'venue_coordinator'
+    | 'planner'
+    | 'vendor'
+    | 'supplier';
+  venueLocation?: string;
+  ceremonyTime?: Date;
+  receptionTime?: Date;
+  isWeddingDay: boolean;
+  priorityLevel: 'low' | 'medium' | 'high' | 'critical';
+}
+
+// Presence analytics and insights
+export interface PresenceAnalytics {
+  userId: string;
+  date: Date;
+  totalOnlineTime: number; // minutes
+  busyTime: number; // minutes
+  peakActivityHours: number[]; // hours of day (0-23)
+  integrationUsage: Record<string, number>; // provider -> usage count
+  responseRate: number; // percentage
+  averageResponseTime: number; // minutes
+}
+
+export interface PresencePattern {
+  userId: string;
+  dayOfWeek: number; // 0 = Sunday, 6 = Saturday
+  typicalOnlineTime: Date;
+  typicalOfflineTime: Date;
+  busyPeriods: Array<{
+    start: Date;
+    end: Date;
+    reason: string;
+  }>;
+  preferredNotificationTimes: Array<{
+    start: Date;
+    end: Date;
+  }>;
+  confidenceScore: number; // 0-1, how reliable this pattern is
+}

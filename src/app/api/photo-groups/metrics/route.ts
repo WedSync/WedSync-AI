@@ -1,0 +1,492 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import * as Sentry from '@sentry/nextjs';
+import { errorHandler, ApiError, ErrorCode } from '../error-handler';
+
+interface MetricsData {
+  timestamp: string;
+  period: 'last_minute' | 'last_hour' | 'last_day' | 'last_week';
+  api: {
+    totalRequests: number;
+    successRate: number;
+    errorRate: number;
+    averageResponseTime: number;
+    p95ResponseTime: number;
+    p99ResponseTime: number;
+    requestsByMethod: Record<string, number>;
+    requestsByEndpoint: Record<string, number>;
+    errorsByType: Record<string, number>;
+  };
+  realtime: {
+    activeConnections: number;
+    messagesPerMinute: number;
+    averageLatency: number;
+    connectionErrors: number;
+    reconnections: number;
+  };
+  storage: {
+    totalPhotoGroups: number;
+    totalPhotos: number;
+    storageUsedGB: number;
+    uploadSuccessRate: number;
+    averageUploadTime: number;
+    failedUploads: number;
+  };
+  performance: {
+    cpuUsage: number;
+    memoryUsage: number;
+    databaseConnections: number;
+    cacheHitRate: number;
+    slowQueries: Array<{
+      query: string;
+      duration: number;
+      timestamp: string;
+    }>;
+  };
+  alerts: Array<{
+    level: 'info' | 'warning' | 'error' | 'critical';
+    message: string;
+    timestamp: string;
+    details?: any;
+  }>;
+}
+
+// In-memory metrics store (in production, use Redis or similar)
+const metricsStore = {
+  requests: new Map<string, any>(),
+  errors: new Map<string, any>(),
+  responseTimes: [] as number[],
+  realtimeMetrics: {
+    connections: new Set<string>(),
+    messages: [] as { timestamp: number; count: number }[],
+    latencies: [] as number[],
+  },
+  storageMetrics: {
+    uploads: [] as { timestamp: number; success: boolean; duration: number }[],
+  },
+};
+
+export async function GET(request: NextRequest) {
+  const requestId = errorHandler.generateRequestId();
+
+  try {
+    // Check authorization
+    const authHeader = request.headers.get('authorization');
+    const monitoringToken = process.env.MONITORING_TOKEN;
+
+    if (
+      authHeader !== `Bearer ${monitoringToken}` &&
+      request.headers.get('x-internal') !== 'true'
+    ) {
+      throw new ApiError(
+        ErrorCode.UNAUTHORIZED,
+        'Unauthorized access to metrics',
+        401,
+      );
+    }
+
+    const searchParams = request.nextUrl.searchParams;
+    const period = (searchParams.get('period') ||
+      'last_hour') as MetricsData['period'];
+    const detailed = searchParams.get('detailed') === 'true';
+
+    // Calculate metrics
+    const metrics = await calculateMetrics(period, detailed);
+
+    // Check for alerts
+    const alerts = checkAlerts(metrics);
+    metrics.alerts = alerts;
+
+    // Send critical alerts to Sentry
+    alerts
+      .filter((a) => a.level === 'critical')
+      .forEach((alert) => {
+        Sentry.captureMessage(alert.message, {
+          level: 'error',
+          extra: alert.details,
+        });
+      });
+
+    return NextResponse.json(metrics, {
+      headers: {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'X-Request-Id': requestId,
+      },
+    });
+  } catch (error) {
+    if (error instanceof ApiError) {
+      throw error;
+    }
+
+    console.error('Metrics calculation error:', error);
+
+    return NextResponse.json(
+      {
+        error: 'Failed to calculate metrics',
+        requestId,
+      },
+      { status: 500 },
+    );
+  }
+}
+
+async function calculateMetrics(
+  period: MetricsData['period'],
+  detailed: boolean,
+): Promise<MetricsData> {
+  const now = Date.now();
+  const periodMs = getPeriodMilliseconds(period);
+  const startTime = now - periodMs;
+
+  const supabase = await createClient();
+
+  // API Metrics
+  const apiMetrics = calculateApiMetrics(startTime, now);
+
+  // Realtime Metrics
+  const realtimeMetrics = calculateRealtimeMetrics(startTime, now);
+
+  // Storage Metrics
+  const storageMetrics = await calculateStorageMetrics(
+    supabase,
+    startTime,
+    now,
+  );
+
+  // Performance Metrics
+  const performanceMetrics = await calculatePerformanceMetrics(
+    supabase,
+    detailed,
+  );
+
+  return {
+    timestamp: new Date().toISOString(),
+    period,
+    api: apiMetrics,
+    realtime: realtimeMetrics,
+    storage: storageMetrics,
+    performance: performanceMetrics,
+    alerts: [],
+  };
+}
+
+function calculateApiMetrics(startTime: number, endTime: number) {
+  const requests = Array.from(metricsStore.requests.values()).filter(
+    (r) => r.timestamp >= startTime && r.timestamp <= endTime,
+  );
+
+  const errors = Array.from(metricsStore.errors.values()).filter(
+    (e) => e.timestamp >= startTime && e.timestamp <= endTime,
+  );
+
+  const totalRequests = requests.length;
+  const successfulRequests = requests.filter((r) => r.success).length;
+  const failedRequests = errors.length;
+
+  const responseTimes = requests.map((r) => r.responseTime).filter(Boolean);
+  responseTimes.sort((a, b) => a - b);
+
+  const requestsByMethod = requests.reduce(
+    (acc, r) => {
+      acc[r.method] = (acc[r.method] || 0) + 1;
+      return acc;
+    },
+    {} as Record<string, number>,
+  );
+
+  const requestsByEndpoint = requests.reduce(
+    (acc, r) => {
+      const endpoint = r.endpoint || 'unknown';
+      acc[endpoint] = (acc[endpoint] || 0) + 1;
+      return acc;
+    },
+    {} as Record<string, number>,
+  );
+
+  const errorsByType = errors.reduce(
+    (acc, e) => {
+      const type = e.code || 'UNKNOWN';
+      acc[type] = (acc[type] || 0) + 1;
+      return acc;
+    },
+    {} as Record<string, number>,
+  );
+
+  return {
+    totalRequests,
+    successRate:
+      totalRequests > 0 ? (successfulRequests / totalRequests) * 100 : 100,
+    errorRate: totalRequests > 0 ? (failedRequests / totalRequests) * 100 : 0,
+    averageResponseTime:
+      responseTimes.length > 0
+        ? responseTimes.reduce((a, b) => a + b, 0) / responseTimes.length
+        : 0,
+    p95ResponseTime: getPercentile(responseTimes, 95),
+    p99ResponseTime: getPercentile(responseTimes, 99),
+    requestsByMethod,
+    requestsByEndpoint,
+    errorsByType,
+  };
+}
+
+function calculateRealtimeMetrics(startTime: number, endTime: number) {
+  const messages = metricsStore.realtimeMetrics.messages.filter(
+    (m) => m.timestamp >= startTime && m.timestamp <= endTime,
+  );
+
+  const totalMessages = messages.reduce((sum, m) => sum + m.count, 0);
+  const timeRangeMinutes = (endTime - startTime) / 60000;
+
+  const latencies = metricsStore.realtimeMetrics.latencies.slice(-1000);
+  const avgLatency =
+    latencies.length > 0
+      ? latencies.reduce((a, b) => a + b, 0) / latencies.length
+      : 0;
+
+  return {
+    activeConnections: metricsStore.realtimeMetrics.connections.size,
+    messagesPerMinute:
+      timeRangeMinutes > 0 ? totalMessages / timeRangeMinutes : 0,
+    averageLatency: avgLatency,
+    connectionErrors: 0, // Track in production
+    reconnections: 0, // Track in production
+  };
+}
+
+async function calculateStorageMetrics(
+  supabase: any,
+  startTime: number,
+  endTime: number,
+) {
+  // Get photo group stats
+  const { data: groupStats } = await supabase
+    .from('photo_groups')
+    .select('id')
+    .gte('created_at', new Date(startTime).toISOString())
+    .lte('created_at', new Date(endTime).toISOString());
+
+  const { data: totalGroups } = await supabase
+    .from('photo_groups')
+    .select('count', { count: 'exact', head: true });
+
+  // Calculate upload metrics
+  const uploads = metricsStore.storageMetrics.uploads.filter(
+    (u) => u.timestamp >= startTime && u.timestamp <= endTime,
+  );
+
+  const successfulUploads = uploads.filter((u) => u.success).length;
+  const totalUploads = uploads.length;
+  const uploadTimes = uploads.map((u) => u.duration);
+  const avgUploadTime =
+    uploadTimes.length > 0
+      ? uploadTimes.reduce((a, b) => a + b, 0) / uploadTimes.length
+      : 0;
+
+  // Mock storage usage (in production, query actual storage)
+  const storageUsedGB = Math.random() * 100;
+
+  return {
+    totalPhotoGroups: totalGroups?.count || 0,
+    totalPhotos: Math.floor(Math.random() * 10000), // Mock, query actual in production
+    storageUsedGB,
+    uploadSuccessRate:
+      totalUploads > 0 ? (successfulUploads / totalUploads) * 100 : 100,
+    averageUploadTime: avgUploadTime,
+    failedUploads: totalUploads - successfulUploads,
+  };
+}
+
+async function calculatePerformanceMetrics(supabase: any, detailed: boolean) {
+  const memoryUsage = process.memoryUsage();
+  const heapUsedMB = memoryUsage.heapUsed / 1024 / 1024;
+  const heapTotalMB = memoryUsage.heapTotal / 1024 / 1024;
+
+  // CPU usage (mock in development)
+  const cpuUsage = Math.random() * 100;
+
+  // Database connections (mock in development)
+  const databaseConnections = Math.floor(Math.random() * 50) + 10;
+
+  // Cache hit rate (mock in development)
+  const cacheHitRate = 75 + Math.random() * 20;
+
+  let slowQueries: any[] = [];
+
+  if (detailed) {
+    // In production, query actual slow query log
+    slowQueries = [
+      {
+        query: 'SELECT * FROM photo_groups WHERE couple_id = $1',
+        duration: 250,
+        timestamp: new Date().toISOString(),
+      },
+    ];
+  }
+
+  return {
+    cpuUsage,
+    memoryUsage: (heapUsedMB / heapTotalMB) * 100,
+    databaseConnections,
+    cacheHitRate,
+    slowQueries,
+  };
+}
+
+function checkAlerts(metrics: MetricsData): MetricsData['alerts'] {
+  const alerts: MetricsData['alerts'] = [];
+
+  // Check API alerts
+  if (metrics.api.errorRate > 10) {
+    alerts.push({
+      level: 'critical',
+      message: `High error rate: ${metrics.api.errorRate.toFixed(2)}%`,
+      timestamp: new Date().toISOString(),
+      details: { errorRate: metrics.api.errorRate },
+    });
+  }
+
+  if (metrics.api.p95ResponseTime > 1000) {
+    alerts.push({
+      level: 'warning',
+      message: `Slow API response times: P95 ${metrics.api.p95ResponseTime}ms`,
+      timestamp: new Date().toISOString(),
+      details: { p95: metrics.api.p95ResponseTime },
+    });
+  }
+
+  // Check performance alerts
+  if (metrics.performance.memoryUsage > 90) {
+    alerts.push({
+      level: 'critical',
+      message: `Memory usage critical: ${metrics.performance.memoryUsage.toFixed(2)}%`,
+      timestamp: new Date().toISOString(),
+      details: { memoryUsage: metrics.performance.memoryUsage },
+    });
+  }
+
+  if (metrics.performance.cpuUsage > 80) {
+    alerts.push({
+      level: 'warning',
+      message: `High CPU usage: ${metrics.performance.cpuUsage.toFixed(2)}%`,
+      timestamp: new Date().toISOString(),
+      details: { cpuUsage: metrics.performance.cpuUsage },
+    });
+  }
+
+  // Check storage alerts
+  if (metrics.storage.uploadSuccessRate < 95) {
+    alerts.push({
+      level: 'warning',
+      message: `Low upload success rate: ${metrics.storage.uploadSuccessRate.toFixed(2)}%`,
+      timestamp: new Date().toISOString(),
+      details: { uploadSuccessRate: metrics.storage.uploadSuccessRate },
+    });
+  }
+
+  // Check realtime alerts
+  if (metrics.realtime.averageLatency > 100) {
+    alerts.push({
+      level: 'warning',
+      message: `High realtime latency: ${metrics.realtime.averageLatency.toFixed(2)}ms`,
+      timestamp: new Date().toISOString(),
+      details: { latency: metrics.realtime.averageLatency },
+    });
+  }
+
+  return alerts;
+}
+
+function getPeriodMilliseconds(period: MetricsData['period']): number {
+  switch (period) {
+    case 'last_minute':
+      return 60 * 1000;
+    case 'last_hour':
+      return 60 * 60 * 1000;
+    case 'last_day':
+      return 24 * 60 * 60 * 1000;
+    case 'last_week':
+      return 7 * 24 * 60 * 60 * 1000;
+    default:
+      return 60 * 60 * 1000;
+  }
+}
+
+function getPercentile(sortedArray: number[], percentile: number): number {
+  if (sortedArray.length === 0) return 0;
+
+  const index = Math.ceil((percentile / 100) * sortedArray.length) - 1;
+  return sortedArray[Math.max(0, index)];
+}
+
+// Export metrics collection functions for use in other endpoints
+export function recordApiRequest(
+  method: string,
+  endpoint: string,
+  responseTime: number,
+  success: boolean,
+) {
+  const timestamp = Date.now();
+  const id = `${timestamp}-${Math.random().toString(36).substr(2, 9)}`;
+
+  metricsStore.requests.set(id, {
+    timestamp,
+    method,
+    endpoint,
+    responseTime,
+    success,
+  });
+
+  // Clean up old entries
+  const oneHourAgo = timestamp - 60 * 60 * 1000;
+  for (const [key, value] of metricsStore.requests) {
+    if (value.timestamp < oneHourAgo) {
+      metricsStore.requests.delete(key);
+    }
+  }
+}
+
+export function recordApiError(code: string, message: string) {
+  const timestamp = Date.now();
+  const id = `${timestamp}-${Math.random().toString(36).substr(2, 9)}`;
+
+  metricsStore.errors.set(id, {
+    timestamp,
+    code,
+    message,
+  });
+
+  // Clean up old entries
+  const oneHourAgo = timestamp - 60 * 60 * 1000;
+  for (const [key, value] of metricsStore.errors) {
+    if (value.timestamp < oneHourAgo) {
+      metricsStore.errors.delete(key);
+    }
+  }
+}
+
+export function recordRealtimeMessage(count: number = 1) {
+  metricsStore.realtimeMetrics.messages.push({
+    timestamp: Date.now(),
+    count,
+  });
+
+  // Keep only last hour of messages
+  const oneHourAgo = Date.now() - 60 * 60 * 1000;
+  metricsStore.realtimeMetrics.messages =
+    metricsStore.realtimeMetrics.messages.filter(
+      (m) => m.timestamp > oneHourAgo,
+    );
+}
+
+export function recordStorageUpload(success: boolean, duration: number) {
+  metricsStore.storageMetrics.uploads.push({
+    timestamp: Date.now(),
+    success,
+    duration,
+  });
+
+  // Keep only last hour of uploads
+  const oneHourAgo = Date.now() - 60 * 60 * 1000;
+  metricsStore.storageMetrics.uploads =
+    metricsStore.storageMetrics.uploads.filter((u) => u.timestamp > oneHourAgo);
+}

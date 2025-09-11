@@ -1,0 +1,270 @@
+// Next.js 15 API Route Handler Types (CRITICAL FIX)
+import { NextRequest, NextResponse } from 'next/server';
+
+// Base API response types
+export interface ApiResponse<T = any> {
+  success: boolean;
+  data?: T;
+  message?: string;
+  error?: string;
+  code?: string;
+}
+
+export interface ApiError {
+  success: false;
+  error: string;
+  code?: string;
+  statusCode?: number;
+  details?: any;
+}
+
+export interface ApiSuccess<T = any> {
+  success: true;
+  data: T;
+  message?: string;
+}
+
+// Rate limiting response type
+export interface RateLimitResponse {
+  success: boolean;
+  limit: number;
+  remaining: number;
+  reset: number;
+  retryAfter?: number;
+}
+
+// Next.js 15 API Route Handler with proper return types
+export type NextApiHandler<T = any> = (
+  request: NextRequest,
+) => Promise<NextResponse<ApiResponse<T> | ApiError>>;
+
+// API Route Handler with context (for dynamic routes)
+export type NextApiHandlerWithContext<T = any, P = any> = (
+  request: NextRequest,
+  context: { params: Promise<P> },
+) => Promise<NextResponse<ApiResponse<T> | ApiError>>;
+
+// Specific route handlers
+export type ClientApiHandler<T = any> = NextApiHandlerWithContext<
+  T,
+  { id: string }
+>;
+export type VendorApiHandler<T = any> = NextApiHandlerWithContext<
+  T,
+  { id: string }
+>;
+export type FormApiHandler<T = any> = NextApiHandlerWithContext<
+  T,
+  { id: string }
+>;
+export type SupplierApiHandler<T = any> = NextApiHandlerWithContext<
+  T,
+  { id: string }
+>;
+export type JourneyApiHandler<T = any> = NextApiHandlerWithContext<
+  T,
+  { executionId: string }
+>;
+export type MessageApiHandler<T = any> = NextApiHandlerWithContext<
+  T,
+  { id: string }
+>;
+
+// HTTP Method specific handlers
+export interface ApiRouteHandlers<T = any> {
+  GET?: NextApiHandler<T> | NextApiHandlerWithContext<T, any>;
+  POST?: NextApiHandler<T> | NextApiHandlerWithContext<T, any>;
+  PUT?: NextApiHandler<T> | NextApiHandlerWithContext<T, any>;
+  PATCH?: NextApiHandler<T> | NextApiHandlerWithContext<T, any>;
+  DELETE?: NextApiHandler<T> | NextApiHandlerWithContext<T, any>;
+}
+
+// Helper functions for creating typed responses
+export const createSuccessResponse = <T>(
+  data: T,
+  message?: string,
+  status = 200,
+): NextResponse<ApiSuccess<T>> => {
+  return NextResponse.json(
+    {
+      success: true,
+      data,
+      message,
+    },
+    { status },
+  );
+};
+
+export const createErrorResponse = (
+  error: string,
+  code?: string,
+  status = 500,
+  details?: any,
+): NextResponse<ApiError> => {
+  return NextResponse.json(
+    {
+      success: false,
+      error,
+      code,
+      details,
+    },
+    { status },
+  );
+};
+
+export const createRateLimitResponse = (
+  limit: number,
+  remaining: number,
+  reset: number,
+  retryAfter?: number,
+): NextResponse<RateLimitResponse> => {
+  return NextResponse.json(
+    {
+      success: false,
+      limit,
+      remaining,
+      reset,
+      retryAfter,
+    },
+    {
+      status: 429,
+      headers: {
+        'X-RateLimit-Limit': limit.toString(),
+        'X-RateLimit-Remaining': remaining.toString(),
+        'X-RateLimit-Reset': reset.toString(),
+        ...(retryAfter && { 'Retry-After': retryAfter.toString() }),
+      },
+    },
+  );
+};
+
+// Middleware types for API routes
+export type ApiMiddleware<T = any> = (
+  request: NextRequest,
+  context?: { params: Promise<any> },
+) => Promise<NextResponse<T> | void>;
+
+// Common middleware return types
+export interface AuthMiddlewareResult {
+  success: boolean;
+  userId?: string;
+  error?: string;
+}
+
+export interface ValidationMiddlewareResult<T = any> {
+  success: boolean;
+  data?: T;
+  errors?: Array<{
+    field: string;
+    message: string;
+  }>;
+}
+
+export interface RateLimitMiddlewareResult {
+  success: boolean;
+  limit: number;
+  remaining: number;
+  reset: number;
+  retryAfter?: number;
+}
+
+// Helper type for extracting params from Promise-based context
+export type ExtractParams<T> = T extends Promise<infer U> ? U : T;
+
+// Utility function types for async param handling
+export type ParamHandler<P, R> = (params: P) => Promise<R> | R;
+
+// Request validation types
+export interface RequestValidation<T = any> {
+  body?: T;
+  query?: Record<string, string | string[]>;
+  headers?: Record<string, string>;
+  params?: Record<string, string>;
+}
+
+// Response helpers
+export type ApiResponseBuilder<T> = {
+  success: (
+    data: T,
+    message?: string,
+    status?: number,
+  ) => NextResponse<ApiSuccess<T>>;
+  error: (
+    error: string,
+    code?: string,
+    status?: number,
+    details?: any,
+  ) => NextResponse<ApiError>;
+  rateLimit: (
+    limit: number,
+    remaining: number,
+    reset: number,
+    retryAfter?: number,
+  ) => NextResponse<RateLimitResponse>;
+};
+
+// Create response builder
+export const createResponseBuilder = <T>(): ApiResponseBuilder<T> => ({
+  success: createSuccessResponse,
+  error: createErrorResponse,
+  rateLimit: createRateLimitResponse,
+});
+
+// Route handler wrapper with error handling
+export const withErrorHandler = <T extends any[], R>(
+  handler: (...args: T) => Promise<R>,
+) => {
+  return async (...args: T): Promise<R | NextResponse<ApiError>> => {
+    try {
+      return await handler(...args);
+    } catch (error) {
+      console.error('API Route Error:', error);
+      return createErrorResponse(
+        error instanceof Error ? error.message : 'Internal server error',
+        'INTERNAL_ERROR',
+        500,
+        error instanceof Error ? { stack: error.stack } : undefined,
+      ) as R;
+    }
+  };
+};
+
+// Type guard helpers
+export const isApiError = (response: any): response is ApiError => {
+  return response && typeof response === 'object' && response.success === false;
+};
+
+export const isApiSuccess = <T>(response: any): response is ApiSuccess<T> => {
+  return response && typeof response === 'object' && response.success === true;
+};
+
+// Common request types for wedding form system
+export interface FormSubmissionRequest {
+  formId: string;
+  data: Record<string, any>;
+  metadata?: Record<string, any>;
+}
+
+export interface ClientCreateRequest {
+  name: string;
+  email: string;
+  phone?: string;
+  weddingDate?: string;
+  venue?: string;
+}
+
+export interface VendorCreateRequest {
+  name: string;
+  email: string;
+  category: string;
+  services: string[];
+  contactInfo: Record<string, any>;
+}
+
+export interface SupplierCreateRequest {
+  name: string;
+  category: string;
+  contactInfo: Record<string, any>;
+  services: string[];
+  pricing?: Record<string, any>;
+}

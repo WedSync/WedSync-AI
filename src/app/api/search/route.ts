@@ -1,0 +1,833 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+
+// Validation schema for search parameters
+const SearchSchema = z.object({
+  table: z.enum([
+    'helper_assignments',
+    'expenses',
+    'budget_categories',
+    'weddings',
+    'tasks',
+  ]),
+  wedding_id: z.string(),
+  query: z.string().optional(),
+  filters: z
+    .object({
+      date_range: z
+        .object({
+          start: z.string(),
+          end: z.string(),
+        })
+        .optional(),
+      status: z.string().optional(),
+      category_id: z.string().optional(),
+      helper_id: z.string().optional(),
+      vendor_name: z.string().optional(),
+      amount_min: z.number().optional(),
+      amount_max: z.number().optional(),
+      payment_status: z.string().optional(),
+      priority: z.string().optional(),
+      tags: z.array(z.string()).optional(),
+    })
+    .optional(),
+  sort: z
+    .object({
+      field: z.string(),
+      direction: z.enum(['asc', 'desc']).default('desc'),
+    })
+    .optional(),
+  pagination: z
+    .object({
+      page: z.number().default(1),
+      limit: z.number().default(50).max(1000),
+    })
+    .optional(),
+});
+
+const AnalyticsSearchSchema = z.object({
+  wedding_id: z.string(),
+  period: z.enum(['1m', '3m', '6m', '1y', 'all']).default('6m'),
+  compare_previous: z.boolean().default(false),
+  metrics: z
+    .array(
+      z.enum([
+        'budget_utilization',
+        'expense_trends',
+        'category_breakdown',
+        'task_completion',
+        'helper_performance',
+      ]),
+    )
+    .optional(),
+});
+
+// GET /api/search - Advanced search with filtering
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = createClient();
+    const { searchParams } = new URL(request.url);
+
+    // Get authenticated user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Parse search parameters
+    const searchData = {
+      table: searchParams.get('table'),
+      wedding_id: searchParams.get('wedding_id'),
+      query: searchParams.get('q'),
+      filters: {
+        date_range:
+          searchParams.get('date_start') && searchParams.get('date_end')
+            ? {
+                start: searchParams.get('date_start'),
+                end: searchParams.get('date_end'),
+              }
+            : undefined,
+        status: searchParams.get('status'),
+        category_id: searchParams.get('category_id'),
+        helper_id: searchParams.get('helper_id'),
+        vendor_name: searchParams.get('vendor_name'),
+        amount_min: searchParams.get('amount_min')
+          ? parseFloat(searchParams.get('amount_min')!)
+          : undefined,
+        amount_max: searchParams.get('amount_max')
+          ? parseFloat(searchParams.get('amount_max')!)
+          : undefined,
+        payment_status: searchParams.get('payment_status'),
+        priority: searchParams.get('priority'),
+        tags: searchParams.get('tags')
+          ? searchParams.get('tags')!.split(',')
+          : undefined,
+      },
+      sort: {
+        field: searchParams.get('sort_field') || 'created_at',
+        direction:
+          (searchParams.get('sort_direction') as 'asc' | 'desc') || 'desc',
+      },
+      pagination: {
+        page: parseInt(searchParams.get('page') || '1'),
+        limit: Math.min(parseInt(searchParams.get('limit') || '50'), 1000),
+      },
+    };
+
+    const validation = SearchSchema.safeParse(searchData);
+    if (!validation.success) {
+      return NextResponse.json(
+        {
+          error: 'Invalid search parameters',
+          details: validation.error.errors,
+        },
+        { status: 400 },
+      );
+    }
+
+    const { table, wedding_id, query, filters, sort, pagination } =
+      validation.data;
+
+    switch (table) {
+      case 'helper_assignments':
+        return await searchHelperAssignments(supabase, {
+          wedding_id,
+          query,
+          filters,
+          sort,
+          pagination,
+        });
+
+      case 'expenses':
+        return await searchExpenses(supabase, {
+          wedding_id,
+          query,
+          filters,
+          sort,
+          pagination,
+        });
+
+      case 'budget_categories':
+        return await searchBudgetCategories(supabase, {
+          wedding_id,
+          query,
+          filters,
+          sort,
+          pagination,
+        });
+
+      case 'tasks':
+        return await searchTasks(supabase, {
+          wedding_id,
+          query,
+          filters,
+          sort,
+          pagination,
+        });
+
+      case 'weddings':
+        return await searchWeddings(supabase, {
+          query,
+          filters,
+          sort,
+          pagination,
+        });
+
+      default:
+        return NextResponse.json(
+          { error: 'Invalid table specified' },
+          { status: 400 },
+        );
+    }
+  } catch (error) {
+    console.error('Search error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error during search' },
+      { status: 500 },
+    );
+  }
+}
+
+// Search helper assignments with advanced filtering
+async function searchHelperAssignments(supabase: any, params: any) {
+  const { wedding_id, query, filters, sort, pagination } = params;
+
+  let queryBuilder = supabase
+    .from('helper_assignments')
+    .select(
+      `
+      *,
+      wedding:weddings(couple_names),
+      helper:user_profiles(full_name, email),
+      assigned_by:user_profiles!assigned_by_id(full_name)
+    `,
+    )
+    .eq('wedding_id', wedding_id)
+    .is('deleted_at', null);
+
+  // Apply text search
+  if (query) {
+    queryBuilder = queryBuilder.or(`
+      task_name.ilike.%${query}%,
+      description.ilike.%${query}%,
+      location.ilike.%${query}%,
+      requirements.cs.{${query}}
+    `);
+  }
+
+  // Apply filters
+  if (filters) {
+    if (filters.status) {
+      queryBuilder = queryBuilder.eq('status', filters.status);
+    }
+
+    if (filters.helper_id) {
+      queryBuilder = queryBuilder.eq('helper_id', filters.helper_id);
+    }
+
+    if (filters.priority) {
+      queryBuilder = queryBuilder.eq('priority', filters.priority);
+    }
+
+    if (filters.date_range) {
+      queryBuilder = queryBuilder
+        .gte('scheduled_time', filters.date_range.start)
+        .lte('scheduled_time', filters.date_range.end);
+    }
+  }
+
+  // Apply sorting
+  if (sort) {
+    queryBuilder = queryBuilder.order(sort.field, {
+      ascending: sort.direction === 'asc',
+    });
+  }
+
+  // Apply pagination
+  if (pagination) {
+    const offset = (pagination.page - 1) * pagination.limit;
+    queryBuilder = queryBuilder.range(offset, offset + pagination.limit - 1);
+  }
+
+  const { data, error, count } = await queryBuilder;
+
+  if (error) {
+    throw error;
+  }
+
+  return NextResponse.json({
+    data,
+    pagination: {
+      page: pagination?.page || 1,
+      limit: pagination?.limit || 50,
+      total_count: count,
+      total_pages: Math.ceil((count || 0) / (pagination?.limit || 50)),
+    },
+  });
+}
+
+// Search expenses with advanced filtering
+async function searchExpenses(supabase: any, params: any) {
+  const { wedding_id, query, filters, sort, pagination } = params;
+
+  let queryBuilder = supabase
+    .from('expenses')
+    .select(
+      `
+      *,
+      budget_category:budget_categories(category_name, color),
+      wedding:weddings(couple_names),
+      created_by:user_profiles(full_name)
+    `,
+    )
+    .eq('wedding_id', wedding_id)
+    .is('deleted_at', null);
+
+  // Apply text search
+  if (query) {
+    queryBuilder = queryBuilder.or(`
+      vendor_name.ilike.%${query}%,
+      description.ilike.%${query}%,
+      notes.ilike.%${query}%,
+      tags.cs.{${query}}
+    `);
+  }
+
+  // Apply filters
+  if (filters) {
+    if (filters.category_id) {
+      queryBuilder = queryBuilder.eq('budget_category_id', filters.category_id);
+    }
+
+    if (filters.payment_status) {
+      queryBuilder = queryBuilder.eq('payment_status', filters.payment_status);
+    }
+
+    if (filters.vendor_name) {
+      queryBuilder = queryBuilder.ilike(
+        'vendor_name',
+        `%${filters.vendor_name}%`,
+      );
+    }
+
+    if (filters.amount_min !== undefined) {
+      queryBuilder = queryBuilder.gte('amount', filters.amount_min);
+    }
+
+    if (filters.amount_max !== undefined) {
+      queryBuilder = queryBuilder.lte('amount', filters.amount_max);
+    }
+
+    if (filters.date_range) {
+      queryBuilder = queryBuilder
+        .gte('date_incurred', filters.date_range.start)
+        .lte('date_incurred', filters.date_range.end);
+    }
+
+    if (filters.tags && filters.tags.length > 0) {
+      queryBuilder = queryBuilder.contains('tags', filters.tags);
+    }
+  }
+
+  // Apply sorting
+  if (sort) {
+    queryBuilder = queryBuilder.order(sort.field, {
+      ascending: sort.direction === 'asc',
+    });
+  }
+
+  // Apply pagination
+  if (pagination) {
+    const offset = (pagination.page - 1) * pagination.limit;
+    queryBuilder = queryBuilder.range(offset, offset + pagination.limit - 1);
+  }
+
+  const { data, error, count } = await queryBuilder;
+
+  if (error) {
+    throw error;
+  }
+
+  return NextResponse.json({
+    data,
+    pagination: {
+      page: pagination?.page || 1,
+      limit: pagination?.limit || 50,
+      total_count: count,
+      total_pages: Math.ceil((count || 0) / (pagination?.limit || 50)),
+    },
+  });
+}
+
+// Search budget categories with spending analysis
+async function searchBudgetCategories(supabase: any, params: any) {
+  const { wedding_id, query, filters, sort, pagination } = params;
+
+  let queryBuilder = supabase
+    .from('budget_categories')
+    .select(
+      `
+      *,
+      wedding:weddings(couple_names),
+      expenses:expenses(id, amount, date_incurred, vendor_name)
+    `,
+    )
+    .eq('wedding_id', wedding_id)
+    .is('deleted_at', null);
+
+  // Apply text search
+  if (query) {
+    queryBuilder = queryBuilder.or(`
+      category_name.ilike.%${query}%,
+      description.ilike.%${query}%
+    `);
+  }
+
+  // Apply filters
+  if (filters) {
+    if (filters.amount_min !== undefined) {
+      queryBuilder = queryBuilder.gte('allocated_amount', filters.amount_min);
+    }
+
+    if (filters.amount_max !== undefined) {
+      queryBuilder = queryBuilder.lte('allocated_amount', filters.amount_max);
+    }
+  }
+
+  // Apply sorting
+  if (sort) {
+    queryBuilder = queryBuilder.order(sort.field, {
+      ascending: sort.direction === 'asc',
+    });
+  }
+
+  // Apply pagination
+  if (pagination) {
+    const offset = (pagination.page - 1) * pagination.limit;
+    queryBuilder = queryBuilder.range(offset, offset + pagination.limit - 1);
+  }
+
+  const { data, error, count } = await queryBuilder;
+
+  if (error) {
+    throw error;
+  }
+
+  return NextResponse.json({
+    data,
+    pagination: {
+      page: pagination?.page || 1,
+      limit: pagination?.limit || 50,
+      total_count: count,
+      total_pages: Math.ceil((count || 0) / (pagination?.limit || 50)),
+    },
+  });
+}
+
+// Search tasks with priority and completion tracking
+async function searchTasks(supabase: any, params: any) {
+  const { wedding_id, query, filters, sort, pagination } = params;
+
+  let queryBuilder = supabase
+    .from('tasks')
+    .select(
+      `
+      *,
+      wedding:weddings(couple_names),
+      assigned_to:user_profiles(full_name),
+      created_by:user_profiles!created_by_id(full_name)
+    `,
+    )
+    .eq('wedding_id', wedding_id)
+    .is('deleted_at', null);
+
+  // Apply text search
+  if (query) {
+    queryBuilder = queryBuilder.or(`
+      title.ilike.%${query}%,
+      description.ilike.%${query}%,
+      notes.ilike.%${query}%
+    `);
+  }
+
+  // Apply filters
+  if (filters) {
+    if (filters.status) {
+      queryBuilder = queryBuilder.eq('status', filters.status);
+    }
+
+    if (filters.priority) {
+      queryBuilder = queryBuilder.eq('priority', filters.priority);
+    }
+
+    if (filters.date_range) {
+      queryBuilder = queryBuilder
+        .gte('due_date', filters.date_range.start)
+        .lte('due_date', filters.date_range.end);
+    }
+  }
+
+  // Apply sorting
+  if (sort) {
+    queryBuilder = queryBuilder.order(sort.field, {
+      ascending: sort.direction === 'asc',
+    });
+  }
+
+  // Apply pagination
+  if (pagination) {
+    const offset = (pagination.page - 1) * pagination.limit;
+    queryBuilder = queryBuilder.range(offset, offset + pagination.limit - 1);
+  }
+
+  const { data, error, count } = await queryBuilder;
+
+  if (error) {
+    throw error;
+  }
+
+  return NextResponse.json({
+    data,
+    pagination: {
+      page: pagination?.page || 1,
+      limit: pagination?.limit || 50,
+      total_count: count,
+      total_pages: Math.ceil((count || 0) / (pagination?.limit || 50)),
+    },
+  });
+}
+
+// Search weddings (for admin/super users)
+async function searchWeddings(supabase: any, params: any) {
+  const { query, filters, sort, pagination } = params;
+
+  let queryBuilder = supabase
+    .from('weddings')
+    .select(
+      `
+      *,
+      planner:user_profiles!planner_id(full_name, email),
+      couple_1:user_profiles!couple_1_id(full_name, email),
+      couple_2:user_profiles!couple_2_id(full_name, email)
+    `,
+    )
+    .is('deleted_at', null);
+
+  // Apply text search
+  if (query) {
+    queryBuilder = queryBuilder.or(`
+      couple_names.ilike.%${query}%,
+      venue_name.ilike.%${query}%,
+      venue_location.ilike.%${query}%
+    `);
+  }
+
+  // Apply filters
+  if (filters) {
+    if (filters.status) {
+      queryBuilder = queryBuilder.eq('status', filters.status);
+    }
+
+    if (filters.date_range) {
+      queryBuilder = queryBuilder
+        .gte('wedding_date', filters.date_range.start)
+        .lte('wedding_date', filters.date_range.end);
+    }
+  }
+
+  // Apply sorting
+  if (sort) {
+    queryBuilder = queryBuilder.order(sort.field, {
+      ascending: sort.direction === 'asc',
+    });
+  }
+
+  // Apply pagination
+  if (pagination) {
+    const offset = (pagination.page - 1) * pagination.limit;
+    queryBuilder = queryBuilder.range(offset, offset + pagination.limit - 1);
+  }
+
+  const { data, error, count } = await queryBuilder;
+
+  if (error) {
+    throw error;
+  }
+
+  return NextResponse.json({
+    data,
+    pagination: {
+      page: pagination?.page || 1,
+      limit: pagination?.limit || 50,
+      total_count: count,
+      total_pages: Math.ceil((count || 0) / (pagination?.limit || 50)),
+    },
+  });
+}
+
+// POST /api/search/analytics - Advanced analytics search
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = createClient();
+    const body = await request.json();
+
+    // Get authenticated user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const validation = AnalyticsSearchSchema.safeParse(body);
+    if (!validation.success) {
+      return NextResponse.json(
+        {
+          error: 'Invalid analytics search parameters',
+          details: validation.error.errors,
+        },
+        { status: 400 },
+      );
+    }
+
+    const { wedding_id, period, compare_previous, metrics } = validation.data;
+
+    // Calculate date range based on period
+    const now = new Date();
+    const periodMap = {
+      '1m': 30,
+      '3m': 90,
+      '6m': 180,
+      '1y': 365,
+      all: null,
+    };
+
+    const daysBack = periodMap[period];
+    const startDate = daysBack
+      ? new Date(now.getTime() - daysBack * 24 * 60 * 60 * 1000)
+      : null;
+
+    // Get analytics from materialized view
+    let analyticsQuery = supabase
+      .from('wedding_budget_analytics')
+      .select('*')
+      .eq('wedding_id', wedding_id);
+
+    const { data: analyticsData, error: analyticsError } =
+      await analyticsQuery.single();
+
+    if (analyticsError) {
+      throw analyticsError;
+    }
+
+    // Get detailed metrics if requested
+    const detailedMetrics = {};
+
+    if (!metrics || metrics.includes('budget_utilization')) {
+      detailedMetrics.budget_utilization = await getBudgetUtilizationTrends(
+        supabase,
+        wedding_id,
+        startDate,
+      );
+    }
+
+    if (!metrics || metrics.includes('expense_trends')) {
+      detailedMetrics.expense_trends = await getExpenseTrends(
+        supabase,
+        wedding_id,
+        startDate,
+      );
+    }
+
+    if (!metrics || metrics.includes('category_breakdown')) {
+      detailedMetrics.category_breakdown = await getCategoryBreakdown(
+        supabase,
+        wedding_id,
+      );
+    }
+
+    if (!metrics || metrics.includes('task_completion')) {
+      detailedMetrics.task_completion = await getTaskCompletionTrends(
+        supabase,
+        wedding_id,
+        startDate,
+      );
+    }
+
+    if (!metrics || metrics.includes('helper_performance')) {
+      detailedMetrics.helper_performance = await getHelperPerformanceTrends(
+        supabase,
+        wedding_id,
+        startDate,
+      );
+    }
+
+    // Compare with previous period if requested
+    let comparison = null;
+    if (compare_previous && startDate) {
+      const previousStartDate = new Date(
+        startDate.getTime() - daysBack! * 24 * 60 * 60 * 1000,
+      );
+      comparison = await getPreviousPeriodComparison(
+        supabase,
+        wedding_id,
+        previousStartDate,
+        startDate,
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      wedding_id,
+      period,
+      analytics: analyticsData,
+      detailed_metrics: detailedMetrics,
+      comparison,
+      generated_at: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error('Analytics search error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error during analytics search' },
+      { status: 500 },
+    );
+  }
+}
+
+// Helper functions for detailed analytics
+async function getBudgetUtilizationTrends(
+  supabase: any,
+  weddingId: string,
+  startDate: Date | null,
+) {
+  let query = supabase
+    .from('budget_categories')
+    .select('category_name, allocated_amount, spent_amount, updated_at')
+    .eq('wedding_id', weddingId)
+    .is('deleted_at', null);
+
+  if (startDate) {
+    query = query.gte('updated_at', startDate.toISOString());
+  }
+
+  const { data, error } = await query.order('updated_at', { ascending: true });
+
+  if (error) throw error;
+  return data;
+}
+
+async function getExpenseTrends(
+  supabase: any,
+  weddingId: string,
+  startDate: Date | null,
+) {
+  let query = supabase
+    .from('expenses')
+    .select('amount, date_incurred, budget_category_id, vendor_name')
+    .eq('wedding_id', weddingId)
+    .eq('status', 'approved')
+    .is('deleted_at', null);
+
+  if (startDate) {
+    query = query.gte('date_incurred', startDate.toISOString());
+  }
+
+  const { data, error } = await query.order('date_incurred', {
+    ascending: true,
+  });
+
+  if (error) throw error;
+  return data;
+}
+
+async function getCategoryBreakdown(supabase: any, weddingId: string) {
+  const { data, error } = await supabase
+    .from('budget_categories')
+    .select(
+      `
+      *,
+      expenses:expenses(amount, date_incurred)
+    `,
+    )
+    .eq('wedding_id', weddingId)
+    .is('deleted_at', null);
+
+  if (error) throw error;
+  return data;
+}
+
+async function getTaskCompletionTrends(
+  supabase: any,
+  weddingId: string,
+  startDate: Date | null,
+) {
+  let query = supabase
+    .from('tasks')
+    .select('status, priority, completed_at, due_date')
+    .eq('wedding_id', weddingId)
+    .is('deleted_at', null);
+
+  if (startDate) {
+    query = query.gte('created_at', startDate.toISOString());
+  }
+
+  const { data, error } = await query.order('completed_at', {
+    ascending: true,
+  });
+
+  if (error) throw error;
+  return data;
+}
+
+async function getHelperPerformanceTrends(
+  supabase: any,
+  weddingId: string,
+  startDate: Date | null,
+) {
+  let query = supabase
+    .from('helper_assignments')
+    .select(
+      `
+      status,
+      helper_id,
+      task_name,
+      scheduled_time,
+      completed_at,
+      helper:user_profiles(full_name)
+    `,
+    )
+    .eq('wedding_id', weddingId)
+    .is('deleted_at', null);
+
+  if (startDate) {
+    query = query.gte('scheduled_time', startDate.toISOString());
+  }
+
+  const { data, error } = await query.order('scheduled_time', {
+    ascending: true,
+  });
+
+  if (error) throw error;
+  return data;
+}
+
+async function getPreviousPeriodComparison(
+  supabase: any,
+  weddingId: string,
+  previousStartDate: Date,
+  currentStartDate: Date,
+) {
+  // This would involve complex queries to compare metrics between periods
+  // Implementation would depend on specific comparison requirements
+  return {
+    budget_change: 0,
+    expense_change: 0,
+    task_completion_change: 0,
+    period: `${previousStartDate.toISOString()} to ${currentStartDate.toISOString()}`,
+  };
+}

@@ -1,0 +1,12 @@
+'use client';
+
+import React from 'react';
+import JourneyExecutionMonitor from '@/components/journey-engine/JourneyExecutionMonitor';
+
+export default function JourneyMonitorPage() {
+  return (
+    <div className="min-h-screen bg-gray-50">
+      <JourneyExecutionMonitor />
+    </div>
+  );
+}

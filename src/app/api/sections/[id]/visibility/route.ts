@@ -1,0 +1,87 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { sectionVisibilityService } from '@/lib/services/section-visibility-service';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+);
+
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { id: string } },
+) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const clientId = searchParams.get('clientId');
+    const useCache = searchParams.get('useCache') === 'true';
+    const debugMode = searchParams.get('debug') === 'true';
+
+    if (!clientId) {
+      return NextResponse.json(
+        { error: 'clientId parameter is required' },
+        { status: 400 },
+      );
+    }
+
+    const result = await sectionVisibilityService.evaluateSectionVisibility(
+      params.id,
+      clientId,
+      { useCache, debugMode },
+    );
+
+    return NextResponse.json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    console.error('Section visibility evaluation error:', error);
+    return NextResponse.json(
+      { error: 'Failed to evaluate section visibility' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function POST(
+  request: NextRequest,
+  { params }: { params: { id: string } },
+) {
+  try {
+    const body = await request.json();
+    const { clientId, forceRefresh } = body;
+
+    if (!clientId) {
+      return NextResponse.json(
+        { error: 'clientId is required' },
+        { status: 400 },
+      );
+    }
+
+    // If force refresh, invalidate cache first
+    if (forceRefresh) {
+      await supabase
+        .from('section_visibility_cache')
+        .delete()
+        .eq('client_id', clientId)
+        .eq('section_id', params.id);
+    }
+
+    const result = await sectionVisibilityService.evaluateSectionVisibility(
+      params.id,
+      clientId,
+      { useCache: !forceRefresh },
+    );
+
+    return NextResponse.json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    console.error('Section visibility refresh error:', error);
+    return NextResponse.json(
+      { error: 'Failed to refresh section visibility' },
+      { status: 500 },
+    );
+  }
+}

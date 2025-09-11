@@ -1,0 +1,127 @@
+import React from 'react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import '@testing-library/jest-dom';
+import { RateLimitExceededDialog } from '../RateLimitExceededDialog';
+import { RateViolation, ViolationType, SubscriptionTier, UpgradeRecommendation } from '@/types/rate-limiting';
+
+const mockViolation: RateViolation = {
+  id: 'violation-123',
+  endpoint: '/api/weddings',
+  violationType: ViolationType.RATE_LIMIT_EXCEEDED,
+  timestamp: new Date('2025-01-20T10:30:00Z'),
+  requestsAttempted: 120,
+  requestsAllowed: 100,
+  retryAfter: 300,
+  userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X)',
+  currentTier: SubscriptionTier.FREE
+};
+const mockUpgradeRecommendation: UpgradeRecommendation = {
+  currentTier: SubscriptionTier.FREE,
+  recommendedTier: SubscriptionTier.STARTER,
+  customMessage: 'Upgrade to Starter for unlimited requests',
+  additionalRequests: 50000,
+  additionalFeatures: ['Unlimited Forms', 'Email Automation'],
+  monthlySavings: 25,
+  urgencyScore: 75,
+  weddingDeadlineImpact: true
+describe('RateLimitExceededDialog', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  it('renders dialog with violation information', () => {
+    render(
+      <RateLimitExceededDialog
+        isOpen={true}
+        violation={mockViolation}
+      />
+    );
+    
+    expect(screen.getByText('Rate Limit Exceeded')).toBeInTheDocument();
+    expect(screen.getByText('/api/weddings')).toBeInTheDocument();
+    expect(screen.getByText('120')).toBeInTheDocument(); // Requests attempted
+    expect(screen.getByText('100')).toBeInTheDocument(); // Requests allowed
+  it('displays countdown timer correctly', () => {
+    expect(screen.getByText('5m 0s')).toBeInTheDocument(); // 300 seconds = 5 minutes
+    // Advance timer by 1 second
+    jest.advanceTimersByTime(1000);
+    expect(screen.getByText('4m 59s')).toBeInTheDocument();
+  it('shows retry button when countdown reaches zero', async () => {
+    const mockOnRetry = jest.fn();
+        onRetry={mockOnRetry}
+    // Fast forward to end of countdown
+    jest.advanceTimersByTime(300000);
+    await waitFor(() => {
+      const retryButton = screen.getByText('Retry Request');
+      expect(retryButton).toBeInTheDocument();
+      expect(retryButton).not.toBeDisabled();
+    });
+    const retryButton = screen.getByText('Retry Request');
+    fireEvent.click(retryButton);
+    expect(mockOnRetry).toHaveBeenCalled();
+  it('displays upgrade recommendation when provided', () => {
+        upgradeRecommendation={mockUpgradeRecommendation}
+    expect(screen.getByText('Recommended Solution')).toBeInTheDocument();
+    expect(screen.getByText('Upgrade to Starter for unlimited requests')).toBeInTheDocument();
+    expect(screen.getByText('FREE → STARTER')).toBeInTheDocument();
+    expect(screen.getByText('50,000')).toBeInTheDocument(); // Additional requests
+  it('handles upgrade button click', () => {
+    const mockOnUpgrade = jest.fn();
+        onUpgrade={mockOnUpgrade}
+    const upgradeButton = screen.getByText('Upgrade Now');
+    fireEvent.click(upgradeButton);
+    expect(mockOnUpgrade).toHaveBeenCalledWith(SubscriptionTier.STARTER);
+  it('shows wedding context message for wedding-related endpoints', () => {
+        showWeddingContext={true}
+    expect(screen.getByText(/affects your wedding planning/i)).toBeInTheDocument();
+  it('displays different violation types correctly', () => {
+    const burstViolation = {
+      ...mockViolation,
+      violationType: ViolationType.BURST_LIMIT_EXCEEDED
+    };
+    const { rerender } = render(
+        violation={burstViolation}
+    expect(screen.getByText('Burst Limit Exceeded')).toBeInTheDocument();
+    const monthlyViolation = {
+      violationType: ViolationType.MONTHLY_LIMIT_EXCEEDED
+    rerender(
+        violation={monthlyViolation}
+    expect(screen.getByText('Monthly Limit Reached')).toBeInTheDocument();
+  it('handles dialog close', () => {
+    const mockOnClose = jest.fn();
+        onClose={mockOnClose}
+    const closeButton = screen.getByText('Close');
+    fireEvent.click(closeButton);
+    expect(mockOnClose).toHaveBeenCalled();
+  it('shows wedding deadline impact warning', () => {
+    expect(screen.getByText(/critical for upcoming wedding deadline/i)).toBeInTheDocument();
+  it('displays helpful tips for avoiding rate limits', () => {
+    expect(screen.getByText('💡 Tips to avoid rate limits:')).toBeInTheDocument();
+    expect(screen.getByText(/space out your requests/i)).toBeInTheDocument();
+    expect(screen.getByText(/use batch operations/i)).toBeInTheDocument();
+  it('shows contact support option', () => {
+    const mockOnContactSupport = jest.fn();
+        onContactSupport={mockOnContactSupport}
+    const supportButton = screen.getByText('Contact Support');
+    fireEvent.click(supportButton);
+    expect(mockOnContactSupport).toHaveBeenCalled();
+  it('displays violation metadata correctly', () => {
+    expect(screen.getByText(`Request ID: ${mockViolation.id}`)).toBeInTheDocument();
+    expect(screen.getByText(/Time:/)).toBeInTheDocument();
+    expect(screen.getByText('Client: Mozilla/5.0')).toBeInTheDocument();
+  it('uses appropriate severity styling', () => {
+    const criticalViolation = {
+      violationType: ViolationType.AUTOMATED_ABUSE
+        violation={criticalViolation}
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveClass('border-red-300', 'bg-red-50');
+  it('is accessible with proper ARIA attributes', () => {
+    expect(screen.getByRole('dialog')).toHaveAttribute('aria-modal', 'true');
+    expect(screen.getByRole('dialog')).toHaveAttribute('aria-labelledby');
+  it('handles keyboard navigation', () => {
+        onClose={jest.fn()}
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    // Dialog should close on Escape key
+});

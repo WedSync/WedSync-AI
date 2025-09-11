@@ -1,0 +1,178 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = createServerComponentClient({ cookies });
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+
+    if (!session) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get user's organization
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('id', session.user.id)
+      .single();
+
+    if (!profile) {
+      return NextResponse.json({ error: 'Profile not found' }, { status: 404 });
+    }
+
+    const searchParams = request.nextUrl.searchParams;
+    const status = searchParams.get('status');
+    const type = searchParams.get('type');
+    const limit = parseInt(searchParams.get('limit') || '50');
+    const offset = parseInt(searchParams.get('offset') || '0');
+
+    let query = supabase
+      .from('marketing_campaigns')
+      .select(
+        `
+        *,
+        created_by_user:auth.users!marketing_campaigns_created_by_fkey(email),
+        campaign_steps:marketing_campaign_steps(count)
+      `,
+      )
+      .eq('organization_id', profile.organization_id)
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (status) {
+      query = query.eq('status', status);
+    }
+
+    if (type) {
+      query = query.eq('campaign_type', type);
+    }
+
+    const { data: campaigns, error } = await query;
+
+    if (error) {
+      console.error('Error fetching campaigns:', error);
+      return NextResponse.json(
+        { error: 'Failed to fetch campaigns' },
+        { status: 500 },
+      );
+    }
+
+    // Get total count for pagination
+    const { count: totalCount, error: countError } = await supabase
+      .from('marketing_campaigns')
+      .select('*', { count: 'exact', head: true })
+      .eq('organization_id', profile.organization_id);
+
+    if (countError) {
+      console.error('Error getting campaign count:', countError);
+    }
+
+    return NextResponse.json({
+      campaigns,
+      pagination: {
+        total: totalCount || 0,
+        limit,
+        offset,
+        hasMore: (totalCount || 0) > offset + limit,
+      },
+    });
+  } catch (error) {
+    console.error('API error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = createServerComponentClient({ cookies });
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+
+    if (!session) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get user's organization
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('id', session.user.id)
+      .single();
+
+    if (!profile) {
+      return NextResponse.json({ error: 'Profile not found' }, { status: 404 });
+    }
+
+    const body = await request.json();
+    const {
+      name,
+      description,
+      campaign_type,
+      target_audience = {},
+      segmentation_rules = {},
+      trigger_conditions,
+      schedule_settings,
+      workflow_config = {},
+      enable_ab_testing = false,
+    } = body;
+
+    // Validate required fields
+    if (!name || !campaign_type) {
+      return NextResponse.json(
+        { error: 'Name and campaign type are required' },
+        { status: 400 },
+      );
+    }
+
+    // Validate campaign type
+    const validTypes = ['email', 'sms', 'mixed', 'drip', 'trigger'];
+    if (!validTypes.includes(campaign_type)) {
+      return NextResponse.json(
+        { error: 'Invalid campaign type' },
+        { status: 400 },
+      );
+    }
+
+    const { data: campaign, error } = await supabase
+      .from('marketing_campaigns')
+      .insert({
+        name,
+        description,
+        campaign_type,
+        target_audience,
+        segmentation_rules,
+        trigger_conditions,
+        schedule_settings,
+        workflow_config,
+        enable_ab_testing,
+        organization_id: profile.organization_id,
+        created_by: session.user.id,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error creating campaign:', error);
+      return NextResponse.json(
+        { error: 'Failed to create campaign' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({ campaign }, { status: 201 });
+  } catch (error) {
+    console.error('API error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

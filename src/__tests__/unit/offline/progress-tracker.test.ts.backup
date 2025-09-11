@@ -1,0 +1,614 @@
+import { SyncProgressTracker, SyncProgress, ExtendedSyncOperation, WeddingProgressContext } from '@/lib/offline/progress-tracker';
+import { SyncEventType, SyncPriority } from '@/lib/offline/background-sync';
+import { EventEmitter } from 'events';
+
+describe('SyncProgressTracker', () => {
+  let progressTracker: SyncProgressTracker;
+
+  beforeEach(() => {
+    progressTracker = new SyncProgressTracker();
+    jest.clearAllMocks();
+  });
+
+  afterEach(() => {
+    progressTracker.destroy();
+  });
+
+  describe('progress tracking lifecycle', () => {
+    it('should start tracking a sync operation', () => {
+      const operation: ExtendedSyncOperation = {
+        id: 'op-1',
+        type: SyncEventType.CLIENT_DATA_SYNC,
+        data: { clientId: 'client-1', updates: ['timeline', 'vendors'] },
+        priority: SyncPriority.MEDIUM,
+        estimatedSize: 500000,
+        estimatedDuration: 30000,
+      };
+
+      const progress = progressTracker.startTracking(operation);
+
+      expect(progress).toBeDefined();
+      expect(progress.operationId).toBe('op-1');
+      expect(progress.status).toBe('initializing');
+      expect(progress.percentage).toBe(0);
+      expect(progress.userMessage).toContain('Preparing to sync');
+    });
+
+    it('should start tracking with wedding context', () => {
+      const operation: ExtendedSyncOperation = {
+        id: 'wedding-op-1',
+        type: SyncEventType.GUEST_LIST_UPDATE,
+        data: { guestId: 'guest-1', status: 'confirmed' },
+        priority: SyncPriority.HIGH,
+        estimatedSize: 100000,
+        estimatedDuration: 15000,
+      };
+
+      const weddingContext: WeddingProgressContext = {
+        weddingId: 'wedding-123',
+        eventDate: Date.now() + 86400000, // Tomorrow
+        isEventDay: false,
+        coordinatorName: 'Sarah Johnson',
+        guestImpact: true,
+        vendorCritical: false,
+      };
+
+      const progress = progressTracker.startTracking(operation, weddingContext);
+
+      expect(progress.weddingContext).toEqual(weddingContext);
+      expect(progress.userMessage).toContain('guest list');
+      expect(progress.contextIndicators).toContain('Guest Impact');
+    });
+
+    it('should generate appropriate user messages for different operation types', () => {
+      const operations = [
+        {
+          type: SyncEventType.CLIENT_DATA_SYNC,
+          expected: 'client information',
+        },
+        {
+          type: SyncEventType.VENDOR_COMMUNICATION,
+          expected: 'vendor messages',
+        },
+        {
+          type: SyncEventType.GUEST_LIST_UPDATE,
+          expected: 'guest list',
+        },
+        {
+          type: SyncEventType.TIMELINE_CHANGES,
+          expected: 'timeline updates',
+        },
+        {
+          type: SyncEventType.MEDIA_UPLOAD,
+          expected: 'photos and documents',
+        },
+      ];
+
+      operations.forEach(({ type, expected }) => {
+        const operation: ExtendedSyncOperation = {
+          id: `op-${type}`,
+          type,
+          data: {},
+          priority: SyncPriority.MEDIUM,
+        };
+
+        const progress = progressTracker.startTracking(operation);
+        expect(progress.userMessage.toLowerCase()).toContain(expected);
+      });
+    });
+  });
+
+  describe('progress updates', () => {
+    let operationId: string;
+
+    beforeEach(() => {
+      const operation: ExtendedSyncOperation = {
+        id: 'update-test-op',
+        type: SyncEventType.CLIENT_DATA_SYNC,
+        data: {},
+        priority: SyncPriority.MEDIUM,
+        estimatedSize: 1000000,
+        estimatedDuration: 60000,
+      };
+
+      const progress = progressTracker.startTracking(operation);
+      operationId = progress.operationId;
+    });
+
+    it('should update progress percentage and status', () => {
+      const updated = progressTracker.updateProgress(operationId, {
+        percentage: 45,
+        status: 'uploading',
+      });
+
+      expect(updated).toBe(true);
+
+      const progress = progressTracker.getProgress(operationId);
+      expect(progress?.percentage).toBe(45);
+      expect(progress?.status).toBe('uploading');
+    });
+
+    it('should update network impact information', () => {
+      const updated = progressTracker.updateProgress(operationId, {
+        networkImpact: {
+          currentSpeed: 2.5,
+          estimatedTimeRemaining: 25000,
+          retryCount: 1,
+          qualityLevel: 'good',
+        },
+      });
+
+      expect(updated).toBe(true);
+
+      const progress = progressTracker.getProgress(operationId);
+      expect(progress?.networkImpact?.currentSpeed).toBe(2.5);
+      expect(progress?.networkImpact?.retryCount).toBe(1);
+    });
+
+    it('should update user message dynamically', () => {
+      progressTracker.updateProgress(operationId, {
+        percentage: 75,
+        status: 'finalizing',
+        userMessage: 'Almost done syncing your data...',
+      });
+
+      const progress = progressTracker.getProgress(operationId);
+      expect(progress?.userMessage).toBe('Almost done syncing your data...');
+    });
+
+    it('should handle invalid operation ID gracefully', () => {
+      const updated = progressTracker.updateProgress('non-existent-id', {
+        percentage: 50,
+      });
+
+      expect(updated).toBe(false);
+    });
+
+    it('should validate percentage bounds', () => {
+      // Test negative percentage
+      progressTracker.updateProgress(operationId, { percentage: -10 });
+      let progress = progressTracker.getProgress(operationId);
+      expect(progress?.percentage).toBe(0);
+
+      // Test percentage over 100
+      progressTracker.updateProgress(operationId, { percentage: 150 });
+      progress = progressTracker.getProgress(operationId);
+      expect(progress?.percentage).toBe(100);
+    });
+  });
+
+  describe('progress completion', () => {
+    it('should complete operation successfully', () => {
+      const operation: ExtendedSyncOperation = {
+        id: 'complete-op',
+        type: SyncEventType.VENDOR_COMMUNICATION,
+        data: {},
+        priority: SyncPriority.HIGH,
+      };
+
+      progressTracker.startTracking(operation);
+
+      const completed = progressTracker.completeOperation('complete-op', {
+        success: true,
+        message: 'Vendor messages synced successfully',
+        syncedItems: 5,
+      });
+
+      expect(completed).toBe(true);
+
+      const progress = progressTracker.getProgress('complete-op');
+      expect(progress?.status).toBe('completed');
+      expect(progress?.percentage).toBe(100);
+      expect(progress?.completionResult?.success).toBe(true);
+      expect(progress?.completionResult?.syncedItems).toBe(5);
+    });
+
+    it('should handle operation failure', () => {
+      const operation: ExtendedSyncOperation = {
+        id: 'failed-op',
+        type: SyncEventType.GUEST_LIST_UPDATE,
+        data: {},
+        priority: SyncPriority.MEDIUM,
+      };
+
+      progressTracker.startTracking(operation);
+
+      const completed = progressTracker.completeOperation('failed-op', {
+        success: false,
+        error: 'Network timeout after 3 retries',
+        retryAvailable: true,
+      });
+
+      expect(completed).toBe(true);
+
+      const progress = progressTracker.getProgress('failed-op');
+      expect(progress?.status).toBe('failed');
+      expect(progress?.completionResult?.success).toBe(false);
+      expect(progress?.completionResult?.retryAvailable).toBe(true);
+    });
+
+    it('should emit completion events', (done) => {
+      const operation: ExtendedSyncOperation = {
+        id: 'event-op',
+        type: SyncEventType.CLIENT_DATA_SYNC,
+        data: {},
+        priority: SyncPriority.MEDIUM,
+      };
+
+      progressTracker.on('operation-completed', (result) => {
+        expect(result.operationId).toBe('event-op');
+        expect(result.success).toBe(true);
+        done();
+      });
+
+      progressTracker.startTracking(operation);
+      progressTracker.completeOperation('event-op', { success: true });
+    });
+  });
+
+  describe('wedding context handling', () => {
+    it('should generate event day specific messages', () => {
+      const operation: ExtendedSyncOperation = {
+        id: 'event-day-op',
+        type: SyncEventType.GUEST_LIST_UPDATE,
+        data: {},
+        priority: SyncPriority.CRITICAL,
+      };
+
+      const eventDayContext: WeddingProgressContext = {
+        weddingId: 'wedding-123',
+        eventDate: Date.now(), // Today
+        isEventDay: true,
+        coordinatorName: 'Sarah',
+        guestImpact: true,
+        vendorCritical: false,
+      };
+
+      const progress = progressTracker.startTracking(operation, eventDayContext);
+
+      expect(progress.userMessage).toContain('event day');
+      expect(progress.contextIndicators).toContain('Event Day');
+      expect(progress.contextIndicators).toContain('Guest Impact');
+    });
+
+    it('should handle vendor critical scenarios', () => {
+      const operation: ExtendedSyncOperation = {
+        id: 'vendor-critical-op',
+        type: SyncEventType.VENDOR_COMMUNICATION,
+        data: {},
+        priority: SyncPriority.HIGH,
+      };
+
+      const vendorCriticalContext: WeddingProgressContext = {
+        weddingId: 'wedding-456',
+        eventDate: Date.now() + 172800000, // 2 days from now
+        isEventDay: false,
+        coordinatorName: 'Mike',
+        guestImpact: false,
+        vendorCritical: true,
+      };
+
+      const progress = progressTracker.startTracking(operation, vendorCriticalContext);
+
+      expect(progress.contextIndicators).toContain('Vendor Impact');
+      expect(progress.userMessage).toContain('vendor');
+    });
+
+    it('should update estimated time based on wedding context', () => {
+      const operation: ExtendedSyncOperation = {
+        id: 'time-estimate-op',
+        type: SyncEventType.TIMELINE_CHANGES,
+        data: {},
+        priority: SyncPriority.HIGH,
+        estimatedDuration: 30000, // 30 seconds
+      };
+
+      const urgentContext: WeddingProgressContext = {
+        weddingId: 'wedding-789',
+        eventDate: Date.now() + 3600000, // 1 hour from now
+        isEventDay: false,
+        coordinatorName: 'Lisa',
+        guestImpact: true,
+        vendorCritical: true,
+      };
+
+      const progress = progressTracker.startTracking(operation, urgentContext);
+
+      // Should reduce estimated time for urgent contexts
+      expect(progress.estimatedTimeRemaining).toBeLessThan(30000);
+    });
+  });
+
+  describe('bulk operations', () => {
+    it('should get all active progress items', () => {
+      const operations = [
+        { id: 'bulk-1', type: SyncEventType.CLIENT_DATA_SYNC },
+        { id: 'bulk-2', type: SyncEventType.VENDOR_COMMUNICATION },
+        { id: 'bulk-3', type: SyncEventType.GUEST_LIST_UPDATE },
+      ];
+
+      operations.forEach(({ id, type }) => {
+        const operation: ExtendedSyncOperation = {
+          id,
+          type,
+          data: {},
+          priority: SyncPriority.MEDIUM,
+        };
+        progressTracker.startTracking(operation);
+      });
+
+      const allProgress = progressTracker.getAllProgress();
+      
+      expect(allProgress).toHaveLength(3);
+      expect(allProgress.map(p => p.operationId)).toEqual(['bulk-1', 'bulk-2', 'bulk-3']);
+    });
+
+    it('should filter progress by wedding ID', () => {
+      const wedding1Context: WeddingProgressContext = {
+        weddingId: 'wedding-1',
+        eventDate: Date.now(),
+        isEventDay: false,
+        coordinatorName: 'Alice',
+        guestImpact: false,
+        vendorCritical: false,
+      };
+
+      const wedding2Context: WeddingProgressContext = {
+        weddingId: 'wedding-2',
+        eventDate: Date.now(),
+        isEventDay: false,
+        coordinatorName: 'Bob',
+        guestImpact: false,
+        vendorCritical: false,
+      };
+
+      // Create operations for different weddings
+      progressTracker.startTracking({
+        id: 'w1-op1',
+        type: SyncEventType.CLIENT_DATA_SYNC,
+        data: {},
+        priority: SyncPriority.MEDIUM,
+      }, wedding1Context);
+
+      progressTracker.startTracking({
+        id: 'w1-op2',
+        type: SyncEventType.VENDOR_COMMUNICATION,
+        data: {},
+        priority: SyncPriority.MEDIUM,
+      }, wedding1Context);
+
+      progressTracker.startTracking({
+        id: 'w2-op1',
+        type: SyncEventType.GUEST_LIST_UPDATE,
+        data: {},
+        priority: SyncPriority.MEDIUM,
+      }, wedding2Context);
+
+      const wedding1Progress = progressTracker.getProgressByWedding('wedding-1');
+      const wedding2Progress = progressTracker.getProgressByWedding('wedding-2');
+
+      expect(wedding1Progress).toHaveLength(2);
+      expect(wedding2Progress).toHaveLength(1);
+      expect(wedding1Progress[0].weddingContext?.weddingId).toBe('wedding-1');
+      expect(wedding2Progress[0].weddingContext?.weddingId).toBe('wedding-2');
+    });
+
+    it('should clear completed operations', () => {
+      const operation: ExtendedSyncOperation = {
+        id: 'clear-test-op',
+        type: SyncEventType.CLIENT_DATA_SYNC,
+        data: {},
+        priority: SyncPriority.MEDIUM,
+      };
+
+      progressTracker.startTracking(operation);
+      progressTracker.completeOperation('clear-test-op', { success: true });
+
+      expect(progressTracker.getAllProgress()).toHaveLength(1);
+
+      progressTracker.clearCompleted();
+
+      expect(progressTracker.getAllProgress()).toHaveLength(0);
+    });
+  });
+
+  describe('event emission', () => {
+    it('should emit progress update events', (done) => {
+      const operation: ExtendedSyncOperation = {
+        id: 'event-test-op',
+        type: SyncEventType.CLIENT_DATA_SYNC,
+        data: {},
+        priority: SyncPriority.MEDIUM,
+      };
+
+      progressTracker.on('progress-updated', (progress) => {
+        expect(progress.operationId).toBe('event-test-op');
+        expect(progress.percentage).toBe(50);
+        done();
+      });
+
+      progressTracker.startTracking(operation);
+      progressTracker.updateProgress('event-test-op', { percentage: 50 });
+    });
+
+    it('should emit operation started events', (done) => {
+      const operation: ExtendedSyncOperation = {
+        id: 'start-event-op',
+        type: SyncEventType.VENDOR_COMMUNICATION,
+        data: {},
+        priority: SyncPriority.HIGH,
+      };
+
+      progressTracker.on('operation-started', (progress) => {
+        expect(progress.operationId).toBe('start-event-op');
+        expect(progress.status).toBe('initializing');
+        done();
+      });
+
+      progressTracker.startTracking(operation);
+    });
+
+    it('should emit wedding context events for critical operations', (done) => {
+      const operation: ExtendedSyncOperation = {
+        id: 'wedding-event-op',
+        type: SyncEventType.GUEST_LIST_UPDATE,
+        data: {},
+        priority: SyncPriority.CRITICAL,
+      };
+
+      const context: WeddingProgressContext = {
+        weddingId: 'wedding-123',
+        eventDate: Date.now(),
+        isEventDay: true,
+        coordinatorName: 'Sarah',
+        guestImpact: true,
+        vendorCritical: false,
+      };
+
+      progressTracker.on('wedding-critical-operation', (data) => {
+        expect(data.operationId).toBe('wedding-event-op');
+        expect(data.isEventDay).toBe(true);
+        expect(data.guestImpact).toBe(true);
+        done();
+      });
+
+      progressTracker.startTracking(operation, context);
+    });
+  });
+
+  describe('error handling and edge cases', () => {
+    it('should handle operations without estimated duration', () => {
+      const operation: ExtendedSyncOperation = {
+        id: 'no-duration-op',
+        type: SyncEventType.CLIENT_DATA_SYNC,
+        data: {},
+        priority: SyncPriority.MEDIUM,
+        // No estimatedDuration provided
+      };
+
+      const progress = progressTracker.startTracking(operation);
+
+      expect(progress.estimatedTimeRemaining).toBeGreaterThan(0);
+      expect(progress.estimatedTimeRemaining).toBeLessThan(60000); // Should use fallback
+    });
+
+    it('should handle operations with invalid data', () => {
+      const operation: ExtendedSyncOperation = {
+        id: 'invalid-data-op',
+        type: null as any,
+        data: undefined as any,
+        priority: 'invalid' as any,
+      };
+
+      expect(() => {
+        progressTracker.startTracking(operation);
+      }).not.toThrow();
+
+      const progress = progressTracker.getProgress('invalid-data-op');
+      expect(progress).toBeDefined();
+      expect(progress?.userMessage).toBeDefined();
+    });
+
+    it('should handle concurrent updates to the same operation', () => {
+      const operation: ExtendedSyncOperation = {
+        id: 'concurrent-op',
+        type: SyncEventType.CLIENT_DATA_SYNC,
+        data: {},
+        priority: SyncPriority.MEDIUM,
+      };
+
+      progressTracker.startTracking(operation);
+
+      // Simulate concurrent updates
+      const updates = [
+        { percentage: 10 },
+        { percentage: 20 },
+        { percentage: 30 },
+        { percentage: 40 },
+        { percentage: 50 },
+      ];
+
+      const promises = updates.map(update =>
+        Promise.resolve(progressTracker.updateProgress('concurrent-op', update))
+      );
+
+      return Promise.all(promises).then(results => {
+        expect(results.every(result => result === true)).toBe(true);
+        
+        const finalProgress = progressTracker.getProgress('concurrent-op');
+        expect(finalProgress?.percentage).toBe(50);
+      });
+    });
+
+    it('should handle memory cleanup for completed operations', () => {
+      const operationIds: string[] = [];
+
+      // Create many operations
+      for (let i = 0; i < 100; i++) {
+        const operation: ExtendedSyncOperation = {
+          id: `cleanup-op-${i}`,
+          type: SyncEventType.CLIENT_DATA_SYNC,
+          data: {},
+          priority: SyncPriority.MEDIUM,
+        };
+
+        progressTracker.startTracking(operation);
+        operationIds.push(operation.id);
+      }
+
+      // Complete all operations
+      operationIds.forEach(id => {
+        progressTracker.completeOperation(id, { success: true });
+      });
+
+      expect(progressTracker.getAllProgress()).toHaveLength(100);
+
+      // Clear completed
+      progressTracker.clearCompleted();
+
+      expect(progressTracker.getAllProgress()).toHaveLength(0);
+    });
+  });
+
+  describe('destroy and cleanup', () => {
+    it('should cleanup all resources on destroy', () => {
+      const operation: ExtendedSyncOperation = {
+        id: 'cleanup-test-op',
+        type: SyncEventType.CLIENT_DATA_SYNC,
+        data: {},
+        priority: SyncPriority.MEDIUM,
+      };
+
+      progressTracker.startTracking(operation);
+      
+      expect(progressTracker.getAllProgress()).toHaveLength(1);
+
+      progressTracker.destroy();
+
+      expect(progressTracker.getAllProgress()).toHaveLength(0);
+    });
+
+    it('should remove all event listeners on destroy', () => {
+      const removeAllListenersSpy = jest.spyOn(progressTracker, 'removeAllListeners');
+
+      progressTracker.destroy();
+
+      expect(removeAllListenersSpy).toHaveBeenCalled();
+    });
+
+    it('should handle operations gracefully after destroy', () => {
+      progressTracker.destroy();
+
+      const operation: ExtendedSyncOperation = {
+        id: 'post-destroy-op',
+        type: SyncEventType.CLIENT_DATA_SYNC,
+        data: {},
+        priority: SyncPriority.MEDIUM,
+      };
+
+      expect(() => {
+        progressTracker.startTracking(operation);
+      }).not.toThrow();
+    });
+  });
+});

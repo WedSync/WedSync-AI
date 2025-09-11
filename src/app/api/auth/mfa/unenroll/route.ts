@@ -1,0 +1,81 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import { mfaService } from '@/lib/auth/mfa';
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const { factorId } = body;
+
+    if (!factorId) {
+      return NextResponse.json(
+        { error: 'Factor ID required' },
+        { status: 400 },
+      );
+    }
+
+    // Verify user has AAL2 before allowing unenrollment
+    const aalData = await mfaService.getAuthenticatorAssuranceLevel();
+    if (aalData.data?.currentLevel !== 'aal2') {
+      return NextResponse.json(
+        { error: 'MFA verification required to remove authentication methods' },
+        { status: 403 },
+      );
+    }
+
+    // Check if this is the last factor
+    const factors = await mfaService.listFactors(user.id);
+    const totalFactors =
+      (factors.data?.totp?.length || 0) + (factors.data?.phone?.length || 0);
+
+    if (totalFactors === 1) {
+      // Warn user about removing last factor
+      const confirmRemoval = request.headers.get('x-confirm-removal');
+      if (confirmRemoval !== 'true') {
+        return NextResponse.json(
+          {
+            error: 'LAST_FACTOR_WARNING',
+            message:
+              'This is your last authentication method. Removing it will disable MFA on your account.',
+            requiresConfirmation: true,
+          },
+          { status: 400 },
+        );
+      }
+    }
+
+    const result = await mfaService.unenroll(factorId, user.id);
+
+    if (result.error) {
+      return NextResponse.json(
+        { error: result.error.message },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: 'Authentication method removed successfully',
+    });
+  } catch (error) {
+    console.error('MFA unenroll error:', error);
+    return NextResponse.json(
+      { error: 'Failed to remove authentication method' },
+      { status: 500 },
+    );
+  }
+}

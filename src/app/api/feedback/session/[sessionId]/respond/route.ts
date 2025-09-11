@@ -1,0 +1,486 @@
+/**
+ * WS-236: User Feedback System - Session Response API
+ *
+ * Handles submitting responses to feedback questions
+ * Includes sentiment analysis and session completion checking
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
+import { createClient } from '@/lib/supabase/server';
+import { rateLimit } from '@/lib/rate-limiter';
+import { feedbackCollector } from '@/lib/feedback/feedback-collector';
+
+// Validation schemas
+const respondSchema = z.object({
+  questionKey: z.string().min(1),
+  response: z.union([
+    z.number(), // for NPS scores and ratings
+    z.string(), // for text and choice responses
+    z.boolean(), // for boolean responses
+  ]),
+  timeSpent: z.number().min(0).optional().default(0), // seconds spent on question
+});
+
+export const dynamic = 'force-dynamic';
+
+/**
+ * POST /api/feedback/session/[sessionId]/respond
+ * Submit a response to a feedback question
+ */
+export async function POST(
+  request: NextRequest,
+  { params }: { params: { sessionId: string } },
+) {
+  try {
+    // Rate limiting - allow frequent responses during active sessions
+    const rateLimitResult = await rateLimit(request, {
+      max: 100,
+      windowMs: 60000,
+    });
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { error: 'Too many response submissions' },
+        { status: 429, headers: rateLimitResult.headers },
+      );
+    }
+
+    const { sessionId } = params;
+    if (!sessionId) {
+      return NextResponse.json(
+        { error: 'Session ID is required' },
+        { status: 400 },
+      );
+    }
+
+    const supabase = createClient();
+
+    // Check authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Verify session ownership
+    const { data: session, error: sessionError } = await supabase
+      .from('feedback_sessions')
+      .select('user_id, session_type, completed_at')
+      .eq('id', sessionId)
+      .single();
+
+    if (sessionError || !session) {
+      return NextResponse.json(
+        { error: 'Feedback session not found' },
+        { status: 404 },
+      );
+    }
+
+    if (session.user_id !== user.id) {
+      return NextResponse.json(
+        { error: 'Access denied to this feedback session' },
+        { status: 403 },
+      );
+    }
+
+    if (session.completed_at) {
+      return NextResponse.json(
+        { error: 'Feedback session already completed' },
+        { status: 400 },
+      );
+    }
+
+    // Parse and validate request body
+    const body = await request.json();
+    const { questionKey, response, timeSpent } = respondSchema.parse(body);
+
+    console.log(`Submitting response for session ${sessionId}:`, {
+      questionKey,
+      responseType: typeof response,
+      timeSpent,
+    });
+
+    try {
+      // Submit response using FeedbackCollector service
+      await feedbackCollector.submitResponse(
+        sessionId,
+        questionKey,
+        response,
+        timeSpent,
+      );
+
+      // Check if session is now complete
+      const { data: updatedSession, error: updateError } = await supabase
+        .from('feedback_sessions')
+        .select(
+          `
+          completed_at,
+          completion_rate,
+          questions_total,
+          questions_answered,
+          overall_sentiment,
+          satisfaction_category
+        `,
+        )
+        .eq('id', sessionId)
+        .single();
+
+      if (updateError) {
+        console.error('Error fetching updated session:', updateError);
+      }
+
+      const isComplete = updatedSession?.completed_at !== null;
+
+      // Prepare response
+      const responseData = {
+        success: true,
+        data: {
+          sessionId,
+          questionKey,
+          responseSubmitted: true,
+          sessionStatus: isComplete ? 'completed' : 'in_progress',
+          completionRate: updatedSession?.completion_rate || 0,
+          questionsAnswered: updatedSession?.questions_answered || 0,
+          questionsTotal: updatedSession?.questions_total || 0,
+        },
+        message: 'Response submitted successfully',
+      };
+
+      // Add completion data if session is complete
+      if (isComplete) {
+        responseData.data = {
+          ...responseData.data,
+          completedAt: updatedSession.completed_at,
+          overallSentiment: updatedSession.overall_sentiment,
+          satisfactionCategory: updatedSession.satisfaction_category,
+          nextSteps: getNextStepsForCompletedSession(
+            session.session_type,
+            updatedSession.satisfaction_category,
+          ),
+        };
+        responseData.message =
+          'Response submitted and feedback session completed';
+      }
+
+      return NextResponse.json(responseData);
+    } catch (serviceError) {
+      console.error('Error submitting feedback response:', serviceError);
+
+      // Handle specific service errors
+      if (serviceError instanceof Error) {
+        if (serviceError.message.includes('Invalid session')) {
+          return NextResponse.json(
+            {
+              error: 'Invalid feedback session',
+              details: serviceError.message,
+            },
+            { status: 400 },
+          );
+        }
+        if (serviceError.message.includes('Invalid question')) {
+          return NextResponse.json(
+            { error: 'Invalid question key', details: serviceError.message },
+            { status: 400 },
+          );
+        }
+        if (serviceError.message.includes('validation')) {
+          return NextResponse.json(
+            { error: 'Invalid response format', details: serviceError.message },
+            { status: 400 },
+          );
+        }
+      }
+
+      return NextResponse.json(
+        { error: 'Failed to submit response' },
+        { status: 500 },
+      );
+    }
+  } catch (error) {
+    console.error(
+      'POST /api/feedback/session/[sessionId]/respond error:',
+      error,
+    );
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid response data', details: error.errors },
+        { status: 400 },
+      );
+    }
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * GET /api/feedback/session/[sessionId]/respond
+ * Get current session status and progress
+ */
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { sessionId: string } },
+) {
+  try {
+    // Rate limiting
+    const rateLimitResult = await rateLimit(request, {
+      max: 60,
+      windowMs: 60000,
+    });
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { error: 'Too many requests' },
+        { status: 429, headers: rateLimitResult.headers },
+      );
+    }
+
+    const { sessionId } = params;
+    if (!sessionId) {
+      return NextResponse.json(
+        { error: 'Session ID is required' },
+        { status: 400 },
+      );
+    }
+
+    const supabase = createClient();
+
+    // Check authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get session details with responses
+    const { data: session, error: sessionError } = await supabase
+      .from('feedback_sessions')
+      .select(
+        `
+        id,
+        user_id,
+        session_type,
+        started_at,
+        completed_at,
+        completion_rate,
+        questions_total,
+        questions_answered,
+        overall_sentiment,
+        satisfaction_category,
+        feedback_responses (
+          question_key,
+          question_text,
+          question_type,
+          nps_score,
+          rating_value,
+          text_value,
+          choice_value,
+          boolean_value,
+          responded_at
+        )
+      `,
+      )
+      .eq('id', sessionId)
+      .single();
+
+    if (sessionError || !session) {
+      return NextResponse.json(
+        { error: 'Feedback session not found' },
+        { status: 404 },
+      );
+    }
+
+    if (session.user_id !== user.id) {
+      return NextResponse.json(
+        { error: 'Access denied to this feedback session' },
+        { status: 403 },
+      );
+    }
+
+    // Format responses for frontend
+    const responses = (session.feedback_responses || []).map(
+      (response: any) => ({
+        questionKey: response.question_key,
+        questionText: response.question_text,
+        questionType: response.question_type,
+        value:
+          response.nps_score ??
+          response.rating_value ??
+          response.text_value ??
+          response.choice_value ??
+          response.boolean_value,
+        respondedAt: response.responded_at,
+      }),
+    );
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        sessionId: session.id,
+        sessionType: session.session_type,
+        startedAt: session.started_at,
+        completedAt: session.completed_at,
+        isComplete: !!session.completed_at,
+        completionRate: session.completion_rate,
+        questionsTotal: session.questions_total,
+        questionsAnswered: session.questions_answered,
+        responses,
+        overallSentiment: session.overall_sentiment,
+        satisfactionCategory: session.satisfaction_category,
+      },
+    });
+  } catch (error) {
+    console.error(
+      'GET /api/feedback/session/[sessionId]/respond error:',
+      error,
+    );
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * Get next steps for user based on completed feedback session
+ */
+function getNextStepsForCompletedSession(
+  sessionType: string,
+  satisfactionCategory: string | null,
+): any {
+  const nextSteps = {
+    nps: {
+      very_satisfied: {
+        title: 'Thank you for your positive feedback!',
+        actions: [
+          'Consider joining our referral program',
+          'Stay tuned for early access to new features',
+          'Follow us for product updates',
+        ],
+      },
+      satisfied: {
+        title: 'Thanks for your feedback!',
+        actions: [
+          'Explore advanced features you might not know about',
+          'Check out our help center for tips',
+          'Consider upgrading for more capabilities',
+        ],
+      },
+      neutral: {
+        title: 'We appreciate your honest feedback',
+        actions: [
+          'A team member will reach out to understand your experience better',
+          'Check out upcoming feature announcements',
+          'Contact support if you need assistance',
+        ],
+      },
+      dissatisfied: {
+        title: 'We want to make this right',
+        actions: [
+          'A senior team member will contact you within 24 hours',
+          'Priority support access has been activated for your account',
+          'We will keep you updated on improvements based on your feedback',
+        ],
+      },
+      very_dissatisfied: {
+        title: 'Your feedback is critical to us',
+        actions: [
+          'A senior team member will contact you immediately',
+          'Priority support and dedicated assistance activated',
+          'Executive review of your feedback initiated',
+        ],
+      },
+    },
+    feature: {
+      satisfied: {
+        title: 'Great to hear you like this feature!',
+        actions: [
+          'Your usage patterns will help us improve it further',
+          'Look for related features that might help your workflow',
+          'Consider sharing your positive experience with others',
+        ],
+      },
+      dissatisfied: {
+        title: 'We will improve this feature',
+        actions: [
+          'Your specific feedback has been forwarded to our development team',
+          'You will be notified when improvements are released',
+          'Contact support for workarounds or alternatives',
+        ],
+      },
+      default: {
+        title: 'Thank you for your feature feedback',
+        actions: [
+          'Your input helps shape our product roadmap',
+          'Check back for updates and improvements',
+          'Explore other features that might meet your needs',
+        ],
+      },
+    },
+    onboarding: {
+      satisfied: {
+        title: 'Welcome to WedSync!',
+        actions: [
+          'Explore advanced features at your own pace',
+          'Join our community for tips and best practices',
+          'Set up your first client or wedding project',
+        ],
+      },
+      dissatisfied: {
+        title: 'Let us help you get started',
+        actions: [
+          'A success specialist will reach out to provide personalized onboarding',
+          'Access to premium tutorial content activated',
+          'Priority support available for setup questions',
+        ],
+      },
+      default: {
+        title: 'Continue your WedSync journey',
+        actions: [
+          'Complete your profile setup for the best experience',
+          'Try creating your first form or journey',
+          'Explore our help center for tips and tricks',
+        ],
+      },
+    },
+    general: {
+      default: {
+        title: 'Thank you for your feedback',
+        actions: [
+          'Your input helps us improve WedSync for everyone',
+          'Stay tuned for updates and new features',
+          'Contact support if you need any assistance',
+        ],
+      },
+    },
+  };
+
+  try {
+    const sessionSteps =
+      nextSteps[sessionType as keyof typeof nextSteps] || nextSteps.general;
+    const categorySteps =
+      sessionSteps[satisfactionCategory as keyof typeof sessionSteps] ||
+      sessionSteps['default' as keyof typeof sessionSteps];
+
+    return (
+      categorySteps || {
+        title: 'Thank you for your feedback',
+        actions: [
+          'We appreciate you taking the time to share your thoughts with us',
+        ],
+      }
+    );
+  } catch (error) {
+    console.error('Error getting next steps:', error);
+    return {
+      title: 'Thank you for your feedback',
+      actions: [
+        'We appreciate you taking the time to share your thoughts with us',
+      ],
+    };
+  }
+}

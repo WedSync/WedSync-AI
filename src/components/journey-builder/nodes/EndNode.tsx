@@ -1,0 +1,16 @@
+'use client';
+
+import React from 'react';
+import { NodeProps } from '@xyflow/react';
+import { CheckCircle } from 'lucide-react';
+import { BaseNode } from './BaseNode';
+
+export function EndNode(props: NodeProps) {
+  return (
+    <BaseNode
+      {...props}
+      icon={<CheckCircle className="h-4 w-4" />}
+      color="bg-red-500"
+    />
+  );
+}

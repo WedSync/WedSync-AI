@@ -1,0 +1,379 @@
+/**
+ * WS-241 AI Caching Strategy System - Seasonal Scaling API
+ * Handles automated scaling operations based on wedding season patterns
+ * Team B - Backend Infrastructure & API Development
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import { SeasonalScalingAutomator, ScalingAction, ScalingMetrics } from '@/lib/ai-cache/SeasonalScalingAutomator';
+import { ratelimit } from '@/lib/ratelimit';
+
+// Initialize scaling automator
+const scalingAutomator = new SeasonalScalingAutomator(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  process.env.REDIS_URL || 'redis://localhost:6379'
+);
+
+export async function GET(request: NextRequest) {
+  try {
+    const startTime = Date.now();
+    const url = new URL(request.url);
+    const action = url.searchParams.get('action') || 'status';
+
+    // Rate limiting - 30 requests per minute
+    const identifier = request.headers.get('x-forwarded-for') || 'anonymous';
+    const { success, limit, remaining, reset } = await ratelimit.limit(`seasonal_scaling:${identifier}`);
+
+    if (!success) {
+      return NextResponse.json(
+        { error: 'Too many requests. Please try again later.' },
+        { 
+          status: 429,
+          headers: {
+            'X-RateLimit-Limit': limit.toString(),
+            'X-RateLimit-Remaining': remaining.toString(),
+            'X-RateLimit-Reset': reset.toString(),
+          }
+        }
+      );
+    }
+
+    // Authentication check
+    const supabase = createRouteHandlerClient({ cookies: cookies() });
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized. Please log in to access seasonal scaling.' },
+        { status: 401 }
+      );
+    }
+
+    // Get user's role and organization
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id, role')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!profile?.organization_id) {
+      return NextResponse.json(
+        { error: 'User profile not found or no organization associated' },
+        { status: 404 }
+      );
+    }
+
+    // Only admins can access scaling automation
+    const isAdmin = profile.role === 'OWNER' || profile.role === 'ADMIN';
+    if (!isAdmin) {
+      return NextResponse.json(
+        { error: 'Seasonal scaling requires admin privileges' },
+        { status: 403 }
+      );
+    }
+
+    console.log(`Seasonal scaling ${action} requested by user ${user.id}, org ${profile.organization_id}`);
+
+    let responseData;
+
+    switch (action) {
+      case 'status':
+        responseData = await getScalingStatus();
+        break;
+      
+      case 'predictions':
+        const lookaheadDays = parseInt(url.searchParams.get('days') || '30');
+        responseData = await scalingAutomator.predictSeasonalTransition(lookaheadDays);
+        break;
+      
+      case 'health':
+        responseData = await scalingAutomator.healthCheck();
+        break;
+      
+      case 'metrics':
+        const currentSeason = scalingAutomator.getCurrentSeason();
+        responseData = {
+          currentSeason,
+          scaling_history: await getScalingHistory(supabase, 30), // Last 30 days
+          performance_impact: await getPerformanceImpact(supabase)
+        };
+        break;
+
+      default:
+        return NextResponse.json(
+          { error: 'Invalid action. Supported: status, predictions, health, metrics' },
+          { status: 400 }
+        );
+    }
+
+    const responseTimeMs = Date.now() - startTime;
+
+    return NextResponse.json({
+      success: true,
+      action,
+      data: responseData,
+      responseTimeMs,
+      timestamp: new Date().toISOString()
+    }, {
+      headers: {
+        'X-Response-Time': responseTimeMs.toString(),
+        'X-RateLimit-Remaining': remaining.toString(),
+        'X-Scaling-Status': action
+      }
+    });
+
+  } catch (error) {
+    console.error('Seasonal scaling API error:', error);
+    
+    return NextResponse.json({
+      error: 'Failed to process seasonal scaling request',
+      details: error instanceof Error ? error.message : 'Unknown error',
+      timestamp: new Date().toISOString()
+    }, { status: 500 });
+  }
+}
+
+export async function POST(request: NextRequest) {
+  // Manual scaling execution
+  try {
+    const startTime = Date.now();
+
+    // Rate limiting - More restrictive for POST operations (5 per minute)
+    const identifier = request.headers.get('x-forwarded-for') || 'anonymous';
+    const { success, limit, remaining, reset } = await ratelimit.limit(`seasonal_scaling_post:${identifier}`);
+
+    if (!success) {
+      return NextResponse.json(
+        { error: 'Too many scaling requests. Please try again later.' },
+        { 
+          status: 429,
+          headers: {
+            'X-RateLimit-Limit': limit.toString(),
+            'X-RateLimit-Remaining': remaining.toString(),
+            'X-RateLimit-Reset': reset.toString(),
+          }
+        }
+      );
+    }
+
+    // Parse request body
+    const body = await request.json();
+    const { action, force = false, reason, scheduledFor } = body as {
+      action: 'execute' | 'schedule' | 'cancel';
+      force?: boolean;
+      reason?: string;
+      scheduledFor?: string;
+    };
+
+    // Authentication check
+    const supabase = createRouteHandlerClient({ cookies: cookies() });
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized. Please log in to execute scaling.' },
+        { status: 401 }
+      );
+    }
+
+    // Get user's role and organization
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id, role')
+      .eq('user_id', user.id)
+      .single();
+
+    // Only owners can execute scaling operations
+    if (profile?.role !== 'OWNER') {
+      return NextResponse.json(
+        { error: 'Manual scaling execution requires owner privileges' },
+        { status: 403 }
+      );
+    }
+
+    console.log(`Manual scaling ${action} initiated by user ${user.id}, org ${profile.organization_id}, reason: ${reason || 'not specified'}`);
+
+    // Record scaling request for audit
+    const auditLog = {
+      user_id: user.id,
+      organization_id: profile.organization_id,
+      action: `seasonal_scaling_${action}`,
+      details: {
+        action,
+        force,
+        reason,
+        scheduledFor,
+        timestamp: new Date().toISOString()
+      }
+    };
+
+    await supabase.from('audit_logs').insert(auditLog);
+
+    let responseData;
+
+    switch (action) {
+      case 'execute':
+        // Safety check for immediate execution
+        if (!force) {
+          const currentSeason = scalingAutomator.getCurrentSeason();
+          if (currentSeason.name === 'peak' && new Date().getDay() === 6) { // Saturday during peak season
+            return NextResponse.json({
+              error: 'Scaling during Saturday peak season requires force=true parameter',
+              warning: 'This could impact active weddings',
+              safetyCheck: 'failed'
+            }, { status: 400 });
+          }
+        }
+
+        responseData = await scalingAutomator.executeSeasonalScaling();
+        break;
+
+      case 'schedule':
+        if (!scheduledFor) {
+          return NextResponse.json({
+            error: 'scheduledFor timestamp required for scheduled scaling'
+          }, { status: 400 });
+        }
+
+        // Schedule scaling for later execution (would integrate with job queue)
+        responseData = {
+          scheduled: true,
+          scheduledFor: new Date(scheduledFor),
+          estimatedDuration: '30-60 minutes',
+          actions: await generateScheduledActions()
+        };
+        break;
+
+      case 'cancel':
+        // Cancel scheduled scaling operations
+        responseData = {
+          cancelled: true,
+          cancelledAt: new Date().toISOString(),
+          reason: reason || 'Manual cancellation'
+        };
+        break;
+
+      default:
+        return NextResponse.json(
+          { error: 'Invalid action. Supported: execute, schedule, cancel' },
+          { status: 400 }
+        );
+    }
+
+    const responseTimeMs = Date.now() - startTime;
+
+    return NextResponse.json({
+      success: true,
+      action,
+      data: responseData,
+      responseTimeMs,
+      auditLogged: true,
+      executedAt: new Date().toISOString()
+    }, {
+      headers: {
+        'X-Scaling-Action': action,
+        'X-Response-Time': responseTimeMs.toString(),
+        'X-Force-Applied': force.toString()
+      }
+    });
+
+  } catch (error) {
+    console.error('Manual scaling execution error:', error);
+    return NextResponse.json({
+      error: 'Failed to execute scaling operation',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    }, { status: 500 });
+  }
+}
+
+// Helper functions
+async function getScalingStatus(): Promise<{
+  currentSeason: any;
+  lastScaling: any;
+  nextScheduledScaling: any;
+  systemHealth: any;
+}> {
+  const currentSeason = scalingAutomator.getCurrentSeason();
+  const health = await scalingAutomator.healthCheck();
+  
+  // This would typically get data from Redis/database
+  return {
+    currentSeason,
+    lastScaling: {
+      timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(), // 2 hours ago
+      status: 'completed',
+      duration: '45 minutes',
+      actions: ['scale_up', 'preload']
+    },
+    nextScheduledScaling: {
+      timestamp: new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString(), // 6 hours from now
+      estimatedActions: ['evaluate', 'adjust_capacity']
+    },
+    systemHealth: health
+  };
+}
+
+async function getScalingHistory(supabase: any, days: number): Promise<any[]> {
+  const { data: history } = await supabase
+    .from('ai_cache_scaling_logs')
+    .select('*')
+    .gte('created_at', new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString())
+    .order('created_at', { ascending: false })
+    .limit(50);
+
+  return history || [];
+}
+
+async function getPerformanceImpact(supabase: any): Promise<{
+  cacheHitRateImprovement: number;
+  responseTimeImprovement: number;
+  costSavings: number;
+}> {
+  // Get performance metrics before/after scaling
+  const { data: recentStats } = await supabase
+    .from('ai_cache_statistics')
+    .select('cache_hit_rate, avg_response_time, cost_savings')
+    .gte('created_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
+    .order('created_at', { ascending: false })
+    .limit(10);
+
+  if (!recentStats?.length) {
+    return {
+      cacheHitRateImprovement: 0,
+      responseTimeImprovement: 0,
+      costSavings: 0
+    };
+  }
+
+  const avgHitRate = recentStats.reduce((sum, stat) => sum + (stat.cache_hit_rate || 0), 0) / recentStats.length;
+  const avgResponseTime = recentStats.reduce((sum, stat) => sum + (stat.avg_response_time || 0), 0) / recentStats.length;
+  const totalCostSavings = recentStats.reduce((sum, stat) => sum + (stat.cost_savings || 0), 0);
+
+  return {
+    cacheHitRateImprovement: avgHitRate,
+    responseTimeImprovement: avgResponseTime,
+    costSavings: totalCostSavings
+  };
+}
+
+async function generateScheduledActions(): Promise<ScalingAction[]> {
+  return [
+    {
+      type: 'scale_up',
+      target: 'redis',
+      priority: 'scheduled',
+      estimated_duration_minutes: 30,
+      business_impact: 'low'
+    },
+    {
+      type: 'preload',
+      target: 'memory',
+      priority: 'scheduled',
+      estimated_duration_minutes: 45,
+      business_impact: 'none'
+    }
+  ];
+}

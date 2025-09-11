@@ -1,0 +1,710 @@
+'use client';
+
+import React, { useState, useEffect } from 'react';
+import {
+  Users,
+  UserPlus,
+  ChevronRight,
+  AlertCircle,
+  Check,
+  Clock,
+  X,
+} from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { Progress } from '@/components/ui/progress';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '@/components/ui/dialog';
+import { Checkbox } from '@/components/ui/checkbox';
+import { toast } from 'sonner';
+import { supabase } from '@/lib/supabase';
+import { cn } from '@/lib/utils';
+import { TaskCategory, PHASE_CONFIG } from '@/lib/services/taskCategories';
+
+interface Helper {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  specialties: string[];
+  available_hours_per_week: number;
+  assigned_task_count?: number;
+  completed_task_count?: number;
+  avatar_url?: string;
+}
+
+interface CategoryAssignment {
+  category_id: string;
+  helper_id: string;
+  is_primary: boolean;
+  max_tasks?: number;
+  auto_assign: boolean;
+}
+
+interface CategoryWorkload {
+  category_id: string;
+  category_name: string;
+  phase: string;
+  color_hex: string;
+  total_tasks: number;
+  assigned_tasks: number;
+  completed_tasks: number;
+  helpers: Helper[];
+}
+
+interface CategoryHelperAssignmentProps {
+  weddingId: string;
+  organizationId: string;
+  categories: TaskCategory[];
+  onAssignmentChange?: () => void;
+}
+
+export default function CategoryHelperAssignment({
+  weddingId,
+  organizationId,
+  categories,
+  onAssignmentChange,
+}: CategoryHelperAssignmentProps) {
+  const [helpers, setHelpers] = useState<Helper[]>([]);
+  const [workloads, setWorkloads] = useState<CategoryWorkload[]>([]);
+  const [assignments, setAssignments] = useState<CategoryAssignment[]>([]);
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [assignDialogOpen, setAssignDialogOpen] = useState(false);
+  const [bulkAssignMode, setBulkAssignMode] = useState(false);
+  const [selectedHelpers, setSelectedHelpers] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    loadData();
+  }, [organizationId, weddingId]);
+
+  const loadData = async () => {
+    try {
+      setLoading(true);
+
+      // Load helpers
+      const { data: helpersData, error: helpersError } = await supabase
+        .from('team_members')
+        .select('*')
+        .eq('is_active', true)
+        .order('name');
+
+      if (helpersError) throw helpersError;
+
+      // Load task counts and assignments
+      const { data: tasksData, error: tasksError } = await supabase
+        .from('workflow_tasks')
+        .select('category_id, status, assigned_to')
+        .eq('wedding_id', weddingId);
+
+      if (tasksError) throw tasksError;
+
+      // Process workload data
+      const workloadMap: Record<string, CategoryWorkload> = {};
+
+      for (const category of categories) {
+        const categoryTasks =
+          tasksData?.filter((t) => t.category_id === category.id) || [];
+        const assignedHelperIds = [
+          ...new Set(
+            categoryTasks
+              .filter((t) => t.assigned_to)
+              .map((t) => t.assigned_to),
+          ),
+        ];
+
+        workloadMap[category.id] = {
+          category_id: category.id,
+          category_name: category.name,
+          phase: category.phase,
+          color_hex: category.color_hex,
+          total_tasks: categoryTasks.length,
+          assigned_tasks: categoryTasks.filter((t) => t.assigned_to).length,
+          completed_tasks: categoryTasks.filter((t) => t.status === 'completed')
+            .length,
+          helpers:
+            helpersData?.filter((h) => assignedHelperIds.includes(h.id)) || [],
+        };
+      }
+
+      setHelpers(helpersData || []);
+      setWorkloads(Object.values(workloadMap));
+    } catch (error) {
+      console.error('Error loading data:', error);
+      toast.error('Failed to load assignment data');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const assignHelperToCategory = async (
+    categoryId: string,
+    helperId: string,
+    isPrimary = false,
+  ) => {
+    try {
+      // Create assignment record
+      const { error: assignError } = await supabase
+        .from('category_assignments')
+        .insert({
+          category_id: categoryId,
+          helper_id: helperId,
+          is_primary: isPrimary,
+          auto_assign: true,
+          created_at: new Date().toISOString(),
+        });
+
+      if (assignError) throw assignError;
+
+      // Auto-assign unassigned tasks in this category
+      if (isPrimary) {
+        const { error: taskError } = await supabase
+          .from('workflow_tasks')
+          .update({
+            assigned_to: helperId,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('wedding_id', weddingId)
+          .eq('category_id', categoryId)
+          .is('assigned_to', null);
+
+        if (taskError) throw taskError;
+      }
+
+      toast.success('Helper assigned successfully');
+      loadData();
+      onAssignmentChange?.();
+    } catch (error) {
+      console.error('Error assigning helper:', error);
+      toast.error('Failed to assign helper');
+    }
+  };
+
+  const bulkAssignHelpers = async () => {
+    try {
+      if (!selectedCategory || selectedHelpers.length === 0) {
+        toast.error('Please select a category and at least one helper');
+        return;
+      }
+
+      // Assign first helper as primary
+      for (let i = 0; i < selectedHelpers.length; i++) {
+        await assignHelperToCategory(
+          selectedCategory,
+          selectedHelpers[i],
+          i === 0,
+        );
+      }
+
+      setBulkAssignMode(false);
+      setSelectedHelpers([]);
+      setAssignDialogOpen(false);
+    } catch (error) {
+      console.error('Error in bulk assignment:', error);
+      toast.error('Failed to complete bulk assignment');
+    }
+  };
+
+  const removeHelperFromCategory = async (
+    categoryId: string,
+    helperId: string,
+  ) => {
+    try {
+      const { error } = await supabase
+        .from('category_assignments')
+        .delete()
+        .eq('category_id', categoryId)
+        .eq('helper_id', helperId);
+
+      if (error) throw error;
+
+      toast.success('Helper removed from category');
+      loadData();
+      onAssignmentChange?.();
+    } catch (error) {
+      console.error('Error removing helper:', error);
+      toast.error('Failed to remove helper');
+    }
+  };
+
+  const getHelperWorkloadStatus = (helper: Helper) => {
+    const assignedHours = (helper.assigned_task_count || 0) * 2; // Assume 2 hours per task average
+    const utilizationRate =
+      (assignedHours / helper.available_hours_per_week) * 100;
+
+    if (utilizationRate > 100)
+      return { status: 'overloaded', color: 'text-red-600' };
+    if (utilizationRate > 80)
+      return { status: 'busy', color: 'text-orange-600' };
+    if (utilizationRate > 50)
+      return { status: 'balanced', color: 'text-green-600' };
+    return { status: 'available', color: 'text-blue-600' };
+  };
+
+  const getPhaseIcon = (phase: string) => PHASE_CONFIG[phase]?.icon || '📋';
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Overview Stats */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <Card>
+          <CardContent className="pt-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-gray-500">Total Helpers</p>
+                <p className="text-2xl font-bold">{helpers.length}</p>
+              </div>
+              <Users className="w-8 h-8 text-gray-400" />
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="pt-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-gray-500">Categories</p>
+                <p className="text-2xl font-bold">{categories.length}</p>
+              </div>
+              <div className="flex -space-x-2">
+                {categories.slice(0, 3).map((cat) => (
+                  <div
+                    key={cat.id}
+                    className="w-8 h-8 rounded-full border-2 border-white flex items-center justify-center text-xs"
+                    style={{ backgroundColor: cat.color_hex }}
+                  >
+                    {getPhaseIcon(cat.phase)}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="pt-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-gray-500">Assigned Tasks</p>
+                <p className="text-2xl font-bold">
+                  {workloads.reduce((sum, w) => sum + w.assigned_tasks, 0)}
+                </p>
+              </div>
+              <Check className="w-8 h-8 text-green-500" />
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="pt-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-gray-500">Unassigned</p>
+                <p className="text-2xl font-bold text-orange-600">
+                  {workloads.reduce(
+                    (sum, w) => sum + (w.total_tasks - w.assigned_tasks),
+                    0,
+                  )}
+                </p>
+              </div>
+              <AlertCircle className="w-8 h-8 text-orange-500" />
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Category Assignment Grid */}
+      <Card>
+        <CardHeader>
+          <div className="flex justify-between items-center">
+            <CardTitle>Category Helper Assignments</CardTitle>
+            <Button
+              onClick={() => {
+                setBulkAssignMode(true);
+                setAssignDialogOpen(true);
+              }}
+            >
+              <UserPlus className="w-4 h-4 mr-2" />
+              Bulk Assign
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-4">
+            {workloads.map((workload) => (
+              <div
+                key={workload.category_id}
+                className="border rounded-lg p-4 hover:bg-gray-50 transition-colors"
+              >
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-3">
+                    <div
+                      className="w-10 h-10 rounded-lg flex items-center justify-center text-white"
+                      style={{ backgroundColor: workload.color_hex }}
+                    >
+                      {getPhaseIcon(workload.phase)}
+                    </div>
+                    <div>
+                      <h4 className="font-medium">{workload.category_name}</h4>
+                      <p className="text-sm text-gray-500">
+                        {workload.total_tasks} tasks • {workload.assigned_tasks}{' '}
+                        assigned
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    {/* Progress Bar */}
+                    <div className="w-32">
+                      <Progress
+                        value={
+                          (workload.assigned_tasks /
+                            Math.max(workload.total_tasks, 1)) *
+                          100
+                        }
+                        className="h-2"
+                      />
+                    </div>
+
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        setSelectedCategory(workload.category_id);
+                        setAssignDialogOpen(true);
+                      }}
+                    >
+                      <UserPlus className="w-4 h-4" />
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Assigned Helpers */}
+                <div className="flex items-center gap-2 flex-wrap">
+                  {workload.helpers.length > 0 ? (
+                    workload.helpers.map((helper) => (
+                      <div
+                        key={helper.id}
+                        className="flex items-center gap-2 bg-gray-100 rounded-full pl-1 pr-3 py-1"
+                      >
+                        <Avatar className="w-6 h-6">
+                          <AvatarImage src={helper.avatar_url} />
+                          <AvatarFallback>
+                            {helper.name
+                              .split(' ')
+                              .map((n) => n[0])
+                              .join('')}
+                          </AvatarFallback>
+                        </Avatar>
+                        <span className="text-sm">{helper.name}</span>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() =>
+                            removeHelperFromCategory(
+                              workload.category_id,
+                              helper.id,
+                            )
+                          }
+                          className="h-4 w-4 p-0 ml-1"
+                        >
+                          <X className="w-3 h-3" />
+                        </Button>
+                      </div>
+                    ))
+                  ) : (
+                    <span className="text-sm text-gray-400">
+                      No helpers assigned
+                    </span>
+                  )}
+                </div>
+
+                {/* Unassigned Warning */}
+                {workload.total_tasks > workload.assigned_tasks && (
+                  <div className="mt-2 flex items-center gap-2 text-sm text-orange-600">
+                    <AlertCircle className="w-4 h-4" />
+                    <span>
+                      {workload.total_tasks - workload.assigned_tasks} tasks
+                      need assignment
+                    </span>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Helper Workload Overview */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Helper Workload Distribution</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {helpers.map((helper) => {
+              const workloadStatus = getHelperWorkloadStatus(helper);
+              const assignedCategories = workloads.filter((w) =>
+                w.helpers.some((h) => h.id === helper.id),
+              );
+
+              return (
+                <div key={helper.id} className="border rounded-lg p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-3">
+                      <Avatar>
+                        <AvatarImage src={helper.avatar_url} />
+                        <AvatarFallback>
+                          {helper.name
+                            .split(' ')
+                            .map((n) => n[0])
+                            .join('')}
+                        </AvatarFallback>
+                      </Avatar>
+                      <div>
+                        <h5 className="font-medium">{helper.name}</h5>
+                        <p className="text-sm text-gray-500">{helper.role}</p>
+                      </div>
+                    </div>
+                    <Badge className={cn('', workloadStatus.color)}>
+                      {workloadStatus.status}
+                    </Badge>
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-500">Assigned Tasks:</span>
+                      <span className="font-medium">
+                        {helper.assigned_task_count || 0}
+                      </span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-500">Completed:</span>
+                      <span className="font-medium">
+                        {helper.completed_task_count || 0}
+                      </span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-500">Categories:</span>
+                      <span className="font-medium">
+                        {assignedCategories.length}
+                      </span>
+                    </div>
+                  </div>
+
+                  {assignedCategories.length > 0 && (
+                    <div className="mt-3 pt-3 border-t">
+                      <div className="flex flex-wrap gap-1">
+                        {assignedCategories.map((cat) => (
+                          <div
+                            key={cat.category_id}
+                            className="w-6 h-6 rounded flex items-center justify-center text-xs"
+                            style={{ backgroundColor: cat.color_hex }}
+                            title={cat.category_name}
+                          >
+                            {getPhaseIcon(cat.phase)}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Assignment Dialog */}
+      <Dialog open={assignDialogOpen} onOpenChange={setAssignDialogOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>
+              {bulkAssignMode
+                ? 'Bulk Assign Helpers'
+                : 'Assign Helper to Category'}
+            </DialogTitle>
+            <DialogDescription>
+              {bulkAssignMode
+                ? 'Select multiple helpers to assign to categories'
+                : 'Select a helper to assign to this category'}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            {/* Category Selection (for bulk mode) */}
+            {bulkAssignMode && (
+              <div>
+                <label className="text-sm font-medium mb-2 block">
+                  Select Category
+                </label>
+                <Select
+                  value={selectedCategory || ''}
+                  onValueChange={setSelectedCategory}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Choose a category" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {categories.map((cat) => (
+                      <SelectItem key={cat.id} value={cat.id}>
+                        <div className="flex items-center gap-2">
+                          <div
+                            className="w-4 h-4 rounded"
+                            style={{ backgroundColor: cat.color_hex }}
+                          />
+                          <span>{cat.name}</span>
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            {/* Helper Selection */}
+            <div>
+              <label className="text-sm font-medium mb-2 block">
+                Available Helpers
+              </label>
+              <div className="space-y-2 max-h-[300px] overflow-y-auto">
+                {helpers.map((helper) => {
+                  const workloadStatus = getHelperWorkloadStatus(helper);
+
+                  return (
+                    <label
+                      key={helper.id}
+                      className="flex items-center gap-3 p-3 border rounded-lg hover:bg-gray-50 cursor-pointer"
+                    >
+                      {bulkAssignMode ? (
+                        <Checkbox
+                          checked={selectedHelpers.includes(helper.id)}
+                          onCheckedChange={(checked) => {
+                            if (checked) {
+                              setSelectedHelpers([
+                                ...selectedHelpers,
+                                helper.id,
+                              ]);
+                            } else {
+                              setSelectedHelpers(
+                                selectedHelpers.filter(
+                                  (id) => id !== helper.id,
+                                ),
+                              );
+                            }
+                          }}
+                        />
+                      ) : (
+                        <input
+                          type="radio"
+                          name="helper"
+                          value={helper.id}
+                          onChange={() => setSelectedHelpers([helper.id])}
+                        />
+                      )}
+
+                      <Avatar className="w-8 h-8">
+                        <AvatarImage src={helper.avatar_url} />
+                        <AvatarFallback>
+                          {helper.name
+                            .split(' ')
+                            .map((n) => n[0])
+                            .join('')}
+                        </AvatarFallback>
+                      </Avatar>
+
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium">{helper.name}</span>
+                          <Badge
+                            variant="outline"
+                            className={workloadStatus.color}
+                          >
+                            {workloadStatus.status}
+                          </Badge>
+                        </div>
+                        <p className="text-sm text-gray-500">
+                          {helper.role} • {helper.assigned_task_count || 0}{' '}
+                          tasks assigned
+                        </p>
+                      </div>
+
+                      <div className="text-right">
+                        <p className="text-sm text-gray-500">
+                          {helper.available_hours_per_week}h/week
+                        </p>
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setAssignDialogOpen(false);
+                setBulkAssignMode(false);
+                setSelectedHelpers([]);
+                setSelectedCategory(null);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                if (bulkAssignMode) {
+                  bulkAssignHelpers();
+                } else if (selectedCategory && selectedHelpers[0]) {
+                  assignHelperToCategory(
+                    selectedCategory,
+                    selectedHelpers[0],
+                    true,
+                  );
+                  setAssignDialogOpen(false);
+                  setSelectedHelpers([]);
+                  setSelectedCategory(null);
+                }
+              }}
+              disabled={
+                selectedHelpers.length === 0 ||
+                (bulkAssignMode && !selectedCategory)
+              }
+            >
+              Assign{' '}
+              {selectedHelpers.length > 1
+                ? `${selectedHelpers.length} Helpers`
+                : 'Helper'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}

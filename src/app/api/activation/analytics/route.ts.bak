@@ -1,0 +1,324 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+
+// Rate limiting store (in production, use Redis)
+const rateLimitStore = new Map<string, { count: number; resetTime: number }>();
+
+function checkRateLimit(ip: string, limit: number, windowMs: number): boolean {
+  const now = Date.now();
+  const key = `${ip}:${Math.floor(now / windowMs)}`;
+  
+  if (!rateLimitStore.has(key)) {
+    rateLimitStore.set(key, { count: 1, resetTime: now + windowMs });
+    return true;
+  }
+  
+  const current = rateLimitStore.get(key)!;
+  if (current.count >= limit) {
+    return false;
+  }
+  
+  current.count++;
+  return true;
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    // Rate limiting: 50 requests per minute per IP
+    const ip = request.ip || 'unknown';
+    if (!checkRateLimit(ip, 50, 60000)) {
+      return NextResponse.json(
+        { 
+          success: false, 
+          error: 'Rate limit exceeded',
+          code: 'RATE_LIMIT_EXCEEDED'
+        },
+        { status: 429 }
+      );
+    }
+
+    const supabase = await createClient();
+    
+    // Get current user
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { 
+          success: false, 
+          error: 'Authentication required',
+          code: 'UNAUTHORIZED'
+        },
+        { status: 401 }
+      );
+    }
+
+    // Check if user is admin
+    const { data: profile, error: profileError } = await supabase
+      .from('user_profiles')
+      .select('role, organization_id')
+      .eq('id', user.id)
+      .single();
+
+    if (profileError || !profile || !['admin', 'owner', 'super_admin'].includes(profile.role)) {
+      return NextResponse.json(
+        { 
+          success: false, 
+          error: 'Admin access required',
+          code: 'ACCESS_DENIED'
+        },
+        { status: 403 }
+      );
+    }
+
+    // Parse query parameters
+    const url = new URL(request.url);
+    const days = parseInt(url.searchParams.get('days') || '30');
+    const funnelId = url.searchParams.get('funnel_id');
+
+    // Get funnel analytics for the specified period
+    const endDate = new Date();
+    const startDate = new Date();
+    startDate.setDate(endDate.getDate() - days);
+
+    let analyticsQuery = supabase
+      .from('funnel_analytics')
+      .select('*')
+      .gte('date', startDate.toISOString().split('T')[0])
+      .lte('date', endDate.toISOString().split('T')[0])
+      .order('date', { ascending: true })
+      .order('step_number', { ascending: true });
+
+    if (funnelId) {
+      analyticsQuery = analyticsQuery.eq('funnel_id', funnelId);
+    }
+
+    const { data: analyticsData, error: analyticsError } = await analyticsQuery;
+
+    if (analyticsError) {
+      console.error('Error fetching funnel analytics:', analyticsError);
+      return NextResponse.json(
+        { 
+          success: false, 
+          error: 'Failed to fetch analytics',
+          code: 'FETCH_ERROR'
+        },
+        { status: 500 }
+      );
+    }
+
+    // Get overall activation status distribution
+    const { data: statusDistribution, error: statusError } = await supabase
+      .from('user_activation_status')
+      .select('activation_score, current_step, completed_at')
+      .gte('created_at', startDate.toISOString());
+
+    if (statusError) {
+      console.error('Error fetching status distribution:', statusError);
+    }
+
+    // Calculate metrics
+    const totalUsers = statusDistribution?.length || 0;
+    const completedUsers = statusDistribution?.filter(s => s.completed_at).length || 0;
+    const atRiskUsers = statusDistribution?.filter(s => s.activation_score < 30).length || 0;
+    const activeUsers = statusDistribution?.filter(s => s.activation_score >= 30 && !s.completed_at).length || 0;
+
+    // Group analytics by step for funnel visualization
+    const funnelSteps = analyticsData?.reduce((acc, row) => {
+      if (!acc[row.step_number]) {
+        acc[row.step_number] = {
+          step_number: row.step_number,
+          step_name: row.step_name,
+          total_entered: 0,
+          total_completed: 0,
+          avg_conversion_rate: 0,
+          dates: []
+        };
+      }
+
+      acc[row.step_number].total_entered += row.users_entered;
+      acc[row.step_number].total_completed += row.users_completed;
+      acc[row.step_number].dates.push({
+        date: row.date,
+        users_entered: row.users_entered,
+        users_completed: row.users_completed,
+        conversion_rate: row.conversion_rate
+      });
+
+      return acc;
+    }, {} as Record<number, any>);
+
+    // Calculate average conversion rates
+    Object.values(funnelSteps || {}).forEach((step: any) => {
+      if (step.total_entered > 0) {
+        step.avg_conversion_rate = (step.total_completed / step.total_entered) * 100;
+      }
+    });
+
+    // Get recent drop-offs (users who haven't progressed in 7 days)
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+    const { data: recentDropOffs, error: dropOffError } = await supabase
+      .from('user_activation_status')
+      .select(`
+        user_id,
+        current_step,
+        activation_score,
+        last_activity_at,
+        user_profiles!inner(email, first_name, last_name)
+      `)
+      .lt('last_activity_at', sevenDaysAgo.toISOString())
+      .is('completed_at', null)
+      .lt('activation_score', 80)
+      .order('last_activity_at', { ascending: true })
+      .limit(20);
+
+    if (dropOffError) {
+      console.error('Error fetching drop-offs:', dropOffError);
+    }
+
+    // Calculate daily totals for trend analysis
+    const dailyMetrics = analyticsData?.reduce((acc, row) => {
+      if (!acc[row.date]) {
+        acc[row.date] = {
+          date: row.date,
+          total_new_users: 0,
+          total_completions: 0,
+          total_events: 0
+        };
+      }
+
+      if (row.step_number === 1) {
+        acc[row.date].total_new_users += row.users_completed;
+      }
+
+      acc[row.date].total_completions += row.users_completed;
+      acc[row.date].total_events += row.users_entered;
+
+      return acc;
+    }, {} as Record<string, any>);
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        overview: {
+          total_users: totalUsers,
+          completed_users: completedUsers,
+          completion_rate: totalUsers > 0 ? (completedUsers / totalUsers) * 100 : 0,
+          at_risk_users: atRiskUsers,
+          active_users: activeUsers,
+          period_days: days
+        },
+        funnel_steps: Object.values(funnelSteps || {}),
+        daily_metrics: Object.values(dailyMetrics || {}),
+        recent_drop_offs: recentDropOffs || [],
+        raw_analytics: analyticsData || []
+      }
+    });
+
+  } catch (error) {
+    console.error('Error in activation analytics API:', error);
+    return NextResponse.json(
+      { 
+        success: false, 
+        error: 'Internal server error',
+        code: 'INTERNAL_ERROR'
+      },
+      { status: 500 }
+    );
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    // Rate limiting: 10 requests per minute per IP (for generating analytics)
+    const ip = request.ip || 'unknown';
+    if (!checkRateLimit(ip, 10, 60000)) {
+      return NextResponse.json(
+        { 
+          success: false, 
+          error: 'Rate limit exceeded',
+          code: 'RATE_LIMIT_EXCEEDED'
+        },
+        { status: 429 }
+      );
+    }
+
+    const supabase = await createClient();
+    
+    // Get current user
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { 
+          success: false, 
+          error: 'Authentication required',
+          code: 'UNAUTHORIZED'
+        },
+        { status: 401 }
+      );
+    }
+
+    // Check if user is admin
+    const { data: profile, error: profileError } = await supabase
+      .from('user_profiles')
+      .select('role')
+      .eq('id', user.id)
+      .single();
+
+    if (profileError || !profile || !['admin', 'owner', 'super_admin'].includes(profile.role)) {
+      return NextResponse.json(
+        { 
+          success: false, 
+          error: 'Admin access required',
+          code: 'ACCESS_DENIED'
+        },
+        { status: 403 }
+      );
+    }
+
+    // Parse request body
+    const body = await request.json();
+    const { date } = body;
+
+    // Generate analytics for the specified date (default to today)
+    const targetDate = date ? new Date(date) : new Date();
+    const targetDateString = targetDate.toISOString().split('T')[0];
+
+    // Call the database function to generate analytics
+    const { error: generateError } = await supabase.rpc('generate_daily_funnel_analytics', {
+      p_date: targetDateString
+    });
+
+    if (generateError) {
+      console.error('Error generating analytics:', generateError);
+      return NextResponse.json(
+        { 
+          success: false, 
+          error: 'Failed to generate analytics',
+          code: 'GENERATION_ERROR'
+        },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: `Analytics generated for ${targetDateString}`,
+      data: {
+        date: targetDateString
+      }
+    });
+
+  } catch (error) {
+    console.error('Error in generate analytics API:', error);
+    return NextResponse.json(
+      { 
+        success: false, 
+        error: 'Internal server error',
+        code: 'INTERNAL_ERROR'
+      },
+      { status: 500 }
+    );
+  }
+}

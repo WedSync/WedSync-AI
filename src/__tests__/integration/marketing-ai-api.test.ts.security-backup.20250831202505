@@ -1,0 +1,352 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { getServerSession } from 'next-auth';
+import { POST as aiOptimizationPost, GET as aiOptimizationGet } from '@/app/api/marketing/ai-optimization/route';
+import { POST as attributionPost, GET as attributionGet } from '@/app/api/marketing/attribution-modeling/route';
+import { POST as behavioralPost, GET as behavioralGet } from '@/app/api/marketing/behavioral-segmentation/route';
+
+// Mock dependencies
+jest.mock('next-auth', () => ({
+  getServerSession: jest.fn()
+}));
+jest.mock('@/lib/auth', () => ({
+  authOptions: {}
+jest.mock('@/lib/ratelimit', () => ({
+  rateLimitService: {
+    checkAIOptimization: jest.fn().mockResolvedValue({ allowed: true }),
+    checkAttributionAnalysis: jest.fn().mockResolvedValue({ allowed: true }),
+    checkBehavioralAnalysis: jest.fn().mockResolvedValue({ allowed: true })
+  }
+jest.mock('@/lib/services/ai-content-generator', () => ({
+  AIContentGenerator: {
+    generateEmailSubjectLines: jest.fn().mockResolvedValue({
+      variants: [
+        {
+          text: 'Your Wedding Photos Are Ready - See the Magic! ✨',
+          predictedOpenRate: 0.42,
+          aiConfidence: 0.89,
+          personalizedElements: ['wedding_context', 'emotional_trigger']
+        }
+      ],
+      aiConfidence: 0.89,
+      expectedPerformance: 0.42
+    }),
+    optimizeEmailContent: jest.fn().mockResolvedValue({
+      optimizedHTML: '<p>Optimized content</p>',
+      optimizedPlainText: 'Optimized content',
+      keyChanges: ['Added personalization'],
+      expectedLift: 0.23,
+      personalizationScore: 0.85
+    predictCampaignPerformance: jest.fn().mockResolvedValue({
+      predictedOpenRate: 0.34,
+      predictedClickRate: 0.08,
+      predictedConversionRate: 0.12,
+      confidenceScore: 0.87,
+      recommendedSendTime: new Date(),
+      audienceSegmentScore: 0.79
+    optimizeABTestAutomatically: jest.fn().mockResolvedValue({
+      winningVariant: 'variant_b',
+      confidence: 0.95,
+      improvementRecommendations: ['Use variant_b approach'],
+      expectedLift: 0.18
+    })
+jest.mock('@/lib/services/attribution-modeling-service', () => ({
+  AttributionModelingService: {
+    getInstance: jest.fn().mockReturnValue({
+      calculateMultiTouchAttribution: jest.fn().mockResolvedValue({
+        modelType: 'custom_wedding_industry',
+        touchpoints: [
+          {
+            touchpointId: 'tp1',
+            attributionWeight: 0.4,
+            channelSource: 'email',
+            touchpointValue: 50,
+            timestamp: new Date()
+          }
+        ],
+        totalTouchpoints: 1,
+        attributedValue: 50
+      }),
+      calculateLifetimeValue: jest.fn().mockResolvedValue({
+        userId: 'user123',
+        currentLTV: 1200,
+        predictedLTV: 2400,
+        customerLifespan: 18,
+        churnProbability: 0.15,
+        confidenceScore: 0.84
+      analyzeConversionPaths: jest.fn().mockResolvedValue([
+          pathSequence: ['email', 'viral_invitation', 'conversion'],
+          frequency: 12,
+          conversionRate: 0.18,
+          avgTimeToConversion: 7,
+          avgPathValue: 450
+      ]),
+      trackTouchpoint: jest.fn().mockResolvedValue('tp_new_123'),
+      optimizeCampaignROI: jest.fn().mockResolvedValue([
+          campaignId: 'camp1',
+          currentROI: 4.4,
+          projectedROI: 5.2,
+          recommendation: 'increase',
+          currentSpend: 500,
+          optimizedSpend: 650
+      ])
+jest.mock('@/lib/services/behavioral-segmentation-service', () => ({
+  BehavioralSegmentationService: {
+      generateBehaviorProfile: jest.fn().mockResolvedValue({
+        engagementScore: 78,
+        personalityTraits: ['collaborative', 'detail_oriented'],
+        preferredChannels: ['email', 'in_app'],
+        viralPotential: 0.65,
+        nextBestActions: [
+          { action: 'Send personalized email', priority: 'high', expectedImpact: 0.15 }
+        ]
+      createDynamicSegments: jest.fn().mockResolvedValue([
+          segmentId: 'seg_001',
+          name: 'High-Value Photographers',
+          description: 'Photographers with high LTV and viral potential',
+          userCount: 234,
+          criteria: { minLifetimeValue: 2000, minViralPotential: 0.6 },
+          performanceMetrics: { avgEngagement: 0.78, conversionRate: 0.15 }
+      predictLifecycleTransitions: jest.fn().mockResolvedValue({
+        currentStage: 'active',
+        predictedNextStage: 'expanding',
+        probability: 0.72,
+        timeToTransition: 30,
+        confidence: 0.85,
+        recommendations: [
+          { action: 'Offer premium features', impact: 'high', effort: 'low' }
+      calculateRealTimeEngagementScore: jest.fn().mockResolvedValue({
+        currentScore: 78,
+        trend: 'increasing',
+        factors: [
+          { factor: 'recent_login', weight: 0.2, impact: 'positive' }
+          { action: 'Increase communication frequency', expectedImpact: 0.1, priority: 'medium' }
+        lastUpdated: new Date()
+      performPredictiveSegmentation: jest.fn().mockResolvedValue({
+        segments: [
+            segmentId: 'ml_seg_1',
+            name: 'High-Value Growth Potential',
+            size: 150,
+            characteristics: ['high_engagement'],
+            predictedBehaviors: ['likely_to_upgrade']
+        model: {
+          accuracy: 0.87,
+          precision: 0.84,
+          recall: 0.89
+      })
+const mockGetServerSession = getServerSession as jest.MockedFunction<typeof getServerSession>;
+describe('Marketing AI API Integration Tests', () => {
+  const mockSession = {
+    user: { id: 'user123', email: 'test@example.com' }
+  };
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockGetServerSession.mockResolvedValue(mockSession);
+  });
+  describe('AI Optimization API (/api/marketing/ai-optimization)', () => {
+    describe('POST requests', () => {
+      it('should generate subject lines successfully', async () => {
+        const requestBody = {
+          action: 'generate_subject_lines',
+          campaignContext: {
+            campaignType: 'viral_invitation',
+            recipientType: 'supplier',
+            recipientRole: 'florist',
+            goal: 'viral_growth',
+            season: 'summer',
+            relationship: 'cross_supplier'
+          },
+          count: 3
+        };
+        const request = new NextRequest('http://localhost:3000/api/marketing/ai-optimization', {
+          method: 'POST',
+          body: JSON.stringify(requestBody),
+          headers: { 'Content-Type': 'application/json' }
+        });
+        const response = await aiOptimizationPost(request);
+        const responseData = await response.json();
+        expect(response.status).toBe(200);
+        expect(responseData.success).toBe(true);
+        expect(responseData.data.action).toBe('generate_subject_lines');
+        expect(responseData.data.subjectLines).toBeDefined();
+        expect(responseData.data.subjectLines.variants).toHaveLength(1);
+      });
+      it('should optimize content successfully', async () => {
+          action: 'optimize_content',
+          contentData: {
+            baseContent: 'Hello, we have some news to share...',
+            personalizationData: {
+              userType: 'photographer',
+              businessType: 'Wedding Photography',
+              experienceLevel: 'expert',
+              recentActivity: ['completed_wedding']
+            },
+            campaignGoal: 'conversion'
+        expect(responseData.data.action).toBe('optimize_content');
+        expect(responseData.data.optimizedContent).toBeDefined();
+        expect(responseData.data.optimizedContent.expectedLift).toBeGreaterThan(0);
+      it('should handle unauthorized requests', async () => {
+        mockGetServerSession.mockResolvedValue(null);
+          campaignContext: { campaignType: 'viral_invitation' }
+        expect(response.status).toBe(401);
+        expect(responseData.error).toBe('Unauthorized');
+      it('should handle validation errors', async () => {
+          action: 'invalid_action',
+          campaignContext: { invalidField: 'test' }
+        expect(response.status).toBe(400);
+      it('should handle rate limiting', async () => {
+        const { rateLimitService } = require('@/lib/ratelimit');
+        rateLimitService.checkAIOptimization.mockResolvedValue({ 
+          allowed: false, 
+          resetTime: Date.now() + 60000 
+        expect(response.status).toBe(429);
+        expect(responseData.error).toContain('rate limit exceeded');
+    });
+    describe('GET requests', () => {
+      it('should return AI capabilities and usage stats', async () => {
+        const request = new NextRequest('http://localhost:3000/api/marketing/ai-optimization');
+        const response = await aiOptimizationGet(request);
+        expect(responseData.data.capabilities).toBeDefined();
+        expect(responseData.data.usage).toBeDefined();
+        expect(responseData.data.rateLimits).toBeDefined();
+  describe('Attribution Modeling API (/api/marketing/attribution-modeling)', () => {
+      it('should calculate multi-touch attribution', async () => {
+          action: 'calculate_multi_touch',
+          userId: 'user123',
+          modelConfig: {
+            modelType: 'custom_wedding_industry',
+            lookbackWindow: 90,
+            includeViewThrough: true,
+            viralAttributionBonus: 1.2
+        const request = new NextRequest('http://localhost:3000/api/marketing/attribution-modeling', {
+        const response = await attributionPost(request);
+        expect(responseData.data.action).toBe('calculate_multi_touch');
+        expect(responseData.data.attribution).toBeDefined();
+        expect(responseData.data.attribution.modelType).toBe('custom_wedding_industry');
+      it('should calculate lifetime value', async () => {
+          action: 'calculate_ltv',
+          userId: 'user123'
+        expect(responseData.data.action).toBe('calculate_ltv');
+        expect(responseData.data.ltv).toBeDefined();
+        expect(responseData.data.ltv.predictedLTV).toBeGreaterThan(0);
+      it('should track touchpoints', async () => {
+          action: 'track_touchpoint',
+          touchpointData: {
+            userId: 'user123',
+            touchpointType: 'email_click',
+            campaignId: 'camp456',
+            touchpointValue: 75
+        expect(responseData.data.action).toBe('track_touchpoint');
+        expect(responseData.data.touchpointId).toBe('tp_new_123');
+      it('should optimize campaign ROI', async () => {
+          action: 'optimize_roi',
+          campaignIds: ['camp1', 'camp2']
+        expect(responseData.data.action).toBe('optimize_roi');
+        expect(responseData.data.optimizations).toBeDefined();
+        expect(Array.isArray(responseData.data.optimizations)).toBe(true);
+      it('should return user attribution data', async () => {
+        const request = new NextRequest('http://localhost:3000/api/marketing/attribution-modeling?action=get_user_attribution&userId=user123');
+        const response = await attributionGet(request);
+      it('should return capabilities when no action specified', async () => {
+        const request = new NextRequest('http://localhost:3000/api/marketing/attribution-modeling');
+  describe('Behavioral Segmentation API (/api/marketing/behavioral-segmentation)', () => {
+      it('should generate behavior profile', async () => {
+          action: 'generate_profile',
+        const request = new NextRequest('http://localhost:3000/api/marketing/behavioral-segmentation', {
+        const response = await behavioralPost(request);
+        expect(responseData.data.action).toBe('generate_profile');
+        expect(responseData.data.profile).toBeDefined();
+        expect(responseData.data.profile.userId).toBe('user123');
+        expect(responseData.data.profile.engagementScore).toBeGreaterThan(0);
+      it('should create dynamic segments', async () => {
+          action: 'create_segments',
+          segmentationConfig: {
+            includePredictive: true,
+            minSegmentSize: 50,
+            maxSegments: 10
+        expect(responseData.data.action).toBe('create_segments');
+        expect(responseData.data.segments).toBeDefined();
+        expect(Array.isArray(responseData.data.segments)).toBe(true);
+      it('should predict lifecycle transitions', async () => {
+          action: 'predict_transitions',
+        expect(responseData.data.action).toBe('predict_transitions');
+        expect(responseData.data.prediction).toBeDefined();
+        expect(responseData.data.prediction.predictedNextStage).toBe('expanding');
+      it('should calculate engagement scores', async () => {
+          action: 'calculate_engagement',
+          engagementConfig: {
+            timeframe: 7,
+            includeFactors: true,
+            includeRecommendations: true
+        expect(responseData.data.action).toBe('calculate_engagement');
+        expect(responseData.data.engagement).toBeDefined();
+        expect(responseData.data.engagement.currentScore).toBeGreaterThan(0);
+      it('should perform predictive segmentation', async () => {
+          action: 'perform_segmentation'
+        expect(responseData.data.action).toBe('perform_segmentation');
+        expect(responseData.data.segmentation).toBeDefined();
+        expect(responseData.data.segmentation.model.accuracy).toBeGreaterThan(0.5);
+      it('should return user profile', async () => {
+        const request = new NextRequest('http://localhost:3000/api/marketing/behavioral-segmentation?action=get_user_profile&userId=user123');
+        const response = await behavioralGet(request);
+        const request = new NextRequest('http://localhost:3000/api/marketing/behavioral-segmentation');
+        expect(responseData.data.features).toBeDefined();
+  describe('Error Handling Across All APIs', () => {
+    it('should handle service errors gracefully', async () => {
+      const { AIContentGenerator } = require('@/lib/services/ai-content-generator');
+      AIContentGenerator.generateEmailSubjectLines.mockRejectedValue(
+        new Error('OpenAI service unavailable')
+      );
+      const requestBody = {
+        action: 'generate_subject_lines',
+        campaignContext: { campaignType: 'viral_invitation' }
+      };
+      const request = new NextRequest('http://localhost:3000/api/marketing/ai-optimization', {
+        method: 'POST',
+        body: JSON.stringify(requestBody),
+        headers: { 'Content-Type': 'application/json' }
+      const response = await aiOptimizationPost(request);
+      const responseData = await response.json();
+      expect(response.status).toBe(500);
+      expect(responseData.error).toBe('AI optimization failed');
+      expect(responseData.details).toContain('OpenAI service unavailable');
+    it('should validate required parameters across all endpoints', async () => {
+      const endpoints = [
+          handler: attributionPost,
+          body: { action: 'calculate_multi_touch' } // Missing userId
+        },
+          handler: behavioralPost,
+          body: { action: 'generate_profile' } // Missing userId
+          handler: aiOptimizationPost,
+          body: { action: 'generate_subject_lines' } // Missing campaignContext
+      ];
+      for (const { handler, body } of endpoints) {
+        const request = new NextRequest('http://localhost:3000/api/test', {
+          body: JSON.stringify(body),
+        const response = await handler(request);
+      }
+    it('should handle malformed JSON requests', async () => {
+        body: '{ invalid json }',
+      expect(response.status).toBe(400);
+  describe('Security and Performance', () => {
+    it('should include security headers in responses', async () => {
+      
+      expect(response.headers.get('Content-Type')).toContain('application/json');
+    it('should handle concurrent requests efficiently', async () => {
+      const requests = Array.from({ length: 5 }, () => {
+          userId: `user${Math.random()}`
+        return new NextRequest('http://localhost:3000/api/marketing/behavioral-segmentation', {
+      const startTime = Date.now();
+      const responses = await Promise.all(requests.map(req => behavioralPost(req)));
+      const executionTime = Date.now() - startTime;
+      responses.forEach(response => {
+      expect(executionTime).toBeLessThan(5000); // All should complete within 5 seconds
+    it('should sanitize user input in responses', async () => {
+        campaignContext: {
+          campaignType: 'viral_invitation',
+          recipientRole: '<script>alert("xss")</script>florist'
+      if (response.status === 200) {
+        const responseStr = JSON.stringify(responseData);
+        expect(responseStr).not.toContain('<script>');
+        expect(responseStr).not.toContain('alert(');
+});

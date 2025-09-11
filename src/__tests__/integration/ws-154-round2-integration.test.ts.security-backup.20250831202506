@@ -1,0 +1,369 @@
+/**
+ * WS-154 ROUND 2 INTEGRATION TESTS
+ * Team C - Advanced Conflict Resolution & Integration Testing
+ * Tests all Round 2 deliverables: AI prediction, smart resolution, analytics, family grouping
+ */
+
+import { describe, test, expect, beforeAll, afterAll } from '@jest/globals'
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { createClient } from '@/lib/supabase/client'
+import { AIConflictPredictionService } from '@/lib/services/ai-conflict-prediction-service'
+import { SmartResolutionService } from '@/lib/services/smart-resolution-service'
+import { ConflictSeverityAnalyticsService } from '@/lib/services/conflict-severity-analytics-service'
+import { FamilyGroupDetectionService } from '@/lib/services/family-group-detection-service'
+import { RelationshipConflictValidator } from '@/lib/services/relationship-conflict-validator'
+describe('WS-154 Round 2: Advanced Conflict Resolution Integration', () => {
+  let supabase: any
+  let testCoupleId: string
+  let testGuestIds: string[]
+  let aiPredictionService: AIConflictPredictionService
+  let smartResolutionService: SmartResolutionService
+  let analyticsService: ConflictSeverityAnalyticsService
+  let familyDetectionService: FamilyGroupDetectionService
+  let conflictValidator: RelationshipConflictValidator
+  beforeAll(async () => {
+    supabase = createClient()
+    
+    // Initialize services
+    aiPredictionService = new AIConflictPredictionService()
+    smartResolutionService = new SmartResolutionService()
+    analyticsService = new ConflictSeverityAnalyticsService()
+    familyDetectionService = new FamilyGroupDetectionService()
+    conflictValidator = new RelationshipConflictValidator()
+    // Create test data
+    await setupTestData()
+  })
+  afterAll(async () => {
+    await cleanupTestData()
+  describe('AI-Powered Conflict Prediction', () => {
+    test('should predict conflicts with >90% confidence for high-risk scenarios', async () => {
+      const prediction = await aiPredictionService.predictConflicts(
+        testCoupleId,
+        testGuestIds,
+        { 
+          predictionDepth: 'deep_learning',
+          includeFamily: true,
+          historicalWeight: 0.8
+        }
+      )
+      expect(prediction).toBeDefined()
+      expect(prediction.confidence_score).toBeGreaterThan(0.9) // >90% accuracy requirement
+      expect(prediction.predictions.length).toBeGreaterThan(0)
+      expect(prediction.risk_score).toBeLessThan(100)
+      expect(prediction.prevention_strategies.length).toBeGreaterThan(0)
+      expect(prediction.learning_insights.length).toBeGreaterThan(0)
+      // Validate prediction structure
+      prediction.predictions.forEach(pred => {
+        expect(pred.guest_1_id).toBeDefined()
+        expect(pred.guest_2_id).toBeDefined()
+        expect(pred.prediction_confidence).toBeGreaterThan(0)
+        expect(pred.likelihood_percentage).toBeGreaterThanOrEqual(0)
+        expect(pred.likelihood_percentage).toBeLessThanOrEqual(100)
+        expect(['incompatible', 'avoid', 'prefer_apart', 'neutral', 'prefer_together'])
+          .toContain(pred.predicted_severity)
+      })
+    })
+    test('should provide historical basis for predictions', async () => {
+        testGuestIds.slice(0, 4),
+          predictionDepth: 'advanced',
+          historicalWeight: 0.9
+      const highConfidencePredictions = prediction.predictions.filter(p => p.prediction_confidence > 0.7)
+      
+      highConfidencePredictions.forEach(pred => {
+        expect(pred.historical_basis).toBeDefined()
+        expect(pred.pattern_indicators.length).toBeGreaterThan(0)
+        expect(pred.suggested_preventive_action).toBeDefined()
+    test('should identify family group patterns in predictions', async () => {
+          predictionDepth: 'comprehensive'
+      const familyPatterns = prediction.predictions.filter(pred =>
+        pred.pattern_indicators.some(indicator => 
+          indicator.indicator_type === 'family_dynamics'
+        )
+      expect(familyPatterns.length).toBeGreaterThan(0)
+      familyPatterns.forEach(pattern => {
+        const familyIndicator = pattern.pattern_indicators.find(i => i.indicator_type === 'family_dynamics')
+        expect(familyIndicator?.strength).toBeGreaterThan(0)
+        expect(familyIndicator?.contributing_factors).toBeDefined()
+  describe('Smart Resolution Suggestions', () => {
+    test('should generate automated resolution alternatives', async () => {
+      // First get conflict data
+      const conflicts = await conflictValidator.validateSeatingConflict(
+        testGuestIds
+      const resolutions = await smartResolutionService.generateSmartResolutions(
+        conflicts,
+        {
+          preferAutomated: true,
+          maxGuestRelocations: 5,
+          allowNewTables: true
+      expect(resolutions.length).toBeGreaterThan(0)
+      expect(resolutions.length).toBeLessThanOrEqual(5) // Should limit results
+      // Test resolution quality
+      resolutions.forEach(resolution => {
+        expect(resolution.resolution_id).toBeDefined()
+        expect(resolution.confidence_score).toBeGreaterThan(0)
+        expect(resolution.estimated_success_rate).toBeGreaterThan(0)
+        expect(['fully_automated', 'semi_automated', 'manual_guidance'])
+          .toContain(resolution.automation_level)
+        expect(resolution.suggested_arrangements.length).toBeGreaterThan(0)
+    test('should provide multiple resolution strategies with different automation levels', async () => {
+      const prediction = await aiPredictionService.predictConflicts(testCoupleId, testGuestIds)
+        prediction,
+        { preferAutomated: false } // Allow all automation levels
+      const automationLevels = new Set(resolutions.map(r => r.automation_level))
+      expect(automationLevels.size).toBeGreaterThan(1) // Multiple automation levels
+      // Test execution steps
+        expect(resolution.execution_steps.length).toBeGreaterThan(0)
+        expect(resolution.impact_analysis).toBeDefined()
+        expect(resolution.fallback_options.length).toBeGreaterThan(0)
+        // Validate execution steps
+        resolution.execution_steps.forEach(step => {
+          expect(step.step_number).toBeGreaterThan(0)
+          expect(step.description).toBeDefined()
+          expect(step.estimated_duration_minutes).toBeGreaterThan(0)
+          expect(['low', 'medium', 'high']).toContain(step.risk_level)
+        })
+    test('should rank solutions by effectiveness and automation level', async () => {
+      const conflicts = await conflictValidator.validateSeatingConflict(testCoupleId, testGuestIds.slice(0, 6))
+        { preferAutomated: true }
+      // Verify ranking - higher effectiveness should come first
+      for (let i = 0; i < resolutions.length - 1; i++) {
+        const current = resolutions[i]
+        const next = resolutions[i + 1]
+        
+        const currentScore = current.confidence_score * current.estimated_success_rate
+        const nextScore = next.confidence_score * next.estimated_success_rate
+        expect(currentScore).toBeGreaterThanOrEqual(nextScore)
+      }
+  describe('Conflict Severity Analytics', () => {
+    test('should provide comprehensive severity breakdown analysis', async () => {
+      const analytics = await analyticsService.analyzeSeverityPatterns(
+          analysisScope: 'comprehensive',
+          timeRangeDays: 90,
+          includePredictions: true,
+          detailLevel: 'detailed'
+      expect(analytics).toBeDefined()
+      expect(analytics.analytics_id).toBeDefined()
+      expect(['minimal', 'low', 'moderate', 'high', 'severe', 'critical'])
+        .toContain(analytics.overall_conflict_risk)
+      // Test severity breakdown
+      const breakdown = analytics.severity_breakdown
+      expect(breakdown.total_relationships).toBeGreaterThan(0)
+      expect(breakdown.severity_distribution_score).toBeGreaterThanOrEqual(0)
+      expect(breakdown.severity_distribution_score).toBeLessThanOrEqual(100)
+      // Percentages should sum to 100
+      const totalPercentage = breakdown.incompatible_percentage + 
+                            breakdown.avoid_percentage + 
+                            breakdown.prefer_apart_percentage + 
+                            breakdown.neutral_percentage + 
+                            breakdown.prefer_together_percentage
+      expect(Math.abs(totalPercentage - 100)).toBeLessThan(5) // Allow small rounding errors
+    test('should detect relationship patterns with statistical accuracy', async () => {
+          focusAreas: ['severity_patterns', 'relationship_dynamics'],
+          detailLevel: 'expert'
+      expect(analytics.relationship_patterns.length).toBeGreaterThan(0)
+      // Test pattern quality
+      analytics.relationship_patterns.forEach(pattern => {
+        expect(pattern.pattern_id).toBeDefined()
+        expect(['family_cluster', 'social_group', 'generational_gap', 'side_division', 'professional_network'])
+          .toContain(pattern.pattern_type)
+        expect(pattern.guest_count).toBeGreaterThan(0)
+        expect(pattern.pattern_strength).toBeGreaterThanOrEqual(0)
+        expect(pattern.pattern_strength).toBeLessThanOrEqual(1)
+        expect(pattern.impact_assessment).toBeDefined()
+        // Test impact assessment
+        const impact = pattern.impact_assessment
+        expect(['low', 'medium', 'high', 'extreme']).toContain(impact.resolution_difficulty)
+        expect(impact.success_probability_with_intervention).toBeGreaterThan(
+          impact.success_probability_without_intervention
+    test('should generate predictive insights with actionable recommendations', async () => {
+          focusAreas: ['risk_assessment', 'mitigation_planning']
+      expect(analytics.predictive_insights.length).toBeGreaterThan(0)
+      expect(analytics.risk_factors.length).toBeGreaterThan(0)
+      expect(analytics.mitigation_recommendations.length).toBeGreaterThan(0)
+      // Test insights quality
+      analytics.predictive_insights.forEach(insight => {
+        expect(insight.confidence_score).toBeGreaterThan(0)
+        expect(['low', 'medium', 'high', 'critical']).toContain(insight.urgency_level)
+        expect(insight.recommended_actions.length).toBeGreaterThan(0)
+        expect(insight.business_impact).toBeDefined()
+      // Test mitigation recommendations
+      analytics.mitigation_recommendations.forEach(rec => {
+        expect(['immediate', 'high', 'medium', 'low']).toContain(rec.priority)
+        expect(rec.implementation_steps.length).toBeGreaterThan(0)
+        expect(rec.success_metrics.length).toBeGreaterThan(0)
+        expect(rec.estimated_impact).toBeDefined()
+  describe('Family Group Detection', () => {
+    test('should automatically detect family and social groups', async () => {
+      const detection = await familyDetectionService.detectFamilyGroups(
+          detectionSensitivity: 'balanced',
+          minimumGroupSize: 3,
+          prioritizeFamilyConnections: true
+      expect(detection).toBeDefined()
+      expect(detection.detected_groups.length).toBeGreaterThan(0)
+      expect(detection.confidence_score).toBeGreaterThan(0.5)
+      expect(detection.total_guests_grouped).toBeGreaterThan(0)
+      // Test group quality
+      detection.detected_groups.forEach(group => {
+        expect(group.group_id).toBeDefined()
+        expect(['nuclear_family', 'extended_family', 'friend_circle', 'professional_group', 'plus_one_cluster'])
+          .toContain(group.group_type)
+        expect(['bride', 'groom', 'neutral']).toContain(group.primary_side)
+        expect(group.guest_members.length).toBeGreaterThanOrEqual(2)
+        expect(group.cohesion_strength).toBeGreaterThanOrEqual(0)
+        expect(group.cohesion_strength).toBeLessThanOrEqual(1)
+        expect(['high', 'medium', 'low']).toContain(group.priority_level)
+    test('should analyze group dynamics and seating preferences', async () => {
+        { includeWeakConnections: false }
+      // Test group dynamics
+        expect(group.group_dynamics).toBeDefined()
+        expect(group.group_dynamics.internal_stability).toBeGreaterThanOrEqual(0)
+        expect(group.group_dynamics.internal_stability).toBeLessThanOrEqual(1)
+        expect(['hierarchical', 'consensus', 'independent', 'chaotic'])
+          .toContain(group.group_dynamics.decision_making_style)
+        // Test seating preferences
+        expect(group.seating_preferences).toBeDefined()
+        expect(group.seating_preferences.preferred_table_size).toBeGreaterThan(0)
+        expect(['clustered', 'mixed', 'separated', 'flexible'])
+          .toContain(group.seating_preferences.seating_arrangement)
+        // Test relationship matrix
+        expect(group.relationship_matrix).toBeDefined()
+        expect(group.relationship_matrix.conflict_density).toBeGreaterThanOrEqual(0)
+        expect(group.relationship_matrix.conflict_density).toBeLessThanOrEqual(1)
+    test('should provide grouping recommendations for optimization', async () => {
+        { detectionSensitivity: 'aggressive' }
+      if (detection.recommendations.length > 0) {
+        detection.recommendations.forEach(rec => {
+          expect(rec.recommendation_id).toBeDefined()
+          expect(['merge_groups', 'split_group', 'reassign_member', 'create_bridge', 'isolate_conflict'])
+            .toContain(rec.recommendation_type)
+          expect(rec.expected_improvement).toBeGreaterThan(0)
+          expect(rec.success_probability).toBeGreaterThan(0)
+          expect(['easy', 'moderate', 'complex']).toContain(rec.implementation_difficulty)
+  describe('Cross-Service Integration', () => {
+    test('should integrate AI prediction with smart resolution', async () => {
+      // Get AI predictions
+      const predictions = await aiPredictionService.predictConflicts(
+        testGuestIds.slice(0, 6)
+      // Use predictions for smart resolution
+        predictions,
+      // Validate that resolutions address the predicted conflicts
+      const highRiskPredictions = predictions.predictions.filter(p => p.likelihood_percentage > 70)
+      if (highRiskPredictions.length > 0) {
+        const hasHighRiskResolution = resolutions.some(r => 
+          r.implementation_difficulty === 'easy' && r.automation_level === 'fully_automated'
+        expect(hasHighRiskResolution).toBe(true)
+    test('should correlate family groups with conflict patterns', async () => {
+      // Detect family groups
+      const familyGroups = await familyDetectionService.detectFamilyGroups(testCoupleId)
+      // Get conflict analytics
+      const analytics = await analyticsService.analyzeSeverityPatterns(testCoupleId)
+      // Find correlation between family patterns and conflict patterns
+      const familyPatterns = analytics.relationship_patterns.filter(p => 
+        p.pattern_type === 'family_cluster'
+      const familyGroupsWithConflicts = familyGroups.detected_groups.filter(g => 
+        g.conflict_potential > 0.3
+      // Should have some correlation
+      if (familyGroupsWithConflicts.length > 0 && familyPatterns.length > 0) {
+        expect(familyPatterns.some(p => p.internal_conflict_rate > 0.2)).toBe(true)
+    test('should maintain >90% prediction accuracy across all services', async () => {
+      // Test prediction accuracy with multiple services
+      const predictions = await aiPredictionService.predictConflicts(testCoupleId, testGuestIds)
+      const familyDetection = await familyDetectionService.detectFamilyGroups(testCoupleId)
+      // Validate accuracy metrics
+      expect(predictions.confidence_score).toBeGreaterThanOrEqual(0.9) // >90% requirement
+      expect(familyDetection.confidence_score).toBeGreaterThan(0.7)
+      expect(familyDetection.group_quality_score).toBeGreaterThan(60)
+      // Cross-validate predictions with analytics
+      if (analytics.predictive_insights.length > 0) {
+        const avgInsightConfidence = analytics.predictive_insights.reduce(
+          (sum, insight) => sum + insight.confidence_score, 0
+        ) / analytics.predictive_insights.length
+        expect(avgInsightConfidence).toBeGreaterThan(0.7)
+  describe('Performance and Scalability', () => {
+    test('should complete analysis within acceptable time limits', async () => {
+      const startTime = Date.now()
+      const [predictions, resolution, analytics, familyGroups] = await Promise.all([
+        aiPredictionService.predictConflicts(testCoupleId, testGuestIds.slice(0, 8)),
+        smartResolutionService.generateSmartResolutions(testCoupleId, { conflicts: [], has_conflicts: false, severity_score: 0, resolution_suggestions: [], performance_metrics: { validation_time_ms: 0, queries_executed: 0, cache_hits: 0 } }),
+        analyticsService.analyzeSeverityPatterns(testCoupleId),
+        familyDetectionService.detectFamilyGroups(testCoupleId)
+      ])
+      const totalTime = Date.now() - startTime
+      // Should complete within 30 seconds for moderate dataset
+      expect(totalTime).toBeLessThan(30000)
+      // Individual service performance requirements
+      expect(predictions.learning_insights).toBeDefined()
+      expect(familyGroups.processing_metrics.processing_time_ms).toBeLessThan(10000) // 10 seconds
+      expect(analytics.performance_metrics.processing_time_ms).toBeLessThan(15000) // 15 seconds
+    test('should handle cache efficiently across services', async () => {
+      // First call - cache miss
+      const firstPrediction = await aiPredictionService.predictConflicts(testCoupleId, testGuestIds.slice(0, 4))
+      // Second call - should hit cache
+      const secondPrediction = await aiPredictionService.predictConflicts(testCoupleId, testGuestIds.slice(0, 4))
+      expect(firstPrediction.confidence_score).toBe(secondPrediction.confidence_score)
+      // Test cache stats
+      const cacheStats = aiPredictionService.getCacheStats()
+      expect(cacheStats.predictions).toBeGreaterThanOrEqual(0)
+  // Helper functions for test setup
+  async function setupTestData() {
+    // Create test couple
+    const { data: couple, error: coupleError } = await supabase
+      .from('couples')
+      .insert({
+        bride_first_name: 'Test',
+        bride_last_name: 'Bride',
+        groom_first_name: 'Test',
+        groom_last_name: 'Groom',
+        wedding_date: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString() // 90 days from now
+      .select('id')
+      .single()
+    if (coupleError || !couple) {
+      throw new Error('Failed to create test couple')
+    }
+    testCoupleId = couple.id
+    // Create test guests
+    const guests = [
+      { first_name: 'Uncle', last_name: 'Bob', category: 'family', side: 'groom', age_group: 'senior' },
+      { first_name: 'Aunt', last_name: 'Sarah', category: 'family', side: 'groom', age_group: 'senior' },
+      { first_name: 'Cousin', last_name: 'Jim', category: 'family', side: 'groom', age_group: 'adult' },
+      { first_name: 'Best', last_name: 'Friend', category: 'wedding_party', side: 'groom', age_group: 'adult' },
+      { first_name: 'College', last_name: 'Buddy', category: 'friends', side: 'groom', age_group: 'adult' },
+      { first_name: 'Mother', last_name: 'Bride', category: 'immediate_family', side: 'bride', age_group: 'middle_age' },
+      { first_name: 'Sister', last_name: 'Bride', category: 'immediate_family', side: 'bride', age_group: 'adult' },
+      { first_name: 'Maid', last_name: 'Honor', category: 'wedding_party', side: 'bride', age_group: 'adult' }
+    ]
+    const { data: insertedGuests, error: guestError } = await supabase
+      .from('guests')
+      .insert(
+        guests.map(guest => ({
+          ...guest,
+          couple_id: testCoupleId,
+          rsvp_status: 'attending',
+          email: `${guest.first_name.toLowerCase()}.${guest.last_name.toLowerCase()}@test.com`
+        }))
+    if (guestError || !insertedGuests) {
+      throw new Error('Failed to create test guests')
+    testGuestIds = insertedGuests.map((guest: any) => guest.id)
+    // Create test relationships with various conflict scenarios
+    const relationships = [
+      // Family relationships
+      { guest1_id: testGuestIds[0], guest2_id: testGuestIds[1], relationship_type: 'siblings', conflict_severity: 'incompatible' }, // Uncle Bob & Aunt Sarah - divorced
+      { guest1_id: testGuestIds[0], guest2_id: testGuestIds[2], relationship_type: 'family_extended', conflict_severity: 'prefer_together' }, // Uncle Bob & Cousin Jim - good relationship
+      { guest1_id: testGuestIds[3], guest2_id: testGuestIds[4], relationship_type: 'friends', conflict_severity: 'prefer_together' }, // Best Friend & College Buddy
+      { guest1_id: testGuestIds[5], guest2_id: testGuestIds[6], relationship_type: 'family_immediate', conflict_severity: 'prefer_together' }, // Mother & Sister
+      { guest1_id: testGuestIds[6], guest2_id: testGuestIds[7], relationship_type: 'close_friends', conflict_severity: 'prefer_together' }, // Sister & Maid of Honor
+      // Cross-side potential conflicts
+      { guest1_id: testGuestIds[1], guest2_id: testGuestIds[5], relationship_type: 'acquaintances', conflict_severity: 'avoid' }, // Aunt Sarah & Mother Bride - tension
+    await supabase
+      .from('guest_relationships')
+        relationships.map(rel => ({
+          ...rel,
+          relationship_strength: rel.conflict_severity === 'prefer_together' ? 5 : 2,
+          is_bidirectional: true,
+          created_by: 'test-system'
+  }
+  async function cleanupTestData() {
+    if (testCoupleId) {
+      // Cleanup is handled by foreign key constraints
+      await supabase.from('couples').delete().eq('id', testCoupleId)
+})

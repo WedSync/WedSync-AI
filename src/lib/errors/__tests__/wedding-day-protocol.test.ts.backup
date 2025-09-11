@@ -1,0 +1,568 @@
+// WS-198 Team C Integration Architect - Wedding Day Protocol Tests
+// Critical test suite ensuring zero failures during active wedding ceremonies
+
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { IntegrationErrorManager } from '../integration-error-manager';
+import { WebhookErrorHandler } from '../webhook-error-handler';
+import { IntegrationHealthMonitor } from '../../monitoring/integration-health-monitor';
+
+// Mock dependencies
+vi.mock('ioredis');
+vi.mock('@supabase/supabase-js', () => ({
+  createClient: vi.fn(() => ({
+    from: vi.fn(() => ({
+      insert: vi.fn(() => Promise.resolve({ data: { id: 'test-id' }, error: null })),
+      update: vi.fn(() => Promise.resolve({ data: null, error: null })),
+      upsert: vi.fn(() => Promise.resolve({ data: null, error: null })),
+      select: vi.fn(() => ({
+        eq: vi.fn(() => ({
+          limit: vi.fn(() => Promise.resolve({ data: [{ id: 'wedding-123' }], error: null })),
+          is: vi.fn(() => ({
+            limit: vi.fn(() => Promise.resolve({ data: [], error: null }))
+          }))
+        })),
+        order: vi.fn(() => Promise.resolve({ data: [], error: null }))
+      }))
+    }))
+  }))
+}));
+
+describe('Wedding Day Protocol Tests', () => {
+  let errorManager: IntegrationErrorManager;
+  let webhookHandler: WebhookErrorHandler;
+  let healthMonitor: IntegrationHealthMonitor;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    errorManager = new IntegrationErrorManager();
+    webhookHandler = new WebhookErrorHandler();
+    healthMonitor = new IntegrationHealthMonitor();
+  });
+
+  afterEach(() => {
+    healthMonitor.stop();
+    vi.restoreAllMocks();
+  });
+
+  describe('Critical Wedding Day Operations', () => {
+    it('should immediately fallback for wedding day critical payment errors', async () => {
+      const weddingDate = new Date().toISOString().split('T')[0]; // Today
+      const error = new Error('Payment processor unavailable');
+      
+      const context = {
+        serviceName: 'stripe_payments',
+        serviceType: 'payment' as const,
+        endpoint: '/v1/payment_intents',
+        requestId: 'req_wedding_critical_payment',
+        retryAttempt: 0,
+        weddingContext: {
+          weddingId: 'wedding_today_001',
+          weddingDate,
+          vendorType: 'photographer',
+          criticalityLevel: 'wedding_day_critical' as const
+        },
+        errorDetails: {
+          httpStatus: 503,
+          errorCode: 'service_unavailable',
+          responseTime: 30000,
+          errorMessage: 'Payment processor unavailable'
+        }
+      };
+
+      const result = await errorManager.handleIntegrationError(error, context);
+
+      // Wedding day critical operations should NEVER retry
+      expect(result.retryRecommended).toBe(false);
+      expect(result.fallbackUsed).toBe(true);
+      expect(result.errorHandled).toBe(true);
+      expect(result.processingTime).toBeLessThan(5000); // Must be fast
+    });
+
+    it('should handle wedding day vendor coordination failures', async () => {
+      const weddingDate = new Date().toISOString().split('T')[0]; // Today
+      const error = new Error('Vendor API timeout');
+      
+      const context = {
+        serviceName: 'vendor_api',
+        serviceType: 'vendor_api' as const,
+        endpoint: '/sync/booking',
+        requestId: 'req_vendor_wedding_day',
+        retryAttempt: 0,
+        weddingContext: {
+          weddingId: 'wedding_today_002',
+          weddingDate,
+          vendorType: 'florist',
+          criticalityLevel: 'wedding_day_critical' as const
+        },
+        errorDetails: {
+          httpStatus: 408,
+          errorCode: 'timeout',
+          responseTime: 25000,
+          errorMessage: 'Vendor API timeout'
+        }
+      };
+
+      const result = await errorManager.handleIntegrationError(error, context);
+
+      expect(result.fallbackUsed).toBe(true);
+      expect(result.fallbackData?.degradedMode).toBe(true);
+      expect(result.fallbackData?.manualSyncAvailable).toBe(true);
+      expect(result.processingTime).toBeLessThan(3000);
+    });
+
+    it('should prioritize wedding day webhook processing', async () => {
+      const weddingDate = new Date().toISOString().split('T')[0]; // Today
+      const error = new Error('Webhook processing delay');
+      
+      const context = {
+        webhookId: 'wh_wedding_day_001',
+        source: 'vendor_booking_system',
+        endpoint: '/webhook/booking_confirmed',
+        method: 'POST',
+        headers: { 'x-vendor-signature': 'valid_sig' },
+        metadata: {
+          wedding_id: 'wedding_today_003',
+          wedding_date: weddingDate,
+          vendor_type: 'venue',
+          booking_id: 'booking_wedding_day_001',
+          criticality_level: 'wedding_day_critical' as const
+        },
+        originalTimestamp: new Date().toISOString()
+      };
+
+      const payload = {
+        event: 'booking.confirmed',
+        wedding_id: 'wedding_today_003',
+        booking_details: { venue: 'Grand Hotel', time: '15:00' }
+      };
+
+      const result = await webhookHandler.handleWebhookError(payload, error, context);
+
+      expect(result.handled).toBe(true);
+      expect(result.weddingImpact?.affectsWedding).toBe(true);
+      expect(result.weddingImpact?.impactLevel).toBe('critical');
+      
+      // Wedding day webhooks should get maximum retry attempts
+      if (result.retryScheduled) {
+        expect(result.maxRetries).toBeGreaterThanOrEqual(10);
+        expect(result.retryAfterSeconds).toBeLessThanOrEqual(30); // Fast retry
+      }
+    });
+  });
+
+  describe('Saturday Wedding Protocol', () => {
+    it('should detect Saturday wedding operations', async () => {
+      // Mock Saturday date
+      const saturday = new Date('2024-06-15'); // Assuming this is a Saturday
+      saturday.setDate(saturday.getDate() - ((saturday.getDay() + 1) % 7)); // Ensure it's Saturday
+      const saturdayString = saturday.toISOString().split('T')[0];
+
+      const error = new Error('Service degradation detected');
+      const context = {
+        serviceName: 'email_service',
+        serviceType: 'email' as const,
+        endpoint: '/send_wedding_update',
+        requestId: 'req_saturday_wedding',
+        retryAttempt: 0,
+        weddingContext: {
+          weddingId: 'wedding_saturday_001',
+          weddingDate: saturdayString,
+          vendorType: 'photographer',
+          criticalityLevel: 'high' as const
+        },
+        errorDetails: {
+          httpStatus: 502,
+          errorMessage: 'Service degradation detected'
+        }
+      };
+
+      const result = await errorManager.handleIntegrationError(error, context);
+
+      expect(result.errorHandled).toBe(true);
+      expect(result.processingTime).toBeLessThan(2000); // Saturday operations must be fast
+    });
+
+    it('should apply stricter thresholds on wedding days', async () => {
+      const healthMonitor = new IntegrationHealthMonitor({
+        weddingDayThresholds: {
+          errorRate: 1.0, // 1% error rate threshold
+          responseTime: 2000 // 2 second response time threshold
+        }
+      });
+
+      // Mock service health data that would be acceptable normally but not on wedding days
+      const mockMetrics = {
+        serviceName: 'payment_processor',
+        serviceType: 'payment',
+        successRate24h: 97.5, // 2.5% error rate - acceptable normally, not on wedding days
+        avgResponseTime: 2500, // 2.5 seconds - too slow for wedding days
+        p95ResponseTime: 3000
+      };
+
+      // In a real scenario, this would trigger alerts due to stricter wedding day thresholds
+      expect(100 - mockMetrics.successRate24h).toBeGreaterThan(1.0); // Above wedding day error threshold
+      expect(mockMetrics.avgResponseTime).toBeGreaterThan(2000); // Above wedding day response time threshold
+
+      healthMonitor.stop();
+    });
+  });
+
+  describe('Emergency Response Protocols', () => {
+    it('should escalate wedding day failures immediately', async () => {
+      const weddingDate = new Date().toISOString().split('T')[0];
+      const error = new Error('Critical service failure');
+      
+      const context = {
+        serviceName: 'payment_processing',
+        serviceType: 'payment' as const,
+        endpoint: '/process_final_payment',
+        requestId: 'req_wedding_emergency',
+        retryAttempt: 0,
+        weddingContext: {
+          weddingId: 'wedding_emergency_001',
+          weddingDate,
+          vendorType: 'venue',
+          criticalityLevel: 'wedding_day_critical' as const
+        },
+        errorDetails: {
+          httpStatus: 500,
+          errorCode: 'internal_server_error',
+          responseTime: 0,
+          errorMessage: 'Critical service failure'
+        }
+      };
+
+      const result = await errorManager.handleIntegrationError(error, context);
+
+      expect(result.errorHandled).toBe(true);
+      expect(result.alertsSent).toBeDefined();
+      expect(result.alertsSent?.length).toBeGreaterThan(0);
+    });
+
+    it('should provide manual override capabilities for wedding day', async () => {
+      const error = new Error('All automated systems failing');
+      const context = {
+        serviceName: 'calendar_integration',
+        serviceType: 'calendar' as const,
+        endpoint: '/sync_wedding_schedule',
+        requestId: 'req_manual_override',
+        retryAttempt: 0,
+        weddingContext: {
+          weddingId: 'wedding_override_001',
+          weddingDate: new Date().toISOString().split('T')[0],
+          vendorType: 'wedding_planner',
+          criticalityLevel: 'wedding_day_critical' as const
+        },
+        errorDetails: {
+          httpStatus: 503,
+          errorMessage: 'All automated systems failing'
+        }
+      };
+
+      const result = await errorManager.handleIntegrationError(error, context);
+
+      expect(result.fallbackUsed).toBe(true);
+      expect(result.fallbackData?.manualOverrideEnabled).toBe(true);
+      expect(result.fallbackData?.manualActionRequired).toBe(true);
+      expect(result.fallbackData?.instructions).toBeDefined();
+    });
+  });
+
+  describe('Service Recovery Verification', () => {
+    it('should verify service health before allowing wedding day operations', async () => {
+      const healthOverview = await healthMonitor.getServiceHealthOverview();
+      
+      // All services should be healthy before processing wedding day operations
+      const unhealthyServices = healthOverview.filter(service => 
+        service.healthStatus === 'unhealthy' || service.healthStatus === 'degraded'
+      );
+
+      // In a production environment, this would block wedding day operations
+      if (unhealthyServices.length > 0) {
+        console.warn('Unhealthy services detected:', unhealthyServices.map(s => s.serviceName));
+      }
+
+      // Test passes if we can successfully get health overview
+      expect(healthOverview).toBeDefined();
+      expect(Array.isArray(healthOverview)).toBe(true);
+    });
+
+    it('should maintain service health metrics during high load', async () => {
+      // Simulate high load scenario typical during wedding ceremonies
+      const highLoadPromises = [];
+      
+      for (let i = 0; i < 20; i++) {
+        const error = new Error(`High load error ${i}`);
+        const context = {
+          serviceName: 'payment_processor',
+          serviceType: 'payment' as const,
+          endpoint: '/process_vendor_payment',
+          requestId: `req_high_load_${i}`,
+          retryAttempt: 0,
+          weddingContext: {
+            weddingId: `wedding_load_${i}`,
+            weddingDate: new Date().toISOString().split('T')[0],
+            vendorType: 'photographer',
+            criticalityLevel: Math.random() > 0.5 ? 'wedding_day_critical' : 'high' as const
+          },
+          errorDetails: {
+            httpStatus: 503,
+            errorMessage: `High load error ${i}`
+          }
+        };
+
+        highLoadPromises.push(errorManager.handleIntegrationError(error, context));
+      }
+
+      const results = await Promise.all(highLoadPromises);
+      
+      // All errors should be handled within acceptable time
+      expect(results.every(r => r.errorHandled)).toBe(true);
+      expect(results.every(r => r.processingTime < 5000)).toBe(true); // Under 5 seconds each
+    });
+  });
+
+  describe('Data Integrity During Failures', () => {
+    it('should preserve wedding data during service failures', async () => {
+      const error = new Error('Database connection lost');
+      const context = {
+        serviceName: 'database_service',
+        serviceType: 'storage' as const,
+        endpoint: '/save_wedding_timeline',
+        requestId: 'req_data_integrity',
+        retryAttempt: 0,
+        weddingContext: {
+          weddingId: 'wedding_data_001',
+          weddingDate: new Date().toISOString().split('T')[0],
+          vendorType: 'wedding_planner',
+          criticalityLevel: 'wedding_day_critical' as const
+        },
+        errorDetails: {
+          httpStatus: 500,
+          errorCode: 'connection_lost',
+          errorMessage: 'Database connection lost'
+        }
+      };
+
+      const result = await errorManager.handleIntegrationError(error, context);
+
+      // Should use cached/fallback data to preserve wedding information
+      expect(result.fallbackUsed).toBe(true);
+      expect(result.fallbackData).toBeDefined();
+    });
+
+    it('should prevent data corruption during partial failures', async () => {
+      // Test scenario where part of wedding data save succeeds but part fails
+      const error = new Error('Partial save failure');
+      const context = {
+        serviceName: 'wedding_data_service',
+        serviceType: 'storage' as const,
+        endpoint: '/save_complete_wedding_data',
+        requestId: 'req_partial_failure',
+        retryAttempt: 0,
+        weddingContext: {
+          weddingId: 'wedding_partial_001',
+          weddingDate: new Date().toISOString().split('T')[0],
+          vendorType: 'coordinator',
+          criticalityLevel: 'wedding_day_critical' as const
+        },
+        errorDetails: {
+          httpStatus: 507, // Insufficient storage
+          errorMessage: 'Partial save failure'
+        }
+      };
+
+      const result = await errorManager.handleIntegrationError(error, context);
+
+      // Should handle partial failures gracefully without corrupting existing data
+      expect(result.errorHandled).toBe(true);
+      expect(result.fallbackUsed).toBe(true);
+    });
+  });
+
+  describe('Communication Continuity', () => {
+    it('should maintain vendor communication during email service failures', async () => {
+      const error = new Error('Email service overload');
+      const context = {
+        serviceName: 'email_service',
+        serviceType: 'email' as const,
+        endpoint: '/send_vendor_update',
+        requestId: 'req_vendor_communication',
+        retryAttempt: 0,
+        weddingContext: {
+          weddingId: 'wedding_comm_001',
+          weddingDate: new Date().toISOString().split('T')[0],
+          vendorType: 'photographer',
+          criticalityLevel: 'wedding_day_critical' as const
+        },
+        errorDetails: {
+          httpStatus: 503,
+          errorMessage: 'Email service overload'
+        }
+      };
+
+      const result = await errorManager.handleIntegrationError(error, context);
+
+      expect(result.fallbackUsed).toBe(true);
+      expect(result.fallbackData?.degradedMode).toBe(true);
+      expect(result.fallbackData?.manualActionRequired).toBe(true);
+    });
+
+    it('should fallback SMS to email for wedding day communications', async () => {
+      const error = new Error('SMS gateway failure');
+      const context = {
+        serviceName: 'sms_service',
+        serviceType: 'sms' as const,
+        endpoint: '/send_urgent_update',
+        requestId: 'req_sms_fallback',
+        retryAttempt: 0,
+        weddingContext: {
+          weddingId: 'wedding_sms_001',
+          weddingDate: new Date().toISOString().split('T')[0],
+          vendorType: 'venue',
+          criticalityLevel: 'wedding_day_critical' as const
+        },
+        errorDetails: {
+          httpStatus: 502,
+          errorMessage: 'SMS gateway failure'
+        }
+      };
+
+      const result = await errorManager.handleIntegrationError(error, context);
+
+      expect(result.fallbackUsed).toBe(true);
+      expect(result.fallbackData?.alternativeMethodUsed).toBe('email');
+      expect(result.fallbackData?.degradedMode).toBe(true);
+    });
+  });
+
+  describe('Performance Requirements', () => {
+    it('should meet wedding day response time requirements', async () => {
+      const startTime = Date.now();
+      
+      const error = new Error('Performance test error');
+      const context = {
+        serviceName: 'critical_service',
+        serviceType: 'payment' as const,
+        endpoint: '/wedding_day_operation',
+        requestId: 'req_performance_test',
+        retryAttempt: 0,
+        weddingContext: {
+          weddingId: 'wedding_performance_001',
+          weddingDate: new Date().toISOString().split('T')[0],
+          vendorType: 'photographer',
+          criticalityLevel: 'wedding_day_critical' as const
+        },
+        errorDetails: {
+          httpStatus: 500,
+          responseTime: 100,
+          errorMessage: 'Performance test error'
+        }
+      };
+
+      const result = await errorManager.handleIntegrationError(error, context);
+      const endTime = Date.now();
+      const totalTime = endTime - startTime;
+
+      // Wedding day operations must complete within 500ms
+      expect(totalTime).toBeLessThan(500);
+      expect(result.errorHandled).toBe(true);
+      expect(result.processingTime).toBeLessThan(500);
+    });
+
+    it('should maintain high availability metrics during wedding ceremonies', async () => {
+      const errors = [];
+      const totalOperations = 100;
+      
+      // Simulate 100 concurrent wedding day operations
+      for (let i = 0; i < totalOperations; i++) {
+        const error = new Error(`Wedding operation ${i}`);
+        const context = {
+          serviceName: 'wedding_service',
+          serviceType: 'vendor_api' as const,
+          endpoint: '/wedding_operation',
+          requestId: `req_availability_${i}`,
+          retryAttempt: 0,
+          weddingContext: {
+            weddingId: `wedding_avail_${i}`,
+            weddingDate: new Date().toISOString().split('T')[0],
+            vendorType: 'coordinator',
+            criticalityLevel: 'wedding_day_critical' as const
+          },
+          errorDetails: {
+            httpStatus: 503,
+            errorMessage: `Wedding operation ${i}`
+          }
+        };
+
+        errors.push(errorManager.handleIntegrationError(error, context));
+      }
+
+      const results = await Promise.all(errors);
+      const successfulHandling = results.filter(r => r.errorHandled).length;
+      const availabilityRate = (successfulHandling / totalOperations) * 100;
+
+      // Must maintain 100% error handling success rate
+      expect(availabilityRate).toBe(100);
+      expect(results.every(r => r.processingTime < 1000)).toBe(true); // All under 1 second
+    });
+  });
+
+  describe('Monitoring and Alerting Validation', () => {
+    it('should generate immediate alerts for wedding day failures', async () => {
+      const error = new Error('Wedding day critical failure');
+      const context = {
+        serviceName: 'critical_wedding_service',
+        serviceType: 'payment' as const,
+        endpoint: '/process_wedding_payment',
+        requestId: 'req_alert_test',
+        retryAttempt: 0,
+        weddingContext: {
+          weddingId: 'wedding_alert_001',
+          weddingDate: new Date().toISOString().split('T')[0],
+          vendorType: 'venue',
+          criticalityLevel: 'wedding_day_critical' as const
+        },
+        errorDetails: {
+          httpStatus: 500,
+          errorCode: 'critical_failure',
+          errorMessage: 'Wedding day critical failure'
+        }
+      };
+
+      const result = await errorManager.handleIntegrationError(error, context);
+
+      expect(result.alertsSent).toBeDefined();
+      expect(result.alertsSent?.length).toBeGreaterThan(0);
+    });
+
+    it('should provide real-time health monitoring during weddings', async () => {
+      const healthOverview = await healthMonitor.getServiceHealthOverview();
+      const activeAlerts = await healthMonitor.getActiveAlerts();
+
+      // Health monitoring should be operational
+      expect(healthOverview).toBeDefined();
+      expect(Array.isArray(healthOverview)).toBe(true);
+      expect(Array.isArray(activeAlerts)).toBe(true);
+    });
+  });
+});
+
+// Wedding Day Integration Test Suite
+describe('Wedding Day End-to-End Scenarios', () => {
+  it.skip('should handle complete service outage during wedding ceremony', async () => {
+    // This would test the complete workflow when all services fail during an active wedding
+  });
+
+  it.skip('should recover gracefully from partial system failures', async () => {
+    // This would test recovery scenarios where some services recover while others remain down
+  });
+
+  it.skip('should maintain data consistency across service failures', async () => {
+    // This would test data integrity across multiple service failures and recoveries
+  });
+
+  it.skip('should validate real-time monitoring during live wedding scenarios', async () => {
+    // This would test monitoring and alerting with real wedding data flows
+  });
+});

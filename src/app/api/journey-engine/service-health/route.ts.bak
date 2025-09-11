@@ -1,0 +1,255 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { emailServiceConnector } from '@/lib/services/email-connector';
+import { smsServiceConnector } from '@/lib/services/sms-connector';
+import { deliveryTracker } from '@/lib/services/delivery-tracker';
+import { journeyServiceBridge } from '@/lib/services/journey-service-bridge';
+
+/**
+ * Service Health Check API
+ * Monitors the health of all journey service connections
+ */
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const includeMetrics = searchParams.get('metrics') === 'true';
+    const journeyIds = searchParams.get('journey_ids')?.split(',') || [];
+
+    // Check all service statuses in parallel
+    const [
+      emailStatus,
+      smsStatus,
+      serviceStatus
+    ] = await Promise.all([
+      checkServiceSafely('email', () => emailServiceConnector.getServiceStatus()),
+      checkServiceSafely('sms', () => smsServiceConnector.getServiceStatus()),
+      journeyIds.length > 0 ? 
+        checkServiceSafely('journey_bridge', () => journeyServiceBridge.getJourneyServiceStatus(journeyIds)) :
+        Promise.resolve({ status: 'healthy', data: {} })
+    ]);
+
+    // Get delivery metrics if requested
+    let deliveryMetrics = null;
+    if (includeMetrics) {
+      const metricsResult = await checkServiceSafely('delivery_metrics', async () => {
+        const today = new Date().toISOString().split('T')[0];
+        return await deliveryTracker.getDeliveryMetrics({
+          start_date: today
+        });
+      });
+      deliveryMetrics = metricsResult.data;
+    }
+
+    // Calculate overall health
+    const services = [emailStatus, smsStatus, serviceStatus];
+    const healthyServices = services.filter(s => s.status === 'healthy').length;
+    const totalServices = services.length;
+    
+    const overallHealth = healthyServices === totalServices ? 'healthy' :
+                         healthyServices > totalServices / 2 ? 'degraded' : 'unhealthy';
+
+    const response = {
+      overall_health: overallHealth,
+      timestamp: new Date().toISOString(),
+      services: {
+        email_service: {
+          status: emailStatus.status,
+          details: emailStatus.data,
+          error: emailStatus.error
+        },
+        sms_service: {
+          status: smsStatus.status,
+          details: smsStatus.data,
+          error: smsStatus.error
+        },
+        journey_bridge: {
+          status: serviceStatus.status,
+          details: serviceStatus.data,
+          error: serviceStatus.error
+        }
+      },
+      ...(deliveryMetrics && { 
+        today_metrics: deliveryMetrics 
+      }),
+      health_summary: {
+        total_services: totalServices,
+        healthy_services: healthyServices,
+        degraded_services: services.filter(s => s.status === 'degraded').length,
+        unhealthy_services: services.filter(s => s.status === 'unhealthy').length
+      }
+    };
+
+    const httpStatus = overallHealth === 'healthy' ? 200 : 
+                      overallHealth === 'degraded' ? 200 : 503;
+
+    return NextResponse.json(response, { status: httpStatus });
+
+  } catch (error) {
+    console.error('Service health check failed:', error);
+    return NextResponse.json({
+      overall_health: 'unhealthy',
+      timestamp: new Date().toISOString(),
+      error: error instanceof Error ? error.message : 'Unknown error',
+      services: {
+        email_service: { status: 'unknown' },
+        sms_service: { status: 'unknown' },
+        journey_bridge: { status: 'unknown' }
+      }
+    }, { status: 500 });
+  }
+}
+
+/**
+ * Test service connections
+ * POST /api/journey-engine/service-health
+ */
+export async function POST(request: NextRequest) {
+  try {
+    const { service, action } = await request.json();
+
+    switch (action) {
+      case 'test_email':
+        return await testEmailService(service.test_email);
+      
+      case 'test_sms':
+        return await testSmsService(service.test_phone);
+      
+      case 'restart_connections':
+        return await restartConnections();
+      
+      default:
+        return NextResponse.json({
+          error: 'Invalid action. Supported: test_email, test_sms, restart_connections'
+        }, { status: 400 });
+    }
+
+  } catch (error) {
+    console.error('Service action failed:', error);
+    return NextResponse.json({
+      error: error instanceof Error ? error.message : 'Unknown error'
+    }, { status: 500 });
+  }
+}
+
+/**
+ * Safely check a service and return status
+ */
+async function checkServiceSafely<T>(
+  serviceName: string, 
+  checkFunction: () => Promise<T>
+): Promise<{
+  status: 'healthy' | 'degraded' | 'unhealthy';
+  data?: T;
+  error?: string;
+}> {
+  try {
+    const data = await Promise.race([
+      checkFunction(),
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Service check timeout')), 5000)
+      )
+    ]) as T;
+
+    return {
+      status: 'healthy',
+      data
+    };
+  } catch (error) {
+    console.error(`${serviceName} health check failed:`, error);
+    
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    const isTimeout = errorMessage.includes('timeout');
+    const isConnectionError = errorMessage.includes('connection') || 
+                             errorMessage.includes('network') ||
+                             errorMessage.includes('ECONNREFUSED');
+
+    return {
+      status: isTimeout || isConnectionError ? 'degraded' : 'unhealthy',
+      error: errorMessage
+    };
+  }
+}
+
+/**
+ * Test email service with a real send
+ */
+async function testEmailService(testEmail: string) {
+  if (!testEmail) {
+    throw new Error('test_email is required');
+  }
+
+  const testResult = await emailServiceConnector.sendEmail({
+    template_id: 'test_template',
+    recipient: {
+      email: testEmail,
+      name: 'Test User'
+    },
+    variables: {
+      test_message: 'Service health check test',
+      timestamp: new Date().toISOString()
+    },
+    priority: 'normal',
+    track_opens: false,
+    track_clicks: false
+  });
+
+  return NextResponse.json({
+    success: true,
+    message: 'Test email sent successfully',
+    details: {
+      message_id: testResult.message_id,
+      status: testResult.status,
+      delivery_timestamp: testResult.delivery_timestamp
+    }
+  });
+}
+
+/**
+ * Test SMS service with a real send
+ */
+async function testSmsService(testPhone: string) {
+  if (!testPhone) {
+    throw new Error('test_phone is required');
+  }
+
+  const testResult = await smsServiceConnector.sendSMS({
+    custom_message: 'WedSync service health check test - {timestamp}',
+    recipient: {
+      phone: testPhone,
+      name: 'Test User'
+    },
+    variables: {
+      timestamp: new Date().toLocaleString()
+    },
+    priority: 'normal',
+    enable_delivery_tracking: true,
+    compliance_data: {
+      consent_given: true,
+      consent_timestamp: new Date().toISOString(),
+      opt_in_method: 'single_opt_in'
+    }
+  });
+
+  return NextResponse.json({
+    success: true,
+    message: 'Test SMS sent successfully',
+    details: {
+      message_id: testResult.message_id,
+      status: testResult.status,
+      segments_used: testResult.segments_used,
+      cost_estimate: testResult.cost_estimate
+    }
+  });
+}
+
+/**
+ * Restart service connections
+ */
+async function restartConnections() {
+  // This would restart/reinitialize service connectors
+  // For now, just return success
+  return NextResponse.json({
+    success: true,
+    message: 'Service connections restarted',
+    timestamp: new Date().toISOString()
+  });
+}

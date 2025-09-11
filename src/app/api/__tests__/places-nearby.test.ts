@@ -1,0 +1,593 @@
+import { GET } from '../places/nearby/route';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { NextRequest } from 'next/server';
+
+// Mock dependencies
+vi.mock('../../../lib/integrations/google-places-client');
+vi.mock('../../../lib/middleware/security');
+vi.mock('../../../lib/middleware/audit');
+vi.mock('@supabase/ssr');
+
+// Mock GooglePlacesClient
+const mockGooglePlacesClient = {
+  nearbySearch: vi.fn(),
+};
+
+vi.mock('../../../lib/integrations/google-places-client', () => ({
+  GooglePlacesClient: vi.fn(() => mockGooglePlacesClient),
+}));
+
+// Mock security middleware
+const mockWithSecureValidation = vi.fn((schema, handler) => handler);
+vi.mock('../../../lib/middleware/security', () => ({
+  withSecureValidation: mockWithSecureValidation,
+  secureStringSchema: vi.fn(),
+}));
+
+// Mock audit middleware
+const mockLogAuditEvent = vi.fn();
+vi.mock('../../../lib/middleware/audit', () => ({
+  logAuditEvent: mockLogAuditEvent,
+}));
+
+// Mock Supabase
+const mockSupabase = {
+  auth: {
+    getUser: vi.fn(),
+  },
+};
+
+vi.mock('@supabase/ssr', () => ({
+  createServerClient: vi.fn(() => mockSupabase),
+}));
+
+// Mock console methods
+const consoleMock = {
+  error: vi.spyOn(console, 'error').mockImplementation(() => {}),
+  warn: vi.spyOn(console, 'warn').mockImplementation(() => {}),
+  log: vi.spyOn(console, 'log').mockImplementation(() => {}),
+};
+
+describe('/api/places/nearby', () => {
+  const mockUser = {
+    id: 'user-123',
+    email: 'test@example.com',
+  };
+
+  const mockNearbyResponse = {
+    success: true,
+    data: {
+      results: [
+        {
+          place_id: 'nearby-venue-1',
+          name: 'Nearby Wedding Venue',
+          rating: 4.7,
+          types: ['wedding_venue', 'event_planning'],
+          geometry: {
+            location: { lat: 40.7129, lng: -74.0061 },
+          },
+          vicinity: '456 Wedding Street, New York',
+          price_level: 3,
+          opening_hours: {
+            open_now: true,
+          },
+        },
+        {
+          place_id: 'nearby-venue-2',
+          name: 'Garden Reception Hall',
+          rating: 4.5,
+          types: ['banquet_hall', 'restaurant'],
+          geometry: {
+            location: { lat: 40.7125, lng: -74.0065 },
+          },
+          vicinity: '789 Garden Avenue, New York',
+          price_level: 2,
+        },
+      ],
+      status: 'OK',
+    },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+
+    // Default successful auth mock
+    mockSupabase.auth.getUser.mockResolvedValue({
+      data: { user: mockUser },
+      error: null,
+    });
+  });
+
+  afterEach(() => {
+    vi.resetAllMocks();
+  });
+
+  describe('GET /api/places/nearby', () => {
+    it('should find nearby wedding venues successfully', async () => {
+      mockGooglePlacesClient.nearbySearch.mockResolvedValue(mockNearbyResponse);
+
+      const url = new URL('http://localhost:3000/api/places/nearby');
+      url.searchParams.set('lat', '40.7128');
+      url.searchParams.set('lng', '-74.0060');
+      url.searchParams.set('radius', '5000');
+      url.searchParams.set('type', 'wedding_venue');
+
+      const request = new NextRequest(url);
+      const response = await GET(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data).toEqual({
+        success: true,
+        venues: expect.arrayContaining([
+          expect.objectContaining({
+            place_id: 'nearby-venue-1',
+            name: 'Nearby Wedding Venue',
+            rating: 4.7,
+          }),
+        ]),
+        message: 'Found 2 nearby venues',
+      });
+
+      expect(mockGooglePlacesClient.nearbySearch).toHaveBeenCalledWith({
+        location: { lat: 40.7128, lng: -74.006 },
+        radius: 5000,
+        type: 'wedding_venue',
+      });
+
+      expect(mockLogAuditEvent).toHaveBeenCalledWith(
+        'user-123',
+        'places_nearby_search',
+        'success',
+        expect.objectContaining({
+          location: { lat: 40.7128, lng: -74.006 },
+          radius: 5000,
+          resultCount: 2,
+        }),
+      );
+    });
+
+    it('should search with keyword parameter', async () => {
+      mockGooglePlacesClient.nearbySearch.mockResolvedValue(mockNearbyResponse);
+
+      const url = new URL('http://localhost:3000/api/places/nearby');
+      url.searchParams.set('lat', '40.7128');
+      url.searchParams.set('lng', '-74.0060');
+      url.searchParams.set('radius', '10000');
+      url.searchParams.set('keyword', 'outdoor wedding');
+
+      const request = new NextRequest(url);
+      const response = await GET(request);
+
+      expect(response.status).toBe(200);
+      expect(mockGooglePlacesClient.nearbySearch).toHaveBeenCalledWith({
+        location: { lat: 40.7128, lng: -74.006 },
+        radius: 10000,
+        keyword: 'outdoor wedding',
+      });
+    });
+
+    it('should apply price level filtering', async () => {
+      mockGooglePlacesClient.nearbySearch.mockResolvedValue({
+        success: true,
+        data: {
+          results: [
+            {
+              place_id: 'affordable-venue',
+              name: 'Budget Friendly Hall',
+              rating: 4.2,
+              price_level: 1,
+            },
+          ],
+          status: 'OK',
+        },
+      });
+
+      const url = new URL('http://localhost:3000/api/places/nearby');
+      url.searchParams.set('lat', '40.7128');
+      url.searchParams.set('lng', '-74.0060');
+      url.searchParams.set('radius', '5000');
+      url.searchParams.set('minPrice', '1');
+      url.searchParams.set('maxPrice', '2');
+
+      const request = new NextRequest(url);
+      const response = await GET(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data.venues).toHaveLength(1);
+      expect(data.venues[0].price_level).toBeLessThanOrEqual(2);
+    });
+
+    it('should require authentication', async () => {
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: null },
+        error: { message: 'Not authenticated' },
+      });
+
+      const url = new URL('http://localhost:3000/api/places/nearby');
+      url.searchParams.set('lat', '40.7128');
+      url.searchParams.set('lng', '-74.0060');
+      url.searchParams.set('radius', '5000');
+
+      const request = new NextRequest(url);
+      const response = await GET(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(401);
+      expect(data).toEqual({
+        success: false,
+        error: 'Authentication required',
+      });
+
+      expect(mockGooglePlacesClient.nearbySearch).not.toHaveBeenCalled();
+    });
+
+    it('should validate required location parameters', async () => {
+      const url = new URL('http://localhost:3000/api/places/nearby');
+      // Missing lat/lng parameters
+      url.searchParams.set('radius', '5000');
+
+      const request = new NextRequest(url);
+      const response = await GET(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(400);
+      expect(data).toEqual({
+        success: false,
+        error: 'Location (lat, lng) and radius are required',
+      });
+    });
+
+    it('should validate coordinate ranges', async () => {
+      const url = new URL('http://localhost:3000/api/places/nearby');
+      url.searchParams.set('lat', '91'); // Invalid latitude
+      url.searchParams.set('lng', '-74.0060');
+      url.searchParams.set('radius', '5000');
+
+      const request = new NextRequest(url);
+      const response = await GET(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(400);
+      expect(data.error).toContain('Invalid coordinates');
+    });
+
+    it('should validate radius limits', async () => {
+      const url = new URL('http://localhost:3000/api/places/nearby');
+      url.searchParams.set('lat', '40.7128');
+      url.searchParams.set('lng', '-74.0060');
+      url.searchParams.set('radius', '100000'); // Too large radius
+
+      const request = new NextRequest(url);
+      const response = await GET(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(400);
+      expect(data.error).toContain('Radius must be between');
+    });
+
+    it('should handle Google Places API errors', async () => {
+      mockGooglePlacesClient.nearbySearch.mockResolvedValue({
+        success: false,
+        error: 'API quota exceeded',
+      });
+
+      const url = new URL('http://localhost:3000/api/places/nearby');
+      url.searchParams.set('lat', '40.7128');
+      url.searchParams.set('lng', '-74.0060');
+      url.searchParams.set('radius', '5000');
+
+      const request = new NextRequest(url);
+      const response = await GET(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(500);
+      expect(data).toEqual({
+        success: false,
+        error: 'API quota exceeded',
+      });
+
+      expect(mockLogAuditEvent).toHaveBeenCalledWith(
+        'user-123',
+        'places_nearby_search',
+        'failed',
+        expect.objectContaining({
+          error: 'API quota exceeded',
+        }),
+      );
+    });
+
+    it('should handle network failures with retry', async () => {
+      mockGooglePlacesClient.nearbySearch
+        .mockRejectedValueOnce(new Error('Network timeout'))
+        .mockResolvedValueOnce(mockNearbyResponse);
+
+      const url = new URL('http://localhost:3000/api/places/nearby');
+      url.searchParams.set('lat', '40.7128');
+      url.searchParams.set('lng', '-74.0060');
+      url.searchParams.set('radius', '5000');
+
+      const request = new NextRequest(url);
+      const response = await GET(request);
+
+      expect(response.status).toBe(200);
+      expect(mockGooglePlacesClient.nearbySearch).toHaveBeenCalledTimes(1);
+    });
+
+    it('should filter venues by wedding suitability', async () => {
+      const mixedVenuesResponse = {
+        success: true,
+        data: {
+          results: [
+            {
+              place_id: 'wedding-venue-1',
+              name: 'Perfect Wedding Venue',
+              types: ['wedding_venue', 'event_planning'],
+              rating: 4.8,
+            },
+            {
+              place_id: 'gas-station-1',
+              name: 'Gas Station',
+              types: ['gas_station'],
+              rating: 3.5,
+            },
+            {
+              place_id: 'banquet-hall-1',
+              name: 'Grand Banquet Hall',
+              types: ['banquet_hall', 'restaurant'],
+              rating: 4.6,
+            },
+          ],
+          status: 'OK',
+        },
+      };
+
+      mockGooglePlacesClient.nearbySearch.mockResolvedValue(
+        mixedVenuesResponse,
+      );
+
+      const url = new URL('http://localhost:3000/api/places/nearby');
+      url.searchParams.set('lat', '40.7128');
+      url.searchParams.set('lng', '-74.0060');
+      url.searchParams.set('radius', '5000');
+      url.searchParams.set('weddingOnly', 'true');
+
+      const request = new NextRequest(url);
+      const response = await GET(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data.venues).toHaveLength(2); // Should exclude gas station
+      expect(data.venues.map((v) => v.name)).toEqual([
+        'Perfect Wedding Venue',
+        'Grand Banquet Hall',
+      ]);
+    });
+
+    it('should sort venues by distance', async () => {
+      const unsortedResponse = {
+        success: true,
+        data: {
+          results: [
+            {
+              place_id: 'far-venue',
+              name: 'Far Venue',
+              geometry: { location: { lat: 40.72, lng: -74.01 } },
+              rating: 4.8,
+            },
+            {
+              place_id: 'close-venue',
+              name: 'Close Venue',
+              geometry: { location: { lat: 40.7129, lng: -74.0061 } },
+              rating: 4.5,
+            },
+          ],
+          status: 'OK',
+        },
+      };
+
+      mockGooglePlacesClient.nearbySearch.mockResolvedValue(unsortedResponse);
+
+      const url = new URL('http://localhost:3000/api/places/nearby');
+      url.searchParams.set('lat', '40.7128');
+      url.searchParams.set('lng', '-74.0060');
+      url.searchParams.set('radius', '10000');
+      url.searchParams.set('sortBy', 'distance');
+
+      const request = new NextRequest(url);
+      const response = await GET(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      // Should be sorted by distance (closest first)
+      expect(data.venues[0].name).toBe('Close Venue');
+      expect(data.venues[1].name).toBe('Far Venue');
+    });
+
+    it('should sort venues by rating', async () => {
+      mockGooglePlacesClient.nearbySearch.mockResolvedValue({
+        success: true,
+        data: {
+          results: [
+            { place_id: '1', name: 'Low Rated', rating: 3.8 },
+            { place_id: '2', name: 'High Rated', rating: 4.9 },
+            { place_id: '3', name: 'Medium Rated', rating: 4.3 },
+          ],
+          status: 'OK',
+        },
+      });
+
+      const url = new URL('http://localhost:3000/api/places/nearby');
+      url.searchParams.set('lat', '40.7128');
+      url.searchParams.set('lng', '-74.0060');
+      url.searchParams.set('radius', '5000');
+      url.searchParams.set('sortBy', 'rating');
+      url.searchParams.set('sortOrder', 'desc');
+
+      const request = new NextRequest(url);
+      const response = await GET(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data.venues[0].name).toBe('High Rated');
+      expect(data.venues[1].name).toBe('Medium Rated');
+      expect(data.venues[2].name).toBe('Low Rated');
+    });
+
+    it('should apply rating filter', async () => {
+      mockGooglePlacesClient.nearbySearch.mockResolvedValue({
+        success: true,
+        data: {
+          results: [
+            { place_id: '1', name: 'Excellent Venue', rating: 4.8 },
+            { place_id: '2', name: 'Poor Venue', rating: 3.2 },
+            { place_id: '3', name: 'Good Venue', rating: 4.5 },
+          ],
+          status: 'OK',
+        },
+      });
+
+      const url = new URL('http://localhost:3000/api/places/nearby');
+      url.searchParams.set('lat', '40.7128');
+      url.searchParams.set('lng', '-74.0060');
+      url.searchParams.set('radius', '5000');
+      url.searchParams.set('minRating', '4.0');
+
+      const request = new NextRequest(url);
+      const response = await GET(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data.venues).toHaveLength(2);
+      expect(data.venues.map((v) => v.name)).toEqual([
+        'Excellent Venue',
+        'Good Venue',
+      ]);
+    });
+
+    it('should handle empty results gracefully', async () => {
+      mockGooglePlacesClient.nearbySearch.mockResolvedValue({
+        success: true,
+        data: {
+          results: [],
+          status: 'ZERO_RESULTS',
+        },
+      });
+
+      const url = new URL('http://localhost:3000/api/places/nearby');
+      url.searchParams.set('lat', '40.7128');
+      url.searchParams.set('lng', '-74.0060');
+      url.searchParams.set('radius', '5000');
+
+      const request = new NextRequest(url);
+      const response = await GET(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data).toEqual({
+        success: true,
+        venues: [],
+        message: 'No nearby venues found',
+      });
+    });
+
+    it('should include performance metrics in response headers', async () => {
+      mockGooglePlacesClient.nearbySearch.mockResolvedValue(mockNearbyResponse);
+
+      const url = new URL('http://localhost:3000/api/places/nearby');
+      url.searchParams.set('lat', '40.7128');
+      url.searchParams.set('lng', '-74.0060');
+      url.searchParams.set('radius', '5000');
+
+      const request = new NextRequest(url);
+      const response = await GET(request);
+
+      expect(response.headers.get('X-Response-Time')).toMatch(/^\d+ms$/);
+      expect(response.headers.get('X-Cache-Status')).toBeDefined();
+    });
+
+    it('should enforce rate limiting', async () => {
+      mockGooglePlacesClient.nearbySearch
+        .mockResolvedValueOnce(mockNearbyResponse)
+        .mockResolvedValueOnce(mockNearbyResponse)
+        .mockRejectedValue(new Error('Rate limit exceeded'));
+
+      const requests = Array(10)
+        .fill(null)
+        .map(() => {
+          const url = new URL('http://localhost:3000/api/places/nearby');
+          url.searchParams.set('lat', '40.7128');
+          url.searchParams.set('lng', '-74.0060');
+          url.searchParams.set('radius', '5000');
+          return GET(new NextRequest(url));
+        });
+
+      const responses = await Promise.all(requests);
+      const statusCodes = responses.map((r) => r.status);
+
+      expect(statusCodes).toContain(200); // Some successful
+      expect(statusCodes).toContain(429); // Some rate limited
+    });
+
+    it('should handle malformed coordinate parameters', async () => {
+      const url = new URL('http://localhost:3000/api/places/nearby');
+      url.searchParams.set('lat', 'invalid-lat');
+      url.searchParams.set('lng', '-74.0060');
+      url.searchParams.set('radius', '5000');
+
+      const request = new NextRequest(url);
+      const response = await GET(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(400);
+      expect(data.error).toContain('Invalid coordinates');
+    });
+
+    it('should enhance venues with distance information', async () => {
+      mockGooglePlacesClient.nearbySearch.mockResolvedValue(mockNearbyResponse);
+
+      const url = new URL('http://localhost:3000/api/places/nearby');
+      url.searchParams.set('lat', '40.7128');
+      url.searchParams.set('lng', '-74.0060');
+      url.searchParams.set('radius', '5000');
+
+      const request = new NextRequest(url);
+      const response = await GET(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data.venues[0]).toHaveProperty('distanceFromSearch');
+      expect(data.venues[0].distanceFromSearch).toMatch(/^\d+(\.\d+)? (m|km)$/);
+    });
+
+    it('should handle concurrent nearby searches efficiently', async () => {
+      mockGooglePlacesClient.nearbySearch.mockImplementation(async () => {
+        // Simulate API delay
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return mockNearbyResponse;
+      });
+
+      const concurrentRequests = Array(20)
+        .fill(null)
+        .map(() => {
+          const url = new URL('http://localhost:3000/api/places/nearby');
+          url.searchParams.set('lat', '40.7128');
+          url.searchParams.set('lng', '-74.0060');
+          url.searchParams.set('radius', '5000');
+          return GET(new NextRequest(url));
+        });
+
+      const startTime = Date.now();
+      const responses = await Promise.all(concurrentRequests);
+      const endTime = Date.now();
+
+      // Should handle concurrency efficiently
+      expect(endTime - startTime).toBeLessThan(2000);
+
+      // Most should succeed (unless rate limited)
+      const successCount = responses.filter((r) => r.status === 200).length;
+      expect(successCount).toBeGreaterThan(15);
+    });
+  });
+});

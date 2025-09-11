@@ -1,0 +1,250 @@
+/**
+ * Supabase Server Utilities
+ * Server-side Supabase client configuration and utilities
+ */
+
+import { createServerClient, type CookieOptions } from '@supabase/ssr';
+import { cookies } from 'next/headers';
+import { NextRequest, NextResponse } from 'next/server';
+
+export function createClient() {
+  const cookieStore = cookies();
+
+  return createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    {
+      cookies: {
+        get(name: string) {
+          return cookieStore.get(name)?.value;
+        },
+        set(name: string, value: string, options: CookieOptions) {
+          try {
+            cookieStore.set({ name, value, ...options });
+          } catch (error) {
+            // The `set` method was called from a Server Component.
+            // This can be ignored if you have middleware refreshing
+            // user sessions.
+          }
+        },
+        remove(name: string, options: CookieOptions) {
+          try {
+            cookieStore.set({ name, value: '', ...options });
+          } catch (error) {
+            // The `delete` method was called from a Server Component.
+            // This can be ignored if you have middleware refreshing
+            // user sessions.
+          }
+        },
+      },
+    },
+  );
+}
+
+export function createRouteHandlerClient(request: NextRequest) {
+  const response = NextResponse.next();
+
+  return createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    {
+      cookies: {
+        get(name: string) {
+          return request.cookies.get(name)?.value;
+        },
+        set(name: string, value: string, options: CookieOptions) {
+          response.cookies.set({
+            name,
+            value,
+            ...options,
+          });
+        },
+        remove(name: string, options: CookieOptions) {
+          response.cookies.set({
+            name,
+            value: '',
+            ...options,
+          });
+        },
+      },
+    },
+  );
+}
+
+export function createAdminClient() {
+  return createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    {
+      cookies: {
+        get() {
+          return undefined;
+        },
+        set() {
+          // No-op for admin client
+        },
+        remove() {
+          // No-op for admin client
+        },
+      },
+    },
+  );
+}
+
+// Helper function to get user from server-side
+export async function getUser() {
+  const supabase = createClient();
+
+  try {
+    const {
+      data: { user },
+      error,
+    } = await supabase.auth.getUser();
+
+    if (error) {
+      console.error('Error getting user:', error);
+      return null;
+    }
+
+    return user;
+  } catch (error) {
+    console.error('Error in getUser:', error);
+    return null;
+  }
+}
+
+// Helper function to get session from server-side
+export async function getSession() {
+  const supabase = createClient();
+
+  try {
+    const {
+      data: { session },
+      error,
+    } = await supabase.auth.getSession();
+
+    if (error) {
+      console.error('Error getting session:', error);
+      return null;
+    }
+
+    return session;
+  } catch (error) {
+    console.error('Error in getSession:', error);
+    return null;
+  }
+}
+
+// Helper function to check if user is authenticated
+export async function isAuthenticated(): Promise<boolean> {
+  const user = await getUser();
+  return !!user;
+}
+
+// Helper function to get user role
+export async function getUserRole(userId?: string): Promise<string | null> {
+  const supabase = createClient();
+
+  try {
+    let targetUserId = userId;
+
+    if (!targetUserId) {
+      const user = await getUser();
+      if (!user) return null;
+      targetUserId = user.id;
+    }
+
+    const { data, error } = await supabase
+      .from('user_roles')
+      .select('role')
+      .eq('user_id', targetUserId)
+      .single();
+
+    if (error) {
+      console.error('Error getting user role:', error);
+      return null;
+    }
+
+    return data?.role || null;
+  } catch (error) {
+    console.error('Error in getUserRole:', error);
+    return null;
+  }
+}
+
+// Helper function to check if user has specific permission
+export async function hasPermission(
+  permission: string,
+  userId?: string,
+): Promise<boolean> {
+  const supabase = createClient();
+
+  try {
+    let targetUserId = userId;
+
+    if (!targetUserId) {
+      const user = await getUser();
+      if (!user) return false;
+      targetUserId = user.id;
+    }
+
+    const { data, error } = await supabase
+      .from('user_permissions')
+      .select('permission')
+      .eq('user_id', targetUserId)
+      .eq('permission', permission)
+      .single();
+
+    if (error && error.code !== 'PGRST116') {
+      console.error('Error checking permission:', error);
+      return false;
+    }
+
+    return !!data;
+  } catch (error) {
+    console.error('Error in hasPermission:', error);
+    return false;
+  }
+}
+
+// Helper function to require authentication
+export async function requireAuth() {
+  const user = await getUser();
+
+  if (!user) {
+    throw new Error('Authentication required');
+  }
+
+  return user;
+}
+
+// Helper function to require specific role
+export async function requireRole(requiredRole: string) {
+  const user = await requireAuth();
+  const userRole = await getUserRole(user.id);
+
+  if (userRole !== requiredRole) {
+    throw new Error(`Role '${requiredRole}' required`);
+  }
+
+  return user;
+}
+
+// Helper function to require specific permission
+export async function requirePermission(permission: string) {
+  const user = await requireAuth();
+  const hasRequiredPermission = await hasPermission(permission, user.id);
+
+  if (!hasRequiredPermission) {
+    throw new Error(`Permission '${permission}' required`);
+  }
+
+  return user;
+}
+
+// Type definitions for better TypeScript support
+export type SupabaseClient = ReturnType<typeof createClient>;
+export type SupabaseAdminClient = ReturnType<typeof createAdminClient>;
+
+// Export commonly used types
+export type { User, Session } from '@supabase/supabase-js';

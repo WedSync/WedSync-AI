@@ -1,0 +1,112 @@
+name: Lighthouse CI - Performance Monitoring
+on: 
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  lighthouse:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: wedsync/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ./wedsync
+        run: npm ci
+
+      - name: Build application
+        working-directory: ./wedsync
+        run: npm run build
+        env:
+          # Set required environment variables for build
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          NEXTAUTH_SECRET: ${{ secrets.NEXTAUTH_SECRET }}
+          NEXTAUTH_URL: http://localhost:3000
+
+      - name: Start application
+        working-directory: ./wedsync
+        run: |
+          npm start &
+          # Wait for app to be ready
+          npx wait-on http://localhost:3000 --timeout 60000
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          NEXTAUTH_SECRET: ${{ secrets.NEXTAUTH_SECRET }}
+          NEXTAUTH_URL: http://localhost:3000
+
+      - name: Run Lighthouse CI
+        uses: treosh/lighthouse-ci-action@v10
+        with:
+          configPath: './wedsync/lighthouserc.js'
+          uploadArtifacts: true
+          temporaryPublicStorage: true
+        env:
+          LHCI_GITHUB_APP_TOKEN: ${{ secrets.LHCI_GITHUB_APP_TOKEN }}
+
+      - name: Comment Lighthouse results
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        with:
+          script: |
+            const fs = require('fs');
+            const path = './wedsync/lhci_reports/manifest.json';
+            
+            if (fs.existsSync(path)) {
+              const manifest = JSON.parse(fs.readFileSync(path, 'utf8'));
+              const summary = manifest.reduce((acc, report) => {
+                const scores = report.summary;
+                Object.keys(scores).forEach(key => {
+                  if (!acc[key]) acc[key] = [];
+                  acc[key].push(scores[key]);
+                });
+                return acc;
+              }, {});
+              
+              const avgScores = Object.keys(summary).reduce((acc, key) => {
+                acc[key] = (summary[key].reduce((a, b) => a + b, 0) / summary[key].length).toFixed(2);
+                return acc;
+              }, {});
+              
+              const comment = `## 🚨 Lighthouse Performance Report
+              
+              | Metric | Score | Status |
+              |--------|--------|--------|
+              | Performance | ${avgScores.performance || 'N/A'} | ${avgScores.performance >= 0.9 ? '✅' : avgScores.performance >= 0.7 ? '⚠️' : '❌'} |
+              | Accessibility | ${avgScores.accessibility || 'N/A'} | ${avgScores.accessibility >= 0.9 ? '✅' : avgScores.accessibility >= 0.7 ? '⚠️' : '❌'} |
+              | Best Practices | ${avgScores['best-practices'] || 'N/A'} | ${avgScores['best-practices'] >= 0.9 ? '✅' : avgScores['best-practices'] >= 0.7 ? '⚠️' : '❌'} |
+              | SEO | ${avgScores.seo || 'N/A'} | ${avgScores.seo >= 0.9 ? '✅' : avgScores.seo >= 0.7 ? '⚠️' : '❌'} |
+              
+              **Wedding Context**: Performance scores are critical for wedding day operations.
+              - Performance < 70: 🚨 **Critical** - May impact wedding day user experience
+              - Performance 70-89: ⚠️ **Warning** - Monitor closely for wedding events
+              - Performance ≥ 90: ✅ **Good** - Wedding-ready performance
+              
+              [View detailed report](${process.env.GITHUB_SERVER_URL}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`;
+              
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: comment
+              });
+            }
+
+      - name: Upload Lighthouse artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lighthouse-reports
+          path: wedsync/lhci_reports/
+          retention-days: 30

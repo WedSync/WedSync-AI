@@ -1,0 +1,308 @@
+/**
+ * Feedback Responses API Routes
+ * Feature: WS-236 User Feedback System
+ * Handles responses/comments on feedback submissions
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
+import { createClient } from '@/lib/supabase/server';
+import { rateLimit } from '@/lib/rate-limiter';
+
+interface RouteContext {
+  params: { id: string };
+}
+
+// Validation schemas
+const createResponseSchema = z.object({
+  response_text: z.string().min(1, 'Response text is required').max(5000),
+  response_type: z
+    .enum(['comment', 'status_update', 'resolution', 'internal_note'])
+    .default('comment'),
+  is_internal: z.boolean().default(false),
+  is_customer_visible: z.boolean().default(true),
+});
+
+/**
+ * GET /api/feedback/[id]/responses - Get responses for a feedback submission
+ */
+export async function GET(request: NextRequest, { params }: RouteContext) {
+  try {
+    // Rate limiting
+    const rateLimitResult = await rateLimit(request, {
+      max: 100,
+      windowMs: 60000,
+    });
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { error: 'Too many requests' },
+        { status: 429, headers: rateLimitResult.headers },
+      );
+    }
+
+    const supabase = createClient();
+    const { id: feedbackId } = params;
+
+    // Validate ID format
+    if (!feedbackId || !/^[0-9a-f-]{36}$/.test(feedbackId)) {
+      return NextResponse.json(
+        { error: 'Invalid feedback ID format' },
+        { status: 400 },
+      );
+    }
+
+    // Check authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get user profile and organization
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('organization_id, role')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!userProfile?.organization_id) {
+      return NextResponse.json(
+        { error: 'User organization not found' },
+        { status: 403 },
+      );
+    }
+
+    // Verify feedback submission exists and belongs to organization
+    const { data: feedback, error: feedbackError } = await supabase
+      .from('feedback_submissions')
+      .select('id, organization_id')
+      .eq('id', feedbackId)
+      .eq('organization_id', userProfile.organization_id)
+      .is('deleted_at', null)
+      .single();
+
+    if (feedbackError || !feedback) {
+      return NextResponse.json(
+        { error: 'Feedback submission not found' },
+        { status: 404 },
+      );
+    }
+
+    // Build query for responses
+    let query = supabase
+      .from('feedback_responses')
+      .select(
+        `
+        id,
+        response_text,
+        response_type,
+        is_internal,
+        is_customer_visible,
+        created_at,
+        updated_at,
+        author:auth.users(email, raw_user_meta_data)
+      `,
+      )
+      .eq('feedback_id', feedbackId)
+      .is('deleted_at', null)
+      .order('created_at', { ascending: true });
+
+    // Filter internal responses for non-admin users
+    if (!['admin', 'owner'].includes(userProfile.role)) {
+      query = query.eq('is_internal', false);
+    }
+
+    const { data: responses, error } = await query;
+
+    if (error) {
+      console.error('Error fetching feedback responses:', error);
+      return NextResponse.json(
+        { error: 'Failed to fetch feedback responses' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      data: responses,
+    });
+  } catch (error) {
+    console.error(`GET /api/feedback/${params.id}/responses error:`, error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * POST /api/feedback/[id]/responses - Add a response to feedback submission
+ */
+export async function POST(request: NextRequest, { params }: RouteContext) {
+  try {
+    // Rate limiting
+    const rateLimitResult = await rateLimit(request, {
+      max: 20,
+      windowMs: 60000,
+    });
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { error: 'Too many responses. Please wait before submitting again.' },
+        { status: 429, headers: rateLimitResult.headers },
+      );
+    }
+
+    const supabase = createClient();
+    const { id: feedbackId } = params;
+
+    // Validate ID format
+    if (!feedbackId || !/^[0-9a-f-]{36}$/.test(feedbackId)) {
+      return NextResponse.json(
+        { error: 'Invalid feedback ID format' },
+        { status: 400 },
+      );
+    }
+
+    // Check authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get user profile and organization
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('organization_id, role')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!userProfile?.organization_id) {
+      return NextResponse.json(
+        { error: 'User organization not found' },
+        { status: 403 },
+      );
+    }
+
+    // Verify feedback submission exists and belongs to organization
+    const { data: feedback, error: feedbackError } = await supabase
+      .from('feedback_submissions')
+      .select('id, organization_id, status, user_id')
+      .eq('id', feedbackId)
+      .eq('organization_id', userProfile.organization_id)
+      .is('deleted_at', null)
+      .single();
+
+    if (feedbackError || !feedback) {
+      return NextResponse.json(
+        { error: 'Feedback submission not found' },
+        { status: 404 },
+      );
+    }
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validatedData = createResponseSchema.parse(body);
+
+    // Only admins can create internal notes or status updates
+    if (
+      (validatedData.is_internal ||
+        validatedData.response_type !== 'comment') &&
+      !['admin', 'owner'].includes(userProfile.role)
+    ) {
+      return NextResponse.json(
+        {
+          error: 'Admin access required for internal notes and status updates',
+        },
+        { status: 403 },
+      );
+    }
+
+    // Prepare response data
+    const responseData = {
+      feedback_id: feedbackId,
+      organization_id: userProfile.organization_id,
+      author_id: user.id,
+      ...validatedData,
+    };
+
+    // Insert response
+    const { data: response, error: insertError } = await supabase
+      .from('feedback_responses')
+      .insert(responseData)
+      .select(
+        `
+        id,
+        response_text,
+        response_type,
+        is_internal,
+        is_customer_visible,
+        created_at,
+        author:auth.users(email, raw_user_meta_data)
+      `,
+      )
+      .single();
+
+    if (insertError) {
+      console.error('Error creating feedback response:', insertError);
+      return NextResponse.json(
+        { error: 'Failed to create feedback response' },
+        { status: 500 },
+      );
+    }
+
+    // Update feedback submission's updated_at timestamp
+    await supabase
+      .from('feedback_submissions')
+      .update({ updated_at: new Date().toISOString() })
+      .eq('id', feedbackId);
+
+    // Send notification to feedback author if response is customer-visible and from admin
+    if (
+      validatedData.is_customer_visible &&
+      ['admin', 'owner'].includes(userProfile.role) &&
+      feedback.user_id !== user.id
+    ) {
+      // Insert notification (if notification system exists)
+      await supabase
+        .from('notifications')
+        .insert({
+          organization_id: userProfile.organization_id,
+          user_id: feedback.user_id,
+          type: 'feedback_response',
+          title: 'New Response to Your Feedback',
+          message: `Your feedback submission has received a response: ${validatedData.response_text.substring(0, 100)}...`,
+          metadata: {
+            feedback_id: feedbackId,
+            response_id: response.id,
+          },
+        })
+        .catch((error) => console.log('Notification insert failed:', error)); // Don't fail the request if notification fails
+    }
+
+    return NextResponse.json(
+      {
+        success: true,
+        data: response,
+        message: 'Response added successfully',
+      },
+      { status: 201 },
+    );
+  } catch (error) {
+    console.error(`POST /api/feedback/${params.id}/responses error:`, error);
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid response data', details: error.errors },
+        { status: 400 },
+      );
+    }
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

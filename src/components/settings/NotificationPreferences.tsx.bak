@@ -1,0 +1,872 @@
+/**
+ * WS-155: Granular Mobile Notification Preferences
+ * Complete control over mobile messaging and event notifications
+ */
+
+import React, { useState, useEffect } from 'react';
+import { 
+  Bell, 
+  BellOff, 
+  MessageSquare, 
+  Calendar,
+  Clock,
+  Users,
+  AlertCircle,
+  Mail,
+  Phone,
+  Smartphone,
+  Volume2,
+  Vibrate,
+  Moon,
+  Sun,
+  Settings,
+  Check,
+  X,
+  ChevronRight,
+  Info
+} from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { supabase } from '@/lib/supabase/client';
+import { pushNotificationSystem } from '@/lib/services/push-notification-system';
+import { Switch } from '@/components/ui/switch';
+import { motion, AnimatePresence } from 'framer-motion';
+
+// Notification categories
+interface NotificationCategory {
+  id: string;
+  name: string;
+  description: string;
+  icon: React.ReactNode;
+  settings: NotificationSetting[];
+}
+
+// Individual notification setting
+interface NotificationSetting {
+  id: string;
+  label: string;
+  description?: string;
+  type: 'toggle' | 'select' | 'range' | 'time';
+  value: any;
+  options?: any[];
+  min?: number;
+  max?: number;
+  step?: number;
+}
+
+// User preferences
+interface UserNotificationPreferences {
+  userId: string;
+  globalEnabled: boolean;
+  quietHours: {
+    enabled: boolean;
+    startTime: string;
+    endTime: string;
+    timezone: string;
+  };
+  channels: {
+    push: boolean;
+    email: boolean;
+    sms: boolean;
+    inApp: boolean;
+  };
+  categories: {
+    messages: NotificationCategoryPreferences;
+    events: NotificationCategoryPreferences;
+    reminders: NotificationCategoryPreferences;
+    updates: NotificationCategoryPreferences;
+    social: NotificationCategoryPreferences;
+  };
+  soundSettings: {
+    enabled: boolean;
+    volume: number;
+    customSound?: string;
+  };
+  vibrationSettings: {
+    enabled: boolean;
+    pattern: number[];
+  };
+  deviceSettings: Record<string, any>;
+}
+
+// Category preferences
+interface NotificationCategoryPreferences {
+  enabled: boolean;
+  priority: 'high' | 'normal' | 'low';
+  showPreview: boolean;
+  grouping: boolean;
+  sound?: string;
+  vibration?: boolean;
+  filters?: any;
+}
+
+interface NotificationPreferencesProps {
+  userId: string;
+  className?: string;
+  onSave?: (preferences: UserNotificationPreferences) => void;
+}
+
+export function NotificationPreferences({
+  userId,
+  className,
+  onSave
+}: NotificationPreferencesProps) {
+  const [preferences, setPreferences] = useState<UserNotificationPreferences | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [expandedCategory, setExpandedCategory] = useState<string | null>(null);
+  const [testMode, setTestMode] = useState(false);
+  const [permissionStatus, setPermissionStatus] = useState<NotificationPermission>('default');
+
+  // Default preferences
+  const getDefaultPreferences = (): UserNotificationPreferences => ({
+    userId,
+    globalEnabled: true,
+    quietHours: {
+      enabled: false,
+      startTime: '22:00',
+      endTime: '08:00',
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
+    },
+    channels: {
+      push: true,
+      email: true,
+      sms: false,
+      inApp: true
+    },
+    categories: {
+      messages: {
+        enabled: true,
+        priority: 'high',
+        showPreview: true,
+        grouping: true,
+        sound: 'default',
+        vibration: true
+      },
+      events: {
+        enabled: true,
+        priority: 'high',
+        showPreview: true,
+        grouping: false,
+        sound: 'default',
+        vibration: true
+      },
+      reminders: {
+        enabled: true,
+        priority: 'normal',
+        showPreview: true,
+        grouping: false,
+        sound: 'reminder',
+        vibration: true
+      },
+      updates: {
+        enabled: true,
+        priority: 'low',
+        showPreview: false,
+        grouping: true,
+        sound: undefined,
+        vibration: false
+      },
+      social: {
+        enabled: true,
+        priority: 'normal',
+        showPreview: true,
+        grouping: true,
+        sound: 'social',
+        vibration: false
+      }
+    },
+    soundSettings: {
+      enabled: true,
+      volume: 80,
+      customSound: undefined
+    },
+    vibrationSettings: {
+      enabled: true,
+      pattern: [200, 100, 200]
+    },
+    deviceSettings: {}
+  });
+
+  // Notification categories configuration
+  const categories: NotificationCategory[] = [
+    {
+      id: 'messages',
+      name: 'Messages',
+      description: 'Direct messages and communications',
+      icon: <MessageSquare className="w-5 h-5" />,
+      settings: [
+        {
+          id: 'new_messages',
+          label: 'New Messages',
+          description: 'Notify when you receive new messages',
+          type: 'toggle',
+          value: preferences?.categories.messages.enabled ?? true
+        },
+        {
+          id: 'message_preview',
+          label: 'Show Message Preview',
+          description: 'Display message content in notifications',
+          type: 'toggle',
+          value: preferences?.categories.messages.showPreview ?? true
+        },
+        {
+          id: 'message_grouping',
+          label: 'Group Messages',
+          description: 'Combine multiple messages from same sender',
+          type: 'toggle',
+          value: preferences?.categories.messages.grouping ?? true
+        },
+        {
+          id: 'message_priority',
+          label: 'Priority Level',
+          type: 'select',
+          value: preferences?.categories.messages.priority ?? 'high',
+          options: [
+            { value: 'high', label: 'High - Always notify' },
+            { value: 'normal', label: 'Normal - Respect quiet hours' },
+            { value: 'low', label: 'Low - Silent notifications' }
+          ]
+        }
+      ]
+    },
+    {
+      id: 'events',
+      name: 'Event Updates',
+      description: 'Wedding timeline and schedule changes',
+      icon: <Calendar className="w-5 h-5" />,
+      settings: [
+        {
+          id: 'event_reminders',
+          label: 'Event Reminders',
+          description: 'Remind before events start',
+          type: 'toggle',
+          value: preferences?.categories.events.enabled ?? true
+        },
+        {
+          id: 'reminder_time',
+          label: 'Reminder Time',
+          description: 'Minutes before event',
+          type: 'select',
+          value: 30,
+          options: [
+            { value: 15, label: '15 minutes' },
+            { value: 30, label: '30 minutes' },
+            { value: 60, label: '1 hour' },
+            { value: 120, label: '2 hours' },
+            { value: 1440, label: '1 day' }
+          ]
+        },
+        {
+          id: 'event_changes',
+          label: 'Event Changes',
+          description: 'Notify about schedule changes',
+          type: 'toggle',
+          value: true
+        }
+      ]
+    },
+    {
+      id: 'reminders',
+      name: 'RSVP & Tasks',
+      description: 'RSVP deadlines and action items',
+      icon: <Clock className="w-5 h-5" />,
+      settings: [
+        {
+          id: 'rsvp_reminders',
+          label: 'RSVP Reminders',
+          type: 'toggle',
+          value: preferences?.categories.reminders.enabled ?? true
+        },
+        {
+          id: 'task_reminders',
+          label: 'Task Reminders',
+          type: 'toggle',
+          value: true
+        },
+        {
+          id: 'deadline_alerts',
+          label: 'Deadline Alerts',
+          description: 'Alert before deadlines',
+          type: 'toggle',
+          value: true
+        }
+      ]
+    },
+    {
+      id: 'updates',
+      name: 'System Updates',
+      description: 'App updates and system notifications',
+      icon: <AlertCircle className="w-5 h-5" />,
+      settings: [
+        {
+          id: 'system_updates',
+          label: 'System Updates',
+          type: 'toggle',
+          value: preferences?.categories.updates.enabled ?? true
+        },
+        {
+          id: 'feature_announcements',
+          label: 'New Features',
+          type: 'toggle',
+          value: false
+        },
+        {
+          id: 'maintenance_alerts',
+          label: 'Maintenance Alerts',
+          type: 'toggle',
+          value: true
+        }
+      ]
+    },
+    {
+      id: 'social',
+      name: 'Social Activity',
+      description: 'Guest interactions and social features',
+      icon: <Users className="w-5 h-5" />,
+      settings: [
+        {
+          id: 'guest_responses',
+          label: 'Guest Responses',
+          type: 'toggle',
+          value: preferences?.categories.social.enabled ?? true
+        },
+        {
+          id: 'photo_sharing',
+          label: 'Photo Sharing',
+          type: 'toggle',
+          value: true
+        },
+        {
+          id: 'mentions',
+          label: 'Mentions & Tags',
+          type: 'toggle',
+          value: true
+        }
+      ]
+    }
+  ];
+
+  // Load preferences
+  useEffect(() => {
+    loadPreferences();
+    checkPermissionStatus();
+  }, [userId]);
+
+  // Load user preferences from database
+  const loadPreferences = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('notification_preferences')
+        .select('*')
+        .eq('user_id', userId)
+        .single();
+
+      if (error && error.code !== 'PGRST116') {
+        throw error;
+      }
+
+      if (data) {
+        setPreferences(data);
+      } else {
+        // Use default preferences
+        const defaults = getDefaultPreferences();
+        setPreferences(defaults);
+        
+        // Save defaults to database
+        await savePreferencesToDatabase(defaults);
+      }
+
+    } catch (error) {
+      console.error('Error loading preferences:', error);
+      setPreferences(getDefaultPreferences());
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Check notification permission status
+  const checkPermissionStatus = () => {
+    if (pushNotificationSystem.isSupported()) {
+      setPermissionStatus(pushNotificationSystem.getPermissionStatus());
+    }
+  };
+
+  // Request notification permission
+  const requestPermission = async () => {
+    const permission = await pushNotificationSystem.requestPermission();
+    setPermissionStatus(permission);
+    
+    if (permission === 'granted' && preferences) {
+      setPreferences({
+        ...preferences,
+        channels: { ...preferences.channels, push: true }
+      });
+    }
+  };
+
+  // Save preferences to database
+  const savePreferencesToDatabase = async (prefs: UserNotificationPreferences) => {
+    try {
+      const { error } = await supabase
+        .from('notification_preferences')
+        .upsert({
+          user_id: userId,
+          ...prefs,
+          updated_at: new Date().toISOString()
+        });
+
+      if (error) throw error;
+
+    } catch (error) {
+      console.error('Error saving preferences:', error);
+      throw error;
+    }
+  };
+
+  // Save preferences
+  const savePreferences = async () => {
+    if (!preferences) return;
+
+    setSaving(true);
+    try {
+      await savePreferencesToDatabase(preferences);
+      onSave?.(preferences);
+      
+      // Show success feedback
+      if ('vibrate' in navigator && preferences.vibrationSettings.enabled) {
+        navigator.vibrate(50);
+      }
+
+    } catch (error) {
+      console.error('Error saving preferences:', error);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Update preference value
+  const updatePreference = (path: string[], value: any) => {
+    if (!preferences) return;
+
+    const updated = { ...preferences };
+    let current: any = updated;
+
+    for (let i = 0; i < path.length - 1; i++) {
+      current = current[path[i]];
+    }
+
+    current[path[path.length - 1]] = value;
+    setPreferences(updated);
+  };
+
+  // Test notification
+  const sendTestNotification = async (category: string) => {
+    setTestMode(true);
+    try {
+      await pushNotificationSystem.sendNotification(
+        userId,
+        'SYSTEM_ALERT',
+        {
+          title: `Test ${category} Notification`,
+          body: 'This is a test notification. If you see this, notifications are working!',
+          icon: '/icons/notification-icon.png',
+          badge: '/icons/badge-icon.png',
+          vibrate: preferences?.vibrationSettings.enabled ? preferences.vibrationSettings.pattern : undefined
+        }
+      );
+    } catch (error) {
+      console.error('Error sending test notification:', error);
+    } finally {
+      setTimeout(() => setTestMode(false), 2000);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className={cn('animate-pulse', className)}>
+        <div className="space-y-4">
+          {[...Array(5)].map((_, i) => (
+            <div key={i} className="h-20 bg-gray-200 dark:bg-gray-700 rounded-xl" />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (!preferences) return null;
+
+  return (
+    <div className={cn('space-y-6', className)}>
+      {/* Permission Status */}
+      {permissionStatus === 'denied' && (
+        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl p-4">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-red-500 mt-0.5" />
+            <div className="flex-1">
+              <h4 className="font-medium text-red-900 dark:text-red-100">
+                Notifications Blocked
+              </h4>
+              <p className="text-sm text-red-700 dark:text-red-300 mt-1">
+                Push notifications are blocked in your browser. Please enable them in your browser settings to receive notifications.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {permissionStatus === 'default' && (
+        <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-xl p-4">
+          <div className="flex items-start gap-3">
+            <Info className="w-5 h-5 text-blue-500 mt-0.5" />
+            <div className="flex-1">
+              <h4 className="font-medium text-blue-900 dark:text-blue-100">
+                Enable Notifications
+              </h4>
+              <p className="text-sm text-blue-700 dark:text-blue-300 mt-1">
+                Allow notifications to stay updated with messages and events.
+              </p>
+              <button
+                onClick={requestPermission}
+                className="mt-2 px-3 py-1 bg-blue-500 text-white text-sm rounded-lg hover:bg-blue-600"
+              >
+                Enable Notifications
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Global Settings */}
+      <div className="bg-white dark:bg-gray-800 rounded-xl p-6 shadow-sm">
+        <div className="flex items-center justify-between mb-6">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-blue-100 dark:bg-blue-900/20 rounded-lg">
+              <Bell className="w-5 h-5 text-blue-500" />
+            </div>
+            <div>
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+                Notification Settings
+              </h3>
+              <p className="text-sm text-gray-500 dark:text-gray-400">
+                Customize how you receive notifications
+              </p>
+            </div>
+          </div>
+          <Switch
+            checked={preferences.globalEnabled}
+            onCheckedChange={(checked) => updatePreference(['globalEnabled'], checked)}
+          />
+        </div>
+
+        {/* Notification Channels */}
+        <div className="space-y-4">
+          <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300">
+            Notification Channels
+          </h4>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <button
+              onClick={() => updatePreference(['channels', 'push'], !preferences.channels.push)}
+              disabled={permissionStatus === 'denied'}
+              className={cn(
+                'p-3 rounded-lg border transition-all',
+                preferences.channels.push 
+                  ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20' 
+                  : 'border-gray-300 dark:border-gray-600',
+                permissionStatus === 'denied' && 'opacity-50 cursor-not-allowed'
+              )}
+            >
+              <Smartphone className={cn(
+                'w-5 h-5 mx-auto mb-1',
+                preferences.channels.push ? 'text-blue-500' : 'text-gray-400'
+              )} />
+              <span className="text-xs">Push</span>
+            </button>
+
+            <button
+              onClick={() => updatePreference(['channels', 'email'], !preferences.channels.email)}
+              className={cn(
+                'p-3 rounded-lg border transition-all',
+                preferences.channels.email 
+                  ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20' 
+                  : 'border-gray-300 dark:border-gray-600'
+              )}
+            >
+              <Mail className={cn(
+                'w-5 h-5 mx-auto mb-1',
+                preferences.channels.email ? 'text-blue-500' : 'text-gray-400'
+              )} />
+              <span className="text-xs">Email</span>
+            </button>
+
+            <button
+              onClick={() => updatePreference(['channels', 'sms'], !preferences.channels.sms)}
+              className={cn(
+                'p-3 rounded-lg border transition-all',
+                preferences.channels.sms 
+                  ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20' 
+                  : 'border-gray-300 dark:border-gray-600'
+              )}
+            >
+              <Phone className={cn(
+                'w-5 h-5 mx-auto mb-1',
+                preferences.channels.sms ? 'text-blue-500' : 'text-gray-400'
+              )} />
+              <span className="text-xs">SMS</span>
+            </button>
+
+            <button
+              onClick={() => updatePreference(['channels', 'inApp'], !preferences.channels.inApp)}
+              className={cn(
+                'p-3 rounded-lg border transition-all',
+                preferences.channels.inApp 
+                  ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20' 
+                  : 'border-gray-300 dark:border-gray-600'
+              )}
+            >
+              <Bell className={cn(
+                'w-5 h-5 mx-auto mb-1',
+                preferences.channels.inApp ? 'text-blue-500' : 'text-gray-400'
+              )} />
+              <span className="text-xs">In-App</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Quiet Hours */}
+        <div className="mt-6 pt-6 border-t border-gray-200 dark:border-gray-700">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-3">
+              <Moon className="w-5 h-5 text-gray-400" />
+              <div>
+                <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Quiet Hours
+                </h4>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Silence non-urgent notifications
+                </p>
+              </div>
+            </div>
+            <Switch
+              checked={preferences.quietHours.enabled}
+              onCheckedChange={(checked) => updatePreference(['quietHours', 'enabled'], checked)}
+            />
+          </div>
+          
+          {preferences.quietHours.enabled && (
+            <div className="grid grid-cols-2 gap-3 ml-8">
+              <div>
+                <label className="text-xs text-gray-500 dark:text-gray-400">Start Time</label>
+                <input
+                  type="time"
+                  value={preferences.quietHours.startTime}
+                  onChange={(e) => updatePreference(['quietHours', 'startTime'], e.target.value)}
+                  className="w-full px-3 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-900"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 dark:text-gray-400">End Time</label>
+                <input
+                  type="time"
+                  value={preferences.quietHours.endTime}
+                  onChange={(e) => updatePreference(['quietHours', 'endTime'], e.target.value)}
+                  className="w-full px-3 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-900"
+                />
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Sound & Vibration */}
+        <div className="mt-6 pt-6 border-t border-gray-200 dark:border-gray-700">
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <Volume2 className="w-5 h-5 text-gray-400" />
+                <div>
+                  <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Sound
+                  </h4>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    Notification sounds
+                  </p>
+                </div>
+              </div>
+              <Switch
+                checked={preferences.soundSettings.enabled}
+                onCheckedChange={(checked) => updatePreference(['soundSettings', 'enabled'], checked)}
+              />
+            </div>
+
+            {preferences.soundSettings.enabled && (
+              <div className="ml-8">
+                <label className="text-xs text-gray-500 dark:text-gray-400">
+                  Volume: {preferences.soundSettings.volume}%
+                </label>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="10"
+                  value={preferences.soundSettings.volume}
+                  onChange={(e) => updatePreference(['soundSettings', 'volume'], parseInt(e.target.value))}
+                  className="w-full mt-1"
+                />
+              </div>
+            )}
+
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <Vibrate className="w-5 h-5 text-gray-400" />
+                <div>
+                  <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Vibration
+                  </h4>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    Haptic feedback
+                  </p>
+                </div>
+              </div>
+              <Switch
+                checked={preferences.vibrationSettings.enabled}
+                onCheckedChange={(checked) => updatePreference(['vibrationSettings', 'enabled'], checked)}
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Notification Categories */}
+      <div className="space-y-3">
+        {categories.map(category => (
+          <motion.div
+            key={category.id}
+            className="bg-white dark:bg-gray-800 rounded-xl shadow-sm overflow-hidden"
+          >
+            <button
+              onClick={() => setExpandedCategory(
+                expandedCategory === category.id ? null : category.id
+              )}
+              className="w-full p-4 flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
+            >
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-gray-100 dark:bg-gray-700 rounded-lg">
+                  {category.icon}
+                </div>
+                <div className="text-left">
+                  <h4 className="font-medium text-gray-900 dark:text-white">
+                    {category.name}
+                  </h4>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    {category.description}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {testMode && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      sendTestNotification(category.id);
+                    }}
+                    className="px-2 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600"
+                  >
+                    Test
+                  </button>
+                )}
+                <ChevronRight className={cn(
+                  'w-5 h-5 text-gray-400 transition-transform',
+                  expandedCategory === category.id && 'rotate-90'
+                )} />
+              </div>
+            </button>
+
+            <AnimatePresence>
+              {expandedCategory === category.id && (
+                <motion.div
+                  initial={{ height: 0 }}
+                  animate={{ height: 'auto' }}
+                  exit={{ height: 0 }}
+                  transition={{ duration: 0.2 }}
+                  className="border-t border-gray-200 dark:border-gray-700"
+                >
+                  <div className="p-4 space-y-4">
+                    {category.settings.map(setting => (
+                      <div key={setting.id} className="flex items-center justify-between">
+                        <div className="flex-1">
+                          <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                            {setting.label}
+                          </label>
+                          {setting.description && (
+                            <p className="text-xs text-gray-500 dark:text-gray-400">
+                              {setting.description}
+                            </p>
+                          )}
+                        </div>
+                        <div>
+                          {setting.type === 'toggle' && (
+                            <Switch
+                              checked={setting.value}
+                              onCheckedChange={(checked) => {
+                                // Update category setting
+                                const categoryKey = category.id as keyof typeof preferences.categories;
+                                updatePreference(
+                                  ['categories', categoryKey, setting.id.replace(`${category.id}_`, '')],
+                                  checked
+                                );
+                              }}
+                            />
+                          )}
+                          {setting.type === 'select' && (
+                            <select
+                              value={setting.value}
+                              onChange={(e) => {
+                                const categoryKey = category.id as keyof typeof preferences.categories;
+                                updatePreference(
+                                  ['categories', categoryKey, setting.id.replace(`${category.id}_`, '')],
+                                  e.target.value
+                                );
+                              }}
+                              className="px-3 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-900"
+                            >
+                              {setting.options?.map(option => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </motion.div>
+        ))}
+      </div>
+
+      {/* Actions */}
+      <div className="flex gap-3">
+        <button
+          onClick={savePreferences}
+          disabled={saving}
+          className={cn(
+            'flex-1 py-2 px-4 rounded-lg font-medium transition-colors',
+            'bg-blue-500 text-white hover:bg-blue-600',
+            saving && 'opacity-50 cursor-not-allowed'
+          )}
+        >
+          {saving ? 'Saving...' : 'Save Preferences'}
+        </button>
+        
+        <button
+          onClick={() => setTestMode(!testMode)}
+          className="py-2 px-4 bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600"
+        >
+          {testMode ? 'Exit Test Mode' : 'Test Mode'}
+        </button>
+      </div>
+    </div>
+  );
+}

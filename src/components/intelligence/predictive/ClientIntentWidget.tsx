@@ -1,0 +1,427 @@
+// WS-055: Client Intent Scoring Widget
+// Displays real-time client intent scores and trends
+
+'use client';
+
+import { useState, useMemo } from 'react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Progress } from '@/components/ui/progress';
+import {
+  TrendingUp,
+  TrendingDown,
+  Minus,
+  Users,
+  Clock,
+  Target,
+  Activity,
+} from 'lucide-react';
+
+import type { IntentScore } from '@/lib/ml/prediction/types';
+
+interface ClientIntentWidgetProps {
+  clientScores: IntentScore[];
+  timeRange: '24h' | '7d' | '30d' | '90d';
+  detailed?: boolean;
+}
+
+interface IntentSummary {
+  totalClients: number;
+  averageScore: number;
+  highIntentCount: number;
+  mediumIntentCount: number;
+  lowIntentCount: number;
+  trendDirection: 'up' | 'down' | 'stable';
+  trendPercentage: number;
+}
+
+export function ClientIntentWidget({
+  clientScores,
+  timeRange,
+  detailed = false,
+}: ClientIntentWidgetProps) {
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+
+  const intentSummary = useMemo((): IntentSummary => {
+    if (!clientScores.length) {
+      return {
+        totalClients: 0,
+        averageScore: 0,
+        highIntentCount: 0,
+        mediumIntentCount: 0,
+        lowIntentCount: 0,
+        trendDirection: 'stable',
+        trendPercentage: 0,
+      };
+    }
+
+    const totalScore = clientScores.reduce(
+      (sum, score) => sum + score.score,
+      0,
+    );
+    const averageScore = totalScore / clientScores.length;
+
+    const categoryCounts = clientScores.reduce(
+      (acc, score) => {
+        acc[score.category] = (acc[score.category] || 0) + 1;
+        return acc;
+      },
+      {} as Record<string, number>,
+    );
+
+    // Calculate trend direction (simplified - would use historical data)
+    const increasingTrend = clientScores.filter(
+      (s) => s.trend === 'increasing',
+    ).length;
+    const decreasingTrend = clientScores.filter(
+      (s) => s.trend === 'decreasing',
+    ).length;
+
+    let trendDirection: 'up' | 'down' | 'stable' = 'stable';
+    let trendPercentage = 0;
+
+    if (increasingTrend > decreasingTrend) {
+      trendDirection = 'up';
+      trendPercentage =
+        ((increasingTrend - decreasingTrend) / clientScores.length) * 100;
+    } else if (decreasingTrend > increasingTrend) {
+      trendDirection = 'down';
+      trendPercentage =
+        ((decreasingTrend - increasingTrend) / clientScores.length) * 100;
+    }
+
+    return {
+      totalClients: clientScores.length,
+      averageScore,
+      highIntentCount:
+        (categoryCounts.high || 0) + (categoryCounts.very_high || 0),
+      mediumIntentCount: categoryCounts.medium || 0,
+      lowIntentCount: categoryCounts.low || 0,
+      trendDirection,
+      trendPercentage,
+    };
+  }, [clientScores]);
+
+  const getCategoryColor = (category: string) => {
+    switch (category) {
+      case 'very_high':
+        return 'bg-green-500';
+      case 'high':
+        return 'bg-blue-500';
+      case 'medium':
+        return 'bg-yellow-500';
+      case 'low':
+        return 'bg-red-500';
+      default:
+        return 'bg-gray-500';
+    }
+  };
+
+  const getCategoryBadgeVariant = (category: string) => {
+    switch (category) {
+      case 'very_high':
+        return 'default';
+      case 'high':
+        return 'secondary';
+      case 'medium':
+        return 'outline';
+      case 'low':
+        return 'destructive';
+      default:
+        return 'outline';
+    }
+  };
+
+  const TrendIcon = ({
+    direction,
+  }: {
+    direction: 'up' | 'down' | 'stable';
+  }) => {
+    switch (direction) {
+      case 'up':
+        return <TrendingUp className="h-4 w-4 text-green-500" />;
+      case 'down':
+        return <TrendingDown className="h-4 w-4 text-red-500" />;
+      case 'stable':
+        return <Minus className="h-4 w-4 text-gray-500" />;
+    }
+  };
+
+  if (!detailed) {
+    return (
+      <div className="space-y-4">
+        {/* Summary Stats */}
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <div className="flex items-center space-x-2">
+              <Users className="h-4 w-4 text-muted-foreground" />
+              <span className="text-sm text-muted-foreground">
+                Total Clients
+              </span>
+            </div>
+            <p className="text-2xl font-bold">{intentSummary.totalClients}</p>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center space-x-2">
+              <Target className="h-4 w-4 text-muted-foreground" />
+              <span className="text-sm text-muted-foreground">
+                Avg Intent Score
+              </span>
+            </div>
+            <div className="flex items-center space-x-2">
+              <p className="text-2xl font-bold">
+                {intentSummary.averageScore.toFixed(1)}
+              </p>
+              <TrendIcon direction={intentSummary.trendDirection} />
+              <span className="text-sm text-muted-foreground">
+                {intentSummary.trendPercentage.toFixed(1)}%
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Intent Distribution */}
+        <div className="space-y-3">
+          <h4 className="text-sm font-medium">Intent Distribution</h4>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <div className="w-3 h-3 rounded-full bg-green-500"></div>
+                <span className="text-sm">High Intent</span>
+              </div>
+              <span className="text-sm font-medium">
+                {intentSummary.highIntentCount}
+              </span>
+            </div>
+            <Progress
+              value={
+                (intentSummary.highIntentCount /
+                  Math.max(1, intentSummary.totalClients)) *
+                100
+              }
+              className="h-2"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <div className="w-3 h-3 rounded-full bg-yellow-500"></div>
+                <span className="text-sm">Medium Intent</span>
+              </div>
+              <span className="text-sm font-medium">
+                {intentSummary.mediumIntentCount}
+              </span>
+            </div>
+            <Progress
+              value={
+                (intentSummary.mediumIntentCount /
+                  Math.max(1, intentSummary.totalClients)) *
+                100
+              }
+              className="h-2"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <div className="w-3 h-3 rounded-full bg-red-500"></div>
+                <span className="text-sm">Low Intent</span>
+              </div>
+              <span className="text-sm font-medium">
+                {intentSummary.lowIntentCount}
+              </span>
+            </div>
+            <Progress
+              value={
+                (intentSummary.lowIntentCount /
+                  Math.max(1, intentSummary.totalClients)) *
+                100
+              }
+              className="h-2"
+            />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Detailed Summary Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <Card>
+          <CardContent className="p-4">
+            <div className="space-y-2">
+              <div className="flex items-center space-x-2">
+                <Users className="h-4 w-4 text-blue-500" />
+                <span className="text-sm text-muted-foreground">
+                  Total Clients
+                </span>
+              </div>
+              <p className="text-2xl font-bold">{intentSummary.totalClients}</p>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="p-4">
+            <div className="space-y-2">
+              <div className="flex items-center space-x-2">
+                <Target className="h-4 w-4 text-green-500" />
+                <span className="text-sm text-muted-foreground">Avg Score</span>
+              </div>
+              <div className="flex items-center space-x-2">
+                <p className="text-2xl font-bold">
+                  {intentSummary.averageScore.toFixed(1)}
+                </p>
+                <TrendIcon direction={intentSummary.trendDirection} />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="p-4">
+            <div className="space-y-2">
+              <div className="flex items-center space-x-2">
+                <Activity className="h-4 w-4 text-purple-500" />
+                <span className="text-sm text-muted-foreground">
+                  High Intent
+                </span>
+              </div>
+              <p className="text-2xl font-bold">
+                {intentSummary.highIntentCount}
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="p-4">
+            <div className="space-y-2">
+              <div className="flex items-center space-x-2">
+                <Clock className="h-4 w-4 text-orange-500" />
+                <span className="text-sm text-muted-foreground">Trend</span>
+              </div>
+              <div className="flex items-center space-x-2">
+                <TrendIcon direction={intentSummary.trendDirection} />
+                <p className="text-sm font-medium">
+                  {intentSummary.trendPercentage.toFixed(1)}%
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Detailed Client List */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Client Intent Scores</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-4">
+            {clientScores.length === 0 ? (
+              <div className="text-center py-8">
+                <Users className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                <p className="text-muted-foreground">
+                  No client data available for {timeRange}
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {clientScores
+                  .filter(
+                    (score) =>
+                      !selectedCategory || score.category === selectedCategory,
+                  )
+                  .sort((a, b) => b.score - a.score)
+                  .slice(0, 20) // Show top 20
+                  .map((score) => (
+                    <div
+                      key={score.client_id}
+                      className="flex items-center justify-between p-3 border rounded-lg"
+                    >
+                      <div className="flex items-center space-x-3">
+                        <div
+                          className={`w-2 h-8 rounded-full ${getCategoryColor(score.category)}`}
+                        ></div>
+                        <div>
+                          <p className="font-medium">
+                            Client {score.client_id.slice(-8)}
+                          </p>
+                          <div className="flex items-center space-x-2">
+                            <Badge
+                              variant={getCategoryBadgeVariant(score.category)}
+                              className="text-xs"
+                            >
+                              {score.category.replace('_', ' ').toUpperCase()}
+                            </Badge>
+                            <TrendIcon
+                              direction={
+                                score.trend === 'increasing'
+                                  ? 'up'
+                                  : score.trend === 'decreasing'
+                                    ? 'down'
+                                    : 'stable'
+                              }
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="text-right">
+                        <p className="text-2xl font-bold">{score.score}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {score.indicators.length} indicators
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Intent Indicators Summary */}
+      {clientScores.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Common Intent Indicators</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+              {Array.from(
+                clientScores
+                  .flatMap((score) => score.indicators)
+                  .reduce((acc, indicator) => {
+                    acc.set(
+                      indicator.indicator_type,
+                      (acc.get(indicator.indicator_type) || 0) + 1,
+                    );
+                    return acc;
+                  }, new Map<string, number>()),
+              )
+                .sort(([, a], [, b]) => b - a)
+                .slice(0, 6)
+                .map(([type, count]) => (
+                  <div key={type} className="p-3 border rounded-lg">
+                    <p className="text-sm font-medium capitalize">
+                      {type.replace(/_/g, ' ')}
+                    </p>
+                    <p className="text-2xl font-bold text-primary">{count}</p>
+                    <p className="text-xs text-muted-foreground">clients</p>
+                  </div>
+                ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}

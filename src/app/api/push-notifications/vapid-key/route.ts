@@ -1,0 +1,13 @@
+import { NextResponse } from 'next/server';
+
+// Generate VAPID keys for Web Push
+// In production, these should be stored securely and generated once
+const VAPID_PUBLIC_KEY =
+  process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY ||
+  'BJK_7Jm4xvJZg7kbMroQ8JvXTLjE_BSJqF0z7kYVwXBXbVZMPMZe0VEXjfPqyCF5T8Y2Tz5Fz2k8UwQZ3xBvGkU';
+
+export async function GET() {
+  return NextResponse.json({
+    publicKey: VAPID_PUBLIC_KEY,
+  });
+}

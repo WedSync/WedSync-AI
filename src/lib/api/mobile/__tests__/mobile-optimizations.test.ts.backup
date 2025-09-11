@@ -1,0 +1,438 @@
+/**
+ * WS-196 Team D: Mobile API Optimization Tests
+ * 
+ * Comprehensive test suite for mobile-optimized API functionality
+ * Testing device context parsing, payload optimization, and wedding-specific optimizations
+ */
+
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { NextRequest } from 'next/server';
+import { 
+  MobileAPIOptimizer, 
+  WeddingMobileOptimizer,
+  MobileContext,
+  MobileAPIOptions,
+  getMobileSupplierClients,
+  getMobileBookingData,
+  withMobileOptimization
+} from '../mobile-optimizations';
+
+describe('MobileAPIOptimizer', () => {
+  describe('parseMobileContext', () => {
+    it('should detect mobile device from user agent', () => {
+      const request = new NextRequest('http://localhost:3000', {
+        headers: {
+          'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15'
+        }
+      });
+
+      const context = MobileAPIOptimizer.parseMobileContext(request);
+
+      expect(context.deviceType).toBe('mobile');
+      expect(context.connectionType).toBe('4g');
+      expect(context.screenSize).toEqual({ width: 375, height: 667 });
+    });
+
+    it('should detect tablet device from user agent', () => {
+      const request = new NextRequest('http://localhost:3000', {
+        headers: {
+          'user-agent': 'Mozilla/5.0 (iPad; CPU OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15'
+        }
+      });
+
+      const context = MobileAPIOptimizer.parseMobileContext(request);
+
+      expect(context.deviceType).toBe('tablet');
+    });
+
+    it('should parse mobile context from custom headers', () => {
+      const request = new NextRequest('http://localhost:3000', {
+        headers: {
+          'user-agent': 'iPhone',
+          'x-connection-type': '3g',
+          'x-battery-level': '25',
+          'x-low-power-mode': 'true',
+          'x-viewport': '414x896'
+        }
+      });
+
+      const context = MobileAPIOptimizer.parseMobileContext(request);
+
+      expect(context.deviceType).toBe('mobile');
+      expect(context.connectionType).toBe('3g');
+      expect(context.batteryLevel).toBe(25);
+      expect(context.isLowPowerMode).toBe(true);
+      expect(context.screenSize).toEqual({ width: 414, height: 896 });
+    });
+
+    it('should use defaults for missing headers', () => {
+      const request = new NextRequest('http://localhost:3000', {
+        headers: {}
+      });
+
+      const context = MobileAPIOptimizer.parseMobileContext(request);
+
+      expect(context.deviceType).toBe('desktop');
+      expect(context.connectionType).toBe('4g');
+      expect(context.screenSize).toEqual({ width: 375, height: 667 });
+    });
+  });
+
+  describe('optimizeResponse', () => {
+    const mockData = {
+      id: '1',
+      name: 'Test Wedding',
+      description: 'A beautiful wedding ceremony',
+      portfolio_image: 'https://example.com/image.jpg',
+      details: {
+        venue: 'Garden Venue',
+        guests: 150
+      },
+      empty_field: null,
+      undefined_field: undefined,
+      empty_string: ''
+    };
+
+    it('should compress data by removing empty fields', () => {
+      const context: MobileContext = {
+        deviceType: 'mobile',
+        connectionType: '4g',
+        screenSize: { width: 375, height: 667 }
+      };
+
+      const optimized = MobileAPIOptimizer.optimizeResponse(mockData, context);
+
+      expect(optimized.empty_field).toBeUndefined();
+      expect(optimized.undefined_field).toBeUndefined();
+      expect(optimized.empty_string).toBeUndefined();
+      expect(optimized.name).toBe('Test Wedding');
+    });
+
+    it('should optimize images for mobile context', () => {
+      const context: MobileContext = {
+        deviceType: 'mobile',
+        connectionType: '3g',
+        screenSize: { width: 414, height: 896 }
+      };
+
+      const optimized = MobileAPIOptimizer.optimizeResponse(mockData, context);
+
+      expect(optimized.portfolio_image).toContain('w=828'); // 414 * 2 for retina
+      expect(optimized.portfolio_image).toContain('h=1792'); // 896 * 2 for retina
+      expect(optimized.portfolio_image).toContain('q=70'); // 3G quality
+      expect(optimized.portfolio_image).toContain('f=webp');
+    });
+
+    it('should reduce image quality for low battery', () => {
+      const context: MobileContext = {
+        deviceType: 'mobile',
+        connectionType: '4g',
+        batteryLevel: 15,
+        isLowPowerMode: true,
+        screenSize: { width: 375, height: 667 }
+      };
+
+      const optimized = MobileAPIOptimizer.optimizeResponse(mockData, context);
+
+      expect(optimized.portfolio_image).toContain('q=60'); // Low power mode quality
+    });
+
+    it('should exclude specified fields', () => {
+      const context: MobileContext = {
+        deviceType: 'mobile',
+        connectionType: '4g',
+        screenSize: { width: 375, height: 667 }
+      };
+
+      const options: Partial<MobileAPIOptions> = {
+        excludeFields: ['description', 'details']
+      };
+
+      const optimized = MobileAPIOptimizer.optimizeResponse(mockData, context, options);
+
+      expect(optimized.description).toBeUndefined();
+      expect(optimized.details).toBeUndefined();
+      expect(optimized.name).toBe('Test Wedding');
+    });
+  });
+
+  describe('getOptimizationHeaders', () => {
+    it('should return appropriate headers for mobile context', () => {
+      const context: MobileContext = {
+        deviceType: 'mobile',
+        connectionType: '3g',
+        isLowPowerMode: true,
+        screenSize: { width: 375, height: 667 }
+      };
+
+      const headers = MobileAPIOptimizer.getOptimizationHeaders(context);
+
+      expect(headers['X-Mobile-Optimized']).toBe('true');
+      expect(headers['X-Device-Type']).toBe('mobile');
+      expect(headers['X-Connection-Type']).toBe('3g');
+      expect(headers['X-Optimization-Applied']).toContain('compression');
+      expect(headers['X-Optimization-Applied']).toContain('battery-saving');
+      expect(headers['Cache-Control']).toContain('max-age=1800'); // 30 min for 3G
+    });
+
+    it('should set longer cache for 2G connections', () => {
+      const context: MobileContext = {
+        deviceType: 'mobile',
+        connectionType: '2g',
+        screenSize: { width: 375, height: 667 }
+      };
+
+      const headers = MobileAPIOptimizer.getOptimizationHeaders(context);
+
+      expect(headers['Cache-Control']).toContain('max-age=3600'); // 1 hour for 2G
+    });
+  });
+});
+
+describe('WeddingMobileOptimizer', () => {
+  const mockWeddingData = {
+    id: '1',
+    client_name: 'Sarah & John',
+    timeline: [
+      { id: '1', time: '14:00', title: 'Ceremony', vendor: { name: 'Garden Venue' }, description: 'Outdoor ceremony in the rose garden with 150 guests' },
+      { id: '2', time: '15:30', title: 'Photos', vendor: { name: 'Pro Photography' }, description: 'Family and couple photos in the garden' },
+      { id: '3', time: '17:00', title: 'Reception', vendor: { name: 'Garden Venue' }, description: 'Dinner and dancing until midnight' }
+    ],
+    vendors: Array.from({ length: 25 }, (_, i) => ({
+      id: `vendor-${i}`,
+      name: `Vendor ${i}`,
+      category: 'Photography',
+      phone: '+1234567890',
+      email: `vendor${i}@example.com`,
+      portfolio: [`image${i}-1.jpg`, `image${i}-2.jpg`],
+      description: `Professional vendor ${i} with 10 years experience`
+    })),
+    photos: Array.from({ length: 50 }, (_, i) => `photo-${i}.jpg`)
+  };
+
+  it('should simplify timeline for 2G connections', () => {
+    const context: MobileContext = {
+      deviceType: 'mobile',
+      connectionType: '2g',
+      screenSize: { width: 375, height: 667 }
+    };
+
+    const optimized = WeddingMobileOptimizer.optimizeWeddingData(mockWeddingData, context);
+
+    expect(optimized.timeline).toHaveLength(3);
+    expect(optimized.timeline[0]).toEqual({
+      id: '1',
+      time: '14:00',
+      title: 'Ceremony',
+      vendor: 'Garden Venue'
+    });
+    expect(optimized.timeline[0].description).toBeUndefined();
+  });
+
+  it('should limit vendors for mobile devices', () => {
+    const context: MobileContext = {
+      deviceType: 'mobile',
+      connectionType: '4g',
+      screenSize: { width: 375, height: 667 }
+    };
+
+    const optimized = WeddingMobileOptimizer.optimizeWeddingData(mockWeddingData, context);
+
+    expect(optimized.vendors).toHaveLength(10); // Limited to 10 for mobile
+    expect(optimized.vendors[0].portfolio).toBeUndefined(); // Portfolio removed for mobile
+    expect(optimized.vendors[0].description).toBeUndefined(); // Description removed for mobile
+  });
+
+  it('should not limit vendors for tablets', () => {
+    const context: MobileContext = {
+      deviceType: 'tablet',
+      connectionType: '4g',
+      screenSize: { width: 768, height: 1024 }
+    };
+
+    const optimized = WeddingMobileOptimizer.optimizeWeddingData(mockWeddingData, context);
+
+    expect(optimized.vendors).toHaveLength(20); // Limited to 20 for tablet
+    expect(optimized.vendors[0].portfolio).toBeDefined(); // Portfolio included for tablet
+    expect(optimized.vendors[0].description).toBeDefined(); // Description included for tablet
+  });
+
+  it('should limit photos for low battery', () => {
+    const context: MobileContext = {
+      deviceType: 'mobile',
+      connectionType: '4g',
+      batteryLevel: 25,
+      screenSize: { width: 375, height: 667 }
+    };
+
+    const optimized = WeddingMobileOptimizer.optimizeWeddingData(mockWeddingData, context);
+
+    expect(optimized.photos).toHaveLength(5); // Limited to 5 for low battery
+  });
+
+  it('should not limit photos for good battery', () => {
+    const context: MobileContext = {
+      deviceType: 'mobile',
+      connectionType: '4g',
+      batteryLevel: 80,
+      screenSize: { width: 375, height: 667 }
+    };
+
+    const optimized = WeddingMobileOptimizer.optimizeWeddingData(mockWeddingData, context);
+
+    expect(optimized.photos).toHaveLength(50); // Full photos for good battery
+  });
+});
+
+describe('getMobileSupplierClients', () => {
+  it('should return optimized client data with mobile context', async () => {
+    const request = new NextRequest('http://localhost:3000/api/suppliers/123/clients', {
+      headers: {
+        'user-agent': 'iPhone',
+        'x-connection-type': '4g'
+      }
+    });
+
+    const result = await getMobileSupplierClients(request, '123');
+
+    expect(result.mobile_context).toBeDefined();
+    expect(result.mobile_context.device_type).toBe('mobile');
+    expect(result.mobile_context.connection_type).toBe('4g');
+    expect(result.mobile_context.optimizations_applied).toBeDefined();
+    expect(result.mobile_context.performance_hints).toBeDefined();
+    expect(result.clients).toBeDefined();
+    expect(result.total).toBe(1);
+    expect(result.summary).toBeDefined();
+  });
+
+  it('should exclude fields for 2G connections', async () => {
+    const request = new NextRequest('http://localhost:3000/api/suppliers/123/clients', {
+      headers: {
+        'user-agent': 'iPhone',
+        'x-connection-type': '2g'
+      }
+    });
+
+    const result = await getMobileSupplierClients(request, '123');
+
+    expect(result.mobile_context.optimizations_applied.field_filtering).toBe(true);
+    expect(result.mobile_context.performance_hints.cache_duration).toBe('1 hour');
+  });
+});
+
+describe('getMobileBookingData', () => {
+  it('should return optimized booking data', async () => {
+    const request = new NextRequest('http://localhost:3000/api/bookings/123', {
+      headers: {
+        'user-agent': 'iPhone',
+        'x-connection-type': '3g',
+        'x-battery-level': '50'
+      }
+    });
+
+    const result = await getMobileBookingData(request, '123');
+
+    expect(result.id).toBe('123');
+    expect(result.client_name).toBe('Sarah & John');
+    expect(result.mobile_metadata).toBeDefined();
+    expect(result.mobile_metadata['X-Mobile-Optimized']).toBe('true');
+    expect(result.mobile_metadata['X-Connection-Type']).toBe('3g');
+  });
+});
+
+describe('withMobileOptimization middleware', () => {
+  it('should apply mobile optimizations to handler result', async () => {
+    const mockHandler = vi.fn().mockResolvedValue({
+      data: 'test',
+      image: 'https://example.com/image.jpg'
+    });
+
+    const request = new NextRequest('http://localhost:3000/api/test', {
+      headers: {
+        'user-agent': 'iPhone',
+        'x-connection-type': '3g'
+      }
+    });
+
+    const middleware = withMobileOptimization(mockHandler);
+    const response = await middleware(request, { test: 'data' });
+
+    expect(response).toBeInstanceOf(Response);
+    expect(response.headers.get('Content-Type')).toBe('application/json');
+    expect(response.headers.get('X-Mobile-Optimized')).toBe('true');
+    expect(response.headers.get('X-Device-Type')).toBe('mobile');
+  });
+
+  it('should handle handler errors gracefully', async () => {
+    const mockHandler = vi.fn().mockRejectedValue(new Error('Test error'));
+
+    const request = new NextRequest('http://localhost:3000/api/test', {
+      headers: {
+        'user-agent': 'iPhone',
+        'x-connection-type': '2g'
+      }
+    });
+
+    const middleware = withMobileOptimization(mockHandler);
+    const response = await middleware(request, { test: 'data' });
+
+    expect(response).toBeInstanceOf(Response);
+    expect(response.status).toBe(500);
+    expect(response.headers.get('Retry-After')).toBe('30'); // 30 seconds for 2G
+
+    const body = await response.json();
+    expect(body.error).toBe('Request failed');
+    expect(body.mobile_fallback).toBe(true);
+    expect(body.retry_after).toBe(30);
+  });
+});
+
+describe('Mobile API Integration Tests', () => {
+  it('should handle complete mobile optimization flow', () => {
+    // Create mobile context
+    const request = new NextRequest('http://localhost:3000', {
+      headers: {
+        'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X)',
+        'x-connection-type': '3g',
+        'x-battery-level': '30',
+        'x-low-power-mode': 'false',
+        'x-viewport': '414x896'
+      }
+    });
+
+    const context = MobileAPIOptimizer.parseMobileContext(request);
+
+    // Test data with images and complex structure
+    const testData = {
+      wedding: {
+        id: '1',
+        name: 'Beautiful Wedding',
+        venue_photo: 'https://example.com/venue.jpg',
+        timeline: [
+          { time: '14:00', event: 'Ceremony', details: 'Long detailed description...' }
+        ],
+        vendors: Array.from({ length: 15 }, (_, i) => ({
+          name: `Vendor ${i}`,
+          portfolio_image: `https://example.com/portfolio${i}.jpg`
+        }))
+      },
+      metadata: null,
+      empty_array: [],
+      undefined_field: undefined
+    };
+
+    // Apply optimizations
+    const optimized = WeddingMobileOptimizer.optimizeWeddingData(testData, context);
+
+    // Verify optimizations applied
+    expect(optimized.metadata).toBeUndefined();
+    expect(optimized.undefined_field).toBeUndefined();
+    expect(optimized.wedding.venue_photo).toContain('q=70'); // 3G quality
+    expect(optimized.wedding.venue_photo).toContain('f=webp');
+
+    // Get optimization headers
+    const headers = MobileAPIOptimizer.getOptimizationHeaders(context);
+    expect(headers['X-Mobile-Optimized']).toBe('true');
+    expect(headers['Cache-Control']).toContain('max-age=1800'); // 30 minutes for 3G
+  });
+});

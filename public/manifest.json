@@ -1,0 +1,452 @@
+{
+  "name": "WedSync - Wedding Vendor Platform",
+  "short_name": "WedSync",
+  "description": "Professional wedding vendor management platform. Manage clients, automate workflows, and coordinate with couples seamlessly.",
+  "start_url": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "background_color": "#FFFFFF",
+  "theme_color": "#F0A1AA",
+  "orientation": "portrait-primary",
+  "scope": "/",
+  "lang": "en-US",
+  "dir": "ltr",
+  "categories": ["business", "productivity"],
+  "iarc_rating_id": "e84b8d71-ff39-4c75-b6e3-23f3bcb7bcac",
+  "id": "app.wedsync.supplier",
+  "shortcuts": [
+    {
+      "name": "Share Referral",
+      "short_name": "Refer",
+      "description": "Quickly share your referral link with couples and vendors",
+      "url": "/dashboard/referrals/share?utm_source=pwa_shortcut",
+      "icons": [
+        {
+          "src": "/icons/share-shortcut-96.png",
+          "sizes": "96x96",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "View Leaderboard",
+      "short_name": "Rankings",
+      "description": "Check your referral leaderboard position and rewards",
+      "url": "/dashboard/referrals/leaderboard?utm_source=pwa_shortcut",
+      "icons": [
+        {
+          "src": "/icons/leaderboard-shortcut-96.png",
+          "sizes": "96x96",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Photo Groups",
+      "short_name": "Photos",
+      "description": "Manage wedding photo groups (emergency mode available)",
+      "url": "/wedme/photo-groups?utm_source=pwa_shortcut",
+      "icons": [
+        {
+          "src": "/icons/photo-groups-192x192.svg",
+          "sizes": "192x192",
+          "type": "image/svg+xml"
+        }
+      ]
+    },
+    {
+      "name": "Emergency Response",
+      "short_name": "Emergency",
+      "description": "Emergency incident response dashboard (works offline)",
+      "url": "/mobile-dashboard?mode=emergency&utm_source=pwa_shortcut",
+      "icons": [
+        {
+          "src": "/icons/emergency-192x192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Incident Report",
+      "short_name": "Report",
+      "description": "Quick incident reporting (offline capable)",
+      "url": "/incident-response?utm_source=pwa_shortcut",
+      "icons": [
+        {
+          "src": "/icons/alert-triangle-192x192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Wedding Day Dashboard",
+      "short_name": "Wedding Day",
+      "description": "Access wedding day coordination tools (works offline)",
+      "url": "/dashboard/wedding-day?utm_source=pwa_shortcut",
+      "icons": [
+        {
+          "src": "/icons/wedding-day-192x192.svg",
+          "sizes": "192x192",
+          "type": "image/svg+xml"
+        }
+      ]
+    },
+    {
+      "name": "Timeline",
+      "short_name": "Timeline",
+      "description": "View and manage timeline events (offline capable)",
+      "url": "/dashboard/timeline?utm_source=pwa_shortcut",
+      "icons": [
+        {
+          "src": "/icons/timeline-192x192.svg",
+          "sizes": "192x192",
+          "type": "image/svg+xml"
+        }
+      ]
+    },
+    {
+      "name": "Clients",
+      "short_name": "Clients",
+      "description": "Manage wedding clients and communications",
+      "url": "/dashboard/clients?utm_source=pwa_shortcut",
+      "icons": [
+        {
+          "src": "/icons/clients-192x192.svg",
+          "sizes": "192x192",
+          "type": "image/svg+xml"
+        }
+      ]
+    },
+    {
+      "name": "Vendor Check-In",
+      "short_name": "Check-In",
+      "description": "Quick vendor check-in for wedding day (offline first)",
+      "url": "/dashboard/wedding-day/check-in?utm_source=pwa_shortcut",
+      "icons": [
+        {
+          "src": "/icons/checkin-192x192.svg",
+          "sizes": "192x192",
+          "type": "image/svg+xml"
+        }
+      ]
+    },
+    {
+      "name": "Helper Schedules",
+      "short_name": "Helpers",
+      "description": "Mobile helper schedule management with offline sync",
+      "url": "/helpers/schedules?utm_source=pwa_shortcut",
+      "icons": [
+        {
+          "src": "/icons/helpers-192x192.svg",
+          "sizes": "192x192",
+          "type": "image/svg+xml"
+        }
+      ]
+    },
+    {
+      "name": "Budget Tracker",
+      "short_name": "Budget",
+      "description": "Mobile budget management with real-time spending alerts",
+      "url": "/budget/categories?utm_source=pwa_shortcut",
+      "icons": [
+        {
+          "src": "/icons/budget-192x192.svg",
+          "sizes": "192x192",
+          "type": "image/svg+xml"
+        }
+      ]
+    },
+    {
+      "name": "Expense Capture",
+      "short_name": "Expenses",
+      "description": "Instant expense capture with camera and voice",
+      "url": "/expenses/capture?utm_source=pwa_shortcut",
+      "icons": [
+        {
+          "src": "/icons/expenses-192x192.svg",
+          "sizes": "192x192",
+          "type": "image/svg+xml"
+        }
+      ]
+    },
+    {
+      "name": "Infrastructure Dashboard",
+      "short_name": "Infrastructure",
+      "description": "Monitor cloud infrastructure performance and health",
+      "url": "/dashboard/infrastructure?utm_source=pwa_shortcut",
+      "icons": [
+        {
+          "src": "/icons/infrastructure-192x192.svg",
+          "sizes": "192x192",
+          "type": "image/svg+xml"
+        }
+      ]
+    },
+    {
+      "name": "Performance Metrics",
+      "short_name": "Metrics",
+      "description": "Real-time system performance and metrics monitoring",
+      "url": "/dashboard/infrastructure/metrics?utm_source=pwa_shortcut",
+      "icons": [
+        {
+          "src": "/icons/metrics-192x192.svg",
+          "sizes": "192x192", 
+          "type": "image/svg+xml"
+        }
+      ]
+    },
+    {
+      "name": "Wedding Day Ops",
+      "short_name": "Ops",
+      "description": "Emergency infrastructure controls for wedding days",
+      "url": "/dashboard/infrastructure?wedding_mode=true&utm_source=pwa_shortcut",
+      "icons": [
+        {
+          "src": "/icons/wedding-ops-192x192.svg",
+          "sizes": "192x192",
+          "type": "image/svg+xml"
+        }
+      ]
+    },
+    {
+      "name": "Backup Dashboard",
+      "short_name": "Backup",
+      "description": "High-performance backup management with 72-hour offline capability",
+      "url": "/dashboard/backup/performance?utm_source=pwa_shortcut",
+      "icons": [
+        {
+          "src": "/icons/backup-192x192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Emergency Recovery",
+      "short_name": "Recovery",
+      "description": "Mobile emergency recovery interface with touch controls",
+      "url": "/mobile/backup/recovery?emergency=true&utm_source=pwa_shortcut",
+      "icons": [
+        {
+          "src": "/icons/backup-restore-192x192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Performance Monitor",
+      "short_name": "Performance",
+      "description": "Real-time backup performance analytics with <100ms sync",
+      "url": "/dashboard/backup/analytics?utm_source=pwa_shortcut",
+      "icons": [
+        {
+          "src": "/icons/performance-192x192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    }
+  ],
+  "icons": [
+    {
+      "src": "/app-store-assets/icons/icon-72x72.png",
+      "sizes": "72x72",
+      "type": "image/png",
+      "purpose": "maskable any"
+    },
+    {
+      "src": "/app-store-assets/icons/icon-96x96.png",
+      "sizes": "96x96",
+      "type": "image/png",
+      "purpose": "maskable any"
+    },
+    {
+      "src": "/app-store-assets/icons/icon-128x128.png",
+      "sizes": "128x128",
+      "type": "image/png",
+      "purpose": "maskable any"
+    },
+    {
+      "src": "/app-store-assets/icons/icon-144x144.png",
+      "sizes": "144x144",
+      "type": "image/png",
+      "purpose": "maskable any"
+    },
+    {
+      "src": "/app-store-assets/icons/icon-152x152.png",
+      "sizes": "152x152",
+      "type": "image/png",
+      "purpose": "maskable any"
+    },
+    {
+      "src": "/app-store-assets/icons/icon-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable any"
+    },
+    {
+      "src": "/app-store-assets/icons/icon-384x384.png",
+      "sizes": "384x384",
+      "type": "image/png",
+      "purpose": "maskable any"
+    },
+    {
+      "src": "/app-store-assets/icons/icon-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable any"
+    },
+    {
+      "src": "/app-store-assets/icons/icon-1024x1024.png",
+      "sizes": "1024x1024",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "/app-store-assets/screenshots/desktop-dashboard-1280x800.png",
+      "sizes": "1280x800",
+      "type": "image/png",
+      "form_factor": "wide",
+      "platform": "windows",
+      "label": "Professional dashboard for wedding vendor management"
+    },
+    {
+      "src": "/app-store-assets/screenshots/desktop-clients-1280x800.png",
+      "sizes": "1280x800", 
+      "type": "image/png",
+      "form_factor": "wide",
+      "platform": "windows",
+      "label": "Client management and communication center"
+    },
+    {
+      "src": "/app-store-assets/screenshots/desktop-timeline-1280x800.png",
+      "sizes": "1280x800",
+      "type": "image/png",
+      "form_factor": "wide",
+      "platform": "windows",
+      "label": "Wedding timeline automation and coordination"
+    },
+    {
+      "src": "/app-store-assets/screenshots/mobile-forms-750x1334.png",
+      "sizes": "750x1334",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "platform": "ios",
+      "label": "Mobile forms with offline support"
+    },
+    {
+      "src": "/app-store-assets/screenshots/mobile-dashboard-750x1334.png",
+      "sizes": "750x1334",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "platform": "ios",
+      "label": "Dashboard optimized for mobile vendors"
+    },
+    {
+      "src": "/app-store-assets/screenshots/mobile-wedding-day-750x1334.png",
+      "sizes": "750x1334",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "platform": "ios",
+      "label": "Wedding day coordination tools"
+    },
+    {
+      "src": "/app-store-assets/screenshots/android-dashboard-1080x1920.png",
+      "sizes": "1080x1920",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "platform": "android",
+      "label": "Android optimized vendor dashboard"
+    },
+    {
+      "src": "/app-store-assets/screenshots/android-timeline-1080x1920.png",
+      "sizes": "1080x1920",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "platform": "android",
+      "label": "Timeline management on Android"
+    }
+  ],
+  "features": [
+    "Emergency Incident Response",
+    "Offline Incident Reporting",
+    "Real-time Security Monitoring",
+    "Mobile Emergency Dashboard",
+    "Automatic Infrastructure Scaling",
+    "High Availability Failover",
+    "Performance Monitoring",
+    "Push Notifications for Critical Alerts",
+    "Background Sync for Offline Reports",
+    "Emergency Contact Integration",
+    "Voice Recording for Incidents",
+    "Photo Evidence Capture",
+    "GPS Location Tracking",
+    "Wedding Day Emergency Protocols",
+    "Venue Security Integration",
+    "Photo Groups Management",
+    "Timeline automation",
+    "Client management",
+    "Vendor check-ins",
+    "High-Performance Backup Management",
+    "72-Hour Offline Backup Capability",
+    "Real-time Backup Sync <100ms",
+    "Touch-Optimized Mobile Emergency Recovery",
+    "Wedding-Specific Haptic Feedback",
+    "Progressive Web App Backup Optimization",
+    "Emergency Backup Data Preloading",
+    "Network-Adaptive Backup Strategies",
+    "Background Backup Sync",
+    "Mobile Backup Performance Analytics",
+    "Gesture-Based Backup Navigation",
+    "Emergency Recovery Touch Controls"
+  ],
+  "prefer_related_applications": false,
+  "edge_side_panel": {
+    "preferred_width": 400
+  },
+  "protocol_handlers": [
+    {
+      "protocol": "web+wedsync",
+      "url": "/handle-protocol?protocol=%s"
+    }
+  ],
+  "file_handlers": [
+    {
+      "action": "/import",
+      "accept": {
+        "text/csv": [".csv"],
+        "application/vnd.ms-excel": [".xls", ".xlsx"]
+      }
+    }
+  ],
+  "share_target": {
+    "action": "/api/referrals/share-handler",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url",
+      "files": [
+        {
+          "name": "files",
+          "accept": ["image/*", ".pdf", ".csv", ".xlsx"]
+        }
+      ]
+    }
+  },
+  "related_applications": [
+    {
+      "platform": "webapp",
+      "url": "https://app.wedsync.co/manifest.json"
+    }
+  ],
+  "launch_handler": {
+    "client_mode": "focus-existing"
+  }
+}

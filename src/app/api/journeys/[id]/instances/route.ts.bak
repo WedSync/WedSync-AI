@@ -1,0 +1,195 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { Database } from '@/types/database';
+import { journeyExecutor } from '@/lib/journey-engine/executor';
+
+const supabase = createClient<Database>(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+// GET /api/journeys/[id]/instances - List journey instances
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const journeyId = params.id;
+    const url = new URL(request.url);
+    const state = url.searchParams.get('state');
+    const limit = parseInt(url.searchParams.get('limit') || '50');
+    const offset = parseInt(url.searchParams.get('offset') || '0');
+
+    let query = supabase
+      .from('journey_instances')
+      .select(`
+        *,
+        clients(
+          id,
+          first_name,
+          last_name,
+          email,
+          phone,
+          event_date
+        )
+      `)
+      .eq('journey_id', journeyId)
+      .order('started_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (state) {
+      query = query.eq('state', state);
+    }
+
+    const { data: instances, error } = await query;
+
+    if (error) {
+      console.error('Failed to fetch instances:', error);
+      return NextResponse.json(
+        { error: 'Failed to fetch instances' },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({
+      instances: instances || [],
+      pagination: {
+        limit,
+        offset,
+        total: instances?.length || 0
+      }
+    });
+
+  } catch (error) {
+    console.error('Instance listing error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+// POST /api/journeys/[id]/instances - Start journey for a client
+export async function POST(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const journeyId = params.id;
+    const body = await request.json();
+    const {
+      client_id,
+      vendor_id,
+      variables = {},
+      trigger_event = 'manual',
+      entry_metadata = {}
+    } = body;
+
+    // Validation
+    if (!client_id || !vendor_id) {
+      return NextResponse.json(
+        { error: 'client_id and vendor_id are required' },
+        { status: 400 }
+      );
+    }
+
+    // Check if journey exists and is active
+    const { data: journey, error: journeyError } = await supabase
+      .from('journeys')
+      .select('status, name, settings')
+      .eq('id', journeyId)
+      .single();
+
+    if (journeyError) {
+      return NextResponse.json(
+        { error: 'Journey not found' },
+        { status: 404 }
+      );
+    }
+
+    if (journey.status !== 'active') {
+      return NextResponse.json(
+        { error: 'Journey is not active' },
+        { status: 400 }
+      );
+    }
+
+    // Check if client already has an active instance for this journey
+    const maxInstances = journey.settings?.maxInstancesPerClient || 1;
+    
+    const { data: existingInstances } = await supabase
+      .from('journey_instances')
+      .select('id')
+      .eq('journey_id', journeyId)
+      .eq('client_id', client_id)
+      .eq('state', 'active');
+
+    if (existingInstances && existingInstances.length >= maxInstances) {
+      return NextResponse.json(
+        { error: `Client already has maximum number of active instances (${maxInstances}) for this journey` },
+        { status: 400 }
+      );
+    }
+
+    // Get client data for variables
+    const { data: client } = await supabase
+      .from('clients')
+      .select('*')
+      .eq('id', client_id)
+      .single();
+
+    if (!client) {
+      return NextResponse.json(
+        { error: 'Client not found' },
+        { status: 404 }
+      );
+    }
+
+    // Merge client data with provided variables
+    const instanceVariables = {
+      ...variables,
+      client_id: client.id,
+      client_first_name: client.first_name,
+      client_last_name: client.last_name,
+      client_email: client.email,
+      client_phone: client.phone,
+      event_date: client.event_date,
+      event_type: client.event_type,
+      guest_count: client.guest_count,
+      budget_range: client.budget_range,
+      venue_name: client.venue_name,
+      venue_address: client.venue_address
+    };
+
+    // Start journey execution
+    const instanceId = await journeyExecutor.startJourney(
+      journeyId,
+      client_id,
+      vendor_id,
+      instanceVariables,
+      trigger_event
+    );
+
+    // Get the created instance
+    const { data: instance } = await supabase
+      .from('journey_instances')
+      .select(`
+        *,
+        clients(first_name, last_name, email)
+      `)
+      .eq('id', instanceId)
+      .single();
+
+    return NextResponse.json({
+      instance,
+      message: 'Journey started successfully'
+    }, { status: 201 });
+
+  } catch (error) {
+    console.error('Journey start error:', error);
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}

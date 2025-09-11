@@ -1,0 +1,959 @@
+'use client';
+
+import React, {
+  createContext,
+  useContext,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useMemo,
+} from 'react';
+import { useRealtime } from '../performance/RealtimeProvider';
+import { usePerformanceMonitor } from '../../hooks/usePerformanceOptimization';
+import { FormField, FormSection } from '../../types/forms';
+
+interface RealtimeFormEvent {
+  type:
+    | 'field_updated'
+    | 'field_added'
+    | 'field_removed'
+    | 'section_added'
+    | 'section_removed'
+    | 'form_structure_changed';
+  fieldId?: string;
+  sectionId?: string;
+  data: any;
+  userId: string;
+  timestamp: number;
+  version: number;
+}
+
+interface FieldLock {
+  fieldId: string;
+  userId: string;
+  userName: string;
+  startTime: number;
+  lockExpiry: number;
+  color: string;
+}
+
+interface FormCollaborator {
+  userId: string;
+  userName: string;
+  avatar?: string;
+  color: string;
+  lastActivity: number;
+  currentField?: string;
+  status: 'active' | 'editing' | 'idle';
+  cursorPosition?: {
+    fieldId: string;
+    caretPosition: number;
+  };
+}
+
+interface FormConflict {
+  id: string;
+  type: 'concurrent_edit' | 'validation_conflict' | 'structure_conflict';
+  fieldIds: string[];
+  users: string[];
+  timestamp: number;
+  severity: 'low' | 'medium' | 'high';
+  resolution?: 'auto_resolved' | 'manual_required';
+  description: string;
+}
+
+interface RealtimeFormState {
+  collaborators: Map<string, FormCollaborator>;
+  fieldLocks: Map<string, FieldLock>;
+  pendingChanges: Map<string, RealtimeFormEvent>;
+  conflicts: FormConflict[];
+  formVersion: number;
+  operationalTransform: {
+    localOperations: RealtimeFormEvent[];
+    remoteOperations: RealtimeFormEvent[];
+    transformState: number;
+  };
+  syncStatus: {
+    lastSync: number;
+    pendingOps: number;
+    conflictCount: number;
+    connectionHealth: 'excellent' | 'good' | 'poor' | 'offline';
+  };
+}
+
+interface RealtimeFormContextValue {
+  // State
+  state: RealtimeFormState;
+
+  // Field operations
+  updateField: (
+    fieldId: string,
+    value: any,
+    skipBroadcast?: boolean,
+  ) => Promise<boolean>;
+  addField: (
+    sectionId: string,
+    field: Omit<FormField, 'id'>,
+  ) => Promise<string | null>;
+  removeField: (fieldId: string) => Promise<boolean>;
+
+  // Section operations
+  addSection: (section: Omit<FormSection, 'id'>) => Promise<string | null>;
+  removeSection: (sectionId: string) => Promise<boolean>;
+  reorderSections: (sectionIds: string[]) => Promise<boolean>;
+
+  // Locking and collaboration
+  acquireFieldLock: (fieldId: string) => Promise<boolean>;
+  releaseFieldLock: (fieldId: string) => void;
+  isFieldLocked: (fieldId: string) => boolean;
+  getFieldLock: (fieldId: string) => FieldLock | null;
+
+  // Cursor tracking
+  updateCursor: (fieldId: string, caretPosition: number) => void;
+  clearCursor: () => void;
+
+  // Conflict resolution
+  resolveConflict: (
+    conflictId: string,
+    resolution: 'accept_local' | 'accept_remote' | 'merge',
+  ) => Promise<boolean>;
+  getConflicts: () => FormConflict[];
+
+  // Operational Transform
+  applyOperation: (operation: RealtimeFormEvent) => Promise<boolean>;
+  transformOperation: (
+    local: RealtimeFormEvent,
+    remote: RealtimeFormEvent,
+  ) => RealtimeFormEvent[];
+
+  // Collaboration info
+  getCollaborators: () => FormCollaborator[];
+  getActiveEditors: () => FormCollaborator[];
+  updatePresence: (
+    status: FormCollaborator['status'],
+    currentField?: string,
+  ) => void;
+
+  // Sync operations
+  forceSyncForm: () => Promise<void>;
+  getSyncStatus: () => RealtimeFormState['syncStatus'];
+}
+
+const RealtimeFormContext = createContext<RealtimeFormContextValue | null>(
+  null,
+);
+
+export const useRealtimeForm = () => {
+  const context = useContext(RealtimeFormContext);
+  if (!context) {
+    throw new Error('useRealtimeForm must be used within RealtimeFormProvider');
+  }
+  return context;
+};
+
+interface RealtimeFormProviderProps {
+  children: React.ReactNode;
+  formId: string;
+  userId: string;
+  userName: string;
+  userColor?: string;
+  onFormChange?: (sections: FormSection[]) => void;
+  onConflictDetected?: (conflict: FormConflict) => void;
+  lockTimeout?: number; // in milliseconds
+}
+
+export const RealtimeFormProvider: React.FC<RealtimeFormProviderProps> = ({
+  children,
+  formId,
+  userId,
+  userName,
+  userColor = '#3B82F6',
+  onFormChange,
+  onConflictDetected,
+  lockTimeout = 300000, // 5 minutes
+}) => {
+  const realtime = useRealtime();
+  const { logMetric } = usePerformanceMonitor('RealtimeForm');
+
+  const channelName = `form:${formId}`;
+  const unsubscribeRef = useRef<(() => void) | null>(null);
+  const cursorUpdateThrottleRef = useRef<NodeJS.Timeout | null>(null);
+  const lockTimeoutsRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
+  const operationBufferRef = useRef<RealtimeFormEvent[]>([]);
+  const lastOperationIdRef = useRef<number>(0);
+
+  const [state, setState] = useState<RealtimeFormState>({
+    collaborators: new Map(),
+    fieldLocks: new Map(),
+    pendingChanges: new Map(),
+    conflicts: [],
+    formVersion: 1,
+    operationalTransform: {
+      localOperations: [],
+      remoteOperations: [],
+      transformState: 0,
+    },
+    syncStatus: {
+      lastSync: Date.now(),
+      pendingOps: 0,
+      conflictCount: 0,
+      connectionHealth: 'excellent',
+    },
+  });
+
+  // Handle real-time form events
+  const handleRealtimeEvent = useCallback(
+    (event: RealtimeFormEvent) => {
+      logMetric('realtimeFormEventReceived', 1);
+
+      setState((prev) => ({
+        ...prev,
+        formVersion: Math.max(prev.formVersion, event.version),
+        operationalTransform: {
+          ...prev.operationalTransform,
+          remoteOperations: [
+            ...prev.operationalTransform.remoteOperations,
+            event,
+          ],
+        },
+        syncStatus: {
+          ...prev.syncStatus,
+          lastSync: Date.now(),
+        },
+      }));
+
+      // Process the operation through operational transform
+      applyOperation(event);
+    },
+    [logMetric],
+  );
+
+  // Operational Transform implementation
+  const transformOperation = useCallback(
+    (
+      local: RealtimeFormEvent,
+      remote: RealtimeFormEvent,
+    ): RealtimeFormEvent[] => {
+      // Simple operational transform logic
+      // In a full implementation, this would be more sophisticated
+
+      if (local.type === remote.type && local.fieldId === remote.fieldId) {
+        // Concurrent edits to the same field
+        if (local.timestamp < remote.timestamp) {
+          // Remote wins - transform local operation
+          return [
+            {
+              ...local,
+              version: remote.version + 1,
+              data: { ...local.data, _transformed: true },
+            },
+          ];
+        } else {
+          // Local wins - keep as is but increment version
+          return [
+            {
+              ...local,
+              version: Math.max(local.version, remote.version) + 1,
+            },
+          ];
+        }
+      }
+
+      // Different operations - no transformation needed
+      return [local];
+    },
+    [],
+  );
+
+  // Apply operation with conflict detection
+  const applyOperation = useCallback(
+    async (operation: RealtimeFormEvent): Promise<boolean> => {
+      try {
+        // Check for conflicts
+        const existingChange = state.pendingChanges.get(
+          operation.fieldId || operation.sectionId || 'global',
+        );
+
+        if (existingChange && existingChange.userId !== operation.userId) {
+          // Potential conflict detected
+          const conflict: FormConflict = {
+            id: `conflict_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            type: 'concurrent_edit',
+            fieldIds: [operation.fieldId || operation.sectionId || ''],
+            users: [existingChange.userId, operation.userId],
+            timestamp: Date.now(),
+            severity: 'medium',
+            description: `Concurrent edit detected on field ${operation.fieldId || operation.sectionId}`,
+          };
+
+          setState((prev) => ({
+            ...prev,
+            conflicts: [...prev.conflicts, conflict],
+          }));
+
+          if (onConflictDetected) {
+            onConflictDetected(conflict);
+          }
+
+          logMetric('realtimeFormConflictDetected', 1);
+          return false;
+        }
+
+        // Apply the operation
+        setState((prev) => {
+          const newPendingChanges = new Map(prev.pendingChanges);
+          newPendingChanges.set(
+            operation.fieldId || operation.sectionId || 'global',
+            operation,
+          );
+
+          return {
+            ...prev,
+            pendingChanges: newPendingChanges,
+            operationalTransform: {
+              ...prev.operationalTransform,
+              transformState: prev.operationalTransform.transformState + 1,
+            },
+          };
+        });
+
+        logMetric('realtimeFormOperationApplied', 1);
+        return true;
+      } catch (error) {
+        logMetric('realtimeFormOperationError', 1);
+        return false;
+      }
+    },
+    [state.pendingChanges, onConflictDetected, logMetric],
+  );
+
+  // Update field with real-time sync
+  const updateField = useCallback(
+    async (
+      fieldId: string,
+      value: any,
+      skipBroadcast = false,
+    ): Promise<boolean> => {
+      // Check if field is locked by another user
+      const lock = state.fieldLocks.get(fieldId);
+      if (lock && lock.userId !== userId && Date.now() < lock.lockExpiry) {
+        logMetric('realtimeFormFieldUpdateBlocked', 1);
+        return false;
+      }
+
+      if (!skipBroadcast) {
+        const operation: RealtimeFormEvent = {
+          type: 'field_updated',
+          fieldId,
+          data: { value },
+          userId,
+          timestamp: Date.now(),
+          version: state.formVersion + 1,
+        };
+
+        const success = await realtime.broadcast(
+          channelName,
+          'field_updated',
+          operation,
+          'medium',
+        );
+
+        if (success) {
+          setState((prev) => ({
+            ...prev,
+            formVersion: prev.formVersion + 1,
+            operationalTransform: {
+              ...prev.operationalTransform,
+              localOperations: [
+                ...prev.operationalTransform.localOperations,
+                operation,
+              ],
+            },
+          }));
+
+          logMetric('realtimeFormFieldUpdated', 1);
+          return true;
+        } else {
+          logMetric('realtimeFormFieldUpdateFailed', 1);
+          return false;
+        }
+      }
+
+      return true;
+    },
+    [
+      state.fieldLocks,
+      state.formVersion,
+      userId,
+      channelName,
+      realtime,
+      logMetric,
+    ],
+  );
+
+  // Add field with real-time sync
+  const addField = useCallback(
+    async (
+      sectionId: string,
+      field: Omit<FormField, 'id'>,
+    ): Promise<string | null> => {
+      const fieldId = `field_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const newField = { ...field, id: fieldId };
+
+      const operation: RealtimeFormEvent = {
+        type: 'field_added',
+        fieldId,
+        sectionId,
+        data: { field: newField },
+        userId,
+        timestamp: Date.now(),
+        version: state.formVersion + 1,
+      };
+
+      const success = await realtime.broadcast(
+        channelName,
+        'field_added',
+        operation,
+        'high',
+      );
+
+      if (success) {
+        setState((prev) => ({
+          ...prev,
+          formVersion: prev.formVersion + 1,
+        }));
+
+        logMetric('realtimeFormFieldAdded', 1);
+        return fieldId;
+      } else {
+        logMetric('realtimeFormFieldAddFailed', 1);
+        return null;
+      }
+    },
+    [state.formVersion, userId, channelName, realtime, logMetric],
+  );
+
+  // Remove field with real-time sync
+  const removeField = useCallback(
+    async (fieldId: string): Promise<boolean> => {
+      const operation: RealtimeFormEvent = {
+        type: 'field_removed',
+        fieldId,
+        data: {},
+        userId,
+        timestamp: Date.now(),
+        version: state.formVersion + 1,
+      };
+
+      const success = await realtime.broadcast(
+        channelName,
+        'field_removed',
+        operation,
+        'high',
+      );
+
+      if (success) {
+        // Release lock if we own it
+        releaseFieldLock(fieldId);
+
+        setState((prev) => ({
+          ...prev,
+          formVersion: prev.formVersion + 1,
+        }));
+
+        logMetric('realtimeFormFieldRemoved', 1);
+        return true;
+      } else {
+        logMetric('realtimeFormFieldRemoveFailed', 1);
+        return false;
+      }
+    },
+    [state.formVersion, userId, channelName, realtime, logMetric],
+  );
+
+  // Add section with real-time sync
+  const addSection = useCallback(
+    async (section: Omit<FormSection, 'id'>): Promise<string | null> => {
+      const sectionId = `section_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const newSection = { ...section, id: sectionId };
+
+      const operation: RealtimeFormEvent = {
+        type: 'section_added',
+        sectionId,
+        data: { section: newSection },
+        userId,
+        timestamp: Date.now(),
+        version: state.formVersion + 1,
+      };
+
+      const success = await realtime.broadcast(
+        channelName,
+        'section_added',
+        operation,
+        'high',
+      );
+
+      if (success) {
+        setState((prev) => ({
+          ...prev,
+          formVersion: prev.formVersion + 1,
+        }));
+
+        logMetric('realtimeFormSectionAdded', 1);
+        return sectionId;
+      } else {
+        logMetric('realtimeFormSectionAddFailed', 1);
+        return null;
+      }
+    },
+    [state.formVersion, userId, channelName, realtime, logMetric],
+  );
+
+  // Remove section with real-time sync
+  const removeSection = useCallback(
+    async (sectionId: string): Promise<boolean> => {
+      const operation: RealtimeFormEvent = {
+        type: 'section_removed',
+        sectionId,
+        data: {},
+        userId,
+        timestamp: Date.now(),
+        version: state.formVersion + 1,
+      };
+
+      const success = await realtime.broadcast(
+        channelName,
+        'section_removed',
+        operation,
+        'high',
+      );
+
+      if (success) {
+        setState((prev) => ({
+          ...prev,
+          formVersion: prev.formVersion + 1,
+        }));
+
+        logMetric('realtimeFormSectionRemoved', 1);
+        return true;
+      } else {
+        logMetric('realtimeFormSectionRemoveFailed', 1);
+        return false;
+      }
+    },
+    [state.formVersion, userId, channelName, realtime, logMetric],
+  );
+
+  // Reorder sections
+  const reorderSections = useCallback(
+    async (sectionIds: string[]): Promise<boolean> => {
+      const operation: RealtimeFormEvent = {
+        type: 'form_structure_changed',
+        data: { sectionOrder: sectionIds },
+        userId,
+        timestamp: Date.now(),
+        version: state.formVersion + 1,
+      };
+
+      const success = await realtime.broadcast(
+        channelName,
+        'form_structure_changed',
+        operation,
+        'medium',
+      );
+
+      if (success) {
+        setState((prev) => ({
+          ...prev,
+          formVersion: prev.formVersion + 1,
+        }));
+
+        logMetric('realtimeFormStructureChanged', 1);
+        return true;
+      } else {
+        logMetric('realtimeFormStructureChangeFailed', 1);
+        return false;
+      }
+    },
+    [state.formVersion, userId, channelName, realtime, logMetric],
+  );
+
+  // Acquire field lock
+  const acquireFieldLock = useCallback(
+    async (fieldId: string): Promise<boolean> => {
+      const existingLock = state.fieldLocks.get(fieldId);
+      if (
+        existingLock &&
+        existingLock.userId !== userId &&
+        Date.now() < existingLock.lockExpiry
+      ) {
+        return false; // Field is already locked by someone else
+      }
+
+      const lock: FieldLock = {
+        fieldId,
+        userId,
+        userName,
+        startTime: Date.now(),
+        lockExpiry: Date.now() + lockTimeout,
+        color: userColor,
+      };
+
+      const success = await realtime.broadcast(
+        `${channelName}:locks`,
+        'field_lock_acquired',
+        lock,
+        'critical',
+      );
+
+      if (success) {
+        setState((prev) => ({
+          ...prev,
+          fieldLocks: new Map(prev.fieldLocks).set(fieldId, lock),
+        }));
+
+        // Set timeout to auto-release lock
+        const timeout = setTimeout(() => {
+          releaseFieldLock(fieldId);
+        }, lockTimeout);
+
+        lockTimeoutsRef.current.set(fieldId, timeout);
+        logMetric('realtimeFormFieldLocked', 1);
+        return true;
+      }
+
+      return false;
+    },
+    [
+      state.fieldLocks,
+      userId,
+      userName,
+      userColor,
+      lockTimeout,
+      channelName,
+      realtime,
+      logMetric,
+    ],
+  );
+
+  // Release field lock
+  const releaseFieldLock = useCallback(
+    (fieldId: string) => {
+      const lock = state.fieldLocks.get(fieldId);
+      if (!lock || lock.userId !== userId) return;
+
+      setState((prev) => {
+        const newLocks = new Map(prev.fieldLocks);
+        newLocks.delete(fieldId);
+        return { ...prev, fieldLocks: newLocks };
+      });
+
+      const timeout = lockTimeoutsRef.current.get(fieldId);
+      if (timeout) {
+        clearTimeout(timeout);
+        lockTimeoutsRef.current.delete(fieldId);
+      }
+
+      realtime.broadcast(
+        `${channelName}:locks`,
+        'field_lock_released',
+        { fieldId, userId },
+        'medium',
+      );
+
+      logMetric('realtimeFormFieldUnlocked', 1);
+    },
+    [state.fieldLocks, userId, channelName, realtime, logMetric],
+  );
+
+  // Check if field is locked
+  const isFieldLocked = useCallback(
+    (fieldId: string): boolean => {
+      const lock = state.fieldLocks.get(fieldId);
+      return lock
+        ? lock.userId !== userId && Date.now() < lock.lockExpiry
+        : false;
+    },
+    [state.fieldLocks, userId],
+  );
+
+  // Get field lock
+  const getFieldLock = useCallback(
+    (fieldId: string): FieldLock | null => {
+      return state.fieldLocks.get(fieldId) || null;
+    },
+    [state.fieldLocks],
+  );
+
+  // Update cursor position
+  const updateCursor = useCallback(
+    (fieldId: string, caretPosition: number) => {
+      if (cursorUpdateThrottleRef.current) {
+        clearTimeout(cursorUpdateThrottleRef.current);
+      }
+
+      cursorUpdateThrottleRef.current = setTimeout(() => {
+        realtime.broadcast(
+          `${channelName}:cursors`,
+          'cursor_update',
+          { fieldId, caretPosition, userId, userName, color: userColor },
+          'low',
+        );
+      }, 100);
+    },
+    [channelName, realtime, userId, userName, userColor],
+  );
+
+  // Clear cursor
+  const clearCursor = useCallback(() => {
+    realtime.broadcast(
+      `${channelName}:cursors`,
+      'cursor_clear',
+      { userId },
+      'low',
+    );
+  }, [channelName, realtime, userId]);
+
+  // Resolve conflict
+  const resolveConflict = useCallback(
+    async (
+      conflictId: string,
+      resolution: 'accept_local' | 'accept_remote' | 'merge',
+    ): Promise<boolean> => {
+      const success = await realtime.broadcast(
+        channelName,
+        'conflict_resolved',
+        { conflictId, resolution },
+        'high',
+      );
+
+      if (success) {
+        setState((prev) => ({
+          ...prev,
+          conflicts: prev.conflicts.filter((c) => c.id !== conflictId),
+        }));
+        logMetric('realtimeFormConflictResolved', 1);
+      }
+
+      return success;
+    },
+    [channelName, realtime, logMetric],
+  );
+
+  // Get conflicts
+  const getConflicts = useCallback((): FormConflict[] => {
+    return state.conflicts;
+  }, [state.conflicts]);
+
+  // Get collaborators
+  const getCollaborators = useCallback((): FormCollaborator[] => {
+    return Array.from(state.collaborators.values()).filter(
+      (c) => c.userId !== userId,
+    );
+  }, [state.collaborators, userId]);
+
+  // Get active editors
+  const getActiveEditors = useCallback((): FormCollaborator[] => {
+    return getCollaborators().filter((c) => c.status === 'editing');
+  }, [getCollaborators]);
+
+  // Update presence
+  const updatePresence = useCallback(
+    (status: FormCollaborator['status'], currentField?: string) => {
+      const collaborator: FormCollaborator = {
+        userId,
+        userName,
+        color: userColor,
+        lastActivity: Date.now(),
+        currentField,
+        status,
+      };
+
+      setState((prev) => ({
+        ...prev,
+        collaborators: new Map(prev.collaborators).set(userId, collaborator),
+      }));
+
+      realtime.broadcast(
+        `${channelName}:presence`,
+        'presence_update',
+        collaborator,
+        'low',
+      );
+    },
+    [userId, userName, userColor, channelName, realtime],
+  );
+
+  // Force sync form
+  const forceSyncForm = useCallback(async (): Promise<void> => {
+    setState((prev) => ({
+      ...prev,
+      syncStatus: {
+        ...prev.syncStatus,
+        pendingOps: prev.syncStatus.pendingOps + 1,
+      },
+    }));
+
+    const success = await realtime.broadcast(
+      channelName,
+      'force_sync',
+      { formVersion: state.formVersion, timestamp: Date.now() },
+      'critical',
+    );
+
+    setState((prev) => ({
+      ...prev,
+      syncStatus: {
+        ...prev.syncStatus,
+        pendingOps: Math.max(0, prev.syncStatus.pendingOps - 1),
+        lastSync: Date.now(),
+      },
+    }));
+
+    if (success) {
+      logMetric('realtimeFormForceSyncSuccess', 1);
+    } else {
+      logMetric('realtimeFormForceSyncFailed', 1);
+    }
+  }, [channelName, realtime, state.formVersion, logMetric]);
+
+  // Get sync status
+  const getSyncStatus = useCallback(() => {
+    return state.syncStatus;
+  }, [state.syncStatus]);
+
+  // Subscribe to channels on mount
+  useEffect(() => {
+    if (realtime.state.isConnected) {
+      // Main form events
+      unsubscribeRef.current = realtime.subscribe(channelName, (event) => {
+        handleRealtimeEvent(event.data as RealtimeFormEvent);
+      });
+
+      // Lock events
+      realtime.subscribe(`${channelName}:locks`, (event) => {
+        const { type, data } = event;
+        if (type === 'field_lock_acquired') {
+          setState((prev) => ({
+            ...prev,
+            fieldLocks: new Map(prev.fieldLocks).set(
+              data.fieldId,
+              data as FieldLock,
+            ),
+          }));
+        } else if (type === 'field_lock_released') {
+          setState((prev) => {
+            const newLocks = new Map(prev.fieldLocks);
+            newLocks.delete(data.fieldId);
+            return { ...prev, fieldLocks: newLocks };
+          });
+        }
+      });
+
+      // Presence events
+      realtime.subscribe(`${channelName}:presence`, (event) => {
+        const collaborator = event.data as FormCollaborator;
+        if (collaborator.userId !== userId) {
+          setState((prev) => ({
+            ...prev,
+            collaborators: new Map(prev.collaborators).set(
+              collaborator.userId,
+              collaborator,
+            ),
+          }));
+        }
+      });
+
+      logMetric('realtimeFormChannelSubscribed', 1);
+    }
+
+    return () => {
+      if (unsubscribeRef.current) {
+        unsubscribeRef.current();
+      }
+    };
+  }, [channelName, realtime, handleRealtimeEvent, userId, logMetric]);
+
+  // Update connection health
+  useEffect(() => {
+    setState((prev) => ({
+      ...prev,
+      syncStatus: {
+        ...prev.syncStatus,
+        connectionHealth:
+          realtime.getConnectionQuality() as RealtimeFormState['syncStatus']['connectionHealth'],
+      },
+    }));
+  }, [realtime]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      // Clear all timeouts
+      if (cursorUpdateThrottleRef.current) {
+        clearTimeout(cursorUpdateThrottleRef.current);
+      }
+      lockTimeoutsRef.current.forEach((timeout) => clearTimeout(timeout));
+    };
+  }, []);
+
+  const contextValue: RealtimeFormContextValue = useMemo(
+    () => ({
+      state,
+      updateField,
+      addField,
+      removeField,
+      addSection,
+      removeSection,
+      reorderSections,
+      acquireFieldLock,
+      releaseFieldLock,
+      isFieldLocked,
+      getFieldLock,
+      updateCursor,
+      clearCursor,
+      resolveConflict,
+      getConflicts,
+      applyOperation,
+      transformOperation,
+      getCollaborators,
+      getActiveEditors,
+      updatePresence,
+      forceSyncForm,
+      getSyncStatus,
+    }),
+    [
+      state,
+      updateField,
+      addField,
+      removeField,
+      addSection,
+      removeSection,
+      reorderSections,
+      acquireFieldLock,
+      releaseFieldLock,
+      isFieldLocked,
+      getFieldLock,
+      updateCursor,
+      clearCursor,
+      resolveConflict,
+      getConflicts,
+      applyOperation,
+      transformOperation,
+      getCollaborators,
+      getActiveEditors,
+      updatePresence,
+      forceSyncForm,
+      getSyncStatus,
+    ],
+  );
+
+  return (
+    <RealtimeFormContext.Provider value={contextValue}>
+      {children}
+    </RealtimeFormContext.Provider>
+  );
+};
+
+export default RealtimeFormProvider;

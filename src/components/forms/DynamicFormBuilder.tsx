@@ -1,0 +1,1084 @@
+'use client';
+
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  DragEndEvent,
+  DragOverlay,
+  DragStartEvent,
+  DragOverEvent,
+} from '@dnd-kit/core';
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import {
+  FormField,
+  FormSection,
+  FormFieldType,
+  FIELD_TEMPLATES,
+  Form,
+} from '@/types/forms';
+import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
+import { Switch } from '@/components/ui/switch';
+import { FieldManager } from './FieldManager';
+import { FieldEditor } from './FieldEditor';
+import { FormPreview } from './FormPreview';
+import { nanoid } from 'nanoid';
+import {
+  PlayIcon,
+  PauseIcon,
+  EyeIcon,
+  Cog6ToothIcon,
+  PlusIcon,
+  TrashIcon,
+  DocumentDuplicateIcon,
+  ClockIcon,
+  CheckCircleIcon,
+  XCircleIcon,
+  BeakerIcon,
+  ChartBarIcon,
+  CpuChipIcon,
+} from '@heroicons/react/24/outline';
+
+interface DynamicFormBuilderProps {
+  initialForm?: Partial<Form>;
+  onSave?: (form: Partial<Form>) => Promise<void>;
+  onPublish?: (form: Partial<Form>) => Promise<void>;
+  onPreview?: (form: Partial<Form>) => void;
+  autoSaveInterval?: number;
+  enableAdvancedFeatures?: boolean;
+}
+
+interface BuilderState {
+  activeTab: 'design' | 'logic' | 'preview' | 'settings' | 'analytics';
+  selectedField: FormField | null;
+  isDirty: boolean;
+  autoSaveEnabled: boolean;
+  isPreviewMode: boolean;
+  previewDevice: 'desktop' | 'tablet' | 'mobile';
+  showFieldManager: boolean;
+  enableConditionalLogic: boolean;
+  enableMultiStep: boolean;
+  currentStep: number;
+  validationMode: 'live' | 'onSubmit' | 'onBlur';
+}
+
+export function DynamicFormBuilder({
+  initialForm,
+  onSave,
+  onPublish,
+  onPreview,
+  autoSaveInterval = 30000, // 30 seconds
+  enableAdvancedFeatures = true,
+}: DynamicFormBuilderProps) {
+  // Form data state
+  const [form, setForm] = useState<Partial<Form>>({
+    name: 'Untitled Form',
+    description: '',
+    sections: [
+      {
+        id: nanoid(),
+        title: 'Main Section',
+        description: '',
+        fields: [],
+        order: 0,
+      },
+    ],
+    settings: {
+      submitButtonText: 'Submit',
+      successMessage: 'Thank you for your submission!',
+      autoSave: false,
+      requireLogin: false,
+      onePerUser: false,
+      captchaEnabled: false,
+    },
+    theme: {
+      primaryColor: '#9333ea',
+      fontFamily: 'Inter',
+      borderRadius: 'md',
+    },
+    isPublished: false,
+    isArchived: false,
+    isTemplate: false,
+    ...initialForm,
+  });
+
+  // Builder state
+  const [state, setState] = useState<BuilderState>({
+    activeTab: 'design',
+    selectedField: null,
+    isDirty: false,
+    autoSaveEnabled: true,
+    isPreviewMode: false,
+    previewDevice: 'desktop',
+    showFieldManager: true,
+    enableConditionalLogic: false,
+    enableMultiStep: false,
+    currentStep: 0,
+    validationMode: 'onBlur',
+  });
+
+  // Drag and drop
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [lastAutoSave, setLastAutoSave] = useState<Date>(new Date());
+
+  const sensors = useSensors(
+    useSensor(PointerSensor),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
+  );
+
+  // Auto-save functionality
+  useEffect(() => {
+    if (!state.autoSaveEnabled || !state.isDirty) return;
+
+    const interval = setInterval(async () => {
+      if (onSave && state.isDirty) {
+        try {
+          await onSave(form);
+          setLastAutoSave(new Date());
+          setState((prev) => ({ ...prev, isDirty: false }));
+        } catch (error) {
+          console.error('Auto-save failed:', error);
+        }
+      }
+    }, autoSaveInterval);
+
+    return () => clearInterval(interval);
+  }, [form, state.autoSaveEnabled, state.isDirty, onSave, autoSaveInterval]);
+
+  // Get all fields from all sections
+  const allFields = useMemo(() => {
+    return form.sections?.flatMap((section) => section.fields) || [];
+  }, [form.sections]);
+
+  // Form validation
+  const formValidation = useMemo(() => {
+    const errors: string[] = [];
+    const warnings: string[] = [];
+
+    if (!form.name?.trim()) {
+      errors.push('Form name is required');
+    }
+
+    if (!form.sections?.length) {
+      errors.push('Form must have at least one section');
+    }
+
+    const hasFields = allFields.length > 0;
+    if (!hasFields) {
+      warnings.push('Form has no fields');
+    }
+
+    const requiredFields = allFields.filter((f) => f.validation?.required);
+    if (requiredFields.length === 0 && hasFields) {
+      warnings.push('No required fields - consider making key fields required');
+    }
+
+    return { errors, warnings, isValid: errors.length === 0 };
+  }, [form, allFields]);
+
+  // Form operations
+  const updateForm = useCallback((updates: Partial<Form>) => {
+    setForm((prev) => ({ ...prev, ...updates }));
+    setState((prev) => ({ ...prev, isDirty: true }));
+  }, []);
+
+  const updateSection = useCallback(
+    (sectionId: string, updates: Partial<FormSection>) => {
+      setForm((prev) => ({
+        ...prev,
+        sections: prev.sections?.map((section) =>
+          section.id === sectionId ? { ...section, ...updates } : section,
+        ),
+      }));
+      setState((prev) => ({ ...prev, isDirty: true }));
+    },
+    [],
+  );
+
+  const addSection = useCallback(() => {
+    const newSection: FormSection = {
+      id: nanoid(),
+      title: `Section ${(form.sections?.length || 0) + 1}`,
+      description: '',
+      fields: [],
+      order: form.sections?.length || 0,
+    };
+
+    updateForm({
+      sections: [...(form.sections || []), newSection],
+    });
+  }, [form.sections, updateForm]);
+
+  const deleteSection = useCallback(
+    (sectionId: string) => {
+      updateForm({
+        sections: form.sections?.filter((section) => section.id !== sectionId),
+      });
+    },
+    [form.sections, updateForm],
+  );
+
+  const updateField = useCallback(
+    (fieldId: string, updates: Partial<FormField>) => {
+      setForm((prev) => ({
+        ...prev,
+        sections: prev.sections?.map((section) => ({
+          ...section,
+          fields: section.fields.map((field) =>
+            field.id === fieldId ? { ...field, ...updates } : field,
+          ),
+        })),
+      }));
+      setState((prev) => ({ ...prev, isDirty: true }));
+    },
+    [],
+  );
+
+  const addField = useCallback(
+    (sectionId: string, fieldType: FormFieldType, position?: number) => {
+      const template = FIELD_TEMPLATES[fieldType];
+      const section = form.sections?.find((s) => s.id === sectionId);
+      const newField: FormField = {
+        id: nanoid(),
+        ...template,
+        order: position !== undefined ? position : section?.fields.length || 0,
+      } as FormField;
+
+      setForm((prev) => ({
+        ...prev,
+        sections:
+          prev.sections?.map((section) => {
+            if (section.id === sectionId) {
+              const updatedFields = [...section.fields];
+              if (position !== undefined) {
+                updatedFields.splice(position, 0, newField);
+                // Update order for all fields
+                updatedFields.forEach((field, index) => {
+                  field.order = index;
+                });
+              } else {
+                updatedFields.push(newField);
+              }
+              return { ...section, fields: updatedFields };
+            }
+            return section;
+          }) || [],
+      }));
+      setState((prev) => ({ ...prev, isDirty: true, selectedField: newField }));
+    },
+    [form.sections],
+  );
+
+  const deleteField = useCallback((fieldId: string) => {
+    setForm((prev) => ({
+      ...prev,
+      sections: prev.sections?.map((section) => ({
+        ...section,
+        fields: section.fields.filter((field) => field.id !== fieldId),
+      })),
+    }));
+    setState((prev) => ({
+      ...prev,
+      isDirty: true,
+      selectedField:
+        prev.selectedField?.id === fieldId ? null : prev.selectedField,
+    }));
+  }, []);
+
+  // Drag and drop handlers
+  const handleDragStart = (event: DragStartEvent) => {
+    setActiveId(event.active.id as string);
+  };
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+
+    if (!over) {
+      setActiveId(null);
+      return;
+    }
+
+    const activeData = active.data.current;
+    const overData = over.data?.current;
+
+    // Handle field reordering within sections
+    if (activeData?.type === 'field' && overData?.type === 'field') {
+      const activeFieldId = active.id as string;
+      const overFieldId = over.id as string;
+
+      setForm((prev) => {
+        const sections = prev.sections?.map((section) => {
+          const activeIndex = section.fields.findIndex(
+            (f) => f.id === activeFieldId,
+          );
+          const overIndex = section.fields.findIndex(
+            (f) => f.id === overFieldId,
+          );
+
+          if (activeIndex !== -1 && overIndex !== -1) {
+            const reorderedFields = arrayMove(
+              section.fields,
+              activeIndex,
+              overIndex,
+            );
+            reorderedFields.forEach((field, index) => {
+              field.order = index;
+            });
+            return { ...section, fields: reorderedFields };
+          }
+          return section;
+        });
+
+        return { ...prev, sections };
+      });
+      setState((prev) => ({ ...prev, isDirty: true }));
+    }
+
+    setActiveId(null);
+  };
+
+  // Save and publish handlers
+  const handleSave = async () => {
+    if (onSave) {
+      try {
+        await onSave(form);
+        setLastAutoSave(new Date());
+        setState((prev) => ({ ...prev, isDirty: false }));
+      } catch (error) {
+        console.error('Save failed:', error);
+      }
+    }
+  };
+
+  const handlePublish = async () => {
+    if (!formValidation.isValid) return;
+
+    const publishedForm = {
+      ...form,
+      isPublished: true,
+    };
+
+    if (onPublish) {
+      try {
+        await onPublish(publishedForm);
+        updateForm({ isPublished: true });
+        setState((prev) => ({ ...prev, isDirty: false }));
+      } catch (error) {
+        console.error('Publish failed:', error);
+      }
+    }
+  };
+
+  const handlePreview = () => {
+    if (onPreview) {
+      onPreview(form);
+    }
+    setState((prev) => ({ ...prev, isPreviewMode: !prev.isPreviewMode }));
+  };
+
+  // Render main content based on active tab
+  const renderMainContent = () => {
+    switch (state.activeTab) {
+      case 'design':
+        return (
+          <div className="flex h-full">
+            {state.showFieldManager && (
+              <div className="w-80 border-r bg-white">
+                <FieldManager
+                  fields={allFields}
+                  onFieldsUpdate={(fields) => {
+                    // Update fields across all sections
+                    const updatedSections =
+                      form.sections?.map((section) => {
+                        const sectionFields = fields.filter((field) =>
+                          section.fields.some((f) => f.id === field.id),
+                        );
+                        return { ...section, fields: sectionFields };
+                      }) || [];
+                    updateForm({ sections: updatedSections });
+                  }}
+                  onFieldSelect={(field) =>
+                    setState((prev) => ({ ...prev, selectedField: field }))
+                  }
+                  selectedFieldId={state.selectedField?.id}
+                  showPreview={true}
+                />
+              </div>
+            )}
+
+            <div className="flex-1 flex">
+              {/* Form Canvas */}
+              <div className="flex-1 overflow-y-auto p-6 bg-gray-50">
+                <DndContext
+                  sensors={sensors}
+                  collisionDetection={closestCenter}
+                  onDragStart={handleDragStart}
+                  onDragEnd={handleDragEnd}
+                >
+                  <div className="max-w-2xl mx-auto">
+                    {form.sections?.map((section) => (
+                      <SectionBuilder
+                        key={section.id}
+                        section={section}
+                        onUpdate={(updates) =>
+                          updateSection(section.id, updates)
+                        }
+                        onDelete={() => deleteSection(section.id)}
+                        onAddField={(fieldType, position) =>
+                          addField(section.id, fieldType, position)
+                        }
+                        onFieldSelect={(field) =>
+                          setState((prev) => ({
+                            ...prev,
+                            selectedField: field,
+                          }))
+                        }
+                        selectedFieldId={state.selectedField?.id}
+                        enableConditionalLogic={state.enableConditionalLogic}
+                      />
+                    ))}
+
+                    <Button
+                      variant="outline"
+                      onClick={addSection}
+                      className="w-full mt-4"
+                    >
+                      <PlusIcon className="h-4 w-4 mr-2" />
+                      Add Section
+                    </Button>
+                  </div>
+
+                  <DragOverlay>
+                    {activeId ? (
+                      <div className="bg-white border-2 border-purple-500 rounded-lg p-3 shadow-lg opacity-80">
+                        <p className="text-sm font-medium">Moving field...</p>
+                      </div>
+                    ) : null}
+                  </DragOverlay>
+                </DndContext>
+              </div>
+
+              {/* Field Editor */}
+              {state.selectedField && (
+                <div className="w-80 border-l bg-white">
+                  <FieldEditor
+                    field={state.selectedField}
+                    onUpdate={(updates) =>
+                      updateField(state.selectedField!.id, updates)
+                    }
+                    onDelete={() => deleteField(state.selectedField!.id)}
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+        );
+
+      case 'logic':
+        return (
+          <div className="p-6">
+            <div className="max-w-4xl mx-auto">
+              <h2 className="text-xl font-semibold mb-6">
+                Conditional Logic & Rules
+              </h2>
+              <div className="bg-white rounded-lg border p-6">
+                <div className="text-center py-8 text-gray-500">
+                  <BeakerIcon className="h-12 w-12 mx-auto mb-4 text-gray-400" />
+                  <p className="text-lg font-medium mb-2">
+                    Advanced Logic Coming Soon
+                  </p>
+                  <p className="text-sm">
+                    Conditional field visibility, multi-step forms, and advanced
+                    validation rules will be available in the next update.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+
+      case 'preview':
+        return (
+          <div className="h-full flex flex-col bg-gray-50">
+            {/* Device Selector */}
+            <div className="p-4 bg-white border-b">
+              <div className="flex items-center justify-center gap-2">
+                <Button
+                  variant={
+                    state.previewDevice === 'desktop' ? 'default' : 'outline'
+                  }
+                  size="sm"
+                  onClick={() =>
+                    setState((prev) => ({ ...prev, previewDevice: 'desktop' }))
+                  }
+                >
+                  Desktop
+                </Button>
+                <Button
+                  variant={
+                    state.previewDevice === 'tablet' ? 'default' : 'outline'
+                  }
+                  size="sm"
+                  onClick={() =>
+                    setState((prev) => ({ ...prev, previewDevice: 'tablet' }))
+                  }
+                >
+                  Tablet
+                </Button>
+                <Button
+                  variant={
+                    state.previewDevice === 'mobile' ? 'default' : 'outline'
+                  }
+                  size="sm"
+                  onClick={() =>
+                    setState((prev) => ({ ...prev, previewDevice: 'mobile' }))
+                  }
+                >
+                  Mobile
+                </Button>
+              </div>
+            </div>
+
+            {/* Preview */}
+            <div className="flex-1 flex items-center justify-center p-6">
+              <div
+                className={`bg-white rounded-lg shadow-lg overflow-hidden ${
+                  state.previewDevice === 'mobile'
+                    ? 'w-80'
+                    : state.previewDevice === 'tablet'
+                      ? 'w-96'
+                      : 'w-full max-w-2xl'
+                }`}
+              >
+                <FormPreview
+                  sections={form.sections || []}
+                  settings={form.settings || {}}
+                />
+              </div>
+            </div>
+          </div>
+        );
+
+      case 'settings':
+        return (
+          <div className="p-6">
+            <div className="max-w-2xl mx-auto">
+              <FormSettings
+                form={form}
+                onUpdate={updateForm}
+                enableAdvancedFeatures={enableAdvancedFeatures}
+              />
+            </div>
+          </div>
+        );
+
+      case 'analytics':
+        return (
+          <div className="p-6">
+            <div className="max-w-4xl mx-auto">
+              <h2 className="text-xl font-semibold mb-6">Form Analytics</h2>
+              <div className="bg-white rounded-lg border p-6">
+                <div className="text-center py-8 text-gray-500">
+                  <ChartBarIcon className="h-12 w-12 mx-auto mb-4 text-gray-400" />
+                  <p className="text-lg font-medium mb-2">
+                    Analytics Dashboard
+                  </p>
+                  <p className="text-sm">
+                    View submission rates, completion times, and field analytics
+                    after your form receives submissions.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+
+      default:
+        return null;
+    }
+  };
+
+  return (
+    <div className="h-screen flex flex-col bg-gray-50">
+      {/* Header */}
+      <div className="bg-white border-b px-6 py-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <input
+              type="text"
+              value={form.name || ''}
+              onChange={(e) => updateForm({ name: e.target.value })}
+              className="text-xl font-semibold bg-transparent border-none focus:outline-none focus:ring-2 focus:ring-purple-500 rounded px-2 -ml-2"
+              placeholder="Form Name"
+            />
+
+            <div className="flex items-center gap-2 text-sm text-gray-500">
+              {state.isDirty && <span className="text-orange-500">●</span>}
+              <span>
+                {formValidation.errors.length} errors,{' '}
+                {formValidation.warnings.length} warnings
+              </span>
+              •<span>{allFields.length} fields</span>•
+              <span>Last saved: {lastAutoSave.toLocaleTimeString()}</span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            {/* Auto-save toggle */}
+            <label className="flex items-center gap-2 text-sm">
+              <Switch
+                checked={state.autoSaveEnabled}
+                onCheckedChange={(checked) =>
+                  setState((prev) => ({ ...prev, autoSaveEnabled: checked }))
+                }
+              />
+              Auto-save
+            </label>
+
+            <Button
+              variant="outline"
+              onClick={handleSave}
+              disabled={!state.isDirty}
+            >
+              {state.isDirty ? 'Save Changes' : 'Saved'}
+            </Button>
+
+            <Button variant="outline" onClick={handlePreview}>
+              <EyeIcon className="h-4 w-4 mr-2" />
+              Preview
+            </Button>
+
+            <Button
+              onClick={handlePublish}
+              disabled={!formValidation.isValid}
+              className="bg-green-600 hover:bg-green-700"
+            >
+              {form.isPublished ? (
+                <>
+                  <CheckCircleIcon className="h-4 w-4 mr-2" />
+                  Published
+                </>
+              ) : (
+                <>
+                  <PlayIcon className="h-4 w-4 mr-2" />
+                  Publish
+                </>
+              )}
+            </Button>
+          </div>
+        </div>
+
+        {/* Tab Navigation */}
+        <div className="flex mt-4 border-b -mb-4">
+          {[
+            { id: 'design', label: 'Design', icon: CpuChipIcon },
+            { id: 'logic', label: 'Logic', icon: BeakerIcon },
+            { id: 'preview', label: 'Preview', icon: EyeIcon },
+            { id: 'settings', label: 'Settings', icon: Cog6ToothIcon },
+            { id: 'analytics', label: 'Analytics', icon: ChartBarIcon },
+          ].map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() =>
+                setState((prev) => ({ ...prev, activeTab: tab.id as any }))
+              }
+              className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+                state.activeTab === tab.id
+                  ? 'border-purple-500 text-purple-600 bg-purple-50'
+                  : 'border-transparent text-gray-600 hover:text-gray-900 hover:border-gray-300'
+              }`}
+            >
+              <tab.icon className="h-4 w-4" />
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Validation Errors */}
+      {formValidation.errors.length > 0 && (
+        <div className="bg-red-50 border-b border-red-200 px-6 py-3">
+          <div className="flex items-center gap-2 text-red-700">
+            <XCircleIcon className="h-5 w-5" />
+            <span className="font-medium">Form has errors:</span>
+            <span className="text-sm">{formValidation.errors.join(', ')}</span>
+          </div>
+        </div>
+      )}
+
+      {/* Main Content */}
+      <div className="flex-1 overflow-hidden">{renderMainContent()}</div>
+    </div>
+  );
+}
+
+// Section Builder Component
+interface SectionBuilderProps {
+  section: FormSection;
+  onUpdate: (updates: Partial<FormSection>) => void;
+  onDelete: () => void;
+  onAddField: (fieldType: FormFieldType, position?: number) => void;
+  onFieldSelect: (field: FormField) => void;
+  selectedFieldId?: string;
+  enableConditionalLogic: boolean;
+}
+
+function SectionBuilder({
+  section,
+  onUpdate,
+  onDelete,
+  onAddField,
+  onFieldSelect,
+  selectedFieldId,
+  enableConditionalLogic,
+}: SectionBuilderProps) {
+  return (
+    <Card className="p-6 mb-6">
+      <div className="flex items-center justify-between mb-4">
+        <input
+          type="text"
+          value={section.title}
+          onChange={(e) => onUpdate({ title: e.target.value })}
+          className="text-lg font-semibold bg-transparent border-none focus:outline-none focus:ring-2 focus:ring-purple-500 rounded px-2 -ml-2"
+          placeholder="Section Title"
+        />
+
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onDelete}
+          className="text-red-500 hover:bg-red-50"
+        >
+          <TrashIcon className="h-4 w-4" />
+        </Button>
+      </div>
+
+      {section.description && (
+        <input
+          type="text"
+          value={section.description}
+          onChange={(e) => onUpdate({ description: e.target.value })}
+          className="w-full text-sm text-gray-600 bg-transparent border-none focus:outline-none focus:ring-2 focus:ring-purple-500 rounded px-2 -ml-2 mb-4"
+          placeholder="Section description..."
+        />
+      )}
+
+      <SortableContext
+        items={section.fields.map((f) => f.id)}
+        strategy={verticalListSortingStrategy}
+      >
+        <div className="space-y-3">
+          {section.fields.map((field) => (
+            <FieldCard
+              key={field.id}
+              field={field}
+              isSelected={selectedFieldId === field.id}
+              onSelect={() => onFieldSelect(field)}
+              enableConditionalLogic={enableConditionalLogic}
+            />
+          ))}
+        </div>
+      </SortableContext>
+
+      <Button
+        variant="outline"
+        onClick={() => onAddField('text')}
+        className="w-full mt-4"
+      >
+        <PlusIcon className="h-4 w-4 mr-2" />
+        Add Field
+      </Button>
+    </Card>
+  );
+}
+
+// Field Card Component
+interface FieldCardProps {
+  field: FormField;
+  isSelected: boolean;
+  onSelect: () => void;
+  enableConditionalLogic: boolean;
+}
+
+function FieldCard({
+  field,
+  isSelected,
+  onSelect,
+  enableConditionalLogic,
+}: FieldCardProps) {
+  return (
+    <div
+      onClick={onSelect}
+      className={`p-3 border rounded-lg cursor-pointer transition-all ${
+        isSelected
+          ? 'ring-2 ring-purple-500 border-purple-300 bg-purple-50'
+          : 'border-gray-200 hover:border-gray-300 bg-white'
+      }`}
+    >
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="font-medium text-gray-900">
+            {field.label}
+            {field.validation?.required && (
+              <span className="text-red-500 ml-1">*</span>
+            )}
+          </p>
+          <p className="text-sm text-gray-500">
+            {field.type} • Order: {field.order || 0}
+          </p>
+        </div>
+
+        {enableConditionalLogic && field.conditionalLogic && (
+          <div className="text-xs text-purple-600 bg-purple-100 px-2 py-1 rounded">
+            Conditional
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Form Settings Component
+interface FormSettingsProps {
+  form: Partial<Form>;
+  onUpdate: (updates: Partial<Form>) => void;
+  enableAdvancedFeatures: boolean;
+}
+
+function FormSettings({
+  form,
+  onUpdate,
+  enableAdvancedFeatures,
+}: FormSettingsProps) {
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-xl font-semibold mb-4">Form Settings</h2>
+      </div>
+
+      <Card className="p-6">
+        <h3 className="text-lg font-medium mb-4">Basic Settings</h3>
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Form Description
+            </label>
+            <textarea
+              value={form.description || ''}
+              onChange={(e) => onUpdate({ description: e.target.value })}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+              rows={3}
+              placeholder="Describe what this form is for..."
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Submit Button Text
+            </label>
+            <input
+              type="text"
+              value={form.settings?.submitButtonText || ''}
+              onChange={(e) =>
+                onUpdate({
+                  settings: {
+                    ...form.settings,
+                    submitButtonText: e.target.value,
+                  },
+                })
+              }
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Success Message
+            </label>
+            <textarea
+              value={form.settings?.successMessage || ''}
+              onChange={(e) =>
+                onUpdate({
+                  settings: {
+                    ...form.settings,
+                    successMessage: e.target.value,
+                  },
+                })
+              }
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+              rows={2}
+            />
+          </div>
+        </div>
+      </Card>
+
+      <Card className="p-6">
+        <h3 className="text-lg font-medium mb-4">Submission Settings</h3>
+        <div className="space-y-4">
+          <label className="flex items-center gap-3">
+            <Switch
+              checked={form.settings?.autoSave || false}
+              onCheckedChange={(checked) =>
+                onUpdate({
+                  settings: { ...form.settings, autoSave: checked },
+                })
+              }
+            />
+            <div>
+              <p className="text-sm font-medium text-gray-900">
+                Auto-save progress
+              </p>
+              <p className="text-xs text-gray-500">
+                Save user progress as they fill out the form
+              </p>
+            </div>
+          </label>
+
+          <label className="flex items-center gap-3">
+            <Switch
+              checked={form.settings?.requireLogin || false}
+              onCheckedChange={(checked) =>
+                onUpdate({
+                  settings: { ...form.settings, requireLogin: checked },
+                })
+              }
+            />
+            <div>
+              <p className="text-sm font-medium text-gray-900">Require login</p>
+              <p className="text-xs text-gray-500">
+                Users must be logged in to submit
+              </p>
+            </div>
+          </label>
+
+          <label className="flex items-center gap-3">
+            <Switch
+              checked={form.settings?.onePerUser || false}
+              onCheckedChange={(checked) =>
+                onUpdate({
+                  settings: { ...form.settings, onePerUser: checked },
+                })
+              }
+            />
+            <div>
+              <p className="text-sm font-medium text-gray-900">
+                One submission per user
+              </p>
+              <p className="text-xs text-gray-500">
+                Limit to one submission per user account
+              </p>
+            </div>
+          </label>
+
+          {enableAdvancedFeatures && (
+            <label className="flex items-center gap-3">
+              <Switch
+                checked={form.settings?.captchaEnabled || false}
+                onCheckedChange={(checked) =>
+                  onUpdate({
+                    settings: { ...form.settings, captchaEnabled: checked },
+                  })
+                }
+              />
+              <div>
+                <p className="text-sm font-medium text-gray-900">
+                  Enable CAPTCHA
+                </p>
+                <p className="text-xs text-gray-500">
+                  Protect against spam submissions
+                </p>
+              </div>
+            </label>
+          )}
+        </div>
+      </Card>
+
+      <Card className="p-6">
+        <h3 className="text-lg font-medium mb-4">Theme & Appearance</h3>
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Primary Color
+            </label>
+            <div className="flex items-center gap-3">
+              <input
+                type="color"
+                value={form.theme?.primaryColor || '#9333ea'}
+                onChange={(e) =>
+                  onUpdate({
+                    theme: { ...form.theme, primaryColor: e.target.value },
+                  })
+                }
+                className="h-10 w-20 border border-gray-300 rounded cursor-pointer"
+              />
+              <input
+                type="text"
+                value={form.theme?.primaryColor || '#9333ea'}
+                onChange={(e) =>
+                  onUpdate({
+                    theme: { ...form.theme, primaryColor: e.target.value },
+                  })
+                }
+                className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                placeholder="#9333ea"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Font Family
+            </label>
+            <select
+              value={form.theme?.fontFamily || 'Inter'}
+              onChange={(e) =>
+                onUpdate({
+                  theme: { ...form.theme, fontFamily: e.target.value },
+                })
+              }
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+            >
+              <option value="Inter">Inter</option>
+              <option value="system-ui">System UI</option>
+              <option value="serif">Serif</option>
+              <option value="mono">Monospace</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Border Radius
+            </label>
+            <select
+              value={form.theme?.borderRadius || 'md'}
+              onChange={(e) =>
+                onUpdate({
+                  theme: { ...form.theme, borderRadius: e.target.value },
+                })
+              }
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+            >
+              <option value="none">None</option>
+              <option value="sm">Small</option>
+              <option value="md">Medium</option>
+              <option value="lg">Large</option>
+              <option value="xl">Extra Large</option>
+            </select>
+          </div>
+        </div>
+      </Card>
+    </div>
+  );
+}

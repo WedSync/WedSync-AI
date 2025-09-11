@@ -1,0 +1,506 @@
+/**
+ * WS-116: Geographic Location Search Filter Component
+ * Advanced location search and filtering interface for supplier discovery
+ */
+
+'use client';
+
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Search, MapPin, Sliders, X, Navigation } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Slider } from '@/components/ui/slider';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Checkbox } from '@/components/ui/checkbox';
+import { geographicSearchService, LocationSuggestion } from '@/lib/services/geographic-search-service';
+
+export interface LocationSearchParams {
+  latitude?: number;
+  longitude?: number;
+  address?: string;
+  radius: number;
+  category?: string;
+  subcategories: string[];
+  priceRange: string[];
+  minRating: number;
+  verifiedOnly: boolean;
+  sortBy: 'distance' | 'rating' | 'price' | 'reviews';
+  sortOrder: 'asc' | 'desc';
+}
+
+interface LocationSearchFilterProps {
+  onSearch: (params: LocationSearchParams) => void;
+  onClearFilters: () => void;
+  loading?: boolean;
+  initialParams?: Partial<LocationSearchParams>;
+  categories?: Array<{ value: string; label: string }>;
+  className?: string;
+}
+
+export default function LocationSearchFilter({
+  onSearch,
+  onClearFilters,
+  loading = false,
+  initialParams = {},
+  categories = [],
+  className = ''
+}: LocationSearchFilterProps) {
+  // Search state
+  const [searchAddress, setSearchAddress] = useState(initialParams.address || '');
+  const [locationSuggestions, setLocationSuggestions] = useState<LocationSuggestion[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [selectedLocation, setSelectedLocation] = useState<{
+    latitude: number;
+    longitude: number;
+    address: string;
+  } | null>(
+    initialParams.latitude && initialParams.longitude
+      ? {
+          latitude: initialParams.latitude,
+          longitude: initialParams.longitude,
+          address: initialParams.address || ''
+        }
+      : null
+  );
+
+  // Filter state
+  const [filters, setFilters] = useState({
+    radius: initialParams.radius || 50,
+    category: initialParams.category || '',
+    subcategories: initialParams.subcategories || [],
+    priceRange: initialParams.priceRange || [],
+    minRating: initialParams.minRating || 0,
+    verifiedOnly: initialParams.verifiedOnly || false,
+    sortBy: (initialParams.sortBy || 'distance') as 'distance' | 'rating' | 'price' | 'reviews',
+    sortOrder: (initialParams.sortOrder || 'asc') as 'asc' | 'desc'
+  });
+
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
+  const [geoLocationLoading, setGeoLocationLoading] = useState(false);
+  const searchTimeoutRef = useRef<NodeJS.Timeout>();
+
+  // Debounced location search
+  useEffect(() => {
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+    }
+
+    if (searchAddress.length >= 2) {
+      searchTimeoutRef.current = setTimeout(async () => {
+        try {
+          const suggestions = await geographicSearchService.getLocationSuggestions(searchAddress, 8);
+          setLocationSuggestions(suggestions);
+          setShowSuggestions(suggestions.length > 0);
+        } catch (error) {
+          console.error('Location suggestions error:', error);
+          setLocationSuggestions([]);
+        }
+      }, 300);
+    } else {
+      setLocationSuggestions([]);
+      setShowSuggestions(false);
+    }
+
+    return () => {
+      if (searchTimeoutRef.current) {
+        clearTimeout(searchTimeoutRef.current);
+      }
+    };
+  }, [searchAddress]);
+
+  // Handle location selection
+  const handleLocationSelect = useCallback((suggestion: LocationSuggestion) => {
+    setSelectedLocation({
+      latitude: suggestion.latitude,
+      longitude: suggestion.longitude,
+      address: suggestion.fullAddress
+    });
+    setSearchAddress(suggestion.fullAddress);
+    setShowSuggestions(false);
+  }, []);
+
+  // Handle current location
+  const handleCurrentLocation = useCallback(() => {
+    if (!navigator.geolocation) {
+      alert('Geolocation is not supported by this browser');
+      return;
+    }
+
+    setGeoLocationLoading(true);
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        const { latitude, longitude } = position.coords;
+        
+        try {
+          // Reverse geocode to get address
+          const response = await fetch(`/api/geocode?lat=${latitude}&lng=${longitude}`);
+          const data = await response.json();
+          
+          let address = 'Current Location';
+          if (data.success && data.results?.[0]?.formatted_address) {
+            address = data.results[0].formatted_address;
+          }
+
+          setSelectedLocation({ latitude, longitude, address });
+          setSearchAddress(address);
+          setGeoLocationLoading(false);
+        } catch (error) {
+          console.error('Reverse geocoding error:', error);
+          setSelectedLocation({ 
+            latitude, 
+            longitude, 
+            address: `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`
+          });
+          setSearchAddress(`${latitude.toFixed(6)}, ${longitude.toFixed(6)}`);
+          setGeoLocationLoading(false);
+        }
+      },
+      (error) => {
+        console.error('Geolocation error:', error);
+        alert('Unable to get current location');
+        setGeoLocationLoading(false);
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 300000 // 5 minutes
+      }
+    );
+  }, []);
+
+  // Handle search
+  const handleSearch = useCallback(() => {
+    if (!selectedLocation) {
+      alert('Please select a location first');
+      return;
+    }
+
+    const searchParams: LocationSearchParams = {
+      latitude: selectedLocation.latitude,
+      longitude: selectedLocation.longitude,
+      address: selectedLocation.address,
+      radius: filters.radius,
+      category: filters.category || undefined,
+      subcategories: filters.subcategories,
+      priceRange: filters.priceRange,
+      minRating: filters.minRating,
+      verifiedOnly: filters.verifiedOnly,
+      sortBy: filters.sortBy,
+      sortOrder: filters.sortOrder
+    };
+
+    onSearch(searchParams);
+  }, [selectedLocation, filters, onSearch]);
+
+  // Handle clear filters
+  const handleClearFilters = useCallback(() => {
+    setSearchAddress('');
+    setSelectedLocation(null);
+    setFilters({
+      radius: 50,
+      category: '',
+      subcategories: [],
+      priceRange: [],
+      minRating: 0,
+      verifiedOnly: false,
+      sortBy: 'distance',
+      sortOrder: 'asc'
+    });
+    setShowAdvancedFilters(false);
+    onClearFilters();
+  }, [onClearFilters]);
+
+  // Handle subcategory toggle
+  const toggleSubcategory = useCallback((subcategory: string) => {
+    setFilters(prev => ({
+      ...prev,
+      subcategories: prev.subcategories.includes(subcategory)
+        ? prev.subcategories.filter(s => s !== subcategory)
+        : [...prev.subcategories, subcategory]
+    }));
+  }, []);
+
+  // Handle price range toggle
+  const togglePriceRange = useCallback((price: string) => {
+    setFilters(prev => ({
+      ...prev,
+      priceRange: prev.priceRange.includes(price)
+        ? prev.priceRange.filter(p => p !== price)
+        : [...prev.priceRange, price]
+    }));
+  }, []);
+
+  const priceRangeOptions = ['£', '££', '£££', '££££'];
+  const subcategoryOptions = [
+    'Photography', 'Videography', 'Flowers', 'Catering', 
+    'Entertainment', 'Decoration', 'Transport', 'Accommodation'
+  ];
+
+  return (
+    <Card className={`w-full ${className}`}>
+      <CardHeader className="pb-4">
+        <CardTitle className="flex items-center gap-2">
+          <MapPin className="h-5 w-5" />
+          Find Suppliers Near You
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {/* Location Search */}
+        <div className="space-y-2">
+          <Label htmlFor="location-search">Location</Label>
+          <div className="relative">
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                <Input
+                  id="location-search"
+                  type="text"
+                  placeholder="Enter city, postcode, or venue..."
+                  value={searchAddress}
+                  onChange={(e) => setSearchAddress(e.target.value)}
+                  className="pl-10"
+                  onFocus={() => setShowSuggestions(locationSuggestions.length > 0)}
+                />
+                {selectedLocation && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="absolute right-1 top-1/2 -translate-y-1/2 h-8 w-8 p-0"
+                    onClick={() => {
+                      setSelectedLocation(null);
+                      setSearchAddress('');
+                    }}
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                )}
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleCurrentLocation}
+                disabled={geoLocationLoading}
+                className="px-3"
+              >
+                <Navigation className={`h-4 w-4 ${geoLocationLoading ? 'animate-spin' : ''}`} />
+              </Button>
+            </div>
+
+            {/* Location Suggestions */}
+            {showSuggestions && locationSuggestions.length > 0 && (
+              <div className="absolute top-full left-0 right-0 z-50 mt-1 bg-white border border-gray-200 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                {locationSuggestions.map((suggestion) => (
+                  <button
+                    key={suggestion.id}
+                    type="button"
+                    className="w-full px-4 py-2 text-left hover:bg-gray-50 flex items-center gap-2 border-b last:border-b-0"
+                    onClick={() => handleLocationSelect(suggestion)}
+                  >
+                    <MapPin className="h-4 w-4 text-gray-400 flex-shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="font-medium text-sm">{suggestion.name}</div>
+                      <div className="text-xs text-gray-500 truncate">
+                        {suggestion.fullAddress}
+                      </div>
+                    </div>
+                    <Badge variant="secondary" className="text-xs">
+                      {suggestion.type}
+                    </Badge>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Selected Location */}
+        {selectedLocation && (
+          <div className="flex items-center gap-2 p-3 bg-green-50 border border-green-200 rounded-md">
+            <MapPin className="h-4 w-4 text-green-600" />
+            <span className="text-sm text-green-700">
+              {selectedLocation.address}
+            </span>
+          </div>
+        )}
+
+        {/* Search Radius */}
+        <div className="space-y-2">
+          <Label>Search Radius: {filters.radius} km</Label>
+          <Slider
+            value={[filters.radius]}
+            onValueChange={(value) => setFilters(prev => ({ ...prev, radius: value[0] }))}
+            max={200}
+            min={5}
+            step={5}
+            className="w-full"
+          />
+          <div className="flex justify-between text-xs text-gray-500">
+            <span>5 km</span>
+            <span>200 km</span>
+          </div>
+        </div>
+
+        {/* Category Filter */}
+        {categories.length > 0 && (
+          <div className="space-y-2">
+            <Label>Category</Label>
+            <Select value={filters.category} onValueChange={(value) => 
+              setFilters(prev => ({ ...prev, category: value }))
+            }>
+              <SelectTrigger>
+                <SelectValue placeholder="All categories" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="">All categories</SelectItem>
+                {categories.map((category) => (
+                  <SelectItem key={category.value} value={category.value}>
+                    {category.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
+
+        {/* Advanced Filters Toggle */}
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}
+          className="w-full"
+        >
+          <Sliders className="h-4 w-4 mr-2" />
+          {showAdvancedFilters ? 'Hide' : 'Show'} Advanced Filters
+        </Button>
+
+        {/* Advanced Filters */}
+        {showAdvancedFilters && (
+          <div className="space-y-4 border-t pt-4">
+            {/* Subcategories */}
+            <div className="space-y-2">
+              <Label>Services</Label>
+              <div className="grid grid-cols-2 gap-2">
+                {subcategoryOptions.map((subcategory) => (
+                  <div key={subcategory} className="flex items-center space-x-2">
+                    <Checkbox
+                      id={`subcategory-${subcategory}`}
+                      checked={filters.subcategories.includes(subcategory)}
+                      onCheckedChange={() => toggleSubcategory(subcategory)}
+                    />
+                    <Label
+                      htmlFor={`subcategory-${subcategory}`}
+                      className="text-sm font-normal cursor-pointer"
+                    >
+                      {subcategory}
+                    </Label>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Price Range */}
+            <div className="space-y-2">
+              <Label>Price Range</Label>
+              <div className="flex gap-2">
+                {priceRangeOptions.map((price) => (
+                  <Button
+                    key={price}
+                    type="button"
+                    variant={filters.priceRange.includes(price) ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => togglePriceRange(price)}
+                  >
+                    {price}
+                  </Button>
+                ))}
+              </div>
+            </div>
+
+            {/* Minimum Rating */}
+            <div className="space-y-2">
+              <Label>Minimum Rating: {filters.minRating === 0 ? 'Any' : `${filters.minRating}+ stars`}</Label>
+              <Slider
+                value={[filters.minRating]}
+                onValueChange={(value) => setFilters(prev => ({ ...prev, minRating: value[0] }))}
+                max={5}
+                min={0}
+                step={0.5}
+                className="w-full"
+              />
+            </div>
+
+            {/* Verified Only */}
+            <div className="flex items-center space-x-2">
+              <Checkbox
+                id="verified-only"
+                checked={filters.verifiedOnly}
+                onCheckedChange={(checked) => 
+                  setFilters(prev => ({ ...prev, verifiedOnly: !!checked }))
+                }
+              />
+              <Label htmlFor="verified-only" className="cursor-pointer">
+                Verified suppliers only
+              </Label>
+            </div>
+
+            {/* Sort Options */}
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Sort by</Label>
+                <Select value={filters.sortBy} onValueChange={(value) => 
+                  setFilters(prev => ({ ...prev, sortBy: value as any }))
+                }>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="distance">Distance</SelectItem>
+                    <SelectItem value="rating">Rating</SelectItem>
+                    <SelectItem value="price">Price</SelectItem>
+                    <SelectItem value="reviews">Reviews</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Order</Label>
+                <Select value={filters.sortOrder} onValueChange={(value) => 
+                  setFilters(prev => ({ ...prev, sortOrder: value as any }))
+                }>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="asc">Ascending</SelectItem>
+                    <SelectItem value="desc">Descending</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Action Buttons */}
+        <div className="flex gap-2 pt-4 border-t">
+          <Button
+            onClick={handleSearch}
+            disabled={!selectedLocation || loading}
+            className="flex-1"
+          >
+            {loading ? 'Searching...' : 'Search Suppliers'}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={handleClearFilters}
+            disabled={loading}
+          >
+            Clear
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}

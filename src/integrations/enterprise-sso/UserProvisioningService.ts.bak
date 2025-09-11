@@ -1,0 +1,1007 @@
+/**
+ * Enterprise User Provisioning Service
+ * 
+ * Automated user provisioning and lifecycle management for enterprise SSO integrations.
+ * Handles Just-In-Time (JIT) provisioning, automated onboarding/offboarding,
+ * role assignment, and user attribute synchronization across identity providers.
+ * 
+ * Essential for large wedding venues and hospitality groups where staff frequently
+ * join/leave, change roles, or move between departments. Ensures consistent
+ * access control and reduces manual administrative overhead.
+ * 
+ * @author WedSync Enterprise Team C
+ * @version 1.0.0
+ */
+
+import { createClient } from '@supabase/supabase-js';
+import { Database } from '../../types/database';
+import { 
+  IdentityProviderConfig, 
+  EnterpriseUserAttributes, 
+  ProvisioningStrategy 
+} from './IdentityProviderConnector';
+
+/**
+ * User provisioning configuration
+ */
+export interface ProvisioningConfig {
+  providerId: string;
+  strategy: ProvisioningStrategy;
+  autoActivation: boolean;
+  defaultOrganizationId: string;
+  defaultRoles: string[];
+  attributeMapping: Record<string, string>;
+  approvalRequired: boolean;
+  approverRoles?: string[];
+  notificationSettings: {
+    onProvisioning?: string[];
+    onDeprovisioning?: string[];
+    onRoleChange?: string[];
+    onError?: string[];
+  };
+  customFields?: Record<string, {
+    required: boolean;
+    defaultValue?: unknown;
+    validation?: string;
+  }>;
+}
+
+/**
+ * Provisioning request
+ */
+export interface ProvisioningRequest {
+  id: string;
+  providerId: string;
+  requestType: 'create' | 'update' | 'deactivate' | 'reactivate' | 'delete';
+  userIdentifier: string;
+  email: string;
+  attributes: EnterpriseUserAttributes;
+  requestedBy?: string;
+  requestedAt: Date;
+  status: 'pending' | 'approved' | 'rejected' | 'processing' | 'completed' | 'failed';
+  approvedBy?: string;
+  approvedAt?: Date;
+  completedAt?: Date;
+  errorMessage?: string;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * User provisioning result
+ */
+export interface ProvisioningResult {
+  success: boolean;
+  userId?: string;
+  operation: 'created' | 'updated' | 'deactivated' | 'reactivated' | 'deleted' | 'no_change';
+  changes?: Array<{
+    field: string;
+    oldValue: unknown;
+    newValue: unknown;
+  }>;
+  warnings?: string[];
+  error?: string;
+  timestamp: Date;
+}
+
+/**
+ * Role assignment configuration
+ */
+interface RoleAssignmentRule {
+  condition: {
+    type: 'group_membership' | 'attribute_match' | 'department' | 'job_title' | 'custom';
+    value: string;
+    operator: 'equals' | 'contains' | 'starts_with' | 'regex' | 'in';
+  };
+  roles: string[];
+  priority: number;
+  override?: boolean; // If true, removes other roles
+}
+
+/**
+ * Deprovisioning policy
+ */
+interface DeprovisioningPolicy {
+  trigger: 'immediate' | 'delayed' | 'scheduled';
+  gracePeridDays?: number;
+  retainData: boolean;
+  archiveUser: boolean;
+  notifyStakeholders: boolean;
+  transferOwnership?: {
+    enabled: boolean;
+    defaultTransferTo?: string;
+    requireApproval: boolean;
+  };
+}
+
+/**
+ * Enterprise User Provisioning Service
+ * 
+ * Orchestrates automated user lifecycle management across enterprise
+ * identity providers and WedSync's user management system.
+ */
+export class UserProvisioningService {
+  private supabase: ReturnType<typeof createClient<Database>>;
+  private provisioningConfigs: Map<string, ProvisioningConfig> = new Map();
+  private roleAssignmentRules: Map<string, RoleAssignmentRule[]> = new Map();
+  private deprovisioningPolicies: Map<string, DeprovisioningPolicy> = new Map();
+
+  constructor(
+    supabaseUrl: string,
+    supabaseServiceKey: string
+  ) {
+    this.supabase = createClient<Database>(supabaseUrl, supabaseServiceKey);
+    this.loadConfigurations();
+  }
+
+  /**
+   * Configure user provisioning for an identity provider
+   */
+  async configureProvisioning(
+    providerId: string,
+    config: ProvisioningConfig
+  ): Promise<void> {
+    try {
+      // Validate configuration
+      await this.validateProvisioningConfig(config);
+      
+      // Store configuration in database
+      await this.supabase
+        .from('user_provisioning_configs')
+        .upsert({
+          provider_id: providerId,
+          strategy: config.strategy,
+          auto_activation: config.autoActivation,
+          default_organization_id: config.defaultOrganizationId,
+          default_roles: config.defaultRoles,
+          attribute_mapping: config.attributeMapping,
+          approval_required: config.approvalRequired,
+          approver_roles: config.approverRoles || [],
+          notification_settings: config.notificationSettings,
+          custom_fields: config.customFields || {},
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        });
+      
+      // Cache configuration
+      this.provisioningConfigs.set(providerId, config);
+      
+      console.log(`User provisioning configured for provider: ${providerId}`);
+      
+    } catch (error) {
+      console.error(`Failed to configure provisioning for provider ${providerId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Configure role assignment rules
+   */
+  async configureRoleAssignmentRules(
+    providerId: string,
+    rules: RoleAssignmentRule[]
+  ): Promise<void> {
+    // Sort rules by priority
+    const sortedRules = rules.sort((a, b) => b.priority - a.priority);
+    
+    await this.supabase
+      .from('role_assignment_rules')
+      .delete()
+      .eq('provider_id', providerId);
+    
+    if (sortedRules.length > 0) {
+      await this.supabase
+        .from('role_assignment_rules')
+        .insert(
+          sortedRules.map((rule, index) => ({
+            provider_id: providerId,
+            rule_order: index,
+            condition_type: rule.condition.type,
+            condition_value: rule.condition.value,
+            condition_operator: rule.condition.operator,
+            roles: rule.roles,
+            priority: rule.priority,
+            override_other_roles: rule.override || false
+          }))
+        );
+    }
+    
+    this.roleAssignmentRules.set(providerId, sortedRules);
+    console.log(`Role assignment rules configured for provider: ${providerId}`);
+  }
+
+  /**
+   * Provision user from identity provider attributes (JIT provisioning)
+   */
+  async provisionUser(
+    providerId: string,
+    userIdentifier: string,
+    email: string,
+    attributes: EnterpriseUserAttributes,
+    requestedBy?: string
+  ): Promise<ProvisioningResult> {
+    const startTime = new Date();
+    
+    try {
+      console.log(`Starting user provisioning for: ${email} (${providerId})`);
+      
+      const config = this.provisioningConfigs.get(providerId);
+      if (!config) {
+        throw new Error(`No provisioning configuration found for provider: ${providerId}`);
+      }
+      
+      // Check if approval is required
+      if (config.approvalRequired) {
+        const requestId = await this.createProvisioningRequest({
+          providerId,
+          requestType: 'create',
+          userIdentifier,
+          email,
+          attributes,
+          requestedBy
+        });
+        
+        return {
+          success: true,
+          operation: 'no_change',
+          warnings: [`User provisioning request created: ${requestId}. Approval required.`],
+          timestamp: startTime
+        };
+      }
+      
+      // Check if user already exists
+      const existingUser = await this.findExistingUser(email, userIdentifier);
+      
+      if (existingUser) {
+        // Update existing user
+        return await this.updateExistingUser(existingUser.id, attributes, config);
+      } else {
+        // Create new user
+        return await this.createNewUser(providerId, userIdentifier, email, attributes, config);
+      }
+      
+    } catch (error) {
+      console.error(`User provisioning failed for ${email}:`, error);
+      return {
+        success: false,
+        operation: 'no_change',
+        error: error instanceof Error ? error.message : 'Provisioning failed',
+        timestamp: startTime
+      };
+    }
+  }
+
+  /**
+   * Deprovision user (disable or delete)
+   */
+  async deprovisionUser(
+    providerId: string,
+    userIdentifier: string,
+    reason?: string,
+    requestedBy?: string
+  ): Promise<ProvisioningResult> {
+    const startTime = new Date();
+    
+    try {
+      console.log(`Starting user deprovisioning for: ${userIdentifier} (${providerId})`);
+      
+      const policy = this.deprovisioningPolicies.get(providerId);
+      const user = await this.findUserByIdentifier(userIdentifier, providerId);
+      
+      if (!user) {
+        return {
+          success: true,
+          operation: 'no_change',
+          warnings: ['User not found - may already be deprovisioned'],
+          timestamp: startTime
+        };
+      }
+      
+      // Apply deprovisioning policy
+      if (policy?.trigger === 'delayed' && policy.gracePeridDays) {
+        // Schedule deprovisioning for later
+        await this.scheduleDeprovisioning(user.id, policy.gracePeridDays, reason);
+        
+        return {
+          success: true,
+          operation: 'no_change',
+          warnings: [`User deprovisioning scheduled for ${policy.gracePeridDays} days`],
+          timestamp: startTime
+        };
+      }
+      
+      // Immediate deprovisioning
+      const operation = policy?.archiveUser ? 'deleted' : 'deactivated';
+      
+      if (operation === 'deleted') {
+        await this.archiveUser(user.id, reason);
+      } else {
+        await this.deactivateUser(user.id, reason);
+      }
+      
+      // Transfer ownership if configured
+      if (policy?.transferOwnership?.enabled) {
+        await this.transferUserOwnership(user.id, policy.transferOwnership);
+      }
+      
+      // Send notifications
+      await this.sendDeprovisioningNotification(user.id, operation, reason);
+      
+      console.log(`User ${operation} successfully: ${userIdentifier}`);
+      
+      return {
+        success: true,
+        operation,
+        timestamp: startTime
+      };
+      
+    } catch (error) {
+      console.error(`User deprovisioning failed for ${userIdentifier}:`, error);
+      return {
+        success: false,
+        operation: 'no_change',
+        error: error instanceof Error ? error.message : 'Deprovisioning failed',
+        timestamp: startTime
+      };
+    }
+  }
+
+  /**
+   * Process provisioning request approval
+   */
+  async processProvisioningApproval(
+    requestId: string,
+    approved: boolean,
+    approvedBy: string,
+    comments?: string
+  ): Promise<ProvisioningResult> {
+    try {
+      const request = await this.getProvisioningRequest(requestId);
+      if (!request) {
+        throw new Error(`Provisioning request not found: ${requestId}`);
+      }
+      
+      if (request.status !== 'pending') {
+        throw new Error(`Request ${requestId} is not in pending status`);
+      }
+      
+      // Update request status
+      await this.supabase
+        .from('provisioning_requests')
+        .update({
+          status: approved ? 'approved' : 'rejected',
+          approved_by: approvedBy,
+          approved_at: new Date().toISOString(),
+          comments
+        })
+        .eq('id', requestId);
+      
+      if (!approved) {
+        await this.sendProvisioningNotification(request, 'rejected', comments);
+        return {
+          success: true,
+          operation: 'no_change',
+          warnings: ['Provisioning request rejected'],
+          timestamp: new Date()
+        };
+      }
+      
+      // Execute approved provisioning
+      const result = await this.executeProvisioningRequest(request);
+      
+      // Update request status
+      await this.supabase
+        .from('provisioning_requests')
+        .update({
+          status: result.success ? 'completed' : 'failed',
+          completed_at: new Date().toISOString(),
+          error_message: result.error
+        })
+        .eq('id', requestId);
+      
+      return result;
+      
+    } catch (error) {
+      console.error(`Failed to process provisioning approval for ${requestId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Bulk provision users
+   */
+  async bulkProvisionUsers(
+    providerId: string,
+    users: Array<{
+      userIdentifier: string;
+      email: string;
+      attributes: EnterpriseUserAttributes;
+    }>,
+    options: {
+      batchSize?: number;
+      continueOnError?: boolean;
+      onProgress?: (completed: number, total: number, current?: string) => void;
+    } = {}
+  ): Promise<{
+    total: number;
+    successful: number;
+    failed: number;
+    results: Array<{
+      email: string;
+      result: ProvisioningResult;
+    }>;
+  }> {
+    const batchSize = options.batchSize || 50;
+    const results: Array<{ email: string; result: ProvisioningResult }> = [];
+    let successful = 0;
+    let failed = 0;
+    
+    console.log(`Starting bulk provisioning of ${users.length} users for provider: ${providerId}`);
+    
+    for (let i = 0; i < users.length; i += batchSize) {
+      const batch = users.slice(i, i + batchSize);
+      
+      const batchResults = await Promise.allSettled(
+        batch.map(async (user) => {
+          const result = await this.provisionUser(
+            providerId,
+            user.userIdentifier,
+            user.email,
+            user.attributes
+          );
+          return { email: user.email, result };
+        })
+      );
+      
+      for (const promiseResult of batchResults) {
+        if (promiseResult.status === 'fulfilled') {
+          results.push(promiseResult.value);
+          if (promiseResult.value.result.success) {
+            successful++;
+          } else {
+            failed++;
+          }
+        } else {
+          const errorResult = {
+            email: 'unknown',
+            result: {
+              success: false,
+              operation: 'no_change' as const,
+              error: promiseResult.reason?.message || 'Unknown error',
+              timestamp: new Date()
+            }
+          };
+          results.push(errorResult);
+          failed++;
+        }
+      }
+      
+      // Report progress
+      if (options.onProgress) {
+        options.onProgress(i + batch.length, users.length);
+      }
+      
+      // Stop on error if configured
+      if (!options.continueOnError && failed > 0) {
+        break;
+      }
+    }
+    
+    console.log(`Bulk provisioning completed. Successful: ${successful}, Failed: ${failed}`);
+    
+    return {
+      total: users.length,
+      successful,
+      failed,
+      results
+    };
+  }
+
+  /**
+   * Load configurations from database
+   */
+  private async loadConfigurations(): Promise<void> {
+    try {
+      // Load provisioning configs
+      const { data: configs } = await this.supabase
+        .from('user_provisioning_configs')
+        .select('*');
+      
+      if (configs) {
+        for (const config of configs) {
+          this.provisioningConfigs.set(config.provider_id, {
+            providerId: config.provider_id,
+            strategy: config.strategy,
+            autoActivation: config.auto_activation,
+            defaultOrganizationId: config.default_organization_id,
+            defaultRoles: config.default_roles,
+            attributeMapping: config.attribute_mapping,
+            approvalRequired: config.approval_required,
+            approverRoles: config.approver_roles,
+            notificationSettings: config.notification_settings,
+            customFields: config.custom_fields
+          });
+        }
+      }
+      
+      // Load role assignment rules
+      const { data: rules } = await this.supabase
+        .from('role_assignment_rules')
+        .select('*')
+        .order('provider_id')
+        .order('rule_order');
+      
+      if (rules) {
+        const rulesByProvider = new Map<string, RoleAssignmentRule[]>();
+        
+        for (const rule of rules) {
+          if (!rulesByProvider.has(rule.provider_id)) {
+            rulesByProvider.set(rule.provider_id, []);
+          }
+          
+          rulesByProvider.get(rule.provider_id)!.push({
+            condition: {
+              type: rule.condition_type,
+              value: rule.condition_value,
+              operator: rule.condition_operator
+            },
+            roles: rule.roles,
+            priority: rule.priority,
+            override: rule.override_other_roles
+          });
+        }
+        
+        this.roleAssignmentRules = rulesByProvider;
+      }
+      
+      console.log(`Loaded ${this.provisioningConfigs.size} provisioning configurations`);
+      
+    } catch (error) {
+      console.error('Failed to load provisioning configurations:', error);
+    }
+  }
+
+  /**
+   * Validate provisioning configuration
+   */
+  private async validateProvisioningConfig(config: ProvisioningConfig): Promise<void> {
+    if (!config.providerId) {
+      throw new Error('Provider ID is required');
+    }
+    
+    if (!config.defaultOrganizationId) {
+      throw new Error('Default organization ID is required');
+    }
+    
+    // Validate organization exists
+    const { data: org } = await this.supabase
+      .from('organizations')
+      .select('id')
+      .eq('id', config.defaultOrganizationId)
+      .single();
+    
+    if (!org) {
+      throw new Error(`Default organization not found: ${config.defaultOrganizationId}`);
+    }
+    
+    if (config.approvalRequired && (!config.approverRoles || config.approverRoles.length === 0)) {
+      throw new Error('Approver roles must be specified when approval is required');
+    }
+  }
+
+  /**
+   * Find existing user by email or identifier
+   */
+  private async findExistingUser(
+    email: string,
+    identifier?: string
+  ): Promise<{ id: string; email: string } | null> {
+    const { data } = await this.supabase
+      .from('user_profiles')
+      .select('id, email')
+      .or(`email.eq.${email}${identifier ? `,enterprise_user_id.eq.${identifier}` : ''}`)
+      .single();
+    
+    return data;
+  }
+
+  /**
+   * Find user by provider identifier
+   */
+  private async findUserByIdentifier(
+    identifier: string,
+    providerId: string
+  ): Promise<{ id: string; email: string } | null> {
+    const { data } = await this.supabase
+      .from('user_profiles')
+      .select('id, email')
+      .eq('enterprise_user_id', identifier)
+      .eq('identity_provider_id', providerId)
+      .single();
+    
+    return data;
+  }
+
+  /**
+   * Create new user
+   */
+  private async createNewUser(
+    providerId: string,
+    userIdentifier: string,
+    email: string,
+    attributes: EnterpriseUserAttributes,
+    config: ProvisioningConfig
+  ): Promise<ProvisioningResult> {
+    // Assign roles based on rules
+    const assignedRoles = await this.determineUserRoles(providerId, attributes);
+    
+    const { data: newUser, error } = await this.supabase
+      .from('user_profiles')
+      .insert({
+        email,
+        full_name: this.constructFullName(attributes),
+        enterprise_user_id: attributes.employeeId || userIdentifier,
+        department: attributes.department,
+        job_title: attributes.jobTitle,
+        phone: attributes.phone,
+        identity_provider_id: providerId,
+        organization_id: config.defaultOrganizationId,
+        is_active: config.autoActivation,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      })
+      .select()
+      .single();
+    
+    if (error || !newUser) {
+      throw new Error(`Failed to create user: ${error?.message}`);
+    }
+    
+    // Assign roles
+    if (assignedRoles.length > 0) {
+      await this.assignUserRoles(newUser.id, assignedRoles);
+    }
+    
+    // Send provisioning notification
+    await this.sendProvisioningNotification(newUser.id, 'created');
+    
+    console.log(`User created successfully: ${email} (${newUser.id})`);
+    
+    return {
+      success: true,
+      userId: newUser.id,
+      operation: 'created',
+      timestamp: new Date()
+    };
+  }
+
+  /**
+   * Update existing user
+   */
+  private async updateExistingUser(
+    userId: string,
+    attributes: EnterpriseUserAttributes,
+    config: ProvisioningConfig
+  ): Promise<ProvisioningResult> {
+    const changes: Array<{ field: string; oldValue: unknown; newValue: unknown }> = [];
+    
+    // Get current user data
+    const { data: currentUser } = await this.supabase
+      .from('user_profiles')
+      .select('*')
+      .eq('id', userId)
+      .single();
+    
+    if (!currentUser) {
+      throw new Error('User not found for update');
+    }
+    
+    // Build update object and track changes
+    const updates: any = {
+      updated_at: new Date().toISOString()
+    };
+    
+    const fullName = this.constructFullName(attributes);
+    if (fullName !== currentUser.full_name) {
+      updates.full_name = fullName;
+      changes.push({
+        field: 'full_name',
+        oldValue: currentUser.full_name,
+        newValue: fullName
+      });
+    }
+    
+    if (attributes.department !== currentUser.department) {
+      updates.department = attributes.department;
+      changes.push({
+        field: 'department',
+        oldValue: currentUser.department,
+        newValue: attributes.department
+      });
+    }
+    
+    if (attributes.jobTitle !== currentUser.job_title) {
+      updates.job_title = attributes.jobTitle;
+      changes.push({
+        field: 'job_title',
+        oldValue: currentUser.job_title,
+        newValue: attributes.jobTitle
+      });
+    }
+    
+    if (attributes.phone !== currentUser.phone) {
+      updates.phone = attributes.phone;
+      changes.push({
+        field: 'phone',
+        oldValue: currentUser.phone,
+        newValue: attributes.phone
+      });
+    }
+    
+    // Update user if there are changes
+    if (Object.keys(updates).length > 1) { // More than just updated_at
+      const { error } = await this.supabase
+        .from('user_profiles')
+        .update(updates)
+        .eq('id', userId);
+      
+      if (error) {
+        throw new Error(`Failed to update user: ${error.message}`);
+      }
+    }
+    
+    // Update roles based on current attributes
+    const newRoles = await this.determineUserRoles(config.providerId, attributes);
+    await this.updateUserRoles(userId, newRoles);
+    
+    console.log(`User updated successfully: ${userId} (${changes.length} changes)`);
+    
+    return {
+      success: true,
+      userId,
+      operation: changes.length > 0 ? 'updated' : 'no_change',
+      changes: changes.length > 0 ? changes : undefined,
+      timestamp: new Date()
+    };
+  }
+
+  // Additional helper methods would be implemented here
+  private constructFullName(attributes: EnterpriseUserAttributes): string {
+    // Implementation to construct full name from attributes
+    return attributes.customAttributes?.displayName as string || 
+           `${attributes.customAttributes?.firstName || ''} ${attributes.customAttributes?.lastName || ''}`.trim() ||
+           'Unknown User';
+  }
+
+  private async determineUserRoles(
+    providerId: string,
+    attributes: EnterpriseUserAttributes
+  ): Promise<string[]> {
+    const rules = this.roleAssignmentRules.get(providerId) || [];
+    const assignedRoles: string[] = [];
+    
+    for (const rule of rules) {
+      if (this.evaluateRoleCondition(rule.condition, attributes)) {
+        assignedRoles.push(...rule.roles);
+        
+        if (rule.override) {
+          return rule.roles; // Override mode - return only these roles
+        }
+      }
+    }
+    
+    return [...new Set(assignedRoles)]; // Remove duplicates
+  }
+
+  private evaluateRoleCondition(
+    condition: RoleAssignmentRule['condition'],
+    attributes: EnterpriseUserAttributes
+  ): boolean {
+    let value: string | undefined;
+    
+    switch (condition.type) {
+      case 'group_membership':
+        return attributes.groups?.some(group => 
+          this.matchesOperator(group, condition.value, condition.operator)
+        ) || false;
+      
+      case 'department':
+        value = attributes.department;
+        break;
+      
+      case 'job_title':
+        value = attributes.jobTitle;
+        break;
+      
+      case 'attribute_match':
+        value = attributes.customAttributes?.[condition.value] as string;
+        break;
+      
+      default:
+        return false;
+    }
+    
+    return value ? this.matchesOperator(value, condition.value, condition.operator) : false;
+  }
+
+  private matchesOperator(
+    value: string,
+    condition: string,
+    operator: RoleAssignmentRule['condition']['operator']
+  ): boolean {
+    switch (operator) {
+      case 'equals':
+        return value.toLowerCase() === condition.toLowerCase();
+      case 'contains':
+        return value.toLowerCase().includes(condition.toLowerCase());
+      case 'starts_with':
+        return value.toLowerCase().startsWith(condition.toLowerCase());
+      case 'regex':
+        return new RegExp(condition, 'i').test(value);
+      case 'in':
+        return condition.split(',').map(v => v.trim().toLowerCase()).includes(value.toLowerCase());
+      default:
+        return false;
+    }
+  }
+
+  private async assignUserRoles(userId: string, roles: string[]): Promise<void> {
+    if (roles.length === 0) return;
+    
+    const roleAssignments = roles.map(role => ({
+      user_id: userId,
+      role_name: role,
+      assigned_at: new Date().toISOString()
+    }));
+    
+    await this.supabase
+      .from('user_roles')
+      .insert(roleAssignments);
+  }
+
+  private async updateUserRoles(userId: string, newRoles: string[]): Promise<void> {
+    // Remove existing roles
+    await this.supabase
+      .from('user_roles')
+      .delete()
+      .eq('user_id', userId);
+    
+    // Add new roles
+    await this.assignUserRoles(userId, newRoles);
+  }
+
+  private async createProvisioningRequest(
+    request: Omit<ProvisioningRequest, 'id' | 'requestedAt' | 'status'>
+  ): Promise<string> {
+    const requestId = `prov_req_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    
+    await this.supabase
+      .from('provisioning_requests')
+      .insert({
+        id: requestId,
+        provider_id: request.providerId,
+        request_type: request.requestType,
+        user_identifier: request.userIdentifier,
+        email: request.email,
+        attributes: request.attributes,
+        requested_by: request.requestedBy,
+        requested_at: new Date().toISOString(),
+        status: 'pending'
+      });
+    
+    return requestId;
+  }
+
+  private async getProvisioningRequest(requestId: string): Promise<ProvisioningRequest | null> {
+    const { data } = await this.supabase
+      .from('provisioning_requests')
+      .select('*')
+      .eq('id', requestId)
+      .single();
+    
+    if (!data) return null;
+    
+    return {
+      id: data.id,
+      providerId: data.provider_id,
+      requestType: data.request_type,
+      userIdentifier: data.user_identifier,
+      email: data.email,
+      attributes: data.attributes,
+      requestedBy: data.requested_by,
+      requestedAt: new Date(data.requested_at),
+      status: data.status,
+      approvedBy: data.approved_by,
+      approvedAt: data.approved_at ? new Date(data.approved_at) : undefined,
+      completedAt: data.completed_at ? new Date(data.completed_at) : undefined,
+      errorMessage: data.error_message
+    };
+  }
+
+  private async executeProvisioningRequest(
+    request: ProvisioningRequest
+  ): Promise<ProvisioningResult> {
+    switch (request.requestType) {
+      case 'create':
+        return this.provisionUser(
+          request.providerId,
+          request.userIdentifier,
+          request.email,
+          request.attributes,
+          request.requestedBy
+        );
+      
+      case 'deactivate':
+        return this.deprovisionUser(
+          request.providerId,
+          request.userIdentifier,
+          'Approved deprovisioning request',
+          request.approvedBy
+        );
+      
+      default:
+        throw new Error(`Unsupported request type: ${request.requestType}`);
+    }
+  }
+
+  private async deactivateUser(userId: string, reason?: string): Promise<void> {
+    await this.supabase
+      .from('user_profiles')
+      .update({
+        is_active: false,
+        deactivated_at: new Date().toISOString(),
+        deactivation_reason: reason,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', userId);
+  }
+
+  private async archiveUser(userId: string, reason?: string): Promise<void> {
+    // Move user to archive table and delete from active table
+    // Implementation would depend on archival strategy
+    console.log(`Archiving user ${userId}: ${reason}`);
+  }
+
+  private async scheduleDeprovisioning(
+    userId: string,
+    gracePeriodDays: number,
+    reason?: string
+  ): Promise<void> {
+    const scheduledDate = new Date();
+    scheduledDate.setDate(scheduledDate.getDate() + gracePeriodDays);
+    
+    await this.supabase
+      .from('scheduled_deprovisionings')
+      .insert({
+        user_id: userId,
+        scheduled_date: scheduledDate.toISOString(),
+        reason,
+        created_at: new Date().toISOString()
+      });
+  }
+
+  private async transferUserOwnership(
+    userId: string,
+    transferConfig: DeprovisioningPolicy['transferOwnership']
+  ): Promise<void> {
+    // Implementation would transfer ownership of user's data/resources
+    console.log(`Transferring ownership for user ${userId}`);
+  }
+
+  private async sendProvisioningNotification(
+    userIdOrRequest: string | ProvisioningRequest,
+    operation: 'created' | 'updated' | 'approved' | 'rejected',
+    details?: string
+  ): Promise<void> {
+    // Implementation would send notifications
+    console.log(`Sending provisioning notification: ${operation}`);
+  }
+
+  private async sendDeprovisioningNotification(
+    userId: string,
+    operation: 'deactivated' | 'deleted',
+    reason?: string
+  ): Promise<void> {
+    // Implementation would send deprovisioning notifications
+    console.log(`Sending deprovisioning notification: ${operation} - ${reason}`);
+  }
+}

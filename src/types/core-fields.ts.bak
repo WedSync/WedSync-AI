@@ -1,0 +1,577 @@
+// Core Fields Types - The KEY differentiator for WedSync
+// This system saves wedding vendors 10+ hours per wedding by auto-populating data
+
+export type CoreFieldCategory = 'couple_info' | 'wedding_details' | 'venue_info' | 'timeline';
+
+export type CoreFieldType = 'text' | 'email' | 'tel' | 'date' | 'time' | 'number' | 'address';
+
+export interface CoreFieldDefinition {
+  id: string;
+  field_key: string; // e.g., 'bride_first_name'
+  field_name: string; // Display name
+  field_type: CoreFieldType;
+  category: CoreFieldCategory;
+  description?: string;
+  validation_rules?: Record<string, any>;
+  is_active: boolean;
+  sort_order: number;
+}
+
+// The actual wedding data that gets shared across vendors
+export interface WeddingCoreData {
+  id: string;
+  wedding_id: string;
+  
+  // Couple Information
+  bride_first_name?: string;
+  bride_last_name?: string;
+  bride_email?: string;
+  bride_phone?: string;
+  groom_first_name?: string;
+  groom_last_name?: string;
+  groom_email?: string;
+  groom_phone?: string;
+  
+  // Wedding Details
+  wedding_date?: Date | string;
+  ceremony_time?: string;
+  reception_time?: string;
+  guest_count?: number;
+  adult_guests?: number;
+  child_guests?: number;
+  wedding_party_size?: number;
+  
+  // Ceremony Venue
+  ceremony_venue_name?: string;
+  ceremony_venue_address?: string;
+  ceremony_venue_city?: string;
+  ceremony_venue_postcode?: string;
+  ceremony_venue_phone?: string;
+  ceremony_venue_coordinator?: string;
+  ceremony_venue_coordinator_phone?: string;
+  
+  // Reception Venue
+  reception_venue_name?: string;
+  reception_venue_address?: string;
+  reception_venue_city?: string;
+  reception_venue_postcode?: string;
+  reception_venue_phone?: string;
+  reception_venue_coordinator?: string;
+  reception_venue_coordinator_phone?: string;
+  
+  // Timeline
+  getting_ready_time?: string;
+  getting_ready_location?: string;
+  first_look_time?: string;
+  first_look_location?: string;
+  cocktail_hour_time?: string;
+  dinner_time?: string;
+  first_dance_time?: string;
+  parent_dances_time?: string;
+  cake_cutting_time?: string;
+  bouquet_toss_time?: string;
+  last_dance_time?: string;
+  send_off_time?: string;
+  
+  // Additional
+  wedding_theme?: string;
+  wedding_colors?: string[];
+  budget_range?: string;
+  planning_status?: 'planning' | 'booked' | 'completed';
+  
+  // Metadata
+  created_at: Date;
+  updated_at: Date;
+  last_synced_at: Date;
+}
+
+// Connection between vendor and wedding
+export interface VendorWeddingConnection {
+  id: string;
+  wedding_id: string;
+  organization_id: string;
+  supplier_id?: string;
+  client_id?: string;
+  
+  connection_type: 'vendor' | 'planner' | 'coordinator';
+  connection_status: 'active' | 'inactive' | 'completed';
+  is_primary_vendor: boolean;
+  
+  // Permissions
+  can_read_core_fields: boolean;
+  can_write_core_fields: boolean;
+  allowed_field_categories: CoreFieldCategory[];
+  custom_field_permissions?: Record<string, boolean>;
+  
+  // Sync Settings
+  auto_sync_enabled: boolean;
+  sync_frequency: 'realtime' | 'hourly' | 'daily' | 'manual';
+  last_sync_at?: Date;
+  
+  created_at: Date;
+  updated_at: Date;
+}
+
+// Maps form fields to core fields
+export interface FormFieldCoreMapping {
+  id: string;
+  form_id: string;
+  form_field_id: string; // ID within the form JSON
+  core_field_key: string;
+  
+  mapping_type: 'auto' | 'manual' | 'suggested';
+  confidence_score?: number; // 0.00 to 1.00 for auto-detected
+  is_verified: boolean;
+  sync_direction: 'read_only' | 'write_only' | 'bidirectional';
+  
+  use_custom_label?: boolean;
+  custom_label?: string;
+  transform_function?: string;
+  
+  created_at: Date;
+  updated_at: Date;
+  created_by?: string;
+}
+
+// Audit log entry
+export interface CoreFieldAuditLog {
+  id: string;
+  wedding_id: string;
+  field_key: string;
+  old_value?: string;
+  new_value?: string;
+  changed_by_organization: string;
+  changed_by_user?: string;
+  change_source: 'form_submission' | 'manual_edit' | 'api_update' | 'import';
+  source_details?: Record<string, any>;
+  created_at: Date;
+}
+
+// All available core fields with their definitions
+export const CORE_FIELDS: Record<string, Omit<CoreFieldDefinition, 'id'>> = {
+  // Couple Information
+  bride_first_name: {
+    field_key: 'bride_first_name',
+    field_name: 'Bride First Name',
+    field_type: 'text',
+    category: 'couple_info',
+    description: 'First name of the bride',
+    is_active: true,
+    sort_order: 1
+  },
+  bride_last_name: {
+    field_key: 'bride_last_name',
+    field_name: 'Bride Last Name',
+    field_type: 'text',
+    category: 'couple_info',
+    description: 'Last name of the bride',
+    is_active: true,
+    sort_order: 2
+  },
+  bride_email: {
+    field_key: 'bride_email',
+    field_name: 'Bride Email',
+    field_type: 'email',
+    category: 'couple_info',
+    description: 'Email address of the bride',
+    validation_rules: { pattern: '^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$' },
+    is_active: true,
+    sort_order: 3
+  },
+  bride_phone: {
+    field_key: 'bride_phone',
+    field_name: 'Bride Phone',
+    field_type: 'tel',
+    category: 'couple_info',
+    description: 'Phone number of the bride',
+    is_active: true,
+    sort_order: 4
+  },
+  groom_first_name: {
+    field_key: 'groom_first_name',
+    field_name: 'Groom First Name',
+    field_type: 'text',
+    category: 'couple_info',
+    description: 'First name of the groom',
+    is_active: true,
+    sort_order: 5
+  },
+  groom_last_name: {
+    field_key: 'groom_last_name',
+    field_name: 'Groom Last Name',
+    field_type: 'text',
+    category: 'couple_info',
+    description: 'Last name of the groom',
+    is_active: true,
+    sort_order: 6
+  },
+  groom_email: {
+    field_key: 'groom_email',
+    field_name: 'Groom Email',
+    field_type: 'email',
+    category: 'couple_info',
+    description: 'Email address of the groom',
+    validation_rules: { pattern: '^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$' },
+    is_active: true,
+    sort_order: 7
+  },
+  groom_phone: {
+    field_key: 'groom_phone',
+    field_name: 'Groom Phone',
+    field_type: 'tel',
+    category: 'couple_info',
+    description: 'Phone number of the groom',
+    is_active: true,
+    sort_order: 8
+  },
+  
+  // Wedding Details
+  wedding_date: {
+    field_key: 'wedding_date',
+    field_name: 'Wedding Date',
+    field_type: 'date',
+    category: 'wedding_details',
+    description: 'Date of the wedding ceremony',
+    is_active: true,
+    sort_order: 10
+  },
+  ceremony_time: {
+    field_key: 'ceremony_time',
+    field_name: 'Ceremony Time',
+    field_type: 'time',
+    category: 'wedding_details',
+    description: 'Start time of the ceremony',
+    is_active: true,
+    sort_order: 11
+  },
+  reception_time: {
+    field_key: 'reception_time',
+    field_name: 'Reception Time',
+    field_type: 'time',
+    category: 'wedding_details',
+    description: 'Start time of the reception',
+    is_active: true,
+    sort_order: 12
+  },
+  guest_count: {
+    field_key: 'guest_count',
+    field_name: 'Total Guest Count',
+    field_type: 'number',
+    category: 'wedding_details',
+    description: 'Total number of expected guests',
+    validation_rules: { min: 1, max: 1000 },
+    is_active: true,
+    sort_order: 13
+  },
+  adult_guests: {
+    field_key: 'adult_guests',
+    field_name: 'Adult Guests',
+    field_type: 'number',
+    category: 'wedding_details',
+    description: 'Number of adult guests',
+    is_active: true,
+    sort_order: 14
+  },
+  child_guests: {
+    field_key: 'child_guests',
+    field_name: 'Child Guests',
+    field_type: 'number',
+    category: 'wedding_details',
+    description: 'Number of child guests',
+    is_active: true,
+    sort_order: 15
+  },
+  wedding_party_size: {
+    field_key: 'wedding_party_size',
+    field_name: 'Wedding Party Size',
+    field_type: 'number',
+    category: 'wedding_details',
+    description: 'Number of people in wedding party',
+    is_active: true,
+    sort_order: 16
+  },
+  
+  // Ceremony Venue
+  ceremony_venue_name: {
+    field_key: 'ceremony_venue_name',
+    field_name: 'Ceremony Venue Name',
+    field_type: 'text',
+    category: 'venue_info',
+    description: 'Name of the ceremony venue',
+    is_active: true,
+    sort_order: 20
+  },
+  ceremony_venue_address: {
+    field_key: 'ceremony_venue_address',
+    field_name: 'Ceremony Venue Address',
+    field_type: 'address',
+    category: 'venue_info',
+    description: 'Full address of ceremony venue',
+    is_active: true,
+    sort_order: 21
+  },
+  ceremony_venue_city: {
+    field_key: 'ceremony_venue_city',
+    field_name: 'Ceremony Venue City',
+    field_type: 'text',
+    category: 'venue_info',
+    description: 'City of ceremony venue',
+    is_active: true,
+    sort_order: 22
+  },
+  
+  // Reception Venue
+  reception_venue_name: {
+    field_key: 'reception_venue_name',
+    field_name: 'Reception Venue Name',
+    field_type: 'text',
+    category: 'venue_info',
+    description: 'Name of the reception venue',
+    is_active: true,
+    sort_order: 30
+  },
+  reception_venue_address: {
+    field_key: 'reception_venue_address',
+    field_name: 'Reception Venue Address',
+    field_type: 'address',
+    category: 'venue_info',
+    description: 'Full address of reception venue',
+    is_active: true,
+    sort_order: 31
+  },
+  
+  // Timeline
+  getting_ready_time: {
+    field_key: 'getting_ready_time',
+    field_name: 'Getting Ready Time',
+    field_type: 'time',
+    category: 'timeline',
+    description: 'Time to start getting ready',
+    is_active: true,
+    sort_order: 40
+  },
+  first_look_time: {
+    field_key: 'first_look_time',
+    field_name: 'First Look Time',
+    field_type: 'time',
+    category: 'timeline',
+    description: 'Time for first look photos',
+    is_active: true,
+    sort_order: 42
+  },
+  cocktail_hour_time: {
+    field_key: 'cocktail_hour_time',
+    field_name: 'Cocktail Hour Time',
+    field_type: 'time',
+    category: 'timeline',
+    description: 'Start time of cocktail hour',
+    is_active: true,
+    sort_order: 44
+  },
+  dinner_time: {
+    field_key: 'dinner_time',
+    field_name: 'Dinner Time',
+    field_type: 'time',
+    category: 'timeline',
+    description: 'Start time of dinner service',
+    is_active: true,
+    sort_order: 45
+  },
+  first_dance_time: {
+    field_key: 'first_dance_time',
+    field_name: 'First Dance Time',
+    field_type: 'time',
+    category: 'timeline',
+    description: 'Time for first dance',
+    is_active: true,
+    sort_order: 46
+  },
+  cake_cutting_time: {
+    field_key: 'cake_cutting_time',
+    field_name: 'Cake Cutting Time',
+    field_type: 'time',
+    category: 'timeline',
+    description: 'Time for cake cutting',
+    is_active: true,
+    sort_order: 47
+  },
+  send_off_time: {
+    field_key: 'send_off_time',
+    field_name: 'Send Off Time',
+    field_type: 'time',
+    category: 'timeline',
+    description: 'Time for couple send off',
+    is_active: true,
+    sort_order: 48
+  }
+};
+
+// Helper to detect core field from a label (for PDF import)
+export function detectCoreFieldFromLabel(label: string): { 
+  field_key: string | null; 
+  confidence: number;
+} {
+  const normalizedLabel = label.toLowerCase().trim();
+  
+  // Direct mappings with high confidence
+  const directMappings: Record<string, string> = {
+    'wedding date': 'wedding_date',
+    'ceremony date': 'wedding_date',
+    'event date': 'wedding_date',
+    'ceremony time': 'ceremony_time',
+    'ceremony start time': 'ceremony_time',
+    'reception time': 'reception_time',
+    'reception start time': 'reception_time',
+    'guest count': 'guest_count',
+    'number of guests': 'guest_count',
+    'total guests': 'guest_count',
+    'venue': 'ceremony_venue_name',
+    'ceremony venue': 'ceremony_venue_name',
+    'reception venue': 'reception_venue_name',
+    'venue name': 'ceremony_venue_name',
+    'location': 'ceremony_venue_name',
+  };
+  
+  // Check direct mappings first
+  if (directMappings[normalizedLabel]) {
+    return { field_key: directMappings[normalizedLabel], confidence: 0.95 };
+  }
+  
+  // Pattern-based detection
+  const patterns: Array<{ pattern: RegExp; field_key: string; confidence: number }> = [
+    // Bride patterns
+    { pattern: /bride.*first.*name|her.*first.*name/, field_key: 'bride_first_name', confidence: 0.90 },
+    { pattern: /bride.*last.*name|her.*last.*name/, field_key: 'bride_last_name', confidence: 0.90 },
+    { pattern: /bride.*email|her.*email/, field_key: 'bride_email', confidence: 0.85 },
+    { pattern: /bride.*phone|her.*phone/, field_key: 'bride_phone', confidence: 0.85 },
+    { pattern: /bride.*name|her.*name/, field_key: 'bride_first_name', confidence: 0.80 },
+    
+    // Groom patterns
+    { pattern: /groom.*first.*name|his.*first.*name/, field_key: 'groom_first_name', confidence: 0.90 },
+    { pattern: /groom.*last.*name|his.*last.*name/, field_key: 'groom_last_name', confidence: 0.90 },
+    { pattern: /groom.*email|his.*email/, field_key: 'groom_email', confidence: 0.85 },
+    { pattern: /groom.*phone|his.*phone/, field_key: 'groom_phone', confidence: 0.85 },
+    { pattern: /groom.*name|his.*name/, field_key: 'groom_first_name', confidence: 0.80 },
+    
+    // Timeline patterns
+    { pattern: /getting.*ready.*time/, field_key: 'getting_ready_time', confidence: 0.90 },
+    { pattern: /first.*look.*time/, field_key: 'first_look_time', confidence: 0.90 },
+    { pattern: /cocktail.*hour/, field_key: 'cocktail_hour_time', confidence: 0.85 },
+    { pattern: /dinner.*time/, field_key: 'dinner_time', confidence: 0.85 },
+    { pattern: /first.*dance/, field_key: 'first_dance_time', confidence: 0.85 },
+    { pattern: /cake.*cutting/, field_key: 'cake_cutting_time', confidence: 0.85 },
+    { pattern: /send.*off.*time|departure/, field_key: 'send_off_time', confidence: 0.85 },
+  ];
+  
+  // Check patterns
+  for (const { pattern, field_key, confidence } of patterns) {
+    if (pattern.test(normalizedLabel)) {
+      return { field_key, confidence };
+    }
+  }
+  
+  // Fuzzy matching as fallback
+  let bestMatch = { field_key: null as string | null, confidence: 0 };
+  
+  for (const [key, field] of Object.entries(CORE_FIELDS)) {
+    const fieldName = field.field_name.toLowerCase();
+    
+    // Check if label contains significant parts of field name
+    const fieldWords = fieldName.split(/\s+/);
+    const labelWords = normalizedLabel.split(/\s+/);
+    
+    let matchCount = 0;
+    for (const fieldWord of fieldWords) {
+      if (labelWords.some(labelWord => 
+        labelWord.includes(fieldWord) || fieldWord.includes(labelWord)
+      )) {
+        matchCount++;
+      }
+    }
+    
+    const confidence = matchCount / fieldWords.length * 0.7; // Max 0.7 for fuzzy matches
+    
+    if (confidence > bestMatch.confidence && confidence > 0.5) {
+      bestMatch = { field_key: key, confidence };
+    }
+  }
+  
+  return bestMatch;
+}
+
+// Helper to get display name for a core field
+export function getCoreFieldDisplayName(field_key: string): string {
+  return CORE_FIELDS[field_key]?.field_name || field_key;
+}
+
+// Helper to get category display name
+export function getCategoryDisplayName(category: CoreFieldCategory): string {
+  const names: Record<CoreFieldCategory, string> = {
+    couple_info: 'Couple Information',
+    wedding_details: 'Wedding Details',
+    venue_info: 'Venue Information',
+    timeline: 'Timeline'
+  };
+  return names[category] || category;
+}
+
+// Get all fields in a category
+export function getFieldsByCategory(category: CoreFieldCategory): typeof CORE_FIELDS {
+  const filtered: typeof CORE_FIELDS = {};
+  for (const [key, field] of Object.entries(CORE_FIELDS)) {
+    if (field.category === category && field.is_active) {
+      filtered[key] = field;
+    }
+  }
+  return filtered;
+}
+
+// Validate a value against a core field's rules
+export function validateCoreFieldValue(
+  field_key: string, 
+  value: any
+): { valid: boolean; error?: string } {
+  const field = CORE_FIELDS[field_key];
+  if (!field) {
+    return { valid: false, error: 'Unknown field' };
+  }
+  
+  // Type validation
+  switch (field.field_type) {
+    case 'email':
+      if (field.validation_rules?.pattern) {
+        const regex = new RegExp(field.validation_rules.pattern);
+        if (!regex.test(value)) {
+          return { valid: false, error: 'Invalid email format' };
+        }
+      }
+      break;
+      
+    case 'number':
+      const num = Number(value);
+      if (isNaN(num)) {
+        return { valid: false, error: 'Must be a number' };
+      }
+      if (field.validation_rules?.min && num < field.validation_rules.min) {
+        return { valid: false, error: `Minimum value is ${field.validation_rules.min}` };
+      }
+      if (field.validation_rules?.max && num > field.validation_rules.max) {
+        return { valid: false, error: `Maximum value is ${field.validation_rules.max}` };
+      }
+      break;
+      
+    case 'date':
+      if (!value || isNaN(Date.parse(value))) {
+        return { valid: false, error: 'Invalid date' };
+      }
+      break;
+      
+    case 'time':
+      if (!/^\d{2}:\d{2}(:\d{2})?$/.test(value)) {
+        return { valid: false, error: 'Invalid time format (HH:MM)' };
+      }
+      break;
+  }
+  
+  return { valid: true };
+}

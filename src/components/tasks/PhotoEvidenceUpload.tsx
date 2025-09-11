@@ -1,0 +1,548 @@
+'use client';
+
+import React, { useState, useRef, useCallback } from 'react';
+import {
+  Camera,
+  Upload,
+  X,
+  FileImage,
+  AlertCircle,
+  CheckCircle,
+  Eye,
+  Download,
+  Trash2,
+  ZoomIn,
+} from 'lucide-react';
+import { toast } from '@/hooks/use-toast';
+
+interface PhotoFile {
+  id: string;
+  file?: File;
+  url: string;
+  name: string;
+  size: number;
+  uploadStatus: 'pending' | 'uploading' | 'success' | 'error';
+  uploadProgress?: number;
+  errorMessage?: string;
+}
+
+interface PhotoEvidenceUploadProps {
+  taskId: string;
+  existingPhotos?: string[];
+  maxFiles?: number;
+  maxFileSize?: number; // in MB
+  onUpload?: (photos: PhotoFile[]) => Promise<string[]>; // Returns URLs
+  onDelete?: (photoUrl: string) => Promise<void>;
+  onChange?: (photos: PhotoFile[]) => void;
+  disabled?: boolean;
+  className?: string;
+  variant?: 'default' | 'compact' | 'gallery';
+  showPreview?: boolean;
+  allowDelete?: boolean;
+}
+
+export function PhotoEvidenceUpload({
+  taskId,
+  existingPhotos = [],
+  maxFiles = 5,
+  maxFileSize = 5,
+  onUpload,
+  onDelete,
+  onChange,
+  disabled = false,
+  className = '',
+  variant = 'default',
+  showPreview = true,
+  allowDelete = true,
+}: PhotoEvidenceUploadProps) {
+  const [photos, setPhotos] = useState<PhotoFile[]>(() =>
+    existingPhotos.map((url, index) => ({
+      id: `existing-${index}`,
+      url,
+      name: `Photo ${index + 1}`,
+      size: 0,
+      uploadStatus: 'success' as const,
+    })),
+  );
+  const [selectedPhoto, setSelectedPhoto] = useState<string | null>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const validateFile = (file: File): string | null => {
+    if (!file.type.startsWith('image/')) {
+      return 'Only image files are allowed';
+    }
+    if (file.size > maxFileSize * 1024 * 1024) {
+      return `File size must be less than ${maxFileSize}MB`;
+    }
+    return null;
+  };
+
+  const createPhotoFile = (file: File): PhotoFile => ({
+    id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+    file,
+    url: URL.createObjectURL(file),
+    name: file.name,
+    size: file.size,
+    uploadStatus: 'pending',
+  });
+
+  const handleFileSelection = useCallback(
+    (files: FileList) => {
+      const fileArray = Array.from(files);
+      const remainingSlots = maxFiles - photos.length;
+
+      if (fileArray.length > remainingSlots) {
+        alert(
+          `You can only upload ${remainingSlots} more photo(s). Maximum ${maxFiles} photos allowed.`,
+        );
+        return;
+      }
+
+      const validPhotos: PhotoFile[] = [];
+      const errors: string[] = [];
+
+      fileArray.forEach((file) => {
+        const error = validateFile(file);
+        if (error) {
+          errors.push(`${file.name}: ${error}`);
+        } else {
+          validPhotos.push(createPhotoFile(file));
+        }
+      });
+
+      if (errors.length > 0) {
+        alert(`Some files were not added:\n${errors.join('\n')}`);
+      }
+
+      if (validPhotos.length > 0) {
+        const newPhotos = [...photos, ...validPhotos];
+        setPhotos(newPhotos);
+        onChange?.(newPhotos);
+
+        // Auto-upload if upload handler provided
+        if (onUpload) {
+          uploadPhotos(validPhotos);
+        }
+      }
+    },
+    [photos, maxFiles, maxFileSize, onChange, onUpload],
+  );
+
+  const uploadPhotos = async (photosToUpload: PhotoFile[]) => {
+    if (!onUpload) return;
+
+    // Update status to uploading
+    setPhotos((prev) =>
+      prev.map((photo) =>
+        photosToUpload.find((p) => p.id === photo.id)
+          ? { ...photo, uploadStatus: 'uploading' as const, uploadProgress: 0 }
+          : photo,
+      ),
+    );
+
+    try {
+      // Simulate upload progress
+      for (const photo of photosToUpload) {
+        for (let progress = 0; progress <= 100; progress += 20) {
+          setTimeout(() => {
+            setPhotos((prev) =>
+              prev.map((p) =>
+                p.id === photo.id ? { ...p, uploadProgress: progress } : p,
+              ),
+            );
+          }, progress * 10);
+        }
+      }
+
+      const uploadedUrls = await onUpload(photosToUpload);
+
+      // Update with success and new URLs
+      setPhotos((prev) =>
+        prev.map((photo) => {
+          const uploadIndex = photosToUpload.findIndex(
+            (p) => p.id === photo.id,
+          );
+          if (uploadIndex !== -1 && uploadedUrls[uploadIndex]) {
+            return {
+              ...photo,
+              url: uploadedUrls[uploadIndex],
+              uploadStatus: 'success' as const,
+              uploadProgress: 100,
+            };
+          }
+          return photo;
+        }),
+      );
+    } catch (error) {
+      // Mark as error
+      setPhotos((prev) =>
+        prev.map((photo) =>
+          photosToUpload.find((p) => p.id === photo.id)
+            ? {
+                ...photo,
+                uploadStatus: 'error' as const,
+                errorMessage:
+                  error instanceof Error ? error.message : 'Upload failed',
+              }
+            : photo,
+        ),
+      );
+    }
+  };
+
+  const handleFileInput = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (event.target.files) {
+      handleFileSelection(event.target.files);
+      // Reset input to allow same file selection again
+      event.target.value = '';
+    }
+  };
+
+  const handleDrop = useCallback(
+    (event: React.DragEvent) => {
+      event.preventDefault();
+      setIsDragOver(false);
+
+      if (disabled) return;
+
+      if (event.dataTransfer.files) {
+        handleFileSelection(event.dataTransfer.files);
+      }
+    },
+    [disabled, handleFileSelection],
+  );
+
+  const handleDragOver = useCallback(
+    (event: React.DragEvent) => {
+      event.preventDefault();
+      if (!disabled) {
+        setIsDragOver(true);
+      }
+    },
+    [disabled],
+  );
+
+  const handleDragLeave = useCallback(() => {
+    setIsDragOver(false);
+  }, []);
+
+  const removePhoto = async (photoId: string) => {
+    const photo = photos.find((p) => p.id === photoId);
+    if (!photo) return;
+
+    if (
+      photo.uploadStatus === 'success' &&
+      onDelete &&
+      photo.url.startsWith('http')
+    ) {
+      try {
+        await onDelete(photo.url);
+      } catch (error) {
+        // GUARDIAN FIX: Use proper error handling instead of console.error
+        if (process.env.NODE_ENV === 'development') {
+          console.error('Failed to delete photo:', error);
+        }
+
+        // Show user-friendly error message
+        toast({
+          title: 'Delete Failed',
+          description: 'Unable to delete photo. Please try again.',
+          variant: 'destructive',
+        });
+
+        return;
+      }
+    }
+
+    // Clean up object URL if it's a local file
+    if (photo.url.startsWith('blob:')) {
+      URL.revokeObjectURL(photo.url);
+    }
+
+    const newPhotos = photos.filter((p) => p.id !== photoId);
+    setPhotos(newPhotos);
+    onChange?.(newPhotos);
+  };
+
+  const retryUpload = (photoId: string) => {
+    const photo = photos.find((p) => p.id === photoId);
+    if (photo && photo.file && onUpload) {
+      uploadPhotos([photo]);
+    }
+  };
+
+  const PhotoPreview = ({ photo }: { photo: PhotoFile }) => {
+    const getStatusIcon = () => {
+      switch (photo.uploadStatus) {
+        case 'success':
+          return <CheckCircle className="w-4 h-4 text-success-500" />;
+        case 'error':
+          return <AlertCircle className="w-4 h-4 text-error-500" />;
+        case 'uploading':
+          return (
+            <div className="w-4 h-4 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />
+          );
+        default:
+          return <FileImage className="w-4 h-4 text-gray-400" />;
+      }
+    };
+
+    if (variant === 'compact') {
+      return (
+        <div className="relative group">
+          <img
+            src={photo.url}
+            alt={photo.name}
+            className="w-12 h-12 object-cover rounded-lg border border-gray-200"
+          />
+          {allowDelete && (
+            <button
+              onClick={() => removePhoto(photo.id)}
+              className="absolute -top-1 -right-1 p-0.5 bg-error-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity duration-200"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          )}
+        </div>
+      );
+    }
+
+    return (
+      <div className="relative group bg-gray-50 rounded-lg border border-gray-200 overflow-hidden">
+        <div className="aspect-square">
+          <img
+            src={photo.url}
+            alt={photo.name}
+            className="w-full h-full object-cover"
+          />
+        </div>
+
+        {/* Overlay */}
+        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-all duration-200">
+          <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex items-center justify-center space-x-2">
+            {showPreview && (
+              <button
+                onClick={() => setSelectedPhoto(photo.url)}
+                className="p-2 bg-white/90 rounded-lg hover:bg-white transition-colors duration-200"
+                title="View full size"
+              >
+                <ZoomIn className="w-4 h-4 text-gray-700" />
+              </button>
+            )}
+
+            {allowDelete && (
+              <button
+                onClick={() => removePhoto(photo.id)}
+                className="p-2 bg-white/90 rounded-lg hover:bg-white transition-colors duration-200"
+                title="Remove photo"
+              >
+                <Trash2 className="w-4 h-4 text-error-600" />
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Status and Info */}
+        <div className="absolute bottom-0 left-0 right-0 p-2 bg-gradient-to-t from-black/60 to-transparent">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-1 text-white text-xs">
+              {getStatusIcon()}
+              <span className="truncate max-w-20">{photo.name}</span>
+            </div>
+            <span className="text-white text-xs">
+              {Math.round(photo.size / 1024)}KB
+            </span>
+          </div>
+
+          {/* Progress bar for uploading */}
+          {photo.uploadStatus === 'uploading' &&
+            photo.uploadProgress !== undefined && (
+              <div className="mt-1 w-full bg-black/30 rounded-full h-1">
+                <div
+                  className="bg-primary-400 h-1 rounded-full transition-all duration-300"
+                  style={{ width: `${photo.uploadProgress}%` }}
+                />
+              </div>
+            )}
+
+          {/* Error message */}
+          {photo.uploadStatus === 'error' && photo.errorMessage && (
+            <div className="mt-1">
+              <p className="text-xs text-error-300 truncate">
+                {photo.errorMessage}
+              </p>
+              <button
+                onClick={() => retryUpload(photo.id)}
+                className="text-xs text-primary-300 hover:text-primary-200 underline"
+              >
+                Retry
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  if (variant === 'compact') {
+    return (
+      <div className={`flex items-center space-x-3 ${className}`}>
+        <div className="flex items-center space-x-2">
+          {photos.map((photo) => (
+            <PhotoPreview key={photo.id} photo={photo} />
+          ))}
+        </div>
+
+        {photos.length < maxFiles && !disabled && (
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="flex items-center justify-center w-12 h-12 border-2 border-dashed border-gray-300 rounded-lg hover:border-primary-300 transition-colors duration-200"
+          >
+            <Camera className="w-5 h-5 text-gray-400" />
+          </button>
+        )}
+
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          onChange={handleFileInput}
+          className="hidden"
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className={className}>
+      {/* Upload Area */}
+      {photos.length < maxFiles && !disabled && (
+        <div
+          onDrop={handleDrop}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          className={`
+            relative border-2 border-dashed rounded-xl p-6 text-center transition-all duration-200
+            ${
+              isDragOver
+                ? 'border-primary-400 bg-primary-25'
+                : 'border-gray-300 hover:border-primary-300'
+            }
+          `}
+        >
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            onChange={handleFileInput}
+            className="hidden"
+          />
+
+          <div className="flex flex-col items-center">
+            <div
+              className={`
+              p-3 rounded-full mb-4 transition-colors duration-200
+              ${isDragOver ? 'bg-primary-100' : 'bg-gray-100'}
+            `}
+            >
+              <Camera
+                className={`
+                w-8 h-8 transition-colors duration-200
+                ${isDragOver ? 'text-primary-600' : 'text-gray-400'}
+              `}
+              />
+            </div>
+
+            <h3 className="text-sm font-medium text-gray-900 mb-2">
+              {isDragOver ? 'Drop photos here' : 'Upload photo evidence'}
+            </h3>
+
+            <p className="text-sm text-gray-600 mb-4">
+              Drag and drop photos, or click to browse
+            </p>
+
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="inline-flex items-center px-4 py-2 text-sm font-medium text-primary-600 bg-primary-50 border border-primary-200 rounded-lg hover:bg-primary-100 transition-colors duration-200"
+            >
+              <Upload className="w-4 h-4 mr-2" />
+              Choose Photos
+            </button>
+
+            <p className="text-xs text-gray-500 mt-3">
+              PNG, JPG up to {maxFileSize}MB each • {photos.length}/{maxFiles}{' '}
+              photos used
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Photo Grid */}
+      {photos.length > 0 && (
+        <div className="mt-6">
+          <div className="flex items-center justify-between mb-4">
+            <h4 className="text-sm font-medium text-gray-900">
+              Photo Evidence ({photos.length}/{maxFiles})
+            </h4>
+            {photos.some((p) => p.uploadStatus === 'error') && (
+              <button
+                onClick={() => {
+                  const errorPhotos = photos.filter(
+                    (p) => p.uploadStatus === 'error',
+                  );
+                  errorPhotos.forEach((photo) => retryUpload(photo.id));
+                }}
+                className="text-xs text-primary-600 hover:text-primary-700 underline"
+              >
+                Retry failed uploads
+              </button>
+            )}
+          </div>
+
+          <div
+            className={`
+            grid gap-4
+            ${
+              variant === 'gallery'
+                ? 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-4'
+                : 'grid-cols-2 sm:grid-cols-3'
+            }
+          `}
+          >
+            {photos.map((photo) => (
+              <PhotoPreview key={photo.id} photo={photo} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Full Size Preview Modal */}
+      {selectedPhoto && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
+          onClick={() => setSelectedPhoto(null)}
+        >
+          <div className="relative max-w-4xl max-h-full">
+            <img
+              src={selectedPhoto}
+              alt="Full size preview"
+              className="max-w-full max-h-full object-contain rounded-lg"
+            />
+            <button
+              onClick={() => setSelectedPhoto(null)}
+              className="absolute top-4 right-4 p-2 bg-black/50 text-white rounded-full hover:bg-black/70 transition-colors duration-200"
+            >
+              <X className="w-6 h-6" />
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default PhotoEvidenceUpload;

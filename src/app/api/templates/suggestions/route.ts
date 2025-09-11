@@ -1,0 +1,223 @@
+/**
+ * Template Suggestions API
+ * WS-235: Support Operations Ticket Management System
+ *
+ * Provides intelligent template suggestions based on ticket classification
+ * Routes: POST /api/templates/suggestions
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import TemplateManager from '@/lib/support/template-manager';
+import { z } from 'zod';
+
+// Validation schema for suggestions request
+const SuggestionsRequestSchema = z.object({
+  ticket_category: z.string().min(1, 'Ticket category is required'),
+  ticket_type: z.string().min(1, 'Ticket type is required'),
+  vendor_type: z.string().optional(),
+  ticket_priority: z.enum(['critical', 'high', 'medium', 'low']).optional(),
+  ticket_subject: z.string().optional(),
+  ticket_content: z.string().optional(),
+  customer_tier: z.string().optional(),
+  is_wedding_emergency: z.boolean().default(false),
+  limit: z.number().min(1).max(10).default(5),
+});
+
+// Initialize template manager
+const templateManager = new TemplateManager();
+
+/**
+ * POST /api/templates/suggestions - Get template suggestions
+ */
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = createServerComponentClient({ cookies });
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get user tier
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select(
+        `
+        id,
+        role,
+        organizations!inner(
+          id,
+          subscription_tier
+        )
+      `,
+      )
+      .eq('id', user.id)
+      .single();
+
+    if (!profile) {
+      return NextResponse.json(
+        { error: 'User profile not found' },
+        { status: 404 },
+      );
+    }
+
+    // Verify user is support agent or admin
+    if (!['admin', 'support_agent', 'manager'].includes(profile.role || '')) {
+      return NextResponse.json(
+        { error: 'Access restricted to support agents' },
+        { status: 403 },
+      );
+    }
+
+    const userTier = profile.organizations.subscription_tier || 'professional';
+
+    // Parse and validate request body
+    const body = await request.json();
+    const suggestionRequest = SuggestionsRequestSchema.parse(body);
+
+    // Get suggested templates based on ticket classification
+    const suggestions = await templateManager.getSuggestedTemplates(
+      suggestionRequest.ticket_category,
+      suggestionRequest.ticket_type,
+      suggestionRequest.vendor_type,
+      userTier,
+    );
+
+    // If this is a wedding emergency, prioritize emergency templates
+    if (suggestionRequest.is_wedding_emergency) {
+      const emergencyTemplates = await templateManager.getTemplatesForUser(
+        user.id,
+        userTier,
+        'wedding_emergency',
+      );
+
+      // Add emergency templates to the beginning
+      suggestions.unshift(...emergencyTemplates);
+    }
+
+    // Enhanced suggestion scoring based on context
+    const scoredSuggestions = suggestions.map((template) => {
+      let score = template.usage_count || 0;
+
+      // Boost score for matching vendor type
+      if (template.vendor_type === suggestionRequest.vendor_type) {
+        score += 10;
+      }
+
+      // Boost score for wedding emergency templates if applicable
+      if (
+        suggestionRequest.is_wedding_emergency &&
+        template.category === 'wedding_emergency'
+      ) {
+        score += 50;
+      }
+
+      // Boost score for high priority issues
+      if (suggestionRequest.ticket_priority === 'critical') {
+        score += 20;
+      } else if (suggestionRequest.ticket_priority === 'high') {
+        score += 10;
+      }
+
+      // Boost score based on average rating
+      if (template.avg_rating) {
+        score += template.avg_rating * 5;
+      }
+
+      // Text relevance scoring (simple keyword matching)
+      if (
+        suggestionRequest.ticket_subject ||
+        suggestionRequest.ticket_content
+      ) {
+        const searchText =
+          `${suggestionRequest.ticket_subject || ''} ${suggestionRequest.ticket_content || ''}`.toLowerCase();
+        const templateText =
+          `${template.name} ${template.content}`.toLowerCase();
+
+        // Count keyword matches
+        const words = searchText.split(/\s+/).filter((w) => w.length > 3);
+        const matches = words.filter((word) =>
+          templateText.includes(word),
+        ).length;
+        score += matches * 2;
+      }
+
+      return {
+        ...template,
+        relevance_score: score,
+        match_reasons: getMatchReasons(template, suggestionRequest),
+      };
+    });
+
+    // Sort by relevance score and limit results
+    const finalSuggestions = scoredSuggestions
+      .sort((a, b) => b.relevance_score - a.relevance_score)
+      .slice(0, suggestionRequest.limit);
+
+    return NextResponse.json({
+      suggestions: finalSuggestions,
+      search_context: {
+        category: suggestionRequest.ticket_category,
+        type: suggestionRequest.ticket_type,
+        vendor_type: suggestionRequest.vendor_type,
+        is_emergency: suggestionRequest.is_wedding_emergency,
+        total_found: suggestions.length,
+      },
+    });
+  } catch (error) {
+    console.error('POST /api/templates/suggestions error:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid suggestions request', details: error.errors },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * Generate match reasons for template suggestion
+ */
+function getMatchReasons(template: any, request: any): string[] {
+  const reasons: string[] = [];
+
+  if (template.category === request.ticket_category) {
+    reasons.push('Category match');
+  }
+
+  if (template.vendor_type === request.vendor_type) {
+    reasons.push('Vendor type match');
+  }
+
+  if (
+    request.is_wedding_emergency &&
+    template.category === 'wedding_emergency'
+  ) {
+    reasons.push('Wedding emergency template');
+  }
+
+  if (template.usage_count > 10) {
+    reasons.push('Popular template');
+  }
+
+  if (template.avg_rating && template.avg_rating >= 4.0) {
+    reasons.push('Highly rated');
+  }
+
+  if (template.tags?.includes('built-in')) {
+    reasons.push('Built-in template');
+  }
+
+  return reasons;
+}

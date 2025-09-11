@@ -1,0 +1,434 @@
+/**
+ * WS-116: Geographic Search Results Component
+ * Display location-based supplier search results with distance and service area info
+ */
+
+'use client';
+
+import React, { useState, useCallback } from 'react';
+import { 
+  MapPin, 
+  Star, 
+  Shield, 
+  Phone, 
+  Globe, 
+  Navigation,
+  Clock,
+  DollarSign,
+  ChevronDown,
+  ChevronUp,
+  ExternalLink,
+  AlertCircle
+} from 'lucide-react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { Separator } from '@/components/ui/separator';
+import { GeographicSearchResult } from '@/lib/services/geographic-search-service';
+
+interface GeographicSearchResultsProps {
+  results: GeographicSearchResult[];
+  loading?: boolean;
+  searchCenter?: { latitude: number; longitude: number };
+  searchRadius?: number;
+  totalCount: number;
+  onLoadMore?: () => void;
+  hasMore?: boolean;
+  onSupplierClick?: (supplierId: string) => void;
+  onGetDirections?: (supplier: GeographicSearchResult) => void;
+  onCheckAvailability?: (supplierId: string) => void;
+  className?: string;
+}
+
+interface SupplierCardProps {
+  supplier: GeographicSearchResult;
+  onSupplierClick?: (supplierId: string) => void;
+  onGetDirections?: (supplier: GeographicSearchResult) => void;
+  onCheckAvailability?: (supplierId: string) => void;
+}
+
+function SupplierCard({ 
+  supplier, 
+  onSupplierClick,
+  onGetDirections,
+  onCheckAvailability 
+}: SupplierCardProps) {
+  const [showDetails, setShowDetails] = useState(false);
+
+  const handleSupplierClick = useCallback(() => {
+    onSupplierClick?.(supplier.supplierId);
+  }, [supplier.supplierId, onSupplierClick]);
+
+  const handleGetDirections = useCallback(() => {
+    onGetDirections?.(supplier);
+  }, [supplier, onGetDirections]);
+
+  const handleCheckAvailability = useCallback(() => {
+    onCheckAvailability?.(supplier.supplierId);
+  }, [supplier.supplierId, onCheckAvailability]);
+
+  const renderStars = (rating: number) => {
+    const fullStars = Math.floor(rating);
+    const hasHalfStar = rating % 1 !== 0;
+    const stars = [];
+
+    for (let i = 0; i < fullStars; i++) {
+      stars.push(
+        <Star key={i} className="h-4 w-4 fill-yellow-400 text-yellow-400" />
+      );
+    }
+
+    if (hasHalfStar) {
+      stars.push(
+        <Star key="half" className="h-4 w-4 fill-yellow-400/50 text-yellow-400" />
+      );
+    }
+
+    const emptyStars = 5 - Math.ceil(rating);
+    for (let i = 0; i < emptyStars; i++) {
+      stars.push(
+        <Star key={`empty-${i}`} className="h-4 w-4 text-gray-300" />
+      );
+    }
+
+    return stars;
+  };
+
+  const getServiceLevelColor = (level: string) => {
+    switch (level) {
+      case 'primary': return 'bg-green-100 text-green-800';
+      case 'secondary': return 'bg-yellow-100 text-yellow-800';
+      case 'extended': return 'bg-blue-100 text-blue-800';
+      default: return 'bg-gray-100 text-gray-800';
+    }
+  };
+
+  const getServiceLevelText = (level: string) => {
+    switch (level) {
+      case 'primary': return 'Primary Service Area';
+      case 'secondary': return 'Secondary Service Area';
+      case 'extended': return 'Extended Coverage';
+      default: return 'Service Area Unknown';
+    }
+  };
+
+  return (
+    <Card className="w-full hover:shadow-md transition-shadow">
+      <CardHeader className="pb-4">
+        <div className="flex items-start gap-4">
+          <Avatar className="h-16 w-16">
+            <AvatarImage src={supplier.featuredImage} alt={supplier.businessName} />
+            <AvatarFallback>
+              {supplier.businessName.split(' ').map(w => w[0]).join('').toUpperCase()}
+            </AvatarFallback>
+          </Avatar>
+
+          <div className="flex-1 min-w-0">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <h3 className="font-semibold text-lg leading-6">
+                  <button
+                    onClick={handleSupplierClick}
+                    className="text-left hover:text-primary transition-colors"
+                  >
+                    {supplier.businessName}
+                  </button>
+                </h3>
+                <p className="text-sm text-gray-600 mt-1">{supplier.category}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                {supplier.isVerified && (
+                  <Badge variant="secondary" className="flex items-center gap-1">
+                    <Shield className="h-3 w-3" />
+                    Verified
+                  </Badge>
+                )}
+                <Badge variant="outline" className={getServiceLevelColor(supplier.serviceLevel)}>
+                  {getServiceLevelText(supplier.serviceLevel)}
+                </Badge>
+              </div>
+            </div>
+
+            {/* Rating and Reviews */}
+            <div className="flex items-center gap-3 mt-2">
+              <div className="flex items-center gap-1">
+                {renderStars(supplier.rating)}
+                <span className="text-sm font-medium ml-1">
+                  {supplier.rating.toFixed(1)}
+                </span>
+              </div>
+              <span className="text-sm text-gray-600">
+                ({supplier.totalReviews} review{supplier.totalReviews !== 1 ? 's' : ''})
+              </span>
+              {supplier.priceRange && (
+                <Badge variant="outline">{supplier.priceRange}</Badge>
+              )}
+            </div>
+          </div>
+        </div>
+      </CardHeader>
+
+      <CardContent className="pt-0">
+        {/* Location and Distance */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 text-sm">
+              <MapPin className="h-4 w-4 text-gray-400" />
+              <span className="truncate">{supplier.address}</span>
+            </div>
+            <div className="flex items-center gap-2 text-sm">
+              <Navigation className="h-4 w-4 text-gray-400" />
+              <span>{supplier.distance.toFixed(1)} km away</span>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 text-sm">
+              <Clock className="h-4 w-4 text-gray-400" />
+              <span>Service radius: {supplier.serviceRadius} miles</span>
+            </div>
+            {supplier.additionalTravelCost && supplier.additionalTravelCost > 0 && (
+              <div className="flex items-center gap-2 text-sm">
+                <DollarSign className="h-4 w-4 text-gray-400" />
+                <span>+£{supplier.additionalTravelCost} travel cost</span>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Service Status */}
+        <div className="mb-4">
+          {supplier.servesLocation ? (
+            <div className="flex items-center gap-2 text-sm text-green-700 bg-green-50 px-3 py-2 rounded-md">
+              <Shield className="h-4 w-4" />
+              <span>Available to serve your location</span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 text-sm text-amber-700 bg-amber-50 px-3 py-2 rounded-md">
+              <AlertCircle className="h-4 w-4" />
+              <span>May have limited availability for your location</span>
+            </div>
+          )}
+        </div>
+
+        {/* Action Buttons */}
+        <div className="flex gap-2 mb-4">
+          <Button onClick={handleSupplierClick} className="flex-1">
+            View Profile
+          </Button>
+          <Button variant="outline" onClick={handleGetDirections}>
+            <Navigation className="h-4 w-4 mr-2" />
+            Directions
+          </Button>
+          {supplier.servesLocation && (
+            <Button variant="outline" onClick={handleCheckAvailability}>
+              Check Dates
+            </Button>
+          )}
+        </div>
+
+        {/* Expandable Details */}
+        <div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setShowDetails(!showDetails)}
+            className="w-full justify-between p-0 h-auto"
+          >
+            <span className="text-sm font-medium">More Details</span>
+            {showDetails ? (
+              <ChevronUp className="h-4 w-4" />
+            ) : (
+              <ChevronDown className="h-4 w-4" />
+            )}
+          </Button>
+
+          {showDetails && (
+            <div className="mt-3 pt-3 border-t space-y-3">
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                  <span className="font-medium">Location:</span>
+                  <p className="text-gray-600 mt-1">
+                    {supplier.city}, {supplier.state}
+                  </p>
+                  {supplier.postcode && (
+                    <p className="text-gray-600">{supplier.postcode}</p>
+                  )}
+                </div>
+                <div>
+                  <span className="font-medium">Coordinates:</span>
+                  <p className="text-gray-600 mt-1 font-mono text-xs">
+                    {supplier.latitude.toFixed(6)}, {supplier.longitude.toFixed(6)}
+                  </p>
+                </div>
+              </div>
+
+              <Separator />
+
+              <div className="space-y-2">
+                <span className="font-medium text-sm">Service Area Information:</span>
+                <div className="grid grid-cols-1 gap-2 text-sm text-gray-600">
+                  <div className="flex justify-between">
+                    <span>Service Type:</span>
+                    <span className="capitalize">{supplier.serviceLevel.replace('_', ' ')}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Coverage Radius:</span>
+                    <span>{supplier.serviceRadius} miles ({(supplier.serviceRadius * 1.60934).toFixed(1)} km)</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Distance from you:</span>
+                    <span>{supplier.distance.toFixed(1)} km</span>
+                  </div>
+                  {supplier.additionalTravelCost && (
+                    <div className="flex justify-between">
+                      <span>Additional travel cost:</span>
+                      <span>£{supplier.additionalTravelCost.toFixed(2)}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+export default function GeographicSearchResults({
+  results,
+  loading = false,
+  searchCenter,
+  searchRadius,
+  totalCount,
+  onLoadMore,
+  hasMore = false,
+  onSupplierClick,
+  onGetDirections,
+  onCheckAvailability,
+  className = ''
+}: GeographicSearchResultsProps) {
+  const handleGetDirections = useCallback((supplier: GeographicSearchResult) => {
+    if (onGetDirections) {
+      onGetDirections(supplier);
+    } else {
+      // Default behavior: open Google Maps
+      const url = `https://maps.google.com/maps?q=${supplier.latitude},${supplier.longitude}`;
+      window.open(url, '_blank');
+    }
+  }, [onGetDirections]);
+
+  if (loading) {
+    return (
+      <div className={`space-y-4 ${className}`}>
+        {[...Array(3)].map((_, index) => (
+          <Card key={index} className="w-full">
+            <CardHeader>
+              <div className="flex items-start gap-4">
+                <div className="h-16 w-16 bg-gray-200 rounded-full animate-pulse" />
+                <div className="flex-1 space-y-2">
+                  <div className="h-6 bg-gray-200 rounded animate-pulse w-3/4" />
+                  <div className="h-4 bg-gray-200 rounded animate-pulse w-1/2" />
+                  <div className="h-4 bg-gray-200 rounded animate-pulse w-1/3" />
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-3">
+                <div className="h-4 bg-gray-200 rounded animate-pulse w-full" />
+                <div className="h-4 bg-gray-200 rounded animate-pulse w-3/4" />
+                <div className="flex gap-2">
+                  <div className="h-8 bg-gray-200 rounded animate-pulse flex-1" />
+                  <div className="h-8 bg-gray-200 rounded animate-pulse w-24" />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+    );
+  }
+
+  if (results.length === 0) {
+    return (
+      <Card className={`w-full ${className}`}>
+        <CardContent className="text-center py-12">
+          <MapPin className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+          <h3 className="text-lg font-semibold text-gray-900 mb-2">No suppliers found</h3>
+          <p className="text-gray-600 mb-4">
+            We couldn't find any suppliers in your area. Try expanding your search radius or changing your filters.
+          </p>
+          {searchCenter && searchRadius && (
+            <p className="text-sm text-gray-500">
+              Searched within {searchRadius} km of your location
+            </p>
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <div className={`space-y-4 ${className}`}>
+      {/* Results Summary */}
+      <Card>
+        <CardContent className="py-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-lg font-semibold">
+                {totalCount} supplier{totalCount !== 1 ? 's' : ''} found
+              </h2>
+              {searchCenter && searchRadius && (
+                <p className="text-sm text-gray-600">
+                  Within {searchRadius} km of your location
+                </p>
+              )}
+            </div>
+            <div className="flex items-center gap-2 text-sm text-gray-600">
+              <MapPin className="h-4 w-4" />
+              <span>Sorted by distance</span>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Supplier Results */}
+      <div className="space-y-4">
+        {results.map((supplier) => (
+          <SupplierCard
+            key={supplier.supplierId}
+            supplier={supplier}
+            onSupplierClick={onSupplierClick}
+            onGetDirections={handleGetDirections}
+            onCheckAvailability={onCheckAvailability}
+          />
+        ))}
+      </div>
+
+      {/* Load More Button */}
+      {hasMore && (
+        <div className="text-center pt-4">
+          <Button
+            variant="outline"
+            onClick={onLoadMore}
+            disabled={loading}
+            className="w-full sm:w-auto"
+          >
+            {loading ? 'Loading...' : 'Load More Results'}
+          </Button>
+        </div>
+      )}
+
+      {/* No More Results */}
+      {!hasMore && results.length > 0 && (
+        <div className="text-center pt-4">
+          <p className="text-sm text-gray-600">
+            You've seen all {totalCount} supplier{totalCount !== 1 ? 's' : ''} in this area
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}

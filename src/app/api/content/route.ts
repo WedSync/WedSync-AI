@@ -1,0 +1,562 @@
+/**
+ * WS-223 Content Management System API
+ * Team B - Secure Content API with rich text and media handling
+ *
+ * This API provides comprehensive content management functionality including:
+ * - Rich text content creation and editing with versioning
+ * - Media upload and processing with security validation
+ * - Content publishing workflow management
+ * - Search and organization capabilities
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { Database } from '@/types/database';
+import DOMPurify from 'isomorphic-dompurify';
+import { z } from 'zod';
+
+const supabase = createClient<Database>(
+  process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    (() => {
+      throw new Error('Missing environment variable: NEXT_PUBLIC_SUPABASE_URL');
+    })(),
+  process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    (() => {
+      throw new Error(
+        'Missing environment variable: SUPABASE_SERVICE_ROLE_KEY',
+      );
+    })(),
+);
+
+// Validation schemas
+const ContentCreateSchema = z.object({
+  title: z.string().min(1).max(255),
+  content_type: z.enum([
+    'article',
+    'page',
+    'email_template',
+    'form_description',
+    'journey_step',
+  ]),
+  rich_content: z.string().optional(),
+  plain_content: z.string().optional(),
+  metadata: z.record(z.any()).optional(),
+  category_id: z.string().uuid().optional(),
+  tags: z.array(z.string()).optional(),
+  status: z.enum(['draft', 'review', 'published', 'archived']).default('draft'),
+  publish_at: z.string().datetime().optional(),
+  expire_at: z.string().datetime().optional(),
+});
+
+const ContentUpdateSchema = ContentCreateSchema.partial().extend({
+  id: z.string().uuid(),
+  version_note: z.string().optional(),
+});
+
+// Helper function to sanitize rich content
+function sanitizeRichContent(content: string): string {
+  return DOMPurify.sanitize(content, {
+    ALLOWED_TAGS: [
+      'p',
+      'br',
+      'strong',
+      'em',
+      'u',
+      's',
+      'h1',
+      'h2',
+      'h3',
+      'h4',
+      'h5',
+      'h6',
+      'ul',
+      'ol',
+      'li',
+      'blockquote',
+      'a',
+      'img',
+      'table',
+      'tr',
+      'td',
+      'th',
+      'thead',
+      'tbody',
+      'tfoot',
+      'div',
+      'span',
+    ],
+    ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'class', 'id', 'style'],
+    ALLOW_DATA_ATTR: false,
+  });
+}
+
+// Helper function to extract metadata from content
+function extractContentMetadata(content: string, plainText: string) {
+  const wordCount = plainText ? plainText.split(/\s+/).length : 0;
+  const readingTime = Math.ceil(wordCount / 200); // Average reading speed
+  const imageCount = (content.match(/<img/g) || []).length;
+  const linkCount = (content.match(/<a/g) || []).length;
+
+  return {
+    word_count: wordCount,
+    reading_time_minutes: readingTime,
+    image_count: imageCount,
+    link_count: linkCount,
+    last_analyzed: new Date().toISOString(),
+  };
+}
+
+/**
+ * GET /api/content - Retrieve content with filtering and pagination
+ */
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+
+    // Parse query parameters
+    const page = parseInt(searchParams.get('page') || '1');
+    const limit = Math.min(parseInt(searchParams.get('limit') || '20'), 100);
+    const offset = (page - 1) * limit;
+
+    const contentType = searchParams.get('content_type');
+    const status = searchParams.get('status');
+    const categoryId = searchParams.get('category_id');
+    const organizationId = searchParams.get('organization_id');
+    const search = searchParams.get('search');
+    const sortBy = searchParams.get('sort_by') || 'updated_at';
+    const sortOrder = searchParams.get('sort_order') || 'desc';
+
+    if (!organizationId) {
+      return NextResponse.json(
+        { error: 'Organization ID is required' },
+        { status: 400 },
+      );
+    }
+
+    // Build query
+    let query = supabase
+      .from('content_items')
+      .select(
+        `
+        *,
+        content_versions!content_versions_content_id_fkey(
+          version_number,
+          created_at,
+          created_by,
+          version_note
+        )
+      `,
+      )
+      .eq('organization_id', organizationId)
+      .order(sortBy as any, { ascending: sortOrder === 'asc' })
+      .range(offset, offset + limit - 1);
+
+    // Apply filters
+    if (contentType) {
+      query = query.eq('content_type', contentType);
+    }
+    if (status) {
+      query = query.eq('status', status);
+    }
+    if (categoryId) {
+      query = query.eq('category_id', categoryId);
+    }
+    if (search) {
+      query = query.or(
+        `title.ilike.%${search}%,plain_content.ilike.%${search}%,tags.cs.{${search}}`,
+      );
+    }
+
+    const { data, error, count } = await query;
+
+    if (error) {
+      console.error('Content fetch error:', error);
+      return NextResponse.json(
+        { error: 'Failed to fetch content' },
+        { status: 500 },
+      );
+    }
+
+    // Get total count for pagination
+    const { count: totalCount } = await supabase
+      .from('content_items')
+      .select('*', { count: 'exact', head: true })
+      .eq('organization_id', organizationId);
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        content: data || [],
+        pagination: {
+          page,
+          limit,
+          total: totalCount || 0,
+          total_pages: Math.ceil((totalCount || 0) / limit),
+        },
+      },
+    });
+  } catch (error) {
+    console.error('Content API GET error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * POST /api/content - Create new content item
+ */
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+
+    // Validate input
+    const validationResult = ContentCreateSchema.safeParse(body);
+    if (!validationResult.success) {
+      return NextResponse.json(
+        {
+          error: 'Validation failed',
+          details: validationResult.error.errors,
+        },
+        { status: 400 },
+      );
+    }
+
+    const {
+      title,
+      content_type,
+      rich_content,
+      plain_content,
+      metadata,
+      category_id,
+      tags,
+      status,
+      publish_at,
+      expire_at,
+    } = validationResult.data;
+
+    // Get organization_id from authenticated user context
+    const organizationId = body.organization_id; // This should come from auth middleware
+    if (!organizationId) {
+      return NextResponse.json(
+        { error: 'Organization ID is required' },
+        { status: 400 },
+      );
+    }
+
+    // Sanitize rich content if provided
+    const sanitizedRichContent = rich_content
+      ? sanitizeRichContent(rich_content)
+      : null;
+
+    // Extract content metadata
+    const contentMetadata = extractContentMetadata(
+      sanitizedRichContent || '',
+      plain_content || '',
+    );
+
+    // Merge provided metadata with extracted metadata
+    const finalMetadata = {
+      ...metadata,
+      ...contentMetadata,
+    };
+
+    // Generate content slug
+    const slug = title
+      .toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, '')
+      .replace(/\s+/g, '-')
+      .substring(0, 100);
+
+    // Create content item
+    const { data: contentItem, error: contentError } = await supabase
+      .from('content_items')
+      .insert({
+        title,
+        slug,
+        content_type,
+        rich_content: sanitizedRichContent,
+        plain_content,
+        metadata: finalMetadata,
+        organization_id: organizationId,
+        category_id,
+        tags: tags || [],
+        status,
+        publish_at,
+        expire_at,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .select()
+      .single();
+
+    if (contentError) {
+      console.error('Content creation error:', contentError);
+      return NextResponse.json(
+        { error: 'Failed to create content' },
+        { status: 500 },
+      );
+    }
+
+    // Create initial version
+    const { error: versionError } = await supabase
+      .from('content_versions')
+      .insert({
+        content_id: contentItem.id,
+        version_number: 1,
+        rich_content: sanitizedRichContent,
+        plain_content,
+        metadata: finalMetadata,
+        version_note: 'Initial version',
+        created_by: organizationId, // This should be user_id from auth
+        created_at: new Date().toISOString(),
+      });
+
+    if (versionError) {
+      console.error('Version creation error:', versionError);
+      // Non-fatal error, continue with response
+    }
+
+    return NextResponse.json(
+      {
+        success: true,
+        data: {
+          content: contentItem,
+          message: 'Content created successfully',
+        },
+      },
+      { status: 201 },
+    );
+  } catch (error) {
+    console.error('Content API POST error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * PUT /api/content - Update existing content item
+ */
+export async function PUT(request: NextRequest) {
+  try {
+    const body = await request.json();
+
+    // Validate input
+    const validationResult = ContentUpdateSchema.safeParse(body);
+    if (!validationResult.success) {
+      return NextResponse.json(
+        {
+          error: 'Validation failed',
+          details: validationResult.error.errors,
+        },
+        { status: 400 },
+      );
+    }
+
+    const {
+      id,
+      title,
+      content_type,
+      rich_content,
+      plain_content,
+      metadata,
+      category_id,
+      tags,
+      status,
+      publish_at,
+      expire_at,
+      version_note,
+    } = validationResult.data;
+
+    const organizationId = body.organization_id;
+    if (!organizationId) {
+      return NextResponse.json(
+        { error: 'Organization ID is required' },
+        { status: 400 },
+      );
+    }
+
+    // Get current content item to check permissions and version
+    const { data: currentContent, error: fetchError } = await supabase
+      .from('content_items')
+      .select('*, organization_id, version')
+      .eq('id', id)
+      .single();
+
+    if (fetchError || !currentContent) {
+      return NextResponse.json({ error: 'Content not found' }, { status: 404 });
+    }
+
+    if (currentContent.organization_id !== organizationId) {
+      return NextResponse.json(
+        { error: 'Unauthorized to modify this content' },
+        { status: 403 },
+      );
+    }
+
+    // Sanitize rich content if provided
+    const sanitizedRichContent = rich_content
+      ? sanitizeRichContent(rich_content)
+      : undefined;
+
+    // Extract content metadata if content changed
+    let finalMetadata = metadata;
+    if (rich_content || plain_content) {
+      const contentMetadata = extractContentMetadata(
+        sanitizedRichContent || currentContent.rich_content || '',
+        plain_content || currentContent.plain_content || '',
+      );
+      finalMetadata = {
+        ...currentContent.metadata,
+        ...metadata,
+        ...contentMetadata,
+      };
+    }
+
+    // Update content item
+    const updateData: any = {
+      updated_at: new Date().toISOString(),
+      version: currentContent.version + 1,
+    };
+
+    // Only update fields that are provided
+    if (title !== undefined) {
+      updateData.title = title;
+      updateData.slug = title
+        .toLowerCase()
+        .replace(/[^a-z0-9\s-]/g, '')
+        .replace(/\s+/g, '-')
+        .substring(0, 100);
+    }
+    if (content_type !== undefined) updateData.content_type = content_type;
+    if (sanitizedRichContent !== undefined)
+      updateData.rich_content = sanitizedRichContent;
+    if (plain_content !== undefined) updateData.plain_content = plain_content;
+    if (finalMetadata !== undefined) updateData.metadata = finalMetadata;
+    if (category_id !== undefined) updateData.category_id = category_id;
+    if (tags !== undefined) updateData.tags = tags;
+    if (status !== undefined) updateData.status = status;
+    if (publish_at !== undefined) updateData.publish_at = publish_at;
+    if (expire_at !== undefined) updateData.expire_at = expire_at;
+
+    const { data: updatedContent, error: updateError } = await supabase
+      .from('content_items')
+      .update(updateData)
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (updateError) {
+      console.error('Content update error:', updateError);
+      return NextResponse.json(
+        { error: 'Failed to update content' },
+        { status: 500 },
+      );
+    }
+
+    // Create new version if content changed
+    if (rich_content !== undefined || plain_content !== undefined) {
+      const { error: versionError } = await supabase
+        .from('content_versions')
+        .insert({
+          content_id: id,
+          version_number: currentContent.version + 1,
+          rich_content: sanitizedRichContent || currentContent.rich_content,
+          plain_content: plain_content || currentContent.plain_content,
+          metadata: finalMetadata || currentContent.metadata,
+          version_note:
+            version_note ||
+            `Updated content - Version ${currentContent.version + 1}`,
+          created_by: organizationId, // This should be user_id from auth
+          created_at: new Date().toISOString(),
+        });
+
+      if (versionError) {
+        console.error('Version creation error:', versionError);
+        // Non-fatal error, continue with response
+      }
+    }
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        content: updatedContent,
+        message: 'Content updated successfully',
+      },
+    });
+  } catch (error) {
+    console.error('Content API PUT error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * DELETE /api/content - Delete content item (soft delete)
+ */
+export async function DELETE(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const contentId = searchParams.get('id');
+    const organizationId = searchParams.get('organization_id');
+
+    if (!contentId || !organizationId) {
+      return NextResponse.json(
+        { error: 'Content ID and Organization ID are required' },
+        { status: 400 },
+      );
+    }
+
+    // Verify ownership
+    const { data: content, error: fetchError } = await supabase
+      .from('content_items')
+      .select('organization_id')
+      .eq('id', contentId)
+      .single();
+
+    if (fetchError || !content) {
+      return NextResponse.json({ error: 'Content not found' }, { status: 404 });
+    }
+
+    if (content.organization_id !== organizationId) {
+      return NextResponse.json(
+        { error: 'Unauthorized to delete this content' },
+        { status: 403 },
+      );
+    }
+
+    // Soft delete by updating status to 'archived'
+    const { error: deleteError } = await supabase
+      .from('content_items')
+      .update({
+        status: 'archived',
+        deleted_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', contentId);
+
+    if (deleteError) {
+      console.error('Content delete error:', deleteError);
+      return NextResponse.json(
+        { error: 'Failed to delete content' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: 'Content deleted successfully',
+    });
+  } catch (error) {
+    console.error('Content API DELETE error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

@@ -1,0 +1,152 @@
+version: '3.8'
+
+services:
+  # Enhanced Next.js app with comprehensive monitoring
+  app:
+    image: node:20-alpine
+    container_name: wedsync-monitored
+    working_dir: /app
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - HOSTNAME=0.0.0.0
+      - PORT=3000
+      - CHOKIDAR_USEPOLLING=true
+      - WATCHPACK_POLLING=true
+      # Memory monitoring
+      - NODE_OPTIONS=--max-old-space-size=8192
+      # Enable detailed logging
+      - DEBUG=*
+      - NEXT_TELEMETRY_DISABLED=0
+    command: >
+      sh -c "
+        echo '🔍 WedSync Startup Diagnostics - $(date)' &&
+        echo '📊 System Resources:' &&
+        df -h &&
+        free -m &&
+        echo '📦 Installing system dependencies...' &&
+        apk add --no-cache git curl htop procps &&
+        echo '📋 Node.js version: $(node --version)' &&
+        echo '📋 NPM version: $(npm --version)' &&
+        echo '🔧 Installing npm dependencies with full logging...' &&
+        npm install --legacy-peer-deps --verbose --timing 2>&1 | tee /tmp/npm-install.log &&
+        echo '✅ Dependencies installed. Build size:' &&
+        du -sh node_modules/ &&
+        echo '🚀 Starting Next.js with monitoring...' &&
+        npm run dev -- --hostname 0.0.0.0 --port 3000 2>&1 | tee /tmp/nextjs.log
+      "
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - monitoring_logs:/tmp
+    networks:
+      - wedsync-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/health || (echo '❌ Health check failed'; cat /tmp/nextjs.log | tail -20; exit 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
+
+  # PostgreSQL with monitoring
+  postgres:
+    image: postgres:15-alpine
+    container_name: wedsync-postgres-monitored
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=wedsync
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - monitoring_logs:/tmp
+    networks:
+      - wedsync-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres || (echo '❌ PostgreSQL health check failed'; exit 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # Redis with monitoring
+  redis:
+    image: redis:7-alpine
+    container_name: wedsync-redis-monitored
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+      - monitoring_logs:/tmp
+    networks:
+      - wedsync-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # System monitoring dashboard
+  monitor:
+    image: prom/node-exporter:latest
+    container_name: wedsync-monitor
+    ports:
+      - "9100:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+      - monitoring_logs:/tmp
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    networks:
+      - wedsync-network
+    restart: unless-stopped
+
+  # Simple monitoring dashboard
+  dashboard:
+    image: nginx:alpine
+    container_name: wedsync-dashboard
+    ports:
+      - "8080:80"
+    volumes:
+      - ./monitoring/dashboard:/usr/share/nginx/html:ro
+      - monitoring_logs:/usr/share/nginx/html/logs
+    networks:
+      - wedsync-network
+    restart: unless-stopped
+    depends_on:
+      - app
+      - postgres
+      - redis
+      - monitor
+
+networks:
+  wedsync-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  monitoring_logs:

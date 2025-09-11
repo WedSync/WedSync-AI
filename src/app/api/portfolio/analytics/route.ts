@@ -1,0 +1,126 @@
+// WS-119: Portfolio Analytics API
+// Team B Batch 9 Round 2
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import { portfolioService } from '@/lib/services/portfolioService';
+import { z } from 'zod';
+
+const trackViewSchema = z.object({
+  vendor_id: z.string().uuid(),
+  project_id: z.string().uuid().optional(),
+  media_id: z.string().uuid().optional(),
+});
+
+const analyticsQuerySchema = z.object({
+  vendor_id: z.string().uuid(),
+  start_date: z.string().optional(),
+  end_date: z.string().optional(),
+});
+
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const { vendor_id, project_id, media_id } = trackViewSchema.parse(body);
+
+    // Track the view (this is public endpoint for tracking)
+    await portfolioService.trackView(vendor_id, project_id, media_id);
+
+    return NextResponse.json({ success: true });
+  } catch (error: any) {
+    console.error('Analytics tracking error:', error);
+
+    if (error?.name === 'ZodError') {
+      return NextResponse.json(
+        { error: 'Invalid request data', details: error.errors },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Failed to track view' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+
+    if (!session) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { searchParams } = new URL(request.url);
+    const query = analyticsQuerySchema.parse({
+      vendor_id: searchParams.get('vendor_id'),
+      start_date: searchParams.get('start_date') || undefined,
+      end_date: searchParams.get('end_date') || undefined,
+    });
+
+    // Verify user has access to this vendor
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', session.user.id)
+      .single();
+
+    if (!userProfile) {
+      return NextResponse.json(
+        { error: 'User profile not found' },
+        { status: 404 },
+      );
+    }
+
+    const { data: vendor } = await supabase
+      .from('vendors')
+      .select('organization_id')
+      .eq('id', query.vendor_id)
+      .single();
+
+    if (!vendor || vendor.organization_id !== userProfile.organization_id) {
+      return NextResponse.json(
+        { error: 'Vendor not found or access denied' },
+        { status: 403 },
+      );
+    }
+
+    // Get analytics data
+    const dateRange =
+      query.start_date && query.end_date
+        ? {
+            start: query.start_date,
+            end: query.end_date,
+          }
+        : undefined;
+
+    const [stats, analytics] = await Promise.all([
+      portfolioService.getStats(query.vendor_id),
+      portfolioService.getAnalytics(query.vendor_id, dateRange),
+    ]);
+
+    return NextResponse.json({ stats, analytics });
+  } catch (error: any) {
+    console.error('Analytics GET error:', error);
+
+    if (error?.name === 'ZodError') {
+      return NextResponse.json(
+        { error: 'Invalid request parameters', details: error.errors },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Failed to fetch analytics' },
+      { status: 500 },
+    );
+  }
+}

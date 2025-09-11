@@ -1,0 +1,364 @@
+// WS-055: Unit Tests for Historical Data Analysis
+// Tests for historical performance analysis and trend identification
+
+import { HistoricalAnalyzer } from '@/lib/ml/prediction/historical-analyzer'
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import type { HistoricalAnalytics, SeasonalPattern, ChurnPattern } from '@/lib/ml/prediction/types'
+// Mock Supabase client
+vi.mock('@/lib/supabase', () => ({
+  createSupabaseClient: () => ({
+    from: jest.fn(() => ({
+      select: jest.fn(() => ({
+        gte: jest.fn(() => ({
+          lte: vi.fn(),
+          not: jest.fn(() => ({
+            gte: vi.fn()
+          })),
+          is: vi.fn(),
+          in: vi.fn(),
+          eq: vi.fn()
+        }))
+      }))
+    }))
+  })
+}))
+describe('HistoricalAnalyzer', () => {
+  let analyzer: HistoricalAnalyzer
+  let mockSupabaseData: any[]
+  beforeEach(() => {
+    analyzer = new HistoricalAnalyzer()
+    
+    // Mock historical client data
+    mockSupabaseData = [
+      {
+        id: 'client-1',
+        wedding_date: '2024-06-15',
+        initial_contact_at: '2024-01-15T10:00:00Z',
+        booking_confirmed_at: '2024-01-17T14:30:00Z', // Booked after 2 days
+        engagement_score: 85,
+        questionnaire_completed_at: '2024-01-15T18:00:00Z', // 8 hours
+        vendor_inquiries: 6,
+        responses_count: 12,
+        response_time_avg: 900, // 15 minutes
+        session_duration_avg: 300,
+        last_activity_at: '2024-01-20T10:00:00Z',
+        budget_range: 'high'
+      },
+        id: 'client-2',
+        wedding_date: '2024-08-20',
+        initial_contact_at: '2024-02-15T10:00:00Z',
+        booking_confirmed_at: null, // Churned
+        engagement_score: 40,
+        questionnaire_completed_at: '2024-02-21T10:00:00Z', // 6 days delay
+        vendor_inquiries: 2,
+        responses_count: 4,
+        response_time_avg: 3600, // 1 hour
+        session_duration_avg: 120,
+        last_activity_at: '2024-02-25T10:00:00Z',
+        budget_range: 'medium'
+        id: 'client-3',
+        wedding_date: '2024-09-10',
+        initial_contact_at: '2024-03-10T10:00:00Z',
+        booking_confirmed_at: '2024-03-12T10:00:00Z', // Quick booking
+        engagement_score: 90,
+        questionnaire_completed_at: '2024-03-10T16:00:00Z', // 6 hours
+        vendor_inquiries: 8,
+        responses_count: 15,
+        response_time_avg: 600, // 10 minutes
+        session_duration_avg: 450,
+        last_activity_at: '2024-03-15T10:00:00Z',
+        budget_range: 'luxury'
+      }
+    ]
+  describe('Historical Performance Analysis', () => {
+    test('should analyze overall performance metrics correctly', async () => {
+      vi.spyOn(analyzer as any, 'fetchHistoricalData').mockResolvedValue([
+        {
+          client_id: 'client-1',
+          wedding_date: new Date('2024-06-15'),
+          initial_contact_at: new Date('2024-01-15T10:00:00Z'),
+          booking_confirmed_at: new Date('2024-01-17T14:30:00Z'),
+          final_outcome: 'booked',
+          total_revenue: 15000,
+          engagement_metrics: {
+            questionnaire_completion_time_hours: 8,
+            total_interactions: 18,
+            response_time_avg_hours: 0.25,
+            vendor_inquiries: 6,
+            session_count: 12
+          }
+        },
+          client_id: 'client-2',
+          wedding_date: new Date('2024-08-20'),
+          initial_contact_at: new Date('2024-02-15T10:00:00Z'),
+          booking_confirmed_at: null,
+          final_outcome: 'churned',
+          total_revenue: 0,
+            questionnaire_completion_time_hours: 144, // 6 days
+            total_interactions: 6,
+            response_time_avg_hours: 1,
+            vendor_inquiries: 2,
+            session_count: 4
+        }
+      ])
+      const analytics = await analyzer.analyzeHistoricalPerformance(90)
+      expect(analytics.total_clients).toBe(2)
+      expect(analytics.conversion_metrics.overall_booking_rate).toBe(0.5) // 1 out of 2
+      expect(analytics.conversion_metrics.by_questionnaire_timing.within_24h).toBe(1) // Client-1 booked
+      expect(analytics.conversion_metrics.by_questionnaire_timing.after_week).toBe(0) // Client-2 churned
+      expect(analytics.period_start).toBeInstanceOf(Date)
+      expect(analytics.period_end).toBeInstanceOf(Date)
+    })
+    test('should calculate behavior insights correctly', async () => {
+          booking_confirmed_at: new Date('2024-01-25T14:30:00Z'), // 10 days to book
+      vi.spyOn(analyzer, 'identifySeasonalPatterns').mockResolvedValue([])
+      vi.spyOn(analyzer, 'analyzeChurnPatterns').mockResolvedValue([])
+      expect(analytics.behavior_insights.avg_time_to_booking).toBe(10)
+      expect(analytics.behavior_insights.most_predictive_factors).toContain('questionnaire_completion_speed')
+      expect(analytics.behavior_insights.most_predictive_factors).toContain('vendor_inquiry_count')
+    test('should handle empty historical data', async () => {
+      vi.spyOn(analyzer as any, 'fetchHistoricalData').mockResolvedValue([])
+      const analytics = await analyzer.analyzeHistoricalPerformance(30)
+      expect(analytics.total_clients).toBe(0)
+      expect(analytics.conversion_metrics.overall_booking_rate).toBe(0)
+      expect(analytics.behavior_insights.avg_time_to_booking).toBe(0)
+  describe('Seasonal Pattern Analysis', () => {
+    test('should identify seasonal booking patterns', async () => {
+      const mockSeasonalData = [
+          wedding_date: '2023-06-15', // Summer
+          booking_confirmed_at: '2023-01-15T10:00:00Z',
+          initial_contact_at: '2023-01-10T10:00:00Z',
+          engagement_score: 85,
+          budget_range: 'high'
+          wedding_date: '2023-07-20', // Summer
+          booking_confirmed_at: '2023-02-20T10:00:00Z',
+          initial_contact_at: '2023-02-15T10:00:00Z',
+          engagement_score: 80,
+          budget_range: 'medium'
+          wedding_date: '2023-12-10', // Winter
+          booking_confirmed_at: '2023-08-10T10:00:00Z',
+          initial_contact_at: '2023-08-05T10:00:00Z',
+          engagement_score: 70,
+      ]
+      vi.spyOn(analyzer['supabase'], 'from').mockReturnValue({
+        select: vi.fn().mockReturnValue({
+          gte: vi.fn().mockReturnValue({
+            not: vi.fn().mockResolvedValue({
+              data: mockSeasonalData,
+              error: null
+            })
+          })
+        })
+      } as unknown)
+      const patterns = await analyzer.identifySeasonalPatterns(2)
+      expect(patterns).toHaveLength(2) // Summer and Winter (no Spring/Fall in mock data)
+      
+      const summerPattern = patterns.find(p => p.season === 'summer')
+      const winterPattern = patterns.find(p => p.season === 'winter')
+      expect(summerPattern).toBeTruthy()
+      expect(winterPattern).toBeTruthy()
+      expect(summerPattern!.typical_timeline_days).toBeGreaterThan(0)
+      expect(summerPattern!.behavior_characteristics).toContain('Peak wedding season')
+    test('should handle missing seasonal data gracefully', async () => {
+              data: null,
+              error: new Error('No data found')
+      await expect(analyzer.identifySeasonalPatterns(1))
+        .rejects.toThrow('Failed to fetch seasonal data')
+    test('should calculate seasonal characteristics correctly', () => {
+      const springData = { bookings: 10, avgEngagement: 75 }
+      const summerData = { bookings: 15, avgEngagement: 85 }
+      const fallData = { bookings: 8, avgEngagement: 70 }
+      const winterData = { bookings: 5, avgEngagement: 65 }
+      const springChars = (analyzer as unknown).getSeasonalCharacteristics('spring', springData)
+      const summerChars = (analyzer as unknown).getSeasonalCharacteristics('summer', summerData)
+      const fallChars = (analyzer as unknown).getSeasonalCharacteristics('fall', fallData)
+      const winterChars = (analyzer as unknown).getSeasonalCharacteristics('winter', winterData)
+      expect(springChars).toContain('Higher venue booking activity')
+      expect(summerChars).toContain('Peak wedding season')
+      expect(fallChars).toContain('Budget-conscious planning')
+      expect(winterChars).toContain('Indoor venue preference')
+  describe('Churn Pattern Analysis', () => {
+    test('should identify common churn patterns', async () => {
+      const mockChurnData = [
+          id: 'client-1',
+          initial_contact_at: '2024-01-15T10:00:00Z',
+          last_activity_at: '2024-01-20T10:00:00Z',
+          engagement_score: 30,
+          questionnaire_completed_at: null, // Never completed
+          vendor_inquiries: 1,
+          responses_count: 2,
+          response_time_avg: 7200, // 2 hours
+          booking_confirmed_at: null
+          id: 'client-2',
+          initial_contact_at: '2024-02-15T10:00:00Z',
+          last_activity_at: '2024-02-16T10:00:00Z', // Only 1 day of activity
+          engagement_score: 25,
+          questionnaire_completed_at: '2024-02-21T10:00:00Z', // 6 days delay
+          vendor_inquiries: 0,
+          responses_count: 1,
+          response_time_avg: 14400, // 4 hours
+            is: vi.fn().mockResolvedValue({
+              data: mockChurnData,
+      const patterns = await analyzer.analyzeChurnPatterns(180)
+      expect(patterns).toHaveLength(2)
+      expect(patterns[0].pattern_name).toBe('Delayed Questionnaire Completion')
+      expect(patterns[1].pattern_name).toBe('Communication Gap')
+      expect(patterns[0].frequency).toBe(0.35)
+      expect(patterns[0].intervention_success_rate).toBeGreaterThan(0)
+    test('should handle churn analysis errors', async () => {
+              error: new Error('Database error')
+      await expect(analyzer.analyzeChurnPatterns(90))
+        .rejects.toThrow('Failed to fetch churn data')
+  describe('Model Validation', () => {
+    test('should validate model predictions against actual outcomes', async () => {
+      const mockPredictions = [
+        { client_id: 'client-1', predicted_probability: 0.8, confidence: 0.9, created_at: '2024-01-15T10:00:00Z' },
+        { client_id: 'client-2', predicted_probability: 0.3, confidence: 0.7, created_at: '2024-01-15T11:00:00Z' },
+        { client_id: 'client-3', predicted_probability: 0.7, confidence: 0.8, created_at: '2024-01-15T12:00:00Z' },
+        { client_id: 'client-4', predicted_probability: 0.2, confidence: 0.6, created_at: '2024-01-15T13:00:00Z' }
+      const mockOutcomes = [
+        { id: 'client-1', booking_confirmed_at: '2024-01-17T10:00:00Z' }, // Booked (correct prediction)
+        { id: 'client-2', booking_confirmed_at: null }, // Churned (correct prediction)
+        { id: 'client-3', booking_confirmed_at: '2024-01-18T10:00:00Z' }, // Booked (correct prediction)
+        { id: 'client-4', booking_confirmed_at: null } // Churned (correct prediction)
+      vi.spyOn(analyzer['supabase'], 'from')
+        .mockReturnValueOnce({
+          select: vi.fn().mockReturnValue({
+            eq: vi.fn().mockReturnValue({
+              gte: vi.fn().mockResolvedValue({
+                data: mockPredictions,
+                error: null
+              })
+        } as unknown)
+            in: vi.fn().mockResolvedValue({
+              data: mockOutcomes,
+      const validationResults = await analyzer.validateModelPredictions('1.0.0', 30)
+      expect(validationResults.test_accuracy).toBe(0.87) // Mocked value
+      expect(validationResults.validation_passed).toBe(true) // Should pass with 87% accuracy
+      expect(validationResults.confusion_matrix).toHaveLength(2)
+      expect(validationResults.roc_auc_score).toBeGreaterThan(0.8)
+      expect(validationResults.bias_metrics.fairness_assessment).toBe('passed')
+    test('should handle validation errors gracefully', async () => {
+          eq: vi.fn().mockReturnValue({
+            gte: vi.fn().mockResolvedValue({
+              error: new Error('Prediction data not found')
+      await expect(analyzer.validateModelPredictions('invalid-version', 30))
+        .rejects.toThrow('Failed to fetch predictions for validation')
+  describe('Conversion Insights Generation', () => {
+    test('should generate actionable conversion insights', async () => {
+      const mockHistoricalData = [
+          client_id: 'booked-1',
+            questionnaire_completion_time_hours: 6,
+            total_interactions: 15,
+            response_time_avg_hours: 0.5,
+            vendor_inquiries: 5,
+            session_count: 10
+          client_id: 'booked-2',
+            questionnaire_completion_time_hours: 12,
+            total_interactions: 20,
+            vendor_inquiries: 7,
+            session_count: 15
+          client_id: 'churned-1',
+            questionnaire_completion_time_hours: 150, // 6+ days
+            total_interactions: 3,
+            response_time_avg_hours: 2,
+            vendor_inquiries: 1,
+            session_count: 2
+      vi.spyOn(analyzer as any, 'fetchHistoricalData').mockResolvedValue(mockHistoricalData)
+      const insights = await analyzer.generateConversionInsights(60)
+      expect(insights.topConversionFactors).toContain('Quick questionnaire completion (within 24 hours)')
+      expect(insights.topConversionFactors).toContain('High vendor inquiry rate (3+ inquiries)')
+      expect(insights.conversionBottlenecks).toContain('Questionnaire completion delays')
+      expect(insights.recommendedImprovements).toContain('Implement 24-hour questionnaire completion incentives')
+      expect(insights.benchmarkMetrics.optimal_questionnaire_completion_hours).toBeGreaterThan(0)
+      expect(insights.benchmarkMetrics.target_response_time_hours).toBeGreaterThan(0)
+      expect(insights.benchmarkMetrics.ideal_vendor_inquiries).toBeGreaterThan(0)
+      expect(insights.benchmarkMetrics.minimum_interaction_threshold).toBeGreaterThan(0)
+    test('should handle edge cases in conversion analysis', async () => {
+      // Test with no booked clients
+            questionnaire_completion_time_hours: 200,
+            total_interactions: 2,
+            response_time_avg_hours: 3,
+            vendor_inquiries: 0,
+            session_count: 1
+      const insights = await analyzer.generateConversionInsights(30)
+      expect(insights.topConversionFactors).toBeInstanceOf(Array)
+      expect(insights.conversionBottlenecks).toBeInstanceOf(Array)
+      expect(insights.recommendedImprovements).toBeInstanceOf(Array)
+      expect(insights.benchmarkMetrics).toBeDefined()
+  describe('Data Fetching and Transformation', () => {
+    test('should fetch and transform historical data correctly', async () => {
+            lte: vi.fn().mockResolvedValue({
+              data: mockSupabaseData,
+      const startDate = new Date('2024-01-01')
+      const endDate = new Date('2024-04-01')
+      const data = await (analyzer as unknown).fetchHistoricalData(startDate, endDate)
+      expect(data).toHaveLength(3)
+      expect(data[0].client_id).toBe('client-1')
+      expect(data[0].final_outcome).toBe('booked')
+      expect(data[0].total_revenue).toBe(15000)
+      expect(data[1].final_outcome).toBe('churned')
+      expect(data[1].total_revenue).toBe(0)
+    test('should handle data fetch errors', async () => {
+              error: new Error('Database connection failed')
+      await expect((analyzer as unknown).fetchHistoricalData(startDate, endDate))
+        .rejects.toThrow('Failed to fetch historical data')
+  describe('Conversion Metrics Calculation', () => {
+    test('should calculate accurate conversion metrics', () => {
+      const testData = [
+            questionnaire_completion_time_hours: 20, // Within 24h
+            questionnaire_completion_time_hours: 180, // After week
+          client_id: 'client-3',
+            questionnaire_completion_time_hours: 36, // Within 48h
+            total_interactions: 12,
+            response_time_avg_hours: 0.75,
+            vendor_inquiries: 4,
+            session_count: 8
+      const metrics = (analyzer as unknown).calculateConversionMetrics(testData)
+      expect(metrics.overall_booking_rate).toBeCloseTo(0.67, 2) // 2 out of 3
+      expect(metrics.by_questionnaire_timing.within_24h).toBe(1) // Client-1 booked
+      expect(metrics.by_questionnaire_timing.within_48h).toBeCloseTo(0.67, 2) // Client-1 and Client-3
+      expect(metrics.by_questionnaire_timing.after_week).toBe(0) // Client-2 churned
+    test('should handle empty data in conversion metrics', () => {
+      const metrics = (analyzer as unknown).calculateConversionMetrics([])
+      expect(metrics.overall_booking_rate).toBe(0)
+      expect(metrics.by_questionnaire_timing.within_24h).toBe(0)
+      expect(metrics.by_engagement_level.high).toBe(0)
+  describe('Benchmark Calculation Helpers', () => {
+    test('should calculate optimal questionnaire completion time', () => {
+      const bookedClients = [
+        { engagement_metrics: { questionnaire_completion_time_hours: 8 } },
+        { engagement_metrics: { questionnaire_completion_time_hours: 12 } },
+        { engagement_metrics: { questionnaire_completion_time_hours: 16 } }
+      const optimalTime = (analyzer as unknown).calculateOptimalQuestionnaireTime(bookedClients)
+      expect(optimalTime).toBe(12) // Average of 8, 12, 16
+    test('should calculate target response time', () => {
+        { engagement_metrics: { response_time_avg_hours: 0.5 } },
+        { engagement_metrics: { response_time_avg_hours: 1.0 } },
+        { engagement_metrics: { response_time_avg_hours: 0.25 } }
+      const targetTime = (analyzer as unknown).calculateTargetResponseTime(bookedClients)
+      expect(targetTime).toBeCloseTo(0.583, 2) // Average of 0.5, 1.0, 0.25
+    test('should calculate ideal vendor inquiries', () => {
+        { engagement_metrics: { vendor_inquiries: 5 } },
+        { engagement_metrics: { vendor_inquiries: 7 } },
+        { engagement_metrics: { vendor_inquiries: 4 } }
+      const idealInquiries = (analyzer as unknown).calculateIdealVendorInquiries(bookedClients)
+      expect(idealInquiries).toBe(5) // Rounded average of 5, 7, 4
+    test('should calculate minimum interaction threshold', () => {
+        { engagement_metrics: { total_interactions: 15 } },
+        { engagement_metrics: { total_interactions: 8 } },
+        { engagement_metrics: { total_interactions: 12 } }
+      const minInteractions = (analyzer as unknown).calculateMinimumInteractions(bookedClients)
+      expect(minInteractions).toBe(8) // Minimum of 15, 8, 12
+  describe('Performance and Error Handling', () => {
+    test('should complete analysis within reasonable time', async () => {
+      vi.spyOn(analyzer as any, 'fetchHistoricalData').mockResolvedValue(mockSupabaseData.slice(0, 1))
+      const startTime = performance.now()
+      await analyzer.analyzeHistoricalPerformance(30)
+      const endTime = performance.now()
+      expect(endTime - startTime).toBeLessThan(5000) // Should complete in under 5 seconds
+    test('should handle analysis errors gracefully', async () => {
+      vi.spyOn(analyzer as any, 'fetchHistoricalData').mockRejectedValue(new Error('Analysis failed'))
+      await expect(analyzer.analyzeHistoricalPerformance(30))
+        .rejects.toThrow('Analysis failed')
+})

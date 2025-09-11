@@ -1,0 +1,325 @@
+'use client';
+
+import React, { useState } from 'react';
+import {
+  Button,
+  WeddingButton,
+  ElegantButton,
+  VendorButton,
+} from '@/components/ui/button-untitled';
+import {
+  Input,
+  WeddingInput,
+  ElegantInput,
+  Label,
+  HelperText,
+} from '@/components/ui/input-untitled';
+import {
+  Card,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+  CardContent,
+  CardFooter,
+  WeddingCard,
+  VendorCard,
+} from '@/components/ui/card-untitled';
+
+export default function UIShowcasePage() {
+  const [loading, setLoading] = useState(false);
+  const [formData, setFormData] = useState({
+    coupleName: '',
+    weddingDate: '',
+    guestCount: '',
+    email: '',
+  });
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
+  const handleSubmit = async () => {
+    setLoading(true);
+    // Simulate API call
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    setLoading(false);
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-50 py-12">
+      <div className="max-width-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="text-center mb-12">
+          <h1 className="text-4xl font-bold text-gray-900 mb-4">
+            WedSync UI Component Showcase
+          </h1>
+          <p className="text-lg text-gray-600">
+            Untitled UI Migration - Wedding Industry Components
+          </p>
+        </div>
+
+        {/* Button Showcase */}
+        <Card className="mb-8">
+          <CardHeader>
+            <CardTitle>Button Variants</CardTitle>
+            <CardDescription>
+              All 26+ wedding-specific button variants preserved and enhanced
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <Button variant="primary">Primary</Button>
+              <Button variant="secondary">Secondary</Button>
+              <Button variant="tertiary">Tertiary</Button>
+              <Button variant="destructive">Destructive</Button>
+
+              <WeddingButton>Wedding</WeddingButton>
+              <ElegantButton>Elegant</ElegantButton>
+              <Button variant="romantic">Romantic</Button>
+              <Button variant="luxury">Luxury</Button>
+
+              <VendorButton vendorType="photographer">
+                Photographer
+              </VendorButton>
+              <VendorButton vendorType="venue">Venue</VendorButton>
+              <VendorButton vendorType="florist">Florist</VendorButton>
+              <VendorButton vendorType="caterer">Caterer</VendorButton>
+
+              <Button variant="save">Save</Button>
+              <Button variant="approve">Approve</Button>
+              <Button variant="reject">Reject</Button>
+              <Button variant="gradient">Gradient</Button>
+            </div>
+
+            <div className="mt-6 flex flex-wrap gap-4">
+              <Button loading loadingText="Processing...">
+                Loading State
+              </Button>
+              <Button size="touch" variant="wedding">
+                Touch Optimized
+              </Button>
+              <Button disabled>Disabled</Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Input Showcase */}
+        <Card className="mb-8">
+          <CardHeader>
+            <CardTitle>Enhanced Input Components</CardTitle>
+            <CardDescription>
+              Form inputs with built-in validation and accessibility
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-6">
+              <WeddingInput
+                label="Couple Names"
+                placeholder="Enter both names"
+                helperText="As they should appear on the invitation"
+                value={formData.coupleName}
+                onChange={(e) =>
+                  setFormData({ ...formData, coupleName: e.target.value })
+                }
+                required
+              />
+
+              <Input
+                type="date"
+                label="Wedding Date"
+                helperText="Must be at least 30 days from today"
+                value={formData.weddingDate}
+                onChange={(e) =>
+                  setFormData({ ...formData, weddingDate: e.target.value })
+                }
+                required
+              />
+
+              <Input
+                type="number"
+                label="Expected Guest Count"
+                placeholder="150"
+                value={formData.guestCount}
+                onChange={(e) =>
+                  setFormData({ ...formData, guestCount: e.target.value })
+                }
+                error={errors.guestCount}
+              />
+
+              <ElegantInput
+                type="email"
+                label="Contact Email"
+                placeholder="couple@example.com"
+                value={formData.email}
+                onChange={(e) =>
+                  setFormData({ ...formData, email: e.target.value })
+                }
+                error={errors.email}
+                success={formData.email.includes('@')}
+              />
+            </div>
+          </CardContent>
+          <CardFooter className="justify-end space-x-4">
+            <Button variant="secondary">Cancel</Button>
+            <WeddingButton onClick={handleSubmit} loading={loading}>
+              Save Details
+            </WeddingButton>
+          </CardFooter>
+        </Card>
+
+        {/* Card Variants */}
+        <div className="mb-8">
+          <h2 className="text-2xl font-semibold mb-6">Card Components</h2>
+          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <WeddingCard>
+              <CardHeader>
+                <CardTitle>Wedding Package</CardTitle>
+                <CardDescription>
+                  Complete wedding planning solution
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <p className="text-gray-600">
+                  Includes venue, catering, photography, and coordination
+                </p>
+              </CardContent>
+              <CardFooter>
+                <Button variant="wedding" fullWidth>
+                  View Details
+                </Button>
+              </CardFooter>
+            </WeddingCard>
+
+            <Card variant="elegant">
+              <CardHeader>
+                <CardTitle>Elegant Reception</CardTitle>
+                <CardDescription>
+                  Sophisticated dining experience
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <p className="text-gray-600">
+                  5-course meal with premium wine selection
+                </p>
+              </CardContent>
+              <CardFooter>
+                <Button variant="elegant" fullWidth>
+                  Book Now
+                </Button>
+              </CardFooter>
+            </Card>
+
+            <Card variant="luxury">
+              <CardHeader>
+                <CardTitle>Luxury Suite</CardTitle>
+                <CardDescription>
+                  Premium honeymoon accommodation
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <p className="text-gray-600">
+                  Ocean view with private balcony and spa access
+                </p>
+              </CardContent>
+              <CardFooter>
+                <Button variant="luxury" fullWidth>
+                  Reserve
+                </Button>
+              </CardFooter>
+            </Card>
+          </div>
+        </div>
+
+        {/* Vendor Cards */}
+        <div className="mb-8">
+          <h2 className="text-2xl font-semibold mb-6">Vendor Cards</h2>
+          <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
+            <VendorCard
+              vendorType="photographer"
+              vendorName="Elegant Moments"
+              vendorDescription="Capturing your special day"
+              rating={4.9}
+              imageUrl="https://images.unsplash.com/photo-1537633552985-df8429e8048b?w=400"
+            >
+              <div className="text-sm text-gray-600">
+                <p>📸 10+ years experience</p>
+                <p>💰 Starting at $2,500</p>
+              </div>
+            </VendorCard>
+
+            <VendorCard
+              vendorType="venue"
+              vendorName="Garden Estate"
+              vendorDescription="Beautiful outdoor venue"
+              rating={4.8}
+              imageUrl="https://images.unsplash.com/photo-1519167758481-83f550bb49b3?w=400"
+            >
+              <div className="text-sm text-gray-600">
+                <p>👥 Capacity: 200</p>
+                <p>🌿 5 acres of gardens</p>
+              </div>
+            </VendorCard>
+
+            <VendorCard
+              vendorType="florist"
+              vendorName="Bloom & Blossom"
+              vendorDescription="Custom floral designs"
+              rating={5.0}
+              imageUrl="https://images.unsplash.com/photo-1525772764200-be829a350797?w=400"
+            >
+              <div className="text-sm text-gray-600">
+                <p>🌸 Seasonal flowers</p>
+                <p>🎨 Custom arrangements</p>
+              </div>
+            </VendorCard>
+
+            <VendorCard
+              vendorType="caterer"
+              vendorName="Gourmet Delights"
+              vendorDescription="Fine dining catering"
+              rating={4.7}
+              imageUrl="https://images.unsplash.com/photo-1555244162-803834f70033?w=400"
+            >
+              <div className="text-sm text-gray-600">
+                <p>🍽️ Multi-cuisine options</p>
+                <p>🥂 Full bar service</p>
+              </div>
+            </VendorCard>
+          </div>
+        </div>
+
+        {/* Interactive Demo */}
+        <Card variant="glass" className="backdrop-blur-lg">
+          <CardHeader>
+            <CardTitle>Interactive Component Demo</CardTitle>
+            <CardDescription>
+              Try the enhanced touch interactions and accessibility features
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              <p className="text-gray-600">
+                All components are touch-optimized with 44px+ touch targets on
+                mobile, include comprehensive ARIA attributes for screen
+                readers, support keyboard navigation with visible focus
+                indicators, and provide loading states with custom messaging.
+              </p>
+              <div className="flex flex-wrap gap-4">
+                <Button
+                  variant="shine"
+                  size="lg"
+                  onClick={() => alert('Shine effect button clicked!')}
+                >
+                  Hover for Shine Effect
+                </Button>
+                <Button
+                  variant="glass"
+                  size="lg"
+                  onClick={() => alert('Glass morphism button clicked!')}
+                >
+                  Glass Morphism
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}

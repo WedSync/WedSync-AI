@@ -1,0 +1,235 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+
+export async function POST(request: NextRequest) {
+  try {
+    const { websiteId, includeCategories, includeRSVPStatus } =
+      await request.json();
+
+    if (!websiteId) {
+      return NextResponse.json(
+        { error: 'Website ID is required' },
+        { status: 400 },
+      );
+    }
+
+    const supabase = await createClient();
+
+    // Get the client_id from the website
+    const { data: website, error: websiteError } = await supabase
+      .from('wedding_websites')
+      .select('client_id')
+      .eq('id', websiteId)
+      .single();
+
+    if (websiteError || !website) {
+      return NextResponse.json(
+        { error: 'Wedding website not found' },
+        { status: 404 },
+      );
+    }
+
+    // Build query for guest list sync
+    let query = supabase
+      .from('guests')
+      .select(
+        `
+        id,
+        first_name,
+        last_name,
+        email,
+        phone,
+        category,
+        side,
+        plus_one,
+        plus_one_name,
+        age_group,
+        table_number,
+        dietary_restrictions,
+        special_needs,
+        rsvp_status,
+        rsvp_date,
+        households (
+          id,
+          name,
+          address
+        )
+      `,
+      )
+      .eq('couple_id', website.client_id);
+
+    // Apply filters if specified
+    if (includeCategories && includeCategories.length > 0) {
+      query = query.in('category', includeCategories);
+    }
+
+    if (includeRSVPStatus && includeRSVPStatus.length > 0) {
+      query = query.in('rsvp_status', includeRSVPStatus);
+    }
+
+    const { data: guests, error: guestsError } = await query;
+
+    if (guestsError) {
+      console.error('Error fetching guests:', guestsError);
+      return NextResponse.json(
+        { error: 'Failed to fetch guest list' },
+        { status: 500 },
+      );
+    }
+
+    // Transform data for wedding website use
+    const syncedGuests =
+      guests?.map((guest) => ({
+        id: guest.id,
+        name: `${guest.first_name} ${guest.last_name}`.trim(),
+        first_name: guest.first_name,
+        last_name: guest.last_name,
+        email: guest.email,
+        phone: guest.phone,
+        category: guest.category,
+        side: guest.side,
+        plus_one: guest.plus_one,
+        plus_one_name: guest.plus_one_name,
+        age_group: guest.age_group,
+        table_number: guest.table_number,
+        dietary_restrictions: guest.dietary_restrictions,
+        special_needs: guest.special_needs,
+        rsvp_status: guest.rsvp_status,
+        rsvp_date: guest.rsvp_date,
+        household: guest.households
+          ? {
+              id: guest.households.id,
+              name: guest.households.name,
+              address: guest.households.address,
+            }
+          : null,
+      })) || [];
+
+    // Calculate summary statistics
+    const summary = {
+      total_guests: syncedGuests.length,
+      by_category: {},
+      by_rsvp_status: {},
+      by_side: {},
+      with_plus_ones: syncedGuests.filter((g) => g.plus_one).length,
+      with_dietary_restrictions: syncedGuests.filter(
+        (g) => g.dietary_restrictions,
+      ).length,
+      last_sync: new Date().toISOString(),
+    };
+
+    // Group by category
+    syncedGuests.forEach((guest) => {
+      summary.by_category[guest.category] =
+        (summary.by_category[guest.category] || 0) + 1;
+      summary.by_rsvp_status[guest.rsvp_status] =
+        (summary.by_rsvp_status[guest.rsvp_status] || 0) + 1;
+      summary.by_side[guest.side] = (summary.by_side[guest.side] || 0) + 1;
+    });
+
+    // Update the wedding website sync timestamp
+    await supabase
+      .from('wedding_websites')
+      .update({
+        last_guest_sync: new Date().toISOString(),
+        guest_count: syncedGuests.length,
+      })
+      .eq('id', websiteId);
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        guests: syncedGuests,
+        summary,
+      },
+    });
+  } catch (error) {
+    console.error('Error in guest sync endpoint:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const websiteId = searchParams.get('website_id');
+
+    if (!websiteId) {
+      return NextResponse.json(
+        { error: 'Website ID is required' },
+        { status: 400 },
+      );
+    }
+
+    const supabase = await createClient();
+
+    // Get sync status and basic guest count
+    const { data: website, error: websiteError } = await supabase
+      .from('wedding_websites')
+      .select(
+        `
+        client_id,
+        last_guest_sync,
+        guest_count
+      `,
+      )
+      .eq('id', websiteId)
+      .single();
+
+    if (websiteError || !website) {
+      return NextResponse.json(
+        { error: 'Wedding website not found' },
+        { status: 404 },
+      );
+    }
+
+    // Get quick guest stats without full sync
+    const { data: guestStats, error: statsError } = await supabase
+      .from('guests')
+      .select('rsvp_status, category, side')
+      .eq('couple_id', website.client_id);
+
+    if (statsError) {
+      console.error('Error fetching guest stats:', statsError);
+      return NextResponse.json(
+        { error: 'Failed to fetch guest statistics' },
+        { status: 500 },
+      );
+    }
+
+    const stats = {
+      total_guests: guestStats?.length || 0,
+      last_sync: website.last_guest_sync,
+      synced_count: website.guest_count || 0,
+      sync_needed:
+        !website.last_guest_sync ||
+        (guestStats?.length || 0) !== (website.guest_count || 0),
+      by_rsvp_status: {},
+      by_category: {},
+      by_side: {},
+    };
+
+    // Calculate current stats
+    guestStats?.forEach((guest) => {
+      stats.by_rsvp_status[guest.rsvp_status] =
+        (stats.by_rsvp_status[guest.rsvp_status] || 0) + 1;
+      stats.by_category[guest.category] =
+        (stats.by_category[guest.category] || 0) + 1;
+      stats.by_side[guest.side] = (stats.by_side[guest.side] || 0) + 1;
+    });
+
+    return NextResponse.json({
+      success: true,
+      data: stats,
+    });
+  } catch (error) {
+    console.error('Error in guest sync status endpoint:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

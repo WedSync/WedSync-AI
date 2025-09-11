@@ -1,0 +1,9 @@
+/**
+ * ❌ RADIX UI COMPONENT - REMOVED
+ * REPLACE WITH: Untitled UI components only
+ * See: WORKFLOW-V2-DRAFT/SAAS-UI-STYLE-GUIDE.md
+ */
+
+throw new Error("🚨 RADIX UI COMPONENT - Replace with Untitled UI");
+
+export default function BrokenComponent() { return null; }

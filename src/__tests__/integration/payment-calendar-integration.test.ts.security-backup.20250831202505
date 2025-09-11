@@ -1,0 +1,308 @@
+/**
+ * WS-165: Payment Calendar Integration Tests
+ * Team C Integration Implementation
+ * 
+ * Comprehensive integration tests for payment calendar orchestration
+ * Tests service coordination, error handling, and end-to-end workflows
+ */
+
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { PaymentCalendarOrchestratorService } from '@/lib/integrations/payment-calendar-orchestrator';
+import { BudgetIntegrationService } from '@/lib/integrations/budget-integration';
+import { NotificationService } from '@/lib/integrations/NotificationService';
+import { VendorPaymentSyncService } from '@/lib/integrations/vendor-payment-sync';
+import { CashFlowCalculatorService } from '@/lib/integrations/cash-flow-calculator';
+// Mock external dependencies
+vi.mock('@/lib/integrations/budget-integration');
+vi.mock('@/lib/integrations/NotificationService');
+vi.mock('@/lib/integrations/vendor-payment-sync');
+vi.mock('@/lib/integrations/cash-flow-calculator');
+vi.mock('@/lib/supabase/client', () => ({
+  createClient: () => ({
+    from: vi.fn(() => ({
+      select: vi.fn(() => ({
+        eq: vi.fn(() => ({
+          single: vi.fn()
+        }))
+      })),
+      insert: vi.fn(() => ({
+        select: vi.fn()
+      update: vi.fn(() => ({
+          select: vi.fn()
+      }))
+    }))
+  })
+}));
+describe('Payment Calendar Integration Tests', () => {
+  let orchestrator: PaymentCalendarOrchestratorService;
+  let mockBudgetService: any;
+  let mockNotificationService: any;
+  let mockVendorSyncService: any;
+  let mockCashFlowService: any;
+  const mockWeddingId = 'wedding-123';
+  const mockUserId = 'user-456';
+  beforeEach(() => {
+    // Initialize mocked services
+    mockBudgetService = new BudgetIntegrationService() as jest.Mocked<BudgetIntegrationService>;
+    mockNotificationService = new NotificationService() as jest.Mocked<NotificationService>;
+    mockVendorSyncService = new VendorPaymentSyncService() as jest.Mocked<VendorPaymentSyncService>;
+    mockCashFlowService = new CashFlowCalculatorService() as jest.Mocked<CashFlowCalculatorService>;
+    // Initialize orchestrator
+    orchestrator = new PaymentCalendarOrchestratorService();
+    // Reset all mocks
+    vi.clearAllMocks();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  describe('Payment Calendar Synchronization', () => {
+    it('should successfully orchestrate complete payment calendar sync', async () => {
+      // Arrange
+      const mockVendorPayments = [
+        {
+          id: 'payment-1',
+          vendorId: 'vendor-1',
+          vendorName: 'Elite Catering',
+          amount: 5000,
+          currency: 'USD',
+          dueDate: new Date('2024-06-15'),
+          status: 'pending',
+          category: 'catering'
+        },
+          id: 'payment-2',
+          vendorId: 'vendor-2',
+          vendorName: 'Dream Flowers',
+          amount: 1500,
+          dueDate: new Date('2024-05-20'),
+          status: 'overdue',
+          category: 'flowers'
+        }
+      ];
+      const mockBudgetUpdate = {
+        totalAllocated: 25000,
+        totalSpent: 8500,
+        remaining: 16500,
+        categoryBreakdown: {
+          catering: { allocated: 10000, spent: 5000, remaining: 5000 },
+          flowers: { allocated: 3000, spent: 1500, remaining: 1500 }
+      };
+      const mockCashFlowProjection = {
+        projectedOutflows: [
+          { date: new Date('2024-05-20'), amount: 1500, category: 'flowers' },
+          { date: new Date('2024-06-15'), amount: 5000, category: 'catering' }
+        ],
+        liquidityGaps: [],
+        recommendations: ['Consider payment plan for catering']
+      // Mock service responses
+      mockVendorSyncService.syncAllVendorPayments = vi.fn().mockResolvedValue({
+        success: true,
+        syncedPayments: mockVendorPayments,
+        errors: []
+      });
+      mockBudgetService.updateBudgetFromPayments = vi.fn().mockResolvedValue(mockBudgetUpdate);
+      mockCashFlowService.calculateProjectedCashFlow = vi.fn().mockResolvedValue(mockCashFlowProjection);
+      mockNotificationService.sendPaymentReminders = vi.fn().mockResolvedValue({
+        sent: 2,
+        failed: 0,
+        details: [
+          { recipientId: mockUserId, channel: 'email', status: 'sent' },
+          { recipientId: mockUserId, channel: 'push', status: 'sent' }
+        ]
+      // Act
+      const result = await orchestrator.syncPaymentCalendar(mockWeddingId);
+      // Assert
+      expect(result.success).toBe(true);
+      expect(result.totalEvents).toBe(2);
+      expect(result.errors).toHaveLength(0);
+      // Verify service coordination
+      expect(mockVendorSyncService.syncAllVendorPayments).toHaveBeenCalledWith(mockWeddingId);
+      expect(mockBudgetService.updateBudgetFromPayments).toHaveBeenCalledWith(
+        mockWeddingId,
+        mockVendorPayments
+      );
+      expect(mockCashFlowService.calculateProjectedCashFlow).toHaveBeenCalledWith(
+      expect(mockNotificationService.sendPaymentReminders).toHaveBeenCalledWith(
+        expect.arrayContaining([
+          expect.objectContaining({ status: 'overdue' })
+        ])
+    });
+    it('should handle partial service failures gracefully', async () => {
+      // Mock vendor sync success
+      // Mock budget service failure
+      mockBudgetService.updateBudgetFromPayments = vi.fn().mockRejectedValue(
+        new Error('Budget service temporarily unavailable')
+      // Mock cash flow service success
+      mockCashFlowService.calculateProjectedCashFlow = vi.fn().mockResolvedValue({
+        projectedOutflows: [],
+        recommendations: []
+      // Mock notification service success
+        sent: 1,
+        details: []
+      // Assert - Should continue despite budget service failure
+      expect(result.success).toBe(true); // Overall success due to circuit breaker
+      expect(result.totalEvents).toBe(1);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]).toContain('Budget update failed');
+      // Verify other services still called
+      expect(mockCashFlowService.calculateProjectedCashFlow).toHaveBeenCalled();
+      expect(mockNotificationService.sendPaymentReminders).toHaveBeenCalled();
+    it('should handle complete vendor sync failure', async () => {
+        success: false,
+        syncedPayments: [],
+        errors: ['Connection timeout to vendor API', 'Invalid authentication']
+      expect(result.success).toBe(false);
+      expect(result.totalEvents).toBe(0);
+      expect(result.errors).toContain('Vendor sync failed');
+      // Verify downstream services not called when vendor sync fails
+      expect(mockBudgetService.updateBudgetFromPayments).not.toHaveBeenCalled();
+      expect(mockCashFlowService.calculateProjectedCashFlow).not.toHaveBeenCalled();
+      expect(mockNotificationService.sendPaymentReminders).not.toHaveBeenCalled();
+  describe('Health Monitoring Integration', () => {
+    it('should collect health status from all integrated services', async () => {
+      const mockHealthChecks = {
+        budgetService: { status: 'healthy', responseTime: 150, uptime: 99.9 },
+        notificationService: { status: 'healthy', responseTime: 200, uptime: 99.8 },
+        vendorSyncService: { status: 'degraded', responseTime: 800, uptime: 98.5 },
+        cashFlowService: { status: 'healthy', responseTime: 300, uptime: 99.7 }
+      // Mock health check responses
+      mockBudgetService.healthCheck = vi.fn().mockResolvedValue(mockHealthChecks.budgetService);
+      mockNotificationService.healthCheck = vi.fn().mockResolvedValue(mockHealthChecks.notificationService);
+      mockVendorSyncService.healthCheck = vi.fn().mockResolvedValue(mockHealthChecks.vendorSyncService);
+      mockCashFlowService.healthCheck = vi.fn().mockResolvedValue(mockHealthChecks.cashFlowService);
+      const healthDashboard = await orchestrator.getHealthDashboard(mockWeddingId);
+      expect(healthDashboard.overallHealth).toBe('degraded'); // Due to vendor sync being degraded
+      expect(healthDashboard.services).toHaveLength(4);
+      
+      const vendorSyncHealth = healthDashboard.services.find(
+        s => s.serviceName === 'VendorPaymentSyncService'
+      expect(vendorSyncHealth?.status).toBe('degraded');
+      expect(vendorSyncHealth?.responseTime).toBe(800);
+      // Verify all services checked
+      expect(mockBudgetService.healthCheck).toHaveBeenCalled();
+      expect(mockNotificationService.healthCheck).toHaveBeenCalled();
+      expect(mockVendorSyncService.healthCheck).toHaveBeenCalled();
+      expect(mockCashFlowService.healthCheck).toHaveBeenCalled();
+    it('should handle health check failures and mark services as unhealthy', async () => {
+      mockBudgetService.healthCheck = vi.fn().mockRejectedValue(new Error('Service unavailable'));
+      mockNotificationService.healthCheck = vi.fn().mockResolvedValue({
+        status: 'healthy',
+        responseTime: 200,
+        uptime: 99.8
+      mockVendorSyncService.healthCheck = vi.fn().mockResolvedValue({
+        responseTime: 300,
+        uptime: 99.5
+      mockCashFlowService.healthCheck = vi.fn().mockResolvedValue({
+        responseTime: 250,
+        uptime: 99.9
+      expect(healthDashboard.overallHealth).toBe('degraded'); // Due to budget service failure
+      const budgetServiceHealth = healthDashboard.services.find(
+        s => s.serviceName === 'BudgetIntegrationService'
+      expect(budgetServiceHealth?.status).toBe('unhealthy');
+      expect(budgetServiceHealth?.responseTime).toBeGreaterThan(5000); // Timeout value
+  describe('Real-time Notification Integration', () => {
+    it('should trigger appropriate notifications based on payment status changes', async () => {
+      const mockPayments = [
+          dueDate: new Date(Date.now() + 86400000), // Tomorrow
+          dueDate: new Date(Date.now() - 86400000), // Yesterday (overdue)
+        syncedPayments: mockPayments,
+      mockBudgetService.updateBudgetFromPayments = vi.fn().mockResolvedValue({
+        totalSpent: 6500,
+        remaining: 18500
+        liquidityGaps: [{ date: new Date(), amount: 500 }],
+        recommendations: ['Urgent payment required']
+        sent: 3,
+          { recipientId: mockUserId, channel: 'email', status: 'sent', templateId: 'payment_overdue' },
+          { recipientId: mockUserId, channel: 'sms', status: 'sent', templateId: 'payment_overdue' },
+          { recipientId: mockUserId, channel: 'push', status: 'sent', templateId: 'payment_due_soon' }
+          expect.objectContaining({ status: 'overdue' }),
+          expect.objectContaining({ 
+            dueDate: expect.any(Date),
+            status: 'pending'
+          })
+    it('should handle notification service failures without affecting sync', async () => {
+        totalSpent: 5000,
+        remaining: 20000
+      // Mock notification failure
+      mockNotificationService.sendPaymentReminders = vi.fn().mockRejectedValue(
+        new Error('SMS service temporarily unavailable')
+      // Assert - Sync should succeed despite notification failure
+      expect(result.errors).toContain('Notification sending failed');
+      // Verify core sync operations completed
+      expect(mockVendorSyncService.syncAllVendorPayments).toHaveBeenCalled();
+      expect(mockBudgetService.updateBudgetFromPayments).toHaveBeenCalled();
+  describe('Error Recovery and Circuit Breaker Integration', () => {
+    it('should implement circuit breaker pattern for failing services', async () => {
+      // Arrange - Simulate repeated vendor service failures
+      const vendorError = new Error('Vendor API rate limit exceeded');
+      mockVendorSyncService.syncAllVendorPayments = vi.fn().mockRejectedValue(vendorError);
+      // Act - Multiple rapid calls to trigger circuit breaker
+      const promises = Array(6).fill(null).map(() => 
+        orchestrator.syncPaymentCalendar(mockWeddingId).catch(e => ({ success: false, error: e.message }))
+      const results = await Promise.all(promises);
+      // Assert - Circuit breaker should activate after threshold
+      expect(results).toHaveLength(6);
+      // First few should attempt vendor service
+      expect(mockVendorSyncService.syncAllVendorPayments).toHaveBeenCalledTimes(5); // Circuit breaker threshold
+      // Later calls should be short-circuited
+      const shortCircuitedResults = results.slice(5);
+      expect(shortCircuitedResults.every(r => r.success === false)).toBe(true);
+    it('should recover from circuit breaker state after timeout', async () => {
+      // This test would require more complex timing setup
+      // For now, we'll test the circuit breaker state management
+      const orchestratorWithCircuitBreaker = new PaymentCalendarOrchestratorService();
+      // Simulate circuit breaker open state
+      mockVendorSyncService.syncAllVendorPayments = vi.fn()
+        .mockRejectedValueOnce(new Error('Service unavailable'))
+        .mockResolvedValueOnce({
+          success: true,
+          syncedPayments: [],
+          errors: []
+        });
+      // Act & Assert - Circuit should eventually allow calls through
+      try {
+        await orchestratorWithCircuitBreaker.syncPaymentCalendar(mockWeddingId);
+        expect(false).toBe(true); // Should not reach here
+      } catch (error) {
+        expect(error).toBeDefined();
+      }
+      // After circuit breaker timeout (simulated), it should work
+      mockBudgetService.updateBudgetFromPayments = vi.fn().mockResolvedValue({});
+        sent: 0,
+      // This should succeed after circuit breaker recovery
+      const result = await orchestratorWithCircuitBreaker.syncPaymentCalendar(mockWeddingId);
+  describe('Performance and Concurrency', () => {
+    it('should handle concurrent sync requests efficiently', async () => {
+      // Act - Simulate concurrent requests
+      const concurrentRequests = Array(3).fill(null).map(() => 
+        orchestrator.syncPaymentCalendar(mockWeddingId)
+      const results = await Promise.all(concurrentRequests);
+      // Assert - All requests should succeed
+      expect(results.every(r => r.success === true)).toBe(true);
+      // Verify services called appropriately (may be deduplicated)
+    it('should measure and report performance metrics', async () => {
+      const startTime = Date.now();
+      mockVendorSyncService.syncAllVendorPayments = vi.fn().mockImplementation(async () => {
+        await new Promise(resolve => setTimeout(resolve, 100)); // Simulate 100ms delay
+        return { success: true, syncedPayments: [], errors: [] };
+      const endTime = Date.now();
+      expect(result.processingTime).toBeGreaterThan(0);
+      expect(result.processingTime).toBeLessThan(endTime - startTime + 50); // Allow for some margin
+      expect(result.performanceMetrics).toBeDefined();
+      expect(result.performanceMetrics.serviceTimings).toBeDefined();
+  describe('Data Validation and Security', () => {
+    it('should validate wedding ID and sanitize inputs', async () => {
+      // Arrange - Invalid wedding ID
+      const invalidWeddingId = '<script>alert("xss")</script>';
+      // Act & Assert
+      await expect(orchestrator.syncPaymentCalendar(invalidWeddingId))
+        .rejects.toThrow('Invalid wedding ID format');
+    it('should handle sensitive payment data securely', async () => {
+      const mockSensitivePayments = [
+          category: 'catering',
+          paymentMethod: 'credit_card_ending_1234',
+          accountDetails: '****-****-****-1234' // Should be masked
+        syncedPayments: mockSensitivePayments,
+      // Assert - Verify sensitive data is properly handled
+      // Check that sensitive payment data is not exposed in results
+      expect(JSON.stringify(result)).not.toContain('credit_card_ending');
+      expect(JSON.stringify(result)).not.toContain('****-****-****-1234');
+});

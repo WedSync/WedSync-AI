@@ -1,0 +1,161 @@
+/**
+ * Cloud Provider Services API
+ * GET /api/cloud/providers/[id]/services - List available services
+ * WS-257 Team B Implementation
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { MultiCloudOrchestrationService } from '@/lib/services/cloud-orchestration-service';
+
+// Rate limiting
+const RATE_LIMIT = { requests: 30, windowMs: 60000 }; // 30 requests per minute
+const requestCounts = new Map<string, { count: number; resetTime: number }>();
+
+function checkRateLimit(clientId: string): boolean {
+  const now = Date.now();
+  const current = requestCounts.get(clientId);
+
+  if (!current || now > current.resetTime) {
+    requestCounts.set(clientId, { count: 1, resetTime: now + RATE_LIMIT.windowMs });
+    return true;
+  }
+
+  if (current.count >= RATE_LIMIT.requests) {
+    return false;
+  }
+
+  current.count++;
+  return true;
+}
+
+function getClientId(request: NextRequest): string {
+  const forwarded = request.headers.get('x-forwarded-for');
+  const ip = forwarded ? forwarded.split(',')[0] : request.ip || 'unknown';
+  return `ip:${ip}`;
+}
+
+async function getUserFromAuth(request: NextRequest) {
+  const supabase = (await import('@/lib/supabase/server')).createClient();
+  const { data: { user }, error } = await supabase.auth.getUser();
+  
+  if (error || !user) {
+    throw new Error('Authentication required');
+  }
+
+  const { data: userData, error: userError } = await supabase
+    .from('users')
+    .select('organization_id, role')
+    .eq('id', user.id)
+    .single();
+
+  if (userError || !userData) {
+    throw new Error('User not found');
+  }
+
+  return {
+    userId: user.id,
+    organizationId: userData.organization_id,
+    role: userData.role,
+  };
+}
+
+interface RouteParams {
+  params: { id: string };
+}
+
+/**
+ * GET /api/cloud/providers/[id]/services
+ * List all available services for a cloud provider
+ */
+export async function GET(request: NextRequest, { params }: RouteParams) {
+  try {
+    // Rate limiting
+    const clientId = getClientId(request);
+    if (!checkRateLimit(clientId)) {
+      return NextResponse.json(
+        { error: 'Rate limit exceeded' },
+        { status: 429 }
+      );
+    }
+
+    // Authentication
+    const user = await getUserFromAuth(request);
+    const { id: providerId } = params;
+
+    if (!providerId?.trim()) {
+      return NextResponse.json(
+        { error: 'Provider ID is required' },
+        { status: 400 }
+      );
+    }
+
+    // Parse query parameters
+    const { searchParams } = new URL(request.url);
+    const region = searchParams.get('region') || undefined;
+    const category = searchParams.get('category') || undefined;
+    const availableOnly = searchParams.get('availableOnly') === 'true';
+
+    // Create orchestration service
+    const orchestrationService = new MultiCloudOrchestrationService({
+      organizationId: user.organizationId,
+      userId: user.userId,
+    });
+
+    // Get provider and list services
+    const provider = await orchestrationService.getCloudProvider(providerId);
+    let services = await provider.listServices(region);
+
+    // Apply filters
+    if (category) {
+      services = services.filter(service => 
+        service.category.toLowerCase() === category.toLowerCase()
+      );
+    }
+
+    if (availableOnly) {
+      services = services.filter(service => service.isAvailable);
+    }
+
+    // Group by category
+    const servicesByCategory = services.reduce((acc, service) => {
+      if (!acc[service.category]) {
+        acc[service.category] = [];
+      }
+      acc[service.category].push(service);
+      return acc;
+    }, {} as Record<string, typeof services>);
+
+    return NextResponse.json({
+      providerId,
+      region,
+      services,
+      servicesByCategory,
+      totalCount: services.length,
+      availableCount: services.filter(s => s.isAvailable).length,
+      categories: Object.keys(servicesByCategory),
+      filters: {
+        region,
+        category,
+        availableOnly,
+      },
+      retrievedAt: new Date().toISOString(),
+    });
+
+  } catch (error) {
+    console.error('Error listing provider services:', error);
+
+    if (error instanceof Error) {
+      if (error.message.includes('Authentication')) {
+        return NextResponse.json({ error: error.message }, { status: 401 });
+      }
+      if (error.message.includes('not found')) {
+        return NextResponse.json({ error: 'Provider not found' }, { status: 404 });
+      }
+    }
+
+    return NextResponse.json(
+      { error: 'Failed to retrieve services' },
+      { status: 500 }
+    );
+  }
+}

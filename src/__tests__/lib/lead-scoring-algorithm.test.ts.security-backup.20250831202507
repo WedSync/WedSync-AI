@@ -1,0 +1,255 @@
+import { describe, it, expect, jest, beforeEach } from '@jest/globals'
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { LeadScoringAlgorithm } from '@/lib/lead-scoring/algorithm'
+
+describe('LeadScoringAlgorithm', () => {
+  let algorithm: LeadScoringAlgorithm
+  let mockSupabase: any
+  const organizationId = 'org-123'
+  beforeEach(() => {
+    mockSupabase = {
+      from: jest.fn(() => mockSupabase),
+      select: jest.fn(() => mockSupabase),
+      eq: jest.fn(() => mockSupabase),
+      single: jest.fn(),
+      upsert: jest.fn(),
+      update: jest.fn(() => mockSupabase)
+    }
+    algorithm = new LeadScoringAlgorithm(mockSupabase, organizationId)
+  })
+  describe('calculateLeadScore', () => {
+    const mockClient = {
+      id: 'client-123',
+      first_name: 'John',
+      last_name: 'Doe',
+      email: 'john@example.com',
+      phone: '1234567890',
+      wedding_date: '2024-06-15',
+      venue_name: 'Beautiful Venue',
+      budget_range: '£3000-5000',
+      guest_count: 100,
+      lead_source: 'referral',
+      created_at: '2024-01-01T00:00:00Z',
+      last_touch_date: '2024-01-20T00:00:00Z',
+      touch_count: 5,
+      engagement_score: 50,
+      estimated_value: 4000,
+      notes: 'Looking for photography services',
+      client_activities: [
+        { activity_type: 'form_completed', created_at: '2024-01-15T00:00:00Z' },
+        { activity_type: 'email_opened', created_at: '2024-01-18T00:00:00Z' },
+        { activity_type: 'email_clicked', created_at: '2024-01-19T00:00:00Z' },
+        { activity_type: 'website_visit', created_at: '2024-01-20T00:00:00Z' }
+      ],
+      lead_sources: {
+        source_name: 'Word of Mouth',
+        source_category: 'referral'
+      }
+    beforeEach(() => {
+      mockSupabase.single.mockResolvedValue({
+        data: mockClient,
+        error: null
+      })
+      mockSupabase.upsert.mockResolvedValue({
+        data: {},
+      mockSupabase.update.mockResolvedValue({
+    })
+    it('should calculate a comprehensive lead score', async () => {
+      const result = await algorithm.calculateLeadScore('client-123')
+      expect(result.clientId).toBe('client-123')
+      expect(result.totalScore).toBeGreaterThan(0)
+      expect(result.totalScore).toBeLessThanOrEqual(100)
+      expect(result.grade).toMatch(/^(A\+|A|B|C|D|F)$/)
+      expect(result.components.demographic).toBeGreaterThan(0)
+      expect(result.components.behavioral).toBeGreaterThan(0)
+      expect(result.components.engagement).toBeGreaterThan(0)
+      expect(result.components.fit).toBeGreaterThan(0)
+    it('should assign higher scores to well-qualified leads', async () => {
+      const highQualityClient = {
+        ...mockClient,
+        wedding_date: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // 3 months out
+        budget_range: '£5000+',
+        last_touch_date: new Date().toISOString(),
+        touch_count: 10,
+        client_activities: [
+          { activity_type: 'form_completed', created_at: '2024-01-15T00:00:00Z' },
+          { activity_type: 'form_completed', created_at: '2024-01-16T00:00:00Z' },
+          { activity_type: 'email_opened', created_at: '2024-01-18T00:00:00Z' },
+          { activity_type: 'email_clicked', created_at: '2024-01-19T00:00:00Z' },
+          { activity_type: 'email_replied', created_at: '2024-01-20T00:00:00Z' }
+        ]
+        data: highQualityClient,
+      expect(result.totalScore).toBeGreaterThan(60)
+      expect(['A+', 'A', 'B']).toContain(result.grade)
+      expect(result.qualificationStatus).toBe('qualified')
+    it('should assign lower scores to poorly-qualified leads', async () => {
+      const lowQualityClient = {
+        wedding_date: null,
+        budget_range: null,
+        venue_name: null,
+        last_touch_date: '2023-12-01T00:00:00Z', // Very old
+        touch_count: 1,
+        client_activities: [],
+        lead_sources: {
+          source_name: 'Unknown',
+          source_category: 'unknown'
+        }
+        data: lowQualityClient,
+      expect(result.totalScore).toBeLessThan(40)
+      expect(['D', 'F']).toContain(result.grade)
+      expect(result.qualificationStatus).toBe('unqualified')
+    it('should calculate wedding date proximity correctly', async () => {
+      // Test immediate wedding (within 3 months)
+      const immediateWedding = {
+        wedding_date: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] // 2 months out
+        data: immediateWedding,
+      expect(result.factors.weddingDateProximity).toBe(10)
+      // Test distant wedding (over 18 months)
+      const distantWedding = {
+        wedding_date: new Date(Date.now() + 600 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] // 20 months out
+        data: distantWedding,
+      const result2 = await algorithm.calculateLeadScore('client-123')
+      expect(result2.factors.weddingDateProximity).toBe(2)
+    it('should score behavioral factors correctly', async () => {
+      const activeClient = {
+          { activity_type: 'email_replied', created_at: '2024-01-20T00:00:00Z' },
+          { activity_type: 'website_visit', created_at: '2024-01-21T00:00:00Z' },
+          { activity_type: 'portfolio_viewed', created_at: '2024-01-22T00:00:00Z' }
+        data: activeClient,
+      expect(result.factors.formCompletions).toBeGreaterThan(0)
+      expect(result.factors.emailEngagement).toBeGreaterThan(0)
+      expect(result.factors.websiteActivity).toBeGreaterThan(0)
+    it('should handle clients with no activities', async () => {
+      const inactiveClient = {
+        last_touch_date: null,
+        touch_count: 0
+        data: inactiveClient,
+      expect(result.totalScore).toBeGreaterThan(0) // Should still have some score from demographic factors
+      expect(result.factors.formCompletions).toBe(0)
+      expect(result.factors.emailEngagement).toBe(0)
+      expect(result.factors.recentActivity).toBe(0)
+    it('should save score to database', async () => {
+      await algorithm.calculateLeadScore('client-123')
+      expect(mockSupabase.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          client_id: 'client-123',
+          organization_id: organizationId,
+          total_score: expect.any(Number),
+          score_grade: expect.any(String)
+        })
+      )
+      expect(mockSupabase.update).toHaveBeenCalledWith(
+          lead_score: expect.any(Number),
+          lead_grade: expect.any(String)
+    it('should handle database errors', async () => {
+        data: null,
+        error: new Error('Client not found')
+      await expect(algorithm.calculateLeadScore('client-123')).rejects.toThrow('Client not found')
+    it('should calculate score trend correctly', async () => {
+      // Mock existing score
+      const existingScore = { total_score: 65 }
+      mockSupabase.single
+        .mockResolvedValueOnce({ data: mockClient, error: null }) // Client data
+        .mockResolvedValueOnce({ data: existingScore, error: null }) // Previous score
+      
+      // Since new score should be different, trend should not be 'new'
+      expect(['up', 'down', 'stable']).toContain(result.scoreTrend)
+  describe('batchCalculateScores', () => {
+    it('should process multiple clients', async () => {
+      const clientIds = ['client-1', 'client-2', 'client-3']
+      const results = await algorithm.batchCalculateScores(clientIds)
+      expect(results).toHaveLength(3)
+      results.forEach((result) => {
+        expect(result.totalScore).toBeGreaterThan(0)
+        expect(result.grade).toMatch(/^(A\+|A|B|C|D|F)$/)
+    it('should process clients in batches', async () => {
+      const clientIds = Array.from({ length: 12 }, (_, i) => `client-${i}`)
+      expect(results).toHaveLength(12)
+      // Verify database was called for each client
+      expect(mockSupabase.single).toHaveBeenCalledTimes(24) // 12 for client data + 12 for previous scores
+  describe('getRecommendedActions', () => {
+    const mockLeadScore = {
+      clientId: 'client-123',
+      totalScore: 75,
+      grade: 'B' as const,
+      components: {
+        demographic: 20,
+        behavioral: 15,
+        engagement: 20,
+        fit: 20
+      },
+      factors: {
+        weddingDateProximity: 8,
+        budgetMatch: 6,
+        profileCompleteness: 4,
+        locationMatch: 2,
+        formCompletions: 6,
+        emailEngagement: 5,
+        websiteActivity: 4,
+        responseRate: 0,
+        recentActivity: 6,
+        communicationFrequency: 5,
+        initiatedContact: 4,
+        referralSource: 5,
+        serviceAlignment: 5,
+        pricePointMatch: 6,
+        previousExperience: 4,
+        urgencyLevel: 5
+      qualificationStatus: 'qualified' as const,
+      scoreTrend: 'up' as const,
+      lastCalculated: new Date()
+    it('should provide recommendations for A-grade leads', async () => {
+      const aGradeLead = { ...mockLeadScore, grade: 'A' as const, totalScore: 85 }
+      const actions = algorithm.getRecommendedActions(aGradeLead)
+      expect(actions).toContain('Schedule immediate consultation call')
+      expect(actions).toContain('Send premium package information')
+      expect(actions).toContain('Prioritize in follow-up queue')
+    it('should provide recommendations for B-grade leads', async () => {
+      const actions = algorithm.getRecommendedActions(mockLeadScore)
+      expect(actions).toContain('Send detailed portfolio')
+      expect(actions).toContain('Schedule discovery call')
+      expect(actions).toContain('Add to weekly follow-up sequence')
+    it('should provide recommendations for low-grade leads', async () => {
+      const lowGradeLead = { ...mockLeadScore, grade: 'D' as const, totalScore: 30 }
+      const actions = algorithm.getRecommendedActions(lowGradeLead)
+      expect(actions).toContain('Add to long-term nurture campaign')
+      expect(actions).toContain('Monitor for engagement changes')
+    it('should provide specific recommendations based on weak components', async () => {
+      const weakBehavioralLead = {
+        ...mockLeadScore,
+        components: { ...mockLeadScore.components, behavioral: 5 }
+      const actions = algorithm.getRecommendedActions(weakBehavioralLead)
+      expect(actions).toContain('Encourage form completion with incentive')
+    it('should provide specific recommendations based on weak engagement', async () => {
+      const weakEngagementLead = {
+        components: { ...mockLeadScore.components, engagement: 5 }
+      const actions = algorithm.getRecommendedActions(weakEngagementLead)
+      expect(actions).toContain('Increase communication frequency')
+    it('should limit recommendations to manageable number', async () => {
+      expect(actions.length).toBeLessThanOrEqual(6) // Should be reasonable number of actions
+  const mockClient = {
+    id: 'client-123',
+    first_name: 'John',
+    last_name: 'Doe',
+    email: 'john@example.com',
+    phone: '1234567890',
+    wedding_date: '2024-06-15',
+    venue_name: 'Beautiful Venue',
+    budget_range: '£3000-5000',
+    guest_count: 100,
+    lead_source: 'referral',
+    created_at: '2024-01-01T00:00:00Z',
+    last_touch_date: '2024-01-20T00:00:00Z',
+    touch_count: 5,
+    engagement_score: 50,
+    estimated_value: 4000,
+    notes: 'Looking for photography services',
+    client_activities: [
+      { activity_type: 'form_completed', created_at: '2024-01-15T00:00:00Z' },
+      { activity_type: 'email_opened', created_at: '2024-01-18T00:00:00Z' }
+    ],
+    lead_sources: {
+      source_name: 'Word of Mouth',
+      source_category: 'referral'
+  }
+})

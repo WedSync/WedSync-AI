@@ -1,0 +1,65 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import { mfaService } from '@/lib/auth/mfa';
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const { factorId } = body;
+
+    if (!factorId) {
+      return NextResponse.json(
+        { error: 'Factor ID required' },
+        { status: 400 },
+      );
+    }
+
+    const result = await mfaService.challenge(factorId, user.id);
+
+    if (result.error) {
+      // Check if account is locked
+      if (result.error.message.includes('locked')) {
+        return NextResponse.json(
+          {
+            error: 'ACCOUNT_LOCKED',
+            message: result.error.message,
+            retryAfter: 1800, // 30 minutes
+          },
+          { status: 423 },
+        );
+      }
+
+      return NextResponse.json(
+        { error: result.error.message },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      challengeId: result.data?.id,
+      message:
+        'Challenge created. Check your authenticator app or SMS for the code.',
+    });
+  } catch (error) {
+    console.error('MFA challenge error:', error);
+    return NextResponse.json(
+      { error: 'Failed to create MFA challenge' },
+      { status: 500 },
+    );
+  }
+}

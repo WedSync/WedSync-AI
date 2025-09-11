@@ -1,0 +1,301 @@
+/**
+ * Tests for usePhotoUploadProtection hook - Specialized photo upload protection with compression and queuing
+ * WS-198 Error Handling System - Team D Mobile & PWA Architecture
+ */
+
+import { renderHook, act, waitFor } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { usePhotoUploadProtection } from '../../hooks/usePhotoUploadProtection'
+// Mock Web Worker
+class MockWorker {
+  onmessage: ((event: MessageEvent) => void) | null = null
+  postMessage = jest.fn((data) => {
+    // Simulate compression response
+    setTimeout(() => {
+      this.onmessage?.({
+        data: {
+          type: 'compression_complete',
+          fileId: data.fileId,
+          compressedBlob: new Blob(['compressed'], { type: 'image/jpeg' }),
+          originalSize: data.file.size,
+          compressedSize: Math.floor(data.file.size * 0.6) // 40% compression
+        }
+      } as MessageEvent)
+    }, 100)
+  })
+  terminate = jest.fn()
+}
+// Mock IndexedDB
+const mockIndexedDB = {
+  open: jest.fn(),
+  deleteDatabase: jest.fn()
+const mockDB = {
+  transaction: jest.fn(),
+  createObjectStore: jest.fn(),
+  close: jest.fn()
+const mockTransaction = {
+  objectStore: jest.fn(),
+  oncomplete: null,
+  onerror: null
+const mockStore = {
+  add: jest.fn(),
+  get: jest.fn(),
+  put: jest.fn(),
+  delete: jest.fn(),
+  getAll: jest.fn()
+// Mock XMLHttpRequest
+class MockXMLHttpRequest {
+  upload = {
+    addEventListener: jest.fn(),
+    removeEventListener: jest.fn()
+  }
+  addEventListener = jest.fn()
+  open = jest.fn()
+  setRequestHeader = jest.fn()
+  send = jest.fn()
+  timeout = 0
+  status = 200
+  responseText = '{"success": true, "url": "https://example.com/photo.jpg"}'
+  
+  constructor() {
+    // Simulate successful upload after delay
+      this.upload.addEventListener.mock.calls.forEach(([event, handler]) => {
+        if (event === 'progress') {
+          handler({ lengthComputable: true, loaded: 50, total: 100 })
+          setTimeout(() => {
+            handler({ lengthComputable: true, loaded: 100, total: 100 })
+          }, 50)
+      })
+      
+      this.addEventListener.mock.calls.forEach(([event, handler]) => {
+        if (event === 'load') {
+          handler()
+    }, 200)
+Object.defineProperty(window, 'Worker', {
+  value: MockWorker,
+  writable: true
+})
+Object.defineProperty(window, 'indexedDB', {
+  value: mockIndexedDB,
+Object.defineProperty(window, 'XMLHttpRequest', {
+  value: MockXMLHttpRequest,
+// Setup IndexedDB mocks
+beforeAll(() => {
+  mockIndexedDB.open.mockImplementation(() => {
+    const request = {
+      onsuccess: null,
+      onerror: null,
+      onupgradeneeded: null,
+      result: mockDB
+    }
+    setTimeout(() => request.onsuccess?.({ target: { result: mockDB } }), 0)
+    return request
+  mockDB.transaction.mockReturnValue(mockTransaction)
+  mockTransaction.objectStore.mockReturnValue(mockStore)
+describe('usePhotoUploadProtection', () => {
+  const createMockFile = (name: string, size: number = 1024000) => {
+    return new File(['mock file content'], name, { 
+      type: 'image/jpeg',
+      lastModified: Date.now()
+    })
+  beforeEach(() => {
+    jest.clearAllMocks()
+    mockStore.add.mockResolvedValue('upload-key-123')
+    mockStore.get.mockResolvedValue(null)
+    mockStore.put.mockResolvedValue('upload-key-123')
+  it('should initialize with empty upload state', () => {
+    const { result } = renderHook(() => usePhotoUploadProtection())
+    
+    expect(result.current.uploads).toEqual({})
+    expect(result.current.isUploading).toBe(false)
+    expect(result.current.totalUploads).toBe(0)
+    expect(result.current.completedUploads).toBe(0)
+    expect(result.current.failedUploads).toBe(0)
+  it('should upload single photo successfully', async () => {
+    const mockFile = createMockFile('wedding-photo.jpg', 2048000) // 2MB
+    let uploadComplete = false
+    act(() => {
+      result.current.uploadWithProtection(
+        mockFile,
+        'photo-123',
+        'Beautiful ceremony moment',
+        false
+      ).then(() => {
+        uploadComplete = true
+    // Should show upload in progress
+    expect(result.current.isUploading).toBe(true)
+    expect(result.current.uploads['photo-123']).toBeDefined()
+    expect(result.current.uploads['photo-123'].status).toBe('compressing')
+    // Wait for compression and upload to complete
+    await waitFor(() => {
+      expect(uploadComplete).toBe(true)
+    }, { timeout: 5000 })
+    expect(result.current.uploads['photo-123'].status).toBe('completed')
+    expect(result.current.completedUploads).toBe(1)
+  it('should compress large photos before upload', async () => {
+    const largeFile = createMockFile('large-photo.jpg', 10 * 1024 * 1024) // 10MB
+      result.current.uploadWithProtection(largeFile, 'large-photo-123')
+    // Should start with compression
+    expect(result.current.uploads['large-photo-123'].status).toBe('compressing')
+      expect(result.current.uploads['large-photo-123'].status).toBe('uploading')
+    }, { timeout: 2000 })
+    // Should show compression savings
+    const upload = result.current.uploads['large-photo-123']
+    expect(upload.compressionSavings).toBeGreaterThan(0)
+    expect(upload.compressedSize).toBeLessThan(upload.originalSize)
+  it('should handle wedding day uploads with priority', async () => {
+    const ceremonyPhoto = createMockFile('ceremony-kiss.jpg', 5 * 1024 * 1024)
+        ceremonyPhoto,
+        'ceremony-123',
+        'First kiss - ceremony',
+        true // isWeddingDay = true
+      )
+    const upload = result.current.uploads['ceremony-123']
+    expect(upload.isWeddingDay).toBe(true)
+    expect(upload.priority).toBe('critical')
+      expect(upload.status).toBe('completed')
+    }, { timeout: 10000 }) // Longer timeout for wedding day
+  it('should queue uploads when offline', async () => {
+    // Mock offline state
+    Object.defineProperty(navigator, 'onLine', {
+      value: false,
+      writable: true
+    const offlinePhoto = createMockFile('offline-photo.jpg')
+      result.current.uploadWithProtection(offlinePhoto, 'offline-123')
+      expect(result.current.uploads['offline-123'].status).toBe('queued')
+    expect(mockStore.add).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fileId: 'offline-123',
+        status: 'queued',
+        queuedAt: expect.any(Number)
+    )
+  it('should resume uploads when coming back online', async () => {
+    // Setup queued upload
+    const queuedUpload = {
+      fileId: 'queued-123',
+      file: createMockFile('queued-photo.jpg'),
+      status: 'queued',
+      queuedAt: Date.now() - 30000, // Queued 30 seconds ago
+      retryCount: 0
+    mockStore.getAll.mockResolvedValue([queuedUpload])
+    // Come back online
+      value: true,
+      result.current.processUploadQueue()
+      expect(result.current.uploads['queued-123']).toBeDefined()
+      expect(result.current.uploads['queued-123'].status).toBe('uploading')
+  it('should handle upload failures with retries', async () => {
+    // Mock XMLHttpRequest to fail first few times
+    let attemptCount = 0
+    const OriginalXHR = XMLHttpRequest
+    window.XMLHttpRequest = jest.fn().mockImplementation(() => {
+      const xhr = new OriginalXHR()
+      const originalSend = xhr.send
+      xhr.send = jest.fn().mockImplementation((data) => {
+        attemptCount++
+        if (attemptCount < 3) {
+            xhr.addEventListener.mock.calls.forEach(([event, handler]) => {
+              if (event === 'error') handler(new Error('Network error'))
+            })
+          }, 100)
+        } else {
+          originalSend.call(xhr, data)
+      return xhr
+    const failingPhoto = createMockFile('failing-photo.jpg')
+      result.current.uploadWithProtection(failingPhoto, 'failing-123')
+      const upload = result.current.uploads['failing-123']
+      expect(upload.retryCount).toBeGreaterThan(0)
+      expect(upload.status).toBe('completed') // Eventually succeeds
+    window.XMLHttpRequest = OriginalXHR
+  it('should batch multiple uploads efficiently', async () => {
+    const photos = [
+      createMockFile('photo1.jpg'),
+      createMockFile('photo2.jpg'),
+      createMockFile('photo3.jpg'),
+      createMockFile('photo4.jpg'),
+      createMockFile('photo5.jpg')
+    ]
+    // Start all uploads simultaneously
+      photos.forEach((photo, index) => {
+        result.current.uploadWithProtection(photo, `batch-photo-${index}`)
+    expect(result.current.totalUploads).toBe(5)
+    // Should process in batches (max 3 concurrent by default)
+    const uploadingCount = Object.values(result.current.uploads)
+      .filter(upload => upload.status === 'uploading').length
+    expect(uploadingCount).toBeLessThanOrEqual(3)
+      expect(result.current.completedUploads).toBe(5)
+      expect(result.current.isUploading).toBe(false)
+    }, { timeout: 10000 })
+  it('should provide accurate progress tracking', async () => {
+    const progressUpdates: number[] = []
+    const trackProgress = () => {
+      const upload = result.current.uploads['progress-123']
+      if (upload) {
+        progressUpdates.push(upload.progress)
+      }
+    const photo = createMockFile('progress-photo.jpg')
+      result.current.uploadWithProtection(photo, 'progress-123')
+    // Track progress updates
+    const interval = setInterval(trackProgress, 50)
+      expect(result.current.uploads['progress-123'].status).toBe('completed')
+    clearInterval(interval)
+    // Should have multiple progress updates
+    expect(progressUpdates.length).toBeGreaterThan(1)
+    expect(progressUpdates[progressUpdates.length - 1]).toBe(100) // Final progress should be 100%
+  it('should handle different image formats', async () => {
+    const imageFormats = [
+      { name: 'photo.jpg', type: 'image/jpeg' },
+      { name: 'photo.png', type: 'image/png' },
+      { name: 'photo.webp', type: 'image/webp' },
+      { name: 'photo.heic', type: 'image/heic' }
+    for (const format of imageFormats) {
+      const file = new File(['content'], format.name, { type: format.type })
+      act(() => {
+        result.current.uploadWithProtection(file, `format-${format.name}`)
+      expect(result.current.uploads[`format-${format.name}`]).toBeDefined()
+      expect(result.current.completedUploads).toBe(imageFormats.length)
+    }, { timeout: 8000 })
+  it('should provide upload statistics and insights', async () => {
+      createMockFile('small.jpg', 500000),    // 0.5MB
+      createMockFile('medium.jpg', 2000000),  // 2MB
+      createMockFile('large.jpg', 8000000)    // 8MB
+    for (let i = 0; i < photos.length; i++) {
+        result.current.uploadWithProtection(photos[i], `stats-${i}`)
+      expect(result.current.completedUploads).toBe(3)
+    const stats = result.current.getUploadStatistics()
+    expect(stats.totalFiles).toBe(3)
+    expect(stats.totalSize).toBeGreaterThan(0)
+    expect(stats.averageCompressionRatio).toBeGreaterThan(0)
+    expect(stats.averageUploadTime).toBeGreaterThan(0)
+    expect(stats.bandwidthEfficiency).toBeDefined()
+  it('should clean up completed uploads to prevent memory leaks', async () => {
+    // Upload multiple files
+    const photos = Array.from({ length: 10 }, (_, i) => 
+      createMockFile(`cleanup-${i}.jpg`)
+        result.current.uploadWithProtection(photos[i], `cleanup-${i}`)
+      expect(result.current.completedUploads).toBe(10)
+    }, { timeout: 15000 })
+    // Trigger cleanup
+      result.current.cleanupCompletedUploads()
+    // Should keep only recent uploads
+    const activeUploads = Object.keys(result.current.uploads).length
+    expect(activeUploads).toBeLessThan(10)
+  it('should handle emergency wedding day scenarios', async () => {
+    // Simulate poor network conditions on wedding day
+    Object.defineProperty(navigator, 'connection', {
+      value: {
+        effectiveType: 'slow-2g',
+        downlink: 0.5,
+        rtt: 2000
+      },
+    const emergencyPhoto = createMockFile('emergency-ceremony.jpg', 15 * 1024 * 1024) // 15MB
+        emergencyPhoto,
+        'emergency-123',
+        'Critical ceremony moment - URGENT',
+        true, // isWeddingDay
+        true  // isEmergency
+    const upload = result.current.uploads['emergency-123']
+    expect(upload.isEmergency).toBe(true)
+    expect(upload.priority).toBe('emergency')
+    // Should apply aggressive compression for poor network
+      expect(upload.compressionLevel).toBe('aggressive')
+    }, { timeout: 20000 }) // Extended timeout for emergency scenarios

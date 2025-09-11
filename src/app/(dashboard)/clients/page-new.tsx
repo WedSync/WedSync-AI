@@ -1,0 +1,315 @@
+'use client';
+
+import { useState, useEffect, Suspense } from 'react';
+import { createClient } from '@/lib/supabase/client';
+import ClientListViews, {
+  ClientData,
+  ViewType,
+} from '@/components/clients/ClientListViews';
+import ClientNotifications from '@/components/clients/ClientNotifications';
+import { Card } from '@/components/ui/card-untitled';
+import { Button } from '@/components/ui/button-untitled';
+import { Badge } from '@/components/ui/badge';
+import { Loader2, AlertCircle, Bell } from 'lucide-react';
+import { useSearchParams, useRouter } from 'next/navigation';
+
+// Error Boundary Component
+function ClientPageError({
+  error,
+  retry,
+}: {
+  error: Error;
+  retry: () => void;
+}) {
+  return (
+    <Card className="p-8 text-center">
+      <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
+      <h2 className="text-lg font-semibold text-gray-900 mb-2">
+        Something went wrong
+      </h2>
+      <p className="text-gray-600 mb-4">
+        {error.message || 'Failed to load clients. Please try again.'}
+      </p>
+      <Button onClick={retry}>Try Again</Button>
+    </Card>
+  );
+}
+
+// Loading Component
+function ClientPageLoading() {
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="h-8 bg-gray-200 rounded w-32 animate-pulse"></div>
+          <div className="h-4 bg-gray-200 rounded w-64 mt-2 animate-pulse"></div>
+        </div>
+        <div className="flex gap-2">
+          <div className="h-10 bg-gray-200 rounded w-20 animate-pulse"></div>
+          <div className="h-10 bg-gray-200 rounded w-24 animate-pulse"></div>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-4">
+        <div className="h-10 bg-gray-200 rounded flex-1 max-w-md animate-pulse"></div>
+        <div className="h-10 bg-gray-200 rounded w-20 animate-pulse"></div>
+        <div className="h-10 bg-gray-200 rounded w-16 animate-pulse"></div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+        {Array.from({ length: 6 }).map((_, i) => (
+          <Card key={i} className="p-6 space-y-4">
+            <div className="h-6 bg-gray-200 rounded w-3/4 animate-pulse"></div>
+            <div className="h-4 bg-gray-200 rounded w-1/2 animate-pulse"></div>
+            <div className="h-4 bg-gray-200 rounded w-2/3 animate-pulse"></div>
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+interface ClientPageContentProps {
+  searchParams: {
+    view?: string;
+    status?: string;
+    search?: string;
+    tab?: string;
+    sort?: string;
+  };
+}
+
+function ClientPageContent({ searchParams }: ClientPageContentProps) {
+  const router = useRouter();
+  const [clients, setClients] = useState<ClientData[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+  const [currentView, setCurrentView] = useState<ViewType>(
+    (searchParams.view as ViewType) || 'list',
+  );
+  const [searchQuery, setSearchQuery] = useState(searchParams.search || '');
+  const [activeTab, setActiveTab] = useState(searchParams.tab || 'clients');
+
+  const supabase = createClient();
+
+  const fetchClients = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+
+      const { data: user } = await supabase.auth.getUser();
+      if (!user) throw new Error('Not authenticated');
+
+      const { data: profile } = await supabase
+        .from('user_profiles')
+        .select('organization_id')
+        .eq('user_id', user.id)
+        .single();
+
+      if (!profile?.organization_id) throw new Error('No organization found');
+
+      let query = supabase
+        .from('clients')
+        .select(
+          `
+          *,
+          client_activities (
+            id,
+            activity_type,
+            created_at
+          )
+        `,
+        )
+        .eq('organization_id', profile.organization_id);
+
+      // Apply filters
+      if (searchParams.status && searchParams.status !== 'all') {
+        query = query.eq('status', searchParams.status);
+      }
+
+      if (searchQuery) {
+        query = query.or(`
+          first_name.ilike.%${searchQuery}%,
+          last_name.ilike.%${searchQuery}%,
+          email.ilike.%${searchQuery}%,
+          partner_first_name.ilike.%${searchQuery}%,
+          partner_last_name.ilike.%${searchQuery}%
+        `);
+      }
+
+      const sortField = searchParams.sort?.replace('-', '') || 'created_at';
+      const sortAscending = !searchParams.sort?.startsWith('-');
+      query = query.order(sortField, { ascending: sortAscending });
+
+      const { data, error: queryError } = await query;
+
+      if (queryError) throw queryError;
+
+      setClients(data || []);
+    } catch (err) {
+      console.error('Error fetching clients:', err);
+      setError(err as Error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchClients();
+  }, [searchParams, searchQuery]);
+
+  const handleSearch = (query: string) => {
+    setSearchQuery(query);
+    const params = new URLSearchParams(window.location.search);
+    if (query) {
+      params.set('search', query);
+    } else {
+      params.delete('search');
+    }
+    router.push(`?${params.toString()}`);
+  };
+
+  const handleFilter = (filters: any) => {
+    // Implement filtering logic
+    console.log('Filters applied:', filters);
+  };
+
+  const handleSort = (field: string, direction: 'asc' | 'desc') => {
+    const params = new URLSearchParams(window.location.search);
+    params.set('sort', direction === 'desc' ? `-${field}` : field);
+    router.push(`?${params.toString()}`);
+  };
+
+  const handleViewChange = (view: ViewType) => {
+    setCurrentView(view);
+    const params = new URLSearchParams(window.location.search);
+    params.set('view', view);
+    router.push(`?${params.toString()}`);
+  };
+
+  const handleTabChange = (tab: string) => {
+    setActiveTab(tab);
+    const params = new URLSearchParams(window.location.search);
+    params.set('tab', tab);
+    router.push(`?${params.toString()}`);
+  };
+
+  const handleNotificationUpdate = async (
+    notificationId: string,
+    action: 'read' | 'dismiss',
+  ) => {
+    // Integrate with Team E's notification system
+    console.log(`Notification ${notificationId} marked as ${action}`);
+
+    // In production, this would call Team E's API:
+    // await fetch('/api/notifications/' + notificationId, {
+    //   method: 'PATCH',
+    //   body: JSON.stringify({ status: action }),
+    // })
+  };
+
+  if (error) {
+    return <ClientPageError error={error} retry={fetchClients} />;
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Tab Navigation */}
+      <div className="border-b border-gray-200">
+        <div className="flex space-x-8">
+          <button
+            onClick={() => handleTabChange('clients')}
+            className={`py-2 px-1 border-b-2 font-medium text-sm transition-colors duration-150 ${
+              activeTab === 'clients'
+                ? 'border-primary-500 text-primary-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            }`}
+          >
+            Clients ({clients.length})
+          </button>
+          <button
+            onClick={() => handleTabChange('notifications')}
+            className={`py-2 px-1 border-b-2 font-medium text-sm transition-colors duration-150 flex items-center gap-2 ${
+              activeTab === 'notifications'
+                ? 'border-primary-500 text-primary-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            }`}
+            data-testid="client-notifications"
+          >
+            <Bell className="w-4 h-4" />
+            Notifications
+          </button>
+        </div>
+      </div>
+
+      {loading ? (
+        <ClientPageLoading />
+      ) : (
+        <>
+          {activeTab === 'clients' ? (
+            <ClientListViews
+              clients={clients}
+              onSearch={handleSearch}
+              onFilter={handleFilter}
+              onSort={handleSort}
+              searchQuery={searchQuery}
+              currentView={currentView}
+              onViewChange={handleViewChange}
+              onTagFilter={() => {}}
+              selectedTagIds={[]}
+            />
+          ) : (
+            <ClientNotifications
+              onNotificationUpdate={handleNotificationUpdate}
+            />
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// Main Page Component with Suspense boundary
+export default function ClientsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{
+    view?: string;
+    status?: string;
+    search?: string;
+    sort?: string;
+    tab?: string;
+  }>;
+}) {
+  return (
+    <Suspense fallback={<ClientPageLoading />}>
+      <ClientPageContentWrapper searchParams={searchParams} />
+    </Suspense>
+  );
+}
+
+function ClientPageContentWrapper({
+  searchParams,
+}: {
+  searchParams: Promise<{
+    view?: string;
+    status?: string;
+    search?: string;
+    sort?: string;
+    tab?: string;
+  }>;
+}) {
+  const [resolvedParams, setResolvedParams] = useState<{
+    view?: string;
+    status?: string;
+    search?: string;
+    sort?: string;
+    tab?: string;
+  }>({});
+
+  useEffect(() => {
+    searchParams.then(setResolvedParams);
+  }, [searchParams]);
+
+  return <ClientPageContent searchParams={resolvedParams} />;
+}

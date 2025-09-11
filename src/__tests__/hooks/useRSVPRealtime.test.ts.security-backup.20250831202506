@@ -1,0 +1,165 @@
+/**
+ * @vitest-environment jsdom
+ */
+
+import { renderHook, act, waitFor } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { useRSVPRealtime } from '@/hooks/useRSVPRealtime'
+// Mock the realtime manager
+const mockSubscribe = jest.fn()
+const mockUnsubscribe = jest.fn()
+const mockBroadcast = jest.fn()
+jest.mock('@/lib/realtime/rsvp-realtime', () => ({
+  rsvpRealtimeManager: {
+    subscribeToRSVPResponses: mockSubscribe,
+    unsubscribeFromRSVPResponses: mockUnsubscribe,
+    getConnectionStatus: jest.fn(() => 'connected'),
+    broadcastRSVPEvent: mockBroadcast,
+  }
+}))
+// Mock Supabase auth
+jest.mock('@supabase/auth-helpers-react', () => ({
+  useUser: () => ({ user: { id: 'user-123' } })
+// Mock fetch for API calls
+global.fetch = jest.fn()
+describe('useRSVPRealtime', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+    
+    // Mock successful API response for initial load
+    ;(global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        data: [
+          {
+            id: 'response-1',
+            guest_name: 'John Doe',
+            status: 'attending',
+            created_at: '2025-01-22T10:00:00Z'
+          },
+            id: 'response-2', 
+            guest_name: 'Jane Smith',
+            status: 'not_attending',
+            created_at: '2025-01-22T11:00:00Z'
+          }
+        ]
+      })
+    })
+    mockSubscribe.mockResolvedValue('channel-id')
+  })
+  it('should initialize with loading state', () => {
+    const { result } = renderHook(() => useRSVPRealtime({ eventId: 'test-event' }))
+    expect(result.current.isLoading).toBe(true)
+    expect(result.current.responses).toEqual([])
+    expect(result.current.totalResponses).toBe(0)
+  it('should load initial responses and calculate statistics', async () => {
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false)
+    expect(result.current.responses).toHaveLength(2)
+    expect(result.current.totalResponses).toBe(2)
+    expect(result.current.attendingCount).toBe(1)
+    expect(result.current.notAttendingCount).toBe(1)
+    expect(result.current.pendingCount).toBe(0)
+  it('should subscribe to real-time updates', async () => {
+    renderHook(() => useRSVPRealtime({ eventId: 'test-event' }))
+      expect(mockSubscribe).toHaveBeenCalledWith({
+        eventId: 'test-event',
+        onResponse: expect.any(Function),
+        onError: expect.any(Function),
+        onSubscribed: expect.any(Function),
+        onUnsubscribed: expect.any(Function)
+  it('should handle real-time INSERT events', async () => {
+    // Simulate real-time INSERT event
+    const insertEvent = {
+      type: 'INSERT' as const,
+      record: {
+        id: 'response-3',
+        event_id: 'test-event',
+        guest_name: 'Bob Wilson',
+        status: 'attending',
+        created_at: '2025-01-22T12:00:00Z'
+      },
+      timestamp: '2025-01-22T12:00:00Z',
+      eventId: 'event-123'
+    }
+    // Get the onResponse callback that was passed to subscribe
+    const subscribeCall = mockSubscribe.mock.calls[0][0]
+    act(() => {
+      subscribeCall.onResponse(insertEvent)
+    expect(result.current.responses).toHaveLength(3)
+    expect(result.current.totalResponses).toBe(3)
+    expect(result.current.attendingCount).toBe(2)
+    expect(result.current.lastUpdate).toBe('2025-01-22T12:00:00Z')
+  it('should handle real-time UPDATE events', async () => {
+    // Simulate real-time UPDATE event
+    const updateEvent = {
+      type: 'UPDATE' as const,
+        id: 'response-1',
+        guest_name: 'John Doe',
+        status: 'not_attending', // Changed from attending
+        created_at: '2025-01-22T10:00:00Z'
+      timestamp: '2025-01-22T12:30:00Z',
+      subscribeCall.onResponse(updateEvent)
+    expect(result.current.attendingCount).toBe(0)
+    expect(result.current.notAttendingCount).toBe(2)
+    expect(result.current.lastUpdate).toBe('2025-01-22T12:30:00Z')
+  it('should handle real-time DELETE events', async () => {
+    // Simulate real-time DELETE event
+    const deleteEvent = {
+      type: 'DELETE' as const,
+      timestamp: '2025-01-22T13:00:00Z',
+      subscribeCall.onResponse(deleteEvent)
+    expect(result.current.responses).toHaveLength(1)
+    expect(result.current.totalResponses).toBe(1)
+  it('should handle subscription errors', async () => {
+    const mockOnError = jest.fn()
+    const { result } = renderHook(() => 
+      useRSVPRealtime({ eventId: 'test-event', onError: mockOnError })
+    )
+      expect(mockSubscribe).toHaveBeenCalled()
+    const testError = new Error('Connection failed')
+      subscribeCall.onError(testError)
+    expect(result.current.error).toEqual(testError)
+    expect(result.current.isConnected).toBe(false)
+    expect(mockOnError).toHaveBeenCalledWith(testError)
+  it('should unsubscribe on unmount', () => {
+    const { unmount } = renderHook(() => useRSVPRealtime({ eventId: 'test-event' }))
+    unmount()
+    expect(mockUnsubscribe).toHaveBeenCalledWith('test-event')
+  it('should handle eventId changes', async () => {
+    const { result, rerender } = renderHook(
+      ({ eventId }) => useRSVPRealtime({ eventId }),
+      { initialProps: { eventId: 'test-event-1' } }
+      expect(mockSubscribe).toHaveBeenCalledWith(
+        expect.objectContaining({ eventId: 'test-event-1' })
+      )
+    // Change eventId
+    rerender({ eventId: 'test-event-2' })
+      expect(mockUnsubscribe).toHaveBeenCalledWith('test-event-1')
+        expect.objectContaining({ eventId: 'test-event-2' })
+  it('should provide refresh functionality', async () => {
+    // Clear previous fetch calls
+    ;(global.fetch as jest.Mock).mockClear()
+    // Mock new data for refresh
+    ;(global.fetch as jest.Mock).mockResolvedValueOnce({
+            id: 'response-3',
+            guest_name: 'New Guest',
+            created_at: '2025-01-22T14:00:00Z'
+    await act(async () => {
+      await result.current.refresh()
+    expect(global.fetch).toHaveBeenCalledWith('/api/rsvp/test-event/responses')
+    expect(result.current.responses[0].guest_name).toBe('New Guest')
+  it('should handle disabled state', () => {
+    renderHook(() => useRSVPRealtime({ eventId: 'test-event', enabled: false }))
+    expect(mockSubscribe).not.toHaveBeenCalled()
+  it('should calculate statistics correctly for complex scenarios', async () => {
+    // Mock complex response data
+          { id: '1', status: 'attending', dietary_restrictions: 'Vegan' },
+          { id: '2', status: 'attending', dietary_restrictions: null },
+          { id: '3', status: 'not_attending', dietary_restrictions: null },
+          { id: '4', status: 'pending', dietary_restrictions: 'Gluten-free' },
+          { id: '5', status: 'attending', dietary_restrictions: 'Allergies' },
+    expect(result.current.totalResponses).toBe(5)
+    expect(result.current.attendingCount).toBe(3)
+    expect(result.current.pendingCount).toBe(1)
+})

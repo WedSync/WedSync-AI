@@ -1,0 +1,976 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WS-172 Offline Functionality Interactive Test</title>
+    <style>
+        /* Untitled UI styling system */
+        :root {
+            --color-primary: #6366f1;
+            --color-primary-50: #eef2ff;
+            --color-primary-100: #e0e7ff;
+            --color-primary-500: #6366f1;
+            --color-primary-600: #4f46e5;
+            --color-gray-50: #f9fafb;
+            --color-gray-100: #f3f4f6;
+            --color-gray-200: #e5e7eb;
+            --color-gray-300: #d1d5db;
+            --color-gray-500: #6b7280;
+            --color-gray-700: #374151;
+            --color-gray-900: #111827;
+            --color-green-50: #f0fdf4;
+            --color-green-500: #22c55e;
+            --color-red-50: #fef2f2;
+            --color-red-500: #ef4444;
+            --color-yellow-50: #fefce8;
+            --color-yellow-500: #eab308;
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background-color: var(--color-gray-50);
+            color: var(--color-gray-900);
+            line-height: 1.6;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 3rem;
+        }
+        
+        .header h1 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: var(--color-gray-900);
+            margin-bottom: 0.5rem;
+        }
+        
+        .header p {
+            color: var(--color-gray-600);
+            font-size: 1.1rem;
+        }
+        
+        .test-section {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            padding: 2rem;
+            margin-bottom: 2rem;
+        }
+        
+        .test-section h2 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            color: var(--color-gray-900);
+        }
+        
+        /* Offline Indicator Styles */
+        .offline-indicator {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.5rem 1rem;
+            border-radius: 8px;
+            font-size: 0.875rem;
+            font-weight: 500;
+            margin: 0.5rem;
+        }
+        
+        .offline-indicator.online {
+            background-color: var(--color-green-50);
+            color: var(--color-green-500);
+            border: 1px solid var(--color-green-500);
+        }
+        
+        .offline-indicator.offline {
+            background-color: var(--color-red-50);
+            color: var(--color-red-500);
+            border: 1px solid var(--color-red-500);
+        }
+        
+        .offline-indicator.connecting {
+            background-color: var(--color-yellow-50);
+            color: var(--color-yellow-500);
+            border: 1px solid var(--color-yellow-500);
+        }
+        
+        .offline-indicator .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 0.5rem;
+            background-color: currentColor;
+        }
+        
+        .offline-indicator .details {
+            font-size: 0.75rem;
+            opacity: 0.8;
+            margin-left: 0.5rem;
+        }
+        
+        /* Form Styles */
+        .offline-form {
+            background: white;
+            border: 1px solid var(--color-gray-200);
+            border-radius: 8px;
+            padding: 1.5rem;
+        }
+        
+        .form-group {
+            margin-bottom: 1rem;
+        }
+        
+        .form-group label {
+            display: block;
+            font-weight: 500;
+            color: var(--color-gray-700);
+            margin-bottom: 0.5rem;
+        }
+        
+        .form-group input, 
+        .form-group textarea,
+        .form-group select {
+            width: 100%;
+            padding: 0.75rem;
+            border: 1px solid var(--color-gray-300);
+            border-radius: 6px;
+            font-size: 1rem;
+        }
+        
+        .form-group input:focus,
+        .form-group textarea:focus,
+        .form-group select:focus {
+            outline: none;
+            border-color: var(--color-primary-500);
+            box-shadow: 0 0 0 3px var(--color-primary-50);
+        }
+        
+        /* Button Styles */
+        .btn {
+            padding: 0.75rem 1.5rem;
+            border: none;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .btn-primary {
+            background-color: var(--color-primary-500);
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            background-color: var(--color-primary-600);
+        }
+        
+        .btn-secondary {
+            background-color: var(--color-gray-200);
+            color: var(--color-gray-700);
+        }
+        
+        .btn-secondary:hover {
+            background-color: var(--color-gray-300);
+        }
+        
+        /* Sync Status Styles */
+        .sync-status {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            padding: 1rem;
+            background: var(--color-gray-50);
+            border-radius: 8px;
+            margin: 1rem 0;
+        }
+        
+        .sync-icon {
+            width: 24px;
+            height: 24px;
+            border: 2px solid var(--color-primary-500);
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        .sync-icon.idle {
+            border-color: var(--color-gray-300);
+            animation: none;
+        }
+        
+        .sync-icon.success {
+            border-color: var(--color-green-500);
+            animation: none;
+        }
+        
+        .sync-icon.error {
+            border-color: var(--color-red-500);
+            animation: none;
+        }
+        
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+        
+        /* Queue Display */
+        .queue-display {
+            border: 1px solid var(--color-gray-200);
+            border-radius: 8px;
+            margin: 1rem 0;
+        }
+        
+        .queue-header {
+            padding: 1rem;
+            background: var(--color-gray-50);
+            border-bottom: 1px solid var(--color-gray-200);
+            font-weight: 600;
+        }
+        
+        .queue-item {
+            padding: 1rem;
+            border-bottom: 1px solid var(--color-gray-100);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .queue-item:last-child {
+            border-bottom: none;
+        }
+        
+        .queue-item-info {
+            flex: 1;
+        }
+        
+        .queue-item-title {
+            font-weight: 500;
+            margin-bottom: 0.25rem;
+        }
+        
+        .queue-item-meta {
+            font-size: 0.875rem;
+            color: var(--color-gray-500);
+        }
+        
+        .priority-badge {
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        
+        .priority-emergency {
+            background: var(--color-red-50);
+            color: var(--color-red-500);
+        }
+        
+        .priority-high {
+            background: var(--color-yellow-50);
+            color: var(--color-yellow-500);
+        }
+        
+        .priority-medium {
+            background: var(--color-primary-50);
+            color: var(--color-primary-500);
+        }
+        
+        .priority-low {
+            background: var(--color-gray-100);
+            color: var(--color-gray-500);
+        }
+        
+        /* Wedding Day Mode */
+        .wedding-day-banner {
+            background: linear-gradient(135deg, var(--color-primary-500), #8b5cf6);
+            color: white;
+            padding: 1.5rem;
+            border-radius: 12px;
+            text-align: center;
+            margin-bottom: 2rem;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        
+        .wedding-day-banner h3 {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+        }
+        
+        /* Connection Quality */
+        .connection-quality {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin: 1rem 0;
+        }
+        
+        .quality-bars {
+            display: flex;
+            gap: 2px;
+            align-items: flex-end;
+        }
+        
+        .quality-bar {
+            width: 4px;
+            background: var(--color-gray-300);
+            border-radius: 2px;
+        }
+        
+        .quality-bar.active {
+            background: var(--color-green-500);
+        }
+        
+        .quality-bar:nth-child(1) { height: 8px; }
+        .quality-bar:nth-child(2) { height: 12px; }
+        .quality-bar:nth-child(3) { height: 16px; }
+        .quality-bar:nth-child(4) { height: 20px; }
+        
+        /* Error Recovery Panel */
+        .error-recovery-panel {
+            background: var(--color-red-50);
+            border: 1px solid var(--color-red-200);
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin: 1rem 0;
+        }
+        
+        .error-recovery-panel h4 {
+            color: var(--color-red-500);
+            font-weight: 600;
+            margin-bottom: 1rem;
+        }
+        
+        .error-actions {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+        
+        .test-controls {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+            margin: 2rem 0;
+            flex-wrap: wrap;
+        }
+        
+        .test-log {
+            background: #1f2937;
+            color: #f3f4f6;
+            padding: 1rem;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.875rem;
+            max-height: 200px;
+            overflow-y: auto;
+            margin: 1rem 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>WS-172 Offline Functionality Test</h1>
+            <p>Interactive testing of enhanced offline features for wedding coordinators</p>
+        </div>
+
+        <!-- Wedding Day Mode Banner -->
+        <div id="weddingDayBanner" class="wedding-day-banner" style="display: none;">
+            <h3>🎉 Wedding Day Mode Active</h3>
+            <p>Priority handling enabled • Fast sync mode • Emergency alerts ready</p>
+        </div>
+
+        <!-- Connection Status -->
+        <div class="test-section">
+            <h2>Connection & Offline Status</h2>
+            <div class="offline-indicator" id="offlineIndicator" data-testid="offline-indicator">
+                <div class="status-dot"></div>
+                <span id="connectionStatus">Online</span>
+                <div class="details" id="connectionDetails">
+                    Quality: Excellent • Latency: <span id="latency">25ms</span>
+                </div>
+            </div>
+            
+            <div class="connection-quality">
+                <span>Connection Quality:</span>
+                <div class="quality-bars">
+                    <div class="quality-bar active"></div>
+                    <div class="quality-bar active"></div>
+                    <div class="quality-bar active"></div>
+                    <div class="quality-bar active"></div>
+                </div>
+                <span id="qualityText">Excellent (4/4)</span>
+            </div>
+        </div>
+
+        <!-- Test Controls -->
+        <div class="test-controls">
+            <button class="btn btn-secondary" onclick="simulateOffline()" id="offlineBtn">Go Offline</button>
+            <button class="btn btn-secondary" onclick="simulateSlowConnection()">Simulate Slow Connection</button>
+            <button class="btn btn-secondary" onclick="simulateIntermittent()">Simulate Intermittent</button>
+            <button class="btn btn-primary" onclick="toggleWeddingDayMode()">Toggle Wedding Day Mode</button>
+            <button class="btn btn-secondary" onclick="clearTestData()">Clear Test Data</button>
+        </div>
+
+        <!-- Offline Form Testing -->
+        <div class="test-section">
+            <h2>Emergency Contact Form (Priority 10)</h2>
+            <div class="offline-form">
+                <div class="form-group">
+                    <label for="contactName">Emergency Contact Name</label>
+                    <input type="text" id="contactName" data-testid="contact-name" placeholder="Venue Coordinator">
+                </div>
+                <div class="form-group">
+                    <label for="contactPhone">Phone Number</label>
+                    <input type="tel" id="contactPhone" data-testid="contact-phone" placeholder="+1 (555) 123-4567">
+                </div>
+                <div class="form-group">
+                    <label for="contactRole">Role</label>
+                    <select id="contactRole" data-testid="contact-role">
+                        <option value="venue-coordinator">Venue Coordinator</option>
+                        <option value="wedding-planner">Wedding Planner</option>
+                        <option value="emergency-contact">Emergency Contact</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="emergencyNotes">Emergency Notes</label>
+                    <textarea id="emergencyNotes" data-testid="emergency-notes" rows="3" placeholder="Additional emergency information..."></textarea>
+                </div>
+                <button class="btn btn-primary" onclick="submitEmergencyForm()" data-testid="submit-emergency">
+                    Save Emergency Contact
+                </button>
+                <div id="autoSaveIndicator" data-testid="auto-save-indicator" style="display: none; margin-top: 0.5rem; color: var(--color-green-500); font-size: 0.875rem;">
+                    ✓ Auto-saved
+                </div>
+            </div>
+        </div>
+
+        <!-- Timeline Update Form -->
+        <div class="test-section">
+            <h2>Timeline Update Form (Priority 8)</h2>
+            <div class="offline-form">
+                <div class="form-group">
+                    <label for="eventTitle">Event Title</label>
+                    <input type="text" id="eventTitle" data-testid="event-title" placeholder="Ceremony Start">
+                </div>
+                <div class="form-group">
+                    <label for="eventTime">Time</label>
+                    <input type="time" id="eventTime" data-testid="event-time" value="15:00">
+                </div>
+                <div class="form-group">
+                    <label for="eventStatus">Status</label>
+                    <select id="eventStatus" data-testid="event-status">
+                        <option value="on-time">On Time</option>
+                        <option value="delayed">Delayed</option>
+                        <option value="in-progress">In Progress</option>
+                        <option value="completed">Completed</option>
+                    </select>
+                </div>
+                <button class="btn btn-primary" onclick="submitTimelineForm()" data-testid="submit-timeline">
+                    Update Timeline
+                </button>
+            </div>
+        </div>
+
+        <!-- Sync Status & Queue -->
+        <div class="test-section">
+            <h2>Sync Status & Queue Management</h2>
+            <div class="sync-status" data-testid="sync-status-indicator">
+                <div class="sync-icon idle" id="syncIcon"></div>
+                <div>
+                    <div id="syncStatusText">Sync Status: Idle</div>
+                    <div id="syncProgress" data-testid="sync-progress" style="font-size: 0.875rem; color: var(--color-gray-500);">
+                        0 items pending
+                    </div>
+                </div>
+            </div>
+
+            <div class="queue-display" id="queueDisplay">
+                <div class="queue-header">
+                    Sync Queue (<span id="queueCount">0</span> items)
+                </div>
+                <div id="queueItems">
+                    <div style="padding: 2rem; text-align: center; color: var(--color-gray-500);">
+                        No items in queue
+                    </div>
+                </div>
+            </div>
+
+            <div style="margin-top: 1rem;">
+                <button class="btn btn-primary" onclick="forceSync()" data-testid="force-sync">Force Sync</button>
+                <button class="btn btn-secondary" onclick="clearQueue()" data-testid="clear-queue">Clear Queue</button>
+            </div>
+        </div>
+
+        <!-- Error Recovery Panel -->
+        <div class="error-recovery-panel" id="errorRecoveryPanel" data-testid="error-recovery-panel" style="display: none;">
+            <h4>⚠️ Sync Error Detected</h4>
+            <p id="errorMessage">Unable to sync data. Check your connection and try again.</p>
+            <div class="error-actions" style="margin-top: 1rem;">
+                <button class="btn btn-primary" onclick="retrySync()" data-testid="retry-sync">Retry Sync</button>
+                <button class="btn btn-secondary" onclick="skipFailed()" data-testid="skip-failed-items">Skip Failed Items</button>
+                <button class="btn btn-secondary" onclick="escalateError()" data-testid="escalate-to-support">Escalate to Support</button>
+                <button class="btn btn-secondary" onclick="dismissError()" data-testid="dismiss-error">Dismiss</button>
+            </div>
+        </div>
+
+        <!-- Test Performance Metrics -->
+        <div class="test-section">
+            <h2>Performance Metrics</h2>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem;">
+                <div style="text-align: center; padding: 1rem; background: var(--color-gray-50); border-radius: 8px;">
+                    <div style="font-size: 2rem; font-weight: 700; color: var(--color-primary-500);" id="avgResponseTime">< 50ms</div>
+                    <div style="font-size: 0.875rem; color: var(--color-gray-600);">Avg Response Time</div>
+                </div>
+                <div style="text-align: center; padding: 1rem; background: var(--color-gray-50); border-radius: 8px;">
+                    <div style="font-size: 2rem; font-weight: 700; color: var(--color-green-500);" id="encryptedItems">0</div>
+                    <div style="font-size: 0.875rem; color: var(--color-gray-600);">Encrypted Items</div>
+                </div>
+                <div style="text-align: center; padding: 1rem; background: var(--color-gray-50); border-radius: 8px;">
+                    <div style="font-size: 2rem; font-weight: 700; color: var(--color-primary-500);" id="queueProcessed">0</div>
+                    <div style="font-size: 0.875rem; color: var(--color-gray-600);">Items Processed</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Test Log -->
+        <div class="test-section">
+            <h2>Test Activity Log</h2>
+            <div class="test-log" id="testLog"></div>
+            <button class="btn btn-secondary" onclick="clearLog()">Clear Log</button>
+        </div>
+    </div>
+
+    <script>
+        // Simulated offline functionality for testing
+        let isOnline = navigator.onLine;
+        let connectionQuality = 'excellent';
+        let weddingDayMode = false;
+        let syncQueue = [];
+        let processedItems = 0;
+        let encryptedItemCount = 0;
+        let performanceMetrics = [];
+        
+        // Auto-save timer
+        let autoSaveTimer;
+        
+        // Log function
+        function log(message) {
+            const timestamp = new Date().toLocaleTimeString();
+            const logElement = document.getElementById('testLog');
+            logElement.innerHTML += `[${timestamp}] ${message}\n`;
+            logElement.scrollTop = logElement.scrollHeight;
+            console.log(`[WS-172 Test] ${message}`);
+        }
+        
+        // Initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            log('WS-172 Offline Functionality Test initialized');
+            updateConnectionStatus();
+            
+            // Add input listeners for auto-save simulation
+            const inputs = document.querySelectorAll('input, textarea, select');
+            inputs.forEach(input => {
+                input.addEventListener('input', simulateAutoSave);
+            });
+            
+            // Simulate performance monitoring
+            setInterval(updatePerformanceMetrics, 2000);
+        });
+        
+        // Connection status management
+        function updateConnectionStatus() {
+            const indicator = document.getElementById('offlineIndicator');
+            const status = document.getElementById('connectionStatus');
+            const details = document.getElementById('connectionDetails');
+            const latency = document.getElementById('latency');
+            
+            if (isOnline) {
+                indicator.className = 'offline-indicator online';
+                status.textContent = 'Online';
+                
+                const latencyValue = connectionQuality === 'excellent' ? '25ms' : 
+                                   connectionQuality === 'good' ? '150ms' : 
+                                   connectionQuality === 'poor' ? '800ms' : '2000ms';
+                latency.textContent = latencyValue;
+                
+                details.innerHTML = `Quality: ${connectionQuality.charAt(0).toUpperCase() + connectionQuality.slice(1)} • Latency: ${latencyValue}`;
+            } else {
+                indicator.className = 'offline-indicator offline';
+                status.textContent = 'Offline';
+                details.innerHTML = 'Working offline • Data will sync when connection restored';
+            }
+            
+            updateConnectionQuality();
+        }
+        
+        function updateConnectionQuality() {
+            const bars = document.querySelectorAll('.quality-bar');
+            const qualityText = document.getElementById('qualityText');
+            
+            let activeBars = 0;
+            switch(connectionQuality) {
+                case 'excellent': activeBars = 4; break;
+                case 'good': activeBars = 3; break;
+                case 'poor': activeBars = 2; break;
+                case 'very-poor': activeBars = 1; break;
+                default: activeBars = 0;
+            }
+            
+            bars.forEach((bar, index) => {
+                bar.classList.toggle('active', index < activeBars);
+            });
+            
+            qualityText.textContent = `${connectionQuality.charAt(0).toUpperCase() + connectionQuality.slice(1)} (${activeBars}/4)`;
+        }
+        
+        // Network simulation functions
+        function simulateOffline() {
+            isOnline = !isOnline;
+            const btn = document.getElementById('offlineBtn');
+            btn.textContent = isOnline ? 'Go Offline' : 'Go Online';
+            
+            log(isOnline ? 'Connection restored' : 'Going offline - data will be queued');
+            updateConnectionStatus();
+            
+            if (isOnline) {
+                setTimeout(processSyncQueue, 1000);
+            }
+        }
+        
+        function simulateSlowConnection() {
+            connectionQuality = connectionQuality === 'excellent' ? 'poor' : 'excellent';
+            log(`Connection quality changed to: ${connectionQuality}`);
+            updateConnectionStatus();
+        }
+        
+        function simulateIntermittent() {
+            connectionQuality = 'poor';
+            updateConnectionStatus();
+            log('Simulating intermittent connection');
+            
+            let count = 0;
+            const interval = setInterval(() => {
+                isOnline = !isOnline;
+                updateConnectionStatus();
+                log(isOnline ? 'Connection restored' : 'Connection lost');
+                
+                if (++count >= 6) {
+                    clearInterval(interval);
+                    isOnline = true;
+                    connectionQuality = 'excellent';
+                    updateConnectionStatus();
+                    log('Connection stabilized');
+                }
+            }, 2000);
+        }
+        
+        // Wedding day mode
+        function toggleWeddingDayMode() {
+            weddingDayMode = !weddingDayMode;
+            const banner = document.getElementById('weddingDayBanner');
+            banner.style.display = weddingDayMode ? 'block' : 'none';
+            
+            log(`Wedding day mode ${weddingDayMode ? 'enabled' : 'disabled'}`);
+            
+            if (weddingDayMode) {
+                log('Priority escalation active - all items get higher priority');
+            }
+        }
+        
+        // Auto-save simulation
+        function simulateAutoSave() {
+            clearTimeout(autoSaveTimer);
+            const indicator = document.getElementById('autoSaveIndicator');
+            indicator.style.display = 'none';
+            
+            autoSaveTimer = setTimeout(() => {
+                indicator.style.display = 'block';
+                log('Form auto-saved locally');
+                setTimeout(() => {
+                    indicator.style.display = 'none';
+                }, 2000);
+            }, 1500);
+        }
+        
+        // Form submissions
+        function submitEmergencyForm() {
+            const name = document.getElementById('contactName').value;
+            const phone = document.getElementById('contactPhone').value;
+            const role = document.getElementById('contactRole').value;
+            const notes = document.getElementById('emergencyNotes').value;
+            
+            if (!name || !phone) {
+                alert('Please fill in required fields');
+                return;
+            }
+            
+            const priority = weddingDayMode ? 10 : 10; // Always high priority for emergency
+            const item = {
+                id: Date.now().toString(),
+                type: 'emergency-contact',
+                priority: priority,
+                data: { name, phone, role, notes },
+                timestamp: new Date().toISOString(),
+                weddingDay: weddingDayMode
+            };
+            
+            addToQueue(item);
+            log(`Emergency contact queued: ${name} (Priority: ${priority})`);
+            
+            // Clear form
+            document.getElementById('contactName').value = '';
+            document.getElementById('contactPhone').value = '';
+            document.getElementById('emergencyNotes').value = '';
+            
+            // Simulate encryption
+            encryptedItemCount++;
+            updatePerformanceMetrics();
+            
+            if (isOnline) {
+                setTimeout(() => processSyncQueue(), 500);
+            }
+        }
+        
+        function submitTimelineForm() {
+            const title = document.getElementById('eventTitle').value;
+            const time = document.getElementById('eventTime').value;
+            const status = document.getElementById('eventStatus').value;
+            
+            if (!title) {
+                alert('Please enter event title');
+                return;
+            }
+            
+            const priority = weddingDayMode ? 9 : 8; // Escalated on wedding day
+            const item = {
+                id: Date.now().toString(),
+                type: 'timeline-event',
+                priority: priority,
+                data: { title, time, status },
+                timestamp: new Date().toISOString(),
+                weddingDay: weddingDayMode
+            };
+            
+            addToQueue(item);
+            log(`Timeline update queued: ${title} (Priority: ${priority})`);
+            
+            // Clear form
+            document.getElementById('eventTitle').value = '';
+            
+            if (isOnline) {
+                setTimeout(() => processSyncQueue(), 500);
+            }
+        }
+        
+        // Queue management
+        function addToQueue(item) {
+            // Measure response time
+            const startTime = performance.now();
+            
+            syncQueue.push(item);
+            syncQueue.sort((a, b) => b.priority - a.priority); // Sort by priority
+            
+            const responseTime = performance.now() - startTime;
+            performanceMetrics.push(responseTime);
+            
+            updateQueueDisplay();
+            log(`Item added to queue in ${responseTime.toFixed(2)}ms`);
+        }
+        
+        function updateQueueDisplay() {
+            const queueCount = document.getElementById('queueCount');
+            const queueItems = document.getElementById('queueItems');
+            const syncProgress = document.getElementById('syncProgress');
+            
+            queueCount.textContent = syncQueue.length;
+            syncProgress.textContent = `${syncQueue.length} items pending`;
+            
+            if (syncQueue.length === 0) {
+                queueItems.innerHTML = '<div style="padding: 2rem; text-align: center; color: var(--color-gray-500);">No items in queue</div>';
+                return;
+            }
+            
+            queueItems.innerHTML = syncQueue.map(item => {
+                const priorityClass = item.priority >= 10 ? 'priority-emergency' :
+                                   item.priority >= 8 ? 'priority-high' :
+                                   item.priority >= 5 ? 'priority-medium' : 'priority-low';
+                
+                const priorityText = item.priority >= 10 ? 'Emergency' :
+                                   item.priority >= 8 ? 'High' :
+                                   item.priority >= 5 ? 'Medium' : 'Low';
+                
+                return `
+                    <div class="queue-item" data-testid="queue-item">
+                        <div class="queue-item-info">
+                            <div class="queue-item-title">${item.type.replace('-', ' ').replace(/\b\w/g, l => l.toUpperCase())}</div>
+                            <div class="queue-item-meta">
+                                ${new Date(item.timestamp).toLocaleTimeString()}
+                                ${item.weddingDay ? ' • Wedding Day' : ''}
+                            </div>
+                        </div>
+                        <div class="priority-badge ${priorityClass}">
+                            ${priorityText} (${item.priority})
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+        
+        function processSyncQueue() {
+            if (!isOnline || syncQueue.length === 0) return;
+            
+            const syncIcon = document.getElementById('syncIcon');
+            const syncStatusText = document.getElementById('syncStatusText');
+            
+            syncIcon.className = 'sync-icon';
+            syncStatusText.textContent = 'Sync Status: Syncing...';
+            
+            log(`Processing ${syncQueue.length} items in sync queue`);
+            
+            // Simulate processing time based on connection quality
+            const processTime = connectionQuality === 'excellent' ? 500 :
+                              connectionQuality === 'good' ? 1500 :
+                              connectionQuality === 'poor' ? 3000 : 5000;
+            
+            setTimeout(() => {
+                const itemCount = syncQueue.length;
+                processedItems += itemCount;
+                syncQueue = [];
+                
+                syncIcon.className = 'sync-icon success';
+                syncStatusText.textContent = 'Sync Status: Success';
+                
+                log(`Successfully synced ${itemCount} items`);
+                updateQueueDisplay();
+                updatePerformanceMetrics();
+                
+                setTimeout(() => {
+                    syncIcon.className = 'sync-icon idle';
+                    syncStatusText.textContent = 'Sync Status: Idle';
+                }, 2000);
+                
+            }, processTime);
+        }
+        
+        function forceSync() {
+            if (!isOnline) {
+                showErrorRecovery('Unable to sync while offline');
+                return;
+            }
+            
+            processSyncQueue();
+        }
+        
+        function clearQueue() {
+            syncQueue = [];
+            updateQueueDisplay();
+            log('Sync queue cleared');
+        }
+        
+        // Error recovery
+        function showErrorRecovery(message) {
+            const panel = document.getElementById('errorRecoveryPanel');
+            const messageElement = document.getElementById('errorMessage');
+            
+            messageElement.textContent = message;
+            panel.style.display = 'block';
+            
+            log(`Error: ${message}`);
+        }
+        
+        function retrySync() {
+            log('Retrying sync operation...');
+            setTimeout(() => {
+                if (Math.random() > 0.5) {
+                    dismissError();
+                    processSyncQueue();
+                    log('Retry successful');
+                } else {
+                    log('Retry failed - will attempt again');
+                }
+            }, 1000);
+        }
+        
+        function skipFailed() {
+            log('Skipping failed items');
+            syncQueue = syncQueue.filter(item => item.priority < 8); // Keep high priority items
+            updateQueueDisplay();
+            dismissError();
+        }
+        
+        function escalateError() {
+            log('Escalating to support - creating support ticket');
+            alert('Support ticket created: #WS-172-ERR-' + Date.now());
+            dismissError();
+        }
+        
+        function dismissError() {
+            document.getElementById('errorRecoveryPanel').style.display = 'none';
+            log('Error dismissed');
+        }
+        
+        // Performance metrics
+        function updatePerformanceMetrics() {
+            const avgTime = performanceMetrics.length > 0 ? 
+                performanceMetrics.reduce((a, b) => a + b, 0) / performanceMetrics.length : 0;
+            
+            document.getElementById('avgResponseTime').textContent = avgTime < 50 ? '< 50ms' : `${avgTime.toFixed(0)}ms`;
+            document.getElementById('encryptedItems').textContent = encryptedItemCount;
+            document.getElementById('queueProcessed').textContent = processedItems;
+        }
+        
+        // Utility functions
+        function clearTestData() {
+            syncQueue = [];
+            processedItems = 0;
+            encryptedItemCount = 0;
+            performanceMetrics = [];
+            
+            updateQueueDisplay();
+            updatePerformanceMetrics();
+            
+            // Reset forms
+            document.querySelectorAll('input, textarea').forEach(input => input.value = '');
+            document.querySelectorAll('select').forEach(select => select.selectedIndex = 0);
+            
+            log('Test data cleared');
+        }
+        
+        function clearLog() {
+            document.getElementById('testLog').innerHTML = '';
+        }
+        
+        // Online/offline event listeners
+        window.addEventListener('online', function() {
+            isOnline = true;
+            updateConnectionStatus();
+            log('Browser detected connection restored');
+            setTimeout(processSyncQueue, 1000);
+        });
+        
+        window.addEventListener('offline', function() {
+            isOnline = false;
+            updateConnectionStatus();
+            log('Browser detected connection lost');
+        });
+    </script>
+</body>
+</html>

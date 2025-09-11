@@ -1,0 +1,143 @@
+'use client'
+
+import React, { useEffect, useRef, useState } from 'react'
+import { cn } from '@/lib/utils'
+import { useHapticFeedback } from '@/hooks/useHapticFeedback'
+
+interface TouchOptimizedButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+  priority: 'critical' | 'primary' | 'secondary'
+  context: 'photo' | 'client' | 'schedule' | 'emergency'
+  icon?: React.ReactNode
+  children: React.ReactNode
+  hapticFeedback?: boolean
+  emergencyAction?: boolean
+  className?: string
+}
+
+export const TouchOptimizedButton: React.FC<TouchOptimizedButtonProps> = ({
+  priority,
+  context,
+  icon,
+  children,
+  hapticFeedback = true,
+  emergencyAction = false,
+  className,
+  onClick,
+  disabled,
+  ...props
+}) => {
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  const [isPressed, setIsPressed] = useState(false)
+  const haptics = useHapticFeedback()
+
+  const handleTouchStart = (e: React.TouchEvent<HTMLButtonElement>) => {
+    if (disabled) return
+    
+    setIsPressed(true)
+    
+    if (hapticFeedback) {
+      const feedbackType = priority === 'critical' ? 'medium' : 'light'
+      haptics[feedbackType]()
+    }
+  }
+
+  const handleTouchEnd = (e: React.TouchEvent<HTMLButtonElement>) => {
+    if (disabled) return
+    setIsPressed(false)
+  }
+
+  const handleClick = (e: React.MouseEvent<HTMLButtonElement>) => {
+    if (disabled) return
+    
+    e.preventDefault()
+    
+    if (hapticFeedback && priority === 'critical') {
+      haptics.success()
+    }
+    
+    onClick?.(e)
+  }
+
+  const baseClasses = cn(
+    'relative inline-flex items-center justify-center rounded-lg font-medium transition-all duration-150',
+    'touch-manipulation select-none outline-none focus-visible:ring-2 focus-visible:ring-offset-2',
+    'active:scale-95 disabled:opacity-50 disabled:pointer-events-none',
+    
+    {
+      'min-h-[56px] min-w-[56px] px-6 py-3 text-base': priority === 'critical',
+      'min-h-[48px] min-w-[48px] px-4 py-2 text-sm': priority === 'primary',
+      'min-h-[44px] min-w-[44px] px-3 py-2 text-sm': priority === 'secondary',
+    },
+    
+    {
+      'bg-slate-900 text-white hover:bg-slate-800 focus-visible:ring-slate-500': 
+        context === 'photo' && !emergencyAction,
+      
+      'bg-blue-600 text-white hover:bg-blue-700 focus-visible:ring-blue-500': 
+        context === 'client' && !emergencyAction,
+      
+      'bg-green-600 text-white hover:bg-green-700 focus-visible:ring-green-500': 
+        context === 'schedule' && !emergencyAction,
+      
+      'bg-red-600 text-white hover:bg-red-700 focus-visible:ring-red-500 shadow-lg': 
+        context === 'emergency' || emergencyAction,
+    },
+    
+    {
+      'bg-slate-700': isPressed && context === 'photo' && !emergencyAction,
+      'bg-blue-800': isPressed && context === 'client' && !emergencyAction,
+      'bg-green-800': isPressed && context === 'schedule' && !emergencyAction,
+      'bg-red-800': isPressed && (context === 'emergency' || emergencyAction),
+    },
+    
+    className
+  )
+
+  return (
+    <button
+      ref={buttonRef}
+      className={baseClasses}
+      onClick={handleClick}
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
+      disabled={disabled}
+      {...props}
+    >
+      <div className="flex items-center justify-center gap-2">
+        {icon && <span className="flex-shrink-0">{icon}</span>}
+        <span className="font-medium">{children}</span>
+      </div>
+      
+      <div 
+        className={cn(
+          'absolute inset-0 rounded-lg transition-opacity duration-150 pointer-events-none',
+          'bg-white/10',
+          {
+            'opacity-100': isPressed,
+            'opacity-0': !isPressed,
+          }
+        )}
+      />
+      
+      {emergencyAction && (
+        <div className="absolute inset-0 rounded-lg animate-pulse bg-red-400/20 pointer-events-none" />
+      )}
+    </button>
+  )
+}
+
+export const PhotoCaptureButton: React.FC<Omit<TouchOptimizedButtonProps, 'priority' | 'context'>> = (props) => (
+  <TouchOptimizedButton priority="critical" context="photo" {...props} />
+)
+
+export const ClientContactButton: React.FC<Omit<TouchOptimizedButtonProps, 'priority' | 'context'>> = (props) => (
+  <TouchOptimizedButton priority="primary" context="client" {...props} />
+)
+
+export const ScheduleActionButton: React.FC<Omit<TouchOptimizedButtonProps, 'priority' | 'context'>> = (props) => (
+  <TouchOptimizedButton priority="primary" context="schedule" {...props} />
+)
+
+export const EmergencyButton: React.FC<Omit<TouchOptimizedButtonProps, 'priority' | 'context' | 'emergencyAction'>> = (props) => (
+  <TouchOptimizedButton priority="critical" context="emergency" emergencyAction={true} {...props} />
+)

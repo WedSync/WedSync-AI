@@ -1,0 +1,79 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { MRRCalculator } from '@/lib/metrics/mrr-calculator';
+import { z } from 'zod';
+
+const mrrQuerySchema = z.object({
+  startDate: z.string().optional(),
+  endDate: z.string().optional(),
+  granularity: z.enum(['daily', 'weekly', 'monthly']).default('monthly'),
+});
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const { data: { user }, error } = await supabase.auth.getUser();
+    
+    if (error || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    // Check for executive/admin role access
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('role, organization_id')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!profile || !['admin', 'owner', 'executive'].includes(profile.role)) {
+      return NextResponse.json(
+        { error: 'Unauthorized - Executive access required' },
+        { status: 403 }
+      );
+    }
+
+    const url = new URL(request.url);
+    const queryParams = {
+      startDate: url.searchParams.get('startDate') || undefined,
+      endDate: url.searchParams.get('endDate') || undefined,
+      granularity: url.searchParams.get('granularity') || 'monthly',
+    };
+
+    const validatedData = mrrQuerySchema.parse(queryParams);
+
+    const calculator = new MRRCalculator(supabase);
+    
+    // Calculate comprehensive MRR metrics
+    const mrrMetrics = await calculator.calculateMRRMetrics({
+      startDate: validatedData.startDate 
+        ? new Date(validatedData.startDate)
+        : new Date(Date.now() - 365 * 24 * 60 * 60 * 1000), // 1 year ago
+      endDate: validatedData.endDate
+        ? new Date(validatedData.endDate)
+        : new Date(),
+      granularity: validatedData.granularity as 'daily' | 'weekly' | 'monthly',
+    });
+
+    // Add wedding season context
+    const seasonalInsights = await calculator.analyzeSeasonalTrends(mrrMetrics);
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        ...mrrMetrics,
+        seasonalInsights,
+        calculatedAt: new Date().toISOString(),
+      },
+    });
+
+  } catch (error) {
+    console.error('MRR API error:', error);
+    return NextResponse.json(
+      { error: 'Failed to calculate MRR metrics' },
+      { status: 500 }
+    );
+  }
+}

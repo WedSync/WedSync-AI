@@ -1,0 +1,228 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { rateLimit } from '@/lib/ratelimit';
+import NodeCache from 'node-cache';
+
+// Server-side cache with 5-minute TTL for analytics data
+const analyticsCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
+
+// Performance monitoring for API endpoints
+const performanceLogger = {
+  logQuery: (queryName: string, duration: number, supplierId: string) => {
+    console.log(`[ANALYTICS-API] ${queryName}: ${duration.toFixed(2)}ms for supplier ${supplierId}`);
+    
+    // In production, send to monitoring service
+    if (process.env.NODE_ENV === 'production') {
+      // TODO: Send metrics to monitoring service (DataDog, New Relic, etc.)
+    }
+  },
+  
+  logCacheHit: (key: string) => {
+    console.log(`[ANALYTICS-CACHE] HIT: ${key}`);
+  },
+  
+  logCacheMiss: (key: string) => {
+    console.log(`[ANALYTICS-CACHE] MISS: ${key}`);
+  }
+};
+
+export async function GET(request: NextRequest) {
+  const startTime = performance.now();
+  
+  try {
+    // Rate limiting - 30 requests per minute for analytics
+    const rateLimitResult = await rateLimit(
+      request,
+      30, // requests
+      60 * 1000 // window in milliseconds (1 minute)
+    );
+    
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { error: 'Too many requests. Please try again later.' },
+        { status: 429 }
+      );
+    }
+
+    const searchParams = request.nextUrl.searchParams;
+    const supplierId = searchParams.get('supplierId');
+    const timeRange = searchParams.get('timeRange') || '30d';
+
+    // Input validation
+    if (!supplierId) {
+      return NextResponse.json(
+        { error: 'Missing supplierId parameter' },
+        { status: 400 }
+      );
+    }
+
+    // Validate timeRange to prevent injection
+    const validTimeRanges = ['7d', '30d', '90d'];
+    if (!validTimeRanges.includes(timeRange)) {
+      return NextResponse.json(
+        { error: 'Invalid timeRange parameter' },
+        { status: 400 }
+      );
+    }
+
+    // Check server-side cache
+    const cacheKey = `analytics_${supplierId}_${timeRange}`;
+    const cachedData = analyticsCache.get(cacheKey);
+    
+    if (cachedData) {
+      performanceLogger.logCacheHit(cacheKey);
+      return NextResponse.json({
+        data: cachedData,
+        cached: true,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    performanceLogger.logCacheMiss(cacheKey);
+
+    const supabase = createClient();
+    
+    // Verify supplier access
+    const { data: supplier, error: supplierError } = await supabase
+      .from('user_profiles')
+      .select('id, organization_id')
+      .eq('id', supplierId)
+      .single();
+
+    if (supplierError || !supplier) {
+      return NextResponse.json(
+        { error: 'Unauthorized access' },
+        { status: 401 }
+      );
+    }
+
+    const queryStartTime = performance.now();
+
+    // Calculate date range for queries
+    const now = new Date();
+    const daysBack = timeRange === '7d' ? 7 : timeRange === '30d' ? 30 : 90;
+    const startDate = new Date(now.getTime() - (daysBack * 24 * 60 * 60 * 1000));
+
+    // Optimized parallel queries for analytics data
+    const [
+      summaryResult,
+      segmentsResult,
+      clientsResult,
+      trendsResult,
+      activityStatusResult
+    ] = await Promise.all([
+      // Summary metrics
+      supabase.rpc('get_client_analytics_summary', {
+        supplier_id: supplierId,
+        start_date: startDate.toISOString(),
+        end_date: now.toISOString()
+      }),
+      
+      // Client segments distribution
+      supabase.rpc('get_client_segments_distribution', {
+        supplier_id: supplierId
+      }),
+      
+      // Client details with engagement scores
+      supabase.rpc('get_client_engagement_details', {
+        supplier_id: supplierId,
+        start_date: startDate.toISOString(),
+        end_date: now.toISOString(),
+        limit_count: 100
+      }),
+      
+      // Engagement trends over time
+      supabase.rpc('get_engagement_trends', {
+        supplier_id: supplierId,
+        start_date: startDate.toISOString(),
+        end_date: now.toISOString(),
+        date_granularity: timeRange === '7d' ? 'day' : 'week'
+      }),
+      
+      // Activity status distribution
+      supabase.rpc('get_activity_status_distribution', {
+        supplier_id: supplierId,
+        start_date: startDate.toISOString(),
+        end_date: now.toISOString()
+      })
+    ]);
+
+    const queryDuration = performance.now() - queryStartTime;
+    performanceLogger.logQuery('parallel_analytics_queries', queryDuration, supplierId);
+
+    // Check for query errors
+    const errors = [
+      summaryResult.error,
+      segmentsResult.error, 
+      clientsResult.error,
+      trendsResult.error,
+      activityStatusResult.error
+    ].filter(Boolean);
+
+    if (errors.length > 0) {
+      console.error('Analytics query errors:', errors);
+      return NextResponse.json(
+        { error: 'Failed to fetch analytics data' },
+        { status: 500 }
+      );
+    }
+
+    // Transform and structure the response
+    const analyticsData = {
+      summary: summaryResult.data?.[0] || {
+        total_clients: 0,
+        average_engagement_score: 0,
+        total_open_alerts: 0,
+        at_risk_clients: 0,
+        ghost_clients: 0
+      },
+      segments: segmentsResult.data?.reduce((acc: Record<string, number>, item: any) => {
+        acc[item.segment] = item.count;
+        return acc;
+      }, {}) || {},
+      activity_status: activityStatusResult.data?.reduce((acc: Record<string, number>, item: any) => {
+        acc[item.status] = item.count;
+        return acc;
+      }, {}) || {},
+      clients: clientsResult.data || [],
+      engagement_trends: trendsResult.data || [],
+      last_refreshed: new Date().toISOString()
+    };
+
+    // Cache the result
+    analyticsCache.set(cacheKey, analyticsData);
+    
+    const totalDuration = performance.now() - startTime;
+    performanceLogger.logQuery('total_request', totalDuration, supplierId);
+
+    return NextResponse.json({
+      data: analyticsData,
+      cached: false,
+      timestamp: new Date().toISOString(),
+      performance: {
+        total_duration_ms: totalDuration.toFixed(2),
+        query_duration_ms: queryDuration.toFixed(2),
+        cache_hit: false
+      }
+    });
+
+  } catch (error) {
+    console.error('Analytics API error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+// OPTIONS method for CORS
+export async function OPTIONS() {
+  return new Response(null, {
+    status: 200,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    },
+  });
+}

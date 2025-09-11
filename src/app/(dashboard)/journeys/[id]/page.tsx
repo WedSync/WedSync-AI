@@ -1,0 +1,97 @@
+'use client';
+
+import React, { useEffect, useState } from 'react';
+import { useParams, useRouter } from 'next/navigation';
+import { JourneyCanvas } from '@/components/journey-builder';
+import { Button } from '@/components/ui/button';
+import { ArrowLeft, Save, Play, Settings } from 'lucide-react';
+import Link from 'next/link';
+
+export default function JourneyEditPage() {
+  const params = useParams();
+  const router = useRouter();
+  const canvasId = params.id as string;
+  const [canvasName, setCanvasName] = useState('');
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    if (canvasId) {
+      fetchCanvasDetails();
+    }
+  }, [canvasId]);
+
+  const fetchCanvasDetails = async () => {
+    try {
+      const response = await fetch(`/api/journeys/${canvasId}`);
+      if (!response.ok) throw new Error('Failed to fetch canvas');
+      const data = await response.json();
+      setCanvasName(data.name || 'Untitled Journey');
+    } catch (error) {
+      console.error('Error fetching canvas:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleSave = (nodes: any[], edges: any[]) => {
+    console.log('Saving canvas:', { nodes, edges });
+  };
+
+  const handleExecute = () => {
+    console.log('Executing journey:', canvasId);
+    // TODO: Implement journey execution
+  };
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-screen">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
+          <p className="text-muted-foreground">Loading canvas...</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-screen flex flex-col bg-background">
+      <header className="bg-card border-b px-6 py-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-4">
+            <Link href="/journeys">
+              <Button variant="ghost" size="sm">
+                <ArrowLeft className="h-4 w-4 mr-2" />
+                Back
+              </Button>
+            </Link>
+            <div>
+              <h1 className="text-2xl font-bold">{canvasName}</h1>
+              <p className="text-sm text-muted-foreground">
+                Journey Canvas Editor
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center space-x-2">
+            <Button variant="outline" size="sm" onClick={handleExecute}>
+              <Play className="h-4 w-4 mr-2" />
+              Test Run
+            </Button>
+            <Button variant="outline" size="sm">
+              <Settings className="h-4 w-4 mr-2" />
+              Settings
+            </Button>
+          </div>
+        </div>
+      </header>
+
+      <div className="flex-1 overflow-hidden">
+        <JourneyCanvas
+          canvasId={canvasId}
+          onSave={handleSave}
+          className="h-full"
+        />
+      </div>
+    </div>
+  );
+}

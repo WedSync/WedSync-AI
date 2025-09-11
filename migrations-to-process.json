@@ -1,0 +1,218 @@
+[
+  {
+    "file": "20250101000015_advanced_performance_optimization.sql",
+    "name": "advanced_performance_optimization",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000015_advanced_performance_optimization.sql"
+  },
+  {
+    "file": "20250101000016_pdf_processing_progress_tracking.sql",
+    "name": "pdf_processing_progress_tracking",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000016_pdf_processing_progress_tracking.sql"
+  },
+  {
+    "file": "20250101000017_journey_execution_system.sql",
+    "name": "journey_execution_system",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000017_journey_execution_system.sql"
+  },
+  {
+    "file": "20250101000018_journey_analytics_dashboard.sql",
+    "name": "journey_analytics_dashboard",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000018_journey_analytics_dashboard.sql"
+  },
+  {
+    "file": "20250101000019_analytics_data_pipeline.sql",
+    "name": "analytics_data_pipeline",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000019_analytics_data_pipeline.sql"
+  },
+  {
+    "file": "20250101000020_form_templates_library.sql",
+    "name": "form_templates_library",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000020_form_templates_library.sql"
+  },
+  {
+    "file": "20250101000021_lead_status_tracking_system.sql",
+    "name": "lead_status_tracking_system",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000021_lead_status_tracking_system.sql"
+  },
+  {
+    "file": "20250101000022_advanced_journey_index_optimization.sql",
+    "name": "advanced_journey_index_optimization",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000022_advanced_journey_index_optimization.sql"
+  },
+  {
+    "file": "20250101000023_index_monitoring_system.sql",
+    "name": "index_monitoring_system",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000023_index_monitoring_system.sql"
+  },
+  {
+    "file": "20250101000024_notes_system.sql",
+    "name": "notes_system",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000024_notes_system.sql"
+  },
+  {
+    "file": "20250101000025_analytics_tracking.sql",
+    "name": "analytics_tracking",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000025_analytics_tracking.sql"
+  },
+  {
+    "file": "20250101000026_query_performance_validation.sql",
+    "name": "query_performance_validation",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000026_query_performance_validation.sql"
+  },
+  {
+    "file": "20250101000027_gdpr_ccpa_compliance.sql",
+    "name": "gdpr_ccpa_compliance",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000027_gdpr_ccpa_compliance.sql"
+  },
+  {
+    "file": "20250101000028_tagging_system.sql",
+    "name": "tagging_system",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000028_tagging_system.sql"
+  },
+  {
+    "file": "20250101000029_tutorial_system.sql",
+    "name": "tutorial_system",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000029_tutorial_system.sql"
+  },
+  {
+    "file": "20250101000030_vendor_portal_system.sql",
+    "name": "vendor_portal_system",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000030_vendor_portal_system.sql"
+  },
+  {
+    "file": "20250101000031_dashboard_system.sql",
+    "name": "dashboard_system",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000031_dashboard_system.sql"
+  },
+  {
+    "file": "20250101000032_import_system.sql",
+    "name": "import_system",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000032_import_system.sql"
+  },
+  {
+    "file": "20250101000033_payment_system_extensions.sql",
+    "name": "payment_system_extensions",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000033_payment_system_extensions.sql"
+  },
+  {
+    "file": "20250101000034_wedding_encryption_system.sql",
+    "name": "wedding_encryption_system",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000034_wedding_encryption_system.sql"
+  },
+  {
+    "file": "20250101000035_ab_testing_system.sql",
+    "name": "ab_testing_system",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000035_ab_testing_system.sql"
+  },
+  {
+    "file": "20250101000036_client_profiles_enhancement.sql",
+    "name": "client_profiles_enhancement",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000036_client_profiles_enhancement.sql"
+  },
+  {
+    "file": "20250101000037_journey_canvas_enhancement.sql",
+    "name": "journey_canvas_enhancement",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000037_journey_canvas_enhancement.sql"
+  },
+  {
+    "file": "20250101000038_guest_management_system.sql",
+    "name": "guest_management_system",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000038_guest_management_system.sql"
+  },
+  {
+    "file": "20250101000039_guest_management_rls.sql",
+    "name": "guest_management_rls",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000039_guest_management_rls.sql"
+  },
+  {
+    "file": "20250101000040_guest_management_functions.sql",
+    "name": "guest_management_functions",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000040_guest_management_functions.sql"
+  },
+  {
+    "file": "20250101000041_rsvp_management_system.sql",
+    "name": "rsvp_management_system",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000041_rsvp_management_system.sql"
+  },
+  {
+    "file": "20250101000042_wedding_website_system.sql",
+    "name": "wedding_website_system",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000042_wedding_website_system.sql"
+  },
+  {
+    "file": "20250101000043_referral_programs_system.sql",
+    "name": "referral_programs_system",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000043_referral_programs_system.sql"
+  },
+  {
+    "file": "20250101000044_task_delegation_system.sql",
+    "name": "task_delegation_system",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000044_task_delegation_system.sql"
+  },
+  {
+    "file": "20250101000045_delegation_workflow_system.sql",
+    "name": "delegation_workflow_system",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000045_delegation_workflow_system.sql"
+  },
+  {
+    "file": "20250101000046_deadline_tracking_system.sql",
+    "name": "deadline_tracking_system",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000046_deadline_tracking_system.sql"
+  },
+  {
+    "file": "20250101000047_task_status_history.sql",
+    "name": "task_status_history",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000047_task_status_history.sql"
+  },
+  {
+    "file": "20250101000048_workload_tracking_system.sql",
+    "name": "workload_tracking_system",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000048_workload_tracking_system.sql"
+  },
+  {
+    "file": "20250101000049_task_collaboration_templates.sql",
+    "name": "task_collaboration_templates",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000049_task_collaboration_templates.sql"
+  },
+  {
+    "file": "20250101000050_seo_analytics_system.sql",
+    "name": "seo_analytics_system",
+    "status": "ready",
+    "path": "/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/supabase/migrations/20250101000050_seo_analytics_system.sql"
+  }
+]

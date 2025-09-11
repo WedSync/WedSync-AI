@@ -1,0 +1,458 @@
+/**
+ * TypeScript interfaces for WS-166 Budget Export System
+ * Team B - Backend API and Processing
+ * Enhanced for backend processing requirements
+ */
+
+// Core budget types (simplified for export context)
+interface BudgetCategory {
+  id: string;
+  name: string;
+  allocated_amount?: number;
+}
+
+interface BudgetTransaction {
+  id: string;
+  description: string;
+  amount: number;
+  category?: string;
+  date?: string;
+}
+
+// Export format options
+export type ExportFormat = 'pdf' | 'csv' | 'excel';
+
+// Export filter options
+export interface ExportFilters {
+  categories: string[];
+  dateRange: {
+    start: Date;
+    end: Date;
+  } | null;
+  paymentStatus: 'all' | 'paid' | 'pending' | 'planned';
+  includeNotes: boolean;
+  includeReceipts: boolean;
+  includeVendors: boolean;
+}
+
+// Export options for the dialog
+export interface ExportOptions {
+  format: ExportFormat;
+  filters: ExportFilters;
+  includeCharts: boolean;
+  includeSummary: boolean;
+  customTitle?: string;
+}
+
+// Export progress states
+export type ExportStatus =
+  | 'idle'
+  | 'preparing'
+  | 'generating'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+// Export progress information
+export interface ExportProgress {
+  exportId: string;
+  status: ExportStatus;
+  progress: number; // 0-100
+  message: string;
+  startedAt: Date;
+  completedAt?: Date;
+  estimatedTimeRemaining?: number; // in milliseconds
+  error?: string;
+}
+
+// Export history record
+export interface ExportHistoryRecord {
+  id: string;
+  userId: string;
+  clientId?: string;
+  format: ExportFormat;
+  filters: ExportFilters;
+  fileName: string;
+  fileSize: number;
+  downloadUrl: string;
+  downloadCount: number;
+  status: ExportStatus;
+  createdAt: Date;
+  expiresAt: Date;
+  error?: string;
+  metadata: {
+    categoriesCount: number;
+    transactionsCount: number;
+    totalAmount: number;
+    dateRange?: {
+      start: Date;
+      end: Date;
+    };
+  };
+}
+
+// Format preview information
+export interface FormatPreview {
+  format: ExportFormat;
+  title: string;
+  description: string;
+  icon: string; // Lucide icon name
+  features: string[];
+  fileSize: string;
+  compatibility: string[];
+  pros: string[];
+  cons: string[];
+  bestFor: string;
+}
+
+// Component props interfaces
+
+export interface BudgetExportDialogProps {
+  isOpen: boolean;
+  onClose: () => void;
+  coupleId: string;
+  budgetData: {
+    categories: BudgetCategory[];
+    transactions: BudgetTransaction[];
+    totalBudget: number;
+    totalSpent: number;
+  };
+  onExportComplete?: (exportId: string) => void;
+}
+
+export interface ExportFiltersProps {
+  filters: ExportFilters;
+  onFiltersChange: (filters: ExportFilters) => void;
+  availableCategories: string[];
+  isLoading?: boolean;
+}
+
+export interface ExportProgressProps {
+  exportId: string;
+  status: ExportStatus;
+  progress?: number;
+  message?: string;
+  onComplete: (downloadUrl: string) => void;
+  onCancel?: () => void;
+  onRetry?: () => void;
+}
+
+export interface ExportHistoryProps {
+  userId: string;
+  clientId?: string;
+  onDownload: (record: ExportHistoryRecord) => void;
+  onDelete?: (recordId: string) => void;
+  maxRecords?: number;
+}
+
+export interface ExportFormatCardProps {
+  preview: FormatPreview;
+  isSelected: boolean;
+  onSelect: () => void;
+  isDisabled?: boolean;
+}
+
+// API request/response interfaces
+
+export interface ExportRequest {
+  clientId?: string;
+  format: ExportFormat;
+  filters: ExportFilters;
+  options: {
+    includeCharts: boolean;
+    includeSummary: boolean;
+    customTitle?: string;
+  };
+}
+
+export interface ExportResponse {
+  success: boolean;
+  exportId: string;
+  message: string;
+  estimatedDuration?: number; // in milliseconds
+  error?: string;
+}
+
+export interface ExportStatusResponse {
+  exportId: string;
+  status: ExportStatus;
+  progress: number;
+  message: string;
+  downloadUrl?: string;
+  error?: string;
+  estimatedTimeRemaining?: number;
+}
+
+export interface ExportHistoryResponse {
+  success: boolean;
+  records: ExportHistoryRecord[];
+  totalCount: number;
+  hasMore: boolean;
+  error?: string;
+}
+
+// Hook interfaces
+
+export interface UseBudgetExportOptions {
+  clientId?: string;
+  onExportComplete?: (exportId: string, downloadUrl: string) => void;
+  onExportError?: (error: string) => void;
+  pollInterval?: number; // milliseconds
+}
+
+export interface UseBudgetExportReturn {
+  // State
+  currentExport: ExportProgress | null;
+  isExporting: boolean;
+  exportHistory: ExportHistoryRecord[];
+  historyLoading: boolean;
+
+  // Actions
+  startExport: (options: ExportOptions) => Promise<string>;
+  cancelExport: (exportId: string) => Promise<void>;
+  retryExport: (exportId: string) => Promise<void>;
+  downloadExport: (exportId: string) => Promise<void>;
+  deleteHistoryRecord: (recordId: string) => Promise<void>;
+  refreshHistory: () => Promise<void>;
+
+  // Helpers
+  getExportStatus: (exportId: string) => Promise<ExportStatusResponse>;
+  validateFilters: (filters: ExportFilters) => string[];
+}
+
+// Error types
+export interface ExportError {
+  code:
+    | 'VALIDATION_ERROR'
+    | 'GENERATION_ERROR'
+    | 'STORAGE_ERROR'
+    | 'PERMISSION_ERROR'
+    | 'TIMEOUT_ERROR';
+  message: string;
+  details?: Record<string, any>;
+  retryable: boolean;
+}
+
+// Default values and constants
+export const DEFAULT_EXPORT_FILTERS: ExportFilters = {
+  categories: [],
+  dateRange: null,
+  paymentStatus: 'all',
+  includeNotes: true,
+  includeReceipts: false,
+  includeVendors: true,
+};
+
+export const DEFAULT_EXPORT_OPTIONS: ExportOptions = {
+  format: 'pdf',
+  filters: DEFAULT_EXPORT_FILTERS,
+  includeCharts: true,
+  includeSummary: true,
+};
+
+export const FORMAT_PREVIEWS: Record<ExportFormat, FormatPreview> = {
+  pdf: {
+    format: 'pdf',
+    title: 'PDF Document',
+    description: 'Professional report with charts and formatting',
+    icon: 'FileText',
+    features: [
+      'Charts & graphs',
+      'Professional formatting',
+      'Print-ready',
+      'Password protection',
+    ],
+    fileSize: '~2-5 MB',
+    compatibility: ['All devices', 'Email friendly', 'Print ready'],
+    pros: [
+      'Professional appearance',
+      'Includes visual charts',
+      'Easy to share',
+    ],
+    cons: ['Larger file size', 'Not editable'],
+    bestFor: 'Sharing with family, vendors, or financial advisors',
+  },
+  csv: {
+    format: 'csv',
+    title: 'CSV Spreadsheet',
+    description: 'Raw data for analysis and import',
+    icon: 'Sheet',
+    features: [
+      'Raw data export',
+      'Excel compatible',
+      'Import anywhere',
+      'Small file size',
+    ],
+    fileSize: '~50-200 KB',
+    compatibility: ['Excel', 'Google Sheets', 'Any spreadsheet app'],
+    pros: ['Small file size', 'Highly compatible', 'Editable data'],
+    cons: ['No formatting', 'No charts'],
+    bestFor: 'Data analysis and further processing',
+  },
+  excel: {
+    format: 'excel',
+    title: 'Excel Workbook',
+    description: 'Formatted spreadsheet with multiple sheets',
+    icon: 'Table',
+    features: [
+      'Multiple sheets',
+      'Charts included',
+      'Formulas & formatting',
+      'Excel optimized',
+    ],
+    fileSize: '~1-3 MB',
+    compatibility: ['Microsoft Excel', 'LibreOffice', 'Google Sheets'],
+    pros: ['Rich formatting', 'Includes charts', 'Editable'],
+    cons: ['Requires Excel', 'Larger than CSV'],
+    bestFor: 'Detailed analysis and budget planning',
+  },
+};
+
+//============================================================================
+// Backend Types (Added by Team B for WS-166 implementation)
+//============================================================================
+
+// Database record types
+export interface BudgetExportRecord {
+  id: string;
+  couple_id: string;
+  export_type: ExportFormat;
+  export_filters: {
+    categories?: string[];
+    payment_status?: 'paid' | 'pending' | 'planned' | 'all';
+    date_range?: {
+      start: string;
+      end: string;
+    };
+    include_notes?: boolean;
+    options?: {
+      include_charts?: boolean;
+      include_timeline?: boolean;
+      email_delivery?: boolean;
+    };
+  };
+  file_name?: string;
+  file_url?: string;
+  file_size_bytes?: number;
+  status: 'generating' | 'completed' | 'failed' | 'expired';
+  generated_at?: string;
+  expires_at?: string;
+  download_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ExportQueueItem {
+  id: string;
+  export_id: string;
+  priority: number;
+  started_at?: string;
+  completed_at?: string;
+  error_message?: string;
+  retry_count: number;
+  created_at: string;
+  updated_at?: string;
+}
+
+// Comprehensive budget data for processing
+export interface BudgetData {
+  couple: {
+    id: string;
+    partner1_name: string;
+    partner2_name: string;
+    wedding_date: string;
+    total_budget: number;
+    organization_id: string;
+  };
+  budgetItems: Array<{
+    id: string;
+    category: string;
+    vendor_name?: string;
+    description: string;
+    planned_amount: number;
+    actual_amount: number;
+    paid_amount: number;
+    payment_status: 'paid' | 'pending' | 'planned' | 'partial';
+    due_date?: string;
+    notes?: string;
+    created_at: string;
+    updated_at: string;
+  }>;
+  summary: {
+    total_planned: number;
+    total_actual: number;
+    total_paid: number;
+    total_remaining: number;
+    item_count: number;
+  };
+  categories: Array<{
+    category: string;
+    planned_amount: number;
+    actual_amount: number;
+    paid_amount: number;
+    item_count: number;
+  }>;
+  generatedAt: Date;
+  filters: any;
+}
+
+// Export job processing types
+export interface ExportJob {
+  id: string;
+  type: 'PDF_GENERATION' | 'EXCEL_GENERATION' | 'CSV_GENERATION';
+  payload: {
+    exportId: string;
+    coupleId: string;
+    budgetData: BudgetData;
+    options: any;
+  };
+  priority: number;
+  attempts: number;
+  maxAttempts: number;
+  createdAt: string;
+  processedAt: string;
+}
+
+// Queue statistics and monitoring
+export interface QueueStats {
+  totalQueued: number;
+  currentlyProcessing: number;
+  averageProcessingTime: number;
+  failureRate: number;
+}
+
+// Updated ExportFilters interface for backend compatibility
+export interface ExportFilters {
+  categories?: string[];
+  date_range?: {
+    start: string;
+    end: string;
+  };
+  payment_status?: 'paid' | 'pending' | 'planned' | 'all';
+  include_notes?: boolean;
+  options?: {
+    include_charts?: boolean;
+    include_timeline?: boolean;
+    email_delivery?: boolean;
+  };
+}
+
+// API request/response types for backend
+export interface ExportRequest {
+  format: ExportFormat;
+  filters: ExportFilters;
+  options: {
+    include_charts?: boolean;
+    include_timeline?: boolean;
+    email_delivery?: boolean;
+  };
+}
+
+export interface ExportResponse {
+  exportId: string;
+  status: 'generating' | 'completed';
+  statusUrl: string;
+  estimatedCompletionTime: number;
+  message: string;
+  downloadUrl?: string;
+}

@@ -1,0 +1,678 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import {
+  X,
+  Save,
+  Eye,
+  EyeOff,
+  Star,
+  StarOff,
+  Plus,
+  Minus,
+  Camera,
+  Clock,
+  CreditCard,
+  MapPin,
+  Package,
+  Cloud,
+  Shield,
+  FileText,
+} from 'lucide-react';
+import { faqService } from '@/lib/services/faqService';
+import type {
+  FaqItem,
+  FaqCategory,
+  CreateFaqItemRequest,
+  UpdateFaqItemRequest,
+} from '@/types/faq';
+import { WEDDING_FAQ_CATEGORIES } from '@/types/faq';
+
+const CATEGORY_ICONS = {
+  'booking-pricing': CreditCard,
+  'timeline-delivery': Clock,
+  'photography-process': Camera,
+  'wedding-day-logistics': MapPin,
+  'packages-addons': Package,
+  'weather-backup': Cloud,
+  'image-rights': Shield,
+  'payment-contracts': FileText,
+};
+
+interface FAQEditorProps {
+  faq?: FaqItem | null;
+  categories: FaqCategory[];
+  onClose: () => void;
+  onSave: (faq: FaqItem) => void;
+}
+
+export function FAQEditor({
+  faq,
+  categories,
+  onClose,
+  onSave,
+}: FAQEditorProps) {
+  const [formData, setFormData] = useState({
+    question: '',
+    answer: '',
+    summary: '',
+    category_id: '',
+    tags: [] as string[],
+    is_published: false,
+    is_featured: false,
+    sort_order: 0,
+  });
+  const [newTag, setNewTag] = useState('');
+  const [loading, setSaving] = useState(false);
+  const [previewMode, setPreviewMode] = useState(false);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
+  // Initialize form with existing FAQ data or defaults
+  useEffect(() => {
+    if (faq) {
+      setFormData({
+        question: faq.question || '',
+        answer: faq.answer || '',
+        summary: faq.summary || '',
+        category_id: faq.category_id || '',
+        tags: faq.tags || [],
+        is_published: faq.is_published || false,
+        is_featured: faq.is_featured || false,
+        sort_order: faq.sort_order || 0,
+      });
+    } else {
+      // Set default category if available
+      if (categories.length > 0) {
+        setFormData((prev) => ({ ...prev, category_id: categories[0].id }));
+      }
+    }
+  }, [faq, categories]);
+
+  const validateForm = () => {
+    const newErrors: Record<string, string> = {};
+
+    if (!formData.question.trim()) {
+      newErrors.question = 'Question is required';
+    } else if (formData.question.length < 10) {
+      newErrors.question = 'Question must be at least 10 characters long';
+    }
+
+    if (!formData.answer.trim()) {
+      newErrors.answer = 'Answer is required';
+    } else if (formData.answer.length < 20) {
+      newErrors.answer = 'Answer must be at least 20 characters long';
+    }
+
+    if (!formData.category_id) {
+      newErrors.category_id = 'Please select a category';
+    }
+
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    if (!validateForm()) return;
+
+    try {
+      setSaving(true);
+
+      if (faq) {
+        // Update existing FAQ
+        const updateRequest: UpdateFaqItemRequest = {
+          id: faq.id,
+          ...formData,
+        };
+        const updatedFaq = await faqService.updateFaqItem(updateRequest);
+        if (updatedFaq) {
+          onSave(updatedFaq);
+        }
+      } else {
+        // Create new FAQ
+        const createRequest: CreateFaqItemRequest = formData;
+        const newFaq = await faqService.createFaqItem(createRequest);
+        if (newFaq) {
+          onSave(newFaq);
+        }
+      }
+    } catch (error) {
+      console.error('Error saving FAQ:', error);
+      setErrors({ submit: 'Failed to save FAQ. Please try again.' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleAddTag = () => {
+    const tag = newTag.trim().toLowerCase();
+    if (tag && !formData.tags.includes(tag)) {
+      setFormData((prev) => ({
+        ...prev,
+        tags: [...prev.tags, tag],
+      }));
+      setNewTag('');
+    }
+  };
+
+  const handleRemoveTag = (tagToRemove: string) => {
+    setFormData((prev) => ({
+      ...prev,
+      tags: prev.tags.filter((tag) => tag !== tagToRemove),
+    }));
+  };
+
+  const selectedCategory =
+    categories.find((cat) => cat.id === formData.category_id) ||
+    WEDDING_FAQ_CATEGORIES.find((cat) => cat.slug === formData.category_id);
+
+  return (
+    <div className="fixed inset-0 z-50 bg-gray-900/50 backdrop-blur-sm flex items-center justify-center p-4">
+      <div className="bg-white rounded-2xl max-w-4xl w-full max-h-[90vh] overflow-hidden shadow-xl">
+        {/* Header */}
+        <div className="px-6 py-4 border-b border-gray-200 bg-gray-50">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              {selectedCategory && (
+                <div className="p-2 bg-primary-100 rounded-lg">
+                  {CATEGORY_ICONS[
+                    selectedCategory.slug as keyof typeof CATEGORY_ICONS
+                  ] ? (
+                    (() => {
+                      const Icon =
+                        CATEGORY_ICONS[
+                          selectedCategory.slug as keyof typeof CATEGORY_ICONS
+                        ];
+                      return <Icon className="w-5 h-5 text-primary-600" />;
+                    })()
+                  ) : (
+                    <FileText className="w-5 h-5 text-primary-600" />
+                  )}
+                </div>
+              )}
+              <div>
+                <h2 className="text-lg font-semibold text-gray-900">
+                  {faq ? 'Edit FAQ' : 'Create New FAQ'}
+                </h2>
+                <p className="text-sm text-gray-500">
+                  {selectedCategory?.name ||
+                    'Add helpful information for your wedding clients'}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setPreviewMode(!previewMode)}
+                className={`
+                  inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-lg transition-colors
+                  ${
+                    previewMode
+                      ? 'bg-primary-100 text-primary-700 border border-primary-200'
+                      : 'bg-white text-gray-600 border border-gray-300 hover:bg-gray-50'
+                  }
+                `}
+              >
+                <Eye className="w-4 h-4" />
+                Preview
+              </button>
+
+              <button
+                onClick={onClose}
+                className="p-2 text-gray-400 hover:text-gray-600 rounded-lg transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto max-h-[calc(90vh-140px)]">
+          {previewMode ? (
+            <FAQPreview
+              formData={formData}
+              selectedCategory={selectedCategory}
+            />
+          ) : (
+            <form onSubmit={handleSubmit} className="p-6 space-y-6">
+              {/* Question */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Question *
+                </label>
+                <input
+                  type="text"
+                  value={formData.question}
+                  onChange={(e) =>
+                    setFormData((prev) => ({
+                      ...prev,
+                      question: e.target.value,
+                    }))
+                  }
+                  placeholder="e.g., When will my wedding photos be ready?"
+                  className={`
+                    w-full px-3.5 py-2.5
+                    bg-white border rounded-lg
+                    text-gray-900 placeholder-gray-500
+                    shadow-xs
+                    focus:outline-none focus:ring-4 focus:ring-primary-100
+                    focus:border-primary-300
+                    transition-all duration-200
+                    ${errors.question ? 'border-error-300' : 'border-gray-300'}
+                  `}
+                />
+                {errors.question && (
+                  <p className="mt-1 text-sm text-error-600">
+                    {errors.question}
+                  </p>
+                )}
+              </div>
+
+              {/* Category */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Category *
+                </label>
+                <select
+                  value={formData.category_id}
+                  onChange={(e) =>
+                    setFormData((prev) => ({
+                      ...prev,
+                      category_id: e.target.value,
+                    }))
+                  }
+                  className={`
+                    w-full px-3.5 py-2.5
+                    bg-white border rounded-lg
+                    text-gray-900
+                    shadow-xs
+                    focus:outline-none focus:ring-4 focus:ring-primary-100
+                    focus:border-primary-300
+                    transition-all duration-200
+                    ${errors.category_id ? 'border-error-300' : 'border-gray-300'}
+                  `}
+                >
+                  <option value="">Select a category</option>
+                  {WEDDING_FAQ_CATEGORIES.map((category) => (
+                    <option key={category.slug} value={category.slug}>
+                      {category.name}
+                    </option>
+                  ))}
+                </select>
+                {errors.category_id && (
+                  <p className="mt-1 text-sm text-error-600">
+                    {errors.category_id}
+                  </p>
+                )}
+                {selectedCategory && (
+                  <p className="mt-1 text-sm text-gray-500">
+                    {selectedCategory.description}
+                  </p>
+                )}
+              </div>
+
+              {/* Answer */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Answer *
+                </label>
+                <textarea
+                  value={formData.answer}
+                  onChange={(e) =>
+                    setFormData((prev) => ({ ...prev, answer: e.target.value }))
+                  }
+                  rows={8}
+                  placeholder="Provide a comprehensive answer that addresses the client's concern..."
+                  className={`
+                    w-full px-3.5 py-2.5
+                    bg-white border rounded-lg
+                    text-gray-900 placeholder-gray-500
+                    shadow-xs
+                    focus:outline-none focus:ring-4 focus:ring-primary-100
+                    focus:border-primary-300
+                    transition-all duration-200
+                    resize-vertical
+                    ${errors.answer ? 'border-error-300' : 'border-gray-300'}
+                  `}
+                />
+                {errors.answer && (
+                  <p className="mt-1 text-sm text-error-600">{errors.answer}</p>
+                )}
+                <p className="mt-1 text-sm text-gray-500">
+                  {formData.answer.length} characters
+                </p>
+              </div>
+
+              {/* Summary */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Summary (Optional)
+                </label>
+                <input
+                  type="text"
+                  value={formData.summary}
+                  onChange={(e) =>
+                    setFormData((prev) => ({
+                      ...prev,
+                      summary: e.target.value,
+                    }))
+                  }
+                  placeholder="Brief summary for search results (optional)"
+                  className="
+                    w-full px-3.5 py-2.5
+                    bg-white border border-gray-300 rounded-lg
+                    text-gray-900 placeholder-gray-500
+                    shadow-xs
+                    focus:outline-none focus:ring-4 focus:ring-primary-100
+                    focus:border-primary-300
+                    transition-all duration-200
+                  "
+                />
+                <p className="mt-1 text-sm text-gray-500">
+                  This will appear in search results if provided
+                </p>
+              </div>
+
+              {/* Tags */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Search Tags
+                </label>
+                <div className="flex flex-wrap gap-2 mb-2">
+                  {formData.tags.map((tag) => (
+                    <span
+                      key={tag}
+                      className="inline-flex items-center gap-1 px-3 py-1 bg-primary-50 text-primary-700 text-sm rounded-full border border-primary-200"
+                    >
+                      {tag}
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveTag(tag)}
+                        className="text-primary-500 hover:text-primary-700"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={newTag}
+                    onChange={(e) => setNewTag(e.target.value)}
+                    onKeyDown={(e) =>
+                      e.key === 'Enter' && (e.preventDefault(), handleAddTag())
+                    }
+                    placeholder="Add search tags (e.g., photos, delivery, timeline)"
+                    className="
+                      flex-1 px-3.5 py-2
+                      bg-white border border-gray-300 rounded-lg
+                      text-gray-900 placeholder-gray-500 text-sm
+                      shadow-xs
+                      focus:outline-none focus:ring-4 focus:ring-primary-100
+                      focus:border-primary-300
+                      transition-all duration-200
+                    "
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAddTag}
+                    disabled={!newTag.trim()}
+                    className="
+                      px-3 py-2 bg-gray-100 hover:bg-gray-200 disabled:opacity-50
+                      text-gray-700 text-sm font-medium rounded-lg
+                      transition-colors
+                    "
+                  >
+                    <Plus className="w-4 h-4" />
+                  </button>
+                </div>
+                <p className="mt-1 text-sm text-gray-500">
+                  Add keywords to help clients find this FAQ
+                </p>
+              </div>
+
+              {/* Settings */}
+              <div className="space-y-4 pt-4 border-t border-gray-200">
+                <h3 className="text-sm font-semibold text-gray-900">
+                  FAQ Settings
+                </h3>
+
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h4 className="text-sm font-medium text-gray-700">
+                      Published
+                    </h4>
+                    <p className="text-xs text-gray-500">
+                      Make this FAQ visible to clients
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setFormData((prev) => ({
+                        ...prev,
+                        is_published: !prev.is_published,
+                      }))
+                    }
+                    className={`
+                      relative inline-flex h-6 w-11 items-center rounded-full transition-colors
+                      focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2
+                      ${formData.is_published ? 'bg-primary-600' : 'bg-gray-200'}
+                    `}
+                  >
+                    <span
+                      className={`
+                      inline-block h-4 w-4 transform rounded-full bg-white transition-transform
+                      ${formData.is_published ? 'translate-x-6' : 'translate-x-1'}
+                    `}
+                    />
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h4 className="text-sm font-medium text-gray-700">
+                      Featured
+                    </h4>
+                    <p className="text-xs text-gray-500">
+                      Highlight this FAQ for important questions
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setFormData((prev) => ({
+                        ...prev,
+                        is_featured: !prev.is_featured,
+                      }))
+                    }
+                    className={`
+                      relative inline-flex h-6 w-11 items-center rounded-full transition-colors
+                      focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2
+                      ${formData.is_featured ? 'bg-warning-500' : 'bg-gray-200'}
+                    `}
+                  >
+                    <span
+                      className={`
+                      inline-block h-4 w-4 transform rounded-full bg-white transition-transform
+                      ${formData.is_featured ? 'translate-x-6' : 'translate-x-1'}
+                    `}
+                    />
+                  </button>
+                </div>
+              </div>
+
+              {errors.submit && (
+                <div className="p-4 bg-error-50 border border-error-200 rounded-lg">
+                  <p className="text-sm text-error-700">{errors.submit}</p>
+                </div>
+              )}
+            </form>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 py-4 border-t border-gray-200 bg-gray-50">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4 text-sm text-gray-500">
+              {formData.is_published && (
+                <span className="flex items-center gap-1 text-success-600">
+                  <Eye className="w-4 h-4" />
+                  Will be visible to clients
+                </span>
+              )}
+              {formData.is_featured && (
+                <span className="flex items-center gap-1 text-warning-600">
+                  <Star className="w-4 h-4 fill-current" />
+                  Featured FAQ
+                </span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={onClose}
+                className="
+                  px-4 py-2 bg-white border border-gray-300
+                  text-gray-700 font-medium text-sm rounded-lg
+                  hover:bg-gray-50 transition-colors
+                "
+              >
+                Cancel
+              </button>
+
+              <button
+                onClick={handleSubmit}
+                disabled={loading}
+                className="
+                  inline-flex items-center gap-2 px-4 py-2
+                  bg-primary-600 hover:bg-primary-700 disabled:bg-primary-400
+                  text-white font-semibold text-sm
+                  rounded-lg shadow-xs hover:shadow-sm
+                  transition-all duration-200
+                  focus:outline-none focus:ring-4 focus:ring-primary-100
+                "
+              >
+                {loading ? (
+                  <>
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                    Saving...
+                  </>
+                ) : (
+                  <>
+                    <Save className="w-4 h-4" />
+                    {faq ? 'Update FAQ' : 'Create FAQ'}
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Preview Component
+function FAQPreview({
+  formData,
+  selectedCategory,
+}: {
+  formData: any;
+  selectedCategory: any;
+}) {
+  return (
+    <div className="p-6 max-w-3xl mx-auto">
+      <div className="space-y-6">
+        {/* Category Badge */}
+        {selectedCategory && (
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-primary-50 text-primary-700 text-sm font-medium rounded-full border border-primary-200">
+              {CATEGORY_ICONS[
+                selectedCategory.slug as keyof typeof CATEGORY_ICONS
+              ] &&
+                (() => {
+                  const Icon =
+                    CATEGORY_ICONS[
+                      selectedCategory.slug as keyof typeof CATEGORY_ICONS
+                    ];
+                  return <Icon className="w-3.5 h-3.5" />;
+                })()}
+              {selectedCategory.name}
+            </span>
+            {formData.is_featured && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-warning-50 text-warning-700 text-xs font-medium rounded-full border border-warning-200">
+                <Star className="w-3 h-3 fill-current" />
+                Featured
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Question */}
+        <div>
+          <h2 className="text-xl font-semibold text-gray-900 mb-4">
+            {formData.question || 'FAQ Question Preview'}
+          </h2>
+        </div>
+
+        {/* Answer */}
+        <div className="prose prose-gray max-w-none">
+          <div className="whitespace-pre-wrap text-gray-700 leading-relaxed">
+            {formData.answer || 'FAQ answer preview will appear here...'}
+          </div>
+        </div>
+
+        {/* Summary */}
+        {formData.summary && (
+          <div className="mt-4 p-4 bg-gray-50 rounded-lg border-l-4 border-primary-600">
+            <p className="text-sm font-medium text-gray-700 mb-1">Summary</p>
+            <p className="text-sm text-gray-600">{formData.summary}</p>
+          </div>
+        )}
+
+        {/* Tags */}
+        {formData.tags.length > 0 && (
+          <div className="mt-6 pt-4 border-t border-gray-200">
+            <p className="text-sm font-medium text-gray-700 mb-2">Tags</p>
+            <div className="flex flex-wrap gap-1">
+              {formData.tags.map((tag: string) => (
+                <span
+                  key={tag}
+                  className="inline-block px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded"
+                >
+                  {tag}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Status */}
+        <div className="mt-6 pt-4 border-t border-gray-200 flex items-center gap-4 text-sm">
+          <span
+            className={`
+            inline-flex items-center gap-1 px-2 py-1 rounded-full font-medium
+            ${
+              formData.is_published
+                ? 'bg-success-50 text-success-700 border border-success-200'
+                : 'bg-gray-50 text-gray-600 border border-gray-200'
+            }
+          `}
+          >
+            {formData.is_published ? (
+              <Eye className="w-3 h-3" />
+            ) : (
+              <EyeOff className="w-3 h-3" />
+            )}
+            {formData.is_published ? 'Published' : 'Draft'}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}

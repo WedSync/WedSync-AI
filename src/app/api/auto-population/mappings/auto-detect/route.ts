@@ -1,0 +1,416 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { validateAuth } from '@/lib/auth-middleware';
+import { autoPopulationService } from '@/lib/services/auto-population-service';
+import { rateLimit } from '@/lib/rate-limit';
+import {
+  AutoDetectMappingsSchema,
+  RATE_LIMITS,
+} from '@/lib/validations/auto-population-schemas';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    (() => {
+      throw new Error('Missing environment variable: NEXT_PUBLIC_SUPABASE_URL');
+    })(),
+  process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    (() => {
+      throw new Error(
+        'Missing environment variable: SUPABASE_SERVICE_ROLE_KEY',
+      );
+    })(),
+);
+
+// Rate limiter for auto-detection - stricter limits due to computational intensity
+const autoDetectRateLimiter = rateLimit({
+  windowMs: RATE_LIMITS.autoDetect.windowMs,
+  max: RATE_LIMITS.autoDetect.requests,
+  message: RATE_LIMITS.autoDetect.message,
+  keyGenerator: (req: NextRequest) => {
+    const authHeader = req.headers.get('authorization');
+    if (authHeader) {
+      return `auto-detect:${authHeader}`;
+    }
+    const forwarded = req.headers.get('x-forwarded-for');
+    const realIp = req.headers.get('x-real-ip');
+    return `auto-detect-ip:${forwarded?.split(',')[0] || realIp || '127.0.0.1'}`;
+  },
+});
+
+/**
+ * POST /api/auto-population/mappings/auto-detect
+ * AI-powered field mapping suggestions using fuzzy matching algorithms
+ */
+export async function POST(request: NextRequest) {
+  const startTime = Date.now();
+
+  try {
+    // Rate limiting - strict limits for auto-detection
+    const rateLimitResult = await autoDetectRateLimiter(request);
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Too many auto-detection requests',
+          retryAfter: rateLimitResult.retryAfter,
+        },
+        {
+          status: 429,
+          headers: {
+            'X-RateLimit-Limit': rateLimitResult.limit.toString(),
+            'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+            'X-RateLimit-Reset': new Date(rateLimitResult.reset).toISOString(),
+            'Retry-After': rateLimitResult.retryAfter?.toString() || '60',
+          },
+        },
+      );
+    }
+
+    // Authentication
+    const authResult = await validateAuth(request);
+    if (!authResult.success || !authResult.user) {
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized' },
+        { status: 401 },
+      );
+    }
+
+    // Parse and validate request
+    const body = await request.json();
+    const validationResult = AutoDetectMappingsSchema.safeParse(body);
+
+    if (!validationResult.success) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Invalid auto-detection request',
+          details: validationResult.error.errors.map((e) => ({
+            field: e.path.join('.'),
+            message: e.message,
+          })),
+        },
+        { status: 400 },
+      );
+    }
+
+    const { formId, formFields, supplierType, formType } =
+      validationResult.data;
+
+    // Performance check - Limit form fields for auto-detection
+    if (formFields.length > 200) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            'Too many form fields for auto-detection - Maximum 200 allowed',
+        },
+        { status: 400 },
+      );
+    }
+
+    // Get user organization
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', authResult.user.id)
+      .single();
+
+    if (!profile?.organization_id) {
+      return NextResponse.json(
+        { success: false, error: 'Organization not found' },
+        { status: 403 },
+      );
+    }
+
+    // Check if mappings already exist for this form
+    const { data: existingMappings } = await supabase
+      .from('form_field_mappings')
+      .select('form_field_id, core_field_key, confidence')
+      .eq('organization_id', profile.organization_id)
+      .eq('form_id', formId)
+      .eq('is_active', true);
+
+    // Auto-detect field mappings using advanced fuzzy matching
+    const detectedMappings = await autoPopulationService.autoDetectMappings(
+      formId,
+      formFields,
+    );
+
+    // Enhanced mapping with supplier and form type context
+    const enhancedMappings = await enhanceWithContext(
+      detectedMappings,
+      supplierType,
+      formType,
+      profile.organization_id,
+    );
+
+    // Merge with existing mappings (prefer existing verified mappings)
+    const finalMappings = mergeMappings(
+      enhancedMappings,
+      existingMappings || [],
+    );
+
+    // Calculate confidence statistics
+    const confidenceStats = calculateConfidenceStats(finalMappings);
+
+    // Performance monitoring
+    const processingTime = Date.now() - startTime;
+
+    if (processingTime > 5000) {
+      // >5 seconds is concerning for auto-detection
+      console.warn(
+        `Slow auto-detection: ${processingTime}ms for ${formFields.length} fields`,
+      );
+    }
+
+    return NextResponse.json(
+      {
+        success: true,
+        detectedMappings: finalMappings.map((m) => ({
+          formFieldId: m.form_field_id,
+          formFieldName:
+            formFields.find((f) => f.id === m.form_field_id)?.name || 'Unknown',
+          formFieldLabel:
+            formFields.find((f) => f.id === m.form_field_id)?.label ||
+            'Unknown',
+          coreFieldKey: m.core_field_key,
+          confidence: m.confidence,
+          transformationRule: m.transformation_rule,
+          priority: m.priority,
+          isNewMapping: !existingMappings?.some(
+            (em) => em.form_field_id === m.form_field_id,
+          ),
+          suggestion: getConfidenceSuggestion(m.confidence),
+        })),
+        stats: {
+          totalFields: formFields.length,
+          mappingsDetected: finalMappings.length,
+          mappingsSkipped: formFields.length - finalMappings.length,
+          processingTimeMs: processingTime,
+          ...confidenceStats,
+        },
+        recommendations: generateRecommendations(
+          finalMappings,
+          formFields,
+          supplierType,
+        ),
+        contextFactors: {
+          supplierType,
+          formType,
+          organizationId: profile.organization_id,
+        },
+      },
+      {
+        headers: {
+          'X-RateLimit-Limit': rateLimitResult.limit.toString(),
+          'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+          'X-RateLimit-Reset': new Date(rateLimitResult.reset).toISOString(),
+        },
+      },
+    );
+  } catch (error) {
+    console.error('Auto-detection error:', error);
+    return NextResponse.json(
+      { success: false, error: 'Auto-detection failed - Please try again' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * Enhance mappings with supplier type and form type context
+ */
+async function enhanceWithContext(
+  baseMappings: any[],
+  supplierType?: string,
+  formType?: string,
+  organizationId?: string,
+) {
+  // Get organization-specific rules that might boost confidence
+  const { data: orgRules } = await supabase
+    .from('auto_population_rules')
+    .select('*')
+    .eq('organization_id', organizationId)
+    .eq('is_active', true);
+
+  // Get supplier-specific rules
+  const { data: supplierRules } = await supabase
+    .from('auto_population_rules')
+    .select('*')
+    .eq('supplier_type', supplierType)
+    .eq('is_active', true);
+
+  return baseMappings.map((mapping) => {
+    let confidenceBoost = 0;
+
+    // Apply organization-specific rules
+    const orgRule = orgRules?.find(
+      (rule) => rule.target_core_field === mapping.core_field_key,
+    );
+    if (orgRule) {
+      confidenceBoost += orgRule.confidence_modifier;
+    }
+
+    // Apply supplier-specific rules
+    const supplierRule = supplierRules?.find(
+      (rule) => rule.target_core_field === mapping.core_field_key,
+    );
+    if (supplierRule) {
+      confidenceBoost += supplierRule.confidence_modifier;
+    }
+
+    // Context-specific adjustments
+    if (
+      supplierType === 'photographer' &&
+      mapping.core_field_key === 'wedding_date'
+    ) {
+      confidenceBoost += 0.1; // Photographers always need wedding date
+    }
+
+    if (supplierType === 'venue' && mapping.core_field_key === 'guest_count') {
+      confidenceBoost += 0.15; // Venues critically need guest count
+    }
+
+    if (
+      formType === 'contract' &&
+      ['couple_name_1', 'couple_name_2', 'contact_email'].includes(
+        mapping.core_field_key,
+      )
+    ) {
+      confidenceBoost += 0.1; // Contract forms need contact info
+    }
+
+    return {
+      ...mapping,
+      confidence: Math.min(mapping.confidence + confidenceBoost, 1.0), // Cap at 1.0
+    };
+  });
+}
+
+/**
+ * Merge detected mappings with existing mappings
+ */
+function mergeMappings(detectedMappings: any[], existingMappings: any[]) {
+  const mergedMappings = [...detectedMappings];
+
+  // Update with existing mapping confidence if available
+  existingMappings.forEach((existing) => {
+    const detected = mergedMappings.find(
+      (m) => m.form_field_id === existing.form_field_id,
+    );
+    if (detected) {
+      // Use higher confidence between detected and existing
+      detected.confidence = Math.max(detected.confidence, existing.confidence);
+      detected.isExisting = true;
+    }
+  });
+
+  return mergedMappings.filter((m) => m.confidence >= 0.5); // Filter low confidence mappings
+}
+
+/**
+ * Calculate confidence statistics
+ */
+function calculateConfidenceStats(mappings: any[]) {
+  if (mappings.length === 0) {
+    return {
+      averageConfidence: 0,
+      highConfidenceMappings: 0,
+      mediumConfidenceMappings: 0,
+      lowConfidenceMappings: 0,
+    };
+  }
+
+  const totalConfidence = mappings.reduce((sum, m) => sum + m.confidence, 0);
+  const averageConfidence =
+    Math.round((totalConfidence / mappings.length) * 100) / 100;
+
+  return {
+    averageConfidence,
+    highConfidenceMappings: mappings.filter((m) => m.confidence >= 0.8).length,
+    mediumConfidenceMappings: mappings.filter(
+      (m) => m.confidence >= 0.6 && m.confidence < 0.8,
+    ).length,
+    lowConfidenceMappings: mappings.filter((m) => m.confidence < 0.6).length,
+  };
+}
+
+/**
+ * Get suggestion based on confidence score
+ */
+function getConfidenceSuggestion(confidence: number): string {
+  if (confidence >= 0.9) return 'Excellent match - Auto-populate recommended';
+  if (confidence >= 0.8) return 'Very good match - Safe to auto-populate';
+  if (confidence >= 0.7) return 'Good match - Review recommended';
+  if (confidence >= 0.6) return 'Fair match - Manual verification needed';
+  if (confidence >= 0.5) return 'Low confidence - Manual mapping suggested';
+  return 'Very low confidence - Skip auto-population';
+}
+
+/**
+ * Generate contextual recommendations
+ */
+function generateRecommendations(
+  mappings: any[],
+  formFields: any[],
+  supplierType?: string,
+): string[] {
+  const recommendations: string[] = [];
+
+  const highConfidenceCount = mappings.filter(
+    (m) => m.confidence >= 0.8,
+  ).length;
+  const totalFields = formFields.length;
+
+  if (highConfidenceCount / totalFields >= 0.8) {
+    recommendations.push(
+      'Excellent auto-population coverage! Most fields can be automatically filled.',
+    );
+  } else if (highConfidenceCount / totalFields >= 0.6) {
+    recommendations.push(
+      'Good auto-population coverage. Review medium confidence mappings.',
+    );
+  } else {
+    recommendations.push(
+      'Limited auto-population coverage. Consider manual field mapping for better results.',
+    );
+  }
+
+  // Supplier-specific recommendations
+  if (supplierType === 'photographer') {
+    const hasWeddingDate = mappings.some(
+      (m) => m.core_field_key === 'wedding_date' && m.confidence >= 0.7,
+    );
+    if (!hasWeddingDate) {
+      recommendations.push(
+        'Consider manually mapping the wedding date field - critical for photography timelines.',
+      );
+    }
+  }
+
+  if (supplierType === 'venue') {
+    const hasGuestCount = mappings.some(
+      (m) => m.core_field_key === 'guest_count' && m.confidence >= 0.7,
+    );
+    if (!hasGuestCount) {
+      recommendations.push(
+        'Guest count mapping is important for venue capacity planning.',
+      );
+    }
+  }
+
+  // Missing critical fields
+  const criticalFields = ['couple_name_1', 'wedding_date', 'contact_email'];
+  const missingCritical = criticalFields.filter(
+    (field) =>
+      !mappings.some((m) => m.core_field_key === field && m.confidence >= 0.7),
+  );
+
+  if (missingCritical.length > 0) {
+    recommendations.push(
+      `Consider manually mapping these critical fields: ${missingCritical.join(', ')}`,
+    );
+  }
+
+  return recommendations;
+}

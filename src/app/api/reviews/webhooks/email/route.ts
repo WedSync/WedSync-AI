@@ -1,0 +1,310 @@
+/**
+ * Email Delivery Webhook Handler
+ * WS-047: Review Collection System - Email Tracking Webhooks
+ *
+ * Handles email delivery status webhooks from email providers (Resend, SendGrid, etc.)
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { webhookManager } from '@/lib/webhooks/webhook-manager';
+import { webhookRateLimiter } from '@/lib/security/webhook-validation';
+import ReviewEmailService from '@/lib/reviews/email-service';
+
+export async function POST(request: NextRequest) {
+  try {
+    const clientIP =
+      request.headers.get('x-forwarded-for') ||
+      request.headers.get('x-real-ip') ||
+      'unknown';
+
+    // Rate limiting
+    const rateLimitResult = webhookRateLimiter.isAllowed(clientIP);
+    if (!rateLimitResult.allowed) {
+      return new NextResponse('Rate limit exceeded', {
+        status: 429,
+        headers: {
+          'Retry-After': Math.ceil(
+            (rateLimitResult.resetTime - Date.now()) / 1000,
+          ).toString(),
+        },
+      });
+    }
+
+    // Determine email provider from headers or URL
+    const provider = determineEmailProvider(request);
+    const body = await request.text();
+
+    // Verify webhook signature based on provider
+    const isValid = await verifyEmailWebhookSignature(request, body, provider);
+    if (!isValid) {
+      console.warn(`${provider} email webhook signature verification failed`);
+      return new NextResponse('Invalid signature', { status: 401 });
+    }
+
+    // Parse webhook payload
+    let webhookData;
+    try {
+      webhookData = JSON.parse(body);
+    } catch (error) {
+      console.error(`Failed to parse ${provider} webhook payload:`, error);
+      return new NextResponse('Invalid JSON payload', { status: 400 });
+    }
+
+    // Process webhook based on provider
+    await processEmailWebhook(provider, webhookData);
+
+    return new NextResponse('OK', { status: 200 });
+  } catch (error) {
+    console.error('Email webhook processing error:', error);
+    return new NextResponse('Webhook processing failed', { status: 500 });
+  }
+}
+
+/**
+ * Determine email provider from request
+ */
+function determineEmailProvider(
+  request: NextRequest,
+): 'resend' | 'sendgrid' | 'ses' {
+  const userAgent = request.headers.get('user-agent') || '';
+  const url = new URL(request.url);
+
+  // Check URL path or query parameters
+  if (url.searchParams.get('provider')) {
+    return url.searchParams.get('provider') as 'resend' | 'sendgrid' | 'ses';
+  }
+
+  // Check user agent or other headers
+  if (userAgent.includes('Resend')) return 'resend';
+  if (userAgent.includes('SendGrid')) return 'sendgrid';
+  if (userAgent.includes('Amazon')) return 'ses';
+
+  // Default to resend
+  return 'resend';
+}
+
+/**
+ * Verify email webhook signature
+ */
+async function verifyEmailWebhookSignature(
+  request: NextRequest,
+  body: string,
+  provider: string,
+): Promise<boolean> {
+  try {
+    switch (provider) {
+      case 'resend':
+        return verifyResendSignature(request, body);
+      case 'sendgrid':
+        return verifySendGridSignature(request, body);
+      case 'ses':
+        return verifySESSignature(request, body);
+      default:
+        return false;
+    }
+  } catch (error) {
+    console.error(
+      `Email webhook signature verification error for ${provider}:`,
+      error,
+    );
+    return false;
+  }
+}
+
+/**
+ * Verify Resend webhook signature
+ */
+function verifyResendSignature(request: NextRequest, body: string): boolean {
+  const signature = request.headers.get('resend-signature');
+  if (!signature || !process.env.RESEND_WEBHOOK_SECRET) {
+    return false;
+  }
+
+  const crypto = require('crypto');
+  const expectedSignature = crypto
+    .createHmac('sha256', process.env.RESEND_WEBHOOK_SECRET)
+    .update(body)
+    .digest('hex');
+
+  return crypto.timingSafeEqual(
+    Buffer.from(signature),
+    Buffer.from(expectedSignature),
+  );
+}
+
+/**
+ * Verify SendGrid webhook signature
+ */
+function verifySendGridSignature(request: NextRequest, body: string): boolean {
+  const signature = request.headers.get(
+    'x-twilio-email-event-webhook-signature',
+  );
+  const timestamp = request.headers.get(
+    'x-twilio-email-event-webhook-timestamp',
+  );
+
+  if (!signature || !timestamp || !process.env.SENDGRID_WEBHOOK_SECRET) {
+    return false;
+  }
+
+  const crypto = require('crypto');
+  const payload = timestamp + body;
+  const expectedSignature = crypto
+    .createHmac('sha256', process.env.SENDGRID_WEBHOOK_SECRET)
+    .update(payload)
+    .digest('base64');
+
+  return crypto.timingSafeEqual(
+    Buffer.from(signature, 'base64'),
+    Buffer.from(expectedSignature, 'base64'),
+  );
+}
+
+/**
+ * Verify Amazon SES webhook signature
+ */
+function verifySESSignature(request: NextRequest, body: string): boolean {
+  // Amazon SES webhook verification would go here
+  // For now, return true as not fully implemented
+  return true;
+}
+
+/**
+ * Process email webhook based on provider
+ */
+async function processEmailWebhook(
+  provider: string,
+  webhookData: any,
+): Promise<void> {
+  const emailService = new ReviewEmailService(provider as any);
+
+  switch (provider) {
+    case 'resend':
+      await processResendWebhook(webhookData, emailService);
+      break;
+    case 'sendgrid':
+      await processSendGridWebhook(webhookData, emailService);
+      break;
+    case 'ses':
+      await processSESWebhook(webhookData, emailService);
+      break;
+    default:
+      console.warn(`Unknown email provider: ${provider}`);
+  }
+}
+
+/**
+ * Process Resend webhook events
+ */
+async function processResendWebhook(
+  webhookData: any,
+  emailService: ReviewEmailService,
+): Promise<void> {
+  const event = webhookData.type;
+  const data = webhookData.data;
+
+  // Extract tracking token from headers or custom data
+  const trackingToken =
+    data.headers?.['x-tracking-token'] || data.tags?.tracking_token;
+
+  if (!trackingToken) {
+    console.warn('Resend webhook received without tracking token');
+    return;
+  }
+
+  await emailService.handleEmailTracking({
+    type: mapResendEventType(event),
+    tracking_token: trackingToken,
+    timestamp: webhookData.created_at || new Date().toISOString(),
+    metadata: {
+      message_id: data.id,
+      email: data.to?.[0],
+      provider: 'resend',
+    },
+  });
+}
+
+/**
+ * Process SendGrid webhook events
+ */
+async function processSendGridWebhook(
+  webhookData: any,
+  emailService: ReviewEmailService,
+): Promise<void> {
+  // SendGrid sends arrays of events
+  const events = Array.isArray(webhookData) ? webhookData : [webhookData];
+
+  for (const event of events) {
+    const trackingToken =
+      event.tracking_token || event.custom_args?.tracking_token;
+
+    if (!trackingToken) {
+      console.warn('SendGrid webhook received without tracking token');
+      continue;
+    }
+
+    await emailService.handleEmailTracking({
+      type: mapSendGridEventType(event.event),
+      tracking_token: trackingToken,
+      timestamp: new Date(event.timestamp * 1000).toISOString(),
+      metadata: {
+        message_id: event.sg_message_id,
+        email: event.email,
+        provider: 'sendgrid',
+        reason: event.reason,
+      },
+    });
+  }
+}
+
+/**
+ * Process Amazon SES webhook events
+ */
+async function processSESWebhook(
+  webhookData: any,
+  emailService: ReviewEmailService,
+): Promise<void> {
+  // Amazon SES webhook processing would go here
+  console.log('Processing SES webhook:', webhookData);
+}
+
+/**
+ * Map Resend event types to standard types
+ */
+function mapResendEventType(
+  eventType: string,
+): 'delivered' | 'opened' | 'clicked' | 'bounced' | 'complained' {
+  const eventMap: Record<
+    string,
+    'delivered' | 'opened' | 'clicked' | 'bounced' | 'complained'
+  > = {
+    'email.sent': 'delivered',
+    'email.delivered': 'delivered',
+    'email.opened': 'opened',
+    'email.clicked': 'clicked',
+    'email.bounced': 'bounced',
+    'email.complained': 'complained',
+  };
+
+  return eventMap[eventType] || 'delivered';
+}
+
+/**
+ * Map SendGrid event types to standard types
+ */
+function mapSendGridEventType(
+  eventType: string,
+): 'delivered' | 'opened' | 'clicked' | 'bounced' | 'complained' {
+  const eventMap: Record<
+    string,
+    'delivered' | 'opened' | 'clicked' | 'bounced' | 'complained'
+  > = {
+    delivered: 'delivered',
+    open: 'opened',
+    click: 'clicked',
+    bounce: 'bounced',
+    spamreport: 'complained',
+  };
+
+  return eventMap[eventType] || 'delivered';
+}

@@ -1,0 +1,589 @@
+/**
+ * WS-190 Security Incidents API - Integration Test Suite
+ * Tests API endpoints with authentication, validation, and rate limiting
+ */
+
+import { describe, test, expect, beforeEach, afterEach, jest } from '@jest/globals'
+import { NextRequest } from 'next/server'
+import { POST, GET } from '@/app/api/security/incidents/route'
+import { createClient } from '@/utils/supabase/server'
+
+// Mock dependencies
+jest.mock('@/utils/supabase/server')
+jest.mock('@/lib/security/incident-response-system')
+jest.mock('@/lib/rate-limit')
+
+describe('WS-190 Security Incidents API', () => {
+  let mockSupabase: any
+  let mockRequest: Partial<NextRequest>
+
+  beforeEach(() => {
+    mockSupabase = {
+      auth: {
+        getUser: jest.fn()
+      },
+      from: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      insert: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      single: jest.fn().mockReturnThis(),
+      order: jest.fn().mockReturnThis(),
+      range: jest.fn().mockReturnThis(),
+      gte: jest.fn().mockReturnThis(),
+      lte: jest.fn().mockReturnThis(),
+      not: jest.fn().mockReturnThis(),
+      or: jest.fn().mockReturnThis()
+    }
+
+    ;(createClient as jest.MockedFunction<typeof createClient>).mockReturnValue(mockSupabase)
+
+    mockRequest = {
+      ip: '192.168.1.100',
+      json: jest.fn(),
+      url: 'http://localhost:3000/api/security/incidents',
+      headers: new Headers()
+    }
+  })
+
+  afterEach(() => {
+    jest.clearAllMocks()
+  })
+
+  describe('POST /api/security/incidents - Create Incident', () => {
+    test('should create P1 incident with proper authentication', async () => {
+      const validIncidentData = {
+        incidentType: 'security_breach',
+        severity: 'P1',
+        title: 'Critical wedding guest data breach during ceremony',
+        description: 'Unauthorized access detected to guest management system during active wedding ceremony. Payment information and personal details of 200+ guests potentially compromised.',
+        affectedSystems: ['guest_management', 'payment_gateway'],
+        weddingIds: ['wedding-urgent-123'],
+        venueIds: ['venue-456'],
+        vendorIds: ['photographer-789'],
+        guestDataAffected: true,
+        photosAffected: false,
+        paymentDataAffected: true,
+        forensicsRequired: true,
+        autoContainmentEnabled: true
+      }
+
+      // Mock authenticated user
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: { id: 'admin-user-123' } },
+        error: null
+      })
+
+      // Mock user profile with admin role
+      mockSupabase.from.mockImplementation((table) => {
+        if (table === 'user_profiles') {
+          return {
+            select: jest.fn().mockReturnThis(),
+            eq: jest.fn().mockReturnThis(),
+            single: jest.fn().mockResolvedValue({
+              data: {
+                organization_id: 'org-123',
+                role: 'security_officer',
+                full_name: 'Security Admin'
+              },
+              error: null
+            })
+          }
+        }
+        return mockSupabase
+      })
+
+      mockRequest.json = jest.fn().mockResolvedValue(validIncidentData)
+
+      // Mock incident response system
+      const mockIncidentSystem = {
+        createIncident: jest.fn().mockResolvedValue({
+          incident: {
+            id: 'incident-123',
+            incident_reference: 'INC-2025-001',
+            severity: 'P1',
+            status: 'detected',
+            title: validIncidentData.title,
+            created_at: new Date().toISOString()
+          },
+          emergencyResponse: true,
+          weddingImpactAssessment: {
+            impactLevel: 'CRITICAL',
+            guestsAffected: 200,
+            weddingsAffected: 1
+          },
+          containmentActions: [
+            { actionType: 'isolate_system', status: 'executed' },
+            { actionType: 'disable_compromised_accounts', status: 'executed' }
+          ],
+          complianceRequired: true
+        })
+      }
+
+      // Mock rate limiting (allow request)
+      const { rateLimit } = require('@/lib/rate-limit')
+      rateLimit.mockResolvedValue({ success: true, remaining: 9 })
+
+      const response = await POST(mockRequest as NextRequest)
+      const responseData = await response.json()
+
+      expect(response.status).toBe(201)
+      expect(responseData.success).toBe(true)
+      expect(responseData.incident.reference).toBe('INC-2025-001')
+      expect(responseData.incident.emergencyResponse).toBe(true)
+      expect(responseData.message).toContain('emergency response activated')
+    })
+
+    test('should reject unauthorized access', async () => {
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: null },
+        error: new Error('No user found')
+      })
+
+      const response = await POST(mockRequest as NextRequest)
+      const responseData = await response.json()
+
+      expect(response.status).toBe(401)
+      expect(responseData.error).toBe('Unauthorized - Valid authentication required')
+    })
+
+    test('should enforce role-based authorization', async () => {
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: { id: 'regular-user-123' } },
+        error: null
+      })
+
+      // Mock user with insufficient permissions
+      mockSupabase.from.mockImplementation((table) => {
+        if (table === 'user_profiles') {
+          return {
+            select: jest.fn().mockReturnThis(),
+            eq: jest.fn().mockReturnThis(),
+            single: jest.fn().mockResolvedValue({
+              data: {
+                organization_id: 'org-123',
+                role: 'basic_user', // Insufficient role
+                full_name: 'Regular User'
+              },
+              error: null
+            })
+          }
+        }
+        return mockSupabase
+      })
+
+      const response = await POST(mockRequest as NextRequest)
+      const responseData = await response.json()
+
+      expect(response.status).toBe(403)
+      expect(responseData.error).toBe('Insufficient permissions to create security incidents')
+    })
+
+    test('should validate input data with comprehensive schema', async () => {
+      const invalidIncidentData = {
+        incidentType: 'invalid_type',
+        severity: 'P5', // Invalid severity
+        title: 'A', // Too short
+        description: 'Too short', // Too short
+        affectedSystems: [], // Empty array not allowed
+        weddingIds: ['invalid-uuid-format']
+      }
+
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: { id: 'admin-user-123' } },
+        error: null
+      })
+
+      mockSupabase.from.mockImplementation((table) => {
+        if (table === 'user_profiles') {
+          return {
+            select: jest.fn().mockReturnThis(),
+            eq: jest.fn().mockReturnThis(),
+            single: jest.fn().mockResolvedValue({
+              data: {
+                organization_id: 'org-123',
+                role: 'admin',
+                full_name: 'Admin User'
+              },
+              error: null
+            })
+          }
+        }
+        return mockSupabase
+      })
+
+      mockRequest.json = jest.fn().mockResolvedValue(invalidIncidentData)
+
+      const response = await POST(mockRequest as NextRequest)
+      const responseData = await response.json()
+
+      expect(response.status).toBe(400)
+      expect(responseData.error).toBe('Validation failed')
+      expect(responseData.details).toBeDefined()
+      expect(responseData.details).toContainEqual(
+        expect.objectContaining({
+          field: 'incidentType',
+          message: expect.stringContaining('Invalid enum value')
+        })
+      )
+    })
+
+    test('should handle rate limiting for security endpoints', async () => {
+      const { rateLimit } = require('@/lib/rate-limit')
+      rateLimit.mockResolvedValue({
+        success: false,
+        remaining: 0,
+        retryAfter: 60
+      })
+
+      const response = await POST(mockRequest as NextRequest)
+      const responseData = await response.json()
+
+      expect(response.status).toBe(429)
+      expect(responseData.error).toBe('Rate limit exceeded')
+      expect(responseData.retryAfter).toBe(60)
+    })
+
+    test('should activate wedding day protection for Saturday P1 incidents', async () => {
+      // Mock Saturday date
+      const mockSaturday = new Date('2025-01-25T14:00:00Z') // Saturday
+      jest.spyOn(Date, 'now').mockReturnValue(mockSaturday.getTime())
+
+      const saturdayP1Data = {
+        incidentType: 'system_failure',
+        severity: 'P1',
+        title: 'Payment system failure during active wedding',
+        description: 'Critical payment gateway failure affecting venue transactions during Saturday wedding ceremonies',
+        affectedSystems: ['payment_gateway'],
+        weddingIds: ['saturday-wedding-123'],
+        autoContainmentEnabled: true
+      }
+
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: { id: 'emergency-responder' } },
+        error: null
+      })
+
+      mockSupabase.from.mockImplementation((table) => {
+        if (table === 'user_profiles') {
+          return {
+            select: jest.fn().mockReturnThis(),
+            eq: jest.fn().mockReturnThis(),
+            single: jest.fn().mockResolvedValue({
+              data: {
+                organization_id: 'org-123',
+                role: 'incident_manager',
+                full_name: 'Emergency Response Team'
+              },
+              error: null
+            })
+          }
+        }
+        return mockSupabase
+      })
+
+      mockRequest.json = jest.fn().mockResolvedValue(saturdayP1Data)
+
+      // Mock Saturday-aware incident response
+      const mockIncidentSystem = {
+        createIncident: jest.fn().mockResolvedValue({
+          incident: {
+            id: 'saturday-incident-123',
+            incident_reference: 'INC-2025-SAT-001',
+            severity: 'P1',
+            status: 'detected'
+          },
+          emergencyResponse: true,
+          weddingImpactAssessment: {
+            impactLevel: 'CRITICAL',
+            isWeddingDay: true
+          },
+          containmentActions: [
+            { actionType: 'enable_offline_mode', status: 'executed' },
+            { actionType: 'notify_wedding_coordinator', status: 'executed' }
+          ]
+        })
+      }
+
+      const response = await POST(mockRequest as NextRequest)
+
+      expect(response.status).toBe(201)
+      // Verify Saturday protection was activated
+      expect(console.warn).toHaveBeenCalledWith(
+        expect.stringContaining('P1 incident on wedding day - Auto-containment enabled with wedding safety checks')
+      )
+    })
+  })
+
+  describe('GET /api/security/incidents - List Incidents', () => {
+    test('should list incidents with proper authentication and filtering', async () => {
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: { id: 'viewer-user-123' } },
+        error: null
+      })
+
+      mockSupabase.from.mockImplementation((table) => {
+        if (table === 'user_profiles') {
+          return {
+            select: jest.fn().mockReturnThis(),
+            eq: jest.fn().mockReturnThis(),
+            single: jest.fn().mockResolvedValue({
+              data: {
+                organization_id: 'org-123',
+                role: 'security_analyst'
+              },
+              error: null
+            })
+          }
+        }
+
+        if (table === 'security_incidents') {
+          return {
+            select: jest.fn().mockReturnThis(),
+            eq: jest.fn().mockReturnThis(),
+            order: jest.fn().mockReturnThis(),
+            range: jest.fn().mockResolvedValue({
+              data: [
+                {
+                  id: 'incident-1',
+                  incident_reference: 'INC-2025-001',
+                  severity: 'P1',
+                  status: 'resolved',
+                  title: 'Guest data breach',
+                  detected_at: '2025-01-20T10:00:00Z',
+                  contained_at: '2025-01-20T10:04:30Z',
+                  wedding_ids: ['wedding-123'],
+                  guest_data_affected: true
+                },
+                {
+                  id: 'incident-2',
+                  incident_reference: 'INC-2025-002',
+                  severity: 'P2',
+                  status: 'investigating',
+                  title: 'Photo storage access violation',
+                  detected_at: '2025-01-20T14:00:00Z',
+                  photos_affected: true
+                }
+              ],
+              error: null
+            }),
+            count: jest.fn()
+          }
+        }
+
+        if (table === 'containment_actions') {
+          return {
+            select: jest.fn().mockReturnThis(),
+            eq: jest.fn().mockReturnThis(),
+            count: jest.fn().mockResolvedValue({ count: 3, error: null })
+          }
+        }
+
+        if (table === 'incident_timeline') {
+          return {
+            select: jest.fn().mockReturnThis(),
+            eq: jest.fn().mockReturnThis(),
+            count: jest.fn().mockResolvedValue({ count: 5, error: null })
+          }
+        }
+
+        return mockSupabase
+      })
+
+      mockRequest.url = 'http://localhost:3000/api/security/incidents?status=resolved&limit=10'
+
+      const response = await GET(mockRequest as NextRequest)
+      const responseData = await response.json()
+
+      expect(response.status).toBe(200)
+      expect(responseData.incidents).toHaveLength(2)
+      expect(responseData.incidents[0].incident_reference).toBe('INC-2025-001')
+      expect(responseData.incidents[0].responseMetrics.timeToContainment).toBe(270) // 4.5 minutes
+      expect(responseData.incidents[0].p1SlaCompliance).toBe(true) // Under 5 minutes
+      expect(responseData.summary.totalIncidents).toBe(2)
+      expect(responseData.summary.p1Incidents).toBe(1)
+    })
+
+    test('should filter incidents by wedding impact', async () => {
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: { id: 'viewer-user-123' } },
+        error: null
+      })
+
+      mockSupabase.from.mockImplementation((table) => {
+        if (table === 'user_profiles') {
+          return {
+            select: jest.fn().mockReturnThis(),
+            eq: jest.fn().mockReturnThis(),
+            single: jest.fn().mockResolvedValue({
+              data: { organization_id: 'org-123', role: 'security_analyst' },
+              error: null
+            })
+          }
+        }
+
+        if (table === 'security_incidents') {
+          return {
+            select: jest.fn().mockReturnThis(),
+            eq: jest.fn().mockReturnThis(),
+            or: jest.fn().mockReturnThis(), // Wedding impact filter
+            order: jest.fn().mockReturnThis(),
+            range: jest.fn().mockResolvedValue({
+              data: [
+                {
+                  id: 'incident-wedding-1',
+                  incident_reference: 'INC-2025-WED-001',
+                  severity: 'P1',
+                  title: 'Wedding guest data compromise',
+                  wedding_ids: ['wedding-123'],
+                  guest_data_affected: true,
+                  photos_affected: false,
+                  detected_at: '2025-01-25T16:00:00Z' // Saturday
+                }
+              ],
+              error: null
+            })
+          }
+        }
+
+        return mockSupabase
+      })
+
+      mockRequest.url = 'http://localhost:3000/api/security/incidents?weddingImpactOnly=true'
+
+      const response = await GET(mockRequest as NextRequest)
+      const responseData = await response.json()
+
+      expect(response.status).toBe(200)
+      expect(responseData.incidents[0].weddingImpact.hasWeddingData).toBe(true)
+      expect(responseData.incidents[0].isWeddingDay).toBe(true)
+      expect(responseData.summary.weddingRelated).toBe(1)
+      expect(responseData.summary.saturdayIncidents).toBe(1)
+    })
+
+    test('should enforce pagination limits', async () => {
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: { id: 'viewer-user-123' } },
+        error: null
+      })
+
+      mockSupabase.from.mockImplementation((table) => {
+        if (table === 'user_profiles') {
+          return {
+            select: jest.fn().mockReturnThis(),
+            eq: jest.fn().mockReturnThis(),
+            single: jest.fn().mockResolvedValue({
+              data: { organization_id: 'org-123', role: 'security_analyst' },
+              error: null
+            })
+          }
+        }
+
+        if (table === 'security_incidents') {
+          return {
+            select: jest.fn().mockReturnThis(),
+            eq: jest.fn().mockReturnThis(),
+            order: jest.fn().mockReturnThis(),
+            range: jest.fn().mockImplementation((start, end) => {
+              expect(end - start).toBeLessThanOrEqual(99) // Max 100 items per page
+              return Promise.resolve({ data: [], error: null })
+            })
+          }
+        }
+
+        return mockSupabase
+      })
+
+      mockRequest.url = 'http://localhost:3000/api/security/incidents?limit=150' // Above max
+
+      const response = await GET(mockRequest as NextRequest)
+
+      expect(response.status).toBe(400)
+    })
+
+    test('should handle query parameter validation', async () => {
+      mockRequest.url = 'http://localhost:3000/api/security/incidents?severity=invalid&limit=abc'
+
+      const response = await GET(mockRequest as NextRequest)
+      const responseData = await response.json()
+
+      expect(response.status).toBe(400)
+      expect(responseData.error).toBe('Invalid query parameters')
+      expect(responseData.details).toBeDefined()
+    })
+  })
+
+  describe('Security and Performance', () => {
+    test('should handle concurrent request load', async () => {
+      const { rateLimit } = require('@/lib/rate-limit')
+      
+      // Simulate high load
+      const requests = Array(50).fill(null).map(async () => {
+        rateLimit.mockResolvedValue({ success: true, remaining: 50 })
+        
+        mockSupabase.auth.getUser.mockResolvedValue({
+          data: { user: { id: 'load-test-user' } },
+          error: null
+        })
+
+        return POST(mockRequest as NextRequest)
+      })
+
+      const responses = await Promise.allSettled(requests)
+      const successfulResponses = responses.filter(r => r.status === 'fulfilled')
+
+      expect(successfulResponses.length).toBeGreaterThan(0)
+      // Verify system handles concurrent load gracefully
+    })
+
+    test('should sanitize sensitive data in error responses', async () => {
+      // Mock database error with sensitive information
+      mockSupabase.auth.getUser.mockRejectedValue(
+        new Error('Database connection failed: password=secret123, host=db.internal.com')
+      )
+
+      const response = await POST(mockRequest as NextRequest)
+      const responseData = await response.json()
+
+      expect(response.status).toBe(500)
+      expect(responseData.error).toBe('Failed to create security incident')
+      // Verify no sensitive data leaked in production
+      if (process.env.NODE_ENV === 'production') {
+        expect(responseData.details).toBeUndefined()
+      }
+    })
+
+    test('should log security events for audit trail', async () => {
+      const consoleSpy = jest.spyOn(console, 'log')
+
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: { id: 'audit-test-user' } },
+        error: null
+      })
+
+      mockSupabase.from.mockImplementation((table) => {
+        if (table === 'user_profiles') {
+          return {
+            select: jest.fn().mockReturnThis(),
+            eq: jest.fn().mockReturnThis(),
+            single: jest.fn().mockResolvedValue({
+              data: {
+                organization_id: 'org-123',
+                role: 'admin',
+                full_name: 'Audit Test User'
+              },
+              error: null
+            })
+          }
+        }
+        return mockSupabase
+      })
+
+      await POST(mockRequest as NextRequest)
+
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining('🔐 Incident created:'),
+        expect.any(Object)
+      )
+    })
+  })
+})

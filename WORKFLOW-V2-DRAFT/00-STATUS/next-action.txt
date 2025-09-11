@@ -1,0 +1,11 @@
+IMMEDIATE: Fix team prompt paths, then re-run Teams B, C, D, E for Round 1
+
+DETAILS:
+1. Fix paths in team prompts (use absolute paths)
+2. Re-run Teams B, C, D, E with corrected prompts  
+3. Verify all 15 Round 1 reports exist in /SESSION-LOGS/today/
+4. Run Senior Dev review once all teams complete
+
+COMMANDS TO RUN:
+./fix-team-paths.sh
+./verify-team-reports.sh

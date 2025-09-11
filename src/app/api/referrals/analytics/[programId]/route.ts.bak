@@ -1,0 +1,128 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { rateLimit, rateLimitConfigs } from '@/lib/rate-limit';
+
+// GET /api/referrals/analytics/[programId]
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ programId: string }> }
+) {
+  try {
+    // Apply rate limiting
+    const rateLimitResult = await rateLimit(request, rateLimitConfigs.api);
+    if (rateLimitResult) return rateLimitResult;
+
+    const supabase = await createClient();
+    const { data: user } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { programId } = await params;
+
+    // Verify user owns this program
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('supplier_id')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!profile?.supplier_id) {
+      return NextResponse.json({ error: 'No supplier profile found' }, { status: 400 });
+    }
+
+    const { data: program } = await supabase
+      .from('referral_programs')
+      .select('id')
+      .eq('id', programId)
+      .eq('supplier_id', profile.supplier_id)
+      .single();
+
+    if (!program) {
+      return NextResponse.json({ error: 'Program not found or unauthorized' }, { status: 404 });
+    }
+
+    // Get aggregated analytics
+    const { data: analytics } = await supabase
+      .from('referral_analytics')
+      .select('*')
+      .eq('program_id', programId)
+      .order('date', { ascending: false })
+      .limit(30); // Last 30 days
+
+    const totalMetrics = analytics?.reduce(
+      (acc, day) => ({
+        totalInvitations: acc.totalInvitations + day.invitations_sent,
+        totalClicks: acc.totalClicks + day.clicks,
+        totalConversions: acc.totalConversions + day.conversions,
+        totalRevenue: acc.totalRevenue + Number(day.revenue_generated || 0),
+        totalRewardsPaid: acc.totalRewardsPaid + Number(day.rewards_paid || 0)
+      }),
+      { totalInvitations: 0, totalClicks: 0, totalConversions: 0, totalRevenue: 0, totalRewardsPaid: 0 }
+    ) || { totalInvitations: 0, totalClicks: 0, totalConversions: 0, totalRevenue: 0, totalRewardsPaid: 0 };
+
+    // Calculate rates
+    const clickThroughRate = totalMetrics.totalInvitations > 0 
+      ? (totalMetrics.totalClicks / totalMetrics.totalInvitations) * 100 
+      : 0;
+    
+    const conversionRate = totalMetrics.totalClicks > 0 
+      ? (totalMetrics.totalConversions / totalMetrics.totalClicks) * 100 
+      : 0;
+    
+    const roi = totalMetrics.totalRewardsPaid > 0 
+      ? ((totalMetrics.totalRevenue - totalMetrics.totalRewardsPaid) / totalMetrics.totalRewardsPaid) * 100 
+      : 0;
+
+    // Get top referrers
+    const { data: topReferrers } = await supabase
+      .from('referral_codes')
+      .select(`
+        id,
+        total_conversions,
+        couples!inner(
+          first_name,
+          last_name
+        ),
+        referral_conversions!inner(
+          reward_amount
+        )
+      `)
+      .eq('program_id', programId)
+      .gt('total_conversions', 0)
+      .order('total_conversions', { ascending: false })
+      .limit(10);
+
+    const processedTopReferrers = topReferrers?.map(referrer => {
+      const totalEarnings = referrer.referral_conversions?.reduce(
+        (sum, conversion) => sum + (Number(conversion.reward_amount) || 0),
+        0
+      ) || 0;
+
+      return {
+        coupleName: `${referrer.couples?.first_name || 'Unknown'} ${referrer.couples?.last_name || 'User'}`,
+        conversions: referrer.total_conversions,
+        earnings: totalEarnings
+      };
+    }) || [];
+
+    return NextResponse.json({
+      success: true,
+      metrics: {
+        totalInvitations: totalMetrics.totalInvitations,
+        clickThroughRate: parseFloat(clickThroughRate.toFixed(2)),
+        conversionRate: parseFloat(conversionRate.toFixed(2)),
+        roi: parseFloat(roi.toFixed(2)),
+        topReferrers: processedTopReferrers
+      },
+      dailyData: analytics || []
+    });
+  } catch (error) {
+    console.error('Error fetching referral analytics:', error);
+    return NextResponse.json(
+      { error: 'Failed to fetch referral analytics' },
+      { status: 500 }
+    );
+  }
+}

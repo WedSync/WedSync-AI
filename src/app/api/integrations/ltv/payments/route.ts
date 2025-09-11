@@ -1,0 +1,465 @@
+/**
+ * WS-183 LTV Payment Integration API
+ * POST /api/integrations/ltv/payments - Synchronize payment data for LTV
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import {
+  LTVDataPipeline,
+  PaymentEvent,
+} from '@/lib/integrations/ltv-data-pipeline';
+import {
+  PaymentSystemIntegrator,
+  StripeIntegrationConfig,
+} from '@/lib/integrations/payment-system-integrator';
+
+interface LTVPaymentIntegrationRequest {
+  platform: 'stripe' | 'paypal' | 'manual';
+  syncType: 'full' | 'incremental' | 'webhook';
+  dateRange?: {
+    start: string;
+    end: string;
+  };
+  webhookData?: any;
+  validationLevel: 'basic' | 'comprehensive';
+  config?: StripeIntegrationConfig;
+}
+
+interface LTVPaymentIntegrationResponse {
+  syncId: string;
+  status: 'processing' | 'completed' | 'failed' | 'partial';
+  processedEvents: number;
+  ltvUpdatesTriggered: number;
+  dataQualityReport: {
+    totalRecords: number;
+    validRecords: number;
+    invalidRecords: number;
+    dataQualityScore: number;
+    issues: string[];
+  };
+  errors?: string[];
+  processingTimeMs: number;
+  affectedSuppliers: number;
+  revenueImpact: number;
+}
+
+export async function POST(request: NextRequest) {
+  const startTime = Date.now();
+  const syncId = `ltv_payment_sync_${Date.now()}`;
+
+  try {
+    const body: LTVPaymentIntegrationRequest = await request.json();
+
+    // Validate request
+    if (!body.platform || !body.syncType || !body.validationLevel) {
+      return NextResponse.json(
+        {
+          error: 'Missing required fields: platform, syncType, validationLevel',
+        },
+        { status: 400 },
+      );
+    }
+
+    const pipeline = new LTVDataPipeline();
+    const paymentIntegrator = new PaymentSystemIntegrator();
+
+    let processedEvents = 0;
+    let ltvUpdatesTriggered = 0;
+    let errors: string[] = [];
+    let dataQualityReport: LTVPaymentIntegrationResponse['dataQualityReport'];
+    let affectedSuppliers = 0;
+    let revenueImpact = 0;
+
+    switch (body.syncType) {
+      case 'webhook':
+        if (!body.webhookData) {
+          return NextResponse.json(
+            { error: 'Webhook data is required for webhook sync' },
+            { status: 400 },
+          );
+        }
+
+        // Process webhook data
+        const webhookEvents = await processWebhookData(
+          body.webhookData,
+          body.platform,
+        );
+        const webhookResult =
+          await pipeline.processRevenueEvents(webhookEvents);
+
+        processedEvents = webhookResult.processedEvents;
+        ltvUpdatesTriggered = webhookResult.ltvUpdatesTriggered;
+        errors = webhookResult.failedEvents.map((fe) => fe.error);
+        affectedSuppliers = webhookResult.affectedSuppliers.length;
+        revenueImpact = webhookResult.totalRevenueImpact;
+
+        dataQualityReport = {
+          totalRecords: webhookEvents.length,
+          validRecords: webhookResult.successfulEvents.length,
+          invalidRecords: webhookResult.failedEvents.length,
+          dataQualityScore: webhookResult.dataQualityScore,
+          issues: errors,
+        };
+        break;
+
+      case 'full':
+      case 'incremental':
+        if (body.platform === 'stripe') {
+          if (!body.config) {
+            return NextResponse.json(
+              {
+                error:
+                  'Stripe configuration is required for full/incremental sync',
+              },
+              { status: 400 },
+            );
+          }
+
+          // Perform Stripe integration
+          const stripeResult = await paymentIntegrator.integrateStripeData(
+            body.config,
+          );
+
+          processedEvents = stripeResult.processedEvents;
+          errors =
+            stripeResult.failedEvents > 0
+              ? [`${stripeResult.failedEvents} failed events`]
+              : [];
+
+          dataQualityReport = {
+            totalRecords:
+              stripeResult.processedEvents + stripeResult.failedEvents,
+            validRecords: stripeResult.processedEvents,
+            invalidRecords: stripeResult.failedEvents,
+            dataQualityScore:
+              stripeResult.processedEvents /
+              (stripeResult.processedEvents + stripeResult.failedEvents),
+            issues: errors,
+          };
+
+          // Trigger LTV updates for affected subscriptions
+          ltvUpdatesTriggered =
+            stripeResult.subscriptionMetrics.activeSubscriptions;
+          affectedSuppliers =
+            stripeResult.subscriptionMetrics.activeSubscriptions;
+          revenueImpact = stripeResult.subscriptionMetrics.totalRevenue;
+        } else {
+          return NextResponse.json(
+            {
+              error: `${body.syncType} sync not yet implemented for platform: ${body.platform}`,
+            },
+            { status: 501 },
+          );
+        }
+        break;
+
+      default:
+        return NextResponse.json(
+          { error: `Unsupported sync type: ${body.syncType}` },
+          { status: 400 },
+        );
+    }
+
+    // Apply comprehensive validation if requested
+    if (body.validationLevel === 'comprehensive') {
+      const validationScore = await performComprehensiveValidation(
+        processedEvents,
+        body.platform,
+      );
+      dataQualityReport.dataQualityScore *= validationScore;
+    }
+
+    const processingTimeMs = Date.now() - startTime;
+    const status: LTVPaymentIntegrationResponse['status'] =
+      errors.length === 0
+        ? 'completed'
+        : processedEvents > 0
+          ? 'partial'
+          : 'failed';
+
+    const response: LTVPaymentIntegrationResponse = {
+      syncId,
+      status,
+      processedEvents,
+      ltvUpdatesTriggered,
+      dataQualityReport,
+      errors: errors.length > 0 ? errors : undefined,
+      processingTimeMs,
+      affectedSuppliers,
+      revenueImpact,
+    };
+
+    // Log integration activity
+    await logIntegrationActivity(syncId, body.platform, response);
+
+    return NextResponse.json(response);
+  } catch (error) {
+    console.error('LTV payment integration error:', error);
+
+    const errorResponse: LTVPaymentIntegrationResponse = {
+      syncId,
+      status: 'failed',
+      processedEvents: 0,
+      ltvUpdatesTriggered: 0,
+      dataQualityReport: {
+        totalRecords: 0,
+        validRecords: 0,
+        invalidRecords: 0,
+        dataQualityScore: 0,
+        issues: [error instanceof Error ? error.message : 'Unknown error'],
+      },
+      errors: [error instanceof Error ? error.message : 'Unknown error'],
+      processingTimeMs: Date.now() - startTime,
+      affectedSuppliers: 0,
+      revenueImpact: 0,
+    };
+
+    return NextResponse.json(errorResponse, { status: 500 });
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const action = searchParams.get('action');
+    const syncId = searchParams.get('syncId');
+    const platform = searchParams.get('platform');
+
+    switch (action) {
+      case 'status':
+        if (!syncId) {
+          return NextResponse.json(
+            { error: 'syncId parameter is required for status check' },
+            { status: 400 },
+          );
+        }
+
+        const syncStatus = await getSyncStatus(syncId);
+        return NextResponse.json(syncStatus);
+
+      case 'health':
+        if (!platform) {
+          return NextResponse.json(
+            { error: 'platform parameter is required for health check' },
+            { status: 400 },
+          );
+        }
+
+        const healthStatus = await checkPlatformHealth(platform);
+        return NextResponse.json(healthStatus);
+
+      case 'metrics':
+        const timeRange = searchParams.get('timeRange') || '24'; // hours
+        const metrics = await getIntegrationMetrics(
+          platform,
+          parseInt(timeRange),
+        );
+        return NextResponse.json(metrics);
+
+      default:
+        return NextResponse.json(
+          {
+            error: 'Invalid action. Supported actions: status, health, metrics',
+          },
+          { status: 400 },
+        );
+    }
+  } catch (error) {
+    console.error('LTV payment integration GET error:', error);
+    return NextResponse.json(
+      { error: 'Failed to process request' },
+      { status: 500 },
+    );
+  }
+}
+
+// Helper functions
+
+async function processWebhookData(
+  webhookData: any,
+  platform: string,
+): Promise<PaymentEvent[]> {
+  const events: PaymentEvent[] = [];
+
+  switch (platform) {
+    case 'stripe':
+      // Process Stripe webhook
+      if (webhookData.type && webhookData.data) {
+        const stripeEvent = webhookData.data.object;
+        const event = mapStripeWebhookToPaymentEvent(
+          stripeEvent,
+          webhookData.type,
+        );
+        if (event) events.push(event);
+      }
+      break;
+
+    case 'paypal':
+      // Process PayPal webhook
+      if (webhookData.event_type && webhookData.resource) {
+        const event = mapPayPalWebhookToPaymentEvent(
+          webhookData.resource,
+          webhookData.event_type,
+        );
+        if (event) events.push(event);
+      }
+      break;
+
+    default:
+      throw new Error(`Unsupported webhook platform: ${platform}`);
+  }
+
+  return events;
+}
+
+function mapStripeWebhookToPaymentEvent(
+  stripeObject: any,
+  eventType: string,
+): PaymentEvent | null {
+  const eventTypeMap: Record<string, PaymentEvent['eventType']> = {
+    'invoice.payment_succeeded': 'payment_successful',
+    'invoice.payment_failed': 'payment_failed',
+    'customer.subscription.created': 'subscription_upgraded',
+    'customer.subscription.updated': 'subscription_upgraded',
+    'customer.subscription.deleted': 'subscription_cancelled',
+    'charge.dispute.created': 'chargeback_received',
+  };
+
+  const mappedEventType = eventTypeMap[eventType];
+  if (!mappedEventType) return null;
+
+  return {
+    id: stripeObject.id,
+    userId:
+      stripeObject.customer ||
+      stripeObject.metadata?.user_id ||
+      stripeObject.id,
+    subscriptionId: stripeObject.subscription,
+    eventType: mappedEventType,
+    amount: (stripeObject.amount_paid || stripeObject.amount || 0) / 100,
+    currency: (
+      stripeObject.currency || 'usd'
+    ).toUpperCase() as PaymentEvent['currency'],
+    timestamp: new Date(stripeObject.created * 1000),
+    paymentMethod: 'stripe',
+    metadata: {
+      customerId: stripeObject.customer || '',
+      invoiceId: stripeObject.invoice || '',
+      paymentIntentId: stripeObject.payment_intent || '',
+      webhookEventId: eventType,
+    },
+    taxes: stripeObject.tax || 0,
+    fees: stripeObject.application_fee_amount
+      ? stripeObject.application_fee_amount / 100
+      : 0,
+    netAmount: (stripeObject.amount_paid || stripeObject.amount || 0) / 100,
+  };
+}
+
+function mapPayPalWebhookToPaymentEvent(
+  paypalResource: any,
+  eventType: string,
+): PaymentEvent | null {
+  const eventTypeMap: Record<string, PaymentEvent['eventType']> = {
+    'PAYMENT.SALE.COMPLETED': 'payment_successful',
+    'PAYMENT.SALE.DENIED': 'payment_failed',
+    'BILLING.SUBSCRIPTION.CREATED': 'subscription_upgraded',
+    'BILLING.SUBSCRIPTION.CANCELLED': 'subscription_cancelled',
+  };
+
+  const mappedEventType = eventTypeMap[eventType];
+  if (!mappedEventType) return null;
+
+  const amount = parseFloat(
+    paypalResource.amount?.total ||
+      paypalResource.billing_info?.last_payment?.amount?.value ||
+      '0',
+  );
+
+  return {
+    id: paypalResource.id,
+    userId:
+      paypalResource.custom_id ||
+      paypalResource.subscriber?.payer_id ||
+      paypalResource.id,
+    subscriptionId: paypalResource.billing_agreement_id || paypalResource.id,
+    eventType: mappedEventType,
+    amount,
+    currency: (paypalResource.amount?.currency ||
+      paypalResource.billing_info?.last_payment?.amount?.currency_code ||
+      'USD') as PaymentEvent['currency'],
+    timestamp: new Date(paypalResource.create_time || Date.now()),
+    paymentMethod: 'paypal',
+    metadata: {
+      customerId: paypalResource.payer?.payer_id || '',
+      invoiceId: paypalResource.invoice_id || '',
+      paymentIntentId: paypalResource.id,
+      webhookEventId: eventType,
+    },
+    taxes: parseFloat(paypalResource.amount?.details?.tax || '0'),
+    fees: parseFloat(paypalResource.amount?.details?.fee || '0'),
+    netAmount: amount,
+  };
+}
+
+async function performComprehensiveValidation(
+  processedEvents: number,
+  platform: string,
+): Promise<number> {
+  // Simulate comprehensive validation
+  // In production, this would perform deep data validation
+  const baseScore = processedEvents > 0 ? 0.95 : 0.5;
+  const platformMultiplier = platform === 'stripe' ? 1.0 : 0.9;
+
+  return Math.min(1.0, baseScore * platformMultiplier);
+}
+
+async function getSyncStatus(syncId: string) {
+  // Implementation would query database for sync status
+  return {
+    syncId,
+    status: 'completed',
+    startTime: new Date(),
+    endTime: new Date(),
+    processedRecords: 150,
+    errors: [],
+  };
+}
+
+async function checkPlatformHealth(platform: string) {
+  // Implementation would check platform-specific health
+  return {
+    platform,
+    healthy: true,
+    lastCheck: new Date(),
+    responseTime: 120,
+    issues: [],
+  };
+}
+
+async function getIntegrationMetrics(
+  platform: string | null,
+  timeRangeHours: number,
+) {
+  // Implementation would fetch real metrics from database
+  return {
+    platform,
+    timeRangeHours,
+    totalEvents: 1250,
+    successfulEvents: 1200,
+    failedEvents: 50,
+    averageProcessingTime: 85,
+    dataQualityScore: 0.96,
+  };
+}
+
+async function logIntegrationActivity(
+  syncId: string,
+  platform: string,
+  response: LTVPaymentIntegrationResponse,
+) {
+  // Implementation would log to database or external service
+  console.log(
+    `Integration activity logged: ${syncId} - ${platform} - ${response.status}`,
+  );
+}

@@ -1,0 +1,108 @@
+
+> wedsync@0.1.0 build
+> next build
+
+   ▲ Next.js 15.4.6
+   - Environments: .env.local
+   - Experiments (use with caution):
+     ✓ optimizeCss
+     ✓ reactCompiler
+
+   Creating an optimized production build ...
+ ✓ Compiled successfully in 7.0s
+   Skipping validation of types
+   Skipping linting
+   Collecting page data ...
+Twilio credentials not configured
+Warning: Please use the `legacy` build in Node.js environments.
+Failed to initialize enterprise features: Error: `cookies` was called outside a request scope. Read more: https://nextjs.org/docs/messages/next-dynamic-api-wrong-context
+    at n (.next/server/chunks/4999.js:1:14509)
+    at f (.next/server/app/api/clients/route.js:1:252)
+    at m.initializeEnterpriseFeatures (.next/server/chunks/8179.js:1:12006)
+    at new m (.next/server/chunks/8179.js:1:11907)
+    at 98179 (.next/server/chunks/8179.js:1:22678)
+    at c (.next/server/webpack-runtime.js:1:128)
+    at 52248 (.next/server/app/api/pdf/process/route.js:10:496742)
+    at c (.next/server/webpack-runtime.js:1:128)
+Warning: Please use the `legacy` build in Node.js environments.
+Generated new encryption key. Set FILE_ENCRYPTION_KEY env variable: d1adfa3046a1e5155bda8aa6fcd8aa8955e47f754d23258dd6ff63d8391e851a
+Failed to initialize enterprise features: Error: `cookies` was called outside a request scope. Read more: https://nextjs.org/docs/messages/next-dynamic-api-wrong-context
+    at n (.next/server/chunks/4999.js:1:14509)
+    at f (.next/server/app/api/communications/messages/route.js:1:248)
+    at m.initializeEnterpriseFeatures (.next/server/chunks/8179.js:1:12006)
+    at new m (.next/server/chunks/8179.js:1:11907)
+    at 98179 (.next/server/chunks/8179.js:1:22678)
+    at c (.next/server/webpack-runtime.js:1:128)
+    at 14174 (.next/server/app/api/pdf/process-and-create/route.js:1:769)
+    at c (.next/server/webpack-runtime.js:1:128)
+Missing Stripe price IDs: [
+  'STRIPE_PROFESSIONAL_MONTHLY_PRICE_ID',
+  'STRIPE_PROFESSIONAL_ANNUAL_PRICE_ID',
+  'STRIPE_BUSINESS_MONTHLY_PRICE_ID',
+  'STRIPE_BUSINESS_ANNUAL_PRICE_ID'
+]
+Using test mode - configure these in .env for production
+Twilio credentials not configured
+Twilio credentials not configured
+Twilio credentials not configured
+Twilio credentials not configured
+(node:25930) MetadataLookupWarning: received unexpected error = All promises were rejected code = UNKNOWN
+(Use `node --trace-warnings ...` to show where the warning was created)
+   Generating static pages (0/53) ...
+Twilio credentials not configured
+Merging inline stylesheets into a single <style> tag skipped, no inline stylesheets to merge
+Merging inline stylesheets into a single <style> tag skipped, no inline stylesheets to merge
+   Generating static pages (13/53) 
+Twilio credentials not configured
+Warning: Please use the `legacy` build in Node.js environments.
+Failed to initialize enterprise features: Error: `cookies` was called outside a request scope. Read more: https://nextjs.org/docs/messages/next-dynamic-api-wrong-context
+    at n (.next/server/chunks/4999.js:1:14509)
+    at f (.next/server/chunks/6203.js:1:168)
+    at m.initializeEnterpriseFeatures (.next/server/chunks/8179.js:1:12006)
+    at new m (.next/server/chunks/8179.js:1:11907)
+    at 98179 (.next/server/chunks/8179.js:1:22678)
+    at c (.next/server/webpack-runtime.js:1:128)
+    at 14174 (.next/server/app/api/pdf/process-and-create/route.js:1:769)
+    at c (.next/server/webpack-runtime.js:1:128)
+Generated new encryption key. Set FILE_ENCRYPTION_KEY env variable: f71245930e66a31744df5454d8924f460619496ff25730eb8a9f921193e4c70c
+Missing Stripe price IDs: [
+  'STRIPE_PROFESSIONAL_MONTHLY_PRICE_ID',
+  'STRIPE_PROFESSIONAL_ANNUAL_PRICE_ID',
+  'STRIPE_BUSINESS_MONTHLY_PRICE_ID',
+  'STRIPE_BUSINESS_ANNUAL_PRICE_ID'
+]
+Using test mode - configure these in .env for production
+   Generating static pages (26/53) 
+Twilio credentials not configured
+   Generating static pages (39/53) 
+Error in FormBuilderPage: Error: Dynamic server usage: Route /forms/builder couldn't be rendered statically because it used ``await searchParams`, `searchParams.then`, or similar`. See more info here: https://nextjs.org/docs/messages/dynamic-server-error
+    at r (.next/server/chunks/2073.js:19:11054)
+    at Object.get (.next/server/chunks/5876.js:7:102338)
+    at e (.next/server/app/forms/builder/page.js:1:1323)
+    at i (.next/server/app/forms/builder/page.js:1:11738) {
+  description: "Route /forms/builder couldn't be rendered statically because it used ``await searchParams`, `searchParams.then`, or similar`. See more info here: https://nextjs.org/docs/messages/dynamic-server-error",
+  digest: 'DYNAMIC_SERVER_USAGE'
+}
+Warning: Please use the `legacy` build in Node.js environments.
+Failed to initialize enterprise features: Error: `cookies` was called outside a request scope. Read more: https://nextjs.org/docs/messages/next-dynamic-api-wrong-context
+    at n (.next/server/chunks/4999.js:1:14509)
+    at f (.next/server/app/api/communications/messages/route.js:1:248)
+    at m.initializeEnterpriseFeatures (.next/server/chunks/8179.js:1:12006)
+    at new m (.next/server/chunks/8179.js:1:11907)
+    at 98179 (.next/server/chunks/8179.js:1:22678)
+    at c (.next/server/webpack-runtime.js:1:128)
+    at 52248 (.next/server/app/api/pdf/process/route.js:10:496742)
+    at c (.next/server/webpack-runtime.js:1:128)
+ ✓ Generating static pages (53/53)
+(node:26024) MetadataLookupWarning: received unexpected error = All promises were rejected code = UNKNOWN
+(Use `node --trace-warnings ...` to show where the warning was created)
+   Finalizing page optimization ...
+   Collecting build traces ...
+ ⚠ Failed to copy traced files for /Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/.next/server/app/(dashboard)/page.js [Error: ENOENT: no such file or directory, copyfile '/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/.next/server/app/(dashboard)/page_client-reference-manifest.js' -> '/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/.next/standalone/.next/server/app/(dashboard)/page_client-reference-manifest.js'] {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'copyfile',
+  path: '/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/.next/server/app/(dashboard)/page_client-reference-manifest.js',
+  dest: '/Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/.next/standalone/.next/server/app/(dashboard)/page_client-reference-manifest.js'
+}
+

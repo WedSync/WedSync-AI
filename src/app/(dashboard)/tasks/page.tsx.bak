@@ -1,0 +1,745 @@
+'use client';
+
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { 
+  Plus, 
+  Search, 
+  Filter, 
+  Calendar, 
+  List, 
+  Settings,
+  ChevronDown,
+  SlidersHorizontal,
+  MoreVertical,
+  Clock,
+  User,
+  AlertTriangle,
+  CheckCircle,
+  BookTemplate
+} from 'lucide-react';
+import {
+  WorkflowTask,
+  TaskFilter,
+  TaskPageState,
+  TaskCategory,
+  TaskPriority,
+  TaskStatus,
+  TeamMember,
+  TaskTemplate,
+  TaskCreateInput,
+  TimingConflict,
+  ConflictResolution
+} from '@/types/workflow';
+import { TaskCreator } from '@/components/tasks/TaskCreator';
+import { TaskTemplateLibrary } from '@/components/tasks/TaskTemplateLibrary';
+import { TaskTimingValidator } from '@/components/tasks/TaskTimingValidator';
+
+// Mock data - in production this would come from API/database
+const mockTasks: WorkflowTask[] = [
+  {
+    id: 'task-1',
+    title: 'Photography Session Setup',
+    description: 'Prepare equipment and setup for couple portrait session',
+    wedding_id: 'wedding-123',
+    category: 'photography',
+    priority: 'high',
+    status: 'todo',
+    assigned_to: 'photographer-1',
+    assigned_by: 'planner-1',
+    created_by: 'planner-1',
+    estimated_duration: 2,
+    buffer_time: 0.5,
+    deadline: new Date('2025-02-15T16:00:00'),
+    start_date: new Date('2025-02-15T14:00:00'),
+    completion_date: null,
+    progress_percentage: 0,
+    is_critical_path: true,
+    notes: '',
+    attachments: [],
+    created_at: new Date('2025-01-20T10:00:00'),
+    updated_at: new Date('2025-01-20T10:00:00')
+  },
+  {
+    id: 'task-2',
+    title: 'Ceremony Venue Setup',
+    description: 'Setup ceremony chairs, decorations, and sound system',
+    wedding_id: 'wedding-123',
+    category: 'venue_management',
+    priority: 'critical',
+    status: 'in_progress',
+    assigned_to: 'coordinator-1',
+    assigned_by: 'planner-1',
+    created_by: 'planner-1',
+    estimated_duration: 3,
+    buffer_time: 1,
+    deadline: new Date('2025-02-15T13:00:00'),
+    start_date: new Date('2025-02-15T10:00:00'),
+    completion_date: null,
+    progress_percentage: 45,
+    is_critical_path: true,
+    notes: '100 white chairs delivered',
+    attachments: [],
+    created_at: new Date('2025-01-18T09:00:00'),
+    updated_at: new Date('2025-01-22T15:30:00')
+  }
+];
+
+const mockTeamMembers: TeamMember[] = [
+  {
+    id: 'photographer-1',
+    name: 'Sarah Photographer',
+    email: 'sarah@wedsync.com',
+    role: 'photographer',
+    specialties: ['photography'],
+    current_workload: 75,
+    available_hours_per_week: 40,
+    timezone: 'America/Los_Angeles',
+    avatar_url: null
+  },
+  {
+    id: 'coordinator-1',
+    name: 'Mike Coordinator',
+    email: 'mike@wedsync.com',
+    role: 'coordinator',
+    specialties: ['venue_management', 'logistics'],
+    current_workload: 60,
+    available_hours_per_week: 45,
+    timezone: 'America/Los_Angeles',
+    avatar_url: null
+  },
+  {
+    id: 'planner-1',
+    name: 'Emma Planner',
+    email: 'emma@wedsync.com',
+    role: 'planner',
+    specialties: ['client_management', 'vendor_coordination', 'logistics'],
+    current_workload: 80,
+    available_hours_per_week: 50,
+    timezone: 'America/Los_Angeles',
+    avatar_url: null
+  }
+];
+
+const mockTemplates: TaskTemplate[] = [
+  {
+    id: 'template-1',
+    name: 'Ceremony Setup Complete',
+    category: 'venue_management',
+    description: 'Complete ceremony venue setup including seating, decorations, and AV',
+    tasks: [
+      {
+        title: 'Set up ceremony chairs',
+        description: 'Arrange chairs for guests',
+        category: 'venue_management',
+        priority: 'high',
+        estimated_duration: 2,
+        buffer_time: 0.5,
+        order: 1,
+        is_required: true
+      },
+      {
+        title: 'Install sound system',
+        description: 'Setup microphones and speakers',
+        category: 'logistics',
+        priority: 'medium',
+        estimated_duration: 1.5,
+        buffer_time: 0.25,
+        order: 2,
+        is_required: true
+      }
+    ],
+    tags: ['ceremony', 'setup', 'venue'],
+    popularity: 95,
+    is_featured: true,
+    created_by: 'system',
+    created_at: new Date('2024-12-01T00:00:00'),
+    updated_at: new Date('2025-01-15T00:00:00')
+  }
+];
+
+const categories = [
+  { value: 'venue_management', label: 'Venue Management' },
+  { value: 'vendor_coordination', label: 'Vendor Coordination' },
+  { value: 'client_management', label: 'Client Management' },
+  { value: 'logistics', label: 'Logistics' },
+  { value: 'design', label: 'Design' },
+  { value: 'photography', label: 'Photography' },
+  { value: 'catering', label: 'Catering' },
+  { value: 'florals', label: 'Florals' },
+  { value: 'music', label: 'Music' },
+  { value: 'transportation', label: 'Transportation' }
+];
+
+const priorities = [
+  { value: 'low', label: 'Low', color: 'text-gray-600' },
+  { value: 'medium', label: 'Medium', color: 'text-blue-600' },
+  { value: 'high', label: 'High', color: 'text-warning-600' },
+  { value: 'critical', label: 'Critical', color: 'text-error-600' }
+];
+
+const statusOptions = [
+  { value: 'todo', label: 'To Do', color: 'bg-gray-100 text-gray-800' },
+  { value: 'in_progress', label: 'In Progress', color: 'bg-blue-100 text-blue-800' },
+  { value: 'review', label: 'Review', color: 'bg-yellow-100 text-yellow-800' },
+  { value: 'completed', label: 'Completed', color: 'bg-green-100 text-green-800' },
+  { value: 'blocked', label: 'Blocked', color: 'bg-red-100 text-red-800' },
+  { value: 'cancelled', label: 'Cancelled', color: 'bg-gray-100 text-gray-600' }
+];
+
+export default function TasksPage() {
+  // Page state management
+  const [pageState, setPageState] = useState<TaskPageState>({
+    tasks: mockTasks,
+    filters: {},
+    searchQuery: '',
+    viewMode: 'list',
+    selectedTask: null,
+    isCreateModalOpen: false,
+    isTemplateLibraryOpen: false,
+    sortBy: 'deadline',
+    sortOrder: 'asc'
+  });
+
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Filtered and sorted tasks
+  const filteredTasks = useMemo(() => {
+    let filtered = pageState.tasks;
+
+    // Apply search filter
+    if (pageState.searchQuery) {
+      const query = pageState.searchQuery.toLowerCase();
+      filtered = filtered.filter(task => 
+        task.title.toLowerCase().includes(query) ||
+        task.description.toLowerCase().includes(query) ||
+        task.notes.toLowerCase().includes(query)
+      );
+    }
+
+    // Apply category filter
+    if (pageState.filters.category?.length) {
+      filtered = filtered.filter(task => 
+        pageState.filters.category!.includes(task.category)
+      );
+    }
+
+    // Apply priority filter
+    if (pageState.filters.priority?.length) {
+      filtered = filtered.filter(task => 
+        pageState.filters.priority!.includes(task.priority)
+      );
+    }
+
+    // Apply status filter
+    if (pageState.filters.status?.length) {
+      filtered = filtered.filter(task => 
+        pageState.filters.status!.includes(task.status)
+      );
+    }
+
+    // Apply assignee filter
+    if (pageState.filters.assigned_to?.length) {
+      filtered = filtered.filter(task => 
+        task.assigned_to && pageState.filters.assigned_to!.includes(task.assigned_to)
+      );
+    }
+
+    // Apply date filters
+    if (pageState.filters.deadline_from) {
+      filtered = filtered.filter(task => 
+        task.deadline >= pageState.filters.deadline_from!
+      );
+    }
+
+    if (pageState.filters.deadline_to) {
+      filtered = filtered.filter(task => 
+        task.deadline <= pageState.filters.deadline_to!
+      );
+    }
+
+    // Apply overdue filter
+    if (pageState.filters.is_overdue) {
+      const now = new Date();
+      filtered = filtered.filter(task => 
+        task.deadline < now && task.status !== 'completed' && task.status !== 'cancelled'
+      );
+    }
+
+    // Apply critical path filter
+    if (pageState.filters.is_critical_path) {
+      filtered = filtered.filter(task => task.is_critical_path);
+    }
+
+    // Sort tasks
+    filtered.sort((a, b) => {
+      let aValue: any, bValue: any;
+
+      switch (pageState.sortBy) {
+        case 'deadline':
+          aValue = a.deadline.getTime();
+          bValue = b.deadline.getTime();
+          break;
+        case 'priority':
+          const priorityOrder = { critical: 4, high: 3, medium: 2, low: 1 };
+          aValue = priorityOrder[a.priority];
+          bValue = priorityOrder[b.priority];
+          break;
+        case 'created':
+          aValue = a.created_at.getTime();
+          bValue = b.created_at.getTime();
+          break;
+        case 'category':
+          aValue = a.category;
+          bValue = b.category;
+          break;
+        default:
+          return 0;
+      }
+
+      const result = aValue < bValue ? -1 : aValue > bValue ? 1 : 0;
+      return pageState.sortOrder === 'asc' ? result : -result;
+    });
+
+    return filtered;
+  }, [pageState.tasks, pageState.filters, pageState.searchQuery, pageState.sortBy, pageState.sortOrder]);
+
+  // Handle search
+  const handleSearch = useCallback((query: string) => {
+    setPageState(prev => ({ ...prev, searchQuery: query }));
+  }, []);
+
+  // Handle filter changes
+  const handleFilterChange = useCallback((filterKey: keyof TaskFilter, value: any) => {
+    setPageState(prev => ({
+      ...prev,
+      filters: {
+        ...prev.filters,
+        [filterKey]: value
+      }
+    }));
+  }, []);
+
+  // Handle view mode toggle
+  const handleViewModeChange = useCallback((mode: 'list' | 'timeline' | 'kanban') => {
+    setPageState(prev => ({ ...prev, viewMode: mode }));
+  }, []);
+
+  // Handle task creation
+  const handleTaskCreate = useCallback(async (taskData: TaskCreateInput) => {
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      // In production, this would be an API call
+      const newTask: WorkflowTask = {
+        id: `task-${Date.now()}`,
+        ...taskData,
+        status: 'todo',
+        assigned_by: 'current-user',
+        created_by: 'current-user',
+        progress_percentage: 0,
+        is_critical_path: false,
+        notes: '',
+        attachments: [],
+        created_at: new Date(),
+        updated_at: new Date(),
+        start_date: null,
+        completion_date: null
+      };
+
+      setPageState(prev => ({
+        ...prev,
+        tasks: [...prev.tasks, newTask],
+        isCreateModalOpen: false
+      }));
+
+      // Success notification
+      const announcement = document.createElement('div');
+      announcement.setAttribute('role', 'alert');
+      announcement.setAttribute('aria-live', 'polite');
+      announcement.textContent = `Task "${taskData.title}" created successfully.`;
+      announcement.className = 'sr-only';
+      document.body.appendChild(announcement);
+      setTimeout(() => document.body.removeChild(announcement), 3000);
+
+    } catch (error) {
+      console.error('Task creation failed:', error);
+      setError('Failed to create task. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  // Handle template selection
+  const handleTemplateSelect = useCallback(async (template: TaskTemplate) => {
+    // Pre-populate create form with template data
+    setPageState(prev => ({ 
+      ...prev, 
+      isTemplateLibraryOpen: false,
+      isCreateModalOpen: true 
+    }));
+
+    // In a real implementation, you'd populate the TaskCreator with template data
+    console.log('Selected template:', template);
+  }, []);
+
+  // Handle conflict detection
+  const handleConflictDetected = useCallback((conflict: TimingConflict) => {
+    console.log('Conflict detected:', conflict);
+    // In production, show conflict resolution UI
+  }, []);
+
+  // Handle conflict resolution
+  const handleConflictResolved = useCallback((resolution: ConflictResolution) => {
+    console.log('Conflict resolved:', resolution);
+    // In production, apply the resolution
+  }, []);
+
+  // Get task status icon
+  const getStatusIcon = (status: TaskStatus) => {
+    switch (status) {
+      case 'completed':
+        return <CheckCircle className="w-4 h-4 text-green-600" />;
+      case 'blocked':
+        return <AlertTriangle className="w-4 h-4 text-red-600" />;
+      case 'in_progress':
+        return <Clock className="w-4 h-4 text-blue-600" />;
+      default:
+        return <div className="w-4 h-4 rounded-full bg-gray-300" />;
+    }
+  };
+
+  // Format date for display
+  const formatDate = (date: Date) => {
+    return new Intl.DateTimeFormat('en-US', {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit'
+    }).format(date);
+  };
+
+  return (
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      {/* Page Header */}
+      <div className="mb-8">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold text-gray-900">
+              Task Management
+            </h1>
+            <p className="text-gray-600 mt-1">
+              Plan, organize, and track wedding tasks with intelligent scheduling
+            </p>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setPageState(prev => ({ ...prev, isTemplateLibraryOpen: true }))}
+              className="
+                inline-flex items-center px-4 py-2 text-sm font-medium text-primary-700
+                bg-primary-50 border border-primary-200 rounded-lg hover:bg-primary-100
+                transition-colors duration-200 focus:outline-none focus:ring-4 focus:ring-primary-100
+              "
+              data-testid="template-library-button"
+            >
+              <BookTemplate className="w-4 h-4 mr-2" />
+              Templates
+            </button>
+
+            <button
+              onClick={() => setPageState(prev => ({ ...prev, isCreateModalOpen: true }))}
+              className="
+                inline-flex items-center px-4 py-2 text-sm font-semibold text-white
+                bg-primary-600 hover:bg-primary-700 rounded-lg shadow-xs hover:shadow-sm
+                transition-all duration-200 focus:outline-none focus:ring-4 focus:ring-primary-100
+              "
+              data-testid="create-task-button"
+            >
+              <Plus className="w-4 h-4 mr-2" />
+              Create Task
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Search and Filters */}
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 mb-6">
+        <div className="flex flex-col lg:flex-row gap-4">
+          {/* Search */}
+          <div className="flex-1 relative" data-testid="task-search">
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
+            <input
+              type="text"
+              placeholder="Search tasks, descriptions, or notes..."
+              value={pageState.searchQuery}
+              onChange={(e) => handleSearch(e.target.value)}
+              className="
+                w-full pl-10 pr-4 py-2.5 bg-white border border-gray-300 rounded-lg
+                text-gray-900 placeholder-gray-500 shadow-xs
+                focus:outline-none focus:ring-4 focus:ring-primary-100 focus:border-primary-300
+                transition-all duration-200
+              "
+            />
+          </div>
+
+          {/* Category Filter */}
+          <div className="relative" data-testid="task-filters">
+            <select
+              multiple={false}
+              onChange={(e) => {
+                const value = e.target.value;
+                handleFilterChange('category', value ? [value] : []);
+              }}
+              className="
+                px-4 py-2.5 bg-white border border-gray-300 rounded-lg
+                text-gray-900 shadow-xs focus:outline-none focus:ring-4 focus:ring-primary-100
+                focus:border-primary-300 transition-all duration-200
+              "
+              data-testid="category-filter"
+            >
+              <option value="">All Categories</option>
+              {categories.map(cat => (
+                <option key={cat.value} value={cat.value}>
+                  {cat.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Priority Filter */}
+          <div className="relative" data-testid="priority-filter">
+            <select
+              onChange={(e) => {
+                const value = e.target.value;
+                handleFilterChange('priority', value ? [value] : []);
+              }}
+              className="
+                px-4 py-2.5 bg-white border border-gray-300 rounded-lg
+                text-gray-900 shadow-xs focus:outline-none focus:ring-4 focus:ring-primary-100
+                focus:border-primary-300 transition-all duration-200
+              "
+            >
+              <option value="">All Priorities</option>
+              {priorities.map(priority => (
+                <option key={priority.value} value={priority.value}>
+                  {priority.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* View Mode Toggle */}
+          <div className="flex rounded-lg border border-gray-300 bg-white">
+            <button
+              onClick={() => handleViewModeChange('list')}
+              className={`
+                px-3 py-2 text-sm font-medium rounded-l-lg transition-colors duration-200
+                ${pageState.viewMode === 'list'
+                  ? 'bg-primary-100 text-primary-700 border-primary-300'
+                  : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50'
+                }
+              `}
+              data-testid="list-view-toggle"
+            >
+              <List className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => handleViewModeChange('timeline')}
+              className={`
+                px-3 py-2 text-sm font-medium rounded-r-lg border-l border-gray-300 transition-colors duration-200
+                ${pageState.viewMode === 'timeline'
+                  ? 'bg-primary-100 text-primary-700'
+                  : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50'
+                }
+              `}
+              data-testid="timeline-view-toggle"
+            >
+              <Calendar className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* Clear Filters */}
+          {(pageState.searchQuery || Object.keys(pageState.filters).length > 0) && (
+            <button
+              onClick={() => setPageState(prev => ({ ...prev, searchQuery: '', filters: {} }))}
+              className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800 underline"
+              data-testid="clear-filters"
+            >
+              Clear filters
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Error Message */}
+      {error && (
+        <div className="mb-6 p-4 bg-error-50 border border-error-200 rounded-lg" data-testid="error-message">
+          <div className="flex items-center">
+            <AlertTriangle className="w-5 h-5 text-error-600 mr-2" />
+            <span className="text-sm text-error-700">{error}</span>
+            <button
+              onClick={() => setError(null)}
+              className="ml-auto text-error-600 hover:text-error-700"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Task Views */}
+      <div data-testid="tasks-dashboard">
+        {pageState.viewMode === 'list' ? (
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm" data-testid="task-list-view">
+            {/* List Header */}
+            <div className="px-6 py-4 border-b border-gray-200 bg-gray-50 rounded-t-xl">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-medium text-gray-900">
+                  {filteredTasks.length} tasks
+                </h3>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-gray-600">Sort by:</span>
+                  <select
+                    value={pageState.sortBy}
+                    onChange={(e) => setPageState(prev => ({ 
+                      ...prev, 
+                      sortBy: e.target.value as any
+                    }))}
+                    className="text-sm border-gray-300 rounded px-2 py-1"
+                  >
+                    <option value="deadline">Deadline</option>
+                    <option value="priority">Priority</option>
+                    <option value="created">Created Date</option>
+                    <option value="category">Category</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {/* Task List */}
+            <div className="divide-y divide-gray-200">
+              {filteredTasks.length === 0 ? (
+                <div className="p-12 text-center" data-testid="no-tasks-message">
+                  <div className="w-16 h-16 mx-auto bg-gray-100 rounded-full flex items-center justify-center mb-4">
+                    <Search className="w-8 h-8 text-gray-400" />
+                  </div>
+                  <h3 className="text-lg font-medium text-gray-900 mb-2">No tasks found</h3>
+                  <p className="text-gray-600 mb-4">
+                    {pageState.searchQuery || Object.keys(pageState.filters).length > 0
+                      ? 'Try adjusting your search or filters'
+                      : 'Get started by creating your first task'
+                    }
+                  </p>
+                  <button
+                    onClick={() => setPageState(prev => ({ ...prev, isCreateModalOpen: true }))}
+                    className="text-primary-600 hover:text-primary-700 font-medium"
+                  >
+                    Create a task
+                  </button>
+                </div>
+              ) : (
+                filteredTasks.map((task) => (
+                  <div key={task.id} className="p-6 hover:bg-gray-50 transition-colors" data-testid="task-item">
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-3 mb-2">
+                          {getStatusIcon(task.status)}
+                          <h4 className="font-medium text-gray-900">{task.title}</h4>
+                          
+                          {task.priority === 'critical' && (
+                            <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-error-100 text-error-800">
+                              Critical
+                            </span>
+                          )}
+                          
+                          {task.is_critical_path && (
+                            <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-800">
+                              Critical Path
+                            </span>
+                          )}
+                        </div>
+                        
+                        <p className="text-sm text-gray-600 mb-3">{task.description}</p>
+                        
+                        <div className="flex items-center gap-4 text-xs text-gray-500">
+                          <span className="flex items-center">
+                            <Calendar className="w-3 h-3 mr-1" />
+                            Due: {formatDate(task.deadline)}
+                          </span>
+                          <span className="flex items-center">
+                            <Clock className="w-3 h-3 mr-1" />
+                            {task.estimated_duration}h
+                          </span>
+                          {task.assigned_to && (
+                            <span className="flex items-center">
+                              <User className="w-3 h-3 mr-1" />
+                              {mockTeamMembers.find(m => m.id === task.assigned_to)?.name || task.assigned_to}
+                            </span>
+                          )}
+                          <span className="capitalize">
+                            {categories.find(c => c.value === task.category)?.label}
+                          </span>
+                        </div>
+                      </div>
+                      
+                      <div className="ml-4">
+                        <span className={`
+                          inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium
+                          ${statusOptions.find(s => s.value === task.status)?.color}
+                        `}>
+                          {statusOptions.find(s => s.value === task.status)?.label}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6" data-testid="timeline-view">
+            <h3 className="text-lg font-medium text-gray-900 mb-4">Timeline View</h3>
+            <p className="text-gray-600">Timeline visualization coming soon...</p>
+          </div>
+        )}
+      </div>
+
+      {/* Task Creator Modal */}
+      {pageState.isCreateModalOpen && (
+        <div className="fixed inset-0 z-50 bg-gray-900/50 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="max-w-4xl w-full max-h-[90vh] overflow-y-auto" data-testid="task-creator-modal">
+            <TaskCreator
+              weddingId="wedding-123"
+              teamMembers={mockTeamMembers}
+              availableTasks={pageState.tasks.map(t => ({
+                id: t.id,
+                title: t.title,
+                category: t.category
+              }))}
+              onSubmit={handleTaskCreate}
+              onCancel={() => setPageState(prev => ({ ...prev, isCreateModalOpen: false }))}
+              isSubmitting={isLoading}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Template Library Modal */}
+      <TaskTemplateLibrary
+        templates={mockTemplates}
+        selectedCategory={null}
+        onTemplateSelect={handleTemplateSelect}
+        onTemplateCustomize={handleTemplateSelect}
+        onClose={() => setPageState(prev => ({ ...prev, isTemplateLibraryOpen: false }))}
+        isVisible={pageState.isTemplateLibraryOpen}
+      />
+
+      {/* Task Creation Success */}
+      {!isLoading && !pageState.isCreateModalOpen && (
+        <div className="sr-only" data-testid="task-created-success" />
+      )}
+    </div>
+  );
+}

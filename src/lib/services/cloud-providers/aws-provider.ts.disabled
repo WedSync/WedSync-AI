@@ -1,0 +1,1015 @@
+/**
+ * AWS Cloud Provider Implementation
+ * WS-257 Team B Implementation
+ */
+
+import {
+  EC2Client,
+  DescribeInstancesCommand,
+  RunInstancesCommand,
+  TerminateInstancesCommand,
+  StartInstancesCommand,
+  StopInstancesCommand,
+  DescribeRegionsCommand,
+  DescribeAvailabilityZonesCommand,
+  CreateTagsCommand,
+  ModifyInstanceAttributeCommand,
+} from '@aws-sdk/client-ec2';
+
+import {
+  RDSClient,
+  CreateDBInstanceCommand,
+  DeleteDBInstanceCommand,
+  DescribeDBInstancesCommand,
+  ModifyDBInstanceCommand,
+} from '@aws-sdk/client-rds';
+
+import {
+  S3Client,
+  CreateBucketCommand,
+  DeleteBucketCommand,
+  ListBucketsCommand,
+  GetBucketLocationCommand,
+  PutBucketTaggingCommand,
+} from '@aws-sdk/client-s3';
+
+import {
+  CloudWatchClient,
+  GetMetricDataCommand,
+  ListMetricsCommand,
+  MetricDataQuery,
+  Metric,
+} from '@aws-sdk/client-cloudwatch';
+
+import {
+  CostExplorerClient,
+  GetCostAndUsageCommand,
+  GetUsageCommand,
+  Dimension,
+} from '@aws-sdk/client-cost-explorer';
+
+import BaseCloudProvider, {
+  ResourceConfig,
+  ScaleConfig,
+  ResourceMetrics,
+  CostData,
+  TimeRange,
+} from './base-provider';
+
+import type {
+  AWSCredentials,
+  CloudProvider,
+  CloudResource,
+  CloudRegion,
+  CloudService,
+  ResourceType,
+  TestConnectionResponse,
+  SyncResourcesResponse,
+} from '@/types/cloud-infrastructure';
+
+export class AWSProvider extends BaseCloudProvider {
+  private ec2Client?: EC2Client;
+  private rdsClient?: RDSClient;
+  private s3Client?: S3Client;
+  private cloudWatchClient?: CloudWatchClient;
+  private costExplorerClient?: CostExplorerClient;
+
+  constructor(provider: CloudProvider) {
+    super(provider);
+  }
+
+  // =====================================================
+  // AUTHENTICATION AND CONNECTION
+  // =====================================================
+
+  async authenticate(credentials: AWSCredentials): Promise<void> {
+    try {
+      this.validateCredentials(credentials, ['accessKeyId', 'secretAccessKey', 'defaultRegion']);
+
+      const clientConfig = {
+        region: credentials.defaultRegion,
+        credentials: {
+          accessKeyId: credentials.accessKeyId,
+          secretAccessKey: credentials.secretAccessKey,
+          ...(credentials.sessionToken && { sessionToken: credentials.sessionToken }),
+        },
+      };
+
+      // Initialize AWS clients
+      this.ec2Client = new EC2Client(clientConfig);
+      this.rdsClient = new RDSClient(clientConfig);
+      this.s3Client = new S3Client(clientConfig);
+      this.cloudWatchClient = new CloudWatchClient(clientConfig);
+      this.costExplorerClient = new CostExplorerClient(clientConfig);
+
+      // Test connectivity by calling a lightweight operation
+      await this.ec2Client.send(new DescribeRegionsCommand({ MaxResults: 1 }));
+      
+      this.isAuthenticated = true;
+      this.logOperation('Successfully authenticated with AWS');
+      
+    } catch (error) {
+      this.handleProviderError(error, 'AWS authentication failed');
+    }
+  }
+
+  async testConnection(timeoutMs = 10000): Promise<TestConnectionResponse> {
+    const startTime = Date.now();
+    
+    try {
+      if (!this.isAuthenticated || !this.ec2Client) {
+        throw new Error('Provider not authenticated');
+      }
+
+      // Create a promise that will timeout
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('Connection timeout')), timeoutMs);
+      });
+
+      // Test connection with a simple operation
+      const testPromise = this.withRetry(async () => {
+        const regionsResponse = await this.ec2Client!.send(new DescribeRegionsCommand({ MaxResults: 5 }));
+        const regions = regionsResponse.Regions?.map(region => region.RegionName!) || [];
+        
+        return {
+          success: true,
+          latencyMs: Date.now() - startTime,
+          regions,
+          services: await this.getAvailableServices(),
+        };
+      });
+
+      const result = await Promise.race([testPromise, timeoutPromise]);
+      
+      this.lastConnectionTest = new Date();
+      this.connectionLatency = result.latencyMs;
+      
+      this.logOperation('Connection test successful', {
+        latencyMs: result.latencyMs,
+        regionsCount: result.regions?.length || 0,
+        servicesCount: result.services?.length || 0,
+      });
+
+      return result;
+      
+    } catch (error) {
+      const latencyMs = Date.now() - startTime;
+      
+      this.logOperation('Connection test failed', {
+        latencyMs,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+
+      return {
+        success: false,
+        latencyMs,
+        error: error instanceof Error ? error.message : 'Connection test failed',
+      };
+    }
+  }
+
+  // =====================================================
+  // RESOURCE MANAGEMENT
+  // =====================================================
+
+  async provisionResource(config: ResourceConfig): Promise<CloudResource> {
+    this.validateResourceConfig(config);
+    
+    try {
+      switch (config.resourceType) {
+        case 'compute_instance':
+          return await this.provisionEC2Instance(config);
+        case 'database':
+          return await this.provisionRDSInstance(config);
+        case 'storage_bucket':
+          return await this.provisionS3Bucket(config);
+        default:
+          throw new Error(`Unsupported resource type: ${config.resourceType}`);
+      }
+    } catch (error) {
+      this.handleProviderError(error, `Failed to provision ${config.resourceType}`);
+    }
+  }
+
+  async terminateResource(resourceId: string): Promise<void> {
+    try {
+      // Parse the resource ID to determine the type
+      if (resourceId.startsWith('i-')) {
+        // EC2 Instance
+        await this.ec2Client!.send(new TerminateInstancesCommand({
+          InstanceIds: [resourceId],
+        }));
+      } else if (resourceId.includes('rds')) {
+        // RDS Instance
+        await this.rdsClient!.send(new DeleteDBInstanceCommand({
+          DBInstanceIdentifier: resourceId,
+          SkipFinalSnapshot: true,
+        }));
+      } else {
+        // Assume S3 bucket
+        await this.s3Client!.send(new DeleteBucketCommand({
+          Bucket: resourceId,
+        }));
+      }
+      
+      this.logOperation('Resource terminated successfully', { resourceId });
+      
+    } catch (error) {
+      this.handleProviderError(error, `Failed to terminate resource ${resourceId}`);
+    }
+  }
+
+  async getResource(resourceId: string): Promise<CloudResource> {
+    try {
+      if (resourceId.startsWith('i-')) {
+        return await this.getEC2Instance(resourceId);
+      } else if (resourceId.includes('rds')) {
+        return await this.getRDSInstance(resourceId);
+      } else {
+        return await this.getS3Bucket(resourceId);
+      }
+    } catch (error) {
+      this.handleProviderError(error, `Failed to get resource ${resourceId}`);
+    }
+  }
+
+  async updateResource(resourceId: string, updates: Partial<ResourceConfig>): Promise<CloudResource> {
+    try {
+      if (resourceId.startsWith('i-')) {
+        return await this.updateEC2Instance(resourceId, updates);
+      } else if (resourceId.includes('rds')) {
+        return await this.updateRDSInstance(resourceId, updates);
+      } else {
+        return await this.updateS3Bucket(resourceId, updates);
+      }
+    } catch (error) {
+      this.handleProviderError(error, `Failed to update resource ${resourceId}`);
+    }
+  }
+
+  async scaleResource(resource: CloudResource, config: ScaleConfig): Promise<CloudResource> {
+    try {
+      if (resource.resourceType === 'compute_instance') {
+        return await this.scaleEC2Instance(resource, config);
+      } else if (resource.resourceType === 'database') {
+        return await this.scaleRDSInstance(resource, config);
+      } else {
+        throw new Error(`Scaling not supported for resource type: ${resource.resourceType}`);
+      }
+    } catch (error) {
+      this.handleProviderError(error, `Failed to scale resource ${resource.id}`);
+    }
+  }
+
+  async startResource(resourceId: string): Promise<CloudResource> {
+    try {
+      if (resourceId.startsWith('i-')) {
+        await this.ec2Client!.send(new StartInstancesCommand({
+          InstanceIds: [resourceId],
+        }));
+        
+        return await this.getEC2Instance(resourceId);
+      } else {
+        throw new Error(`Start operation not supported for resource: ${resourceId}`);
+      }
+    } catch (error) {
+      this.handleProviderError(error, `Failed to start resource ${resourceId}`);
+    }
+  }
+
+  async stopResource(resourceId: string): Promise<CloudResource> {
+    try {
+      if (resourceId.startsWith('i-')) {
+        await this.ec2Client!.send(new StopInstancesCommand({
+          InstanceIds: [resourceId],
+        }));
+        
+        return await this.getEC2Instance(resourceId);
+      } else {
+        throw new Error(`Stop operation not supported for resource: ${resourceId}`);
+      }
+    } catch (error) {
+      this.handleProviderError(error, `Failed to stop resource ${resourceId}`);
+    }
+  }
+
+  // =====================================================
+  // DISCOVERY AND SYNCHRONIZATION
+  // =====================================================
+
+  async listRegions(): Promise<CloudRegion[]> {
+    try {
+      const response = await this.ec2Client!.send(new DescribeRegionsCommand({}));
+      
+      return response.Regions?.map(region => ({
+        id: region.RegionName!,
+        name: region.RegionName!,
+        displayName: this.getRegionDisplayName(region.RegionName!),
+        isDefault: region.RegionName === this.provider.region,
+      })) || [];
+      
+    } catch (error) {
+      this.handleProviderError(error, 'Failed to list regions');
+    }
+  }
+
+  async listServices(region?: string): Promise<CloudService[]> {
+    try {
+      return this.getAvailableServices(region);
+    } catch (error) {
+      this.handleProviderError(error, 'Failed to list services');
+    }
+  }
+
+  async syncResources(options: {
+    resourceTypes?: ResourceType[];
+    regions?: string[];
+    dryRun?: boolean;
+  } = {}): Promise<SyncResourcesResponse> {
+    const startTime = Date.now();
+    let resourcesDiscovered = 0;
+    let resourcesCreated = 0;
+    let resourcesUpdated = 0;
+    let resourcesDeleted = 0;
+    const errors: string[] = [];
+
+    try {
+      const regionsToSync = options.regions || [this.provider.region];
+      const resourceTypesToSync = options.resourceTypes || ['compute_instance', 'database', 'storage_bucket'];
+
+      for (const region of regionsToSync) {
+        for (const resourceType of resourceTypesToSync) {
+          try {
+            const resources = await this.discoverResourcesOfType(resourceType, region);
+            resourcesDiscovered += resources.length;
+
+            if (!options.dryRun) {
+              // Here you would typically save the discovered resources to your database
+              // For now, we'll just count them
+              resourcesCreated += resources.length;
+            }
+            
+          } catch (error) {
+            const errorMessage = `Failed to sync ${resourceType} in ${region}: ${error instanceof Error ? error.message : 'Unknown error'}`;
+            errors.push(errorMessage);
+            this.logOperation('Sync error', { resourceType, region, error: errorMessage });
+          }
+        }
+      }
+
+      const result: SyncResourcesResponse = {
+        success: errors.length === 0,
+        resourcesDiscovered,
+        resourcesCreated,
+        resourcesUpdated,
+        resourcesDeleted,
+        errors,
+        syncDurationMs: Date.now() - startTime,
+      };
+
+      this.logOperation('Resource sync completed', result);
+      return result;
+      
+    } catch (error) {
+      this.handleProviderError(error, 'Resource synchronization failed');
+    }
+  }
+
+  async listResources(resourceType?: ResourceType, region?: string): Promise<CloudResource[]> {
+    try {
+      if (resourceType) {
+        return await this.discoverResourcesOfType(resourceType, region || this.provider.region);
+      }
+
+      // List all resource types
+      const allResources: CloudResource[] = [];
+      const resourceTypes: ResourceType[] = ['compute_instance', 'database', 'storage_bucket'];
+
+      for (const type of resourceTypes) {
+        try {
+          const resources = await this.discoverResourcesOfType(type, region || this.provider.region);
+          allResources.push(...resources);
+        } catch (error) {
+          this.logOperation(`Failed to list ${type} resources`, { error: error instanceof Error ? error.message : 'Unknown error' });
+        }
+      }
+
+      return allResources;
+      
+    } catch (error) {
+      this.handleProviderError(error, 'Failed to list resources');
+    }
+  }
+
+  // =====================================================
+  // METRICS AND MONITORING
+  // =====================================================
+
+  async getResourceMetrics(
+    resourceId: string,
+    timeRange: TimeRange,
+    metricNames?: string[]
+  ): Promise<ResourceMetrics> {
+    try {
+      const metrics = metricNames || this.getDefaultMetricsForResource(resourceId);
+      const queries: MetricDataQuery[] = metrics.map((metricName, index) => ({
+        Id: `m${index}`,
+        MetricStat: {
+          Metric: {
+            Namespace: this.getMetricNamespace(resourceId),
+            MetricName: metricName,
+            Dimensions: this.getMetricDimensions(resourceId),
+          },
+          Period: 300, // 5 minutes
+          Stat: 'Average',
+        },
+      }));
+
+      const response = await this.cloudWatchClient!.send(new GetMetricDataCommand({
+        MetricDataQueries: queries,
+        StartTime: timeRange.start,
+        EndTime: timeRange.end,
+      }));
+
+      const resourceMetrics: ResourceMetrics = {
+        resourceId,
+        metrics: [],
+      };
+
+      response.MetricDataResults?.forEach((result, index) => {
+        if (result.Values && result.Timestamps) {
+          result.Values.forEach((value, valueIndex) => {
+            const timestamp = result.Timestamps![valueIndex];
+            resourceMetrics.metrics.push({
+              name: metrics[index],
+              value,
+              unit: this.getMetricUnit(metrics[index]),
+              timestamp,
+            });
+          });
+        }
+      });
+
+      return resourceMetrics;
+      
+    } catch (error) {
+      this.handleProviderError(error, `Failed to get metrics for resource ${resourceId}`);
+    }
+  }
+
+  async getCostData(timeRange: TimeRange, resourceIds?: string[]): Promise<CostData> {
+    try {
+      const response = await this.costExplorerClient!.send(new GetCostAndUsageCommand({
+        TimePeriod: {
+          Start: timeRange.start.toISOString().split('T')[0],
+          End: timeRange.end.toISOString().split('T')[0],
+        },
+        Granularity: 'DAILY',
+        Metrics: ['BlendedCost', 'UsageQuantity'],
+        GroupBy: [
+          {
+            Type: 'DIMENSION',
+            Key: 'SERVICE',
+          },
+        ],
+      }));
+
+      let totalCost = 0;
+      const breakdown: Array<{
+        service: string;
+        cost: number;
+        usage?: {
+          amount: number;
+          unit: string;
+        };
+      }> = [];
+
+      response.ResultsByTime?.forEach(result => {
+        result.Groups?.forEach(group => {
+          const service = group.Keys?.[0] || 'Unknown';
+          const cost = parseFloat(group.Metrics?.BlendedCost?.Amount || '0');
+          const usageAmount = parseFloat(group.Metrics?.UsageQuantity?.Amount || '0');
+          const usageUnit = group.Metrics?.UsageQuantity?.Unit || '';
+
+          totalCost += cost;
+          breakdown.push({
+            service,
+            cost,
+            usage: usageAmount > 0 ? { amount: usageAmount, unit: usageUnit } : undefined,
+          });
+        });
+      });
+
+      return {
+        totalCost,
+        currency: 'USD',
+        period: timeRange,
+        breakdown,
+      };
+      
+    } catch (error) {
+      this.handleProviderError(error, 'Failed to get cost data');
+    }
+  }
+
+  // =====================================================
+  // PRIVATE IMPLEMENTATION METHODS
+  // =====================================================
+
+  private async provisionEC2Instance(config: ResourceConfig): Promise<CloudResource> {
+    const instanceConfig = config.configuration as {
+      imageId?: string;
+      instanceType?: string;
+      securityGroups?: string[];
+      subnetId?: string;
+      keyName?: string;
+      userData?: string;
+    };
+
+    const command = new RunInstancesCommand({
+      ImageId: instanceConfig.imageId || 'ami-0abcdef1234567890', // Default Amazon Linux 2
+      InstanceType: instanceConfig.instanceType || 't3.micro',
+      MinCount: 1,
+      MaxCount: 1,
+      SecurityGroupIds: instanceConfig.securityGroups || [],
+      SubnetId: instanceConfig.subnetId,
+      KeyName: instanceConfig.keyName,
+      UserData: instanceConfig.userData ? Buffer.from(instanceConfig.userData).toString('base64') : undefined,
+      TagSpecifications: [
+        {
+          ResourceType: 'instance',
+          Tags: Object.entries(this.normalizeResourceTags(config.tags)).map(([Key, Value]) => ({
+            Key,
+            Value,
+          })),
+        },
+      ],
+    });
+
+    const response = await this.ec2Client!.send(command);
+    const instance = response.Instances?.[0];
+
+    if (!instance?.InstanceId) {
+      throw new Error('Failed to create EC2 instance');
+    }
+
+    return this.createCloudResource(instance.InstanceId, config, {
+      instanceType: instance.InstanceType,
+      imageId: instance.ImageId,
+      state: instance.State?.Name,
+      launchTime: instance.LaunchTime,
+      placement: instance.Placement,
+    });
+  }
+
+  private async provisionRDSInstance(config: ResourceConfig): Promise<CloudResource> {
+    const dbConfig = config.configuration as {
+      dbInstanceClass?: string;
+      engine?: string;
+      masterUsername?: string;
+      masterUserPassword?: string;
+      allocatedStorage?: number;
+      dbName?: string;
+    };
+
+    const dbInstanceId = this.generateResourceName(config.resourceName, config.resourceType);
+
+    const command = new CreateDBInstanceCommand({
+      DBInstanceIdentifier: dbInstanceId,
+      DBInstanceClass: dbConfig.dbInstanceClass || 'db.t3.micro',
+      Engine: dbConfig.engine || 'mysql',
+      MasterUsername: dbConfig.masterUsername || 'admin',
+      MasterUserPassword: dbConfig.masterUserPassword || 'temporary-password-123',
+      AllocatedStorage: dbConfig.allocatedStorage || 20,
+      DBName: dbConfig.dbName,
+      Tags: Object.entries(this.normalizeResourceTags(config.tags)).map(([Key, Value]) => ({
+        Key,
+        Value,
+      })),
+    });
+
+    const response = await this.rdsClient!.send(command);
+
+    if (!response.DBInstance?.DBInstanceIdentifier) {
+      throw new Error('Failed to create RDS instance');
+    }
+
+    return this.createCloudResource(response.DBInstance.DBInstanceIdentifier, config, {
+      engine: response.DBInstance.Engine,
+      instanceClass: response.DBInstance.DBInstanceClass,
+      status: response.DBInstance.DBInstanceStatus,
+      endpoint: response.DBInstance.Endpoint,
+    });
+  }
+
+  private async provisionS3Bucket(config: ResourceConfig): Promise<CloudResource> {
+    const bucketName = this.generateResourceName(config.resourceName, config.resourceType);
+
+    const command = new CreateBucketCommand({
+      Bucket: bucketName,
+      CreateBucketConfiguration: config.region !== 'us-east-1' ? {
+        LocationConstraint: config.region as any,
+      } : undefined,
+    });
+
+    await this.s3Client!.send(command);
+
+    // Add tags
+    const tags = this.normalizeResourceTags(config.tags);
+    if (Object.keys(tags).length > 0) {
+      await this.s3Client!.send(new PutBucketTaggingCommand({
+        Bucket: bucketName,
+        Tagging: {
+          TagSet: Object.entries(tags).map(([Key, Value]) => ({ Key, Value })),
+        },
+      }));
+    }
+
+    return this.createCloudResource(bucketName, config, {
+      bucketName,
+      region: config.region,
+      creationDate: new Date(),
+    });
+  }
+
+  private async getEC2Instance(instanceId: string): Promise<CloudResource> {
+    const response = await this.ec2Client!.send(new DescribeInstancesCommand({
+      InstanceIds: [instanceId],
+    }));
+
+    const instance = response.Reservations?.[0]?.Instances?.[0];
+    if (!instance) {
+      throw new Error(`EC2 instance ${instanceId} not found`);
+    }
+
+    return this.createCloudResource(instanceId, {
+      resourceName: instance.Tags?.find(tag => tag.Key === 'Name')?.Value || instanceId,
+      resourceType: 'compute_instance',
+      region: this.provider.region,
+      configuration: {
+        instanceType: instance.InstanceType,
+        imageId: instance.ImageId,
+        state: instance.State?.Name,
+      },
+    }, {
+      instanceType: instance.InstanceType,
+      imageId: instance.ImageId,
+      state: instance.State?.Name,
+      launchTime: instance.LaunchTime,
+      placement: instance.Placement,
+    });
+  }
+
+  private async getRDSInstance(dbInstanceId: string): Promise<CloudResource> {
+    const response = await this.rdsClient!.send(new DescribeDBInstancesCommand({
+      DBInstanceIdentifier: dbInstanceId,
+    }));
+
+    const dbInstance = response.DBInstances?.[0];
+    if (!dbInstance) {
+      throw new Error(`RDS instance ${dbInstanceId} not found`);
+    }
+
+    return this.createCloudResource(dbInstanceId, {
+      resourceName: dbInstanceId,
+      resourceType: 'database',
+      region: this.provider.region,
+      configuration: {
+        engine: dbInstance.Engine,
+        instanceClass: dbInstance.DBInstanceClass,
+      },
+    }, {
+      engine: dbInstance.Engine,
+      instanceClass: dbInstance.DBInstanceClass,
+      status: dbInstance.DBInstanceStatus,
+      endpoint: dbInstance.Endpoint,
+    });
+  }
+
+  private async getS3Bucket(bucketName: string): Promise<CloudResource> {
+    // S3 doesn't have a direct "describe bucket" operation, so we'll get basic info
+    const locationResponse = await this.s3Client!.send(new GetBucketLocationCommand({
+      Bucket: bucketName,
+    }));
+
+    return this.createCloudResource(bucketName, {
+      resourceName: bucketName,
+      resourceType: 'storage_bucket',
+      region: locationResponse.LocationConstraint || 'us-east-1',
+      configuration: {},
+    }, {
+      bucketName,
+      region: locationResponse.LocationConstraint || 'us-east-1',
+    });
+  }
+
+  private async updateEC2Instance(instanceId: string, updates: Partial<ResourceConfig>): Promise<CloudResource> {
+    // EC2 instances have limited update capabilities
+    if (updates.tags) {
+      await this.ec2Client!.send(new CreateTagsCommand({
+        Resources: [instanceId],
+        Tags: Object.entries(this.normalizeResourceTags(updates.tags)).map(([Key, Value]) => ({
+          Key,
+          Value,
+        })),
+      }));
+    }
+
+    return await this.getEC2Instance(instanceId);
+  }
+
+  private async updateRDSInstance(dbInstanceId: string, updates: Partial<ResourceConfig>): Promise<CloudResource> {
+    const dbUpdates = updates.configuration as {
+      dbInstanceClass?: string;
+      allocatedStorage?: number;
+    };
+
+    if (dbUpdates) {
+      await this.rdsClient!.send(new ModifyDBInstanceCommand({
+        DBInstanceIdentifier: dbInstanceId,
+        DBInstanceClass: dbUpdates.dbInstanceClass,
+        AllocatedStorage: dbUpdates.allocatedStorage,
+        ApplyImmediately: true,
+      }));
+    }
+
+    return await this.getRDSInstance(dbInstanceId);
+  }
+
+  private async updateS3Bucket(bucketName: string, updates: Partial<ResourceConfig>): Promise<CloudResource> {
+    // Update tags if provided
+    if (updates.tags) {
+      const tags = this.normalizeResourceTags(updates.tags);
+      await this.s3Client!.send(new PutBucketTaggingCommand({
+        Bucket: bucketName,
+        Tagging: {
+          TagSet: Object.entries(tags).map(([Key, Value]) => ({ Key, Value })),
+        },
+      }));
+    }
+
+    return await this.getS3Bucket(bucketName);
+  }
+
+  private async scaleEC2Instance(resource: CloudResource, config: ScaleConfig): Promise<CloudResource> {
+    // For EC2, scaling typically involves changing instance type
+    const newInstanceType = this.determineNewInstanceType(resource, config);
+    
+    if (newInstanceType) {
+      await this.ec2Client!.send(new ModifyInstanceAttributeCommand({
+        InstanceId: resource.providerResourceId,
+        InstanceType: { Value: newInstanceType },
+      }));
+    }
+
+    return await this.getEC2Instance(resource.providerResourceId);
+  }
+
+  private async scaleRDSInstance(resource: CloudResource, config: ScaleConfig): Promise<CloudResource> {
+    // For RDS, scaling involves changing instance class
+    const newInstanceClass = this.determineNewRDSInstanceClass(resource, config);
+
+    if (newInstanceClass) {
+      await this.rdsClient!.send(new ModifyDBInstanceCommand({
+        DBInstanceIdentifier: resource.providerResourceId,
+        DBInstanceClass: newInstanceClass,
+        ApplyImmediately: true,
+      }));
+    }
+
+    return await this.getRDSInstance(resource.providerResourceId);
+  }
+
+  private async discoverResourcesOfType(resourceType: ResourceType, region: string): Promise<CloudResource[]> {
+    switch (resourceType) {
+      case 'compute_instance':
+        return await this.discoverEC2Instances(region);
+      case 'database':
+        return await this.discoverRDSInstances(region);
+      case 'storage_bucket':
+        return await this.discoverS3Buckets();
+      default:
+        return [];
+    }
+  }
+
+  private async discoverEC2Instances(region: string): Promise<CloudResource[]> {
+    const response = await this.ec2Client!.send(new DescribeInstancesCommand({}));
+    const instances: CloudResource[] = [];
+
+    response.Reservations?.forEach(reservation => {
+      reservation.Instances?.forEach(instance => {
+        if (instance.InstanceId) {
+          instances.push(this.createCloudResource(instance.InstanceId, {
+            resourceName: instance.Tags?.find(tag => tag.Key === 'Name')?.Value || instance.InstanceId,
+            resourceType: 'compute_instance',
+            region,
+            configuration: {
+              instanceType: instance.InstanceType,
+              imageId: instance.ImageId,
+            },
+            tags: this.convertAWSTagsToRecord(instance.Tags || []),
+          }, {
+            instanceType: instance.InstanceType,
+            imageId: instance.ImageId,
+            state: instance.State?.Name,
+            launchTime: instance.LaunchTime,
+          }));
+        }
+      });
+    });
+
+    return instances;
+  }
+
+  private async discoverRDSInstances(region: string): Promise<CloudResource[]> {
+    const response = await this.rdsClient!.send(new DescribeDBInstancesCommand({}));
+    const instances: CloudResource[] = [];
+
+    response.DBInstances?.forEach(dbInstance => {
+      if (dbInstance.DBInstanceIdentifier) {
+        instances.push(this.createCloudResource(dbInstance.DBInstanceIdentifier, {
+          resourceName: dbInstance.DBInstanceIdentifier,
+          resourceType: 'database',
+          region,
+          configuration: {
+            engine: dbInstance.Engine,
+            instanceClass: dbInstance.DBInstanceClass,
+          },
+          tags: this.convertAWSTagsToRecord(dbInstance.TagList || []),
+        }, {
+          engine: dbInstance.Engine,
+          instanceClass: dbInstance.DBInstanceClass,
+          status: dbInstance.DBInstanceStatus,
+        }));
+      }
+    });
+
+    return instances;
+  }
+
+  private async discoverS3Buckets(): Promise<CloudResource[]> {
+    const response = await this.s3Client!.send(new ListBucketsCommand({}));
+    const buckets: CloudResource[] = [];
+
+    if (response.Buckets) {
+      for (const bucket of response.Buckets) {
+        if (bucket.Name) {
+          try {
+            const locationResponse = await this.s3Client!.send(new GetBucketLocationCommand({
+              Bucket: bucket.Name,
+            }));
+
+            buckets.push(this.createCloudResource(bucket.Name, {
+              resourceName: bucket.Name,
+              resourceType: 'storage_bucket',
+              region: locationResponse.LocationConstraint || 'us-east-1',
+              configuration: {},
+            }, {
+              bucketName: bucket.Name,
+              creationDate: bucket.CreationDate,
+            }));
+          } catch (error) {
+            // Skip buckets we can't access
+            this.logOperation(`Skipping bucket ${bucket.Name}`, { error: error instanceof Error ? error.message : 'Unknown error' });
+          }
+        }
+      }
+    }
+
+    return buckets;
+  }
+
+  private getAvailableServices(region?: string): CloudService[] {
+    // Return a static list of AWS services
+    return [
+      { id: 'ec2', name: 'EC2', displayName: 'Elastic Compute Cloud', category: 'Compute', isAvailable: true },
+      { id: 'rds', name: 'RDS', displayName: 'Relational Database Service', category: 'Database', isAvailable: true },
+      { id: 's3', name: 'S3', displayName: 'Simple Storage Service', category: 'Storage', isAvailable: true },
+      { id: 'lambda', name: 'Lambda', displayName: 'AWS Lambda', category: 'Compute', isAvailable: true },
+      { id: 'cloudwatch', name: 'CloudWatch', displayName: 'Amazon CloudWatch', category: 'Monitoring', isAvailable: true },
+    ];
+  }
+
+  private getRegionDisplayName(regionName: string): string {
+    const regionNames: Record<string, string> = {
+      'us-east-1': 'US East (N. Virginia)',
+      'us-east-2': 'US East (Ohio)',
+      'us-west-1': 'US West (N. California)',
+      'us-west-2': 'US West (Oregon)',
+      'eu-west-1': 'Europe (Ireland)',
+      'eu-west-2': 'Europe (London)',
+      'eu-central-1': 'Europe (Frankfurt)',
+      'ap-southeast-1': 'Asia Pacific (Singapore)',
+      'ap-southeast-2': 'Asia Pacific (Sydney)',
+      'ap-northeast-1': 'Asia Pacific (Tokyo)',
+    };
+
+    return regionNames[regionName] || regionName;
+  }
+
+  private getDefaultMetricsForResource(resourceId: string): string[] {
+    if (resourceId.startsWith('i-')) {
+      return ['CPUUtilization', 'NetworkIn', 'NetworkOut', 'DiskReadOps', 'DiskWriteOps'];
+    } else if (resourceId.includes('rds')) {
+      return ['CPUUtilization', 'DatabaseConnections', 'ReadLatency', 'WriteLatency'];
+    } else {
+      return ['BucketSizeBytes', 'NumberOfObjects'];
+    }
+  }
+
+  private getMetricNamespace(resourceId: string): string {
+    if (resourceId.startsWith('i-')) {
+      return 'AWS/EC2';
+    } else if (resourceId.includes('rds')) {
+      return 'AWS/RDS';
+    } else {
+      return 'AWS/S3';
+    }
+  }
+
+  private getMetricDimensions(resourceId: string): Dimension[] {
+    if (resourceId.startsWith('i-')) {
+      return [{ Name: 'InstanceId', Value: resourceId }];
+    } else if (resourceId.includes('rds')) {
+      return [{ Name: 'DBInstanceIdentifier', Value: resourceId }];
+    } else {
+      return [{ Name: 'BucketName', Value: resourceId }];
+    }
+  }
+
+  private getMetricUnit(metricName: string): string {
+    const units: Record<string, string> = {
+      'CPUUtilization': 'Percent',
+      'NetworkIn': 'Bytes',
+      'NetworkOut': 'Bytes',
+      'DiskReadOps': 'Count',
+      'DiskWriteOps': 'Count',
+      'DatabaseConnections': 'Count',
+      'ReadLatency': 'Seconds',
+      'WriteLatency': 'Seconds',
+      'BucketSizeBytes': 'Bytes',
+      'NumberOfObjects': 'Count',
+    };
+
+    return units[metricName] || 'Count';
+  }
+
+  private determineNewInstanceType(resource: CloudResource, config: ScaleConfig): string | null {
+    const currentType = resource.configuration.instanceType as string;
+    
+    if (config.scaleDirection === 'up') {
+      // Scale up instance type
+      const scaleUpMap: Record<string, string> = {
+        't3.micro': 't3.small',
+        't3.small': 't3.medium',
+        't3.medium': 't3.large',
+        't3.large': 't3.xlarge',
+      };
+      return scaleUpMap[currentType] || null;
+    } else if (config.scaleDirection === 'down') {
+      // Scale down instance type
+      const scaleDownMap: Record<string, string> = {
+        't3.small': 't3.micro',
+        't3.medium': 't3.small',
+        't3.large': 't3.medium',
+        't3.xlarge': 't3.large',
+      };
+      return scaleDownMap[currentType] || null;
+    }
+
+    return null;
+  }
+
+  private determineNewRDSInstanceClass(resource: CloudResource, config: ScaleConfig): string | null {
+    const currentClass = resource.configuration.instanceClass as string;
+    
+    if (config.scaleDirection === 'up') {
+      const scaleUpMap: Record<string, string> = {
+        'db.t3.micro': 'db.t3.small',
+        'db.t3.small': 'db.t3.medium',
+        'db.t3.medium': 'db.t3.large',
+      };
+      return scaleUpMap[currentClass] || null;
+    } else if (config.scaleDirection === 'down') {
+      const scaleDownMap: Record<string, string> = {
+        'db.t3.small': 'db.t3.micro',
+        'db.t3.medium': 'db.t3.small',
+        'db.t3.large': 'db.t3.medium',
+      };
+      return scaleDownMap[currentClass] || null;
+    }
+
+    return null;
+  }
+
+  private convertAWSTagsToRecord(tags: Array<{ Key?: string; Value?: string }>): Record<string, string> {
+    const record: Record<string, string> = {};
+    tags.forEach(tag => {
+      if (tag.Key && tag.Value) {
+        record[tag.Key] = tag.Value;
+      }
+    });
+    return record;
+  }
+}

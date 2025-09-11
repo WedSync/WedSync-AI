@@ -1,0 +1,419 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import { IntegrationOrchestrator } from '@/lib/integrations/websocket/integration-orchestrator';
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+
+let orchestrator: IntegrationOrchestrator | null = null;
+
+function getOrchestrator(): IntegrationOrchestrator {
+  if (!orchestrator) {
+    orchestrator = new IntegrationOrchestrator(supabaseUrl, supabaseServiceKey);
+  }
+  return orchestrator;
+}
+
+async function getAuthenticatedUser(request: NextRequest) {
+  try {
+    const cookieStore = cookies();
+    const supabase = createClient(supabaseUrl, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, {
+      cookies: {
+        get(name: string) {
+          return cookieStore.get(name)?.value;
+        },
+      },
+    });
+
+    const { data: { user }, error } = await supabase.auth.getUser();
+    
+    if (error || !user) {
+      throw new Error('Authentication required');
+    }
+
+    return user;
+  } catch (error) {
+    throw new Error('Authentication failed');
+  }
+}
+
+async function getOrganizationId(userId: string): Promise<string> {
+  const supabase = createClient(supabaseUrl, supabaseServiceKey);
+  
+  const { data, error } = await supabase
+    .from('user_profiles')
+    .select('organization_id')
+    .eq('id', userId)
+    .single();
+
+  if (error || !data) {
+    throw new Error('Organization not found');
+  }
+
+  return data.organization_id;
+}
+
+// GET - Integration health monitoring
+export async function GET(request: NextRequest) {
+  try {
+    const user = await getAuthenticatedUser(request);
+    const organizationId = await getOrganizationId(user.id);
+    const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+    // Get health reports from orchestrator
+    const orchestratorInstance = getOrchestrator();
+    const healthReports = await orchestratorInstance.getIntegrationHealth();
+
+    // Get webhook delivery statistics
+    const { data: deliveryStats } = await supabase
+      .rpc('get_webhook_delivery_stats', {
+        org_id: organizationId,
+        hours_back: 24
+      });
+
+    // Get recent integration errors
+    const { data: recentErrors } = await supabase
+      .from('webhook_delivery_failures')
+      .select(`
+        id,
+        target_system,
+        error_message,
+        created_at,
+        retry_count
+      `)
+      .eq('organization_id', organizationId)
+      .order('created_at', { ascending: false })
+      .limit(50);
+
+    // Get integration system statuses
+    const { data: systemStatuses } = await supabase
+      .from('integration_configs')
+      .select(`
+        id,
+        name,
+        type,
+        is_active,
+        last_successful_delivery,
+        created_at,
+        updated_at
+      `)
+      .eq('organization_id', organizationId);
+
+    // Get channel activity summary
+    const { data: channelActivity } = await supabase
+      .rpc('get_channel_activity_summary', {
+        org_id: organizationId,
+        hours_back: 24
+      });
+
+    // Calculate overall health score
+    const overallHealth = calculateOverallHealthScore(
+      healthReports,
+      deliveryStats,
+      recentErrors
+    );
+
+    // Get active webhook configurations
+    const { data: webhookConfigs } = await supabase
+      .from('vendor_webhook_configs')
+      .select(`
+        id,
+        vendor_name,
+        vendor_type,
+        is_active,
+        created_at
+      `)
+      .eq('organization_id', organizationId)
+      .eq('is_active', true);
+
+    const healthData = {
+      timestamp: new Date().toISOString(),
+      organizationId,
+      overallHealth,
+      integrationReports: healthReports.map(report => ({
+        systemId: report.systemId,
+        isHealthy: report.isHealthy,
+        lastSuccessfulDelivery: report.lastSuccessfulDelivery,
+        failureCount: report.failureCount,
+        circuitBreakerOpen: report.circuitBreakerOpen,
+        averageResponseTime: Math.round(report.averageResponseTime),
+        successRate: Math.round(report.successRate * 100),
+        status: getSystemStatus(report)
+      })),
+      deliveryStatistics: {
+        totalDeliveries: deliveryStats?.[0]?.total_deliveries || 0,
+        successfulDeliveries: deliveryStats?.[0]?.successful_deliveries || 0,
+        failedDeliveries: deliveryStats?.[0]?.failed_deliveries || 0,
+        averageResponseTime: deliveryStats?.[0]?.avg_response_time || 0,
+        successRate: deliveryStats?.[0]?.success_rate || 0
+      },
+      systemStatuses: (systemStatuses || []).map(system => ({
+        id: system.id,
+        name: system.name,
+        type: system.type,
+        isActive: system.is_active,
+        lastSuccessfulDelivery: system.last_successful_delivery,
+        uptime: calculateUptime(system.created_at, system.last_successful_delivery)
+      })),
+      channelActivity: channelActivity || [],
+      recentErrors: (recentErrors || []).slice(0, 10).map(error => ({
+        id: error.id,
+        targetSystem: error.target_system,
+        errorMessage: truncateErrorMessage(error.error_message),
+        createdAt: error.created_at,
+        retryCount: error.retry_count
+      })),
+      webhookConfigurations: webhookConfigs || []
+    };
+
+    return NextResponse.json({
+      success: true,
+      health: healthData
+    });
+
+  } catch (error) {
+    console.error('GET /api/integrations/health error:', error);
+    
+    if (error instanceof Error && error.message.includes('Authentication')) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 }
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+// POST - Test integration health
+export async function POST(request: NextRequest) {
+  try {
+    const user = await getAuthenticatedUser(request);
+    const organizationId = await getOrganizationId(user.id);
+    
+    const { systemId } = await request.json();
+    
+    if (!systemId) {
+      return NextResponse.json(
+        { error: 'System ID required' },
+        { status: 400 }
+      );
+    }
+
+    // Perform health check for specific system
+    const testResult = await performSystemHealthTest(systemId, organizationId);
+
+    return NextResponse.json({
+      success: true,
+      testResult
+    });
+
+  } catch (error) {
+    console.error('POST /api/integrations/health error:', error);
+    
+    if (error instanceof Error && error.message.includes('Authentication')) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 }
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+function calculateOverallHealthScore(
+  healthReports: any[],
+  deliveryStats: any,
+  recentErrors: any[]
+): {
+  score: number;
+  status: 'healthy' | 'warning' | 'critical';
+  factors: string[];
+} {
+  let score = 100;
+  const factors: string[] = [];
+
+  // Factor in system health
+  const unhealthySystems = healthReports.filter(r => !r.isHealthy).length;
+  if (unhealthySystems > 0) {
+    const penalty = (unhealthySystems / healthReports.length) * 30;
+    score -= penalty;
+    factors.push(`${unhealthySystems} unhealthy systems`);
+  }
+
+  // Factor in success rate
+  const overallSuccessRate = deliveryStats?.[0]?.success_rate || 1;
+  if (overallSuccessRate < 0.95) {
+    const penalty = (0.95 - overallSuccessRate) * 40;
+    score -= penalty;
+    factors.push(`Low success rate: ${Math.round(overallSuccessRate * 100)}%`);
+  }
+
+  // Factor in recent errors
+  const recentErrorCount = recentErrors?.length || 0;
+  if (recentErrorCount > 10) {
+    const penalty = Math.min((recentErrorCount - 10) * 2, 20);
+    score -= penalty;
+    factors.push(`${recentErrorCount} recent errors`);
+  }
+
+  // Factor in response time
+  const avgResponseTime = deliveryStats?.[0]?.avg_response_time || 0;
+  if (avgResponseTime > 5000) {
+    const penalty = Math.min((avgResponseTime - 5000) / 1000 * 5, 15);
+    score -= penalty;
+    factors.push(`High response time: ${avgResponseTime}ms`);
+  }
+
+  score = Math.max(0, Math.round(score));
+
+  let status: 'healthy' | 'warning' | 'critical';
+  if (score >= 80) {
+    status = 'healthy';
+  } else if (score >= 60) {
+    status = 'warning';
+  } else {
+    status = 'critical';
+  }
+
+  return { score, status, factors };
+}
+
+function getSystemStatus(report: any): 'online' | 'degraded' | 'offline' {
+  if (!report.isHealthy || report.circuitBreakerOpen) {
+    return 'offline';
+  }
+  
+  if (report.failureCount > 3 || report.successRate < 0.9 || report.averageResponseTime > 10000) {
+    return 'degraded';
+  }
+  
+  return 'online';
+}
+
+function calculateUptime(createdAt: string, lastSuccessfulDelivery: string | null): number {
+  if (!lastSuccessfulDelivery) return 0;
+  
+  const created = new Date(createdAt);
+  const lastSuccess = new Date(lastSuccessfulDelivery);
+  const now = new Date();
+  
+  const totalTime = now.getTime() - created.getTime();
+  const downTime = now.getTime() - lastSuccess.getTime();
+  
+  if (totalTime <= 0) return 100;
+  
+  const uptime = ((totalTime - downTime) / totalTime) * 100;
+  return Math.max(0, Math.min(100, uptime));
+}
+
+function truncateErrorMessage(message: string | null): string {
+  if (!message) return 'Unknown error';
+  return message.length > 100 ? `${message.substring(0, 100)}...` : message;
+}
+
+async function performSystemHealthTest(
+  systemId: string,
+  organizationId: string
+): Promise<{
+  systemId: string;
+  isHealthy: boolean;
+  responseTime: number;
+  lastTested: string;
+  error?: string;
+}> {
+  const startTime = Date.now();
+  
+  try {
+    const supabase = createClient(supabaseUrl, supabaseServiceKey);
+    
+    // Get system configuration
+    const { data: system } = await supabase
+      .from('integration_configs')
+      .select('*')
+      .eq('id', systemId)
+      .eq('organization_id', organizationId)
+      .single();
+
+    if (!system) {
+      throw new Error('System not found');
+    }
+
+    // Perform health check based on system type
+    let isHealthy = false;
+    let error: string | undefined;
+
+    if (system.config?.webhookUrl) {
+      // Test webhook endpoint
+      try {
+        const response = await fetch(system.config.webhookUrl, {
+          method: 'GET',
+          timeout: 10000
+        });
+        isHealthy = response.ok;
+      } catch (webhookError) {
+        error = `Webhook test failed: ${webhookError}`;
+        isHealthy = false;
+      }
+    } else {
+      // For systems without webhook URLs, check last successful delivery
+      const { data: lastDelivery } = await supabase
+        .from('webhook_deliveries')
+        .select('success, created_at')
+        .eq('target_system_id', systemId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single();
+
+      if (lastDelivery) {
+        const lastDeliveryTime = new Date(lastDelivery.created_at);
+        const hoursSinceLastDelivery = (Date.now() - lastDeliveryTime.getTime()) / (1000 * 60 * 60);
+        isHealthy = lastDelivery.success && hoursSinceLastDelivery < 24;
+      } else {
+        error = 'No delivery history found';
+        isHealthy = false;
+      }
+    }
+
+    const responseTime = Date.now() - startTime;
+
+    // Log health test result
+    await supabase
+      .from('integration_health_tests')
+      .insert({
+        system_id: systemId,
+        organization_id: organizationId,
+        is_healthy: isHealthy,
+        response_time: responseTime,
+        error_message: error,
+        tested_at: new Date().toISOString()
+      });
+
+    return {
+      systemId,
+      isHealthy,
+      responseTime,
+      lastTested: new Date().toISOString(),
+      error
+    };
+
+  } catch (testError) {
+    const responseTime = Date.now() - startTime;
+    
+    return {
+      systemId,
+      isHealthy: false,
+      responseTime,
+      lastTested: new Date().toISOString(),
+      error: testError instanceof Error ? testError.message : 'Unknown error'
+    };
+  }
+}

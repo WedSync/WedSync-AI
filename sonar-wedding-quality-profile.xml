@@ -1,0 +1,226 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Wedding Platform Quality Profile for SonarQube -->
+<!-- Configured for mission-critical wedding day reliability -->
+<profile>
+  <name>WedSync Wedding Platform</name>
+  <language>ts</language>
+  <language>js</language>
+  
+  <!-- WEDDING DAY CRITICAL RULES -->
+  <!-- These rules are MANDATORY for wedding platform reliability -->
+  
+  <!-- Security Rules (Wedding platforms handle sensitive customer data) -->
+  <rule>
+    <repositoryKey>typescript</repositoryKey>
+    <key>S2068</key> <!-- Hard-coded credentials -->
+    <priority>BLOCKER</priority>
+    <parameters>
+      <parameter>
+        <key>secretWords</key>
+        <value>password,passwd,pwd,api_key,apikey,secret,token,key,stripe_key,stripe_secret,supabase_key</value>
+      </parameter>
+    </parameters>
+  </rule>
+  
+  <rule>
+    <repositoryKey>typescript</repositoryKey>
+    <key>S4507</key> <!-- Delivering code in production with debug features activated -->
+    <priority>BLOCKER</priority>
+  </rule>
+  
+  <rule>
+    <repositoryKey>typescript</repositoryKey>
+    <key>S5122</key> <!-- Cross-Origin Resource Sharing policy -->
+    <priority>CRITICAL</priority>
+  </rule>
+  
+  <!-- Data Protection Rules (GDPR compliance for wedding data) -->
+  <rule>
+    <repositoryKey>typescript</repositoryKey>
+    <key>S2092</key> <!-- Insecure cookie -->
+    <priority>CRITICAL</priority>
+  </rule>
+  
+  <rule>
+    <repositoryKey>typescript</repositoryKey>
+    <key>S5542</key> <!-- Encryption of sensitive data -->
+    <priority>CRITICAL</priority>
+  </rule>
+  
+  <!-- Error Handling Rules (Critical for wedding day reliability) -->
+  <rule>
+    <repositoryKey>typescript</repositoryKey>
+    <key>S1181</key> <!-- Throwable should not be caught -->
+    <priority>MAJOR</priority>
+  </rule>
+  
+  <rule>
+    <repositoryKey>typescript</repositoryKey>
+    <key>S108</key> <!-- Empty catch blocks -->
+    <priority>CRITICAL</priority>
+  </rule>
+  
+  <rule>
+    <repositoryKey>typescript</repositoryKey>
+    <key>S3923</key> <!-- All branches should be reachable -->
+    <priority>MAJOR</priority>
+  </rule>
+  
+  <!-- Type Safety Rules (Prevent runtime errors on wedding day) -->
+  <rule>
+    <repositoryKey>typescript</repositoryKey>
+    <key>S4144</key> <!-- Functions should not have identical implementations -->
+    <priority>MAJOR</priority>
+  </rule>
+  
+  <rule>
+    <repositoryKey>typescript</repositoryKey>
+    <key>S3776</key> <!-- Cognitive Complexity should be limited -->
+    <priority>MAJOR</priority>
+    <parameters>
+      <parameter>
+        <key>threshold</key>
+        <value>15</value> <!-- Strict limit for wedding-critical code -->
+      </parameter>
+    </parameters>
+  </rule>
+  
+  <!-- Payment Processing Rules (Stripe/financial transactions) -->
+  <rule>
+    <repositoryKey>typescript</repositoryKey>
+    <key>S4823</key> <!-- Using command line arguments -->
+    <priority>CRITICAL</priority>
+  </rule>
+  
+  <!-- Database Rules (Wedding data integrity) -->
+  <rule>
+    <repositoryKey>typescript</repositoryKey>
+    <key>S2077</key> <!-- SQL injection -->
+    <priority>BLOCKER</priority>
+  </rule>
+  
+  <rule>
+    <repositoryKey>typescript</repositoryKey>
+    <key>S3649</key> <!-- Database queries should be protected from injection -->
+    <priority>BLOCKER</priority>
+  </rule>
+  
+  <!-- API Rules (Vendor/client integrations) -->
+  <rule>
+    <repositoryKey>typescript</repositoryKey>
+    <key>S5131</key> <!-- Path traversal -->
+    <priority>BLOCKER</priority>
+  </rule>
+  
+  <rule>
+    <repositoryKey>typescript</repositoryKey>
+    <key>S5693</key> <!-- Request restrictions -->
+    <priority>CRITICAL</priority>
+  </rule>
+  
+  <!-- Code Quality Rules -->
+  <rule>
+    <repositoryKey>typescript</repositoryKey>
+    <key>S1854</key> <!-- Dead stores should be removed -->
+    <priority>MAJOR</priority>
+  </rule>
+  
+  <rule>
+    <repositoryKey>typescript</repositoryKey>
+    <key>S1481</key> <!-- Unused local variables should be removed -->
+    <priority>MINOR</priority>
+  </rule>
+  
+  <rule>
+    <repositoryKey>typescript</repositoryKey>
+    <key>S1068</key> <!-- Unused private fields should be removed -->
+    <priority>MAJOR</priority>
+  </rule>
+  
+  <!-- Performance Rules (Wedding day traffic spikes) -->
+  <rule>
+    <repositoryKey>typescript</repositoryKey>
+    <key>S1764</key> <!-- Identical expressions should not be used on both sides of operators -->
+    <priority>MAJOR</priority>
+  </rule>
+  
+  <rule>
+    <repositoryKey>typescript</repositoryKey>
+    <key>S3981</key> <!-- Collection sizes should be checked before accessing elements -->
+    <priority>MAJOR</priority>
+  </rule>
+  
+  <!-- Documentation Rules (Team knowledge transfer) -->
+  <rule>
+    <repositoryKey>typescript</repositoryKey>
+    <key>S1133</key> <!-- Deprecated code should be removed -->
+    <priority>INFO</priority>
+  </rule>
+  
+  <!-- React/Next.js Specific Rules -->
+  <rule>
+    <repositoryKey>typescript</repositoryKey>
+    <key>S6319</key> <!-- React Hook Rules -->
+    <priority>CRITICAL</priority>
+  </rule>
+  
+  <!-- Custom Wedding Platform Rules -->
+  <!-- These are specific patterns we need to enforce -->
+  
+  <!-- Logging Rules (Essential for wedding day debugging) -->
+  <rule>
+    <repositoryKey>typescript</repositoryKey>
+    <key>S2228</key> <!-- Console logging should not be used in production -->
+    <priority>MAJOR</priority>
+  </rule>
+  
+  <!-- Date/Time Rules (Critical for wedding scheduling) -->
+  <rule>
+    <repositoryKey>typescript</repositoryKey>
+    <key>S6571</key> <!-- Date and time should be handled properly -->
+    <priority>CRITICAL</priority>
+  </rule>
+  
+  <!-- WEDDING-SPECIFIC RULE CONFIGURATIONS -->
+  <!-- These parameters are tuned for wedding platform requirements -->
+  
+  <!-- Function complexity limits (wedding logic can be complex but must be maintainable) -->
+  <rule>
+    <repositoryKey>typescript</repositoryKey>
+    <key>S1541</key> <!-- Functions should not be too complex -->
+    <priority>MAJOR</priority>
+    <parameters>
+      <parameter>
+        <key>maximumFunctionComplexityThreshold</key>
+        <value>20</value> <!-- Allow slightly higher complexity for wedding business logic -->
+      </parameter>
+    </parameters>
+  </rule>
+  
+  <!-- File line limits (large files are harder to debug during wedding emergencies) -->
+  <rule>
+    <repositoryKey>typescript</repositoryKey>
+    <key>S104</key> <!-- Files should not have too many lines -->
+    <priority>MAJOR</priority>
+    <parameters>
+      <parameter>
+        <key>maximumFileLinesTollThreshold</key>
+        <value>500</value> <!-- Strict limit for maintainability -->
+      </parameter>
+    </parameters>
+  </rule>
+  
+  <!-- Method parameter limits -->
+  <rule>
+    <repositoryKey>typescript</repositoryKey>
+    <key>S107</key> <!-- Functions should not have too many parameters -->
+    <priority>MAJOR</priority>
+    <parameters>
+      <parameter>
+        <key>maximumFunctionParameters</key>
+        <value>7</value> <!-- Wedding functions often need multiple parameters -->
+      </parameter>
+    </parameters>
+  </rule>
+  
+</profile>

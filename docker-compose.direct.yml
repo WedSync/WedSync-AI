@@ -1,0 +1,62 @@
+# Direct Docker Compose - No Build Required
+# This avoids the extended attributes issue entirely
+
+services:
+  # WedSync Application - Direct from node:20-alpine
+  wedsync:
+    image: node:20-alpine
+    container_name: wedsync-app
+    working_dir: /app
+    ports:
+      - "3000:3000"
+    
+    environment:
+      - NODE_ENV=development
+      - HOSTNAME=0.0.0.0
+      - PORT=3000
+      - NEXTAUTH_URL=http://localhost:3000
+      - NEXT_PUBLIC_APP_URL=http://localhost:3000
+      - DATABASE_URL=postgresql://postgres.azhgptjkqiiqvvvhapml:postgres@aws-0-us-west-1.pooler.supabase.com:6543/postgres
+      - NEXT_PUBLIC_SUPABASE_URL=https://azhgptjkqiiqvvvhapml.supabase.co
+      - NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF6aGdwdGprcWlpcXZ2dmhhcG1sIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzUyMTk4MDUsImV4cCI6MjA1MDc5NTgwNX0.oXoH0zRHEI71mLIcuwXsxR_CWMkZL5JsVgE5BG9LzY0
+      - NEXT_PUBLIC_STORAGE_BUCKET=wedsync-uploads
+      - NEXT_PUBLIC_ENABLE_REALTIME_SYNC=true
+      - CHOKIDAR_USEPOLLING=true
+      - WATCHPACK_POLLING=true
+      - NEXT_TELEMETRY_DISABLED=1
+    
+    # Direct command to install and run
+    command: >
+      sh -c "
+        echo '=== Installing system dependencies ===' &&
+        apk add --no-cache python3 make g++ cairo-dev jpeg-dev pango-dev giflib-dev curl git &&
+        echo '=== Copying fixed config ===' &&
+        if [ -f next.config.simple.js ]; then cp next.config.simple.js next.config.js; fi &&
+        echo '=== Installing npm packages (this will take a few minutes) ===' &&
+        npm install --legacy-peer-deps &&
+        echo '=== Starting Next.js development server ===' &&
+        npm run dev -- --hostname 0.0.0.0 --port 3000
+      "
+    
+    # Mount entire directory
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/.next
+    
+    restart: unless-stopped
+    networks:
+      - wedsync-network
+    
+    # Simple health check using curl (already installed)
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"] 
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 120s
+
+networks:
+  wedsync-network:
+    driver: bridge
+    name: wedsync-network

@@ -1,0 +1,668 @@
+// WS-154 Seating Arrangements System Types
+// Team E - Database Schema & Data Management
+// Optimized for 200+ guest weddings with complex relationships
+
+import { Guest as GuestManagementGuest } from './guest-management'
+
+// ==================================================
+// BASE SEATING TYPES
+// ==================================================
+
+export type TableShape = 'round' | 'rectangular' | 'square' | 'oval'
+
+export type RelationshipType = 
+  | 'spouse' 
+  | 'partner' 
+  | 'family_immediate' 
+  | 'family_extended'
+  | 'close_friends' 
+  | 'friends' 
+  | 'colleagues' 
+  | 'plus_one'
+  | 'child_parent' 
+  | 'siblings' 
+  | 'acquaintances'
+
+export type SeatingPreference = 
+  | 'must_sit_together'
+  | 'prefer_together'
+  | 'neutral'
+  | 'prefer_apart'
+  | 'must_separate'
+  | 'incompatible'
+
+export type SeatPosition = 'head' | 'foot' | 'side'
+
+export type OptimizationRuleType = 
+  | 'age_grouping'
+  | 'family_grouping'
+  | 'relationship_proximity'
+  | 'table_balance'
+  | 'special_needs'
+  | 'custom'
+
+export type AccessType = 'view' | 'create' | 'update' | 'delete'
+
+// ==================================================
+// DATABASE INTERFACES
+// ==================================================
+
+export interface ReceptionTable {
+  id: string
+  couple_id: string
+  table_number: number
+  name?: string
+  capacity: number
+  table_shape: TableShape
+  location_x?: number
+  location_y?: number
+  rotation_angle: number
+  special_requirements?: string
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface GuestRelationship {
+  id: string
+  guest1_id: string
+  guest2_id: string
+  relationship_type: RelationshipType
+  seating_preference: SeatingPreference
+  relationship_strength: number // 1-5
+  notes?: string
+  created_by: string
+  created_at: string
+  updated_at: string
+}
+
+export interface SeatingArrangement {
+  id: string
+  couple_id: string
+  name: string
+  description?: string
+  is_active: boolean
+  optimization_score: number
+  created_by: string
+  created_at: string
+  updated_at: string
+}
+
+export interface SeatingAssignment {
+  id: string
+  arrangement_id: string
+  guest_id: string
+  table_id: string
+  seat_number?: number
+  seat_position?: SeatPosition
+  assigned_by?: string
+  assigned_at: string
+  notes?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface SeatingOptimizationRule {
+  id: string
+  couple_id: string
+  rule_name: string
+  rule_type: OptimizationRuleType
+  rule_config: Record<string, any>
+  weight: number
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface RelationshipAccessLog {
+  id: string
+  couple_id: string
+  relationship_id?: string
+  user_id?: string
+  access_type: AccessType
+  ip_address?: string
+  user_agent?: string
+  accessed_at: string
+}
+
+// ==================================================
+// ENHANCED TYPES WITH RELATIONSHIPS
+// ==================================================
+
+export interface ReceptionTableWithAssignments extends ReceptionTable {
+  assignments: SeatingAssignmentWithGuest[]
+  assigned_count: number
+  available_seats: number
+}
+
+export interface SeatingAssignmentWithGuest extends SeatingAssignment {
+  guest: Guest
+}
+
+export interface SeatingArrangementWithDetails extends SeatingArrangement {
+  tables: ReceptionTableWithAssignments[]
+  total_guests: number
+  total_tables: number
+  validation_result?: ValidationResult
+}
+
+export interface GuestRelationshipWithNames extends GuestRelationship {
+  guest1_name: string
+  guest2_name: string
+}
+
+// ==================================================
+// OPTIMIZATION & ANALYSIS TYPES
+// ==================================================
+
+export interface ValidationResult {
+  valid: boolean
+  errors: ValidationError[]
+  warnings: ValidationWarning[]
+}
+
+export interface ValidationError {
+  type: 'relationship_conflict' | 'capacity_exceeded' | 'invalid_assignment'
+  severity: 'error' | 'warning'
+  message: string
+  affected_guests?: string[]
+  table_name?: string
+  relationship_type?: RelationshipType
+  preference?: SeatingPreference
+}
+
+export interface ValidationWarning extends ValidationError {
+  severity: 'warning'
+}
+
+export interface OptimizationSuggestion {
+  guest_id: string
+  guest_name: string
+  current_table_id?: string
+  current_table_name?: string
+  suggested_table_id: string
+  suggested_table_name: string
+  reason: string
+  impact_score: number
+  relationship_improvements: RelationshipImprovement[]
+}
+
+export interface RelationshipImprovement {
+  related_guest_id: string
+  related_guest_name: string
+  relationship_type: RelationshipType
+  preference: SeatingPreference
+  current_status: 'satisfied' | 'violated' | 'neutral'
+  new_status: 'satisfied' | 'violated' | 'neutral'
+  score_change: number
+}
+
+export interface SeatingAnalytics {
+  total_score: number
+  relationship_scores: {
+    must_sit_together_satisfied: number
+    prefer_together_satisfied: number
+    must_separate_satisfied: number
+    prefer_apart_satisfied: number
+    conflicts: number
+  }
+  table_utilization: TableUtilization[]
+  guest_satisfaction_score: number
+}
+
+export interface TableUtilization {
+  table_id: string
+  table_name: string
+  capacity: number
+  assigned: number
+  utilization_percentage: number
+  guest_categories: Record<string, number>
+  age_group_distribution: Record<string, number>
+}
+
+// ==================================================
+// MATERIALIZED VIEW TYPES
+// ==================================================
+
+export interface SeatingOptimizationView {
+  couple_id: string
+  guest_id: string
+  guest_name: string
+  category: string
+  side: string
+  age_group: string
+  rsvp_status: string
+  must_sit_together: string[] | null
+  prefer_together: string[] | null
+  avoid_seating_with: string[] | null
+}
+
+// ==================================================
+// API RESPONSE TYPES
+// ==================================================
+
+export interface SeatingPlanResponse {
+  arrangement: SeatingArrangementWithDetails
+  relationships: GuestRelationshipWithNames[]
+  analytics: SeatingAnalytics
+  suggestions?: OptimizationSuggestion[]
+}
+
+export interface OptimizationResponse {
+  current_score: number
+  optimized_score: number
+  improvements: OptimizationSuggestion[]
+  estimated_time_seconds: number
+  algorithm_used: string
+}
+
+export interface ConflictDetectionResponse {
+  conflicts: RelationshipConflict[]
+  warnings: RelationshipWarning[]
+  affected_tables: string[]
+  recommendation: string
+}
+
+export interface RelationshipConflict {
+  guest1: Guest
+  guest2: Guest
+  relationship: GuestRelationship
+  current_table1?: string
+  current_table2?: string
+  conflict_type: 'same_table_conflict' | 'separation_violation' | 'capacity_issue'
+  severity: 'high' | 'medium' | 'low'
+  suggested_action: string
+}
+
+export interface RelationshipWarning {
+  guest1: Guest
+  guest2: Guest
+  relationship: GuestRelationship
+  warning_type: 'suboptimal_placement' | 'preference_not_met'
+  impact_score: number
+  suggested_improvement: string
+}
+
+// ==================================================
+// FORM INPUT TYPES
+// ==================================================
+
+export interface CreateReceptionTableInput {
+  table_number: number
+  name?: string
+  capacity: number
+  table_shape: TableShape
+  location_x?: number
+  location_y?: number
+  rotation_angle?: number
+  special_requirements?: string
+}
+
+export interface UpdateReceptionTableInput extends Partial<CreateReceptionTableInput> {
+  id: string
+}
+
+export interface CreateGuestRelationshipInput {
+  guest1_id: string
+  guest2_id: string
+  relationship_type: RelationshipType
+  seating_preference: SeatingPreference
+  relationship_strength: number
+  notes?: string
+}
+
+export interface UpdateGuestRelationshipInput extends Partial<CreateGuestRelationshipInput> {
+  id: string
+}
+
+export interface CreateSeatingArrangementInput {
+  name: string
+  description?: string
+  copy_from_arrangement_id?: string
+}
+
+export interface UpdateSeatingArrangementInput {
+  id: string
+  name?: string
+  description?: string
+  is_active?: boolean
+}
+
+export interface CreateSeatingAssignmentInput {
+  arrangement_id: string
+  guest_id: string
+  table_id: string
+  seat_number?: number
+  seat_position?: SeatPosition
+  notes?: string
+}
+
+export interface BulkSeatingAssignmentInput {
+  arrangement_id: string
+  assignments: Array<{
+    guest_id: string
+    table_id: string
+    seat_number?: number
+    seat_position?: SeatPosition
+  }>
+}
+
+// ==================================================
+// QUERY FILTER TYPES
+// ==================================================
+
+export interface SeatingArrangementFilter {
+  couple_id?: string
+  is_active?: boolean
+  created_by?: string
+  created_after?: string
+  created_before?: string
+}
+
+export interface GuestRelationshipFilter {
+  guest_ids?: string[]
+  relationship_types?: RelationshipType[]
+  seating_preferences?: SeatingPreference[]
+  min_strength?: number
+  max_strength?: number
+}
+
+export interface SeatingAssignmentFilter {
+  arrangement_id?: string
+  table_ids?: string[]
+  guest_ids?: string[]
+  assigned_by?: string
+  assigned_after?: string
+  assigned_before?: string
+}
+
+// ==================================================
+// PERFORMANCE TYPES
+// ==================================================
+
+export interface QueryPerformanceMetrics {
+  query_type: string
+  execution_time_ms: number
+  rows_examined: number
+  rows_returned: number
+  index_usage: string[]
+  optimization_suggestions?: string[]
+}
+
+export interface SeatingPerformanceStats {
+  table_name: string
+  column_name: string
+  n_distinct: number
+  most_common_vals: any[]
+  most_common_freqs: number[]
+  correlation: number
+}
+
+// ==================================================
+// ALGORITHM TYPES
+// ==================================================
+
+export interface SeatingAlgorithmConfig {
+  algorithm_type: 'greedy' | 'genetic' | 'simulated_annealing' | 'constraint_satisfaction'
+  max_iterations: number
+  convergence_threshold: number
+  weight_preferences: {
+    must_sit_together: number
+    prefer_together: number
+    must_separate: number
+    prefer_apart: number
+    table_balance: number
+    age_grouping: number
+  }
+  constraints: {
+    respect_table_capacity: boolean
+    enforce_hard_constraints: boolean
+    allow_table_splitting: boolean
+    max_optimization_time_seconds: number
+  }
+}
+
+export interface AlgorithmResult {
+  success: boolean
+  iterations_completed: number
+  final_score: number
+  execution_time_ms: number
+  assignments: SeatingAssignment[]
+  score_history: number[]
+  convergence_achieved: boolean
+  error_message?: string
+}
+
+// ==================================================
+// IMPORT/EXPORT TYPES
+// ==================================================
+
+export interface SeatingExportData {
+  arrangement: SeatingArrangement
+  tables: ReceptionTable[]
+  assignments: SeatingAssignmentWithGuest[]
+  relationships: GuestRelationshipWithNames[]
+  metadata: {
+    exported_at: string
+    exported_by: string
+    version: string
+    guest_count: number
+    table_count: number
+  }
+}
+
+export interface SeatingImportResult {
+  success: boolean
+  arrangement_id?: string
+  imported_tables: number
+  imported_assignments: number
+  imported_relationships: number
+  errors: string[]
+  warnings: string[]
+}
+
+// ==================================================
+// UTILITY TYPES
+// ==================================================
+
+export type SeatingEventType = 
+  | 'arrangement_created'
+  | 'arrangement_updated' 
+  | 'arrangement_activated'
+  | 'assignment_created'
+  | 'assignment_updated'
+  | 'assignment_deleted'
+  | 'relationship_created'
+  | 'relationship_updated'
+  | 'optimization_completed'
+  | 'conflict_detected'
+
+export interface SeatingEvent {
+  type: SeatingEventType
+  arrangement_id?: string
+  guest_id?: string
+  table_id?: string
+  user_id: string
+  timestamp: string
+  data: Record<string, any>
+}
+
+// ==================================================
+// TYPE GUARDS
+// ==================================================
+
+export function isValidSeatingPreference(value: string): value is SeatingPreference {
+  return ['must_sit_together', 'prefer_together', 'neutral', 'prefer_apart', 'must_separate', 'incompatible'].includes(value)
+}
+
+export function isValidRelationshipType(value: string): value is RelationshipType {
+  return ['spouse', 'partner', 'family_immediate', 'family_extended', 'close_friends', 'friends', 'colleagues', 'plus_one', 'child_parent', 'siblings', 'acquaintances'].includes(value)
+}
+
+export function isValidTableShape(value: string): value is TableShape {
+  return ['round', 'rectangular', 'square', 'oval'].includes(value)
+}
+
+// ==================================================
+// FRONTEND COMPONENT TYPES
+// ==================================================
+
+// Position type for table layout
+export interface Position {
+  x: number
+  y: number
+}
+
+// Simplified frontend types for components
+export interface Guest {
+  id: string
+  name: string
+  priority?: 'vip' | 'family' | 'wedding_party' | 'friend'
+  dietaryRequirements?: string[]
+  accessibilityRequirements?: string[]
+  conflictsWith?: string[]
+  assignedTableId?: string
+  notes?: string
+  rsvpStatus?: 'pending' | 'attending' | 'not_attending' | 'maybe'
+  category?: string
+  side?: 'bride' | 'groom' | 'neutral'
+  ageGroup?: string
+  plusOne?: boolean
+}
+
+export interface Table {
+  id: string
+  name: string
+  capacity: number
+  shape: 'round' | 'square' | 'rectangular'
+  position: Position
+  guestIds?: string[]
+  notes?: string
+  specialRequirements?: string[]
+  isActive: boolean
+  createdAt: Date
+  updatedAt: Date
+}
+
+// Conflict detection types for components
+export interface ConflictDetails {
+  type: 'guest_conflict' | 'dietary_conflict' | 'accessibility_conflict' | 'capacity_exceeded'
+  severity: 'high' | 'medium' | 'low'
+  affectedGuests: Guest[]
+  table: Table
+  message: string
+  suggestions?: string[]
+}
+
+// Seating arrangement metadata
+export interface SeatingArrangementMetadata {
+  id: string
+  name: string
+  createdAt: Date
+  updatedAt: Date
+  isDefault: boolean
+  description?: string
+  coupleId?: string
+  createdBy?: string
+}
+
+// Drag and drop data types
+export interface DragData {
+  type: 'guest' | 'table'
+  guest?: Guest
+  table?: Table
+}
+
+// Component state types
+export interface SeatingState {
+  guests: Guest[]
+  tables: Table[]
+  selectedTableId?: string
+  selectedGuestIds: string[]
+  conflicts: ConflictDetails[]
+  isLoading: boolean
+  isDragging: boolean
+  error?: string
+}
+
+// Action types for seating operations
+export type SeatingAction = 
+  | { type: 'ADD_TABLE'; table: Omit<Table, 'id' | 'createdAt' | 'updatedAt'> }
+  | { type: 'UPDATE_TABLE'; tableId: string; updates: Partial<Table> }
+  | { type: 'DELETE_TABLE'; tableId: string }
+  | { type: 'MOVE_TABLE'; tableId: string; position: Position }
+  | { type: 'ASSIGN_GUEST'; guestId: string; tableId: string }
+  | { type: 'UNASSIGN_GUEST'; guestId: string }
+  | { type: 'SET_SELECTED_TABLE'; tableId?: string }
+  | { type: 'SET_SELECTED_GUESTS'; guestIds: string[] }
+  | { type: 'SET_LOADING'; isLoading: boolean }
+  | { type: 'SET_ERROR'; error?: string }
+  | { type: 'DETECT_CONFLICTS'; conflicts: ConflictDetails[] }
+
+// Layout view types
+export type ViewMode = 'layout' | 'list' | 'split'
+export type ZoomLevel = number // 0.25 to 2.0
+
+// Export/Import types for components
+export interface LayoutExportData {
+  tables: Table[]
+  assignments: Record<string, string> // guestId -> tableId
+  metadata: {
+    name: string
+    exportedAt: string
+    version: string
+    totalGuests: number
+    totalTables: number
+  }
+}
+
+// ==================================================
+// CONSTANTS
+// ==================================================
+
+export const SEATING_PREFERENCES = {
+  MUST_SIT_TOGETHER: 'must_sit_together' as const,
+  PREFER_TOGETHER: 'prefer_together' as const,
+  NEUTRAL: 'neutral' as const,
+  PREFER_APART: 'prefer_apart' as const,
+  MUST_SEPARATE: 'must_separate' as const,
+  INCOMPATIBLE: 'incompatible' as const,
+}
+
+export const RELATIONSHIP_TYPES = {
+  SPOUSE: 'spouse' as const,
+  PARTNER: 'partner' as const,
+  FAMILY_IMMEDIATE: 'family_immediate' as const,
+  FAMILY_EXTENDED: 'family_extended' as const,
+  CLOSE_FRIENDS: 'close_friends' as const,
+  FRIENDS: 'friends' as const,
+  COLLEAGUES: 'colleagues' as const,
+  PLUS_ONE: 'plus_one' as const,
+  CHILD_PARENT: 'child_parent' as const,
+  SIBLINGS: 'siblings' as const,
+  ACQUAINTANCES: 'acquaintances' as const,
+}
+
+export const TABLE_SHAPES = {
+  ROUND: 'round' as const,
+  RECTANGULAR: 'rectangular' as const,
+  SQUARE: 'square' as const,
+  OVAL: 'oval' as const,
+}
+
+export const DEFAULT_SCORING_WEIGHTS = {
+  must_sit_together: 50,
+  prefer_together: 25,
+  must_separate: -80,
+  prefer_apart: -5,
+  incompatible: -120,
+  table_balance: 10,
+  age_grouping: 15,
+} as const
+
+export const MAX_TABLE_CAPACITY = 20
+export const MIN_TABLE_CAPACITY = 1
+export const DEFAULT_TABLE_CAPACITY = 8
+export const MAX_RELATIONSHIP_STRENGTH = 5
+export const MIN_RELATIONSHIP_STRENGTH = 1
+export const DEFAULT_RELATIONSHIP_STRENGTH = 3

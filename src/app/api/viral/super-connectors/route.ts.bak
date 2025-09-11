@@ -1,0 +1,414 @@
+/**
+ * Super-Connectors API - GET /api/viral/super-connectors
+ * WS-141 Round 2: Network analysis and super-connector management
+ * SECURITY: Rate limited, authenticated, privacy protected
+ */
+
+import { NextRequest, NextResponse } from 'next/server'
+import { z } from 'zod'
+import { getServerSession } from 'next-auth'
+import { authOptions } from '@/lib/auth'
+import { rateLimit } from '@/lib/ratelimit'
+import { SuperConnectorService, type SuperConnector, type NetworkAnalysis } from '@/lib/services/super-connector-service'
+
+// Query parameter validation schema
+const superConnectorQuerySchema = z.object({
+  action: z.enum(['identify', 'analyze', 'priority', 'update']).default('identify'),
+  tier: z.enum(['bronze', 'silver', 'gold', 'platinum']).optional(),
+  include_metrics: z.enum(['true', 'false']).default('true').transform(val => val === 'true'),
+  limit: z.coerce.number().min(1).max(100).default(50),
+  offset: z.coerce.number().min(0).default(0),
+  force_refresh: z.enum(['true', 'false']).default('false').transform(val => val === 'true'),
+  user_id: z.string().uuid().optional(), // For priority calculations
+  recipient_id: z.string().uuid().optional(),
+  invitation_type: z.enum(['invitation', 'referral', 'collaboration']).optional()
+})
+
+// Response type for super-connectors
+interface SuperConnectorResponse {
+  success: true
+  data: {
+    action: string
+    super_connectors?: Array<{
+      user_id: string
+      couple_count: number
+      avg_connection_strength: number
+      recent_connections: number
+      viral_successes: number
+      super_connector_score: number
+      tier: 'bronze' | 'silver' | 'gold' | 'platinum'
+      priority_level: number
+      reward_multiplier: number
+      last_analyzed_at: string
+      // Privacy: Do not expose internal IDs or detailed personal data
+    }>
+    network_analysis?: {
+      total_super_connectors: number
+      tier_distribution: {
+        bronze: number
+        silver: number
+        gold: number
+        platinum: number
+      }
+      average_score: number
+      growth_trend: {
+        weekly_growth: number
+        monthly_growth: number
+        trend_direction: 'up' | 'down' | 'stable'
+      }
+    }
+    priority_result?: {
+      calculated_priority: number
+      sender_tier?: string
+      recipient_relationship?: string
+      priority_factors: string[]
+    }
+    pagination?: {
+      limit: number
+      offset: number
+      total: number
+      has_more: boolean
+    }
+  }
+  computed_at: string
+  cache_ttl: number
+}
+
+export async function GET(request: NextRequest) {
+  const startTime = Date.now()
+  
+  try {
+    // Authentication check
+    const session = await getServerSession(authOptions)
+    if (!session?.user) {
+      return NextResponse.json(
+        { error: 'UNAUTHORIZED', message: 'Authentication required' },
+        { status: 401 }
+      )
+    }
+
+    // Rate limiting for super-connector analytics
+    const rateLimitResult = await rateLimit.check(
+      `viral_super_connectors:${session.user.id}`,
+      20, // 20 requests
+      300 // per 5 minutes
+    )
+
+    if (!rateLimitResult.allowed) {
+      return NextResponse.json(
+        { 
+          error: 'RATE_LIMITED', 
+          message: 'Super-connector analytics rate limit exceeded.',
+          retry_after: rateLimitResult.retryAfter 
+        },
+        { status: 429 }
+      )
+    }
+
+    // Validate query parameters
+    const url = new URL(request.url)
+    const queryParams = Object.fromEntries(url.searchParams.entries())
+    
+    const validationResult = superConnectorQuerySchema.safeParse(queryParams)
+    if (!validationResult.success) {
+      return NextResponse.json(
+        {
+          error: 'INVALID_QUERY_PARAMETERS',
+          message: 'Invalid query parameters provided',
+          details: validationResult.error.errors.map(e => `${e.path.join('.')}: ${e.message}`)
+        },
+        { status: 400 }
+      )
+    }
+
+    const { 
+      action, 
+      tier, 
+      include_metrics, 
+      limit, 
+      offset, 
+      force_refresh, 
+      user_id, 
+      recipient_id, 
+      invitation_type 
+    } = validationResult.data
+
+    let responseData: SuperConnectorResponse['data']
+
+    switch (action) {
+      case 'identify':
+        const superConnectors = await SuperConnectorService.identifySuperConnectors(force_refresh)
+        
+        // Apply tier filter if specified
+        let filteredConnectors = tier 
+          ? superConnectors.filter(sc => sc.tier === tier)
+          : superConnectors
+
+        // Apply pagination
+        const paginatedConnectors = filteredConnectors.slice(offset, offset + limit)
+        
+        // Privacy protection: Remove sensitive fields
+        const publicConnectors = paginatedConnectors.map(sc => ({
+          user_id: sc.user_id,
+          couple_count: sc.couple_count,
+          avg_connection_strength: Math.round(sc.avg_connection_strength * 10) / 10,
+          recent_connections: sc.recent_connections,
+          viral_successes: sc.viral_successes,
+          super_connector_score: Math.round(sc.super_connector_score * 10) / 10,
+          tier: sc.tier,
+          priority_level: sc.priority_level,
+          reward_multiplier: sc.reward_multiplier,
+          last_analyzed_at: sc.last_analyzed_at.toISOString()
+        }))
+
+        responseData = {
+          action: 'identify',
+          super_connectors: publicConnectors,
+          pagination: {
+            limit,
+            offset,
+            total: filteredConnectors.length,
+            has_more: offset + limit < filteredConnectors.length
+          }
+        }
+        break
+
+      case 'analyze':
+        // Check permissions for network analysis
+        if (!session.user.role || !['admin', 'marketing_manager', 'data_analyst'].includes(session.user.role)) {
+          return NextResponse.json(
+            { error: 'FORBIDDEN', message: 'Insufficient permissions for network analysis' },
+            { status: 403 }
+          )
+        }
+
+        const networkAnalysis = await SuperConnectorService.getNetworkAnalysis()
+        
+        responseData = {
+          action: 'analyze',
+          network_analysis: {
+            total_super_connectors: networkAnalysis.total_super_connectors,
+            tier_distribution: networkAnalysis.tier_distribution,
+            average_score: networkAnalysis.average_score,
+            growth_trend: networkAnalysis.growth_trend
+          }
+        }
+        break
+
+      case 'priority':
+        if (!user_id || !recipient_id || !invitation_type) {
+          return NextResponse.json(
+            { 
+              error: 'MISSING_PARAMETERS', 
+              message: 'Priority calculation requires user_id, recipient_id, and invitation_type' 
+            },
+            { status: 400 }
+          )
+        }
+
+        const calculatedPriority = await SuperConnectorService.calculateInboxPriority(
+          recipient_id,
+          user_id,
+          invitation_type
+        )
+
+        // Get additional context for priority factors
+        const priorityFactors: string[] = []
+        if (calculatedPriority > 7) {
+          priorityFactors.push('Sender is high-tier super-connector')
+        }
+        if (invitation_type === 'collaboration') {
+          priorityFactors.push('Collaboration invitation receives priority boost')
+        }
+        if (calculatedPriority < 5) {
+          priorityFactors.push('Standard priority applied')
+        }
+
+        responseData = {
+          action: 'priority',
+          priority_result: {
+            calculated_priority: calculatedPriority,
+            priority_factors: priorityFactors
+          }
+        }
+        break
+
+      case 'update':
+        // Check permissions for updating super-connectors
+        if (!session.user.role || !['admin', 'system'].includes(session.user.role)) {
+          return NextResponse.json(
+            { error: 'FORBIDDEN', message: 'Insufficient permissions for super-connector updates' },
+            { status: 403 }
+          )
+        }
+
+        // Trigger background super-connector refresh
+        SuperConnectorService.identifySuperConnectors(true)
+          .then(() => console.log('Super-connector refresh completed'))
+          .catch(error => console.error('Super-connector refresh failed:', error))
+
+        responseData = {
+          action: 'update',
+          super_connectors: [],
+        }
+        break
+
+      default:
+        throw new Error(`Unknown action: ${action}`)
+    }
+
+    // Performance monitoring
+    const processingTime = Date.now() - startTime
+    const performanceThreshold = action === 'identify' ? 1000 : action === 'priority' ? 50 : 500
+    
+    if (processingTime > performanceThreshold * 0.9) {
+      console.warn(`Super-connector ${action} took ${processingTime}ms - approaching ${performanceThreshold}ms limit`)
+    }
+
+    const response: SuperConnectorResponse = {
+      success: true,
+      data: responseData,
+      computed_at: new Date().toISOString(),
+      cache_ttl: action === 'priority' ? 60 : 300 // Priority: 1min, Others: 5min
+    }
+
+    // Add performance headers
+    return NextResponse.json(response, {
+      headers: {
+        'X-Processing-Time': `${processingTime}ms`,
+        'Cache-Control': `private, max-age=${response.cache_ttl}`,
+        'X-Rate-Limit-Remaining': rateLimitResult.remaining.toString(),
+        'X-Privacy-Protected': 'true'
+      }
+    })
+
+  } catch (error) {
+    console.error('Super-connectors API error:', error)
+    
+    return NextResponse.json(
+      {
+        error: 'INTERNAL_SERVER_ERROR',
+        message: 'Failed to process super-connector request',
+        timestamp: new Date().toISOString(),
+        processing_time: `${Date.now() - startTime}ms`
+      },
+      { status: 500 }
+    )
+  }
+}
+
+/**
+ * POST /api/viral/super-connectors
+ * Batch update super-connector statuses
+ */
+export async function POST(request: NextRequest) {
+  const startTime = Date.now()
+  
+  try {
+    // Authentication check  
+    const session = await getServerSession(authOptions)
+    if (!session?.user) {
+      return NextResponse.json(
+        { error: 'UNAUTHORIZED', message: 'Authentication required' },
+        { status: 401 }
+      )
+    }
+
+    // Check admin permissions for status updates
+    if (!session.user.role || !['admin', 'marketing_manager'].includes(session.user.role)) {
+      return NextResponse.json(
+        { error: 'FORBIDDEN', message: 'Insufficient permissions for super-connector updates' },
+        { status: 403 }
+      )
+    }
+
+    // Rate limiting for batch updates
+    const rateLimitResult = await rateLimit.check(
+      `viral_super_connector_update:${session.user.id}`,
+      5, // 5 requests
+      900 // per 15 minutes
+    )
+
+    if (!rateLimitResult.allowed) {
+      return NextResponse.json(
+        { 
+          error: 'RATE_LIMITED', 
+          message: 'Super-connector update rate limit exceeded.',
+          retry_after: rateLimitResult.retryAfter 
+        },
+        { status: 429 }
+      )
+    }
+
+    // Parse and validate request body
+    const body = await request.json()
+    
+    const updateRequestSchema = z.object({
+      updates: z.array(z.object({
+        user_id: z.string().uuid(),
+        new_tier: z.enum(['bronze', 'silver', 'gold', 'platinum']).optional(),
+        new_score: z.number().min(0).optional(),
+        new_priority: z.number().min(1).max(10).optional(),
+        new_multiplier: z.number().min(1).max(5).optional(),
+        reason: z.string().min(1).max(200)
+      })).min(1).max(20) // Limit batch size
+    })
+
+    const validationResult = updateRequestSchema.safeParse(body)
+    if (!validationResult.success) {
+      return NextResponse.json(
+        {
+          error: 'INVALID_REQUEST_BODY',
+          message: 'Invalid super-connector update request',
+          details: validationResult.error.errors.map(e => `${e.path.join('.')}: ${e.message}`)
+        },
+        { status: 400 }
+      )
+    }
+
+    const { updates } = validationResult.data
+
+    // Process updates
+    await SuperConnectorService.updateSuperConnectorStatus(updates.map(update => ({
+      user_id: update.user_id,
+      new_tier: update.new_tier,
+      new_score: update.new_score,
+      new_priority: update.new_priority,
+      new_multiplier: update.new_multiplier,
+      reason: `Manual update by ${session.user.email}: ${update.reason}`
+    })))
+
+    const processingTime = Date.now() - startTime
+
+    const response = {
+      success: true,
+      data: {
+        updates_processed: updates.length,
+        processing_time_ms: processingTime,
+        updated_by: session.user.email,
+        updated_at: new Date().toISOString()
+      },
+      message: `Successfully updated ${updates.length} super-connector(s)`
+    }
+
+    return NextResponse.json(response, {
+      headers: {
+        'X-Processing-Time': `${processingTime}ms`,
+        'X-Rate-Limit-Remaining': rateLimitResult.remaining.toString()
+      }
+    })
+
+  } catch (error) {
+    console.error('Super-connector update error:', error)
+    
+    return NextResponse.json(
+      {
+        error: 'INTERNAL_SERVER_ERROR',
+        message: 'Failed to update super-connectors',
+        timestamp: new Date().toISOString(),
+        processing_time: `${Date.now() - startTime}ms`
+      },
+      { status: 500 }
+    )
+  }
+}

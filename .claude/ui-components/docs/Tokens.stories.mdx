@@ -1,0 +1,13 @@
+import { Meta, Canvas } from '@storybook/blocks';
+<Meta title="Docs/Design Tokens" />
+# Design Tokens
+<Canvas>
+  <div style={{ display:'grid', gap:12, gridTemplateColumns:'repeat(5, minmax(0,1fr))' }}>
+    {['bg','bg-elev','bg-muted','fg','fg-muted','border','accent'].map(token => (
+      <div key={token} style={{ border:'1px solid var(--border)', borderRadius:8, padding:12 }}>
+        <div style={{ height:48, background:`var(--${token})`, border:'1px solid var(--border)', borderRadius:6 }} />
+        <div style={{ marginTop:8, fontSize:12 }}>{`--${token}`}</div>
+      </div>
+    ))}
+  </div>
+</Canvas>

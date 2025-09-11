@@ -1,0 +1,1070 @@
+/**
+ * WS-204: Presence Tracking API Endpoints Tests
+ *
+ * Comprehensive test suite for all presence tracking API endpoints:
+ * - /api/presence/track - Presence tracking with rate limiting
+ * - /api/presence/users - Bulk presence queries
+ * - /api/presence/settings - Settings management
+ * - /api/presence/analytics - Enterprise analytics
+ *
+ * Tests cover authentication, validation, rate limiting, privacy controls,
+ * and wedding industry specific workflows.
+ */
+
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+
+// Mock external dependencies
+vi.mock('@supabase/auth-helpers-nextjs', () => ({
+  createRouteHandlerClient: vi.fn(),
+}));
+
+vi.mock('next/headers', () => ({
+  cookies: vi.fn(() => ({
+    get: vi.fn(),
+    set: vi.fn(),
+    delete: vi.fn(),
+  })),
+  headers: vi.fn(() => ({
+    get: vi.fn(),
+  })),
+}));
+
+vi.mock('@/lib/presence/presence-manager', () => ({
+  getPresenceManager: vi.fn(() => ({
+    trackUserPresence: vi.fn(),
+    getUserPresence: vi.fn(),
+    getBulkPresence: vi.fn(),
+    updatePresenceSettings: vi.fn(),
+    getPresenceSettings: vi.fn(),
+  })),
+}));
+
+vi.mock('@/lib/presence/permission-service', () => ({
+  getPermissionService: vi.fn(() => ({
+    checkViewPermission: vi.fn(),
+    checkBulkPermissions: vi.fn(),
+    canManagePresenceSettings: vi.fn(),
+    checkSpecificPermission: vi.fn(),
+    invalidateUserCache: vi.fn(),
+  })),
+}));
+
+vi.mock('@/lib/presence/activity-tracker', () => ({
+  getActivityTracker: vi.fn(() => ({
+    trackUserInteraction: vi.fn(),
+    trackPageView: vi.fn(),
+    generateActivityReport: vi.fn(),
+    generateUserActivitySummary: vi.fn(),
+    generateWeddingActivityInsights: vi.fn(),
+  })),
+}));
+
+vi.mock('@/lib/rate-limit', () => ({
+  ratelimit: {
+    limit: vi.fn(),
+  },
+}));
+
+// Import the route handlers
+import { POST as trackPOST } from '../track/route';
+import { GET as usersGET } from '../users/route';
+import { GET as settingsGET, PUT as settingsPUT } from '../settings/route';
+import { GET as analyticsGET } from '../analytics/route';
+
+describe('Presence Tracking API Endpoints', () => {
+  let mockSupabaseClient: any;
+  let mockRateLimit: any;
+
+  beforeEach(() => {
+    // Mock Supabase client
+    mockSupabaseClient = {
+      auth: {
+        getUser: vi.fn(() =>
+          Promise.resolve({
+            data: {
+              user: {
+                id: 'test-user-id',
+                email: 'test@example.com',
+              },
+            },
+            error: null,
+          }),
+        ),
+      },
+      from: vi.fn(() => ({
+        select: vi.fn(() => ({
+          eq: vi.fn(() => ({
+            single: vi.fn(() => Promise.resolve({ data: null, error: null })),
+            gte: vi.fn(() => ({
+              order: vi.fn(() => ({
+                limit: vi.fn(() => Promise.resolve({ data: [], error: null })),
+              })),
+            })),
+          })),
+        })),
+        insert: vi.fn(() => Promise.resolve({ data: null, error: null })),
+        upsert: vi.fn(() => Promise.resolve({ data: null, error: null })),
+      })),
+    };
+
+    (createRouteHandlerClient as any).mockReturnValue(mockSupabaseClient);
+
+    // Mock rate limiting
+    const { ratelimit } = require('@/lib/rate-limit');
+    mockRateLimit = ratelimit;
+    mockRateLimit.limit.mockResolvedValue({
+      success: true,
+      remaining: 10,
+      reset: Date.now() + 60000,
+    });
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  describe('/api/presence/track', () => {
+    it('should track user presence successfully', async () => {
+      const requestBody = {
+        status: 'active',
+        currentPage: '/dashboard/weddings',
+        lastActivity: new Date().toISOString(),
+        deviceInfo: {
+          userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X)',
+          screenSize: '390x844',
+          platform: 'mobile',
+        },
+        weddingContext: {
+          weddingId: 'wedding-123',
+          role: 'photographer',
+        },
+      };
+
+      const request = new NextRequest(
+        'http://localhost:3000/api/presence/track',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestBody),
+        },
+      );
+
+      const { getPresenceManager } = require('@/lib/presence/presence-manager');
+      const mockPresenceManager = getPresenceManager();
+      mockPresenceManager.trackUserPresence.mockResolvedValue(undefined);
+
+      const response = await trackPOST(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data.success).toBe(true);
+      expect(mockPresenceManager.trackUserPresence).toHaveBeenCalledWith(
+        'test-user-id',
+        expect.objectContaining({
+          status: 'active',
+          currentPage: '/dashboard/weddings',
+        }),
+      );
+    });
+
+    it('should handle authentication failure', async () => {
+      mockSupabaseClient.auth.getUser.mockResolvedValue({
+        data: { user: null },
+        error: { message: 'Invalid token' },
+      });
+
+      const request = new NextRequest(
+        'http://localhost:3000/api/presence/track',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'active' }),
+        },
+      );
+
+      const response = await trackPOST(request);
+      expect(response.status).toBe(401);
+
+      const data = await response.json();
+      expect(data.error).toBe('Authentication required');
+    });
+
+    it('should enforce rate limiting', async () => {
+      mockRateLimit.limit.mockResolvedValue({
+        success: false,
+        remaining: 0,
+        reset: Date.now() + 60000,
+      });
+
+      const request = new NextRequest(
+        'http://localhost:3000/api/presence/track',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'active' }),
+        },
+      );
+
+      const response = await trackPOST(request);
+      expect(response.status).toBe(429);
+
+      const data = await response.json();
+      expect(data.error).toContain('Rate limit exceeded');
+    });
+
+    it('should validate request body', async () => {
+      const invalidRequestBody = {
+        status: 'invalid_status', // Invalid enum value
+        currentPage: 123, // Should be string
+        lastActivity: 'invalid_date',
+      };
+
+      const request = new NextRequest(
+        'http://localhost:3000/api/presence/track',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(invalidRequestBody),
+        },
+      );
+
+      const response = await trackPOST(request);
+      expect(response.status).toBe(400);
+
+      const data = await response.json();
+      expect(data.error).toBe('Invalid request data');
+      expect(data.details).toBeDefined();
+    });
+
+    it('should handle wedding context correctly', async () => {
+      const requestBody = {
+        status: 'active',
+        currentPage: '/weddings/wedding-123/timeline',
+        weddingContext: {
+          weddingId: 'wedding-123',
+          role: 'photographer',
+          permissions: ['view_timeline', 'edit_photos'],
+        },
+      };
+
+      const request = new NextRequest(
+        'http://localhost:3000/api/presence/track',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestBody),
+        },
+      );
+
+      const { getPresenceManager } = require('@/lib/presence/presence-manager');
+      const mockPresenceManager = getPresenceManager();
+      mockPresenceManager.trackUserPresence.mockResolvedValue(undefined);
+
+      const response = await trackPOST(request);
+      expect(response.status).toBe(200);
+
+      expect(mockPresenceManager.trackUserPresence).toHaveBeenCalledWith(
+        'test-user-id',
+        expect.objectContaining({
+          weddingContext: {
+            weddingId: 'wedding-123',
+            role: 'photographer',
+            permissions: ['view_timeline', 'edit_photos'],
+          },
+        }),
+      );
+    });
+  });
+
+  describe('/api/presence/users', () => {
+    it('should return bulk presence data', async () => {
+      const userIds = ['user-1', 'user-2', 'user-3'];
+      const url = `http://localhost:3000/api/presence/users?${userIds.map((id) => `userIds[]=${id}`).join('&')}`;
+
+      const request = new NextRequest(url, { method: 'GET' });
+
+      const { getPresenceManager } = require('@/lib/presence/presence-manager');
+      const mockPresenceManager = getPresenceManager();
+      mockPresenceManager.getBulkPresence.mockResolvedValue({
+        'user-1': {
+          isOnline: true,
+          status: 'active',
+          lastSeen: new Date().toISOString(),
+        },
+        'user-2': {
+          isOnline: false,
+          status: 'away',
+          lastSeen: new Date(Date.now() - 300000).toISOString(),
+        },
+        'user-3': {
+          isOnline: true,
+          status: 'busy',
+          lastSeen: new Date().toISOString(),
+        },
+      });
+
+      const response = await usersGET(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data.success).toBe(true);
+      expect(data.users).toHaveProperty('user-1');
+      expect(data.users).toHaveProperty('user-2');
+      expect(data.users).toHaveProperty('user-3');
+      expect(data.meta.totalRequested).toBe(3);
+    });
+
+    it('should filter users by wedding context', async () => {
+      const userIds = ['user-1', 'user-2', 'user-3'];
+      const url = `http://localhost:3000/api/presence/users?${userIds.map((id) => `userIds[]=${id}`).join('&')}&context=wedding&contextId=wedding-123`;
+
+      const request = new NextRequest(url, { method: 'GET' });
+
+      // Mock wedding collaborators query
+      mockSupabaseClient
+        .from()
+        .select()
+        .eq()
+        .eq.mockResolvedValue({
+          data: [
+            { supplier_id: 'user-1', client_id: null },
+            { supplier_id: null, client_id: 'user-2' },
+          ],
+          error: null,
+        });
+
+      const { getPresenceManager } = require('@/lib/presence/presence-manager');
+      const mockPresenceManager = getPresenceManager();
+      mockPresenceManager.getBulkPresence.mockResolvedValue({
+        'user-1': { isOnline: true, status: 'active' },
+        'user-2': { isOnline: true, status: 'active' },
+      });
+
+      const response = await usersGET(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data.users).toHaveProperty('user-1');
+      expect(data.users).toHaveProperty('user-2');
+      expect(data.users).not.toHaveProperty('user-3'); // user-3 not in wedding
+    });
+
+    it('should validate user ID limits', async () => {
+      // Test with more than 50 user IDs (limit)
+      const userIds = Array.from({ length: 51 }, (_, i) => `user-${i}`);
+      const url = `http://localhost:3000/api/presence/users?${userIds.map((id) => `userIds[]=${id}`).join('&')}`;
+
+      const request = new NextRequest(url, { method: 'GET' });
+
+      const response = await usersGET(request);
+      expect(response.status).toBe(400);
+
+      const data = await response.json();
+      expect(data.error).toBe('Invalid request parameters');
+    });
+
+    it('should include activity data when requested', async () => {
+      const url =
+        'http://localhost:3000/api/presence/users?userIds[]=user-1&includeActivity=true';
+      const request = new NextRequest(url, { method: 'GET' });
+
+      const { getPresenceManager } = require('@/lib/presence/presence-manager');
+      const mockPresenceManager = getPresenceManager();
+      mockPresenceManager.getBulkPresence.mockResolvedValue({
+        'user-1': { isOnline: true, status: 'active' },
+      });
+
+      const {
+        getPermissionService,
+      } = require('@/lib/presence/permission-service');
+      const mockPermissionService = getPermissionService();
+      mockPermissionService.checkSpecificPermission.mockResolvedValue(true);
+
+      // Mock activity data
+      mockSupabaseClient
+        .from()
+        .select()
+        .eq()
+        .gte()
+        .order()
+        .limit.mockResolvedValue({
+          data: [
+            {
+              activity_type: 'page_view',
+              timestamp: new Date().toISOString(),
+              metadata: { page: '/dashboard' },
+            },
+          ],
+          error: null,
+        });
+
+      const response = await usersGET(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data.users['user-1']).toHaveProperty('activity');
+    });
+  });
+
+  describe('/api/presence/settings', () => {
+    describe('GET /api/presence/settings', () => {
+      it('should return user presence settings', async () => {
+        const request = new NextRequest(
+          'http://localhost:3000/api/presence/settings',
+          {
+            method: 'GET',
+          },
+        );
+
+        const {
+          getPresenceManager,
+        } = require('@/lib/presence/presence-manager');
+        const mockPresenceManager = getPresenceManager();
+        mockPresenceManager.getPresenceSettings.mockResolvedValue({
+          visibility: 'team',
+          showActivity: true,
+          showCurrentPage: false,
+          appearOffline: false,
+          customStatus: 'Available for wedding consultations',
+          customEmoji: '📸',
+        });
+
+        // Mock settings metadata
+        mockSupabaseClient
+          .from()
+          .select()
+          .eq()
+          .single.mockResolvedValue({
+            data: {
+              created_at: '2025-01-01T00:00:00Z',
+              updated_at: '2025-01-15T10:00:00Z',
+            },
+            error: null,
+          });
+
+        const response = await settingsGET(request);
+        const data = await response.json();
+
+        expect(response.status).toBe(200);
+        expect(data.success).toBe(true);
+        expect(data.settings).toHaveProperty('visibility', 'team');
+        expect(data.settings).toHaveProperty(
+          'customStatus',
+          'Available for wedding consultations',
+        );
+        expect(data.metadata).toHaveProperty('settingsLastUpdated');
+      });
+
+      it('should check permissions for accessing other user settings', async () => {
+        const request = new NextRequest(
+          'http://localhost:3000/api/presence/settings?userId=other-user-id',
+          {
+            method: 'GET',
+          },
+        );
+
+        const {
+          getPermissionService,
+        } = require('@/lib/presence/permission-service');
+        const mockPermissionService = getPermissionService();
+        mockPermissionService.canManagePresenceSettings.mockResolvedValue(
+          false,
+        );
+
+        const response = await settingsGET(request);
+        expect(response.status).toBe(403);
+
+        const data = await response.json();
+        expect(data.error).toBe('Insufficient permissions to access settings');
+      });
+    });
+
+    describe('PUT /api/presence/settings', () => {
+      it('should update user presence settings', async () => {
+        const updatedSettings = {
+          visibility: 'contacts',
+          showActivity: false,
+          showCurrentPage: true,
+          appearOffline: false,
+          customStatus: 'Busy with wedding shoot',
+          customEmoji: '📷',
+        };
+
+        const requestBody = {
+          settings: updatedSettings,
+          broadcastChanges: true,
+        };
+
+        const request = new NextRequest(
+          'http://localhost:3000/api/presence/settings',
+          {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestBody),
+          },
+        );
+
+        const {
+          getPresenceManager,
+        } = require('@/lib/presence/presence-manager');
+        const mockPresenceManager = getPresenceManager();
+        mockPresenceManager.getPresenceSettings.mockResolvedValue({
+          visibility: 'team',
+          showActivity: true,
+          showCurrentPage: false,
+          appearOffline: false,
+        });
+        mockPresenceManager.updatePresenceSettings.mockResolvedValue(undefined);
+
+        const response = await settingsPUT(request);
+        const data = await response.json();
+
+        expect(response.status).toBe(200);
+        expect(data.success).toBe(true);
+        expect(data.settings).toEqual(updatedSettings);
+        expect(data.changes).toContain('visibility');
+        expect(data.changes).toContain('showActivity');
+        expect(data.broadcastSent).toBe(true);
+      });
+
+      it('should validate settings data', async () => {
+        const invalidSettings = {
+          visibility: 'invalid_option', // Invalid enum
+          showActivity: 'not_boolean', // Should be boolean
+          customStatus: 'A'.repeat(101), // Exceeds max length
+        };
+
+        const requestBody = { settings: invalidSettings };
+
+        const request = new NextRequest(
+          'http://localhost:3000/api/presence/settings',
+          {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestBody),
+          },
+        );
+
+        const response = await settingsPUT(request);
+        expect(response.status).toBe(400);
+
+        const data = await response.json();
+        expect(data.error).toBe('Invalid settings data');
+        expect(data.details).toBeDefined();
+      });
+
+      it('should handle permission checks for admin updates', async () => {
+        const requestBody = {
+          userId: 'target-user-id',
+          settings: {
+            visibility: 'nobody',
+            showActivity: false,
+            showCurrentPage: false,
+            appearOffline: true,
+          },
+        };
+
+        const request = new NextRequest(
+          'http://localhost:3000/api/presence/settings',
+          {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestBody),
+          },
+        );
+
+        const {
+          getPermissionService,
+        } = require('@/lib/presence/permission-service');
+        const mockPermissionService = getPermissionService();
+        mockPermissionService.canManagePresenceSettings.mockResolvedValue(
+          false,
+        );
+
+        const response = await settingsPUT(request);
+        expect(response.status).toBe(403);
+
+        const data = await response.json();
+        expect(data.error).toBe('Insufficient permissions to update settings');
+      });
+    });
+  });
+
+  describe('/api/presence/analytics', () => {
+    it('should return organization analytics for enterprise users', async () => {
+      const url =
+        'http://localhost:3000/api/presence/analytics?type=organization&id=org-123&period=week';
+      const request = new NextRequest(url, { method: 'GET' });
+
+      // Mock organization admin verification
+      mockSupabaseClient
+        .from()
+        .select()
+        .eq()
+        .eq()
+        .single.mockResolvedValue({
+          data: {
+            role: 'admin',
+            organization_id: 'org-123',
+            organizations: {
+              pricing_tier: 'enterprise',
+            },
+          },
+          error: null,
+        });
+
+      const { getActivityTracker } = require('@/lib/presence/activity-tracker');
+      const mockActivityTracker = getActivityTracker();
+      mockActivityTracker.generateActivityReport.mockResolvedValue({
+        organizationId: 'org-123',
+        totalUsers: 25,
+        totalSessions: 150,
+        averageSessionDuration: 1800,
+        mostActiveUsers: [
+          { userId: 'user-1', sessionCount: 10 },
+          { userId: 'user-2', sessionCount: 8 },
+        ],
+        deviceBreakdown: { mobile: 60, desktop: 40 },
+        dailyTrends: [{ date: '2025-01-15', sessions: 20 }],
+      });
+
+      const response = await analyticsGET(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data.success).toBe(true);
+      expect(data.analytics).toHaveProperty('organizationId', 'org-123');
+      expect(data.analytics).toHaveProperty('totalUsers', 25);
+      expect(data.metadata).toHaveProperty('queryType', 'organization');
+    });
+
+    it('should return wedding analytics for wedding participants', async () => {
+      const url =
+        'http://localhost:3000/api/presence/analytics?type=wedding&id=wedding-123&period=month';
+      const request = new NextRequest(url, { method: 'GET' });
+
+      // Mock wedding connection verification
+      mockSupabaseClient
+        .from()
+        .select()
+        .or()
+        .eq()
+        .eq()
+        .single.mockResolvedValue({
+          data: {
+            id: 'connection-1',
+            organization_id: 'org-123',
+            organizations: {
+              pricing_tier: 'enterprise',
+            },
+          },
+          error: null,
+        });
+
+      const { getActivityTracker } = require('@/lib/presence/activity-tracker');
+      const mockActivityTracker = getActivityTracker();
+      mockActivityTracker.generateWeddingActivityInsights.mockResolvedValue({
+        weddingId: 'wedding-123',
+        collaborators: 5,
+        activityByRole: {
+          couple: 15,
+          vendor: 35,
+        },
+        timelineInteractions: 25,
+        vendorEngagement: {
+          totalVendors: 3,
+          serviceTypes: ['photography', 'catering', 'flowers'],
+        },
+        weddingProgress: {
+          milestonesCompleted: 8,
+          progressPercentage: 65,
+        },
+      });
+
+      const response = await analyticsGET(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data.success).toBe(true);
+      expect(data.analytics).toHaveProperty('weddingId', 'wedding-123');
+      expect(data.analytics.weddingProgress).toHaveProperty(
+        'progressPercentage',
+        65,
+      );
+    });
+
+    it('should return user analytics for self or admin access', async () => {
+      const url =
+        'http://localhost:3000/api/presence/analytics?type=user&id=test-user-id&period=day&includeRawData=true';
+      const request = new NextRequest(url, { method: 'GET' });
+
+      // Mock user profile with enterprise access
+      mockSupabaseClient
+        .from()
+        .select()
+        .eq()
+        .single.mockResolvedValue({
+          data: {
+            organization_id: 'org-123',
+            organizations: {
+              pricing_tier: 'enterprise',
+            },
+          },
+          error: null,
+        });
+
+      const { getActivityTracker } = require('@/lib/presence/activity-tracker');
+      const mockActivityTracker = getActivityTracker();
+      mockActivityTracker.generateUserActivitySummary.mockResolvedValue({
+        userId: 'test-user-id',
+        totalActivities: 45,
+        sessionCount: 8,
+        averageSessionDuration: 2100,
+        mostUsedFeatures: [
+          'dashboard',
+          'wedding_timeline',
+          'client_communication',
+        ],
+        devicePreference: 'mobile',
+        recentActivities: [
+          { type: 'page_view', timestamp: '2025-01-15T10:00:00Z' },
+        ],
+      });
+
+      const response = await analyticsGET(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data.success).toBe(true);
+      expect(data.analytics).toHaveProperty('userId', 'test-user-id');
+      expect(data.analytics).toHaveProperty('recentActivities'); // Raw data included
+    });
+
+    it('should enforce enterprise tier requirement', async () => {
+      const url =
+        'http://localhost:3000/api/presence/analytics?type=organization&id=org-123&period=week';
+      const request = new NextRequest(url, { method: 'GET' });
+
+      // Mock non-enterprise user
+      mockSupabaseClient
+        .from()
+        .select()
+        .eq()
+        .eq()
+        .single.mockResolvedValue({
+          data: {
+            role: 'admin',
+            organization_id: 'org-123',
+            organizations: {
+              pricing_tier: 'professional', // Not enterprise
+            },
+          },
+          error: null,
+        });
+
+      const response = await analyticsGET(request);
+      expect(response.status).toBe(403);
+
+      const data = await response.json();
+      expect(data.error).toBe('Insufficient permissions for analytics');
+    });
+
+    it('should filter metrics when specific ones are requested', async () => {
+      const url =
+        'http://localhost:3000/api/presence/analytics?type=organization&id=org-123&period=week&metrics=sessions,users,trends';
+      const request = new NextRequest(url, { method: 'GET' });
+
+      // Mock enterprise access
+      mockSupabaseClient
+        .from()
+        .select()
+        .eq()
+        .eq()
+        .single.mockResolvedValue({
+          data: {
+            role: 'admin',
+            organization_id: 'org-123',
+            organizations: { pricing_tier: 'enterprise' },
+          },
+          error: null,
+        });
+
+      const { getActivityTracker } = require('@/lib/presence/activity-tracker');
+      const mockActivityTracker = getActivityTracker();
+      mockActivityTracker.generateActivityReport.mockResolvedValue({
+        organizationId: 'org-123',
+        totalSessions: 150,
+        totalUsers: 25,
+        dailyTrends: [{ date: '2025-01-15', sessions: 20 }],
+        pageViews: 500, // Should be filtered out
+        deviceBreakdown: { mobile: 60 }, // Should be filtered out
+      });
+
+      const response = await analyticsGET(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data.analytics).toHaveProperty('totalSessions');
+      expect(data.analytics).toHaveProperty('totalUsers');
+      expect(data.analytics).toHaveProperty('dailyTrends');
+      expect(data.analytics).not.toHaveProperty('pageViews');
+      expect(data.analytics).not.toHaveProperty('deviceBreakdown');
+    });
+
+    it('should handle custom date ranges', async () => {
+      const url =
+        'http://localhost:3000/api/presence/analytics?type=user&id=test-user-id&startDate=2025-01-01T00:00:00Z&endDate=2025-01-31T23:59:59Z';
+      const request = new NextRequest(url, { method: 'GET' });
+
+      // Mock enterprise access
+      mockSupabaseClient
+        .from()
+        .select()
+        .eq()
+        .single.mockResolvedValue({
+          data: {
+            organization_id: 'org-123',
+            organizations: { pricing_tier: 'enterprise' },
+          },
+          error: null,
+        });
+
+      const { getActivityTracker } = require('@/lib/presence/activity-tracker');
+      const mockActivityTracker = getActivityTracker();
+      mockActivityTracker.generateUserActivitySummary.mockResolvedValue({
+        userId: 'test-user-id',
+        totalActivities: 100,
+      });
+
+      const response = await analyticsGET(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data.metadata.dateRange).toEqual({
+        startDate: '2025-01-01T00:00:00Z',
+        endDate: '2025-01-31T23:59:59Z',
+      });
+    });
+
+    it('should enforce analytics rate limiting', async () => {
+      mockRateLimit.limit.mockResolvedValue({
+        success: false,
+        remaining: 0,
+        reset: Date.now() + 3600000,
+      });
+
+      const url =
+        'http://localhost:3000/api/presence/analytics?type=user&id=test-user-id&period=day';
+      const request = new NextRequest(url, { method: 'GET' });
+
+      const response = await analyticsGET(request);
+      expect(response.status).toBe(429);
+
+      const data = await response.json();
+      expect(data.error).toContain('Rate limit exceeded');
+    });
+  });
+
+  describe('Error Handling', () => {
+    it('should handle database connection errors', async () => {
+      mockSupabaseClient.auth.getUser.mockResolvedValue({
+        data: { user: null },
+        error: {
+          message: 'Database connection failed',
+          code: 'CONNECTION_ERROR',
+        },
+      });
+
+      const request = new NextRequest(
+        'http://localhost:3000/api/presence/track',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'active' }),
+        },
+      );
+
+      const response = await trackPOST(request);
+      expect(response.status).toBe(401);
+    });
+
+    it('should handle service unavailable errors', async () => {
+      const { getPresenceManager } = require('@/lib/presence/presence-manager');
+      const mockPresenceManager = getPresenceManager();
+      mockPresenceManager.trackUserPresence.mockRejectedValue(
+        new Error('Service unavailable'),
+      );
+
+      const request = new NextRequest(
+        'http://localhost:3000/api/presence/track',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'active' }),
+        },
+      );
+
+      const response = await trackPOST(request);
+      expect(response.status).toBe(500);
+
+      const data = await response.json();
+      expect(data.error).toBe('Internal server error');
+    });
+  });
+
+  describe('Wedding Industry Specific Tests', () => {
+    it('should handle photographer presence tracking during wedding day', async () => {
+      const weddingDayPresence = {
+        status: 'active',
+        currentPage: '/weddings/wedding-123/live-timeline',
+        lastActivity: new Date().toISOString(),
+        weddingContext: {
+          weddingId: 'wedding-123',
+          role: 'photographer',
+          isWeddingDay: true,
+          currentLocation: 'ceremony_venue',
+          criticalMode: true,
+        },
+        deviceInfo: {
+          platform: 'mobile',
+          batteryLevel: 85,
+          connectionType: '4G',
+        },
+      };
+
+      const request = new NextRequest(
+        'http://localhost:3000/api/presence/track',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(weddingDayPresence),
+        },
+      );
+
+      const { getPresenceManager } = require('@/lib/presence/presence-manager');
+      const mockPresenceManager = getPresenceManager();
+      mockPresenceManager.trackUserPresence.mockResolvedValue(undefined);
+
+      const response = await trackPOST(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data.success).toBe(true);
+
+      const presenceCall = mockPresenceManager.trackUserPresence.mock.calls[0];
+      expect(presenceCall[1].weddingContext.isWeddingDay).toBe(true);
+      expect(presenceCall[1].weddingContext.criticalMode).toBe(true);
+    });
+
+    it('should track vendor collaboration patterns', async () => {
+      const vendorUserIds = [
+        'photographer-1',
+        'florist-2',
+        'catering-3',
+        'couple-4',
+      ];
+      const url = `http://localhost:3000/api/presence/users?${vendorUserIds.map((id) => `userIds[]=${id}`).join('&')}&context=wedding&contextId=wedding-123&includeActivity=true`;
+
+      const request = new NextRequest(url, { method: 'GET' });
+
+      // Mock wedding collaborators
+      mockSupabaseClient
+        .from()
+        .select()
+        .eq()
+        .eq.mockResolvedValue({
+          data: vendorUserIds.map((id) => ({
+            supplier_id: id.startsWith('couple') ? null : id,
+            client_id: id.startsWith('couple') ? id : null,
+          })),
+          error: null,
+        });
+
+      const { getPresenceManager } = require('@/lib/presence/presence-manager');
+      const mockPresenceManager = getPresenceManager();
+      mockPresenceManager.getBulkPresence.mockResolvedValue(
+        vendorUserIds.reduce(
+          (acc, id) => ({
+            ...acc,
+            [id]: {
+              isOnline: true,
+              status: 'active',
+              currentPage: `/weddings/wedding-123/timeline`,
+              role: id.startsWith('couple') ? 'couple' : 'vendor',
+            },
+          }),
+          {},
+        ),
+      );
+
+      const response = await usersGET(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data.meta.totalReturned).toBe(4);
+      expect(Object.keys(data.users)).toContain('photographer-1');
+      expect(Object.keys(data.users)).toContain('couple-4');
+    });
+
+    it('should generate comprehensive wedding progress analytics', async () => {
+      const url =
+        'http://localhost:3000/api/presence/analytics?type=wedding&id=wedding-123&period=quarter&metrics=collaboration,progress,trends';
+      const request = new NextRequest(url, { method: 'GET' });
+
+      // Mock wedding access
+      mockSupabaseClient
+        .from()
+        .select()
+        .or()
+        .eq()
+        .eq()
+        .single.mockResolvedValue({
+          data: {
+            organization_id: 'org-123',
+            organizations: { pricing_tier: 'enterprise' },
+          },
+          error: null,
+        });
+
+      const { getActivityTracker } = require('@/lib/presence/activity-tracker');
+      const mockActivityTracker = getActivityTracker();
+      mockActivityTracker.generateWeddingActivityInsights.mockResolvedValue({
+        weddingId: 'wedding-123',
+        collaborators: 6,
+        weddingProgress: {
+          milestonesCompleted: 12,
+          totalMilestones: 18,
+          progressPercentage: 67,
+          timeline: [
+            { milestone: 'venue_booked', completedAt: '2025-01-01' },
+            { milestone: 'photographer_hired', completedAt: '2025-01-15' },
+            { milestone: 'catering_confirmed', completedAt: '2025-01-20' },
+          ],
+        },
+        collaborationMetrics: {
+          totalMessages: 145,
+          documentsShared: 23,
+          meetingsScheduled: 8,
+          tasksCompleted: 34,
+        },
+        coordinationPatterns: {
+          peakCollaborationHours: ['10:00-12:00', '14:00-16:00'],
+          mostActiveVendorType: 'photography',
+          communicationFrequency: 'high',
+        },
+      });
+
+      const response = await analyticsGET(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data.analytics.weddingProgress.progressPercentage).toBe(67);
+      expect(data.analytics.collaborationMetrics.totalMessages).toBe(145);
+      expect(data.analytics.coordinationPatterns.mostActiveVendorType).toBe(
+        'photography',
+      );
+    });
+  });
+});

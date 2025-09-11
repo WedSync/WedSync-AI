@@ -1,0 +1,465 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { DynamicAPIRouteContext, extractParams } from '@/types/next15-params';
+import { isValidUUID, sanitizeString } from '@/lib/security/input-validation';
+import { rbacSystem, PERMISSIONS } from '@/lib/security/rbac-system';
+import { z } from 'zod';
+import rateLimit from '@/lib/rate-limit';
+
+// Rate limiting for note operations
+const noteRateLimit = rateLimit({
+  interval: 60 * 1000, // 1 minute
+  uniqueTokenPerInterval: 500,
+});
+
+// Note update schema
+const noteUpdateSchema = z.object({
+  content: z.string().min(1).max(10000).optional(),
+  note_type: z
+    .enum(['client', 'internal', 'follow_up', 'meeting', 'important'])
+    .optional(),
+  visibility: z.enum(['public', 'internal', 'private']).optional(),
+  priority: z.enum(['low', 'medium', 'high', 'urgent']).optional(),
+  tags: z.array(z.string().max(50)).max(20).optional(),
+  follow_up_date: z.string().optional().nullable(),
+  is_pinned: z.boolean().optional(),
+});
+
+export async function GET(
+  request: NextRequest,
+  context: DynamicAPIRouteContext,
+) {
+  const params = await extractParams(context.params);
+
+  try {
+    // Rate limiting
+    const identifier = request.ip || 'anonymous';
+    const { success } = await noteRateLimit.check(100, identifier);
+
+    if (!success) {
+      return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
+    }
+
+    // Validate note ID format
+    if (!isValidUUID(params.id)) {
+      return NextResponse.json(
+        { error: 'Invalid note ID format' },
+        { status: 400 },
+      );
+    }
+
+    const supabase = await createClient();
+    const { data: user } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get the note
+    const { data: note, error } = await supabase
+      .from('client_notes')
+      .select(
+        `
+        id,
+        client_id,
+        content,
+        note_type,
+        visibility,
+        tags,
+        created_at,
+        updated_at,
+        created_by,
+        created_by_name,
+        updated_by,
+        updated_by_name,
+        is_pinned,
+        follow_up_date,
+        priority
+      `,
+      )
+      .eq('id', params.id)
+      .single();
+
+    if (error) {
+      if (error.code === 'PGRST116') {
+        return NextResponse.json({ error: 'Note not found' }, { status: 404 });
+      }
+      throw error;
+    }
+
+    // Check viewing permissions
+    const hasViewPermission = await rbacSystem.hasPermission(
+      user.id,
+      PERMISSIONS.WEDDING_VIEW,
+    );
+
+    if (!hasViewPermission) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions' },
+        { status: 403 },
+      );
+    }
+
+    // Check specific note visibility permissions
+    if (note.visibility === 'internal') {
+      const canViewInternal = await rbacSystem.hasPermission(
+        user.id,
+        PERMISSIONS.SETTINGS_VIEW,
+      );
+      if (!canViewInternal) {
+        return NextResponse.json(
+          { error: 'Cannot access internal notes' },
+          { status: 403 },
+        );
+      }
+    } else if (note.visibility === 'private' && note.created_by !== user.id) {
+      return NextResponse.json(
+        { error: 'Cannot access private notes of others' },
+        { status: 403 },
+      );
+    }
+
+    return NextResponse.json(note);
+  } catch (error) {
+    console.error('Error fetching note:', error);
+    return NextResponse.json(
+      { error: 'Failed to fetch note' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function PATCH(
+  request: NextRequest,
+  context: DynamicAPIRouteContext,
+) {
+  const params = await extractParams(context.params);
+
+  try {
+    // Rate limiting
+    const identifier = request.ip || 'anonymous';
+    const { success } = await noteRateLimit.check(20, identifier);
+
+    if (!success) {
+      return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
+    }
+
+    // Validate note ID format
+    if (!isValidUUID(params.id)) {
+      return NextResponse.json(
+        { error: 'Invalid note ID format' },
+        { status: 400 },
+      );
+    }
+
+    const supabase = await createClient();
+    const { data: user } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get the existing note
+    const { data: existingNote, error: fetchError } = await supabase
+      .from('client_notes')
+      .select('id, client_id, created_by, visibility, content')
+      .eq('id', params.id)
+      .single();
+
+    if (fetchError) {
+      if (fetchError.code === 'PGRST116') {
+        return NextResponse.json({ error: 'Note not found' }, { status: 404 });
+      }
+      throw fetchError;
+    }
+
+    // Check edit permissions
+    const hasEditPermission = await rbacSystem.hasPermission(
+      user.id,
+      PERMISSIONS.WEDDING_EDIT,
+    );
+
+    if (!hasEditPermission) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions' },
+        { status: 403 },
+      );
+    }
+
+    // Users can only edit their own notes (unless they're admin)
+    const isAdmin = await rbacSystem.hasPermission(
+      user.id,
+      PERMISSIONS.SYSTEM_ADMIN,
+    );
+    if (existingNote.created_by !== user.id && !isAdmin) {
+      return NextResponse.json(
+        { error: 'Can only edit your own notes' },
+        { status: 403 },
+      );
+    }
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validatedData = noteUpdateSchema.parse(body);
+
+    // Get user profile
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('first_name, last_name')
+      .eq('user_id', user.id)
+      .single();
+
+    const userName = userProfile
+      ? `${userProfile.first_name || ''} ${userProfile.last_name || ''}`.trim()
+      : user.email || 'Unknown User';
+
+    // Prepare update data
+    const updateData: any = {
+      updated_at: new Date().toISOString(),
+      updated_by: user.id,
+      updated_by_name: userName,
+    };
+
+    // Only update provided fields
+    if (validatedData.content !== undefined) {
+      const sanitizedContent = sanitizeString(validatedData.content);
+      if (!sanitizedContent) {
+        return NextResponse.json(
+          { error: 'Invalid note content' },
+          { status: 400 },
+        );
+      }
+      updateData.content = sanitizedContent;
+    }
+
+    if (validatedData.note_type !== undefined) {
+      updateData.note_type = validatedData.note_type;
+    }
+
+    if (validatedData.visibility !== undefined) {
+      // Check if user can set internal visibility
+      if (validatedData.visibility === 'internal') {
+        const canCreateInternal = await rbacSystem.hasPermission(
+          user.id,
+          PERMISSIONS.SETTINGS_VIEW,
+        );
+        if (!canCreateInternal) {
+          return NextResponse.json(
+            { error: 'Insufficient permissions to set internal visibility' },
+            { status: 403 },
+          );
+        }
+      }
+      updateData.visibility = validatedData.visibility;
+    }
+
+    if (validatedData.priority !== undefined) {
+      updateData.priority = validatedData.priority;
+    }
+
+    if (validatedData.tags !== undefined) {
+      updateData.tags = validatedData.tags;
+    }
+
+    if (validatedData.follow_up_date !== undefined) {
+      updateData.follow_up_date = validatedData.follow_up_date;
+    }
+
+    if (validatedData.is_pinned !== undefined) {
+      updateData.is_pinned = validatedData.is_pinned;
+    }
+
+    // Update note
+    const { data: updatedNote, error: updateError } = await supabase
+      .from('client_notes')
+      .update(updateData)
+      .eq('id', params.id)
+      .select(
+        `
+        id,
+        client_id,
+        content,
+        note_type,
+        visibility,
+        tags,
+        created_at,
+        updated_at,
+        created_by,
+        created_by_name,
+        updated_by,
+        updated_by_name,
+        is_pinned,
+        follow_up_date,
+        priority
+      `,
+      )
+      .single();
+
+    if (updateError) {
+      throw updateError;
+    }
+
+    // Create activity record if content was updated
+    if (
+      validatedData.content !== undefined &&
+      validatedData.content !== existingNote.content
+    ) {
+      await supabase.from('client_activities').insert({
+        client_id: existingNote.client_id,
+        activity_type: 'note_updated',
+        activity_title: 'Note updated',
+        activity_description: `Note content was modified`,
+        performed_by: user.id,
+        performed_by_name: userName,
+        metadata: { note_id: params.id },
+      });
+    }
+
+    // Broadcast real-time update
+    await supabase.channel(`client_notes:${existingNote.client_id}`).send({
+      type: 'broadcast',
+      event: 'note_updated',
+      payload: updatedNote,
+    });
+
+    return NextResponse.json(updatedNote);
+  } catch (error) {
+    console.error('Error updating note:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Invalid note data',
+          details: error.errors.map((err) => ({
+            field: err.path.join('.'),
+            message: err.message,
+          })),
+        },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Failed to update note' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function DELETE(
+  request: NextRequest,
+  context: DynamicAPIRouteContext,
+) {
+  const params = await extractParams(context.params);
+
+  try {
+    // Rate limiting
+    const identifier = request.ip || 'anonymous';
+    const { success } = await noteRateLimit.check(10, identifier);
+
+    if (!success) {
+      return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
+    }
+
+    // Validate note ID format
+    if (!isValidUUID(params.id)) {
+      return NextResponse.json(
+        { error: 'Invalid note ID format' },
+        { status: 400 },
+      );
+    }
+
+    const supabase = await createClient();
+    const { data: user } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get the existing note
+    const { data: existingNote, error: fetchError } = await supabase
+      .from('client_notes')
+      .select('id, client_id, created_by, content')
+      .eq('id', params.id)
+      .single();
+
+    if (fetchError) {
+      if (fetchError.code === 'PGRST116') {
+        return NextResponse.json({ error: 'Note not found' }, { status: 404 });
+      }
+      throw fetchError;
+    }
+
+    // Check delete permissions
+    const hasDeletePermission = await rbacSystem.hasPermission(
+      user.id,
+      PERMISSIONS.WEDDING_DELETE,
+    );
+
+    if (!hasDeletePermission) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions' },
+        { status: 403 },
+      );
+    }
+
+    // Users can only delete their own notes (unless they're admin)
+    const isAdmin = await rbacSystem.hasPermission(
+      user.id,
+      PERMISSIONS.SYSTEM_ADMIN,
+    );
+    if (existingNote.created_by !== user.id && !isAdmin) {
+      return NextResponse.json(
+        { error: 'Can only delete your own notes' },
+        { status: 403 },
+      );
+    }
+
+    // Delete the note
+    const { error: deleteError } = await supabase
+      .from('client_notes')
+      .delete()
+      .eq('id', params.id);
+
+    if (deleteError) {
+      throw deleteError;
+    }
+
+    // Get user profile for activity log
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('first_name, last_name')
+      .eq('user_id', user.id)
+      .single();
+
+    const userName = userProfile
+      ? `${userProfile.first_name || ''} ${userProfile.last_name || ''}`.trim()
+      : user.email || 'Unknown User';
+
+    // Create activity record
+    await supabase.from('client_activities').insert({
+      client_id: existingNote.client_id,
+      activity_type: 'note_deleted',
+      activity_title: 'Note deleted',
+      activity_description: `Note was removed: "${existingNote.content.substring(0, 50)}${existingNote.content.length > 50 ? '...' : ''}"`,
+      performed_by: user.id,
+      performed_by_name: userName,
+      metadata: { deleted_note_id: params.id },
+    });
+
+    // Broadcast real-time update
+    await supabase.channel(`client_notes:${existingNote.client_id}`).send({
+      type: 'broadcast',
+      event: 'note_deleted',
+      payload: { id: params.id },
+    });
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error('Error deleting note:', error);
+    return NextResponse.json(
+      { error: 'Failed to delete note' },
+      { status: 500 },
+    );
+  }
+}

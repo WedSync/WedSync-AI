@@ -1,0 +1,357 @@
+import { SupplierScheduleEmailService } from '../supplier-schedule-service'
+import { EmailService } from '../service'
+import { SupplierContactInfo, SupplierScheduleEvent, ScheduleChangeDetails } from '@/types/supplier-communication'
+import { createClient } from '@/lib/supabase/server'
+
+// Mock dependencies
+jest.mock('../service')
+jest.mock('@/lib/supabase/server')
+jest.mock('@/lib/config/environment', () => ({
+  ENV_CONFIG: {
+    SUPABASE_URL: 'https://test.supabase.co',
+    SUPABASE_ANON_KEY: 'test-anon-key'
+  }
+}))
+
+// Mock data
+const mockSupplier: SupplierContactInfo = {
+  id: 'supplier-1',
+  name: 'John Doe',
+  email: 'john@photography.com',
+  phone: '+1234567890',
+  company_name: 'John Photography',
+  role: 'photographer',
+  organization_id: 'org-1'
+}
+
+const mockScheduleEvent: SupplierScheduleEvent = {
+  id: 'event-1',
+  title: 'Wedding Photography',
+  start_time: new Date('2024-06-15T10:00:00Z'),
+  end_time: new Date('2024-06-15T18:00:00Z'),
+  location: 'Grand Hotel',
+  event_type: 'wedding_day',
+  couple_names: 'Alice & Bob',
+  wedding_date: new Date('2024-06-15'),
+  supplier_id: 'supplier-1',
+  organization_id: 'org-1',
+  client_id: 'client-1',
+  status: 'scheduled'
+}
+
+const mockChangeDetails: ScheduleChangeDetails = {
+  change_type: 'time_update',
+  original_values: { start_time: '09:00', end_time: '17:00' },
+  new_values: { start_time: '10:00', end_time: '18:00' },
+  change_reason: 'Client requested later start time',
+  urgency_level: 'medium'
+}
+
+const mockSupabaseClient = {
+  from: jest.fn().mockReturnThis(),
+  select: jest.fn().mockReturnThis(),
+  insert: jest.fn().mockReturnThis(),
+  update: jest.fn().mockReturnThis(),
+  eq: jest.fn().mockReturnThis(),
+  single: jest.fn(),
+  data: null,
+  error: null
+}
+
+const mockEmailService = {
+  sendTemplateEmail: jest.fn(),
+  logEmailActivity: jest.fn()
+}
+
+describe('SupplierScheduleEmailService', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (createClient as jest.Mock).mockReturnValue(mockSupabaseClient);
+    (EmailService as jest.MockedClass<typeof EmailService>).mockImplementation(() => mockEmailService as any)
+  })
+
+  describe('sendScheduleUpdateNotification', () => {
+    it('should send schedule update email successfully', async () => {
+      mockEmailService.sendTemplateEmail.mockResolvedValue({
+        success: true,
+        messageId: 'msg-123'
+      })
+      mockSupabaseClient.single.mockResolvedValue({
+        data: { notification_preferences: { email_notifications: true } },
+        error: null
+      })
+
+      const result = await SupplierScheduleEmailService.sendScheduleUpdateNotification(
+        mockSupplier,
+        mockScheduleEvent,
+        mockChangeDetails,
+        'org-1'
+      )
+
+      expect(result.success).toBe(true)
+      expect(result.email_id).toBe('msg-123')
+      expect(mockEmailService.sendTemplateEmail).toHaveBeenCalledWith(
+        mockSupplier.email,
+        expect.objectContaining({
+          subject: expect.stringContaining('Schedule Update'),
+          template: 'supplier-schedule-update'
+        }),
+        expect.any(Object)
+      )
+    })
+
+    it('should handle email disabled in preferences', async () => {
+      mockSupabaseClient.single.mockResolvedValue({
+        data: { notification_preferences: { email_notifications: false } },
+        error: null
+      })
+
+      const result = await SupplierScheduleEmailService.sendScheduleUpdateNotification(
+        mockSupplier,
+        mockScheduleEvent,
+        mockChangeDetails,
+        'org-1'
+      )
+
+      expect(result.success).toBe(true)
+      expect(result.skipped).toBe(true)
+      expect(result.reason).toBe('Email notifications disabled')
+      expect(mockEmailService.sendTemplateEmail).not.toHaveBeenCalled()
+    })
+
+    it('should handle email service failure', async () => {
+      mockSupabaseClient.single.mockResolvedValue({
+        data: { notification_preferences: { email_notifications: true } },
+        error: null
+      })
+      mockEmailService.sendTemplateEmail.mockResolvedValue({
+        success: false,
+        error: 'Email service unavailable'
+      })
+
+      const result = await SupplierScheduleEmailService.sendScheduleUpdateNotification(
+        mockSupplier,
+        mockScheduleEvent,
+        mockChangeDetails,
+        'org-1'
+      )
+
+      expect(result.success).toBe(false)
+      expect(result.error).toBe('Email service unavailable')
+    })
+
+    it('should handle database error when fetching preferences', async () => {
+      mockSupabaseClient.single.mockResolvedValue({
+        data: null,
+        error: { message: 'Database connection failed' }
+      })
+
+      const result = await SupplierScheduleEmailService.sendScheduleUpdateNotification(
+        mockSupplier,
+        mockScheduleEvent,
+        mockChangeDetails,
+        'org-1'
+      )
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('Database connection failed')
+    })
+  })
+
+  describe('sendScheduleCancellationNotification', () => {
+    it('should send cancellation email with proper urgency', async () => {
+      mockEmailService.sendTemplateEmail.mockResolvedValue({
+        success: true,
+        messageId: 'msg-456'
+      })
+      mockSupabaseClient.single.mockResolvedValue({
+        data: { notification_preferences: { email_notifications: true } },
+        error: null
+      })
+
+      const cancellationReason = 'Wedding postponed due to weather'
+      
+      const result = await SupplierScheduleEmailService.sendScheduleCancellationNotification(
+        mockSupplier,
+        mockScheduleEvent,
+        cancellationReason,
+        'org-1'
+      )
+
+      expect(result.success).toBe(true)
+      expect(mockEmailService.sendTemplateEmail).toHaveBeenCalledWith(
+        mockSupplier.email,
+        expect.objectContaining({
+          subject: expect.stringContaining('CANCELLED'),
+          template: 'supplier-schedule-cancellation'
+        }),
+        expect.objectContaining({
+          cancellationReason
+        })
+      )
+    })
+  })
+
+  describe('sendScheduleReminderNotification', () => {
+    it('should send reminder email with event details', async () => {
+      mockEmailService.sendTemplateEmail.mockResolvedValue({
+        success: true,
+        messageId: 'msg-789'
+      })
+      mockSupabaseClient.single.mockResolvedValue({
+        data: { notification_preferences: { email_notifications: true } },
+        error: null
+      })
+
+      const result = await SupplierScheduleEmailService.sendScheduleReminderNotification(
+        mockSupplier,
+        mockScheduleEvent,
+        'org-1',
+        { hours_before: 24 }
+      )
+
+      expect(result.success).toBe(true)
+      expect(mockEmailService.sendTemplateEmail).toHaveBeenCalledWith(
+        mockSupplier.email,
+        expect.objectContaining({
+          subject: expect.stringContaining('Reminder'),
+          template: 'supplier-schedule-reminder'
+        }),
+        expect.objectContaining({
+          reminderType: '24 hours before'
+        })
+      )
+    })
+
+    it('should handle different reminder types', async () => {
+      mockEmailService.sendTemplateEmail.mockResolvedValue({
+        success: true,
+        messageId: 'msg-reminder'
+      })
+      mockSupabaseClient.single.mockResolvedValue({
+        data: { notification_preferences: { email_notifications: true } },
+        error: null
+      })
+
+      // Test 1 week before reminder
+      await SupplierScheduleEmailService.sendScheduleReminderNotification(
+        mockSupplier,
+        mockScheduleEvent,
+        'org-1',
+        { days_before: 7 }
+      )
+
+      expect(mockEmailService.sendTemplateEmail).toHaveBeenCalledWith(
+        mockSupplier.email,
+        expect.objectContaining({
+          template: 'supplier-schedule-reminder'
+        }),
+        expect.objectContaining({
+          reminderType: '7 days before'
+        })
+      )
+    })
+  })
+
+  describe('sendBulkScheduleNotifications', () => {
+    const mockSuppliers = [mockSupplier, { ...mockSupplier, id: 'supplier-2', email: 'jane@catering.com' }]
+    const mockEvents = [mockScheduleEvent, { ...mockScheduleEvent, id: 'event-2', supplier_id: 'supplier-2' }]
+
+    it('should send bulk notifications successfully', async () => {
+      mockEmailService.sendTemplateEmail
+        .mockResolvedValueOnce({ success: true, messageId: 'msg-1' })
+        .mockResolvedValueOnce({ success: true, messageId: 'msg-2' })
+      
+      mockSupabaseClient.single
+        .mockResolvedValueOnce({ data: { notification_preferences: { email_notifications: true } }, error: null })
+        .mockResolvedValueOnce({ data: { notification_preferences: { email_notifications: true } }, error: null })
+
+      const result = await SupplierScheduleEmailService.sendBulkScheduleNotifications(
+        mockSuppliers.map((supplier, index) => ({
+          supplier,
+          scheduleEvent: mockEvents[index],
+          changeDetails: mockChangeDetails
+        })),
+        'schedule_update',
+        'org-1'
+      )
+
+      expect(result.success).toBe(true)
+      expect(result.sent_count).toBe(2)
+      expect(result.failed_count).toBe(0)
+      expect(result.results).toHaveLength(2)
+      expect(mockEmailService.sendTemplateEmail).toHaveBeenCalledTimes(2)
+    })
+
+    it('should handle partial failures in bulk send', async () => {
+      mockEmailService.sendTemplateEmail
+        .mockResolvedValueOnce({ success: true, messageId: 'msg-1' })
+        .mockResolvedValueOnce({ success: false, error: 'Invalid email' })
+      
+      mockSupabaseClient.single
+        .mockResolvedValue({ data: { notification_preferences: { email_notifications: true } }, error: null })
+
+      const result = await SupplierScheduleEmailService.sendBulkScheduleNotifications(
+        mockSuppliers.map((supplier, index) => ({
+          supplier,
+          scheduleEvent: mockEvents[index],
+          changeDetails: mockChangeDetails
+        })),
+        'schedule_update',
+        'org-1'
+      )
+
+      expect(result.success).toBe(true)
+      expect(result.sent_count).toBe(1)
+      expect(result.failed_count).toBe(1)
+      expect(result.results[0].success).toBe(true)
+      expect(result.results[1].success).toBe(false)
+    })
+
+    it('should handle empty bulk notification list', async () => {
+      const result = await SupplierScheduleEmailService.sendBulkScheduleNotifications(
+        [],
+        'schedule_update',
+        'org-1'
+      )
+
+      expect(result.success).toBe(true)
+      expect(result.sent_count).toBe(0)
+      expect(result.failed_count).toBe(0)
+      expect(result.results).toHaveLength(0)
+      expect(mockEmailService.sendTemplateEmail).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('error handling', () => {
+    it('should handle network timeouts gracefully', async () => {
+      mockSupabaseClient.single.mockResolvedValue({
+        data: { notification_preferences: { email_notifications: true } },
+        error: null
+      })
+      mockEmailService.sendTemplateEmail.mockRejectedValue(new Error('Network timeout'))
+
+      const result = await SupplierScheduleEmailService.sendScheduleUpdateNotification(
+        mockSupplier,
+        mockScheduleEvent,
+        mockChangeDetails,
+        'org-1'
+      )
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('Network timeout')
+    })
+
+    it('should validate required parameters', async () => {
+      const result = await SupplierScheduleEmailService.sendScheduleUpdateNotification(
+        null as any,
+        mockScheduleEvent,
+        mockChangeDetails,
+        'org-1'
+      )
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('Supplier information is required')
+    })
+  })
+})

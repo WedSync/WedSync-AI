@@ -1,0 +1,92 @@
+/**
+ * Field Extraction Templates API Route
+ * WS-122: Automated Field Extraction from Documents
+ * GET/POST /api/field-extraction/templates
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { FieldExtractionService } from '@/lib/services/field-extraction-service';
+import { ExtractionTemplate } from '@/types/field-extraction';
+
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const documentType = searchParams.get('documentType');
+    const isActive = searchParams.get('active');
+    
+    const extractionService = new FieldExtractionService();
+    
+    const templates = await extractionService.getTemplates({
+      documentType: documentType || undefined,
+      isActive: isActive === 'true'
+    });
+    
+    return NextResponse.json({
+      success: true,
+      data: templates,
+      message: 'Templates retrieved successfully'
+    });
+
+  } catch (error: any) {
+    console.error('Get templates error:', error);
+    return NextResponse.json(
+      { 
+        success: false,
+        error: 'Internal server error',
+        message: error.message || 'Failed to get templates'
+      },
+      { status: 500 }
+    );
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const template: Partial<ExtractionTemplate> = await request.json();
+    
+    // Validate required fields
+    if (!template.name || !template.fields || template.fields.length === 0) {
+      return NextResponse.json(
+        { error: 'Template name and fields are required' },
+        { status: 400 }
+      );
+    }
+
+    // Validate field definitions
+    for (const field of template.fields) {
+      if (!field.name || !field.type) {
+        return NextResponse.json(
+          { error: 'Field name and type are required for all fields' },
+          { status: 400 }
+        );
+      }
+    }
+
+    const extractionService = new FieldExtractionService();
+    
+    const createdTemplate = await extractionService.createTemplate(template);
+    
+    console.log('Template created:', {
+      id: createdTemplate.id,
+      name: createdTemplate.name,
+      fieldCount: createdTemplate.fields.length
+    });
+    
+    return NextResponse.json({
+      success: true,
+      data: createdTemplate,
+      message: 'Template created successfully'
+    }, { status: 201 });
+
+  } catch (error: any) {
+    console.error('Create template error:', error);
+    return NextResponse.json(
+      { 
+        success: false,
+        error: 'Internal server error',
+        message: error.message || 'Failed to create template'
+      },
+      { status: 500 }
+    );
+  }
+}

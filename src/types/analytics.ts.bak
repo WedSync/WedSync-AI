@@ -1,0 +1,135 @@
+// Analytics Types for WedSync Vendor Performance System
+// Generated for WS-246 - Team A - Round 1
+
+export interface VendorPerformanceMetrics {
+  vendorId: string;
+  vendorName: string;
+  vendorType: 'photographer' | 'venue' | 'florist' | 'caterer' | 'dj' | 'videographer' | 'planner' | 'other';
+  responseTimeMinutes: number;
+  bookingSuccessRate: number; // 0-1
+  customerSatisfactionScore: number; // 0-5
+  totalBookings: number;
+  completedWeddings: number;
+  averageRating: number; // 0-5
+  reliabilityScore: number; // 0-100
+  communicationScore: number; // 0-100
+  qualityScore: number; // 0-100
+  totalRevenue: number;
+  repeatClientRate: number; // 0-1
+  onTimeDeliveryRate: number; // 0-1
+  lastActive: Date;
+  isActive: boolean;
+}
+
+export interface PerformanceTrend {
+  date: string;
+  value: number;
+  metric: string;
+}
+
+export interface BenchmarkData {
+  vendorId: string;
+  metric: keyof VendorPerformanceMetrics;
+  value: number;
+  industryAverage: number;
+  percentile: number;
+  trend: 'up' | 'down' | 'stable';
+}
+
+export interface ChartDataPoint {
+  x: string | number;
+  y: number;
+  label?: string;
+  color?: string;
+}
+
+export interface ChartConfig {
+  type: 'line' | 'bar' | 'pie' | 'doughnut' | 'area';
+  data: ChartDataPoint[];
+  title: string;
+  xAxisLabel?: string;
+  yAxisLabel?: string;
+  colors?: string[];
+}
+
+export interface AnalyticsFilters {
+  dateRange: {
+    start: Date;
+    end: Date;
+  };
+  vendorTypes: string[];
+  metrics: string[];
+  minBookings: number;
+  sortBy: keyof VendorPerformanceMetrics;
+  sortOrder: 'asc' | 'desc';
+  searchQuery: string;
+}
+
+export interface VendorComparison {
+  primaryVendor: VendorPerformanceMetrics;
+  comparisonVendors: VendorPerformanceMetrics[];
+  metrics: (keyof VendorPerformanceMetrics)[];
+}
+
+export interface AnalyticsDashboardData {
+  totalVendors: number;
+  activeVendors: number;
+  averageResponseTime: number;
+  averageBookingSuccessRate: number;
+  averageCustomerSatisfaction: number;
+  totalRevenue: number;
+  topPerformers: VendorPerformanceMetrics[];
+  recentActivity: ActivityData[];
+  performanceTrends: PerformanceTrend[];
+}
+
+export interface ActivityData {
+  id: string;
+  vendorId: string;
+  vendorName: string;
+  type: 'booking' | 'review' | 'communication' | 'delivery';
+  description: string;
+  timestamp: Date;
+  impact: 'positive' | 'negative' | 'neutral';
+}
+
+export interface ScoreCardConfig {
+  title: string;
+  value: number;
+  maxValue?: number;
+  format: 'percentage' | 'decimal' | 'currency' | 'number' | 'time';
+  trend?: {
+    direction: 'up' | 'down' | 'stable';
+    value: number;
+    period: string;
+  };
+  color: 'green' | 'yellow' | 'red' | 'blue' | 'purple';
+  icon?: string;
+}
+
+export interface WeddingSeasonData {
+  season: 'spring' | 'summer' | 'fall' | 'winter';
+  startMonth: number;
+  endMonth: number;
+  bookingMultiplier: number;
+  averageRevenue: number;
+  vendorDemand: Record<string, number>;
+}
+
+// Export utility types
+export type MetricKey = keyof VendorPerformanceMetrics;
+export type ChartType = ChartConfig['type'];
+export type VendorType = VendorPerformanceMetrics['vendorType'];
+export type TrendDirection = 'up' | 'down' | 'stable';
+
+// API Response types
+export interface AnalyticsApiResponse<T = any> {
+  success: boolean;
+  data: T;
+  error?: string;
+  timestamp: Date;
+}
+
+export type VendorPerformanceResponse = AnalyticsApiResponse<VendorPerformanceMetrics[]>;
+export type DashboardDataResponse = AnalyticsApiResponse<AnalyticsDashboardData>;
+export type BenchmarkResponse = AnalyticsApiResponse<BenchmarkData[]>;

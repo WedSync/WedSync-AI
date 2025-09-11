@@ -1,0 +1,577 @@
+/**
+ * WebSocket Channel Unsubscription API - WS-203 Team B Implementation
+ *
+ * Handles clean unsubscription from WebSocket channels with connection cleanup.
+ * Ensures proper resource cleanup and audit logging for wedding coordination workflows.
+ *
+ * Wedding Industry Features:
+ * - Graceful connection cleanup when suppliers finish wedding tasks
+ * - Audit trail for all subscription changes (liability protection)
+ * - Automatic cleanup of offline message queues
+ * - Wedding season resource optimization
+ * - Multi-wedding channel management for suppliers
+ */
+
+import { NextRequest } from 'next/server';
+import { z } from 'zod';
+import { withSecureValidation } from '@/lib/validation/middleware';
+import { createClient } from '@/lib/supabase/server';
+import { ChannelManager } from '@/lib/websocket/channel-manager';
+import { rateLimitService } from '@/lib/rate-limit';
+import { logger } from '@/lib/monitoring/logger';
+
+// ================================================
+// VALIDATION SCHEMA
+// ================================================
+
+const channelUnsubscriptionSchema = z.object({
+  channelName: z
+    .string()
+    .min(1, 'Channel name is required')
+    .regex(
+      /^(supplier|couple|collaboration|form|journey|admin):[a-zA-Z0-9_-]+:[a-f0-9-]{36}$/,
+      'Channel name must follow pattern: {scope}:{entity}:{entityId}',
+    ),
+  connectionId: z.string().min(1, 'Connection ID is required'),
+
+  // Cleanup options
+  cleanupOfflineQueue: z.boolean().optional().default(true),
+  transferToUser: z.string().uuid().optional(), // Transfer subscription to another user
+
+  // Reason for unsubscription (for audit logging)
+  reason: z
+    .enum([
+      'user_request',
+      'connection_lost',
+      'session_ended',
+      'wedding_completed',
+      'supplier_changed',
+      'permission_revoked',
+      'system_cleanup',
+    ])
+    .optional()
+    .default('user_request'),
+
+  // Additional context
+  metadata: z.record(z.any()).optional().default({}),
+});
+
+type ChannelUnsubscriptionRequest = z.infer<typeof channelUnsubscriptionSchema>;
+
+// ================================================
+// UNSUBSCRIPTION HANDLER
+// ================================================
+
+export const POST = withSecureValidation(
+  channelUnsubscriptionSchema,
+  async (request: NextRequest, validatedData: ChannelUnsubscriptionRequest) => {
+    const startTime = Date.now();
+
+    try {
+      // Get authenticated user
+      const supabase = createClient();
+      const {
+        data: { user },
+        error: authError,
+      } = await supabase.auth.getUser();
+
+      if (authError || !user) {
+        logger.warn('Unauthorized unsubscription attempt', {
+          channelName: validatedData.channelName,
+          connectionId: validatedData.connectionId,
+          ip: request.ip,
+        });
+
+        return Response.json(
+          {
+            error: 'UNAUTHORIZED',
+            message: 'Authentication required to unsubscribe from channels',
+            code: 'AUTH_REQUIRED',
+          },
+          { status: 401 },
+        );
+      }
+
+      // Rate limiting for unsubscription requests (generous limits)
+      const rateLimitKey = `websocket:unsubscribe:${user.id}`;
+      const allowed = await rateLimitService.checkLimit(
+        rateLimitKey,
+        200,
+        3600,
+      ); // 200 per hour
+
+      if (!allowed) {
+        logger.warn('Unsubscription rate limit exceeded', {
+          userId: user.id,
+          channelName: validatedData.channelName,
+          connectionId: validatedData.connectionId,
+        });
+
+        return Response.json(
+          {
+            error: 'RATE_LIMITED',
+            message: 'Unsubscription rate limit exceeded. Try again later.',
+            code: 'RATE_LIMIT_EXCEEDED',
+            retryAfter: 3600,
+          },
+          { status: 429 },
+        );
+      }
+
+      // Get user profile
+      const { data: userProfile, error: profileError } = await supabase
+        .from('user_profiles')
+        .select('*')
+        .eq('user_id', user.id)
+        .single();
+
+      if (profileError || !userProfile) {
+        logger.error('Failed to get user profile for unsubscription', {
+          error: profileError?.message,
+          userId: user.id,
+          channelName: validatedData.channelName,
+        });
+
+        return Response.json(
+          {
+            error: 'PROFILE_ERROR',
+            message: 'Unable to validate user permissions',
+            code: 'PROFILE_FETCH_FAILED',
+          },
+          { status: 400 },
+        );
+      }
+
+      // Verify the subscription exists and belongs to the user
+      const { data: subscription, error: subscriptionError } = await supabase
+        .from('channel_subscriptions')
+        .select('*')
+        .eq('user_id', user.id)
+        .eq('connection_id', validatedData.connectionId)
+        .eq('active', true)
+        .single();
+
+      if (subscriptionError || !subscription) {
+        logger.warn('Subscription not found for unsubscription', {
+          userId: user.id,
+          channelName: validatedData.channelName,
+          connectionId: validatedData.connectionId,
+          subscriptionError: subscriptionError?.message,
+        });
+
+        return Response.json(
+          {
+            error: 'SUBSCRIPTION_NOT_FOUND',
+            message:
+              'Active subscription not found for this channel and connection',
+            code: 'SUBSCRIPTION_NOT_FOUND',
+            channelName: validatedData.channelName,
+            connectionId: validatedData.connectionId,
+          },
+          { status: 404 },
+        );
+      }
+
+      // Get channel info for logging
+      const { data: channelInfo, error: channelError } = await supabase
+        .from('websocket_channels')
+        .select('*')
+        .eq('channel_name', validatedData.channelName)
+        .single();
+
+      if (channelError || !channelInfo) {
+        logger.warn('Channel not found during unsubscription', {
+          channelName: validatedData.channelName,
+          channelError: channelError?.message,
+        });
+      }
+
+      // Handle subscription transfer if requested
+      if (validatedData.transferToUser) {
+        const transferResult = await handleSubscriptionTransfer(
+          subscription,
+          validatedData.transferToUser,
+          user.id,
+          supabase,
+        );
+
+        if (!transferResult.success) {
+          return Response.json(
+            {
+              error: 'TRANSFER_FAILED',
+              message: transferResult.error,
+              code: 'SUBSCRIPTION_TRANSFER_FAILED',
+              transferToUser: validatedData.transferToUser,
+            },
+            { status: 400 },
+          );
+        }
+      }
+
+      // Initialize Channel Manager
+      const channelManager = new ChannelManager({
+        supabaseClient: supabase,
+        maxConnectionsPerUser: 50,
+        messageRateLimit: 100,
+        enableMetrics: true,
+      });
+
+      // Unsubscribe from channel
+      await channelManager.unsubscribeFromChannel(
+        validatedData.channelName,
+        user.id,
+        validatedData.connectionId,
+      );
+
+      // Cleanup offline message queue if requested
+      let queueCleanupResult = null;
+      if (validatedData.cleanupOfflineQueue) {
+        queueCleanupResult = await cleanupOfflineMessageQueue(
+          user.id,
+          validatedData.channelName,
+          supabase,
+        );
+      }
+
+      // Log unsubscription with detailed audit trail
+      await logUnsubscriptionAudit(
+        subscription,
+        channelInfo,
+        userProfile,
+        validatedData,
+        request,
+        supabase,
+      );
+
+      const latency = Date.now() - startTime;
+
+      // Success logging with wedding context
+      logger.info('WebSocket channel unsubscription successful', {
+        subscriptionId: subscription.id,
+        channelName: validatedData.channelName,
+        channelId: subscription.channel_id,
+        userId: user.id,
+        connectionId: validatedData.connectionId,
+        reason: validatedData.reason,
+        organizationId: userProfile.organization_id,
+        weddingContext: {
+          weddingId: channelInfo?.wedding_id,
+          supplierId: channelInfo?.supplier_id,
+          coupleId: channelInfo?.couple_id,
+        },
+        cleanup: {
+          offlineQueue: queueCleanupResult?.cleaned || 0,
+          transferred: !!validatedData.transferToUser,
+        },
+        latency: `${latency}ms`,
+        performance:
+          latency < 200
+            ? 'excellent'
+            : latency < 500
+              ? 'good'
+              : 'needs_optimization',
+      });
+
+      // Return unsubscription confirmation
+      return Response.json(
+        {
+          success: true,
+          unsubscription: {
+            channelName: validatedData.channelName,
+            userId: user.id,
+            connectionId: validatedData.connectionId,
+            unsubscribedAt: new Date().toISOString(),
+            reason: validatedData.reason,
+            subscriptionDuration: subscription.subscribed_at
+              ? Math.round(
+                  (Date.now() -
+                    new Date(subscription.subscribed_at).getTime()) /
+                    1000,
+                ) + 's'
+              : undefined,
+          },
+          cleanup: {
+            offlineQueueCleaned: validatedData.cleanupOfflineQueue,
+            messagesRemoved: queueCleanupResult?.cleaned || 0,
+            transferredTo: validatedData.transferToUser || null,
+          },
+          channel: channelInfo
+            ? {
+                id: channelInfo.id,
+                name: channelInfo.channel_name,
+                scope: channelInfo.scope,
+                entity: channelInfo.entity,
+                weddingId: channelInfo.wedding_id,
+                supplierId: channelInfo.supplier_id,
+                coupleId: channelInfo.couple_id,
+              }
+            : null,
+          performance: {
+            latency: `${latency}ms`,
+            target: '<200ms',
+          },
+        },
+        {
+          status: 200,
+          headers: {
+            'X-Channel-Name': validatedData.channelName,
+            'X-Unsubscription-Reason': validatedData.reason,
+            'X-Performance-Latency': `${latency}ms`,
+          },
+        },
+      );
+    } catch (error) {
+      const latency = Date.now() - startTime;
+
+      logger.error('WebSocket channel unsubscription failed', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+        stack: error instanceof Error ? error.stack : undefined,
+        channelName: validatedData.channelName,
+        connectionId: validatedData.connectionId,
+        reason: validatedData.reason,
+        latency: `${latency}ms`,
+        requestData: validatedData,
+      });
+
+      return Response.json(
+        {
+          error: 'UNSUBSCRIPTION_FAILED',
+          message: 'Failed to unsubscribe from channel',
+          code: 'UNSUBSCRIPTION_ERROR',
+          channelName: validatedData.channelName,
+          connectionId: validatedData.connectionId,
+          details: process.env.NODE_ENV === 'development' ? error : undefined,
+        },
+        { status: 500 },
+      );
+    }
+  },
+);
+
+// ================================================
+// HELPER FUNCTIONS
+// ================================================
+
+/**
+ * Handle subscription transfer to another user
+ */
+async function handleSubscriptionTransfer(
+  subscription: any,
+  transferToUserId: string,
+  currentUserId: string,
+  supabase: any,
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    // Validate transfer recipient exists and has permission
+    const { data: recipientProfile, error: recipientError } = await supabase
+      .from('user_profiles')
+      .select('*')
+      .eq('user_id', transferToUserId)
+      .single();
+
+    if (recipientError || !recipientProfile) {
+      return {
+        success: false,
+        error: 'Transfer recipient not found or invalid',
+      };
+    }
+
+    // Check if recipient has permission to access the channel
+    const { data: hasPermission, error: permissionError } = await supabase.rpc(
+      'validate_websocket_channel_permission',
+      {
+        user_uuid: transferToUserId,
+        channel_name_param: subscription.channel_name,
+        operation_type: 'subscribe',
+      },
+    );
+
+    if (permissionError || !hasPermission) {
+      return {
+        success: false,
+        error:
+          'Transfer recipient does not have permission to access this channel',
+      };
+    }
+
+    // Create new subscription for recipient
+    const { error: transferError } = await supabase
+      .from('channel_subscriptions')
+      .insert({
+        channel_id: subscription.channel_id,
+        user_id: transferToUserId,
+        connection_id: `transferred-${subscription.connection_id}`,
+        subscription_metadata: {
+          ...subscription.subscription_metadata,
+          transferredFrom: currentUserId,
+          transferredAt: new Date().toISOString(),
+          originalSubscription: subscription.id,
+        },
+      });
+
+    if (transferError) {
+      logger.error('Failed to create transferred subscription', {
+        error: transferError.message,
+        fromUserId: currentUserId,
+        toUserId: transferToUserId,
+        subscriptionId: subscription.id,
+      });
+      return {
+        success: false,
+        error: 'Failed to create transferred subscription',
+      };
+    }
+
+    logger.info('Subscription transferred successfully', {
+      originalSubscriptionId: subscription.id,
+      fromUserId: currentUserId,
+      toUserId: transferToUserId,
+      channelId: subscription.channel_id,
+    });
+
+    return { success: true };
+  } catch (error) {
+    logger.error('Subscription transfer failed', {
+      error: error instanceof Error ? error.message : error,
+      fromUserId: currentUserId,
+      toUserId: transferToUserId,
+      subscriptionId: subscription.id,
+    });
+    return { success: false, error: 'Subscription transfer failed' };
+  }
+}
+
+/**
+ * Cleanup offline message queue for user
+ */
+async function cleanupOfflineMessageQueue(
+  userId: string,
+  channelName: string,
+  supabase: any,
+): Promise<{ cleaned: number; error?: string }> {
+  try {
+    // Get channel ID
+    const { data: channel, error: channelError } = await supabase
+      .from('websocket_channels')
+      .select('id')
+      .eq('channel_name', channelName)
+      .single();
+
+    if (channelError || !channel) {
+      return { cleaned: 0, error: 'Channel not found for queue cleanup' };
+    }
+
+    // Remove undelivered messages for this user in this channel
+    const { data: deletedMessages, error: deleteError } = await supabase
+      .from('channel_message_queue')
+      .delete()
+      .eq('recipient_id', userId)
+      .eq('channel_id', channel.id)
+      .eq('delivered', false)
+      .select('id');
+
+    if (deleteError) {
+      logger.warn('Failed to cleanup offline message queue', {
+        error: deleteError.message,
+        userId,
+        channelName,
+        channelId: channel.id,
+      });
+      return { cleaned: 0, error: deleteError.message };
+    }
+
+    const cleanedCount = deletedMessages?.length || 0;
+
+    if (cleanedCount > 0) {
+      logger.info('Offline message queue cleaned up', {
+        userId,
+        channelName,
+        channelId: channel.id,
+        messagesRemoved: cleanedCount,
+      });
+    }
+
+    return { cleaned: cleanedCount };
+  } catch (error) {
+    logger.error('Queue cleanup failed', {
+      error: error instanceof Error ? error.message : error,
+      userId,
+      channelName,
+    });
+    return { cleaned: 0, error: 'Queue cleanup failed' };
+  }
+}
+
+/**
+ * Log unsubscription audit trail
+ */
+async function logUnsubscriptionAudit(
+  subscription: any,
+  channelInfo: any,
+  userProfile: any,
+  requestData: ChannelUnsubscriptionRequest,
+  request: NextRequest,
+  supabase: any,
+): Promise<void> {
+  try {
+    const auditEntry = {
+      action: 'websocket_channel_unsubscribe',
+      user_id: subscription.user_id,
+      resource_type: 'websocket_channel',
+      resource_id: subscription.channel_id,
+      details: {
+        subscriptionId: subscription.id,
+        channelName: requestData.channelName,
+        connectionId: requestData.connectionId,
+        reason: requestData.reason,
+        cleanupOfflineQueue: requestData.cleanupOfflineQueue,
+        transferToUser: requestData.transferToUser,
+        subscriptionDuration: subscription.subscribed_at
+          ? Math.round(
+              (Date.now() - new Date(subscription.subscribed_at).getTime()) /
+                1000,
+            )
+          : null,
+        userContext: {
+          organizationId: userProfile.organization_id,
+          role: userProfile.role,
+          fullName: `${userProfile.first_name} ${userProfile.last_name}`.trim(),
+        },
+        channelContext: channelInfo
+          ? {
+              scope: channelInfo.scope,
+              entity: channelInfo.entity,
+              weddingId: channelInfo.wedding_id,
+              supplierId: channelInfo.supplier_id,
+              coupleId: channelInfo.couple_id,
+              organizationId: channelInfo.organization_id,
+            }
+          : null,
+        requestMetadata: {
+          userAgent: request.headers.get('user-agent'),
+          ipAddress: request.ip,
+          ...requestData.metadata,
+        },
+      },
+      status: 'success',
+      created_at: new Date().toISOString(),
+    };
+
+    // Insert audit log (using admin_audit_logs or create specific websocket_audit_logs table)
+    const { error: auditError } = await supabase
+      .from('admin_audit_logs')
+      .insert(auditEntry);
+
+    if (auditError) {
+      logger.warn('Failed to log unsubscription audit entry', {
+        error: auditError.message,
+        subscriptionId: subscription.id,
+      });
+    }
+  } catch (error) {
+    logger.error('Audit logging failed for unsubscription', {
+      error: error instanceof Error ? error.message : error,
+      subscriptionId: subscription.id,
+    });
+  }
+}

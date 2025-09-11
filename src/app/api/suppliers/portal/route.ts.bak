@@ -1,0 +1,644 @@
+// WS-161: Supplier Portal API
+import { NextRequest, NextResponse } from 'next/server'
+import { SupplierAuthService, SupplierRegistrationData } from '@/lib/auth/supplier-auth-service'
+import { SupplierPortalService } from '@/lib/portal/supplier-portal-service'
+import { createClient } from '@/lib/supabase/server'
+import { z } from 'zod'
+
+const SupplierRegistrationSchema = z.object({
+  supplier_id: z.string(),
+  email: z.string().email(),
+  password: z.string().min(8).max(128),
+  phone: z.string().optional(),
+  emergency_contact: z.object({
+    name: z.string(),
+    phone: z.string(),
+    relationship: z.string()
+  }).optional(),
+  notification_preferences: z.object({
+    email_notifications: z.boolean().default(true),
+    sms_notifications: z.boolean().default(false),
+    push_notifications: z.boolean().default(false),
+    notification_frequency: z.enum(['immediate', 'daily', 'weekly']).default('immediate'),
+    notification_types: z.array(z.string()).default(['schedule_updates', 'messages', 'reminders'])
+  }).optional()
+})
+
+const SupplierLoginSchema = z.object({
+  email: z.string().email(),
+  password: z.string(),
+  device_info: z.object({
+    device_type: z.enum(['desktop', 'mobile', 'tablet']).optional(),
+    user_agent: z.string().optional(),
+    location: z.string().optional()
+  }).optional()
+})
+
+const ProfileUpdateSchema = z.object({
+  profile_picture: z.string().url().optional(),
+  phone: z.string().optional(),
+  address: z.string().optional(),
+  emergency_contact: z.object({
+    name: z.string(),
+    phone: z.string(),
+    relationship: z.string()
+  }).optional(),
+  notification_preferences: z.object({
+    email_notifications: z.boolean().optional(),
+    sms_notifications: z.boolean().optional(),
+    push_notifications: z.boolean().optional(),
+    notification_frequency: z.enum(['immediate', 'daily', 'weekly']).optional(),
+    notification_types: z.array(z.string()).optional()
+  }).optional()
+})
+
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json()
+    const url = new URL(request.url)
+    const action = url.searchParams.get('action') || 'login'
+    
+    // Get client info for authentication
+    const clientInfo = {
+      ip_address: request.headers.get('x-forwarded-for') || 
+                   request.headers.get('x-real-ip') || 
+                   'unknown',
+      user_agent: request.headers.get('user-agent') || 'unknown'
+    }
+
+    switch (action) {
+      case 'register':
+        return await handleSupplierRegistration(body, clientInfo)
+      
+      case 'login':
+        return await handleSupplierLogin(body, clientInfo)
+      
+      case 'logout':
+        return await handleSupplierLogout(request)
+      
+      case 'verify_email':
+        return await handleEmailVerification(body)
+      
+      case 'forgot_password':
+        return await handleForgotPassword(body)
+      
+      case 'reset_password':
+        return await handleResetPassword(body)
+      
+      default:
+        return NextResponse.json(
+          { error: 'Invalid action' },
+          { status: 400 }
+        )
+    }
+
+  } catch (error) {
+    console.error('Supplier Portal API Error:', error)
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}
+
+async function handleSupplierRegistration(body: any, clientInfo: any) {
+  try {
+    const validatedData = SupplierRegistrationSchema.parse(body)
+    const { organization_id } = body
+
+    if (!organization_id) {
+      return NextResponse.json(
+        { error: 'Organization ID required' },
+        { status: 400 }
+      )
+    }
+
+    const result = await SupplierAuthService.registerSupplier(
+      validatedData,
+      organization_id
+    )
+
+    if (!result.success) {
+      return NextResponse.json(
+        { error: result.error || 'Registration failed' },
+        { status: 400 }
+      )
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: 'Registration successful. Please check your email to verify your account.',
+      user_id: result.user_id
+    })
+
+  } catch (validationError) {
+    return NextResponse.json(
+      { error: 'Invalid registration data', details: validationError },
+      { status: 400 }
+    )
+  }
+}
+
+async function handleSupplierLogin(body: any, clientInfo: any) {
+  try {
+    const validatedData = SupplierLoginSchema.parse(body)
+    
+    const metadata = {
+      ip_address: clientInfo.ip_address,
+      user_agent: clientInfo.user_agent,
+      device_type: validatedData.device_info?.device_type || 'desktop'
+    }
+
+    const result = await SupplierAuthService.authenticateSupplier(
+      validatedData.email,
+      validatedData.password,
+      metadata
+    )
+
+    if (!result.success) {
+      const statusCode = result.requires_2fa ? 202 : 401
+      return NextResponse.json({
+        success: false,
+        error: result.error,
+        requires_2fa: result.requires_2fa,
+        two_fa_token: result.two_fa_token
+      }, { status: statusCode })
+    }
+
+    // Set secure HTTP-only cookie for session
+    const response = NextResponse.json({
+      success: true,
+      message: 'Login successful',
+      user: {
+        id: result.user!.id,
+        name: result.user!.name,
+        email: result.user!.email,
+        company_name: result.user!.company_name,
+        role: result.user!.role,
+        permissions: result.user!.permissions
+      },
+      session: {
+        id: result.session!.id,
+        expires_at: result.session!.expires_at
+      },
+      access_token: result.access_token
+    })
+
+    // Set session cookie
+    response.cookies.set('supplier_session', result.session!.session_token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 24 * 60 * 60, // 24 hours
+      path: '/api/suppliers/portal'
+    })
+
+    return response
+
+  } catch (validationError) {
+    return NextResponse.json(
+      { error: 'Invalid login data', details: validationError },
+      { status: 400 }
+    )
+  }
+}
+
+async function handleSupplierLogout(request: NextRequest) {
+  try {
+    const sessionToken = request.cookies.get('supplier_session')?.value
+
+    if (sessionToken) {
+      await SupplierAuthService.logoutSupplier(sessionToken)
+    }
+
+    const response = NextResponse.json({
+      success: true,
+      message: 'Logged out successfully'
+    })
+
+    // Clear session cookie
+    response.cookies.delete('supplier_session')
+
+    return response
+
+  } catch (error) {
+    return NextResponse.json(
+      { error: 'Logout failed' },
+      { status: 500 }
+    )
+  }
+}
+
+async function handleEmailVerification(body: any) {
+  try {
+    const { token } = body
+
+    if (!token) {
+      return NextResponse.json(
+        { error: 'Verification token required' },
+        { status: 400 }
+      )
+    }
+
+    const result = await SupplierAuthService.verifyEmail(token)
+
+    if (!result.success) {
+      return NextResponse.json(
+        { error: result.error || 'Email verification failed' },
+        { status: 400 }
+      )
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: 'Email verified successfully. You can now log in to your account.'
+    })
+
+  } catch (error) {
+    return NextResponse.json(
+      { error: 'Email verification failed' },
+      { status: 500 }
+    )
+  }
+}
+
+async function handleForgotPassword(body: any) {
+  try {
+    const { email } = body
+
+    if (!email) {
+      return NextResponse.json(
+        { error: 'Email address required' },
+        { status: 400 }
+      )
+    }
+
+    const result = await SupplierAuthService.requestPasswordReset(email)
+
+    if (!result.success) {
+      return NextResponse.json(
+        { error: result.error || 'Password reset request failed' },
+        { status: 400 }
+      )
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: 'If an account with that email exists, you will receive password reset instructions.'
+    })
+
+  } catch (error) {
+    return NextResponse.json(
+      { error: 'Password reset request failed' },
+      { status: 500 }
+    )
+  }
+}
+
+async function handleResetPassword(body: any) {
+  try {
+    const { token, new_password } = body
+
+    if (!token || !new_password) {
+      return NextResponse.json(
+        { error: 'Reset token and new password required' },
+        { status: 400 }
+      )
+    }
+
+    // Implementation would verify token and update password
+    // This is a placeholder for the actual password reset logic
+
+    return NextResponse.json({
+      success: true,
+      message: 'Password reset successfully. You can now log in with your new password.'
+    })
+
+  } catch (error) {
+    return NextResponse.json(
+      { error: 'Password reset failed' },
+      { status: 500 }
+    )
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    // Authenticate the request
+    const authResult = await authenticateSupplierRequest(request)
+    if (!authResult.success) {
+      return NextResponse.json(
+        { error: authResult.error },
+        { status: authResult.status || 401 }
+      )
+    }
+
+    const { user } = authResult
+    const url = new URL(request.url)
+    const action = url.searchParams.get('action') || 'dashboard'
+
+    switch (action) {
+      case 'dashboard':
+        return await handleGetDashboard(user.supplier_id, user.organization_id)
+      
+      case 'schedule':
+        const month = url.searchParams.get('month')
+        const year = url.searchParams.get('year')
+        return await handleGetSchedule(
+          user.supplier_id, 
+          user.organization_id,
+          month ? parseInt(month) : undefined,
+          year ? parseInt(year) : undefined
+        )
+      
+      case 'communications':
+        return await handleGetCommunications(user.supplier_id, user.organization_id)
+      
+      case 'profile':
+        return await handleGetProfile(user.supplier_id, user.organization_id)
+      
+      default:
+        return NextResponse.json(
+          { error: 'Invalid action' },
+          { status: 400 }
+        )
+    }
+
+  } catch (error) {
+    console.error('Supplier Portal API Error:', error)
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}
+
+async function handleGetDashboard(supplierId: string, organizationId: string) {
+  try {
+    const dashboard = await SupplierPortalService.getSupplierDashboard(
+      supplierId,
+      organizationId
+    )
+
+    return NextResponse.json({
+      success: true,
+      dashboard
+    })
+
+  } catch (error) {
+    return NextResponse.json(
+      { error: 'Failed to load dashboard' },
+      { status: 500 }
+    )
+  }
+}
+
+async function handleGetSchedule(
+  supplierId: string, 
+  organizationId: string,
+  month?: number,
+  year?: number
+) {
+  try {
+    const schedule = await SupplierPortalService.getSupplierScheduleOverview(
+      supplierId,
+      organizationId,
+      month,
+      year
+    )
+
+    return NextResponse.json({
+      success: true,
+      schedule
+    })
+
+  } catch (error) {
+    return NextResponse.json(
+      { error: 'Failed to load schedule' },
+      { status: 500 }
+    )
+  }
+}
+
+async function handleGetCommunications(supplierId: string, organizationId: string) {
+  try {
+    const communications = await SupplierPortalService.getSupplierCommunicationHub(
+      supplierId,
+      organizationId
+    )
+
+    return NextResponse.json({
+      success: true,
+      communications
+    })
+
+  } catch (error) {
+    return NextResponse.json(
+      { error: 'Failed to load communications' },
+      { status: 500 }
+    )
+  }
+}
+
+async function handleGetProfile(supplierId: string, organizationId: string) {
+  try {
+    const supabase = await createClient()
+
+    const { data: profile, error } = await supabase
+      .from('supplier_portal_users')
+      .select(`
+        id, supplier_id, email, name, company_name, role,
+        phone, address, profile_picture, emergency_contact,
+        notification_preferences, created_at, updated_at,
+        email_verified, phone_verified
+      `)
+      .eq('supplier_id', supplierId)
+      .eq('organization_id', organizationId)
+      .single()
+
+    if (error) {
+      throw error
+    }
+
+    return NextResponse.json({
+      success: true,
+      profile: {
+        ...profile,
+        created_at: new Date(profile.created_at),
+        updated_at: new Date(profile.updated_at)
+      }
+    })
+
+  } catch (error) {
+    return NextResponse.json(
+      { error: 'Failed to load profile' },
+      { status: 500 }
+    )
+  }
+}
+
+export async function PUT(request: NextRequest) {
+  try {
+    // Authenticate the request
+    const authResult = await authenticateSupplierRequest(request)
+    if (!authResult.success) {
+      return NextResponse.json(
+        { error: authResult.error },
+        { status: authResult.status || 401 }
+      )
+    }
+
+    const { user } = authResult
+    const body = await request.json()
+    const url = new URL(request.url)
+    const action = url.searchParams.get('action') || 'update_profile'
+
+    switch (action) {
+      case 'update_profile':
+        return await handleUpdateProfile(
+          user.supplier_id,
+          user.organization_id,
+          body
+        )
+      
+      case 'mark_notifications_read':
+        return await handleMarkNotificationsRead(
+          user.supplier_id,
+          user.organization_id,
+          body
+        )
+      
+      default:
+        return NextResponse.json(
+          { error: 'Invalid action' },
+          { status: 400 }
+        )
+    }
+
+  } catch (error) {
+    console.error('Supplier Portal API Error:', error)
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}
+
+async function handleUpdateProfile(
+  supplierId: string,
+  organizationId: string,
+  body: any
+) {
+  try {
+    const validatedData = ProfileUpdateSchema.parse(body)
+
+    const result = await SupplierPortalService.updateSupplierProfile(
+      supplierId,
+      organizationId,
+      validatedData
+    )
+
+    if (!result.success) {
+      return NextResponse.json(
+        { error: result.error || 'Profile update failed' },
+        { status: 400 }
+      )
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: 'Profile updated successfully'
+    })
+
+  } catch (validationError) {
+    return NextResponse.json(
+      { error: 'Invalid profile data', details: validationError },
+      { status: 400 }
+    )
+  }
+}
+
+async function handleMarkNotificationsRead(
+  supplierId: string,
+  organizationId: string,
+  body: any
+) {
+  try {
+    const { notification_ids } = body
+
+    if (!Array.isArray(notification_ids)) {
+      return NextResponse.json(
+        { error: 'notification_ids must be an array' },
+        { status: 400 }
+      )
+    }
+
+    const result = await SupplierPortalService.markNotificationsAsRead(
+      supplierId,
+      organizationId,
+      notification_ids
+    )
+
+    if (!result.success) {
+      return NextResponse.json(
+        { error: result.error || 'Failed to update notifications' },
+        { status: 400 }
+      )
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: 'Notifications marked as read'
+    })
+
+  } catch (error) {
+    return NextResponse.json(
+      { error: 'Failed to update notifications' },
+      { status: 500 }
+    )
+  }
+}
+
+// Helper function to authenticate supplier requests
+async function authenticateSupplierRequest(request: NextRequest): Promise<{
+  success: boolean
+  user?: any
+  error?: string
+  status?: number
+}> {
+  try {
+    const sessionToken = request.cookies.get('supplier_session')?.value ||
+                        request.headers.get('authorization')?.replace('Bearer ', '')
+
+    if (!sessionToken) {
+      return {
+        success: false,
+        error: 'Authentication required',
+        status: 401
+      }
+    }
+
+    const result = await SupplierAuthService.validateSession(sessionToken)
+
+    if (!result.valid) {
+      return {
+        success: false,
+        error: result.error || 'Invalid session',
+        status: 401
+      }
+    }
+
+    return {
+      success: true,
+      user: result.user
+    }
+
+  } catch (error) {
+    console.error('Authentication error:', error)
+    return {
+      success: false,
+      error: 'Authentication failed',
+      status: 500
+    }
+  }
+}

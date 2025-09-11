@@ -1,0 +1,64 @@
+/**
+ * GDPR Data Subject Request Submission API
+ * POST /api/gdpr/subject-request/submit
+ * WS-149: Handles data subject requests (access, erasure, portability, etc.)
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { gdprService } from '@/lib/services/gdpr-compliance-service';
+import { z } from 'zod';
+
+const DataSubjectRequestSchema = z.object({
+  request_type: z.enum([
+    'access',
+    'rectification',
+    'erasure',
+    'portability',
+    'restrict_processing',
+    'object_to_processing',
+    'withdraw_consent'
+  ]),
+  data_subject_email: z.string().email(),
+  data_subject_name: z.string(),
+  identity_verification: z.object({
+    method: z.enum(['email_verification', 'document_upload', 'sms_verification']),
+    evidence: z.record(z.any())
+  }),
+  request_details: z.record(z.any()),
+  preferred_format: z.enum(['json', 'csv', 'pdf']).optional()
+});
+
+export async function POST(request: NextRequest) {
+  try {
+    // Parse and validate request body
+    const body = await request.json();
+    const validatedData = DataSubjectRequestSchema.parse(body);
+
+    // Submit the data subject request
+    const result = await gdprService.submitDataSubjectRequest(validatedData);
+
+    // Return success response with request details
+    return NextResponse.json({
+      success: true,
+      request_id: result.request.request_id,
+      status: result.request.status,
+      due_date: result.request.due_date,
+      message: `Your ${validatedData.request_type} request has been submitted successfully. Reference: ${result.request.request_id}`
+    });
+    
+  } catch (error) {
+    console.error('Error submitting data subject request:', error);
+    
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid request data', details: error.errors },
+        { status: 400 }
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Failed to submit data subject request' },
+      { status: 500 }
+    );
+  }
+}

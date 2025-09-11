@@ -1,0 +1,78 @@
+'use client';
+
+import React, { useState } from 'react';
+import { SMSConfigurationWizard } from '@/components/sms/SMSConfigurationWizard';
+import { SMSPerformanceDashboard } from '@/components/sms/SMSPerformanceDashboard';
+
+export default function TestSMSPage() {
+  const [activeTab, setActiveTab] = useState<'config' | 'dashboard'>('config');
+  const [weddingId] = useState('test-wedding-123');
+
+  return (
+    <div className="min-h-screen bg-gray-50 p-8">
+      <div className="max-w-6xl mx-auto">
+        <div className="mb-8">
+          <h1 className="text-3xl font-bold text-gray-900 mb-4">
+            SMS Integration Test
+          </h1>
+
+          {/* Tab Navigation */}
+          <div className="border-b border-gray-200">
+            <nav className="-mb-px flex space-x-8" aria-label="Tabs">
+              <button
+                onClick={() => setActiveTab('config')}
+                className={`${
+                  activeTab === 'config'
+                    ? 'border-primary-500 text-primary-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                } whitespace-nowrap py-2 px-1 border-b-2 font-medium text-sm`}
+              >
+                SMS Configuration
+              </button>
+              <button
+                onClick={() => setActiveTab('dashboard')}
+                className={`${
+                  activeTab === 'dashboard'
+                    ? 'border-primary-500 text-primary-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                } whitespace-nowrap py-2 px-1 border-b-2 font-medium text-sm`}
+              >
+                Performance Dashboard
+              </button>
+            </nav>
+          </div>
+        </div>
+
+        {/* Tab Content */}
+        <div className="mt-8">
+          {activeTab === 'config' && (
+            <div>
+              <h2 className="text-xl font-semibold text-gray-900 mb-6">
+                SMS Configuration Wizard
+              </h2>
+              <SMSConfigurationWizard
+                weddingId={weddingId}
+                onComplete={(config) => {
+                  console.log('SMS Configuration completed:', config);
+                  alert('SMS Configuration completed successfully!');
+                }}
+              />
+            </div>
+          )}
+
+          {activeTab === 'dashboard' && (
+            <div>
+              <h2 className="text-xl font-semibold text-gray-900 mb-6">
+                SMS Performance Dashboard
+              </h2>
+              <SMSPerformanceDashboard
+                weddingId={weddingId}
+                refreshInterval={10000} // 10 seconds for testing
+              />
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

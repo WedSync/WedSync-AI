@@ -1,0 +1,481 @@
+import { createClient } from '@supabase/supabase-js';
+import { Database } from '../../types/database';
+
+export class TestDatabase {
+  private supabase;
+  private testSchema: string;
+
+  constructor() {
+    // Use test environment variables
+    this.supabase = createClient(
+      process.env.TEST_SUPABASE_URL!,
+      process.env.TEST_SUPABASE_SERVICE_ROLE_KEY!,
+    );
+    this.testSchema = process.env.TEST_DB_SCHEMA || 'test_middleware';
+  }
+
+  async initialize(): Promise<void> {
+    console.log('🔄 Initializing test database...');
+
+    try {
+      // Create test schema if it doesn't exist
+      await this.createTestSchema();
+
+      // Create test tables
+      await this.createTestTables();
+
+      console.log('✅ Test database initialization complete');
+    } catch (error) {
+      console.error('❌ Test database initialization failed:', error);
+      throw error;
+    }
+  }
+
+  private async createTestSchema(): Promise<void> {
+    const { error } = await this.supabase.rpc('create_test_schema', {
+      schema_name: this.testSchema,
+    });
+
+    if (error && !error.message.includes('already exists')) {
+      throw new Error(`Failed to create test schema: ${error.message}`);
+    }
+  }
+
+  private async createTestTables(): Promise<void> {
+    const tables = [
+      this.createCouplesTable(),
+      this.createSuppliersTable(),
+      this.createWeddingsTable(),
+      this.createBookingsTable(),
+      this.createTimelineEventsTable(),
+      this.createSessionsTable(),
+      this.createRateLimitsTable(),
+      this.createWebhookEventsTable(),
+    ];
+
+    await Promise.all(tables);
+  }
+
+  private async createCouplesTable(): Promise<void> {
+    const { error } = await this.supabase.rpc('exec', {
+      sql: `
+        CREATE TABLE IF NOT EXISTS ${this.testSchema}.couples (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          email TEXT UNIQUE NOT NULL,
+          wedding_date DATE,
+          status TEXT DEFAULT 'active',
+          created_at TIMESTAMP DEFAULT NOW(),
+          updated_at TIMESTAMP DEFAULT NOW()
+        );
+      `,
+    });
+
+    if (error) {
+      throw new Error(`Failed to create couples table: ${error.message}`);
+    }
+  }
+
+  private async createSuppliersTable(): Promise<void> {
+    const { error } = await this.supabase.rpc('exec', {
+      sql: `
+        CREATE TABLE IF NOT EXISTS ${this.testSchema}.suppliers (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          name TEXT NOT NULL,
+          category TEXT NOT NULL,
+          availability JSONB DEFAULT '{}',
+          created_at TIMESTAMP DEFAULT NOW(),
+          updated_at TIMESTAMP DEFAULT NOW()
+        );
+      `,
+    });
+
+    if (error) {
+      throw new Error(`Failed to create suppliers table: ${error.message}`);
+    }
+  }
+
+  private async createWeddingsTable(): Promise<void> {
+    const { error } = await this.supabase.rpc('exec', {
+      sql: `
+        CREATE TABLE IF NOT EXISTS ${this.testSchema}.weddings (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          couple_id UUID REFERENCES ${this.testSchema}.couples(id),
+          suppliers_booked TEXT[] DEFAULT '{}',
+          timeline JSONB DEFAULT '{}',
+          created_at TIMESTAMP DEFAULT NOW(),
+          updated_at TIMESTAMP DEFAULT NOW()
+        );
+      `,
+    });
+
+    if (error) {
+      throw new Error(`Failed to create weddings table: ${error.message}`);
+    }
+  }
+
+  private async createBookingsTable(): Promise<void> {
+    const { error } = await this.supabase.rpc('exec', {
+      sql: `
+        CREATE TABLE IF NOT EXISTS ${this.testSchema}.bookings (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          wedding_id UUID REFERENCES ${this.testSchema}.weddings(id),
+          supplier_id UUID REFERENCES ${this.testSchema}.suppliers(id),
+          status TEXT DEFAULT 'pending',
+          booking_date DATE,
+          created_at TIMESTAMP DEFAULT NOW(),
+          updated_at TIMESTAMP DEFAULT NOW()
+        );
+      `,
+    });
+
+    if (error) {
+      throw new Error(`Failed to create bookings table: ${error.message}`);
+    }
+  }
+
+  private async createTimelineEventsTable(): Promise<void> {
+    const { error } = await this.supabase.rpc('exec', {
+      sql: `
+        CREATE TABLE IF NOT EXISTS ${this.testSchema}.timeline_events (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          wedding_id UUID REFERENCES ${this.testSchema}.weddings(id),
+          event_name TEXT NOT NULL,
+          event_time TIMESTAMP,
+          event_type TEXT DEFAULT 'custom',
+          created_at TIMESTAMP DEFAULT NOW(),
+          updated_at TIMESTAMP DEFAULT NOW()
+        );
+      `,
+    });
+
+    if (error) {
+      throw new Error(
+        `Failed to create timeline_events table: ${error.message}`,
+      );
+    }
+  }
+
+  private async createSessionsTable(): Promise<void> {
+    const { error } = await this.supabase.rpc('exec', {
+      sql: `
+        CREATE TABLE IF NOT EXISTS ${this.testSchema}.sessions (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          session_id TEXT UNIQUE NOT NULL,
+          user_id UUID,
+          user_type TEXT,
+          wedding_id UUID,
+          permissions TEXT[],
+          expires_at TIMESTAMP,
+          created_at TIMESTAMP DEFAULT NOW()
+        );
+      `,
+    });
+
+    if (error) {
+      throw new Error(`Failed to create sessions table: ${error.message}`);
+    }
+  }
+
+  private async createRateLimitsTable(): Promise<void> {
+    const { error } = await this.supabase.rpc('exec', {
+      sql: `
+        CREATE TABLE IF NOT EXISTS ${this.testSchema}.rate_limits (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          user_id TEXT NOT NULL,
+          endpoint TEXT NOT NULL,
+          requests_count INTEGER DEFAULT 0,
+          window_start TIMESTAMP DEFAULT NOW(),
+          created_at TIMESTAMP DEFAULT NOW(),
+          UNIQUE(user_id, endpoint, window_start)
+        );
+      `,
+    });
+
+    if (error) {
+      throw new Error(`Failed to create rate_limits table: ${error.message}`);
+    }
+  }
+
+  private async createWebhookEventsTable(): Promise<void> {
+    const { error } = await this.supabase.rpc('exec', {
+      sql: `
+        CREATE TABLE IF NOT EXISTS ${this.testSchema}.webhook_events (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          event_id TEXT UNIQUE NOT NULL,
+          event_type TEXT NOT NULL,
+          wedding_id UUID,
+          payload JSONB,
+          processed BOOLEAN DEFAULT FALSE,
+          processed_at TIMESTAMP,
+          created_at TIMESTAMP DEFAULT NOW()
+        );
+      `,
+    });
+
+    if (error) {
+      throw new Error(
+        `Failed to create webhook_events table: ${error.message}`,
+      );
+    }
+  }
+
+  async seedData(weddingTestData: any): Promise<void> {
+    console.log('🌱 Seeding test data...');
+
+    try {
+      // Seed couples
+      for (const couple of weddingTestData.couples) {
+        const { error } = await this.supabase
+          .from(`${this.testSchema}.couples`)
+          .upsert({
+            id: couple.id,
+            email: couple.email,
+            wedding_date: couple.weddingDate,
+            status: couple.status,
+          });
+
+        if (error) {
+          console.warn(`Warning seeding couple ${couple.id}:`, error.message);
+        }
+      }
+
+      // Seed suppliers
+      for (const supplier of weddingTestData.suppliers) {
+        const { error } = await this.supabase
+          .from(`${this.testSchema}.suppliers`)
+          .upsert({
+            id: supplier.id,
+            name: supplier.name,
+            category: supplier.category,
+            availability: supplier.availability,
+          });
+
+        if (error) {
+          console.warn(
+            `Warning seeding supplier ${supplier.id}:`,
+            error.message,
+          );
+        }
+      }
+
+      // Seed weddings
+      for (const wedding of weddingTestData.weddings) {
+        const { error } = await this.supabase
+          .from(`${this.testSchema}.weddings`)
+          .upsert({
+            id: wedding.id,
+            couple_id: wedding.coupleId,
+            suppliers_booked: wedding.suppliersBooked,
+            timeline: wedding.timeline,
+          });
+
+        if (error) {
+          console.warn(`Warning seeding wedding ${wedding.id}:`, error.message);
+        }
+      }
+
+      console.log('✅ Test data seeding complete');
+    } catch (error) {
+      console.error('❌ Test data seeding failed:', error);
+      throw error;
+    }
+  }
+
+  async cleanup(): Promise<void> {
+    console.log('🧹 Cleaning up test database...');
+
+    try {
+      // Drop all test tables
+      const tables = [
+        'webhook_events',
+        'rate_limits',
+        'sessions',
+        'timeline_events',
+        'bookings',
+        'weddings',
+        'suppliers',
+        'couples',
+      ];
+
+      for (const table of tables) {
+        const { error } = await this.supabase.rpc('exec', {
+          sql: `DROP TABLE IF EXISTS ${this.testSchema}.${table} CASCADE;`,
+        });
+
+        if (error) {
+          console.warn(`Warning dropping table ${table}:`, error.message);
+        }
+      }
+
+      // Drop test schema
+      const { error } = await this.supabase.rpc('exec', {
+        sql: `DROP SCHEMA IF EXISTS ${this.testSchema} CASCADE;`,
+      });
+
+      if (error) {
+        console.warn(
+          `Warning dropping schema ${this.testSchema}:`,
+          error.message,
+        );
+      }
+
+      console.log('✅ Test database cleanup complete');
+    } catch (error) {
+      console.error('❌ Test database cleanup failed:', error);
+      // Don't throw - cleanup failures shouldn't break tests
+    }
+  }
+
+  // Helper methods for test data access
+  async getCoupleById(id: string): Promise<any> {
+    const { data, error } = await this.supabase
+      .from(`${this.testSchema}.couples`)
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (error) {
+      throw new Error(`Failed to get couple ${id}: ${error.message}`);
+    }
+
+    return data;
+  }
+
+  async getSupplierById(id: string): Promise<any> {
+    const { data, error } = await this.supabase
+      .from(`${this.testSchema}.suppliers`)
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (error) {
+      throw new Error(`Failed to get supplier ${id}: ${error.message}`);
+    }
+
+    return data;
+  }
+
+  async getWeddingById(id: string): Promise<any> {
+    const { data, error } = await this.supabase
+      .from(`${this.testSchema}.weddings`)
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (error) {
+      throw new Error(`Failed to get wedding ${id}: ${error.message}`);
+    }
+
+    return data;
+  }
+
+  async createWebhookEvent(eventData: {
+    eventId: string;
+    eventType: string;
+    weddingId?: string;
+    payload: any;
+  }): Promise<void> {
+    const { error } = await this.supabase
+      .from(`${this.testSchema}.webhook_events`)
+      .insert({
+        event_id: eventData.eventId,
+        event_type: eventData.eventType,
+        wedding_id: eventData.weddingId,
+        payload: eventData.payload,
+      });
+
+    if (error) {
+      throw new Error(`Failed to create webhook event: ${error.message}`);
+    }
+  }
+
+  async getProcessedWebhookEvent(
+    eventType: string,
+    weddingId?: string,
+  ): Promise<any> {
+    let query = this.supabase
+      .from(`${this.testSchema}.webhook_events`)
+      .select('*')
+      .eq('event_type', eventType)
+      .eq('processed', true);
+
+    if (weddingId) {
+      query = query.eq('wedding_id', weddingId);
+    }
+
+    const { data, error } = await query.single();
+
+    if (error) {
+      throw new Error(
+        `Failed to get processed webhook event: ${error.message}`,
+      );
+    }
+
+    return data;
+  }
+
+  async updateSupplierAvailability(
+    supplierId: string,
+    availability: any,
+  ): Promise<void> {
+    const { error } = await this.supabase
+      .from(`${this.testSchema}.suppliers`)
+      .update({ availability })
+      .eq('id', supplierId);
+
+    if (error) {
+      throw new Error(
+        `Failed to update supplier availability: ${error.message}`,
+      );
+    }
+  }
+
+  async createSession(sessionData: {
+    sessionId: string;
+    userId: string;
+    userType: string;
+    weddingId?: string;
+    permissions: string[];
+    expiresAt: Date;
+  }): Promise<void> {
+    const { error } = await this.supabase
+      .from(`${this.testSchema}.sessions`)
+      .insert({
+        session_id: sessionData.sessionId,
+        user_id: sessionData.userId,
+        user_type: sessionData.userType,
+        wedding_id: sessionData.weddingId,
+        permissions: sessionData.permissions,
+        expires_at: sessionData.expiresAt.toISOString(),
+      });
+
+    if (error) {
+      throw new Error(`Failed to create session: ${error.message}`);
+    }
+  }
+
+  async getSession(sessionId: string): Promise<any> {
+    const { data, error } = await this.supabase
+      .from(`${this.testSchema}.sessions`)
+      .select('*')
+      .eq('session_id', sessionId)
+      .single();
+
+    if (error) {
+      throw new Error(`Failed to get session: ${error.message}`);
+    }
+
+    return data;
+  }
+
+  // Method to execute raw SQL for advanced testing scenarios
+  async executeSQL(sql: string): Promise<any> {
+    const { data, error } = await this.supabase.rpc('exec', { sql });
+
+    if (error) {
+      throw new Error(`Failed to execute SQL: ${error.message}`);
+    }
+
+    return data;
+  }
+}

@@ -1,0 +1,184 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { smsService, SMS_CREDITS } from '@/lib/sms/twilio';
+
+// GET /api/sms/manage - Get SMS analytics and usage
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const action = searchParams.get('action');
+    const organizationId = searchParams.get('organizationId');
+
+    if (!organizationId) {
+      return NextResponse.json(
+        { error: 'organizationId required' },
+        { status: 400 },
+      );
+    }
+
+    switch (action) {
+      case 'usage':
+        const usage = smsService.getUsage(organizationId);
+        return NextResponse.json(usage);
+
+      case 'analytics':
+        const dateRange = {
+          start: new Date(
+            searchParams.get('start') ||
+              new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+          ),
+          end: new Date(searchParams.get('end') || new Date().toISOString()),
+        };
+        const analytics = smsService.getAnalytics(organizationId, dateRange);
+        return NextResponse.json(analytics);
+
+      case 'credits':
+        const tier = searchParams.get('tier') as keyof typeof SMS_CREDITS;
+        if (!tier || !(tier in SMS_CREDITS)) {
+          return NextResponse.json({ error: 'Invalid tier' }, { status: 400 });
+        }
+
+        const credits = SMS_CREDITS[tier];
+        const currentUsage = smsService.getUsage(organizationId);
+
+        return NextResponse.json({
+          tier,
+          creditsAllowed: credits,
+          creditsUsed: currentUsage?.creditsUsed || 0,
+          creditsRemaining:
+            credits === -1
+              ? 'unlimited'
+              : Math.max(0, credits - (currentUsage?.creditsUsed || 0)),
+          overageUsed: currentUsage?.overageUsed || 0,
+        });
+
+      case 'pricing':
+        return NextResponse.json({
+          tiers: {
+            FREE: { credits: SMS_CREDITS.FREE, price: 0 },
+            PROFESSIONAL: { credits: SMS_CREDITS.PROFESSIONAL, price: 19 },
+            SCALE: { credits: SMS_CREDITS.SCALE, price: 49 },
+            ENTERPRISE: { credits: 'unlimited', price: 99 },
+          },
+          overage: {
+            rate: 0.02, // $0.02 per SMS
+            description: 'Additional SMS beyond plan limits',
+          },
+        });
+
+      default:
+        return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
+    }
+  } catch (error) {
+    console.error('SMS management API error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+// POST /api/sms/manage - Send SMS or perform management actions
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const { action, organizationId, organizationTier, ...data } = body;
+
+    if (!organizationId || !organizationTier) {
+      return NextResponse.json(
+        { error: 'organizationId and organizationTier required' },
+        { status: 400 },
+      );
+    }
+
+    switch (action) {
+      case 'send':
+        const result = await smsService.sendSMS({
+          to: data.to,
+          templateType: data.templateType,
+          variables: data.variables,
+          organizationId,
+          organizationTier,
+          priority: data.priority || 'normal',
+          scheduleTime: data.scheduleTime
+            ? new Date(data.scheduleTime)
+            : undefined,
+        });
+        return NextResponse.json(result);
+
+      case 'send_test':
+        // Send test SMS with tracking disabled
+        const testResult = await smsService.sendSMS({
+          to: data.to,
+          templateType: data.templateType,
+          variables: data.variables,
+          organizationId: 'test',
+          organizationTier: 'ENTERPRISE', // Unlimited for tests
+          priority: 'normal',
+        });
+        return NextResponse.json(testResult);
+
+      case 'check_credits':
+        const usage = smsService.getUsage(organizationId);
+        const creditsAllowed =
+          SMS_CREDITS[organizationTier as keyof typeof SMS_CREDITS];
+
+        return NextResponse.json({
+          canSend:
+            creditsAllowed === -1 || (usage?.creditsUsed || 0) < creditsAllowed,
+          creditsUsed: usage?.creditsUsed || 0,
+          creditsAllowed: creditsAllowed === -1 ? 'unlimited' : creditsAllowed,
+          overageUsed: usage?.overageUsed || 0,
+        });
+
+      case 'preview':
+        // Preview SMS without sending
+        const template = data.templateType;
+        const variables = data.variables || {};
+
+        // This would use the same template rendering logic
+        let message = '';
+        switch (template) {
+          case 'form_reminder':
+            message = `Hi ${variables.first_name}! Reminder: ${variables.vendor_name} form due ${variables.due_date}. Complete here: ${variables.short_link}`;
+            break;
+          case 'payment_due':
+            message = `${variables.vendor_name}: Payment reminder for ${variables.service_type}. Due ${variables.due_date}. Pay: ${variables.payment_link}`;
+            break;
+          case 'wedding_countdown':
+            message = `${variables.days} days until your wedding! ${variables.vendor_name} needs final details: ${variables.link}`;
+            break;
+          case 'appointment_reminder':
+            message = `Reminder: ${variables.appointment_type} with ${variables.vendor_name} ${variables.date} at ${variables.time}. ${variables.location}`;
+            break;
+          case 'urgent_update':
+            message = `${variables.vendor_name}: Important wedding update. Please check your portal: ${variables.link}`;
+            break;
+          case 'thank_you':
+            message = `Thank you for choosing ${variables.vendor_name}! Your wedding was beautiful. Please review us: ${variables.review_link}`;
+            break;
+        }
+
+        const segments = Math.ceil(message.length / 160);
+        const cost = segments * 0.0075; // Simplified cost calculation
+
+        return NextResponse.json({
+          message,
+          length: message.length,
+          segments,
+          estimatedCost: cost.toFixed(4),
+          withinLimit: message.length <= 160,
+        });
+
+      default:
+        return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
+    }
+  } catch (error) {
+    console.error('SMS management API error:', error);
+    return NextResponse.json(
+      {
+        error: error instanceof Error ? error.message : 'Internal server error',
+      },
+      { status: 500 },
+    );
+  }
+}

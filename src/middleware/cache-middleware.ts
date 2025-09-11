@@ -1,0 +1,369 @@
+/**
+ * Next.js Cache Middleware Integration
+ *
+ * Integrates API response caching into Next.js middleware pipeline:
+ * - Intercepts API route requests before they reach handlers
+ * - Applies intelligent caching based on route patterns
+ * - Handles wedding day emergency protocols
+ * - Provides cache statistics and monitoring
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { RedisCacheService } from '../lib/cache/redis-cache-service';
+import { APIResponseCacheMiddleware } from '../lib/api/response-cache-middleware';
+import { getVendorCacheConfig } from '../lib/integrations/cache/vendor-cache-config';
+
+// Global cache service instance
+let globalCacheService: RedisCacheService | null = null;
+let globalAPICache: APIResponseCacheMiddleware | null = null;
+
+/**
+ * Initialize cache services
+ */
+function initializeCacheServices(): {
+  cacheService: RedisCacheService;
+  apiCache: APIResponseCacheMiddleware;
+} {
+  if (!globalCacheService) {
+    // Use default Redis configuration for cache service
+    globalCacheService = new RedisCacheService({
+      keyPrefix: 'wedsync:api:',
+      defaultTTL: 3600, // 1 hour
+    });
+  }
+
+  if (!globalAPICache) {
+    globalAPICache = new APIResponseCacheMiddleware(globalCacheService);
+  }
+
+  return {
+    cacheService: globalCacheService,
+    apiCache: globalAPICache,
+  };
+}
+
+/**
+ * Extract route pattern from request URL
+ */
+function extractRoutePattern(request: NextRequest): string {
+  const { pathname } = new URL(request.url);
+
+  // Convert dynamic routes to patterns
+  // /api/vendors/123 -> /api/vendors/[id]
+  // /api/weddings/456/guests -> /api/weddings/[id]/guests
+
+  const patterns = [
+    // Vendor patterns
+    { regex: /^\/api\/vendors\/[^\/]+$/, pattern: '/api/vendors/[id]' },
+    {
+      regex: /^\/api\/vendors\/[^\/]+\/availability$/,
+      pattern: '/api/vendors/[id]/availability',
+    },
+    {
+      regex: /^\/api\/vendors\/[^\/]+\/portfolio$/,
+      pattern: '/api/vendors/[id]/portfolio',
+    },
+    {
+      regex: /^\/api\/vendors\/[^\/]+\/reviews$/,
+      pattern: '/api/vendors/[id]/reviews',
+    },
+
+    // Wedding patterns
+    { regex: /^\/api\/weddings\/[^\/]+$/, pattern: '/api/weddings/[id]' },
+    {
+      regex: /^\/api\/weddings\/[^\/]+\/timeline$/,
+      pattern: '/api/weddings/[id]/timeline',
+    },
+    {
+      regex: /^\/api\/weddings\/[^\/]+\/guests$/,
+      pattern: '/api/weddings/[id]/guests',
+    },
+    {
+      regex: /^\/api\/weddings\/[^\/]+\/budget$/,
+      pattern: '/api/weddings/[id]/budget',
+    },
+    {
+      regex: /^\/api\/weddings\/[^\/]+\/checklist$/,
+      pattern: '/api/weddings/[id]/checklist',
+    },
+    {
+      regex: /^\/api\/weddings\/[^\/]+\/vendors$/,
+      pattern: '/api/weddings/[id]/vendors',
+    },
+
+    // Client patterns
+    { regex: /^\/api\/clients\/[^\/]+$/, pattern: '/api/clients/[id]' },
+    {
+      regex: /^\/api\/clients\/[^\/]+\/weddings$/,
+      pattern: '/api/clients/[id]/weddings',
+    },
+    {
+      regex: /^\/api\/clients\/[^\/]+\/communications$/,
+      pattern: '/api/clients/[id]/communications',
+    },
+
+    // Organization patterns
+    {
+      regex: /^\/api\/organizations\/[^\/]+$/,
+      pattern: '/api/organizations/[id]',
+    },
+    {
+      regex: /^\/api\/organizations\/[^\/]+\/members$/,
+      pattern: '/api/organizations/[id]/members',
+    },
+    {
+      regex: /^\/api\/organizations\/[^\/]+\/settings$/,
+      pattern: '/api/organizations/[id]/settings',
+    },
+  ];
+
+  // Find matching pattern
+  for (const { regex, pattern } of patterns) {
+    if (regex.test(pathname)) {
+      return pattern;
+    }
+  }
+
+  // Return exact path if no pattern matches
+  return pathname;
+}
+
+/**
+ * Check if request should be cached
+ */
+function shouldProcessRequest(request: NextRequest): boolean {
+  const { pathname } = new URL(request.url);
+
+  // Only process API routes
+  if (!pathname.startsWith('/api/')) {
+    return false;
+  }
+
+  // Skip certain routes that should never be cached
+  const skipRoutes = [
+    '/api/auth/',
+    '/api/webhooks/',
+    '/api/upload/',
+    '/api/payments/',
+    '/api/stripe/',
+    '/api/internal/',
+    '/api/debug/',
+    '/api/test/',
+  ];
+
+  return !skipRoutes.some((route) => pathname.startsWith(route));
+}
+
+/**
+ * Main cache middleware function
+ */
+export async function cacheMiddleware(
+  request: NextRequest,
+  next: () => Promise<NextResponse>,
+): Promise<NextResponse> {
+  // Skip if not an API route we want to cache
+  if (!shouldProcessRequest(request)) {
+    return await next();
+  }
+
+  // Wedding day protection - log all requests
+  const isWeddingDay = new Date().getDay() === 6;
+  if (isWeddingDay) {
+    console.log(`🏰 Wedding day request: ${request.method} ${request.url}`);
+  }
+
+  try {
+    const { apiCache } = initializeCacheServices();
+    const routePattern = extractRoutePattern(request);
+
+    // Apply caching middleware
+    return await apiCache.middleware(
+      request,
+      async (req) => {
+        // Call the next middleware/handler
+        return await next();
+      },
+      routePattern,
+    );
+  } catch (error) {
+    console.error('Cache middleware error:', error);
+
+    // On wedding day, we want to be extra careful
+    if (isWeddingDay) {
+      console.error(
+        '🚨 Wedding day cache error - falling back to direct response',
+      );
+    }
+
+    // Always fall back to normal processing
+    return await next();
+  }
+}
+
+/**
+ * Cache invalidation helper
+ */
+export async function invalidateAPICache(options: {
+  tags?: string[];
+  routes?: string[];
+  organizationId?: string;
+}): Promise<{ invalidated: number; success: boolean }> {
+  try {
+    const { apiCache } = initializeCacheServices();
+    const organizationId = options.organizationId || 'default';
+    let totalInvalidated = 0;
+
+    // Invalidate by tags
+    if (options.tags) {
+      totalInvalidated += await apiCache.invalidateByTags(
+        options.tags,
+        organizationId,
+      );
+    }
+
+    // Invalidate by routes
+    if (options.routes) {
+      for (const route of options.routes) {
+        totalInvalidated += await apiCache.invalidateByRoute(
+          route,
+          organizationId,
+        );
+      }
+    }
+
+    return {
+      invalidated: totalInvalidated,
+      success: true,
+    };
+  } catch (error) {
+    console.error('Cache invalidation error:', error);
+    return {
+      invalidated: 0,
+      success: false,
+    };
+  }
+}
+
+/**
+ * Get cache statistics
+ */
+export function getCacheStats(): any {
+  try {
+    const { apiCache, cacheService } = initializeCacheServices();
+
+    return {
+      api: apiCache.getCacheStats(),
+      service: cacheService.getHealthStatus(),
+      timestamp: new Date().toISOString(),
+    };
+  } catch (error) {
+    console.error('Error getting cache stats:', error);
+    return {
+      error: error instanceof Error ? error.message : 'Unknown error',
+      timestamp: new Date().toISOString(),
+    };
+  }
+}
+
+/**
+ * Cache warming helper for critical routes
+ */
+export async function warmCache(options: {
+  routes: string[];
+  organizationId?: string;
+  baseUrl?: string;
+}): Promise<{ warmed: number; errors: number }> {
+  const { routes, organizationId = 'default', baseUrl = '' } = options;
+  let warmed = 0;
+  let errors = 0;
+
+  console.log(`🔥 Warming cache for ${routes.length} routes`);
+
+  for (const route of routes) {
+    try {
+      const url = `${baseUrl}${route}`;
+      const response = await fetch(url, {
+        headers: {
+          'x-organization-id': organizationId,
+          'x-cache-warm': 'true',
+        },
+      });
+
+      if (response.ok) {
+        warmed++;
+        console.log(`✅ Warmed: ${route}`);
+      } else {
+        errors++;
+        console.warn(`⚠️ Failed to warm: ${route} (${response.status})`);
+      }
+
+      // Small delay to avoid overwhelming the server
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    } catch (error) {
+      errors++;
+      console.error(`❌ Error warming ${route}:`, error);
+    }
+  }
+
+  return { warmed, errors };
+}
+
+/**
+ * Wedding day cache optimization
+ */
+export async function enableWeddingDayMode(
+  organizationId: string,
+): Promise<void> {
+  console.log('🏰 Enabling wedding day cache mode');
+
+  // Warm critical caches
+  const criticalRoutes = ['/api/vendors', '/api/weddings', '/api/health'];
+
+  await warmCache({
+    routes: criticalRoutes,
+    organizationId,
+  });
+
+  // Could also:
+  // - Increase cache TTL globally
+  // - Enable additional monitoring
+  // - Set up emergency fallbacks
+
+  console.log('✅ Wedding day mode enabled');
+}
+
+/**
+ * Reset cache statistics
+ */
+export function resetCacheStats(): void {
+  try {
+    const { apiCache } = initializeCacheServices();
+    apiCache.resetStats();
+    console.log('📊 Cache statistics reset');
+  } catch (error) {
+    console.error('Error resetting cache stats:', error);
+  }
+}
+
+/**
+ * Cleanup cache services (for testing or shutdown)
+ */
+export async function cleanupCacheServices(): Promise<void> {
+  try {
+    if (globalAPICache) {
+      globalAPICache.cleanup();
+      globalAPICache = null;
+    }
+
+    if (globalCacheService) {
+      await globalCacheService.disconnect();
+      globalCacheService = null;
+    }
+
+    console.log('🧹 Cache services cleaned up');
+  } catch (error) {
+    console.error('Error cleaning up cache services:', error);
+  }
+}
+
+export default cacheMiddleware;

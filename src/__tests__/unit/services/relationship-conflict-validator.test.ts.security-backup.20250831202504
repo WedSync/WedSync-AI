@@ -1,0 +1,254 @@
+/**
+ * Unit tests for RelationshipConflictValidator
+ * Tests core conflict detection logic in isolation
+ */
+
+import { describe, test, expect, jest, beforeEach, afterEach } from '@jest/test'
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { 
+  RelationshipConflictValidator,
+  ConflictResult,
+  SeatingConflict,
+  GuestConflictInfo
+} from '@/lib/services/relationship-conflict-validator'
+// Mock dependencies
+jest.mock('@/lib/supabase/client', () => ({
+  createClient: jest.fn(() => ({
+    from: jest.fn(() => ({
+      select: jest.fn(() => ({
+        eq: jest.fn(() => ({
+          in: jest.fn(() => ({
+            order: jest.fn(() => ({
+              single: jest.fn(),
+              then: jest.fn()
+            }))
+          }))
+        }))
+      }))
+    })),
+    rpc: jest.fn()
+  }))
+}))
+jest.mock('@/lib/realtime/guest-sync', () => ({
+  __esModule: true,
+  default: {
+    subscribeToIntegrationUpdates: jest.fn(),
+    broadcastIntegrationUpdate: jest.fn()
+  }
+describe('RelationshipConflictValidator', () => {
+  let validator: RelationshipConflictValidator
+  let mockSupabase: any
+  beforeEach(() => {
+    // Reset all mocks
+    jest.clearAllMocks()
+    
+    // Create fresh validator instance
+    validator = new RelationshipConflictValidator()
+    // Get mock supabase instance
+    mockSupabase = require('@/lib/supabase/client').createClient()
+  })
+  describe('validateSeatingConflict', () => {
+    test('detects incompatible relationship conflicts', async () => {
+      const coupleId = 'test-couple-id'
+      const guestIds = ['guest-1', 'guest-2']
+      // Mock successful ownership verification
+      mockSupabase.rpc.mockImplementation((functionName: string) => {
+        if (functionName === 'verify_guest_ownership') {
+          return Promise.resolve({ 
+            data: [{ guest_id: 'guest-1' }, { guest_id: 'guest-2' }], 
+            error: null 
+          })
+        }
+        return Promise.resolve({ data: [], error: null })
+      })
+      // Mock guest info fetch
+      const mockGuests: GuestConflictInfo[] = [
+        {
+          id: 'guest-1',
+          first_name: 'John',
+          last_name: 'Doe',
+          email: 'john@test.com',
+          category: 'family',
+          side: 'partner1',
+          current_table: 1
+        },
+          id: 'guest-2', 
+          first_name: 'Jane',
+          email: 'jane@test.com',
+      ]
+      mockSupabase.from.mockReturnValue({
+        select: jest.fn().mockReturnValue({
+          eq: jest.fn().mockReturnValue({
+            in: jest.fn().mockResolvedValue({
+              data: mockGuests,
+              error: null
+            })
+        })
+      // Mock relationship data
+      const mockRelationships = [
+          id: 'rel-1',
+          guest_id_1: 'guest-1',
+          guest_id_2: 'guest-2',
+          relationship_type: 'divorced',
+          conflict_severity: 'incompatible',
+          notes: 'Divorced couple',
+          is_bidirectional: true,
+          created_at: '2024-01-01T00:00:00Z',
+          updated_at: '2024-01-01T00:00:00Z',
+          created_by: 'user-1'
+      // Chain the mocks for relationship fetch
+      mockSupabase.from.mockImplementation((table: string) => {
+        if (table === 'guests') {
+          return {
+            select: jest.fn().mockReturnValue({
+              eq: jest.fn().mockReturnValue({
+                in: jest.fn().mockResolvedValue({
+                  data: mockGuests,
+                  error: null
+                })
+              })
+          }
+        } else if (table === 'guest_relationships') {
+                or: jest.fn().mockReturnValue({
+                  order: jest.fn().mockResolvedValue({
+                    data: mockRelationships,
+                    error: null
+                  })
+        return {}
+      // Execute test
+      const result = await validator.validateSeatingConflict(coupleId, guestIds, 1)
+      // Assertions
+      expect(result.has_conflicts).toBe(true)
+      expect(result.conflicts).toHaveLength(1)
+      expect(result.conflicts[0].severity).toBe('incompatible')
+      expect(result.conflicts[0].guest_1.id).toBe('guest-1')
+      expect(result.conflicts[0].guest_2.id).toBe('guest-2')
+      expect(result.severity_score).toBeGreaterThan(80) // High severity for incompatible
+      expect(result.resolution_suggestions).toHaveLength(1)
+      expect(result.resolution_suggestions[0].type).toBe('separate_tables')
+    })
+    test('returns no conflicts for compatible guests', async () => {
+      const guestIds = ['guest-3', 'guest-4']
+      mockSupabase.rpc.mockResolvedValue({ 
+        data: [{ guest_id: 'guest-3' }, { guest_id: 'guest-4' }], 
+        error: null 
+          id: 'guest-3',
+          first_name: 'Bob',
+          last_name: 'Smith',
+          category: 'friends',
+          side: 'mutual',
+          current_table: 2
+          id: 'guest-4',
+          first_name: 'Alice',
+          last_name: 'Johnson', 
+      // Mock no relationships between guests
+                    data: [], // No relationships
+      const result = await validator.validateSeatingConflict(coupleId, guestIds, 2)
+      expect(result.has_conflicts).toBe(false)
+      expect(result.conflicts).toHaveLength(0)
+      expect(result.severity_score).toBe(0)
+      expect(result.resolution_suggestions).toHaveLength(0)
+    test('meets performance requirements (<500ms)', async () => {
+      const guestIds = ['guest-5', 'guest-6']
+      
+      // Mock fast responses
+        data: [{ guest_id: 'guest-5' }, { guest_id: 'guest-6' }], 
+      mockSupabase.from.mockImplementation(() => ({
+              data: [],
+            }),
+            or: jest.fn().mockReturnValue({
+              order: jest.fn().mockResolvedValue({
+                data: [],
+                error: null
+      const startTime = Date.now()
+      const result = await validator.validateSeatingConflict(coupleId, guestIds)
+      const executionTime = Date.now() - startTime
+      expect(executionTime).toBeLessThan(500)
+      expect(result.performance_metrics.validation_time_ms).toBeLessThan(500)
+    test('handles unauthorized access properly', async () => {
+      const guestIds = ['unauthorized-guest']
+      // Mock ownership verification failure
+        data: [], // Empty data indicates unauthorized access
+      await expect(
+        validator.validateSeatingConflict(coupleId, guestIds)
+      ).rejects.toThrow(/Unauthorized access/)
+  describe('validateEntireSeatingPlan', () => {
+    test('validates multiple tables efficiently', async () => {
+      // Mock seating plan with 3 tables
+      const mockSeatingPlan = new Map([
+        [1, ['guest-1', 'guest-2', 'guest-3']],
+        [2, ['guest-4', 'guest-5']],
+        [3, ['guest-6', 'guest-7', 'guest-8', 'guest-9']]
+      ])
+      // Mock the getSeatingPlan method
+      // @ts-ignore - Accessing private method for testing
+      validator.getSeatingPlan = jest.fn().mockResolvedValue(mockSeatingPlan)
+      // Mock validateSeatingConflict to return different results per table
+      const originalValidate = validator.validateSeatingConflict
+      validator.validateSeatingConflict = jest.fn()
+        .mockResolvedValueOnce({ // Table 1: No conflicts
+          has_conflicts: false,
+          conflicts: [],
+          severity_score: 0,
+          resolution_suggestions: [],
+          performance_metrics: { validation_time_ms: 50, queries_executed: 2, cache_hits: 0 }
+        .mockResolvedValueOnce({ // Table 2: Minor conflict
+          has_conflicts: true,
+          conflicts: [{ severity: 'prefer_apart' }],
+          severity_score: 30,
+          performance_metrics: { validation_time_ms: 75, queries_executed: 3, cache_hits: 0 }
+        .mockResolvedValueOnce({ // Table 3: Major conflict  
+          conflicts: [{ severity: 'incompatible' }],
+          severity_score: 95,
+          performance_metrics: { validation_time_ms: 100, queries_executed: 4, cache_hits: 0 }
+      const result = await validator.validateEntireSeatingPlan(coupleId)
+      expect(result.tables.size).toBe(3)
+      expect(result.overall_conflicts).toBe(2) // Table 2 + Table 3
+      expect(result.critical_conflicts).toBe(1) // Only Table 3 has incompatible
+      expect(result.validation_time_ms).toBeGreaterThan(0)
+      // Verify each table was validated
+      expect(validator.validateSeatingConflict).toHaveBeenCalledTimes(3)
+  describe('cache management', () => {
+    test('caches validation results for performance', async () => {
+      // Mock ownership verification
+        data: [{ guest_id: 'guest-1' }, { guest_id: 'guest-2' }], 
+      // First call
+      const result1 = await validator.validateSeatingConflict(coupleId, guestIds, 1)
+      // Second call with same parameters (should hit cache)
+      const result2 = await validator.validateSeatingConflict(coupleId, guestIds, 1)
+      expect(result2.performance_metrics.cache_hits).toBeGreaterThan(0)
+      expect(result1.performance_metrics.validation_time_ms).toBeGreaterThanOrEqual(
+        result2.performance_metrics.validation_time_ms
+      )
+    test('clears cache when requested', () => {
+      validator.clearCache()
+      const stats = validator.getCacheStats()
+      expect(stats.size).toBe(0)
+  describe('conflict severity calculation', () => {
+    test('calculates severity scores correctly', () => {
+      // Test private method by creating test conflicts
+      const conflicts: SeatingConflict[] = [
+          id: 'conflict-1',
+          guest_1: { id: 'g1', first_name: 'John', last_name: 'Doe', category: 'family', side: 'partner1' },
+          guest_2: { id: 'g2', first_name: 'Jane', last_name: 'Smith', category: 'family', side: 'partner2' },
+          relationship: {
+            id: 'rel-1',
+            guest_id_1: 'g1',
+            guest_id_2: 'g2',
+            relationship_type: 'divorced',
+            conflict_severity: 'incompatible',
+            notes: '',
+            is_bidirectional: true,
+            created_at: '',
+            updated_at: '',
+            created_by: ''
+          },
+          severity: 'incompatible',
+          conflict_reason: 'Test conflict',
+          confidence_score: 95,
+          auto_resolvable: false
+      // Access private method for testing
+      // @ts-ignore
+      const severity = validator.calculateSeverityScore(conflicts)
+      expect(severity).toBeGreaterThan(90) // Should be high for incompatible
+})

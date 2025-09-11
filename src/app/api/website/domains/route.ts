@@ -1,0 +1,266 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+
+export interface CustomDomain {
+  id: string;
+  website_id: string;
+  domain: string;
+  status: 'pending' | 'active' | 'failed' | 'suspended';
+  ssl_status: 'pending' | 'active' | 'failed';
+  verification_token: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DomainVerification {
+  domain: string;
+  verified: boolean;
+  records: {
+    type: string;
+    name: string;
+    value: string;
+    required: boolean;
+  }[];
+}
+
+// GET /api/website/domains - List all custom domains for a website
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const websiteId = searchParams.get('website_id');
+
+    if (!websiteId) {
+      return NextResponse.json(
+        { error: 'Website ID is required' },
+        { status: 400 },
+      );
+    }
+
+    const supabase = await createClient();
+
+    const { data: domains, error } = await supabase
+      .from('custom_domains')
+      .select('*')
+      .eq('website_id', websiteId)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('Error fetching domains:', error);
+      return NextResponse.json(
+        { error: 'Failed to fetch domains' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({ domains });
+  } catch (error) {
+    console.error('Error in GET /api/website/domains:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+// POST /api/website/domains - Add a new custom domain
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const { website_id, domain } = body;
+
+    if (!website_id || !domain) {
+      return NextResponse.json(
+        { error: 'Website ID and domain are required' },
+        { status: 400 },
+      );
+    }
+
+    // Validate domain format
+    const domainRegex =
+      /^[a-zA-Z0-9][a-zA-Z0-9-]{1,61}[a-zA-Z0-9]\.[a-zA-Z]{2,}$/;
+    if (!domainRegex.test(domain)) {
+      return NextResponse.json(
+        { error: 'Invalid domain format' },
+        { status: 400 },
+      );
+    }
+
+    const supabase = await createClient();
+
+    // Check if domain already exists
+    const { data: existingDomain } = await supabase
+      .from('custom_domains')
+      .select('id')
+      .eq('domain', domain)
+      .single();
+
+    if (existingDomain) {
+      return NextResponse.json(
+        { error: 'Domain already exists' },
+        { status: 409 },
+      );
+    }
+
+    // Generate verification token
+    const verificationToken = generateVerificationToken();
+
+    // Create domain record
+    const { data: newDomain, error } = await supabase
+      .from('custom_domains')
+      .insert({
+        website_id,
+        domain,
+        status: 'pending',
+        ssl_status: 'pending',
+        verification_token: verificationToken,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error creating domain:', error);
+      return NextResponse.json(
+        { error: 'Failed to create domain' },
+        { status: 500 },
+      );
+    }
+
+    // Generate DNS records for verification
+    const dnsRecords = generateDNSRecords(domain, verificationToken);
+
+    return NextResponse.json({
+      domain: newDomain,
+      verification: {
+        domain,
+        verified: false,
+        records: dnsRecords,
+      },
+    });
+  } catch (error) {
+    console.error('Error in POST /api/website/domains:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+// DELETE /api/website/domains - Remove a custom domain
+export async function DELETE(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const domainId = searchParams.get('id');
+
+    if (!domainId) {
+      return NextResponse.json(
+        { error: 'Domain ID is required' },
+        { status: 400 },
+      );
+    }
+
+    const supabase = await createClient();
+
+    const { error } = await supabase
+      .from('custom_domains')
+      .delete()
+      .eq('id', domainId);
+
+    if (error) {
+      console.error('Error deleting domain:', error);
+      return NextResponse.json(
+        { error: 'Failed to delete domain' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error('Error in DELETE /api/website/domains:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+// PATCH /api/website/domains - Update domain status
+export async function PATCH(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const { id, status, ssl_status } = body;
+
+    if (!id) {
+      return NextResponse.json(
+        { error: 'Domain ID is required' },
+        { status: 400 },
+      );
+    }
+
+    const supabase = await createClient();
+
+    const updateData: any = { updated_at: new Date().toISOString() };
+    if (status) updateData.status = status;
+    if (ssl_status) updateData.ssl_status = ssl_status;
+
+    const { data: updatedDomain, error } = await supabase
+      .from('custom_domains')
+      .update(updateData)
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error updating domain:', error);
+      return NextResponse.json(
+        { error: 'Failed to update domain' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({ domain: updatedDomain });
+  } catch (error) {
+    console.error('Error in PATCH /api/website/domains:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+function generateVerificationToken(): string {
+  return (
+    Math.random().toString(36).substring(2, 15) +
+    Math.random().toString(36).substring(2, 15)
+  );
+}
+
+function generateDNSRecords(domain: string, verificationToken: string) {
+  const subdomain = domain.split('.')[0];
+
+  return [
+    {
+      type: 'CNAME',
+      name: subdomain,
+      value: 'wedsync.app',
+      required: true,
+    },
+    {
+      type: 'TXT',
+      name: `_wedsync-verification.${domain}`,
+      value: verificationToken,
+      required: true,
+    },
+    {
+      type: 'A',
+      name: '@',
+      value: '76.76.19.61',
+      required: false,
+    },
+    {
+      type: 'AAAA',
+      name: '@',
+      value: '2606:4700:3033::6815:134d',
+      required: false,
+    },
+  ];
+}

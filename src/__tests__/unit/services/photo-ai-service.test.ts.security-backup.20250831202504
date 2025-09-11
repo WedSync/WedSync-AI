@@ -1,0 +1,330 @@
+// WS-130: AI-Powered Photography Library - Photo AI Service Tests
+// Team C Batch 10 Round 1
+
+import { PhotoAIService } from '@/lib/ml/photo-ai-service';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+// Mock OpenAI service
+jest.mock('@/lib/services/openai-service', () => ({
+  OpenAIService: {
+    getInstance: jest.fn().mockReturnValue({
+      analyzeImage: jest.fn(),
+      generateCompletion: jest.fn(),
+    }),
+  },
+}));
+describe('PhotoAIService', () => {
+  let photoAIService: PhotoAIService;
+  beforeEach(() => {
+    photoAIService = new PhotoAIService();
+    jest.clearAllMocks();
+  });
+  describe('analyzePhotoStyle', () => {
+    it('should analyze photo style and return comprehensive results', async () => {
+      const mockOpenAI = require('@/lib/services/openai-service').OpenAIService.getInstance();
+      
+      // Mock OpenAI Vision API response
+      mockOpenAI.analyzeImage.mockResolvedValue({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              detected_styles: [
+                { style_name: 'romantic', confidence: 0.85, style_id: 'style-1' },
+                { style_name: 'natural', confidence: 0.72, style_id: 'style-2' }
+              ],
+              color_analysis: {
+                dominant_colors: ['#FFE5E5', '#F8D7DA', '#FFEAA7'],
+                color_harmony: 'complementary',
+                saturation_level: 'medium',
+                brightness_level: 'bright'
+              },
+              composition_analysis: {
+                rule_of_thirds: true,
+                leading_lines: false,
+                symmetry: true,
+                depth_of_field: 'shallow'
+              mood_analysis: {
+                mood_tags: ['dreamy', 'soft', 'intimate'],
+                emotion_score: 0.78,
+                energy_level: 'calm'
+              technical_analysis: {
+                lighting_quality: 'excellent',
+                focus_quality: 'sharp',
+                composition_score: 8.5
+              }
+            })
+          }
+        }]
+      });
+      const imageUrl = 'https://example.com/wedding-photo.jpg';
+      const result = await photoAIService.analyzePhotoStyle(imageUrl);
+      expect(result).toHaveProperty('detected_styles');
+      expect(result).toHaveProperty('color_analysis');
+      expect(result).toHaveProperty('composition_analysis');
+      expect(result).toHaveProperty('mood_analysis');
+      expect(result).toHaveProperty('technical_analysis');
+      expect(result.detected_styles).toHaveLength(2);
+      expect(result.detected_styles[0].style_name).toBe('romantic');
+      expect(result.detected_styles[0].confidence).toBe(0.85);
+      expect(result.color_analysis.dominant_colors).toContain('#FFE5E5');
+      expect(result.composition_analysis.rule_of_thirds).toBe(true);
+      expect(result.mood_analysis.mood_tags).toContain('dreamy');
+      expect(result.technical_analysis.composition_score).toBe(8.5);
+    });
+    it('should handle OpenAI API errors gracefully', async () => {
+      mockOpenAI.analyzeImage.mockRejectedValue(new Error('OpenAI API error'));
+      const imageUrl = 'https://example.com/test-image.jpg';
+      await expect(photoAIService.analyzePhotoStyle(imageUrl))
+        .rejects.toThrow('Failed to analyze photo style');
+    it('should validate image URL format', async () => {
+      const invalidUrls = [
+        '',
+        'not-a-url',
+        'ftp://example.com/image.jpg',
+        'https://example.com/document.pdf'
+      ];
+      for (const url of invalidUrls) {
+        await expect(photoAIService.analyzePhotoStyle(url))
+          .rejects.toThrow('Invalid image URL');
+      }
+    it('should handle malformed OpenAI responses', async () => {
+      // Mock malformed response
+            content: 'This is not valid JSON'
+      const imageUrl = 'https://example.com/valid-image.jpg';
+        .rejects.toThrow('Invalid response format from AI service');
+  describe('categorizePhotographyStyle', () => {
+    it('should categorize photos into predefined style categories', async () => {
+      const mockAnalysis = {
+        detected_styles: [
+          { style_name: 'romantic', confidence: 0.85 },
+          { style_name: 'soft', confidence: 0.72 }
+        ],
+        color_analysis: {
+          dominant_colors: ['#FFE5E5', '#F8D7DA'],
+          saturation_level: 'low'
+        },
+        mood_analysis: {
+          mood_tags: ['dreamy', 'ethereal'],
+          energy_level: 'calm'
+        }
+      };
+      const category = await photoAIService.categorizePhotographyStyle(mockAnalysis);
+      expect(category).toHaveProperty('primary_style');
+      expect(category).toHaveProperty('secondary_styles');
+      expect(category).toHaveProperty('confidence');
+      expect(category).toHaveProperty('style_family');
+      expect(category.primary_style).toBe('romantic');
+      expect(category.confidence).toBeGreaterThan(0.7);
+      expect(category.style_family).toContain('romantic');
+    it('should handle unknown or edge-case styles', async () => {
+          { style_name: 'unknown-style', confidence: 0.95 }
+          dominant_colors: ['#123456'],
+          saturation_level: 'medium'
+          mood_tags: ['unusual'],
+          energy_level: 'medium'
+      expect(category.primary_style).toBe('mixed');
+      expect(category.confidence).toBeLessThan(0.5);
+    it('should consider color and mood context in categorization', async () => {
+      const mockAnalysisWarm = {
+          { style_name: 'portrait', confidence: 0.80 }
+          dominant_colors: ['#FF6B6B', '#FFA07A'],
+          saturation_level: 'high'
+          mood_tags: ['energetic', 'vibrant'],
+          energy_level: 'high'
+      const mockAnalysisCool = {
+          dominant_colors: ['#4ECDC4', '#45B7D1'],
+          mood_tags: ['serene', 'calm'],
+          energy_level: 'low'
+      const warmCategory = await photoAIService.categorizePhotographyStyle(mockAnalysisWarm);
+      const coolCategory = await photoAIService.categorizePhotographyStyle(mockAnalysisCool);
+      // Should consider color temperature in style family classification
+      expect(warmCategory.style_family).not.toEqual(coolCategory.style_family);
+  describe('extractColorPalette', () => {
+    it('should extract and analyze color palette from image', async () => {
+              dominant_colors: ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8'],
+              color_distribution: [
+                { color: '#FF6B6B', percentage: 35 },
+                { color: '#4ECDC4', percentage: 25 },
+                { color: '#45B7D1', percentage: 20 },
+                { color: '#FFA07A', percentage: 12 },
+                { color: '#98D8C8', percentage: 8 }
+              color_temperature: 'warm',
+              color_harmony_type: 'complementary',
+              color_intensity: 'vibrant'
+      const imageUrl = 'https://example.com/colorful-image.jpg';
+      const palette = await photoAIService.extractColorPalette(imageUrl);
+      expect(palette).toHaveProperty('dominant_colors');
+      expect(palette).toHaveProperty('color_distribution');
+      expect(palette).toHaveProperty('color_temperature');
+      expect(palette).toHaveProperty('harmony_analysis');
+      expect(palette.dominant_colors).toHaveLength(5);
+      expect(palette.dominant_colors[0]).toBe('#FF6B6B');
+      expect(palette.color_temperature).toBe('warm');
+      expect(palette.color_distribution[0].percentage).toBe(35);
+      expect(palette.harmony_analysis).toHaveProperty('type');
+      expect(palette.harmony_analysis).toHaveProperty('score');
+    it('should handle monochromatic images', async () => {
+              dominant_colors: ['#FFFFFF', '#F5F5F5', '#E0E0E0'],
+                { color: '#FFFFFF', percentage: 60 },
+                { color: '#F5F5F5', percentage: 25 },
+                { color: '#E0E0E0', percentage: 15 }
+              color_temperature: 'neutral',
+              color_harmony_type: 'monochromatic',
+              color_intensity: 'low'
+      const imageUrl = 'https://example.com/bw-image.jpg';
+      expect(palette.color_temperature).toBe('neutral');
+      expect(palette.harmony_analysis.type).toBe('monochromatic');
+      expect(palette.harmony_analysis.score).toBeGreaterThan(0.8); // Monochromatic should score high
+  describe('analyzeMoodAndEmotion', () => {
+    it('should analyze emotional content of photos', async () => {
+              primary_emotion: 'joy',
+              emotion_scores: {
+                joy: 0.85,
+                love: 0.72,
+                serenity: 0.68,
+                excitement: 0.45,
+                sadness: 0.12
+              mood_descriptors: ['happy', 'celebratory', 'romantic', 'uplifting'],
+              energy_level: 0.78,
+              intimacy_level: 0.65,
+              formality_level: 0.82
+      const imageUrl = 'https://example.com/happy-couple.jpg';
+      const moodAnalysis = await photoAIService.analyzeMoodAndEmotion(imageUrl);
+      expect(moodAnalysis).toHaveProperty('primary_emotion');
+      expect(moodAnalysis).toHaveProperty('emotion_scores');
+      expect(moodAnalysis).toHaveProperty('mood_descriptors');
+      expect(moodAnalysis).toHaveProperty('energy_level');
+      expect(moodAnalysis.primary_emotion).toBe('joy');
+      expect(moodAnalysis.emotion_scores.joy).toBe(0.85);
+      expect(moodAnalysis.mood_descriptors).toContain('happy');
+      expect(moodAnalysis.energy_level).toBeGreaterThan(0.7);
+    it('should detect subtle emotional nuances', async () => {
+              primary_emotion: 'contemplative',
+                contemplative: 0.78,
+                serenity: 0.72,
+                melancholy: 0.35,
+                hope: 0.48
+              mood_descriptors: ['thoughtful', 'introspective', 'peaceful'],
+              energy_level: 0.25,
+              intimacy_level: 0.85,
+              formality_level: 0.35
+      const imageUrl = 'https://example.com/contemplative-portrait.jpg';
+      expect(moodAnalysis.primary_emotion).toBe('contemplative');
+      expect(moodAnalysis.energy_level).toBeLessThan(0.5);
+      expect(moodAnalysis.intimacy_level).toBeGreaterThan(0.8);
+  describe('assessTechnicalQuality', () => {
+    it('should evaluate technical aspects of photography', async () => {
+              overall_quality_score: 8.7,
+              technical_scores: {
+                sharpness: 9.2,
+                exposure: 8.5,
+                composition: 8.8,
+                color_accuracy: 8.9,
+                noise_level: 9.0
+              lighting_assessment: {
+                quality: 'excellent',
+                direction: 'soft side lighting',
+                color_temperature: '5500K',
+                contrast: 'moderate'
+              composition_elements: {
+                symmetry: false,
+                depth_of_field: 'shallow',
+                framing: 'tight'
+              technical_issues: []
+      const imageUrl = 'https://example.com/high-quality-photo.jpg';
+      const quality = await photoAIService.assessTechnicalQuality(imageUrl);
+      expect(quality).toHaveProperty('overall_score');
+      expect(quality).toHaveProperty('technical_scores');
+      expect(quality).toHaveProperty('lighting_assessment');
+      expect(quality).toHaveProperty('composition_elements');
+      expect(quality.overall_score).toBe(8.7);
+      expect(quality.technical_scores.sharpness).toBe(9.2);
+      expect(quality.lighting_assessment.quality).toBe('excellent');
+      expect(quality.composition_elements.rule_of_thirds).toBe(true);
+    it('should identify technical issues', async () => {
+              overall_quality_score: 5.2,
+                sharpness: 4.5,
+                exposure: 6.0,
+                composition: 5.8,
+                color_accuracy: 4.9,
+                noise_level: 3.2
+                quality: 'poor',
+                direction: 'harsh direct',
+                color_temperature: '3200K',
+                contrast: 'high'
+                rule_of_thirds: false,
+                depth_of_field: 'deep',
+                framing: 'loose'
+              technical_issues: [
+                'Motion blur detected',
+                'High ISO noise',
+                'Underexposed shadows',
+                'Color cast present'
+              ]
+      const imageUrl = 'https://example.com/low-quality-photo.jpg';
+      expect(quality.overall_score).toBeLessThan(6);
+      expect(quality.technical_issues).toContain('Motion blur detected');
+      expect(quality.technical_issues).toContain('High ISO noise');
+      expect(quality.lighting_assessment.quality).toBe('poor');
+      expect(quality.technical_scores.noise_level).toBeLessThan(4);
+  describe('batchAnalyzePhotos', () => {
+    it('should analyze multiple photos efficiently', async () => {
+      const imageUrls = [
+        'https://example.com/photo1.jpg',
+        'https://example.com/photo2.jpg',
+        'https://example.com/photo3.jpg'
+      // Mock individual responses
+              detected_styles: [{ style_name: 'romantic', confidence: 0.8 }],
+              color_analysis: { dominant_colors: ['#FFE5E5'] },
+              technical_analysis: { composition_score: 8.0 }
+      const results = await photoAIService.batchAnalyzePhotos(imageUrls);
+      expect(results).toHaveLength(imageUrls.length);
+      expect(results[0]).toHaveProperty('imageUrl');
+      expect(results[0]).toHaveProperty('analysis');
+      expect(results[0]).toHaveProperty('processingTime');
+      // All analyses should be complete
+      results.forEach(result => {
+        expect(result.analysis).toBeDefined();
+        expect(result.success).toBe(true);
+    it('should handle partial failures gracefully', async () => {
+        'https://example.com/good-photo.jpg',
+        'https://invalid-url',
+        'https://example.com/another-good-photo.jpg'
+      mockOpenAI.analyzeImage
+        .mockResolvedValueOnce({
+          choices: [{ message: { content: JSON.stringify({ detected_styles: [] }) } }]
+        })
+        .mockRejectedValueOnce(new Error('Invalid URL'))
+        });
+      expect(results[0].success).toBe(true);
+      expect(results[1].success).toBe(false);
+      expect(results[1].error).toContain('Invalid URL');
+      expect(results[2].success).toBe(true);
+    it('should respect rate limits and process in batches', async () => {
+      const manyUrls = Array.from({ length: 50 }, (_, i) => `https://example.com/photo${i}.jpg`);
+        choices: [{ message: { content: JSON.stringify({ detected_styles: [] }) } }]
+      const startTime = Date.now();
+      const results = await photoAIService.batchAnalyzePhotos(manyUrls, { batchSize: 10 });
+      const endTime = Date.now();
+      expect(results).toHaveLength(manyUrls.length);
+      // Should take some time due to batching (but not too long)
+      expect(endTime - startTime).toBeGreaterThan(100);
+      expect(endTime - startTime).toBeLessThan(30000);
+  describe('caching and performance', () => {
+    it('should cache analysis results for repeated requests', async () => {
+      const imageUrl = 'https://example.com/cached-photo.jpg';
+      // First request
+      const result1 = await photoAIService.analyzePhotoStyle(imageUrl);
+      // Second request - should use cache
+      const result2 = await photoAIService.analyzePhotoStyle(imageUrl);
+      expect(mockOpenAI.analyzeImage).toHaveBeenCalledTimes(1); // Only called once due to caching
+      expect(result1).toEqual(result2);
+    it('should handle cache expiration', async () => {
+      const imageUrl = 'https://example.com/expiry-test.jpg';
+      // Mock a very short cache TTL for testing
+      jest.spyOn(photoAIService as any, 'getCacheTTL').mockReturnValue(1); // 1ms TTL
+      await photoAIService.analyzePhotoStyle(imageUrl);
+      // Wait for cache to expire
+      await new Promise(resolve => setTimeout(resolve, 10));
+      // Second request - should make new API call
+      expect(mockOpenAI.analyzeImage).toHaveBeenCalledTimes(2);
+});

@@ -1,0 +1,586 @@
+'use client';
+
+import React, { useState, useEffect } from 'react';
+import { Settings, Save, Plus, Trash2, Copy, Check } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { Badge } from '@/components/ui/badge';
+import { Slider } from '@/components/ui/slider';
+import { toast } from 'sonner';
+import {
+  TaskCategoryService,
+  TaskCategory,
+  CategoryPreference,
+  WEDDING_TYPE_TEMPLATES,
+  PHASE_CONFIG,
+} from '@/lib/services/taskCategories';
+import { cn } from '@/lib/utils';
+
+interface CategoryPreferencesProps {
+  organizationId: string;
+  onPreferencesSaved?: () => void;
+}
+
+interface WeddingTypeConfig {
+  type: string;
+  name: string;
+  preferences: CategoryPreference[];
+  estimatedGuestCount: number;
+  averageTaskCount: number;
+}
+
+export default function CategoryPreferences({
+  organizationId,
+  onPreferencesSaved,
+}: CategoryPreferencesProps) {
+  const [categories, setCategories] = useState<TaskCategory[]>([]);
+  const [weddingTypeConfigs, setWeddingTypeConfigs] = useState<
+    WeddingTypeConfig[]
+  >([]);
+  const [selectedWeddingType, setSelectedWeddingType] =
+    useState<string>('traditional');
+  const [editMode, setEditMode] = useState(false);
+  const [hasChanges, setHasChanges] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    loadData();
+  }, [organizationId]);
+
+  const loadData = async () => {
+    try {
+      setLoading(true);
+
+      // Load categories
+      const categoriesData =
+        await TaskCategoryService.getCategories(organizationId);
+      setCategories(categoriesData);
+
+      // Load preferences for each wedding type
+      const configs: WeddingTypeConfig[] = [];
+
+      for (const [typeKey, template] of Object.entries(
+        WEDDING_TYPE_TEMPLATES,
+      )) {
+        const preferences = await TaskCategoryService.getCategoryPreferences(
+          organizationId,
+          typeKey,
+        );
+
+        configs.push({
+          type: typeKey,
+          name: template.name,
+          preferences:
+            preferences.length > 0
+              ? preferences
+              : createDefaultPreferences(categoriesData, typeKey),
+          estimatedGuestCount: template.typical_guest_count,
+          averageTaskCount: template.categories.length * 10, // Estimate
+        });
+      }
+
+      setWeddingTypeConfigs(configs);
+    } catch (error) {
+      console.error('Error loading data:', error);
+      toast.error('Failed to load preferences');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const createDefaultPreferences = (
+    categories: TaskCategory[],
+    weddingType: string,
+  ): CategoryPreference[] => {
+    const template = WEDDING_TYPE_TEMPLATES[weddingType];
+    if (!template) return [];
+
+    return categories
+      .filter((cat) => template.categories.includes(cat.phase))
+      .map((cat) => ({
+        id: crypto.randomUUID(),
+        organization_id: organizationId,
+        wedding_type: weddingType,
+        category_id: cat.id,
+        is_required: ['ceremony', 'reception'].includes(cat.phase),
+        default_task_count: cat.phase === 'ceremony' ? 15 : 10,
+        typical_duration_minutes: cat.phase === 'ceremony' ? 30 : 60,
+        notes: '',
+      }));
+  };
+
+  const handlePreferenceChange = (
+    weddingType: string,
+    categoryId: string,
+    field: keyof CategoryPreference,
+    value: any,
+  ) => {
+    setWeddingTypeConfigs((prev) =>
+      prev.map((config) => {
+        if (config.type !== weddingType) return config;
+
+        return {
+          ...config,
+          preferences: config.preferences.map((pref) =>
+            pref.category_id === categoryId
+              ? { ...pref, [field]: value }
+              : pref,
+          ),
+        };
+      }),
+    );
+
+    setHasChanges(true);
+  };
+
+  const addCategoryToWeddingType = (
+    weddingType: string,
+    categoryId: string,
+  ) => {
+    const category = categories.find((c) => c.id === categoryId);
+    if (!category) return;
+
+    const newPreference: CategoryPreference = {
+      id: crypto.randomUUID(),
+      organization_id: organizationId,
+      wedding_type: weddingType,
+      category_id: categoryId,
+      is_required: false,
+      default_task_count: 5,
+      typical_duration_minutes: 30,
+      notes: '',
+    };
+
+    setWeddingTypeConfigs((prev) =>
+      prev.map((config) => {
+        if (config.type !== weddingType) return config;
+
+        return {
+          ...config,
+          preferences: [...config.preferences, newPreference],
+        };
+      }),
+    );
+
+    setHasChanges(true);
+  };
+
+  const removeCategoryFromWeddingType = (
+    weddingType: string,
+    categoryId: string,
+  ) => {
+    setWeddingTypeConfigs((prev) =>
+      prev.map((config) => {
+        if (config.type !== weddingType) return config;
+
+        return {
+          ...config,
+          preferences: config.preferences.filter(
+            (pref) => pref.category_id !== categoryId,
+          ),
+        };
+      }),
+    );
+
+    setHasChanges(true);
+  };
+
+  const copyPreferencesFromType = (fromType: string, toType: string) => {
+    const sourceConfig = weddingTypeConfigs.find((c) => c.type === fromType);
+    if (!sourceConfig) return;
+
+    setWeddingTypeConfigs((prev) =>
+      prev.map((config) => {
+        if (config.type !== toType) return config;
+
+        return {
+          ...config,
+          preferences: sourceConfig.preferences.map((pref) => ({
+            ...pref,
+            id: crypto.randomUUID(),
+            wedding_type: toType,
+          })),
+        };
+      }),
+    );
+
+    setHasChanges(true);
+    toast.success(`Copied preferences from ${sourceConfig.name}`);
+  };
+
+  const saveAllPreferences = async () => {
+    try {
+      for (const config of weddingTypeConfigs) {
+        await TaskCategoryService.saveCategoryPreferences(config.preferences);
+      }
+
+      setHasChanges(false);
+      toast.success('All preferences saved successfully');
+      onPreferencesSaved?.();
+    } catch (error) {
+      console.error('Error saving preferences:', error);
+      toast.error('Failed to save preferences');
+    }
+  };
+
+  const currentConfig = weddingTypeConfigs.find(
+    (c) => c.type === selectedWeddingType,
+  );
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <Card>
+        <CardHeader>
+          <div className="flex justify-between items-start">
+            <div>
+              <CardTitle className="flex items-center gap-2">
+                <Settings className="w-5 h-5" />
+                Category Preferences by Wedding Type
+              </CardTitle>
+              <CardDescription className="mt-2">
+                Configure which task categories are used for different types of
+                weddings. This helps automatically set up the right workflow for
+                each couple.
+              </CardDescription>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Button
+                variant={editMode ? 'default' : 'outline'}
+                onClick={() => setEditMode(!editMode)}
+              >
+                {editMode ? 'View Mode' : 'Edit Mode'}
+              </Button>
+
+              {hasChanges && (
+                <Button onClick={saveAllPreferences}>
+                  <Save className="w-4 h-4 mr-2" />
+                  Save All Changes
+                </Button>
+              )}
+            </div>
+          </div>
+        </CardHeader>
+      </Card>
+
+      {/* Wedding Type Tabs */}
+      <Tabs value={selectedWeddingType} onValueChange={setSelectedWeddingType}>
+        <TabsList className="grid grid-cols-5 w-full">
+          {weddingTypeConfigs.map((config) => (
+            <TabsTrigger key={config.type} value={config.type}>
+              <div className="text-center">
+                <span className="block">{config.name}</span>
+                <span className="text-xs text-gray-500">
+                  ~{config.estimatedGuestCount} guests
+                </span>
+              </div>
+            </TabsTrigger>
+          ))}
+        </TabsList>
+
+        {weddingTypeConfigs.map((config) => (
+          <TabsContent
+            key={config.type}
+            value={config.type}
+            className="space-y-4"
+          >
+            {/* Quick Actions */}
+            {editMode && (
+              <Card>
+                <CardContent className="pt-4">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm text-gray-600">
+                      Quick Actions for {config.name}
+                    </p>
+                    <div className="flex gap-2">
+                      <Select
+                        onValueChange={(value) =>
+                          copyPreferencesFromType(value, config.type)
+                        }
+                      >
+                        <SelectTrigger className="w-[200px]">
+                          <SelectValue placeholder="Copy from..." />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {weddingTypeConfigs
+                            .filter((c) => c.type !== config.type)
+                            .map((c) => (
+                              <SelectItem key={c.type} value={c.type}>
+                                <div className="flex items-center gap-2">
+                                  <Copy className="w-4 h-4" />
+                                  {c.name}
+                                </div>
+                              </SelectItem>
+                            ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Category Preferences Grid */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg">
+                  Categories for {config.name}
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  {config.preferences.map((pref) => {
+                    const category = categories.find(
+                      (c) => c.id === pref.category_id,
+                    );
+                    if (!category) return null;
+
+                    return (
+                      <div
+                        key={pref.category_id}
+                        className={cn(
+                          'p-4 border rounded-lg',
+                          pref.is_required && 'border-blue-200 bg-blue-50',
+                        )}
+                      >
+                        <div className="flex items-start justify-between mb-4">
+                          <div className="flex items-center gap-3">
+                            <div
+                              className="w-10 h-10 rounded-lg flex items-center justify-center text-white"
+                              style={{ backgroundColor: category.color_hex }}
+                            >
+                              {PHASE_CONFIG[category.phase]?.icon}
+                            </div>
+                            <div>
+                              <h4 className="font-medium flex items-center gap-2">
+                                {category.name}
+                                {pref.is_required && (
+                                  <Badge variant="secondary">Required</Badge>
+                                )}
+                              </h4>
+                              <p className="text-sm text-gray-500">
+                                {PHASE_CONFIG[category.phase]?.label} Phase
+                              </p>
+                            </div>
+                          </div>
+
+                          {editMode && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() =>
+                                removeCategoryFromWeddingType(
+                                  config.type,
+                                  pref.category_id,
+                                )
+                              }
+                            >
+                              <Trash2 className="w-4 h-4 text-red-500" />
+                            </Button>
+                          )}
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                          {/* Is Required Toggle */}
+                          <div className="space-y-2">
+                            <Label className="text-sm">Required Category</Label>
+                            <div className="flex items-center space-x-2">
+                              <Switch
+                                checked={pref.is_required}
+                                onCheckedChange={(checked) =>
+                                  handlePreferenceChange(
+                                    config.type,
+                                    pref.category_id,
+                                    'is_required',
+                                    checked,
+                                  )
+                                }
+                                disabled={!editMode}
+                              />
+                              <span className="text-sm text-gray-600">
+                                {pref.is_required ? 'Yes' : 'No'}
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Default Task Count */}
+                          <div className="space-y-2">
+                            <Label className="text-sm">
+                              Default Tasks: {pref.default_task_count}
+                            </Label>
+                            <Slider
+                              value={[pref.default_task_count]}
+                              onValueChange={([value]) =>
+                                handlePreferenceChange(
+                                  config.type,
+                                  pref.category_id,
+                                  'default_task_count',
+                                  value,
+                                )
+                              }
+                              max={50}
+                              min={0}
+                              step={5}
+                              disabled={!editMode}
+                              className="w-full"
+                            />
+                          </div>
+
+                          {/* Typical Duration */}
+                          <div className="space-y-2">
+                            <Label className="text-sm">
+                              Duration: {pref.typical_duration_minutes} min
+                            </Label>
+                            <Slider
+                              value={[pref.typical_duration_minutes]}
+                              onValueChange={([value]) =>
+                                handlePreferenceChange(
+                                  config.type,
+                                  pref.category_id,
+                                  'typical_duration_minutes',
+                                  value,
+                                )
+                              }
+                              max={180}
+                              min={15}
+                              step={15}
+                              disabled={!editMode}
+                              className="w-full"
+                            />
+                          </div>
+                        </div>
+
+                        {/* Notes */}
+                        {editMode && (
+                          <div className="mt-4">
+                            <Label className="text-sm">Notes</Label>
+                            <Input
+                              value={pref.notes || ''}
+                              onChange={(e) =>
+                                handlePreferenceChange(
+                                  config.type,
+                                  pref.category_id,
+                                  'notes',
+                                  e.target.value,
+                                )
+                              }
+                              placeholder="Add notes about this category for this wedding type..."
+                              className="mt-1"
+                            />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Add Category Button */}
+                {editMode && (
+                  <div className="mt-4">
+                    <Select
+                      onValueChange={(value) =>
+                        addCategoryToWeddingType(config.type, value)
+                      }
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="Add a category to this wedding type..." />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {categories
+                          .filter(
+                            (cat) =>
+                              !config.preferences.some(
+                                (p) => p.category_id === cat.id,
+                              ),
+                          )
+                          .map((cat) => (
+                            <SelectItem key={cat.id} value={cat.id}>
+                              <div className="flex items-center gap-2">
+                                <div
+                                  className="w-4 h-4 rounded"
+                                  style={{ backgroundColor: cat.color_hex }}
+                                />
+                                <span>{cat.name}</span>
+                                <span className="text-xs text-gray-500">
+                                  ({PHASE_CONFIG[cat.phase]?.label})
+                                </span>
+                              </div>
+                            </SelectItem>
+                          ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Summary Stats */}
+            <Card>
+              <CardContent className="pt-6">
+                <div className="grid grid-cols-3 gap-4 text-center">
+                  <div>
+                    <p className="text-2xl font-bold">
+                      {config.preferences.filter((p) => p.is_required).length}
+                    </p>
+                    <p className="text-sm text-gray-500">Required Categories</p>
+                  </div>
+                  <div>
+                    <p className="text-2xl font-bold">
+                      {config.preferences.reduce(
+                        (sum, p) => sum + p.default_task_count,
+                        0,
+                      )}
+                    </p>
+                    <p className="text-sm text-gray-500">Total Default Tasks</p>
+                  </div>
+                  <div>
+                    <p className="text-2xl font-bold">
+                      {Math.round(
+                        config.preferences.reduce(
+                          (sum, p) =>
+                            sum +
+                            p.default_task_count * p.typical_duration_minutes,
+                          0,
+                        ) / 60,
+                      )}
+                      h
+                    </p>
+                    <p className="text-sm text-gray-500">
+                      Estimated Total Time
+                    </p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        ))}
+      </Tabs>
+    </div>
+  );
+}

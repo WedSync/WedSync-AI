@@ -1,0 +1,479 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import {
+  UserIcon,
+  EyeIcon,
+  ClockIcon,
+  ExclamationTriangleIcon,
+  ShieldExclamationIcon,
+  CheckCircleIcon,
+  MapPinIcon,
+  ComputerDesktopIcon,
+  DevicePhoneMobileIcon,
+} from '@heroicons/react/24/outline';
+
+interface UserBehaviorAnalyzerProps {
+  timeframe: string;
+  className?: string;
+}
+
+interface SuspiciousActivity {
+  id: string;
+  userId: string;
+  userEmail: string;
+  userType: 'couple' | 'supplier' | 'venue' | 'admin';
+  activityType:
+    | 'rapid_browsing'
+    | 'unusual_location'
+    | 'suspicious_pattern'
+    | 'data_scraping'
+    | 'multiple_accounts';
+  riskScore: number; // 0-100
+  description: string;
+  weddingContext: string;
+  detectedAt: Date;
+  location: string;
+  deviceType: string;
+  actionsTaken: string[];
+  resolved: boolean;
+}
+
+interface BehaviorMetrics {
+  totalUsers: number;
+  suspiciousUsers: number;
+  highRiskUsers: number;
+  behaviorPatterns: {
+    rapidBrowsing: number;
+    unusualLocation: number;
+    dataScraping: number;
+    multipleAccounts: number;
+  };
+  weddingSpecificRisks: {
+    supplierDataHarvesting: number;
+    fakeConsultations: number;
+    competitorReconnaissance: number;
+    paymentFraud: number;
+  };
+}
+
+export function UserBehaviorAnalyzer({
+  timeframe,
+  className = '',
+}: UserBehaviorAnalyzerProps) {
+  const [suspiciousActivities, setSuspiciousActivities] = useState<
+    SuspiciousActivity[]
+  >([]);
+  const [metrics, setMetrics] = useState<BehaviorMetrics | null>(null);
+  const [selectedRiskLevel, setSelectedRiskLevel] = useState<string>('all');
+
+  useEffect(() => {
+    // Mock data generation
+    const mockActivities: SuspiciousActivity[] = [
+      {
+        id: 'suspicious_001',
+        userId: 'user_123',
+        userEmail: 'competitor@example.com',
+        userType: 'supplier',
+        activityType: 'data_scraping',
+        riskScore: 87,
+        description:
+          'User rapidly viewed 50+ wedding supplier profiles in 10 minutes',
+        weddingContext:
+          'Potential competitor harvesting supplier contact details and pricing information',
+        detectedAt: new Date(Date.now() - 15 * 60000),
+        location: 'Unknown Location',
+        deviceType: 'Desktop',
+        actionsTaken: ['Rate limited', 'Account flagged'],
+        resolved: false,
+      },
+      {
+        id: 'suspicious_002',
+        userId: 'user_456',
+        userEmail: 'fake.couple@tempmail.com',
+        userType: 'couple',
+        activityType: 'suspicious_pattern',
+        riskScore: 73,
+        description:
+          'Multiple fake consultation requests with identical patterns',
+        weddingContext:
+          'Spam consultation forms affecting supplier response quality and time',
+        detectedAt: new Date(Date.now() - 45 * 60000),
+        location: 'Manchester, UK',
+        deviceType: 'Mobile',
+        actionsTaken: ['Forms blocked', 'IP monitored'],
+        resolved: false,
+      },
+      {
+        id: 'suspicious_003',
+        userId: 'user_789',
+        userEmail: 'venue@legitvenue.com',
+        userType: 'venue',
+        activityType: 'unusual_location',
+        riskScore: 45,
+        description:
+          'Account accessed from 3 different countries within 24 hours',
+        weddingContext:
+          'Potential account compromise affecting venue booking system and couple data',
+        detectedAt: new Date(Date.now() - 90 * 60000),
+        location: 'Multiple locations',
+        deviceType: 'Various',
+        actionsTaken: ['MFA required', 'Password reset sent'],
+        resolved: true,
+      },
+      {
+        id: 'suspicious_004',
+        userId: 'user_101',
+        userEmail: 'photographer@studio.com',
+        userType: 'supplier',
+        activityType: 'rapid_browsing',
+        riskScore: 92,
+        description:
+          'Rapid browsing of couple profiles and wedding details without legitimate business purpose',
+        weddingContext:
+          'Unauthorized access to couple wedding information including personal details and dates',
+        detectedAt: new Date(Date.now() - 120 * 60000),
+        location: 'Birmingham, UK',
+        deviceType: 'Desktop',
+        actionsTaken: ['Account suspended', 'Investigation opened'],
+        resolved: false,
+      },
+    ];
+
+    const mockMetrics: BehaviorMetrics = {
+      totalUsers: 2847,
+      suspiciousUsers: 23,
+      highRiskUsers: 8,
+      behaviorPatterns: {
+        rapidBrowsing: 12,
+        unusualLocation: 7,
+        dataScraping: 5,
+        multipleAccounts: 3,
+      },
+      weddingSpecificRisks: {
+        supplierDataHarvesting: 8,
+        fakeConsultations: 6,
+        competitorReconnaissance: 4,
+        paymentFraud: 2,
+      },
+    };
+
+    setSuspiciousActivities(mockActivities);
+    setMetrics(mockMetrics);
+  }, [timeframe]);
+
+  const getRiskColor = (riskScore: number) => {
+    if (riskScore >= 80) return 'text-error-700 bg-error-50 border-error-200';
+    if (riskScore >= 60)
+      return 'text-orange-700 bg-orange-50 border-orange-200';
+    if (riskScore >= 40)
+      return 'text-warning-700 bg-warning-50 border-warning-200';
+    return 'text-blue-700 bg-blue-50 border-blue-200';
+  };
+
+  const getRiskLevel = (riskScore: number) => {
+    if (riskScore >= 80) return 'Critical';
+    if (riskScore >= 60) return 'High';
+    if (riskScore >= 40) return 'Medium';
+    return 'Low';
+  };
+
+  const getActivityTypeLabel = (type: string) => {
+    switch (type) {
+      case 'rapid_browsing':
+        return 'Rapid Browsing';
+      case 'unusual_location':
+        return 'Unusual Location';
+      case 'suspicious_pattern':
+        return 'Suspicious Pattern';
+      case 'data_scraping':
+        return 'Data Scraping';
+      case 'multiple_accounts':
+        return 'Multiple Accounts';
+      default:
+        return 'Unknown';
+    }
+  };
+
+  const getDeviceIcon = (deviceType: string) => {
+    if (deviceType.toLowerCase().includes('mobile')) {
+      return <DevicePhoneMobileIcon className="w-4 h-4" />;
+    }
+    return <ComputerDesktopIcon className="w-4 h-4" />;
+  };
+
+  const filteredActivities = suspiciousActivities.filter((activity) => {
+    if (selectedRiskLevel === 'all') return true;
+    if (selectedRiskLevel === 'critical' && activity.riskScore >= 80)
+      return true;
+    if (
+      selectedRiskLevel === 'high' &&
+      activity.riskScore >= 60 &&
+      activity.riskScore < 80
+    )
+      return true;
+    if (
+      selectedRiskLevel === 'medium' &&
+      activity.riskScore >= 40 &&
+      activity.riskScore < 60
+    )
+      return true;
+    if (selectedRiskLevel === 'low' && activity.riskScore < 40) return true;
+    return false;
+  });
+
+  if (!metrics) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
+        <span className="ml-3 text-gray-600">
+          Analyzing user behavior patterns...
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={`bg-white rounded-xl border border-gray-200 shadow-xs p-6 ${className}`}
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900">
+            User Behavior Analysis
+          </h3>
+          <p className="text-sm text-gray-600">
+            Suspicious activity detection and pattern recognition
+          </p>
+        </div>
+
+        <div className="flex items-center space-x-2">
+          <EyeIcon className="w-5 h-5 text-primary-600" />
+          <span className="text-sm font-medium text-primary-600">
+            Active Monitoring
+          </span>
+        </div>
+      </div>
+
+      {/* Metrics Overview */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+        <div className="text-center p-4 bg-gray-50 rounded-lg">
+          <p className="text-2xl font-bold text-gray-900">
+            {metrics.totalUsers.toLocaleString()}
+          </p>
+          <p className="text-sm text-gray-600">Total Users</p>
+        </div>
+
+        <div className="text-center p-4 bg-warning-50 rounded-lg">
+          <p className="text-2xl font-bold text-warning-700">
+            {metrics.suspiciousUsers}
+          </p>
+          <p className="text-sm text-warning-600">Suspicious Users</p>
+        </div>
+
+        <div className="text-center p-4 bg-error-50 rounded-lg">
+          <p className="text-2xl font-bold text-error-700">
+            {metrics.highRiskUsers}
+          </p>
+          <p className="text-sm text-error-600">High Risk Users</p>
+        </div>
+
+        <div className="text-center p-4 bg-primary-50 rounded-lg">
+          <p className="text-2xl font-bold text-primary-700">
+            {((metrics.suspiciousUsers / metrics.totalUsers) * 100).toFixed(2)}%
+          </p>
+          <p className="text-sm text-primary-600">Risk Rate</p>
+        </div>
+      </div>
+
+      {/* Wedding-Specific Risk Categories */}
+      <div className="bg-gradient-to-r from-orange-50 to-red-50 rounded-lg border border-orange-200 p-4 mb-6">
+        <h4 className="text-sm font-semibold text-orange-900 mb-3">
+          Wedding Industry Security Risks
+        </h4>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="text-center">
+            <p className="text-lg font-bold text-orange-900">
+              {metrics.weddingSpecificRisks.supplierDataHarvesting}
+            </p>
+            <p className="text-xs text-orange-700">Supplier Data Harvesting</p>
+          </div>
+          <div className="text-center">
+            <p className="text-lg font-bold text-orange-900">
+              {metrics.weddingSpecificRisks.fakeConsultations}
+            </p>
+            <p className="text-xs text-orange-700">Fake Consultations</p>
+          </div>
+          <div className="text-center">
+            <p className="text-lg font-bold text-orange-900">
+              {metrics.weddingSpecificRisks.competitorReconnaissance}
+            </p>
+            <p className="text-xs text-orange-700">Competitor Reconnaissance</p>
+          </div>
+          <div className="text-center">
+            <p className="text-lg font-bold text-orange-900">
+              {metrics.weddingSpecificRisks.paymentFraud}
+            </p>
+            <p className="text-xs text-orange-700">Payment Fraud</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Behavior Pattern Breakdown */}
+      <div className="mb-6">
+        <h4 className="text-sm font-semibold text-gray-900 mb-3">
+          Detected Behavior Patterns
+        </h4>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {Object.entries(metrics.behaviorPatterns).map(([pattern, count]) => (
+            <div
+              key={pattern}
+              className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
+            >
+              <span className="text-sm text-gray-700 capitalize">
+                {pattern.replace(/([A-Z])/g, ' $1')}
+              </span>
+              <span className="text-sm font-semibold text-gray-900">
+                {count}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Filter Controls */}
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <label className="text-sm font-medium text-gray-700 mr-2">
+            Risk Level:
+          </label>
+          <select
+            value={selectedRiskLevel}
+            onChange={(e) => setSelectedRiskLevel(e.target.value)}
+            className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-4 focus:ring-primary-100 focus:border-primary-300"
+          >
+            <option value="all">All Levels</option>
+            <option value="critical">Critical (80-100)</option>
+            <option value="high">High (60-79)</option>
+            <option value="medium">Medium (40-59)</option>
+            <option value="low">Low (0-39)</option>
+          </select>
+        </div>
+
+        <span className="text-sm text-gray-500">
+          Showing {filteredActivities.length} of {suspiciousActivities.length}{' '}
+          activities
+        </span>
+      </div>
+
+      {/* Suspicious Activities List */}
+      <div className="space-y-4">
+        {filteredActivities.length === 0 ? (
+          <div className="text-center py-8">
+            <CheckCircleIcon className="w-12 h-12 text-success-400 mx-auto mb-3" />
+            <h4 className="text-lg font-medium text-gray-900 mb-2">
+              No suspicious activities
+            </h4>
+            <p className="text-gray-600">
+              All user behavior patterns appear normal for the selected
+              criteria.
+            </p>
+          </div>
+        ) : (
+          filteredActivities.map((activity) => (
+            <div
+              key={activity.id}
+              className={`border rounded-lg p-4 ${activity.resolved ? 'bg-green-25' : 'bg-white'}`}
+            >
+              <div className="flex items-start justify-between">
+                <div className="flex items-start space-x-3 flex-1">
+                  <UserIcon className="w-5 h-5 text-gray-400 mt-1" />
+
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center space-x-2 mb-2">
+                      <h4 className="text-sm font-medium text-gray-900">
+                        {activity.userEmail}
+                      </h4>
+                      <span className="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-blue-100 text-blue-700 capitalize">
+                        {activity.userType}
+                      </span>
+                      <span
+                        className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium border ${getRiskColor(activity.riskScore)}`}
+                      >
+                        {getRiskLevel(activity.riskScore)}
+                      </span>
+                      {activity.resolved && (
+                        <span className="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-success-100 text-success-700">
+                          Resolved
+                        </span>
+                      )}
+                    </div>
+
+                    <p className="text-sm text-gray-900 mb-2">
+                      {activity.description}
+                    </p>
+
+                    <div className="flex items-center space-x-4 text-xs text-gray-500 mb-3">
+                      <span className="flex items-center space-x-1">
+                        <ClockIcon className="w-3 h-3" />
+                        <span>
+                          {new Date(activity.detectedAt).toLocaleTimeString()}
+                        </span>
+                      </span>
+                      <span className="flex items-center space-x-1">
+                        <MapPinIcon className="w-3 h-3" />
+                        <span>{activity.location}</span>
+                      </span>
+                      <span className="flex items-center space-x-1">
+                        {getDeviceIcon(activity.deviceType)}
+                        <span>{activity.deviceType}</span>
+                      </span>
+                      <span>{getActivityTypeLabel(activity.activityType)}</span>
+                    </div>
+
+                    <div className="p-3 bg-orange-50 rounded border border-orange-200 mb-3">
+                      <div className="text-xs text-orange-600 font-medium mb-1">
+                        Wedding Industry Impact:
+                      </div>
+                      <div className="text-sm text-orange-700">
+                        {activity.weddingContext}
+                      </div>
+                    </div>
+
+                    {activity.actionsTaken.length > 0 && (
+                      <div>
+                        <div className="text-xs text-gray-600 font-medium mb-1">
+                          Actions Taken:
+                        </div>
+                        <div className="flex flex-wrap gap-1">
+                          {activity.actionsTaken.map((action, index) => (
+                            <span
+                              key={index}
+                              className="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-blue-100 text-blue-700"
+                            >
+                              {action}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="ml-4">
+                  <div className="text-right">
+                    <div className="text-lg font-bold text-gray-900">
+                      {activity.riskScore}
+                    </div>
+                    <div className="text-xs text-gray-500">Risk Score</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}

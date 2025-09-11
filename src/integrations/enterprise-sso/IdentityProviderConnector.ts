@@ -1,0 +1,479 @@
+/**
+ * Multi-Provider Identity Authentication Connector
+ *
+ * Enterprise-grade SSO connector that orchestrates authentication across
+ * multiple identity providers including Active Directory, Okta, Azure AD, and Auth0.
+ *
+ * Designed for large wedding venues, hotel chains with wedding facilities,
+ * and enterprise-level wedding planning organizations that need centralized
+ * identity management across their corporate systems.
+ *
+ * @author WedSync Enterprise Team C
+ * @version 1.0.0
+ */
+
+import { createClient } from '@supabase/supabase-js';
+import { Database } from '../../types/database';
+
+/**
+ * Supported identity provider types
+ */
+export enum IdentityProviderType {
+  ACTIVE_DIRECTORY = 'active_directory',
+  OKTA = 'okta',
+  AZURE_AD = 'azure_ad',
+  AUTH0 = 'auth0',
+  SAML = 'saml',
+  OIDC = 'oidc',
+}
+
+/**
+ * Authentication protocols supported
+ */
+export enum AuthProtocol {
+  SAML_20 = 'saml2.0',
+  OAUTH2 = 'oauth2',
+  OIDC = 'openid_connect',
+  LDAP = 'ldap',
+}
+
+/**
+ * User provisioning strategies
+ */
+export enum ProvisioningStrategy {
+  JIT = 'just_in_time', // Create user on first login
+  PRE_PROVISIONED = 'pre_provisioned', // User must exist before login
+  SYNC = 'directory_sync', // Sync from directory periodically
+}
+
+/**
+ * Enterprise user attributes from identity provider
+ */
+export interface EnterpriseUserAttributes {
+  employeeId?: string;
+  department?: string;
+  jobTitle?: string;
+  manager?: string;
+  location?: string;
+  phone?: string;
+  groups?: string[];
+  roles?: string[];
+  customAttributes?: Record<string, unknown>;
+}
+
+/**
+ * Identity provider configuration
+ */
+export interface IdentityProviderConfig {
+  id: string;
+  name: string;
+  type: IdentityProviderType;
+  protocol: AuthProtocol;
+  enabled: boolean;
+
+  // Connection settings
+  endpoint: string;
+  clientId?: string;
+  clientSecret?: string;
+  certificate?: string;
+  privateKey?: string;
+
+  // SAML specific
+  ssoUrl?: string;
+  sloUrl?: string;
+  entityId?: string;
+
+  // LDAP specific
+  baseDn?: string;
+  bindDn?: string;
+  bindPassword?: string;
+
+  // User provisioning
+  provisioningStrategy: ProvisioningStrategy;
+  userAttributeMapping: Record<string, string>;
+  groupMapping?: Record<string, string>;
+
+  // Security settings
+  requireSignedAssertion?: boolean;
+  requireEncryption?: boolean;
+  allowedCorsOrigins?: string[];
+
+  // Wedding industry specific
+  defaultVenueId?: string;
+  defaultOrganizationId?: string;
+  autoAssignRoles?: string[];
+}
+
+/**
+ * Authentication result from identity provider
+ */
+export interface AuthenticationResult {
+  success: boolean;
+  userId?: string;
+  email: string;
+  displayName?: string;
+  attributes: EnterpriseUserAttributes;
+  provider: string;
+  sessionToken?: string;
+  refreshToken?: string;
+  expiresAt?: Date;
+  error?: string;
+  errorCode?: string;
+}
+
+/**
+ * SSO session information
+ */
+export interface SSOSession {
+  sessionId: string;
+  userId: string;
+  providerId: string;
+  createdAt: Date;
+  expiresAt: Date;
+  isActive: boolean;
+  lastActivity: Date;
+  ipAddress: string;
+  userAgent: string;
+}
+
+/**
+ * Multi-provider identity authentication connector
+ *
+ * Orchestrates enterprise SSO authentication across multiple identity providers
+ * while maintaining unified user sessions in WedSync platform.
+ */
+export class IdentityProviderConnector {
+  private supabase: ReturnType<typeof createClient<Database>>;
+  private providers: Map<string, IdentityProviderConfig> = new Map();
+  private readonly MAX_SESSION_DURATION = 8 * 60 * 60 * 1000; // 8 hours
+
+  constructor(supabaseUrl: string, supabaseServiceKey: string) {
+    this.supabase = createClient<Database>(supabaseUrl, supabaseServiceKey);
+  }
+
+  /**
+   * Register an identity provider configuration
+   */
+  async registerProvider(config: IdentityProviderConfig): Promise<void> {
+    try {
+      // Validate configuration
+      this.validateProviderConfig(config);
+
+      // Store in database
+      const { error } = await this.supabase.from('identity_providers').upsert({
+        id: config.id,
+        name: config.name,
+        type: config.type,
+        protocol: config.protocol,
+        enabled: config.enabled,
+        config: config,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+
+      if (error) {
+        throw new Error(`Failed to register provider: ${error.message}`);
+      }
+
+      // Cache in memory
+      this.providers.set(config.id, config);
+
+      console.log(`Identity provider ${config.name} registered successfully`);
+    } catch (error) {
+      console.error(`Failed to register provider ${config.id}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Load all registered identity providers
+   */
+  async loadProviders(): Promise<void> {
+    try {
+      const { data: providers, error } = await this.supabase
+        .from('identity_providers')
+        .select('*')
+        .eq('enabled', true);
+
+      if (error) {
+        throw new Error(`Failed to load providers: ${error.message}`);
+      }
+
+      this.providers.clear();
+
+      if (providers) {
+        for (const provider of providers) {
+          this.providers.set(provider.id, provider.config);
+        }
+      }
+
+      console.log(`Loaded ${this.providers.size} identity providers`);
+    } catch (error) {
+      console.error('Failed to load identity providers:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Authenticate user through specified identity provider
+   */
+  async authenticate(
+    providerId: string,
+    authenticationData: Record<string, unknown>,
+    ipAddress: string,
+    userAgent: string,
+  ): Promise<AuthenticationResult> {
+    try {
+      const provider = this.providers.get(providerId);
+      if (!provider) {
+        throw new Error(`Identity provider ${providerId} not found`);
+      }
+
+      if (!provider.enabled) {
+        throw new Error(`Identity provider ${providerId} is disabled`);
+      }
+
+      // Delegate to specific provider implementation
+      let result: AuthenticationResult;
+
+      switch (provider.type) {
+        case IdentityProviderType.ACTIVE_DIRECTORY:
+          result = await this.authenticateActiveDirectory(
+            provider,
+            authenticationData,
+          );
+          break;
+        case IdentityProviderType.OKTA:
+          result = await this.authenticateOkta(provider, authenticationData);
+          break;
+        case IdentityProviderType.AZURE_AD:
+          result = await this.authenticateAzureAD(provider, authenticationData);
+          break;
+        case IdentityProviderType.AUTH0:
+          result = await this.authenticateAuth0(provider, authenticationData);
+          break;
+        default:
+          throw new Error(`Unsupported provider type: ${provider.type}`);
+      }
+
+      // Create SSO session if authentication successful
+      if (result.success && result.userId) {
+        await this.createSSOSession(
+          result.userId,
+          providerId,
+          ipAddress,
+          userAgent,
+        );
+      }
+
+      return result;
+    } catch (error) {
+      console.error(`Authentication failed for provider ${providerId}:`, error);
+      return {
+        success: false,
+        email: '',
+        attributes: {},
+        provider: providerId,
+        error: error instanceof Error ? error.message : 'Authentication failed',
+        errorCode: 'AUTH_FAILED',
+      };
+    }
+  }
+
+  /**
+   * Provision user in WedSync based on enterprise attributes
+   */
+  async provisionUser(
+    result: AuthenticationResult,
+    providerId: string,
+  ): Promise<string> {
+    const provider = this.providers.get(providerId);
+    if (!provider) {
+      throw new Error(`Provider ${providerId} not found`);
+    }
+
+    try {
+      // Check if user already exists
+      const { data: existingUser } = await this.supabase
+        .from('user_profiles')
+        .select('id, email')
+        .eq('email', result.email)
+        .single();
+
+      if (existingUser) {
+        // Update existing user with new attributes
+        await this.updateUserAttributes(
+          existingUser.id,
+          result.attributes,
+          provider,
+        );
+        return existingUser.id;
+      }
+
+      // Create new user based on provisioning strategy
+      if (
+        provider.provisioningStrategy === ProvisioningStrategy.PRE_PROVISIONED
+      ) {
+        throw new Error('User must be pre-provisioned but was not found');
+      }
+
+      // JIT provisioning - create new user
+      const { data: newUser, error } = await this.supabase
+        .from('user_profiles')
+        .insert({
+          email: result.email,
+          full_name: result.displayName || result.email,
+          enterprise_user_id: result.attributes.employeeId,
+          department: result.attributes.department,
+          job_title: result.attributes.jobTitle,
+          phone: result.attributes.phone,
+          identity_provider_id: providerId,
+          organization_id: provider.defaultOrganizationId,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .select()
+        .single();
+
+      if (error || !newUser) {
+        throw new Error(`Failed to create user: ${error?.message}`);
+      }
+
+      // Assign default roles if configured
+      if (provider.autoAssignRoles && provider.autoAssignRoles.length > 0) {
+        await this.assignUserRoles(newUser.id, provider.autoAssignRoles);
+      }
+
+      console.log(
+        `User ${result.email} provisioned successfully with ID ${newUser.id}`,
+      );
+      return newUser.id;
+    } catch (error) {
+      console.error(`Failed to provision user ${result.email}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Create SSO session tracking
+   */
+  private async createSSOSession(
+    userId: string,
+    providerId: string,
+    ipAddress: string,
+    userAgent: string,
+  ): Promise<void> {
+    const sessionId = crypto.randomUUID();
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + this.MAX_SESSION_DURATION);
+
+    await this.supabase.from('sso_sessions').insert({
+      id: sessionId,
+      user_id: userId,
+      provider_id: providerId,
+      created_at: now.toISOString(),
+      expires_at: expiresAt.toISOString(),
+      is_active: true,
+      last_activity: now.toISOString(),
+      ip_address: ipAddress,
+      user_agent: userAgent,
+    });
+  }
+
+  /**
+   * Validate identity provider configuration
+   */
+  private validateProviderConfig(config: IdentityProviderConfig): void {
+    if (!config.id || !config.name || !config.type) {
+      throw new Error('Provider ID, name, and type are required');
+    }
+
+    if (!config.endpoint) {
+      throw new Error('Provider endpoint is required');
+    }
+
+    // Validate protocol-specific requirements
+    switch (config.protocol) {
+      case AuthProtocol.OAUTH2:
+      case AuthProtocol.OIDC:
+        if (!config.clientId || !config.clientSecret) {
+          throw new Error('Client ID and secret are required for OAuth2/OIDC');
+        }
+        break;
+      case AuthProtocol.SAML_20:
+        if (!config.ssoUrl || !config.entityId) {
+          throw new Error('SSO URL and Entity ID are required for SAML');
+        }
+        break;
+      case AuthProtocol.LDAP:
+        if (!config.baseDn) {
+          throw new Error('Base DN is required for LDAP');
+        }
+        break;
+    }
+  }
+
+  // Placeholder methods for specific provider implementations
+  // These would be implemented by the specific provider connectors
+  private async authenticateActiveDirectory(
+    provider: IdentityProviderConfig,
+    authData: Record<string, unknown>,
+  ): Promise<AuthenticationResult> {
+    // Implementation would be in ActiveDirectoryIntegration.ts
+    throw new Error('Active Directory authentication not implemented');
+  }
+
+  private async authenticateOkta(
+    provider: IdentityProviderConfig,
+    authData: Record<string, unknown>,
+  ): Promise<AuthenticationResult> {
+    // Implementation would be in OktaConnector.ts
+    throw new Error('Okta authentication not implemented');
+  }
+
+  private async authenticateAzureAD(
+    provider: IdentityProviderConfig,
+    authData: Record<string, unknown>,
+  ): Promise<AuthenticationResult> {
+    // Implementation would be in AzureADIntegration.ts
+    throw new Error('Azure AD authentication not implemented');
+  }
+
+  private async authenticateAuth0(
+    provider: IdentityProviderConfig,
+    authData: Record<string, unknown>,
+  ): Promise<AuthenticationResult> {
+    // Implementation would be in Auth0Integration.ts
+    throw new Error('Auth0 authentication not implemented');
+  }
+
+  private async updateUserAttributes(
+    userId: string,
+    attributes: EnterpriseUserAttributes,
+    provider: IdentityProviderConfig,
+  ): Promise<void> {
+    await this.supabase
+      .from('user_profiles')
+      .update({
+        enterprise_user_id: attributes.employeeId,
+        department: attributes.department,
+        job_title: attributes.jobTitle,
+        phone: attributes.phone,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', userId);
+  }
+
+  private async assignUserRoles(
+    userId: string,
+    roles: string[],
+  ): Promise<void> {
+    const roleAssignments = roles.map((role) => ({
+      user_id: userId,
+      role_name: role,
+      assigned_at: new Date().toISOString(),
+    }));
+
+    await this.supabase.from('user_roles').insert(roleAssignments);
+  }
+}

@@ -1,0 +1,358 @@
+import { renderHook, waitFor, act } from '@testing-library/react';
+import { useSupplierSchedule } from '@/hooks/useSupplierSchedule';
+import { useAuth } from '@/hooks/useAuth';
+
+// Mock the useAuth hook
+jest.mock('@/hooks/useAuth', () => ({
+  useAuth: jest.fn(),
+}));
+
+// Mock fetch globally
+global.fetch = jest.fn();
+
+const mockUseAuth = useAuth as jest.MockedFunction<typeof useAuth>;
+const mockFetch = fetch as jest.MockedFunction<typeof fetch>;
+
+describe('useSupplierSchedule', () => {
+  beforeEach(() => {
+    mockUseAuth.mockReturnValue({
+      user: {
+        id: 'user-1',
+        role: 'vendor',
+        email: 'supplier@example.com',
+      },
+      loading: false,
+      error: null,
+      signIn: jest.fn(),
+      signOut: jest.fn(),
+      signUp: jest.fn(),
+      resetPassword: jest.fn(),
+      updateProfile: jest.fn(),
+    });
+
+    mockFetch.mockClear();
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('fetches schedule data on mount', async () => {
+    const mockScheduleData = {
+      schedule: {
+        id: 'schedule-1',
+        vendor_id: 'vendor-1',
+        todayEvents: [],
+        upcomingBookings: [],
+      },
+      todayEvents: [],
+      upcomingBookings: [],
+      conflicts: [],
+    };
+
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => mockScheduleData,
+    } as Response);
+
+    const { result } = renderHook(() => useSupplierSchedule());
+
+    expect(result.current.loading).toBe(true);
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(mockFetch).toHaveBeenCalledWith('/api/supplier/schedule?');
+    expect(result.current.schedule).toEqual(mockScheduleData.schedule);
+    expect(result.current.todayEvents).toEqual(mockScheduleData.todayEvents);
+    expect(result.current.upcomingBookings).toEqual(mockScheduleData.upcomingBookings);
+  });
+
+  it('handles fetch errors gracefully', async () => {
+    mockFetch.mockRejectedValueOnce(new Error('Network error'));
+
+    const { result } = renderHook(() => useSupplierSchedule());
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+      expect(result.current.error).toBe('Network error');
+    });
+  });
+
+  it('updates event status successfully', async () => {
+    const mockScheduleData = {
+      schedule: {
+        id: 'schedule-1',
+        vendor_id: 'vendor-1',
+        todayEvents: [
+          {
+            id: 'event-1',
+            title: 'Test Event',
+            status: 'pending',
+          },
+        ],
+        upcomingBookings: [],
+      },
+      todayEvents: [
+        {
+          id: 'event-1',
+          title: 'Test Event',
+          status: 'pending',
+        },
+      ],
+      upcomingBookings: [],
+      conflicts: [],
+    };
+
+    const updatedEvent = {
+      id: 'event-1',
+      title: 'Test Event',
+      status: 'confirmed',
+    };
+
+    // Mock initial fetch
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => mockScheduleData,
+    } as Response);
+
+    // Mock update fetch
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => updatedEvent,
+    } as Response);
+
+    const { result } = renderHook(() => useSupplierSchedule());
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    await act(async () => {
+      await result.current.updateEventStatus('event-1', 'confirmed');
+    });
+
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      '/api/supplier/schedule/events/event-1/status',
+      expect.objectContaining({
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ status: 'confirmed' }),
+      })
+    );
+  });
+
+  it('reports conflict successfully', async () => {
+    const mockScheduleData = {
+      schedule: { id: 'schedule-1', vendor_id: 'vendor-1' },
+      todayEvents: [],
+      upcomingBookings: [],
+      conflicts: [],
+    };
+
+    const mockConflict = {
+      id: 'conflict-1',
+      type: 'double_booking',
+      description: 'Two events at same time',
+      severity: 'critical',
+      status: 'active',
+    };
+
+    // Mock initial fetch
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => mockScheduleData,
+    } as Response);
+
+    // Mock conflict report fetch
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => mockConflict,
+    } as Response);
+
+    const { result } = renderHook(() => useSupplierSchedule());
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    await act(async () => {
+      await result.current.reportConflict(
+        ['event-1', 'event-2'],
+        'Two events scheduled at same time',
+        'double_booking'
+      );
+    });
+
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      '/api/supplier/schedule/conflicts',
+      expect.objectContaining({
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          event_ids: ['event-1', 'event-2'],
+          description: 'Two events scheduled at same time',
+          type: 'double_booking',
+        }),
+      })
+    );
+
+    expect(result.current.conflicts).toContainEqual(mockConflict);
+  });
+
+  it('confirms availability successfully', async () => {
+    const mockScheduleData = {
+      schedule: { id: 'schedule-1', vendor_id: 'vendor-1' },
+      todayEvents: [
+        {
+          id: 'event-1',
+          title: 'Test Event',
+          status: 'pending',
+        },
+      ],
+      upcomingBookings: [],
+      conflicts: [],
+    };
+
+    const confirmedEvent = {
+      id: 'event-1',
+      title: 'Test Event',
+      status: 'confirmed',
+    };
+
+    // Mock initial fetch
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => mockScheduleData,
+    } as Response);
+
+    // Mock confirm availability fetch
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => confirmedEvent,
+    } as Response);
+
+    const { result } = renderHook(() => useSupplierSchedule());
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    await act(async () => {
+      await result.current.confirmAvailability('event-1');
+    });
+
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      '/api/supplier/schedule/events/event-1/confirm',
+      expect.objectContaining({
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      })
+    );
+  });
+
+  it('exports schedule successfully', async () => {
+    const mockScheduleData = {
+      schedule: { id: 'schedule-1', vendor_id: 'vendor-1' },
+      todayEvents: [],
+      upcomingBookings: [],
+      conflicts: [],
+    };
+
+    // Mock initial fetch
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => mockScheduleData,
+    } as Response);
+
+    // Mock export fetch
+    const mockBlob = new Blob(['mock pdf content'], { type: 'application/pdf' });
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      blob: async () => mockBlob,
+    } as Response);
+
+    // Mock URL.createObjectURL
+    global.URL.createObjectURL = jest.fn(() => 'blob:url');
+    global.URL.revokeObjectURL = jest.fn();
+
+    const { result } = renderHook(() => useSupplierSchedule());
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    await act(async () => {
+      await result.current.exportSchedule('pdf', {
+        start: '2024-01-01',
+        end: '2024-01-31',
+      });
+    });
+
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      '/api/supplier/schedule/export?format=pdf&start_date=2024-01-01&end_date=2024-01-31'
+    );
+  });
+
+  it('handles non-vendor users', async () => {
+    mockUseAuth.mockReturnValue({
+      user: {
+        id: 'user-1',
+        role: 'couple', // Not a vendor
+        email: 'couple@example.com',
+      },
+      loading: false,
+      error: null,
+      signIn: jest.fn(),
+      signOut: jest.fn(),
+      signUp: jest.fn(),
+      resetPassword: jest.fn(),
+      updateProfile: jest.fn(),
+    });
+
+    const { result } = renderHook(() => useSupplierSchedule());
+
+    expect(result.current.loading).toBe(false);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('refetches data when date parameter changes', async () => {
+    const mockScheduleData = {
+      schedule: { id: 'schedule-1', vendor_id: 'vendor-1' },
+      todayEvents: [],
+      upcomingBookings: [],
+      conflicts: [],
+    };
+
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => mockScheduleData,
+    } as Response);
+
+    const { result, rerender } = renderHook(
+      ({ date }) => useSupplierSchedule(date),
+      { initialProps: { date: '2024-01-15' } }
+    );
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(mockFetch).toHaveBeenCalledWith('/api/supplier/schedule?date=2024-01-15');
+
+    rerender({ date: '2024-01-16' });
+
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalledWith('/api/supplier/schedule?date=2024-01-16');
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+});

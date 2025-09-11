@@ -1,0 +1,105 @@
+'use client';
+
+import React from 'react';
+import { Handle, Position, NodeProps } from '@xyflow/react';
+import { motion } from 'framer-motion';
+
+interface OverflowBaseNodeProps extends NodeProps {
+  icon?: React.ReactNode;
+  gradient?: string;
+  glowColor?: string;
+}
+
+export function OverflowBaseNode({
+  data,
+  icon,
+  gradient = 'from-blue-500 to-purple-600',
+  glowColor = 'rgba(59, 130, 246, 0.5)',
+  selected,
+}: OverflowBaseNodeProps) {
+  return (
+    <motion.div
+      initial={{ scale: 0.8, opacity: 0 }}
+      animate={{ scale: 1, opacity: 1 }}
+      whileHover={{ scale: 1.02 }}
+      transition={{ type: 'spring', stiffness: 300, damping: 20 }}
+      className={`
+        relative px-5 py-4 rounded-2xl border backdrop-blur-sm
+        ${selected ? 'border-white/30 shadow-2xl' : 'border-white/10 shadow-lg'}
+        min-w-[180px] cursor-pointer
+      `}
+      style={{
+        background: selected
+          ? `linear-gradient(135deg, ${glowColor} 0%, transparent 100%)`
+          : 'rgba(255, 255, 255, 0.05)',
+        boxShadow: selected
+          ? `0 8px 32px ${glowColor}, 0 0 80px ${glowColor}`
+          : '0 4px 24px rgba(0, 0, 0, 0.1)',
+      }}
+    >
+      {/* Gradient background */}
+      <div
+        className={`
+        absolute inset-0 rounded-2xl bg-gradient-to-br ${gradient} opacity-90
+      `}
+      />
+
+      {/* Glass effect overlay */}
+      <div className="absolute inset-0 rounded-2xl bg-white/5 backdrop-blur-md" />
+
+      {/* Content */}
+      <div className="relative z-10">
+        <Handle
+          type="target"
+          position={Position.Top}
+          className="w-3 h-3 bg-white/50 border-2 border-white/70"
+        />
+
+        <div className="flex items-center space-x-3">
+          {icon && (
+            <motion.div
+              whileHover={{ rotate: 360 }}
+              transition={{ duration: 0.5 }}
+              className="bg-white/20 text-white p-2 rounded-xl backdrop-blur-sm"
+            >
+              {icon}
+            </motion.div>
+          )}
+          <div className="flex-1">
+            <div className="text-white font-semibold text-sm">{data.label}</div>
+            {data.description && (
+              <div className="text-white/70 text-xs mt-1">
+                {data.description}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <Handle
+          type="source"
+          position={Position.Bottom}
+          className="w-3 h-3 bg-white/50 border-2 border-white/70"
+        />
+      </div>
+
+      {/* Animated glow effect */}
+      {selected && (
+        <motion.div
+          className="absolute inset-0 rounded-2xl"
+          animate={{
+            boxShadow: [
+              `0 0 20px ${glowColor}`,
+              `0 0 40px ${glowColor}`,
+              `0 0 20px ${glowColor}`,
+            ],
+          }}
+          transition={{
+            duration: 2,
+            repeat: Infinity,
+            ease: 'easeInOut',
+          }}
+        />
+      )}
+    </motion.div>
+  );
+}

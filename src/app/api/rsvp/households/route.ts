@@ -1,0 +1,705 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+
+// Validation schemas for Household Management
+const HouseholdSchema = z.object({
+  event_id: z.string().uuid(),
+  household_name: z.string().min(1),
+  primary_contact_invitation_id: z.string().uuid().optional(),
+  total_expected_guests: z.coerce.number().positive().default(1),
+  household_notes: z.string().optional(),
+  address_line1: z.string().optional(),
+  address_line2: z.string().optional(),
+  city: z.string().optional(),
+  state: z.string().max(10).optional(),
+  zip_code: z.string().max(20).optional(),
+});
+
+const UpdateHouseholdSchema = z.object({
+  household_name: z.string().min(1).optional(),
+  primary_contact_invitation_id: z.string().uuid().optional(),
+  total_expected_guests: z.coerce.number().positive().optional(),
+  household_notes: z.string().optional(),
+  address_line1: z.string().optional(),
+  address_line2: z.string().optional(),
+  city: z.string().optional(),
+  state: z.string().max(10).optional(),
+  zip_code: z.string().max(20).optional(),
+});
+
+const AssignToHouseholdSchema = z.object({
+  invitation_id: z.string().uuid(),
+  household_id: z.string().uuid(),
+  role_in_household: z
+    .enum(['primary', 'member', 'child', 'guest'])
+    .default('member'),
+});
+
+const HouseholdQuerySchema = z.object({
+  event_id: z.string().uuid().optional(),
+  include_invitations: z.enum(['true', 'false']).optional(),
+  include_analytics: z.enum(['true', 'false']).optional(),
+});
+
+// GET /api/rsvp/households - Get household groups
+export async function GET(req: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const searchParams = req.nextUrl.searchParams;
+
+    const queryData = HouseholdQuerySchema.parse({
+      event_id: searchParams.get('event_id'),
+      include_invitations: searchParams.get('include_invitations') || 'false',
+      include_analytics: searchParams.get('include_analytics') || 'false',
+    });
+
+    // Get current user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    let query = supabase
+      .from('rsvp_households')
+      .select(
+        `
+        *,
+        rsvp_events!inner (
+          id,
+          event_name,
+          vendor_id
+        )
+      `,
+      )
+      .eq('rsvp_events.vendor_id', user.id);
+
+    if (queryData.event_id) {
+      query = query.eq('event_id', queryData.event_id);
+    }
+
+    const { data: households, error } = await query.order('household_name', {
+      ascending: true,
+    });
+
+    if (error) {
+      console.error('Error fetching households:', error);
+      return NextResponse.json(
+        { error: 'Failed to fetch households' },
+        { status: 500 },
+      );
+    }
+
+    let responseData: any = { households };
+
+    // Include invitations for each household if requested
+    if (queryData.include_invitations === 'true' && households) {
+      const householdsWithInvitations = await Promise.all(
+        households.map(async (household) => {
+          const { data: invitations } = await supabase
+            .from('rsvp_invitation_households')
+            .select(
+              `
+              role_in_household,
+              rsvp_invitations (
+                id,
+                guest_name,
+                guest_email,
+                guest_phone,
+                max_party_size,
+                rsvp_responses (
+                  id,
+                  response_status,
+                  party_size,
+                  responded_at
+                )
+              )
+            `,
+            )
+            .eq('household_id', household.id);
+
+          return {
+            ...household,
+            invitations: invitations || [],
+          };
+        }),
+      );
+
+      responseData.households = householdsWithInvitations;
+    }
+
+    // Include analytics if requested
+    if (queryData.include_analytics === 'true' && queryData.event_id) {
+      try {
+        const analytics = await getHouseholdAnalytics(queryData.event_id);
+        responseData.analytics = analytics;
+      } catch (analyticsError) {
+        console.error('Error fetching household analytics:', analyticsError);
+        responseData.analytics_error = 'Failed to load analytics';
+      }
+    }
+
+    return NextResponse.json(responseData);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Validation error',
+          details: error.issues,
+        },
+        { status: 400 },
+      );
+    }
+    console.error('Error in GET /api/rsvp/households:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+// POST /api/rsvp/households - Create household group
+export async function POST(req: NextRequest) {
+  try {
+    const supabase = await createClient();
+
+    // Get current user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await req.json();
+    const validatedData = HouseholdSchema.parse(body);
+
+    // Verify event ownership
+    const { data: event, error: eventError } = await supabase
+      .from('rsvp_events')
+      .select('id')
+      .eq('id', validatedData.event_id)
+      .eq('vendor_id', user.id)
+      .single();
+
+    if (eventError || !event) {
+      return NextResponse.json(
+        {
+          error: 'Event not found or unauthorized',
+        },
+        { status: 404 },
+      );
+    }
+
+    // Check if household name already exists for this event
+    const { data: existing } = await supabase
+      .from('rsvp_households')
+      .select('id')
+      .eq('event_id', validatedData.event_id)
+      .eq('household_name', validatedData.household_name)
+      .single();
+
+    if (existing) {
+      return NextResponse.json(
+        {
+          error: 'A household with this name already exists for this event',
+        },
+        { status: 400 },
+      );
+    }
+
+    // Verify primary contact invitation if provided
+    if (validatedData.primary_contact_invitation_id) {
+      const { data: invitation, error: invitationError } = await supabase
+        .from('rsvp_invitations')
+        .select('id')
+        .eq('id', validatedData.primary_contact_invitation_id)
+        .eq('event_id', validatedData.event_id)
+        .single();
+
+      if (invitationError || !invitation) {
+        return NextResponse.json(
+          {
+            error: 'Primary contact invitation not found for this event',
+          },
+          { status: 400 },
+        );
+      }
+    }
+
+    // Create household
+    const { data: household, error } = await supabase
+      .from('rsvp_households')
+      .insert(validatedData)
+      .select(
+        `
+        *,
+        rsvp_events (
+          event_name
+        )
+      `,
+      )
+      .single();
+
+    if (error) {
+      console.error('Error creating household:', error);
+      return NextResponse.json(
+        { error: 'Failed to create household' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json(
+      {
+        household,
+        message: `Household "${validatedData.household_name}" created successfully`,
+      },
+      { status: 201 },
+    );
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Validation error',
+          details: error.issues,
+        },
+        { status: 400 },
+      );
+    }
+    console.error('Error in POST /api/rsvp/households:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+// PUT /api/rsvp/households/[id] - Update household
+export async function PUT(req: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const url = new URL(req.url);
+    const householdId = url.pathname.split('/').pop();
+
+    if (!householdId) {
+      return NextResponse.json(
+        { error: 'Household ID is required' },
+        { status: 400 },
+      );
+    }
+
+    // Get current user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await req.json();
+    const validatedData = UpdateHouseholdSchema.parse(body);
+
+    // Verify household ownership
+    const { data: household, error: fetchError } = await supabase
+      .from('rsvp_households')
+      .select(
+        `
+        *,
+        rsvp_events (
+          vendor_id
+        )
+      `,
+      )
+      .eq('id', householdId)
+      .single();
+
+    if (
+      fetchError ||
+      !household ||
+      household.rsvp_events.vendor_id !== user.id
+    ) {
+      return NextResponse.json(
+        {
+          error: 'Household not found or unauthorized',
+        },
+        { status: 404 },
+      );
+    }
+
+    // Update household
+    const { data: updatedHousehold, error } = await supabase
+      .from('rsvp_households')
+      .update(validatedData)
+      .eq('id', householdId)
+      .select(
+        `
+        *,
+        rsvp_events (
+          event_name
+        )
+      `,
+      )
+      .single();
+
+    if (error) {
+      console.error('Error updating household:', error);
+      return NextResponse.json(
+        { error: 'Failed to update household' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({
+      household: updatedHousehold,
+      message: 'Household updated successfully',
+    });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Validation error',
+          details: error.issues,
+        },
+        { status: 400 },
+      );
+    }
+    console.error('Error in PUT /api/rsvp/households/[id]:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+// DELETE /api/rsvp/households/[id] - Delete household
+export async function DELETE(req: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const url = new URL(req.url);
+    const householdId = url.pathname.split('/').pop();
+
+    if (!householdId) {
+      return NextResponse.json(
+        { error: 'Household ID is required' },
+        { status: 400 },
+      );
+    }
+
+    // Get current user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Verify household ownership and get details
+    const { data: household, error: fetchError } = await supabase
+      .from('rsvp_households')
+      .select(
+        `
+        *,
+        rsvp_events (
+          vendor_id
+        )
+      `,
+      )
+      .eq('id', householdId)
+      .single();
+
+    if (
+      fetchError ||
+      !household ||
+      household.rsvp_events.vendor_id !== user.id
+    ) {
+      return NextResponse.json(
+        {
+          error: 'Household not found or unauthorized',
+        },
+        { status: 404 },
+      );
+    }
+
+    // Check if household has assigned invitations
+    const { count: assignedInvitations } = await supabase
+      .from('rsvp_invitation_households')
+      .select('*', { count: 'exact', head: true })
+      .eq('household_id', householdId);
+
+    if ((assignedInvitations || 0) > 0) {
+      return NextResponse.json(
+        {
+          error:
+            'Cannot delete household with assigned invitations. Remove invitations first.',
+        },
+        { status: 400 },
+      );
+    }
+
+    // Delete household
+    const { error } = await supabase
+      .from('rsvp_households')
+      .delete()
+      .eq('id', householdId);
+
+    if (error) {
+      console.error('Error deleting household:', error);
+      return NextResponse.json(
+        { error: 'Failed to delete household' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({
+      message: `Household "${household.household_name}" deleted successfully`,
+    });
+  } catch (error) {
+    console.error('Error in DELETE /api/rsvp/households/[id]:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+// PATCH /api/rsvp/households/assign - Assign invitation to household
+export async function PATCH(req: NextRequest) {
+  try {
+    const supabase = await createClient();
+
+    // Get current user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await req.json();
+    const validatedData = AssignToHouseholdSchema.parse(body);
+
+    // Verify invitation and household ownership
+    const [invitationCheck, householdCheck] = await Promise.all([
+      supabase
+        .from('rsvp_invitations')
+        .select(
+          `
+          id,
+          guest_name,
+          event_id,
+          rsvp_events (
+            vendor_id
+          )
+        `,
+        )
+        .eq('id', validatedData.invitation_id)
+        .single(),
+
+      supabase
+        .from('rsvp_households')
+        .select(
+          `
+          id,
+          household_name,
+          event_id,
+          rsvp_events (
+            vendor_id
+          )
+        `,
+        )
+        .eq('id', validatedData.household_id)
+        .single(),
+    ]);
+
+    if (invitationCheck.error || !invitationCheck.data) {
+      return NextResponse.json(
+        { error: 'Invitation not found' },
+        { status: 404 },
+      );
+    }
+
+    if (householdCheck.error || !householdCheck.data) {
+      return NextResponse.json(
+        { error: 'Household not found' },
+        { status: 404 },
+      );
+    }
+
+    const invitation = invitationCheck.data;
+    const household = householdCheck.data;
+
+    // Verify user owns both resources
+    if (
+      invitation.rsvp_events.vendor_id !== user.id ||
+      household.rsvp_events.vendor_id !== user.id
+    ) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
+    }
+
+    // Verify they belong to the same event
+    if (invitation.event_id !== household.event_id) {
+      return NextResponse.json(
+        {
+          error: 'Invitation and household must belong to the same event',
+        },
+        { status: 400 },
+      );
+    }
+
+    // Check if already assigned
+    const { data: existing } = await supabase
+      .from('rsvp_invitation_households')
+      .select('id')
+      .eq('invitation_id', validatedData.invitation_id)
+      .eq('household_id', validatedData.household_id)
+      .single();
+
+    if (existing) {
+      return NextResponse.json(
+        {
+          error: 'Invitation is already assigned to this household',
+        },
+        { status: 400 },
+      );
+    }
+
+    // Assign invitation to household
+    const { data: assignment, error } = await supabase
+      .from('rsvp_invitation_households')
+      .insert({
+        invitation_id: validatedData.invitation_id,
+        household_id: validatedData.household_id,
+        role_in_household: validatedData.role_in_household,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error assigning invitation to household:', error);
+      return NextResponse.json(
+        { error: 'Failed to assign invitation to household' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({
+      assignment,
+      message: `${invitation.guest_name} assigned to household "${household.household_name}"`,
+    });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Validation error',
+          details: error.issues,
+        },
+        { status: 400 },
+      );
+    }
+    console.error('Error in PATCH /api/rsvp/households/assign:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+// Helper function to get household analytics
+async function getHouseholdAnalytics(eventId: string) {
+  const supabase = await createClient();
+
+  try {
+    // Get all households for the event
+    const { data: households, error } = await supabase
+      .from('rsvp_households')
+      .select(
+        `
+        *,
+        rsvp_invitation_households (
+          rsvp_invitations (
+            id,
+            rsvp_responses (
+              response_status,
+              party_size
+            )
+          )
+        )
+      `,
+      )
+      .eq('event_id', eventId);
+
+    if (error) {
+      throw error;
+    }
+
+    const analytics = {
+      total_households: households?.length || 0,
+      total_invitations_assigned: 0,
+      total_responses_from_households: 0,
+      total_attending_from_households: 0,
+      average_household_size: 0,
+      single_person_households: 0,
+      largest_household_size: 0,
+      household_response_rates: {} as Record<string, number>,
+    };
+
+    let totalExpectedGuests = 0;
+
+    households?.forEach((household) => {
+      const invitations = household.rsvp_invitation_households || [];
+      analytics.total_invitations_assigned += invitations.length;
+
+      if (household.total_expected_guests === 1) {
+        analytics.single_person_households++;
+      }
+
+      if (household.total_expected_guests > analytics.largest_household_size) {
+        analytics.largest_household_size = household.total_expected_guests;
+      }
+
+      totalExpectedGuests += household.total_expected_guests;
+
+      // Calculate response stats for this household
+      let householdResponses = 0;
+      let householdAttending = 0;
+
+      invitations.forEach((invHousehold: any) => {
+        const responses = invHousehold.rsvp_invitations?.rsvp_responses || [];
+        householdResponses += responses.length;
+        householdAttending += responses.filter(
+          (r: any) => r.response_status === 'attending',
+        ).length;
+      });
+
+      analytics.total_responses_from_households += householdResponses;
+      analytics.total_attending_from_households += householdAttending;
+
+      // Calculate household response rate
+      const responseRate =
+        invitations.length > 0
+          ? Math.round((householdResponses / invitations.length) * 100)
+          : 0;
+      analytics.household_response_rates[household.household_name] =
+        responseRate;
+    });
+
+    // Calculate average household size
+    analytics.average_household_size =
+      analytics.total_households > 0
+        ? Math.round((totalExpectedGuests / analytics.total_households) * 100) /
+          100
+        : 0;
+
+    return analytics;
+  } catch (error) {
+    console.error('Error calculating household analytics:', error);
+    return null;
+  }
+}

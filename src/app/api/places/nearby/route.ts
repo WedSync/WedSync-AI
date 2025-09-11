@@ -1,0 +1,254 @@
+/**
+ * Google Places Nearby Search API Route
+ * Team B - WS-219 Google Places Integration
+ *
+ * Secure endpoint for nearby wedding venue search with:
+ * - Location-based venue discovery
+ * - Authentication and rate limiting
+ * - Wedding-specific filtering
+ * - Distance-based sorting
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
+import { createClient } from '@supabase/supabase-js';
+import { GooglePlacesClient } from '@/lib/integrations/google-places-client';
+import { PlacesSearchService } from '@/lib/services/places-search-service';
+
+const nearbyRequestSchema = z.object({
+  location: z.object({
+    lat: z.number().min(-90).max(90),
+    lng: z.number().min(-180).max(180),
+  }),
+  radius: z
+    .number()
+    .int()
+    .min(100, 'Minimum radius is 100 meters')
+    .max(50000, 'Maximum radius is 50km')
+    .default(5000),
+  type: z.string().optional().default('establishment'),
+  keyword: z.string().optional(),
+  language: z.string().length(2).optional().default('en'),
+  venueCategory: z
+    .enum(['ceremony', 'reception', 'accommodation', 'photo_location'])
+    .optional(),
+  priceLevel: z
+    .object({
+      min: z.number().int().min(0).max(4).optional(),
+      max: z.number().int().min(0).max(4).optional(),
+    })
+    .optional(),
+  minimumRating: z.number().min(0).max(5).optional(),
+  openNow: z.boolean().optional(),
+});
+
+const rateLimitStore = new Map<string, { count: number; resetTime: number }>();
+
+async function checkRateLimit(identifier: string): Promise<boolean> {
+  const now = Date.now();
+  const windowMs = 60 * 1000;
+  const maxRequests = 25; // 25 requests per minute for nearby search
+
+  const existing = rateLimitStore.get(identifier);
+
+  if (!existing || now > existing.resetTime) {
+    rateLimitStore.set(identifier, { count: 1, resetTime: now + windowMs });
+    return true;
+  }
+
+  if (existing.count >= maxRequests) {
+    return false;
+  }
+
+  existing.count++;
+  return true;
+}
+
+async function validateSession(request: NextRequest) {
+  const supabase = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL ||
+      (() => {
+        throw new Error(
+          'Missing environment variable: NEXT_PUBLIC_SUPABASE_URL',
+        );
+      })(),
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+      (() => {
+        throw new Error(
+          'Missing environment variable: SUPABASE_SERVICE_ROLE_KEY',
+        );
+      })(),
+  );
+
+  const authHeader = request.headers.get('authorization');
+  if (!authHeader) {
+    throw new Error('Authorization header required');
+  }
+
+  const token = authHeader.replace('Bearer ', '');
+  const {
+    data: { user },
+    error,
+  } = await supabase.auth.getUser(token);
+
+  if (error || !user) {
+    throw new Error('Invalid authentication token');
+  }
+
+  const { data: profile, error: profileError } = await supabase
+    .from('user_profiles')
+    .select('*, organizations(*)')
+    .eq('id', user.id)
+    .single();
+
+  if (profileError || !profile) {
+    throw new Error('User profile not found');
+  }
+
+  return { user, profile };
+}
+
+export async function GET(request: NextRequest) {
+  const startTime = Date.now();
+  let user: any = null;
+  let organizationId: string = '';
+
+  try {
+    const { searchParams } = new URL(request.url);
+
+    const rawParams = {
+      location: searchParams.get('location')
+        ? JSON.parse(searchParams.get('location')!)
+        : null,
+      radius: searchParams.get('radius')
+        ? parseInt(searchParams.get('radius')!)
+        : undefined,
+      type: searchParams.get('type'),
+      keyword: searchParams.get('keyword'),
+      language: searchParams.get('language'),
+      venueCategory: searchParams.get('venueCategory'),
+      priceLevel: searchParams.get('priceLevel')
+        ? JSON.parse(searchParams.get('priceLevel')!)
+        : undefined,
+      minimumRating: searchParams.get('minimumRating')
+        ? parseFloat(searchParams.get('minimumRating')!)
+        : undefined,
+      openNow: searchParams.get('openNow') === 'true',
+    };
+
+    const validatedParams = nearbyRequestSchema.parse(rawParams);
+
+    // Authentication
+    const { user: authUser, profile } = await validateSession(request);
+    user = authUser;
+    organizationId = profile.organization_id;
+
+    // Rate limiting
+    const clientIp = request.headers.get('x-forwarded-for') || 'unknown';
+    const rateLimitKey = `${user.id}:${clientIp}:nearby`;
+
+    if (!(await checkRateLimit(rateLimitKey))) {
+      return NextResponse.json(
+        { error: 'Rate limit exceeded' },
+        { status: 429 },
+      );
+    }
+
+    // Initialize services
+    const placesClient = await GooglePlacesClient.create(organizationId);
+    const searchService = new PlacesSearchService(placesClient);
+
+    let searchResults;
+
+    if (validatedParams.venueCategory) {
+      // Use category-specific search
+      searchResults = await searchService.searchByCategory(
+        validatedParams.venueCategory,
+        validatedParams.location,
+        validatedParams.radius,
+      );
+    } else {
+      // Use nearby search
+      const nearbyRequest = {
+        location: validatedParams.location,
+        radius: validatedParams.radius,
+        type: validatedParams.type,
+        keyword: validatedParams.keyword,
+        language: validatedParams.language,
+        minprice: validatedParams.priceLevel?.min,
+        maxprice: validatedParams.priceLevel?.max,
+        opennow: validatedParams.openNow,
+      };
+
+      const response = await placesClient.nearbySearch(nearbyRequest);
+
+      // Convert to our standard format
+      searchResults = {
+        venues: response.results,
+        search_metadata: {
+          query: validatedParams.keyword || 'nearby venues',
+          location: validatedParams.location,
+          radius_km: validatedParams.radius / 1000,
+          total_results: response.results.length,
+          api_calls_used: 1,
+          search_time_ms: Date.now() - startTime,
+          cache_hits: 0,
+          wedding_filter_applied: false,
+        },
+        recommendations: {
+          ceremony_venues: [],
+          reception_venues: [],
+          alternative_suggestions: [],
+        },
+      };
+    }
+
+    // Filter by minimum rating if specified
+    if (validatedParams.minimumRating) {
+      searchResults.venues = searchResults.venues.filter(
+        (venue: any) =>
+          venue.rating && venue.rating >= validatedParams.minimumRating,
+      );
+    }
+
+    // Sort by distance (closest first)
+    searchResults.venues.sort((a: any, b: any) => {
+      const distA = a.distance_km || 999;
+      const distB = b.distance_km || 999;
+      return distA - distB;
+    });
+
+    return NextResponse.json({
+      success: true,
+      data: searchResults,
+      meta: {
+        request_id: crypto.randomUUID(),
+        search_time_ms: Date.now() - startTime,
+        search_type: 'nearby',
+      },
+    });
+  } catch (error: any) {
+    console.error('Nearby search error:', error);
+
+    if (error.name === 'ZodError') {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Invalid request parameters',
+          details:
+            process.env.NODE_ENV === 'development' ? error.errors : undefined,
+        },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Search failed',
+        message: error.message || 'An error occurred during nearby search',
+      },
+      { status: 500 },
+    );
+  }
+}

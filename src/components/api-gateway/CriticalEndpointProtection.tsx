@@ -1,0 +1,783 @@
+'use client';
+
+import React, { useState, useEffect } from 'react';
+import {
+  Shield,
+  AlertTriangle,
+  Heart,
+  Clock,
+  Activity,
+  RefreshCw,
+  Zap,
+  Eye,
+  Settings,
+  CheckCircle,
+  XCircle,
+  AlertCircle,
+  Calendar,
+  Users,
+  Camera,
+  MapPin,
+  Phone,
+} from 'lucide-react';
+
+// Types for Critical Endpoint Protection
+interface CriticalEndpoint {
+  id: string;
+  name: string;
+  path: string;
+  priority: 'emergency' | 'critical' | 'high';
+  healthStatus: 'healthy' | 'degraded' | 'down';
+  responseTime: number;
+  lastCheck: string;
+  uptime: number;
+  errorRate: number;
+  weddingImpact: 'devastating' | 'severe' | 'moderate' | 'low';
+  fallbackEnabled: boolean;
+  circuitBreakerStatus: 'closed' | 'open' | 'half-open';
+}
+
+interface WeddingContext {
+  isWeddingDay: boolean;
+  activeWeddings: number;
+  upcomingWeddings: number;
+  peakHours: boolean;
+  seasonalLoad: 'peak' | 'high' | 'normal' | 'low';
+}
+
+interface ProtectionRule {
+  id: string;
+  name: string;
+  endpoint: string;
+  condition: string;
+  action: 'block' | 'throttle' | 'redirect' | 'cache' | 'fallback';
+  threshold: number;
+  active: boolean;
+  weddingDayOverride: boolean;
+}
+
+const CriticalEndpointProtection: React.FC = () => {
+  const [activeTab, setActiveTab] = useState<
+    'monitoring' | 'protection' | 'recovery'
+  >('monitoring');
+  const [criticalEndpoints, setCriticalEndpoints] = useState<
+    CriticalEndpoint[]
+  >([
+    {
+      id: '1',
+      name: 'Wedding Day Timeline API',
+      path: '/api/weddings/{id}/timeline',
+      priority: 'emergency',
+      healthStatus: 'healthy',
+      responseTime: 45,
+      lastCheck: '2025-01-14 10:30:15',
+      uptime: 99.98,
+      errorRate: 0.02,
+      weddingImpact: 'devastating',
+      fallbackEnabled: true,
+      circuitBreakerStatus: 'closed',
+    },
+    {
+      id: '2',
+      name: 'Vendor Communication Hub',
+      path: '/api/communications/emergency',
+      priority: 'emergency',
+      healthStatus: 'healthy',
+      responseTime: 62,
+      lastCheck: '2025-01-14 10:30:12',
+      uptime: 99.95,
+      errorRate: 0.05,
+      weddingImpact: 'devastating',
+      fallbackEnabled: true,
+      circuitBreakerStatus: 'closed',
+    },
+    {
+      id: '3',
+      name: 'Photo Gallery Access',
+      path: '/api/galleries/wedding/{id}',
+      priority: 'critical',
+      healthStatus: 'degraded',
+      responseTime: 340,
+      lastCheck: '2025-01-14 10:29:58',
+      uptime: 99.12,
+      errorRate: 0.88,
+      weddingImpact: 'severe',
+      fallbackEnabled: false,
+      circuitBreakerStatus: 'half-open',
+    },
+    {
+      id: '4',
+      name: 'Venue Coordination System',
+      path: '/api/venues/coordination',
+      priority: 'critical',
+      healthStatus: 'healthy',
+      responseTime: 128,
+      lastCheck: '2025-01-14 10:30:10',
+      uptime: 99.87,
+      errorRate: 0.13,
+      weddingImpact: 'severe',
+      fallbackEnabled: true,
+      circuitBreakerStatus: 'closed',
+    },
+    {
+      id: '5',
+      name: 'Guest Management Portal',
+      path: '/api/guests/management',
+      priority: 'high',
+      healthStatus: 'healthy',
+      responseTime: 89,
+      lastCheck: '2025-01-14 10:30:08',
+      uptime: 99.45,
+      errorRate: 0.55,
+      weddingImpact: 'moderate',
+      fallbackEnabled: true,
+      circuitBreakerStatus: 'closed',
+    },
+  ]);
+
+  const [weddingContext, setWeddingContext] = useState<WeddingContext>({
+    isWeddingDay: true, // Saturday simulation
+    activeWeddings: 12,
+    upcomingWeddings: 8,
+    peakHours: true,
+    seasonalLoad: 'peak',
+  });
+
+  const [protectionRules, setProtectionRules] = useState<ProtectionRule[]>([
+    {
+      id: '1',
+      name: 'Wedding Day Emergency Block',
+      endpoint: '/api/weddings/*/timeline',
+      condition: 'error_rate > 5% OR response_time > 500ms',
+      action: 'fallback',
+      threshold: 5,
+      active: true,
+      weddingDayOverride: true,
+    },
+    {
+      id: '2',
+      name: 'Photo Upload Protection',
+      endpoint: '/api/photos/upload',
+      condition: 'concurrent_uploads > 50',
+      action: 'throttle',
+      threshold: 50,
+      active: true,
+      weddingDayOverride: false,
+    },
+    {
+      id: '3',
+      name: 'Communication Failsafe',
+      endpoint: '/api/communications/*',
+      condition: 'response_time > 1000ms',
+      action: 'cache',
+      threshold: 1000,
+      active: true,
+      weddingDayOverride: true,
+    },
+  ]);
+
+  const [alerts, setAlerts] = useState([
+    {
+      id: '1',
+      severity: 'warning' as const,
+      message: 'Photo Gallery API showing increased response times',
+      timestamp: '2025-01-14 10:29:45',
+      endpoint: 'Photo Gallery Access',
+    },
+    {
+      id: '2',
+      severity: 'info' as const,
+      message: 'Wedding day protection protocols activated',
+      timestamp: '2025-01-14 06:00:00',
+      endpoint: 'All Critical Endpoints',
+    },
+  ]);
+
+  // Simulate real-time monitoring
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setCriticalEndpoints((prev) =>
+        prev.map((endpoint) => ({
+          ...endpoint,
+          responseTime: Math.max(
+            20,
+            endpoint.responseTime + (Math.random() - 0.5) * 20,
+          ),
+          lastCheck: new Date().toISOString().slice(0, 19).replace('T', ' '),
+        })),
+      );
+    }, 10000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  const getHealthIcon = (status: string) => {
+    switch (status) {
+      case 'healthy':
+        return <CheckCircle className="w-5 h-5 text-green-500" />;
+      case 'degraded':
+        return <AlertCircle className="w-5 h-5 text-yellow-500" />;
+      case 'down':
+        return <XCircle className="w-5 h-5 text-red-500" />;
+      default:
+        return <AlertCircle className="w-5 h-5 text-gray-500" />;
+    }
+  };
+
+  const getPriorityColor = (priority: string) => {
+    switch (priority) {
+      case 'emergency':
+        return 'bg-red-100 text-red-800 border-red-200';
+      case 'critical':
+        return 'bg-orange-100 text-orange-800 border-orange-200';
+      case 'high':
+        return 'bg-yellow-100 text-yellow-800 border-yellow-200';
+      default:
+        return 'bg-gray-100 text-gray-800 border-gray-200';
+    }
+  };
+
+  const getWeddingImpactIcon = (impact: string) => {
+    switch (impact) {
+      case 'devastating':
+        return <Heart className="w-4 h-4 text-red-600" />;
+      case 'severe':
+        return <AlertTriangle className="w-4 h-4 text-orange-600" />;
+      case 'moderate':
+        return <Clock className="w-4 h-4 text-yellow-600" />;
+      case 'low':
+        return <Eye className="w-4 h-4 text-blue-600" />;
+      default:
+        return <Activity className="w-4 h-4 text-gray-600" />;
+    }
+  };
+
+  const renderMonitoringTab = () => (
+    <div className="space-y-6">
+      {/* Wedding Context Alert */}
+      {weddingContext.isWeddingDay && (
+        <div className="bg-red-50 border-l-4 border-red-400 p-4">
+          <div className="flex items-center">
+            <Heart className="w-6 h-6 text-red-600 mr-3" />
+            <div>
+              <h3 className="text-lg font-semibold text-red-800">
+                Wedding Day Protocol Active
+              </h3>
+              <p className="text-red-700">
+                {weddingContext.activeWeddings} active weddings,{' '}
+                {weddingContext.upcomingWeddings} upcoming today. Enhanced
+                monitoring and automatic failover enabled.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Critical Endpoints Grid */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
+        {criticalEndpoints.map((endpoint) => (
+          <div
+            key={endpoint.id}
+            className="bg-white rounded-lg shadow-md border"
+          >
+            <div className="p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center space-x-2">
+                  {getHealthIcon(endpoint.healthStatus)}
+                  <span className="font-medium text-gray-900">
+                    {endpoint.name}
+                  </span>
+                </div>
+                <span
+                  className={`px-2 py-1 text-xs rounded-full border ${getPriorityColor(endpoint.priority)}`}
+                >
+                  {endpoint.priority}
+                </span>
+              </div>
+
+              <div className="space-y-2 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Response Time:</span>
+                  <span
+                    className={`font-medium ${endpoint.responseTime > 200 ? 'text-yellow-600' : 'text-green-600'}`}
+                  >
+                    {endpoint.responseTime}ms
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Uptime:</span>
+                  <span
+                    className={`font-medium ${endpoint.uptime < 99.5 ? 'text-red-600' : 'text-green-600'}`}
+                  >
+                    {endpoint.uptime}%
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Error Rate:</span>
+                  <span
+                    className={`font-medium ${endpoint.errorRate > 0.5 ? 'text-red-600' : 'text-green-600'}`}
+                  >
+                    {endpoint.errorRate}%
+                  </span>
+                </div>
+              </div>
+
+              <div className="mt-3 pt-3 border-t">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-1">
+                    {getWeddingImpactIcon(endpoint.weddingImpact)}
+                    <span className="text-xs text-gray-600">
+                      Wedding Impact
+                    </span>
+                  </div>
+                  <span className="text-xs font-medium capitalize">
+                    {endpoint.weddingImpact}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between mt-1">
+                  <span className="text-xs text-gray-600">
+                    Circuit Breaker:
+                  </span>
+                  <span
+                    className={`text-xs px-2 py-0.5 rounded ${
+                      endpoint.circuitBreakerStatus === 'closed'
+                        ? 'bg-green-100 text-green-800'
+                        : endpoint.circuitBreakerStatus === 'open'
+                          ? 'bg-red-100 text-red-800'
+                          : 'bg-yellow-100 text-yellow-800'
+                    }`}
+                  >
+                    {endpoint.circuitBreakerStatus}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Recent Alerts */}
+      <div className="bg-white rounded-lg shadow-md">
+        <div className="px-6 py-4 border-b">
+          <h3 className="text-lg font-semibold text-gray-900 flex items-center">
+            <AlertTriangle className="w-5 h-5 mr-2" />
+            Recent Protection Alerts
+          </h3>
+        </div>
+        <div className="divide-y">
+          {alerts.map((alert) => (
+            <div key={alert.id} className="px-6 py-4 hover:bg-gray-50">
+              <div className="flex items-start space-x-3">
+                <div
+                  className={`w-2 h-2 rounded-full mt-2 ${
+                    alert.severity === 'error'
+                      ? 'bg-red-500'
+                      : alert.severity === 'warning'
+                        ? 'bg-yellow-500'
+                        : 'bg-blue-500'
+                  }`}
+                />
+                <div className="flex-1">
+                  <p className="text-sm font-medium text-gray-900">
+                    {alert.message}
+                  </p>
+                  <div className="flex items-center space-x-4 mt-1 text-xs text-gray-500">
+                    <span>{alert.endpoint}</span>
+                    <span>{alert.timestamp}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderProtectionTab = () => (
+    <div className="space-y-6">
+      {/* Protection Rules */}
+      <div className="bg-white rounded-lg shadow-md">
+        <div className="px-6 py-4 border-b flex items-center justify-between">
+          <h3 className="text-lg font-semibold text-gray-900 flex items-center">
+            <Shield className="w-5 h-5 mr-2" />
+            Active Protection Rules
+          </h3>
+          <button className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm">
+            Add New Rule
+          </button>
+        </div>
+        <div className="divide-y">
+          {protectionRules.map((rule) => (
+            <div key={rule.id} className="px-6 py-4">
+              <div className="flex items-center justify-between">
+                <div className="flex-1">
+                  <div className="flex items-center space-x-3 mb-2">
+                    <span className="font-medium text-gray-900">
+                      {rule.name}
+                    </span>
+                    <span
+                      className={`px-2 py-1 text-xs rounded-full ${
+                        rule.active
+                          ? 'bg-green-100 text-green-800'
+                          : 'bg-gray-100 text-gray-800'
+                      }`}
+                    >
+                      {rule.active ? 'Active' : 'Inactive'}
+                    </span>
+                    {rule.weddingDayOverride && (
+                      <span className="px-2 py-1 text-xs rounded-full bg-red-100 text-red-800">
+                        Wedding Day Override
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-sm text-gray-600 space-y-1">
+                    <div>
+                      <strong>Endpoint:</strong> {rule.endpoint}
+                    </div>
+                    <div>
+                      <strong>Condition:</strong> {rule.condition}
+                    </div>
+                    <div>
+                      <strong>Action:</strong> {rule.action} (threshold:{' '}
+                      {rule.threshold})
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <button className="p-2 text-gray-400 hover:text-gray-600">
+                    <Settings className="w-4 h-4" />
+                  </button>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={rule.active}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setProtectionRules((prev) =>
+                          prev.map((r) =>
+                            r.id === rule.id ? { ...r, active: checked } : r,
+                          ),
+                        );
+                      }}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                  </label>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Wedding Day Specific Protections */}
+      <div className="bg-white rounded-lg shadow-md">
+        <div className="px-6 py-4 border-b">
+          <h3 className="text-lg font-semibold text-gray-900 flex items-center">
+            <Heart className="w-5 h-5 mr-2" />
+            Wedding Day Emergency Protocols
+          </h3>
+        </div>
+        <div className="p-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="space-y-4">
+              <div className="flex items-center space-x-3">
+                <Calendar className="w-5 h-5 text-blue-600" />
+                <div>
+                  <h4 className="font-medium text-gray-900">
+                    Automatic Saturday Protection
+                  </h4>
+                  <p className="text-sm text-gray-600">
+                    Enhanced monitoring on wedding days
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center space-x-3">
+                <RefreshCw className="w-5 h-5 text-green-600" />
+                <div>
+                  <h4 className="font-medium text-gray-900">
+                    Instant Failover
+                  </h4>
+                  <p className="text-sm text-gray-600">
+                    Zero-downtime recovery for critical endpoints
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center space-x-3">
+                <Zap className="w-5 h-5 text-yellow-600" />
+                <div>
+                  <h4 className="font-medium text-gray-900">Emergency Cache</h4>
+                  <p className="text-sm text-gray-600">
+                    Serve cached responses during outages
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div className="space-y-4">
+              <div className="flex items-center space-x-3">
+                <Phone className="w-5 h-5 text-red-600" />
+                <div>
+                  <h4 className="font-medium text-gray-900">
+                    Emergency Notifications
+                  </h4>
+                  <p className="text-sm text-gray-600">
+                    Instant alerts to on-call team
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center space-x-3">
+                <Users className="w-5 h-5 text-purple-600" />
+                <div>
+                  <h4 className="font-medium text-gray-900">
+                    Vendor Communication Backup
+                  </h4>
+                  <p className="text-sm text-gray-600">
+                    SMS/email fallback for API failures
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center space-x-3">
+                <MapPin className="w-5 h-5 text-indigo-600" />
+                <div>
+                  <h4 className="font-medium text-gray-900">
+                    Venue Coordination Override
+                  </h4>
+                  <p className="text-sm text-gray-600">
+                    Manual coordination when systems fail
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderRecoveryTab = () => (
+    <div className="space-y-6">
+      {/* Recovery Actions */}
+      <div className="bg-white rounded-lg shadow-md">
+        <div className="px-6 py-4 border-b">
+          <h3 className="text-lg font-semibold text-gray-900 flex items-center">
+            <RefreshCw className="w-5 h-5 mr-2" />
+            Emergency Recovery Actions
+          </h3>
+        </div>
+        <div className="p-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <button className="p-4 border-2 border-red-200 rounded-lg hover:bg-red-50 text-left transition-colors">
+              <Heart className="w-8 h-8 text-red-600 mb-2" />
+              <h4 className="font-medium text-gray-900 mb-1">
+                Wedding Day Lockdown
+              </h4>
+              <p className="text-sm text-gray-600">
+                Activate maximum protection for all critical endpoints
+              </p>
+            </button>
+
+            <button className="p-4 border-2 border-orange-200 rounded-lg hover:bg-orange-50 text-left transition-colors">
+              <Shield className="w-8 h-8 text-orange-600 mb-2" />
+              <h4 className="font-medium text-gray-900 mb-1">
+                Circuit Breaker Reset
+              </h4>
+              <p className="text-sm text-gray-600">
+                Reset all circuit breakers to restore normal operation
+              </p>
+            </button>
+
+            <button className="p-4 border-2 border-blue-200 rounded-lg hover:bg-blue-50 text-left transition-colors">
+              <RefreshCw className="w-8 h-8 text-blue-600 mb-2" />
+              <h4 className="font-medium text-gray-900 mb-1">
+                Force Cache Refresh
+              </h4>
+              <p className="text-sm text-gray-600">
+                Clear all caches and refresh critical data
+              </p>
+            </button>
+
+            <button className="p-4 border-2 border-green-200 rounded-lg hover:bg-green-50 text-left transition-colors">
+              <Activity className="w-8 h-8 text-green-600 mb-2" />
+              <h4 className="font-medium text-gray-900 mb-1">
+                Health Check Reset
+              </h4>
+              <p className="text-sm text-gray-600">
+                Re-run all health checks and update status
+              </p>
+            </button>
+
+            <button className="p-4 border-2 border-purple-200 rounded-lg hover:bg-purple-50 text-left transition-colors">
+              <Phone className="w-8 h-8 text-purple-600 mb-2" />
+              <h4 className="font-medium text-gray-900 mb-1">
+                Emergency Alerts
+              </h4>
+              <p className="text-sm text-gray-600">
+                Send immediate notifications to all stakeholders
+              </p>
+            </button>
+
+            <button className="p-4 border-2 border-gray-200 rounded-lg hover:bg-gray-50 text-left transition-colors">
+              <Settings className="w-8 h-8 text-gray-600 mb-2" />
+              <h4 className="font-medium text-gray-900 mb-1">
+                Manual Override
+              </h4>
+              <p className="text-sm text-gray-600">
+                Temporarily disable all protection rules
+              </p>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Recovery History */}
+      <div className="bg-white rounded-lg shadow-md">
+        <div className="px-6 py-4 border-b">
+          <h3 className="text-lg font-semibold text-gray-900">
+            Recent Recovery Actions
+          </h3>
+        </div>
+        <div className="divide-y">
+          <div className="px-6 py-4">
+            <div className="flex items-center space-x-3">
+              <div className="w-2 h-2 rounded-full bg-green-500" />
+              <div className="flex-1">
+                <p className="text-sm font-medium text-gray-900">
+                  Circuit breaker reset for Photo Gallery API
+                </p>
+                <p className="text-xs text-gray-500">
+                  2025-01-14 09:45:23 - Recovered successfully
+                </p>
+              </div>
+            </div>
+          </div>
+          <div className="px-6 py-4">
+            <div className="flex items-center space-x-3">
+              <div className="w-2 h-2 rounded-full bg-blue-500" />
+              <div className="flex-1">
+                <p className="text-sm font-medium text-gray-900">
+                  Cache refresh initiated for venue coordination
+                </p>
+                <p className="text-xs text-gray-500">
+                  2025-01-14 08:30:12 - Cache updated
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="p-6 bg-gray-50 min-h-screen">
+      <div className="max-w-7xl mx-auto">
+        {/* Header */}
+        <div className="mb-8">
+          <div className="flex items-center space-x-3 mb-2">
+            <Shield className="w-8 h-8 text-blue-600" />
+            <h1 className="text-3xl font-bold text-gray-900">
+              Critical Endpoint Protection
+            </h1>
+          </div>
+          <p className="text-gray-600">
+            Wedding-critical API protection with emergency protocols and
+            automatic recovery
+          </p>
+        </div>
+
+        {/* Status Overview */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+          <div className="bg-white p-6 rounded-lg shadow-md">
+            <div className="flex items-center space-x-3">
+              <CheckCircle className="w-8 h-8 text-green-500" />
+              <div>
+                <p className="text-2xl font-bold text-gray-900">
+                  {
+                    criticalEndpoints.filter(
+                      (e) => e.healthStatus === 'healthy',
+                    ).length
+                  }
+                </p>
+                <p className="text-sm text-gray-600">Healthy Endpoints</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white p-6 rounded-lg shadow-md">
+            <div className="flex items-center space-x-3">
+              <AlertCircle className="w-8 h-8 text-yellow-500" />
+              <div>
+                <p className="text-2xl font-bold text-gray-900">
+                  {
+                    criticalEndpoints.filter(
+                      (e) => e.healthStatus === 'degraded',
+                    ).length
+                  }
+                </p>
+                <p className="text-sm text-gray-600">Degraded Endpoints</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white p-6 rounded-lg shadow-md">
+            <div className="flex items-center space-x-3">
+              <Activity className="w-8 h-8 text-blue-500" />
+              <div>
+                <p className="text-2xl font-bold text-gray-900">
+                  {protectionRules.filter((r) => r.active).length}
+                </p>
+                <p className="text-sm text-gray-600">Active Rules</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white p-6 rounded-lg shadow-md">
+            <div className="flex items-center space-x-3">
+              <Heart className="w-8 h-8 text-red-500" />
+              <div>
+                <p className="text-2xl font-bold text-gray-900">
+                  {weddingContext.activeWeddings}
+                </p>
+                <p className="text-sm text-gray-600">Active Weddings</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Tab Navigation */}
+        <div className="mb-6">
+          <div className="border-b border-gray-200">
+            <nav className="-mb-px flex space-x-8">
+              {[
+                { key: 'monitoring', label: 'Monitoring', icon: Activity },
+                { key: 'protection', label: 'Protection Rules', icon: Shield },
+                { key: 'recovery', label: 'Recovery', icon: RefreshCw },
+              ].map(({ key, label, icon: Icon }) => (
+                <button
+                  key={key}
+                  onClick={() => setActiveTab(key as any)}
+                  className={`py-2 px-1 border-b-2 font-medium text-sm flex items-center space-x-2 ${
+                    activeTab === key
+                      ? 'border-blue-500 text-blue-600'
+                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                  }`}
+                >
+                  <Icon className="w-4 h-4" />
+                  <span>{label}</span>
+                </button>
+              ))}
+            </nav>
+          </div>
+        </div>
+
+        {/* Tab Content */}
+        {activeTab === 'monitoring' && renderMonitoringTab()}
+        {activeTab === 'protection' && renderProtectionTab()}
+        {activeTab === 'recovery' && renderRecoveryTab()}
+      </div>
+    </div>
+  );
+};
+
+export default CriticalEndpointProtection;

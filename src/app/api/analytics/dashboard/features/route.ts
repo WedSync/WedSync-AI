@@ -1,0 +1,326 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+    const { searchParams } = new URL(request.url);
+
+    const range = searchParams.get('range') || '24h';
+
+    // Calculate time range
+    const now = new Date();
+    const timeRanges = {
+      '1h': new Date(now.getTime() - 60 * 60 * 1000),
+      '24h': new Date(now.getTime() - 24 * 60 * 60 * 1000),
+      '7d': new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000),
+      '30d': new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000),
+    };
+
+    const startTime =
+      timeRanges[range as keyof typeof timeRanges] || timeRanges['24h'];
+
+    // Get feature adoption data from both analytics events and feature adoption table
+    const [featuresResult, analyticsResult, activeUsersResult] =
+      await Promise.all([
+        // Get feature adoption rates
+        supabase
+          .from('feature_adoption')
+          .select('*')
+          .gte('updated_at', startTime.toISOString()),
+
+        // Get feature usage events
+        supabase
+          .from('analytics_events')
+          .select('*')
+          .eq('event_name', 'feature_used')
+          .gte('created_at', startTime.toISOString()),
+
+        // Get total active users for calculating adoption rates
+        supabase
+          .from('analytics_events')
+          .select('user_id')
+          .eq('event_name', 'page_view')
+          .gte('created_at', startTime.toISOString()),
+      ]);
+
+    const featuresData = featuresResult.data || [];
+    const analyticsData = analyticsResult.data || [];
+    const totalActiveUsers = new Set(
+      activeUsersResult.data?.map((row) => row.user_id) || [],
+    ).size;
+
+    // Define wedding-specific features with categories and colors
+    const weddingFeatures = [
+      {
+        feature: 'Guest List Manager',
+        category: 'core',
+        color: '#8884d8',
+        description: 'Manage wedding guests and RSVPs',
+        priority: 'high',
+      },
+      {
+        feature: 'Vendor Search',
+        category: 'discovery',
+        color: '#82ca9d',
+        description: 'Find and contact wedding vendors',
+        priority: 'high',
+      },
+      {
+        feature: 'Budget Tracker',
+        category: 'planning',
+        color: '#ffc658',
+        description: 'Track wedding expenses and budget',
+        priority: 'high',
+      },
+      {
+        feature: 'Wedding Timeline',
+        category: 'planning',
+        color: '#ff7c7c',
+        description: 'Plan wedding day schedule',
+        priority: 'medium',
+      },
+      {
+        feature: 'RSVP System',
+        category: 'core',
+        color: '#8dd1e1',
+        description: 'Manage guest responses',
+        priority: 'high',
+      },
+      {
+        feature: 'Seating Chart',
+        category: 'planning',
+        color: '#82d982',
+        description: 'Organize reception seating',
+        priority: 'medium',
+      },
+      {
+        feature: 'Photo Gallery',
+        category: 'content',
+        color: '#ffa07a',
+        description: 'Share wedding photos',
+        priority: 'medium',
+      },
+      {
+        feature: 'Wedding Website',
+        category: 'content',
+        color: '#98fb98',
+        description: 'Create wedding website',
+        priority: 'low',
+      },
+      {
+        feature: 'Gift Registry',
+        category: 'planning',
+        color: '#f0e68c',
+        description: 'Manage wedding registry',
+        priority: 'low',
+      },
+      {
+        feature: 'Vendor Communications',
+        category: 'communication',
+        color: '#dda0dd',
+        description: 'Chat with vendors',
+        priority: 'medium',
+      },
+    ];
+
+    // Process feature usage from analytics events
+    const featureUsage = new Map();
+    const featureUsers = new Map();
+
+    analyticsData.forEach((event) => {
+      const featureName = event.properties?.feature || 'Unknown';
+      const userId = event.user_id;
+
+      // Count total usage
+      featureUsage.set(featureName, (featureUsage.get(featureName) || 0) + 1);
+
+      // Track unique users per feature
+      if (!featureUsers.has(featureName)) {
+        featureUsers.set(featureName, new Set());
+      }
+      featureUsers.get(featureName).add(userId);
+    });
+
+    // Calculate previous period for growth comparison
+    const previousStartTime = new Date(
+      startTime.getTime() - (now.getTime() - startTime.getTime()),
+    );
+
+    const { data: previousAnalytics } = await supabase
+      .from('analytics_events')
+      .select('*')
+      .eq('event_name', 'feature_used')
+      .gte('created_at', previousStartTime.toISOString())
+      .lt('created_at', startTime.toISOString());
+
+    const previousFeatureUsage = new Map();
+    previousAnalytics?.forEach((event) => {
+      const featureName = event.properties?.feature || 'Unknown';
+      previousFeatureUsage.set(
+        featureName,
+        (previousFeatureUsage.get(featureName) || 0) + 1,
+      );
+    });
+
+    // Build feature adoption data
+    const featureAdoptionData = weddingFeatures
+      .map((feature) => {
+        const uniqueUsers = featureUsers.get(feature.feature)?.size || 0;
+        const totalUsage = featureUsage.get(feature.feature) || 0;
+        const previousUsage = previousFeatureUsage.get(feature.feature) || 0;
+
+        // Calculate adoption rate (percentage of active users who used this feature)
+        const adoptionRate =
+          totalActiveUsers > 0 ? (uniqueUsers / totalActiveUsers) * 100 : 0;
+
+        // Calculate usage growth compared to previous period
+        const usageGrowth =
+          previousUsage > 0
+            ? ((totalUsage - previousUsage) / previousUsage) * 100
+            : totalUsage > 0
+              ? 100
+              : 0;
+
+        // Get additional metrics from feature_adoption table if available
+        const adoptionRecord = featuresData.find(
+          (f) => f.feature_name === feature.feature,
+        );
+
+        return {
+          feature: feature.feature,
+          adoptionRate: Math.round(adoptionRate * 100) / 100,
+          usageGrowth: Math.round(usageGrowth * 100) / 100,
+          category: feature.category,
+          color: feature.color,
+          description: feature.description,
+          priority: feature.priority,
+          metrics: {
+            uniqueUsers,
+            totalUsage,
+            previousUsage,
+            avgUsagePerUser:
+              uniqueUsers > 0 ? Math.round(totalUsage / uniqueUsers) : 0,
+            firstTimeUsers: adoptionRecord?.first_time_users || 0,
+            powerUsers: adoptionRecord?.power_users || 0,
+            abandonmentRate: adoptionRecord?.abandonment_rate || 0,
+            timeToFirstUse: adoptionRecord?.avg_time_to_first_use || null,
+          },
+        };
+      })
+      .sort((a, b) => b.adoptionRate - a.adoptionRate); // Sort by adoption rate
+
+    // Calculate feature categories summary
+    const categoryStats = new Map();
+    featureAdoptionData.forEach((feature) => {
+      if (!categoryStats.has(feature.category)) {
+        categoryStats.set(feature.category, {
+          category: feature.category,
+          features: [],
+          avgAdoption: 0,
+          totalUsage: 0,
+        });
+      }
+
+      const category = categoryStats.get(feature.category);
+      category.features.push(feature.feature);
+      category.totalUsage += feature.metrics.totalUsage;
+    });
+
+    // Calculate average adoption per category
+    categoryStats.forEach((category) => {
+      const categoryFeatures = featureAdoptionData.filter(
+        (f) => f.category === category.category,
+      );
+      category.avgAdoption =
+        categoryFeatures.length > 0
+          ? categoryFeatures.reduce((sum, f) => sum + f.adoptionRate, 0) /
+            categoryFeatures.length
+          : 0;
+    });
+
+    const categoryBreakdown = Array.from(categoryStats.values());
+
+    // Calculate feature health scores
+    const featureHealthScores = featureAdoptionData.map((feature) => {
+      let healthScore = 0;
+
+      // Adoption rate weight (40%)
+      healthScore += Math.min(feature.adoptionRate / 50, 1) * 40; // 50% adoption = max points
+
+      // Usage growth weight (30%)
+      healthScore += Math.min(Math.max(feature.usageGrowth / 20, 0), 1) * 30; // 20% growth = max points
+
+      // User engagement weight (20%)
+      const avgUsage = feature.metrics.avgUsagePerUser;
+      healthScore += Math.min(avgUsage / 5, 1) * 20; // 5 uses per user = max points
+
+      // Priority weight (10%)
+      const priorityScore =
+        feature.priority === 'high'
+          ? 1
+          : feature.priority === 'medium'
+            ? 0.7
+            : 0.4;
+      healthScore += priorityScore * 10;
+
+      return {
+        feature: feature.feature,
+        healthScore: Math.round(healthScore),
+        status:
+          healthScore >= 80
+            ? 'excellent'
+            : healthScore >= 60
+              ? 'good'
+              : healthScore >= 40
+                ? 'needs-attention'
+                : 'critical',
+      };
+    });
+
+    return NextResponse.json({
+      success: true,
+      data: featureAdoptionData,
+      metadata: {
+        timeRange: range,
+        startTime: startTime.toISOString(),
+        endTime: now.toISOString(),
+        totalActiveUsers,
+        totalFeatures: featureAdoptionData.length,
+        categoryBreakdown,
+        featureHealthScores,
+        summary: {
+          avgAdoptionRate:
+            featureAdoptionData.length > 0
+              ? featureAdoptionData.reduce(
+                  (sum, f) => sum + f.adoptionRate,
+                  0,
+                ) / featureAdoptionData.length
+              : 0,
+          topFeatures: featureAdoptionData.slice(0, 5).map((f) => ({
+            name: f.feature,
+            adoption: f.adoptionRate,
+            growth: f.usageGrowth,
+          })),
+          underperformingFeatures: featureAdoptionData
+            .filter((f) => f.adoptionRate < 20)
+            .map((f) => ({
+              name: f.feature,
+              adoption: f.adoptionRate,
+              category: f.category,
+            })),
+        },
+      },
+    });
+  } catch (error) {
+    console.error('Feature adoption API error:', error);
+    return NextResponse.json(
+      { success: false, error: 'Failed to fetch feature adoption data' },
+      { status: 500 },
+    );
+  }
+}

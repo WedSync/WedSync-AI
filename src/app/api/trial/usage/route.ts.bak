@@ -1,0 +1,209 @@
+/**
+ * WS-167 Trial Management API - Usage Tracking Endpoint with Enhanced Security
+ * POST /api/trial/usage - Track feature usage and time savings
+ * GET /api/trial/usage - Get feature usage summary
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import { TrialService } from '@/lib/trial/TrialService';
+import { SubscriptionService } from '@/lib/services/subscriptionService';
+import { TrackFeatureUsageSchema } from '@/types/trial';
+import { stripe } from '@/lib/stripe/config';
+import { z } from 'zod';
+import { withRateLimit, trialApiLimiter } from '@/lib/middleware/rateLimiter';
+import { withEnhancedAuth } from '@/lib/middleware/jwtValidation';
+
+async function postHandler(request: NextRequest, context: { user: any; session: any }) {
+  try {
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
+    
+    // User authentication already verified by enhanced JWT middleware
+    const user = context.user;
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validationResult = TrackFeatureUsageSchema.safeParse(body);
+
+    if (!validationResult.success) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Invalid request data',
+          details: validationResult.error.issues
+        },
+        { status: 400 }
+      );
+    }
+
+    const { feature_key, feature_name, time_saved_minutes, context_data } = validationResult.data;
+
+    // Initialize services
+    const subscriptionService = new SubscriptionService(supabase, stripe);
+    const trialService = new TrialService(supabase, subscriptionService);
+
+    // Track feature usage
+    await trialService.trackFeatureUsage(
+      user.id,
+      feature_key,
+      feature_name,
+      time_saved_minutes,
+      context_data
+    );
+
+    return NextResponse.json({
+      success: true,
+      message: 'Feature usage tracked successfully',
+      feature_key,
+      time_saved_minutes
+    });
+
+  } catch (error) {
+    console.error('Error tracking feature usage:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Validation failed',
+          details: error.issues
+        },
+        { status: 400 }
+      );
+    }
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Failed to track usage',
+        message: 'An error occurred while tracking feature usage'
+      },
+      { status: 500 }
+    );
+  }
+}
+
+async function getHandler(request: NextRequest, context: { user: any; session: any }) {
+  try {
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
+    
+    // User authentication already verified by enhanced JWT middleware
+    const user = context.user;
+
+    // Get active trial
+    const subscriptionService = new SubscriptionService(supabase, stripe);
+    const trialService = new TrialService(supabase, subscriptionService);
+    
+    const activeTrial = await trialService.getActiveTrial(user.id);
+    
+    if (!activeTrial) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'No active trial found',
+          usage_summary: []
+        },
+        { status: 404 }
+      );
+    }
+
+    // Get feature usage data
+    const { data: featureUsage, error: usageError } = await supabase
+      .from('trial_feature_usage')
+      .select('*')
+      .eq('trial_id', activeTrial.id)
+      .order('usage_count', { ascending: false });
+
+    if (usageError) {
+      throw usageError;
+    }
+
+    // Calculate aggregated metrics
+    const totalTimeSaved = (featureUsage || []).reduce(
+      (total, usage) => total + usage.time_saved_minutes, 
+      0
+    );
+
+    const totalFeatures = (featureUsage || []).length;
+    const totalUsages = (featureUsage || []).reduce(
+      (total, usage) => total + usage.usage_count,
+      0
+    );
+
+    const averageTimeSavedPerUsage = totalUsages > 0 ? totalTimeSaved / totalUsages : 0;
+    
+    // Calculate estimated cost savings
+    const hourlyRate = activeTrial.hourly_rate || 50;
+    const estimatedSavings = (totalTimeSaved / 60) * hourlyRate;
+
+    return NextResponse.json({
+      success: true,
+      usage_summary: featureUsage || [],
+      metrics: {
+        total_time_saved_minutes: totalTimeSaved,
+        total_time_saved_hours: Math.round((totalTimeSaved / 60) * 100) / 100,
+        features_used_count: totalFeatures,
+        total_usage_count: totalUsages,
+        average_time_saved_per_usage: Math.round(averageTimeSavedPerUsage * 100) / 100,
+        estimated_cost_savings: Math.round(estimatedSavings * 100) / 100,
+        hourly_rate: hourlyRate
+      },
+      trial_info: {
+        trial_id: activeTrial.id,
+        days_remaining: Math.max(0, Math.ceil(
+          (new Date(activeTrial.trial_end).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24)
+        )),
+        business_type: activeTrial.business_type
+      }
+    });
+
+  } catch (error) {
+    console.error('Error getting usage data:', error);
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Failed to get usage data',
+        message: 'An error occurred while retrieving usage information'
+      },
+      { status: 500 }
+    );
+  }
+}
+
+// Export handlers with comprehensive security middleware
+export const POST = withRateLimit(trialApiLimiter)(
+  withEnhancedAuth()(postHandler)
+);
+
+export const GET = withRateLimit(trialApiLimiter)(
+  withEnhancedAuth()(getHandler)
+);
+
+// Handle unsupported methods with rate limiting
+export async function PUT(request: NextRequest) {
+  return withRateLimit(trialApiLimiter)(async () => {
+    return NextResponse.json(
+      { 
+        success: false,
+        error: 'Method not allowed',
+        message: 'GET or POST methods required for usage tracking'
+      },
+      { status: 405, headers: { 'Allow': 'GET, POST' } }
+    );
+  })(request);
+}
+
+export async function DELETE(request: NextRequest) {
+  return withRateLimit(trialApiLimiter)(async () => {
+    return NextResponse.json(
+      { 
+        success: false,
+        error: 'Method not allowed',
+        message: 'GET or POST methods required for usage tracking'
+      },
+      { status: 405, headers: { 'Allow': 'GET, POST' } }
+    );
+  })(request);
+}

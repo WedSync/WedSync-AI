@@ -1,0 +1,108 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { CSRFTokenService } from '@/lib/csrf-token';
+
+/**
+ * Generate new CSRF token
+ */
+export async function GET(request: NextRequest) {
+  try {
+    // Extract session ID if available (from your existing auth system)
+    const sessionId = extractSessionId(request);
+
+    // Generate new CSRF token
+    const tokenData = CSRFTokenService.generateToken(sessionId);
+
+    // Create response with token
+    const response = NextResponse.json({
+      token: tokenData.token,
+      expiresAt: new Date(tokenData.timestamp + 30 * 60 * 1000).toISOString(),
+    });
+
+    // Set CSRF cookies
+    CSRFTokenService.setTokenCookie(response, tokenData);
+
+    return response;
+  } catch (error) {
+    console.error('CSRF token generation error:', error);
+    return NextResponse.json(
+      { error: 'Failed to generate CSRF token' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * Refresh CSRF token if needed
+ */
+export async function POST(request: NextRequest) {
+  try {
+    // Validate existing token and refresh if needed
+    const tokenData = CSRFTokenService.getTokenDataFromCookies(request);
+
+    if (!tokenData) {
+      return NextResponse.json(
+        { error: 'No existing CSRF token found' },
+        { status: 400 },
+      );
+    }
+
+    // Check if token is close to expiry (refresh if < 5 minutes remaining)
+    const timeRemaining = tokenData.timestamp + 30 * 60 * 1000 - Date.now();
+
+    if (timeRemaining < 5 * 60 * 1000) {
+      // Generate new token
+      const sessionId = extractSessionId(request);
+      const newTokenData = CSRFTokenService.generateToken(sessionId);
+
+      const response = NextResponse.json({
+        token: newTokenData.token,
+        expiresAt: new Date(
+          newTokenData.timestamp + 30 * 60 * 1000,
+        ).toISOString(),
+        refreshed: true,
+      });
+
+      CSRFTokenService.setTokenCookie(response, newTokenData);
+      return response;
+    }
+
+    return NextResponse.json({
+      token: tokenData.token,
+      expiresAt: new Date(tokenData.timestamp + 30 * 60 * 1000).toISOString(),
+      refreshed: false,
+    });
+  } catch (error) {
+    console.error('CSRF token refresh error:', error);
+    return NextResponse.json(
+      { error: 'Failed to refresh CSRF token' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * Extract session ID from request
+ * This integrates with your existing session management
+ */
+function extractSessionId(request: NextRequest): string | undefined {
+  // Try to get session from various sources
+
+  // 1. From session cookie (if you have one)
+  const sessionCookie =
+    request.cookies.get('session-id') ||
+    request.cookies.get('next-auth.session-token') ||
+    request.cookies.get('supabase-auth-token');
+
+  if (sessionCookie?.value) {
+    return sessionCookie.value;
+  }
+
+  // 2. From Authorization header (if using JWT)
+  const authHeader = request.headers.get('authorization');
+  if (authHeader?.startsWith('Bearer ')) {
+    return authHeader.substring(7);
+  }
+
+  // 3. Return undefined if no session found (still secure)
+  return undefined;
+}

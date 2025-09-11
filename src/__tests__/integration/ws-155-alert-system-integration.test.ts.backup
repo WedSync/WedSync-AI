@@ -1,0 +1,550 @@
+/**
+ * WS-155: Automated Monitoring, Alerting & Integration Hub
+ * Comprehensive Integration Test Suite
+ * 
+ * TDD approach: Tests drive implementation
+ * Focus: Integration between existing systems + new enhancements
+ */
+
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
+import { createClient } from '@supabase/supabase-js';
+import { AlertManager } from '@/lib/monitoring/alerts';
+import { MultiChannelOrchestrator } from '@/lib/alerts/channels/MultiChannelOrchestrator';
+import { webhookManager } from '@/lib/webhooks/webhook-manager';
+import { notificationEngine } from '@/lib/notifications/engine';
+import { slackNotifications } from '@/lib/monitoring/slack-notifications';
+import { 
+  generateSystemHealthReport, 
+  checkDatabaseHealth,
+  checkAPIEndpoints,
+  checkRLSPolicies 
+} from '@/lib/monitoring/healthChecks';
+
+// Test-specific imports for new WS-155 functionality
+import { AutomatedHealthMonitor } from '@/lib/monitoring/ws-155-automated-health-monitor';
+import { WeddingContextAlertManager } from '@/lib/monitoring/ws-155-wedding-context-alert-manager';
+import { ServiceIntegrationHub } from '@/lib/monitoring/ws-155-service-integration-hub';
+import { AdminSecurityController } from '@/lib/monitoring/ws-155-admin-security-controller';
+
+// Mock external services
+vi.mock('@slack/web-api');
+vi.mock('twilio');
+
+describe('WS-155: Alert System Integration Hub', () => {
+  let supabase: ReturnType<typeof createClient>;
+  let automatedMonitor: AutomatedHealthMonitor;
+  let weddingAlertManager: WeddingContextAlertManager;
+  let integrationHub: ServiceIntegrationHub;
+  let adminController: AdminSecurityController;
+
+  beforeAll(async () => {
+    // Setup test environment
+    supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!
+    );
+
+    // Initialize WS-155 components
+    automatedMonitor = new AutomatedHealthMonitor();
+    weddingAlertManager = new WeddingContextAlertManager();
+    integrationHub = new ServiceIntegrationHub();
+    adminController = new AdminSecurityController();
+  });
+
+  beforeEach(() => {
+    // Reset mocks before each test
+    vi.clearAllMocks();
+  });
+
+  afterAll(async () => {
+    // Cleanup test resources
+    await automatedMonitor.stop();
+    await integrationHub.shutdown();
+  });
+
+  describe('Automated Health Check System', () => {
+    it('should run health checks every 5 minutes automatically', async () => {
+      const startTime = Date.now();
+      
+      // Start automated monitoring
+      await automatedMonitor.start({
+        intervalMinutes: 5,
+        enabledChecks: ['database', 'api', 'storage', 'memory', 'cpu'],
+        alertThresholds: {
+          responseTime: 1000,
+          errorRate: 0.05,
+          cpuUsage: 0.8,
+          memoryUsage: 0.8
+        }
+      });
+
+      // Verify monitoring is active
+      expect(automatedMonitor.isRunning()).toBe(true);
+      
+      // Check that first health report is generated quickly
+      const healthReport = await automatedMonitor.getLatestHealthReport();
+      expect(healthReport).toBeDefined();
+      expect(healthReport.timestamp).toBeGreaterThan(startTime);
+      expect(healthReport.checks).toHaveProperty('database');
+      expect(healthReport.checks).toHaveProperty('api');
+      expect(healthReport.overallHealth).toBeOneOf(['healthy', 'degraded', 'critical']);
+    });
+
+    it('should integrate with existing health check functions', async () => {
+      // Verify integration with existing health check system
+      const databaseHealth = await checkDatabaseHealth();
+      const apiHealth = await checkAPIEndpoints();
+      const rlsHealth = await checkRLSPolicies();
+
+      // Automated monitor should use existing functions
+      const report = await automatedMonitor.runHealthCheck();
+      
+      expect(report.checks.database).toEqual(expect.objectContaining({
+        status: databaseHealth.status,
+        responseTime: expect.any(Number)
+      }));
+      
+      expect(report.checks.api).toEqual(expect.objectContaining({
+        status: apiHealth.status,
+        successRate: expect.any(Number)
+      }));
+    });
+
+    it('should trigger alerts when health thresholds are breached', async () => {
+      const alertSpy = vi.spyOn(weddingAlertManager, 'processAlert');
+
+      // Simulate critical health issue
+      const criticalReport = {
+        overallHealth: 'critical' as const,
+        timestamp: new Date(),
+        checks: {
+          database: { status: 'failed', responseTime: 5000, error: 'Connection timeout' },
+          api: { status: 'degraded', successRate: 0.6, averageResponseTime: 2000 }
+        }
+      };
+
+      await automatedMonitor.processHealthReport(criticalReport);
+
+      // Verify alert was triggered
+      expect(alertSpy).toHaveBeenCalledWith(expect.objectContaining({
+        severity: 'critical',
+        type: 'system_health',
+        title: expect.stringContaining('Critical System Health Issue'),
+        context: expect.objectContaining({
+          healthReport: criticalReport
+        })
+      }));
+    });
+  });
+
+  describe('HMAC Admin Security Integration', () => {
+    it('should verify HMAC signatures for admin health check requests', async () => {
+      const payload = JSON.stringify({ action: 'force_health_check', timestamp: Date.now() });
+      const validSignature = adminController.generateHMAC(payload, process.env.ADMIN_WEBHOOK_SECRET!);
+      const invalidSignature = 'invalid_signature';
+
+      // Valid signature should pass
+      const validResult = await adminController.verifyAdminRequest(payload, validSignature);
+      expect(validResult.valid).toBe(true);
+      expect(validResult.userId).toBeDefined();
+
+      // Invalid signature should fail
+      const invalidResult = await adminController.verifyAdminRequest(payload, invalidSignature);
+      expect(invalidResult.valid).toBe(false);
+      expect(invalidResult.error).toContain('Invalid HMAC signature');
+    });
+
+    it('should integrate with existing webhook HMAC verification patterns', async () => {
+      // Verify consistency with existing webhook manager patterns
+      const payload = '{"test": "data"}';
+      const secret = process.env.ADMIN_WEBHOOK_SECRET!;
+      
+      // Both systems should generate the same HMAC
+      const adminHMAC = adminController.generateHMAC(payload, secret);
+      const webhookHMAC = webhookManager['verifyTwilioSignature'](payload, adminHMAC, '', secret);
+      
+      expect(webhookHMAC).toBe(true);
+    });
+
+    it('should enforce rate limiting on admin endpoints', async () => {
+      const adminRequest = {
+        action: 'get_system_metrics',
+        timestamp: Date.now()
+      };
+
+      // First request should succeed
+      const firstResponse = await adminController.handleAdminRequest(adminRequest, '127.0.0.1');
+      expect(firstResponse.success).toBe(true);
+
+      // Rapid subsequent requests should be rate limited
+      const rapidRequests = Array.from({ length: 10 }, () => 
+        adminController.handleAdminRequest(adminRequest, '127.0.0.1')
+      );
+
+      const results = await Promise.all(rapidRequests);
+      const rateLimitedCount = results.filter(r => !r.success && r.error?.includes('rate limit')).length;
+      
+      expect(rateLimitedCount).toBeGreaterThan(0);
+    });
+  });
+
+  describe('Wedding Context Alert Manager', () => {
+    it('should enhance existing alerts with wedding-specific context', async () => {
+      const mockWeddingContext = {
+        weddingId: 'wedding_123',
+        eventDate: '2024-06-15',
+        timeToWedding: 7, // days
+        criticalVendors: ['photographer', 'venue', 'catering'],
+        weddingPhase: 'final_week' as const
+      };
+
+      const baseAlert = {
+        id: 'alert_test_001',
+        severity: 'high' as const,
+        type: 'vendor_communication',
+        title: 'Vendor Response Delay',
+        description: 'Photographer has not responded to messages in 24 hours',
+        timestamp: new Date()
+      };
+
+      const enhancedAlert = await weddingAlertManager.enhanceWithWeddingContext(
+        baseAlert,
+        mockWeddingContext
+      );
+
+      expect(enhancedAlert.severity).toBe('critical'); // Escalated due to final week
+      expect(enhancedAlert.weddingContext).toEqual(mockWeddingContext);
+      expect(enhancedAlert.priority).toBe('immediate');
+      expect(enhancedAlert.escalationChannels).toContain('phone');
+      expect(enhancedAlert.title).toContain('URGENT');
+    });
+
+    it('should integrate with existing MultiChannelOrchestrator', async () => {
+      const orchestratorSpy = vi.spyOn(MultiChannelOrchestrator.prototype, 'sendAlert');
+      
+      const weddingAlert = {
+        id: 'wedding_alert_001',
+        severity: 'critical' as const,
+        type: 'wedding_day_critical',
+        title: 'Wedding Day Venue Issue',
+        description: 'Venue access denied - immediate attention required',
+        weddingContext: {
+          weddingId: 'wedding_456',
+          eventDate: new Date().toISOString().split('T')[0], // Today
+          timeToWedding: 0,
+          weddingPhase: 'wedding_day' as const
+        }
+      };
+
+      await weddingAlertManager.processWeddingAlert(weddingAlert);
+
+      expect(orchestratorSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          alert: expect.objectContaining(weddingAlert),
+          context: expect.objectContaining({
+            isWeddingDay: true,
+            requiresImmediateResponse: true
+          })
+        })
+      );
+    });
+
+    it('should scale alert urgency based on wedding timeline', async () => {
+      const testCases = [
+        { daysToWedding: 30, expectedSeverity: 'medium', expectedChannels: ['email', 'slack'] },
+        { daysToWedding: 7, expectedSeverity: 'high', expectedChannels: ['email', 'slack', 'sms'] },
+        { daysToWedding: 1, expectedSeverity: 'critical', expectedChannels: ['email', 'slack', 'sms', 'phone'] },
+        { daysToWedding: 0, expectedSeverity: 'emergency', expectedChannels: ['phone', 'sms', 'slack', 'email'] }
+      ];
+
+      for (const testCase of testCases) {
+        const alert = await weddingAlertManager.scaleAlertUrgency({
+          id: `test_${testCase.daysToWedding}`,
+          severity: 'medium' as const,
+          type: 'vendor_issue',
+          title: 'Test Alert',
+          description: 'Testing urgency scaling'
+        }, {
+          weddingId: 'test_wedding',
+          eventDate: new Date(Date.now() + testCase.daysToWedding * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+          timeToWedding: testCase.daysToWedding
+        });
+
+        expect(alert.severity).toBe(testCase.expectedSeverity);
+        expect(alert.recommendedChannels).toEqual(testCase.expectedChannels);
+      }
+    });
+  });
+
+  describe('Service Integration Hub', () => {
+    it('should connect all existing monitoring systems', async () => {
+      await integrationHub.initialize();
+
+      // Verify all systems are registered
+      const registeredSystems = integrationHub.getRegisteredSystems();
+      
+      expect(registeredSystems).toContain('healthChecks');
+      expect(registeredSystems).toContain('alertManager');
+      expect(registeredSystems).toContain('multiChannelOrchestrator');
+      expect(registeredSystems).toContain('notificationEngine');
+      expect(registeredSystems).toContain('webhookManager');
+      expect(registeredSystems).toContain('slackNotifications');
+      expect(registeredSystems).toContain('securityAlertingSystem');
+    });
+
+    it('should provide unified health status across all systems', async () => {
+      const unifiedStatus = await integrationHub.getUnifiedSystemStatus();
+
+      expect(unifiedStatus).toHaveProperty('overallStatus');
+      expect(unifiedStatus).toHaveProperty('systemStatuses');
+      expect(unifiedStatus).toHaveProperty('lastUpdated');
+      expect(unifiedStatus).toHaveProperty('activeAlerts');
+
+      expect(unifiedStatus.systemStatuses).toHaveProperty('database');
+      expect(unifiedStatus.systemStatuses).toHaveProperty('notifications');
+      expect(unifiedStatus.systemStatuses).toHaveProperty('webhooks');
+      expect(unifiedStatus.systemStatuses).toHaveProperty('slack');
+
+      expect(unifiedStatus.overallStatus).toBeOneOf(['healthy', 'degraded', 'critical']);
+    });
+
+    it('should route alerts through optimal channels based on system health', async () => {
+      const routingSpy = vi.spyOn(integrationHub, 'routeAlert');
+      
+      // Simulate Slack being down
+      await integrationHub.updateSystemStatus('slack', {
+        status: 'failed',
+        lastCheck: new Date(),
+        error: 'Slack API unreachable'
+      });
+
+      const testAlert = {
+        id: 'routing_test_001',
+        severity: 'high' as const,
+        type: 'system_issue',
+        title: 'Test Alert Routing',
+        preferredChannels: ['slack', 'email', 'sms']
+      };
+
+      await integrationHub.routeAlert(testAlert);
+
+      expect(routingSpy).toHaveBeenCalledWith(expect.objectContaining({
+        ...testAlert,
+        actualChannels: expect.not.arrayContaining(['slack']) // Slack should be excluded
+      }));
+    });
+
+    it('should provide metrics aggregation across all systems', async () => {
+      const metrics = await integrationHub.getAggregatedMetrics({
+        timeRange: '1h',
+        systems: ['all']
+      });
+
+      expect(metrics).toHaveProperty('alertsSent');
+      expect(metrics).toHaveProperty('healthCheckResults');
+      expect(metrics).toHaveProperty('webhooksProcessed');
+      expect(metrics).toHaveProperty('notificationDeliveryRates');
+      expect(metrics).toHaveProperty('systemResponseTimes');
+
+      expect(metrics.alertsSent).toHaveProperty('total');
+      expect(metrics.alertsSent).toHaveProperty('bySeverity');
+      expect(metrics.alertsSent).toHaveProperty('byChannel');
+
+      // Performance requirements
+      expect(metrics.systemResponseTimes.average).toBeLessThan(100); // Sub-100ms requirement
+    });
+  });
+
+  describe('End-to-End Alert Flow Integration', () => {
+    it('should process complete alert flow from health check to delivery', async () => {
+      const deliverySpy = vi.spyOn(MultiChannelOrchestrator.prototype, 'sendAlert');
+      
+      // Simulate health check detecting issue
+      const healthIssue = {
+        type: 'database_connection',
+        severity: 'critical' as const,
+        details: {
+          connectionPool: 'exhausted',
+          responseTime: 5000,
+          errorRate: 0.8
+        }
+      };
+
+      // Process through automated monitor
+      await automatedMonitor.processHealthIssue(healthIssue);
+
+      // Verify alert was created and processed
+      await new Promise(resolve => setTimeout(resolve, 100)); // Allow async processing
+
+      expect(deliverySpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          severity: 'critical',
+          title: expect.stringContaining('Database Connection Critical'),
+          channels: expect.arrayContaining(['email', 'slack', 'sms']),
+          metadata: expect.objectContaining({
+            source: 'automated_health_monitor',
+            healthCheck: expect.objectContaining(healthIssue)
+          })
+        })
+      );
+    });
+
+    it('should maintain sub-100ms alert delivery performance', async () => {
+      const performanceTest = async () => {
+        const startTime = process.hrtime.bigint();
+        
+        await integrationHub.sendUrgentAlert({
+          id: 'perf_test_alert',
+          severity: 'critical',
+          type: 'performance_test',
+          title: 'Performance Test Alert',
+          channels: ['slack'],
+          requiresImmediateDelivery: true
+        });
+
+        const endTime = process.hrtime.bigint();
+        return Number(endTime - startTime) / 1000000; // Convert to milliseconds
+      };
+
+      // Run multiple performance tests
+      const results = await Promise.all(
+        Array.from({ length: 10 }, () => performanceTest())
+      );
+
+      const averageResponseTime = results.reduce((sum, time) => sum + time, 0) / results.length;
+      
+      expect(averageResponseTime).toBeLessThan(100); // Sub-100ms requirement
+      expect(Math.max(...results)).toBeLessThan(200); // No single alert should exceed 200ms
+    });
+
+    it('should handle system failures with graceful degradation', async () => {
+      // Simulate Slack failure
+      vi.spyOn(slackNotifications, 'sendAlert').mockRejectedValue(new Error('Slack API down'));
+
+      const testAlert = {
+        id: 'failover_test',
+        severity: 'high' as const,
+        type: 'system_test',
+        title: 'Failover Test Alert',
+        channels: ['slack', 'email']
+      };
+
+      const result = await integrationHub.sendAlert(testAlert);
+
+      // Should succeed with fallback to email
+      expect(result.success).toBe(true);
+      expect(result.deliveredChannels).not.toContain('slack');
+      expect(result.deliveredChannels).toContain('email');
+      expect(result.failedChannels).toContain('slack');
+    });
+  });
+
+  describe('Webhook Integration Security', () => {
+    it('should verify webhook signatures for all external services', async () => {
+      const testWebhooks = [
+        {
+          source: 'twilio' as const,
+          signature: 'test_signature_twilio',
+          payload: '{"status": "delivered"}',
+          headers: { 'x-twilio-signature': 'test_signature_twilio' }
+        },
+        {
+          source: 'sendgrid' as const,
+          signature: 'test_signature_sendgrid',
+          payload: '{"event": "delivered"}',
+          headers: { 'x-twilio-email-event-webhook-signature': 'test_signature_sendgrid' }
+        }
+      ];
+
+      for (const webhook of testWebhooks) {
+        const result = await webhookManager.processWebhook({
+          source: webhook.source,
+          type: 'status_update',
+          data: JSON.parse(webhook.payload),
+          signature: webhook.signature,
+          headers: webhook.headers
+        });
+
+        // Should process webhook with proper signature verification
+        expect(result.success).toBeDefined();
+        expect(result.eventId).toBeDefined();
+      }
+    });
+
+    it('should integrate webhook events with alert system', async () => {
+      const alertSpy = vi.spyOn(weddingAlertManager, 'processAlert');
+
+      // Simulate webhook indicating delivery failure
+      await webhookManager.processWebhook({
+        source: 'twilio',
+        type: 'delivery_failed',
+        data: {
+          to: '+1234567890',
+          status: 'failed',
+          error: 'Phone number unreachable',
+          context: { weddingId: 'wedding_789', urgency: 'critical' }
+        },
+        signature: 'valid_signature',
+        headers: { 'x-twilio-signature': 'valid_signature' }
+      });
+
+      expect(alertSpy).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'communication_failure',
+        severity: expect.stringMatching(/high|critical/),
+        title: expect.stringContaining('SMS Delivery Failed'),
+        weddingContext: expect.objectContaining({
+          weddingId: 'wedding_789'
+        })
+      }));
+    });
+  });
+
+  describe('Performance and Reliability', () => {
+    it('should maintain 99.9% alert delivery success rate', async () => {
+      const totalAlerts = 1000;
+      const alerts = Array.from({ length: totalAlerts }, (_, i) => ({
+        id: `reliability_test_${i}`,
+        severity: ['low', 'medium', 'high', 'critical'][i % 4] as const,
+        type: 'reliability_test',
+        title: `Reliability Test Alert ${i}`,
+        channels: ['email', 'slack']
+      }));
+
+      const results = await Promise.all(
+        alerts.map(alert => 
+          integrationHub.sendAlert(alert).catch(error => ({ 
+            success: false, 
+            error: error.message 
+          }))
+        )
+      );
+
+      const successCount = results.filter(r => r.success).length;
+      const successRate = successCount / totalAlerts;
+
+      expect(successRate).toBeGreaterThanOrEqual(0.999); // 99.9% success rate
+    });
+
+    it('should handle high-volume alert processing', async () => {
+      const startTime = Date.now();
+      const alertCount = 100;
+
+      // Generate high volume of alerts
+      const alerts = Array.from({ length: alertCount }, (_, i) => ({
+        id: `volume_test_${i}`,
+        severity: 'medium' as const,
+        type: 'volume_test',
+        title: `Volume Test Alert ${i}`,
+        channels: ['email']
+      }));
+
+      await Promise.all(alerts.map(alert => integrationHub.sendAlert(alert)));
+
+      const processingTime = Date.now() - startTime;
+      const alertsPerSecond = (alertCount / processingTime) * 1000;
+
+      // Should handle at least 50 alerts per second
+      expect(alertsPerSecond).toBeGreaterThan(50);
+    });
+  });
+});

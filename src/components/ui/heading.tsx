@@ -1,0 +1,34 @@
+'use client';
+
+import { forwardRef } from 'react';
+import { cn } from '@/lib/utils';
+
+interface HeadingProps extends React.HTMLAttributes<HTMLHeadingElement> {
+  level?: 1 | 2 | 3 | 4 | 5 | 6;
+}
+
+export const Heading = forwardRef<HTMLHeadingElement, HeadingProps>(
+  ({ className, level = 1, children, ...props }, ref) => {
+    const Component = `h${level}` as 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6';
+
+    const sizeClasses = {
+      1: 'text-3xl font-bold tracking-tight text-gray-900',
+      2: 'text-2xl font-bold tracking-tight text-gray-900',
+      3: 'text-xl font-semibold text-gray-900',
+      4: 'text-lg font-semibold text-gray-900',
+      5: 'text-base font-semibold text-gray-900',
+      6: 'text-sm font-semibold text-gray-900',
+    };
+
+    return (
+      <Component
+        ref={ref}
+        className={cn(sizeClasses[level], className)}
+        {...props}
+      >
+        {children}
+      </Component>
+    );
+  },
+);
+Heading.displayName = 'Heading';

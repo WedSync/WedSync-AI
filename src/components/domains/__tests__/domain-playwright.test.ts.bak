@@ -1,0 +1,542 @@
+/**
+ * Playwright E2E Tests for WS-222 Custom Domains System
+ * Tests the complete domain setup workflow from UI to backend
+ */
+
+import { test, expect } from '@playwright/test';
+
+// Test data
+const TEST_DOMAIN = 'clients.photographystudio.com';
+const INVALID_DOMAIN = 'invalid..domain';
+const SUPPLIER_ID = 'test-supplier-uuid';
+
+test.describe('Custom Domains System - WS-222', () => {
+  test.beforeEach(async ({ page }) => {
+    // Navigate to the domain settings page
+    await page.goto('http://localhost:3000/settings/domain');
+    await page.waitForLoadState('networkidle');
+  });
+
+  test.describe('Domain Manager UI', () => {
+    test('renders domain management interface correctly', async ({ page }) => {
+      // Check main components are present
+      await expect(page.getByText('Custom Domain')).toBeVisible();
+      await expect(page.getByText('Brand your client portal with your own domain')).toBeVisible();
+      
+      // Check navigation tabs
+      await expect(page.getByRole('tab', { name: 'Overview' })).toBeVisible();
+      await expect(page.getByRole('tab', { name: 'Configure' })).toBeVisible();
+      await expect(page.getByRole('tab', { name: 'DNS Setup' })).toBeVisible();
+      await expect(page.getByRole('tab', { name: 'Preview' })).toBeVisible();
+    });
+
+    test('displays default domain when no custom domain configured', async ({ page }) => {
+      // Should show default WedSync domain
+      await expect(page.locator('[data-testid="current-domain"]')).toContainText('.wedsync.app');
+      
+      // Should show "Not Set" status badges
+      await expect(page.getByText('Not Set')).toBeVisible();
+    });
+
+    test('shows refresh functionality', async ({ page }) => {
+      const refreshButton = page.getByRole('button', { name: 'Refresh' });
+      await expect(refreshButton).toBeVisible();
+      
+      // Click refresh and verify loading state
+      await refreshButton.click();
+      await expect(refreshButton).toBeDisabled();
+      await page.waitForTimeout(1000);
+      await expect(refreshButton).toBeEnabled();
+    });
+  });
+
+  test.describe('Domain Configuration Workflow', () => {
+    test('complete domain setup workflow', async ({ page }) => {
+      // Navigate to Configure tab
+      await page.getByRole('tab', { name: 'Configure' }).click();
+      
+      // Verify configuration form is visible
+      await expect(page.getByText('Add Custom Domain')).toBeVisible();
+      await expect(page.getByTestId('domain-input')).toBeVisible();
+      
+      // Test domain input validation
+      await page.getByTestId('domain-input').fill(INVALID_DOMAIN);
+      await expect(page.getByText('Please enter a valid domain format')).toBeVisible();
+      
+      // Enter valid domain
+      await page.getByTestId('domain-input').clear();
+      await page.getByTestId('domain-input').fill(TEST_DOMAIN);
+      
+      // Click validate domain
+      await page.getByRole('button', { name: 'Validate Domain' }).click();
+      
+      // Wait for validation to complete
+      await page.waitForTimeout(2000);
+      
+      // Should show validation success
+      await expect(page.getByText('Domain is valid and available!')).toBeVisible();
+      
+      // Click configure domain
+      await page.getByTestId('verify-domain').click();
+      
+      // Wait for configuration
+      await page.waitForTimeout(2000);
+      
+      // Should redirect to DNS setup tab
+      await expect(page.getByText('DNS Configuration')).toBeVisible();
+    });
+
+    test('domain validation with various inputs', async ({ page }) => {
+      await page.getByRole('tab', { name: 'Configure' }).click();
+      
+      const domainInput = page.getByTestId('domain-input');
+      const validateButton = page.getByRole('button', { name: 'Validate Domain' });
+      
+      // Test empty input
+      await validateButton.click();
+      await expect(page.getByText('Please enter a domain name')).toBeVisible();
+      
+      // Test invalid formats
+      const invalidDomains = [
+        'invalid',
+        'invalid.',
+        '.invalid',
+        'invalid..domain',
+        'too-long-' + 'a'.repeat(250) + '.com'
+      ];
+      
+      for (const domain of invalidDomains) {
+        await domainInput.clear();
+        await domainInput.fill(domain);
+        await validateButton.click();
+        await page.waitForTimeout(500);
+        await expect(page.getByText(/Invalid|Please enter a valid/)).toBeVisible();
+      }
+    });
+
+    test('progress tracking during configuration', async ({ page }) => {
+      await page.getByRole('tab', { name: 'Configure' }).click();
+      
+      // Check initial progress state
+      await expect(page.getByText('0% complete')).toBeVisible();
+      
+      // Fill domain and validate
+      await page.getByTestId('domain-input').fill(TEST_DOMAIN);
+      await page.getByRole('button', { name: 'Validate Domain' }).click();
+      await page.waitForTimeout(1000);
+      
+      // Should show progress increase
+      await expect(page.getByText('33% complete')).toBeVisible();
+      
+      // Continue configuration
+      await page.getByTestId('verify-domain').click();
+      await page.waitForTimeout(1000);
+      
+      // Should show further progress
+      await expect(page.getByText('66% complete')).toBeVisible();
+    });
+  });
+
+  test.describe('DNS Instructions', () => {
+    test('displays DNS configuration instructions', async ({ page }) => {
+      // Set up a domain first (mock data)
+      await page.evaluate(() => {
+        window.localStorage.setItem('test-domain-configured', 'true');
+      });
+      
+      await page.getByRole('tab', { name: 'DNS Setup' }).click();
+      
+      // Check DNS instructions are visible
+      await expect(page.getByText('DNS Configuration')).toBeVisible();
+      await expect(page.getByText('Required DNS Records')).toBeVisible();
+      
+      // Check record types tabs
+      await expect(page.getByRole('tab', { name: 'All Records' })).toBeVisible();
+      await expect(page.getByRole('tab', { name: 'TXT Records' })).toBeVisible();
+      await expect(page.getByRole('tab', { name: 'CNAME Records' })).toBeVisible();
+      await expect(page.getByRole('tab', { name: 'Help' })).toBeVisible();
+    });
+
+    test('copy DNS records functionality', async ({ page }) => {
+      await page.evaluate(() => {
+        window.localStorage.setItem('test-domain-configured', 'true');
+      });
+      
+      await page.getByRole('tab', { name: 'DNS Setup' }).click();
+      
+      // Click copy button for DNS value
+      const copyButton = page.locator('[aria-label="Copy DNS value"]').first();
+      await copyButton.click();
+      
+      // Verify copy feedback (check icon changes or tooltip)
+      await expect(page.getByRole('button', { name: /copied/i })).toBeVisible({ timeout: 2000 });
+    });
+
+    test('DNS help section provides guidance', async ({ page }) => {
+      await page.evaluate(() => {
+        window.localStorage.setItem('test-domain-configured', 'true');
+      });
+      
+      await page.getByRole('tab', { name: 'DNS Setup' }).click();
+      await page.getByRole('tab', { name: 'Help' }).click();
+      
+      // Check help content
+      await expect(page.getByText('Step-by-Step Setup Process')).toBeVisible();
+      await expect(page.getByText('Popular DNS Provider Guides')).toBeVisible();
+      await expect(page.getByText('Troubleshooting Tips')).toBeVisible();
+      
+      // Check external links
+      await expect(page.getByRole('link', { name: /GoDaddy Guide/i })).toBeVisible();
+      await expect(page.getByRole('link', { name: /Cloudflare Guide/i })).toBeVisible();
+    });
+  });
+
+  test.describe('SSL Status Monitoring', () => {
+    test('displays SSL certificate status', async ({ page }) => {
+      // Mock active domain with SSL
+      await page.evaluate(() => {
+        window.localStorage.setItem('test-ssl-active', 'true');
+      });
+      
+      // Should show SSL status in overview
+      await expect(page.getByText('SSL Certificate')).toBeVisible();
+      await expect(page.getByText('Automatic HTTPS encryption')).toBeVisible();
+    });
+
+    test('shows SSL provisioning progress', async ({ page }) => {
+      // Mock SSL provisioning state
+      await page.evaluate(() => {
+        window.localStorage.setItem('test-ssl-provisioning', 'true');
+      });
+      
+      // Should show progress indicator
+      await expect(page.getByText('SSL Provisioning Progress')).toBeVisible();
+      await expect(page.locator('[role="progressbar"]')).toBeVisible();
+    });
+
+    test('displays SSL expiry warnings', async ({ page }) => {
+      // Mock expiring SSL certificate
+      await page.evaluate(() => {
+        window.localStorage.setItem('test-ssl-expiring', 'true');
+      });
+      
+      // Should show expiry warning
+      await expect(page.getByText(/Certificate Renewal Required/)).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Force Renewal Now' })).toBeVisible();
+    });
+  });
+
+  test.describe('Domain Preview', () => {
+    test('shows domain preview in different viewports', async ({ page }) => {
+      await page.getByRole('tab', { name: 'Preview' }).click();
+      
+      // Check preview interface
+      await expect(page.getByText('Domain Preview')).toBeVisible();
+      
+      // Test viewport switching
+      await page.getByRole('button', { name: /desktop/i }).click();
+      await expect(page.locator('[data-viewport="desktop"]')).toBeVisible();
+      
+      await page.getByRole('button', { name: /mobile/i }).click();
+      await expect(page.locator('[data-viewport="mobile"]')).toBeVisible();
+      
+      await page.getByRole('button', { name: /tablet/i }).click();
+      await expect(page.locator('[data-viewport="tablet"]')).toBeVisible();
+    });
+
+    test('switches between portal and website preview', async ({ page }) => {
+      await page.getByRole('tab', { name: 'Preview' }).click();
+      
+      // Test preview type switching
+      await page.getByRole('tab', { name: 'Client Portal' }).click();
+      await expect(page.getByText('Client Portal')).toBeVisible();
+      
+      await page.getByRole('tab', { name: 'Public Website' }).click();
+      await expect(page.getByText('Public Website')).toBeVisible();
+    });
+
+    test('external preview link works', async ({ page }) => {
+      await page.getByRole('tab', { name: 'Preview' }).click();
+      
+      const previewLink = page.getByRole('link', { name: /Visit Live/i });
+      await expect(previewLink).toBeVisible();
+      await expect(previewLink).toHaveAttribute('target', '_blank');
+    });
+  });
+
+  test.describe('Domain Management Actions', () => {
+    test('verify domain functionality', async ({ page }) => {
+      // Mock configured domain
+      await page.evaluate(() => {
+        window.localStorage.setItem('test-domain-configured', 'true');
+      });
+      
+      const verifyButton = page.getByRole('button', { name: 'Verify Domain' });
+      await expect(verifyButton).toBeVisible();
+      
+      await verifyButton.click();
+      
+      // Should show verification in progress
+      await expect(page.getByText(/Verifying/)).toBeVisible({ timeout: 2000 });
+    });
+
+    test('remove domain with confirmation', async ({ page }) => {
+      // Mock configured domain
+      await page.evaluate(() => {
+        window.localStorage.setItem('test-domain-configured', 'true');
+      });
+      
+      const removeButton = page.getByRole('button', { name: 'Remove Domain' });
+      await expect(removeButton).toBeVisible();
+      
+      // Set up dialog handler before clicking
+      page.on('dialog', async (dialog) => {
+        expect(dialog.message()).toContain('Are you sure you want to remove');
+        await dialog.accept();
+      });
+      
+      await removeButton.click();
+      
+      // Should show removal confirmation
+      await expect(page.getByText(/Domain removed successfully/)).toBeVisible({ timeout: 5000 });
+    });
+
+    test('cancel domain removal', async ({ page }) => {
+      // Mock configured domain
+      await page.evaluate(() => {
+        window.localStorage.setItem('test-domain-configured', 'true');
+      });
+      
+      const removeButton = page.getByRole('button', { name: 'Remove Domain' });
+      
+      // Set up dialog handler to cancel
+      page.on('dialog', async (dialog) => {
+        await dialog.dismiss();
+      });
+      
+      await removeButton.click();
+      
+      // Domain should still be configured
+      await expect(removeButton).toBeVisible();
+    });
+  });
+
+  test.describe('Error Handling', () => {
+    test('displays API errors gracefully', async ({ page }) => {
+      // Mock API error
+      await page.route('/api/supplier/domain**', (route) => {
+        route.fulfill({
+          status: 500,
+          contentType: 'application/json',
+          body: JSON.stringify({ success: false, error: 'Internal server error' })
+        });
+      });
+      
+      await page.goto('http://localhost:3000/settings/domain');
+      
+      // Should show error message
+      await expect(page.getByText('Internal server error')).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Try Again' })).toBeVisible();
+    });
+
+    test('handles network timeouts', async ({ page }) => {
+      // Mock slow/timeout response
+      await page.route('/api/supplier/domain**', async (route) => {
+        await new Promise(resolve => setTimeout(resolve, 10000)); // 10 second delay
+        route.fulfill({ status: 200, body: '{}' });
+      });
+      
+      await page.goto('http://localhost:3000/settings/domain');
+      
+      // Should show loading state then timeout handling
+      await expect(page.locator('.animate-pulse')).toBeVisible();
+      
+      // Wait for timeout
+      await page.waitForTimeout(5000);
+    });
+
+    test('recovers from errors with retry', async ({ page }) => {
+      let callCount = 0;
+      
+      await page.route('/api/supplier/domain**', (route) => {
+        callCount++;
+        if (callCount === 1) {
+          // First call fails
+          route.fulfill({
+            status: 500,
+            body: JSON.stringify({ success: false, error: 'Server error' })
+          });
+        } else {
+          // Second call succeeds
+          route.fulfill({
+            status: 200,
+            body: JSON.stringify({ success: true, data: { default_domain: 'test.wedsync.app' } })
+          });
+        }
+      });
+      
+      await page.goto('http://localhost:3000/settings/domain');
+      
+      // Should show error first
+      await expect(page.getByText('Server error')).toBeVisible();
+      
+      // Click retry
+      await page.getByRole('button', { name: 'Try Again' }).click();
+      
+      // Should recover and show content
+      await expect(page.getByText('Custom Domain')).toBeVisible();
+    });
+  });
+
+  test.describe('Mobile Responsiveness', () => {
+    test('works correctly on mobile viewport', async ({ page }) => {
+      await page.setViewportSize({ width: 375, height: 667 });
+      
+      await expect(page.getByText('Custom Domain')).toBeVisible();
+      
+      // Tabs should be responsive
+      await page.getByRole('tab', { name: 'Configure' }).click();
+      await expect(page.getByTestId('domain-input')).toBeVisible();
+      
+      // Form should be usable on mobile
+      await page.getByTestId('domain-input').fill(TEST_DOMAIN);
+      await expect(page.getByTestId('domain-input')).toHaveValue(TEST_DOMAIN);
+    });
+
+    test('preview adapts to mobile viewport', async ({ page }) => {
+      await page.setViewportSize({ width: 375, height: 667 });
+      
+      await page.getByRole('tab', { name: 'Preview' }).click();
+      
+      // Mobile preview should be selected automatically or available
+      await page.getByRole('button', { name: /mobile/i }).click();
+      await expect(page.locator('[data-viewport="mobile"]')).toBeVisible();
+    });
+  });
+
+  test.describe('Accessibility', () => {
+    test('meets accessibility standards', async ({ page }) => {
+      // Check for proper ARIA labels
+      await expect(page.getByRole('tablist')).toBeVisible();
+      await expect(page.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected');
+      
+      // Check for proper heading hierarchy
+      await expect(page.getByRole('heading', { level: 2 })).toBeVisible();
+      
+      // Check for proper form labels
+      await page.getByRole('tab', { name: 'Configure' }).click();
+      await expect(page.getByLabelText(/Domain Name/i)).toBeVisible();
+    });
+
+    test('supports keyboard navigation', async ({ page }) => {
+      // Tab through interface
+      await page.keyboard.press('Tab');
+      await expect(page.getByRole('button', { name: 'Refresh' })).toBeFocused();
+      
+      await page.keyboard.press('Tab');
+      await page.keyboard.press('Tab');
+      
+      // Should be able to activate tabs with keyboard
+      await page.keyboard.press('ArrowRight');
+      await expect(page.getByRole('tab', { name: 'Configure' })).toHaveAttribute('aria-selected', 'true');
+    });
+
+    test('provides appropriate focus management', async ({ page }) => {
+      // Navigate to configure tab
+      await page.getByRole('tab', { name: 'Configure' }).click();
+      
+      // Focus should move to form when tab is activated
+      const domainInput = page.getByTestId('domain-input');
+      await domainInput.focus();
+      await expect(domainInput).toBeFocused();
+      
+      // Tab navigation within form
+      await page.keyboard.press('Tab');
+      await expect(page.getByRole('button', { name: 'Validate Domain' })).toBeFocused();
+    });
+  });
+
+  test.describe('Performance', () => {
+    test('loads within acceptable time limits', async ({ page }) => {
+      const startTime = Date.now();
+      
+      await page.goto('http://localhost:3000/settings/domain');
+      await page.waitForLoadState('networkidle');
+      
+      const loadTime = Date.now() - startTime;
+      expect(loadTime).toBeLessThan(3000); // Should load within 3 seconds
+    });
+
+    test('handles large DNS record lists efficiently', async ({ page }) => {
+      // Mock large number of DNS records
+      await page.route('/api/supplier/domain**', (route) => {
+        const largeRecordList = Array.from({ length: 50 }, (_, i) => ({
+          type: 'TXT',
+          name: `record-${i}.example.com`,
+          value: `value-${i}`,
+          required: false,
+          description: `Test record ${i}`,
+          status: 'pending'
+        }));
+        
+        route.fulfill({
+          status: 200,
+          body: JSON.stringify({
+            success: true,
+            data: {
+              dns_records: largeRecordList,
+              default_domain: 'test.wedsync.app'
+            }
+          })
+        });
+      });
+      
+      await page.getByRole('tab', { name: 'DNS Setup' }).click();
+      
+      // Should handle large lists without performance issues
+      await expect(page.getByText('DNS Configuration')).toBeVisible({ timeout: 5000 });
+    });
+  });
+});
+
+/**
+ * Additional helper test for API endpoint validation
+ * Tests the backend API responses independently
+ */
+test.describe('API Integration Tests', () => {
+  test('domain validation endpoint works correctly', async ({ request }) => {
+    const response = await request.post('/api/supplier/domain/validate', {
+      data: { domain: TEST_DOMAIN }
+    });
+    
+    expect(response.ok()).toBeTruthy();
+    const data = await response.json();
+    expect(data.success).toBe(true);
+    expect(data.data.valid).toBeDefined();
+  });
+
+  test('domain configuration endpoint requires authentication', async ({ request }) => {
+    const response = await request.post('/api/supplier/domain', {
+      data: {
+        supplier_id: SUPPLIER_ID,
+        domain: TEST_DOMAIN,
+        action: 'configure'
+      }
+    });
+    
+    // Should require authentication
+    expect(response.status()).toBe(401);
+  });
+
+  test('SSL status endpoint returns proper structure', async ({ request }) => {
+    // This would need authentication in real scenario
+    const response = await request.post('/api/supplier/domain/ssl-status', {
+      data: { supplier_id: SUPPLIER_ID }
+    });
+    
+    if (response.status() !== 401) { // Skip auth for this test
+      const data = await response.json();
+      expect(data).toHaveProperty('success');
+    }
+  });
+});

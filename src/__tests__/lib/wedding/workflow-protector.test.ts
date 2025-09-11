@@ -1,0 +1,284 @@
+/**
+ * Tests for WeddingWorkflowProtector - Core wedding workflow protection engine
+ * WS-198 Error Handling System - Team D Mobile & PWA Architecture
+ */
+
+import { WeddingWorkflowProtector, WeddingWorkflow, WorkflowExecutionResult } from '../../../lib/wedding/workflow-protector'
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+// Mock IndexedDB
+const mockIndexedDB = {
+  open: vi.fn(),
+  deleteDatabase: vi.fn(),
+  cmp: vi.fn()
+}
+const mockDB = {
+  transaction: vi.fn(),
+  createObjectStore: vi.fn(),
+  close: vi.fn()
+const mockTransaction = {
+  objectStore: vi.fn(),
+  oncomplete: null,
+  onerror: null
+const mockStore = {
+  add: vi.fn(),
+  get: vi.fn(),
+  put: vi.fn(),
+  delete: vi.fn(),
+  clear: vi.fn(),
+  getAll: vi.fn()
+Object.defineProperty(window, 'indexedDB', {
+  value: mockIndexedDB,
+  writable: true
+})
+// Mock Supabase client
+vi.mock('../../../lib/supabase/client', () => ({
+  supabase: {
+    channel: vi.fn(),
+    from: vi.fn(),
+    auth: {
+      getUser: vi.fn()
+    }
+  }
+}))
+describe('WeddingWorkflowProtector', () => {
+  let protector: WeddingWorkflowProtector
+  let mockWorkflow: WeddingWorkflow
+  beforeEach(() => {
+    vi.clearAllMocks()
+    
+    // Setup IndexedDB mocks
+    mockIndexedDB.open.mockImplementation(() => {
+      const request = {
+        onsuccess: null,
+        onerror: null,
+        onupgradeneeded: null,
+        result: mockDB
+      }
+      setTimeout(() => request.onsuccess?.({ target: { result: mockDB } }), 0)
+      return request
+    })
+    mockDB.transaction.mockReturnValue(mockTransaction)
+    mockTransaction.objectStore.mockReturnValue(mockStore)
+    protector = new WeddingWorkflowProtector()
+    mockWorkflow = {
+      id: 'test-workflow-123',
+      type: 'photo_upload',
+      priority: 'critical',
+      weddingId: 'wedding-456',
+      weddingDate: '2024-06-15',
+      data: {
+        photoFile: 'ceremony-photo.jpg',
+        caption: 'First kiss',
+        timestamp: '2024-06-15T15:30:00Z'
+      },
+      metadata: {
+        isWeddingDay: true,
+        vendorType: 'photographer',
+        emergencyEscalation: true
+  })
+  describe('Workflow Execution', () => {
+    it('should execute workflow successfully with all protection layers', async () => {
+      const mockExecutionFunction = vi.fn().mockResolvedValue({
+        success: true,
+        data: 'Photo uploaded successfully'
+      })
+      const result = await protector.executeProtectedWorkflow(
+        mockWorkflow,
+        mockExecutionFunction
+      )
+      expect(result.success).toBe(true)
+      expect(result.data).toBe('Photo uploaded successfully')
+      expect(result.executionTime).toBeGreaterThan(0)
+      expect(result.retryCount).toBe(0)
+      expect(mockExecutionFunction).toHaveBeenCalledTimes(1)
+    it('should retry failed workflow according to priority', async () => {
+      let attemptCount = 0
+      const mockExecutionFunction = vi.fn().mockImplementation(async () => {
+        attemptCount++
+        if (attemptCount < 3) {
+          throw new Error('Network timeout')
+        }
+        return { success: true, data: 'Success on attempt 3' }
+      expect(result.retryCount).toBe(2)
+      expect(mockExecutionFunction).toHaveBeenCalledTimes(3)
+    it('should escalate to emergency support for critical wedding day failures', async () => {
+      const mockExecutionFunction = vi.fn().mockRejectedValue(
+        new Error('Critical ceremony photo upload failed')
+      const emergencySpy = vi.spyOn(protector as any, 'escalateToEmergency')
+      emergencySpy.mockResolvedValue({ escalated: true, ticketId: 'EMG-123' })
+      expect(result.success).toBe(false)
+      expect(result.emergencyEscalated).toBe(true)
+      expect(result.emergencyTicketId).toBe('EMG-123')
+      expect(emergencySpy).toHaveBeenCalled()
+    it('should queue workflow for offline execution when network unavailable', async () => {
+      // Mock offline state
+      Object.defineProperty(navigator, 'onLine', {
+        value: false,
+        writable: true
+      const mockExecutionFunction = vi.fn()
+      mockStore.add.mockResolvedValue('queue-key-123')
+      expect(result.queued).toBe(true)
+      expect(result.queuedAt).toBeDefined()
+      expect(mockStore.add).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workflow: mockWorkflow,
+          queuedAt: expect.any(Number),
+          retryCount: 0
+        })
+  describe('Priority-Based Retry Logic', () => {
+    it('should retry critical workflows more aggressively', async () => {
+      const criticalWorkflow = {
+        ...mockWorkflow,
+        priority: 'critical' as const
+        throw new Error('Persistent failure')
+        criticalWorkflow,
+      // Critical workflows should get maximum retries (10)
+      expect(mockExecutionFunction).toHaveBeenCalledTimes(10)
+      expect(result.retryCount).toBe(9)
+    it('should retry low priority workflows conservatively', async () => {
+      const lowPriorityWorkflow = {
+        priority: 'low' as const
+        throw new Error('Minor failure')
+        lowPriorityWorkflow,
+      // Low priority workflows should get fewer retries (3)
+  describe('Wedding Day Detection', () => {
+    it('should detect when workflow is executed on actual wedding day', () => {
+      const today = new Date().toISOString().split('T')[0]
+      const weddingDayWorkflow = {
+        weddingDate: today
+      const isWeddingDay = (protector as unknown).isWeddingDay(weddingDayWorkflow.weddingDate)
+      expect(isWeddingDay).toBe(true)
+    it('should apply emergency protocols on wedding day', async () => {
+      // Set up wedding day scenario
+        weddingDate: today,
+        metadata: {
+          ...mockWorkflow.metadata,
+          isWeddingDay: true,
+          emergencyEscalation: true
+        new Error('Wedding day failure')
+      emergencySpy.mockResolvedValue({ escalated: true, ticketId: 'WED-123' })
+      await protector.executeProtectedWorkflow(
+        weddingDayWorkflow,
+      expect(emergencySpy).toHaveBeenCalledWith(
+        expect.any(Error),
+        expect.any(Number)
+  describe('Different Workflow Types', () => {
+    const workflowTypes = [
+      'photo_upload',
+      'timeline_update', 
+      'payment',
+      'emergency_comm',
+      'guest_management',
+      'vendor_coordination',
+      'couple_checkin'
+    ] as const
+    workflowTypes.forEach(type => {
+      it(`should handle ${type} workflow type correctly`, async () => {
+        const typedWorkflow = {
+          ...mockWorkflow,
+          type,
+          data: getTestDataForType(type)
+        const mockExecutionFunction = vi.fn().mockResolvedValue({
+          success: true,
+          data: `${type} completed`
+        const result = await protector.executeProtectedWorkflow(
+          typedWorkflow,
+          mockExecutionFunction
+        )
+        expect(result.success).toBe(true)
+        expect(result.workflowType).toBe(type)
+  describe('Error Recovery Patterns', () => {
+    it('should handle network timeouts with exponential backoff', async () => {
+      const delays: number[] = []
+      const originalSetTimeout = setTimeout
+      global.setTimeout = vi.fn().mockImplementation((callback, delay) => {
+        delays.push(delay)
+        return originalSetTimeout(callback, 0)
+      }) as any
+        if (attemptCount < 4) {
+        return { success: true, data: 'Finally worked' }
+      // Check exponential backoff pattern
+      expect(delays[0]).toBe(1000) // First retry: 1s
+      expect(delays[1]).toBe(2000) // Second retry: 2s  
+      expect(delays[2]).toBe(4000) // Third retry: 4s
+      global.setTimeout = originalSetTimeout
+    it('should handle server errors differently from network errors', async () => {
+      const serverErrorWorkflow = { ...mockWorkflow }
+      
+        .mockRejectedValueOnce(new Error('500 Internal Server Error'))
+        .mockRejectedValueOnce(new Error('502 Bad Gateway'))
+        .mockResolvedValueOnce({ success: true, data: 'Server recovered' })
+        serverErrorWorkflow,
+  describe('Offline Queue Management', () => {
+    beforeEach(() => {
+    it('should queue multiple workflows when offline', async () => {
+      const workflows = [
+        { ...mockWorkflow, id: 'workflow-1', type: 'photo_upload' as const },
+        { ...mockWorkflow, id: 'workflow-2', type: 'timeline_update' as const },
+        { ...mockWorkflow, id: 'workflow-3', type: 'guest_management' as const }
+      ]
+      mockStore.add.mockResolvedValue('queue-key')
+      for (const workflow of workflows) {
+        await protector.executeProtectedWorkflow(workflow, mockExecutionFunction)
+      expect(mockStore.add).toHaveBeenCalledTimes(3)
+    it('should process queued workflows when coming back online', async () => {
+      // Setup queued workflows
+      const queuedWorkflows = [
+        {
+          workflow: { ...mockWorkflow, id: 'queued-1' },
+          queuedAt: Date.now() - 60000, // Queued 1 minute ago
+      mockStore.getAll.mockResolvedValue(queuedWorkflows)
+        data: 'Processed from queue'
+      // Come back online
+        value: true,
+      await protector.processOfflineQueue(mockExecutionFunction)
+      expect(mockExecutionFunction).toHaveBeenCalledWith(queuedWorkflows[0].workflow)
+      expect(mockStore.delete).toHaveBeenCalled()
+  describe('Real-time Sync Integration', () => {
+    it('should establish real-time sync channel for wedding coordination', async () => {
+      const { supabase } = require('../../../lib/supabase/client')
+      const mockChannel = {
+        on: vi.fn(),
+        subscribe: vi.fn()
+      supabase.channel.mockReturnValue(mockChannel)
+      await protector.initializeRealTimeSync(mockWorkflow.weddingId)
+      expect(supabase.channel).toHaveBeenCalledWith(`wedding:${mockWorkflow.weddingId}`)
+      expect(mockChannel.on).toHaveBeenCalledWith(
+        'postgres_changes',
+        expect.any(Object),
+        expect.any(Function)
+  describe('Performance Monitoring', () => {
+    it('should track workflow execution performance', async () => {
+        await new Promise(resolve => setTimeout(resolve, 100))
+        return { success: true, data: 'Performance test' }
+      expect(result.executionTime).toBeGreaterThan(100)
+      expect(result.performanceMetrics).toBeDefined()
+    it('should detect slow workflows and apply optimizations', async () => {
+      const slowWorkflow = {
+        type: 'photo_upload' as const,
+        data: {
+          ...mockWorkflow.data,
+          fileSize: 50 * 1024 * 1024 // 50MB file
+        await new Promise(resolve => setTimeout(resolve, 200))
+        return { success: true, data: 'Slow operation completed' }
+        slowWorkflow,
+      expect(result.performanceOptimizationsApplied).toBeTruthy()
+// Helper function to generate test data for different workflow types
+function getTestDataForType(type: WeddingWorkflow['type']) {
+  switch (type) {
+    case 'photo_upload':
+      return { photoFile: 'test.jpg', caption: 'Test photo' }
+    case 'timeline_update':
+      return { eventId: 'event-123', newTime: '15:30' }
+    case 'payment':
+      return { amount: 5000, description: 'Final payment' }
+    case 'emergency_comm':
+      return { message: 'Emergency at venue', recipients: ['vendor1', 'vendor2'] }
+    case 'guest_management':
+      return { guestId: 'guest-456', action: 'check_in' }
+    case 'vendor_coordination':
+      return { vendorId: 'vendor-789', status: 'ready', location: 'ceremony site' }
+    case 'couple_checkin':
+      return { coupleId: 'couple-012', milestone: 'getting_ready', status: 'completed' }
+    default:
+      return {}

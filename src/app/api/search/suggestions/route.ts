@@ -1,0 +1,775 @@
+/**
+ * WS-248: Advanced Search System - Auto-complete and Suggestions API
+ *
+ * GET /api/search/suggestions
+ * POST /api/search/suggestions
+ *
+ * Smart auto-complete, query suggestions, and search assistance
+ * with ML-powered wedding vendor discovery recommendations.
+ *
+ * Team B - Round 1 - Advanced Search Backend Focus
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+
+// =====================================================================================
+// VALIDATION SCHEMAS
+// =====================================================================================
+
+const SuggestionsSchema = z.object({
+  query: z.string().min(1).max(100),
+  type: z
+    .enum(['autocomplete', 'suggestions', 'corrections', 'related'])
+    .default('autocomplete'),
+  context: z
+    .object({
+      searchType: z.enum(['vendors', 'venues', 'services', 'all']).optional(),
+      location: z
+        .object({
+          latitude: z.number(),
+          longitude: z.number(),
+          radius: z.number().default(50),
+        })
+        .optional(),
+      previousSearches: z.array(z.string()).max(10).optional(),
+      userPreferences: z
+        .object({
+          vendorTypes: z.array(z.string()).optional(),
+          budgetRange: z
+            .object({
+              min: z.number(),
+              max: z.number(),
+            })
+            .optional(),
+        })
+        .optional(),
+    })
+    .optional(),
+  limit: z.number().min(1).max(50).default(10),
+});
+
+const BatchSuggestionsSchema = z.object({
+  queries: z.array(z.string()).min(1).max(20),
+});
+
+// =====================================================================================
+// TYPES & INTERFACES
+// =====================================================================================
+
+interface SuggestionItem {
+  text: string;
+  type: 'vendor' | 'service' | 'location' | 'category' | 'query';
+  score: number;
+  metadata: {
+    category?: string;
+    location?: string;
+    popularity?: number;
+    recentSearchCount?: number;
+    vendorCount?: number;
+  };
+  highlighted?: string;
+}
+
+interface SuggestionsResponse {
+  success: boolean;
+  suggestions: SuggestionItem[];
+  metadata: {
+    query: string;
+    type: string;
+    totalSuggestions: number;
+    executionTime: number;
+    context?: any;
+  };
+  error?: string;
+}
+
+// =====================================================================================
+// API HANDLERS
+// =====================================================================================
+
+export async function GET(request: NextRequest) {
+  const startTime = Date.now();
+
+  try {
+    const supabase = createClient();
+    const { searchParams } = request.nextUrl;
+
+    // Parse parameters
+    const requestData = {
+      query: searchParams.get('q') || '',
+      type: searchParams.get('type') || 'autocomplete',
+      context: {
+        searchType: searchParams.get('search_type') || undefined,
+        location:
+          searchParams.get('lat') && searchParams.get('lng')
+            ? {
+                latitude: parseFloat(searchParams.get('lat')!),
+                longitude: parseFloat(searchParams.get('lng')!),
+                radius: searchParams.get('radius')
+                  ? parseInt(searchParams.get('radius')!)
+                  : 50,
+              }
+            : undefined,
+      },
+      limit: Math.min(parseInt(searchParams.get('limit') || '10'), 50),
+    };
+
+    // Validate parameters
+    const validation = SuggestionsSchema.safeParse(requestData);
+    if (!validation.success) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Invalid suggestion parameters',
+          details: validation.error.errors,
+        },
+        { status: 400 },
+      );
+    }
+
+    const params = validation.data;
+
+    // Execute suggestions based on type
+    let suggestions: SuggestionItem[] = [];
+
+    switch (params.type) {
+      case 'autocomplete':
+        suggestions = await getAutocompleteSuggestions(supabase, params);
+        break;
+      case 'suggestions':
+        suggestions = await getQuerySuggestions(supabase, params);
+        break;
+      case 'corrections':
+        suggestions = await getSpellingCorrections(supabase, params);
+        break;
+      case 'related':
+        suggestions = await getRelatedSuggestions(supabase, params);
+        break;
+    }
+
+    const response: SuggestionsResponse = {
+      success: true,
+      suggestions,
+      metadata: {
+        query: params.query,
+        type: params.type,
+        totalSuggestions: suggestions.length,
+        executionTime: Date.now() - startTime,
+        context: params.context,
+      },
+    };
+
+    // Add caching headers
+    const headers = {
+      'Cache-Control': 'public, max-age=300, stale-while-revalidate=600',
+      'X-Execution-Time': (Date.now() - startTime).toString(),
+    };
+
+    return NextResponse.json(response, { headers });
+  } catch (error) {
+    console.error('Suggestions API error:', error);
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Failed to generate suggestions',
+        executionTime: Date.now() - startTime,
+      },
+      { status: 500 },
+    );
+  }
+}
+
+export async function POST(request: NextRequest) {
+  const startTime = Date.now();
+
+  try {
+    const supabase = createClient();
+    const body = await request.json();
+
+    // Get user context
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { success: false, error: 'Authentication required for POST requests' },
+        { status: 401 },
+      );
+    }
+
+    // Handle batch suggestions
+    if (body.queries && Array.isArray(body.queries)) {
+      return handleBatchSuggestions(supabase, body, user.id);
+    }
+
+    // Single suggestion request with user context
+    const validation = SuggestionsSchema.safeParse(body);
+    if (!validation.success) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Invalid suggestion parameters',
+          details: validation.error.errors,
+        },
+        { status: 400 },
+      );
+    }
+
+    const params = validation.data;
+
+    // Get user preferences and search history
+    const userContext = await getUserSearchContext(supabase, user.id);
+    const enrichedParams = {
+      ...params,
+      context: {
+        ...params.context,
+        userPreferences: userContext.preferences,
+        previousSearches: userContext.recentSearches,
+      },
+    };
+
+    // Execute personalized suggestions
+    const suggestions = await getPersonalizedSuggestions(
+      supabase,
+      enrichedParams,
+      user.id,
+    );
+
+    const response: SuggestionsResponse = {
+      success: true,
+      suggestions,
+      metadata: {
+        query: params.query,
+        type: params.type,
+        totalSuggestions: suggestions.length,
+        executionTime: Date.now() - startTime,
+        context: enrichedParams.context,
+      },
+    };
+
+    return NextResponse.json(response);
+  } catch (error) {
+    console.error('POST Suggestions API error:', error);
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Failed to generate personalized suggestions',
+        executionTime: Date.now() - startTime,
+      },
+      { status: 500 },
+    );
+  }
+}
+
+// =====================================================================================
+// SUGGESTION ALGORITHMS
+// =====================================================================================
+
+async function getAutocompleteSuggestions(
+  supabase: any,
+  params: any,
+): Promise<SuggestionItem[]> {
+  const suggestions: SuggestionItem[] = [];
+  const query = params.query.toLowerCase().trim();
+
+  try {
+    // Get vendor name suggestions
+    const { data: vendorSuggestions } = await supabase
+      .from('suppliers')
+      .select('id, business_name, supplier_type, city, state, average_rating')
+      .ilike('business_name', `${query}%`)
+      .eq('status', 'active')
+      .limit(params.limit)
+      .order('average_rating', { ascending: false });
+
+    if (vendorSuggestions) {
+      vendorSuggestions.forEach((vendor: any) => {
+        suggestions.push({
+          text: vendor.business_name,
+          type: 'vendor',
+          score: calculateVendorScore(vendor),
+          metadata: {
+            category: vendor.supplier_type,
+            location: `${vendor.city}, ${vendor.state}`,
+            popularity: vendor.average_rating,
+          },
+          highlighted: highlightMatch(vendor.business_name, query),
+        });
+      });
+    }
+
+    // Get service category suggestions
+    const { data: serviceSuggestions } = await supabase
+      .from('supplier_services')
+      .select('service_name, category, COUNT(*) as vendor_count')
+      .ilike('service_name', `${query}%`)
+      .group(['service_name', 'category'])
+      .limit(params.limit)
+      .order('vendor_count', { ascending: false });
+
+    if (serviceSuggestions) {
+      serviceSuggestions.forEach((service: any) => {
+        suggestions.push({
+          text: service.service_name,
+          type: 'service',
+          score: Math.min(service.vendor_count / 10, 1.0),
+          metadata: {
+            category: service.category,
+            vendorCount: service.vendor_count,
+          },
+          highlighted: highlightMatch(service.service_name, query),
+        });
+      });
+    }
+
+    // Get location suggestions if location context provided
+    if (params.context?.location) {
+      const locationSuggestions = await getLocationSuggestions(
+        supabase,
+        query,
+        params.context.location,
+      );
+      suggestions.push(...locationSuggestions);
+    }
+
+    // Get popular search terms
+    const popularTerms = await getPopularSearchTerms(
+      supabase,
+      query,
+      params.limit,
+    );
+    suggestions.push(...popularTerms);
+
+    // Sort by score and limit results
+    return suggestions.sort((a, b) => b.score - a.score).slice(0, params.limit);
+  } catch (error) {
+    console.error('Autocomplete suggestions error:', error);
+    return [];
+  }
+}
+
+async function getQuerySuggestions(
+  supabase: any,
+  params: any,
+): Promise<SuggestionItem[]> {
+  const suggestions: SuggestionItem[] = [];
+  const query = params.query.toLowerCase();
+
+  try {
+    // Get trending search queries
+    const { data: trendingQueries } = await supabase
+      .from('search_analytics')
+      .select('search_query, COUNT(*) as search_count')
+      .gte(
+        'created_at',
+        new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+      ) // Last 30 days
+      .group('search_query')
+      .order('search_count', { ascending: false })
+      .limit(params.limit);
+
+    if (trendingQueries) {
+      trendingQueries.forEach((item: any) => {
+        if (item.search_query.toLowerCase().includes(query)) {
+          suggestions.push({
+            text: item.search_query,
+            type: 'query',
+            score: Math.log(item.search_count) / 10,
+            metadata: {
+              recentSearchCount: item.search_count,
+              popularity: item.search_count,
+            },
+          });
+        }
+      });
+    }
+
+    // Get semantic suggestions based on wedding planning context
+    const contextualSuggestions = await getContextualSuggestions(
+      query,
+      params.context,
+    );
+    suggestions.push(...contextualSuggestions);
+
+    return suggestions.sort((a, b) => b.score - a.score).slice(0, params.limit);
+  } catch (error) {
+    console.error('Query suggestions error:', error);
+    return [];
+  }
+}
+
+async function getSpellingCorrections(
+  supabase: any,
+  params: any,
+): Promise<SuggestionItem[]> {
+  // Implement spell checking and correction algorithms
+  const suggestions: SuggestionItem[] = [];
+  const query = params.query.toLowerCase();
+
+  try {
+    // Simple Levenshtein distance-based corrections
+    const { data: vendorNames } = await supabase
+      .from('suppliers')
+      .select('business_name')
+      .eq('status', 'active')
+      .limit(1000);
+
+    if (vendorNames) {
+      const corrections = vendorNames
+        .filter((vendor: any) => {
+          const distance = levenshteinDistance(
+            query,
+            vendor.business_name.toLowerCase(),
+          );
+          return (
+            distance > 0 &&
+            distance <= 2 &&
+            Math.abs(query.length - vendor.business_name.length) <= 2
+          );
+        })
+        .map((vendor: any) => ({
+          text: vendor.business_name,
+          type: 'vendor' as const,
+          score:
+            1 /
+            (levenshteinDistance(query, vendor.business_name.toLowerCase()) +
+              1),
+          metadata: {
+            category: 'correction',
+          },
+        }))
+        .slice(0, params.limit);
+
+      suggestions.push(...corrections);
+    }
+
+    return suggestions.sort((a, b) => b.score - a.score);
+  } catch (error) {
+    console.error('Spelling corrections error:', error);
+    return [];
+  }
+}
+
+async function getRelatedSuggestions(
+  supabase: any,
+  params: any,
+): Promise<SuggestionItem[]> {
+  // Get related terms and suggestions based on current query
+  const suggestions: SuggestionItem[] = [];
+
+  try {
+    // Implementation would include semantic analysis and related term discovery
+    // For now, return wedding-related suggestions based on common patterns
+
+    const weddingRelatedTerms = getWeddingRelatedTerms(params.query);
+    weddingRelatedTerms.forEach((term) => {
+      suggestions.push({
+        text: term,
+        type: 'category',
+        score: 0.8,
+        metadata: {
+          category: 'related',
+        },
+      });
+    });
+
+    return suggestions.slice(0, params.limit);
+  } catch (error) {
+    console.error('Related suggestions error:', error);
+    return [];
+  }
+}
+
+// =====================================================================================
+// HELPER FUNCTIONS
+// =====================================================================================
+
+async function getUserSearchContext(supabase: any, userId: string) {
+  try {
+    const { data: recentSearches } = await supabase
+      .from('search_analytics')
+      .select('search_query')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(10);
+
+    const { data: userPreferences } = await supabase
+      .from('user_profiles')
+      .select('wedding_preferences, location_preferences')
+      .eq('id', userId)
+      .single();
+
+    return {
+      recentSearches: recentSearches?.map((s: any) => s.search_query) || [],
+      preferences: userPreferences || {},
+    };
+  } catch (error) {
+    console.error('Failed to get user search context:', error);
+    return { recentSearches: [], preferences: {} };
+  }
+}
+
+async function getPersonalizedSuggestions(
+  supabase: any,
+  params: any,
+  userId: string,
+): Promise<SuggestionItem[]> {
+  // Enhanced suggestions with user context
+  const baseSuggestions = await getAutocompleteSuggestions(supabase, params);
+
+  // Boost suggestions based on user preferences and history
+  const personalizedSuggestions = baseSuggestions.map((suggestion) => {
+    let boostedScore = suggestion.score;
+
+    // Boost based on user's previous searches
+    if (
+      params.context?.previousSearches?.some((term: string) =>
+        term.toLowerCase().includes(suggestion.text.toLowerCase()),
+      )
+    ) {
+      boostedScore *= 1.5;
+    }
+
+    // Boost based on user preferences
+    if (
+      params.context?.userPreferences?.vendorTypes?.includes(
+        suggestion.metadata.category,
+      )
+    ) {
+      boostedScore *= 1.3;
+    }
+
+    return {
+      ...suggestion,
+      score: Math.min(boostedScore, 1.0),
+    };
+  });
+
+  return personalizedSuggestions.sort((a, b) => b.score - a.score);
+}
+
+function calculateVendorScore(vendor: any): number {
+  // Calculate relevance score based on various factors
+  let score = 0.5; // Base score
+
+  if (vendor.average_rating) {
+    score += (vendor.average_rating / 5) * 0.3;
+  }
+
+  if (vendor.review_count > 10) {
+    score += 0.2;
+  }
+
+  return Math.min(score, 1.0);
+}
+
+function highlightMatch(text: string, query: string): string {
+  if (!query) return text;
+
+  const regex = new RegExp(`(${query})`, 'gi');
+  return text.replace(regex, '<mark>$1</mark>');
+}
+
+async function getLocationSuggestions(
+  supabase: any,
+  query: string,
+  location: any,
+): Promise<SuggestionItem[]> {
+  // Get location-based suggestions
+  try {
+    const { data: nearbyVendors } = await supabase
+      .rpc('suppliers_within_radius', {
+        center_lat: location.latitude,
+        center_lng: location.longitude,
+        radius_km: location.radius,
+      })
+      .ilike('business_name', `${query}%`)
+      .limit(5);
+
+    return (
+      nearbyVendors?.map((vendor: any) => ({
+        text: `${vendor.business_name} (${vendor.distance_km.toFixed(1)}km away)`,
+        type: 'vendor' as const,
+        score: Math.max(0.1, 1 - vendor.distance_km / location.radius),
+        metadata: {
+          location: `${vendor.city}, ${vendor.state}`,
+          category: vendor.supplier_type,
+        },
+      })) || []
+    );
+  } catch (error) {
+    console.error('Location suggestions error:', error);
+    return [];
+  }
+}
+
+async function getPopularSearchTerms(
+  supabase: any,
+  query: string,
+  limit: number,
+): Promise<SuggestionItem[]> {
+  try {
+    const { data: popularTerms } = await supabase
+      .from('popular_search_terms')
+      .select('term, search_count')
+      .ilike('term', `${query}%`)
+      .order('search_count', { ascending: false })
+      .limit(limit);
+
+    return (
+      popularTerms?.map((term: any) => ({
+        text: term.term,
+        type: 'query' as const,
+        score: Math.log(term.search_count) / 15,
+        metadata: {
+          popularity: term.search_count,
+          recentSearchCount: term.search_count,
+        },
+      })) || []
+    );
+  } catch (error) {
+    return [];
+  }
+}
+
+function getContextualSuggestions(
+  query: string,
+  context: any,
+): SuggestionItem[] {
+  // Wedding-specific contextual suggestions
+  const weddingContexts = {
+    photo: [
+      'wedding photographer',
+      'engagement photos',
+      'bridal portraits',
+      'wedding album',
+    ],
+    venue: [
+      'wedding venue',
+      'reception hall',
+      'outdoor wedding',
+      'church wedding',
+    ],
+    catering: [
+      'wedding catering',
+      'wedding cake',
+      'rehearsal dinner',
+      'cocktail hour',
+    ],
+    music: ['wedding DJ', 'live band', 'ceremony music', 'reception music'],
+    flowers: [
+      'wedding flowers',
+      'bridal bouquet',
+      'centerpieces',
+      'ceremony decor',
+    ],
+  };
+
+  const suggestions: SuggestionItem[] = [];
+
+  Object.entries(weddingContexts).forEach(([key, terms]) => {
+    if (query.toLowerCase().includes(key)) {
+      terms.forEach((term) => {
+        suggestions.push({
+          text: term,
+          type: 'category',
+          score: 0.6,
+          metadata: {
+            category: 'contextual',
+          },
+        });
+      });
+    }
+  });
+
+  return suggestions;
+}
+
+function getWeddingRelatedTerms(query: string): string[] {
+  // Simple mapping of related wedding terms
+  const relatedTermsMap = {
+    photographer: ['videographer', 'photo booth', 'engagement photos'],
+    venue: ['catering', 'coordinator', 'decoration'],
+    flowers: ['florist', 'bouquet', 'centerpieces'],
+    music: ['DJ', 'band', 'sound system'],
+    cake: ['dessert', 'catering', 'bakery'],
+  };
+
+  for (const [term, related] of Object.entries(relatedTermsMap)) {
+    if (query.toLowerCase().includes(term)) {
+      return related;
+    }
+  }
+
+  return [];
+}
+
+function levenshteinDistance(str1: string, str2: string): number {
+  const matrix = [];
+
+  for (let i = 0; i <= str2.length; i++) {
+    matrix[i] = [i];
+  }
+
+  for (let j = 0; j <= str1.length; j++) {
+    matrix[0][j] = j;
+  }
+
+  for (let i = 1; i <= str2.length; i++) {
+    for (let j = 1; j <= str1.length; j++) {
+      if (str2.charAt(i - 1) === str1.charAt(j - 1)) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j - 1] + 1, // substitution
+          matrix[i][j - 1] + 1, // insertion
+          matrix[i - 1][j] + 1, // deletion
+        );
+      }
+    }
+  }
+
+  return matrix[str2.length][str1.length];
+}
+
+async function handleBatchSuggestions(
+  supabase: any,
+  body: any,
+  userId: string,
+) {
+  const validation = BatchSuggestionsSchema.safeParse(body);
+  if (!validation.success) {
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Invalid batch suggestions parameters',
+        details: validation.error.errors,
+      },
+      { status: 400 },
+    );
+  }
+
+  const results = await Promise.all(
+    validation.data.queries.map(async (query, index) => {
+      try {
+        const params = { query, type: 'autocomplete', limit: 5 };
+        const suggestions = await getAutocompleteSuggestions(supabase, params);
+        return { query, suggestions, success: true };
+      } catch (error) {
+        return { query, error: error.message, success: false };
+      }
+    }),
+  );
+
+  return NextResponse.json({
+    success: true,
+    results,
+  });
+}
+
+export const dynamic = 'force-dynamic';

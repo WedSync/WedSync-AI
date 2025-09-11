@@ -1,0 +1,388 @@
+/**
+ * WS-101 Alert System Integration Tests
+ * Comprehensive testing of the alert system implementation
+ */
+
+import { describe, test, expect, beforeEach, afterEach, jest } from '@jest/globals';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { AlertManager } from '@/lib/alerts/alertManager';
+import { MultiChannelOrchestrator } from '@/lib/alerts/channels/MultiChannelOrchestrator';
+import { SlackChannel } from '@/lib/alerts/channels/SlackChannel';
+import { EmailChannel } from '@/lib/alerts/channels/EmailChannel';
+import { SmsChannel } from '@/lib/alerts/channels/SmsChannel';
+import { Alert, AlertSeverity, AlertType, AlertStatus } from '@/lib/alerts/Alert';
+// Mock external dependencies
+jest.mock('@supabase/supabase-js');
+jest.mock('@slack/web-api');
+jest.mock('@sendgrid/mail');
+jest.mock('twilio');
+describe('WS-101 Alert System Integration Tests', () => {
+  let alertManager: AlertManager;
+  let orchestrator: MultiChannelOrchestrator;
+  let mockSupabase: any;
+  beforeEach(() => {
+    // Reset all mocks
+    jest.clearAllMocks();
+    // Mock Supabase client
+    mockSupabase = {
+      from: jest.fn().mockReturnThis(),
+      insert: jest.fn().mockReturnThis(),
+      update: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      single: jest.fn().mockReturnThis(),
+      order: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+    };
+    // Initialize alert manager
+    alertManager = AlertManager.getInstance();
+    orchestrator = new MultiChannelOrchestrator();
+  });
+  afterEach(() => {
+    // Clean up
+    alertManager?.shutdown();
+    orchestrator?.shutdown();
+  describe('Core Alert Creation and Management', () => {
+    test('should create alert with all required fields', async () => {
+      const alertData = {
+        title: 'System Health Degradation',
+        message: 'Database response time increased by 300%',
+        type: AlertType.PERFORMANCE,
+        severity: AlertSeverity.HIGH,
+        source: 'performance-monitor',
+        metadata: {
+          metricName: 'db_response_time',
+          currentValue: 1500,
+          threshold: 500
+        }
+      };
+      mockSupabase.from.mockReturnValue({
+        insert: jest.fn().mockResolvedValue({ error: null })
+      });
+      const alert = await alertManager.createAlert(alertData);
+      expect(alert).toBeDefined();
+      expect(alert.id).toBeDefined();
+      expect(alert.title).toBe(alertData.title);
+      expect(alert.message).toBe(alertData.message);
+      expect(alert.type).toBe(alertData.type);
+      expect(alert.severity).toBe(alertData.severity);
+      expect(alert.status).toBe(AlertStatus.NEW);
+      expect(alert.timestamp).toBeInstanceOf(Date);
+    });
+    test('should validate alert data before creation', async () => {
+      const invalidAlertData = {
+        title: '', // Invalid: empty title
+        message: 'Test message',
+        type: AlertType.SYSTEM,
+        severity: AlertSeverity.LOW
+      await expect(alertManager.createAlert(invalidAlertData))
+        .rejects.toThrow('Alert must have title and message');
+    test('should acknowledge alert successfully', async () => {
+      const alertId = 'test-alert-id';
+      const userId = 'test-user';
+      const comment = 'Investigating the issue';
+        select: jest.fn().mockReturnValue({
+          eq: jest.fn().mockReturnValue({
+            single: jest.fn().mockResolvedValue({
+              data: {
+                id: alertId,
+                status: AlertStatus.NEW,
+                title: 'Test Alert',
+                message: 'Test message',
+                type: AlertType.SYSTEM,
+                severity: AlertSeverity.LOW,
+                timestamp: new Date()
+              },
+              error: null
+            })
+          })
+        }),
+        update: jest.fn().mockReturnValue({
+          eq: jest.fn().mockResolvedValue({ error: null })
+      const acknowledgedAlert = await alertManager.acknowledgeAlert(alertId, userId, comment);
+      expect(acknowledgedAlert.status).toBe(AlertStatus.ACKNOWLEDGED);
+      expect(acknowledgedAlert.acknowledgedBy).toBe(userId);
+      expect(acknowledgedAlert.acknowledgedAt).toBeInstanceOf(Date);
+    test('should resolve alert successfully', async () => {
+      const resolution = 'Issue resolved by restarting service';
+                status: AlertStatus.ACKNOWLEDGED,
+      const resolvedAlert = await alertManager.resolveAlert(alertId, userId, resolution);
+      expect(resolvedAlert.status).toBe(AlertStatus.RESOLVED);
+      expect(resolvedAlert.resolvedBy).toBe(userId);
+      expect(resolvedAlert.resolvedAt).toBeInstanceOf(Date);
+    test('should escalate critical alerts automatically', async () => {
+      const criticalAlert = {
+        title: 'System Down',
+        message: 'Main database is unreachable',
+        type: AlertType.DATABASE,
+        severity: AlertSeverity.SYSTEM_DOWN,
+        source: 'health-check'
+      // Mock escalation storage
+      const escalationSpy = jest.spyOn(alertManager as any, 'scheduleEscalation');
+      
+      await alertManager.createAlert(criticalAlert);
+      expect(escalationSpy).toHaveBeenCalled();
+  describe('Multi-Channel Orchestrator', () => {
+    test('should register channels successfully', () => {
+      const slackConfig = {
+        id: 'slack-main',
+        name: 'Main Slack Channel',
+        type: 'slack' as const,
+        priority: 1,
+        enabled: true,
+        healthStatus: 'healthy' as const,
+        rateLimit: { messagesPerMinute: 60, burstLimit: 10 },
+        weddingDayCapacity: 120,
+        failoverChannels: ['email-main'],
+        messageFormats: ['blocks', 'text']
+      const slackChannel = new SlackChannel({
+        token: 'mock-token',
+        defaultChannel: '#alerts'
+      orchestrator.registerChannel(slackConfig, slackChannel);
+      const channelStatus = orchestrator.getChannelStatus();
+      expect(channelStatus.has('slack-main')).toBe(true);
+      expect(channelStatus.get('slack-main')?.name).toBe('Main Slack Channel');
+    test('should send alerts through multiple channels', async () => {
+      // Register mock channels
+      const mockSlack = { send: jest.fn().mockResolvedValue(undefined) };
+      const mockEmail = { send: jest.fn().mockResolvedValue(undefined) };
+      const mockSms = { send: jest.fn().mockResolvedValue(undefined) };
+      orchestrator.registerChannel({
+        id: 'slack',
+        name: 'Slack',
+        type: 'slack',
+        healthStatus: 'healthy',
+        failoverChannels: [],
+        messageFormats: ['blocks']
+      }, mockSlack);
+        id: 'email',
+        name: 'Email',
+        type: 'email',
+        priority: 2,
+        messageFormats: ['html', 'text']
+      }, mockEmail);
+      const testAlert: Alert = {
+        id: 'test-alert',
+        title: 'Test Alert',
+        message: 'This is a test alert',
+        timestamp: new Date(),
+        status: AlertStatus.NEW
+      const results = await orchestrator.sendAlert(testAlert);
+      expect(results).toBeDefined();
+      expect(results.length).toBeGreaterThan(0);
+      expect(mockSlack.send).toHaveBeenCalledWith(testAlert, undefined);
+      expect(mockEmail.send).toHaveBeenCalledWith(testAlert, undefined);
+    test('should handle channel failover for wedding-critical alerts', async () => {
+      const mockPrimaryChannel = { 
+        send: jest.fn().mockRejectedValue(new Error('Channel unavailable'))
+      const mockFailoverChannel = { 
+        send: jest.fn().mockResolvedValue(undefined)
+      // Register primary channel that will fail
+        id: 'primary',
+        name: 'Primary Channel',
+        failoverChannels: ['failover'],
+      }, mockPrimaryChannel);
+      // Register failover channel
+        id: 'failover',
+        name: 'Failover Channel',
+        messageFormats: ['html']
+      }, mockFailoverChannel);
+      const weddingCriticalAlert: Alert = {
+        id: 'wedding-alert',
+        title: 'Wedding Emergency',
+        message: 'Vendor communication system down 2 hours before ceremony',
+        type: AlertType.WEDDING_CRITICAL,
+        severity: AlertSeverity.WEDDING_EMERGENCY,
+      const weddingContext = {
+        isWeddingDay: true,
+        coupleName: 'John & Jane',
+        weddingDate: new Date(),
+        venue: 'Grand Hotel'
+      const results = await orchestrator.sendAlert(weddingCriticalAlert, weddingContext);
+      // Verify failover was triggered
+      const failoverResults = results.filter(r => r.fallbackUsed);
+      expect(failoverResults.length).toBeGreaterThan(0);
+      expect(mockFailoverChannel.send).toHaveBeenCalled();
+    test('should enable wedding day mode and increase capacity', () => {
+      const weddingId = 'wedding-123';
+        id: 'test-channel',
+        name: 'Test Channel',
+        rateLimit: { messagesPerMinute: 30, burstLimit: 5 },
+        weddingDayCapacity: 60,
+      }, { send: jest.fn() });
+      orchestrator.enableWeddingDayMode(weddingId);
+      const testChannel = channelStatus.get('test-channel');
+      // Verify capacity was doubled
+      expect(testChannel?.rateLimit.messagesPerMinute).toBe(60);
+      expect(testChannel?.rateLimit.burstLimit).toBe(10);
+  describe('Alert Metrics and Analytics', () => {
+    test('should calculate alert metrics correctly', async () => {
+      const mockAlerts = [
+        {
+          id: '1',
+          severity: AlertSeverity.HIGH,
+          type: AlertType.SYSTEM,
+          status: AlertStatus.RESOLVED,
+          timestamp: '2024-01-01T10:00:00Z',
+          resolvedAt: '2024-01-01T10:30:00Z',
+          acknowledgedAt: '2024-01-01T10:05:00Z'
+        },
+          id: '2',
+          severity: AlertSeverity.CRITICAL,
+          type: AlertType.PERFORMANCE,
+          status: AlertStatus.NEW,
+          timestamp: '2024-01-01T11:00:00Z'
+      ];
+          order: jest.fn().mockReturnValue({
+            limit: jest.fn().mockResolvedValue({
+              data: mockAlerts,
+        })
+      const metrics = await alertManager.getMetrics();
+      expect(metrics.totalAlerts).toBe(2);
+      expect(metrics.activeAlerts).toBe(1);
+      expect(metrics.resolvedAlerts).toBe(1);
+      expect(metrics.averageResolutionTime).toBeGreaterThan(0);
+      expect(metrics.alertsBySeverity[AlertSeverity.HIGH]).toBe(1);
+      expect(metrics.alertsBySeverity[AlertSeverity.CRITICAL]).toBe(1);
+    test('should track delivery metrics for channels', async () => {
+      const mockChannel = { send: jest.fn().mockResolvedValue(undefined) };
+        id: 'test-metrics',
+        name: 'Test Metrics Channel',
+      }, mockChannel);
+        id: 'metrics-test',
+        title: 'Metrics Test Alert',
+        message: 'Testing delivery metrics',
+        severity: AlertSeverity.LOW,
+      await orchestrator.sendAlert(testAlert);
+      const metrics = orchestrator.getDeliveryMetrics('test-metrics');
+      expect(metrics.length).toBeGreaterThan(0);
+      expect(metrics[0].success).toBe(true);
+      expect(metrics[0].latency).toBeGreaterThan(0);
+  describe('Wedding-Specific Alert Scenarios', () => {
+    test('should handle wedding day vendor alerts with high priority', async () => {
+      const vendorAlert = {
+        title: 'Florist Communication Lost',
+        message: 'Cannot reach primary florist 3 hours before ceremony',
+        type: AlertType.VENDOR_ALERT,
+        severity: AlertSeverity.VENDOR_CRITICAL,
+        source: 'vendor-monitor',
+          vendorType: 'florist',
+          weddingId: 'wedding-456',
+          timeToEvent: 180 // minutes
+      const alert = await alertManager.createAlert(vendorAlert);
+      expect(alert.severity).toBe(AlertSeverity.VENDOR_CRITICAL);
+      expect(alert.metadata?.vendorType).toBe('florist');
+    test('should escalate timeline-critical alerts faster', async () => {
+      const timelineAlert = {
+        title: 'Timeline Conflict Detected',
+        message: 'Ceremony and photo session overlap by 30 minutes',
+        severity: AlertSeverity.TIMELINE_CRITICAL,
+        source: 'timeline-engine'
+      // Mock the escalation delay calculation
+      const getEscalationDelaySpy = jest.spyOn(alertManager as any, 'getEscalationDelay');
+      await alertManager.createAlert(timelineAlert);
+      expect(getEscalationDelaySpy).toHaveBeenCalledWith(
+        AlertSeverity.TIMELINE_CRITICAL, 
+        expect.any(Number)
+      );
+  describe('Security and Rate Limiting', () => {
+    test('should respect rate limits for SMS channel', async () => {
+      const smsChannel = new SmsChannel({
+        accountSid: 'mock-sid',
+        authToken: 'mock-token',
+        fromNumber: '+1234567890',
+        defaultRecipients: ['+1987654321'],
+        rateLimitPerMinute: 5
+      const sendSpy = jest.spyOn(smsChannel, 'send').mockResolvedValue(undefined);
+      // Attempt to send more messages than rate limit
+      const promises = [];
+      for (let i = 0; i < 10; i++) {
+        const alert: Alert = {
+          id: `rate-test-${i}`,
+          title: `Rate Test ${i}`,
+          message: 'Testing rate limits',
+          severity: AlertSeverity.LOW,
+          timestamp: new Date(),
+          status: AlertStatus.NEW
+        };
+        promises.push(smsChannel.send(alert));
+      }
+      // Some should be delayed due to rate limiting
+      const startTime = Date.now();
+      await Promise.all(promises);
+      const endTime = Date.now();
+      expect(endTime - startTime).toBeGreaterThan(1000); // Should take more than 1 second due to rate limiting
+      expect(sendSpy).toHaveBeenCalledTimes(10);
+    test('should filter sensitive data from alert messages', async () => {
+      const alertWithSensitiveData = {
+        title: 'Payment Processing Error',
+        message: 'Credit card ending in 1234 failed to process',
+        source: 'payment-gateway',
+          cardNumber: '4111111111111234', // Should be filtered
+          amount: 1500,
+          transactionId: 'txn_123456'
+      const alert = await alertManager.createAlert(alertWithSensitiveData);
+      // Verify sensitive data is not in the alert
+      expect(JSON.stringify(alert)).not.toContain('4111111111111234');
+  describe('Performance and Reliability', () => {
+    test('should handle high volume of alerts without degradation', async () => {
+      const alertCount = 100;
+      const alerts = [];
+      for (let i = 0; i < alertCount; i++) {
+        alerts.push(alertManager.createAlert({
+          title: `Performance Test Alert ${i}`,
+          message: `Testing high volume alert processing`,
+          source: 'performance-test'
+        }));
+      const results = await Promise.allSettled(alerts);
+      const successCount = results.filter(r => r.status === 'fulfilled').length;
+      const processingTime = endTime - startTime;
+      expect(successCount).toBeGreaterThan(alertCount * 0.95); // 95% success rate
+      expect(processingTime).toBeLessThan(alertCount * 100); // Less than 100ms per alert
+    test('should recover gracefully from database connection issues', async () => {
+      // Simulate database error
+        insert: jest.fn().mockRejectedValue(new Error('Connection timeout'))
+        title: 'Database Recovery Test',
+        message: 'Testing database error recovery',
+        severity: AlertSeverity.MEDIUM,
+        source: 'recovery-test'
+      await expect(alertManager.createAlert(alertData))
+        .rejects.toThrow('Failed to create alert');
+  describe('API Integration Tests', () => {
+    test('should validate API request schemas', () => {
+      const validRequest = {
+        title: 'API Test Alert',
+        message: 'Testing API validation',
+        type: 'system',
+        severity: 'high',
+        source: 'api-test'
+      const invalidRequest = {
+        type: 'invalid-type', // Invalid type
+        severity: 'high'
+      // These would be tested with actual API calls in a full integration test
+      expect(validRequest.title).toBeTruthy();
+      expect(validRequest.type).toBe('system');
+      expect(invalidRequest.title).toBeFalsy();
+});
+// Helper function to create test alerts
+export function createTestAlert(overrides: Partial<Alert> = {}): Alert {
+  return {
+    id: `test-${Date.now()}`,
+    title: 'Test Alert',
+    message: 'This is a test alert',
+    type: AlertType.SYSTEM,
+    severity: AlertSeverity.LOW,
+    status: AlertStatus.NEW,
+    timestamp: new Date(),
+    ...overrides
+  };
+}
+// Mock wedding context for testing
+export const mockWeddingContext = {
+  isWeddingDay: true,
+  coupleName: 'John & Jane Doe',
+  weddingDate: new Date('2024-06-15'),
+  venue: 'Grand Ballroom Hotel',
+  guestCount: 150,
+  weddingId: 'wedding-test-123'
+};

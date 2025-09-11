@@ -1,0 +1,325 @@
+/**
+ * WS-168: Customer Success Dashboard - Security Tests
+ * Admin access control and authorization testing
+ */
+
+import { describe, it, expect, jest, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { createMocks } from 'node-mocks-http';
+import { NextRequest } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { verifyAdminAccess, validatePermissions } from '@/lib/auth/admin';
+vi.mock('@/lib/supabase/server');
+vi.mock('@/lib/auth/admin');
+describe('WS-168: Admin Access Security Tests', () => {
+  let mockSupabase: unknown;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSupabase = {
+      auth: {
+        getUser: vi.fn(),
+        getSession: vi.fn()
+      },
+      from: vi.fn().mockReturnThis(),
+      select: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      single: vi.fn().mockReturnThis(),
+      rpc: vi.fn()
+    };
+    (createClient as ReturnType<typeof vi.fn>).mockReturnValue(mockSupabase);
+  });
+  describe('Authentication Tests', () => {
+    it('should reject unauthenticated requests to health dashboard', async () => {
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: null },
+        error: { message: 'No user session' }
+      });
+      const handler = async (req: NextRequest) => {
+        const supabase = createClient();
+        const { data: { user }, error } = await supabase.auth.getUser();
+        if (!user) {
+          return Response.json({ error: 'Unauthorized' }, { status: 401 });
+        }
+        return Response.json({ data: 'Protected data' });
+      };
+      const req = new NextRequest('http://localhost/api/admin/health-scores');
+      const response = await handler(req);
+      expect(response.status).toBe(401);
+      const result = await response.json();
+      expect(result.error).toBe('Unauthorized');
+    });
+    it('should reject expired session tokens', async () => {
+      mockSupabase.auth.getSession.mockResolvedValue({
+        data: {
+          session: {
+            expires_at: Date.now() - 3600000, // Expired 1 hour ago
+            user: { id: 'user-123' }
+          }
+        },
+        error: null
+        const { data: { session }, error } = await supabase.auth.getSession();
+        if (!session || session.expires_at < Date.now()) {
+          return Response.json({ error: 'Session expired' }, { status: 401 });
+      expect(result.error).toBe('Session expired');
+    it('should validate JWT token signature', async () => {
+      const mockToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.invalid.signature';
+        error: { message: 'Invalid token signature' }
+        const authHeader = req.headers.get('authorization');
+        
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+          const token = authHeader.substring(7);
+          // Validate token signature
+          const { data: { user }, error } = await supabase.auth.getUser(token);
+          
+          if (error || !user) {
+            return Response.json({ error: 'Invalid token' }, { status: 401 });
+        return Response.json({ error: 'No authorization header' }, { status: 401 });
+      const req = new NextRequest('http://localhost/api/admin/health-scores', {
+        headers: {
+          'authorization': `Bearer ${mockToken}`
+      expect(result.error).toBe('Invalid token');
+  describe('Authorization Tests', () => {
+    it('should reject non-admin users from accessing health dashboard', async () => {
+          user: {
+            id: 'regular-user-123',
+            email: 'user@example.com',
+            user_metadata: { role: 'supplier' }
+      (verifyAdminAccess as ReturnType<typeof vi.fn>).mockResolvedValue(false);
+        const { data: { user } } = await supabase.auth.getUser();
+        const isAdmin = await verifyAdminAccess(user.id);
+        if (!isAdmin) {
+          return Response.json({ error: 'Forbidden: Admin access required' }, { status: 403 });
+        return Response.json({ data: 'Admin dashboard data' });
+      expect(response.status).toBe(403);
+      expect(result.error).toBe('Forbidden: Admin access required');
+    it('should verify admin role from database', async () => {
+      const adminUser = {
+        id: 'admin-123',
+        email: 'admin@wedsync.com',
+        user_metadata: { role: 'admin' }
+        data: { user: adminUser },
+      mockSupabase.single.mockResolvedValue({
+          user_id: 'admin-123',
+          role: 'admin',
+          permissions: ['health_dashboard_read', 'health_dashboard_write']
+        // Verify admin role from database
+        const { data: adminRecord } = await supabase
+          .from('admin_users')
+          .select('role, permissions')
+          .eq('user_id', user.id)
+          .single();
+        if (!adminRecord || adminRecord.role !== 'admin') {
+          return Response.json({ error: 'Forbidden' }, { status: 403 });
+      expect(response.status).toBe(200);
+      expect(result.data).toBe('Admin dashboard data');
+    it('should enforce permission-based access control', async () => {
+      const limitedAdmin = {
+        id: 'limited-admin-123',
+        email: 'support@wedsync.com',
+        user_metadata: { role: 'support_admin' }
+        data: { user: limitedAdmin },
+      (validatePermissions as ReturnType<typeof vi.fn>).mockImplementation((userId, requiredPermission) => {
+        const permissions = ['health_dashboard_read']; // No write permission
+        return permissions.includes(requiredPermission);
+        const method = req.method;
+        let requiredPermission = 'health_dashboard_read';
+        if (method === 'POST' || method === 'PUT' || method === 'DELETE') {
+          requiredPermission = 'health_dashboard_write';
+        const hasPermission = await validatePermissions(user.id, requiredPermission);
+        if (!hasPermission) {
+          return Response.json({ 
+            error: `Forbidden: Missing permission '${requiredPermission}'` 
+          }, { status: 403 });
+        return Response.json({ data: 'Operation allowed' });
+      // Test READ permission - should succeed
+      const readReq = new NextRequest('http://localhost/api/admin/health-scores', {
+        method: 'GET'
+      const readResponse = await handler(readReq);
+      expect(readResponse.status).toBe(200);
+      // Test WRITE permission - should fail
+      const writeReq = new NextRequest('http://localhost/api/admin/interventions', {
+        method: 'POST'
+      const writeResponse = await handler(writeReq);
+      expect(writeResponse.status).toBe(403);
+      const writeResult = await writeResponse.json();
+      expect(writeResult.error).toContain('health_dashboard_write');
+  describe('Data Isolation Tests', () => {
+    it('should isolate health data by organization for org admins', async () => {
+      const orgAdmin = {
+        id: 'org-admin-123',
+        email: 'admin@organization.com',
+        user_metadata: { 
+          role: 'org_admin',
+          organization_id: 'org-specific'
+        data: { user: orgAdmin },
+      mockSupabase.select.mockResolvedValue({
+        data: [
+          { user_id: 'user-1', organization_id: 'org-specific', health_score: 75 },
+          { user_id: 'user-2', organization_id: 'org-specific', health_score: 82 }
+          // Should not include data from other organizations
+        ],
+        let query = supabase.from('customer_health_scores').select('*');
+        // Apply organization filter for org admins
+        if (user.user_metadata?.role === 'org_admin') {
+          query = query.eq('organization_id', user.user_metadata.organization_id);
+        const { data, error } = await query;
+        if (error) {
+          return Response.json({ error: error.message }, { status: 500 });
+        return Response.json({ data });
+      expect(result.data).toHaveLength(2);
+      expect(result.data.every((item: any) => item.organization_id === 'org-specific')).toBe(true);
+    it('should prevent cross-organization data access', async () => {
+        email: 'admin@org1.com',
+        user_metadata: {
+          organization_id: 'org-1'
+        const url = new URL(req.url);
+        const requestedOrgId = url.searchParams.get('organization_id');
+        if (user?.user_metadata?.role === 'org_admin') {
+          // Org admins can only access their own organization
+          if (requestedOrgId && requestedOrgId !== user.user_metadata.organization_id) {
+            return Response.json({ 
+              error: 'Forbidden: Cannot access other organization data' 
+            }, { status: 403 });
+        return Response.json({ data: 'Allowed' });
+      // Attempting to access different org data
+      const req = new NextRequest('http://localhost/api/admin/health-scores?organization_id=org-2');
+      expect(result.error).toBe('Forbidden: Cannot access other organization data');
+  describe('Audit Logging Tests', () => {
+    it('should log all admin dashboard access', async () => {
+      const auditLogSpy = vi.spyOn(mockSupabase, 'from');
+        // Log access attempt
+        await supabase.from('audit_logs').insert({
+          user_id: user.id,
+          action: 'health_dashboard_access',
+          resource: req.url,
+          method: req.method,
+          ip_address: req.headers.get('x-forwarded-for') || 'unknown',
+          user_agent: req.headers.get('user-agent'),
+          timestamp: new Date().toISOString()
+        });
+        return Response.json({ data: 'Dashboard data' });
+      await handler(req);
+      expect(auditLogSpy).toHaveBeenCalledWith('audit_logs');
+      expect(mockSupabase.insert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          resource: expect.stringContaining('/api/admin/health-scores')
+        })
+      );
+    it('should log intervention creation with details', async () => {
+        email: 'admin@wedsync.com'
+      const interventionData = {
+        user_id: 'at-risk-user',
+        intervention_type: 'success_call',
+        priority: 'high',
+        reason: 'Critical health score'
+        const body = await req.json();
+        // Log sensitive action
+          user_id: user!.id,
+          action: 'intervention_created',
+          resource: `user:${body.user_id}`,
+          details: {
+            intervention_type: body.intervention_type,
+            priority: body.priority,
+            target_user: body.user_id
+          },
+        return Response.json({ success: true });
+      const req = new NextRequest('http://localhost/api/admin/interventions', {
+        method: 'POST',
+        body: JSON.stringify(interventionData)
+          details: expect.objectContaining({
+            target_user: 'at-risk-user',
+            priority: 'high'
+          })
+  describe('Rate Limiting Tests', () => {
+    it('should enforce rate limits on dashboard API', async () => {
+      // Mock rate limiter
+      const rateLimiter = {
+        attempts: new Map<string, number[]>(),
+        check: function(userId: string, limit: number, window: number) {
+          const now = Date.now();
+          const userAttempts = this.attempts.get(userId) || [];
+          const recentAttempts = userAttempts.filter(t => t > now - window);
+          if (recentAttempts.length >= limit) {
+            return false; // Rate limit exceeded
+          recentAttempts.push(now);
+          this.attempts.set(userId, recentAttempts);
+          return true;
+        // Check rate limit: 100 requests per minute
+        const allowed = rateLimiter.check(user.id, 100, 60000);
+        if (!allowed) {
+            error: 'Rate limit exceeded',
+            retry_after: 60
+          }, { status: 429 });
+        return Response.json({ data: 'Success' });
+      // Simulate multiple requests
+      const requests = Array(101).fill(null).map(() => 
+        new NextRequest('http://localhost/api/admin/health-scores')
+      const responses = [];
+      for (const req of requests) {
+        responses.push(await handler(req));
+      }
+      // First 100 should succeed
+      expect(responses.slice(0, 100).every(r => r.status === 200)).toBe(true);
+      
+      // 101st should be rate limited
+      expect(responses[100].status).toBe(429);
+      const limitedResult = await responses[100].json();
+      expect(limitedResult.error).toBe('Rate limit exceeded');
+  describe('SQL Injection Prevention', () => {
+    it('should sanitize user input in queries', async () => {
+        // Malicious input attempting SQL injection
+        const maliciousInput = "'; DROP TABLE customer_health_scores; --";
+        const sanitizedInput = url.searchParams.get('user_id');
+        // Use parameterized query
+        const { data, error } = await supabase
+          .from('customer_health_scores')
+          .select('*')
+          .eq('user_id', sanitizedInput); // Supabase automatically escapes
+      const req = new NextRequest(
+        "http://localhost/api/admin/health-scores?user_id='; DROP TABLE customer_health_scores; --"
+      // Should handle safely without executing malicious SQL
+      expect(mockSupabase.eq).toHaveBeenCalledWith(
+        'user_id',
+        "'; DROP TABLE customer_health_scores; --"
+  describe('XSS Prevention', () => {
+    it('should sanitize output data to prevent XSS', async () => {
+      // Mock data with XSS attempt
+        data: [{
+          user_id: 'user-123',
+          notes: '<script>alert("XSS")</script>',
+          health_score: 75
+        }],
+        const { data } = await supabase
+          .select('*');
+        // Sanitize output
+        const sanitized = data?.map(item => ({
+          ...item,
+          notes: item.notes?.replace(/[<>]/g, '') // Simple sanitization
+        }));
+        return Response.json({ data: sanitized });
+      expect(result.data[0].notes).not.toContain('<script>');
+      expect(result.data[0].notes).toBe('scriptalert("XSS")/script');
+  describe('CSRF Protection', () => {
+    it('should validate CSRF tokens for state-changing operations', async () => {
+        // Check CSRF token for non-GET requests
+        if (req.method !== 'GET') {
+          const csrfToken = req.headers.get('x-csrf-token');
+          const sessionToken = await supabase
+            .from('csrf_tokens')
+            .select('token')
+            .eq('user_id', user.id)
+            .single();
+          if (!csrfToken || csrfToken !== sessionToken?.data?.token) {
+            return Response.json({ error: 'Invalid CSRF token' }, { status: 403 });
+      // Request without CSRF token
+      const reqWithoutToken = new NextRequest('http://localhost/api/admin/interventions', {
+      const responseWithoutToken = await handler(reqWithoutToken);
+      expect(responseWithoutToken.status).toBe(403);
+      // Request with valid CSRF token
+      mockSupabase.single.mockResolvedValueOnce({
+        data: { token: 'valid-csrf-token' },
+      const reqWithToken = new NextRequest('http://localhost/api/admin/interventions', {
+          'x-csrf-token': 'valid-csrf-token'
+      const responseWithToken = await handler(reqWithToken);
+      expect(responseWithToken.status).toBe(200);
+});

@@ -1,0 +1,809 @@
+# monitoring-stack.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-pdf-config
+  namespace: wedsync-pdf-analysis
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+      external_labels:
+        cluster: 'wedsync-pdf-analysis'
+        environment: 'production'
+    
+    rule_files:
+      - "pdf_processing_rules.yml"
+      - "wedding_season_rules.yml"
+      - "cost_optimization_rules.yml"
+      - "business_metrics_rules.yml"
+    
+    scrape_configs:
+    - job_name: 'pdf-analysis-workers'
+      kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names:
+          - wedsync-pdf-analysis
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        regex: pdf-analysis-worker
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: instance
+      - source_labels: [__meta_kubernetes_pod_node_name]
+        target_label: node
+      metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'pdf_processing_(.*)'
+        target_label: metric_type
+        replacement: 'pdf_${1}'
+    
+    - job_name: 'redis-pdf-queue'
+      static_configs:
+      - targets: ['redis-pdf-queue:6379']
+      metrics_path: /metrics
+      scrape_interval: 10s
+    
+    - job_name: 'ai-service-costs'
+      static_configs:
+      - targets: ['cost-tracker:8080']
+      scrape_interval: 30s
+    
+    - job_name: 'wedding-business-metrics'
+      static_configs:
+      - targets: ['business-metrics-collector:8080']
+      scrape_interval: 60s
+    
+    - job_name: 'global-load-balancer'
+      static_configs:
+      - targets: ['load-balancer-metrics:9090']
+      scrape_interval: 30s
+
+  pdf_processing_rules.yml: |
+    groups:
+    - name: pdf_processing_alerts
+      rules:
+      - alert: PDFProcessingQueueBacklog
+        expr: redis_queue_length > 100
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+          component: pdf-processing
+        annotations:
+          summary: "PDF processing queue has significant backlog"
+          description: "Queue length: {{ $value }} jobs waiting. This may impact wedding form processing times."
+          runbook_url: "https://docs.wedsync.com/runbooks/pdf-queue-backlog"
+      
+      - alert: PDFProcessingFailureRate
+        expr: rate(pdf_processing_failures_total[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+          component: pdf-processing
+        annotations:
+          summary: "High PDF processing failure rate detected"
+          description: "Failure rate: {{ $value }} failures per second. Wedding forms may not be processing correctly."
+          runbook_url: "https://docs.wedsync.com/runbooks/pdf-processing-failures"
+      
+      - alert: WeddingSeasonCapacityLimit  
+        expr: (pdf_processing_workers_available / pdf_processing_workers_total) < 0.2
+        for: 3m
+        labels:
+          severity: warning
+          team: platform
+          component: capacity
+        annotations:
+          summary: "PDF processing approaching capacity limits during wedding season"
+          description: "Only {{ $value | humanizePercentage }} workers available. Consider scaling up."
+          runbook_url: "https://docs.wedsync.com/runbooks/wedding-season-scaling"
+      
+      - alert: AIProcessingCostSpike
+        expr: increase(ai_processing_cost_dollars[1h]) > 50
+        for: 1m
+        labels:
+          severity: warning
+          team: platform
+          component: cost-optimization
+        annotations:
+          summary: "AI processing costs spiking unexpectedly"
+          description: "Cost increase: ${{ $value }} in last hour. Check for processing anomalies."
+          runbook_url: "https://docs.wedsync.com/runbooks/cost-spike-investigation"
+      
+      - alert: RegionalProcessingLatency
+        expr: histogram_quantile(0.95, rate(pdf_processing_duration_seconds_bucket[5m])) > 120
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+          component: performance
+        annotations:
+          summary: "High PDF processing latency in region {{ $labels.region }}"
+          description: "95th percentile processing time: {{ $value }}s. Wedding vendors may experience delays."
+          runbook_url: "https://docs.wedsync.com/runbooks/processing-latency"
+
+  wedding_season_rules.yml: |
+    groups:
+    - name: wedding_season_alerts
+      rules:
+      - alert: WeddingSeasonPeakTrafficPredicted
+        expr: wedding_season_load_factor > 3.0
+        for: 1h
+        labels:
+          severity: info
+          team: platform
+          component: seasonal-scaling
+        annotations:
+          summary: "Wedding season peak traffic predicted"
+          description: "Load factor: {{ $value }}. Prepare for increased PDF processing demand."
+          runbook_url: "https://docs.wedsync.com/runbooks/wedding-season-preparation"
+      
+      - alert: SaturdayWeddingDayAlert
+        expr: day_of_week() == 6 and pdf_processing_error_rate > 0.01
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+          component: wedding-day-protection
+        annotations:
+          summary: "CRITICAL: PDF processing errors detected on Saturday (wedding day)"
+          description: "Error rate: {{ $value | humanizePercentage }}. Saturday is peak wedding day - immediate attention required."
+          runbook_url: "https://docs.wedsync.com/runbooks/saturday-wedding-emergency"
+      
+      - alert: WeddingSeasonCapacityPreparation
+        expr: wedding_season_days_until_peak < 7 and pdf_processing_workers_max < 30
+        for: 30m
+        labels:
+          severity: warning
+          team: platform
+          component: capacity-planning
+        annotations:
+          summary: "Wedding season approaching - capacity preparation needed"
+          description: "Peak season in {{ $value }} days. Current max workers: {{ $labels.max_workers }}"
+          runbook_url: "https://docs.wedsync.com/runbooks/pre-season-scaling"
+
+  cost_optimization_rules.yml: |
+    groups:
+    - name: cost_optimization_alerts
+      rules:
+      - alert: OffSeasonOverProvisioning
+        expr: wedding_season_load_factor < 1.0 and pdf_processing_workers_active > 10
+        for: 1h
+        labels:
+          severity: info
+          team: platform
+          component: cost-optimization
+        annotations:
+          summary: "Potential over-provisioning detected during off-season"
+          description: "Load factor: {{ $value }}, Active workers: {{ $labels.active_workers }}. Consider scaling down."
+          runbook_url: "https://docs.wedsync.com/runbooks/off-season-optimization"
+      
+      - alert: AIProcessingBudgetExceeded
+        expr: ai_processing_cost_dollars_monthly > ai_processing_budget_dollars_monthly
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+          component: budget-management
+        annotations:
+          summary: "Monthly AI processing budget exceeded"
+          description: "Current: ${{ $value }}, Budget: ${{ $labels.budget }}. Review usage patterns."
+          runbook_url: "https://docs.wedsync.com/runbooks/budget-exceeded"
+      
+      - alert: IneffientResourceUtilization
+        expr: avg_over_time(pdf_processing_cpu_utilization[1h]) < 30 and pdf_processing_workers_active > 5
+        for: 30m
+        labels:
+          severity: info
+          team: platform
+          component: resource-efficiency
+        annotations:
+          summary: "Low resource utilization detected"
+          description: "Average CPU: {{ $value | humanizePercentage }}. Consider optimizing resource allocation."
+          runbook_url: "https://docs.wedsync.com/runbooks/resource-optimization"
+
+  business_metrics_rules.yml: |
+    groups:
+    - name: business_impact_alerts
+      rules:
+      - alert: WeddingFormProcessingBacklog
+        expr: wedding_forms_pending_processing > 500
+        for: 10m
+        labels:
+          severity: warning
+          team: business
+          component: customer-experience
+        annotations:
+          summary: "Large backlog of wedding forms awaiting processing"
+          description: "{{ $value }} forms pending. This may impact customer onboarding."
+          runbook_url: "https://docs.wedsync.com/runbooks/form-processing-backlog"
+      
+      - alert: VendorOnboardingImpact
+        expr: rate(pdf_processing_failures_vendor_onboarding[1h]) > 0.05
+        for: 15m
+        labels:
+          severity: critical
+          team: business
+          component: vendor-acquisition
+        annotations:
+          summary: "PDF processing failures impacting vendor onboarding"
+          description: "Failure rate: {{ $value | humanizePercentage }}. New vendors cannot complete registration."
+          runbook_url: "https://docs.wedsync.com/runbooks/vendor-onboarding-issues"
+      
+      - alert: RevenueImpactingProcessingDelay
+        expr: avg_over_time(pdf_processing_duration_seconds[1h]) > 300 and wedding_season_load_factor > 2.0
+        for: 20m
+        labels:
+          severity: warning
+          team: business
+          component: revenue-protection
+        annotations:
+          summary: "PDF processing delays during peak season may impact revenue"
+          description: "Average processing time: {{ $value }}s during high-demand period."
+          runbook_url: "https://docs.wedsync.com/runbooks/revenue-impact-mitigation"
+
+---
+# Grafana Dashboard ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pdf-analysis-dashboard
+  namespace: wedsync-pdf-analysis
+data:
+  wedding-industry-dashboard.json: |
+    {
+      "dashboard": {
+        "id": null,
+        "title": "WedSync PDF Analysis - Wedding Industry Operations",
+        "tags": ["wedding", "pdf", "analysis", "business"],
+        "timezone": "browser",
+        "panels": [
+          {
+            "id": 1,
+            "title": "Wedding Season Load Factor",
+            "type": "gauge",
+            "gridPos": {"h": 8, "w": 8, "x": 0, "y": 0},
+            "targets": [
+              {
+                "expr": "wedding_season_load_factor",
+                "legendFormat": "Load Factor",
+                "refId": "A"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "min": 0,
+                "max": 5.0,
+                "thresholds": {
+                  "steps": [
+                    {"color": "green", "value": null},
+                    {"color": "yellow", "value": 2.0},
+                    {"color": "red", "value": 3.5}
+                  ]
+                },
+                "unit": "none"
+              }
+            },
+            "options": {
+              "reduceOptions": {
+                "values": false,
+                "calcs": ["lastNotNull"],
+                "fields": ""
+              }
+            }
+          },
+          {
+            "id": 2,
+            "title": "PDF Processing Queue Status",
+            "type": "stat",
+            "gridPos": {"h": 4, "w": 8, "x": 8, "y": 0},
+            "targets": [
+              {
+                "expr": "redis_queue_length",
+                "legendFormat": "Queue Length",
+                "refId": "A"
+              },
+              {
+                "expr": "rate(pdf_processing_jobs_total[5m]) * 60",
+                "legendFormat": "Jobs per Minute",
+                "refId": "B"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "thresholds": {
+                  "steps": [
+                    {"color": "green", "value": null},
+                    {"color": "yellow", "value": 50},
+                    {"color": "red", "value": 100}
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "id": 3,
+            "title": "Wedding Business Impact Metrics",
+            "type": "stat",
+            "gridPos": {"h": 4, "w": 8, "x": 16, "y": 0},
+            "targets": [
+              {
+                "expr": "wedding_forms_processed_today",
+                "legendFormat": "Forms Processed Today",
+                "refId": "A"
+              },
+              {
+                "expr": "vendor_onboarding_success_rate",
+                "legendFormat": "Onboarding Success Rate",
+                "refId": "B"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "unit": "percent",
+                "thresholds": {
+                  "steps": [
+                    {"color": "red", "value": null},
+                    {"color": "yellow", "value": 80},
+                    {"color": "green", "value": 95}
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "id": 4,
+            "title": "AI Processing Costs (Hourly)",
+            "type": "timeseries",
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+            "targets": [
+              {
+                "expr": "rate(ai_processing_cost_dollars[1h])",
+                "legendFormat": "Hourly Cost ($)",
+                "refId": "A"
+              },
+              {
+                "expr": "ai_processing_cost_per_job_dollars",
+                "legendFormat": "Cost per Job ($)",
+                "refId": "B"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "unit": "currencyUSD",
+                "custom": {
+                  "drawStyle": "line",
+                  "lineInterpolation": "smooth",
+                  "fillOpacity": 10
+                }
+              }
+            }
+          },
+          {
+            "id": 5,
+            "title": "Field Extraction Accuracy by Document Type",
+            "type": "timeseries",
+            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+            "targets": [
+              {
+                "expr": "avg_over_time(field_extraction_accuracy{document_type=\"wedding_contract\"}[5m])",
+                "legendFormat": "Wedding Contracts",
+                "refId": "A"
+              },
+              {
+                "expr": "avg_over_time(field_extraction_accuracy{document_type=\"vendor_agreement\"}[5m])",
+                "legendFormat": "Vendor Agreements",
+                "refId": "B"
+              },
+              {
+                "expr": "avg_over_time(field_extraction_accuracy{document_type=\"pricing_sheet\"}[5m])",
+                "legendFormat": "Pricing Sheets",
+                "refId": "C"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "unit": "percent",
+                "min": 0,
+                "max": 100,
+                "custom": {
+                  "drawStyle": "line",
+                  "lineInterpolation": "linear",
+                  "fillOpacity": 5
+                }
+              }
+            }
+          },
+          {
+            "id": 6,
+            "title": "Regional Processing Distribution",
+            "type": "piechart",
+            "gridPos": {"h": 8, "w": 8, "x": 0, "y": 16},
+            "targets": [
+              {
+                "expr": "sum by (region) (pdf_processing_jobs_total)",
+                "legendFormat": "{{ region }}",
+                "refId": "A"
+              }
+            ],
+            "options": {
+              "legend": {
+                "displayMode": "table",
+                "placement": "right"
+              },
+              "pieType": "pie",
+              "reduceOptions": {
+                "values": false,
+                "calcs": ["lastNotNull"]
+              }
+            }
+          },
+          {
+            "id": 7,
+            "title": "Wedding Market Performance",
+            "type": "table",
+            "gridPos": {"h": 8, "w": 16, "x": 8, "y": 16},
+            "targets": [
+              {
+                "expr": "avg by (wedding_market) (pdf_processing_duration_seconds)",
+                "legendFormat": "{{ wedding_market }}",
+                "refId": "A",
+                "format": "table"
+              }
+            ],
+            "transformations": [
+              {
+                "id": "organize",
+                "options": {
+                  "excludeByName": {},
+                  "indexByName": {
+                    "wedding_market": 0,
+                    "Value": 1
+                  },
+                  "renameByName": {
+                    "wedding_market": "Wedding Market",
+                    "Value": "Avg Processing Time (s)"
+                  }
+                }
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "custom": {
+                  "align": "left",
+                  "displayMode": "auto"
+                },
+                "thresholds": {
+                  "steps": [
+                    {"color": "green", "value": null},
+                    {"color": "yellow", "value": 60},
+                    {"color": "red", "value": 120}
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "id": 8,
+            "title": "Saturday Wedding Day Protection",
+            "type": "stat",
+            "gridPos": {"h": 6, "w": 12, "x": 0, "y": 24},
+            "targets": [
+              {
+                "expr": "pdf_processing_error_rate{day_of_week=\"saturday\"}",
+                "legendFormat": "Saturday Error Rate",
+                "refId": "A"
+              },
+              {
+                "expr": "pdf_processing_response_time_p95{day_of_week=\"saturday\"}",
+                "legendFormat": "Saturday P95 Response Time",
+                "refId": "B"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "thresholds"
+                },
+                "thresholds": {
+                  "steps": [
+                    {"color": "green", "value": null},
+                    {"color": "yellow", "value": 0.01},
+                    {"color": "red", "value": 0.05}
+                  ]
+                }
+              }
+            },
+            "options": {
+              "colorMode": "background",
+              "graphMode": "none",
+              "justifyMode": "center",
+              "orientation": "horizontal"
+            }
+          },
+          {
+            "id": 9,
+            "title": "Seasonal Scaling Recommendations",
+            "type": "logs",
+            "gridPos": {"h": 6, "w": 12, "x": 12, "y": 24},
+            "targets": [
+              {
+                "expr": "{job=\"intelligent-resource-manager\"} |= \"scaling_recommendation\"",
+                "refId": "A"
+              }
+            ],
+            "options": {
+              "showTime": true,
+              "showLabels": true,
+              "wrapLogMessage": true
+            }
+          }
+        ],
+        "time": {
+          "from": "now-1h",
+          "to": "now"
+        },
+        "timepicker": {},
+        "templating": {
+          "list": [
+            {
+              "name": "region",
+              "type": "query",
+              "query": "label_values(pdf_processing_jobs_total, region)",
+              "refresh": 1,
+              "includeAll": true,
+              "multi": true
+            },
+            {
+              "name": "wedding_season",
+              "type": "custom",
+              "options": [
+                {"text": "All", "value": "$__all"},
+                {"text": "Peak Season", "value": "peak"},
+                {"text": "Pre Season", "value": "pre"},
+                {"text": "Off Season", "value": "off"}
+              ],
+              "current": {"text": "All", "value": "$__all"}
+            }
+          ]
+        },
+        "annotations": {
+          "list": [
+            {
+              "name": "Wedding Season Events",
+              "datasource": "prometheus",
+              "expr": "changes(wedding_season_load_factor[1d]) > 0.5",
+              "titleFormat": "Season Change",
+              "textFormat": "Wedding season load factor changed significantly",
+              "iconColor": "rgba(255, 96, 96, 1)"
+            }
+          ]
+        },
+        "refresh": "30s",
+        "schemaVersion": 27,
+        "version": 1
+      }
+    }
+
+---
+# Prometheus Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: wedsync-pdf-analysis
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10003
+        runAsGroup: 10003
+        fsGroup: 10003
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: prometheus
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: false  # Prometheus needs to write to storage
+          runAsNonRoot: true
+          runAsUser: 10003
+          seccompProfile:
+            type: RuntimeDefault
+        image: prom/prometheus:v2.40.0
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 9090
+        volumeMounts:
+        - name: prometheus-config
+          mountPath: /etc/prometheus
+        - name: prometheus-storage
+          mountPath: /prometheus
+        args:
+          - '--config.file=/etc/prometheus/prometheus.yml'
+          - '--storage.tsdb.path=/prometheus'
+          - '--web.console.libraries=/etc/prometheus/console_libraries'
+          - '--web.console.templates=/etc/prometheus/consoles'
+          - '--web.enable-lifecycle'
+          - '--storage.tsdb.retention.time=30d'
+        readinessProbe:
+          httpGet:
+            path: /-/ready
+            port: 9090
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /-/healthy
+            port: 9090
+          initialDelaySeconds: 60
+          periodSeconds: 30
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1"
+          limits:
+            memory: "8Gi"
+            cpu: "4"
+      volumes:
+      - name: prometheus-config
+        configMap:
+          name: prometheus-pdf-config
+      - name: prometheus-storage
+        persistentVolumeClaim:
+          claimName: prometheus-storage
+
+---
+# Grafana Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: wedsync-pdf-analysis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10004
+        runAsGroup: 10004
+        fsGroup: 10004
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: grafana
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: false  # Grafana needs to write to storage
+          runAsNonRoot: true
+          runAsUser: 10004
+          seccompProfile:
+            type: RuntimeDefault
+        image: grafana/grafana:9.0.0
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 3000
+        volumeMounts:
+        - name: grafana-admin-secret
+          mountPath: /etc/secrets/admin
+          readOnly: true
+        env:
+        - name: GF_SECURITY_ADMIN_PASSWORD_FILE
+          value: "/etc/secrets/admin/password"
+        - name: grafana-dashboard
+          mountPath: /var/lib/grafana/dashboards
+        - name: grafana-storage
+          mountPath: /var/lib/grafana
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: 3000
+          initialDelaySeconds: 60
+          periodSeconds: 30
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "4Gi"
+            cpu: "2"
+      volumes:
+      - name: grafana-admin-secret
+        secret:
+          secretName: grafana-admin
+      - name: grafana-dashboard
+        configMap:
+          name: pdf-analysis-dashboard
+      - name: grafana-storage
+        persistentVolumeClaim:
+          claimName: grafana-storage
+
+---
+# Services
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: wedsync-pdf-analysis
+spec:
+  selector:
+    app: prometheus
+  ports:
+  - name: web
+    port: 9090
+    targetPort: 9090
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: wedsync-pdf-analysis
+spec:
+  selector:
+    app: grafana
+  ports:
+  - name: web
+    port: 3000
+    targetPort: 3000
+
+---
+# Persistent Volume Claims
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus-storage
+  namespace: wedsync-pdf-analysis
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi
+  storageClassName: fast-ssd
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-storage
+  namespace: wedsync-pdf-analysis
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: standard-ssd

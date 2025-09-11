@@ -1,0 +1,333 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { useRouter, useSearchParams } from 'next/navigation';
+import Link from 'next/link';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Card, CardContent } from '@/components/ui/card';
+import { createClient } from '@/lib/supabase/client';
+import {
+  passwordResetSchema,
+  type PasswordResetInput,
+} from '@/lib/validations/auth';
+import {
+  HeartIcon,
+  EyeIcon,
+  EyeSlashIcon,
+  CheckCircleIcon,
+  ExclamationTriangleIcon,
+} from '@heroicons/react/24/outline';
+
+type PasswordStrength = 'weak' | 'fair' | 'good' | 'strong';
+
+export default function ResetPasswordForm() {
+  const [isLoading, setIsLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [passwordStrength, setPasswordStrength] =
+    useState<PasswordStrength>('weak');
+  const [isTokenValid, setIsTokenValid] = useState<boolean | null>(null);
+
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const supabase = createClient();
+
+  const {
+    register,
+    handleSubmit,
+    watch,
+    formState: { errors },
+    setError,
+    setValue,
+  } = useForm<PasswordResetInput>({
+    resolver: zodResolver(passwordResetSchema),
+  });
+
+  const password = watch('password', '');
+
+  useEffect(() => {
+    const token = searchParams.get('token');
+    if (token) {
+      setValue('token', token);
+      setIsTokenValid(true);
+    } else {
+      setIsTokenValid(false);
+    }
+  }, [searchParams, setValue]);
+
+  useEffect(() => {
+    if (password) {
+      setPasswordStrength(calculatePasswordStrength(password));
+    }
+  }, [password]);
+
+  const calculatePasswordStrength = (pass: string): PasswordStrength => {
+    let score = 0;
+
+    if (pass.length >= 8) score++;
+    if (/[A-Z]/.test(pass)) score++;
+    if (/[a-z]/.test(pass)) score++;
+    if (/[0-9]/.test(pass)) score++;
+    if (/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(pass)) score++;
+
+    if (score < 2) return 'weak';
+    if (score < 3) return 'fair';
+    if (score < 4) return 'good';
+    return 'strong';
+  };
+
+  const getPasswordStrengthColor = (strength: PasswordStrength) => {
+    switch (strength) {
+      case 'weak':
+        return 'bg-red-500';
+      case 'fair':
+        return 'bg-yellow-500';
+      case 'good':
+        return 'bg-blue-500';
+      case 'strong':
+        return 'bg-green-500';
+    }
+  };
+
+  const getPasswordStrengthText = (strength: PasswordStrength) => {
+    switch (strength) {
+      case 'weak':
+        return 'Weak password';
+      case 'fair':
+        return 'Fair password';
+      case 'good':
+        return 'Good password';
+      case 'strong':
+        return 'Strong password';
+    }
+  };
+
+  const onSubmit = async (data: PasswordResetInput) => {
+    setIsLoading(true);
+
+    try {
+      const { error } = await supabase.auth.updateUser({
+        password: data.password,
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      router.push('/login?message=Password updated successfully');
+    } catch (error: any) {
+      setError('password', {
+        type: 'manual',
+        message: error.message || 'Failed to reset password',
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  if (isTokenValid === false) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-pink-50 to-purple-50 p-4">
+        <div className="w-full max-w-md">
+          <div className="text-center mb-8">
+            <div className="flex justify-center mb-4">
+              <ExclamationTriangleIcon className="h-12 w-12 text-red-600" />
+            </div>
+            <h1 className="text-3xl font-bold text-gray-900">
+              Invalid reset link
+            </h1>
+            <p className="text-gray-600 mt-2">
+              This password reset link is invalid or has expired
+            </p>
+          </div>
+
+          <Card>
+            <CardContent>
+              <div className="space-y-6 text-center">
+                <p className="text-gray-700">
+                  Password reset links expire after 24 hours for security
+                  reasons.
+                </p>
+
+                <div className="space-y-3">
+                  <Link href="/forgot-password" className="block">
+                    <Button className="w-full">Request new reset link</Button>
+                  </Link>
+
+                  <Link href="/login" className="block">
+                    <Button variant="ghost" className="w-full">
+                      Back to sign in
+                    </Button>
+                  </Link>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-pink-50 to-purple-50 p-4">
+      <div className="w-full max-w-md">
+        <div className="text-center mb-8">
+          <div className="flex justify-center mb-4">
+            <HeartIcon className="h-12 w-12 text-pink-600" />
+          </div>
+          <h1 className="text-3xl font-bold text-gray-900">
+            Reset your password
+          </h1>
+          <p className="text-gray-600 mt-2">Enter your new password below</p>
+        </div>
+
+        <Card>
+          <CardContent>
+            <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+              <input type="hidden" {...register('token')} />
+
+              <div>
+                <Label htmlFor="password">New password</Label>
+                <div className="relative mt-1">
+                  <Input
+                    {...register('password')}
+                    id="password"
+                    name="password"
+                    type={showPassword ? 'text' : 'password'}
+                    placeholder="Enter your new password"
+                    disabled={isLoading}
+                    aria-describedby={
+                      errors.password ? 'password-error' : 'password-strength'
+                    }
+                  />
+                  <button
+                    type="button"
+                    className="absolute inset-y-0 right-0 pr-3 flex items-center"
+                    onClick={() => setShowPassword(!showPassword)}
+                  >
+                    {showPassword ? (
+                      <EyeSlashIcon className="h-4 w-4 text-gray-400" />
+                    ) : (
+                      <EyeIcon className="h-4 w-4 text-gray-400" />
+                    )}
+                  </button>
+                </div>
+
+                {password && (
+                  <div id="password-strength" className="mt-2">
+                    <div className="flex items-center space-x-2">
+                      <div className="flex-1 bg-gray-200 rounded-full h-2">
+                        <div
+                          className={`h-2 rounded-full transition-all duration-300 ${getPasswordStrengthColor(passwordStrength)}`}
+                          style={{
+                            width: `${((['weak', 'fair', 'good', 'strong'].indexOf(passwordStrength) + 1) / 4) * 100}%`,
+                          }}
+                        />
+                      </div>
+                      <span
+                        className={`text-xs font-medium ${
+                          passwordStrength === 'weak'
+                            ? 'text-red-600'
+                            : passwordStrength === 'fair'
+                              ? 'text-yellow-600'
+                              : passwordStrength === 'good'
+                                ? 'text-blue-600'
+                                : 'text-green-600'
+                        }`}
+                      >
+                        {getPasswordStrengthText(passwordStrength)}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {errors.password && (
+                  <p
+                    id="password-error"
+                    className="mt-2 text-sm text-red-600"
+                    role="alert"
+                  >
+                    {errors.password.message}
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <Label htmlFor="confirmPassword">Confirm new password</Label>
+                <div className="relative mt-1">
+                  <Input
+                    {...register('confirmPassword')}
+                    id="confirmPassword"
+                    name="confirmPassword"
+                    type={showConfirmPassword ? 'text' : 'password'}
+                    placeholder="Confirm your new password"
+                    disabled={isLoading}
+                    aria-describedby={
+                      errors.confirmPassword
+                        ? 'confirm-password-error'
+                        : undefined
+                    }
+                  />
+                  <button
+                    type="button"
+                    className="absolute inset-y-0 right-0 pr-3 flex items-center"
+                    onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                  >
+                    {showConfirmPassword ? (
+                      <EyeSlashIcon className="h-4 w-4 text-gray-400" />
+                    ) : (
+                      <EyeIcon className="h-4 w-4 text-gray-400" />
+                    )}
+                  </button>
+                </div>
+                {errors.confirmPassword && (
+                  <p
+                    id="confirm-password-error"
+                    className="mt-2 text-sm text-red-600"
+                    role="alert"
+                  >
+                    {errors.confirmPassword.message}
+                  </p>
+                )}
+              </div>
+
+              <Button type="submit" className="w-full" disabled={isLoading}>
+                {isLoading ? 'Updating password...' : 'Update password'}
+              </Button>
+
+              <div className="text-center">
+                <Link
+                  href="/login"
+                  className="text-sm text-blue-600 hover:text-blue-700"
+                >
+                  Back to sign in
+                </Link>
+              </div>
+            </form>
+          </CardContent>
+        </Card>
+
+        <div className="mt-6 p-4 bg-blue-50 rounded-lg">
+          <div className="flex">
+            <CheckCircleIcon className="h-5 w-5 text-blue-500 mt-0.5" />
+            <div className="ml-3">
+              <h3 className="text-sm font-medium text-blue-800">
+                Password requirements:
+              </h3>
+              <ul className="mt-2 text-sm text-blue-700 list-disc list-inside space-y-1">
+                <li>At least 8 characters long</li>
+                <li>Contains uppercase and lowercase letters</li>
+                <li>Contains at least one number</li>
+                <li>Contains at least one special character</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,605 @@
+/**
+ * WS-180 Performance Testing Framework - Test Execution API
+ * Team B - Round 1 Implementation
+ *
+ * Handles performance test execution, k6 integration, and real-time
+ * status updates with wedding-specific load patterns and security.
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { performanceMonitor } from '@/lib/testing/performance-monitor';
+import {
+  k6TestOrchestrator,
+  TestConfiguration,
+} from '@/lib/testing/k6-test-orchestrator';
+import type { PerformanceTestResults } from '@/lib/testing/performance-monitor';
+
+interface PerformanceTestExecutionRequest {
+  testId?: string; // Optional - execute existing test config
+  testType: 'load' | 'stress' | 'spike' | 'endurance' | 'volume' | 'smoke';
+  testScenario: string;
+  userType: 'couple' | 'supplier' | 'admin' | 'guest' | 'anonymous';
+  weddingSizeCategory: 'small' | 'medium' | 'large' | 'xl';
+  environment: 'development' | 'staging' | 'production';
+
+  // Test execution parameters
+  configuration: {
+    duration: string;
+    virtualUsers: number;
+    rampUpTime?: string;
+    thresholds?: Record<string, string[]>;
+    customOptions?: Record<string, any>;
+  };
+
+  // Wedding-specific parameters
+  weddingSeasonLoad?: boolean;
+  peakTrafficMultiplier?: number;
+}
+
+interface PerformanceTestResponse {
+  testId: string;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  message: string;
+  results?: {
+    performanceScore: number;
+    thresholdsPassed: boolean;
+    regressionDetected: boolean;
+    executionTime: number;
+    metrics: any;
+  };
+  estimatedCompletion?: string;
+  queuePosition?: number;
+}
+
+/**
+ * POST /api/performance/tests/execute
+ * Triggers performance test execution with k6 integration
+ */
+export async function POST(request: NextRequest): Promise<NextResponse> {
+  try {
+    const supabase = createClient();
+
+    // Verify admin/engineer authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 },
+      );
+    }
+
+    // Check user role
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('role')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!profile || !['admin', 'engineer'].includes(profile.role)) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions. Admin or engineer role required.' },
+        { status: 403 },
+      );
+    }
+
+    // Rate limiting - prevent abuse of performance testing
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    const { data: recentTests } = await supabase
+      .from('performance_test_runs')
+      .select('id')
+      .eq('created_by', user.id)
+      .gte('created_at', oneHourAgo.toISOString());
+
+    if ((recentTests?.length || 0) >= 10) {
+      // Max 10 tests per hour per user
+      return NextResponse.json(
+        {
+          error: 'Rate limit exceeded. Maximum 10 performance tests per hour.',
+        },
+        { status: 429 },
+      );
+    }
+
+    // Parse request body
+    const body: PerformanceTestExecutionRequest = await request.json();
+    const {
+      testId,
+      testType,
+      testScenario,
+      userType,
+      weddingSizeCategory,
+      environment,
+      configuration,
+      weddingSeasonLoad = false,
+      peakTrafficMultiplier = 1.2,
+    } = body;
+
+    // Validate required fields
+    if (
+      !testType ||
+      !testScenario ||
+      !userType ||
+      !environment ||
+      !configuration
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            'Missing required fields: testType, testScenario, userType, environment, configuration',
+        },
+        { status: 400 },
+      );
+    }
+
+    // Validate configuration
+    if (!configuration.duration || !configuration.virtualUsers) {
+      return NextResponse.json(
+        { error: 'Configuration must include duration and virtualUsers' },
+        { status: 400 },
+      );
+    }
+
+    // Validate virtual users limit based on environment
+    const maxVirtualUsers = {
+      development: 50,
+      staging: 200,
+      production: 100, // Conservative limit for production
+    };
+
+    if (configuration.virtualUsers > maxVirtualUsers[environment]) {
+      return NextResponse.json(
+        {
+          error: `Virtual users limit exceeded for ${environment} environment. Maximum: ${maxVirtualUsers[environment]}`,
+        },
+        { status: 400 },
+      );
+    }
+
+    // Check for concurrent tests of same type in same environment
+    const { data: runningTests } = await supabase
+      .from('performance_test_runs')
+      .select('id')
+      .eq('test_type', testType)
+      .eq('environment', environment)
+      .eq('status', 'running');
+
+    if (runningTests && runningTests.length > 0) {
+      return NextResponse.json(
+        {
+          error: `Another ${testType} test is already running in ${environment} environment. Please wait for it to complete.`,
+        },
+        { status: 409 },
+      );
+    }
+
+    // Create or update test run record
+    let testRunId: string;
+
+    if (testId) {
+      // Execute existing test configuration
+      const { data: existingTest, error } = await supabase
+        .from('performance_test_runs')
+        .select('*')
+        .eq('id', testId)
+        .single();
+
+      if (error || !existingTest) {
+        return NextResponse.json(
+          { error: 'Test configuration not found' },
+          { status: 404 },
+        );
+      }
+
+      // Update existing test to running status
+      const { error: updateError } = await supabase
+        .from('performance_test_runs')
+        .update({
+          status: 'running',
+          start_time: new Date().toISOString(),
+          test_configuration: {
+            ...existingTest.test_configuration,
+            ...configuration,
+          },
+        })
+        .eq('id', testId);
+
+      if (updateError) {
+        throw updateError;
+      }
+
+      testRunId = testId;
+    } else {
+      // Create new test run
+      const { data: newTest, error } = await supabase
+        .from('performance_test_runs')
+        .insert({
+          name: `${testType}_${testScenario}_${Date.now()}`,
+          test_type: testType,
+          test_scenario: testScenario,
+          status: 'running',
+          start_time: new Date().toISOString(),
+          user_type: userType,
+          wedding_size_category: weddingSizeCategory || 'medium',
+          environment,
+          test_configuration: configuration,
+          created_by: user.id,
+        })
+        .select('id')
+        .single();
+
+      if (error) {
+        throw error;
+      }
+
+      testRunId = newTest.id;
+    }
+
+    // Prepare k6 test configuration
+    const k6Config: TestConfiguration = {
+      testType,
+      testScenario,
+      userType,
+      weddingSizeCategory: weddingSizeCategory || 'medium',
+      environment,
+      duration: configuration.duration,
+      virtualUsers: configuration.virtualUsers,
+      rampUpTime: configuration.rampUpTime,
+      thresholds: configuration.thresholds || {},
+      weddingSeasonLoad,
+      peakTrafficMultiplier,
+      apiBaseUrl: getApiBaseUrl(environment),
+      customOptions: configuration.customOptions,
+    };
+
+    // Execute test asynchronously (don't await)
+    executePerformanceTestAsync(testRunId, k6Config)
+      .then(async (results) => {
+        console.log(`Performance test ${testRunId} completed successfully`);
+
+        // Process results with performance monitor
+        const analysisResults =
+          await performanceMonitor.recordTestResults(results);
+
+        // Update final test status
+        await supabase
+          .from('performance_test_runs')
+          .update({
+            status: 'completed',
+            end_time: new Date().toISOString(),
+            duration_ms: results.duration,
+            performance_score: analysisResults.performanceScore,
+            metrics: {
+              ...results.metrics,
+              performance_score: analysisResults.performanceScore,
+              thresholds_passed: analysisResults.thresholdsPassed,
+              regression_detected:
+                analysisResults.regressionAnalysis.hasRegression,
+            },
+          })
+          .eq('id', testRunId);
+      })
+      .catch(async (error) => {
+        console.error(`Performance test ${testRunId} failed:`, error);
+
+        // Update test status to failed
+        await supabase
+          .from('performance_test_runs')
+          .update({
+            status: 'failed',
+            end_time: new Date().toISOString(),
+            notes: `Test execution failed: ${error.message}`,
+          })
+          .eq('id', testRunId);
+      });
+
+    // Return immediate response
+    const estimatedCompletion = new Date(
+      Date.now() + parseEstimatedDuration(configuration.duration),
+    ).toISOString();
+
+    const response: PerformanceTestResponse = {
+      testId: testRunId,
+      status: 'running',
+      message: `Performance test initiated successfully. Test ID: ${testRunId}`,
+      estimatedCompletion,
+    };
+
+    return NextResponse.json(response, { status: 202 }); // 202 Accepted
+  } catch (error) {
+    console.error('Error in POST /api/performance/tests/execute:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * GET /api/performance/tests/execute/[testId]
+ * Gets the status and results of a running or completed test
+ */
+export async function GET(request: NextRequest): Promise<NextResponse> {
+  try {
+    const supabase = createClient();
+
+    // Verify admin/engineer authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 },
+      );
+    }
+
+    // Check user role
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('role')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!profile || !['admin', 'engineer'].includes(profile.role)) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions. Admin or engineer role required.' },
+        { status: 403 },
+      );
+    }
+
+    // Get test ID from URL
+    const { searchParams } = new URL(request.url);
+    const testId = searchParams.get('testId');
+
+    if (!testId) {
+      return NextResponse.json(
+        { error: 'Test ID is required' },
+        { status: 400 },
+      );
+    }
+
+    // Get test status from performance monitor
+    const testStatus = await performanceMonitor.getTestStatus(testId);
+
+    if (!testStatus) {
+      return NextResponse.json({ error: 'Test not found' }, { status: 404 });
+    }
+
+    // Get detailed test results if completed
+    let results = undefined;
+    if (testStatus.status === 'completed') {
+      const { data: testData } = await supabase
+        .from('performance_test_runs')
+        .select('performance_score, metrics, baseline_comparison, duration_ms')
+        .eq('id', testId)
+        .single();
+
+      if (testData) {
+        results = {
+          performanceScore: testData.performance_score,
+          thresholdsPassed: testData.metrics?.thresholds_passed || false,
+          regressionDetected: testData.metrics?.regression_detected || false,
+          executionTime: testData.duration_ms,
+          metrics: testData.metrics,
+        };
+      }
+    }
+
+    const response: PerformanceTestResponse = {
+      testId,
+      status: testStatus.status,
+      message: testStatus.currentPhase,
+      results,
+      estimatedCompletion: testStatus.estimatedCompletion?.toISOString(),
+    };
+
+    return NextResponse.json(response);
+  } catch (error) {
+    console.error('Error in GET /api/performance/tests/execute:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * DELETE /api/performance/tests/execute/[testId]
+ * Cancels a running performance test
+ */
+export async function DELETE(request: NextRequest): Promise<NextResponse> {
+  try {
+    const supabase = createClient();
+
+    // Verify admin/engineer authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 },
+      );
+    }
+
+    // Check user role
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('role')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!profile || !['admin', 'engineer'].includes(profile.role)) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions. Admin or engineer role required.' },
+        { status: 403 },
+      );
+    }
+
+    // Get test ID from URL
+    const { searchParams } = new URL(request.url);
+    const testId = searchParams.get('testId');
+
+    if (!testId) {
+      return NextResponse.json(
+        { error: 'Test ID is required' },
+        { status: 400 },
+      );
+    }
+
+    // Check if test is running
+    const { data: testData } = await supabase
+      .from('performance_test_runs')
+      .select('status, created_by')
+      .eq('id', testId)
+      .single();
+
+    if (!testData) {
+      return NextResponse.json({ error: 'Test not found' }, { status: 404 });
+    }
+
+    if (testData.status !== 'running') {
+      return NextResponse.json(
+        { error: 'Only running tests can be cancelled' },
+        { status: 409 },
+      );
+    }
+
+    // Only admin or test creator can cancel
+    if (profile.role !== 'admin' && testData.created_by !== user.id) {
+      return NextResponse.json(
+        { error: 'You can only cancel tests you created' },
+        { status: 403 },
+      );
+    }
+
+    // Cancel the test
+    const cancelled = await k6TestOrchestrator.cancelTest(testId);
+
+    if (cancelled) {
+      // Update test status
+      await supabase
+        .from('performance_test_runs')
+        .update({
+          status: 'cancelled',
+          end_time: new Date().toISOString(),
+          notes: `Test cancelled by user ${user.id}`,
+        })
+        .eq('id', testId);
+
+      return NextResponse.json({
+        message: 'Test cancelled successfully',
+      });
+    } else {
+      return NextResponse.json(
+        { error: 'Failed to cancel test. It may have already completed.' },
+        { status: 409 },
+      );
+    }
+  } catch (error) {
+    console.error('Error in DELETE /api/performance/tests/execute:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * Executes performance test asynchronously
+ */
+async function executePerformanceTestAsync(
+  testId: string,
+  config: TestConfiguration,
+): Promise<PerformanceTestResults> {
+  // Generate k6 script
+  const scriptPath = await k6TestOrchestrator.generateK6Script(config);
+
+  // Execute k6 test
+  const k6Results = await k6TestOrchestrator.executeK6Test(
+    scriptPath,
+    config,
+    testId,
+  );
+
+  if (!k6Results.success) {
+    throw new Error(`k6 test execution failed: ${k6Results.errors.join(', ')}`);
+  }
+
+  // Transform k6 results to PerformanceTestResults format
+  const results: PerformanceTestResults = {
+    testId,
+    testType: config.testType,
+    testScenario: config.testScenario,
+    userType: config.userType,
+    weddingSizeCategory: config.weddingSizeCategory,
+    environment: config.environment,
+    avgResponseTime: k6Results.metrics.http_req_duration.avg,
+    p95ResponseTime: k6Results.metrics.http_req_duration.p95,
+    p99ResponseTime: k6Results.metrics.http_req_duration.p99,
+    errorRate: k6Results.metrics.http_req_failed,
+    throughputRps: k6Results.metrics.http_reqs / (k6Results.duration / 1000),
+    weddingSeason: config.weddingSeasonLoad,
+    concurrentUsers: k6Results.metrics.vus_max,
+    totalRequests: k6Results.metrics.http_reqs,
+    failedRequests: Math.floor(
+      k6Results.metrics.http_reqs * k6Results.metrics.http_req_failed,
+    ),
+    metrics: k6Results.metrics,
+    testConfiguration: {
+      duration: config.duration,
+      virtualUsers: config.virtualUsers,
+      rampUpTime: config.rampUpTime,
+      thresholds: config.thresholds,
+      scenarios: [],
+    },
+    startTime: new Date(Date.now() - k6Results.duration),
+    endTime: new Date(),
+    duration: k6Results.duration,
+  };
+
+  return results;
+}
+
+/**
+ * Gets API base URL for different environments
+ */
+function getApiBaseUrl(environment: string): string {
+  switch (environment) {
+    case 'production':
+      return process.env.NEXT_PUBLIC_API_URL || 'https://api.wedsync.com';
+    case 'staging':
+      return process.env.STAGING_API_URL || 'https://staging-api.wedsync.com';
+    case 'development':
+    default:
+      return process.env.DEV_API_URL || 'http://localhost:3000';
+  }
+}
+
+/**
+ * Parses duration string and returns estimated duration in milliseconds
+ */
+function parseEstimatedDuration(duration: string): number {
+  const match = duration.match(/^(\d+)([smh])$/);
+  if (!match) return 5 * 60 * 1000; // Default 5 minutes
+
+  const value = parseInt(match[1]);
+  const unit = match[2];
+
+  switch (unit) {
+    case 's':
+      return value * 1000;
+    case 'm':
+      return value * 60 * 1000;
+    case 'h':
+      return value * 60 * 60 * 1000;
+    default:
+      return 5 * 60 * 1000; // Default 5 minutes
+  }
+}

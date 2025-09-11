@@ -1,0 +1,860 @@
+'use client'
+
+import React, { useState, useCallback, useRef, useEffect } from 'react'
+import { Button } from '@/components/ui/button-untitled'
+import { Card } from '@/components/ui/card-untitled'
+import { Badge } from '@/components/ui/badge'
+import { Progress } from '@/components/ui/progress'
+import { useDropzone } from 'react-dropzone'
+import Papa from 'papaparse'
+import {
+  Upload,
+  FileText,
+  CheckCircle,
+  XCircle,
+  AlertTriangle,
+  Download,
+  Eye,
+  ArrowLeft,
+  ArrowRight,
+  X,
+  RefreshCw,
+  Clock,
+  Users,
+  Mail,
+  Phone,
+  Calendar,
+  MapPin,
+  Star
+} from 'lucide-react'
+
+interface ImportStep {
+  id: string
+  title: string
+  description: string
+  completed: boolean
+}
+
+interface ParsedClient {
+  first_name?: string
+  last_name?: string
+  partner_first_name?: string
+  partner_last_name?: string
+  email?: string
+  phone?: string
+  wedding_date?: string
+  venue_name?: string
+  venue_address?: string
+  guest_count?: number
+  budget_range?: string
+  status?: string
+  notes?: string
+  package_name?: string
+  package_price?: number
+  priority_level?: string
+}
+
+interface ColumnMapping {
+  source: string
+  target: string
+  confidence: number
+}
+
+interface ImportError {
+  row: number
+  field: string
+  message: string
+  value: string
+}
+
+interface ImportResult {
+  success: boolean
+  total_clients: number
+  successful_imports: number
+  failed_imports: number
+  errors: ImportError[]
+  performance_metrics: {
+    file_size_mb: string
+    processing_time_ms: number
+    batch_size: number
+    batches_processed: number
+  }
+}
+
+const STEPS: ImportStep[] = [
+  { id: 'upload', title: 'Upload File', description: 'Select your CSV or Excel file', completed: false },
+  { id: 'preview', title: 'Preview Data', description: 'Review and validate your data', completed: false },
+  { id: 'mapping', title: 'Column Mapping', description: 'Map columns to client fields', completed: false },
+  { id: 'import', title: 'Import', description: 'Import clients to your database', completed: false },
+  { id: 'complete', title: 'Complete', description: 'Review import results', completed: false }
+]
+
+const COLUMN_MAPPINGS = {
+  'first_name': ['first_name', 'firstname', 'client_first_name', 'name', 'bride_first_name'],
+  'last_name': ['last_name', 'lastname', 'client_last_name', 'surname', 'bride_last_name'],
+  'partner_first_name': ['partner_first_name', 'partner_firstname', 'groom_first_name', 'spouse_first_name'],
+  'partner_last_name': ['partner_last_name', 'partner_lastname', 'groom_last_name', 'spouse_last_name'],
+  'email': ['email', 'email_address', 'contact_email', 'primary_email'],
+  'phone': ['phone', 'phone_number', 'contact_phone', 'mobile', 'telephone'],
+  'wedding_date': ['wedding_date', 'event_date', 'ceremony_date', 'date'],
+  'venue_name': ['venue_name', 'venue', 'location', 'venue_location'],
+  'venue_address': ['venue_address', 'address', 'venue_location', 'location_address'],
+  'guest_count': ['guest_count', 'guests', 'number_of_guests', 'guest_number'],
+  'budget_range': ['budget_range', 'budget', 'price_range', 'budget_amount'],
+  'status': ['status', 'client_status', 'booking_status', 'lead_status'],
+  'package_name': ['package_name', 'package', 'service_package', 'plan'],
+  'package_price': ['package_price', 'price', 'cost', 'amount'],
+  'priority_level': ['priority_level', 'priority', 'importance', 'urgency'],
+  'notes': ['notes', 'comments', 'remarks', 'description']
+}
+
+interface ImportWizardProps {
+  onComplete?: (result: ImportResult) => void
+  onCancel?: () => void
+}
+
+export default function ImportWizard({ onComplete, onCancel }: ImportWizardProps) {
+  const [currentStep, setCurrentStep] = useState('upload')
+  const [file, setFile] = useState<File | null>(null)
+  const [parsedData, setParsedData] = useState<ParsedClient[]>([])
+  const [columnMappings, setColumnMappings] = useState<Record<string, string>>({})
+  const [detectedColumns, setDetectedColumns] = useState<string[]>([])
+  const [importProgress, setImportProgress] = useState(0)
+  const [importStatus, setImportStatus] = useState<'idle' | 'processing' | 'completed' | 'error'>('idle')
+  const [importResult, setImportResult] = useState<ImportResult | null>(null)
+  const [validationErrors, setValidationErrors] = useState<ImportError[]>([])
+  const [isProcessing, setIsProcessing] = useState(false)
+  const [processingMessage, setProcessingMessage] = useState('')
+  const cancelRef = useRef<AbortController | null>(null)
+
+  const steps = STEPS.map(step => ({
+    ...step,
+    completed: getStepIndex(step.id) < getStepIndex(currentStep) || 
+                (currentStep === 'complete' && step.id === 'complete')
+  }))
+
+  function getStepIndex(stepId: string): number {
+    return STEPS.findIndex(step => step.id === stepId)
+  }
+
+  const onDrop = useCallback(async (acceptedFiles: File[]) => {
+    const uploadedFile = acceptedFiles[0]
+    if (!uploadedFile) return
+
+    setFile(uploadedFile)
+    setIsProcessing(true)
+    setProcessingMessage('Parsing file...')
+
+    try {
+      const fileExtension = uploadedFile.name.split('.').pop()?.toLowerCase()
+      let clients: ParsedClient[] = []
+
+      if (fileExtension === 'csv') {
+        clients = await parseCSV(uploadedFile)
+      } else if (['xlsx', 'xls'].includes(fileExtension || '')) {
+        clients = await parseExcel(uploadedFile)
+      } else {
+        throw new Error('Unsupported file format. Please use CSV or Excel files.')
+      }
+
+      setParsedData(clients)
+      
+      // Auto-detect column mappings
+      if (clients.length > 0) {
+        const sampleClient = clients[0]
+        const detectedCols = Object.keys(sampleClient)
+        setDetectedColumns(detectedCols)
+        
+        const mappings = autoDetectMappings(detectedCols)
+        setColumnMappings(mappings)
+      }
+
+      setCurrentStep('preview')
+    } catch (error) {
+      console.error('File parsing error:', error)
+      setValidationErrors([{
+        row: 0,
+        field: 'file',
+        message: error instanceof Error ? error.message : 'Failed to parse file',
+        value: uploadedFile.name
+      }])
+    } finally {
+      setIsProcessing(false)
+      setProcessingMessage('')
+    }
+  }, [])
+
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    onDrop,
+    accept: {
+      'text/csv': ['.csv'],
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
+      'application/vnd.ms-excel': ['.xls']
+    },
+    multiple: false,
+    maxSize: 50 * 1024 * 1024 // 50MB limit
+  })
+
+  const parseCSV = (file: File): Promise<ParsedClient[]> => {
+    return new Promise((resolve, reject) => {
+      Papa.parse(file, {
+        header: true,
+        skipEmptyLines: true,
+        transformHeader: (header) => header.toLowerCase().trim().replace(/[^a-z0-9]/g, '_'),
+        complete: (results) => {
+          try {
+            const clients = results.data as ParsedClient[]
+            resolve(clients.filter(client => client.first_name || client.email))
+          } catch (error) {
+            reject(error)
+          }
+        },
+        error: (error) => reject(new Error(`CSV parsing failed: ${error.message}`))
+      })
+    })
+  }
+
+  const parseExcel = async (file: File): Promise<ParsedClient[]> => {
+    try {
+      const XLSX = await import('xlsx')
+      const buffer = await file.arrayBuffer()
+      const workbook = XLSX.read(buffer, { type: 'array' })
+      const sheetName = workbook.SheetNames[0]
+      const worksheet = workbook.Sheets[sheetName]
+      
+      const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as any[][]
+      
+      if (jsonData.length < 2) {
+        throw new Error('Excel file must contain at least a header row and one data row')
+      }
+
+      const headers = jsonData[0].map((h: any) => h?.toString().toLowerCase().trim().replace(/[^a-z0-9]/g, '_') || '')
+      const rows = jsonData.slice(1)
+
+      const clients = rows.map((row: any[]) => {
+        const client: ParsedClient = {}
+        headers.forEach((header: string, index: number) => {
+          const value = row[index]?.toString().trim()
+          if (value) {
+            (client as any)[header] = value
+          }
+        })
+        return client
+      }).filter(client => client.first_name || client.email)
+
+      return clients
+    } catch (error) {
+      throw new Error(`Excel parsing failed: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    }
+  }
+
+  const autoDetectMappings = (columns: string[]): Record<string, string> => {
+    const mappings: Record<string, string> = {}
+    
+    Object.entries(COLUMN_MAPPINGS).forEach(([targetField, possibleSources]) => {
+      for (const source of possibleSources) {
+        if (columns.some(col => col.includes(source))) {
+          const matchedColumn = columns.find(col => col.includes(source))
+          if (matchedColumn) {
+            mappings[matchedColumn] = targetField
+            break
+          }
+        }
+      }
+    })
+
+    return mappings
+  }
+
+  const validateData = (): ImportError[] => {
+    const errors: ImportError[] = []
+    
+    parsedData.forEach((client, index) => {
+      const rowNum = index + 2 // Account for header row and 1-based indexing
+
+      // Email validation
+      if (client.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(client.email)) {
+        errors.push({ row: rowNum, field: 'email', message: 'Invalid email format', value: client.email })
+      }
+
+      // Phone validation
+      if (client.phone && !/^[\+]?[1-9][\d]{0,15}$/.test(client.phone.replace(/[\s\-\(\)]/g, ''))) {
+        errors.push({ row: rowNum, field: 'phone', message: 'Invalid phone format', value: client.phone })
+      }
+
+      // Date validation
+      if (client.wedding_date && isNaN(new Date(client.wedding_date).getTime())) {
+        errors.push({ row: rowNum, field: 'wedding_date', message: 'Invalid date format', value: client.wedding_date })
+      }
+
+      // Required fields
+      if (!client.first_name && !client.email) {
+        errors.push({ row: rowNum, field: 'required', message: 'Either first name or email is required', value: '' })
+      }
+    })
+
+    return errors
+  }
+
+  const handleImport = async () => {
+    if (!file || parsedData.length === 0) return
+
+    setImportStatus('processing')
+    setImportProgress(0)
+    setProcessingMessage('Starting import...')
+    
+    cancelRef.current = new AbortController()
+
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+
+      const response = await fetch('/api/clients/import', {
+        method: 'POST',
+        body: formData,
+        signal: cancelRef.current.signal
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.message || 'Import failed')
+      }
+
+      const result = await response.json()
+      setImportResult(result)
+      setImportStatus('completed')
+      setCurrentStep('complete')
+      
+      if (onComplete) {
+        onComplete(result)
+      }
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        setImportStatus('idle')
+        setProcessingMessage('Import cancelled')
+      } else {
+        setImportStatus('error')
+        setValidationErrors([{
+          row: 0,
+          field: 'import',
+          message: error instanceof Error ? error.message : 'Import failed',
+          value: ''
+        }])
+      }
+    }
+  }
+
+  const handleCancel = () => {
+    if (cancelRef.current) {
+      cancelRef.current.abort()
+    }
+    if (onCancel) {
+      onCancel()
+    }
+  }
+
+  const getClientDisplayName = (client: ParsedClient) => {
+    const names = [client.first_name, client.last_name].filter(Boolean).join(' ')
+    const partnerNames = [client.partner_first_name, client.partner_last_name].filter(Boolean).join(' ')
+    
+    if (names && partnerNames) {
+      return `${names} & ${partnerNames}`
+    }
+    return names || partnerNames || client.email || 'Unnamed Client'
+  }
+
+  const renderStepIndicator = () => (
+    <div className="flex items-center justify-between mb-8">
+      {steps.map((step, index) => (
+        <div key={step.id} className="flex items-center">
+          <div className={`flex items-center justify-center w-10 h-10 rounded-full border-2 
+            ${step.completed ? 'bg-primary-600 border-primary-600 text-white' : 
+              currentStep === step.id ? 'border-primary-600 bg-primary-50 text-primary-600' :
+              'border-gray-300 bg-gray-50 text-gray-400'}`}>
+            {step.completed ? (
+              <CheckCircle className="w-5 h-5" />
+            ) : (
+              <span className="text-sm font-medium">{index + 1}</span>
+            )}
+          </div>
+          {index < steps.length - 1 && (
+            <div className={`w-12 h-0.5 mx-2 ${step.completed ? 'bg-primary-600' : 'bg-gray-300'}`} />
+          )}
+        </div>
+      ))}
+    </div>
+  )
+
+  const renderUploadStep = () => (
+    <Card className="p-8">
+      <div className="text-center mb-6">
+        <h2 className="text-2xl font-bold text-gray-900 mb-2">Upload Your Client Data</h2>
+        <p className="text-gray-600">
+          Import clients from a CSV or Excel file. Maximum file size: 50MB, up to 50,000 clients.
+        </p>
+      </div>
+
+      <div
+        {...getRootProps()}
+        data-testid="file-upload-zone"
+        className={`border-2 border-dashed rounded-xl p-12 text-center cursor-pointer transition-all duration-200
+          ${isDragActive ? 'border-primary-400 bg-primary-50' : 
+            file ? 'border-green-400 bg-green-50' : 'border-gray-300 hover:border-primary-300'}`}
+      >
+        <input {...getInputProps()} />
+        
+        {isProcessing ? (
+          <div className="space-y-4">
+            <div className="animate-spin mx-auto">
+              <RefreshCw className="w-12 h-12 text-primary-600" />
+            </div>
+            <p className="text-lg font-medium text-primary-900">{processingMessage}</p>
+          </div>
+        ) : file ? (
+          <div className="space-y-4">
+            <CheckCircle className="w-12 h-12 text-green-600 mx-auto" />
+            <div>
+              <p className="text-lg font-medium text-green-900">{file.name}</p>
+              <p className="text-sm text-green-600">
+                {parsedData.length} clients found • {(file.size / (1024 * 1024)).toFixed(2)} MB
+              </p>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <Upload className="w-12 h-12 text-gray-400 mx-auto" />
+            <div>
+              <p className="text-lg font-medium text-gray-900">
+                {isDragActive ? 'Drop your file here' : 'Drag and drop your file here'}
+              </p>
+              <p className="text-sm text-gray-500 mt-2">or click to browse files</p>
+            </div>
+            <div className="text-xs text-gray-400 space-y-1">
+              <p>Supported formats: CSV, Excel (.xlsx, .xls)</p>
+              <p>Maximum file size: 50MB</p>
+              <p>Maximum records: 50,000 clients</p>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {validationErrors.length > 0 && (
+        <div className="mt-6 p-4 bg-red-50 border border-red-200 rounded-lg">
+          <div className="flex items-center gap-2 text-red-800 font-medium mb-2">
+            <XCircle className="w-5 h-5" />
+            File Upload Errors
+          </div>
+          <ul className="text-sm text-red-700 space-y-1">
+            {validationErrors.map((error, index) => (
+              <li key={index}>• {error.message}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {file && parsedData.length > 0 && (
+        <div className="mt-6 flex justify-end gap-3">
+          <Button
+            variant="outline"
+            onClick={() => {
+              setFile(null)
+              setParsedData([])
+              setValidationErrors([])
+            }}
+          >
+            Remove File
+          </Button>
+          <Button onClick={() => setCurrentStep('preview')}>
+            Continue to Preview
+            <ArrowRight className="w-4 h-4 ml-2" />
+          </Button>
+        </div>
+      )}
+    </Card>
+  )
+
+  const renderPreviewStep = () => (
+    <Card className="p-8">
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900">Preview Your Data</h2>
+          <p className="text-gray-600 mt-1">
+            Review the first 10 rows of your data. Total: {parsedData.length} clients
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => setCurrentStep('upload')}>
+            <ArrowLeft className="w-4 h-4 mr-2" />
+            Back
+          </Button>
+          <Button onClick={() => setCurrentStep('mapping')}>
+            Continue to Mapping
+            <ArrowRight className="w-4 h-4 ml-2" />
+          </Button>
+        </div>
+      </div>
+
+      {/* Data Statistics */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+          <div className="flex items-center gap-2">
+            <Users className="w-5 h-5 text-blue-600" />
+            <span className="text-sm font-medium text-blue-900">Total Clients</span>
+          </div>
+          <p className="text-2xl font-bold text-blue-900 mt-1">{parsedData.length}</p>
+        </div>
+        
+        <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+          <div className="flex items-center gap-2">
+            <Mail className="w-5 h-5 text-green-600" />
+            <span className="text-sm font-medium text-green-900">With Email</span>
+          </div>
+          <p className="text-2xl font-bold text-green-900 mt-1">
+            {parsedData.filter(c => c.email).length}
+          </p>
+        </div>
+
+        <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
+          <div className="flex items-center gap-2">
+            <Calendar className="w-5 h-5 text-purple-600" />
+            <span className="text-sm font-medium text-purple-900">With Wedding Date</span>
+          </div>
+          <p className="text-2xl font-bold text-purple-900 mt-1">
+            {parsedData.filter(c => c.wedding_date).length}
+          </p>
+        </div>
+
+        <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
+          <div className="flex items-center gap-2">
+            <MapPin className="w-5 h-5 text-orange-600" />
+            <span className="text-sm font-medium text-orange-900">With Venue</span>
+          </div>
+          <p className="text-2xl font-bold text-orange-900 mt-1">
+            {parsedData.filter(c => c.venue_name).length}
+          </p>
+        </div>
+      </div>
+
+      {/* Preview Table */}
+      <div data-testid="data-preview" className="border border-gray-200 rounded-lg overflow-hidden">
+        <div className="overflow-x-auto max-h-96">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-3 text-left font-medium text-gray-900">Client Name</th>
+                <th className="px-4 py-3 text-left font-medium text-gray-900">Email</th>
+                <th className="px-4 py-3 text-left font-medium text-gray-900">Phone</th>
+                <th className="px-4 py-3 text-left font-medium text-gray-900">Wedding Date</th>
+                <th className="px-4 py-3 text-left font-medium text-gray-900">Venue</th>
+                <th className="px-4 py-3 text-left font-medium text-gray-900">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-200">
+              {parsedData.slice(0, 10).map((client, index) => (
+                <tr key={index} className="hover:bg-gray-50">
+                  <td className="px-4 py-3 font-medium text-gray-900">
+                    {getClientDisplayName(client)}
+                  </td>
+                  <td className="px-4 py-3 text-gray-600">{client.email || '—'}</td>
+                  <td className="px-4 py-3 text-gray-600">{client.phone || '—'}</td>
+                  <td className="px-4 py-3 text-gray-600">{client.wedding_date || '—'}</td>
+                  <td className="px-4 py-3 text-gray-600">{client.venue_name || '—'}</td>
+                  <td className="px-4 py-3">
+                    <Badge className={`px-2 py-1 text-xs ${
+                      client.status === 'booked' ? 'bg-green-100 text-green-800' :
+                      client.status === 'lead' ? 'bg-blue-100 text-blue-800' :
+                      'bg-gray-100 text-gray-800'
+                    }`}>
+                      {client.status || 'lead'}
+                    </Badge>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {parsedData.length > 10 && (
+          <div className="px-4 py-3 bg-gray-50 border-t border-gray-200 text-sm text-gray-600">
+            Showing first 10 of {parsedData.length} clients
+          </div>
+        )}
+      </div>
+    </Card>
+  )
+
+  const renderMappingStep = () => (
+    <Card className="p-8">
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900">Column Mapping</h2>
+          <p className="text-gray-600 mt-1">
+            Map your file columns to WedSync client fields
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => setCurrentStep('preview')}>
+            <ArrowLeft className="w-4 h-4 mr-2" />
+            Back
+          </Button>
+          <Button onClick={() => setCurrentStep('import')}>
+            Continue to Import
+            <ArrowRight className="w-4 h-4 ml-2" />
+          </Button>
+        </div>
+      </div>
+
+      <div data-testid="column-mapping" className="space-y-4">
+        {detectedColumns.map(sourceColumn => (
+          <div key={sourceColumn} className="flex items-center gap-4 p-4 bg-gray-50 rounded-lg">
+            <div className="flex-1">
+              <p className="font-medium text-gray-900">{sourceColumn}</p>
+              <p className="text-sm text-gray-600">
+                Sample: {parsedData[0] && (parsedData[0] as any)[sourceColumn] ? 
+                  String((parsedData[0] as any)[sourceColumn]).substring(0, 50) : 'No data'}
+              </p>
+            </div>
+            
+            <ArrowRight className="w-5 h-5 text-gray-400" />
+            
+            <div className="flex-1">
+              <select
+                value={columnMappings[sourceColumn] || ''}
+                onChange={(e) => setColumnMappings(prev => ({
+                  ...prev,
+                  [sourceColumn]: e.target.value
+                }))}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+              >
+                <option value="">Don't import</option>
+                {Object.keys(COLUMN_MAPPINGS).map(targetField => (
+                  <option key={targetField} value={targetField}>
+                    {targetField.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase())}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Auto-detection Summary */}
+      <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+        <div className="flex items-center gap-2 text-blue-800 font-medium mb-2">
+          <Eye className="w-5 h-5" />
+          Auto-Detection Summary
+        </div>
+        <div className="text-sm text-blue-700 space-y-1">
+          <p>{Object.keys(columnMappings).length} columns mapped automatically</p>
+          <p>{detectedColumns.length - Object.keys(columnMappings).length} columns require manual mapping</p>
+          <p>Review and adjust mappings as needed before importing</p>
+        </div>
+      </div>
+    </Card>
+  )
+
+  const renderImportStep = () => (
+    <Card className="p-8">
+      <div className="text-center mb-8">
+        <h2 className="text-2xl font-bold text-gray-900 mb-2">Importing Your Clients</h2>
+        <p className="text-gray-600">
+          Processing {parsedData.length} clients... Please don't close this window.
+        </p>
+      </div>
+
+      <div data-testid="import-progress" className="space-y-6">
+        <div className="w-full bg-gray-200 rounded-full h-4">
+          <div
+            className="bg-primary-600 h-4 rounded-full transition-all duration-300"
+            style={{ width: `${importProgress}%` }}
+          />
+        </div>
+        
+        <div className="text-center">
+          <p className="text-lg font-medium text-gray-900">{importProgress}% Complete</p>
+          <p className="text-sm text-gray-600 mt-1">{processingMessage}</p>
+        </div>
+
+        {importStatus === 'processing' && (
+          <div className="flex justify-center">
+            <Button
+              variant="outline"
+              onClick={handleCancel}
+              data-testid="cancel-import"
+              className="text-red-600 border-red-300 hover:bg-red-50"
+            >
+              <X className="w-4 h-4 mr-2" />
+              Cancel Import
+            </Button>
+          </div>
+        )}
+      </div>
+    </Card>
+  )
+
+  const renderCompleteStep = () => (
+    <Card className="p-8">
+      <div className="text-center mb-8">
+        {importResult?.successful_imports ? (
+          <div className="space-y-4">
+            <CheckCircle className="w-16 h-16 text-green-600 mx-auto" />
+            <h2 className="text-2xl font-bold text-gray-900">Import Completed Successfully!</h2>
+            <p className="text-gray-600">
+              {importResult.successful_imports} out of {importResult.total_clients} clients imported
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <XCircle className="w-16 h-16 text-red-600 mx-auto" />
+            <h2 className="text-2xl font-bold text-gray-900">Import Failed</h2>
+            <p className="text-gray-600">
+              There were issues importing your clients. Please review the errors below.
+            </p>
+          </div>
+        )}
+      </div>
+
+      {importResult && (
+        <div data-testid="import-results" className="space-y-6">
+          {/* Results Summary */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="bg-green-50 border border-green-200 rounded-lg p-4 text-center">
+              <CheckCircle className="w-8 h-8 text-green-600 mx-auto mb-2" />
+              <p className="text-2xl font-bold text-green-900">{importResult.successful_imports}</p>
+              <p className="text-sm text-green-700">Successfully Imported</p>
+            </div>
+
+            <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-center">
+              <XCircle className="w-8 h-8 text-red-600 mx-auto mb-2" />
+              <p className="text-2xl font-bold text-red-900">{importResult.failed_imports}</p>
+              <p className="text-sm text-red-700">Failed to Import</p>
+            </div>
+
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-center">
+              <Clock className="w-8 h-8 text-blue-600 mx-auto mb-2" />
+              <p className="text-2xl font-bold text-blue-900">
+                {importResult.performance_metrics.processing_time_ms}ms
+              </p>
+              <p className="text-sm text-blue-700">Processing Time</p>
+            </div>
+          </div>
+
+          {/* Performance Metrics */}
+          <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+            <h3 className="font-medium text-gray-900 mb-3">Performance Metrics</h3>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+              <div>
+                <p className="text-gray-600">File Size</p>
+                <p className="font-medium">{importResult.performance_metrics.file_size_mb} MB</p>
+              </div>
+              <div>
+                <p className="text-gray-600">Batch Size</p>
+                <p className="font-medium">{importResult.performance_metrics.batch_size}</p>
+              </div>
+              <div>
+                <p className="text-gray-600">Batches Processed</p>
+                <p className="font-medium">{importResult.performance_metrics.batches_processed}</p>
+              </div>
+              <div>
+                <p className="text-gray-600">Processing Time</p>
+                <p className="font-medium">{importResult.performance_metrics.processing_time_ms}ms</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Error Details */}
+          {importResult.errors.length > 0 && (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-medium text-red-900">Import Errors</h3>
+                <Badge className="bg-red-100 text-red-800">
+                  {importResult.errors.length} errors
+                </Badge>
+              </div>
+              <div className="max-h-48 overflow-y-auto space-y-2" data-testid="import-errors">
+                {importResult.errors.slice(0, 20).map((error, index) => (
+                  <div key={index} className="text-sm text-red-700 bg-red-100 p-2 rounded">
+                    <span className="font-medium">Row {error.row}:</span> {error.message}
+                    {error.field && <span className="text-red-600"> ({error.field})</span>}
+                  </div>
+                ))}
+                {importResult.errors.length > 20 && (
+                  <p className="text-sm text-red-600 text-center">
+                    ... and {importResult.errors.length - 20} more errors
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Actions */}
+          <div className="flex justify-center gap-4">
+            <Button
+              variant="outline"
+              onClick={() => window.location.href = '/dashboard/clients'}
+            >
+              View All Clients
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setCurrentStep('upload')
+                setFile(null)
+                setParsedData([])
+                setImportResult(null)
+                setValidationErrors([])
+                setImportStatus('idle')
+              }}
+            >
+              Import More Clients
+            </Button>
+            {importResult.errors.length > 0 && (
+              <Button
+                variant="outline"
+                onClick={() => {
+                  const csvContent = [
+                    'Row,Field,Error,Value',
+                    ...importResult.errors.map(error => 
+                      `${error.row},${error.field},"${error.message}","${error.value}"`
+                    )
+                  ].join('\n')
+                  
+                  const blob = new Blob([csvContent], { type: 'text/csv' })
+                  const url = URL.createObjectURL(blob)
+                  const a = document.createElement('a')
+                  a.href = url
+                  a.download = 'import-errors.csv'
+                  a.click()
+                  URL.revokeObjectURL(url)
+                }}
+              >
+                <Download className="w-4 h-4 mr-2" />
+                Download Error Report
+              </Button>
+            )}
+          </div>
+        </div>
+      )}
+    </Card>
+  )
+
+  // Auto-start import when reaching import step
+  useEffect(() => {
+    if (currentStep === 'import' && importStatus === 'idle') {
+      handleImport()
+    }
+  }, [currentStep, importStatus])
+
+  return (
+    <div className="max-w-4xl mx-auto p-6">
+      {renderStepIndicator()}
+      
+      <div className="min-h-[600px]">
+        {currentStep === 'upload' && renderUploadStep()}
+        {currentStep === 'preview' && renderPreviewStep()}
+        {currentStep === 'mapping' && renderMappingStep()}
+        {currentStep === 'import' && renderImportStep()}
+        {currentStep === 'complete' && renderCompleteStep()}
+      </div>
+    </div>
+  )
+}

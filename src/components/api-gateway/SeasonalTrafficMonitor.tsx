@@ -1,0 +1,610 @@
+'use client';
+
+import React, { useState, useEffect } from 'react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Progress } from '@/components/ui/progress';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import {
+  LineChart,
+  Line,
+  AreaChart,
+  Area,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  Legend,
+} from 'recharts';
+import {
+  Calendar,
+  TrendingUp,
+  AlertTriangle,
+  Activity,
+  Thermometer,
+  Sun,
+  Snowflake,
+  Leaf,
+  Users,
+} from 'lucide-react';
+
+interface SeasonalData {
+  month: string;
+  weddingCount: number;
+  apiTraffic: number;
+  peakDay: string;
+  averageLoad: number;
+  weatherFactor: number;
+  seasonType: 'peak' | 'shoulder' | 'low';
+}
+
+interface WeeklyPattern {
+  day: string;
+  traffic: number;
+  weddingDay: boolean;
+  venueBookings: number;
+  photographerActivity: number;
+}
+
+const MONTHS_DATA: SeasonalData[] = [
+  {
+    month: 'Jan',
+    weddingCount: 15,
+    apiTraffic: 12000,
+    peakDay: 'Sat 20th',
+    averageLoad: 25,
+    weatherFactor: 0.6,
+    seasonType: 'low',
+  },
+  {
+    month: 'Feb',
+    weddingCount: 22,
+    apiTraffic: 18000,
+    peakDay: 'Sat 14th',
+    averageLoad: 35,
+    weatherFactor: 0.7,
+    seasonType: 'low',
+  },
+  {
+    month: 'Mar',
+    weddingCount: 35,
+    apiTraffic: 28000,
+    peakDay: 'Sat 25th',
+    averageLoad: 55,
+    weatherFactor: 0.8,
+    seasonType: 'shoulder',
+  },
+  {
+    month: 'Apr',
+    weddingCount: 68,
+    apiTraffic: 54000,
+    peakDay: 'Sat 15th',
+    averageLoad: 85,
+    weatherFactor: 1.0,
+    seasonType: 'shoulder',
+  },
+  {
+    month: 'May',
+    weddingCount: 125,
+    apiTraffic: 98000,
+    peakDay: 'Sat 20th',
+    averageLoad: 95,
+    weatherFactor: 1.2,
+    seasonType: 'peak',
+  },
+  {
+    month: 'Jun',
+    weddingCount: 180,
+    apiTraffic: 142000,
+    peakDay: 'Sat 10th',
+    averageLoad: 98,
+    weatherFactor: 1.1,
+    seasonType: 'peak',
+  },
+  {
+    month: 'Jul',
+    weddingCount: 195,
+    apiTraffic: 156000,
+    peakDay: 'Sat 22nd',
+    averageLoad: 100,
+    weatherFactor: 1.3,
+    seasonType: 'peak',
+  },
+  {
+    month: 'Aug',
+    weddingCount: 185,
+    apiTraffic: 148000,
+    peakDay: 'Sat 12th',
+    averageLoad: 97,
+    weatherFactor: 1.2,
+    seasonType: 'peak',
+  },
+  {
+    month: 'Sep',
+    weddingCount: 145,
+    apiTraffic: 116000,
+    peakDay: 'Sat 16th',
+    averageLoad: 92,
+    weatherFactor: 1.0,
+    seasonType: 'peak',
+  },
+  {
+    month: 'Oct',
+    weddingCount: 85,
+    apiTraffic: 68000,
+    peakDay: 'Sat 14th',
+    averageLoad: 75,
+    weatherFactor: 0.9,
+    seasonType: 'shoulder',
+  },
+  {
+    month: 'Nov',
+    weddingCount: 45,
+    apiTraffic: 36000,
+    peakDay: 'Sat 18th',
+    averageLoad: 45,
+    weatherFactor: 0.7,
+    seasonType: 'shoulder',
+  },
+  {
+    month: 'Dec',
+    weddingCount: 25,
+    apiTraffic: 20000,
+    peakDay: 'Sat 9th',
+    averageLoad: 30,
+    weatherFactor: 0.5,
+    seasonType: 'low',
+  },
+];
+
+const WEEKLY_PATTERN: WeeklyPattern[] = [
+  {
+    day: 'Mon',
+    traffic: 15000,
+    weddingDay: false,
+    venueBookings: 120,
+    photographerActivity: 200,
+  },
+  {
+    day: 'Tue',
+    traffic: 18000,
+    weddingDay: false,
+    venueBookings: 150,
+    photographerActivity: 250,
+  },
+  {
+    day: 'Wed',
+    traffic: 22000,
+    weddingDay: false,
+    venueBookings: 180,
+    photographerActivity: 300,
+  },
+  {
+    day: 'Thu',
+    traffic: 25000,
+    weddingDay: false,
+    venueBookings: 200,
+    photographerActivity: 320,
+  },
+  {
+    day: 'Fri',
+    traffic: 35000,
+    weddingDay: true,
+    venueBookings: 300,
+    photographerActivity: 450,
+  },
+  {
+    day: 'Sat',
+    traffic: 85000,
+    weddingDay: true,
+    venueBookings: 800,
+    photographerActivity: 1200,
+  },
+  {
+    day: 'Sun',
+    traffic: 45000,
+    weddingDay: true,
+    venueBookings: 400,
+    photographerActivity: 600,
+  },
+];
+
+export default function SeasonalTrafficMonitor(): JSX.Element {
+  const [currentMonth, setCurrentMonth] = useState(new Date().getMonth());
+  const [currentSeason, setCurrentSeason] = useState<
+    'peak' | 'shoulder' | 'low'
+  >('peak');
+  const [loadCapacity, setLoadCapacity] = useState(85);
+  const [predictions, setPredictions] = useState({
+    nextWeekTraffic: 125000,
+    peakDay: 'Saturday',
+    recommendedScaling: 'Increase capacity by 40%',
+  });
+
+  useEffect(() => {
+    const month = new Date().getMonth();
+    const seasonData = MONTHS_DATA[month];
+    setCurrentSeason(seasonData.seasonType);
+    setLoadCapacity(seasonData.averageLoad);
+  }, []);
+
+  const getSeasonColor = (season: string) => {
+    switch (season) {
+      case 'peak':
+        return 'bg-red-500';
+      case 'shoulder':
+        return 'bg-yellow-500';
+      case 'low':
+        return 'bg-green-500';
+      default:
+        return 'bg-gray-500';
+    }
+  };
+
+  const getSeasonIcon = (season: string) => {
+    switch (season) {
+      case 'peak':
+        return Sun;
+      case 'shoulder':
+        return Leaf;
+      case 'low':
+        return Snowflake;
+      default:
+        return Calendar;
+    }
+  };
+
+  const SeasonIcon = getSeasonIcon(currentSeason);
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex justify-between items-start">
+        <div>
+          <h1 className="text-3xl font-bold">Seasonal Traffic Monitor</h1>
+          <p className="text-muted-foreground">
+            Wedding season API load monitoring and capacity planning
+          </p>
+        </div>
+        <div className="flex items-center space-x-2">
+          <SeasonIcon className="h-5 w-5" />
+          <Badge className={`${getSeasonColor(currentSeason)} text-white`}>
+            {currentSeason.toUpperCase()} SEASON
+          </Badge>
+        </div>
+      </div>
+
+      {/* Current Load Status */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Current Load</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-2xl font-bold">{loadCapacity}%</span>
+              <Thermometer
+                className={`h-5 w-5 ${loadCapacity > 90 ? 'text-red-500' : loadCapacity > 75 ? 'text-yellow-500' : 'text-green-500'}`}
+              />
+            </div>
+            <Progress value={loadCapacity} className="w-full" />
+            <p className="text-xs text-muted-foreground mt-1">
+              {loadCapacity > 90
+                ? 'Critical load'
+                : loadCapacity > 75
+                  ? 'High load'
+                  : 'Normal load'}
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">This Week</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">47</div>
+            <p className="text-sm text-muted-foreground">Weddings scheduled</p>
+            <div className="flex items-center mt-1">
+              <TrendingUp className="h-3 w-3 text-green-500 mr-1" />
+              <span className="text-xs text-green-600">+12% vs last week</span>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Peak Day</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">Saturday</div>
+            <p className="text-sm text-muted-foreground">
+              Expected 85k API calls
+            </p>
+            <Badge variant="destructive" className="text-xs mt-1">
+              High Traffic
+            </Badge>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Weather Impact</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">1.2x</div>
+            <p className="text-sm text-muted-foreground">Traffic multiplier</p>
+            <div className="flex items-center mt-1">
+              <Sun className="h-3 w-3 text-yellow-500 mr-1" />
+              <span className="text-xs">Perfect weather forecast</span>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Seasonal Alert */}
+      {currentSeason === 'peak' && (
+        <Alert className="border-red-200 bg-red-50">
+          <AlertTriangle className="h-4 w-4" />
+          <AlertDescription>
+            <strong>Peak Wedding Season Alert:</strong> API traffic is expected
+            to be 3x normal levels. Consider scaling infrastructure and enabling
+            emergency protocols.
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {/* Charts */}
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+        {/* Annual Seasonal Pattern */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Annual Wedding Season Pattern</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="h-80">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={MONTHS_DATA}>
+                  <defs>
+                    <linearGradient
+                      id="weddingGradient"
+                      x1="0"
+                      y1="0"
+                      x2="0"
+                      y2="1"
+                    >
+                      <stop offset="5%" stopColor="#E11D48" stopOpacity={0.8} />
+                      <stop
+                        offset="95%"
+                        stopColor="#E11D48"
+                        stopOpacity={0.1}
+                      />
+                    </linearGradient>
+                    <linearGradient
+                      id="trafficGradient"
+                      x1="0"
+                      y1="0"
+                      x2="0"
+                      y2="1"
+                    >
+                      <stop offset="5%" stopColor="#3B82F6" stopOpacity={0.8} />
+                      <stop
+                        offset="95%"
+                        stopColor="#3B82F6"
+                        stopOpacity={0.1}
+                      />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="month" />
+                  <YAxis yAxisId="left" />
+                  <YAxis yAxisId="right" orientation="right" />
+                  <Tooltip />
+                  <Legend />
+                  <Area
+                    yAxisId="left"
+                    type="monotone"
+                    dataKey="weddingCount"
+                    stroke="#E11D48"
+                    fillOpacity={1}
+                    fill="url(#weddingGradient)"
+                    name="Weddings"
+                  />
+                  <Area
+                    yAxisId="right"
+                    type="monotone"
+                    dataKey="apiTraffic"
+                    stroke="#3B82F6"
+                    fillOpacity={0.6}
+                    fill="url(#trafficGradient)"
+                    name="API Traffic"
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Weekly Pattern */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Weekly Traffic Pattern</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="h-80">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={WEEKLY_PATTERN}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="day" />
+                  <YAxis />
+                  <Tooltip />
+                  <Legend />
+                  <Bar
+                    dataKey="traffic"
+                    fill="#8B5CF6"
+                    name="API Traffic"
+                    radius={[4, 4, 0, 0]}
+                  />
+                  <Bar
+                    dataKey="photographerActivity"
+                    fill="#E11D48"
+                    name="Photographer Activity"
+                    radius={[4, 4, 0, 0]}
+                  />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Capacity Planning */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <Card>
+          <CardHeader>
+            <CardTitle>Capacity Recommendations</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between">
+              <span className="text-sm">Current Capacity</span>
+              <Badge variant="outline">Standard</Badge>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-sm">Recommended for Peak</span>
+              <Badge variant="destructive">Scale Up 40%</Badge>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-sm">Wedding Day Protocol</span>
+              <Badge variant="default">Enable</Badge>
+            </div>
+            <Alert>
+              <Activity className="h-4 w-4" />
+              <AlertDescription className="text-sm">
+                Auto-scaling triggers: CPU &gt; 75%, Memory &gt; 80%, Queue
+                depth &gt; 100
+              </AlertDescription>
+            </Alert>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Next Week Forecast</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div>
+              <span className="text-sm text-muted-foreground">
+                Predicted Traffic
+              </span>
+              <p className="text-lg font-semibold">
+                {predictions.nextWeekTraffic.toLocaleString()} calls
+              </p>
+            </div>
+            <div>
+              <span className="text-sm text-muted-foreground">Peak Day</span>
+              <p className="text-lg font-semibold">{predictions.peakDay}</p>
+            </div>
+            <div>
+              <span className="text-sm text-muted-foreground">
+                Weather Factor
+              </span>
+              <div className="flex items-center">
+                <Sun className="h-4 w-4 text-yellow-500 mr-2" />
+                <span>1.3x multiplier</span>
+              </div>
+            </div>
+            <Badge variant="secondary" className="w-full justify-center">
+              Confidence: 87%
+            </Badge>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Critical Metrics</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex justify-between items-center">
+              <span className="text-sm">Response Time</span>
+              <span className="text-sm font-medium text-green-600">145ms</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-sm">Error Rate</span>
+              <span className="text-sm font-medium text-green-600">0.2%</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-sm">Queue Depth</span>
+              <span className="text-sm font-medium text-yellow-600">45</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-sm">Active Connections</span>
+              <span className="text-sm font-medium">1,247</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-sm">Weekend Readiness</span>
+              <Badge variant="default">Ready</Badge>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Season Comparison Table */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Seasonal Comparison</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b">
+                  <th className="text-left p-2">Month</th>
+                  <th className="text-left p-2">Season</th>
+                  <th className="text-right p-2">Weddings</th>
+                  <th className="text-right p-2">API Traffic</th>
+                  <th className="text-right p-2">Load %</th>
+                  <th className="text-left p-2">Peak Day</th>
+                </tr>
+              </thead>
+              <tbody>
+                {MONTHS_DATA.map((month) => (
+                  <tr key={month.month} className="border-b hover:bg-gray-50">
+                    <td className="p-2 font-medium">{month.month}</td>
+                    <td className="p-2">
+                      <Badge
+                        className={`${getSeasonColor(month.seasonType)} text-white text-xs`}
+                      >
+                        {month.seasonType}
+                      </Badge>
+                    </td>
+                    <td className="p-2 text-right">{month.weddingCount}</td>
+                    <td className="p-2 text-right">
+                      {month.apiTraffic.toLocaleString()}
+                    </td>
+                    <td className="p-2 text-right">
+                      <span
+                        className={
+                          month.averageLoad > 90
+                            ? 'text-red-600'
+                            : month.averageLoad > 75
+                              ? 'text-yellow-600'
+                              : 'text-green-600'
+                        }
+                      >
+                        {month.averageLoad}%
+                      </span>
+                    </td>
+                    <td className="p-2">{month.peakDay}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}

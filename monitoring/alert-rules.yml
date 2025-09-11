@@ -1,0 +1,189 @@
+# WedSync Ultra-Stable Alert Rules
+# Predictive monitoring and early warning system
+
+groups:
+  # High-Priority Development Disruption Alerts
+  - name: development_critical
+    interval: 30s
+    rules:
+      # Memory pressure prediction (before OOM kill)
+      - alert: MemoryPressureHigh
+        expr: (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) < 0.15
+        for: 30s
+        labels:
+          severity: critical
+          impact: development
+        annotations:
+          summary: "Memory pressure detected - container restart imminent"
+          description: "Available memory is below 15%. Container may be killed by OOM killer."
+          action: "Auto-restart will be triggered in 60 seconds if not resolved"
+
+      # CPU saturation (development lag)
+      - alert: CPUSaturationHigh
+        expr: rate(node_cpu_seconds_total[1m]) > 0.9
+        for: 2m
+        labels:
+          severity: warning
+          impact: development
+        annotations:
+          summary: "High CPU usage affecting development performance"
+          description: "CPU usage is above 90% for 2 minutes"
+
+      # Container restart loop detection
+      - alert: ContainerRestartLoop
+        expr: increase(container_start_time_seconds[10m]) > 3
+        for: 1m
+        labels:
+          severity: critical
+          impact: stability
+        annotations:
+          summary: "Container restart loop detected"
+          description: "Container has restarted {{$value}} times in 10 minutes"
+
+      # Disk space critical
+      - alert: DiskSpaceCritical
+        expr: (node_filesystem_avail_bytes / node_filesystem_size_bytes) < 0.1
+        for: 1m
+        labels:
+          severity: critical
+          impact: development
+        annotations:
+          summary: "Disk space critically low"
+          description: "Less than 10% disk space available"
+
+  # Performance Degradation Alerts
+  - name: performance_degradation
+    interval: 60s
+    rules:
+      # Next.js build time degradation
+      - alert: BuildTimeIncreasing
+        expr: increase(wedsync_build_duration_seconds[1h]) > 300
+        for: 5m
+        labels:
+          severity: warning
+          impact: productivity
+        annotations:
+          summary: "Build times are increasing"
+          description: "Build time has increased by {{$value}} seconds over the last hour"
+
+      # Hot reload performance
+      - alert: HotReloadSlow
+        expr: wedsync_hot_reload_duration_seconds > 5
+        for: 30s
+        labels:
+          severity: warning
+          impact: development
+        annotations:
+          summary: "Hot reload is slow"
+          description: "Hot reload taking {{$value}} seconds"
+
+      # API response time degradation
+      - alert: APIResponseSlow
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 2
+        for: 2m
+        labels:
+          severity: warning
+          impact: development
+        annotations:
+          summary: "API responses are slow"
+          description: "95th percentile response time is {{$value}} seconds"
+
+  # Predictive Failure Detection
+  - name: predictive_monitoring
+    interval: 2m
+    rules:
+      # Memory leak detection
+      - alert: MemoryLeakPredicted
+        expr: increase(process_resident_memory_bytes[1h]) > 1073741824  # 1GB increase per hour
+        for: 5m
+        labels:
+          severity: warning
+          impact: stability
+        annotations:
+          summary: "Potential memory leak detected"
+          description: "Memory usage increased by {{$value}} bytes in the last hour"
+
+      # File descriptor leak
+      - alert: FileDescriptorLeak
+        expr: process_open_fds > 1000
+        for: 2m
+        labels:
+          severity: warning
+          impact: stability
+        annotations:
+          summary: "High file descriptor usage"
+          description: "{{$value}} file descriptors open"
+
+      # Docker daemon issues
+      - alert: DockerDaemonUnhealthy
+        expr: up{job="docker"} == 0
+        for: 30s
+        labels:
+          severity: critical
+          impact: development
+        annotations:
+          summary: "Docker daemon is not responding"
+          description: "Docker daemon appears to be down or unresponsive"
+
+  # Network and Connectivity
+  - name: connectivity_issues
+    interval: 30s
+    rules:
+      # Database connection issues
+      - alert: DatabaseConnectionFail
+        expr: wedsync_database_connections_failed_total > 0
+        for: 30s
+        labels:
+          severity: critical
+          impact: development
+        annotations:
+          summary: "Database connection failures"
+          description: "{{$value}} database connections have failed"
+
+      # External service connectivity
+      - alert: ExternalServiceDown
+        expr: wedsync_external_service_up == 0
+        for: 1m
+        labels:
+          severity: warning
+          impact: development
+        annotations:
+          summary: "External service connectivity issues"
+          description: "External service {{$labels.service}} is not reachable"
+
+  # Development Environment Health
+  - name: dev_environment_health
+    interval: 1m
+    rules:
+      # TypeScript compilation errors
+      - alert: TypeScriptCompilationErrors
+        expr: wedsync_typescript_errors > 0
+        for: 30s
+        labels:
+          severity: warning
+          impact: development
+        annotations:
+          summary: "TypeScript compilation errors detected"
+          description: "{{$value}} TypeScript compilation errors"
+
+      # ESLint rule violations increasing
+      - alert: ESLintViolationsIncreasing
+        expr: increase(wedsync_eslint_violations_total[10m]) > 10
+        for: 2m
+        labels:
+          severity: info
+          impact: code_quality
+        annotations:
+          summary: "Code quality degrading"
+          description: "{{$value}} new ESLint violations in the last 10 minutes"
+
+      # Dependency vulnerabilities
+      - alert: SecurityVulnerabilities
+        expr: wedsync_npm_vulnerabilities > 0
+        for: 5m
+        labels:
+          severity: warning
+          impact: security
+        annotations:
+          summary: "Security vulnerabilities detected"
+          description: "{{$value}} security vulnerabilities found in dependencies"

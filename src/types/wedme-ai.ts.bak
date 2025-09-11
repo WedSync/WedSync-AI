@@ -1,0 +1,441 @@
+/**
+ * WS-239: Platform vs Client APIs - Mobile AI Feature Types
+ * Mobile-optimized AI feature management for wedding suppliers
+ */
+
+export type AIProvider = 'openai' | 'anthropic' | 'google' | 'azure';
+export type AIFeatureType = 'photo-tagging' | 'description-generation' | 'menu-ai' | 'timeline-optimization' | 'chat-bot';
+export type PlatformType = 'platform' | 'client';
+export type SetupStepStatus = 'pending' | 'in-progress' | 'completed' | 'failed';
+export type CostAlertLevel = 'low' | 'medium' | 'high' | 'critical';
+export type ConnectionStatus = 'connected' | 'disconnected' | 'testing' | 'error';
+
+// Core AI Feature Management Interface
+export interface MobileAIFeatureManager {
+  showPlatformVsClientComparison(): Promise<ComparisonView>;
+  setupClientAPI(provider: AIProvider): Promise<SetupResult>;
+  monitorCostsRealtime(): Promise<CostMonitorView>;
+  switchBetweenSystems(target: PlatformType): Promise<SwitchResult>;
+  getOfflineCapabilities(): Promise<OfflineFeatures>;
+}
+
+// Mobile API Key Management
+export interface MobileAPIKeyManager {
+  validateAPIKeyOnDevice(key: string, provider: string): Promise<ValidationResult>;
+  setupSecureKeyStorage(): Promise<void>;
+  testAPIConnectionMobile(key: string): Promise<ConnectionTest>;
+  rotateAPIKeyMobile(newKey: string): Promise<RotationResult>;
+}
+
+// Mobile Cost Tracking
+export interface MobileCostTracker {
+  showRealTimeCosts(): Promise<MobileCostDashboard>;
+  setMobileBudgetAlerts(budget: number): Promise<void>;
+  showUsageProjections(): Promise<CostProjection>;
+  handleOfflineCostSync(): Promise<OfflineSyncResult>;
+}
+
+// Platform vs Client Comparison Data
+export interface PlatformClientComparison {
+  platformFeatures: AIFeatureComparison[];
+  clientFeatures: AIFeatureComparison[];
+  costComparison: CostComparisonData;
+  performanceMetrics: PerformanceComparison;
+  recommendedChoice: RecommendationData;
+}
+
+export interface AIFeatureComparison {
+  feature: AIFeatureType;
+  platformIncluded: boolean;
+  clientAvailable: boolean;
+  platformLimits: UsageLimit | null;
+  clientCosts: CostEstimate | null;
+  weddingScenarios: WeddingScenario[];
+}
+
+export interface CostComparisonData {
+  platformMonthly: number;
+  averageClientCosts: CostBreakdown;
+  breakEvenPoint: number;
+  savingsProjection: number[];
+  riskFactors: string[];
+}
+
+export interface PerformanceComparison {
+  platformLatency: number;
+  clientLatency: number;
+  platformReliability: number;
+  clientReliability: number;
+  offlineCapabilities: OfflineCapabilityComparison;
+}
+
+// API Key Setup Types
+export interface APIKeySetupFlow {
+  currentStep: number;
+  totalSteps: number;
+  steps: SetupStep[];
+  canUseBiometric: boolean;
+  requiresValidation: boolean;
+}
+
+export interface SetupStep {
+  id: string;
+  title: string;
+  description: string;
+  status: SetupStepStatus;
+  isOptional: boolean;
+  mobileOptimized: boolean;
+  component: string;
+}
+
+export interface APIKeyValidation {
+  isValid: boolean;
+  provider: AIProvider;
+  keyStrength: 'weak' | 'medium' | 'strong';
+  features: string[];
+  rateLimit: RateLimitInfo;
+  expiresAt?: Date;
+}
+
+// Cost Monitoring Types
+export interface MobileCostDashboard {
+  currentUsage: UsageMetrics;
+  projectedCosts: CostProjection;
+  budgetAlerts: BudgetAlert[];
+  historicalData: UsageHistoryPoint[];
+  comparisonMode: PlatformType;
+  offlineQueuedCosts: QueuedCostItem[];
+}
+
+export interface UsageMetrics {
+  totalRequests: number;
+  costToDate: number;
+  remainingBudget: number;
+  topFeatures: FeatureUsage[];
+  peakHours: HourlyUsage[];
+  weddingSeasonImpact: number;
+}
+
+export interface CostProjection {
+  daily: number;
+  weekly: number;
+  monthly: number;
+  seasonalMultiplier: number;
+  confidence: number;
+  scenarios: ProjectionScenario[];
+}
+
+export interface BudgetAlert {
+  id: string;
+  level: CostAlertLevel;
+  threshold: number;
+  currentValue: number;
+  message: string;
+  actionRequired: string;
+  dismissable: boolean;
+  createdAt: Date;
+}
+
+// Mobile-Specific Types
+export interface MobileTouchInteraction {
+  type: 'tap' | 'swipe' | 'long-press' | 'pinch';
+  target: string;
+  hapticFeedback?: boolean;
+  actionResult: TouchActionResult;
+}
+
+export interface TouchActionResult {
+  success: boolean;
+  feedback: string;
+  nextStep?: string;
+  errorMessage?: string;
+}
+
+export interface MobileGesture {
+  gesture: 'swipe-left' | 'swipe-right' | 'swipe-up' | 'swipe-down';
+  action: 'accept' | 'reject' | 'switch-mode' | 'show-details';
+  feedback: string;
+}
+
+// Wedding Industry Specific Types
+export interface WeddingScenario {
+  scenario: string;
+  description: string;
+  platformBenefit: string;
+  clientBenefit: string;
+  recommendedChoice: PlatformType;
+  mobileContext: string;
+}
+
+export interface VenueSpecificFeatures {
+  venueType: 'indoor' | 'outdoor' | 'destination' | 'church' | 'garden';
+  aiFeatures: AIFeatureType[];
+  offlineRequirements: boolean;
+  mobilePriority: 'high' | 'medium' | 'low';
+  peakSeasonMultiplier: number;
+}
+
+// Offline and PWA Types
+export interface OfflineFeatures {
+  availableFeatures: AIFeatureType[];
+  cachedConfigurations: CachedConfig[];
+  syncQueueSize: number;
+  lastSyncTime: Date;
+  offlineCapabilities: OfflineCapabilityMap;
+}
+
+export interface CachedConfig {
+  provider: AIProvider;
+  features: AIFeatureType[];
+  lastUpdated: Date;
+  expiresAt: Date;
+  securelyStored: boolean;
+}
+
+export interface OfflineCapabilityMap {
+  [K in AIFeatureType]: {
+    worksOffline: boolean;
+    requiresSync: boolean;
+    degradedMode: boolean;
+  };
+}
+
+// Security Types
+export interface SecureAPIKeyStorage {
+  encrypted: boolean;
+  biometricProtected: boolean;
+  keyRotationEnabled: boolean;
+  lastRotation?: Date;
+  integrityChecked: boolean;
+}
+
+export interface BiometricAuthRequest {
+  purpose: 'setup' | 'access' | 'rotate';
+  challenge: string;
+  timeout: number;
+  fallbackToPin: boolean;
+}
+
+// Missing types from mobile-auto-population
+export interface CostDashboard {
+  currentUsage: UsageMetrics;
+  projectedCosts: CostProjection;
+  budgetAlerts: BudgetAlert[];
+  historicalData: UsageHistoryPoint[];
+  comparisonMode: PlatformType;
+  offlineQueuedCosts: QueuedCostItem[];
+}
+
+export interface UsageProjection {
+  daily: number;
+  weekly: number;
+  monthly: number;
+  confidence: number;
+}
+
+export interface OfflineSyncResult {
+  success: boolean;
+  syncedItems: number;
+  errors: string[];
+  lastSyncTime: Date;
+}
+
+// Result Types
+export interface SetupResult {
+  success: boolean;
+  provider: AIProvider;
+  features: AIFeatureType[];
+  message: string;
+  nextSteps?: string[];
+}
+
+export interface ValidationResult {
+  isValid: boolean;
+  provider?: AIProvider;
+  errorMessage?: string;
+  suggestions?: string[];
+}
+
+export interface ConnectionTest {
+  status: ConnectionStatus;
+  latency?: number;
+  features: AIFeatureType[];
+  errorDetails?: string;
+  timestamp: Date;
+}
+
+export interface SwitchResult {
+  success: boolean;
+  newMode: PlatformType;
+  migrationRequired: boolean;
+  estimatedCostImpact: number;
+  timeToComplete: number;
+}
+
+// Utility Types
+export interface UsageLimit {
+  daily?: number;
+  monthly?: number;
+  perFeature?: Record<AIFeatureType, number>;
+}
+
+export interface CostEstimate {
+  perRequest: number;
+  monthly: number;
+  variableCosts: boolean;
+  discounts: string[];
+}
+
+export interface CostBreakdown {
+  base: number;
+  perRequest: number;
+  volume: number;
+  total: number;
+}
+
+export interface RateLimitInfo {
+  requestsPerMinute: number;
+  requestsPerDay: number;
+  concurrentRequests: number;
+  resetTime?: Date;
+}
+
+export interface FeatureUsage {
+  feature: AIFeatureType;
+  requests: number;
+  cost: number;
+  percentage: number;
+}
+
+export interface HourlyUsage {
+  hour: number;
+  requests: number;
+  cost: number;
+  peakMultiplier: number;
+}
+
+export interface UsageHistoryPoint {
+  date: Date;
+  requests: number;
+  cost: number;
+  feature: AIFeatureType;
+}
+
+export interface ProjectionScenario {
+  name: string;
+  description: string;
+  multiplier: number;
+  probability: number;
+}
+
+export interface QueuedCostItem {
+  id: string;
+  feature: AIFeatureType;
+  requests: number;
+  estimatedCost: number;
+  timestamp: Date;
+  willSyncWhenOnline: boolean;
+}
+
+export interface ComparisonView {
+  platformData: PlatformData;
+  clientData: ClientData;
+  recommendation: RecommendationData;
+  mobileOptimized: boolean;
+}
+
+export interface PlatformData {
+  included: AIFeatureType[];
+  limits: UsageLimit;
+  cost: number;
+  benefits: string[];
+  limitations: string[];
+}
+
+export interface ClientData {
+  available: AIFeatureType[];
+  estimatedCosts: CostEstimate;
+  setup: APIKeySetupFlow;
+  benefits: string[];
+  requirements: string[];
+}
+
+export interface RecommendationData {
+  choice: PlatformType;
+  confidence: number;
+  reasoning: string[];
+  weddingScenarioFit: string[];
+  mobileConsiderations: string[];
+}
+
+export interface CostMonitorView {
+  currentSpend: number;
+  budget: number;
+  alerts: BudgetAlert[];
+  projections: CostProjection;
+  offlineQueue: QueuedCostItem[];
+}
+
+export interface RotationResult {
+  success: boolean;
+  newKeyValidated: boolean;
+  oldKeyRevoked: boolean;
+  servicesUpdated: string[];
+  errorMessage?: string;
+}
+
+export interface OfflineCapabilityComparison {
+  platform: OfflineCapabilityMap;
+  client: OfflineCapabilityMap;
+  syncRequirements: SyncRequirement[];
+}
+
+export interface SyncRequirement {
+  feature: AIFeatureType;
+  frequency: 'realtime' | 'hourly' | 'daily';
+  dataSize: number;
+  priority: 'high' | 'medium' | 'low';
+}
+
+// Component Props Types
+export interface MobileAIFeatureManagerProps {
+  userId: string;
+  organizationId: string;
+  initialMode?: PlatformType;
+  onModeChange?: (mode: PlatformType) => void;
+  offlineMode?: boolean;
+  className?: string;
+}
+
+export interface PlatformVsClientToggleProps {
+  currentMode: PlatformType;
+  comparison: PlatformClientComparison;
+  onSwitch: (mode: PlatformType) => void;
+  loading?: boolean;
+  disabled?: boolean;
+  showDetailedComparison?: boolean;
+  mobileOptimized?: boolean;
+  className?: string;
+}
+
+export interface MobileAPIKeySetupProps {
+  provider: AIProvider;
+  onComplete: (result: SetupResult) => void;
+  onCancel?: () => void;
+  biometricAvailable?: boolean;
+  existingKey?: string;
+  validateImmediately?: boolean;
+  touchOptimized?: boolean;
+  className?: string;
+}
+
+export interface MobileCostMonitorProps {
+  mode: PlatformType;
+  refreshInterval?: number;
+  showProjections?: boolean;
+  enableAlerts?: boolean;
+  onBudgetExceeded?: (alert: BudgetAlert) => void;
+  offlineData?: QueuedCostItem[];
+  compactView?: boolean;
+  className?: string;
+}

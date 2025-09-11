@@ -1,0 +1,842 @@
+/**
+ * PerformanceMetricsCollector.ts - Automated metrics gathering from external systems
+ * WS-246: Vendor Performance Analytics System - Team C Integration Focus
+ * 
+ * Collects and processes performance metrics from multiple wedding industry data sources:
+ * - Response time tracking from calendar integrations
+ * - Customer satisfaction from review platforms
+ * - Booking conversion rates from CRM systems
+ * - Payment success rates from processors
+ * - Communication frequency analytics
+ */
+
+import { createClient } from '@supabase/supabase-js';
+import { 
+  PerformanceMetric,
+  MetricType,
+  VendorDataSource,
+  WeddingMetricsContext,
+  BenchmarkData
+} from '../../types/integrations';
+
+interface MetricCalculationRule {
+  metricType: MetricType;
+  sourceTypes: VendorDataSource['type'][];
+  calculationMethod: 'SUM' | 'AVERAGE' | 'MEDIAN' | 'MAX' | 'MIN' | 'COUNT';
+  aggregationPeriod: 'HOURLY' | 'DAILY' | 'WEEKLY' | 'MONTHLY';
+  weddingContextFilters?: Partial<WeddingMetricsContext>;
+}
+
+interface MetricAggregation {
+  metricType: MetricType;
+  period: string;
+  value: number;
+  unit: string;
+  sampleSize: number;
+  context: WeddingMetricsContext;
+  benchmark?: BenchmarkData;
+}
+
+export class PerformanceMetricsCollector {
+  private supabase;
+  private calculationRules: MetricCalculationRule[] = [];
+  private collectionInterval: NodeJS.Timeout | null = null;
+  private aggregationInterval: NodeJS.Timeout | null = null;
+
+  constructor(
+    private supabaseUrl: string,
+    private serviceKey: string
+  ) {
+    this.supabase = createClient(supabaseUrl, serviceKey);
+    this.initializeDefaultRules();
+    this.startAutomaticCollection();
+  }
+
+  /**
+   * Initialize default metric calculation rules for wedding industry
+   */
+  private initializeDefaultRules(): void {
+    this.calculationRules = [
+      {
+        metricType: 'RESPONSE_TIME',
+        sourceTypes: ['CALENDAR', 'CRM'],
+        calculationMethod: 'AVERAGE',
+        aggregationPeriod: 'DAILY',
+        weddingContextFilters: { priority: 'HIGH' }
+      },
+      {
+        metricType: 'SATISFACTION_SCORE',
+        sourceTypes: ['REVIEW'],
+        calculationMethod: 'AVERAGE',
+        aggregationPeriod: 'WEEKLY'
+      },
+      {
+        metricType: 'BOOKING_CONVERSION',
+        sourceTypes: ['CRM', 'BOOKING'],
+        calculationMethod: 'AVERAGE',
+        aggregationPeriod: 'MONTHLY'
+      },
+      {
+        metricType: 'PAYMENT_SUCCESS',
+        sourceTypes: ['PAYMENT'],
+        calculationMethod: 'AVERAGE',
+        aggregationPeriod: 'DAILY'
+      },
+      {
+        metricType: 'COMMUNICATION_FREQUENCY',
+        sourceTypes: ['CRM'],
+        calculationMethod: 'AVERAGE',
+        aggregationPeriod: 'WEEKLY'
+      },
+      {
+        metricType: 'QUALITY_RATING',
+        sourceTypes: ['REVIEW'],
+        calculationMethod: 'AVERAGE',
+        aggregationPeriod: 'MONTHLY'
+      },
+      {
+        metricType: 'SEASONAL_PERFORMANCE',
+        sourceTypes: ['CRM', 'BOOKING', 'PAYMENT'],
+        calculationMethod: 'AVERAGE',
+        aggregationPeriod: 'MONTHLY'
+      }
+    ];
+  }
+
+  /**
+   * Collect metrics for a specific vendor
+   */
+  async collectVendorMetrics(vendorId: string, organizationId: string): Promise<PerformanceMetric[]> {
+    try {
+      console.log(`📊 Collecting metrics for vendor: ${vendorId}`);
+
+      const metrics: PerformanceMetric[] = [];
+
+      // Get all data sources for this vendor
+      const { data: dataSources, error } = await this.supabase
+        .from('vendor_data_sources')
+        .select('*')
+        .eq('vendor_id', vendorId)
+        .eq('organization_id', organizationId)
+        .eq('status->connected', true)
+        .eq('status->health', 'HEALTHY');
+
+      if (error) {
+        throw new Error(`Failed to fetch data sources: ${error.message}`);
+      }
+
+      if (!dataSources?.length) {
+        console.warn(`⚠️ No healthy data sources found for vendor: ${vendorId}`);
+        return metrics;
+      }
+
+      // Collect metrics from each applicable data source
+      for (const rule of this.calculationRules) {
+        const applicableSources = dataSources.filter(ds => 
+          rule.sourceTypes.includes(ds.type)
+        );
+
+        if (applicableSources.length === 0) {
+          continue;
+        }
+
+        try {
+          const calculatedMetrics = await this.calculateMetricsForRule(
+            rule,
+            applicableSources,
+            vendorId,
+            organizationId
+          );
+          metrics.push(...calculatedMetrics);
+        } catch (error) {
+          console.error(`❌ Failed to calculate ${rule.metricType} metrics:`, error);
+        }
+      }
+
+      // Store collected metrics
+      if (metrics.length > 0) {
+        const { error: insertError } = await this.supabase
+          .from('performance_metrics')
+          .insert(metrics);
+
+        if (insertError) {
+          console.error('❌ Failed to store metrics:', insertError);
+        } else {
+          console.log(`✅ Stored ${metrics.length} metrics for vendor: ${vendorId}`);
+        }
+      }
+
+      return metrics;
+
+    } catch (error) {
+      console.error('❌ Failed to collect vendor metrics:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Calculate aggregated metrics across all vendors for industry benchmarks
+   */
+  async calculateIndustryBenchmarks(): Promise<BenchmarkData[]> {
+    try {
+      console.log('📈 Calculating industry benchmarks...');
+
+      const benchmarks: BenchmarkData[] = [];
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+      // Calculate benchmarks for each metric type
+      for (const metricType of Object.values({
+        RESPONSE_TIME: 'RESPONSE_TIME',
+        SATISFACTION_SCORE: 'SATISFACTION_SCORE',
+        BOOKING_CONVERSION: 'BOOKING_CONVERSION',
+        PAYMENT_SUCCESS: 'PAYMENT_SUCCESS',
+        QUALITY_RATING: 'QUALITY_RATING'
+      } as const)) {
+        try {
+          // Get all metrics of this type from the last 30 days
+          const { data: metrics, error } = await this.supabase
+            .from('performance_metrics')
+            .select('value, context')
+            .eq('metric_type', metricType)
+            .gte('timestamp', thirtyDaysAgo)
+            .order('value');
+
+          if (error || !metrics?.length) {
+            console.warn(`⚠️ No metrics found for ${metricType}`);
+            continue;
+          }
+
+          const values = metrics.map(m => m.value);
+          const benchmark = this.calculateBenchmarkStatistics(values, metricType);
+          
+          if (benchmark) {
+            benchmarks.push(benchmark);
+          }
+
+          // Calculate seasonal benchmarks
+          const seasonalBenchmarks = await this.calculateSeasonalBenchmarks(metricType, metrics);
+          benchmarks.push(...seasonalBenchmarks);
+
+        } catch (error) {
+          console.error(`❌ Failed to calculate benchmark for ${metricType}:`, error);
+        }
+      }
+
+      // Store benchmarks
+      if (benchmarks.length > 0) {
+        const { error } = await this.supabase
+          .from('benchmark_data')
+          .insert(benchmarks);
+
+        if (error) {
+          console.error('❌ Failed to store benchmarks:', error);
+        } else {
+          console.log(`✅ Stored ${benchmarks.length} industry benchmarks`);
+        }
+      }
+
+      return benchmarks;
+
+    } catch (error) {
+      console.error('❌ Failed to calculate industry benchmarks:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get performance trends for a vendor over time
+   */
+  async getPerformanceTrends(
+    vendorId: string,
+    organizationId: string,
+    metricTypes: MetricType[],
+    periodDays: number = 30
+  ): Promise<Record<MetricType, MetricAggregation[]>> {
+    try {
+      const trends: Record<MetricType, MetricAggregation[]> = {} as Record<MetricType, MetricAggregation[]>;
+      const startDate = new Date(Date.now() - periodDays * 24 * 60 * 60 * 1000).toISOString();
+
+      for (const metricType of metricTypes) {
+        // Get metrics for this type and period
+        const { data: metrics, error } = await this.supabase
+          .from('performance_metrics')
+          .select('*')
+          .eq('vendor_id', vendorId)
+          .eq('organization_id', organizationId)
+          .eq('metric_type', metricType)
+          .gte('timestamp', startDate)
+          .order('timestamp');
+
+        if (error) {
+          console.error(`❌ Failed to fetch ${metricType} trends:`, error);
+          continue;
+        }
+
+        if (!metrics?.length) {
+          trends[metricType] = [];
+          continue;
+        }
+
+        // Group metrics by day and calculate aggregations
+        const dailyAggregations = this.aggregateMetricsByDay(metrics);
+        
+        // Add benchmark comparisons
+        const aggregationsWithBenchmarks = await this.addBenchmarkComparisons(
+          dailyAggregations,
+          metricType
+        );
+
+        trends[metricType] = aggregationsWithBenchmarks;
+      }
+
+      return trends;
+
+    } catch (error) {
+      console.error('❌ Failed to get performance trends:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Analyze vendor performance against industry benchmarks
+   */
+  async analyzeVendorPerformance(
+    vendorId: string,
+    organizationId: string
+  ): Promise<{
+    overallScore: number;
+    metricScores: Record<MetricType, {
+      value: number;
+      benchmark: number;
+      percentile: number;
+      trend: 'IMPROVING' | 'STABLE' | 'DECLINING';
+    }>;
+    recommendations: string[];
+  }> {
+    try {
+      console.log(`📊 Analyzing performance for vendor: ${vendorId}`);
+
+      const analysis = {
+        overallScore: 0,
+        metricScores: {} as any,
+        recommendations: [] as string[]
+      };
+
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+      // Analyze each metric type
+      for (const metricType of Object.values({
+        RESPONSE_TIME: 'RESPONSE_TIME',
+        SATISFACTION_SCORE: 'SATISFACTION_SCORE',
+        BOOKING_CONVERSION: 'BOOKING_CONVERSION',
+        PAYMENT_SUCCESS: 'PAYMENT_SUCCESS',
+        QUALITY_RATING: 'QUALITY_RATING'
+      } as const)) {
+        try {
+          // Get vendor's recent performance
+          const { data: vendorMetrics } = await this.supabase
+            .from('performance_metrics')
+            .select('value, timestamp')
+            .eq('vendor_id', vendorId)
+            .eq('organization_id', organizationId)
+            .eq('metric_type', metricType)
+            .gte('timestamp', thirtyDaysAgo)
+            .order('timestamp');
+
+          if (!vendorMetrics?.length) {
+            continue;
+          }
+
+          // Get industry benchmark
+          const { data: benchmarks } = await this.supabase
+            .from('benchmark_data')
+            .select('*')
+            .eq('metric_type', metricType)
+            .eq('industry', 'wedding')
+            .order('collected_at', { ascending: false })
+            .limit(1);
+
+          const benchmark = benchmarks?.[0];
+          if (!benchmark) {
+            continue;
+          }
+
+          // Calculate vendor's average performance
+          const vendorAverage = vendorMetrics.reduce((sum, m) => sum + m.value, 0) / vendorMetrics.length;
+
+          // Calculate percentile ranking
+          const percentile = this.calculatePercentileRanking(
+            vendorAverage,
+            benchmark.percentile_25,
+            benchmark.percentile_50,
+            benchmark.percentile_75,
+            benchmark.percentile_90
+          );
+
+          // Calculate trend
+          const trend = this.calculateTrend(vendorMetrics);
+
+          analysis.metricScores[metricType] = {
+            value: vendorAverage,
+            benchmark: benchmark.benchmark_value,
+            percentile,
+            trend
+          };
+
+          // Generate recommendations
+          const recommendations = this.generateRecommendations(metricType, vendorAverage, benchmark, trend);
+          analysis.recommendations.push(...recommendations);
+
+        } catch (error) {
+          console.error(`❌ Failed to analyze ${metricType}:`, error);
+        }
+      }
+
+      // Calculate overall score
+      const scores = Object.values(analysis.metricScores).map((score: any) => score.percentile);
+      analysis.overallScore = scores.length > 0 ? scores.reduce((sum, score) => sum + score, 0) / scores.length : 0;
+
+      return analysis;
+
+    } catch (error) {
+      console.error('❌ Failed to analyze vendor performance:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Private method: Calculate metrics for a specific rule
+   */
+  private async calculateMetricsForRule(
+    rule: MetricCalculationRule,
+    dataSources: VendorDataSource[],
+    vendorId: string,
+    organizationId: string
+  ): Promise<PerformanceMetric[]> {
+    const metrics: PerformanceMetric[] = [];
+
+    for (const dataSource of dataSources) {
+      try {
+        const rawData = await this.extractRawDataFromSource(dataSource, rule.metricType);
+        
+        if (!rawData || rawData.length === 0) {
+          continue;
+        }
+
+        // Apply wedding context filters
+        const filteredData = rule.weddingContextFilters
+          ? rawData.filter(data => this.matchesWeddingContext(data.context, rule.weddingContextFilters!))
+          : rawData;
+
+        if (filteredData.length === 0) {
+          continue;
+        }
+
+        // Calculate aggregated value
+        const aggregatedValue = this.applyCalculationMethod(
+          filteredData.map(d => d.value),
+          rule.calculationMethod
+        );
+
+        // Create metric
+        const metric: PerformanceMetric = {
+          id: `metric_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+          vendor_id: vendorId,
+          organization_id: organizationId,
+          data_source_id: dataSource.id,
+          metric_type: rule.metricType,
+          metric_name: `${rule.metricType} (${rule.calculationMethod})`,
+          value: aggregatedValue,
+          unit: this.getMetricUnit(rule.metricType),
+          context: this.mergeWeddingContexts(filteredData.map(d => d.context)),
+          timestamp: new Date().toISOString(),
+          metadata: {
+            calculation_method: rule.calculationMethod,
+            sample_size: filteredData.length,
+            source: dataSource.name
+          }
+        };
+
+        metrics.push(metric);
+
+      } catch (error) {
+        console.error(`❌ Failed to calculate metric from ${dataSource.name}:`, error);
+      }
+    }
+
+    return metrics;
+  }
+
+  /**
+   * Private method: Extract raw data from a data source
+   */
+  private async extractRawDataFromSource(
+    dataSource: VendorDataSource,
+    metricType: MetricType
+  ): Promise<Array<{ value: number; context: WeddingMetricsContext }> | null> {
+    // This would integrate with actual external APIs
+    // For now, return simulated data based on source type
+
+    const simulatedData: Array<{ value: number; context: WeddingMetricsContext }> = [];
+
+    // Generate realistic sample data based on metric type and source type
+    const sampleSize = Math.floor(Math.random() * 20) + 5; // 5-25 samples
+
+    for (let i = 0; i < sampleSize; i++) {
+      const value = this.generateRealisticMetricValue(metricType, dataSource.type);
+      const context = this.generateRealisticWeddingContext();
+      
+      simulatedData.push({ value, context });
+    }
+
+    return simulatedData;
+  }
+
+  /**
+   * Private method: Generate realistic metric values based on type
+   */
+  private generateRealisticMetricValue(metricType: MetricType, sourceType: VendorDataSource['type']): number {
+    const baseValues: Record<MetricType, number> = {
+      'RESPONSE_TIME': 2.5, // hours
+      'SATISFACTION_SCORE': 4.2, // out of 5
+      'BOOKING_CONVERSION': 0.15, // 15%
+      'PAYMENT_SUCCESS': 0.98, // 98%
+      'COMMUNICATION_FREQUENCY': 3.5, // messages per day
+      'DELIVERY_TIME': 7, // days
+      'QUALITY_RATING': 4.3, // out of 5
+      'REFERRAL_COUNT': 2.1, // per month
+      'REPEAT_BUSINESS': 0.25, // 25%
+      'SEASONAL_PERFORMANCE': 85 // score out of 100
+    };
+
+    const baseValue = baseValues[metricType];
+    const variance = baseValue * 0.3; // 30% variance
+    
+    return Math.max(0, baseValue + (Math.random() - 0.5) * variance);
+  }
+
+  /**
+   * Private method: Generate realistic wedding context
+   */
+  private generateRealisticWeddingContext(): WeddingMetricsContext {
+    const seasons: WeddingMetricsContext['season'][] = ['SPRING', 'SUMMER', 'FALL', 'WINTER'];
+    const budgetTiers: WeddingMetricsContext['budget_tier'][] = ['BUDGET', 'MID_RANGE', 'LUXURY', 'ULTRA_LUXURY'];
+    const priorities: WeddingMetricsContext['priority'][] = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
+
+    return {
+      season: seasons[Math.floor(Math.random() * seasons.length)],
+      budget_tier: budgetTiers[Math.floor(Math.random() * budgetTiers.length)],
+      priority: priorities[Math.floor(Math.random() * priorities.length)],
+      is_wedding_week: Math.random() < 0.1, // 10% chance
+      is_weekend: Math.random() < 0.7, // 70% chance (most weddings are weekends)
+      guest_count: Math.floor(Math.random() * 200) + 50, // 50-250 guests
+      venue_type: ['Indoor', 'Outdoor', 'Church', 'Beach', 'Garden'][Math.floor(Math.random() * 5)]
+    };
+  }
+
+  /**
+   * Private utility methods
+   */
+  private matchesWeddingContext(
+    context: WeddingMetricsContext,
+    filters: Partial<WeddingMetricsContext>
+  ): boolean {
+    for (const [key, value] of Object.entries(filters)) {
+      if (context[key as keyof WeddingMetricsContext] !== value) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private applyCalculationMethod(values: number[], method: MetricCalculationRule['calculationMethod']): number {
+    if (values.length === 0) return 0;
+
+    switch (method) {
+      case 'SUM':
+        return values.reduce((sum, val) => sum + val, 0);
+      case 'AVERAGE':
+        return values.reduce((sum, val) => sum + val, 0) / values.length;
+      case 'MEDIAN':
+        const sorted = [...values].sort((a, b) => a - b);
+        const mid = Math.floor(sorted.length / 2);
+        return sorted.length % 2 === 0 
+          ? (sorted[mid - 1] + sorted[mid]) / 2 
+          : sorted[mid];
+      case 'MAX':
+        return Math.max(...values);
+      case 'MIN':
+        return Math.min(...values);
+      case 'COUNT':
+        return values.length;
+      default:
+        return values.reduce((sum, val) => sum + val, 0) / values.length;
+    }
+  }
+
+  private mergeWeddingContexts(contexts: WeddingMetricsContext[]): WeddingMetricsContext {
+    // Return the most common context values
+    return contexts[0] || {
+      season: 'SUMMER',
+      budget_tier: 'MID_RANGE',
+      priority: 'MEDIUM',
+      is_wedding_week: false,
+      is_weekend: true
+    };
+  }
+
+  private getMetricUnit(metricType: MetricType): string {
+    const units: Record<MetricType, string> = {
+      'RESPONSE_TIME': 'hours',
+      'SATISFACTION_SCORE': 'rating',
+      'BOOKING_CONVERSION': 'percentage',
+      'PAYMENT_SUCCESS': 'percentage',
+      'COMMUNICATION_FREQUENCY': 'messages/day',
+      'DELIVERY_TIME': 'days',
+      'QUALITY_RATING': 'rating',
+      'REFERRAL_COUNT': 'count',
+      'REPEAT_BUSINESS': 'percentage',
+      'SEASONAL_PERFORMANCE': 'score'
+    };
+    return units[metricType] || 'count';
+  }
+
+  private calculateBenchmarkStatistics(values: number[], metricType: MetricType): BenchmarkData | null {
+    if (values.length < 10) return null; // Need minimum sample size
+
+    const sorted = [...values].sort((a, b) => a - b);
+    
+    return {
+      id: `benchmark_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      metric_type: metricType,
+      industry: 'wedding',
+      vendor_category: 'all',
+      benchmark_value: sorted[Math.floor(sorted.length * 0.5)], // median
+      percentile_25: sorted[Math.floor(sorted.length * 0.25)],
+      percentile_50: sorted[Math.floor(sorted.length * 0.5)],
+      percentile_75: sorted[Math.floor(sorted.length * 0.75)],
+      percentile_90: sorted[Math.floor(sorted.length * 0.9)],
+      sample_size: values.length,
+      data_source: 'WedSync Analytics',
+      collected_at: new Date().toISOString()
+    };
+  }
+
+  private async calculateSeasonalBenchmarks(
+    metricType: MetricType,
+    metrics: Array<{ value: number; context: WeddingMetricsContext }>
+  ): Promise<BenchmarkData[]> {
+    const benchmarks: BenchmarkData[] = [];
+    const seasons = ['SPRING', 'SUMMER', 'FALL', 'WINTER'] as const;
+
+    for (const season of seasons) {
+      const seasonalMetrics = metrics.filter(m => m.context.season === season);
+      
+      if (seasonalMetrics.length < 5) continue; // Need minimum sample size
+
+      const values = seasonalMetrics.map(m => m.value).sort((a, b) => a - b);
+      
+      benchmarks.push({
+        id: `benchmark_${season.toLowerCase()}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        metric_type: metricType,
+        industry: 'wedding',
+        vendor_category: 'all',
+        season: season,
+        benchmark_value: values[Math.floor(values.length * 0.5)],
+        percentile_25: values[Math.floor(values.length * 0.25)],
+        percentile_50: values[Math.floor(values.length * 0.5)],
+        percentile_75: values[Math.floor(values.length * 0.75)],
+        percentile_90: values[Math.floor(values.length * 0.9)],
+        sample_size: values.length,
+        data_source: 'WedSync Analytics',
+        collected_at: new Date().toISOString()
+      });
+    }
+
+    return benchmarks;
+  }
+
+  private aggregateMetricsByDay(metrics: PerformanceMetric[]): MetricAggregation[] {
+    const dailyGroups = new Map<string, PerformanceMetric[]>();
+
+    // Group metrics by day
+    for (const metric of metrics) {
+      const day = metric.timestamp.split('T')[0];
+      if (!dailyGroups.has(day)) {
+        dailyGroups.set(day, []);
+      }
+      dailyGroups.get(day)!.push(metric);
+    }
+
+    // Calculate daily aggregations
+    const aggregations: MetricAggregation[] = [];
+
+    for (const [day, dayMetrics] of dailyGroups.entries()) {
+      const values = dayMetrics.map(m => m.value);
+      const avgValue = values.reduce((sum, val) => sum + val, 0) / values.length;
+
+      aggregations.push({
+        metricType: dayMetrics[0].metric_type,
+        period: day,
+        value: avgValue,
+        unit: dayMetrics[0].unit,
+        sampleSize: values.length,
+        context: dayMetrics[0].context
+      });
+    }
+
+    return aggregations.sort((a, b) => a.period.localeCompare(b.period));
+  }
+
+  private async addBenchmarkComparisons(
+    aggregations: MetricAggregation[],
+    metricType: MetricType
+  ): Promise<MetricAggregation[]> {
+    // Get latest benchmark for this metric type
+    const { data: benchmarks } = await this.supabase
+      .from('benchmark_data')
+      .select('*')
+      .eq('metric_type', metricType)
+      .eq('industry', 'wedding')
+      .order('collected_at', { ascending: false })
+      .limit(1);
+
+    const benchmark = benchmarks?.[0];
+
+    return aggregations.map(agg => ({
+      ...agg,
+      benchmark
+    }));
+  }
+
+  private calculatePercentileRanking(
+    value: number,
+    p25: number,
+    p50: number,
+    p75: number,
+    p90: number
+  ): number {
+    if (value <= p25) return 25;
+    if (value <= p50) return 25 + ((value - p25) / (p50 - p25)) * 25;
+    if (value <= p75) return 50 + ((value - p50) / (p75 - p50)) * 25;
+    if (value <= p90) return 75 + ((value - p75) / (p90 - p75)) * 15;
+    return 90 + Math.min(10, ((value - p90) / p90) * 10);
+  }
+
+  private calculateTrend(metrics: Array<{ value: number; timestamp: string }>): 'IMPROVING' | 'STABLE' | 'DECLINING' {
+    if (metrics.length < 3) return 'STABLE';
+
+    const sortedMetrics = [...metrics].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+    const firstHalf = sortedMetrics.slice(0, Math.floor(sortedMetrics.length / 2));
+    const secondHalf = sortedMetrics.slice(Math.floor(sortedMetrics.length / 2));
+
+    const firstHalfAvg = firstHalf.reduce((sum, m) => sum + m.value, 0) / firstHalf.length;
+    const secondHalfAvg = secondHalf.reduce((sum, m) => sum + m.value, 0) / secondHalf.length;
+
+    const percentChange = ((secondHalfAvg - firstHalfAvg) / firstHalfAvg) * 100;
+
+    if (percentChange > 5) return 'IMPROVING';
+    if (percentChange < -5) return 'DECLINING';
+    return 'STABLE';
+  }
+
+  private generateRecommendations(
+    metricType: MetricType,
+    value: number,
+    benchmark: BenchmarkData,
+    trend: 'IMPROVING' | 'STABLE' | 'DECLINING'
+  ): string[] {
+    const recommendations: string[] = [];
+
+    const percentile = this.calculatePercentileRanking(
+      value,
+      benchmark.percentile_25,
+      benchmark.percentile_50,
+      benchmark.percentile_75,
+      benchmark.percentile_90
+    );
+
+    // Low performance recommendations
+    if (percentile < 25) {
+      switch (metricType) {
+        case 'RESPONSE_TIME':
+          recommendations.push('Consider implementing automated email responses for faster initial contact');
+          recommendations.push('Set up calendar booking links to reduce back-and-forth');
+          break;
+        case 'SATISFACTION_SCORE':
+          recommendations.push('Focus on improving client communication and setting clear expectations');
+          recommendations.push('Implement a feedback collection system to identify improvement areas');
+          break;
+        case 'BOOKING_CONVERSION':
+          recommendations.push('Review your pricing strategy and package offerings');
+          recommendations.push('Improve your portfolio and testimonials presentation');
+          break;
+      }
+    }
+
+    // Declining trend recommendations
+    if (trend === 'DECLINING') {
+      recommendations.push(`Your ${metricType.toLowerCase()} is trending downward - consider immediate attention`);
+      recommendations.push('Schedule a review of recent process changes that might be affecting performance');
+    }
+
+    return recommendations;
+  }
+
+  /**
+   * Start automatic metric collection
+   */
+  private startAutomaticCollection(): void {
+    // Collect metrics every hour
+    this.collectionInterval = setInterval(async () => {
+      try {
+        console.log('🔄 Starting automatic metric collection...');
+        
+        // Get all active vendors
+        const { data: vendors } = await this.supabase
+          .from('vendor_data_sources')
+          .select('vendor_id, organization_id')
+          .eq('status->connected', true)
+          .eq('status->health', 'HEALTHY');
+
+        if (vendors?.length) {
+          const uniqueVendors = Array.from(
+            new Set(vendors.map(v => `${v.vendor_id}_${v.organization_id}`))
+          ).map(key => {
+            const [vendor_id, organization_id] = key.split('_');
+            return { vendor_id, organization_id };
+          });
+
+          for (const vendor of uniqueVendors) {
+            await this.collectVendorMetrics(vendor.vendor_id, vendor.organization_id);
+          }
+        }
+      } catch (error) {
+        console.error('❌ Automatic metric collection error:', error);
+      }
+    }, 60 * 60 * 1000); // 1 hour
+
+    // Calculate benchmarks daily
+    this.aggregationInterval = setInterval(async () => {
+      try {
+        await this.calculateIndustryBenchmarks();
+      } catch (error) {
+        console.error('❌ Benchmark calculation error:', error);
+      }
+    }, 24 * 60 * 60 * 1000); // 24 hours
+  }
+
+  /**
+   * Clean up resources
+   */
+  destroy(): void {
+    if (this.collectionInterval) {
+      clearInterval(this.collectionInterval);
+      this.collectionInterval = null;
+    }
+    if (this.aggregationInterval) {
+      clearInterval(this.aggregationInterval);
+      this.aggregationInterval = null;
+    }
+  }
+}

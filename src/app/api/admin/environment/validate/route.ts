@@ -1,0 +1,206 @@
+/**
+ * WS-194 Environment Configuration Validation API
+ * Team B - Backend/API Focus
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import {
+  validateWeddingEnvironment,
+  generateWeddingValidationReport,
+} from '@/lib/environment/config-validator';
+import { logger } from '@/lib/monitoring/structured-logger';
+import { metrics } from '@/lib/monitoring/metrics';
+
+export async function GET(request: NextRequest) {
+  const startTime = Date.now();
+
+  try {
+    // Get query parameters
+    const url = new URL(request.url);
+    const environment = url.searchParams.get('environment') || 'production';
+    const format = url.searchParams.get('format') || 'json';
+
+    logger.info('Environment validation requested', {
+      environment,
+      format,
+      userAgent: request.headers.get('user-agent'),
+      ip: request.ip,
+    });
+
+    // Run validation
+    const validationResult = await validateWeddingEnvironment();
+
+    // Track metrics
+    metrics.incrementCounter('api.environment.validation_requested', 1, {
+      environment,
+      status: validationResult.isValid ? 'valid' : 'invalid',
+    });
+
+    metrics.recordHistogram(
+      'api.environment.validation_duration',
+      Date.now() - startTime,
+    );
+
+    // Return response based on format
+    if (format === 'report') {
+      const report = generateWeddingValidationReport(validationResult);
+
+      return new NextResponse(report, {
+        status: validationResult.isValid ? 200 : 400,
+        headers: {
+          'Content-Type': 'text/plain',
+          'X-Validation-Status': validationResult.isValid ? 'valid' : 'invalid',
+          'X-Critical-Issues': validationResult.errors.length.toString(),
+          'X-Wedding-Compatible':
+            validationResult.saturdayProtection.toString(),
+        },
+      });
+    }
+
+    // JSON response
+    return NextResponse.json(
+      {
+        success: true,
+        data: {
+          isValid: validationResult.isValid,
+          environment: validationResult.environment,
+          timestamp: validationResult.timestamp,
+          saturdayProtection: validationResult.saturdayProtection,
+          peakSeasonReady: validationResult.peakSeasonReady,
+          weddingCompliance: validationResult.weddingCompliance,
+          summary: {
+            errors: validationResult.errors.length,
+            warnings: validationResult.warnings.length,
+            criticalIssues: validationResult.errors.filter(
+              (e) => e.severity === 'error',
+            ).length,
+          },
+          issues: {
+            errors: validationResult.errors,
+            warnings: validationResult.warnings,
+          },
+        },
+      },
+      {
+        status: validationResult.isValid ? 200 : 400,
+        headers: {
+          'X-Validation-Status': validationResult.isValid ? 'valid' : 'invalid',
+          'X-Critical-Issues': validationResult.errors.length.toString(),
+          'X-Wedding-Compatible':
+            validationResult.saturdayProtection.toString(),
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+        },
+      },
+    );
+  } catch (error) {
+    logger.error('Environment validation failed', error as Error, {
+      endpoint: '/api/admin/environment/validate',
+      duration: Date.now() - startTime,
+    });
+
+    metrics.incrementCounter('api.environment.validation_failed', 1);
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: {
+          message: 'Environment validation failed',
+          details: error instanceof Error ? error.message : 'Unknown error',
+        },
+      },
+      {
+        status: 500,
+        headers: {
+          'X-Validation-Status': 'failed',
+        },
+      },
+    );
+  }
+}
+
+export async function POST(request: NextRequest) {
+  const startTime = Date.now();
+
+  try {
+    const body = await request.json();
+    const { environment = 'production', throwOnError = false } = body;
+
+    logger.info('Environment validation with options requested', {
+      environment,
+      throwOnError,
+      userAgent: request.headers.get('user-agent'),
+      ip: request.ip,
+    });
+
+    // Run validation
+    let validationResult;
+
+    if (throwOnError) {
+      try {
+        validationResult = await validateWeddingEnvironment();
+
+        if (!validationResult.isValid) {
+          throw new Error(
+            `Environment validation failed with ${validationResult.errors.length} error(s)`,
+          );
+        }
+      } catch (error) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: {
+              message: 'Environment validation failed (throw mode)',
+              details: error instanceof Error ? error.message : 'Unknown error',
+            },
+          },
+          { status: 400 },
+        );
+      }
+    } else {
+      validationResult = await validateWeddingEnvironment();
+    }
+
+    // Track metrics
+    metrics.incrementCounter('api.environment.validation_post', 1, {
+      environment,
+      throwOnError: throwOnError.toString(),
+      status: validationResult.isValid ? 'valid' : 'invalid',
+    });
+
+    return NextResponse.json(
+      {
+        success: true,
+        data: {
+          isValid: validationResult.isValid,
+          environment: validationResult.environment,
+          timestamp: validationResult.timestamp,
+          saturdayProtection: validationResult.saturdayProtection,
+          peakSeasonReady: validationResult.peakSeasonReady,
+          weddingCompliance: validationResult.weddingCompliance,
+          summary: {
+            errors: validationResult.errors.length,
+            warnings: validationResult.warnings.length,
+          },
+          report: generateWeddingValidationReport(validationResult),
+        },
+      },
+      {
+        status: validationResult.isValid ? 200 : 400,
+      },
+    );
+  } catch (error) {
+    logger.error('Environment validation POST failed', error as Error);
+    metrics.incrementCounter('api.environment.validation_post_failed', 1);
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: {
+          message: 'Environment validation failed',
+          details: error instanceof Error ? error.message : 'Unknown error',
+        },
+      },
+      { status: 500 },
+    );
+  }
+}

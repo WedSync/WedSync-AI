@@ -1,0 +1,461 @@
+import { createClient } from '@/lib/supabase/server';
+import { notFound } from 'next/navigation';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import ProfileHeader from '@/components/clients/profile/ProfileHeader';
+import ActivityFeed from '@/components/clients/profile/ActivityFeed';
+import DocumentManager from '@/components/clients/profile/DocumentManager';
+import NotesSection from '@/components/clients/profile/NotesSection';
+import {
+  DescriptionList,
+  DescriptionTerm,
+  DescriptionDetails,
+} from '@/components/ui/description-list';
+import {
+  MapPinIcon,
+  UsersIcon,
+  CurrencyPoundIcon,
+  ChartBarIcon,
+} from '@heroicons/react/20/solid';
+import { format } from 'date-fns';
+import { DynamicPageProps, extractParams } from '@/types/next15-params';
+import { Badge } from '@/components/ui/badge';
+import { Card } from '@/components/ui/card-untitled';
+import { rbacSystem } from '@/lib/security/rbac-system';
+
+export default async function ClientProfilePage({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  // Extract async params - Next.js 15 requirement
+  const resolvedParams = await extractParams(params);
+  const supabase = await createClient();
+
+  // Get current user for RBAC
+  const { data: user } = await supabase.auth.getUser();
+  if (!user) {
+    notFound();
+  }
+
+  // Get user profile for name
+  const { data: userProfile } = await supabase
+    .from('user_profiles')
+    .select('first_name, last_name')
+    .eq('user_id', user.id)
+    .single();
+
+  const userName = userProfile
+    ? `${userProfile.first_name || ''} ${userProfile.last_name || ''}`.trim()
+    : user.email || 'Unknown User';
+
+  // Get client with all related data
+  const { data: client } = await supabase
+    .from('clients')
+    .select(
+      `
+      *,
+      client_activities (
+        id,
+        activity_type,
+        activity_title,
+        activity_description,
+        performed_by_name,
+        created_at
+      )
+    `,
+    )
+    .eq('id', resolvedParams.id)
+    .single();
+
+  // Get client documents
+  const { data: documentsData } = await supabase
+    .from('client_documents')
+    .select('*')
+    .eq('client_id', resolvedParams.id)
+    .order('uploaded_at', { ascending: false });
+
+  const documents = documentsData ?? [];
+
+  // Get client notes
+  const { data: notesData } = await supabase
+    .from('client_notes')
+    .select('*')
+    .eq('client_id', resolvedParams.id)
+    .order('created_at', { ascending: false });
+
+  const notes = notesData ?? [];
+
+  // Check user permissions for this client
+  const userRoleContext = await rbacSystem.getUserRoleContext(user.id);
+
+  if (!client) {
+    notFound();
+  }
+
+  const handleProfileUpdate = () => {
+    // This will be handled by the client-side components
+    // The page will revalidate after mutations
+  };
+
+  const handleActivityAdd = () => {
+    // This will be handled by the ActivityFeed component
+  };
+
+  const handleDocumentUpload = () => {
+    // This will be handled by the DocumentManager component
+  };
+
+  const handleNoteAdd = () => {
+    // This will be handled by the NotesSection component
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-50">
+      {/* Enhanced Profile Header */}
+      <ProfileHeader
+        client={client}
+        onProfileUpdate={handleProfileUpdate}
+        currentUserId={user.id}
+      />
+
+      {/* Main Content */}
+      <div className="px-6 py-6">
+        <Tabs defaultValue="info" className="space-y-6">
+          <div className="border-b border-gray-200">
+            <TabsList className="h-12 p-1 bg-gray-100">
+              <TabsTrigger
+                value="info"
+                className="px-6 py-2 data-[state=active]:bg-white data-[state=active]:shadow-sm"
+                data-testid="info-tab"
+              >
+                Information
+              </TabsTrigger>
+              <TabsTrigger
+                value="activity"
+                className="px-6 py-2 data-[state=active]:bg-white data-[state=active]:shadow-sm"
+                data-testid="activity-tab"
+              >
+                Activity
+              </TabsTrigger>
+              <TabsTrigger
+                value="documents"
+                className="px-6 py-2 data-[state=active]:bg-white data-[state=active]:shadow-sm"
+                data-testid="documents-tab"
+              >
+                Documents
+              </TabsTrigger>
+              <TabsTrigger
+                value="notes"
+                className="px-6 py-2 data-[state=active]:bg-white data-[state=active]:shadow-sm"
+                data-testid="notes-tab"
+              >
+                Notes
+              </TabsTrigger>
+              <TabsTrigger
+                value="journey"
+                className="px-6 py-2 data-[state=active]:bg-white data-[state=active]:shadow-sm"
+                data-testid="journey-tab"
+              >
+                Journey
+              </TabsTrigger>
+            </TabsList>
+          </div>
+
+          <TabsContent
+            value="info"
+            className="space-y-8"
+            data-testid="client-info"
+          >
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              {/* Wedding Information */}
+              <Card className="p-6 bg-white border border-gray-200 rounded-xl">
+                <h2 className="text-xl font-semibold text-gray-900 mb-4">
+                  Wedding Information
+                </h2>
+                <DescriptionList className="space-y-4">
+                  <div>
+                    <DescriptionTerm className="text-sm font-medium text-gray-500 mb-1">
+                      Venue
+                    </DescriptionTerm>
+                    <DescriptionDetails className="text-gray-900">
+                      {client.venue_name || (
+                        <span className="text-gray-400">Not set</span>
+                      )}
+                    </DescriptionDetails>
+                  </div>
+
+                  {client.venue_address && (
+                    <div>
+                      <DescriptionTerm className="text-sm font-medium text-gray-500 mb-1">
+                        Venue Address
+                      </DescriptionTerm>
+                      <DescriptionDetails className="text-gray-900">
+                        {client.venue_address}
+                      </DescriptionDetails>
+                    </div>
+                  )}
+
+                  <div>
+                    <DescriptionTerm className="text-sm font-medium text-gray-500 mb-1">
+                      Guest Count
+                    </DescriptionTerm>
+                    <DescriptionDetails className="text-gray-900">
+                      {client.guest_count ? (
+                        <div className="flex items-center gap-2">
+                          <UsersIcon className="w-4 h-4 text-gray-400" />
+                          {client.guest_count} guests
+                        </div>
+                      ) : (
+                        <span className="text-gray-400">Not set</span>
+                      )}
+                    </DescriptionDetails>
+                  </div>
+
+                  <div>
+                    <DescriptionTerm className="text-sm font-medium text-gray-500 mb-1">
+                      Budget Range
+                    </DescriptionTerm>
+                    <DescriptionDetails className="text-gray-900">
+                      {client.budget_range ? (
+                        <div className="flex items-center gap-2">
+                          <CurrencyPoundIcon className="w-4 h-4 text-gray-400" />
+                          {client.budget_range}
+                        </div>
+                      ) : (
+                        <span className="text-gray-400">Not set</span>
+                      )}
+                    </DescriptionDetails>
+                  </div>
+                </DescriptionList>
+              </Card>
+
+              {/* Booking Information */}
+              <Card className="p-6 bg-white border border-gray-200 rounded-xl">
+                <h2 className="text-xl font-semibold text-gray-900 mb-4">
+                  Booking Information
+                </h2>
+                <DescriptionList className="space-y-4">
+                  <div>
+                    <DescriptionTerm className="text-sm font-medium text-gray-500 mb-1">
+                      Package
+                    </DescriptionTerm>
+                    <DescriptionDetails className="text-gray-900">
+                      {client.package_name || (
+                        <span className="text-gray-400">
+                          No package selected
+                        </span>
+                      )}
+                    </DescriptionDetails>
+                  </div>
+
+                  {client.package_price && (
+                    <div>
+                      <DescriptionTerm className="text-sm font-medium text-gray-500 mb-1">
+                        Package Price
+                      </DescriptionTerm>
+                      <DescriptionDetails className="text-gray-900">
+                        £{client.package_price.toLocaleString()}
+                      </DescriptionDetails>
+                    </div>
+                  )}
+
+                  {client.deposit_amount && (
+                    <div>
+                      <DescriptionTerm className="text-sm font-medium text-gray-500 mb-1">
+                        Deposit
+                      </DescriptionTerm>
+                      <DescriptionDetails className="text-gray-900">
+                        £{client.deposit_amount.toLocaleString()}
+                      </DescriptionDetails>
+                    </div>
+                  )}
+
+                  {client.balance_due && (
+                    <div>
+                      <DescriptionTerm className="text-sm font-medium text-gray-500 mb-1">
+                        Balance Due
+                      </DescriptionTerm>
+                      <DescriptionDetails className="text-gray-900">
+                        £{client.balance_due.toLocaleString()}
+                      </DescriptionDetails>
+                    </div>
+                  )}
+
+                  <div>
+                    <DescriptionTerm className="text-sm font-medium text-gray-500 mb-1">
+                      Booking Stage
+                    </DescriptionTerm>
+                    <DescriptionDetails>
+                      <Badge className="bg-blue-50 text-blue-700 border border-blue-200">
+                        {client.booking_stage || 'inquiry'}
+                      </Badge>
+                    </DescriptionDetails>
+                  </div>
+
+                  <div>
+                    <DescriptionTerm className="text-sm font-medium text-gray-500 mb-1">
+                      Lead Source
+                    </DescriptionTerm>
+                    <DescriptionDetails className="text-gray-900">
+                      {client.lead_source || (
+                        <span className="text-gray-400">Unknown</span>
+                      )}
+                    </DescriptionDetails>
+                  </div>
+                </DescriptionList>
+              </Card>
+            </div>
+
+            {/* Contact Information */}
+            <Card className="p-6 bg-white border border-gray-200 rounded-xl">
+              <h2 className="text-xl font-semibold text-gray-900 mb-4">
+                Contact Details
+              </h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <DescriptionList className="space-y-4">
+                  <div>
+                    <DescriptionTerm className="text-sm font-medium text-gray-500 mb-1">
+                      Primary Contact
+                    </DescriptionTerm>
+                    <DescriptionDetails className="text-gray-900">
+                      {client.first_name} {client.last_name}
+                    </DescriptionDetails>
+                  </div>
+
+                  {client.partner_first_name && (
+                    <div>
+                      <DescriptionTerm className="text-sm font-medium text-gray-500 mb-1">
+                        Partner
+                      </DescriptionTerm>
+                      <DescriptionDetails className="text-gray-900">
+                        {client.partner_first_name} {client.partner_last_name}
+                      </DescriptionDetails>
+                    </div>
+                  )}
+                </DescriptionList>
+
+                <DescriptionList className="space-y-4">
+                  <div>
+                    <DescriptionTerm className="text-sm font-medium text-gray-500 mb-1">
+                      Email
+                    </DescriptionTerm>
+                    <DescriptionDetails className="text-gray-900">
+                      {client.email || (
+                        <span className="text-gray-400">Not provided</span>
+                      )}
+                    </DescriptionDetails>
+                  </div>
+
+                  <div>
+                    <DescriptionTerm className="text-sm font-medium text-gray-500 mb-1">
+                      Phone
+                    </DescriptionTerm>
+                    <DescriptionDetails className="text-gray-900">
+                      {client.phone || (
+                        <span className="text-gray-400">Not provided</span>
+                      )}
+                    </DescriptionDetails>
+                  </div>
+                </DescriptionList>
+              </div>
+            </Card>
+
+            {/* Import Information */}
+            <Card className="p-6 bg-white border border-gray-200 rounded-xl">
+              <h2 className="text-xl font-semibold text-gray-900 mb-4">
+                Import Information
+              </h2>
+              <DescriptionList className="space-y-4">
+                <div>
+                  <DescriptionTerm className="text-sm font-medium text-gray-500 mb-1">
+                    Added On
+                  </DescriptionTerm>
+                  <DescriptionDetails className="text-gray-900">
+                    {format(new Date(client.created_at), 'MMMM d, yyyy h:mm a')}
+                  </DescriptionDetails>
+                </div>
+
+                {client.import_source && (
+                  <div>
+                    <DescriptionTerm className="text-sm font-medium text-gray-500 mb-1">
+                      Import Source
+                    </DescriptionTerm>
+                    <DescriptionDetails className="text-gray-900">
+                      {client.import_source}
+                    </DescriptionDetails>
+                  </div>
+                )}
+
+                {client.tags && client.tags.length > 0 && (
+                  <div>
+                    <DescriptionTerm className="text-sm font-medium text-gray-500 mb-1">
+                      Tags
+                    </DescriptionTerm>
+                    <DescriptionDetails>
+                      <div className="flex flex-wrap gap-2">
+                        {client.tags.map((tag: string) => (
+                          <Badge
+                            key={tag}
+                            variant="outline"
+                            className="text-xs"
+                          >
+                            {tag}
+                          </Badge>
+                        ))}
+                      </div>
+                    </DescriptionDetails>
+                  </div>
+                )}
+              </DescriptionList>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="activity" data-testid="activity-feed">
+            <ActivityFeed
+              clientId={resolvedParams.id}
+              activities={client.client_activities || []}
+              onActivityAdd={handleActivityAdd}
+            />
+          </TabsContent>
+
+          <TabsContent value="documents" data-testid="documents-list">
+            <DocumentManager
+              clientId={resolvedParams.id}
+              documents={documents}
+              onDocumentUpload={handleDocumentUpload}
+              currentUserId={user.id}
+            />
+          </TabsContent>
+
+          <TabsContent value="notes" data-testid="notes-section">
+            <NotesSection
+              clientId={resolvedParams.id}
+              notes={notes}
+              onNoteAdd={handleNoteAdd}
+              currentUserId={user.id}
+              currentUserName={userName}
+            />
+          </TabsContent>
+
+          <TabsContent value="journey">
+            <Card className="p-8 text-center bg-white border border-gray-200 rounded-xl">
+              <ChartBarIcon className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+              <h3 className="text-lg font-medium text-gray-900 mb-2">
+                Journey Management
+              </h3>
+              <p className="text-gray-500 mb-4">
+                Customer journey and automation features will be available here
+              </p>
+              <div className="space-y-3">
+                <p className="text-sm text-gray-600">
+                  • Automated follow-up sequences • Wedding timeline milestones
+                  • Vendor coordination workflows • Payment reminder automation
+                </p>
+              </div>
+            </Card>
+          </TabsContent>
+        </Tabs>
+      </div>
+    </div>
+  );
+}

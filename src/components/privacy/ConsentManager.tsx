@@ -1,0 +1,326 @@
+'use client';
+
+import React, { useState, useEffect } from 'react';
+import { createClient } from '@supabase/supabase-js';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
+import { Switch } from '@/components/ui/switch';
+import { Button } from '@/components/ui/button';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Shield, Info, Check, AlertCircle } from 'lucide-react';
+import { Label } from '@/components/ui/label';
+
+interface ConsentType {
+  id: string;
+  name: string;
+  description: string;
+  required: boolean;
+  category: 'essential' | 'functional' | 'analytics' | 'marketing';
+  legalBasis: string;
+}
+
+const CONSENT_TYPES: ConsentType[] = [
+  {
+    id: 'essential_cookies',
+    name: 'Essential Cookies',
+    description:
+      'Required for the website to function properly. Cannot be disabled.',
+    required: true,
+    category: 'essential',
+    legalBasis: 'Legitimate Interest',
+  },
+  {
+    id: 'functional_cookies',
+    name: 'Functional Cookies',
+    description: 'Enable personalized features and remember your preferences.',
+    required: false,
+    category: 'functional',
+    legalBasis: 'Consent',
+  },
+  {
+    id: 'analytics_cookies',
+    name: 'Analytics Cookies',
+    description:
+      'Help us understand how you use our platform to improve your experience.',
+    required: false,
+    category: 'analytics',
+    legalBasis: 'Consent',
+  },
+  {
+    id: 'marketing_cookies',
+    name: 'Marketing Cookies',
+    description:
+      'Used to show you relevant ads and measure marketing campaign effectiveness.',
+    required: false,
+    category: 'marketing',
+    legalBasis: 'Consent',
+  },
+  {
+    id: 'vendor_sharing',
+    name: 'Vendor Data Sharing',
+    description:
+      'Share necessary wedding planning data with your selected vendors.',
+    required: false,
+    category: 'functional',
+    legalBasis: 'Consent',
+  },
+  {
+    id: 'guest_communications',
+    name: 'Guest Communications',
+    description: 'Send invitations and updates to your wedding guests.',
+    required: false,
+    category: 'functional',
+    legalBasis: 'Consent',
+  },
+  {
+    id: 'photo_sharing',
+    name: 'Photo Sharing',
+    description: 'Allow photographers to upload and share wedding photos.',
+    required: false,
+    category: 'functional',
+    legalBasis: 'Consent',
+  },
+];
+
+export default function ConsentManager() {
+  const [consents, setConsents] = useState<Record<string, boolean>>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<{
+    type: 'success' | 'error';
+    text: string;
+  } | null>(null);
+  const supabase = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+  );
+
+  useEffect(() => {
+    loadCurrentConsents();
+  }, []);
+
+  const loadCurrentConsents = async () => {
+    try {
+      const { data: user } = await supabase.auth.getUser();
+      if (!user) return;
+
+      const response = await fetch('/api/privacy/consent');
+      if (response.ok) {
+        const data = await response.json();
+        const consentMap: Record<string, boolean> = {};
+
+        // Initialize all consents to false except required ones
+        CONSENT_TYPES.forEach((type) => {
+          consentMap[type.id] = type.required || false;
+        });
+
+        // Apply user's saved consents
+        if (data.consents) {
+          data.consents.forEach((consent: any) => {
+            if (consent.is_granted) {
+              consentMap[consent.consent_type] = true;
+            }
+          });
+        }
+
+        setConsents(consentMap);
+      }
+    } catch (error) {
+      console.error('Failed to load consents:', error);
+      setMessage({
+        type: 'error',
+        text: 'Failed to load your privacy preferences',
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleConsentChange = (consentId: string, value: boolean) => {
+    const consentType = CONSENT_TYPES.find((t) => t.id === consentId);
+    if (consentType?.required) return; // Don't allow changing required consents
+
+    setConsents((prev) => ({
+      ...prev,
+      [consentId]: value,
+    }));
+  };
+
+  const saveConsents = async () => {
+    setSaving(true);
+    setMessage(null);
+
+    try {
+      const consentUpdates = Object.entries(consents).map(
+        ([type, granted]) => ({
+          consent_type: type,
+          is_granted: granted,
+          legal_basis:
+            CONSENT_TYPES.find((t) => t.id === type)?.legalBasis || 'Consent',
+        }),
+      );
+
+      const response = await fetch('/api/privacy/consent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ consents: consentUpdates }),
+      });
+
+      if (!response.ok) throw new Error('Failed to save preferences');
+
+      setMessage({
+        type: 'success',
+        text: 'Your privacy preferences have been saved successfully',
+      });
+    } catch (error) {
+      console.error('Failed to save consents:', error);
+      setMessage({
+        type: 'error',
+        text: 'Failed to save your privacy preferences. Please try again.',
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const acceptAll = () => {
+    const newConsents: Record<string, boolean> = {};
+    CONSENT_TYPES.forEach((type) => {
+      newConsents[type.id] = true;
+    });
+    setConsents(newConsents);
+  };
+
+  const rejectNonEssential = () => {
+    const newConsents: Record<string, boolean> = {};
+    CONSENT_TYPES.forEach((type) => {
+      newConsents[type.id] = type.required;
+    });
+    setConsents(newConsents);
+  };
+
+  if (loading) {
+    return (
+      <Card className="max-w-4xl mx-auto">
+        <CardContent className="p-8">
+          <div className="flex items-center justify-center">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="max-w-4xl mx-auto">
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <Shield className="h-6 w-6 text-primary" />
+          <CardTitle>Privacy & Consent Settings</CardTitle>
+        </div>
+        <CardDescription>
+          Manage how your wedding data is collected, used, and shared. Your
+          privacy is important to us.
+        </CardDescription>
+      </CardHeader>
+
+      <CardContent className="space-y-6">
+        {message && (
+          <Alert
+            className={
+              message.type === 'error' ? 'border-red-500' : 'border-green-500'
+            }
+          >
+            <AlertCircle className="h-4 w-4" />
+            <AlertDescription>{message.text}</AlertDescription>
+          </Alert>
+        )}
+
+        <div className="flex gap-2 pb-4 border-b">
+          <Button onClick={acceptAll} variant="default" size="sm">
+            Accept All
+          </Button>
+          <Button onClick={rejectNonEssential} variant="outline" size="sm">
+            Essential Only
+          </Button>
+        </div>
+
+        <div className="space-y-4">
+          {CONSENT_TYPES.map((consentType) => (
+            <div
+              key={consentType.id}
+              className="flex items-start justify-between space-x-4 p-4 rounded-lg border"
+            >
+              <div className="flex-1 space-y-1">
+                <div className="flex items-center gap-2">
+                  <Label htmlFor={consentType.id} className="font-medium">
+                    {consentType.name}
+                  </Label>
+                  {consentType.required && (
+                    <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded">
+                      Required
+                    </span>
+                  )}
+                  <span
+                    className={`text-xs px-2 py-0.5 rounded ${
+                      consentType.category === 'essential'
+                        ? 'bg-gray-100 text-gray-700'
+                        : consentType.category === 'functional'
+                          ? 'bg-green-100 text-green-700'
+                          : consentType.category === 'analytics'
+                            ? 'bg-purple-100 text-purple-700'
+                            : 'bg-orange-100 text-orange-700'
+                    }`}
+                  >
+                    {consentType.category}
+                  </span>
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  {consentType.description}
+                </p>
+                <p className="text-xs text-muted-foreground flex items-center gap-1">
+                  <Info className="h-3 w-3" />
+                  Legal Basis: {consentType.legalBasis}
+                </p>
+              </div>
+              <Switch
+                id={consentType.id}
+                checked={consents[consentType.id] || false}
+                onCheckedChange={(value) =>
+                  handleConsentChange(consentType.id, value)
+                }
+                disabled={consentType.required || saving}
+                aria-label={`Toggle ${consentType.name}`}
+              />
+            </div>
+          ))}
+        </div>
+
+        <div className="flex justify-between items-center pt-4 border-t">
+          <p className="text-sm text-muted-foreground">
+            Last updated: {new Date().toLocaleDateString()}
+          </p>
+          <Button
+            onClick={saveConsents}
+            disabled={saving}
+            className="min-w-[120px]"
+          >
+            {saving ? (
+              <>Saving...</>
+            ) : (
+              <>
+                <Check className="h-4 w-4 mr-2" />
+                Save Preferences
+              </>
+            )}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}

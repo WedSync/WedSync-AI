@@ -1,0 +1,163 @@
+// WS-129: AI-Powered Floral Arrangement Recommendations
+// API endpoint for generating AI-powered floral recommendations
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { getCurrentUser } from '@/lib/auth/server';
+import {
+  floralAIService,
+  FloralArrangementRequest,
+} from '@/lib/ml/floral-ai-service';
+
+export async function POST(request: NextRequest) {
+  try {
+    const user = await getCurrentUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const {
+      client_id,
+      arrangement_type,
+      wedding_style,
+      preferred_colors,
+      budget_range,
+      wedding_date,
+      guest_count,
+      venue_type,
+      special_requirements,
+      avoid_flowers,
+    } = body;
+
+    // Validate required fields
+    if (
+      !client_id ||
+      !arrangement_type ||
+      !wedding_style ||
+      !preferred_colors ||
+      !budget_range ||
+      !wedding_date
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            'Missing required fields: client_id, arrangement_type, wedding_style, preferred_colors, budget_range, wedding_date',
+        },
+        { status: 400 },
+      );
+    }
+
+    // Validate budget range
+    if (
+      !budget_range.min ||
+      !budget_range.max ||
+      budget_range.min > budget_range.max
+    ) {
+      return NextResponse.json(
+        { error: 'Invalid budget range' },
+        { status: 400 },
+      );
+    }
+
+    // Build AI request
+    const aiRequest: FloralArrangementRequest = {
+      client_id,
+      arrangement_type,
+      wedding_style,
+      preferred_colors,
+      budget_range: {
+        min: parseFloat(budget_range.min),
+        max: parseFloat(budget_range.max),
+      },
+      wedding_date: new Date(wedding_date),
+      guest_count: guest_count ? parseInt(guest_count) : undefined,
+      venue_type,
+      special_requirements,
+      avoid_flowers,
+    };
+
+    // Generate AI recommendations
+    const aiResponse = await floralAIService.generateRecommendations(aiRequest);
+
+    if (!aiResponse.success) {
+      return NextResponse.json(
+        { error: aiResponse.error || 'Failed to generate recommendations' },
+        { status: 500 },
+      );
+    }
+
+    // Save recommendations to database for learning
+    if (aiResponse.recommendations.length > 0) {
+      await floralAIService.saveRecommendation(
+        client_id,
+        aiResponse.recommendations[0],
+        aiRequest,
+      );
+    }
+
+    return NextResponse.json(aiResponse);
+  } catch (error) {
+    console.error('Floral AI recommendations error:', error);
+    return NextResponse.json(
+      { error: 'Failed to generate floral recommendations' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const user = await getCurrentUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const supabase = createClient();
+    const { searchParams } = new URL(request.url);
+    const clientId = searchParams.get('client_id');
+    const limit = parseInt(searchParams.get('limit') || '10');
+
+    if (!clientId) {
+      return NextResponse.json(
+        { error: 'client_id parameter is required' },
+        { status: 400 },
+      );
+    }
+
+    // Get historical recommendations for this client
+    const { data: recommendations, error } = await supabase
+      .from('floral_ai_recommendations')
+      .select(
+        `
+        id,
+        recommendation_type,
+        wedding_date,
+        wedding_style,
+        season,
+        budget_total,
+        preferred_colors,
+        recommended_arrangements,
+        confidence_scores,
+        reasoning,
+        user_feedback,
+        created_at
+      `,
+      )
+      .eq('client_id', clientId)
+      .order('created_at', { ascending: false })
+      .limit(limit);
+
+    if (error) {
+      throw new Error(`Failed to fetch recommendations: ${error.message}`);
+    }
+
+    return NextResponse.json({ recommendations });
+  } catch (error) {
+    console.error('Floral recommendations history error:', error);
+    return NextResponse.json(
+      { error: 'Failed to fetch recommendation history' },
+      { status: 500 },
+    );
+  }
+}

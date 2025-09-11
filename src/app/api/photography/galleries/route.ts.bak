@@ -1,0 +1,244 @@
+// WS-130: AI-Powered Photography Library - Portfolio Galleries API
+// Team C Batch 10 Round 1
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { getCurrentUser } from '@/lib/auth/server';
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = createClient();
+    const user = await getCurrentUser();
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { searchParams } = new URL(request.url);
+    const galleryType = searchParams.get('type');
+    const style = searchParams.get('style');
+    const featured = searchParams.get('featured') === 'true';
+    const photographerId = searchParams.get('photographer_id');
+    const limit = parseInt(searchParams.get('limit') || '20');
+    const offset = parseInt(searchParams.get('offset') || '0');
+
+    // Build query
+    let query = supabase
+      .from('portfolio_galleries')
+      .select(`
+        *,
+        photographer:photographer_profiles(*),
+        photos:portfolio_photos(
+          id,
+          photo_url,
+          thumbnail_url,
+          title,
+          is_featured,
+          display_order,
+          tags,
+          style_analysis:photo_style_analyses(
+            detected_styles,
+            color_analysis,
+            mood_analysis,
+            technical_analysis
+          )
+        )
+      `)
+      .eq('is_public', true);
+
+    // Apply filters
+    if (galleryType) {
+      query = query.eq('gallery_type', galleryType);
+    }
+
+    if (style) {
+      query = query.contains('style_focus', [style]);
+    }
+
+    if (featured) {
+      query = query.eq('is_featured', true);
+    }
+
+    if (photographerId) {
+      query = query.eq('photographer_id', photographerId);
+    }
+
+    // Apply pagination and ordering
+    query = query
+      .order('is_featured', { ascending: false })
+      .order('view_count', { ascending: false })
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    const { data: galleries, error } = await query;
+
+    if (error) {
+      console.error('Error fetching galleries:', error);
+      return NextResponse.json(
+        { error: 'Failed to fetch galleries' },
+        { status: 500 }
+      );
+    }
+
+    // Process galleries to include computed fields
+    const processedGalleries = galleries?.map(gallery => ({
+      ...gallery,
+      photo_count: gallery.photos?.length || 0,
+      featured_photos: gallery.photos
+        ?.filter((photo: any) => photo.is_featured)
+        .sort((a: any, b: any) => a.display_order - b.display_order)
+        .slice(0, 6) || [],
+      average_style_confidence: gallery.photos?.length > 0 
+        ? gallery.photos.reduce((sum: number, photo: any) => {
+            const maxConfidence = photo.style_analysis?.detected_styles
+              ?.reduce((max: number, style: any) => Math.max(max, style.confidence), 0) || 0;
+            return sum + maxConfidence;
+          }, 0) / gallery.photos.length
+        : 0,
+      dominant_styles: extractDominantStyles(gallery.photos || [])
+    })) || [];
+
+    // Get total count for pagination
+    const { count } = await supabase
+      .from('portfolio_galleries')
+      .select('*', { count: 'exact', head: true })
+      .eq('is_public', true);
+
+    return NextResponse.json({
+      galleries: processedGalleries,
+      pagination: {
+        total: count || 0,
+        limit,
+        offset,
+        hasMore: (offset + limit) < (count || 0)
+      }
+    });
+
+  } catch (error) {
+    console.error('Galleries API error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = createClient();
+    const user = await getCurrentUser();
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const {
+      photographer_id,
+      name,
+      description,
+      gallery_type,
+      style_focus,
+      cover_photo_url,
+      is_public = true,
+      is_featured = false
+    } = body;
+
+    // Validate required fields
+    if (!photographer_id || !name || !gallery_type) {
+      return NextResponse.json(
+        { error: 'Photographer ID, name, and gallery type are required' },
+        { status: 400 }
+      );
+    }
+
+    // Verify photographer exists and user has permission
+    const { data: photographer } = await supabase
+      .from('photographer_profiles')
+      .select('organization_id')
+      .eq('id', photographer_id)
+      .single();
+
+    if (!photographer) {
+      return NextResponse.json(
+        { error: 'Photographer not found' },
+        { status: 404 }
+      );
+    }
+
+    // Get user's organization to verify access
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('id', user.id)
+      .single();
+
+    if (userProfile?.organization_id !== photographer.organization_id) {
+      return NextResponse.json(
+        { error: 'Permission denied' },
+        { status: 403 }
+      );
+    }
+
+    // Insert new gallery
+    const { data: gallery, error } = await supabase
+      .from('portfolio_galleries')
+      .insert([{
+        photographer_id,
+        name,
+        description,
+        gallery_type,
+        style_focus: style_focus || [],
+        cover_photo_url,
+        is_public,
+        is_featured,
+        organization_id: photographer.organization_id,
+        created_by: user.id
+      }])
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error creating gallery:', error);
+      return NextResponse.json(
+        { error: 'Failed to create gallery' },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({ gallery }, { status: 201 });
+
+  } catch (error) {
+    console.error('Galleries POST error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+// Helper function to extract dominant styles from photos
+function extractDominantStyles(photos: any[]): Array<{ style: string; confidence: number; count: number }> {
+  const styleMap = new Map<string, { totalConfidence: number; count: number }>();
+  
+  photos.forEach(photo => {
+    if (photo.style_analysis?.detected_styles) {
+      photo.style_analysis.detected_styles.forEach((styleData: any) => {
+        const existing = styleMap.get(styleData.style_name) || { totalConfidence: 0, count: 0 };
+        styleMap.set(styleData.style_name, {
+          totalConfidence: existing.totalConfidence + styleData.confidence,
+          count: existing.count + 1
+        });
+      });
+    }
+  });
+
+  return Array.from(styleMap.entries())
+    .map(([style, data]) => ({
+      style,
+      confidence: data.totalConfidence / data.count,
+      count: data.count
+    }))
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(0, 5); // Top 5 dominant styles
+}

@@ -1,0 +1,821 @@
+/**
+ * Timeline Events API Tests - WS-160
+ * Tests for timeline event CRUD operations and event management
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import type { 
+  TimelineEvent, 
+  EventType, 
+  EventPriority, 
+  EventStatus 
+} from '@/types/timeline';
+
+// Mock the API handlers - we'll test the logic they would contain
+const mockEventHandlers = {
+  createEvent: jest.fn(),
+  getEvents: jest.fn(),
+  updateEvent: jest.fn(),
+  deleteEvent: jest.fn(),
+  moveEvent: jest.fn(),
+  bulkUpdateEvents: jest.fn()
+};
+
+// Mock dependencies
+jest.mock('@/lib/supabase/server');
+jest.mock('@/lib/validation/middleware');
+
+const mockCreateClient = createClient as jest.MockedFunction<typeof createClient>;
+
+describe('Timeline Events API', () => {
+  let mockSupabase: any;
+  let mockRequest: Partial<NextRequest>;
+  let mockUser: any;
+  let mockProfile: any;
+  let mockTimeline: any;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+
+    mockUser = {
+      id: 'user-123',
+      email: 'test@example.com'
+    };
+
+    mockProfile = {
+      organization_id: 'org-123',
+      user_id: 'user-123'
+    };
+
+    mockTimeline = {
+      id: 'timeline-123',
+      organization_id: 'org-123',
+      client_id: 'client-123',
+      name: 'Wedding Timeline',
+      wedding_date: '2024-06-15',
+      start_time: '10:00',
+      end_time: '23:00',
+      buffer_time_minutes: 15
+    };
+
+    mockSupabase = {
+      auth: {
+        getUser: jest.fn().mockResolvedValue({
+          data: { user: mockUser },
+          error: null
+        })
+      },
+      from: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      insert: jest.fn().mockReturnThis(),
+      update: jest.fn().mockReturnThis(),
+      delete: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      in: jest.fn().mockReturnThis(),
+      order: jest.fn().mockReturnThis(),
+      range: jest.fn().mockReturnThis(),
+      single: jest.fn(),
+      rpc: jest.fn()
+    };
+
+    mockCreateClient.mockResolvedValue(mockSupabase);
+
+    mockRequest = {
+      json: jest.fn(),
+      nextUrl: { searchParams: new URLSearchParams() }
+    };
+  });
+
+  describe('POST /api/timeline/[id]/events - Create Event', () => {
+    const createEventRequest = {
+      title: 'Wedding Ceremony',
+      start_time: '2024-06-15T14:00:00Z',
+      end_time: '2024-06-15T15:00:00Z',
+      event_type: 'ceremony' as EventType,
+      location: 'St. Mary\'s Church',
+      description: 'Wedding ceremony with family and friends',
+      priority: 'high' as EventPriority,
+      vendor_ids: ['vendor-1', 'vendor-2']
+    };
+
+    it('should successfully create a timeline event', async () => {
+      const createdEvent: TimelineEvent = {
+        id: 'event-123',
+        timeline_id: 'timeline-123',
+        ...createEventRequest,
+        status: 'pending' as EventStatus,
+        is_locked: false,
+        is_flexible: true,
+        weather_dependent: false,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        priority: 'high' as EventPriority
+      };
+
+      // Mock timeline access verification
+      mockSupabase.single
+        .mockResolvedValueOnce({ data: mockProfile, error: null })
+        .mockResolvedValueOnce({ 
+          data: { 
+            ...mockTimeline,
+            timeline_collaborators: [{ user_id: 'user-123', can_edit: true, status: 'active' }]
+          }, 
+          error: null 
+        })
+        .mockResolvedValueOnce({ data: createdEvent, error: null });
+
+      // Mock conflict detection
+      mockSupabase.rpc.mockResolvedValue({ data: [], error: null });
+
+      const response = await mockEventHandlers.createEvent(
+        mockRequest as NextRequest, 
+        { params: { id: 'timeline-123' } },
+        createEventRequest
+      );
+
+      expect(mockSupabase.from).toHaveBeenCalledWith('timeline_events');
+      expect(mockSupabase.insert).toHaveBeenCalledWith(expect.objectContaining({
+        timeline_id: 'timeline-123',
+        title: createEventRequest.title,
+        event_type: createEventRequest.event_type
+      }));
+    });
+
+    it('should detect and report time conflicts', async () => {
+      const conflictingEvent = {
+        id: 'existing-event',
+        title: 'Existing Event',
+        start_time: '2024-06-15T13:30:00Z',
+        end_time: '2024-06-15T14:30:00Z'
+      };
+
+      mockSupabase.single
+        .mockResolvedValueOnce({ data: mockProfile, error: null })
+        .mockResolvedValueOnce({ 
+          data: { 
+            ...mockTimeline,
+            timeline_collaborators: [{ user_id: 'user-123', can_edit: true, status: 'active' }]
+          }, 
+          error: null 
+        });
+
+      // Mock existing events that would conflict
+      mockSupabase.from.mockReturnValue({
+        select: jest.fn().mockReturnValue({
+          eq: jest.fn().mockReturnValue({
+            order: jest.fn().mockResolvedValue({
+              data: [conflictingEvent],
+              error: null
+            })
+          })
+        })
+      });
+
+      // Test conflict detection logic
+      const hasConflict = checkTimeConflict(
+        createEventRequest.start_time,
+        createEventRequest.end_time,
+        [conflictingEvent]
+      );
+
+      expect(hasConflict).toBe(true);
+    });
+
+    it('should validate event timing within timeline bounds', async () => {
+      const invalidEventRequest = {
+        ...createEventRequest,
+        start_time: '2024-06-15T23:30:00Z', // After timeline end time
+        end_time: '2024-06-16T00:30:00Z'
+      };
+
+      const timelineEndDateTime = new Date(`2024-06-15 ${mockTimeline.end_time}`);
+      const eventStartTime = new Date(invalidEventRequest.start_time);
+
+      expect(eventStartTime > timelineEndDateTime).toBe(true);
+    });
+
+    it('should auto-assign vendor roles based on event type', async () => {
+      const ceremonyEvent = {
+        ...createEventRequest,
+        event_type: 'ceremony' as EventType,
+        vendor_ids: ['photographer-1', 'officiant-1']
+      };
+
+      const expectedVendorAssignments = [
+        {
+          vendor_id: 'photographer-1',
+          role: 'primary',
+          responsibilities: 'Photography and videography'
+        },
+        {
+          vendor_id: 'officiant-1', 
+          role: 'primary',
+          responsibilities: 'Wedding officiant'
+        }
+      ];
+
+      // Test vendor assignment logic
+      const assignments = assignVendorRoles(ceremonyEvent.event_type, ceremonyEvent.vendor_ids);
+      expect(assignments).toEqual(expect.arrayContaining(
+        expectedVendorAssignments.map(expect.objectContaining)
+      ));
+    });
+  });
+
+  describe('GET /api/timeline/[id]/events - Get Events', () => {
+    it('should fetch all events for a timeline', async () => {
+      const mockEvents: TimelineEvent[] = [
+        {
+          id: 'event-1',
+          timeline_id: 'timeline-123',
+          title: 'Wedding Ceremony',
+          start_time: '2024-06-15T14:00:00Z',
+          end_time: '2024-06-15T15:00:00Z',
+          event_type: 'ceremony',
+          priority: 'high',
+          status: 'confirmed',
+          is_locked: false,
+          is_flexible: true,
+          weather_dependent: false,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        },
+        {
+          id: 'event-2',
+          timeline_id: 'timeline-123',
+          title: 'Reception',
+          start_time: '2024-06-15T18:00:00Z',
+          end_time: '2024-06-15T23:00:00Z',
+          event_type: 'reception',
+          priority: 'high',
+          status: 'pending',
+          is_locked: false,
+          is_flexible: true,
+          weather_dependent: false,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        }
+      ];
+
+      mockSupabase.single
+        .mockResolvedValueOnce({ data: mockProfile, error: null })
+        .mockResolvedValueOnce({ 
+          data: { 
+            ...mockTimeline,
+            timeline_collaborators: [{ user_id: 'user-123', status: 'active' }]
+          }, 
+          error: null 
+        });
+
+      mockSupabase.from.mockReturnValue({
+        select: jest.fn().mockReturnValue({
+          eq: jest.fn().mockReturnValue({
+            order: jest.fn().mockResolvedValue({
+              data: mockEvents,
+              error: null
+            })
+          })
+        })
+      });
+
+      const events = await fetchTimelineEvents('timeline-123');
+      
+      expect(events).toHaveLength(2);
+      expect(events[0].title).toBe('Wedding Ceremony');
+      expect(events[1].title).toBe('Reception');
+    });
+
+    it('should filter events by type', async () => {
+      const ceremonyEvents = [
+        {
+          id: 'event-1',
+          event_type: 'ceremony',
+          title: 'Wedding Ceremony'
+        }
+      ];
+
+      mockSupabase.from.mockReturnValue({
+        select: jest.fn().mockReturnValue({
+          eq: jest.fn().mockReturnValue({
+            eq: jest.fn().mockReturnValue({
+              order: jest.fn().mockResolvedValue({
+                data: ceremonyEvents,
+                error: null
+              })
+            })
+          })
+        })
+      });
+
+      expect(mockSupabase.eq).toHaveBeenCalledWith('event_type', 'ceremony');
+    });
+
+    it('should sort events by start time', async () => {
+      const unsortedEvents = [
+        { id: 'event-2', start_time: '2024-06-15T18:00:00Z', title: 'Reception' },
+        { id: 'event-1', start_time: '2024-06-15T14:00:00Z', title: 'Ceremony' }
+      ];
+
+      const sortedEvents = sortEventsByStartTime(unsortedEvents);
+      
+      expect(sortedEvents[0].title).toBe('Ceremony');
+      expect(sortedEvents[1].title).toBe('Reception');
+    });
+  });
+
+  describe('PUT /api/timeline/[id]/events/[eventId] - Update Event', () => {
+    const eventId = 'event-123';
+    const updateData = {
+      title: 'Updated Wedding Ceremony',
+      location: 'New Venue',
+      priority: 'critical' as EventPriority
+    };
+
+    it('should successfully update event', async () => {
+      const updatedEvent = {
+        id: eventId,
+        timeline_id: 'timeline-123',
+        ...updateData,
+        updated_at: new Date().toISOString()
+      };
+
+      mockSupabase.single
+        .mockResolvedValueOnce({ data: mockProfile, error: null })
+        .mockResolvedValueOnce({ 
+          data: { 
+            ...mockTimeline,
+            timeline_collaborators: [{ user_id: 'user-123', can_edit: true, status: 'active' }]
+          }, 
+          error: null 
+        })
+        .mockResolvedValueOnce({ data: updatedEvent, error: null });
+
+      const result = await updateTimelineEvent(eventId, updateData);
+      
+      expect(result.title).toBe(updateData.title);
+      expect(result.location).toBe(updateData.location);
+      expect(result.priority).toBe(updateData.priority);
+    });
+
+    it('should validate time changes do not create conflicts', async () => {
+      const timeUpdateData = {
+        start_time: '2024-06-15T13:00:00Z',
+        end_time: '2024-06-15T14:00:00Z'
+      };
+
+      const existingEvents = [
+        {
+          id: 'other-event',
+          start_time: '2024-06-15T13:30:00Z',
+          end_time: '2024-06-15T14:30:00Z'
+        }
+      ];
+
+      const hasConflict = checkTimeConflict(
+        timeUpdateData.start_time,
+        timeUpdateData.end_time,
+        existingEvents
+      );
+
+      expect(hasConflict).toBe(true);
+    });
+
+    it('should handle locked event updates', async () => {
+      const lockedEvent = {
+        id: eventId,
+        is_locked: true,
+        locked_by: 'other-user'
+      };
+
+      mockSupabase.single.mockResolvedValue({ data: lockedEvent, error: null });
+
+      // Should prevent editing locked events by other users
+      const canEdit = canUserEditEvent(lockedEvent, 'user-123');
+      expect(canEdit).toBe(false);
+    });
+
+    it('should increment version on update', async () => {
+      const currentEvent = { id: eventId, version: 1 };
+      const updatedEvent = await updateEventVersion(currentEvent, updateData);
+      
+      expect(updatedEvent.version).toBe(2);
+    });
+  });
+
+  describe('DELETE /api/timeline/[id]/events/[eventId] - Delete Event', () => {
+    const eventId = 'event-123';
+
+    it('should successfully delete event', async () => {
+      mockSupabase.single
+        .mockResolvedValueOnce({ data: mockProfile, error: null })
+        .mockResolvedValueOnce({ 
+          data: { 
+            ...mockTimeline,
+            timeline_collaborators: [{ user_id: 'user-123', can_edit: true, status: 'active' }]
+          }, 
+          error: null 
+        })
+        .mockResolvedValueOnce({ data: { id: eventId, is_locked: false }, error: null });
+
+      mockSupabase.from.mockReturnValue({
+        delete: jest.fn().mockReturnValue({
+          eq: jest.fn().mockResolvedValue({ error: null })
+        })
+      });
+
+      await deleteTimelineEvent(eventId);
+      expect(mockSupabase.delete).toHaveBeenCalled();
+    });
+
+    it('should check for event dependencies before deletion', async () => {
+      const eventWithDependents = {
+        id: eventId,
+        title: 'Ceremony'
+      };
+
+      const dependentEvents = [
+        {
+          id: 'reception-event',
+          title: 'Reception',
+          depends_on: [eventId]
+        }
+      ];
+
+      const hasDependents = checkEventDependencies(eventWithDependents, dependentEvents);
+      expect(hasDependents).toBe(true);
+    });
+
+    it('should prevent deletion of locked events', async () => {
+      const lockedEvent = {
+        id: eventId,
+        is_locked: true,
+        locked_by: 'other-user'
+      };
+
+      mockSupabase.single.mockResolvedValue({ data: lockedEvent, error: null });
+
+      const canDelete = canUserDeleteEvent(lockedEvent, 'user-123');
+      expect(canDelete).toBe(false);
+    });
+  });
+
+  describe('POST /api/timeline/[id]/events/move - Move Event', () => {
+    const moveRequest = {
+      event_id: 'event-123',
+      new_start_time: '2024-06-15T15:00:00Z',
+      new_end_time: '2024-06-15T16:00:00Z',
+      resolve_conflicts: true
+    };
+
+    it('should successfully move event to new time', async () => {
+      const originalEvent = {
+        id: 'event-123',
+        start_time: '2024-06-15T14:00:00Z',
+        end_time: '2024-06-15T15:00:00Z',
+        duration_minutes: 60
+      };
+
+      const movedEvent = {
+        ...originalEvent,
+        start_time: moveRequest.new_start_time,
+        end_time: moveRequest.new_end_time
+      };
+
+      const result = await moveEvent(originalEvent, moveRequest);
+      
+      expect(result.start_time).toBe(moveRequest.new_start_time);
+      expect(result.end_time).toBe(moveRequest.new_end_time);
+    });
+
+    it('should auto-resolve conflicts when flag is set', async () => {
+      const conflictingEvent = {
+        id: 'other-event',
+        start_time: '2024-06-15T15:30:00Z',
+        end_time: '2024-06-15T16:30:00Z',
+        is_flexible: true
+      };
+
+      const resolution = await resolveTimeConflict(
+        moveRequest,
+        [conflictingEvent],
+        { auto_resolve: true }
+      );
+
+      expect(resolution.success).toBe(true);
+      expect(resolution.adjustments).toHaveLength(1);
+    });
+
+    it('should maintain event duration when moving', async () => {
+      const originalDuration = 60; // 1 hour
+      const newStartTime = new Date(moveRequest.new_start_time);
+      const newEndTime = new Date(moveRequest.new_end_time);
+      const newDuration = (newEndTime.getTime() - newStartTime.getTime()) / 60000;
+      
+      expect(newDuration).toBe(originalDuration);
+    });
+  });
+
+  describe('POST /api/timeline/[id]/events/bulk - Bulk Operations', () => {
+    it('should handle bulk event creation', async () => {
+      const bulkCreateData = [
+        {
+          title: 'Pre-ceremony photos',
+          start_time: '2024-06-15T12:00:00Z',
+          end_time: '2024-06-15T13:00:00Z',
+          event_type: 'photos' as EventType
+        },
+        {
+          title: 'Wedding ceremony',
+          start_time: '2024-06-15T14:00:00Z',
+          end_time: '2024-06-15T15:00:00Z',
+          event_type: 'ceremony' as EventType
+        }
+      ];
+
+      const createdEvents = await bulkCreateEvents('timeline-123', bulkCreateData);
+      
+      expect(createdEvents).toHaveLength(2);
+      expect(createdEvents[0].title).toBe('Pre-ceremony photos');
+      expect(createdEvents[1].title).toBe('Wedding ceremony');
+    });
+
+    it('should handle bulk event updates', async () => {
+      const bulkUpdateData = [
+        { id: 'event-1', status: 'confirmed' as EventStatus },
+        { id: 'event-2', status: 'confirmed' as EventStatus }
+      ];
+
+      const result = await bulkUpdateEvents(bulkUpdateData);
+      expect(result.updated_count).toBe(2);
+    });
+
+    it('should handle bulk event deletion', async () => {
+      const eventIds = ['event-1', 'event-2', 'event-3'];
+      
+      mockSupabase.from.mockReturnValue({
+        delete: jest.fn().mockReturnValue({
+          in: jest.fn().mockResolvedValue({
+            data: null,
+            error: null
+          })
+        })
+      });
+
+      await bulkDeleteEvents(eventIds);
+      expect(mockSupabase.in).toHaveBeenCalledWith('id', eventIds);
+    });
+  });
+
+  describe('Event validation and business rules', () => {
+    it('should validate minimum event duration', async () => {
+      const shortEvent = {
+        title: 'Brief moment',
+        start_time: '2024-06-15T14:00:00Z',
+        end_time: '2024-06-15T14:05:00Z' // Only 5 minutes
+      };
+
+      const isValid = validateEventDuration(shortEvent, { min_duration_minutes: 15 });
+      expect(isValid).toBe(false);
+    });
+
+    it('should validate maximum event duration', async () => {
+      const longEvent = {
+        title: 'All day event',
+        start_time: '2024-06-15T08:00:00Z',
+        end_time: '2024-06-16T02:00:00Z' // 18 hours
+      };
+
+      const isValid = validateEventDuration(longEvent, { max_duration_minutes: 480 }); // 8 hours
+      expect(isValid).toBe(false);
+    });
+
+    it('should enforce buffer time between events', async () => {
+      const event1 = {
+        end_time: '2024-06-15T15:00:00Z',
+        buffer_after_minutes: 30
+      };
+
+      const event2 = {
+        start_time: '2024-06-15T15:15:00Z' // Only 15 minutes after
+      };
+
+      const hasValidBuffer = validateBufferTime(event1, event2);
+      expect(hasValidBuffer).toBe(false);
+    });
+
+    it('should validate vendor availability for event times', async () => {
+      const eventTime = {
+        start_time: '2024-06-15T14:00:00Z',
+        end_time: '2024-06-15T15:00:00Z'
+      };
+
+      const vendorAvailability = {
+        vendor_id: 'photographer-1',
+        available_slots: [
+          {
+            start: '2024-06-15T13:00:00Z',
+            end: '2024-06-15T16:00:00Z'
+          }
+        ]
+      };
+
+      const isAvailable = checkVendorAvailability(eventTime, vendorAvailability);
+      expect(isAvailable).toBe(true);
+    });
+
+    it('should validate weather-dependent events', async () => {
+      const outdoorEvent = {
+        title: 'Garden ceremony',
+        weather_dependent: true,
+        backup_plan: 'Indoor chapel'
+      };
+
+      const hasBackupPlan = validateWeatherDependentEvent(outdoorEvent);
+      expect(hasBackupPlan).toBe(true);
+    });
+  });
+
+  describe('Error handling and edge cases', () => {
+    it('should handle timeline not found', async () => {
+      mockSupabase.single.mockResolvedValue({ data: null, error: { message: 'Timeline not found' } });
+
+      try {
+        await fetchTimelineEvents('nonexistent-timeline');
+        fail('Should have thrown an error');
+      } catch (error) {
+        expect((error as Error).message).toContain('Timeline not found');
+      }
+    });
+
+    it('should handle database connection errors', async () => {
+      mockCreateClient.mockRejectedValue(new Error('Database connection failed'));
+
+      try {
+        await fetchTimelineEvents('timeline-123');
+        fail('Should have thrown an error');
+      } catch (error) {
+        expect((error as Error).message).toBe('Database connection failed');
+      }
+    });
+
+    it('should handle invalid event data gracefully', async () => {
+      const invalidEventData = {
+        title: '', // Empty title
+        start_time: 'invalid-date',
+        end_time: '2024-06-15T15:00:00Z'
+      };
+
+      const validation = validateEventData(invalidEventData);
+      expect(validation.isValid).toBe(false);
+      expect(validation.errors).toContain('Title is required');
+      expect(validation.errors).toContain('Invalid start time format');
+    });
+  });
+});
+
+// Helper functions that would be part of the actual implementation
+function checkTimeConflict(startTime: string, endTime: string, existingEvents: any[]): boolean {
+  const newStart = new Date(startTime);
+  const newEnd = new Date(endTime);
+  
+  return existingEvents.some(event => {
+    const existingStart = new Date(event.start_time);
+    const existingEnd = new Date(event.end_time);
+    
+    return newStart < existingEnd && existingStart < newEnd;
+  });
+}
+
+function assignVendorRoles(eventType: EventType, vendorIds: string[]) {
+  const roleMapping: Record<EventType, Record<string, string>> = {
+    ceremony: {
+      photographer: 'Photography and videography',
+      officiant: 'Wedding officiant'
+    },
+    reception: {
+      dj: 'Music and entertainment',
+      caterer: 'Food and beverage service'
+    },
+    // ... other event types
+  } as any;
+
+  return vendorIds.map(vendorId => ({
+    vendor_id: vendorId,
+    role: 'primary' as const,
+    responsibilities: roleMapping[eventType]?.[vendorId.split('-')[0]] || 'General support'
+  }));
+}
+
+async function fetchTimelineEvents(timelineId: string) {
+  // Mock implementation
+  return [];
+}
+
+function sortEventsByStartTime(events: any[]) {
+  return [...events].sort((a, b) => 
+    new Date(a.start_time).getTime() - new Date(b.start_time).getTime()
+  );
+}
+
+async function updateTimelineEvent(eventId: string, updateData: any) {
+  return { id: eventId, ...updateData };
+}
+
+async function updateEventVersion(event: any, changes: any) {
+  return { ...event, ...changes, version: event.version + 1 };
+}
+
+function canUserEditEvent(event: any, userId: string): boolean {
+  return !event.is_locked || event.locked_by === userId;
+}
+
+async function deleteTimelineEvent(eventId: string) {
+  return true;
+}
+
+function checkEventDependencies(event: any, allEvents: any[]): boolean {
+  return allEvents.some(e => e.depends_on?.includes(event.id));
+}
+
+function canUserDeleteEvent(event: any, userId: string): boolean {
+  return !event.is_locked || event.locked_by === userId;
+}
+
+async function moveEvent(event: any, moveRequest: any) {
+  return {
+    ...event,
+    start_time: moveRequest.new_start_time,
+    end_time: moveRequest.new_end_time
+  };
+}
+
+async function resolveTimeConflict(moveRequest: any, conflicts: any[], options: any) {
+  return { success: true, adjustments: conflicts.map(c => ({ event_id: c.id, action: 'move' })) };
+}
+
+async function bulkCreateEvents(timelineId: string, events: any[]) {
+  return events.map((event, index) => ({
+    id: `event-${index + 1}`,
+    timeline_id: timelineId,
+    ...event
+  }));
+}
+
+async function bulkUpdateEvents(updates: any[]) {
+  return { updated_count: updates.length };
+}
+
+async function bulkDeleteEvents(eventIds: string[]) {
+  return { deleted_count: eventIds.length };
+}
+
+function validateEventDuration(event: any, rules: any): boolean {
+  const duration = (new Date(event.end_time).getTime() - new Date(event.start_time).getTime()) / 60000;
+  
+  if (rules.min_duration_minutes && duration < rules.min_duration_minutes) return false;
+  if (rules.max_duration_minutes && duration > rules.max_duration_minutes) return false;
+  
+  return true;
+}
+
+function validateBufferTime(event1: any, event2: any): boolean {
+  const event1End = new Date(event1.end_time);
+  const event2Start = new Date(event2.start_time);
+  const gap = (event2Start.getTime() - event1End.getTime()) / 60000;
+  
+  return gap >= (event1.buffer_after_minutes || 0);
+}
+
+function checkVendorAvailability(eventTime: any, availability: any): boolean {
+  const eventStart = new Date(eventTime.start_time);
+  const eventEnd = new Date(eventTime.end_time);
+  
+  return availability.available_slots.some((slot: any) => {
+    const slotStart = new Date(slot.start);
+    const slotEnd = new Date(slot.end);
+    
+    return eventStart >= slotStart && eventEnd <= slotEnd;
+  });
+}
+
+function validateWeatherDependentEvent(event: any): boolean {
+  return !event.weather_dependent || Boolean(event.backup_plan);
+}
+
+function validateEventData(eventData: any) {
+  const errors: string[] = [];
+  
+  if (!eventData.title || eventData.title.trim().length === 0) {
+    errors.push('Title is required');
+  }
+  
+  if (!eventData.start_time || isNaN(new Date(eventData.start_time).getTime())) {
+    errors.push('Invalid start time format');
+  }
+  
+  return {
+    isValid: errors.length === 0,
+    errors
+  };
+}

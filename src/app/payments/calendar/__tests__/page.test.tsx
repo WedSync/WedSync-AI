@@ -1,0 +1,247 @@
+import React from 'react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import userEvent from '@testing-library/user-event';
+import '@testing-library/jest-dom';
+import PaymentCalendarPage from '../page';
+
+// Mock the payment components
+jest.mock('@/components/payments/PaymentCalendar', () => ({
+  PaymentCalendar: ({ payments, selectedDate, onDateSelect, loading }: any) => (
+    <div data-testid="payment-calendar">
+      <div>Calendar Component</div>
+      <div>Selected: {selectedDate}</div>
+      <div>Payments: {payments.length}</div>
+      <div>Loading: {loading.toString()}</div>
+      <button onClick={() => onDateSelect('2024-06-15')}>Select Date</button>
+    </div>
+  )
+}));
+jest.mock('@/components/payments/UpcomingPaymentsList', () => ({
+  UpcomingPaymentsList: ({ payments, onMarkPaid, loading }: any) => (
+    <div data-testid="upcoming-payments-list">
+      <div>Payments List Component</div>
+      {payments.map((payment: any) => (
+        <div key={payment.id}>
+          <span>{payment.vendor_name}</span>
+          <button onClick={() => onMarkPaid(payment.id)}>Mark Paid</button>
+        </div>
+      ))}
+    </div>
+  )
+}));
+
+jest.mock('@/components/payments/MarkAsPaidModal', () => ({
+  MarkAsPaidModal: ({ payment, open, onClose, onConfirm }: any) => (
+    open ? (
+      <div data-testid="mark-paid-modal">
+        <div>Modal for: {payment?.vendor_name}</div>
+        <button onClick={onClose}>Close</button>
+        <button onClick={() => onConfirm({ paymentId: payment?.id })}>Confirm</button>
+      </div>
+    ) : null
+  ),
+  useMarkAsPaid: () => ({
+    isModalOpen: false,
+    selectedPayment: null,
+    loading: false,
+    openModal: jest.fn(),
+    closeModal: jest.fn(),
+    confirmPayment: jest.fn()
+  })
+}));
+
+// Mock fetch
+global.fetch = jest.fn();
+// Mock localStorage
+const mockLocalStorage = {
+  getItem: jest.fn(),
+  setItem: jest.fn(),
+  removeItem: jest.fn(),
+};
+Object.defineProperty(window, 'localStorage', {
+  value: mockLocalStorage
+});
+const mockPaymentData = {
+  payments: [
+    {
+      id: 'payment-1',
+      vendor_name: 'Test Photographer',
+      amount: 150000,
+      currency: 'GBP',
+      due_date: '2024-06-15',
+      status: 'upcoming',
+      description: 'Wedding photography',
+      vendor_id: 'vendor-1',
+      budget_category_id: 'cat-1'
+    },
+      id: 'payment-2',
+      vendor_name: 'Test Venue',
+      amount: 300000,
+      due_date: '2024-06-10',
+      status: 'due',
+      description: 'Venue final payment',
+      vendor_id: 'vendor-2',
+      budget_category_id: 'cat-2'
+      id: 'payment-3',
+      vendor_name: 'Test Catering',
+      amount: 200000,
+      due_date: '2024-06-05',
+      status: 'overdue',
+      description: 'Catering service',
+      vendor_id: 'vendor-3',
+      budget_category_id: 'cat-3'
+    }
+  ],
+  totalAmount: 650000,
+  overdueCount: 1,
+  dueCount: 1,
+  weddingDate: '2024-07-20'
+describe('PaymentCalendarPage', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockLocalStorage.getItem.mockReturnValue('mock-token');
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(mockPaymentData)
+    });
+  });
+  describe('Page Rendering', () => {
+    it('renders page header correctly', async () => {
+      render(<PaymentCalendarPage />);
+      
+      await waitFor(() => {
+        expect(screen.getByText('Payment Calendar')).toBeInTheDocument();
+        expect(screen.getByText(/Track your wedding vendor payment deadlines/)).toBeInTheDocument();
+      });
+    it('renders payment components', async () => {
+        expect(screen.getByTestId('payment-calendar')).toBeInTheDocument();
+        expect(screen.getByTestId('upcoming-payments-list')).toBeInTheDocument();
+    it('shows loading state initially', () => {
+      expect(screen.getByText('Loading: true')).toBeInTheDocument();
+    it('displays payment data after loading', async () => {
+        expect(screen.getByText('Payments: 3')).toBeInTheDocument();
+        expect(screen.getByText('Test Photographer')).toBeInTheDocument();
+        expect(screen.getByText('Test Venue')).toBeInTheDocument();
+        expect(screen.getByText('Test Catering')).toBeInTheDocument();
+  describe('Payment Summary Statistics', () => {
+    it('calculates and displays summary statistics', async () => {
+        // Check for overdue amount display
+        expect(screen.getByText(/£2,000.00 overdue/)).toBeInTheDocument();
+        // Check for due this week count
+        expect(screen.getByText(/1 due this week/)).toBeInTheDocument();
+    it('shows mobile stats cards', async () => {
+      // Mock mobile viewport
+      Object.defineProperty(window, 'innerWidth', {
+        writable: true,
+        configurable: true,
+        value: 375,
+        expect(screen.getByText('Total Pending')).toBeInTheDocument();
+        expect(screen.getByText(/£6,500.00/)).toBeInTheDocument();
+    it('hides overdue badge when no overdue payments', async () => {
+      const noOverdueData = {
+        ...mockPaymentData,
+        payments: mockPaymentData.payments.filter(p => p.status !== 'overdue')
+      };
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve(noOverdueData)
+        expect(screen.queryByText(/overdue/)).not.toBeInTheDocument();
+  describe('Wedding Context Bar', () => {
+    it('renders wedding context when wedding date is provided', async () => {
+        expect(screen.getByText(/Your Wedding:/)).toBeInTheDocument();
+        expect(screen.getByText(/20 July 2024/)).toBeInTheDocument();
+    it('calculates days until wedding correctly', async () => {
+      const futureWeddingData = {
+        weddingDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+        json: () => Promise.resolve(futureWeddingData)
+        expect(screen.getByText(/30 days until your special day/)).toBeInTheDocument();
+    it('shows urgency styling for weddings close by', async () => {
+      const closeWeddingData = {
+        weddingDate: new Date(Date.now() + 15 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+        json: () => Promise.resolve(closeWeddingData)
+        expect(screen.getByText(/Almost there!/)).toBeInTheDocument();
+  describe('Date Selection', () => {
+    it('updates selected date when calendar date is selected', async () => {
+      const user = userEvent.setup();
+      const selectButton = screen.getByText('Select Date');
+      await user.click(selectButton);
+      expect(screen.getByText('Selected: 2024-06-15')).toBeInTheDocument();
+  describe('Payment Actions', () => {
+    it('opens mark as paid modal when payment is marked', async () => {
+      // Mock useMarkAsPaid hook to return modal open state
+      const mockUseMarkAsPaid = {
+        isModalOpen: true,
+        selectedPayment: mockPaymentData.payments[0],
+        loading: false,
+        openModal: jest.fn(),
+        closeModal: jest.fn(),
+        confirmPayment: jest.fn()
+      jest.doMock('@/components/payments/MarkAsPaidModal', () => ({
+        MarkAsPaidModal: ({ payment, open }: any) => 
+          open ? <div data-testid="mark-paid-modal">Modal for: {payment?.vendor_name}</div> : null,
+        useMarkAsPaid: () => mockUseMarkAsPaid
+      }));
+      const markPaidButton = screen.getAllByText('Mark Paid')[0];
+      await user.click(markPaidButton);
+      expect(mockUseMarkAsPaid.openModal).toHaveBeenCalled();
+    it('refreshes payment data after successful payment confirmation', async () => {
+        expect(screen.getByTestId('mark-paid-modal')).toBeInTheDocument();
+      const confirmButton = screen.getByText('Confirm');
+      await user.click(confirmButton);
+      // Should refetch payment data
+      expect(global.fetch).toHaveBeenCalledWith('/api/payments/schedule', {
+        headers: {
+          'Authorization': 'Bearer mock-token',
+        },
+  describe('Quick Actions', () => {
+    it('renders desktop quick actions', async () => {
+        expect(screen.getByText('📊 Export Schedule')).toBeInTheDocument();
+        expect(screen.getByText('🔔 Reminder Settings')).toBeInTheDocument();
+        expect(screen.getByText('📈 Budget Overview')).toBeInTheDocument();
+    it('navigates to budget on budget overview click', async () => {
+      // Mock window.location
+      delete (window as any).location;
+      (window as any).location = { href: '' };
+      const budgetButton = screen.getByText('📈 Budget Overview');
+      await user.click(budgetButton);
+      expect(window.location.href).toBe('/budget');
+  describe('Error Handling', () => {
+    it('displays error state when API fails', async () => {
+      (global.fetch as jest.Mock).mockRejectedValue(new Error('API Error'));
+        expect(screen.getByText('Payment Calendar Unavailable')).toBeInTheDocument();
+        expect(screen.getByText(/API Error/)).toBeInTheDocument();
+    it('shows authentication error when no token', async () => {
+      mockLocalStorage.getItem.mockReturnValue(null);
+        expect(screen.getByText(/Authentication required/)).toBeInTheDocument();
+    it('provides retry functionality on error', async () => {
+      (global.fetch as jest.Mock).mockRejectedValue(new Error('Network Error'));
+      // Mock window.location.reload
+      const mockReload = jest.fn();
+      Object.defineProperty(window, 'location', {
+        value: { reload: mockReload }
+        expect(screen.getByText('Try Again')).toBeInTheDocument();
+      const retryButton = screen.getByText('Try Again');
+      await user.click(retryButton);
+      expect(mockReload).toHaveBeenCalled();
+    it('handles non-ok response from API', async () => {
+        ok: false,
+        status: 500
+        expect(screen.getByText(/Failed to load payment schedule/)).toBeInTheDocument();
+  describe('Accessibility', () => {
+    it('has proper heading structure', async () => {
+        const mainHeading = screen.getByRole('heading', { level: 1 });
+        expect(mainHeading).toHaveTextContent('Payment Calendar');
+    it('provides descriptive text for screen readers', async () => {
+    it('maintains focus management', async () => {
+      // Page should be focusable and have proper tabindex management
+      const mainContent = screen.getByText('Payment Calendar').closest('div');
+      expect(mainContent).toBeTruthy();
+  describe('Responsive Design', () => {
+    it('shows mobile layout on small screens', async () => {
+        // Mobile quick actions should be visible
+        expect(screen.getByText('📊 Export')).toBeInTheDocument();
+        expect(screen.getByText('🔔 Reminders')).toBeInTheDocument();
+    it('adapts grid layout for different screen sizes', async () => {
+        const container = screen.getByText('Payment Calendar').closest('.container');
+        expect(container).toBeTruthy();

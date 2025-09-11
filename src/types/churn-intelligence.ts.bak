@@ -1,0 +1,732 @@
+// ============================================================================
+// WS-182: Churn Intelligence Dashboard - TypeScript Interfaces
+// ============================================================================
+// Team A - Round 1 Implementation  
+// Date: 2025-01-20
+//
+// Type definitions for churn prediction, risk scoring, retention campaigns,
+// and intelligent intervention management for wedding supplier success.
+// ============================================================================
+
+import { HealthStatus, RiskLevel, InteractionType, Priority } from './customer-success';
+
+// ============================================================================
+// ENUMS - CHURN SPECIFIC
+// ============================================================================
+
+/**
+ * Churn risk levels with predictive scoring
+ */
+export enum ChurnRiskLevel {
+  SAFE = 'safe',           // 0-25: Highly engaged, no intervention needed
+  STABLE = 'stable',       // 26-50: Normal activity, monitor trends
+  ATTENTION = 'attention', // 51-70: Declining engagement, proactive outreach
+  HIGH_RISK = 'high_risk', // 71-85: Significant risk, immediate intervention
+  CRITICAL = 'critical'    // 86-100: Imminent churn, emergency response
+}
+
+/**
+ * Types of retention campaigns
+ */
+export enum RetentionCampaignType {
+  WELCOME_SERIES = 'welcome_series',
+  FEATURE_ADOPTION = 'feature_adoption',
+  RE_ENGAGEMENT = 're_engagement',
+  WIN_BACK = 'win_back',
+  LOYALTY_PROGRAM = 'loyalty_program',
+  DISCOUNT_OFFER = 'discount_offer',
+  PERSONAL_OUTREACH = 'personal_outreach',
+  TRAINING_INVITE = 'training_invite',
+  SUCCESS_STORY = 'success_story',
+  EMERGENCY_SAVE = 'emergency_save'
+}
+
+/**
+ * Automated retention actions available
+ */
+export enum RetentionAction {
+  SEND_EMAIL = 'send_email',
+  SCHEDULE_CALL = 'schedule_call',
+  ASSIGN_CSM = 'assign_csm',
+  OFFER_DISCOUNT = 'offer_discount',
+  PROVIDE_TRAINING = 'provide_training',
+  FEATURE_DEMO = 'feature_demo',
+  ACCOUNT_REVIEW = 'account_review',
+  ESCALATE_CRITICAL = 'escalate_critical',
+  PAUSE_SUBSCRIPTION = 'pause_subscription',
+  REFUND_PROCESSING = 'refund_processing'
+}
+
+/**
+ * Campaign performance status
+ */
+export enum CampaignStatus {
+  DRAFT = 'draft',
+  ACTIVE = 'active',
+  PAUSED = 'paused',
+  COMPLETED = 'completed',
+  ARCHIVED = 'archived'
+}
+
+/**
+ * Alert urgency levels for churn notifications
+ */
+export enum AlertUrgency {
+  INFO = 'info',
+  WARNING = 'warning',
+  URGENT = 'urgent',
+  CRITICAL = 'critical'
+}
+
+// ============================================================================
+// CORE INTERFACES - CHURN PREDICTION
+// ============================================================================
+
+/**
+ * Behavioral factors contributing to churn risk
+ */
+export interface ChurnRiskFactor {
+  factorType: 'login_recency' | 'feature_usage' | 'support_sentiment' | 'payment_health' | 'engagement_decline';
+  severity: RiskLevel;
+  score: number; // 0-100 (higher = more risk)
+  weight: number; // 0-1 weighting in overall score
+  description: string;
+  value: string | number;
+  detectedAt: Date;
+  thresholdExceeded: boolean;
+  actionRequired: boolean;
+}
+
+/**
+ * At-risk supplier with predictive analytics
+ */
+export interface AtRiskSupplier {
+  // Supplier identification
+  supplierId: string;
+  supplierName: string;
+  supplierType: 'photographer' | 'venue' | 'planner' | 'caterer' | 'florist' | 'dj' | 'videographer' | 'other';
+  contactEmail: string;
+  contactPhone?: string;
+  
+  // Risk assessment
+  churnRiskScore: number; // 0-100 composite score
+  churnRiskLevel: ChurnRiskLevel;
+  churnProbability: number; // 0-1 probability of churning in next 30 days
+  predictedChurnDate?: Date;
+  daysUntilPredictedChurn?: number;
+  
+  // Risk factors breakdown
+  riskFactors: ChurnRiskFactor[];
+  primaryRiskReason: string;
+  
+  // Behavioral indicators
+  daysSinceLastLogin: number;
+  lastActivityDate: Date;
+  loginFrequencyTrend: 'increasing' | 'stable' | 'declining';
+  featureUsageScore: number; // 0-100
+  engagementTrend: 'improving' | 'stable' | 'declining';
+  
+  // Support context
+  openSupportTickets: number;
+  recentTicketSentiment: 'positive' | 'neutral' | 'negative';
+  supportInteractionCount30d: number;
+  
+  // Financial indicators
+  subscriptionValue: number;
+  paymentFailures30d: number;
+  subscriptionTier: string;
+  daysSinceLastPayment?: number;
+  
+  // Intervention history
+  lastInterventionDate?: Date;
+  interventionCount30d: number;
+  previousRetentionSuccess: boolean;
+  
+  // Wedding seasonal context
+  weddingSeasonActivity: 'peak' | 'off_peak' | 'transition';
+  seasonalRiskAdjustment: number; // -20 to +20 score adjustment
+  
+  // Metadata
+  calculatedAt: Date;
+  lastUpdated: Date;
+}
+
+/**
+ * Retention campaign configuration and tracking
+ */
+export interface RetentionCampaign {
+  // Campaign identification
+  id: string;
+  name: string;
+  campaignType: RetentionCampaignType;
+  description: string;
+  
+  // Targeting criteria
+  targetRiskLevel: ChurnRiskLevel[];
+  targetSupplierTypes: string[];
+  targetSegments: string[];
+  
+  // Campaign content
+  emailTemplate?: string;
+  discountPercentage?: number;
+  callScriptTemplate?: string;
+  customMessage?: string;
+  
+  // Execution settings
+  status: CampaignStatus;
+  startDate: Date;
+  endDate?: Date;
+  frequency: 'once' | 'weekly' | 'monthly' | 'triggered';
+  
+  // Performance metrics
+  targetedSuppliers: number;
+  emailsSent: number;
+  emailOpenRate: number;
+  emailClickRate: number;
+  callsCompleted: number;
+  responseRate: number;
+  
+  // Success metrics
+  suppliersRetained: number;
+  suppliersLost: number;
+  saveRate: number; // percentage successfully retained
+  roiCalculated: number;
+  revenueRetained: number;
+  
+  // A/B testing
+  isTestCampaign: boolean;
+  testVariant?: 'A' | 'B' | 'C';
+  parentCampaignId?: string;
+  
+  // Automation
+  autoExecute: boolean;
+  triggerConditions: Record<string, any>;
+  executionHistory: CampaignExecution[];
+  
+  // Metadata
+  createdBy: string;
+  assignedCSM?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/**
+ * Campaign execution tracking
+ */
+export interface CampaignExecution {
+  id: string;
+  campaignId: string;
+  supplierId: string;
+  executedAt: Date;
+  action: RetentionAction;
+  result: 'success' | 'failed' | 'pending';
+  responseReceived: boolean;
+  responseTime?: number; // hours until response
+  conversionResult?: 'retained' | 'churned' | 'pending';
+  notes?: string;
+}
+
+/**
+ * Real-time churn alert
+ */
+export interface ChurnAlert {
+  id: string;
+  alertType: 'new_risk' | 'escalated_risk' | 'intervention_due' | 'campaign_urgent' | 'churn_imminent';
+  urgency: AlertUrgency;
+  
+  // Subject information
+  supplierId: string;
+  supplierName: string;
+  riskScore: number;
+  riskLevel: ChurnRiskLevel;
+  
+  // Alert details
+  title: string;
+  message: string;
+  actionRequired: string;
+  suggestedActions: RetentionAction[];
+  
+  // Timing
+  createdAt: Date;
+  expiresAt?: Date;
+  acknowledgedAt?: Date;
+  acknowledgedBy?: string;
+  
+  // Metadata
+  isRead: boolean;
+  isDismissed: boolean;
+  triggerEvent: string;
+  metadata: Record<string, any>;
+}
+
+// ============================================================================
+// ANALYTICS & REPORTING INTERFACES
+// ============================================================================
+
+/**
+ * Churn prediction metrics for dashboard overview
+ */
+export interface ChurnMetrics {
+  // Current period metrics
+  totalSuppliers: number;
+  atRiskSuppliers: number;
+  criticalRiskSuppliers: number;
+  predictedChurn30d: number;
+  predictedChurn90d: number;
+  
+  // Retention performance
+  monthlyRetentionRate: number;
+  retentionRateChange: number; // month-over-month change
+  campaignsSaved: number;
+  revenueAtRisk: number;
+  revenueRetained: number;
+  
+  // Intervention metrics
+  interventionsExecuted30d: number;
+  interventionSuccessRate: number;
+  averageTimeToIntervention: number; // hours
+  criticalAlertsGenerated: number;
+  
+  // Trends
+  riskTrend: 'improving' | 'stable' | 'worsening';
+  seasonalAdjustment: number;
+  
+  // Calculated timestamp
+  calculatedAt: Date;
+}
+
+/**
+ * Historical churn trend data for visualization
+ */
+export interface ChurnTrendData {
+  date: Date;
+  totalSuppliers: number;
+  churnedSuppliers: number;
+  churnRate: number; // percentage
+  predictedChurnRate: number; // AI prediction
+  retentionCampaignsSaved: number;
+  newRiskSuppliers: number;
+  interventionsExecuted: number;
+  seasonalFactor: number; // seasonal adjustment (-1 to 1)
+}
+
+/**
+ * Retention action recommendation from AI
+ */
+export interface RetentionRecommendation {
+  action: RetentionAction;
+  priority: Priority;
+  successProbability: number; // 0-100 percentage
+  estimatedEffort: 'low' | 'medium' | 'high';
+  expectedOutcome: string;
+  reasoning: string;
+  timeFrame: string; // "within 24 hours", "this week", etc.
+  requiredResources: string[];
+}
+
+/**
+ * Churn intelligence dashboard state
+ */
+export interface ChurnIntelligenceDashboard {
+  // Data loading states
+  isLoading: boolean;
+  error?: string;
+  lastUpdated: Date;
+  
+  // Core data
+  metrics: ChurnMetrics;
+  atRiskSuppliers: AtRiskSupplier[];
+  trendData: ChurnTrendData[];
+  activeCampaigns: RetentionCampaign[];
+  activeAlerts: ChurnAlert[];
+  
+  // Filters and settings
+  dateRange: {
+    startDate: Date;
+    endDate: Date;
+  };
+  riskLevelFilter: ChurnRiskLevel[];
+  supplierTypeFilter: string[];
+  autoRefresh: boolean;
+  refreshInterval: number; // seconds
+  
+  // Real-time subscriptions
+  realTimeEnabled: boolean;
+  connectionStatus: 'connected' | 'disconnected' | 'reconnecting';
+}
+
+// ============================================================================
+// API REQUEST/RESPONSE MODELS
+// ============================================================================
+
+/**
+ * Request to calculate churn risk for supplier
+ */
+export interface CalculateChurnRiskRequest {
+  supplierId: string;
+  includeHistoricalData?: boolean;
+  riskFactorWeights?: Partial<Record<string, number>>;
+}
+
+/**
+ * Response with calculated churn risk
+ */
+export interface CalculateChurnRiskResponse {
+  supplierId: string;
+  churnRiskScore: number;
+  churnRiskLevel: ChurnRiskLevel;
+  churnProbability: number;
+  riskFactors: ChurnRiskFactor[];
+  recommendations: RetentionRecommendation[];
+  lastCalculated: Date;
+}
+
+/**
+ * Request to create retention campaign
+ */
+export interface CreateRetentionCampaignRequest {
+  name: string;
+  campaignType: RetentionCampaignType;
+  targetRiskLevel: ChurnRiskLevel[];
+  targetSupplierTypes?: string[];
+  campaignContent: {
+    emailTemplate?: string;
+    discountPercentage?: number;
+    callScript?: string;
+    customMessage?: string;
+  };
+  executionSettings: {
+    startDate: Date;
+    endDate?: Date;
+    autoExecute: boolean;
+    frequency: 'once' | 'weekly' | 'monthly' | 'triggered';
+  };
+}
+
+/**
+ * Request to execute retention action
+ */
+export interface ExecuteRetentionActionRequest {
+  supplierId: string;
+  action: RetentionAction;
+  campaignId?: string;
+  customMessage?: string;
+  scheduledFor?: Date;
+  assignedTo?: string;
+}
+
+/**
+ * Response after executing retention action
+ */
+export interface ExecuteRetentionActionResponse {
+  success: boolean;
+  actionId: string;
+  supplierId: string;
+  action: RetentionAction;
+  executedAt: Date;
+  expectedResponse?: string;
+  followUpRequired: boolean;
+  followUpDate?: Date;
+  estimatedImpact: number; // predicted risk score reduction
+}
+
+// ============================================================================
+// FILTER AND PAGINATION TYPES
+// ============================================================================
+
+/**
+ * Filters for at-risk supplier queries
+ */
+export interface AtRiskSupplierFilters {
+  riskLevel?: ChurnRiskLevel[];
+  supplierType?: string[];
+  riskScore?: {
+    min: number;
+    max: number;
+  };
+  daysSinceLastLogin?: {
+    min?: number;
+    max?: number;
+  };
+  hasOpenTickets?: boolean;
+  interventionOverdue?: boolean;
+  seasonalContext?: 'peak' | 'off_peak' | 'transition';
+  paymentIssues?: boolean;
+  search?: string;
+}
+
+/**
+ * Sort options for supplier lists
+ */
+export interface AtRiskSupplierSort {
+  field: 'riskScore' | 'churnProbability' | 'lastActivity' | 'supplierName' | 'predictedChurnDate';
+  direction: 'asc' | 'desc';
+}
+
+/**
+ * Pagination with supplier-specific options
+ */
+export interface SupplierPaginationOptions {
+  page: number;
+  limit: number;
+  filters?: AtRiskSupplierFilters;
+  sort?: AtRiskSupplierSort;
+}
+
+// ============================================================================
+// DASHBOARD COMPONENT PROPS
+// ============================================================================
+
+/**
+ * Props for main churn risk dashboard
+ */
+export interface ChurnRiskDashboardProps {
+  atRiskSuppliers: AtRiskSupplier[];
+  churnMetrics: ChurnMetrics;
+  retentionCampaigns: RetentionCampaign[];
+  realTimeUpdates: boolean;
+  onSupplierSelect?: (supplier: AtRiskSupplier) => void;
+  onCampaignCreate?: (campaign: CreateRetentionCampaignRequest) => void;
+  onActionExecute?: (request: ExecuteRetentionActionRequest) => void;
+}
+
+/**
+ * Props for individual supplier risk cards
+ */
+export interface AtRiskSupplierCardProps {
+  supplier: AtRiskSupplier;
+  riskFactors: ChurnRiskFactor[];
+  recommendedActions: RetentionRecommendation[];
+  onActionExecute: (action: RetentionAction) => void;
+  onViewDetails?: (supplierId: string) => void;
+  compact?: boolean;
+}
+
+/**
+ * Props for churn trend visualization
+ */
+export interface ChurnTrendChartProps {
+  churnData: ChurnTrendData[];
+  timeRange: '30d' | '90d' | '365d';
+  supplierSegments: string[];
+  showPredictions?: boolean;
+  showInterventions?: boolean;
+  onDateRangeChange?: (range: { startDate: Date; endDate: Date }) => void;
+}
+
+/**
+ * Props for retention campaign manager
+ */
+export interface RetentionCampaignManagerProps {
+  activeCampaigns: RetentionCampaign[];
+  campaignTemplates: RetentionCampaignTemplate[];
+  onCampaignCreate: (campaign: CreateRetentionCampaignRequest) => void;
+  onCampaignUpdate: (id: string, updates: Partial<RetentionCampaign>) => void;
+  onCampaignPause: (id: string) => void;
+  onCampaignStop: (id: string) => void;
+}
+
+/**
+ * Props for real-time alert panel
+ */
+export interface ChurnAlertPanelProps {
+  alerts: ChurnAlert[];
+  onAlertDismiss: (alertId: string) => void;
+  onAlertAction: (alertId: string, action: string) => void;
+  onAlertAcknowledge: (alertId: string) => void;
+  maxDisplayAlerts?: number;
+}
+
+// ============================================================================
+// CAMPAIGN TEMPLATES AND AUTOMATION
+// ============================================================================
+
+/**
+ * Retention campaign template
+ */
+export interface RetentionCampaignTemplate {
+  id: string;
+  name: string;
+  campaignType: RetentionCampaignType;
+  description: string;
+  
+  // Template content
+  emailSubject?: string;
+  emailTemplate?: string;
+  callScriptTemplate?: string;
+  discountSettings?: {
+    percentage: number;
+    validDays: number;
+    minimumSpend?: number;
+  };
+  
+  // Targeting defaults
+  defaultRiskLevels: ChurnRiskLevel[];
+  defaultSupplierTypes: string[];
+  
+  // Performance expectations
+  expectedOpenRate: number;
+  expectedResponseRate: number;
+  expectedSaveRate: number;
+  
+  // Automation settings
+  autoTriggerConditions?: Record<string, any>;
+  followUpSequence?: RetentionAction[];
+  
+  // Metadata
+  isActive: boolean;
+  usageCount: number;
+  averagePerformance: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/**
+ * Automated intervention rule
+ */
+export interface InterventionRule {
+  id: string;
+  name: string;
+  description: string;
+  
+  // Trigger conditions
+  riskScoreThreshold: number;
+  riskLevelTriggers: ChurnRiskLevel[];
+  factorTriggers: string[]; // specific risk factors that trigger
+  
+  // Actions to execute
+  actions: RetentionAction[];
+  actionPriority: Priority;
+  escalationPath: string[];
+  
+  // Timing and frequency
+  delayMinutes: number; // delay before execution
+  maxExecutionsPerSupplier: number;
+  cooldownDays: number; // days between executions for same supplier
+  
+  // Metadata
+  isActive: boolean;
+  executionCount: number;
+  successRate: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// ============================================================================
+// REAL-TIME UPDATES AND WEBHOOKS
+// ============================================================================
+
+/**
+ * Real-time churn risk update event
+ */
+export interface ChurnRiskUpdateEvent {
+  type: 'churn_risk_updated';
+  supplierId: string;
+  supplierName: string;
+  previousRiskScore: number;
+  newRiskScore: number;
+  riskLevelChanged: boolean;
+  newRiskLevel: ChurnRiskLevel;
+  triggeredInterventions: string[];
+  alertsGenerated: string[];
+  timestamp: Date;
+}
+
+/**
+ * Campaign execution event
+ */
+export interface CampaignExecutionEvent {
+  type: 'campaign_executed' | 'campaign_responded' | 'campaign_converted';
+  campaignId: string;
+  campaignName: string;
+  supplierId: string;
+  action: RetentionAction;
+  result: 'success' | 'failed' | 'pending';
+  responseTime?: number;
+  conversionValue?: number;
+  timestamp: Date;
+}
+
+/**
+ * Churn alert event
+ */
+export interface ChurnAlertEvent {
+  type: 'churn_alert_created' | 'churn_alert_resolved';
+  alertId: string;
+  supplierId: string;
+  urgency: AlertUrgency;
+  message: string;
+  actionTaken?: string;
+  timestamp: Date;
+}
+
+// ============================================================================
+// UTILITY AND CONFIGURATION TYPES
+// ============================================================================
+
+/**
+ * Churn risk calculation configuration
+ */
+export interface ChurnRiskConfig {
+  factorWeights: {
+    loginRecency: number;      // 0.4 (40%)
+    featureUsage: number;      // 0.3 (30%)
+    supportSentiment: number;  // 0.2 (20%)
+    paymentHealth: number;     // 0.1 (10%)
+  };
+  riskThresholds: {
+    safe: number;      // 0-25
+    stable: number;    // 26-50
+    attention: number; // 51-70
+    highRisk: number;  // 71-85
+    critical: number;  // 86-100
+  };
+  seasonalAdjustments: {
+    peakSeason: number;     // -5 score adjustment (less risk during peak)
+    offPeak: number;        // +10 score adjustment (higher risk off-peak)
+    transition: number;     // +5 score adjustment
+  };
+}
+
+/**
+ * Dashboard refresh configuration
+ */
+export interface RefreshConfig {
+  autoRefresh: boolean;
+  refreshInterval: number; // seconds
+  realTimeSubscriptions: string[];
+  lastRefreshAt: Date;
+  nextRefreshAt: Date;
+}
+
+// ============================================================================
+// INTEGRATION TYPES
+// ============================================================================
+
+/**
+ * Integration with existing customer success systems
+ */
+export interface ChurnIntelligenceIntegration {
+  customerHealthData: import('./customer-health').CustomerHealthRow;
+  supportInteractions: import('./customer-success').SupportInteraction[];
+  existingInterventions: import('./customer-success').InterventionQueueItem[];
+  cohortAnalysis?: Record<string, any>; // Placeholder for cohort analysis integration
+}
+
+/**
+ * Wedding-specific churn factors
+ */
+export interface WeddingChurnContext {
+  weddingDate?: Date;
+  daysUntilWedding?: number;
+  weddingSeason: 'spring' | 'summer' | 'fall' | 'winter';
+  isDestinationWedding: boolean;
+  guestCount?: number;
+  budgetRange?: string;
+  supplierCriticalPath: boolean; // is this supplier critical for timeline
+  alternativeOptions: number; // number of alternative suppliers available
+}
+
+// ============================================================================
+// ALL TYPES EXPORTED DIRECTLY AS INTERFACES/ENUMS ABOVE
+// ============================================================================

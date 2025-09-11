@@ -1,0 +1,279 @@
+import { describe, it, expect, jest, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { TrialUsageIntegration } from '@/lib/trial/TrialUsageIntegration';
+
+// Mock the AI services
+vi.mock('@/lib/services/music-ai-service');
+vi.mock('@/lib/ml/floral-ai-service');
+vi.mock('@/lib/ml/photo-ai-service');
+vi.mock('@/lib/services/subscriptionService');
+// Mock Supabase client
+const mockSupabase = {
+  from: jest.fn(() => ({
+    select: jest.fn(() => ({
+      eq: jest.fn(() => ({
+        single: vi.fn(),
+      })),
+      gte: jest.fn(() => ({
+        lte: jest.fn(() => ({})),
+    })),
+    insert: jest.fn(() => ({
+      single: vi.fn(),
+    update: jest.fn(() => ({
+  })),
+  rpc: vi.fn(),
+};
+vi.mock('@/lib/supabase/client', () => ({
+  createClient: () => mockSupabase,
+}));
+describe('TrialUsageIntegration', () => {
+  let trialIntegration: TrialUsageIntegration;
+  beforeEach(() => {
+    trialIntegration = new TrialUsageIntegration();
+    vi.clearAllMocks();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  describe('Service Integration Tracking', () => {
+    it('should track Music AI service usage correctly', async () => {
+      const mockUsageData = {
+        recommendations_generated: 5,
+        playlists_created: 2,
+        mood_analyses: 8,
+        processing_time_ms: 1200,
+        api_calls: 15,
+      };
+      // Mock successful database operations
+      mockSupabase.from.mockReturnValue({
+        insert: vi.fn().mockReturnValue({
+          single: vi.fn().mockResolvedValue({ data: mockUsageData, error: null }),
+        }),
+      });
+      const result = await trialIntegration.trackMusicAIUsage(
+        'test-trial-id',
+        'test-session-id',
+        mockUsageData
+      );
+      expect(result).toBeDefined();
+      expect(mockSupabase.from).toHaveBeenCalledWith('trial_music_ai_usage');
+    });
+    it('should track Floral AI service usage with TensorFlow metrics', async () => {
+        arrangements_generated: 3,
+        style_analyses: 6,
+        color_recommendations: 12,
+        ml_model_calls: 9,
+        inference_time_ms: 850,
+      const result = await trialIntegration.trackFloralAIUsage(
+      expect(mockSupabase.from).toHaveBeenCalledWith('trial_floral_ai_usage');
+    it('should track Photo AI service with OpenAI Vision API metrics', async () => {
+        photos_analyzed: 15,
+        enhancements_applied: 8,
+        categorizations_performed: 22,
+        openai_api_calls: 15,
+        vision_processing_time_ms: 2400,
+      const result = await trialIntegration.trackPhotoAIUsage(
+      expect(mockSupabase.from).toHaveBeenCalledWith('trial_photo_ai_usage');
+    it('should track Subscription Service integration metrics', async () => {
+        billing_calculations: 12,
+        tier_evaluations: 5,
+        usage_predictions: 8,
+        stripe_api_calls: 7,
+        processing_time_ms: 600,
+      const result = await trialIntegration.trackSubscriptionUsage(
+      expect(mockSupabase.from).toHaveBeenCalledWith('trial_subscription_usage');
+  describe('Cross-Team ROI Analysis', () => {
+    it('should calculate weighted ROI correctly across all services', async () => {
+      // Mock database responses for each service
+      const mockMusicData = {
+        data: [{ 
+          recommendations_generated: 10,
+          processing_time_ms: 1500,
+          api_calls: 20
+        }],
+        error: null
+      const mockFloralData = {
+          arrangements_generated: 6,
+          inference_time_ms: 900,
+          ml_model_calls: 15
+      const mockPhotoData = {
+          photos_analyzed: 25,
+          vision_processing_time_ms: 3000,
+          openai_api_calls: 25
+      const mockSubscriptionData = {
+          billing_calculations: 15,
+          processing_time_ms: 500,
+          stripe_api_calls: 10
+      // Chain the mock returns for different table queries
+      mockSupabase.from
+        .mockReturnValueOnce({
+          select: vi.fn().mockReturnValue({
+            eq: vi.fn().mockResolvedValue(mockMusicData)
+          })
+        })
+            eq: vi.fn().mockResolvedValue(mockFloralData)
+            eq: vi.fn().mockResolvedValue(mockPhotoData)
+            eq: vi.fn().mockResolvedValue(mockSubscriptionData)
+        });
+      const result = await trialIntegration.generateCrossTeamROI('test-trial-id');
+      expect(result.totalWeightedROI).toBeGreaterThan(0);
+      expect(result.serviceBreakdown).toHaveLength(4);
+      
+      // Verify each service is represented
+      const serviceNames = result.serviceBreakdown.map(s => s.serviceName);
+      expect(serviceNames).toContain('music_ai');
+      expect(serviceNames).toContain('floral_ai');
+      expect(serviceNames).toContain('photo_ai');
+      expect(serviceNames).toContain('subscription_management');
+      // Verify weighted calculations are applied
+      result.serviceBreakdown.forEach(service => {
+        expect(service.weightedROI).toBeGreaterThan(0);
+        expect(service.timeMultiplier).toBeGreaterThan(0);
+        expect(service.costMultiplier).toBeGreaterThan(0);
+    it('should handle missing service data gracefully', async () => {
+      // Mock scenario where some services have no data
+            eq: vi.fn().mockResolvedValue({ data: [], error: null })
+            eq: vi.fn().mockResolvedValue({ 
+              data: [{ photos_analyzed: 5, vision_processing_time_ms: 1000 }], 
+              error: null 
+            })
+      expect(result.serviceBreakdown.length).toBeLessThanOrEqual(4);
+      // Should only include services with actual data
+      const servicesWithData = result.serviceBreakdown.filter(s => s.totalUsage > 0);
+      expect(servicesWithData.length).toBeGreaterThanOrEqual(1);
+    it('should apply correct weight multipliers for each service type', () => {
+      const weights = (trialIntegration as unknown).serviceWeights;
+      // Verify Music AI weights (time-efficient, cost-effective)
+      expect(weights.music_ai.time_multiplier).toBe(1.2);
+      expect(weights.music_ai.cost_multiplier).toBe(0.8);
+      expect(weights.music_ai.engagement_weight).toBe(0.9);
+      // Verify Floral AI weights (time-intensive, higher cost)
+      expect(weights.floral_ai.time_multiplier).toBe(1.5);
+      expect(weights.floral_ai.cost_multiplier).toBe(1.2);
+      expect(weights.floral_ai.engagement_weight).toBe(1.0);
+      // Verify Photo AI weights (moderate processing)
+      expect(weights.photo_ai.time_multiplier).toBe(1.3);
+      expect(weights.photo_ai.cost_multiplier).toBe(0.9);
+      expect(weights.photo_ai.engagement_weight).toBe(1.1);
+      // Verify Subscription weights (lightweight processing)
+      expect(weights.subscription_management.time_multiplier).toBe(0.8);
+      expect(weights.subscription_management.cost_multiplier).toBe(1.0);
+      expect(weights.subscription_management.engagement_weight).toBe(0.7);
+  describe('Business Intelligence Metrics Generation', () => {
+    it('should generate comprehensive business intelligence metrics', async () => {
+      // Mock aggregated data from multiple sources
+      const mockAggregatedData = {
+        data: [{
+          total_trial_users: 1247,
+          active_users_30d: 945,
+          conversion_rate: 23.8,
+          avg_session_duration: 24.5,
+          total_ai_interactions: 15420,
+          cross_service_usage_rate: 67.3
+      mockSupabase.rpc.mockResolvedValue(mockAggregatedData);
+      const result = await trialIntegration.generateBusinessIntelligence();
+      expect(result.totalTrialUsers).toBe(1247);
+      expect(result.conversionMetrics.conversionRate).toBe(23.8);
+      expect(result.engagementMetrics.crossServiceUsageRate).toBe(67.3);
+      expect(result.performanceMetrics.avgSessionDuration).toBe(24.5);
+      expect(mockSupabase.rpc).toHaveBeenCalledWith('get_trial_business_intelligence');
+    it('should calculate conversion funnel stages correctly', async () => {
+      const mockFunnelData = {
+          trial_signups: 2847,
+          ai_feature_usage: 2156,
+          multiple_services: 1823,
+          extension_requests: 945,
+          converted_to_paid: 678
+      mockSupabase.rpc.mockResolvedValue(mockFunnelData);
+      expect(result.conversionFunnel).toBeDefined();
+      expect(result.conversionFunnel.length).toBeGreaterThan(0);
+      // Verify funnel stages are in descending order (typical conversion pattern)
+      const values = result.conversionFunnel.map(stage => stage.value);
+      for (let i = 0; i < values.length - 1; i++) {
+        expect(values[i]).toBeGreaterThanOrEqual(values[i + 1]);
+      }
+    it('should handle database errors gracefully in BI generation', async () => {
+      mockSupabase.rpc.mockResolvedValue({ data: null, error: { message: 'Database error' } });
+      // Should return default/fallback values instead of throwing
+      expect(result.totalTrialUsers).toBe(0);
+      expect(result.conversionMetrics.conversionRate).toBe(0);
+  describe('Helper Methods', () => {
+    it('should categorize usage levels correctly', () => {
+      const categorizeUsage = (trialIntegration as unknown).categorizeUsageLevel;
+      expect(categorizeUsage(0)).toBe('inactive');
+      expect(categorizeUsage(5)).toBe('low');
+      expect(categorizeUsage(15)).toBe('medium');
+      expect(categorizeUsage(35)).toBe('high');
+      expect(categorizeUsage(100)).toBe('very_high');
+    it('should calculate conversion indicators correctly', () => {
+      const calculateConversionIndicator = (trialIntegration as unknown).calculateConversionIndicator;
+      // Mock usage data for calculation
+      const usageData = {
+        totalInteractions: 45,
+        avgSessionDuration: 18.5,
+        servicesUsed: 3,
+        daysActive: 12,
+        extensionRequests: 1
+      const indicator = calculateConversionIndicator(usageData);
+      expect(indicator).toBeGreaterThan(0);
+      expect(indicator).toBeLessThanOrEqual(100);
+    it('should calculate weighted ROI correctly for individual services', () => {
+      const calculateServiceROI = (trialIntegration as unknown).calculateServiceROI;
+      const serviceData = {
+        totalUsage: 25,
+        processingTime: 1500,
+        apiCalls: 30,
+        serviceName: 'floral_ai'
+      const roi = calculateServiceROI(serviceData);
+      expect(roi).toBeGreaterThan(0);
+      // Floral AI should have higher ROI due to weight multipliers
+      expect(roi).toBeGreaterThan(1000); // Base expectation
+  describe('Error Handling and Edge Cases', () => {
+    it('should handle null trial IDs gracefully', async () => {
+      await expect(
+        trialIntegration.generateCrossTeamROI('')
+      ).rejects.toThrow('Trial ID is required');
+    it('should handle database connection errors', async () => {
+      mockSupabase.from.mockImplementation(() => {
+        throw new Error('Database connection failed');
+        trialIntegration.trackMusicAIUsage('trial-id', 'session-id', {})
+      ).rejects.toThrow('Database connection failed');
+    it('should handle malformed usage data', async () => {
+      const malformedData = {
+        invalid_field: 'not a number',
+        null_value: null,
+        undefined_value: undefined
+      // Should sanitize data before database insertion
+          single: vi.fn().mockResolvedValue({ data: {}, error: null }),
+        malformedData as any
+    it('should handle concurrent access safely', async () => {
+      const promises = Array.from({ length: 10 }, (_, i) =>
+        trialIntegration.trackMusicAIUsage(
+          `trial-${i}`,
+          `session-${i}`,
+          { recommendations_generated: i }
+        )
+      // Mock successful responses for all concurrent calls
+      const results = await Promise.all(promises);
+      expect(results).toHaveLength(10);
+      results.forEach(result => {
+        expect(result).toBeDefined();
+  describe('Performance Validation', () => {
+    it('should complete ROI analysis within performance threshold', async () => {
+      // Mock fast database responses
+        select: vi.fn().mockReturnValue({
+          eq: vi.fn().mockResolvedValue({ data: [{ usage: 10 }], error: null })
+      const startTime = Date.now();
+      await trialIntegration.generateCrossTeamROI('test-trial-id');
+      const duration = Date.now() - startTime;
+      // Should complete within 200ms (as per Round 2 specs)
+      expect(duration).toBeLessThan(200);
+    it('should handle large datasets efficiently', async () => {
+      // Mock large dataset
+      const largeDataset = Array.from({ length: 1000 }, (_, i) => ({
+        usage_metric: i,
+        processing_time: i * 10,
+        api_calls: i * 2
+      }));
+          eq: vi.fn().mockResolvedValue({ data: largeDataset, error: null })
+      expect(duration).toBeLessThan(1000); // Should handle large datasets within 1 second
+});

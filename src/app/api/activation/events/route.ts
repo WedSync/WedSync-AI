@@ -1,0 +1,272 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+
+// Rate limiting store (in production, use Redis)
+const rateLimitStore = new Map<string, { count: number; resetTime: number }>();
+
+function checkRateLimit(ip: string, limit: number, windowMs: number): boolean {
+  const now = Date.now();
+  const key = `${ip}:${Math.floor(now / windowMs)}`;
+
+  if (!rateLimitStore.has(key)) {
+    rateLimitStore.set(key, { count: 1, resetTime: now + windowMs });
+    return true;
+  }
+
+  const current = rateLimitStore.get(key)!;
+  if (current.count >= limit) {
+    return false;
+  }
+
+  current.count++;
+  return true;
+}
+
+// Validation schema for activation events
+const ActivationEventSchema = z.object({
+  event_type: z.string().min(1).max(100),
+  event_data: z.record(z.any()).optional().default({}),
+  properties: z.record(z.any()).optional().default({}),
+  session_id: z.string().optional(),
+});
+
+export async function POST(request: NextRequest) {
+  try {
+    // Rate limiting: 50 requests per minute per IP
+    const ip = request.ip || 'unknown';
+    if (!checkRateLimit(ip, 50, 60000)) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Rate limit exceeded',
+          code: 'RATE_LIMIT_EXCEEDED',
+        },
+        { status: 429 },
+      );
+    }
+
+    const supabase = await createClient();
+
+    // Get current user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Authentication required',
+          code: 'UNAUTHORIZED',
+        },
+        { status: 401 },
+      );
+    }
+
+    // Get user's organization
+    const { data: profile, error: profileError } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('id', user.id)
+      .single();
+
+    if (profileError || !profile?.organization_id) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'User organization not found',
+          code: 'ORGANIZATION_NOT_FOUND',
+        },
+        { status: 400 },
+      );
+    }
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validatedData = ActivationEventSchema.parse(body);
+
+    // Insert activation event
+    const { data: event, error: insertError } = await supabase
+      .from('activation_events')
+      .insert({
+        user_id: user.id,
+        organization_id: profile.organization_id,
+        event_type: validatedData.event_type,
+        event_data: validatedData.event_data,
+        properties: validatedData.properties,
+        session_id: validatedData.session_id,
+        ip_address: request.ip,
+        user_agent: request.headers.get('user-agent'),
+      })
+      .select()
+      .single();
+
+    if (insertError) {
+      console.error('Error inserting activation event:', insertError);
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Failed to track event',
+          code: 'INSERT_ERROR',
+        },
+        { status: 500 },
+      );
+    }
+
+    // Get updated activation status
+    const { data: status, error: statusError } = await supabase
+      .from('user_activation_status')
+      .select('*')
+      .eq('user_id', user.id)
+      .single();
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        event,
+        activation_status: status,
+      },
+    });
+  } catch (error) {
+    console.error('Error in activation events API:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Invalid request data',
+          details: error.errors,
+          code: 'VALIDATION_ERROR',
+        },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Internal server error',
+        code: 'INTERNAL_ERROR',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    // Rate limiting: 100 requests per minute per IP
+    const ip = request.ip || 'unknown';
+    if (!checkRateLimit(ip, 100, 60000)) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Rate limit exceeded',
+          code: 'RATE_LIMIT_EXCEEDED',
+        },
+        { status: 429 },
+      );
+    }
+
+    const supabase = await createClient();
+
+    // Get current user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Authentication required',
+          code: 'UNAUTHORIZED',
+        },
+        { status: 401 },
+      );
+    }
+
+    // Parse query parameters
+    const url = new URL(request.url);
+    const page = parseInt(url.searchParams.get('page') || '1');
+    const limit = Math.min(
+      parseInt(url.searchParams.get('limit') || '50'),
+      100,
+    );
+    const eventType = url.searchParams.get('event_type');
+    const from = url.searchParams.get('from');
+    const to = url.searchParams.get('to');
+
+    // Build query
+    let query = supabase
+      .from('activation_events')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false });
+
+    // Apply filters
+    if (eventType) {
+      query = query.eq('event_type', eventType);
+    }
+
+    if (from) {
+      query = query.gte('created_at', from);
+    }
+
+    if (to) {
+      query = query.lte('created_at', to);
+    }
+
+    // Apply pagination
+    const offset = (page - 1) * limit;
+    query = query.range(offset, offset + limit - 1);
+
+    const { data: events, error: eventsError } = await query;
+
+    if (eventsError) {
+      console.error('Error fetching activation events:', eventsError);
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Failed to fetch events',
+          code: 'FETCH_ERROR',
+        },
+        { status: 500 },
+      );
+    }
+
+    // Get total count for pagination
+    const { count, error: countError } = await supabase
+      .from('activation_events')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', user.id);
+
+    if (countError) {
+      console.error('Error getting events count:', countError);
+    }
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        events,
+        pagination: {
+          page,
+          limit,
+          total: count || 0,
+          total_pages: Math.ceil((count || 0) / limit),
+        },
+      },
+    });
+  } catch (error) {
+    console.error('Error in activation events GET API:', error);
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Internal server error',
+        code: 'INTERNAL_ERROR',
+      },
+      { status: 500 },
+    );
+  }
+}

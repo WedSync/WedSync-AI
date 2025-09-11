@@ -1,0 +1,220 @@
+// ==========================================
+// WS-243: AI Chatbot Real-time SSE Endpoint
+// GET /api/chatbot/realtime - Server-Sent Events stream
+// ==========================================
+
+import { NextRequest } from 'next/server';
+import { getAuthenticatedUser, createAuthErrorResponse, canAccessChatbot } from '@/lib/auth/chatbot-auth';
+import { chatbotRealtime } from '@/lib/services/chatbot-realtime-service';
+import { validateAndSanitize, UUIDSchema } from '@/lib/validation/chatbot-schemas';
+
+// ==========================================
+// GET - Server-Sent Events Stream
+// ==========================================
+export async function GET(request: NextRequest) {
+  try {
+    // Authentication
+    const user = await getAuthenticatedUser();
+    if (!user || !canAccessChatbot(user)) {
+      return createAuthErrorResponse('Access denied. Chatbot feature required.');
+    }
+
+    // Get conversation ID from query parameters
+    const { searchParams } = new URL(request.url);
+    const conversationId = searchParams.get('conversation_id');
+
+    if (!conversationId) {
+      return new Response(
+        JSON.stringify({
+          error: 'conversation_id parameter is required',
+          code: 'MISSING_CONVERSATION_ID',
+          timestamp: new Date().toISOString(),
+        }),
+        {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+    }
+
+    // Validate conversation ID format
+    try {
+      validateAndSanitize(UUIDSchema, conversationId);
+    } catch (error) {
+      return new Response(
+        JSON.stringify({
+          error: 'Invalid conversation ID format',
+          code: 'INVALID_CONVERSATION_ID',
+          timestamp: new Date().toISOString(),
+        }),
+        {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+    }
+
+    // Create SSE stream
+    const stream = chatbotRealtime.createSSEStream(user.id, conversationId);
+
+    // Log connection
+    console.log(`SSE connection established: user ${user.id} -> conversation ${conversationId}`);
+
+    // Return SSE response
+    return new Response(stream, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET',
+        'Access-Control-Allow-Headers': 'Cache-Control',
+      },
+    });
+
+  } catch (error) {
+    console.error('SSE endpoint error:', error);
+    
+    return new Response(
+      JSON.stringify({
+        error: 'Failed to establish real-time connection',
+        code: 'SSE_CONNECTION_FAILED',
+        details: process.env.NODE_ENV === 'development' ? error.message : undefined,
+        timestamp: new Date().toISOString(),
+      }),
+      {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
+  }
+}
+
+// ==========================================
+// POST - Send real-time events
+// ==========================================
+export async function POST(request: NextRequest) {
+  try {
+    // Authentication
+    const user = await getAuthenticatedUser();
+    if (!user || !canAccessChatbot(user)) {
+      return createAuthErrorResponse('Access denied. Chatbot feature required.');
+    }
+
+    // Parse request body
+    const body = await request.json();
+    const { action, conversation_id, data } = body;
+
+    if (!action || !conversation_id) {
+      return new Response(
+        JSON.stringify({
+          error: 'action and conversation_id are required',
+          code: 'MISSING_PARAMETERS',
+          timestamp: new Date().toISOString(),
+        }),
+        {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+    }
+
+    // Validate conversation ID
+    try {
+      validateAndSanitize(UUIDSchema, conversation_id);
+    } catch (error) {
+      return new Response(
+        JSON.stringify({
+          error: 'Invalid conversation ID format',
+          code: 'INVALID_CONVERSATION_ID',
+          timestamp: new Date().toISOString(),
+        }),
+        {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+    }
+
+    // Handle different actions
+    switch (action) {
+      case 'start_typing':
+        chatbotRealtime.startTyping(conversation_id, user.id, 'user');
+        break;
+
+      case 'stop_typing':
+        chatbotRealtime.stopTyping(conversation_id, user.id, 'user');
+        break;
+
+      case 'join_conversation':
+        chatbotRealtime.addUserToConversation(conversation_id, user.id);
+        break;
+
+      case 'leave_conversation':
+        chatbotRealtime.removeUserFromConversation(conversation_id, user.id);
+        break;
+
+      default:
+        return new Response(
+          JSON.stringify({
+            error: `Unknown action: ${action}`,
+            code: 'UNKNOWN_ACTION',
+            allowed_actions: ['start_typing', 'stop_typing', 'join_conversation', 'leave_conversation'],
+            timestamp: new Date().toISOString(),
+          }),
+          {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' },
+          }
+        );
+    }
+
+    // Log action
+    console.log(`Real-time action: ${action} by user ${user.id} in conversation ${conversation_id}`);
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        action,
+        conversation_id,
+        user_id: user.id,
+        timestamp: new Date().toISOString(),
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
+
+  } catch (error) {
+    console.error('Real-time action error:', error);
+    
+    return new Response(
+      JSON.stringify({
+        error: 'Failed to process real-time action',
+        code: 'REALTIME_ACTION_FAILED',
+        details: process.env.NODE_ENV === 'development' ? error.message : undefined,
+        timestamp: new Date().toISOString(),
+      }),
+      {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
+  }
+}
+
+// ==========================================
+// OPTIONS - CORS preflight
+// ==========================================
+export async function OPTIONS() {
+  return new Response(null, {
+    status: 200,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, Cache-Control',
+    },
+  });
+}

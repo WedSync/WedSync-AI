@@ -1,0 +1,118 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { verifyAdminAccess } from '@/lib/admin/auth';
+import { adminAuditLogger } from '@/lib/admin/auditLogger';
+import { emergencyControls } from '@/lib/admin/emergencyControls';
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+
+    // Verify admin authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized access' },
+        { status: 401 },
+      );
+    }
+
+    const isAdmin = await verifyAdminAccess(user.id);
+    if (!isAdmin) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions' },
+        { status: 403 },
+      );
+    }
+
+    const body = await request.json();
+    const { featureId, enabled } = body;
+
+    if (!featureId || typeof enabled !== 'boolean') {
+      return NextResponse.json(
+        { error: 'Invalid parameters' },
+        { status: 400 },
+      );
+    }
+
+    // Get client IP for audit logging
+    const clientIP =
+      request.headers.get('x-forwarded-for') ||
+      request.headers.get('x-real-ip') ||
+      'unknown';
+
+    // Toggle the feature
+    const result = await emergencyControls.toggleSystemFeature(
+      featureId,
+      enabled,
+    );
+
+    // Log the action
+    await adminAuditLogger.logAction({
+      adminId: user.id,
+      adminEmail: user.email || 'unknown',
+      action: 'toggle_system_feature',
+      status: result.success ? 'success' : 'failed',
+      details: {
+        feature_id: featureId,
+        enabled,
+        client_ip: clientIP,
+      },
+      timestamp: new Date().toISOString(),
+      clientIP,
+      requiresMFA: false,
+    });
+
+    if (result.success) {
+      return NextResponse.json({
+        success: true,
+        message: result.message,
+        featureId,
+        enabled,
+      });
+    } else {
+      return NextResponse.json(
+        {
+          error: result.message,
+          details: result.error,
+        },
+        { status: 500 },
+      );
+    }
+  } catch (error) {
+    console.error('Feature toggle error:', error);
+
+    // Log the failed attempt
+    try {
+      const body = await request.json();
+      const { data: user } = await createClient().auth.getUser();
+
+      if (user) {
+        await adminAuditLogger.logAction({
+          adminId: user.id,
+          adminEmail: user.email || 'unknown',
+          action: 'toggle_system_feature',
+          status: 'error',
+          details: {
+            error: error instanceof Error ? error.message : 'Unknown error',
+            feature_id: body.featureId,
+            client_ip: request.headers.get('x-forwarded-for') || 'unknown',
+          },
+          timestamp: new Date().toISOString(),
+          clientIP: request.headers.get('x-forwarded-for') || 'unknown',
+          requiresMFA: false,
+        });
+      }
+    } catch (auditError) {
+      console.error('Failed to log audit entry:', auditError);
+    }
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

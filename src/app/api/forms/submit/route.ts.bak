@@ -1,0 +1,243 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { formSubmissionSchema } from '@/lib/validations/forms';
+import { generateSecureId } from '@/lib/crypto-utils';
+import { withMediumSecurity, SecurityContext } from '@/lib/comprehensive-security-middleware';
+import { DatabaseOptimizer } from '@/lib/database-optimizer';
+
+// Optimized form submission query fields
+const FORM_QUERY_FIELDS = `
+  id, 
+  status, 
+  settings, 
+  sections, 
+  created_by,
+  organization_id
+`;
+
+// Submission data interface
+interface FormSubmissionData {
+  formId: string;
+  data: Record<string, any>;
+  metadata?: {
+    source?: string;
+    referrer?: string;
+    sessionId?: string;
+  };
+}
+
+// POST /api/forms/submit - Optimized form submission with security middleware
+async function handleFormSubmission(request: NextRequest, context: SecurityContext): Promise<NextResponse> {
+  const supabase = await createClient();
+  
+  try {
+    // Get validated submission data (already sanitized by middleware)
+    const submissionData = await request.json() as FormSubmissionData;
+    
+    // Optimized form lookup with caching
+    const formResult = await DatabaseOptimizer.executeOptimizedQuery(
+      `form:${submissionData.formId}`,
+      async () => {
+        return await supabase
+          .from('forms')
+          .select(FORM_QUERY_FIELDS)
+          .eq('id', submissionData.formId)
+          .single();
+      },
+      { cacheTTL: 60 * 1000 } // Cache form data for 1 minute
+    );
+
+    if (formResult.error || !formResult.data) {
+      return NextResponse.json(
+        { 
+          success: false,
+          error: 'Form not found' 
+        },
+        { status: 404 }
+      );
+    }
+
+    const form = formResult.data;
+
+    // Check form publication status and ownership
+    const isOwner = context.user && form.created_by === context.user.id;
+    if (form.status !== 'published' && !isOwner) {
+      return NextResponse.json(
+        { 
+          success: false,
+          error: 'Form is not published' 
+        },
+        { status: 403 }
+      );
+    }
+
+    // Check authentication requirements
+    if (form.settings?.requireLogin && !context.user) {
+      return NextResponse.json(
+        { 
+          success: false,
+          error: 'Authentication required' 
+        },
+        { status: 401 }
+      );
+    }
+
+    // Optimized field validation
+    const validationErrors = validateSubmissionData(submissionData.data, form.sections || []);
+    
+    if (validationErrors.length > 0) {
+      return NextResponse.json(
+        { 
+          success: false,
+          error: 'Validation failed',
+          details: validationErrors
+        },
+        { status: 400 }
+      );
+    }
+
+    // Generate secure submission ID
+    const submissionId = generateSecureId(16);
+    
+    // Prepare optimized submission data
+    const optimizedSubmissionData = {
+      id: submissionId,
+      form_id: submissionData.formId,
+      data: submissionData.data,
+      metadata: {
+        ...submissionData.metadata,
+        requestId: context.requestId,
+        ipAddress: context.clientIp,
+        userAgent: context.userAgent,
+        timestamp: new Date().toISOString(),
+        source: 'api'
+      },
+      status: 'completed',
+      submitted_by: context.user?.id || null,
+      submitted_at: new Date().toISOString()
+    };
+
+    // Optimized submission insert with conflict handling
+    const submitResult = await DatabaseOptimizer.executeOptimizedQuery(
+      `submit:${submissionId}`,
+      async () => {
+        return await supabase
+          .from('form_submissions')
+          .insert(optimizedSubmissionData)
+          .select('id, created_at')
+          .single();
+      },
+      { skipCache: true } // Don't cache submission operations
+    );
+
+    if (submitResult.error) {
+      console.error('Form submission error:', submitResult.error);
+      return NextResponse.json(
+        { 
+          success: false,
+          error: 'Failed to save submission' 
+        },
+        { status: 500 }
+      );
+    }
+
+    // Async form update (don't wait for completion)
+    supabase
+      .from('forms')
+      .update({ updated_at: new Date().toISOString() })
+      .eq('id', submissionData.formId)
+      .then(() => {
+        // Clear form cache after update
+        DatabaseOptimizer.clearCache(`form:${submissionData.formId}`);
+      })
+      .catch(error => {
+        console.warn('Form update error (non-critical):', error);
+      });
+
+    // Send optimized success response
+    return NextResponse.json({
+      success: true,
+      data: {
+        submissionId: submitResult.data.id,
+        message: form.settings?.successMessage || 'Thank you for your submission!',
+        redirect: form.settings?.redirectUrl || null
+      }
+    }, { status: 201 });
+
+  } catch (error) {
+    console.error('Form submission error:', error);
+    return NextResponse.json(
+      { 
+        success: false,
+        error: 'Submission processing failed' 
+      },
+      { status: 500 }
+    );
+  }
+}
+
+// Optimized field validation function
+function validateSubmissionData(data: Record<string, any>, sections: any[]): string[] {
+  const errors: string[] = [];
+  
+  for (const section of sections) {
+    for (const field of section.fields || []) {
+      const value = data[field.id];
+      
+      // Required field check
+      if (field.validation?.required && (value === null || value === undefined || value === '')) {
+        errors.push(`${field.label} is required`);
+        continue; // Skip further validation if required field is empty
+      }
+      
+      // Skip validation if field is empty and not required
+      if (!value) continue;
+      
+      // String validations
+      if (typeof value === 'string') {
+        // Length validations
+        if (field.validation?.minLength && value.length < field.validation.minLength) {
+          errors.push(`${field.label} must be at least ${field.validation.minLength} characters`);
+        }
+        if (field.validation?.maxLength && value.length > field.validation.maxLength) {
+          errors.push(`${field.label} must be no more than ${field.validation.maxLength} characters`);
+        }
+        
+        // Pattern validation
+        if (field.validation?.pattern && !new RegExp(field.validation.pattern).test(value)) {
+          errors.push(`${field.label} format is invalid`);
+        }
+        
+        // Type-specific validations
+        switch (field.type) {
+          case 'email':
+            if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
+              errors.push(`${field.label} must be a valid email address`);
+            }
+            break;
+          case 'phone':
+            const cleanedPhone = value.replace(/[\s\-\(\)]/g, '');
+            if (!/^[\+]?[1-9][\d]{0,15}$/.test(cleanedPhone)) {
+              errors.push(`${field.label} must be a valid phone number`);
+            }
+            break;
+        }
+      }
+    }
+  }
+  
+  return errors;
+}
+
+export const POST = withMediumSecurity(handleFormSubmission, formSubmissionSchema);
+
+// GET /api/forms/submit - Not allowed
+export async function GET() {
+  return NextResponse.json(
+    { 
+      success: false,
+      error: 'Method not allowed' 
+    },
+    { status: 405 }
+  );
+}

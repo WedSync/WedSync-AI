@@ -1,0 +1,552 @@
+'use client';
+
+import React, { useState, useCallback } from 'react';
+import { FormField, FormSection, Form } from '@/types/forms';
+import { FieldManager } from './FieldManager';
+import { DynamicFormBuilder } from './DynamicFormBuilder';
+import { FieldValidator, useFieldValidator } from './FieldValidator';
+import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Badge } from '@/components/ui/badge';
+import {
+  BeakerIcon,
+  CpuChipIcon,
+  ShieldCheckIcon,
+  CheckCircleIcon,
+  ExclamationTriangleIcon,
+} from '@heroicons/react/24/outline';
+
+/**
+ * Demo component showing how the Field Management System components work together
+ * This demonstrates the integration between FieldManager, DynamicFormBuilder, and FieldValidator
+ */
+export function FieldManagementDemo() {
+  const [activeTab, setActiveTab] = useState('builder');
+  const [demoForm, setDemoForm] = useState<Partial<Form>>({
+    name: 'Wedding Planning Form',
+    description: 'Comprehensive form for wedding planning services',
+    sections: [
+      {
+        id: 'main-section',
+        title: 'Wedding Details',
+        description: 'Tell us about your special day',
+        fields: [
+          {
+            id: 'bride-name',
+            type: 'text',
+            label: "Bride's Name",
+            placeholder: "Enter bride's full name",
+            required: true,
+            validation: { required: true, minLength: 2 },
+            order: 0,
+          },
+          {
+            id: 'groom-name',
+            type: 'text',
+            label: "Groom's Name",
+            placeholder: "Enter groom's full name",
+            required: true,
+            validation: { required: true, minLength: 2 },
+            order: 1,
+          },
+          {
+            id: 'wedding-date',
+            type: 'date',
+            label: 'Wedding Date',
+            required: true,
+            validation: { required: true },
+            order: 2,
+          },
+          {
+            id: 'contact-email',
+            type: 'email',
+            label: 'Contact Email',
+            placeholder: 'your.email@example.com',
+            required: true,
+            validation: {
+              required: true,
+              pattern: '^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$',
+              customMessage: 'Please enter a valid email address',
+            },
+            order: 3,
+          },
+          {
+            id: 'phone',
+            type: 'tel',
+            label: 'Phone Number',
+            placeholder: '(555) 123-4567',
+            validation: { required: true },
+            order: 4,
+          },
+          {
+            id: 'venue',
+            type: 'text',
+            label: 'Venue Name',
+            placeholder: 'Where will your wedding take place?',
+            helperText: 'Include the full name and location if known',
+            order: 5,
+          },
+          {
+            id: 'guest-count',
+            type: 'number',
+            label: 'Expected Guest Count',
+            placeholder: '150',
+            validation: { min: 1, max: 1000 },
+            order: 6,
+          },
+          {
+            id: 'service-type',
+            type: 'select',
+            label: 'Service Type',
+            required: true,
+            options: [
+              { id: '1', label: 'Photography Only', value: 'photography' },
+              { id: '2', label: 'Videography Only', value: 'videography' },
+              { id: '3', label: 'Photography + Videography', value: 'both' },
+              { id: '4', label: 'Wedding Planning', value: 'planning' },
+            ],
+            validation: { required: true },
+            order: 7,
+          },
+          {
+            id: 'special-requests',
+            type: 'textarea',
+            label: 'Special Requests',
+            placeholder: 'Any special requirements or requests...',
+            helperText:
+              'Please include any specific needs, themes, or important details',
+            validation: { maxLength: 500 },
+            order: 8,
+          },
+        ],
+        order: 0,
+      },
+    ],
+    settings: {
+      submitButtonText: 'Submit Wedding Inquiry',
+      successMessage: "Thank you! We'll contact you within 24 hours.",
+      autoSave: true,
+      requireLogin: false,
+      onePerUser: false,
+    },
+  });
+
+  // Integration with FieldValidator
+  const {
+    formData,
+    validationResult,
+    updateFieldValue,
+    validateField,
+    validateForm,
+  } = useFieldValidator(demoForm.sections?.[0]?.fields || [], {
+    validationMode: 'live',
+    enableRealTime: true,
+    enableAsyncValidation: false,
+    enableCrossFieldValidation: true,
+    showValidationSummary: true,
+    enableFieldSuggestions: true,
+  });
+
+  // Get all fields from all sections
+  const allFields =
+    demoForm.sections?.flatMap((section) => section.fields) || [];
+
+  // Handle form updates from DynamicFormBuilder
+  const handleFormUpdate = useCallback(
+    async (updatedForm: Partial<Form>) => {
+      setDemoForm(updatedForm);
+      // Trigger form validation after update
+      if (updatedForm.sections?.[0]?.fields) {
+        await validateForm();
+      }
+    },
+    [validateForm],
+  );
+
+  // Handle field updates from FieldManager
+  const handleFieldsUpdate = useCallback((fields: FormField[]) => {
+    setDemoForm((prev) => ({
+      ...prev,
+      sections: prev.sections?.map((section, index) =>
+        index === 0 ? { ...section, fields } : section,
+      ),
+    }));
+  }, []);
+
+  // Demo actions
+  const handleRunValidation = async () => {
+    const result = await validateForm(formData);
+    console.log('Validation Result:', result);
+  };
+
+  const handlePreviewForm = () => {
+    console.log('Form Preview:', demoForm);
+    alert(
+      'Form preview would open in a new window (check console for form data)',
+    );
+  };
+
+  const handlePublishForm = async () => {
+    const result = await validateForm(formData);
+    if (result.isValid) {
+      console.log('Publishing form:', demoForm);
+      alert('Form published successfully!');
+    } else {
+      alert(`Cannot publish: ${result.errors.length} validation errors found`);
+    }
+  };
+
+  return (
+    <div className="field-management-demo p-6 max-w-7xl mx-auto">
+      {/* Header */}
+      <div className="mb-8">
+        <div className="flex items-center gap-3 mb-4">
+          <div className="flex items-center gap-2">
+            <BeakerIcon className="h-6 w-6 text-purple-600" />
+            <h1 className="text-2xl font-bold text-gray-900">
+              Field Management System Demo
+            </h1>
+          </div>
+          <Badge variant="secondary" className="bg-purple-100 text-purple-800">
+            WS-215 Team A
+          </Badge>
+        </div>
+        <p className="text-gray-600 mb-4">
+          This demo showcases the integration of FieldManager,
+          DynamicFormBuilder, and FieldValidator components for creating
+          sophisticated, validated forms with real-time feedback.
+        </p>
+
+        {/* Status Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+          <Card className="p-4">
+            <div className="flex items-center gap-3">
+              <CpuChipIcon className="h-8 w-8 text-blue-600" />
+              <div>
+                <h3 className="font-semibold text-gray-900">Form Fields</h3>
+                <p className="text-2xl font-bold text-blue-600">
+                  {allFields.length}
+                </p>
+                <p className="text-sm text-gray-500">Total fields in form</p>
+              </div>
+            </div>
+          </Card>
+
+          <Card className="p-4">
+            <div className="flex items-center gap-3">
+              <ShieldCheckIcon className="h-8 w-8 text-green-600" />
+              <div>
+                <h3 className="font-semibold text-gray-900">
+                  Validation Score
+                </h3>
+                <p className="text-2xl font-bold text-green-600">
+                  {validationResult.formScore}%
+                </p>
+                <p className="text-sm text-gray-500">Form validation health</p>
+              </div>
+            </div>
+          </Card>
+
+          <Card className="p-4">
+            <div className="flex items-center gap-3">
+              {validationResult.errors.length === 0 ? (
+                <CheckCircleIcon className="h-8 w-8 text-green-600" />
+              ) : (
+                <ExclamationTriangleIcon className="h-8 w-8 text-red-600" />
+              )}
+              <div>
+                <h3 className="font-semibold text-gray-900">Status</h3>
+                <p
+                  className={`text-2xl font-bold ${
+                    validationResult.errors.length === 0
+                      ? 'text-green-600'
+                      : 'text-red-600'
+                  }`}
+                >
+                  {validationResult.errors.length === 0 ? 'Valid' : 'Issues'}
+                </p>
+                <p className="text-sm text-gray-500">
+                  {validationResult.errors.length} errors,{' '}
+                  {validationResult.warnings.length} warnings
+                </p>
+              </div>
+            </div>
+          </Card>
+        </div>
+
+        {/* Quick Actions */}
+        <div className="flex flex-wrap gap-2">
+          <Button onClick={handleRunValidation} variant="outline">
+            Run Validation
+          </Button>
+          <Button onClick={handlePreviewForm} variant="outline">
+            Preview Form
+          </Button>
+          <Button
+            onClick={handlePublishForm}
+            className="bg-green-600 hover:bg-green-700"
+            disabled={validationResult.errors.length > 0}
+          >
+            Publish Form
+          </Button>
+        </div>
+      </div>
+
+      {/* Main Demo Tabs */}
+      <Tabs defaultValue={activeTab} className="w-full">
+        <TabsList className="grid w-full grid-cols-4">
+          <TabsTrigger value="builder">Form Builder</TabsTrigger>
+          <TabsTrigger value="manager">Field Manager</TabsTrigger>
+          <TabsTrigger value="validator">Field Validator</TabsTrigger>
+          <TabsTrigger value="integration">Integration View</TabsTrigger>
+        </TabsList>
+
+        {/* Dynamic Form Builder Tab */}
+        <TabsContent value="builder" className="space-y-4">
+          <Card className="p-6">
+            <h2 className="text-xl font-semibold mb-4">
+              DynamicFormBuilder Component
+            </h2>
+            <p className="text-gray-600 mb-4">
+              Advanced form builder with real-time preview, drag-and-drop
+              functionality, and comprehensive settings.
+            </p>
+            <div className="border rounded-lg overflow-hidden bg-white">
+              <DynamicFormBuilder
+                initialForm={demoForm}
+                onSave={handleFormUpdate}
+                onPublish={handleFormUpdate}
+                onPreview={(form) => console.log('Preview:', form)}
+                autoSaveInterval={10000}
+                enableAdvancedFeatures={true}
+              />
+            </div>
+          </Card>
+        </TabsContent>
+
+        {/* Field Manager Tab */}
+        <TabsContent value="manager" className="space-y-4">
+          <Card className="p-6">
+            <h2 className="text-xl font-semibold mb-4">
+              FieldManager Component
+            </h2>
+            <p className="text-gray-600 mb-4">
+              Comprehensive field management with search, filtering, reordering,
+              and bulk operations.
+            </p>
+            <div
+              className="border rounded-lg overflow-hidden bg-gray-50"
+              style={{ height: '600px' }}
+            >
+              <FieldManager
+                fields={allFields}
+                onFieldsUpdate={handleFieldsUpdate}
+                onFieldSelect={(field) => console.log('Selected field:', field)}
+                allowReorder={true}
+                showPreview={true}
+              />
+            </div>
+          </Card>
+        </TabsContent>
+
+        {/* Field Validator Tab */}
+        <TabsContent value="validator" className="space-y-4">
+          <Card className="p-6">
+            <h2 className="text-xl font-semibold mb-4">
+              FieldValidator Component
+            </h2>
+            <p className="text-gray-600 mb-4">
+              Real-time validation with comprehensive error reporting,
+              suggestions, and performance metrics.
+            </p>
+
+            {/* Sample Form Data Input */}
+            <div className="mb-6 p-4 bg-gray-50 rounded-lg">
+              <h3 className="font-medium mb-3">Test Form Data</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {allFields.slice(0, 6).map((field) => (
+                  <div key={field.id}>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      {field.label}
+                      {field.required && (
+                        <span className="text-red-500">*</span>
+                      )}
+                    </label>
+                    {field.type === 'textarea' ? (
+                      <textarea
+                        value={formData[field.id] || ''}
+                        onChange={(e) =>
+                          updateFieldValue(field.id, e.target.value)
+                        }
+                        placeholder={field.placeholder}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                        rows={3}
+                      />
+                    ) : field.type === 'select' ? (
+                      <select
+                        value={formData[field.id] || ''}
+                        onChange={(e) =>
+                          updateFieldValue(field.id, e.target.value)
+                        }
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      >
+                        <option value="">Select an option...</option>
+                        {field.options?.map((option) => (
+                          <option key={option.id} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        type={field.type}
+                        value={formData[field.id] || ''}
+                        onChange={(e) =>
+                          updateFieldValue(field.id, e.target.value)
+                        }
+                        placeholder={field.placeholder}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      />
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <FieldValidator
+              fields={allFields}
+              formData={formData}
+              validationMode="live"
+              enableRealTime={true}
+              enableAsyncValidation={false}
+              enableCrossFieldValidation={true}
+              showValidationSummary={true}
+              enableFieldSuggestions={true}
+              onValidation={(result) => {
+                console.log('Validation update:', result);
+              }}
+            />
+          </Card>
+        </TabsContent>
+
+        {/* Integration View Tab */}
+        <TabsContent value="integration" className="space-y-4">
+          <Card className="p-6">
+            <h2 className="text-xl font-semibold mb-4">
+              Component Integration
+            </h2>
+            <p className="text-gray-600 mb-6">
+              This view shows how all three components work together in a
+              real-world scenario.
+            </p>
+
+            <div className="space-y-6">
+              {/* Architecture Overview */}
+              <div className="bg-gray-50 p-4 rounded-lg">
+                <h3 className="font-semibold mb-3">Architecture Overview</h3>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="bg-white p-3 rounded border-l-4 border-blue-500">
+                    <h4 className="font-medium text-blue-800">FieldManager</h4>
+                    <ul className="text-sm text-gray-600 mt-1">
+                      <li>• Dynamic field CRUD operations</li>
+                      <li>• Search and filtering</li>
+                      <li>• Bulk operations</li>
+                      <li>• Real-time preview</li>
+                    </ul>
+                  </div>
+                  <div className="bg-white p-3 rounded border-l-4 border-green-500">
+                    <h4 className="font-medium text-green-800">
+                      DynamicFormBuilder
+                    </h4>
+                    <ul className="text-sm text-gray-600 mt-1">
+                      <li>• Advanced form designer</li>
+                      <li>• Drag & drop interface</li>
+                      <li>• Multi-device preview</li>
+                      <li>• Theme customization</li>
+                    </ul>
+                  </div>
+                  <div className="bg-white p-3 rounded border-l-4 border-purple-500">
+                    <h4 className="font-medium text-purple-800">
+                      FieldValidator
+                    </h4>
+                    <ul className="text-sm text-gray-600 mt-1">
+                      <li>• Real-time validation</li>
+                      <li>• Custom validation rules</li>
+                      <li>• Performance metrics</li>
+                      <li>• Error suggestions</li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+
+              {/* Integration Benefits */}
+              <div className="bg-green-50 p-4 rounded-lg">
+                <h3 className="font-semibold text-green-800 mb-3">
+                  Integration Benefits
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                  <div>
+                    <h4 className="font-medium mb-2">For Developers</h4>
+                    <ul className="space-y-1 text-green-700">
+                      <li>• Modular architecture for easy customization</li>
+                      <li>• Type-safe interfaces with TypeScript</li>
+                      <li>• Comprehensive testing utilities</li>
+                      <li>• Performance optimizations built-in</li>
+                    </ul>
+                  </div>
+                  <div>
+                    <h4 className="font-medium mb-2">For Users</h4>
+                    <ul className="space-y-1 text-green-700">
+                      <li>• Intuitive form building experience</li>
+                      <li>• Real-time feedback and validation</li>
+                      <li>• Responsive design across devices</li>
+                      <li>• Advanced field management capabilities</li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+
+              {/* Usage Example */}
+              <div className="bg-blue-50 p-4 rounded-lg">
+                <h3 className="font-semibold text-blue-800 mb-3">
+                  Usage Example
+                </h3>
+                <pre className="text-sm bg-white p-3 rounded border overflow-x-auto">
+                  {`// Initialize the field management system
+const { formData, validateForm, updateFieldValue } = useFieldValidator(fields, {
+  validationMode: 'live',
+  enableRealTime: true,
+  showValidationSummary: true
+});
+
+// Use with DynamicFormBuilder
+<DynamicFormBuilder
+  initialForm={form}
+  onSave={handleSave}
+  enableAdvancedFeatures={true}
+/>
+
+// Use with FieldManager
+<FieldManager
+  fields={allFields}
+  onFieldsUpdate={handleFieldUpdate}
+  showPreview={true}
+/>
+
+// Use with FieldValidator
+<FieldValidator
+  fields={fields}
+  formData={formData}
+  enableRealTime={true}
+  showValidationSummary={true}
+/>`}
+                </pre>
+              </div>
+            </div>
+          </Card>
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}

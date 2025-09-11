@@ -1,0 +1,772 @@
+'use client';
+
+import React, { useState, useEffect } from 'react';
+import { createClient } from '@supabase/supabase-js';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { Badge } from '@/components/ui/badge';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import {
+  Calendar,
+  Clock,
+  Plus,
+  Minus,
+  Save,
+  Loader2,
+  ChevronRight,
+  ChevronDown,
+  Target,
+  AlertCircle,
+  CheckCircle2,
+  Edit,
+  Trash2,
+  Copy,
+  Download,
+  Upload,
+} from 'lucide-react';
+import { toast } from '@/components/ui/use-toast';
+import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+);
+
+interface Milestone {
+  id: string;
+  month: number;
+  title: string;
+  tasks: string[];
+  isExpanded: boolean;
+}
+
+interface TimelineTemplate {
+  id: string;
+  name: string;
+  description: string;
+  months_before_wedding: number;
+  template_id?: string;
+  milestones: Milestone[];
+  is_active: boolean;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+interface TimelineTemplateBuilderProps {
+  weddingId?: string;
+  weddingDate?: Date;
+  onApplyTimeline?: (timelineId: string) => void;
+}
+
+export default function TimelineTemplateBuilder({
+  weddingId,
+  weddingDate,
+  onApplyTimeline
+}: TimelineTemplateBuilderProps) {
+  const [templates, setTemplates] = useState<TimelineTemplate[]>([]);
+  const [selectedTemplate, setSelectedTemplate] = useState<TimelineTemplate | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [isCreating, setIsCreating] = useState(false);
+  const [currentUserId, setCurrentUserId] = useState<string>('');
+  const [activeTab, setActiveTab] = useState('templates');
+
+  const [newTemplate, setNewTemplate] = useState({
+    name: '',
+    description: '',
+    months_before_wedding: 12,
+  });
+
+  const [editingMilestones, setEditingMilestones] = useState<Milestone[]>([]);
+
+  useEffect(() => {
+    fetchTemplates();
+    fetchCurrentUser();
+  }, []);
+
+  const fetchCurrentUser = async () => {
+    const { data: user } = await supabase.auth.getUser();
+    if (user) {
+      const { data } = await supabase
+        .from('team_members')
+        .select('id')
+        .eq('user_id', user.id)
+        .single();
+      
+      if (data) setCurrentUserId(data.id);
+    }
+  };
+
+  const fetchTemplates = async () => {
+    setLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('timeline_templates')
+        .select('*')
+        .eq('is_active', true)
+        .order('months_before_wedding', { ascending: false });
+
+      if (error) throw error;
+
+      const templatesWithParsedMilestones = data?.map(template => ({
+        ...template,
+        milestones: template.milestones.map((m: any) => ({
+          ...m,
+          id: m.id || `milestone-${Date.now()}-${Math.random()}`,
+          isExpanded: false
+        }))
+      })) || [];
+
+      setTemplates(templatesWithParsedMilestones);
+    } catch (error) {
+      console.error('Error fetching timeline templates:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to load timeline templates',
+        variant: 'destructive',
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCreateTemplate = async () => {
+    if (!newTemplate.name || !currentUserId) return;
+
+    setLoading(true);
+    try {
+      const initialMilestones = generateInitialMilestones(newTemplate.months_before_wedding);
+
+      const { data, error } = await supabase
+        .from('timeline_templates')
+        .insert({
+          name: newTemplate.name,
+          description: newTemplate.description,
+          months_before_wedding: newTemplate.months_before_wedding,
+          milestones: initialMilestones,
+          is_active: true,
+          created_by: currentUserId,
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      const templateWithParsedMilestones = {
+        ...data,
+        milestones: data.milestones.map((m: any) => ({
+          ...m,
+          id: m.id || `milestone-${Date.now()}-${Math.random()}`,
+          isExpanded: false
+        }))
+      };
+
+      setTemplates([templateWithParsedMilestones, ...templates]);
+      setSelectedTemplate(templateWithParsedMilestones);
+      setEditingMilestones(templateWithParsedMilestones.milestones);
+      setIsCreating(false);
+      setActiveTab('editor');
+
+      toast({
+        title: 'Success',
+        description: 'Timeline template created successfully',
+      });
+    } catch (error) {
+      console.error('Error creating timeline template:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to create timeline template',
+        variant: 'destructive',
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const generateInitialMilestones = (months: number): Milestone[] => {
+    const milestones: Milestone[] = [];
+    const defaultTasks: Record<number, string[]> = {
+      12: ['Set budget', 'Create guest list', 'Choose wedding date', 'Book venue'],
+      11: ['Book photographer/videographer', 'Start dress shopping', 'Register for gifts'],
+      10: ['Book caterer', 'Book florist', 'Book entertainment'],
+      9: ['Send save the dates', 'Book officiant', 'Start planning honeymoon'],
+      8: ['Order wedding dress', 'Choose wedding party attire', 'Book transportation'],
+      7: ['Register for remaining gifts', 'Order invitations', 'Plan ceremony'],
+      6: ['Book hair and makeup', 'Finalize honeymoon', 'Choose wedding rings'],
+      5: ['Send invitations', 'Plan rehearsal dinner', 'Order wedding cake'],
+      4: ['Shop for wedding party gifts', 'Write vows', 'Finalize ceremony details'],
+      3: ['Finalize reception details', 'Have dress fitting', 'Finalize flowers'],
+      2: ['Apply for marriage license', 'Finalize seating chart', 'Break in wedding shoes'],
+      1: ['Final venue walkthrough', 'Confirm all vendors', 'Pack for honeymoon'],
+    };
+
+    for (let i = months; i >= 1; i--) {
+      milestones.push({
+        id: `milestone-${i}`,
+        month: i,
+        title: `${i} Month${i > 1 ? 's' : ''} Before Wedding`,
+        tasks: defaultTasks[i] || ['Add tasks for this milestone'],
+        isExpanded: false
+      });
+    }
+
+    return milestones;
+  };
+
+  const handleUpdateMilestone = (milestoneId: string, field: string, value: any) => {
+    setEditingMilestones(prev =>
+      prev.map(m =>
+        m.id === milestoneId ? { ...m, [field]: value } : m
+      )
+    );
+  };
+
+  const handleAddTask = (milestoneId: string) => {
+    setEditingMilestones(prev =>
+      prev.map(m =>
+        m.id === milestoneId
+          ? { ...m, tasks: [...m.tasks, 'New task'] }
+          : m
+      )
+    );
+  };
+
+  const handleUpdateTask = (milestoneId: string, taskIndex: number, value: string) => {
+    setEditingMilestones(prev =>
+      prev.map(m =>
+        m.id === milestoneId
+          ? {
+              ...m,
+              tasks: m.tasks.map((t, i) => (i === taskIndex ? value : t))
+            }
+          : m
+      )
+    );
+  };
+
+  const handleRemoveTask = (milestoneId: string, taskIndex: number) => {
+    setEditingMilestones(prev =>
+      prev.map(m =>
+        m.id === milestoneId
+          ? {
+              ...m,
+              tasks: m.tasks.filter((_, i) => i !== taskIndex)
+            }
+          : m
+      )
+    );
+  };
+
+  const handleAddMilestone = () => {
+    const newMilestone: Milestone = {
+      id: `milestone-${Date.now()}`,
+      month: editingMilestones.length + 1,
+      title: 'New Milestone',
+      tasks: ['Add tasks here'],
+      isExpanded: true
+    };
+    setEditingMilestones([newMilestone, ...editingMilestones]);
+  };
+
+  const handleRemoveMilestone = (milestoneId: string) => {
+    setEditingMilestones(prev => prev.filter(m => m.id !== milestoneId));
+  };
+
+  const handleSaveTemplate = async () => {
+    if (!selectedTemplate) return;
+
+    setLoading(true);
+    try {
+      const { error } = await supabase
+        .from('timeline_templates')
+        .update({
+          milestones: editingMilestones.map(m => ({
+            month: m.month,
+            title: m.title,
+            tasks: m.tasks
+          })),
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', selectedTemplate.id);
+
+      if (error) throw error;
+
+      setTemplates(prev =>
+        prev.map(t =>
+          t.id === selectedTemplate.id
+            ? { ...t, milestones: editingMilestones }
+            : t
+        )
+      );
+
+      toast({
+        title: 'Success',
+        description: 'Timeline template saved successfully',
+      });
+    } catch (error) {
+      console.error('Error saving timeline template:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to save timeline template',
+        variant: 'destructive',
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleApplyToWedding = async () => {
+    if (!selectedTemplate || !weddingId || !weddingDate) {
+      toast({
+        title: 'Error',
+        description: 'Wedding information is required to apply timeline',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const tasks = [];
+      
+      for (const milestone of selectedTemplate.milestones) {
+        const daysBeforeWedding = milestone.month * 30;
+        const taskDate = new Date(weddingDate);
+        taskDate.setDate(taskDate.getDate() - daysBeforeWedding);
+
+        for (const taskTitle of milestone.tasks) {
+          tasks.push({
+            title: taskTitle,
+            description: `Part of ${milestone.title} milestone`,
+            wedding_id: weddingId,
+            category: 'timeline_planning',
+            priority: milestone.month <= 3 ? 'high' : 'medium',
+            status: 'todo',
+            created_by: currentUserId,
+            assigned_by: currentUserId,
+            estimated_duration: 2,
+            deadline: taskDate.toISOString(),
+            notes: `Timeline: ${selectedTemplate.name}`
+          });
+        }
+      }
+
+      const { error } = await supabase
+        .from('workflow_tasks')
+        .insert(tasks);
+
+      if (error) throw error;
+
+      toast({
+        title: 'Success',
+        description: `Applied timeline with ${tasks.length} tasks`,
+      });
+
+      if (onApplyTimeline) {
+        onApplyTimeline(selectedTemplate.id);
+      }
+    } catch (error) {
+      console.error('Error applying timeline:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to apply timeline',
+        variant: 'destructive',
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDragEnd = (result: any) => {
+    if (!result.destination) return;
+
+    const items = Array.from(editingMilestones);
+    const [reorderedItem] = items.splice(result.source.index, 1);
+    items.splice(result.destination.index, 0, reorderedItem);
+
+    setEditingMilestones(items);
+  };
+
+  const handleExportTemplate = () => {
+    if (!selectedTemplate) return;
+
+    const dataStr = JSON.stringify(selectedTemplate, null, 2);
+    const dataUri = 'data:application/json;charset=utf-8,' + encodeURIComponent(dataStr);
+    
+    const exportFileDefaultName = `${selectedTemplate.name.replace(/\s+/g, '-')}-timeline.json`;
+    
+    const linkElement = document.createElement('a');
+    linkElement.setAttribute('href', dataUri);
+    linkElement.setAttribute('download', exportFileDefaultName);
+    linkElement.click();
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-2xl font-semibold">Timeline Templates</h2>
+        <Button onClick={() => setIsCreating(true)}>
+          <Plus className="h-4 w-4 mr-2" />
+          Create Timeline
+        </Button>
+      </div>
+
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <TabsList>
+          <TabsTrigger value="templates">Templates</TabsTrigger>
+          {selectedTemplate && (
+            <>
+              <TabsTrigger value="editor">Editor</TabsTrigger>
+              <TabsTrigger value="preview">Preview</TabsTrigger>
+            </>
+          )}
+        </TabsList>
+
+        <TabsContent value="templates" className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {templates.map((template) => (
+              <Card
+                key={template.id}
+                className="cursor-pointer hover:shadow-lg transition-shadow"
+                onClick={() => {
+                  setSelectedTemplate(template);
+                  setEditingMilestones(template.milestones);
+                  setActiveTab('editor');
+                }}
+              >
+                <CardHeader>
+                  <CardTitle className="text-lg">{template.name}</CardTitle>
+                  <CardDescription>{template.description}</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2 text-sm text-gray-600">
+                      <Calendar className="h-4 w-4" />
+                      <span>{template.months_before_wedding} months timeline</span>
+                    </div>
+                    <div className="flex items-center gap-2 text-sm text-gray-600">
+                      <Target className="h-4 w-4" />
+                      <span>{template.milestones.length} milestones</span>
+                    </div>
+                    <div className="flex items-center gap-2 text-sm text-gray-600">
+                      <CheckCircle2 className="h-4 w-4" />
+                      <span>
+                        {template.milestones.reduce((acc, m) => acc + m.tasks.length, 0)} tasks
+                      </span>
+                    </div>
+                  </div>
+                  {weddingId && (
+                    <Button
+                      className="w-full mt-4"
+                      variant="outline"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedTemplate(template);
+                        handleApplyToWedding();
+                      }}
+                    >
+                      Apply to Wedding
+                    </Button>
+                  )}
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </TabsContent>
+
+        {selectedTemplate && (
+          <TabsContent value="editor" className="space-y-4">
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle>{selectedTemplate.name}</CardTitle>
+                    <CardDescription>{selectedTemplate.description}</CardDescription>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button variant="outline" size="sm" onClick={handleExportTemplate}>
+                      <Download className="h-4 w-4 mr-2" />
+                      Export
+                    </Button>
+                    <Button size="sm" onClick={handleSaveTemplate} disabled={loading}>
+                      {loading ? (
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      ) : (
+                        <Save className="h-4 w-4 mr-2" />
+                      )}
+                      Save Changes
+                    </Button>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  <Button
+                    variant="outline"
+                    onClick={handleAddMilestone}
+                    className="w-full"
+                  >
+                    <Plus className="h-4 w-4 mr-2" />
+                    Add Milestone
+                  </Button>
+
+                  <DragDropContext onDragEnd={handleDragEnd}>
+                    <Droppable droppableId="milestones">
+                      {(provided) => (
+                        <div
+                          {...provided.droppableProps}
+                          ref={provided.innerRef}
+                          className="space-y-3"
+                        >
+                          {editingMilestones.map((milestone, index) => (
+                            <Draggable
+                              key={milestone.id}
+                              draggableId={milestone.id}
+                              index={index}
+                            >
+                              {(provided) => (
+                                <Card
+                                  ref={provided.innerRef}
+                                  {...provided.draggableProps}
+                                  {...provided.dragHandleProps}
+                                >
+                                  <CardHeader className="pb-3">
+                                    <div className="flex items-center justify-between">
+                                      <div className="flex items-center gap-2">
+                                        <Button
+                                          variant="ghost"
+                                          size="sm"
+                                          className="p-0 h-6 w-6"
+                                          onClick={() =>
+                                            handleUpdateMilestone(
+                                              milestone.id,
+                                              'isExpanded',
+                                              !milestone.isExpanded
+                                            )
+                                          }
+                                        >
+                                          {milestone.isExpanded ? (
+                                            <ChevronDown className="h-4 w-4" />
+                                          ) : (
+                                            <ChevronRight className="h-4 w-4" />
+                                          )}
+                                        </Button>
+                                        <Input
+                                          value={milestone.title}
+                                          onChange={(e) =>
+                                            handleUpdateMilestone(
+                                              milestone.id,
+                                              'title',
+                                              e.target.value
+                                            )
+                                          }
+                                          className="font-medium"
+                                        />
+                                      </div>
+                                      <div className="flex items-center gap-2">
+                                        <Badge variant="secondary">
+                                          {milestone.month} month{milestone.month > 1 ? 's' : ''}
+                                        </Badge>
+                                        <Button
+                                          variant="ghost"
+                                          size="sm"
+                                          onClick={() => handleRemoveMilestone(milestone.id)}
+                                        >
+                                          <Trash2 className="h-4 w-4" />
+                                        </Button>
+                                      </div>
+                                    </div>
+                                  </CardHeader>
+                                  {milestone.isExpanded && (
+                                    <CardContent>
+                                      <div className="space-y-2">
+                                        {milestone.tasks.map((task, taskIndex) => (
+                                          <div
+                                            key={taskIndex}
+                                            className="flex items-center gap-2"
+                                          >
+                                            <Input
+                                              value={task}
+                                              onChange={(e) =>
+                                                handleUpdateTask(
+                                                  milestone.id,
+                                                  taskIndex,
+                                                  e.target.value
+                                                )
+                                              }
+                                              placeholder="Task description"
+                                            />
+                                            <Button
+                                              variant="ghost"
+                                              size="sm"
+                                              onClick={() =>
+                                                handleRemoveTask(milestone.id, taskIndex)
+                                              }
+                                            >
+                                              <Minus className="h-4 w-4" />
+                                            </Button>
+                                          </div>
+                                        ))}
+                                        <Button
+                                          variant="outline"
+                                          size="sm"
+                                          onClick={() => handleAddTask(milestone.id)}
+                                          className="w-full"
+                                        >
+                                          <Plus className="h-4 w-4 mr-2" />
+                                          Add Task
+                                        </Button>
+                                      </div>
+                                    </CardContent>
+                                  )}
+                                </Card>
+                              )}
+                            </Draggable>
+                          ))}
+                          {provided.placeholder}
+                        </div>
+                      )}
+                    </Droppable>
+                  </DragDropContext>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
+
+        {selectedTemplate && (
+          <TabsContent value="preview" className="space-y-4">
+            <Card>
+              <CardHeader>
+                <CardTitle>Timeline Preview</CardTitle>
+                <CardDescription>
+                  Visual representation of your wedding planning timeline
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <ScrollArea className="h-[600px]">
+                  <div className="space-y-4">
+                    {editingMilestones.map((milestone) => (
+                      <div key={milestone.id} className="relative pl-8">
+                        <div className="absolute left-0 top-0 h-full w-0.5 bg-gray-200" />
+                        <div className="absolute left-[-6px] top-2 h-3 w-3 rounded-full bg-primary" />
+                        
+                        <Card>
+                          <CardHeader className="pb-3">
+                            <div className="flex items-center justify-between">
+                              <CardTitle className="text-base">
+                                {milestone.title}
+                              </CardTitle>
+                              <Badge variant="outline">
+                                {weddingDate
+                                  ? new Date(
+                                      new Date(weddingDate).setMonth(
+                                        new Date(weddingDate).getMonth() - milestone.month
+                                      )
+                                    ).toLocaleDateString('en-US', {
+                                      month: 'long',
+                                      year: 'numeric'
+                                    })
+                                  : `${milestone.month} months before`}
+                              </Badge>
+                            </div>
+                          </CardHeader>
+                          <CardContent>
+                            <ul className="space-y-1">
+                              {milestone.tasks.map((task, idx) => (
+                                <li key={idx} className="flex items-start gap-2">
+                                  <CheckCircle2 className="h-4 w-4 mt-0.5 text-green-500" />
+                                  <span className="text-sm">{task}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          </CardContent>
+                        </Card>
+                      </div>
+                    ))}
+                  </div>
+                </ScrollArea>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
+      </Tabs>
+
+      <Dialog open={isCreating} onOpenChange={setIsCreating}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Create Timeline Template</DialogTitle>
+            <DialogDescription>
+              Create a reusable timeline template for wedding planning
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label>Template Name</Label>
+              <Input
+                value={newTemplate.name}
+                onChange={(e) => setNewTemplate({ ...newTemplate, name: e.target.value })}
+                placeholder="e.g., 12-Month Wedding Timeline"
+              />
+            </div>
+            <div>
+              <Label>Description</Label>
+              <Textarea
+                value={newTemplate.description}
+                onChange={(e) => setNewTemplate({ ...newTemplate, description: e.target.value })}
+                placeholder="Describe this timeline template..."
+              />
+            </div>
+            <div>
+              <Label>Timeline Duration (months)</Label>
+              <Select
+                value={newTemplate.months_before_wedding.toString()}
+                onValueChange={(value) =>
+                  setNewTemplate({ ...newTemplate, months_before_wedding: parseInt(value) })
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="6">6 months</SelectItem>
+                  <SelectItem value="9">9 months</SelectItem>
+                  <SelectItem value="12">12 months</SelectItem>
+                  <SelectItem value="18">18 months</SelectItem>
+                  <SelectItem value="24">24 months</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setIsCreating(false)}>
+                Cancel
+              </Button>
+              <Button onClick={handleCreateTemplate} disabled={loading}>
+                {loading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                Create Template
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}

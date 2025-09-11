@@ -1,0 +1,163 @@
+import {
+  SubscriptionTier,
+  RateLimitStatus,
+  ViolationType,
+  ThreatLevel,
+  AbuseResponse,
+  isPeakWeddingSeason,
+  getSeasonalMultiplier,
+  RATE_LIMIT_COLORS,
+  SUBSCRIPTION_TIER_LIMITS
+} from '../rate-limiting';
+
+describe('Rate Limiting Types and Utilities', () => {
+  describe('isPeakWeddingSeason', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('returns true during peak wedding months', () => {
+      // May (month index 4)
+      jest.setSystemTime(new Date(2025, 4, 15));
+      expect(isPeakWeddingSeason()).toBe(true);
+
+      // June (month index 5)
+      jest.setSystemTime(new Date(2025, 5, 15));
+      expect(isPeakWeddingSeason()).toBe(true);
+
+      // September (month index 8)
+      jest.setSystemTime(new Date(2025, 8, 15));
+      expect(isPeakWeddingSeason()).toBe(true);
+
+      // October (month index 9)
+      jest.setSystemTime(new Date(2025, 9, 15));
+      expect(isPeakWeddingSeason()).toBe(true);
+    });
+
+    it('returns false during non-peak wedding months', () => {
+      // January (month index 0)
+      jest.setSystemTime(new Date(2025, 0, 15));
+      expect(isPeakWeddingSeason()).toBe(false);
+
+      // February (month index 1)
+      jest.setSystemTime(new Date(2025, 1, 15));
+      expect(isPeakWeddingSeason()).toBe(false);
+
+      // December (month index 11)
+      jest.setSystemTime(new Date(2025, 11, 15));
+      expect(isPeakWeddingSeason()).toBe(false);
+    });
+  });
+
+  describe('getSeasonalMultiplier', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('returns higher multiplier during peak season', () => {
+      jest.setSystemTime(new Date(2025, 5, 15)); // June
+      expect(getSeasonalMultiplier()).toBeGreaterThan(1.0);
+    });
+
+    it('returns base multiplier during non-peak season', () => {
+      jest.setSystemTime(new Date(2025, 0, 15)); // January
+      expect(getSeasonalMultiplier()).toBe(1.0);
+    });
+
+    it('returns different multipliers for different peak months', () => {
+      jest.setSystemTime(new Date(2025, 5, 15)); // June - highest
+      const juneMultiplier = getSeasonalMultiplier();
+
+      jest.setSystemTime(new Date(2025, 4, 15)); // May
+      const mayMultiplier = getSeasonalMultiplier();
+
+      expect(juneMultiplier).toBeGreaterThanOrEqual(mayMultiplier);
+    });
+  });
+
+  describe('RATE_LIMIT_COLORS', () => {
+    it('has colors defined for all status types', () => {
+      expect(RATE_LIMIT_COLORS[RateLimitStatus.SAFE]).toBeDefined();
+      expect(RATE_LIMIT_COLORS[RateLimitStatus.MODERATE]).toBeDefined();
+      expect(RATE_LIMIT_COLORS[RateLimitStatus.HIGH]).toBeDefined();
+      expect(RATE_LIMIT_COLORS[RateLimitStatus.EXCEEDED]).toBeDefined();
+    });
+
+    it('uses appropriate color values', () => {
+      expect(RATE_LIMIT_COLORS[RateLimitStatus.SAFE]).toMatch(/green|#[0-9a-f]{6}/i);
+      expect(RATE_LIMIT_COLORS[RateLimitStatus.EXCEEDED]).toMatch(/red|#[0-9a-f]{6}/i);
+    });
+  });
+
+  describe('SUBSCRIPTION_TIER_LIMITS', () => {
+    it('has limits defined for all subscription tiers', () => {
+      expect(SUBSCRIPTION_TIER_LIMITS[SubscriptionTier.FREE]).toBeDefined();
+      expect(SUBSCRIPTION_TIER_LIMITS[SubscriptionTier.STARTER]).toBeDefined();
+      expect(SUBSCRIPTION_TIER_LIMITS[SubscriptionTier.PROFESSIONAL]).toBeDefined();
+      expect(SUBSCRIPTION_TIER_LIMITS[SubscriptionTier.SCALE]).toBeDefined();
+      expect(SUBSCRIPTION_TIER_LIMITS[SubscriptionTier.ENTERPRISE]).toBeDefined();
+    });
+
+    it('has increasing limits for higher tiers', () => {
+      const freeLimits = SUBSCRIPTION_TIER_LIMITS[SubscriptionTier.FREE];
+      const starterLimits = SUBSCRIPTION_TIER_LIMITS[SubscriptionTier.STARTER];
+      const proLimits = SUBSCRIPTION_TIER_LIMITS[SubscriptionTier.PROFESSIONAL];
+
+      expect(starterLimits.monthlyRequestLimit).toBeGreaterThan(freeLimits.monthlyRequestLimit);
+      expect(proLimits.monthlyRequestLimit).toBeGreaterThan(starterLimits.monthlyRequestLimit);
+    });
+
+    it('has wedding season multipliers for all tiers', () => {
+      Object.values(SUBSCRIPTION_TIER_LIMITS).forEach(limits => {
+        expect(limits.weddingSeasonMultiplier).toBeGreaterThanOrEqual(1.0);
+        expect(typeof limits.weddingSeasonMultiplier).toBe('number');
+      });
+    });
+  });
+
+  describe('Enums', () => {
+    it('SubscriptionTier contains expected values', () => {
+      expect(Object.values(SubscriptionTier)).toContain('FREE');
+      expect(Object.values(SubscriptionTier)).toContain('STARTER');
+      expect(Object.values(SubscriptionTier)).toContain('PROFESSIONAL');
+      expect(Object.values(SubscriptionTier)).toContain('SCALE');
+      expect(Object.values(SubscriptionTier)).toContain('ENTERPRISE');
+    });
+
+    it('RateLimitStatus contains expected values', () => {
+      expect(Object.values(RateLimitStatus)).toContain('SAFE');
+      expect(Object.values(RateLimitStatus)).toContain('MODERATE');
+      expect(Object.values(RateLimitStatus)).toContain('HIGH');
+      expect(Object.values(RateLimitStatus)).toContain('EXCEEDED');
+    });
+
+    it('ViolationType contains expected values', () => {
+      expect(Object.values(ViolationType)).toContain('RATE_LIMIT_EXCEEDED');
+      expect(Object.values(ViolationType)).toContain('BURST_LIMIT_EXCEEDED');
+      expect(Object.values(ViolationType)).toContain('DAILY_LIMIT_EXCEEDED');
+      expect(Object.values(ViolationType)).toContain('MONTHLY_LIMIT_EXCEEDED');
+    });
+
+    it('ThreatLevel contains expected values', () => {
+      expect(Object.values(ThreatLevel)).toContain('LOW');
+      expect(Object.values(ThreatLevel)).toContain('MEDIUM');
+      expect(Object.values(ThreatLevel)).toContain('HIGH');
+      expect(Object.values(ThreatLevel)).toContain('CRITICAL');
+    });
+
+    it('AbuseResponse contains expected values', () => {
+      expect(Object.values(AbuseResponse)).toContain('LOG_ONLY');
+      expect(Object.values(AbuseResponse)).toContain('RATE_LIMIT');
+      expect(Object.values(AbuseResponse)).toContain('TEMPORARY_BLOCK');
+      expect(Object.values(AbuseResponse)).toContain('PERMANENT_BLOCK');
+    });
+  });
+});

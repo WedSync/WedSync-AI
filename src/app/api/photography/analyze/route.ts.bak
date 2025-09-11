@@ -1,0 +1,323 @@
+/**
+ * Photography AI Analysis API - Production Ready
+ * WS-130 Round 3: Final integration with all team outputs
+ * 
+ * Integrated with:
+ * - Team A: Music AI (style consistency)
+ * - Team B: Floral AI (color harmony)  
+ * - Team D: Pricing (feature gating)
+ * - Team E: Trials (usage tracking)
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { withFeatureGate } from '@/lib/billing/featureGating';
+import { photographyAICoordinator } from '@/lib/integrations/photography-ai-coordinator';
+import { z } from 'zod';
+import { ratelimit } from '@/lib/ratelimit';
+import type { ApiResponse, IntegratedPhotoAnalysis, IntegrationError } from '@/types/photography-integrations';
+
+// Request validation schema
+const AnalysisRequestSchema = z.object({
+  client_id: z.string().uuid(),
+  wedding_style: z.string().min(1),
+  preferred_colors: z.array(z.string()).min(1).max(10),
+  wedding_date: z.string().datetime(),
+  mood_board_images: z.array(z.string().url()).min(1).max(20),
+  budget_range: z.object({
+    min: z.number().min(0),
+    max: z.number().min(0)
+  }).optional(),
+  integration_preferences: z.object({
+    sync_with_music: z.boolean().default(true),
+    sync_with_floral: z.boolean().default(true),
+    track_usage: z.boolean().default(true)
+  }).default({
+    sync_with_music: true,
+    sync_with_floral: true,
+    track_usage: true
+  })
+});
+
+/**
+ * POST /api/photography/analyze
+ * Main photography AI analysis endpoint with full team integration
+ */
+export const POST = withFeatureGate('ai:photo_processing', {
+  checkUsageIncrease: true,
+  increment: 1
+})(async function handler(request: NextRequest) {
+  const requestId = crypto.randomUUID();
+  const startTime = Date.now();
+  
+  try {
+    // Get authenticated user
+    const supabase = createClient();
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    
+    if (authError || !user) {
+      return createErrorResponse('AUTH_REQUIRED', 'Authentication required', 401, requestId, startTime);
+    }
+
+    // Rate limiting
+    const identifier = user.id;
+    const { success: rateLimitSuccess, limit, reset, remaining } = await ratelimit.limit(identifier);
+    
+    if (!rateLimitSuccess) {
+      return createErrorResponse(
+        'RATE_LIMIT_EXCEEDED', 
+        'Too many requests. Please try again later.',
+        429,
+        requestId,
+        startTime,
+        { rate_limit_reset: reset }
+      );
+    }
+
+    // Parse and validate request
+    const body = await request.json();
+    const validationResult = AnalysisRequestSchema.safeParse(body);
+    
+    if (!validationResult.success) {
+      return createErrorResponse(
+        'INVALID_REQUEST',
+        'Invalid request parameters',
+        400,
+        requestId,
+        startTime,
+        { validation_errors: validationResult.error.errors }
+      );
+    }
+
+    const analysisRequest = validationResult.data;
+
+    // Verify client ownership
+    const { data: client, error: clientError } = await supabase
+      .from('clients')
+      .select('id, organization_id')
+      .eq('id', analysisRequest.client_id)
+      .single();
+
+    if (clientError || !client) {
+      return createErrorResponse('CLIENT_NOT_FOUND', 'Client not found', 404, requestId, startTime);
+    }
+
+    // Verify user has access to this client
+    const { data: userAccess } = await supabase
+      .from('organization_members')
+      .select('role')
+      .eq('organization_id', client.organization_id)
+      .eq('user_id', user.id)
+      .single();
+
+    if (!userAccess) {
+      return createErrorResponse('ACCESS_DENIED', 'Access denied to this client', 403, requestId, startTime);
+    }
+
+    // Process the analysis with full team integration
+    const coordinatedAnalysis = await photographyAICoordinator.analyzeWithFullIntegration({
+      client_id: analysisRequest.client_id,
+      user_id: user.id,
+      wedding_style: analysisRequest.wedding_style,
+      preferred_colors: analysisRequest.preferred_colors,
+      wedding_date: new Date(analysisRequest.wedding_date),
+      mood_board_images: analysisRequest.mood_board_images,
+      budget_range: analysisRequest.budget_range,
+      integration_preferences: analysisRequest.integration_preferences
+    });
+
+    // Update integration metrics
+    coordinatedAnalysis.integration_metrics.processing_time_ms = Date.now() - startTime;
+
+    // Log successful analysis
+    await logAnalysis(supabase, {
+      request_id: requestId,
+      user_id: user.id,
+      client_id: analysisRequest.client_id,
+      analysis_result: coordinatedAnalysis,
+      processing_time_ms: Date.now() - startTime
+    });
+
+    // Return successful response
+    return NextResponse.json({
+      success: true,
+      data: coordinatedAnalysis,
+      metadata: {
+        request_id: requestId,
+        processing_time_ms: Date.now() - startTime,
+        api_version: '1.0.0',
+        rate_limit_remaining: remaining,
+        rate_limit_reset: reset
+      }
+    } satisfies ApiResponse<IntegratedPhotoAnalysis>, {
+      status: 200,
+      headers: {
+        'X-Request-ID': requestId,
+        'X-Rate-Limit-Remaining': remaining.toString(),
+        'X-Rate-Limit-Reset': reset.toString(),
+        'Cache-Control': 'private, no-cache'
+      }
+    });
+
+  } catch (error) {
+    console.error('Photography analysis failed:', error);
+    
+    // Handle specific error types
+    if (error.message.includes('access denied')) {
+      return createErrorResponse('FEATURE_ACCESS_DENIED', error.message, 403, requestId, startTime);
+    }
+    
+    if (error.message.includes('rate limit')) {
+      return createErrorResponse('RATE_LIMIT_EXCEEDED', error.message, 429, requestId, startTime);
+    }
+
+    if (error.message.includes('timeout')) {
+      return createErrorResponse('PROCESSING_TIMEOUT', 'Analysis timed out. Please try again.', 408, requestId, startTime);
+    }
+
+    // Generic server error
+    return createErrorResponse(
+      'INTERNAL_ERROR',
+      'Internal server error occurred',
+      500,
+      requestId,
+      startTime
+    );
+  }
+});
+
+/**
+ * GET /api/photography/analyze/status
+ * Check analysis status for long-running requests
+ */
+export async function GET(request: NextRequest) {
+  const requestId = crypto.randomUUID();
+  const startTime = Date.now();
+  
+  try {
+    const { searchParams } = new URL(request.url);
+    const analysisId = searchParams.get('analysis_id');
+    
+    if (!analysisId) {
+      return createErrorResponse('MISSING_PARAMETER', 'analysis_id parameter required', 400, requestId, startTime);
+    }
+
+    const supabase = createClient();
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    
+    if (authError || !user) {
+      return createErrorResponse('AUTH_REQUIRED', 'Authentication required', 401, requestId, startTime);
+    }
+
+    // Get analysis status
+    const { data: analysis, error } = await supabase
+      .from('photo_analysis_records')
+      .select('*')
+      .eq('id', analysisId)
+      .eq('user_id', user.id)
+      .single();
+
+    if (error || !analysis) {
+      return createErrorResponse('ANALYSIS_NOT_FOUND', 'Analysis not found', 404, requestId, startTime);
+    }
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        analysis_id: analysis.id,
+        status: analysis.status || 'completed',
+        created_at: analysis.created_at,
+        processing_time_ms: analysis.processing_time_ms,
+        integration_scores: analysis.integration_scores,
+        teams_integrated: analysis.teams_integrated
+      },
+      metadata: {
+        request_id: requestId,
+        processing_time_ms: Date.now() - startTime,
+        api_version: '1.0.0',
+        rate_limit_remaining: 100,
+        rate_limit_reset: Date.now() + 60000
+      }
+    });
+
+  } catch (error) {
+    console.error('Status check failed:', error);
+    return createErrorResponse('INTERNAL_ERROR', 'Failed to check status', 500, requestId, startTime);
+  }
+}
+
+/**
+ * Create standardized error response
+ */
+function createErrorResponse(
+  code: string,
+  message: string,
+  status: number,
+  requestId: string,
+  startTime: number,
+  details?: Record<string, any>
+): NextResponse {
+  const error: IntegrationError = {
+    code,
+    message,
+    details
+  };
+
+  const response: ApiResponse<null> = {
+    success: false,
+    error,
+    metadata: {
+      request_id: requestId,
+      processing_time_ms: Date.now() - startTime,
+      api_version: '1.0.0',
+      rate_limit_remaining: 0,
+      rate_limit_reset: Date.now() + 60000
+    }
+  };
+
+  return NextResponse.json(response, {
+    status,
+    headers: {
+      'X-Request-ID': requestId,
+      'Content-Type': 'application/json'
+    }
+  });
+}
+
+/**
+ * Log analysis for monitoring and analytics
+ */
+async function logAnalysis(supabase: any, logData: {
+  request_id: string;
+  user_id: string;
+  client_id: string;
+  analysis_result: IntegratedPhotoAnalysis;
+  processing_time_ms: number;
+}) {
+  try {
+    await supabase
+      .from('photo_analysis_records')
+      .insert({
+        id: logData.request_id,
+        client_id: logData.client_id,
+        user_id: logData.user_id,
+        analysis_type: 'integrated_mood_board',
+        request_data: {
+          mood_board_id: logData.analysis_result.photography_analysis.mood_board_id
+        },
+        response_data: logData.analysis_result,
+        processing_time_ms: logData.processing_time_ms,
+        integration_scores: {
+          style_consistency: logData.analysis_result.style_consistency.style_match_score,
+          color_harmony: logData.analysis_result.color_harmony.color_harmony_score,
+          overall_coherence: logData.analysis_result.integration_metrics.overall_coherence_score
+        },
+        teams_integrated: logData.analysis_result.integration_metrics.teams_integrated,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      });
+  } catch (error) {
+    console.error('Failed to log analysis:', error);
+    // Don't throw - logging failure shouldn't break the response
+  }
+}

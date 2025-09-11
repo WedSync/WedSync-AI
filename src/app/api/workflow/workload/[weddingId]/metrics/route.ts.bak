@@ -1,0 +1,48 @@
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import { NextRequest, NextResponse } from 'next/server';
+import { workloadTrackingService } from '@/lib/services/workload-tracking-service';
+
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { weddingId: string } }
+) {
+  try {
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
+    const weddingId = params.weddingId;
+
+    // Verify authentication
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    if (userError || !user) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 }
+      );
+    }
+
+    // Verify access to wedding
+    const { data: userTeamMember } = await supabase
+      .from('team_members')
+      .select('id, role')
+      .eq('user_id', user.id)
+      .eq('wedding_id', weddingId)
+      .single();
+
+    if (!userTeamMember) {
+      return NextResponse.json(
+        { error: 'Access denied to this wedding' },
+        { status: 403 }
+      );
+    }
+
+    const metrics = await workloadTrackingService.calculateWorkloadMetrics(weddingId);
+    return NextResponse.json(metrics);
+
+  } catch (error) {
+    console.error('Error fetching workload metrics:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}

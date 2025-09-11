@@ -1,0 +1,556 @@
+'use client';
+
+import React, { useState, useCallback, useMemo, memo } from 'react';
+import { FormField, FormSection } from '@/types/forms';
+import { VirtualizedList } from '../performance/VirtualizedList';
+import { usePerformanceMonitor, useMemoryOptimization } from '@/hooks/usePerformanceOptimization';
+import { useDndContext } from '@dnd-kit/core';
+import { 
+  TrashIcon, 
+  PencilIcon, 
+  DocumentDuplicateIcon, 
+  EyeIcon,
+  ChevronDownIcon,
+  ChevronRightIcon 
+} from '@heroicons/react/24/outline';
+
+interface VirtualizedFormCanvasProps {
+  sections: FormSection[];
+  onFieldSelect: (field: FormField | null) => void;
+  onFieldUpdate: (fieldId: string, updates: Partial<FormField>) => void;
+  onFieldDelete: (fieldId: string) => void;
+  onFieldDuplicate: (field: FormField) => void;
+  selectedFieldId?: string;
+  className?: string;
+  'data-testid'?: string;
+}
+
+interface VirtualizedFieldItemProps {
+  field: FormField;
+  sectionId: string;
+  sectionTitle: string;
+  isSelected: boolean;
+  onSelect: () => void;
+  onUpdate: (updates: Partial<FormField>) => void;
+  onDelete: () => void;
+  onDuplicate: () => void;
+  onPreview: () => void;
+}
+
+// Memoized field item component for optimal performance
+const VirtualizedFieldItem = memo<VirtualizedFieldItemProps>(function VirtualizedFieldItem({
+  field,
+  sectionId,
+  sectionTitle,
+  isSelected,
+  onSelect,
+  onUpdate,
+  onDelete,
+  onDuplicate,
+  onPreview
+}) {
+  const [isHovered, setIsHovered] = useState(false);
+  const { logMetric } = usePerformanceMonitor('VirtualizedFieldItem');
+  
+  const handleInteraction = useCallback((action: string) => {
+    logMetric('fieldInteraction', performance.now());
+    logMetric(`fieldAction_${action}`, 1);
+  }, [logMetric]);
+
+  const renderFieldIcon = () => {
+    const iconClass = "w-4 h-4 text-gray-500";
+    
+    switch (field.type) {
+      case 'text':
+      case 'email':
+      case 'tel':
+        return (
+          <svg className={iconClass} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+          </svg>
+        );
+      case 'textarea':
+        return (
+          <svg className={iconClass} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+        );
+      case 'select':
+        return (
+          <svg className={iconClass} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
+        );
+      case 'radio':
+        return (
+          <svg className={iconClass} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+        );
+      case 'checkbox':
+        return (
+          <svg className={iconClass} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+        );
+      case 'date':
+        return (
+          <svg className={iconClass} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+          </svg>
+        );
+      case 'file':
+        return (
+          <svg className={iconClass} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+          </svg>
+        );
+      default:
+        return (
+          <svg className={iconClass} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+          </svg>
+        );
+    }
+  };
+
+  const getFieldTypeLabel = () => {
+    const labels: Record<string, string> = {
+      text: 'Text Input',
+      email: 'Email',
+      tel: 'Phone',
+      textarea: 'Text Area',
+      select: 'Dropdown',
+      radio: 'Radio Button',
+      checkbox: 'Checkbox',
+      date: 'Date Picker',
+      file: 'File Upload',
+      number: 'Number',
+      heading: 'Heading',
+      paragraph: 'Paragraph',
+      divider: 'Divider',
+      signature: 'Signature'
+    };
+    return labels[field.type] || field.type;
+  };
+
+  return (
+    <div
+      className={`relative bg-white border rounded-lg p-4 transition-all duration-200 cursor-pointer ${
+        isSelected 
+          ? 'border-blue-500 shadow-md ring-1 ring-blue-500' 
+          : 'border-gray-200 hover:border-gray-300 hover:shadow-sm'
+      }`}
+      onClick={() => {
+        handleInteraction('select');
+        onSelect();
+      }}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+      data-testid={`virtualized-field-${field.id}`}
+    >
+      {/* Field Header */}
+      <div className="flex items-start justify-between mb-2">
+        <div className="flex items-center gap-3 flex-1 min-w-0">
+          {renderFieldIcon()}
+          <div className="flex-1 min-w-0">
+            <h4 className="font-medium text-gray-900 truncate">
+              {field.label}
+            </h4>
+            <p className="text-sm text-gray-500 truncate">
+              {getFieldTypeLabel()} • {sectionTitle}
+            </p>
+          </div>
+        </div>
+        
+        {/* Field Status Indicators */}
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {field.validation?.required && (
+            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
+              Required
+            </span>
+          )}
+          
+          {field.placeholder && (
+            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700">
+              Placeholder
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Field Preview Content */}
+      <div className="text-sm text-gray-600 mb-3">
+        {field.placeholder && (
+          <p className="italic">"{field.placeholder}"</p>
+        )}
+        {field.helperText && (
+          <p className="text-xs text-gray-500 mt-1">Help: {field.helperText}</p>
+        )}
+        {field.options && field.options.length > 0 && (
+          <p className="text-xs text-gray-500">
+            Options: {field.options.slice(0, 3).map(opt => opt.label || opt.value).join(', ')}
+            {field.options.length > 3 && ` (+${field.options.length - 3} more)`}
+          </p>
+        )}
+      </div>
+
+      {/* Validation Rules */}
+      {field.validation && Object.keys(field.validation).length > 1 && (
+        <div className="flex flex-wrap gap-1 mb-3">
+          {field.validation.minLength && (
+            <span className="text-xs px-2 py-1 bg-blue-50 text-blue-700 rounded">
+              Min: {field.validation.minLength}
+            </span>
+          )}
+          {field.validation.maxLength && (
+            <span className="text-xs px-2 py-1 bg-blue-50 text-blue-700 rounded">
+              Max: {field.validation.maxLength}
+            </span>
+          )}
+          {field.validation.pattern && (
+            <span className="text-xs px-2 py-1 bg-green-50 text-green-700 rounded">
+              Pattern
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Action Buttons */}
+      <div className={`flex items-center justify-end gap-2 transition-opacity duration-200 ${
+        isHovered || isSelected ? 'opacity-100' : 'opacity-0'
+      }`}>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            handleInteraction('preview');
+            onPreview();
+          }}
+          className="p-1.5 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
+          title="Preview field"
+        >
+          <EyeIcon className="w-4 h-4" />
+        </button>
+        
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            handleInteraction('duplicate');
+            onDuplicate();
+          }}
+          className="p-1.5 text-gray-500 hover:text-green-600 hover:bg-green-50 rounded-md transition-colors"
+          title="Duplicate field"
+        >
+          <DocumentDuplicateIcon className="w-4 h-4" />
+        </button>
+        
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            handleInteraction('edit');
+            onSelect();
+          }}
+          className="p-1.5 text-gray-500 hover:text-yellow-600 hover:bg-yellow-50 rounded-md transition-colors"
+          title="Edit field"
+        >
+          <PencilIcon className="w-4 h-4" />
+        </button>
+        
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            handleInteraction('delete');
+            if (confirm(`Delete field "${field.label}"?`)) {
+              onDelete();
+            }
+          }}
+          className="p-1.5 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
+          title="Delete field"
+        >
+          <TrashIcon className="w-4 h-4" />
+        </button>
+      </div>
+    </div>
+  );
+});
+
+// Section header component
+const VirtualizedSectionHeader = memo(function VirtualizedSectionHeader({
+  section,
+  fieldsCount,
+  isExpanded,
+  onToggle
+}: {
+  section: FormSection;
+  fieldsCount: number;
+  isExpanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="bg-gray-50 border-b border-gray-200 p-4">
+      <button
+        onClick={onToggle}
+        className="flex items-center justify-between w-full text-left hover:bg-gray-100 rounded-lg p-2 transition-colors"
+      >
+        <div className="flex items-center gap-3">
+          {isExpanded ? (
+            <ChevronDownIcon className="w-4 h-4 text-gray-500" />
+          ) : (
+            <ChevronRightIcon className="w-4 h-4 text-gray-500" />
+          )}
+          <div>
+            <h3 className="font-medium text-gray-900">{section.title}</h3>
+            {section.description && (
+              <p className="text-sm text-gray-600 mt-1">{section.description}</p>
+            )}
+          </div>
+        </div>
+        
+        <span className="text-sm text-gray-500 bg-gray-200 px-2 py-1 rounded-full">
+          {fieldsCount} {fieldsCount === 1 ? 'field' : 'fields'}
+        </span>
+      </button>
+    </div>
+  );
+});
+
+export const VirtualizedFormCanvas: React.FC<VirtualizedFormCanvasProps> = ({
+  sections,
+  onFieldSelect,
+  onFieldUpdate,
+  onFieldDelete,
+  onFieldDuplicate,
+  selectedFieldId,
+  className = '',
+  'data-testid': testId
+}) => {
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(
+    new Set(sections.map(s => s.id))
+  );
+  const [previewField, setPreviewField] = useState<FormField | null>(null);
+  const { addObserver } = useMemoryOptimization();
+  const { logMetric } = usePerformanceMonitor('VirtualizedFormCanvas');
+
+  // Flatten fields with section context for virtualization
+  const virtualizedItems = useMemo(() => {
+    const startTime = performance.now();
+    const items: Array<{
+      id: string;
+      type: 'section-header' | 'field';
+      field?: FormField;
+      section?: FormSection;
+      sectionId?: string;
+      sectionTitle?: string;
+    }> = [];
+
+    sections.forEach(section => {
+      // Add section header
+      items.push({
+        id: `section-header-${section.id}`,
+        type: 'section-header',
+        section,
+        sectionId: section.id
+      });
+
+      // Add fields if section is expanded
+      if (expandedSections.has(section.id)) {
+        section.fields.forEach(field => {
+          items.push({
+            id: field.id,
+            type: 'field',
+            field,
+            sectionId: section.id,
+            sectionTitle: section.title
+          });
+        });
+      }
+    });
+
+    const processingTime = performance.now() - startTime;
+    logMetric('virtualizedItemsProcessing', processingTime);
+    
+    return items;
+  }, [sections, expandedSections, logMetric]);
+
+  // Optimized callbacks
+  const toggleSection = useCallback((sectionId: string) => {
+    setExpandedSections(prev => {
+      const next = new Set(prev);
+      if (next.has(sectionId)) {
+        next.delete(sectionId);
+      } else {
+        next.add(sectionId);
+      }
+      logMetric('sectionToggle', 1);
+      return next;
+    });
+  }, [logMetric]);
+
+  const handleFieldSelect = useCallback((field: FormField) => {
+    logMetric('fieldSelected', performance.now());
+    onFieldSelect(field);
+  }, [onFieldSelect, logMetric]);
+
+  const handleFieldUpdate = useCallback((fieldId: string, updates: Partial<FormField>) => {
+    logMetric('fieldUpdated', performance.now());
+    onFieldUpdate(fieldId, updates);
+  }, [onFieldUpdate, logMetric]);
+
+  const handleFieldDuplicate = useCallback((field: FormField) => {
+    logMetric('fieldDuplicated', performance.now());
+    onFieldDuplicate(field);
+  }, [onFieldDuplicate, logMetric]);
+
+  const handleFieldPreview = useCallback((field: FormField) => {
+    logMetric('fieldPreviewed', performance.now());
+    setPreviewField(field);
+  }, [logMetric]);
+
+  // Render item function for VirtualizedList
+  const renderVirtualizedItem = useCallback((item: typeof virtualizedItems[0], index: number) => {
+    if (item.type === 'section-header' && item.section) {
+      const fieldsCount = item.section.fields.length;
+      const isExpanded = expandedSections.has(item.section.id);
+      
+      return (
+        <VirtualizedSectionHeader
+          key={item.id}
+          section={item.section}
+          fieldsCount={fieldsCount}
+          isExpanded={isExpanded}
+          onToggle={() => toggleSection(item.section!.id)}
+        />
+      );
+    }
+
+    if (item.type === 'field' && item.field) {
+      return (
+        <div key={item.id} className="px-4 py-2">
+          <VirtualizedFieldItem
+            field={item.field}
+            sectionId={item.sectionId!}
+            sectionTitle={item.sectionTitle!}
+            isSelected={selectedFieldId === item.field.id}
+            onSelect={() => handleFieldSelect(item.field!)}
+            onUpdate={(updates) => handleFieldUpdate(item.field!.id, updates)}
+            onDelete={() => onFieldDelete(item.field!.id)}
+            onDuplicate={() => handleFieldDuplicate(item.field!)}
+            onPreview={() => handleFieldPreview(item.field!)}
+          />
+        </div>
+      );
+    }
+
+    return null;
+  }, [
+    expandedSections,
+    selectedFieldId,
+    toggleSection,
+    handleFieldSelect,
+    handleFieldUpdate,
+    onFieldDelete,
+    handleFieldDuplicate,
+    handleFieldPreview
+  ]);
+
+  // Memory optimization
+  React.useEffect(() => {
+    const observer = addObserver('VirtualizedFormCanvas', virtualizedItems.length);
+    return () => observer?.disconnect();
+  }, [addObserver, virtualizedItems.length]);
+
+  return (
+    <div className={`flex flex-col h-full ${className}`} data-testid={testId}>
+      {/* Canvas Header */}
+      <div className="flex items-center justify-between p-4 bg-white border-b border-gray-200">
+        <div className="flex items-center gap-4">
+          <h2 className="text-lg font-semibold text-gray-900">Form Fields</h2>
+          <span className="text-sm text-gray-500 bg-gray-100 px-2 py-1 rounded-full">
+            {sections.reduce((total, section) => total + section.fields.length, 0)} total fields
+          </span>
+        </div>
+        
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setExpandedSections(new Set(sections.map(s => s.id)))}
+            className="text-sm text-blue-600 hover:text-blue-700 font-medium"
+          >
+            Expand All
+          </button>
+          <button
+            onClick={() => setExpandedSections(new Set())}
+            className="text-sm text-gray-600 hover:text-gray-700 font-medium"
+          >
+            Collapse All
+          </button>
+        </div>
+      </div>
+
+      {/* Virtualized List */}
+      <div className="flex-1">
+        <VirtualizedList
+          items={virtualizedItems}
+          itemHeight={120} // Estimated average height
+          containerHeight="100%"
+          renderItem={renderVirtualizedItem}
+          keyExtractor={(item) => item.id}
+          overscan={5}
+          className="h-full"
+          data-testid="virtualized-form-fields"
+        />
+      </div>
+
+      {/* Field Preview Modal */}
+      {previewField && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl max-w-md w-full p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold">Field Preview</h3>
+              <button
+                onClick={() => setPreviewField(null)}
+                className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            
+            <div className="space-y-4">
+              <div>
+                <h4 className="font-medium text-gray-900 mb-2">{previewField.label}</h4>
+                <p className="text-sm text-gray-600">Type: {previewField.type}</p>
+                {previewField.placeholder && (
+                  <p className="text-sm text-gray-600">Placeholder: {previewField.placeholder}</p>
+                )}
+                {previewField.helperText && (
+                  <p className="text-sm text-gray-600">Help: {previewField.helperText}</p>
+                )}
+              </div>
+              
+              {previewField.options && (
+                <div>
+                  <h5 className="font-medium text-gray-700 mb-1">Options:</h5>
+                  <ul className="text-sm text-gray-600 space-y-1">
+                    {previewField.options.map((option, index) => (
+                      <li key={index}>• {option.label || option.value}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Performance Debug (development only) */}
+      {process.env.NODE_ENV === 'development' && (
+        <div className="p-2 text-xs text-gray-500 bg-gray-50 border-t">
+          Rendering {virtualizedItems.length} items • 
+          Sections: {sections.length} • 
+          Expanded: {expandedSections.size}
+        </div>
+      )}
+    </div>
+  );
+};

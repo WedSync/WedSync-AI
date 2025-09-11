@@ -1,0 +1,89 @@
+# Optimized Dockerfile for Next.js 14 with WedSync
+FROM node:20-alpine AS base
+
+# Install dependencies only when needed
+FROM base AS deps
+RUN apk add --no-cache libc6-compat python3 make g++
+
+WORKDIR /app
+
+# Copy package files (ensure we use package-lock.json, not yarn)
+COPY package.json package-lock.json ./
+
+# Clean install with exact versions from lock file
+RUN npm ci --only=production && npm cache clean --force
+
+# Development dependencies for dev stage
+FROM base AS dev-deps
+RUN apk add --no-cache libc6-compat python3 make g++
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci && npm cache clean --force
+
+# Development stage
+FROM base AS development
+WORKDIR /app
+
+RUN apk add --no-cache curl python3 make g++
+
+# Copy dependencies
+COPY --from=dev-deps /app/node_modules ./node_modules
+
+# Copy source code
+COPY . .
+
+# Create next cache directory with proper permissions
+RUN mkdir -p .next && chmod 755 .next
+
+# Critical: Ensure Next.js binds to all interfaces for Docker accessibility
+ENV HOSTNAME=0.0.0.0
+ENV PORT=3000
+ENV NODE_ENV=development
+
+# Add file watching optimization for Docker
+ENV CHOKIDAR_USEPOLLING=true
+ENV WATCHPACK_POLLING=true
+
+EXPOSE 3000
+
+# Start development server with explicit host binding
+CMD ["npm", "run", "dev", "--", "--hostname", "0.0.0.0", "--port", "3000"]
+
+# Production builder stage
+FROM base AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+
+# Build with production optimizations
+ENV NEXT_TELEMETRY_DISABLED=1
+RUN npm run build
+
+# Production runner
+FROM base AS runner
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+
+RUN addgroup --system --gid 1001 nodejs
+RUN adduser --system --uid 1001 nextjs
+
+COPY --from=builder /app/public ./public
+
+RUN mkdir .next
+RUN chown nextjs:nodejs .next
+
+# Use standalone output if available
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+
+USER nextjs
+
+# Ensure production also binds to all interfaces
+ENV HOSTNAME=0.0.0.0
+ENV PORT=3000
+
+EXPOSE 3000
+
+CMD ["node", "server.js"]

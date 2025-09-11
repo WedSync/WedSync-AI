@@ -1,0 +1,339 @@
+/**
+ * Music Database Dashboard Page
+ * Feature ID: WS-252
+ * AI-powered music search and wedding appropriateness analysis
+ */
+
+'use client';
+
+import React, { useState, useEffect } from 'react';
+import { useSearchParams } from 'next/navigation';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { 
+  Music, 
+  Search, 
+  Sparkles, 
+  BarChart3,
+  Settings,
+  Heart,
+  Users,
+  Zap
+} from 'lucide-react';
+import { motion } from 'framer-motion';
+
+import { MusicDatabase } from '@/components/music/MusicDatabase';
+import type { MusicTrack, WeddingPhase } from '@/types/music';
+
+interface MusicPageStats {
+  totalTracks: number;
+  totalPlaylists: number;
+  totalRequests: number;
+  avgAppropriatenessScore: number;
+}
+
+export default function MusicPage() {
+  const searchParams = useSearchParams();
+  const weddingId = searchParams.get('wedding_id') || 'current';
+  const category = searchParams.get('category') as WeddingPhase || 'ceremony';
+  
+  const [stats, setStats] = useState<MusicPageStats>({
+    totalTracks: 0,
+    totalPlaylists: 0,
+    totalRequests: 0,
+    avgAppropriatenessScore: 0
+  });
+  
+  const [selectedTrack, setSelectedTrack] = useState<MusicTrack | null>(null);
+
+  // Load music stats
+  useEffect(() => {
+    loadMusicStats();
+  }, [weddingId]);
+
+  const loadMusicStats = async () => {
+    try {
+      const response = await fetch(`/api/music/stats?wedding_id=${weddingId}`, {
+        credentials: 'same-origin'
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        setStats(data);
+      }
+    } catch (error) {
+      console.error('Failed to load music stats:', error);
+      // Use mock stats for development
+      setStats({
+        totalTracks: 1250,
+        totalPlaylists: 8,
+        totalRequests: 23,
+        avgAppropriatenessScore: 8.6
+      });
+    }
+  };
+
+  const handleTrackSelect = (track: MusicTrack) => {
+    setSelectedTrack(track);
+    console.log('Track selected:', track.title, 'by', track.artist);
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-50" data-testid="music-dashboard-container">
+      {/* Page Header */}
+      <div className="bg-white border-b border-gray-200">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-3xl font-bold text-gray-900 flex items-center gap-3">
+                <Music className="w-8 h-8 text-primary-600" />
+                Music Database
+              </h1>
+              <p className="text-gray-600 mt-2">
+                AI-powered music search and wedding appropriateness analysis for professional DJs
+              </p>
+            </div>
+            
+            <div className="flex items-center gap-3">
+              <Badge variant="outline" className="px-3 py-1">
+                <Sparkles className="w-4 h-4 mr-2" />
+                AI Powered
+              </Badge>
+              
+              <Button variant="outline" size="sm">
+                <Settings className="w-4 h-4 mr-2" />
+                Preferences
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {/* Stats Cards */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-8" data-testid="stats-grid">
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.1 }}
+          >
+            <Card data-testid="total-tracks-stat">
+              <CardContent className="p-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-gray-600">Music Library</p>
+                    <p className="text-3xl font-bold text-gray-900">
+                      {stats.totalTracks.toLocaleString()}
+                    </p>
+                  </div>
+                  <div className="p-3 bg-blue-100 rounded-lg">
+                    <Music className="w-6 h-6 text-blue-600" />
+                  </div>
+                </div>
+                <p className="text-xs text-gray-500 mt-2">Wedding-curated tracks</p>
+              </CardContent>
+            </Card>
+          </motion.div>
+
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.2 }}
+          >
+            <Card data-testid="playlists-stat">
+              <CardContent className="p-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-gray-600">Active Playlists</p>
+                    <p className="text-3xl font-bold text-gray-900">{stats.totalPlaylists}</p>
+                  </div>
+                  <div className="p-3 bg-green-100 rounded-lg">
+                    <Heart className="w-6 h-6 text-green-600" />
+                  </div>
+                </div>
+                <p className="text-xs text-gray-500 mt-2">Custom wedding playlists</p>
+              </CardContent>
+            </Card>
+          </motion.div>
+
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.3 }}
+          >
+            <Card data-testid="recent-searches-stat">
+              <CardContent className="p-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-gray-600">Song Requests</p>
+                    <p className="text-3xl font-bold text-gray-900">{stats.totalRequests}</p>
+                  </div>
+                  <div className="p-3 bg-purple-100 rounded-lg">
+                    <Users className="w-6 h-6 text-purple-600" />
+                  </div>
+                </div>
+                <p className="text-xs text-gray-500 mt-2">Resolved this month</p>
+              </CardContent>
+            </Card>
+          </motion.div>
+
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.4 }}
+          >
+            <Card>
+              <CardContent className="p-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-gray-600">AI Accuracy</p>
+                    <p className="text-3xl font-bold text-gray-900">
+                      {stats.avgAppropriatenessScore.toFixed(1)}/10
+                    </p>
+                  </div>
+                  <div className="p-3 bg-yellow-100 rounded-lg">
+                    <Zap className="w-6 h-6 text-yellow-600" />
+                  </div>
+                </div>
+                <p className="text-xs text-gray-500 mt-2">Appropriateness scoring</p>
+              </CardContent>
+            </Card>
+          </motion.div>
+        </div>
+
+        {/* Quick Actions */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+          <motion.div
+            initial={{ opacity: 0, x: -20 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ delay: 0.5 }}
+          >
+            <Card className="cursor-pointer hover:shadow-md transition-shadow">
+              <CardHeader className="pb-4">
+                <CardTitle className="text-lg flex items-center gap-2">
+                  <Search className="w-5 h-5 text-blue-600" />
+                  Smart Search
+                </CardTitle>
+                <CardDescription>
+                  Search across multiple music providers with AI-powered filtering
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <p className="text-sm text-gray-600 mb-4">
+                  Find the perfect songs for every wedding moment with intelligent recommendations.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <Badge variant="secondary">Spotify</Badge>
+                  <Badge variant="secondary">Apple Music</Badge>
+                  <Badge variant="secondary">YouTube Music</Badge>
+                </div>
+              </CardContent>
+            </Card>
+          </motion.div>
+
+          <motion.div
+            initial={{ opacity: 0, x: -20 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ delay: 0.6 }}
+          >
+            <Card className="cursor-pointer hover:shadow-md transition-shadow">
+              <CardHeader className="pb-4">
+                <CardTitle className="text-lg flex items-center gap-2">
+                  <Sparkles className="w-5 h-5 text-purple-600" />
+                  Request Resolver
+                </CardTitle>
+                <CardDescription>
+                  Turn vague song descriptions into specific track matches
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <p className="text-sm text-gray-600 mb-4">
+                  Handle client requests like "that romantic song by Bruno Mars" with AI assistance.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <Badge variant="secondary">Natural Language</Badge>
+                  <Badge variant="secondary">High Accuracy</Badge>
+                </div>
+              </CardContent>
+            </Card>
+          </motion.div>
+
+          <motion.div
+            initial={{ opacity: 0, x: -20 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ delay: 0.7 }}
+          >
+            <Card className="cursor-pointer hover:shadow-md transition-shadow">
+              <CardHeader className="pb-4">
+                <CardTitle className="text-lg flex items-center gap-2">
+                  <BarChart3 className="w-5 h-5 text-green-600" />
+                  Timeline Builder
+                </CardTitle>
+                <CardDescription>
+                  Create perfect wedding day music flows with drag-and-drop
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <p className="text-sm text-gray-600 mb-4">
+                  Build complete wedding timelines with energy flow optimization.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <Badge variant="secondary">Drag & Drop</Badge>
+                  <Badge variant="secondary">Energy Flow</Badge>
+                </div>
+              </CardContent>
+            </Card>
+          </motion.div>
+        </div>
+
+        {/* Main Music Database Component */}
+        <motion.div
+          initial={{ opacity: 0, y: 30 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.8 }}
+        >
+          <MusicDatabase
+            weddingId={weddingId}
+            onTrackSelect={handleTrackSelect}
+            initialSearchMode={category}
+            className="shadow-lg"
+          />
+        </motion.div>
+
+        {/* Selected Track Info */}
+        {selectedTrack && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mt-8"
+          >
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg">Recently Selected Track</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-center gap-4">
+                  <div className="p-3 bg-primary-100 rounded-lg">
+                    <Music className="w-6 h-6 text-primary-600" />
+                  </div>
+                  <div>
+                    <h4 className="font-semibold text-gray-900">{selectedTrack.title}</h4>
+                    <p className="text-gray-600">by {selectedTrack.artist}</p>
+                    <div className="flex items-center gap-2 mt-1">
+                      <Badge variant="outline">{selectedTrack.primary_genre}</Badge>
+                      <Badge variant="outline">Energy: {selectedTrack.energy_level}/10</Badge>
+                      <Badge variant={selectedTrack.wedding_appropriateness === 'perfect' ? 'default' : 'secondary'}>
+                        {selectedTrack.wedding_appropriateness}
+                      </Badge>
+                    </div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </motion.div>
+        )}
+      </div>
+    </div>
+  );
+}

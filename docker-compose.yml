@@ -1,0 +1,142 @@
+version: '3.8'
+
+services:
+  # Next.js Application with Journey Builder
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.fixed
+      target: development
+    container_name: wedsync-app-fixed
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env.local
+    environment:
+      - NODE_ENV=development
+      - NEXTAUTH_URL=http://localhost:3000
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/wedsync
+      - HOSTNAME=0.0.0.0
+      - CHOKIDAR_USEPOLLING=true
+      - WATCHPACK_POLLING=true
+    # Use the fixed config and explicit dev command
+    command: ["sh", "-c", "cp next.config.simple.js next.config.js && npm run dev -- --hostname 0.0.0.0 --port 3000"]
+    volumes:
+      - ./src:/app/src
+      - ./public:/app/public
+      - ./styles:/app/styles
+      - ./.env.local:/app/.env.local
+      - ./next.config.simple.js:/app/next.config.simple.js
+      - node_modules:/app/node_modules
+      - next_cache:/app/.next
+    networks:
+      - wedsync-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # PostgreSQL Database for local development
+  postgres:
+    image: postgres:15-alpine
+    container_name: wedsync-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=wedsync
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./supabase/migrations:/docker-entrypoint-initdb.d
+    networks:
+      - wedsync-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis for caching and sessions
+  redis:
+    image: redis:7-alpine
+    container_name: wedsync-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - wedsync-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # MinIO for S3-compatible storage (journey exports, templates)
+  minio:
+    image: minio/minio:latest
+    container_name: wedsync-minio
+    ports:
+      - "9002:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    networks:
+      - wedsync-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  # Playwright for testing Journey Builder
+  playwright:
+    build:
+      context: .
+      dockerfile: Dockerfile.playwright
+    container_name: wedsync-playwright
+    environment:
+      - PLAYWRIGHT_BASE_URL=http://app:3000
+      - CI=true
+    volumes:
+      - ./src:/app/src
+      - ./tests:/app/tests
+      - ./playwright-report:/app/playwright-report
+      - ./test-results:/app/test-results
+    networks:
+      - wedsync-network
+    depends_on:
+      app:
+        condition: service_healthy
+    profiles:
+      - testing
+
+  # Mailhog for email testing (journey email nodes)
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: wedsync-mailhog
+    ports:
+      - "1025:1025" # SMTP
+      - "8025:8025" # Web UI
+    networks:
+      - wedsync-network
+    profiles:
+      - development
+
+networks:
+  wedsync-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  node_modules:
+  next_cache:

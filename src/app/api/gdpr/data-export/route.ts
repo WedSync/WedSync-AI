@@ -1,0 +1,120 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { getServerSession } from 'next-auth';
+import { authOptions } from '@/lib/auth/options';
+import { createClient } from '@supabase/supabase-js';
+import { z } from 'zod';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+);
+
+const dataExportSchema = z.object({
+  email: z.string().email(),
+  dataTypes: z
+    .array(
+      z.enum(['profile', 'weddings', 'vendors', 'communications', 'analytics']),
+    )
+    .min(1),
+  format: z.enum(['json', 'csv']).default('json'),
+  confirmIdentity: z
+    .boolean()
+    .refine((val) => val === true, 'You must confirm your identity'),
+});
+
+export async function POST(request: NextRequest) {
+  try {
+    const session = await getServerSession(authOptions);
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const validationResult = dataExportSchema.safeParse(body);
+
+    if (!validationResult.success) {
+      return NextResponse.json(
+        { error: 'Validation failed', details: validationResult.error.issues },
+        { status: 400 },
+      );
+    }
+
+    const { email, dataTypes, format } = validationResult.data;
+    const userId = session.user.id;
+
+    // Verify email matches user account
+    if (email !== session.user.email) {
+      return NextResponse.json(
+        { error: 'Email must match your account email address' },
+        { status: 400 },
+      );
+    }
+
+    // Collect requested data
+    const exportData: any = {};
+
+    for (const dataType of dataTypes) {
+      switch (dataType) {
+        case 'profile':
+          const { data: profileData } = await supabase
+            .from('user_profiles')
+            .select('*')
+            .eq('id', userId)
+            .single();
+          exportData.profile = profileData;
+          break;
+
+        case 'weddings':
+          const { data: weddingsData } = await supabase
+            .from('weddings')
+            .select('*')
+            .eq('user_id', userId);
+          exportData.weddings = weddingsData;
+          break;
+      }
+    }
+
+    // Generate export
+    let responseData: string;
+    let contentType: string;
+    let filename: string;
+
+    if (format === 'json') {
+      responseData = JSON.stringify(
+        {
+          exportInfo: {
+            userId,
+            email,
+            exportedAt: new Date().toISOString(),
+            dataTypes,
+            version: '1.0',
+          },
+          userData: exportData,
+        },
+        null,
+        2,
+      );
+      contentType = 'application/json';
+      filename = `wedsync-data-export-${Date.now()}.json`;
+    } else {
+      responseData = 'CSV export not implemented';
+      contentType = 'text/csv';
+      filename = `wedsync-data-export-${Date.now()}.csv`;
+    }
+
+    const response = new NextResponse(responseData);
+    response.headers.set('Content-Type', contentType);
+    response.headers.set(
+      'Content-Disposition',
+      `attachment; filename="${filename}"`,
+    );
+
+    return response;
+  } catch (error) {
+    console.error('Data export error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

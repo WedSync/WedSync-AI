@@ -1,0 +1,67 @@
+// WS-189 Touch Optimization Components
+export { TouchButton } from './TouchButton';
+export { TouchInput, TouchTextarea, TouchSelect } from './TouchInput';
+export { SwipeableNav } from './SwipeableNav';
+export { PinchZoomImage } from './PinchZoomImage';
+export { PullToRefresh } from './PullToRefresh';
+export { TouchTimeline } from './TouchTimeline';
+
+// WS-189 New Touch Optimized Components
+export {
+  TouchOptimizedButton,
+  PhotoCaptureButton,
+  ClientContactButton,
+  ScheduleActionButton,
+  EmergencyButton,
+} from './TouchOptimizedButton';
+
+export { ThumbNavigationBar, useThumbNavigation } from './ThumbNavigationBar';
+
+export {
+  TouchGestureHandler,
+  PhotoGestureHandler,
+  ScheduleGestureHandler,
+} from './TouchGestureHandler';
+
+export {
+  SwipeNavigation,
+  WeddingSwipeNavigation,
+  TouchCarousel,
+} from './SwipeNavigation';
+
+export {
+  TouchDrawer,
+  PhotoDrawer,
+  ClientContactDrawer,
+  ScheduleDrawer,
+  EmergencyDrawer,
+  useDrawerState,
+} from './TouchDrawer';
+
+// Re-export hooks for convenience
+export {
+  useTouch,
+  useSwipeNavigation,
+  usePinchZoom,
+  usePullToRefresh,
+  useTouchDrag,
+  useHaptic,
+  useLongPress,
+} from '@/hooks/useTouch';
+
+// WS-189 New Touch Optimization Hooks
+export {
+  useHapticFeedback,
+  usePhotoHaptics,
+  useClientHaptics,
+  useScheduleHaptics,
+  useEmergencyHaptics,
+  HapticFeedbackProvider,
+} from '@/hooks/useHapticFeedback';
+
+export {
+  useTouchOptimization,
+  usePhotoTouchOptimization,
+  useScheduleTouchOptimization,
+  useEmergencyTouchOptimization,
+} from '@/hooks/useTouchOptimization';

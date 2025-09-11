@@ -1,0 +1,418 @@
+import { test, expect, Page } from '@playwright/test';
+
+// Test fixtures and utilities
+const ADMIN_CREDENTIALS = {
+  email: 'admin.test@wedsync.com',
+  password: 'TestAdmin123!'
+};
+
+const MOCK_AUDIT_ENTRIES = [
+  {
+    id: '1',
+    adminId: 'admin123',
+    adminEmail: 'admin@example.com',
+    action: 'user_created',
+    status: 'success',
+    details: { userId: 'user456', userName: 'John Doe' },
+    timestamp: '2024-01-20T10:30:00Z',
+    clientIP: '192.168.1.100',
+    requiresMFA: false,
+    userAgent: 'Mozilla/5.0'
+  },
+  {
+    id: '2',
+    adminId: 'admin123',
+    adminEmail: 'admin@example.com',
+    action: 'user_deleted',
+    status: 'success',
+    details: { userId: 'user789', reason: 'GDPR request' },
+    timestamp: '2024-01-20T11:15:00Z',
+    clientIP: '192.168.1.100',
+    requiresMFA: true,
+    userAgent: 'Mozilla/5.0'
+  },
+  {
+    id: '3',
+    adminId: 'admin456',
+    adminEmail: 'admin2@example.com',
+    action: 'login_failed',
+    status: 'failed',
+    details: { reason: 'invalid_credentials', attempts: 3 },
+    timestamp: '2024-01-20T12:00:00Z',
+    clientIP: '203.0.113.50',
+    requiresMFA: false,
+    userAgent: 'Mozilla/5.0'
+  }
+];
+
+async function loginAsAdmin(page: Page): Promise<void> {
+  await page.goto('/admin/login');
+  
+  await page.fill('[data-testid="email-input"]', ADMIN_CREDENTIALS.email);
+  await page.fill('[data-testid="password-input"]', ADMIN_CREDENTIALS.password);
+  
+  await page.click('[data-testid="login-button"]');
+  
+  // Wait for successful login
+  await expect(page).toHaveURL(/\/admin\/dashboard/);
+}
+
+async function navigateToAuditDashboard(page: Page): Promise<void> {
+  await page.click('[data-testid="audit-menu-item"]');
+  await expect(page).toHaveURL(/\/admin\/audit/);
+  
+  // Wait for audit dashboard to load
+  await expect(page.locator('[data-testid="audit-dashboard"]')).toBeVisible();
+}
+
+test.describe('Audit Dashboard E2E Tests', () => {
+  test.beforeEach(async ({ page }) => {
+    // Mock API responses for consistent testing
+    await page.route('**/api/admin/audit-log*', async route => {
+      if (route.request().method() === 'GET') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            success: true,
+            entries: MOCK_AUDIT_ENTRIES,
+            pagination: {
+              currentPage: 1,
+              totalPages: 1,
+              limit: 10,
+              hasMore: false
+            }
+          })
+        });
+      } else if (route.request().method() === 'POST') {
+        const body = await route.request().postData();
+        const data = JSON.parse(body || '{}');
+        
+        if (data.action === 'cleanup') {
+          await route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({
+              success: true,
+              message: 'Audit log cleanup completed'
+            })
+          });
+        } else if (data.action === 'export') {
+          await route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({
+              success: true,
+              data: {
+                totalActions: 150,
+                successfulActions: 140,
+                failedActions: 10,
+                mfaRequiredActions: 25,
+                topActions: [
+                  { action: 'user_login', count: 50 },
+                  { action: 'user_created', count: 30 }
+                ],
+                topAdmins: [
+                  { adminEmail: 'admin1@example.com', count: 75 }
+                ]
+              }
+            })
+          });
+        }
+      }
+    });
+
+    await loginAsAdmin(page);
+    await navigateToAuditDashboard(page);
+  });
+
+  test('should display audit dashboard with entries', async ({ page }) => {
+    // Check that audit entries are displayed
+    await expect(page.locator('[data-testid="audit-entry"]')).toHaveCount(3);
+    
+    // Verify first entry details
+    const firstEntry = page.locator('[data-testid="audit-entry"]').first();
+    await expect(firstEntry.locator('[data-testid="entry-action"]')).toContainText('user_created');
+    await expect(firstEntry.locator('[data-testid="entry-status"]')).toContainText('success');
+    await expect(firstEntry.locator('[data-testid="entry-admin"]')).toContainText('admin@example.com');
+    
+    // Check for MFA indicator
+    const mfaEntry = page.locator('[data-testid="audit-entry"]').nth(1);
+    await expect(mfaEntry.locator('[data-testid="mfa-required-indicator"]')).toBeVisible();
+  });
+
+  test('should filter audit entries by status', async ({ page }) => {
+    // Test status filter
+    await page.selectOption('[data-testid="status-filter"]', 'failed');
+    await page.click('[data-testid="apply-filters-button"]');
+    
+    // Should show only failed entries
+    await expect(page.locator('[data-testid="audit-entry"]')).toHaveCount(1);
+    await expect(page.locator('[data-testid="audit-entry"] [data-testid="entry-status"]')).toContainText('failed');
+  });
+
+  test('should filter audit entries by action type', async ({ page }) => {
+    // Test action filter
+    await page.selectOption('[data-testid="action-filter"]', 'user_deleted');
+    await page.click('[data-testid="apply-filters-button"]');
+    
+    // Should show only user_deleted entries
+    await expect(page.locator('[data-testid="audit-entry"]')).toHaveCount(1);
+    await expect(page.locator('[data-testid="audit-entry"] [data-testid="entry-action"]')).toContainText('user_deleted');
+  });
+
+  test('should filter audit entries by time range', async ({ page }) => {
+    // Test time range filter
+    await page.selectOption('[data-testid="time-range-filter"]', '1h');
+    await page.click('[data-testid="apply-filters-button"]');
+    
+    // Should update the entries based on time filter
+    await expect(page.locator('[data-testid="audit-entry"]')).toHaveCount(1);
+  });
+
+  test('should filter audit entries by admin user', async ({ page }) => {
+    // Test admin filter
+    await page.fill('[data-testid="admin-filter-input"]', 'admin456');
+    await page.click('[data-testid="apply-filters-button"]');
+    
+    // Should show only entries from admin456
+    await expect(page.locator('[data-testid="audit-entry"]')).toHaveCount(1);
+    await expect(page.locator('[data-testid="audit-entry"] [data-testid="entry-admin"]')).toContainText('admin2@example.com');
+  });
+
+  test('should display audit entry details in modal', async ({ page }) => {
+    // Click on first audit entry
+    await page.click('[data-testid="audit-entry"]');
+    
+    // Modal should open with detailed information
+    await expect(page.locator('[data-testid="audit-detail-modal"]')).toBeVisible();
+    
+    // Verify modal content
+    await expect(page.locator('[data-testid="detail-action"]')).toContainText('user_created');
+    await expect(page.locator('[data-testid="detail-admin-email"]')).toContainText('admin@example.com');
+    await expect(page.locator('[data-testid="detail-timestamp"]')).toContainText('2024-01-20');
+    await expect(page.locator('[data-testid="detail-client-ip"]')).toContainText('192.168.1.100');
+    
+    // Check detailed metadata
+    await expect(page.locator('[data-testid="detail-metadata"]')).toContainText('user456');
+    await expect(page.locator('[data-testid="detail-metadata"]')).toContainText('John Doe');
+    
+    // Close modal
+    await page.click('[data-testid="close-modal-button"]');
+    await expect(page.locator('[data-testid="audit-detail-modal"]')).not.toBeVisible();
+  });
+
+  test('should handle audit log cleanup workflow', async ({ page }) => {
+    // Open cleanup modal
+    await page.click('[data-testid="cleanup-logs-button"]');
+    await expect(page.locator('[data-testid="cleanup-modal"]')).toBeVisible();
+    
+    // Set retention period
+    await page.fill('[data-testid="retention-days-input"]', '30');
+    
+    // Confirm cleanup
+    await page.click('[data-testid="confirm-cleanup-button"]');
+    
+    // Should show success notification
+    await expect(page.locator('[data-testid="success-notification"]')).toBeVisible();
+    await expect(page.locator('[data-testid="success-notification"]')).toContainText('Audit log cleanup completed');
+    
+    // Modal should close
+    await expect(page.locator('[data-testid="cleanup-modal"]')).not.toBeVisible();
+  });
+
+  test('should export audit summary', async ({ page }) => {
+    // Click export button
+    await page.click('[data-testid="export-summary-button"]');
+    
+    // Should show export modal with summary data
+    await expect(page.locator('[data-testid="export-modal"]')).toBeVisible();
+    await expect(page.locator('[data-testid="export-total-actions"]')).toContainText('150');
+    await expect(page.locator('[data-testid="export-successful-actions"]')).toContainText('140');
+    await expect(page.locator('[data-testid="export-failed-actions"]')).toContainText('10');
+    
+    // Check top actions list
+    await expect(page.locator('[data-testid="top-action-user_login"]')).toContainText('50');
+    
+    // Download export (mock)
+    await page.click('[data-testid="download-export-button"]');
+    
+    // Should show download success
+    await expect(page.locator('[data-testid="download-success"]')).toBeVisible();
+  });
+
+  test('should handle pagination', async ({ page }) => {
+    // Mock paginated response
+    await page.route('**/api/admin/audit-log?page=2*', async route => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          entries: [
+            {
+              id: '4',
+              adminId: 'admin789',
+              adminEmail: 'admin3@example.com',
+              action: 'system_maintenance',
+              status: 'success',
+              details: { maintenance_type: 'database_cleanup' },
+              timestamp: '2024-01-19T15:30:00Z',
+              clientIP: '192.168.1.200',
+              requiresMFA: true,
+              userAgent: 'Mozilla/5.0'
+            }
+          ],
+          pagination: {
+            currentPage: 2,
+            totalPages: 2,
+            limit: 10,
+            hasMore: false
+          }
+        })
+      });
+    });
+
+    // Click next page
+    await page.click('[data-testid="pagination-next"]');
+    
+    // Should load page 2 entries
+    await expect(page.locator('[data-testid="audit-entry"]')).toHaveCount(1);
+    await expect(page.locator('[data-testid="entry-action"]')).toContainText('system_maintenance');
+    
+    // Page indicator should show page 2
+    await expect(page.locator('[data-testid="current-page"]')).toContainText('2');
+  });
+
+  test('should display security alerts and violations', async ({ page }) => {
+    // Mock security alert data
+    const securityAlerts = [
+      {
+        id: 'alert1',
+        type: 'security',
+        message: 'Multiple failed login attempts detected',
+        details: { admin_id: 'admin456', failure_count: 5 },
+        timestamp: '2024-01-20T12:05:00Z',
+        acknowledged: false
+      }
+    ];
+
+    await page.route('**/api/admin/security-alerts*', async route => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          alerts: securityAlerts
+        })
+      });
+    });
+
+    // Navigate to security alerts section
+    await page.click('[data-testid="security-alerts-tab"]');
+    
+    // Should display security alerts
+    await expect(page.locator('[data-testid="security-alert"]')).toHaveCount(1);
+    await expect(page.locator('[data-testid="alert-message"]')).toContainText('Multiple failed login attempts');
+    
+    // Acknowledge alert
+    await page.click('[data-testid="acknowledge-alert-button"]');
+    await expect(page.locator('[data-testid="alert-acknowledged"]')).toBeVisible();
+  });
+
+  test('should search audit entries', async ({ page }) => {
+    // Use search functionality
+    await page.fill('[data-testid="search-input"]', 'user_created');
+    await page.press('[data-testid="search-input"]', 'Enter');
+    
+    // Should filter results
+    await expect(page.locator('[data-testid="audit-entry"]')).toHaveCount(1);
+    await expect(page.locator('[data-testid="entry-action"]')).toContainText('user_created');
+    
+    // Clear search
+    await page.fill('[data-testid="search-input"]', '');
+    await page.press('[data-testid="search-input"]', 'Enter');
+    
+    // Should show all entries again
+    await expect(page.locator('[data-testid="audit-entry"]')).toHaveCount(3);
+  });
+
+  test('should handle investigation workflow', async ({ page }) => {
+    // Start investigation on suspicious entry
+    const suspiciousEntry = page.locator('[data-testid="audit-entry"]').nth(2); // failed login
+    await suspiciousEntry.click('[data-testid="start-investigation-button"]');
+    
+    // Investigation panel should open
+    await expect(page.locator('[data-testid="investigation-panel"]')).toBeVisible();
+    
+    // Should show related entries
+    await expect(page.locator('[data-testid="related-entries"]')).toBeVisible();
+    await expect(page.locator('[data-testid="related-entry"]')).toHaveCount(0); // No related entries in mock data
+    
+    // Add investigation note
+    await page.fill('[data-testid="investigation-note-input"]', 'Potential brute force attack from IP 203.0.113.50');
+    await page.click('[data-testid="add-note-button"]');
+    
+    // Note should be added
+    await expect(page.locator('[data-testid="investigation-note"]')).toContainText('Potential brute force attack');
+    
+    // Mark investigation as resolved
+    await page.selectOption('[data-testid="investigation-status-select"]', 'resolved');
+    await page.click('[data-testid="update-investigation-button"]');
+    
+    // Should show success message
+    await expect(page.locator('[data-testid="investigation-updated"]')).toBeVisible();
+  });
+
+  test('should handle error states gracefully', async ({ page }) => {
+    // Mock API error
+    await page.route('**/api/admin/audit-log*', async route => {
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: false,
+          error: 'Internal server error'
+        })
+      });
+    });
+
+    // Reload page to trigger error
+    await page.reload();
+    
+    // Should display error message
+    await expect(page.locator('[data-testid="error-message"]')).toBeVisible();
+    await expect(page.locator('[data-testid="error-message"]')).toContainText('Failed to load audit entries');
+    
+    // Should show retry button
+    await expect(page.locator('[data-testid="retry-button"]')).toBeVisible();
+  });
+
+  test('should maintain real-time updates', async ({ page }) => {
+    // Mock WebSocket connection for real-time updates
+    await page.evaluate(() => {
+      // Simulate real-time audit entry
+      const newEntry = {
+        id: '5',
+        adminId: 'admin123',
+        adminEmail: 'admin@example.com',
+        action: 'real_time_action',
+        status: 'success',
+        details: { real_time: true },
+        timestamp: new Date().toISOString(),
+        clientIP: '192.168.1.100',
+        requiresMFA: false,
+        userAgent: 'Mozilla/5.0'
+      };
+
+      // Dispatch custom event to simulate WebSocket message
+      window.dispatchEvent(new CustomEvent('audit-update', { detail: newEntry }));
+    });
+
+    // Should show new entry at top of list
+    await expect(page.locator('[data-testid="audit-entry"]').first().locator('[data-testid="entry-action"]')).toContainText('real_time_action');
+    
+    // Should show real-time indicator
+    await expect(page.locator('[data-testid="real-time-indicator"]')).toBeVisible();
+  });
+});

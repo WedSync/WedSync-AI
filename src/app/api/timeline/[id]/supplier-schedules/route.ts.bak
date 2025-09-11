@@ -1,0 +1,415 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@/lib/supabase/server'
+import { z } from 'zod'
+import { withSecureValidation } from '@/lib/validation/middleware'
+
+// =====================================================
+// VALIDATION SCHEMAS
+// =====================================================
+
+const generateSchedulesSchema = z.object({
+  supplier_ids: z.array(z.string().uuid()).optional(),
+  include_setup_breakdown: z.boolean().default(true),
+  buffer_time_minutes: z.number().min(0).max(120).default(15),
+  export_format: z.enum(['json', 'pdf', 'ics']).default('json')
+})
+
+// =====================================================
+// HELPER FUNCTIONS
+// =====================================================
+
+async function verifyTimelineAccess(
+  supabase: any,
+  timelineId: string,
+  userId: string
+) {
+  const { data: profile, error: profileError } = await supabase
+    .from('user_profiles')
+    .select('organization_id')
+    .eq('user_id', userId)
+    .single()
+
+  if (profileError || !profile?.organization_id) {
+    throw new Error('UNAUTHORIZED: User organization not found')
+  }
+
+  const { data: timeline, error: timelineError } = await supabase
+    .from('wedding_timelines')
+    .select(`
+      id,
+      organization_id,
+      timeline_name,
+      wedding_date,
+      created_by
+    `)
+    .eq('id', timelineId)
+    .eq('organization_id', profile.organization_id)
+    .single()
+
+  if (timelineError || !timeline) {
+    throw new Error('FORBIDDEN: Timeline not found or access denied')
+  }
+
+  return { timeline, profile }
+}
+
+async function getTimelineEvents(supabase: any, timelineId: string) {
+  const { data: events, error } = await supabase
+    .from('timeline_events')
+    .select(`
+      id,
+      event_title,
+      event_description,
+      event_time,
+      event_duration_minutes,
+      event_location,
+      location_details,
+      event_category,
+      sort_order
+    `)
+    .eq('timeline_id', timelineId)
+    .order('event_time', { ascending: true })
+
+  if (error) {
+    throw new Error('Failed to fetch timeline events')
+  }
+
+  return events || []
+}
+
+async function generateSupplierSchedule(
+  supabase: any,
+  supplier: any,
+  timelineEvents: any[],
+  weddingDate: string,
+  bufferTime: number
+) {
+  // Find events relevant to this supplier category
+  const relevantEvents = timelineEvents.filter(event => {
+    const category = event.event_category?.toLowerCase() || ''
+    const supplierCategory = supplier.primary_category?.toLowerCase() || ''
+    
+    return category.includes(supplierCategory) || 
+           supplierCategory.includes(category) ||
+           // Include setup/breakdown events for all suppliers
+           category.includes('setup') || 
+           category.includes('breakdown') ||
+           category.includes('arrival') ||
+           category.includes('departure')
+  })
+
+  // Generate schedule items with buffer times
+  const scheduleItems = relevantEvents.map(event => {
+    const baseTime = new Date(`${weddingDate}T${event.event_time || '00:00:00'}`)
+    const startTime = new Date(baseTime.getTime() - (bufferTime * 60000)) // Buffer before
+    const endTime = new Date(baseTime.getTime() + ((event.event_duration_minutes || 60) * 60000))
+    const departureTime = new Date(endTime.getTime() + (bufferTime * 60000)) // Buffer after
+
+    return {
+      event_id: event.id,
+      event_title: event.event_title,
+      event_description: event.event_description,
+      scheduled_arrival: startTime.toISOString(),
+      event_start: baseTime.toISOString(),
+      event_end: endTime.toISOString(),
+      scheduled_departure: departureTime.toISOString(),
+      location: event.event_location,
+      location_details: event.location_details,
+      category: event.event_category,
+      duration_minutes: event.event_duration_minutes || 60,
+      buffer_before_minutes: bufferTime,
+      buffer_after_minutes: bufferTime,
+      notes: `Please arrive by ${startTime.toLocaleTimeString()} for ${event.event_title}`,
+      status: 'pending'
+    }
+  })
+
+  return {
+    supplier_id: supplier.id,
+    supplier_name: supplier.business_name,
+    supplier_category: supplier.primary_category,
+    supplier_contact: {
+      email: supplier.email,
+      phone: supplier.phone
+    },
+    total_events: scheduleItems.length,
+    earliest_arrival: scheduleItems.length > 0 ? scheduleItems[0].scheduled_arrival : null,
+    latest_departure: scheduleItems.length > 0 ? scheduleItems[scheduleItems.length - 1].scheduled_departure : null,
+    schedule_items: scheduleItems,
+    generated_at: new Date().toISOString(),
+    status: 'generated'
+  }
+}
+
+// =====================================================
+// GET /api/timeline/[id]/supplier-schedules
+// =====================================================
+
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const supabase = await createClient()
+    
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+    
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 }
+      )
+    }
+
+    const { timeline } = await verifyTimelineAccess(supabase, params.id, user.id)
+
+    // Get query parameters
+    const searchParams = request.nextUrl.searchParams
+    const supplierIds = searchParams.get('supplier_ids')?.split(',') || null
+    const includeSetupBreakdown = searchParams.get('include_setup_breakdown') !== 'false'
+    const bufferTime = parseInt(searchParams.get('buffer_time_minutes') || '15')
+    const exportFormat = searchParams.get('export_format') || 'json'
+
+    // Get timeline events
+    const timelineEvents = await getTimelineEvents(supabase, params.id)
+
+    if (timelineEvents.length === 0) {
+      return NextResponse.json({
+        success: true,
+        data: {
+          timeline_id: params.id,
+          timeline_name: timeline.timeline_name,
+          wedding_date: timeline.wedding_date,
+          supplier_schedules: [],
+          message: 'No events found in timeline to generate schedules'
+        }
+      })
+    }
+
+    // Get suppliers - either specified ones or all active suppliers
+    let suppliersQuery = supabase
+      .from('suppliers')
+      .select(`
+        id,
+        business_name,
+        primary_category,
+        email,
+        phone,
+        is_published
+      `)
+      .eq('is_published', true)
+
+    if (supplierIds && supplierIds.length > 0) {
+      suppliersQuery = suppliersQuery.in('id', supplierIds)
+    }
+
+    const { data: suppliers, error: suppliersError } = await suppliersQuery
+
+    if (suppliersError) {
+      throw new Error('Failed to fetch suppliers')
+    }
+
+    if (!suppliers || suppliers.length === 0) {
+      return NextResponse.json({
+        success: true,
+        data: {
+          timeline_id: params.id,
+          timeline_name: timeline.timeline_name,
+          wedding_date: timeline.wedding_date,
+          supplier_schedules: [],
+          message: 'No suppliers found to generate schedules for'
+        }
+      })
+    }
+
+    // Generate schedules for each supplier
+    const supplierSchedules = await Promise.all(
+      suppliers.map(supplier => 
+        generateSupplierSchedule(
+          supabase,
+          supplier,
+          timelineEvents,
+          timeline.wedding_date,
+          bufferTime
+        )
+      )
+    )
+
+    // Filter out suppliers with no relevant events
+    const validSchedules = supplierSchedules.filter(schedule => 
+      schedule.schedule_items.length > 0
+    )
+
+    // Store generated schedules in database
+    for (const schedule of validSchedules) {
+      await supabase
+        .from('supplier_schedules')
+        .upsert({
+          timeline_id: params.id,
+          supplier_id: schedule.supplier_id,
+          schedule_data: schedule,
+          status: 'generated',
+          generated_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        }, {
+          onConflict: 'timeline_id,supplier_id'
+        })
+    }
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        timeline_id: params.id,
+        timeline_name: timeline.timeline_name,
+        wedding_date: timeline.wedding_date,
+        total_suppliers: suppliers.length,
+        schedules_generated: validSchedules.length,
+        supplier_schedules: validSchedules,
+        generation_settings: {
+          include_setup_breakdown: includeSetupBreakdown,
+          buffer_time_minutes: bufferTime,
+          export_format: exportFormat
+        }
+      }
+    })
+
+  } catch (error) {
+    console.error('Supplier schedules generation error:', error)
+    const status = error instanceof Error && error.message.startsWith('UNAUTHORIZED') ? 401 :
+                   error instanceof Error && error.message.startsWith('FORBIDDEN') ? 403 : 500
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Internal server error' },
+      { status }
+    )
+  }
+}
+
+// =====================================================
+// POST /api/timeline/[id]/supplier-schedules - Generate and save schedules
+// =====================================================
+
+export const POST = withSecureValidation(
+  generateSchedulesSchema,
+  async (request: NextRequest, validatedData: z.infer<typeof generateSchedulesSchema>) => {
+    try {
+      const supabase = await createClient()
+      const { params } = await request.json()
+      
+      const { data: { user }, error: authError } = await supabase.auth.getUser()
+      
+      if (authError || !user) {
+        return NextResponse.json(
+          { error: 'Authentication required' },
+          { status: 401 }
+        )
+      }
+
+      const timelineId = params.id
+      const { timeline } = await verifyTimelineAccess(supabase, timelineId, user.id)
+
+      // Get timeline events
+      const timelineEvents = await getTimelineEvents(supabase, timelineId)
+
+      if (timelineEvents.length === 0) {
+        return NextResponse.json(
+          { error: 'No events found in timeline to generate schedules' },
+          { status: 400 }
+        )
+      }
+
+      // Get specified suppliers or all active suppliers
+      let suppliersQuery = supabase
+        .from('suppliers')
+        .select(`
+          id,
+          business_name,
+          primary_category,
+          email,
+          phone,
+          is_published
+        `)
+        .eq('is_published', true)
+
+      if (validatedData.supplier_ids && validatedData.supplier_ids.length > 0) {
+        suppliersQuery = suppliersQuery.in('id', validatedData.supplier_ids)
+      }
+
+      const { data: suppliers, error: suppliersError } = await suppliersQuery
+
+      if (suppliersError || !suppliers || suppliers.length === 0) {
+        return NextResponse.json(
+          { error: 'No valid suppliers found' },
+          { status: 400 }
+        )
+      }
+
+      // Generate schedules for each supplier
+      const supplierSchedules = await Promise.all(
+        suppliers.map(supplier => 
+          generateSupplierSchedule(
+            supabase,
+            supplier,
+            timelineEvents,
+            timeline.wedding_date,
+            validatedData.buffer_time_minutes
+          )
+        )
+      )
+
+      // Filter out suppliers with no relevant events
+      const validSchedules = supplierSchedules.filter(schedule => 
+        schedule.schedule_items.length > 0
+      )
+
+      // Save generated schedules to database
+      const savedSchedules = []
+      for (const schedule of validSchedules) {
+        const { data: savedSchedule, error: saveError } = await supabase
+          .from('supplier_schedules')
+          .upsert({
+            timeline_id: timelineId,
+            supplier_id: schedule.supplier_id,
+            schedule_data: schedule,
+            status: 'generated',
+            generated_at: new Date().toISOString(),
+            generated_by: user.id,
+            updated_at: new Date().toISOString()
+          }, {
+            onConflict: 'timeline_id,supplier_id'
+          })
+          .select()
+          .single()
+
+        if (!saveError && savedSchedule) {
+          savedSchedules.push(savedSchedule)
+        }
+      }
+
+      return NextResponse.json({
+        success: true,
+        data: {
+          timeline_id: timelineId,
+          timeline_name: timeline.timeline_name,
+          wedding_date: timeline.wedding_date,
+          total_suppliers_processed: suppliers.length,
+          schedules_generated: validSchedules.length,
+          schedules_saved: savedSchedules.length,
+          supplier_schedules: validSchedules,
+          generation_settings: validatedData
+        }
+      }, { status: 201 })
+
+    } catch (error) {
+      console.error('Supplier schedules creation error:', error)
+      const status = error instanceof Error && error.message.startsWith('UNAUTHORIZED') ? 401 :
+                     error instanceof Error && error.message.startsWith('FORBIDDEN') ? 403 : 500
+      return NextResponse.json(
+        { error: error instanceof Error ? error.message : 'Internal server error' },
+        { status }
+      )
+    }
+  }
+)
+
+export const runtime = 'nodejs'
+export const dynamic = 'force-dynamic'

@@ -1,0 +1,129 @@
+export interface StylePreferences {
+  categories: string[]
+  colors: {
+    primary: string
+    secondary: string
+    accent: string
+    neutral: string
+  }
+  preferences: {
+    elegance: number
+    modernity: number
+    intimacy: number
+    luxury: number
+    naturalness: number
+    boldness: number
+  }
+  inspiration?: {
+    season: 'spring' | 'summer' | 'fall' | 'winter'
+    venue: string
+    timeOfDay: string
+  }
+}
+
+export interface StyleCategory {
+  id: string
+  name: string
+  description: string
+  image: string
+  tags: string[]
+  popularity: number
+  season?: 'spring' | 'summer' | 'fall' | 'winter' | 'all'
+  venue?: string[]
+  inspiration: string[]
+}
+
+export interface ColorPalette {
+  id: string
+  name: string
+  description: string
+  colors: {
+    primary: string
+    secondary: string
+    accent: string
+    neutral: string
+  }
+  season: string[]
+  style: string[]
+  harmony: string
+  accessibility: number
+}
+
+export interface AestheticPreferences {
+  elegance: number
+  modernity: number
+  intimacy: number
+  luxury: number
+  naturalness: number
+  boldness: number
+}
+
+export interface Venue {
+  id: string
+  name: string
+  type: string
+  location: string
+  images: string[]
+  rating: number
+  reviewCount: number
+  priceRange: string
+  capacity: { min: number; max: number }
+  styleMatch: number
+  features: string[]
+  description: string
+  contact: { phone: string; email: string; website: string }
+}
+
+export interface Vendor {
+  id: string
+  name: string
+  category: string
+  specialty: string
+  location: string
+  image: string
+  rating: number
+  reviewCount: number
+  priceRange: string
+  styleMatch: number
+  portfolio: string[]
+  description: string
+  contact: { phone: string; email: string; website: string }
+}
+
+export interface StyleMatch {
+  id: string
+  type: 'venue' | 'vendor'
+  item: Venue | Vendor
+  matchScore: number
+  matchFactors: {
+    colorHarmony: number
+    styleAlignment: number
+    preferenceMatch: number
+    seasonalFit: number
+  }
+  explanation: string[]
+  confidence: number
+}
+
+export interface StyleAnalysis {
+  harmony: string
+  accessibility: {
+    score: number
+    issues: string[]
+    recommendations: string[]
+  }
+  mood: string[]
+  season: string
+  style: string[]
+  compatibility: number
+}
+
+export interface StyleDiscoverySession {
+  id: string
+  userId: string
+  preferences: StylePreferences
+  matches: StyleMatch[]
+  createdAt: Date
+  updatedAt: Date
+  status: 'draft' | 'completed' | 'expired'
+}

@@ -1,0 +1,880 @@
+/**
+ * Wedding-Specific Error Scenario Runbooks
+ * 
+ * Comprehensive operational runbooks for wedding coordinators and emergency response teams.
+ * Provides step-by-step recovery procedures for critical wedding day scenarios.
+ * 
+ * Team E - QA & Documentation Lead
+ * WS-198 Error Handling System Implementation
+ */
+
+export interface RunbookStep {
+  id: string;
+  title: string;
+  description: string;
+  estimatedTime: string;
+  priority: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
+  requiredRole: 'COORDINATOR' | 'VENDOR' | 'SUPPORT' | 'EMERGENCY' | 'ANY';
+  commands?: string[];
+  checkpoints: string[];
+  fallbackOptions: string[];
+}
+
+export interface WeddingScenarioRunbook {
+  id: string;
+  title: string;
+  description: string;
+  severity: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
+  weddingPhase: 'PLANNING' | 'FINAL_WEEK' | 'WEDDING_DAY' | 'POST_WEDDING';
+  triggerConditions: string[];
+  detectionMethods: string[];
+  impactAssessment: string;
+  timeToResolve: string;
+  steps: RunbookStep[];
+  escalationMatrix: string[];
+  preventionMeasures: string[];
+  relatedRunbooks: string[];
+  lastUpdated: string;
+  testedScenarios: string[];
+}
+
+export interface EmergencyContact {
+  role: string;
+  name: string;
+  phone: string;
+  email: string;
+  availability: string;
+  expertise: string[];
+}
+
+export interface WeddingDayEmergencyKit {
+  contactList: EmergencyContact[];
+  backupSystems: string[];
+  offlineCapabilities: string[];
+  alternativeWorkflows: string[];
+  emergencySuppliers: string[];
+}
+
+export class WeddingScenarioRunbookSystem {
+  private runbooks: Map<string, WeddingScenarioRunbook> = new Map();
+  private emergencyKit: WeddingDayEmergencyKit;
+
+  constructor() {
+    this.initializeRunbooks();
+    this.initializeEmergencyKit();
+  }
+
+  private initializeRunbooks(): void {
+    // Critical Wedding Day Scenarios
+    this.addRunbook({
+      id: 'WD-SYSTEM-DOWN',
+      title: 'Complete System Outage on Wedding Day',
+      description: 'WedSync platform completely unavailable during active wedding',
+      severity: 'CRITICAL',
+      weddingPhase: 'WEDDING_DAY',
+      triggerConditions: [
+        'Platform returns 5xx errors for >2 minutes',
+        'Database connectivity lost',
+        'CDN failure affecting assets',
+        'Authentication service down'
+      ],
+      detectionMethods: [
+        'Automated uptime monitoring alerts',
+        'Wedding coordinator reports access issues',
+        'Vendor mobile app connection failures',
+        'Guest check-in system unresponsive'
+      ],
+      impactAssessment: 'CATASTROPHIC - Active wedding coordination disrupted, vendor communication lost, guest management compromised',
+      timeToResolve: '< 5 minutes (CRITICAL)',
+      steps: [
+        {
+          id: 'WD-SD-001',
+          title: 'Immediate Emergency Protocol Activation',
+          description: 'Activate wedding day emergency procedures and notify all stakeholders',
+          estimatedTime: '30 seconds',
+          priority: 'CRITICAL',
+          requiredRole: 'EMERGENCY',
+          commands: [
+            'Send emergency SMS to wedding coordinator',
+            'Activate backup communication channels',
+            'Enable offline mode for venue staff'
+          ],
+          checkpoints: [
+            'Wedding coordinator contacted via backup phone',
+            'Venue staff switched to offline procedures',
+            'Vendor backup communication initiated'
+          ],
+          fallbackOptions: [
+            'Manual paper-based coordination',
+            'WhatsApp group emergency chat',
+            'Venue PA system announcements'
+          ]
+        },
+        {
+          id: 'WD-SD-002',
+          title: 'System Status Assessment',
+          description: 'Rapidly diagnose the root cause and estimate resolution time',
+          estimatedTime: '2 minutes',
+          priority: 'CRITICAL',
+          requiredRole: 'SUPPORT',
+          commands: [
+            'Check health endpoints',
+            'Review error logs for last 10 minutes',
+            'Verify database connectivity',
+            'Test CDN endpoints'
+          ],
+          checkpoints: [
+            'Root cause identified',
+            'Resolution estimate determined',
+            'Stakeholders informed of timeline'
+          ],
+          fallbackOptions: [
+            'Switch to backup data center',
+            'Activate disaster recovery procedures',
+            'Enable read-only emergency mode'
+          ]
+        },
+        {
+          id: 'WD-SD-003',
+          title: 'Vendor Notification & Backup Workflows',
+          description: 'Inform all wedding vendors and enable alternative coordination methods',
+          estimatedTime: '1 minute',
+          priority: 'CRITICAL',
+          requiredRole: 'COORDINATOR',
+          checkpoints: [
+            'All vendors contacted via backup methods',
+            'Alternative coordination workflows activated',
+            'Critical vendor tasks prioritized'
+          ],
+          fallbackOptions: [
+            'Direct phone calls to key vendors',
+            'Email blast with backup instructions',
+            'Venue coordinator physical coordination'
+          ]
+        }
+      ],
+      escalationMatrix: [
+        '0-2 minutes: Wedding Coordinator + Support Team',
+        '2-5 minutes: Engineering Manager + Platform Owner',
+        '5+ minutes: CEO + All Department Heads',
+        'If >10 minutes: External emergency support activated'
+      ],
+      preventionMeasures: [
+        'Multi-region deployment',
+        'Database clustering with failover',
+        'CDN redundancy',
+        'Proactive monitoring alerts',
+        'Weekly disaster recovery drills'
+      ],
+      relatedRunbooks: ['WD-PAYMENT-FAIL', 'WD-VENDOR-COMM', 'WD-GUEST-CHECKIN'],
+      lastUpdated: new Date().toISOString(),
+      testedScenarios: ['Load testing at 5000 concurrent users', 'Database failover simulation']
+    });
+
+    this.addRunbook({
+      id: 'WD-PAYMENT-FAIL',
+      title: 'Payment Processing Failure During Wedding',
+      description: 'Critical payment failures for final vendor payments or emergency services',
+      severity: 'CRITICAL',
+      weddingPhase: 'WEDDING_DAY',
+      triggerConditions: [
+        'Stripe webhook failures >5 minutes',
+        'Payment gateway timeout errors',
+        'Final vendor payment rejections',
+        'Emergency service payment failures'
+      ],
+      detectionMethods: [
+        'Automated payment monitoring alerts',
+        'Vendor payment confirmation timeouts',
+        'Wedding coordinator payment reports',
+        'Stripe dashboard anomaly detection'
+      ],
+      impactAssessment: 'HIGH - Vendor service disruption risk, emergency service access issues, wedding timeline delays',
+      timeToResolve: '< 10 minutes',
+      steps: [
+        {
+          id: 'WD-PF-001',
+          title: 'Payment Channel Assessment',
+          description: 'Quickly identify which payment channels are affected and available',
+          estimatedTime: '1 minute',
+          priority: 'CRITICAL',
+          requiredRole: 'SUPPORT',
+          commands: [
+            'Check Stripe dashboard status',
+            'Test backup payment processor',
+            'Verify bank account balances',
+            'Check payment method alternatives'
+          ],
+          checkpoints: [
+            'Primary payment channel status confirmed',
+            'Backup options identified',
+            'Available credit limits verified'
+          ],
+          fallbackOptions: [
+            'Switch to backup payment processor',
+            'Use alternative payment methods',
+            'Process emergency manual payments'
+          ]
+        },
+        {
+          id: 'WD-PF-002',
+          title: 'Vendor Communication & Assurance',
+          description: 'Inform affected vendors and provide payment guarantees',
+          estimatedTime: '2 minutes',
+          priority: 'HIGH',
+          requiredRole: 'COORDINATOR',
+          checkpoints: [
+            'All affected vendors contacted',
+            'Payment guarantees provided',
+            'Service continuation confirmed'
+          ],
+          fallbackOptions: [
+            'Provide written payment guarantees',
+            'Arrange post-wedding payment schedules',
+            'Use venue emergency fund if available'
+          ]
+        }
+      ],
+      escalationMatrix: [
+        '0-5 minutes: Payment Team + Wedding Coordinator',
+        '5-10 minutes: Finance Director + Platform Owner',
+        '10+ minutes: CEO + Legal Team (contract implications)'
+      ],
+      preventionMeasures: [
+        'Multiple payment processor redundancy',
+        'Real-time payment monitoring',
+        'Pre-authorized emergency payment methods',
+        'Vendor payment schedule optimization'
+      ],
+      relatedRunbooks: ['WD-VENDOR-COMM', 'FP-PAYMENT-RECOVERY'],
+      lastUpdated: new Date().toISOString(),
+      testedScenarios: ['Stripe webhook simulation', 'Payment processor failover testing']
+    });
+
+    this.addRunbook({
+      id: 'WD-VENDOR-COMM',
+      title: 'Vendor Communication System Failure',
+      description: 'Critical breakdown in communication with key wedding vendors',
+      severity: 'HIGH',
+      weddingPhase: 'WEDDING_DAY',
+      triggerConditions: [
+        'SMS gateway failure affecting vendor notifications',
+        'Email system outage during critical updates',
+        'Mobile app push notification failures',
+        'Vendor portal access issues'
+      ],
+      detectionMethods: [
+        'Vendor response time monitoring',
+        'Communication delivery confirmations',
+        'Wedding coordinator feedback',
+        'Vendor portal usage analytics'
+      ],
+      impactAssessment: 'HIGH - Wedding timeline coordination issues, vendor service delays, guest experience degradation',
+      timeToResolve: '< 15 minutes',
+      steps: [
+        {
+          id: 'WD-VC-001',
+          title: 'Activate Backup Communication Channels',
+          description: 'Switch to alternative communication methods for vendor coordination',
+          estimatedTime: '2 minutes',
+          priority: 'HIGH',
+          requiredRole: 'COORDINATOR',
+          commands: [
+            'Enable backup SMS service',
+            'Activate WhatsApp Business groups',
+            'Set up direct phone call protocols',
+            'Enable emergency email routing'
+          ],
+          checkpoints: [
+            'Backup channels operational',
+            'Vendor contact confirmed via alternatives',
+            'Critical messages resent successfully'
+          ],
+          fallbackOptions: [
+            'Direct phone calls to all vendors',
+            'Physical venue coordinator dispatch',
+            'Emergency runner system activation'
+          ]
+        },
+        {
+          id: 'WD-VC-002',
+          title: 'Vendor Status Confirmation',
+          description: 'Confirm all vendors are aware of timeline and current status',
+          estimatedTime: '5 minutes',
+          priority: 'HIGH',
+          requiredRole: 'COORDINATOR',
+          checkpoints: [
+            'All critical vendors confirmed',
+            'Timeline updates acknowledged',
+            'Any vendor issues identified'
+          ],
+          fallbackOptions: [
+            'Send venue staff to vendor locations',
+            'Use guest coordinators as messengers',
+            'Implement visual cue system'
+          ]
+        }
+      ],
+      escalationMatrix: [
+        '0-5 minutes: Wedding Coordinator + Communications Team',
+        '5-15 minutes: Venue Manager + Regional Coordinator',
+        '15+ minutes: Executive Team + Venue Emergency Protocols'
+      ],
+      preventionMeasures: [
+        'Multi-channel communication redundancy',
+        'Vendor communication preference profiles',
+        'Real-time delivery confirmation system',
+        'Regular communication channel testing'
+      ],
+      relatedRunbooks: ['WD-TIMELINE-DELAY', 'VE-VENDOR-RESPONSE'],
+      lastUpdated: new Date().toISOString(),
+      testedScenarios: ['SMS gateway simulation', 'Multi-channel failover testing']
+    });
+
+    // Vendor Coordination Failures
+    this.addRunbook({
+      id: 'VC-PHOTOGRAPHER-MISSING',
+      title: 'Primary Photographer No-Show or Emergency',
+      description: 'Primary wedding photographer unavailable on wedding day',
+      severity: 'CRITICAL',
+      weddingPhase: 'WEDDING_DAY',
+      triggerConditions: [
+        'Photographer not checked in 2 hours before ceremony',
+        'Photographer emergency contact activated',
+        'Equipment failure requiring replacement',
+        'Health emergency preventing attendance'
+      ],
+      detectionMethods: [
+        'Automated check-in monitoring',
+        'Vendor status confirmation calls',
+        'Equipment status reports',
+        'Emergency contact notifications'
+      ],
+      impactAssessment: 'CRITICAL - Wedding memories at risk, couple devastation potential, vendor reputation crisis',
+      timeToResolve: '< 30 minutes',
+      steps: [
+        {
+          id: 'VC-PM-001',
+          title: 'Emergency Photographer Network Activation',
+          description: 'Immediately contact backup photographer network',
+          estimatedTime: '5 minutes',
+          priority: 'CRITICAL',
+          requiredRole: 'COORDINATOR',
+          commands: [
+            'Access emergency photographer database',
+            'Filter by location and availability',
+            'Send bulk emergency requests',
+            'Escalate to premium photographer partners'
+          ],
+          checkpoints: [
+            'Emergency photographers contacted',
+            'At least one confirmation received',
+            'Travel time to venue confirmed'
+          ],
+          fallbackOptions: [
+            'Contact local photography schools',
+            'Activate guest photographer coordination',
+            'Arrange videographer photo capture'
+          ]
+        },
+        {
+          id: 'VC-PM-002',
+          title: 'Couple Communication & Expectation Management',
+          description: 'Inform couple while managing emotional impact',
+          estimatedTime: '3 minutes',
+          priority: 'CRITICAL',
+          requiredRole: 'COORDINATOR',
+          checkpoints: [
+            'Couple informed with solution focus',
+            'Emotional support provided',
+            'Backup photographer introduction scheduled'
+          ],
+          fallbackOptions: [
+            'Family member designated as coordinator',
+            'Professional counselor activation',
+            'Venue emotional support protocols'
+          ]
+        }
+      ],
+      escalationMatrix: [
+        '0-10 minutes: Wedding Coordinator + Photography Partners',
+        '10-20 minutes: Regional Manager + Premium Partners',
+        '20+ minutes: Executive Team + Legal/Insurance'
+      ],
+      preventionMeasures: [
+        'Backup photographer requirement in contracts',
+        'Real-time photographer tracking',
+        'Equipment backup requirements',
+        'Health and emergency protocol agreements'
+      ],
+      relatedRunbooks: ['VC-VENDOR-REPLACEMENT', 'EC-COUPLE-CRISIS'],
+      lastUpdated: new Date().toISOString(),
+      testedScenarios: ['Photographer replacement simulation', 'Equipment failure response']
+    });
+
+    // Guest Communication Issues
+    this.addRunbook({
+      id: 'GC-CHECKIN-SYSTEM-FAIL',
+      title: 'Guest Check-in System Failure',
+      description: 'Digital guest check-in and seating system unavailable',
+      severity: 'MEDIUM',
+      weddingPhase: 'WEDDING_DAY',
+      triggerConditions: [
+        'QR code scanner failures',
+        'Guest list database unavailable',
+        'Seating chart display errors',
+        'Check-in app crashes'
+      ],
+      detectionMethods: [
+        'Venue staff reports',
+        'Guest complaint monitoring',
+        'Check-in success rate alerts',
+        'System performance monitoring'
+      ],
+      impactAssessment: 'MEDIUM - Guest experience degradation, ceremony delays, seating confusion',
+      timeToResolve: '< 10 minutes',
+      steps: [
+        {
+          id: 'GC-CF-001',
+          title: 'Activate Paper-Based Backup System',
+          description: 'Switch to pre-printed guest lists and manual check-in',
+          estimatedTime: '2 minutes',
+          priority: 'HIGH',
+          requiredRole: 'COORDINATOR',
+          commands: [
+            'Retrieve printed guest lists from emergency kit',
+            'Set up manual check-in stations',
+            'Deploy additional venue staff',
+            'Activate manual seating chart display'
+          ],
+          checkpoints: [
+            'Paper systems operational',
+            'Staff briefed on manual procedures',
+            'Guest flow restored'
+          ],
+          fallbackOptions: [
+            'Guest self-seating protocols',
+            'Venue staff guest recognition system',
+            'Family member assisted seating'
+          ]
+        }
+      ],
+      escalationMatrix: [
+        '0-5 minutes: Venue Coordinator + Technical Support',
+        '5-10 minutes: Wedding Coordinator + Venue Manager',
+        '10+ minutes: Guest Experience Team + Executive Review'
+      ],
+      preventionMeasures: [
+        'Mandatory paper backup requirements',
+        'Regular check-in system testing',
+        'Guest list synchronization protocols',
+        'Staff training on manual procedures'
+      ],
+      relatedRunbooks: ['GC-SEATING-ISSUES', 'VE-VENUE-COORDINATION'],
+      lastUpdated: new Date().toISOString(),
+      testedScenarios: ['QR scanner failure simulation', 'Database connectivity testing']
+    });
+
+    // Final Week Preparation Scenarios
+    this.addRunbook({
+      id: 'FW-VENDOR-CANCELLATION',
+      title: 'Critical Vendor Cancellation (Final Week)',
+      description: 'Key vendor cancels services within 7 days of wedding',
+      severity: 'CRITICAL',
+      weddingPhase: 'FINAL_WEEK',
+      triggerConditions: [
+        'Vendor health emergency',
+        'Business closure or bankruptcy',
+        'Equipment failure or unavailability',
+        'Force majeure events'
+      ],
+      detectionMethods: [
+        'Vendor status confirmation calls',
+        'Automated vendor health monitoring',
+        'Industry news monitoring',
+        'Vendor check-in system alerts'
+      ],
+      impactAssessment: 'CRITICAL - Wedding service disruption, couple stress, potential ceremony postponement',
+      timeToResolve: '< 24 hours',
+      steps: [
+        {
+          id: 'FW-VC-001',
+          title: 'Emergency Vendor Replacement Protocol',
+          description: 'Activate premium emergency vendor network',
+          estimatedTime: '4 hours',
+          priority: 'CRITICAL',
+          requiredRole: 'COORDINATOR',
+          commands: [
+            'Access emergency vendor database',
+            'Filter by service type and availability',
+            'Contact premium partner network',
+            'Negotiate emergency service rates'
+          ],
+          checkpoints: [
+            'Replacement vendor secured',
+            'Service terms confirmed',
+            'Couple approval obtained'
+          ],
+          fallbackOptions: [
+            'Multiple vendor coordination for service split',
+            'Family/friend network activation',
+            'Venue built-in service activation'
+          ]
+        }
+      ],
+      escalationMatrix: [
+        '0-4 hours: Senior Wedding Coordinator + Vendor Relations',
+        '4-12 hours: Regional Manager + Executive Team',
+        '12+ hours: CEO + Legal Team + Insurance Claims'
+      ],
+      preventionMeasures: [
+        'Vendor health monitoring system',
+        'Contract backup vendor requirements',
+        'Vendor financial stability checks',
+        'Force majeure preparation protocols'
+      ],
+      relatedRunbooks: ['FW-TIMELINE-ADJUSTMENT', 'EC-COUPLE-CRISIS'],
+      lastUpdated: new Date().toISOString(),
+      testedScenarios: ['Vendor replacement simulation', 'Emergency contract negotiation']
+    });
+
+    // Planning Phase Scenarios
+    this.addRunbook({
+      id: 'PP-DATA-CORRUPTION',
+      title: 'Wedding Data Corruption or Loss',
+      description: 'Critical wedding planning data corrupted or lost',
+      severity: 'HIGH',
+      weddingPhase: 'PLANNING',
+      triggerConditions: [
+        'Database corruption detected',
+        'File upload failures',
+        'Sync errors across devices',
+        'User reports missing data'
+      ],
+      detectionMethods: [
+        'Data integrity monitoring alerts',
+        'User data loss reports',
+        'Backup verification failures',
+        'Sync status monitoring'
+      ],
+      impactAssessment: 'HIGH - Planning progress loss, couple trust issues, potential wedding delays',
+      timeToResolve: '< 2 hours',
+      steps: [
+        {
+          id: 'PP-DC-001',
+          title: 'Data Recovery Assessment',
+          description: 'Assess extent of data loss and recovery options',
+          estimatedTime: '15 minutes',
+          priority: 'HIGH',
+          requiredRole: 'SUPPORT',
+          commands: [
+            'Check backup system status',
+            'Verify data integrity checksums',
+            'Test recovery procedures',
+            'Assess recovery time estimates'
+          ],
+          checkpoints: [
+            'Data loss extent determined',
+            'Recovery options identified',
+            'Recovery timeline established'
+          ],
+          fallbackOptions: [
+            'Partial data recovery from cache',
+            'Manual data reconstruction',
+            'Third-party data source integration'
+          ]
+        }
+      ],
+      escalationMatrix: [
+        '0-30 minutes: Data Team + Customer Support',
+        '30-2 hours: Engineering Manager + Data Recovery Specialists',
+        '2+ hours: CTO + External Data Recovery Services'
+      ],
+      preventionMeasures: [
+        'Real-time data backup systems',
+        'Multi-region data replication',
+        'Regular backup verification testing',
+        'User education on data export options'
+      ],
+      relatedRunbooks: ['PP-SYNC-FAILURES', 'DS-DISASTER-RECOVERY'],
+      lastUpdated: new Date().toISOString(),
+      testedScenarios: ['Data corruption simulation', 'Recovery procedure testing']
+    });
+  }
+
+  private initializeEmergencyKit(): void {
+    this.emergencyKit = {
+      contactList: [
+        {
+          role: 'Emergency Wedding Coordinator',
+          name: 'Sarah Mitchell',
+          phone: '+44-7700-900123',
+          email: 'emergency@wedsync.com',
+          availability: '24/7 Wedding Days',
+          expertise: ['Crisis Management', 'Vendor Coordination', 'Couple Support']
+        },
+        {
+          role: 'Technical Emergency Lead',
+          name: 'James Rodriguez',
+          phone: '+44-7700-900456',
+          email: 'tech-emergency@wedsync.com',
+          availability: '24/7',
+          expertise: ['System Recovery', 'Database Issues', 'Infrastructure']
+        },
+        {
+          role: 'Vendor Relations Emergency',
+          name: 'Emma Thompson',
+          phone: '+44-7700-900789',
+          email: 'vendor-emergency@wedsync.com',
+          availability: '8am-10pm',
+          expertise: ['Vendor Networks', 'Emergency Replacements', 'Contract Negotiations']
+        }
+      ],
+      backupSystems: [
+        'Paper-based coordination workflows',
+        'Offline mobile apps with sync',
+        'WhatsApp Business emergency groups',
+        'Backup payment processing systems'
+      ],
+      offlineCapabilities: [
+        'Venue staff coordination protocols',
+        'Printed vendor contact lists',
+        'Manual guest check-in procedures',
+        'Emergency communication networks'
+      ],
+      alternativeWorkflows: [
+        'Manual vendor coordination procedures',
+        'Paper-based guest management',
+        'Physical timeline coordination boards',
+        'Emergency supplier activation protocols'
+      ],
+      emergencySuppliers: [
+        'Photography network partners',
+        'Backup catering services',
+        'Emergency floral services',
+        'Alternative venue options'
+      ]
+    };
+  }
+
+  private addRunbook(runbook: WeddingScenarioRunbook): void {
+    this.runbooks.set(runbook.id, runbook);
+  }
+
+  public getRunbook(id: string): WeddingScenarioRunbook | undefined {
+    return this.runbooks.get(id);
+  }
+
+  public getRunbooksByPhase(phase: WeddingScenarioRunbook['weddingPhase']): WeddingScenarioRunbook[] {
+    return Array.from(this.runbooks.values()).filter(r => r.weddingPhase === phase);
+  }
+
+  public getRunbooksBySeverity(severity: WeddingScenarioRunbook['severity']): WeddingScenarioRunbook[] {
+    return Array.from(this.runbooks.values()).filter(r => r.severity === severity);
+  }
+
+  public getCriticalWeddingDayRunbooks(): WeddingScenarioRunbook[] {
+    return Array.from(this.runbooks.values()).filter(
+      r => r.weddingPhase === 'WEDDING_DAY' && r.severity === 'CRITICAL'
+    );
+  }
+
+  public generateEmergencyResponseCard(runbookId: string): string {
+    const runbook = this.getRunbook(runbookId);
+    if (!runbook) return 'Runbook not found';
+
+    return `
+=== EMERGENCY RESPONSE CARD ===
+${runbook.title}
+Severity: ${runbook.severity} | Phase: ${runbook.weddingPhase}
+
+DETECTION:
+${runbook.detectionMethods.map(method => `• ${method}`).join('\n')}
+
+IMMEDIATE ACTIONS (First 5 minutes):
+${runbook.steps.slice(0, 3).map(step => 
+  `${step.priority === 'CRITICAL' ? '🚨' : '⚠️'} ${step.title} (${step.estimatedTime})\n   Role: ${step.requiredRole}\n   Key Actions: ${step.checkpoints.join(', ')}`
+).join('\n\n')}
+
+ESCALATION:
+${runbook.escalationMatrix.join('\n')}
+
+EMERGENCY CONTACTS:
+${this.emergencyKit.contactList.map(contact => 
+  `${contact.role}: ${contact.phone} (${contact.availability})`
+).join('\n')}
+
+BACKUP OPTIONS:
+${runbook.steps[0]?.fallbackOptions?.join('\n• ') || 'See full runbook for backup options'}
+===========================
+`;
+  }
+
+  public generateWeddingDayEmergencyBriefing(): string {
+    const criticalRunbooks = this.getCriticalWeddingDayRunbooks();
+    
+    return `
+=== WEDDING DAY EMERGENCY BRIEFING ===
+Date: ${new Date().toLocaleDateString()}
+Time: ${new Date().toLocaleTimeString()}
+
+CRITICAL SCENARIOS TO MONITOR:
+${criticalRunbooks.map(runbook => 
+  `• ${runbook.title} (${runbook.timeToResolve} resolution target)`
+).join('\n')}
+
+EMERGENCY CONTACT HIERARCHY:
+${this.emergencyKit.contactList.map((contact, index) => 
+  `${index + 1}. ${contact.role}: ${contact.phone}`
+).join('\n')}
+
+BACKUP SYSTEMS STATUS:
+${this.emergencyKit.backupSystems.map(system => `✓ ${system}`).join('\n')}
+
+OFFLINE CAPABILITIES:
+${this.emergencyKit.offlineCapabilities.map(cap => `✓ ${cap}`).join('\n')}
+
+REMEMBER: 
+- Wedding days are SACRED - act fast, communicate clearly
+- When in doubt, prioritize couple experience over system perfection
+- ALL vendor issues must be resolved within 30 minutes
+- Activate backup systems IMMEDIATELY if primary fails
+- Document everything for post-wedding analysis
+
+Emergency Briefing Generated: ${new Date().toISOString()}
+===========================================
+`;
+  }
+
+  public exportRunbooksForVenueStaff(): string {
+    const weddingDayRunbooks = this.getRunbooksByPhase('WEDDING_DAY');
+    
+    return `
+=== VENUE STAFF EMERGENCY PROCEDURES ===
+
+QUICK REFERENCE FOR VENUE COORDINATORS
+
+${weddingDayRunbooks.map(runbook => `
+--- ${runbook.title} ---
+IF YOU SEE: ${runbook.triggerConditions.slice(0, 2).join(' OR ')}
+THEN DO:
+${runbook.steps.slice(0, 2).map(step => 
+  `${step.priority === 'CRITICAL' ? '🚨 URGENT' : '⚠️ IMPORTANT'}: ${step.description}`
+).join('\n')}
+
+CALL IMMEDIATELY: ${this.emergencyKit.contactList[0].phone}
+---
+`).join('\n')}
+
+GENERAL EMERGENCY PROTOCOL:
+1. Stay calm and act quickly
+2. Notify WedSync emergency coordinator immediately
+3. Comfort the couple - we will fix this
+4. Activate venue backup procedures
+5. Document what happened
+
+Emergency Contact: ${this.emergencyKit.contactList[0].phone}
+Alternative: ${this.emergencyKit.contactList[1].phone}
+===============================================
+`;
+  }
+
+  public getAllRunbooks(): WeddingScenarioRunbook[] {
+    return Array.from(this.runbooks.values());
+  }
+
+  public getEmergencyKit(): WeddingDayEmergencyKit {
+    return this.emergencyKit;
+  }
+
+  public testRunbook(runbookId: string): {
+    success: boolean;
+    testResults: string[];
+    recommendations: string[];
+  } {
+    const runbook = this.getRunbook(runbookId);
+    if (!runbook) {
+      return {
+        success: false,
+        testResults: ['Runbook not found'],
+        recommendations: ['Verify runbook ID']
+      };
+    }
+
+    const testResults: string[] = [];
+    const recommendations: string[] = [];
+
+    // Test runbook completeness
+    if (runbook.steps.length === 0) {
+      testResults.push('❌ No steps defined');
+      recommendations.push('Add detailed step-by-step procedures');
+    } else {
+      testResults.push(`✅ ${runbook.steps.length} steps defined`);
+    }
+
+    // Test critical steps have checkpoints
+    const criticalSteps = runbook.steps.filter(step => step.priority === 'CRITICAL');
+    const criticalWithCheckpoints = criticalSteps.filter(step => step.checkpoints.length > 0);
+    
+    if (criticalSteps.length > criticalWithCheckpoints.length) {
+      testResults.push('❌ Some critical steps missing checkpoints');
+      recommendations.push('Add verification checkpoints to all critical steps');
+    } else {
+      testResults.push('✅ All critical steps have checkpoints');
+    }
+
+    // Test escalation matrix completeness
+    if (runbook.escalationMatrix.length === 0) {
+      testResults.push('❌ No escalation matrix defined');
+      recommendations.push('Define clear escalation procedures');
+    } else {
+      testResults.push('✅ Escalation matrix defined');
+    }
+
+    // Test fallback options
+    const stepsWithFallbacks = runbook.steps.filter(step => step.fallbackOptions && step.fallbackOptions.length > 0);
+    if (stepsWithFallbacks.length < runbook.steps.length) {
+      testResults.push('⚠️ Some steps missing fallback options');
+      recommendations.push('Add fallback options to all critical steps');
+    } else {
+      testResults.push('✅ All steps have fallback options');
+    }
+
+    const success = recommendations.length === 0;
+    return { success, testResults, recommendations };
+  }
+}
+
+// Export singleton instance for global use
+export const weddingScenarioRunbooks = new WeddingScenarioRunbookSystem();
+
+// Wedding Phase Specific Exports
+export const WeddingDayEmergencyRunbooks = {
+  systemDown: 'WD-SYSTEM-DOWN',
+  paymentFailure: 'WD-PAYMENT-FAIL',
+  vendorCommunication: 'WD-VENDOR-COMM',
+  photographerMissing: 'VC-PHOTOGRAPHER-MISSING',
+  guestCheckinFail: 'GC-CHECKIN-SYSTEM-FAIL'
+} as const;
+
+export const FinalWeekRunbooks = {
+  vendorCancellation: 'FW-VENDOR-CANCELLATION'
+} as const;
+
+export const PlanningPhaseRunbooks = {
+  dataCorruption: 'PP-DATA-CORRUPTION'
+} as const;
+
+// Quick Access Functions
+export function getEmergencyResponseCard(scenario: keyof typeof WeddingDayEmergencyRunbooks): string {
+  const runbookId = WeddingDayEmergencyRunbooks[scenario];
+  return weddingScenarioRunbooks.generateEmergencyResponseCard(runbookId);
+}
+
+export function generateDailyEmergencyBriefing(): string {
+  return weddingScenarioRunbooks.generateWeddingDayEmergencyBriefing();
+}
+
+export function getVenueStaffProcedures(): string {
+  return weddingScenarioRunbooks.exportRunbooksForVenueStaff();
+}

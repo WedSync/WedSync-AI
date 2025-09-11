@@ -1,0 +1,415 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import { PerformanceAuditLogger } from '@/lib/audit/performance-audit-logger';
+import { WeddingAuditEventBus } from '@/lib/audit/integration-manager';
+import { z } from 'zod';
+
+const auditEventSchema = z.object({
+  event_type: z.string().min(1).max(100),
+  resource_type: z.enum([
+    'wedding',
+    'venue',
+    'vendor',
+    'guest',
+    'timeline',
+    'budget',
+    'payment',
+    'document',
+    'photo',
+    'user',
+    'organization',
+  ]),
+  resource_id: z.string().uuid().optional(),
+  action: z.enum([
+    'create',
+    'read',
+    'update',
+    'delete',
+    'login',
+    'logout',
+    'approve',
+    'reject',
+    'submit',
+    'cancel',
+    'complete',
+  ]),
+  details: z.record(z.any()).optional(),
+  wedding_id: z.string().uuid().optional(),
+  vendor_id: z.string().uuid().optional(),
+  guest_id: z.string().uuid().optional(),
+  severity: z.enum(['info', 'warning', 'error', 'critical']).default('info'),
+  custom_fields: z.record(z.any()).optional(),
+});
+
+const auditQuerySchema = z.object({
+  wedding_id: z.string().uuid().optional(),
+  resource_type: z.string().optional(),
+  action: z.string().optional(),
+  severity: z.string().optional(),
+  start_date: z.string().datetime().optional(),
+  end_date: z.string().datetime().optional(),
+  user_id: z.string().uuid().optional(),
+  limit: z.number().min(1).max(1000).default(100),
+  offset: z.number().min(0).default(0),
+  search: z.string().optional(),
+});
+
+const logger = PerformanceAuditLogger.getInstance();
+const eventBus = WeddingAuditEventBus.getInstance();
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+    const { data: user } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const eventData = auditEventSchema.parse(body);
+
+    // Wedding-specific business logic validation
+    if (eventData.wedding_id) {
+      const { data: wedding } = await supabase
+        .from('weddings')
+        .select('id, couple_id, status, wedding_date')
+        .eq('id', eventData.wedding_id)
+        .single();
+
+      if (!wedding) {
+        return NextResponse.json(
+          { error: 'Wedding not found or access denied' },
+          { status: 404 },
+        );
+      }
+
+      // Add wedding context to audit event
+      eventData.custom_fields = {
+        ...eventData.custom_fields,
+        wedding_status: wedding.status,
+        wedding_date: wedding.wedding_date,
+        couple_id: wedding.couple_id,
+      };
+    }
+
+    // Vendor-specific business logic
+    if (eventData.vendor_id) {
+      const { data: vendor } = await supabase
+        .from('vendors')
+        .select('id, business_name, service_type, status')
+        .eq('id', eventData.vendor_id)
+        .single();
+
+      if (vendor) {
+        eventData.custom_fields = {
+          ...eventData.custom_fields,
+          vendor_business_name: vendor.business_name,
+          vendor_service_type: vendor.service_type,
+          vendor_status: vendor.status,
+        };
+      }
+    }
+
+    // Risk scoring for critical wedding events
+    const riskScore = calculateWeddingRiskScore(eventData);
+
+    // Enhanced audit event with wedding context
+    const enhancedEvent = {
+      ...eventData,
+      user_id: user.id,
+      user_email: user.email,
+      ip_address:
+        request.ip || request.headers.get('x-forwarded-for') || 'unknown',
+      user_agent: request.headers.get('user-agent') || 'unknown',
+      risk_score: riskScore,
+      session_id: request.headers.get('x-session-id'),
+      organization_id: request.headers.get('x-organization-id'),
+      timestamp: new Date().toISOString(),
+      correlation_id: crypto.randomUUID(),
+    };
+
+    // Log the audit event with high performance
+    await logger.logAuditEvent(enhancedEvent);
+
+    // Publish to event bus for real-time processing
+    eventBus.publishAuditEvent(enhancedEvent);
+
+    // Handle critical severity events immediately
+    if (eventData.severity === 'critical') {
+      await handleCriticalAuditEvent(enhancedEvent, supabase);
+    }
+
+    return NextResponse.json({
+      success: true,
+      event_id: enhancedEvent.correlation_id,
+      risk_score: riskScore,
+    });
+  } catch (error) {
+    console.error('Audit event creation error:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid event data', details: error.errors },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+    const { data: user } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const url = new URL(request.url);
+    const queryParams = Object.fromEntries(url.searchParams.entries());
+
+    // Convert string numbers to actual numbers
+    if (queryParams.limit) queryParams.limit = parseInt(queryParams.limit);
+    if (queryParams.offset) queryParams.offset = parseInt(queryParams.offset);
+
+    const query = auditQuerySchema.parse(queryParams);
+
+    // Build query with RLS
+    let auditQuery = supabase
+      .from('audit_logs_optimized')
+      .select(
+        `
+        id, event_type, resource_type, resource_id, action,
+        details, user_id, user_email, ip_address, severity,
+        risk_score, wedding_id, vendor_id, guest_id,
+        timestamp, correlation_id, custom_fields
+      `,
+      )
+      .order('timestamp', { ascending: false })
+      .limit(query.limit)
+      .range(query.offset, query.offset + query.limit - 1);
+
+    // Apply filters with wedding-specific logic
+    if (query.wedding_id) {
+      auditQuery = auditQuery.eq('wedding_id', query.wedding_id);
+    }
+
+    if (query.resource_type) {
+      auditQuery = auditQuery.eq('resource_type', query.resource_type);
+    }
+
+    if (query.action) {
+      auditQuery = auditQuery.eq('action', query.action);
+    }
+
+    if (query.severity) {
+      auditQuery = auditQuery.eq('severity', query.severity);
+    }
+
+    if (query.user_id) {
+      auditQuery = auditQuery.eq('user_id', query.user_id);
+    }
+
+    if (query.start_date) {
+      auditQuery = auditQuery.gte('timestamp', query.start_date);
+    }
+
+    if (query.end_date) {
+      auditQuery = auditQuery.lte('timestamp', query.end_date);
+    }
+
+    if (query.search) {
+      auditQuery = auditQuery.or(`
+        event_type.ilike.%${query.search}%,
+        resource_type.ilike.%${query.search}%,
+        user_email.ilike.%${query.search}%
+      `);
+    }
+
+    const { data: auditEvents, error, count } = await auditQuery;
+
+    if (error) {
+      throw error;
+    }
+
+    // Get wedding and vendor context for enhanced display
+    const enrichedEvents = await enrichAuditEventsWithContext(
+      auditEvents,
+      supabase,
+    );
+
+    return NextResponse.json({
+      events: enrichedEvents,
+      total_count: count,
+      limit: query.limit,
+      offset: query.offset,
+      has_more: count > query.offset + query.limit,
+    });
+  } catch (error) {
+    console.error('Audit query error:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid query parameters', details: error.errors },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+function calculateWeddingRiskScore(eventData: any): number {
+  let riskScore = 0;
+
+  // Base risk by action type
+  const actionRisk = {
+    delete: 80,
+    cancel: 70,
+    reject: 60,
+    update: 30,
+    create: 20,
+    read: 5,
+    login: 10,
+    logout: 5,
+    approve: 15,
+    submit: 25,
+    complete: 10,
+  };
+
+  riskScore += actionRisk[eventData.action] || 10;
+
+  // Resource type risk multipliers
+  const resourceRisk = {
+    payment: 2.0,
+    budget: 1.8,
+    vendor: 1.6,
+    wedding: 1.9,
+    venue: 1.7,
+    timeline: 1.4,
+    document: 1.2,
+    guest: 1.1,
+    photo: 1.0,
+    user: 1.3,
+    organization: 1.5,
+  };
+
+  riskScore *= resourceRisk[eventData.resource_type] || 1.0;
+
+  // Severity multiplier
+  const severityMultiplier = {
+    critical: 3.0,
+    error: 2.0,
+    warning: 1.5,
+    info: 1.0,
+  };
+
+  riskScore *= severityMultiplier[eventData.severity] || 1.0;
+
+  // Wedding timeline proximity risk
+  if (eventData.custom_fields?.wedding_date) {
+    const weddingDate = new Date(eventData.custom_fields.wedding_date);
+    const now = new Date();
+    const daysUntilWedding = Math.ceil(
+      (weddingDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24),
+    );
+
+    if (daysUntilWedding <= 7) {
+      riskScore *= 2.5; // Very high risk near wedding date
+    } else if (daysUntilWedding <= 30) {
+      riskScore *= 1.8; // High risk in final month
+    } else if (daysUntilWedding <= 90) {
+      riskScore *= 1.3; // Medium risk in final quarter
+    }
+  }
+
+  return Math.min(Math.round(riskScore), 100);
+}
+
+async function handleCriticalAuditEvent(event: any, supabase: any) {
+  // Immediate notification for critical events
+  const notificationData = {
+    type: 'critical_audit_event',
+    title: `Critical Wedding Event: ${event.event_type}`,
+    message: `Critical audit event detected for ${event.resource_type} ${event.action}`,
+    user_id: event.user_id,
+    wedding_id: event.wedding_id,
+    metadata: {
+      event_id: event.correlation_id,
+      risk_score: event.risk_score,
+      timestamp: event.timestamp,
+    },
+  };
+
+  // Create immediate notification
+  await supabase.from('notifications').insert(notificationData);
+
+  // Send real-time notification if wedding has active monitoring
+  if (event.wedding_id) {
+    const channel = supabase.channel(`wedding_${event.wedding_id}`);
+    channel.send({
+      type: 'broadcast',
+      event: 'critical_audit_event',
+      payload: notificationData,
+    });
+  }
+}
+
+async function enrichAuditEventsWithContext(events: any[], supabase: any) {
+  if (!events.length) return events;
+
+  // Extract unique IDs for batch queries
+  const weddingIds = [
+    ...new Set(events.filter((e) => e.wedding_id).map((e) => e.wedding_id)),
+  ];
+  const vendorIds = [
+    ...new Set(events.filter((e) => e.vendor_id).map((e) => e.vendor_id)),
+  ];
+
+  // Batch fetch wedding context
+  const weddingContext = new Map();
+  if (weddingIds.length > 0) {
+    const { data: weddings } = await supabase
+      .from('weddings')
+      .select('id, couple_names, wedding_date, venue_name, status')
+      .in('id', weddingIds);
+
+    weddings?.forEach((w) => weddingContext.set(w.id, w));
+  }
+
+  // Batch fetch vendor context
+  const vendorContext = new Map();
+  if (vendorIds.length > 0) {
+    const { data: vendors } = await supabase
+      .from('vendors')
+      .select('id, business_name, service_type, contact_email')
+      .in('id', vendorIds);
+
+    vendors?.forEach((v) => vendorContext.set(v.id, v));
+  }
+
+  // Enrich events with context
+  return events.map((event) => ({
+    ...event,
+    wedding_context: event.wedding_id
+      ? weddingContext.get(event.wedding_id)
+      : null,
+    vendor_context: event.vendor_id ? vendorContext.get(event.vendor_id) : null,
+  }));
+}

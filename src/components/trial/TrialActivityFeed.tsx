@@ -1,0 +1,508 @@
+/**
+ * WS-140 Trial Management System - Round 2: Trial Activity Feed Component
+ * Shows recent actions and their time savings with interactive animations
+ * Provides visual feedback on productivity gains and feature adoption
+ */
+
+'use client';
+
+import React, { useState, useEffect } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { Card } from '@/components/untitled-ui/card';
+import { Badge } from '@/components/untitled-ui/badge';
+import { Button } from '@/components/untitled-ui/button';
+import {
+  Activity,
+  Clock,
+  TrendingUp,
+  Users,
+  Mail,
+  Calendar,
+  FileText,
+  CheckCircle,
+  Zap,
+  Target,
+  Heart,
+  Sparkles,
+  ArrowUp,
+  Filter,
+  MoreHorizontal,
+  Repeat,
+  Star,
+} from 'lucide-react';
+import { TrialFeatureUsage, FEATURE_TIME_SAVINGS } from '@/types/trial';
+
+interface ActivityItem {
+  id: string;
+  type:
+    | 'feature_usage'
+    | 'milestone_achieved'
+    | 'time_saved'
+    | 'automation_triggered'
+    | 'engagement';
+  title: string;
+  description: string;
+  timeSavedMinutes: number;
+  timestamp: Date;
+  featureKey?: string;
+  impactScore: number; // 1-10
+  category:
+    | 'productivity'
+    | 'automation'
+    | 'collaboration'
+    | 'milestone'
+    | 'engagement';
+  isNew?: boolean;
+}
+
+const activityIcons = {
+  feature_usage: Zap,
+  milestone_achieved: Target,
+  time_saved: Clock,
+  automation_triggered: Repeat,
+  engagement: Heart,
+};
+
+const categoryIcons = {
+  productivity: TrendingUp,
+  automation: Repeat,
+  collaboration: Users,
+  milestone: Target,
+  engagement: Star,
+};
+
+const categoryColors = {
+  productivity: 'text-green-600 bg-green-100',
+  automation: 'text-blue-600 bg-blue-100',
+  collaboration: 'text-purple-600 bg-purple-100',
+  milestone: 'text-amber-600 bg-amber-100',
+  engagement: 'text-pink-600 bg-pink-100',
+};
+
+// Sample activity data - in real app this would come from API
+const SAMPLE_ACTIVITIES: ActivityItem[] = [
+  {
+    id: '1',
+    type: 'milestone_achieved',
+    title: 'First Client Added! 🎉',
+    description:
+      'Successfully connected your first client profile with wedding details',
+    timeSavedMinutes: 120,
+    timestamp: new Date(Date.now() - 30 * 60 * 1000), // 30 mins ago
+    impactScore: 9,
+    category: 'milestone',
+    isNew: true,
+  },
+  {
+    id: '2',
+    type: 'automation_triggered',
+    title: 'Welcome Email Sent',
+    description: 'Automated welcome sequence delivered to Sarah & Mike Johnson',
+    timeSavedMinutes: 15,
+    timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000), // 2 hours ago
+    impactScore: 6,
+    category: 'automation',
+  },
+  {
+    id: '3',
+    type: 'feature_usage',
+    title: 'Guest List Template Used',
+    description: 'Applied elegant invitation template for 150 guests',
+    timeSavedMinutes: 45,
+    timestamp: new Date(Date.now() - 4 * 60 * 60 * 1000), // 4 hours ago
+    featureKey: 'guest_management',
+    impactScore: 7,
+    category: 'productivity',
+  },
+  {
+    id: '4',
+    type: 'time_saved',
+    title: 'Timeline Auto-Generated',
+    description:
+      'Created comprehensive wedding timeline with 23 key milestones',
+    timeSavedMinutes: 180,
+    timestamp: new Date(Date.now() - 6 * 60 * 60 * 1000), // 6 hours ago
+    featureKey: 'timeline_management',
+    impactScore: 8,
+    category: 'productivity',
+  },
+  {
+    id: '5',
+    type: 'engagement',
+    title: 'Vendor Response Received',
+    description: 'Elite Florals responded to your collaboration request',
+    timeSavedMinutes: 25,
+    timestamp: new Date(Date.now() - 8 * 60 * 60 * 1000), // 8 hours ago
+    impactScore: 5,
+    category: 'collaboration',
+  },
+  {
+    id: '6',
+    type: 'automation_triggered',
+    title: 'RSVP Reminder Sent',
+    description: 'Automated reminder sent to 45 pending guests',
+    timeSavedMinutes: 30,
+    timestamp: new Date(Date.now() - 12 * 60 * 60 * 1000), // 12 hours ago
+    impactScore: 6,
+    category: 'automation',
+  },
+];
+
+interface TrialActivityFeedProps {
+  activities?: ActivityItem[];
+  className?: string;
+  maxItems?: number;
+  showFilters?: boolean;
+  showTimeSavings?: boolean;
+  onActivityClick?: (activity: ActivityItem) => void;
+}
+
+function ActivityCard({
+  activity,
+  index,
+  onActivityClick,
+}: {
+  activity: ActivityItem;
+  index: number;
+  onActivityClick?: (activity: ActivityItem) => void;
+}) {
+  const Icon = activityIcons[activity.type];
+  const CategoryIcon = categoryIcons[activity.category];
+  const categoryClass = categoryColors[activity.category];
+
+  const formatTimeAgo = (timestamp: Date) => {
+    const now = new Date();
+    const diffMs = now.getTime() - timestamp.getTime();
+    const diffMins = Math.floor(diffMs / (1000 * 60));
+    const diffHours = Math.floor(diffMins / 60);
+    const diffDays = Math.floor(diffHours / 24);
+
+    if (diffDays > 0) return `${diffDays}d ago`;
+    if (diffHours > 0) return `${diffHours}h ago`;
+    if (diffMins > 0) return `${diffMins}m ago`;
+    return 'Just now';
+  };
+
+  const formatTimeSaved = (minutes: number) => {
+    if (minutes >= 60) {
+      const hours = Math.floor(minutes / 60);
+      const remainingMins = minutes % 60;
+      return remainingMins > 0 ? `${hours}h ${remainingMins}m` : `${hours}h`;
+    }
+    return `${minutes}m`;
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, x: -20 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ delay: index * 0.1, type: 'spring', stiffness: 300 }}
+      whileHover={{ scale: 1.02, x: 4 }}
+      className="cursor-pointer"
+      onClick={() => onActivityClick?.(activity)}
+    >
+      <Card
+        className={`p-4 transition-all duration-200 hover:shadow-md border-l-4 ${
+          activity.isNew
+            ? 'border-l-green-500 bg-green-50/50'
+            : 'border-l-gray-200'
+        }`}
+      >
+        <div className="flex items-start space-x-3">
+          {/* Icon with category color */}
+          <motion.div
+            whileHover={{ rotate: 5, scale: 1.1 }}
+            className={`p-2 rounded-lg ${categoryClass} flex-shrink-0`}
+          >
+            <Icon className="w-4 h-4" />
+          </motion.div>
+
+          {/* Content */}
+          <div className="flex-1 min-w-0">
+            <div className="flex items-start justify-between mb-1">
+              <h4 className="font-medium text-gray-900 flex items-center space-x-2">
+                <span>{activity.title}</span>
+                {activity.isNew && (
+                  <motion.div
+                    initial={{ scale: 0 }}
+                    animate={{ scale: 1 }}
+                    className="w-2 h-2 bg-green-500 rounded-full"
+                  />
+                )}
+              </h4>
+              <div className="flex items-center space-x-2 ml-2 flex-shrink-0">
+                <Badge variant="secondary" size="sm">
+                  <CategoryIcon className="w-3 h-3 mr-1" />
+                  {activity.category}
+                </Badge>
+                <span className="text-xs text-gray-500">
+                  {formatTimeAgo(activity.timestamp)}
+                </span>
+              </div>
+            </div>
+
+            <p className="text-sm text-gray-600 mb-2">{activity.description}</p>
+
+            {/* Metrics */}
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-4">
+                {activity.timeSavedMinutes > 0 && (
+                  <motion.div
+                    whileHover={{ scale: 1.05 }}
+                    className="flex items-center space-x-1 bg-green-100 text-green-700 px-2 py-1 rounded-full"
+                  >
+                    <Clock className="w-3 h-3" />
+                    <span className="text-xs font-medium">
+                      +{formatTimeSaved(activity.timeSavedMinutes)} saved
+                    </span>
+                  </motion.div>
+                )}
+
+                <div className="flex items-center space-x-1">
+                  <Zap className="w-3 h-3 text-blue-500" />
+                  <span className="text-xs text-gray-600">
+                    Impact: {activity.impactScore}/10
+                  </span>
+                </div>
+              </div>
+
+              <Button variant="ghost" size="sm" className="p-1 h-auto">
+                <MoreHorizontal className="w-4 h-4 text-gray-400" />
+              </Button>
+            </div>
+          </div>
+        </div>
+      </Card>
+    </motion.div>
+  );
+}
+
+function ActivitySummary({ activities }: { activities: ActivityItem[] }) {
+  const totalTimeSaved = activities.reduce(
+    (acc, activity) => acc + activity.timeSavedMinutes,
+    0,
+  );
+  const todayActivities = activities.filter((activity) => {
+    const today = new Date();
+    const activityDate = new Date(activity.timestamp);
+    return activityDate.toDateString() === today.toDateString();
+  });
+
+  const categoryCounts = activities.reduce(
+    (acc, activity) => {
+      acc[activity.category] = (acc[activity.category] || 0) + 1;
+      return acc;
+    },
+    {} as Record<string, number>,
+  );
+
+  const topCategory = Object.entries(categoryCounts).sort(
+    ([, a], [, b]) => b - a,
+  )[0];
+
+  const formatTimeSaved = (minutes: number) => {
+    const hours = Math.floor(minutes / 60);
+    const remainingMins = minutes % 60;
+    if (hours > 0) {
+      return remainingMins > 0 ? `${hours}h ${remainingMins}m` : `${hours}h`;
+    }
+    return `${minutes}m`;
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: -10 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6"
+    >
+      <Card className="p-4 bg-gradient-to-br from-green-50 to-emerald-50 border-green-200">
+        <div className="flex items-center space-x-2 mb-1">
+          <Clock className="w-4 h-4 text-green-600" />
+          <span className="text-sm font-medium text-green-900">Time Saved</span>
+        </div>
+        <p className="text-2xl font-bold text-green-600">
+          {formatTimeSaved(totalTimeSaved)}
+        </p>
+        <p className="text-xs text-green-700">This trial period</p>
+      </Card>
+
+      <Card className="p-4 bg-gradient-to-br from-blue-50 to-indigo-50 border-blue-200">
+        <div className="flex items-center space-x-2 mb-1">
+          <Activity className="w-4 h-4 text-blue-600" />
+          <span className="text-sm font-medium text-blue-900">Today</span>
+        </div>
+        <p className="text-2xl font-bold text-blue-600">
+          {todayActivities.length}
+        </p>
+        <p className="text-xs text-blue-700">activities</p>
+      </Card>
+
+      <Card className="p-4 bg-gradient-to-br from-purple-50 to-violet-50 border-purple-200">
+        <div className="flex items-center space-x-2 mb-1">
+          <TrendingUp className="w-4 h-4 text-purple-600" />
+          <span className="text-sm font-medium text-purple-900">Top Focus</span>
+        </div>
+        <p className="text-sm font-bold text-purple-600 capitalize">
+          {topCategory?.[0] || 'Getting started'}
+        </p>
+        <p className="text-xs text-purple-700">
+          {topCategory?.[1] || 0} activities
+        </p>
+      </Card>
+
+      <Card className="p-4 bg-gradient-to-br from-amber-50 to-orange-50 border-amber-200">
+        <div className="flex items-center space-x-2 mb-1">
+          <Star className="w-4 h-4 text-amber-600" />
+          <span className="text-sm font-medium text-amber-900">Avg Impact</span>
+        </div>
+        <p className="text-2xl font-bold text-amber-600">
+          {activities.length > 0
+            ? Math.round(
+                activities.reduce((acc, a) => acc + a.impactScore, 0) /
+                  activities.length,
+              )
+            : 0}
+          /10
+        </p>
+        <p className="text-xs text-amber-700">efficiency score</p>
+      </Card>
+    </motion.div>
+  );
+}
+
+export function TrialActivityFeed({
+  activities = SAMPLE_ACTIVITIES,
+  className = '',
+  maxItems = 10,
+  showFilters = true,
+  showTimeSavings = true,
+  onActivityClick,
+}: TrialActivityFeedProps) {
+  const [filter, setFilter] = useState<
+    'all' | 'productivity' | 'automation' | 'milestones'
+  >('all');
+  const [showAll, setShowAll] = useState(false);
+
+  const filteredActivities = activities.filter((activity) => {
+    if (filter === 'all') return true;
+    if (filter === 'milestones') return activity.category === 'milestone';
+    return activity.category === filter;
+  });
+
+  const displayedActivities = showAll
+    ? filteredActivities
+    : filteredActivities.slice(0, maxItems);
+
+  const handleActivityClick = (activity: ActivityItem) => {
+    onActivityClick?.(activity);
+  };
+
+  if (activities.length === 0) {
+    return (
+      <div className={`space-y-6 ${className}`}>
+        <div className="text-center py-12">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.8 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ type: 'spring', stiffness: 200 }}
+          >
+            <Activity className="w-16 h-16 text-gray-400 mx-auto mb-4" />
+            <h3 className="text-lg font-medium text-gray-900 mb-2">
+              Start Your Activity Journey
+            </h3>
+            <p className="text-gray-600 max-w-md mx-auto">
+              Your activity feed will show time savings and progress as you use
+              WedSync features. Add your first client to get started!
+            </p>
+          </motion.div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`space-y-6 ${className}`}>
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center space-x-3">
+          <Activity className="w-6 h-6 text-primary-600" />
+          <h2 className="text-xl font-bold text-gray-900">Activity Feed</h2>
+          <Badge variant="secondary" size="sm">
+            {activities.length}
+          </Badge>
+        </div>
+
+        {/* Filters */}
+        {showFilters && (
+          <div className="flex items-center space-x-2">
+            <Filter className="w-4 h-4 text-gray-500" />
+            <select
+              value={filter}
+              onChange={(e) => setFilter(e.target.value as any)}
+              className="text-sm border-gray-300 rounded-md focus:ring-primary-500 focus:border-primary-500"
+            >
+              <option value="all">All Activity</option>
+              <option value="productivity">Productivity</option>
+              <option value="automation">Automation</option>
+              <option value="milestones">Milestones</option>
+            </select>
+          </div>
+        )}
+      </div>
+
+      {/* Time savings summary */}
+      {showTimeSavings && <ActivitySummary activities={filteredActivities} />}
+
+      {/* Activity list */}
+      <div className="space-y-3">
+        <AnimatePresence mode="popLayout">
+          {displayedActivities.map((activity, index) => (
+            <ActivityCard
+              key={activity.id}
+              activity={activity}
+              index={index}
+              onActivityClick={handleActivityClick}
+            />
+          ))}
+        </AnimatePresence>
+      </div>
+
+      {/* Show more button */}
+      {filteredActivities.length > maxItems && !showAll && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.3 }}
+          className="text-center"
+        >
+          <Button
+            variant="outline"
+            onClick={() => setShowAll(true)}
+            className="w-full"
+          >
+            <ArrowUp className="w-4 h-4 mr-2 rotate-180" />
+            Show {filteredActivities.length - maxItems} more activities
+          </Button>
+        </motion.div>
+      )}
+
+      {/* Collapse button */}
+      {showAll && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className="text-center"
+        >
+          <Button
+            variant="outline"
+            onClick={() => setShowAll(false)}
+            className="w-full"
+          >
+            <ArrowUp className="w-4 h-4 mr-2" />
+            Show less
+          </Button>
+        </motion.div>
+      )}
+    </div>
+  );
+}

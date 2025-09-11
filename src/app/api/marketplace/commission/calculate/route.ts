@@ -1,0 +1,356 @@
+/**
+ * WS-109: Commission Calculation API Endpoint
+ *
+ * POST /api/marketplace/commission/calculate
+ *
+ * Calculates commission breakdown for template sales including
+ * tier-based rates, Stripe fees, VAT, and tier comparison data.
+ *
+ * Team B - Batch 8 - Round 2
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { commissionCalculationService } from '@/lib/services/commissionCalculationService';
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_KEY!,
+);
+
+// =====================================================================================
+// REQUEST/RESPONSE INTERFACES
+// =====================================================================================
+
+interface CalculateCommissionRequest {
+  creator_id: string;
+  sale_amount: number; // in cents
+  template_id: string;
+  promotional_code?: string;
+  bundle_sale?: boolean;
+  currency?: string;
+}
+
+interface CalculateCommissionResponse {
+  success: boolean;
+  calculation?: any;
+  applicable_promotions?: Array<{
+    promotion_name: string;
+    discount_applied: number;
+    savings_amount: number;
+  }>;
+  error?: string;
+}
+
+// =====================================================================================
+// API HANDLERS
+// =====================================================================================
+
+export async function POST(request: NextRequest) {
+  try {
+    // Parse request body
+    const body: CalculateCommissionRequest = await request.json();
+
+    // Validate required fields
+    const validation = validateRequest(body);
+    if (!validation.valid) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: validation.error,
+        },
+        { status: 400 },
+      );
+    }
+
+    const { creator_id, sale_amount, template_id, promotional_code, currency } =
+      body;
+
+    // Convert cents to pounds for calculation
+    const saleAmountInPounds = sale_amount / 100;
+
+    // Verify creator exists and has access
+    const creatorCheck = await verifyCreatorAccess(creator_id);
+    if (!creatorCheck.valid) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: creatorCheck.error,
+        },
+        { status: creatorCheck.status },
+      );
+    }
+
+    // Calculate commission
+    const calculation = await commissionCalculationService.calculateCommission({
+      creatorId: creator_id,
+      saleAmount: saleAmountInPounds,
+      templateId: template_id,
+      promotionalCode: promotional_code,
+      currency: currency || 'GBP',
+    });
+
+    // Get applicable promotions info if promotional code was used
+    let applicablePromotions = undefined;
+    if (promotional_code) {
+      applicablePromotions = await getPromotionDetails(
+        promotional_code,
+        creator_id,
+      );
+    }
+
+    // Log calculation request for analytics
+    await logCalculationRequest(
+      creator_id,
+      template_id,
+      sale_amount,
+      calculation,
+    );
+
+    const response: CalculateCommissionResponse = {
+      success: true,
+      calculation: {
+        // Convert amounts back to cents for API consistency
+        gross_amount: Math.round(calculation.gross_amount * 100),
+        commission_rate: calculation.commission_rate,
+        commission_amount: Math.round(calculation.commission_amount * 100),
+        creator_earnings: Math.round(calculation.creator_earnings * 100),
+        creator_tier: calculation.creator_tier,
+        breakdown: {
+          stripe_fee: Math.round(calculation.breakdown.stripe_fee * 100),
+          vat_amount: Math.round(calculation.breakdown.vat_amount * 100),
+          net_amount: Math.round(calculation.breakdown.net_amount * 100),
+          platform_commission: Math.round(
+            calculation.breakdown.platform_commission * 100,
+          ),
+          creator_payout: Math.round(
+            calculation.breakdown.creator_payout * 100,
+          ),
+        },
+        tier_comparison: calculation.tier_comparison
+          ? {
+              current_tier_earnings: Math.round(
+                calculation.tier_comparison.current_tier_earnings * 100,
+              ),
+              next_tier_earnings: Math.round(
+                calculation.tier_comparison.next_tier_earnings * 100,
+              ),
+              potential_increase: Math.round(
+                calculation.tier_comparison.potential_increase * 100,
+              ),
+            }
+          : undefined,
+      },
+      applicable_promotions: applicablePromotions,
+    };
+
+    return NextResponse.json(response);
+  } catch (error) {
+    console.error('Commission calculation API error:', error);
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Failed to calculate commission. Please try again.',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+// Optional: GET endpoint for commission rate lookup
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = request.nextUrl;
+    const creatorId = searchParams.get('creator_id');
+
+    if (!creatorId) {
+      return NextResponse.json(
+        { success: false, error: 'creator_id is required' },
+        { status: 400 },
+      );
+    }
+
+    // Get creator tier info for rate lookup
+    const tierInfo =
+      await commissionCalculationService.getCreatorTier(creatorId);
+
+    return NextResponse.json({
+      success: true,
+      tier_info: {
+        current_tier: tierInfo.current_tier,
+        commission_rate: tierInfo.commission_rate,
+        tier_benefits: tierInfo.tier_benefits,
+        next_tier: tierInfo.next_tier,
+        stats: tierInfo.stats,
+      },
+    });
+  } catch (error) {
+    console.error('Commission rate lookup error:', error);
+
+    return NextResponse.json(
+      { success: false, error: 'Failed to get commission rate' },
+      { status: 500 },
+    );
+  }
+}
+
+// =====================================================================================
+// HELPER FUNCTIONS
+// =====================================================================================
+
+function validateRequest(body: any): { valid: boolean; error?: string } {
+  if (!body.creator_id || typeof body.creator_id !== 'string') {
+    return {
+      valid: false,
+      error: 'creator_id is required and must be a string',
+    };
+  }
+
+  if (
+    !body.sale_amount ||
+    typeof body.sale_amount !== 'number' ||
+    body.sale_amount <= 0
+  ) {
+    return {
+      valid: false,
+      error: 'sale_amount is required and must be a positive number in cents',
+    };
+  }
+
+  if (!body.template_id || typeof body.template_id !== 'string') {
+    return {
+      valid: false,
+      error: 'template_id is required and must be a string',
+    };
+  }
+
+  // Validate amount is reasonable (between 1p and £10,000)
+  if (body.sale_amount < 1 || body.sale_amount > 1000000) {
+    return {
+      valid: false,
+      error: 'sale_amount must be between 1 and 1,000,000 cents',
+    };
+  }
+
+  return { valid: true };
+}
+
+async function verifyCreatorAccess(
+  creatorId: string,
+): Promise<{ valid: boolean; error?: string; status?: number }> {
+  try {
+    // Check if creator exists
+    const { data: creator, error } = await supabase
+      .from('suppliers')
+      .select('id, account_status')
+      .eq('id', creatorId)
+      .single();
+
+    if (error || !creator) {
+      return {
+        valid: false,
+        error: 'Creator not found',
+        status: 404,
+      };
+    }
+
+    // Check if creator account is active
+    if (
+      creator.account_status === 'suspended' ||
+      creator.account_status === 'disabled'
+    ) {
+      return {
+        valid: false,
+        error: 'Creator account is not active',
+        status: 403,
+      };
+    }
+
+    return { valid: true };
+  } catch (error) {
+    console.error('Error verifying creator access:', error);
+    return {
+      valid: false,
+      error: 'Unable to verify creator access',
+      status: 500,
+    };
+  }
+}
+
+async function getPromotionDetails(
+  promotionalCode: string,
+  creatorId: string,
+): Promise<
+  | Array<{
+      promotion_name: string;
+      discount_applied: number;
+      savings_amount: number;
+    }>
+  | undefined
+> {
+  try {
+    const { data: promotion, error } = await supabase
+      .from('marketplace_commission_promotions')
+      .select('*')
+      .eq('promotion_code', promotionalCode)
+      .eq('active', true)
+      .lte('start_date', new Date().toISOString())
+      .gte('end_date', new Date().toISOString())
+      .single();
+
+    if (error || !promotion) {
+      return undefined;
+    }
+
+    // Check eligibility
+    if (
+      promotion.eligible_creator_ids &&
+      !promotion.eligible_creator_ids.includes(creatorId)
+    ) {
+      return undefined;
+    }
+
+    const discountApplied = promotion.commission_discount_percent || 0;
+
+    return [
+      {
+        promotion_name: promotion.promotion_name,
+        discount_applied: discountApplied,
+        savings_amount: 0, // Would be calculated based on sale amount
+      },
+    ];
+  } catch (error) {
+    console.error('Error getting promotion details:', error);
+    return undefined;
+  }
+}
+
+async function logCalculationRequest(
+  creatorId: string,
+  templateId: string,
+  saleAmount: number,
+  calculation: any,
+): Promise<void> {
+  try {
+    const { error } = await supabase
+      .from('marketplace_commission_calculations_log')
+      .insert({
+        creator_id: creatorId,
+        template_id: templateId,
+        sale_amount_cents: saleAmount,
+        calculated_tier: calculation.creator_tier,
+        commission_rate: calculation.commission_rate,
+        creator_earnings_cents: Math.round(calculation.creator_earnings * 100),
+        requested_at: new Date().toISOString(),
+      });
+
+    if (error) {
+      console.error('Failed to log calculation request:', error);
+      // Don't throw - logging failure shouldn't break the API
+    }
+  } catch (error) {
+    console.error('Error logging calculation request:', error);
+    // Don't throw - logging failure shouldn't break the API
+  }
+}

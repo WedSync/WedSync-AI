@@ -1,0 +1,506 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@/lib/supabase/server'
+import { createGuestService, guestValidationSchemas } from '@/lib/services/guestService'
+import { z } from 'zod'
+import Papa from 'papaparse'
+
+// Validation schema for bulk import
+const bulkImportSchema = z.object({
+  couple_id: z.string().uuid(),
+  import_type: z.enum(['csv', 'json', 'excel']),
+  duplicate_handling: z.enum(['skip', 'merge', 'create_anyway']).default('skip'),
+  create_households: z.boolean().default(true),
+  batch_size: z.number().int().min(10).max(200).default(100),
+  field_mapping: z.record(z.string()).optional(),
+  validate_only: z.boolean().default(false) // For preview/validation mode
+})
+
+const csvDataSchema = z.object({
+  couple_id: z.string().uuid(),
+  csv_data: z.string().min(1),
+  duplicate_handling: z.enum(['skip', 'merge', 'create_anyway']).default('skip'),
+  create_households: z.boolean().default(true),
+  batch_size: z.number().int().min(10).max(200).default(100),
+  validate_only: z.boolean().default(false)
+})
+
+// POST /api/guests/bulk-import - High-performance bulk import
+export async function POST(request: NextRequest) {
+  const startTime = Date.now()
+  
+  try {
+    const supabase = await createClient()
+    const { data: user } = await supabase.auth.getUser()
+    
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
+    const contentType = request.headers.get('content-type') || ''
+    let validatedData: any
+    let guestData: any[] = []
+
+    // Handle different input formats
+    if (contentType.includes('multipart/form-data')) {
+      // File upload
+      const formData = await request.formData()
+      const file = formData.get('file') as File
+      const metaDataStr = formData.get('metadata') as string
+      
+      if (!file || !metaDataStr) {
+        return NextResponse.json({ error: 'File and metadata required' }, { status: 400 })
+      }
+
+      validatedData = bulkImportSchema.parse(JSON.parse(metaDataStr))
+      guestData = await parseFileData(file, validatedData.import_type)
+      
+    } else if (contentType.includes('application/json')) {
+      // Direct JSON or CSV data
+      const body = await request.json()
+      
+      if (body.csv_data) {
+        // CSV data in JSON body
+        validatedData = csvDataSchema.parse(body)
+        guestData = await parseCSVString(validatedData.csv_data)
+      } else {
+        // Direct JSON guest data
+        validatedData = guestValidationSchemas.bulkCreate.parse(body)
+        guestData = validatedData.guests
+      }
+    } else {
+      return NextResponse.json({ error: 'Unsupported content type' }, { status: 400 })
+    }
+
+    // Get user's organization and verify access
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', user.id)
+      .single()
+
+    if (!profile?.organization_id) {
+      return NextResponse.json({ error: 'No organization found' }, { status: 400 })
+    }
+
+    const { data: client } = await supabase
+      .from('clients')
+      .select('id, first_name, last_name')
+      .eq('id', validatedData.couple_id)
+      .eq('organization_id', profile.organization_id)
+      .single()
+
+    if (!client) {
+      return NextResponse.json({ error: 'Client not found' }, { status: 404 })
+    }
+
+    // Initialize guest service
+    const guestService = await createGuestService()
+
+    // Validate and normalize guest data
+    const processedGuests = await processGuestData(guestData, validatedData, guestService)
+
+    if (processedGuests.errors.length > 0 && processedGuests.validGuests.length === 0) {
+      return NextResponse.json({
+        error: 'No valid guests found in import data',
+        validation_errors: processedGuests.errors,
+        total_rows: guestData.length
+      }, { status: 400 })
+    }
+
+    // Performance validation
+    const performance = await guestService.validatePerformance(
+      validatedData.couple_id,
+      processedGuests.validGuests.length
+    )
+
+    // If validation only, return preview
+    if (validatedData.validate_only) {
+      return NextResponse.json({
+        success: true,
+        validation_result: {
+          total_rows: guestData.length,
+          valid_guests: processedGuests.validGuests.length,
+          validation_errors: processedGuests.errors,
+          performance_estimate: performance,
+          sample_guests: processedGuests.validGuests.slice(0, 5),
+          household_groups_detected: await guestService.createHouseholdGroups(
+            validatedData.couple_id,
+            processedGuests.validGuests.slice(0, 20)
+          ).then(groups => groups.length)
+        }
+      })
+    }
+
+    // Create import session for tracking
+    const { data: importSession, error: sessionError } = await supabase
+      .from('guest_import_sessions')
+      .insert({
+        couple_id: validatedData.couple_id,
+        import_type: validatedData.import_type || 'json',
+        file_name: `bulk-import-${Date.now()}`,
+        original_file_name: 'bulk-import',
+        file_size: JSON.stringify(guestData).length,
+        total_rows: processedGuests.validGuests.length,
+        mapping_config: validatedData.field_mapping || {},
+        performance_metrics: {
+          estimated_time_ms: performance.estimated_time_ms,
+          batch_size: validatedData.batch_size,
+          total_guests: processedGuests.validGuests.length
+        }
+      })
+      .select()
+      .single()
+
+    if (sessionError) {
+      console.error('Error creating import session:', sessionError)
+      return NextResponse.json({ error: 'Failed to create import session' }, { status: 500 })
+    }
+
+    try {
+      // Execute bulk import
+      const importResult = await guestService.bulkCreateGuests(
+        validatedData.couple_id,
+        processedGuests.validGuests,
+        {
+          duplicateHandling: validatedData.duplicate_handling,
+          createHouseholds: validatedData.create_households,
+          batchSize: validatedData.batch_size
+        }
+      )
+
+      // Calculate final performance metrics
+      const totalTime = Date.now() - startTime
+      const performanceMetrics = {
+        total_time_ms: totalTime,
+        guests_per_second: Math.round((importResult.successful_count / totalTime) * 1000),
+        batch_processing_time: totalTime / Math.ceil(processedGuests.validGuests.length / validatedData.batch_size),
+        validation_time_ms: processedGuests.processingTime,
+        database_time_ms: totalTime - processedGuests.processingTime
+      }
+
+      // Update import session with results
+      await supabase
+        .from('guest_import_sessions')
+        .update({
+          status: importResult.failed_count > 0 ? 'partial_success' : 'completed',
+          completed_at: new Date().toISOString(),
+          successful_imports: importResult.successful_count,
+          failed_imports: importResult.failed_count,
+          processed_rows: processedGuests.validGuests.length,
+          error_log: importResult.errors,
+          performance_metrics: performanceMetrics
+        })
+        .eq('id', importSession.id)
+
+      // Get updated analytics
+      const analytics = await guestService.calculateGuestCounts(validatedData.couple_id)
+
+      return NextResponse.json({
+        success: true,
+        import_session_id: importSession.id,
+        results: {
+          total_processed: processedGuests.validGuests.length,
+          successful_imports: importResult.successful_count,
+          failed_imports: importResult.failed_count,
+          validation_errors: processedGuests.errors.length,
+          households_created: validatedData.create_households ? 
+            Math.floor(importResult.successful_count / 2.5) : 0 // Estimate
+        },
+        performance_metrics: performanceMetrics,
+        analytics,
+        errors: importResult.errors.slice(0, 10), // Limit error responses
+        warnings: performance.performance_warnings
+      })
+
+    } catch (importError) {
+      console.error('Bulk import execution failed:', importError)
+      
+      // Update session as failed
+      await supabase
+        .from('guest_import_sessions')
+        .update({
+          status: 'failed',
+          completed_at: new Date().toISOString(),
+          error_log: [{
+            row: 0,
+            field: 'bulk_import',
+            message: importError instanceof Error ? importError.message : 'Import execution failed',
+            value: 'bulk_operation'
+          }]
+        })
+        .eq('id', importSession.id)
+
+      return NextResponse.json({
+        success: false,
+        error: 'Bulk import failed',
+        import_session_id: importSession.id,
+        details: importError instanceof Error ? importError.message : 'Unknown error'
+      }, { status: 500 })
+    }
+
+  } catch (error) {
+    console.error('Error in POST /api/guests/bulk-import:', error)
+    
+    if (error instanceof z.ZodError) {
+      return NextResponse.json({
+        error: 'Validation failed',
+        details: error.errors
+      }, { status: 400 })
+    }
+
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+  }
+}
+
+// Helper function to parse file data
+async function parseFileData(file: File, importType: string): Promise<any[]> {
+  if (importType === 'csv') {
+    const text = await file.text()
+    return parseCSVString(text)
+  } else if (importType === 'excel') {
+    return parseExcelFile(file)
+  } else if (importType === 'json') {
+    const text = await file.text()
+    return JSON.parse(text)
+  }
+  
+  throw new Error(`Unsupported import type: ${importType}`)
+}
+
+// Helper function to parse CSV string
+async function parseCSVString(csvContent: string): Promise<any[]> {
+  return new Promise((resolve, reject) => {
+    Papa.parse(csvContent, {
+      header: true,
+      skipEmptyLines: true,
+      transformHeader: (header) => header.toLowerCase().trim().replace(/[^a-z0-9]/g, '_'),
+      transform: (value) => value.trim(),
+      complete: (results) => {
+        if (results.errors.length > 0) {
+          reject(new Error(`CSV parsing failed: ${results.errors[0].message}`))
+        } else {
+          resolve(results.data as any[])
+        }
+      },
+      error: (error) => reject(new Error(`CSV parsing failed: ${error.message}`))
+    })
+  })
+}
+
+// Helper function to parse Excel file
+async function parseExcelFile(file: File): Promise<any[]> {
+  try {
+    const XLSX = await import('xlsx')
+    const buffer = await file.arrayBuffer()
+    const workbook = XLSX.read(buffer, { type: 'array' })
+    const sheetName = workbook.SheetNames[0]
+    const worksheet = workbook.Sheets[sheetName]
+    
+    const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as any[][]
+    
+    if (jsonData.length < 2) {
+      throw new Error('Excel file must contain at least a header row and one data row')
+    }
+
+    const headers = jsonData[0].map((h: any) => 
+      h?.toString().toLowerCase().trim().replace(/[^a-z0-9]/g, '_') || ''
+    )
+    const rows = jsonData.slice(1)
+
+    return rows.map((row: any[]) => {
+      const record: any = {}
+      headers.forEach((header: string, index: number) => {
+        const value = row[index]?.toString().trim()
+        if (value) {
+          record[header] = value
+        }
+      })
+      return record
+    }).filter(record => Object.keys(record).length > 0)
+
+  } catch (error) {
+    throw new Error(`Excel parsing failed: ${error instanceof Error ? error.message : 'Unknown error'}`)
+  }
+}
+
+// Helper function to process and validate guest data
+async function processGuestData(
+  rawData: any[],
+  config: any,
+  guestService: any
+): Promise<{
+  validGuests: any[]
+  errors: any[]
+  processingTime: number
+}> {
+  const startTime = Date.now()
+  const validGuests: any[] = []
+  const errors: any[] = []
+
+  // Standard field mapping
+  const standardMapping: Record<string, string> = {
+    'first_name': 'first_name',
+    'firstname': 'first_name',
+    'fname': 'first_name',
+    'given_name': 'first_name',
+    'last_name': 'last_name',
+    'lastname': 'last_name',
+    'lname': 'last_name',
+    'family_name': 'last_name',
+    'surname': 'last_name',
+    'email': 'email',
+    'email_address': 'email',
+    'phone': 'phone',
+    'phone_number': 'phone',
+    'mobile': 'phone',
+    'cell': 'phone',
+    'address': 'address',
+    'street_address': 'address',
+    'category': 'category',
+    'guest_type': 'category',
+    'relation': 'category',
+    'side': 'side',
+    'bride_groom': 'side',
+    'plus_one': 'plus_one',
+    'plusone': 'plus_one',
+    'guest': 'plus_one',
+    'table': 'table_number',
+    'table_number': 'table_number',
+    'seating': 'table_number',
+    'dietary': 'dietary_restrictions',
+    'dietary_restrictions': 'dietary_restrictions',
+    'diet': 'dietary_restrictions',
+    'allergies': 'dietary_restrictions',
+    'notes': 'notes',
+    'comments': 'notes',
+    'rsvp': 'rsvp_status',
+    'rsvp_status': 'rsvp_status',
+    'attending': 'rsvp_status'
+  }
+
+  for (const [index, rawGuest] of rawData.entries()) {
+    try {
+      const processedGuest: any = {
+        couple_id: config.couple_id,
+        category: 'family',
+        side: 'mutual',
+        age_group: 'adult',
+        rsvp_status: 'pending',
+        plus_one: false,
+        tags: []
+      }
+
+      // Apply field mapping
+      const mapping = { ...standardMapping, ...(config.field_mapping || {}) }
+      
+      for (const [sourceField, targetField] of Object.entries(mapping)) {
+        const value = rawGuest[sourceField]
+        if (value !== undefined && value !== null && value !== '') {
+          // Type conversions
+          if (targetField === 'plus_one') {
+            processedGuest[targetField] = ['yes', 'true', '1', 'y'].includes(
+              value.toString().toLowerCase()
+            )
+          } else if (targetField === 'table_number') {
+            const num = parseInt(value)
+            processedGuest[targetField] = isNaN(num) ? null : num
+          } else if (targetField === 'address') {
+            if (typeof value === 'string') {
+              processedGuest[targetField] = { street: value }
+            } else {
+              processedGuest[targetField] = value
+            }
+          } else if (['category', 'side', 'age_group', 'rsvp_status'].includes(targetField)) {
+            // Normalize enum values
+            processedGuest[targetField] = normalizeEnumValue(targetField, value)
+          } else {
+            processedGuest[targetField] = value.toString().trim()
+          }
+        }
+      }
+
+      // Validation
+      const validationErrors: string[] = []
+      
+      if (!processedGuest.first_name || processedGuest.first_name.length === 0) {
+        validationErrors.push('First name is required')
+      }
+      
+      if (!processedGuest.last_name || processedGuest.last_name.length === 0) {
+        validationErrors.push('Last name is required')
+      }
+
+      if (processedGuest.email && !isValidEmail(processedGuest.email)) {
+        validationErrors.push('Invalid email format')
+      }
+
+      if (validationErrors.length > 0) {
+        errors.push({
+          row: index + 1,
+          field: 'validation',
+          message: validationErrors.join(', '),
+          value: `${processedGuest.first_name || ''} ${processedGuest.last_name || ''}`.trim()
+        })
+        continue
+      }
+
+      // Normalize address
+      if (processedGuest.address) {
+        processedGuest.address = guestService.normalizeAddress(processedGuest.address)
+      }
+
+      validGuests.push(processedGuest)
+
+    } catch (error) {
+      errors.push({
+        row: index + 1,
+        field: 'processing',
+        message: error instanceof Error ? error.message : 'Processing failed',
+        value: JSON.stringify(rawGuest).slice(0, 100)
+      })
+    }
+  }
+
+  return {
+    validGuests,
+    errors,
+    processingTime: Date.now() - startTime
+  }
+}
+
+// Helper functions
+function normalizeEnumValue(field: string, value: string): string {
+  const normalized = value.toString().toLowerCase().trim()
+  
+  switch (field) {
+    case 'category':
+      if (['family', 'relative', 'relatives'].includes(normalized)) return 'family'
+      if (['friend', 'friends'].includes(normalized)) return 'friends'
+      if (['work', 'colleague', 'coworker', 'business'].includes(normalized)) return 'work'
+      return 'other'
+      
+    case 'side':
+      if (['bride', 'partner1', 'p1'].includes(normalized)) return 'partner1'
+      if (['groom', 'partner2', 'p2'].includes(normalized)) return 'partner2'
+      return 'mutual'
+      
+    case 'age_group':
+      if (['child', 'kid', 'minor'].includes(normalized)) return 'child'
+      if (['infant', 'baby', 'toddler'].includes(normalized)) return 'infant'
+      return 'adult'
+      
+    case 'rsvp_status':
+      if (['yes', 'attending', 'accept', 'confirmed'].includes(normalized)) return 'attending'
+      if (['no', 'declined', 'decline', 'reject'].includes(normalized)) return 'declined'
+      if (['maybe', 'tentative', 'unsure'].includes(normalized)) return 'maybe'
+      return 'pending'
+      
+    default:
+      return normalized
+  }
+}
+
+function isValidEmail(email: string): boolean {
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+  return emailRegex.test(email)
+}

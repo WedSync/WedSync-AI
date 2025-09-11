@@ -1,0 +1,754 @@
+/**
+ * /api/webhooks/analytics/route.ts - Analytics webhook endpoint
+ * WS-246: Vendor Performance Analytics System - Team C Integration Focus
+ *
+ * Handles incoming webhooks from external analytics systems:
+ * - Tave photography CRM webhooks
+ * - Stripe payment processor events
+ * - Google My Business review notifications
+ * - Calendar system event updates
+ * - Custom vendor integrations
+ *
+ * Security features:
+ * - Webhook signature verification
+ * - Rate limiting and DDoS protection
+ * - Request validation and sanitization
+ * - Audit logging for all webhook events
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { headers } from 'next/headers';
+import crypto from 'crypto';
+import { ratelimit } from '../../../../lib/api/rate-limit-middleware';
+import { WebhookEvent } from '../../../../types/integrations';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+);
+
+interface WebhookSignature {
+  timestamp: string;
+  signature: string;
+}
+
+interface ProcessedWebhookResult {
+  success: boolean;
+  eventId: string;
+  message: string;
+  metrics?: any[];
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    // Rate limiting
+    const rateLimitResult = await ratelimit.limit(
+      'webhooks-analytics',
+      request,
+    );
+    if (!rateLimitResult.success) {
+      console.warn('🚨 Rate limit exceeded for analytics webhook');
+      return NextResponse.json(
+        { error: 'Rate limit exceeded' },
+        {
+          status: 429,
+          headers: {
+            'X-RateLimit-Limit': rateLimitResult.limit.toString(),
+            'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+            'X-RateLimit-Reset': new Date(rateLimitResult.reset).toISOString(),
+          },
+        },
+      );
+    }
+
+    // Get headers
+    const headersList = await headers();
+    const userAgent = headersList.get('user-agent') || 'unknown';
+    const contentType = headersList.get('content-type') || '';
+    const webhookSource = headersList.get('x-webhook-source') || 'unknown';
+    const signature = headersList.get('x-webhook-signature') || '';
+    const timestamp = headersList.get('x-webhook-timestamp') || '';
+
+    // Validate content type
+    if (!contentType.includes('application/json')) {
+      console.error(
+        '❌ Invalid content type for analytics webhook:',
+        contentType,
+      );
+      return NextResponse.json(
+        { error: 'Invalid content type. Expected application/json.' },
+        { status: 400 },
+      );
+    }
+
+    // Parse request body
+    let body: any;
+    try {
+      const rawBody = await request.text();
+      body = JSON.parse(rawBody);
+
+      // Verify webhook signature if provided
+      if (signature && timestamp) {
+        const isValid = await verifyWebhookSignature(
+          rawBody,
+          signature,
+          timestamp,
+          webhookSource,
+        );
+        if (!isValid) {
+          console.error('❌ Invalid webhook signature from:', webhookSource);
+          return NextResponse.json(
+            { error: 'Invalid webhook signature' },
+            { status: 401 },
+          );
+        }
+      }
+    } catch (error) {
+      console.error('❌ Failed to parse webhook body:', error);
+      return NextResponse.json(
+        { error: 'Invalid JSON in request body' },
+        { status: 400 },
+      );
+    }
+
+    // Validate required fields
+    if (!body.event_type || !body.data) {
+      console.error('❌ Missing required webhook fields:', {
+        event_type: body.event_type,
+        hasData: !!body.data,
+      });
+      return NextResponse.json(
+        { error: 'Missing required fields: event_type and data are required' },
+        { status: 400 },
+      );
+    }
+
+    console.log(
+      `📥 Received analytics webhook: ${body.event_type} from ${webhookSource}`,
+    );
+
+    // Create webhook event record
+    const webhookEvent: WebhookEvent = {
+      id: `webhook_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      source: webhookSource,
+      event_type: body.event_type,
+      payload: body.data,
+      signature: signature || undefined,
+      timestamp: new Date().toISOString(),
+      processed: false,
+      retry_count: 0,
+    };
+
+    // Store webhook event
+    const { data: storedEvent, error: storeError } = await supabase
+      .from('webhook_events')
+      .insert([webhookEvent])
+      .select()
+      .single();
+
+    if (storeError) {
+      console.error('❌ Failed to store webhook event:', storeError);
+      return NextResponse.json(
+        { error: 'Failed to store webhook event' },
+        { status: 500 },
+      );
+    }
+
+    // Process webhook based on source and event type
+    const result = await processWebhookEvent(webhookEvent);
+
+    // Update webhook event with processing result
+    const { error: updateError } = await supabase
+      .from('webhook_events')
+      .update({
+        processed: result.success,
+        processed_at: new Date().toISOString(),
+        error: result.success ? null : result.message,
+      })
+      .eq('id', webhookEvent.id);
+
+    if (updateError) {
+      console.error('❌ Failed to update webhook event:', updateError);
+    }
+
+    // Audit log
+    await createAuditLog(webhookEvent, result, {
+      userAgent,
+      ipAddress: getClientIP(request),
+      rateLimitRemaining: rateLimitResult.remaining,
+    });
+
+    // Return response
+    if (result.success) {
+      console.log(
+        `✅ Successfully processed webhook: ${webhookEvent.id} (${body.event_type})`,
+      );
+      return NextResponse.json({
+        success: true,
+        eventId: webhookEvent.id,
+        message: result.message,
+        metricsGenerated: result.metrics?.length || 0,
+      });
+    } else {
+      console.error(
+        `❌ Failed to process webhook: ${webhookEvent.id} (${body.event_type}):`,
+        result.message,
+      );
+      return NextResponse.json(
+        {
+          success: false,
+          eventId: webhookEvent.id,
+          error: result.message,
+        },
+        { status: 422 }, // Unprocessable Entity
+      );
+    }
+  } catch (error) {
+    console.error('❌ Analytics webhook error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * Handle webhook retries and error cases
+ */
+export async function PUT(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const { eventId, action } = body;
+
+    if (!eventId || !action) {
+      return NextResponse.json(
+        { error: 'Missing required fields: eventId and action' },
+        { status: 400 },
+      );
+    }
+
+    // Get webhook event
+    const { data: webhookEvent, error } = await supabase
+      .from('webhook_events')
+      .select('*')
+      .eq('id', eventId)
+      .single();
+
+    if (error || !webhookEvent) {
+      return NextResponse.json(
+        { error: 'Webhook event not found' },
+        { status: 404 },
+      );
+    }
+
+    let result: ProcessedWebhookResult;
+
+    switch (action) {
+      case 'retry':
+        console.log(`🔄 Retrying webhook processing: ${eventId}`);
+
+        // Increment retry count
+        webhookEvent.retry_count = (webhookEvent.retry_count || 0) + 1;
+
+        if (webhookEvent.retry_count > 5) {
+          return NextResponse.json(
+            { error: 'Maximum retry attempts exceeded' },
+            { status: 400 },
+          );
+        }
+
+        // Reprocess webhook
+        result = await processWebhookEvent(webhookEvent);
+
+        // Update webhook event
+        await supabase
+          .from('webhook_events')
+          .update({
+            processed: result.success,
+            processed_at: new Date().toISOString(),
+            error: result.success ? null : result.message,
+            retry_count: webhookEvent.retry_count,
+          })
+          .eq('id', eventId);
+
+        break;
+
+      case 'acknowledge':
+        console.log(`✅ Acknowledging webhook: ${eventId}`);
+
+        await supabase
+          .from('webhook_events')
+          .update({
+            processed: true,
+            processed_at: new Date().toISOString(),
+            error: null,
+          })
+          .eq('id', eventId);
+
+        result = {
+          success: true,
+          eventId,
+          message: 'Webhook acknowledged',
+        };
+        break;
+
+      default:
+        return NextResponse.json(
+          { error: 'Invalid action. Supported actions: retry, acknowledge' },
+          { status: 400 },
+        );
+    }
+
+    return NextResponse.json(result);
+  } catch (error) {
+    console.error('❌ Webhook action error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * Get webhook processing status
+ */
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const eventId = searchParams.get('eventId');
+    const source = searchParams.get('source');
+    const limit = parseInt(searchParams.get('limit') || '50');
+
+    let query = supabase
+      .from('webhook_events')
+      .select('*')
+      .order('timestamp', { ascending: false })
+      .limit(limit);
+
+    if (eventId) {
+      query = query.eq('id', eventId);
+    }
+
+    if (source) {
+      query = query.eq('source', source);
+    }
+
+    const { data: events, error } = await query;
+
+    if (error) {
+      throw new Error(`Failed to fetch webhook events: ${error.message}`);
+    }
+
+    // Calculate processing statistics
+    const stats = {
+      total: events?.length || 0,
+      processed: events?.filter((e) => e.processed).length || 0,
+      failed: events?.filter((e) => !e.processed && e.error).length || 0,
+      pending: events?.filter((e) => !e.processed && !e.error).length || 0,
+      averageProcessingTime: 0, // Would calculate from processing timestamps
+    };
+
+    return NextResponse.json({
+      events: events || [],
+      stats,
+    });
+  } catch (error) {
+    console.error('❌ Failed to get webhook status:', error);
+    return NextResponse.json(
+      { error: 'Failed to fetch webhook events' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * Process webhook event based on source and type
+ */
+async function processWebhookEvent(
+  webhookEvent: WebhookEvent,
+): Promise<ProcessedWebhookResult> {
+  try {
+    console.log(
+      `🔄 Processing webhook: ${webhookEvent.id} (${webhookEvent.event_type} from ${webhookEvent.source})`,
+    );
+
+    switch (webhookEvent.source.toLowerCase()) {
+      case 'tave':
+        return await processTaveWebhook(webhookEvent);
+
+      case 'stripe':
+        return await processStripeWebhook(webhookEvent);
+
+      case 'google':
+      case 'google_my_business':
+        return await processGoogleWebhook(webhookEvent);
+
+      case 'calendar':
+      case 'google_calendar':
+        return await processCalendarWebhook(webhookEvent);
+
+      default:
+        return await processGenericWebhook(webhookEvent);
+    }
+  } catch (error) {
+    console.error(`❌ Failed to process webhook ${webhookEvent.id}:`, error);
+    return {
+      success: false,
+      eventId: webhookEvent.id,
+      message:
+        error instanceof Error ? error.message : 'Unknown processing error',
+    };
+  }
+}
+
+/**
+ * Process Tave CRM webhooks
+ */
+async function processTaveWebhook(
+  webhookEvent: WebhookEvent,
+): Promise<ProcessedWebhookResult> {
+  const { payload, event_type } = webhookEvent;
+  const metrics: any[] = [];
+
+  switch (event_type) {
+    case 'job.created':
+    case 'job.updated':
+      // Extract performance metrics from job data
+      if (payload.first_response_hours) {
+        metrics.push({
+          metric_type: 'RESPONSE_TIME',
+          value: payload.first_response_hours,
+          unit: 'hours',
+          source: 'tave',
+        });
+      }
+
+      if (payload.status === 'booked') {
+        metrics.push({
+          metric_type: 'BOOKING_CONVERSION',
+          value: 1,
+          unit: 'boolean',
+          source: 'tave',
+        });
+      }
+      break;
+
+    case 'client.communication':
+      metrics.push({
+        metric_type: 'COMMUNICATION_FREQUENCY',
+        value: 1,
+        unit: 'count',
+        source: 'tave',
+      });
+      break;
+
+    default:
+      console.log(`🔍 Unhandled Tave event type: ${event_type}`);
+  }
+
+  // Store metrics if any were generated
+  if (metrics.length > 0) {
+    const performanceMetrics = metrics.map((m) => ({
+      id: `metric_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      vendor_id: payload.vendor_id || 'unknown',
+      organization_id: payload.organization_id || 'unknown',
+      data_source_id: payload.data_source_id || 'unknown',
+      metric_type: m.metric_type,
+      metric_name: `Webhook ${m.metric_type}`,
+      value: m.value,
+      unit: m.unit,
+      context: {
+        season: getCurrentSeason(),
+        budget_tier: 'MID_RANGE',
+        priority: 'MEDIUM',
+        is_wedding_week: false,
+        is_weekend: false,
+      },
+      timestamp: new Date().toISOString(),
+      metadata: {
+        source: 'tave_webhook',
+        webhook_event_id: webhookEvent.id,
+        event_type,
+      },
+    }));
+
+    const { error } = await supabase
+      .from('performance_metrics')
+      .insert(performanceMetrics);
+
+    if (error) {
+      throw new Error(`Failed to store Tave metrics: ${error.message}`);
+    }
+  }
+
+  return {
+    success: true,
+    eventId: webhookEvent.id,
+    message: `Processed Tave ${event_type} event`,
+    metrics,
+  };
+}
+
+/**
+ * Process Stripe payment webhooks
+ */
+async function processStripeWebhook(
+  webhookEvent: WebhookEvent,
+): Promise<ProcessedWebhookResult> {
+  const { payload, event_type } = webhookEvent;
+  const metrics: any[] = [];
+
+  switch (event_type) {
+    case 'payment_intent.succeeded':
+    case 'charge.succeeded':
+      metrics.push({
+        metric_type: 'PAYMENT_SUCCESS',
+        value: 1,
+        unit: 'boolean',
+        source: 'stripe',
+      });
+      break;
+
+    case 'payment_intent.payment_failed':
+    case 'charge.failed':
+      metrics.push({
+        metric_type: 'PAYMENT_SUCCESS',
+        value: 0,
+        unit: 'boolean',
+        source: 'stripe',
+      });
+      break;
+
+    default:
+      console.log(`🔍 Unhandled Stripe event type: ${event_type}`);
+  }
+
+  // Store metrics similar to Tave processing
+  if (metrics.length > 0) {
+    // Implementation similar to processTaveWebhook
+    console.log(`💳 Processing Stripe metrics: ${metrics.length}`);
+  }
+
+  return {
+    success: true,
+    eventId: webhookEvent.id,
+    message: `Processed Stripe ${event_type} event`,
+    metrics,
+  };
+}
+
+/**
+ * Process Google My Business webhooks
+ */
+async function processGoogleWebhook(
+  webhookEvent: WebhookEvent,
+): Promise<ProcessedWebhookResult> {
+  const { payload, event_type } = webhookEvent;
+  const metrics: any[] = [];
+
+  switch (event_type) {
+    case 'review.created':
+    case 'review.updated':
+      if (payload.rating) {
+        metrics.push({
+          metric_type: 'QUALITY_RATING',
+          value: payload.rating,
+          unit: 'rating',
+          source: 'google',
+        });
+      }
+      break;
+
+    default:
+      console.log(`🔍 Unhandled Google event type: ${event_type}`);
+  }
+
+  return {
+    success: true,
+    eventId: webhookEvent.id,
+    message: `Processed Google ${event_type} event`,
+    metrics,
+  };
+}
+
+/**
+ * Process calendar system webhooks
+ */
+async function processCalendarWebhook(
+  webhookEvent: WebhookEvent,
+): Promise<ProcessedWebhookResult> {
+  const { payload, event_type } = webhookEvent;
+  const metrics: any[] = [];
+
+  switch (event_type) {
+    case 'event.created':
+    case 'event.updated':
+      // Could extract response time metrics from calendar events
+      console.log(`📅 Processing calendar event: ${event_type}`);
+      break;
+
+    default:
+      console.log(`🔍 Unhandled Calendar event type: ${event_type}`);
+  }
+
+  return {
+    success: true,
+    eventId: webhookEvent.id,
+    message: `Processed Calendar ${event_type} event`,
+    metrics,
+  };
+}
+
+/**
+ * Process generic webhooks
+ */
+async function processGenericWebhook(
+  webhookEvent: WebhookEvent,
+): Promise<ProcessedWebhookResult> {
+  console.log(
+    `🔄 Processing generic webhook: ${webhookEvent.event_type} from ${webhookEvent.source}`,
+  );
+
+  return {
+    success: true,
+    eventId: webhookEvent.id,
+    message: `Processed generic ${webhookEvent.event_type} event`,
+  };
+}
+
+/**
+ * Verify webhook signature
+ */
+async function verifyWebhookSignature(
+  payload: string,
+  signature: string,
+  timestamp: string,
+  source: string,
+): Promise<boolean> {
+  try {
+    // Get the appropriate secret for the webhook source
+    let secret = '';
+
+    switch (source.toLowerCase()) {
+      case 'tave':
+        secret = process.env.TAVE_WEBHOOK_SECRET || '';
+        break;
+      case 'stripe':
+        secret = process.env.STRIPE_WEBHOOK_SECRET || '';
+        break;
+      case 'google':
+        secret = process.env.GOOGLE_WEBHOOK_SECRET || '';
+        break;
+      default:
+        secret = process.env.GENERIC_WEBHOOK_SECRET || '';
+    }
+
+    if (!secret) {
+      console.warn(`⚠️ No webhook secret configured for source: ${source}`);
+      return true; // Allow if no secret is configured (for development)
+    }
+
+    // Verify timestamp (prevent replay attacks)
+    const timestampNum = parseInt(timestamp);
+    const currentTime = Math.floor(Date.now() / 1000);
+    const timeDiff = Math.abs(currentTime - timestampNum);
+
+    if (timeDiff > 300) {
+      // 5 minutes
+      console.error('❌ Webhook timestamp too old:', {
+        timestamp,
+        current: currentTime,
+        diff: timeDiff,
+      });
+      return false;
+    }
+
+    // Calculate expected signature
+    const signedPayload = timestamp + '.' + payload;
+    const expectedSignature = crypto
+      .createHmac('sha256', secret)
+      .update(signedPayload, 'utf8')
+      .digest('hex');
+
+    // Compare signatures (constant-time comparison)
+    const providedSignature = signature.replace('sha256=', '');
+
+    return crypto.timingSafeEqual(
+      Buffer.from(expectedSignature, 'hex'),
+      Buffer.from(providedSignature, 'hex'),
+    );
+  } catch (error) {
+    console.error('❌ Webhook signature verification error:', error);
+    return false;
+  }
+}
+
+/**
+ * Create audit log entry
+ */
+async function createAuditLog(
+  webhookEvent: WebhookEvent,
+  result: ProcessedWebhookResult,
+  context: {
+    userAgent: string;
+    ipAddress: string;
+    rateLimitRemaining: number;
+  },
+): Promise<void> {
+  try {
+    const auditEntry = {
+      event_id: webhookEvent.id,
+      event_type: 'webhook_processed',
+      source: webhookEvent.source,
+      success: result.success,
+      webhook_event_type: webhookEvent.event_type,
+      user_agent: context.userAgent,
+      ip_address: context.ipAddress,
+      rate_limit_remaining: context.rateLimitRemaining,
+      metrics_generated: result.metrics?.length || 0,
+      processing_time: new Date().toISOString(),
+      error_message: result.success ? null : result.message,
+    };
+
+    const { error } = await supabase
+      .from('webhook_audit_log')
+      .insert([auditEntry]);
+
+    if (error) {
+      console.error('❌ Failed to create audit log:', error);
+    }
+  } catch (error) {
+    console.error('❌ Audit log creation error:', error);
+  }
+}
+
+/**
+ * Get client IP address
+ */
+function getClientIP(request: NextRequest): string {
+  const forwarded = request.headers.get('x-forwarded-for');
+  const realIP = request.headers.get('x-real-ip');
+
+  if (forwarded) {
+    return forwarded.split(',')[0].trim();
+  }
+
+  if (realIP) {
+    return realIP;
+  }
+
+  return 'unknown';
+}
+
+/**
+ * Get current season
+ */
+function getCurrentSeason(): 'SPRING' | 'SUMMER' | 'FALL' | 'WINTER' {
+  const month = new Date().getMonth();
+
+  if (month >= 2 && month <= 4) return 'SPRING';
+  if (month >= 5 && month <= 7) return 'SUMMER';
+  if (month >= 8 && month <= 10) return 'FALL';
+  return 'WINTER';
+}

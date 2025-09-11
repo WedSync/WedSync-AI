@@ -1,0 +1,59 @@
+'use client';
+
+import { lazy, Suspense, memo } from 'react';
+import { FormSkeleton } from '@/components/ui/LoadingSkeleton';
+import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
+
+// Lazy load heavy form components
+const FormBuilder = lazy(() => import('./FormBuilder').then(module => ({
+  default: module.FormBuilder
+})));
+
+const OptimizedFormBuilder = lazy(() => import('./OptimizedFormBuilder'));
+
+const EnhancedFormBuilder = lazy(() => import('./EnhancedFormBuilder').then(module => ({
+  default: module.EnhancedFormBuilder
+})));
+
+interface LazyFormBuilderProps {
+  variant?: 'standard' | 'optimized' | 'enhanced';
+  [key: string]: any;
+}
+
+// Memoized wrapper component
+export const LazyFormBuilder = memo(function LazyFormBuilder({ 
+  variant = 'standard',
+  ...props 
+}: LazyFormBuilderProps) {
+  const FormComponent = variant === 'optimized' 
+    ? OptimizedFormBuilder 
+    : variant === 'enhanced'
+    ? EnhancedFormBuilder
+    : FormBuilder;
+
+  return (
+    <ErrorBoundary>
+      <Suspense fallback={<FormSkeleton />}>
+        <FormComponent {...props} />
+      </Suspense>
+    </ErrorBoundary>
+  );
+});
+
+// Export other lazy-loaded form components
+export const LazyFormPreview = lazy(() => 
+  import('./FormPreview').then(module => ({
+    default: module.FormPreview
+  }))
+);
+
+export const LazyPDFImport = lazy(() => 
+  import('@/app/forms/import/page')
+);
+
+// Preload function for critical paths
+export function preloadFormBuilder() {
+  import('./FormBuilder');
+  import('./OptimizedFormBuilder');
+  import('./EnhancedFormBuilder');
+}

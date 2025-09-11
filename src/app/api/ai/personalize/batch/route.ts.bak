@@ -1,0 +1,339 @@
+/**
+ * WS-209: AI Content Personalization Batch API Endpoint
+ * POST /api/ai/personalize/batch - Bulk personalization of multiple content items
+ * Team B - Secure batch processing with queue management and priority handling
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { 
+  personalizationEngine,
+  PersonalizationRequestSchema,
+  BatchPersonalizationRequest
+} from '@/lib/ai/personalization-engine';
+import { defaultRateLimiter } from '@/lib/rate-limit';
+import { z } from 'zod';
+import { v4 as uuidv4 } from 'uuid';
+
+// Initialize Supabase client
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL || (() => { throw new Error("Missing environment variable: NEXT_PUBLIC_SUPABASE_URL") })(),
+  process.env.SUPABASE_SERVICE_ROLE_KEY || (() => { throw new Error("Missing environment variable: SUPABASE_SERVICE_ROLE_KEY") })()
+);
+
+// Batch processing limits by subscription tier
+const BATCH_LIMITS: Record<string, { maxItems: number; maxConcurrent: number }> = {
+  'FREE': { maxItems: 0, maxConcurrent: 0 }, // No batch access on free tier
+  'STARTER': { maxItems: 0, maxConcurrent: 0 }, // No batch access on starter tier  
+  'PROFESSIONAL': { maxItems: 10, maxConcurrent: 3 }, // 10 items, 3 concurrent for pro
+  'SCALE': { maxItems: 50, maxConcurrent: 5 }, // 50 items, 5 concurrent for scale
+  'ENTERPRISE': { maxItems: 200, maxConcurrent: 10 } // 200 items, 10 concurrent for enterprise
+};
+
+// Request validation schema for batch operations
+const BatchPersonalizeRequestSchema = z.object({
+  requests: z.array(z.object({
+    content: z.string().min(1).max(10000),
+    weddingContext: z.object({
+      coupleNames: z.object({
+        partner1: z.string().min(1),
+        partner2: z.string().min(1)
+      }).optional(),
+      weddingDate: z.string().optional(),
+      venue: z.string().optional(),
+      weddingStyle: z.enum([
+        'classic', 'modern', 'rustic', 'bohemian', 'vintage', 'luxury',
+        'minimalist', 'outdoor', 'destination', 'intimate', 'traditional'
+      ]).optional(),
+      guestCount: z.number().min(1).max(1000).optional(),
+      budget: z.number().min(0).optional(),
+      specialRequests: z.string().optional(),
+      vendorType: z.string().optional(),
+      customVariables: z.record(z.string(), z.any()).optional()
+    }),
+    personalizationSettings: z.object({
+      tone: z.enum([
+        'romantic', 'elegant', 'playful', 'sophisticated', 'warm', 'professional',
+        'intimate', 'celebratory', 'nostalgic', 'joyful', 'formal', 'casual'
+      ]),
+      context: z.enum([
+        'email', 'sms', 'proposal', 'contract', 'invoice', 'timeline',
+        'checklist', 'questionnaire', 'website', 'social_media'
+      ]),
+      formality: z.enum(['formal', 'informal', 'balanced']),
+      personalizationLevel: z.enum(['light', 'moderate', 'heavy']),
+      preserveStructure: z.boolean().default(true),
+      includeEmoji: z.boolean().default(false)
+    }),
+    performanceTracking: z.boolean().default(true)
+  })).min(1).max(200),
+  priority: z.enum(['low', 'normal', 'high']).default('normal'),
+  batchName: z.string().min(1).max(100).optional()
+});
+
+/**
+ * Authenticate user and get supplier information
+ */
+async function authenticateUser(request: NextRequest) {
+  const authHeader = request.headers.get('authorization');
+  if (!authHeader?.startsWith('Bearer ')) {
+    throw new Error('Missing or invalid authorization header');
+  }
+
+  const token = authHeader.substring(7);
+  const { data: { user }, error } = await supabase.auth.getUser(token);
+  
+  if (error || !user) {
+    throw new Error('Invalid authentication token');
+  }
+
+  // Get supplier information
+  const { data: supplier, error: supplierError } = await supabase
+    .from('suppliers')
+    .select(`
+      id,
+      subscription_tier,
+      organization_id,
+      ai_credits_used,
+      ai_credits_limit
+    `)
+    .eq('user_id', user.id)
+    .single();
+
+  if (supplierError || !supplier) {
+    throw new Error('Supplier not found');
+  }
+
+  return { user, supplier };
+}
+
+/**
+ * Validate batch access and limits
+ */
+function validateBatchAccess(subscriptionTier: string, requestCount: number, aiCreditsUsed: number, aiCreditsLimit: number | null) {
+  const tierConfig = BATCH_LIMITS[subscriptionTier.toUpperCase()];
+  
+  if (!tierConfig || tierConfig.maxItems === 0) {
+    throw new Error(`Batch personalization not available for ${subscriptionTier} tier. Upgrade to Professional or higher.`);
+  }
+
+  if (requestCount > tierConfig.maxItems) {
+    throw new Error(`Batch size exceeds limit. Maximum ${tierConfig.maxItems} items allowed for ${subscriptionTier} tier.`);
+  }
+
+  // Check credits if applicable
+  if (aiCreditsLimit !== null && (aiCreditsUsed + requestCount) > aiCreditsLimit) {
+    throw new Error(`Insufficient AI credits. Required: ${requestCount}, Available: ${aiCreditsLimit - aiCreditsUsed}`);
+  }
+
+  return tierConfig;
+}
+
+/**
+ * POST /api/ai/personalize/batch
+ * Bulk personalization of multiple content items
+ */
+export async function POST(request: NextRequest) {
+  try {
+    // Parse and validate request body
+    const body = await request.json();
+    const validatedData = BatchPersonalizeRequestSchema.parse(body);
+
+    // Authenticate user
+    const { user, supplier } = await authenticateUser(request);
+
+    // Validate batch access
+    const tierConfig = validateBatchAccess(
+      supplier.subscription_tier,
+      validatedData.requests.length,
+      supplier.ai_credits_used || 0,
+      supplier.ai_credits_limit
+    );
+
+    // Apply rate limiting for batch operations (stricter limits)
+    const rateLimitKey = `ai-personalize-batch:${supplier.id}`;
+    const rateLimitResult = await defaultRateLimiter.check(
+      rateLimitKey,
+      5, // Max 5 batch requests per hour regardless of tier
+      3600000 // 1 hour window
+    );
+
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { 
+          error: 'Batch rate limit exceeded',
+          retryAfter: rateLimitResult.retryAfter,
+          message: 'Maximum 5 batch operations per hour allowed'
+        },
+        { status: 429 }
+      );
+    }
+
+    // Generate batch ID
+    const batchId = uuidv4();
+    const batchName = validatedData.batchName || `Batch ${new Date().toISOString()}`;
+
+    // Create batch record
+    await supabase
+      .from('personalization_batches')
+      .insert({
+        id: batchId,
+        supplier_id: supplier.id,
+        batch_name: batchName,
+        total_items: validatedData.requests.length,
+        priority: validatedData.priority,
+        status: 'processing',
+        created_at: new Date().toISOString()
+      });
+
+    // Process requests with the personalization engine
+    const batchRequest: BatchPersonalizationRequest = {
+      requests: validatedData.requests.map(req => ({
+        ...req,
+        supplierId: supplier.id
+      })),
+      batchId,
+      priority: validatedData.priority
+    };
+
+    const startTime = Date.now();
+    const results = await personalizationEngine.batchPersonalize(batchRequest);
+    const processingTime = Date.now() - startTime;
+
+    // Calculate statistics
+    const successCount = results.length;
+    const failureCount = validatedData.requests.length - successCount;
+    const totalTokens = results.reduce((sum, r) => sum + r.tokens.total, 0);
+    const averageConfidence = results.reduce((sum, r) => sum + r.confidence, 0) / results.length;
+    
+    // Update AI credits usage
+    const creditsUsed = successCount;
+    if (supplier.ai_credits_limit !== null) {
+      await supabase
+        .from('suppliers')
+        .update({ 
+          ai_credits_used: (supplier.ai_credits_used || 0) + creditsUsed,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', supplier.id);
+    }
+
+    // Store individual results
+    const insertPromises = results.map((result, index) => 
+      supabase
+        .from('personalizations')
+        .insert({
+          batch_id: batchId,
+          supplier_id: supplier.id,
+          original_content: result.originalContent,
+          personalized_content: result.personalizedContent,
+          context_type: validatedData.requests[index].personalizationSettings.context,
+          tone: validatedData.requests[index].personalizationSettings.tone,
+          confidence_score: result.confidence,
+          processing_time_ms: result.processingTime,
+          tokens_used: result.tokens.total,
+          variables_used: result.variables,
+          created_at: new Date().toISOString()
+        })
+    );
+
+    await Promise.allSettled(insertPromises);
+
+    // Update batch record with completion
+    await supabase
+      .from('personalization_batches')
+      .update({
+        status: failureCount > 0 ? 'partial_success' : 'completed',
+        processed_items: successCount,
+        failed_items: failureCount,
+        total_tokens: totalTokens,
+        average_confidence: averageConfidence,
+        processing_time_ms: processingTime,
+        completed_at: new Date().toISOString()
+      })
+      .eq('id', batchId);
+
+    // Return successful response
+    return NextResponse.json({
+      success: true,
+      data: {
+        batchId,
+        batchName,
+        summary: {
+          totalRequested: validatedData.requests.length,
+          successfullyProcessed: successCount,
+          failed: failureCount,
+          averageConfidence: Math.round(averageConfidence * 100) / 100,
+          totalProcessingTime: processingTime,
+          totalTokensUsed: totalTokens
+        },
+        results: results.map(result => ({
+          personalizedContent: result.personalizedContent,
+          confidence: result.confidence,
+          processingTime: result.processingTime,
+          variablesUsed: Object.keys(result.variables).length
+        }))
+      },
+      usage: {
+        creditsUsed: creditsUsed,
+        creditsRemaining: supplier.ai_credits_limit ? supplier.ai_credits_limit - ((supplier.ai_credits_used || 0) + creditsUsed) : null,
+        rateLimitRemaining: rateLimitResult.remaining
+      }
+    });
+
+  } catch (error) {
+    console.error('Batch personalization API error:', error);
+    
+    // Handle specific error types
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { 
+          error: 'Validation error',
+          details: error.errors.map(e => ({
+            field: e.path.join('.'),
+            message: e.message
+          }))
+        },
+        { status: 400 }
+      );
+    }
+
+    if (error instanceof Error) {
+      // Handle known error types
+      if (error.message.includes('authentication')) {
+        return NextResponse.json({ error: error.message }, { status: 401 });
+      }
+      if (error.message.includes('not available') || error.message.includes('Upgrade')) {
+        return NextResponse.json({ error: error.message }, { status: 403 });
+      }
+      if (error.message.includes('Rate limit') || error.message.includes('credits')) {
+        return NextResponse.json({ error: error.message }, { status: 429 });
+      }
+      if (error.message.includes('exceeds limit')) {
+        return NextResponse.json({ error: error.message }, { status: 413 });
+      }
+    }
+
+    return NextResponse.json(
+      { 
+        error: 'Internal server error',
+        message: 'Failed to process batch personalization. Please try again.'
+      },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * OPTIONS handler for CORS
+ */
+export async function OPTIONS() {
+  return new NextResponse(null, {
+    status: 200,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    },
+  });
+}

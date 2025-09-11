@@ -1,0 +1,713 @@
+'use client';
+
+import React, { useState, useEffect } from 'react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Badge } from '@/components/ui/badge';
+import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
+import { Textarea } from '@/components/ui/textarea';
+import { 
+  Bell, 
+  Mail, 
+  MessageSquare, 
+  Smartphone, 
+  Users, 
+  Clock, 
+  Settings,
+  Plus,
+  Edit,
+  Trash2,
+  Heart,
+  Star,
+  Calendar,
+  AlertCircle
+} from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+
+interface NotificationChannel {
+  id: string;
+  type: 'email' | 'sms' | 'in_app' | 'slack' | 'webhook';
+  name: string;
+  config: {
+    email?: string;
+    phone?: string;
+    webhook_url?: string;
+    slack_channel?: string;
+    template?: string;
+  };
+  isActive: boolean;
+}
+
+interface NotificationRule {
+  id: string;
+  name: string;
+  description: string;
+  trigger: {
+    event: 'new_response' | 'response_updated' | 'high_priority' | 'follow_up_due' | 'vip_inquiry';
+    conditions?: {
+      field: string;
+      operator: string;
+      value: any;
+    }[];
+  };
+  channels: string[]; // channel IDs
+  recipients: {
+    type: 'user' | 'role' | 'email';
+    value: string;
+  }[];
+  timing: {
+    immediate: boolean;
+    delay?: number; // minutes
+    schedule?: {
+      days: string[];
+      hours: { start: string; end: string };
+    };
+  };
+  template: {
+    subject?: string;
+    message: string;
+    variables: string[];
+  };
+  isActive: boolean;
+  metrics: {
+    sent: number;
+    delivered: number;
+    failed: number;
+    lastSent?: Date;
+  };
+  createdAt: Date;
+}
+
+interface ResponseNotificationsProps {
+  formId: string;
+}
+
+const ResponseNotifications: React.FC<ResponseNotificationsProps> = ({ formId }) => {
+  const [channels, setChannels] = useState<NotificationChannel[]>([]);
+  const [rules, setRules] = useState<NotificationRule[]>([]);
+  const [activeTab, setActiveTab] = useState<'rules' | 'channels' | 'templates'>('rules');
+  const [isCreatingRule, setIsCreatingRule] = useState(false);
+  const [isCreatingChannel, setIsCreatingChannel] = useState(false);
+
+  // Wedding-specific notification templates
+  const templateSuggestions = [
+    {
+      name: 'VIP Inquiry Alert',
+      subject: '🌟 VIP Wedding Inquiry - Immediate Attention Required',
+      message: `A high-value wedding inquiry has been received!
+
+Couple: {{bride_name}} & {{groom_name}}
+Wedding Date: {{wedding_date}}
+Guest Count: {{guest_count}}
+Budget: {{budget}}
+Venue Preference: {{venue_preference}}
+
+This inquiry qualifies as VIP based on:
+- Budget over $50,000
+- Guest count over 150
+- Premium venue preference
+
+Action Required:
+- Assign senior planner within 1 hour
+- Send personalized welcome package
+- Schedule consultation within 24 hours
+
+View Details: {{response_link}}`,
+      variables: ['bride_name', 'groom_name', 'wedding_date', 'guest_count', 'budget', 'venue_preference', 'response_link']
+    },
+    {
+      name: 'Quick Response Needed',
+      subject: '⚡ Urgent: Interested Couple Needs Quick Response',
+      message: `An interested couple is waiting for your response!
+
+Contact: {{contact_name}}
+Email: {{email}}
+Phone: {{phone}}
+Interest Level: {{interest_level}}
+Preferred Contact Method: {{contact_preference}}
+
+They indicated they are:
+- Actively looking and comparing vendors
+- {{urgency_note}}
+
+Respond within 2 hours to maintain competitive advantage.
+
+View Full Response: {{response_link}}`,
+      variables: ['contact_name', 'email', 'phone', 'interest_level', 'contact_preference', 'urgency_note', 'response_link']
+    },
+    {
+      name: 'Destination Wedding Alert',
+      subject: '✈️ Destination Wedding Inquiry - Special Handling Required',
+      message: `A destination wedding inquiry requires your expertise!
+
+Couple: {{bride_name}} & {{groom_name}}
+Destination: {{destination}}
+Wedding Date: {{wedding_date}}
+Guest Count: {{guest_count}}
+
+Special Requirements:
+{{special_requirements}}
+
+This inquiry needs:
+- Destination wedding specialist assignment
+- Travel coordination discussion
+- Local vendor network activation
+- Extended timeline planning
+
+View Details: {{response_link}}`,
+      variables: ['bride_name', 'groom_name', 'destination', 'wedding_date', 'guest_count', 'special_requirements', 'response_link']
+    },
+    {
+      name: 'Follow-up Reminder',
+      subject: '📅 Follow-up Reminder: {{contact_name}} Wedding Inquiry',
+      message: `Time for follow-up on wedding inquiry:
+
+Original Inquiry: {{days_ago}} days ago
+Contact: {{contact_name}}
+Status: {{current_status}}
+Last Contact: {{last_contact_date}}
+
+Recommended Actions:
+{{#if_no_response}}
+- Send gentle follow-up email
+- Try alternative contact method
+- Check if information packet was received
+{{/if_no_response}}
+
+{{#if_interested}}
+- Schedule consultation call
+- Send venue options
+- Discuss next steps
+{{/if_interested}}
+
+View Response: {{response_link}}`,
+      variables: ['contact_name', 'days_ago', 'current_status', 'last_contact_date', 'response_link']
+    }
+  ];
+
+  // Default notification channels
+  const defaultChannels: NotificationChannel[] = [
+    {
+      id: 'email-primary',
+      type: 'email',
+      name: 'Primary Email Notifications',
+      config: { email: 'wedding@yourcompany.com', template: 'default' },
+      isActive: true
+    },
+    {
+      id: 'sms-urgent',
+      type: 'sms',
+      name: 'Urgent SMS Alerts',
+      config: { phone: '+1234567890', template: 'urgent_sms' },
+      isActive: true
+    },
+    {
+      id: 'slack-team',
+      type: 'slack',
+      name: 'Team Slack Channel',
+      config: { slack_channel: '#wedding-inquiries', template: 'slack_notification' },
+      isActive: false
+    }
+  ];
+
+  // Default notification rules
+  const defaultRules: NotificationRule[] = [
+    {
+      id: 'vip-instant',
+      name: 'VIP Inquiry - Instant Alert',
+      description: 'Immediate notification for high-value wedding inquiries',
+      trigger: {
+        event: 'vip_inquiry',
+        conditions: [
+          { field: 'budget', operator: 'greater_than', value: 50000 }
+        ]
+      },
+      channels: ['email-primary', 'sms-urgent'],
+      recipients: [
+        { type: 'role', value: 'senior_planner' },
+        { type: 'role', value: 'sales_manager' }
+      ],
+      timing: {
+        immediate: true
+      },
+      template: {
+        subject: '🌟 VIP Wedding Inquiry - Immediate Attention Required',
+        message: 'A high-value wedding inquiry has been received and requires immediate attention.',
+        variables: ['bride_name', 'groom_name', 'budget', 'wedding_date']
+      },
+      isActive: true,
+      metrics: {
+        sent: 0,
+        delivered: 0,
+        failed: 0
+      },
+      createdAt: new Date()
+    },
+    {
+      id: 'new-response-alert',
+      name: 'New Response Alert',
+      description: 'Notification for all new form responses',
+      trigger: {
+        event: 'new_response'
+      },
+      channels: ['email-primary'],
+      recipients: [
+        { type: 'role', value: 'coordinator' }
+      ],
+      timing: {
+        immediate: false,
+        delay: 15 // 15 minutes to batch notifications
+      },
+      template: {
+        subject: 'New Wedding Inquiry Received',
+        message: 'A new wedding inquiry has been submitted and is awaiting review.',
+        variables: ['contact_name', 'wedding_date', 'guest_count']
+      },
+      isActive: true,
+      metrics: {
+        sent: 0,
+        delivered: 0,
+        failed: 0
+      },
+      createdAt: new Date()
+    },
+    {
+      id: 'followup-reminder',
+      name: 'Follow-up Reminder',
+      description: 'Daily reminder for inquiries needing follow-up',
+      trigger: {
+        event: 'follow_up_due'
+      },
+      channels: ['email-primary'],
+      recipients: [
+        { type: 'role', value: 'account_manager' }
+      ],
+      timing: {
+        immediate: false,
+        schedule: {
+          days: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
+          hours: { start: '09:00', end: '17:00' }
+        }
+      },
+      template: {
+        subject: 'Daily Follow-up Report',
+        message: 'Here are the wedding inquiries that need follow-up today.',
+        variables: ['pending_count', 'overdue_count']
+      },
+      isActive: true,
+      metrics: {
+        sent: 0,
+        delivered: 0,
+        failed: 0
+      },
+      createdAt: new Date()
+    }
+  ];
+
+  // Load data on mount
+  useEffect(() => {
+    loadNotificationData();
+  }, [formId]);
+
+  const loadNotificationData = () => {
+    // Load from localStorage or API
+    const savedChannels = localStorage.getItem(`notification-channels-${formId}`);
+    const savedRules = localStorage.getItem(`notification-rules-${formId}`);
+
+    if (savedChannels) {
+      setChannels(JSON.parse(savedChannels));
+    } else {
+      setChannels(defaultChannels);
+    }
+
+    if (savedRules) {
+      setRules(JSON.parse(savedRules));
+    } else {
+      setRules(defaultRules);
+    }
+  };
+
+  const saveChannels = (newChannels: NotificationChannel[]) => {
+    setChannels(newChannels);
+    localStorage.setItem(`notification-channels-${formId}`, JSON.stringify(newChannels));
+  };
+
+  const saveRules = (newRules: NotificationRule[]) => {
+    setRules(newRules);
+    localStorage.setItem(`notification-rules-${formId}`, JSON.stringify(newRules));
+  };
+
+  const toggleRule = (ruleId: string) => {
+    const updated = rules.map(rule =>
+      rule.id === ruleId ? { ...rule, isActive: !rule.isActive } : rule
+    );
+    saveRules(updated);
+  };
+
+  const toggleChannel = (channelId: string) => {
+    const updated = channels.map(channel =>
+      channel.id === channelId ? { ...channel, isActive: !channel.isActive } : channel
+    );
+    saveChannels(updated);
+  };
+
+  const getChannelIcon = (type: string) => {
+    switch (type) {
+      case 'email': return <Mail className="h-4 w-4" />;
+      case 'sms': return <MessageSquare className="h-4 w-4" />;
+      case 'in_app': return <Bell className="h-4 w-4" />;
+      case 'slack': return <MessageSquare className="h-4 w-4" />;
+      case 'webhook': return <Settings className="h-4 w-4" />;
+      default: return <Bell className="h-4 w-4" />;
+    }
+  };
+
+  const getEventLabel = (event: string) => {
+    const labels = {
+      'new_response': 'New Response',
+      'response_updated': 'Response Updated',
+      'high_priority': 'High Priority',
+      'follow_up_due': 'Follow-up Due',
+      'vip_inquiry': 'VIP Inquiry'
+    };
+    return labels[event as keyof typeof labels] || event;
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-bold flex items-center gap-2">
+            <Bell className="h-6 w-6 text-blue-600" />
+            Response Notifications
+          </h2>
+          <p className="text-muted-foreground">
+            Stay informed with intelligent wedding inquiry alerts
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => setIsCreatingChannel(true)}>
+            <Plus className="h-4 w-4 mr-2" />
+            Add Channel
+          </Button>
+          <Button onClick={() => setIsCreatingRule(true)}>
+            <Plus className="h-4 w-4 mr-2" />
+            Create Rule
+          </Button>
+        </div>
+      </div>
+
+      {/* Notification Overview */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <Card>
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground">Active Rules</p>
+                <p className="text-2xl font-bold">{rules.filter(r => r.isActive).length}</p>
+              </div>
+              <Bell className="h-8 w-8 text-blue-500" />
+            </div>
+          </CardContent>
+        </Card>
+        
+        <Card>
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground">Active Channels</p>
+                <p className="text-2xl font-bold">{channels.filter(c => c.isActive).length}</p>
+              </div>
+              <MessageSquare className="h-8 w-8 text-green-500" />
+            </div>
+          </CardContent>
+        </Card>
+        
+        <Card>
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground">Notifications Sent</p>
+                <p className="text-2xl font-bold">
+                  {rules.reduce((sum, r) => sum + r.metrics.sent, 0)}
+                </p>
+              </div>
+              <Star className="h-8 w-8 text-purple-500" />
+            </div>
+          </CardContent>
+        </Card>
+        
+        <Card>
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground">Delivery Rate</p>
+                <p className="text-2xl font-bold">
+                  {rules.length > 0 
+                    ? Math.round((rules.reduce((sum, r) => sum + r.metrics.delivered, 0) / 
+                       Math.max(rules.reduce((sum, r) => sum + r.metrics.sent, 0), 1)) * 100)
+                    : 0}%
+                </p>
+              </div>
+              <Heart className="h-8 w-8 text-pink-500" />
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex space-x-1 bg-gray-100 p-1 rounded-lg w-fit">
+        {[
+          { id: 'rules', label: 'Notification Rules', icon: <Bell className="h-4 w-4" /> },
+          { id: 'channels', label: 'Channels', icon: <MessageSquare className="h-4 w-4" /> },
+          { id: 'templates', label: 'Templates', icon: <Edit className="h-4 w-4" /> }
+        ].map(tab => (
+          <Button
+            key={tab.id}
+            variant={activeTab === tab.id ? "default" : "ghost"}
+            size="sm"
+            onClick={() => setActiveTab(tab.id as any)}
+            className="flex items-center gap-2"
+          >
+            {tab.icon}
+            {tab.label}
+          </Button>
+        ))}
+      </div>
+
+      {/* Notification Rules Tab */}
+      {activeTab === 'rules' && (
+        <div className="space-y-4">
+          {rules.map(rule => (
+            <Card key={rule.id} className={`border-l-4 ${rule.isActive ? 'border-l-blue-500' : 'border-l-gray-300'}`}>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <Switch
+                      checked={rule.isActive}
+                      onCheckedChange={() => toggleRule(rule.id)}
+                    />
+                    <div>
+                      <CardTitle className="flex items-center gap-2">
+                        {rule.name}
+                        <Badge variant={rule.isActive ? 'default' : 'secondary'}>
+                          {rule.isActive ? 'Active' : 'Paused'}
+                        </Badge>
+                        <Badge variant="outline">
+                          {getEventLabel(rule.trigger.event)}
+                        </Badge>
+                      </CardTitle>
+                      <p className="text-sm text-muted-foreground">
+                        {rule.description}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button variant="outline" size="sm">
+                      <Edit className="h-4 w-4" />
+                    </Button>
+                    <Button variant="outline" size="sm">
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {/* Channels */}
+                  <div>
+                    <Label className="text-sm font-medium mb-2 block">Channels</Label>
+                    <div className="space-y-1">
+                      {rule.channels.map(channelId => {
+                        const channel = channels.find(c => c.id === channelId);
+                        return channel ? (
+                          <Badge key={channelId} variant="outline" className="flex items-center gap-1 w-fit">
+                            {getChannelIcon(channel.type)}
+                            {channel.name}
+                          </Badge>
+                        ) : null;
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Recipients */}
+                  <div>
+                    <Label className="text-sm font-medium mb-2 block">Recipients</Label>
+                    <div className="space-y-1">
+                      {rule.recipients.map((recipient, index) => (
+                        <Badge key={index} variant="secondary" className="flex items-center gap-1 w-fit">
+                          <Users className="h-3 w-3" />
+                          {recipient.type}: {recipient.value}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Metrics */}
+                  <div>
+                    <Label className="text-sm font-medium mb-2 block">Performance</Label>
+                    <div className="space-y-1 text-sm">
+                      <div className="flex justify-between">
+                        <span>Sent:</span>
+                        <span className="font-medium">{rule.metrics.sent}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Delivered:</span>
+                        <span className="font-medium text-green-600">{rule.metrics.delivered}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Failed:</span>
+                        <span className="font-medium text-red-600">{rule.metrics.failed}</span>
+                      </div>
+                      {rule.metrics.lastSent && (
+                        <div className="text-xs text-muted-foreground">
+                          Last: {new Date(rule.metrics.lastSent).toLocaleDateString()}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Timing */}
+                <div className="mt-4 pt-4 border-t">
+                  <Label className="text-sm font-medium mb-2 block">Timing</Label>
+                  <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                    {rule.timing.immediate ? (
+                      <Badge variant="outline" className="text-orange-600 border-orange-200">
+                        <Clock className="h-3 w-3 mr-1" />
+                        Immediate
+                      </Badge>
+                    ) : rule.timing.delay ? (
+                      <Badge variant="outline">
+                        <Clock className="h-3 w-3 mr-1" />
+                        Delayed {rule.timing.delay}min
+                      </Badge>
+                    ) : null}
+                    
+                    {rule.timing.schedule && (
+                      <Badge variant="outline">
+                        <Calendar className="h-3 w-3 mr-1" />
+                        Scheduled
+                      </Badge>
+                    )}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {/* Channels Tab */}
+      {activeTab === 'channels' && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {channels.map(channel => (
+            <Card key={channel.id} className={`border-l-4 ${channel.isActive ? 'border-l-green-500' : 'border-l-gray-300'}`}>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    {getChannelIcon(channel.type)}
+                    <CardTitle className="text-lg">{channel.name}</CardTitle>
+                  </div>
+                  <Switch
+                    checked={channel.isActive}
+                    onCheckedChange={() => toggleChannel(channel.id)}
+                  />
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-2">
+                  <Badge variant="outline" className="capitalize">
+                    {channel.type}
+                  </Badge>
+                  <div className="text-sm text-muted-foreground">
+                    {channel.config.email && <div>Email: {channel.config.email}</div>}
+                    {channel.config.phone && <div>Phone: {channel.config.phone}</div>}
+                    {channel.config.slack_channel && <div>Slack: {channel.config.slack_channel}</div>}
+                    {channel.config.webhook_url && <div>Webhook: {channel.config.webhook_url}</div>}
+                  </div>
+                </div>
+                <div className="flex justify-end gap-2 mt-4">
+                  <Button variant="outline" size="sm">
+                    <Edit className="h-4 w-4" />
+                  </Button>
+                  <Button variant="outline" size="sm">
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {/* Templates Tab */}
+      {activeTab === 'templates' && (
+        <div className="space-y-4">
+          <Alert>
+            <Heart className="h-4 w-4" />
+            <AlertDescription>
+              These templates are optimized for wedding businesses and include wedding-specific variables and language.
+            </AlertDescription>
+          </Alert>
+          
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {templateSuggestions.map((template, index) => (
+              <Card key={index}>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Star className="h-5 w-5 text-yellow-500" />
+                    {template.name}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-3">
+                    <div>
+                      <Label className="text-sm font-medium">Subject:</Label>
+                      <p className="text-sm text-muted-foreground mt-1">{template.subject}</p>
+                    </div>
+                    
+                    <div>
+                      <Label className="text-sm font-medium">Message Preview:</Label>
+                      <div className="text-sm text-muted-foreground mt-1 bg-gray-50 p-3 rounded-lg max-h-32 overflow-y-auto">
+                        {template.message.split('\n').slice(0, 6).join('\n')}
+                        {template.message.split('\n').length > 6 && '...'}
+                      </div>
+                    </div>
+                    
+                    <div>
+                      <Label className="text-sm font-medium">Variables:</Label>
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {template.variables.slice(0, 6).map(variable => (
+                          <Badge key={variable} variant="outline" className="text-xs">
+                            {`{{${variable}}}`}
+                          </Badge>
+                        ))}
+                        {template.variables.length > 6 && (
+                          <Badge variant="outline" className="text-xs">
+                            +{template.variables.length - 6} more
+                          </Badge>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div className="flex gap-2 mt-4">
+                    <Button size="sm">Use Template</Button>
+                    <Button variant="outline" size="sm">Preview</Button>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default ResponseNotifications;

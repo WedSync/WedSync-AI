@@ -1,0 +1,29 @@
+[INFO]  Bootstrapper: Retrieving info from "package.json" file
+[WARN]  Bootstrapper: Property "sonar.login" is deprecated and will be removed in a future version. Please use "sonar.token" instead.
+[INFO]  Bootstrapper: Platform: darwin arm64
+[INFO]  Bootstrapper: Server URL: https://sonarcloud.io
+[INFO]  Bootstrapper: Version: 4.3.0
+[INFO]  Bootstrapper: JRE provisioning is supported
+[INFO]  Bootstrapper: No Cache found for JRE
+[INFO]  Bootstrapper: Download starting...
+[INFO]  Bootstrapper: Download complete
+[INFO]  Bootstrapper: Downloaded JRE to /Users/skyphotography/.sonar/cache/003d3e0a65a2f0633b8bfed42be133724b490acb323c174c708d3a446d5fc660/OpenJDK17U-jre_aarch64_mac_hotspot_17.0.11_9.tar.gz
+[INFO]  Bootstrapper: No Cache found for SonarScanner Engine
+[INFO]  Bootstrapper: Download starting...
+[INFO]  Bootstrapper: Download complete
+[INFO]  Bootstrapper: Downloaded SonarScanner Engine to /Users/skyphotography/.sonar/cache/389023132d4de7124d91bd4e355ae68fe312b7440c8a1fece0f26cd2ee92ad08/sonarcloud-scanner-engine-11.19.0.895.jar
+[INFO]  ScannerEngine: Starting SonarScanner Engine...
+[INFO]  ScannerEngine: Java 17.0.11 Eclipse Adoptium (64-bit)
+[INFO]  ScannerEngine: Load global settings
+[INFO]  ScannerEngine: Load global settings (done) | time=400ms
+[INFO]  ScannerEngine: Server id: 1BD809FA-AWHW8ct9-T_TB3XqouNu
+[WARN]  ScannerEngine: sonar.projectDate is deprecated and will be removed in the future.
+[INFO]  ScannerEngine: Loading required plugins
+[INFO]  ScannerEngine: Load plugins index
+[INFO]  ScannerEngine: Load plugins index (done) | time=59ms
+[INFO]  ScannerEngine: Load/download plugins
+[INFO]  ScannerEngine: Load/download plugins (done) | time=1533ms
+[INFO]  ScannerEngine: Load project settings for component key: 'WedSync_WedSync2'
+[INFO]  ScannerEngine: Load project settings for component key: 'WedSync_WedSync2' (done) | time=552ms
+[ERROR] ScannerEngine: You are running manual analysis while Automatic Analysis is enabled. Please consider disabling one or the other.
+[ERROR] Bootstrapper: An error occurred: Error: Scanner engine failed with code 1

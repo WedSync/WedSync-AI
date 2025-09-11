@@ -1,0 +1,740 @@
+'use client';
+
+import React, { useState, useCallback } from 'react';
+import { createClient } from '@supabase/supabase-js';
+import {
+  Settings,
+  Phone,
+  MessageSquare,
+  DollarSign,
+  Shield,
+  CheckCircle,
+  AlertTriangle,
+  Eye,
+  EyeOff,
+  Loader2,
+} from 'lucide-react';
+
+interface SMSConfiguration {
+  twilioAccountSid: string;
+  twilioAuthToken: string;
+  twilioPhoneNumber: string;
+  dailyBudgetLimit: number;
+  monthlyBudgetLimit: number;
+  enableInternational: boolean;
+  enableEmergencyBypass: boolean;
+  alertThreshold: number;
+  webhookUrl?: string;
+}
+
+interface SMSConfigurationWizardProps {
+  weddingId: string;
+  onComplete?: (config: SMSConfiguration) => void;
+  className?: string;
+}
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+);
+
+// Untitled UI Components
+const Card = ({ children, className = '', ...props }: any) => (
+  <div
+    className={`bg-white border border-gray-200 rounded-xl p-6 shadow-xs hover:shadow-md transition-all duration-200 ${className}`}
+    {...props}
+  >
+    {children}
+  </div>
+);
+
+const Button = ({
+  children,
+  variant = 'primary',
+  size = 'md',
+  className = '',
+  loading = false,
+  disabled = false,
+  onClick,
+  ...props
+}: any) => {
+  const variants = {
+    primary:
+      'bg-primary-600 hover:bg-primary-700 text-white shadow-xs hover:shadow-sm',
+    secondary:
+      'bg-white hover:bg-gray-50 text-gray-700 border border-gray-300 shadow-xs',
+    outline: 'bg-white hover:bg-gray-50 text-gray-700 border border-gray-300',
+    ghost: 'hover:bg-gray-50 text-gray-700',
+  };
+
+  const sizes = {
+    sm: 'px-3.5 py-2 text-sm',
+    md: 'px-4 py-2.5 text-sm',
+    lg: 'px-4.5 py-2.5 text-base',
+  };
+
+  return (
+    <button
+      className={`
+        ${variants[variant]} ${sizes[size]}
+        font-semibold rounded-lg
+        transition-all duration-200
+        focus:outline-none focus:ring-4 focus:ring-primary-100
+        disabled:opacity-50 disabled:cursor-not-allowed
+        flex items-center justify-center space-x-2
+        ${className}
+      `}
+      onClick={onClick}
+      disabled={disabled || loading}
+      {...props}
+    >
+      {loading && <Loader2 className="h-4 w-4 animate-spin" />}
+      <span>{children}</span>
+    </button>
+  );
+};
+
+const Input = ({
+  label,
+  placeholder,
+  type = 'text',
+  value,
+  onChange,
+  error,
+  required = false,
+  className = '',
+  icon: Icon,
+  ...props
+}: any) => (
+  <div className="space-y-2">
+    {label && (
+      <label className="block text-sm font-medium text-gray-700">
+        {label}
+        {required && <span className="text-error-500 ml-1">*</span>}
+      </label>
+    )}
+    <div className="relative">
+      {Icon && (
+        <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
+          <Icon className="h-4 w-4 text-gray-400" />
+        </div>
+      )}
+      <input
+        type={type}
+        className={`
+          w-full ${Icon ? 'pl-10' : 'pl-3.5'} pr-3.5 py-2.5
+          bg-white border border-gray-300 rounded-lg
+          text-gray-900 placeholder-gray-500
+          shadow-xs
+          focus:outline-none focus:ring-4 focus:ring-primary-100
+          focus:border-primary-300
+          transition-all duration-200
+          ${error ? 'border-error-300 focus:border-error-300 focus:ring-error-100' : ''}
+          ${className}
+        `}
+        placeholder={placeholder}
+        value={value}
+        onChange={onChange}
+        {...props}
+      />
+    </div>
+    {error && (
+      <p className="text-sm text-error-600 flex items-center space-x-1">
+        <AlertTriangle className="h-3 w-3" />
+        <span>{error}</span>
+      </p>
+    )}
+  </div>
+);
+
+const Toggle = ({ label, enabled, onChange, description }: any) => (
+  <div className="flex items-start justify-between">
+    <div className="flex-1">
+      <h4 className="text-sm font-medium text-gray-900">{label}</h4>
+      {description && (
+        <p className="text-sm text-gray-500 mt-1">{description}</p>
+      )}
+    </div>
+    <button
+      type="button"
+      className={`
+        relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent 
+        transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2
+        ${enabled ? 'bg-primary-600' : 'bg-gray-200'}
+      `}
+      onClick={() => onChange(!enabled)}
+    >
+      <span
+        className={`
+          pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 
+          transition duration-200 ease-in-out
+          ${enabled ? 'translate-x-5' : 'translate-x-0'}
+        `}
+      />
+    </button>
+  </div>
+);
+
+const Alert = ({ children, variant = 'default', className = '' }: any) => {
+  const variants = {
+    default: 'bg-blue-50 border-blue-200 text-blue-700',
+    success: 'bg-success-50 border-success-200 text-success-700',
+    warning: 'bg-warning-50 border-warning-200 text-warning-700',
+    error: 'bg-error-50 border-error-200 text-error-700',
+  };
+
+  return (
+    <div className={`p-4 border rounded-lg ${variants[variant]} ${className}`}>
+      {children}
+    </div>
+  );
+};
+
+export function SMSConfigurationWizard({
+  weddingId,
+  onComplete,
+  className = '',
+}: SMSConfigurationWizardProps) {
+  const [currentStep, setCurrentStep] = useState(1);
+  const [loading, setLoading] = useState(false);
+  const [testingConnection, setTestingConnection] = useState(false);
+  const [showAuthToken, setShowAuthToken] = useState(false);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
+  const [config, setConfig] = useState<SMSConfiguration>({
+    twilioAccountSid: '',
+    twilioAuthToken: '',
+    twilioPhoneNumber: '',
+    dailyBudgetLimit: 50.0,
+    monthlyBudgetLimit: 500.0,
+    enableInternational: false,
+    enableEmergencyBypass: true,
+    alertThreshold: 0.8,
+    webhookUrl: '',
+  });
+
+  const steps = [
+    { id: 1, title: 'Twilio Configuration', icon: Settings },
+    { id: 2, title: 'Budget & Limits', icon: DollarSign },
+    { id: 3, title: 'Security & Settings', icon: Shield },
+    { id: 4, title: 'Test & Activate', icon: CheckCircle },
+  ];
+
+  const updateConfig = useCallback(
+    (field: string, value: any) => {
+      setConfig((prev) => ({ ...prev, [field]: value }));
+      if (errors[field]) {
+        setErrors((prev) => ({ ...prev, [field]: '' }));
+      }
+    },
+    [errors],
+  );
+
+  const validateStep = useCallback(
+    (step: number): boolean => {
+      const newErrors: Record<string, string> = {};
+
+      switch (step) {
+        case 1:
+          if (!config.twilioAccountSid.trim()) {
+            newErrors.twilioAccountSid = 'Account SID is required';
+          } else if (!config.twilioAccountSid.startsWith('AC')) {
+            newErrors.twilioAccountSid = 'Account SID must start with "AC"';
+          }
+
+          if (!config.twilioAuthToken.trim()) {
+            newErrors.twilioAuthToken = 'Auth Token is required';
+          } else if (config.twilioAuthToken.length < 32) {
+            newErrors.twilioAuthToken = 'Auth Token appears to be invalid';
+          }
+
+          if (!config.twilioPhoneNumber.trim()) {
+            newErrors.twilioPhoneNumber = 'Phone number is required';
+          } else if (!/^\+[1-9]\d{1,14}$/.test(config.twilioPhoneNumber)) {
+            newErrors.twilioPhoneNumber =
+              'Phone number must be in E.164 format (+1234567890)';
+          }
+          break;
+
+        case 2:
+          if (config.dailyBudgetLimit <= 0) {
+            newErrors.dailyBudgetLimit = 'Daily budget must be greater than $0';
+          }
+          if (config.monthlyBudgetLimit <= 0) {
+            newErrors.monthlyBudgetLimit =
+              'Monthly budget must be greater than $0';
+          }
+          if (config.dailyBudgetLimit > config.monthlyBudgetLimit) {
+            newErrors.dailyBudgetLimit =
+              'Daily budget cannot exceed monthly budget';
+          }
+          break;
+      }
+
+      setErrors(newErrors);
+      return Object.keys(newErrors).length === 0;
+    },
+    [config],
+  );
+
+  const testTwilioConnection = async () => {
+    setTestingConnection(true);
+    try {
+      const response = await fetch('/api/sms/test-connection', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          accountSid: config.twilioAccountSid,
+          authToken: config.twilioAuthToken,
+          phoneNumber: config.twilioPhoneNumber,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Connection test failed');
+      }
+
+      // Success - show confirmation
+      setErrors({ testResult: '' });
+    } catch (error) {
+      setErrors({
+        testResult:
+          error instanceof Error ? error.message : 'Connection test failed',
+      });
+    } finally {
+      setTestingConnection(false);
+    }
+  };
+
+  const saveConfiguration = async () => {
+    setLoading(true);
+    try {
+      const response = await fetch('/api/sms/configuration', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...config,
+          weddingId,
+          webhookUrl: `${window.location.origin}/api/sms/webhook`,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to save configuration');
+      }
+
+      onComplete?.(config);
+    } catch (error) {
+      setErrors({
+        save:
+          error instanceof Error
+            ? error.message
+            : 'Failed to save configuration',
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const nextStep = () => {
+    if (validateStep(currentStep)) {
+      setCurrentStep((prev) => Math.min(prev + 1, steps.length));
+    }
+  };
+
+  const prevStep = () => {
+    setCurrentStep((prev) => Math.max(prev - 1, 1));
+  };
+
+  const renderStepContent = () => {
+    switch (currentStep) {
+      case 1:
+        return (
+          <div className="space-y-6">
+            <div className="text-center mb-8">
+              <Settings className="h-12 w-12 text-primary-600 mx-auto mb-4" />
+              <h2 className="text-xl font-semibold text-gray-900">
+                Twilio Configuration
+              </h2>
+              <p className="text-sm text-gray-600 mt-2">
+                Configure your Twilio account for SMS messaging
+              </p>
+            </div>
+
+            <Alert variant="default">
+              <div className="flex items-start space-x-2">
+                <MessageSquare className="h-4 w-4 mt-0.5" />
+                <div>
+                  <p className="text-sm font-medium">
+                    Get your Twilio credentials
+                  </p>
+                  <p className="text-xs mt-1">
+                    Find your Account SID and Auth Token in your Twilio Console
+                    dashboard
+                  </p>
+                </div>
+              </div>
+            </Alert>
+
+            <div className="space-y-4">
+              <Input
+                label="Account SID"
+                placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                value={config.twilioAccountSid}
+                onChange={(e: any) =>
+                  updateConfig('twilioAccountSid', e.target.value)
+                }
+                error={errors.twilioAccountSid}
+                required
+                icon={Settings}
+              />
+
+              <div className="relative">
+                <Input
+                  label="Auth Token"
+                  placeholder="Your Twilio Auth Token"
+                  type={showAuthToken ? 'text' : 'password'}
+                  value={config.twilioAuthToken}
+                  onChange={(e: any) =>
+                    updateConfig('twilioAuthToken', e.target.value)
+                  }
+                  error={errors.twilioAuthToken}
+                  required
+                  icon={Shield}
+                />
+                <button
+                  type="button"
+                  className="absolute right-3 top-8 p-1 text-gray-400 hover:text-gray-600"
+                  onClick={() => setShowAuthToken(!showAuthToken)}
+                >
+                  {showAuthToken ? (
+                    <EyeOff className="h-4 w-4" />
+                  ) : (
+                    <Eye className="h-4 w-4" />
+                  )}
+                </button>
+              </div>
+
+              <Input
+                label="Twilio Phone Number"
+                placeholder="+1234567890"
+                value={config.twilioPhoneNumber}
+                onChange={(e: any) =>
+                  updateConfig('twilioPhoneNumber', e.target.value)
+                }
+                error={errors.twilioPhoneNumber}
+                required
+                icon={Phone}
+              />
+            </div>
+          </div>
+        );
+
+      case 2:
+        return (
+          <div className="space-y-6">
+            <div className="text-center mb-8">
+              <DollarSign className="h-12 w-12 text-primary-600 mx-auto mb-4" />
+              <h2 className="text-xl font-semibold text-gray-900">
+                Budget & Cost Controls
+              </h2>
+              <p className="text-sm text-gray-600 mt-2">
+                Set spending limits to control SMS costs
+              </p>
+            </div>
+
+            <Alert variant="warning">
+              <div className="flex items-start space-x-2">
+                <AlertTriangle className="h-4 w-4 mt-0.5" />
+                <div>
+                  <p className="text-sm font-medium">Cost Management</p>
+                  <p className="text-xs mt-1">
+                    SMS costs vary by destination. US/Canada: ~$0.0075/message,
+                    International: ~$0.05/message
+                  </p>
+                </div>
+              </div>
+            </Alert>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <Input
+                label="Daily Budget Limit"
+                type="number"
+                step="0.01"
+                min="0"
+                placeholder="50.00"
+                value={config.dailyBudgetLimit}
+                onChange={(e: any) =>
+                  updateConfig(
+                    'dailyBudgetLimit',
+                    parseFloat(e.target.value) || 0,
+                  )
+                }
+                error={errors.dailyBudgetLimit}
+                required
+              />
+
+              <Input
+                label="Monthly Budget Limit"
+                type="number"
+                step="0.01"
+                min="0"
+                placeholder="500.00"
+                value={config.monthlyBudgetLimit}
+                onChange={(e: any) =>
+                  updateConfig(
+                    'monthlyBudgetLimit',
+                    parseFloat(e.target.value) || 0,
+                  )
+                }
+                error={errors.monthlyBudgetLimit}
+                required
+              />
+            </div>
+
+            <div className="bg-gray-50 p-4 rounded-lg">
+              <h4 className="text-sm font-medium text-gray-900 mb-2">
+                Budget Alert Threshold
+              </h4>
+              <div className="flex items-center space-x-4">
+                <input
+                  type="range"
+                  min="0.5"
+                  max="1"
+                  step="0.1"
+                  value={config.alertThreshold}
+                  onChange={(e: any) =>
+                    updateConfig('alertThreshold', parseFloat(e.target.value))
+                  }
+                  className="flex-1"
+                />
+                <span className="text-sm font-medium text-gray-700">
+                  {(config.alertThreshold * 100).toFixed(0)}%
+                </span>
+              </div>
+              <p className="text-xs text-gray-500 mt-2">
+                Receive alerts when you've used this percentage of your budget
+              </p>
+            </div>
+          </div>
+        );
+
+      case 3:
+        return (
+          <div className="space-y-6">
+            <div className="text-center mb-8">
+              <Shield className="h-12 w-12 text-primary-600 mx-auto mb-4" />
+              <h2 className="text-xl font-semibold text-gray-900">
+                Security & Advanced Settings
+              </h2>
+              <p className="text-sm text-gray-600 mt-2">
+                Configure security and operational settings
+              </p>
+            </div>
+
+            <div className="space-y-6">
+              <Toggle
+                label="Enable International SMS"
+                description="Allow sending SMS messages to international phone numbers. Higher costs apply."
+                enabled={config.enableInternational}
+                onChange={(enabled: boolean) =>
+                  updateConfig('enableInternational', enabled)
+                }
+              />
+
+              <Toggle
+                label="Emergency Bypass"
+                description="Allow emergency messages to bypass budget limits and rate limits."
+                enabled={config.enableEmergencyBypass}
+                onChange={(enabled: boolean) =>
+                  updateConfig('enableEmergencyBypass', enabled)
+                }
+              />
+
+              {config.enableInternational && (
+                <Alert variant="warning">
+                  <div className="flex items-start space-x-2">
+                    <AlertTriangle className="h-4 w-4 mt-0.5" />
+                    <div>
+                      <p className="text-sm font-medium">
+                        International SMS Rates
+                      </p>
+                      <p className="text-xs mt-1">
+                        International SMS rates are significantly higher
+                        ($0.05-$0.50 per message). Monitor your usage carefully.
+                      </p>
+                    </div>
+                  </div>
+                </Alert>
+              )}
+            </div>
+          </div>
+        );
+
+      case 4:
+        return (
+          <div className="space-y-6">
+            <div className="text-center mb-8">
+              <CheckCircle className="h-12 w-12 text-primary-600 mx-auto mb-4" />
+              <h2 className="text-xl font-semibold text-gray-900">
+                Test & Activate
+              </h2>
+              <p className="text-sm text-gray-600 mt-2">
+                Test your configuration and activate SMS messaging
+              </p>
+            </div>
+
+            <div className="space-y-4">
+              <Card className="bg-gray-50">
+                <h4 className="text-sm font-medium text-gray-900 mb-4">
+                  Configuration Summary
+                </h4>
+                <div className="space-y-2 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Account SID:</span>
+                    <span className="font-mono">{config.twilioAccountSid}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Phone Number:</span>
+                    <span className="font-mono">
+                      {config.twilioPhoneNumber}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Daily Budget:</span>
+                    <span>${config.dailyBudgetLimit.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">International:</span>
+                    <span>
+                      {config.enableInternational ? 'Enabled' : 'Disabled'}
+                    </span>
+                  </div>
+                </div>
+              </Card>
+
+              <div className="flex space-x-3">
+                <Button
+                  variant="secondary"
+                  onClick={testTwilioConnection}
+                  loading={testingConnection}
+                  className="flex-1"
+                >
+                  Test Connection
+                </Button>
+              </div>
+
+              {errors.testResult && (
+                <Alert variant="error">
+                  <p className="text-sm">{errors.testResult}</p>
+                </Alert>
+              )}
+
+              {!errors.testResult &&
+                testingConnection === false &&
+                config.twilioAccountSid && (
+                  <Alert variant="success">
+                    <div className="flex items-center space-x-2">
+                      <CheckCircle className="h-4 w-4" />
+                      <p className="text-sm font-medium">
+                        Ready to activate SMS messaging
+                      </p>
+                    </div>
+                  </Alert>
+                )}
+            </div>
+          </div>
+        );
+
+      default:
+        return null;
+    }
+  };
+
+  return (
+    <div className={`max-w-2xl mx-auto ${className}`}>
+      {/* Progress Steps */}
+      <div className="mb-8">
+        <div className="flex items-center justify-between">
+          {steps.map((step, index) => (
+            <div key={step.id} className="flex items-center">
+              <div
+                className={`
+                flex items-center justify-center w-10 h-10 rounded-full border-2
+                ${
+                  currentStep >= step.id
+                    ? 'bg-primary-600 border-primary-600 text-white'
+                    : 'bg-white border-gray-300 text-gray-500'
+                }
+              `}
+              >
+                {currentStep > step.id ? (
+                  <CheckCircle className="h-5 w-5" />
+                ) : (
+                  <step.icon className="h-5 w-5" />
+                )}
+              </div>
+              {index < steps.length - 1 && (
+                <div
+                  className={`
+                  w-16 h-0.5 mx-4
+                  ${currentStep > step.id ? 'bg-primary-600' : 'bg-gray-300'}
+                `}
+                />
+              )}
+            </div>
+          ))}
+        </div>
+        <div className="flex justify-between mt-2">
+          {steps.map((step) => (
+            <div key={step.id} className="text-xs text-center w-10">
+              <p
+                className={`font-medium ${
+                  currentStep >= step.id ? 'text-primary-600' : 'text-gray-500'
+                }`}
+              >
+                {step.title}
+              </p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Step Content */}
+      <Card>{renderStepContent()}</Card>
+
+      {/* Navigation */}
+      <div className="flex justify-between mt-6">
+        <Button
+          variant="secondary"
+          onClick={prevStep}
+          disabled={currentStep === 1}
+        >
+          Previous
+        </Button>
+
+        {currentStep < steps.length ? (
+          <Button variant="primary" onClick={nextStep}>
+            Next
+          </Button>
+        ) : (
+          <Button
+            variant="primary"
+            onClick={saveConfiguration}
+            loading={loading}
+          >
+            Activate SMS
+          </Button>
+        )}
+      </div>
+
+      {errors.save && (
+        <Alert variant="error" className="mt-4">
+          <p className="text-sm">{errors.save}</p>
+        </Alert>
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,94 @@
+// Stripe Customer Management
+import Stripe from 'stripe';
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
+  apiVersion: '2024-12-18.acacia',
+});
+
+export interface CustomerData {
+  id: string;
+  email: string;
+  name?: string;
+  phone?: string;
+  metadata?: Record<string, string>;
+}
+
+export async function createCustomer(data: {
+  email: string;
+  name?: string;
+  phone?: string;
+  metadata?: Record<string, string>;
+}): Promise<CustomerData> {
+  const customer = await stripe.customers.create({
+    email: data.email,
+    name: data.name,
+    phone: data.phone,
+    metadata: data.metadata,
+  });
+
+  return {
+    id: customer.id,
+    email: customer.email!,
+    name: customer.name || undefined,
+    phone: customer.phone || undefined,
+    metadata: customer.metadata,
+  };
+}
+
+export async function getCustomer(
+  customerId: string,
+): Promise<CustomerData | null> {
+  try {
+    const customer = await stripe.customers.retrieve(customerId);
+
+    if (customer.deleted) {
+      return null;
+    }
+
+    return {
+      id: customer.id,
+      email: customer.email!,
+      name: customer.name || undefined,
+      phone: customer.phone || undefined,
+      metadata: customer.metadata,
+    };
+  } catch (error) {
+    console.error('Error retrieving customer:', error);
+    return null;
+  }
+}
+
+export async function updateCustomer(
+  customerId: string,
+  updates: {
+    email?: string;
+    name?: string;
+    phone?: string;
+    metadata?: Record<string, string>;
+  },
+): Promise<CustomerData | null> {
+  try {
+    const customer = await stripe.customers.update(customerId, updates);
+
+    return {
+      id: customer.id,
+      email: customer.email!,
+      name: customer.name || undefined,
+      phone: customer.phone || undefined,
+      metadata: customer.metadata,
+    };
+  } catch (error) {
+    console.error('Error updating customer:', error);
+    return null;
+  }
+}
+
+export async function deleteCustomer(customerId: string): Promise<boolean> {
+  try {
+    await stripe.customers.del(customerId);
+    return true;
+  } catch (error) {
+    console.error('Error deleting customer:', error);
+    return false;
+  }
+}

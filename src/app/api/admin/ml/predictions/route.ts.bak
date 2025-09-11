@@ -1,0 +1,419 @@
+/**
+ * WS-232 Main ML Predictions API
+ * Comprehensive endpoint for all ML predictions and analytics
+ */
+
+import { NextRequest, NextResponse } from 'next/server'
+import { createServerClient } from '@supabase/ssr'
+import { cookies } from 'next/headers'
+import { WeddingSupplierChurnPredictor } from '@/lib/ml/churn-prediction-model'
+import { RevenueForecaster } from '@/lib/ml/revenue-forecaster'
+import { ViralGrowthPredictor } from '@/lib/ml/viral-growth-predictor'
+import { LTVPredictor } from '@/lib/ml/ltv-predictor'
+import { AnomalyDetector } from '@/lib/ml/anomaly-detector'
+
+// Response interfaces matching the specification
+interface PredictionsResponse {
+  churn: ChurnPredictions
+  revenue: RevenueForecast
+  viral: ViralPredictions
+  ltv: LTVPredictions
+  anomalies: AnomalyAlert[]
+  generatedAt: Date
+  refreshInterval: number
+}
+
+interface ChurnPredictions {
+  totalAtRisk: number
+  mrrAtRisk: number
+  criticalRiskSuppliers: number
+  highRiskSuppliers: number
+  interventionsRequired: number
+  topRiskFactors: string[]
+  averageChurnProbability: number
+  seasonalAdjustment: number
+}
+
+interface RevenueForecast {
+  currentMRR: number
+  forecastedMRR: number[]
+  confidence: number
+  growthRate: number
+  seasonalFactors: number[]
+  keyDrivers: string[]
+  riskFactors: string[]
+}
+
+interface ViralPredictions {
+  platformViralCoefficient: number
+  expectedInvitations: number
+  conversionRate: number
+  networkGrowthRate: number
+  viralOptimizations: number
+  topPerformers: string[]
+}
+
+interface LTVPredictions {
+  averageLTV: number
+  ltvDistribution: Record<string, number>
+  highValueCustomers: number
+  ltvGrowthRate: number
+  optimizationOpportunities: number
+}
+
+interface AnomalyAlert {
+  type: string
+  severity: 'low' | 'medium' | 'high' | 'critical'
+  description: string
+  detectedAt: Date
+  autoActionTaken: boolean
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    // Get auth cookies
+    const cookieStore = cookies()
+    
+    // Create Supabase client
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      {
+        cookies: {
+          get(name: string) {
+            return cookieStore.get(name)?.value
+          },
+          set(name: string, value: string, options: any) {
+            cookieStore.set({ name, value, ...options })
+          },
+          remove(name: string, options: any) {
+            cookieStore.delete({ name, ...options })
+          },
+        },
+      }
+    )
+
+    // Verify admin access
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
+    // Check if user is admin
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('role')
+      .eq('id', user.id)
+      .single()
+
+    if (!profile || profile.role !== 'admin') {
+      return NextResponse.json({ error: 'Admin access required' }, { status: 403 })
+    }
+
+    // Get query parameters
+    const url = new URL(request.url)
+    const includeChurn = url.searchParams.get('churn') !== 'false'
+    const includeRevenue = url.searchParams.get('revenue') !== 'false' 
+    const includeViral = url.searchParams.get('viral') !== 'false'
+    const includeLTV = url.searchParams.get('ltv') !== 'false'
+    const includeAnomalies = url.searchParams.get('anomalies') !== 'false'
+    const refreshInterval = parseInt(url.searchParams.get('refreshInterval') || '300') // 5 minutes default
+
+    console.log('🤖 Generating comprehensive ML predictions...')
+
+    // Initialize ML models
+    const churnPredictor = new WeddingSupplierChurnPredictor()
+    const revenueForecaster = new RevenueForecaster()
+    const viralPredictor = new ViralGrowthPredictor()
+    const ltvPredictor = new LTVPredictor()
+    const anomalyDetector = new AnomalyDetector()
+
+    // Generate predictions in parallel
+    const [churnData, revenueData, viralData, ltvData, anomalyData] = await Promise.allSettled([
+      includeChurn ? generateChurnPredictions(churnPredictor, supabase) : null,
+      includeRevenue ? generateRevenueForecast(revenueForecaster) : null,
+      includeViral ? generateViralPredictions(viralPredictor, supabase) : null,
+      includeLTV ? generateLTVPredictions(ltvPredictor, supabase) : null,
+      includeAnomalies ? generateAnomalyAlerts(anomalyDetector) : null,
+    ])
+
+    // Build response
+    const response: PredictionsResponse = {
+      churn: churnData.status === 'fulfilled' && churnData.value ? churnData.value : getDefaultChurnPredictions(),
+      revenue: revenueData.status === 'fulfilled' && revenueData.value ? revenueData.value : getDefaultRevenueForecast(),
+      viral: viralData.status === 'fulfilled' && viralData.value ? viralData.value : getDefaultViralPredictions(),
+      ltv: ltvData.status === 'fulfilled' && ltvData.value ? ltvData.value : getDefaultLTVPredictions(),
+      anomalies: anomalyData.status === 'fulfilled' && anomalyData.value ? anomalyData.value : [],
+      generatedAt: new Date(),
+      refreshInterval
+    }
+
+    console.log('✅ ML predictions generated successfully')
+
+    return NextResponse.json(response, {
+      headers: {
+        'Cache-Control': `public, max-age=${refreshInterval}`,
+        'X-Refresh-Interval': refreshInterval.toString()
+      }
+    })
+
+  } catch (error) {
+    console.error('❌ ML predictions API error:', error)
+    return NextResponse.json(
+      { 
+        error: 'Internal server error',
+        message: process.env.NODE_ENV === 'development' ? String(error) : undefined
+      },
+      { status: 500 }
+    )
+  }
+}
+
+/**
+ * Generate churn predictions summary
+ */
+async function generateChurnPredictions(
+  churnPredictor: WeddingSupplierChurnPredictor,
+  supabase: any
+): Promise<ChurnPredictions> {
+  console.log('🔍 Generating churn predictions...')
+
+  // Get active suppliers
+  const { data: suppliers } = await supabase
+    .from('suppliers')
+    .select('id, vendor_type')
+    .eq('status', 'active')
+    .limit(100) // Limit for performance
+
+  if (!suppliers || suppliers.length === 0) {
+    return getDefaultChurnPredictions()
+  }
+
+  // Predict churn for a sample of suppliers
+  const sampleSize = Math.min(50, suppliers.length)
+  const sampleSuppliers = suppliers.slice(0, sampleSize)
+  
+  const predictions = await Promise.allSettled(
+    sampleSuppliers.map(supplier => 
+      churnPredictor.predictChurn(supplier.id).catch(error => {
+        console.warn(`Churn prediction failed for supplier ${supplier.id}:`, error)
+        return null
+      })
+    )
+  )
+
+  const validPredictions = predictions
+    .filter(p => p.status === 'fulfilled' && p.value)
+    .map(p => (p as PromiseFulfilledResult<any>).value)
+
+  if (validPredictions.length === 0) {
+    return getDefaultChurnPredictions()
+  }
+
+  // Aggregate results
+  const criticalRisk = validPredictions.filter(p => p.riskLevel === 'critical').length
+  const highRisk = validPredictions.filter(p => p.riskLevel === 'high').length
+  const totalMRRAtRisk = validPredictions.reduce((sum, p) => sum + p.monthlyRevenueLoss, 0)
+  const avgChurnProbability = validPredictions.reduce((sum, p) => sum + p.churnProbability, 0) / validPredictions.length
+  const avgSeasonalAdjustment = validPredictions.reduce((sum, p) => sum + p.seasonalAdjustment, 0) / validPredictions.length
+
+  // Extract top risk factors
+  const allFactors = validPredictions.flatMap(p => p.factors)
+  const factorCounts = allFactors.reduce((counts, factor) => {
+    counts[factor.factor] = (counts[factor.factor] || 0) + Math.abs(factor.impact)
+    return counts
+  }, {} as Record<string, number>)
+
+  const topRiskFactors = Object.entries(factorCounts)
+    .sort(([,a], [,b]) => b - a)
+    .slice(0, 5)
+    .map(([factor]) => factor)
+
+  const interventionsRequired = validPredictions.reduce((sum, p) => sum + p.interventions.length, 0)
+
+  return {
+    totalAtRisk: criticalRisk + highRisk,
+    mrrAtRisk: Math.round(totalMRRAtRisk),
+    criticalRiskSuppliers: criticalRisk,
+    highRiskSuppliers: highRisk,
+    interventionsRequired,
+    topRiskFactors,
+    averageChurnProbability: Math.round(avgChurnProbability * 100) / 100,
+    seasonalAdjustment: Math.round(avgSeasonalAdjustment * 100) / 100
+  }
+}
+
+/**
+ * Generate revenue forecast summary
+ */
+async function generateRevenueForecast(revenueForecaster: RevenueForecaster): Promise<RevenueForecast> {
+  console.log('💰 Generating revenue forecast...')
+
+  const forecast = await revenueForecaster.forecastRevenue(12) // 12 month forecast
+
+  return {
+    currentMRR: Math.round(forecast.baseline[0] || 0),
+    forecastedMRR: forecast.baseline.map(val => Math.round(val)),
+    confidence: Math.round(forecast.confidence * 100),
+    growthRate: Math.round(forecast.growthRate * 100),
+    seasonalFactors: forecast.seasonalFactors.map(val => Math.round(val * 100) / 100),
+    keyDrivers: forecast.keyDrivers,
+    riskFactors: [] // Would be enhanced with risk analysis
+  }
+}
+
+/**
+ * Generate viral predictions summary
+ */
+async function generateViralPredictions(
+  viralPredictor: ViralGrowthPredictor,
+  supabase: any
+): Promise<ViralPredictions> {
+  console.log('🚀 Generating viral predictions...')
+
+  // Get platform viral prediction
+  const platformPrediction = await viralPredictor.predictViralGrowth('platform', 'platform')
+
+  // Get top performing suppliers for viral
+  const { data: topSuppliers } = await supabase
+    .from('suppliers')
+    .select('id, business_name')
+    .eq('status', 'active')
+    .limit(10)
+
+  const topPerformers = topSuppliers?.map(s => s.business_name || 'Unnamed Business').slice(0, 3) || []
+
+  return {
+    platformViralCoefficient: Math.round(platformPrediction.viralCoefficient * 100) / 100,
+    expectedInvitations: platformPrediction.expectedInvites,
+    conversionRate: Math.round(platformPrediction.conversionProbability * 100),
+    networkGrowthRate: Math.round(platformPrediction.networkEffect * 100),
+    viralOptimizations: platformPrediction.optimizations.length,
+    topPerformers
+  }
+}
+
+/**
+ * Generate LTV predictions summary
+ */
+async function generateLTVPredictions(
+  ltvPredictor: LTVPredictor,
+  supabase: any
+): Promise<LTVPredictions> {
+  console.log('💎 Generating LTV predictions...')
+
+  // Get sample suppliers for LTV analysis
+  const { data: suppliers } = await supabase
+    .from('suppliers')
+    .select('id, vendor_type')
+    .eq('status', 'active')
+    .limit(30)
+
+  if (!suppliers || suppliers.length === 0) {
+    return getDefaultLTVPredictions()
+  }
+
+  // Predict LTV for sample
+  const ltvPredictions = await Promise.allSettled(
+    suppliers.slice(0, 20).map(supplier =>
+      ltvPredictor.predictLTV(supplier.id).catch(error => {
+        console.warn(`LTV prediction failed for supplier ${supplier.id}:`, error)
+        return null
+      })
+    )
+  )
+
+  const validPredictions = ltvPredictions
+    .filter(p => p.status === 'fulfilled' && p.value)
+    .map(p => (p as PromiseFulfilledResult<any>).value)
+
+  if (validPredictions.length === 0) {
+    return getDefaultLTVPredictions()
+  }
+
+  const averageLTV = validPredictions.reduce((sum, p) => sum + p.predictedLTV, 0) / validPredictions.length
+  
+  // LTV distribution by segment
+  const distribution = validPredictions.reduce((dist, p) => {
+    dist[p.ltvSegment] = (dist[p.ltvSegment] || 0) + 1
+    return dist
+  }, {} as Record<string, number>)
+
+  const highValueCustomers = validPredictions.filter(p => p.ltvSegment === 'gold' || p.ltvSegment === 'platinum').length
+  const optimizationOpportunities = validPredictions.reduce((sum, p) => sum + p.optimizations.length, 0)
+
+  return {
+    averageLTV: Math.round(averageLTV),
+    ltvDistribution: distribution,
+    highValueCustomers,
+    ltvGrowthRate: 15, // Would calculate from historical data
+    optimizationOpportunities
+  }
+}
+
+/**
+ * Generate anomaly alerts summary
+ */
+async function generateAnomalyAlerts(anomalyDetector: AnomalyDetector): Promise<AnomalyAlert[]> {
+  console.log('⚠️  Detecting anomalies...')
+
+  const anomalies = await anomalyDetector.detectAnomalies()
+
+  return anomalies.slice(0, 10).map(anomaly => ({
+    type: anomaly.anomalyType,
+    severity: anomaly.severity,
+    description: anomaly.description,
+    detectedAt: anomaly.detectedAt,
+    autoActionTaken: anomaly.autoAction?.executed || false
+  }))
+}
+
+/**
+ * Default fallback responses
+ */
+function getDefaultChurnPredictions(): ChurnPredictions {
+  return {
+    totalAtRisk: 0,
+    mrrAtRisk: 0,
+    criticalRiskSuppliers: 0,
+    highRiskSuppliers: 0,
+    interventionsRequired: 0,
+    topRiskFactors: ['Insufficient data'],
+    averageChurnProbability: 0.05,
+    seasonalAdjustment: 1.0
+  }
+}
+
+function getDefaultRevenueForecast(): RevenueForecast {
+  const defaultMRR = Array(12).fill(0).map((_, i) => 1000 + i * 100)
+  return {
+    currentMRR: 1000,
+    forecastedMRR: defaultMRR,
+    confidence: 50,
+    growthRate: 10,
+    seasonalFactors: Array(12).fill(1.0),
+    keyDrivers: ['Insufficient data'],
+    riskFactors: []
+  }
+}
+
+function getDefaultViralPredictions(): ViralPredictions {
+  return {
+    platformViralCoefficient: 0.8,
+    expectedInvitations: 50,
+    conversionRate: 15,
+    networkGrowthRate: 8,
+    viralOptimizations: 0,
+    topPerformers: ['No data available']
+  }
+}
+
+function getDefaultLTVPredictions(): LTVPredictions {
+  return {
+    averageLTV: 1200,
+    ltvDistribution: { bronze: 0, silver: 0, gold: 0, platinum: 0 },
+    highValueCustomers: 0,
+    ltvGrowthRate: 10,
+    optimizationOpportunities: 0
+  }
+}

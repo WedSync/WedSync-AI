@@ -1,0 +1,320 @@
+/**
+ * Performance Metrics API Endpoint - WS-173 Backend Performance Optimization
+ * Team B - Round 1 Implementation
+ * Provides real-time performance metrics and monitoring data
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { metricsTracker } from '@/lib/performance/metrics-tracker';
+import { performanceCacheManager } from '@/lib/cache/performance-cache-manager';
+import { connectionPool } from '@/lib/database/connection-pool';
+import { queryOptimizer } from '@/lib/database/query-optimizer';
+import { ResponseStreamer } from '@/lib/streaming/response-streaming';
+import { z } from 'zod';
+
+const metricsQuerySchema = z.object({
+  timeRange: z.enum(['1h', '24h', '7d']).optional().default('24h'),
+  format: z.enum(['json', 'sse']).optional().default('json'),
+  includeDetails: z.boolean().optional().default(false),
+  refresh: z.boolean().optional().default(false),
+});
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
+/**
+ * GET /api/performance/metrics
+ * Get comprehensive performance metrics
+ */
+export async function GET(request: NextRequest) {
+  const startTime = Date.now();
+
+  try {
+    // Parse query parameters
+    const searchParams = request.nextUrl.searchParams;
+    const query = metricsQuerySchema.parse({
+      timeRange: searchParams.get('timeRange'),
+      format: searchParams.get('format'),
+      includeDetails: searchParams.get('includeDetails') === 'true',
+      refresh: searchParams.get('refresh') === 'true',
+    });
+
+    // Authentication check
+    const supabase = await createClient();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Check if user is admin (for security)
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('role')
+      .eq('id', user.id)
+      .single();
+
+    if (profile?.role !== 'admin' && profile?.role !== 'super_admin') {
+      return NextResponse.json(
+        { error: 'Forbidden - Admin access required' },
+        { status: 403 },
+      );
+    }
+
+    // Handle SSE requests
+    if (query.format === 'sse') {
+      return handleSSEMetrics(query, user.id);
+    }
+
+    // Get comprehensive metrics
+    const metrics = await getPerformanceMetrics(
+      query.timeRange,
+      query.includeDetails,
+      query.refresh,
+    );
+
+    const responseTime = Date.now() - startTime;
+
+    // Track this API call
+    await metricsTracker.trackAPICall(
+      '/api/performance/metrics',
+      'GET',
+      responseTime,
+      200,
+      { userId: user.id },
+    );
+
+    return NextResponse.json(
+      {
+        success: true,
+        data: metrics,
+        meta: {
+          timeRange: query.timeRange,
+          generatedAt: new Date().toISOString(),
+          responseTime,
+          includeDetails: query.includeDetails,
+        },
+      },
+      {
+        headers: {
+          'Cache-Control': 'private, no-cache, max-age=0',
+          'X-Response-Time': responseTime.toString(),
+        },
+      },
+    );
+  } catch (error) {
+    const responseTime = Date.now() - startTime;
+    console.error('Performance metrics API error:', error);
+
+    await metricsTracker.trackAPICall(
+      '/api/performance/metrics',
+      'GET',
+      responseTime,
+      500,
+      {
+        errorMessage: error instanceof Error ? error.message : 'Unknown error',
+      },
+    );
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : 'Internal server error',
+        meta: {
+          responseTime,
+        },
+      },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * POST /api/performance/metrics
+ * Trigger metrics collection or clear cache
+ */
+export async function POST(request: NextRequest) {
+  const startTime = Date.now();
+
+  try {
+    // Authentication
+    const supabase = await createClient();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const action = body.action as string;
+
+    let result: any = {};
+
+    switch (action) {
+      case 'refresh-cache':
+        // Clear performance metrics cache
+        await performanceCacheManager.invalidateByTags([
+          'performance',
+          'metrics',
+        ]);
+        result = { message: 'Performance cache refreshed' };
+        break;
+
+      case 'trigger-collection':
+        // Trigger immediate metrics collection
+        const systemMetrics = await metricsTracker.trackSystemMetrics();
+        result = {
+          message: 'Metrics collection triggered',
+          systemMetrics,
+        };
+        break;
+
+      case 'cleanup-old-data':
+        // Cleanup old metrics data
+        const cutoffDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000); // 7 days ago
+        await metricsTracker.cleanup(cutoffDate);
+        result = { message: 'Old metrics data cleaned up' };
+        break;
+
+      default:
+        return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
+    }
+
+    const responseTime = Date.now() - startTime;
+
+    await metricsTracker.trackAPICall(
+      '/api/performance/metrics',
+      'POST',
+      responseTime,
+      200,
+      { userId: user.id },
+    );
+
+    return NextResponse.json({
+      success: true,
+      action,
+      result,
+      meta: {
+        responseTime,
+        timestamp: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    const responseTime = Date.now() - startTime;
+    console.error('Performance metrics POST error:', error);
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : 'Internal server error',
+        meta: { responseTime },
+      },
+      { status: 500 },
+    );
+  }
+}
+
+// Helper functions
+
+async function getPerformanceMetrics(
+  timeRange: '1h' | '24h' | '7d',
+  includeDetails: boolean,
+  refresh: boolean,
+) {
+  // Get metrics from various sources
+  const [
+    performanceSummary,
+    slowQueries,
+    cacheAnalytics,
+    poolStats,
+    systemMetrics,
+  ] = await Promise.all([
+    metricsTracker.getPerformanceSummary(timeRange),
+    queryOptimizer.getSlowQueryReport(includeDetails ? 20 : 5),
+    performanceCacheManager.getAnalytics(timeRange),
+    connectionPool.getPoolStatistics(),
+    metricsTracker.trackSystemMetrics(),
+  ]);
+
+  const metrics = {
+    summary: performanceSummary,
+    cache: cacheAnalytics,
+    database: {
+      slowQueries: slowQueries.queries,
+      summary: slowQueries.summary,
+      connectionPools: poolStats,
+    },
+    system: systemMetrics,
+    timestamp: new Date().toISOString(),
+  };
+
+  // Add detailed information if requested
+  if (includeDetails) {
+    const [slowEndpoints, indexSuggestions] = await Promise.all([
+      metricsTracker.getSlowEndpoints(10),
+      queryOptimizer.getIndexSuggestions(undefined, 3),
+    ]);
+
+    metrics.api = {
+      slowEndpoints,
+    };
+
+    metrics.database.indexSuggestions = indexSuggestions;
+  }
+
+  return metrics;
+}
+
+async function handleSSEMetrics(
+  query: { timeRange: '1h' | '24h' | '7d'; includeDetails: boolean },
+  userId: string,
+): Promise<Response> {
+  const dataSource = async function* () {
+    while (true) {
+      try {
+        // Get fresh metrics
+        const metrics = await getPerformanceMetrics(
+          query.timeRange,
+          query.includeDetails,
+          true,
+        );
+
+        yield [
+          {
+            type: 'metrics_update',
+            data: metrics,
+            timestamp: new Date().toISOString(),
+          },
+        ];
+
+        // Wait 10 seconds before next update
+        await new Promise((resolve) => setTimeout(resolve, 10000));
+      } catch (error) {
+        console.error('SSE metrics generation error:', error);
+        yield [
+          {
+            type: 'error',
+            data: { error: error.message },
+            timestamp: new Date().toISOString(),
+          },
+        ];
+        break;
+      }
+    }
+  };
+
+  return ResponseStreamer.streamServerSentEvents(
+    dataSource(),
+    {
+      includeProgress: false,
+    },
+    { userId },
+  );
+}

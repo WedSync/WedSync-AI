@@ -1,0 +1,525 @@
+/**
+ * WS-248: Advanced Search System - Search Index Management API
+ *
+ * POST /api/search/indexing
+ * PUT /api/search/indexing
+ * DELETE /api/search/indexing
+ * GET /api/search/indexing/status
+ *
+ * Elasticsearch integration for vendor data indexing, bulk operations,
+ * real-time updates, and search performance optimization.
+ *
+ * Team B - Round 1 - Advanced Search Backend Focus
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+import { SearchIndexingService } from '@/lib/services/search/SearchIndexingService';
+
+// =====================================================================================
+// VALIDATION SCHEMAS
+// =====================================================================================
+
+const IndexOperationSchema = z.object({
+  operation: z.enum([
+    'create',
+    'update',
+    'delete',
+    'bulk_index',
+    'reindex',
+    'optimize',
+  ]),
+  entityType: z.enum(['supplier', 'venue', 'service', 'portfolio', 'review']),
+  entityIds: z.array(z.string()).optional(),
+  options: z
+    .object({
+      async: z.boolean().default(true),
+      batchSize: z.number().min(1).max(1000).default(100),
+      includeRelations: z.boolean().default(true),
+      forceRefresh: z.boolean().default(false),
+      timeout: z.number().min(1000).max(300000).default(30000),
+    })
+    .optional(),
+});
+
+const BulkIndexSchema = z.object({
+  operations: z
+    .array(
+      z.object({
+        action: z.enum(['index', 'update', 'delete']),
+        entityType: z.string(),
+        entityId: z.string(),
+        data: z.record(z.any()).optional(),
+      }),
+    )
+    .max(1000),
+});
+
+const IndexStatusSchema = z.object({
+  indexNames: z.array(z.string()).optional(),
+  includeStats: z.boolean().default(true),
+  includeHealth: z.boolean().default(true),
+});
+
+// =====================================================================================
+// TYPES & INTERFACES
+// =====================================================================================
+
+interface IndexOperation {
+  id: string;
+  operation: string;
+  entityType: string;
+  entityIds?: string[];
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  startedAt: string;
+  completedAt?: string;
+  progress?: {
+    processed: number;
+    total: number;
+    percentage: number;
+  };
+  error?: string;
+  metadata?: {
+    batchSize: number;
+    async: boolean;
+    includeRelations: boolean;
+  };
+}
+
+interface IndexStats {
+  indexName: string;
+  documentCount: number;
+  indexSize: string;
+  lastUpdated: string;
+  health: 'green' | 'yellow' | 'red';
+  settings: {
+    shards: number;
+    replicas: number;
+    refreshInterval: string;
+  };
+  mappings: {
+    totalFields: number;
+    dynamicMapping: boolean;
+  };
+}
+
+interface IndexingResponse {
+  success: boolean;
+  operation?: IndexOperation;
+  operations?: IndexOperation[];
+  status?: {
+    indices: IndexStats[];
+    cluster: {
+      health: string;
+      activeShards: number;
+      relocatingShards: number;
+      unassignedShards: number;
+    };
+    operations: {
+      pending: number;
+      processing: number;
+      completed: number;
+      failed: number;
+    };
+  };
+  error?: string;
+}
+
+// =====================================================================================
+// API HANDLERS
+// =====================================================================================
+
+export async function POST(request: NextRequest) {
+  return handleIndexingRequest(request, 'CREATE');
+}
+
+export async function PUT(request: NextRequest) {
+  return handleIndexingRequest(request, 'UPDATE');
+}
+
+export async function DELETE(request: NextRequest) {
+  return handleIndexingRequest(request, 'DELETE');
+}
+
+export async function GET(request: NextRequest) {
+  return handleStatusRequest(request);
+}
+
+// =====================================================================================
+// CORE HANDLERS
+// =====================================================================================
+
+async function handleIndexingRequest(request: NextRequest, method: string) {
+  const startTime = Date.now();
+
+  try {
+    const supabase = createClient();
+
+    // Authenticate and authorize admin users only
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { success: false, error: 'Authentication required' },
+        { status: 401 },
+      );
+    }
+
+    // Check admin permissions
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('role, permissions')
+      .eq('id', user.id)
+      .single();
+
+    if (!userProfile || !['admin', 'super_admin'].includes(userProfile.role)) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Admin privileges required for indexing operations',
+        },
+        { status: 403 },
+      );
+    }
+
+    const body = await request.json();
+
+    // Handle bulk operations
+    if (body.operations && Array.isArray(body.operations)) {
+      return handleBulkIndexing(supabase, body, user.id);
+    }
+
+    // Validate single operation
+    const validation = IndexOperationSchema.safeParse(body);
+    if (!validation.success) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Invalid indexing parameters',
+          details: validation.error.errors,
+        },
+        { status: 400 },
+      );
+    }
+
+    const params = validation.data;
+
+    // Initialize indexing service
+    const indexingService = new SearchIndexingService(supabase);
+
+    // Execute indexing operation
+    const operation = await indexingService.executeOperation(params, {
+      userId: user.id,
+      requestId: generateRequestId(),
+    });
+
+    if (!operation) {
+      return NextResponse.json(
+        { success: false, error: 'Failed to execute indexing operation' },
+        { status: 500 },
+      );
+    }
+
+    const response: IndexingResponse = {
+      success: true,
+      operation,
+    };
+
+    return NextResponse.json(response);
+  } catch (error) {
+    console.error('Indexing API error:', error);
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Internal server error during indexing operation',
+        executionTime: Date.now() - startTime,
+      },
+      { status: 500 },
+    );
+  }
+}
+
+async function handleStatusRequest(request: NextRequest) {
+  const startTime = Date.now();
+
+  try {
+    const supabase = createClient();
+    const { searchParams } = request.nextUrl;
+
+    // Authenticate user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { success: false, error: 'Authentication required' },
+        { status: 401 },
+      );
+    }
+
+    const requestData = {
+      indexNames: searchParams.get('indices')?.split(','),
+      includeStats: searchParams.get('stats') !== 'false',
+      includeHealth: searchParams.get('health') !== 'false',
+    };
+
+    const validation = IndexStatusSchema.safeParse(requestData);
+    if (!validation.success) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Invalid status request parameters',
+          details: validation.error.errors,
+        },
+        { status: 400 },
+      );
+    }
+
+    const params = validation.data;
+
+    // Initialize indexing service
+    const indexingService = new SearchIndexingService(supabase);
+
+    // Get index status
+    const status = await indexingService.getIndexStatus(params);
+
+    if (!status) {
+      return NextResponse.json(
+        { success: false, error: 'Failed to retrieve index status' },
+        { status: 500 },
+      );
+    }
+
+    const response: IndexingResponse = {
+      success: true,
+      status,
+    };
+
+    // Add performance headers
+    const headers = {
+      'X-Execution-Time': (Date.now() - startTime).toString(),
+      'Cache-Control': 'public, max-age=60, stale-while-revalidate=120',
+    };
+
+    return NextResponse.json(response, { headers });
+  } catch (error) {
+    console.error('Index status API error:', error);
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Failed to retrieve index status',
+        executionTime: Date.now() - startTime,
+      },
+      { status: 500 },
+    );
+  }
+}
+
+async function handleBulkIndexing(supabase: any, body: any, userId: string) {
+  const validation = BulkIndexSchema.safeParse(body);
+  if (!validation.success) {
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Invalid bulk indexing parameters',
+        details: validation.error.errors,
+      },
+      { status: 400 },
+    );
+  }
+
+  const indexingService = new SearchIndexingService(supabase);
+
+  try {
+    const operations = await indexingService.executeBulkOperations(
+      validation.data.operations,
+      { userId, requestId: generateRequestId() },
+    );
+
+    return NextResponse.json({
+      success: true,
+      operations,
+    });
+  } catch (error) {
+    console.error('Bulk indexing error:', error);
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Failed to execute bulk indexing operations',
+        details: error.message,
+      },
+      { status: 500 },
+    );
+  }
+}
+
+// =====================================================================================
+// WEBHOOK HANDLERS FOR REAL-TIME INDEXING
+// =====================================================================================
+
+export async function PATCH(request: NextRequest) {
+  // Handle real-time index updates via webhooks
+  const startTime = Date.now();
+
+  try {
+    const supabase = createClient();
+    const body = await request.json();
+
+    // Validate webhook signature/auth
+    const webhookSecret = request.headers.get('x-webhook-secret');
+    if (webhookSecret !== process.env.SEARCH_WEBHOOK_SECRET) {
+      return NextResponse.json(
+        { success: false, error: 'Invalid webhook secret' },
+        { status: 401 },
+      );
+    }
+
+    // Process webhook payload
+    const { eventType, entityType, entityId, data } = body;
+
+    if (!['created', 'updated', 'deleted'].includes(eventType)) {
+      return NextResponse.json(
+        { success: false, error: 'Invalid event type' },
+        { status: 400 },
+      );
+    }
+
+    const indexingService = new SearchIndexingService(supabase);
+
+    // Execute real-time index update
+    const operation = await indexingService.handleWebhookUpdate({
+      eventType,
+      entityType,
+      entityId,
+      data,
+    });
+
+    return NextResponse.json({
+      success: true,
+      operation,
+      processingTime: Date.now() - startTime,
+    });
+  } catch (error) {
+    console.error('Webhook indexing error:', error);
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Failed to process webhook indexing update',
+        processingTime: Date.now() - startTime,
+      },
+      { status: 500 },
+    );
+  }
+}
+
+// =====================================================================================
+// BACKGROUND JOB ENDPOINTS
+// =====================================================================================
+
+// GET /api/search/indexing/jobs - Get indexing job status
+export async function OPTIONS(request: NextRequest) {
+  const { searchParams } = request.nextUrl;
+  const jobId = searchParams.get('job_id');
+
+  if (!jobId) {
+    return NextResponse.json(
+      { success: false, error: 'Job ID required' },
+      { status: 400 },
+    );
+  }
+
+  try {
+    const supabase = createClient();
+
+    // Get job status from database
+    const { data: job, error } = await supabase
+      .from('search_indexing_jobs')
+      .select('*')
+      .eq('id', jobId)
+      .single();
+
+    if (error || !job) {
+      return NextResponse.json(
+        { success: false, error: 'Job not found' },
+        { status: 404 },
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      job: {
+        id: job.id,
+        operation: job.operation,
+        status: job.status,
+        progress: job.progress,
+        startedAt: job.started_at,
+        completedAt: job.completed_at,
+        error: job.error_message,
+        metadata: job.metadata,
+      },
+    });
+  } catch (error) {
+    console.error('Job status error:', error);
+
+    return NextResponse.json(
+      { success: false, error: 'Failed to retrieve job status' },
+      { status: 500 },
+    );
+  }
+}
+
+// =====================================================================================
+// UTILITY FUNCTIONS
+// =====================================================================================
+
+function generateRequestId(): string {
+  return `req_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
+}
+
+// Scheduled maintenance endpoint
+async function performScheduledMaintenance(supabase: any) {
+  try {
+    const indexingService = new SearchIndexingService(supabase);
+
+    // Optimize indices
+    await indexingService.optimizeIndices();
+
+    // Clean up old indexing jobs
+    await supabase
+      .from('search_indexing_jobs')
+      .delete()
+      .lt(
+        'created_at',
+        new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+      ) // 7 days old
+      .in('status', ['completed', 'failed']);
+
+    // Update search statistics
+    await updateSearchStatistics(supabase);
+
+    return { success: true, message: 'Maintenance completed successfully' };
+  } catch (error) {
+    console.error('Scheduled maintenance error:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+async function updateSearchStatistics(supabase: any) {
+  // Update materialized views and statistics for search performance
+  try {
+    await supabase.rpc('refresh_search_statistics');
+    console.log('Search statistics refreshed successfully');
+  } catch (error) {
+    console.error('Failed to refresh search statistics:', error);
+  }
+}
+
+export const dynamic = 'force-dynamic';

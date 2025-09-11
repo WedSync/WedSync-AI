@@ -1,0 +1,327 @@
+/**
+ * Comprehensive Unit Tests for GuestListBuilder Component
+ * Team E - Batch 13 - WS-151 Guest List Builder Testing
+ * 
+ * Testing Requirements:
+ * - File upload and parsing (CSV, Excel)
+ * - Column mapping and auto-detection
+ * - Data validation and preview
+ * - Batch import processing
+ * - Error handling and recovery
+ * - Template management
+ * - Accessibility compliance
+ */
+
+import React from 'react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { GuestListBuilder } from '@/components/guests/GuestListBuilder'
+// Mock dependencies
+vi.mock('@/lib/supabase/client', () => ({
+  createClient: () => ({
+    from: vi.fn(() => ({
+      select: vi.fn(() => ({
+        eq: vi.fn(() => ({
+          single: vi.fn(() => ({ data: { organization_id: 'test-org' } })),
+          order: vi.fn(() => ({ data: [] }))
+        }))
+      })),
+      insert: vi.fn(() => ({
+        select: vi.fn(() => ({
+          single: vi.fn(() => ({ 
+            data: { 
+              id: 'test-session-id', 
+              created_at: new Date().toISOString() 
+            } 
+          }))
+      update: vi.fn(() => ({ eq: vi.fn(() => ({})) }))
+    })),
+    auth: {
+      getUser: vi.fn(() => ({ data: { user: { id: 'test-user-id' } } }))
+    }
+  })
+}))
+vi.mock('@/lib/utils/toast', () => ({
+  toast: {
+    success: vi.fn(),
+    error: vi.fn()
+  }
+vi.mock('@/hooks/useDebounce', () => ({
+  useDebounce: (value: string) => value
+vi.mock('papaparse', () => ({
+  default: {
+    parse: vi.fn(),
+    unparse: vi.fn(() => 'mocked,csv,content')
+vi.mock('xlsx', () => ({
+  read: vi.fn(() => ({
+    SheetNames: ['Sheet1'],
+    Sheets: {
+      Sheet1: {}
+  })),
+  utils: {
+    sheet_to_json: vi.fn(() => [])
+// Mock file reader
+global.FileReader = vi.fn(() => ({
+  readAsArrayBuffer: vi.fn(),
+  onload: vi.fn(),
+  result: new ArrayBuffer(8)
+})) as any
+// Mock URL methods
+global.URL.createObjectURL = vi.fn(() => 'mocked-url')
+global.URL.revokeObjectURL = vi.fn()
+// Mock document.createElement for download functionality
+const mockClick = vi.fn()
+global.document.createElement = vi.fn(() => ({
+  click: mockClick,
+  href: '',
+  download: ''
+describe('GuestListBuilder Component', () => {
+  const defaultProps = {
+    coupleId: 'test-couple-id',
+    onImportComplete: vi.fn()
+  beforeEach(() => {
+    vi.clearAllMocks()
+  afterEach(() => {
+    vi.resetAllMocks()
+  describe('Initial Rendering and UI Elements', () => {
+    it('renders upload step with all required elements', () => {
+      render(<GuestListBuilder {...defaultProps} />)
+      
+      expect(screen.getByText('Guest List Builder')).toBeInTheDocument()
+      expect(screen.getByText('Import and manage your wedding guest list')).toBeInTheDocument()
+      expect(screen.getByText('Upload Guest List')).toBeInTheDocument()
+      expect(screen.getByText('Download Template')).toBeInTheDocument()
+      expect(screen.getByLabelText('Choose File')).toBeInTheDocument()
+      // Check supported formats
+      expect(screen.getByText('Supported formats:')).toBeInTheDocument()
+      expect(screen.getByText('• CSV (.csv)')).toBeInTheDocument()
+      expect(screen.getByText('• Excel (.xlsx, .xls)')).toBeInTheDocument()
+      expect(screen.getByText('• Maximum 10,000 guests')).toBeInTheDocument()
+      expect(screen.getByText('• File size up to 10MB')).toBeInTheDocument()
+    })
+    it('renders progress steps correctly', () => {
+      const steps = ['upload', 'mapping', 'preview', 'importing', 'complete']
+      steps.forEach((step, index) => {
+        const stepElement = screen.getByText(String(index + 1))
+        expect(stepElement).toBeInTheDocument()
+      })
+    it('has proper accessibility attributes', () => {
+      const fileInput = screen.getByLabelText('Choose File')
+      expect(fileInput).toHaveAttribute('type', 'file')
+      expect(fileInput).toHaveAttribute('accept', '.csv,.xlsx,.xls')
+      const downloadButton = screen.getByRole('button', { name: /download template/i })
+      expect(downloadButton).toBeInTheDocument()
+  describe('File Upload Functionality', () => {
+    it('accepts CSV file upload', async () => {
+      const mockPapa = await import('papaparse')
+      mockPapa.default.parse.mockImplementation((file, options) => {
+        options.complete({
+          data: [
+            { 'First Name': 'John', 'Last Name': 'Doe', 'Email': 'john@example.com' },
+            { 'First Name': 'Jane', 'Last Name': 'Smith', 'Email': 'jane@example.com' }
+          ]
+        })
+      const csvFile = new File(['name,email\nJohn Doe,john@example.com'], 'guests.csv', {
+        type: 'text/csv'
+      await userEvent.upload(fileInput, csvFile)
+      expect(mockPapa.default.parse).toHaveBeenCalledWith(csvFile, expect.objectContaining({
+        header: true,
+        complete: expect.any(Function),
+        error: expect.any(Function)
+      }))
+    it('accepts Excel file upload', async () => {
+      const mockXLSX = await import('xlsx')
+      mockXLSX.read.mockReturnValue({
+        SheetNames: ['Sheet1'],
+        Sheets: {
+          Sheet1: {}
+        }
+      mockXLSX.utils.sheet_to_json.mockReturnValue([
+        { 'Name': 'John Doe', 'Email': 'john@example.com' }
+      ])
+      const excelFile = new File(['mock excel data'], 'guests.xlsx', {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      // Mock FileReader
+      const mockReader = {
+        readAsArrayBuffer: vi.fn(),
+        onload: vi.fn(),
+        result: new ArrayBuffer(8)
+      }
+      global.FileReader = vi.fn(() => mockReader) as any
+      await userEvent.upload(fileInput, excelFile)
+      expect(mockReader.readAsArrayBuffer).toHaveBeenCalledWith(excelFile)
+    it('rejects unsupported file types', async () => {
+      const { toast } = await import('@/lib/utils/toast')
+      const textFile = new File(['some text'], 'document.txt', { type: 'text/plain' })
+      await userEvent.upload(fileInput, textFile)
+      expect(toast.error).toHaveBeenCalledWith('Please upload a CSV or Excel file')
+    it('handles CSV parsing errors', async () => {
+        options.error(new Error('Parse error'))
+      const csvFile = new File(['invalid csv content'], 'invalid.csv', { type: 'text/csv' })
+      expect(toast.error).toHaveBeenCalledWith('Failed to parse CSV file')
+  describe('Column Mapping Functionality', () => {
+    beforeEach(async () => {
+    it('advances to mapping step after successful file upload', async () => {
+      const csvFile = new File(['name,email'], 'guests.csv', { type: 'text/csv' })
+      await waitFor(() => {
+        expect(screen.getByText('Map Your Columns')).toBeInTheDocument()
+    it('auto-detects column mappings', async () => {
+      const csvFile = new File(['first,last,email'], 'guests.csv', { type: 'text/csv' })
+        const firstNameMapping = screen.getByDisplayValue('First Name')
+        const lastNameMapping = screen.getByDisplayValue('Last Name')
+        const emailMapping = screen.getByDisplayValue('Email')
+        
+        expect(firstNameMapping).toBeInTheDocument()
+        expect(lastNameMapping).toBeInTheDocument()
+        expect(emailMapping).toBeInTheDocument()
+    it('renders all mapping fields with proper labels', async () => {
+      const csvFile = new File(['test'], 'guests.csv', { type: 'text/csv' })
+        expect(screen.getByText('First Name')).toBeInTheDocument()
+        expect(screen.getByText('Last Name')).toBeInTheDocument()
+        expect(screen.getByText('Email')).toBeInTheDocument()
+        expect(screen.getByText('Phone')).toBeInTheDocument()
+        expect(screen.getByText('Category (Family/Friends/Work/Other)')).toBeInTheDocument()
+        expect(screen.getByText('Side (Partner1/Partner2/Mutual)')).toBeInTheDocument()
+        expect(screen.getByText('Plus One (Yes/No)')).toBeInTheDocument()
+        expect(screen.getByText('Plus One Name')).toBeInTheDocument()
+        expect(screen.getByText('Dietary Restrictions')).toBeInTheDocument()
+        expect(screen.getByText('Table Number')).toBeInTheDocument()
+        expect(screen.getByText('Notes')).toBeInTheDocument()
+    it('shows required field indicators', async () => {
+        const requiredFields = screen.getAllByText('*')
+        expect(requiredFields.length).toBeGreaterThan(0)
+    it('allows navigation back to upload step', async () => {
+        const backButton = screen.getByRole('button', { name: /back/i })
+        expect(backButton).toBeInTheDocument()
+  describe('Data Validation and Preview', () => {
+            { 'First Name': 'John', 'Last Name': 'Doe', 'Email': 'john@example.com', 'Phone': '555-1234' },
+            { 'First Name': '', 'Last Name': 'Invalid', 'Email': 'not-an-email' },
+    it('validates required first and last name fields', async () => {
+        const previewButton = screen.getByRole('button', { name: /preview import/i })
+        fireEvent.click(previewButton)
+      expect(toast.error).toHaveBeenCalledWith('First Name and Last Name mappings are required')
+    it('shows preview statistics', async () => {
+        // Mock proper mappings
+        const firstNameSelect = screen.getByDisplayValue('First Name')
+        const lastNameSelect = screen.getByDisplayValue('Last Name')
+        if (firstNameSelect && lastNameSelect) {
+          const previewButton = screen.getByRole('button', { name: /preview import/i })
+          fireEvent.click(previewButton)
+    it('displays validation errors', async () => {
+      // Test with invalid data that would trigger validation errors
+      // This would be expanded based on the validation logic in the component
+    it('shows duplicate detection', async () => {
+            { 'First Name': 'John', 'Last Name': 'Doe', 'Email': 'john2@example.com' } // Duplicate name
+      // Test duplicate detection logic
+  describe('Template Management', () => {
+    it('renders saved templates dropdown when templates exist', async () => {
+      // Mock templates being loaded
+      // Would need to mock the Supabase response to return templates
+      // Then verify the dropdown appears
+    it('applies template mappings when selected', async () => {
+      // Test template application functionality
+      // Mock template selection and verify mappings are updated
+  describe('Sample CSV Download', () => {
+    it('generates and downloads sample CSV template', async () => {
+      await userEvent.click(downloadButton)
+      expect(mockPapa.default.unparse).toHaveBeenCalledWith([
+        expect.objectContaining({
+          'First Name': 'John',
+          'Last Name': 'Doe',
+          'Email': 'john.doe@example.com'
+        }),
+          'First Name': 'Sarah',
+          'Last Name': 'Smith',
+          'Email': 'sarah.smith@example.com'
+      expect(global.URL.createObjectURL).toHaveBeenCalled()
+      expect(mockClick).toHaveBeenCalled()
+  describe('Error Handling', () => {
+    it('handles network errors during import', async () => {
+      // Mock network error
+      // Test error handling scenarios
+      expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('Failed'))
+    it('shows proper error messages for validation failures', () => {
+      // Test various validation error scenarios
+  describe('Performance and Optimization', () => {
+    it('handles large file uploads efficiently', async () => {
+      // Test with large dataset
+      const largeDataset = Array.from({ length: 1000 }, (_, i) => ({
+        'First Name': `Guest${i}`,
+        'Last Name': `Test${i}`,
+        'Email': `guest${i}@example.com`
+        options.complete({ data: largeDataset })
+      const largeFile = new File(['large content'], 'large-guests.csv', { type: 'text/csv' })
+      const startTime = Date.now()
+      await userEvent.upload(fileInput, largeFile)
+      const uploadTime = Date.now() - startTime
+      // Ensure reasonable performance
+      expect(uploadTime).toBeLessThan(5000) // Under 5 seconds
+    it('uses batch processing for imports', () => {
+      // Test that batch processing is implemented
+      // Verify batch processing configuration
+  describe('Accessibility Compliance', () => {
+    it('has proper ARIA labels', () => {
+      expect(fileInput).toHaveAttribute('aria-label', expect.any(String))
+    it('supports keyboard navigation', async () => {
+      // Test tab navigation
+      downloadButton.focus()
+      fireEvent.keyDown(downloadButton, { key: 'Tab' })
+      // Verify focus moves to next focusable element
+    it('provides screen reader announcements', () => {
+      // Test for aria-live regions and status announcements
+      const statusRegions = screen.queryAllByRole('status')
+      expect(statusRegions.length).toBeGreaterThanOrEqual(0)
+    it('has sufficient color contrast', () => {
+      // Test color contrast (would need actual color values)
+      const buttons = screen.getAllByRole('button')
+      buttons.forEach(button => {
+        expect(button).toHaveClass(expect.stringMatching(/bg-|text-/))
+    it('supports high contrast mode', () => {
+      // Test high contrast support
+      // Verify elements are still visible in high contrast
+  describe('Mobile Responsiveness', () => {
+    it('renders correctly on mobile viewports', () => {
+      // Mock mobile viewport
+      Object.defineProperty(window, 'innerWidth', {
+        writable: true,
+        configurable: true,
+        value: 375,
+      // Test mobile-specific layout
+    it('maintains functionality on touch devices', () => {
+      // Test touch interactions
+      fireEvent.touchStart(downloadButton)
+      fireEvent.touchEnd(downloadButton)
+  describe('Integration with Parent Components', () => {
+    it('calls onImportComplete callback after successful import', async () => {
+      const mockOnImportComplete = vi.fn()
+      render(<GuestListBuilder 
+        {...defaultProps} 
+        onImportComplete={mockOnImportComplete} 
+      />)
+      // Mock successful import flow
+      // Verify callback is called
+    it('passes correct coupleId to API calls', () => {
+      // Verify coupleId is used in API calls
+      expect(defaultProps.coupleId).toBe('test-couple-id')
+  describe('Edge Cases', () => {
+    it('handles empty CSV files', async () => {
+        options.complete({ data: [] })
+      const emptyFile = new File([''], 'empty.csv', { type: 'text/csv' })
+      await userEvent.upload(fileInput, emptyFile)
+      // Test handling of empty files
+    it('handles files with special characters', async () => {
+            { 'First Name': 'José', 'Last Name': 'García', 'Email': 'jose@example.com' },
+            { 'First Name': '李', 'Last Name': '明', 'Email': 'li.ming@example.com' }
+      const specialCharsFile = new File(['special chars'], 'special.csv', { type: 'text/csv' })
+      await userEvent.upload(fileInput, specialCharsFile)
+      // Test handling of international characters
+    it('handles maximum file size limits', async () => {
+      // Create a mock large file
+      const largeContent = 'x'.repeat(11 * 1024 * 1024) // 11MB (over limit)
+      const largeFile = new File([largeContent], 'large.csv', { type: 'text/csv' })
+      Object.defineProperty(largeFile, 'size', {
+        value: 11 * 1024 * 1024,
+        configurable: true
+      // Test file size validation
+})

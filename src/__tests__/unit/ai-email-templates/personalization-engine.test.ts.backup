@@ -1,0 +1,445 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { emailPersonalizationEngine, PersonalizationProfile } from '@/lib/services/email-personalization-engine';
+import { AIEmailGenerationRequest } from '@/lib/services/ai-email-generator';
+
+// Mock Supabase client
+vi.mock('@supabase/supabase-js', () => ({
+  createClient: () => ({
+    from: (table: string) => ({
+      select: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      single: vi.fn().mockResolvedValue({
+        data: mockClientData,
+        error: null
+      }),
+      insert: vi.fn().mockReturnThis(),
+      update: vi.fn().mockReturnThis(),
+      order: vi.fn().mockReturnThis(),
+      limit: vi.fn().mockReturnThis()
+    })
+  })
+}));
+
+// Mock client data
+const mockClientData = {
+  id: 'client_123',
+  first_name: 'Sarah',
+  last_name: 'Johnson',
+  email: 'sarah.johnson@example.com',
+  wedding_date: '2024-06-15',
+  guest_count: 150,
+  created_at: '2024-01-01T00:00:00Z'
+};
+
+// Mock interaction history
+const mockInteractions = [
+  {
+    sent_at: '2024-01-15T10:00:00Z',
+    subject: 'Welcome to our services',
+    template_type: 'welcome',
+    opened_at: '2024-01-15T10:30:00Z',
+    clicked_at: '2024-01-15T11:00:00Z'
+  },
+  {
+    sent_at: '2024-01-20T14:00:00Z',
+    subject: 'Payment reminder',
+    template_type: 'payment_reminder',
+    opened_at: '2024-01-20T15:00:00Z'
+  }
+];
+
+describe('Email Personalization Engine', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.resetAllMocks();
+  });
+
+  describe('getPersonalizationProfile', () => {
+    it('should build comprehensive personalization profile', async () => {
+      const profile = await emailPersonalizationEngine.getPersonalizationProfile('client_123');
+
+      expect(profile).toBeDefined();
+      expect(profile.client_id).toBe('client_123');
+      expect(profile.communication_preferences).toBeDefined();
+      expect(profile.behavioral_data).toBeDefined();
+      expect(profile.wedding_context).toBeDefined();
+      expect(profile.personalization_score).toBeGreaterThan(0);
+      expect(profile.last_updated).toBeDefined();
+    });
+
+    it('should calculate personalization score based on data richness', async () => {
+      const profile = await emailPersonalizationEngine.getPersonalizationProfile('client_123');
+
+      expect(profile.personalization_score).toBeGreaterThan(0.5);
+      // Score should be higher with more interaction history and context
+      expect(profile.personalization_score).toBeLessThanOrEqual(1.0);
+    });
+
+    it('should determine correct wedding phase', async () => {
+      const profile = await emailPersonalizationEngine.getPersonalizationProfile('client_123');
+
+      expect(profile.wedding_context.wedding_phase).toMatch(/early_planning|mid_planning|final_month|post_wedding/);
+      expect(profile.wedding_context.days_until_wedding).toBeGreaterThanOrEqual(0);
+    });
+
+    it('should infer communication preferences from behavior', async () => {
+      const profile = await emailPersonalizationEngine.getPersonalizationProfile('client_123');
+
+      expect(profile.communication_preferences.preferred_tone).toMatch(/formal|friendly|professional|warm/);
+      expect(profile.communication_preferences.frequency_preference).toMatch(/minimal|regular|frequent/);
+      expect(profile.communication_preferences.content_length).toMatch(/short|medium|long/);
+      expect(profile.communication_preferences.language).toBe('en');
+    });
+
+    it('should handle missing client data gracefully', async () => {
+      // Mock client not found
+      vi.mocked(vi.fn()).mockRejectedValueOnce(new Error('Client not found'));
+
+      const profile = await emailPersonalizationEngine.getPersonalizationProfile('nonexistent_client');
+
+      expect(profile).toBeDefined();
+      expect(profile.client_id).toBe('nonexistent_client');
+      expect(profile.personalization_score).toBe(0.5); // Default score
+    });
+  });
+
+  describe('enhanceEmailRequest', () => {
+    it('should enhance request with personalization data', async () => {
+      const baseRequest: AIEmailGenerationRequest = {
+        context: {
+          communication_purpose: 'Welcome new client',
+          relationship_stage: 'new_client'
+        },
+        style_preferences: {
+          use_emojis: false,
+          include_personal_touches: false,
+          formal_language: true,
+          include_vendor_branding: true,
+          template_structure: 'minimal'
+        },
+        personalization_data: {},
+        template_type: 'welcome',
+        tone: 'formal',
+        length: 'short',
+        include_call_to_action: false
+      };
+
+      const enhancedRequest = await emailPersonalizationEngine.enhanceEmailRequest(
+        baseRequest,
+        'client_123',
+        'vendor_456'
+      );
+
+      expect(enhancedRequest).toBeDefined();
+      expect(enhancedRequest.context.client_name).toBeDefined();
+      expect(enhancedRequest.personalization_data.client_preferences).toBeDefined();
+      expect(enhancedRequest.personalization_data.wedding_details).toBeDefined();
+      
+      // Should adjust tone and style based on preferences
+      expect(enhancedRequest.tone).toMatch(/formal|friendly|professional|warm/);
+      expect(enhancedRequest.length).toMatch(/short|medium|long/);
+      expect(enhancedRequest.style_preferences.include_personal_touches).toBe(true);
+    });
+
+    it('should maintain original request if enhancement fails', async () => {
+      const baseRequest: AIEmailGenerationRequest = {
+        context: {
+          communication_purpose: 'Test request',
+          relationship_stage: 'existing_client'
+        },
+        style_preferences: {
+          use_emojis: false,
+          include_personal_touches: true,
+          formal_language: false,
+          include_vendor_branding: true,
+          template_structure: 'standard'
+        },
+        personalization_data: {},
+        template_type: 'welcome',
+        tone: 'professional',
+        length: 'medium',
+        include_call_to_action: true
+      };
+
+      // Mock failure
+      vi.mocked(vi.fn()).mockRejectedValueOnce(new Error('Enhancement failed'));
+
+      const enhancedRequest = await emailPersonalizationEngine.enhanceEmailRequest(
+        baseRequest,
+        'invalid_client'
+      );
+
+      expect(enhancedRequest).toEqual(baseRequest);
+    });
+  });
+
+  describe('getPersonalizationRecommendations', () => {
+    it('should provide relevant recommendations based on profile', async () => {
+      const recommendations = await emailPersonalizationEngine.getPersonalizationRecommendations(
+        'client_123',
+        'welcome',
+        'vendor_456'
+      );
+
+      expect(recommendations).toBeDefined();
+      expect(Array.isArray(recommendations)).toBe(true);
+      
+      if (recommendations.length > 0) {
+        recommendations.forEach(rec => {
+          expect(rec.field).toBeDefined();
+          expect(rec.recommendation).toBeDefined();
+          expect(rec.reasoning).toBeDefined();
+          expect(rec.confidence).toBeGreaterThan(0);
+          expect(rec.confidence).toBeLessThanOrEqual(1);
+          expect(rec.impact_score).toBeGreaterThan(0);
+          expect(rec.impact_score).toBeLessThanOrEqual(1);
+        });
+      }
+    });
+
+    it('should provide timing recommendations based on engagement patterns', async () => {
+      const recommendations = await emailPersonalizationEngine.getPersonalizationRecommendations(
+        'client_123',
+        'payment_reminder'
+      );
+
+      const timingRecs = recommendations.filter(rec => rec.field === 'send_time');
+      
+      if (timingRecs.length > 0) {
+        expect(timingRecs[0].recommendation).toContain('time');
+        expect(timingRecs[0].confidence).toBeGreaterThan(0.5);
+      }
+    });
+
+    it('should provide content recommendations for different template types', async () => {
+      const welcomeRecs = await emailPersonalizationEngine.getPersonalizationRecommendations(
+        'client_123',
+        'welcome'
+      );
+
+      const paymentRecs = await emailPersonalizationEngine.getPersonalizationRecommendations(
+        'client_123',
+        'payment_reminder'
+      );
+
+      // Recommendations should be contextually different
+      expect(welcomeRecs).not.toEqual(paymentRecs);
+    });
+  });
+
+  describe('getContextualInsights', () => {
+    it('should provide wedding phase specific insights', async () => {
+      const insights = await emailPersonalizationEngine.getContextualInsights(
+        'client_123',
+        'meeting_confirmation'
+      );
+
+      expect(insights).toBeDefined();
+      expect(Array.isArray(insights)).toBe(true);
+      
+      if (insights.length > 0) {
+        insights.forEach(insight => {
+          expect(insight.type).toMatch(/timing|content|tone|format|personalization/);
+          expect(insight.insight).toBeDefined();
+          expect(insight.recommendation).toBeDefined();
+          expect(insight.priority).toMatch(/high|medium|low/);
+        });
+      }
+    });
+
+    it('should identify high-stress periods and provide appropriate insights', async () => {
+      // Mock client in final month before wedding
+      const mockFinalMonthClient = {
+        ...mockClientData,
+        wedding_date: new Date(Date.now() + 15 * 24 * 60 * 60 * 1000).toISOString() // 15 days from now
+      };
+
+      const insights = await emailPersonalizationEngine.getContextualInsights(
+        'client_final_month',
+        'client_communication'
+      );
+
+      const timingInsights = insights.filter(insight => insight.type === 'timing');
+      
+      if (timingInsights.length > 0) {
+        expect(timingInsights.some(insight => 
+          insight.priority === 'high' && insight.insight.includes('stress')
+        )).toBeTruthy();
+      }
+    });
+
+    it('should provide format recommendations for low engagement clients', async () => {
+      const insights = await emailPersonalizationEngine.getContextualInsights(
+        'client_123',
+        'welcome'
+      );
+
+      const formatInsights = insights.filter(insight => insight.type === 'format');
+      
+      if (formatInsights.length > 0) {
+        expect(formatInsights[0].recommendation).toBeDefined();
+        expect(formatInsights[0].priority).toMatch(/high|medium|low/);
+      }
+    });
+  });
+
+  describe('trackEmailEngagement', () => {
+    it('should record email engagement successfully', async () => {
+      const emailData = {
+        template_type: 'welcome',
+        subject: 'Welcome to our services',
+        sent_at: new Date().toISOString(),
+        opened_at: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+        clicked_at: new Date(Date.now() + 60 * 60 * 1000).toISOString()
+      };
+
+      await expect(
+        emailPersonalizationEngine.trackEmailEngagement('client_123', emailData, 'vendor_456')
+      ).resolves.not.toThrow();
+    });
+
+    it('should handle tracking failures gracefully', async () => {
+      const emailData = {
+        template_type: 'invalid',
+        subject: '',
+        sent_at: new Date().toISOString()
+      };
+
+      // Mock database error
+      vi.mocked(vi.fn()).mockRejectedValueOnce(new Error('Database error'));
+
+      await expect(
+        emailPersonalizationEngine.trackEmailEngagement('client_123', emailData)
+      ).resolves.not.toThrow();
+    });
+  });
+
+  describe('Behavioral analysis', () => {
+    it('should calculate engagement rates correctly', async () => {
+      const profile = await emailPersonalizationEngine.getPersonalizationProfile('client_123');
+
+      expect(profile.behavioral_data.email_engagement.open_rate).toBeGreaterThanOrEqual(0);
+      expect(profile.behavioral_data.email_engagement.open_rate).toBeLessThanOrEqual(1);
+      expect(profile.behavioral_data.email_engagement.click_rate).toBeGreaterThanOrEqual(0);
+      expect(profile.behavioral_data.email_engagement.click_rate).toBeLessThanOrEqual(1);
+      expect(profile.behavioral_data.email_engagement.response_rate).toBeGreaterThanOrEqual(0);
+      expect(profile.behavioral_data.email_engagement.response_rate).toBeLessThanOrEqual(1);
+    });
+
+    it('should identify communication patterns', async () => {
+      const profile = await emailPersonalizationEngine.getPersonalizationProfile('client_123');
+
+      expect(profile.behavioral_data.communication_patterns.response_time_avg_hours).toBeGreaterThan(0);
+      expect(profile.behavioral_data.communication_patterns.preferred_communication_channels).toContain('email');
+      expect(profile.behavioral_data.communication_patterns.decision_making_style).toMatch(/quick|deliberate|collaborative/);
+    });
+
+    it('should assess content preferences', async () => {
+      const profile = await emailPersonalizationEngine.getPersonalizationProfile('client_123');
+
+      expect(typeof profile.behavioral_data.content_preferences.likes_detailed_info).toBe('boolean');
+      expect(typeof profile.behavioral_data.content_preferences.prefers_visual_content).toBe('boolean');
+      expect(typeof profile.behavioral_data.content_preferences.responds_to_urgency).toBe('boolean');
+      expect(typeof profile.behavioral_data.content_preferences.values_personal_touch).toBe('boolean');
+    });
+  });
+
+  describe('Wedding context analysis', () => {
+    it('should correctly determine wedding timeline', async () => {
+      const profile = await emailPersonalizationEngine.getPersonalizationProfile('client_123');
+
+      expect(profile.wedding_context.wedding_date).toBeDefined();
+      expect(profile.wedding_context.days_until_wedding).toBeGreaterThanOrEqual(0);
+      expect(profile.wedding_context.wedding_phase).toMatch(/early_planning|mid_planning|final_month|post_wedding/);
+    });
+
+    it('should classify venue and event details', async () => {
+      const profile = await emailPersonalizationEngine.getPersonalizationProfile('client_123');
+
+      expect(profile.wedding_context.venue_type).toBeDefined();
+      expect(profile.wedding_context.guest_count).toBeGreaterThan(0);
+      expect(profile.wedding_context.budget_tier).toMatch(/budget|mid-range|luxury/);
+      expect(profile.wedding_context.wedding_style).toBeDefined();
+    });
+
+    it('should track vendor relationships', async () => {
+      const profile = await emailPersonalizationEngine.getPersonalizationProfile('client_123', 'vendor_456');
+
+      expect(Array.isArray(profile.wedding_context.vendor_relationships)).toBe(true);
+      expect(Array.isArray(profile.wedding_context.special_requirements)).toBe(true);
+    });
+  });
+
+  describe('Caching and performance', () => {
+    it('should cache profiles to improve performance', async () => {
+      const startTime = Date.now();
+      
+      // First call should build and cache profile
+      const profile1 = await emailPersonalizationEngine.getPersonalizationProfile('client_123');
+      const firstCallTime = Date.now() - startTime;
+
+      const cacheStartTime = Date.now();
+      
+      // Second call should use cache
+      const profile2 = await emailPersonalizationEngine.getPersonalizationProfile('client_123');
+      const cachedCallTime = Date.now() - cacheStartTime;
+
+      expect(profile1).toEqual(profile2);
+      expect(cachedCallTime).toBeLessThan(firstCallTime * 0.5); // Should be significantly faster
+    });
+
+    it('should handle cache expiration correctly', async () => {
+      // This would require mocking time progression, simplified test
+      const profile = await emailPersonalizationEngine.getPersonalizationProfile('client_123');
+      
+      expect(profile.last_updated).toBeDefined();
+      const lastUpdated = new Date(profile.last_updated);
+      expect(lastUpdated.getTime()).toBeLessThanOrEqual(Date.now());
+    });
+  });
+
+  describe('Error handling and edge cases', () => {
+    it('should handle empty interaction history', async () => {
+      // Mock empty interactions
+      vi.mocked(vi.fn()).mockResolvedValueOnce({ data: [], error: null });
+
+      const profile = await emailPersonalizationEngine.getPersonalizationProfile('new_client');
+
+      expect(profile).toBeDefined();
+      expect(profile.interaction_history).toHaveLength(0);
+      expect(profile.personalization_score).toBeGreaterThan(0); // Should still have base score
+    });
+
+    it('should provide default values for missing client data', async () => {
+      // Mock partial client data
+      const partialClientData = {
+        id: 'partial_client',
+        email: 'partial@example.com'
+        // Missing other fields
+      };
+
+      const profile = await emailPersonalizationEngine.getPersonalizationProfile('partial_client');
+
+      expect(profile).toBeDefined();
+      expect(profile.client_id).toBe('partial_client');
+      expect(profile.wedding_context.guest_count).toBeGreaterThan(0); // Should have default
+      expect(profile.wedding_context.budget_tier).toBeDefined();
+    });
+
+    it('should handle invalid date formats gracefully', async () => {
+      const invalidDateClient = {
+        ...mockClientData,
+        wedding_date: 'invalid-date'
+      };
+
+      const profile = await emailPersonalizationEngine.getPersonalizationProfile('invalid_date_client');
+
+      expect(profile).toBeDefined();
+      expect(profile.wedding_context.wedding_date).toBeDefined();
+      expect(profile.wedding_context.days_until_wedding).toBeGreaterThanOrEqual(0);
+    });
+  });
+});

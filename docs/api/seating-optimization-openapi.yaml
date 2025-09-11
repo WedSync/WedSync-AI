@@ -1,0 +1,1323 @@
+openapi: 3.0.3
+info:
+  title: WedSync Seating Optimization API
+  description: |
+    **WS-154 Round 3: Production-Ready Seating Optimization APIs**
+    
+    Complete API specification for WedSync's advanced seating arrangement optimization system.
+    Supports multiple optimization engines, mobile clients, team integrations, and production monitoring.
+    
+    ## Features
+    - **Multiple Optimization Engines**: Standard, ML-powered, Genetic Algorithm, High-Performance
+    - **Mobile Optimization**: Lightweight APIs optimized for mobile devices
+    - **Team Integrations**: Seamless integration with frontend, conflict detection, database optimization
+    - **Production Ready**: Rate limiting, error handling, monitoring, and alerting
+    - **Real-time Processing**: WebSocket support for live optimization updates
+    - **Caching**: Intelligent caching for improved performance
+    
+    ## Authentication
+    All endpoints require JWT authentication with couple-specific access tokens.
+    
+    ## Rate Limiting
+    - **Free Tier**: 100 requests/hour, 20 optimizations/hour
+    - **Premium Tier**: 500 requests/hour, 100 optimizations/hour  
+    - **Enterprise Tier**: 2000 requests/hour, 500 optimizations/hour
+    
+    ## Error Handling
+    Comprehensive error handling with automatic recovery mechanisms and fallback options.
+    
+  version: 3.0.0
+  contact:
+    name: WedSync API Team
+    email: api@wedsync.com
+    url: https://docs.wedsync.com
+  license:
+    name: Proprietary
+    url: https://wedsync.com/terms
+  termsOfService: https://wedsync.com/terms
+
+servers:
+  - url: https://api.wedsync.com/v3
+    description: Production server
+  - url: https://staging-api.wedsync.com/v3
+    description: Staging server
+  - url: http://localhost:3000/api
+    description: Development server
+
+security:
+  - BearerAuth: []
+  - CoupleAccess: []
+
+paths:
+  /seating/optimize-v2:
+    post:
+      summary: Advanced Seating Optimization
+      description: |
+        Main seating optimization endpoint with support for multiple optimization engines,
+        team integrations, and advanced configuration options.
+        
+        **Optimization Engines:**
+        - `standard`: Fast, reliable optimization
+        - `ml_basic`: Basic machine learning optimization
+        - `ml_advanced`: Advanced ML with historical learning
+        - `ml_expert`: Expert-level ML with complex relationship modeling
+        - `genetic`: Genetic algorithm for global optimization
+        - `high_performance`: Optimized for speed and scalability
+        
+        **Team Integrations:**
+        - Team A: Frontend-optimized responses
+        - Team C: Advanced conflict detection
+        - Team D: Mobile optimization
+        - Team E: Database query optimization
+        
+      operationId: optimizeSeatingV2
+      tags:
+        - Seating Optimization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SeatingOptimizationV2Request'
+            examples:
+              basic_optimization:
+                summary: Basic optimization request
+                value:
+                  couple_id: "123e4567-e89b-12d3-a456-426614174000"
+                  guest_count: 75
+                  table_count: 10
+                  table_configurations:
+                    - table_number: 1
+                      capacity: 8
+                      table_shape: "round"
+                      location_x: 100
+                      location_y: 200
+                  relationship_preferences:
+                    prioritize_families: true
+                    separate_conflicting_guests: true
+                  optimization_engine: "standard"
+              ml_optimization:
+                summary: ML-powered optimization
+                value:
+                  couple_id: "123e4567-e89b-12d3-a456-426614174000"
+                  guest_count: 150
+                  table_count: 20
+                  table_configurations:
+                    - table_number: 1
+                      capacity: 8
+                      table_shape: "round"
+                  optimization_engine: "ml_advanced"
+                  use_historical_learning: true
+                  ml_confidence_threshold: 0.8
+              team_integration:
+                summary: Team integration enabled
+                value:
+                  couple_id: "123e4567-e89b-12d3-a456-426614174000"
+                  guest_count: 100
+                  table_count: 15
+                  table_configurations:
+                    - table_number: 1
+                      capacity: 8
+                      table_shape: "round"
+                  team_a_frontend_mode: true
+                  team_c_conflict_integration: true
+                  team_d_mobile_optimization: true
+                  team_e_enhanced_queries: true
+      responses:
+        '200':
+          description: Optimization completed successfully
+          headers:
+            X-RateLimit-Limit:
+              schema:
+                type: integer
+              description: Rate limit for the current tier
+            X-RateLimit-Remaining:
+              schema:
+                type: integer
+              description: Remaining requests in the current window
+            X-Processing-Time:
+              schema:
+                type: integer
+              description: Processing time in milliseconds
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SeatingOptimizationV2Response'
+              examples:
+                successful_optimization:
+                  summary: Successful optimization
+                  value:
+                    success: true
+                    arrangement_id: "arr_123456789"
+                    optimization_engine_used: "ml_advanced"
+                    optimization_score: 8.7
+                    ml_confidence: 0.92
+                    predicted_satisfaction: 0.89
+                    conflicts: []
+                    arrangement:
+                      "1":
+                        guests: ["guest_1", "guest_2", "guest_3"]
+                        capacity: 8
+                        utilization: 0.75
+                    processing_time_ms: 2340
+                    recommendations:
+                      - "Excellent family grouping achieved"
+                      - "No conflicts detected"
+                    performance_metrics:
+                      algorithm_efficiency: 3.7
+                      memory_usage_mb: 145
+                      cache_hit_rate: 0.6
+                      quality_score: 8.7
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized' 
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimitExceeded'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /seating/mobile/optimize:
+    post:
+      summary: Mobile Seating Optimization
+      description: |
+        Lightweight seating optimization endpoint optimized for mobile devices.
+        Features reduced payload size, faster response times, and offline caching support.
+        
+        **Mobile Optimizations:**
+        - Compressed response format
+        - Aggressive timeout limits (2-5 seconds)
+        - Simplified conflict reporting
+        - Touch-optimized data structure
+        - Offline cache support
+        
+      operationId: optimizeSeatingMobile
+      tags:
+        - Mobile Optimization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MobileSeatingOptimizationRequest'
+            examples:
+              mobile_fast:
+                summary: Fast mobile optimization
+                value:
+                  couple_id: "123e4567-e89b-12d3-a456-426614174000"
+                  guest_count: 60
+                  table_configurations:
+                    - id: 1
+                      capacity: 8
+                      shape: "round"
+                  preferences:
+                    families_together: true
+                    avoid_conflicts: true
+                  quality_level: "fast"
+                  max_time_ms: 2000
+                  cache_for_offline: true
+                  device_info:
+                    type: "phone"
+                    connection: "4g"
+                    memory_limit_mb: 512
+      responses:
+        '200':
+          description: Mobile optimization completed
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+              description: Cache control header for offline support
+            X-Mobile-Optimized:
+              schema:
+                type: string
+                enum: ["true"]
+              description: Indicates mobile-optimized response
+            X-Response-Size:
+              schema:
+                type: integer
+              description: Response size in bytes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MobileOptimizationResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimitExceeded'
+
+  /seating/validate:
+    post:
+      summary: Validate Seating Arrangement
+      description: |
+        Validates a seating arrangement for conflicts and optimization opportunities
+        without performing full optimization.
+        
+      operationId: validateSeatingArrangement
+      tags:
+        - Validation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SeatingValidationRequest'
+      responses:
+        '200':
+          description: Validation completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SeatingValidationResponse'
+
+  /seating/arrangements/{arrangementId}:
+    get:
+      summary: Get Seating Arrangement
+      description: Retrieve a specific seating arrangement by ID
+      operationId: getSeatingArrangement
+      tags:
+        - Arrangements
+      parameters:
+        - name: arrangementId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique identifier for the seating arrangement
+      responses:
+        '200':
+          description: Seating arrangement retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SeatingArrangement'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      summary: Update Seating Arrangement
+      description: Update an existing seating arrangement
+      operationId: updateSeatingArrangement
+      tags:
+        - Arrangements
+      parameters:
+        - name: arrangementId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SeatingArrangementUpdate'
+      responses:
+        '200':
+          description: Arrangement updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SeatingArrangement'
+
+    delete:
+      summary: Delete Seating Arrangement
+      description: Delete a seating arrangement
+      operationId: deleteSeatingArrangement
+      tags:
+        - Arrangements
+      parameters:
+        - name: arrangementId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Arrangement deleted successfully
+
+  /seating/health:
+    get:
+      summary: Health Check
+      description: |
+        Comprehensive health check for the seating optimization system.
+        Provides detailed status information about all components.
+        
+      operationId: getSeatingHealth
+      tags:
+        - Monitoring
+      security: []  # Public endpoint
+      responses:
+        '200':
+          description: Health status retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+
+  /seating/metrics:
+    get:
+      summary: System Metrics
+      description: |
+        Real-time metrics for the seating optimization system.
+        Requires admin access.
+        
+      operationId: getSeatingMetrics
+      tags:
+        - Monitoring
+      security:
+        - AdminAccess: []
+      responses:
+        '200':
+          description: Metrics retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemMetrics'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT access token for authenticated requests
+    CoupleAccess:
+      type: apiKey
+      in: header
+      name: X-Couple-ID
+      description: Couple-specific access token
+    AdminAccess:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Admin-level JWT token
+
+  schemas:
+    SeatingOptimizationV2Request:
+      type: object
+      required:
+        - couple_id
+        - guest_count
+        - table_count
+        - table_configurations
+      properties:
+        couple_id:
+          type: string
+          format: uuid
+          description: Unique identifier for the couple
+          example: "123e4567-e89b-12d3-a456-426614174000"
+        guest_count:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          description: Total number of guests
+          example: 75
+        table_count:
+          type: integer
+          minimum: 1
+          maximum: 100
+          description: Number of tables
+          example: 10
+        table_configurations:
+          type: array
+          items:
+            $ref: '#/components/schemas/TableConfiguration'
+        relationship_preferences:
+          $ref: '#/components/schemas/RelationshipPreferences'
+        optimization_engine:
+          type: string
+          enum: [standard, ml_basic, ml_advanced, ml_expert, genetic, high_performance]
+          default: standard
+          description: Optimization engine to use
+        quality_vs_speed:
+          type: string
+          enum: [speed, balanced, quality]
+          default: balanced
+          description: Trade-off between optimization quality and speed
+        enable_caching:
+          type: boolean
+          default: true
+          description: Enable result caching
+        max_processing_time_ms:
+          type: integer
+          minimum: 1000
+          maximum: 60000
+          default: 10000
+          description: Maximum processing time in milliseconds
+        use_historical_learning:
+          type: boolean
+          default: false
+          description: Use historical data for ML optimization
+        ml_confidence_threshold:
+          type: number
+          minimum: 0.1
+          maximum: 1.0
+          default: 0.7
+          description: Minimum ML confidence threshold
+        team_a_frontend_mode:
+          type: boolean
+          default: false
+          description: Optimize response for frontend consumption
+        team_c_conflict_integration:
+          type: boolean
+          default: false
+          description: Enable advanced conflict detection
+        team_d_mobile_optimization:
+          type: boolean
+          default: false
+          description: Enable mobile optimizations
+        team_e_enhanced_queries:
+          type: boolean
+          default: false
+          description: Use enhanced database queries
+
+    SeatingOptimizationV2Response:
+      type: object
+      required:
+        - success
+        - arrangement_id
+        - optimization_engine_used
+        - optimization_score
+        - conflicts
+        - arrangement
+        - processing_time_ms
+        - recommendations
+      properties:
+        success:
+          type: boolean
+          description: Whether optimization was successful
+        arrangement_id:
+          type: string
+          description: Unique identifier for the generated arrangement
+        optimization_engine_used:
+          type: string
+          description: Actual optimization engine used
+        optimization_score:
+          type: number
+          minimum: 0
+          maximum: 10
+          description: Quality score of the optimization (0-10)
+        ml_confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: ML confidence score (if applicable)
+        predicted_satisfaction:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Predicted guest satisfaction score
+        conflicts:
+          type: array
+          items:
+            $ref: '#/components/schemas/SeatingConflict'
+          description: List of detected conflicts
+        arrangement:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/TableAssignment'
+          description: Table assignments keyed by table number
+        processing_time_ms:
+          type: integer
+          description: Total processing time in milliseconds
+        recommendations:
+          type: array
+          items:
+            type: string
+          description: Optimization recommendations
+        performance_metrics:
+          $ref: '#/components/schemas/PerformanceMetrics'
+        team_integrations:
+          $ref: '#/components/schemas/TeamIntegrationData'
+        analytics:
+          $ref: '#/components/schemas/OptimizationAnalytics'
+
+    MobileSeatingOptimizationRequest:
+      type: object
+      required:
+        - couple_id
+        - guest_count
+        - table_configurations
+      properties:
+        couple_id:
+          type: string
+          format: uuid
+        guest_count:
+          type: integer
+          minimum: 1
+          maximum: 500
+        table_configurations:
+          type: array
+          items:
+            $ref: '#/components/schemas/MobileTableConfiguration'
+        preferences:
+          $ref: '#/components/schemas/MobilePreferences'
+        quality_level:
+          type: string
+          enum: [fast, balanced, thorough]
+          default: fast
+        offline_mode:
+          type: boolean
+          default: false
+        max_time_ms:
+          type: integer
+          minimum: 500
+          maximum: 5000
+          default: 2000
+        cache_for_offline:
+          type: boolean
+          default: true
+        device_info:
+          $ref: '#/components/schemas/DeviceInfo'
+
+    MobileOptimizationResponse:
+      type: object
+      required:
+        - success
+        - arrangement_id
+        - score
+        - tables
+        - conflicts
+        - processing_ms
+        - cached
+        - quality_level
+        - mobile_data
+        - recommendations
+      properties:
+        success:
+          type: boolean
+        arrangement_id:
+          type: string
+        score:
+          type: number
+        tables:
+          type: array
+          items:
+            $ref: '#/components/schemas/MobileTableAssignment'
+        conflicts:
+          $ref: '#/components/schemas/CompressedConflictData'
+        processing_ms:
+          type: integer
+        cached:
+          type: boolean
+        quality_level:
+          type: string
+        mobile_data:
+          $ref: '#/components/schemas/MobileOptimizationData'
+        recommendations:
+          type: array
+          items:
+            type: string
+          maxItems: 3
+
+    TableConfiguration:
+      type: object
+      required:
+        - table_number
+        - capacity
+        - table_shape
+      properties:
+        table_number:
+          type: integer
+          minimum: 1
+        capacity:
+          type: integer
+          minimum: 2
+          maximum: 20
+        table_shape:
+          type: string
+          enum: [round, rectangular, square, oval]
+          default: round
+        location_notes:
+          type: string
+        special_requirements:
+          type: string
+        location_x:
+          type: number
+        location_y:
+          type: number
+
+    MobileTableConfiguration:
+      type: object
+      required:
+        - id
+        - capacity
+        - shape
+      properties:
+        id:
+          type: integer
+        capacity:
+          type: integer
+          minimum: 2
+          maximum: 12
+        shape:
+          type: string
+          enum: [round, square]
+          default: round
+
+    RelationshipPreferences:
+      type: object
+      properties:
+        prioritize_families:
+          type: boolean
+          default: true
+        separate_conflicting_guests:
+          type: boolean
+          default: true
+        balance_age_groups:
+          type: boolean
+          default: true
+        consider_dietary_needs:
+          type: boolean
+          default: true
+
+    MobilePreferences:
+      type: object
+      properties:
+        families_together:
+          type: boolean
+          default: true
+        avoid_conflicts:
+          type: boolean
+          default: true
+
+    DeviceInfo:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [phone, tablet]
+          default: phone
+        connection:
+          type: string
+          enum: [wifi, 4g, 3g, slow]
+          default: 4g
+        memory_limit_mb:
+          type: integer
+          minimum: 128
+          maximum: 2048
+          default: 512
+
+    SeatingConflict:
+      type: object
+      required:
+        - id
+        - type
+        - severity
+        - description
+        - affected_guests
+        - table_numbers
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [relationship, dietary, age_group, family, custom]
+        severity:
+          type: string
+          enum: [low, medium, high, critical]
+        description:
+          type: string
+        affected_guests:
+          type: array
+          items:
+            type: string
+        table_numbers:
+          type: array
+          items:
+            type: integer
+        confidence_score:
+          type: number
+          minimum: 0
+          maximum: 100
+
+    TableAssignment:
+      type: object
+      required:
+        - guests
+        - capacity
+        - utilization
+      properties:
+        guests:
+          type: array
+          items:
+            type: string
+          description: Guest IDs assigned to this table
+        capacity:
+          type: integer
+          description: Maximum capacity of the table
+        utilization:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Table utilization ratio (0-1)
+        table_shape:
+          type: string
+        special_notes:
+          type: string
+
+    MobileTableAssignment:
+      type: object
+      required:
+        - id
+        - guests
+        - utilization
+      properties:
+        id:
+          type: integer
+        guests:
+          type: array
+          items:
+            type: string
+        utilization:
+          type: number
+
+    CompressedConflictData:
+      type: object
+      required:
+        - high
+        - medium
+        - low
+      properties:
+        high:
+          type: integer
+        medium:
+          type: integer
+        low:
+          type: integer
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+              tables:
+                type: array
+                items:
+                  type: integer
+              severity:
+                type: string
+                enum: [high, medium, low]
+
+    PerformanceMetrics:
+      type: object
+      required:
+        - algorithm_efficiency
+        - memory_usage_mb
+        - cache_hit_rate
+        - quality_score
+      properties:
+        algorithm_efficiency:
+          type: number
+          description: Algorithm efficiency score
+        memory_usage_mb:
+          type: number
+          description: Memory usage in megabytes
+        cache_hit_rate:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Cache hit rate (0-1)
+        parallel_efficiency:
+          type: number
+          description: Parallel processing efficiency
+        quality_score:
+          type: number
+          minimum: 0
+          maximum: 10
+          description: Overall quality score
+
+    TeamIntegrationData:
+      type: object
+      properties:
+        team_a_data:
+          $ref: '#/components/schemas/TeamAIntegrationData'
+        team_c_conflicts:
+          $ref: '#/components/schemas/TeamCConflictData'
+        team_d_mobile:
+          $ref: '#/components/schemas/TeamDMobileData'
+        team_e_queries:
+          $ref: '#/components/schemas/TeamEQueryData'
+
+    TeamAIntegrationData:
+      type: object
+      properties:
+        optimized_for_frontend:
+          type: boolean
+        component_ready_data:
+          type: object
+        progressive_loading_support:
+          type: boolean
+
+    TeamCConflictData:
+      type: object
+      properties:
+        conflict_detection_enabled:
+          type: boolean
+        advanced_conflict_analysis:
+          type: array
+          items: {}
+        resolution_suggestions:
+          type: array
+          items:
+            type: string
+        severity_breakdown:
+          type: object
+          properties:
+            high:
+              type: integer
+            medium:
+              type: integer
+            low:
+              type: integer
+
+    TeamDMobileData:
+      type: object
+      properties:
+        mobile_optimized:
+          type: boolean
+        lightweight_response_size_bytes:
+          type: integer
+        offline_cache_keys:
+          type: array
+          items:
+            type: string
+        touch_optimized_layout:
+          type: boolean
+
+    TeamEQueryData:
+      type: object
+      properties:
+        enhanced_queries_used:
+          type: boolean
+        query_performance_ms:
+          type: number
+        index_utilization_rate:
+          type: number
+        data_freshness_score:
+          type: number
+
+    OptimizationAnalytics:
+      type: object
+      required:
+        - guest_satisfaction_prediction
+        - relationship_optimization_score
+        - table_utilization_efficiency
+        - constraint_satisfaction_rate
+      properties:
+        guest_satisfaction_prediction:
+          type: number
+          minimum: 0
+          maximum: 1
+        relationship_optimization_score:
+          type: number
+          minimum: 0
+          maximum: 10
+        table_utilization_efficiency:
+          type: number
+          minimum: 0
+          maximum: 1
+        constraint_satisfaction_rate:
+          type: number
+          minimum: 0
+          maximum: 1
+
+    MobileOptimizationData:
+      type: object
+      required:
+        - response_size_bytes
+        - cache_keys
+        - offline_support
+        - touch_optimized
+      properties:
+        response_size_bytes:
+          type: integer
+        cache_keys:
+          type: array
+          items:
+            type: string
+        offline_support:
+          type: boolean
+        next_sync_recommended_ms:
+          type: integer
+        touch_optimized:
+          type: boolean
+
+    SeatingValidationRequest:
+      type: object
+      required:
+        - couple_id
+        - arrangement
+      properties:
+        couple_id:
+          type: string
+          format: uuid
+        arrangement:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/TableAssignment'
+        validation_options:
+          type: object
+          properties:
+            check_conflicts:
+              type: boolean
+              default: true
+            check_optimization:
+              type: boolean
+              default: true
+            detailed_analysis:
+              type: boolean
+              default: false
+
+    SeatingValidationResponse:
+      type: object
+      required:
+        - success
+        - validation_score
+        - conflicts
+        - suggestions
+      properties:
+        success:
+          type: boolean
+        validation_score:
+          type: number
+          minimum: 0
+          maximum: 10
+        conflicts:
+          type: array
+          items:
+            $ref: '#/components/schemas/SeatingConflict'
+        suggestions:
+          type: array
+          items:
+            type: string
+        detailed_analysis:
+          type: object
+          properties:
+            table_utilization_scores:
+              type: object
+            relationship_quality_scores:
+              type: object
+            optimization_opportunities:
+              type: array
+              items:
+                type: string
+
+    SeatingArrangement:
+      type: object
+      required:
+        - id
+        - couple_id
+        - arrangement_name
+        - arrangement_data
+        - optimization_score
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+        couple_id:
+          type: string
+          format: uuid
+        arrangement_name:
+          type: string
+        arrangement_data:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/TableAssignment'
+        optimization_score:
+          type: number
+        conflicts:
+          type: array
+          items:
+            $ref: '#/components/schemas/SeatingConflict'
+        metadata:
+          type: object
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    SeatingArrangementUpdate:
+      type: object
+      properties:
+        arrangement_name:
+          type: string
+        arrangement_data:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/TableAssignment'
+        metadata:
+          type: object
+
+    HealthStatus:
+      type: object
+      required:
+        - status
+        - checks
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+        checks:
+          type: array
+          items:
+            type: object
+            required:
+              - name
+              - status
+              - details
+            properties:
+              name:
+                type: string
+              status:
+                type: string
+                enum: [pass, warn, fail]
+              details:
+                type: string
+        timestamp:
+          type: string
+          format: date-time
+        version:
+          type: string
+
+    SystemMetrics:
+      type: object
+      required:
+        - requests
+        - response_times
+        - optimization_engines
+        - resources
+        - business_metrics
+      properties:
+        requests:
+          type: object
+          properties:
+            total:
+              type: integer
+            successful:
+              type: integer
+            failed:
+              type: integer
+            rate_limited:
+              type: integer
+            cached_hits:
+              type: integer
+        response_times:
+          type: object
+          properties:
+            avg_ms:
+              type: number
+            p95_ms:
+              type: number
+            p99_ms:
+              type: number
+        optimization_engines:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              requests:
+                type: integer
+              avg_time_ms:
+                type: number
+              success_rate:
+                type: number
+        resources:
+          type: object
+          properties:
+            memory_usage_mb:
+              type: number
+            cpu_usage_percent:
+              type: number
+            active_connections:
+              type: integer
+        business_metrics:
+          type: object
+          properties:
+            couples_served:
+              type: integer
+            avg_guests_per_optimization:
+              type: number
+            optimization_quality_score:
+              type: number
+
+    Error:
+      type: object
+      required:
+        - error
+        - message
+        - timestamp
+      properties:
+        error:
+          type: string
+          description: Error code
+        message:
+          type: string
+          description: Human-readable error message
+        details:
+          type: string
+          description: Additional error details
+        timestamp:
+          type: string
+          format: date-time
+        trace_id:
+          type: string
+          description: Request trace ID for debugging
+
+    RateLimitError:
+      allOf:
+        - $ref: '#/components/schemas/Error'
+        - type: object
+          required:
+            - retry_after_seconds
+            - tier
+          properties:
+            retry_after_seconds:
+              type: integer
+              description: Seconds to wait before retrying
+            tier:
+              type: string
+              enum: [FREE, PREMIUM, ENTERPRISE, ADMIN]
+              description: Current rate limit tier
+            penalty_active:
+              type: boolean
+              description: Whether rate limit penalty is active
+
+  responses:
+    BadRequest:
+      description: Bad request - Invalid input parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: "INVALID_INPUT"
+            message: "Guest count must be between 1 and 1000"
+            timestamp: "2025-01-22T10:30:00Z"
+
+    Unauthorized:
+      description: Unauthorized - Invalid or missing authentication
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: "UNAUTHORIZED_ACCESS"
+            message: "Valid authentication token required"
+            timestamp: "2025-01-22T10:30:00Z"
+
+    Forbidden:
+      description: Forbidden - Insufficient permissions
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: "COUPLE_ACCESS_DENIED"
+            message: "Access to this couple's data is not permitted"
+            timestamp: "2025-01-22T10:30:00Z"
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: "NOT_FOUND"
+            message: "Seating arrangement not found"
+            timestamp: "2025-01-22T10:30:00Z"
+
+    RateLimitExceeded:
+      description: Rate limit exceeded
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+          description: Seconds to wait before retrying
+        X-RateLimit-Limit:
+          schema:
+            type: integer
+          description: Rate limit for current tier
+        X-RateLimit-Remaining:
+          schema:
+            type: integer
+          description: Remaining requests
+        X-RateLimit-Reset:
+          schema:
+            type: integer
+          description: Reset time as Unix timestamp
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RateLimitError'
+          example:
+            error: "RATE_LIMIT_EXCEEDED"
+            message: "Request limit exceeded for your tier"
+            retry_after_seconds: 3600
+            tier: "FREE"
+            penalty_active: false
+            timestamp: "2025-01-22T10:30:00Z"
+
+    InternalServerError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: "OPTIMIZATION_TIMEOUT"
+            message: "Optimization took too long and was terminated"
+            details: "Consider using a simpler optimization engine or reducing guest count"
+            trace_id: "abc123def456"
+            timestamp: "2025-01-22T10:30:00Z"
+
+  examples:
+    BasicOptimization:
+      summary: Basic seating optimization
+      value:
+        couple_id: "123e4567-e89b-12d3-a456-426614174000"
+        guest_count: 50
+        table_count: 7
+        table_configurations:
+          - table_number: 1
+            capacity: 8
+            table_shape: "round"
+        relationship_preferences:
+          prioritize_families: true
+          separate_conflicting_guests: true
+        optimization_engine: "standard"
+
+    AdvancedMLOptimization:
+      summary: Advanced ML-powered optimization
+      value:
+        couple_id: "123e4567-e89b-12d3-a456-426614174000"
+        guest_count: 200
+        table_count: 25
+        table_configurations:
+          - table_number: 1
+            capacity: 8
+            table_shape: "round"
+        optimization_engine: "ml_expert"
+        use_historical_learning: true
+        ml_confidence_threshold: 0.9
+        max_processing_time_ms: 30000
+
+tags:
+  - name: Seating Optimization
+    description: Core seating arrangement optimization endpoints
+  - name: Mobile Optimization
+    description: Mobile-optimized seating optimization APIs
+  - name: Validation
+    description: Seating arrangement validation and conflict checking
+  - name: Arrangements
+    description: CRUD operations for seating arrangements
+  - name: Monitoring
+    description: Health checks, metrics, and system monitoring

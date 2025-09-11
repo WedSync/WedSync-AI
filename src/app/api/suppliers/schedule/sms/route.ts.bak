@@ -1,0 +1,374 @@
+// WS-161: Supplier Schedule SMS Notifications API
+import { NextRequest, NextResponse } from 'next/server'
+import { SupplierScheduleSMSService } from '@/lib/messaging/supplier-schedule-sms-service'
+import { SupplierScheduleEmailService } from '@/lib/email/supplier-schedule-service'
+import { createClient } from '@/lib/supabase/server'
+import { z } from 'zod'
+
+const SMSNotificationSchema = z.object({
+  notification_type: z.enum(['urgent_update', 'reminder', 'update', 'cancellation', 'conflict']),
+  supplier_ids: z.array(z.string()),
+  schedule_event_id: z.string(),
+  organization_id: z.string(),
+  change_details: z.object({
+    change_type: z.enum(['time_update', 'location_update', 'details_update', 'cancellation', 'new_booking']).optional(),
+    original_values: z.any().optional(),
+    new_values: z.any().optional(),
+    reason: z.string().optional(),
+    requested_by: z.string(),
+    urgent: z.boolean().default(false)
+  }).optional(),
+  reminder_type: z.enum(['day', 'hour', '30min', '15min']).optional(),
+  cancellation_reason: z.string().optional(),
+  compensation: z.object({
+    amount: z.number(),
+    currency: z.string(),
+    method: z.string()
+  }).optional(),
+  conflict_details: z.object({
+    conflictingEvent: z.string(),
+    conflictTime: z.string(),
+    suggestionOptions: z.array(z.object({
+      startTime: z.string(),
+      endTime: z.string(),
+      reason: z.string()
+    }))
+  }).optional()
+})
+
+const IncomingSMSSchema = z.object({
+  from: z.string(),
+  body: z.string(),
+  provider_id: z.string()
+})
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = await createClient()
+    
+    // Get user from request headers or session
+    const { data: { user }, error: userError } = await supabase.auth.getUser()
+    
+    if (userError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      )
+    }
+
+    const body = await request.json()
+
+    // Check if this is an incoming SMS webhook
+    if (body.webhook_type === 'incoming_sms') {
+      return await handleIncomingSMSWebhook(body)
+    }
+
+    // Validate outgoing SMS notification request
+    let validatedData
+    try {
+      validatedData = SMSNotificationSchema.parse(body)
+    } catch (validationError) {
+      return NextResponse.json(
+        { error: 'Invalid request data', details: validationError },
+        { status: 400 }
+      )
+    }
+
+    const { notification_type, supplier_ids, schedule_event_id, organization_id } = validatedData
+
+    // Verify user has access to the organization
+    const { data: orgMembership } = await supabase
+      .from('organization_members')
+      .select('role')
+      .eq('organization_id', organization_id)
+      .eq('user_id', user.id)
+      .single()
+
+    if (!orgMembership || !['admin', 'planner', 'coordinator'].includes(orgMembership.role)) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions' },
+        { status: 403 }
+      )
+    }
+
+    // Get schedule event details
+    const { data: scheduleEvent, error: eventError } = await supabase
+      .from('supplier_schedule_events')
+      .select(`
+        *,
+        wedding:weddings!inner(
+          id,
+          couple_names,
+          wedding_date,
+          planner_name,
+          planner_email
+        )
+      `)
+      .eq('id', schedule_event_id)
+      .eq('organization_id', organization_id)
+      .single()
+
+    if (eventError || !scheduleEvent) {
+      return NextResponse.json(
+        { error: 'Schedule event not found' },
+        { status: 404 }
+      )
+    }
+
+    // Get supplier details
+    const { data: suppliers, error: suppliersError } = await supabase
+      .from('suppliers')
+      .select(`
+        id,
+        email,
+        name,
+        company_name,
+        phone,
+        role,
+        notification_preferences
+      `)
+      .in('id', supplier_ids)
+      .eq('organization_id', organization_id)
+
+    if (suppliersError || !suppliers || suppliers.length === 0) {
+      return NextResponse.json(
+        { error: 'No valid suppliers found' },
+        { status: 404 }
+      )
+    }
+
+    // Convert to supplier contact info format
+    const supplierContacts = suppliers.map(supplier => ({
+      id: supplier.id,
+      email: supplier.email,
+      name: supplier.name,
+      company_name: supplier.company_name,
+      phone: supplier.phone,
+      role: supplier.role,
+      preferences: supplier.notification_preferences || {
+        email_notifications: true,
+        sms_notifications: false,
+        whatsapp_notifications: false,
+        reminder_hours: [24, 2],
+        preferred_contact_method: 'email'
+      }
+    }))
+
+    // Filter suppliers who have SMS notifications enabled and phone numbers
+    const smsEnabledSuppliers = supplierContacts.filter(
+      supplier => supplier.preferences.sms_notifications && supplier.phone
+    )
+
+    if (smsEnabledSuppliers.length === 0) {
+      return NextResponse.json(
+        { message: 'No suppliers have SMS notifications enabled or phone numbers available' },
+        { status: 200 }
+      )
+    }
+
+    // Convert schedule event to proper format
+    const supplierScheduleEvent = {
+      id: scheduleEvent.id,
+      title: scheduleEvent.title,
+      description: scheduleEvent.description,
+      start_time: new Date(scheduleEvent.start_time),
+      end_time: new Date(scheduleEvent.end_time),
+      location: scheduleEvent.location,
+      venue_name: scheduleEvent.venue_name,
+      venue_address: scheduleEvent.venue_address,
+      setup_time: scheduleEvent.setup_time ? new Date(scheduleEvent.setup_time) : undefined,
+      breakdown_time: scheduleEvent.breakdown_time ? new Date(scheduleEvent.breakdown_time) : undefined,
+      supplier_role: scheduleEvent.supplier_role,
+      special_instructions: scheduleEvent.special_instructions,
+      contact_person: scheduleEvent.contact_person,
+      contact_phone: scheduleEvent.contact_phone,
+      contact_email: scheduleEvent.contact_email,
+      wedding_date: new Date(scheduleEvent.wedding.wedding_date),
+      couple_names: scheduleEvent.wedding.couple_names,
+      planner_name: scheduleEvent.wedding.planner_name,
+      planner_email: scheduleEvent.wedding.planner_email,
+      priority: scheduleEvent.priority as 'low' | 'medium' | 'high' | 'critical',
+      status: scheduleEvent.status as 'draft' | 'confirmed' | 'updated' | 'cancelled',
+      created_at: new Date(scheduleEvent.created_at),
+      updated_at: new Date(scheduleEvent.updated_at)
+    }
+
+    let results
+
+    try {
+      // Prepare additional data based on notification type
+      const additionalData = {
+        changeDetails: validatedData.change_details,
+        reminderType: validatedData.reminder_type,
+        reason: validatedData.cancellation_reason,
+        compensation: validatedData.compensation,
+        conflictDetails: validatedData.conflict_details
+      }
+
+      // Send SMS notifications using bulk method
+      results = await SupplierScheduleSMSService.sendBulkSupplierSMS(
+        smsEnabledSuppliers,
+        supplierScheduleEvent,
+        notification_type,
+        additionalData
+      )
+
+      // Log the bulk SMS operation
+      await supabase
+        .from('supplier_sms_notification_log')
+        .insert({
+          organization_id,
+          schedule_event_id,
+          notification_type,
+          supplier_count: smsEnabledSuppliers.length,
+          successful_count: results.successful,
+          failed_count: results.failed,
+          errors: results.errors,
+          requested_by: user.id,
+          created_at: new Date().toISOString()
+        })
+
+      return NextResponse.json({
+        success: true,
+        message: `SMS notifications sent successfully`,
+        results: {
+          total_suppliers: smsEnabledSuppliers.length,
+          successful: results.successful,
+          failed: results.failed,
+          errors: results.errors
+        }
+      })
+
+    } catch (error) {
+      console.error('Error sending SMS notifications:', error)
+      return NextResponse.json(
+        { error: 'Failed to send SMS notifications', details: error instanceof Error ? error.message : 'Unknown error' },
+        { status: 500 }
+      )
+    }
+
+  } catch (error) {
+    console.error('API Error:', error)
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}
+
+async function handleIncomingSMSWebhook(webhookData: any) {
+  try {
+    const validatedData = IncomingSMSSchema.parse(webhookData)
+    
+    // Handle the incoming SMS using the SMS service
+    await SupplierScheduleSMSService.handleSupplierSMSResponse(
+      validatedData.from,
+      validatedData.body,
+      validatedData.provider_id
+    )
+
+    return NextResponse.json({ success: true, message: 'SMS response processed' })
+
+  } catch (error) {
+    console.error('Error processing incoming SMS webhook:', error)
+    return NextResponse.json(
+      { error: 'Failed to process SMS webhook' },
+      { status: 500 }
+    )
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = await createClient()
+    
+    const { data: { user }, error: userError } = await supabase.auth.getUser()
+    
+    if (userError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      )
+    }
+
+    const url = new URL(request.url)
+    const organizationId = url.searchParams.get('organization_id')
+    const eventId = url.searchParams.get('event_id')
+    const supplierId = url.searchParams.get('supplier_id')
+    const limit = parseInt(url.searchParams.get('limit') || '50')
+    const offset = parseInt(url.searchParams.get('offset') || '0')
+
+    if (!organizationId) {
+      return NextResponse.json(
+        { error: 'Organization ID required' },
+        { status: 400 }
+      )
+    }
+
+    // Verify user has access to the organization
+    const { data: orgMembership } = await supabase
+      .from('organization_members')
+      .select('role')
+      .eq('organization_id', organizationId)
+      .eq('user_id', user.id)
+      .single()
+
+    if (!orgMembership) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions' },
+        { status: 403 }
+      )
+    }
+
+    // Get SMS notification history
+    let query = supabase
+      .from('supplier_sms_notification_log')
+      .select(`
+        *,
+        schedule_event:supplier_schedule_events(
+          title,
+          start_time,
+          wedding:weddings(couple_names)
+        )
+      `)
+      .eq('organization_id', organizationId)
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1)
+
+    if (eventId) {
+      query = query.eq('schedule_event_id', eventId)
+    }
+
+    const { data: notifications, error } = await query
+
+    if (error) {
+      return NextResponse.json(
+        { error: 'Failed to fetch SMS notification history' },
+        { status: 500 }
+      )
+    }
+
+    // If supplier ID is provided, also get supplier SMS validation status
+    let supplierValidation = null
+    if (supplierId) {
+      supplierValidation = await SupplierScheduleSMSService.validateSupplierForSMS(supplierId)
+    }
+
+    return NextResponse.json({
+      notifications: notifications || [],
+      supplier_validation: supplierValidation,
+      pagination: {
+        limit,
+        offset,
+        has_more: (notifications?.length || 0) === limit
+      }
+    })
+
+  } catch (error) {
+    console.error('API Error:', error)
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}

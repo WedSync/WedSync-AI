@@ -1,0 +1,354 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+    const { searchParams } = new URL(request.url);
+
+    const range = searchParams.get('range') || '24h';
+    const category = searchParams.get('category') || 'all';
+
+    // Calculate time range
+    const now = new Date();
+    const timeRanges = {
+      '1h': new Date(now.getTime() - 60 * 60 * 1000),
+      '24h': new Date(now.getTime() - 24 * 60 * 60 * 1000),
+      '7d': new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000),
+      '30d': new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000),
+    };
+
+    const startTime =
+      timeRanges[range as keyof typeof timeRanges] || timeRanges['24h'];
+
+    // Get wedding industry metrics
+    const [
+      activeUsersResult,
+      conversionResult,
+      revenueResult,
+      planningTimeResult,
+      engagementResult,
+      vendorBookingsResult,
+    ] = await Promise.all([
+      // Active couples/users
+      supabase
+        .from('analytics_events')
+        .select('user_id')
+        .gte('created_at', startTime.toISOString())
+        .eq('event_name', 'page_view'),
+
+      // Booking conversion rate
+      supabase
+        .from('analytics_events')
+        .select('*')
+        .gte('created_at', startTime.toISOString())
+        .in('event_name', ['booking_started', 'booking_completed']),
+
+      // Revenue metrics
+      supabase
+        .from('analytics_events')
+        .select('properties')
+        .gte('created_at', startTime.toISOString())
+        .eq('event_name', 'payment_completed'),
+
+      // Average planning time
+      supabase
+        .from('user_profiles')
+        .select('created_at, wedding_date')
+        .gte('created_at', startTime.toISOString())
+        .not('wedding_date', 'is', null),
+
+      // User engagement metrics
+      supabase
+        .from('analytics_events')
+        .select('*')
+        .gte('created_at', startTime.toISOString())
+        .in('event_name', [
+          'feature_used',
+          'form_completed',
+          'vendor_contacted',
+        ]),
+
+      // Vendor bookings
+      supabase
+        .from('analytics_events')
+        .select('*')
+        .gte('created_at', startTime.toISOString())
+        .eq('event_name', 'vendor_booked'),
+    ]);
+
+    // Calculate metrics with previous period comparison
+    const previousStartTime = new Date(
+      startTime.getTime() - (now.getTime() - startTime.getTime()),
+    );
+
+    const [
+      previousActiveUsers,
+      previousConversions,
+      previousRevenue,
+      previousEngagement,
+    ] = await Promise.all([
+      supabase
+        .from('analytics_events')
+        .select('user_id')
+        .gte('created_at', previousStartTime.toISOString())
+        .lt('created_at', startTime.toISOString())
+        .eq('event_name', 'page_view'),
+
+      supabase
+        .from('analytics_events')
+        .select('*')
+        .gte('created_at', previousStartTime.toISOString())
+        .lt('created_at', startTime.toISOString())
+        .in('event_name', ['booking_started', 'booking_completed']),
+
+      supabase
+        .from('analytics_events')
+        .select('properties')
+        .gte('created_at', previousStartTime.toISOString())
+        .lt('created_at', startTime.toISOString())
+        .eq('event_name', 'payment_completed'),
+
+      supabase
+        .from('analytics_events')
+        .select('*')
+        .gte('created_at', previousStartTime.toISOString())
+        .lt('created_at', startTime.toISOString())
+        .in('event_name', [
+          'feature_used',
+          'form_completed',
+          'vendor_contacted',
+        ]),
+    ]);
+
+    // Process results
+    const activeUsers = new Set(
+      activeUsersResult.data?.map((row) => row.user_id) || [],
+    ).size;
+    const previousActiveUsersCount = new Set(
+      previousActiveUsers.data?.map((row) => row.user_id) || [],
+    ).size;
+
+    // Calculate conversion rate
+    const bookingStarted =
+      conversionResult.data?.filter((e) => e.event_name === 'booking_started')
+        .length || 0;
+    const bookingCompleted =
+      conversionResult.data?.filter((e) => e.event_name === 'booking_completed')
+        .length || 0;
+    const conversionRate =
+      bookingStarted > 0 ? (bookingCompleted / bookingStarted) * 100 : 0;
+
+    const prevBookingStarted =
+      previousConversions.data?.filter(
+        (e) => e.event_name === 'booking_started',
+      ).length || 0;
+    const prevBookingCompleted =
+      previousConversions.data?.filter(
+        (e) => e.event_name === 'booking_completed',
+      ).length || 0;
+    const previousConversionRate =
+      prevBookingStarted > 0
+        ? (prevBookingCompleted / prevBookingStarted) * 100
+        : 0;
+
+    // Calculate total revenue
+    const totalRevenue =
+      revenueResult.data?.reduce((sum, event) => {
+        const amount = event.properties?.amount || 0;
+        return (
+          sum + (typeof amount === 'number' ? amount : parseFloat(amount) || 0)
+        );
+      }, 0) || 0;
+
+    const previousTotalRevenue =
+      previousRevenue.data?.reduce((sum, event) => {
+        const amount = event.properties?.amount || 0;
+        return (
+          sum + (typeof amount === 'number' ? amount : parseFloat(amount) || 0)
+        );
+      }, 0) || 0;
+
+    // Calculate average planning time
+    const planningTimes =
+      planningTimeResult.data
+        ?.map((profile) => {
+          const createdAt = new Date(profile.created_at);
+          const weddingDate = new Date(profile.wedding_date);
+          const diffTime = weddingDate.getTime() - createdAt.getTime();
+          return Math.ceil(diffTime / (1000 * 60 * 60 * 24)); // Days
+        })
+        .filter((days) => days > 0 && days < 730) || []; // Filter reasonable planning times
+
+    const avgPlanningTime =
+      planningTimes.length > 0
+        ? Math.round(
+            planningTimes.reduce((sum, days) => sum + days, 0) /
+              planningTimes.length,
+          )
+        : 180; // Default to 6 months
+
+    // Engagement score based on feature usage
+    const engagementEvents = engagementResult.data?.length || 0;
+    const engagementScore =
+      activeUsers > 0 ? (engagementEvents / activeUsers) * 100 : 0;
+    const previousEngagementEvents = previousEngagement.data?.length || 0;
+    const previousEngagementScore =
+      previousActiveUsersCount > 0
+        ? (previousEngagementEvents / previousActiveUsersCount) * 100
+        : 0;
+
+    // Vendor booking rate
+    const vendorBookings = vendorBookingsResult.data?.length || 0;
+    const vendorBookingRate =
+      activeUsers > 0 ? (vendorBookings / activeUsers) * 100 : 0;
+
+    // Build metrics array
+    const metrics = [
+      {
+        id: 'active-users',
+        name: 'Active Couples',
+        value: activeUsers,
+        previousValue: previousActiveUsersCount,
+        trend:
+          activeUsers > previousActiveUsersCount
+            ? 'up'
+            : activeUsers < previousActiveUsersCount
+              ? 'down'
+              : 'stable',
+        change: activeUsers - previousActiveUsersCount,
+        changePercent:
+          previousActiveUsersCount > 0
+            ? ((activeUsers - previousActiveUsersCount) /
+                previousActiveUsersCount) *
+              100
+            : 0,
+        category: 'engagement',
+        target: Math.ceil(activeUsers * 1.2), // 20% growth target
+        unit: 'number',
+      },
+      {
+        id: 'conversion-rate',
+        name: 'Booking Conversion',
+        value: conversionRate,
+        previousValue: previousConversionRate,
+        trend:
+          conversionRate > previousConversionRate
+            ? 'up'
+            : conversionRate < previousConversionRate
+              ? 'down'
+              : 'stable',
+        change: conversionRate - previousConversionRate,
+        changePercent:
+          previousConversionRate > 0
+            ? ((conversionRate - previousConversionRate) /
+                previousConversionRate) *
+              100
+            : 0,
+        category: 'conversion',
+        target: 25, // 25% conversion target
+        unit: 'percentage',
+      },
+      {
+        id: 'total-revenue',
+        name: 'Total Revenue',
+        value: totalRevenue,
+        previousValue: previousTotalRevenue,
+        trend:
+          totalRevenue > previousTotalRevenue
+            ? 'up'
+            : totalRevenue < previousTotalRevenue
+              ? 'down'
+              : 'stable',
+        change: totalRevenue - previousTotalRevenue,
+        changePercent:
+          previousTotalRevenue > 0
+            ? ((totalRevenue - previousTotalRevenue) / previousTotalRevenue) *
+              100
+            : 0,
+        category: 'revenue',
+        target: Math.ceil(totalRevenue * 1.15), // 15% growth target
+        unit: 'currency',
+      },
+      {
+        id: 'planning-time',
+        name: 'Avg Planning Time',
+        value: avgPlanningTime,
+        previousValue: 180, // Previous period average
+        trend:
+          avgPlanningTime < 180
+            ? 'up'
+            : avgPlanningTime > 180
+              ? 'down'
+              : 'stable', // Lower is better for efficiency
+        change: 180 - avgPlanningTime,
+        changePercent: ((180 - avgPlanningTime) / 180) * 100,
+        category: 'satisfaction',
+        target: 150, // Target 5 months planning time
+        unit: 'days',
+      },
+      {
+        id: 'engagement-score',
+        name: 'User Engagement',
+        value: engagementScore,
+        previousValue: previousEngagementScore,
+        trend:
+          engagementScore > previousEngagementScore
+            ? 'up'
+            : engagementScore < previousEngagementScore
+              ? 'down'
+              : 'stable',
+        change: engagementScore - previousEngagementScore,
+        changePercent:
+          previousEngagementScore > 0
+            ? ((engagementScore - previousEngagementScore) /
+                previousEngagementScore) *
+              100
+            : 0,
+        category: 'engagement',
+        target: 80, // 80% engagement target
+        unit: 'percentage',
+      },
+      {
+        id: 'vendor-bookings',
+        name: 'Vendor Booking Rate',
+        value: vendorBookingRate,
+        previousValue: 0, // Would calculate from previous period
+        trend: 'up',
+        change: vendorBookingRate,
+        changePercent: 100,
+        category: 'conversion',
+        target: 60, // 60% vendor booking rate target
+        unit: 'percentage',
+      },
+    ];
+
+    // Filter by category if specified
+    const filteredMetrics =
+      category === 'all'
+        ? metrics
+        : metrics.filter((metric) => metric.category === category);
+
+    return NextResponse.json({
+      success: true,
+      data: filteredMetrics,
+      metadata: {
+        timeRange: range,
+        category,
+        startTime: startTime.toISOString(),
+        endTime: now.toISOString(),
+        totalMetrics: filteredMetrics.length,
+      },
+    });
+  } catch (error) {
+    console.error('Analytics metrics API error:', error);
+    return NextResponse.json(
+      { success: false, error: 'Failed to fetch analytics metrics' },
+      { status: 500 },
+    );
+  }
+}

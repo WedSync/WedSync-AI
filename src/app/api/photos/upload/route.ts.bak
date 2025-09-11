@@ -1,0 +1,317 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+import { rateLimit } from '@/lib/rate-limit';
+import * as crypto from 'crypto';
+
+// Rate limiting: 20 photo uploads per minute per user
+const PHOTO_UPLOAD_RATE_LIMIT = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 20, // 20 uploads per minute
+});
+
+// Magic numbers for image validation
+const IMAGE_MAGIC_NUMBERS = {
+  'image/jpeg': [0xFF, 0xD8, 0xFF],
+  'image/png': [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A],
+  'image/webp': [0x52, 0x49, 0x46, 0x46], // RIFF (first 4 bytes)
+  'image/heic': [0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63] // ftypheic at offset 4
+};
+
+function validateImageMagicNumber(buffer: Buffer, mimeType: string): boolean {
+  const magicNumbers = IMAGE_MAGIC_NUMBERS[mimeType as keyof typeof IMAGE_MAGIC_NUMBERS];
+  if (!magicNumbers) return false;
+  
+  if (mimeType === 'image/heic') {
+    // HEIC magic number is at offset 4
+    return buffer.length >= 12 && magicNumbers.every((byte, index) => buffer[4 + index] === byte);
+  }
+  
+  return buffer.length >= magicNumbers.length && 
+         magicNumbers.every((byte, index) => buffer[index] === byte);
+}
+
+const uploadSchema = z.object({
+  galleryId: z.string().uuid().optional(),
+  clientId: z.string().uuid().optional(),
+  metadata: z.object({
+    camera: z.string().max(100).optional(),
+    lens: z.string().max(100).optional(),
+    iso: z.number().min(50).max(409600).optional(),
+    aperture: z.string().max(20).optional(),
+    shutterSpeed: z.string().max(20).optional(),
+    focalLength: z.string().max(20).optional(),
+    dateTaken: z.string().datetime().optional(),
+    location: z.object({
+      lat: z.number().min(-90).max(90),
+      lng: z.number().min(-180).max(180),
+      name: z.string().max(200).optional()
+    }).optional()
+  }).optional()
+});
+
+export async function POST(request: NextRequest) {
+  try {
+    // Rate limiting
+    const rateLimitResult = await PHOTO_UPLOAD_RATE_LIMIT(request);
+    if (rateLimitResult.success === false) {
+      return NextResponse.json(
+        { error: 'Too many photo uploads. Please try again later.' },
+        { status: 429 }
+      );
+    }
+
+    const supabase = await createClient();
+    
+    // Check authentication
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    // Parse form data
+    const formData = await request.formData();
+    const file = formData.get('file') as File;
+    const dataString = formData.get('data') as string;
+
+    if (!file) {
+      return NextResponse.json(
+        { error: 'No file provided' },
+        { status: 400 }
+      );
+    }
+
+    // Validate file type
+    const validTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/heic'];
+    if (!validTypes.includes(file.type)) {
+      return NextResponse.json(
+        { error: 'Invalid file type. Accepted: JPEG, PNG, WebP, HEIC' },
+        { status: 400 }
+      );
+    }
+
+    // Validate file size (50MB max)
+    const maxSize = 50 * 1024 * 1024;
+    if (file.size > maxSize) {
+      return NextResponse.json(
+        { error: 'File too large. Maximum size: 50MB' },
+        { status: 400 }
+      );
+    }
+
+    // Convert File to ArrayBuffer for magic number validation
+    const arrayBuffer = await file.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    // Validate file magic number to prevent disguised malicious files
+    if (!validateImageMagicNumber(buffer, file.type)) {
+      return NextResponse.json(
+        { error: 'Invalid file format. File content does not match declared type.' },
+        { status: 400 }
+      );
+    }
+
+    // Parse and validate additional data
+    let additionalData: z.infer<typeof uploadSchema> = {};
+    if (dataString) {
+      try {
+        const parsed = JSON.parse(dataString);
+        additionalData = uploadSchema.parse(parsed);
+      } catch (error) {
+        return NextResponse.json(
+          { error: 'Invalid data format' },
+          { status: 400 }
+        );
+      }
+    }
+
+    // Generate cryptographically secure unique filename
+    const timestamp = Date.now();
+    const secureId = crypto.randomUUID().replace(/-/g, '');
+    const fileExt = file.name.split('.').pop()?.toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
+    const fileName = `${timestamp}_${secureId}.${fileExt}`;
+    const filePath = `photos/${user.id.replace(/-/g, '')}/${fileName}`;
+
+    // Upload to Supabase Storage
+    const { data: uploadData, error: uploadError } = await supabase.storage
+      .from('wedding-photos')
+      .upload(filePath, buffer, {
+        contentType: file.type,
+        cacheControl: '3600',
+        upsert: false
+      });
+
+    if (uploadError) {
+      console.error('Upload error:', uploadError);
+      return NextResponse.json(
+        { error: 'Failed to upload file' },
+        { status: 500 }
+      );
+    }
+
+    // Get public URL
+    const { data: { publicUrl } } = supabase.storage
+      .from('wedding-photos')
+      .getPublicUrl(filePath);
+
+    // Create thumbnail URL (assuming CDN handles resizing)
+    const thumbnailUrl = `${publicUrl}?width=400&height=300&quality=80`;
+
+    // Get image dimensions (mock for now - in production, use sharp or similar)
+    const dimensions = {
+      width: 4000,
+      height: 3000
+    };
+
+    // Save photo record to database
+    const photoRecord = {
+      id: `photo-${timestamp}-${randomString}`,
+      url: publicUrl,
+      thumbnail_url: thumbnailUrl,
+      filename: file.name,
+      size: file.size,
+      mime_type: file.type,
+      width: dimensions.width,
+      height: dimensions.height,
+      uploaded_by: user.id,
+      gallery_id: additionalData.galleryId || null,
+      client_id: additionalData.clientId || null,
+      metadata: additionalData.metadata || {},
+      storage_path: filePath
+    };
+
+    const { data: photo, error: dbError } = await supabase
+      .from('photos')
+      .insert(photoRecord)
+      .select()
+      .single();
+
+    if (dbError) {
+      console.error('Database error:', dbError);
+      // Try to delete the uploaded file
+      await supabase.storage
+        .from('wedding-photos')
+        .remove([filePath]);
+      
+      return NextResponse.json(
+        { error: 'Failed to save photo record' },
+        { status: 500 }
+      );
+    }
+
+    // Queue for AI tagging (in production, use a job queue)
+    // For now, we'll just return the photo
+    
+    return NextResponse.json({
+      success: true,
+      photo: {
+        id: photo.id,
+        url: photo.url,
+        thumbnailUrl: photo.thumbnail_url,
+        filename: photo.filename,
+        size: photo.size,
+        mimeType: photo.mime_type,
+        width: photo.width,
+        height: photo.height,
+        uploadedAt: photo.created_at,
+        uploadedBy: photo.uploaded_by,
+        galleryId: photo.gallery_id,
+        clientId: photo.client_id,
+        tags: [],
+        metadata: photo.metadata
+      }
+    });
+
+  } catch (error) {
+    console.error('Upload error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+    
+    // Check authentication
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    // Get query parameters
+    const { searchParams } = new URL(request.url);
+    const galleryId = searchParams.get('galleryId');
+    const clientId = searchParams.get('clientId');
+    const limit = parseInt(searchParams.get('limit') || '50');
+    const offset = parseInt(searchParams.get('offset') || '0');
+
+    // Build query
+    let query = supabase
+      .from('photos')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (galleryId) {
+      query = query.eq('gallery_id', galleryId);
+    }
+    
+    if (clientId) {
+      query = query.eq('client_id', clientId);
+    }
+
+    const { data: photos, error } = await query;
+
+    if (error) {
+      console.error('Query error:', error);
+      return NextResponse.json(
+        { error: 'Failed to fetch photos' },
+        { status: 500 }
+      );
+    }
+
+    // Transform the data
+    const transformedPhotos = photos.map(photo => ({
+      id: photo.id,
+      url: photo.url,
+      thumbnailUrl: photo.thumbnail_url,
+      filename: photo.filename,
+      size: photo.size,
+      mimeType: photo.mime_type,
+      width: photo.width,
+      height: photo.height,
+      uploadedAt: photo.created_at,
+      uploadedBy: photo.uploaded_by,
+      galleryId: photo.gallery_id,
+      clientId: photo.client_id,
+      tags: photo.tags || [],
+      metadata: photo.metadata || {}
+    }));
+
+    return NextResponse.json({
+      success: true,
+      photos: transformedPhotos,
+      pagination: {
+        limit,
+        offset,
+        hasMore: photos.length === limit
+      }
+    });
+
+  } catch (error) {
+    console.error('Fetch error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}

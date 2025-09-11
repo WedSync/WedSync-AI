@@ -1,0 +1,30 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { EmailService } from '@/lib/email/service'
+
+export async function POST(request: NextRequest) {
+  try {
+    // Verify webhook signature if needed
+    const signature = request.headers.get('resend-signature')
+    
+    // In production, you should verify the webhook signature
+    // const isValid = verifyWebhookSignature(signature, body)
+    // if (!isValid) {
+    //   return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
+    // }
+
+    const payload = await request.json()
+    
+    console.log('Received Resend webhook:', payload)
+
+    // Handle the webhook event
+    await EmailService.handleWebhook(payload)
+
+    return NextResponse.json({ success: true })
+  } catch (error) {
+    console.error('Error handling Resend webhook:', error)
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}

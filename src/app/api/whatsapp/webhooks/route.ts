@@ -1,0 +1,365 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { WhatsAppService } from '@/lib/services/whatsapp-service';
+import { headers } from 'next/headers';
+import crypto from 'crypto';
+
+/**
+ * WhatsApp Business API Webhook Handler
+ * Handles incoming messages, delivery statuses, and webhook verification
+ */
+
+export async function GET(request: NextRequest) {
+  const { searchParams } = new URL(request.url);
+
+  // Handle webhook verification challenge
+  const mode = searchParams.get('hub.mode');
+  const token = searchParams.get('hub.verify_token');
+  const challenge = searchParams.get('hub.challenge');
+
+  console.log('WhatsApp webhook verification attempt:', { mode, token });
+
+  if (mode === 'subscribe') {
+    // Create a service instance to verify token
+    const whatsappService = new WhatsAppService();
+    const challengeResponse = whatsappService.verifyWebhookChallenge({
+      'hub.mode': mode,
+      'hub.verify_token': token,
+      'hub.challenge': challenge,
+    });
+
+    if (challengeResponse) {
+      console.log('WhatsApp webhook verification successful');
+      return new NextResponse(challengeResponse, {
+        status: 200,
+        headers: { 'Content-Type': 'text/plain' },
+      });
+    }
+  }
+
+  console.log('WhatsApp webhook verification failed');
+  return NextResponse.json(
+    { error: 'Webhook verification failed' },
+    { status: 403 },
+  );
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.text();
+    const signature = (await headers()).get('x-hub-signature-256');
+
+    console.log('WhatsApp webhook received:', {
+      hasSignature: !!signature,
+      bodyLength: body.length,
+    });
+
+    // Verify webhook signature
+    if (signature && !verifyWebhookSignature(body, signature)) {
+      console.error('WhatsApp webhook signature verification failed');
+      return NextResponse.json({ error: 'Invalid signature' }, { status: 403 });
+    }
+
+    const webhookData = JSON.parse(body);
+
+    // Log webhook data for debugging
+    console.log('WhatsApp webhook data:', JSON.stringify(webhookData, null, 2));
+
+    // Process webhook with WhatsApp service
+    const whatsappService = new WhatsAppService();
+    await whatsappService.handleWebhook(webhookData, signature || undefined);
+
+    // Handle specific webhook events
+    await processWebhookEvents(webhookData);
+
+    return NextResponse.json({
+      success: true,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error('WhatsApp webhook processing error:', error);
+    return NextResponse.json(
+      {
+        error: 'Webhook processing failed',
+        details: error instanceof Error ? error.message : 'Unknown error',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * Verify webhook signature from Meta
+ */
+function verifyWebhookSignature(payload: string, signature: string): boolean {
+  const appSecret = process.env.WHATSAPP_APP_SECRET;
+
+  if (!appSecret) {
+    console.warn(
+      'WhatsApp app secret not configured, skipping signature verification',
+    );
+    return true; // Allow in development
+  }
+
+  const expectedSignature = crypto
+    .createHmac('sha256', appSecret)
+    .update(payload, 'utf8')
+    .digest('hex');
+
+  const providedSignature = signature.replace('sha256=', '');
+
+  return crypto.timingSafeEqual(
+    Buffer.from(expectedSignature, 'hex'),
+    Buffer.from(providedSignature, 'hex'),
+  );
+}
+
+/**
+ * Process webhook events and trigger notifications
+ */
+async function processWebhookEvents(webhookData: any): Promise<void> {
+  try {
+    const entry = webhookData.entry?.[0];
+    const changes = entry?.changes?.[0];
+    const value = changes?.value;
+
+    if (!value) return;
+
+    // Process incoming messages
+    if (value.messages) {
+      for (const message of value.messages) {
+        await handleIncomingMessage(message, value);
+      }
+    }
+
+    // Process status updates
+    if (value.statuses) {
+      for (const status of value.statuses) {
+        await handleStatusUpdate(status, value);
+      }
+    }
+  } catch (error) {
+    console.error('Error processing webhook events:', error);
+  }
+}
+
+/**
+ * Handle incoming WhatsApp message
+ */
+async function handleIncomingMessage(message: any, value: any): Promise<void> {
+  try {
+    console.log(`Incoming WhatsApp message from ${message.from}:`, {
+      type: message.type,
+      id: message.id,
+      timestamp: message.timestamp,
+    });
+
+    // Check for auto-reply triggers
+    await checkAutoReplyTriggers(message, value);
+
+    // Check for customer service keywords
+    await checkCustomerServiceKeywords(message, value);
+
+    // Notify relevant users
+    await notifyUsersOfIncomingMessage(message, value);
+  } catch (error) {
+    console.error('Error handling incoming message:', error);
+  }
+}
+
+/**
+ * Handle message status updates
+ */
+async function handleStatusUpdate(status: any, value: any): Promise<void> {
+  try {
+    console.log(`WhatsApp message status update:`, {
+      id: status.id,
+      status: status.status,
+      recipient: status.recipient_id,
+      timestamp: status.timestamp,
+    });
+
+    // Update delivery analytics
+    await updateDeliveryAnalytics(status);
+
+    // Handle failed messages
+    if (status.status === 'failed' && status.errors) {
+      await handleFailedMessage(status);
+    }
+
+    // Notify users of delivery confirmations
+    if (status.status === 'delivered' || status.status === 'read') {
+      await notifyDeliveryConfirmation(status);
+    }
+  } catch (error) {
+    console.error('Error handling status update:', error);
+  }
+}
+
+/**
+ * Check for auto-reply triggers
+ */
+async function checkAutoReplyTriggers(message: any, value: any): Promise<void> {
+  if (message.type !== 'text') return;
+
+  const messageText = message.text?.body?.toLowerCase();
+  if (!messageText) return;
+
+  // Common auto-reply triggers
+  const triggers = {
+    hello:
+      'Hello! Thanks for reaching out. How can we help you with your wedding planning?',
+    hi: "Hi there! We're here to help with your wedding. What can we assist you with?",
+    hours:
+      "Our business hours are Monday-Friday 9AM-6PM, Saturday 10AM-4PM. We'll respond during business hours!",
+    pricing:
+      "Thanks for your interest in our services! We'd love to discuss pricing with you. Please let us know what services you're interested in.",
+    availability:
+      "To check our availability for your wedding date, please share your wedding date and we'll get back to you shortly!",
+  };
+
+  for (const [trigger, response] of Object.entries(triggers)) {
+    if (messageText.includes(trigger)) {
+      await sendAutoReply(
+        message.from,
+        response,
+        value.metadata.phone_number_id,
+      );
+      break;
+    }
+  }
+}
+
+/**
+ * Check for customer service keywords
+ */
+async function checkCustomerServiceKeywords(
+  message: any,
+  value: any,
+): Promise<void> {
+  if (message.type !== 'text') return;
+
+  const messageText = message.text?.body?.toLowerCase();
+  if (!messageText) return;
+
+  const urgentKeywords = [
+    'urgent',
+    'emergency',
+    'problem',
+    'issue',
+    'help',
+    'cancel',
+  ];
+  const isUrgent = urgentKeywords.some((keyword) =>
+    messageText.includes(keyword),
+  );
+
+  if (isUrgent) {
+    // Flag for immediate attention
+    await flagForImmediateAttention(message, value);
+  }
+}
+
+/**
+ * Send auto-reply message
+ */
+async function sendAutoReply(
+  to: string,
+  message: string,
+  phoneNumberId: string,
+): Promise<void> {
+  try {
+    const whatsappService = new WhatsAppService();
+    await whatsappService.sendMessage({
+      to,
+      message,
+    });
+
+    console.log(`Auto-reply sent to ${to}`);
+  } catch (error) {
+    console.error('Failed to send auto-reply:', error);
+  }
+}
+
+/**
+ * Flag message for immediate attention
+ */
+async function flagForImmediateAttention(
+  message: any,
+  value: any,
+): Promise<void> {
+  // This would integrate with your notification system
+  console.log(
+    `URGENT: Message from ${message.from} flagged for immediate attention`,
+  );
+
+  // Could trigger:
+  // - Slack notification
+  // - Email alert
+  // - Push notification
+  // - Dashboard alert
+}
+
+/**
+ * Notify users of incoming message
+ */
+async function notifyUsersOfIncomingMessage(
+  message: any,
+  value: any,
+): Promise<void> {
+  // This would integrate with your real-time notification system
+  console.log(
+    `New WhatsApp message notification for phone ${value.metadata.phone_number_id}`,
+  );
+
+  // Implementation would:
+  // - Find users responsible for this WhatsApp number
+  // - Send push notifications
+  // - Update real-time dashboard
+  // - Log activity
+}
+
+/**
+ * Update delivery analytics
+ */
+async function updateDeliveryAnalytics(status: any): Promise<void> {
+  // Update analytics in your database
+  console.log(
+    `Updating delivery analytics for message ${status.id}: ${status.status}`,
+  );
+
+  // Implementation would:
+  // - Update message delivery rates
+  // - Track response times
+  // - Update user dashboards
+  // - Generate reports
+}
+
+/**
+ * Handle failed message delivery
+ */
+async function handleFailedMessage(status: any): Promise<void> {
+  console.error(`WhatsApp message delivery failed:`, {
+    messageId: status.id,
+    recipient: status.recipient_id,
+    errors: status.errors,
+  });
+
+  // Implementation would:
+  // - Retry message if appropriate
+  // - Notify sender of failure
+  // - Log failure reason
+  // - Update user dashboard
+}
+
+/**
+ * Notify delivery confirmation
+ */
+async function notifyDeliveryConfirmation(status: any): Promise<void> {
+  console.log(`WhatsApp message ${status.status}: ${status.id}`);
+
+  // Implementation would:
+  // - Update sender dashboard
+  // - Show delivery confirmation
+  // - Update message status in UI
+  // - Track engagement metrics
+}

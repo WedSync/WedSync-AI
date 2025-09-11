@@ -1,0 +1,1032 @@
+openapi: 3.0.3
+info:
+  title: WedSync Guest Communications API
+  description: |
+    Production-ready Guest Communications API for WedSync platform.
+    Provides comprehensive messaging capabilities with compliance, monitoring, and abuse prevention.
+    
+    ## Features
+    - Multi-channel messaging (Email, SMS, Push, In-app)
+    - Template-based communications
+    - Bulk messaging with personalization
+    - Real-time delivery tracking
+    - CAN-SPAM and GDPR compliance
+    - Advanced rate limiting
+    - Comprehensive monitoring and analytics
+    
+    ## Rate Limiting
+    The API implements advanced rate limiting with multiple algorithms:
+    - **Token Bucket**: For burst handling
+    - **Sliding Window**: For precise rate control
+    - **Fixed Window**: For simple rate limiting
+    - **Leaky Bucket**: For traffic shaping
+    
+    Rate limits are applied per endpoint and user/IP combination.
+    
+    ## Compliance
+    Full compliance with international regulations:
+    - **GDPR** (EU): Consent management, data portability, right to erasure
+    - **CAN-SPAM** (US): Unsubscribe requirements, sender identification
+    - **CASL** (Canada): Express consent requirements
+    
+    ## Authentication
+    API uses JWT tokens or API keys for authentication:
+    ```
+    Authorization: Bearer <jwt-token>
+    X-API-Key: <api-key>
+    ```
+  version: '2.0.0'
+  contact:
+    name: WedSync API Support
+    email: api-support@wedsync.com
+    url: https://docs.wedsync.com/api
+  license:
+    name: Proprietary
+    url: https://wedsync.com/terms
+
+servers:
+  - url: https://api.wedsync.com
+    description: Production server
+  - url: https://staging-api.wedsync.com
+    description: Staging server
+  - url: http://localhost:3000/api
+    description: Development server
+
+security:
+  - BearerAuth: []
+  - ApiKeyAuth: []
+
+paths:
+  /communications/messages/send:
+    post:
+      tags:
+        - Messages
+      summary: Send individual message
+      description: |
+        Send a single message to a recipient via specified channel.
+        
+        **Rate Limit**: 100 requests per minute
+        **Compliance**: Automatic compliance checks applied
+      operationId: sendMessage
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendMessageRequest'
+            examples:
+              email_message:
+                summary: Email message example
+                value:
+                  recipientId: "guest-123"
+                  recipientEmail: "guest@example.com"
+                  subject: "Wedding Update"
+                  content: "Your wedding details have been updated."
+                  type: "email"
+                  metadata:
+                    weddingId: "wedding-456"
+                    priority: "normal"
+              sms_message:
+                summary: SMS message example
+                value:
+                  recipientId: "guest-123"
+                  recipientPhone: "+1234567890"
+                  content: "Wedding reminder: Your event is tomorrow!"
+                  type: "sms"
+                  metadata:
+                    weddingId: "wedding-456"
+      responses:
+        '200':
+          description: Message sent successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /communications/messages/bulk:
+    post:
+      tags:
+        - Messages
+      summary: Send bulk messages
+      description: |
+        Send messages to multiple recipients with template support.
+        
+        **Rate Limit**: 10 requests per minute
+        **Max Recipients**: 1000 per request
+      operationId: sendBulkMessages
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BulkMessageRequest'
+      responses:
+        '200':
+          description: Bulk messages queued successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BulkMessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /communications/messages/template:
+    post:
+      tags:
+        - Messages
+      summary: Send template-based message
+      description: |
+        Send a message using a predefined template with variable substitution.
+        
+        **Rate Limit**: 200 requests per minute
+      operationId: sendTemplateMessage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TemplateMessageRequest'
+      responses:
+        '200':
+          description: Template message sent successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+
+  /communications/messages/{messageId}:
+    get:
+      tags:
+        - Messages
+      summary: Get message status
+      description: Retrieve detailed status and delivery information for a message
+      operationId: getMessageStatus
+      parameters:
+        - name: messageId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Unique message identifier
+      responses:
+        '200':
+          description: Message status retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageStatus'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /communications/messages:
+    get:
+      tags:
+        - Messages
+      summary: List messages
+      description: |
+        Retrieve a list of messages with filtering and pagination support.
+        
+        **Rate Limit**: 500 requests per minute
+      operationId: listMessages
+      parameters:
+        - name: userId
+          in: query
+          schema:
+            type: string
+          description: Filter by user ID
+        - name: weddingId
+          in: query
+          schema:
+            type: string
+          description: Filter by wedding ID
+        - name: type
+          in: query
+          schema:
+            $ref: '#/components/schemas/MessageType'
+          description: Filter by message type
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/MessageStatus'
+          description: Filter by message status
+        - name: startDate
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: Filter messages after this date
+        - name: endDate
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: Filter messages before this date
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+          description: Number of results to return
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+          description: Number of results to skip
+      responses:
+        '200':
+          description: Messages retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageList'
+
+  /communications/compliance/consent:
+    post:
+      tags:
+        - Compliance
+      summary: Record consent
+      description: |
+        Record user consent for messaging in compliance with GDPR and other regulations.
+        
+        **Compliance**: GDPR Article 6, 7 requirements
+      operationId: recordConsent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConsentRequest'
+      responses:
+        '200':
+          description: Consent recorded successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsentResponse'
+
+  /communications/compliance/unsubscribe:
+    post:
+      tags:
+        - Compliance
+      summary: Process unsubscribe request
+      description: |
+        Process unsubscribe request in compliance with CAN-SPAM Act.
+        
+        **Compliance**: CAN-SPAM 10-day processing requirement
+      operationId: unsubscribe
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UnsubscribeRequest'
+      responses:
+        '200':
+          description: Unsubscribe processed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnsubscribeResponse'
+
+  /communications/compliance/data-request:
+    post:
+      tags:
+        - Compliance
+      summary: Submit GDPR data request
+      description: |
+        Submit a GDPR data request (access, portability, deletion, rectification).
+        
+        **Compliance**: GDPR Articles 15-22
+      operationId: submitDataRequest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DataRequest'
+      responses:
+        '200':
+          description: Data request submitted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataRequestResponse'
+
+  /communications/compliance/check:
+    post:
+      tags:
+        - Compliance
+      summary: Check compliance status
+      description: |
+        Check if a specific action is compliant before execution.
+        
+        **Rate Limit**: 500 requests per minute
+      operationId: checkCompliance
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ComplianceCheckRequest'
+      responses:
+        '200':
+          description: Compliance check completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComplianceCheckResponse'
+
+  /communications/analytics:
+    get:
+      tags:
+        - Analytics
+      summary: Get communication analytics
+      description: |
+        Retrieve comprehensive analytics for communication campaigns.
+        
+        **Rate Limit**: 100 requests per minute
+      operationId: getAnalytics
+      parameters:
+        - name: weddingId
+          in: query
+          schema:
+            type: string
+          description: Filter by wedding ID
+        - name: startDate
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+          description: Analytics start date
+        - name: endDate
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+          description: Analytics end date
+        - name: groupBy
+          in: query
+          schema:
+            type: string
+            enum: [day, week, month, channel, type]
+            default: day
+          description: Group analytics by time period or attribute
+      responses:
+        '200':
+          description: Analytics retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalyticsResponse'
+
+  /communications/health:
+    get:
+      tags:
+        - Monitoring
+      summary: Get system health status
+      description: |
+        Retrieve current health status of the communication system.
+        
+        **Public Endpoint**: No authentication required
+      operationId: getHealthStatus
+      security: []
+      responses:
+        '200':
+          description: Health status retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token for authenticated requests
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key for service-to-service authentication
+
+  schemas:
+    SendMessageRequest:
+      type: object
+      required:
+        - recipientId
+        - content
+        - type
+      properties:
+        recipientId:
+          type: string
+          description: Unique identifier for the message recipient
+          example: "guest-123"
+        recipientEmail:
+          type: string
+          format: email
+          description: Recipient email address (required for email type)
+          example: "guest@example.com"
+        recipientPhone:
+          type: string
+          pattern: '^\\+?[1-9]\\d{1,14}$'
+          description: Recipient phone number (required for SMS type)
+          example: "+1234567890"
+        subject:
+          type: string
+          maxLength: 998
+          description: Message subject (email only)
+          example: "Wedding Update"
+        content:
+          type: string
+          maxLength: 10000
+          description: Message content
+          example: "Your wedding details have been updated."
+        type:
+          $ref: '#/components/schemas/MessageType'
+        priority:
+          type: string
+          enum: [low, normal, high, urgent]
+          default: normal
+          description: Message priority level
+        scheduledFor:
+          type: string
+          format: date-time
+          description: Schedule message for future delivery
+        metadata:
+          type: object
+          description: Additional metadata for the message
+          properties:
+            weddingId:
+              type: string
+              description: Associated wedding ID
+            campaignId:
+              type: string
+              description: Campaign identifier
+            trackOpens:
+              type: boolean
+              default: true
+              description: Track message opens
+            trackClicks:
+              type: boolean
+              default: true
+              description: Track link clicks
+
+    BulkMessageRequest:
+      type: object
+      required:
+        - recipients
+        - subject
+        - content
+        - type
+      properties:
+        recipients:
+          type: array
+          maxItems: 1000
+          items:
+            $ref: '#/components/schemas/BulkRecipient'
+          description: List of message recipients
+        subject:
+          type: string
+          maxLength: 998
+          description: Message subject template
+          example: "Hello {{name}}, wedding update!"
+        content:
+          type: string
+          maxLength: 10000
+          description: Message content template
+          example: "Hi {{name}}, your wedding on {{date}} has been updated."
+        type:
+          $ref: '#/components/schemas/MessageType'
+        sendAt:
+          type: string
+          format: date-time
+          description: Schedule bulk send for specific time
+        batchSize:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 50
+          description: Number of messages to send per batch
+        batchDelay:
+          type: integer
+          minimum: 0
+          maximum: 3600
+          default: 60
+          description: Delay between batches in seconds
+
+    BulkRecipient:
+      type: object
+      required:
+        - id
+        - email
+      properties:
+        id:
+          type: string
+          description: Recipient ID
+        email:
+          type: string
+          format: email
+          description: Recipient email
+        phone:
+          type: string
+          description: Recipient phone (for SMS)
+        variables:
+          type: object
+          description: Template variables for personalization
+          additionalProperties:
+            type: string
+
+    TemplateMessageRequest:
+      type: object
+      required:
+        - templateId
+        - recipientEmail
+      properties:
+        templateId:
+          type: string
+          description: ID of the message template to use
+          example: "wedding-invitation"
+        recipientEmail:
+          type: string
+          format: email
+          description: Recipient email address
+        recipientPhone:
+          type: string
+          description: Recipient phone number (for SMS templates)
+        variables:
+          type: object
+          description: Variables to substitute in the template
+          additionalProperties:
+            type: string
+          example:
+            guestName: "John Doe"
+            weddingDate: "2024-06-15"
+            venue: "Grand Ballroom"
+        scheduledFor:
+          type: string
+          format: date-time
+          description: Schedule message for future delivery
+
+    MessageResponse:
+      type: object
+      properties:
+        messageId:
+          type: string
+          format: uuid
+          description: Unique message identifier
+        status:
+          $ref: '#/components/schemas/MessageStatus'
+        sentAt:
+          type: string
+          format: date-time
+          description: Message send timestamp
+        estimatedDelivery:
+          type: string
+          format: date-time
+          description: Estimated delivery time
+        trackingUrl:
+          type: string
+          format: uri
+          description: URL for tracking message status
+
+    BulkMessageResponse:
+      type: object
+      properties:
+        batchId:
+          type: string
+          format: uuid
+          description: Bulk message batch identifier
+        totalMessages:
+          type: integer
+          description: Total number of messages in batch
+        queuedMessages:
+          type: integer
+          description: Number of messages successfully queued
+        failedMessages:
+          type: integer
+          description: Number of messages that failed validation
+        estimatedCompletion:
+          type: string
+          format: date-time
+          description: Estimated batch completion time
+        trackingUrl:
+          type: string
+          format: uri
+          description: URL for tracking batch progress
+
+    MessageStatus:
+      type: object
+      properties:
+        messageId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [queued, sending, sent, delivered, failed, bounced, complained]
+          description: Current message status
+        channel:
+          $ref: '#/components/schemas/MessageType'
+        recipient:
+          type: string
+          description: Message recipient
+        sentAt:
+          type: string
+          format: date-time
+        deliveredAt:
+          type: string
+          format: date-time
+        openedAt:
+          type: string
+          format: date-time
+        clickedAt:
+          type: string
+          format: date-time
+        lastUpdated:
+          type: string
+          format: date-time
+        deliveryAttempts:
+          type: integer
+          description: Number of delivery attempts
+        errorMessage:
+          type: string
+          description: Error message if delivery failed
+        metadata:
+          type: object
+          description: Additional message metadata
+
+    MessageList:
+      type: object
+      properties:
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/MessageStatus'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+        totalCount:
+          type: integer
+          description: Total number of messages matching filters
+
+    ConsentRequest:
+      type: object
+      required:
+        - email
+        - consentType
+        - granted
+      properties:
+        email:
+          type: string
+          format: email
+        consentType:
+          type: string
+          enum: [marketing, transactional, all]
+        granted:
+          type: boolean
+        ipAddress:
+          type: string
+          format: ipv4
+        userAgent:
+          type: string
+        jurisdiction:
+          type: string
+          enum: [US, EU, UK, CA]
+
+    ConsentResponse:
+      type: object
+      properties:
+        consentId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [granted, revoked]
+        validUntil:
+          type: string
+          format: date-time
+        recordedAt:
+          type: string
+          format: date-time
+
+    UnsubscribeRequest:
+      type: object
+      required:
+        - email
+      properties:
+        email:
+          type: string
+          format: email
+        listId:
+          type: string
+          description: Specific list to unsubscribe from (optional)
+        reason:
+          type: string
+          enum: [too_frequent, not_relevant, privacy, other]
+        feedback:
+          type: string
+          maxLength: 500
+
+    UnsubscribeResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        confirmationSent:
+          type: boolean
+        processedAt:
+          type: string
+          format: date-time
+
+    DataRequest:
+      type: object
+      required:
+        - email
+        - requestType
+      properties:
+        email:
+          type: string
+          format: email
+        requestType:
+          type: string
+          enum: [access, portability, deletion, rectification]
+        verificationToken:
+          type: string
+          description: Token from verification email
+        details:
+          type: string
+          description: Additional details for rectification requests
+
+    DataRequestResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        requiresVerification:
+          type: boolean
+        requestId:
+          type: string
+          format: uuid
+        estimatedCompletion:
+          type: string
+
+    ComplianceCheckRequest:
+      type: object
+      required:
+        - email
+        - action
+        - jurisdiction
+      properties:
+        email:
+          type: string
+          format: email
+        action:
+          type: string
+          enum: [send_marketing, send_transactional, collect_data, share_data]
+        jurisdiction:
+          type: string
+          enum: [US, EU, UK, CA]
+
+    ComplianceCheckResponse:
+      type: object
+      properties:
+        allowed:
+          type: boolean
+        requirements:
+          type: array
+          items:
+            type: string
+        jurisdiction:
+          type: string
+        complianceScore:
+          type: integer
+          minimum: 0
+          maximum: 100
+
+    AnalyticsResponse:
+      type: object
+      properties:
+        summary:
+          type: object
+          properties:
+            totalMessages:
+              type: integer
+            deliveryRate:
+              type: number
+              format: float
+            openRate:
+              type: number
+              format: float
+            clickRate:
+              type: number
+              format: float
+            bounceRate:
+              type: number
+              format: float
+            complaintRate:
+              type: number
+              format: float
+        timeSeries:
+          type: array
+          items:
+            type: object
+            properties:
+              date:
+                type: string
+                format: date
+              sent:
+                type: integer
+              delivered:
+                type: integer
+              opened:
+                type: integer
+              clicked:
+                type: integer
+              bounced:
+                type: integer
+        channels:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              sent:
+                type: integer
+              delivered:
+                type: integer
+              deliveryRate:
+                type: number
+
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+        timestamp:
+          type: string
+          format: date-time
+        metrics:
+          type: object
+          properties:
+            errorRate:
+              type: number
+              format: float
+            deliveryRate:
+              type: number
+              format: float
+            queueSize:
+              type: integer
+            messagesProcessed:
+              type: integer
+        services:
+          type: object
+          properties:
+            email:
+              $ref: '#/components/schemas/ServiceHealth'
+            sms:
+              $ref: '#/components/schemas/ServiceHealth'
+            database:
+              $ref: '#/components/schemas/ServiceHealth'
+            redis:
+              $ref: '#/components/schemas/ServiceHealth'
+
+    ServiceHealth:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [up, down, degraded]
+        latency:
+          type: number
+          format: float
+          description: Response time in milliseconds
+        lastChecked:
+          type: string
+          format: date-time
+
+    MessageType:
+      type: string
+      enum: [email, sms, push, in_app]
+      description: Type of message channel
+
+    Pagination:
+      type: object
+      properties:
+        limit:
+          type: integer
+        offset:
+          type: integer
+        hasMore:
+          type: boolean
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+        code:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        requestId:
+          type: string
+          format: uuid
+
+  responses:
+    BadRequest:
+      description: Bad request - invalid parameters or request body
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: "Bad Request"
+            message: "Invalid email address format"
+            code: "INVALID_EMAIL"
+            timestamp: "2024-01-15T10:00:00Z"
+
+    Unauthorized:
+      description: Unauthorized - invalid or missing authentication
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    RateLimited:
+      description: Rate limit exceeded
+      headers:
+        X-RateLimit-Limit:
+          schema:
+            type: integer
+          description: Request limit per window
+        X-RateLimit-Remaining:
+          schema:
+            type: integer
+          description: Remaining requests in current window
+        X-RateLimit-Reset:
+          schema:
+            type: string
+            format: date-time
+          description: Window reset time
+        Retry-After:
+          schema:
+            type: integer
+          description: Seconds to wait before retrying
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+tags:
+  - name: Messages
+    description: Core messaging operations
+  - name: Compliance
+    description: GDPR and CAN-SPAM compliance features
+  - name: Analytics
+    description: Communication analytics and reporting
+  - name: Monitoring
+    description: System health and monitoring endpoints
+
+externalDocs:
+  description: Complete API Documentation
+  url: https://docs.wedsync.com/api/communications

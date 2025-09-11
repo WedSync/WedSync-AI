@@ -1,0 +1,308 @@
+// Types for Vendor-Specific Schedule Views
+
+export interface VendorSpecificScheduleViewProps {
+  schedule: SupplierSchedule
+  vendorData: any
+  onConfirmSchedule: (confirmation: ScheduleConfirmation) => void
+  onRequestChange: (change: ScheduleChangeRequest) => void
+  onUpdateStatus: (status: string) => void
+}
+
+export interface ScheduleConfirmation {
+  scheduleId: string
+  supplierId: string
+  confirmedAt: Date
+  status: 'confirmed' | 'conditional' | 'declined'
+  notes?: string
+  conditions?: string[]
+  signedBy: string
+  digitalSignature?: string
+}
+
+export interface ScheduleChangeRequest {
+  id: string
+  scheduleItemId: string
+  requestType: 'time_change' | 'location_change' | 'equipment_change' | 'cancellation' | 'addition'
+  currentValue: any
+  requestedValue: any
+  reason: string
+  priority: 'low' | 'medium' | 'high' | 'urgent'
+  requestedBy: string
+  requestedAt: Date
+  additionalNotes?: string
+}
+
+export interface SupplierSchedule {
+  supplierId: string
+  supplierType: string
+  supplierName: string
+  scheduleItems: SupplierScheduleItem[]
+  totalDuration: number
+  conflicts: ScheduleConflict[]
+  recommendations: string[]
+  generatedAt: Date
+}
+
+export interface SupplierScheduleItem {
+  id: string
+  title: string
+  phase: SchedulePhase
+  startTime: Date
+  endTime: Date
+  location: string
+  description: string
+  eventId?: string
+  dependencies: string[]
+  equipment: string[]
+  notes: string[]
+  priority: 'high' | 'medium' | 'low'
+  travelTime?: number
+  isBufferTime?: boolean
+  vendorSpecificData?: any
+}
+
+export interface ScheduleConflict {
+  id: string
+  type: 'overlap' | 'travel' | 'equipment' | 'dependency'
+  severity: 'high' | 'medium' | 'low'
+  description: string
+  items: string[]
+  suggestion: string
+}
+
+export type SchedulePhase = 
+  | 'arrival' 
+  | 'setup' 
+  | 'preparation' 
+  | 'performance' 
+  | 'breakdown' 
+  | 'travel' 
+  | 'break'
+
+export type VendorScheduleViewType = 
+  | 'photographer'
+  | 'dj'
+  | 'caterer'
+  | 'florist'
+  | 'coordinator'
+  | 'transport'
+
+// Vendor-Specific Data Interfaces
+
+export interface PhotographerScheduleData {
+  shotList: ShotListItem[]
+  equipmentChecklist: EquipmentItem[]
+  lightingNotes: LightingNote[]
+  timelineMarkers: TimelineMarker[]
+}
+
+export interface ShotListItem {
+  id: string
+  title: string
+  description: string
+  location: string
+  timeSlot: string
+  participants: string[]
+  equipment: string[]
+  priority: number
+  completed: boolean
+}
+
+export interface DJScheduleData {
+  playlist: PlaylistItem[]
+  equipmentStatus: EquipmentStatus[]
+  volumeCues: VolumeCue[]
+  announcements: AnnouncementCue[]
+}
+
+export interface PlaylistItem {
+  id: string
+  songTitle: string
+  artist: string
+  duration: number
+  scheduledTime: string
+  eventPhase: string
+  notes?: string
+}
+
+export interface CatererScheduleData {
+  menuTimeline: MenuTimelineItem[]
+  dietaryAlerts: DietaryAlert[]
+  servicePhases: ServicePhase[]
+  staffAssignments: StaffAssignment[]
+}
+
+export interface MenuTimelineItem {
+  id: string
+  dishName: string
+  prepTime: number
+  cookTime: number
+  serviceTime: string
+  servingSize: number
+  specialRequirements: string[]
+}
+
+export interface FloristScheduleData {
+  arrangements: ArrangementItem[]
+  installationPhases: InstallationPhase[]
+  setupChecklist: ChecklistItem[]
+}
+
+export interface ArrangementItem {
+  id: string
+  type: string
+  location: string
+  installTime: string
+  description: string
+  flowers: string[]
+  completed: boolean
+}
+
+export interface CoordinatorScheduleData {
+  vendorStatuses: VendorStatus[]
+  communicationLog: CommunicationEntry[]
+  checklistItems: ChecklistItem[]
+  emergencyContacts: EmergencyContact[]
+}
+
+export interface VendorStatus {
+  vendorId: string
+  vendorName: string
+  status: 'not_started' | 'on_time' | 'delayed' | 'completed' | 'issue'
+  lastUpdate: Date
+  notes?: string
+}
+
+export interface TransportScheduleData {
+  routes: RouteItem[]
+  passengerManifest: PassengerItem[]
+  vehicleInfo: VehicleInfo
+  pickupSchedule: PickupItem[]
+}
+
+export interface RouteItem {
+  id: string
+  from: string
+  to: string
+  estimatedDuration: number
+  distance: number
+  traffic: 'light' | 'moderate' | 'heavy'
+  alternateRoute?: string
+}
+
+// Common supporting interfaces
+export interface EquipmentItem {
+  id: string
+  name: string
+  status: 'ready' | 'needs_check' | 'issue' | 'missing'
+  notes?: string
+}
+
+export interface LightingNote {
+  location: string
+  conditions: string
+  equipment: string[]
+  settings: string
+}
+
+export interface TimelineMarker {
+  time: string
+  event: string
+  importance: 'high' | 'medium' | 'low'
+}
+
+export interface EquipmentStatus {
+  item: string
+  status: 'working' | 'issue' | 'needs_setup'
+  notes?: string
+}
+
+export interface VolumeCue {
+  time: string
+  level: number
+  reason: string
+}
+
+export interface AnnouncementCue {
+  time: string
+  announcement: string
+  priority: number
+}
+
+export interface DietaryAlert {
+  guestName: string
+  restriction: string
+  severity: 'allergy' | 'preference' | 'religious'
+  notes?: string
+}
+
+export interface ServicePhase {
+  name: string
+  startTime: string
+  duration: number
+  staff: number
+  notes?: string
+}
+
+export interface StaffAssignment {
+  staffMember: string
+  role: string
+  startTime: string
+  endTime: string
+}
+
+export interface InstallationPhase {
+  phase: string
+  startTime: string
+  duration: number
+  requirements: string[]
+}
+
+export interface ChecklistItem {
+  id: string
+  task: string
+  completed: boolean
+  assignedTo?: string
+  dueTime?: string
+  priority: number
+}
+
+export interface CommunicationEntry {
+  timestamp: Date
+  from: string
+  to: string
+  message: string
+  type: 'text' | 'call' | 'email'
+  urgent: boolean
+}
+
+export interface EmergencyContact {
+  name: string
+  role: string
+  phone: string
+  email?: string
+}
+
+export interface PassengerItem {
+  name: string
+  pickupLocation: string
+  pickupTime: string
+  phone: string
+  specialRequirements?: string
+}
+
+export interface VehicleInfo {
+  type: string
+  capacity: number
+  license: string
+  driverName: string
+  driverPhone: string
+}
+
+export interface PickupItem {
+  id: string
+  location: string
+  time: string
+  passengers: string[]
+  notes?: string
+}

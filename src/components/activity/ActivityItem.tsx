@@ -1,0 +1,289 @@
+'use client';
+
+import { useState } from 'react';
+import { format, formatDistanceToNow } from 'date-fns';
+import { Card } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Avatar } from '@/components/ui/avatar';
+import {
+  Eye,
+  EyeOff,
+  MoreVertical,
+  User,
+  Calendar,
+  FileText,
+  MessageCircle,
+  CreditCard,
+  Settings,
+  ExternalLink,
+  Clock,
+} from 'lucide-react';
+import { ActivityFeed as ActivityFeedType } from '@/types/communications';
+import { cn } from '@/lib/utils';
+
+interface ActivityItemProps {
+  activity: ActivityFeedType;
+  isRead: boolean;
+  showEntityInfo?: boolean;
+  compact?: boolean;
+  showActions?: boolean;
+  onClick?: () => void;
+  onMarkAsRead?: () => void;
+  onViewDetails?: () => void;
+}
+
+const ACTIVITY_ICONS = {
+  // Client activities
+  client_created: User,
+  client_updated: User,
+  client_deleted: User,
+
+  // Form activities
+  form_submitted: FileText,
+  form_created: FileText,
+  form_updated: FileText,
+
+  // Message activities
+  message_sent: MessageCircle,
+  message_received: MessageCircle,
+
+  // Booking activities
+  booking_created: Calendar,
+  booking_updated: Calendar,
+  booking_cancelled: Calendar,
+  booking_confirmed: Calendar,
+
+  // Payment activities
+  payment_received: CreditCard,
+  payment_failed: CreditCard,
+  payment_refunded: CreditCard,
+
+  // System activities
+  system_notification: Settings,
+  email_sent: MessageCircle,
+
+  // Default
+  default: FileText,
+} as const;
+
+const ENTITY_TYPE_LABELS = {
+  client: 'Client',
+  vendor: 'Vendor',
+  form: 'Form',
+  message: 'Message',
+  booking: 'Booking',
+  payment: 'Payment',
+} as const;
+
+const ACTOR_TYPE_LABELS = {
+  client: 'Client',
+  vendor: 'Team Member',
+  system: 'System',
+} as const;
+
+export function ActivityItem({
+  activity,
+  isRead,
+  showEntityInfo = true,
+  compact = false,
+  showActions = true,
+  onClick,
+  onMarkAsRead,
+  onViewDetails,
+}: ActivityItemProps) {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  const IconComponent =
+    ACTIVITY_ICONS[activity.activity_type as keyof typeof ACTIVITY_ICONS] ||
+    ACTIVITY_ICONS.default;
+  const entityTypeLabel =
+    ENTITY_TYPE_LABELS[
+      activity.entity_type as keyof typeof ENTITY_TYPE_LABELS
+    ] || activity.entity_type;
+  const actorTypeLabel =
+    ACTOR_TYPE_LABELS[activity.actor_type as keyof typeof ACTOR_TYPE_LABELS] ||
+    activity.actor_type;
+
+  const formattedTime = formatDistanceToNow(new Date(activity.created_at), {
+    addSuffix: true,
+  });
+  const fullTime = format(new Date(activity.created_at), 'PPpp');
+
+  const handleCardClick = () => {
+    if (!isRead && onMarkAsRead) {
+      onMarkAsRead();
+    }
+    onClick?.();
+  };
+
+  const handleToggleExpanded = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setIsExpanded(!isExpanded);
+  };
+
+  const handleMarkAsRead = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    onMarkAsRead?.();
+  };
+
+  const handleViewDetails = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    onViewDetails?.();
+  };
+
+  const iconColor = activity.color || '#6b7280';
+  const hasDescription =
+    activity.description && activity.description.trim().length > 0;
+  const hasData = activity.data && Object.keys(activity.data).length > 0;
+
+  return (
+    <Card
+      className={cn(
+        'group transition-all duration-200 cursor-pointer hover:shadow-md',
+        !isRead && 'ring-2 ring-blue-200 bg-blue-50/50',
+        compact && 'p-3',
+        !compact && 'p-4',
+      )}
+      onClick={handleCardClick}
+    >
+      <div className="flex items-start space-x-3">
+        {/* Activity Icon */}
+        <div
+          className={cn(
+            'flex items-center justify-center rounded-full flex-shrink-0',
+            compact ? 'w-8 h-8' : 'w-10 h-10',
+          )}
+          style={{ backgroundColor: `${iconColor}20` }}
+        >
+          <IconComponent
+            className={cn(compact ? 'w-4 h-4' : 'w-5 h-5')}
+            style={{ color: iconColor }}
+          />
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-start justify-between">
+            <div className="flex-1 min-w-0">
+              {/* Title and badges */}
+              <div className="flex items-center space-x-2 mb-1">
+                <h4
+                  className={cn(
+                    'font-medium text-gray-900 truncate',
+                    compact ? 'text-sm' : 'text-base',
+                  )}
+                >
+                  {activity.title}
+                </h4>
+
+                {!isRead && (
+                  <Badge variant="secondary" className="text-xs px-1 py-0">
+                    New
+                  </Badge>
+                )}
+              </div>
+
+              {/* Actor and entity info */}
+              <div className="flex items-center space-x-2 mb-2">
+                {activity.actor_name && (
+                  <div className="flex items-center space-x-1 text-sm text-gray-600">
+                    <span>by</span>
+                    <span className="font-medium">{activity.actor_name}</span>
+                    <Badge variant="outline" className="text-xs">
+                      {actorTypeLabel}
+                    </Badge>
+                  </div>
+                )}
+
+                {showEntityInfo && (
+                  <div className="flex items-center space-x-1 text-sm text-gray-600">
+                    <span>•</span>
+                    <Badge variant="outline" className="text-xs">
+                      {entityTypeLabel}
+                    </Badge>
+                  </div>
+                )}
+              </div>
+
+              {/* Description */}
+              {hasDescription && (
+                <p
+                  className={cn(
+                    'text-gray-600 mb-2',
+                    compact ? 'text-sm' : 'text-base',
+                    !isExpanded && 'line-clamp-2',
+                  )}
+                >
+                  {activity.description}
+                </p>
+              )}
+
+              {/* Data preview */}
+              {hasData && isExpanded && (
+                <div className="mb-2">
+                  <div className="bg-gray-50 rounded-lg p-3 text-sm">
+                    <div className="font-medium text-gray-700 mb-1">
+                      Additional Data:
+                    </div>
+                    <pre className="text-xs text-gray-600 whitespace-pre-wrap">
+                      {JSON.stringify(activity.data, null, 2)}
+                    </pre>
+                  </div>
+                </div>
+              )}
+
+              {/* Time */}
+              <div className="flex items-center space-x-1 text-xs text-gray-500">
+                <Clock className="w-3 h-3" />
+                <span title={fullTime}>{formattedTime}</span>
+              </div>
+            </div>
+
+            {/* Actions */}
+            {showActions && (
+              <div className="flex items-center space-x-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                {!isRead && onMarkAsRead && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={handleMarkAsRead}
+                    title="Mark as read"
+                  >
+                    <Eye className="w-4 h-4" />
+                  </Button>
+                )}
+
+                {(hasDescription || hasData) && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={handleToggleExpanded}
+                    title={isExpanded ? 'Collapse' : 'Expand'}
+                  >
+                    {isExpanded ? (
+                      <span className="text-xs">Less</span>
+                    ) : (
+                      <span className="text-xs">More</span>
+                    )}
+                  </Button>
+                )}
+
+                {onViewDetails && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={handleViewDetails}
+                    title="View details"
+                  >
+                    <ExternalLink className="w-4 h-4" />
+                  </Button>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </Card>
+  );
+}

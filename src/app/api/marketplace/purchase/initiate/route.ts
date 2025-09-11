@@ -1,0 +1,575 @@
+/**
+ * WS-115: Marketplace Template Purchase Initiation API
+ *
+ * POST /api/marketplace/purchase/initiate
+ *
+ * Initiates a purchase flow for marketplace templates with secure Stripe checkout
+ * Validates template availability, creates purchase session, and handles pricing
+ *
+ * Team C - Batch 9 - Round 1
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import Stripe from 'stripe';
+import { createClient } from '@supabase/supabase-js';
+import { withRateLimit } from '@/lib/api-middleware';
+import { generateSecureToken } from '@/lib/crypto-utils';
+import { auditPayment } from '@/lib/security-audit-logger';
+
+// Initialize Stripe
+const stripe = process.env.STRIPE_SECRET_KEY
+  ? new Stripe(process.env.STRIPE_SECRET_KEY, {
+      apiVersion: '2024-12-18.acacia',
+    })
+  : null;
+
+if (!stripe) {
+  console.warn(
+    'STRIPE_SECRET_KEY is not configured - Template purchases will not work',
+  );
+}
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+);
+
+// =====================================================================================
+// REQUEST/RESPONSE INTERFACES
+// =====================================================================================
+
+interface PurchaseInitiateRequest {
+  template_id: string;
+  return_url?: string;
+  promotional_code?: string;
+  client_reference_id?: string; // For tracking purposes
+}
+
+interface PurchaseInitiateResponse {
+  success: boolean;
+  checkout_url?: string;
+  session_id?: string;
+  purchase_id?: string;
+  template_details?: {
+    title: string;
+    price_cents: number;
+    currency: string;
+    creator_name: string;
+  };
+  error?: string;
+}
+
+// =====================================================================================
+// API HANDLERS
+// =====================================================================================
+
+export async function POST(request: NextRequest) {
+  // Check if Stripe is configured
+  if (!stripe) {
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Payment processing is not configured',
+      },
+      { status: 503 },
+    );
+  }
+
+  // Apply rate limiting for purchase endpoints
+  return withRateLimit(
+    request,
+    { limit: 10, type: 'purchase' }, // 10 purchase attempts per minute
+    async () => {
+      try {
+        // Authentication check
+        const authResult = await verifyAuthentication(request);
+        if (!authResult.valid) {
+          return NextResponse.json(
+            {
+              success: false,
+              error: authResult.error,
+            },
+            { status: authResult.status || 401 },
+          );
+        }
+
+        const { user, customer } = authResult;
+
+        // Parse and validate request
+        const body: PurchaseInitiateRequest = await request.json();
+
+        const validation = validatePurchaseRequest(body);
+        if (!validation.valid) {
+          return NextResponse.json(
+            {
+              success: false,
+              error: validation.error,
+            },
+            { status: 400 },
+          );
+        }
+
+        // Generate unique purchase ID
+        const purchaseId = generateSecureToken(16);
+        const idempotencyKey = `purchase_${user.id}_${body.template_id}_${Date.now()}`;
+
+        // Fetch template details and verify availability
+        const templateResult = await fetchTemplateDetails(body.template_id);
+        if (!templateResult.success) {
+          return NextResponse.json(
+            {
+              success: false,
+              error: templateResult.error,
+            },
+            { status: templateResult.status || 404 },
+          );
+        }
+
+        const template = templateResult.template!;
+
+        // Check if user already owns this template
+        const ownershipCheck = await checkTemplateOwnership(
+          user.id,
+          body.template_id,
+        );
+        if (ownershipCheck.alreadyOwned) {
+          return NextResponse.json(
+            {
+              success: false,
+              error: 'You already own this template',
+            },
+            { status: 409 },
+          );
+        }
+
+        // Calculate final price (apply promotional codes if provided)
+        const pricingResult = await calculateFinalPrice(
+          template.price_cents,
+          body.promotional_code,
+        );
+
+        // Create purchase record in pending state
+        const { data: purchaseRecord, error: purchaseError } = await supabase
+          .from('marketplace_purchases')
+          .insert({
+            id: purchaseId,
+            customer_id: customer.id,
+            template_id: body.template_id,
+            creator_id: template.creator_id,
+            status: 'pending',
+            original_price_cents: template.price_cents,
+            final_price_cents: pricingResult.final_price_cents,
+            currency: template.currency,
+            promotional_code: body.promotional_code,
+            discount_amount_cents: pricingResult.discount_amount_cents,
+            client_reference_id: body.client_reference_id,
+            initiated_at: new Date().toISOString(),
+          })
+          .select()
+          .single();
+
+        if (purchaseError) {
+          console.error('Failed to create purchase record:', purchaseError);
+          throw new Error('Failed to initialize purchase');
+        }
+
+        // Log purchase initiation
+        await auditPayment.purchaseInitiated(
+          user.id,
+          customer.organization_id,
+          {
+            purchase_id: purchaseId,
+            template_id: body.template_id,
+            template_title: template.title,
+            price_cents: pricingResult.final_price_cents,
+            currency: template.currency,
+            creator_id: template.creator_id,
+          },
+          request,
+        );
+
+        // Create Stripe checkout session
+        const origin =
+          request.headers.get('origin') ||
+          process.env.NEXT_PUBLIC_APP_URL ||
+          'http://localhost:3000';
+        const successUrl = body.return_url
+          ? `${body.return_url}?purchase_id=${purchaseId}&success=true`
+          : `${origin}/marketplace/purchase/success?purchase_id=${purchaseId}`;
+        const cancelUrl = body.return_url
+          ? `${body.return_url}?purchase_id=${purchaseId}&canceled=true`
+          : `${origin}/marketplace/templates/${body.template_id}?purchase_canceled=true`;
+
+        const session = await stripe.checkout.sessions.create(
+          {
+            customer: customer.stripe_customer_id,
+            payment_method_types: ['card'],
+            line_items: [
+              {
+                price_data: {
+                  currency: template.currency.toLowerCase(),
+                  product_data: {
+                    name: template.title,
+                    description: template.description,
+                    images: template.preview_images || [],
+                    metadata: {
+                      template_id: body.template_id,
+                      creator_id: template.creator_id,
+                      purchase_id: purchaseId,
+                    },
+                  },
+                  unit_amount: pricingResult.final_price_cents,
+                },
+                quantity: 1,
+              },
+            ],
+            mode: 'payment', // One-time payment, not subscription
+            success_url: successUrl,
+            cancel_url: cancelUrl,
+            allow_promotion_codes: true,
+            billing_address_collection: 'auto',
+            customer_update: {
+              address: 'auto',
+              name: 'auto',
+            },
+            metadata: {
+              purchase_id: purchaseId,
+              template_id: body.template_id,
+              creator_id: template.creator_id,
+              customer_id: customer.id,
+              purchase_type: 'template',
+            },
+            payment_intent_data: {
+              metadata: {
+                purchase_id: purchaseId,
+                template_id: body.template_id,
+                creator_id: template.creator_id,
+              },
+            },
+          },
+          {
+            idempotencyKey: idempotencyKey,
+          },
+        );
+
+        // Update purchase record with Stripe session ID
+        await supabase
+          .from('marketplace_purchases')
+          .update({
+            stripe_session_id: session.id,
+            checkout_url: session.url,
+          })
+          .eq('id', purchaseId);
+
+        // Log successful checkout session creation
+        await auditPayment.checkoutSuccess(
+          user.id,
+          customer.organization_id,
+          {
+            session_id: session.id,
+            purchase_id: purchaseId,
+            template_id: body.template_id,
+            price_cents: pricingResult.final_price_cents,
+            currency: template.currency,
+          },
+          request,
+        );
+
+        const response: PurchaseInitiateResponse = {
+          success: true,
+          checkout_url: session.url!,
+          session_id: session.id,
+          purchase_id: purchaseId,
+          template_details: {
+            title: template.title,
+            price_cents: pricingResult.final_price_cents,
+            currency: template.currency,
+            creator_name: template.creator_name,
+          },
+        };
+
+        return NextResponse.json(response);
+      } catch (error: unknown) {
+        const errorMessage =
+          error instanceof Error ? error.message : 'Unknown error';
+        console.error('Purchase initiation error:', errorMessage, error);
+
+        return NextResponse.json(
+          {
+            success: false,
+            error: 'Failed to initiate purchase. Please try again.',
+          },
+          { status: 500 },
+        );
+      }
+    },
+  );
+}
+
+// =====================================================================================
+// HELPER FUNCTIONS
+// =====================================================================================
+
+async function verifyAuthentication(request: NextRequest): Promise<{
+  valid: boolean;
+  error?: string;
+  status?: number;
+  user?: any;
+  customer?: any;
+}> {
+  try {
+    // Check for Bearer token
+    const authHeader = request.headers.get('authorization');
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return {
+        valid: false,
+        error: 'Authorization header required',
+        status: 401,
+      };
+    }
+
+    const token = authHeader.replace('Bearer ', '');
+
+    // Verify the user with Supabase
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser(token);
+
+    if (authError || !user) {
+      console.error('Auth error:', authError);
+      return {
+        valid: false,
+        error: 'Invalid or expired token',
+        status: 401,
+      };
+    }
+
+    // Get user's customer profile
+    const { data: customer } = await supabase
+      .from('clients')
+      .select('id, organization_id, stripe_customer_id')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!customer) {
+      return {
+        valid: false,
+        error: 'Customer profile not found',
+        status: 404,
+      };
+    }
+
+    // Ensure customer has Stripe customer ID
+    if (!customer.stripe_customer_id) {
+      // Create Stripe customer
+      const stripeCustomer = await stripe!.customers.create({
+        email: user.email,
+        metadata: {
+          user_id: user.id,
+          customer_id: customer.id,
+        },
+      });
+
+      // Update customer record
+      await supabase
+        .from('clients')
+        .update({ stripe_customer_id: stripeCustomer.id })
+        .eq('id', customer.id);
+
+      customer.stripe_customer_id = stripeCustomer.id;
+    }
+
+    return {
+      valid: true,
+      user,
+      customer,
+    };
+  } catch (error) {
+    console.error('Authentication verification error:', error);
+    return {
+      valid: false,
+      error: 'Authentication verification failed',
+      status: 500,
+    };
+  }
+}
+
+function validatePurchaseRequest(body: any): {
+  valid: boolean;
+  error?: string;
+} {
+  if (!body.template_id || typeof body.template_id !== 'string') {
+    return {
+      valid: false,
+      error: 'template_id is required and must be a string',
+    };
+  }
+
+  if (body.return_url && typeof body.return_url !== 'string') {
+    return { valid: false, error: 'return_url must be a string when provided' };
+  }
+
+  if (body.promotional_code && typeof body.promotional_code !== 'string') {
+    return {
+      valid: false,
+      error: 'promotional_code must be a string when provided',
+    };
+  }
+
+  if (
+    body.client_reference_id &&
+    typeof body.client_reference_id !== 'string'
+  ) {
+    return {
+      valid: false,
+      error: 'client_reference_id must be a string when provided',
+    };
+  }
+
+  return { valid: true };
+}
+
+async function fetchTemplateDetails(templateId: string): Promise<{
+  success: boolean;
+  template?: any;
+  error?: string;
+  status?: number;
+}> {
+  try {
+    const { data: template, error } = await supabase
+      .from('marketplace_templates')
+      .select(
+        `
+        id,
+        title,
+        description,
+        price_cents,
+        currency,
+        creator_id,
+        status,
+        preview_images,
+        suppliers!inner (
+          id,
+          business_name
+        )
+      `,
+      )
+      .eq('id', templateId)
+      .eq('status', 'active')
+      .single();
+
+    if (error || !template) {
+      return {
+        success: false,
+        error: 'Template not found or not available',
+        status: 404,
+      };
+    }
+
+    return {
+      success: true,
+      template: {
+        ...template,
+        creator_name: template.suppliers.business_name,
+      },
+    };
+  } catch (error) {
+    console.error('Template fetch error:', error);
+    return {
+      success: false,
+      error: 'Failed to fetch template details',
+      status: 500,
+    };
+  }
+}
+
+async function checkTemplateOwnership(
+  userId: string,
+  templateId: string,
+): Promise<{
+  alreadyOwned: boolean;
+}> {
+  try {
+    const { data, error } = await supabase
+      .from('marketplace_purchases')
+      .select('id')
+      .eq('template_id', templateId)
+      .in('status', ['completed', 'installed'])
+      .limit(1);
+
+    if (error) {
+      console.error('Ownership check error:', error);
+      return { alreadyOwned: false }; // Assume not owned if we can't check
+    }
+
+    return { alreadyOwned: data && data.length > 0 };
+  } catch (error) {
+    console.error('Template ownership check error:', error);
+    return { alreadyOwned: false };
+  }
+}
+
+async function calculateFinalPrice(
+  basePriceCents: number,
+  promotionalCode?: string,
+): Promise<{
+  final_price_cents: number;
+  discount_amount_cents: number;
+  promotional_code_valid: boolean;
+}> {
+  let finalPrice = basePriceCents;
+  let discountAmount = 0;
+  let promoCodeValid = false;
+
+  if (promotionalCode) {
+    try {
+      // Check if promotional code exists and is valid
+      const { data: promo, error } = await supabase
+        .from('promotional_codes')
+        .select('*')
+        .eq('code', promotionalCode.toUpperCase())
+        .eq('active', true)
+        .single();
+
+      if (!error && promo) {
+        // Check expiry date
+        if (!promo.expires_at || new Date(promo.expires_at) > new Date()) {
+          // Check usage limits
+          if (!promo.max_uses || promo.current_uses < promo.max_uses) {
+            promoCodeValid = true;
+
+            if (promo.discount_type === 'percentage') {
+              discountAmount = Math.floor(
+                (basePriceCents * promo.discount_value) / 100,
+              );
+            } else if (promo.discount_type === 'fixed') {
+              discountAmount = Math.min(
+                promo.discount_value * 100,
+                basePriceCents,
+              ); // Convert to cents
+            }
+
+            finalPrice = basePriceCents - discountAmount;
+
+            // Ensure minimum price
+            if (finalPrice < 100) {
+              // Minimum £1
+              finalPrice = 100;
+              discountAmount = basePriceCents - 100;
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Promotional code validation error:', error);
+      // Continue with full price if promo validation fails
+    }
+  }
+
+  return {
+    final_price_cents: finalPrice,
+    discount_amount_cents: discountAmount,
+    promotional_code_valid: promoCodeValid,
+  };
+}

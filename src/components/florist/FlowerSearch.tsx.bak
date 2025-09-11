@@ -1,0 +1,500 @@
+'use client';
+
+import { useState, useCallback } from 'react';
+import { MagnifyingGlassIcon, XMarkIcon, AdjustmentsHorizontalIcon } from '@heroicons/react/24/outline';
+import { Slider } from '@/components/ui/Slider';
+import { ColorPicker } from '@/components/ui/ColorPicker';
+import { Badge } from '@/components/ui/Badge';
+import { Button } from '@/components/ui/Button';
+import { Card } from '@/components/ui/Card';
+import { Select } from '@/components/ui/Select';
+import { useFloristSearch } from '@/hooks/useFloristSearch';
+import { classNames } from '@/lib/utils';
+
+interface FlowerSearchProps {
+  weddingId?: string;
+  onResultsUpdate?: (results: any) => void;
+  onFlowerSelect?: (flower: any) => void;
+  className?: string;
+}
+
+const WEDDING_STYLES = [
+  { value: '', label: 'Any Style' },
+  { value: 'romantic', label: 'Romantic' },
+  { value: 'modern', label: 'Modern' },
+  { value: 'rustic', label: 'Rustic' },
+  { value: 'classic', label: 'Classic' },
+  { value: 'bohemian', label: 'Bohemian' },
+  { value: 'minimalist', label: 'Minimalist' },
+];
+
+const SEASONS = [
+  { value: '', label: 'Any Season' },
+  { value: 'spring', label: 'Spring' },
+  { value: 'summer', label: 'Summer' },
+  { value: 'fall', label: 'Fall' },
+  { value: 'winter', label: 'Winter' },
+];
+
+const WEDDING_USES = [
+  'bridal_bouquet',
+  'bridesmaids_bouquet',
+  'boutonniere',
+  'centerpiece',
+  'ceremony_arch',
+  'aisle_petals',
+  'reception_decor',
+];
+
+export function FlowerSearch({ 
+  weddingId, 
+  onResultsUpdate, 
+  onFlowerSelect,
+  className = ''
+}: FlowerSearchProps) {
+  const [searchCriteria, setSearchCriteria] = useState({
+    colors: [] as string[],
+    wedding_date: '',
+    style: '',
+    season: '',
+    budget_range: { min: 1, max: 10 },
+    exclude_allergens: [] as string[],
+    sustainability_minimum: 0,
+    wedding_uses: [] as string[]
+  });
+
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  
+  const { searchResults, isLoading, error, searchFlowers } = useFloristSearch();
+
+  const handleSearch = useCallback(async () => {
+    if (searchCriteria.colors.length === 0 && !searchCriteria.wedding_date && !searchCriteria.style) {
+      return; // Require at least one search criterion
+    }
+    
+    try {
+      const results = await searchFlowers(searchCriteria);
+      onResultsUpdate?.(results);
+    } catch (err) {
+      console.error('Flower search failed:', err);
+    }
+  }, [searchCriteria, searchFlowers, onResultsUpdate]);
+
+  const addColor = (color: string) => {
+    if (!searchCriteria.colors.includes(color) && searchCriteria.colors.length < 5) {
+      setSearchCriteria(prev => ({
+        ...prev,
+        colors: [...prev.colors, color]
+      }));
+    }
+  };
+
+  const removeColor = (index: number) => {
+    setSearchCriteria(prev => ({
+      ...prev,
+      colors: prev.colors.filter((_, i) => i !== index)
+    }));
+  };
+
+  const toggleWeddingUse = (use: string) => {
+    setSearchCriteria(prev => ({
+      ...prev,
+      wedding_uses: prev.wedding_uses.includes(use)
+        ? prev.wedding_uses.filter(u => u !== use)
+        : [...prev.wedding_uses, use]
+    }));
+  };
+
+  const formatWeddingUse = (use: string) => {
+    return use.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+  };
+
+  const getSeasonalScoreColor = (score: number) => {
+    if (score >= 0.8) return 'text-green-600 bg-green-50 border-green-200';
+    if (score >= 0.5) return 'text-yellow-600 bg-yellow-50 border-yellow-200';
+    return 'text-red-600 bg-red-50 border-red-200';
+  };
+
+  const getSeasonalScoreLabel = (score: number) => {
+    if (score >= 0.8) return 'Excellent Season';
+    if (score >= 0.5) return 'Good Season';
+    return 'Limited Season';
+  };
+
+  return (
+    <div className={`space-y-6 ${className}`} role="search" aria-label="Flower Search">
+      {/* Search Header */}
+      <div className="flex items-center justify-between">
+        <h3 className="text-lg font-semibold text-gray-900">AI Flower Search</h3>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setShowAdvanced(!showAdvanced)}
+          className="flex items-center gap-2"
+          aria-label={showAdvanced ? 'Hide advanced filters' : 'Show advanced filters'}
+        >
+          <AdjustmentsHorizontalIcon className="w-4 h-4" />
+          {showAdvanced ? 'Simple' : 'Advanced'}
+        </Button>
+      </div>
+
+      {/* Search Filters */}
+      <div className="space-y-6">
+        {/* Basic Filters */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {/* Color Selection */}
+          <div className="space-y-3">
+            <label className="block text-sm font-medium text-gray-700">
+              Wedding Colors (up to 5)
+            </label>
+            <div className="space-y-3">
+              <ColorPicker
+                onColorSelect={addColor}
+                disabled={searchCriteria.colors.length >= 5}
+                className="w-full"
+                aria-label="Select wedding colors"
+              />
+              <div className="flex flex-wrap gap-2 min-h-[2rem]">
+                {searchCriteria.colors.map((color, index) => (
+                  <Badge
+                    key={index}
+                    variant="secondary"
+                    className="flex items-center gap-2 px-3 py-1"
+                  >
+                    <div
+                      className="w-3 h-3 rounded-full border border-gray-300"
+                      style={{ backgroundColor: color }}
+                      aria-label={`Color ${color}`}
+                    />
+                    <span className="text-xs font-mono">{color}</span>
+                    <button
+                      onClick={() => removeColor(index)}
+                      className="ml-1 text-gray-400 hover:text-gray-600 focus:outline-none focus:text-gray-600"
+                      aria-label={`Remove color ${color}`}
+                    >
+                      <XMarkIcon className="w-3 h-3" />
+                    </button>
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Wedding Date */}
+          <div className="space-y-3">
+            <label htmlFor="wedding-date" className="block text-sm font-medium text-gray-700">
+              Wedding Date
+            </label>
+            <input
+              id="wedding-date"
+              type="date"
+              value={searchCriteria.wedding_date}
+              onChange={e => setSearchCriteria(prev => ({ ...prev, wedding_date: e.target.value }))}
+              className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+              aria-describedby="wedding-date-help"
+            />
+            <p id="wedding-date-help" className="text-xs text-gray-500">
+              Used for seasonal scoring
+            </p>
+          </div>
+
+          {/* Wedding Style */}
+          <div className="space-y-3">
+            <label htmlFor="wedding-style" className="block text-sm font-medium text-gray-700">
+              Wedding Style
+            </label>
+            <Select
+              id="wedding-style"
+              value={searchCriteria.style}
+              onChange={value => setSearchCriteria(prev => ({ ...prev, style: value }))}
+              className="w-full"
+            >
+              {WEDDING_STYLES.map(style => (
+                <option key={style.value} value={style.value}>
+                  {style.label}
+                </option>
+              ))}
+            </Select>
+          </div>
+        </div>
+
+        {/* Advanced Filters */}
+        {showAdvanced && (
+          <div className="space-y-6 p-4 bg-gray-50 rounded-lg">
+            <h4 className="text-sm font-medium text-gray-900">Advanced Filters</h4>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {/* Season Override */}
+              <div className="space-y-3">
+                <label htmlFor="season" className="block text-sm font-medium text-gray-700">
+                  Season Override
+                </label>
+                <Select
+                  id="season"
+                  value={searchCriteria.season}
+                  onChange={value => setSearchCriteria(prev => ({ ...prev, season: value }))}
+                  className="w-full"
+                >
+                  {SEASONS.map(season => (
+                    <option key={season.value} value={season.value}>
+                      {season.label}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+
+              {/* Budget Range */}
+              <div className="space-y-3">
+                <label className="block text-sm font-medium text-gray-700">
+                  Budget per Stem ($)
+                </label>
+                <div className="space-y-3">
+                  <Slider
+                    value={[searchCriteria.budget_range.min, searchCriteria.budget_range.max]}
+                    onValueChange={([min, max]) => 
+                      setSearchCriteria(prev => ({ ...prev, budget_range: { min, max } }))
+                    }
+                    max={20}
+                    min={1}
+                    step={0.5}
+                    className="w-full"
+                    aria-label="Budget range per stem"
+                  />
+                  <div className="flex justify-between text-sm text-gray-600">
+                    <span>${searchCriteria.budget_range.min}</span>
+                    <span>${searchCriteria.budget_range.max}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Sustainability Priority */}
+              <div className="space-y-3">
+                <label className="block text-sm font-medium text-gray-700">
+                  Sustainability Priority
+                </label>
+                <Slider
+                  value={[searchCriteria.sustainability_minimum]}
+                  onValueChange={([value]) => 
+                    setSearchCriteria(prev => ({ ...prev, sustainability_minimum: value }))
+                  }
+                  max={1}
+                  min={0}
+                  step={0.1}
+                  className="w-full"
+                  aria-label="Minimum sustainability score"
+                />
+                <div className="text-sm text-gray-600">
+                  {searchCriteria.sustainability_minimum === 0 ? 'No preference' :
+                   searchCriteria.sustainability_minimum < 0.3 ? 'Low priority' :
+                   searchCriteria.sustainability_minimum < 0.7 ? 'Moderate priority' : 'High priority'}
+                </div>
+              </div>
+            </div>
+
+            {/* Wedding Uses */}
+            <div className="space-y-3">
+              <label className="block text-sm font-medium text-gray-700">
+                Intended Uses
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {WEDDING_USES.map(use => (
+                  <button
+                    key={use}
+                    onClick={() => toggleWeddingUse(use)}
+                    className={classNames(
+                      'px-3 py-1 rounded-full text-sm font-medium border transition-colors',
+                      searchCriteria.wedding_uses.includes(use)
+                        ? 'bg-blue-100 text-blue-800 border-blue-300'
+                        : 'bg-gray-100 text-gray-700 border-gray-300 hover:bg-gray-200'
+                    )}
+                    aria-pressed={searchCriteria.wedding_uses.includes(use)}
+                    aria-label={`Toggle ${formatWeddingUse(use)} filter`}
+                  >
+                    {formatWeddingUse(use)}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Search Button */}
+      <div className="flex justify-center">
+        <Button
+          onClick={handleSearch}
+          disabled={isLoading || (searchCriteria.colors.length === 0 && !searchCriteria.wedding_date && !searchCriteria.style)}
+          size="lg"
+          className="px-8 py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-50"
+        >
+          {isLoading ? (
+            <div className="flex items-center gap-2">
+              <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
+              Searching...
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <MagnifyingGlassIcon className="w-5 h-5" />
+              Search Flowers with AI
+            </div>
+          )}
+        </Button>
+      </div>
+
+      {/* Search Results */}
+      {searchResults && (
+        <div className="space-y-4" role="region" aria-label="Search Results">
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg font-semibold text-gray-900">
+              Search Results ({searchResults.flowers?.length || 0} flowers)
+            </h3>
+            {searchResults.search_metadata?.avg_seasonal_score && (
+              <div className="text-sm text-gray-600">
+                Avg Seasonal Score: {((searchResults.search_metadata.avg_seasonal_score) * 100).toFixed(0)}%
+              </div>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {searchResults.flowers?.map((flower: any, index: number) => (
+              <Card 
+                key={flower.id} 
+                className="p-4 hover:shadow-lg transition-shadow cursor-pointer focus-within:ring-2 focus-within:ring-blue-500"
+                onClick={() => onFlowerSelect?.(flower)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    onFlowerSelect?.(flower);
+                  }
+                }}
+                aria-label={`Select ${flower.common_name}`}
+              >
+                <div className="space-y-3">
+                  {/* Flower Header */}
+                  <div className="flex items-start justify-between">
+                    <div className="min-w-0 flex-1">
+                      <h4 className="font-semibold text-gray-900 truncate">
+                        {flower.common_name}
+                      </h4>
+                      <p className="text-sm text-gray-600 italic truncate">
+                        {flower.scientific_name}
+                      </p>
+                    </div>
+                    {flower.seasonal_score && (
+                      <Badge 
+                        className={classNames(
+                          'ml-2 flex-shrink-0',
+                          getSeasonalScoreColor(flower.seasonal_score)
+                        )}
+                        aria-label={`Seasonal score: ${getSeasonalScoreLabel(flower.seasonal_score)}`}
+                      >
+                        {(flower.seasonal_score * 100).toFixed(0)}%
+                      </Badge>
+                    )}
+                  </div>
+
+                  {/* Color Matches */}
+                  {flower.matched_color && (
+                    <div className="flex items-center gap-2">
+                      <div
+                        className="w-4 h-4 rounded-full border border-gray-300 flex-shrink-0"
+                        style={{ backgroundColor: flower.matched_color.color_hex }}
+                        aria-label={`Matching color: ${flower.matched_color.color_hex}`}
+                      />
+                      <span className="text-sm text-gray-600 truncate">
+                        {flower.color_compatibility || 'Good'} match
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Pricing */}
+                  {flower.current_pricing && (
+                    <div className="flex items-center gap-2 text-sm">
+                      <span className="font-medium">
+                        ${flower.current_pricing.adjusted_price}
+                      </span>
+                      <span className="text-gray-600">per stem</span>
+                      {flower.current_pricing.availability_score < 0.5 && (
+                        <Badge variant="warning" className="text-xs">
+                          Limited
+                        </Badge>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Sustainability & Allergen Info */}
+                  <div className="flex flex-wrap gap-2 text-xs">
+                    {flower.sustainability_score && (
+                      <Badge variant="outline" className="text-green-700 border-green-200">
+                        <span className="mr-1" role="img" aria-label="Sustainability">🌱</span>
+                        {(flower.sustainability_score * 100).toFixed(0)}%
+                      </Badge>
+                    )}
+                    {flower.allergen_info?.pollen === 'low' && (
+                      <Badge variant="outline" className="text-blue-700 border-blue-200">
+                        Low Pollen
+                      </Badge>
+                    )}
+                  </div>
+
+                  {/* Wedding Uses */}
+                  {flower.wedding_suitability && (
+                    <div className="flex flex-wrap gap-1">
+                      {Object.entries(flower.wedding_suitability)
+                        .filter(([_, suitable]) => suitable)
+                        .slice(0, 3) // Limit to 3 uses for space
+                        .map(([use, _]) => (
+                          <Badge key={use} variant="secondary" className="text-xs">
+                            {formatWeddingUse(use)}
+                          </Badge>
+                        ))}
+                    </div>
+                  )}
+
+                  {/* Seasonal Notes */}
+                  {flower.seasonal_notes && flower.seasonal_notes.length > 0 && (
+                    <div className="text-xs text-gray-600 line-clamp-2">
+                      {flower.seasonal_notes[0]}
+                    </div>
+                  )}
+                </div>
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Error Display */}
+      {error && (
+        <div className="p-4 bg-red-50 border border-red-200 rounded-md" role="alert">
+          <div className="flex items-start">
+            <div className="flex-shrink-0">
+              <span className="text-red-400 text-xl" role="img" aria-label="Error">⚠️</span>
+            </div>
+            <div className="ml-3">
+              <h3 className="text-sm font-medium text-red-800">
+                Search Failed
+              </h3>
+              <p className="text-sm text-red-700 mt-1">
+                {error.message || 'An error occurred while searching for flowers. Please try again.'}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Empty State */}
+      {!isLoading && !searchResults && !error && (
+        <div className="text-center py-12">
+          <MagnifyingGlassIcon className="mx-auto h-12 w-12 text-gray-400" />
+          <h3 className="mt-2 text-sm font-medium text-gray-900">No search performed</h3>
+          <p className="mt-1 text-sm text-gray-500">
+            Select colors, date, or style to search for flowers
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,257 @@
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+/**
+ * Browser MCP Interactive Tests for WS-160 Timeline Features
+ * 
+ * This file documents the interactive testing procedures using Browser MCP
+ * for the real-time timeline collaboration features.
+ */
+
+ * BROWSER MCP INTERACTIVE TEST PROCEDURES
+ * These tests should be run manually using Browser MCP to validate
+ * the user interface and real-time collaboration features.
+export const BrowserMCPTestProcedures = {
+  /**
+   * Test 1: Real-time Timeline Collaboration
+   */
+  async testRealtimeCollaboration() {
+    /*
+    1. Open two browser instances:
+       - Browser 1: await mcp__browsermcp__browser_navigate({url: "http://localhost:3000/dashboard/timelines/test-timeline"});
+       - Browser 2: Open in separate browser/incognito with different user
+    
+    2. Test collaborative editing:
+       - Browser 1: Create new event
+         await mcp__browsermcp__browser_click({
+           element: "Add Event button",
+           ref: "[data-testid='add-event-btn']"
+         });
+         
+         await mcp__browsermcp__browser_fill_form({
+           fields: [
+             { name: "Event Title", type: "textbox", ref: "[data-testid='event-title']", value: "Test Collaboration Event" },
+             { name: "Start Time", type: "textbox", ref: "[data-testid='start-time']", value: "10:00 AM" },
+             { name: "End Time", type: "textbox", ref: "[data-testid='end-time']", value: "11:00 AM" },
+             { name: "Location", type: "textbox", ref: "[data-testid='location']", value: "Test Venue" }
+           ]
+           element: "Save Event button",
+           ref: "[data-testid='save-event-btn']"
+       
+       - Browser 2: Verify event appears in real-time
+         const snapshot = await mcp__browsermcp__browser_snapshot();
+         // Should show the new event without page refresh
+    3. Test edit locking:
+       - Browser 1: Click to edit existing event
+           element: "Edit event",
+           ref: "[data-testid='event-123-edit']"
+       - Browser 2: Try to edit same event
+           element: "Same event edit",
+         // Should show "Event is being edited by [User]" message
+    4. Test presence indicators:
+       - Both browsers should show active collaborators
+       - Cursor positions should be visible when hovering over events
+       - Real-time status indicators should be present
+    */
+  },
+   * Test 2: Conflict Detection UI
+  async testConflictDetection() {
+    1. Navigate to timeline:
+       await mcp__browsermcp__browser_navigate({url: "http://localhost:3000/dashboard/timelines/test-timeline"});
+    2. Create overlapping events:
+       - Create Event A: 2:00 PM - 3:00 PM at "Main Hall"
+       - Create Event B: 2:30 PM - 3:30 PM at "Main Hall"
+    3. Verify conflict detection:
+       await mcp__browsermcp__browser_wait_for({text: "Conflict Detected"});
+       const conflictPanel = await mcp__browsermcp__browser_snapshot();
+       // Should show conflict warning with details
+    4. Test conflict resolution:
+       await mcp__browsermcp__browser_click({
+         element: "Resolve Conflict button",
+         ref: "[data-testid='resolve-conflict-btn']"
+       });
+         element: "Auto-resolve option",
+         ref: "[data-testid='auto-resolve-time-shift']"
+       // Verify one event was moved automatically
+   * Test 3: Calendar Export Functionality
+  async testCalendarExport() {
+    2. Access export options:
+         element: "Export menu",
+         ref: "[data-testid='export-menu-btn']"
+    3. Test Google Calendar export:
+         element: "Google Calendar option",
+         ref: "[data-testid='export-google-calendar']"
+       // Should open OAuth flow or show export dialog
+       await mcp__browsermcp__browser_wait_for({text: "Connect Google Calendar"});
+    4. Test Apple Calendar (.ics) download:
+         element: "Apple Calendar option",
+         ref: "[data-testid='export-apple-calendar']"
+       // Should trigger file download
+       await mcp__browsermcp__browser_wait_for({time: 2});
+    5. Test export options:
+       await mcp__browsermcp__browser_fill_form({
+         fields: [
+           { name: "Include vendor details", type: "checkbox", ref: "[data-testid='include-vendors']", value: "true" },
+           { name: "Include internal notes", type: "checkbox", ref: "[data-testid='include-notes']", value: "false" },
+           { name: "Reminder minutes", type: "textbox", ref: "[data-testid='reminder-minutes']", value: "15,30,60" }
+         ]
+   * Test 4: Timeline Sharing and Permissions
+  async testSharingAndPermissions() {
+    2. Open sharing dialog:
+         element: "Share button",
+         ref: "[data-testid='share-timeline-btn']"
+    3. Add collaborator:
+           { name: "Email address", type: "textbox", ref: "[data-testid='collaborator-email']", value: "test@example.com" },
+           { name: "Role", type: "combobox", ref: "[data-testid='collaborator-role']", value: "Editor" }
+         element: "Send invitation",
+         ref: "[data-testid='send-invitation-btn']"
+    4. Create share link:
+         element: "Create share link",
+         ref: "[data-testid='create-share-link-btn']"
+           { name: "Can view", type: "checkbox", ref: "[data-testid='link-can-view']", value: "true" },
+           { name: "Can edit", type: "checkbox", ref: "[data-testid='link-can-edit']", value: "false" },
+           { name: "Can comment", type: "checkbox", ref: "[data-testid='link-can-comment']", value: "true" }
+       // Copy link and test access in incognito window
+    5. Test permission restrictions:
+       // Login as viewer-only user
+       // Try to edit events (should be disabled)
+       // Try to delete events (should be disabled)
+       // Verify comments are allowed
+   * Test 5: Notification System
+  async testNotifications() {
+    2. Create event with notifications:
+         element: "Add Event button",
+         ref: "[data-testid='add-event-btn']"
+       // Fill event details and save
+    3. Check in-app notifications:
+         element: "Notifications bell",
+         ref: "[data-testid='notifications-bell']"
+       // Should show "Event created" notification
+       await mcp__browsermcp__browser_wait_for({text: "Event created"});
+    4. Test notification preferences:
+       await mcp__browsermcp__browser_navigate({url: "http://localhost:3000/settings/notifications"});
+           { name: "Email notifications", type: "checkbox", ref: "[data-testid='email-notifications']", value: "true" },
+           { name: "Timeline changes", type: "checkbox", ref: "[data-testid='timeline-changes']", value: "true" },
+           { name: "Conflict alerts", type: "checkbox", ref: "[data-testid='conflict-alerts']", value: "true" }
+   * Test 6: Version History and Rollback
+  async testVersionHistory() {
+    2. Make several changes:
+       - Create new event
+       - Edit existing event
+       - Delete an event
+       - Move events around
+    3. Access version history:
+         element: "History menu",
+         ref: "[data-testid='timeline-history-btn']"
+       // Should show list of versions with timestamps and descriptions
+       const historyPanel = await mcp__browsermcp__browser_snapshot();
+    4. Test rollback:
+         element: "Previous version",
+         ref: "[data-testid='version-2-rollback']"
+         element: "Confirm rollback",
+         ref: "[data-testid='confirm-rollback-btn']"
+       // Verify timeline reverted to previous state
+   * Test 7: Performance and Responsiveness
+  async testPerformance() {
+    1. Test large timeline loading:
+       await mcp__browsermcp__browser_navigate({url: "http://localhost:3000/dashboard/timelines/large-timeline"});
+       // Measure load time
+       const startTime = Date.now();
+       await mcp__browsermcp__browser_wait_for({text: "Timeline loaded"});
+       const loadTime = Date.now() - startTime;
+       // Should load within 3 seconds
+    2. Test responsive design:
+       // Mobile view
+       await mcp__browsermcp__browser_resize({width: 375, height: 667});
+       await mcp__browsermcp__browser_take_screenshot({filename: "timeline-mobile.png"});
+       // Tablet view
+       await mcp__browsermcp__browser_resize({width: 768, height: 1024});
+       await mcp__browsermcp__browser_take_screenshot({filename: "timeline-tablet.png"});
+       // Desktop view
+       await mcp__browsermcp__browser_resize({width: 1920, height: 1080});
+       await mcp__browsermcp__browser_take_screenshot({filename: "timeline-desktop.png"});
+    3. Test real-time updates under load:
+       // Simulate multiple rapid updates
+       // Verify UI remains responsive
+       // Check for memory leaks or performance degradation
+   * Test 8: Error Handling and Edge Cases
+  async testErrorHandling() {
+    1. Network disconnection:
+       // Simulate offline mode
+       await mcp__browsermcp__browser_evaluate({
+         function: "() => { window.navigator.onLine = false; }"
+       // Try to create event
+       // Should show offline message and queue changes
+    2. Invalid data handling:
+           { name: "Event Title", type: "textbox", ref: "[data-testid='event-title']", value: "" }, // Empty title
+           { name: "Start Time", type: "textbox", ref: "[data-testid='start-time']", value: "invalid-time" },
+           { name: "End Time", type: "textbox", ref: "[data-testid='end-time']", value: "before-start-time" }
+         element: "Save Event",
+         ref: "[data-testid='save-event-btn']"
+       // Should show appropriate validation errors
+       await mcp__browsermcp__browser_wait_for({text: "Title is required"});
+    3. Concurrent edit conflicts:
+       // Simulate two users editing same event simultaneously
+       // Should show conflict resolution UI
+       // Test different resolution strategies
+  }
+};
+ * BROWSER MCP SCREENSHOT DOCUMENTATION
+ * Key screenshots to capture for documentation:
+export const DocumentationScreenshots = [
+  {
+    name: "timeline-overview",
+    description: "Main timeline view with events",
+    url: "/dashboard/timelines/demo-timeline",
+    viewport: { width: 1920, height: 1080 }
+    name: "realtime-collaboration",
+    description: "Multiple users editing timeline simultaneously",
+    setup: "Two browser windows with different users"
+    name: "conflict-detection",
+    description: "Conflict warning and resolution options",
+    trigger: "Create overlapping events"
+    name: "calendar-export-dialog",
+    description: "Export options and calendar integrations",
+    element: "[data-testid='export-menu']"
+    name: "sharing-permissions",
+    description: "Timeline sharing and permission management",
+    element: "[data-testid='share-timeline-btn']"
+    name: "notification-center",
+    description: "In-app notifications for timeline changes",
+    element: "[data-testid='notifications-bell']"
+    name: "version-history",
+    description: "Timeline version history and rollback options",
+    element: "[data-testid='timeline-history-btn']"
+    name: "mobile-timeline",
+    description: "Mobile-optimized timeline interface",
+    viewport: { width: 375, height: 667 }
+];
+ * ACCESSIBILITY TESTING WITH BROWSER MCP
+export const AccessibilityTests = {
+  async testKeyboardNavigation() {
+    2. Test tab navigation:
+       await mcp__browsermcp__browser_press_key({key: "Tab"});
+       // Continue tabbing through all interactive elements
+    3. Test event selection with keyboard:
+       await mcp__browsermcp__browser_press_key({key: "ArrowDown"});
+       await mcp__browsermcp__browser_press_key({key: "Enter"});
+       // Should open event details
+    4. Test keyboard shortcuts:
+       await mcp__browsermcp__browser_press_key({key: "Control+n"}); // New event
+       await mcp__browsermcp__browser_press_key({key: "Control+s"}); // Save
+       await mcp__browsermcp__browser_press_key({key: "Escape"});   // Cancel
+  async testScreenReaderCompatibility() {
+    1. Check ARIA labels:
+       const snapshot = await mcp__browsermcp__browser_snapshot();
+       // Verify proper ARIA labels on interactive elements
+    2. Test live regions for real-time updates:
+       // Create event and verify screen reader announcements
+       // Check aria-live regions for notifications
+    3. Test semantic HTML structure:
+         function: `() => {
+           const headings = document.querySelectorAll('h1, h2, h3, h4, h5, h6');
+           const landmarks = document.querySelectorAll('[role="main"], [role="navigation"], [role="banner"]');
+           return { headings: headings.length, landmarks: landmarks.length };
+         }`
+export default {
+  BrowserMCPTestProcedures,
+  DocumentationScreenshots,
+  AccessibilityTests

@@ -1,0 +1,402 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { validateAuth } from '@/lib/auth-middleware';
+import { coreFieldsManager } from '@/lib/core-fields-manager';
+import { z } from 'zod';
+import { rateLimit } from '@/lib/rate-limit';
+import {
+  PopulateRequestSchema,
+  WeddingDataUpdateSchema,
+  validateCoreFields,
+  sanitizeInput,
+} from '@/lib/validations/core-fields';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+);
+
+// Rate limiter for Core Fields API - 100 requests per minute per user
+const coreFieldsRateLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 100, // 100 requests per minute
+  keyGenerator: (req: NextRequest) => {
+    // Use user ID for authenticated requests
+    const authHeader = req.headers.get('authorization');
+    if (authHeader) {
+      return `auth:${authHeader}`;
+    }
+    // Fallback to IP
+    const forwarded = req.headers.get('x-forwarded-for');
+    const realIp = req.headers.get('x-real-ip');
+    return forwarded?.split(',')[0] || realIp || '127.0.0.1';
+  },
+});
+
+export async function POST(request: NextRequest) {
+  const startTime = Date.now();
+
+  try {
+    // Rate limiting
+    const rateLimitResult = await coreFieldsRateLimiter(request);
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        {
+          error: 'Too many requests',
+          retryAfter: rateLimitResult.retryAfter,
+        },
+        {
+          status: 429,
+          headers: {
+            'X-RateLimit-Limit': rateLimitResult.limit.toString(),
+            'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+            'X-RateLimit-Reset': new Date(rateLimitResult.reset).toISOString(),
+            'Retry-After': rateLimitResult.retryAfter?.toString() || '60',
+          },
+        },
+      );
+    }
+
+    // Authentication
+    const authResult = await validateAuth(request);
+    if (!authResult.success || !authResult.user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Parse and validate request with security schemas
+    const body = await request.json();
+    const validationResult = PopulateRequestSchema.safeParse(body);
+
+    if (!validationResult.success) {
+      return NextResponse.json(
+        {
+          error: 'Invalid request data',
+          details: validationResult.error.errors.map((e) => ({
+            field: e.path.join('.'),
+            message: e.message,
+          })),
+        },
+        { status: 400 },
+      );
+    }
+
+    const { formId, clientId, formFields } = validationResult.data;
+
+    // Get or create wedding data for this client
+    const weddingData =
+      await coreFieldsManager.getOrCreateWeddingData(clientId);
+
+    if (!weddingData) {
+      return NextResponse.json(
+        { error: 'Could not access wedding data' },
+        { status: 500 },
+      );
+    }
+
+    // Auto-detect field mappings
+    const detectedMappings = await coreFieldsManager.autoDetectMappings(
+      formId,
+      formFields,
+    );
+
+    // Store the mappings if they don't exist
+    if (detectedMappings.length > 0) {
+      await coreFieldsManager.createFormFieldMappings(formId, detectedMappings);
+    }
+
+    // Get core fields for this form
+    const coreFieldValues = await coreFieldsManager.getCoreFieldsForForm(
+      formId,
+      weddingData.id,
+    );
+
+    // Map core field values to form fields
+    const populatedFields: Record<
+      string,
+      {
+        value: any;
+        confidence: number;
+        source: 'existing' | 'new';
+        coreFieldKey: string;
+      }
+    > = {};
+
+    for (const mapping of detectedMappings) {
+      const coreValue = coreFieldValues[mapping.core_field_key];
+      if (coreValue !== undefined && coreValue !== null) {
+        populatedFields[mapping.form_field_id] = {
+          value: coreValue,
+          confidence: mapping.confidence,
+          source: 'existing',
+          coreFieldKey: mapping.core_field_key,
+        };
+      }
+    }
+
+    // Calculate stats
+    const fieldsDetected = detectedMappings.length;
+    const fieldsPopulated = Object.keys(populatedFields).length;
+    const averageConfidence =
+      fieldsDetected > 0
+        ? detectedMappings.reduce((acc, m) => acc + m.confidence, 0) /
+          fieldsDetected
+        : 0;
+
+    // Log performance
+    const processingTime = Date.now() - startTime;
+    if (processingTime > 500) {
+      console.warn(
+        `Slow population: ${processingTime}ms for ${fieldsDetected} fields`,
+      );
+    }
+
+    return NextResponse.json(
+      {
+        success: true,
+        weddingId: weddingData.id,
+        populatedFields,
+        stats: {
+          fieldsDetected,
+          fieldsPopulated,
+          fieldsSkipped: fieldsDetected - fieldsPopulated,
+          averageConfidence,
+          processingTimeMs: processingTime,
+        },
+        mappings: detectedMappings.map((m) => ({
+          fieldId: m.form_field_id,
+          coreFieldKey: m.core_field_key,
+          confidence: m.confidence,
+        })),
+      },
+      {
+        headers: {
+          'X-RateLimit-Limit': rateLimitResult.limit.toString(),
+          'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+          'X-RateLimit-Reset': new Date(rateLimitResult.reset).toISOString(),
+        },
+      },
+    );
+  } catch (error) {
+    // Never expose internal error details
+    console.error('Form population error');
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Invalid request data',
+          details: error.errors.map((e) => ({
+            field: e.path.join('.'),
+            message: e.message,
+          })),
+        },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Failed to populate form' },
+      { status: 500 },
+    );
+  }
+}
+
+// Save populated values back to core fields
+export async function PUT(request: NextRequest) {
+  try {
+    // Rate limiting
+    const rateLimitResult = await coreFieldsRateLimiter(request);
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        {
+          error: 'Too many requests',
+          retryAfter: rateLimitResult.retryAfter,
+        },
+        {
+          status: 429,
+          headers: {
+            'X-RateLimit-Limit': rateLimitResult.limit.toString(),
+            'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+            'X-RateLimit-Reset': new Date(rateLimitResult.reset).toISOString(),
+            'Retry-After': rateLimitResult.retryAfter?.toString() || '60',
+          },
+        },
+      );
+    }
+
+    // Authentication
+    const authResult = await validateAuth(request);
+    if (!authResult.success || !authResult.user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Parse and validate request with security schemas
+    const body = await request.json();
+    const validationResult = WeddingDataUpdateSchema.safeParse(body);
+
+    if (!validationResult.success) {
+      return NextResponse.json(
+        {
+          error: 'Invalid request data',
+          details: validationResult.error.errors.map((e) => ({
+            field: e.path.join('.'),
+            message: e.message,
+          })),
+        },
+        { status: 400 },
+      );
+    }
+
+    const {
+      weddingId,
+      updates,
+      source = 'form_submission',
+    } = validationResult.data;
+
+    // Check vendor access
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', authResult.user.id)
+      .single();
+
+    if (!profile?.organization_id) {
+      return NextResponse.json(
+        { error: 'Organization not found' },
+        { status: 403 },
+      );
+    }
+
+    const access = await coreFieldsManager.checkVendorAccess(
+      profile.organization_id,
+      weddingId,
+    );
+
+    if (!access.canWrite) {
+      return NextResponse.json(
+        { error: 'No write access to wedding data' },
+        { status: 403 },
+      );
+    }
+
+    // Update core fields
+    const success = await coreFieldsManager.updateCoreFields(
+      weddingId,
+      updates,
+      source,
+    );
+
+    if (!success) {
+      return NextResponse.json(
+        { error: 'Failed to update core fields' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json(
+      {
+        success: true,
+        message: 'Core fields updated successfully',
+      },
+      {
+        headers: {
+          'X-RateLimit-Limit': rateLimitResult.limit.toString(),
+          'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+          'X-RateLimit-Reset': new Date(rateLimitResult.reset).toISOString(),
+        },
+      },
+    );
+  } catch (error) {
+    // Never expose internal error details
+    console.error('Update core fields error');
+    return NextResponse.json(
+      { error: 'Failed to update core fields' },
+      { status: 500 },
+    );
+  }
+}
+
+// Get field mappings for a form
+export async function GET(request: NextRequest) {
+  try {
+    // Rate limiting
+    const rateLimitResult = await coreFieldsRateLimiter(request);
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        {
+          error: 'Too many requests',
+          retryAfter: rateLimitResult.retryAfter,
+        },
+        {
+          status: 429,
+          headers: {
+            'X-RateLimit-Limit': rateLimitResult.limit.toString(),
+            'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+            'X-RateLimit-Reset': new Date(rateLimitResult.reset).toISOString(),
+            'Retry-After': rateLimitResult.retryAfter?.toString() || '60',
+          },
+        },
+      );
+    }
+
+    const authResult = await validateAuth(request);
+    if (!authResult.success || !authResult.user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { searchParams } = new URL(request.url);
+    const formId = searchParams.get('formId');
+
+    if (!formId) {
+      return NextResponse.json({ error: 'Form ID required' }, { status: 400 });
+    }
+
+    // Validate form ID is a valid UUID
+    const uuidRegex =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(formId)) {
+      return NextResponse.json(
+        { error: 'Invalid form ID format' },
+        { status: 400 },
+      );
+    }
+
+    // Get existing mappings
+    const { data: mappings, error } = await supabase
+      .from('form_field_core_mappings')
+      .select('*')
+      .eq('form_id', formId);
+
+    if (error) {
+      console.error('Failed to get mappings');
+      return NextResponse.json(
+        { error: 'Failed to get field mappings' },
+        { status: 500 },
+      );
+    }
+
+    // Get core field definitions
+    const definitions = await coreFieldsManager.getCoreFieldDefinitions();
+
+    return NextResponse.json(
+      {
+        success: true,
+        mappings: mappings || [],
+        definitions,
+      },
+      {
+        headers: {
+          'X-RateLimit-Limit': rateLimitResult.limit.toString(),
+          'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+          'X-RateLimit-Reset': new Date(rateLimitResult.reset).toISOString(),
+        },
+      },
+    );
+  } catch (error) {
+    // Never expose internal error details
+    console.error('Get mappings error');
+    return NextResponse.json(
+      { error: 'Failed to get mappings' },
+      { status: 500 },
+    );
+  }
+}

@@ -1,0 +1,343 @@
+/**
+ * Rate Limit Analytics API
+ * Provides detailed analytics and insights for rate limiting performance
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { logger } from '@/lib/monitoring/structured-logger';
+import { metrics } from '@/lib/monitoring/metrics';
+import type { RateLimitAnalytics, RateLimitTier } from '@/types/rate-limit';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+/**
+ * Verify admin authentication (simplified version)
+ */
+async function verifyAdminAuth(request: NextRequest): Promise<{ authorized: boolean; userId?: string }> {
+  try {
+    const authHeader = request.headers.get('authorization');
+    if (!authHeader?.startsWith('Bearer ')) {
+      return { authorized: false };
+    }
+
+    const token = authHeader.substring(7);
+    const { data: { user }, error } = await supabase.auth.getUser(token);
+
+    if (error || !user) {
+      return { authorized: false };
+    }
+
+    // Check admin privileges
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('role, permissions')
+      .eq('id', user.id)
+      .single();
+
+    const isAuthorized = profile?.role === 'admin' || 
+                        profile?.role === 'super_admin' ||
+                        profile?.permissions?.includes('rate_limit_admin');
+
+    return { authorized: isAuthorized, userId: user.id };
+  } catch (error) {
+    return { authorized: false };
+  }
+}
+
+/**
+ * GET /api/admin/rate-limits/analytics
+ * Retrieve comprehensive rate limiting analytics
+ */
+export async function GET(request: NextRequest) {
+  const startTime = Date.now();
+  
+  try {
+    const auth = await verifyAdminAuth(request);
+    if (!auth.authorized) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { searchParams } = new URL(request.url);
+    const period = searchParams.get('period') || '24h'; // 1h, 24h, 7d, 30d
+    const tier = searchParams.get('tier') as RateLimitTier | null;
+    const groupBy = searchParams.get('groupBy') || 'hour'; // hour, day
+    
+    // Calculate time range
+    const timeRanges = {
+      '1h': 60 * 60 * 1000,
+      '24h': 24 * 60 * 60 * 1000,
+      '7d': 7 * 24 * 60 * 60 * 1000,
+      '30d': 30 * 24 * 60 * 60 * 1000
+    };
+
+    const rangeMs = timeRanges[period as keyof typeof timeRanges] || timeRanges['24h'];
+    const startDate = new Date(Date.now() - rangeMs);
+    const endDate = new Date();
+
+    // Build base query
+    let eventsQuery = supabase
+      .from('rate_limit_events')
+      .select('*')
+      .gte('created_at', startDate.toISOString())
+      .lte('created_at', endDate.toISOString());
+
+    if (tier) {
+      eventsQuery = eventsQuery.eq('tier', tier);
+    }
+
+    const { data: events, error: eventsError } = await eventsQuery.order('created_at', { ascending: true });
+
+    if (eventsError) {
+      logger.error('Failed to fetch rate limit events for analytics', eventsError);
+      return NextResponse.json({ error: 'Failed to fetch analytics data' }, { status: 500 });
+    }
+
+    // Process events to create analytics
+    const analytics = await processAnalyticsData(events || [], startDate, endDate, groupBy);
+
+    // Get top blocked IPs/users for additional insights
+    const topBlocked = await getTopBlockedEntities(startDate, endDate, tier);
+
+    metrics.incrementCounter('admin_api.rate_limits.analytics', 1, {
+      admin_user_id: auth.userId!,
+      period,
+      tier: tier || 'all'
+    });
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        period: {
+          start: startDate.toISOString(),
+          end: endDate.toISOString(),
+          duration: period
+        },
+        analytics,
+        topBlocked,
+        metadata: {
+          totalEvents: events?.length || 0,
+          queryTime: Date.now() - startTime,
+          groupBy
+        }
+      }
+    });
+
+  } catch (error) {
+    logger.error('Rate limit analytics API error', error as Error);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  } finally {
+    metrics.recordHistogram('admin_api.rate_limits.analytics.duration', Date.now() - startTime);
+  }
+}
+
+/**
+ * Process raw events data into structured analytics
+ */
+async function processAnalyticsData(
+  events: any[],
+  startDate: Date,
+  endDate: Date,
+  groupBy: string
+): Promise<RateLimitAnalytics> {
+  const summary = {
+    totalRequests: 0,
+    blockedRequests: events.filter(e => e.event_type === 'limit_exceeded').length,
+    allowedRequests: 0,
+    blockRate: 0
+  };
+
+  // Group events by tier
+  const byTier: Record<RateLimitTier, any> = {
+    ip: { requests: 0, blocked: 0, allowed: 0, topKeys: [] },
+    user: { requests: 0, blocked: 0, allowed: 0, topKeys: [] },
+    organization: { requests: 0, blocked: 0, allowed: 0, topKeys: [] },
+    global: { requests: 0, blocked: 0, allowed: 0, topKeys: [] }
+  };
+
+  // Group events by endpoint
+  const endpointMap = new Map<string, { requests: number; blocked: number; avgResponseTime: number }>();
+
+  // Process each event
+  events.forEach(event => {
+    const tier = event.tier as RateLimitTier;
+    const isBlocked = event.event_type === 'limit_exceeded';
+    
+    if (byTier[tier]) {
+      byTier[tier].requests++;
+      if (isBlocked) {
+        byTier[tier].blocked++;
+      } else {
+        byTier[tier].allowed++;
+      }
+    }
+
+    // Process endpoint statistics
+    const endpoint = event.endpoint || 'unknown';
+    if (!endpointMap.has(endpoint)) {
+      endpointMap.set(endpoint, { requests: 0, blocked: 0, avgResponseTime: 0 });
+    }
+    const endpointStats = endpointMap.get(endpoint)!;
+    endpointStats.requests++;
+    if (isBlocked) {
+      endpointStats.blocked++;
+    }
+  });
+
+  // Calculate top keys for each tier
+  for (const tier of Object.keys(byTier) as RateLimitTier[]) {
+    const tierEvents = events.filter(e => e.tier === tier);
+    const keyMap = new Map<string, { requests: number; blocked: number }>();
+    
+    tierEvents.forEach(event => {
+      const key = getKeyFromEvent(event);
+      if (!keyMap.has(key)) {
+        keyMap.set(key, { requests: 0, blocked: 0 });
+      }
+      const keyStats = keyMap.get(key)!;
+      keyStats.requests++;
+      if (event.event_type === 'limit_exceeded') {
+        keyStats.blocked++;
+      }
+    });
+
+    // Get top 5 keys by requests
+    byTier[tier].topKeys = Array.from(keyMap.entries())
+      .sort((a, b) => b[1].requests - a[1].requests)
+      .slice(0, 5)
+      .map(([key, stats]) => ({
+        key: anonymizeKey(key),
+        requests: stats.requests,
+        blocked: stats.blocked
+      }));
+  }
+
+  // Convert endpoint map to array and sort
+  const byEndpoint = Array.from(endpointMap.entries())
+    .sort((a, b) => b[1].requests - a[1].requests)
+    .slice(0, 10)
+    .map(([path, stats]) => ({
+      path,
+      requests: stats.requests,
+      blocked: stats.blocked,
+      avgResponseTime: stats.avgResponseTime || 0
+    }));
+
+  // Calculate summary
+  summary.totalRequests = Object.values(byTier).reduce((sum, tier) => sum + tier.requests, 0);
+  summary.allowedRequests = summary.totalRequests - summary.blockedRequests;
+  summary.blockRate = summary.totalRequests > 0 ? (summary.blockedRequests / summary.totalRequests) * 100 : 0;
+
+  return {
+    period: {
+      start: startDate,
+      end: endDate
+    },
+    summary,
+    byTier,
+    byEndpoint
+  };
+}
+
+/**
+ * Get top blocked entities (IPs, users, etc.)
+ */
+async function getTopBlockedEntities(
+  startDate: Date,
+  endDate: Date,
+  tier: RateLimitTier | null
+) {
+  try {
+    let query = supabase
+      .from('rate_limit_events')
+      .select('ip_address, user_id, tier, details')
+      .eq('event_type', 'limit_exceeded')
+      .gte('created_at', startDate.toISOString())
+      .lte('created_at', endDate.toISOString());
+
+    if (tier) {
+      query = query.eq('tier', tier);
+    }
+
+    const { data: blockedEvents } = await query.limit(1000);
+
+    if (!blockedEvents) return [];
+
+    // Group by entity (IP, user, etc.)
+    const entityMap = new Map<string, { count: number; tier: string; lastSeen: string }>();
+
+    blockedEvents.forEach(event => {
+      const entity = event.ip_address || event.user_id || 'unknown';
+      const key = `${event.tier}:${entity}`;
+      
+      if (!entityMap.has(key)) {
+        entityMap.set(key, { 
+          count: 0, 
+          tier: event.tier, 
+          lastSeen: event.created_at 
+        });
+      }
+      
+      const stats = entityMap.get(key)!;
+      stats.count++;
+      if (event.created_at > stats.lastSeen) {
+        stats.lastSeen = event.created_at;
+      }
+    });
+
+    // Return top 20 blocked entities
+    return Array.from(entityMap.entries())
+      .sort((a, b) => b[1].count - a[1].count)
+      .slice(0, 20)
+      .map(([key, stats]) => {
+        const [tier, entity] = key.split(':', 2);
+        return {
+          tier,
+          entity: anonymizeKey(entity),
+          blockedCount: stats.count,
+          lastSeen: stats.lastSeen
+        };
+      });
+  } catch (error) {
+    logger.error('Failed to get top blocked entities', error as Error);
+    return [];
+  }
+}
+
+/**
+ * Extract key from event for grouping
+ */
+function getKeyFromEvent(event: any): string {
+  if (event.user_id) return `user:${event.user_id}`;
+  if (event.organization_id) return `org:${event.organization_id}`;
+  if (event.ip_address) return `ip:${event.ip_address}`;
+  return 'unknown';
+}
+
+/**
+ * Anonymize sensitive keys for analytics display
+ */
+function anonymizeKey(key: string): string {
+  if (key.startsWith('ip:')) {
+    const ip = key.substring(3);
+    const parts = ip.split('.');
+    if (parts.length === 4) {
+      return `ip:${parts[0]}.${parts[1]}.*.* `;
+    }
+  }
+  
+  if (key.startsWith('user:')) {
+    const userId = key.substring(5);
+    return `user:${userId.substring(0, 8)}...`;
+  }
+  
+  if (key.startsWith('org:')) {
+    const orgId = key.substring(4);
+    return `org:${orgId.substring(0, 8)}...`;
+  }
+  
+  return key.length > 20 ? `${key.substring(0, 17)}...` : key;
+}

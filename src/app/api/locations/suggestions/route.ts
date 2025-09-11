@@ -1,0 +1,58 @@
+/**
+ * WS-116: Location Suggestions API
+ * Autocomplete endpoint for location search
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { geographicSearchService } from '@/lib/services/geographic-search-service';
+
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const query = searchParams.get('q') || searchParams.get('query');
+
+    if (!query || query.length < 2) {
+      return NextResponse.json(
+        { error: 'Query must be at least 2 characters long' },
+        { status: 400 },
+      );
+    }
+
+    // Sanitize query input
+    const sanitizedQuery = query.trim().slice(0, 100); // Limit to 100 characters
+
+    if (!/^[a-zA-Z0-9\s\-.,]+$/.test(sanitizedQuery)) {
+      return NextResponse.json(
+        { error: 'Query contains invalid characters' },
+        { status: 400 },
+      );
+    }
+
+    const limit = Math.min(parseInt(searchParams.get('limit') || '10'), 20); // Max 20 suggestions
+
+    const suggestions = await geographicSearchService.getLocationSuggestions(
+      sanitizedQuery,
+      limit,
+    );
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        suggestions,
+        query: sanitizedQuery,
+        count: suggestions.length,
+      },
+    });
+  } catch (error: any) {
+    console.error('Location suggestions API error:', error);
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Failed to get location suggestions',
+        message: error.message || 'Internal server error',
+      },
+      { status: 500 },
+    );
+  }
+}

@@ -1,0 +1,545 @@
+/**
+ * Unit Tests for Conflict Resolution Audit Logger
+ * Feature: WS-172 - Offline Functionality - Conflict Resolution
+ * Team: C - Batch 21 - Round 3
+ */
+
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { 
+  ConflictAuditLogger,
+  InMemoryAuditStorage,
+  SupabaseAuditStorage,
+  createInMemoryAuditLogger,
+  createSupabaseAuditLogger,
+  DEFAULT_AUDIT_CONFIG
+} from '../audit-logger';
+import type { 
+  DataConflict,
+  ResolutionResult,
+  UserContext,
+  AuditStorage,
+  AuditSearchCriteria,
+  AuditLogConfig
+} from '../types';
+describe('InMemoryAuditStorage', () => {
+  let storage: InMemoryAuditStorage;
+  beforeEach(() => {
+    storage = new InMemoryAuditStorage();
+  });
+  const mockAuditEntry = {
+    entryId: 'audit-123',
+    conflictId: 'conflict-123',
+    action: 'resolved' as const,
+    timestamp: {
+      timestamp: Date.now(),
+      timezone: 'UTC',
+      deviceTime: Date.now()
+    },
+    user: {
+      id: 'user-123',
+      role: 'bride' as const,
+      deviceId: 'device-abc',
+      sessionId: 'session-def'
+    details: {
+      strategy: 'merge-fields',
+      success: true
+    dataSnapshot: { title: 'Resolved Data' }
+  };
+  describe('Basic Operations', () => {
+    it('should store and retrieve audit entries', async () => {
+      await storage.store(mockAuditEntry);
+      
+      const entries = await storage.retrieve('conflict-123');
+      expect(entries).toHaveLength(1);
+      expect(entries[0].entryId).toBe('audit-123');
+      expect(entries[0].conflictId).toBe('conflict-123');
+    });
+    it('should retrieve entries by user', async () => {
+      const entry1 = { ...mockAuditEntry, user: { ...mockAuditEntry.user, id: 'user-1' } };
+      const entry2 = { ...mockAuditEntry, user: { ...mockAuditEntry.user, id: 'user-2' } };
+      await storage.store(entry1);
+      await storage.store(entry2);
+      const user1Entries = await storage.retrieveByUser('user-1');
+      expect(user1Entries).toHaveLength(1);
+      expect(user1Entries[0].user.id).toBe('user-1');
+    it('should retrieve entries by time range', async () => {
+      const now = new Date();
+      const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+      const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000);
+      const oldEntry = {
+        ...mockAuditEntry,
+        timestamp: { ...mockAuditEntry.timestamp, timestamp: twoHoursAgo.getTime() }
+      };
+      const recentEntry = {
+        entryId: 'audit-recent',
+        timestamp: { ...mockAuditEntry.timestamp, timestamp: now.getTime() }
+      await storage.store(oldEntry);
+      await storage.store(recentEntry);
+      const recentEntries = await storage.retrieveByTimeRange(oneHourAgo, now);
+      expect(recentEntries).toHaveLength(1);
+      expect(recentEntries[0].entryId).toBe('audit-recent');
+    it('should search entries with criteria', async () => {
+      const entry1 = { ...mockAuditEntry, action: 'detected' as const };
+      const entry2 = { ...mockAuditEntry, entryId: 'audit-456', action: 'resolved' as const };
+      const searchCriteria: AuditSearchCriteria = {
+        actions: ['resolved'],
+        limit: 10
+      const results = await storage.search(searchCriteria);
+      expect(results).toHaveLength(1);
+      expect(results[0].action).toBe('resolved');
+    it('should cleanup old entries', async () => {
+      const oldTimestamp = Date.now() - 24 * 60 * 60 * 1000; // 24 hours ago
+      const recentTimestamp = Date.now();
+        timestamp: { ...mockAuditEntry.timestamp, timestamp: oldTimestamp }
+        timestamp: { ...mockAuditEntry.timestamp, timestamp: recentTimestamp }
+      const cutoffDate = new Date(Date.now() - 12 * 60 * 60 * 1000); // 12 hours ago
+      const cleanedCount = await storage.cleanup(cutoffDate);
+      expect(cleanedCount).toBe(1);
+      const remainingEntries = await storage.retrieveByTimeRange(
+        new Date(0), 
+        new Date()
+      );
+      expect(remainingEntries).toHaveLength(1);
+      expect(remainingEntries[0].entryId).toBe('audit-recent');
+  describe('Advanced Search', () => {
+    beforeEach(async () => {
+      // Setup test data
+      const entries = [
+        {
+          ...mockAuditEntry,
+          entryId: 'audit-1',
+          conflictId: 'conflict-1',
+          action: 'detected' as const,
+          user: { ...mockAuditEntry.user, id: 'user-1' }
+        },
+          entryId: 'audit-2',
+          action: 'resolved' as const,
+          entryId: 'audit-3',
+          conflictId: 'conflict-2',
+          action: 'escalated' as const,
+          user: { ...mockAuditEntry.user, id: 'user-2' }
+        }
+      ];
+      for (const entry of entries) {
+        await storage.store(entry);
+      }
+    it('should search by multiple conflict IDs', async () => {
+      const results = await storage.search({
+        conflictIds: ['conflict-1', 'conflict-2']
+      });
+      expect(results).toHaveLength(3);
+    it('should search by user IDs', async () => {
+        userIds: ['user-1']
+      expect(results).toHaveLength(2);
+      expect(results.every(r => r.user.id === 'user-1')).toBe(true);
+    it('should search by actions', async () => {
+        actions: ['detected', 'escalated']
+      expect(results.some(r => r.action === 'detected')).toBe(true);
+      expect(results.some(r => r.action === 'escalated')).toBe(true);
+    it('should apply pagination', async () => {
+      const page1 = await storage.search({ limit: 2 });
+      expect(page1).toHaveLength(2);
+      const page2 = await storage.search({ offset: 2, limit: 2 });
+      expect(page2).toHaveLength(1);
+});
+describe('SupabaseAuditStorage', () => {
+  let storage: SupabaseAuditStorage;
+  let mockSupabaseClient: any;
+    mockSupabaseClient = {
+      from: vi.fn().mockReturnThis(),
+      insert: vi.fn().mockResolvedValue({ error: null }),
+      select: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      gte: vi.fn().mockReturnThis(),
+      lte: vi.fn().mockReturnThis(),
+      in: vi.fn().mockReturnThis(),
+      order: vi.fn().mockReturnThis(),
+      range: vi.fn().mockReturnThis(),
+      limit: vi.fn().mockReturnThis(),
+      delete: vi.fn().mockReturnThis(),
+      lt: vi.fn().mockReturnThis()
+    };
+    storage = new SupabaseAuditStorage(mockSupabaseClient);
+  const mockDatabaseRow = {
+    entry_id: 'audit-123',
+    conflict_id: 'conflict-123',
+    action: 'resolved',
+    timestamp: '2024-01-01T12:00:00Z',
+    user_id: 'user-123',
+    user_role: 'bride',
+    device_id: 'device-abc',
+    session_id: 'session-def',
+    details: { strategy: 'merge-fields' },
+    data_snapshot: { title: 'Resolved' }
+  it('should store audit entries in Supabase', async () => {
+    const entry = {
+      entryId: 'audit-123',
+      conflictId: 'conflict-123',
+      action: 'resolved' as const,
+      timestamp: {
+        timestamp: Date.now(),
+        timezone: 'UTC',
+        deviceTime: Date.now()
+      },
+      user: {
+        id: 'user-123',
+        role: 'bride' as const,
+        deviceId: 'device-abc',
+        sessionId: 'session-def'
+      details: { strategy: 'merge-fields' },
+      dataSnapshot: { title: 'Resolved' }
+    await storage.store(entry);
+    expect(mockSupabaseClient.from).toHaveBeenCalledWith('conflict_audit_log');
+    expect(mockSupabaseClient.insert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entry_id: 'audit-123',
+        conflict_id: 'conflict-123',
+        action: 'resolved',
+        user_id: 'user-123',
+        user_role: 'bride'
+      })
+    );
+  it('should retrieve entries from Supabase', async () => {
+    mockSupabaseClient.select.mockResolvedValue({
+      data: [mockDatabaseRow],
+      error: null
+    const entries = await storage.retrieve('conflict-123');
+    expect(entries).toHaveLength(1);
+    expect(entries[0].entryId).toBe('audit-123');
+    expect(entries[0].conflictId).toBe('conflict-123');
+    expect(entries[0].user.role).toBe('bride');
+  it('should handle Supabase errors gracefully', async () => {
+    mockSupabaseClient.insert.mockResolvedValue({
+      error: { message: 'Database error' }
+      timestamp: { timestamp: Date.now(), timezone: 'UTC', deviceTime: Date.now() },
+      user: { id: 'user-123', role: 'bride' as const, deviceId: 'device-abc', sessionId: 'session-def' },
+      details: {}
+    await expect(storage.store(entry)).rejects.toThrow('Failed to store audit entry: Database error');
+  it('should search with complex criteria', async () => {
+    const criteria: AuditSearchCriteria = {
+      conflictIds: ['conflict-123'],
+      userIds: ['user-123'],
+      actions: ['resolved'],
+      timeRange: {
+        start: new Date('2024-01-01'),
+        end: new Date('2024-01-02')
+      limit: 10,
+      offset: 0
+    await storage.search(criteria);
+    expect(mockSupabaseClient.in).toHaveBeenCalledWith('conflict_id', ['conflict-123']);
+    expect(mockSupabaseClient.in).toHaveBeenCalledWith('user_id', ['user-123']);
+    expect(mockSupabaseClient.in).toHaveBeenCalledWith('action', ['resolved']);
+    expect(mockSupabaseClient.gte).toHaveBeenCalledWith('timestamp', expect.any(String));
+    expect(mockSupabaseClient.lte).toHaveBeenCalledWith('timestamp', expect.any(String));
+describe('ConflictAuditLogger', () => {
+  let logger: ConflictAuditLogger;
+  let mockStorage: AuditStorage;
+  let mockUserContext: UserContext;
+    mockStorage = {
+      store: vi.fn().mockResolvedValue(undefined),
+      retrieve: vi.fn().mockResolvedValue([]),
+      retrieveByUser: vi.fn().mockResolvedValue([]),
+      retrieveByTimeRange: vi.fn().mockResolvedValue([]),
+      search: vi.fn().mockResolvedValue([]),
+      cleanup: vi.fn().mockResolvedValue(0)
+    logger = new ConflictAuditLogger(mockStorage);
+    mockUserContext = {
+      role: 'bride',
+  const createMockConflict = (overrides = {}): DataConflict<any> => ({
+    metadata: {
+      detectedAt: { timestamp: Date.now(), timezone: 'UTC', deviceTime: Date.now() },
+      affectedFields: ['title'],
+      severity: 'medium' as const,
+      autoResolvable: true
+    dataType: 'timeline-item',
+    localVersion: {
+      id: 'item-123',
+      version: 1,
+      data: { title: 'Local Title' },
+      lastModified: { timestamp: Date.now(), timezone: 'UTC', deviceTime: Date.now() },
+      modifiedBy: mockUserContext,
+      checksum: 'local-checksum'
+    remoteVersion: {
+      version: 2,
+      data: { title: 'Remote Title' },
+      checksum: 'remote-checksum'
+    conflictType: { type: 'field-conflict', field: 'title', conflictingValues: [] },
+    resolutionStrategy: 'timeline-item-merge-fields' as any,
+    isResolved: false,
+    ...overrides
+  describe('Conflict Logging', () => {
+    it('should log conflict detection', async () => {
+      const conflict = createMockConflict();
+      await logger.logConflictDetected(conflict, { source: 'sync-engine' });
+      expect(mockStorage.store).toHaveBeenCalledWith(
+        expect.objectContaining({
+          conflictId: 'conflict-123',
+          action: 'detected',
+          details: expect.objectContaining({
+            dataType: 'timeline-item',
+            severity: 'medium',
+            detectionContext: { source: 'sync-engine' }
+          })
+        })
+    it('should log resolution attempts', async () => {
+      await logger.logResolutionAttempt(conflict, 'merge-fields', { attempt: 1 });
+          action: 'resolved',
+            resolutionStrategy: 'merge-fields',
+            context: { attempt: 1 }
+    it('should log successful resolutions', async () => {
+      const result: ResolutionResult<any> = {
+        success: true,
+        resolvedData: { title: 'Merged Title' },
+        audit: {
+          entryId: 'audit-123',
+          timestamp: { timestamp: Date.now(), timezone: 'UTC', deviceTime: Date.now() },
+          user: mockUserContext,
+          details: { strategy: 'merge' }
+      await logger.logResolutionSuccess(conflict, result, result.resolvedData);
+            success: true,
+            resolutionStrategy: 'timeline-item-merge-fields'
+    it('should log resolution failures', async () => {
+        success: false,
+        error: {
+          code: 'RESOLUTION_FAILED',
+          message: 'Could not resolve conflict',
+          conflictId: 'conflict-123'
+        } as any,
+        requiresManualReview: true
+      await logger.logResolutionFailure(conflict, result);
+          action: 'rejected',
+            success: false,
+            error: {
+              code: 'RESOLUTION_FAILED',
+              message: 'Could not resolve conflict'
+            },
+            requiresManualReview: true
+    it('should log manual escalations', async () => {
+      const escalatedBy = { ...mockUserContext, role: 'admin' as const };
+      await logger.logManualEscalation(
+        conflict, 
+        escalatedBy, 
+        'Complex conflict requiring expert review',
+        { complexity: 'high' }
+          action: 'escalated',
+          user: escalatedBy,
+            reason: 'Complex conflict requiring expert review',
+            context: { complexity: 'high' }
+  describe('Data Sanitization', () => {
+    it('should sanitize sensitive information', async () => {
+      conflict.localVersion.data = {
+        title: 'Wedding',
+        email: 'bride@example.com',
+        creditCard: '4111-1111-1111-1111'
+      await logger.logConflictDetected(conflict);
+      const storedCall = vi.mocked(mockStorage.store).mock.calls[0][0];
+      expect(storedCall.details).not.toContain('bride@example.com');
+      expect(storedCall.details).not.toContain('4111-1111-1111-1111');
+    it('should redact emails in compliance mode', async () => {
+      const complianceLogger = new ConflictAuditLogger(mockStorage, { 
+        complianceMode: true 
+      await complianceLogger.logConflictDetected(conflict, {
+        userEmail: 'user@example.com',
+        note: 'Contact support@wedsync.com for help'
+      const detailsStr = JSON.stringify(storedCall.details);
+      expect(detailsStr).toContain('[EMAIL_REDACTED]');
+      expect(detailsStr).not.toContain('user@example.com');
+      expect(detailsStr).not.toContain('support@wedsync.com');
+    it('should handle data snapshots based on configuration', async () => {
+      const snapshotLogger = new ConflictAuditLogger(mockStorage, {
+        includeDataSnapshots: true,
+        logLevel: 'detailed'
+        resolvedData: { title: 'Resolved Title' },
+          details: {}
+      await snapshotLogger.logResolutionSuccess(conflict, result, result.resolvedData);
+      expect(storedCall.dataSnapshot).toEqual({ title: 'Resolved Title' });
+  describe('Alert System', () => {
+    it('should trigger alerts for suspicious activity', async () => {
+      const alertCallback = vi.fn();
+      logger.onAlert(alertCallback);
+      // Mock storage to return many recent entries for the user
+      const recentEntries = Array.from({ length: 15 }, (_, i) => ({
+        entryId: `audit-${i}`,
+        conflictId: `conflict-${i}`,
+        action: 'detected' as const,
+        timestamp: { timestamp: Date.now(), timezone: 'UTC', deviceTime: Date.now() },
+        user: mockUserContext,
+        details: {}
+      }));
+      vi.mocked(mockStorage.retrieveByUser).mockResolvedValue(recentEntries);
+      expect(alertCallback).toHaveBeenCalledWith(
+        expect.any(Object),
+        'SUSPICIOUS_ACTIVITY'
+    it('should trigger alerts for excessive failures', async () => {
+      // Mock storage to return many failed entries
+      const failedEntries = Array.from({ length: 6 }, (_, i) => ({
+        action: 'rejected' as const,
+        details: { success: false }
+      vi.mocked(mockStorage.retrieveByUser).mockResolvedValue(failedEntries);
+      const failedResult: ResolutionResult<any> = {
+        error: { code: 'FAILED', message: 'Failed', conflictId: 'conflict-123' } as any,
+      await logger.logResolutionFailure(conflict, failedResult);
+        'EXCESSIVE_FAILURES'
+    it('should handle alert callback errors gracefully', async () => {
+      const faultyCallback = vi.fn().mockImplementation(() => {
+        throw new Error('Callback error');
+      logger.onAlert(faultyCallback);
+      // Should not throw even if callback fails
+      await expect(logger.logConflictDetected(conflict)).resolves.not.toThrow();
+  describe('Configuration Options', () => {
+    it('should respect disabled logging', async () => {
+      const disabledLogger = new ConflictAuditLogger(mockStorage, { 
+        enableLogging: false 
+      await disabledLogger.logConflictDetected(conflict);
+      expect(mockStorage.store).not.toHaveBeenCalled();
+    it('should handle different log levels', async () => {
+      const minimalLogger = new ConflictAuditLogger(mockStorage, { 
+        logLevel: 'minimal' 
+      await minimalLogger.logConflictDetected(conflict);
+      expect(storedCall.dataSnapshot).toBeUndefined();
+    it('should fail in compliance mode when storage fails', async () => {
+      vi.mocked(mockStorage.store).mockRejectedValue(new Error('Storage failed'));
+      await expect(complianceLogger.logConflictDetected(conflict)).rejects.toThrow(
+        /Audit logging failed.*compliance mode/
+  describe('Reporting and Analytics', () => {
+    it('should generate audit reports', async () => {
+      const mockEntries = [
+          user: { ...mockUserContext, id: 'user-1' },
+          details: { dataType: 'timeline-item' }
+          user: { ...mockUserContext, id: 'user-2' },
+          details: { dataType: 'vendor-contact' }
+      vi.mocked(mockStorage.retrieveByTimeRange).mockResolvedValue(mockEntries);
+      const timeRange = {
+        end: new Date('2024-01-31')
+      const report = await logger.generateAuditReport(timeRange);
+      expect(report.summary.totalEntries).toBe(2);
+      expect(report.summary.byAction['detected']).toBe(1);
+      expect(report.summary.byAction['resolved']).toBe(1);
+      expect(report.summary.byUser['user-1']).toBe(1);
+      expect(report.summary.byUser['user-2']).toBe(1);
+      expect(report.summary.byDataType['timeline-item']).toBe(1);
+      expect(report.summary.byDataType['vendor-contact']).toBe(1);
+      expect(report.entries).toEqual(mockEntries);
+      vi.mocked(mockStorage.cleanup).mockResolvedValue(42);
+      const cleanedCount = await logger.cleanupOldEntries();
+      expect(cleanedCount).toBe(42);
+      expect(mockStorage.cleanup).toHaveBeenCalledWith(
+        expect.any(Date)
+    it('should search audit logs', async () => {
+      vi.mocked(mockStorage.search).mockResolvedValue(mockEntries);
+      const criteria: AuditSearchCriteria = {
+        userIds: ['user-123']
+      const results = await logger.searchAuditLogs(criteria);
+      expect(results).toEqual(mockEntries);
+      expect(mockStorage.search).toHaveBeenCalledWith(criteria);
+    it('should get conflict audit trail', async () => {
+      const mockTrail = [
+      vi.mocked(mockStorage.retrieve).mockResolvedValue(mockTrail);
+      const trail = await logger.getConflictAuditTrail('conflict-123');
+      expect(trail).toEqual(mockTrail);
+      expect(mockStorage.retrieve).toHaveBeenCalledWith('conflict-123');
+describe('Factory Functions', () => {
+  describe('createInMemoryAuditLogger', () => {
+    it('should create logger with in-memory storage', () => {
+      const logger = createInMemoryAuditLogger();
+      expect(logger).toBeInstanceOf(ConflictAuditLogger);
+      const config = logger.getConfig();
+      expect(config.enableLogging).toBe(true);
+    it('should accept custom configuration', () => {
+      const customConfig: Partial<AuditLogConfig> = {
+        logLevel: 'forensic',
+        retentionDays: 365
+      const logger = createInMemoryAuditLogger(customConfig);
+      expect(config.logLevel).toBe('forensic');
+      expect(config.retentionDays).toBe(365);
+  describe('createSupabaseAuditLogger', () => {
+    it('should create logger with Supabase storage', () => {
+      const mockSupabaseClient = {};
+      const logger = createSupabaseAuditLogger(mockSupabaseClient);
+    it('should pass configuration to logger', () => {
+        complianceMode: false,
+        enableRealTimeAlerts: false
+      const logger = createSupabaseAuditLogger(mockSupabaseClient, customConfig);
+      expect(config.complianceMode).toBe(false);
+      expect(config.enableRealTimeAlerts).toBe(false);
+describe('Integration Scenarios', () => {
+  it('should handle end-to-end audit workflow', async () => {
+    const storage = new InMemoryAuditStorage();
+    const logger = new ConflictAuditLogger(storage, {
+      logLevel: 'detailed',
+      includeDataSnapshots: true
+    const conflict = {
+      metadata: {
+        conflictId: 'conflict-workflow-test',
+        detectedAt: { timestamp: Date.now(), timezone: 'UTC', deviceTime: Date.now() },
+        affectedFields: ['title'],
+        severity: 'medium' as const,
+        autoResolvable: false
+      dataType: 'timeline-item',
+      localVersion: {
+        id: 'item-123',
+        version: 1,
+        data: { title: 'Local Title' },
+        lastModified: { timestamp: Date.now(), timezone: 'UTC', deviceTime: Date.now() },
+        modifiedBy: mockUserContext,
+        checksum: 'local'
+      remoteVersion: {
+        version: 2,
+        data: { title: 'Remote Title' },
+        checksum: 'remote'
+      conflictType: { type: 'field-conflict' as const, field: 'title', conflictingValues: [] },
+      resolutionStrategy: 'timeline-item-manual-review' as any,
+      isResolved: false
+    // Full workflow: detect -> attempt -> escalate -> resolve
+    await logger.logConflictDetected(conflict);
+    await logger.logResolutionAttempt(conflict, 'auto-merge');
+    await logger.logManualEscalation(conflict, mockUserContext, 'Auto-resolution failed');
+    
+    const successResult: ResolutionResult<any> = {
+      success: true,
+      resolvedData: { title: 'Final Title' },
+      audit: {
+        entryId: 'final-audit',
+        details: { strategy: 'manual' }
+    await logger.logResolutionSuccess(conflict, successResult, successResult.resolvedData);
+    // Verify complete audit trail
+    const auditTrail = await logger.getConflictAuditTrail('conflict-workflow-test');
+    expect(auditTrail.length).toBe(4);
+    const actions = auditTrail.map(entry => entry.action);
+    expect(actions).toContain('detected');
+    expect(actions).toContain('resolved');
+    expect(actions).toContain('escalated');
+  it('should handle high-volume logging', async () => {
+    const logger = new ConflictAuditLogger(storage);
+    // Log many entries
+    const promises = Array.from({ length: 100 }, async (_, i) => {
+      const conflict = {
+        metadata: {
+          conflictId: `conflict-${i}`,
+          detectedAt: { timestamp: Date.now(), timezone: 'UTC', deviceTime: Date.now() },
+          affectedFields: ['field'],
+          severity: 'low' as const,
+          autoResolvable: true
+        dataType: 'timeline-item',
+        localVersion: {
+          id: `item-${i}`,
+          version: 1,
+          data: { value: i },
+          lastModified: { timestamp: Date.now(), timezone: 'UTC', deviceTime: Date.now() },
+          modifiedBy: mockUserContext,
+          checksum: 'checksum'
+        remoteVersion: {
+          version: 2,
+          data: { value: i + 1 },
+          checksum: 'checksum2'
+        conflictType: { type: 'field-conflict' as const, field: 'value', conflictingValues: [] },
+        resolutionStrategy: 'test-merge' as any,
+        isResolved: false
+      return logger.logConflictDetected(conflict);
+    // Should handle concurrent logging
+    await expect(Promise.all(promises)).resolves.not.toThrow();
+    // Verify all entries were stored
+    const allEntries = await storage.retrieveByTimeRange(
+      new Date(Date.now() - 60000), 
+      new Date()
+    expect(allEntries.length).toBe(100);

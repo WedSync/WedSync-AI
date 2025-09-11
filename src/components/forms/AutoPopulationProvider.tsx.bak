@@ -1,0 +1,662 @@
+'use client'
+
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { 
+  type PopulationContext, 
+  type PopulationSession, 
+  type FieldPopulationData, 
+  type PopulationRequest,
+  type PopulationEvent,
+  type SessionSummary,
+  type PopulationError,
+  type PerformanceMetrics
+} from '@/types/auto-population'
+
+// Security and performance imports
+import { v4 as uuidv4 } from 'uuid'
+import CryptoJS from 'crypto-js'
+
+// Context creation
+const AutoPopulationContext = createContext<PopulationContext | null>(null)
+
+// Hook for consuming the context
+export function useAutoPopulationContext() {
+  const context = useContext(AutoPopulationContext)
+  if (!context) {
+    throw new Error('useAutoPopulationContext must be used within an AutoPopulationProvider')
+  }
+  return context
+}
+
+// Configuration constants
+const SESSION_CONFIG = {
+  TIMEOUT: 30 * 60 * 1000, // 30 minutes
+  ACTIVITY_TIMEOUT: 15 * 60 * 1000, // 15 minutes
+  MAX_RETRIES: 3,
+  RETRY_DELAY: 1000,
+  STORAGE_KEY: 'wedsync_auto_population_session',
+  ENCRYPTION_KEY: process.env.SESSION_KEY || 'default-key-change-in-production'
+} as const
+
+interface AutoPopulationProviderProps {
+  children: React.ReactNode
+  organizationId: string
+  userId?: string
+  onError?: (error: PopulationError) => void
+  onPerformanceMetric?: (metrics: PerformanceMetrics) => void
+  maxSessions?: number
+  debugMode?: boolean
+}
+
+export function AutoPopulationProvider({
+  children,
+  organizationId,
+  userId,
+  onError,
+  onPerformanceMetric,
+  maxSessions = 1,
+  debugMode = false
+}: AutoPopulationProviderProps) {
+  // Core state
+  const [session, setSession] = useState<PopulationSession | null>(null)
+  const [populationData, setPopulationData] = useState<Map<string, FieldPopulationData>>(new Map())
+  const [isLoading, setIsLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // Performance tracking
+  const performanceRef = useRef<PerformanceMetrics>({
+    componentRenderTime: 0,
+    confidenceCalculationTime: 0,
+    apiRequestTime: 0,
+    totalPopulationTime: 0,
+    memoryUsage: 0,
+    cacheHitRate: 0
+  })
+
+  // Cleanup and abort controllers
+  const abortControllerRef = useRef<AbortController | null>(null)
+  const sessionTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+
+  // Generate secure client identifier
+  const generateClientHash = useCallback((): string => {
+    const clientInfo = `${navigator.userAgent}${window.location.host}${Date.now()}`
+    return CryptoJS.SHA256(clientInfo).toString().slice(0, 16)
+  }, [])
+
+  // Encrypt session data for storage
+  const encryptSessionData = useCallback((data: PopulationSession): string => {
+    try {
+      return CryptoJS.AES.encrypt(JSON.stringify(data), SESSION_CONFIG.ENCRYPTION_KEY).toString()
+    } catch (error) {
+      console.error('Session encryption failed:', error)
+      throw new Error('Failed to encrypt session data')
+    }
+  }, [])
+
+  // Decrypt session data from storage
+  const decryptSessionData = useCallback((encryptedData: string): PopulationSession | null => {
+    try {
+      const bytes = CryptoJS.AES.decrypt(encryptedData, SESSION_CONFIG.ENCRYPTION_KEY)
+      const decryptedString = bytes.toString(CryptoJS.enc.Utf8)
+      return JSON.parse(decryptedString) as PopulationSession
+    } catch (error) {
+      console.error('Session decryption failed:', error)
+      return null
+    }
+  }, [])
+
+  // Store session data securely
+  const storeSessionData = useCallback((sessionData: PopulationSession) => {
+    try {
+      const encrypted = encryptSessionData(sessionData)
+      sessionStorage.setItem(SESSION_CONFIG.STORAGE_KEY, encrypted)
+      
+      if (debugMode) {
+        console.log('Session stored:', sessionData.sessionId)
+      }
+    } catch (error) {
+      console.error('Failed to store session:', error)
+      onError?.({
+        code: 'STORAGE_ERROR',
+        message: 'Failed to store session data',
+        severity: 'medium',
+        recoverable: true,
+        timestamp: Date.now()
+      })
+    }
+  }, [encryptSessionData, debugMode, onError])
+
+  // Load session data from storage
+  const loadSessionData = useCallback((): PopulationSession | null => {
+    try {
+      const stored = sessionStorage.getItem(SESSION_CONFIG.STORAGE_KEY)
+      if (!stored) return null
+
+      const sessionData = decryptSessionData(stored)
+      if (!sessionData) return null
+
+      // Validate session isn't expired
+      const now = Date.now()
+      if (now > sessionData.expiresAt || sessionData.isExpired) {
+        sessionStorage.removeItem(SESSION_CONFIG.STORAGE_KEY)
+        return null
+      }
+
+      // Check activity timeout
+      if (now - sessionData.lastActivity > SESSION_CONFIG.ACTIVITY_TIMEOUT) {
+        sessionStorage.removeItem(SESSION_CONFIG.STORAGE_KEY)
+        return null
+      }
+
+      return sessionData
+    } catch (error) {
+      console.error('Failed to load session:', error)
+      sessionStorage.removeItem(SESSION_CONFIG.STORAGE_KEY)
+      return null
+    }
+  }, [decryptSessionData])
+
+  // Create new session
+  const createSession = useCallback(async (orgId: string): Promise<string> => {
+    const startTime = performance.now()
+    
+    try {
+      const sessionId = uuidv4()
+      const now = Date.now()
+      
+      const newSession: PopulationSession = {
+        sessionId,
+        startTime: now,
+        lastActivity: now,
+        expiresAt: now + SESSION_CONFIG.TIMEOUT,
+        userId,
+        organizationId: orgId,
+        ipHash: generateClientHash(),
+        userAgent: navigator.userAgent.slice(0, 200),
+        populationEvents: [],
+        isExpired: false,
+        hasUserConsent: false
+      }
+
+      setSession(newSession)
+      storeSessionData(newSession)
+      
+      // Set up session timeout
+      if (sessionTimeoutRef.current) {
+        clearTimeout(sessionTimeoutRef.current)
+      }
+      
+      sessionTimeoutRef.current = setTimeout(() => {
+        expireSession()
+      }, SESSION_CONFIG.TIMEOUT)
+
+      // Track performance
+      const endTime = performance.now()
+      performanceRef.current.componentRenderTime = endTime - startTime
+      
+      if (debugMode) {
+        console.log('New session created:', sessionId)
+      }
+
+      return sessionId
+    } catch (error) {
+      const errorObj: PopulationError = {
+        code: 'SESSION_CREATE_ERROR',
+        message: error instanceof Error ? error.message : 'Failed to create session',
+        severity: 'high',
+        recoverable: true,
+        timestamp: Date.now()
+      }
+      
+      setError(errorObj.message)
+      onError?.(errorObj)
+      throw error
+    }
+  }, [userId, generateClientHash, storeSessionData, debugMode, onError])
+
+  // Expire session
+  const expireSession = useCallback(() => {
+    if (session) {
+      const expiredSession = { ...session, isExpired: true }
+      setSession(expiredSession)
+      storeSessionData(expiredSession)
+      
+      // Clear sensitive data
+      setPopulationData(new Map())
+      
+      if (debugMode) {
+        console.log('Session expired:', session.sessionId)
+      }
+    }
+  }, [session, storeSessionData, debugMode])
+
+  // Add population event to session
+  const addPopulationEvent = useCallback((event: Omit<PopulationEvent, 'id' | 'timestamp'>) => {
+    if (!session) return
+
+    const newEvent: PopulationEvent = {
+      ...event,
+      id: uuidv4(),
+      timestamp: Date.now()
+    }
+
+    const updatedSession: PopulationSession = {
+      ...session,
+      populationEvents: [...session.populationEvents, newEvent],
+      lastActivity: Date.now()
+    }
+
+    setSession(updatedSession)
+    storeSessionData(updatedSession)
+    
+    // Audit log API call (fire and forget)
+    fetch('/api/audit/population-events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionId: session.sessionId,
+        organizationId: session.organizationId,
+        event: newEvent
+      })
+    }).catch(error => {
+      if (debugMode) {
+        console.warn('Failed to log population event:', error)
+      }
+    })
+  }, [session, storeSessionData, debugMode])
+
+  // Request population for a field
+  const requestPopulation = useCallback(async (request: PopulationRequest): Promise<FieldPopulationData | null> => {
+    if (!session || session.isExpired || !session.hasUserConsent) {
+      throw new Error('Invalid session or missing consent')
+    }
+
+    const startTime = performance.now()
+    setIsLoading(true)
+    setError(null)
+
+    // Cancel any existing request
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+    }
+    abortControllerRef.current = new AbortController()
+
+    try {
+      const response = await fetch('/api/forms/auto-population', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-ID': session.sessionId
+        },
+        body: JSON.stringify({
+          ...request,
+          sessionId: session.sessionId,
+          hasUserConsent: session.hasUserConsent
+        }),
+        signal: abortControllerRef.current.signal
+      })
+
+      if (!response.ok) {
+        throw new Error(`Population request failed: ${response.status}`)
+      }
+
+      const result = await response.json()
+      
+      if (result.success && result.data) {
+        const populationData: FieldPopulationData = result.data
+        
+        // Store population data
+        setPopulationData(prev => new Map(prev.set(request.fieldId, populationData)))
+        
+        // Add event to session
+        addPopulationEvent({
+          action: 'VIEWED',
+          fieldId: request.fieldId,
+          fieldType: request.fieldType,
+          source: request.source,
+          confidenceScore: populationData.confidenceScore,
+          metadata: populationData.metadata
+        })
+
+        // Track performance
+        const endTime = performance.now()
+        performanceRef.current.apiRequestTime = endTime - startTime
+        
+        return populationData
+      } else {
+        throw new Error(result.error || 'Population request failed')
+      }
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        return null
+      }
+
+      const errorObj: PopulationError = {
+        code: 'POPULATION_REQUEST_ERROR',
+        message: error instanceof Error ? error.message : 'Population request failed',
+        field: request.fieldId,
+        severity: 'medium',
+        recoverable: true,
+        timestamp: Date.now(),
+        context: { request }
+      }
+
+      setError(errorObj.message)
+      onError?.(errorObj)
+      
+      // Add failed event
+      addPopulationEvent({
+        action: 'REJECTED',
+        fieldId: request.fieldId,
+        fieldType: request.fieldType,
+        source: request.source,
+        confidenceScore: 0,
+        metadata: {
+          sourceType: 'api',
+          processingTime: 0,
+          validation: { passed: false, rules: [], errors: [errorObj.message] },
+          isSensitive: false,
+          userDecision: 'rejected',
+          rejectionReason: errorObj.message
+        }
+      })
+
+      return null
+    } finally {
+      setIsLoading(false)
+    }
+  }, [session, addPopulationEvent, onError])
+
+  // Accept population suggestion
+  const acceptPopulation = useCallback((fieldId: string) => {
+    const data = populationData.get(fieldId)
+    if (!data || !session) return
+
+    // Update population data status
+    const updatedData = { ...data, status: 'accepted' as const, isVerified: true }
+    setPopulationData(prev => new Map(prev.set(fieldId, updatedData)))
+
+    // Add event
+    addPopulationEvent({
+      action: 'ACCEPTED',
+      fieldId,
+      fieldType: data.fieldType,
+      source: data.source,
+      confidenceScore: data.confidenceScore,
+      metadata: {
+        ...data.metadata,
+        userDecision: 'accepted'
+      }
+    })
+  }, [populationData, session, addPopulationEvent])
+
+  // Reject population suggestion
+  const rejectPopulation = useCallback((fieldId: string, reason: string) => {
+    const data = populationData.get(fieldId)
+    if (!data || !session) return
+
+    // Remove from population data
+    setPopulationData(prev => {
+      const next = new Map(prev)
+      next.delete(fieldId)
+      return next
+    })
+
+    // Add event
+    addPopulationEvent({
+      action: 'REJECTED',
+      fieldId,
+      fieldType: data.fieldType,
+      source: data.source,
+      confidenceScore: data.confidenceScore,
+      metadata: {
+        ...data.metadata,
+        userDecision: 'rejected',
+        rejectionReason: reason
+      }
+    })
+  }, [populationData, session, addPopulationEvent])
+
+  // Grant user consent
+  const grantConsent = useCallback(() => {
+    if (!session) return
+
+    const updatedSession = { ...session, hasUserConsent: true, lastActivity: Date.now() }
+    setSession(updatedSession)
+    storeSessionData(updatedSession)
+
+    addPopulationEvent({
+      action: 'CONSENT_GRANTED',
+      fieldId: 'system',
+      fieldType: 'text',
+      source: 'ml_suggestion',
+      confidenceScore: 1.0
+    })
+  }, [session, storeSessionData, addPopulationEvent])
+
+  // Revoke user consent
+  const revokeConsent = useCallback(() => {
+    if (!session) return
+
+    const updatedSession = { ...session, hasUserConsent: false, lastActivity: Date.now() }
+    setSession(updatedSession)
+    storeSessionData(updatedSession)
+
+    // Clear all population data
+    setPopulationData(new Map())
+
+    addPopulationEvent({
+      action: 'CONSENT_REVOKED',
+      fieldId: 'system',
+      fieldType: 'text',
+      source: 'ml_suggestion',
+      confidenceScore: 1.0
+    })
+  }, [session, storeSessionData, addPopulationEvent])
+
+  // Clear session
+  const clearSession = useCallback(() => {
+    if (sessionTimeoutRef.current) {
+      clearTimeout(sessionTimeoutRef.current)
+    }
+    
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+    }
+
+    setSession(null)
+    setPopulationData(new Map())
+    setIsLoading(false)
+    setError(null)
+    
+    sessionStorage.removeItem(SESSION_CONFIG.STORAGE_KEY)
+  }, [])
+
+  // Check if session is valid
+  const isSessionValid = useCallback((): boolean => {
+    if (!session) return false
+    
+    const now = Date.now()
+    return (
+      !session.isExpired &&
+      now < session.expiresAt &&
+      (now - session.lastActivity) < SESSION_CONFIG.ACTIVITY_TIMEOUT
+    )
+  }, [session])
+
+  // Get session summary for reporting
+  const getSessionSummary = useCallback((): SessionSummary => {
+    if (!session) {
+      return {
+        sessionId: '',
+        totalEvents: 0,
+        acceptedPopulations: 0,
+        rejectedPopulations: 0,
+        pendingPopulations: 0,
+        averageConfidence: 0,
+        sessionDuration: 0,
+        securityScore: 0,
+        sensitiveFieldsCount: 0,
+        lastActivity: 0
+      }
+    }
+
+    const events = session.populationEvents
+    const acceptedCount = events.filter(e => e.action === 'ACCEPTED').length
+    const rejectedCount = events.filter(e => e.action === 'REJECTED').length
+    const pendingCount = populationData.size - acceptedCount - rejectedCount
+    
+    const confidenceScores = events
+      .filter(e => e.confidenceScore > 0)
+      .map(e => e.confidenceScore)
+    
+    const averageConfidence = confidenceScores.length > 0 
+      ? confidenceScores.reduce((sum, score) => sum + score, 0) / confidenceScores.length 
+      : 0
+
+    const sensitiveCount = Array.from(populationData.values())
+      .filter(data => data.isSensitive).length
+
+    // Simple security score calculation
+    let securityScore = 100
+    if (!session.hasUserConsent) securityScore -= 30
+    if (events.length === 0) securityScore -= 20
+    if (sensitiveCount > 0 && acceptedCount === 0) securityScore -= 10
+
+    return {
+      sessionId: session.sessionId,
+      totalEvents: events.length,
+      acceptedPopulations: acceptedCount,
+      rejectedPopulations: rejectedCount,
+      pendingPopulations: pendingCount,
+      averageConfidence,
+      sessionDuration: Date.now() - session.startTime,
+      securityScore: Math.max(0, securityScore),
+      sensitiveFieldsCount: sensitiveCount,
+      lastActivity: session.lastActivity
+    }
+  }, [session, populationData])
+
+  // Export audit log
+  const exportAuditLog = useCallback((): string => {
+    if (!session) return ''
+
+    const summary = getSessionSummary()
+    const auditData = {
+      session: {
+        id: session.sessionId,
+        organizationId: session.organizationId,
+        userId: session.userId,
+        startTime: new Date(session.startTime).toISOString(),
+        duration: summary.sessionDuration,
+        hasConsent: session.hasUserConsent
+      },
+      summary,
+      events: session.populationEvents.map(event => ({
+        ...event,
+        timestamp: new Date(event.timestamp).toISOString()
+      })),
+      populationData: Array.from(populationData.values()),
+      exportTime: new Date().toISOString()
+    }
+
+    return JSON.stringify(auditData, null, 2)
+  }, [session, populationData, getSessionSummary])
+
+  // Initialize session on mount
+  useEffect(() => {
+    const existingSession = loadSessionData()
+    
+    if (existingSession && existingSession.organizationId === organizationId) {
+      setSession(existingSession)
+      
+      // Restore session timeout
+      const remainingTime = existingSession.expiresAt - Date.now()
+      if (remainingTime > 0) {
+        sessionTimeoutRef.current = setTimeout(() => {
+          expireSession()
+        }, remainingTime)
+      } else {
+        expireSession()
+      }
+    } else if (organizationId) {
+      createSession(organizationId).catch(error => {
+        console.error('Failed to create session on mount:', error)
+      })
+    }
+
+    // Cleanup on unmount
+    return () => {
+      if (sessionTimeoutRef.current) {
+        clearTimeout(sessionTimeoutRef.current)
+      }
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort()
+      }
+    }
+  }, [organizationId, loadSessionData, createSession, expireSession])
+
+  // Activity tracking
+  useEffect(() => {
+    if (!session || session.isExpired) return
+
+    const handleActivity = () => {
+      if (session && !session.isExpired) {
+        const updatedSession = { ...session, lastActivity: Date.now() }
+        setSession(updatedSession)
+        storeSessionData(updatedSession)
+      }
+    }
+
+    // Track user activity
+    const events = ['mousedown', 'mousemove', 'keypress', 'scroll', 'touchstart']
+    events.forEach(event => {
+      window.addEventListener(event, handleActivity, { passive: true })
+    })
+
+    return () => {
+      events.forEach(event => {
+        window.removeEventListener(event, handleActivity)
+      })
+    }
+  }, [session, storeSessionData])
+
+  // Memoized context value for performance
+  const contextValue = useMemo((): PopulationContext => ({
+    session,
+    populationData,
+    isLoading,
+    error,
+    createSession,
+    requestPopulation,
+    acceptPopulation,
+    rejectPopulation,
+    clearSession,
+    grantConsent,
+    revokeConsent,
+    isSessionValid,
+    getSessionSummary,
+    exportAuditLog
+  }), [
+    session,
+    populationData,
+    isLoading,
+    error,
+    createSession,
+    requestPopulation,
+    acceptPopulation,
+    rejectPopulation,
+    clearSession,
+    grantConsent,
+    revokeConsent,
+    isSessionValid,
+    getSessionSummary,
+    exportAuditLog
+  ])
+
+  return (
+    <AutoPopulationContext.Provider value={contextValue}>
+      {children}
+    </AutoPopulationContext.Provider>
+  )
+}

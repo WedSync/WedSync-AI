@@ -1,0 +1,499 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+
+interface CDNConfig {
+  enabled: boolean;
+  provider: 'cloudflare' | 'aws_cloudfront' | 'custom';
+  cache_settings: {
+    browser_cache_ttl: number;
+    edge_cache_ttl: number;
+    always_online: boolean;
+    minify: {
+      html: boolean;
+      css: boolean;
+      js: boolean;
+    };
+  };
+  performance: {
+    gzip_compression: boolean;
+    brotli_compression: boolean;
+    image_optimization: boolean;
+    lazy_loading: boolean;
+  };
+  security: {
+    hotlink_protection: boolean;
+    ddos_protection: boolean;
+    rate_limiting: boolean;
+  };
+}
+
+interface CDNStats {
+  cache_hit_ratio: number;
+  bandwidth_saved: number;
+  average_load_time: number;
+  global_edge_locations: number;
+  requests_served: number;
+  data_transferred: string;
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const websiteId = searchParams.get('website_id');
+
+    if (!websiteId) {
+      return NextResponse.json(
+        { error: 'Website ID is required' },
+        { status: 400 }
+      );
+    }
+
+    const supabase = await createClient();
+
+    // Get website CDN configuration
+    const { data: website, error: websiteError } = await supabase
+      .from('wedding_websites')
+      .select(`
+        id,
+        domain,
+        cdn_config,
+        cdn_enabled,
+        performance_config
+      `)
+      .eq('id', websiteId)
+      .single();
+
+    if (websiteError || !website) {
+      return NextResponse.json(
+        { error: 'Wedding website not found' },
+        { status: 404 }
+      );
+    }
+
+    // Get CDN performance stats
+    const stats = await getCDNStats(websiteId, website.cdn_config);
+
+    // Get CDN recommendations
+    const recommendations = generateCDNRecommendations(website);
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        website_id: website.id,
+        domain: website.domain,
+        cdn_enabled: website.cdn_enabled || false,
+        config: website.cdn_config || getDefaultCDNConfig(),
+        stats,
+        recommendations,
+        available_providers: [
+          {
+            id: 'cloudflare',
+            name: 'Cloudflare',
+            description: 'Global CDN with advanced security features',
+            features: ['DDoS Protection', 'WAF', 'Bot Management', 'Analytics']
+          },
+          {
+            id: 'aws_cloudfront',
+            name: 'AWS CloudFront',
+            description: 'Amazon\'s global content delivery network',
+            features: ['Edge Locations', 'Lambda@Edge', 'Real-time Logs', 'Origin Shield']
+          }
+        ]
+      }
+    });
+
+  } catch (error) {
+    console.error('Error in CDN status endpoint:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const { websiteId, action, config } = await request.json();
+
+    if (!websiteId) {
+      return NextResponse.json(
+        { error: 'Website ID is required' },
+        { status: 400 }
+      );
+    }
+
+    const supabase = await createClient();
+
+    switch (action) {
+      case 'enable':
+        return await enableCDN(supabase, websiteId, config);
+      case 'disable':
+        return await disableCDN(supabase, websiteId);
+      case 'update_config':
+        return await updateCDNConfig(supabase, websiteId, config);
+      case 'purge_cache':
+        return await purgeCDNCache(supabase, websiteId, config.urls);
+      case 'test_performance':
+        return await testCDNPerformance(supabase, websiteId);
+      default:
+        return NextResponse.json(
+          { error: 'Invalid action' },
+          { status: 400 }
+        );
+    }
+
+  } catch (error) {
+    console.error('Error in CDN configuration endpoint:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+async function enableCDN(supabase: any, websiteId: string, config: Partial<CDNConfig>) {
+  const { data: website, error: websiteError } = await supabase
+    .from('wedding_websites')
+    .select('domain, ssl_enabled')
+    .eq('id', websiteId)
+    .single();
+
+  if (websiteError || !website) {
+    return NextResponse.json(
+      { error: 'Website not found' },
+      { status: 404 }
+    );
+  }
+
+  if (!website.domain) {
+    return NextResponse.json(
+      { error: 'Custom domain required for CDN configuration' },
+      { status: 400 }
+    );
+  }
+
+  // Create CDN configuration
+  const cdnConfig: CDNConfig = {
+    ...getDefaultCDNConfig(),
+    ...config,
+    enabled: true
+  };
+
+  // Simulate CDN setup process
+  const setupResult = await simulateCDNSetup(website.domain, cdnConfig);
+
+  if (setupResult.success) {
+    // Update website with CDN configuration
+    const { data, error: updateError } = await supabase
+      .from('wedding_websites')
+      .update({
+        cdn_enabled: true,
+        cdn_config: {
+          ...cdnConfig,
+          enabled_at: new Date().toISOString(),
+          zone_id: setupResult.zone_id,
+          nameservers: setupResult.nameservers
+        }
+      })
+      .eq('id', websiteId)
+      .select()
+      .single();
+
+    if (updateError) {
+      console.error('Error updating CDN configuration:', updateError);
+      return NextResponse.json(
+        { error: 'Failed to save CDN configuration' },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        message: 'CDN enabled successfully',
+        config: cdnConfig,
+        zone_id: setupResult.zone_id,
+        nameservers: setupResult.nameservers,
+        next_steps: [
+          'Update your domain\'s nameservers if using Cloudflare',
+          'Monitor performance metrics in the dashboard',
+          'Configure cache rules as needed'
+        ]
+      }
+    });
+  } else {
+    return NextResponse.json(
+      { error: setupResult.error || 'Failed to enable CDN' },
+      { status: 500 }
+    );
+  }
+}
+
+async function disableCDN(supabase: any, websiteId: string) {
+  const { data, error } = await supabase
+    .from('wedding_websites')
+    .update({
+      cdn_enabled: false,
+      cdn_config: null
+    })
+    .eq('id', websiteId)
+    .select()
+    .single();
+
+  if (error) {
+    console.error('Error disabling CDN:', error);
+    return NextResponse.json(
+      { error: 'Failed to disable CDN' },
+      { status: 500 }
+    );
+  }
+
+  return NextResponse.json({
+    success: true,
+    data: { message: 'CDN disabled successfully' }
+  });
+}
+
+async function updateCDNConfig(supabase: any, websiteId: string, newConfig: Partial<CDNConfig>) {
+  const { data: website, error: websiteError } = await supabase
+    .from('wedding_websites')
+    .select('cdn_config')
+    .eq('id', websiteId)
+    .single();
+
+  if (websiteError || !website) {
+    return NextResponse.json(
+      { error: 'Website not found' },
+      { status: 404 }
+    );
+  }
+
+  const updatedConfig = {
+    ...website.cdn_config,
+    ...newConfig,
+    updated_at: new Date().toISOString()
+  };
+
+  const { error: updateError } = await supabase
+    .from('wedding_websites')
+    .update({ cdn_config: updatedConfig })
+    .eq('id', websiteId);
+
+  if (updateError) {
+    console.error('Error updating CDN configuration:', updateError);
+    return NextResponse.json(
+      { error: 'Failed to update CDN configuration' },
+      { status: 500 }
+    );
+  }
+
+  return NextResponse.json({
+    success: true,
+    data: {
+      message: 'CDN configuration updated successfully',
+      config: updatedConfig
+    }
+  });
+}
+
+async function purgeCDNCache(supabase: any, websiteId: string, urls?: string[]) {
+  // Simulate cache purge
+  const purgeResult = await simulateCachePurge(websiteId, urls);
+
+  if (purgeResult.success) {
+    // Log purge activity
+    await supabase
+      .from('cdn_activity_log')
+      .insert({
+        website_id: websiteId,
+        action: 'cache_purge',
+        details: {
+          urls: urls || ['all'],
+          purged_at: new Date().toISOString(),
+          files_purged: purgeResult.files_purged
+        }
+      });
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        message: urls 
+          ? `Purged ${urls.length} URLs from CDN cache`
+          : 'Purged all files from CDN cache',
+        files_purged: purgeResult.files_purged,
+        estimated_propagation: '5-10 minutes'
+      }
+    });
+  } else {
+    return NextResponse.json(
+      { error: purgeResult.error || 'Failed to purge CDN cache' },
+      { status: 500 }
+    );
+  }
+}
+
+async function testCDNPerformance(supabase: any, websiteId: string) {
+  // Simulate performance test
+  const testResults = await simulatePerformanceTest(websiteId);
+
+  return NextResponse.json({
+    success: true,
+    data: {
+      test_results: testResults,
+      recommendations: generatePerformanceRecommendations(testResults)
+    }
+  });
+}
+
+async function getCDNStats(websiteId: string, config: any): Promise<CDNStats> {
+  // In a real implementation, this would fetch actual CDN statistics
+  // For simulation, we'll generate realistic stats
+  
+  const baseStats = {
+    cache_hit_ratio: 0.85 + Math.random() * 0.1, // 85-95%
+    bandwidth_saved: Math.floor(Math.random() * 500) + 200, // 200-700 GB
+    average_load_time: 800 + Math.random() * 400, // 800-1200ms
+    global_edge_locations: 200 + Math.floor(Math.random() * 50), // 200-250
+    requests_served: Math.floor(Math.random() * 100000) + 50000, // 50k-150k
+    data_transferred: `${(Math.random() * 10 + 5).toFixed(1)} TB` // 5-15 TB
+  };
+
+  return baseStats;
+}
+
+function getDefaultCDNConfig(): CDNConfig {
+  return {
+    enabled: false,
+    provider: 'cloudflare',
+    cache_settings: {
+      browser_cache_ttl: 86400, // 24 hours
+      edge_cache_ttl: 7200, // 2 hours
+      always_online: true,
+      minify: {
+        html: true,
+        css: true,
+        js: true
+      }
+    },
+    performance: {
+      gzip_compression: true,
+      brotli_compression: true,
+      image_optimization: true,
+      lazy_loading: true
+    },
+    security: {
+      hotlink_protection: true,
+      ddos_protection: true,
+      rate_limiting: true
+    }
+  };
+}
+
+async function simulateCDNSetup(domain: string, config: CDNConfig) {
+  return new Promise<{ success: boolean; error?: string; zone_id?: string; nameservers?: string[] }>((resolve) => {
+    setTimeout(() => {
+      if (Math.random() > 0.05) { // 95% success rate
+        resolve({
+          success: true,
+          zone_id: `zone_${Date.now()}`,
+          nameservers: [
+            'ns1.cloudflare.com',
+            'ns2.cloudflare.com'
+          ]
+        });
+      } else {
+        resolve({
+          success: false,
+          error: 'Domain verification failed'
+        });
+      }
+    }, 2000);
+  });
+}
+
+async function simulateCachePurge(websiteId: string, urls?: string[]) {
+  return new Promise<{ success: boolean; error?: string; files_purged?: number }>((resolve) => {
+    setTimeout(() => {
+      resolve({
+        success: true,
+        files_purged: urls ? urls.length * 3 : Math.floor(Math.random() * 1000) + 100
+      });
+    }, 1000);
+  });
+}
+
+async function simulatePerformanceTest(websiteId: string) {
+  // Simulate performance test results from multiple locations
+  const locations = ['New York', 'London', 'Tokyo', 'Sydney', 'São Paulo'];
+  
+  return locations.map(location => ({
+    location,
+    load_time: Math.floor(Math.random() * 500) + 300, // 300-800ms
+    ttfb: Math.floor(Math.random() * 100) + 50, // 50-150ms
+    cache_status: Math.random() > 0.2 ? 'HIT' : 'MISS',
+    edge_location: `${location} Edge`
+  }));
+}
+
+function generateCDNRecommendations(website: any) {
+  const recommendations = [];
+
+  if (!website.cdn_enabled) {
+    recommendations.push({
+      type: 'info',
+      title: 'Enable CDN',
+      description: 'Improve your website performance with global content delivery',
+      impact: 'High',
+      effort: 'Low'
+    });
+  }
+
+  if (website.domain) {
+    recommendations.push({
+      type: 'success',
+      title: 'Image Optimization',
+      description: 'Enable automatic image compression and format conversion',
+      impact: 'Medium',
+      effort: 'Low'
+    });
+  }
+
+  recommendations.push({
+    type: 'info',
+    title: 'Minification',
+    description: 'Reduce file sizes by removing unnecessary characters',
+    impact: 'Medium',
+    effort: 'Low'
+  });
+
+  recommendations.push({
+    type: 'info',
+    title: 'Browser Caching',
+    description: 'Set appropriate cache headers for better repeat visits',
+    impact: 'High',
+    effort: 'Low'
+  });
+
+  return recommendations;
+}
+
+function generatePerformanceRecommendations(testResults: any[]) {
+  const recommendations = [];
+  const avgLoadTime = testResults.reduce((sum, result) => sum + result.load_time, 0) / testResults.length;
+
+  if (avgLoadTime > 1000) {
+    recommendations.push('Consider enabling image optimization');
+    recommendations.push('Review and optimize large assets');
+  }
+
+  if (avgLoadTime > 500) {
+    recommendations.push('Enable Brotli compression for better file compression');
+  }
+
+  const cacheHitRate = testResults.filter(r => r.cache_status === 'HIT').length / testResults.length;
+  if (cacheHitRate < 0.8) {
+    recommendations.push('Increase cache TTL for static assets');
+  }
+
+  return recommendations;
+}

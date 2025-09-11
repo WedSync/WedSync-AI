@@ -1,0 +1,329 @@
+/**
+ * Mobile Seating Integration Tests - WS-154
+ * 
+ * Comprehensive integration tests for mobile seating interface:
+ * - Touch gesture interactions
+ * - Offline functionality
+ * - PWA capabilities
+ * - WedMe integration
+ * - Performance validation
+ * - Accessibility compliance
+ */
+
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { userEvent } from '@testing-library/user-event';
+import '@testing-library/jest-dom';
+// Mock next/navigation
+jest.mock('next/navigation', () => ({
+  useRouter: () => ({
+    push: jest.fn(),
+    back: jest.fn(),
+    forward: jest.fn(),
+    refresh: jest.fn(),
+  }),
+  usePathname: () => '/wedme/seating',
+  useSearchParams: () => new URLSearchParams(),
+}));
+// Mock IndexedDB for offline storage
+global.indexedDB = require('fake-indexeddb/build/fakeIndexedDB');
+global.IDBIndex = require('fake-indexeddb/build/fakeIDBIndex');
+global.IDBObjectStore = require('fake-indexeddb/build/fakeIDBObjectStore');
+global.IDBDatabase = require('fake-indexeddb/build/fakeIDBDatabase');
+global.IDBTransaction = require('fake-indexeddb/build/fakeIDBTransaction');
+global.IDBKeyRange = require('fake-indexeddb/build/fakeIDBKeyRange');
+// Mock service worker
+Object.defineProperty(navigator, 'serviceWorker', {
+  value: {
+    register: jest.fn().mockResolvedValue({
+      installing: null,
+      waiting: null,
+      active: null,
+      addEventListener: jest.fn(),
+      sync: { register: jest.fn() }
+    }),
+    ready: Promise.resolve({
+      sync: { register: jest.fn() },
+      showNotification: jest.fn()
+    addEventListener: jest.fn()
+  },
+  writable: true
+});
+// Mock touch events
+class MockTouch {
+  constructor(public clientX: number, public clientY: number) {}
+}
+class MockTouchEvent extends Event {
+  constructor(type: string, public touches: Touch[], public changedTouches: Touch[]) {
+    super(type);
+  }
+global.Touch = MockTouch as any;
+global.TouchEvent = MockTouchEvent as any;
+// Import components
+import { MobileSeatingViewer } from '@/components/mobile/seating/MobileSeatingViewer';
+import { TouchTableCard } from '@/components/mobile/seating/TouchTableCard';
+import { GuestAssignmentModal } from '@/components/mobile/seating/GuestAssignmentModal';
+import { ConflictMobileBanner } from '@/components/mobile/seating/ConflictMobileBanner';
+import { MobileSeatingDashboard } from '@/components/mobile/seating/MobileSeatingDashboard';
+import { WedMeHeader } from '@/components/wedme/WedMeHeader';
+import { WedMeNavigation } from '@/components/wedme/WedMeNavigation';
+// Mock data
+const mockArrangement = {
+  id: 'arrangement-1',
+  name: 'Reception Layout',
+  coupleId: 'couple-1',
+  tables: [],
+  venue: {
+    id: 'venue-1',
+    name: 'Grand Ballroom',
+    layout: { width: 800, height: 600 },
+    zones: []
+  lastModified: new Date(),
+  isActive: true,
+  version: 1,
+  conflictCount: 2
+};
+const mockTable = {
+  id: 'table-1',
+  name: 'Head Table',
+  shape: 'rectangle' as const,
+  capacity: 8,
+  position: { x: 300, y: 100 },
+  rotation: 0,
+  guests: []
+const mockGuests = [
+  {
+    id: 'guest-1',
+    firstName: 'John',
+    lastName: 'Smith',
+    category: 'family' as const,
+    rsvpStatus: 'attending' as const,
+    dietaryRestrictions: []
+    id: 'guest-2',
+    firstName: 'Sarah',
+    lastName: 'Johnson',
+    category: 'friends' as const,
+];
+const mockConflicts = [
+    type: 'dietary' as const,
+    severity: 'medium' as const,
+    message: 'Dietary conflict at Table 5',
+    suggestedAction: 'Review seating assignments'
+describe('WS-154 Mobile Seating Integration', () => {
+  beforeEach(() => {
+    // Reset mocks
+    jest.clearAllMocks();
+    
+    // Mock window properties
+    Object.defineProperty(window, 'innerWidth', { value: 375, writable: true });
+    Object.defineProperty(window, 'innerHeight', { value: 667, writable: true });
+    // Mock online status
+    Object.defineProperty(navigator, 'onLine', { value: true, writable: true });
+    // Mock vibration API
+    Object.defineProperty(navigator, 'vibrate', {
+      value: jest.fn(),
+      writable: true
+    });
+    // Mock share API
+    Object.defineProperty(navigator, 'share', {
+      value: jest.fn().mockResolvedValue(undefined),
+  });
+  describe('Mobile Seating Viewer', () => {
+    it('should render mobile seating viewer with touch support', async () => {
+      render(
+        <MobileSeatingViewer 
+          arrangement={mockArrangement}
+          onTableSelect={jest.fn()}
+          onGuestAssign={jest.fn()}
+        />
+      );
+      // Check for main components
+      expect(screen.getByText('Wedding Reception Hall')).toBeInTheDocument();
+      
+      // Wait for loading to complete
+      await waitFor(() => {
+        expect(screen.queryByTestId('loading-skeleton')).not.toBeInTheDocument();
+      });
+    it('should handle touch gestures for zoom and pan', async () => {
+      const user = userEvent.setup();
+      const mockTableSelect = jest.fn();
+          onTableSelect={mockTableSelect}
+      const seatingArea = screen.getByRole('main').firstChild as HTMLElement;
+      // Mock pinch gesture
+      const touch1 = new MockTouch(100, 100);
+      const touch2 = new MockTouch(200, 200);
+      fireEvent(seatingArea, new MockTouchEvent('touchstart', [touch1, touch2], [touch1, touch2]));
+      // Simulate pinch zoom
+      const touch1Moved = new MockTouch(90, 90);
+      const touch2Moved = new MockTouch(210, 210);
+      fireEvent(seatingArea, new MockTouchEvent('touchmove', [touch1Moved, touch2Moved], [touch1Moved, touch2Moved]));
+      fireEvent(seatingArea, new MockTouchEvent('touchend', [], [touch1Moved, touch2Moved]));
+      // Should handle zoom gestures without errors
+      expect(seatingArea).toBeInTheDocument();
+    it('should display offline indicator when offline', () => {
+      // Mock offline status
+      Object.defineProperty(navigator, 'onLine', { value: false });
+          isOffline={true}
+      expect(screen.getByText(/Working offline/)).toBeInTheDocument();
+  describe('Touch Table Card', () => {
+    it('should render table with accessibility features', () => {
+        <TouchTableCard 
+          table={mockTable}
+          onSelect={jest.fn()}
+      const tableButton = screen.getByRole('button');
+      expect(tableButton).toHaveAttribute('aria-label', 'Table Head Table, 0 of 8 guests');
+      expect(tableButton).toHaveAttribute('tabIndex', '0');
+      // Check minimum touch target size (44px)
+      expect(tableButton).toHaveStyle({ minWidth: '44px', minHeight: '44px' });
+    it('should handle tap gesture for selection', async () => {
+      const mockOnSelect = jest.fn();
+          onSelect={mockOnSelect}
+      // Simulate touch tap
+      const touch = new MockTouch(150, 150);
+      fireEvent(tableButton, new MockTouchEvent('touchstart', [touch], [touch]));
+      fireEvent(tableButton, new MockTouchEvent('touchend', [], [touch]));
+      expect(mockOnSelect).toHaveBeenCalledWith('table-1');
+    it('should handle long-press gesture for guest assignment', async () => {
+      const mockOnGuestAssign = jest.fn();
+          onGuestAssign={mockOnGuestAssign}
+      // Simulate long press (hold for 500ms+)
+      // Wait for long press duration
+        expect(mockOnGuestAssign).toHaveBeenCalledWith('table-1');
+      }, { timeout: 600 });
+    it('should display visual feedback for interactions', () => {
+          isSelected={true}
+      expect(tableButton.parentElement).toHaveClass('scale-105');
+  describe('Guest Assignment Modal', () => {
+    it('should render full-screen modal for mobile', () => {
+        <GuestAssignmentModal 
+          isOpen={true}
+          onClose={jest.fn()}
+          selectedTable={mockTable}
+          availableGuests={mockGuests}
+          onAssignGuests={jest.fn()}
+      const modal = screen.getByRole('dialog');
+      expect(modal).toHaveClass('w-full', 'h-full', 'max-w-none', 'max-h-none');
+      expect(screen.getByText('Assign Guests')).toBeInTheDocument();
+      expect(screen.getByText('Head Table (0/8 seated)')).toBeInTheDocument();
+    it('should handle search functionality', async () => {
+      const searchInput = screen.getByPlaceholderText('Search guests by name...');
+      await user.type(searchInput, 'John');
+      // Should show filtered results
+      expect(screen.getByText('John Smith')).toBeInTheDocument();
+      expect(screen.queryByText('Sarah Johnson')).not.toBeInTheDocument();
+    it('should handle guest selection and assignment', async () => {
+      const mockOnAssignGuests = jest.fn();
+          onAssignGuests={mockOnAssignGuests}
+      // Select a guest
+      const guestCard = screen.getByText('John Smith').closest('[role="button"]') as HTMLElement;
+      await user.click(guestCard);
+      // Assign selected guests
+      const assignButton = screen.getByRole('button', { name: /Assign/ });
+      await user.click(assignButton);
+      expect(mockOnAssignGuests).toHaveBeenCalledWith(['guest-1'], 'table-1');
+    it('should display conflict warnings', () => {
+      const overCapacityTable = {
+        ...mockTable,
+        guests: new Array(8).fill(0).map((_, i) => ({
+          id: `existing-guest-${i}`,
+          firstName: `Guest${i}`,
+          lastName: 'Existing',
+          category: 'family' as const,
+          rsvpStatus: 'attending' as const,
+          dietaryRestrictions: []
+        }))
+      };
+          selectedTable={overCapacityTable}
+      // Select guests that would exceed capacity
+      fireEvent.click(guestCard);
+      // Should show capacity warning
+      expect(screen.getByText(/exceed table capacity/)).toBeInTheDocument();
+  describe('Conflict Mobile Banner', () => {
+    it('should display conflicts with swipe-to-dismiss functionality', () => {
+      const mockOnDismiss = jest.fn();
+        <ConflictMobileBanner 
+          conflicts={mockConflicts}
+          onDismiss={mockOnDismiss}
+      expect(screen.getByText('Dietary conflict at Table 5')).toBeInTheDocument();
+      expect(screen.getByText('MEDIUM')).toBeInTheDocument();
+      // Should have dismiss button
+      const dismissButton = screen.getByLabelText('Dismiss conflict');
+      expect(dismissButton).toBeInTheDocument();
+    it('should handle conflict dismissal', async () => {
+      await user.click(dismissButton);
+      expect(mockOnDismiss).toHaveBeenCalledWith('0');
+    it('should auto-hide low priority conflicts', async () => {
+      const lowPriorityConflicts = [{
+        type: 'seating_preference' as const,
+        severity: 'low' as const,
+        message: 'Minor seating preference'
+      }];
+          conflicts={lowPriorityConflicts}
+      // Should auto-dismiss after 5 seconds
+        expect(mockOnDismiss).toHaveBeenCalled();
+      }, { timeout: 6000 });
+  describe('WedMe Integration', () => {
+    it('should render WedMe header with wedding branding', () => {
+      render(<WedMeHeader title="Seating Arrangements" notifications={3} />);
+      expect(screen.getByText('Seating Arrangements')).toBeInTheDocument();
+      expect(screen.getByText('Sarah Johnson & Michael')).toBeInTheDocument();
+      // Should have gradient background
+      const header = screen.getByRole('banner');
+      expect(header).toHaveClass('bg-gradient-to-r', 'from-pink-500', 'to-rose-500');
+      // Should show notification count
+      expect(screen.getByText('3')).toBeInTheDocument();
+    it('should render WedMe navigation with current page highlighted', () => {
+      render(<WedMeNavigation currentPage="seating" />);
+      const seatingButton = screen.getByLabelText('Navigate to Seating');
+      expect(seatingButton).toHaveClass('bg-pink-100', 'text-pink-600');
+      // Should have minimum touch targets
+      const navButtons = screen.getAllByRole('button');
+      navButtons.forEach(button => {
+        expect(button).toHaveClass('min-h-[56px]');
+    it('should handle share functionality', async () => {
+      render(<WedMeHeader title="Seating Arrangements" />);
+      const shareButton = screen.getByLabelText('Share');
+      await user.click(shareButton);
+      expect(navigator.share).toHaveBeenCalledWith({
+        title: 'Seating Arrangements - WedMe',
+        text: 'Check out our wedding planning progress!',
+        url: expect.any(String)
+  describe('Performance Requirements', () => {
+    it('should render within performance budget', async () => {
+      const startTime = performance.now();
+      const renderTime = performance.now() - startTime;
+      // Should render within 2 seconds (as per WS-154 requirements)
+      expect(renderTime).toBeLessThan(2000);
+    it('should handle viewport resize efficiently', () => {
+      render(<MobileSeatingViewer arrangement={mockArrangement} />);
+      // Simulate viewport change
+      Object.defineProperty(window, 'innerWidth', { value: 768 });
+      Object.defineProperty(window, 'innerHeight', { value: 1024 });
+      fireEvent(window, new Event('resize'));
+      // Component should still be rendered
+  describe('Accessibility Compliance', () => {
+    it('should meet WCAG 2.1 AA standards', async () => {
+      const { container } = render(
+      // Check for proper ARIA labels
+      const interactiveElements = container.querySelectorAll('[role="button"]');
+      interactiveElements.forEach(element => {
+        expect(element).toHaveAttribute('aria-label');
+      // Check for keyboard navigation support
+      const focusableElements = container.querySelectorAll('[tabindex="0"]');
+      expect(focusableElements.length).toBeGreaterThan(0);
+    it('should support screen reader announcements', () => {
+      // Should have screen reader content
+      const srContent = screen.getByText(/This table is empty/);
+      expect(srContent).toHaveClass('sr-only');
+    it('should maintain focus management in modals', async () => {
+      // Focus should be trapped within modal
+      searchInput.focus();
+      expect(document.activeElement).toBe(searchInput);
+  describe('Offline PWA Functionality', () => {
+    it('should initialize offline storage', async () => {
+      // This would test the offline storage initialization
+      // In a real test, you'd mock the IndexedDB operations
+      expect(global.indexedDB).toBeDefined();
+    it('should register service worker for offline support', async () => {
+      // This would test service worker registration
+      expect(navigator.serviceWorker.register).toBeDefined();

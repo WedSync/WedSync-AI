@@ -1,0 +1,498 @@
+'use client';
+
+import { useState, useEffect, useCallback } from 'react';
+import { formatDistanceToNow } from 'date-fns';
+import {
+  Clock,
+  RefreshCw,
+  X,
+  AlertCircle,
+  Wifi,
+  FileText,
+  MapPin,
+  Loader2,
+  CheckCircle,
+  XCircle,
+} from 'lucide-react';
+import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
+import { toast } from '@/hooks/use-toast';
+import { cn } from '@/lib/utils';
+import type { QueuedMessage } from '@/types/websocket';
+
+interface MessageQueueProps {
+  channelId: string;
+  isOnline: boolean;
+  onMessageDelivered?: (messageId: string) => void;
+}
+
+interface UseMessageQueueResult {
+  queuedMessages: QueuedMessage[];
+  deliverMessage: (messageId: string) => Promise<void>;
+  retryFailedMessages: (messageIds: string[]) => Promise<void>;
+  clearExpiredMessages: (channelId: string) => Promise<void>;
+}
+
+// Custom hook for message queue management
+function useMessageQueue(channelId: string): UseMessageQueueResult {
+  const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
+
+  // Load queued messages from localStorage
+  useEffect(() => {
+    const loadQueuedMessages = () => {
+      try {
+        const stored = localStorage.getItem(`messageQueue_${channelId}`);
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          setQueuedMessages(
+            parsed.filter(
+              (msg: QueuedMessage) =>
+                // Keep messages less than 24 hours old
+                new Date().getTime() - new Date(msg.created_at).getTime() <
+                24 * 60 * 60 * 1000,
+            ),
+          );
+        }
+      } catch (error) {
+        console.error('Failed to load queued messages:', error);
+      }
+    };
+
+    loadQueuedMessages();
+  }, [channelId]);
+
+  // Save queued messages to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        `messageQueue_${channelId}`,
+        JSON.stringify(queuedMessages),
+      );
+    } catch (error) {
+      console.error('Failed to save queued messages:', error);
+    }
+  }, [queuedMessages, channelId]);
+
+  const deliverMessage = useCallback(
+    async (messageId: string) => {
+      setQueuedMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === messageId
+            ? { ...msg, delivery_status: 'delivering' }
+            : msg,
+        ),
+      );
+
+      try {
+        const message = queuedMessages.find((m) => m.id === messageId);
+        if (!message) throw new Error('Message not found');
+
+        // Simulate API call to deliver message
+        const response = await fetch('/api/websocket/deliver-message', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            channelName: message.channelName,
+            message: message.message,
+            messageType: message.messageType,
+            payload: message.payload,
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error(`Delivery failed: ${response.statusText}`);
+        }
+
+        // Mark as delivered and remove from queue
+        setQueuedMessages((prev) => prev.filter((msg) => msg.id !== messageId));
+      } catch (error) {
+        console.error(`Failed to deliver message ${messageId}:`, error);
+
+        // Mark as failed and increment retry count
+        setQueuedMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === messageId
+              ? {
+                  ...msg,
+                  delivery_status: 'failed',
+                  retry_count: msg.retry_count + 1,
+                }
+              : msg,
+          ),
+        );
+        throw error;
+      }
+    },
+    [queuedMessages],
+  );
+
+  const retryFailedMessages = useCallback(
+    async (messageIds: string[]) => {
+      for (const messageId of messageIds) {
+        const message = queuedMessages.find((m) => m.id === messageId);
+        if (message && message.retry_count < message.max_retries) {
+          try {
+            await deliverMessage(messageId);
+          } catch (error) {
+            // Error already handled in deliverMessage
+          }
+        }
+      }
+    },
+    [queuedMessages, deliverMessage],
+  );
+
+  const clearExpiredMessages = useCallback(async (channelId: string) => {
+    setQueuedMessages((prev) =>
+      prev.filter(
+        (msg) =>
+          new Date().getTime() - new Date(msg.created_at).getTime() <
+          24 * 60 * 60 * 1000,
+      ),
+    );
+  }, []);
+
+  return {
+    queuedMessages,
+    deliverMessage,
+    retryFailedMessages,
+    clearExpiredMessages,
+  };
+}
+
+export function MessageQueue({
+  channelId,
+  isOnline,
+  onMessageDelivered,
+}: MessageQueueProps) {
+  const [isProcessing, setIsProcessing] = useState(false);
+
+  // Use message queue hook
+  const {
+    queuedMessages,
+    deliverMessage,
+    retryFailedMessages,
+    clearExpiredMessages,
+  } = useMessageQueue(channelId);
+
+  // Auto-process queue when coming online
+  useEffect(() => {
+    if (isOnline && queuedMessages.length > 0 && !isProcessing) {
+      processQueue();
+    }
+  }, [isOnline, queuedMessages.length]);
+
+  // Process queued messages
+  const processQueue = useCallback(async () => {
+    if (isProcessing) return;
+
+    setIsProcessing(true);
+
+    try {
+      // Process messages in chronological order
+      const sortedMessages = [...queuedMessages]
+        .filter(
+          (msg) =>
+            msg.delivery_status === 'pending' ||
+            msg.delivery_status === 'failed',
+        )
+        .sort(
+          (a, b) =>
+            new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+        );
+
+      for (const message of sortedMessages) {
+        // Skip messages that have exceeded retry limit
+        if (message.retry_count >= message.max_retries) continue;
+
+        try {
+          await deliverMessage(message.id);
+
+          // Notify parent
+          onMessageDelivered?.(message.id);
+
+          // Brief delay between messages to avoid overwhelming
+          await new Promise((resolve) => setTimeout(resolve, 200));
+        } catch (error) {
+          console.error(`Failed to deliver message ${message.id}:`, error);
+          // Continue with next message
+        }
+      }
+    } finally {
+      setIsProcessing(false);
+    }
+  }, [queuedMessages, deliverMessage, onMessageDelivered, isProcessing]);
+
+  // Retry failed messages
+  const handleRetryMessages = useCallback(async () => {
+    const failedMessages = queuedMessages.filter(
+      (m) => m.delivery_status === 'failed' && m.retry_count < m.max_retries,
+    );
+
+    if (failedMessages.length === 0) {
+      toast({
+        title: 'No messages to retry',
+        description:
+          'All messages have been delivered or exceeded retry limit.',
+      });
+      return;
+    }
+
+    try {
+      await retryFailedMessages(failedMessages.map((m) => m.id));
+      toast({
+        title: 'Retrying messages',
+        description: `Attempting to deliver ${failedMessages.length} failed messages.`,
+      });
+    } catch (error) {
+      console.error('Failed to retry messages:', error);
+      toast({
+        title: 'Retry failed',
+        description: 'Failed to retry some messages. Please try again.',
+        variant: 'destructive',
+      });
+    }
+  }, [queuedMessages, retryFailedMessages]);
+
+  // Clear all messages
+  const handleClearQueue = useCallback(async () => {
+    try {
+      await clearExpiredMessages(channelId);
+      toast({
+        title: 'Queue cleared',
+        description: 'All queued messages have been removed.',
+      });
+    } catch (error) {
+      console.error('Failed to clear queue:', error);
+      toast({
+        title: 'Clear failed',
+        description: 'Failed to clear message queue.',
+        variant: 'destructive',
+      });
+    }
+  }, [channelId, clearExpiredMessages]);
+
+  // Don't render if no messages
+  if (queuedMessages.length === 0) {
+    return null;
+  }
+
+  const pendingCount = queuedMessages.filter(
+    (m) => m.delivery_status === 'pending',
+  ).length;
+  const failedCount = queuedMessages.filter(
+    (m) => m.delivery_status === 'failed',
+  ).length;
+  const deliveringCount = queuedMessages.filter(
+    (m) => m.delivery_status === 'delivering',
+  ).length;
+
+  return (
+    <Card className="mb-4 border-orange-200 bg-orange-50 dark:bg-orange-950/20">
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center justify-between text-sm">
+          <div className="flex items-center space-x-2">
+            <Clock className="h-4 w-4 text-orange-600" />
+            <span>Queued Messages</span>
+            <Badge variant="secondary" className="text-xs">
+              {queuedMessages.length}
+            </Badge>
+            {failedCount > 0 && (
+              <Badge variant="destructive" className="text-xs">
+                {failedCount} failed
+              </Badge>
+            )}
+          </div>
+
+          <div className="flex items-center space-x-2">
+            {(isProcessing || deliveringCount > 0) && (
+              <Loader2 className="h-4 w-4 animate-spin text-orange-600" />
+            )}
+
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleRetryMessages}
+              disabled={isProcessing || !isOnline || failedCount === 0}
+              className="h-7"
+            >
+              <RefreshCw className="h-3 w-3 mr-1" />
+              Retry ({failedCount})
+            </Button>
+
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleClearQueue}
+              disabled={isProcessing}
+              className="h-7"
+            >
+              <X className="h-3 w-3" />
+            </Button>
+          </div>
+        </CardTitle>
+      </CardHeader>
+
+      <CardContent>
+        {/* Status Summary */}
+        <div className="flex items-center space-x-4 mb-3 text-sm text-muted-foreground">
+          <div className="flex items-center space-x-1">
+            <Clock className="h-3 w-3" />
+            <span>{pendingCount} pending</span>
+          </div>
+          <div className="flex items-center space-x-1">
+            <Loader2 className="h-3 w-3" />
+            <span>{deliveringCount} sending</span>
+          </div>
+          <div className="flex items-center space-x-1">
+            <XCircle className="h-3 w-3" />
+            <span>{failedCount} failed</span>
+          </div>
+        </div>
+
+        {/* Message List */}
+        <div className="space-y-2 max-h-48 overflow-y-auto">
+          {queuedMessages.map((message) => (
+            <QueuedMessageItem
+              key={message.id}
+              message={message}
+              isDelivering={isProcessing}
+              onRetry={() => retryFailedMessages([message.id])}
+            />
+          ))}
+        </div>
+
+        {/* Offline Warning */}
+        {!isOnline && (
+          <Alert className="mt-3">
+            <Wifi className="h-4 w-4" />
+            <AlertTitle>Offline</AlertTitle>
+            <AlertDescription>
+              Messages will be delivered automatically when connection is
+              restored.
+              {queuedMessages.length > 0 &&
+                ` ${queuedMessages.length} messages are waiting.`}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {/* Connection Issues */}
+        {isOnline && failedCount > 0 && (
+          <Alert variant="destructive" className="mt-3">
+            <AlertCircle className="h-4 w-4" />
+            <AlertTitle>Delivery Issues</AlertTitle>
+            <AlertDescription>
+              Some messages failed to deliver. This may indicate server issues
+              or poor connectivity. Messages will be retried automatically.
+            </AlertDescription>
+          </Alert>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// Supporting component for individual queued messages
+function QueuedMessageItem({
+  message,
+  isDelivering,
+  onRetry,
+}: {
+  message: QueuedMessage;
+  isDelivering: boolean;
+  onRetry: () => void;
+}) {
+  const getMessagePreview = (): string => {
+    switch (message.messageType) {
+      case 'status':
+        return `📋 Status: ${message.message.substring(0, 30)}...`;
+      case 'emergency':
+        return `🚨 Emergency: ${message.message.substring(0, 30)}...`;
+      case 'file':
+        return `📁 File: ${message.payload?.fileName || 'Attachment'}`;
+      case 'image':
+        return `📸 Image: ${message.payload?.imageName || 'Photo'}`;
+      default:
+        return `💬 ${message.message.substring(0, 40)}...`;
+    }
+  };
+
+  const getStatusColor = (): string => {
+    switch (message.delivery_status) {
+      case 'pending':
+        return 'text-orange-600';
+      case 'delivering':
+        return 'text-blue-600';
+      case 'failed':
+        return 'text-red-600';
+      case 'delivered':
+        return 'text-green-600';
+      default:
+        return 'text-gray-600';
+    }
+  };
+
+  const getStatusIcon = () => {
+    switch (message.delivery_status) {
+      case 'pending':
+        return <Clock className="h-3 w-3" />;
+      case 'delivering':
+        return <Loader2 className="h-3 w-3 animate-spin" />;
+      case 'failed':
+        return <XCircle className="h-3 w-3" />;
+      case 'delivered':
+        return <CheckCircle className="h-3 w-3" />;
+      default:
+        return <Clock className="h-3 w-3" />;
+    }
+  };
+
+  return (
+    <div className="flex items-center justify-between p-3 bg-white dark:bg-gray-800 rounded border transition-colors hover:bg-gray-50 dark:hover:bg-gray-700">
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-medium truncate">{getMessagePreview()}</p>
+        <div className="flex items-center space-x-2 mt-1">
+          <p className="text-xs text-muted-foreground">
+            {formatDistanceToNow(new Date(message.created_at), {
+              addSuffix: true,
+            })}
+          </p>
+          {message.retry_count > 0 && (
+            <Badge variant="outline" className="text-xs">
+              Retry {message.retry_count}/{message.max_retries}
+            </Badge>
+          )}
+        </div>
+      </div>
+
+      <div className="flex items-center space-x-2 flex-shrink-0">
+        <div className="flex items-center space-x-1">
+          <div className={cn('transition-colors', getStatusColor())}>
+            {getStatusIcon()}
+          </div>
+          <Badge variant="outline" className={cn('text-xs', getStatusColor())}>
+            {message.delivery_status}
+          </Badge>
+        </div>
+
+        {message.delivery_status === 'failed' &&
+          message.retry_count < message.max_retries && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onRetry}
+              disabled={isDelivering}
+              className="h-6 w-6 p-0"
+              aria-label="Retry message"
+            >
+              <RefreshCw className="h-3 w-3" />
+            </Button>
+          )}
+      </div>
+    </div>
+  );
+}

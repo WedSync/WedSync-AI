@@ -1,0 +1,237 @@
+import { describe, it, expect, jest, beforeEach } from '@jest/globals'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import '@testing-library/jest-dom'
+import LeadScoringCard from '@/components/leads/LeadScoringCard'
+
+const mockLeadScore = {
+  totalScore: 75,
+  grade: 'B' as const,
+  components: {
+    demographic: 20,
+    behavioral: 15,
+    engagement: 20,
+    fit: 20
+  },
+  trend: 'up' as const,
+  lastCalculated: '2024-01-20T10:00:00Z',
+  qualificationStatus: 'qualified' as const
+}
+
+describe('LeadScoringCard', () => {
+  const defaultProps = {
+    leadId: 'lead-123',
+    currentScore: mockLeadScore,
+    onRecalculate: jest.fn(),
+    isRecalculating: false
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks()
+  })
+
+  it('should render lead score information', () => {
+    render(<LeadScoringCard {...defaultProps} />)
+
+    expect(screen.getByText('75')).toBeInTheDocument()
+    expect(screen.getByText('Grade B')).toBeInTheDocument()
+    expect(screen.getByText('qualified')).toBeInTheDocument()
+  })
+
+  it('should display correct grade color', () => {
+    render(<LeadScoringCard {...defaultProps} />)
+
+    const gradeBadge = screen.getByText('Grade B')
+    expect(gradeBadge).toHaveClass('badge') // Assuming badge has this class
+  })
+
+  it('should show trend icon correctly', () => {
+    render(<LeadScoringCard {...defaultProps} />)
+
+    // Should show up trend icon (ArrowTrendingUpIcon)
+    expect(screen.getByText('up')).toBeInTheDocument()
+  })
+
+  it('should display last calculated date', () => {
+    render(<LeadScoringCard {...defaultProps} />)
+
+    expect(screen.getByText(/1\/20\/2024/)).toBeInTheDocument()
+  })
+
+  it('should show score description', () => {
+    render(<LeadScoringCard {...defaultProps} />)
+
+    expect(screen.getByText(/Good lead - standard follow-up/)).toBeInTheDocument()
+  })
+
+  it('should toggle details view when details button is clicked', async () => {
+    render(<LeadScoringCard {...defaultProps} />)
+
+    const detailsButton = screen.getByText('Details')
+    
+    // Initially, detailed breakdown should not be visible
+    expect(screen.queryByText('Score Breakdown')).not.toBeInTheDocument()
+
+    // Click to show details
+    fireEvent.click(detailsButton)
+
+    await waitFor(() => {
+      expect(screen.getByText('Score Breakdown')).toBeInTheDocument()
+    })
+
+    // Verify component scores are shown
+    expect(screen.getByText('Demographic Fit')).toBeInTheDocument()
+    expect(screen.getByText('20/25')).toBeInTheDocument()
+    expect(screen.getByText('Behavioral Signals')).toBeInTheDocument()
+    expect(screen.getByText('15/25')).toBeInTheDocument()
+    expect(screen.getByText('Engagement Level')).toBeInTheDocument()
+    expect(screen.getByText('Service Fit')).toBeInTheDocument()
+  })
+
+  it('should show recommendations when details are visible', async () => {
+    render(<LeadScoringCard {...defaultProps} />)
+
+    const detailsButton = screen.getByText('Details')
+    fireEvent.click(detailsButton)
+
+    await waitFor(() => {
+      expect(screen.getByText('Recommended Actions')).toBeInTheDocument()
+    })
+
+    // Should show relevant recommendations for B-grade lead
+    expect(screen.getByText(/Send detailed portfolio/)).toBeInTheDocument()
+    expect(screen.getByText(/Schedule discovery call/)).toBeInTheDocument()
+  })
+
+  it('should call onRecalculate when recalculate button is clicked', () => {
+    const mockRecalculate = jest.fn()
+    render(<LeadScoringCard {...defaultProps} onRecalculate={mockRecalculate} />)
+
+    const recalculateButton = screen.getByText('Recalculate')
+    fireEvent.click(recalculateButton)
+
+    expect(mockRecalculate).toHaveBeenCalledTimes(1)
+  })
+
+  it('should disable recalculate button when recalculating', () => {
+    render(<LeadScoringCard {...defaultProps} isRecalculating={true} />)
+
+    const recalculateButton = screen.getByText('Recalculate')
+    expect(recalculateButton).toBeDisabled()
+  })
+
+  it('should show spinner when recalculating', () => {
+    render(<LeadScoringCard {...defaultProps} isRecalculating={true} />)
+
+    // The ArrowPathIcon should have animate-spin class when recalculating
+    const spinIcon = screen.getByText('Recalculate').querySelector('svg')
+    expect(spinIcon).toHaveClass('animate-spin')
+  })
+
+  it('should render without onRecalculate prop', () => {
+    const { onRecalculate, ...propsWithoutRecalculate } = defaultProps
+    render(<LeadScoringCard {...propsWithoutRecalculate} />)
+
+    expect(screen.queryByText('Recalculate')).not.toBeInTheDocument()
+  })
+
+  it('should display correct qualification status colors', () => {
+    // Test qualified status
+    render(<LeadScoringCard {...defaultProps} />)
+    expect(screen.getByText('qualified')).toBeInTheDocument()
+
+    // Test unqualified status
+    const unqualifiedScore = {
+      ...mockLeadScore,
+      qualificationStatus: 'unqualified' as const
+    }
+    render(<LeadScoringCard {...defaultProps} currentScore={unqualifiedScore} />)
+    expect(screen.getByText('unqualified')).toBeInTheDocument()
+
+    // Test needs review status
+    const needsReviewScore = {
+      ...mockLeadScore,
+      qualificationStatus: 'needs_review' as const
+    }
+    render(<LeadScoringCard {...defaultProps} currentScore={needsReviewScore} />)
+    expect(screen.getByText('needs review')).toBeInTheDocument()
+  })
+
+  it('should show different descriptions for different score ranges', () => {
+    // Test A+ grade
+    const aplusScore = { ...mockLeadScore, totalScore: 95, grade: 'A+' as const }
+    const { rerender } = render(<LeadScoringCard {...defaultProps} currentScore={aplusScore} />)
+    expect(screen.getByText(/Exceptional lead - immediate priority/)).toBeInTheDocument()
+
+    // Test F grade
+    const fScore = { ...mockLeadScore, totalScore: 25, grade: 'F' as const }
+    rerender(<LeadScoringCard {...defaultProps} currentScore={fScore} />)
+    expect(screen.getByText(/Low priority - long-term nurture/)).toBeInTheDocument()
+  })
+
+  it('should show different trend icons', () => {
+    // Test down trend
+    const downTrendScore = { ...mockLeadScore, trend: 'down' as const }
+    const { rerender } = render(<LeadScoringCard {...defaultProps} currentScore={downTrendScore} />)
+    expect(screen.getByText('down')).toBeInTheDocument()
+
+    // Test stable trend
+    const stableTrendScore = { ...mockLeadScore, trend: 'stable' as const }
+    rerender(<LeadScoringCard {...defaultProps} currentScore={stableTrendScore} />)
+    expect(screen.getByText('stable')).toBeInTheDocument()
+
+    // Test new trend
+    const newTrendScore = { ...mockLeadScore, trend: 'new' as const }
+    rerender(<LeadScoringCard {...defaultProps} currentScore={newTrendScore} />)
+    expect(screen.getByText('new')).toBeInTheDocument()
+  })
+
+  it('should show progress bars for component breakdown', async () => {
+    render(<LeadScoringCard {...defaultProps} />)
+
+    const detailsButton = screen.getByText('Details')
+    fireEvent.click(detailsButton)
+
+    await waitFor(() => {
+      // Should have progress bars for each component
+      const progressBars = screen.getAllByRole('progressbar')
+      expect(progressBars).toHaveLength(4) // 4 components
+    })
+  })
+
+  it('should show specific recommendations based on weak components', async () => {
+    const weakBehavioralScore = {
+      ...mockLeadScore,
+      components: {
+        ...mockLeadScore.components,
+        behavioral: 5 // Low behavioral score
+      }
+    }
+
+    render(<LeadScoringCard {...defaultProps} currentScore={weakBehavioralScore} />)
+
+    const detailsButton = screen.getByText('Details')
+    fireEvent.click(detailsButton)
+
+    await waitFor(() => {
+      expect(screen.getByText(/Encourage form completion with incentive/)).toBeInTheDocument()
+    })
+  })
+
+  it('should handle hide details correctly', async () => {
+    render(<LeadScoringCard {...defaultProps} />)
+
+    const detailsButton = screen.getByText('Details')
+    fireEvent.click(detailsButton)
+
+    await waitFor(() => {
+      expect(screen.getByText('Score Breakdown')).toBeInTheDocument()
+    })
+
+    const hideButton = screen.getByText('Hide')
+    fireEvent.click(hideButton)
+
+    await waitFor(() => {
+      expect(screen.queryByText('Score Breakdown')).not.toBeInTheDocument()
+    })
+  })
+})

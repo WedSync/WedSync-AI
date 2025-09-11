@@ -1,0 +1,937 @@
+'use client';
+
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import { FormField, FormFieldValidation, FormSection } from '@/types/forms';
+import { Card } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Switch } from '@/components/ui/switch';
+import {
+  CheckCircleIcon,
+  XCircleIcon,
+  ExclamationTriangleIcon,
+  InformationCircleIcon,
+  ShieldCheckIcon,
+  ClockIcon,
+  CpuChipIcon,
+  BeakerIcon,
+} from '@heroicons/react/24/outline';
+
+// Validation Rule Types
+export type ValidationRuleType =
+  | 'required'
+  | 'minLength'
+  | 'maxLength'
+  | 'pattern'
+  | 'email'
+  | 'url'
+  | 'number'
+  | 'phone'
+  | 'min'
+  | 'max'
+  | 'fileSize'
+  | 'fileType'
+  | 'custom'
+  | 'conditional'
+  | 'crossField'
+  | 'async';
+
+export interface ValidationRule {
+  id: string;
+  type: ValidationRuleType;
+  value?: any;
+  message?: string;
+  condition?: string; // For conditional validation
+  fieldRef?: string; // For cross-field validation
+  asyncValidator?: (
+    value: any,
+    formData?: Record<string, any>,
+  ) => Promise<boolean>;
+  customValidator?: (value: any, formData?: Record<string, any>) => boolean;
+  priority?: number; // Higher priority runs first
+  breakOnFail?: boolean; // Stop validation chain if this rule fails
+}
+
+export interface ValidationResult {
+  isValid: boolean;
+  errors: ValidationError[];
+  warnings: ValidationWarning[];
+  fieldResults: Record<string, FieldValidationResult>;
+  formScore: number; // 0-100 validation confidence score
+}
+
+export interface ValidationError {
+  fieldId: string;
+  ruleType: ValidationRuleType;
+  message: string;
+  severity: 'error' | 'warning' | 'info';
+  suggestions?: string[];
+}
+
+export interface ValidationWarning extends ValidationError {
+  severity: 'warning';
+}
+
+export interface FieldValidationResult {
+  fieldId: string;
+  isValid: boolean;
+  errors: ValidationError[];
+  warnings: ValidationWarning[];
+  value: any;
+  sanitizedValue?: any;
+  confidence: number; // 0-100
+  executionTime: number; // Validation execution time in ms
+}
+
+// Built-in Validation Rules
+const BUILT_IN_RULES: Record<ValidationRuleType, Partial<ValidationRule>> = {
+  required: {
+    type: 'required',
+    message: 'This field is required',
+    priority: 100,
+  },
+  email: {
+    type: 'email',
+    value: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
+    message: 'Please enter a valid email address',
+  },
+  url: {
+    type: 'url',
+    value: /^https?:\/\/.+\..+/,
+    message: 'Please enter a valid URL',
+  },
+  phone: {
+    type: 'phone',
+    value: /^[\+]?[1-9][\d]{0,15}$/,
+    message: 'Please enter a valid phone number',
+  },
+  minLength: {
+    type: 'minLength',
+    message: 'Must be at least {value} characters long',
+  },
+  maxLength: {
+    type: 'maxLength',
+    message: 'Must be no more than {value} characters long',
+  },
+  min: {
+    type: 'min',
+    message: 'Value must be at least {value}',
+  },
+  max: {
+    type: 'max',
+    message: 'Value must be no more than {value}',
+  },
+  pattern: {
+    type: 'pattern',
+    message: 'Invalid format',
+  },
+  number: {
+    type: 'number',
+    message: 'Must be a valid number',
+  },
+  fileSize: {
+    type: 'fileSize',
+    message: 'File size must be less than {value}MB',
+  },
+  fileType: {
+    type: 'fileType',
+    message: 'Invalid file type. Allowed types: {value}',
+  },
+  custom: {
+    type: 'custom',
+    message: 'Custom validation failed',
+  },
+  conditional: {
+    type: 'conditional',
+    message: 'Conditional validation failed',
+  },
+  crossField: {
+    type: 'crossField',
+    message: 'Cross-field validation failed',
+  },
+  async: {
+    type: 'async',
+    message: 'Asynchronous validation failed',
+  },
+};
+
+// Field Validator Props
+interface FieldValidatorProps {
+  fields: FormField[];
+  sections?: FormSection[];
+  formData?: Record<string, any>;
+  validationMode?: 'live' | 'onSubmit' | 'onBlur' | 'debounced';
+  debounceMs?: number;
+  enableRealTime?: boolean;
+  enableAsyncValidation?: boolean;
+  enableCrossFieldValidation?: boolean;
+  customRules?: ValidationRule[];
+  onValidation?: (result: ValidationResult) => void;
+  onFieldValidation?: (fieldId: string, result: FieldValidationResult) => void;
+  showValidationSummary?: boolean;
+  enableFieldSuggestions?: boolean;
+}
+
+export function FieldValidator({
+  fields,
+  sections,
+  formData = {},
+  validationMode = 'onBlur',
+  debounceMs = 500,
+  enableRealTime = false,
+  enableAsyncValidation = false,
+  enableCrossFieldValidation = false,
+  customRules = [],
+  onValidation,
+  onFieldValidation,
+  showValidationSummary = false,
+  enableFieldSuggestions = false,
+}: FieldValidatorProps) {
+  const [validationResult, setValidationResult] = useState<ValidationResult>({
+    isValid: true,
+    errors: [],
+    warnings: [],
+    fieldResults: {},
+    formScore: 100,
+  });
+
+  const [isValidating, setIsValidating] = useState(false);
+  const [validationStats, setValidationStats] = useState({
+    totalValidations: 0,
+    avgExecutionTime: 0,
+    errorRate: 0,
+    lastValidation: null as Date | null,
+  });
+
+  // Memoized validation rules for each field
+  const fieldRules = useMemo(() => {
+    const rules: Record<string, ValidationRule[]> = {};
+
+    fields.forEach((field) => {
+      const fieldRules: ValidationRule[] = [];
+
+      // Add built-in rules based on field validation config
+      if (field.validation?.required) {
+        fieldRules.push({
+          id: `${field.id}-required`,
+          ...BUILT_IN_RULES.required,
+        } as ValidationRule);
+      }
+
+      if (field.validation?.minLength !== undefined) {
+        fieldRules.push({
+          id: `${field.id}-minLength`,
+          ...BUILT_IN_RULES.minLength,
+          value: field.validation.minLength,
+          message: BUILT_IN_RULES.minLength.message?.replace(
+            '{value}',
+            field.validation.minLength.toString(),
+          ),
+        } as ValidationRule);
+      }
+
+      if (field.validation?.maxLength !== undefined) {
+        fieldRules.push({
+          id: `${field.id}-maxLength`,
+          ...BUILT_IN_RULES.maxLength,
+          value: field.validation.maxLength,
+          message: BUILT_IN_RULES.maxLength.message?.replace(
+            '{value}',
+            field.validation.maxLength.toString(),
+          ),
+        } as ValidationRule);
+      }
+
+      if (field.validation?.min !== undefined) {
+        fieldRules.push({
+          id: `${field.id}-min`,
+          ...BUILT_IN_RULES.min,
+          value: field.validation.min,
+          message: BUILT_IN_RULES.min.message?.replace(
+            '{value}',
+            field.validation.min.toString(),
+          ),
+        } as ValidationRule);
+      }
+
+      if (field.validation?.max !== undefined) {
+        fieldRules.push({
+          id: `${field.id}-max`,
+          ...BUILT_IN_RULES.max,
+          value: field.validation.max,
+          message: BUILT_IN_RULES.max.message?.replace(
+            '{value}',
+            field.validation.max.toString(),
+          ),
+        } as ValidationRule);
+      }
+
+      if (field.validation?.pattern) {
+        fieldRules.push({
+          id: `${field.id}-pattern`,
+          ...BUILT_IN_RULES.pattern,
+          value: new RegExp(field.validation.pattern),
+          message:
+            field.validation.customMessage || BUILT_IN_RULES.pattern.message,
+        } as ValidationRule);
+      }
+
+      // Add field type specific rules
+      if (field.type === 'email') {
+        fieldRules.push({
+          id: `${field.id}-email`,
+          ...BUILT_IN_RULES.email,
+        } as ValidationRule);
+      }
+
+      if (field.type === 'tel') {
+        fieldRules.push({
+          id: `${field.id}-phone`,
+          ...BUILT_IN_RULES.phone,
+        } as ValidationRule);
+      }
+
+      if (field.type === 'number') {
+        fieldRules.push({
+          id: `${field.id}-number`,
+          ...BUILT_IN_RULES.number,
+          customValidator: (value) => {
+            return !isNaN(Number(value)) && !isNaN(parseFloat(value));
+          },
+        } as ValidationRule);
+      }
+
+      // Sort rules by priority (higher first)
+      fieldRules.sort((a, b) => (b.priority || 0) - (a.priority || 0));
+
+      rules[field.id] = fieldRules;
+    });
+
+    // Add custom rules
+    customRules.forEach((rule) => {
+      const fieldId = rule.fieldRef;
+      if (fieldId && rules[fieldId]) {
+        rules[fieldId].push(rule);
+      }
+    });
+
+    return rules;
+  }, [fields, customRules]);
+
+  // Validate a single field
+  const validateField = useCallback(
+    async (
+      fieldId: string,
+      value: any,
+      allFormData: Record<string, any> = formData,
+    ): Promise<FieldValidationResult> => {
+      const startTime = Date.now();
+      const field = fields.find((f) => f.id === fieldId);
+      const rules = fieldRules[fieldId] || [];
+
+      if (!field) {
+        return {
+          fieldId,
+          isValid: true,
+          errors: [],
+          warnings: [],
+          value,
+          confidence: 0,
+          executionTime: Date.now() - startTime,
+        };
+      }
+
+      const errors: ValidationError[] = [];
+      const warnings: ValidationWarning[] = [];
+      let sanitizedValue = value;
+      let shouldContinue = true;
+
+      // Apply validation rules in priority order
+      for (const rule of rules) {
+        if (!shouldContinue) break;
+
+        let isRuleValid = true;
+        let errorMessage = rule.message || 'Validation failed';
+
+        try {
+          switch (rule.type) {
+            case 'required':
+              isRuleValid =
+                value !== undefined && value !== null && value !== '';
+              break;
+
+            case 'minLength':
+              isRuleValid =
+                !value || value.toString().length >= (rule.value || 0);
+              break;
+
+            case 'maxLength':
+              isRuleValid =
+                !value ||
+                value.toString().length <=
+                  (rule.value || Number.MAX_SAFE_INTEGER);
+              break;
+
+            case 'pattern':
+              isRuleValid =
+                !value || (rule.value as RegExp).test(value.toString());
+              break;
+
+            case 'email':
+              isRuleValid =
+                !value || (rule.value as RegExp).test(value.toString());
+              break;
+
+            case 'url':
+              isRuleValid =
+                !value || (rule.value as RegExp).test(value.toString());
+              break;
+
+            case 'phone':
+              isRuleValid =
+                !value || (rule.value as RegExp).test(value.toString());
+              break;
+
+            case 'number':
+              isRuleValid = !value || !isNaN(Number(value));
+              if (isRuleValid && value) {
+                sanitizedValue = Number(value);
+              }
+              break;
+
+            case 'min':
+              isRuleValid = !value || Number(value) >= (rule.value || 0);
+              break;
+
+            case 'max':
+              isRuleValid =
+                !value ||
+                Number(value) <= (rule.value || Number.MAX_SAFE_INTEGER);
+              break;
+
+            case 'custom':
+              if (rule.customValidator) {
+                isRuleValid = rule.customValidator(value, allFormData);
+              }
+              break;
+
+            case 'async':
+              if (rule.asyncValidator && enableAsyncValidation) {
+                isRuleValid = await rule.asyncValidator(value, allFormData);
+              }
+              break;
+
+            case 'crossField':
+              if (enableCrossFieldValidation && rule.fieldRef) {
+                const otherFieldValue = allFormData[rule.fieldRef];
+                if (rule.customValidator) {
+                  isRuleValid = rule.customValidator(value, {
+                    ...allFormData,
+                    [rule.fieldRef]: otherFieldValue,
+                  });
+                }
+              }
+              break;
+
+            case 'conditional':
+              if (rule.condition) {
+                // Simple conditional logic evaluation
+                try {
+                  const conditionMet = new Function(
+                    'formData',
+                    `return ${rule.condition}`,
+                  )(allFormData);
+                  if (conditionMet && rule.customValidator) {
+                    isRuleValid = rule.customValidator(value, allFormData);
+                  }
+                } catch (e) {
+                  console.warn('Conditional validation error:', e);
+                }
+              }
+              break;
+
+            case 'fileSize':
+              if (value instanceof File) {
+                const maxSizeBytes = (rule.value || 10) * 1024 * 1024; // Convert MB to bytes
+                isRuleValid = value.size <= maxSizeBytes;
+              }
+              break;
+
+            case 'fileType':
+              if (value instanceof File && rule.value) {
+                const allowedTypes = Array.isArray(rule.value)
+                  ? rule.value
+                  : [rule.value];
+                isRuleValid = allowedTypes.some(
+                  (type) =>
+                    value.type.includes(type) ||
+                    value.name.toLowerCase().endsWith(type),
+                );
+              }
+              break;
+          }
+
+          if (!isRuleValid) {
+            const error: ValidationError = {
+              fieldId,
+              ruleType: rule.type,
+              message: errorMessage,
+              severity: rule.type === 'required' ? 'error' : 'warning',
+              suggestions: enableFieldSuggestions
+                ? generateSuggestions(field, rule, value)
+                : undefined,
+            };
+
+            if (error.severity === 'error') {
+              errors.push(error);
+            } else {
+              warnings.push(error as ValidationWarning);
+            }
+
+            if (rule.breakOnFail) {
+              shouldContinue = false;
+            }
+          }
+        } catch (e) {
+          console.error(`Validation rule ${rule.type} failed:`, e);
+          errors.push({
+            fieldId,
+            ruleType: rule.type,
+            message: 'Validation rule execution failed',
+            severity: 'error',
+          });
+        }
+      }
+
+      const confidence = calculateConfidence(errors, warnings, rules.length);
+      const executionTime = Date.now() - startTime;
+
+      const result: FieldValidationResult = {
+        fieldId,
+        isValid: errors.length === 0,
+        errors,
+        warnings,
+        value,
+        sanitizedValue,
+        confidence,
+        executionTime,
+      };
+
+      // Update stats
+      setValidationStats((prev) => ({
+        totalValidations: prev.totalValidations + 1,
+        avgExecutionTime: (prev.avgExecutionTime + executionTime) / 2,
+        errorRate:
+          (prev.errorRate * prev.totalValidations +
+            (errors.length > 0 ? 1 : 0)) /
+          (prev.totalValidations + 1),
+        lastValidation: new Date(),
+      }));
+
+      if (onFieldValidation) {
+        onFieldValidation(fieldId, result);
+      }
+
+      return result;
+    },
+    [
+      fields,
+      fieldRules,
+      formData,
+      enableAsyncValidation,
+      enableCrossFieldValidation,
+      enableFieldSuggestions,
+      onFieldValidation,
+    ],
+  );
+
+  // Validate entire form
+  const validateForm = useCallback(
+    async (data: Record<string, any> = formData): Promise<ValidationResult> => {
+      setIsValidating(true);
+      const startTime = Date.now();
+
+      try {
+        const fieldResults: Record<string, FieldValidationResult> = {};
+        const allErrors: ValidationError[] = [];
+        const allWarnings: ValidationWarning[] = [];
+
+        // Validate all fields
+        for (const field of fields) {
+          const result = await validateField(field.id, data[field.id], data);
+          fieldResults[field.id] = result;
+          allErrors.push(...result.errors);
+          allWarnings.push(...result.warnings);
+        }
+
+        // Calculate form score
+        const formScore = calculateFormScore(fieldResults, fields);
+
+        const result: ValidationResult = {
+          isValid: allErrors.length === 0,
+          errors: allErrors,
+          warnings: allWarnings,
+          fieldResults,
+          formScore,
+        };
+
+        setValidationResult(result);
+
+        if (onValidation) {
+          onValidation(result);
+        }
+
+        return result;
+      } finally {
+        setIsValidating(false);
+      }
+    },
+    [fields, formData, validateField, onValidation],
+  );
+
+  // Real-time validation effect
+  useEffect(() => {
+    if (enableRealTime && validationMode === 'live') {
+      const debounceTimer = setTimeout(() => {
+        validateForm(formData);
+      }, debounceMs);
+
+      return () => clearTimeout(debounceTimer);
+    }
+  }, [formData, enableRealTime, validationMode, debounceMs, validateForm]);
+
+  // Helper functions
+  const generateSuggestions = (
+    field: FormField,
+    rule: ValidationRule,
+    value: any,
+  ): string[] => {
+    const suggestions: string[] = [];
+
+    switch (rule.type) {
+      case 'email':
+        if (value && !value.includes('@')) {
+          suggestions.push('Add @ symbol to make it a valid email');
+        }
+        if (value && !value.includes('.')) {
+          suggestions.push('Add a domain extension like .com or .org');
+        }
+        break;
+
+      case 'phone':
+        suggestions.push('Try format: +1234567890 or (123) 456-7890');
+        break;
+
+      case 'url':
+        if (value && !value.startsWith('http')) {
+          suggestions.push('Start with http:// or https://');
+        }
+        break;
+
+      case 'minLength':
+        const needed = (rule.value || 0) - (value?.toString().length || 0);
+        if (needed > 0) {
+          suggestions.push(`Add ${needed} more characters`);
+        }
+        break;
+
+      case 'maxLength':
+        const excess = (value?.toString().length || 0) - (rule.value || 0);
+        if (excess > 0) {
+          suggestions.push(`Remove ${excess} characters`);
+        }
+        break;
+    }
+
+    return suggestions;
+  };
+
+  const calculateConfidence = (
+    errors: ValidationError[],
+    warnings: ValidationWarning[],
+    totalRules: number,
+  ): number => {
+    if (totalRules === 0) return 100;
+
+    const errorWeight = 20; // Each error reduces confidence by 20%
+    const warningWeight = 5; // Each warning reduces confidence by 5%
+
+    const reduction =
+      errors.length * errorWeight + warnings.length * warningWeight;
+    return Math.max(0, 100 - reduction);
+  };
+
+  const calculateFormScore = (
+    fieldResults: Record<string, FieldValidationResult>,
+    allFields: FormField[],
+  ): number => {
+    if (allFields.length === 0) return 100;
+
+    const scores = allFields.map((field) => {
+      const result = fieldResults[field.id];
+      return result ? result.confidence : 0;
+    });
+
+    return Math.round(
+      scores.reduce((sum, score) => sum + score, 0) / scores.length,
+    );
+  };
+
+  // Render validation summary
+  const renderValidationSummary = () => {
+    if (!showValidationSummary) return null;
+
+    return (
+      <Card className="p-4 mb-4">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-lg font-semibold flex items-center gap-2">
+            <ShieldCheckIcon className="h-5 w-5" />
+            Validation Summary
+          </h3>
+          <div className="flex items-center gap-2 text-sm text-gray-500">
+            <ClockIcon className="h-4 w-4" />
+            {validationStats.avgExecutionTime.toFixed(1)}ms avg
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+          <div className="text-center">
+            <div
+              className={`text-2xl font-bold ${
+                validationResult.isValid ? 'text-green-600' : 'text-red-600'
+              }`}
+            >
+              {validationResult.formScore}
+            </div>
+            <p className="text-sm text-gray-600">Form Score</p>
+          </div>
+
+          <div className="text-center">
+            <div className="text-2xl font-bold text-red-600">
+              {validationResult.errors.length}
+            </div>
+            <p className="text-sm text-gray-600">Errors</p>
+          </div>
+
+          <div className="text-center">
+            <div className="text-2xl font-bold text-yellow-600">
+              {validationResult.warnings.length}
+            </div>
+            <p className="text-sm text-gray-600">Warnings</p>
+          </div>
+
+          <div className="text-center">
+            <div className="text-2xl font-bold text-blue-600">
+              {Object.keys(validationResult.fieldResults).length}
+            </div>
+            <p className="text-sm text-gray-600">Fields</p>
+          </div>
+        </div>
+
+        {(validationResult.errors.length > 0 ||
+          validationResult.warnings.length > 0) && (
+          <div className="space-y-2">
+            {validationResult.errors.map((error, index) => (
+              <div
+                key={`error-${index}`}
+                className="flex items-start gap-2 p-2 bg-red-50 rounded-md"
+              >
+                <XCircleIcon className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
+                <div className="flex-1">
+                  <p className="text-sm font-medium text-red-800">
+                    {error.message}
+                  </p>
+                  <p className="text-xs text-red-600">
+                    Field:{' '}
+                    {fields.find((f) => f.id === error.fieldId)?.label ||
+                      error.fieldId}
+                  </p>
+                  {error.suggestions && error.suggestions.length > 0 && (
+                    <div className="mt-1">
+                      <p className="text-xs text-red-600 font-medium">
+                        Suggestions:
+                      </p>
+                      <ul className="text-xs text-red-600 list-disc list-inside">
+                        {error.suggestions.map((suggestion, idx) => (
+                          <li key={idx}>{suggestion}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+
+            {validationResult.warnings.map((warning, index) => (
+              <div
+                key={`warning-${index}`}
+                className="flex items-start gap-2 p-2 bg-yellow-50 rounded-md"
+              >
+                <ExclamationTriangleIcon className="h-4 w-4 text-yellow-500 mt-0.5 flex-shrink-0" />
+                <div className="flex-1">
+                  <p className="text-sm font-medium text-yellow-800">
+                    {warning.message}
+                  </p>
+                  <p className="text-xs text-yellow-600">
+                    Field:{' '}
+                    {fields.find((f) => f.id === warning.fieldId)?.label ||
+                      warning.fieldId}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="mt-4 flex items-center justify-between text-xs text-gray-500">
+          <span>
+            Total Validations: {validationStats.totalValidations} | Error Rate:{' '}
+            {(validationStats.errorRate * 100).toFixed(1)}%
+          </span>
+          {isValidating && (
+            <div className="flex items-center gap-1">
+              <CpuChipIcon className="h-3 w-3 animate-spin" />
+              Validating...
+            </div>
+          )}
+        </div>
+      </Card>
+    );
+  };
+
+  // Public API
+  const validatorAPI = {
+    validateField,
+    validateForm,
+    isValidating,
+    validationResult,
+    validationStats,
+    addCustomRule: (rule: ValidationRule) => {
+      // This would be implemented to add custom rules dynamically
+    },
+    removeCustomRule: (ruleId: string) => {
+      // This would be implemented to remove custom rules dynamically
+    },
+  };
+
+  return (
+    <div className="field-validator">
+      {renderValidationSummary()}
+
+      {/* Expose validator API through context or props */}
+      <div style={{ display: 'none' }}>{JSON.stringify(validatorAPI)}</div>
+    </div>
+  );
+}
+
+// Hook for using field validator
+export function useFieldValidator(
+  fields: FormField[],
+  options: Partial<FieldValidatorProps> = {},
+) {
+  const [formData, setFormData] = useState<Record<string, any>>({});
+  const [validationResult, setValidationResult] = useState<ValidationResult>({
+    isValid: true,
+    errors: [],
+    warnings: [],
+    fieldResults: {},
+    formScore: 100,
+  });
+
+  const validator = React.useRef<{
+    validateField: (
+      fieldId: string,
+      value: any,
+    ) => Promise<FieldValidationResult>;
+    validateForm: (data?: Record<string, any>) => Promise<ValidationResult>;
+  } | null>(null);
+
+  const validateField = useCallback(async (fieldId: string, value: any) => {
+    if (validator.current) {
+      return await validator.current.validateField(fieldId, value);
+    }
+    throw new Error('Validator not initialized');
+  }, []);
+
+  const validateForm = useCallback(async (data?: Record<string, any>) => {
+    if (validator.current) {
+      return await validator.current.validateForm(data);
+    }
+    throw new Error('Validator not initialized');
+  }, []);
+
+  const updateFieldValue = useCallback(
+    (fieldId: string, value: any) => {
+      setFormData((prev) => ({ ...prev, [fieldId]: value }));
+
+      // Auto-validate if in live mode
+      if (options.validationMode === 'live' || options.enableRealTime) {
+        validateField(fieldId, value);
+      }
+    },
+    [options.validationMode, options.enableRealTime, validateField],
+  );
+
+  return {
+    formData,
+    validationResult,
+    updateFieldValue,
+    validateField,
+    validateForm,
+    setValidator: (v: any) => {
+      validator.current = v;
+    },
+  };
+}
+
+// Export validation utilities
+export const ValidationUtils = {
+  createRule: (
+    type: ValidationRuleType,
+    options: Partial<ValidationRule> = {},
+  ): ValidationRule => ({
+    id: `rule-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+    type,
+    ...BUILT_IN_RULES[type],
+    ...options,
+  }),
+
+  validateEmail: (email: string): boolean => {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  },
+
+  validatePhone: (phone: string): boolean => {
+    return /^[\+]?[1-9][\d]{0,15}$/.test(phone.replace(/\s/g, ''));
+  },
+
+  validateUrl: (url: string): boolean => {
+    try {
+      new URL(url);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
+  sanitizeInput: (
+    value: string,
+    type: 'text' | 'html' | 'sql' = 'text',
+  ): string => {
+    if (!value) return value;
+
+    switch (type) {
+      case 'html':
+        return value
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#x27;');
+
+      case 'sql':
+        return value.replace(/'/g, "''");
+
+      default:
+        return value.trim();
+    }
+  },
+};

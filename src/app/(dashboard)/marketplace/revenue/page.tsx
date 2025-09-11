@@ -1,0 +1,405 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { useSearchParams } from 'next/navigation';
+import {
+  DollarSign,
+  TrendingUp,
+  Users,
+  Calendar,
+  Download,
+  RefreshCw,
+  BarChart3,
+  PieChart,
+  Filter,
+  Settings,
+} from 'lucide-react';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { Separator } from '@/components/ui/separator';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { MarketplaceRevenueMetrics } from '@/components/marketplace/MarketplaceRevenueMetrics';
+import { CommissionManagementPanel } from '@/components/marketplace/CommissionManagementPanel';
+import { CreatorEarningsTable } from '@/components/marketplace/CreatorEarningsTable';
+import { RevenueChartsPanel } from '@/components/marketplace/RevenueChartsPanel';
+import { FinancialReportsSection } from '@/components/marketplace/FinancialReportsSection';
+
+interface MarketplaceRevenueData {
+  totalRevenue: number;
+  totalCommissions: number;
+  totalCreatorEarnings: number;
+  templatesCount: number;
+  creatorsCount: number;
+  avgCommissionRate: number;
+  topPerformingTemplates: Array<{
+    id: string;
+    title: string;
+    revenue: number;
+    sales: number;
+    creator: string;
+  }>;
+  revenueByCategory: Array<{
+    category: string;
+    revenue: number;
+    percentage: number;
+  }>;
+  monthlyTrends: Array<{
+    month: string;
+    revenue: number;
+    commissions: number;
+    creatorEarnings: number;
+  }>;
+}
+
+export default function MarketplaceRevenuePage() {
+  const [loading, setLoading] = useState(true);
+  const [revenueData, setRevenueData] = useState<MarketplaceRevenueData | null>(
+    null,
+  );
+  const [timeframe, setTimeframe] = useState('30d');
+  const [activeTab, setActiveTab] = useState('overview');
+  const searchParams = useSearchParams();
+
+  useEffect(() => {
+    const urlTimeframe = searchParams.get('timeframe');
+    if (urlTimeframe) {
+      setTimeframe(urlTimeframe);
+    }
+    fetchRevenueData();
+  }, [timeframe, searchParams]);
+
+  const fetchRevenueData = async () => {
+    try {
+      setLoading(true);
+
+      // Mock data - in real implementation, this would fetch from API
+      const mockData: MarketplaceRevenueData = {
+        totalRevenue: 125340,
+        totalCommissions: 37602,
+        totalCreatorEarnings: 87738,
+        templatesCount: 247,
+        creatorsCount: 64,
+        avgCommissionRate: 0.28,
+        topPerformingTemplates: [
+          {
+            id: '1',
+            title: 'Client Onboarding Email Sequence',
+            revenue: 15670,
+            sales: 127,
+            creator: 'Sarah Photography',
+          },
+          {
+            id: '2',
+            title: 'Vendor Coordination Checklist',
+            revenue: 12450,
+            sales: 98,
+            creator: 'Marcus Venues',
+          },
+          {
+            id: '3',
+            title: 'Wedding Day Timeline Builder',
+            revenue: 11200,
+            sales: 76,
+            creator: 'Emma Coordination',
+          },
+          {
+            id: '4',
+            title: 'Budget Tracker Bundle',
+            revenue: 9890,
+            sales: 89,
+            creator: 'Wedding Pro Solutions',
+          },
+          {
+            id: '5',
+            title: 'RSVP Management System',
+            revenue: 8760,
+            sales: 65,
+            creator: 'Digital Wedding Tools',
+          },
+        ],
+        revenueByCategory: [
+          {
+            category: 'Client Communication',
+            revenue: 45230,
+            percentage: 36.1,
+          },
+          { category: 'Planning Tools', revenue: 32890, percentage: 26.2 },
+          { category: 'Vendor Management', revenue: 28710, percentage: 22.9 },
+          { category: 'Timeline Templates', revenue: 18510, percentage: 14.8 },
+        ],
+        monthlyTrends: [
+          {
+            month: 'Oct',
+            revenue: 98450,
+            commissions: 29535,
+            creatorEarnings: 68915,
+          },
+          {
+            month: 'Nov',
+            revenue: 112670,
+            commissions: 33801,
+            creatorEarnings: 78869,
+          },
+          {
+            month: 'Dec',
+            revenue: 125340,
+            commissions: 37602,
+            creatorEarnings: 87738,
+          },
+          {
+            month: 'Jan',
+            revenue: 134560,
+            commissions: 40368,
+            creatorEarnings: 94192,
+          },
+        ],
+      };
+
+      await new Promise((resolve) => setTimeout(resolve, 1000)); // Simulate API delay
+      setRevenueData(mockData);
+    } catch (error) {
+      console.error('Failed to fetch revenue data:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleExportData = async () => {
+    // Export revenue data to CSV/PDF
+    console.log('Exporting marketplace revenue data...');
+  };
+
+  const formatCurrency = (amount: number): string => {
+    return new Intl.NumberFormat('en-GB', {
+      style: 'currency',
+      currency: 'GBP',
+    }).format(amount / 100);
+  };
+
+  const formatPercentage = (value: number): string => {
+    return `${(value * 100).toFixed(1)}%`;
+  };
+
+  if (loading) {
+    return (
+      <div className="container mx-auto py-8">
+        <div className="space-y-6">
+          <div className="flex items-center justify-between">
+            <div className="h-8 bg-gray-200 rounded w-64 animate-pulse"></div>
+            <div className="flex gap-2">
+              <div className="h-9 bg-gray-200 rounded w-24 animate-pulse"></div>
+              <div className="h-9 bg-gray-200 rounded w-24 animate-pulse"></div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            {[...Array(4)].map((_, i) => (
+              <Card key={i} className="animate-pulse">
+                <CardHeader className="space-y-0 pb-2">
+                  <div className="h-4 bg-gray-200 rounded w-24"></div>
+                </CardHeader>
+                <CardContent>
+                  <div className="h-8 bg-gray-200 rounded w-20 mb-2"></div>
+                  <div className="h-3 bg-gray-200 rounded w-16"></div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!revenueData) {
+    return (
+      <div className="container mx-auto py-8">
+        <div className="text-center py-12">
+          <p className="text-gray-500">Failed to load revenue data</p>
+          <Button onClick={fetchRevenueData} className="mt-4">
+            <RefreshCw className="w-4 h-4 mr-2" />
+            Retry
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="container mx-auto py-8">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-8">
+        <div>
+          <h1 className="text-3xl font-bold text-gray-900">
+            Marketplace Revenue Dashboard
+          </h1>
+          <p className="text-gray-600 mt-1">
+            Track template sales, creator earnings, and commission performance
+          </p>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <Select value={timeframe} onValueChange={setTimeframe}>
+            <SelectTrigger className="w-32">
+              <SelectValue placeholder="Timeframe" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="7d">Last 7 days</SelectItem>
+              <SelectItem value="30d">Last 30 days</SelectItem>
+              <SelectItem value="90d">Last 3 months</SelectItem>
+              <SelectItem value="12m">Last 12 months</SelectItem>
+            </SelectContent>
+          </Select>
+
+          <Button variant="outline" size="sm" onClick={fetchRevenueData}>
+            <RefreshCw className="w-4 h-4 mr-2" />
+            Refresh
+          </Button>
+
+          <Button variant="outline" size="sm" onClick={handleExportData}>
+            <Download className="w-4 h-4 mr-2" />
+            Export
+          </Button>
+        </div>
+      </div>
+
+      {/* Key Metrics */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Total Revenue</CardTitle>
+            <DollarSign className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">
+              {formatCurrency(revenueData.totalRevenue)}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              <span className="text-green-600 flex items-center">
+                <TrendingUp className="w-3 h-3 mr-1" />
+                +12.5% from last month
+              </span>
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">
+              Creator Earnings
+            </CardTitle>
+            <Users className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">
+              {formatCurrency(revenueData.totalCreatorEarnings)}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {formatPercentage(
+                revenueData.totalCreatorEarnings / revenueData.totalRevenue,
+              )}{' '}
+              of total revenue
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">
+              Platform Commission
+            </CardTitle>
+            <PieChart className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">
+              {formatCurrency(revenueData.totalCommissions)}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Avg rate: {formatPercentage(revenueData.avgCommissionRate)}
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">
+              Active Creators
+            </CardTitle>
+            <BarChart3 className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">
+              {revenueData.creatorsCount}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {revenueData.templatesCount} templates total
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Main Content Tabs */}
+      <Tabs
+        value={activeTab}
+        onValueChange={setActiveTab}
+        className="space-y-6"
+      >
+        <TabsList>
+          <TabsTrigger value="overview">Revenue Overview</TabsTrigger>
+          <TabsTrigger value="commission">Commission Management</TabsTrigger>
+          <TabsTrigger value="creators">Creator Earnings</TabsTrigger>
+          <TabsTrigger value="reports">Financial Reports</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="overview">
+          <div className="space-y-6">
+            <MarketplaceRevenueMetrics
+              revenueData={revenueData}
+              timeframe={timeframe}
+            />
+            <RevenueChartsPanel
+              monthlyTrends={revenueData.monthlyTrends}
+              categoryBreakdown={revenueData.revenueByCategory}
+              topTemplates={revenueData.topPerformingTemplates}
+            />
+          </div>
+        </TabsContent>
+
+        <TabsContent value="commission">
+          <CommissionManagementPanel
+            creatorsCount={revenueData.creatorsCount}
+            avgCommissionRate={revenueData.avgCommissionRate}
+            onRateUpdate={fetchRevenueData}
+          />
+        </TabsContent>
+
+        <TabsContent value="creators">
+          <CreatorEarningsTable
+            topCreators={revenueData.topPerformingTemplates}
+            totalEarnings={revenueData.totalCreatorEarnings}
+          />
+        </TabsContent>
+
+        <TabsContent value="reports">
+          <FinancialReportsSection
+            revenueData={revenueData}
+            timeframe={timeframe}
+          />
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}

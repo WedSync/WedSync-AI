@@ -1,0 +1,722 @@
+/**
+ * WS-130: Enhanced Search Filters with AI Style Categorization
+ * Advanced filtering system for photographer and photo search with AI-powered style matching
+ */
+
+'use client';
+
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import {
+  Search,
+  Filter,
+  X,
+  ChevronDown,
+  Palette,
+  Star,
+  MapPin,
+  Calendar,
+  DollarSign,
+  Sliders,
+} from 'lucide-react';
+import { colorHarmonyAnalyzer } from '@/lib/ai/photography/color-harmony-analyzer';
+import { photographerMatcher } from '@/lib/ml/photographer-matching-algorithm';
+
+export interface SearchFilters {
+  // Basic Filters
+  query: string;
+  location: {
+    city?: string;
+    state?: string;
+    radius?: number;
+  };
+
+  // Style & Theme Filters
+  styles: string[];
+  themes: string[];
+  moods: string[];
+  colorPalettes: string[];
+
+  // Photographer Filters
+  experienceLevel: string[];
+  priceRange: {
+    min?: number;
+    max?: number;
+  };
+  rating: number;
+  availability: {
+    startDate?: string;
+    endDate?: string;
+  };
+
+  // AI-Powered Filters
+  similarToPhotos: string[];
+  styleCompatibility: number;
+  trendAlignment: string[];
+  seasonality: string[];
+
+  // Advanced Filters
+  portfolioSize: {
+    min?: number;
+    max?: number;
+  };
+  specializations: string[];
+  equipment: string[];
+  deliverySpeed: string[];
+}
+
+interface EnhancedSearchFiltersProps {
+  filters: SearchFilters;
+  onFiltersChange: (filters: SearchFilters) => void;
+  onSearch: () => void;
+  isLoading?: boolean;
+  resultCount?: number;
+  suggestedFilters?: Array<{
+    label: string;
+    filter: Partial<SearchFilters>;
+    reason: string;
+  }>;
+}
+
+const STYLE_OPTIONS = [
+  'Natural',
+  'Romantic',
+  'Documentary',
+  'Editorial',
+  'Fine Art',
+  'Candid',
+  'Traditional',
+  'Modern',
+  'Vintage',
+  'Fashion',
+];
+
+const THEME_OPTIONS = [
+  'Romantic',
+  'Rustic',
+  'Modern',
+  'Vintage',
+  'Beach',
+  'Garden',
+  'Industrial',
+  'Bohemian',
+  'Classic',
+  'Destination',
+];
+
+const MOOD_OPTIONS = [
+  'Joyful',
+  'Intimate',
+  'Dramatic',
+  'Dreamy',
+  'Elegant',
+  'Fun',
+  'Sophisticated',
+  'Whimsical',
+  'Timeless',
+  'Bold',
+];
+
+const COLOR_PALETTES = [
+  { name: 'Neutral', colors: ['#F5F5DC', '#DEB887', '#D2B48C', '#BC8F8F'] },
+  { name: 'Romantic', colors: ['#FFB6C1', '#F0E68C', '#DDA0DD', '#FFF8DC'] },
+  { name: 'Earthy', colors: ['#8B4513', '#D2691E', '#F4A460', '#DEB887'] },
+  { name: 'Ocean', colors: ['#87CEEB', '#F0F8FF', '#E0FFFF', '#B0E0E6'] },
+  { name: 'Garden', colors: ['#90EE90', '#98FB98', '#F0FFF0', '#ADFF2F'] },
+  { name: 'Sunset', colors: ['#FF4500', '#FF6347', '#FFA500', '#FFD700'] },
+];
+
+export const EnhancedSearchFilters: React.FC<EnhancedSearchFiltersProps> = ({
+  filters,
+  onFiltersChange,
+  onSearch,
+  isLoading = false,
+  resultCount = 0,
+  suggestedFilters = [],
+}) => {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [activeSection, setActiveSection] = useState<string | null>(null);
+  const [aiSuggestions, setAiSuggestions] = useState<string[]>([]);
+  const [colorAnalysisResults, setColorAnalysisResults] = useState<any[]>([]);
+
+  // AI-powered filter suggestions
+  useEffect(() => {
+    if (filters.query || filters.styles.length > 0) {
+      generateAISuggestions();
+    }
+  }, [filters.query, filters.styles]);
+
+  const generateAISuggestions = useCallback(async () => {
+    try {
+      // Generate contextual filter suggestions based on current filters
+      const suggestions = await generateContextualSuggestions(filters);
+      setAiSuggestions(suggestions);
+    } catch (error) {
+      console.error('Error generating AI suggestions:', error);
+    }
+  }, [filters]);
+
+  const updateFilter = useCallback(
+    <K extends keyof SearchFilters>(key: K, value: SearchFilters[K]) => {
+      onFiltersChange({ ...filters, [key]: value });
+    },
+    [filters, onFiltersChange],
+  );
+
+  const toggleArrayFilter = useCallback(
+    <K extends keyof SearchFilters>(
+      key: K,
+      value: string,
+      arrayField: SearchFilters[K] extends string[] ? SearchFilters[K] : never,
+    ) => {
+      const currentArray = arrayField as string[];
+      const newArray = currentArray.includes(value)
+        ? currentArray.filter((item) => item !== value)
+        : [...currentArray, value];
+
+      updateFilter(key, newArray as SearchFilters[K]);
+    },
+    [updateFilter],
+  );
+
+  const clearFilter = useCallback(
+    <K extends keyof SearchFilters>(key: K) => {
+      const defaultValue = Array.isArray(filters[key])
+        ? []
+        : typeof filters[key] === 'object'
+          ? {}
+          : typeof filters[key] === 'number'
+            ? 0
+            : '';
+      updateFilter(key, defaultValue as SearchFilters[K]);
+    },
+    [filters, updateFilter],
+  );
+
+  const clearAllFilters = useCallback(() => {
+    const defaultFilters: SearchFilters = {
+      query: '',
+      location: {},
+      styles: [],
+      themes: [],
+      moods: [],
+      colorPalettes: [],
+      experienceLevel: [],
+      priceRange: {},
+      rating: 0,
+      availability: {},
+      similarToPhotos: [],
+      styleCompatibility: 0,
+      trendAlignment: [],
+      seasonality: [],
+      portfolioSize: {},
+      specializations: [],
+      equipment: [],
+      deliverySpeed: [],
+    };
+    onFiltersChange(defaultFilters);
+  }, [onFiltersChange]);
+
+  const activeFilterCount = useMemo(() => {
+    let count = 0;
+    if (filters.query) count++;
+    if (filters.location.city || filters.location.state) count++;
+    count += filters.styles.length;
+    count += filters.themes.length;
+    count += filters.moods.length;
+    count += filters.colorPalettes.length;
+    count += filters.experienceLevel.length;
+    if (filters.priceRange.min || filters.priceRange.max) count++;
+    if (filters.rating > 0) count++;
+    if (filters.availability.startDate || filters.availability.endDate) count++;
+    return count;
+  }, [filters]);
+
+  const handleImageUpload = useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      const files = event.target.files;
+      if (!files || files.length === 0) return;
+
+      const file = files[0];
+      const reader = new FileReader();
+
+      reader.onload = async (e) => {
+        const imageUrl = e.target?.result as string;
+
+        try {
+          // Analyze uploaded image for style matching
+          const analysis = await colorHarmonyAnalyzer.analyzeColorHarmony(
+            imageUrl,
+            `upload_${Date.now()}`,
+          );
+
+          // Update filters based on analysis
+          const detectedThemes = analysis.theme_matches.map(
+            (match) => match.theme,
+          );
+          const dominantColors = analysis.dominant_colors.map(
+            (color) => color.hex,
+          );
+
+          updateFilter('themes', detectedThemes.slice(0, 3));
+          updateFilter('similarToPhotos', [
+            ...filters.similarToPhotos,
+            imageUrl,
+          ]);
+
+          setColorAnalysisResults((prev) => [...prev, analysis]);
+        } catch (error) {
+          console.error('Error analyzing uploaded image:', error);
+        }
+      };
+
+      reader.readAsDataURL(file);
+    },
+    [filters.similarToPhotos, updateFilter],
+  );
+
+  return (
+    <div className="bg-white border border-gray-200 rounded-xl shadow-sm">
+      {/* Main Search Bar */}
+      <div className="p-4 border-b border-gray-100">
+        <div className="flex items-center space-x-3">
+          <div className="flex-1 relative">
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
+            <input
+              type="text"
+              placeholder="Search photographers by style, location, or specialty..."
+              value={filters.query}
+              onChange={(e) => updateFilter('query', e.target.value)}
+              onKeyPress={(e) => e.key === 'Enter' && onSearch()}
+              className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-4 focus:ring-primary-100 focus:border-primary-300 text-gray-900 placeholder-gray-500"
+            />
+          </div>
+
+          <button
+            onClick={() => setIsExpanded(!isExpanded)}
+            className={`flex items-center space-x-2 px-4 py-3 rounded-lg border transition-colors ${
+              activeFilterCount > 0
+                ? 'bg-primary-50 border-primary-200 text-primary-700'
+                : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100'
+            }`}
+          >
+            <Filter className="w-5 h-5" />
+            <span className="font-medium">Filters</span>
+            {activeFilterCount > 0 && (
+              <span className="bg-primary-600 text-white text-xs rounded-full px-2 py-0.5">
+                {activeFilterCount}
+              </span>
+            )}
+            <ChevronDown
+              className={`w-4 h-4 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+            />
+          </button>
+
+          <button
+            onClick={onSearch}
+            disabled={isLoading}
+            className="px-6 py-3 bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
+          >
+            {isLoading ? 'Searching...' : 'Search'}
+          </button>
+        </div>
+
+        {/* Quick Stats */}
+        {resultCount > 0 && (
+          <div className="mt-3 flex items-center justify-between text-sm text-gray-600">
+            <span>{resultCount} photographers found</span>
+            {activeFilterCount > 0 && (
+              <button
+                onClick={clearAllFilters}
+                className="text-primary-600 hover:text-primary-700 font-medium"
+              >
+                Clear all filters
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* AI Suggestions */}
+      {aiSuggestions.length > 0 && (
+        <div className="px-4 py-3 bg-blue-50 border-b border-blue-100">
+          <h4 className="text-sm font-medium text-blue-900 mb-2">
+            AI Suggestions
+          </h4>
+          <div className="flex flex-wrap gap-2">
+            {aiSuggestions.map((suggestion, index) => (
+              <button
+                key={index}
+                className="px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-xs hover:bg-blue-200 transition-colors"
+                onClick={() => {
+                  // Apply AI suggestion
+                  updateFilter('query', filters.query + ' ' + suggestion);
+                }}
+              >
+                {suggestion}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Expanded Filters */}
+      {isExpanded && (
+        <div className="p-4 space-y-6">
+          {/* Location Filters */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                <MapPin className="inline w-4 h-4 mr-1" />
+                City
+              </label>
+              <input
+                type="text"
+                placeholder="Enter city"
+                value={filters.location.city || ''}
+                onChange={(e) =>
+                  updateFilter('location', {
+                    ...filters.location,
+                    city: e.target.value,
+                  })
+                }
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                State
+              </label>
+              <input
+                type="text"
+                placeholder="Enter state"
+                value={filters.location.state || ''}
+                onChange={(e) =>
+                  updateFilter('location', {
+                    ...filters.location,
+                    state: e.target.value,
+                  })
+                }
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Radius (miles)
+              </label>
+              <select
+                value={filters.location.radius || ''}
+                onChange={(e) =>
+                  updateFilter('location', {
+                    ...filters.location,
+                    radius: e.target.value
+                      ? parseInt(e.target.value)
+                      : undefined,
+                  })
+                }
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+              >
+                <option value="">Any distance</option>
+                <option value="25">25 miles</option>
+                <option value="50">50 miles</option>
+                <option value="100">100 miles</option>
+                <option value="200">200 miles</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Style Filters */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-3">
+              Photography Styles
+            </label>
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+              {STYLE_OPTIONS.map((style) => (
+                <button
+                  key={style}
+                  onClick={() =>
+                    toggleArrayFilter('styles', style, filters.styles)
+                  }
+                  className={`px-3 py-2 text-sm rounded-lg border transition-colors ${
+                    filters.styles.includes(style)
+                      ? 'bg-primary-100 border-primary-300 text-primary-800'
+                      : 'bg-gray-50 border-gray-200 text-gray-700 hover:bg-gray-100'
+                  }`}
+                >
+                  {style}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Theme Filters */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-3">
+              Wedding Themes
+            </label>
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+              {THEME_OPTIONS.map((theme) => (
+                <button
+                  key={theme}
+                  onClick={() =>
+                    toggleArrayFilter('themes', theme, filters.themes)
+                  }
+                  className={`px-3 py-2 text-sm rounded-lg border transition-colors ${
+                    filters.themes.includes(theme)
+                      ? 'bg-primary-100 border-primary-300 text-primary-800'
+                      : 'bg-gray-50 border-gray-200 text-gray-700 hover:bg-gray-100'
+                  }`}
+                >
+                  {theme}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Color Palette Filters */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-3">
+              <Palette className="inline w-4 h-4 mr-1" />
+              Color Palettes
+            </label>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+              {COLOR_PALETTES.map((palette) => (
+                <button
+                  key={palette.name}
+                  onClick={() =>
+                    toggleArrayFilter(
+                      'colorPalettes',
+                      palette.name,
+                      filters.colorPalettes,
+                    )
+                  }
+                  className={`p-3 rounded-lg border transition-colors ${
+                    filters.colorPalettes.includes(palette.name)
+                      ? 'border-primary-300 bg-primary-50'
+                      : 'border-gray-200 hover:border-gray-300'
+                  }`}
+                >
+                  <div className="flex items-center space-x-2 mb-2">
+                    {palette.colors.map((color, index) => (
+                      <div
+                        key={index}
+                        className="w-4 h-4 rounded-full border border-gray-200"
+                        style={{ backgroundColor: color }}
+                      />
+                    ))}
+                  </div>
+                  <span className="text-sm font-medium text-gray-700">
+                    {palette.name}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Price & Experience Filters */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-3">
+                <DollarSign className="inline w-4 h-4 mr-1" />
+                Price Range
+              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <input
+                  type="number"
+                  placeholder="Min price"
+                  value={filters.priceRange.min || ''}
+                  onChange={(e) =>
+                    updateFilter('priceRange', {
+                      ...filters.priceRange,
+                      min: e.target.value
+                        ? parseInt(e.target.value)
+                        : undefined,
+                    })
+                  }
+                  className="px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                />
+                <input
+                  type="number"
+                  placeholder="Max price"
+                  value={filters.priceRange.max || ''}
+                  onChange={(e) =>
+                    updateFilter('priceRange', {
+                      ...filters.priceRange,
+                      max: e.target.value
+                        ? parseInt(e.target.value)
+                        : undefined,
+                    })
+                  }
+                  className="px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-3">
+                <Star className="inline w-4 h-4 mr-1" />
+                Minimum Rating
+              </label>
+              <select
+                value={filters.rating}
+                onChange={(e) =>
+                  updateFilter('rating', parseFloat(e.target.value))
+                }
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+              >
+                <option value="0">Any rating</option>
+                <option value="3">3+ stars</option>
+                <option value="4">4+ stars</option>
+                <option value="4.5">4.5+ stars</option>
+                <option value="5">5 stars only</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Availability Filter */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-3">
+              <Calendar className="inline w-4 h-4 mr-1" />
+              Availability
+            </label>
+            <div className="grid grid-cols-2 gap-3">
+              <input
+                type="date"
+                value={filters.availability.startDate || ''}
+                onChange={(e) =>
+                  updateFilter('availability', {
+                    ...filters.availability,
+                    startDate: e.target.value,
+                  })
+                }
+                className="px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+              />
+              <input
+                type="date"
+                value={filters.availability.endDate || ''}
+                onChange={(e) =>
+                  updateFilter('availability', {
+                    ...filters.availability,
+                    endDate: e.target.value,
+                  })
+                }
+                className="px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+              />
+            </div>
+          </div>
+
+          {/* AI-Powered Visual Search */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-3">
+              <Sliders className="inline w-4 h-4 mr-1" />
+              Visual Style Search
+            </label>
+            <div className="space-y-3">
+              <div>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleImageUpload}
+                  className="hidden"
+                  id="style-upload"
+                />
+                <label
+                  htmlFor="style-upload"
+                  className="inline-flex items-center px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 cursor-pointer"
+                >
+                  Upload inspiration photo
+                </label>
+                <p className="text-xs text-gray-500 mt-1">
+                  Upload a photo to find photographers with similar styles
+                </p>
+              </div>
+
+              {filters.similarToPhotos.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {filters.similarToPhotos.map((photo, index) => (
+                    <div key={index} className="relative">
+                      <img
+                        src={photo}
+                        alt="Style reference"
+                        className="w-16 h-16 object-cover rounded-lg border border-gray-200"
+                      />
+                      <button
+                        onClick={() => {
+                          const newPhotos = filters.similarToPhotos.filter(
+                            (_, i) => i !== index,
+                          );
+                          updateFilter('similarToPhotos', newPhotos);
+                        }}
+                        className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center text-xs hover:bg-red-600"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Suggested Filters */}
+      {suggestedFilters.length > 0 && (
+        <div className="px-4 py-3 bg-green-50 border-t border-green-100">
+          <h4 className="text-sm font-medium text-green-900 mb-2">
+            Suggested Refinements
+          </h4>
+          <div className="space-y-2">
+            {suggestedFilters.slice(0, 3).map((suggestion, index) => (
+              <button
+                key={index}
+                onClick={() =>
+                  onFiltersChange({ ...filters, ...suggestion.filter })
+                }
+                className="block w-full text-left px-3 py-2 bg-green-100 text-green-800 rounded-lg text-sm hover:bg-green-200 transition-colors"
+              >
+                <span className="font-medium">{suggestion.label}</span>
+                <span className="text-green-600 text-xs block">
+                  {suggestion.reason}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Helper function to generate AI suggestions
+async function generateContextualSuggestions(
+  filters: SearchFilters,
+): Promise<string[]> {
+  const suggestions: string[] = [];
+
+  // Style-based suggestions
+  if (filters.styles.includes('Natural')) {
+    suggestions.push('outdoor venues', 'golden hour');
+  }
+
+  if (filters.styles.includes('Romantic')) {
+    suggestions.push('soft lighting', 'intimate moments');
+  }
+
+  // Theme-based suggestions
+  if (filters.themes.includes('Rustic')) {
+    suggestions.push('barn venues', 'country settings');
+  }
+
+  if (filters.themes.includes('Beach')) {
+    suggestions.push('sunset photography', 'destination weddings');
+  }
+
+  // Query-based suggestions
+  if (filters.query.toLowerCase().includes('vintage')) {
+    suggestions.push('film photography', 'timeless style');
+  }
+
+  return suggestions.slice(0, 5);
+}
+
+export default EnhancedSearchFilters;

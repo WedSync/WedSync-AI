@@ -1,0 +1,507 @@
+/**
+ * Ticket Messages API
+ * WS-235: Support Operations Ticket Management System
+ *
+ * Handles conversation messages for support tickets:
+ * - POST: Add new message/reply to ticket
+ * - GET: Retrieve messages with pagination
+ * - Real-time SLA tracking on first response
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import { slaMonitor } from '@/lib/support/sla-monitor';
+
+// Validation schemas
+const CreateMessageSchema = z.object({
+  messageContent: z
+    .string()
+    .min(1, 'Message cannot be empty')
+    .max(10000, 'Message too long'),
+  messageType: z
+    .enum(['reply', 'note', 'resolution', 'system'])
+    .default('reply'),
+  isInternal: z.boolean().default(false),
+  attachments: z
+    .array(
+      z.object({
+        filename: z.string(),
+        url: z.string(),
+        size: z.number(),
+        mimeType: z.string(),
+      }),
+    )
+    .optional(),
+});
+
+const GetMessagesSchema = z.object({
+  includeInternal: z.boolean().default(false),
+  limit: z.number().min(1).max(100).default(50),
+  offset: z.number().min(0).default(0),
+  messageType: z.enum(['reply', 'note', 'resolution', 'system']).optional(),
+  authorType: z.enum(['customer', 'agent', 'system']).optional(),
+  since: z.string().datetime().optional(),
+});
+
+/**
+ * POST /api/tickets/[id]/messages - Add message to ticket
+ */
+export async function POST(
+  request: NextRequest,
+  { params }: { params: { id: string } },
+) {
+  try {
+    const supabaseClient = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+
+    // Get authenticated user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabaseClient.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const ticketId = params.id;
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validatedData = CreateMessageSchema.parse(body);
+
+    console.log(`Adding message to ticket ${ticketId} by user ${user.id}`);
+
+    // Get ticket to verify access and status
+    const { data: ticket, error: ticketError } = await supabaseClient
+      .from('support_tickets')
+      .select(
+        `
+        *,
+        user_profiles!support_tickets_user_id_fkey (
+          full_name,
+          role
+        )
+      `,
+      )
+      .eq('id', ticketId)
+      .single();
+
+    if (ticketError || !ticket) {
+      return NextResponse.json({ error: 'Ticket not found' }, { status: 404 });
+    }
+
+    // Check if ticket is closed
+    if (ticket.status === 'closed') {
+      return NextResponse.json(
+        {
+          error: 'Cannot add messages to closed ticket',
+        },
+        { status: 400 },
+      );
+    }
+
+    // Check permissions
+    const { data: profile } = await supabaseClient
+      .from('user_profiles')
+      .select('role, full_name, avatar_url')
+      .eq('user_id', user.id)
+      .single();
+
+    const isOwner = ticket.user_id === user.id;
+    const isAgent =
+      profile?.role === 'support_agent' && ticket.assigned_agent_id === user.id;
+    const isAdmin = profile?.role === 'admin';
+    const isAnyAgent = profile?.role === 'support_agent';
+
+    if (!isOwner && !isAgent && !isAdmin && !isAnyAgent) {
+      return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+    }
+
+    // Determine author type and validate permissions
+    let authorType = 'customer';
+
+    if (isAgent || isAdmin || isAnyAgent) {
+      authorType = 'agent';
+
+      // Only agents can create internal notes
+      if (validatedData.isInternal && !isAnyAgent && !isAdmin) {
+        return NextResponse.json(
+          {
+            error: 'Only agents can create internal notes',
+          },
+          { status: 403 },
+        );
+      }
+
+      // Only agents can create resolution messages
+      if (
+        validatedData.messageType === 'resolution' &&
+        !isAnyAgent &&
+        !isAdmin
+      ) {
+        return NextResponse.json(
+          {
+            error: 'Only agents can create resolution messages',
+          },
+          { status: 403 },
+        );
+      }
+    }
+
+    // Customers can't create internal messages
+    if (isOwner && !isAgent && !isAdmin && validatedData.isInternal) {
+      return NextResponse.json(
+        {
+          error: 'Customers cannot create internal messages',
+        },
+        { status: 403 },
+      );
+    }
+
+    // Create message
+    const { data: newMessage, error: messageError } = await supabaseClient
+      .from('ticket_messages')
+      .insert({
+        ticket_id: ticketId,
+        message_content: validatedData.messageContent,
+        message_type: validatedData.messageType,
+        is_internal: validatedData.isInternal,
+        attachments: validatedData.attachments || [],
+        author_type: authorType,
+        author_id: user.id,
+      })
+      .select(
+        `
+        *,
+        support_agents!ticket_messages_author_id_fkey (
+          full_name,
+          avatar_url
+        ),
+        user_profiles!ticket_messages_author_id_fkey (
+          full_name,
+          avatar_url
+        )
+      `,
+      )
+      .single();
+
+    if (messageError) {
+      console.error('Error creating message:', messageError);
+      return NextResponse.json(
+        { error: 'Failed to create message' },
+        { status: 500 },
+      );
+    }
+
+    // Update ticket status and timestamps
+    const ticketUpdates: any = {
+      updated_at: new Date().toISOString(),
+      last_message_at: new Date().toISOString(),
+    };
+
+    // Handle first response from agent
+    if (
+      authorType === 'agent' &&
+      !ticket.first_response_at &&
+      !validatedData.isInternal
+    ) {
+      ticketUpdates.first_response_at = new Date().toISOString();
+      ticketUpdates.status = 'in_progress';
+
+      console.log(`First response recorded for ticket ${ticketId}`);
+    }
+
+    // Handle resolution messages
+    if (validatedData.messageType === 'resolution') {
+      ticketUpdates.status = 'resolved';
+      ticketUpdates.resolved_at = new Date().toISOString();
+    }
+
+    // Update ticket status based on author type
+    if (isOwner && ticket.status === 'pending_response') {
+      ticketUpdates.status = 'in_progress';
+    } else if (authorType === 'agent' && ticket.status === 'open') {
+      ticketUpdates.status = 'in_progress';
+    } else if (
+      authorType === 'agent' &&
+      isOwner &&
+      ticket.status === 'in_progress'
+    ) {
+      ticketUpdates.status = 'pending_response';
+    }
+
+    // Update ticket
+    const { error: updateError } = await supabaseClient
+      .from('support_tickets')
+      .update(ticketUpdates)
+      .eq('id', ticketId);
+
+    if (updateError) {
+      console.error('Error updating ticket after message:', updateError);
+    }
+
+    // Record SLA event for first response
+    if (ticketUpdates.first_response_at) {
+      await supabaseClient.from('ticket_sla_events').insert({
+        ticket_id: ticketId,
+        event_type: 'first_response',
+        agent_id: user.id,
+        notes: `First response provided by ${profile?.full_name || 'agent'}`,
+      });
+    }
+
+    // Record message creation event
+    await supabaseClient.from('ticket_sla_events').insert({
+      ticket_id: ticketId,
+      event_type: 'message_added',
+      agent_id: authorType === 'agent' ? user.id : null,
+      event_data: {
+        message_type: validatedData.messageType,
+        is_internal: validatedData.isInternal,
+        author_type: authorType,
+      },
+      notes: `${validatedData.messageType} message added by ${authorType}`,
+    });
+
+    // Get updated SLA status if this was first response
+    let slaStatus = null;
+    if (ticketUpdates.first_response_at) {
+      try {
+        slaStatus = await slaMonitor.getTicketSLAStatus(ticketId);
+      } catch (error) {
+        console.error('Failed to get updated SLA status:', error);
+      }
+    }
+
+    return NextResponse.json(
+      {
+        message: newMessage,
+        ticketUpdates: Object.keys(ticketUpdates),
+        slaStatus,
+        success: true,
+      },
+      { status: 201 },
+    );
+  } catch (error) {
+    console.error('Error adding message to ticket:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Validation failed',
+          details: error.errors.map((e) => ({
+            field: e.path.join('.'),
+            message: e.message,
+          })),
+        },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Failed to add message' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * GET /api/tickets/[id]/messages - Get ticket messages
+ */
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { id: string } },
+) {
+  try {
+    const supabaseClient = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+
+    // Get authenticated user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabaseClient.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const ticketId = params.id;
+
+    // Parse query parameters
+    const { searchParams } = new URL(request.url);
+    const queryParams = Object.fromEntries(searchParams.entries());
+
+    // Convert query params to proper types
+    const processedParams = {
+      ...queryParams,
+      includeInternal: queryParams.includeInternal === 'true',
+      limit: queryParams.limit ? parseInt(queryParams.limit) : undefined,
+      offset: queryParams.offset ? parseInt(queryParams.offset) : undefined,
+    };
+
+    const validatedParams = GetMessagesSchema.parse(processedParams);
+
+    // Check ticket access
+    const { data: ticket, error: ticketError } = await supabaseClient
+      .from('support_tickets')
+      .select('user_id, assigned_agent_id')
+      .eq('id', ticketId)
+      .single();
+
+    if (ticketError || !ticket) {
+      return NextResponse.json({ error: 'Ticket not found' }, { status: 404 });
+    }
+
+    // Check permissions
+    const { data: profile } = await supabaseClient
+      .from('user_profiles')
+      .select('role')
+      .eq('user_id', user.id)
+      .single();
+
+    const isOwner = ticket.user_id === user.id;
+    const isAgent =
+      profile?.role === 'support_agent' && ticket.assigned_agent_id === user.id;
+    const isAdmin = profile?.role === 'admin';
+    const isAnyAgent = profile?.role === 'support_agent';
+
+    if (!isOwner && !isAgent && !isAdmin && !isAnyAgent) {
+      return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+    }
+
+    // Build messages query
+    let query = supabaseClient
+      .from('ticket_messages')
+      .select(
+        `
+        *,
+        support_agents!ticket_messages_author_id_fkey (
+          full_name,
+          avatar_url,
+          specialties
+        ),
+        user_profiles!ticket_messages_author_id_fkey (
+          full_name,
+          avatar_url
+        )
+      `,
+      )
+      .eq('ticket_id', ticketId);
+
+    // Filter internal messages for customers
+    if (
+      !validatedParams.includeInternal &&
+      !isAgent &&
+      !isAdmin &&
+      !isAnyAgent
+    ) {
+      query = query.eq('is_internal', false);
+    }
+
+    // Apply additional filters
+    if (validatedParams.messageType) {
+      query = query.eq('message_type', validatedParams.messageType);
+    }
+
+    if (validatedParams.authorType) {
+      query = query.eq('author_type', validatedParams.authorType);
+    }
+
+    if (validatedParams.since) {
+      query = query.gte('created_at', validatedParams.since);
+    }
+
+    // Apply pagination and ordering
+    query = query
+      .order('created_at', { ascending: true })
+      .range(
+        validatedParams.offset,
+        validatedParams.offset + validatedParams.limit - 1,
+      );
+
+    const { data: messages, error: messagesError, count } = await query;
+
+    if (messagesError) {
+      console.error('Error fetching messages:', messagesError);
+      return NextResponse.json(
+        { error: 'Failed to fetch messages' },
+        { status: 500 },
+      );
+    }
+
+    // Get message counts for summary
+    const { data: messageCounts } = await supabaseClient
+      .from('ticket_messages')
+      .select('author_type, is_internal, message_type')
+      .eq('ticket_id', ticketId);
+
+    const summary = {
+      total: messageCounts?.length || 0,
+      byAuthorType: {
+        customer:
+          messageCounts?.filter((m) => m.author_type === 'customer').length ||
+          0,
+        agent:
+          messageCounts?.filter((m) => m.author_type === 'agent').length || 0,
+        system:
+          messageCounts?.filter((m) => m.author_type === 'system').length || 0,
+      },
+      byType: {
+        reply:
+          messageCounts?.filter((m) => m.message_type === 'reply').length || 0,
+        note:
+          messageCounts?.filter((m) => m.message_type === 'note').length || 0,
+        resolution:
+          messageCounts?.filter((m) => m.message_type === 'resolution')
+            .length || 0,
+        system:
+          messageCounts?.filter((m) => m.message_type === 'system').length || 0,
+      },
+      internal: messageCounts?.filter((m) => m.is_internal).length || 0,
+    };
+
+    return NextResponse.json({
+      messages: messages || [],
+      pagination: {
+        offset: validatedParams.offset,
+        limit: validatedParams.limit,
+        total: count || 0,
+        hasMore: (count || 0) > validatedParams.offset + validatedParams.limit,
+      },
+      summary,
+      permissions: {
+        canViewInternal: isAgent || isAdmin || isAnyAgent,
+        canCreateInternal: isAgent || isAdmin || isAnyAgent,
+        canCreateResolution: isAgent || isAdmin || isAnyAgent,
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching ticket messages:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Invalid query parameters',
+          details: error.errors.map((e) => ({
+            field: e.path.join('.'),
+            message: e.message,
+          })),
+        },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Failed to fetch messages' },
+      { status: 500 },
+    );
+  }
+}

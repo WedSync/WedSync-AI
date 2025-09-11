@@ -1,0 +1,446 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+import Papa from 'papaparse';
+import * as XLSX from 'xlsx';
+
+const ImportSessionSchema = z.object({
+  couple_id: z.string().uuid(),
+  import_type: z.enum(['csv', 'excel', 'google_contacts']),
+  file_name: z.string().optional(),
+  mapping_config: z.record(z.string()),
+  batch_processing: z.boolean().default(true),
+  batch_size: z.number().int().min(10).max(100).default(50),
+});
+
+const GuestImportSchema = z.object({
+  first_name: z.string().min(1).max(100),
+  last_name: z.string().min(1).max(100),
+  email: z.string().email().optional().or(z.literal('')),
+  phone: z.string().max(20).optional(),
+  category: z.enum(['family', 'friends', 'work', 'other']).default('other'),
+  side: z.enum(['partner1', 'partner2', 'mutual']).default('mutual'),
+  plus_one: z.boolean().default(false),
+  plus_one_name: z.string().max(100).optional(),
+  age_group: z.enum(['adult', 'child', 'infant']).default('adult'),
+  table_number: z.number().int().optional(),
+  helper_role: z.string().max(50).optional(),
+  dietary_restrictions: z.string().optional(),
+  dietary_severity: z
+    .enum(['mild', 'moderate', 'severe', 'life_threatening'])
+    .optional(),
+  special_needs: z.string().optional(),
+  tags: z.array(z.string()).default([]),
+  notes: z.string().optional(),
+});
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const { data: user } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const formData = await request.formData();
+    const file = formData.get('file') as File;
+    const coupleId = formData.get('couple_id') as string;
+    const mappingConfig = JSON.parse(formData.get('mapping_config') as string);
+    const batchSize = parseInt(formData.get('batch_size') as string) || 50;
+
+    if (!file || !coupleId || !mappingConfig) {
+      return NextResponse.json(
+        {
+          error: 'Missing required fields: file, couple_id, mapping_config',
+        },
+        { status: 400 },
+      );
+    }
+
+    // Verify user has access to this couple
+    const { data: client } = await supabase
+      .from('clients')
+      .select(
+        `
+        id,
+        user_profiles!inner(user_id)
+      `,
+      )
+      .eq('id', coupleId)
+      .eq('user_profiles.user_id', user.id)
+      .single();
+
+    if (!client) {
+      return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+    }
+
+    // Parse file based on type
+    let rawData: any[] = [];
+    const fileExtension = file.name.split('.').pop()?.toLowerCase();
+
+    if (fileExtension === 'csv') {
+      const text = await file.text();
+      const parseResult = Papa.parse(text, { header: true });
+      rawData = parseResult.data;
+    } else if (['xlsx', 'xls'].includes(fileExtension || '')) {
+      const buffer = await file.arrayBuffer();
+      const workbook = XLSX.read(buffer, { type: 'array' });
+      const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+      rawData = XLSX.utils.sheet_to_json(firstSheet);
+    } else {
+      return NextResponse.json(
+        { error: 'Unsupported file format' },
+        { status: 400 },
+      );
+    }
+
+    if (rawData.length === 0) {
+      return NextResponse.json(
+        { error: 'No data found in file' },
+        { status: 400 },
+      );
+    }
+
+    if (rawData.length > 10000) {
+      return NextResponse.json(
+        {
+          error: 'File too large. Maximum 10,000 guests allowed.',
+        },
+        { status: 400 },
+      );
+    }
+
+    // Create import session
+    const { data: session, error: sessionError } = await supabase
+      .from('guest_import_sessions')
+      .insert({
+        couple_id: coupleId,
+        import_type: fileExtension === 'csv' ? 'csv' : 'excel',
+        file_name: file.name,
+        original_file_name: file.name,
+        file_size: file.size,
+        total_rows: rawData.length,
+        mapping_config: mappingConfig,
+        batch_processing: true,
+        batch_size: batchSize,
+        status: 'processing',
+      })
+      .select()
+      .single();
+
+    if (sessionError) {
+      console.error('Error creating import session:', sessionError);
+      return NextResponse.json(
+        { error: 'Failed to create import session' },
+        { status: 500 },
+      );
+    }
+
+    // Process and validate data
+    const processedGuests: any[] = [];
+    const errors: any[] = [];
+    const startTime = Date.now();
+
+    for (let i = 0; i < rawData.length; i++) {
+      const row = rawData[i];
+
+      try {
+        const mappedData: any = { couple_id: coupleId };
+
+        // Map fields according to configuration
+        Object.entries(mappingConfig).forEach(([targetField, sourceColumn]) => {
+          const value = row[sourceColumn as string];
+
+          if (targetField === 'email' && value) {
+            mappedData.email = value.toString().toLowerCase().trim() || null;
+          } else if (targetField === 'phone' && value) {
+            mappedData.phone = value.toString().replace(/\D/g, '') || null;
+          } else if (targetField === 'plus_one' && value) {
+            mappedData.plus_one = ['yes', 'true', '1', 'y'].includes(
+              value.toString().toLowerCase().trim(),
+            );
+          } else if (targetField === 'table_number' && value) {
+            const tableNum = parseInt(value);
+            mappedData.table_number = isNaN(tableNum) ? null : tableNum;
+          } else if (targetField === 'tags' && value) {
+            mappedData.tags = value
+              .toString()
+              .split(',')
+              .map((t: string) => t.trim());
+          } else if (value !== undefined && value !== null && value !== '') {
+            mappedData[targetField] = value.toString().trim();
+          }
+        });
+
+        // Validate the mapped data
+        const validatedGuest = GuestImportSchema.parse(mappedData);
+        processedGuests.push(validatedGuest);
+
+        // Create import history record
+        await supabase.from('guest_import_history').insert({
+          import_session_id: session.id,
+          action: 'created',
+          original_data: row,
+          processed_data: validatedGuest,
+        });
+      } catch (error) {
+        const errorMessage =
+          error instanceof z.ZodError
+            ? error.errors.map((e) => `${e.path}: ${e.message}`).join(', ')
+            : 'Invalid data format';
+
+        errors.push({
+          row: i + 1,
+          message: errorMessage,
+          data: row,
+        });
+
+        await supabase.from('guest_import_history').insert({
+          import_session_id: session.id,
+          action: 'error',
+          original_data: row,
+          error_message: errorMessage,
+        });
+      }
+    }
+
+    // Import guests in batches for better performance
+    let successfulImports = 0;
+    let failedImports = 0;
+
+    for (let i = 0; i < processedGuests.length; i += batchSize) {
+      const batch = processedGuests.slice(i, i + batchSize);
+
+      try {
+        const { data: insertedGuests, error: insertError } = await supabase
+          .from('guests')
+          .insert(batch)
+          .select('id');
+
+        if (insertError) {
+          console.error('Batch insert error:', insertError);
+          failedImports += batch.length;
+        } else {
+          successfulImports += insertedGuests?.length || 0;
+
+          // Update import history with guest IDs
+          if (insertedGuests) {
+            const historyUpdates = insertedGuests.map((guest, index) => ({
+              import_session_id: session.id,
+              guest_id: guest.id,
+              action: 'created' as const,
+              processed_data: batch[index],
+            }));
+
+            await supabase.from('guest_import_history').insert(historyUpdates);
+          }
+        }
+      } catch (batchError) {
+        console.error('Batch processing error:', batchError);
+        failedImports += batch.length;
+      }
+    }
+
+    const processingTime = Date.now() - startTime;
+    const processingSpeed = processedGuests.length / (processingTime / 1000);
+
+    // Update session with final results
+    await supabase
+      .from('guest_import_sessions')
+      .update({
+        processed_rows: rawData.length,
+        successful_imports: successfulImports,
+        failed_imports: failedImports,
+        status: successfulImports > 0 ? 'completed' : 'failed',
+        completed_at: new Date().toISOString(),
+        error_log: errors,
+        performance_metrics: {
+          processing_time_ms: processingTime,
+          file_size_mb: (file.size / 1024 / 1024).toFixed(2),
+          batch_size: batchSize,
+          batches_processed: Math.ceil(processedGuests.length / batchSize),
+          processing_speed_per_second: processingSpeed.toFixed(2),
+          memory_usage_mb: process.memoryUsage().heapUsed / 1024 / 1024,
+        },
+        processing_speed_per_second: processingSpeed,
+      })
+      .eq('id', session.id);
+
+    return NextResponse.json({
+      session_id: session.id,
+      total_rows: rawData.length,
+      successful_imports: successfulImports,
+      failed_imports: failedImports,
+      errors: errors.slice(0, 20), // Return first 20 errors
+      performance: {
+        processing_time_ms: processingTime,
+        processing_speed_per_second: processingSpeed,
+        batches_processed: Math.ceil(processedGuests.length / batchSize),
+      },
+    });
+  } catch (error) {
+    console.error('Enhanced import error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function GET(request: NextRequest) {
+  const searchParams = request.nextUrl.searchParams;
+  const sessionId = searchParams.get('session_id');
+  const coupleId = searchParams.get('couple_id');
+
+  try {
+    const supabase = await createClient();
+    const { data: user } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    if (sessionId) {
+      // Get specific import session
+      const { data: session, error } = await supabase
+        .from('guest_import_sessions')
+        .select(
+          `
+          *,
+          history:guest_import_history(*)
+        `,
+        )
+        .eq('id', sessionId)
+        .single();
+
+      if (error) {
+        return NextResponse.json(
+          { error: 'Session not found' },
+          { status: 404 },
+        );
+      }
+
+      return NextResponse.json(session);
+    } else if (coupleId) {
+      // Get all import sessions for a couple
+      const { data: sessions, error } = await supabase
+        .from('guest_import_sessions')
+        .select('*')
+        .eq('couple_id', coupleId)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('Error fetching import sessions:', error);
+        return NextResponse.json(
+          { error: 'Failed to fetch sessions' },
+          { status: 500 },
+        );
+      }
+
+      return NextResponse.json(sessions);
+    }
+
+    return NextResponse.json(
+      { error: 'session_id or couple_id required' },
+      { status: 400 },
+    );
+  } catch (error) {
+    console.error('Import sessions GET error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+// Rollback import endpoint
+export async function DELETE(request: NextRequest) {
+  const searchParams = request.nextUrl.searchParams;
+  const sessionId = searchParams.get('session_id');
+
+  if (!sessionId) {
+    return NextResponse.json(
+      { error: 'session_id is required' },
+      { status: 400 },
+    );
+  }
+
+  try {
+    const supabase = await createClient();
+    const { data: user } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get import session and verify access
+    const { data: session } = await supabase
+      .from('guest_import_sessions')
+      .select(
+        `
+        *,
+        clients!inner(
+          user_profiles!inner(user_id)
+        )
+      `,
+      )
+      .eq('id', sessionId)
+      .eq('clients.user_profiles.user_id', user.id)
+      .single();
+
+    if (!session) {
+      return NextResponse.json(
+        { error: 'Session not found or access denied' },
+        { status: 403 },
+      );
+    }
+
+    // Get all guests created in this import
+    const { data: importHistory } = await supabase
+      .from('guest_import_history')
+      .select('guest_id')
+      .eq('import_session_id', sessionId)
+      .eq('action', 'created')
+      .not('guest_id', 'is', null);
+
+    const guestIds =
+      importHistory?.map((h) => h.guest_id).filter(Boolean) || [];
+
+    if (guestIds.length > 0) {
+      // Delete all guests created in this import
+      const { error: deleteError } = await supabase
+        .from('guests')
+        .delete()
+        .in('id', guestIds);
+
+      if (deleteError) {
+        console.error('Error rolling back guests:', deleteError);
+        return NextResponse.json(
+          { error: 'Failed to rollback import' },
+          { status: 500 },
+        );
+      }
+    }
+
+    // Update session status
+    await supabase
+      .from('guest_import_sessions')
+      .update({
+        status: 'cancelled',
+        completed_at: new Date().toISOString(),
+      })
+      .eq('id', sessionId);
+
+    return NextResponse.json({
+      success: true,
+      rolled_back_guests: guestIds.length,
+    });
+  } catch (error) {
+    console.error('Import rollback error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

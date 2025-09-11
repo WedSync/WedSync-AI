@@ -1,0 +1,344 @@
+// WS-255 Deployment System TypeScript Definitions
+// Team C: Integration & CI/CD Pipeline
+
+export interface Deployment {
+  id: string;
+  deployment_id: string;
+  project_id: string;
+  project_name: string;
+  environment: 'production' | 'preview' | 'development';
+  branch: string;
+  commit_sha?: string;
+  commit_message?: string;
+  commit_author?: string;
+  version?: string;
+  deployment_url: string;
+  status: 'building' | 'ready' | 'error' | 'canceled';
+  created_at: string;
+  updated_at: string;
+  ready_at?: string;
+  failed_at?: string;
+  canceled_at?: string;
+  build_duration_ms?: number;
+  metadata: Record<string, any>;
+}
+
+export interface DeploymentEvent {
+  id: string;
+  deployment_id: string;
+  event_type: string;
+  event_data: Record<string, any>;
+  triggered_by?: string;
+  created_at: string;
+}
+
+export interface DeploymentHealthCheck {
+  id: string;
+  deployment_id: string;
+  check_type: 'post_deployment' | 'scheduled' | 'manual';
+  success: boolean;
+  response_time_ms?: number;
+  checks: {
+    database: boolean;
+    auth: boolean;
+    api: boolean;
+    storage: boolean;
+  };
+  error_details?: string;
+  performed_at: string;
+  performed_by: string;
+}
+
+export interface DeploymentRollback {
+  id: string;
+  failed_deployment_id: string;
+  previous_deployment_id: string;
+  initiated_by: string;
+  reason: string;
+  status: 'in_progress' | 'completed' | 'failed';
+  started_at: string;
+  completed_at?: string;
+  error?: string;
+  automatic: boolean;
+  metadata: Record<string, any>;
+}
+
+export interface VercelWebhookEvent {
+  id: string;
+  event_type: string;
+  deployment_id?: string;
+  project_id?: string;
+  payload: Record<string, any>;
+  processed_at: string;
+  processing_duration_ms?: number;
+  success: boolean;
+  error_details?: string;
+}
+
+export interface GitHubWorkflowRun {
+  id: string;
+  run_id: number;
+  workflow_name: string;
+  status: 'queued' | 'in_progress' | 'completed';
+  conclusion?:
+    | 'success'
+    | 'failure'
+    | 'cancelled'
+    | 'skipped'
+    | 'timed_out'
+    | 'action_required';
+  deployment_id?: string;
+  branch: string;
+  commit_sha: string;
+  triggered_by?: string;
+  started_at: string;
+  completed_at?: string;
+  html_url: string;
+  created_at: string;
+}
+
+export interface DeploymentNotification {
+  id: string;
+  deployment_id: string;
+  event_type: string;
+  urgency: 'low' | 'medium' | 'high' | 'critical';
+  channels_attempted: number;
+  channels_successful: number;
+  notification_data: Record<string, any>;
+  sent_at: string;
+}
+
+export interface DeploymentWebhook {
+  id: string;
+  name: string;
+  url: string;
+  secret: string;
+  enabled: boolean;
+  events: string[];
+  last_used_at?: string;
+  created_at: string;
+  created_by?: string;
+}
+
+export interface CriticalAlert {
+  id: string;
+  alert_type: string;
+  severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  deployment_id?: string;
+  title: string;
+  description?: string;
+  error_details?: string;
+  escalated_at: string;
+  resolved_at?: string;
+  resolved_by?: string;
+  metadata: Record<string, any>;
+}
+
+export interface RateLimitAttempt {
+  id: string;
+  key: string;
+  type: string;
+  ip_address?: string;
+  created_at: string;
+}
+
+export interface AuditLog {
+  id: string;
+  action: string;
+  risk_level: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  details: Record<string, any>;
+  ip_address?: string;
+  user_agent?: string;
+  user_id?: string;
+  created_at: string;
+}
+
+// API Response Types
+export interface DeploymentSummary {
+  id: string;
+  deployment_id: string;
+  project_name: string;
+  environment: string;
+  branch: string;
+  status: string;
+  version?: string;
+  deployment_url: string;
+  created_at: string;
+  ready_at?: string;
+  build_duration_ms?: number;
+  last_health_check_success?: boolean;
+  last_health_check_at?: string;
+  last_response_time_ms?: number;
+  total_events: number;
+}
+
+export interface RecentCriticalIssue {
+  id: string;
+  alert_type: string;
+  severity: string;
+  title: string;
+  deployment_id?: string;
+  escalated_at: string;
+  resolved_at?: string;
+  project_name?: string;
+  environment?: string;
+  branch?: string;
+}
+
+export interface DeploymentPerformance {
+  hour: string;
+  environment: string;
+  total_deployments: number;
+  successful_deployments: number;
+  failed_deployments: number;
+  avg_build_time_ms?: number;
+  p95_build_time_ms?: number;
+}
+
+export interface DeploymentHealthStatus {
+  overall_health: 'healthy' | 'unhealthy';
+  last_check_at?: string;
+  response_time_ms?: number;
+  database_ok: boolean;
+  auth_ok: boolean;
+  api_ok: boolean;
+  storage_ok: boolean;
+}
+
+// Request/Response Types for API endpoints
+export interface DeploymentWebhookPayload {
+  type: string;
+  createdAt: number;
+  data: {
+    deployment?: {
+      id: string;
+      url: string;
+      name: string;
+      state: string;
+      meta?: {
+        githubCommitSha?: string;
+        githubCommitMessage?: string;
+        githubCommitAuthorName?: string;
+      };
+    };
+    project?: {
+      id: string;
+      name: string;
+    };
+    user?: {
+      id: string;
+      username: string;
+    };
+  };
+}
+
+export interface NotificationChannelConfig {
+  type: 'email' | 'slack' | 'sms' | 'webhook';
+  destination: string;
+  enabled: boolean;
+  urgency_filter: ('low' | 'medium' | 'high' | 'critical')[];
+}
+
+export interface DeploymentConfig {
+  auto_rollback_enabled: boolean;
+  health_check_timeout_ms: number;
+  notification_channels: NotificationChannelConfig[];
+  wedding_day_protection: boolean;
+  max_concurrent_deployments: number;
+}
+
+// Webhook signature verification
+export interface WebhookSignatureVerification {
+  signature: string;
+  payload: string;
+  secret: string;
+  algorithm: 'sha1' | 'sha256';
+}
+
+// GitHub Actions integration types
+export interface GitHubDispatchPayload {
+  deployment_id: string;
+  deployment_url: string;
+  version?: string;
+  environment?: 'production' | 'staging' | 'preview';
+  [key: string]: any;
+}
+
+export interface WorkflowTriggerRequest {
+  workflow_id: string;
+  ref: string;
+  inputs: Record<string, string>;
+}
+
+// Error types
+export interface DeploymentError {
+  code: string;
+  message: string;
+  details?: Record<string, any>;
+  timestamp: string;
+  deployment_id?: string;
+}
+
+export interface SecurityError extends DeploymentError {
+  risk_level: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  ip_address?: string;
+  user_agent?: string;
+}
+
+// Utility types
+export type DeploymentStatus = Deployment['status'];
+export type DeploymentEnvironment = Deployment['environment'];
+export type AlertSeverity = CriticalAlert['severity'];
+export type NotificationUrgency = DeploymentNotification['urgency'];
+export type WorkflowStatus = GitHubWorkflowRun['status'];
+export type WorkflowConclusion = GitHubWorkflowRun['conclusion'];
+
+// Type guards
+export function isProductionDeployment(deployment: Deployment): boolean {
+  return deployment.environment === 'production';
+}
+
+export function isWeddingDay(date: Date = new Date()): boolean {
+  return date.getDay() === 6; // Saturday
+}
+
+export function isCriticalAlert(alert: CriticalAlert): boolean {
+  return alert.severity === 'CRITICAL';
+}
+
+export function isFailedDeployment(deployment: Deployment): boolean {
+  return deployment.status === 'error';
+}
+
+export function isHealthy(healthCheck: DeploymentHealthCheck): boolean {
+  return (
+    healthCheck.success &&
+    healthCheck.checks.database &&
+    healthCheck.checks.auth &&
+    healthCheck.checks.api &&
+    healthCheck.checks.storage
+  );
+}
+
+// Constants
+export const DEPLOYMENT_TIMEOUTS = {
+  BUILD_TIMEOUT_MS: 600000, // 10 minutes
+  HEALTH_CHECK_TIMEOUT_MS: 30000, // 30 seconds
+  ROLLBACK_TIMEOUT_MS: 120000, // 2 minutes
+  WEBHOOK_TIMEOUT_MS: 60000, // 1 minute
+} as const;
+
+export const RATE_LIMITS = {
+  WEBHOOK_REQUESTS_PER_MINUTE: 50,
+  DEPLOYMENT_REQUESTS_PER_HOUR: 100,
+  HEALTH_CHECK_REQUESTS_PER_MINUTE: 10,
+} as const;
+
+export const NOTIFICATION_TEMPLATES = {
+  DEPLOYMENT_STARTED: 'deployment.started',
+  DEPLOYMENT_SUCCEEDED: 'deployment.succeeded',
+  DEPLOYMENT_FAILED: 'deployment.failed',
+  DEPLOYMENT_ROLLBACK: 'deployment.rollback',
+  HEALTH_CHECK_FAILED: 'health_check.failed',
+  WEDDING_DAY_ALERT: 'wedding_day.alert',
+} as const;

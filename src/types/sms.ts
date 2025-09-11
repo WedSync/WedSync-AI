@@ -1,0 +1,504 @@
+// SMS Configuration System Types
+// Extends email template patterns for SMS messaging
+
+// Core SMS template interface (mirrors EmailTemplate)
+export interface SMSTemplate {
+  id: string;
+  name: string;
+  content: string;
+  category:
+    | 'welcome'
+    | 'payment_reminder'
+    | 'meeting_confirmation'
+    | 'thank_you'
+    | 'client_communication'
+    | 'custom';
+  status: 'active' | 'draft' | 'archived';
+  created_at: string;
+  updated_at: string;
+  user_id: string;
+  created_by: string;
+  usage_count: number;
+  is_favorite: boolean;
+  variables: string[];
+
+  // SMS-specific fields
+  character_count: number;
+  segment_count: number;
+  character_limit: number;
+
+  // Compliance fields
+  opt_out_required: boolean;
+  tcpa_compliant: boolean;
+  consent_required: boolean;
+
+  metadata: {
+    author_name?: string;
+    description?: string;
+    tags?: string[];
+    compliance_notes?: string;
+    source?: string;
+  };
+  profiles?: {
+    full_name: string;
+  };
+}
+
+// SMS Configuration interface
+export interface SMSConfiguration {
+  id: string;
+  user_id: string;
+
+  // Encrypted Twilio credentials
+  account_sid_encrypted?: string;
+  auth_token_encrypted?: string;
+  phone_number: string;
+
+  // Configuration settings
+  is_active: boolean;
+  webhook_url?: string;
+  status_callback_url?: string;
+
+  // Compliance settings
+  auto_opt_out: boolean;
+  opt_out_keywords: string[];
+  opt_in_keywords: string[];
+
+  // Usage tracking
+  monthly_limit: number;
+  monthly_usage: number;
+  cost_per_message: number;
+
+  created_at: string;
+  updated_at: string;
+}
+
+// SMS Message interface
+export interface SMSMessage {
+  id: string;
+  user_id: string;
+  template_id?: string;
+
+  // Message details
+  to_phone: string;
+  from_phone: string;
+  content: string;
+  character_count: number;
+  segment_count: number;
+
+  // Twilio tracking
+  message_sid?: string;
+  status:
+    | 'queued'
+    | 'sending'
+    | 'sent'
+    | 'delivered'
+    | 'undelivered'
+    | 'failed';
+  delivery_status?: string;
+  error_code?: string;
+  error_message?: string;
+
+  // Compliance tracking
+  consent_given: boolean;
+  opt_out_respected: boolean;
+  tcpa_compliant: boolean;
+
+  // Cost tracking
+  cost_charged?: number;
+
+  // Timestamps
+  sent_at?: string;
+  delivered_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+// Opt-out management interface
+export interface SMSOptOut {
+  id: string;
+  user_id: string;
+  phone_number: string;
+  opted_out_at: string;
+  opt_out_method: 'sms' | 'manual' | 'api';
+  opt_out_message?: string;
+
+  // Re-opt-in tracking
+  opted_in_at?: string;
+  opt_in_method?: 'sms' | 'manual' | 'api';
+
+  // Current status
+  is_active: boolean;
+
+  created_at: string;
+  updated_at: string;
+}
+
+// Filter interfaces (extending email template patterns)
+export interface SMSTemplateFilters {
+  search?: string;
+  categories?: string[];
+  statuses?: string[];
+  showFavorites?: boolean;
+  dateRange?: {
+    from: Date;
+    to?: Date;
+  };
+  usageRange?: {
+    min?: number;
+    max?: number;
+  };
+  characterRange?: {
+    min?: number;
+    max?: number;
+  };
+  complianceFilter?: 'tcpa_compliant' | 'needs_review' | 'all';
+  sortBy?: string;
+  page?: number;
+  limit?: number;
+}
+
+// Bulk action types (extending email template patterns)
+export interface SMSBulkAction {
+  type:
+    | 'activate'
+    | 'archive'
+    | 'delete'
+    | 'move_folder'
+    | 'export'
+    | 'create_folder'
+    | 'mark_compliant'
+    | 'update_compliance';
+  templateIds: string[];
+  metadata?: {
+    folderId?: string;
+    folderName?: string;
+    format?: string;
+    tcpa_compliant?: boolean;
+    opt_out_required?: boolean;
+  };
+}
+
+// SMS metrics calculation result
+export interface SMSMetrics {
+  character_count: number;
+  segment_count: number;
+  has_unicode: boolean;
+  encoding: 'GSM 7-bit' | 'UCS-2';
+  estimated_cost: number;
+  character_limit: number;
+  characters_remaining: number;
+}
+
+// Template validation result (extending email patterns)
+export interface SMSValidationResult {
+  isValid: boolean;
+  errors: string[];
+  warnings?: string[];
+  compliance_issues?: string[];
+  character_count: number;
+  segment_count: number;
+  estimated_cost: number;
+}
+
+// SMS sending configuration
+export interface SMSSendConfig {
+  to: string;
+  template?: SMSTemplate;
+  templateId?: string;
+  variables?: Record<string, any>;
+  content?: string; // For custom messages
+
+  // Delivery options
+  scheduled_for?: Date;
+  priority?: 'high' | 'normal' | 'low';
+
+  // Compliance
+  bypass_opt_out?: boolean; // Only for emergency/transactional
+  consent_verified?: boolean;
+
+  // Tracking
+  enable_delivery_receipt?: boolean;
+  webhook_url?: string;
+}
+
+// Component props interfaces (extending email template patterns)
+export interface SMSTemplateCardProps {
+  template: SMSTemplate;
+  viewMode: 'grid' | 'list';
+  selected: boolean;
+  isActive?: boolean;
+  selectionMode?: boolean;
+  onSelect: (template: SMSTemplate) => void;
+  onToggleSelect: (templateId: string, selected: boolean) => void;
+  onAction: (templateId: string, action: string) => void;
+}
+
+export interface SMSTemplateFiltersProps {
+  filters: SMSTemplateFilters;
+  onFiltersChange: (filters: SMSTemplateFilters) => void;
+  onClearFilters: () => void;
+  templateCounts?: Record<string, number>;
+}
+
+export interface SMSTemplateBulkActionsProps {
+  selectedTemplates: string[];
+  onAction: (action: SMSBulkAction) => void;
+  onClearSelection: () => void;
+  isLoading?: boolean;
+  progress?: {
+    current: number;
+    total: number;
+    operation: string;
+  };
+  error?: string;
+  onDismissError?: () => void;
+  folders?: SMSTemplateFolder[];
+  selectionInfo?: {
+    allActive: boolean;
+    allArchived: boolean;
+    mixed: boolean;
+    allCompliant: boolean;
+  };
+}
+
+export interface SMSTemplateEditorProps {
+  template?: SMSTemplate;
+  onSave: (template: SMSTemplate) => void;
+  onCancel: () => void;
+  mergeFields: SMSMergeField[];
+}
+
+export interface SMSTemplateLibraryProps {
+  selectionMode?: boolean;
+  onSelectTemplate?: (template: SMSTemplate) => void;
+}
+
+// SMS-specific merge field interface
+export interface SMSMergeField {
+  key: string;
+  label: string;
+  description: string;
+  type: 'text' | 'phone' | 'date' | 'currency' | 'url';
+  required?: boolean;
+  category?: string;
+  max_length?: number; // SMS character limit consideration
+  sms_safe?: boolean; // Whether field content is SMS-safe
+}
+
+// Template folder interface
+export interface SMSTemplateFolder {
+  id: string;
+  name: string;
+  description?: string;
+  template_count?: number;
+}
+
+// Template library response
+export interface SMSTemplateLibraryResponse {
+  templates: SMSTemplate[];
+  totalCount: number;
+  totalPages: number;
+}
+
+// Template editor form data
+export interface SMSTemplateFormData {
+  name: string;
+  category: SMSTemplate['category'];
+  content: string;
+  description?: string;
+  variables?: string[];
+  status?: SMSTemplate['status'];
+
+  // SMS-specific
+  opt_out_required?: boolean;
+  tcpa_compliant?: boolean;
+  consent_required?: boolean;
+}
+
+// Template preview data
+export interface SMSTemplatePreviewData {
+  content: string;
+  character_count: number;
+  segment_count: number;
+  estimated_cost: number;
+  compliance_warnings: string[];
+}
+
+// Editor state (extending email patterns)
+export interface SMSEditorState {
+  isDirty: boolean;
+  isValid: boolean;
+  errors: Record<string, string>;
+  warnings: Record<string, string>;
+  compliance_issues: Record<string, string>;
+  metrics: SMSMetrics;
+  draftSaved?: boolean;
+  lastSaveTime?: Date;
+}
+
+// Pagination info (same as email)
+export interface PaginationInfo {
+  currentPage: number;
+  totalPages: number;
+  totalItems: number;
+  itemsPerPage: number;
+}
+
+// Library state (extending email patterns)
+export interface SMSLibraryState {
+  templates: SMSTemplate[];
+  filteredTemplates: SMSTemplate[];
+  filters: SMSTemplateFilters;
+  selectedTemplates: string[];
+  viewMode: 'grid' | 'list';
+  isLoading: boolean;
+  error?: string;
+  pagination: PaginationInfo;
+  configuration?: SMSConfiguration;
+}
+
+// Template categories with metadata
+export interface SMSTemplateCategory {
+  value: SMSTemplate['category'];
+  label: string;
+  description: string;
+  icon?: string;
+  color?: string;
+  compliance_requirements?: string[];
+}
+
+// Template statistics (extending email patterns)
+export interface SMSTemplateStats {
+  totalTemplates: number;
+  activeTemplates: number;
+  draftTemplates: number;
+  archivedTemplates: number;
+  favoriteTemplates: number;
+  compliantTemplates: number;
+  totalUsage: number;
+  totalCharacters: number;
+  totalSegments: number;
+  totalCost: number;
+  mostUsedTemplate?: SMSTemplate;
+  recentlyCreated: SMSTemplate[];
+}
+
+// Export options (extending email patterns)
+export interface SMSExportOptions {
+  format: 'json' | 'csv' | 'txt';
+  includeMetadata: boolean;
+  includeUsageStats: boolean;
+  includeComplianceInfo: boolean;
+  dateRange?: {
+    from: Date;
+    to: Date;
+  };
+}
+
+// Import data structure
+export interface SMSImportData {
+  templates: Partial<SMSTemplate>[];
+  mergeFields?: SMSMergeField[];
+  folders?: SMSTemplateFolder[];
+  configuration?: Partial<SMSConfiguration>;
+}
+
+// Configuration validation
+export interface SMSConfigValidationResult {
+  isValid: boolean;
+  errors: string[];
+  warnings?: string[];
+  twilioConnectionStatus?: 'connected' | 'failed' | 'untested';
+  phoneNumberValidation?: {
+    isValid: boolean;
+    formatted: string;
+    country: string;
+    type: 'mobile' | 'landline' | 'voip' | 'unknown';
+  };
+}
+
+// Delivery status tracking
+export interface SMSDeliveryStatus {
+  message_id: string;
+  status: SMSMessage['status'];
+  delivery_time?: number; // milliseconds
+  error_details?: {
+    code: string;
+    message: string;
+    more_info?: string;
+  };
+  cost?: number;
+  segments_delivered?: number;
+}
+
+// Analytics and reporting
+export interface SMSAnalytics {
+  period: {
+    start: Date;
+    end: Date;
+  };
+  metrics: {
+    messages_sent: number;
+    messages_delivered: number;
+    delivery_rate: number;
+    total_cost: number;
+    average_segments: number;
+    opt_outs: number;
+    compliance_violations: number;
+  };
+  top_templates: Array<{
+    template_id: string;
+    template_name: string;
+    usage_count: number;
+    delivery_rate: number;
+  }>;
+  cost_breakdown: Array<{
+    date: string;
+    messages: number;
+    cost: number;
+  }>;
+}
+
+// Character count and validation utilities
+export interface SMSCharacterAnalysis {
+  content: string;
+  character_count: number;
+  segment_count: number;
+  encoding: 'GSM 7-bit' | 'UCS-2';
+  has_unicode: boolean;
+  invalid_characters: string[];
+  suggestions: string[];
+  cost_estimate: number;
+}
+
+// Compliance check result
+export interface SMSComplianceCheck {
+  template_id?: string;
+  content: string;
+  is_compliant: boolean;
+  issues: Array<{
+    type: 'error' | 'warning' | 'info';
+    code: string;
+    message: string;
+    suggestion?: string;
+  }>;
+  opt_out_present: boolean;
+  consent_language_present: boolean;
+  tcpa_compliant: boolean;
+}
+
+// Webhook event types for SMS status callbacks
+export interface SMSWebhookEvent {
+  MessageSid: string;
+  MessageStatus: string;
+  To: string;
+  From: string;
+  MessageBody?: string;
+  ErrorCode?: string;
+  ErrorMessage?: string;
+  Price?: string;
+  PriceUnit?: string;
+  ApiVersion: string;
+  AccountSid: string;
+}

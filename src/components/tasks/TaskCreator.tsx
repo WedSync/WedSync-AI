@@ -1,0 +1,840 @@
+'use client';
+
+import React, { useState, useCallback, useMemo } from 'react';
+import {
+  Calendar,
+  Clock,
+  User,
+  Plus,
+  X,
+  AlertTriangle,
+  Loader2,
+} from 'lucide-react';
+import {
+  TaskCategory,
+  TaskPriority,
+  TaskCreateInput,
+  TaskCreatorProps,
+  DependencyType,
+  TaskFormValidation,
+  TimingConflict,
+  ValidationWarning,
+} from '@/types/workflow';
+import { sanitizeHtml } from '@/lib/security/input-validation';
+import { taskSchema } from '@/lib/validation/schemas';
+
+// Untitled UI styling constants (from SAAS-UI-STYLE-GUIDE.md)
+const categories: { value: TaskCategory; label: string }[] = [
+  { value: 'venue_management', label: 'Venue Management' },
+  { value: 'vendor_coordination', label: 'Vendor Coordination' },
+  { value: 'client_management', label: 'Client Management' },
+  { value: 'logistics', label: 'Logistics' },
+  { value: 'design', label: 'Design' },
+  { value: 'photography', label: 'Photography' },
+  { value: 'catering', label: 'Catering' },
+  { value: 'florals', label: 'Florals' },
+  { value: 'music', label: 'Music' },
+  { value: 'transportation', label: 'Transportation' },
+];
+
+const priorities: { value: TaskPriority; label: string; color: string }[] = [
+  {
+    value: 'low',
+    label: 'Low',
+    color: 'bg-gray-100 text-gray-700 border-gray-200',
+  },
+  {
+    value: 'medium',
+    label: 'Medium',
+    color: 'bg-blue-50 text-blue-700 border-blue-200',
+  },
+  {
+    value: 'high',
+    label: 'High',
+    color: 'bg-warning-50 text-warning-700 border-warning-200',
+  },
+  {
+    value: 'critical',
+    label: 'Critical',
+    color: 'bg-error-50 text-error-700 border-error-200',
+  },
+];
+
+const dependencyTypes = [
+  { value: 'finish_to_start', label: 'Finish to Start' },
+  { value: 'start_to_start', label: 'Start to Start' },
+  { value: 'finish_to_finish', label: 'Finish to Finish' },
+  { value: 'start_to_finish', label: 'Start to Finish' },
+];
+
+export const TaskCreator = React.memo<TaskCreatorProps>(
+  ({
+    weddingId,
+    teamMembers,
+    availableTasks = [],
+    onSubmit,
+    onCancel,
+    isSubmitting = false,
+  }) => {
+    // Form state with comprehensive validation
+    const [formData, setFormData] = useState<Partial<TaskCreateInput>>({
+      wedding_id: weddingId,
+      title: '',
+      description: '',
+      category: undefined,
+      priority: 'medium',
+      assigned_to: undefined,
+      estimated_duration: 2,
+      buffer_time: 0,
+      deadline: '',
+      dependencies: [],
+    });
+
+    const [validation, setValidation] = useState<TaskFormValidation>({
+      title: { isValid: true },
+      category: { isValid: true },
+      deadline: { isValid: true },
+      estimated_duration: { isValid: true },
+      buffer_time: { isValid: true },
+      timing: { isValid: true, conflicts: [], warnings: [] },
+    });
+
+    const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+    const [submitError, setSubmitError] = useState<string | null>(null);
+
+    // Filtered team members based on selected category
+    const filteredTeamMembers = useMemo(() => {
+      if (!formData.category) return teamMembers;
+
+      return teamMembers.filter(
+        (member) =>
+          member.specialties.includes(formData.category!) ||
+          member.role === 'admin' ||
+          member.role === 'planner',
+      );
+    }, [formData.category, teamMembers]);
+
+    // Form validation with security sanitization
+    const validateForm = useCallback(
+      (data: Partial<TaskCreateInput>): TaskFormValidation => {
+        const newValidation: TaskFormValidation = {
+          title: { isValid: true },
+          category: { isValid: true },
+          deadline: { isValid: true },
+          estimated_duration: { isValid: true },
+          buffer_time: { isValid: true },
+          timing: { isValid: true, conflicts: [], warnings: [] },
+        };
+
+        // Title validation with XSS sanitization
+        const sanitizedTitle = data.title
+          ? sanitizeHtml(data.title.trim())
+          : '';
+        if (!sanitizedTitle) {
+          newValidation.title = { isValid: false, error: 'Title is required' };
+        } else if (sanitizedTitle.length < 3) {
+          newValidation.title = {
+            isValid: false,
+            error: 'Title must be at least 3 characters',
+          };
+        } else if (sanitizedTitle.length > 100) {
+          newValidation.title = {
+            isValid: false,
+            error: 'Title must be less than 100 characters',
+          };
+        }
+
+        // Category validation
+        if (!data.category) {
+          newValidation.category = {
+            isValid: false,
+            error: 'Category is required',
+          };
+        }
+
+        // Deadline validation
+        if (!data.deadline) {
+          newValidation.deadline = {
+            isValid: false,
+            error: 'Deadline is required',
+          };
+        } else {
+          const deadlineDate = new Date(data.deadline);
+          const now = new Date();
+          if (deadlineDate <= now) {
+            newValidation.deadline = {
+              isValid: false,
+              error: 'Deadline must be in the future',
+            };
+          }
+        }
+
+        // Duration validation
+        if (!data.estimated_duration || data.estimated_duration <= 0) {
+          newValidation.estimated_duration = {
+            isValid: false,
+            error: 'Duration must be greater than 0',
+          };
+        } else if (data.estimated_duration > 24) {
+          newValidation.estimated_duration = {
+            isValid: false,
+            error: 'Duration cannot exceed 24 hours',
+          };
+        }
+
+        // Buffer time validation
+        if (data.buffer_time && data.buffer_time < 0) {
+          newValidation.buffer_time = {
+            isValid: false,
+            error: 'Buffer time cannot be negative',
+          };
+        } else if (
+          data.buffer_time &&
+          data.buffer_time > data.estimated_duration!
+        ) {
+          newValidation.buffer_time = {
+            isValid: false,
+            error: 'Buffer time cannot exceed task duration',
+          };
+        }
+
+        return newValidation;
+      },
+      [],
+    );
+
+    // Handle form field changes with validation
+    const handleFieldChange = useCallback(
+      (field: keyof TaskCreateInput, value: any) => {
+        const newData = { ...formData, [field]: value };
+        setFormData(newData);
+        setHasUnsavedChanges(true);
+        setSubmitError(null);
+
+        // Real-time validation
+        const newValidation = validateForm(newData);
+        setValidation(newValidation);
+
+        // Reset assignee when category changes
+        if (field === 'category') {
+          setFormData((prev) => ({ ...prev, assigned_to: undefined }));
+        }
+      },
+      [formData, validateForm],
+    );
+
+    // Handle form submission with security validation
+    const handleSubmit = async (e: React.FormEvent) => {
+      e.preventDefault();
+      setSubmitError(null);
+
+      // Final validation
+      const finalValidation = validateForm(formData);
+      setValidation(finalValidation);
+
+      const isFormValid = Object.values(finalValidation).every((field) =>
+        'isValid' in field ? field.isValid : true,
+      );
+
+      if (!isFormValid) {
+        // Announce validation errors to screen readers
+        const errorMessages = Object.entries(finalValidation)
+          .filter(([_, field]) => 'isValid' in field && !field.isValid)
+          .map(
+            ([fieldName, field]) =>
+              `${fieldName}: ${'error' in field ? field.error : 'Invalid'}`,
+          )
+          .join(', ');
+
+        // Create announcement for screen readers
+        const announcement = document.createElement('div');
+        announcement.setAttribute('role', 'alert');
+        announcement.setAttribute('aria-live', 'polite');
+        announcement.textContent = `Form validation errors: ${errorMessages}`;
+        announcement.className = 'sr-only';
+        document.body.appendChild(announcement);
+        setTimeout(() => document.body.removeChild(announcement), 3000);
+
+        return;
+      }
+
+      try {
+        // Sanitize all text inputs before submission
+        const sanitizedData: TaskCreateInput = {
+          ...(formData as TaskCreateInput),
+          title: sanitizeHtml(formData.title!.trim()),
+          description: formData.description
+            ? sanitizeHtml(formData.description.trim())
+            : '',
+          deadline: new Date(formData.deadline!),
+        };
+
+        // Use Zod schema validation for final security check
+        const validationResult = taskSchema.safeParse(sanitizedData);
+        if (!validationResult.success) {
+          throw new Error('Security validation failed');
+        }
+
+        await onSubmit(sanitizedData);
+        setHasUnsavedChanges(false);
+      } catch (error) {
+        console.error('Task creation failed:', error);
+        // Generic error message to prevent information disclosure
+        setSubmitError('Something went wrong. Please try again.');
+      }
+    };
+
+    // Dependency management
+    const addDependency = useCallback(() => {
+      const newDependencies = [
+        ...(formData.dependencies || []),
+        {
+          predecessor_task_id: '',
+          dependency_type: 'finish_to_start' as DependencyType,
+          lag_time: 0,
+        },
+      ];
+      handleFieldChange('dependencies', newDependencies);
+    }, [formData.dependencies, handleFieldChange]);
+
+    const removeDependency = useCallback(
+      (index: number) => {
+        const newDependencies =
+          formData.dependencies?.filter((_, i) => i !== index) || [];
+        handleFieldChange('dependencies', newDependencies);
+      },
+      [formData.dependencies, handleFieldChange],
+    );
+
+    const updateDependency = useCallback(
+      (index: number, field: string, value: any) => {
+        const newDependencies =
+          formData.dependencies?.map((dep, i) =>
+            i === index ? { ...dep, [field]: value } : dep,
+          ) || [];
+        handleFieldChange('dependencies', newDependencies);
+      },
+      [formData.dependencies, handleFieldChange],
+    );
+
+    return (
+      <div
+        className="bg-white rounded-xl border border-gray-200 shadow-lg"
+        data-testid="task-creator-form"
+      >
+        <div className="px-6 py-4 border-b border-gray-200">
+          <h2
+            className="text-lg font-semibold text-gray-900"
+            id="task-creator-title"
+          >
+            Create New Task
+          </h2>
+          <p className="text-sm text-gray-600 mt-1">
+            Add a new task to the wedding workflow with timing validation
+          </p>
+        </div>
+
+        <form
+          onSubmit={handleSubmit}
+          className="p-6 space-y-6"
+          role="form"
+          aria-labelledby="task-creator-title"
+          noValidate
+        >
+          {/* Submit Error Display */}
+          {submitError && (
+            <div
+              className="p-4 bg-error-50 border border-error-200 rounded-lg"
+              role="alert"
+              aria-live="assertive"
+              data-testid="error-message"
+            >
+              <div className="flex items-center">
+                <AlertTriangle className="w-5 h-5 text-error-600 mr-2" />
+                <span className="text-sm text-error-700">{submitError}</span>
+              </div>
+            </div>
+          )}
+
+          {/* Title Field */}
+          <div>
+            <label
+              htmlFor="task-title"
+              className="block text-sm font-medium text-gray-700 mb-2"
+            >
+              Task Title *
+            </label>
+            <input
+              id="task-title"
+              type="text"
+              value={formData.title || ''}
+              onChange={(e) => handleFieldChange('title', e.target.value)}
+              className={`
+              w-full px-3.5 py-2.5 bg-white border rounded-lg text-gray-900 placeholder-gray-500
+              shadow-xs focus:outline-none focus:ring-4 focus:ring-primary-100 focus:border-primary-300
+              transition-all duration-200 ${validation.title.isValid ? 'border-gray-300' : 'border-error-300'}
+            `}
+              placeholder="e.g., Set up ceremony chairs in garden pavilion"
+              aria-required="true"
+              aria-invalid={!validation.title.isValid}
+              aria-describedby={
+                !validation.title.isValid ? 'title-error' : undefined
+              }
+              maxLength={100}
+            />
+            {!validation.title.isValid && (
+              <p
+                id="title-error"
+                className="text-sm text-error-600 mt-1"
+                role="alert"
+                aria-live="polite"
+                data-testid="title-error"
+              >
+                {validation.title.error}
+              </p>
+            )}
+          </div>
+
+          {/* Description Field */}
+          <div>
+            <label
+              htmlFor="task-description"
+              className="block text-sm font-medium text-gray-700 mb-2"
+            >
+              Description
+            </label>
+            <textarea
+              id="task-description"
+              value={formData.description || ''}
+              onChange={(e) => handleFieldChange('description', e.target.value)}
+              rows={3}
+              className="
+              w-full px-3.5 py-2.5 bg-white border border-gray-300 rounded-lg
+              text-gray-900 placeholder-gray-500 shadow-xs
+              focus:outline-none focus:ring-4 focus:ring-primary-100 focus:border-primary-300
+              transition-all duration-200
+            "
+              placeholder="Detailed description of the task and any special requirements..."
+              maxLength={500}
+            />
+          </div>
+
+          {/* Category and Priority Grid */}
+          <div
+            className="grid grid-cols-1 md:grid-cols-2 gap-4"
+            data-testid="form-grid"
+          >
+            <div>
+              <label
+                htmlFor="task-category"
+                className="block text-sm font-medium text-gray-700 mb-2"
+              >
+                Category *
+              </label>
+              <select
+                id="task-category"
+                value={formData.category || ''}
+                onChange={(e) =>
+                  handleFieldChange('category', e.target.value as TaskCategory)
+                }
+                className={`
+                w-full px-3.5 py-2.5 bg-white border rounded-lg text-gray-900
+                shadow-xs focus:outline-none focus:ring-4 focus:ring-primary-100 focus:border-primary-300
+                transition-all duration-200 ${validation.category.isValid ? 'border-gray-300' : 'border-error-300'}
+              `}
+                aria-required="true"
+                aria-invalid={!validation.category.isValid}
+                aria-describedby={
+                  !validation.category.isValid ? 'category-error' : undefined
+                }
+              >
+                <option value="">Select category</option>
+                {categories.map((cat) => (
+                  <option key={cat.value} value={cat.value}>
+                    {cat.label}
+                  </option>
+                ))}
+              </select>
+              {!validation.category.isValid && (
+                <p
+                  id="category-error"
+                  className="text-sm text-error-600 mt-1"
+                  role="alert"
+                  aria-live="polite"
+                  data-testid="category-error"
+                >
+                  {validation.category.error}
+                </p>
+              )}
+            </div>
+
+            <div>
+              <label
+                htmlFor="task-priority"
+                className="block text-sm font-medium text-gray-700 mb-2"
+              >
+                Priority
+              </label>
+              <select
+                id="task-priority"
+                value={formData.priority || 'medium'}
+                onChange={(e) =>
+                  handleFieldChange('priority', e.target.value as TaskPriority)
+                }
+                className="
+                w-full px-3.5 py-2.5 bg-white border border-gray-300 rounded-lg
+                text-gray-900 shadow-xs focus:outline-none focus:ring-4 focus:ring-primary-100
+                focus:border-primary-300 transition-all duration-200
+              "
+              >
+                {priorities.map((priority) => (
+                  <option key={priority.value} value={priority.value}>
+                    {priority.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* Assignee Selection */}
+          <div>
+            <label
+              htmlFor="task-assignee"
+              className="block text-sm font-medium text-gray-700 mb-2"
+            >
+              Assign To
+            </label>
+            <select
+              id="task-assignee"
+              value={formData.assigned_to || ''}
+              onChange={(e) =>
+                handleFieldChange('assigned_to', e.target.value || undefined)
+              }
+              className="
+              w-full px-3.5 py-2.5 bg-white border border-gray-300 rounded-lg
+              text-gray-900 shadow-xs focus:outline-none focus:ring-4 focus:ring-primary-100
+              focus:border-primary-300 transition-all duration-200
+            "
+              aria-describedby="assignee-help"
+            >
+              <option value="">Assign later</option>
+              {filteredTeamMembers.map((member) => (
+                <option key={member.id} value={member.id}>
+                  {member.name} ({member.role})
+                </option>
+              ))}
+            </select>
+            {formData.category && filteredTeamMembers.length === 0 && (
+              <p id="assignee-help" className="text-sm text-warning-600 mt-1">
+                No team members specialize in this category
+              </p>
+            )}
+          </div>
+
+          {/* Duration and Deadline Grid */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <label
+                htmlFor="task-duration"
+                className="block text-sm font-medium text-gray-700 mb-2"
+              >
+                Duration (hours) *
+              </label>
+              <input
+                id="task-duration"
+                type="number"
+                min="0.25"
+                max="24"
+                step="0.25"
+                value={formData.estimated_duration || ''}
+                onChange={(e) =>
+                  handleFieldChange(
+                    'estimated_duration',
+                    parseFloat(e.target.value) || 0,
+                  )
+                }
+                className={`
+                w-full px-3.5 py-2.5 bg-white border rounded-lg text-gray-900
+                shadow-xs focus:outline-none focus:ring-4 focus:ring-primary-100 focus:border-primary-300
+                transition-all duration-200 ${validation.estimated_duration.isValid ? 'border-gray-300' : 'border-error-300'}
+              `}
+                aria-required="true"
+                aria-invalid={!validation.estimated_duration.isValid}
+                aria-describedby={
+                  !validation.estimated_duration.isValid
+                    ? 'duration-error'
+                    : undefined
+                }
+              />
+              {!validation.estimated_duration.isValid && (
+                <p
+                  id="duration-error"
+                  className="text-sm text-error-600 mt-1"
+                  role="alert"
+                  aria-live="polite"
+                  data-testid="duration-error"
+                >
+                  {validation.estimated_duration.error}
+                </p>
+              )}
+            </div>
+
+            <div>
+              <label
+                htmlFor="task-buffer"
+                className="block text-sm font-medium text-gray-700 mb-2"
+              >
+                Buffer Time (hours)
+              </label>
+              <input
+                id="task-buffer"
+                type="number"
+                min="0"
+                step="0.25"
+                value={formData.buffer_time || 0}
+                onChange={(e) =>
+                  handleFieldChange(
+                    'buffer_time',
+                    parseFloat(e.target.value) || 0,
+                  )
+                }
+                className="
+                w-full px-3.5 py-2.5 bg-white border border-gray-300 rounded-lg
+                text-gray-900 shadow-xs focus:outline-none focus:ring-4 focus:ring-primary-100
+                focus:border-primary-300 transition-all duration-200
+              "
+                aria-describedby="buffer-help"
+              />
+              <p id="buffer-help" className="text-xs text-gray-500 mt-1">
+                Extra time buffer to prevent schedule conflicts
+              </p>
+            </div>
+
+            <div>
+              <label
+                htmlFor="task-deadline"
+                className="block text-sm font-medium text-gray-700 mb-2"
+              >
+                Deadline *
+              </label>
+              <input
+                id="task-deadline"
+                type="datetime-local"
+                value={formData.deadline || ''}
+                onChange={(e) => handleFieldChange('deadline', e.target.value)}
+                className={`
+                w-full px-3.5 py-2.5 bg-white border rounded-lg text-gray-900
+                shadow-xs focus:outline-none focus:ring-4 focus:ring-primary-100 focus:border-primary-300
+                transition-all duration-200 ${validation.deadline.isValid ? 'border-gray-300' : 'border-error-300'}
+              `}
+                aria-required="true"
+                aria-invalid={!validation.deadline.isValid}
+                aria-describedby={
+                  !validation.deadline.isValid ? 'deadline-error' : undefined
+                }
+              />
+              {!validation.deadline.isValid && (
+                <p
+                  id="deadline-error"
+                  className="text-sm text-error-600 mt-1"
+                  role="alert"
+                  aria-live="polite"
+                  data-testid="deadline-error"
+                >
+                  {validation.deadline.error}
+                </p>
+              )}
+            </div>
+          </div>
+
+          {/* Dependencies Section */}
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <label className="block text-sm font-medium text-gray-700">
+                Dependencies
+              </label>
+              <button
+                type="button"
+                onClick={addDependency}
+                className="
+                inline-flex items-center px-3 py-1.5 text-sm font-medium text-primary-700
+                bg-primary-50 border border-primary-200 rounded-lg hover:bg-primary-100
+                transition-colors duration-200 focus:outline-none focus:ring-4 focus:ring-primary-100
+              "
+                disabled={availableTasks.length === 0}
+                data-testid="add-dependency-button"
+              >
+                <Plus className="w-4 h-4 mr-1" />
+                Add Dependency
+              </button>
+            </div>
+
+            {formData.dependencies && formData.dependencies.length > 0 && (
+              <div className="space-y-3 p-4 bg-gray-50 rounded-lg">
+                {formData.dependencies.map((dep, index) => (
+                  <div
+                    key={index}
+                    className="flex items-center gap-3"
+                    data-testid={`dependency-${index}`}
+                  >
+                    <select
+                      value={dep.predecessor_task_id}
+                      onChange={(e) =>
+                        updateDependency(
+                          index,
+                          'predecessor_task_id',
+                          e.target.value,
+                        )
+                      }
+                      className="
+                      flex-1 px-3 py-2 bg-white border border-gray-300 rounded-lg
+                      text-sm focus:outline-none focus:ring-2 focus:ring-primary-100
+                    "
+                      data-testid={`predecessor-select-${index}`}
+                    >
+                      <option value="">Select task</option>
+                      {availableTasks.map((task) => (
+                        <option key={task.id} value={task.id}>
+                          {task.title}
+                        </option>
+                      ))}
+                    </select>
+
+                    <select
+                      value={dep.dependency_type}
+                      onChange={(e) =>
+                        updateDependency(
+                          index,
+                          'dependency_type',
+                          e.target.value,
+                        )
+                      }
+                      className="
+                      px-3 py-2 bg-white border border-gray-300 rounded-lg
+                      text-sm focus:outline-none focus:ring-2 focus:ring-primary-100
+                    "
+                      data-testid={`dependency-type-${index}`}
+                    >
+                      {dependencyTypes.map((type) => (
+                        <option key={type.value} value={type.value}>
+                          {type.label}
+                        </option>
+                      ))}
+                    </select>
+
+                    <input
+                      type="number"
+                      min="0"
+                      value={dep.lag_time}
+                      onChange={(e) =>
+                        updateDependency(
+                          index,
+                          'lag_time',
+                          parseInt(e.target.value) || 0,
+                        )
+                      }
+                      placeholder="Lag (hours)"
+                      className="
+                      w-24 px-3 py-2 bg-white border border-gray-300 rounded-lg
+                      text-sm focus:outline-none focus:ring-2 focus:ring-primary-100
+                    "
+                      data-testid={`lag-time-${index}`}
+                    />
+
+                    <button
+                      type="button"
+                      onClick={() => removeDependency(index)}
+                      className="p-2 text-error-600 hover:bg-error-50 rounded-lg transition-colors duration-200"
+                      aria-label="Remove dependency"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {availableTasks.length === 0 && (
+              <p className="text-sm text-gray-500">
+                No existing tasks available for dependencies
+              </p>
+            )}
+          </div>
+
+          {/* Validation Feedback */}
+          {(validation.timing.conflicts.length > 0 ||
+            validation.timing.warnings.length > 0) && (
+            <div
+              className="p-4 bg-warning-50 border border-warning-200 rounded-lg"
+              data-testid="validation-feedback"
+            >
+              {validation.timing.conflicts.length > 0 && (
+                <div className="mb-2">
+                  <h4 className="text-sm font-medium text-warning-800 mb-1">
+                    Timing Conflicts
+                  </h4>
+                  <ul className="text-sm text-warning-700 list-disc list-inside">
+                    {validation.timing.conflicts.map((conflict, index) => (
+                      <li key={index}>{conflict.message}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {validation.timing.warnings.length > 0 && (
+                <div>
+                  <h4 className="text-sm font-medium text-warning-800 mb-1">
+                    Warnings
+                  </h4>
+                  <ul className="text-sm text-warning-700 list-disc list-inside">
+                    {validation.timing.warnings.map((warning, index) => (
+                      <li key={index}>{warning.message}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Form Actions */}
+          <div className="flex items-center justify-end gap-3 pt-4 border-t border-gray-200">
+            <button
+              type="button"
+              onClick={onCancel}
+              className="
+              px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300
+              rounded-lg hover:bg-gray-50 focus:outline-none focus:ring-4 focus:ring-gray-100
+              transition-all duration-200
+            "
+              data-testid="cancel-button"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={isSubmitting}
+              className="
+              px-4 py-2.5 text-sm font-semibold text-white bg-primary-600
+              hover:bg-primary-700 rounded-lg shadow-xs hover:shadow-sm
+              focus:outline-none focus:ring-4 focus:ring-primary-100
+              transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed
+            "
+              data-testid="submit-button"
+            >
+              {isSubmitting ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Creating...
+                </>
+              ) : (
+                'Create Task'
+              )}
+            </button>
+          </div>
+        </form>
+      </div>
+    );
+  },
+);
+
+TaskCreator.displayName = 'TaskCreator';

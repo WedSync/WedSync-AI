@@ -1,0 +1,464 @@
+/**
+ * Touch Input Validator
+ * Validates touch input patterns for security purposes
+ */
+
+'use client';
+
+import React, { useState, useEffect, useRef } from 'react';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Shield, CheckCircle, XCircle, RotateCcw } from 'lucide-react';
+
+export interface TouchPoint {
+  x: number;
+  y: number;
+  timestamp: number;
+  pressure?: number;
+  identifier: number;
+}
+
+export interface TouchPattern {
+  points: TouchPoint[];
+  duration: number;
+  velocity: number;
+  acceleration: number;
+  isValid: boolean;
+}
+
+export interface TouchValidationResult {
+  isHuman: boolean;
+  confidence: number;
+  pattern: TouchPattern;
+  flags: string[];
+}
+
+interface TouchInputValidatorProps {
+  onValidation?: (result: TouchValidationResult) => void;
+  minTouchPoints?: number;
+  maxTouchPoints?: number;
+  validationTimeout?: number;
+  className?: string;
+}
+
+export default function TouchInputValidator({
+  onValidation,
+  minTouchPoints = 3,
+  maxTouchPoints = 10,
+  validationTimeout = 5000,
+  className = ''
+}: TouchInputValidatorProps) {
+  const [touchPoints, setTouchPoints] = useState<TouchPoint[]>([]);
+  const [isRecording, setIsRecording] = useState(false);
+  const [validationResult, setValidationResult] = useState<TouchValidationResult | null>(null);
+  const [timeRemaining, setTimeRemaining] = useState(0);
+  
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const startTimeRef = useRef<number>(0);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+      }
+    };
+  }, []);
+
+  const startRecording = () => {
+    setTouchPoints([]);
+    setIsRecording(true);
+    setValidationResult(null);
+    startTimeRef.current = Date.now();
+    setTimeRemaining(validationTimeout / 1000);
+
+    // Start countdown timer
+    timerRef.current = setInterval(() => {
+      setTimeRemaining(prev => {
+        if (prev <= 1) {
+          stopRecording();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    // Clear canvas
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      }
+    }
+  };
+
+  const stopRecording = () => {
+    setIsRecording(false);
+    
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+
+    // Validate the touch pattern
+    const result = validateTouchPattern(touchPoints);
+    setValidationResult(result);
+    
+    if (onValidation) {
+      onValidation(result);
+    }
+  };
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (!isRecording) return;
+    
+    e.preventDefault();
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const touches = Array.from(e.touches);
+
+    touches.forEach(touch => {
+      const point: TouchPoint = {
+        x: touch.clientX - rect.left,
+        y: touch.clientY - rect.top,
+        timestamp: Date.now(),
+        pressure: touch.force || 1,
+        identifier: touch.identifier
+      };
+
+      setTouchPoints(prev => [...prev, point]);
+      drawPoint(point);
+    });
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (!isRecording) return;
+    
+    e.preventDefault();
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const touches = Array.from(e.touches);
+
+    touches.forEach(touch => {
+      const point: TouchPoint = {
+        x: touch.clientX - rect.left,
+        y: touch.clientY - rect.top,
+        timestamp: Date.now(),
+        pressure: touch.force || 1,
+        identifier: touch.identifier
+      };
+
+      setTouchPoints(prev => [...prev, point]);
+      drawPoint(point);
+    });
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    if (!isRecording) return;
+    e.preventDefault();
+  };
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (!isRecording) return;
+    
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const point: TouchPoint = {
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top,
+      timestamp: Date.now(),
+      pressure: 1,
+      identifier: 0
+    };
+
+    setTouchPoints(prev => [...prev, point]);
+    drawPoint(point);
+  };
+
+  const drawPoint = (point: TouchPoint) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.fillStyle = '#3b82f6';
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, 3, 0, 2 * Math.PI);
+    ctx.fill();
+
+    // Draw line to previous point if exists
+    if (touchPoints.length > 0) {
+      const lastPoint = touchPoints[touchPoints.length - 1];
+      if (lastPoint.identifier === point.identifier) {
+        ctx.strokeStyle = '#3b82f6';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(lastPoint.x, lastPoint.y);
+        ctx.lineTo(point.x, point.y);
+        ctx.stroke();
+      }
+    }
+  };
+
+  const validateTouchPattern = (points: TouchPoint[]): TouchValidationResult => {
+    const flags: string[] = [];
+    let confidence = 0.5; // Base confidence
+
+    // Check minimum touch points
+    if (points.length < minTouchPoints) {
+      flags.push('insufficient_touch_points');
+      confidence -= 0.3;
+    }
+
+    // Check for too many points (possible bot)
+    if (points.length > maxTouchPoints * 10) {
+      flags.push('excessive_touch_points');
+      confidence -= 0.4;
+    }
+
+    // Calculate timing patterns
+    const duration = points.length > 0 ? 
+      points[points.length - 1].timestamp - points[0].timestamp : 0;
+
+    // Check for human-like timing variations
+    const timingVariations = calculateTimingVariations(points);
+    if (timingVariations > 0.1) {
+      confidence += 0.2; // Human-like variation
+    } else {
+      flags.push('uniform_timing');
+      confidence -= 0.3;
+    }
+
+    // Check for pressure variations (if available)
+    const pressureVariations = calculatePressureVariations(points);
+    if (pressureVariations > 0.05) {
+      confidence += 0.1;
+    }
+
+    // Calculate velocity and acceleration
+    const { velocity, acceleration } = calculateMotionMetrics(points);
+
+    // Check for natural motion patterns
+    if (velocity > 0 && acceleration !== 0) {
+      confidence += 0.1;
+    }
+
+    // Check for too perfect patterns (possible bot)
+    if (isPerfectPattern(points)) {
+      flags.push('perfect_pattern');
+      confidence -= 0.4;
+    }
+
+    // Ensure confidence is within bounds
+    confidence = Math.max(0, Math.min(1, confidence));
+
+    const pattern: TouchPattern = {
+      points,
+      duration,
+      velocity,
+      acceleration,
+      isValid: confidence > 0.6
+    };
+
+    return {
+      isHuman: confidence > 0.6 && flags.length < 2,
+      confidence,
+      pattern,
+      flags
+    };
+  };
+
+  const calculateTimingVariations = (points: TouchPoint[]): number => {
+    if (points.length < 2) return 0;
+
+    const intervals = [];
+    for (let i = 1; i < points.length; i++) {
+      intervals.push(points[i].timestamp - points[i - 1].timestamp);
+    }
+
+    const mean = intervals.reduce((sum, interval) => sum + interval, 0) / intervals.length;
+    const variance = intervals.reduce((sum, interval) => sum + Math.pow(interval - mean, 2), 0) / intervals.length;
+    
+    return Math.sqrt(variance) / mean; // Coefficient of variation
+  };
+
+  const calculatePressureVariations = (points: TouchPoint[]): number => {
+    const pressures = points.filter(p => p.pressure !== undefined).map(p => p.pressure!);
+    if (pressures.length < 2) return 0;
+
+    const mean = pressures.reduce((sum, p) => sum + p, 0) / pressures.length;
+    const variance = pressures.reduce((sum, p) => sum + Math.pow(p - mean, 2), 0) / pressures.length;
+    
+    return Math.sqrt(variance);
+  };
+
+  const calculateMotionMetrics = (points: TouchPoint[]): { velocity: number; acceleration: number } => {
+    if (points.length < 2) return { velocity: 0, acceleration: 0 };
+
+    let totalDistance = 0;
+    let totalTime = 0;
+
+    for (let i = 1; i < points.length; i++) {
+      const dx = points[i].x - points[i - 1].x;
+      const dy = points[i].y - points[i - 1].y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      const time = points[i].timestamp - points[i - 1].timestamp;
+      
+      totalDistance += distance;
+      totalTime += time;
+    }
+
+    const velocity = totalTime > 0 ? totalDistance / totalTime : 0;
+    
+    // Simple acceleration calculation
+    const acceleration = points.length > 2 ? 
+      (velocity - 0) / (totalTime / 1000) : 0;
+
+    return { velocity, acceleration };
+  };
+
+  const isPerfectPattern = (points: TouchPoint[]): boolean => {
+    if (points.length < 3) return false;
+
+    // Check for perfectly straight lines or geometric patterns
+    // This is a simplified check - in production, you'd want more sophisticated pattern detection
+    
+    const slopes = [];
+    for (let i = 2; i < points.length; i++) {
+      const dx1 = points[i - 1].x - points[i - 2].x;
+      const dy1 = points[i - 1].y - points[i - 2].y;
+      const dx2 = points[i].x - points[i - 1].x;
+      const dy2 = points[i].y - points[i - 1].y;
+      
+      if (dx1 !== 0 && dx2 !== 0) {
+        slopes.push(dy1 / dx1, dy2 / dx2);
+      }
+    }
+
+    // Check if all slopes are identical (perfect straight line)
+    if (slopes.length > 2) {
+      const firstSlope = slopes[0];
+      return slopes.every(slope => Math.abs(slope - firstSlope) < 0.001);
+    }
+
+    return false;
+  };
+
+  const reset = () => {
+    setTouchPoints([]);
+    setValidationResult(null);
+    setIsRecording(false);
+    setTimeRemaining(0);
+    
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      }
+    }
+  };
+
+  return (
+    <Card className={className}>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Shield className="h-5 w-5" />
+          Touch Input Validation
+        </CardTitle>
+        <CardDescription>
+          Draw or touch on the canvas below to validate human interaction
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="relative">
+          <canvas
+            ref={canvasRef}
+            width={400}
+            height={200}
+            className="border border-gray-300 rounded-lg cursor-crosshair"
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
+            onMouseDown={handleMouseDown}
+            style={{ touchAction: 'none' }}
+          />
+          
+          {isRecording && (
+            <div className="absolute top-2 right-2 bg-red-500 text-white px-2 py-1 rounded text-sm">
+              Recording: {timeRemaining}s
+            </div>
+          )}
+        </div>
+
+        <div className="flex gap-2">
+          {!isRecording ? (
+            <Button onClick={startRecording} className="flex items-center gap-2">
+              <Shield className="h-4 w-4" />
+              Start Validation
+            </Button>
+          ) : (
+            <Button onClick={stopRecording} variant="destructive">
+              Stop Recording
+            </Button>
+          )}
+          
+          <Button onClick={reset} variant="outline" className="flex items-center gap-2">
+            <RotateCcw className="h-4 w-4" />
+            Reset
+          </Button>
+        </div>
+
+        {validationResult && (
+          <Alert className={validationResult.isHuman ? 'border-green-500' : 'border-red-500'}>
+            <div className="flex items-center gap-2">
+              {validationResult.isHuman ? (
+                <CheckCircle className="h-4 w-4 text-green-500" />
+              ) : (
+                <XCircle className="h-4 w-4 text-red-500" />
+              )}
+              <AlertDescription>
+                <div className="space-y-1">
+                  <div>
+                    <strong>Result:</strong> {validationResult.isHuman ? 'Human' : 'Suspicious'} 
+                    (Confidence: {(validationResult.confidence * 100).toFixed(1)}%)
+                  </div>
+                  <div>
+                    <strong>Touch Points:</strong> {validationResult.pattern.points.length}
+                  </div>
+                  <div>
+                    <strong>Duration:</strong> {(validationResult.pattern.duration / 1000).toFixed(2)}s
+                  </div>
+                  {validationResult.flags.length > 0 && (
+                    <div>
+                      <strong>Flags:</strong> {validationResult.flags.join(', ')}
+                    </div>
+                  )}
+                </div>
+              </AlertDescription>
+            </div>
+          </Alert>
+        )}
+
+        <div className="text-sm text-gray-600">
+          <p>Touch points collected: {touchPoints.length}</p>
+          <p>Minimum required: {minTouchPoints}</p>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}

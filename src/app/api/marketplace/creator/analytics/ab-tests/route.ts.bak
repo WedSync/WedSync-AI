@@ -1,0 +1,408 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+
+// GET all AB tests for the creator
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
+    
+    // Get authenticated user
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const searchParams = request.nextUrl.searchParams;
+    const status = searchParams.get('status');
+    const templateId = searchParams.get('templateId');
+
+    let query = supabase
+      .from('creator_ab_tests')
+      .select(`
+        *,
+        marketplace_templates!inner(id, title, category)
+      `)
+      .eq('creator_id', user.id)
+      .order('created_at', { ascending: false });
+
+    if (status) {
+      query = query.eq('status', status);
+    }
+
+    if (templateId) {
+      query = query.eq('template_id', templateId);
+    }
+
+    const { data: tests, error } = await query;
+
+    if (error) {
+      console.error('Error fetching AB tests:', error);
+      return NextResponse.json({ error: 'Failed to fetch AB tests' }, { status: 500 });
+    }
+
+    // Calculate statistical significance for running tests
+    const testsWithStats = tests?.map(test => {
+      if (test.status === 'running') {
+        const controlRate = test.control_visitors > 0 
+          ? test.control_conversions / test.control_visitors 
+          : 0;
+        const testRate = test.test_visitors > 0 
+          ? test.test_conversions / test.test_visitors 
+          : 0;
+        
+        // Simple statistical significance calculation (z-test)
+        const pooledRate = (test.control_conversions + test.test_conversions) / 
+                          (test.control_visitors + test.test_visitors);
+        const standardError = Math.sqrt(
+          pooledRate * (1 - pooledRate) * 
+          (1/test.control_visitors + 1/test.test_visitors)
+        );
+        const zScore = standardError > 0 
+          ? (testRate - controlRate) / standardError 
+          : 0;
+        const pValue = 2 * (1 - normalCDF(Math.abs(zScore)));
+        const isSignificant = pValue < (1 - test.target_significance);
+        
+        return {
+          ...test,
+          controlConversionRate: controlRate,
+          testConversionRate: testRate,
+          uplift: controlRate > 0 ? ((testRate - controlRate) / controlRate) * 100 : 0,
+          pValue,
+          isSignificant,
+          hasEnoughData: test.control_visitors >= test.minimum_sample_size && 
+                         test.test_visitors >= test.minimum_sample_size
+        };
+      }
+      return test;
+    }) || [];
+
+    return NextResponse.json(testsWithStats);
+
+  } catch (error) {
+    console.error('AB tests fetch error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+// POST create a new AB test
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
+    
+    // Get authenticated user
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const {
+      templateId,
+      testName,
+      testType,
+      controlVariant,
+      testVariant,
+      trafficAllocation = 0.5,
+      duration,
+      minimumSampleSize = 100,
+      weddingSeasonConsideration = false
+    } = body;
+
+    // Validate required fields
+    if (!templateId || !testName || !testType || !controlVariant || !testVariant) {
+      return NextResponse.json(
+        { error: 'Missing required fields' },
+        { status: 400 }
+      );
+    }
+
+    // Check if template belongs to creator
+    const { data: template } = await supabase
+      .from('marketplace_templates')
+      .select('id, supplier_id')
+      .eq('id', templateId)
+      .single();
+
+    if (!template || template.supplier_id !== user.id) {
+      return NextResponse.json(
+        { error: 'Template not found or unauthorized' },
+        { status: 403 }
+      );
+    }
+
+    // Check for existing running tests on the same template
+    const { data: existingTests } = await supabase
+      .from('creator_ab_tests')
+      .select('id')
+      .eq('template_id', templateId)
+      .eq('status', 'running');
+
+    if (existingTests && existingTests.length > 0) {
+      return NextResponse.json(
+        { error: 'Template already has a running test' },
+        { status: 400 }
+      );
+    }
+
+    // Create the AB test
+    const { data: newTest, error: createError } = await supabase
+      .from('creator_ab_tests')
+      .insert({
+        creator_id: user.id,
+        template_id: templateId,
+        test_name: testName,
+        test_type: testType,
+        control_variant: controlVariant,
+        test_variant: testVariant,
+        traffic_allocation: trafficAllocation,
+        success_metric: 'conversion_rate',
+        target_significance: 0.95,
+        minimum_sample_size: minimumSampleSize,
+        status: 'draft',
+        wedding_seasonality_factor: weddingSeasonConsideration ? {} : null,
+        starts_at: null,
+        ends_at: duration ? new Date(Date.now() + duration * 24 * 60 * 60 * 1000).toISOString() : null
+      })
+      .select()
+      .single();
+
+    if (createError) {
+      console.error('Error creating AB test:', createError);
+      return NextResponse.json(
+        { error: 'Failed to create AB test' },
+        { status: 500 }
+      );
+    }
+
+    // Calculate estimated completion based on historical traffic
+    const { data: trafficData } = await supabase
+      .from('creator_analytics_events')
+      .select('event_type')
+      .eq('template_id', templateId)
+      .eq('event_type', 'view')
+      .gte('created_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString());
+
+    const estimatedDailyTraffic = (trafficData?.length || 0) / 7;
+    const estimatedCompletionDays = estimatedDailyTraffic > 0 
+      ? Math.ceil((minimumSampleSize * 2) / estimatedDailyTraffic)
+      : 30;
+
+    return NextResponse.json({
+      testId: newTest.id,
+      status: 'created',
+      estimatedCompletionDate: new Date(Date.now() + estimatedCompletionDays * 24 * 60 * 60 * 1000).toISOString(),
+      requiredSampleSize: minimumSampleSize * 2,
+      estimatedDailyTraffic: Math.round(estimatedDailyTraffic)
+    });
+
+  } catch (error) {
+    console.error('AB test creation error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+// PATCH update AB test status (start, stop, complete)
+export async function PATCH(request: NextRequest) {
+  try {
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
+    
+    // Get authenticated user
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { testId, action } = await request.json();
+
+    if (!testId || !action) {
+      return NextResponse.json(
+        { error: 'Missing required fields' },
+        { status: 400 }
+      );
+    }
+
+    // Verify test ownership
+    const { data: test } = await supabase
+      .from('creator_ab_tests')
+      .select('*')
+      .eq('id', testId)
+      .eq('creator_id', user.id)
+      .single();
+
+    if (!test) {
+      return NextResponse.json(
+        { error: 'Test not found or unauthorized' },
+        { status: 403 }
+      );
+    }
+
+    let updateData: any = {};
+
+    switch (action) {
+      case 'start':
+        if (test.status !== 'draft') {
+          return NextResponse.json(
+            { error: 'Can only start draft tests' },
+            { status: 400 }
+          );
+        }
+        updateData = {
+          status: 'running',
+          starts_at: new Date().toISOString()
+        };
+        break;
+
+      case 'stop':
+        if (test.status !== 'running') {
+          return NextResponse.json(
+            { error: 'Can only stop running tests' },
+            { status: 400 }
+          );
+        }
+        updateData = {
+          status: 'stopped',
+          ends_at: new Date().toISOString()
+        };
+        break;
+
+      case 'complete':
+        if (test.status !== 'running') {
+          return NextResponse.json(
+            { error: 'Can only complete running tests' },
+            { status: 400 }
+          );
+        }
+        
+        // Determine winner based on conversion rates
+        const controlRate = test.control_visitors > 0 
+          ? test.control_conversions / test.control_visitors 
+          : 0;
+        const testRate = test.test_visitors > 0 
+          ? test.test_conversions / test.test_visitors 
+          : 0;
+        
+        let winner = 'none';
+        let confidenceLevel = 0;
+        
+        if (test.control_visitors >= test.minimum_sample_size && 
+            test.test_visitors >= test.minimum_sample_size) {
+          const pooledRate = (test.control_conversions + test.test_conversions) / 
+                            (test.control_visitors + test.test_visitors);
+          const standardError = Math.sqrt(
+            pooledRate * (1 - pooledRate) * 
+            (1/test.control_visitors + 1/test.test_visitors)
+          );
+          const zScore = standardError > 0 
+            ? (testRate - controlRate) / standardError 
+            : 0;
+          const pValue = 2 * (1 - normalCDF(Math.abs(zScore)));
+          confidenceLevel = 1 - pValue;
+          
+          if (confidenceLevel >= test.target_significance) {
+            winner = testRate > controlRate ? 'test' : 'control';
+          }
+        }
+        
+        updateData = {
+          status: 'completed',
+          ends_at: new Date().toISOString(),
+          completed_at: new Date().toISOString(),
+          winner,
+          confidence_level: confidenceLevel
+        };
+        
+        // If test variant won, optionally update the template
+        if (winner === 'test' && test.test_type === 'pricing') {
+          // Could automatically update template price here
+          await supabase
+            .from('marketplace_templates')
+            .update({
+              price_cents: test.test_variant.price
+            })
+            .eq('id', test.template_id);
+        }
+        break;
+
+      case 'pause':
+        if (test.status !== 'running') {
+          return NextResponse.json(
+            { error: 'Can only pause running tests' },
+            { status: 400 }
+          );
+        }
+        updateData = {
+          status: 'paused'
+        };
+        break;
+
+      case 'resume':
+        if (test.status !== 'paused') {
+          return NextResponse.json(
+            { error: 'Can only resume paused tests' },
+            { status: 400 }
+          );
+        }
+        updateData = {
+          status: 'running'
+        };
+        break;
+
+      default:
+        return NextResponse.json(
+          { error: 'Invalid action' },
+          { status: 400 }
+        );
+    }
+
+    const { error: updateError } = await supabase
+      .from('creator_ab_tests')
+      .update(updateData)
+      .eq('id', testId);
+
+    if (updateError) {
+      console.error('Error updating AB test:', updateError);
+      return NextResponse.json(
+        { error: 'Failed to update AB test' },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({ 
+      success: true,
+      ...updateData
+    });
+
+  } catch (error) {
+    console.error('AB test update error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+// Helper function for normal CDF calculation
+function normalCDF(z: number): number {
+  const a1 =  0.254829592;
+  const a2 = -0.284496736;
+  const a3 =  1.421413741;
+  const a4 = -1.453152027;
+  const a5 =  1.061405429;
+  const p  =  0.3275911;
+
+  const sign = z < 0 ? -1 : 1;
+  z = Math.abs(z) / Math.sqrt(2.0);
+
+  const t = 1.0 / (1.0 + p * z);
+  const y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-z * z);
+
+  return 0.5 * (1.0 + sign * y);
+}

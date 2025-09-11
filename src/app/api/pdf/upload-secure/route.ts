@@ -1,0 +1,626 @@
+/**
+ * Enhanced Secure PDF Upload API Route
+ * Implements comprehensive file upload security with advanced threat detection
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { writeFile, unlink, mkdir } from 'fs/promises';
+import { existsSync } from 'fs';
+import path from 'path';
+import crypto from 'crypto';
+
+import { fileUploadSecurity } from '@/lib/security/file-upload-security';
+import { productionRateLimiters } from '@/lib/security/production-rate-limiter';
+import { validateSession } from '@/lib/auth/session-security';
+import { verifyCSRFToken } from '@/lib/csrf-token-edge';
+import { withSecurityHeaders } from '@/lib/security/security-headers';
+import { logger } from '@/lib/monitoring/structured-logger';
+import { metrics } from '@/lib/monitoring/metrics';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+);
+
+// Configuration
+const UPLOAD_CONFIG = {
+  maxFileSize: 50 * 1024 * 1024, // 50MB
+  allowedMimeTypes: [
+    'application/pdf',
+    'image/jpeg',
+    'image/png',
+    'image/webp',
+  ],
+  tempDir: path.join(process.cwd(), 'tmp', 'secure-uploads'),
+  quarantineDir: path.join(process.cwd(), 'tmp', 'quarantine'),
+  maxUploadsPerHour: 20,
+  maxStoragePerUser: 1024 * 1024 * 1024, // 1GB
+};
+
+// Ensure required directories exist
+async function ensureDirectories() {
+  const dirs = [UPLOAD_CONFIG.tempDir, UPLOAD_CONFIG.quarantineDir];
+
+  for (const dir of dirs) {
+    if (!existsSync(dir)) {
+      await mkdir(dir, { recursive: true });
+    }
+  }
+}
+
+// Secure file storage with encryption
+async function storeFileSecurely(
+  fileBuffer: Buffer,
+  sanitizedName: string,
+  userId: string,
+  metadata: any,
+): Promise<{ success: boolean; path?: string; error?: string }> {
+  try {
+    const storageKey = crypto.randomBytes(32);
+    const iv = crypto.randomBytes(16);
+
+    // Encrypt file content
+    const cipher = crypto.createCipher('aes-256-cbc', storageKey);
+    const encryptedContent = Buffer.concat([
+      cipher.update(fileBuffer),
+      cipher.final(),
+    ]);
+
+    // Create secure storage path
+    const datePath = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    const userHash = crypto
+      .createHash('sha256')
+      .update(userId)
+      .digest('hex')
+      .substring(0, 8);
+    const secureDir = path.join(UPLOAD_CONFIG.tempDir, datePath, userHash);
+
+    if (!existsSync(secureDir)) {
+      await mkdir(secureDir, { recursive: true });
+    }
+
+    const securePath = path.join(secureDir, sanitizedName);
+
+    // Write encrypted file
+    await writeFile(securePath, encryptedContent);
+
+    // Store encryption key in database
+    const { error: dbError } = await supabase
+      .from('secure_file_storage')
+      .insert({
+        file_path: securePath,
+        user_id: userId,
+        encryption_key: storageKey.toString('base64'),
+        iv: iv.toString('base64'),
+        metadata: metadata,
+        created_at: new Date().toISOString(),
+      });
+
+    if (dbError) {
+      await unlink(securePath).catch(() => {});
+      return { success: false, error: 'Failed to store encryption metadata' };
+    }
+
+    return { success: true, path: securePath };
+  } catch (error) {
+    logger.error('Secure file storage failed', error as Error, { userId });
+    return { success: false, error: 'File storage failed' };
+  }
+}
+
+// Quarantine malicious files
+async function quarantineFile(
+  fileBuffer: Buffer,
+  filename: string,
+  userId: string,
+  threatInfo: any,
+): Promise<void> {
+  try {
+    const quarantineName = `${Date.now()}_${crypto.randomBytes(8).toString('hex')}_${filename}`;
+    const quarantinePath = path.join(
+      UPLOAD_CONFIG.quarantineDir,
+      quarantineName,
+    );
+
+    await writeFile(quarantinePath, fileBuffer);
+
+    // Log quarantine event
+    await supabase.from('security_quarantine').insert({
+      original_filename: filename,
+      quarantine_path: quarantinePath,
+      user_id: userId,
+      threat_info: threatInfo,
+      quarantined_at: new Date().toISOString(),
+    });
+
+    logger.warn('File quarantined due to security threats', {
+      filename,
+      userId,
+      quarantinePath,
+      threatLevel: threatInfo.threatLevel,
+      issues: threatInfo.issues,
+    });
+  } catch (error) {
+    logger.error('File quarantine failed', error as Error, {
+      filename,
+      userId,
+    });
+  }
+}
+
+// Validate user upload limits
+async function validateUserLimits(
+  userId: string,
+  fileSize: number,
+): Promise<{ valid: boolean; error?: string }> {
+  try {
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+
+    // Check hourly upload limit
+    const { data: recentUploads, error: uploadError } = await supabase
+      .from('secure_uploads')
+      .select('id')
+      .eq('user_id', userId)
+      .gte('created_at', oneHourAgo);
+
+    if (uploadError) {
+      return { valid: false, error: 'Failed to check upload limits' };
+    }
+
+    if (
+      recentUploads &&
+      recentUploads.length >= UPLOAD_CONFIG.maxUploadsPerHour
+    ) {
+      return {
+        valid: false,
+        error: `Hourly upload limit exceeded (${UPLOAD_CONFIG.maxUploadsPerHour} files)`,
+      };
+    }
+
+    // Check storage quota
+    const { data: userStorage, error: storageError } = await supabase
+      .from('secure_uploads')
+      .select('file_size')
+      .eq('user_id', userId);
+
+    if (storageError) {
+      return { valid: false, error: 'Failed to check storage quota' };
+    }
+
+    const totalStorage =
+      userStorage?.reduce((sum, file) => sum + file.file_size, 0) || 0;
+    if (totalStorage + fileSize > UPLOAD_CONFIG.maxStoragePerUser) {
+      return { valid: false, error: 'Storage quota exceeded' };
+    }
+
+    return { valid: true };
+  } catch (error) {
+    logger.error('User limit validation failed', error as Error, { userId });
+    return { valid: false, error: 'Limit validation failed' };
+  }
+}
+
+export async function POST(request: NextRequest) {
+  const startTime = Date.now();
+  let uploadId: string | null = null;
+  let tempFilePath: string | null = null;
+
+  try {
+    // Ensure directories exist
+    await ensureDirectories();
+
+    // Rate limiting with enhanced security analysis
+    const rateLimitResult =
+      await productionRateLimiters.upload.checkLimit(request);
+    if (!rateLimitResult.allowed) {
+      metrics.incrementCounter('upload.rate_limited', 1);
+
+      const response = NextResponse.json(
+        {
+          error: 'Upload rate limit exceeded',
+          message: `Too many upload attempts. ${rateLimitResult.retryAfter ? `Retry after ${rateLimitResult.retryAfter} seconds.` : 'Please try again later.'}`,
+          retryAfter: rateLimitResult.retryAfter,
+        },
+        {
+          status: 429,
+          headers: {
+            'Retry-After': rateLimitResult.retryAfter?.toString() || '60',
+            'X-RateLimit-Limit': rateLimitResult.limit.toString(),
+            'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+            'X-RateLimit-Reset': rateLimitResult.resetTime.toString(),
+          },
+        },
+      );
+
+      return withSecurityHeaders(response, request);
+    }
+
+    // Session validation with enhanced JWT security
+    const sessionValidation = await validateSession(request);
+    if (!sessionValidation.valid || !sessionValidation.user) {
+      metrics.incrementCounter('upload.auth_failed', 1);
+
+      const response = NextResponse.json(
+        { error: 'Authentication required', code: 'AUTH_REQUIRED' },
+        { status: 401 },
+      );
+
+      return withSecurityHeaders(response, request);
+    }
+
+    const user = sessionValidation.user;
+    const userId = user.id;
+
+    // CSRF token validation
+    const csrfValid = await verifyCSRFToken(request);
+    if (!csrfValid) {
+      metrics.incrementCounter('upload.csrf_failed', 1);
+
+      logger.warn('CSRF validation failed for upload', {
+        userId,
+        ip: request.headers.get('x-forwarded-for') || 'unknown',
+        userAgent: request.headers.get('user-agent'),
+      });
+
+      const response = NextResponse.json(
+        { error: 'CSRF validation failed', code: 'CSRF_INVALID' },
+        { status: 403 },
+      );
+
+      return withSecurityHeaders(response, request);
+    }
+
+    // Parse multipart form data with size validation
+    let formData: FormData;
+    try {
+      formData = await request.formData();
+    } catch (error) {
+      const response = NextResponse.json(
+        { error: 'Invalid form data', code: 'INVALID_FORM' },
+        { status: 400 },
+      );
+
+      return withSecurityHeaders(response, request);
+    }
+
+    const file = formData.get('file') as File;
+    if (!file) {
+      const response = NextResponse.json(
+        { error: 'No file provided', code: 'NO_FILE' },
+        { status: 400 },
+      );
+
+      return withSecurityHeaders(response, request);
+    }
+
+    // Basic file validation
+    if (file.size === 0) {
+      const response = NextResponse.json(
+        { error: 'Empty file not allowed', code: 'EMPTY_FILE' },
+        { status: 400 },
+      );
+
+      return withSecurityHeaders(response, request);
+    }
+
+    if (file.size > UPLOAD_CONFIG.maxFileSize) {
+      const response = NextResponse.json(
+        {
+          error: `File size exceeds limit of ${UPLOAD_CONFIG.maxFileSize / 1024 / 1024}MB`,
+          code: 'FILE_TOO_LARGE',
+          maxSize: UPLOAD_CONFIG.maxFileSize,
+        },
+        { status: 400 },
+      );
+
+      return withSecurityHeaders(response, request);
+    }
+
+    if (!UPLOAD_CONFIG.allowedMimeTypes.includes(file.type)) {
+      const response = NextResponse.json(
+        {
+          error: 'Invalid file type',
+          code: 'INVALID_TYPE',
+          allowed: UPLOAD_CONFIG.allowedMimeTypes,
+        },
+        { status: 400 },
+      );
+
+      return withSecurityHeaders(response, request);
+    }
+
+    // User upload limits validation
+    const limitCheck = await validateUserLimits(userId, file.size);
+    if (!limitCheck.valid) {
+      const response = NextResponse.json(
+        { error: limitCheck.error, code: 'LIMIT_EXCEEDED' },
+        { status: 429 },
+      );
+
+      return withSecurityHeaders(response, request);
+    }
+
+    // Comprehensive security validation
+    logger.info('Starting file security validation', {
+      userId,
+      filename: file.name,
+      size: file.size,
+      type: file.type,
+    });
+
+    const validationResult = await fileUploadSecurity.validateFile(
+      file,
+      userId,
+    );
+
+    // Log validation results
+    metrics.incrementCounter('upload.validation_completed', 1, {
+      is_valid: validationResult.isValid.toString(),
+      is_safe: validationResult.isSafe.toString(),
+      threat_level: validationResult.threatLevel,
+      user_id: userId,
+    });
+
+    // Handle validation failures
+    if (!validationResult.isValid) {
+      logger.warn('File validation failed', {
+        userId,
+        filename: file.name,
+        issues: validationResult.issues,
+        threatLevel: validationResult.threatLevel,
+      });
+
+      // Quarantine suspicious files
+      if (
+        validationResult.threatLevel === 'high' ||
+        validationResult.threatLevel === 'critical'
+      ) {
+        const fileBuffer = Buffer.from(await file.arrayBuffer());
+        await quarantineFile(fileBuffer, file.name, userId, {
+          threatLevel: validationResult.threatLevel,
+          issues: validationResult.issues,
+          virusScan: validationResult.virusScan,
+        });
+      }
+
+      const response = NextResponse.json(
+        {
+          error: 'File validation failed',
+          code: 'VALIDATION_FAILED',
+          details: {
+            issues: validationResult.issues,
+            warnings: validationResult.warnings,
+            threatLevel: validationResult.threatLevel,
+          },
+        },
+        { status: 400 },
+      );
+
+      return withSecurityHeaders(response, request);
+    }
+
+    // Handle security threats (but file structure is valid)
+    if (!validationResult.isSafe) {
+      logger.warn('Security threats detected in valid file', {
+        userId,
+        filename: file.name,
+        threatLevel: validationResult.threatLevel,
+        issues: validationResult.issues,
+      });
+
+      // Quarantine high-threat files even if structurally valid
+      if (validationResult.threatLevel === 'critical') {
+        const fileBuffer = Buffer.from(await file.arrayBuffer());
+        await quarantineFile(fileBuffer, file.name, userId, validationResult);
+
+        const response = NextResponse.json(
+          {
+            error: 'File contains security threats and has been quarantined',
+            code: 'SECURITY_THREAT',
+            threatLevel: validationResult.threatLevel,
+          },
+          { status: 400 },
+        );
+
+        return withSecurityHeaders(response, request);
+      }
+    }
+
+    // File passed validation - proceed with secure storage
+    uploadId = crypto.randomUUID();
+    const fileBuffer = Buffer.from(await file.arrayBuffer());
+    const sanitizedName = validationResult.metadata.sanitizedName;
+
+    // Store file securely with encryption
+    const storageResult = await storeFileSecurely(
+      fileBuffer,
+      sanitizedName,
+      userId,
+      {
+        originalName: file.name,
+        mimeType: file.type,
+        validationResult: {
+          threatLevel: validationResult.threatLevel,
+          warnings: validationResult.warnings,
+          virusScan: validationResult.virusScan,
+        },
+      },
+    );
+
+    if (!storageResult.success) {
+      logger.error(
+        'Secure file storage failed',
+        new Error(storageResult.error),
+        {
+          userId,
+          filename: file.name,
+          uploadId,
+        },
+      );
+
+      const response = NextResponse.json(
+        { error: 'File storage failed', code: 'STORAGE_FAILED' },
+        { status: 500 },
+      );
+
+      return withSecurityHeaders(response, request);
+    }
+
+    tempFilePath = storageResult.path!;
+
+    // Store upload metadata in database
+    const { error: dbError } = await supabase.from('secure_uploads').insert({
+      id: uploadId,
+      user_id: userId,
+      original_filename: file.name,
+      sanitized_filename: sanitizedName,
+      file_path: tempFilePath,
+      file_size: file.size,
+      mime_type: file.type,
+      file_hash: validationResult.metadata.hash,
+      upload_status: 'uploaded',
+      security_scan_result: {
+        threatLevel: validationResult.threatLevel,
+        virusScan: validationResult.virusScan,
+        issues: validationResult.issues,
+        warnings: validationResult.warnings,
+      },
+      threat_level: validationResult.threatLevel,
+      encryption_status: 'encrypted',
+      auto_delete_at: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 hours
+      upload_ip: request.headers.get('x-forwarded-for') || 'unknown',
+      user_agent: request.headers.get('user-agent') || 'unknown',
+    });
+
+    if (dbError) {
+      logger.error('Database error during upload', dbError, {
+        userId,
+        uploadId,
+        filename: file.name,
+      });
+
+      // Clean up stored file
+      if (tempFilePath) {
+        await unlink(tempFilePath).catch(() => {});
+      }
+
+      const response = NextResponse.json(
+        { error: 'Upload metadata storage failed', code: 'DB_ERROR' },
+        { status: 500 },
+      );
+
+      return withSecurityHeaders(response, request);
+    }
+
+    // Log successful upload
+    logger.info('File upload completed successfully', {
+      userId,
+      uploadId,
+      filename: file.name,
+      size: file.size,
+      threatLevel: validationResult.threatLevel,
+      processingTime: Date.now() - startTime,
+    });
+
+    // Record metrics
+    metrics.incrementCounter('upload.success', 1, {
+      file_type: file.type,
+      threat_level: validationResult.threatLevel,
+      user_id: userId,
+    });
+
+    metrics.recordHistogram('upload.processing_time', Date.now() - startTime);
+    metrics.recordHistogram('upload.file_size', file.size);
+
+    // Return success response
+    const response = NextResponse.json({
+      success: true,
+      uploadId,
+      filename: file.name,
+      sanitizedFilename: sanitizedName,
+      size: file.size,
+      hash: validationResult.metadata.hash,
+      security: {
+        threatLevel: validationResult.threatLevel,
+        encrypted: true,
+        warnings: validationResult.warnings,
+        virusScan: validationResult.virusScan,
+      },
+      metadata: {
+        uploadTimestamp: validationResult.metadata.uploadTimestamp,
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      },
+    });
+
+    return withSecurityHeaders(response, request);
+  } catch (error) {
+    logger.error('Upload API error', error as Error, {
+      uploadId,
+      processingTime: Date.now() - startTime,
+    });
+
+    // Clean up on error
+    if (tempFilePath) {
+      await unlink(tempFilePath).catch(() => {});
+    }
+
+    metrics.incrementCounter('upload.error', 1);
+
+    const response = NextResponse.json(
+      { error: 'Internal server error during upload', code: 'SERVER_ERROR' },
+      { status: 500 },
+    );
+
+    return withSecurityHeaders(response, request);
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    // Return upload configuration and status
+    const sessionValidation = await validateSession(request);
+    if (!sessionValidation.valid) {
+      const response = NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 },
+      );
+
+      return withSecurityHeaders(response, request);
+    }
+
+    const response = NextResponse.json({
+      config: {
+        maxFileSize: UPLOAD_CONFIG.maxFileSize,
+        allowedTypes: UPLOAD_CONFIG.allowedMimeTypes,
+        maxUploadsPerHour: UPLOAD_CONFIG.maxUploadsPerHour,
+        maxStoragePerUser: UPLOAD_CONFIG.maxStoragePerUser,
+      },
+      rateLimits: {
+        upload: {
+          requests: 50,
+          windowMs: 60000,
+          burstMultiplier: 1.3,
+        },
+      },
+      security: {
+        csrfRequired: true,
+        authRequired: true,
+        encryptionEnabled: true,
+        virusScanningEnabled: true,
+        threatDetectionEnabled: true,
+      },
+    });
+
+    return withSecurityHeaders(response, request);
+  } catch (error) {
+    logger.error('Upload config API error', error as Error);
+
+    const response = NextResponse.json(
+      { error: 'Failed to get upload configuration' },
+      { status: 500 },
+    );
+
+    return withSecurityHeaders(response, request);
+  }
+}

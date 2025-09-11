@@ -1,0 +1,529 @@
+/**
+ * WS-151 Guest List Builder Integration Tests
+ * Team B - Batch 13
+ * 
+ * Tests for:
+ * 1. Guest Service Layer functionality
+ * 2. Quick Add natural language parsing
+ * 3. Bulk import performance (500+ guests in <10 seconds)
+ * 4. Export functionality
+ * 5. Duplicate detection
+ * 6. Household grouping
+ */
+
+import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'vitest'
+import { createClient } from '@/lib/supabase/server'
+import { createGuestService, GuestService } from '@/lib/services/guestService'
+import { NextRequest } from 'next/server'
+
+// Test data generators
+const generateTestGuests = (count: number) => {
+  const guests = []
+  const categories = ['family', 'friends', 'work', 'other']
+  const sides = ['partner1', 'partner2', 'mutual']
+  
+  for (let i = 0; i < count; i++) {
+    guests.push({
+      first_name: `TestFirst${i}`,
+      last_name: `TestLast${Math.floor(i / 3)}`, // Group every 3 guests by last name
+      email: i % 5 === 0 ? `test${i}@example.com` : null, // Only some have emails
+      phone: i % 4 === 0 ? `555-${String(i).padStart(4, '0')}` : null,
+      category: categories[i % categories.length],
+      side: sides[i % sides.length],
+      plus_one: i % 10 === 0, // Every 10th guest has plus one
+      plus_one_name: i % 10 === 0 ? `Plus${i}` : null,
+      dietary_restrictions: i % 7 === 0 ? 'Vegetarian' : null,
+      address: i % 8 === 0 ? { 
+        street: `${i} Test St`, 
+        city: 'Test City', 
+        state: 'TS', 
+        zip: `${String(i).padStart(5, '0')}` 
+      } : null
+    })
+  }
+  
+  return guests
+}
+
+const generateTestCSV = (guestCount: number): string => {
+  const headers = [
+    'first_name', 'last_name', 'email', 'phone', 'category', 
+    'side', 'plus_one', 'dietary_restrictions', 'rsvp_status'
+  ]
+  
+  const rows = [headers.join(',')]
+  
+  for (let i = 0; i < guestCount; i++) {
+    const row = [
+      `TestFirst${i}`,
+      `TestLast${Math.floor(i / 3)}`,
+      i % 5 === 0 ? `test${i}@example.com` : '',
+      i % 4 === 0 ? `555-${String(i).padStart(4, '0')}` : '',
+      ['family', 'friends', 'work', 'other'][i % 4],
+      ['partner1', 'partner2', 'mutual'][i % 3],
+      i % 10 === 0 ? 'yes' : 'no',
+      i % 7 === 0 ? 'Vegetarian' : '',
+      'pending'
+    ]
+    rows.push(row.map(field => `"${field}"`).join(','))
+  }
+  
+  return rows.join('\n')
+}
+
+// Test suite
+describe('WS-151 Guest List Builder Integration Tests', () => {
+  let supabase: any
+  let guestService: GuestService
+  let testCoupleId: string
+  let testOrganizationId: string
+  let testUserId: string
+
+  beforeAll(async () => {
+    // Initialize Supabase client
+    supabase = await createClient()
+    guestService = await createGuestService()
+    
+    // Create test organization
+    const { data: org, error: orgError } = await supabase
+      .from('organizations')
+      .insert({
+        name: 'WS-151 Test Org',
+        business_type: 'wedding_planner'
+      })
+      .select()
+      .single()
+    
+    if (orgError) throw orgError
+    testOrganizationId = org.id
+    
+    // Create test client (couple)
+    const { data: client, error: clientError } = await supabase
+      .from('clients')
+      .insert({
+        organization_id: testOrganizationId,
+        first_name: 'Test',
+        last_name: 'Couple',
+        email: 'test-couple@example.com',
+        wedding_date: '2025-06-15'
+      })
+      .select()
+      .single()
+    
+    if (clientError) throw clientError
+    testCoupleId = client.id
+  })
+
+  afterAll(async () => {
+    // Clean up test data
+    await supabase.from('guests').delete().eq('couple_id', testCoupleId)
+    await supabase.from('households').delete().eq('couple_id', testCoupleId)
+    await supabase.from('guest_import_sessions').delete().eq('couple_id', testCoupleId)
+    await supabase.from('clients').delete().eq('id', testCoupleId)
+    await supabase.from('organizations').delete().eq('id', testOrganizationId)
+  })
+
+  beforeEach(async () => {
+    // Clean guests before each test
+    await supabase.from('guests').delete().eq('couple_id', testCoupleId)
+    await supabase.from('households').delete().eq('couple_id', testCoupleId)
+  })
+
+  describe('Guest Service Layer', () => {
+    test('should parse natural language names correctly', () => {
+      const testCases = [
+        {
+          input: 'John Smith',
+          expected: {
+            guests: [{ first_name: 'John', last_name: 'Smith' }],
+            household_detected: false,
+            confidence_score: 95
+          }
+        },
+        {
+          input: 'John and Jane Smith',
+          expected: {
+            guests: [
+              { first_name: 'John', last_name: 'Smith' },
+              { first_name: 'Jane', last_name: 'Smith' }
+            ],
+            household_detected: true,
+            confidence_score: 95
+          }
+        },
+        {
+          input: 'John Smith + 1',
+          expected: {
+            guests: [{ 
+              first_name: 'John', 
+              last_name: 'Smith', 
+              plus_one: true 
+            }],
+            household_detected: false,
+            confidence_score: 90
+          }
+        },
+        {
+          input: 'The Smith Family',
+          expected: {
+            guests: [{ first_name: 'Family', last_name: 'Smith' }],
+            household_detected: true,
+            confidence_score: 70
+          }
+        }
+      ]
+
+      testCases.forEach(({ input, expected }) => {
+        const result = guestService.parseNaturalLanguageNames(input)
+        expect(result.guests).toHaveLength(expected.guests.length)
+        expect(result.household_detected).toBe(expected.household_detected)
+        expect(result.confidence_score).toBe(expected.confidence_score)
+        
+        result.guests.forEach((guest, index) => {
+          expect(guest.first_name).toBe(expected.guests[index].first_name)
+          expect(guest.last_name).toBe(expected.guests[index].last_name)
+          if ('plus_one' in expected.guests[index]) {
+            expect(guest.plus_one).toBe(expected.guests[index].plus_one)
+          }
+        })
+      })
+    })
+
+    test('should create household groups correctly', async () => {
+      const testGuests = [
+        { first_name: 'John', last_name: 'Smith', address: { street: '123 Main St' } },
+        { first_name: 'Jane', last_name: 'Smith', address: { street: '123 Main St' } },
+        { first_name: 'Bob', last_name: 'Jones', address: { street: '456 Oak St' } },
+        { first_name: 'Alice', last_name: 'Johnson', address: { street: '789 Pine St' } }
+      ] as any[]
+
+      const householdGroups = await guestService.createHouseholdGroups(testCoupleId, testGuests)
+      
+      expect(householdGroups).toHaveLength(1) // Only Smith family should be grouped
+      expect(householdGroups[0].guests).toHaveLength(2)
+      expect(householdGroups[0].suggested_name).toContain('Smith')
+    })
+
+    test('should normalize addresses correctly', () => {
+      const testAddresses = [
+        {
+          input: { street: '123 Main Street', city: 'New York', state: 'New York' },
+          expected: { street: '123 main st', city: 'new york', state: 'ny' }
+        },
+        {
+          input: { address_line_1: '456 Oak Avenue', city: 'California', state: 'CA' },
+          expected: { street: '456 oak ave', city: 'california', state: 'ca' }
+        }
+      ]
+
+      testAddresses.forEach(({ input, expected }) => {
+        const normalized = guestService.normalizeAddress(input)
+        expect(normalized.street).toBe(expected.street)
+        expect(normalized.city).toBe(expected.city)
+        expect(normalized.state).toBe(expected.state)
+      })
+    })
+  })
+
+  describe('Performance Tests', () => {
+    test('should handle bulk import of 500 guests in under 10 seconds', async () => {
+      const startTime = Date.now()
+      const testGuests = generateTestGuests(500)
+
+      const result = await guestService.bulkCreateGuests(
+        testCoupleId,
+        testGuests.map(guest => ({ ...guest, couple_id: testCoupleId })),
+        {
+          duplicateHandling: 'skip',
+          createHouseholds: true,
+          batchSize: 100
+        }
+      )
+
+      const endTime = Date.now()
+      const processingTime = endTime - startTime
+
+      expect(processingTime).toBeLessThan(10000) // Less than 10 seconds
+      expect(result.successful_count).toBe(500)
+      expect(result.failed_count).toBe(0)
+      
+      console.log(`Bulk import performance: ${processingTime}ms for 500 guests`)
+      console.log(`Rate: ${Math.round((500 / processingTime) * 1000)} guests/second`)
+    })
+
+    test('should handle search on large guest lists efficiently', async () => {
+      // Create 1000 test guests first
+      const testGuests = generateTestGuests(1000)
+      await guestService.bulkCreateGuests(
+        testCoupleId,
+        testGuests.map(guest => ({ ...guest, couple_id: testCoupleId })),
+        { duplicateHandling: 'skip', createHouseholds: false, batchSize: 200 }
+      )
+
+      const startTime = Date.now()
+      
+      // Test search functionality
+      const searchResult = await guestService.searchGuests(testCoupleId, {
+        search: 'TestFirst1',
+        category: 'family',
+        page: 1,
+        limit: 50
+      })
+
+      const endTime = Date.now()
+      const searchTime = endTime - startTime
+
+      expect(searchTime).toBeLessThan(1000) // Less than 1 second
+      expect(searchResult.guests.length).toBeGreaterThan(0)
+      expect(searchResult.total).toBeGreaterThan(0)
+      
+      console.log(`Search performance: ${searchTime}ms for 1000 guests`)
+    })
+
+    test('should calculate analytics quickly for large guest lists', async () => {
+      // Use existing 1000 guests from previous test
+      const startTime = Date.now()
+      
+      const analytics = await guestService.calculateGuestCounts(testCoupleId)
+      
+      const endTime = Date.now()
+      const analyticsTime = endTime - startTime
+
+      expect(analyticsTime).toBeLessThan(500) // Less than 500ms
+      expect(analytics.total_guests).toBeGreaterThan(0)
+      
+      console.log(`Analytics performance: ${analyticsTime}ms for guest analytics`)
+    })
+  })
+
+  describe('API Endpoint Tests', () => {
+    test('quick-add API should handle natural language input', async () => {
+      // Mock the API request
+      const quickAddModule = await import('@/app/api/guests/quick-add/route')
+      
+      const testCases = [
+        { 
+          input: 'John and Jane Smith',
+          expectedGuestCount: 2,
+          expectedHousehold: true
+        },
+        {
+          input: 'Bob Wilson + 1',
+          expectedGuestCount: 1,
+          expectedPlusOne: true
+        }
+      ]
+
+      for (const testCase of testCases) {
+        const requestBody = {
+          couple_id: testCoupleId,
+          name_input: testCase.input,
+          default_category: 'family',
+          default_side: 'mutual'
+        }
+
+        // This would need proper mocking in a real test environment
+        // For now, we'll test the parsing logic directly
+        const parseResult = guestService.parseNaturalLanguageNames(testCase.input)
+        expect(parseResult.guests).toHaveLength(testCase.expectedGuestCount)
+        
+        if (testCase.expectedHousehold) {
+          expect(parseResult.household_detected).toBe(true)
+        }
+        
+        if (testCase.expectedPlusOne) {
+          expect(parseResult.guests[0].plus_one).toBe(true)
+        }
+      }
+    })
+
+    test('bulk-import API should handle CSV data efficiently', async () => {
+      const csvData = generateTestCSV(100)
+      const Papa = await import('papaparse')
+      
+      const parseResult = Papa.parse(csvData, {
+        header: true,
+        skipEmptyLines: true
+      })
+      
+      expect(parseResult.data).toHaveLength(100)
+      expect(parseResult.errors).toHaveLength(0)
+      
+      // Test the data processing
+      const processedGuests = parseResult.data.map((row: any) => ({
+        couple_id: testCoupleId,
+        first_name: row.first_name,
+        last_name: row.last_name,
+        email: row.email || null,
+        phone: row.phone || null,
+        category: row.category || 'family',
+        side: row.side || 'mutual',
+        rsvp_status: row.rsvp_status || 'pending',
+        plus_one: row.plus_one === 'yes'
+      }))
+
+      const startTime = Date.now()
+      const result = await guestService.bulkCreateGuests(
+        testCoupleId,
+        processedGuests,
+        { duplicateHandling: 'skip', createHouseholds: false, batchSize: 50 }
+      )
+      const endTime = Date.now()
+
+      expect(result.successful_count).toBe(100)
+      expect(endTime - startTime).toBeLessThan(2000) // Less than 2 seconds for 100 guests
+    })
+  })
+
+  describe('Duplicate Detection', () => {
+    test('should detect duplicates accurately', async () => {
+      // Create initial guest
+      const initialGuest = {
+        couple_id: testCoupleId,
+        first_name: 'John',
+        last_name: 'Smith',
+        email: 'john.smith@example.com',
+        phone: '555-1234'
+      }
+
+      const { data: createdGuest } = await supabase
+        .from('guests')
+        .insert(initialGuest)
+        .select()
+        .single()
+
+      // Test duplicate detection
+      const duplicates = await guestService.findDuplicateGuests(
+        testCoupleId,
+        'john.smith@example.com',
+        'John',
+        'Smith',
+        '555-1234'
+      )
+
+      expect(duplicates).toHaveLength(1)
+      expect(duplicates[0].guest_id).toBe(createdGuest.id)
+      expect(duplicates[0].match_score).toBeGreaterThan(80)
+    })
+
+    test('should handle duplicate detection during bulk import', async () => {
+      // Create initial guests
+      await supabase.from('guests').insert([
+        { couple_id: testCoupleId, first_name: 'John', last_name: 'Smith', email: 'john@example.com' },
+        { couple_id: testCoupleId, first_name: 'Jane', last_name: 'Doe', phone: '555-9999' }
+      ])
+
+      // Attempt bulk import with duplicates
+      const bulkGuests = [
+        { couple_id: testCoupleId, first_name: 'John', last_name: 'Smith', email: 'john@example.com' }, // Duplicate
+        { couple_id: testCoupleId, first_name: 'Jane', last_name: 'Doe', phone: '555-9999' }, // Duplicate
+        { couple_id: testCoupleId, first_name: 'Bob', last_name: 'Wilson', email: 'bob@example.com' } // New
+      ]
+
+      const result = await guestService.bulkCreateGuests(
+        testCoupleId,
+        bulkGuests,
+        { duplicateHandling: 'skip', createHouseholds: false, batchSize: 50 }
+      )
+
+      expect(result.successful_count).toBe(1) // Only Bob should be created
+      expect(result.failed_count).toBe(2) // John and Jane should be skipped
+      expect(result.errors).toHaveLength(2)
+    })
+  })
+
+  describe('Performance Validation', () => {
+    test('should provide accurate performance estimates', async () => {
+      const testCases = [
+        { guestCount: 50, expectedTime: 1000, expectedBatch: 100 },
+        { guestCount: 500, expectedTime: 10000, expectedBatch: 50 },
+        { guestCount: 1500, expectedTime: 75000, expectedBatch: 25 }
+      ]
+
+      for (const testCase of testCases) {
+        const performance = await guestService.validatePerformance(testCoupleId, testCase.guestCount)
+        
+        expect(performance.estimated_time_ms).toBeLessThanOrEqual(testCase.expectedTime)
+        expect(performance.recommended_batch_size).toBeLessThanOrEqual(testCase.expectedBatch)
+        
+        if (testCase.guestCount > 1000) {
+          expect(performance.performance_warnings).toContain(
+            'Very large guest list. Consider processing in multiple sessions.'
+          )
+        }
+      }
+    })
+  })
+
+  describe('Data Integrity', () => {
+    test('should maintain data consistency during concurrent operations', async () => {
+      const batchSize = 50
+      const batches = 5
+      
+      // Create multiple concurrent batch operations
+      const concurrentOperations = Array.from({ length: batches }, (_, i) => {
+        const guests = generateTestGuests(batchSize).map(guest => ({
+          ...guest,
+          couple_id: testCoupleId,
+          first_name: `Concurrent${i}_${guest.first_name}`
+        }))
+        
+        return guestService.bulkCreateGuests(
+          testCoupleId,
+          guests,
+          { duplicateHandling: 'skip', createHouseholds: false, batchSize: 25 }
+        )
+      })
+
+      const results = await Promise.all(concurrentOperations)
+      
+      // Verify all operations completed successfully
+      const totalSuccess = results.reduce((sum, result) => sum + result.successful_count, 0)
+      const totalFailed = results.reduce((sum, result) => sum + result.failed_count, 0)
+      
+      expect(totalSuccess).toBe(batchSize * batches)
+      expect(totalFailed).toBe(0)
+
+      // Verify database consistency
+      const { data: allGuests } = await supabase
+        .from('guests')
+        .select('id')
+        .eq('couple_id', testCoupleId)
+
+      expect(allGuests).toHaveLength(batchSize * batches)
+    })
+  })
+})
+
+// Performance benchmark helper
+const benchmark = {
+  async measureBulkImport(guestCount: number, batchSize: number = 100) {
+    const startTime = Date.now()
+    const testGuests = generateTestGuests(guestCount)
+    const guestService = await createGuestService()
+    
+    const result = await guestService.bulkCreateGuests(
+      'test-couple-id',
+      testGuests.map(guest => ({ ...guest, couple_id: 'test-couple-id' })),
+      {
+        duplicateHandling: 'skip',
+        createHouseholds: true,
+        batchSize
+      }
+    )
+    
+    const endTime = Date.now()
+    const processingTime = endTime - startTime
+    
+    return {
+      guestCount,
+      batchSize,
+      processingTime,
+      guestsPerSecond: Math.round((guestCount / processingTime) * 1000),
+      successRate: (result.successful_count / guestCount) * 100,
+      result
+    }
+  }
+}
+
+export { benchmark }

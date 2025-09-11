@@ -1,0 +1,190 @@
+/**
+ * WS-142: Customer Success - Health Score API
+ * Secure API endpoints for health score management
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { getServerSession } from 'next-auth/next';
+import { authOptions } from '@/lib/auth/config';
+import { withSecureValidation } from '@/lib/validation/middleware';
+import { z } from 'zod';
+import { customerHealthService } from '@/lib/services/customer-health-service';
+import { healthScoringEngine } from '@/lib/services/health-scoring-engine';
+import { ratelimit } from '@/lib/ratelimit';
+
+// Validation schemas
+const healthScoreQuerySchema = z.object({
+  userId: z.string().uuid().optional(),
+  organizationId: z.string().uuid().optional(),
+  timeframe: z.enum(['7d', '30d', '90d']).default('30d'),
+  includeRecommendations: z.boolean().default(true),
+  forceRefresh: z.boolean().default(false)
+});
+
+const batchHealthScoreSchema = z.object({
+  userIds: z.array(z.string().uuid()).min(1).max(50),
+  organizationId: z.string().uuid().optional(),
+  timeframe: z.enum(['7d', '30d', '90d']).default('30d')
+});
+
+/**
+ * GET /api/customer-success/health-score
+ * Get health score for current user or specified users
+ */
+export const GET = withSecureValidation(
+  healthScoreQuerySchema,
+  async (request: NextRequest, validatedData) => {
+    // Apply rate limiting
+    const identifier = request.ip ?? 'anonymous';
+    const { success } = await ratelimit.limit(identifier);
+    
+    if (!success) {
+      return NextResponse.json(
+        { error: 'Rate limit exceeded' },
+        { status: 429 }
+      );
+    }
+
+    try {
+      const session = await getServerSession(authOptions);
+      if (!session?.user) {
+        return NextResponse.json(
+          { error: 'Authentication required' },
+          { status: 401 }
+        );
+      }
+
+      const userId = validatedData.userId || session.user.id;
+      const organizationId = validatedData.organizationId || session.user.organizationId;
+
+      // Authorization check: users can only access their own data or organization data if they're an admin
+      if (userId !== session.user.id) {
+        if (!session.user.isAdmin || !organizationId || organizationId !== session.user.organizationId) {
+          return NextResponse.json(
+            { error: 'Access denied' },
+            { status: 403 }
+          );
+        }
+      }
+
+      // Calculate health score
+      const healthResult = await customerHealthService.calculateHealthScoreFromActivity(
+        userId,
+        organizationId,
+        validatedData.timeframe,
+        validatedData.forceRefresh
+      );
+
+      // Get health trends if requested
+      const trends = await healthScoringEngine.getHealthTrends(userId, 30);
+
+      return NextResponse.json({
+        success: true,
+        data: {
+          healthScore: healthResult.healthScore,
+          activitySummary: healthResult.activitySummary,
+          recommendations: validatedData.includeRecommendations ? healthResult.recommendations : [],
+          riskIndicators: healthResult.riskIndicators,
+          trends: trends.slice(0, 30), // Last 30 data points
+          calculatedAt: new Date().toISOString()
+        }
+      });
+
+    } catch (error) {
+      console.error('Health score API error:', error);
+      return NextResponse.json(
+        { 
+          error: 'Failed to calculate health score',
+          message: error instanceof Error ? error.message : 'Unknown error'
+        },
+        { status: 500 }
+      );
+    }
+  }
+);
+
+/**
+ * POST /api/customer-success/health-score/batch
+ * Get health scores for multiple users (admin only)
+ */
+export const POST = withSecureValidation(
+  batchHealthScoreSchema,
+  async (request: NextRequest, validatedData) => {
+    // Apply stricter rate limiting for batch operations
+    const identifier = request.ip ?? 'anonymous';
+    const { success } = await ratelimit.limit(identifier);
+    
+    if (!success) {
+      return NextResponse.json(
+        { error: 'Rate limit exceeded for batch operations' },
+        { status: 429 }
+      );
+    }
+
+    try {
+      const session = await getServerSession(authOptions);
+      if (!session?.user?.isAdmin) {
+        return NextResponse.json(
+          { error: 'Admin access required' },
+          { status: 403 }
+        );
+      }
+
+      const organizationId = validatedData.organizationId || session.user.organizationId;
+
+      // Additional authorization check for organization users
+      if (organizationId && organizationId !== session.user.organizationId) {
+        return NextResponse.json(
+          { error: 'Access denied to organization data' },
+          { status: 403 }
+        );
+      }
+
+      // Process batch health score calculation
+      const batchResults = await customerHealthService.batchCalculateHealthScores(
+        validatedData.userIds,
+        organizationId,
+        validatedData.timeframe
+      );
+
+      // Convert Map to object for JSON response
+      const results: Record<string, any> = {};
+      const errors: Record<string, string> = {};
+
+      for (const [userId, result] of batchResults.entries()) {
+        if (result) {
+          results[userId] = {
+            healthScore: result.healthScore,
+            activitySummary: result.activitySummary,
+            riskLevel: result.healthScore.risk_level,
+            lastCalculated: result.healthScore.calculated_at
+          };
+        } else {
+          errors[userId] = 'Failed to calculate health score';
+        }
+      }
+
+      return NextResponse.json({
+        success: true,
+        data: {
+          results,
+          errors,
+          processedCount: validatedData.userIds.length,
+          successCount: Object.keys(results).length,
+          errorCount: Object.keys(errors).length,
+          calculatedAt: new Date().toISOString()
+        }
+      });
+
+    } catch (error) {
+      console.error('Batch health score API error:', error);
+      return NextResponse.json(
+        { 
+          error: 'Failed to process batch health score calculation',
+          message: error instanceof Error ? error.message : 'Unknown error'
+        },
+        { status: 500 }
+      );
+    }
+  }
+);

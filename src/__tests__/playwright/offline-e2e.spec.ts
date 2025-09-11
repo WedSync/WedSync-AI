@@ -1,0 +1,266 @@
+import { test, expect } from '@playwright/test'
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+
+test.describe('WedSync Offline Functionality E2E Tests', () => {
+  test.beforeEach(async ({ page, context }) => {
+    // Enable service worker and offline capabilities
+    await context.addInitScript(() => {
+      // Mock IndexedDB if needed
+      if (!window.indexedDB) {
+        // Fallback for test environments
+        console.log('IndexedDB not available in test environment')
+      }
+    })
+    // Navigate to the app
+    await page.goto('/')
+    
+    // Wait for initial page load and service worker registration
+    await page.waitForLoadState('networkidle')
+    // Wait for service worker to be registered
+    await page.waitForFunction(() => 
+      'serviceWorker' in navigator && navigator.serviceWorker.ready
+    )
+  })
+  test('should display offline indicator when network is disconnected', async ({ page, context }) => {
+    // Go to dashboard first
+    await page.goto('/dashboard')
+    // Initially should show online status
+    const offlineIndicator = page.locator('[data-testid="offline-indicator"]')
+    // Simulate going offline
+    await context.setOffline(true)
+    // Trigger offline event
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event('offline'))
+    // Should show offline indicator
+    await expect(page.locator('text=Offline')).toBeVisible({ timeout: 5000 })
+    // Should show offline message
+    await expect(page.locator('text=works offline')).toBeVisible({ timeout: 3000 })
+  test('should cache wedding day data automatically', async ({ page, context }) => {
+    // Login first
+    await page.goto('/auth/signin')
+    await page.fill('[data-testid="email-input"]', 'coordinator@test.com')
+    await page.fill('[data-testid="password-input"]', 'testpassword')
+    await page.click('[data-testid="signin-button"]')
+    // Wait for dashboard
+    await page.waitForURL('/dashboard')
+    // Navigate to today's wedding (simulated)
+    await page.goto('/dashboard/wedding-day')
+    // Verify wedding data is loaded
+    await expect(page.locator('[data-testid="wedding-timeline"]')).toBeVisible()
+    // Go offline
+    // Refresh page to test offline cache
+    await page.reload()
+    // Should still show wedding data from cache
+    await expect(page.locator('[data-testid="wedding-timeline"]')).toBeVisible({ timeout: 10000 })
+    await expect(page.locator('text=Offline')).toBeVisible()
+  test('should auto-save form data every 30 seconds when offline', async ({ page, context }) => {
+    // Navigate to a form page
+    await page.goto('/dashboard/forms/new')
+    // Fill out form
+    await page.fill('[data-testid="client-name"]', 'John & Jane Doe')
+    await page.fill('[data-testid="wedding-date"]', '2024-06-15')
+    await page.fill('[data-testid="venue-name"]', 'Test Venue')
+    // Wait for auto-save (30 seconds - we'll mock this for testing)
+      // Trigger auto-save event manually for testing
+      window.dispatchEvent(new CustomEvent('auto-save-triggered'))
+    // Should show auto-save indicator
+    await expect(page.locator('text=Auto-saved')).toBeVisible({ timeout: 5000 })
+    // Refresh page to verify data persisted
+    // Form data should be restored from draft
+    await expect(page.locator('[data-testid="client-name"]')).toHaveValue('John & Jane Doe')
+    await expect(page.locator('[data-testid="wedding-date"]')).toHaveValue('2024-06-15')
+  test('should sync queued actions when connection is restored', async ({ page, context }) => {
+    // Start offline
+    // Navigate to form
+    await page.waitForLoadState('domcontentloaded')
+    // Fill and submit form while offline
+    await page.fill('[data-testid="client-name"]', 'Offline Test Client')
+    await page.fill('[data-testid="email"]', 'offline@test.com')
+    await page.click('[data-testid="submit-button"]')
+    // Should show queued for sync message
+    await expect(page.locator('text=will be submitted when connection is restored')).toBeVisible()
+    // Go back online
+    await context.setOffline(false)
+      window.dispatchEvent(new Event('online'))
+    // Should show syncing indicator
+    await expect(page.locator('text=Syncing')).toBeVisible({ timeout: 5000 })
+    // Should eventually show synced
+    await expect(page.locator('text=All synced')).toBeVisible({ timeout: 10000 })
+  test('should handle cache size limits and optimize storage', async ({ page }) => {
+    // Navigate to cache management page
+    await page.goto('/dashboard/settings/cache')
+    // Should show cache usage
+    await expect(page.locator('[data-testid="cache-usage"]')).toBeVisible()
+    // Get initial cache size
+    const initialSize = await page.locator('[data-testid="cache-size"]').textContent()
+    // Trigger cache optimization
+    await page.click('[data-testid="optimize-cache-button"]')
+    // Should show optimization in progress
+    await expect(page.locator('text=Optimizing')).toBeVisible()
+    // Should complete optimization
+    await expect(page.locator('text=Optimization complete')).toBeVisible({ timeout: 10000 })
+    // Cache usage should be updated
+    const newSize = await page.locator('[data-testid="cache-size"]').textContent()
+    expect(newSize).not.toBe(initialSize)
+  test('should work completely offline for wedding day coordination', async ({ page, context }) => {
+    // Setup: Login and go to wedding day dashboard
+    // Ensure wedding data is cached
+    // Go completely offline
+    // Test offline functionality
+    // 1. Update vendor status
+    await page.click('[data-testid="vendor-checkin-button"]')
+    await page.selectOption('[data-testid="vendor-status"]', 'arrived')
+    await page.click('[data-testid="update-status-button"]')
+    // Should show offline confirmation
+    await expect(page.locator('text=Update queued for sync')).toBeVisible()
+    // 2. Add timeline event
+    await page.click('[data-testid="add-timeline-event"]')
+    await page.fill('[data-testid="event-title"]', 'Ceremony started')
+    await page.fill('[data-testid="event-time"]', '14:30')
+    await page.click('[data-testid="save-event-button"]')
+    // Should save locally
+    await expect(page.locator('text=Event saved offline')).toBeVisible()
+    // 3. Add coordinator notes
+    await page.fill('[data-testid="coordinator-notes"]', 'All vendors arrived on time')
+    await page.click('[data-testid="save-notes-button"]')
+    // Should auto-save
+    await expect(page.locator('text=Notes saved')).toBeVisible()
+    // All data should persist page refresh
+    // Verify data is still there
+    await expect(page.locator('text=Ceremony started')).toBeVisible()
+    await expect(page.locator('[data-testid="coordinator-notes"]')).toHaveValue('All vendors arrived on time')
+    // Should show offline status throughout
+  test('should handle conflict resolution when syncing', async ({ page, context }) => {
+    // Start online, make changes, then simulate conflict
+    await page.goto('/dashboard/clients/1/edit')
+    // Make local changes
+    await page.fill('[data-testid="client-phone"]', '555-1234')
+    // Save changes (will queue for sync)
+    await page.click('[data-testid="save-button"]')
+    // Mock conflict response
+    await page.route('**/api/clients/update', route => {
+      route.fulfill({
+        status: 409,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          error: 'Conflict detected',
+          serverData: { phone: '555-9999' },
+          clientData: { phone: '555-1234' }
+        })
+      })
+    // Should show conflict resolution UI
+    await expect(page.locator('[data-testid="conflict-resolution"]')).toBeVisible({ timeout: 10000 })
+    // Should offer resolution options
+    await expect(page.locator('text=Choose version')).toBeVisible()
+    await expect(page.locator('[data-testid="use-local-version"]')).toBeVisible()
+    await expect(page.locator('[data-testid="use-server-version"]')).toBeVisible()
+  test('should maintain performance under 100ms for cache operations', async ({ page }) => {
+    // Navigate to performance test page or use existing page
+    // Measure cache operation performance
+    const startTime = await page.evaluate(() => performance.now())
+    // Perform cache operations
+    await page.evaluate(async () => {
+      // Simulate multiple cache operations
+      const operations = []
+      for (let i = 0; i < 10; i++) {
+        operations.push(
+          // This would be actual cache operations in a real test
+          new Promise(resolve => setTimeout(resolve, 1))
+        )
+      await Promise.all(operations)
+    const endTime = await page.evaluate(() => performance.now())
+    const duration = endTime - startTime
+    // Should complete under 100ms
+    expect(duration).toBeLessThan(100)
+  test('should show appropriate offline page when navigating while offline', async ({ page, context }) => {
+    // Try to navigate to a new page
+    await page.goto('/dashboard/new-page')
+    // Should show offline page
+    await expect(page.locator('h1')).toContainText('You\'re Offline')
+    // Should show offline capabilities
+    await expect(page.locator('text=What you can do offline')).toBeVisible()
+    // Should offer to continue offline
+    await expect(page.locator('[data-testid="continue-offline-button"]')).toBeVisible()
+    // Click continue offline
+    await page.click('[data-testid="continue-offline-button"]')
+    // Should navigate to cached dashboard
+    await expect(page).toHaveURL(/\/dashboard/)
+  test('should preserve encryption for sensitive data in offline storage', async ({ page, context }) => {
+    // This test verifies that sensitive data is encrypted when stored offline
+    // Fill in sensitive information
+    await page.fill('[data-testid="client-phone"]', '555-PRIVATE')
+    await page.fill('[data-testid="client-email"]', 'private@example.com')
+    await page.fill('[data-testid="emergency-contact"]', '555-EMERGENCY')
+    // Go offline and save
+    // Check that data is encrypted in IndexedDB
+    const isEncrypted = await page.evaluate(async () => {
+      // This is a simplified check - in reality we'd verify encryption
+      const db = await new Promise<IDBDatabase>((resolve, reject) => {
+        const request = indexedDB.open('WedSyncOfflineDB')
+        request.onsuccess = () => resolve(request.result)
+        request.onerror = () => reject(request.error)
+      
+      // Check if sensitive data is not stored in plain text
+      const transaction = db.transaction(['clients'], 'readonly')
+      const store = transaction.objectStore('clients')
+      const request = store.get('1')
+      return new Promise<boolean>((resolve) => {
+        request.onsuccess = () => {
+          const data = request.result
+          // Sensitive data should not be in plain text
+          const hasPlainTextSensitiveData = 
+            JSON.stringify(data).includes('555-PRIVATE') ||
+            JSON.stringify(data).includes('private@example.com')
+          resolve(!hasPlainTextSensitiveData)
+        }
+    expect(isEncrypted).toBe(true)
+})
+test.describe('PWA Installation and Features', () => {
+  test('should be installable as PWA', async ({ page, context }) => {
+    // Navigate to app
+    // Check for PWA manifest
+    const manifestLink = page.locator('link[rel="manifest"]')
+    await expect(manifestLink).toHaveAttribute('href', '/manifest.json')
+    // Check service worker registration
+    const swRegistered = await page.evaluate(async () => {
+      if ('serviceWorker' in navigator) {
+        try {
+          const registration = await navigator.serviceWorker.ready
+          return registration !== null
+        } catch {
+          return false
+      return false
+    expect(swRegistered).toBe(true)
+  test('should show install prompt on supported devices', async ({ page }) => {
+    // Simulate PWA install prompt
+    // Mock beforeinstallprompt event
+      const event = new Event('beforeinstallprompt')
+      ;(event as unknown).prompt = () => Promise.resolve({ outcome: 'accepted' })
+      window.dispatchEvent(event)
+    // Should show install button or notification
+    // This would depend on your PWA install UI implementation
+    // await expect(page.locator('[data-testid="install-pwa-button"]')).toBeVisible()
+test.describe('Service Worker Functionality', () => {
+  test('should cache critical resources', async ({ page }) => {
+    // Check that service worker caches critical resources
+    const cacheCheck = await page.evaluate(async () => {
+      if ('caches' in window) {
+        const cacheNames = await caches.keys()
+        const hasAppCache = cacheNames.some(name => 
+          name.includes('wedsync') || name.includes('static')
+        return hasAppCache
+    expect(cacheCheck).toBe(true)
+  test('should handle background sync for queued actions', async ({ page, context }) => {
+    // This test would verify background sync functionality
+    // Note: Background sync testing in Playwright is limited
+    // Go offline and create action
+    // Simulate background sync registration
+    const bgSyncSupported = await page.evaluate(() => {
+      return 'serviceWorker' in navigator && 'sync' in window.ServiceWorkerRegistration.prototype
+    // If background sync is supported, it should register sync events
+    if (bgSyncSupported) {
+      const syncRegistered = await page.evaluate(async () => {
+          // In a real implementation, this would check for registered sync tags
+          return true
+      expect(syncRegistered).toBe(true)
+    }

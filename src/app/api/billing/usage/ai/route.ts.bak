@@ -1,0 +1,382 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { SubscriptionService } from '@/lib/services/subscriptionService';
+import { FeatureGateService } from '@/lib/billing/featureGating';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+const subscriptionService = new SubscriptionService(supabase, null);
+
+interface AIUsageRequest {
+  service: 'photo_processing' | 'music_recommendations' | 'floral_suggestions' | 'faq_extraction' | 'chatbot_interactions';
+  operation: string;
+  userId?: string;
+  increment?: number;
+  metadata?: {
+    operation_type?: string;
+    processing_time_ms?: number;
+    file_size_mb?: number;
+    quality_level?: string;
+    success?: boolean;
+    error_code?: string;
+  };
+}
+
+/**
+ * POST /api/billing/usage/ai
+ * Track AI service usage for billing and feature gating
+ * Integration point for Teams A, B, C AI services
+ */
+export async function POST(request: NextRequest) {
+  try {
+    const authUser = await getAuthenticatedUser(request);
+    if (!authUser) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body: AIUsageRequest = await request.json();
+    const { service, operation, userId, increment = 1, metadata } = body;
+
+    if (!service || !operation) {
+      return NextResponse.json(
+        { error: 'service and operation are required' },
+        { status: 400 }
+      );
+    }
+
+    // Use authenticated user ID if not provided
+    const targetUserId = userId || authUser.id;
+
+    // Verify user can track usage for this user
+    if (targetUserId !== authUser.id && !isAdmin(authUser)) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
+
+    // Validate AI service type
+    const validServices = [
+      'photo_processing',
+      'music_recommendations', 
+      'floral_suggestions',
+      'faq_extraction',
+      'chatbot_interactions'
+    ];
+
+    if (!validServices.includes(service)) {
+      return NextResponse.json(
+        { error: 'Invalid AI service type' },
+        { status: 400 }
+      );
+    }
+
+    // Get user's subscription details for feature gating
+    const subscriptionDetails = await supabase
+      .rpc('get_user_subscription_details', { p_user_id: targetUserId });
+
+    const userPlan = subscriptionDetails.data?.plan?.tier || 'starter';
+
+    // Check feature access and limits
+    const featureKey = getFeatureKeyForService(service, userPlan);
+    const accessCheck = await supabase
+      .rpc('check_feature_access', { 
+        p_user_id: targetUserId, 
+        p_feature_key: featureKey,
+        p_current_usage: getCurrentUsageForService(subscriptionDetails.data?.usage, service)
+      });
+
+    if (!accessCheck.data?.hasAccess) {
+      return NextResponse.json({
+        error: 'AI service access denied',
+        reason: accessCheck.data?.reason,
+        required_plan: accessCheck.data?.requiredPlan,
+        current_plan: accessCheck.data?.userPlan,
+        upgrade_required: true
+      }, { status: 403 });
+    }
+
+    // Track usage in database
+    const metricName = `ai_${service}`;
+    await subscriptionService.trackUsage(targetUserId, metricName, increment);
+
+    // Record detailed usage history for analytics
+    await supabase
+      .from('usage_history')
+      .insert({
+        user_id: targetUserId,
+        metric_name: metricName,
+        metric_value: increment,
+        period_start: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
+        period_end: new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0),
+        recorded_at: new Date().toISOString(),
+        // Store additional metadata in a separate field if needed
+        metadata: {
+          operation,
+          service_metadata: metadata,
+          request_timestamp: new Date().toISOString()
+        }
+      });
+
+    // Get updated usage and check if approaching limits
+    const updatedUsage = await subscriptionService.getUserUsage(targetUserId);
+    const currentServiceUsage = getCurrentUsageForService(updatedUsage, service);
+    
+    // Calculate usage warnings
+    const usageWarnings = calculateUsageWarnings(
+      currentServiceUsage,
+      accessCheck.data?.usageLimit,
+      userPlan
+    );
+
+    // Prepare response with usage analytics
+    const responseData = {
+      success: true,
+      service,
+      operation,
+      usage_tracked: increment,
+      current_usage: currentServiceUsage,
+      usage_limit: accessCheck.data?.usageLimit || -1,
+      plan: userPlan,
+      warnings: usageWarnings,
+      metadata: {
+        operation_success: metadata?.success !== false,
+        processing_time: metadata?.processing_time_ms,
+        timestamp: new Date().toISOString()
+      }
+    };
+
+    // Add rate limiting headers
+    const response = NextResponse.json(responseData);
+    
+    if (accessCheck.data?.usageLimit && accessCheck.data.usageLimit > 0) {
+      const remaining = Math.max(0, accessCheck.data.usageLimit - currentServiceUsage);
+      response.headers.set('X-RateLimit-Limit', accessCheck.data.usageLimit.toString());
+      response.headers.set('X-RateLimit-Remaining', remaining.toString());
+      response.headers.set('X-RateLimit-Reset', getNextResetTime().toString());
+    }
+
+    return response;
+
+  } catch (error) {
+    console.error('AI usage tracking error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * GET /api/billing/usage/ai
+ * Get AI service usage analytics for the user
+ */
+export async function GET(request: NextRequest) {
+  try {
+    const authUser = await getAuthenticatedUser(request);
+    if (!authUser) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { searchParams } = new URL(request.url);
+    const userId = searchParams.get('userId') || authUser.id;
+    const service = searchParams.get('service');
+    const period = searchParams.get('period') || 'current_month';
+
+    if (userId !== authUser.id && !isAdmin(authUser)) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
+
+    // Get subscription details
+    const subscriptionDetails = await supabase
+      .rpc('get_user_subscription_details', { p_user_id: userId });
+
+    const usage = subscriptionDetails.data?.usage || {};
+    const plan = subscriptionDetails.data?.plan || {};
+
+    // Prepare AI usage breakdown
+    const aiUsage = {
+      photo_processing: {
+        current: usage.ai_photo_processing_count || 0,
+        limit: getServiceLimit(plan, 'photo_processing'),
+        feature_key: getFeatureKeyForService('photo_processing', plan.tier)
+      },
+      music_recommendations: {
+        current: usage.ai_music_recommendations_count || 0,
+        limit: getServiceLimit(plan, 'music_recommendations'),
+        feature_key: getFeatureKeyForService('music_recommendations', plan.tier)
+      },
+      floral_suggestions: {
+        current: usage.ai_floral_suggestions_count || 0,
+        limit: getServiceLimit(plan, 'floral_suggestions'),
+        feature_key: getFeatureKeyForService('floral_suggestions', plan.tier)
+      },
+      faq_extraction: {
+        current: usage.ai_faq_extractions_count || 0,
+        limit: getServiceLimit(plan, 'faq_extraction'),
+        feature_key: getFeatureKeyForService('faq_extraction', plan.tier)
+      },
+      chatbot_interactions: {
+        current: usage.chatbot_interactions_count || 0,
+        limit: getServiceLimit(plan, 'chatbot_interactions'),
+        feature_key: getFeatureKeyForService('chatbot_interactions', plan.tier)
+      }
+    };
+
+    // If specific service requested, return detailed analytics
+    if (service && aiUsage[service as keyof typeof aiUsage]) {
+      const serviceData = aiUsage[service as keyof typeof aiUsage];
+      
+      // Get historical data for the service
+      const { data: historyData } = await supabase
+        .from('usage_history')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('metric_name', `ai_${service}`)
+        .gte('recorded_at', getPeriodStart(period))
+        .order('recorded_at', { ascending: true });
+
+      return NextResponse.json({
+        success: true,
+        service,
+        current_usage: serviceData.current,
+        usage_limit: serviceData.limit,
+        usage_percentage: serviceData.limit > 0 
+          ? Math.round((serviceData.current / serviceData.limit) * 100) 
+          : 0,
+        history: historyData || [],
+        plan: plan.tier,
+        feature_access: serviceData.feature_key
+      });
+    }
+
+    // Return all AI services overview
+    return NextResponse.json({
+      success: true,
+      user_id: userId,
+      plan: plan.tier,
+      ai_services: aiUsage,
+      total_ai_usage: Object.values(aiUsage).reduce((sum, service) => sum + service.current, 0),
+      last_updated: usage.last_updated,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Get AI usage error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+// Helper functions
+
+function getFeatureKeyForService(service: string, userPlan?: string): string {
+  const serviceMap = {
+    'photo_processing': userPlan === 'premium' || userPlan === 'enterprise' ? 'ai:photo_unlimited' : 'ai:photo_processing',
+    'music_recommendations': userPlan === 'premium' || userPlan === 'enterprise' ? 'ai:music_unlimited' : 'ai:music_recommendations',
+    'floral_suggestions': userPlan === 'premium' || userPlan === 'enterprise' ? 'ai:floral_unlimited' : 'ai:floral_suggestions',
+    'faq_extraction': 'ai:faq_extraction',
+    'chatbot_interactions': userPlan === 'enterprise' ? 'ai:chatbot_unlimited' : 'ai:chatbot'
+  };
+  
+  return serviceMap[service] || 'ai:basic';
+}
+
+function getCurrentUsageForService(usage: any, service: string): number {
+  const serviceMap = {
+    'photo_processing': usage?.ai_photo_processing_count || 0,
+    'music_recommendations': usage?.ai_music_recommendations_count || 0,
+    'floral_suggestions': usage?.ai_floral_suggestions_count || 0,
+    'faq_extraction': usage?.ai_faq_extractions_count || 0,
+    'chatbot_interactions': usage?.chatbot_interactions_count || 0
+  };
+  
+  return serviceMap[service] || 0;
+}
+
+function getServiceLimit(plan: any, service: string): number {
+  const limits = plan?.limits || {};
+  
+  // Map service to limit in plan
+  const limitMap = {
+    'photo_processing': 100, // Default professional limit
+    'music_recommendations': 50,
+    'floral_suggestions': 50,
+    'faq_extraction': 20,
+    'chatbot_interactions': 500
+  };
+
+  if (plan.tier === 'premium' || plan.tier === 'enterprise') {
+    return -1; // Unlimited
+  }
+  
+  if (plan.tier === 'professional') {
+    return limitMap[service] || 0;
+  }
+  
+  return 0; // Starter plan has no AI access
+}
+
+function calculateUsageWarnings(current: number, limit: number, plan: string): string[] {
+  const warnings = [];
+  
+  if (limit === -1) return []; // Unlimited
+  if (limit === 0) return ['AI services not available on current plan'];
+  
+  const percentage = (current / limit) * 100;
+  
+  if (percentage >= 90) {
+    warnings.push('Approaching usage limit - consider upgrading plan');
+  } else if (percentage >= 75) {
+    warnings.push('Usage approaching limit');
+  }
+  
+  return warnings;
+}
+
+function getNextResetTime(): number {
+  const now = new Date();
+  const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+  return Math.floor(nextMonth.getTime() / 1000);
+}
+
+function getPeriodStart(period: string): string {
+  const now = new Date();
+  switch (period) {
+    case 'current_month':
+      return new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+    case 'last_month':
+      return new Date(now.getFullYear(), now.getMonth() - 1, 1).toISOString();
+    case 'last_7_days':
+      return new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    default:
+      return new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+  }
+}
+
+// Helper function to get authenticated user
+async function getAuthenticatedUser(request: NextRequest) {
+  const authHeader = request.headers.get('authorization');
+  if (!authHeader?.startsWith('Bearer ')) {
+    return null;
+  }
+
+  try {
+    const token = authHeader.substring(7);
+    const { data, error } = await supabase.auth.getUser(token);
+    
+    if (error || !data.user) {
+      return null;
+    }
+    
+    return data.user;
+  } catch {
+    return null;
+  }
+}
+
+function isAdmin(user: any): boolean {
+  return user?.user_metadata?.role === 'admin' || false;
+}

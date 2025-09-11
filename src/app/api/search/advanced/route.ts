@@ -1,0 +1,433 @@
+/**
+ * WS-248: Advanced Search System - Core Advanced Search API
+ *
+ * GET /api/search/advanced
+ * POST /api/search/advanced
+ *
+ * Advanced wedding vendor search with Elasticsearch integration,
+ * intelligent relevance scoring, and location-based discovery.
+ *
+ * Team B - Round 1 - Advanced Search Backend Focus
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+import { AdvancedSearchService } from '@/lib/services/search/AdvancedSearchService';
+import { SearchAnalytics } from '@/lib/services/search/SearchAnalytics';
+import { RelevanceScoring } from '@/lib/services/search/RelevanceScoring';
+
+// =====================================================================================
+// VALIDATION SCHEMAS
+// =====================================================================================
+
+const AdvancedSearchSchema = z.object({
+  query: z.string().min(1).max(500),
+  searchType: z.enum(['vendors', 'venues', 'services', 'all']).default('all'),
+  location: z
+    .object({
+      latitude: z.number().min(-90).max(90),
+      longitude: z.number().min(-180).max(180),
+      radius: z.number().min(1).max(500).default(50), // km
+      address: z.string().optional(),
+    })
+    .optional(),
+  filters: z
+    .object({
+      vendorTypes: z.array(z.string()).optional(),
+      priceRange: z
+        .object({
+          min: z.number().min(0),
+          max: z.number().min(0),
+        })
+        .optional(),
+      availability: z
+        .object({
+          startDate: z.string(),
+          endDate: z.string(),
+        })
+        .optional(),
+      rating: z.number().min(0).max(5).optional(),
+      verified: z.boolean().optional(),
+      featured: z.boolean().optional(),
+      tags: z.array(z.string()).optional(),
+    })
+    .optional(),
+  sorting: z
+    .object({
+      by: z
+        .enum([
+          'relevance',
+          'distance',
+          'price',
+          'rating',
+          'popularity',
+          'recent',
+        ])
+        .default('relevance'),
+      direction: z.enum(['asc', 'desc']).default('desc'),
+    })
+    .optional(),
+  pagination: z
+    .object({
+      page: z.number().min(1).default(1),
+      limit: z.number().min(1).max(100).default(20),
+    })
+    .optional(),
+  includeAggregations: z.boolean().default(true),
+  includeHighlights: z.boolean().default(true),
+});
+
+const BulkSearchSchema = z.object({
+  searches: z.array(AdvancedSearchSchema).max(10),
+});
+
+// =====================================================================================
+// TYPES & INTERFACES
+// =====================================================================================
+
+interface SearchResult {
+  id: string;
+  type: 'vendor' | 'venue' | 'service';
+  title: string;
+  description: string;
+  vendor: {
+    id: string;
+    name: string;
+    type: string;
+    verified: boolean;
+    rating: number;
+    reviewCount: number;
+    location: {
+      address: string;
+      city: string;
+      state: string;
+      latitude: number;
+      longitude: number;
+    };
+    contact: {
+      email: string;
+      phone: string;
+      website?: string;
+    };
+  };
+  services: Array<{
+    id: string;
+    name: string;
+    category: string;
+    priceRange: {
+      min: number;
+      max: number;
+      currency: string;
+    };
+    availability: boolean;
+  }>;
+  media: {
+    photos: string[];
+    videos: string[];
+    portfolioUrl?: string;
+  };
+  searchMetadata: {
+    score: number;
+    distance?: number;
+    highlights: Record<string, string[]>;
+    matchedTerms: string[];
+  };
+}
+
+interface SearchResponse {
+  success: boolean;
+  results: {
+    hits: SearchResult[];
+    total: number;
+    maxScore: number;
+    aggregations?: Record<string, any>;
+    pagination: {
+      page: number;
+      limit: number;
+      totalPages: number;
+      hasNext: boolean;
+      hasPrev: boolean;
+    };
+    searchMetadata: {
+      query: string;
+      searchType: string;
+      executionTime: number;
+      searchId: string;
+      suggestedQueries?: string[];
+    };
+  };
+  error?: string;
+}
+
+// =====================================================================================
+// API HANDLERS
+// =====================================================================================
+
+export async function GET(request: NextRequest) {
+  return handleSearchRequest(request, 'GET');
+}
+
+export async function POST(request: NextRequest) {
+  return handleSearchRequest(request, 'POST');
+}
+
+async function handleSearchRequest(
+  request: NextRequest,
+  method: 'GET' | 'POST',
+) {
+  const startTime = Date.now();
+
+  try {
+    const supabase = createClient();
+
+    // Authenticate user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { success: false, error: 'Authentication required' },
+        { status: 401 },
+      );
+    }
+
+    // Parse request parameters
+    let searchData;
+    if (method === 'GET') {
+      const { searchParams } = request.nextUrl;
+      searchData = parseGetParameters(searchParams);
+    } else {
+      const body = await request.json();
+
+      // Handle bulk search
+      if (body.searches && Array.isArray(body.searches)) {
+        return handleBulkSearch(body, user.id, supabase);
+      }
+
+      searchData = body;
+    }
+
+    // Validate search parameters
+    const validation = AdvancedSearchSchema.safeParse(searchData);
+    if (!validation.success) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Invalid search parameters',
+          details: validation.error.errors,
+        },
+        { status: 400 },
+      );
+    }
+
+    const params = validation.data;
+
+    // Initialize search service
+    const searchService = new AdvancedSearchService(supabase);
+    const analyticsService = new SearchAnalytics(supabase);
+
+    // Execute search
+    const searchId = generateSearchId();
+    const searchResults = await searchService.executeAdvancedSearch(params, {
+      userId: user.id,
+      searchId,
+      userLocation: params.location,
+    });
+
+    if (!searchResults) {
+      return NextResponse.json(
+        { success: false, error: 'Search execution failed' },
+        { status: 500 },
+      );
+    }
+
+    // Calculate pagination
+    const totalPages = Math.ceil(
+      searchResults.total / params.pagination!.limit,
+    );
+    const pagination = {
+      page: params.pagination!.page,
+      limit: params.pagination!.limit,
+      totalPages,
+      hasNext: params.pagination!.page < totalPages,
+      hasPrev: params.pagination!.page > 1,
+    };
+
+    // Record search analytics asynchronously
+    analyticsService
+      .recordSearch({
+        searchId,
+        userId: user.id,
+        query: params.query,
+        searchType: params.searchType,
+        filters: params.filters || {},
+        location: params.location,
+        resultCount: searchResults.total,
+        executionTime: Date.now() - startTime,
+      })
+      .catch((error) => {
+        console.error('Failed to record search analytics:', error);
+      });
+
+    // Generate suggested queries if low result count
+    let suggestedQueries: string[] | undefined;
+    if (searchResults.total < 5) {
+      suggestedQueries = await searchService.generateSuggestedQueries(
+        params.query,
+        params.searchType,
+        params.location,
+      );
+    }
+
+    const response: SearchResponse = {
+      success: true,
+      results: {
+        hits: searchResults.hits,
+        total: searchResults.total,
+        maxScore: searchResults.maxScore,
+        aggregations: searchResults.aggregations,
+        pagination,
+        searchMetadata: {
+          query: params.query,
+          searchType: params.searchType,
+          executionTime: Date.now() - startTime,
+          searchId,
+          suggestedQueries,
+        },
+      },
+    };
+
+    // Add performance headers
+    const headers = {
+      'X-Search-Time': (Date.now() - startTime).toString(),
+      'X-Search-ID': searchId,
+      'Cache-Control': 'public, max-age=300, stale-while-revalidate=600',
+    };
+
+    return NextResponse.json(response, { headers });
+  } catch (error) {
+    console.error('Advanced search API error:', error);
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Internal server error during advanced search',
+        searchTime: Date.now() - startTime,
+      },
+      { status: 500 },
+    );
+  }
+}
+
+// =====================================================================================
+// HELPER FUNCTIONS
+// =====================================================================================
+
+function parseGetParameters(searchParams: URLSearchParams) {
+  return {
+    query: searchParams.get('q') || '',
+    searchType: searchParams.get('type') || 'all',
+    location:
+      searchParams.get('lat') && searchParams.get('lng')
+        ? {
+            latitude: parseFloat(searchParams.get('lat')!),
+            longitude: parseFloat(searchParams.get('lng')!),
+            radius: searchParams.get('radius')
+              ? parseInt(searchParams.get('radius')!)
+              : 50,
+            address: searchParams.get('address') || undefined,
+          }
+        : undefined,
+    filters: {
+      vendorTypes: searchParams.get('vendor_types')?.split(','),
+      priceRange:
+        searchParams.get('price_min') && searchParams.get('price_max')
+          ? {
+              min: parseInt(searchParams.get('price_min')!),
+              max: parseInt(searchParams.get('price_max')!),
+            }
+          : undefined,
+      availability:
+        searchParams.get('start_date') && searchParams.get('end_date')
+          ? {
+              startDate: searchParams.get('start_date')!,
+              endDate: searchParams.get('end_date')!,
+            }
+          : undefined,
+      rating: searchParams.get('rating')
+        ? parseFloat(searchParams.get('rating')!)
+        : undefined,
+      verified: searchParams.get('verified') === 'true',
+      featured: searchParams.get('featured') === 'true',
+      tags: searchParams.get('tags')?.split(','),
+    },
+    sorting: {
+      by: searchParams.get('sort') || 'relevance',
+      direction: searchParams.get('direction') || 'desc',
+    },
+    pagination: {
+      page: parseInt(searchParams.get('page') || '1'),
+      limit: Math.min(parseInt(searchParams.get('limit') || '20'), 100),
+    },
+    includeAggregations: searchParams.get('aggregations') !== 'false',
+    includeHighlights: searchParams.get('highlights') !== 'false',
+  };
+}
+
+async function handleBulkSearch(body: any, userId: string, supabase: any) {
+  const validation = BulkSearchSchema.safeParse(body);
+  if (!validation.success) {
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Invalid bulk search parameters',
+        details: validation.error.errors,
+      },
+      { status: 400 },
+    );
+  }
+
+  const searchService = new AdvancedSearchService(supabase);
+  const results = [];
+
+  // Execute searches in parallel with concurrency limit
+  const concurrencyLimit = 3;
+  for (let i = 0; i < validation.data.searches.length; i += concurrencyLimit) {
+    const batch = validation.data.searches.slice(i, i + concurrencyLimit);
+    const batchResults = await Promise.all(
+      batch.map(async (searchParams, index) => {
+        try {
+          const searchId = generateSearchId();
+          const result = await searchService.executeAdvancedSearch(
+            searchParams,
+            {
+              userId,
+              searchId,
+              userLocation: searchParams.location,
+            },
+          );
+          return { index: i + index, success: true, result };
+        } catch (error) {
+          console.error(`Bulk search ${i + index} failed:`, error);
+          return { index: i + index, success: false, error: error.message };
+        }
+      }),
+    );
+    results.push(...batchResults);
+  }
+
+  return NextResponse.json({
+    success: true,
+    results: results.sort((a, b) => a.index - b.index),
+  });
+}
+
+function generateSearchId(): string {
+  return `search_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
+}
+
+// Rate limiting middleware
+export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';

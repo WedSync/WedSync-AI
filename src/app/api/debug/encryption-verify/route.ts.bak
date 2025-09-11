@@ -1,0 +1,81 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+
+// Debug endpoint for testing encryption - REMOVE IN PRODUCTION
+export async function POST(request: NextRequest) {
+  // Only allow in development/test environments
+  if (process.env.NODE_ENV === 'production') {
+    return NextResponse.json({ error: 'Not available in production' }, { status: 403 });
+  }
+
+  try {
+    const cookieStore = cookies();
+    const supabase = createRouteHandlerClient({ cookies: () => cookieStore });
+
+    const body = await request.json();
+    const { clientName } = body;
+
+    // Get encrypted fields for verification
+    const { data: encryptedFields } = await supabase
+      .from('encrypted_fields')
+      .select('*')
+      .eq('table_name', 'clients')
+      .limit(10);
+
+    const result: any = {};
+
+    if (encryptedFields && encryptedFields.length > 0) {
+      for (const field of encryptedFields) {
+        const fieldKey = `${field.column_name}_encrypted`;
+        result[fieldKey] = field.encrypted_value.substring(0, 50) + '...'; // Show partial encrypted value
+      }
+    }
+
+    // Check if data contains plaintext (should not)
+    const containsPlaintext = {
+      venue_address: result.venue_address_encrypted?.includes('Beverly Hills') || false,
+      budget_amount: result.budget_amount_encrypted?.includes('85000') || false,
+      dietary_data: result.dietary_data_encrypted?.includes('vegan') || false
+    };
+
+    return NextResponse.json({
+      ...result,
+      encryption_verified: !Object.values(containsPlaintext).some(v => v),
+      plaintext_detected: containsPlaintext
+    });
+
+  } catch (error) {
+    return NextResponse.json({ 
+      error: 'Failed to verify encryption',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    }, { status: 500 });
+  }
+}
+
+// Verify crypto-shredding
+export async function verifyShred(request: NextRequest) {
+  if (process.env.NODE_ENV === 'production') {
+    return NextResponse.json({ error: 'Not available in production' }, { status: 403 });
+  }
+
+  try {
+    const cookieStore = cookies();
+    const supabase = createRouteHandlerClient({ cookies: () => cookieStore });
+
+    const body = await request.json();
+    const { userId } = body;
+
+    const result = await supabase.rpc('verify_crypto_shred', {
+      target_user_id: userId
+    });
+
+    return NextResponse.json(result.data);
+
+  } catch (error) {
+    return NextResponse.json({ 
+      error: 'Failed to verify shredding',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    }, { status: 500 });
+  }
+}

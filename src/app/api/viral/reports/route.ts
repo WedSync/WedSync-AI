@@ -1,0 +1,396 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { ViralReportingService } from '@/lib/services/viral-reporting-service';
+import { ViralCoefficientService } from '@/lib/services/viral-coefficient-service';
+import { z } from 'zod';
+
+const GenerateReportSchema = z.object({
+  report_type: z.enum(['daily', 'weekly', 'monthly', 'custom']),
+  period_start: z.string().datetime().optional(),
+  period_end: z.string().datetime().optional(),
+  include_recommendations: z.boolean().default(true),
+  delivery_method: z.enum(['api', 'email', 'both']).default('api'),
+});
+
+const ReportFiltersSchema = z.object({
+  report_type: z.enum(['daily', 'weekly', 'monthly', 'custom']).optional(),
+  status: z.enum(['generating', 'completed', 'failed']).optional(),
+  date_from: z.string().datetime().optional(),
+  date_to: z.string().datetime().optional(),
+  page: z.string().transform(Number).optional(),
+  limit: z.string().transform(Number).optional(),
+});
+
+/**
+ * POST /api/viral/reports
+ * Generate a new viral coefficient report
+ */
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+
+    // Check authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Authentication required', code: 'AUTH_REQUIRED' },
+        { status: 401 },
+      );
+    }
+
+    const body = await request.json();
+    const validatedData = GenerateReportSchema.parse(body);
+
+    // Validate custom report dates
+    if (validatedData.report_type === 'custom') {
+      if (!validatedData.period_start || !validatedData.period_end) {
+        return NextResponse.json(
+          {
+            error:
+              'period_start and period_end are required for custom reports',
+            code: 'MISSING_DATES',
+          },
+          { status: 400 },
+        );
+      }
+
+      const startDate = new Date(validatedData.period_start);
+      const endDate = new Date(validatedData.period_end);
+
+      if (startDate >= endDate) {
+        return NextResponse.json(
+          {
+            error: 'period_start must be before period_end',
+            code: 'INVALID_DATE_RANGE',
+          },
+          { status: 400 },
+        );
+      }
+
+      // Limit custom report range to 90 days
+      const daysDiff =
+        (endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24);
+      if (daysDiff > 90) {
+        return NextResponse.json(
+          {
+            error: 'Custom report period cannot exceed 90 days',
+            code: 'DATE_RANGE_TOO_LARGE',
+          },
+          { status: 400 },
+        );
+      }
+    }
+
+    const viralService = new ViralCoefficientService(supabase);
+    const reportingService = new ViralReportingService(supabase, viralService);
+
+    // Generate the report
+    const report = await reportingService.generateViralReport(
+      user.id,
+      validatedData.report_type,
+      validatedData.period_start,
+      validatedData.period_end,
+    );
+
+    // Send via email if requested
+    if (
+      validatedData.delivery_method === 'email' ||
+      validatedData.delivery_method === 'both'
+    ) {
+      try {
+        await sendReportByEmail(user, report);
+      } catch (error) {
+        console.warn('Failed to send report by email:', error);
+        // Don't fail the entire request if email fails
+      }
+    }
+
+    return NextResponse.json(
+      {
+        success: true,
+        data: {
+          report_id: report.id,
+          report_type: report.report_type,
+          period: {
+            start: report.period_start,
+            end: report.period_end,
+          },
+          status: report.status,
+          generated_at: report.generated_at,
+          summary: {
+            viral_coefficient: report.metrics.viral_coefficient.current,
+            trend: report.metrics.viral_coefficient.trend,
+            total_recommendations: report.recommendations.length,
+            critical_alerts: report.alerts.filter(
+              (a) => a.severity === 'critical',
+            ).length,
+          },
+        },
+        // Include full report data if delivery_method is 'api' or 'both'
+        report: validatedData.delivery_method !== 'email' ? report : undefined,
+        message: 'Viral coefficient report generated successfully',
+      },
+      { status: 201 },
+    );
+  } catch (error) {
+    console.error('Report generation error:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Invalid report parameters',
+          code: 'VALIDATION_ERROR',
+          details: error.errors,
+        },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      {
+        error: 'Failed to generate report',
+        code: 'REPORT_GENERATION_ERROR',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * GET /api/viral/reports
+ * Get viral coefficient reports with filtering
+ */
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+
+    // Check authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Authentication required', code: 'AUTH_REQUIRED' },
+        { status: 401 },
+      );
+    }
+
+    const url = new URL(request.url);
+    const filters = {
+      report_type: url.searchParams.get('report_type'),
+      status: url.searchParams.get('status'),
+      date_from: url.searchParams.get('date_from'),
+      date_to: url.searchParams.get('date_to'),
+      page: url.searchParams.get('page') || '1',
+      limit: url.searchParams.get('limit') || '20',
+    };
+
+    const validatedFilters = ReportFiltersSchema.parse(filters);
+
+    const viralService = new ViralCoefficientService(supabase);
+    const reportingService = new ViralReportingService(supabase, viralService);
+
+    const result = await reportingService.getViralReports(
+      user.id,
+      validatedFilters,
+    );
+
+    return NextResponse.json({
+      success: true,
+      data: result.reports,
+      pagination: result.pagination,
+      metadata: {
+        total: result.total,
+        filters: validatedFilters,
+        user_id: user.id,
+      },
+    });
+  } catch (error) {
+    console.error('Get reports error:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Invalid query parameters',
+          code: 'VALIDATION_ERROR',
+          details: error.errors,
+        },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      {
+        error: 'Failed to retrieve reports',
+        code: 'FETCH_ERROR',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+const ScheduleReportSchema = z.object({
+  report_type: z.enum(['daily', 'weekly', 'monthly']),
+  schedule: z.object({
+    frequency: z.enum(['daily', 'weekly', 'monthly']),
+    day_of_week: z.number().min(0).max(6).optional(), // 0 = Sunday
+    day_of_month: z.number().min(1).max(31).optional(),
+    time: z.string().regex(/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/), // HH:MM format
+  }),
+  delivery_channels: z.array(z.enum(['email', 'webhook'])).min(1),
+  webhook_url: z.string().url().optional(),
+  is_active: z.boolean().default(true),
+});
+
+/**
+ * PUT /api/viral/reports
+ * Schedule automated report generation
+ */
+export async function PUT(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+
+    // Check authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Authentication required', code: 'AUTH_REQUIRED' },
+        { status: 401 },
+      );
+    }
+
+    const body = await request.json();
+    const validatedData = ScheduleReportSchema.parse(body);
+
+    // Validate webhook URL if webhook delivery is selected
+    if (
+      validatedData.delivery_channels.includes('webhook') &&
+      !validatedData.webhook_url
+    ) {
+      return NextResponse.json(
+        {
+          error: 'webhook_url is required when webhook delivery is selected',
+          code: 'MISSING_WEBHOOK_URL',
+        },
+        { status: 400 },
+      );
+    }
+
+    const scheduleData = {
+      id: crypto.randomUUID(),
+      user_id: user.id,
+      report_type: validatedData.report_type,
+      schedule: validatedData.schedule,
+      delivery_channels: validatedData.delivery_channels,
+      webhook_url: validatedData.webhook_url,
+      is_active: validatedData.is_active,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    // Upsert report schedule (update if exists, insert if new)
+    const { data, error } = await supabase
+      .from('viral_report_schedules')
+      .upsert(scheduleData, {
+        onConflict: 'user_id,report_type',
+        ignoreDuplicates: false,
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        schedule_id: data.id,
+        report_type: data.report_type,
+        schedule: data.schedule,
+        delivery_channels: data.delivery_channels,
+        is_active: data.is_active,
+        next_run: calculateNextRun(data.schedule),
+      },
+      message: 'Report schedule updated successfully',
+    });
+  } catch (error) {
+    console.error('Schedule report error:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Invalid schedule data',
+          code: 'VALIDATION_ERROR',
+          details: error.errors,
+        },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      {
+        error: 'Failed to schedule report',
+        code: 'SCHEDULE_ERROR',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+// Helper functions
+
+async function sendReportByEmail(user: any, report: any): Promise<void> {
+  // This would integrate with Resend to send the report via email
+  // Implementation would format the report as HTML and send via email service
+  console.log(`Sending report ${report.id} to ${user.email}`);
+
+  // Placeholder - would implement actual email sending
+  // const emailService = new EmailService();
+  // await emailService.sendViralReport(user.email, report);
+}
+
+function calculateNextRun(schedule: any): string {
+  const now = new Date();
+  const [hours, minutes] = schedule.time.split(':').map(Number);
+
+  let nextRun = new Date();
+  nextRun.setHours(hours, minutes, 0, 0);
+
+  switch (schedule.frequency) {
+    case 'daily':
+      if (nextRun <= now) {
+        nextRun.setDate(nextRun.getDate() + 1);
+      }
+      break;
+
+    case 'weekly':
+      const targetDayOfWeek = schedule.day_of_week || 1; // Default Monday
+      const currentDayOfWeek = nextRun.getDay();
+      let daysUntilTarget = (targetDayOfWeek - currentDayOfWeek + 7) % 7;
+
+      if (daysUntilTarget === 0 && nextRun <= now) {
+        daysUntilTarget = 7; // Next week
+      }
+
+      nextRun.setDate(nextRun.getDate() + daysUntilTarget);
+      break;
+
+    case 'monthly':
+      const targetDayOfMonth = schedule.day_of_month || 1;
+      nextRun.setDate(targetDayOfMonth);
+
+      if (nextRun <= now) {
+        nextRun.setMonth(nextRun.getMonth() + 1);
+        nextRun.setDate(targetDayOfMonth);
+      }
+      break;
+  }
+
+  return nextRun.toISOString();
+}

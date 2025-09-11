@@ -1,0 +1,287 @@
+/**
+ * WS-130 Round 3: Photography AI Performance and Load Testing
+ * Tests system performance under load and validates caching/rate limiting effectiveness
+ */
+
+import { describe, test, expect, beforeAll, afterAll, jest } from '@jest/test';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { createClient } from '@supabase/supabase-js';
+import { photographyRateLimiter } from '@/lib/ratelimit/photography-rate-limiter';
+import { photographyCache } from '@/lib/cache/photography-cache';
+import { photographyAICoordinator } from '@/lib/integrations/photography-ai-coordinator';
+// Performance test configuration
+const PERFORMANCE_CONFIG = {
+  concurrentUsers: 50,
+  requestsPerUser: 10,
+  maxResponseTime: 5000, // 5 seconds
+  acceptableErrorRate: 0.05, // 5%
+  cacheHitRateTarget: 0.8, // 80%
+  memoryLimitMB: 512,
+  cpuThresholdPercent: 80
+};
+// Test data generator
+const generateTestRequest = (userId: string, clientId: string) => ({
+  client_id: clientId,
+  user_id: userId,
+  wedding_style: 'romantic',
+  preferred_colors: ['#F5F5DC', '#8B4513'],
+  wedding_date: new Date('2024-06-15T18:00:00Z'),
+  mood_board_images: [
+    'https://example.com/wedding1.jpg',
+    'https://example.com/wedding2.jpg'
+  ],
+  budget_range: { min: 2000, max: 5000 },
+  integration_preferences: {
+    sync_with_music: true,
+    sync_with_floral: true,
+    track_usage: true
+  }
+});
+describe('Photography AI Performance Testing', () => {
+  let performanceMetrics: {
+    responseTimes: number[];
+    errors: Error[];
+    cacheHits: number;
+    cacheMisses: number;
+    memoryUsage: NodeJS.MemoryUsage[];
+  };
+  beforeAll(async () => {
+    // Initialize performance tracking
+    performanceMetrics = {
+      responseTimes: [],
+      errors: [],
+      cacheHits: 0,
+      cacheMisses: 0,
+      memoryUsage: []
+    };
+    // Warm up caches
+    await warmupSystem();
+  });
+  afterAll(async () => {
+    // Generate performance report
+    generatePerformanceReport();
+    
+    // Cleanup
+    await photographyCache.clearAll();
+    await photographyRateLimiter.shutdown();
+  describe('Load Testing', () => {
+    test('should handle concurrent requests from multiple users', async () => {
+      const concurrentRequests = [];
+      const userIds = Array.from({ length: PERFORMANCE_CONFIG.concurrentUsers }, (_, i) => `load-test-user-${i}`);
+      
+      // Create concurrent requests
+      for (const userId of userIds) {
+        for (let i = 0; i < PERFORMANCE_CONFIG.requestsPerUser; i++) {
+          const request = generateTestRequest(userId, `client-${userId}-${i}`);
+          concurrentRequests.push(measureRequest(() => 
+            photographyAICoordinator.analyzeWithFullIntegration(request)
+          ));
+        }
+      }
+      // Execute all requests concurrently
+      const results = await Promise.allSettled(concurrentRequests);
+      // Analyze results
+      const successful = results.filter(r => r.status === 'fulfilled').length;
+      const failed = results.filter(r => r.status === 'rejected').length;
+      const errorRate = failed / results.length;
+      // Verify performance requirements
+      expect(errorRate).toBeLessThanOrEqual(PERFORMANCE_CONFIG.acceptableErrorRate);
+      expect(successful).toBeGreaterThan(0);
+      // Check response times
+      const averageResponseTime = performanceMetrics.responseTimes.reduce((a, b) => a + b, 0) / performanceMetrics.responseTimes.length;
+      expect(averageResponseTime).toBeLessThan(PERFORMANCE_CONFIG.maxResponseTime);
+      // Verify 95th percentile response time
+      const sortedTimes = performanceMetrics.responseTimes.sort((a, b) => a - b);
+      const p95Index = Math.floor(sortedTimes.length * 0.95);
+      const p95ResponseTime = sortedTimes[p95Index];
+      expect(p95ResponseTime).toBeLessThan(PERFORMANCE_CONFIG.maxResponseTime * 1.5);
+    }, 120000); // 2 minute timeout for load test
+    test('should scale linearly with user count', async () => {
+      const userCounts = [1, 5, 10, 25];
+      const scalingMetrics = [];
+      for (const userCount of userCounts) {
+        const startTime = Date.now();
+        const requests = Array.from({ length: userCount }, (_, i) => 
+          measureRequest(() => photographyAICoordinator.analyzeWithFullIntegration(
+            generateTestRequest(`scale-test-user-${i}`, `scale-client-${i}`)
+          ))
+        );
+        await Promise.allSettled(requests);
+        const totalTime = Date.now() - startTime;
+        
+        scalingMetrics.push({
+          userCount,
+          totalTime,
+          averageTimePerUser: totalTime / userCount
+        });
+      // Verify linear scaling (within reasonable bounds)
+      for (let i = 1; i < scalingMetrics.length; i++) {
+        const prev = scalingMetrics[i - 1];
+        const curr = scalingMetrics[i];
+        const scalingFactor = curr.totalTime / prev.totalTime;
+        const userFactor = curr.userCount / prev.userCount;
+        // Scaling should be roughly linear (allow 50% overhead for coordination)
+        expect(scalingFactor).toBeLessThan(userFactor * 1.5);
+    });
+  describe('Caching Performance', () => {
+    test('should achieve target cache hit rate under load', async () => {
+      // Create repeated requests that should hit cache
+      const commonRequest = generateTestRequest('cache-test-user', 'cache-test-client');
+      // First request (cache miss)
+      await photographyAICoordinator.analyzeWithFullIntegration(commonRequest);
+      // Multiple subsequent requests (should hit cache)
+      const cachedRequests = Array.from({ length: 20 }, () =>
+        measureRequest(() => photographyAICoordinator.analyzeWithFullIntegration(commonRequest))
+      );
+      await Promise.allSettled(cachedRequests);
+      // Get cache statistics
+      const cacheStats = photographyCache.getCacheStats();
+      const hitRate = cacheStats.cache_hits / cacheStats.total_requests;
+      expect(hitRate).toBeGreaterThan(PERFORMANCE_CONFIG.cacheHitRateTarget);
+    test('should maintain cache performance under memory pressure', async () => {
+      // Fill cache with large amount of data
+      const largeDataRequests = [];
+      for (let i = 0; i < 100; i++) {
+        const request = generateTestRequest(`memory-test-user-${i}`, `memory-test-client-${i}`);
+        request.mood_board_images = Array.from({ length: 10 }, (_, j) => `https://example.com/large-image-${i}-${j}.jpg`);
+        largeDataRequests.push(photographyAICoordinator.analyzeWithFullIntegration(request));
+      await Promise.allSettled(largeDataRequests);
+      // Verify cache is still responsive
+      const startTime = Date.now();
+      await photographyCache.get('test-key');
+      const cacheAccessTime = Date.now() - startTime;
+      expect(cacheAccessTime).toBeLessThan(100); // Should respond within 100ms
+      // Check memory usage
+      const memoryUsage = process.memoryUsage();
+      const memoryUsageMB = memoryUsage.heapUsed / 1024 / 1024;
+      expect(memoryUsageMB).toBeLessThan(PERFORMANCE_CONFIG.memoryLimitMB);
+  describe('Rate Limiting Performance', () => {
+    test('should handle high-volume rate limit checks efficiently', async () => {
+      const rateLimitChecks = [];
+      // Create many concurrent rate limit checks
+      for (let i = 0; i < 1000; i++) {
+        rateLimitChecks.push(measureRequest(() => 
+          photographyRateLimiter.checkLimit(`rate-test-user-${i % 50}`) // 50 unique users
+        ));
+      const results = await Promise.allSettled(rateLimitChecks);
+      const totalTime = Date.now() - startTime;
+      // Verify performance
+      const averageCheckTime = totalTime / results.length;
+      expect(averageCheckTime).toBeLessThan(10); // Each check should take < 10ms on average
+      // Verify accuracy
+      expect(successful / results.length).toBeGreaterThan(0.95); // 95% success rate
+    test('should maintain queue performance under load', async () => {
+      // Fill queue with many requests
+      const queueRequests = [];
+        // Mock rate limit exceeded to force queueing
+        vi.spyOn(photographyRateLimiter as any, 'checkLimit').mockResolvedValueOnce({
+          success: false,
+          pending: i + 1,
+          retryAfter: 30
+        queueRequests.push(photographyRateLimiter.checkLimit(`queue-test-user-${i}`));
+      await Promise.allSettled(queueRequests);
+      // Verify queue processing performance
+      const queueStats = await photographyRateLimiter.getStatistics();
+      expect(queueStats.queueLength).toBeLessThan(150); // Queue shouldn't grow unbounded
+      expect(queueStats.averageWaitTime).toBeLessThan(60000); // Average wait < 1 minute
+  describe('Memory Management', () => {
+    test('should not have memory leaks during sustained operation', async () => {
+      const initialMemory = process.memoryUsage();
+      // Run sustained operation
+      for (let cycle = 0; cycle < 10; cycle++) {
+        const cycleRequests = [];
+        for (let i = 0; i < 50; i++) {
+          const request = generateTestRequest(`memory-cycle-${cycle}-user-${i}`, `memory-cycle-${cycle}-client-${i}`);
+          cycleRequests.push(photographyAICoordinator.analyzeWithFullIntegration(request));
+        await Promise.allSettled(cycleRequests);
+        // Force garbage collection if available
+        if (global.gc) {
+          global.gc();
+        performanceMetrics.memoryUsage.push(process.memoryUsage());
+      const finalMemory = process.memoryUsage();
+      const memoryGrowth = (finalMemory.heapUsed - initialMemory.heapUsed) / 1024 / 1024; // MB
+      // Memory growth should be reasonable (< 100MB for 500 requests)
+      expect(memoryGrowth).toBeLessThan(100);
+    test('should handle garbage collection gracefully', async () => {
+      // Create objects that will need garbage collection
+      const largeObjects = [];
+        largeObjects.push({
+          id: i,
+          data: new Array(10000).fill(`large-data-${i}`),
+          timestamp: Date.now()
+      // Clear references
+      largeObjects.length = 0;
+      // Force GC and measure performance during cleanup
+      if (global.gc) {
+        global.gc();
+      // Continue normal operations during GC
+      const request = generateTestRequest('gc-test-user', 'gc-test-client');
+      await photographyAICoordinator.analyzeWithFullIntegration(request);
+      // Operation should complete reasonably quickly even during GC
+      expect(totalTime).toBeLessThan(10000); // < 10 seconds
+  describe('Database Performance', () => {
+    test('should handle database connection pooling efficiently', async () => {
+      const supabase = createClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.SUPABASE_SERVICE_ROLE_KEY!
+      const dbRequests = [];
+      // Create many concurrent database requests
+        dbRequests.push(measureRequest(async () => {
+          const { data } = await supabase
+            .from('clients')
+            .select('id, name')
+            .limit(1);
+          return data;
+        }));
+      const results = await Promise.allSettled(dbRequests);
+      const errorRate = (results.length - successful) / results.length;
+      expect(errorRate).toBeLessThan(0.05); // < 5% error rate
+      expect(successful).toBeGreaterThan(90); // At least 90% success
+  // Helper functions
+  async function measureRequest<T>(requestFn: () => Promise<T>): Promise<T> {
+    const startTime = Date.now();
+    const startMemory = process.memoryUsage();
+    try {
+      const result = await requestFn();
+      const endTime = Date.now();
+      const responseTime = endTime - startTime;
+      performanceMetrics.responseTimes.push(responseTime);
+      // Track cache hits/misses if applicable
+      if (result && typeof result === 'object' && 'cached' in result) {
+        if ((result as unknown).cached) {
+          performanceMetrics.cacheHits++;
+        } else {
+          performanceMetrics.cacheMisses++;
+      return result;
+    } catch (error) {
+      performanceMetrics.errors.push(error as Error);
+      throw error;
+    }
+  async function warmupSystem() {
+    // Warm up caches and connections
+    const warmupRequests = [];
+    for (let i = 0; i < 5; i++) {
+      const request = generateTestRequest(`warmup-user-${i}`, `warmup-client-${i}`);
+      warmupRequests.push(photographyAICoordinator.analyzeWithFullIntegration(request));
+    await Promise.allSettled(warmupRequests);
+    // Clear warmup metrics
+    performanceMetrics.responseTimes = [];
+    performanceMetrics.errors = [];
+  function generatePerformanceReport() {
+    const report = {
+      totalRequests: performanceMetrics.responseTimes.length,
+      averageResponseTime: performanceMetrics.responseTimes.reduce((a, b) => a + b, 0) / performanceMetrics.responseTimes.length,
+      minResponseTime: Math.min(...performanceMetrics.responseTimes),
+      maxResponseTime: Math.max(...performanceMetrics.responseTimes),
+      p95ResponseTime: performanceMetrics.responseTimes.sort((a, b) => a - b)[Math.floor(performanceMetrics.responseTimes.length * 0.95)],
+      errorRate: performanceMetrics.errors.length / performanceMetrics.responseTimes.length,
+      cacheHitRate: performanceMetrics.cacheHits / (performanceMetrics.cacheHits + performanceMetrics.cacheMisses),
+      memoryUsage: {
+        peak: Math.max(...performanceMetrics.memoryUsage.map(m => m.heapUsed)),
+        average: performanceMetrics.memoryUsage.reduce((sum, m) => sum + m.heapUsed, 0) / performanceMetrics.memoryUsage.length
+    console.log('Performance Test Report:', JSON.stringify(report, null, 2));
+    // Assert overall performance requirements
+    expect(report.errorRate).toBeLessThanOrEqual(PERFORMANCE_CONFIG.acceptableErrorRate);
+    expect(report.averageResponseTime).toBeLessThan(PERFORMANCE_CONFIG.maxResponseTime);
+    if (report.cacheHitRate > 0) {
+      expect(report.cacheHitRate).toBeGreaterThan(PERFORMANCE_CONFIG.cacheHitRateTarget);

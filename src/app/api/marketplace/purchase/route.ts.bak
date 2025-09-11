@@ -1,0 +1,76 @@
+/**
+ * WS-115: Marketplace Purchase API Endpoint
+ * Handles purchase session creation and payment processing
+ * 
+ * Team C - Batch 9 - Round 1
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { MarketplacePurchaseService } from '@/lib/services/marketplace-purchase-service';
+import { createClient } from '@/lib/supabase/server';
+import { cookies } from 'next/headers';
+
+/**
+ * POST /api/marketplace/purchase
+ * Create a new purchase session
+ */
+export async function POST(request: NextRequest) {
+  const supabase = await createClient(cookies());
+
+  try {
+    // Authenticate user
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    // Get supplier ID for the authenticated user
+    const { data: supplier, error: supplierError } = await supabase
+      .from('suppliers')
+      .select('id')
+      .eq('user_id', user.id)
+      .single();
+
+    if (supplierError || !supplier) {
+      return NextResponse.json(
+        { error: 'Supplier profile not found' },
+        { status: 404 }
+      );
+    }
+
+    // Parse request body
+    const body = await request.json();
+    const { templateId, paymentMethodId, returnUrl, metadata } = body;
+
+    if (!templateId) {
+      return NextResponse.json(
+        { error: 'Template ID is required' },
+        { status: 400 }
+      );
+    }
+
+    // Create purchase session
+    const session = await MarketplacePurchaseService.createPurchaseSession({
+      templateId,
+      buyerId: supplier.id,
+      paymentMethodId,
+      returnUrl,
+      metadata: {
+        ...metadata,
+        buyerEmail: user.email
+      }
+    });
+
+    return NextResponse.json(session, { status: 200 });
+  } catch (error: any) {
+    console.error('Error creating purchase session:', error);
+    return NextResponse.json(
+      { error: error.message || 'Failed to create purchase session' },
+      { status: 500 }
+    );
+  }
+}

@@ -1,0 +1,420 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { rateLimit, rateLimitConfigs } from '@/lib/rate-limit';
+import { z } from 'zod';
+
+const leadFilterSchema = z.object({
+  status: z.string().optional(),
+  priority: z.enum(['low', 'medium', 'high', 'urgent']).optional(),
+  grade: z.enum(['A+', 'A', 'B', 'C', 'D', 'F']).optional(),
+  stage: z.string().optional(),
+  assignedTo: z.string().uuid().optional(),
+  source: z.string().optional(),
+  minScore: z.coerce.number().min(0).max(100).optional(),
+  maxScore: z.coerce.number().min(0).max(100).optional(),
+  dateFrom: z.string().datetime().optional(),
+  dateTo: z.string().datetime().optional(),
+  search: z.string().optional(),
+  sortBy: z
+    .enum([
+      'created_at',
+      'updated_at',
+      'lead_score',
+      'wedding_date',
+      'follow_up_date',
+    ])
+    .default('updated_at'),
+  sortOrder: z.enum(['asc', 'desc']).default('desc'),
+  limit: z.coerce.number().min(1).max(100).default(20),
+  offset: z.coerce.number().min(0).default(0),
+});
+
+export async function GET(request: NextRequest) {
+  try {
+    // Apply rate limiting
+    const rateLimitResult = await rateLimit(request, rateLimitConfigs.api);
+    if (rateLimitResult) return rateLimitResult;
+
+    const supabase = await createClient();
+    const { data: user } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!profile?.organization_id) {
+      return NextResponse.json(
+        { error: 'No organization found' },
+        { status: 400 },
+      );
+    }
+
+    // Validate query parameters
+    const searchParams = Object.fromEntries(request.nextUrl.searchParams);
+    const validatedParams = leadFilterSchema.parse(searchParams);
+
+    // Build query for leads with enhanced data
+    let query = supabase
+      .from('clients')
+      .select(
+        `
+        *,
+        lead_scores (
+          total_score,
+          score_grade,
+          demographic_score,
+          behavioral_score,
+          engagement_score,
+          fit_score,
+          scoring_factors,
+          last_calculated_at
+        ),
+        lead_sources (
+          source_name,
+          source_category
+        ),
+        assigned_user:user_profiles!clients_assigned_to_fkey (
+          id,
+          first_name,
+          last_name,
+          email
+        ),
+        recent_activities:client_activities (
+          id,
+          activity_type,
+          activity_title,
+          created_at
+        )
+      `,
+        { count: 'exact' },
+      )
+      .eq('organization_id', profile.organization_id);
+
+    // Apply filters
+    if (validatedParams.status) {
+      query = query.eq('status', validatedParams.status);
+    }
+
+    if (validatedParams.priority) {
+      query = query.eq('lead_priority', validatedParams.priority);
+    }
+
+    if (validatedParams.grade) {
+      query = query.eq('lead_grade', validatedParams.grade);
+    }
+
+    if (validatedParams.stage) {
+      query = query.eq('lifecycle_stage', validatedParams.stage);
+    }
+
+    if (validatedParams.assignedTo) {
+      query = query.eq('assigned_to', validatedParams.assignedTo);
+    }
+
+    if (validatedParams.source) {
+      query = query.eq('lead_source_id', validatedParams.source);
+    }
+
+    if (validatedParams.minScore) {
+      query = query.gte('lead_score', validatedParams.minScore);
+    }
+
+    if (validatedParams.maxScore) {
+      query = query.lte('lead_score', validatedParams.maxScore);
+    }
+
+    if (validatedParams.dateFrom) {
+      query = query.gte('created_at', validatedParams.dateFrom);
+    }
+
+    if (validatedParams.dateTo) {
+      query = query.lte('created_at', validatedParams.dateTo);
+    }
+
+    if (validatedParams.search) {
+      query = query.or(`
+        first_name.ilike.%${validatedParams.search}%,
+        last_name.ilike.%${validatedParams.search}%,
+        partner_first_name.ilike.%${validatedParams.search}%,
+        partner_last_name.ilike.%${validatedParams.search}%,
+        email.ilike.%${validatedParams.search}%,
+        venue_name.ilike.%${validatedParams.search}%
+      `);
+    }
+
+    // Apply sorting and pagination
+    const sortOrder = validatedParams.sortOrder === 'asc';
+    query = query
+      .order(validatedParams.sortBy, { ascending: sortOrder })
+      .range(
+        validatedParams.offset,
+        validatedParams.offset + validatedParams.limit - 1,
+      );
+
+    const { data: leads, error, count } = await query;
+
+    if (error) {
+      throw error;
+    }
+
+    // Get summary statistics
+    const { data: stats } = await supabase
+      .from('clients')
+      .select(
+        `
+        status,
+        lead_grade,
+        lead_priority,
+        lead_score
+      `,
+      )
+      .eq('organization_id', profile.organization_id);
+
+    const summary = {
+      totalLeads: count || 0,
+      byStatus: {},
+      byGrade: {},
+      byPriority: {},
+      averageScore: 0,
+      highValueLeads: 0,
+    };
+
+    if (stats) {
+      // Calculate statistics
+      const statusCounts = stats.reduce(
+        (acc, lead) => {
+          acc[lead.status] = (acc[lead.status] || 0) + 1;
+          return acc;
+        },
+        {} as Record<string, number>,
+      );
+
+      const gradeCounts = stats.reduce(
+        (acc, lead) => {
+          acc[lead.lead_grade] = (acc[lead.lead_grade] || 0) + 1;
+          return acc;
+        },
+        {} as Record<string, number>,
+      );
+
+      const priorityCounts = stats.reduce(
+        (acc, lead) => {
+          acc[lead.lead_priority] = (acc[lead.lead_priority] || 0) + 1;
+          return acc;
+        },
+        {} as Record<string, number>,
+      );
+
+      const totalScore = stats.reduce(
+        (sum, lead) => sum + (lead.lead_score || 0),
+        0,
+      );
+      const averageScore =
+        stats.length > 0 ? Math.round(totalScore / stats.length) : 0;
+      const highValueLeads = stats.filter(
+        (lead) => (lead.lead_score || 0) >= 70,
+      ).length;
+
+      summary.byStatus = statusCounts;
+      summary.byGrade = gradeCounts;
+      summary.byPriority = priorityCounts;
+      summary.averageScore = averageScore;
+      summary.highValueLeads = highValueLeads;
+    }
+
+    return NextResponse.json({
+      leads,
+      summary,
+      pagination: {
+        total: count,
+        limit: validatedParams.limit,
+        offset: validatedParams.offset,
+        hasMore: validatedParams.offset + validatedParams.limit < (count || 0),
+      },
+    });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Validation error', details: error.errors },
+        { status: 400 },
+      );
+    }
+    console.error('Error fetching leads:', error);
+    return NextResponse.json(
+      { error: 'Failed to fetch leads' },
+      { status: 500 },
+    );
+  }
+}
+
+const updateLeadSchema = z.object({
+  clientIds: z.array(z.string().uuid()),
+  updates: z.object({
+    status: z.string().optional(),
+    priority: z.enum(['low', 'medium', 'high', 'urgent']).optional(),
+    stage: z.string().optional(),
+    assignedTo: z.string().uuid().optional(),
+    followUpDate: z.string().datetime().optional(),
+    expectedCloseDate: z.string().date().optional(),
+    probabilityToClose: z.number().min(0).max(100).optional(),
+    estimatedValue: z.number().positive().optional(),
+    notes: z.string().optional(),
+  }),
+});
+
+export async function PATCH(request: NextRequest) {
+  try {
+    // Apply rate limiting
+    const rateLimitResult = await rateLimit(request, rateLimitConfigs.api);
+    if (rateLimitResult) return rateLimitResult;
+
+    const supabase = await createClient();
+    const { data: user } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!profile?.organization_id) {
+      return NextResponse.json(
+        { error: 'No organization found' },
+        { status: 400 },
+      );
+    }
+
+    const body = await request.json();
+    const validatedData = updateLeadSchema.parse(body);
+
+    const results = [];
+    const errors = [];
+
+    // Process each client update
+    for (const clientId of validatedData.clientIds) {
+      try {
+        // Verify client belongs to organization
+        const { data: client } = await supabase
+          .from('clients')
+          .select('id, status, organization_id')
+          .eq('id', clientId)
+          .eq('organization_id', profile.organization_id)
+          .single();
+
+        if (!client) {
+          errors.push({ clientId, error: 'Client not found or unauthorized' });
+          continue;
+        }
+
+        // Prepare update data
+        const updateData = {
+          ...validatedData.updates,
+          updated_at: new Date().toISOString(),
+          last_modified_by: user.id,
+        };
+
+        // Convert camelCase to snake_case for database
+        const dbUpdateData = {
+          status: updateData.status,
+          lead_priority: updateData.priority,
+          lifecycle_stage: updateData.stage,
+          assigned_to: updateData.assignedTo,
+          follow_up_date: updateData.followUpDate,
+          expected_close_date: updateData.expectedCloseDate,
+          probability_to_close: updateData.probabilityToClose,
+          estimated_value: updateData.estimatedValue,
+          notes: updateData.notes,
+          updated_at: updateData.updated_at,
+          last_modified_by: updateData.last_modified_by,
+        };
+
+        // Remove undefined values
+        Object.keys(dbUpdateData).forEach((key) => {
+          if (dbUpdateData[key as keyof typeof dbUpdateData] === undefined) {
+            delete dbUpdateData[key as keyof typeof dbUpdateData];
+          }
+        });
+
+        // Update client
+        const { data: updatedClient, error: updateError } = await supabase
+          .from('clients')
+          .update(dbUpdateData)
+          .eq('id', clientId)
+          .select()
+          .single();
+
+        if (updateError) {
+          errors.push({ clientId, error: updateError.message });
+          continue;
+        }
+
+        // Log status change if status was updated
+        if (
+          validatedData.updates.status &&
+          validatedData.updates.status !== client.status
+        ) {
+          await supabase.rpc('update_lead_status', {
+            client_uuid: clientId,
+            new_status: validatedData.updates.status,
+            change_reason: 'Bulk update via API',
+            notes: validatedData.updates.notes,
+          });
+        }
+
+        // Recalculate lead score
+        await supabase.rpc('calculate_lead_score', { client_uuid: clientId });
+
+        // Log activity
+        await supabase.from('client_activities').insert({
+          client_id: clientId,
+          organization_id: profile.organization_id,
+          activity_type: 'lead_updated',
+          activity_title: 'Lead information updated',
+          activity_description: `Lead updated via bulk operation`,
+          performed_by: user.id,
+          metadata: {
+            updates: validatedData.updates,
+            updatedFields: Object.keys(dbUpdateData),
+          },
+        });
+
+        results.push({ clientId, status: 'success', data: updatedClient });
+      } catch (clientError) {
+        console.error(`Error updating client ${clientId}:`, clientError);
+        errors.push({ clientId, error: 'Update failed' });
+      }
+    }
+
+    return NextResponse.json({
+      results,
+      errors,
+      summary: {
+        total: validatedData.clientIds.length,
+        successful: results.length,
+        failed: errors.length,
+      },
+    });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Validation error', details: error.errors },
+        { status: 400 },
+      );
+    }
+    console.error('Error updating leads:', error);
+    return NextResponse.json(
+      { error: 'Failed to update leads' },
+      { status: 500 },
+    );
+  }
+}

@@ -1,0 +1,595 @@
+import { NextRequest, NextResponse } from 'next/server';
+import {
+  CACCalculator,
+  AcquisitionChannel,
+  DateRange,
+  ChannelCACResult,
+} from '@/lib/analytics/cac-calculator';
+import { createClient } from '@supabase/supabase-js';
+
+interface CACChannelsRequest {
+  channels?: string[];
+  dateRange?: {
+    start: string;
+    end: string;
+  };
+  attributionModel?:
+    | 'first_touch'
+    | 'last_touch'
+    | 'linear'
+    | 'time_decay'
+    | 'position_based'
+    | 'all';
+  includeBreakdown?: boolean;
+  groupBy?: 'channel' | 'campaign' | 'month';
+}
+
+interface CACChannelsResponse {
+  channels: ChannelCACAnalysis[];
+  summary: {
+    totalSpend: number;
+    totalNewCustomers: number;
+    blendedCAC: number;
+    bestPerformingChannel: string;
+    worstPerformingChannel: string;
+  };
+  dateRange: DateRange;
+  generatedAt: string;
+}
+
+interface ChannelCACAnalysis {
+  channel: string;
+  campaigns?: string[];
+  metrics: ChannelCACResult;
+  insights: ChannelInsight[];
+  recommendations: string[];
+  riskFactors: string[];
+}
+
+interface ChannelInsight {
+  type: 'trend' | 'performance' | 'efficiency' | 'seasonality';
+  title: string;
+  description: string;
+  impact: 'positive' | 'negative' | 'neutral';
+  confidence: number;
+}
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+);
+
+const cacCalculator = new CACCalculator();
+
+// Authentication
+async function authenticateRequest(request: NextRequest) {
+  try {
+    const authHeader = request.headers.get('Authorization');
+    if (!authHeader?.startsWith('Bearer ')) {
+      return null;
+    }
+
+    const token = authHeader.substring(7);
+    const {
+      data: { user },
+      error,
+    } = await supabase.auth.getUser(token);
+
+    if (error || !user) {
+      return null;
+    }
+
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('role, permissions')
+      .eq('id', user.id)
+      .single();
+
+    const hasPermission =
+      (profile?.permissions || []).includes('analytics:read') ||
+      profile?.role === 'admin' ||
+      profile?.role === 'executive' ||
+      profile?.role === 'marketing';
+
+    if (!hasPermission) {
+      return null;
+    }
+
+    return { userId: user.id, role: profile?.role || 'user' };
+  } catch (error) {
+    console.error('CAC channels authentication error:', error);
+    return null;
+  }
+}
+
+// Get available channels
+async function getAvailableChannels(): Promise<AcquisitionChannel[]> {
+  const { data, error } = await supabase
+    .from('marketing_attribution')
+    .select('channel, campaign_id')
+    .not('conversion_timestamp', 'is', null);
+
+  if (error) throw error;
+
+  // Group by channel and collect campaigns
+  const channelMap = new Map<string, Set<string>>();
+
+  data?.forEach((record) => {
+    if (!channelMap.has(record.channel)) {
+      channelMap.set(record.channel, new Set());
+    }
+    if (record.campaign_id) {
+      channelMap.get(record.channel)!.add(record.campaign_id);
+    }
+  });
+
+  return Array.from(channelMap.entries()).map(([channel, campaigns]) => ({
+    name: channel,
+    type: determineChannelType(channel),
+    campaigns: Array.from(campaigns),
+  }));
+}
+
+function determineChannelType(channel: string): AcquisitionChannel['type'] {
+  const channelLower = channel.toLowerCase();
+  if (channelLower.includes('organic') || channelLower.includes('seo'))
+    return 'organic';
+  if (
+    channelLower.includes('paid') ||
+    channelLower.includes('google') ||
+    channelLower.includes('search')
+  )
+    return 'paid_search';
+  if (
+    channelLower.includes('social') ||
+    channelLower.includes('facebook') ||
+    channelLower.includes('instagram')
+  )
+    return 'social';
+  if (channelLower.includes('email')) return 'email';
+  if (channelLower.includes('referral')) return 'referral';
+  if (channelLower.includes('display')) return 'display';
+  return 'partnership';
+}
+
+// Generate insights for a channel
+function generateChannelInsights(
+  channelResult: ChannelCACResult,
+): ChannelInsight[] {
+  const insights: ChannelInsight[] = [];
+
+  // CAC trend analysis
+  if (channelResult.trends.monthOverMonth < -0.1) {
+    insights.push({
+      type: 'trend',
+      title: 'CAC Improvement Trend',
+      description: `CAC has improved by ${Math.abs(channelResult.trends.monthOverMonth * 100).toFixed(1)}% month-over-month`,
+      impact: 'positive',
+      confidence: 0.8,
+    });
+  } else if (channelResult.trends.monthOverMonth > 0.15) {
+    insights.push({
+      type: 'trend',
+      title: 'CAC Deterioration',
+      description: `CAC has increased by ${(channelResult.trends.monthOverMonth * 100).toFixed(1)}% month-over-month`,
+      impact: 'negative',
+      confidence: 0.8,
+    });
+  }
+
+  // Conversion rate analysis
+  if (channelResult.conversionRate > 0.05) {
+    // 5%
+    insights.push({
+      type: 'performance',
+      title: 'High Conversion Rate',
+      description: `Excellent conversion rate of ${(channelResult.conversionRate * 100).toFixed(1)}%`,
+      impact: 'positive',
+      confidence: 0.9,
+    });
+  } else if (channelResult.conversionRate < 0.01) {
+    // 1%
+    insights.push({
+      type: 'performance',
+      title: 'Low Conversion Rate',
+      description: `Below-average conversion rate of ${(channelResult.conversionRate * 100).toFixed(2)}%`,
+      impact: 'negative',
+      confidence: 0.85,
+    });
+  }
+
+  // Quality score analysis
+  if (channelResult.qualityScore > 0.8) {
+    insights.push({
+      type: 'efficiency',
+      title: 'High Quality Traffic',
+      description:
+        'This channel delivers high-quality customers with strong LTV potential',
+      impact: 'positive',
+      confidence: 0.9,
+    });
+  } else if (channelResult.qualityScore < 0.4) {
+    insights.push({
+      type: 'efficiency',
+      title: 'Quality Concerns',
+      description:
+        'Channel showing lower quality metrics - review targeting and messaging',
+      impact: 'negative',
+      confidence: 0.75,
+    });
+  }
+
+  // Journey length insights
+  if (channelResult.averageJourneyLength > 8) {
+    insights.push({
+      type: 'efficiency',
+      title: 'Complex Customer Journey',
+      description: `Long conversion path (${channelResult.averageJourneyLength.toFixed(1)} touchpoints) may indicate nurturing opportunities`,
+      impact: 'neutral',
+      confidence: 0.7,
+    });
+  }
+
+  return insights;
+}
+
+// Generate recommendations
+function generateChannelRecommendations(
+  channel: string,
+  result: ChannelCACResult,
+  insights: ChannelInsight[],
+): string[] {
+  const recommendations: string[] = [];
+
+  // CAC-based recommendations
+  if (result.cac > 200) {
+    recommendations.push(
+      'CAC exceeds $200 - consider optimizing targeting or reducing spend',
+    );
+  } else if (result.cac < 50 && result.qualityScore > 0.6) {
+    recommendations.push(
+      'Excellent CAC efficiency - consider increasing investment',
+    );
+  }
+
+  // Conversion rate recommendations
+  if (result.conversionRate < 0.02) {
+    recommendations.push(
+      'Low conversion rate - review landing pages and targeting',
+    );
+  }
+
+  // Attribution model recommendations
+  const bestModel = Object.entries(result.cacByModel).sort(
+    ([, a], [, b]) => a - b,
+  )[0];
+
+  if (bestModel[1] < result.cac * 0.8) {
+    recommendations.push(
+      `Consider focusing on ${bestModel[0]} attribution insights for optimization`,
+    );
+  }
+
+  // Channel-specific recommendations
+  if (channel.toLowerCase().includes('paid_search') && result.cac > 150) {
+    recommendations.push(
+      'Paid search CAC high - review keyword quality scores and ad relevance',
+    );
+  }
+
+  if (
+    channel.toLowerCase().includes('social') &&
+    result.averageJourneyLength > 6
+  ) {
+    recommendations.push(
+      'Social media showing long journey - implement retargeting campaigns',
+    );
+  }
+
+  if (channel.toLowerCase().includes('organic') && result.qualityScore > 0.8) {
+    recommendations.push(
+      'Organic traffic performing well - invest in SEO and content marketing',
+    );
+  }
+
+  return recommendations;
+}
+
+// Identify risk factors
+function identifyRiskFactors(
+  channel: string,
+  result: ChannelCACResult,
+): string[] {
+  const risks: string[] = [];
+
+  if (result.newCustomers < 10) {
+    risks.push('Low volume - statistical significance limited');
+  }
+
+  if (result.trends.quarterOverQuarter > 0.5) {
+    risks.push('Rapidly increasing CAC trend');
+  }
+
+  if (result.conversionRate < 0.005) {
+    // 0.5%
+    risks.push('Extremely low conversion rate');
+  }
+
+  if (result.averageTimeToPurchase > 45) {
+    risks.push('Long sales cycle may impact cash flow');
+  }
+
+  return risks;
+}
+
+// GET handler
+export async function GET(request: NextRequest): Promise<NextResponse> {
+  try {
+    const auth = await authenticateRequest(request);
+    if (!auth) {
+      return NextResponse.json(
+        { error: 'Unauthorized access to CAC analytics' },
+        { status: 401 },
+      );
+    }
+
+    const { searchParams } = new URL(request.url);
+
+    // Parse parameters
+    const channelsParam = searchParams.get('channels');
+    const startDate = searchParams.get('startDate');
+    const endDate = searchParams.get('endDate');
+    const attributionModel =
+      (searchParams.get(
+        'attributionModel',
+      ) as CACChannelsRequest['attributionModel']) || 'all';
+    const includeBreakdown = searchParams.get('includeBreakdown') === 'true';
+    const groupBy =
+      (searchParams.get('groupBy') as CACChannelsRequest['groupBy']) ||
+      'channel';
+
+    // Set default date range (last 90 days)
+    const defaultEnd = new Date();
+    const defaultStart = new Date(
+      defaultEnd.getTime() - 90 * 24 * 60 * 60 * 1000,
+    );
+
+    const dateRange: DateRange = {
+      start: startDate ? new Date(startDate) : defaultStart,
+      end: endDate ? new Date(endDate) : defaultEnd,
+    };
+
+    // Validate date range
+    if (dateRange.start >= dateRange.end) {
+      return NextResponse.json(
+        { error: 'Start date must be before end date' },
+        { status: 400 },
+      );
+    }
+
+    // Get channels to analyze
+    const availableChannels = await getAvailableChannels();
+    const channelsToAnalyze = channelsParam
+      ? channelsParam.split(',').map((c) => c.trim())
+      : availableChannels.map((c) => c.name);
+
+    if (channelsToAnalyze.length === 0) {
+      return NextResponse.json(
+        { error: 'No channels found for analysis' },
+        { status: 404 },
+      );
+    }
+
+    // Calculate CAC for each channel
+    const channelAnalyses: ChannelCACAnalysis[] = [];
+    let totalSpend = 0;
+    let totalNewCustomers = 0;
+
+    for (const channelName of channelsToAnalyze) {
+      try {
+        const channelInfo = availableChannels.find(
+          (c) => c.name === channelName,
+        ) || {
+          name: channelName,
+          type: determineChannelType(channelName) as AcquisitionChannel['type'],
+          campaigns: [],
+        };
+
+        const channelResult = await cacCalculator.calculateChannelCAC(
+          channelInfo,
+          dateRange,
+        );
+
+        const insights = generateChannelInsights(channelResult);
+        const recommendations = generateChannelRecommendations(
+          channelName,
+          channelResult,
+          insights,
+        );
+        const riskFactors = identifyRiskFactors(channelName, channelResult);
+
+        channelAnalyses.push({
+          channel: channelName,
+          campaigns: includeBreakdown ? channelInfo.campaigns : undefined,
+          metrics: channelResult,
+          insights,
+          recommendations,
+          riskFactors,
+        });
+
+        totalSpend += channelResult.totalSpend;
+        totalNewCustomers += channelResult.newCustomers;
+      } catch (error) {
+        console.error(`Error analyzing channel ${channelName}:`, error);
+      }
+    }
+
+    // Calculate summary metrics
+    const blendedCAC =
+      totalNewCustomers > 0 ? totalSpend / totalNewCustomers : 0;
+    const bestPerforming = channelAnalyses.reduce((best, current) =>
+      current.metrics.cac > 0 &&
+      (best.metrics.cac === 0 || current.metrics.cac < best.metrics.cac)
+        ? current
+        : best,
+    );
+    const worstPerforming = channelAnalyses.reduce((worst, current) =>
+      current.metrics.cac > worst.metrics.cac ? current : worst,
+    );
+
+    const response: CACChannelsResponse = {
+      channels: channelAnalyses,
+      summary: {
+        totalSpend,
+        totalNewCustomers,
+        blendedCAC,
+        bestPerformingChannel: bestPerforming.channel,
+        worstPerformingChannel: worstPerforming.channel,
+      },
+      dateRange,
+      generatedAt: new Date().toISOString(),
+    };
+
+    // Audit logging
+    await supabase.from('financial_audit_log').insert({
+      user_id: auth.userId,
+      action: 'cac_channel_analysis',
+      resource_type: 'analytics',
+      details: {
+        channels: channelsToAnalyze,
+        dateRange,
+        blendedCAC,
+        totalSpend,
+      },
+    });
+
+    return NextResponse.json(response, {
+      headers: {
+        'Cache-Control': 'private, max-age=300', // 5 minutes cache
+      },
+    });
+  } catch (error) {
+    console.error('CAC channel analysis error:', error);
+    return NextResponse.json(
+      {
+        error: 'Failed to analyze CAC by channels',
+        requestId: `cac-channels-${Date.now()}`,
+      },
+      { status: 500 },
+    );
+  }
+}
+
+// POST handler for custom CAC analysis
+export async function POST(request: NextRequest): Promise<NextResponse> {
+  try {
+    const auth = await authenticateRequest(request);
+    if (!auth) {
+      return NextResponse.json(
+        { error: 'Unauthorized access to CAC analytics' },
+        { status: 401 },
+      );
+    }
+
+    let body: CACChannelsRequest;
+    try {
+      body = await request.json();
+    } catch (error) {
+      return NextResponse.json(
+        { error: 'Invalid JSON request body' },
+        { status: 400 },
+      );
+    }
+
+    // Set default date range if not provided
+    const defaultEnd = new Date();
+    const defaultStart = new Date(
+      defaultEnd.getTime() - 90 * 24 * 60 * 60 * 1000,
+    );
+
+    const dateRange: DateRange = {
+      start: body.dateRange?.start
+        ? new Date(body.dateRange.start)
+        : defaultStart,
+      end: body.dateRange?.end ? new Date(body.dateRange.end) : defaultEnd,
+    };
+
+    // Get channels to analyze
+    const availableChannels = await getAvailableChannels();
+    const channelsToAnalyze = body.channels?.length
+      ? body.channels
+      : availableChannels.map((c) => c.name);
+
+    // Process channels (similar to GET handler)
+    const channelAnalyses: ChannelCACAnalysis[] = [];
+
+    for (const channelName of channelsToAnalyze) {
+      const channelInfo = availableChannels.find(
+        (c) => c.name === channelName,
+      ) || {
+        name: channelName,
+        type: determineChannelType(channelName) as AcquisitionChannel['type'],
+        campaigns: [],
+      };
+
+      const channelResult = await cacCalculator.calculateChannelCAC(
+        channelInfo,
+        dateRange,
+      );
+
+      const insights = generateChannelInsights(channelResult);
+      const recommendations = generateChannelRecommendations(
+        channelName,
+        channelResult,
+        insights,
+      );
+      const riskFactors = identifyRiskFactors(channelName, channelResult);
+
+      channelAnalyses.push({
+        channel: channelName,
+        campaigns: body.includeBreakdown ? channelInfo.campaigns : undefined,
+        metrics: channelResult,
+        insights,
+        recommendations,
+        riskFactors,
+      });
+    }
+
+    const totalSpend = channelAnalyses.reduce(
+      (sum, c) => sum + c.metrics.totalSpend,
+      0,
+    );
+    const totalNewCustomers = channelAnalyses.reduce(
+      (sum, c) => sum + c.metrics.newCustomers,
+      0,
+    );
+
+    const response: CACChannelsResponse = {
+      channels: channelAnalyses,
+      summary: {
+        totalSpend,
+        totalNewCustomers,
+        blendedCAC: totalNewCustomers > 0 ? totalSpend / totalNewCustomers : 0,
+        bestPerformingChannel: channelAnalyses.reduce((best, current) =>
+          current.metrics.cac > 0 &&
+          (best.metrics.cac === 0 || current.metrics.cac < best.metrics.cac)
+            ? current
+            : best,
+        ).channel,
+        worstPerformingChannel: channelAnalyses.reduce((worst, current) =>
+          current.metrics.cac > worst.metrics.cac ? current : worst,
+        ).channel,
+      },
+      dateRange,
+      generatedAt: new Date().toISOString(),
+    };
+
+    return NextResponse.json(response, { status: 200 });
+  } catch (error) {
+    console.error('Custom CAC analysis error:', error);
+    return NextResponse.json(
+      { error: 'Failed to perform custom CAC analysis' },
+      { status: 500 },
+    );
+  }
+}

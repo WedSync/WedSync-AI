@@ -1,0 +1,602 @@
+/**
+ * WS-177 Security Compliance Reporting API Route
+ * Team D Round 1 Implementation - Ultra Hard Compliance Standards
+ * 
+ * GDPR, SOC2, CCPA compliance reporting with celebrity protection
+ * Automated compliance validation and audit trail generation
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { AuditSecurityManager } from '@/lib/security/AuditSecurityManager';
+import { SecurityMonitoringService } from '@/lib/security/SecurityMonitoringService';
+import { WeddingSecurityContext, SecuritySeverity } from '@/lib/security/SecurityLayerInterface';
+import { z } from 'zod';
+
+const complianceReportSchema = z.object({
+  organization_id: z.string().uuid(),
+  report_type: z.enum(['gdpr', 'soc2', 'ccpa', 'pci', 'comprehensive']),
+  date_range: z.object({
+    start_date: z.string().datetime(),
+    end_date: z.string().datetime()
+  }),
+  include_celebrity_data: z.boolean().default(false),
+  client_ids: z.array(z.string().uuid()).optional(),
+  vendor_ids: z.array(z.string().uuid()).optional(),
+  compliance_scope: z.object({
+    data_processing: z.boolean().default(true),
+    access_controls: z.boolean().default(true),
+    encryption_status: z.boolean().default(true),
+    audit_trails: z.boolean().default(true),
+    incident_response: z.boolean().default(true),
+    vendor_compliance: z.boolean().default(true),
+    celebrity_protection: z.boolean().default(false)
+  }).optional()
+});
+
+interface ComplianceMetrics {
+  total_events: number;
+  critical_violations: number;
+  high_violations: number;
+  medium_violations: number;
+  low_violations: number;
+  celebrity_events: number;
+  vendor_violations: number;
+  data_processing_events: number;
+  access_control_events: number;
+  encryption_events: number;
+  compliance_score: number;
+  risk_level: 'low' | 'medium' | 'high' | 'critical';
+}
+
+interface ComplianceViolation {
+  id: string;
+  type: string;
+  severity: SecuritySeverity;
+  description: string;
+  timestamp: string;
+  organization_id: string;
+  client_id?: string;
+  vendor_id?: string;
+  celebrity_client: boolean;
+  remediation_status: 'open' | 'in_progress' | 'resolved';
+  remediation_notes?: string;
+}
+
+export async function POST(request: NextRequest) {
+  const auditManager = new AuditSecurityManager();
+  const monitoringService = new SecurityMonitoringService();
+  
+  try {
+    const supabase = createClient();
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized access to compliance reporting' },
+        { status: 401 }
+      );
+    }
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validatedRequest = complianceReportSchema.parse(body);
+
+    // Create wedding security context
+    const context: WeddingSecurityContext = {
+      userId: user.id,
+      organizationId: validatedRequest.organization_id,
+      userRole: user.app_metadata?.role || 'user',
+      celebrityTier: 'standard',
+      permissions: user.app_metadata?.permissions || [],
+      sessionId: user.app_metadata?.session_id || 'unknown',
+      ipAddress: request.ip || 'unknown',
+      userAgent: request.headers.get('user-agent') || 'unknown'
+    };
+
+    // Validate compliance reporting access
+    const hasComplianceAccess = await auditManager.validateComplianceAccess(context);
+    if (!hasComplianceAccess) {
+      await auditManager.logSecurityEvent({
+        event_type: 'unauthorized_access',
+        severity: 'high',
+        organization_id: validatedRequest.organization_id,
+        user_id: user.id,
+        event_details: {
+          action: 'compliance_report_unauthorized_access',
+          requested_report_type: validatedRequest.report_type,
+          ip_address: context.ipAddress
+        }
+      });
+      
+      return NextResponse.json(
+        { error: 'Insufficient privileges for compliance reporting' },
+        { status: 403 }
+      );
+    }
+
+    // Celebrity data access validation
+    if (validatedRequest.include_celebrity_data) {
+      const celebrityAccess = await auditManager.validateCelebrityAccess(context);
+      if (!celebrityAccess) {
+        await auditManager.logSecurityEvent({
+          event_type: 'celebrity_unauthorized_access',
+          severity: 'critical',
+          organization_id: validatedRequest.organization_id,
+          user_id: user.id,
+          celebrity_client: true,
+          event_details: {
+            action: 'celebrity_compliance_report_denied',
+            requested_report_type: validatedRequest.report_type
+          }
+        });
+        
+        return NextResponse.json(
+          { error: 'Insufficient privileges for celebrity compliance data' },
+          { status: 403 }
+        );
+      }
+    }
+
+    // Generate compliance report
+    const reportId = `comp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const reportTimestamp = new Date().toISOString();
+
+    // Query audit logs within date range
+    let auditQuery = supabase
+      .from('audit_logs')
+      .select('*')
+      .eq('organization_id', validatedRequest.organization_id)
+      .gte('created_at', validatedRequest.date_range.start_date)
+      .lte('created_at', validatedRequest.date_range.end_date);
+
+    if (validatedRequest.client_ids?.length) {
+      auditQuery = auditQuery.in('client_id', validatedRequest.client_ids);
+    }
+
+    if (validatedRequest.vendor_ids?.length) {
+      auditQuery = auditQuery.in('vendor_id', validatedRequest.vendor_ids);
+    }
+
+    if (!validatedRequest.include_celebrity_data) {
+      auditQuery = auditQuery.eq('celebrity_client', false);
+    }
+
+    const { data: auditLogs, error: auditError } = await auditQuery;
+    if (auditError) {
+      throw auditError;
+    }
+
+    // Query compliance violations
+    let violationsQuery = supabase
+      .from('compliance_violations')
+      .select('*')
+      .eq('organization_id', validatedRequest.organization_id)
+      .gte('created_at', validatedRequest.date_range.start_date)
+      .lte('created_at', validatedRequest.date_range.end_date);
+
+    if (!validatedRequest.include_celebrity_data) {
+      violationsQuery = violationsQuery.eq('celebrity_client', false);
+    }
+
+    const { data: violations, error: violationsError } = await violationsQuery;
+    if (violationsError) {
+      throw violationsError;
+    }
+
+    // Calculate compliance metrics
+    const metrics: ComplianceMetrics = {
+      total_events: auditLogs?.length || 0,
+      critical_violations: violations?.filter(v => v.severity === 'critical').length || 0,
+      high_violations: violations?.filter(v => v.severity === 'high').length || 0,
+      medium_violations: violations?.filter(v => v.severity === 'medium').length || 0,
+      low_violations: violations?.filter(v => v.severity === 'low').length || 0,
+      celebrity_events: auditLogs?.filter(log => log.celebrity_client).length || 0,
+      vendor_violations: violations?.filter(v => v.vendor_id).length || 0,
+      data_processing_events: auditLogs?.filter(log => 
+        ['data_access', 'data_modification', 'data_export'].includes(log.event_type)
+      ).length || 0,
+      access_control_events: auditLogs?.filter(log => 
+        ['login_attempt', 'unauthorized_access', 'permission_denied'].includes(log.event_type)
+      ).length || 0,
+      encryption_events: auditLogs?.filter(log => 
+        log.event_type.includes('encryption') || log.event_type.includes('crypto')
+      ).length || 0,
+      compliance_score: 0,
+      risk_level: 'low'
+    };
+
+    // Calculate compliance score (0-100)
+    const totalViolations = metrics.critical_violations + metrics.high_violations + 
+                           metrics.medium_violations + metrics.low_violations;
+    const violationWeight = (metrics.critical_violations * 10) + 
+                           (metrics.high_violations * 5) + 
+                           (metrics.medium_violations * 2) + 
+                           (metrics.low_violations * 1);
+    
+    metrics.compliance_score = Math.max(0, 100 - (violationWeight / Math.max(1, metrics.total_events) * 100));
+    
+    // Determine risk level
+    if (metrics.critical_violations > 0 || metrics.compliance_score < 60) {
+      metrics.risk_level = 'critical';
+    } else if (metrics.high_violations > 5 || metrics.compliance_score < 80) {
+      metrics.risk_level = 'high';
+    } else if (metrics.medium_violations > 10 || metrics.compliance_score < 90) {
+      metrics.risk_level = 'medium';
+    } else {
+      metrics.risk_level = 'low';
+    }
+
+    // Generate compliance-specific analysis
+    let complianceAnalysis: any = {};
+
+    switch (validatedRequest.report_type) {
+      case 'gdpr':
+        complianceAnalysis = await generateGDPRAnalysis(auditLogs, violations);
+        break;
+      case 'soc2':
+        complianceAnalysis = await generateSOC2Analysis(auditLogs, violations);
+        break;
+      case 'ccpa':
+        complianceAnalysis = await generateCCPAAnalysis(auditLogs, violations);
+        break;
+      case 'pci':
+        complianceAnalysis = await generatePCIAnalysis(auditLogs, violations);
+        break;
+      case 'comprehensive':
+        complianceAnalysis = {
+          gdpr: await generateGDPRAnalysis(auditLogs, violations),
+          soc2: await generateSOC2Analysis(auditLogs, violations),
+          ccpa: await generateCCPAAnalysis(auditLogs, violations),
+          pci: await generatePCIAnalysis(auditLogs, violations)
+        };
+        break;
+    }
+
+    // Wedding-specific compliance considerations
+    const weddingCompliance = {
+      vendor_data_handling: violations?.filter(v => 
+        v.vendor_id && ['data_processing', 'access_control'].includes(v.type)
+      ) || [],
+      guest_data_protection: auditLogs?.filter(log => 
+        log.event_details?.resource?.includes('guest') || 
+        log.event_details?.resource?.includes('attendee')
+      ) || [],
+      venue_security_compliance: violations?.filter(v => 
+        v.description?.includes('venue') || v.description?.includes('location')
+      ) || [],
+      payment_processing_compliance: auditLogs?.filter(log => 
+        log.event_type.includes('payment') || log.event_details?.resource?.includes('payment')
+      ) || []
+    };
+
+    // Celebrity protection compliance
+    const celebrityCompliance = validatedRequest.include_celebrity_data ? {
+      celebrity_access_violations: violations?.filter(v => v.celebrity_client) || [],
+      celebrity_data_breaches: auditLogs?.filter(log => 
+        log.celebrity_client && log.event_type === 'data_breach'
+      ) || [],
+      enhanced_monitoring_events: auditLogs?.filter(log => 
+        log.celebrity_client && log.severity === 'critical'
+      ) || [],
+      privacy_protection_measures: auditLogs?.filter(log => 
+        log.celebrity_client && log.event_type.includes('privacy')
+      ) || []
+    } : null;
+
+    // Store compliance report
+    const { error: reportError } = await supabase
+      .from('compliance_reports')
+      .insert({
+        id: reportId,
+        organization_id: validatedRequest.organization_id,
+        report_type: validatedRequest.report_type,
+        generated_by: user.id,
+        date_range_start: validatedRequest.date_range.start_date,
+        date_range_end: validatedRequest.date_range.end_date,
+        metrics: metrics,
+        compliance_analysis: complianceAnalysis,
+        wedding_compliance: weddingCompliance,
+        celebrity_compliance: celebrityCompliance,
+        total_events_analyzed: metrics.total_events,
+        violations_found: totalViolations,
+        compliance_score: metrics.compliance_score,
+        risk_level: metrics.risk_level,
+        created_at: reportTimestamp
+      });
+
+    if (reportError) {
+      throw reportError;
+    }
+
+    // Log compliance report generation
+    await auditManager.logSecurityEvent({
+      event_type: 'compliance_report_generated',
+      severity: 'medium',
+      organization_id: validatedRequest.organization_id,
+      user_id: user.id,
+      event_details: {
+        action: 'compliance_report_generation',
+        report_id: reportId,
+        report_type: validatedRequest.report_type,
+        events_analyzed: metrics.total_events,
+        violations_found: totalViolations,
+        compliance_score: metrics.compliance_score,
+        celebrity_data_included: validatedRequest.include_celebrity_data
+      },
+      compliance_flags: {
+        gdpr_relevant: ['gdpr', 'comprehensive'].includes(validatedRequest.report_type),
+        soc2_relevant: ['soc2', 'comprehensive'].includes(validatedRequest.report_type),
+        ccpa_relevant: ['ccpa', 'comprehensive'].includes(validatedRequest.report_type),
+        pci_relevant: ['pci', 'comprehensive'].includes(validatedRequest.report_type)
+      }
+    });
+
+    // Trigger alerts for critical compliance issues
+    if (metrics.risk_level === 'critical' || metrics.compliance_score < 60) {
+      await monitoringService.triggerSecurityAlert({
+        type: 'compliance_critical',
+        severity: 'critical',
+        celebrityClient: validatedRequest.include_celebrity_data,
+        organizationId: validatedRequest.organization_id,
+        message: `Critical compliance issues detected in ${validatedRequest.report_type} report`,
+        context: {
+          report_id: reportId,
+          compliance_score: metrics.compliance_score,
+          risk_level: metrics.risk_level,
+          critical_violations: metrics.critical_violations
+        }
+      });
+    }
+
+    return NextResponse.json({
+      success: true,
+      report_id: reportId,
+      report_type: validatedRequest.report_type,
+      organization_id: validatedRequest.organization_id,
+      generated_at: reportTimestamp,
+      date_range: validatedRequest.date_range,
+      metrics: metrics,
+      compliance_analysis: complianceAnalysis,
+      wedding_compliance: weddingCompliance,
+      celebrity_compliance: celebrityCompliance,
+      recommendations: await generateComplianceRecommendations(metrics, violations),
+      download_url: `/api/security/compliance/download/${reportId}`,
+      message: 'Compliance report generated successfully'
+    }, { status: 201 });
+
+  } catch (error) {
+    console.error('Compliance report API error:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { 
+          error: 'Validation error', 
+          details: error.errors,
+          message: 'Compliance report request validation failed'
+        },
+        { status: 400 }
+      );
+    }
+
+    return NextResponse.json(
+      { 
+        error: 'Internal server error',
+        message: 'Failed to generate compliance report'
+      },
+      { status: 500 }
+    );
+  }
+}
+
+async function generateGDPRAnalysis(auditLogs: any[], violations: any[]) {
+  return {
+    data_processing_lawfulness: {
+      total_processing_events: auditLogs?.filter(log => 
+        ['data_access', 'data_modification', 'data_export'].includes(log.event_type)
+      ).length || 0,
+      lawful_basis_documented: auditLogs?.filter(log => 
+        log.event_details?.gdpr_lawful_basis
+      ).length || 0,
+      violations: violations?.filter(v => v.type === 'gdpr_processing') || []
+    },
+    consent_management: {
+      consent_requests: auditLogs?.filter(log => 
+        log.event_type === 'consent_requested'
+      ).length || 0,
+      consent_withdrawals: auditLogs?.filter(log => 
+        log.event_type === 'consent_withdrawn'
+      ).length || 0,
+      violations: violations?.filter(v => v.type === 'gdpr_consent') || []
+    },
+    data_subject_rights: {
+      access_requests: auditLogs?.filter(log => 
+        log.event_type === 'data_subject_access_request'
+      ).length || 0,
+      deletion_requests: auditLogs?.filter(log => 
+        log.event_type === 'data_subject_deletion_request'
+      ).length || 0,
+      portability_requests: auditLogs?.filter(log => 
+        log.event_type === 'data_portability_request'
+      ).length || 0,
+      violations: violations?.filter(v => v.type === 'gdpr_rights') || []
+    },
+    breach_notifications: {
+      breaches_detected: auditLogs?.filter(log => 
+        log.event_type === 'data_breach'
+      ).length || 0,
+      authority_notifications: auditLogs?.filter(log => 
+        log.event_type === 'breach_authority_notification'
+      ).length || 0,
+      subject_notifications: auditLogs?.filter(log => 
+        log.event_type === 'breach_subject_notification'
+      ).length || 0,
+      violations: violations?.filter(v => v.type === 'gdpr_breach') || []
+    }
+  };
+}
+
+async function generateSOC2Analysis(auditLogs: any[], violations: any[]) {
+  return {
+    security: {
+      access_control_events: auditLogs?.filter(log => 
+        ['login_attempt', 'unauthorized_access', 'permission_denied'].includes(log.event_type)
+      ).length || 0,
+      security_violations: violations?.filter(v => v.type === 'soc2_security') || []
+    },
+    availability: {
+      system_downtime_events: auditLogs?.filter(log => 
+        log.event_type === 'system_downtime'
+      ).length || 0,
+      availability_violations: violations?.filter(v => v.type === 'soc2_availability') || []
+    },
+    processing_integrity: {
+      data_integrity_events: auditLogs?.filter(log => 
+        log.event_type === 'data_integrity_check'
+      ).length || 0,
+      integrity_violations: violations?.filter(v => v.type === 'soc2_integrity') || []
+    },
+    confidentiality: {
+      encryption_events: auditLogs?.filter(log => 
+        log.event_type.includes('encryption')
+      ).length || 0,
+      confidentiality_violations: violations?.filter(v => v.type === 'soc2_confidentiality') || []
+    },
+    privacy: {
+      privacy_events: auditLogs?.filter(log => 
+        log.event_type.includes('privacy')
+      ).length || 0,
+      privacy_violations: violations?.filter(v => v.type === 'soc2_privacy') || []
+    }
+  };
+}
+
+async function generateCCPAAnalysis(auditLogs: any[], violations: any[]) {
+  return {
+    consumer_rights: {
+      right_to_know_requests: auditLogs?.filter(log => 
+        log.event_type === 'ccpa_right_to_know'
+      ).length || 0,
+      right_to_delete_requests: auditLogs?.filter(log => 
+        log.event_type === 'ccpa_right_to_delete'
+      ).length || 0,
+      opt_out_requests: auditLogs?.filter(log => 
+        log.event_type === 'ccpa_opt_out'
+      ).length || 0,
+      violations: violations?.filter(v => v.type === 'ccpa_consumer_rights') || []
+    },
+    sale_of_information: {
+      data_sales: auditLogs?.filter(log => 
+        log.event_type === 'data_sale'
+      ).length || 0,
+      third_party_disclosures: auditLogs?.filter(log => 
+        log.event_type === 'third_party_disclosure'
+      ).length || 0,
+      violations: violations?.filter(v => v.type === 'ccpa_sale') || []
+    },
+    disclosure_requirements: {
+      privacy_notice_updates: auditLogs?.filter(log => 
+        log.event_type === 'privacy_notice_update'
+      ).length || 0,
+      violations: violations?.filter(v => v.type === 'ccpa_disclosure') || []
+    }
+  };
+}
+
+async function generatePCIAnalysis(auditLogs: any[], violations: any[]) {
+  return {
+    secure_network: {
+      firewall_events: auditLogs?.filter(log => 
+        log.event_type.includes('firewall')
+      ).length || 0,
+      network_violations: violations?.filter(v => v.type === 'pci_network') || []
+    },
+    cardholder_data_protection: {
+      payment_processing_events: auditLogs?.filter(log => 
+        log.event_type.includes('payment')
+      ).length || 0,
+      data_protection_violations: violations?.filter(v => v.type === 'pci_data_protection') || []
+    },
+    vulnerability_management: {
+      vulnerability_scans: auditLogs?.filter(log => 
+        log.event_type === 'vulnerability_scan'
+      ).length || 0,
+      security_updates: auditLogs?.filter(log => 
+        log.event_type === 'security_update'
+      ).length || 0,
+      violations: violations?.filter(v => v.type === 'pci_vulnerability') || []
+    },
+    access_control: {
+      access_control_events: auditLogs?.filter(log => 
+        log.event_type.includes('access') && log.event_details?.resource?.includes('payment')
+      ).length || 0,
+      violations: violations?.filter(v => v.type === 'pci_access_control') || []
+    }
+  };
+}
+
+async function generateComplianceRecommendations(metrics: ComplianceMetrics, violations: any[]) {
+  const recommendations = [];
+
+  if (metrics.critical_violations > 0) {
+    recommendations.push({
+      priority: 'critical',
+      category: 'immediate_action',
+      title: 'Address Critical Compliance Violations',
+      description: `${metrics.critical_violations} critical violations require immediate attention`,
+      action_items: [
+        'Review all critical violations within 24 hours',
+        'Implement immediate remediation measures',
+        'Notify relevant stakeholders and authorities if required',
+        'Document remediation actions taken'
+      ]
+    });
+  }
+
+  if (metrics.compliance_score < 80) {
+    recommendations.push({
+      priority: 'high',
+      category: 'compliance_improvement',
+      title: 'Improve Overall Compliance Score',
+      description: `Current compliance score of ${metrics.compliance_score}% needs improvement`,
+      action_items: [
+        'Implement additional security controls',
+        'Enhance monitoring and detection capabilities',
+        'Provide additional compliance training to staff',
+        'Review and update compliance policies'
+      ]
+    });
+  }
+
+  if (metrics.celebrity_events > 0) {
+    recommendations.push({
+      priority: 'high',
+      category: 'celebrity_protection',
+      title: 'Enhance Celebrity Client Protection',
+      description: 'Celebrity client events detected - ensure enhanced protection measures',
+      action_items: [
+        'Review celebrity access logs for anomalies',
+        'Verify enhanced monitoring is active',
+        'Confirm additional privacy controls are in place',
+        'Validate celebrity tier access restrictions'
+      ]
+    });
+  }
+
+  if (metrics.vendor_violations > 5) {
+    recommendations.push({
+      priority: 'medium',
+      category: 'vendor_management',
+      title: 'Strengthen Vendor Compliance',
+      description: `${metrics.vendor_violations} vendor violations indicate need for stronger controls`,
+      action_items: [
+        'Review vendor access policies',
+        'Implement additional vendor monitoring',
+        'Conduct vendor security assessments',
+        'Update vendor agreements with compliance requirements'
+      ]
+    });
+  }
+
+  return recommendations;
+}

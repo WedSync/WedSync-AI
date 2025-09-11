@@ -1,0 +1,919 @@
+'use client';
+
+import React, { useState, useEffect } from 'react';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Progress } from '@/components/ui/progress';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  LineChart,
+  Line,
+  PieChart,
+  Pie,
+  Cell,
+  Area,
+  AreaChart,
+  Legend,
+} from 'recharts';
+import {
+  TrendingUp,
+  TrendingDown,
+  Clock,
+  Users,
+  AlertTriangle,
+  CheckCircle,
+  Calendar,
+  Target,
+  BarChart3,
+  PieChart as PieChartIcon,
+  Activity,
+  Zap,
+  RefreshCw,
+  Download,
+  Filter,
+  Loader2,
+  Calendar as CalendarIcon,
+  Trophy,
+  AlertCircle,
+  Flag,
+  Route,
+} from 'lucide-react';
+import { toast } from '@/components/ui/use-toast';
+
+interface ProgressAnalyticsDashboardProps {
+  weddingId: string;
+  weddings?: {
+    id: string;
+    client_name: string;
+    wedding_date: string;
+  }[];
+  onRefresh?: () => void;
+}
+
+interface WeddingProgressAnalytics {
+  wedding_id: string;
+  wedding_name: string;
+  wedding_date: Date;
+  days_until_wedding: number;
+  progress_metrics: {
+    total_tasks: number;
+    completed_tasks: number;
+    in_progress_tasks: number;
+    todo_tasks: number;
+    blocked_tasks: number;
+    overdue_tasks: number;
+    completion_rate: number;
+    on_time_completion_rate: number;
+    average_completion_time: number;
+    estimated_completion_date: Date | null;
+    velocity: number;
+  };
+  category_breakdown: {
+    category: string;
+    total_tasks: number;
+    completed_tasks: number;
+    completion_rate: number;
+    average_duration: number;
+    total_estimated_hours: number;
+    total_actual_hours: number;
+    efficiency_ratio: number;
+  }[];
+  deadline_analytics: {
+    upcoming_deadlines: {
+      task_id: string;
+      title: string;
+      deadline: Date;
+      days_remaining: number;
+      priority: string;
+      assigned_to: string | null;
+    }[];
+    overdue_tasks: {
+      task_id: string;
+      title: string;
+      deadline: Date;
+      days_overdue: number;
+      priority: string;
+      assigned_to: string | null;
+    }[];
+    deadline_distribution: {
+      this_week: number;
+      next_week: number;
+      this_month: number;
+      later: number;
+    };
+  };
+  critical_path_health: number;
+  risk_level: 'low' | 'medium' | 'high' | 'critical';
+  completion_forecast: Date | null;
+}
+
+interface TeamPerformanceMetrics {
+  team_member_id: string;
+  name: string;
+  role: string;
+  total_assigned: number;
+  completed: number;
+  in_progress: number;
+  overdue: number;
+  completion_rate: number;
+  average_completion_time: number;
+  efficiency_score: number;
+  workload_utilization: number;
+  specialties: string[];
+}
+
+interface TaskTrendData {
+  date: string;
+  completed: number;
+  created: number;
+  in_progress: number;
+  overdue: number;
+  cumulative_completed: number;
+  velocity: number;
+}
+
+export default function ProgressAnalyticsDashboard({
+  weddingId,
+  weddings = [],
+  onRefresh,
+}: ProgressAnalyticsDashboardProps) {
+  const [selectedWedding, setSelectedWedding] = useState(weddingId);
+  const [analytics, setAnalytics] = useState<WeddingProgressAnalytics | null>(
+    null,
+  );
+  const [teamMetrics, setTeamMetrics] = useState<TeamPerformanceMetrics[]>([]);
+  const [trendData, setTrendData] = useState<TaskTrendData[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [trendPeriod, setTrendPeriod] = useState('30');
+
+  useEffect(() => {
+    if (selectedWedding) {
+      fetchAnalytics();
+    }
+  }, [selectedWedding, trendPeriod]);
+
+  const fetchAnalytics = async () => {
+    setLoading(true);
+    try {
+      // Fetch all analytics data in parallel
+      const [analyticsRes, teamRes, trendRes] = await Promise.all([
+        fetch(
+          `/api/tasks/analytics?action=wedding_progress&weddingId=${selectedWedding}`,
+        ),
+        fetch(
+          `/api/tasks/analytics?action=team_performance&weddingId=${selectedWedding}`,
+        ),
+        fetch(
+          `/api/tasks/analytics?action=trend_data&weddingId=${selectedWedding}&days=${trendPeriod}`,
+        ),
+      ]);
+
+      const [analyticsData, teamData, trendDataRes] = await Promise.all([
+        analyticsRes.json(),
+        teamRes.json(),
+        trendRes.json(),
+      ]);
+
+      if (analyticsData.success) {
+        setAnalytics(analyticsData.analytics);
+      }
+
+      if (teamData.success) {
+        setTeamMetrics(teamData.team_metrics);
+      }
+
+      if (trendDataRes.success) {
+        setTrendData(trendDataRes.trend_data);
+      }
+    } catch (error) {
+      console.error('Failed to fetch analytics:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to load analytics data',
+        variant: 'destructive',
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const getRiskLevelColor = (riskLevel: string) => {
+    const colors = {
+      low: 'text-green-600 bg-green-100',
+      medium: 'text-yellow-600 bg-yellow-100',
+      high: 'text-orange-600 bg-orange-100',
+      critical: 'text-red-600 bg-red-100',
+    };
+    return (
+      colors[riskLevel as keyof typeof colors] || 'text-gray-600 bg-gray-100'
+    );
+  };
+
+  const getPriorityColor = (priority: string) => {
+    const colors = {
+      critical: 'text-red-600',
+      high: 'text-orange-600',
+      medium: 'text-yellow-600',
+      low: 'text-green-600',
+    };
+    return colors[priority as keyof typeof colors] || 'text-gray-600';
+  };
+
+  const categoryChartData =
+    analytics?.category_breakdown.map((cat) => ({
+      name: cat.category.replace('_', ' '),
+      completed: cat.completed_tasks,
+      total: cat.total_tasks,
+      completion_rate: cat.completion_rate,
+      efficiency: cat.efficiency_ratio * 100,
+    })) || [];
+
+  const deadlineDistributionData = analytics
+    ? [
+        {
+          name: 'This Week',
+          value: analytics.deadline_analytics.deadline_distribution.this_week,
+          color: '#ef4444',
+        },
+        {
+          name: 'Next Week',
+          value: analytics.deadline_analytics.deadline_distribution.next_week,
+          color: '#f97316',
+        },
+        {
+          name: 'This Month',
+          value: analytics.deadline_analytics.deadline_distribution.this_month,
+          color: '#eab308',
+        },
+        {
+          name: 'Later',
+          value: analytics.deadline_analytics.deadline_distribution.later,
+          color: '#22c55e',
+        },
+      ]
+    : [];
+
+  const teamPerformanceData = teamMetrics.map((member) => ({
+    name: member.name,
+    efficiency: member.efficiency_score,
+    completion_rate: member.completion_rate,
+    workload: member.workload_utilization,
+    completed: member.completed,
+    overdue: member.overdue,
+  }));
+
+  if (loading && !analytics) {
+    return (
+      <div className="flex items-center justify-center p-8">
+        <Loader2 className="h-8 w-8 animate-spin" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Header Controls */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <h2 className="text-2xl font-bold">Progress Analytics</h2>
+          {weddings.length > 1 && (
+            <Select value={selectedWedding} onValueChange={setSelectedWedding}>
+              <SelectTrigger className="w-64">
+                <SelectValue placeholder="Select wedding" />
+              </SelectTrigger>
+              <SelectContent>
+                {weddings.map((wedding) => (
+                  <SelectItem key={wedding.id} value={wedding.id}>
+                    {wedding.client_name} -{' '}
+                    {new Date(wedding.wedding_date).toLocaleDateString()}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+        </div>
+
+        <div className="flex items-center gap-2">
+          <Select value={trendPeriod} onValueChange={setTrendPeriod}>
+            <SelectTrigger className="w-32">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="7">7 days</SelectItem>
+              <SelectItem value="14">14 days</SelectItem>
+              <SelectItem value="30">30 days</SelectItem>
+              <SelectItem value="60">60 days</SelectItem>
+            </SelectContent>
+          </Select>
+
+          <Button
+            variant="outline"
+            onClick={fetchAnalytics}
+            disabled={loading}
+            className="flex items-center gap-2"
+          >
+            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+            Refresh
+          </Button>
+
+          <Button variant="outline" className="flex items-center gap-2">
+            <Download className="h-4 w-4" />
+            Export
+          </Button>
+        </div>
+      </div>
+
+      {analytics && (
+        <>
+          {/* Key Metrics Overview */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">
+                  Completion Rate
+                </CardTitle>
+                <BarChart3 className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">
+                  {Math.round(analytics.progress_metrics.completion_rate)}%
+                </div>
+                <Progress
+                  value={analytics.progress_metrics.completion_rate}
+                  className="mt-2"
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  {analytics.progress_metrics.completed_tasks} of{' '}
+                  {analytics.progress_metrics.total_tasks} tasks
+                </p>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">
+                  Risk Level
+                </CardTitle>
+                <AlertTriangle className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <Badge className={getRiskLevelColor(analytics.risk_level)}>
+                  {analytics.risk_level.toUpperCase()}
+                </Badge>
+                <div className="mt-2">
+                  <div className="text-sm text-muted-foreground">
+                    Critical Path Health:{' '}
+                    {Math.round(analytics.critical_path_health)}%
+                  </div>
+                  <Progress
+                    value={analytics.critical_path_health}
+                    className="mt-1"
+                  />
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">
+                  Days Until Wedding
+                </CardTitle>
+                <Calendar className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">
+                  {analytics.days_until_wedding > 0
+                    ? analytics.days_until_wedding
+                    : 'Today!'}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {new Date(analytics.wedding_date).toLocaleDateString()}
+                </p>
+                {analytics.progress_metrics.overdue_tasks > 0 && (
+                  <div className="flex items-center gap-1 mt-2 text-red-600">
+                    <AlertCircle className="h-3 w-3" />
+                    <span className="text-xs">
+                      {analytics.progress_metrics.overdue_tasks} overdue
+                    </span>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Velocity</CardTitle>
+                <Activity className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">
+                  {analytics.progress_metrics.velocity.toFixed(1)}
+                </div>
+                <p className="text-xs text-muted-foreground">tasks per week</p>
+                {analytics.completion_forecast && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Est. completion:{' '}
+                    {new Date(
+                      analytics.completion_forecast,
+                    ).toLocaleDateString()}
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Main Analytics Tabs */}
+          <Tabs defaultValue="overview" className="w-full">
+            <TabsList className="grid w-full max-w-lg grid-cols-4">
+              <TabsTrigger value="overview">Overview</TabsTrigger>
+              <TabsTrigger value="trends">Trends</TabsTrigger>
+              <TabsTrigger value="team">Team</TabsTrigger>
+              <TabsTrigger value="deadlines">Deadlines</TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="overview" className="space-y-6">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Category Breakdown */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Progress by Category</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <ResponsiveContainer width="100%" height={300}>
+                      <BarChart data={categoryChartData}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis
+                          dataKey="name"
+                          angle={-45}
+                          textAnchor="end"
+                          height={80}
+                          fontSize={12}
+                        />
+                        <YAxis />
+                        <Tooltip />
+                        <Legend />
+                        <Bar
+                          dataKey="completed"
+                          fill="#22c55e"
+                          name="Completed"
+                        />
+                        <Bar dataKey="total" fill="#e5e7eb" name="Total" />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </CardContent>
+                </Card>
+
+                {/* Deadline Distribution */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Upcoming Deadlines</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <ResponsiveContainer width="100%" height={300}>
+                      <PieChart>
+                        <Pie
+                          data={deadlineDistributionData}
+                          cx="50%"
+                          cy="50%"
+                          labelLine={false}
+                          label={({ name, value }) => `${name}: ${value}`}
+                          outerRadius={80}
+                          fill="#8884d8"
+                          dataKey="value"
+                        >
+                          {deadlineDistributionData.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={entry.color} />
+                          ))}
+                        </Pie>
+                        <Tooltip />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </CardContent>
+                </Card>
+              </div>
+
+              {/* Category Details Table */}
+              <Card>
+                <CardHeader>
+                  <CardTitle>Category Performance Details</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Category</TableHead>
+                        <TableHead>Progress</TableHead>
+                        <TableHead>Efficiency</TableHead>
+                        <TableHead>Avg Duration</TableHead>
+                        <TableHead>Total Hours</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {analytics.category_breakdown.map((category) => (
+                        <TableRow key={category.category}>
+                          <TableCell className="font-medium">
+                            {category.category.replace('_', ' ').toUpperCase()}
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex items-center gap-2">
+                              <Progress
+                                value={category.completion_rate}
+                                className="w-20"
+                              />
+                              <span className="text-sm">
+                                {Math.round(category.completion_rate)}%
+                              </span>
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <Badge
+                              variant={
+                                category.efficiency_ratio <= 1
+                                  ? 'default'
+                                  : 'destructive'
+                              }
+                            >
+                              {Math.round(category.efficiency_ratio * 100)}%
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            {Math.round(category.average_duration)}h
+                          </TableCell>
+                          <TableCell>
+                            {Math.round(category.total_estimated_hours)}h
+                            {category.total_actual_hours !==
+                              category.total_estimated_hours && (
+                              <span className="text-sm text-gray-500 ml-1">
+                                (actual:{' '}
+                                {Math.round(category.total_actual_hours)}h)
+                              </span>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="trends" className="space-y-6">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Task Completion Trends</CardTitle>
+                  <CardDescription>
+                    Daily task completion and creation over the selected period
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <ResponsiveContainer width="100%" height={400}>
+                    <AreaChart data={trendData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="date" />
+                      <YAxis />
+                      <Tooltip />
+                      <Legend />
+                      <Area
+                        type="monotone"
+                        dataKey="completed"
+                        stackId="1"
+                        stroke="#22c55e"
+                        fill="#22c55e"
+                      />
+                      <Area
+                        type="monotone"
+                        dataKey="created"
+                        stackId="2"
+                        stroke="#3b82f6"
+                        fill="#3b82f6"
+                      />
+                      <Area
+                        type="monotone"
+                        dataKey="in_progress"
+                        stackId="3"
+                        stroke="#f59e0b"
+                        fill="#f59e0b"
+                      />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>Velocity Trend</CardTitle>
+                  <CardDescription>
+                    7-day rolling average of task completion velocity
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <ResponsiveContainer width="100%" height={300}>
+                    <LineChart data={trendData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="date" />
+                      <YAxis />
+                      <Tooltip />
+                      <Line
+                        type="monotone"
+                        dataKey="velocity"
+                        stroke="#8b5cf6"
+                        strokeWidth={2}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="team" className="space-y-6">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Team Performance</CardTitle>
+                  <CardDescription>
+                    Individual team member performance metrics
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <ResponsiveContainer width="100%" height={400}>
+                    <BarChart data={teamPerformanceData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="name" />
+                      <YAxis />
+                      <Tooltip />
+                      <Legend />
+                      <Bar
+                        dataKey="efficiency"
+                        fill="#22c55e"
+                        name="Efficiency Score"
+                      />
+                      <Bar
+                        dataKey="completion_rate"
+                        fill="#3b82f6"
+                        name="Completion Rate"
+                      />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>Team Member Details</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Team Member</TableHead>
+                        <TableHead>Role</TableHead>
+                        <TableHead>Assigned</TableHead>
+                        <TableHead>Completed</TableHead>
+                        <TableHead>Overdue</TableHead>
+                        <TableHead>Efficiency</TableHead>
+                        <TableHead>Workload</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {teamMetrics.map((member) => (
+                        <TableRow key={member.team_member_id}>
+                          <TableCell className="font-medium">
+                            {member.name}
+                          </TableCell>
+                          <TableCell>{member.role}</TableCell>
+                          <TableCell>{member.total_assigned}</TableCell>
+                          <TableCell>
+                            <div className="flex items-center gap-2">
+                              <span>{member.completed}</span>
+                              <Badge variant="outline">
+                                {Math.round(member.completion_rate)}%
+                              </Badge>
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            {member.overdue > 0 ? (
+                              <Badge variant="destructive">
+                                {member.overdue}
+                              </Badge>
+                            ) : (
+                              <span className="text-green-600">0</span>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex items-center gap-2">
+                              <Progress
+                                value={member.efficiency_score}
+                                className="w-16"
+                              />
+                              <span className="text-sm">
+                                {Math.round(member.efficiency_score)}%
+                              </span>
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <Badge
+                              variant={
+                                member.workload_utilization > 100
+                                  ? 'destructive'
+                                  : 'default'
+                              }
+                            >
+                              {Math.round(member.workload_utilization)}%
+                            </Badge>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="deadlines" className="space-y-6">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Upcoming Deadlines */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <Clock className="h-5 w-5" />
+                      Upcoming Deadlines
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-3">
+                      {analytics.deadline_analytics.upcoming_deadlines
+                        .slice(0, 10)
+                        .map((task) => (
+                          <div
+                            key={task.task_id}
+                            className="flex items-center justify-between p-3 border rounded-lg"
+                          >
+                            <div className="flex-1">
+                              <p className="font-medium">{task.title}</p>
+                              <div className="flex items-center gap-2 mt-1">
+                                <Badge
+                                  className={getPriorityColor(task.priority)}
+                                >
+                                  {task.priority}
+                                </Badge>
+                                <span className="text-sm text-gray-600">
+                                  {task.days_remaining} days remaining
+                                </span>
+                              </div>
+                            </div>
+                            <div className="text-right">
+                              <p className="text-sm font-medium">
+                                {new Date(task.deadline).toLocaleDateString()}
+                              </p>
+                              {task.assigned_to && (
+                                <p className="text-xs text-gray-500">
+                                  Assigned
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+
+                      {analytics.deadline_analytics.upcoming_deadlines
+                        .length === 0 && (
+                        <div className="text-center py-8 text-gray-500">
+                          <CheckCircle className="h-8 w-8 mx-auto mb-2" />
+                          <p>No upcoming deadlines</p>
+                        </div>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* Overdue Tasks */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <AlertTriangle className="h-5 w-5 text-red-600" />
+                      Overdue Tasks
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-3">
+                      {analytics.deadline_analytics.overdue_tasks
+                        .slice(0, 10)
+                        .map((task) => (
+                          <div
+                            key={task.task_id}
+                            className="flex items-center justify-between p-3 border border-red-200 rounded-lg bg-red-50"
+                          >
+                            <div className="flex-1">
+                              <p className="font-medium">{task.title}</p>
+                              <div className="flex items-center gap-2 mt-1">
+                                <Badge variant="destructive">
+                                  {task.priority}
+                                </Badge>
+                                <span className="text-sm text-red-600">
+                                  {task.days_overdue} days overdue
+                                </span>
+                              </div>
+                            </div>
+                            <div className="text-right">
+                              <p className="text-sm font-medium text-red-600">
+                                {new Date(task.deadline).toLocaleDateString()}
+                              </p>
+                              {task.assigned_to && (
+                                <p className="text-xs text-red-500">Assigned</p>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+
+                      {analytics.deadline_analytics.overdue_tasks.length ===
+                        0 && (
+                        <div className="text-center py-8 text-green-500">
+                          <CheckCircle className="h-8 w-8 mx-auto mb-2" />
+                          <p>No overdue tasks!</p>
+                        </div>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+
+              {/* Deadline Distribution Summary */}
+              <Card>
+                <CardHeader>
+                  <CardTitle>Deadline Distribution Summary</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div className="text-center">
+                      <div className="text-2xl font-bold text-red-600">
+                        {
+                          analytics.deadline_analytics.deadline_distribution
+                            .this_week
+                        }
+                      </div>
+                      <p className="text-sm text-gray-600">This Week</p>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-2xl font-bold text-orange-600">
+                        {
+                          analytics.deadline_analytics.deadline_distribution
+                            .next_week
+                        }
+                      </div>
+                      <p className="text-sm text-gray-600">Next Week</p>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-2xl font-bold text-yellow-600">
+                        {
+                          analytics.deadline_analytics.deadline_distribution
+                            .this_month
+                        }
+                      </div>
+                      <p className="text-sm text-gray-600">This Month</p>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-2xl font-bold text-green-600">
+                        {
+                          analytics.deadline_analytics.deadline_distribution
+                            .later
+                        }
+                      </div>
+                      <p className="text-sm text-gray-600">Later</p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+          </Tabs>
+        </>
+      )}
+    </div>
+  );
+}

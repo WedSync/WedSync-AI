@@ -1,0 +1,902 @@
+// =====================================================
+// TIMELINE CONFLICT DETECTION API - WS-160
+// =====================================================
+// Real-time conflict detection and resolution for wedding timelines
+// Supports drag-and-drop timeline interface with comprehensive analysis
+// =====================================================
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+import { withSecureValidation } from '@/lib/validation/middleware';
+
+// =====================================================
+// VALIDATION SCHEMAS
+// =====================================================
+
+const checkConflictRequestSchema = z
+  .object({
+    event_id: z.string().uuid('Invalid event ID format'),
+    new_start_time: z.string().refine((val) => {
+      return !isNaN(Date.parse(val));
+    }, 'Invalid start time format'),
+    new_end_time: z.string().refine((val) => {
+      return !isNaN(Date.parse(val));
+    }, 'Invalid end time format'),
+    ignore_conflicts: z.array(z.string().uuid()).optional(),
+  })
+  .refine((data) => {
+    const startTime = new Date(data.new_start_time);
+    const endTime = new Date(data.new_end_time);
+    return startTime < endTime;
+  }, 'Start time must be before end time');
+
+// =====================================================
+// TYPES
+// =====================================================
+
+interface ConflictAnalysis {
+  id?: string;
+  timeline_id: string;
+  conflict_type:
+    | 'time_overlap'
+    | 'vendor_overlap'
+    | 'location_conflict'
+    | 'dependency_issue'
+    | 'buffer_violation'
+    | 'resource_conflict';
+  severity: 'info' | 'warning' | 'error';
+  event_id_1: string;
+  event_id_2?: string;
+  description: string;
+  suggestion: string;
+  can_auto_resolve: boolean;
+  auto_resolution_action?: {
+    action:
+      | 'move_event'
+      | 'adjust_duration'
+      | 'split_time'
+      | 'reassign_vendor'
+      | 'change_location';
+    parameters?: Record<string, any>;
+  };
+  impact_score: number; // 1-10, higher = more critical
+}
+
+interface ConflictContext {
+  timeline: any;
+  events: any[];
+  vendors: any[];
+  locations: string[];
+  dependencies: Map<string, string[]>;
+  criticalPath: string[];
+}
+
+interface OptimizationSuggestion {
+  type: 'time_optimization' | 'vendor_optimization' | 'location_optimization';
+  description: string;
+  estimated_improvement: number;
+  actions: Array<{
+    event_id: string;
+    action: string;
+    details: any;
+  }>;
+}
+
+// =====================================================
+// HELPER FUNCTIONS
+// =====================================================
+
+async function verifyTimelineAccess(
+  supabase: any,
+  timelineId: string,
+  userId: string,
+) {
+  // Get user's organization
+  const { data: profile, error: profileError } = await supabase
+    .from('user_profiles')
+    .select('organization_id')
+    .eq('user_id', userId)
+    .single();
+
+  if (profileError || !profile?.organization_id) {
+    throw new Error('UNAUTHORIZED: User organization not found');
+  }
+
+  // Check timeline access
+  const { data: timeline, error: timelineError } = await supabase
+    .from('wedding_timelines')
+    .select(
+      `
+      id,
+      organization_id,
+      name,
+      wedding_date,
+      start_time,
+      end_time,
+      buffer_time_minutes,
+      status,
+      timeline_collaborators!inner (
+        user_id,
+        role,
+        can_edit,
+        status
+      )
+    `,
+    )
+    .eq('id', timelineId)
+    .eq('organization_id', profile.organization_id)
+    .eq('timeline_collaborators.user_id', userId)
+    .eq('timeline_collaborators.status', 'active')
+    .single();
+
+  if (timelineError || !timeline) {
+    throw new Error('FORBIDDEN: Timeline not found or access denied');
+  }
+
+  return { timeline, profile };
+}
+
+async function getTimelineContext(
+  supabase: any,
+  timelineId: string,
+): Promise<ConflictContext> {
+  // Get timeline details
+  const { data: timeline } = await supabase
+    .from('wedding_timelines')
+    .select('*')
+    .eq('id', timelineId)
+    .single();
+
+  // Get all events
+  const { data: events } = await supabase
+    .from('timeline_events')
+    .select(
+      `
+      *,
+      timeline_event_vendors (
+        vendor_id,
+        role,
+        arrival_time,
+        departure_time,
+        confirmation_status
+      )
+    `,
+    )
+    .eq('timeline_id', timelineId)
+    .order('start_time');
+
+  // Get vendor information
+  const vendorIds =
+    events?.flatMap(
+      (e) => e.timeline_event_vendors?.map((v) => v.vendor_id) || [],
+    ) || [];
+
+  const { data: vendors } =
+    vendorIds.length > 0
+      ? await supabase
+          .from('suppliers')
+          .select(
+            'id, business_name, business_type, location, availability_windows',
+          )
+          .in('id', [...new Set(vendorIds)])
+      : { data: [] };
+
+  // Extract locations
+  const locations = [
+    ...new Set(events?.map((e) => e.location).filter(Boolean) || []),
+  ];
+
+  // Build dependency map
+  const dependencies = new Map<string, string[]>();
+  events?.forEach((event) => {
+    if (event.depends_on && Array.isArray(event.depends_on)) {
+      event.depends_on.forEach((depId) => {
+        if (!dependencies.has(depId)) {
+          dependencies.set(depId, []);
+        }
+        dependencies.get(depId)!.push(event.id);
+      });
+    }
+  });
+
+  // Calculate critical path
+  const criticalPath = calculateCriticalPath(events || [], dependencies);
+
+  return {
+    timeline,
+    events: events || [],
+    vendors: vendors || [],
+    locations,
+    dependencies,
+    criticalPath,
+  };
+}
+
+function calculateCriticalPath(
+  events: any[],
+  dependencies: Map<string, string[]>,
+): string[] {
+  const criticalPath: string[] = [];
+  const visited = new Set<string>();
+
+  // Find events with highest impact (most dependencies)
+  const eventsByImpact = events.sort((a, b) => {
+    const aDepCount = dependencies.get(a.id)?.length || 0;
+    const bDepCount = dependencies.get(b.id)?.length || 0;
+    return bDepCount - aDepCount;
+  });
+
+  // Build critical path starting from high-impact events
+  eventsByImpact.forEach((event) => {
+    if (
+      !visited.has(event.id) &&
+      (dependencies.get(event.id)?.length || 0) > 0
+    ) {
+      criticalPath.push(event.id);
+      visited.add(event.id);
+    }
+  });
+
+  return criticalPath;
+}
+
+async function analyzeTimeOverlaps(
+  context: ConflictContext,
+  targetEvent?: { id: string; start_time: string; end_time: string },
+): Promise<ConflictAnalysis[]> {
+  const conflicts: ConflictAnalysis[] = [];
+  const events = targetEvent
+    ? [...context.events.filter((e) => e.id !== targetEvent.id), targetEvent]
+    : context.events;
+
+  for (let i = 0; i < events.length; i++) {
+    for (let j = i + 1; j < events.length; j++) {
+      const event1 = events[i];
+      const event2 = events[j];
+
+      const start1 = new Date(event1.start_time);
+      const end1 = new Date(event1.end_time);
+      const start2 = new Date(event2.start_time);
+      const end2 = new Date(event2.end_time);
+
+      // Check for time overlap
+      if (start1 < end2 && start2 < end1) {
+        const overlapMinutes =
+          Math.min(end1.getTime(), end2.getTime()) -
+          Math.max(start1.getTime(), start2.getTime());
+        const overlapMins = overlapMinutes / (1000 * 60);
+
+        const severity: 'info' | 'warning' | 'error' =
+          overlapMins > 60 ? 'error' : overlapMins > 15 ? 'warning' : 'info';
+
+        conflicts.push({
+          timeline_id: context.timeline.id,
+          conflict_type: 'time_overlap',
+          severity,
+          event_id_1: event1.id,
+          event_id_2: event2.id,
+          description: `Events "${event1.title}" and "${event2.title}" overlap by ${Math.round(overlapMins)} minutes`,
+          suggestion:
+            overlapMins > 30
+              ? `Consider moving "${event2.title}" to start after "${event1.title}" ends`
+              : `Reduce overlap or ensure events can run simultaneously`,
+          can_auto_resolve:
+            overlapMins < 30 && !event1.is_locked && !event2.is_locked,
+          auto_resolution_action: {
+            action: 'move_event',
+            parameters: {
+              event_id: event2.id,
+              new_start_time: end1.toISOString(),
+              reason: 'resolve_time_overlap',
+            },
+          },
+          impact_score: Math.min(10, Math.ceil(overlapMins / 10)),
+        });
+      }
+    }
+  }
+
+  return conflicts;
+}
+
+async function analyzeVendorConflicts(
+  context: ConflictContext,
+  targetEvent?: any,
+): Promise<ConflictAnalysis[]> {
+  const conflicts: ConflictAnalysis[] = [];
+  const events = targetEvent
+    ? [...context.events.filter((e) => e.id !== targetEvent.id), targetEvent]
+    : context.events;
+
+  // Group events by vendor
+  const vendorEventMap = new Map<string, any[]>();
+
+  events.forEach((event) => {
+    event.timeline_event_vendors?.forEach((vendor) => {
+      if (!vendorEventMap.has(vendor.vendor_id)) {
+        vendorEventMap.set(vendor.vendor_id, []);
+      }
+      vendorEventMap.get(vendor.vendor_id)!.push({
+        ...event,
+        vendor_role: vendor.role,
+        vendor_arrival: vendor.arrival_time,
+        vendor_departure: vendor.departure_time,
+      });
+    });
+  });
+
+  // Check for vendor double-booking
+  vendorEventMap.forEach((vendorEvents, vendorId) => {
+    if (vendorEvents.length < 2) return;
+
+    const vendorInfo = context.vendors.find((v) => v.id === vendorId);
+    const vendorName = vendorInfo?.business_name || 'Unknown Vendor';
+
+    for (let i = 0; i < vendorEvents.length; i++) {
+      for (let j = i + 1; j < vendorEvents.length; j++) {
+        const event1 = vendorEvents[i];
+        const event2 = vendorEvents[j];
+
+        // Consider vendor arrival/departure times
+        const start1 = new Date(event1.vendor_arrival || event1.start_time);
+        const end1 = new Date(event1.vendor_departure || event1.end_time);
+        const start2 = new Date(event2.vendor_arrival || event2.start_time);
+        const end2 = new Date(event2.vendor_departure || event2.end_time);
+
+        if (start1 < end2 && start2 < end1) {
+          const travelTime = calculateTravelTime(
+            event1.location,
+            event2.location,
+          );
+          const severity: 'info' | 'warning' | 'error' =
+            travelTime > 60 ? 'error' : travelTime > 30 ? 'warning' : 'info';
+
+          conflicts.push({
+            timeline_id: context.timeline.id,
+            conflict_type: 'vendor_overlap',
+            severity,
+            event_id_1: event1.id,
+            event_id_2: event2.id,
+            description: `${vendorName} is double-booked between "${event1.title}" and "${event2.title}"`,
+            suggestion: `Consider reassigning vendor or adjusting event times to allow ${travelTime} minutes travel time`,
+            can_auto_resolve:
+              event1.vendor_role !== 'primary' ||
+              event2.vendor_role !== 'primary',
+            auto_resolution_action: {
+              action: 'reassign_vendor',
+              parameters: {
+                event_id:
+                  event2.vendor_role === 'primary' ? event1.id : event2.id,
+                vendor_id: vendorId,
+                find_alternative: true,
+              },
+            },
+            impact_score:
+              event1.vendor_role === 'primary' ||
+              event2.vendor_role === 'primary'
+                ? 8
+                : 5,
+          });
+        }
+      }
+    }
+  });
+
+  return conflicts;
+}
+
+function calculateTravelTime(location1?: string, location2?: string): number {
+  // Simplified travel time calculation
+  // In production, this would use Google Maps API or similar
+  if (!location1 || !location2 || location1 === location2) return 0;
+
+  // Assume 30 minutes between different locations
+  return 30;
+}
+
+async function analyzeLocationConflicts(
+  context: ConflictContext,
+  targetEvent?: any,
+): Promise<ConflictAnalysis[]> {
+  const conflicts: ConflictAnalysis[] = [];
+  const events = targetEvent
+    ? [...context.events.filter((e) => e.id !== targetEvent.id), targetEvent]
+    : context.events;
+
+  // Group events by location
+  const locationEventMap = new Map<string, any[]>();
+
+  events.forEach((event) => {
+    if (event.location) {
+      if (!locationEventMap.has(event.location)) {
+        locationEventMap.set(event.location, []);
+      }
+      locationEventMap.get(event.location)!.push(event);
+    }
+  });
+
+  // Check for location capacity conflicts
+  locationEventMap.forEach((locationEvents, location) => {
+    if (locationEvents.length < 2) return;
+
+    // Sort events by start time
+    locationEvents.sort(
+      (a, b) =>
+        new Date(a.start_time).getTime() - new Date(b.start_time).getTime(),
+    );
+
+    for (let i = 0; i < locationEvents.length; i++) {
+      for (let j = i + 1; j < locationEvents.length; j++) {
+        const event1 = locationEvents[i];
+        const event2 = locationEvents[j];
+
+        const start1 = new Date(event1.start_time);
+        const end1 = new Date(event1.end_time);
+        const start2 = new Date(event2.start_time);
+        const end2 = new Date(event2.end_time);
+
+        // Check if events overlap at same location
+        if (start1 < end2 && start2 < end1) {
+          // Add buffer time for setup/breakdown
+          const bufferNeeded = Math.max(
+            event1.buffer_after_minutes || 0,
+            event2.buffer_before_minutes || 0,
+            context.timeline.buffer_time_minutes || 15,
+          );
+
+          const timeBetween = (start2.getTime() - end1.getTime()) / (1000 * 60);
+          const severity: 'info' | 'warning' | 'error' =
+            timeBetween < bufferNeeded ? 'error' : 'warning';
+
+          conflicts.push({
+            timeline_id: context.timeline.id,
+            conflict_type: 'location_conflict',
+            severity,
+            event_id_1: event1.id,
+            event_id_2: event2.id,
+            description: `Location "${location}" has overlapping events with insufficient buffer time`,
+            suggestion: `Ensure at least ${bufferNeeded} minutes between events for setup/breakdown`,
+            can_auto_resolve: !event1.is_locked && !event2.is_locked,
+            auto_resolution_action: {
+              action: 'adjust_duration',
+              parameters: {
+                event_id: event1.id,
+                new_end_time: new Date(
+                  start2.getTime() - bufferNeeded * 60 * 1000,
+                ).toISOString(),
+              },
+            },
+            impact_score: 7,
+          });
+        }
+      }
+    }
+  });
+
+  return conflicts;
+}
+
+async function analyzeDependencyIssues(
+  context: ConflictContext,
+  targetEvent?: any,
+): Promise<ConflictAnalysis[]> {
+  const conflicts: ConflictAnalysis[] = [];
+  const events = targetEvent
+    ? [...context.events.filter((e) => e.id !== targetEvent.id), targetEvent]
+    : context.events;
+
+  // Create event lookup
+  const eventMap = new Map(events.map((e) => [e.id, e]));
+
+  events.forEach((event) => {
+    if (event.depends_on && Array.isArray(event.depends_on)) {
+      event.depends_on.forEach((depId) => {
+        const dependentEvent = eventMap.get(depId);
+        if (!dependentEvent) return;
+
+        const eventStart = new Date(event.start_time);
+        const depEnd = new Date(dependentEvent.end_time);
+
+        if (eventStart <= depEnd) {
+          const violationMinutes =
+            (depEnd.getTime() - eventStart.getTime()) / (1000 * 60);
+
+          conflicts.push({
+            timeline_id: context.timeline.id,
+            conflict_type: 'dependency_issue',
+            severity: 'error',
+            event_id_1: event.id,
+            event_id_2: depId,
+            description: `"${event.title}" cannot start before "${dependentEvent.title}" ends`,
+            suggestion: `Move "${event.title}" to start at least 15 minutes after "${dependentEvent.title}" completes`,
+            can_auto_resolve: !event.is_locked,
+            auto_resolution_action: {
+              action: 'move_event',
+              parameters: {
+                event_id: event.id,
+                new_start_time: new Date(
+                  depEnd.getTime() + 15 * 60 * 1000,
+                ).toISOString(),
+              },
+            },
+            impact_score: 10, // Dependencies are critical
+          });
+        }
+      });
+    }
+  });
+
+  return conflicts;
+}
+
+function generateOptimizationSuggestions(
+  context: ConflictContext,
+  conflicts: ConflictAnalysis[],
+): OptimizationSuggestion[] {
+  const suggestions: OptimizationSuggestion[] = [];
+
+  // Time optimization suggestions
+  if (conflicts.some((c) => c.conflict_type === 'time_overlap')) {
+    suggestions.push({
+      type: 'time_optimization',
+      description:
+        'Optimize timeline to reduce event overlaps and improve flow',
+      estimated_improvement: conflicts.filter(
+        (c) => c.conflict_type === 'time_overlap',
+      ).length,
+      actions: conflicts
+        .filter((c) => c.conflict_type === 'time_overlap' && c.can_auto_resolve)
+        .map((c) => ({
+          event_id: c.event_id_2!,
+          action: 'move_event',
+          details: c.auto_resolution_action?.parameters,
+        })),
+    });
+  }
+
+  // Vendor optimization suggestions
+  if (conflicts.some((c) => c.conflict_type === 'vendor_overlap')) {
+    suggestions.push({
+      type: 'vendor_optimization',
+      description: 'Optimize vendor assignments to prevent double-booking',
+      estimated_improvement: conflicts.filter(
+        (c) => c.conflict_type === 'vendor_overlap',
+      ).length,
+      actions: conflicts
+        .filter(
+          (c) => c.conflict_type === 'vendor_overlap' && c.can_auto_resolve,
+        )
+        .map((c) => ({
+          event_id: c.event_id_1,
+          action: 'reassign_vendor',
+          details: c.auto_resolution_action?.parameters,
+        })),
+    });
+  }
+
+  // Location optimization suggestions
+  if (conflicts.some((c) => c.conflict_type === 'location_conflict')) {
+    suggestions.push({
+      type: 'location_optimization',
+      description: 'Optimize location usage and buffer times',
+      estimated_improvement: conflicts.filter(
+        (c) => c.conflict_type === 'location_conflict',
+      ).length,
+      actions: conflicts
+        .filter(
+          (c) => c.conflict_type === 'location_conflict' && c.can_auto_resolve,
+        )
+        .map((c) => ({
+          event_id: c.event_id_1,
+          action: 'adjust_timing',
+          details: c.auto_resolution_action?.parameters,
+        })),
+    });
+  }
+
+  return suggestions;
+}
+
+// =====================================================
+// GET /api/timeline/[id]/conflicts - Analyze all conflicts
+// =====================================================
+
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { id: string } },
+) {
+  try {
+    const supabase = await createClient();
+
+    // Get authenticated user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 },
+      );
+    }
+
+    // Verify timeline access
+    await verifyTimelineAccess(supabase, params.id, user.id);
+
+    // Get timeline context
+    const context = await getTimelineContext(supabase, params.id);
+
+    // Run all conflict analyses
+    const [timeOverlaps, vendorConflicts, locationConflicts, dependencyIssues] =
+      await Promise.all([
+        analyzeTimeOverlaps(context),
+        analyzeVendorConflicts(context),
+        analyzeLocationConflicts(context),
+        analyzeDependencyIssues(context),
+      ]);
+
+    // Combine all conflicts
+    const allConflicts = [
+      ...timeOverlaps,
+      ...vendorConflicts,
+      ...locationConflicts,
+      ...dependencyIssues,
+    ];
+
+    // Sort by impact score (highest first)
+    allConflicts.sort((a, b) => b.impact_score - a.impact_score);
+
+    // Generate optimization suggestions
+    const optimizationSuggestions = generateOptimizationSuggestions(
+      context,
+      allConflicts,
+    );
+
+    // Calculate timeline health score (0-100)
+    const totalPossibleIssues = context.events.length * 4; // rough estimate
+    const actualIssues = allConflicts.reduce(
+      (sum, c) => sum + c.impact_score,
+      0,
+    );
+    const healthScore = Math.max(
+      0,
+      Math.min(100, 100 - (actualIssues / totalPossibleIssues) * 100),
+    );
+
+    // Get existing conflicts from database for comparison
+    const { data: existingConflicts } = await supabase
+      .from('timeline_conflicts')
+      .select('*')
+      .eq('timeline_id', params.id)
+      .eq('is_resolved', false);
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        timeline_id: params.id,
+        analysis_timestamp: new Date().toISOString(),
+        health_score: Math.round(healthScore),
+        conflicts: {
+          total_count: allConflicts.length,
+          by_severity: {
+            error: allConflicts.filter((c) => c.severity === 'error').length,
+            warning: allConflicts.filter((c) => c.severity === 'warning')
+              .length,
+            info: allConflicts.filter((c) => c.severity === 'info').length,
+          },
+          by_type: {
+            time_overlap: timeOverlaps.length,
+            vendor_overlap: vendorConflicts.length,
+            location_conflict: locationConflicts.length,
+            dependency_issue: dependencyIssues.length,
+          },
+          items: allConflicts.slice(0, 50), // Limit to prevent huge responses
+        },
+        critical_path: {
+          events: context.criticalPath,
+          affected_by_conflicts: context.criticalPath.filter((eventId) =>
+            allConflicts.some(
+              (c) => c.event_id_1 === eventId || c.event_id_2 === eventId,
+            ),
+          ),
+        },
+        optimization_suggestions: optimizationSuggestions,
+        auto_resolvable_count: allConflicts.filter((c) => c.can_auto_resolve)
+          .length,
+        existing_conflicts: existingConflicts?.length || 0,
+      },
+    });
+  } catch (error) {
+    console.error('Conflict analysis error:', error);
+    const status =
+      error instanceof Error && error.message.startsWith('UNAUTHORIZED')
+        ? 401
+        : error instanceof Error && error.message.startsWith('FORBIDDEN')
+          ? 403
+          : 500;
+    return NextResponse.json(
+      {
+        error: error instanceof Error ? error.message : 'Internal server error',
+      },
+      { status },
+    );
+  }
+}
+
+// =====================================================
+// POST /api/timeline/[id]/conflicts - Check specific event change
+// =====================================================
+
+export async function POST(
+  request: NextRequest,
+  { params }: { params: { id: string } },
+) {
+  return await withSecureValidation(
+    checkConflictRequestSchema,
+    async (
+      req: NextRequest,
+      validatedData: z.infer<typeof checkConflictRequestSchema>,
+    ) => {
+      try {
+        const supabase = await createClient();
+
+        // Get authenticated user
+        const {
+          data: { user },
+          error: authError,
+        } = await supabase.auth.getUser();
+
+        if (authError || !user) {
+          return NextResponse.json(
+            { error: 'Authentication required' },
+            { status: 401 },
+          );
+        }
+
+        // Verify timeline access
+        await verifyTimelineAccess(supabase, params.id, user.id);
+
+        // Get timeline context
+        const context = await getTimelineContext(supabase, params.id);
+
+        // Find the target event
+        const targetEvent = context.events.find(
+          (e) => e.id === validatedData.event_id,
+        );
+        if (!targetEvent) {
+          return NextResponse.json(
+            { error: 'Event not found in timeline' },
+            { status: 404 },
+          );
+        }
+
+        // Create modified event for analysis
+        const modifiedEvent = {
+          ...targetEvent,
+          start_time: validatedData.new_start_time,
+          end_time: validatedData.new_end_time,
+        };
+
+        // Run conflict analyses with the proposed change
+        const [
+          timeOverlaps,
+          vendorConflicts,
+          locationConflicts,
+          dependencyIssues,
+        ] = await Promise.all([
+          analyzeTimeOverlaps(context, modifiedEvent),
+          analyzeVendorConflicts(context, modifiedEvent),
+          analyzeLocationConflicts(context, modifiedEvent),
+          analyzeDependencyIssues(context, modifiedEvent),
+        ]);
+
+        // Filter out ignored conflicts
+        const ignoreSet = new Set(validatedData.ignore_conflicts || []);
+        const filterConflicts = (conflicts: ConflictAnalysis[]) =>
+          conflicts.filter(
+            (c) =>
+              !ignoreSet.has(c.event_id_1) &&
+              (!c.event_id_2 || !ignoreSet.has(c.event_id_2)),
+          );
+
+        const filteredConflicts = [
+          ...filterConflicts(timeOverlaps),
+          ...filterConflicts(vendorConflicts),
+          ...filterConflicts(locationConflicts),
+          ...filterConflicts(dependencyIssues),
+        ];
+
+        // Sort by severity and impact
+        filteredConflicts.sort((a, b) => {
+          const severityWeight = { error: 3, warning: 2, info: 1 };
+          const severityDiff =
+            severityWeight[b.severity] - severityWeight[a.severity];
+          if (severityDiff !== 0) return severityDiff;
+          return b.impact_score - a.impact_score;
+        });
+
+        // Determine if change is allowed
+        const hasBlockingConflicts = filteredConflicts.some(
+          (c) => c.severity === 'error',
+        );
+        const canProceed =
+          !hasBlockingConflicts ||
+          filteredConflicts.every((c) => c.can_auto_resolve);
+
+        // Generate resolution plan if conflicts exist
+        const resolutionPlan =
+          filteredConflicts.length > 0
+            ? {
+                can_auto_resolve: filteredConflicts.every(
+                  (c) => c.can_auto_resolve,
+                ),
+                resolution_steps: filteredConflicts
+                  .filter((c) => c.can_auto_resolve)
+                  .map((c) => ({
+                    conflict_id: c.event_id_1, // temporary ID
+                    action: c.auto_resolution_action,
+                    description: c.suggestion,
+                  })),
+              }
+            : null;
+
+        return NextResponse.json({
+          success: true,
+          data: {
+            event_id: validatedData.event_id,
+            proposed_change: {
+              new_start_time: validatedData.new_start_time,
+              new_end_time: validatedData.new_end_time,
+            },
+            can_proceed: canProceed,
+            conflicts_detected: filteredConflicts.length,
+            conflicts: {
+              blocking: filteredConflicts.filter((c) => c.severity === 'error'),
+              warnings: filteredConflicts.filter(
+                (c) => c.severity === 'warning',
+              ),
+              info: filteredConflicts.filter((c) => c.severity === 'info'),
+            },
+            resolution_plan: resolutionPlan,
+            impact_analysis: {
+              affected_events: [
+                ...new Set([
+                  ...filteredConflicts.map((c) => c.event_id_1),
+                  ...filteredConflicts.map((c) => c.event_id_2).filter(Boolean),
+                ]),
+              ],
+              critical_path_affected: context.criticalPath.includes(
+                validatedData.event_id,
+              ),
+              overall_impact_score: filteredConflicts.reduce(
+                (sum, c) => sum + c.impact_score,
+                0,
+              ),
+            },
+          },
+        });
+      } catch (error) {
+        console.error('Conflict check error:', error);
+        const status =
+          error instanceof Error && error.message.startsWith('UNAUTHORIZED')
+            ? 401
+            : error instanceof Error && error.message.startsWith('FORBIDDEN')
+              ? 403
+              : 500;
+        return NextResponse.json(
+          {
+            error:
+              error instanceof Error ? error.message : 'Internal server error',
+          },
+          { status },
+        );
+      }
+    },
+  )(request);
+}
+
+// Configure runtime options
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';

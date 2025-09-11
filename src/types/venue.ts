@@ -1,0 +1,98 @@
+export interface VenueSearchParams {
+  query: string;
+  location?: {
+    lat: number;
+    lng: number;
+  };
+  radius?: number;
+  type?: VenueType;
+  priceLevel?: number[];
+}
+
+export interface GooglePlaceResult {
+  place_id: string;
+  name: string;
+  formatted_address: string;
+  geometry: {
+    location: {
+      lat: number;
+      lng: number;
+    };
+  };
+  photos?: Array<{
+    photo_reference: string;
+    height: number;
+    width: number;
+  }>;
+  price_level?: number;
+  rating?: number;
+  user_ratings_total?: number;
+  types: string[];
+  opening_hours?: {
+    open_now: boolean;
+    periods?: Array<{
+      open: { day: number; time: string };
+      close?: { day: number; time: string };
+    }>;
+  };
+  website?: string;
+  formatted_phone_number?: string;
+}
+
+export interface VenueDetails extends GooglePlaceResult {
+  reviews?: Array<{
+    author_name: string;
+    rating: number;
+    text: string;
+    time: number;
+  }>;
+  opening_hours?: {
+    open_now: boolean;
+    periods: Array<{
+      open: { day: number; time: string };
+      close?: { day: number; time: string };
+    }>;
+    weekday_text: string[];
+  };
+  international_phone_number?: string;
+  url?: string;
+  utc_offset?: number;
+}
+
+export enum VenueType {
+  CEREMONY = 'ceremony',
+  RECEPTION = 'reception',
+  BOTH = 'both',
+  OUTDOOR = 'outdoor',
+  INDOOR = 'indoor',
+}
+
+export interface CachedVenue {
+  place_id: string;
+  name: string;
+  address: string;
+  location: {
+    lat: number;
+    lng: number;
+  };
+  venue_type: VenueType;
+  price_level?: number;
+  rating?: number;
+  photos: string[];
+  phone?: string;
+  website?: string;
+  cached_at: string;
+  expires_at: string;
+}
+
+export interface VenueSearchResponse {
+  venues: CachedVenue[];
+  total: number;
+  has_more: boolean;
+  search_metadata: {
+    query: string;
+    location?: { lat: number; lng: number };
+    radius?: number;
+    cached: boolean;
+  };
+}

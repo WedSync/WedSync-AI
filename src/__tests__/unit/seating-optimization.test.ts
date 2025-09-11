@@ -1,0 +1,341 @@
+/**
+ * Unit Tests for Seating Optimization Algorithms
+ * Target: >85% test coverage
+ */
+
+import { describe, test, expect, beforeEach, jest } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { 
+  SeatingOptimizationEngine, 
+  ConflictDetector,
+  seatingOptimizationEngine, 
+  conflictDetector 
+} from '@/lib/algorithms/seating-optimization'
+import type { 
+  Guest, 
+  GuestRelationship, 
+  TableConfiguration,
+  OptimizationPreferences 
+// Mock performance monitoring
+vi.mock('@/lib/monitoring/performance-monitor', () => ({
+  performanceMonitor: {
+    startTimer: jest.fn(() => ({ end: vi.fn() })),
+    recordMetric: vi.fn(),
+    trackApiCall: vi.fn()
+  }
+}))
+describe('Seating Optimization Engine', () => {
+  let testGuests: Guest[]
+  let testRelationships: GuestRelationship[]
+  let testTableConfigurations: TableConfiguration[]
+  let testPreferences: OptimizationPreferences
+  beforeEach(() => {
+    // Generate test data
+    testGuests = generateTestGuests(20)
+    testRelationships = generateFamilyRelationships(testGuests)
+    testTableConfigurations = [
+      { table_number: 1, capacity: 8, table_shape: 'round' },
+      { table_number: 2, capacity: 8, table_shape: 'round' },
+      { table_number: 3, capacity: 10, table_shape: 'rectangular' }
+    ]
+    testPreferences = {
+      prioritize_families: true,
+      separate_conflicting_guests: true,
+      balance_age_groups: true,
+      consider_dietary_needs: true
+    }
+  })
+  test('optimizes seating for family groups with high score', async () => {
+    const result = await seatingOptimizationEngine.optimize({
+      guests: testGuests,
+      relationships: testRelationships,
+      tableConfigurations: testTableConfigurations,
+      preferences: testPreferences,
+      optimizationLevel: 'standard'
+    })
+    
+    expect(result.conflicts).toBeDefined()
+    expect(result.conflicts.length).toBe(0)
+    expect(result.score).toBeGreaterThan(0.8)
+    expect(result.arrangement).toBeDefined()
+    expect(Object.keys(result.arrangement).length).toBeGreaterThan(0)
+  test('handles large guest lists efficiently (200+ guests)', async () => {
+    const largeGuestList = generateTestGuests(200)
+    const largeTableConfigs = Array.from({ length: 25 }, (_, i) => ({
+      table_number: i + 1,
+      capacity: 8,
+      table_shape: 'round' as const
+    }))
+    const startTime = Date.now()
+      guests: largeGuestList,
+      relationships: generateFamilyRelationships(largeGuestList),
+      tableConfigurations: largeTableConfigs,
+    const duration = Date.now() - startTime
+    expect(duration).toBeLessThan(5000) // 5 second max as specified
+    expect(result.processingTime).toBeLessThan(5000)
+    expect(result.metadata.guest_count).toBe(200)
+  test('detects and resolves capacity conflicts', async () => {
+    // Create a scenario with insufficient capacity
+    const smallTables = [
+      { table_number: 1, capacity: 4, table_shape: 'round' as const }
+      guests: testGuests.slice(0, 8), // 8 guests, but only 4 capacity
+      tableConfigurations: smallTables,
+      optimizationLevel: 'basic'
+    // Should detect capacity issues
+    const capacityConflicts = result.conflicts.filter(c => c.type === 'capacity')
+    expect(capacityConflicts.length).toBeGreaterThan(0)
+    expect(result.recommendations.length).toBeGreaterThan(0)
+  test('respects relationship preferences', async () => {
+    // Create guests with strong positive relationship
+    const familyGuests = [
+      createTestGuest('1', 'John', 'Smith', 'family', 'household_1'),
+      createTestGuest('2', 'Jane', 'Smith', 'family', 'household_1'),
+      createTestGuest('3', 'Bob', 'Johnson', 'friends'),
+      createTestGuest('4', 'Alice', 'Johnson', 'friends')
+    const strongRelationship: GuestRelationship = {
+      id: 'rel1',
+      couple_id: 'couple1',
+      guest1_id: '1',
+      guest2_id: '2',
+      relationship_type: 'family',
+      relationship_strength: 9,
+      created_at: new Date().toISOString()
+      guests: familyGuests,
+      relationships: [strongRelationship],
+      tableConfigurations: [
+        { table_number: 1, capacity: 4, table_shape: 'round' },
+        { table_number: 2, capacity: 4, table_shape: 'round' }
+      ],
+    // John and Jane (strong relationship) should be at the same table
+    const johnTable = findGuestTable(result.arrangement, '1')
+    const janeTable = findGuestTable(result.arrangement, '2')
+    expect(johnTable).toBe(janeTable)
+    expect(result.score).toBeGreaterThan(0)
+  test('avoids seating conflicting guests together', async () => {
+    const conflictingGuests = [
+      createTestGuest('1', 'Alice', 'Brown', 'friends'),
+      createTestGuest('2', 'Bob', 'Brown', 'friends'),
+      createTestGuest('3', 'Carol', 'Davis', 'family'),
+      createTestGuest('4', 'David', 'Davis', 'family')
+    const negativeRelationship: GuestRelationship = {
+      relationship_type: 'avoid',
+      relationship_strength: -9, // Strong negative relationship
+      guests: conflictingGuests,
+      relationships: [negativeRelationship],
+      optimizationLevel: 'advanced'
+    // Alice and Bob should be at different tables due to negative relationship
+    const aliceTable = findGuestTable(result.arrangement, '1')
+    const bobTable = findGuestTable(result.arrangement, '2')
+    expect(aliceTable).not.toBe(bobTable)
+  test('handles different optimization levels', async () => {
+    const testData = {
+      guests: testGuests.slice(0, 12),
+      tableConfigurations: testTableConfigurations.slice(0, 2),
+      preferences: testPreferences
+    const basicResult = await seatingOptimizationEngine.optimize({
+      ...testData,
+    const standardResult = await seatingOptimizationEngine.optimize({
+    const advancedResult = await seatingOptimizationEngine.optimize({
+    expect(basicResult.metadata.optimization_iterations).toBe(1)
+    expect(standardResult.metadata.optimization_iterations).toBe(100)
+    expect(advancedResult.metadata.optimization_iterations).toBe(500)
+    // Advanced should generally perform better or equal
+    expect(advancedResult.score).toBeGreaterThanOrEqual(basicResult.score - 0.5)
+  test('balances age groups appropriately', async () => {
+    const mixedAgeGuests = [
+      createTestGuest('1', 'Adult1', 'Smith', 'family', undefined, 'adult'),
+      createTestGuest('2', 'Adult2', 'Smith', 'family', undefined, 'adult'),
+      createTestGuest('3', 'Child1', 'Smith', 'family', 'household_1', 'child'),
+      createTestGuest('4', 'Child2', 'Smith', 'family', 'household_1', 'child'),
+      createTestGuest('5', 'Adult3', 'Johnson', 'friends', undefined, 'adult'),
+      createTestGuest('6', 'Adult4', 'Johnson', 'friends', undefined, 'adult')
+      guests: mixedAgeGuests,
+      relationships: [],
+        { table_number: 1, capacity: 6, table_shape: 'round' }
+      preferences: { ...testPreferences, balance_age_groups: true },
+    // Should have no age-related conflicts
+    const ageConflicts = result.conflicts.filter(c => c.type === 'age')
+    expect(ageConflicts.length).toBe(0)
+  test('generates meaningful recommendations', async () => {
+    const problematicScenario = {
+      guests: generateTestGuests(15),
+      relationships: generateConflictingRelationships(),
+        { table_number: 1, capacity: 5, table_shape: 'round' as const },
+        { table_number: 2, capacity: 5, table_shape: 'round' as const }
+      optimizationLevel: 'standard' as const
+    const result = await seatingOptimizationEngine.optimize(problematicScenario)
+    expect(result.recommendations).toBeDefined()
+    expect(result.recommendations.some(rec => 
+      rec.includes('conflict') || rec.includes('capacity') || rec.includes('optimization')
+    )).toBe(true)
+})
+describe('Conflict Detection Engine', () => {
+    testGuests = generateTestGuests(12)
+      { table_number: 1, capacity: 6, table_shape: 'round' },
+      { table_number: 2, capacity: 6, table_shape: 'round' }
+  test('validates seating arrangements correctly', async () => {
+    const validAssignments = [
+      { guest_id: testGuests[0].id, table_number: 1 },
+      { guest_id: testGuests[1].id, table_number: 1 },
+      { guest_id: testGuests[2].id, table_number: 1 },
+      { guest_id: testGuests[3].id, table_number: 2 },
+      { guest_id: testGuests[4].id, table_number: 2 },
+      { guest_id: testGuests[5].id, table_number: 2 }
+    const result = await conflictDetector.validate({
+      guests: testGuests.slice(0, 6),
+      tableAssignments: validAssignments,
+      checkOptions: {
+        checkRelationships: true,
+        checkCapacity: true,
+        checkDietaryNeeds: true,
+        checkAgeAppropriateness: true
+      }
+    expect(result.isValid).toBe(true)
+    expect(result.suggestions.length).toBeGreaterThanOrEqual(0)
+  test('detects capacity violations', async () => {
+    const overcrowdedAssignments = Array.from({ length: 8 }, (_, i) => ({
+      guest_id: testGuests[i].id,
+      table_number: 1 // All 8 guests at table with capacity 6
+      guests: testGuests.slice(0, 8),
+      tableAssignments: overcrowdedAssignments,
+        checkRelationships: false,
+        checkDietaryNeeds: false,
+        checkAgeAppropriateness: false
+    expect(result.isValid).toBe(false)
+    expect(result.conflicts.some(c => c.type === 'capacity')).toBe(true)
+    expect(result.severityBreakdown.high).toBeGreaterThan(0)
+  test('identifies relationship conflicts', async () => {
+      createTestGuest('1', 'Alice', 'Smith', 'friends'),
+      createTestGuest('2', 'Bob', 'Jones', 'friends')
+      relationship_strength: -8,
+    const conflictingAssignments = [
+      { guest_id: '1', table_number: 1 },
+      { guest_id: '2', table_number: 1 } // Same table despite negative relationship
+      tableAssignments: conflictingAssignments,
+        checkCapacity: false,
+    expect(result.conflicts.some(c => c.type === 'relationship')).toBe(true)
+    expect(result.conflicts[0].severity).toBe('high')
+  test('checks age appropriateness', async () => {
+    const childrenWithoutAdults = [
+      createTestGuest('1', 'Child1', 'Smith', 'family', undefined, 'child'),
+      createTestGuest('2', 'Child2', 'Smith', 'family', undefined, 'child')
+    const unsafeAssignments = [
+      { guest_id: '2', table_number: 1 }
+      guests: childrenWithoutAdults,
+      tableAssignments: unsafeAssignments,
+    expect(result.conflicts.some(c => c.type === 'age')).toBe(true)
+    expect(result.conflicts[0].severity).toBe('medium')
+  test('provides helpful suggestions', async () => {
+    const problematicAssignments = Array.from({ length: 10 }, (_, i) => ({
+      table_number: 1 // Overcrowding table 1
+      guests: testGuests.slice(0, 10),
+      tableAssignments: problematicAssignments,
+    expect(result.suggestions.length).toBeGreaterThan(0)
+    expect(result.suggestions.some(suggestion => 
+      suggestion.toLowerCase().includes('capacity') || 
+      suggestion.toLowerCase().includes('conflict')
+  test('calculates severity breakdown correctly', async () => {
+    const mixedProblems = [
+      createTestGuest('1', 'Adult', 'Smith', 'family', undefined, 'adult'),
+      createTestGuest('2', 'Child', 'Smith', 'family', undefined, 'child'),
+      createTestGuest('3', 'Enemy', 'Jones', 'friends'),
+      createTestGuest('4', 'Rival', 'Brown', 'friends')
+      guest1_id: '3',
+      guest2_id: '4',
+      relationship_strength: -9,
+    // Create multiple types of problems
+    const problematicAssignments = [
+      { guest_id: '2', table_number: 2 }, // Child alone at table 2
+      { guest_id: '3', table_number: 1 },
+      { guest_id: '4', table_number: 1 }, // Enemies at same table
+    const smallTable = [{ table_number: 1, capacity: 2, table_shape: 'round' as const }]
+      guests: mixedProblems.slice(0, 3),
+      tableAssignments: problematicAssignments.slice(0, 3),
+      tableConfigurations: smallTable,
+    expect(result.severityBreakdown.high + result.severityBreakdown.medium + result.severityBreakdown.low)
+      .toBeGreaterThan(0)
+    expect(result.conflictTypes.length).toBeGreaterThan(0)
+// ===============================
+// TEST HELPER FUNCTIONS
+function generateTestGuests(count: number): Guest[] {
+  const guests: Guest[] = []
+  const categories: Array<'family' | 'friends' | 'work' | 'other'> = ['family', 'friends', 'work', 'other']
+  const sides: Array<'partner1' | 'partner2' | 'mutual'> = ['partner1', 'partner2', 'mutual']
+  const ageGroups: Array<'adult' | 'child' | 'infant'> = ['adult', 'child', 'infant']
+  
+  for (let i = 0; i < count; i++) {
+    const householdId = i < count * 0.3 ? `household_${Math.floor(i / 2)}` : undefined
+    guests.push({
+      id: `guest_${i + 1}`,
+      first_name: `FirstName${i + 1}`,
+      last_name: `LastName${Math.floor(i / 3) + 1}`,
+      category: categories[i % categories.length],
+      side: sides[i % sides.length],
+      age_group: i < count * 0.1 ? 'child' : 'adult', // 10% children
+      plus_one: Math.random() > 0.7,
+      dietary_restrictions: Math.random() > 0.8 ? 'Vegetarian' : null,
+      special_needs: Math.random() > 0.9 ? 'Wheelchair accessible' : null,
+      household_id: householdId,
+      tags: []
+  return guests
+}
+function generateFamilyRelationships(guests: Guest[]): GuestRelationship[] {
+  const relationships: GuestRelationship[] = []
+  // Create positive relationships within households
+  const householdGroups = new Map<string, Guest[]>()
+  guests.forEach(guest => {
+    if (guest.household_id) {
+      if (!householdGroups.has(guest.household_id)) {
+        householdGroups.set(guest.household_id, [])
+      householdGroups.get(guest.household_id)!.push(guest)
+  householdGroups.forEach(householdGuests => {
+    for (let i = 0; i < householdGuests.length; i++) {
+      for (let j = i + 1; j < householdGuests.length; j++) {
+        relationships.push({
+          id: `rel_${householdGuests[i].id}_${householdGuests[j].id}`,
+          couple_id: 'test_couple',
+          guest1_id: householdGuests[i].id,
+          guest2_id: householdGuests[j].id,
+          relationship_type: 'family',
+          relationship_strength: 8,
+          created_at: new Date().toISOString()
+        })
+  return relationships
+function generateConflictingRelationships(): GuestRelationship[] {
+  return [
+    {
+      id: 'conflict_rel_1',
+      couple_id: 'test_couple',
+      guest1_id: 'guest_1',
+      guest2_id: 'guest_2',
+    },
+      id: 'conflict_rel_2',
+      guest1_id: 'guest_3',
+      guest2_id: 'guest_4',
+      relationship_strength: -6,
+  ]
+function createTestGuest(
+  id: string, 
+  firstName: string, 
+  lastName: string, 
+  category: 'family' | 'friends' | 'work' | 'other',
+  householdId?: string,
+  ageGroup: 'adult' | 'child' | 'infant' = 'adult'
+): Guest {
+  return {
+    id,
+    first_name: firstName,
+    last_name: lastName,
+    category,
+    side: 'mutual',
+    age_group: ageGroup,
+    plus_one: false,
+    dietary_restrictions: null,
+    special_needs: null,
+    household_id: householdId,
+    tags: []
+function findGuestTable(arrangement: any, guestId: string): number | null {
+  for (const [tableNum, table] of Object.entries(arrangement)) {
+    if ((table as unknown).guests.includes(guestId)) {
+      return parseInt(tableNum)
+  return null

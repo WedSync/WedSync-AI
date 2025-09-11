@@ -1,0 +1,228 @@
+import { tagService } from '@/lib/services/tagService'
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { supabase } from '@/lib/supabase'
+import { TagColor, TagCategory } from '@/components/tags/TagManager'
+
+// Mock Supabase
+jest.mock('@/lib/supabase', () => ({
+  supabase: {
+    from: jest.fn()
+  }
+}))
+const mockSupabase = supabase as jest.Mocked<typeof supabase>
+describe('TagService', () => {
+  const mockSupplierId = 'supplier-123'
+  
+  beforeEach(() => {
+    jest.clearAllMocks()
+  })
+  describe('createTag', () => {
+    const mockTagInput = {
+      name: 'VIP Client',
+      description: 'High priority client',
+      color: 'purple' as TagColor,
+      category: 'relationship' as TagCategory
+    }
+    it('creates a tag successfully', async () => {
+      const mockResponse = {
+        data: {
+          id: 'tag-123',
+          ...mockTagInput,
+          supplier_id: mockSupplierId,
+          usage_count: 0,
+          created_at: '2023-01-01T00:00:00Z',
+          updated_at: '2023-01-01T00:00:00Z'
+        },
+        error: null
+      }
+      const mockQuery = {
+        insert: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        single: jest.fn().mockResolvedValue(mockResponse)
+      mockSupabase.from.mockReturnValue(mockQuery as any)
+      const result = await tagService.createTag(mockTagInput, mockSupplierId)
+      expect(mockSupabase.from).toHaveBeenCalledWith('tags')
+      expect(mockQuery.insert).toHaveBeenCalledWith([{
+        name: 'VIP Client',
+        description: 'High priority client',
+        color: 'purple',
+        category: 'relationship',
+        supplier_id: mockSupplierId,
+        usage_count: 0
+      }])
+      expect(result).toEqual(mockResponse.data)
+    })
+    it('validates tag name with invalid characters', async () => {
+      const invalidInput = {
+        ...mockTagInput,
+        name: '<script>alert("xss")</script>'
+      await expect(tagService.createTag(invalidInput, mockSupplierId))
+        .rejects.toThrow('Tag name contains invalid characters')
+    it('sanitizes tag input for XSS prevention', async () => {
+      const xssInput = {
+        name: 'VIP<script>',
+        description: 'Description"with"quotes'
+        data: { id: 'tag-123' },
+      await tagService.createTag(xssInput, mockSupplierId)
+      expect(mockQuery.insert).toHaveBeenCalledWith([
+        expect.objectContaining({
+          name: 'VIP&lt;script&gt;',
+          description: 'Description&quot;with&quot;quotes'
+        })
+      ])
+    it('handles database errors', async () => {
+      const mockError = { message: 'Database error' }
+        single: jest.fn().mockResolvedValue({ data: null, error: mockError })
+      await expect(tagService.createTag(mockTagInput, mockSupplierId))
+        .rejects.toThrow('Failed to create tag')
+  describe('getTags', () => {
+    it('retrieves tags with filters', async () => {
+      const mockTags = [
+        { id: '1', name: 'luxury', category: 'style' },
+        { id: '2', name: 'outdoor', category: 'venue' }
+      ]
+        eq: jest.fn().mockReturnThis(),
+        or: jest.fn().mockReturnThis(),
+        order: jest.fn().mockReturnThis(),
+        limit: jest.fn().mockReturnThis(),
+        range: jest.fn().mockResolvedValue({ data: mockTags, error: null })
+      const options = {
+        category: 'style' as TagCategory,
+        searchQuery: 'lux',
+        sortBy: 'name' as const,
+        sortOrder: 'asc' as const,
+        limit: 10,
+        offset: 0
+      const result = await tagService.getTags(mockSupplierId, options)
+      expect(mockQuery.eq).toHaveBeenCalledWith('supplier_id', mockSupplierId)
+      expect(mockQuery.eq).toHaveBeenCalledWith('category', 'style')
+      expect(mockQuery.or).toHaveBeenCalledWith('name.ilike.%lux%,description.ilike.%lux%')
+      expect(mockQuery.order).toHaveBeenCalledWith('name', { ascending: true })
+      expect(result).toEqual(mockTags)
+  describe('deleteTag', () => {
+    const tagId = 'tag-123'
+    it('deletes tag and associations successfully', async () => {
+      // Mock client_tags deletion
+      const mockClientTagsQuery = {
+        delete: jest.fn().mockReturnThis(),
+        eq: jest.fn().mockResolvedValue({ error: null })
+      // Mock tags deletion
+      const mockTagsQuery = {
+        eq: jest.fn().mockReturnThis().mockResolvedValue({ error: null })
+      mockSupabase.from
+        .mockReturnValueOnce(mockClientTagsQuery as any) // client_tags
+        .mockReturnValueOnce(mockTagsQuery as any) // tags
+      await tagService.deleteTag(tagId, mockSupplierId)
+      expect(mockSupabase.from).toHaveBeenCalledWith('client_tags')
+      expect(mockClientTagsQuery.delete).toHaveBeenCalled()
+      expect(mockClientTagsQuery.eq).toHaveBeenCalledWith('tag_id', tagId)
+      expect(mockTagsQuery.delete).toHaveBeenCalled()
+      expect(mockTagsQuery.eq).toHaveBeenCalledWith('id', tagId)
+      expect(mockTagsQuery.eq).toHaveBeenCalledWith('supplier_id', mockSupplierId)
+    it('handles association deletion error', async () => {
+      const mockError = { message: 'Foreign key constraint' }
+        eq: jest.fn().mockResolvedValue({ error: mockError })
+      await expect(tagService.deleteTag(tagId, mockSupplierId))
+        .rejects.toThrow('Failed to remove tag associations')
+  describe('addTagsToClient', () => {
+    const clientId = 'client-123'
+    const tagIds = ['tag-1', 'tag-2']
+    it('adds tags to client successfully', async () => {
+      // Mock tag validation query
+      const mockValidationQuery = {
+        in: jest.fn().mockResolvedValue({
+          data: [{ id: 'tag-1' }, { id: 'tag-2' }],
+          error: null
+      // Mock association creation query
+      const mockAssociationQuery = {
+        upsert: jest.fn().mockResolvedValue({ error: null })
+      // Mock usage count update
+      const mockUsageQuery = {
+        eq: jest.fn().mockResolvedValue({ data: [1, 2], error: null })
+      const mockUpdateQuery = {
+        update: jest.fn().mockReturnThis(),
+        .mockReturnValueOnce(mockValidationQuery as any) // validation
+        .mockReturnValueOnce(mockAssociationQuery as any) // associations
+        .mockReturnValue(mockUsageQuery as any) // usage counts (multiple calls)
+      await tagService.addTagsToClient(clientId, tagIds, mockSupplierId)
+      expect(mockAssociationQuery.upsert).toHaveBeenCalledWith(
+        [
+          { client_id: clientId, tag_id: 'tag-1', supplier_id: mockSupplierId },
+          { client_id: clientId, tag_id: 'tag-2', supplier_id: mockSupplierId }
+        ],
+        { onConflict: 'client_id,tag_id' }
+      )
+    it('validates tag ownership', async () => {
+          data: [{ id: 'tag-1' }], // Only one tag returned
+      await expect(tagService.addTagsToClient(clientId, tagIds, mockSupplierId))
+        .rejects.toThrow('Some tags are invalid or do not belong to this supplier')
+  describe('getClientsByTags', () => {
+    it('gets clients with OR logic', async () => {
+      const mockClients = [
+        { client_id: 'client-1' },
+        { client_id: 'client-2' }
+        in: jest.fn().mockResolvedValue({ data: mockClients, error: null })
+      const result = await tagService.getClientsByTags(tagIds, 'OR', mockSupplierId)
+      expect(mockQuery.in).toHaveBeenCalledWith('tag_id', tagIds)
+      expect(result).toEqual(['client-1', 'client-2'])
+    it('gets clients with AND logic using RPC', async () => {
+      const mockClientIds = ['client-1']
+      const mockRpc = jest.fn().mockResolvedValue({
+        data: mockClientIds,
+      })
+      mockSupabase.rpc = mockRpc
+      const result = await tagService.getClientsByTags(tagIds, 'AND', mockSupplierId)
+      expect(mockRpc).toHaveBeenCalledWith('get_clients_with_all_tags', {
+        tag_ids: tagIds,
+        supplier_id: mockSupplierId
+      expect(result).toEqual(mockClientIds)
+  describe('bulkTagOperation', () => {
+    const operation = {
+      action: 'add' as const,
+      tagIds: ['tag-1', 'tag-2'],
+      clientIds: ['client-1', 'client-2']
+    it('performs bulk add operation', async () => {
+        eq: jest.fn().mockResolvedValue({ data: [], error: null })
+        .mockReturnValueOnce(mockQuery as any)
+        .mockReturnValue(mockUsageQuery as any)
+      await tagService.bulkTagOperation(operation, mockSupplierId)
+      expect(mockQuery.upsert).toHaveBeenCalledWith(
+          { client_id: 'client-1', tag_id: 'tag-1', supplier_id: mockSupplierId },
+          { client_id: 'client-1', tag_id: 'tag-2', supplier_id: mockSupplierId },
+          { client_id: 'client-2', tag_id: 'tag-1', supplier_id: mockSupplierId },
+          { client_id: 'client-2', tag_id: 'tag-2', supplier_id: mockSupplierId }
+    it('performs bulk remove operation', async () => {
+      const removeOperation = {
+        ...operation,
+        action: 'remove' as const
+        in: jest.fn().mockResolvedValue({ error: null })
+      await tagService.bulkTagOperation(removeOperation, mockSupplierId)
+      expect(mockQuery.delete).toHaveBeenCalled()
+      expect(mockQuery.in).toHaveBeenCalledWith('client_id', operation.clientIds)
+      expect(mockQuery.in).toHaveBeenCalledWith('tag_id', operation.tagIds)
+  describe('exportTagAnalytics', () => {
+    it('exports analytics as CSV', async () => {
+      const mockAnalytics = [
+        {
+          tag: { name: 'luxury', category: 'style' },
+          usage_count: 15,
+          growth_rate: 5.2,
+          last_used: '2023-01-01'
+        }
+      // Mock the RPC call for analytics
+      mockSupabase.rpc = jest.fn().mockResolvedValue({
+        data: mockAnalytics,
+      const result = await tagService.exportTagAnalytics(mockSupplierId, '30d', 'csv')
+      expect(result).toBeInstanceOf(Blob)
+      expect(result.type).toBe('text/csv')
+      // Check CSV content
+      const text = await result.text()
+      expect(text).toContain('Tag Name,Category,Usage Count,Growth Rate,Last Used')
+      expect(text).toContain('"luxury","style","15","5.2","2023-01-01"')
+    it('exports analytics as JSON', async () => {
+      const result = await tagService.exportTagAnalytics(mockSupplierId, '30d', 'json')
+      expect(result.type).toBe('application/json')
+      // Check JSON content
+      const parsed = JSON.parse(text)
+      expect(parsed).toEqual(mockAnalytics)
+})

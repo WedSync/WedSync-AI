@@ -1,0 +1,479 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { validateAuth } from '@/lib/auth-middleware';
+import { autoPopulationService } from '@/lib/services/auto-population-service';
+import { rateLimit } from '@/lib/rate-limit';
+import {
+  SessionFeedbackSchema,
+  secureUuidSchema,
+  RATE_LIMITS,
+} from '@/lib/validations/auto-population-schemas';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    (() => {
+      throw new Error('Missing environment variable: NEXT_PUBLIC_SUPABASE_URL');
+    })(),
+  process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    (() => {
+      throw new Error(
+        'Missing environment variable: SUPABASE_SERVICE_ROLE_KEY',
+      );
+    })(),
+);
+
+// Rate limiter for session operations
+const sessionRateLimiter = rateLimit({
+  windowMs: RATE_LIMITS.feedback.windowMs,
+  max: RATE_LIMITS.feedback.requests,
+  message: RATE_LIMITS.feedback.message,
+  keyGenerator: (req: NextRequest) => {
+    const authHeader = req.headers.get('authorization');
+    if (authHeader) {
+      return `session:${authHeader}`;
+    }
+    const forwarded = req.headers.get('x-forwarded-for');
+    const realIp = req.headers.get('x-real-ip');
+    return `session-ip:${forwarded?.split(',')[0] || realIp || '127.0.0.1'}`;
+  },
+});
+
+/**
+ * GET /api/auto-population/session/[sessionId]
+ * Retrieve active population session details
+ */
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { sessionId: string } },
+) {
+  try {
+    // Rate limiting
+    const rateLimitResult = await sessionRateLimiter(request);
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Too many session requests',
+          retryAfter: rateLimitResult.retryAfter,
+        },
+        {
+          status: 429,
+          headers: {
+            'X-RateLimit-Limit': rateLimitResult.limit.toString(),
+            'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+            'X-RateLimit-Reset': new Date(rateLimitResult.reset).toISOString(),
+            'Retry-After': rateLimitResult.retryAfter?.toString() || '60',
+          },
+        },
+      );
+    }
+
+    // Authentication
+    const authResult = await validateAuth(request);
+    if (!authResult.success || !authResult.user) {
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized' },
+        { status: 401 },
+      );
+    }
+
+    // Validate session ID
+    const sessionIdValidation = secureUuidSchema.safeParse(params.sessionId);
+    if (!sessionIdValidation.success) {
+      return NextResponse.json(
+        { success: false, error: 'Invalid session ID format' },
+        { status: 400 },
+      );
+    }
+
+    const sessionId = sessionIdValidation.data;
+
+    // Get session details
+    const session = await autoPopulationService.getPopulationSession(sessionId);
+
+    if (!session) {
+      return NextResponse.json(
+        { success: false, error: 'Session not found or expired' },
+        { status: 404 },
+      );
+    }
+
+    // Verify session ownership
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', authResult.user.id)
+      .single();
+
+    if (
+      !profile?.organization_id ||
+      session.organization_id !== profile.organization_id
+    ) {
+      return NextResponse.json(
+        { success: false, error: 'No access to this session' },
+        { status: 403 },
+      );
+    }
+
+    // Check if session is expired
+    const now = new Date();
+    const expiresAt = new Date(session.expires_at);
+
+    if (now > expiresAt && session.status === 'active') {
+      // Update session status to expired
+      await supabase
+        .from('auto_population_sessions')
+        .update({ status: 'expired' })
+        .eq('id', sessionId);
+
+      session.status = 'expired';
+    }
+
+    // Return session data with security filtering
+    return NextResponse.json(
+      {
+        success: true,
+        session: {
+          id: session.id,
+          formIdentifier: session.form_identifier,
+          populatedFields: session.populated_fields,
+          createdAt: session.created_at,
+          expiresAt: session.expires_at,
+          status: session.status,
+          feedbackProvided: session.feedback_provided,
+          accuracyScore: session.accuracy_score,
+          // Don't expose internal IDs for security
+          fieldsCount: Object.keys(session.populated_fields).length,
+        },
+      },
+      {
+        headers: {
+          'X-RateLimit-Limit': rateLimitResult.limit.toString(),
+          'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+          'X-RateLimit-Reset': new Date(rateLimitResult.reset).toISOString(),
+        },
+      },
+    );
+  } catch (error) {
+    console.error('Get session error:', error);
+    return NextResponse.json(
+      { success: false, error: 'Failed to retrieve session' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * POST /api/auto-population/session/[sessionId]/feedback
+ * Collect user feedback on population accuracy
+ */
+export async function POST(
+  request: NextRequest,
+  { params }: { params: { sessionId: string } },
+) {
+  try {
+    // Rate limiting
+    const rateLimitResult = await sessionRateLimiter(request);
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Too many feedback requests',
+          retryAfter: rateLimitResult.retryAfter,
+        },
+        {
+          status: 429,
+          headers: {
+            'X-RateLimit-Limit': rateLimitResult.limit.toString(),
+            'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+            'X-RateLimit-Reset': new Date(rateLimitResult.reset).toISOString(),
+            'Retry-After': rateLimitResult.retryAfter?.toString() || '60',
+          },
+        },
+      );
+    }
+
+    // Authentication
+    const authResult = await validateAuth(request);
+    if (!authResult.success || !authResult.user) {
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized' },
+        { status: 401 },
+      );
+    }
+
+    // Validate session ID
+    const sessionIdValidation = secureUuidSchema.safeParse(params.sessionId);
+    if (!sessionIdValidation.success) {
+      return NextResponse.json(
+        { success: false, error: 'Invalid session ID format' },
+        { status: 400 },
+      );
+    }
+
+    const sessionId = sessionIdValidation.data;
+
+    // Parse and validate feedback data
+    const body = await request.json();
+    const feedbackData = {
+      sessionId,
+      fieldFeedback: body.fieldFeedback || [],
+    };
+
+    const validationResult = SessionFeedbackSchema.safeParse(feedbackData);
+
+    if (!validationResult.success) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Invalid feedback data',
+          details: validationResult.error.errors.map((e) => ({
+            field: e.path.join('.'),
+            message: e.message,
+          })),
+        },
+        { status: 400 },
+      );
+    }
+
+    const { fieldFeedback } = validationResult.data;
+
+    // Get session to verify ownership
+    const session = await autoPopulationService.getPopulationSession(sessionId);
+
+    if (!session) {
+      return NextResponse.json(
+        { success: false, error: 'Session not found or expired' },
+        { status: 404 },
+      );
+    }
+
+    // Verify session ownership
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', authResult.user.id)
+      .single();
+
+    if (
+      !profile?.organization_id ||
+      session.organization_id !== profile.organization_id
+    ) {
+      return NextResponse.json(
+        { success: false, error: 'No access to this session' },
+        { status: 403 },
+      );
+    }
+
+    // Check session is still active or recently completed
+    if (session.status === 'expired') {
+      return NextResponse.json(
+        { success: false, error: 'Session expired - feedback window closed' },
+        { status: 400 },
+      );
+    }
+
+    // Store feedback for each field
+    let feedbackStored = 0;
+    let totalAccuracy = 0;
+
+    for (const feedback of fieldFeedback) {
+      const success = await autoPopulationService.storeFeedback(
+        sessionId,
+        feedback.fieldId,
+        feedback.wasCorrect,
+        feedback.correctedValue,
+      );
+
+      if (success) {
+        feedbackStored++;
+        totalAccuracy += feedback.wasCorrect ? 1 : 0;
+      }
+    }
+
+    // Calculate overall accuracy score
+    const accuracyScore =
+      fieldFeedback.length > 0
+        ? Math.round((totalAccuracy / fieldFeedback.length) * 100) / 100
+        : 0;
+
+    // Update session with feedback status and accuracy
+    await supabase
+      .from('auto_population_sessions')
+      .update({
+        feedback_provided: true,
+        accuracy_score: accuracyScore,
+        status: 'completed',
+        feedback_received_at: new Date().toISOString(),
+      })
+      .eq('id', sessionId);
+
+    // Update field mappings accuracy scores asynchronously
+    Promise.all(
+      fieldFeedback.map(async (feedback) => {
+        if (!feedback.wasCorrect) {
+          // Lower confidence for incorrect mappings
+          await supabase
+            .from('form_field_mappings')
+            .update({
+              accuracy_score: supabase.raw('accuracy_score * 0.9'),
+              updated_at: new Date().toISOString(),
+            })
+            .eq('form_field_id', feedback.fieldId);
+        } else {
+          // Increase confidence for correct mappings
+          await supabase
+            .from('form_field_mappings')
+            .update({
+              accuracy_score: supabase.raw('LEAST(accuracy_score * 1.1, 1.0)'),
+              usage_count: supabase.raw('usage_count + 1'),
+              last_used_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            })
+            .eq('form_field_id', feedback.fieldId);
+        }
+      }),
+    ).catch((error) => {
+      console.error('Error updating mapping accuracy:', error);
+    });
+
+    return NextResponse.json(
+      {
+        success: true,
+        message: 'Feedback recorded successfully',
+        feedbackProcessed: feedbackStored,
+        accuracyScore,
+        sessionStatus: 'completed',
+      },
+      {
+        headers: {
+          'X-RateLimit-Limit': rateLimitResult.limit.toString(),
+          'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+          'X-RateLimit-Reset': new Date(rateLimitResult.reset).toISOString(),
+        },
+      },
+    );
+  } catch (error) {
+    console.error('Session feedback error:', error);
+    return NextResponse.json(
+      { success: false, error: 'Failed to process feedback' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * DELETE /api/auto-population/session/[sessionId]
+ * Cancel/expire a population session
+ */
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: { sessionId: string } },
+) {
+  try {
+    // Rate limiting
+    const rateLimitResult = await sessionRateLimiter(request);
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Too many requests',
+          retryAfter: rateLimitResult.retryAfter,
+        },
+        {
+          status: 429,
+          headers: {
+            'X-RateLimit-Limit': rateLimitResult.limit.toString(),
+            'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+            'X-RateLimit-Reset': new Date(rateLimitResult.reset).toISOString(),
+            'Retry-After': rateLimitResult.retryAfter?.toString() || '60',
+          },
+        },
+      );
+    }
+
+    // Authentication
+    const authResult = await validateAuth(request);
+    if (!authResult.success || !authResult.user) {
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized' },
+        { status: 401 },
+      );
+    }
+
+    // Validate session ID
+    const sessionIdValidation = secureUuidSchema.safeParse(params.sessionId);
+    if (!sessionIdValidation.success) {
+      return NextResponse.json(
+        { success: false, error: 'Invalid session ID format' },
+        { status: 400 },
+      );
+    }
+
+    const sessionId = sessionIdValidation.data;
+
+    // Get session to verify ownership
+    const session = await autoPopulationService.getPopulationSession(sessionId);
+
+    if (!session) {
+      return NextResponse.json(
+        { success: false, error: 'Session not found' },
+        { status: 404 },
+      );
+    }
+
+    // Verify session ownership
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', authResult.user.id)
+      .single();
+
+    if (
+      !profile?.organization_id ||
+      session.organization_id !== profile.organization_id
+    ) {
+      return NextResponse.json(
+        { success: false, error: 'No access to this session' },
+        { status: 403 },
+      );
+    }
+
+    // Cancel the session (soft delete - change status)
+    const { error } = await supabase
+      .from('auto_population_sessions')
+      .update({
+        status: 'cancelled',
+        completed_at: new Date().toISOString(),
+      })
+      .eq('id', sessionId);
+
+    if (error) {
+      console.error('Error cancelling session:', error);
+      return NextResponse.json(
+        { success: false, error: 'Failed to cancel session' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json(
+      {
+        success: true,
+        message: 'Session cancelled successfully',
+      },
+      {
+        headers: {
+          'X-RateLimit-Limit': rateLimitResult.limit.toString(),
+          'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
+          'X-RateLimit-Reset': new Date(rateLimitResult.reset).toISOString(),
+        },
+      },
+    );
+  } catch (error) {
+    console.error('Cancel session error:', error);
+    return NextResponse.json(
+      { success: false, error: 'Failed to cancel session' },
+      { status: 500 },
+    );
+  }
+}

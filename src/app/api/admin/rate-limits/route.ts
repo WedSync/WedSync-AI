@@ -1,0 +1,453 @@
+/**
+ * Admin API for Rate Limit Management
+ * Secure API endpoints for managing rate limits and overrides
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { rateLimitService } from '@/lib/rate-limiter';
+import { RateLimitHeadersManager } from '@/lib/rate-limiter/headers';
+import { logger } from '@/lib/monitoring/structured-logger';
+import { metrics } from '@/lib/monitoring/metrics';
+import type {
+  RateLimitTier,
+  RateLimitOverride,
+  AdminRateLimitAction,
+} from '@/types/rate-limit';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+);
+
+/**
+ * Verify admin authentication and authorization
+ */
+async function verifyAdminAuth(request: NextRequest): Promise<{
+  user: any;
+  authorized: boolean;
+  error?: string;
+}> {
+  try {
+    const authHeader = request.headers.get('authorization');
+    if (!authHeader?.startsWith('Bearer ')) {
+      return {
+        user: null,
+        authorized: false,
+        error: 'Missing authorization header',
+      };
+    }
+
+    const token = authHeader.substring(7);
+    const {
+      data: { user },
+      error,
+    } = await supabase.auth.getUser(token);
+
+    if (error || !user) {
+      return { user: null, authorized: false, error: 'Invalid token' };
+    }
+
+    // Check if user has admin privileges
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('role, permissions, organization_id')
+      .eq('id', user.id)
+      .single();
+
+    const isAdmin =
+      profile?.role === 'admin' || profile?.role === 'super_admin';
+    const hasRateLimitPermission =
+      profile?.permissions?.includes('rate_limit_admin');
+
+    if (!isAdmin && !hasRateLimitPermission) {
+      return {
+        user,
+        authorized: false,
+        error: 'Insufficient permissions for rate limit administration',
+      };
+    }
+
+    return { user, authorized: true };
+  } catch (error) {
+    logger.error('Admin auth verification failed', error as Error);
+    return { user: null, authorized: false, error: 'Authentication failed' };
+  }
+}
+
+/**
+ * GET /api/admin/rate-limits
+ * Retrieve rate limit status and overrides
+ */
+export async function GET(request: NextRequest) {
+  const startTime = Date.now();
+
+  try {
+    const auth = await verifyAdminAuth(request);
+    if (!auth.authorized) {
+      return NextResponse.json({ error: auth.error }, { status: 401 });
+    }
+
+    const { searchParams } = new URL(request.url);
+    const tier = searchParams.get('tier') as RateLimitTier | null;
+    const identifier = searchParams.get('identifier');
+    const active = searchParams.get('active') === 'true';
+
+    // Get rate limit overrides
+    let overridesQuery = supabase
+      .from('rate_limit_overrides')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (tier) {
+      overridesQuery = overridesQuery.eq('tier', tier);
+    }
+
+    if (identifier) {
+      overridesQuery = overridesQuery.eq('identifier', identifier);
+    }
+
+    if (active) {
+      overridesQuery = overridesQuery
+        .eq('active', true)
+        .gte('expires_at', new Date().toISOString());
+    }
+
+    const { data: overrides, error: overridesError } =
+      await overridesQuery.limit(100);
+
+    if (overridesError) {
+      logger.error('Failed to fetch rate limit overrides', overridesError);
+      return NextResponse.json(
+        { error: 'Failed to fetch overrides' },
+        { status: 500 },
+      );
+    }
+
+    // Get recent rate limit events for analytics
+    const { data: recentEvents } = await supabase
+      .from('rate_limit_events')
+      .select('*')
+      .gte(
+        'created_at',
+        new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+      )
+      .order('created_at', { ascending: false })
+      .limit(50);
+
+    // Calculate basic statistics
+    const stats = {
+      totalOverrides: overrides?.length || 0,
+      activeOverrides:
+        overrides?.filter(
+          (o) => o.active && new Date(o.expires_at) > new Date(),
+        ).length || 0,
+      recentBlocks:
+        recentEvents?.filter((e) => e.event_type === 'limit_exceeded').length ||
+        0,
+      recentBypasses:
+        recentEvents?.filter((e) => e.event_type === 'bypass').length || 0,
+    };
+
+    metrics.incrementCounter('admin_api.rate_limits.get', 1, {
+      admin_user_id: auth.user.id,
+      tier: tier || 'all',
+      has_identifier: (!!identifier).toString(),
+    });
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        overrides: overrides || [],
+        recentEvents: recentEvents || [],
+        statistics: stats,
+      },
+    });
+  } catch (error) {
+    logger.error('Rate limit GET API error', error as Error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  } finally {
+    metrics.recordHistogram(
+      'admin_api.rate_limits.get.duration',
+      Date.now() - startTime,
+    );
+  }
+}
+
+/**
+ * POST /api/admin/rate-limits
+ * Create rate limit override
+ */
+export async function POST(request: NextRequest) {
+  const startTime = Date.now();
+
+  try {
+    const auth = await verifyAdminAuth(request);
+    if (!auth.authorized) {
+      return NextResponse.json({ error: auth.error }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const {
+      tier,
+      identifier,
+      limit,
+      windowMs,
+      reason,
+      expiresAt,
+    }: {
+      tier: RateLimitTier;
+      identifier: string;
+      limit: number;
+      windowMs: number;
+      reason: string;
+      expiresAt?: string;
+    } = body;
+
+    // Validate input
+    if (!tier || !identifier || !limit || !windowMs || !reason) {
+      return NextResponse.json(
+        {
+          error:
+            'Missing required fields: tier, identifier, limit, windowMs, reason',
+        },
+        { status: 400 },
+      );
+    }
+
+    if (!['ip', 'user', 'organization', 'global'].includes(tier)) {
+      return NextResponse.json({ error: 'Invalid tier' }, { status: 400 });
+    }
+
+    if (limit < 0 || windowMs < 1000) {
+      return NextResponse.json(
+        { error: 'Invalid limit or windowMs values' },
+        { status: 400 },
+      );
+    }
+
+    // Set override in rate limiter
+    const expirationDate = expiresAt
+      ? new Date(expiresAt)
+      : new Date(Date.now() + 24 * 60 * 60 * 1000); // Default 24h
+
+    await rateLimitService.setOverride(
+      tier,
+      identifier,
+      limit,
+      windowMs,
+      auth.user.id,
+      reason,
+      expirationDate,
+    );
+
+    // Log admin action
+    const actionLog: Omit<AdminRateLimitAction, 'timestamp'> = {
+      action: 'create',
+      target: { type: tier, key: identifier },
+      config: { maxRequests: limit, windowMs, tier },
+      reason,
+      adminUserId: auth.user.id,
+    };
+
+    logger.info('Rate limit override created', actionLog);
+
+    metrics.incrementCounter('admin_api.rate_limits.create', 1, {
+      admin_user_id: auth.user.id,
+      tier,
+      action: 'override',
+    });
+
+    return NextResponse.json({
+      success: true,
+      message: 'Rate limit override created successfully',
+      data: {
+        tier,
+        identifier,
+        limit,
+        windowMs,
+        reason,
+        expiresAt: expirationDate.toISOString(),
+      },
+    });
+  } catch (error) {
+    logger.error('Rate limit POST API error', error as Error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  } finally {
+    metrics.recordHistogram(
+      'admin_api.rate_limits.create.duration',
+      Date.now() - startTime,
+    );
+  }
+}
+
+/**
+ * PUT /api/admin/rate-limits/reset
+ * Reset rate limits for specific identifiers
+ */
+export async function PUT(request: NextRequest) {
+  const startTime = Date.now();
+
+  try {
+    const auth = await verifyAdminAuth(request);
+    if (!auth.authorized) {
+      return NextResponse.json({ error: auth.error }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const {
+      tier,
+      identifier,
+      reason,
+    }: {
+      tier: RateLimitTier;
+      identifier: string;
+      reason: string;
+    } = body;
+
+    // Validate input
+    if (!tier || !identifier || !reason) {
+      return NextResponse.json(
+        { error: 'Missing required fields: tier, identifier, reason' },
+        { status: 400 },
+      );
+    }
+
+    if (!['ip', 'user', 'organization', 'global'].includes(tier)) {
+      return NextResponse.json({ error: 'Invalid tier' }, { status: 400 });
+    }
+
+    // Reset rate limit
+    await rateLimitService.resetRateLimit(tier, identifier, auth.user.id);
+
+    // Log admin action
+    const actionLog: Omit<AdminRateLimitAction, 'timestamp'> = {
+      action: 'reset',
+      target: { type: tier, key: identifier },
+      reason,
+      adminUserId: auth.user.id,
+    };
+
+    logger.info('Rate limit reset by admin', actionLog);
+
+    metrics.incrementCounter('admin_api.rate_limits.reset', 1, {
+      admin_user_id: auth.user.id,
+      tier,
+      action: 'reset',
+    });
+
+    return NextResponse.json({
+      success: true,
+      message: `Rate limit reset successfully for ${tier}: ${identifier}`,
+      data: {
+        tier,
+        identifier,
+        resetAt: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    logger.error('Rate limit reset API error', error as Error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  } finally {
+    metrics.recordHistogram(
+      'admin_api.rate_limits.reset.duration',
+      Date.now() - startTime,
+    );
+  }
+}
+
+/**
+ * DELETE /api/admin/rate-limits
+ * Delete rate limit override
+ */
+export async function DELETE(request: NextRequest) {
+  const startTime = Date.now();
+
+  try {
+    const auth = await verifyAdminAuth(request);
+    if (!auth.authorized) {
+      return NextResponse.json({ error: auth.error }, { status: 401 });
+    }
+
+    const { searchParams } = new URL(request.url);
+    const overrideId = searchParams.get('id');
+    const tier = searchParams.get('tier') as RateLimitTier;
+    const identifier = searchParams.get('identifier');
+
+    if (!overrideId && (!tier || !identifier)) {
+      return NextResponse.json(
+        { error: 'Must provide either override ID or tier+identifier' },
+        { status: 400 },
+      );
+    }
+
+    let deleteQuery = supabase
+      .from('rate_limit_overrides')
+      .update({ active: false });
+
+    if (overrideId) {
+      deleteQuery = deleteQuery.eq('id', overrideId);
+    } else {
+      deleteQuery = deleteQuery.eq('tier', tier).eq('identifier', identifier);
+    }
+
+    const { error: deleteError } = await deleteQuery;
+
+    if (deleteError) {
+      logger.error('Failed to delete rate limit override', deleteError);
+      return NextResponse.json(
+        { error: 'Failed to delete override' },
+        { status: 500 },
+      );
+    }
+
+    // Also remove from Redis if we have tier and identifier
+    if (tier && identifier) {
+      // This would require extending the rate limiter service
+      // For now, log the action
+      logger.info('Rate limit override deactivated', {
+        tier,
+        identifier,
+        adminUserId: auth.user.id,
+        overrideId,
+      });
+    }
+
+    metrics.incrementCounter('admin_api.rate_limits.delete', 1, {
+      admin_user_id: auth.user.id,
+      tier: tier || 'unknown',
+      action: 'delete',
+    });
+
+    return NextResponse.json({
+      success: true,
+      message: 'Rate limit override removed successfully',
+      data: {
+        overrideId,
+        tier,
+        identifier,
+        deletedAt: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    logger.error('Rate limit DELETE API error', error as Error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  } finally {
+    metrics.recordHistogram(
+      'admin_api.rate_limits.delete.duration',
+      Date.now() - startTime,
+    );
+  }
+}

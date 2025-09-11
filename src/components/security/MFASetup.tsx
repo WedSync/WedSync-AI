@@ -1,0 +1,433 @@
+'use client';
+
+import { useState } from 'react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import {
+  Shield,
+  Smartphone,
+  Key,
+  CheckCircle,
+  AlertCircle,
+  QrCode,
+} from 'lucide-react';
+import { mfaService, MFAFactorType } from '@/lib/auth/mfa';
+import QRCode from 'qrcode';
+
+interface MFASetupProps {
+  userId: string;
+  onComplete?: () => void;
+}
+
+export function MFASetup({ userId, onComplete }: MFASetupProps) {
+  const [isEnrolling, setIsEnrolling] = useState(false);
+  const [qrCodeUrl, setQrCodeUrl] = useState<string | null>(null);
+  const [totpSecret, setTotpSecret] = useState<string | null>(null);
+  const [verificationCode, setVerificationCode] = useState('');
+  const [phoneNumber, setPhoneNumber] = useState('');
+  const [backupCodes, setBackupCodes] = useState<string[]>([]);
+  const [currentStep, setCurrentStep] = useState<
+    'setup' | 'verify' | 'backup' | 'complete'
+  >('setup');
+  const [error, setError] = useState<string | null>(null);
+  const [factorId, setFactorId] = useState<string | null>(null);
+  const [challengeId, setChallengeId] = useState<string | null>(null);
+  const [selectedMethod, setSelectedMethod] = useState<'totp' | 'sms'>('totp');
+
+  const handleTOTPEnroll = async () => {
+    setIsEnrolling(true);
+    setError(null);
+
+    try {
+      const result = await mfaService.enrollTOTP(userId);
+
+      if (result.error) {
+        setError(result.error.message);
+        return;
+      }
+
+      if (result.data?.totp) {
+        setFactorId(result.data.id);
+        setTotpSecret(result.data.totp.secret);
+
+        // Generate QR code
+        const qrUrl = await QRCode.toDataURL(result.data.totp.uri);
+        setQrCodeUrl(qrUrl);
+
+        setCurrentStep('verify');
+      }
+    } catch (err) {
+      setError('Failed to set up authenticator app');
+    } finally {
+      setIsEnrolling(false);
+    }
+  };
+
+  const handleSMSEnroll = async () => {
+    if (!phoneNumber) {
+      setError('Please enter a phone number');
+      return;
+    }
+
+    setIsEnrolling(true);
+    setError(null);
+
+    try {
+      const result = await mfaService.enrollSMS(userId, phoneNumber);
+
+      if (result.error) {
+        setError(result.error.message);
+        return;
+      }
+
+      if (result.data) {
+        setFactorId(result.data.id);
+
+        // Create a challenge to send SMS
+        const challengeResult = await mfaService.challenge(
+          result.data.id,
+          userId,
+        );
+        if (challengeResult.data) {
+          setChallengeId(challengeResult.data.id);
+          setCurrentStep('verify');
+        }
+      }
+    } catch (err) {
+      setError('Failed to set up SMS authentication');
+    } finally {
+      setIsEnrolling(false);
+    }
+  };
+
+  const handleVerification = async () => {
+    if (!verificationCode || verificationCode.length !== 6) {
+      setError('Please enter a 6-digit code');
+      return;
+    }
+
+    if (!factorId) {
+      setError('No MFA factor found');
+      return;
+    }
+
+    setIsEnrolling(true);
+    setError(null);
+
+    try {
+      let verifyResult;
+
+      if (selectedMethod === 'totp') {
+        // For TOTP, we need to create a challenge first
+        const challengeResult = await mfaService.challenge(factorId, userId);
+        if (challengeResult.error) {
+          setError(challengeResult.error.message);
+          return;
+        }
+
+        verifyResult = await mfaService.verify(
+          factorId,
+          challengeResult.data!.id,
+          verificationCode,
+          userId,
+        );
+      } else {
+        // For SMS, we already have the challenge ID
+        if (!challengeId) {
+          setError('No challenge found');
+          return;
+        }
+
+        verifyResult = await mfaService.verify(
+          factorId,
+          challengeId,
+          verificationCode,
+          userId,
+        );
+      }
+
+      if (verifyResult.error) {
+        setError(verifyResult.error.message);
+        return;
+      }
+
+      // Generate backup codes
+      generateBackupCodes();
+      setCurrentStep('backup');
+    } catch (err) {
+      setError('Verification failed');
+    } finally {
+      setIsEnrolling(false);
+    }
+  };
+
+  const generateBackupCodes = () => {
+    const codes = [];
+    for (let i = 0; i < 10; i++) {
+      codes.push(Math.random().toString(36).substring(2, 10).toUpperCase());
+    }
+    setBackupCodes(codes);
+  };
+
+  const handleComplete = () => {
+    setCurrentStep('complete');
+    if (onComplete) {
+      setTimeout(onComplete, 2000);
+    }
+  };
+
+  const copyBackupCodes = () => {
+    const codesText = backupCodes.join('\n');
+    navigator.clipboard.writeText(codesText);
+  };
+
+  return (
+    <Card className="w-full max-w-2xl mx-auto">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Shield className="w-5 h-5" />
+          Two-Factor Authentication Setup
+        </CardTitle>
+        <CardDescription>
+          Add an extra layer of security to your WedSync account
+        </CardDescription>
+      </CardHeader>
+
+      <CardContent>
+        {error && (
+          <Alert variant="destructive" className="mb-6">
+            <AlertCircle className="h-4 w-4" />
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
+
+        {currentStep === 'setup' && (
+          <Tabs
+            value={selectedMethod}
+            onValueChange={(v) => setSelectedMethod(v as 'totp' | 'sms')}
+          >
+            <TabsList className="grid w-full grid-cols-2">
+              <TabsTrigger value="totp">
+                <QrCode className="w-4 h-4 mr-2" />
+                Authenticator App
+              </TabsTrigger>
+              <TabsTrigger value="sms">
+                <Smartphone className="w-4 h-4 mr-2" />
+                SMS
+              </TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="totp">
+              <div className="space-y-4">
+                <div className="text-sm text-muted-foreground">
+                  Use an authenticator app like Google Authenticator or Authy to
+                  generate time-based codes.
+                </div>
+                <div className="bg-muted p-4 rounded-lg">
+                  <h4 className="font-medium mb-2">How it works:</h4>
+                  <ol className="list-decimal list-inside space-y-1 text-sm">
+                    <li>Install an authenticator app on your phone</li>
+                    <li>Scan the QR code or enter the secret key</li>
+                    <li>Enter the 6-digit code from the app</li>
+                  </ol>
+                </div>
+                <Button
+                  onClick={handleTOTPEnroll}
+                  disabled={isEnrolling}
+                  className="w-full"
+                >
+                  {isEnrolling ? 'Setting up...' : 'Set Up Authenticator App'}
+                </Button>
+              </div>
+            </TabsContent>
+
+            <TabsContent value="sms">
+              <div className="space-y-4">
+                <div className="text-sm text-muted-foreground">
+                  Receive verification codes via text message to your phone.
+                </div>
+                <div>
+                  <label className="text-sm font-medium">Phone Number</label>
+                  <Input
+                    type="tel"
+                    placeholder="+1234567890"
+                    value={phoneNumber}
+                    onChange={(e) => setPhoneNumber(e.target.value)}
+                    className="mt-1"
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Include country code (e.g., +1 for US)
+                  </p>
+                </div>
+                <Button
+                  onClick={handleSMSEnroll}
+                  disabled={isEnrolling || !phoneNumber}
+                  className="w-full"
+                >
+                  {isEnrolling ? 'Setting up...' : 'Set Up SMS Authentication'}
+                </Button>
+              </div>
+            </TabsContent>
+          </Tabs>
+        )}
+
+        {currentStep === 'verify' && selectedMethod === 'totp' && (
+          <div className="space-y-6">
+            <div className="text-center">
+              <h3 className="text-lg font-semibold mb-2">Scan QR Code</h3>
+              <p className="text-sm text-muted-foreground mb-4">
+                Scan this QR code with your authenticator app
+              </p>
+              {qrCodeUrl && (
+                <div className="flex justify-center mb-4">
+                  <img
+                    src={qrCodeUrl}
+                    alt="MFA QR Code"
+                    className="border rounded-lg"
+                  />
+                </div>
+              )}
+              {totpSecret && (
+                <div className="bg-muted p-3 rounded-lg">
+                  <p className="text-xs text-muted-foreground mb-1">
+                    Can't scan? Enter this code manually:
+                  </p>
+                  <code className="text-sm font-mono break-all">
+                    {totpSecret}
+                  </code>
+                </div>
+              )}
+            </div>
+
+            <div>
+              <label className="text-sm font-medium">Verification Code</label>
+              <Input
+                type="text"
+                placeholder="000000"
+                maxLength={6}
+                value={verificationCode}
+                onChange={(e) =>
+                  setVerificationCode(e.target.value.replace(/\D/g, ''))
+                }
+                className="mt-1 text-center text-2xl font-mono tracking-widest"
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                Enter the 6-digit code from your authenticator app
+              </p>
+            </div>
+
+            <Button
+              onClick={handleVerification}
+              disabled={isEnrolling || verificationCode.length !== 6}
+              className="w-full"
+            >
+              {isEnrolling ? 'Verifying...' : 'Verify Code'}
+            </Button>
+          </div>
+        )}
+
+        {currentStep === 'verify' && selectedMethod === 'sms' && (
+          <div className="space-y-6">
+            <div className="text-center">
+              <h3 className="text-lg font-semibold mb-2">Enter SMS Code</h3>
+              <p className="text-sm text-muted-foreground">
+                We've sent a 6-digit code to {phoneNumber}
+              </p>
+            </div>
+
+            <div>
+              <label className="text-sm font-medium">Verification Code</label>
+              <Input
+                type="text"
+                placeholder="000000"
+                maxLength={6}
+                value={verificationCode}
+                onChange={(e) =>
+                  setVerificationCode(e.target.value.replace(/\D/g, ''))
+                }
+                className="mt-1 text-center text-2xl font-mono tracking-widest"
+              />
+            </div>
+
+            <Button
+              onClick={handleVerification}
+              disabled={isEnrolling || verificationCode.length !== 6}
+              className="w-full"
+            >
+              {isEnrolling ? 'Verifying...' : 'Verify Code'}
+            </Button>
+          </div>
+        )}
+
+        {currentStep === 'backup' && (
+          <div className="space-y-6">
+            <div className="text-center">
+              <Key className="w-12 h-12 mx-auto mb-3 text-primary" />
+              <h3 className="text-lg font-semibold mb-2">
+                Save Your Backup Codes
+              </h3>
+              <p className="text-sm text-muted-foreground">
+                Store these codes safely. You can use them to access your
+                account if you lose your phone.
+              </p>
+            </div>
+
+            <div className="bg-muted p-4 rounded-lg">
+              <div className="grid grid-cols-2 gap-2 font-mono text-sm">
+                {backupCodes.map((code, index) => (
+                  <div key={index} className="flex items-center gap-2">
+                    <span className="text-muted-foreground">{index + 1}.</span>
+                    <span>{code}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex gap-2">
+              <Button
+                onClick={copyBackupCodes}
+                variant="outline"
+                className="flex-1"
+              >
+                Copy Codes
+              </Button>
+              <Button onClick={handleComplete} className="flex-1">
+                I've Saved My Codes
+              </Button>
+            </div>
+
+            <Alert>
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>
+                Each backup code can only be used once. After using a code, it
+                will be permanently disabled.
+              </AlertDescription>
+            </Alert>
+          </div>
+        )}
+
+        {currentStep === 'complete' && (
+          <div className="text-center py-8">
+            <CheckCircle className="w-16 h-16 mx-auto mb-4 text-green-500" />
+            <h3 className="text-lg font-semibold mb-2">
+              Two-Factor Authentication Enabled!
+            </h3>
+            <p className="text-sm text-muted-foreground">
+              Your account is now protected with an additional layer of
+              security.
+            </p>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}

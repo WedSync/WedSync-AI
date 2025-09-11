@@ -1,0 +1,440 @@
+/**
+ * Smart Mapping Correction API Endpoint
+ * PUT /api/document-processing/mapping/correct
+ * Accepts user corrections to improve mapping accuracy through machine learning
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { SmartMappingService } from '@/lib/services/smart-mapping-service';
+import { auth } from '@/lib/auth';
+import { createClient } from '@supabase/supabase-js';
+import { z } from 'zod';
+
+// Request validation schema
+const CorrectionRequestSchema = z.object({
+  corrections: z.array(z.object({
+    mappingId: z.string().min(1),
+    correctTargetFieldId: z.string().min(1),
+    feedback: z.enum(['correct', 'incorrect', 'partial']),
+    userConfidence: z.number().min(0).max(1),
+    notes: z.string().optional(),
+    documentId: z.string().min(1),
+    sourceFieldId: z.string().min(1)
+  })),
+  improvementSuggestions: z.array(z.object({
+    type: z.enum(['pattern', 'semantic', 'context', 'validation']),
+    description: z.string(),
+    priority: z.enum(['low', 'medium', 'high']),
+    affectedFields: z.array(z.string())
+  })).optional()
+});
+
+export async function PUT(request: NextRequest) {
+  const startTime = Date.now();
+
+  try {
+    // Authenticate user
+    const session = await auth();
+    if (!session?.user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    // Parse and validate request
+    const body = await request.json();
+    const validatedData = CorrectionRequestSchema.parse(body);
+
+    // Initialize services
+    const smartMappingService = new SmartMappingService();
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+    );
+
+    const processedCorrections: Array<{
+      mappingId: string;
+      status: 'success' | 'error';
+      message?: string;
+      learningImpact?: {
+        patternUpdated: boolean;
+        confidenceAdjustment: number;
+        sampleSizeIncrease: number;
+      };
+    }> = [];
+
+    // Process each correction
+    for (const correction of validatedData.corrections) {
+      try {
+        // Learn from the correction
+        await smartMappingService.learnFromCorrection({
+          mappingId: correction.mappingId,
+          correctTargetFieldId: correction.correctTargetFieldId,
+          feedback: correction.feedback,
+          userConfidence: correction.userConfidence,
+          notes: correction.notes
+        });
+
+        // Calculate learning impact
+        const learningImpact = await calculateLearningImpact(
+          correction,
+          supabase
+        );
+
+        // Save correction details for analysis
+        await saveCorrectionDetails(correction, session.user.id, supabase);
+
+        processedCorrections.push({
+          mappingId: correction.mappingId,
+          status: 'success',
+          learningImpact
+        });
+
+        // Log successful correction
+        console.log(`Mapping correction processed: ${correction.mappingId}`, {
+          feedback: correction.feedback,
+          userConfidence: correction.userConfidence,
+          userId: session.user.id,
+          learningImpact
+        });
+
+      } catch (correctionError: any) {
+        console.error(`Failed to process correction ${correction.mappingId}:`, correctionError);
+        
+        processedCorrections.push({
+          mappingId: correction.mappingId,
+          status: 'error',
+          message: correctionError.message || 'Failed to process correction'
+        });
+      }
+    }
+
+    // Process improvement suggestions if provided
+    let suggestionResults: any[] = [];
+    if (validatedData.improvementSuggestions) {
+      suggestionResults = await processImprovementSuggestions(
+        validatedData.improvementSuggestions,
+        session.user.id,
+        supabase
+      );
+    }
+
+    // Calculate overall learning metrics
+    const successfulCorrections = processedCorrections.filter(c => c.status === 'success');
+    const failedCorrections = processedCorrections.filter(c => c.status === 'error');
+    
+    const learningMetrics = {
+      totalCorrections: processedCorrections.length,
+      successfulCorrections: successfulCorrections.length,
+      failedCorrections: failedCorrections.length,
+      successRate: processedCorrections.length > 0 ? 
+        successfulCorrections.length / processedCorrections.length : 0,
+      averageLearningImpact: calculateAverageLearningImpact(successfulCorrections),
+      processingTime: Date.now() - startTime
+    };
+
+    // Update user's contribution score
+    await updateUserContributionScore(
+      session.user.id,
+      successfulCorrections.length,
+      supabase
+    );
+
+    // Log correction session for monitoring
+    console.log(`Correction session completed for user ${session.user.id}:`, learningMetrics);
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        processedCorrections,
+        suggestionResults,
+        learningMetrics,
+        message: `Successfully processed ${successfulCorrections.length} corrections. Learning system updated.`
+      }
+    });
+
+  } catch (error) {
+    console.error('Mapping correction error:', error);
+
+    // Handle validation errors
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { 
+          error: 'Invalid request data',
+          details: error.errors,
+          code: 'VALIDATION_ERROR'
+        },
+        { status: 400 }
+      );
+    }
+
+    // Handle service errors
+    if (error instanceof Error) {
+      return NextResponse.json(
+        { 
+          error: 'Failed to process corrections',
+          message: error.message,
+          code: 'CORRECTION_ERROR'
+        },
+        { status: 500 }
+      );
+    }
+
+    // Generic error
+    return NextResponse.json(
+      { 
+        error: 'Internal server error',
+        code: 'INTERNAL_ERROR'
+      },
+      { status: 500 }
+    );
+
+  } finally {
+    // Log processing time for monitoring
+    const processingTime = Date.now() - startTime;
+    console.log(`Correction API call completed in ${processingTime}ms`);
+  }
+}
+
+/**
+ * Calculate the learning impact of a correction
+ */
+async function calculateLearningImpact(
+  correction: any,
+  supabase: any
+): Promise<{
+  patternUpdated: boolean;
+  confidenceAdjustment: number;
+  sampleSizeIncrease: number;
+}> {
+  try {
+    // Get current pattern data
+    const { data: currentPattern } = await supabase
+      .from('mapping_learning_patterns')
+      .select('success_rate, sample_size')
+      .eq('pattern_key', `${correction.sourceFieldId}_${correction.correctTargetFieldId}`)
+      .single();
+
+    if (!currentPattern) {
+      return {
+        patternUpdated: true,
+        confidenceAdjustment: correction.userConfidence,
+        sampleSizeIncrease: 1
+      };
+    }
+
+    // Calculate confidence adjustment based on feedback
+    const feedbackValue = correction.feedback === 'correct' ? 1 : 
+                         correction.feedback === 'partial' ? 0.5 : 0;
+    
+    const oldConfidence = currentPattern.success_rate;
+    const newConfidence = (oldConfidence * currentPattern.sample_size + feedbackValue) / 
+                         (currentPattern.sample_size + 1);
+    
+    return {
+      patternUpdated: true,
+      confidenceAdjustment: newConfidence - oldConfidence,
+      sampleSizeIncrease: 1
+    };
+
+  } catch (error) {
+    console.error('Error calculating learning impact:', error);
+    return {
+      patternUpdated: false,
+      confidenceAdjustment: 0,
+      sampleSizeIncrease: 0
+    };
+  }
+}
+
+/**
+ * Save detailed correction information for analysis
+ */
+async function saveCorrectionDetails(
+  correction: any,
+  userId: string,
+  supabase: any
+): Promise<void> {
+  try {
+    await supabase
+      .from('mapping_correction_details')
+      .insert({
+        mapping_id: correction.mappingId,
+        document_id: correction.documentId,
+        user_id: userId,
+        source_field_id: correction.sourceFieldId,
+        correct_target_field_id: correction.correctTargetFieldId,
+        feedback: correction.feedback,
+        user_confidence: correction.userConfidence,
+        notes: correction.notes,
+        session_timestamp: new Date().toISOString(),
+        created_at: new Date().toISOString()
+      });
+  } catch (error) {
+    console.error('Error saving correction details:', error);
+    // Don't throw - this is for analytics only
+  }
+}
+
+/**
+ * Process improvement suggestions
+ */
+async function processImprovementSuggestions(
+  suggestions: any[],
+  userId: string,
+  supabase: any
+): Promise<any[]> {
+  const results: any[] = [];
+
+  for (const suggestion of suggestions) {
+    try {
+      // Save suggestion to database
+      const { data: savedSuggestion, error } = await supabase
+        .from('mapping_improvement_suggestions')
+        .insert({
+          type: suggestion.type,
+          description: suggestion.description,
+          priority: suggestion.priority,
+          affected_fields: suggestion.affectedFields,
+          submitted_by: userId,
+          status: 'pending',
+          created_at: new Date().toISOString()
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      results.push({
+        suggestionId: savedSuggestion.id,
+        type: suggestion.type,
+        status: 'saved',
+        message: 'Suggestion recorded for review by development team'
+      });
+
+    } catch (error: any) {
+      results.push({
+        type: suggestion.type,
+        status: 'error',
+        message: error.message || 'Failed to save suggestion'
+      });
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Calculate average learning impact
+ */
+function calculateAverageLearningImpact(corrections: any[]): {
+  avgConfidenceAdjustment: number;
+  totalPatternsUpdated: number;
+  totalSampleIncrease: number;
+} {
+  if (corrections.length === 0) {
+    return {
+      avgConfidenceAdjustment: 0,
+      totalPatternsUpdated: 0,
+      totalSampleIncrease: 0
+    };
+  }
+
+  let totalConfidenceAdjustment = 0;
+  let totalPatternsUpdated = 0;
+  let totalSampleIncrease = 0;
+
+  for (const correction of corrections) {
+    if (correction.learningImpact) {
+      totalConfidenceAdjustment += Math.abs(correction.learningImpact.confidenceAdjustment);
+      if (correction.learningImpact.patternUpdated) totalPatternsUpdated++;
+      totalSampleIncrease += correction.learningImpact.sampleSizeIncrease;
+    }
+  }
+
+  return {
+    avgConfidenceAdjustment: totalConfidenceAdjustment / corrections.length,
+    totalPatternsUpdated,
+    totalSampleIncrease
+  };
+}
+
+/**
+ * Update user's contribution score
+ */
+async function updateUserContributionScore(
+  userId: string,
+  correctionsCount: number,
+  supabase: any
+): Promise<void> {
+  try {
+    // Get current score
+    const { data: currentScore } = await supabase
+      .from('user_mapping_contributions')
+      .select('total_corrections, contribution_score')
+      .eq('user_id', userId)
+      .single();
+
+    const newTotalCorrections = (currentScore?.total_corrections || 0) + correctionsCount;
+    const contributionPoints = correctionsCount * 10; // 10 points per correction
+    const newContributionScore = (currentScore?.contribution_score || 0) + contributionPoints;
+
+    await supabase
+      .from('user_mapping_contributions')
+      .upsert({
+        user_id: userId,
+        total_corrections: newTotalCorrections,
+        contribution_score: newContributionScore,
+        last_contribution: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'user_id' });
+
+    // Award achievement badges
+    await checkAndAwardAchievements(userId, newTotalCorrections, supabase);
+
+  } catch (error) {
+    console.error('Error updating user contribution score:', error);
+    // Don't throw - this is for gamification only
+  }
+}
+
+/**
+ * Check and award achievements based on contribution
+ */
+async function checkAndAwardAchievements(
+  userId: string,
+  totalCorrections: number,
+  supabase: any
+): Promise<void> {
+  const achievements = [];
+
+  if (totalCorrections >= 1) achievements.push('first_correction');
+  if (totalCorrections >= 10) achievements.push('mapping_contributor');
+  if (totalCorrections >= 50) achievements.push('mapping_expert');
+  if (totalCorrections >= 100) achievements.push('mapping_master');
+
+  for (const achievement of achievements) {
+    try {
+      await supabase
+        .from('user_achievements')
+        .upsert({
+          user_id: userId,
+          achievement_type: achievement,
+          earned_at: new Date().toISOString()
+        }, { onConflict: 'user_id,achievement_type' });
+    } catch (error) {
+      console.error('Error awarding achievement:', error);
+    }
+  }
+}
+
+export async function GET(request: NextRequest) {
+  return NextResponse.json(
+    { 
+      error: 'Method not allowed',
+      message: 'Use PUT to submit mapping corrections'
+    },
+    { status: 405 }
+  );
+}

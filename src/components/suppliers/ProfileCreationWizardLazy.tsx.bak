@@ -1,0 +1,46 @@
+import dynamic from 'next/dynamic';
+import { Suspense } from 'react';
+import { Skeleton } from '@/components/ui/skeleton';
+
+// Lazy load the heavy ProfileCreationWizard component
+const ProfileCreationWizardDynamic = dynamic(() => import('./ProfileCreationWizard'), {
+  loading: () => (
+    <div className="space-y-6">
+      <div className="flex items-center space-x-4">
+        <Skeleton className="h-12 w-12 rounded-full" />
+        <div className="space-y-2">
+          <Skeleton className="h-4 w-48" />
+          <Skeleton className="h-3 w-32" />
+        </div>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="space-y-4">
+          <Skeleton className="h-4 w-32" />
+          <Skeleton className="h-10 w-full" />
+          <Skeleton className="h-4 w-32" />
+          <Skeleton className="h-10 w-full" />
+        </div>
+        <div className="space-y-4">
+          <Skeleton className="h-4 w-32" />
+          <Skeleton className="h-32 w-full" />
+        </div>
+      </div>
+    </div>
+  ),
+  ssr: false, // Disable SSR for better performance
+});
+
+export function ProfileCreationWizardLazy(props: any) {
+  return (
+    <Suspense fallback={
+      <div className="space-y-6">
+        <Skeleton className="h-8 w-64" />
+        <Skeleton className="h-64 w-full" />
+      </div>
+    }>
+      <ProfileCreationWizardDynamic {...props} />
+    </Suspense>
+  );
+}
+
+export default ProfileCreationWizardLazy;

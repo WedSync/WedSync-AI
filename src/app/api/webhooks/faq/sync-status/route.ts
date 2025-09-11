@@ -1,0 +1,264 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { FAQWebhookProcessor } from '@/lib/integrations/faq-webhook-processor';
+import { createServerClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+
+const webhookProcessor = new FAQWebhookProcessor();
+
+const SyncStatusEventSchema = z.object({
+  eventId: z.string().uuid(),
+  timestamp: z.string().datetime(),
+  syncJobId: z.string().uuid(),
+  organizationId: z.string().uuid(),
+  syncStatus: z.object({
+    status: z.enum([
+      'pending',
+      'in_progress',
+      'completed',
+      'failed',
+      'partial',
+    ]),
+    targetSystem: z.string().min(1),
+    syncedItemsCount: z.number().int().min(0),
+    failedItemsCount: z.number().int().min(0),
+    totalItemsCount: z.number().int().min(0),
+    errors: z.array(
+      z.object({
+        itemId: z.string(),
+        error: z.string(),
+        errorCode: z.string().optional(),
+        retryable: z.boolean(),
+      }),
+    ),
+    syncMetrics: z.object({
+      startTime: z.string().datetime(),
+      endTime: z.string().datetime().optional(),
+      durationMs: z.number().int().min(0).optional(),
+      throughputPerSecond: z.number().min(0).optional(),
+      networkLatencyMs: z.number().int().min(0).optional(),
+    }),
+    conflictsResolved: z.array(
+      z.object({
+        itemId: z.string(),
+        conflictType: z.enum(['duplicate', 'newer_version', 'field_mismatch']),
+        resolution: z.enum(['merged', 'overwritten', 'skipped']),
+        resolvedBy: z.enum(['system', 'user', 'rule']),
+      }),
+    ),
+  }),
+  webhookRetryAttempt: z.number().int().min(0).default(0),
+  metadata: z.object({
+    apiVersion: z.string().default('1.0'),
+    sourceSystem: z.string(),
+    correlationId: z.string().uuid().optional(),
+  }),
+});
+
+export async function POST(request: NextRequest) {
+  try {
+    // Get organization ID from auth context
+    const supabase = await createServerClient();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get user's organization
+    const { data: profile, error: profileError } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', user.id)
+      .single();
+
+    if (profileError || !profile?.organization_id) {
+      return NextResponse.json(
+        { error: 'Organization not found' },
+        { status: 403 },
+      );
+    }
+
+    // Get request body and signature
+    const body = await request.text();
+    const signature = request.headers.get('webhook-signature');
+    const contentType = request.headers.get('content-type');
+    const userAgent = request.headers.get('user-agent') || 'unknown';
+
+    if (!signature) {
+      return NextResponse.json(
+        { error: 'Missing webhook signature' },
+        { status: 401 },
+      );
+    }
+
+    if (contentType !== 'application/json') {
+      return NextResponse.json(
+        { error: 'Invalid content type. Expected application/json' },
+        { status: 400 },
+      );
+    }
+
+    // Parse and validate the event
+    let eventData;
+    try {
+      eventData = JSON.parse(body);
+    } catch (error) {
+      return NextResponse.json(
+        { error: 'Invalid JSON payload' },
+        { status: 400 },
+      );
+    }
+
+    const validationResult = SyncStatusEventSchema.safeParse(eventData);
+    if (!validationResult.success) {
+      return NextResponse.json(
+        {
+          error: 'Invalid event data',
+          details: validationResult.error.errors,
+          received: Object.keys(eventData),
+        },
+        { status: 400 },
+      );
+    }
+
+    const validatedEvent = validationResult.data;
+
+    // Verify organization ownership
+    if (validatedEvent.organizationId !== profile.organization_id) {
+      return NextResponse.json(
+        { error: 'Forbidden: Organization mismatch' },
+        { status: 403 },
+      );
+    }
+
+    // Get client IP for security logging
+    const clientIp =
+      request.headers.get('x-forwarded-for') ||
+      request.headers.get('x-real-ip') ||
+      '127.0.0.1';
+
+    // Process webhook with the FAQWebhookProcessor
+    const processingResult = await webhookProcessor.processWebhook(
+      {
+        type: 'faq.sync.status',
+        id: validatedEvent.eventId,
+        timestamp: new Date(validatedEvent.timestamp),
+        organizationId: validatedEvent.organizationId,
+        data: validatedEvent,
+      },
+      signature,
+      validatedEvent.organizationId,
+      clientIp,
+    );
+
+    if (!processingResult.success) {
+      // Check if this is a retryable error
+      const shouldRetry = processingResult.retryable || false;
+      const statusCode = shouldRetry ? 503 : 500; // Service Unavailable for retryable errors
+
+      return NextResponse.json(
+        {
+          error: 'Webhook processing failed',
+          details: processingResult.error,
+          retryable: shouldRetry,
+          retryAfterSeconds: shouldRetry ? 30 : undefined,
+        },
+        {
+          status: statusCode,
+          headers: shouldRetry ? { 'Retry-After': '30' } : {},
+        },
+      );
+    }
+
+    // Determine response based on sync status
+    const syncStatus = validatedEvent.syncStatus.status;
+    let responseMessage = 'FAQ sync status updated successfully';
+    let alertLevel = 'info';
+
+    if (syncStatus === 'failed') {
+      alertLevel = 'error';
+      responseMessage = 'FAQ sync failed - check error details';
+    } else if (syncStatus === 'partial') {
+      alertLevel = 'warning';
+      responseMessage = 'FAQ sync completed with some failures';
+    } else if (syncStatus === 'completed') {
+      alertLevel = 'success';
+      responseMessage = 'FAQ sync completed successfully';
+    }
+
+    // Log processing results with appropriate detail level
+    const logData = {
+      eventId: validatedEvent.eventId,
+      organizationId: validatedEvent.organizationId,
+      syncJobId: validatedEvent.syncJobId,
+      targetSystem: validatedEvent.syncStatus.targetSystem,
+      status: syncStatus,
+      syncedItems: validatedEvent.syncStatus.syncedItemsCount,
+      failedItems: validatedEvent.syncStatus.failedItemsCount,
+      totalItems: validatedEvent.syncStatus.totalItemsCount,
+      processingTimeMs: processingResult.processingTimeMs,
+      conflictsResolved: validatedEvent.syncStatus.conflictsResolved.length,
+      retryAttempt: validatedEvent.webhookRetryAttempt,
+      userAgent,
+      clientIp,
+    };
+
+    if (alertLevel === 'error') {
+      console.error(`FAQ sync webhook - sync failed:`, logData);
+    } else if (alertLevel === 'warning') {
+      console.warn(`FAQ sync webhook - partial success:`, logData);
+    } else {
+      console.log(`FAQ sync webhook processed:`, logData);
+    }
+
+    // Return appropriate response
+    return NextResponse.json({
+      success: true,
+      eventId: validatedEvent.eventId,
+      processingTimeMs: processingResult.processingTimeMs,
+      message: responseMessage,
+      syncSummary: {
+        status: syncStatus,
+        syncedItems: validatedEvent.syncStatus.syncedItemsCount,
+        failedItems: validatedEvent.syncStatus.failedItemsCount,
+        totalItems: validatedEvent.syncStatus.totalItemsCount,
+        conflictsResolved: validatedEvent.syncStatus.conflictsResolved.length,
+      },
+    });
+  } catch (error) {
+    console.error('FAQ sync status webhook error:', error);
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function GET(request: NextRequest) {
+  // Health check endpoint for monitoring webhook availability
+  return NextResponse.json({
+    status: 'healthy',
+    service: 'faq-sync-status-webhook',
+    timestamp: new Date().toISOString(),
+    version: '1.0.0',
+  });
+}
+
+export async function OPTIONS(request: NextRequest) {
+  return NextResponse.json(
+    {},
+    {
+      status: 200,
+      headers: {
+        Allow: 'POST, GET, OPTIONS',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
+        'Access-Control-Allow-Headers': 'webhook-signature, content-type',
+      },
+    },
+  );
+}

@@ -1,0 +1,6 @@
+WedSync Security Scanner Report
+===============================
+Scan Time: Tue Sep  9 23:47:09 BST 2025
+Scanner Version: 1.0.1
+Project: WedSync Wedding Management Platform
+

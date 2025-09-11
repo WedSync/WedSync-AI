@@ -1,0 +1,91 @@
+import { NextRequest, NextResponse } from 'next/server';
+import type { CacheApiResponse } from '@/types/ai-cache';
+
+/**
+ * WS-241 AI Cache Clear API Endpoint
+ * POST /api/ai/cache/clear
+ */
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const { strategy, maxAge, qualityThreshold, cacheType } = body;
+
+    if (!strategy) {
+      return NextResponse.json(
+        { success: false, error: 'strategy is required' },
+        { status: 400 }
+      );
+    }
+
+    const validStrategies = ['old', 'low_quality', 'type_specific', 'all'];
+    if (!validStrategies.includes(strategy)) {
+      return NextResponse.json(
+        { success: false, error: `Invalid strategy. Must be one of: ${validStrategies.join(', ')}` },
+        { status: 400 }
+      );
+    }
+
+    // Mock cache clearing logic
+    let clearedEntries = 0;
+    let freedStorage = '0MB';
+    let affectedTypes: string[] = [];
+
+    switch (strategy) {
+      case 'old':
+        clearedEntries = Math.floor(Math.random() * 500) + 100;
+        freedStorage = `${Math.floor(clearedEntries * 0.05)}MB`;
+        affectedTypes = ['chatbot', 'email_templates', 'content_generation'];
+        break;
+        
+      case 'low_quality':
+        clearedEntries = Math.floor(Math.random() * 200) + 50;
+        freedStorage = `${Math.floor(clearedEntries * 0.03)}MB`;
+        affectedTypes = ['chatbot', 'content_generation'];
+        break;
+        
+      case 'type_specific':
+        clearedEntries = Math.floor(Math.random() * 300) + 75;
+        freedStorage = `${Math.floor(clearedEntries * 0.04)}MB`;
+        affectedTypes = cacheType ? [cacheType] : ['chatbot'];
+        break;
+        
+      case 'all':
+        clearedEntries = Math.floor(Math.random() * 1000) + 500;
+        freedStorage = `${Math.floor(clearedEntries * 0.06)}MB`;
+        affectedTypes = ['chatbot', 'email_templates', 'content_generation', 'form_generation'];
+        break;
+    }
+
+    const response: CacheApiResponse = {
+      success: true,
+      data: {
+        strategy,
+        clearedEntries,
+        freedStorage,
+        affectedTypes,
+        completedAt: new Date().toISOString(),
+        parameters: {
+          maxAge: maxAge || null,
+          qualityThreshold: qualityThreshold || null,
+          cacheType: cacheType || null
+        }
+      },
+      timestamp: new Date().toISOString()
+    };
+
+    // TODO: Implement actual cache clearing
+    // await clearCacheEntries(strategy, { maxAge, qualityThreshold, cacheType });
+
+    return NextResponse.json(response);
+  } catch (error) {
+    console.error('Error clearing cache:', error);
+    return NextResponse.json(
+      { 
+        success: false, 
+        error: 'Failed to clear cache',
+        timestamp: new Date().toISOString()
+      },
+      { status: 500 }
+    );
+  }
+}

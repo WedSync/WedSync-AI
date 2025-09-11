@@ -1,0 +1,265 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { Suspense } from 'react';
+import {
+  Plus,
+  Search,
+  Filter,
+  BarChart3,
+  Settings,
+  BookOpen,
+} from 'lucide-react';
+import { FAQManager } from '@/components/faq/FAQManager';
+import { FAQEditor } from '@/components/faq/FAQEditor';
+import { FAQAnalytics } from '@/components/faq/FAQAnalytics';
+import { faqService } from '@/lib/services/faqService';
+import type { FaqCategory, FaqItem, FaqDashboardOverview } from '@/types/faq';
+
+// FAQ Management Dashboard - Feature ID: WS-070
+export default function FAQPage() {
+  const [activeTab, setActiveTab] = useState<
+    'manage' | 'analytics' | 'settings'
+  >('manage');
+  const [showEditor, setShowEditor] = useState(false);
+  const [editingFaq, setEditingFaq] = useState<FaqItem | null>(null);
+  const [categories, setCategories] = useState<FaqCategory[]>([]);
+  const [faqs, setFaqs] = useState<FaqItem[]>([]);
+  const [overview, setOverview] = useState<FaqDashboardOverview | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    loadFAQData();
+  }, []);
+
+  const loadFAQData = async () => {
+    try {
+      setLoading(true);
+      const [categoriesData, dashboardData] = await Promise.all([
+        faqService.getFaqCategories(),
+        faqService.getDashboard(),
+      ]);
+
+      setCategories(categoriesData);
+      setOverview(dashboardData);
+    } catch (error) {
+      console.error('Error loading FAQ data:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCreateFaq = () => {
+    setEditingFaq(null);
+    setShowEditor(true);
+  };
+
+  const handleEditFaq = (faq: FaqItem) => {
+    setEditingFaq(faq);
+    setShowEditor(true);
+  };
+
+  const handleEditorClose = () => {
+    setShowEditor(false);
+    setEditingFaq(null);
+    loadFAQData(); // Refresh data after editing
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-25 py-8">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="animate-pulse">
+            <div className="h-8 bg-gray-200 rounded-lg w-64 mb-8"></div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+              {[1, 2, 3].map((i) => (
+                <div
+                  key={i}
+                  className="bg-white border border-gray-200 rounded-xl p-6"
+                >
+                  <div className="h-4 bg-gray-200 rounded w-20 mb-2"></div>
+                  <div className="h-8 bg-gray-200 rounded w-16"></div>
+                </div>
+              ))}
+            </div>
+            <div className="bg-white border border-gray-200 rounded-xl h-96"></div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-25 py-8">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        {/* Header */}
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-8">
+          <div>
+            <h1 className="text-display-sm font-semibold text-gray-900">
+              FAQ Management
+            </h1>
+            <p className="mt-2 text-md text-gray-600">
+              Create and manage your wedding business FAQs to reduce client
+              support workload
+            </p>
+          </div>
+
+          <div className="mt-4 sm:mt-0 flex items-center space-x-3">
+            <button
+              onClick={handleCreateFaq}
+              className="
+                inline-flex items-center gap-2
+                px-4 py-2.5
+                bg-primary-600 hover:bg-primary-700
+                text-white font-semibold text-sm
+                rounded-lg
+                shadow-xs hover:shadow-sm
+                transition-all duration-200
+                focus:outline-none focus:ring-4 focus:ring-primary-100
+              "
+            >
+              <Plus className="w-4 h-4" />
+              Create FAQ
+            </button>
+          </div>
+        </div>
+
+        {/* Dashboard Overview */}
+        {overview && (
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+            <div className="bg-white border border-gray-200 rounded-xl p-6 shadow-xs hover:shadow-md transition-all duration-200">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-gray-600">
+                    Total FAQs
+                  </p>
+                  <p className="text-display-xs font-semibold text-gray-900 mt-1">
+                    {overview.total_faqs}
+                  </p>
+                </div>
+                <BookOpen className="w-8 h-8 text-primary-600" />
+              </div>
+            </div>
+
+            <div className="bg-white border border-gray-200 rounded-xl p-6 shadow-xs hover:shadow-md transition-all duration-200">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-gray-600">
+                    Views (30d)
+                  </p>
+                  <p className="text-display-xs font-semibold text-gray-900 mt-1">
+                    {overview.views_30d?.toLocaleString() || 0}
+                  </p>
+                </div>
+                <BarChart3 className="w-8 h-8 text-blue-600" />
+              </div>
+            </div>
+
+            <div className="bg-white border border-gray-200 rounded-xl p-6 shadow-xs hover:shadow-md transition-all duration-200">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-gray-600">
+                    Helpfulness
+                  </p>
+                  <p className="text-display-xs font-semibold text-gray-900 mt-1">
+                    {Math.round(overview.helpfulness_percentage || 0)}%
+                  </p>
+                </div>
+                <div className="w-8 h-8 rounded-full bg-success-100 flex items-center justify-center">
+                  <div className="w-4 h-4 rounded-full bg-success-600"></div>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-white border border-gray-200 rounded-xl p-6 shadow-xs hover:shadow-md transition-all duration-200">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-gray-600">
+                    Search Success
+                  </p>
+                  <p className="text-display-xs font-semibold text-gray-900 mt-1">
+                    {Math.round(overview.search_success_rate || 100)}%
+                  </p>
+                </div>
+                <Search className="w-8 h-8 text-warning-600" />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Navigation Tabs */}
+        <div className="border-b border-gray-200 mb-8">
+          <nav className="-mb-px flex space-x-8">
+            {[
+              { key: 'manage', label: 'Manage FAQs', icon: BookOpen },
+              { key: 'analytics', label: 'Analytics', icon: BarChart3 },
+              { key: 'settings', label: 'Settings', icon: Settings },
+            ].map(({ key, label, icon: Icon }) => (
+              <button
+                key={key}
+                onClick={() => setActiveTab(key as any)}
+                className={`
+                  inline-flex items-center gap-2 px-1 py-4 border-b-2 font-medium text-sm transition-colors
+                  ${
+                    activeTab === key
+                      ? 'border-primary-600 text-primary-600'
+                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                  }
+                `}
+              >
+                <Icon className="w-4 h-4" />
+                {label}
+              </button>
+            ))}
+          </nav>
+        </div>
+
+        {/* Tab Content */}
+        <div className="min-h-96">
+          {activeTab === 'manage' && (
+            <Suspense fallback={<div>Loading FAQ manager...</div>}>
+              <FAQManager
+                supplier_id=""
+                initial_categories={categories}
+                initial_faqs={faqs}
+                onCreateFaq={handleCreateFaq}
+                onEditFaq={handleEditFaq}
+                onDataChange={loadFAQData}
+              />
+            </Suspense>
+          )}
+
+          {activeTab === 'analytics' && (
+            <Suspense fallback={<div>Loading analytics...</div>}>
+              <FAQAnalytics overview={overview} />
+            </Suspense>
+          )}
+
+          {activeTab === 'settings' && (
+            <div className="bg-white border border-gray-200 rounded-xl p-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                FAQ Settings
+              </h3>
+              <p className="text-gray-600">
+                FAQ settings will be available in a future update.
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* FAQ Editor Modal */}
+        {showEditor && (
+          <FAQEditor
+            faq={editingFaq}
+            categories={categories}
+            onClose={handleEditorClose}
+            onSave={() => {
+              handleEditorClose();
+              loadFAQData();
+            }}
+          />
+        )}
+      </div>
+    </div>
+  );
+}

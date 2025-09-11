@@ -1,0 +1,418 @@
+'use client';
+
+import React, { useState, useEffect, useCallback } from 'react';
+import { useRouter, useParams } from 'next/navigation';
+import { JourneyCanvas } from '@/components/journey-builder';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { 
+  Save, 
+  ArrowLeft, 
+  Settings, 
+  Play, 
+  Download,
+  Upload,
+  MoreHorizontal,
+  AlertCircle,
+  Trash2
+} from 'lucide-react';
+
+interface JourneyData {
+  id: string;
+  name: string;
+  description: string;
+  status: 'draft' | 'active' | 'paused' | 'archived';
+  vendorId: string;
+  nodes: any[];
+  edges: any[];
+  nodeCount: number;
+  connectionCount: number;
+  clientsEnrolled: number;
+  conversionRate: number;
+  lastModified: string;
+  createdAt: string;
+}
+
+// Mock data - in real app this would come from API
+const mockJourneyData: JourneyData = {
+  id: '1',
+  name: 'Wedding Photography Client Journey',
+  description: 'Complete journey from initial inquiry to post-wedding delivery',
+  status: 'active',
+  vendorId: 'vendor-1',
+  nodes: [
+    {
+      id: 'start',
+      type: 'timeline',
+      position: { x: 250, y: 100 },
+      data: {
+        label: 'Initial Inquiry',
+        description: 'Client makes first contact',
+        status: 'active',
+        config: {
+          eventType: 'milestone',
+          date: null,
+          daysOffset: 0
+        }
+      }
+    },
+    {
+      id: 'email-1',
+      type: 'email',
+      position: { x: 250, y: 200 },
+      data: {
+        label: 'Welcome Email',
+        description: 'Send welcome package',
+        status: 'active',
+        config: {
+          template: 'welcome-template',
+          recipient: 'client',
+          subject: 'Welcome to [Studio Name]!',
+          delay: 0
+        }
+      }
+    },
+    {
+      id: 'form-1',
+      type: 'form',
+      position: { x: 250, y: 300 },
+      data: {
+        label: 'Client Questionnaire',
+        description: 'Collect wedding details',
+        status: 'active',
+        config: {
+          formName: 'Wedding Details Form',
+          fields: ['wedding_date', 'venue', 'guest_count', 'style_preferences'],
+          required: true,
+          reminder: true
+        }
+      }
+    }
+  ],
+  edges: [
+    {
+      id: 'e-start-email',
+      source: 'start',
+      target: 'email-1',
+      type: 'smoothstep',
+      animated: true
+    },
+    {
+      id: 'e-email-form',
+      source: 'email-1',
+      target: 'form-1',
+      type: 'smoothstep',
+      animated: true
+    }
+  ],
+  nodeCount: 3,
+  connectionCount: 2,
+  clientsEnrolled: 45,
+  conversionRate: 78.5,
+  lastModified: '2024-01-15T10:30:00Z',
+  createdAt: '2024-01-10T09:00:00Z'
+};
+
+export default function EditJourneyPage() {
+  const router = useRouter();
+  const params = useParams();
+  const journeyId = params.id as string;
+  
+  const [journeyData, setJourneyData] = useState<JourneyData | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [lastSaved, setLastSaved] = useState<Date | null>(null);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+
+  // Load journey data
+  useEffect(() => {
+    const loadJourney = async () => {
+      try {
+        setIsLoading(true);
+        // Simulate API call
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        // In real app: const data = await fetchJourney(journeyId);
+        setJourneyData(mockJourneyData);
+        setLastSaved(new Date(mockJourneyData.lastModified));
+      } catch (error) {
+        console.error('Failed to load journey:', error);
+        router.push('/journeys');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    if (journeyId) {
+      loadJourney();
+    }
+  }, [journeyId, router]);
+
+  const handleSave = useCallback(async (nodes: any[], edges: any[]) => {
+    if (!journeyData) return;
+    
+    setIsSaving(true);
+    try {
+      const updatedJourney = {
+        ...journeyData,
+        nodes,
+        edges,
+        nodeCount: nodes.length,
+        connectionCount: edges.length,
+        lastModified: new Date().toISOString()
+      };
+      
+      // Simulate API call
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      console.log('Saving journey:', updatedJourney);
+      
+      // In real app: await updateJourney(journeyId, updatedJourney);
+      
+      setJourneyData(updatedJourney);
+      setLastSaved(new Date());
+      setHasUnsavedChanges(false);
+    } catch (error) {
+      console.error('Failed to save journey:', error);
+    } finally {
+      setIsSaving(false);
+    }
+  }, [journeyData]);
+
+  const handlePreview = useCallback(() => {
+    console.log('Opening journey preview...');
+    // Here you would open a preview modal
+  }, []);
+
+  const handleToggleStatus = useCallback(async () => {
+    if (!journeyData) return;
+    
+    const newStatus = journeyData.status === 'active' ? 'paused' : 'active';
+    
+    try {
+      // In real app: await updateJourneyStatus(journeyId, newStatus);
+      setJourneyData(prev => prev ? { ...prev, status: newStatus } : null);
+      console.log(`Journey ${newStatus}`);
+    } catch (error) {
+      console.error('Failed to update journey status:', error);
+    }
+  }, [journeyData]);
+
+  const handleArchive = useCallback(async () => {
+    if (!journeyData) return;
+    
+    const confirmed = window.confirm(
+      'Are you sure you want to archive this journey? This will remove all enrolled clients.'
+    );
+    
+    if (confirmed) {
+      try {
+        // In real app: await archiveJourney(journeyId);
+        setJourneyData(prev => prev ? { ...prev, status: 'archived' } : null);
+        console.log('Journey archived');
+      } catch (error) {
+        console.error('Failed to archive journey:', error);
+      }
+    }
+  }, [journeyData]);
+
+  const handleGoBack = useCallback(() => {
+    if (hasUnsavedChanges) {
+      const confirmed = window.confirm(
+        'You have unsaved changes. Are you sure you want to leave?'
+      );
+      if (!confirmed) return;
+    }
+    router.push('/journeys');
+  }, [router, hasUnsavedChanges]);
+
+  const formatLastSaved = (date: Date | null) => {
+    if (!date) return 'Never';
+    const now = new Date();
+    const diff = now.getTime() - date.getTime();
+    const minutes = Math.floor(diff / 60000);
+    
+    if (minutes < 1) return 'Just now';
+    if (minutes < 60) return `${minutes}m ago`;
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
+  if (isLoading) {
+    return (
+      <div className="h-screen flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+          <p className="text-muted-foreground">Loading journey...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!journeyData) {
+    return (
+      <div className="h-screen flex items-center justify-center">
+        <div className="text-center">
+          <AlertCircle className="h-12 w-12 text-destructive mx-auto mb-4" />
+          <h2 className="text-lg font-semibold mb-2">Journey not found</h2>
+          <p className="text-muted-foreground mb-4">
+            The journey you're looking for doesn't exist or has been deleted.
+          </p>
+          <Button onClick={() => router.push('/journeys')}>
+            Back to Journeys
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-screen flex flex-col bg-background">
+      {/* Header */}
+      <header className="bg-card border-b px-6 py-4 flex-shrink-0">
+        <div className="flex items-center justify-between">
+          {/* Left side */}
+          <div className="flex items-center space-x-4">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleGoBack}
+              className="flex items-center space-x-2"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              <span>Back to Journeys</span>
+            </Button>
+            
+            <div className="h-6 w-px bg-border" />
+            
+            <div>
+              <h1 className="text-xl font-bold text-foreground">
+                {journeyData.name}
+              </h1>
+              <div className="flex items-center space-x-2 text-sm text-muted-foreground">
+                <span>Last saved: {formatLastSaved(lastSaved)}</span>
+                <Badge 
+                  variant={journeyData.status === 'active' ? 'default' : 'secondary'}
+                  className="text-xs"
+                >
+                  {journeyData.status}
+                </Badge>
+                {journeyData.clientsEnrolled > 0 && (
+                  <Badge variant="outline" className="text-xs">
+                    {journeyData.clientsEnrolled} clients enrolled
+                  </Badge>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Right side */}
+          <div className="flex items-center space-x-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handlePreview}
+              className="hidden sm:flex items-center space-x-2"
+            >
+              <Play className="h-4 w-4" />
+              <span>Preview</span>
+            </Button>
+
+            <Button
+              variant="outline"
+              size="sm"
+              className="hidden sm:flex items-center space-x-2"
+            >
+              <Settings className="h-4 w-4" />
+              <span>Settings</span>
+            </Button>
+
+            <div className="h-6 w-px bg-border hidden sm:block" />
+
+            <Button
+              variant="outline"
+              size="sm"
+              className="hidden sm:flex items-center space-x-2"
+            >
+              <Download className="h-4 w-4" />
+              <span>Export</span>
+            </Button>
+
+            <div className="h-6 w-px bg-border" />
+
+            {journeyData.status === 'active' ? (
+              <Button
+                variant="secondary"
+                onClick={handleToggleStatus}
+                className="flex items-center space-x-2"
+              >
+                <span>Pause</span>
+              </Button>
+            ) : journeyData.status === 'paused' ? (
+              <Button
+                onClick={handleToggleStatus}
+                className="flex items-center space-x-2"
+              >
+                <Play className="h-4 w-4" />
+                <span>Resume</span>
+              </Button>
+            ) : journeyData.status === 'draft' ? (
+              <Button
+                onClick={handleToggleStatus}
+                className="flex items-center space-x-2"
+              >
+                <Play className="h-4 w-4" />
+                <span>Publish</span>
+              </Button>
+            ) : null}
+
+            {journeyData.status !== 'archived' && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleArchive}
+                className="hidden sm:flex items-center space-x-2 text-destructive hover:text-destructive"
+              >
+                <Trash2 className="h-4 w-4" />
+                <span>Archive</span>
+              </Button>
+            )}
+
+            <Button
+              variant="ghost"
+              size="sm"
+              className="sm:hidden"
+            >
+              <MoreHorizontal className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+      </header>
+
+      {/* Canvas */}
+      <div className="flex-1 overflow-hidden">
+        <JourneyCanvas
+          onSave={handleSave}
+          onPreview={handlePreview}
+          className="h-full"
+          readOnly={journeyData.status === 'archived'}
+        />
+      </div>
+
+      {/* Auto-save indicator */}
+      {isSaving && (
+        <div className="fixed bottom-4 right-4 bg-card border shadow-lg rounded-lg px-4 py-2 flex items-center space-x-2">
+          <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+          <span className="text-sm text-foreground">Saving...</span>
+        </div>
+      )}
+
+      {/* Unsaved changes indicator */}
+      {hasUnsavedChanges && !isSaving && (
+        <div className="fixed bottom-4 left-4 bg-yellow-50 border border-yellow-200 text-yellow-800 rounded-lg px-4 py-2 flex items-center space-x-2">
+          <AlertCircle className="w-4 h-4" />
+          <span className="text-sm">You have unsaved changes</span>
+        </div>
+      )}
+    </div>
+  );
+}

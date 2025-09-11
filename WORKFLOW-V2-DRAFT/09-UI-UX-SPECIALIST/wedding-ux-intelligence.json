@@ -1,0 +1,254 @@
+{
+  "wedding_industry_ux_intelligence": {
+    "last_updated": "2025-01-20",
+    "vendor_type_patterns": {
+      "photographer_workflows": {
+        "primary_devices": ["iPhone Pro", "iPad Pro", "MacBook Pro"],
+        "usage_contexts": {
+          "client_meetings": {
+            "device": "iPad Pro", 
+            "orientation": "landscape",
+            "key_interactions": ["portfolio_swipe", "package_selection", "contract_review"],
+            "ui_requirements": ["high_resolution_images", "smooth_transitions", "professional_appearance"]
+          },
+          "wedding_day_shooting": {
+            "device": "iPhone Pro",
+            "orientation": "portrait_primarily",
+            "one_handed_usage": true,
+            "key_interactions": ["quick_upload", "timeline_check", "emergency_contact"],
+            "ui_requirements": ["large_touch_targets", "quick_access_buttons", "offline_capability"]
+          },
+          "post_wedding_editing": {
+            "device": "MacBook Pro",
+            "orientation": "landscape",
+            "extended_sessions": true,
+            "key_interactions": ["bulk_photo_organization", "gallery_curation", "client_delivery"],
+            "ui_requirements": ["keyboard_shortcuts", "bulk_actions", "efficient_workflows"]
+          }
+        },
+        "pain_points_current_tools": [
+          "switching_between_multiple_apps",
+          "poor_mobile_photo_upload_experience", 
+          "client_galleries_look_unprofessional",
+          "timeline_coordination_chaos",
+          "invoice_generation_tedious"
+        ],
+        "ux_priorities": [
+          "beautiful_portfolio_display",
+          "seamless_mobile_photo_workflow",
+          "professional_client_communication",
+          "efficient_business_management"
+        ]
+      },
+      "venue_coordinator_workflows": {
+        "primary_devices": ["iPad", "iPhone", "Surface Tablet"],
+        "usage_contexts": {
+          "venue_setup_morning": {
+            "device": "iPad",
+            "environment": "outdoor_potentially",
+            "lighting_conditions": "variable",
+            "key_interactions": ["vendor_check_ins", "setup_photo_documentation", "timeline_updates"],
+            "ui_requirements": ["high_contrast_mode", "large_buttons", "photo_camera_integration"]
+          },
+          "ceremony_coordination": {
+            "device": "iPhone",
+            "usage_style": "discrete_glances",
+            "stress_level": "high",
+            "key_interactions": ["timeline_monitoring", "vendor_messaging", "emergency_protocols"],
+            "ui_requirements": ["glanceable_status", "one_tap_communications", "silent_notifications"]
+          },
+          "reception_management": {
+            "device": "iPad",
+            "multitasking": true,
+            "noise_level": "high",
+            "key_interactions": ["timeline_adjustments", "vendor_coordination", "problem_resolution"],
+            "ui_requirements": ["visual_status_indicators", "quick_vendor_contact", "timeline_drag_drop"]
+          }
+        },
+        "emergency_scenarios": {
+          "weather_issues": {
+            "required_actions": ["notify_all_vendors", "timeline_adjustments", "backup_plan_activation"],
+            "ui_pattern": "emergency_broadcast_button + cascade_timeline_updates"
+          },
+          "vendor_no_show": {
+            "required_actions": ["emergency_vendor_contact", "backup_vendor_activation", "timeline_modification"],
+            "ui_pattern": "emergency_vendor_directory + quick_replacement_workflow"
+          },
+          "timeline_delays": {
+            "required_actions": ["calculate_delay_impact", "notify_affected_vendors", "adjust_remaining_schedule"],
+            "ui_pattern": "delay_calculator + automated_notification_system"
+          }
+        }
+      },
+      "couple_portal_patterns": {
+        "primary_devices": ["iPhone", "Android", "iPad", "Laptop"],
+        "emotional_context": "high_stress_high_excitement",
+        "usage_frequency": "daily_during_planning_phase",
+        "key_interactions": {
+          "vendor_communication": {
+            "pattern": "message_threading_with_context",
+            "requirements": ["conversation_history", "file_sharing", "decision_tracking"]
+          },
+          "planning_progress": {
+            "pattern": "visual_progress_dashboard",
+            "requirements": ["milestone_tracking", "deadline_alerts", "completion_celebration"]
+          },
+          "wedding_day_live": {
+            "pattern": "live_photo_feed_family_sharing",
+            "requirements": ["real_time_updates", "easy_sharing", "mobile_optimized"]
+          }
+        },
+        "trust_building_elements": [
+          "professional_vendor_presentation",
+          "secure_payment_processing",
+          "reliable_communication_tools",
+          "beautiful_photo_galleries",
+          "progress_transparency"
+        ]
+      }
+    },
+    "mobile_optimization_intelligence": {
+      "venue_specific_challenges": {
+        "poor_signal_areas": {
+          "common_locations": ["basements", "rural_venues", "historic_buildings", "tents"],
+          "ui_adaptations": [
+            "offline_first_critical_functions",
+            "data_sync_when_connected",
+            "cached_essential_information",
+            "visual_offline_indicators"
+          ]
+        },
+        "lighting_conditions": {
+          "bright_sunlight": {
+            "ui_adaptations": ["high_contrast_mode", "larger_text", "bold_icons"]
+          },
+          "low_light_evening": {
+            "ui_adaptations": ["dark_mode_optimization", "larger_touch_targets", "reduced_glare"]
+          }
+        },
+        "one_handed_usage": {
+          "scenarios": ["holding_equipment", "managing_guests", "taking_notes"],
+          "ui_patterns": [
+            "bottom_navigation_primary",
+            "thumb_zone_critical_actions", 
+            "swipe_gestures_common_tasks",
+            "voice_input_alternatives"
+          ]
+        }
+      },
+      "performance_requirements": {
+        "wedding_day_critical": {
+          "load_time": "<1_second",
+          "offline_capability": "essential_functions_only",
+          "battery_optimization": "background_sync_minimal",
+          "data_usage": "compressed_images_cached_content"
+        },
+        "client_presentation": {
+          "visual_quality": "high_resolution_photos",
+          "smooth_animations": "60fps_transitions",
+          "professional_loading": "elegant_spinners_progress_bars"
+        }
+      }
+    },
+    "accessibility_wedding_context": {
+      "vendor_accessibility_needs": {
+        "screen_readers": {
+          "use_cases": ["visually_impaired_vendors", "hands_free_operation", "dark_environment_usage"],
+          "critical_features": ["timeline_announcements", "vendor_status_updates", "emergency_alerts"]
+        },
+        "motor_accessibility": {
+          "use_cases": ["injured_coordinators", "equipment_heavy_photographers", "elderly_vendors"],
+          "adaptations": ["voice_commands", "large_touch_targets", "reduced_precision_required"]
+        },
+        "cognitive_accessibility": {
+          "high_stress_situations": ["wedding_day_pressure", "emergency_management", "multi_vendor_coordination"],
+          "ui_simplification": ["clear_visual_hierarchy", "obvious_next_actions", "error_prevention"]
+        }
+      }
+    },
+    "component_usage_patterns": {
+      "timeline_components": {
+        "drag_drop_technology": "@dnd-kit",
+        "rationale": "Complex time constraints, vendor dependencies, accessibility critical",
+        "mobile_adaptations": ["large_drag_handles", "haptic_feedback", "visual_drop_zones"],
+        "emergency_features": ["bulk_time_shift", "cascade_delay_updates", "conflict_detection"]
+      },
+      "photo_gallery_components": {
+        "display_technology": "react_window + intersection_observer",
+        "rationale": "Performance with thousands of photos, mobile scroll optimization",
+        "photographer_requirements": ["high_quality_previews", "fast_scrolling", "batch_selection"],
+        "client_requirements": ["beautiful_presentation", "easy_sharing", "mobile_friendly"]
+      },
+      "communication_components": {
+        "real_time_technology": "supabase_realtime + optimistic_updates",
+        "rationale": "Vendor coordination requires immediate updates, offline message queuing",
+        "wedding_day_requirements": ["instant_delivery", "offline_queue", "emergency_broadcasts"],
+        "trust_building": ["read_receipts", "typing_indicators", "professional_formatting"]
+      }
+    },
+    "quick_access_emergency_patterns": {
+      "floating_action_button_contexts": {
+        "photographer_wedding_day": {
+          "primary_actions": ["upload_photos", "mark_milestone", "contact_coordinator"],
+          "secondary_actions": ["battery_warning", "storage_check", "backup_request"],
+          "emergency_actions": ["equipment_failure", "timeline_issue", "health_emergency"]
+        },
+        "venue_coordinator_setup": {
+          "primary_actions": ["check_vendor_arrival", "photo_setup_progress", "timeline_update"],
+          "secondary_actions": ["weather_check", "contact_vendors", "problem_log"],
+          "emergency_actions": ["vendor_no_show", "weather_emergency", "equipment_crisis"]
+        }
+      },
+      "swipe_gesture_library": {
+        "photographer_photo_management": {
+          "swipe_right": "mark_favorite",
+          "swipe_left": "mark_for_deletion", 
+          "swipe_up": "upload_to_client_gallery",
+          "swipe_down": "add_to_timeline_milestone"
+        },
+        "coordinator_task_management": {
+          "swipe_right": "mark_task_complete",
+          "swipe_left": "report_delay_issue",
+          "long_press": "show_vendor_quick_contact",
+          "double_tap": "photo_documentation"
+        }
+      }
+    },
+    "trust_and_professional_appearance": {
+      "b2b_credibility_factors": {
+        "visual_design": [
+          "clean_professional_layouts",
+          "high_quality_photography_display",
+          "consistent_branding_elements",
+          "elegant_typography_choices"
+        ],
+        "interaction_design": [
+          "smooth_professional_animations",
+          "intuitive_navigation_patterns",
+          "clear_feedback_systems", 
+          "error_handling_graceful"
+        ],
+        "content_presentation": [
+          "well_organized_information_hierarchy",
+          "professional_language_tone",
+          "clear_pricing_transparency",
+          "testimonial_social_proof"
+        ]
+      },
+      "client_facing_excellence": {
+        "couple_portal_standards": [
+          "beautiful_photo_gallery_presentation",
+          "secure_payment_processing_appearance",
+          "professional_vendor_communication_tools",
+          "milestone_celebration_moments"
+        ],
+        "family_sharing_requirements": [
+          "easy_access_without_accounts",
+          "mobile_optimized_photo_viewing", 
+          "simple_download_sharing_options",
+          "privacy_security_visible"
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,416 @@
+import { createClient } from '@/lib/supabase/server';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
+import {
+  Table,
+  TableHead,
+  TableBody,
+  TableRow,
+  TableHeader,
+  TableCell,
+} from '@/components/ui/table';
+import {
+  Dropdown,
+  DropdownButton,
+  DropdownMenu,
+  DropdownItem,
+  DropdownLabel,
+} from '@/components/ui/dropdown';
+import { InputGroup } from '@/components/ui/input-group';
+import {
+  PlusIcon,
+  MagnifyingGlassIcon,
+  FunnelIcon,
+  ArrowUpTrayIcon,
+  EllipsisHorizontalIcon,
+  CheckCircleIcon,
+  ClockIcon,
+  XCircleIcon,
+  LinkIcon,
+  UserIcon,
+  CalendarIcon,
+  EnvelopeIcon,
+  PhoneIcon,
+  DocumentTextIcon,
+  PencilIcon,
+  TrashIcon,
+  ChevronRightIcon,
+} from '@heroicons/react/20/solid';
+import Link from 'next/link';
+import { format } from 'date-fns';
+import { extractSearchParams } from '@/types/next15-params';
+
+export default async function ClientsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ status?: string; search?: string; sort?: string }>;
+}) {
+  // Extract async searchParams - Next.js 15 requirement
+  const resolvedSearchParams = await extractSearchParams(searchParams);
+  const supabase = await createClient();
+
+  const { data: user } = await supabase.auth.getUser();
+  if (!user) return null;
+
+  const { data: profile } = await supabase
+    .from('user_profiles')
+    .select('organization_id')
+    .eq('user_id', user.id)
+    .single();
+
+  if (!profile?.organization_id) return null;
+
+  let query = supabase
+    .from('clientsList')
+    .select(
+      `
+      *,
+      client_activities (
+        id,
+        activity_type,
+        created_at
+      )
+    `,
+    )
+    .eq('organization_id', profile.organization_id);
+
+  if (resolvedSearchParams.status && resolvedSearchParams.status !== 'all') {
+    query = query.eq('status', resolvedSearchParams.status);
+  }
+
+  if (resolvedSearchParams.search) {
+    query = query.or(`
+      first_name.ilike.%${resolvedSearchParams.search}%,
+      last_name.ilike.%${resolvedSearchParams.search}%,
+      email.ilike.%${resolvedSearchParams.search}%,
+      partner_first_name.ilike.%${resolvedSearchParams.search}%,
+      partner_last_name.ilike.%${resolvedSearchParams.search}%
+    `);
+  }
+
+  const sortField = resolvedSearchParams.sort?.replace('-', '') || 'created_at';
+  const sortAscending = !resolvedSearchParams.sort?.startsWith('-');
+  query = query.order(sortField, { ascending: sortAscending });
+
+  const { data: rawClientsList } = await query;
+  const clientsList = rawClientsList ?? [];
+
+  const statusColors = {
+    lead: 'zinc',
+    booked: 'green',
+    completed: 'blue',
+    archived: 'gray',
+  } as const;
+
+  const statusIcons = {
+    lead: ClockIcon,
+    booked: CheckCircleIcon,
+    completed: CheckCircleIcon,
+    archived: XCircleIcon,
+  } as const;
+
+  const getClientName = (client: (typeof clientsList)[0]) => {
+    const names = [client.first_name, client.last_name]
+      .filter(Boolean)
+      .join(' ');
+    const partnerNames = [client.partner_first_name, client.partner_last_name]
+      .filter(Boolean)
+      .join(' ');
+
+    if (names && partnerNames) {
+      return `${names} & ${partnerNames}`;
+    }
+    return names || partnerNames || 'Unnamed Client';
+  };
+
+  const getDaysUntilWedding = (weddingDate: string | null) => {
+    if (!weddingDate) return null;
+    const days = Math.ceil(
+      (new Date(weddingDate).getTime() - new Date().getTime()) /
+        (1000 * 60 * 60 * 24),
+    );
+    if (days < 0) return 'Past';
+    if (days === 0) return 'Today';
+    if (days === 1) return 'Tomorrow';
+    return `${days} days`;
+  };
+
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-4 mb-6">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight text-gray-900">
+            Clients
+          </h1>
+          <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+            Manage your wedding clientsList and their information
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Link href="/clientsList/import">
+            <Button variant="outline">
+              <ArrowUpTrayIcon />
+              Import
+            </Button>
+          </Link>
+          <Link href="/clientsList/new">
+            <Button>
+              <PlusIcon />
+              Add Client
+            </Button>
+          </Link>
+        </div>
+      </div>
+
+      <div className="mb-6 flex flex-col sm:flex-row gap-4">
+        <div className="flex-1">
+          <InputGroup>
+            <MagnifyingGlassIcon />
+            <Input
+              name="search"
+              placeholder="Search clientsList..."
+              defaultValue={resolvedSearchParams.search}
+            />
+          </InputGroup>
+        </div>
+        <select
+          className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+          name="status"
+          defaultValue={resolvedSearchParams.status || 'all'}
+        >
+          <option value="all">All Status</option>
+          <option value="lead">Leads</option>
+          <option value="booked">Booked</option>
+          <option value="completed">Completed</option>
+          <option value="archived">Archived</option>
+        </select>
+        <Button variant="outline">
+          <FunnelIcon className="mr-2 h-4 w-4" />
+          More Filters
+        </Button>
+      </div>
+
+      <div className="overflow-hidden rounded-lg border border-zinc-950/10 dark:border-white/10">
+        <Table>
+          <TableHead>
+            <TableRow>
+              <TableHeader>Client</TableHeader>
+              <TableHeader>Wedding Date</TableHeader>
+              <TableHeader>Venue</TableHeader>
+              <TableHeader>Status</TableHeader>
+              <TableHeader>Package</TableHeader>
+              <TableHeader>WedMe</TableHeader>
+              <TableHeader className="relative w-0">
+                <span className="sr-only">Actions</span>
+              </TableHeader>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {clientsList.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={7} className="text-center py-12">
+                  <div className="flex flex-col items-center gap-3">
+                    <UserIcon className="size-8 text-zinc-400" />
+                    <div>
+                      <p className="font-medium text-zinc-900 dark:text-white">
+                        No clientsList yet
+                      </p>
+                      <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-1">
+                        Add your first client or import from a spreadsheet
+                      </p>
+                    </div>
+                    <div className="flex gap-2 mt-2">
+                      <Link href="/clientsList/new">
+                        <Button size="sm">
+                          <PlusIcon />
+                          Add Client
+                        </Button>
+                      </Link>
+                      <Link href="/clientsList/import">
+                        <Button variant="outline" size="sm">
+                          <ArrowUpTrayIcon />
+                          Import Clients
+                        </Button>
+                      </Link>
+                    </div>
+                  </div>
+                </TableCell>
+              </TableRow>
+            ) : (
+              clientsList.map((client: (typeof clientsList)[0]) => {
+                const StatusIcon =
+                  statusIcons[client.status as keyof typeof statusIcons] ||
+                  ClockIcon;
+                const daysUntil = getDaysUntilWedding(client.wedding_date);
+
+                return (
+                  <TableRow key={client.id}>
+                    <TableCell>
+                      <div>
+                        <div className="font-medium text-zinc-950 dark:text-white">
+                          {getClientName(client)}
+                        </div>
+                        <div className="flex items-center gap-3 mt-1 text-xs text-zinc-500">
+                          {client.email && (
+                            <span className="flex items-center gap-1">
+                              <EnvelopeIcon className="size-3" />
+                              {client.email}
+                            </span>
+                          )}
+                          {client.phone && (
+                            <span className="flex items-center gap-1">
+                              <PhoneIcon className="size-3" />
+                              {client.phone}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      {client.wedding_date ? (
+                        <div>
+                          <div className="text-sm font-medium">
+                            {format(
+                              new Date(client.wedding_date),
+                              'MMM d, yyyy',
+                            )}
+                          </div>
+                          {daysUntil && (
+                            <div
+                              className={`text-xs mt-0.5 ${
+                                daysUntil === 'Today' ||
+                                daysUntil === 'Tomorrow'
+                                  ? 'text-amber-600 dark:text-amber-400 font-medium'
+                                  : 'text-zinc-500'
+                              }`}
+                            >
+                              {daysUntil}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-zinc-400">Not set</span>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      <div className="text-sm">
+                        {client.venue_name || (
+                          <span className="text-zinc-400">Not set</span>
+                        )}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <Badge
+                        color={
+                          statusColors[
+                            client.status as keyof typeof statusColors
+                          ] || 'zinc'
+                        }
+                      >
+                        <StatusIcon className="size-3" />
+                        {client.status}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      {client.package_name ? (
+                        <div>
+                          <div className="text-sm font-medium">
+                            {client.package_name}
+                          </div>
+                          {client.package_price && (
+                            <div className="text-xs text-zinc-500 mt-0.5">
+                              £{client.package_price.toLocaleString()}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-zinc-400 text-sm">
+                          No package
+                        </span>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      {client.is_wedme_connected ? (
+                        <Badge color="green" className="gap-1">
+                          <LinkIcon className="size-3" />
+                          Connected
+                        </Badge>
+                      ) : (
+                        <Link href={`/clientsList/${client.id}/invite`}>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="text-xs"
+                          >
+                            Invite
+                          </Button>
+                        </Link>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex justify-end">
+                        <Dropdown>
+                          <DropdownButton
+                            aria-label="More options"
+                            className="text-gray-400 hover:text-gray-600"
+                          >
+                            <EllipsisHorizontalIcon />
+                          </DropdownButton>
+                          <DropdownMenu anchor="bottom end">
+                            <DropdownItem href={`/clientsList/${client.id}`}>
+                              <ChevronRightIcon />
+                              View Details
+                            </DropdownItem>
+                            <DropdownItem
+                              href={`/clientsList/${client.id}/edit`}
+                            >
+                              <PencilIcon />
+                              Edit Client
+                            </DropdownItem>
+                            <DropdownItem
+                              href={`/clientsList/${client.id}/activity`}
+                            >
+                              <DocumentTextIcon />
+                              View Activity
+                            </DropdownItem>
+                            <DropdownItem
+                              href={`/clientsList/${client.id}/archive`}
+                            >
+                              <TrashIcon />
+                              Archive Client
+                            </DropdownItem>
+                          </DropdownMenu>
+                        </Dropdown>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                );
+              })
+            )}
+          </TableBody>
+        </Table>
+      </div>
+
+      {clientsList.length > 0 && (
+        <div className="mt-6 flex items-center justify-between text-sm text-zinc-500">
+          <div>
+            Showing {clientsList.length} client
+            {clientsList.length !== 1 ? 's' : ''}
+          </div>
+          <div className="flex gap-4">
+            <span>
+              {clientsList.filter((c) => c.status === 'lead').length} leads
+            </span>
+            <span>
+              {clientsList.filter((c) => c.status === 'booked').length} booked
+            </span>
+            <span>
+              {clientsList.filter((c) => c.is_wedme_connected).length} connected
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

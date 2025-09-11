@@ -1,0 +1,254 @@
+'use client';
+
+import React, { useState, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
+import { JourneyCanvas } from '@/components/journey-builder';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { 
+  Save, 
+  ArrowLeft, 
+  Settings, 
+  Play, 
+  Download,
+  Upload,
+  MoreHorizontal
+} from 'lucide-react';
+
+interface JourneyMetadata {
+  id?: string;
+  name: string;
+  description: string;
+  status: 'draft' | 'active' | 'paused';
+  vendorId: string;
+}
+
+export default function JourneyBuilderPage() {
+  const router = useRouter();
+  const [isSaving, setIsSaving] = useState(false);
+  const [lastSaved, setLastSaved] = useState<Date | null>(null);
+  const [journeyMetadata, setJourneyMetadata] = useState<JourneyMetadata>({
+    name: 'Untitled Journey',
+    description: '',
+    status: 'draft',
+    vendorId: 'current-vendor' // This would come from auth context
+  });
+
+  const handleSave = useCallback(async (nodes: any[], edges: any[]) => {
+    setIsSaving(true);
+    try {
+      // Simulate API call
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      const journeyData = {
+        ...journeyMetadata,
+        nodes,
+        edges,
+        nodeCount: nodes.length,
+        connectionCount: edges.length,
+        lastModified: new Date().toISOString()
+      };
+      
+      console.log('Saving journey:', journeyData);
+      
+      // Here you would call your API
+      // await saveJourney(journeyData);
+      
+      setLastSaved(new Date());
+    } catch (error) {
+      console.error('Failed to save journey:', error);
+    } finally {
+      setIsSaving(false);
+    }
+  }, [journeyMetadata]);
+
+  const handlePreview = useCallback(() => {
+    console.log('Opening journey preview...');
+    // Here you would open a preview modal or navigate to preview page
+  }, []);
+
+  const handlePublish = useCallback(async () => {
+    try {
+      setJourneyMetadata(prev => ({ ...prev, status: 'active' }));
+      // Trigger save with active status
+      // await publishJourney(journeyMetadata.id);
+      console.log('Journey published!');
+    } catch (error) {
+      console.error('Failed to publish journey:', error);
+    }
+  }, [journeyMetadata.id]);
+
+  const handleGoBack = useCallback(() => {
+    router.push('/journeys');
+  }, [router]);
+
+  const formatLastSaved = (date: Date | null) => {
+    if (!date) return 'Never';
+    const now = new Date();
+    const diff = now.getTime() - date.getTime();
+    const minutes = Math.floor(diff / 60000);
+    
+    if (minutes < 1) return 'Just now';
+    if (minutes < 60) return `${minutes}m ago`;
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
+  return (
+    <div className="h-screen flex flex-col bg-background">
+      {/* Header */}
+      <header className="bg-card border-b px-6 py-4 flex-shrink-0">
+        <div className="flex items-center justify-between">
+          {/* Left side */}
+          <div className="flex items-center space-x-4">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleGoBack}
+              className="flex items-center space-x-2"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              <span>Back to Journeys</span>
+            </Button>
+            
+            <div className="h-6 w-px bg-border" />
+            
+            <div>
+              <h1 className="text-xl font-bold text-foreground">
+                {journeyMetadata.name}
+              </h1>
+              <div className="flex items-center space-x-2 text-sm text-muted-foreground">
+                <span>Last saved: {formatLastSaved(lastSaved)}</span>
+                <Badge 
+                  variant={journeyMetadata.status === 'active' ? 'default' : 'secondary'}
+                  className="text-xs"
+                >
+                  {journeyMetadata.status}
+                </Badge>
+              </div>
+            </div>
+          </div>
+
+          {/* Right side */}
+          <div className="flex items-center space-x-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handlePreview}
+              className="hidden sm:flex items-center space-x-2"
+            >
+              <Play className="h-4 w-4" />
+              <span>Preview</span>
+            </Button>
+
+            <Button
+              variant="outline"
+              size="sm"
+              className="hidden sm:flex items-center space-x-2"
+            >
+              <Settings className="h-4 w-4" />
+              <span>Settings</span>
+            </Button>
+
+            <div className="h-6 w-px bg-border hidden sm:block" />
+
+            <Button
+              variant="outline"
+              size="sm"
+              className="hidden sm:flex items-center space-x-2"
+            >
+              <Download className="h-4 w-4" />
+              <span>Export</span>
+            </Button>
+
+            <Button
+              variant="outline"
+              size="sm"
+              className="hidden sm:flex items-center space-x-2"
+            >
+              <Upload className="h-4 w-4" />
+              <span>Import</span>
+            </Button>
+
+            <div className="h-6 w-px bg-border" />
+
+            {journeyMetadata.status === 'draft' && (
+              <Button
+                onClick={handlePublish}
+                className="flex items-center space-x-2"
+              >
+                <Play className="h-4 w-4" />
+                <span>Publish</span>
+              </Button>
+            )}
+
+            {journeyMetadata.status === 'active' && (
+              <Button
+                variant="secondary"
+                onClick={() => setJourneyMetadata(prev => ({ ...prev, status: 'paused' }))}
+                className="flex items-center space-x-2"
+              >
+                <span>Pause</span>
+              </Button>
+            )}
+
+            <Button
+              variant="ghost"
+              size="sm"
+              className="sm:hidden"
+            >
+              <MoreHorizontal className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+
+        {/* Mobile toolbar */}
+        <div className="sm:hidden mt-4 flex items-center space-x-2 overflow-x-auto">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handlePreview}
+            className="flex items-center space-x-2 whitespace-nowrap"
+          >
+            <Play className="h-4 w-4" />
+            <span>Preview</span>
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
+            className="flex items-center space-x-2 whitespace-nowrap"
+          >
+            <Settings className="h-4 w-4" />
+            <span>Settings</span>
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
+            className="flex items-center space-x-2 whitespace-nowrap"
+          >
+            <Download className="h-4 w-4" />
+            <span>Export</span>
+          </Button>
+        </div>
+      </header>
+
+      {/* Canvas */}
+      <div className="flex-1 overflow-hidden">
+        <JourneyCanvas
+          onSave={handleSave}
+          onPreview={handlePreview}
+          className="h-full"
+        />
+      </div>
+
+      {/* Auto-save indicator */}
+      {isSaving && (
+        <div className="fixed bottom-4 right-4 bg-card border shadow-lg rounded-lg px-4 py-2 flex items-center space-x-2">
+          <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+          <span className="text-sm text-foreground">Saving...</span>
+        </div>
+      )}
+    </div>
+  );
+}

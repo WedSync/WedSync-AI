@@ -1,0 +1,1207 @@
+/**
+ * Enterprise Group Management Service
+ *
+ * Comprehensive group and role management system for enterprise SSO integrations.
+ * Handles group synchronization from identity providers, role-based access control,
+ * permission inheritance, and organizational hierarchy management for wedding
+ * venues and hospitality groups.
+ *
+ * Critical for large wedding venues with complex organizational structures:
+ * - Hotel chains with regional managers, venue coordinators, and service staff
+ * - Multi-location wedding venues with department-based access control
+ * - Corporate event management with client-specific team assignments
+ * - Venue groups with brand-specific permissions and workflows
+ *
+ * @author WedSync Enterprise Team C
+ * @version 1.0.0
+ */
+
+import { createClient } from '@supabase/supabase-js';
+import { Database } from '../../types/database';
+import { EnterpriseUserAttributes } from './IdentityProviderConnector';
+
+/**
+ * Enterprise group configuration
+ */
+export interface EnterpriseGroup {
+  id: string;
+  name: string;
+  displayName: string;
+  description?: string;
+  providerId: string;
+  providerGroupId: string;
+  groupType: 'department' | 'role' | 'location' | 'project' | 'custom';
+  parentGroupId?: string;
+  organizationId: string;
+  isActive: boolean;
+  autoAssignUsers: boolean;
+  permissions: GroupPermission[];
+  metadata: Record<string, unknown>;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/**
+ * Group permission definition
+ */
+export interface GroupPermission {
+  resource: string; // e.g., 'weddings', 'clients', 'reports'
+  actions: string[]; // e.g., ['read', 'write', 'delete', 'approve']
+  conditions?: {
+    // Conditional permissions
+    field: string;
+    operator: 'equals' | 'contains' | 'in' | 'not_in';
+    value: unknown;
+  }[];
+  inherited: boolean; // Whether inherited from parent group
+  priority: number; // Resolution priority for conflicts
+}
+
+/**
+ * Group membership information
+ */
+export interface GroupMembership {
+  id: string;
+  groupId: string;
+  userId: string;
+  membershipType: 'direct' | 'inherited' | 'auto_assigned';
+  assignedBy?: string;
+  assignedAt: Date;
+  expiresAt?: Date;
+  isActive: boolean;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Group hierarchy node
+ */
+export interface GroupHierarchyNode {
+  group: EnterpriseGroup;
+  children: GroupHierarchyNode[];
+  members: GroupMembership[];
+  effectivePermissions: GroupPermission[];
+  memberCount: number;
+  depth: number;
+}
+
+/**
+ * Role assignment rule
+ */
+export interface RoleAssignmentRule {
+  id: string;
+  name: string;
+  providerId: string;
+  conditions: Array<{
+    type: 'group_membership' | 'attribute_match' | 'department' | 'job_title';
+    field: string;
+    operator: 'equals' | 'contains' | 'starts_with' | 'regex' | 'in';
+    value: string;
+    caseSensitive?: boolean;
+  }>;
+  actions: Array<{
+    type: 'assign_group' | 'assign_permission' | 'set_organization';
+    target: string;
+    value: string | string[];
+  }>;
+  priority: number;
+  isActive: boolean;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Group synchronization result
+ */
+export interface GroupSyncResult {
+  providerId: string;
+  totalGroups: number;
+  groupsCreated: number;
+  groupsUpdated: number;
+  groupsDeactivated: number;
+  membershipsCreated: number;
+  membershipsUpdated: number;
+  membershipsRemoved: number;
+  errors: Array<{
+    type: 'group' | 'membership' | 'permission';
+    identifier: string;
+    error: string;
+  }>;
+  warnings: string[];
+  duration: number;
+}
+
+/**
+ * Permission evaluation context
+ */
+interface PermissionContext {
+  userId: string;
+  organizationId: string;
+  resource: string;
+  action: string;
+  resourceId?: string;
+  additionalContext?: Record<string, unknown>;
+}
+
+/**
+ * Permission evaluation result
+ */
+export interface PermissionResult {
+  granted: boolean;
+  reason: string;
+  grantingGroups: string[];
+  denyingGroups?: string[];
+  conditions?: Record<string, unknown>;
+  cacheKey?: string;
+}
+
+/**
+ * Enterprise Group Management Service
+ *
+ * Orchestrates group-based access control, role management, and organizational
+ * hierarchy for enterprise wedding venue operations.
+ */
+export class EnterpriseGroupManager {
+  private supabase: ReturnType<typeof createClient<Database>>;
+  private groupCache: Map<string, EnterpriseGroup> = new Map();
+  private hierarchyCache: Map<string, GroupHierarchyNode[]> = new Map();
+  private permissionCache: Map<string, PermissionResult> = new Map();
+  private readonly cacheExpirationMs = 5 * 60 * 1000; // 5 minutes
+
+  constructor(supabaseUrl: string, supabaseServiceKey: string) {
+    this.supabase = createClient<Database>(supabaseUrl, supabaseServiceKey);
+    this.loadGroupCache();
+  }
+
+  /**
+   * Synchronize groups from identity provider
+   */
+  async synchronizeGroups(
+    providerId: string,
+    groups: Array<{
+      providerGroupId: string;
+      name: string;
+      displayName: string;
+      description?: string;
+      groupType: EnterpriseGroup['groupType'];
+      parentGroupId?: string;
+      members: string[]; // User IDs from provider
+      permissions?: Partial<GroupPermission>[];
+      metadata?: Record<string, unknown>;
+    }>,
+    organizationId: string,
+    options: {
+      removeOrphanedGroups?: boolean;
+      updateExistingGroups?: boolean;
+      syncMemberships?: boolean;
+    } = {},
+  ): Promise<GroupSyncResult> {
+    const startTime = Date.now();
+    const result: GroupSyncResult = {
+      providerId,
+      totalGroups: groups.length,
+      groupsCreated: 0,
+      groupsUpdated: 0,
+      groupsDeactivated: 0,
+      membershipsCreated: 0,
+      membershipsUpdated: 0,
+      membershipsRemoved: 0,
+      errors: [],
+      warnings: [],
+      duration: 0,
+    };
+
+    try {
+      console.log(`Starting group synchronization for provider: ${providerId}`);
+
+      // Create a map of existing groups
+      const existingGroups = await this.getGroupsByProvider(providerId);
+      const existingGroupMap = new Map(
+        existingGroups.map((g) => [g.providerGroupId, g]),
+      );
+      const processedGroups = new Set<string>();
+
+      // Process each group from the provider
+      for (const groupData of groups) {
+        try {
+          const existingGroup = existingGroupMap.get(groupData.providerGroupId);
+
+          if (existingGroup) {
+            // Update existing group
+            if (options.updateExistingGroups) {
+              await this.updateGroup(existingGroup.id, {
+                displayName: groupData.displayName,
+                description: groupData.description,
+                groupType: groupData.groupType,
+                parentGroupId: groupData.parentGroupId,
+                permissions: this.mergePermissions(
+                  existingGroup.permissions,
+                  groupData.permissions || [],
+                ),
+                metadata: { ...existingGroup.metadata, ...groupData.metadata },
+                updatedAt: new Date(),
+              });
+              result.groupsUpdated++;
+            }
+
+            // Update memberships if requested
+            if (options.syncMemberships) {
+              const membershipResult = await this.syncGroupMemberships(
+                existingGroup.id,
+                groupData.members,
+                organizationId,
+              );
+              result.membershipsCreated += membershipResult.created;
+              result.membershipsUpdated += membershipResult.updated;
+              result.membershipsRemoved += membershipResult.removed;
+            }
+          } else {
+            // Create new group
+            const newGroupId = await this.createGroup({
+              name: groupData.name,
+              displayName: groupData.displayName,
+              description: groupData.description,
+              providerId,
+              providerGroupId: groupData.providerGroupId,
+              groupType: groupData.groupType,
+              parentGroupId: groupData.parentGroupId,
+              organizationId,
+              isActive: true,
+              autoAssignUsers: false,
+              permissions: this.processPermissions(groupData.permissions || []),
+              metadata: groupData.metadata || {},
+            });
+
+            result.groupsCreated++;
+
+            // Add initial memberships
+            if (options.syncMemberships && groupData.members.length > 0) {
+              const membershipResult = await this.syncGroupMemberships(
+                newGroupId,
+                groupData.members,
+                organizationId,
+              );
+              result.membershipsCreated += membershipResult.created;
+            }
+          }
+
+          processedGroups.add(groupData.providerGroupId);
+        } catch (error) {
+          result.errors.push({
+            type: 'group',
+            identifier: groupData.providerGroupId,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          });
+        }
+      }
+
+      // Remove orphaned groups if requested
+      if (options.removeOrphanedGroups) {
+        const orphanedGroups = existingGroups.filter(
+          (g) => !processedGroups.has(g.providerGroupId),
+        );
+
+        for (const orphanGroup of orphanedGroups) {
+          try {
+            await this.deactivateGroup(
+              orphanGroup.id,
+              'Removed from identity provider',
+            );
+            result.groupsDeactivated++;
+          } catch (error) {
+            result.errors.push({
+              type: 'group',
+              identifier: orphanGroup.providerGroupId,
+              error: `Failed to deactivate: ${error}`,
+            });
+          }
+        }
+      }
+
+      // Clear caches to force reload
+      this.clearCaches();
+
+      result.duration = Date.now() - startTime;
+      console.log(`Group synchronization completed in ${result.duration}ms`);
+
+      return result;
+    } catch (error) {
+      result.errors.push({
+        type: 'group',
+        identifier: 'sync_process',
+        error:
+          error instanceof Error ? error.message : 'Synchronization failed',
+      });
+      result.duration = Date.now() - startTime;
+      return result;
+    }
+  }
+
+  /**
+   * Evaluate user permissions for a resource/action
+   */
+  async evaluatePermission(
+    context: PermissionContext,
+  ): Promise<PermissionResult> {
+    const cacheKey = this.generatePermissionCacheKey(context);
+
+    // Check cache first
+    const cached = this.permissionCache.get(cacheKey);
+    if (cached && this.isCacheValid(cacheKey)) {
+      return { ...cached, cacheKey };
+    }
+
+    try {
+      // Get user's group memberships
+      const userGroups = await this.getUserGroups(context.userId);
+
+      // Get all permissions from user's groups
+      const allPermissions = await this.getAllUserPermissions(
+        context.userId,
+        userGroups,
+      );
+
+      // Filter permissions for the requested resource
+      const relevantPermissions = allPermissions.filter((p) =>
+        this.matchesResourcePattern(p.resource, context.resource),
+      );
+
+      // Evaluate permissions (deny takes precedence)
+      const result = this.evaluatePermissionRules(
+        relevantPermissions,
+        context,
+        userGroups.map((g) => g.name),
+      );
+
+      // Cache the result
+      this.permissionCache.set(cacheKey, result);
+
+      return { ...result, cacheKey };
+    } catch (error) {
+      console.error('Permission evaluation failed:', error);
+      return {
+        granted: false,
+        reason: 'Permission evaluation error',
+        grantingGroups: [],
+      };
+    }
+  }
+
+  /**
+   * Get user's effective groups (including inherited)
+   */
+  async getUserGroups(userId: string): Promise<EnterpriseGroup[]> {
+    const { data: memberships } = await this.supabase
+      .from('group_memberships')
+      .select(
+        `
+        group_id,
+        membership_type,
+        is_active,
+        enterprise_groups (*)
+      `,
+      )
+      .eq('user_id', userId)
+      .eq('is_active', true);
+
+    if (!memberships) return [];
+
+    const directGroups = memberships
+      .filter((m) => m.enterprise_groups)
+      .map((m) => this.transformGroupData(m.enterprise_groups));
+
+    // Add inherited groups from parent groups
+    const inheritedGroups = await this.getInheritedGroups(directGroups);
+
+    // Combine and deduplicate
+    const allGroups = [...directGroups, ...inheritedGroups];
+    const uniqueGroups = Array.from(
+      new Map(allGroups.map((g) => [g.id, g])).values(),
+    );
+
+    return uniqueGroups;
+  }
+
+  /**
+   * Assign user to groups based on their attributes
+   */
+  async assignUserToGroups(
+    userId: string,
+    userAttributes: EnterpriseUserAttributes,
+    providerId: string,
+    organizationId: string,
+  ): Promise<{
+    groupsAssigned: string[];
+    groupsRemoved: string[];
+    errors: string[];
+  }> {
+    const result = {
+      groupsAssigned: [] as string[],
+      groupsRemoved: [] as string[],
+      errors: [] as string[],
+    };
+
+    try {
+      // Get assignment rules for this provider
+      const rules = await this.getRoleAssignmentRules(providerId);
+
+      // Evaluate each rule against user attributes
+      const targetGroups = new Set<string>();
+
+      for (const rule of rules) {
+        if (this.evaluateRuleConditions(rule.conditions, userAttributes)) {
+          for (const action of rule.actions) {
+            if (action.type === 'assign_group') {
+              if (Array.isArray(action.value)) {
+                action.value.forEach((groupId) => targetGroups.add(groupId));
+              } else {
+                targetGroups.add(action.value);
+              }
+            }
+          }
+        }
+      }
+
+      // Get current group memberships
+      const currentGroups = await this.getUserGroupIds(userId, organizationId);
+
+      // Determine groups to add and remove
+      const groupsToAdd = Array.from(targetGroups).filter(
+        (g) => !currentGroups.includes(g),
+      );
+      const groupsToRemove = currentGroups.filter((g) => !targetGroups.has(g));
+
+      // Add user to new groups
+      for (const groupId of groupsToAdd) {
+        try {
+          await this.addUserToGroup(userId, groupId, 'auto_assigned');
+          result.groupsAssigned.push(groupId);
+        } catch (error) {
+          result.errors.push(`Failed to assign to group ${groupId}: ${error}`);
+        }
+      }
+
+      // Remove user from groups they should no longer be in
+      for (const groupId of groupsToRemove) {
+        try {
+          await this.removeUserFromGroup(userId, groupId);
+          result.groupsRemoved.push(groupId);
+        } catch (error) {
+          result.errors.push(
+            `Failed to remove from group ${groupId}: ${error}`,
+          );
+        }
+      }
+
+      // Clear permission cache for this user
+      this.clearUserPermissionCache(userId);
+
+      console.log(
+        `Group assignment completed for user ${userId}: +${result.groupsAssigned.length}, -${result.groupsRemoved.length}`,
+      );
+    } catch (error) {
+      result.errors.push(`Group assignment failed: ${error}`);
+    }
+
+    return result;
+  }
+
+  /**
+   * Get organizational group hierarchy
+   */
+  async getGroupHierarchy(
+    organizationId: string,
+    rootGroupId?: string,
+  ): Promise<GroupHierarchyNode[]> {
+    const cacheKey = `hierarchy_${organizationId}_${rootGroupId || 'root'}`;
+    const cached = this.hierarchyCache.get(cacheKey);
+
+    if (cached && this.isCacheValid(cacheKey)) {
+      return cached;
+    }
+
+    try {
+      // Get all groups for the organization
+      const allGroups = await this.getGroupsByOrganization(organizationId);
+
+      // Build hierarchy tree
+      const hierarchy = this.buildGroupHierarchy(allGroups, rootGroupId);
+
+      // Calculate effective permissions and member counts
+      for (const node of hierarchy) {
+        await this.enrichHierarchyNode(node);
+      }
+
+      // Cache the result
+      this.hierarchyCache.set(cacheKey, hierarchy);
+
+      return hierarchy;
+    } catch (error) {
+      console.error('Failed to build group hierarchy:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Create new enterprise group
+   */
+  async createGroup(
+    groupData: Omit<EnterpriseGroup, 'id' | 'createdAt' | 'updatedAt'>,
+  ): Promise<string> {
+    const groupId = `group_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+
+    const { error } = await this.supabase.from('enterprise_groups').insert({
+      id: groupId,
+      name: groupData.name,
+      display_name: groupData.displayName,
+      description: groupData.description,
+      provider_id: groupData.providerId,
+      provider_group_id: groupData.providerGroupId,
+      group_type: groupData.groupType,
+      parent_group_id: groupData.parentGroupId,
+      organization_id: groupData.organizationId,
+      is_active: groupData.isActive,
+      auto_assign_users: groupData.autoAssignUsers,
+      permissions: groupData.permissions,
+      metadata: groupData.metadata,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+
+    if (error) {
+      throw new Error(`Failed to create group: ${error.message}`);
+    }
+
+    console.log(`Group created: ${groupData.displayName} (${groupId})`);
+
+    // Clear caches
+    this.clearCaches();
+
+    return groupId;
+  }
+
+  /**
+   * Update existing group
+   */
+  async updateGroup(
+    groupId: string,
+    updates: Partial<
+      Pick<
+        EnterpriseGroup,
+        | 'displayName'
+        | 'description'
+        | 'groupType'
+        | 'parentGroupId'
+        | 'permissions'
+        | 'metadata'
+        | 'updatedAt'
+      >
+    >,
+  ): Promise<void> {
+    const { error } = await this.supabase
+      .from('enterprise_groups')
+      .update({
+        display_name: updates.displayName,
+        description: updates.description,
+        group_type: updates.groupType,
+        parent_group_id: updates.parentGroupId,
+        permissions: updates.permissions,
+        metadata: updates.metadata,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', groupId);
+
+    if (error) {
+      throw new Error(`Failed to update group: ${error.message}`);
+    }
+
+    // Clear caches
+    this.clearCaches();
+  }
+
+  /**
+   * Add user to group
+   */
+  async addUserToGroup(
+    userId: string,
+    groupId: string,
+    membershipType: GroupMembership['membershipType'] = 'direct',
+    assignedBy?: string,
+    expiresAt?: Date,
+  ): Promise<void> {
+    const membershipId = `membership_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+
+    const { error } = await this.supabase.from('group_memberships').insert({
+      id: membershipId,
+      group_id: groupId,
+      user_id: userId,
+      membership_type: membershipType,
+      assigned_by: assignedBy,
+      assigned_at: new Date().toISOString(),
+      expires_at: expiresAt?.toISOString(),
+      is_active: true,
+    });
+
+    if (error) {
+      throw new Error(`Failed to add user to group: ${error.message}`);
+    }
+
+    // Clear user's permission cache
+    this.clearUserPermissionCache(userId);
+  }
+
+  /**
+   * Remove user from group
+   */
+  async removeUserFromGroup(userId: string, groupId: string): Promise<void> {
+    const { error } = await this.supabase
+      .from('group_memberships')
+      .update({
+        is_active: false,
+        removed_at: new Date().toISOString(),
+      })
+      .eq('user_id', userId)
+      .eq('group_id', groupId)
+      .eq('is_active', true);
+
+    if (error) {
+      throw new Error(`Failed to remove user from group: ${error.message}`);
+    }
+
+    // Clear user's permission cache
+    this.clearUserPermissionCache(userId);
+  }
+
+  // Private helper methods
+  private async loadGroupCache(): Promise<void> {
+    const { data: groups } = await this.supabase
+      .from('enterprise_groups')
+      .select('*')
+      .eq('is_active', true);
+
+    if (groups) {
+      for (const group of groups) {
+        this.groupCache.set(group.id, this.transformGroupData(group));
+      }
+    }
+  }
+
+  private transformGroupData(data: any): EnterpriseGroup {
+    return {
+      id: data.id,
+      name: data.name,
+      displayName: data.display_name,
+      description: data.description,
+      providerId: data.provider_id,
+      providerGroupId: data.provider_group_id,
+      groupType: data.group_type,
+      parentGroupId: data.parent_group_id,
+      organizationId: data.organization_id,
+      isActive: data.is_active,
+      autoAssignUsers: data.auto_assign_users,
+      permissions: data.permissions || [],
+      metadata: data.metadata || {},
+      createdAt: new Date(data.created_at),
+      updatedAt: new Date(data.updated_at),
+    };
+  }
+
+  private async getGroupsByProvider(
+    providerId: string,
+  ): Promise<EnterpriseGroup[]> {
+    const { data } = await this.supabase
+      .from('enterprise_groups')
+      .select('*')
+      .eq('provider_id', providerId);
+
+    return data?.map((g) => this.transformGroupData(g)) || [];
+  }
+
+  private async getGroupsByOrganization(
+    organizationId: string,
+  ): Promise<EnterpriseGroup[]> {
+    const { data } = await this.supabase
+      .from('enterprise_groups')
+      .select('*')
+      .eq('organization_id', organizationId)
+      .eq('is_active', true);
+
+    return data?.map((g) => this.transformGroupData(g)) || [];
+  }
+
+  private mergePermissions(
+    existing: GroupPermission[],
+    incoming: Partial<GroupPermission>[],
+  ): GroupPermission[] {
+    const merged = [...existing];
+
+    for (const incomingPerm of incoming) {
+      const existingIndex = merged.findIndex(
+        (p) => p.resource === incomingPerm.resource,
+      );
+
+      if (existingIndex >= 0) {
+        // Merge actions
+        const existingActions = new Set(merged[existingIndex].actions);
+        (incomingPerm.actions || []).forEach((action) =>
+          existingActions.add(action),
+        );
+        merged[existingIndex].actions = Array.from(existingActions);
+
+        // Update other properties
+        if (incomingPerm.conditions)
+          merged[existingIndex].conditions = incomingPerm.conditions;
+        if (incomingPerm.priority !== undefined)
+          merged[existingIndex].priority = incomingPerm.priority;
+      } else {
+        merged.push({
+          resource: incomingPerm.resource || '',
+          actions: incomingPerm.actions || [],
+          conditions: incomingPerm.conditions,
+          inherited: false,
+          priority: incomingPerm.priority || 0,
+        });
+      }
+    }
+
+    return merged;
+  }
+
+  private processPermissions(
+    permissions: Partial<GroupPermission>[],
+  ): GroupPermission[] {
+    return permissions.map((p) => ({
+      resource: p.resource || '',
+      actions: p.actions || [],
+      conditions: p.conditions,
+      inherited: false,
+      priority: p.priority || 0,
+    }));
+  }
+
+  private async syncGroupMemberships(
+    groupId: string,
+    memberUserIds: string[],
+    organizationId: string,
+  ): Promise<{ created: number; updated: number; removed: number }> {
+    // Get current memberships
+    const { data: currentMemberships } = await this.supabase
+      .from('group_memberships')
+      .select('user_id, id')
+      .eq('group_id', groupId)
+      .eq('is_active', true);
+
+    const currentUserIds = new Set(
+      currentMemberships?.map((m) => m.user_id) || [],
+    );
+    const targetUserIds = new Set(memberUserIds);
+
+    let created = 0;
+    let updated = 0;
+    let removed = 0;
+
+    // Add new members
+    for (const userId of memberUserIds) {
+      if (!currentUserIds.has(userId)) {
+        await this.addUserToGroup(userId, groupId, 'direct');
+        created++;
+      }
+    }
+
+    // Remove members not in target list
+    const membershipsToRemove =
+      currentMemberships?.filter((m) => !targetUserIds.has(m.user_id)) || [];
+
+    if (membershipsToRemove.length > 0) {
+      await this.supabase
+        .from('group_memberships')
+        .update({ is_active: false, removed_at: new Date().toISOString() })
+        .in(
+          'id',
+          membershipsToRemove.map((m) => m.id),
+        );
+
+      removed = membershipsToRemove.length;
+    }
+
+    return { created, updated, removed };
+  }
+
+  private async deactivateGroup(
+    groupId: string,
+    reason: string,
+  ): Promise<void> {
+    await this.supabase
+      .from('enterprise_groups')
+      .update({
+        is_active: false,
+        deactivated_at: new Date().toISOString(),
+        deactivation_reason: reason,
+      })
+      .eq('id', groupId);
+
+    // Deactivate all memberships
+    await this.supabase
+      .from('group_memberships')
+      .update({
+        is_active: false,
+        removed_at: new Date().toISOString(),
+      })
+      .eq('group_id', groupId);
+  }
+
+  private generatePermissionCacheKey(context: PermissionContext): string {
+    return `perm_${context.userId}_${context.resource}_${context.action}_${context.resourceId || 'any'}`;
+  }
+
+  private isCacheValid(key: string): boolean {
+    // Simple time-based cache validation
+    return true; // Simplified for this implementation
+  }
+
+  private async getAllUserPermissions(
+    userId: string,
+    groups: EnterpriseGroup[],
+  ): Promise<GroupPermission[]> {
+    const allPermissions: GroupPermission[] = [];
+
+    for (const group of groups) {
+      allPermissions.push(...group.permissions);
+    }
+
+    return allPermissions;
+  }
+
+  private matchesResourcePattern(pattern: string, resource: string): boolean {
+    // Simple pattern matching - could be enhanced with wildcards
+    return (
+      pattern === resource || pattern === '*' || resource.startsWith(pattern)
+    );
+  }
+
+  private evaluatePermissionRules(
+    permissions: GroupPermission[],
+    context: PermissionContext,
+    groupNames: string[],
+  ): PermissionResult {
+    const relevantPerms = permissions.filter(
+      (p) => p.actions.includes(context.action) || p.actions.includes('*'),
+    );
+
+    if (relevantPerms.length === 0) {
+      return {
+        granted: false,
+        reason: 'No applicable permissions found',
+        grantingGroups: [],
+      };
+    }
+
+    // Sort by priority (higher priority first)
+    relevantPerms.sort((a, b) => b.priority - a.priority);
+
+    // Check if any permission grants access
+    const grantingGroups: string[] = [];
+
+    for (const perm of relevantPerms) {
+      if (this.evaluatePermissionConditions(perm.conditions || [], context)) {
+        return {
+          granted: true,
+          reason: 'Permission granted by group access control',
+          grantingGroups: groupNames,
+          conditions: this.extractPermissionConditions(perm),
+        };
+      }
+    }
+
+    return {
+      granted: false,
+      reason: 'Permission conditions not met',
+      grantingGroups: [],
+    };
+  }
+
+  private evaluatePermissionConditions(
+    conditions: GroupPermission['conditions'] = [],
+    context: PermissionContext,
+  ): boolean {
+    if (conditions.length === 0) return true;
+
+    return conditions.every((condition) => {
+      const contextValue = context.additionalContext?.[condition.field];
+
+      switch (condition.operator) {
+        case 'equals':
+          return contextValue === condition.value;
+        case 'contains':
+          return String(contextValue).includes(String(condition.value));
+        case 'in':
+          return (
+            Array.isArray(condition.value) &&
+            condition.value.includes(contextValue)
+          );
+        case 'not_in':
+          return (
+            Array.isArray(condition.value) &&
+            !condition.value.includes(contextValue)
+          );
+        default:
+          return false;
+      }
+    });
+  }
+
+  private extractPermissionConditions(
+    permission: GroupPermission,
+  ): Record<string, unknown> {
+    const conditions: Record<string, unknown> = {};
+
+    if (permission.conditions) {
+      for (const condition of permission.conditions) {
+        conditions[condition.field] = condition.value;
+      }
+    }
+
+    return conditions;
+  }
+
+  private async getInheritedGroups(
+    directGroups: EnterpriseGroup[],
+  ): Promise<EnterpriseGroup[]> {
+    const inheritedGroups: EnterpriseGroup[] = [];
+
+    for (const group of directGroups) {
+      if (group.parentGroupId) {
+        const parentGroup = this.groupCache.get(group.parentGroupId);
+        if (parentGroup) {
+          inheritedGroups.push(parentGroup);
+          // Recursively get parent's parents
+          const parentInherited = await this.getInheritedGroups([parentGroup]);
+          inheritedGroups.push(...parentInherited);
+        }
+      }
+    }
+
+    return inheritedGroups;
+  }
+
+  private async getRoleAssignmentRules(
+    providerId: string,
+  ): Promise<RoleAssignmentRule[]> {
+    const { data } = await this.supabase
+      .from('role_assignment_rules')
+      .select('*')
+      .eq('provider_id', providerId)
+      .eq('is_active', true)
+      .order('priority', { ascending: false });
+
+    return (
+      data?.map((r) => ({
+        id: r.id,
+        name: r.name,
+        providerId: r.provider_id,
+        conditions: r.conditions,
+        actions: r.actions,
+        priority: r.priority,
+        isActive: r.is_active,
+        metadata: r.metadata,
+      })) || []
+    );
+  }
+
+  private evaluateRuleConditions(
+    conditions: RoleAssignmentRule['conditions'],
+    attributes: EnterpriseUserAttributes,
+  ): boolean {
+    return conditions.every((condition) => {
+      let value: string | undefined;
+
+      switch (condition.type) {
+        case 'group_membership':
+          return (
+            attributes.groups?.some((group) =>
+              this.stringMatches(
+                group,
+                condition.value,
+                condition.operator,
+                condition.caseSensitive,
+              ),
+            ) || false
+          );
+
+        case 'department':
+          value = attributes.department;
+          break;
+
+        case 'job_title':
+          value = attributes.jobTitle;
+          break;
+
+        case 'attribute_match':
+          value = attributes.customAttributes?.[condition.field] as string;
+          break;
+
+        default:
+          return false;
+      }
+
+      return value
+        ? this.stringMatches(
+            value,
+            condition.value,
+            condition.operator,
+            condition.caseSensitive,
+          )
+        : false;
+    });
+  }
+
+  private stringMatches(
+    value: string,
+    pattern: string,
+    operator: RoleAssignmentRule['conditions'][0]['operator'],
+    caseSensitive = false,
+  ): boolean {
+    const val = caseSensitive ? value : value.toLowerCase();
+    const pat = caseSensitive ? pattern : pattern.toLowerCase();
+
+    switch (operator) {
+      case 'equals':
+        return val === pat;
+      case 'contains':
+        return val.includes(pat);
+      case 'starts_with':
+        return val.startsWith(pat);
+      case 'regex':
+        return new RegExp(pattern, caseSensitive ? 'g' : 'gi').test(value);
+      case 'in':
+        return pattern
+          .split(',')
+          .map((p) => (caseSensitive ? p.trim() : p.trim().toLowerCase()))
+          .includes(val);
+      default:
+        return false;
+    }
+  }
+
+  private async getUserGroupIds(
+    userId: string,
+    organizationId: string,
+  ): Promise<string[]> {
+    const { data } = await this.supabase
+      .from('group_memberships')
+      .select('group_id')
+      .eq('user_id', userId)
+      .eq('is_active', true);
+
+    return data?.map((m) => m.group_id) || [];
+  }
+
+  private buildGroupHierarchy(
+    groups: EnterpriseGroup[],
+    rootGroupId?: string,
+  ): GroupHierarchyNode[] {
+    const groupMap = new Map(groups.map((g) => [g.id, g]));
+    const hierarchy: GroupHierarchyNode[] = [];
+
+    // Find root groups
+    const rootGroups = groups.filter((g) =>
+      rootGroupId ? g.id === rootGroupId : !g.parentGroupId,
+    );
+
+    // Build hierarchy recursively
+    for (const rootGroup of rootGroups) {
+      const node = this.buildHierarchyNode(rootGroup, groupMap, 0);
+      hierarchy.push(node);
+    }
+
+    return hierarchy;
+  }
+
+  private buildHierarchyNode(
+    group: EnterpriseGroup,
+    groupMap: Map<string, EnterpriseGroup>,
+    depth: number,
+  ): GroupHierarchyNode {
+    const children: GroupHierarchyNode[] = [];
+
+    // Find child groups
+    const childGroups = Array.from(groupMap.values()).filter(
+      (g) => g.parentGroupId === group.id,
+    );
+
+    for (const childGroup of childGroups) {
+      const childNode = this.buildHierarchyNode(
+        childGroup,
+        groupMap,
+        depth + 1,
+      );
+      children.push(childNode);
+    }
+
+    return {
+      group,
+      children,
+      members: [], // Will be populated by enrichHierarchyNode
+      effectivePermissions: [], // Will be populated by enrichHierarchyNode
+      memberCount: 0, // Will be populated by enrichHierarchyNode
+      depth,
+    };
+  }
+
+  private async enrichHierarchyNode(node: GroupHierarchyNode): Promise<void> {
+    // Get group members
+    const { data: memberships } = await this.supabase
+      .from('group_memberships')
+      .select('*')
+      .eq('group_id', node.group.id)
+      .eq('is_active', true);
+
+    node.members =
+      memberships?.map((m) => ({
+        id: m.id,
+        groupId: m.group_id,
+        userId: m.user_id,
+        membershipType: m.membership_type,
+        assignedBy: m.assigned_by,
+        assignedAt: new Date(m.assigned_at),
+        expiresAt: m.expires_at ? new Date(m.expires_at) : undefined,
+        isActive: m.is_active,
+        metadata: m.metadata,
+      })) || [];
+
+    node.memberCount = node.members.length;
+
+    // Calculate effective permissions (including inherited)
+    node.effectivePermissions = [...node.group.permissions];
+
+    // Add inherited permissions from parent groups
+    if (node.group.parentGroupId) {
+      const parentGroup = this.groupCache.get(node.group.parentGroupId);
+      if (parentGroup) {
+        const inheritedPermissions = parentGroup.permissions.map((p) => ({
+          ...p,
+          inherited: true,
+        }));
+        node.effectivePermissions.push(...inheritedPermissions);
+      }
+    }
+
+    // Enrich children recursively
+    for (const child of node.children) {
+      await this.enrichHierarchyNode(child);
+      node.memberCount += child.memberCount;
+    }
+  }
+
+  private clearCaches(): void {
+    this.groupCache.clear();
+    this.hierarchyCache.clear();
+    this.permissionCache.clear();
+  }
+
+  private clearUserPermissionCache(userId: string): void {
+    const keysToRemove = Array.from(this.permissionCache.keys()).filter((key) =>
+      key.includes(`_${userId}_`),
+    );
+
+    keysToRemove.forEach((key) => this.permissionCache.delete(key));
+  }
+}

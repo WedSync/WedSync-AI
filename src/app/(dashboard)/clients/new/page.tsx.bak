@@ -1,0 +1,350 @@
+'use client'
+
+import { useState } from 'react'
+import { useRouter } from 'next/navigation'
+import { createClient } from '@/lib/supabase/client'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import Link from 'next/link'
+import { 
+  ArrowLeftIcon,
+  UserIcon,
+  CalendarIcon,
+  MapPinIcon,
+  CurrencyPoundIcon,
+  TagIcon
+} from '@heroicons/react/20/solid'
+
+export default function NewClientPage() {
+  const router = useRouter()
+  const [loading, setLoading] = useState(false)
+  const [formData, setFormData] = useState({
+    first_name: '',
+    last_name: '',
+    partner_first_name: '',
+    partner_last_name: '',
+    email: '',
+    phone: '',
+    wedding_date: '',
+    venue_name: '',
+    venue_address: '',
+    guest_count: '',
+    budget_range: '',
+    status: 'lead',
+    booking_stage: 'inquiry',
+    lead_source: '',
+    package_name: '',
+    package_price: '',
+    notes: ''
+  })
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setLoading(true)
+
+    try {
+      const supabase = await createClient()
+      const { data: user } = await supabase.auth.getUser()
+      
+      if (!user) {
+        throw new Error('Not authenticated')
+      }
+
+      const { data: profile } = await supabase
+        .from('user_profiles')
+        .select('organization_id')
+        .eq('user_id', user.id)
+        .single()
+
+      if (!profile?.organization_id) {
+        throw new Error('No organization found')
+      }
+
+      const { data, error } = await supabase
+        .from('clients')
+        .insert({
+          organization_id: profile.organization_id,
+          ...formData,
+          guest_count: formData.guest_count ? parseInt(formData.guest_count) : null,
+          package_price: formData.package_price ? parseFloat(formData.package_price) : null,
+          wedding_date: formData.wedding_date || null,
+          created_by: user.id
+        })
+        .select()
+        .single()
+
+      if (error) throw error
+
+      router.push(`/clients/${data.id}`)
+    } catch (error) {
+      console.error('Error creating client:', error)
+      alert('Failed to create client. Please try again.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
+    setFormData(prev => ({
+      ...prev,
+      [e.target.name]: e.target.value
+    }))
+  }
+
+  return (
+    <div className="max-w-4xl">
+      <div className="mb-6">
+        <Link href="/clients">
+          <Button variant="ghost">
+            <ArrowLeftIcon className="mr-2 h-4 w-4" />
+            Back to Clients
+          </Button>
+        </Link>
+      </div>
+
+      <div className="mb-8">
+        <h1 className="text-3xl font-bold tracking-tight text-gray-900">Add New Client</h1>
+        <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+          Enter your client's information to add them to your database
+        </p>
+      </div>
+
+      <form onSubmit={handleSubmit} className="space-y-8">
+        <div className="space-y-2">
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 mb-4">
+              <UserIcon className="size-5 text-zinc-500" />
+              <h2 className="text-xl font-semibold text-gray-800">Contact Information</h2>
+            </div>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="space-y-2">
+                <Label>First Name</Label>
+                <Input
+                  name="first_name"
+                  value={formData.first_name}
+                  onChange={handleChange}
+                  required
+                />
+              </div>
+              
+              <div className="space-y-2">
+                <Label>Last Name</Label>
+                <Input
+                  name="last_name"
+                  value={formData.last_name}
+                  onChange={handleChange}
+                  required
+                />
+              </div>
+              
+              <div className="space-y-2">
+                <Label>Partner's First Name</Label>
+                <Input
+                  name="partner_first_name"
+                  value={formData.partner_first_name}
+                  onChange={handleChange}
+                />
+              </div>
+              
+              <div className="space-y-2">
+                <Label>Partner's Last Name</Label>
+                <Input
+                  name="partner_last_name"
+                  value={formData.partner_last_name}
+                  onChange={handleChange}
+                />
+              </div>
+              
+              <div className="space-y-2">
+                <Label>Email</Label>
+                <Input
+                  type="email"
+                  name="email"
+                  value={formData.email}
+                  onChange={handleChange}
+                  required
+                />
+              </div>
+              
+              <div className="space-y-2">
+                <Label>Phone</Label>
+                <Input
+                  type="tel"
+                  name="phone"
+                  value={formData.phone}
+                  onChange={handleChange}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <hr className="border-gray-200" />
+
+        <div className="space-y-2">
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 mb-4">
+              <CalendarIcon className="size-5 text-zinc-500" />
+              <h2 className="text-xl font-semibold text-gray-800">Wedding Details</h2>
+            </div>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="space-y-2">
+                <Label>Wedding Date</Label>
+                <Input
+                  type="date"
+                  name="wedding_date"
+                  value={formData.wedding_date}
+                  onChange={handleChange}
+                />
+              </div>
+              
+              <div className="space-y-2">
+                <Label>Guest Count</Label>
+                <Input
+                  type="number"
+                  name="guest_count"
+                  value={formData.guest_count}
+                  onChange={handleChange}
+                  min="1"
+                />
+              </div>
+              
+              <div className="space-y-2">
+                <Label>Venue Name</Label>
+                <Input
+                  name="venue_name"
+                  value={formData.venue_name}
+                  onChange={handleChange}
+                />
+              </div>
+              
+              <div className="space-y-2">
+                <Label>Budget Range</Label>
+                <select className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" name="budget_range" value={formData.budget_range} onChange={handleChange}>
+                  <option value="">Select budget range</option>
+                  <option value="under-10k">Under £10,000</option>
+                  <option value="10k-20k">£10,000 - £20,000</option>
+                  <option value="20k-30k">£20,000 - £30,000</option>
+                  <option value="30k-50k">£30,000 - £50,000</option>
+                  <option value="50k-plus">£50,000+</option>
+                </select>
+              </div>
+            </div>
+            
+            <div className="space-y-2">
+              <Label>Venue Address</Label>
+              <textarea
+                name="venue_address"
+                value={formData.venue_address}
+                onChange={handleChange}
+                rows={2}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+              />
+            </div>
+          </div>
+        </div>
+
+        <hr className="border-gray-200" />
+
+        <div className="space-y-2">
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 mb-4">
+              <TagIcon className="size-5 text-zinc-500" />
+              <h2 className="text-xl font-semibold text-gray-800">Booking Information</h2>
+            </div>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="space-y-2">
+                <Label>Status</Label>
+                <select className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" name="status" value={formData.status} onChange={handleChange}>
+                  <option value="lead">Lead</option>
+                  <option value="booked">Booked</option>
+                  <option value="completed">Completed</option>
+                  <option value="archived">Archived</option>
+                </select>
+              </div>
+              
+              <div className="space-y-2">
+                <Label>Booking Stage</Label>
+                <select className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" name="booking_stage" value={formData.booking_stage} onChange={handleChange}>
+                  <option value="inquiry">Inquiry</option>
+                  <option value="quote_sent">Quote Sent</option>
+                  <option value="meeting_scheduled">Meeting Scheduled</option>
+                  <option value="contract_sent">Contract Sent</option>
+                  <option value="booked">Booked</option>
+                </select>
+              </div>
+              
+              <div className="space-y-2">
+                <Label>Lead Source</Label>
+                <select className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" name="lead_source" value={formData.lead_source} onChange={handleChange}>
+                  <option value="">Select source</option>
+                  <option value="website">Website</option>
+                  <option value="instagram">Instagram</option>
+                  <option value="facebook">Facebook</option>
+                  <option value="referral">Referral</option>
+                  <option value="wedding_fair">Wedding Fair</option>
+                  <option value="directory">Directory</option>
+                  <option value="other">Other</option>
+                </select>
+              </div>
+              
+              <div className="space-y-2">
+                <Label>Package Name</Label>
+                <Input
+                  name="package_name"
+                  value={formData.package_name}
+                  onChange={handleChange}
+                  placeholder="e.g., Full Day Coverage"
+                />
+              </div>
+              
+              <div className="space-y-2">
+                <Label>Package Price</Label>
+                <div className="relative">
+                  <CurrencyPoundIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                  <Input
+                    type="number"
+                    name="package_price"
+                    value={formData.package_price}
+                    onChange={handleChange}
+                    min="0"
+                    step="0.01"
+                    placeholder="0.00"
+                    className="pl-8"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          <Label>Notes</Label>
+          <p className="text-sm text-gray-500">Any additional information about this client</p>
+          <textarea
+            name="notes"
+            value={formData.notes}
+            onChange={handleChange}
+            rows={4}
+            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+          />
+        </div>
+
+        <div className="flex justify-end gap-3 pt-4">
+          <Link href="/clients">
+            <Button variant="outline">
+              Cancel
+            </Button>
+          </Link>
+          <Button type="submit" disabled={loading}>
+            {loading ? 'Creating...' : 'Create Client'}
+          </Button>
+        </div>
+      </form>
+    </div>
+  )
+}

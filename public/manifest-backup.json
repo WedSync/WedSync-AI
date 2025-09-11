@@ -1,0 +1,238 @@
+{
+  "name": "WedSync Backup Monitor",
+  "short_name": "Backup Monitor",
+  "description": "Mobile backup monitoring for WedSync administrators - Emergency backup access and system status monitoring",
+  "start_url": "/admin/backup?pwa=true&mobile=true",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "theme_color": "#3b82f6",
+  "background_color": "#ffffff",
+  "scope": "/admin/backup",
+  
+  "icons": [
+    {
+      "src": "/icons/backup-72x72.png",
+      "sizes": "72x72",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/backup-96x96.png", 
+      "sizes": "96x96",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/backup-128x128.png",
+      "sizes": "128x128", 
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/backup-144x144.png",
+      "sizes": "144x144",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/backup-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/backup-256x256.png",
+      "sizes": "256x256",
+      "type": "image/png", 
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/backup-384x384.png",
+      "sizes": "384x384",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/backup-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+
+  "categories": [
+    "utilities",
+    "productivity", 
+    "business"
+  ],
+
+  "lang": "en",
+
+  "related_applications": [],
+  "prefer_related_applications": false,
+
+  "shortcuts": [
+    {
+      "name": "System Status",
+      "short_name": "Status",
+      "description": "View backup system health and status",
+      "url": "/admin/backup?shortcut=status",
+      "icons": [
+        {
+          "src": "/icons/shortcut-status-96x96.png",
+          "sizes": "96x96",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Emergency Backup",
+      "short_name": "Emergency",
+      "description": "Trigger emergency backup immediately", 
+      "url": "/admin/backup?shortcut=emergency",
+      "icons": [
+        {
+          "src": "/icons/shortcut-emergency-96x96.png",
+          "sizes": "96x96", 
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Backup History",
+      "short_name": "History",
+      "description": "View recent backup operations and logs",
+      "url": "/admin/backup/history?shortcut=true",
+      "icons": [
+        {
+          "src": "/icons/shortcut-history-96x96.png",
+          "sizes": "96x96",
+          "type": "image/png" 
+        }
+      ]
+    }
+  ],
+
+  "screenshots": [
+    {
+      "src": "/screenshots/backup-mobile-portrait.png",
+      "sizes": "375x812",
+      "type": "image/png",
+      "platform": "mobile",
+      "label": "Backup status on mobile portrait"
+    },
+    {
+      "src": "/screenshots/backup-mobile-landscape.png", 
+      "sizes": "812x375",
+      "type": "image/png",
+      "platform": "mobile",
+      "label": "Backup dashboard mobile landscape"
+    },
+    {
+      "src": "/screenshots/backup-tablet.png",
+      "sizes": "768x1024", 
+      "type": "image/png",
+      "platform": "tablet",
+      "label": "Backup monitoring on tablet"
+    }
+  ],
+
+  "share_target": {
+    "action": "/admin/backup/share",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "title": "title",
+      "text": "text", 
+      "url": "url",
+      "files": [
+        {
+          "name": "backup_logs",
+          "accept": [".log", ".txt", "text/plain"]
+        }
+      ]
+    }
+  },
+
+  "protocol_handlers": [
+    {
+      "protocol": "wedsync-backup",
+      "url": "/admin/backup?protocol=%s"
+    }
+  ],
+
+  "file_handlers": [
+    {
+      "action": "/admin/backup/import",
+      "accept": {
+        "text/plain": [".log"],
+        "application/json": [".json"],
+        "application/zip": [".zip"]
+      }
+    }
+  ],
+
+  "edge_side_panel": {
+    "preferred_width": 400
+  },
+
+  "display_override": [
+    "window-controls-overlay",
+    "minimal-ui",
+    "standalone",
+    "browser"
+  ],
+
+  "launch_handler": {
+    "client_mode": "focus-existing"
+  },
+
+  "capture_links": "existing-client-navigate",
+
+  "handle_links": "preferred",
+
+  "id": "wedsync-backup-monitor",
+
+  "iarc_rating_id": "",
+
+  "scope_extensions": [
+    {
+      "origin": "https://*.wedsync.com"
+    }
+  ],
+
+  "permissions": [
+    "background-sync",
+    "push",
+    "notifications"
+  ],
+
+  "dir": "ltr",
+
+  "custom": {
+    "backup_features": {
+      "offline_monitoring": true,
+      "emergency_access": true, 
+      "mobile_optimized": true,
+      "battery_efficient": true,
+      "touch_optimized": true
+    },
+    "target_audience": [
+      "wedding_administrators",
+      "system_managers", 
+      "emergency_responders"
+    ],
+    "use_cases": [
+      "Emergency backup triggering during wedding disasters",
+      "Mobile status monitoring during system maintenance",
+      "Offline backup status checking during network issues", 
+      "Real-time backup progress tracking on mobile devices"
+    ],
+    "performance": {
+      "target_load_time": "3s",
+      "target_devices": ["mobile", "tablet"],
+      "battery_optimization": true,
+      "offline_capabilities": true
+    }
+  }
+}

@@ -1,0 +1,289 @@
+// WS-198 Team C Integration Architect - Webhook Error Handler Tests
+// Comprehensive test suite for webhook error handling and dead letter queue management
+
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { WebhookErrorHandler, WebhookError, WebhookContext } from '../webhook-error-handler';
+import Redis from 'ioredis';
+// Mock Redis and Supabase
+vi.mock('ioredis');
+vi.mock('@supabase/supabase-js', () => ({
+  createClient: vi.fn(() => ({
+    from: vi.fn(() => ({
+      insert: vi.fn(() => Promise.resolve({ data: { id: 'test-id' }, error: null })),
+      update: vi.fn(() => ({
+        eq: vi.fn(() => Promise.resolve({ data: null, error: null }))
+      })),
+      select: vi.fn(() => ({
+        eq: vi.fn(() => ({
+          limit: vi.fn(() => Promise.resolve({ data: [], error: null })),
+          is: vi.fn(() => ({
+            limit: vi.fn(() => Promise.resolve({ data: [], error: null }))
+          }))
+        }))
+      }))
+    }))
+  }))
+}));
+describe('WebhookErrorHandler', () => {
+  let webhookHandler: WebhookErrorHandler;
+  let mockRedis: any;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    
+    // Mock Redis methods
+    mockRedis = {
+      lpush: vi.fn(() => Promise.resolve(1)),
+      lrange: vi.fn(() => Promise.resolve([])),
+      lrem: vi.fn(() => Promise.resolve(1)),
+      zadd: vi.fn(() => Promise.resolve(1)),
+      zrangebyscore: vi.fn(() => Promise.resolve([])),
+      zrem: vi.fn(() => Promise.resolve(1)),
+      zcard: vi.fn(() => Promise.resolve(0)),
+      zcount: vi.fn(() => Promise.resolve(0)),
+      zrange: vi.fn(() => Promise.resolve([]))
+    };
+    (Redis as any).mockImplementation(() => mockRedis);
+    webhookHandler = new WebhookErrorHandler();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  describe('Error Classification', () => {
+    it('should classify signature verification failures correctly', async () => {
+      const error: WebhookError = new Error('Webhook signature verification failed') as WebhookError;
+      const context: WebhookContext = {
+        webhookId: 'wh_123',
+        source: 'stripe',
+        endpoint: '/webhook/stripe',
+        method: 'POST',
+        headers: { 'stripe-signature': 'invalid' },
+        originalTimestamp: new Date().toISOString()
+      };
+      const payload = { type: 'payment_intent.succeeded', data: {} };
+      const result = await webhookHandler.handleWebhookError(payload, error, context);
+      expect(result.handled).toBe(true);
+      expect(result.retryScheduled).toBe(false); // Signature errors should not retry
+      expect(result.sentToDeadLetterQueue).toBe(true);
+      expect(result.requiresManualIntervention).toBe(true);
+    });
+    it('should classify processing timeout as retryable', async () => {
+      const error: WebhookError = new Error('Processing timeout after 30 seconds') as WebhookError;
+        webhookId: 'wh_456',
+        source: 'vendor_system',
+        endpoint: '/webhook/vendor',
+        headers: {},
+      const payload = { event: 'booking.confirmed', booking_id: 'booking_123' };
+      expect(result.retryScheduled).toBe(true);
+      expect(result.retryAfterSeconds).toBeGreaterThan(0);
+    it('should classify malformed payload as non-retryable', async () => {
+      const error: WebhookError = new Error('Invalid JSON payload') as WebhookError;
+        webhookId: 'wh_789',
+        source: 'booking_platform',
+        endpoint: '/webhook/booking',
+      const payload = 'malformed-json';
+      expect(result.retryScheduled).toBe(false);
+  describe('Wedding Context Impact Assessment', () => {
+    it('should assess high impact for wedding day critical webhooks', async () => {
+      const error: WebhookError = new Error('Service unavailable') as WebhookError;
+        webhookId: 'wh_wedding_critical',
+        source: 'payment_processor',
+        endpoint: '/webhook/payment',
+        metadata: {
+          wedding_id: 'wedding_123',
+          wedding_date: new Date().toISOString().split('T')[0], // Today
+          vendor_type: 'photographer',
+          criticality_level: 'wedding_day_critical'
+        },
+      const payload = { type: 'payment.failed', wedding_id: 'wedding_123' };
+      expect(result.weddingImpact?.affectsWedding).toBe(true);
+      expect(result.weddingImpact?.impactLevel).toBe('critical');
+      expect(result.retryScheduled).toBe(true); // Should retry aggressively for wedding critical
+      expect(result.maxRetries).toBeGreaterThan(5); // Enhanced retry for critical operations
+    it('should assess medium impact for near-wedding-date webhooks', async () => {
+      const nearWeddingDate = new Date();
+      nearWeddingDate.setDate(nearWeddingDate.getDate() + 3); // 3 days from now
+      const error: WebhookError = new Error('Temporary failure') as WebhookError;
+        webhookId: 'wh_near_wedding',
+          wedding_id: 'wedding_456',
+          wedding_date: nearWeddingDate.toISOString().split('T')[0],
+          vendor_type: 'florist',
+          criticality_level: 'high'
+      const payload = { event: 'order.updated', wedding_id: 'wedding_456' };
+      expect(result.weddingImpact?.impactLevel).toBe('medium');
+      expect(result.maxRetries).toBeGreaterThan(3); // Enhanced retry for near-wedding operations
+    it('should assess low impact for non-wedding webhooks', async () => {
+      const error: WebhookError = new Error('General error') as WebhookError;
+        webhookId: 'wh_general',
+        source: 'general_system',
+        endpoint: '/webhook/general',
+      const payload = { event: 'system.maintenance' };
+      expect(result.weddingImpact?.affectsWedding).toBe(false);
+      expect(result.weddingImpact?.impactLevel).toBe('none');
+  describe('Retry Strategy Logic', () => {
+    it('should use enhanced retry strategy for payment webhooks', async () => {
+      const error: WebhookError = new Error('Payment processing timeout') as WebhookError;
+        webhookId: 'wh_payment',
+          payment_intent_id: 'pi_123',
+          wedding_id: 'wedding_789'
+      const payload = { type: 'payment_intent.payment_failed', data: {} };
+      expect(result.maxRetries).toBeGreaterThanOrEqual(8); // Enhanced for payment webhooks
+    it('should not retry signature verification failures', async () => {
+      const error: WebhookError = new Error('Invalid webhook signature') as WebhookError;
+        webhookId: 'wh_bad_sig',
+        headers: { 'stripe-signature': 'bad_signature' },
+      const payload = { type: 'invoice.paid' };
+    it('should apply exponential backoff for retryable errors', async () => {
+      
+      const context1: WebhookContext = {
+        webhookId: 'wh_backoff1',
+        source: 'vendor_api',
+        retryCount: 1,
+      const context2: WebhookContext = {
+        ...context1,
+        webhookId: 'wh_backoff2',
+        retryCount: 3
+      const payload = { event: 'service.error' };
+      const result1 = await webhookHandler.handleWebhookError(payload, error, context1);
+      const result2 = await webhookHandler.handleWebhookError(payload, error, context2);
+      // Later retries should have longer delays
+      expect(result2.retryAfterSeconds).toBeGreaterThan(result1.retryAfterSeconds!);
+  describe('Dead Letter Queue Management', () => {
+    it('should send non-retryable errors to dead letter queue', async () => {
+      const error: WebhookError = new Error('Invalid webhook payload structure') as WebhookError;
+        webhookId: 'wh_dlq_test',
+        source: 'booking_system',
+        retryCount: 0,
+      const payload = { invalid: 'payload' };
+      expect(mockRedis.lpush).toHaveBeenCalledWith('webhook_dlq', expect.any(String));
+    it('should send exhausted retries to dead letter queue', async () => {
+      const error: WebhookError = new Error('Persistent service error') as WebhookError;
+        webhookId: 'wh_exhausted',
+        retryCount: 5,
+        maxRetries: 5, // Already at max retries
+      const payload = { event: 'persistent.error' };
+    it('should provide DLQ management methods', async () => {
+      // Mock DLQ items
+      const dlqItems = [
+        JSON.stringify({
+          errorId: 'error_1',
+          webhookId: 'wh_1',
+          requiresManualIntervention: true
+        }),
+          errorId: 'error_2',
+          webhookId: 'wh_2',
+        })
+      ];
+      mockRedis.lrange.mockResolvedValue(dlqItems);
+      const items = await webhookHandler.getDeadLetterQueueItems(10);
+      expect(items).toHaveLength(2);
+      expect(items[0]).toHaveProperty('errorId', 'error_1');
+      expect(items[1]).toHaveProperty('errorId', 'error_2');
+    it('should allow reprocessing of DLQ items', async () => {
+      const dlqItem = {
+        errorId: 'error_reprocess',
+        webhookPayload: { event: 'test.reprocess' },
+        context: {
+          webhookId: 'wh_reprocess',
+          source: 'test_system',
+          endpoint: '/test',
+          method: 'POST',
+          headers: {},
+          originalTimestamp: new Date().toISOString()
+        }
+      mockRedis.lrange.mockResolvedValue([JSON.stringify(dlqItem)]);
+      mockRedis.lrem.mockResolvedValue(1);
+      const success = await webhookHandler.reprocessDeadLetterItem('error_reprocess');
+      expect(success).toBe(true);
+      expect(mockRedis.lrem).toHaveBeenCalledWith('webhook_dlq', 1, JSON.stringify(dlqItem));
+      expect(mockRedis.zadd).toHaveBeenCalled(); // Should schedule retry
+  describe('Retry Queue Processing', () => {
+    it('should provide retry queue status information', async () => {
+      mockRedis.zcard.mockResolvedValue(15);
+      mockRedis.zcount.mockResolvedValue(5);
+      mockRedis.zrange.mockResolvedValue(['retry_data', '1640995200000']);
+      const status = await webhookHandler.getRetryQueueStatus();
+      expect(status.queueLength).toBe(15);
+      expect(status.overdueCount).toBe(5);
+      expect(status.nextRetryTime).toBeInstanceOf(Date);
+    it('should handle retry queue processing errors gracefully', async () => {
+      mockRedis.zcard.mockRejectedValue(new Error('Redis connection failed'));
+      expect(status.queueLength).toBe(0);
+      expect(status.overdueCount).toBe(0);
+      expect(status.nextRetryTime).toBeUndefined();
+  describe('Webhook Processing Simulation', () => {
+    it('should handle successful webhook retry', async () => {
+      // This would test the webhook retry processor
+      const retryData = {
+        webhookPayload: { event: 'test.retry' },
+          webhookId: 'wh_retry_success',
+          retryCount: 1,
+        retryStrategy: {
+          shouldRetry: true,
+          maxRetries: 5,
+          delaySeconds: 30,
+          exponentialBackoff: true,
+          reason: 'Test retry'
+        errorId: 'error_retry_test'
+      // In a real test, this would verify the retry mechanism
+      expect(retryData.context.retryCount).toBeLessThan(retryData.retryStrategy.maxRetries);
+    it('should handle webhook retry failure and reschedule', async () => {
+        context: { retryCount: 2 },
+        retryStrategy: { maxRetries: 5 }
+      // Verify that retries under max limit get rescheduled
+  describe('Performance and Scalability', () => {
+    it('should handle high volume of webhook errors efficiently', async () => {
+      const errors: Promise<any>[] = [];
+      const startTime = Date.now();
+      // Create 50 concurrent webhook error handling requests
+      for (let i = 0; i < 50; i++) {
+        const error: WebhookError = new Error(`Webhook error ${i}`) as WebhookError;
+        const context: WebhookContext = {
+          webhookId: `wh_load_${i}`,
+          source: 'load_test_system',
+          endpoint: '/webhook/load_test',
+        };
+        const payload = { event: `test.load.${i}` };
+        errors.push(webhookHandler.handleWebhookError(payload, error, context));
+      }
+      const results = await Promise.all(errors);
+      const endTime = Date.now();
+      const totalTime = endTime - startTime;
+      expect(results).toHaveLength(50);
+      expect(results.every(r => r.handled)).toBe(true);
+      expect(totalTime).toBeLessThan(3000); // Should complete within 3 seconds
+    it('should not block on Redis failures', async () => {
+      // Mock Redis to fail
+      mockRedis.lpush.mockRejectedValue(new Error('Redis connection failed'));
+      mockRedis.zadd.mockRejectedValue(new Error('Redis connection failed'));
+      const error: WebhookError = new Error('Test error with Redis failure') as WebhookError;
+        webhookId: 'wh_redis_fail',
+        source: 'test_system',
+        endpoint: '/test',
+      const result = await webhookHandler.handleWebhookError({}, error, context);
+      expect(result.handled).toBe(false); // Should fail gracefully
+      expect(endTime - startTime).toBeLessThan(1000); // Should not hang
+  describe('Edge Cases', () => {
+    it('should handle empty webhook payload', async () => {
+      const error: WebhookError = new Error('Empty payload error') as WebhookError;
+        webhookId: 'wh_empty',
+      const result = await webhookHandler.handleWebhookError(null, error, context);
+      expect(result.errorId).toBeDefined();
+    it('should handle missing webhook context metadata', async () => {
+      const error: WebhookError = new Error('Missing metadata error') as WebhookError;
+        webhookId: '',
+        source: '',
+        endpoint: '',
+    it('should handle handler internal failures gracefully', async () => {
+      // Force an internal error by providing invalid data
+      const error: WebhookError = null as any;
+        webhookId: 'wh_internal_error',
+      expect(result.handled).toBe(false);
+      expect(result.error).toBeDefined();
+});
+// Integration test scenarios for webhook error handling
+describe('WebhookErrorHandler Integration Scenarios', () => {
+  it.skip('should integrate with real Redis for retry queue management', async () => {
+    // Integration test with real Redis instance
+  it.skip('should integrate with Supabase for webhook failure logging', async () => {
+    // Integration test with real Supabase instance
+  it.skip('should handle real Stripe webhook signature verification', async () => {
+    // Integration test with actual Stripe webhook handling

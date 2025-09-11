@@ -1,0 +1,531 @@
+'use client';
+
+import React, { useState, useEffect } from 'react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Switch } from '@/components/ui/switch';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { 
+  Users, Camera, MapPin, Flower2, Music, Heart, Shield, 
+  Key, Clock, Activity, AlertTriangle, CheckCircle, XCircle,
+  Settings, Eye, Ban, Unlock
+} from 'lucide-react';
+
+interface VendorAccess {
+  id: string;
+  name: string;
+  type: 'photographer' | 'venue' | 'florist' | 'musician' | 'planner' | 'caterer';
+  email: string;
+  apiKey: string;
+  permissions: string[];
+  status: 'active' | 'suspended' | 'pending';
+  lastAccess: Date;
+  weddingDayAccess: boolean;
+  rateLimit: number;
+  monthlyQuota: number;
+  usedQuota: number;
+}
+
+const VENDOR_TYPES = {
+  photographer: { name: 'Photographer', icon: Camera, color: 'bg-pink-500' },
+  venue: { name: 'Venue', icon: MapPin, color: 'bg-purple-500' },
+  florist: { name: 'Florist', icon: Flower2, color: 'bg-green-500' },
+  musician: { name: 'Musician', icon: Music, color: 'bg-blue-500' },
+  planner: { name: 'Planner', icon: Users, color: 'bg-orange-500' },
+  caterer: { name: 'Caterer', icon: Heart, color: 'bg-red-500' }
+};
+
+const PERMISSIONS = [
+  { id: 'read_clients', name: 'Read Client Data', description: 'Access client information and wedding details' },
+  { id: 'write_galleries', name: 'Manage Galleries', description: 'Upload and organize wedding photos' },
+  { id: 'send_messages', name: 'Send Messages', description: 'Communicate with clients through the platform' },
+  { id: 'access_timeline', name: 'Wedding Timeline', description: 'View and update wedding day timeline' },
+  { id: 'manage_bookings', name: 'Manage Bookings', description: 'Create and update booking information' },
+  { id: 'financial_data', name: 'Financial Access', description: 'View payment and invoice information' }
+];
+
+export default function VendorAPIAccessManager(): JSX.Element {
+  const [vendors, setVendors] = useState<VendorAccess[]>([]);
+  const [selectedVendor, setSelectedVendor] = useState<VendorAccess | null>(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [filterType, setFilterType] = useState<string>('all');
+  const [filterStatus, setFilterStatus] = useState<string>('all');
+
+  useEffect(() => {
+    // Mock data
+    const mockVendors: VendorAccess[] = [
+      {
+        id: '1',
+        name: 'Perfect Moments Photography',
+        type: 'photographer',
+        email: 'hello@perfectmoments.co.uk',
+        apiKey: 'pm_pk_live_123***789',
+        permissions: ['read_clients', 'write_galleries', 'send_messages'],
+        status: 'active',
+        lastAccess: new Date(Date.now() - 300000),
+        weddingDayAccess: true,
+        rateLimit: 1000,
+        monthlyQuota: 50000,
+        usedQuota: 23450
+      },
+      {
+        id: '2',
+        name: 'The Grand Ballroom',
+        type: 'venue',
+        email: 'events@grandballroom.com',
+        apiKey: 'gb_pk_live_456***012',
+        permissions: ['read_clients', 'access_timeline', 'manage_bookings'],
+        status: 'active',
+        lastAccess: new Date(Date.now() - 1800000),
+        weddingDayAccess: true,
+        rateLimit: 500,
+        monthlyQuota: 25000,
+        usedQuota: 8920
+      },
+      {
+        id: '3',
+        name: 'Elegant Florals',
+        type: 'florist',
+        email: 'orders@elegantflorals.co.uk',
+        apiKey: 'ef_pk_test_789***345',
+        permissions: ['read_clients', 'send_messages'],
+        status: 'suspended',
+        lastAccess: new Date(Date.now() - 86400000),
+        weddingDayAccess: false,
+        rateLimit: 200,
+        monthlyQuota: 10000,
+        usedQuota: 12500
+      }
+    ];
+    
+    setVendors(mockVendors);
+    setSelectedVendor(mockVendors[0]);
+  }, []);
+
+  const filteredVendors = vendors.filter(vendor => {
+    const matchesSearch = vendor.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                         vendor.email.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesType = filterType === 'all' || vendor.type === filterType;
+    const matchesStatus = filterStatus === 'all' || vendor.status === filterStatus;
+    
+    return matchesSearch && matchesType && matchesStatus;
+  });
+
+  const handleToggleVendorStatus = (vendorId: string) => {
+    setVendors(prev => prev.map(vendor => 
+      vendor.id === vendorId 
+        ? { ...vendor, status: vendor.status === 'active' ? 'suspended' : 'active' }
+        : vendor
+    ));
+  };
+
+  const handleUpdatePermissions = (vendorId: string, permissions: string[]) => {
+    setVendors(prev => prev.map(vendor => 
+      vendor.id === vendorId ? { ...vendor, permissions } : vendor
+    ));
+  };
+
+  const generateNewApiKey = (vendorId: string) => {
+    const newKey = `${vendors.find(v => v.id === vendorId)?.type.slice(0, 2)}_pk_live_${Math.random().toString(36).substring(2)}***${Math.random().toString(36).substring(2)}`;
+    setVendors(prev => prev.map(vendor => 
+      vendor.id === vendorId ? { ...vendor, apiKey: newKey } : vendor
+    ));
+  };
+
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'active': return 'text-green-600';
+      case 'suspended': return 'text-red-600';
+      case 'pending': return 'text-yellow-600';
+      default: return 'text-gray-600';
+    }
+  };
+
+  const getQuotaUsageColor = (percentage: number) => {
+    if (percentage >= 90) return 'text-red-600';
+    if (percentage >= 75) return 'text-yellow-600';
+    return 'text-green-600';
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+        <div>
+          <h1 className="text-3xl font-bold">Vendor API Access Manager</h1>
+          <p className="text-muted-foreground">Manage API access and permissions for wedding vendors</p>
+        </div>
+        <Button>
+          <Users className="h-4 w-4 mr-2" />
+          Add New Vendor
+        </Button>
+      </div>
+
+      {/* Filters */}
+      <div className="flex flex-col sm:flex-row gap-4">
+        <div className="flex-1">
+          <Input
+            placeholder="Search vendors..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="w-full"
+          />
+        </div>
+        <Select value={filterType} onValueChange={setFilterType}>
+          <SelectTrigger className="w-40">
+            <SelectValue placeholder="All Types" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Types</SelectItem>
+            {Object.entries(VENDOR_TYPES).map(([key, type]) => (
+              <SelectItem key={key} value={key}>{type.name}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={filterStatus} onValueChange={setFilterStatus}>
+          <SelectTrigger className="w-40">
+            <SelectValue placeholder="All Status" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Status</SelectItem>
+            <SelectItem value="active">Active</SelectItem>
+            <SelectItem value="suspended">Suspended</SelectItem>
+            <SelectItem value="pending">Pending</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Vendor List */}
+        <div className="lg:col-span-1 space-y-4">
+          <h3 className="font-semibold">Vendors ({filteredVendors.length})</h3>
+          <div className="space-y-2">
+            {filteredVendors.map((vendor) => {
+              const VendorIcon = VENDOR_TYPES[vendor.type].icon;
+              const quotaPercentage = (vendor.usedQuota / vendor.monthlyQuota) * 100;
+              
+              return (
+                <Card 
+                  key={vendor.id}
+                  className={`cursor-pointer transition-all hover:shadow-md ${
+                    selectedVendor?.id === vendor.id ? 'border-blue-500 bg-blue-50' : ''
+                  }`}
+                  onClick={() => setSelectedVendor(vendor)}
+                >
+                  <CardContent className="p-4">
+                    <div className="flex items-start justify-between">
+                      <div className="flex items-start space-x-3">
+                        <div className={`p-2 rounded-lg ${VENDOR_TYPES[vendor.type].color} text-white`}>
+                          <VendorIcon className="h-4 w-4" />
+                        </div>
+                        <div className="flex-1">
+                          <h4 className="font-medium text-sm">{vendor.name}</h4>
+                          <p className="text-xs text-muted-foreground">{vendor.email}</p>
+                          <div className="flex items-center gap-2 mt-2">
+                            <Badge 
+                              variant={vendor.status === 'active' ? 'default' : 'destructive'}
+                              className="text-xs"
+                            >
+                              {vendor.status}
+                            </Badge>
+                            {vendor.weddingDayAccess && (
+                              <Badge variant="outline" className="text-xs">Wedding Access</Badge>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="text-right text-xs">
+                        <div className={getQuotaUsageColor(quotaPercentage)}>
+                          {quotaPercentage.toFixed(0)}%
+                        </div>
+                        <div className="text-muted-foreground">quota</div>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Vendor Details */}
+        <div className="lg:col-span-2">
+          {selectedVendor ? (
+            <Tabs defaultValue="overview" className="space-y-4">
+              <TabsList className="grid w-full grid-cols-4">
+                <TabsTrigger value="overview">Overview</TabsTrigger>
+                <TabsTrigger value="permissions">Permissions</TabsTrigger>
+                <TabsTrigger value="usage">Usage</TabsTrigger>
+                <TabsTrigger value="security">Security</TabsTrigger>
+              </TabsList>
+
+              <TabsContent value="overview" className="space-y-4">
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center justify-between">
+                      <span>Vendor Information</span>
+                      <div className="flex items-center space-x-2">
+                        <Switch
+                          checked={selectedVendor.status === 'active'}
+                          onCheckedChange={() => handleToggleVendorStatus(selectedVendor.id)}
+                        />
+                        <span className={getStatusColor(selectedVendor.status)}>
+                          {selectedVendor.status}
+                        </span>
+                      </div>
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="text-sm font-medium">Business Name</label>
+                        <p className="text-sm text-muted-foreground">{selectedVendor.name}</p>
+                      </div>
+                      <div>
+                        <label className="text-sm font-medium">Vendor Type</label>
+                        <p className="text-sm text-muted-foreground">
+                          {VENDOR_TYPES[selectedVendor.type].name}
+                        </p>
+                      </div>
+                      <div>
+                        <label className="text-sm font-medium">Email</label>
+                        <p className="text-sm text-muted-foreground">{selectedVendor.email}</p>
+                      </div>
+                      <div>
+                        <label className="text-sm font-medium">Last Access</label>
+                        <p className="text-sm text-muted-foreground">
+                          {selectedVendor.lastAccess.toLocaleString()}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="text-sm font-medium">Rate Limit</label>
+                        <p className="text-sm text-muted-foreground">
+                          {selectedVendor.rateLimit} requests/hour
+                        </p>
+                      </div>
+                      <div>
+                        <label className="text-sm font-medium">Wedding Day Access</label>
+                        <div className="flex items-center space-x-2">
+                          <Switch
+                            checked={selectedVendor.weddingDayAccess}
+                            onCheckedChange={(checked) => {
+                              setVendors(prev => prev.map(v => 
+                                v.id === selectedVendor.id ? { ...v, weddingDayAccess: checked } : v
+                              ));
+                              setSelectedVendor({ ...selectedVendor, weddingDayAccess: checked });
+                            }}
+                          />
+                          <span className="text-sm text-muted-foreground">
+                            {selectedVendor.weddingDayAccess ? 'Enabled' : 'Disabled'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle>API Key Management</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-4">
+                      <div>
+                        <label className="text-sm font-medium">Current API Key</label>
+                        <div className="flex items-center space-x-2 mt-1">
+                          <Input value={selectedVendor.apiKey} readOnly className="font-mono text-xs" />
+                          <Button 
+                            variant="outline" 
+                            size="sm"
+                            onClick={() => generateNewApiKey(selectedVendor.id)}
+                          >
+                            <Key className="h-4 w-4 mr-1" />
+                            Regenerate
+                          </Button>
+                        </div>
+                      </div>
+                      <Alert>
+                        <Shield className="h-4 w-4" />
+                        <AlertDescription>
+                          API keys provide full access to vendor permissions. Keep them secure and regenerate if compromised.
+                        </AlertDescription>
+                      </Alert>
+                    </div>
+                  </CardContent>
+                </Card>
+              </TabsContent>
+
+              <TabsContent value="permissions" className="space-y-4">
+                <Card>
+                  <CardHeader>
+                    <CardTitle>API Permissions</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-4">
+                      {PERMISSIONS.map((permission) => {
+                        const hasPermission = selectedVendor.permissions.includes(permission.id);
+                        
+                        return (
+                          <div key={permission.id} className="flex items-start justify-between space-x-4">
+                            <div className="flex-1">
+                              <div className="flex items-center space-x-2">
+                                <h4 className="font-medium text-sm">{permission.name}</h4>
+                                {hasPermission && <CheckCircle className="h-4 w-4 text-green-500" />}
+                              </div>
+                              <p className="text-sm text-muted-foreground">{permission.description}</p>
+                            </div>
+                            <Switch
+                              checked={hasPermission}
+                              onCheckedChange={(checked) => {
+                                const newPermissions = checked
+                                  ? [...selectedVendor.permissions, permission.id]
+                                  : selectedVendor.permissions.filter(p => p !== permission.id);
+                                
+                                handleUpdatePermissions(selectedVendor.id, newPermissions);
+                                setSelectedVendor({ ...selectedVendor, permissions: newPermissions });
+                              }}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </CardContent>
+                </Card>
+              </TabsContent>
+
+              <TabsContent value="usage" className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="text-base">Monthly Quota</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="space-y-2">
+                        <div className="flex justify-between text-sm">
+                          <span>Used: {selectedVendor.usedQuota.toLocaleString()}</span>
+                          <span>Limit: {selectedVendor.monthlyQuota.toLocaleString()}</span>
+                        </div>
+                        <div className="w-full bg-gray-200 rounded-full h-2">
+                          <div 
+                            className={`h-2 rounded-full transition-all ${
+                              selectedVendor.usedQuota > selectedVendor.monthlyQuota ? 'bg-red-500' :
+                              (selectedVendor.usedQuota / selectedVendor.monthlyQuota) > 0.8 ? 'bg-yellow-500' :
+                              'bg-green-500'
+                            }`}
+                            style={{ 
+                              width: `${Math.min((selectedVendor.usedQuota / selectedVendor.monthlyQuota) * 100, 100)}%` 
+                            }}
+                          />
+                        </div>
+                        {selectedVendor.usedQuota > selectedVendor.monthlyQuota && (
+                          <Alert className="border-red-200 bg-red-50">
+                            <AlertTriangle className="h-4 w-4" />
+                            <AlertDescription className="text-red-800">
+                              Quota exceeded! Additional charges may apply.
+                            </AlertDescription>
+                          </Alert>
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="text-base">Rate Limiting</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="space-y-3">
+                        <div className="flex justify-between">
+                          <span className="text-sm">Current Limit</span>
+                          <span className="text-sm font-medium">{selectedVendor.rateLimit}/hour</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-sm">Wedding Day Multiplier</span>
+                          <Badge variant="outline">2x</Badge>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-sm">Status</span>
+                          <Badge variant="default">Active</Badge>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+              </TabsContent>
+
+              <TabsContent value="security" className="space-y-4">
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Security Settings</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-6">
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h4 className="font-medium">IP Restrictions</h4>
+                          <p className="text-sm text-muted-foreground">
+                            Limit API access to specific IP addresses
+                          </p>
+                        </div>
+                        <Switch />
+                      </div>
+
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h4 className="font-medium">Two-Factor Authentication</h4>
+                          <p className="text-sm text-muted-foreground">
+                            Require 2FA for sensitive operations
+                          </p>
+                        </div>
+                        <Switch />
+                      </div>
+
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h4 className="font-medium">Webhook Security</h4>
+                          <p className="text-sm text-muted-foreground">
+                            Verify webhook signatures
+                          </p>
+                        </div>
+                        <Switch checked />
+                      </div>
+                    </div>
+
+                    <div className="space-y-3">
+                      <h4 className="font-medium">Recent Security Events</h4>
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between p-2 border rounded">
+                          <span className="text-sm">API key regenerated</span>
+                          <span className="text-xs text-muted-foreground">2 hours ago</span>
+                        </div>
+                        <div className="flex items-center justify-between p-2 border rounded">
+                          <span className="text-sm">Failed authentication attempt</span>
+                          <span className="text-xs text-muted-foreground">1 day ago</span>
+                        </div>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              </TabsContent>
+            </Tabs>
+          ) : (
+            <Card className="h-96 flex items-center justify-center">
+              <div className="text-center">
+                <Users className="h-12 w-12 text-gray-300 mx-auto mb-4" />
+                <h3 className="text-lg font-medium text-gray-900 mb-2">No Vendor Selected</h3>
+                <p className="text-gray-500">Select a vendor from the list to view and manage their API access.</p>
+              </div>
+            </Card>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

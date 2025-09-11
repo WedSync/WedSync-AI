@@ -1,0 +1,292 @@
+/**
+ * Photography AI Integration Types
+ * WS-130 Round 3: Cross-team integration type definitions
+ */
+
+// Base mood board types (from existing implementation)
+export interface MoodBoardRequest {
+  client_id: string;
+  wedding_style: string;
+  preferred_colors: string[];
+  reference_images: string[];
+  requirements: {
+    style_consistency: boolean;
+    color_harmony: boolean;
+    seasonal_appropriateness: boolean;
+  };
+}
+
+export interface MoodBoardResponse {
+  success: boolean;
+  mood_board_id: string;
+  style_analysis?: {
+    primary_style: string;
+    secondary_styles: string[];
+    confidence_score: number;
+  };
+  color_analysis?: {
+    dominant_colors: string[];
+    accent_colors: string[];
+    color_palette: string[];
+    color_temperature: 'warm' | 'cool' | 'neutral';
+  };
+  mood_analysis?: {
+    primary_mood: string;
+    secondary_moods: string[];
+    energy_level: number; // 1-10 scale
+  };
+  layout_suggestions?: Array<{
+    arrangement_type: string;
+    focal_points: string[];
+    balance_score: number;
+  }>;
+  recommendations?: string[];
+  processing_time_ms: number;
+}
+
+// Team A Integration: Music AI Style Consistency
+export interface StyleConsistencyReport {
+  sync_enabled: boolean;
+  style_match_score: number; // 0-100
+  energy_alignment: number; // 0-100
+  music_recommendation_id?: string;
+  recommendations: string[];
+  error?: string;
+}
+
+// Team B Integration: Floral AI Color Harmony
+export interface ColorHarmonyAnalysis {
+  sync_enabled: boolean;
+  color_harmony_score: number; // 0-100
+  palette_compatibility: number; // 0-100
+  floral_recommendation_id?: string;
+  coordinated_palette?: string[];
+  recommendations: string[];
+  error?: string;
+}
+
+// Comprehensive integration analysis
+export interface IntegratedPhotoAnalysis {
+  photography_analysis: MoodBoardResponse;
+  style_consistency: StyleConsistencyReport;
+  color_harmony: ColorHarmonyAnalysis;
+  integration_metrics: TeamIntegrationMetrics;
+  usage_tracked: boolean;
+  recommendations: {
+    photography: string[];
+    music_coordination: string[];
+    floral_coordination: string[];
+    upgrade_suggestions?: string[];
+  };
+}
+
+// Cross-team integration metrics
+export interface TeamIntegrationMetrics {
+  overall_coherence_score: number; // 0-100
+  style_consistency_score: number; // 0-100
+  color_harmony_score: number; // 0-100
+  integration_success_rate: 'high' | 'medium' | 'low';
+  teams_integrated: string[];
+  processing_time_ms: number;
+  calculated_at: string;
+}
+
+// Feature usage tracking (Team E - Trials integration)
+export interface FeatureUsageEvent {
+  user_id: string;
+  feature_key: string;
+  usage_count: number;
+  time_saved_minutes: number;
+  processing_time_ms: number;
+  context_data?: Record<string, any>;
+  created_at: string;
+}
+
+// Team D Integration: Feature access result
+export interface FeatureAccessResult {
+  hasAccess: boolean;
+  reason?: string;
+  upgradeRequired?: boolean;
+  currentPlan?: string;
+  requiredPlan?: string;
+  currentUsage?: number;
+  usageLimit?: number;
+  usagePercentage?: number;
+}
+
+// Enhanced wedding context for coordinated analysis
+export interface WeddingContext {
+  client_id: string;
+  wedding_date: Date;
+  wedding_style: string;
+  preferred_colors: string[];
+  venue_type?: string;
+  guest_count?: number;
+  budget_range?: {
+    min: number;
+    max: number;
+  };
+  cultural_requirements?: string[];
+  accessibility_needs?: string[];
+}
+
+// Integration preferences
+export interface IntegrationPreferences {
+  sync_with_music: boolean;
+  sync_with_floral: boolean;
+  track_usage: boolean;
+  enable_ai_optimization: boolean;
+  privacy_level: 'minimal' | 'standard' | 'comprehensive';
+}
+
+// Production optimization settings
+export interface ProductionOptimization {
+  enable_caching: boolean;
+  cache_ttl_seconds: number;
+  enable_rate_limiting: boolean;
+  rate_limit_per_minute: number;
+  enable_batch_processing: boolean;
+  batch_size: number;
+  priority_queue_enabled: boolean;
+}
+
+// Monitoring and alerting
+export interface ProcessingMetrics {
+  request_id: string;
+  user_id: string;
+  feature_key: string;
+  start_time: number;
+  end_time: number;
+  processing_time_ms: number;
+  memory_usage_mb: number;
+  ai_model_calls: number;
+  cache_hit_rate: number;
+  error_count: number;
+  success: boolean;
+}
+
+// Error types for integration failures
+export interface IntegrationError {
+  code: string;
+  message: string;
+  details?: Record<string, any>;
+  retry_after_seconds?: number;
+  user_action_required?: boolean;
+}
+
+// Batch processing for production optimization
+export interface BatchAnalysisRequest {
+  requests: Array<{
+    client_id: string;
+    user_id: string;
+    wedding_context: WeddingContext;
+    mood_board_images: string[];
+    integration_preferences: IntegrationPreferences;
+  }>;
+  priority: 'low' | 'normal' | 'high' | 'urgent';
+  callback_url?: string;
+}
+
+export interface BatchAnalysisResponse {
+  batch_id: string;
+  status: 'queued' | 'processing' | 'completed' | 'failed';
+  total_requests: number;
+  completed_requests: number;
+  failed_requests: number;
+  estimated_completion_time?: string;
+  results: IntegratedPhotoAnalysis[];
+  errors: IntegrationError[];
+}
+
+// API response wrapper
+export interface ApiResponse<T> {
+  success: boolean;
+  data?: T;
+  error?: IntegrationError;
+  metadata: {
+    request_id: string;
+    processing_time_ms: number;
+    api_version: string;
+    rate_limit_remaining: number;
+    rate_limit_reset: number;
+  };
+}
+
+// Database schema types for integration tracking
+export interface PhotoAnalysisRecord {
+  id: string;
+  client_id: string;
+  user_id: string;
+  analysis_type: 'mood_board' | 'style_analysis' | 'color_harmony';
+  request_data: Record<string, any>;
+  response_data: Record<string, any>;
+  processing_time_ms: number;
+  integration_scores: {
+    style_consistency: number;
+    color_harmony: number;
+    overall_coherence: number;
+  };
+  teams_integrated: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+// Cache keys for production optimization
+export interface CacheKeys {
+  MOOD_BOARD: (clientId: string, styleHash: string) => string;
+  STYLE_ANALYSIS: (weddingStyle: string, colors: string[]) => string;
+  COLOR_HARMONY: (photoColors: string[], floralColors: string[]) => string;
+  FEATURE_ACCESS: (userId: string, feature: string) => string;
+  USER_PREFERENCES: (userId: string) => string;
+}
+
+// Production configuration
+export interface ProductionConfig {
+  openai: {
+    model: string;
+    max_tokens: number;
+    temperature: number;
+    rate_limit_per_minute: number;
+  };
+  cache: {
+    redis_url: string;
+    default_ttl_seconds: number;
+    max_memory_mb: number;
+  };
+  monitoring: {
+    enable_metrics: boolean;
+    enable_logging: boolean;
+    alert_thresholds: {
+      error_rate_percent: number;
+      response_time_ms: number;
+      memory_usage_percent: number;
+    };
+  };
+  integration: {
+    music_ai_timeout_ms: number;
+    floral_ai_timeout_ms: number;
+    feature_gate_timeout_ms: number;
+    trial_tracking_timeout_ms: number;
+  };
+}
+
+// Export utility type helpers
+export type RequiredTeamIntegrations =
+  | 'music_ai'
+  | 'floral_ai'
+  | 'pricing_features'
+  | 'trial_tracking';
+export type OptionalTeamIntegrations = Partial<RequiredTeamIntegrations>;
+
+export type IntegrationStatus =
+  | 'pending'
+  | 'in_progress'
+  | 'completed'
+  | 'failed'
+  | 'timeout';
+export type ProcessingPriority = 'low' | 'normal' | 'high' | 'urgent';
+export type CacheStrategy =
+  | 'aggressive'
+  | 'moderate'
+  | 'conservative'
+  | 'disabled';

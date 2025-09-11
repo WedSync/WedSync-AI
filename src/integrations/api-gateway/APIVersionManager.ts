@@ -1,0 +1,900 @@
+/**
+ * WS-250: API Gateway Management System - API Version Manager
+ * Team C - Round 1: API versioning and compatibility handling
+ *
+ * Manages API versioning, backward compatibility, migration paths,
+ * and deprecation workflows with wedding industry specific considerations.
+ */
+
+import {
+  IntegrationResponse,
+  IntegrationError,
+  ErrorCategory,
+} from '../../types/integrations';
+
+export interface APIVersion {
+  version: string;
+  releaseDate: Date;
+  status: 'active' | 'deprecated' | 'sunset' | 'beta';
+  supportLevel: 'full' | 'security_only' | 'none';
+  deprecationDate?: Date;
+  sunsetDate?: Date;
+  breakingChanges: BreakingChange[];
+  migrationPath?: MigrationPath;
+  documentation: {
+    url: string;
+    changelog: string;
+    migrationGuide?: string;
+  };
+}
+
+export interface BreakingChange {
+  type:
+    | 'field_removed'
+    | 'field_renamed'
+    | 'field_type_changed'
+    | 'endpoint_removed'
+    | 'endpoint_changed'
+    | 'behavior_changed';
+  description: string;
+  affectedEndpoints: string[];
+  workaround?: string;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  weddingImpact?: {
+    affectsWeddingDay: boolean;
+    criticalityLevel: 'low' | 'medium' | 'high' | 'critical';
+    affectedWorkflows: string[];
+  };
+}
+
+export interface MigrationPath {
+  fromVersion: string;
+  toVersion: string;
+  automated: boolean;
+  estimatedDuration: string;
+  steps: MigrationStep[];
+  rollbackPlan: RollbackStep[];
+  testingRequirements: string[];
+  weddingSeasonConsiderations?: string[];
+}
+
+export interface MigrationStep {
+  id: string;
+  description: string;
+  type: 'data_migration' | 'code_change' | 'configuration' | 'validation';
+  automated: boolean;
+  estimatedTime: string;
+  dependencies: string[];
+  rollbackable: boolean;
+  weddingCritical: boolean;
+}
+
+export interface RollbackStep {
+  id: string;
+  description: string;
+  automated: boolean;
+  estimatedTime: string;
+  preconditions: string[];
+}
+
+export interface VersionCompatibilityMatrix {
+  supportedVersions: string[];
+  defaultVersion: string;
+  minimumVersion: string;
+  maximumVersion: string;
+  compatibilityRules: CompatibilityRule[];
+}
+
+export interface CompatibilityRule {
+  fromVersion: string;
+  toVersion: string;
+  compatible: boolean;
+  autoUpgrade: boolean;
+  requiresTransformation: boolean;
+  transformationRules?: TransformationRule[];
+  warnings: string[];
+}
+
+export interface TransformationRule {
+  field: string;
+  fromFormat: any;
+  toFormat: any;
+  transformer: (value: any) => any;
+  bidirectional: boolean;
+}
+
+export interface VersionNegotiationResult {
+  negotiatedVersion: string;
+  clientVersion: string;
+  serverVersion: string;
+  compatibilityMode: 'exact' | 'backward' | 'forward' | 'transformed';
+  warnings: string[];
+  transformationsApplied: string[];
+}
+
+export interface APIUsageMetrics {
+  version: string;
+  totalRequests: number;
+  uniqueClients: number;
+  errorRate: number;
+  averageResponseTime: number;
+  topEndpoints: Array<{
+    endpoint: string;
+    requestCount: number;
+    errorRate: number;
+  }>;
+  clientDistribution: Map<string, number>;
+  geographicDistribution: Map<string, number>;
+  weddingSeasonUsage?: {
+    peakWeddingMonths: Map<string, number>;
+    weddingDayTraffic: number;
+    vendorTypeUsage: Map<string, number>;
+  };
+}
+
+export interface DeprecationNotice {
+  version: string;
+  deprecationDate: Date;
+  sunsetDate: Date;
+  reason: string;
+  migrationPath: string;
+  communicationPlan: {
+    channels: ('email' | 'api_headers' | 'dashboard' | 'documentation')[];
+    timeline: Array<{
+      date: Date;
+      message: string;
+      urgency: 'info' | 'warning' | 'critical';
+    }>;
+  };
+  weddingSeasonExtensions?: {
+    peakSeasonDelay: boolean;
+    extendedSupportMonths: number;
+    justification: string;
+  };
+}
+
+export class APIVersionManager {
+  private versions: Map<string, APIVersion>;
+  private compatibilityMatrix: VersionCompatibilityMatrix;
+  private usageMetrics: Map<string, APIUsageMetrics>;
+  private deprecationNotices: Map<string, DeprecationNotice>;
+  private activeTransformations: Map<string, TransformationRule[]>;
+
+  constructor() {
+    this.versions = new Map();
+    this.usageMetrics = new Map();
+    this.deprecationNotices = new Map();
+    this.activeTransformations = new Map();
+
+    this.compatibilityMatrix = {
+      supportedVersions: [],
+      defaultVersion: '1.0.0',
+      minimumVersion: '1.0.0',
+      maximumVersion: '1.0.0',
+      compatibilityRules: [],
+    };
+
+    // Initialize with base version
+    this.initializeBaseVersion();
+  }
+
+  /**
+   * Register a new API version
+   */
+  registerVersion(version: APIVersion): void {
+    this.versions.set(version.version, version);
+    this.updateCompatibilityMatrix(version);
+    this.initializeUsageMetrics(version.version);
+
+    // Set up deprecation notice if needed
+    if (version.deprecationDate) {
+      this.scheduleDeprecationNotice(version);
+    }
+  }
+
+  /**
+   * Negotiate API version based on client request
+   */
+  negotiateVersion(
+    requestedVersion?: string,
+    acceptableVersions?: string[],
+    clientContext?: {
+      userAgent?: string;
+      clientId?: string;
+      weddingContext?: {
+        isWeddingWeekend: boolean;
+        criticalOperation: boolean;
+      };
+    },
+  ): VersionNegotiationResult {
+    const availableVersions = this.getActiveVersions();
+
+    // If no version requested, use default
+    if (!requestedVersion) {
+      return {
+        negotiatedVersion: this.compatibilityMatrix.defaultVersion,
+        clientVersion: 'unspecified',
+        serverVersion: this.compatibilityMatrix.maximumVersion,
+        compatibilityMode: 'exact',
+        warnings: [],
+        transformationsApplied: [],
+      };
+    }
+
+    // Check if requested version is available
+    if (availableVersions.includes(requestedVersion)) {
+      return {
+        negotiatedVersion: requestedVersion,
+        clientVersion: requestedVersion,
+        serverVersion: requestedVersion,
+        compatibilityMode: 'exact',
+        warnings: this.getVersionWarnings(requestedVersion, clientContext),
+        transformationsApplied: [],
+      };
+    }
+
+    // Find compatible version
+    const compatibleVersion = this.findCompatibleVersion(
+      requestedVersion,
+      acceptableVersions,
+      clientContext,
+    );
+
+    if (!compatibleVersion) {
+      throw new IntegrationError(
+        `No compatible version found for requested version: ${requestedVersion}`,
+        'VERSION_NOT_SUPPORTED',
+        ErrorCategory.VALIDATION,
+      );
+    }
+
+    return compatibleVersion;
+  }
+
+  /**
+   * Transform request/response data between API versions
+   */
+  async transformData(
+    data: any,
+    fromVersion: string,
+    toVersion: string,
+    direction: 'request' | 'response',
+  ): Promise<IntegrationResponse<any>> {
+    try {
+      const transformationKey = `${fromVersion}->${toVersion}`;
+      const rules = this.activeTransformations.get(transformationKey);
+
+      if (!rules || rules.length === 0) {
+        return {
+          success: true,
+          data: data,
+        };
+      }
+
+      let transformedData = { ...data };
+      const appliedTransformations: string[] = [];
+
+      for (const rule of rules) {
+        if (rule.field in transformedData) {
+          const oldValue = transformedData[rule.field];
+          const newValue = rule.transformer(oldValue);
+
+          transformedData[rule.field] = newValue;
+          appliedTransformations.push(
+            `${rule.field}: ${fromVersion} -> ${toVersion}`,
+          );
+        }
+      }
+
+      return {
+        success: true,
+        data: {
+          ...transformedData,
+          _apiVersion: toVersion,
+          _transformationsApplied: appliedTransformations,
+        },
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Transformation failed',
+      };
+    }
+  }
+
+  /**
+   * Get migration recommendations for a specific version
+   */
+  getMigrationRecommendations(
+    currentVersion: string,
+    targetVersion?: string,
+    clientContext?: {
+      weddingContext?: {
+        upcomingWeddings: number;
+        weddingDates: Date[];
+        vendorType: string;
+      };
+    },
+  ): {
+    recommendedTarget: string;
+    urgency: 'low' | 'medium' | 'high' | 'critical';
+    migrationPath: MigrationPath | null;
+    weddingConsiderations: {
+      bestMigrationWindow: {
+        start: Date;
+        end: Date;
+        reason: string;
+      };
+      risksToWeddings: string[];
+      mitigationStrategies: string[];
+    };
+    timeline: {
+      preparation: string;
+      testing: string;
+      migration: string;
+      validation: string;
+    };
+  } {
+    const current = this.versions.get(currentVersion);
+    if (!current) {
+      throw new IntegrationError(
+        `Unknown version: ${currentVersion}`,
+        'VERSION_NOT_FOUND',
+        ErrorCategory.VALIDATION,
+      );
+    }
+
+    // Determine target version
+    const target =
+      targetVersion || this.getRecommendedTargetVersion(currentVersion);
+    const migrationPath = this.findMigrationPath(currentVersion, target);
+
+    // Calculate urgency based on deprecation status and wedding context
+    const urgency = this.calculateMigrationUrgency(current, clientContext);
+
+    // Determine best migration window (avoid wedding season)
+    const migrationWindow = this.calculateOptimalMigrationWindow(clientContext);
+
+    return {
+      recommendedTarget: target,
+      urgency,
+      migrationPath,
+      weddingConsiderations: {
+        bestMigrationWindow: migrationWindow,
+        risksToWeddings: this.assessWeddingRisks(migrationPath),
+        mitigationStrategies: this.generateMitigationStrategies(migrationPath),
+      },
+      timeline: {
+        preparation: this.estimatePreparationTime(migrationPath),
+        testing: this.estimateTestingTime(migrationPath),
+        migration: this.estimateMigrationTime(migrationPath),
+        validation: this.estimateValidationTime(migrationPath),
+      },
+    };
+  }
+
+  /**
+   * Track API usage metrics
+   */
+  trackUsage(
+    version: string,
+    endpoint: string,
+    clientId: string,
+    responseTime: number,
+    success: boolean,
+    metadata?: {
+      userAgent?: string;
+      location?: string;
+      weddingContext?: {
+        isWeddingDay: boolean;
+        vendorType: string;
+      };
+    },
+  ): void {
+    let metrics = this.usageMetrics.get(version);
+    if (!metrics) {
+      this.initializeUsageMetrics(version);
+      metrics = this.usageMetrics.get(version)!;
+    }
+
+    // Update basic metrics
+    metrics.totalRequests++;
+    if (!success) {
+      // Error rate is calculated as a percentage, so we track the count and calculate later
+    }
+
+    // Update response time (moving average)
+    const totalTime = metrics.averageResponseTime * (metrics.totalRequests - 1);
+    metrics.averageResponseTime =
+      (totalTime + responseTime) / metrics.totalRequests;
+
+    // Update endpoint usage
+    const endpointStats = metrics.topEndpoints.find(
+      (e) => e.endpoint === endpoint,
+    );
+    if (endpointStats) {
+      endpointStats.requestCount++;
+      if (!success) {
+        endpointStats.errorRate =
+          (endpointStats.errorRate * (endpointStats.requestCount - 1) + 1) /
+          endpointStats.requestCount;
+      } else {
+        endpointStats.errorRate =
+          (endpointStats.errorRate * (endpointStats.requestCount - 1)) /
+          endpointStats.requestCount;
+      }
+    } else {
+      metrics.topEndpoints.push({
+        endpoint,
+        requestCount: 1,
+        errorRate: success ? 0 : 1,
+      });
+    }
+
+    // Update client distribution
+    const currentClientCount = metrics.clientDistribution.get(clientId) || 0;
+    metrics.clientDistribution.set(clientId, currentClientCount + 1);
+
+    // Update geographic distribution
+    if (metadata?.location) {
+      const currentLocationCount =
+        metrics.geographicDistribution.get(metadata.location) || 0;
+      metrics.geographicDistribution.set(
+        metadata.location,
+        currentLocationCount + 1,
+      );
+    }
+
+    // Update wedding-specific metrics
+    if (metadata?.weddingContext) {
+      if (!metrics.weddingSeasonUsage) {
+        metrics.weddingSeasonUsage = {
+          peakWeddingMonths: new Map(),
+          weddingDayTraffic: 0,
+          vendorTypeUsage: new Map(),
+        };
+      }
+
+      const month = new Date().toISOString().slice(0, 7); // YYYY-MM format
+      const currentMonthCount =
+        metrics.weddingSeasonUsage.peakWeddingMonths.get(month) || 0;
+      metrics.weddingSeasonUsage.peakWeddingMonths.set(
+        month,
+        currentMonthCount + 1,
+      );
+
+      if (metadata.weddingContext.isWeddingDay) {
+        metrics.weddingSeasonUsage.weddingDayTraffic++;
+      }
+
+      const vendorType = metadata.weddingContext.vendorType;
+      const currentVendorCount =
+        metrics.weddingSeasonUsage.vendorTypeUsage.get(vendorType) || 0;
+      metrics.weddingSeasonUsage.vendorTypeUsage.set(
+        vendorType,
+        currentVendorCount + 1,
+      );
+    }
+
+    // Keep top endpoints sorted and limited
+    metrics.topEndpoints.sort((a, b) => b.requestCount - a.requestCount);
+    metrics.topEndpoints = metrics.topEndpoints.slice(0, 10);
+
+    // Recalculate error rate
+    const totalErrors = metrics.topEndpoints.reduce(
+      (sum, ep) => sum + ep.errorRate * ep.requestCount,
+      0,
+    );
+    metrics.errorRate = totalErrors / metrics.totalRequests;
+  }
+
+  /**
+   * Get version usage analytics
+   */
+  getVersionAnalytics(version?: string): APIUsageMetrics[] {
+    if (version) {
+      const metrics = this.usageMetrics.get(version);
+      return metrics ? [metrics] : [];
+    }
+
+    return Array.from(this.usageMetrics.values());
+  }
+
+  /**
+   * Generate deprecation report
+   */
+  generateDeprecationReport(): {
+    activeVersions: string[];
+    deprecatedVersions: Array<{
+      version: string;
+      deprecationDate: Date;
+      sunsetDate: Date;
+      currentUsage: number;
+      migrationProgress: number;
+    }>;
+    criticalActions: Array<{
+      version: string;
+      action: string;
+      deadline: Date;
+      impact: 'low' | 'medium' | 'high' | 'critical';
+    }>;
+  } {
+    const activeVersions = this.getActiveVersions();
+    const deprecatedVersions: any[] = [];
+    const criticalActions: any[] = [];
+
+    for (const [version, versionInfo] of this.versions) {
+      if (
+        versionInfo.status === 'deprecated' ||
+        versionInfo.status === 'sunset'
+      ) {
+        const usage = this.usageMetrics.get(version);
+        const migrationProgress = this.calculateMigrationProgress(version);
+
+        deprecatedVersions.push({
+          version,
+          deprecationDate: versionInfo.deprecationDate!,
+          sunsetDate: versionInfo.sunsetDate!,
+          currentUsage: usage?.totalRequests || 0,
+          migrationProgress,
+        });
+
+        // Generate critical actions
+        const daysTillSunset = versionInfo.sunsetDate
+          ? Math.ceil(
+              (versionInfo.sunsetDate.getTime() - Date.now()) /
+                (1000 * 60 * 60 * 24),
+            )
+          : 365;
+
+        if (daysTillSunset <= 30 && migrationProgress < 90) {
+          criticalActions.push({
+            version,
+            action: 'Force migration - sunset imminent',
+            deadline: versionInfo.sunsetDate!,
+            impact: 'critical' as const,
+          });
+        } else if (daysTillSunset <= 90 && migrationProgress < 50) {
+          criticalActions.push({
+            version,
+            action: 'Accelerate migration efforts',
+            deadline: versionInfo.sunsetDate!,
+            impact: 'high' as const,
+          });
+        }
+      }
+    }
+
+    return {
+      activeVersions,
+      deprecatedVersions,
+      criticalActions,
+    };
+  }
+
+  // Private methods
+
+  private initializeBaseVersion(): void {
+    const baseVersion: APIVersion = {
+      version: '1.0.0',
+      releaseDate: new Date('2024-01-01'),
+      status: 'active',
+      supportLevel: 'full',
+      breakingChanges: [],
+      documentation: {
+        url: '/docs/v1',
+        changelog: '/docs/v1/changelog',
+      },
+    };
+
+    this.registerVersion(baseVersion);
+  }
+
+  private updateCompatibilityMatrix(version: APIVersion): void {
+    this.compatibilityMatrix.supportedVersions.push(version.version);
+    this.compatibilityMatrix.maximumVersion = this.getLatestVersion();
+
+    // Add compatibility rules (simplified)
+    const previousVersions = this.compatibilityMatrix.supportedVersions.filter(
+      (v) => v !== version.version,
+    );
+
+    for (const prevVersion of previousVersions) {
+      this.compatibilityMatrix.compatibilityRules.push({
+        fromVersion: prevVersion,
+        toVersion: version.version,
+        compatible: this.areVersionsCompatible(prevVersion, version.version),
+        autoUpgrade: false,
+        requiresTransformation: true,
+        warnings: [],
+      });
+    }
+  }
+
+  private initializeUsageMetrics(version: string): void {
+    this.usageMetrics.set(version, {
+      version,
+      totalRequests: 0,
+      uniqueClients: 0,
+      errorRate: 0,
+      averageResponseTime: 0,
+      topEndpoints: [],
+      clientDistribution: new Map(),
+      geographicDistribution: new Map(),
+    });
+  }
+
+  private getActiveVersions(): string[] {
+    return Array.from(this.versions.values())
+      .filter((v) => v.status === 'active' || v.status === 'deprecated')
+      .map((v) => v.version);
+  }
+
+  private getLatestVersion(): string {
+    const versions = Array.from(this.versions.keys());
+    return versions.sort(this.compareVersions).pop() || '1.0.0';
+  }
+
+  private compareVersions(a: string, b: string): number {
+    const aParts = a.split('.').map(Number);
+    const bParts = b.split('.').map(Number);
+
+    for (let i = 0; i < Math.max(aParts.length, bParts.length); i++) {
+      const aPart = aParts[i] || 0;
+      const bPart = bParts[i] || 0;
+
+      if (aPart !== bPart) {
+        return aPart - bPart;
+      }
+    }
+
+    return 0;
+  }
+
+  private areVersionsCompatible(version1: string, version2: string): boolean {
+    const v1Parts = version1.split('.').map(Number);
+    const v2Parts = version2.split('.').map(Number);
+
+    // Major version compatibility
+    return v1Parts[0] === v2Parts[0];
+  }
+
+  private findCompatibleVersion(
+    requestedVersion: string,
+    acceptableVersions?: string[],
+    clientContext?: any,
+  ): VersionNegotiationResult | null {
+    const availableVersions = this.getActiveVersions();
+
+    // Check if any acceptable versions are available
+    if (acceptableVersions) {
+      for (const version of acceptableVersions) {
+        if (availableVersions.includes(version)) {
+          return {
+            negotiatedVersion: version,
+            clientVersion: requestedVersion,
+            serverVersion: version,
+            compatibilityMode: 'backward',
+            warnings: this.getVersionWarnings(version, clientContext),
+            transformationsApplied: [],
+          };
+        }
+      }
+    }
+
+    // Find best compatible version
+    const compatibleVersions = availableVersions.filter((v) =>
+      this.areVersionsCompatible(requestedVersion, v),
+    );
+
+    if (compatibleVersions.length === 0) {
+      return null;
+    }
+
+    // Prefer the closest version
+    const bestVersion = compatibleVersions.sort((a, b) => {
+      const aDiff = Math.abs(this.compareVersions(requestedVersion, a));
+      const bDiff = Math.abs(this.compareVersions(requestedVersion, b));
+      return aDiff - bDiff;
+    })[0];
+
+    return {
+      negotiatedVersion: bestVersion,
+      clientVersion: requestedVersion,
+      serverVersion: bestVersion,
+      compatibilityMode: 'transformed',
+      warnings: this.getVersionWarnings(bestVersion, clientContext),
+      transformationsApplied: [`${requestedVersion} -> ${bestVersion}`],
+    };
+  }
+
+  private getVersionWarnings(version: string, clientContext?: any): string[] {
+    const warnings: string[] = [];
+    const versionInfo = this.versions.get(version);
+
+    if (!versionInfo) return warnings;
+
+    if (versionInfo.status === 'deprecated') {
+      warnings.push(
+        `Version ${version} is deprecated and will be sunset on ${versionInfo.sunsetDate?.toISOString().split('T')[0]}`,
+      );
+    }
+
+    if (versionInfo.status === 'beta') {
+      warnings.push(
+        `Version ${version} is in beta and may have breaking changes`,
+      );
+    }
+
+    // Wedding-specific warnings
+    if (clientContext?.weddingContext?.isWeddingWeekend) {
+      const weddingImpacts = versionInfo.breakingChanges.filter(
+        (change) => change.weddingImpact?.affectsWeddingDay,
+      );
+
+      if (weddingImpacts.length > 0) {
+        warnings.push(
+          'This version has changes that may affect wedding day operations',
+        );
+      }
+    }
+
+    return warnings;
+  }
+
+  private scheduleDeprecationNotice(version: APIVersion): void {
+    if (!version.deprecationDate) return;
+
+    const notice: DeprecationNotice = {
+      version: version.version,
+      deprecationDate: version.deprecationDate,
+      sunsetDate:
+        version.sunsetDate ||
+        new Date(version.deprecationDate.getTime() + 365 * 24 * 60 * 60 * 1000),
+      reason: 'Scheduled deprecation',
+      migrationPath:
+        version.migrationPath?.toVersion || this.getLatestVersion(),
+      communicationPlan: {
+        channels: ['email', 'api_headers', 'dashboard'],
+        timeline: [
+          {
+            date: new Date(
+              version.deprecationDate.getTime() - 90 * 24 * 60 * 60 * 1000,
+            ),
+            message: '90-day deprecation notice',
+            urgency: 'info',
+          },
+          {
+            date: new Date(
+              version.deprecationDate.getTime() - 30 * 24 * 60 * 60 * 1000,
+            ),
+            message: '30-day deprecation warning',
+            urgency: 'warning',
+          },
+          {
+            date: new Date(
+              version.deprecationDate.getTime() - 7 * 24 * 60 * 60 * 1000,
+            ),
+            message: 'Final deprecation warning',
+            urgency: 'critical',
+          },
+        ],
+      },
+    };
+
+    this.deprecationNotices.set(version.version, notice);
+  }
+
+  private getRecommendedTargetVersion(currentVersion: string): string {
+    return this.getLatestVersion();
+  }
+
+  private findMigrationPath(
+    fromVersion: string,
+    toVersion: string,
+  ): MigrationPath | null {
+    const fromVersionInfo = this.versions.get(fromVersion);
+    return fromVersionInfo?.migrationPath || null;
+  }
+
+  private calculateMigrationUrgency(
+    version: APIVersion,
+    clientContext?: any,
+  ): 'low' | 'medium' | 'high' | 'critical' {
+    if (version.status === 'sunset') return 'critical';
+    if (version.status === 'deprecated') {
+      const daysTillSunset = version.sunsetDate
+        ? Math.ceil(
+            (version.sunsetDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24),
+          )
+        : 365;
+
+      if (daysTillSunset <= 30) return 'critical';
+      if (daysTillSunset <= 90) return 'high';
+      if (daysTillSunset <= 180) return 'medium';
+    }
+
+    return 'low';
+  }
+
+  private calculateOptimalMigrationWindow(clientContext?: any): {
+    start: Date;
+    end: Date;
+    reason: string;
+  } {
+    // Avoid peak wedding months (May-September)
+    const now = new Date();
+    const currentMonth = now.getMonth();
+
+    if (currentMonth >= 4 && currentMonth <= 8) {
+      // May-September
+      // Recommend winter months
+      return {
+        start: new Date(now.getFullYear(), 10, 1), // November
+        end: new Date(now.getFullYear() + 1, 2, 31), // March
+        reason:
+          'Recommended during off-peak wedding season to minimize disruption',
+      };
+    }
+
+    // Current time is good for migration
+    return {
+      start: new Date(),
+      end: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days from now
+      reason: 'Current period is suitable for migration (off-peak season)',
+    };
+  }
+
+  private assessWeddingRisks(migrationPath: MigrationPath | null): string[] {
+    if (!migrationPath) return [];
+
+    return migrationPath.steps
+      .filter((step) => step.weddingCritical)
+      .map((step) => `${step.description} - May impact wedding operations`);
+  }
+
+  private generateMitigationStrategies(
+    migrationPath: MigrationPath | null,
+  ): string[] {
+    const strategies = [
+      'Schedule migration during off-peak wedding season',
+      'Implement gradual rollout with canary deployments',
+      'Maintain 24/7 monitoring during migration period',
+      'Prepare immediate rollback procedures',
+    ];
+
+    if (migrationPath?.weddingSeasonConsiderations) {
+      strategies.push(...migrationPath.weddingSeasonConsiderations);
+    }
+
+    return strategies;
+  }
+
+  private estimatePreparationTime(migrationPath: MigrationPath | null): string {
+    return (
+      migrationPath?.steps.reduce((total, step) => {
+        const time = parseInt(step.estimatedTime) || 1;
+        return total + time;
+      }, 0) + ' hours' || '4-8 hours'
+    );
+  }
+
+  private estimateTestingTime(migrationPath: MigrationPath | null): string {
+    return '2-4 days including wedding workflow testing';
+  }
+
+  private estimateMigrationTime(migrationPath: MigrationPath | null): string {
+    return migrationPath?.estimatedDuration || '2-4 hours';
+  }
+
+  private estimateValidationTime(migrationPath: MigrationPath | null): string {
+    return '1-2 days for full validation';
+  }
+
+  private calculateMigrationProgress(version: string): number {
+    // This would be implemented based on actual migration tracking
+    return 0;
+  }
+}
+
+export default APIVersionManager;

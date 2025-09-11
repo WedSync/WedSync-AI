@@ -1,0 +1,404 @@
+/**
+ * Tests for FieldIntegration Component
+ */
+
+import React from 'react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { FieldIntegration } from '../FieldIntegration';
+import { fieldIntegrationService } from '@/lib/services/field-integration-service';
+
+// Mock dependencies
+jest.mock('@/lib/services/field-integration-service');
+jest.mock('sonner', () => ({
+  toast: {
+    success: jest.fn(),
+    error: jest.fn()
+  }
+}));
+jest.mock('nanoid', () => ({
+  nanoid: () => 'test-id-123'
+}));
+
+const mockFieldIntegrationService = fieldIntegrationService as jest.Mocked<typeof fieldIntegrationService>;
+
+describe('FieldIntegration Component', () => {
+  const defaultProps = {
+    formId: 'test-form-id',
+    onFieldsImported: jest.fn(),
+    onIntegrationConfigured: jest.fn()
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('Component Rendering', () => {
+    it('renders the field integration manager', () => {
+      render(<FieldIntegration {...defaultProps} />);
+      
+      expect(screen.getByText('Field Integration Manager')).toBeInTheDocument();
+      expect(screen.getByText('Connect and synchronize fields from external sources')).toBeInTheDocument();
+    });
+
+    it('renders all integration tabs', () => {
+      render(<FieldIntegration {...defaultProps} />);
+      
+      expect(screen.getByText('Integration Sources')).toBeInTheDocument();
+      expect(screen.getByText('Field Mapping')).toBeInTheDocument();
+      expect(screen.getByText('Configuration')).toBeInTheDocument();
+      expect(screen.getByText('Sync History')).toBeInTheDocument();
+    });
+
+    it('renders supported integration types', () => {
+      render(<FieldIntegration {...defaultProps} />);
+      
+      expect(screen.getByText('REST API')).toBeInTheDocument();
+      expect(screen.getByText('CSV/JSON Import')).toBeInTheDocument();
+      expect(screen.getByText('Database Connection')).toBeInTheDocument();
+      expect(screen.getByText('Webhook Integration')).toBeInTheDocument();
+      expect(screen.getByText('External Form Builder')).toBeInTheDocument();
+    });
+  });
+
+  describe('Integration Source Management', () => {
+    it('displays connected integrations count', () => {
+      render(<FieldIntegration {...defaultProps} />);
+      
+      const badge = screen.getByText(/Connected/);
+      expect(badge).toBeInTheDocument();
+    });
+
+    it('handles connecting a new integration source', async () => {
+      const user = userEvent.setup();
+      render(<FieldIntegration {...defaultProps} />);
+      
+      const apiConnectButton = screen.getAllByText('Connect Integration')[0];
+      await user.click(apiConnectButton);
+      
+      // Should show loading state and then success
+      await waitFor(() => {
+        expect(screen.getByText(/New api Integration/)).toBeInTheDocument();
+      });
+    });
+
+    it('handles disconnecting an integration source', async () => {
+      const user = userEvent.setup();
+      render(<FieldIntegration {...defaultProps} />);
+      
+      // First connect an integration to have something to disconnect
+      const apiConnectButton = screen.getAllByText('Connect Integration')[0];
+      await user.click(apiConnectButton);
+      
+      await waitFor(() => {
+        const disconnectButton = screen.getByText('Disconnect');
+        expect(disconnectButton).toBeInTheDocument();
+      });
+    });
+
+    it('handles syncing fields from an integration source', async () => {
+      const user = userEvent.setup();
+      render(<FieldIntegration {...defaultProps} />);
+      
+      // Connect an integration first
+      const apiConnectButton = screen.getAllByText('Connect Integration')[0];
+      await user.click(apiConnectButton);
+      
+      await waitFor(async () => {
+        const syncButton = screen.getByText('Sync');
+        await user.click(syncButton);
+      });
+      
+      // Should switch to mapping tab after successful sync
+      await waitFor(() => {
+        expect(screen.getByText(/Field Mapping:/)).toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('Field Mapping', () => {
+    it('shows no integration selected message initially', () => {
+      render(<FieldIntegration {...defaultProps} />);
+      
+      // Switch to mapping tab
+      const mappingTab = screen.getByText('Field Mapping');
+      fireEvent.click(mappingTab);
+      
+      expect(screen.getByText('No Integration Selected')).toBeInTheDocument();
+      expect(screen.getByText('Please connect and sync an integration source first')).toBeInTheDocument();
+    });
+
+    it('allows adding new field mappings', async () => {
+      const user = userEvent.setup();
+      render(<FieldIntegration {...defaultProps} />);
+      
+      // First connect and sync an integration
+      const apiConnectButton = screen.getAllByText('Connect Integration')[0];
+      await user.click(apiConnectButton);
+      
+      await waitFor(async () => {
+        const syncButton = screen.getByText('Sync');
+        await user.click(syncButton);
+      });
+      
+      // Should be on mapping tab now
+      await waitFor(async () => {
+        const addMappingButton = screen.getByText('Add Mapping');
+        await user.click(addMappingButton);
+        
+        expect(screen.getByText('Source Field')).toBeInTheDocument();
+        expect(screen.getByText('Target Field')).toBeInTheDocument();
+      });
+    });
+
+    it('handles field mapping configuration', async () => {
+      const user = userEvent.setup();
+      render(<FieldIntegration {...defaultProps} />);
+      
+      // Setup integration and mapping
+      const apiConnectButton = screen.getAllByText('Connect Integration')[0];
+      await user.click(apiConnectButton);
+      
+      await waitFor(async () => {
+        const syncButton = screen.getByText('Sync');
+        await user.click(syncButton);
+      });
+      
+      await waitFor(async () => {
+        const addMappingButton = screen.getByText('Add Mapping');
+        await user.click(addMappingButton);
+      });
+      
+      // Should show mapping configuration UI
+      await waitFor(() => {
+        expect(screen.getByText('Transformation')).toBeInTheDocument();
+        expect(screen.getByText('Required')).toBeInTheDocument();
+      });
+    });
+
+    it('handles importing fields with mappings', async () => {
+      const user = userEvent.setup();
+      render(<FieldIntegration {...defaultProps} />);
+      
+      // Setup integration, sync, and add mapping
+      const apiConnectButton = screen.getAllByText('Connect Integration')[0];
+      await user.click(apiConnectButton);
+      
+      await waitFor(async () => {
+        const syncButton = screen.getByText('Sync');
+        await user.click(syncButton);
+      });
+      
+      await waitFor(async () => {
+        const addMappingButton = screen.getByText('Add Mapping');
+        await user.click(addMappingButton);
+      });
+      
+      // Should show import button
+      await waitFor(() => {
+        expect(screen.getByText('Import Fields')).toBeInTheDocument();
+        expect(screen.getByText('Save Configuration')).toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('Configuration Management', () => {
+    it('shows empty state when no configurations exist', () => {
+      render(<FieldIntegration {...defaultProps} />);
+      
+      // Switch to configuration tab
+      const configTab = screen.getByText('Configuration');
+      fireEvent.click(configTab);
+      
+      expect(screen.getByText('No configurations saved yet. Create field mappings to get started.')).toBeInTheDocument();
+    });
+
+    it('displays saved integration configurations', async () => {
+      const user = userEvent.setup();
+      render(<FieldIntegration {...defaultProps} />);
+      
+      // Create a configuration by going through the flow
+      const apiConnectButton = screen.getAllByText('Connect Integration')[0];
+      await user.click(apiConnectButton);
+      
+      await waitFor(async () => {
+        const syncButton = screen.getByText('Sync');
+        await user.click(syncButton);
+      });
+      
+      await waitFor(async () => {
+        const addMappingButton = screen.getByText('Add Mapping');
+        await user.click(addMappingButton);
+      });
+      
+      await waitFor(async () => {
+        const saveConfigButton = screen.getByText('Save Configuration');
+        await user.click(saveConfigButton);
+      });
+      
+      // Switch to configuration tab to see saved config
+      const configTab = screen.getByText('Configuration');
+      await user.click(configTab);
+      
+      await waitFor(() => {
+        expect(screen.getByText(/New api Integration Config/)).toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('Sync History', () => {
+    it('shows sync history placeholder', () => {
+      render(<FieldIntegration {...defaultProps} />);
+      
+      // Switch to history tab
+      const historyTab = screen.getByText('Sync History');
+      fireEvent.click(historyTab);
+      
+      expect(screen.getByText('Synchronization History')).toBeInTheDocument();
+      expect(screen.getByText('Sync history will appear here once integrations are active.')).toBeInTheDocument();
+    });
+  });
+
+  describe('Event Handlers', () => {
+    it('calls onFieldsImported when fields are imported', async () => {
+      const onFieldsImported = jest.fn();
+      const user = userEvent.setup();
+      
+      render(<FieldIntegration {...defaultProps} onFieldsImported={onFieldsImported} />);
+      
+      // Setup integration and import fields
+      const apiConnectButton = screen.getAllByText('Connect Integration')[0];
+      await user.click(apiConnectButton);
+      
+      await waitFor(async () => {
+        const syncButton = screen.getByText('Sync');
+        await user.click(syncButton);
+      });
+      
+      await waitFor(async () => {
+        const addMappingButton = screen.getByText('Add Mapping');
+        await user.click(addMappingButton);
+      });
+      
+      await waitFor(async () => {
+        const importButton = screen.getByText('Import Fields');
+        await user.click(importButton);
+      });
+      
+      await waitFor(() => {
+        expect(onFieldsImported).toHaveBeenCalled();
+      });
+    });
+
+    it('calls onIntegrationConfigured when configuration is saved', async () => {
+      const onIntegrationConfigured = jest.fn();
+      const user = userEvent.setup();
+      
+      render(<FieldIntegration {...defaultProps} onIntegrationConfigured={onIntegrationConfigured} />);
+      
+      // Setup and save configuration
+      const apiConnectButton = screen.getAllByText('Connect Integration')[0];
+      await user.click(apiConnectButton);
+      
+      await waitFor(async () => {
+        const syncButton = screen.getByText('Sync');
+        await user.click(syncButton);
+      });
+      
+      await waitFor(async () => {
+        const addMappingButton = screen.getByText('Add Mapping');
+        await user.click(addMappingButton);
+      });
+      
+      await waitFor(async () => {
+        const saveConfigButton = screen.getByText('Save Configuration');
+        await user.click(saveConfigButton);
+      });
+      
+      await waitFor(() => {
+        expect(onIntegrationConfigured).toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Error Handling', () => {
+    it('handles connection failures gracefully', async () => {
+      const user = userEvent.setup();
+      
+      // Mock a connection failure
+      const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
+      
+      render(<FieldIntegration {...defaultProps} />);
+      
+      // Simulate connection attempt that might fail
+      const apiConnectButton = screen.getAllByText('Connect Integration')[0];
+      await user.click(apiConnectButton);
+      
+      // Should handle the error gracefully
+      await waitFor(() => {
+        // Component should still be functional
+        expect(screen.getByText('Field Integration Manager')).toBeInTheDocument();
+      });
+      
+      consoleSpy.mockRestore();
+    });
+
+    it('handles sync failures gracefully', async () => {
+      const user = userEvent.setup();
+      render(<FieldIntegration {...defaultProps} />);
+      
+      // Connect first
+      const apiConnectButton = screen.getAllByText('Connect Integration')[0];
+      await user.click(apiConnectButton);
+      
+      // Attempt sync (which might fail in real scenario)
+      await waitFor(async () => {
+        const syncButton = screen.getByText('Sync');
+        await user.click(syncButton);
+      });
+      
+      // Component should handle gracefully
+      await waitFor(() => {
+        expect(screen.getByText('Field Integration Manager')).toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('Loading States', () => {
+    it('shows loading states during async operations', async () => {
+      const user = userEvent.setup();
+      render(<FieldIntegration {...defaultProps} />);
+      
+      const apiConnectButton = screen.getAllByText('Connect Integration')[0];
+      
+      // The button should be disabled during loading
+      await user.click(apiConnectButton);
+      
+      // Should eventually complete
+      await waitFor(() => {
+        expect(screen.getByText(/New api Integration/)).toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('Accessibility', () => {
+    it('has proper ARIA labels and roles', () => {
+      render(<FieldIntegration {...defaultProps} />);
+      
+      // Check for proper semantic structure
+      expect(screen.getByRole('tablist')).toBeInTheDocument();
+      expect(screen.getAllByRole('tab')).toHaveLength(4);
+    });
+
+    it('supports keyboard navigation', async () => {
+      const user = userEvent.setup();
+      render(<FieldIntegration {...defaultProps} />);
+      
+      // Tab navigation should work
+      await user.tab();
+      
+      // First tab should be focused
+      expect(screen.getByText('Integration Sources')).toHaveAttribute('data-state', 'active');
+    });
+  });
+});

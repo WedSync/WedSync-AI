@@ -1,0 +1,112 @@
+import { createClient } from '@/lib/supabase/server';
+import { redirect } from 'next/navigation';
+import { ChannelManager } from '@/components/websocket/ChannelManager';
+
+export const metadata = {
+  title: 'Channels - WedSync',
+  description: 'Real-time wedding coordination channels for suppliers and couples.',
+};
+
+export default async function ChannelsPage() {
+  const supabase = await createClient();
+  const { data: user } = await supabase.auth.getUser();
+
+  if (!user) {
+    redirect('/login');
+  }
+
+  // Get user profile to determine user type and tier limits
+  const { data: profile } = await supabase
+    .from('user_profiles')
+    .select(`
+      id,
+      user_type,
+      subscription_tier,
+      organization_id,
+      organizations!inner(
+        id,
+        name,
+        subscription_tier
+      )
+    `)
+    .eq('id', user.id)
+    .single();
+
+  if (!profile) {
+    redirect('/onboarding');
+  }
+
+  // Determine channel limits based on subscription tier
+  const getChannelLimits = (tier: string) => {
+    switch (tier) {
+      case 'free':
+        return 3;
+      case 'starter':
+        return 5;
+      case 'professional':
+        return 10;
+      case 'scale':
+        return 15;
+      case 'enterprise':
+        return -1; // unlimited
+      default:
+        return 3;
+    }
+  };
+
+  const organizationTier = profile.organizations?.subscription_tier || 'free';
+  const maxChannels = getChannelLimits(organizationTier);
+  
+  return (
+    <div className="h-screen flex flex-col">
+      {/* Page Header */}
+      <div className="bg-white border-b border-gray-200 px-6 py-4 flex-shrink-0">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold text-gray-900">
+              Wedding Channels
+            </h1>
+            <p className="text-sm text-gray-600 mt-1">
+              Real-time communication for wedding coordination
+            </p>
+          </div>
+          
+          <div className="flex items-center space-x-4">
+            {/* Tier Information */}
+            <div className="text-sm text-gray-500">
+              <span className="font-medium">
+                {organizationTier.charAt(0).toUpperCase() + organizationTier.slice(1)} Plan
+              </span>
+              <span className="ml-2">
+                ({maxChannels === -1 ? 'Unlimited' : maxChannels} channels)
+              </span>
+            </div>
+            
+            {/* Upgrade CTA for limited tiers */}
+            {organizationTier === 'free' && (
+              <a
+                href="/billing"
+                className="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded text-white bg-purple-600 hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500"
+              >
+                Upgrade for More Channels
+              </a>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Channel Manager */}
+      <div className="flex-1 min-h-0">
+        <ChannelManager 
+          userId={user.id}
+          userType={profile.user_type as 'supplier' | 'couple'}
+          maxChannels={maxChannels === -1 ? 50 : maxChannels} // Cap unlimited at 50 for performance
+          onChannelSwitch={(channelName) => {
+            // Track channel switching analytics
+            console.log(`User switched to channel: ${channelName}`);
+          }}
+        />
+      </div>
+    </div>
+  );
+}

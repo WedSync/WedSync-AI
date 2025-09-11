@@ -1,0 +1,488 @@
+import { test, expect } from '@playwright/test';
+
+test.describe('WS-132 Round 3: Cross-Team Integration & Business Intelligence', () => {
+  
+  test.beforeEach(async ({ page }) => {
+    // Set up authentication and trial session
+    await page.goto('/api/auth/signin');
+    await page.fill('[name="email"]', 'test@wedsync.com');
+    await page.fill('[name="password"]', 'password123');
+    await page.click('[data-testid="signin-button"]');
+    await page.waitForURL('/dashboard');
+    
+    // Navigate to trial intelligence dashboard
+    await page.goto('/trial-intelligence');
+    await page.waitForLoadState('networkidle');
+  });
+
+  test('Business Intelligence Dashboard Load and Visual Validation', async ({ page }) => {
+    // Wait for dashboard to fully load
+    await page.waitForSelector('[data-testid="trial-bi-dashboard"]', { timeout: 15000 });
+    
+    // Verify main KPI metrics are visible
+    await expect(page.locator('text="Trial Conversion Rate"')).toBeVisible();
+    await expect(page.locator('text="Cross-Team ROI"')).toBeVisible();
+    await expect(page.locator('text="Active Trial Users"')).toBeVisible();
+    await expect(page.locator('text="AI Service Engagement"')).toBeVisible();
+    
+    // Verify metric values are displayed
+    const conversionRate = page.locator('[data-testid="conversion-rate-value"]');
+    await expect(conversionRate).toBeVisible();
+    const conversionText = await conversionRate.textContent();
+    expect(conversionText).toMatch(/\d+\.\d+%/); // Should match percentage format
+    
+    // Verify cross-team ROI display
+    const roiValue = page.locator('[data-testid="cross-team-roi-value"]');
+    await expect(roiValue).toBeVisible();
+    const roiText = await roiValue.textContent();
+    expect(roiText).toMatch(/\$[\d,]+/); // Should match currency format
+    
+    // Take visual snapshot for evidence
+    await page.screenshot({ 
+      path: `screenshots/bi-dashboard-overview-${Date.now()}.png`,
+      fullPage: true 
+    });
+  });
+
+  test('Trial Conversion Funnel Chart Functionality', async ({ page }) => {
+    await page.waitForSelector('[data-testid="trial-bi-dashboard"]');
+    
+    // Locate the funnel chart
+    const funnelChart = page.locator('[data-testid="conversion-funnel-chart"]');
+    await expect(funnelChart).toBeVisible({ timeout: 10000 });
+    
+    // Verify funnel stages are present
+    await expect(page.locator('text="Trial Signups"')).toBeVisible();
+    await expect(page.locator('text="AI Feature Usage"')).toBeVisible();
+    await expect(page.locator('text="Multiple Services"')).toBeVisible();
+    await expect(page.locator('text="Extension Requests"')).toBeVisible();
+    await expect(page.locator('text="Converted to Paid"')).toBeVisible();
+    
+    // Test chart interactivity
+    await funnelChart.hover();
+    
+    // Look for tooltip appearance
+    const tooltip = page.locator('.recharts-tooltip-wrapper');
+    if (await tooltip.isVisible()) {
+      await expect(tooltip).toBeVisible();
+    }
+    
+    // Verify conversion badge
+    const conversionBadge = page.locator('text="23.8% CVR"');
+    await expect(conversionBadge).toBeVisible();
+    
+    await page.screenshot({ 
+      path: `screenshots/funnel-chart-interaction-${Date.now()}.png` 
+    });
+  });
+
+  test('Cross-Team ROI Bar Chart Analysis', async ({ page }) => {
+    await page.waitForSelector('[data-testid="trial-bi-dashboard"]');
+    
+    // Locate ROI chart
+    const roiChart = page.locator('[data-testid="cross-team-roi-chart"]');
+    await expect(roiChart).toBeVisible({ timeout: 10000 });
+    
+    // Verify all AI services are represented
+    await expect(page.locator('text="Music AI"')).toBeVisible();
+    await expect(page.locator('text="Floral AI"')).toBeVisible();
+    await expect(page.locator('text="Photo AI"')).toBeVisible();
+    await expect(page.locator('text="Subscription"')).toBeVisible();
+    
+    // Test chart hover interactions
+    await roiChart.hover();
+    
+    // Verify ROI average badge
+    const roiAverage = page.locator('text="$4,850 Avg"');
+    await expect(roiAverage).toBeVisible();
+    
+    // Test different team performance indicators
+    const musicAIBar = page.locator('[data-testid="music-ai-bar"]');
+    const floralAIBar = page.locator('[data-testid="floral-ai-bar"]');
+    
+    if (await musicAIBar.isVisible()) {
+      await musicAIBar.hover();
+      // Should show tooltip with conversion data
+      await page.waitForTimeout(500); // Allow tooltip to appear
+    }
+    
+    if (await floralAIBar.isVisible()) {
+      await floralAIBar.hover();
+      await page.waitForTimeout(500);
+    }
+    
+    await page.screenshot({ 
+      path: `screenshots/cross-team-roi-chart-${Date.now()}.png` 
+    });
+  });
+
+  test('Trial Progression Timeline Chart', async ({ page }) => {
+    await page.waitForSelector('[data-testid="trial-bi-dashboard"]');
+    
+    const progressionChart = page.locator('[data-testid="trial-progression-chart"]');
+    await expect(progressionChart).toBeVisible();
+    
+    // Verify timeline stages
+    await expect(page.locator('text="Day 1"')).toBeVisible();
+    await expect(page.locator('text="Day 7"')).toBeVisible();
+    await expect(page.locator('text="Day 14"')).toBeVisible();
+    await expect(page.locator('text="Day 21"')).toBeVisible();
+    await expect(page.locator('text="Day 30"')).toBeVisible();
+    
+    // Verify 30-day trial badge
+    await expect(page.locator('text="30 Day Trial"')).toBeVisible();
+    
+    // Test line chart interactions
+    await progressionChart.hover();
+    
+    await page.screenshot({ 
+      path: `screenshots/trial-progression-timeline-${Date.now()}.png` 
+    });
+  });
+
+  test('ML Prediction Accuracy Visualization', async ({ page }) => {
+    await page.waitForSelector('[data-testid="trial-bi-dashboard"]');
+    
+    const mlChart = page.locator('[data-testid="ml-prediction-chart"]');
+    await expect(mlChart).toBeVisible();
+    
+    // Verify accuracy badge
+    const accuracyBadge = page.locator('text="85.3% Accuracy"');
+    await expect(accuracyBadge).toBeVisible();
+    
+    // Verify chart shows predicted vs actual data
+    await expect(page.locator('text="ML Predicted"')).toBeVisible();
+    await expect(page.locator('text="Actual Conversions"')).toBeVisible();
+    
+    // Test area chart interaction
+    await mlChart.hover();
+    
+    await page.screenshot({ 
+      path: `screenshots/ml-prediction-accuracy-${Date.now()}.png` 
+    });
+  });
+
+  test('Supplier ROI Benchmarks Table', async ({ page }) => {
+    await page.waitForSelector('[data-testid="trial-bi-dashboard"]');
+    
+    const benchmarksTable = page.locator('[data-testid="supplier-benchmarks-table"]');
+    await expect(benchmarksTable).toBeVisible();
+    
+    // Verify table headers
+    await expect(page.locator('text="Supplier Category"')).toBeVisible();
+    await expect(page.locator('text="Avg ROI"')).toBeVisible();
+    await expect(page.locator('text="Trial Users"')).toBeVisible();
+    await expect(page.locator('text="Conversion Rate"')).toBeVisible();
+    
+    // Verify supplier categories
+    await expect(page.locator('text="Premium Suppliers"')).toBeVisible();
+    await expect(page.locator('text="Standard Suppliers"')).toBeVisible();
+    await expect(page.locator('text="Basic Suppliers"')).toBeVisible();
+    await expect(page.locator('text="New Suppliers"')).toBeVisible();
+    
+    // Test export functionality
+    const exportButton = page.locator('[data-testid="export-report-button"]');
+    if (await exportButton.isVisible()) {
+      await exportButton.click();
+      // Verify export initiated (would check for download in real scenario)
+      await page.waitForTimeout(1000);
+    }
+    
+    await page.screenshot({ 
+      path: `screenshots/supplier-benchmarks-table-${Date.now()}.png` 
+    });
+  });
+
+  test('Timeframe Filter Functionality', async ({ page }) => {
+    await page.waitForSelector('[data-testid="trial-bi-dashboard"]');
+    
+    // Test different timeframe filters
+    const timeframes = ['7d', '30d', '90d', '1y'];
+    
+    for (const timeframe of timeframes) {
+      const filterButton = page.locator(`[data-testid="timeframe-${timeframe}"]`);
+      if (await filterButton.isVisible()) {
+        await filterButton.click();
+        
+        // Wait for data to reload
+        await page.waitForTimeout(2000);
+        
+        // Verify active state
+        await expect(filterButton).toHaveClass(/.*active.*|.*selected.*|.*primary.*/);
+        
+        // Take screenshot for each timeframe
+        await page.screenshot({ 
+          path: `screenshots/timeframe-${timeframe}-${Date.now()}.png`,
+          fullPage: true 
+        });
+      }
+    }
+  });
+
+  test('Real-Time Data Updates and Loading States', async ({ page }) => {
+    // Mock slow API response to test loading states
+    await page.route('/api/trial/business-intelligence', async (route) => {
+      await new Promise(resolve => setTimeout(resolve, 3000)); // 3 second delay
+      await route.continue();
+    });
+    
+    await page.goto('/trial-intelligence');
+    
+    // Verify loading skeletons appear
+    const loadingSkeletons = page.locator('[data-testid="metric-skeleton"]');
+    await expect(loadingSkeletons.first()).toBeVisible();
+    
+    // Take screenshot of loading state
+    await page.screenshot({ 
+      path: `screenshots/loading-state-${Date.now()}.png` 
+    });
+    
+    // Wait for content to load
+    await page.waitForSelector('[data-testid="trial-bi-dashboard"]', { timeout: 15000 });
+    
+    // Verify loading state is gone and content is visible
+    await expect(page.locator('text="Trial Conversion Rate"')).toBeVisible();
+    
+    await page.screenshot({ 
+      path: `screenshots/loaded-state-${Date.now()}.png` 
+    });
+  });
+
+  test('Mobile Responsiveness Testing', async ({ page }) => {
+    const viewports = [
+      { width: 375, height: 667, name: 'mobile' },
+      { width: 768, height: 1024, name: 'tablet' },
+      { width: 1920, height: 1080, name: 'desktop' }
+    ];
+    
+    for (const viewport of viewports) {
+      await page.setViewportSize(viewport);
+      await page.goto('/trial-intelligence');
+      await page.waitForSelector('[data-testid="trial-bi-dashboard"]');
+      
+      // Verify key elements are visible and properly arranged
+      await expect(page.locator('text="Trial Business Intelligence"')).toBeVisible();
+      
+      if (viewport.name === 'mobile') {
+        // On mobile, charts might stack vertically
+        const chartContainer = page.locator('[data-testid="charts-container"]');
+        if (await chartContainer.isVisible()) {
+          const containerWidth = await chartContainer.evaluate(el => el.clientWidth);
+          expect(containerWidth).toBeLessThanOrEqual(viewport.width);
+        }
+      }
+      
+      // Test metric cards responsiveness
+      const metricCards = page.locator('[data-testid^="metric-card-"]');
+      const cardCount = await metricCards.count();
+      
+      if (cardCount > 0) {
+        // On mobile, cards might stack or be smaller
+        const firstCard = metricCards.first();
+        const cardBounds = await firstCard.boundingBox();
+        if (cardBounds) {
+          expect(cardBounds.width).toBeLessThanOrEqual(viewport.width - 32); // Account for padding
+        }
+      }
+      
+      await page.screenshot({ 
+        path: `screenshots/responsive-${viewport.name}-${Date.now()}.png`,
+        fullPage: true 
+      });
+    }
+  });
+
+  test('API Integration Testing', async ({ page }) => {
+    // Mock TrialUsageIntegration API responses
+    await page.route('/api/trial/cross-team-roi', route => {
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          totalROI: 4850,
+          teamBreakdown: [
+            { team: 'Music AI', roi: 4200, conversions: 145, engagement: 78 },
+            { team: 'Floral AI', roi: 5800, conversions: 198, engagement: 92 },
+            { team: 'Photo AI', roi: 4950, conversions: 167, engagement: 85 },
+            { team: 'Subscription', roi: 3200, conversions: 89, engagement: 65 }
+          ],
+          weightedCalculation: {
+            timeMultipliers: { music_ai: 1.2, floral_ai: 1.5, photo_ai: 1.3, subscription: 0.8 },
+            costMultipliers: { music_ai: 0.8, floral_ai: 1.2, photo_ai: 0.9, subscription: 1.0 }
+          }
+        })
+      });
+    });
+
+    await page.route('/api/trial/business-intelligence', route => {
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          totalTrialUsers: 1247,
+          conversionRate: 23.8,
+          conversionAccuracy: 85.3,
+          activeEngagement: 87.3,
+          funnelData: [
+            { stage: 'Trial Signups', value: 2847 },
+            { stage: 'AI Feature Usage', value: 2156 },
+            { stage: 'Multiple Services', value: 1823 },
+            { stage: 'Extension Requests', value: 945 },
+            { stage: 'Converted to Paid', value: 678 }
+          ]
+        })
+      });
+    });
+
+    await page.goto('/trial-intelligence');
+    
+    // Wait for API calls and verify data appears
+    await page.waitForSelector('[data-testid="trial-bi-dashboard"]');
+    
+    // Verify API data is displayed correctly
+    await expect(page.locator('text="$4,850"')).toBeVisible(); // ROI value
+    await expect(page.locator('text="23.8%"')).toBeVisible(); // Conversion rate
+    await expect(page.locator('text="1,247"')).toBeVisible(); // Active users
+    await expect(page.locator('text="87.3%"')).toBeVisible(); // Engagement
+    
+    await page.screenshot({ 
+      path: `screenshots/api-integration-test-${Date.now()}.png` 
+    });
+  });
+
+  test('Error Handling and Fallback States', async ({ page }) => {
+    // Mock API failure
+    await page.route('/api/trial/**', route => {
+      route.fulfill({ status: 500 });
+    });
+    
+    await page.goto('/trial-intelligence');
+    
+    // Should show error state or fallback content
+    const errorState = page.locator('[data-testid="error-state"]');
+    const fallbackContent = page.locator('[data-testid="fallback-dashboard"]');
+    
+    // Wait for either error state or fallback
+    await page.waitForTimeout(5000);
+    
+    const hasError = await errorState.isVisible();
+    const hasFallback = await fallbackContent.isVisible();
+    
+    expect(hasError || hasFallback).toBeTruthy();
+    
+    // If retry button is available, test it
+    const retryButton = page.locator('[data-testid="retry-button"]');
+    if (await retryButton.isVisible()) {
+      // Remove the route mock
+      await page.unroute('/api/trial/**');
+      
+      await retryButton.click();
+      
+      // Should recover and show dashboard
+      await page.waitForSelector('[data-testid="trial-bi-dashboard"]', { timeout: 10000 });
+      await expect(page.locator('[data-testid="trial-bi-dashboard"]')).toBeVisible();
+    }
+    
+    await page.screenshot({ 
+      path: `screenshots/error-handling-${Date.now()}.png` 
+    });
+  });
+
+  test('Performance Benchmarking', async ({ page }) => {
+    const performanceMetrics: any = {};
+    
+    // Test dashboard load performance
+    const startTime = Date.now();
+    await page.goto('/trial-intelligence', { waitUntil: 'networkidle' });
+    performanceMetrics.pageLoad = Date.now() - startTime;
+    
+    // Test chart rendering performance
+    const chartStartTime = Date.now();
+    await page.waitForSelector('[data-testid="conversion-funnel-chart"]');
+    await page.waitForSelector('[data-testid="cross-team-roi-chart"]');
+    await page.waitForSelector('[data-testid="trial-progression-chart"]');
+    await page.waitForSelector('[data-testid="ml-prediction-chart"]');
+    performanceMetrics.chartRendering = Date.now() - chartStartTime;
+    
+    // Test data refresh performance
+    const refreshStartTime = Date.now();
+    const refreshButton = page.locator('[data-testid="refresh-data"]');
+    if (await refreshButton.isVisible()) {
+      await refreshButton.click();
+      await page.waitForSelector('[data-testid="data-refreshed"]', { timeout: 5000 });
+    }
+    performanceMetrics.dataRefresh = Date.now() - refreshStartTime;
+    
+    // Assert performance benchmarks
+    expect(performanceMetrics.pageLoad).toBeLessThan(5000); // 5 seconds max
+    expect(performanceMetrics.chartRendering).toBeLessThan(3000); // 3 seconds max
+    expect(performanceMetrics.dataRefresh).toBeLessThan(2000); // 2 seconds max
+    
+    console.log('Performance Benchmarks:', performanceMetrics);
+  });
+
+  test('Accessibility Compliance Testing', async ({ page }) => {
+    await page.goto('/trial-intelligence');
+    await page.waitForSelector('[data-testid="trial-bi-dashboard"]');
+    
+    // Test keyboard navigation
+    await page.keyboard.press('Tab');
+    let focusedElement = page.locator(':focus');
+    await expect(focusedElement).toBeVisible();
+    
+    // Test ARIA labels
+    const dashboard = page.locator('[data-testid="trial-bi-dashboard"]');
+    const role = await dashboard.getAttribute('role');
+    expect(role).toBe('main');
+    
+    // Test heading structure
+    await expect(page.locator('h1')).toBeVisible();
+    
+    // Test chart accessibility
+    const charts = page.locator('[role="img"]'); // Charts should have img role
+    const chartCount = await charts.count();
+    if (chartCount > 0) {
+      const firstChart = charts.first();
+      const ariaLabel = await firstChart.getAttribute('aria-label');
+      expect(ariaLabel).toBeTruthy(); // Should have descriptive label
+    }
+    
+    // Test color contrast (simplified)
+    const contrastElements = [
+      '[data-testid="conversion-rate-value"]',
+      '[data-testid="cross-team-roi-value"]'
+    ];
+    
+    for (const selector of contrastElements) {
+      const element = page.locator(selector);
+      if (await element.isVisible()) {
+        const styles = await element.evaluate(el => {
+          const computed = window.getComputedStyle(el);
+          return {
+            color: computed.color,
+            backgroundColor: computed.backgroundColor
+          };
+        });
+        
+        // Basic contrast check
+        expect(styles.color).not.toBe(styles.backgroundColor);
+      }
+    }
+  });
+
+  test.afterEach(async ({ page }) => {
+    // Cleanup and save test artifacts
+    await page.evaluate(() => {
+      localStorage.clear();
+      sessionStorage.clear();
+    });
+    
+    // Close any additional contexts or pages if created during test
+    const contexts = await page.context().browser()?.contexts();
+    if (contexts && contexts.length > 1) {
+      for (let i = 1; i < contexts.length; i++) {
+        await contexts[i].close();
+      }
+    }
+  });
+});

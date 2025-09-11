@@ -1,0 +1,667 @@
+/**
+ * Active Directory / LDAP Integration Service
+ *
+ * Enterprise authentication service for Microsoft Active Directory and LDAP servers.
+ * Enables large wedding venues, hotel chains, and corporate event management companies
+ * to authenticate users against their existing Windows domain infrastructure.
+ *
+ * Common use cases:
+ * - Marriott Hotels wedding venue coordinators using corporate AD
+ * - Large venue management companies with centralized Windows domains
+ * - Corporate event planners authenticating through company LDAP
+ * - Multi-location wedding businesses with unified directory services
+ *
+ * @author WedSync Enterprise Team C
+ * @version 1.0.0
+ */
+
+import {
+  IdentityProviderConfig,
+  AuthenticationResult,
+  EnterpriseUserAttributes,
+} from './IdentityProviderConnector';
+import * as ldap from 'ldapjs';
+import { promisify } from 'util';
+
+/**
+ * LDAP connection configuration
+ */
+interface LDAPConnectionConfig {
+  url: string;
+  baseDN: string;
+  bindDN: string;
+  bindPassword: string;
+  tlsOptions?: {
+    rejectUnauthorized: boolean;
+    ca?: Buffer[];
+    cert?: Buffer;
+    key?: Buffer;
+  };
+  reconnect: boolean;
+  timeout: number;
+  connectTimeout: number;
+  maxConnections: number;
+}
+
+/**
+ * LDAP search filters for different authentication scenarios
+ */
+interface LDAPSearchFilters {
+  userLogin: string; // e.g., '(sAMAccountName={username})'
+  userEmail: string; // e.g., '(mail={email})'
+  groupMembership: string; // e.g., '(memberOf=cn={group},ou=Groups,dc=company,dc=com)'
+  activeUsers: string; // e.g., '(&(objectClass=user)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))'
+}
+
+/**
+ * Active Directory user attributes mapping
+ */
+interface ADUserAttributes {
+  sAMAccountName: string; // Windows username
+  userPrincipalName: string; // Full email/UPN
+  displayName: string; // Full display name
+  givenName: string; // First name
+  sn: string; // Last name (surname)
+  mail: string; // Email address
+  telephoneNumber: string; // Phone number
+  department: string; // Department
+  title: string; // Job title
+  company: string; // Company name
+  manager: string; // Manager DN
+  memberOf: string[]; // Group memberships
+  employeeID: string; // Employee ID
+  physicalDeliveryOfficeName: string; // Office location
+  distinguishedName: string; // Full LDAP DN
+  userAccountControl: string; // Account status flags
+}
+
+/**
+ * Active Directory group information
+ */
+interface ADGroupInfo {
+  dn: string;
+  cn: string;
+  description: string;
+  members: string[];
+}
+
+/**
+ * Active Directory Integration Service
+ *
+ * Handles authentication and user provisioning against Microsoft Active Directory
+ * and other LDAP-compatible directory services commonly used in enterprise environments.
+ */
+export class ActiveDirectoryIntegration {
+  private connectionPool: ldap.Client[] = [];
+  private readonly poolSize: number = 5;
+  private searchFilters: LDAPSearchFilters;
+
+  constructor(private config: LDAPConnectionConfig) {
+    this.searchFilters = {
+      userLogin: '(sAMAccountName={username})',
+      userEmail: '(mail={email})',
+      groupMembership: '(memberOf=cn={group},ou=Groups,' + config.baseDN + ')',
+      activeUsers:
+        '(&(objectClass=user)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))',
+    };
+
+    this.initializeConnectionPool();
+  }
+
+  /**
+   * Authenticate user against Active Directory
+   *
+   * @param provider - Identity provider configuration
+   * @param credentials - Username and password
+   * @returns Authentication result with user attributes
+   */
+  async authenticate(
+    provider: IdentityProviderConfig,
+    credentials: { username: string; password: string },
+  ): Promise<AuthenticationResult> {
+    try {
+      console.log(
+        `Attempting AD authentication for user: ${credentials.username}`,
+      );
+
+      // Step 1: Bind with service account
+      const client = await this.getConnection();
+      await this.bindServiceAccount(client);
+
+      // Step 2: Search for user
+      const userDN = await this.findUserDN(client, credentials.username);
+      if (!userDN) {
+        return {
+          success: false,
+          email: '',
+          attributes: {},
+          provider: provider.id,
+          error: 'User not found in directory',
+          errorCode: 'USER_NOT_FOUND',
+        };
+      }
+
+      // Step 3: Authenticate user by binding with their credentials
+      const authResult = await this.authenticateUser(
+        userDN,
+        credentials.password,
+      );
+      if (!authResult.success) {
+        return authResult;
+      }
+
+      // Step 4: Retrieve user attributes
+      const userAttributes = await this.getUserAttributes(client, userDN);
+
+      // Step 5: Map AD attributes to WedSync format
+      const mappedAttributes = this.mapUserAttributes(userAttributes, provider);
+
+      console.log(
+        `AD authentication successful for user: ${credentials.username}`,
+      );
+
+      return {
+        success: true,
+        userId: userAttributes.sAMAccountName,
+        email: userAttributes.mail || userAttributes.userPrincipalName,
+        displayName: userAttributes.displayName,
+        attributes: mappedAttributes,
+        provider: provider.id,
+      };
+    } catch (error) {
+      console.error('AD authentication error:', error);
+      return {
+        success: false,
+        email: '',
+        attributes: {},
+        provider: provider.id,
+        error: error instanceof Error ? error.message : 'Authentication failed',
+        errorCode: 'AD_AUTH_ERROR',
+      };
+    }
+  }
+
+  /**
+   * Synchronize user directory for bulk user management
+   * Used by enterprise customers to sync their entire AD with WedSync
+   */
+  async synchronizeDirectory(
+    provider: IdentityProviderConfig,
+    options: {
+      batchSize?: number;
+      includeGroups?: boolean;
+      onProgress?: (processed: number, total: number) => void;
+    } = {},
+  ): Promise<{
+    usersProcessed: number;
+    usersCreated: number;
+    usersUpdated: number;
+    errors: string[];
+  }> {
+    const client = await this.getConnection();
+    await this.bindServiceAccount(client);
+
+    const results = {
+      usersProcessed: 0,
+      usersCreated: 0,
+      usersUpdated: 0,
+      errors: [] as string[],
+    };
+
+    try {
+      // Search for all active users in the directory
+      const users = await this.searchAllUsers(client, options.batchSize || 100);
+
+      for (const user of users) {
+        try {
+          const mappedAttributes = this.mapUserAttributes(user, provider);
+
+          // Process user (would integrate with WedSync user management)
+          console.log(
+            `Processing user: ${user.mail || user.userPrincipalName}`,
+          );
+          results.usersProcessed++;
+
+          // Update progress callback
+          if (options.onProgress) {
+            options.onProgress(results.usersProcessed, users.length);
+          }
+        } catch (error) {
+          results.errors.push(
+            `Failed to process user ${user.sAMAccountName}: ${error}`,
+          );
+        }
+      }
+
+      // Synchronize groups if requested
+      if (options.includeGroups) {
+        await this.synchronizeGroups(client, provider);
+      }
+    } catch (error) {
+      results.errors.push(`Directory sync failed: ${error}`);
+    } finally {
+      this.returnConnection(client);
+    }
+
+    return results;
+  }
+
+  /**
+   * Validate group membership for role-based access control
+   * Essential for wedding venues with different permission levels
+   */
+  async validateGroupMembership(
+    username: string,
+    requiredGroups: string[],
+  ): Promise<{
+    isMember: boolean;
+    memberGroups: string[];
+    missingGroups: string[];
+  }> {
+    const client = await this.getConnection();
+    await this.bindServiceAccount(client);
+
+    try {
+      const userDN = await this.findUserDN(client, username);
+      if (!userDN) {
+        throw new Error('User not found');
+      }
+
+      const userAttributes = await this.getUserAttributes(client, userDN);
+      const userGroups = this.extractGroupNames(userAttributes.memberOf || []);
+
+      const memberGroups = requiredGroups.filter((group) =>
+        userGroups.some((userGroup) =>
+          userGroup.toLowerCase().includes(group.toLowerCase()),
+        ),
+      );
+
+      const missingGroups = requiredGroups.filter(
+        (group) => !memberGroups.includes(group),
+      );
+
+      return {
+        isMember: missingGroups.length === 0,
+        memberGroups,
+        missingGroups,
+      };
+    } finally {
+      this.returnConnection(client);
+    }
+  }
+
+  /**
+   * Initialize connection pool for performance
+   */
+  private async initializeConnectionPool(): Promise<void> {
+    for (let i = 0; i < this.poolSize; i++) {
+      const client = ldap.createClient({
+        url: this.config.url,
+        tlsOptions: this.config.tlsOptions,
+        reconnect: this.config.reconnect,
+        timeout: this.config.timeout,
+        connectTimeout: this.config.connectTimeout,
+      });
+
+      this.connectionPool.push(client);
+    }
+  }
+
+  /**
+   * Get connection from pool
+   */
+  private async getConnection(): Promise<ldap.Client> {
+    return new Promise((resolve, reject) => {
+      const connection = this.connectionPool.pop();
+      if (connection) {
+        resolve(connection);
+      } else {
+        // Create new connection if pool is empty
+        const client = ldap.createClient({
+          url: this.config.url,
+          tlsOptions: this.config.tlsOptions,
+          reconnect: this.config.reconnect,
+          timeout: this.config.timeout,
+          connectTimeout: this.config.connectTimeout,
+        });
+        resolve(client);
+      }
+    });
+  }
+
+  /**
+   * Return connection to pool
+   */
+  private returnConnection(client: ldap.Client): void {
+    if (this.connectionPool.length < this.poolSize) {
+      this.connectionPool.push(client);
+    } else {
+      client.unbind();
+    }
+  }
+
+  /**
+   * Bind with service account for directory operations
+   */
+  private async bindServiceAccount(client: ldap.Client): Promise<void> {
+    return new Promise((resolve, reject) => {
+      client.bind(this.config.bindDN, this.config.bindPassword, (err) => {
+        if (err) {
+          reject(new Error(`Service account bind failed: ${err.message}`));
+        } else {
+          resolve();
+        }
+      });
+    });
+  }
+
+  /**
+   * Find user DN by username or email
+   */
+  private async findUserDN(
+    client: ldap.Client,
+    identifier: string,
+  ): Promise<string | null> {
+    return new Promise((resolve, reject) => {
+      // Try username first, then email
+      const filters = [
+        this.searchFilters.userLogin.replace('{username}', identifier),
+        this.searchFilters.userEmail.replace('{email}', identifier),
+      ];
+
+      let foundDN: string | null = null;
+      let searchesCompleted = 0;
+
+      filters.forEach((filter) => {
+        const searchOptions = {
+          filter,
+          scope: 'sub' as const,
+          attributes: ['dn'],
+        };
+
+        client.search(this.config.baseDN, searchOptions, (err, res) => {
+          if (err) {
+            searchesCompleted++;
+            if (searchesCompleted === filters.length && !foundDN) {
+              resolve(null);
+            }
+            return;
+          }
+
+          res.on('searchEntry', (entry) => {
+            if (!foundDN) {
+              foundDN = entry.dn.toString();
+              resolve(foundDN);
+            }
+          });
+
+          res.on('end', () => {
+            searchesCompleted++;
+            if (searchesCompleted === filters.length && !foundDN) {
+              resolve(null);
+            }
+          });
+
+          res.on('error', (err) => {
+            searchesCompleted++;
+            if (searchesCompleted === filters.length && !foundDN) {
+              resolve(null);
+            }
+          });
+        });
+      });
+    });
+  }
+
+  /**
+   * Authenticate user by binding with their credentials
+   */
+  private async authenticateUser(
+    userDN: string,
+    password: string,
+  ): Promise<AuthenticationResult> {
+    const authClient = ldap.createClient({
+      url: this.config.url,
+      tlsOptions: this.config.tlsOptions,
+    });
+
+    return new Promise((resolve) => {
+      authClient.bind(userDN, password, (err) => {
+        authClient.unbind();
+
+        if (err) {
+          resolve({
+            success: false,
+            email: '',
+            attributes: {},
+            provider: '',
+            error: 'Invalid credentials',
+            errorCode: 'INVALID_CREDENTIALS',
+          });
+        } else {
+          resolve({
+            success: true,
+            email: '',
+            attributes: {},
+            provider: '',
+          });
+        }
+      });
+    });
+  }
+
+  /**
+   * Retrieve user attributes from directory
+   */
+  private async getUserAttributes(
+    client: ldap.Client,
+    userDN: string,
+  ): Promise<ADUserAttributes> {
+    return new Promise((resolve, reject) => {
+      const searchOptions = {
+        filter: '(objectClass=user)',
+        scope: 'base' as const,
+        attributes: [
+          'sAMAccountName',
+          'userPrincipalName',
+          'displayName',
+          'givenName',
+          'sn',
+          'mail',
+          'telephoneNumber',
+          'department',
+          'title',
+          'company',
+          'manager',
+          'memberOf',
+          'employeeID',
+          'physicalDeliveryOfficeName',
+          'distinguishedName',
+          'userAccountControl',
+        ],
+      };
+
+      client.search(userDN, searchOptions, (err, res) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+
+        res.on('searchEntry', (entry) => {
+          const attributes = entry.pojo.attributes.reduce((acc, attr) => {
+            acc[attr.type] =
+              Array.isArray(attr.values) && attr.values.length === 1
+                ? attr.values[0]
+                : attr.values;
+            return acc;
+          }, {} as any);
+
+          resolve(attributes);
+        });
+
+        res.on('end', () => {
+          reject(new Error('User attributes not found'));
+        });
+
+        res.on('error', reject);
+      });
+    });
+  }
+
+  /**
+   * Map Active Directory attributes to WedSync enterprise attributes
+   */
+  private mapUserAttributes(
+    adAttributes: ADUserAttributes,
+    provider: IdentityProviderConfig,
+  ): EnterpriseUserAttributes {
+    return {
+      employeeId: adAttributes.employeeID || adAttributes.sAMAccountName,
+      department: adAttributes.department,
+      jobTitle: adAttributes.title,
+      manager: this.extractManagerName(adAttributes.manager),
+      location: adAttributes.physicalDeliveryOfficeName,
+      phone: adAttributes.telephoneNumber,
+      groups: this.extractGroupNames(adAttributes.memberOf || []),
+      roles: this.mapGroupsToRoles(adAttributes.memberOf || [], provider),
+      customAttributes: {
+        company: adAttributes.company,
+        distinguishedName: adAttributes.distinguishedName,
+        userPrincipalName: adAttributes.userPrincipalName,
+        accountStatus: this.parseAccountStatus(adAttributes.userAccountControl),
+      },
+    };
+  }
+
+  /**
+   * Search all users in directory for bulk operations
+   */
+  private async searchAllUsers(
+    client: ldap.Client,
+    batchSize: number,
+  ): Promise<ADUserAttributes[]> {
+    return new Promise((resolve, reject) => {
+      const users: ADUserAttributes[] = [];
+      const searchOptions = {
+        filter: this.searchFilters.activeUsers,
+        scope: 'sub' as const,
+        sizeLimit: batchSize,
+        attributes: [
+          'sAMAccountName',
+          'userPrincipalName',
+          'displayName',
+          'givenName',
+          'sn',
+          'mail',
+          'telephoneNumber',
+          'department',
+          'title',
+          'company',
+          'manager',
+          'memberOf',
+          'employeeID',
+          'physicalDeliveryOfficeName',
+        ],
+      };
+
+      client.search(this.config.baseDN, searchOptions, (err, res) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+
+        res.on('searchEntry', (entry) => {
+          const attributes = entry.pojo.attributes.reduce((acc, attr) => {
+            acc[attr.type] =
+              Array.isArray(attr.values) && attr.values.length === 1
+                ? attr.values[0]
+                : attr.values;
+            return acc;
+          }, {} as any);
+
+          users.push(attributes);
+        });
+
+        res.on('end', () => resolve(users));
+        res.on('error', reject);
+      });
+    });
+  }
+
+  /**
+   * Synchronize groups from AD for role mapping
+   */
+  private async synchronizeGroups(
+    client: ldap.Client,
+    provider: IdentityProviderConfig,
+  ): Promise<void> {
+    // Implementation for group synchronization
+    console.log('Synchronizing groups from Active Directory...');
+    // Would integrate with WedSync's role management system
+  }
+
+  /**
+   * Extract group names from memberOf attribute
+   */
+  private extractGroupNames(memberOf: string[]): string[] {
+    return memberOf.map((groupDN) => {
+      const cnMatch = groupDN.match(/^CN=([^,]+)/i);
+      return cnMatch ? cnMatch[1] : groupDN;
+    });
+  }
+
+  /**
+   * Extract manager name from manager DN
+   */
+  private extractManagerName(managerDN: string): string {
+    if (!managerDN) return '';
+    const cnMatch = managerDN.match(/^CN=([^,]+)/i);
+    return cnMatch ? cnMatch[1] : managerDN;
+  }
+
+  /**
+   * Map AD groups to WedSync roles based on provider configuration
+   */
+  private mapGroupsToRoles(
+    memberOf: string[],
+    provider: IdentityProviderConfig,
+  ): string[] {
+    const groupNames = this.extractGroupNames(memberOf);
+    const roles: string[] = [];
+
+    if (provider.groupMapping) {
+      for (const [adGroup, wedSyncRole] of Object.entries(
+        provider.groupMapping,
+      )) {
+        if (
+          groupNames.some((group) =>
+            group.toLowerCase().includes(adGroup.toLowerCase()),
+          )
+        ) {
+          roles.push(wedSyncRole);
+        }
+      }
+    }
+
+    return roles;
+  }
+
+  /**
+   * Parse user account control flags to determine account status
+   */
+  private parseAccountStatus(userAccountControl: string): {
+    enabled: boolean;
+    locked: boolean;
+    passwordExpired: boolean;
+    flags: number;
+  } {
+    const flags = parseInt(userAccountControl) || 0;
+
+    return {
+      enabled: !(flags & 0x2), // ACCOUNTDISABLE
+      locked: !!(flags & 0x10), // LOCKOUT
+      passwordExpired: !!(flags & 0x800000), // PASSWORD_EXPIRED
+      flags,
+    };
+  }
+}

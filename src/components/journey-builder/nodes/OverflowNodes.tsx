@@ -1,0 +1,127 @@
+'use client';
+
+import React from 'react';
+import { NodeProps } from '@xyflow/react';
+import {
+  Mail,
+  Calendar,
+  FileText,
+  GitBranch,
+  Star,
+  Users,
+  Split,
+  PlayCircle,
+  CheckCircle,
+  Clock,
+} from 'lucide-react';
+import { OverflowBaseNode } from './OverflowBaseNode';
+
+export function OverflowEmailNode(props: NodeProps) {
+  return (
+    <OverflowBaseNode
+      {...props}
+      icon={<Mail className="h-5 w-5" />}
+      gradient="from-blue-500 to-cyan-400"
+      glowColor="rgba(59, 130, 246, 0.5)"
+    />
+  );
+}
+
+export function OverflowTimelineNode(props: NodeProps) {
+  return (
+    <OverflowBaseNode
+      {...props}
+      icon={<Calendar className="h-5 w-5" />}
+      gradient="from-purple-500 to-pink-500"
+      glowColor="rgba(168, 85, 247, 0.5)"
+    />
+  );
+}
+
+export function OverflowFormNode(props: NodeProps) {
+  return (
+    <OverflowBaseNode
+      {...props}
+      icon={<FileText className="h-5 w-5" />}
+      gradient="from-green-500 to-emerald-400"
+      glowColor="rgba(34, 197, 94, 0.5)"
+    />
+  );
+}
+
+export function OverflowConditionNode(props: NodeProps) {
+  return (
+    <OverflowBaseNode
+      {...props}
+      icon={<GitBranch className="h-5 w-5" />}
+      gradient="from-orange-500 to-amber-400"
+      glowColor="rgba(251, 146, 60, 0.5)"
+    />
+  );
+}
+
+export function OverflowReviewNode(props: NodeProps) {
+  return (
+    <OverflowBaseNode
+      {...props}
+      icon={<Star className="h-5 w-5" />}
+      gradient="from-yellow-500 to-yellow-400"
+      glowColor="rgba(250, 204, 21, 0.5)"
+    />
+  );
+}
+
+export function OverflowMeetingNode(props: NodeProps) {
+  return (
+    <OverflowBaseNode
+      {...props}
+      icon={<Users className="h-5 w-5" />}
+      gradient="from-indigo-500 to-blue-500"
+      glowColor="rgba(99, 102, 241, 0.5)"
+    />
+  );
+}
+
+export function OverflowSplitNode(props: NodeProps) {
+  return (
+    <OverflowBaseNode
+      {...props}
+      icon={<Split className="h-5 w-5" />}
+      gradient="from-red-500 to-rose-400"
+      glowColor="rgba(239, 68, 68, 0.5)"
+    />
+  );
+}
+
+export function OverflowStartNode(props: NodeProps) {
+  return (
+    <OverflowBaseNode
+      {...props}
+      icon={<PlayCircle className="h-5 w-5" />}
+      gradient="from-teal-500 to-cyan-500"
+      glowColor="rgba(20, 184, 166, 0.5)"
+    />
+  );
+}
+
+export function OverflowEndNode(props: NodeProps) {
+  return (
+    <OverflowBaseNode
+      {...props}
+      icon={<CheckCircle className="h-5 w-5" />}
+      gradient="from-gray-600 to-gray-500"
+      glowColor="rgba(107, 114, 128, 0.5)"
+    />
+  );
+}
+
+export function OverflowDelayNode(props: NodeProps) {
+  return (
+    <OverflowBaseNode
+      {...props}
+      icon={<Clock className="h-5 w-5" />}
+      gradient="from-violet-500 to-purple-500"
+      glowColor="rgba(139, 92, 246, 0.5)"
+    />
+  );
+}

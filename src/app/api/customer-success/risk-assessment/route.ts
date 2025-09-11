@@ -1,0 +1,320 @@
+/**
+ * WS-142: Customer Success - Risk Assessment API
+ * Secure API endpoints for user risk analysis and intervention management
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { getServerSession } from 'next-auth/next';
+import { authOptions } from '@/lib/auth/config';
+import { withSecureValidation } from '@/lib/validation/middleware';
+import { z } from 'zod';
+import { riskAssessmentService } from '@/lib/services/risk-assessment';
+import { rateLimit } from '@/lib/ratelimit';
+
+// Validation schemas
+const riskAssessmentSchema = z.object({
+  userId: z.string().uuid().optional(),
+  organizationId: z.string().uuid().optional(),
+  includeTrendAnalysis: z.boolean().default(true),
+  includeRecommendations: z.boolean().default(true),
+  forceRefresh: z.boolean().default(false),
+});
+
+const batchRiskAssessmentSchema = z.object({
+  userIds: z.array(z.string().uuid()).min(1).max(25),
+  organizationId: z.string().uuid().optional(),
+  forceRefresh: z.boolean().default(false),
+});
+
+const riskTrendsSchema = z.object({
+  organizationId: z.string().uuid().optional(),
+  timeframe: z.enum(['7d', '30d', '90d']).default('30d'),
+  riskLevel: z.enum(['high', 'critical']).optional(),
+});
+
+/**
+ * GET /api/customer-success/risk-assessment
+ * Get risk assessment for user
+ */
+export const GET = withSecureValidation(
+  riskAssessmentSchema,
+  async (request: NextRequest, validatedData) => {
+    const identifier = request.ip ?? 'anonymous';
+    const { success } = await rateLimit.limit(identifier);
+
+    if (!success) {
+      return NextResponse.json(
+        { error: 'Rate limit exceeded' },
+        { status: 429 },
+      );
+    }
+
+    try {
+      const session = await getServerSession(authOptions);
+      if (!session?.user) {
+        return NextResponse.json(
+          { error: 'Authentication required' },
+          { status: 401 },
+        );
+      }
+
+      const userId = validatedData.userId || session.user.id;
+      const organizationId =
+        validatedData.organizationId || session.user.organizationId;
+
+      // Authorization check: users can only access their own risk data unless admin
+      if (userId !== session.user.id) {
+        if (
+          !session.user.isAdmin ||
+          !organizationId ||
+          organizationId !== session.user.organizationId
+        ) {
+          return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+        }
+      }
+
+      // Perform risk assessment
+      const riskAssessment = await riskAssessmentService.assessUserRisk(
+        userId,
+        organizationId,
+        {
+          includeTrendAnalysis: validatedData.includeTrendAnalysis,
+          includeRecommendations: validatedData.includeRecommendations,
+          forceRefresh: validatedData.forceRefresh,
+        },
+      );
+
+      // Get risk trends for context
+      const riskTrends = await riskAssessmentService.getRiskTrends(
+        organizationId,
+        '30d',
+      );
+
+      return NextResponse.json({
+        success: true,
+        data: {
+          riskAssessment: {
+            userId: riskAssessment.userId,
+            overallRiskScore: riskAssessment.overallRiskScore,
+            riskLevel: riskAssessment.riskLevel,
+            riskCategory: riskAssessment.riskCategory,
+            churnProbability: riskAssessment.churnProbability,
+            timeToChurn: riskAssessment.timeToChurn,
+            riskTrend: riskAssessment.riskTrend,
+            riskVelocity: riskAssessment.riskVelocity,
+
+            // Risk components summary
+            riskComponents: {
+              engagement: {
+                riskScore: riskAssessment.engagementRisk.riskScore,
+                severity: riskAssessment.engagementRisk.severity,
+                trend: riskAssessment.engagementRisk.trend,
+              },
+              adoption: {
+                riskScore: riskAssessment.adoptionRisk.riskScore,
+                severity: riskAssessment.adoptionRisk.severity,
+                trend: riskAssessment.adoptionRisk.trend,
+              },
+              satisfaction: {
+                riskScore: riskAssessment.satisfactionRisk.riskScore,
+                severity: riskAssessment.satisfactionRisk.severity,
+                trend: riskAssessment.satisfactionRisk.trend,
+              },
+              retention: {
+                riskScore: riskAssessment.retentionRisk.riskScore,
+                severity: riskAssessment.retentionRisk.severity,
+                trend: riskAssessment.retentionRisk.trend,
+              },
+              valueRealization: {
+                riskScore: riskAssessment.valueRealizationRisk.riskScore,
+                severity: riskAssessment.valueRealizationRisk.severity,
+                trend: riskAssessment.valueRealizationRisk.trend,
+              },
+            },
+
+            // Top risk indicators only
+            riskIndicators: riskAssessment.riskIndicators.slice(0, 5),
+
+            // Intervention recommendations if requested
+            interventionRecommendations: validatedData.includeRecommendations
+              ? riskAssessment.interventionRecommendations.slice(0, 3)
+              : [],
+
+            assessedAt: riskAssessment.assessedAt,
+            nextAssessmentDue: riskAssessment.nextAssessmentDue,
+          },
+
+          // Context data
+          organizationTrends: {
+            averageRiskScore: riskTrends.averageRiskScore,
+            riskDistribution: riskTrends.riskDistribution,
+            usersAtRisk: riskTrends.usersAtRisk,
+            totalUsers: riskTrends.totalUsers,
+          },
+
+          assessmentMetadata: {
+            assessmentVersion: '1.0',
+            dataFreshness: new Date().toISOString(),
+            confidenceLevel: 85,
+          },
+        },
+      });
+    } catch (error) {
+      console.error('Risk assessment API error:', error);
+      return NextResponse.json(
+        {
+          error: 'Failed to perform risk assessment',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        },
+        { status: 500 },
+      );
+    }
+  },
+);
+
+/**
+ * POST /api/customer-success/risk-assessment/batch
+ * Batch risk assessment for multiple users (admin only)
+ */
+export const POST = withSecureValidation(
+  batchRiskAssessmentSchema,
+  async (request: NextRequest, validatedData) => {
+    const identifier = request.ip ?? 'anonymous';
+    const { success } = await rateLimit.limit(identifier, {
+      requests: 5,
+      window: '1m',
+    });
+
+    if (!success) {
+      return NextResponse.json(
+        { error: 'Rate limit exceeded for batch operations' },
+        { status: 429 },
+      );
+    }
+
+    try {
+      const session = await getServerSession(authOptions);
+      if (!session?.user?.isAdmin) {
+        return NextResponse.json(
+          { error: 'Admin access required' },
+          { status: 403 },
+        );
+      }
+
+      const organizationId =
+        validatedData.organizationId || session.user.organizationId;
+
+      // Authorization check for organization data
+      if (organizationId && organizationId !== session.user.organizationId) {
+        return NextResponse.json(
+          { error: 'Access denied to organization data' },
+          { status: 403 },
+        );
+      }
+
+      // Process batch risk assessments
+      const batchResults = await riskAssessmentService.batchAssessRisk(
+        validatedData.userIds,
+        organizationId,
+        { forceRefresh: validatedData.forceRefresh },
+      );
+
+      // Organize results
+      const results: Record<string, any> = {};
+      const errors: Record<string, string> = {};
+      const criticalUsers: string[] = [];
+      const highRiskUsers: string[] = [];
+
+      for (const [userId, assessment] of batchResults.entries()) {
+        if (assessment) {
+          results[userId] = {
+            userId: assessment.userId,
+            overallRiskScore: assessment.overallRiskScore,
+            riskLevel: assessment.riskLevel,
+            churnProbability: assessment.churnProbability,
+            timeToChurn: assessment.timeToChurn,
+            primaryRiskCategory: assessment.riskCategory,
+            urgentInterventionsNeeded:
+              assessment.interventionRecommendations.filter(
+                (r) => r.priority === 'critical' || r.priority === 'high',
+              ).length,
+            assessedAt: assessment.assessedAt,
+          };
+
+          // Track users needing immediate attention
+          if (assessment.riskLevel === 'critical') {
+            criticalUsers.push(userId);
+          } else if (assessment.riskLevel === 'high') {
+            highRiskUsers.push(userId);
+          }
+        } else {
+          errors[userId] = 'Risk assessment failed';
+        }
+      }
+
+      // Generate batch summary
+      const successfulAssessments = Object.values(results);
+      const averageRiskScore =
+        successfulAssessments.length > 0
+          ? Math.round(
+              successfulAssessments.reduce(
+                (sum, r) => sum + r.overallRiskScore,
+                0,
+              ) / successfulAssessments.length,
+            )
+          : 0;
+
+      const riskDistribution = successfulAssessments.reduce(
+        (dist, r) => {
+          dist[r.riskLevel] = (dist[r.riskLevel] || 0) + 1;
+          return dist;
+        },
+        {} as Record<string, number>,
+      );
+
+      return NextResponse.json({
+        success: true,
+        data: {
+          results,
+          errors,
+          summary: {
+            processedCount: validatedData.userIds.length,
+            successCount: Object.keys(results).length,
+            errorCount: Object.keys(errors).length,
+            averageRiskScore,
+            riskDistribution,
+            criticalUsers,
+            highRiskUsers,
+            usersNeedingImmedateAttention:
+              criticalUsers.length + highRiskUsers.length,
+          },
+          recommendations: [
+            ...(criticalUsers.length > 0
+              ? [
+                  `Immediate intervention needed for ${criticalUsers.length} critical risk users`,
+                ]
+              : []),
+            ...(highRiskUsers.length > 0
+              ? [
+                  `Schedule success manager outreach for ${highRiskUsers.length} high risk users`,
+                ]
+              : []),
+            ...(averageRiskScore > 60
+              ? ['Organization-wide engagement initiative recommended']
+              : []),
+          ],
+          batchProcessedAt: new Date().toISOString(),
+        },
+      });
+    } catch (error) {
+      console.error('Batch risk assessment API error:', error);
+      return NextResponse.json(
+        {
+          error: 'Failed to process batch risk assessment',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        },
+        { status: 500 },
+      );
+    }
+  },
+);

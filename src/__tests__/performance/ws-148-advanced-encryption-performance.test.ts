@@ -1,0 +1,315 @@
+/**
+ * WS-148 Round 2: Advanced Encryption Performance Test Suite
+ * 
+ * Tests all performance requirements for Team D - Batch 12
+ * Performance Requirements:
+ * - Bulk encryption: 500+ photos in under 30 seconds
+ * - Dashboard loading: 50 encrypted clients in under 2 seconds
+ * - Mobile progressive decryption: High-priority fields in under 3 seconds
+ * - Search response: Under 1 second for typical queries
+ * - Cache efficiency: 80%+ hit rate
+ */
+
+import { test, expect } from '@playwright/test'
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+test.describe('WS-148 Round 2: Advanced Encryption Performance', () => {
+  
+  test.beforeEach(async ({ page }) => {
+    // Setup authentication and test data
+    await page.goto('/api/test/setup-ws148-encryption-test-data')
+    await page.waitForResponse(response => 
+      response.url().includes('setup-ws148-encryption-test-data') && response.ok()
+    )
+  })
+  test('Bulk photo encryption performance - 500+ items in under 30 seconds', async ({ page }) => {
+    // Setup: Navigate to photo upload
+    await page.goto('/photos/bulk-upload')
+    
+    // Simulate uploading 500 photos with metadata
+    const photoFiles = Array.from({ length: 500 }, (_, i) => 
+      `wedding-photo-${i + 1}.jpg`
+    // Mock file upload with realistic photo metadata
+    await page.evaluate((files) => {
+      window.mockPhotoUpload(files.map(filename => ({
+        filename,
+        size: Math.floor(Math.random() * 5000000) + 1000000, // 1-6MB
+        exifData: {
+          camera: 'Canon EOS R5',
+          lens: '85mm f/1.4',
+          location: `${40.7128 + Math.random() * 0.01}, ${-74.0060 + Math.random() * 0.01}`,
+          timestamp: new Date().toISOString(),
+          settings: 'ISO 400, f/2.8, 1/125s',
+          photographer: 'Victoria\'s Photography Team',
+          venue: 'Garden Paradise Resort',
+          eventType: 'ceremony'
+        }
+      })))
+    }, photoFiles)
+    // Start upload and measure performance
+    const startTime = Date.now()
+    await page.click('[data-testid="start-bulk-upload"]')
+    // Wait for progress indicator
+    await page.waitForSelector('[data-testid="upload-progress"]')
+    // Monitor progress and verify completion within time limit
+    await page.waitForSelector('[data-testid="upload-complete"]', { 
+      timeout: 35000 // Allow 5 seconds buffer over 30 second requirement
+    })
+    const completionTime = Date.now() - startTime
+    // WS-148 Performance Requirement Validation
+    expect(completionTime).toBeLessThan(30000) // Must complete in under 30 seconds
+    // Verify all photos encrypted successfully
+    const uploadSummary = await page.textContent('[data-testid="upload-summary"]')
+    expect(uploadSummary).toContain('500 photos encrypted successfully')
+    // Performance verification API call
+    const encryptionVerification = await page.evaluate(async () => {
+      const response = await fetch('/api/debug/verify-photo-encryption', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ photoCount: 500 })
+      })
+      return response.json()
+    expect(encryptionVerification.all_metadata_encrypted).toBe(true)
+    expect(encryptionVerification.location_data_unreadable).toBe(true)
+    expect(encryptionVerification.photographer_data_encrypted).toBe(true)
+    // Record performance metrics
+    console.log(`WS-148 Bulk Encryption Performance: ${completionTime}ms for 500 photos (Target: <30000ms)`)
+  test('Dashboard loading with 50 encrypted client records - under 2 seconds', async ({ page }) => {
+    // Pre-populate database with encrypted client data
+    await page.evaluate(async () => {
+      await fetch('/api/debug/create-encrypted-test-clients', {
+        body: JSON.stringify({ 
+          clientCount: 50, 
+          encryptAllFields: true,
+          includeWeddingData: true,
+          includeVenueData: true,
+          includeFinancialData: true
+        })
+    // Measure dashboard load time with performance.now() for precision
+    const startTime = await page.evaluate(() => performance.now())
+    await page.goto('/dashboard')
+    // Wait for all encrypted client data to load and decrypt
+    await page.waitForSelector('[data-testid="client-grid"]')
+    await page.waitForSelector('[data-testid="client-card"]:nth-child(50)') // Wait for 50th client
+    const loadTime = await page.evaluate((start) => performance.now() - start, startTime)
+    expect(loadTime).toBeLessThan(2000) // Must load in under 2 seconds
+    // Verify all client names are properly decrypted and displayed
+    const clientNames = await page.$$eval(
+      '[data-testid="client-name"]',
+      elements => elements.map(el => el.textContent?.trim())
+    expect(clientNames).toHaveLength(50)
+    expect(clientNames.every(name => name && name.length > 0)).toBe(true)
+    expect(clientNames.some(name => name?.includes('[ENCRYPTED]'))).toBe(false)
+    // Verify financial data is properly decrypted but secured
+    const budgetElements = await page.$$('[data-testid="client-budget"]')
+    expect(budgetElements.length).toBeGreaterThan(0)
+    // Test searchable encryption functionality on loaded data
+    await page.fill('[data-testid="dashboard-search"]', 'Smith')
+    await page.click('[data-testid="dashboard-search-button"]')
+    const searchResults = await page.$$('[data-testid="search-result-client"]')
+    expect(searchResults.length).toBeGreaterThan(0)
+    console.log(`WS-148 Dashboard Load Performance: ${Math.round(loadTime)}ms for 50 encrypted clients (Target: <2000ms)`)
+  test('Searchable encryption functionality - exact, partial, and fuzzy matching', async ({ page }) => {
+    // Setup encrypted client data with searchable fields
+      const testClients = [
+        { 
+          name: 'John Smith', 
+          email: 'john.smith@email.com',
+          phone: '(555) 123-4567'
+        },
+          name: 'Jane Smith-Wilson', 
+          venue: 'Oceanview Hotel',
+          email: 'jane.wilson@email.com',
+          phone: '(555) 234-5678'
+          name: 'Bob Johnson', 
+          venue: 'Mountain View Lodge',
+          email: 'bob.johnson@email.com',
+          phone: '(555) 345-6789'
+          name: 'Alice Brown', 
+          email: 'alice.brown@email.com',
+          phone: '(555) 456-7890'
+          name: 'Charlie Smith', 
+          venue: 'Sunset Beach Club',
+          email: 'charlie.smith@email.com',
+          phone: '(555) 567-8901'
+      ]
+      
+      await fetch('/api/debug/create-searchable-encrypted-clients', {
+        body: JSON.stringify({ clients: testClients })
+    await page.goto('/clients')
+    // Test exact search with performance measurement
+    const exactSearchStart = await page.evaluate(() => performance.now())
+    await page.fill('[data-testid="client-search"]', 'John Smith')
+    await page.click('[data-testid="search-button"]')
+    await page.waitForSelector('[data-testid="search-results"]')
+    const exactSearchTime = await page.evaluate((start) => performance.now() - start, exactSearchStart)
+    const exactResults = await page.$$('[data-testid="client-card"]')
+    expect(exactResults).toHaveLength(1)
+    expect(exactSearchTime).toBeLessThan(1000) // WS-148 requirement
+    // Test partial search
+    const partialSearchStart = await page.evaluate(() => performance.now())
+    await page.fill('[data-testid="client-search"]', 'Smith')
+    const partialSearchTime = await page.evaluate((start) => performance.now() - start, partialSearchStart)
+    const partialResults = await page.$$('[data-testid="client-card"]')
+    expect(partialResults).toHaveLength(3) // John Smith, Jane Smith-Wilson, Charlie Smith
+    expect(partialSearchTime).toBeLessThan(1000) // WS-148 requirement
+    // Test venue search (field-specific search)
+    const venueSearchStart = await page.evaluate(() => performance.now())
+    await page.fill('[data-testid="client-search"]', 'Garden Paradise')
+    await page.selectOption('[data-testid="search-field"]', 'venue')
+    const venueSearchTime = await page.evaluate((start) => performance.now() - start, venueSearchStart)
+    const venueResults = await page.$$('[data-testid="client-card"]')
+    expect(venueResults).toHaveLength(2) // John Smith and Alice Brown
+    expect(venueSearchTime).toBeLessThan(1000) // WS-148 requirement
+    // Test fuzzy search (phonetic matching)
+    const fuzzySearchStart = await page.evaluate(() => performance.now())
+    await page.fill('[data-testid="client-search"]', 'Jon Smyth') // Misspelling
+    await page.selectOption('[data-testid="search-type"]', 'fuzzy')
+    const fuzzySearchTime = await page.evaluate((start) => performance.now() - start, fuzzySearchStart)
+    const fuzzyResults = await page.$$('[data-testid="client-card"]')
+    expect(fuzzyResults.length).toBeGreaterThan(0) // Should find John Smith
+    expect(fuzzySearchTime).toBeLessThan(1000) // WS-148 requirement
+    console.log(`WS-148 Search Performance - Exact: ${Math.round(exactSearchTime)}ms, Partial: ${Math.round(partialSearchTime)}ms, Venue: ${Math.round(venueSearchTime)}ms, Fuzzy: ${Math.round(fuzzySearchTime)}ms (Target: <1000ms each)`)
+  test('Progressive decryption on mobile - high-priority fields under 3 seconds', async ({ page }) => {
+    // Simulate mobile device with slow connection
+    await page.setViewportSize({ width: 375, height: 667 })
+    // Simulate slow 3G connection
+    const cdpSession = await page.context().newCDPSession(page)
+    await cdpSession.send('Network.emulateNetworkConditions', {
+      offline: false,
+      downloadThroughput: 1.6 * 1024 * 1024 / 8, // 1.6 Mbps
+      uploadThroughput: 750 * 1024 / 8, // 750 Kbps
+      latency: 750 // 750ms latency
+    // Navigate to client detail page with comprehensive encrypted data
+    await page.goto('/clients/test-client-with-full-encrypted-data')
+    // Measure high-priority field loading
+    const highPriorityStart = await page.evaluate(() => performance.now())
+    // Verify high-priority fields appear first
+    await page.waitForSelector('[data-testid="client-name"]', { timeout: 4000 })
+    await page.waitForSelector('[data-testid="wedding-date"]', { timeout: 4000 })
+    await page.waitForSelector('[data-testid="venue-name"]', { timeout: 4000 })
+    const highPriorityTime = await page.evaluate((start) => performance.now() - start, highPriorityStart)
+    // WS-148 Mobile Performance Requirement
+    expect(highPriorityTime).toBeLessThan(3000) // High-priority fields under 3 seconds
+    // Verify high-priority fields are visible while others are still loading
+    const highPriorityVisible = await page.isVisible('[data-testid="client-name"]')
+    const lowPriorityLoading = await page.isVisible('[data-testid="loading-detailed-info"]')
+    expect(highPriorityVisible).toBe(true)
+    expect(lowPriorityLoading).toBe(true)
+    // Verify progressive loading indicators
+    const progressIndicators = await page.$$('[data-testid="field-decrypting"]')
+    expect(progressIndicators.length).toBeGreaterThan(0)
+    // Eventually all fields should be decrypted and displayed
+    await page.waitForSelector('[data-testid="all-client-data-loaded"]', { timeout: 15000 })
+    // Verify no encrypted placeholders remain
+    const encryptedPlaceholders = await page.$$('[data-testid*="encrypted-placeholder"]')
+    expect(encryptedPlaceholders).toHaveLength(0)
+    // Test mobile-specific UI optimizations
+    const compactView = await page.isVisible('[data-testid="mobile-compact-view"]')
+    expect(compactView).toBe(true)
+    console.log(`WS-148 Mobile Progressive Decryption: High-priority fields loaded in ${Math.round(highPriorityTime)}ms (Target: <3000ms)`)
+  test('Encryption cache performance - 80%+ hit rate validation', async ({ page }) => {
+    // Setup multiple client records for cache testing
+      await fetch('/api/debug/create-cache-test-clients', {
+          clientCount: 20,
+          duplicateData: true // Create some duplicate encrypted data for cache hits
+    // Navigate to dashboard to populate cache
+    // Perform operations that should hit cache
+    const cacheTestOperations = [
+      () => page.click('[data-testid="client-card"]:first-child'),
+      () => page.goto('/dashboard'), // Return to dashboard
+      () => page.click('[data-testid="client-card"]:nth-child(2)'),
+      () => page.goto('/dashboard'), // Return again
+      () => page.click('[data-testid="client-card"]:first-child'), // Same client again
+      () => page.fill('[data-testid="dashboard-search"]', 'Smith'),
+      () => page.click('[data-testid="dashboard-search-button"]'),
+      () => page.fill('[data-testid="dashboard-search"]', 'Smith'), // Repeat search
+      () => page.click('[data-testid="dashboard-search-button"]')
+    ]
+    // Execute cache test operations
+    for (const operation of cacheTestOperations) {
+      await operation()
+      await page.waitForTimeout(500) // Brief pause between operations
+    }
+    // Get cache performance metrics
+    const cacheMetrics = await page.evaluate(async () => {
+      const response = await fetch('/api/encryption/performance-metrics?include_cache_metrics=true&time_range=1h')
+      const data = await response.json()
+      return data.cache_metrics
+    expect(cacheMetrics).toBeTruthy()
+    // Calculate overall cache hit rate
+    const totalRequests = cacheMetrics.reduce((sum: number, metric: any) => 
+      sum + metric.total_requests, 0)
+    const totalHits = cacheMetrics.reduce((sum: number, metric: any) => 
+      sum + metric.cache_hits, 0)
+    const hitRate = totalRequests > 0 ? (totalHits / totalRequests) * 100 : 0
+    // WS-148 Cache Efficiency Requirement
+    expect(hitRate).toBeGreaterThan(80) // 80%+ cache hit rate
+    console.log(`WS-148 Cache Performance: ${Math.round(hitRate)}% hit rate (Target: >80%)`)
+  test('Memory usage optimization - encryption operations under 100MB peak', async ({ page }) => {
+    // Monitor memory usage during bulk operations
+    const memoryBefore = await page.evaluate(() => {
+      return (performance as unknown).memory?.usedJSHeapSize || 0
+    // Perform memory-intensive bulk encryption
+    // Simulate large batch upload
+    await page.evaluate(() => {
+      const largeFiles = Array.from({ length: 200 }, (_, i) => ({
+        filename: `large-photo-${i + 1}.jpg`,
+        size: 8000000, // 8MB files
+          description: 'Large wedding photo with extensive metadata for memory testing',
+          keywords: ['wedding', 'ceremony', 'celebration', 'photography', 'professional']
+      }))
+      window.mockPhotoUpload(largeFiles)
+    // Monitor peak memory usage
+    let peakMemory = memoryBefore
+    const memoryCheckInterval = setInterval(async () => {
+      const currentMemory = await page.evaluate(() => {
+        return (performance as unknown).memory?.usedJSHeapSize || 0
+      peakMemory = Math.max(peakMemory, currentMemory)
+    }, 500)
+    await page.waitForSelector('[data-testid="upload-complete"]', { timeout: 45000 })
+    clearInterval(memoryCheckInterval)
+    const memoryAfter = await page.evaluate(() => {
+    const memoryUsedMB = (peakMemory - memoryBefore) / (1024 * 1024)
+    // WS-148 Memory Usage Requirement
+    expect(memoryUsedMB).toBeLessThan(100) // Under 100MB peak memory usage
+    console.log(`WS-148 Memory Usage: Peak ${Math.round(memoryUsedMB)}MB during bulk encryption (Target: <100MB)`)
+  test('Cross-team integration validation', async ({ page }) => {
+    // Test integration with Team A (Performance metrics)
+    const performanceData = await page.evaluate(async () => {
+      const response = await fetch('/api/encryption/performance-metrics?time_range=1h')
+    expect(performanceData.ws148_compliance).toBeTruthy()
+    expect(performanceData.ws148_compliance.bulk_encryption_compliance.compliant).toBeTruthy()
+    // Test integration with Team B (Mobile optimization)
+    await page.goto('/clients/mobile-test-client')
+    const mobileOptimizations = await page.evaluate(() => {
+      return {
+        touchOptimized: !!document.querySelector('[data-touch-optimized]'),
+        progressiveLoad: !!document.querySelector('[data-progressive-load]'),
+        compactView: !!document.querySelector('[data-mobile-compact]')
+      }
+    expect(mobileOptimizations.touchOptimized).toBe(true)
+    expect(mobileOptimizations.progressiveLoad).toBe(true)
+    // Test integration with Team C (MFA protection)
+    const mfaProtection = await page.evaluate(async () => {
+      const response = await fetch('/api/encryption/mfa-integration-status')
+    expect(mfaProtection.encryption_key_mfa_protected).toBe(true)
+    // Test integration with Team E (GDPR automation)
+    const gdprIntegration = await page.evaluate(async () => {
+      const response = await fetch('/api/encryption/gdpr-integration-status')
+    expect(gdprIntegration.crypto_shredding_available).toBe(true)
+    expect(gdprIntegration.automated_deletion_supported).toBe(true)
+    console.log('WS-148 Cross-team Integration: All systems integrated successfully')
+  test.afterEach(async ({ page }) => {
+    // Generate performance report
+    const performanceReport = await page.evaluate(async () => {
+      const response = await fetch('/api/encryption/performance-metrics?include_benchmarks=true&time_range=1h')
+    // Log comprehensive performance summary
+    console.log('=== WS-148 Performance Test Summary ===')
+    console.log('Bulk Encryption:', performanceReport.ws148_compliance?.bulk_encryption_compliance)
+    console.log('Dashboard Load:', performanceReport.ws148_compliance?.dashboard_load_compliance) 
+    console.log('Mobile Progressive:', performanceReport.ws148_compliance?.mobile_progressive_compliance)
+    console.log('Search Response:', performanceReport.ws148_compliance?.search_response_compliance)
+    console.log('Cache Efficiency:', performanceReport.ws148_compliance?.cache_efficiency)
+    // Cleanup test data
+      await fetch('/api/debug/cleanup-ws148-test-data', { method: 'POST' })
+})

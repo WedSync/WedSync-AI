@@ -1,0 +1,469 @@
+import { createServerSupabaseClient } from '@/lib/supabase/server';
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
+
+// Validation schemas
+const VenueSchema = z.object({
+  name: z.string().min(1, 'Venue name is required'),
+  placeId: z.string().optional(),
+  address: z.string().min(1, 'Venue address is required'),
+  coordinates: z
+    .object({
+      lat: z.number(),
+      lng: z.number(),
+    })
+    .optional(),
+});
+
+const WeddingBasicsSchema = z.object({
+  weddingDate: z
+    .string()
+    .min(1, 'Wedding date is required')
+    .refine((date) => {
+      const selectedDate = new Date(date);
+      const today = new Date();
+      const maxDate = new Date();
+      maxDate.setFullYear(today.getFullYear() + 3);
+      today.setDate(today.getDate() + 30); // Minimum 30 days in future
+
+      return selectedDate >= today && selectedDate <= maxDate;
+    }, 'Wedding date must be between 30 days and 3 years from today'),
+
+  ceremonyVenue: VenueSchema,
+
+  receptionVenue: VenueSchema.extend({
+    sameAsCeremony: z.boolean().default(true),
+  }).optional(),
+
+  guestCountEstimated: z
+    .number()
+    .int('Guest count must be a whole number')
+    .min(2, 'Guest count must be at least 2')
+    .max(500, 'Guest count cannot exceed 500'),
+
+  weddingStyle: z
+    .array(z.string())
+    .min(1, 'Please select at least one wedding style')
+    .max(5, 'Please select no more than 5 wedding styles'),
+});
+
+// Support partial updates for auto-save
+const PartialWeddingBasicsSchema = WeddingBasicsSchema.partial();
+
+// TypeScript interfaces
+interface WeddingBasicsRequest {
+  weddingDate: string;
+  ceremonyVenue: {
+    name: string;
+    placeId?: string;
+    address: string;
+    coordinates?: { lat: number; lng: number };
+  };
+  receptionVenue?: {
+    name: string;
+    placeId?: string;
+    address: string;
+    coordinates?: { lat: number; lng: number };
+    sameAsCeremony?: boolean;
+  };
+  guestCountEstimated: number;
+  weddingStyle: string[];
+}
+
+interface WeddingBasicsData {
+  weddingDate: string | null;
+  ceremonyVenue: any | null;
+  receptionVenue: any | null;
+  guestCountEstimated: number | null;
+  weddingStyle: string[];
+  completionStatus: {
+    weddingDate: boolean;
+    venue: boolean;
+    guestCount: boolean;
+    style: boolean;
+    overallProgress: number;
+  };
+}
+
+interface WeddingBasicsResponse {
+  success: boolean;
+  data?: WeddingBasicsData;
+  coreFieldsUpdated?: string[];
+  nextStep?: string;
+  message?: string;
+  errors?: Record<string, string[]>;
+}
+
+/**
+ * POST /api/onboarding/wedding-basics
+ * Save wedding basics information
+ */
+export async function POST(
+  request: NextRequest,
+): Promise<NextResponse<WeddingBasicsResponse>> {
+  try {
+    const supabase = await createServerSupabaseClient();
+
+    // Check authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: 'Authentication required. Please log in to continue.',
+        },
+        { status: 401 },
+      );
+    }
+
+    // Parse and validate request body
+    const body = await request.json().catch(() => ({}));
+
+    // Use partial schema to support auto-save with incomplete data
+    const validation = PartialWeddingBasicsSchema.safeParse(body);
+    if (!validation.success) {
+      const errors: Record<string, string[]> = {};
+      validation.error.errors.forEach((error) => {
+        const path = error.path.join('.');
+        if (!errors[path]) errors[path] = [];
+        errors[path].push(error.message);
+      });
+
+      return NextResponse.json(
+        {
+          success: false,
+          message: 'Validation failed. Please check your input.',
+          errors,
+        },
+        { status: 400 },
+      );
+    }
+
+    const validatedData = validation.data;
+
+    // Get current user's couple record
+    const { data: couple, error: coupleError } = await supabase
+      .from('couples')
+      .select('couple_id, organization_id')
+      .eq('user_id', user.id)
+      .single();
+
+    if (coupleError || !couple) {
+      return NextResponse.json(
+        {
+          success: false,
+          message:
+            'Couple profile not found. Please complete your account setup.',
+        },
+        { status: 404 },
+      );
+    }
+
+    // Check if core_fields record exists
+    const { data: existingFields, error: fetchError } = await supabase
+      .from('core_fields')
+      .select('*')
+      .eq('couple_id', couple.couple_id)
+      .single();
+
+    // Prepare update data
+    const updateData: any = {};
+    const updatedFields: string[] = [];
+
+    if (validatedData.weddingDate) {
+      updateData.wedding_date = validatedData.weddingDate;
+      updatedFields.push('wedding_date');
+    }
+
+    if (validatedData.ceremonyVenue) {
+      updateData.ceremony_venue_id =
+        validatedData.ceremonyVenue.placeId || null;
+      updateData.ceremony_venue_address = validatedData.ceremonyVenue.address;
+      updatedFields.push('ceremony_venue_id', 'ceremony_venue_address');
+    }
+
+    if (validatedData.receptionVenue) {
+      if (
+        validatedData.receptionVenue.sameAsCeremony &&
+        validatedData.ceremonyVenue
+      ) {
+        updateData.reception_venue_name = validatedData.ceremonyVenue.name;
+        updateData.reception_venue_id =
+          validatedData.ceremonyVenue.placeId || null;
+        updateData.reception_venue_address =
+          validatedData.ceremonyVenue.address;
+      } else {
+        updateData.reception_venue_name = validatedData.receptionVenue.name;
+        updateData.reception_venue_id =
+          validatedData.receptionVenue.placeId || null;
+        updateData.reception_venue_address =
+          validatedData.receptionVenue.address;
+      }
+      updatedFields.push(
+        'reception_venue_name',
+        'reception_venue_id',
+        'reception_venue_address',
+      );
+    }
+
+    if (validatedData.guestCountEstimated) {
+      updateData.guest_count_estimated = validatedData.guestCountEstimated;
+      updatedFields.push('guest_count_estimated');
+    }
+
+    if (validatedData.weddingStyle) {
+      updateData.wedding_style = validatedData.weddingStyle;
+      updatedFields.push('wedding_style');
+    }
+
+    updateData.updated_at = new Date().toISOString();
+
+    let result;
+    if (existingFields) {
+      // Update existing record
+      const { data, error } = await supabase
+        .from('core_fields')
+        .update(updateData)
+        .eq('couple_id', couple.couple_id)
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Database update error:', error);
+        return NextResponse.json(
+          {
+            success: false,
+            message: 'Failed to save wedding basics. Please try again.',
+          },
+          { status: 500 },
+        );
+      }
+      result = data;
+    } else {
+      // Create new record
+      const { data, error } = await supabase
+        .from('core_fields')
+        .insert({
+          couple_id: couple.couple_id,
+          organization_id: couple.organization_id,
+          ...updateData,
+          created_at: new Date().toISOString(),
+        })
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Database insert error:', error);
+        return NextResponse.json(
+          {
+            success: false,
+            message: 'Failed to save wedding basics. Please try again.',
+          },
+          { status: 500 },
+        );
+      }
+      result = data;
+    }
+
+    // Calculate completion status
+    const completionStatus = {
+      weddingDate: !!result.wedding_date,
+      venue: !!(
+        result.ceremony_venue_address || result.reception_venue_address
+      ),
+      guestCount: !!result.guest_count_estimated,
+      style: !!(result.wedding_style && result.wedding_style.length > 0),
+    };
+
+    const completedFields =
+      Object.values(completionStatus).filter(Boolean).length;
+    const overallProgress = Math.round((completedFields / 4) * 100);
+
+    // Determine next step
+    let nextStep = 'wedding-party';
+    if (overallProgress === 100) {
+      nextStep = 'wedding-party';
+    } else if (overallProgress >= 75) {
+      nextStep = 'timeline';
+    } else if (overallProgress >= 50) {
+      nextStep = 'services';
+    }
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        weddingDate: result.wedding_date,
+        ceremonyVenue: result.ceremony_venue_address
+          ? {
+              name: result.ceremony_venue_address.split(',')[0],
+              placeId: result.ceremony_venue_id,
+              address: result.ceremony_venue_address,
+            }
+          : null,
+        receptionVenue: result.reception_venue_address
+          ? {
+              name: result.reception_venue_name,
+              placeId: result.reception_venue_id,
+              address: result.reception_venue_address,
+            }
+          : null,
+        guestCountEstimated: result.guest_count_estimated,
+        weddingStyle: result.wedding_style || [],
+        completionStatus: {
+          ...completionStatus,
+          overallProgress,
+        },
+      },
+      coreFieldsUpdated: updatedFields,
+      nextStep,
+      message:
+        overallProgress === 100
+          ? 'Wedding basics completed successfully!'
+          : 'Wedding basics saved. Continue with the remaining fields.',
+    });
+  } catch (error) {
+    console.error('Wedding basics API error:', error);
+    return NextResponse.json(
+      {
+        success: false,
+        message: 'An unexpected error occurred. Please try again.',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * GET /api/onboarding/wedding-basics
+ * Retrieve current wedding basics data
+ */
+export async function GET(): Promise<NextResponse<WeddingBasicsResponse>> {
+  try {
+    const supabase = await createServerSupabaseClient();
+
+    // Check authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: 'Authentication required. Please log in to continue.',
+        },
+        { status: 401 },
+      );
+    }
+
+    // Get current user's couple record
+    const { data: couple, error: coupleError } = await supabase
+      .from('couples')
+      .select('couple_id')
+      .eq('user_id', user.id)
+      .single();
+
+    if (coupleError || !couple) {
+      return NextResponse.json(
+        {
+          success: false,
+          message:
+            'Couple profile not found. Please complete your account setup.',
+        },
+        { status: 404 },
+      );
+    }
+
+    // Fetch wedding basics data
+    const { data: coreFields, error: fetchError } = await supabase
+      .from('core_fields')
+      .select(
+        `
+        wedding_date,
+        ceremony_venue_id,
+        ceremony_venue_address,
+        reception_venue_name,
+        reception_venue_id, 
+        reception_venue_address,
+        guest_count_estimated,
+        wedding_style
+      `,
+      )
+      .eq('couple_id', couple.couple_id)
+      .single();
+
+    if (fetchError && fetchError.code !== 'PGRST116') {
+      console.error('Database fetch error:', fetchError);
+      return NextResponse.json(
+        {
+          success: false,
+          message: 'Failed to retrieve wedding basics. Please try again.',
+        },
+        { status: 500 },
+      );
+    }
+
+    // Handle no data found (return empty state)
+    const data = coreFields || {
+      wedding_date: null,
+      ceremony_venue_id: null,
+      ceremony_venue_address: null,
+      reception_venue_name: null,
+      reception_venue_id: null,
+      reception_venue_address: null,
+      guest_count_estimated: null,
+      wedding_style: [],
+    };
+
+    // Calculate completion status
+    const completionStatus = {
+      weddingDate: !!data.wedding_date,
+      venue: !!(data.ceremony_venue_address || data.reception_venue_address),
+      guestCount: !!data.guest_count_estimated,
+      style: !!(data.wedding_style && data.wedding_style.length > 0),
+    };
+
+    const completedFields =
+      Object.values(completionStatus).filter(Boolean).length;
+    const overallProgress = Math.round((completedFields / 4) * 100);
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        weddingDate: data.wedding_date,
+        ceremonyVenue: data.ceremony_venue_address
+          ? {
+              name: data.ceremony_venue_address.split(',')[0],
+              placeId: data.ceremony_venue_id,
+              address: data.ceremony_venue_address,
+            }
+          : null,
+        receptionVenue: data.reception_venue_address
+          ? {
+              name: data.reception_venue_name,
+              placeId: data.reception_venue_id,
+              address: data.reception_venue_address,
+            }
+          : null,
+        guestCountEstimated: data.guest_count_estimated,
+        weddingStyle: data.wedding_style || [],
+        completionStatus: {
+          ...completionStatus,
+          overallProgress,
+        },
+      },
+    });
+  } catch (error) {
+    console.error('Wedding basics GET API error:', error);
+    return NextResponse.json(
+      {
+        success: false,
+        message: 'An unexpected error occurred. Please try again.',
+      },
+      { status: 500 },
+    );
+  }
+}

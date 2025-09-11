@@ -1,0 +1,285 @@
+/**
+ * Comprehensive Integration Tests for WS-162, WS-163, WS-164
+ * Team C Integration Implementation - Testing Suite
+ * Success Criteria: <100ms for real-time updates, cross-system workflows
+ */
+
+import { describe, it, expect, beforeEach, afterEach, jest, vi } from 'vitest';
+import { integrationOrchestrator } from '@/lib/integrations/integration-orchestrator';
+import { budgetIntegration } from '@/lib/integrations/budget-integration';
+import { manualTrackingIntegration } from '@/lib/integrations/manual-tracking-integration';
+// Mock Supabase client
+const mockSupabaseClient = {
+  from: vi.fn(),
+  channel: vi.fn(),
+  removeChannel: vi.fn(),
+  storage: {
+    from: vi.fn()
+  },
+  auth: {
+    getSession: vi.fn()
+  }
+};
+// Mock real-time channel
+const mockChannel = {
+  on: vi.fn().mockReturnThis(),
+  subscribe: vi.fn(),
+  unsubscribe: vi.fn(),
+  send: vi.fn()
+beforeEach(() => {
+  vi.clearAllMocks();
+  mockSupabaseClient.channel.mockReturnValue(mockChannel);
+});
+describe('WS-162: Helper Schedule Integration', () => {
+  const mockWeddingId = 'wedding-123';
+  
+  describe('Real-time Schedule Updates', () => {
+    it('should establish WebSocket connection within 100ms', async () => {
+      const startTime = Date.now();
+      
+      await integrationOrchestrator.initializeWeddingIntegrations(mockWeddingId);
+      const connectionTime = Date.now() - startTime;
+      expect(connectionTime).toBeLessThan(100);
+      expect(mockSupabaseClient.channel).toHaveBeenCalledWith(`wedding-${mockWeddingId}-schedule`);
+    });
+    it('should handle schedule change notifications', async () => {
+      const mockScheduleChange = {
+        type: 'schedule_update',
+        payload: {
+          taskId: 'task-123',
+          newDate: '2024-06-15T10:00:00Z',
+          assigneeId: 'helper-456'
+        }
+      };
+      await integrationOrchestrator.handleScheduleUpdate(mockWeddingId, mockScheduleChange);
+      expect(mockChannel.send).toHaveBeenCalledWith({
+        type: 'broadcast',
+        event: 'schedule_updated',
+        payload: mockScheduleChange.payload
+      });
+    it('should process multi-channel notifications', async () => {
+      const notificationData = {
+        weddingId: mockWeddingId,
+        type: 'schedule_reminder',
+        channels: ['email', 'sms', 'push'],
+        recipients: ['couple@example.com', '+1234567890']
+      const result = await integrationOrchestrator.sendMultiChannelNotification(notificationData);
+      expect(result.success).toBe(true);
+      expect(result.channels).toEqual(['email', 'sms', 'push']);
+  });
+  describe('Calendar Integration', () => {
+    it('should sync with Google Calendar API', async () => {
+      const calendarEvent = {
+        title: 'Wedding Vendor Meeting',
+        start: '2024-06-15T14:00:00Z',
+        end: '2024-06-15T15:00:00Z',
+        attendees: ['couple@example.com', 'vendor@example.com']
+      const result = await integrationOrchestrator.syncToExternalCalendar(
+        mockWeddingId, 
+        calendarEvent
+      );
+      expect(result.calendarEventId).toBeDefined();
+describe('WS-163: Budget Category Integration', () => {
+  const mockBudgetData = {
+    weddingId: 'wedding-123',
+    category: 'venue',
+    totalBudget: 15000,
+    spentAmount: 12000
+  };
+  describe('ML-Powered Expense Categorization', () => {
+    it('should classify expense with >80% confidence', async () => {
+      const expenseData = {
+        description: 'Downtown Event Hall rental payment',
+        amount: 5000,
+        vendor: 'Grand Ballroom Events'
+      const classification = await budgetIntegration.classifyExpense(
+        mockBudgetData.weddingId,
+        expenseData
+      expect(classification.category).toBe('venue');
+      expect(classification.confidence).toBeGreaterThan(0.8);
+    it('should suggest vendors based on category and budget', async () => {
+      const suggestions = await budgetIntegration.suggestVendors(
+        'photography',
+        { min: 2000, max: 4000 }
+      expect(suggestions).toHaveLength(5);
+      expect(suggestions[0]).toHaveProperty('name');
+      expect(suggestions[0]).toHaveProperty('priceRange');
+  describe('Real-time Budget Calculations', () => {
+    it('should update budget in real-time within 100ms', async () => {
+      const newExpense = {
+        category: 'venue',
+        amount: 2000,
+        description: 'Additional decorations'
+      await budgetIntegration.addExpense(mockBudgetData.weddingId, newExpense);
+      const updateTime = Date.now() - startTime;
+      expect(updateTime).toBeLessThan(100);
+    it('should trigger alerts when budget thresholds exceeded', async () => {
+      const overBudgetExpense = {
+        amount: 5000, // This would exceed the remaining budget
+        description: 'Last minute venue changes'
+      const result = await budgetIntegration.addExpense(
+        overBudgetExpense
+      expect(result.alert).toBeDefined();
+      expect(result.alert.alertType).toBe('budget_exceeded');
+      expect(result.alert.severity).toBe('high');
+  describe('Banking API Integration', () => {
+    it('should sync with Plaid API for transaction categorization', async () => {
+      const bankTransaction = {
+        id: 'trans-123',
+        amount: 1500,
+        description: 'ACH Transfer - Wedding Flowers LLC',
+        date: '2024-06-10'
+      const syncResult = await budgetIntegration.syncBankingTransaction(
+        bankTransaction
+      expect(syncResult.success).toBe(true);
+      expect(syncResult.categorizedExpense).toBeDefined();
+      expect(syncResult.categorizedExpense.category).toBe('flowers');
+describe('WS-164: Manual Tracking Integration', () => {
+  const mockReceiptFile = new File(['receipt data'], 'receipt.jpg', { type: 'image/jpeg' });
+  describe('OCR Receipt Processing', () => {
+    it('should process receipt OCR within 5000ms', async () => {
+      const ocrResult = await manualTrackingIntegration.processReceiptOCR(
+        mockReceiptFile,
+        mockWeddingId
+      const processingTime = Date.now() - startTime;
+      expect(processingTime).toBeLessThan(5000);
+      expect(ocrResult.extractedData).toBeDefined();
+      expect(ocrResult.extractedData.totalAmount).toBeGreaterThan(0);
+    it('should extract accurate receipt data with >90% confidence', async () => {
+      const mockReceiptData = {
+        merchantName: 'Wedding Flowers LLC',
+        totalAmount: 450.00,
+        date: '2024-06-10',
+        items: [
+          { description: 'Bridal bouquet', unitPrice: 150, quantity: 1 },
+          { description: 'Centerpieces', unitPrice: 75, quantity: 4 }
+        ]
+      // Mock OCR service response
+      expect(ocrResult.confidence).toBeGreaterThan(0.9);
+      expect(ocrResult.extractedData.merchantName).toContain('Wedding');
+      expect(ocrResult.extractedData.totalAmount).toBe(450.00);
+  describe('File Storage Integration', () => {
+    it('should upload receipt to Supabase Storage securely', async () => {
+      const uploadResult = await manualTrackingIntegration.uploadReceiptFile(
+        mockWeddingId,
+        'user-123'
+      expect(uploadResult.success).toBe(true);
+      expect(uploadResult.fileUrl).toContain('storage.supabase');
+      expect(uploadResult.securityScan.passed).toBe(true);
+    it('should enforce file size and type restrictions', async () => {
+      const largeFile = new File(['x'.repeat(10 * 1024 * 1024)], 'large.txt', { 
+        type: 'text/plain' 
+      await expect(
+        manualTrackingIntegration.uploadReceiptFile(largeFile, mockWeddingId, 'user-123')
+      ).rejects.toThrow('File size exceeds limit');
+  describe('Expense Approval Workflows', () => {
+    it('should create approval workflow for expense >$500', async () => {
+        amount: 750,
+        category: 'catering',
+        description: 'Additional catering costs',
+        receiptUrl: 'https://storage.supabase.co/receipt.jpg'
+      const workflow = await manualTrackingIntegration.createExpenseApproval(
+      expect(workflow.currentStep).toBe('couple_review');
+      expect(workflow.approvalRequired).toBe(true);
+    it('should auto-approve small expenses under threshold', async () => {
+      const smallExpense = {
+        amount: 50,
+        category: 'miscellaneous',
+        description: 'Wedding favors'
+        smallExpense
+      expect(workflow.currentStep).toBe('approved');
+      expect(workflow.autoApproved).toBe(true);
+  describe('Accounting API Integration', () => {
+    it('should sync approved expenses to QuickBooks', async () => {
+      const approvedExpense = {
+        id: 'expense-123',
+        amount: 1200,
+        description: 'Venue deposit payment',
+        approvedAt: new Date()
+      const syncResult = await manualTrackingIntegration.syncToAccountingAPI(
+        approvedExpense,
+        'quickbooks'
+      expect(syncResult.externalTransactionId).toBeDefined();
+describe('Cross-Feature Integration Workflows', () => {
+  describe('Budget + Manual Tracking Integration', () => {
+    it('should automatically update budget when receipt is processed', async () => {
+      const receiptData = {
+        merchantName: 'Premium Catering Services',
+        totalAmount: 3500,
+        category: 'catering'
+      // Process receipt and verify budget update
+      const result = await integrationOrchestrator.processReceiptToBudgetWorkflow(
+        'wedding-123',
+        receiptData
+      expect(result.budgetUpdated).toBe(true);
+      expect(result.expenseCreated).toBe(true);
+      expect(result.categoryUpdated).toBe('catering');
+  describe('Schedule + Budget Integration', () => {
+    it('should trigger budget review when schedule milestone reached', async () => {
+      const milestoneEvent = {
+        type: 'milestone_reached',
+        milestone: 'venue_booking_deadline',
+        daysRemaining: 30
+      const result = await integrationOrchestrator.handleScheduleMilestone(
+        milestoneEvent
+      expect(result.budgetReviewTriggered).toBe(true);
+      expect(result.recommendationsGenerated).toBe(true);
+describe('Performance and Health Monitoring', () => {
+  describe('Integration Health Checks', () => {
+    it('should monitor all integration components', async () => {
+      const healthStatus = await integrationOrchestrator.runHealthCheck('wedding-123');
+      expect(healthStatus.components).toHaveLength(3); // WS-162, WS-163, WS-164
+      expect(healthStatus.overall).toBe('healthy');
+      expect(healthStatus.components.every(c => c.responseTime < 100)).toBe(true);
+  describe('Performance Metrics', () => {
+    it('should track real-time latency under 100ms', async () => {
+      const metrics = await integrationOrchestrator.getPerformanceMetrics('wedding-123');
+      expect(metrics.realtimeLatency).toBeLessThan(100);
+      expect(metrics.budgetCalculationTime).toBeLessThan(50);
+      expect(metrics.errorRate).toBeLessThan(0.01); // Less than 1%
+    it('should alert on performance degradation', async () => {
+      // Simulate high latency
+      const slowMetrics = {
+        realtimeLatency: 250, // Exceeds 100ms threshold
+        budgetCalculationTime: 150
+      const alertResult = await integrationOrchestrator.checkPerformanceThresholds(
+        slowMetrics
+      expect(alertResult.alertTriggered).toBe(true);
+      expect(alertResult.alertLevel).toBe('warning');
+describe('Security and Compliance', () => {
+  describe('PCI DSS Compliance', () => {
+    it('should encrypt financial data at rest', async () => {
+      const sensitiveData = {
+        cardNumber: '4111-1111-1111-1111',
+        amount: 1500
+      const encrypted = await budgetIntegration.encryptFinancialData(sensitiveData);
+      expect(encrypted.data).not.toContain('4111-1111-1111-1111');
+      expect(encrypted.algorithm).toBe('AES-256-GCM');
+  describe('Webhook Security', () => {
+    it('should validate webhook signatures', async () => {
+      const webhookPayload = {
+        type: 'budget_update',
+        data: { amount: 500, category: 'venue' }
+      const signature = 'sha256=valid_signature';
+      const isValid = await integrationOrchestrator.validateWebhook(
+        webhookPayload,
+        signature,
+        'stripe'
+      expect(isValid).toBe(true);
+describe('API Documentation for Team D Mobile Integration', () => {
+  describe('Endpoint Documentation', () => {
+    it('should provide OpenAPI spec for mobile integration', () => {
+      const apiSpec = integrationOrchestrator.generateOpenAPISpec();
+      expect(apiSpec.paths).toHaveProperty('/api/integrations/budget');
+      expect(apiSpec.paths).toHaveProperty('/api/integrations/receipts/upload');
+      expect(apiSpec.paths).toHaveProperty('/api/integrations/schedule/realtime');
+      // Verify mobile-specific endpoints
+      expect(apiSpec.paths).toHaveProperty('/api/mobile/budget/categories');
+      expect(apiSpec.paths).toHaveProperty('/api/mobile/receipts/camera-upload');
+    it('should include authentication requirements for each endpoint', () => {
+      const budgetEndpoint = apiSpec.paths['/api/integrations/budget'].get;
+      expect(budgetEndpoint.security).toContain({ BearerAuth: [] });
+      expect(budgetEndpoint.parameters).toContain({
+        name: 'wedding-id',
+        in: 'header',
+        required: true

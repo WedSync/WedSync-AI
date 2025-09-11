@@ -1,0 +1,311 @@
+/**
+ * Performance Tests - Viral Optimization Round 2
+ * WS-141 Round 2: Validate performance requirements across all components
+ * REQUIREMENTS: A/B selection <50ms, Complex queries <1s, Analytics <200ms
+ */
+
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { performance } from 'perf_hooks'
+// Mock services for controlled performance testing
+vi.mock('@/lib/supabase/client', () => ({
+  supabase: {
+    rpc: vi.fn(),
+    from: vi.fn().mockReturnThis(),
+    select: vi.fn().mockReturnThis(),
+    insert: vi.fn().mockReturnThis(),
+    eq: vi.fn().mockReturnThis(),
+    gte: vi.fn().mockReturnThis(),
+    single: vi.fn()
+  }
+}))
+import { ViralABTestingService } from '@/lib/services/viral-ab-testing-service'
+import { SuperConnectorService } from '@/lib/services/super-connector-service'
+import { ViralAnalyticsService } from '@/lib/services/viral-analytics-service'
+import { ReferralRewardService } from '@/lib/services/referral-reward-service'
+// Performance test utilities
+interface PerformanceResult {
+  avgTime: number
+  minTime: number
+  maxTime: number
+  p95Time: number
+  p99Time: number
+  passedRequirement: boolean
+  requirement: number
+}
+function calculatePerformanceStats(times: number[], requirement: number): PerformanceResult {
+  const sorted = times.sort((a, b) => a - b)
+  const avg = times.reduce((sum, t) => sum + t, 0) / times.length
+  const min = sorted[0]
+  const max = sorted[sorted.length - 1]
+  const p95Index = Math.floor(sorted.length * 0.95)
+  const p99Index = Math.floor(sorted.length * 0.99)
+  const p95 = sorted[p95Index]
+  const p99 = sorted[p99Index]
+  return {
+    avgTime: Math.round(avg),
+    minTime: Math.round(min),
+    maxTime: Math.round(max),
+    p95Time: Math.round(p95),
+    p99Time: Math.round(p99),
+    passedRequirement: p95 < requirement,
+    requirement
+async function measurePerformance<T>(
+  operation: () => Promise<T>,
+  iterations: number = 50
+): Promise<{ times: number[], results: T[] }> {
+  const times: number[] = []
+  const results: T[] = []
+  for (let i = 0; i < iterations; i++) {
+    const start = performance.now()
+    try {
+      const result = await operation()
+      results.push(result)
+    } catch (error) {
+      // Still measure time for failed operations
+      console.warn(`Operation failed on iteration ${i}:`, error)
+    }
+    const end = performance.now()
+    times.push(end - start)
+    
+    // Small delay to prevent overwhelming the system
+    if (i < iterations - 1) {
+      await new Promise(resolve => setTimeout(resolve, 10))
+  return { times, results }
+describe('Viral Optimization Performance Tests', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+  describe('A/B Testing Performance - Requirement: <50ms', () => {
+    beforeEach(() => {
+      const mockSupabase = (await import('@/lib/supabase/client')).supabase as any
+      
+      // Mock fast database responses
+      mockSupabase.rpc.mockResolvedValue({
+        data: [
+          {
+            id: 'variant-1',
+            variant_name: 'control',
+            template: 'Hey {{name}}, try WedSync!',
+            is_control: true,
+            is_active: true,
+            weight: 50
+          },
+            id: 'variant-2',
+            variant_name: 'variant_a', 
+            template: 'Hi {{name}}! WedSync changed my wedding planning',
+            is_control: false,
+          }
+        ],
+        error: null
+      })
+      // Mock user assignment lookup (cache hit simulation)
+      mockSupabase.from.mockImplementation((table) => {
+        if (table === 'user_variant_assignments') {
+          return {
+            select: () => ({
+              eq: () => ({
+                single: () => Promise.resolve({
+                  data: null, // No existing assignment (worst case)
+                  error: null
+                })
+              })
+            })
+        }
+        return mockSupabase
+    })
+    it('should select invitation variants under 50ms (P95)', async () => {
+      const { times } = await measurePerformance(
+        () => ViralABTestingService.selectInvitationVariant('past_client', 'user-123'),
+        100 // More iterations for statistical significance
+      )
+      const stats = calculatePerformanceStats(times, 50)
+      console.log('A/B Testing Variant Selection Performance:', {
+        ...stats,
+        unit: 'ms'
+      expect(stats.passedRequirement).toBe(true)
+      expect(stats.p95Time).toBeLessThan(50)
+      expect(stats.avgTime).toBeLessThan(25) // Should average much faster
+    it('should handle concurrent variant selections efficiently', async () => {
+      const concurrentRequests = 20
+      const start = performance.now()
+      const promises = Array(concurrentRequests).fill(null).map(() =>
+        ViralABTestingService.selectInvitationVariant('vendor', 'user-456')
+      await Promise.all(promises)
+      const totalTime = performance.now() - start
+      const avgTimePerRequest = totalTime / concurrentRequests
+      console.log(`Concurrent A/B Testing (${concurrentRequests} requests):`, {
+        totalTime: Math.round(totalTime),
+        avgTimePerRequest: Math.round(avgTimePerRequest),
+      expect(avgTimePerRequest).toBeLessThan(50)
+    it('should maintain performance under load simulation', async () => {
+      const iterations = 200
+        () => ViralABTestingService.selectInvitationVariant(
+          Math.random() > 0.5 ? 'past_client' : 'vendor',
+          `user-${Math.floor(Math.random() * 1000)}`
+        ),
+        iterations
+      console.log(`A/B Testing Load Test (${iterations} iterations):`, {
+      expect(stats.p99Time).toBeLessThan(75) // Allow some degradation under load
+  describe('Viral Analytics Performance - Requirement: <200ms', () => {
+      const mockSupabase = require('@/lib/supabase/client').supabase
+      // Mock analytics queries with realistic response times
+      mockSupabase.rpc.mockImplementation((functionName) => {
+        const delay = functionName === 'execute_analytics_query' ? 50 : 20
+        
+        return new Promise(resolve => {
+          setTimeout(() => {
+            resolve({
+              data: generateMockAnalyticsData(functionName),
+              error: null
+          }, delay)
+        })
+    it('should analyze channel performance under 200ms (P95)', async () => {
+        () => ViralAnalyticsService.analyzeChannelPerformance('30 days'),
+        75
+      const stats = calculatePerformanceStats(times, 200)
+      console.log('Channel Performance Analysis:', {
+      expect(stats.p95Time).toBeLessThan(200)
+      expect(stats.avgTime).toBeLessThan(150)
+    it('should generate viral analytics summary under 200ms', async () => {
+        () => ViralAnalyticsService.getViralAnalyticsSummary('30 days'),
+        50
+      console.log('Viral Analytics Summary:', {
+    it('should analyze optimal timing patterns efficiently', async () => {
+        () => ViralAnalyticsService.analyzeOptimalTiming('past_client', '90 days'),
+        60
+      console.log('Timing Analysis Performance:', {
+  describe('Complex Queries Performance - Requirement: <1s', () => {
+      // Mock complex queries with longer but acceptable response times
+        let delay = 100
+        if (functionName === 'execute_analytics_query' && 
+            JSON.stringify(arguments).includes('RECURSIVE')) {
+          delay = 400 // Complex recursive queries
+    it('should analyze viral generations under 1s (P95)', async () => {
+        () => ViralAnalyticsService.analyzeGenerations('90 days', 10),
+        30 // Fewer iterations for complex queries
+      const stats = calculatePerformanceStats(times, 1000)
+      console.log('Generation Analysis Performance:', {
+      expect(stats.p95Time).toBeLessThan(1000)
+      expect(stats.avgTime).toBeLessThan(800)
+    it('should analyze geographic spread under 1s', async () => {
+        () => ViralAnalyticsService.analyzeGeographicSpread('180 days'),
+        25
+      console.log('Geographic Spread Analysis:', {
+    it('should update super-connector scores efficiently', async () => {
+        () => SuperConnectorService.identifySuperConnectors(false),
+        20
+      console.log('Super-Connector Score Update:', {
+    it('should analyze viral cohorts under 1s', async () => {
+        () => ViralAnalyticsService.analyzeViralCohorts(100),
+        15
+      console.log('Cohort Analysis Performance:', {
+  describe('Referral Reward Performance - Requirements: <100ms calculation, <500ms fulfillment', () => {
+        data: [{ 
+          successful_referrals: 12,
+          total_rewards_earned: 450,
+          last_referral_date: new Date().toISOString()
+        }],
+    it('should calculate referral rewards under 100ms (P95)', async () => {
+        () => ReferralRewardService.calculateReferralReward(
+          'user-123',
+          'user-456', 
+          'subscription',
+          75.00
+        100
+      const stats = calculatePerformanceStats(times, 100)
+      console.log('Referral Reward Calculation:', {
+      expect(stats.p95Time).toBeLessThan(100)
+      expect(stats.avgTime).toBeLessThan(75)
+    it('should create reward records efficiently', async () => {
+      // Mock calculation result
+      const mockCalculation = {
+        base_amount: 25,
+        tier_multiplier: 1.25,
+        special_bonuses: 5,
+        final_amount: 36.25,
+        currency: 'USD' as const,
+        expires_at: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
+        calculation_factors: ['Silver tier multiplier: 1.25x']
+      }
+        () => ReferralRewardService.createReferralReward(
+          'user-789',
+          'signup',
+          mockCalculation,
+          {}
+      console.log('Referral Reward Creation:', {
+    it('should retrieve referral analytics efficiently', async () => {
+        () => ReferralRewardService.getReferralAnalytics('user-123', '90 days'),
+      const stats = calculatePerformanceStats(times, 300)
+      console.log('Referral Analytics Performance:', {
+      expect(stats.p95Time).toBeLessThan(300)
+  describe('Super-Connector Performance - Requirements: <1s complex analysis', () => {
+            user_id: 'user-123',
+            couple_count: 25,
+            avg_connection_strength: 0.85,
+            recent_connections: 8,
+            viral_successes: 15,
+            super_connector_score: 8.5,
+            tier: 'gold',
+            priority_level: 8,
+            reward_multiplier: 1.5,
+            last_analyzed_at: new Date().toISOString()
+    it('should identify super-connectors under 1s', async () => {
+        () => SuperConnectorService.identifySuperConnectors(true),
+      console.log('Super-Connector Identification:', {
+    it('should calculate inbox priority quickly', async () => {
+        () => SuperConnectorService.calculateInboxPriority(
+          'user-456',
+          'collaboration'
+        80
+      console.log('Inbox Priority Calculation:', {
+    it('should perform network analysis under 1s', async () => {
+        () => SuperConnectorService.getNetworkAnalysis(),
+      console.log('Network Analysis Performance:', {
+  describe('Memory and Resource Usage', () => {
+    it('should not cause memory leaks during sustained operation', async () => {
+      const initialMemory = process.memoryUsage()
+      // Simulate sustained operation
+      for (let i = 0; i < 500; i++) {
+        await ViralABTestingService.selectInvitationVariant('past_client', `user-${i}`)
+        // Force garbage collection every 100 iterations if available
+        if (i % 100 === 0 && global.gc) {
+          global.gc()
+      const finalMemory = process.memoryUsage()
+      const memoryGrowth = finalMemory.heapUsed - initialMemory.heapUsed
+      const memoryGrowthMB = memoryGrowth / (1024 * 1024)
+      console.log('Memory Usage:', {
+        initial: Math.round(initialMemory.heapUsed / (1024 * 1024)),
+        final: Math.round(finalMemory.heapUsed / (1024 * 1024)),
+        growth: Math.round(memoryGrowthMB),
+        unit: 'MB'
+      // Memory growth should be reasonable (< 50MB for 500 operations)
+      expect(memoryGrowthMB).toBeLessThan(50)
+  describe('Database Connection Performance', () => {
+    it('should handle connection pool efficiently', async () => {
+      // Test concurrent database operations
+      const concurrentOps = 50
+      const operations = Array(concurrentOps).fill(null).map((_, i) => 
+        ViralABTestingService.selectInvitationVariant('friend', `user-${i}`)
+      await Promise.allSettled(operations)
+      const avgTimePerOp = totalTime / concurrentOps
+      console.log(`Database Connection Pool Test (${concurrentOps} operations):`, {
+        avgTimePerOp: Math.round(avgTimePerOp),
+      // Should handle concurrent operations efficiently
+      expect(avgTimePerOp).toBeLessThan(100)
+      expect(totalTime).toBeLessThan(2000)
+})
+// Helper function to generate mock analytics data
+function generateMockAnalyticsData(functionName: string) {
+  switch (functionName) {
+    case 'analyze_ab_test_performance':
+      return [
+        { variant: 'control', sent_count: 1000, conversion_rate: 7.5 },
+        { variant: 'variant_a', sent_count: 1000, conversion_rate: 12.3 }
+      ]
+    case 'get_active_template_variants':
+        { id: 'v1', template: 'Template 1', weight: 50 },
+        { id: 'v2', template: 'Template 2', weight: 50 }
+    default:
+      return [{ result: 'mock_data' }]

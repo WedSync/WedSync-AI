@@ -1,0 +1,634 @@
+/**
+ * Dashboard Configuration API Route - WS-037 Dashboard Config Management
+ * Team B - Round 2 Implementation
+ * Handles dashboard layout, widget configuration, and settings management
+ */
+
+import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@/lib/supabase/server'
+import { WidgetService, DashboardWidget } from '@/lib/services/widgetService'
+import { isValidUUID } from '@/lib/security/input-validation'
+import rateLimit from '@/lib/rate-limit'
+import { z } from 'zod'
+
+// Rate limiting for config operations
+const configRateLimit = rateLimit({
+  interval: 60 * 1000, // 1 minute
+  uniqueTokenPerInterval: 200
+})
+
+// Validation schemas
+const widgetPositionSchema = z.object({
+  id: z.string().uuid(),
+  position_x: z.number().min(0).max(12),
+  position_y: z.number().min(0).max(12),
+  width: z.number().min(1).max(12).optional(),
+  height: z.number().min(1).max(6).optional()
+})
+
+const dashboardLayoutSchema = z.object({
+  positions: z.array(widgetPositionSchema),
+  grid_columns: z.number().min(6).max(24).optional(),
+  compact_mode: z.boolean().optional()
+})
+
+const dashboardSettingsSchema = z.object({
+  auto_refresh: z.boolean().optional(),
+  refresh_interval: z.number().min(60).max(3600).optional(),
+  default_date_range: z.enum(['7d', '30d', '90d', '1y']).optional(),
+  enabled_widgets: z.array(z.string()).optional(),
+  notifications: z.object({
+    email: z.boolean().optional(),
+    browser: z.boolean().optional(),
+    sound: z.boolean().optional()
+  }).optional(),
+  theme: z.enum(['light', 'dark', 'auto']).optional()
+})
+
+const importConfigSchema = z.object({
+  widgets: z.array(z.object({
+    widget_type: z.string(),
+    widget_config: z.record(z.unknown()),
+    position_x: z.number(),
+    position_y: z.number(),
+    width: z.number(),
+    height: z.number(),
+    is_enabled: z.boolean()
+  })),
+  settings: dashboardSettingsSchema.optional(),
+  layout_version: z.string().optional()
+})
+
+// Authentication helper
+async function getAuthenticatedUser(request: NextRequest) {
+  const supabase = await createClient()
+  
+  const { data: { user }, error } = await supabase.auth.getUser()
+  
+  if (error || !user) {
+    throw new Error('Authentication required')
+  }
+
+  return { user, supabase }
+}
+
+// CSRF token validation
+function validateCSRFToken(request: NextRequest): boolean {
+  const csrfToken = request.headers.get('x-csrf-token')
+  const sessionToken = request.cookies.get('csrf-token')?.value
+  
+  if (!csrfToken || !sessionToken || csrfToken !== sessionToken) {
+    return false
+  }
+  
+  return true
+}
+
+/**
+ * GET /api/dashboard/config
+ * Retrieve complete dashboard configuration
+ */
+export async function GET(request: NextRequest) {
+  const startTime = Date.now()
+  
+  try {
+    // Rate limiting
+    const identifier = request.ip || 'anonymous'
+    const { success, limit, remaining, reset } = await configRateLimit.check(100, identifier)
+    
+    if (!success) {
+      return NextResponse.json(
+        { error: 'Rate limit exceeded' },
+        { status: 429 }
+      )
+    }
+
+    // Authentication
+    const { user, supabase } = await getAuthenticatedUser(request)
+
+    // Initialize widget service
+    const widgetService = new WidgetService(supabase, user.id)
+
+    // Get dashboard widgets
+    const widgets = await widgetService.getDashboardWidgets()
+
+    // Get dashboard settings
+    const { data: settings, error: settingsError } = await supabase
+      .from('dashboard_settings')
+      .select('*')
+      .eq('supplier_id', user.id)
+      .single()
+
+    // Default settings if none exist
+    const dashboardSettings = settings?.settings || {
+      auto_refresh: true,
+      refresh_interval: 300,
+      default_date_range: '30d',
+      enabled_widgets: ['summary', 'upcoming_weddings', 'recent_activity'],
+      notifications: {
+        email: true,
+        browser: true,
+        sound: false
+      },
+      theme: 'light'
+    }
+
+    const dashboardLayout = settings?.layout || {
+      grid_columns: 12,
+      compact_mode: false
+    }
+
+    // Validate current layout
+    const layoutValidation = await widgetService.validateLayout(widgets)
+
+    const responseTime = Date.now() - startTime
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        widgets,
+        settings: dashboardSettings,
+        layout: dashboardLayout,
+        validation: layoutValidation,
+        meta: {
+          total_widgets: widgets.length,
+          enabled_widgets: widgets.filter(w => w.is_enabled).length,
+          last_updated: settings?.updated_at || new Date().toISOString()
+        }
+      },
+      meta: {
+        supplier_id: user.id,
+        response_time_ms: responseTime,
+        timestamp: new Date().toISOString()
+      }
+    }, {
+      status: 200,
+      headers: {
+        'X-Response-Time': responseTime.toString(),
+        'Cache-Control': 'private, max-age=600' // 10 minutes browser cache
+      }
+    })
+
+  } catch (error) {
+    console.error('Dashboard Config GET Error:', error)
+    
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred'
+    const responseTime = Date.now() - startTime
+
+    let statusCode = 500
+    if (errorMessage.includes('Authentication required')) {
+      statusCode = 401
+    }
+
+    return NextResponse.json({
+      success: false,
+      error: errorMessage,
+      meta: {
+        response_time_ms: responseTime,
+        timestamp: new Date().toISOString()
+      }
+    }, {
+      status: statusCode
+    })
+  }
+}
+
+/**
+ * POST /api/dashboard/config
+ * Initialize default dashboard or reset to defaults
+ */
+export async function POST(request: NextRequest) {
+  const startTime = Date.now()
+  
+  try {
+    // Rate limiting
+    const identifier = request.ip || 'anonymous'
+    const { success } = await configRateLimit.check(10, identifier)
+    
+    if (!success) {
+      return NextResponse.json(
+        { error: 'Rate limit exceeded' },
+        { status: 429 }
+      )
+    }
+
+    // CSRF validation
+    if (!validateCSRFToken(request)) {
+      return NextResponse.json(
+        { error: 'Invalid CSRF token' },
+        { status: 403 }
+      )
+    }
+
+    // Authentication
+    const { user, supabase } = await getAuthenticatedUser(request)
+
+    // Parse request body
+    const body = await request.json()
+    
+    const actionSchema = z.object({
+      action: z.enum(['initialize', 'reset_to_defaults']),
+      force: z.boolean().optional()
+    })
+
+    const { action, force } = actionSchema.parse(body)
+
+    // Initialize widget service
+    const widgetService = new WidgetService(supabase, user.id)
+
+    let result: DashboardWidget[]
+
+    if (action === 'initialize') {
+      // Setup default dashboard (only if no widgets exist or force is true)
+      const existingWidgets = await widgetService.getDashboardWidgets()
+      
+      if (existingWidgets.length > 0 && !force) {
+        return NextResponse.json(
+          { error: 'Dashboard already initialized. Use force=true to override.' },
+          { status: 409 }
+        )
+      }
+
+      if (force && existingWidgets.length > 0) {
+        // Remove existing widgets
+        for (const widget of existingWidgets) {
+          await widgetService.removeWidget(widget.id)
+        }
+      }
+
+      result = await widgetService.setupDefaultDashboard()
+    } else {
+      // Reset to defaults
+      const existingWidgets = await widgetService.getDashboardWidgets()
+      
+      // Remove all existing widgets
+      for (const widget of existingWidgets) {
+        await widgetService.removeWidget(widget.id)
+      }
+
+      // Setup default dashboard
+      result = await widgetService.setupDefaultDashboard()
+    }
+
+    // Reset settings to defaults
+    const defaultSettings = {
+      auto_refresh: true,
+      refresh_interval: 300,
+      default_date_range: '30d',
+      enabled_widgets: ['summary', 'upcoming_weddings', 'recent_activity'],
+      notifications: {
+        email: true,
+        browser: true,
+        sound: false
+      },
+      theme: 'light'
+    }
+
+    const { error: settingsError } = await supabase
+      .from('dashboard_settings')
+      .upsert({
+        supplier_id: user.id,
+        settings: defaultSettings,
+        layout: {
+          grid_columns: 12,
+          compact_mode: false
+        },
+        updated_at: new Date().toISOString()
+      })
+
+    if (settingsError) {
+      console.error('Error updating dashboard settings:', settingsError)
+    }
+
+    const responseTime = Date.now() - startTime
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        widgets: result,
+        settings: defaultSettings,
+        message: `Dashboard ${action === 'initialize' ? 'initialized' : 'reset'} successfully`
+      },
+      meta: {
+        supplier_id: user.id,
+        response_time_ms: responseTime,
+        timestamp: new Date().toISOString()
+      }
+    }, {
+      status: 201,
+      headers: {
+        'X-Response-Time': responseTime.toString()
+      }
+    })
+
+  } catch (error) {
+    console.error('Dashboard Config POST Error:', error)
+    
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred'
+    const responseTime = Date.now() - startTime
+
+    let statusCode = 500
+    if (errorMessage.includes('Authentication required')) {
+      statusCode = 401
+    } else if (errorMessage.includes('Invalid')) {
+      statusCode = 400
+    }
+
+    return NextResponse.json({
+      success: false,
+      error: errorMessage,
+      meta: {
+        response_time_ms: responseTime,
+        timestamp: new Date().toISOString()
+      }
+    }, {
+      status: statusCode
+    })
+  }
+}
+
+/**
+ * PATCH /api/dashboard/config
+ * Update dashboard layout or settings
+ */
+export async function PATCH(request: NextRequest) {
+  const startTime = Date.now()
+  
+  try {
+    // Rate limiting
+    const identifier = request.ip || 'anonymous'
+    const { success } = await configRateLimit.check(50, identifier)
+    
+    if (!success) {
+      return NextResponse.json(
+        { error: 'Rate limit exceeded' },
+        { status: 429 }
+      )
+    }
+
+    // CSRF validation
+    if (!validateCSRFToken(request)) {
+      return NextResponse.json(
+        { error: 'Invalid CSRF token' },
+        { status: 403 }
+      )
+    }
+
+    // Authentication
+    const { user, supabase } = await getAuthenticatedUser(request)
+
+    // Parse request body
+    const body = await request.json()
+    
+    const updateSchema = z.object({
+      layout: dashboardLayoutSchema.optional(),
+      settings: dashboardSettingsSchema.optional()
+    })
+
+    const { layout, settings } = updateSchema.parse(body)
+
+    // Initialize widget service
+    const widgetService = new WidgetService(supabase, user.id)
+
+    // Update widget positions if layout is provided
+    if (layout?.positions) {
+      await widgetService.updateWidgetPositions(layout.positions)
+    }
+
+    // Update dashboard settings
+    if (settings || layout) {
+      // Get current settings
+      const { data: currentSettings } = await supabase
+        .from('dashboard_settings')
+        .select('*')
+        .eq('supplier_id', user.id)
+        .single()
+
+      const updatedSettings = {
+        ...currentSettings?.settings,
+        ...settings
+      }
+
+      const updatedLayout = {
+        ...currentSettings?.layout,
+        ...(layout && {
+          grid_columns: layout.grid_columns,
+          compact_mode: layout.compact_mode
+        })
+      }
+
+      const { error: settingsError } = await supabase
+        .from('dashboard_settings')
+        .upsert({
+          supplier_id: user.id,
+          settings: updatedSettings,
+          layout: updatedLayout,
+          updated_at: new Date().toISOString()
+        })
+
+      if (settingsError) {
+        throw new Error(`Failed to update dashboard settings: ${settingsError.message}`)
+      }
+    }
+
+    // Get updated configuration
+    const widgets = await widgetService.getDashboardWidgets()
+    const validation = await widgetService.validateLayout(widgets)
+
+    const responseTime = Date.now() - startTime
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        widgets,
+        validation,
+        message: 'Dashboard configuration updated successfully'
+      },
+      meta: {
+        supplier_id: user.id,
+        response_time_ms: responseTime,
+        timestamp: new Date().toISOString()
+      }
+    }, {
+      status: 200,
+      headers: {
+        'X-Response-Time': responseTime.toString()
+      }
+    })
+
+  } catch (error) {
+    console.error('Dashboard Config PATCH Error:', error)
+    
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred'
+    const responseTime = Date.now() - startTime
+
+    let statusCode = 500
+    if (errorMessage.includes('Authentication required')) {
+      statusCode = 401
+    } else if (errorMessage.includes('Invalid')) {
+      statusCode = 400
+    }
+
+    return NextResponse.json({
+      success: false,
+      error: errorMessage,
+      meta: {
+        response_time_ms: responseTime,
+        timestamp: new Date().toISOString()
+      }
+    }, {
+      status: statusCode
+    })
+  }
+}
+
+/**
+ * PUT /api/dashboard/config
+ * Import/export dashboard configuration
+ */
+export async function PUT(request: NextRequest) {
+  const startTime = Date.now()
+  
+  try {
+    // Rate limiting
+    const identifier = request.ip || 'anonymous'
+    const { success } = await configRateLimit.check(5, identifier)
+    
+    if (!success) {
+      return NextResponse.json(
+        { error: 'Rate limit exceeded' },
+        { status: 429 }
+      )
+    }
+
+    // CSRF validation
+    if (!validateCSRFToken(request)) {
+      return NextResponse.json(
+        { error: 'Invalid CSRF token' },
+        { status: 403 }
+      )
+    }
+
+    // Authentication
+    const { user, supabase } = await getAuthenticatedUser(request)
+
+    // Parse query to determine action
+    const url = new URL(request.url)
+    const action = url.searchParams.get('action')
+
+    if (action === 'export') {
+      // Export current configuration
+      const widgetService = new WidgetService(supabase, user.id)
+      const config = await widgetService.exportDashboardConfig()
+
+      // Get settings
+      const { data: settings } = await supabase
+        .from('dashboard_settings')
+        .select('*')
+        .eq('supplier_id', user.id)
+        .single()
+
+      const responseTime = Date.now() - startTime
+
+      return NextResponse.json({
+        success: true,
+        data: {
+          ...config,
+          settings: settings?.settings || {},
+          layout: settings?.layout || {},
+          exported_at: new Date().toISOString()
+        },
+        meta: {
+          supplier_id: user.id,
+          response_time_ms: responseTime,
+          timestamp: new Date().toISOString()
+        }
+      }, {
+        status: 200,
+        headers: {
+          'Content-Disposition': `attachment; filename="dashboard-config-${user.id}-${Date.now()}.json"`,
+          'X-Response-Time': responseTime.toString()
+        }
+      })
+    }
+
+    if (action === 'import') {
+      // Import configuration
+      const body = await request.json()
+      const config = importConfigSchema.parse(body)
+
+      const widgetService = new WidgetService(supabase, user.id)
+      
+      // Import widgets
+      await widgetService.importDashboardConfig({ widgets: config.widgets as DashboardWidget[] })
+
+      // Import settings if provided
+      if (config.settings) {
+        const { error: settingsError } = await supabase
+          .from('dashboard_settings')
+          .upsert({
+            supplier_id: user.id,
+            settings: config.settings,
+            layout: {
+              grid_columns: 12,
+              compact_mode: false
+            },
+            updated_at: new Date().toISOString()
+          })
+
+        if (settingsError) {
+          console.error('Error importing dashboard settings:', settingsError)
+        }
+      }
+
+      const responseTime = Date.now() - startTime
+
+      return NextResponse.json({
+        success: true,
+        data: {
+          message: 'Dashboard configuration imported successfully',
+          imported_widgets: config.widgets.length
+        },
+        meta: {
+          supplier_id: user.id,
+          response_time_ms: responseTime,
+          timestamp: new Date().toISOString()
+        }
+      }, {
+        status: 200,
+        headers: {
+          'X-Response-Time': responseTime.toString()
+        }
+      })
+    }
+
+    return NextResponse.json(
+      { error: 'Invalid action. Use ?action=export or ?action=import' },
+      { status: 400 }
+    )
+
+  } catch (error) {
+    console.error('Dashboard Config PUT Error:', error)
+    
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred'
+    const responseTime = Date.now() - startTime
+
+    let statusCode = 500
+    if (errorMessage.includes('Authentication required')) {
+      statusCode = 401
+    } else if (errorMessage.includes('Invalid')) {
+      statusCode = 400
+    }
+
+    return NextResponse.json({
+      success: false,
+      error: errorMessage,
+      meta: {
+        response_time_ms: responseTime,
+        timestamp: new Date().toISOString()
+      }
+    }, {
+      status: statusCode
+    })
+  }
+}

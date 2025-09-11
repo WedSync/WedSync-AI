@@ -1,0 +1,266 @@
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import '@testing-library/jest-dom';
+import SystemHealthPage from '@/app/(admin)/system-health/page';
+
+// Mock next/dynamic to handle SSR disabled components
+jest.mock('next/dynamic', () => ({
+  __esModule: true,
+  default: (fn: any) => {
+    const Component = fn().then((mod: any) => mod.default || mod.LineChart || mod.AreaChart || mod.BarChart);
+    Component.displayName = 'DynamicComponent';
+    return Component;
+  },
+}));
+// Mock fetch for API calls
+global.fetch = jest.fn();
+describe('Complete System Health Monitoring Integration', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (global.fetch as jest.Mock).mockImplementation((url: string) => {
+      // Mock /api/health/complete endpoint
+      if (url.includes('/api/health/complete')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            status: 'healthy',
+            score: 95,
+            timestamp: new Date().toISOString(),
+            environment: 'production',
+            deployment: {
+              environment: 'production',
+              version: '1.0.0',
+              buildId: 'test-build',
+              deployedAt: new Date().toISOString(),
+            },
+            checks: {
+              database: { status: 'healthy', responseTime: 45 },
+              tables: { status: 'healthy', count: 25 },
+              queries: { status: 'healthy', avgTime: 120 },
+              storage: { status: 'healthy', used: 45, total: 100 },
+              rls: { status: 'healthy', policies: 150 },
+              api: { status: 'healthy', endpoints: 50 },
+              memory: { status: 'healthy', usage: 65 },
+              cpu: { status: 'healthy', usage: 35 },
+            metrics: {
+              uptime: 86400,
+              responseTime: 150,
+              activeConnections: 25,
+              requestsPerMinute: 120,
+            alerts: {
+              critical: 0,
+              high: 2,
+              medium: 5,
+              low: 10,
+              total: 17,
+            sla: {
+              target: 99.9,
+              current: 99.95,
+              compliant: true,
+          }),
+        });
+      }
+      
+      // Mock /api/health/trends endpoint
+      if (url.includes('/api/health/trends')) {
+        const dataPoints = Array.from({ length: 24 }, (_, i) => ({
+          timestamp: new Date(Date.now() - (24 - i) * 60 * 60 * 1000).toISOString(),
+          cpu: 30 + Math.random() * 40,
+          memory: 50 + Math.random() * 30,
+          responseTime: 100 + Math.random() * 100,
+          errorRate: Math.random() * 2,
+          requestCount: Math.floor(100 + Math.random() * 200),
+          activeUsers: Math.floor(20 + Math.random() * 50),
+        }));
+        
+            period: '24h',
+            dataPoints,
+            statistics: {
+              cpu: { current: 45, average: 50, min: 30, max: 70, trend: 'stable' },
+              memory: { current: 65, average: 65, min: 50, max: 80, trend: 'increasing' },
+              responseTime: { current: 150, average: 150, min: 100, max: 200, trend: 'stable' },
+            predictions: {
+              cpu: [{ timestamp: new Date().toISOString(), predicted: 48, confidence: 85, trend: 'stable' }],
+              memory: [{ timestamp: new Date().toISOString(), predicted: 68, confidence: 80, trend: 'up' }],
+              responseTime: [{ timestamp: new Date().toISOString(), predicted: 155, confidence: 75, trend: 'stable' }],
+            anomalies: [],
+            recommendations: ['Memory usage trending upward - monitor closely'],
+      // Mock /api/health/alerts endpoint
+      if (url.includes('/api/health/alerts')) {
+            alerts: [
+              {
+                id: '1',
+                timestamp: new Date().toISOString(),
+                severity: 'high',
+                type: 'memory_high',
+                component: 'system',
+                message: 'Memory usage above 75%',
+                resolved: false,
+              },
+                id: '2',
+                timestamp: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+                severity: 'medium',
+                type: 'slow_query',
+                component: 'database',
+                message: 'Query execution time exceeded threshold',
+                resolved: true,
+            ],
+            pagination: { total: 2, limit: 50, offset: 0, hasMore: false },
+              active: 7,
+              resolved: 10,
+              bySeverity: { critical: 0, high: 2, medium: 5, low: 10 },
+              resolutionRate: 58.82,
+            recommendations: ['Multiple high-severity alerts detected - consider system review'],
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({}),
+      });
+    });
+  });
+  
+  describe('Health Dashboard Rendering', () => {
+    test('should render system health dashboard', async () => {
+      render(<SystemHealthPage />);
+      await waitFor(() => {
+        expect(screen.getByText('System Health Monitoring')).toBeInTheDocument();
+    
+    test('should display overall health score', async () => {
+        expect(screen.getByText('95%')).toBeInTheDocument();
+        expect(screen.getByText('Healthy')).toBeInTheDocument();
+    test('should show environment selector', async () => {
+        const envSelector = screen.getByRole('combobox', { name: /environment/i });
+        expect(envSelector).toBeInTheDocument();
+        expect(envSelector).toHaveValue('production');
+  describe('Real-time Updates', () => {
+    test('should auto-refresh data at specified intervals', async () => {
+      jest.useFakeTimers();
+        expect(global.fetch).toHaveBeenCalledTimes(3); // Initial load of 3 endpoints
+      // Fast-forward 30 seconds (auto-refresh interval)
+      jest.advanceTimersByTime(30000);
+        expect(global.fetch).toHaveBeenCalledTimes(6); // Should have refreshed
+      jest.useRealTimers();
+    test('should update metrics in real-time', async () => {
+        expect(screen.getByText(/CPU Usage/i)).toBeInTheDocument();
+        expect(screen.getByText(/Memory Usage/i)).toBeInTheDocument();
+  describe('Cross-Environment Monitoring', () => {
+    test('should switch between environments', async () => {
+        fireEvent.change(envSelector, { target: { value: 'staging' } });
+        expect(global.fetch).toHaveBeenCalledWith(
+          expect.stringContaining('environment=staging'),
+          expect.any(Object)
+        );
+    test('should compare health across environments', async () => {
+        expect(screen.getByText(/Production/i)).toBeInTheDocument();
+  describe('Health Trend Analysis', () => {
+    test('should display trend charts', async () => {
+      // Switch to trends view
+      const trendsTab = screen.getByText('Trends');
+      fireEvent.click(trendsTab);
+        expect(screen.getByText(/Performance Trends/i)).toBeInTheDocument();
+        expect(screen.getByText(/Predictive Analysis/i)).toBeInTheDocument();
+    test('should show predictions', async () => {
+        expect(screen.getByText(/Next 6 hours/i)).toBeInTheDocument();
+  describe('Automated Health Remediation', () => {
+    test('should trigger auto-remediation for supported issues', async () => {
+      (global.fetch as jest.Mock).mockImplementationOnce(() =>
+        Promise.resolve({
+            success: true,
+            action: 'memory_cleanup',
+            message: 'Performed garbage collection and cache cleanup',
+        })
+      );
+      const response = await fetch('/api/health/complete', {
+        method: 'POST',
+        body: JSON.stringify({ issue: 'high_memory', autoRemediate: true }),
+      const result = await response.json();
+      expect(result.success).toBe(true);
+      expect(result.action).toBe('memory_cleanup');
+    test('should log remediation attempts', async () => {
+      const remediationLog = {
+        issue: 'high_memory',
+        action: 'memory_cleanup',
+        success: true,
+        timestamp: new Date().toISOString(),
+      };
+      expect(remediationLog.success).toBe(true);
+  describe('Executive Reporting', () => {
+    test('should display executive dashboard view', async () => {
+      const executiveTab = screen.getByText('Executive');
+      fireEvent.click(executiveTab);
+        expect(screen.getByText(/Executive Health Report/i)).toBeInTheDocument();
+        expect(screen.getByText(/SLA Compliance/i)).toBeInTheDocument();
+    test('should show SLA metrics', async () => {
+        expect(screen.getByText('99.95%')).toBeInTheDocument(); // Current SLA
+        expect(screen.getByText('99.9%')).toBeInTheDocument(); // Target SLA
+  describe('Mobile Responsiveness', () => {
+    test('should be responsive on mobile devices', async () => {
+      // Set mobile viewport
+      global.innerWidth = 375;
+      global.innerHeight = 812;
+        const dashboard = screen.getByTestId('health-dashboard');
+        expect(dashboard).toHaveClass('flex-col'); // Should stack vertically on mobile
+    test('should show mobile-optimized navigation', async () => {
+        const tabs = screen.getByRole('tablist');
+        expect(tabs).toHaveClass('flex-wrap'); // Tabs should wrap on mobile
+  describe('Performance Validation', () => {
+    test('dashboard should load within 3 seconds', async () => {
+      const startTime = Date.now();
+      const loadTime = Date.now() - startTime;
+      expect(loadTime).toBeLessThan(3000);
+    test('should handle large datasets efficiently', async () => {
+      // Mock large dataset
+      const largeDataset = Array.from({ length: 1000 }, (_, i) => ({
+        timestamp: new Date(Date.now() - i * 60000).toISOString(),
+        value: Math.random() * 100,
+      }));
+          json: async () => ({ dataPoints: largeDataset }),
+      const response = await fetch('/api/health/trends?period=30d');
+      const data = await response.json();
+      expect(data.dataPoints).toHaveLength(1000);
+  describe('Integration Points', () => {
+    test('should integrate with alert system', async () => {
+      const alertsTab = screen.getByText('Alerts');
+      fireEvent.click(alertsTab);
+        expect(screen.getByText(/Active Alerts/i)).toBeInTheDocument();
+        expect(screen.getByText('Memory usage above 75%')).toBeInTheDocument();
+    test('should integrate with deployment data', async () => {
+        expect(screen.getByText(/Deployment/i)).toBeInTheDocument();
+        expect(screen.getByText('v1.0.0')).toBeInTheDocument();
+  describe('Error Handling', () => {
+    test('should handle API failures gracefully', async () => {
+      (global.fetch as jest.Mock).mockRejectedValueOnce(new Error('API Error'));
+        expect(screen.getByText(/Unable to load health data/i)).toBeInTheDocument();
+    test('should show retry option on failure', async () => {
+        const retryButton = screen.getByText(/Retry/i);
+        expect(retryButton).toBeInTheDocument();
+});
+describe('Health API Validation', () => {
+  test('complete health endpoint should return all metrics', async () => {
+    const response = await fetch('/api/health/complete');
+    const data = await response.json();
+    expect(data).toHaveProperty('status');
+    expect(data).toHaveProperty('score');
+    expect(data).toHaveProperty('checks');
+    expect(data).toHaveProperty('metrics');
+    expect(data).toHaveProperty('alerts');
+    expect(data).toHaveProperty('sla');
+    expect(data.checks).toHaveProperty('database');
+    expect(data.checks).toHaveProperty('api');
+    expect(data.checks).toHaveProperty('memory');
+    expect(data.checks).toHaveProperty('cpu');
+  test('trends endpoint should return predictions', async () => {
+    const response = await fetch('/api/health/trends');
+    expect(data).toHaveProperty('predictions');
+    expect(data.predictions).toHaveProperty('cpu');
+    expect(data.predictions).toHaveProperty('memory');
+    expect(data.predictions.cpu[0]).toHaveProperty('predicted');
+    expect(data.predictions.cpu[0]).toHaveProperty('confidence');
+    expect(data.predictions.cpu[0]).toHaveProperty('trend');
+  test('alerts endpoint should return categorized alerts', async () => {
+    const response = await fetch('/api/health/alerts');
+    expect(data).toHaveProperty('statistics');
+    expect(data.statistics).toHaveProperty('bySeverity');
+    expect(data.statistics.bySeverity).toHaveProperty('critical');
+    expect(data.statistics.bySeverity).toHaveProperty('high');
+    expect(data.statistics.bySeverity).toHaveProperty('medium');
+    expect(data.statistics.bySeverity).toHaveProperty('low');

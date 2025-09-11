@@ -1,0 +1,85 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { MeetingPreparationWorkflowService } from '@/lib/meeting-preparation/workflow-service';
+import { validateRateLimit } from '@/lib/security/booking-security';
+
+const workflowService = new MeetingPreparationWorkflowService();
+
+// Send reminder for specific task
+export async function POST(request: NextRequest) {
+  try {
+    const clientIP = request.ip || request.headers.get('x-forwarded-for') || 'unknown';
+    
+    // Rate limiting
+    const rateLimitResult = await validateRateLimit(clientIP, 'task_reminder', 5, 300);
+    if (!rateLimitResult.allowed) {
+      return NextResponse.json(
+        { error: 'Rate limit exceeded. Please try again later.' },
+        { status: 429 }
+      );
+    }
+
+    const body = await request.json();
+    const { taskId } = body;
+
+    if (!taskId) {
+      return NextResponse.json(
+        { error: 'Task ID is required' },
+        { status: 400 }
+      );
+    }
+
+    const success = await workflowService.sendTaskReminder(taskId);
+
+    if (success) {
+      return NextResponse.json({
+        success: true,
+        message: 'Task reminder sent successfully'
+      });
+    } else {
+      return NextResponse.json(
+        { error: 'Failed to send task reminder' },
+        { status: 500 }
+      );
+    }
+
+  } catch (error: any) {
+    console.error('Send task reminder API error:', error);
+    
+    return NextResponse.json({
+      success: false,
+      message: error.message || 'Internal server error'
+    }, { status: 500 });
+  }
+}
+
+// Process overdue tasks (cron job endpoint)
+export async function PUT(request: NextRequest) {
+  try {
+    // Verify this is called from our cron job or authorized source
+    const authHeader = request.headers.get('Authorization');
+    const cronSecret = process.env.CRON_SECRET;
+    
+    if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    await workflowService.processOverdueTasks();
+
+    return NextResponse.json({
+      success: true,
+      message: 'Overdue tasks processed',
+      processedAt: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Process overdue tasks API error:', error);
+    
+    return NextResponse.json({
+      success: false,
+      message: 'Failed to process overdue tasks'
+    }, { status: 500 });
+  }
+}

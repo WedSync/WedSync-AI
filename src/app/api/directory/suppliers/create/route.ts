@@ -1,0 +1,209 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+
+// Validation schema for profile creation
+const createProfileSchema = z.object({
+  // Basic information
+  legal_business_name: z.string().min(1).max(255),
+  trading_name: z.string().max(255).optional(),
+  company_registration_number: z.string().max(100).optional(),
+  vat_number: z.string().max(100).optional(),
+  established_year: z
+    .number()
+    .min(1900)
+    .max(new Date().getFullYear())
+    .optional(),
+  business_structure: z
+    .enum(['sole_trader', 'partnership', 'limited_company', 'other'])
+    .optional(),
+
+  // Service details
+  service_offerings: z
+    .array(
+      z.object({
+        name: z.string(),
+        description: z.string(),
+        category: z.string(),
+      }),
+    )
+    .default([]),
+  specializations: z.array(z.string()).default([]),
+  languages_spoken: z.array(z.string()).default([]),
+  service_areas: z.array(z.string()).default([]), // UUID array
+  travel_policy: z.string().optional(),
+
+  // Capacity & Availability
+  max_events_per_day: z.number().min(1).max(10).default(1),
+  max_events_per_week: z.number().min(1).max(50).default(5),
+  advance_booking_days: z.number().min(0).max(365).default(30),
+  peak_season_months: z.array(z.number().min(1).max(12)).default([]),
+
+  // Pricing
+  pricing_structure: z.enum(['hourly', 'package', 'custom']).optional(),
+  hourly_rate: z.number().positive().optional(),
+  minimum_spend: z.number().positive().optional(),
+  deposit_percentage: z.number().min(0).max(100).optional(),
+  payment_terms: z.string().optional(),
+  cancellation_policy: z.string().optional(),
+
+  // Contact
+  key_contact_name: z.string().max(255).optional(),
+  key_contact_role: z.string().max(100).optional(),
+  key_contact_email: z.string().email().optional(),
+  key_contact_phone: z.string().max(50).optional(),
+
+  // Response settings
+  auto_response_enabled: z.boolean().default(false),
+  auto_response_message: z.string().optional(),
+  response_time_commitment: z
+    .enum(['within_hour', 'within_day', 'within_2days'])
+    .optional(),
+  preferred_contact_method: z
+    .enum(['email', 'phone', 'whatsapp', 'platform'])
+    .default('email'),
+
+  // Marketing
+  unique_selling_points: z.array(z.string()).default([]),
+  style_tags: z.array(z.string()).default([]),
+  ideal_client_description: z.string().optional(),
+
+  // Media
+  logo_url: z.string().url().optional(),
+  cover_image_url: z.string().url().optional(),
+});
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+
+    // Check authentication
+    const { data: user } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get user profile and organization
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('id, organization_id, role')
+      .eq('id', user.id)
+      .single();
+
+    if (!userProfile?.organization_id) {
+      return NextResponse.json(
+        { error: 'No organization found' },
+        { status: 400 },
+      );
+    }
+
+    // Check if supplier exists
+    const { data: supplier } = await supabase
+      .from('suppliers')
+      .select('id')
+      .eq('organization_id', userProfile.organization_id)
+      .single();
+
+    if (!supplier) {
+      return NextResponse.json(
+        { error: 'Supplier not found' },
+        { status: 404 },
+      );
+    }
+
+    // Check if profile already exists
+    const { data: existingProfile } = await supabase
+      .from('directory_supplier_profiles')
+      .select('id')
+      .eq('supplier_id', supplier.id)
+      .single();
+
+    if (existingProfile) {
+      return NextResponse.json(
+        { error: 'Profile already exists' },
+        { status: 409 },
+      );
+    }
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validatedData = createProfileSchema.parse(body);
+
+    // Create the profile
+    const { data: profile, error: profileError } = await supabase
+      .from('directory_supplier_profiles')
+      .insert({
+        supplier_id: supplier.id,
+        organization_id: userProfile.organization_id,
+        profile_status: 'draft',
+        completion_step: 1,
+        ...validatedData,
+      })
+      .select()
+      .single();
+
+    if (profileError) {
+      console.error('Error creating profile:', profileError);
+      throw profileError;
+    }
+
+    // Create initial profile completion tracking
+    const sections = [
+      'basic_information',
+      'service_details',
+      'media_gallery',
+      'pricing_packages',
+      'team_contact',
+      'verification',
+    ];
+
+    const completionRecords = sections.map((section) => ({
+      supplier_profile_id: profile.id,
+      section_name: section,
+      is_completed: false,
+      completion_percentage: 0,
+    }));
+
+    await supabase
+      .from('directory_profile_completion')
+      .insert(completionRecords);
+
+    // Generate SEO slug
+    const location = validatedData.service_areas?.[0] || 'uk';
+    const { data: seoData } = await supabase.rpc('generate_supplier_slug', {
+      business_name: validatedData.legal_business_name,
+      location: location,
+    });
+
+    // Create SEO record
+    if (seoData) {
+      await supabase.from('directory_supplier_seo').insert({
+        supplier_profile_id: profile.id,
+        custom_slug: seoData,
+        page_title: `${validatedData.legal_business_name} - Wedding Supplier`,
+        meta_description: `Professional wedding services by ${validatedData.legal_business_name}`,
+        sitemap_priority: 0.8,
+      });
+    }
+
+    return NextResponse.json({
+      success: true,
+      profile: profile,
+      message: 'Profile created successfully',
+    });
+  } catch (error) {
+    console.error('Error creating supplier profile:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Validation error', details: error.errors },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Failed to create supplier profile' },
+      { status: 500 },
+    );
+  }
+}

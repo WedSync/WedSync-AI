@@ -1,0 +1,56 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createSecureRoute, SecurityPresets } from '@/lib/middleware/security';
+import { ReviewEngine } from '@/lib/reviews/review-engine';
+import { reviewSubmissionSchema } from '@/lib/validations/review-schemas';
+
+/**
+ * POST /api/reviews/collect - Submit review from client
+ */
+export const POST = createSecureRoute(
+  {
+    ...SecurityPresets.PUBLIC, // Public endpoint for clients
+    rateLimit: { requests: 5, windowMs: 60 * 1000 }, // 5 submissions per minute per IP
+    validateBody: reviewSubmissionSchema,
+  },
+  async (req, context) => {
+    const reviewEngine = new ReviewEngine();
+    const submissionData = (req as any).validatedData.body;
+
+    try {
+      // Submit review
+      await reviewEngine.markRequestCompleted(submissionData.request_token, {
+        platform: submissionData.platform,
+        rating: submissionData.rating,
+        content: submissionData.content,
+        reviewer_name: submissionData.reviewer_name,
+        reviewer_email: submissionData.reviewer_email,
+        photos: submissionData.photos || [],
+      });
+
+      return NextResponse.json(
+        {
+          message:
+            'Thank you for your review! It has been submitted successfully.',
+          status: 'completed',
+        },
+        { status: 201 },
+      );
+    } catch (error) {
+      console.error('Failed to submit review:', error);
+
+      if (error instanceof Error) {
+        if (error.message.includes('not found')) {
+          return NextResponse.json(
+            { error: 'Review request not found or expired' },
+            { status: 404 },
+          );
+        }
+      }
+
+      return NextResponse.json(
+        { error: 'Failed to submit review' },
+        { status: 500 },
+      );
+    }
+  },
+);

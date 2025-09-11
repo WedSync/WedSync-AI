@@ -1,0 +1,59 @@
+name: 🚫 Saturday Wedding Day Protection
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  wedding-day-protection:
+    name: 💍 Wedding Day Safety Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    
+    steps:
+      - name: 📅 Check for Saturday (Wedding Day)
+        id: saturday-check
+        run: |
+          CURRENT_DAY=$(date +%u)  # 1=Monday, 6=Saturday, 7=Sunday
+          CURRENT_TIME=$(date +%H)
+          
+          echo "Current day: $CURRENT_DAY (6=Saturday)"
+          echo "Current hour: $CURRENT_TIME"
+          
+          # Block deployments on Saturday (day 6)
+          if [ "$CURRENT_DAY" -eq 6 ]; then
+            echo "🚫 BLOCKED: Saturday is WEDDING DAY - No deployments allowed!"
+            echo "🎩 Protecting couples on their special day"
+            echo "⏰ Try again on Monday morning"
+            exit 1
+          fi
+          
+          # Warning for Friday evening deployments (after 6 PM UTC)
+          if [ "$CURRENT_DAY" -eq 5 ] && [ "$CURRENT_TIME" -ge 18 ]; then
+            echo "⚠️  WARNING: Friday evening deployment detected"
+            echo "🕰️  Saturday weddings start early - be extra careful!"
+            echo "🛡️  All changes should be thoroughly tested"
+          fi
+          
+          echo "✅ Safe to proceed - not a wedding day"
+      
+      - name: 🔒 Verify Wedding Calendar (if scheduled)
+        run: |
+          echo "📋 Checking wedding calendar for active events..."
+          # In production, this would check a wedding calendar API
+          # For now, just log the protection is active
+          echo "🛡️  Wedding protection system: ACTIVE"
+          echo "💒 Zero tolerance for wedding day disruptions"
+      
+      - name: 📊 Log Protection Status
+        run: |
+          echo "# 🛡️ Wedding Day Protection Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Protection Status:** ✅ ACTIVE" >> $GITHUB_STEP_SUMMARY
+          echo "**Wedding Day Policy:** No deployments on Saturdays" >> $GITHUB_STEP_SUMMARY
+          echo "**Current Safety Level:** $(if [ $(date +%u) -eq 6 ]; then echo '🚫 BLOCKED'; else echo '✅ SAFE'; fi)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "💝 Protecting precious wedding memories since 2025" >> $GITHUB_STEP_SUMMARY

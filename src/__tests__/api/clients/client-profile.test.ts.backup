@@ -1,0 +1,371 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { NextRequest } from 'next/server'
+import { GET, PATCH, DELETE } from '@/app/api/clients/[id]/route'
+import { createClient } from '@/lib/supabase/server'
+import { rbacSystem } from '@/lib/security/rbac-system'
+
+// Mock dependencies
+vi.mock('@/lib/supabase/server')
+vi.mock('@/lib/security/rbac-system')
+vi.mock('@/lib/rate-limit', () => ({
+  default: () => ({
+    check: vi.fn().mockResolvedValue({ success: true })
+  })
+}))
+
+describe('Client Profile API', () => {
+  let mockSupabase: ReturnType<typeof createClient>
+  let mockUser: { id: string; email: string }
+
+  beforeEach(() => {
+    // Setup mock user
+    mockUser = {
+      id: 'test-user-id',
+      email: 'test@example.com'
+    }
+
+    // Setup mock Supabase client
+    mockSupabase = {
+      auth: {
+        getUser: vi.fn().mockResolvedValue({ data: { user: mockUser } })
+      },
+      from: vi.fn().mockReturnThis(),
+      select: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      single: vi.fn().mockReturnThis(),
+      update: vi.fn().mockReturnThis(),
+      insert: vi.fn().mockReturnThis(),
+      range: vi.fn().mockReturnThis(),
+      order: vi.fn().mockReturnThis()
+    }
+
+    vi.mocked(createClient).mockResolvedValue(mockSupabase)
+    vi.mocked(rbacSystem.hasPermission).mockResolvedValue(true)
+  })
+
+  afterEach(() => {
+    vi.clearAllMocks()
+  })
+
+  describe('GET /api/clients/[id]', () => {
+    it('should fetch client profile with activities', async () => {
+      const mockClient = {
+        id: '123e4567-e89b-12d3-a456-426614174000',
+        first_name: 'John',
+        last_name: 'Doe',
+        partner_first_name: 'Jane',
+        partner_last_name: 'Doe',
+        email: 'john@example.com',
+        wedding_date: '2025-06-15',
+        venue_name: 'Grand Hotel',
+        guest_count_estimated: 150,
+        budget_total: 25000,
+        profile_completion_score: 75,
+        client_activities: [
+          {
+            id: 'activity-1',
+            activity_type: 'client_updated',
+            activity_title: 'Client information updated',
+            created_at: '2025-01-20T10:00:00Z'
+          }
+        ]
+      }
+
+      mockSupabase.single.mockResolvedValue({ data: mockClient, error: null })
+
+      const request = new NextRequest('http://localhost:3000/api/clients/123e4567-e89b-12d3-a456-426614174000')
+      const context = {
+        params: Promise.resolve({ id: '123e4567-e89b-12d3-a456-426614174000' })
+      }
+
+      const response = await GET(request, context)
+      const data = await response.json()
+
+      expect(response.status).toBe(200)
+      expect(data).toEqual(mockClient)
+      expect(mockSupabase.from).toHaveBeenCalledWith('clients')
+      expect(mockSupabase.eq).toHaveBeenCalledWith('id', '123e4567-e89b-12d3-a456-426614174000')
+    })
+
+    it('should return 401 for unauthenticated requests', async () => {
+      mockSupabase.auth.getUser.mockResolvedValue({ data: { user: null } })
+
+      const request = new NextRequest('http://localhost:3000/api/clients/123e4567-e89b-12d3-a456-426614174000')
+      const context = {
+        params: Promise.resolve({ id: '123e4567-e89b-12d3-a456-426614174000' })
+      }
+
+      const response = await GET(request, context)
+      const data = await response.json()
+
+      expect(response.status).toBe(401)
+      expect(data).toEqual({ error: 'Unauthorized' })
+    })
+
+    it('should return 404 for non-existent client', async () => {
+      mockSupabase.single.mockResolvedValue({ 
+        data: null, 
+        error: { code: 'PGRST116', message: 'Not found' } 
+      })
+
+      const request = new NextRequest('http://localhost:3000/api/clients/123e4567-e89b-12d3-a456-426614174000')
+      const context = {
+        params: Promise.resolve({ id: '123e4567-e89b-12d3-a456-426614174000' })
+      }
+
+      const response = await GET(request, context)
+      const data = await response.json()
+
+      expect(response.status).toBe(404)
+      expect(data).toEqual({ error: 'Client not found' })
+    })
+
+    it('should validate UUID format', async () => {
+      const request = new NextRequest('http://localhost:3000/api/clients/invalid-uuid')
+      const context = {
+        params: Promise.resolve({ id: 'invalid-uuid' })
+      }
+
+      const response = await GET(request, context)
+      const data = await response.json()
+
+      expect(response.status).toBe(400)
+      expect(data).toEqual({ error: 'Invalid client ID format' })
+    })
+  })
+
+  describe('PATCH /api/clients/[id]', () => {
+    it('should update client profile', async () => {
+      const updateData = {
+        wedding_date: '2025-07-20',
+        guest_count_estimated: 200,
+        budget_total: 30000,
+        wedding_theme: 'Garden Party'
+      }
+
+      const updatedClient = {
+        id: '123e4567-e89b-12d3-a456-426614174000',
+        ...updateData,
+        updated_at: '2025-01-21T10:00:00Z'
+      }
+
+      mockSupabase.single.mockResolvedValue({ data: updatedClient, error: null })
+      
+      // Mock user profile for activity tracking
+      mockSupabase.from.mockImplementation((table) => {
+        if (table === 'user_profiles') {
+          return {
+            ...mockSupabase,
+            single: vi.fn().mockResolvedValue({ 
+              data: { 
+                organization_id: 'org-123',
+                first_name: 'Test' 
+              } 
+            })
+          }
+        }
+        return mockSupabase
+      })
+
+      const request = new NextRequest('http://localhost:3000/api/clients/123e4567-e89b-12d3-a456-426614174000', {
+        method: 'PATCH',
+        headers: {
+          'x-csrf-token': 'test-token',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(updateData)
+      })
+
+      // Mock CSRF token in cookies
+      Object.defineProperty(request, 'cookies', {
+        value: {
+          get: vi.fn().mockReturnValue({ value: 'test-token' })
+        }
+      })
+
+      const context = {
+        params: Promise.resolve({ id: '123e4567-e89b-12d3-a456-426614174000' })
+      }
+
+      const response = await PATCH(request, context)
+      const data = await response.json()
+
+      expect(response.status).toBe(200)
+      expect(data).toEqual(updatedClient)
+    })
+
+    it('should validate input data', async () => {
+      const invalidData = {
+        email: 'invalid-email',
+        website: 'not-a-url'
+      }
+
+      const request = new NextRequest('http://localhost:3000/api/clients/123e4567-e89b-12d3-a456-426614174000', {
+        method: 'PATCH',
+        headers: {
+          'x-csrf-token': 'test-token',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(invalidData)
+      })
+
+      Object.defineProperty(request, 'cookies', {
+        value: {
+          get: vi.fn().mockReturnValue({ value: 'test-token' })
+        }
+      })
+
+      const context = {
+        params: Promise.resolve({ id: '123e4567-e89b-12d3-a456-426614174000' })
+      }
+
+      const response = await PATCH(request, context)
+      const data = await response.json()
+
+      expect(response.status).toBe(400)
+      expect(data.error).toBe('Invalid client data')
+      expect(data.details).toBeDefined()
+    })
+
+    it('should check CSRF token', async () => {
+      const request = new NextRequest('http://localhost:3000/api/clients/123e4567-e89b-12d3-a456-426614174000', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ company_name: 'Test Corp' })
+      })
+
+      Object.defineProperty(request, 'cookies', {
+        value: {
+          get: vi.fn().mockReturnValue(null)
+        }
+      })
+
+      const context = {
+        params: Promise.resolve({ id: '123e4567-e89b-12d3-a456-426614174000' })
+      }
+
+      const response = await PATCH(request, context)
+      const data = await response.json()
+
+      expect(response.status).toBe(403)
+      expect(data).toEqual({ error: 'CSRF token validation failed' })
+    })
+  })
+
+  describe('DELETE /api/clients/[id]', () => {
+    it('should archive client (soft delete)', async () => {
+      mockSupabase.update.mockReturnThis()
+      mockSupabase.eq.mockResolvedValue({ error: null })
+
+      const request = new NextRequest('http://localhost:3000/api/clients/123e4567-e89b-12d3-a456-426614174000', {
+        method: 'DELETE',
+        headers: {
+          'x-csrf-token': 'test-token'
+        }
+      })
+
+      Object.defineProperty(request, 'cookies', {
+        value: {
+          get: vi.fn().mockReturnValue({ value: 'test-token' })
+        }
+      })
+
+      const context = {
+        params: Promise.resolve({ id: '123e4567-e89b-12d3-a456-426614174000' })
+      }
+
+      const response = await DELETE(request, context)
+      const data = await response.json()
+
+      expect(response.status).toBe(200)
+      expect(data).toEqual({ success: true })
+      expect(mockSupabase.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: 'archived',
+          last_modified_by: mockUser.id
+        })
+      )
+    })
+
+    it('should require authentication', async () => {
+      mockSupabase.auth.getUser.mockResolvedValue({ data: { user: null } })
+
+      const request = new NextRequest('http://localhost:3000/api/clients/123e4567-e89b-12d3-a456-426614174000', {
+        method: 'DELETE',
+        headers: {
+          'x-csrf-token': 'test-token'
+        }
+      })
+
+      Object.defineProperty(request, 'cookies', {
+        value: {
+          get: vi.fn().mockReturnValue({ value: 'test-token' })
+        }
+      })
+
+      const context = {
+        params: Promise.resolve({ id: '123e4567-e89b-12d3-a456-426614174000' })
+      }
+
+      const response = await DELETE(request, context)
+      const data = await response.json()
+
+      expect(response.status).toBe(401)
+      expect(data).toEqual({ error: 'Unauthorized' })
+    })
+  })
+
+  describe('Rate Limiting', () => {
+    it('should enforce rate limits', async () => {
+      const mockRateLimit = {
+        check: vi.fn().mockResolvedValue({ success: false })
+      }
+      
+      vi.mock('@/lib/rate-limit', () => ({
+        default: () => mockRateLimit
+      }))
+
+      const request = new NextRequest('http://localhost:3000/api/clients/123e4567-e89b-12d3-a456-426614174000')
+      const context = {
+        params: Promise.resolve({ id: '123e4567-e89b-12d3-a456-426614174000' })
+      }
+
+      const response = await GET(request, context)
+      const data = await response.json()
+
+      expect(response.status).toBe(429)
+      expect(data).toEqual({ error: 'Too many requests' })
+    })
+  })
+
+  describe('Performance', () => {
+    it('should include activity data in single query', async () => {
+      const mockClient = {
+        id: '123e4567-e89b-12d3-a456-426614174000',
+        first_name: 'John',
+        client_activities: []
+      }
+
+      mockSupabase.single.mockResolvedValue({ data: mockClient, error: null })
+
+      const request = new NextRequest('http://localhost:3000/api/clients/123e4567-e89b-12d3-a456-426614174000')
+      const context = {
+        params: Promise.resolve({ id: '123e4567-e89b-12d3-a456-426614174000' })
+      }
+
+      const startTime = performance.now()
+      await GET(request, context)
+      const endTime = performance.now()
+
+      // Response should be fast (under 500ms even with mocks)
+      expect(endTime - startTime).toBeLessThan(500)
+      
+      // Should use select with join for efficiency
+      expect(mockSupabase.select).toHaveBeenCalledWith(
+        expect.stringContaining('client_activities')
+      )
+    })
+  })
+})

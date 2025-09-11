@@ -1,0 +1,301 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { Database } from '@/types/database';
+
+type ActivityFeed = Database['public']['Tables']['activity_feeds']['Row'];
+type ActivityFeedInsert =
+  Database['public']['Tables']['activity_feeds']['Insert'];
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const { searchParams } = new URL(request.url);
+    const organizationId = searchParams.get('organization_id');
+    const userId = searchParams.get('user_id');
+    const entityType = searchParams.get('entity_type');
+    const entityId = searchParams.get('entity_id');
+    const activityType = searchParams.get('activity_type');
+    const page = parseInt(searchParams.get('page') || '1');
+    const limit = parseInt(searchParams.get('limit') || '50');
+    const before = searchParams.get('before'); // For cursor-based pagination
+    const offset = (page - 1) * limit;
+
+    if (!organizationId) {
+      return NextResponse.json(
+        { error: 'Missing organization_id parameter' },
+        { status: 400 },
+      );
+    }
+
+    // Get user to verify access
+    const { data: user } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Build query with filters
+    let query = supabase
+      .from('activity_feeds')
+      .select(
+        `
+        *,
+        actor:user_profiles!activity_feeds_actor_id_fkey (
+          id,
+          display_name,
+          avatar_url
+        )
+      `,
+      )
+      .eq('organization_id', organizationId)
+      .order('created_at', { ascending: false });
+
+    // Filter by entity type and ID if specified
+    if (entityType) {
+      query = query.eq('entity_type', entityType);
+    }
+    if (entityId) {
+      query = query.eq('entity_id', entityId);
+    }
+    if (activityType) {
+      query = query.eq('activity_type', activityType);
+    }
+
+    // Cursor-based pagination
+    if (before) {
+      query = query.lt('created_at', before);
+    }
+
+    // Apply limit and offset
+    query = query.range(offset, offset + limit - 1);
+
+    const { data: activities, error } = await query;
+
+    if (error) {
+      console.error('Error fetching activity feed:', error);
+      return NextResponse.json(
+        { error: 'Failed to fetch activity feed' },
+        { status: 500 },
+      );
+    }
+
+    // Filter activities based on visibility and user permissions
+    const filteredActivities = (activities || []).filter((activity) => {
+      // Show public activities
+      if (activity.is_public) return true;
+
+      // Show activities targeted to this user
+      if (
+        userId &&
+        activity.target_user_ids &&
+        activity.target_user_ids.includes(userId)
+      ) {
+        return true;
+      }
+
+      // Show activities created by this user
+      if (activity.actor_id === user.id) return true;
+
+      // Hide private activities not targeted to this user
+      return false;
+    });
+
+    return NextResponse.json({
+      activities: filteredActivities,
+      page,
+      limit,
+      has_more: (activities?.length || 0) === limit,
+      next_cursor:
+        activities && activities.length > 0
+          ? activities[activities.length - 1].created_at
+          : null,
+    });
+  } catch (error) {
+    console.error('Error in activity feed GET:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const body = await request.json();
+
+    const {
+      entity_type,
+      entity_id,
+      activity_type,
+      title,
+      description,
+      target_user_ids,
+      is_public = false,
+      icon,
+      color,
+      data,
+      organization_id,
+    } = body;
+
+    if (
+      !entity_type ||
+      !entity_id ||
+      !activity_type ||
+      !title ||
+      !organization_id
+    ) {
+      return NextResponse.json(
+        { error: 'Missing required fields' },
+        { status: 400 },
+      );
+    }
+
+    // Get user to verify access
+    const { data: user } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get user profile for actor info
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('display_name')
+      .eq('user_id', user.id)
+      .single();
+
+    // Determine actor type based on user's role or context
+    let actorType: 'client' | 'vendor' | 'system' = 'system';
+
+    // Try to determine if user is client or vendor based on organization relationship
+    const { data: orgRelation } = await supabase
+      .from('user_profiles')
+      .select('role, organization_id')
+      .eq('user_id', user.id)
+      .eq('organization_id', organization_id)
+      .single();
+
+    if (orgRelation) {
+      // For now, assume OWNER/ADMIN are vendors, MEMBER/VIEWER could be clients
+      actorType = ['OWNER', 'ADMIN'].includes(orgRelation.role)
+        ? 'vendor'
+        : 'client';
+    }
+
+    // Create activity feed entry
+    const activityData: ActivityFeedInsert = {
+      organization_id,
+      entity_type,
+      entity_id,
+      activity_type,
+      title,
+      description,
+      actor_id: user.id,
+      actor_name: userProfile?.display_name || 'Unknown User',
+      actor_type: actorType,
+      target_user_ids,
+      is_public,
+      icon,
+      color,
+      data,
+    };
+
+    const { data: activity, error: insertError } = await supabase
+      .from('activity_feeds')
+      .insert(activityData)
+      .select(
+        `
+        *,
+        actor:user_profiles!activity_feeds_actor_id_fkey (
+          id,
+          display_name,
+          avatar_url
+        )
+      `,
+      )
+      .single();
+
+    if (insertError) {
+      console.error('Error creating activity feed entry:', insertError);
+      return NextResponse.json(
+        { error: 'Failed to create activity' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({ activity });
+  } catch (error) {
+    console.error('Error in activity feed POST:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function PATCH(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const { searchParams } = new URL(request.url);
+    const activityId = searchParams.get('id');
+    const action = searchParams.get('action');
+
+    if (!activityId || !action) {
+      return NextResponse.json(
+        { error: 'Missing required parameters' },
+        { status: 400 },
+      );
+    }
+
+    // Get user to verify access
+    const { data: user } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    if (action === 'mark_read') {
+      // Get current activity
+      const { data: activity, error: fetchError } = await supabase
+        .from('activity_feeds')
+        .select('read_by')
+        .eq('id', activityId)
+        .single();
+
+      if (fetchError || !activity) {
+        return NextResponse.json(
+          { error: 'Activity not found' },
+          { status: 404 },
+        );
+      }
+
+      const currentReadBy = activity.read_by || [];
+      if (currentReadBy.includes(user.id)) {
+        return NextResponse.json({ success: true, already_read: true });
+      }
+
+      const { error: updateError } = await supabase
+        .from('activity_feeds')
+        .update({
+          read_by: [...currentReadBy, user.id],
+        })
+        .eq('id', activityId);
+
+      if (updateError) {
+        console.error('Error marking activity as read:', updateError);
+        return NextResponse.json(
+          { error: 'Failed to mark as read' },
+          { status: 500 },
+        );
+      }
+
+      return NextResponse.json({ success: true });
+    }
+
+    return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
+  } catch (error) {
+    console.error('Error in activity feed PATCH:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

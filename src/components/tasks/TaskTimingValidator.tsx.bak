@@ -1,0 +1,690 @@
+'use client';
+
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { 
+  AlertTriangle, 
+  Clock, 
+  Calendar, 
+  CheckCircle, 
+  XCircle, 
+  Zap,
+  User,
+  ArrowRight,
+  RotateCcw,
+  Split,
+  Move3D,
+  Timer
+} from 'lucide-react';
+import {
+  TaskTimingValidatorProps,
+  TimingConflict,
+  ConflictResolution,
+  TimelineVisualization,
+  TimelineTask,
+  TimeSlot,
+  WorkflowTask,
+  TaskCategory,
+  TaskStatus
+} from '@/types/workflow';
+
+// Category colors for timeline visualization
+const categoryColors: Record<TaskCategory, string> = {
+  venue_management: 'bg-green-100 border-green-300',
+  vendor_coordination: 'bg-blue-100 border-blue-300',
+  client_management: 'bg-purple-100 border-purple-300',
+  logistics: 'bg-yellow-100 border-yellow-300',
+  design: 'bg-pink-100 border-pink-300',
+  photography: 'bg-indigo-100 border-indigo-300',
+  catering: 'bg-orange-100 border-orange-300',
+  florals: 'bg-rose-100 border-rose-300',
+  music: 'bg-violet-100 border-violet-300',
+  transportation: 'bg-cyan-100 border-cyan-300'
+};
+
+const conflictSeverityColors = {
+  low: 'bg-yellow-50 border-yellow-200 text-yellow-800',
+  medium: 'bg-orange-50 border-orange-200 text-orange-800', 
+  high: 'bg-error-50 border-error-200 text-error-800',
+  critical: 'bg-error-100 border-error-300 text-error-900'
+};
+
+export const TaskTimingValidator = React.memo<TaskTimingValidatorProps>(({
+  existingTasks,
+  proposedTask,
+  onConflictDetected,
+  onConflictResolved,
+  realTimeValidation = true
+}) => {
+  // Component state
+  const [conflicts, setConflicts] = useState<TimingConflict[]>([]);
+  const [suggestions, setSuggestions] = useState<ConflictResolution[]>([]);
+  const [selectedTimeSlot, setSelectedTimeSlot] = useState<Date | null>(null);
+  const [isValidating, setIsValidating] = useState(false);
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const [timelineHours, setTimelineHours] = useState({ start: 8, end: 20 }); // 8 AM to 8 PM
+  const [draggedTask, setDraggedTask] = useState<string | null>(null);
+
+  // Debounced validation timer
+  const validationTimer = useRef<NodeJS.Timeout | null>(null);
+  const retryCount = useRef(0);
+
+  // Generate timeline visualization
+  const timelineVisualization = useMemo((): TimelineVisualization => {
+    if (!proposedTask.start_date || !proposedTask.estimated_duration) {
+      return {
+        date: new Date(),
+        tasks: [],
+        conflicts: [],
+        availableSlots: [],
+        totalHours: 0,
+        utilizationPercentage: 0
+      };
+    }
+
+    const proposedStart = new Date(proposedTask.start_date);
+    const proposedEnd = new Date(proposedStart.getTime() + proposedTask.estimated_duration * 60 * 60 * 1000);
+
+    // Convert existing tasks to timeline format
+    const timelineTasks: TimelineTask[] = existingTasks
+      .filter(task => task.start_date && task.status !== 'cancelled')
+      .map(task => ({
+        taskId: task.id,
+        title: task.title,
+        category: task.category,
+        priority: task.priority,
+        startTime: task.start_date!,
+        endTime: new Date(task.start_date!.getTime() + task.estimated_duration * 60 * 60 * 1000),
+        duration: task.estimated_duration,
+        bufferTime: task.buffer_time,
+        assignee: task.assigned_to || undefined,
+        status: task.status,
+        isCriticalPath: task.is_critical_path,
+        hasConflicts: false
+      }));
+
+    // Generate available time slots
+    const availableSlots: TimeSlot[] = [];
+    const dayStart = new Date(proposedStart);
+    dayStart.setHours(timelineHours.start, 0, 0, 0);
+    const dayEnd = new Date(proposedStart);
+    dayEnd.setHours(timelineHours.end, 0, 0, 0);
+
+    // Find gaps between existing tasks
+    const sortedTasks = [...timelineTasks].sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
+    let currentTime = dayStart;
+
+    sortedTasks.forEach(task => {
+      const taskStart = new Date(Math.max(task.startTime.getTime(), dayStart.getTime()));
+      const taskEnd = new Date(Math.min(task.endTime.getTime() + task.bufferTime * 60 * 60 * 1000, dayEnd.getTime()));
+
+      if (currentTime < taskStart) {
+        const slotDuration = (taskStart.getTime() - currentTime.getTime()) / (1000 * 60 * 60);
+        if (slotDuration >= (proposedTask.estimated_duration || 0)) {
+          availableSlots.push({
+            start: new Date(currentTime),
+            end: new Date(taskStart),
+            duration: slotDuration,
+            isAvailable: true,
+            conflicts: [],
+            recommendationScore: calculateRecommendationScore(currentTime, taskStart, proposedTask)
+          });
+        }
+      }
+      currentTime = new Date(Math.max(currentTime.getTime(), taskEnd.getTime()));
+    });
+
+    // Add final slot if there's time left
+    if (currentTime < dayEnd) {
+      const slotDuration = (dayEnd.getTime() - currentTime.getTime()) / (1000 * 60 * 60);
+      if (slotDuration >= (proposedTask.estimated_duration || 0)) {
+        availableSlots.push({
+          start: new Date(currentTime),
+          end: new Date(dayEnd),
+          duration: slotDuration,
+          isAvailable: true,
+          conflicts: [],
+          recommendationScore: calculateRecommendationScore(currentTime, dayEnd, proposedTask)
+        });
+      }
+    }
+
+    const totalHours = (dayEnd.getTime() - dayStart.getTime()) / (1000 * 60 * 60);
+    const scheduledHours = timelineTasks.reduce((total, task) => total + task.duration + task.bufferTime, 0);
+    const utilizationPercentage = Math.round((scheduledHours / totalHours) * 100);
+
+    return {
+      date: proposedStart,
+      tasks: timelineTasks,
+      conflicts: [],
+      availableSlots,
+      totalHours,
+      utilizationPercentage
+    };
+  }, [existingTasks, proposedTask, timelineHours]);
+
+  // Calculate recommendation score for time slots
+  const calculateRecommendationScore = useCallback((start: Date, end: Date, task: any): number => {
+    let score = 70; // Base score
+
+    // Prefer earlier times for high priority tasks
+    if (task.priority === 'critical' || task.priority === 'high') {
+      const hour = start.getHours();
+      if (hour >= 9 && hour <= 12) score += 20; // Morning preference
+    }
+
+    // Avoid meal times for non-catering tasks
+    const hour = start.getHours();
+    if (task.category !== 'catering' && (hour === 12 || hour === 18)) {
+      score -= 15; // Lunch/dinner time penalty
+    }
+
+    // Prefer longer slots for complex tasks
+    const slotDuration = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
+    const taskDuration = task.estimated_duration || 1;
+    if (slotDuration > taskDuration * 1.5) {
+      score += 10; // Buffer time bonus
+    }
+
+    return Math.max(0, Math.min(100, score));
+  }, []);
+
+  // Detect timing conflicts
+  const detectConflicts = useCallback(async (): Promise<TimingConflict[]> => {
+    if (!proposedTask.start_date || !proposedTask.estimated_duration) {
+      return [];
+    }
+
+    const conflicts: TimingConflict[] = [];
+    const proposedStart = new Date(proposedTask.start_date);
+    const proposedEnd = new Date(proposedStart.getTime() + proposedTask.estimated_duration * 60 * 60 * 1000);
+
+    // Check for overlaps with existing tasks
+    existingTasks.forEach(existingTask => {
+      if (!existingTask.start_date || existingTask.status === 'cancelled') return;
+
+      const existingStart = existingTask.start_date;
+      const existingEnd = new Date(existingStart.getTime() + existingTask.estimated_duration * 60 * 60 * 1000);
+      const existingBufferEnd = new Date(existingEnd.getTime() + existingTask.buffer_time * 60 * 60 * 1000);
+
+      // Direct time overlap
+      if (proposedStart < existingBufferEnd && proposedEnd > existingStart) {
+        conflicts.push({
+          type: 'overlap',
+          severity: existingTask.is_critical_path ? 'critical' : 'high',
+          conflictingTasks: [existingTask.id],
+          proposedTime: {
+            start: proposedStart,
+            end: proposedEnd,
+            duration: proposedTask.estimated_duration
+          },
+          message: `Conflicts with ${existingTask.title} scheduled from ${existingStart.toLocaleTimeString()} to ${existingEnd.toLocaleTimeString()}`,
+          suggestions: []
+        });
+      }
+
+      // Buffer time violation (within buffer but not overlapping)
+      else if (proposedStart < existingBufferEnd && proposedStart >= existingEnd) {
+        const actualBuffer = (proposedStart.getTime() - existingEnd.getTime()) / (1000 * 60 * 60);
+        conflicts.push({
+          type: 'buffer_violation',
+          severity: 'medium',
+          conflictingTasks: [existingTask.id],
+          message: `Insufficient buffer time after ${existingTask.title}. Need ${existingTask.buffer_time}h, have ${actualBuffer.toFixed(1)}h`,
+          suggestions: [],
+          requiredBuffer: existingTask.buffer_time,
+          actualBuffer
+        });
+      }
+
+      // Resource conflict (same assignee)
+      if (proposedTask.assigned_to && 
+          existingTask.assigned_to === proposedTask.assigned_to &&
+          proposedStart < existingBufferEnd && proposedEnd > existingStart) {
+        conflicts.push({
+          type: 'resource_conflict',
+          severity: 'high',
+          conflictingTasks: [existingTask.id],
+          message: `Resource allocation conflict: ${existingTask.assigned_to} is already assigned to ${existingTask.title}`,
+          suggestions: []
+        });
+      }
+
+      // Critical path conflict
+      if (existingTask.is_critical_path && 
+          proposedStart < existingBufferEnd && proposedEnd > existingStart) {
+        conflicts.push({
+          type: 'critical_path_conflict',
+          severity: 'critical',
+          conflictingTasks: [existingTask.id],
+          message: 'This task conflicts with critical path items that cannot be moved',
+          suggestions: []
+        });
+      }
+    });
+
+    return conflicts;
+  }, [existingTasks, proposedTask]);
+
+  // Generate conflict resolution suggestions
+  const generateSuggestions = useCallback((conflicts: TimingConflict[]): ConflictResolution[] => {
+    const suggestions: ConflictResolution[] = [];
+
+    if (!proposedTask.start_date || !proposedTask.estimated_duration) return suggestions;
+
+    // Time adjustment suggestions
+    timelineVisualization.availableSlots.forEach((slot, index) => {
+      if (slot.duration >= proposedTask.estimated_duration!) {
+        suggestions.push({
+          id: `time-adjust-${index}`,
+          type: 'time_adjustment',
+          description: `Move to ${slot.start.toLocaleTimeString()} - ${new Date(slot.end.getTime()).toLocaleTimeString()}`,
+          newStartTime: slot.start,
+          effort_required: 'low',
+          impact: 'minimal'
+        });
+      }
+    });
+
+    // Duration reduction for long tasks
+    if (proposedTask.estimated_duration > 4) {
+      suggestions.push({
+        id: 'duration-reduce',
+        type: 'duration_reduction',
+        description: 'Consider reducing task duration or splitting into smaller tasks',
+        newDuration: Math.ceil(proposedTask.estimated_duration / 2),
+        effort_required: 'medium',
+        impact: 'moderate'
+      });
+    }
+
+    // Task splitting for very long tasks
+    if (proposedTask.estimated_duration > 6) {
+      suggestions.push({
+        id: 'task-split',
+        type: 'split_task',
+        description: `Split into ${Math.ceil(proposedTask.estimated_duration / 3)} smaller tasks`,
+        newTasks: Array.from({ length: Math.ceil(proposedTask.estimated_duration / 3) }, (_, i) => ({
+          title: `${proposedTask.title} - Part ${i + 1}`,
+          estimated_duration: Math.ceil(proposedTask.estimated_duration! / Math.ceil(proposedTask.estimated_duration! / 3))
+        })),
+        effort_required: 'high',
+        impact: 'significant'
+      });
+    }
+
+    // Buffer adjustment
+    const hasBufferConflicts = conflicts.some(c => c.type === 'buffer_violation');
+    if (hasBufferConflicts) {
+      suggestions.push({
+        id: 'buffer-adjust',
+        type: 'buffer_adjustment',
+        description: 'Increase buffer time to prevent scheduling conflicts',
+        newBufferTime: Math.max(0.25, (proposedTask.buffer_time || 0) + 0.25),
+        effort_required: 'low',
+        impact: 'minimal'
+      });
+    }
+
+    // Sort by recommendation score and effort
+    return suggestions.sort((a, b) => {
+      const scoreA = a.effort_required === 'low' ? 3 : a.effort_required === 'medium' ? 2 : 1;
+      const scoreB = b.effort_required === 'low' ? 3 : b.effort_required === 'medium' ? 2 : 1;
+      return scoreB - scoreA;
+    }).slice(0, 5); // Limit to top 5 suggestions
+  }, [proposedTask, timelineVisualization]);
+
+  // Debounced validation function
+  const performValidation = useCallback(async () => {
+    if (isValidating) return;
+
+    setIsValidating(true);
+    setValidationError(null);
+
+    try {
+      const detectedConflicts = await detectConflicts();
+      const generatedSuggestions = generateSuggestions(detectedConflicts);
+
+      setConflicts(detectedConflicts);
+      setSuggestions(generatedSuggestions);
+
+      if (detectedConflicts.length > 0) {
+        onConflictDetected(detectedConflicts[0]); // Report most severe conflict
+      }
+
+      retryCount.current = 0;
+    } catch (error) {
+      console.error('Validation failed:', error);
+      setValidationError('Validation error occurred. Please try again.');
+      
+      // Exponential backoff retry
+      if (retryCount.current < 3) {
+        retryCount.current++;
+        setTimeout(() => performValidation(), Math.pow(2, retryCount.current) * 1000);
+      }
+    } finally {
+      setIsValidating(false);
+    }
+  }, [isValidating, detectConflicts, generateSuggestions, onConflictDetected]);
+
+  // Real-time validation with debouncing
+  useEffect(() => {
+    if (!realTimeValidation) return;
+
+    if (validationTimer.current) {
+      clearTimeout(validationTimer.current);
+    }
+
+    validationTimer.current = setTimeout(() => {
+      performValidation();
+    }, 300); // 300ms debounce
+
+    return () => {
+      if (validationTimer.current) {
+        clearTimeout(validationTimer.current);
+      }
+    };
+  }, [proposedTask, realTimeValidation, performValidation]);
+
+  // Handle suggestion application
+  const applySuggestion = useCallback((suggestion: ConflictResolution) => {
+    onConflictResolved(suggestion);
+  }, [onConflictResolved]);
+
+  // Handle drag and drop for timeline adjustment
+  const handleTaskDrag = useCallback((e: React.DragEvent, taskId: string) => {
+    setDraggedTask(taskId);
+    e.dataTransfer.effectAllowed = 'move';
+  }, []);
+
+  const handleTimeSlotDrop = useCallback((e: React.DragEvent, timeSlot: TimeSlot) => {
+    e.preventDefault();
+    if (!draggedTask) return;
+
+    const suggestion: ConflictResolution = {
+      id: 'drag-drop-adjust',
+      type: 'time_adjustment',
+      description: `Move to ${timeSlot.start.toLocaleTimeString()}`,
+      newStartTime: timeSlot.start,
+      effort_required: 'low',
+      impact: 'minimal'
+    };
+
+    applySuggestion(suggestion);
+    setDraggedTask(null);
+  }, [draggedTask, applySuggestion]);
+
+  // Format time for display
+  const formatTime = useCallback((date: Date): string => {
+    return date.toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true
+    });
+  }, []);
+
+  // Generate hour markers for timeline
+  const hourMarkers = useMemo(() => {
+    const markers = [];
+    for (let hour = timelineHours.start; hour <= timelineHours.end; hour += 2) {
+      const date = new Date();
+      date.setHours(hour, 0, 0, 0);
+      markers.push({
+        hour,
+        label: formatTime(date),
+        position: ((hour - timelineHours.start) / (timelineHours.end - timelineHours.start)) * 100
+      });
+    }
+    return markers;
+  }, [timelineHours, formatTime]);
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900">Timing Validation</h3>
+          <p className="text-sm text-gray-600 mt-1">
+            Check for conflicts and optimize task scheduling
+          </p>
+        </div>
+        
+        {!realTimeValidation && (
+          <button
+            onClick={performValidation}
+            disabled={isValidating}
+            className="
+              px-4 py-2 text-sm font-medium text-primary-700 bg-primary-50 
+              border border-primary-200 rounded-lg hover:bg-primary-100
+              transition-colors duration-200 disabled:opacity-50
+              focus:outline-none focus:ring-4 focus:ring-primary-100
+            "
+          >
+            {isValidating ? (
+              <>
+                <Timer className="w-4 h-4 mr-2 animate-spin" />
+                Validating...
+              </>
+            ) : (
+              <>
+                <Clock className="w-4 h-4 mr-2" />
+                Validate Timing
+              </>
+            )}
+          </button>
+        )}
+      </div>
+
+      {/* Validation Error */}
+      {validationError && (
+        <div className="mb-6 p-4 bg-error-50 border border-error-200 rounded-lg">
+          <div className="flex items-center">
+            <XCircle className="w-5 h-5 text-error-600 mr-2" />
+            <span className="text-sm text-error-700">{validationError}</span>
+            <button
+              onClick={performValidation}
+              className="ml-auto text-sm text-error-700 underline hover:text-error-800"
+            >
+              Retry Validation
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Conflict Alerts */}
+      {conflicts.length > 0 && (
+        <div className="mb-6 space-y-3">
+          {conflicts.map((conflict, index) => (
+            <div
+              key={index}
+              className={`p-4 rounded-lg border ${conflictSeverityColors[conflict.severity]}`}
+              data-testid={
+                conflict.type === 'overlap' ? 'conflict-warning' :
+                conflict.type === 'buffer_violation' ? 'buffer-warning' :
+                conflict.type === 'critical_path_conflict' ? 'critical-path-conflict' :
+                conflict.type === 'resource_conflict' ? 'resource-conflict' : 'conflict-warning'
+              }
+            >
+              <div className="flex items-start">
+                <AlertTriangle className="w-5 h-5 mt-0.5 mr-3 flex-shrink-0" />
+                <div className="flex-1">
+                  <h4 className="font-medium mb-1">
+                    {conflict.type.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase())} Detected
+                  </h4>
+                  <p className="text-sm mb-2">{conflict.message}</p>
+                  
+                  {conflict.type === 'buffer_violation' && conflict.requiredBuffer && conflict.actualBuffer && (
+                    <div className="text-xs bg-white/50 rounded px-2 py-1">
+                      Required: {conflict.requiredBuffer}h | Available: {conflict.actualBuffer.toFixed(1)}h
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* No Conflicts Indicator */}
+      {conflicts.length === 0 && proposedTask.start_date && (
+        <div 
+          className="mb-6 p-4 bg-success-50 border border-success-200 rounded-lg"
+          data-testid="no-conflicts-indicator"
+        >
+          <div className="flex items-center">
+            <CheckCircle className="w-5 h-5 text-success-600 mr-2" />
+            <span className="text-sm text-success-700 font-medium">
+              No timing conflicts detected
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Timeline Visualization */}
+      {timelineVisualization.tasks.length > 0 && (
+        <div className="mb-6">
+          <h4 className="text-sm font-medium text-gray-900 mb-4">Timeline View</h4>
+          <div 
+            className="relative bg-gray-50 rounded-lg p-4 min-h-32"
+            data-testid="timeline-visualization"
+          >
+            {/* Hour markers */}
+            <div className="relative h-6 mb-4 border-b border-gray-200">
+              {hourMarkers.map(marker => (
+                <div
+                  key={marker.hour}
+                  className="absolute text-xs text-gray-500"
+                  style={{ left: `${marker.position}%`, transform: 'translateX(-50%)' }}
+                  data-testid={`time-slot-${marker.hour}:00`}
+                >
+                  {marker.label}
+                </div>
+              ))}
+            </div>
+
+            {/* Existing tasks */}
+            <div className="space-y-2">
+              {timelineVisualization.tasks.map(task => {
+                const startPercent = ((task.startTime.getHours() - timelineHours.start) / (timelineHours.end - timelineHours.start)) * 100;
+                const durationPercent = (task.duration / (timelineHours.end - timelineHours.start)) * 100;
+                
+                return (
+                  <div key={task.taskId} className="relative h-8">
+                    <div
+                      className={`
+                        absolute h-6 rounded border-l-4 px-2 py-1 text-xs font-medium
+                        ${categoryColors[task.category]} ${task.isCriticalPath ? 'border-l-red-500' : ''}
+                      `}
+                      style={{
+                        left: `${Math.max(0, startPercent)}%`,
+                        width: `${Math.min(100 - Math.max(0, startPercent), durationPercent)}%`
+                      }}
+                      data-testid={`timeline-task-${task.taskId}`}
+                      data-category={task.category}
+                    >
+                      <span className="truncate block">{task.title}</span>
+                    </div>
+                  </div>
+                );
+              })}
+
+              {/* Proposed task */}
+              {proposedTask.start_date && proposedTask.estimated_duration && (
+                <div className="relative h-8">
+                  <div
+                    className="absolute h-6 bg-primary-100 border-l-4 border-l-primary-500 border border-primary-300 rounded px-2 py-1 text-xs font-medium text-primary-800"
+                    style={{
+                      left: `${((new Date(proposedTask.start_date).getHours() - timelineHours.start) / (timelineHours.end - timelineHours.start)) * 100}%`,
+                      width: `${(proposedTask.estimated_duration / (timelineHours.end - timelineHours.start)) * 100}%`
+                    }}
+                    data-testid="proposed-task-block"
+                    draggable
+                    onDragStart={(e) => handleTaskDrag(e, 'proposed')}
+                  >
+                    <span className="truncate block">{proposedTask.title || 'New Task'}</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Timeline Stats */}
+          <div className="mt-4 flex items-center justify-between text-sm text-gray-600">
+            <span>{timelineVisualization.tasks.length} scheduled tasks</span>
+            <span>
+              {timelineVisualization.utilizationPercentage}% timeline utilization
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Conflict Resolution Suggestions */}
+      {suggestions.length > 0 && (
+        <div data-testid="conflict-suggestions">
+          <h4 className="text-sm font-medium text-gray-900 mb-3">
+            Suggested Alternative Times
+          </h4>
+          <div className="space-y-2" data-testid="suggested-times">
+            {suggestions.slice(0, 3).map((suggestion, index) => (
+              <button
+                key={suggestion.id}
+                onClick={() => applySuggestion(suggestion)}
+                className="
+                  w-full p-3 text-left bg-primary-50 hover:bg-primary-100 
+                  border border-primary-200 rounded-lg transition-colors duration-200
+                  focus:outline-none focus:ring-4 focus:ring-primary-100
+                "
+                data-testid={`suggestion-${index}`}
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center">
+                    {suggestion.type === 'time_adjustment' && <Move3D className="w-4 h-4 text-primary-600 mr-2" />}
+                    {suggestion.type === 'duration_reduction' && <Timer className="w-4 h-4 text-primary-600 mr-2" />}
+                    {suggestion.type === 'split_task' && <Split className="w-4 h-4 text-primary-600 mr-2" />}
+                    {suggestion.type === 'buffer_adjustment' && <Clock className="w-4 h-4 text-primary-600 mr-2" />}
+                    
+                    <span className="text-sm font-medium text-primary-700">
+                      {suggestion.description}
+                    </span>
+                  </div>
+                  
+                  <div className="flex items-center text-xs text-primary-600">
+                    <span className="mr-2">
+                      {suggestion.effort_required} effort
+                    </span>
+                    <ArrowRight className="w-3 h-3" />
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Additional Information for Screen Readers */}
+      {conflicts.length > 0 && (
+        <div 
+          className="sr-only"
+          role="alert"
+          aria-live="assertive"
+          data-testid="conflict-description"
+        >
+          {conflicts.length} timing conflicts detected. 
+          {conflicts.map(c => c.message).join('. ')}
+          {suggestions.length > 0 && ` ${suggestions.length} alternative solutions available.`}
+        </div>
+      )}
+
+      {/* Manual Validation Info */}
+      {!realTimeValidation && !proposedTask.start_date && (
+        <div className="text-center py-8">
+          <Clock className="w-12 h-12 text-gray-400 mx-auto mb-3" />
+          <p className="text-gray-600">
+            Set a start time and duration to validate timing conflicts
+          </p>
+        </div>
+      )}
+    </div>
+  );
+});
+
+TaskTimingValidator.displayName = 'TaskTimingValidator';

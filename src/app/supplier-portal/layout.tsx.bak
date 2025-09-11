@@ -1,0 +1,83 @@
+'use client';
+
+import { Inter } from 'next/font/google';
+import { ReactNode, useEffect } from 'react';
+import { useAuth } from '@/hooks/useAuth';
+import { useRouter } from 'next/navigation';
+import { SupplierMobileNavigation } from '@/components/supplier/mobile/SupplierNavigation';
+import { SupplierHeader } from '@/components/supplier/mobile/SupplierHeader';
+import { Toaster } from '@/components/ui/toaster';
+import { cn } from '@/lib/utils';
+import { useSupplierPortal } from '@/hooks/useSupplierPortal';
+import { ResponsiveChatWidget } from '@/components/chatbot/ChatWidget';
+
+const inter = Inter({ subsets: ['latin'] });
+
+interface SupplierPortalLayoutProps {
+  children: ReactNode;
+}
+
+export default function SupplierPortalLayout({ children }: SupplierPortalLayoutProps) {
+  const { user, loading } = useAuth();
+  const router = useRouter();
+  const { supplierProfile, loading: supplierLoading } = useSupplierPortal();
+
+  useEffect(() => {
+    if (!loading && !user) {
+      router.push('/auth/login?redirect=supplier-portal');
+    }
+    
+    // Check if user has vendor role
+    if (!loading && user && user.role !== 'vendor') {
+      router.push('/dashboard');
+    }
+  }, [user, loading, router]);
+
+  if (loading || supplierLoading) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-gradient-to-br from-pink-50 to-purple-50">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-pink-600 mx-auto mb-4" />
+          <p className="text-gray-600">Loading supplier portal...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user || user.role !== 'vendor') {
+    return null;
+  }
+
+  return (
+    <div className={cn('min-h-screen bg-gradient-to-br from-pink-50 to-purple-50', inter.className)}>
+      {/* Mobile-optimized layout */}
+      <div className="flex flex-col h-screen">
+        {/* Header */}
+        <SupplierHeader supplier={supplierProfile} />
+        
+        {/* Main content area with safe padding for mobile navigation */}
+        <main className="flex-1 overflow-auto pb-20 px-4 pt-2">
+          <div className="max-w-md mx-auto">
+            {children}
+          </div>
+        </main>
+        
+        {/* Bottom navigation */}
+        <SupplierMobileNavigation />
+      </div>
+      
+      {/* Toast notifications */}
+      <Toaster />
+      
+      {/* AI Chatbot Widget - mobile-optimized for wedding suppliers */}
+      <ResponsiveChatWidget 
+        position="bottom-right"
+        initialMessage="Hello! I'm here to help you manage your wedding supplier business. What would you like assistance with today?"
+        contextHint="wedding supplier mobile portal"
+        showSecurityIndicator={true}
+        allowFileUploads={true}
+        theme="light"
+      />
+    </div>
+  );
+}

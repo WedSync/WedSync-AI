@@ -1,0 +1,273 @@
+import { describe, it, expect, jest, beforeEach, afterEach } from '@jest/globals';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { CommunicationsSecurity } from '@/lib/security/communications-security';
+import { CreateBulkMessageRequest } from '@/types/communications';
+
+// Mock dependencies
+const mockFetch = jest.fn();
+global.fetch = mockFetch;
+// Mock console methods
+const consoleSpy = {
+  error: jest.spyOn(console, 'error').mockImplementation(() => {}),
+  warn: jest.spyOn(console, 'warn').mockImplementation(() => {})
+};
+describe('CommunicationsSecurity', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+  afterEach(() => {
+    jest.resetAllMocks();
+  describe('validateGuestOwnership', () => {
+    const coupleId = 'couple-123';
+    const recipientIds = ['guest-1', 'guest-2', 'guest-3'];
+    it('should validate guest ownership successfully', async () => {
+      const mockResponse = {
+        isValid: true,
+        invalidGuestIds: []
+      };
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: jest.fn().mockResolvedValue(mockResponse)
+      });
+      const result = await CommunicationsSecurity.validateGuestOwnership(coupleId, recipientIds);
+      expect(mockFetch).toHaveBeenCalledWith('/api/guests/validate-ownership', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ couple_id: coupleId, guest_ids: recipientIds })
+      expect(result).toEqual(mockResponse);
+    });
+    it('should return invalid result when API call fails', async () => {
+        ok: false,
+        status: 500
+      expect(result).toEqual({
+        isValid: false,
+        invalidGuestIds: recipientIds
+      expect(consoleSpy.error).toHaveBeenCalled();
+    it('should return invalid result when fetch throws error', async () => {
+      mockFetch.mockRejectedValueOnce(new Error('Network error'));
+    it('should return invalid guests when some guests are invalid', async () => {
+        invalidGuestIds: ['guest-2']
+      expect(result.isValid).toBe(false);
+      expect(result.invalidGuestIds).toEqual(['guest-2']);
+  describe('validateEmailAddresses', () => {
+    it('should validate correct email addresses', () => {
+      const emails = [
+        'test@example.com',
+        'user.name@domain.co.uk',
+        'firstname+lastname@example.org'
+      ];
+      const result = CommunicationsSecurity.validateEmailAddresses(emails);
+      expect(result.valid).toEqual(emails);
+      expect(result.invalid).toEqual([]);
+    it('should identify invalid email addresses', () => {
+        'valid@example.com',
+        'invalid.email',
+        '@domain.com',
+        'user@',
+        'user name@example.com'
+      expect(result.valid).toEqual(['valid@example.com']);
+      expect(result.invalid).toEqual([
+      ]);
+    it('should handle empty email array', () => {
+      const result = CommunicationsSecurity.validateEmailAddresses([]);
+      expect(result.valid).toEqual([]);
+  describe('validatePhoneNumbers', () => {
+    it('should validate correct phone numbers', () => {
+      const phones = [
+        '+1234567890',
+        '(555) 123-4567',
+        '+44 20 1234 5678',
+        '1-800-123-4567'
+      const result = CommunicationsSecurity.validatePhoneNumbers(phones);
+      expect(result.valid.length).toBe(4);
+    it('should identify invalid phone numbers', () => {
+        '+1234567890', // valid
+        '123', // too short
+        'abc-def-ghij', // non-numeric
+        '+1 (555) 123-4567' // valid
+      expect(result.valid).toEqual(['+1234567890', '+1 (555) 123-4567']);
+      expect(result.invalid).toEqual(['123', 'abc-def-ghij']);
+    it('should handle empty phone array', () => {
+      const result = CommunicationsSecurity.validatePhoneNumbers([]);
+  describe('validateBulkMessageRequest', () => {
+    let validRequest: CreateBulkMessageRequest;
+    beforeEach(() => {
+      validRequest = {
+        couple_id: '123e4567-e89b-12d3-a456-426614174000',
+        recipient_ids: ['223e4567-e89b-12d3-a456-426614174001'],
+        segmentation_criteria: {
+          rsvp_status: ['pending'],
+          dietary_restrictions: [],
+          age_groups: ['adult'],
+          categories: ['family'],
+          sides: ['partner1'],
+          has_plus_one: false,
+          has_dietary_restrictions: false,
+          has_special_needs: false,
+          table_numbers: [],
+          tags: [],
+          custom_filters: {}
+        },
+        message_content: {
+          subject: 'Test Subject',
+          html_content: '<p>Hello {{guest_name}}!</p>',
+          text_content: 'Hello {{guest_name}}!'
+        delivery_options: {
+          channels: ['email'],
+          send_immediately: true,
+          scheduled_for: undefined,
+          test_mode: false,
+          batch_size: 50,
+          delay_between_batches: 60
+        personalization_tokens: [
+          {
+            token: '{{guest_name}}',
+            display_name: 'Guest Name',
+            description: 'The guest\'s full name',
+            example_value: 'John Doe',
+            required: true,
+            type: 'text'
+          }
+        ]
+      // Mock successful guest ownership validation
+      const mockValidateGuestOwnership = jest.spyOn(CommunicationsSecurity, 'validateGuestOwnership')
+        .mockResolvedValue({ isValid: true, invalidGuestIds: [] });
+      // Mock successful rate limiting
+      const mockRateLimitMessaging = jest.spyOn(CommunicationsSecurity, 'rateLimitMessaging')
+        .mockResolvedValue({
+          allowed: true,
+          remaining: 4,
+          resetTime: new Date(Date.now() + 3600000),
+          dailyLimit: 5
+        });
+    it('should validate correct request successfully', async () => {
+      const result = await CommunicationsSecurity.validateBulkMessageRequest(validRequest);
+      expect(result.isValid).toBe(true);
+      expect(result.errors.filter(e => e.severity === 'error')).toHaveLength(0);
+      expect(result.sanitizedRequest).toBeDefined();
+    it('should reject request with invalid UUID format', async () => {
+      const invalidRequest = {
+        ...validRequest,
+        couple_id: 'invalid-uuid'
+      const result = await CommunicationsSecurity.validateBulkMessageRequest(invalidRequest);
+      expect(result.errors).toContainEqual(
+        expect.objectContaining({
+          field: 'couple_id',
+          message: expect.stringContaining('Invalid'),
+          severity: 'error'
+        })
+      );
+    it('should reject request with no recipients', async () => {
+        recipient_ids: []
+          field: 'recipient_ids',
+          message: 'At least one recipient is required',
+    it('should reject request with too many recipients', async () => {
+        recipient_ids: Array(501).fill('123e4567-e89b-12d3-a456-426614174001')
+          message: 'Too many recipients',
+    it('should reject request with empty message content', async () => {
+          ...validRequest.message_content,
+          html_content: '',
+          text_content: ''
+        }
+          field: 'message_content.html_content',
+          message: 'Message content is required',
+    it('should reject request with invalid guest ownership', async () => {
+      jest.spyOn(CommunicationsSecurity, 'validateGuestOwnership')
+        .mockResolvedValueOnce({
+          isValid: false,
+          invalidGuestIds: ['invalid-guest-1']
+          message: expect.stringContaining('Invalid guest IDs: invalid-guest-1'),
+    it('should reject request when rate limit exceeded', async () => {
+      jest.spyOn(CommunicationsSecurity, 'rateLimitMessaging')
+          allowed: false,
+          remaining: 0,
+          message: expect.stringContaining('Rate limit exceeded'),
+    it('should validate scheduled messages with correct timing', async () => {
+      const futureDate = new Date(Date.now() + 20 * 60 * 1000); // 20 minutes from now
+      const scheduledRequest = {
+          ...validRequest.delivery_options,
+          send_immediately: false,
+          scheduled_for: futureDate.toISOString()
+      const result = await CommunicationsSecurity.validateBulkMessageRequest(scheduledRequest);
+    it('should reject scheduled messages too close to current time', async () => {
+      const nearFutureDate = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes from now
+          scheduled_for: nearFutureDate.toISOString()
+          field: 'scheduled_for',
+          message: 'Scheduled time must be at least 15 minutes in the future',
+    it('should add warnings for long content', async () => {
+      const longContentRequest = {
+          html_content: 'x'.repeat(15000),
+          text_content: 'x'.repeat(2000)
+      const result = await CommunicationsSecurity.validateBulkMessageRequest(longContentRequest);
+      expect(result.warnings).toContain(
+        'Message is quite long and may be truncated in some email clients'
+        'SMS content exceeds recommended length and may be split into multiple messages'
+    it('should add warnings for large recipient lists without batching', async () => {
+      const largeRecipientRequest = {
+        recipient_ids: Array(150).fill('123e4567-e89b-12d3-a456-426614174001'),
+          batch_size: undefined
+      const result = await CommunicationsSecurity.validateBulkMessageRequest(largeRecipientRequest);
+        'Consider using smaller batch sizes for large recipient lists to improve deliverability'
+  describe('generateUnsubscribeToken', () => {
+    it('should generate valid unsubscribe token', () => {
+      const coupleId = 'couple-123';
+      const guestId = 'guest-456';
+      const token = CommunicationsSecurity.generateUnsubscribeToken(coupleId, guestId);
+      expect(token).toBeDefined();
+      expect(typeof token).toBe('string');
+      expect(token.length).toBeGreaterThan(0);
+      // Should be valid base64url
+      expect(() => Buffer.from(token, 'base64url')).not.toThrow();
+    it('should generate different tokens for different inputs', () => {
+      const token1 = CommunicationsSecurity.generateUnsubscribeToken('couple-1', 'guest-1');
+      const token2 = CommunicationsSecurity.generateUnsubscribeToken('couple-2', 'guest-2');
+      expect(token1).not.toBe(token2);
+  describe('validateUnsubscribeToken', () => {
+    it('should validate correct unsubscribe token', () => {
+      
+      const result = CommunicationsSecurity.validateUnsubscribeToken(token);
+      expect(result.coupleId).toBe(coupleId);
+      expect(result.guestId).toBe(guestId);
+    it('should reject invalid token format', () => {
+      const result = CommunicationsSecurity.validateUnsubscribeToken('invalid-token');
+      expect(result.coupleId).toBeUndefined();
+      expect(result.guestId).toBeUndefined();
+    it('should reject expired tokens', () => {
+      // Mock an old timestamp (older than 30 days)
+      const oldTimestamp = Date.now() - (31 * 24 * 60 * 60 * 1000);
+      const oldPayload = JSON.stringify({
+        coupleId: 'couple-123',
+        guestId: 'guest-456',
+        timestamp: oldTimestamp
+      const oldToken = Buffer.from(oldPayload).toString('base64url');
+      const result = CommunicationsSecurity.validateUnsubscribeToken(oldToken);
+  describe('logSecurityEvent', () => {
+    it('should log security events', async () => {
+      await CommunicationsSecurity.logSecurityEvent(
+        'rate_limit_exceeded',
+        'couple-123',
+        { requestCount: 6 }
+      expect(consoleSpy.warn).toHaveBeenCalledWith(
+        'Security Event:',
+          event: 'rate_limit_exceeded',
+          coupleId: 'couple-123',
+          details: { requestCount: 6 },
+          timestamp: expect.any(String),
+          userAgent: expect.any(String)
+    it('should handle logging errors gracefully', async () => {
+      const originalConsoleWarn = console.warn;
+      console.warn = jest.fn().mockImplementation(() => {
+        throw new Error('Logging failed');
+      // Should not throw
+      await expect(
+        CommunicationsSecurity.logSecurityEvent(
+          'invalid_guest_ownership',
+          'couple-123',
+          {}
+        )
+      ).resolves.toBeUndefined();
+      expect(consoleSpy.error).toHaveBeenCalledWith(
+        'Failed to log security event:',
+        expect.any(Error)
+      console.warn = originalConsoleWarn;
+});

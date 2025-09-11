@@ -1,0 +1,567 @@
+/**
+ * @jest-environment jsdom
+ */
+
+import React from 'react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import '@testing-library/jest-dom'
+import InterventionActions from '@/components/dashboard/InterventionActions'
+import type { SupplierHealthMetrics, InterventionAction } from '@/types/supplier-health'
+
+// Sample test data
+const mockSuppliers: SupplierHealthMetrics[] = [
+  {
+    id: '1',
+    supplier_id: 'sup_001',
+    organization_id: 'org_001',
+    supplier_name: 'Perfect Moments Photography',
+    supplier_category: 'photographer',
+    supplier_email: 'contact@perfectmoments.com',
+    supplier_business_name: 'Perfect Moments Photography Ltd',
+    health_score: 92,
+    risk_level: 'green',
+    last_activity: new Date().toISOString(),
+    active_clients: 8,
+    completed_projects: 45,
+    avg_response_time: 2.5,
+    client_satisfaction: 4.8,
+    revenue: 85000,
+    trendsData: [],
+    interventionsNeeded: [
+      {
+        id: 'int_001',
+        type: 'follow_up',
+        priority: 'low',
+        description: 'Schedule quarterly business review',
+        dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+        status: 'pending',
+        createdAt: new Date().toISOString()
+      },
+      {
+        id: 'int_002',
+        type: 'upsell',
+        priority: 'medium',
+        description: 'Discuss premium package options',
+        dueDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString(),
+        status: 'pending',
+        createdAt: new Date().toISOString()
+      }
+    ],
+    last_contact_date: new Date().toISOString(),
+    notes: 'High performing supplier',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  },
+  {
+    id: '2',
+    supplier_id: 'sup_002',
+    organization_id: 'org_001',
+    supplier_name: 'Urgent Flowers',
+    supplier_category: 'florist',
+    supplier_email: 'urgent@flowers.com',
+    supplier_business_name: 'Urgent Flowers Ltd',
+    health_score: 34,
+    risk_level: 'red',
+    last_activity: new Date().toISOString(),
+    active_clients: 3,
+    completed_projects: 15,
+    avg_response_time: 18.0,
+    client_satisfaction: 3.2,
+    revenue: 45000,
+    trendsData: [],
+    interventionsNeeded: [
+      {
+        id: 'int_003',
+        type: 'retention',
+        priority: 'critical',
+        description: 'URGENT: Multiple client complaints - immediate action required',
+        dueDate: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString(), // Overdue
+        status: 'pending',
+        createdAt: new Date().toISOString()
+      },
+      {
+        id: 'int_004',
+        type: 'training',
+        priority: 'high',
+        description: 'Customer service training required',
+        dueDate: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString(),
+        status: 'pending',
+        createdAt: new Date().toISOString()
+      }
+    ],
+    last_contact_date: new Date().toISOString(),
+    notes: 'CRITICAL: Needs immediate attention',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  },
+  {
+    id: '3',
+    supplier_id: 'sup_003',
+    organization_id: 'org_001',
+    supplier_name: 'Support Needed Venue',
+    supplier_category: 'venue',
+    supplier_email: 'help@venue.com',
+    supplier_business_name: 'Support Venue Ltd',
+    health_score: 67,
+    risk_level: 'yellow',
+    last_activity: new Date().toISOString(),
+    active_clients: 5,
+    completed_projects: 20,
+    avg_response_time: 6.0,
+    client_satisfaction: 4.0,
+    revenue: 75000,
+    trendsData: [],
+    interventionsNeeded: [
+      {
+        id: 'int_005',
+        type: 'support',
+        priority: 'high',
+        description: 'Technical support needed for booking system',
+        dueDate: new Date(Date.now() + 1 * 24 * 60 * 60 * 1000).toISOString(), // Due tomorrow
+        status: 'pending',
+        createdAt: new Date().toISOString()
+      }
+    ],
+    last_contact_date: new Date().toISOString(),
+    notes: 'Needs technical support',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  }
+]
+
+const defaultProps = {
+  suppliers: mockSuppliers,
+  onActionExecuted: jest.fn().mockResolvedValue(undefined),
+  loading: false
+}
+
+describe('InterventionActions', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+  })
+
+  describe('Basic Rendering', () => {
+    it('renders intervention cards for all suppliers', () => {
+      render(<InterventionActions {...defaultProps} />)
+      
+      // Should show interventions from all suppliers
+      expect(screen.getByText('Perfect Moments Photography')).toBeInTheDocument()
+      expect(screen.getByText('Urgent Flowers')).toBeInTheDocument()
+      expect(screen.getByText('Support Needed Venue')).toBeInTheDocument()
+    })
+
+    it('displays intervention details correctly', () => {
+      render(<InterventionActions {...defaultProps} />)
+      
+      expect(screen.getByText('Schedule quarterly business review')).toBeInTheDocument()
+      expect(screen.getByText('URGENT: Multiple client complaints - immediate action required')).toBeInTheDocument()
+      expect(screen.getByText('Technical support needed for booking system')).toBeInTheDocument()
+    })
+
+    it('shows supplier avatars with initials', () => {
+      render(<InterventionActions {...defaultProps} />)
+      
+      expect(screen.getByText('PM')).toBeInTheDocument() // Perfect Moments
+      expect(screen.getByText('UF')).toBeInTheDocument() // Urgent Flowers
+      expect(screen.getByText('SN')).toBeInTheDocument() // Support Needed
+    })
+
+    it('displays priority badges', () => {
+      render(<InterventionActions {...defaultProps} />)
+      
+      expect(screen.getByText('LOW')).toBeInTheDocument()
+      expect(screen.getByText('MEDIUM')).toBeInTheDocument()
+      expect(screen.getByText('HIGH')).toBeInTheDocument()
+      expect(screen.getByText('CRITICAL')).toBeInTheDocument()
+    })
+  })
+
+  describe('Priority Sorting', () => {
+    it('sorts interventions by priority and due date', () => {
+      render(<InterventionActions {...defaultProps} />)
+      
+      const cards = screen.getAllByText(/CRITICAL|HIGH|MEDIUM|LOW/)
+      
+      // First should be critical
+      expect(cards[0]).toHaveTextContent('CRITICAL')
+      // Second should be high
+      expect(cards[1]).toHaveTextContent('HIGH')
+    })
+
+    it('shows critical interventions first regardless of due date', () => {
+      render(<InterventionActions {...defaultProps} />)
+      
+      const interventions = screen.getAllByText(/Schedule quarterly|URGENT:|Technical support/)
+      
+      // URGENT (critical) should appear before others
+      expect(interventions[0]).toHaveTextContent('URGENT')
+    })
+  })
+
+  describe('Due Date Display', () => {
+    it('shows overdue interventions in red', () => {
+      render(<InterventionActions {...defaultProps} />)
+      
+      const overdueText = screen.getByText(/1 day overdue/)
+      expect(overdueText).toHaveClass('text-red-600')
+    })
+
+    it('shows due today interventions', () => {
+      // Create intervention due today
+      const todaySupplier = {
+        ...mockSuppliers[0],
+        interventionsNeeded: [{
+          id: 'int_today',
+          type: 'follow_up' as const,
+          priority: 'medium' as const,
+          description: 'Due today intervention',
+          dueDate: new Date().toISOString(),
+          status: 'pending' as const,
+          createdAt: new Date().toISOString()
+        }]
+      }
+      
+      render(<InterventionActions {...defaultProps} suppliers={[todaySupplier]} />)
+      
+      expect(screen.getByText('Due today')).toBeInTheDocument()
+    })
+
+    it('shows due tomorrow interventions', () => {
+      render(<InterventionActions {...defaultProps} />)
+      
+      expect(screen.getByText('Due tomorrow')).toBeInTheDocument()
+    })
+
+    it('shows due in X days for future interventions', () => {
+      render(<InterventionActions {...defaultProps} />)
+      
+      expect(screen.getByText(/Due in \d+ days/)).toBeInTheDocument()
+    })
+  })
+
+  describe('Action Execution', () => {
+    it('executes intervention when action button is clicked', async () => {
+      render(<InterventionActions {...defaultProps} />)
+      
+      const actionButton = screen.getByText('Call Now') // Follow-up action
+      fireEvent.click(actionButton)
+      
+      await waitFor(() => {
+        expect(defaultProps.onActionExecuted).toHaveBeenCalledWith(
+          'sup_001',
+          expect.objectContaining({
+            id: 'int_001',
+            type: 'follow_up'
+          })
+        )
+      })
+    })
+
+    it('shows loading state during action execution', async () => {
+      const slowAction = jest.fn(() => new Promise(resolve => setTimeout(resolve, 100)))
+      
+      render(<InterventionActions {...defaultProps} onActionExecuted={slowAction} />)
+      
+      const actionButton = screen.getByText('Call Now')
+      fireEvent.click(actionButton)
+      
+      expect(screen.getByText('Processing...')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /Processing/ })).toBeDisabled()
+      
+      await waitFor(() => {
+        expect(screen.queryByText('Processing...')).not.toBeInTheDocument()
+      })
+    })
+
+    it('prevents multiple simultaneous executions of same action', async () => {
+      const slowAction = jest.fn(() => new Promise(resolve => setTimeout(resolve, 50)))
+      
+      render(<InterventionActions {...defaultProps} onActionExecuted={slowAction} />)
+      
+      const actionButton = screen.getByText('Call Now')
+      
+      // Click multiple times rapidly
+      fireEvent.click(actionButton)
+      fireEvent.click(actionButton)
+      fireEvent.click(actionButton)
+      
+      await waitFor(() => {
+        expect(slowAction).toHaveBeenCalledTimes(1)
+      })
+    })
+
+    it('handles action execution errors gracefully', async () => {
+      const failingAction = jest.fn().mockRejectedValue(new Error('Action failed'))
+      const consoleSpy = jest.spyOn(console, 'error').mockImplementation()
+      
+      render(<InterventionActions {...defaultProps} onActionExecuted={failingAction} />)
+      
+      const actionButton = screen.getByText('Call Now')
+      fireEvent.click(actionButton)
+      
+      await waitFor(() => {
+        expect(actionButton).not.toBeDisabled()
+        expect(screen.queryByText('Processing...')).not.toBeInTheDocument()
+      })
+      
+      consoleSpy.mockRestore()
+    })
+  })
+
+  describe('Action Button Labels', () => {
+    it('displays correct button labels for different intervention types', () => {
+      render(<InterventionActions {...defaultProps} />)
+      
+      expect(screen.getByText('Call Now')).toBeInTheDocument() // follow_up
+      expect(screen.getByText('Discuss Upgrade')).toBeInTheDocument() // upsell
+      expect(screen.getByText('Retention Action')).toBeInTheDocument() // retention
+      expect(screen.getByText('Schedule Training')).toBeInTheDocument() // training
+      expect(screen.getByText('Provide Support')).toBeInTheDocument() // support
+    })
+
+    it('uses appropriate button variants for critical priorities', () => {
+      render(<InterventionActions {...defaultProps} />)
+      
+      const criticalButton = screen.getByText('Retention Action')
+      expect(criticalButton).toHaveClass('bg-blue-600') // Primary variant for critical
+    })
+
+    it('uses secondary variant for non-critical priorities', () => {
+      render(<InterventionActions {...defaultProps} />)
+      
+      const normalButton = screen.getByText('Call Now')
+      expect(normalButton).toHaveClass('bg-gray-100') // Secondary variant
+    })
+  })
+
+  describe('Icons and Visual Elements', () => {
+    it('displays correct icons for intervention types', () => {
+      render(<InterventionActions {...defaultProps} />)
+      
+      // Icons should be present for each intervention type
+      expect(screen.getByTestId('phone-icon')).toBeInTheDocument() // follow_up
+      expect(screen.getByTestId('trending-up-icon')).toBeInTheDocument() // upsell
+      expect(screen.getByTestId('heart-icon')).toBeInTheDocument() // retention
+      expect(screen.getByTestId('book-icon')).toBeInTheDocument() // training
+      expect(screen.getByTestId('message-icon')).toBeInTheDocument() // support
+    })
+
+    it('uses appropriate colors for intervention types', () => {
+      render(<InterventionActions {...defaultProps} />)
+      
+      const followUpIcon = screen.getByTestId('phone-icon')
+      expect(followUpIcon).toHaveClass('text-blue-600')
+      
+      const upsellIcon = screen.getByTestId('trending-up-icon')
+      expect(upsellIcon).toHaveClass('text-orange-600')
+    })
+  })
+
+  describe('Overdue Highlighting', () => {
+    it('highlights overdue intervention cards', () => {
+      render(<InterventionActions {...defaultProps} />)
+      
+      // Find the card with overdue intervention
+      const overdueCard = screen.getByText('URGENT: Multiple client complaints - immediate action required')
+        .closest('.bg-red-50')
+      
+      expect(overdueCard).toBeInTheDocument()
+      expect(overdueCard).toHaveClass('border-red-200')
+    })
+
+    it('shows overdue status in time indicator', () => {
+      render(<InterventionActions {...defaultProps} />)
+      
+      const overdueIndicator = screen.getByText(/1 day overdue/)
+      expect(overdueIndicator).toHaveClass('text-red-600', 'font-medium')
+    })
+  })
+
+  describe('Limited Display and Pagination', () => {
+    it('shows only first 8 interventions by default', () => {
+      // Create supplier with many interventions
+      const manyInterventions = Array.from({ length: 15 }, (_, index) => ({
+        id: `int_${index}`,
+        type: 'follow_up' as const,
+        priority: 'medium' as const,
+        description: `Intervention ${index}`,
+        dueDate: new Date(Date.now() + index * 24 * 60 * 60 * 1000).toISOString(),
+        status: 'pending' as const,
+        createdAt: new Date().toISOString()
+      }))
+      
+      const supplierWithMany = {
+        ...mockSuppliers[0],
+        interventionsNeeded: manyInterventions
+      }
+      
+      render(<InterventionActions {...defaultProps} suppliers={[supplierWithMany]} />)
+      
+      // Should show only first 8
+      expect(screen.getAllByText('Call Now')).toHaveLength(8)
+      expect(screen.getByText('7 more actions available')).toBeInTheDocument()
+    })
+
+    it('shows "View All Actions" button when there are more than 8 interventions', () => {
+      const manyInterventions = Array.from({ length: 12 }, (_, index) => ({
+        id: `int_${index}`,
+        type: 'follow_up' as const,
+        priority: 'medium' as const,
+        description: `Intervention ${index}`,
+        dueDate: new Date(Date.now() + index * 24 * 60 * 60 * 1000).toISOString(),
+        status: 'pending' as const,
+        createdAt: new Date().toISOString()
+      }))
+      
+      const supplierWithMany = {
+        ...mockSuppliers[0],
+        interventionsNeeded: manyInterventions
+      }
+      
+      render(<InterventionActions {...defaultProps} suppliers={[supplierWithMany]} />)
+      
+      expect(screen.getByText('View All Actions')).toBeInTheDocument()
+      expect(screen.getByText('4 more actions available')).toBeInTheDocument()
+    })
+  })
+
+  describe('Quick Stats', () => {
+    it('displays overdue count correctly', () => {
+      render(<InterventionActions {...defaultProps} />)
+      
+      // Should show 1 overdue intervention
+      expect(screen.getByText('1')).toBeInTheDocument()
+      expect(screen.getByText('Overdue')).toBeInTheDocument()
+    })
+
+    it('displays critical count correctly', () => {
+      render(<InterventionActions {...defaultProps} />)
+      
+      // Should show 1 critical intervention
+      expect(screen.getByText('1')).toBeInTheDocument()
+      expect(screen.getByText('Critical')).toBeInTheDocument()
+    })
+  })
+
+  describe('Empty State', () => {
+    it('shows "All Caught Up" message when no interventions needed', () => {
+      const suppliersWithoutInterventions = mockSuppliers.map(supplier => ({
+        ...supplier,
+        interventionsNeeded: []
+      }))
+      
+      render(<InterventionActions {...defaultProps} suppliers={suppliersWithoutInterventions} />)
+      
+      expect(screen.getByText('All Caught Up!')).toBeInTheDocument()
+      expect(screen.getByText('No immediate interventions required. Your suppliers are healthy!')).toBeInTheDocument()
+    })
+
+    it('shows success icon in empty state', () => {
+      render(<InterventionActions {...defaultProps} suppliers={[]} />)
+      
+      expect(screen.getByTestId('check-circle-icon')).toBeInTheDocument()
+    })
+  })
+
+  describe('Loading State', () => {
+    it('disables all action buttons when loading', () => {
+      render(<InterventionActions {...defaultProps} loading={true} />)
+      
+      const actionButtons = screen.getAllByRole('button', { name: /Call Now|Discuss Upgrade|Retention Action|Schedule Training|Provide Support/ })
+      
+      actionButtons.forEach(button => {
+        expect(button).toBeDisabled()
+      })
+    })
+
+    it('disables "View All Actions" button when loading', () => {
+      const manyInterventions = Array.from({ length: 12 }, (_, index) => ({
+        id: `int_${index}`,
+        type: 'follow_up' as const,
+        priority: 'medium' as const,
+        description: `Intervention ${index}`,
+        dueDate: new Date(Date.now() + index * 24 * 60 * 60 * 1000).toISOString(),
+        status: 'pending' as const,
+        createdAt: new Date().toISOString()
+      }))
+      
+      const supplierWithMany = {
+        ...mockSuppliers[0],
+        interventionsNeeded: manyInterventions
+      }
+      
+      render(<InterventionActions {...defaultProps} suppliers={[supplierWithMany]} loading={true} />)
+      
+      const viewAllButton = screen.getByText('View All Actions')
+      expect(viewAllButton).toBeDisabled()
+    })
+  })
+
+  describe('Accessibility', () => {
+    it('has proper ARIA labels for action buttons', () => {
+      render(<InterventionActions {...defaultProps} />)
+      
+      const actionButton = screen.getByRole('button', { name: /Call Now/ })
+      expect(actionButton).toBeInTheDocument()
+    })
+
+    it('supports keyboard navigation', async () => {
+      const user = userEvent.setup()
+      render(<InterventionActions {...defaultProps} />)
+      
+      // Tab through action buttons
+      await user.tab()
+      expect(document.activeElement).toHaveAttribute('type', 'button')
+    })
+
+    it('announces loading state to screen readers', () => {
+      render(<InterventionActions {...defaultProps} loading={true} />)
+      
+      const loadingButtons = screen.getAllByText('Processing...')
+      loadingButtons.forEach(button => {
+        expect(button.closest('button')).toHaveAttribute('aria-disabled', 'true')
+      })
+    })
+  })
+
+  describe('Performance', () => {
+    it('memoizes intervention sorting', () => {
+      const { rerender } = render(<InterventionActions {...defaultProps} />)
+      
+      // Rerender with same props
+      rerender(<InterventionActions {...defaultProps} />)
+      
+      // Should maintain same order
+      const criticalText = screen.getByText('URGENT: Multiple client complaints - immediate action required')
+      expect(criticalText).toBeInTheDocument()
+    })
+
+    it('handles large numbers of interventions efficiently', () => {
+      const largeDataset = Array.from({ length: 100 }, (_, index) => ({
+        ...mockSuppliers[0],
+        id: `supplier_${index}`,
+        supplier_id: `sup_${index}`,
+        interventionsNeeded: Array.from({ length: 10 }, (_, intIndex) => ({
+          id: `int_${index}_${intIndex}`,
+          type: 'follow_up' as const,
+          priority: 'medium' as const,
+          description: `Intervention ${index}-${intIndex}`,
+          dueDate: new Date(Date.now() + intIndex * 24 * 60 * 60 * 1000).toISOString(),
+          status: 'pending' as const,
+          createdAt: new Date().toISOString()
+        }))
+      }))
+      
+      const startTime = performance.now()
+      render(<InterventionActions {...defaultProps} suppliers={largeDataset} />)
+      const endTime = performance.now()
+      
+      // Should render within reasonable time
+      expect(endTime - startTime).toBeLessThan(100)
+      
+      // Should still show only 8 interventions
+      expect(screen.getAllByText('Call Now')).toHaveLength(8)
+    })
+  })
+})

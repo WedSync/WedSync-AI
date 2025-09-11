@@ -1,0 +1,446 @@
+/**
+ * WS-244 Real-Time Collaboration System - TypeScript Interfaces
+ * Team C - Y.js Integration and WebSocket Provider
+ * 
+ * Comprehensive type definitions for operational transform,
+ * document synchronization, and external service integration.
+ */
+
+import * as Y from 'yjs';
+
+/**
+ * Core Y.js Document and Provider Types
+ */
+export interface YjsDocument extends Y.Doc {
+  readonly guid: string;
+  readonly clientID: number;
+  readonly share: Y.Map<any>;
+}
+
+export interface YjsProviderOptions {
+  /** Authentication token for WebSocket connection */
+  authToken: string;
+  /** Organization ID for document isolation */
+  organizationId: string;
+  /** User ID for operation attribution */
+  userId: string;
+  /** Connection retry configuration */
+  retry: {
+    maxAttempts: number;
+    backoffMs: number;
+    maxBackoffMs: number;
+  };
+  /** Document-specific permissions */
+  permissions: DocumentPermissions;
+  /** Enable offline sync capabilities */
+  offlineSync: boolean;
+}
+
+export interface DocumentPermissions {
+  read: boolean;
+  write: boolean;
+  admin: boolean;
+  share: boolean;
+  comment: boolean;
+}
+
+/**
+ * Connection and Synchronization States
+ */
+export enum ConnectionStatus {
+  CONNECTING = 'connecting',
+  CONNECTED = 'connected',
+  DISCONNECTED = 'disconnected',
+  RECONNECTING = 'reconnecting',
+  FAILED = 'failed',
+  AUTHENTICATED = 'authenticated',
+  UNAUTHORIZED = 'unauthorized'
+}
+
+export enum SyncStatus {
+  SYNCING = 'syncing',
+  SYNCED = 'synced',
+  OUT_OF_SYNC = 'out_of_sync',
+  ERROR = 'error',
+  OFFLINE = 'offline'
+}
+
+export interface SyncResult {
+  success: boolean;
+  documentId: string;
+  operationsApplied: number;
+  conflicts: ConflictResolution[];
+  timestamp: Date;
+  clientVector: StateVector;
+  serverVector: StateVector;
+}
+
+export interface StateVector {
+  [clientId: number]: number;
+}
+
+/**
+ * Operational Transform Types
+ */
+export interface Operation {
+  id: string;
+  type: OperationType;
+  clientId: number;
+  timestamp: Date;
+  position: number;
+  length: number;
+  content?: any;
+  attributes?: OperationAttributes;
+  parentId?: string;
+  userId: string;
+  documentId: string;
+}
+
+export enum OperationType {
+  INSERT = 'insert',
+  DELETE = 'delete',
+  RETAIN = 'retain',
+  FORMAT = 'format',
+  EMBED = 'embed'
+}
+
+export interface OperationAttributes {
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  color?: string;
+  backgroundColor?: string;
+  fontSize?: number;
+  fontFamily?: string;
+  link?: string;
+  [key: string]: any;
+}
+
+export interface TransformedOperation extends Operation {
+  originalOperation: Operation;
+  transformationReason: string;
+  conflictsWith: string[];
+}
+
+export interface ConflictResolution {
+  conflictId: string;
+  operations: Operation[];
+  resolution: 'merged' | 'rejected' | 'deferred';
+  reason: string;
+  timestamp: Date;
+  resolvedBy: 'server' | 'client' | 'algorithm';
+}
+
+/**
+ * Document Persistence and Snapshots
+ */
+export interface DocumentSnapshot {
+  id: string;
+  documentId: string;
+  version: number;
+  stateVector: StateVector;
+  content: Uint8Array; // Y.js encoded document state
+  metadata: DocumentMetadata;
+  createdAt: Date;
+  createdBy: string;
+  size: number;
+}
+
+export interface DocumentMetadata {
+  title?: string;
+  description?: string;
+  tags: string[];
+  collaborators: CollaboratorInfo[];
+  permissions: DocumentPermissions;
+  organizationId: string;
+  lastModified: Date;
+  version: number;
+  type: DocumentType;
+}
+
+export enum DocumentType {
+  TEXT = 'text',
+  FORM = 'form',
+  TIMELINE = 'timeline',
+  BUDGET = 'budget',
+  GUEST_LIST = 'guest_list',
+  CHECKLIST = 'checklist'
+}
+
+export interface CollaboratorInfo {
+  userId: string;
+  name: string;
+  email: string;
+  avatar?: string;
+  permissions: DocumentPermissions;
+  lastSeen: Date;
+  isOnline: boolean;
+  cursor?: CursorInfo;
+}
+
+export interface CursorInfo {
+  position: number;
+  selection: {
+    start: number;
+    end: number;
+  };
+  color: string;
+}
+
+/**
+ * External Service Integration Types
+ */
+export interface ExternalServiceConnection {
+  id: string;
+  type: ExternalServiceType;
+  documentId: string;
+  externalId: string;
+  syncMode: SyncMode;
+  status: ConnectionStatus;
+  lastSync: Date;
+  configuration: ExternalServiceConfig;
+  authCredentials?: ExternalAuthCredentials;
+}
+
+export enum ExternalServiceType {
+  GOOGLE_DOCS = 'google_docs',
+  OFFICE_365 = 'office_365',
+  NOTION = 'notion',
+  DROPBOX_PAPER = 'dropbox_paper'
+}
+
+export enum SyncMode {
+  BIDIRECTIONAL = 'bidirectional',
+  IMPORT_ONLY = 'import_only',
+  EXPORT_ONLY = 'export_only'
+}
+
+export interface ExternalServiceConfig {
+  syncInterval: number; // milliseconds
+  conflictResolutionStrategy: 'yjs_wins' | 'external_wins' | 'manual';
+  fieldsToSync: string[];
+  transformations: FieldTransformation[];
+}
+
+export interface FieldTransformation {
+  sourceField: string;
+  targetField: string;
+  transformer: (value: any) => any;
+}
+
+export interface ExternalAuthCredentials {
+  accessToken: string;
+  refreshToken?: string;
+  expiresAt?: Date;
+  scope: string[];
+}
+
+/**
+ * Google Docs Integration Types
+ */
+export interface GoogleDocConnection extends ExternalServiceConnection {
+  type: ExternalServiceType.GOOGLE_DOCS;
+  googleDocId: string;
+  drivePermissions: GoogleDrivePermission[];
+}
+
+export interface GoogleDrivePermission {
+  id: string;
+  type: 'user' | 'group' | 'domain' | 'anyone';
+  role: 'owner' | 'organizer' | 'fileOrganizer' | 'writer' | 'commenter' | 'reader';
+  emailAddress?: string;
+}
+
+/**
+ * Office 365 Integration Types
+ */
+export interface Office365Connection extends ExternalServiceConnection {
+  type: ExternalServiceType.OFFICE_365;
+  office365FileId: string;
+  sharePointSiteId?: string;
+  oneDriveId?: string;
+  permissions: Office365Permissions;
+}
+
+export interface Office365Permissions {
+  canEdit: boolean;
+  canShare: boolean;
+  canDownload: boolean;
+  canComment: boolean;
+}
+
+/**
+ * WebSocket Infrastructure Types
+ */
+export interface WebSocketMessage {
+  type: WebSocketMessageType;
+  payload: any;
+  documentId: string;
+  userId: string;
+  timestamp: Date;
+  messageId: string;
+}
+
+export enum WebSocketMessageType {
+  SYNC_REQUEST = 'sync_request',
+  SYNC_RESPONSE = 'sync_response',
+  OPERATION = 'operation',
+  AWARENESS = 'awareness',
+  CURSOR_UPDATE = 'cursor_update',
+  USER_JOIN = 'user_join',
+  USER_LEAVE = 'user_leave',
+  DOCUMENT_LOCK = 'document_lock',
+  DOCUMENT_UNLOCK = 'document_unlock',
+  ERROR = 'error',
+  HEARTBEAT = 'heartbeat'
+}
+
+export interface SyncRequest {
+  documentId: string;
+  clientVector: StateVector;
+  requestedOperations?: string[];
+}
+
+export interface SyncResponse {
+  documentId: string;
+  serverVector: StateVector;
+  operations: Operation[];
+  snapshot?: DocumentSnapshot;
+  missingOperations: boolean;
+}
+
+/**
+ * Error Handling Types
+ */
+export interface CollaborationError extends Error {
+  code: CollaborationErrorCode;
+  documentId?: string;
+  operationId?: string;
+  userId?: string;
+  context?: any;
+}
+
+export enum CollaborationErrorCode {
+  // Connection errors
+  CONNECTION_FAILED = 'CONNECTION_FAILED',
+  AUTHENTICATION_FAILED = 'AUTHENTICATION_FAILED',
+  UNAUTHORIZED_DOCUMENT = 'UNAUTHORIZED_DOCUMENT',
+  
+  // Operation errors
+  INVALID_OPERATION = 'INVALID_OPERATION',
+  OPERATION_CONFLICT = 'OPERATION_CONFLICT',
+  OPERATION_REJECTED = 'OPERATION_REJECTED',
+  
+  // Document errors
+  DOCUMENT_NOT_FOUND = 'DOCUMENT_NOT_FOUND',
+  DOCUMENT_CORRUPTED = 'DOCUMENT_CORRUPTED',
+  DOCUMENT_LOCKED = 'DOCUMENT_LOCKED',
+  
+  // Sync errors
+  SYNC_FAILED = 'SYNC_FAILED',
+  STATE_MISMATCH = 'STATE_MISMATCH',
+  VERSION_CONFLICT = 'VERSION_CONFLICT',
+  
+  // External service errors
+  EXTERNAL_SERVICE_ERROR = 'EXTERNAL_SERVICE_ERROR',
+  RATE_LIMIT_EXCEEDED = 'RATE_LIMIT_EXCEEDED',
+  SERVICE_UNAVAILABLE = 'SERVICE_UNAVAILABLE'
+}
+
+/**
+ * Performance and Analytics Types
+ */
+export interface CollaborationMetrics {
+  documentId: string;
+  sessionId: string;
+  userId: string;
+  startTime: Date;
+  endTime?: Date;
+  operationCount: number;
+  conflictCount: number;
+  syncLatency: number[];
+  connectionDowntime: number;
+  errorCount: number;
+  bandwidth: {
+    sent: number;
+    received: number;
+  };
+}
+
+export interface PerformanceThresholds {
+  maxSyncLatency: number; // ms
+  maxOperationSize: number; // bytes
+  maxConcurrentUsers: number;
+  maxDocumentSize: number; // bytes
+  maxOperationsPerSecond: number;
+}
+
+/**
+ * Security and Audit Types
+ */
+export interface AuditLogEntry {
+  id: string;
+  documentId: string;
+  userId: string;
+  action: AuditAction;
+  details: any;
+  timestamp: Date;
+  ipAddress?: string;
+  userAgent?: string;
+  organizationId: string;
+}
+
+export enum AuditAction {
+  DOCUMENT_CREATED = 'document_created',
+  DOCUMENT_ACCESSED = 'document_accessed',
+  DOCUMENT_MODIFIED = 'document_modified',
+  DOCUMENT_DELETED = 'document_deleted',
+  PERMISSION_GRANTED = 'permission_granted',
+  PERMISSION_REVOKED = 'permission_revoked',
+  USER_JOINED = 'user_joined',
+  USER_LEFT = 'user_left',
+  OPERATION_APPLIED = 'operation_applied',
+  SYNC_COMPLETED = 'sync_completed',
+  ERROR_OCCURRED = 'error_occurred'
+}
+
+/**
+ * Configuration Types
+ */
+export interface CollaborationSystemConfig {
+  websocket: {
+    url: string;
+    reconnectInterval: number;
+    maxReconnectAttempts: number;
+    heartbeatInterval: number;
+  };
+  yjs: {
+    enableLogging: boolean;
+    gcThreshold: number;
+    snapshots: {
+      enabled: boolean;
+      interval: number; // ms
+      maxVersions: number;
+    };
+  };
+  security: {
+    enableEncryption: boolean;
+    enableRateLimit: boolean;
+    rateLimitThreshold: number;
+    sessionTimeout: number;
+  };
+  performance: PerformanceThresholds;
+  externalServices: {
+    enabled: boolean;
+    googleDocs: {
+      enabled: boolean;
+      apiKey: string;
+      clientId: string;
+    };
+    office365: {
+      enabled: boolean;
+      clientId: string;
+      tenantId: string;
+    };
+  };
+}

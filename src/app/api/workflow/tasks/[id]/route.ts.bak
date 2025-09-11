@@ -1,0 +1,270 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import { z } from 'zod';
+
+const UpdateTaskSchema = z.object({
+  title: z.string().min(1).max(255).optional(),
+  description: z.string().optional(),
+  category: z.enum([
+    'venue_management', 'vendor_coordination', 'client_management', 'logistics',
+    'design', 'photography', 'catering', 'florals', 'music', 'transportation'
+  ]).optional(),
+  priority: z.enum(['low', 'medium', 'high', 'critical']).optional(),
+  status: z.enum(['todo', 'in_progress', 'review', 'completed', 'blocked', 'cancelled']).optional(),
+  assigned_to: z.string().uuid().nullable().optional(),
+  estimated_duration: z.number().min(0.25).max(168).optional(),
+  buffer_time: z.number().min(0).max(48).optional(),
+  deadline: z.string().datetime().optional(),
+  start_date: z.string().datetime().nullable().optional(),
+  completion_date: z.string().datetime().nullable().optional(),
+  progress_percentage: z.number().min(0).max(100).optional(),
+  notes: z.string().optional()
+});
+
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
+    const taskId = id;
+    
+    // Get current user
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    
+    // Fetch task with all related data
+    const { data: task, error } = await supabase
+      .from('workflow_tasks')
+      .select(`
+        *,
+        assigned_to_member:team_members!workflow_tasks_assigned_to_fkey(
+          id, name, email, role, avatar_url
+        ),
+        created_by_member:team_members!workflow_tasks_created_by_fkey(
+          id, name, email, role, avatar_url
+        ),
+        assigned_by_member:team_members!workflow_tasks_assigned_by_fkey(
+          id, name, email, role, avatar_url
+        ),
+        dependencies_as_successor:task_dependencies!task_dependencies_successor_task_id_fkey(
+          id, predecessor_task_id, dependency_type, lag_time,
+          predecessor_task:workflow_tasks!task_dependencies_predecessor_task_id_fkey(
+            id, title, status
+          )
+        ),
+        dependencies_as_predecessor:task_dependencies!task_dependencies_predecessor_task_id_fkey(
+          id, successor_task_id, dependency_type, lag_time,
+          successor_task:workflow_tasks!task_dependencies_successor_task_id_fkey(
+            id, title, status
+          )
+        ),
+        assignments:task_assignments(
+          id, role, is_primary, assigned_at, accepted_at, declined_at,
+          assigned_member:team_members!task_assignments_assigned_to_fkey(
+            id, name, email, role, avatar_url
+          )
+        )
+      `)
+      .eq('id', taskId)
+      .single();
+    
+    if (error) {
+      if (error.code === 'PGRST116') {
+        return NextResponse.json({ error: 'Task not found' }, { status: 404 });
+      }
+      console.error('Error fetching task:', error);
+      return NextResponse.json({ error: 'Failed to fetch task' }, { status: 500 });
+    }
+    
+    return NextResponse.json({ task });
+    
+  } catch (error) {
+    console.error('GET /api/workflow/tasks/[id] error:', error);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
+}
+
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
+    const taskId = id;
+    const body = await request.json();
+    
+    // Validate input
+    const updateData = UpdateTaskSchema.parse(body);
+    
+    // Get current team member
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    
+    const { data: teamMember } = await supabase
+      .from('team_members')
+      .select('id')
+      .eq('user_id', user.id)
+      .single();
+    
+    if (!teamMember) {
+      return NextResponse.json({ error: 'Team member not found' }, { status: 404 });
+    }
+    
+    // Get current task to check permissions
+    const { data: currentTask } = await supabase
+      .from('workflow_tasks')
+      .select('id, assigned_to, created_by, assigned_by, status, wedding_id')
+      .eq('id', taskId)
+      .single();
+    
+    if (!currentTask) {
+      return NextResponse.json({ error: 'Task not found' }, { status: 404 });
+    }
+    
+    // Check permissions
+    const canEdit = currentTask.assigned_to === teamMember.id || 
+                   currentTask.created_by === teamMember.id || 
+                   currentTask.assigned_by === teamMember.id;
+    
+    if (!canEdit) {
+      return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 });
+    }
+    
+    // Prepare update data
+    const updatePayload: any = { ...updateData };
+    
+    // Handle status-specific logic
+    if (updateData.status) {
+      if (updateData.status === 'completed' && !updateData.completion_date) {
+        updatePayload.completion_date = new Date().toISOString();
+        updatePayload.progress_percentage = 100;
+      } else if (updateData.status === 'in_progress' && !updateData.start_date && !currentTask.start_date) {
+        updatePayload.start_date = new Date().toISOString();
+        if (!updateData.progress_percentage && updatePayload.progress_percentage === undefined) {
+          updatePayload.progress_percentage = 10; // Default to 10% when starting
+        }
+      }
+    }
+    
+    // Update task
+    const { data: task, error: updateError } = await supabase
+      .from('workflow_tasks')
+      .update(updatePayload)
+      .eq('id', taskId)
+      .select(`
+        *,
+        assigned_to_member:team_members!workflow_tasks_assigned_to_fkey(
+          id, name, email, role, avatar_url
+        ),
+        created_by_member:team_members!workflow_tasks_created_by_fkey(
+          id, name, email, role, avatar_url
+        ),
+        assigned_by_member:team_members!workflow_tasks_assigned_by_fkey(
+          id, name, email, role, avatar_url
+        )
+      `)
+      .single();
+    
+    if (updateError) {
+      console.error('Error updating task:', updateError);
+      return NextResponse.json({ error: 'Failed to update task' }, { status: 500 });
+    }
+    
+    // If deadline changed, recalculate critical path
+    if (updateData.deadline || updateData.estimated_duration || updateData.buffer_time) {
+      await supabase.rpc('calculate_critical_path', { wedding_uuid: currentTask.wedding_id });
+    }
+    
+    return NextResponse.json({ task });
+    
+  } catch (error) {
+    console.error('PATCH /api/workflow/tasks/[id] error:', error);
+    if (error instanceof z.ZodError) {
+      return NextResponse.json({ error: 'Invalid update data', details: error.errors }, { status: 400 });
+    }
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
+}
+
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
+    const taskId = id;
+    
+    // Get current team member
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    
+    const { data: teamMember } = await supabase
+      .from('team_members')
+      .select('id')
+      .eq('user_id', user.id)
+      .single();
+    
+    if (!teamMember) {
+      return NextResponse.json({ error: 'Team member not found' }, { status: 404 });
+    }
+    
+    // Get current task to check permissions
+    const { data: currentTask } = await supabase
+      .from('workflow_tasks')
+      .select('id, created_by, assigned_by, wedding_id')
+      .eq('id', taskId)
+      .single();
+    
+    if (!currentTask) {
+      return NextResponse.json({ error: 'Task not found' }, { status: 404 });
+    }
+    
+    // Check permissions - only creator or assigner can delete
+    const canDelete = currentTask.created_by === teamMember.id || 
+                     currentTask.assigned_by === teamMember.id;
+    
+    if (!canDelete) {
+      return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 });
+    }
+    
+    // Check for dependencies
+    const { data: dependencies } = await supabase
+      .from('task_dependencies')
+      .select('id')
+      .or(`predecessor_task_id.eq.${taskId},successor_task_id.eq.${taskId}`);
+    
+    if (dependencies && dependencies.length > 0) {
+      return NextResponse.json({ 
+        error: 'Cannot delete task with dependencies. Remove dependencies first.' 
+      }, { status: 400 });
+    }
+    
+    // Delete task
+    const { error: deleteError } = await supabase
+      .from('workflow_tasks')
+      .delete()
+      .eq('id', taskId);
+    
+    if (deleteError) {
+      console.error('Error deleting task:', deleteError);
+      return NextResponse.json({ error: 'Failed to delete task' }, { status: 500 });
+    }
+    
+    // Recalculate critical path
+    await supabase.rpc('calculate_critical_path', { wedding_uuid: currentTask.wedding_id });
+    
+    return NextResponse.json({ message: 'Task deleted successfully' });
+    
+  } catch (error) {
+    console.error('DELETE /api/workflow/tasks/[id] error:', error);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
+}

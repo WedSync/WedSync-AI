@@ -1,0 +1,799 @@
+'use client';
+
+import React, { useState, useEffect } from 'react';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Progress } from '@/components/ui/progress';
+import { Switch } from '@/components/ui/switch';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  PieChart,
+  Pie,
+  Cell,
+  LineChart,
+  Line,
+} from 'recharts';
+import {
+  Bell,
+  BellRing,
+  AlertTriangle,
+  CheckCircle,
+  Mail,
+  MessageSquare,
+  Smartphone,
+  Slack,
+  Clock,
+  TrendingUp,
+  Settings,
+  Play,
+  Pause,
+  RefreshCw,
+  Zap,
+  Timer,
+  Users,
+  Target,
+  Activity,
+  Loader2,
+} from 'lucide-react';
+import { toast } from '@/components/ui/use-toast';
+
+interface ReminderSystemManagerProps {
+  weddingId?: string;
+}
+
+interface ReminderStats {
+  total_reminders: number;
+  sent: number;
+  failed: number;
+  cancelled: number;
+  escalations: number;
+  by_channel: Record<string, number>;
+  by_priority: Record<string, number>;
+}
+
+interface ReminderRule {
+  id: string;
+  name: string;
+  priority: string;
+  initial_reminder_hours: number;
+  escalation_intervals: number[];
+  channels: ReminderChannel[];
+  is_active: boolean;
+}
+
+interface ReminderChannel {
+  type: string;
+  priority: number;
+  enabled: boolean;
+}
+
+export default function ReminderSystemManager({
+  weddingId,
+}: ReminderSystemManagerProps) {
+  const [stats, setStats] = useState<ReminderStats | null>(null);
+  const [reminderRules, setReminderRules] = useState<ReminderRule[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState('overview');
+
+  // Form states for creating/editing rules
+  const [newRule, setNewRule] = useState({
+    name: '',
+    priority: 'medium',
+    initial_reminder_hours: 24,
+    escalation_intervals: [8, 4, 1],
+    channels: [
+      { type: 'push', priority: 1, enabled: true },
+      { type: 'email', priority: 2, enabled: true },
+      { type: 'in_app', priority: 3, enabled: true },
+    ],
+  });
+
+  useEffect(() => {
+    fetchReminderStats();
+    loadDefaultRules();
+  }, [weddingId]);
+
+  const fetchReminderStats = async () => {
+    try {
+      const params = new URLSearchParams({ action: 'stats' });
+      if (weddingId) params.append('weddingId', weddingId);
+
+      const response = await fetch(`/api/tasks/reminders?${params}`);
+      const data = await response.json();
+
+      if (data.success) {
+        setStats(data.stats);
+      }
+    } catch (error) {
+      console.error('Failed to fetch reminder stats:', error);
+    }
+  };
+
+  const loadDefaultRules = () => {
+    // Load default reminder rules
+    const defaultRules: ReminderRule[] = [
+      {
+        id: 'critical-rule',
+        name: 'Critical Task Reminders',
+        priority: 'critical',
+        initial_reminder_hours: 72,
+        escalation_intervals: [24, 12, 6, 1],
+        channels: [
+          { type: 'push', priority: 1, enabled: true },
+          { type: 'email', priority: 2, enabled: true },
+          { type: 'sms', priority: 3, enabled: true },
+        ],
+        is_active: true,
+      },
+      {
+        id: 'high-rule',
+        name: 'High Priority Task Reminders',
+        priority: 'high',
+        initial_reminder_hours: 48,
+        escalation_intervals: [24, 8, 2],
+        channels: [
+          { type: 'push', priority: 1, enabled: true },
+          { type: 'email', priority: 2, enabled: true },
+        ],
+        is_active: true,
+      },
+      {
+        id: 'medium-rule',
+        name: 'Medium Priority Task Reminders',
+        priority: 'medium',
+        initial_reminder_hours: 24,
+        escalation_intervals: [12, 4],
+        channels: [
+          { type: 'push', priority: 1, enabled: true },
+          { type: 'in_app', priority: 2, enabled: true },
+        ],
+        is_active: true,
+      },
+      {
+        id: 'low-rule',
+        name: 'Low Priority Task Reminders',
+        priority: 'low',
+        initial_reminder_hours: 8,
+        escalation_intervals: [4],
+        channels: [{ type: 'in_app', priority: 1, enabled: true }],
+        is_active: true,
+      },
+    ];
+
+    setReminderRules(defaultRules);
+  };
+
+  const handleProcessReminders = async () => {
+    setLoading(true);
+    try {
+      const response = await fetch('/api/tasks/reminders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'process_due_reminders',
+          data: {},
+        }),
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        toast({
+          title: 'Reminders Processed',
+          description: data.message,
+        });
+        await fetchReminderStats();
+      } else {
+        throw new Error(data.error);
+      }
+    } catch (error) {
+      console.error('Processing reminders failed:', error);
+      toast({
+        title: 'Processing Failed',
+        description: 'Failed to process reminders',
+        variant: 'destructive',
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const toggleRuleStatus = (ruleId: string) => {
+    setReminderRules((rules) =>
+      rules.map((rule) =>
+        rule.id === ruleId ? { ...rule, is_active: !rule.is_active } : rule,
+      ),
+    );
+  };
+
+  const toggleChannelStatus = (ruleId: string, channelType: string) => {
+    setReminderRules((rules) =>
+      rules.map((rule) =>
+        rule.id === ruleId
+          ? {
+              ...rule,
+              channels: rule.channels.map((channel) =>
+                channel.type === channelType
+                  ? { ...channel, enabled: !channel.enabled }
+                  : channel,
+              ),
+            }
+          : rule,
+      ),
+    );
+  };
+
+  const getChannelIcon = (type: string) => {
+    const icons = {
+      email: Mail,
+      sms: MessageSquare,
+      push: Smartphone,
+      slack: Slack,
+      in_app: Bell,
+    };
+    return icons[type as keyof typeof icons] || Bell;
+  };
+
+  const getPriorityColor = (priority: string) => {
+    const colors = {
+      critical: 'bg-red-100 text-red-800',
+      high: 'bg-orange-100 text-orange-800',
+      medium: 'bg-yellow-100 text-yellow-800',
+      low: 'bg-green-100 text-green-800',
+    };
+    return (
+      colors[priority as keyof typeof colors] || 'bg-gray-100 text-gray-800'
+    );
+  };
+
+  const successRate = stats
+    ? Math.round((stats.sent / (stats.sent + stats.failed)) * 100) || 0
+    : 0;
+  const escalationRate = stats
+    ? Math.round((stats.escalations / stats.total_reminders) * 100) || 0
+    : 0;
+
+  const channelData = stats?.by_channel
+    ? Object.entries(stats.by_channel).map(([channel, count]) => ({
+        channel: channel.charAt(0).toUpperCase() + channel.slice(1),
+        count,
+      }))
+    : [];
+
+  const priorityData = stats?.by_priority
+    ? Object.entries(stats.by_priority).map(([priority, count]) => ({
+        priority: priority.charAt(0).toUpperCase() + priority.slice(1),
+        count,
+      }))
+    : [];
+
+  const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884D8'];
+
+  return (
+    <div className="space-y-6">
+      {/* Header Metrics */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">
+              Total Reminders
+            </CardTitle>
+            <Bell className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">
+              {stats?.total_reminders || 0}
+            </div>
+            <p className="text-xs text-muted-foreground">All time</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Success Rate</CardTitle>
+            <CheckCircle className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{successRate}%</div>
+            <Progress value={successRate} className="mt-2" />
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Escalations</CardTitle>
+            <AlertTriangle className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{escalationRate}%</div>
+            <Progress value={escalationRate} className="mt-2" />
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Failed</CardTitle>
+            <AlertTriangle className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{stats?.failed || 0}</div>
+            <p className="text-xs text-muted-foreground">Requires attention</p>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Main Interface */}
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+        <div className="flex items-center justify-between">
+          <TabsList className="grid w-full max-w-md grid-cols-4">
+            <TabsTrigger value="overview">Overview</TabsTrigger>
+            <TabsTrigger value="rules">Rules</TabsTrigger>
+            <TabsTrigger value="channels">Channels</TabsTrigger>
+            <TabsTrigger value="testing">Testing</TabsTrigger>
+          </TabsList>
+
+          <div className="flex gap-2">
+            <Button
+              onClick={handleProcessReminders}
+              disabled={loading}
+              className="flex items-center gap-2"
+            >
+              {loading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Play className="h-4 w-4" />
+              )}
+              Process Reminders
+            </Button>
+            <Button
+              variant="outline"
+              onClick={fetchReminderStats}
+              className="flex items-center gap-2"
+            >
+              <RefreshCw className="h-4 w-4" />
+              Refresh
+            </Button>
+          </div>
+        </div>
+
+        <TabsContent value="overview" className="space-y-6">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>Reminders by Channel</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {channelData.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={200}>
+                    <PieChart>
+                      <Pie
+                        data={channelData}
+                        cx="50%"
+                        cy="50%"
+                        outerRadius={80}
+                        fill="#8884d8"
+                        dataKey="count"
+                        label={({ channel, count }) => `${channel}: ${count}`}
+                      >
+                        {channelData.map((entry, index) => (
+                          <Cell
+                            key={`cell-${index}`}
+                            fill={COLORS[index % COLORS.length]}
+                          />
+                        ))}
+                      </Pie>
+                      <Tooltip />
+                    </PieChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="flex items-center justify-center h-40 text-gray-500">
+                    No reminder data available
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Reminders by Priority</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {priorityData.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={200}>
+                    <BarChart data={priorityData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="priority" />
+                      <YAxis />
+                      <Tooltip />
+                      <Bar dataKey="count" fill="#8884d8" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="flex items-center justify-center h-40 text-gray-500">
+                    No priority data available
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>System Performance</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="text-center">
+                  <div className="text-2xl font-bold text-green-600">
+                    {stats?.sent || 0}
+                  </div>
+                  <p className="text-sm text-gray-600">Sent Successfully</p>
+                </div>
+                <div className="text-center">
+                  <div className="text-2xl font-bold text-red-600">
+                    {stats?.failed || 0}
+                  </div>
+                  <p className="text-sm text-gray-600">Failed</p>
+                </div>
+                <div className="text-center">
+                  <div className="text-2xl font-bold text-orange-600">
+                    {stats?.escalations || 0}
+                  </div>
+                  <p className="text-sm text-gray-600">Escalated</p>
+                </div>
+                <div className="text-center">
+                  <div className="text-2xl font-bold text-gray-600">
+                    {stats?.cancelled || 0}
+                  </div>
+                  <p className="text-sm text-gray-600">Cancelled</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="rules" className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Reminder Rules Configuration</CardTitle>
+              <CardDescription>
+                Configure when and how reminders are sent based on task priority
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {reminderRules.map((rule) => (
+                <div key={rule.id} className="border rounded-lg p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <h4 className="font-medium">{rule.name}</h4>
+                      <Badge className={getPriorityColor(rule.priority)}>
+                        {rule.priority.toUpperCase()}
+                      </Badge>
+                      {rule.is_active ? (
+                        <Badge variant="outline" className="text-green-600">
+                          Active
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="text-gray-600">
+                          Inactive
+                        </Badge>
+                      )}
+                    </div>
+                    <Switch
+                      checked={rule.is_active}
+                      onCheckedChange={() => toggleRuleStatus(rule.id)}
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+                    <div>
+                      <span className="font-medium">Initial Reminder:</span>
+                      <div className="flex items-center gap-1 mt-1">
+                        <Clock className="h-3 w-3" />
+                        {rule.initial_reminder_hours} hours before
+                      </div>
+                    </div>
+                    <div>
+                      <span className="font-medium">Escalations:</span>
+                      <div className="flex items-center gap-1 mt-1">
+                        <Timer className="h-3 w-3" />
+                        {rule.escalation_intervals.join(', ')} hours
+                      </div>
+                    </div>
+                    <div>
+                      <span className="font-medium">Channels:</span>
+                      <div className="flex gap-2 mt-1">
+                        {rule.channels.map((channel) => {
+                          const IconComponent = getChannelIcon(channel.type);
+                          return (
+                            <button
+                              key={channel.type}
+                              onClick={() =>
+                                toggleChannelStatus(rule.id, channel.type)
+                              }
+                              className={`p-1 rounded ${
+                                channel.enabled
+                                  ? 'bg-blue-100 text-blue-600'
+                                  : 'bg-gray-100 text-gray-400'
+                              }`}
+                            >
+                              <IconComponent className="h-3 w-3" />
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="channels" className="space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>Email Configuration</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label>Email Provider</Label>
+                  <Select defaultValue="sendgrid">
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="sendgrid">SendGrid</SelectItem>
+                      <SelectItem value="mailgun">Mailgun</SelectItem>
+                      <SelectItem value="ses">Amazon SES</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>From Email</Label>
+                  <Input defaultValue="noreply@wedsync.com" />
+                </div>
+                <div className="space-y-2">
+                  <Label>Reply-To Email</Label>
+                  <Input defaultValue="support@wedsync.com" />
+                </div>
+                <div className="flex items-center space-x-2">
+                  <Switch defaultChecked />
+                  <Label>Enable Email Reminders</Label>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Push Notifications</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label>Push Provider</Label>
+                  <Select defaultValue="firebase">
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="firebase">Firebase FCM</SelectItem>
+                      <SelectItem value="onesignal">OneSignal</SelectItem>
+                      <SelectItem value="pusher">Pusher</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>API Key</Label>
+                  <Input type="password" placeholder="Enter API key" />
+                </div>
+                <div className="flex items-center space-x-2">
+                  <Switch defaultChecked />
+                  <Label>Enable Push Notifications</Label>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <Switch />
+                  <Label>High Priority for Critical Tasks</Label>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>SMS Configuration</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label>SMS Provider</Label>
+                  <Select defaultValue="twilio">
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="twilio">Twilio</SelectItem>
+                      <SelectItem value="nexmo">Vonage (Nexmo)</SelectItem>
+                      <SelectItem value="aws">AWS SNS</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>From Number</Label>
+                  <Input placeholder="+1234567890" />
+                </div>
+                <div className="flex items-center space-x-2">
+                  <Switch />
+                  <Label>Enable SMS Reminders</Label>
+                </div>
+                <p className="text-sm text-gray-600">
+                  SMS reminders are typically used for critical and
+                  high-priority tasks only
+                </p>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Slack Integration</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label>Webhook URL</Label>
+                  <Input placeholder="https://hooks.slack.com/..." />
+                </div>
+                <div className="space-y-2">
+                  <Label>Default Channel</Label>
+                  <Input placeholder="#general" />
+                </div>
+                <div className="flex items-center space-x-2">
+                  <Switch />
+                  <Label>Enable Slack Reminders</Label>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <Switch />
+                  <Label>Use Direct Messages</Label>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="testing" className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Zap className="h-5 w-5" />
+                Test Reminder System
+              </CardTitle>
+              <CardDescription>
+                Test individual channels and reminder scenarios
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base">
+                      Test Email Reminder
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-2 mb-3">
+                      <Label>Test Email</Label>
+                      <Input placeholder="test@example.com" />
+                    </div>
+                    <Button className="w-full">Send Test Email</Button>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base">
+                      Test Push Notification
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-2 mb-3">
+                      <Label>User ID</Label>
+                      <Input placeholder="user123" />
+                    </div>
+                    <Button className="w-full">Send Test Push</Button>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base">Test SMS</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-2 mb-3">
+                      <Label>Phone Number</Label>
+                      <Input placeholder="+1234567890" />
+                    </div>
+                    <Button className="w-full">Send Test SMS</Button>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base">Test Escalation</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-2 mb-3">
+                      <Label>Escalation Level</Label>
+                      <Select defaultValue="1">
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="1">Level 1</SelectItem>
+                          <SelectItem value="2">Level 2</SelectItem>
+                          <SelectItem value="3">Level 3</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <Button className="w-full">Test Escalation</Button>
+                  </CardContent>
+                </Card>
+              </div>
+
+              <div className="pt-4 border-t">
+                <h4 className="font-medium mb-3">Recent Test Results</h4>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between p-2 border rounded">
+                    <div>
+                      <p className="text-sm font-medium">Email Test</p>
+                      <p className="text-xs text-gray-600">test@example.com</p>
+                    </div>
+                    <Badge variant="outline" className="text-green-600">
+                      Success
+                    </Badge>
+                  </div>
+                  <div className="flex items-center justify-between p-2 border rounded">
+                    <div>
+                      <p className="text-sm font-medium">Push Test</p>
+                      <p className="text-xs text-gray-600">user123</p>
+                    </div>
+                    <Badge variant="outline" className="text-red-600">
+                      Failed
+                    </Badge>
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}

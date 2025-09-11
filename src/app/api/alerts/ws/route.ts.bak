@@ -1,0 +1,213 @@
+/**
+ * WebSocket API Route for Real-time Alert Updates
+ * Provides live updates for the alert dashboard
+ */
+
+import { NextRequest } from 'next/server';
+import { WebSocket, WebSocketServer } from 'ws';
+import { createServer } from 'http';
+import { parse } from 'url';
+import { alertManager } from '@/lib/monitoring/alerts';
+import { logger } from '@/lib/monitoring/logger';
+import { alertClients, broadcastToAlertClients } from '@/lib/websocket/alert-broadcast';
+let wsServer: WebSocketServer | null = null;
+
+// Initialize WebSocket server if not already created
+function initializeWebSocketServer() {
+  if (wsServer) return wsServer;
+
+  const server = createServer();
+  wsServer = new WebSocketServer({ server });
+
+  wsServer.on('connection', (ws: WebSocket, request) => {
+    alertClients.add(ws);
+    logger.info('Alert WebSocket client connected', {
+      clientCount: alertClients.size,
+      userAgent: request.headers['user-agent']
+    });
+
+    // Send initial stats
+    const stats = alertManager.getStats();
+    ws.send(JSON.stringify({
+      type: 'stats_update',
+      stats
+    }));
+
+    // Handle client disconnect
+    ws.on('close', () => {
+      alertClients.delete(ws);
+      logger.info('Alert WebSocket client disconnected', {
+        clientCount: alertClients.size
+      });
+    });
+
+    ws.on('error', (error) => {
+      logger.error('Alert WebSocket client error', error);
+      alertClients.delete(ws);
+    });
+
+    // Handle ping/pong for connection health
+    ws.on('ping', () => {
+      ws.pong();
+    });
+
+    // Send periodic stats updates (every 30 seconds)
+    const statsInterval = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        const currentStats = alertManager.getStats();
+        ws.send(JSON.stringify({
+          type: 'stats_update',
+          stats: currentStats
+        }));
+      } else {
+        clearInterval(statsInterval);
+      }
+    }, 30000);
+  });
+
+  return wsServer;
+}
+
+// WebSocket broadcast function now imported from utility
+
+// Subscribe to alert manager events
+function subscribeToAlertEvents() {
+  if (alertManager.on) {
+    alertManager.on('alert:created', (alert) => {
+      broadcastToAlertClients({
+        type: 'alert_created',
+        alert
+      });
+    });
+
+    alertManager.on('alert:acknowledged', (alertId, acknowledgedBy) => {
+      broadcastToAlertClients({
+        type: 'alert_acknowledged',
+        alertId,
+        acknowledgedBy
+      });
+    });
+
+    alertManager.on('alert:resolved', (alertId, resolvedBy) => {
+      broadcastToAlertClients({
+        type: 'alert_resolved',
+        alertId,
+        resolvedBy
+      });
+    });
+
+    alertManager.on('alert:escalated', (alertId, escalationLevel) => {
+      broadcastToAlertClients({
+        type: 'alert_escalated',
+        alertId,
+        escalationLevel
+      });
+    });
+
+    alertManager.on('stats:updated', (stats) => {
+      broadcastToAlertClients({
+        type: 'stats_update',
+        stats
+      });
+    });
+  }
+}
+
+// HTTP GET handler (upgrade to WebSocket)
+export async function GET(request: NextRequest) {
+  try {
+    // Check if this is a WebSocket upgrade request
+    const upgradeHeader = request.headers.get('upgrade');
+    
+    if (upgradeHeader !== 'websocket') {
+      return new Response('Expected WebSocket upgrade', { status: 400 });
+    }
+
+    // Initialize WebSocket server
+    const wss = initializeWebSocketServer();
+    subscribeToAlertEvents();
+
+    // For Next.js Edge Runtime, we need to handle WebSocket differently
+    // This is a simplified version - in production, you might want to use a dedicated WebSocket server
+    return new Response('WebSocket endpoint initialized', {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/plain',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET',
+        'Access-Control-Allow-Headers': 'Upgrade, Connection, Sec-WebSocket-Key, Sec-WebSocket-Version',
+      },
+    });
+
+  } catch (error) {
+    logger.error('WebSocket initialization error', error as Error);
+    return new Response('WebSocket initialization failed', { status: 500 });
+  }
+}
+
+// Health check endpoint for WebSocket status
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+    
+    if (body.action === 'health') {
+      return Response.json({
+        status: 'healthy',
+        connectedClients: clients.size,
+        timestamp: Date.now()
+      });
+    }
+
+    if (body.action === 'broadcast_test') {
+      // Test broadcast functionality
+      broadcastToAlertClients({
+        type: 'test_message',
+        message: 'WebSocket connection test successful',
+        timestamp: Date.now()
+      });
+
+      return Response.json({
+        success: true,
+        message: 'Test message broadcasted',
+        clientCount: clients.size
+      });
+    }
+
+    return Response.json({
+      error: 'Invalid action'
+    }, { status: 400 });
+
+  } catch (error) {
+    logger.error('WebSocket POST handler error', error as Error);
+    return Response.json({
+      error: 'Internal server error'
+    }, { status: 500 });
+  }
+}
+
+// Cleanup function for graceful shutdown
+process.on('SIGTERM', () => {
+  logger.info('Shutting down WebSocket server...');
+  
+  clients.forEach((ws) => {
+    ws.close(1000, 'Server shutting down');
+  });
+  
+  if (wsServer) {
+    wsServer.close();
+  }
+});
+
+process.on('SIGINT', () => {
+  logger.info('Shutting down WebSocket server...');
+  
+  clients.forEach((ws) => {
+    ws.close(1000, 'Server shutting down');
+  });
+  
+  if (wsServer) {
+    wsServer.close();
+  }
+  
+  process.exit(0);
+});

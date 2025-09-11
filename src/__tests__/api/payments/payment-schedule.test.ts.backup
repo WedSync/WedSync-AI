@@ -1,0 +1,530 @@
+/**
+ * Payment Schedule API Tests - WS-165 Payment Calendar Backend
+ * 
+ * Tests for payment schedule CRUD operations following TDD approach
+ * Following established patterns from budget API tests
+ */
+
+import { NextRequest } from 'next/server'
+import { GET, POST, PUT, DELETE } from '@/app/api/payments/schedule/route'
+import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs'
+
+// Mock Supabase client
+jest.mock('@supabase/auth-helpers-nextjs', () => ({
+  createRouteHandlerClient: jest.fn()
+}))
+
+jest.mock('next/headers', () => ({
+  cookies: jest.fn()
+}))
+
+describe('/api/payments/schedule', () => {
+  let mockSupabase: any
+  let mockUser: any
+  let mockTeamMember: any
+  let mockPaymentSchedule: any
+
+  beforeEach(() => {
+    mockUser = {
+      id: 'user-123',
+      email: 'test@wedsync.com'
+    }
+
+    mockTeamMember = {
+      role: 'owner',
+      wedding_id: 'wedding-123',
+      user_id: 'user-123'
+    }
+
+    mockPaymentSchedule = {
+      id: 'payment-123',
+      wedding_id: 'wedding-123',
+      organization_id: 'org-123',
+      category_id: 'category-123',
+      amount: 5000.00,
+      description: 'Venue deposit payment',
+      due_date: '2024-06-15',
+      status: 'pending',
+      payment_type: 'deposit',
+      priority: 'high',
+      vendor_name: 'Grand Ballroom',
+      notes: 'First payment for venue booking',
+      created_at: '2024-01-20T10:00:00Z',
+      updated_at: '2024-01-20T10:00:00Z',
+      budget_categories: {
+        id: 'category-123',
+        name: 'Venue',
+        category_type: 'VENUE',
+        budgeted_amount: 15000.00
+      },
+      payment_reminders: [
+        {
+          id: 'reminder-123',
+          reminder_date: '2024-06-08T09:00:00Z',
+          reminder_type: 'email',
+          is_sent: false,
+          delivery_status: 'pending'
+        }
+      ]
+    }
+
+    mockSupabase = {
+      auth: {
+        getUser: jest.fn().mockResolvedValue({
+          data: { user: mockUser },
+          error: null
+        })
+      },
+      from: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      insert: jest.fn().mockReturnThis(),
+      update: jest.fn().mockReturnThis(),
+      delete: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      gte: jest.fn().mockReturnThis(),
+      lte: jest.fn().mockReturnThis(),
+      order: jest.fn().mockReturnThis(),
+      range: jest.fn().mockReturnThis(),
+      single: jest.fn(),
+      // Default successful responses
+      single: jest.fn().mockResolvedValue({ data: mockTeamMember, error: null }),
+    }
+
+    ;(createRouteHandlerClient as jest.Mock).mockReturnValue(mockSupabase)
+  })
+
+  afterEach(() => {
+    jest.clearAllMocks()
+  })
+
+  describe('GET /api/payments/schedule', () => {
+    it('should return payment schedules for authorized user', async () => {
+      // Mock successful responses
+      mockSupabase.single
+        .mockResolvedValueOnce({ data: mockTeamMember, error: null }) // Team member check
+        .mockResolvedValueOnce({ data: [mockPaymentSchedule], error: null }) // Payment schedules
+        .mockResolvedValueOnce({ count: 1, error: null }) // Total count
+
+      const request = new NextRequest('http://localhost:3000/api/payments/schedule?wedding_id=wedding-123')
+      const response = await GET(request)
+      const data = await response.json()
+
+      expect(response.status).toBe(200)
+      expect(data.success).toBe(true)
+      expect(data.data.schedules).toHaveLength(1)
+      expect(data.data.schedules[0].description).toBe('Venue deposit payment')
+      expect(data.data.summary.total_scheduled).toBe(5000.00)
+    })
+
+    it('should require wedding_id parameter', async () => {
+      const request = new NextRequest('http://localhost:3000/api/payments/schedule')
+      const response = await GET(request)
+      const data = await response.json()
+
+      expect(response.status).toBe(400)
+      expect(data.error).toBe('wedding_id parameter is required')
+    })
+
+    it('should deny access for unauthorized users', async () => {
+      mockSupabase.single.mockResolvedValueOnce({ data: null, error: { message: 'Not found' } })
+
+      const request = new NextRequest('http://localhost:3000/api/payments/schedule?wedding_id=wedding-123')
+      const response = await GET(request)
+      const data = await response.json()
+
+      expect(response.status).toBe(403)
+      expect(data.error).toBe('Access denied')
+    })
+
+    it('should apply date range filters correctly', async () => {
+      mockSupabase.single
+        .mockResolvedValueOnce({ data: mockTeamMember, error: null })
+        .mockResolvedValueOnce({ data: [], error: null })
+        .mockResolvedValueOnce({ count: 0, error: null })
+
+      const request = new NextRequest('http://localhost:3000/api/payments/schedule?wedding_id=wedding-123&start_date=2024-06-01&end_date=2024-06-30')
+      const response = await GET(request)
+
+      expect(mockSupabase.gte).toHaveBeenCalledWith('due_date', '2024-06-01')
+      expect(mockSupabase.lte).toHaveBeenCalledWith('due_date', '2024-06-30')
+      expect(response.status).toBe(200)
+    })
+
+    it('should calculate overdue status correctly', async () => {
+      const overduePayment = {
+        ...mockPaymentSchedule,
+        due_date: '2024-01-01', // Past date
+        status: 'pending'
+      }
+
+      mockSupabase.single
+        .mockResolvedValueOnce({ data: mockTeamMember, error: null })
+        .mockResolvedValueOnce({ data: [overduePayment], error: null })
+        .mockResolvedValueOnce({ count: 1, error: null })
+
+      const request = new NextRequest('http://localhost:3000/api/payments/schedule?wedding_id=wedding-123')
+      const response = await GET(request)
+      const data = await response.json()
+
+      expect(data.data.schedules[0].status).toBe('overdue')
+      expect(data.data.schedules[0].is_overdue).toBe(true)
+      expect(data.data.summary.overdue_count).toBe(1)
+    })
+  })
+
+  describe('POST /api/payments/schedule', () => {
+    const validPaymentData = {
+      wedding_id: 'wedding-123',
+      organization_id: 'org-123',
+      category_id: 'category-123',
+      amount: 5000.00,
+      description: 'Photography deposit',
+      due_date: '2024-07-01',
+      payment_type: 'deposit',
+      priority: 'high',
+      vendor_name: 'Amazing Photos',
+      notes: 'Initial booking deposit'
+    }
+
+    it('should create payment schedule successfully', async () => {
+      const newPaymentSchedule = { ...mockPaymentSchedule, ...validPaymentData }
+      
+      mockSupabase.single
+        .mockResolvedValueOnce({ data: mockTeamMember, error: null }) // Team member check
+        .mockResolvedValueOnce({ data: { id: 'category-123', name: 'Photography' }, error: null }) // Category check
+        .mockResolvedValueOnce({ data: newPaymentSchedule, error: null }) // Insert result
+
+      mockSupabase.insert.mockResolvedValueOnce({ data: [newPaymentSchedule], error: null })
+      mockSupabase.from.mockReturnValueOnce({ // For audit log
+        insert: jest.fn().mockResolvedValue({ error: null })
+      })
+
+      const request = new NextRequest('http://localhost:3000/api/payments/schedule', {
+        method: 'POST',
+        body: JSON.stringify(validPaymentData)
+      })
+      const response = await POST(request)
+      const data = await response.json()
+
+      expect(response.status).toBe(201)
+      expect(data.success).toBe(true)
+      expect(data.data.description).toBe('Photography deposit')
+      expect(data.message).toBe('Payment schedule created successfully')
+    })
+
+    it('should validate required fields', async () => {
+      const invalidData = {
+        wedding_id: 'wedding-123',
+        // Missing required fields
+        amount: -100, // Invalid amount
+        description: 'ab' // Too short
+      }
+
+      const request = new NextRequest('http://localhost:3000/api/payments/schedule', {
+        method: 'POST',
+        body: JSON.stringify(invalidData)
+      })
+      const response = await POST(request)
+      const data = await response.json()
+
+      expect(response.status).toBe(400)
+      expect(data.error).toBe('Invalid request data')
+      expect(data.details).toBeDefined()
+    })
+
+    it('should validate team member permissions', async () => {
+      const restrictedMember = { ...mockTeamMember, role: 'vendor' }
+      mockSupabase.single.mockResolvedValueOnce({ data: restrictedMember, error: null })
+
+      const request = new NextRequest('http://localhost:3000/api/payments/schedule', {
+        method: 'POST',
+        body: JSON.stringify(validPaymentData)
+      })
+      const response = await POST(request)
+      const data = await response.json()
+
+      expect(response.status).toBe(403)
+      expect(data.error).toBe('Insufficient permissions to create payment schedules')
+    })
+
+    it('should validate budget category ownership', async () => {
+      mockSupabase.single
+        .mockResolvedValueOnce({ data: mockTeamMember, error: null })
+        .mockResolvedValueOnce({ data: null, error: { message: 'Not found' } }) // Category not found
+
+      const request = new NextRequest('http://localhost:3000/api/payments/schedule', {
+        method: 'POST',
+        body: JSON.stringify(validPaymentData)
+      })
+      const response = await POST(request)
+      const data = await response.json()
+
+      expect(response.status).toBe(404)
+      expect(data.error).toBe('Budget category not found or inactive')
+    })
+
+    it('should create payment schedule without category', async () => {
+      const dataWithoutCategory = { ...validPaymentData }
+      delete dataWithoutCategory.category_id
+
+      const newPaymentSchedule = { ...mockPaymentSchedule, category_id: null, budget_categories: null }
+      
+      mockSupabase.single
+        .mockResolvedValueOnce({ data: mockTeamMember, error: null })
+        .mockResolvedValueOnce({ data: newPaymentSchedule, error: null })
+
+      const request = new NextRequest('http://localhost:3000/api/payments/schedule', {
+        method: 'POST',
+        body: JSON.stringify(dataWithoutCategory)
+      })
+      const response = await POST(request)
+
+      expect(response.status).toBe(201)
+    })
+  })
+
+  describe('PUT /api/payments/schedule', () => {
+    const updateData = {
+      id: 'payment-123',
+      amount: 5500.00,
+      description: 'Updated venue deposit',
+      due_date: '2024-06-20',
+      priority: 'critical',
+      notes: 'Updated with new contract terms'
+    }
+
+    it('should update payment schedule successfully', async () => {
+      const existingSchedule = { 
+        wedding_id: 'wedding-123', 
+        description: 'Venue deposit', 
+        status: 'pending' 
+      }
+      const updatedSchedule = { ...mockPaymentSchedule, ...updateData }
+
+      mockSupabase.single
+        .mockResolvedValueOnce({ data: existingSchedule, error: null }) // Existing schedule
+        .mockResolvedValueOnce({ data: mockTeamMember, error: null }) // Team member check
+        .mockResolvedValueOnce({ data: updatedSchedule, error: null }) // Update result
+
+      const request = new NextRequest('http://localhost:3000/api/payments/schedule', {
+        method: 'PUT',
+        body: JSON.stringify(updateData)
+      })
+      const response = await PUT(request)
+      const data = await response.json()
+
+      expect(response.status).toBe(200)
+      expect(data.success).toBe(true)
+      expect(data.data.amount).toBe(5500.00)
+      expect(data.message).toBe('Payment schedule updated successfully')
+    })
+
+    it('should validate payment schedule exists', async () => {
+      mockSupabase.single.mockResolvedValueOnce({ data: null, error: { message: 'Not found' } })
+
+      const request = new NextRequest('http://localhost:3000/api/payments/schedule', {
+        method: 'PUT',
+        body: JSON.stringify(updateData)
+      })
+      const response = await PUT(request)
+      const data = await response.json()
+
+      expect(response.status).toBe(404)
+      expect(data.error).toBe('Payment schedule not found')
+    })
+
+    it('should validate user permissions for updates', async () => {
+      const existingSchedule = { wedding_id: 'wedding-123', description: 'Test', status: 'pending' }
+      const restrictedMember = { ...mockTeamMember, role: 'guest' }
+
+      mockSupabase.single
+        .mockResolvedValueOnce({ data: existingSchedule, error: null })
+        .mockResolvedValueOnce({ data: restrictedMember, error: null })
+
+      const request = new NextRequest('http://localhost:3000/api/payments/schedule', {
+        method: 'PUT',
+        body: JSON.stringify(updateData)
+      })
+      const response = await PUT(request)
+      const data = await response.json()
+
+      expect(response.status).toBe(403)
+      expect(data.error).toBe('Insufficient permissions to update payment schedules')
+    })
+  })
+
+  describe('DELETE /api/payments/schedule', () => {
+    it('should delete unpaid payment schedule', async () => {
+      const unpaidSchedule = {
+        wedding_id: 'wedding-123',
+        description: 'Test payment',
+        status: 'pending',
+        amount_paid: null
+      }
+
+      mockSupabase.single
+        .mockResolvedValueOnce({ data: unpaidSchedule, error: null }) // Existing schedule
+        .mockResolvedValueOnce({ data: mockTeamMember, error: null }) // Team member check
+
+      mockSupabase.delete.mockResolvedValueOnce({ error: null })
+
+      const request = new NextRequest('http://localhost:3000/api/payments/schedule?id=payment-123', {
+        method: 'DELETE'
+      })
+      const response = await DELETE(request)
+      const data = await response.json()
+
+      expect(response.status).toBe(200)
+      expect(data.success).toBe(true)
+      expect(data.message).toBe('Payment schedule deleted successfully')
+    })
+
+    it('should soft delete paid payment schedule', async () => {
+      const paidSchedule = {
+        wedding_id: 'wedding-123',
+        description: 'Paid payment',
+        status: 'paid',
+        amount_paid: 5000.00
+      }
+
+      mockSupabase.single
+        .mockResolvedValueOnce({ data: paidSchedule, error: null })
+        .mockResolvedValueOnce({ data: mockTeamMember, error: null })
+
+      mockSupabase.update.mockResolvedValueOnce({ error: null })
+
+      const request = new NextRequest('http://localhost:3000/api/payments/schedule?id=payment-123', {
+        method: 'DELETE'
+      })
+      const response = await DELETE(request)
+      const data = await response.json()
+
+      expect(response.status).toBe(200)
+      expect(data.success).toBe(true)
+      expect(data.message).toBe('Payment schedule cancelled (had payment history)')
+      expect(mockSupabase.update).toHaveBeenCalled()
+    })
+
+    it('should require payment schedule ID', async () => {
+      const request = new NextRequest('http://localhost:3000/api/payments/schedule', {
+        method: 'DELETE'
+      })
+      const response = await DELETE(request)
+      const data = await response.json()
+
+      expect(response.status).toBe(400)
+      expect(data.error).toBe('Payment schedule ID is required')
+    })
+
+    it('should validate delete permissions', async () => {
+      const existingSchedule = { wedding_id: 'wedding-123', description: 'Test', status: 'pending' }
+      const restrictedMember = { ...mockTeamMember, role: 'financial_manager' } // Can't delete
+
+      mockSupabase.single
+        .mockResolvedValueOnce({ data: existingSchedule, error: null })
+        .mockResolvedValueOnce({ data: restrictedMember, error: null })
+
+      const request = new NextRequest('http://localhost:3000/api/payments/schedule?id=payment-123', {
+        method: 'DELETE'
+      })
+      const response = await DELETE(request)
+      const data = await response.json()
+
+      expect(response.status).toBe(403)
+      expect(data.error).toBe('Only wedding owners/partners/planners can delete payment schedules')
+    })
+  })
+
+  describe('Error Handling', () => {
+    it('should handle unauthorized users', async () => {
+      mockSupabase.auth.getUser.mockResolvedValueOnce({
+        data: { user: null },
+        error: null
+      })
+
+      const request = new NextRequest('http://localhost:3000/api/payments/schedule?wedding_id=wedding-123')
+      const response = await GET(request)
+      const data = await response.json()
+
+      expect(response.status).toBe(401)
+      expect(data.error).toBe('Unauthorized')
+    })
+
+    it('should handle database errors gracefully', async () => {
+      mockSupabase.single
+        .mockResolvedValueOnce({ data: mockTeamMember, error: null })
+        .mockResolvedValueOnce({ data: null, error: { message: 'Database connection failed' } })
+
+      const request = new NextRequest('http://localhost:3000/api/payments/schedule?wedding_id=wedding-123')
+      const response = await GET(request)
+      const data = await response.json()
+
+      expect(response.status).toBe(500)
+      expect(data.error).toBe('Failed to fetch payment schedules')
+    })
+
+    it('should validate JSON parsing errors', async () => {
+      const request = new NextRequest('http://localhost:3000/api/payments/schedule', {
+        method: 'POST',
+        body: 'invalid json'
+      })
+      const response = await POST(request)
+      const data = await response.json()
+
+      expect(response.status).toBe(500)
+      expect(data.error).toBe('Internal server error')
+    })
+  })
+
+  describe('Wedding Industry Context', () => {
+    it('should handle wedding payment types correctly', async () => {
+      const weddingPaymentData = {
+        wedding_id: 'wedding-123',
+        organization_id: 'org-123',
+        amount: 10000.00,
+        description: 'Venue final payment',
+        due_date: '2024-08-15',
+        payment_type: 'final',
+        priority: 'critical',
+        vendor_name: 'Grand Wedding Venue'
+      }
+
+      const newSchedule = { ...mockPaymentSchedule, ...weddingPaymentData }
+      
+      mockSupabase.single
+        .mockResolvedValueOnce({ data: mockTeamMember, error: null })
+        .mockResolvedValueOnce({ data: newSchedule, error: null })
+
+      const request = new NextRequest('http://localhost:3000/api/payments/schedule', {
+        method: 'POST',
+        body: JSON.stringify(weddingPaymentData)
+      })
+      const response = await POST(request)
+      const data = await response.json()
+
+      expect(response.status).toBe(201)
+      expect(data.data.payment_type).toBe('final')
+      expect(data.data.priority).toBe('critical')
+    })
+
+    it('should calculate critical payment timing correctly', async () => {
+      const criticalPayment = {
+        ...mockPaymentSchedule,
+        due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // 7 days from now
+        priority: 'critical'
+      }
+
+      mockSupabase.single
+        .mockResolvedValueOnce({ data: mockTeamMember, error: null })
+        .mockResolvedValueOnce({ data: [criticalPayment], error: null })
+        .mockResolvedValueOnce({ count: 1, error: null })
+
+      const request = new NextRequest('http://localhost:3000/api/payments/schedule?wedding_id=wedding-123')
+      const response = await GET(request)
+      const data = await response.json()
+
+      expect(data.data.schedules[0].days_until_due).toBe(7)
+      expect(data.data.summary.critical_count).toBe(1)
+    })
+  })
+})

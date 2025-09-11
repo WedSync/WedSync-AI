@@ -1,0 +1,223 @@
+// Form Builder Types
+export type FormFieldType =
+  | 'text'
+  | 'email'
+  | 'tel'
+  | 'textarea'
+  | 'select'
+  | 'radio'
+  | 'checkbox'
+  | 'date'
+  | 'time'
+  | 'file'
+  | 'number'
+  | 'heading'
+  | 'paragraph'
+  | 'divider'
+  | 'image'
+  | 'signature';
+
+export interface FormFieldValidation {
+  required?: boolean;
+  minLength?: number;
+  maxLength?: number;
+  pattern?: string;
+  min?: number;
+  max?: number;
+  customMessage?: string;
+}
+
+export interface FormFieldOption {
+  id: string;
+  label: string;
+  value: string;
+}
+
+export interface FormField {
+  id: string;
+  type: FormFieldType;
+  label: string;
+  placeholder?: string;
+  helperText?: string;
+  defaultValue?: any;
+  required?: boolean; // Added for easier access
+  options?: FormFieldOption[];
+  validation?: FormFieldValidation;
+  conditionalLogic?: {
+    show: boolean;
+    when: string; // field id
+    equals: any;
+  };
+  width?: 'full' | 'half' | 'third';
+  order?: number;
+}
+
+export interface FormSection {
+  id: string;
+  title: string;
+  description?: string;
+  fields: FormField[];
+  order: number;
+}
+
+export interface Form {
+  id: string;
+  organizationId: string;
+  name: string;
+  description?: string;
+  slug: string;
+  sections: FormSection[];
+  settings: {
+    submitButtonText?: string;
+    successMessage?: string;
+    redirectUrl?: string;
+    notificationEmail?: string;
+    autoSave?: boolean;
+    requireLogin?: boolean;
+    onePerUser?: boolean;
+    captchaEnabled?: boolean;
+  };
+  theme?: {
+    primaryColor?: string;
+    fontFamily?: string;
+    borderRadius?: string;
+  };
+  isPublished: boolean;
+  isArchived: boolean;
+  isTemplate: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface FormSubmission {
+  id: string;
+  formId: string;
+  organizationId: string;
+  data: Record<string, any>;
+  files?: Record<string, string[]>;
+  status: 'pending' | 'reviewed' | 'processed' | 'archived';
+  contactId?: string;
+  submittedAt: Date;
+}
+
+// Form Builder State
+export interface FormBuilderState {
+  fields: FormField[];
+  selectedField: string | null;
+  isPreview: boolean;
+}
+
+// Drag and Drop Types
+export interface DragEndEvent {
+  active: {
+    id: string;
+    data: {
+      current?: {
+        type: 'field' | 'section';
+        field?: FormField;
+        section?: FormSection;
+      };
+    };
+  };
+  over: {
+    id: string;
+    data?: {
+      current?: {
+        type: 'field' | 'section';
+        index?: number;
+      };
+    };
+  } | null;
+}
+
+// Available field templates for the palette
+export const FIELD_TEMPLATES: Record<FormFieldType, Partial<FormField>> = {
+  text: {
+    type: 'text',
+    label: 'Text Field',
+    placeholder: 'Enter text...',
+  },
+  email: {
+    type: 'email',
+    label: 'Email Address',
+    placeholder: 'email@example.com',
+    validation: {
+      pattern: '^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$',
+      customMessage: 'Please enter a valid email address',
+    },
+  },
+  tel: {
+    type: 'tel',
+    label: 'Phone Number',
+    placeholder: '(555) 123-4567',
+  },
+  textarea: {
+    type: 'textarea',
+    label: 'Long Text',
+    placeholder: 'Enter detailed information...',
+  },
+  select: {
+    type: 'select',
+    label: 'Dropdown',
+    options: [
+      { id: '1', label: 'Option 1', value: 'option1' },
+      { id: '2', label: 'Option 2', value: 'option2' },
+    ],
+  },
+  radio: {
+    type: 'radio',
+    label: 'Radio Buttons',
+    options: [
+      { id: '1', label: 'Option 1', value: 'option1' },
+      { id: '2', label: 'Option 2', value: 'option2' },
+    ],
+  },
+  checkbox: {
+    type: 'checkbox',
+    label: 'Checkboxes',
+    options: [
+      { id: '1', label: 'Option 1', value: 'option1' },
+      { id: '2', label: 'Option 2', value: 'option2' },
+    ],
+  },
+  date: {
+    type: 'date',
+    label: 'Date',
+    placeholder: 'Select date',
+  },
+  time: {
+    type: 'time',
+    label: 'Time',
+    placeholder: 'Select time',
+  },
+  file: {
+    type: 'file',
+    label: 'File Upload',
+    helperText: 'Max file size: 10MB',
+  },
+  number: {
+    type: 'number',
+    label: 'Number',
+    placeholder: '0',
+  },
+  heading: {
+    type: 'heading',
+    label: 'Section Heading',
+  },
+  paragraph: {
+    type: 'paragraph',
+    label: 'This is descriptive text that helps explain the form.',
+  },
+  divider: {
+    type: 'divider',
+    label: '',
+  },
+  image: {
+    type: 'image',
+    label: 'Image',
+  },
+  signature: {
+    type: 'signature',
+    label: 'Signature',
+  },
+};

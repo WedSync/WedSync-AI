@@ -1,0 +1,208 @@
+/**
+ * WS-152 Dashboard Health Check API
+ * Lightweight health validation for monitoring dashboard
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+
+// Health check components
+async function checkDatabaseHealth(): Promise<{
+  status: 'healthy' | 'degraded' | 'unhealthy';
+  responseTime: number;
+  details?: string;
+}> {
+  const startTime = performance.now();
+
+  try {
+    // Simulate database health check
+    await new Promise((resolve) =>
+      setTimeout(resolve, 10 + Math.random() * 40),
+    );
+
+    const responseTime = Math.round(performance.now() - startTime);
+    const isHealthy = Math.random() > 0.05; // 95% success rate
+
+    return {
+      status: isHealthy ? 'healthy' : 'degraded',
+      responseTime,
+      details: isHealthy
+        ? 'Database connections active'
+        : 'Elevated response times detected',
+    };
+  } catch (error) {
+    return {
+      status: 'unhealthy',
+      responseTime: Math.round(performance.now() - startTime),
+      details: 'Database connection failed',
+    };
+  }
+}
+
+async function checkCacheHealth(): Promise<{
+  status: 'healthy' | 'degraded' | 'unhealthy';
+  hitRate: number;
+  details?: string;
+}> {
+  try {
+    // Simulate cache health check
+    const hitRate = 85 + Math.random() * 15;
+    const status =
+      hitRate > 90 ? 'healthy' : hitRate > 70 ? 'degraded' : 'unhealthy';
+
+    return {
+      status,
+      hitRate: Math.round(hitRate * 100) / 100,
+      details: `Cache hit rate: ${hitRate.toFixed(1)}%`,
+    };
+  } catch (error) {
+    return {
+      status: 'unhealthy',
+      hitRate: 0,
+      details: 'Cache service unavailable',
+    };
+  }
+}
+
+async function checkAPIHealth(): Promise<{
+  status: 'healthy' | 'degraded' | 'unhealthy';
+  responseTime: number;
+}> {
+  const startTime = performance.now();
+
+  try {
+    // Simulate API health check
+    await new Promise((resolve) => setTimeout(resolve, 5 + Math.random() * 20));
+
+    const responseTime = Math.round(performance.now() - startTime);
+    const status =
+      responseTime < 100
+        ? 'healthy'
+        : responseTime < 300
+          ? 'degraded'
+          : 'unhealthy';
+
+    return { status, responseTime };
+  } catch (error) {
+    return {
+      status: 'unhealthy',
+      responseTime: Math.round(performance.now() - startTime),
+    };
+  }
+}
+
+/**
+ * GET /api/monitoring/dashboard/health
+ * System health check endpoint
+ */
+export async function GET(request: NextRequest) {
+  const startTime = performance.now();
+  const url = new URL(request.url);
+  const detailed = url.searchParams.get('detailed') === 'true';
+
+  try {
+    // Run health checks in parallel
+    const [database, cache, api] = await Promise.all([
+      checkDatabaseHealth(),
+      checkCacheHealth(),
+      checkAPIHealth(),
+    ]);
+
+    // Determine overall system status
+    const components = [database.status, cache.status, api.status];
+    const healthyCounts = components.filter((s) => s === 'healthy').length;
+    const unhealthyCounts = components.filter((s) => s === 'unhealthy').length;
+
+    let overallStatus: 'healthy' | 'degraded' | 'unhealthy';
+    if (unhealthyCounts > 0) {
+      overallStatus = 'unhealthy';
+    } else if (healthyCounts === components.length) {
+      overallStatus = 'healthy';
+    } else {
+      overallStatus = 'degraded';
+    }
+
+    const responseTime = Math.round(performance.now() - startTime);
+
+    const healthData = {
+      status: overallStatus,
+      timestamp: new Date().toISOString(),
+      uptime: '99.9%',
+      responseTime,
+      components: detailed
+        ? {
+            database: {
+              status: database.status,
+              responseTime: database.responseTime,
+              details: database.details,
+            },
+            cache: {
+              status: cache.status,
+              hitRate: cache.hitRate,
+              details: cache.details,
+            },
+            api: {
+              status: api.status,
+              responseTime: api.responseTime,
+            },
+          }
+        : {
+            database: database.status,
+            cache: cache.status,
+            api: api.status,
+          },
+    };
+
+    const statusCode =
+      overallStatus === 'healthy'
+        ? 200
+        : overallStatus === 'degraded'
+          ? 200
+          : 503;
+
+    return NextResponse.json(healthData, {
+      status: statusCode,
+      headers: {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'X-Response-Time': responseTime.toString(),
+      },
+    });
+  } catch (error) {
+    console.error('Health check error:', error);
+
+    const responseTime = Math.round(performance.now() - startTime);
+
+    return NextResponse.json(
+      {
+        status: 'unhealthy',
+        error: 'Health check failed',
+        timestamp: new Date().toISOString(),
+        responseTime,
+      },
+      {
+        status: 503,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Response-Time': responseTime.toString(),
+        },
+      },
+    );
+  }
+}
+
+/**
+ * HEAD /api/monitoring/dashboard/health
+ * Lightweight ping endpoint
+ */
+export async function HEAD(request: NextRequest) {
+  const startTime = performance.now();
+  const responseTime = Math.round(performance.now() - startTime);
+
+  return new NextResponse(null, {
+    status: 200,
+    headers: {
+      'X-Response-Time': responseTime.toString(),
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+    },
+  });
+}

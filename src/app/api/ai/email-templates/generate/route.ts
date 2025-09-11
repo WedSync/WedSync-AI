@@ -1,0 +1,459 @@
+/**
+ * AI Email Template Generation API Endpoint - WS-206
+ *
+ * Secure endpoint for generating AI-powered email templates for wedding vendors
+ * Implements comprehensive security, authentication, and rate limiting
+ *
+ * POST /api/ai/email-templates/generate
+ *
+ * Team B - Backend Implementation - 2025-01-20
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { getServerSession } from 'next-auth/next';
+import { authOptions } from '@/lib/auth/config';
+import { withSecureValidation } from '@/lib/validation/middleware';
+import {
+  emailTemplateGenerator,
+  EmailGeneratorRequestSchema,
+  EmailGenerationError,
+  RateLimitError,
+} from '@/lib/ai/email-template-generator';
+import { createClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+
+// ====================================================================
+// REQUEST VALIDATION SCHEMA
+// ====================================================================
+
+const GenerateTemplateRequestSchema = z.object({
+  vendorType: z.enum([
+    'photographer',
+    'dj',
+    'caterer',
+    'venue',
+    'florist',
+    'planner',
+    'videographer',
+    'coordinator',
+    'baker',
+    'decorator',
+  ]),
+  stage: z.enum([
+    'inquiry',
+    'booking',
+    'planning',
+    'final',
+    'post',
+    'follow_up',
+    'reminder',
+    'confirmation',
+  ]),
+  tone: z.enum([
+    'formal',
+    'friendly',
+    'casual',
+    'professional',
+    'warm',
+    'enthusiastic',
+  ]),
+  templateName: z
+    .string()
+    .min(3)
+    .max(200)
+    .refine((name) => !/[<>\"'&]/.test(name), {
+      message: 'Template name contains invalid characters',
+    }),
+  context: z
+    .object({
+      businessName: z.string().max(100).optional(),
+      specialization: z.string().max(200).optional(),
+      targetAudience: z.string().max(200).optional(),
+      keyServices: z.array(z.string().max(100)).max(10).optional(),
+      uniqueSellingPoints: z.array(z.string().max(200)).max(5).optional(),
+      weddingType: z.string().max(100).optional(),
+      seasonality: z.string().max(50).optional(),
+      budgetRange: z.string().max(50).optional(),
+      location: z.string().max(100).optional(),
+    })
+    .optional(),
+  variantCount: z.number().min(1).max(5).default(3), // Reduced from 10 for performance
+  customPrompt: z.string().max(1000).optional(),
+  existingTemplate: z.string().max(10000).optional(),
+});
+
+type GenerateTemplateRequest = z.infer<typeof GenerateTemplateRequestSchema>;
+
+// ====================================================================
+// RATE LIMITING CONFIGURATION
+// ====================================================================
+
+class AIGenerationRateLimiter {
+  private static requestCounts = new Map<
+    string,
+    { count: number; resetTime: number }
+  >();
+  private static readonly MAX_REQUESTS = 10; // 10 AI generations per hour
+  private static readonly WINDOW_MS = 60 * 60 * 1000; // 1 hour
+
+  static async checkRateLimit(userId: string): Promise<{
+    allowed: boolean;
+    remaining: number;
+    resetTime: number;
+    cost: number;
+  }> {
+    const now = Date.now();
+    const userKey = `ai_generation_${userId}`;
+    const userData = this.requestCounts.get(userKey);
+
+    // Reset if window expired
+    if (!userData || now >= userData.resetTime) {
+      this.requestCounts.set(userKey, {
+        count: 1,
+        resetTime: now + this.WINDOW_MS,
+      });
+      return {
+        allowed: true,
+        remaining: this.MAX_REQUESTS - 1,
+        resetTime: now + this.WINDOW_MS,
+        cost: 0.05, // Estimated cost in USD
+      };
+    }
+
+    // Check if limit exceeded
+    if (userData.count >= this.MAX_REQUESTS) {
+      return {
+        allowed: false,
+        remaining: 0,
+        resetTime: userData.resetTime,
+        cost: 0.05,
+      };
+    }
+
+    // Increment count
+    userData.count++;
+    this.requestCounts.set(userKey, userData);
+
+    return {
+      allowed: true,
+      remaining: this.MAX_REQUESTS - userData.count,
+      resetTime: userData.resetTime,
+      cost: 0.05,
+    };
+  }
+}
+
+// ====================================================================
+// AUDIT LOGGING
+// ====================================================================
+
+async function logAIGenerationRequest(
+  userId: string,
+  supplierId: string,
+  request: GenerateTemplateRequest,
+  result: { success: boolean; error?: string; tokensUsed?: number },
+) {
+  try {
+    const supabase = await createClient();
+
+    await supabase.from('ai_generation_requests').insert({
+      supplier_id: supplierId,
+      user_id: userId,
+      request_type: 'generate_template',
+      vendor_type: request.vendorType,
+      stage: request.stage,
+      tone: request.tone,
+      prompt_data: {
+        templateName: request.templateName,
+        context: request.context,
+        variantCount: request.variantCount,
+        customPrompt: request.customPrompt ? '[REDACTED]' : null,
+      },
+      ai_model: 'gpt-4',
+      response_data: result.success
+        ? { templatesGenerated: request.variantCount }
+        : null,
+      tokens_used: result.tokensUsed ? { total: result.tokensUsed } : null,
+      estimated_cost_usd: 0.05,
+      status: result.success ? 'completed' : 'failed',
+      error_message: result.error || null,
+      completed_at: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error('Failed to log AI generation request:', error);
+  }
+}
+
+// ====================================================================
+// MAIN API HANDLER
+// ====================================================================
+
+async function generateTemplatesHandler(
+  request: NextRequest,
+  validatedData: GenerateTemplateRequest,
+): Promise<NextResponse> {
+  const startTime = Date.now();
+
+  try {
+    // 1. Authentication Check
+    const session = await getServerSession(authOptions);
+    if (!session?.user?.id) {
+      return NextResponse.json(
+        {
+          error: 'UNAUTHORIZED',
+          message: 'Authentication required to generate templates',
+          timestamp: new Date().toISOString(),
+        },
+        { status: 401 },
+      );
+    }
+
+    // 2. Get User's Organization and Supplier ID
+    const supabase = await createClient();
+
+    const { data: userProfile, error: profileError } = await supabase
+      .from('user_profiles')
+      .select('organization_id, supplier_id')
+      .eq('user_id', session.user.id)
+      .single();
+
+    if (profileError || !userProfile?.supplier_id) {
+      return NextResponse.json(
+        {
+          error: 'FORBIDDEN',
+          message: 'User must be associated with a wedding vendor account',
+          timestamp: new Date().toISOString(),
+        },
+        { status: 403 },
+      );
+    }
+
+    // 3. Rate Limiting Check
+    const rateLimit = await AIGenerationRateLimiter.checkRateLimit(
+      session.user.id,
+    );
+
+    if (!rateLimit.allowed) {
+      const resetTime = new Date(rateLimit.resetTime);
+      await logAIGenerationRequest(
+        session.user.id,
+        userProfile.supplier_id,
+        validatedData,
+        {
+          success: false,
+          error: 'Rate limit exceeded',
+        },
+      );
+
+      return NextResponse.json(
+        {
+          error: 'RATE_LIMITED',
+          message: 'AI generation rate limit exceeded. Please try again later.',
+          resetTime: resetTime.toISOString(),
+          remaining: 0,
+        },
+        {
+          status: 429,
+          headers: {
+            'X-RateLimit-Limit': '10',
+            'X-RateLimit-Remaining': '0',
+            'X-RateLimit-Reset': Math.ceil(
+              rateLimit.resetTime / 1000,
+            ).toString(),
+            'Retry-After': Math.ceil(
+              (rateLimit.resetTime - Date.now()) / 1000,
+            ).toString(),
+          },
+        },
+      );
+    }
+
+    // 4. Input Sanitization (additional layer beyond Zod)
+    const sanitizedRequest = {
+      ...validatedData,
+      templateName: validatedData.templateName.replace(
+        /<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi,
+        '',
+      ),
+      customPrompt: validatedData.customPrompt?.replace(
+        /<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi,
+        '',
+      ),
+    };
+
+    // 5. Generate Templates using AI Service
+    const generationRequest = {
+      supplierId: userProfile.supplier_id,
+      ...sanitizedRequest,
+    };
+
+    const result =
+      await emailTemplateGenerator.generateTemplates(generationRequest);
+
+    // 6. Log Request for Audit Trail
+    await logAIGenerationRequest(
+      session.user.id,
+      userProfile.supplier_id,
+      sanitizedRequest,
+      {
+        success: result.success,
+        error: result.error,
+        tokensUsed: result.totalTokensUsed,
+      },
+    );
+
+    // 7. Error Handling
+    if (!result.success) {
+      if (result.error?.includes('rate limit')) {
+        return NextResponse.json(
+          {
+            error: 'RATE_LIMITED',
+            message: 'AI service rate limit exceeded. Please try again later.',
+            timestamp: new Date().toISOString(),
+          },
+          { status: 429 },
+        );
+      }
+
+      return NextResponse.json(
+        {
+          error: 'GENERATION_FAILED',
+          message: 'Failed to generate email templates. Please try again.',
+          details:
+            process.env.NODE_ENV === 'development' ? result.error : undefined,
+          timestamp: new Date().toISOString(),
+        },
+        { status: 500 },
+      );
+    }
+
+    // 8. Success Response with Performance Metrics
+    const response = NextResponse.json({
+      success: true,
+      data: {
+        templates: result.templates.map((template) => ({
+          id: template.id,
+          templateName: template.templateName,
+          subject: template.subject,
+          body: template.body,
+          mergeTagsUsed: template.mergeTagsUsed,
+          variant: template.variant,
+          metadata: {
+            model: template.aiMetadata.model,
+            tokensUsed: template.aiMetadata.tokensUsed.total,
+            generationTime: template.aiMetadata.generationTimeMs,
+          },
+        })),
+        mainTemplate: {
+          id: result.mainTemplate.id,
+          templateName: result.mainTemplate.templateName,
+          subject: result.mainTemplate.subject,
+          body: result.mainTemplate.body,
+          mergeTagsUsed: result.mainTemplate.mergeTagsUsed,
+        },
+        variants: result.variants.map((variant) => ({
+          id: variant.id,
+          label: variant.variant?.label,
+          subject: variant.subject,
+          body: variant.body,
+          mergeTagsUsed: variant.mergeTagsUsed,
+        })),
+        performance: {
+          totalTokensUsed: result.totalTokensUsed,
+          totalGenerationTime: result.totalGenerationTime,
+          averageTokensPerTemplate: Math.round(
+            result.totalTokensUsed / result.templates.length,
+          ),
+          estimatedCost: (result.totalTokensUsed / 1000) * 0.03, // Rough estimate
+        },
+      },
+      timestamp: new Date().toISOString(),
+      requestId: crypto.randomUUID(),
+    });
+
+    // 9. Add Rate Limit Headers
+    response.headers.set('X-RateLimit-Limit', '10');
+    response.headers.set(
+      'X-RateLimit-Remaining',
+      rateLimit.remaining.toString(),
+    );
+    response.headers.set(
+      'X-RateLimit-Reset',
+      Math.ceil(rateLimit.resetTime / 1000).toString(),
+    );
+
+    return response;
+  } catch (error) {
+    console.error('Email template generation endpoint error:', error);
+
+    // Log error for audit
+    if (
+      error instanceof EmailGenerationError ||
+      error instanceof RateLimitError
+    ) {
+      const session = await getServerSession(authOptions);
+      if (session?.user?.id) {
+        const supabase = await createClient();
+        const { data: userProfile } = await supabase
+          .from('user_profiles')
+          .select('supplier_id')
+          .eq('user_id', session.user.id)
+          .single();
+
+        if (userProfile?.supplier_id) {
+          await logAIGenerationRequest(
+            session.user.id,
+            userProfile.supplier_id,
+            validatedData,
+            {
+              success: false,
+              error: error.message,
+            },
+          );
+        }
+      }
+    }
+
+    // Return sanitized error response
+    return NextResponse.json(
+      {
+        error: 'INTERNAL_ERROR',
+        message: 'An unexpected error occurred while generating templates',
+        timestamp: new Date().toISOString(),
+        requestId: crypto.randomUUID(),
+      },
+      { status: 500 },
+    );
+  }
+}
+
+// ====================================================================
+// EXPORT SECURE HANDLER
+// ====================================================================
+
+export const POST = withSecureValidation(
+  GenerateTemplateRequestSchema,
+  generateTemplatesHandler,
+);
+
+// Method not allowed for other HTTP methods
+export async function GET() {
+  return NextResponse.json(
+    { error: 'METHOD_NOT_ALLOWED', message: 'GET method not supported' },
+    { status: 405 },
+  );
+}
+
+export async function PUT() {
+  return NextResponse.json(
+    { error: 'METHOD_NOT_ALLOWED', message: 'PUT method not supported' },
+    { status: 405 },
+  );
+}
+
+export async function DELETE() {
+  return NextResponse.json(
+    { error: 'METHOD_NOT_ALLOWED', message: 'DELETE method not supported' },
+    { status: 405 },
+  );
+}

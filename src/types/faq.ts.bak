@@ -1,0 +1,376 @@
+// FAQ Management System Types
+// Feature ID: WS-070 - FAQ Management - Client Support Automation
+
+export interface FaqCategory {
+  id: string
+  supplier_id: string
+  name: string
+  description?: string
+  slug: string
+  parent_id?: string
+  sort_order: number
+  icon?: string // Lucide icon name
+  is_active: boolean
+  created_at: string
+  updated_at: string
+  
+  // Relations (populated by queries)
+  children?: FaqCategory[]
+  parent?: FaqCategory
+  faq_items?: FaqItem[]
+  faq_count?: number
+}
+
+export interface FaqItem {
+  id: string
+  supplier_id: string
+  category_id: string
+  question: string
+  answer: string
+  answer_html?: string
+  summary?: string
+  sort_order: number
+  tags: string[]
+  is_published: boolean
+  is_featured: boolean
+  help_score: number
+  view_count: number
+  last_viewed_at?: string
+  created_at: string
+  updated_at: string
+  published_at: string
+  
+  // Relations (populated by queries)
+  category?: FaqCategory
+  feedback?: FaqFeedback[]
+  relevance_score?: number // From search queries
+}
+
+export interface FaqAnalytics {
+  id: string
+  supplier_id: string
+  faq_item_id: string
+  event_type: 'view' | 'helpful' | 'not_helpful' | 'search_result'
+  search_query?: string
+  user_session_id?: string
+  client_id?: string
+  user_agent?: string
+  ip_address?: string
+  referrer_url?: string
+  metadata: Record<string, any>
+  created_at: string
+  
+  // Relations
+  faq_item?: FaqItem
+}
+
+export interface FaqSearchQuery {
+  id: string
+  supplier_id: string
+  query_text: string
+  normalized_query: string
+  result_count: number
+  has_results: boolean
+  user_session_id?: string
+  client_id?: string
+  search_duration_ms?: number
+  created_at: string
+}
+
+export interface FaqFeedback {
+  id: string
+  supplier_id: string
+  faq_item_id: string
+  is_helpful: boolean
+  feedback_text?: string
+  suggested_improvement?: string
+  client_id?: string
+  user_session_id?: string
+  created_at: string
+  
+  // Relations
+  faq_item?: FaqItem
+}
+
+export interface FaqDashboardOverview {
+  supplier_id: string
+  business_name: string
+  
+  // Content stats
+  total_faqs: number
+  published_faqs: number
+  featured_faqs: number
+  total_categories: number
+  active_categories: number
+  
+  // Performance stats
+  avg_help_score: number
+  total_views: number
+  views_30d: number
+  helpful_votes_30d: number
+  not_helpful_votes_30d: number
+  
+  // Search stats
+  searches_30d: number
+  no_result_searches_30d: number
+  avg_search_duration_ms: number
+  unique_search_terms_30d: number
+  
+  // Calculated metrics
+  helpfulness_percentage: number
+  search_success_rate: number
+  
+  last_refreshed: string
+}
+
+// API Request/Response Types
+export interface CreateFaqCategoryRequest {
+  name: string
+  description?: string
+  slug: string
+  parent_id?: string
+  sort_order?: number
+  icon?: string
+}
+
+export interface UpdateFaqCategoryRequest extends Partial<CreateFaqCategoryRequest> {
+  id: string
+  is_active?: boolean
+}
+
+export interface CreateFaqItemRequest {
+  category_id: string
+  question: string
+  answer: string
+  answer_html?: string
+  summary?: string
+  sort_order?: number
+  tags?: string[]
+  is_featured?: boolean
+}
+
+export interface UpdateFaqItemRequest extends Partial<CreateFaqItemRequest> {
+  id: string
+  is_published?: boolean
+}
+
+export interface FaqSearchRequest {
+  query: string
+  category_id?: string
+  limit?: number
+  offset?: number
+  include_categories?: boolean
+}
+
+export interface FaqSearchResult {
+  id: string
+  question: string
+  answer: string
+  summary?: string
+  category_name?: string
+  category_slug?: string
+  tags: string[]
+  view_count: number
+  help_score: number
+  is_featured: boolean
+  relevance_score: number
+  
+  // Highlighted search terms (for UI)
+  highlighted_question?: string
+  highlighted_answer?: string
+}
+
+export interface FaqSearchResponse {
+  results: FaqSearchResult[]
+  total_count: number
+  search_duration_ms: number
+  suggestions?: string[]
+  categories?: Array<{
+    id: string
+    name: string
+    slug: string
+    count: number
+  }>
+}
+
+export interface TrackFaqAnalyticsRequest {
+  faq_item_id: string
+  event_type: 'view' | 'helpful' | 'not_helpful' | 'search_result'
+  search_query?: string
+  user_session_id?: string
+  metadata?: Record<string, any>
+}
+
+export interface SubmitFaqFeedbackRequest {
+  faq_item_id: string
+  is_helpful: boolean
+  feedback_text?: string
+  suggested_improvement?: string
+  user_session_id?: string
+}
+
+// Analytics Dashboard Types
+export interface FaqTopSearchTerms {
+  query: string
+  search_count: number
+  result_count: number
+  success_rate: number
+  trend: 'up' | 'down' | 'stable'
+}
+
+export interface FaqPerformanceMetrics {
+  most_viewed_faqs: Array<{
+    id: string
+    question: string
+    view_count: number
+    helpfulness_ratio: number
+  }>
+  most_helpful_faqs: Array<{
+    id: string
+    question: string
+    help_score: number
+    view_count: number
+  }>
+  underperforming_faqs: Array<{
+    id: string
+    question: string
+    help_score: number
+    view_count: number
+    improvement_suggestions: string[]
+  }>
+  content_gaps: Array<{
+    search_query: string
+    frequency: number
+    suggested_category: string
+  }>
+}
+
+export interface FaqAnalyticsDashboard {
+  overview: FaqDashboardOverview
+  top_search_terms: FaqTopSearchTerms[]
+  performance_metrics: FaqPerformanceMetrics
+  usage_trends: Array<{
+    date: string
+    views: number
+    searches: number
+    helpful_votes: number
+    not_helpful_votes: number
+  }>
+  category_performance: Array<{
+    category_id: string
+    category_name: string
+    faq_count: number
+    total_views: number
+    avg_helpfulness: number
+    search_success_rate: number
+  }>
+}
+
+// UI Component Props Types
+export interface FaqManagerProps {
+  supplier_id: string
+  initial_categories?: FaqCategory[]
+  initial_faqs?: FaqItem[]
+}
+
+export interface FaqDisplayProps {
+  supplier_id: string
+  client_id?: string
+  featured_only?: boolean
+  category_filter?: string
+  search_placeholder?: string
+  max_results?: number
+}
+
+export interface FaqSearchProps {
+  supplier_id: string
+  onSearch: (query: string) => void
+  onResultSelect: (faq: FaqSearchResult) => void
+  placeholder?: string
+  show_categories?: boolean
+  debounce_ms?: number
+}
+
+export interface FaqCategoryNavProps {
+  categories: FaqCategory[]
+  current_category?: string
+  onCategorySelect: (category_id: string | null) => void
+  show_count?: boolean
+}
+
+export interface FaqItemCardProps {
+  faq: FaqItem
+  show_category?: boolean
+  show_actions?: boolean
+  highlight_terms?: string[]
+  on_view?: () => void
+  on_feedback?: (is_helpful: boolean, feedback?: string) => void
+}
+
+// Utility Types
+export type FaqEventType = 'view' | 'helpful' | 'not_helpful' | 'search_result'
+
+export type FaqSortBy = 'relevance' | 'views' | 'helpfulness' | 'created' | 'updated' | 'alphabetical'
+
+export type FaqFilterBy = 'all' | 'published' | 'featured' | 'needs_review' | 'low_performance'
+
+// Error Types
+export interface FaqError {
+  code: string
+  message: string
+  details?: Record<string, any>
+}
+
+// Common FAQ categories for wedding businesses
+export const WEDDING_FAQ_CATEGORIES = [
+  {
+    name: 'Booking & Pricing',
+    slug: 'booking-pricing',
+    icon: 'CreditCard',
+    description: 'Questions about packages, pricing, and booking process'
+  },
+  {
+    name: 'Timeline & Delivery',
+    slug: 'timeline-delivery',
+    icon: 'Clock',
+    description: 'When photos will be ready, delivery schedules, and timelines'
+  },
+  {
+    name: 'Photography Process',
+    slug: 'photography-process',
+    icon: 'Camera',
+    description: 'What to expect during photo shoots and wedding day coverage'
+  },
+  {
+    name: 'Wedding Day Logistics',
+    slug: 'wedding-day-logistics',
+    icon: 'MapPin',
+    description: 'Wedding day coordination, timing, and logistics'
+  },
+  {
+    name: 'Packages & Add-ons',
+    slug: 'packages-addons',
+    icon: 'Package',
+    description: 'Available packages, add-on services, and customization options'
+  },
+  {
+    name: 'Weather & Backup Plans',
+    slug: 'weather-backup',
+    icon: 'Cloud',
+    description: 'Weather contingencies and backup planning'
+  },
+  {
+    name: 'Image Rights & Usage',
+    slug: 'image-rights',
+    icon: 'Shield',
+    description: 'Photo usage rights, sharing permissions, and copyright'
+  },
+  {
+    name: 'Payment & Contracts',
+    slug: 'payment-contracts',
+    icon: 'FileText',
+    description: 'Payment schedules, contracts, and terms'
+  }
+] as const
+
+export type WeddingFaqCategorySlug = typeof WEDDING_FAQ_CATEGORIES[number]['slug']

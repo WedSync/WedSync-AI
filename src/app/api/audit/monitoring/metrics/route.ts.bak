@@ -1,0 +1,458 @@
+/**
+ * WS-150: Audit Monitoring Metrics API - Real-time Monitoring
+ * Provides real-time metrics and monitoring data for audit system performance
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { auditService, AuditEventType, AuditSeverity } from '@/lib/audit/audit-service';
+import { createServerSupabaseClient } from '@/lib/supabase/server';
+
+export async function GET(request: NextRequest) {
+  try {
+    // Authentication and authorization
+    const supabase = createServerSupabaseClient();
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id, role')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!profile || !['admin', 'super_admin', 'system_admin'].includes(profile.role)) {
+      await auditService.logSecurityEvent(
+        AuditEventType.SECURITY_UNAUTHORIZED_ACCESS,
+        'Unauthorized access to audit monitoring metrics',
+        { 
+          endpoint: '/api/audit/monitoring/metrics',
+          user_role: profile?.role 
+        },
+        {
+          user_id: user.id,
+          user_email: user.email,
+          organization_id: profile?.organization_id,
+          ip_address: request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip'),
+          user_agent: request.headers.get('user-agent'),
+        },
+        'medium'
+      );
+
+      return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 });
+    }
+
+    // Parse query parameters
+    const searchParams = request.nextUrl.searchParams;
+    const timeWindow = parseInt(searchParams.get('time_window_minutes') || '60');
+    const includeHealth = searchParams.get('include_health') === 'true';
+    const includePerformance = searchParams.get('include_performance') === 'true';
+    const includeAlerts = searchParams.get('include_alerts') === 'true';
+
+    // Validate parameters
+    if (timeWindow > 1440) { // Max 24 hours
+      return NextResponse.json(
+        { error: 'Time window cannot exceed 1440 minutes (24 hours)' },
+        { status: 400 }
+      );
+    }
+
+    // Get audit service metrics
+    const auditMetrics = auditService.getMetrics();
+
+    // Get real-time statistics
+    const realtimeStats = await getRealTimeStats(
+      profile.organization_id,
+      timeWindow
+    );
+
+    // Get system health metrics if requested
+    let healthMetrics = null;
+    if (includeHealth) {
+      healthMetrics = await getSystemHealthMetrics(
+        profile.organization_id,
+        timeWindow
+      );
+    }
+
+    // Get performance metrics if requested
+    let performanceMetrics = null;
+    if (includePerformance) {
+      performanceMetrics = await getPerformanceMetrics(
+        profile.organization_id,
+        timeWindow
+      );
+    }
+
+    // Get active alerts if requested
+    let activeAlerts = null;
+    if (includeAlerts) {
+      activeAlerts = await getActiveAlerts(profile.organization_id);
+    }
+
+    // Log the metrics access
+    await auditService.log({
+      event_type: AuditEventType.DATA_READ,
+      severity: AuditSeverity.INFO,
+      action: 'Audit monitoring metrics accessed',
+      resource_type: 'audit_monitoring',
+      details: {
+        time_window_minutes: timeWindow,
+        include_health: includeHealth,
+        include_performance: includePerformance,
+        include_alerts: includeAlerts,
+        metrics_accessed_by_admin: true,
+      },
+    }, {
+      user_id: user.id,
+      user_email: user.email,
+      organization_id: profile.organization_id,
+      ip_address: request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip'),
+      user_agent: request.headers.get('user-agent'),
+    });
+
+    return NextResponse.json({
+      success: true,
+      timestamp: new Date().toISOString(),
+      time_window_minutes: timeWindow,
+      data: {
+        audit_service_metrics: auditMetrics,
+        realtime_statistics: realtimeStats,
+        system_health: healthMetrics,
+        performance_metrics: performanceMetrics,
+        active_alerts: activeAlerts,
+      },
+    });
+
+  } catch (error) {
+    console.error('[AUDIT MONITORING API] Error:', error);
+    
+    try {
+      await auditService.log({
+        event_type: AuditEventType.SYSTEM_ERROR_OCCURRED,
+        severity: AuditSeverity.ERROR,
+        action: 'Audit monitoring metrics API error',
+        details: {
+          error: error instanceof Error ? error.message : 'Unknown error',
+          endpoint: '/api/audit/monitoring/metrics',
+        },
+      });
+    } catch (logError) {
+      console.error('[AUDIT MONITORING API] Failed to log error:', logError);
+    }
+
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
+}
+
+// Get real-time audit statistics
+async function getRealTimeStats(organizationId: string, timeWindowMinutes: number) {
+  const startDate = new Date(Date.now() - timeWindowMinutes * 60 * 1000);
+  
+  const recentLogs = await auditService.query({
+    organization_id: organizationId,
+    start_date: startDate,
+    limit: 2000,
+  });
+
+  // Event type distribution
+  const eventTypeDistribution: Record<string, number> = {};
+  recentLogs.forEach(log => {
+    eventTypeDistribution[log.event_type] = (eventTypeDistribution[log.event_type] || 0) + 1;
+  });
+
+  // Severity distribution
+  const severityDistribution: Record<string, number> = {};
+  recentLogs.forEach(log => {
+    severityDistribution[log.severity] = (severityDistribution[log.severity] || 0) + 1;
+  });
+
+  // Hourly breakdown
+  const hourlyBreakdown: Record<string, number> = {};
+  recentLogs.forEach(log => {
+    const hour = new Date(log.timestamp).getHours().toString().padStart(2, '0');
+    hourlyBreakdown[hour] = (hourlyBreakdown[hour] || 0) + 1;
+  });
+
+  // Top users by activity
+  const userActivity: Record<string, number> = {};
+  recentLogs.forEach(log => {
+    if (log.user_email) {
+      userActivity[log.user_email] = (userActivity[log.user_email] || 0) + 1;
+    }
+  });
+
+  const topUsers = Object.entries(userActivity)
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, 10)
+    .map(([email, count]) => ({ email, event_count: count }));
+
+  // Security indicators
+  const securityEvents = recentLogs.filter(log =>
+    log.event_type.includes('security') || 
+    log.event_type.includes('unauthorized') ||
+    log.severity === 'critical'
+  );
+
+  const failedAuthEvents = recentLogs.filter(log =>
+    log.event_type.includes('auth') && 
+    (log.severity === 'error' || log.event_type.includes('failed'))
+  );
+
+  return {
+    summary: {
+      total_events: recentLogs.length,
+      events_per_minute: Math.round(recentLogs.length / timeWindowMinutes),
+      unique_users: new Set(recentLogs.map(log => log.user_id).filter(Boolean)).size,
+      unique_ip_addresses: new Set(recentLogs.map(log => log.ip_address).filter(Boolean)).size,
+    },
+    distributions: {
+      event_types: Object.entries(eventTypeDistribution)
+        .sort(([, a], [, b]) => b - a)
+        .slice(0, 10)
+        .map(([type, count]) => ({ type, count })),
+      severities: severityDistribution,
+      hourly_activity: hourlyBreakdown,
+    },
+    security_indicators: {
+      security_events: securityEvents.length,
+      failed_auth_attempts: failedAuthEvents.length,
+      critical_events: recentLogs.filter(log => log.severity === 'critical').length,
+      error_rate: recentLogs.length > 0 
+        ? Math.round((recentLogs.filter(log => log.severity === 'error').length / recentLogs.length) * 100)
+        : 0,
+    },
+    top_active_users: topUsers,
+  };
+}
+
+// Get system health metrics
+async function getSystemHealthMetrics(organizationId: string, timeWindowMinutes: number) {
+  const startDate = new Date(Date.now() - timeWindowMinutes * 60 * 1000);
+  
+  const systemEvents = await auditService.query({
+    organization_id: organizationId,
+    start_date: startDate,
+    event_types: [
+      AuditEventType.SYSTEM_ERROR_OCCURRED,
+      AuditEventType.SYSTEM_MAINTENANCE_START,
+      AuditEventType.SYSTEM_MAINTENANCE_END,
+      AuditEventType.SYSTEM_BACKUP_CREATED,
+    ],
+    limit: 1000,
+  });
+
+  const errorEvents = systemEvents.filter(event => 
+    event.event_type === AuditEventType.SYSTEM_ERROR_OCCURRED
+  );
+
+  const maintenanceEvents = systemEvents.filter(event =>
+    event.event_type === AuditEventType.SYSTEM_MAINTENANCE_START ||
+    event.event_type === AuditEventType.SYSTEM_MAINTENANCE_END
+  );
+
+  const backupEvents = systemEvents.filter(event =>
+    event.event_type === AuditEventType.SYSTEM_BACKUP_CREATED
+  );
+
+  // Calculate uptime percentage (simplified)
+  const totalMinutes = timeWindowMinutes;
+  const maintenanceMinutes = calculateMaintenanceTime(maintenanceEvents);
+  const uptimePercentage = ((totalMinutes - maintenanceMinutes) / totalMinutes) * 100;
+
+  return {
+    uptime: {
+      percentage: Math.round(uptimePercentage * 100) / 100,
+      maintenance_minutes: maintenanceMinutes,
+      total_window_minutes: totalMinutes,
+    },
+    errors: {
+      total_errors: errorEvents.length,
+      error_rate_per_hour: Math.round((errorEvents.length / timeWindowMinutes) * 60),
+      critical_errors: errorEvents.filter(e => e.severity === 'critical').length,
+    },
+    operations: {
+      maintenance_windows: maintenanceEvents.length / 2, // Start/End pairs
+      successful_backups: backupEvents.filter(e => e.severity !== 'error').length,
+      failed_backups: backupEvents.filter(e => e.severity === 'error').length,
+    },
+    health_score: calculateHealthScore(errorEvents.length, uptimePercentage),
+  };
+}
+
+// Get performance metrics
+async function getPerformanceMetrics(organizationId: string, timeWindowMinutes: number) {
+  const startDate = new Date(Date.now() - timeWindowMinutes * 60 * 1000);
+  
+  const allEvents = await auditService.query({
+    organization_id: organizationId,
+    start_date: startDate,
+    limit: 2000,
+  });
+
+  // Calculate performance metrics from event metadata
+  const eventsWithPerformance = allEvents.filter(event => 
+    event.performance_metrics?.duration_ms != null
+  );
+
+  const durations = eventsWithPerformance.map(event => 
+    event.performance_metrics!.duration_ms!
+  );
+
+  const memoryUsages = eventsWithPerformance
+    .filter(event => event.performance_metrics?.memory_usage != null)
+    .map(event => event.performance_metrics!.memory_usage!);
+
+  // Response time analysis
+  const averageResponseTime = durations.length > 0
+    ? durations.reduce((sum, duration) => sum + duration, 0) / durations.length
+    : 0;
+
+  const p95ResponseTime = durations.length > 0
+    ? calculatePercentile(durations, 95)
+    : 0;
+
+  const p99ResponseTime = durations.length > 0
+    ? calculatePercentile(durations, 99)
+    : 0;
+
+  // Memory usage analysis
+  const averageMemoryUsage = memoryUsages.length > 0
+    ? memoryUsages.reduce((sum, usage) => sum + usage, 0) / memoryUsages.length
+    : 0;
+
+  // Throughput analysis
+  const throughputPerMinute = allEvents.length / timeWindowMinutes;
+
+  return {
+    response_times: {
+      average_ms: Math.round(averageResponseTime * 100) / 100,
+      p95_ms: Math.round(p95ResponseTime * 100) / 100,
+      p99_ms: Math.round(p99ResponseTime * 100) / 100,
+      samples: durations.length,
+    },
+    memory_usage: {
+      average_bytes: Math.round(averageMemoryUsage),
+      peak_bytes: memoryUsages.length > 0 ? Math.max(...memoryUsages) : 0,
+      samples: memoryUsages.length,
+    },
+    throughput: {
+      events_per_minute: Math.round(throughputPerMinute * 100) / 100,
+      total_events: allEvents.length,
+      time_window_minutes: timeWindowMinutes,
+    },
+    buffer_status: {
+      // These would come from the audit service metrics
+      current_buffer_size: 0, // Placeholder
+      max_buffer_size: 1000,
+      buffer_utilization_percent: 0,
+    },
+  };
+}
+
+// Get active alerts
+async function getActiveAlerts(organizationId: string) {
+  const supabase = createServerSupabaseClient();
+  
+  const { data: alerts, error } = await supabase
+    .from('system_alerts')
+    .select('*')
+    .eq('acknowledged', false)
+    .gte('created_at', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    console.error('Error fetching alerts:', error);
+    return {
+      total_active_alerts: 0,
+      critical_alerts: 0,
+      security_alerts: 0,
+      alerts: [],
+    };
+  }
+
+  const criticalAlerts = alerts?.filter(alert => 
+    alert.details?.severity === 'critical' ||
+    alert.type === 'error'
+  ) || [];
+
+  const securityAlerts = alerts?.filter(alert =>
+    alert.category === 'security' ||
+    alert.details?.audit_type === 'security'
+  ) || [];
+
+  return {
+    total_active_alerts: alerts?.length || 0,
+    critical_alerts: criticalAlerts.length,
+    security_alerts: securityAlerts.length,
+    alerts: (alerts || []).slice(0, 20).map(alert => ({
+      id: alert.id,
+      type: alert.type,
+      category: alert.category,
+      message: alert.message,
+      created_at: alert.created_at,
+      severity: alert.details?.severity || 'medium',
+      audit_related: alert.category === 'audit',
+    })),
+  };
+}
+
+// Helper functions
+function calculateMaintenanceTime(maintenanceEvents: any[]): number {
+  let totalMinutes = 0;
+  
+  // Group start/end events
+  const startEvents = maintenanceEvents.filter(e => 
+    e.event_type === AuditEventType.SYSTEM_MAINTENANCE_START
+  );
+  
+  const endEvents = maintenanceEvents.filter(e => 
+    e.event_type === AuditEventType.SYSTEM_MAINTENANCE_END
+  );
+
+  // Calculate duration for each maintenance window
+  startEvents.forEach(startEvent => {
+    const correspondingEnd = endEvents.find(endEvent => 
+      new Date(endEvent.timestamp) > new Date(startEvent.timestamp) &&
+      endEvent.details?.maintenance_id === startEvent.details?.maintenance_id
+    );
+    
+    if (correspondingEnd) {
+      const durationMs = new Date(correspondingEnd.timestamp).getTime() - 
+                        new Date(startEvent.timestamp).getTime();
+      totalMinutes += durationMs / (1000 * 60);
+    }
+  });
+
+  return Math.round(totalMinutes);
+}
+
+function calculateHealthScore(errorCount: number, uptimePercentage: number): number {
+  let score = 100;
+  
+  // Deduct points for errors
+  score -= Math.min(errorCount * 2, 30); // Max 30 points for errors
+  
+  // Deduct points for downtime
+  score -= (100 - uptimePercentage) * 0.5; // 0.5 points per percent downtime
+  
+  return Math.max(Math.round(score), 0);
+}
+
+function calculatePercentile(values: number[], percentile: number): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = Math.ceil((percentile / 100) * sorted.length) - 1;
+  return sorted[index] || 0;
+}
+
+// WebSocket endpoint for real-time metrics (if needed)
+export async function POST(request: NextRequest) {
+  // This could be used to subscribe to real-time metric updates
+  // For now, return method not allowed
+  return NextResponse.json(
+    { error: 'Real-time subscriptions not implemented yet' },
+    { status: 501 }
+  );
+}

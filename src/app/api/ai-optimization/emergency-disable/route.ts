@@ -1,0 +1,60 @@
+/**
+ * WS-240: Emergency Budget Protection API
+ * POST /api/ai-optimization/emergency-disable
+ *
+ * Emergency disable mechanism to prevent budget overruns.
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
+import { BudgetTrackingEngine } from '@/lib/ai/optimization/BudgetTrackingEngine';
+
+const EmergencyDisableSchema = z.object({
+  supplierId: z.string().uuid(),
+  featureType: z.string(),
+  reason: z.enum(['budget_exceeded', 'manual_disable', 'suspicious_activity']),
+  message: z.string().optional(),
+});
+
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const { supplierId, featureType, reason, message } =
+      EmergencyDisableSchema.parse(body);
+
+    const budgetEngine = new BudgetTrackingEngine();
+
+    const disableReason = {
+      type: reason as any,
+      message: message || `Emergency disable triggered for ${featureType}`,
+      currentSpend: 0, // Would be calculated in real implementation
+      budgetLimit: 0, // Would be fetched from config
+      triggerTime: new Date(),
+    };
+
+    const result = await budgetEngine.executeAutoDisable(
+      supplierId,
+      featureType,
+      disableReason,
+    );
+
+    return NextResponse.json({
+      success: result.success,
+      message: 'AI feature has been emergency disabled',
+      disabledAt: result.disabledAt,
+      reason: result.reason,
+      reEnableInstructions: result.reEnableInstructions,
+      emergencyContact: result.emergencyContact,
+      criticalAlert: {
+        severity: 'critical',
+        action: 'Contact support immediately',
+        weddingDayProtection: 'Emergency protocols activated',
+      },
+    });
+  } catch (error) {
+    return NextResponse.json(
+      { error: 'Failed to execute emergency disable' },
+      { status: 500 },
+    );
+  }
+}

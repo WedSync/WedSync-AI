@@ -1,0 +1,470 @@
+import { performance, PerformanceObserver } from 'perf_hooks';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { jest } from 'vitest';
+import React from 'react';
+
+// Mock components for testing
+import { VirtualizedList } from '../../components/performance/VirtualizedList';
+import { VirtualizedClientList } from '../../components/performance/VirtualizedClientList';
+import { ProgressiveImage } from '../../components/performance/ProgressiveImage';
+import { VirtualPhotoGrid } from '../../components/performance/VirtualPhotoGrid';
+import { PerformanceOptimizedFormBuilder } from '../../components/forms/PerformanceOptimizedFormBuilder';
+import { VirtualizedTimeline } from '../../components/timeline/VirtualizedTimeline';
+import { AdvancedPerformanceDashboard } from '../../components/performance/AdvancedPerformanceDashboard';
+// Performance test utilities
+interface PerformanceMetrics {
+  renderTime: number;
+  memoryUsage: number;
+  layoutShifts: number;
+  reRenderCount: number;
+  javascriptHeapSize: number;
+  totalBlockingTime: number;
+}
+interface PerformanceThresholds {
+  renderTime: { max: number };
+  memoryUsage: { max: number };
+  layoutShifts: { max: number };
+  reRenderCount: { max: number };
+  javascriptHeapSize: { max: number };
+  totalBlockingTime: { max: number };
+const performanceThresholds: PerformanceThresholds = {
+  renderTime: { max: 16 }, // 60fps target
+  memoryUsage: { max: 50 * 1024 * 1024 }, // 50MB max
+  layoutShifts: { max: 0.1 }, // Good CLS score
+  reRenderCount: { max: 5 }, // Maximum unnecessary re-renders
+  javascriptHeapSize: { max: 100 * 1024 * 1024 }, // 100MB max
+  totalBlockingTime: { max: 50 } // 50ms max blocking time
+};
+class PerformanceTestRunner {
+  private metrics: PerformanceMetrics[] = [];
+  private observer: PerformanceObserver | null = null;
+  private layoutShiftScore = 0;
+  private renderCount = 0;
+  private startTime = 0;
+  constructor() {
+    this.setupObservers();
+  }
+  private setupObservers() {
+    // Mock PerformanceObserver for Node.js environment
+    if (typeof window !== 'undefined' && 'PerformanceObserver' in window) {
+      this.observer = new PerformanceObserver((list) => {
+        const entries = list.getEntries();
+        entries.forEach((entry) => {
+          if (entry.entryType === 'layout-shift' && !(entry as unknown).hadRecentInput) {
+            this.layoutShiftScore += (entry as unknown).value;
+          }
+        });
+      });
+      try {
+        this.observer.observe({ entryTypes: ['layout-shift', 'paint', 'navigation'] });
+      } catch (error) {
+        // Observer setup failed, continue without it
+      }
+    }
+  startMeasurement() {
+    this.startTime = performance.now();
+    this.renderCount = 0;
+    this.layoutShiftScore = 0;
+    // Clear previous measurements
+    performance.clearMarks();
+    performance.clearMeasures();
+    
+    performance.mark('test-start');
+  endMeasurement(): PerformanceMetrics {
+    performance.mark('test-end');
+    performance.measure('test-duration', 'test-start', 'test-end');
+    const duration = performance.now() - this.startTime;
+    const measures = performance.getEntriesByType('measure');
+    const testDuration = measures.find(m => m.name === 'test-duration');
+    // Mock memory measurement for Node.js environment
+    let memoryUsage = 0;
+    let javascriptHeapSize = 0;
+    if (typeof window !== 'undefined' && 'performance' in window && 'memory' in (window as unknown).performance) {
+      const memory = (window as unknown).performance.memory;
+      memoryUsage = memory.usedJSHeapSize;
+      javascriptHeapSize = memory.totalJSHeapSize;
+    } else {
+      // Use process memory in Node.js environment
+      if (typeof process !== 'undefined' && process.memoryUsage) {
+        const mem = process.memoryUsage();
+        memoryUsage = mem.heapUsed;
+        javascriptHeapSize = mem.heapTotal;
+    const metrics: PerformanceMetrics = {
+      renderTime: testDuration?.duration || duration,
+      memoryUsage,
+      layoutShifts: this.layoutShiftScore,
+      reRenderCount: this.renderCount,
+      javascriptHeapSize,
+      totalBlockingTime: 0 // Would need more sophisticated measurement
+    };
+    this.metrics.push(metrics);
+    return metrics;
+  incrementRenderCount() {
+    this.renderCount++;
+  getAverageMetrics(): PerformanceMetrics {
+    if (this.metrics.length === 0) {
+      return {
+        renderTime: 0,
+        memoryUsage: 0,
+        layoutShifts: 0,
+        reRenderCount: 0,
+        javascriptHeapSize: 0,
+        totalBlockingTime: 0
+      };
+    const totals = this.metrics.reduce((acc, metrics) => ({
+      renderTime: acc.renderTime + metrics.renderTime,
+      memoryUsage: acc.memoryUsage + metrics.memoryUsage,
+      layoutShifts: acc.layoutShifts + metrics.layoutShifts,
+      reRenderCount: acc.reRenderCount + metrics.reRenderCount,
+      javascriptHeapSize: acc.javascriptHeapSize + metrics.javascriptHeapSize,
+      totalBlockingTime: acc.totalBlockingTime + metrics.totalBlockingTime
+    }), {
+      renderTime: 0,
+      memoryUsage: 0,
+      layoutShifts: 0,
+      reRenderCount: 0,
+      javascriptHeapSize: 0,
+      totalBlockingTime: 0
+    });
+    const count = this.metrics.length;
+    return {
+      renderTime: totals.renderTime / count,
+      memoryUsage: totals.memoryUsage / count,
+      layoutShifts: totals.layoutShifts / count,
+      reRenderCount: totals.reRenderCount / count,
+      javascriptHeapSize: totals.javascriptHeapSize / count,
+      totalBlockingTime: totals.totalBlockingTime / count
+  validateMetrics(metrics: PerformanceMetrics): { passed: boolean; failures: string[] } {
+    const failures: string[] = [];
+    if (metrics.renderTime > performanceThresholds.renderTime.max) {
+      failures.push(`Render time ${metrics.renderTime.toFixed(2)}ms exceeds threshold ${performanceThresholds.renderTime.max}ms`);
+    if (metrics.memoryUsage > performanceThresholds.memoryUsage.max) {
+      failures.push(`Memory usage ${(metrics.memoryUsage / 1024 / 1024).toFixed(2)}MB exceeds threshold ${(performanceThresholds.memoryUsage.max / 1024 / 1024).toFixed(2)}MB`);
+    if (metrics.layoutShifts > performanceThresholds.layoutShifts.max) {
+      failures.push(`Layout shift score ${metrics.layoutShifts.toFixed(3)} exceeds threshold ${performanceThresholds.layoutShifts.max}`);
+    if (metrics.reRenderCount > performanceThresholds.reRenderCount.max) {
+      failures.push(`Re-render count ${metrics.reRenderCount} exceeds threshold ${performanceThresholds.reRenderCount.max}`);
+    if (metrics.javascriptHeapSize > performanceThresholds.javascriptHeapSize.max) {
+      failures.push(`JavaScript heap size ${(metrics.javascriptHeapSize / 1024 / 1024).toFixed(2)}MB exceeds threshold ${(performanceThresholds.javascriptHeapSize.max / 1024 / 1024).toFixed(2)}MB`);
+    if (metrics.totalBlockingTime > performanceThresholds.totalBlockingTime.max) {
+      failures.push(`Total blocking time ${metrics.totalBlockingTime.toFixed(2)}ms exceeds threshold ${performanceThresholds.totalBlockingTime.max}ms`);
+      passed: failures.length === 0,
+      failures
+  cleanup() {
+    if (this.observer) {
+      this.observer.disconnect();
+    this.metrics = [];
+// Mock data generators
+const generateMockClients = (count: number) => {
+  return Array.from({ length: count }, (_, index) => ({
+    id: `client-${index}`,
+    name: `Client ${index}`,
+    email: `client${index}@example.com`,
+    weddingDate: new Date(2024, 5, 15 + (index % 30)),
+    venue: `Venue ${index % 10}`,
+    status: ['active', 'inactive', 'pending'][index % 3] as 'active' | 'inactive' | 'pending',
+    totalSpent: Math.random() * 10000,
+    lastContact: new Date(Date.now() - Math.random() * 30 * 24 * 60 * 60 * 1000)
+  }));
+const generateMockPhotos = (count: number) => {
+    id: `photo-${index}`,
+    url: `https://picsum.photos/400/300?random=${index}`,
+    thumbnail: `https://picsum.photos/200/150?random=${index}`,
+    alt: `Photo ${index}`,
+    width: 400,
+    height: 300,
+    selected: false,
+    tags: [`tag${index % 5}`, `category${index % 3}`]
+const generateMockTimelineEvents = (count: number) => {
+    id: `event-${index}`,
+    title: `Event ${index}`,
+    description: `Description for event ${index}`,
+    date: '2024-06-15',
+    startTime: `${8 + (index % 12)}:00`,
+    endTime: `${9 + (index % 12)}:00`,
+    venue: `Venue ${index % 5}`,
+    type: ['ceremony', 'reception', 'photography', 'preparation'][index % 4] as 'ceremony' | 'reception' | 'photography' | 'preparation',
+    vendors: [],
+    notes: `Notes for event ${index}`,
+    status: 'confirmed' as const
+describe('Performance Regression Test Suite', () => {
+  let testRunner: PerformanceTestRunner;
+  beforeEach(() => {
+    testRunner = new PerformanceTestRunner();
+    // Mock IntersectionObserver
+    global.IntersectionObserver = vi.fn().mockImplementation((callback) => ({
+      observe: vi.fn(),
+      unobserve: vi.fn(),
+      disconnect: vi.fn(),
+      root: null,
+      rootMargin: '',
+      thresholds: []
+    }));
+    // Mock ResizeObserver
+    global.ResizeObserver = vi.fn().mockImplementation((callback) => ({
+      disconnect: vi.fn()
+    // Mock performance.memory
+    Object.defineProperty(global.performance, 'memory', {
+      value: {
+        usedJSHeapSize: 10 * 1024 * 1024,
+        totalJSHeapSize: 20 * 1024 * 1024,
+        jsHeapSizeLimit: 100 * 1024 * 1024
+      },
+      configurable: true
+  });
+  afterEach(() => {
+    testRunner.cleanup();
+  describe('VirtualizedList Performance', () => {
+    test('should render large lists within performance thresholds', async () => {
+      const items = Array.from({ length: 10000 }, (_, index) => ({
+        id: index,
+        name: `Item ${index}`
+      }));
+      testRunner.startMeasurement();
+      const { unmount } = render(
+        React.createElement(VirtualizedList, {
+          items,
+          itemHeight: 50,
+          containerHeight: 400,
+          renderItem: ({ item }: any) => React.createElement('div', null, item.name),
+          keyExtractor: (item: any) => item.id.toString()
+        })
+      );
+      const metrics = testRunner.endMeasurement();
+      const validation = testRunner.validateMetrics(metrics);
+      expect(validation.passed).toBe(true);
+      if (!validation.passed) {
+        console.error('VirtualizedList performance failures:', validation.failures);
+      unmount();
+    test('should handle rapid scrolling without performance degradation', async () => {
+      const items = generateMockClients(5000);
+      const { container, unmount } = render(
+        React.createElement(VirtualizedClientList, {
+          clients: items,
+          onClientSelect: vi.fn(),
+          onClientAction: vi.fn()
+      // Simulate rapid scrolling
+      const scrollContainer = container.querySelector('[data-testid*="scroll"]') || container.firstChild as HTMLElement;
+      
+      for (let i = 0; i < 20; i++) {
+        await act(async () => {
+          fireEvent.scroll(scrollContainer, { target: { scrollTop: i * 100 } });
+          await new Promise(resolve => setTimeout(resolve, 10));
+        console.error('Rapid scrolling performance failures:', validation.failures);
+  describe('Progressive Image Loading Performance', () => {
+    test('should load images progressively without blocking main thread', async () => {
+      const imageUrl = 'https://picsum.photos/800/600';
+        React.createElement(ProgressiveImage, {
+          src: imageUrl,
+          alt: 'Test image',
+          width: 800,
+          height: 600,
+          className: 'test-image'
+      // Wait for image to load
+      await waitFor(() => {
+        const img = screen.getByRole('img');
+        expect(img).toBeInTheDocument();
+      }, { timeout: 5000 });
+        console.error('Progressive image loading performance failures:', validation.failures);
+    test('should handle multiple images loading simultaneously', async () => {
+      const photos = generateMockPhotos(100);
+        React.createElement(VirtualPhotoGrid, {
+          photos,
+          columns: 4,
+          onPhotoSelect: vi.fn(),
+          onBulkAction: vi.fn()
+      // Wait for initial render
+        expect(screen.getByTestId('virtual-photo-grid')).toBeInTheDocument();
+        console.error('Multiple image loading performance failures:', validation.failures);
+  describe('Form Builder Performance', () => {
+    test('should handle large forms with many fields efficiently', async () => {
+      const sections = Array.from({ length: 20 }, (_, sectionIndex) => ({
+        id: `section-${sectionIndex}`,
+        title: `Section ${sectionIndex}`,
+        description: `Description for section ${sectionIndex}`,
+        fields: Array.from({ length: 50 }, (_, fieldIndex) => ({
+          id: `field-${sectionIndex}-${fieldIndex}`,
+          type: ['text', 'email', 'number', 'select', 'textarea'][fieldIndex % 5] as 'text' | 'email' | 'number' | 'select' | 'textarea',
+          label: `Field ${sectionIndex}-${fieldIndex}`,
+          value: '',
+          placeholder: `Enter ${fieldIndex}`,
+          validation: {
+            required: fieldIndex % 3 === 0
+        }))
+        React.createElement(PerformanceOptimizedFormBuilder, {
+          initialSections: sections,
+          onSectionsChange: vi.fn(),
+          onSave: vi.fn()
+      // Simulate field updates
+      const textInputs = screen.getAllByRole('textbox');
+      for (let i = 0; i < Math.min(10, textInputs.length); i++) {
+          fireEvent.change(textInputs[i], { target: { value: `Test value ${i}` } });
+        console.error('Large form performance failures:', validation.failures);
+    test('should validate forms efficiently without blocking UI', async () => {
+      const sections = [
+        {
+          id: 'validation-section',
+          title: 'Validation Test Section',
+          description: 'Testing form validation performance',
+          fields: Array.from({ length: 100 }, (_, index) => ({
+            id: `validation-field-${index}`,
+            type: 'text' as const,
+            label: `Required Field ${index}`,
+            value: '',
+            validation: {
+              required: true,
+              minLength: 5,
+              pattern: '^[a-zA-Z0-9]*$'
+            }
+          }))
+        }
+      ];
+      // Trigger validation on all fields
+      for (const input of textInputs.slice(0, 20)) { // Test first 20 fields
+          fireEvent.change(input, { target: { value: 'test' } }); // Invalid - too short
+          fireEvent.blur(input);
+          await new Promise(resolve => setTimeout(resolve, 5));
+        console.error('Form validation performance failures:', validation.failures);
+  describe('Timeline Performance', () => {
+    test('should render large timelines efficiently', async () => {
+      const timeline = {
+        id: 'test-timeline',
+        title: 'Test Wedding Timeline',
+        weddingDate: '2024-06-15',
+        clientId: 'test-client'
+      const events = generateMockTimelineEvents(1000);
+        React.createElement(VirtualizedTimeline, {
+          timeline,
+          events,
+          onEventUpdate: vi.fn(),
+          onEventSelect: vi.fn(),
+          onEventEdit: vi.fn(),
+          onEventDelete: vi.fn()
+        expect(screen.getByTestId('virtualized-timeline')).toBeInTheDocument();
+        console.error('Timeline performance failures:', validation.failures);
+    test('should handle real-time updates efficiently', async () => {
+        id: 'realtime-timeline',
+        title: 'Real-time Test Timeline',
+      let events = generateMockTimelineEvents(100);
+      const { rerender, unmount } = render(
+      // Simulate real-time updates
+      for (let i = 0; i < 10; i++) {
+        events = [
+          ...events,
+          {
+            id: `realtime-event-${i}`,
+            title: `Real-time Event ${i}`,
+            description: `Added in real-time ${i}`,
+            date: '2024-06-15',
+            startTime: `${10 + i}:00`,
+            endTime: `${11 + i}:00`,
+            venue: `Real-time Venue ${i}`,
+            type: 'photography' as const,
+            vendors: [],
+            notes: '',
+            status: 'confirmed' as const
+        ];
+          rerender(
+            React.createElement(VirtualizedTimeline, {
+              timeline,
+              events,
+              onEventUpdate: vi.fn(),
+              onEventSelect: vi.fn(),
+              onEventEdit: vi.fn(),
+              onEventDelete: vi.fn()
+            })
+          );
+          await new Promise(resolve => setTimeout(resolve, 50));
+        console.error('Real-time timeline performance failures:', validation.failures);
+  describe('Performance Dashboard', () => {
+    test('should monitor performance without significant overhead', async () => {
+        React.createElement(AdvancedPerformanceDashboard, {
+          autoOptimize: true,
+          collectDetailedMetrics: true
+      // Wait for dashboard to initialize and collect some metrics
+        expect(screen.getByText('Advanced Performance Dashboard')).toBeInTheDocument();
+      // Let it run for a short time to collect metrics
+      await act(async () => {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        console.error('Performance dashboard overhead failures:', validation.failures);
+  describe('Memory Leak Detection', () => {
+    test('should not leak memory during component lifecycle', async () => {
+      const initialMemory = process.memoryUsage().heapUsed;
+      const components = [];
+      // Create and destroy components multiple times
+      for (let i = 0; i < 5; i++) {
+        testRunner.startMeasurement();
+        const component = render(
+          React.createElement(VirtualizedClientList, {
+            clients: generateMockClients(1000),
+            onClientSelect: vi.fn(),
+            onClientAction: vi.fn()
+          })
+        );
+        components.push(component);
+        // Simulate usage
+          await new Promise(resolve => setTimeout(resolve, 100));
+        component.unmount();
+        
+        const metrics = testRunner.endMeasurement();
+        const validation = testRunner.validateMetrics(metrics);
+        expect(validation.passed).toBe(true);
+      // Force garbage collection if available
+      if (global.gc) {
+        global.gc();
+      const finalMemory = process.memoryUsage().heapUsed;
+      const memoryIncrease = finalMemory - initialMemory;
+      // Allow for some memory increase, but not excessive
+      expect(memoryIncrease).toBeLessThan(10 * 1024 * 1024); // 10MB threshold
+  describe('Stress Testing', () => {
+    test('should handle extreme data loads', async () => {
+      const extremeDataSets = {
+        clients: generateMockClients(50000),
+        photos: generateMockPhotos(10000),
+        events: generateMockTimelineEvents(5000)
+      // Test each component with extreme data
+      const clientListComponent = render(
+          clients: extremeDataSets.clients,
+        expect(screen.getByTestId('virtualized-client-list')).toBeInTheDocument();
+      clientListComponent.unmount();
+      const photoGridComponent = render(
+          photos: extremeDataSets.photos,
+          columns: 5,
+      photoGridComponent.unmount();
+        console.error('Stress test failures:', validation.failures);
+  describe('Benchmark Comparison', () => {
+    test('should maintain performance benchmarks over time', async () => {
+      // Run standardized performance test
+      const standardClients = generateMockClients(1000);
+      const runs = 3;
+      const allMetrics: PerformanceMetrics[] = [];
+      for (let run = 0; run < runs; run++) {
+        const { unmount } = render(
+            clients: standardClients,
+        // Simulate standard user interaction
+          const searchInput = screen.getByPlaceholderText(/search/i);
+          fireEvent.change(searchInput, { target: { value: 'test' } });
+        allMetrics.push(metrics);
+        unmount();
+      // Calculate average metrics
+      const avgMetrics = allMetrics.reduce((acc, metrics) => ({
+        renderTime: acc.renderTime + metrics.renderTime,
+        memoryUsage: acc.memoryUsage + metrics.memoryUsage,
+        layoutShifts: acc.layoutShifts + metrics.layoutShifts,
+        reRenderCount: acc.reRenderCount + metrics.reRenderCount,
+        javascriptHeapSize: acc.javascriptHeapSize + metrics.javascriptHeapSize,
+        totalBlockingTime: acc.totalBlockingTime + metrics.totalBlockingTime
+      }), {
+      Object.keys(avgMetrics).forEach(key => {
+        (avgMetrics as unknown)[key] /= runs;
+      const validation = testRunner.validateMetrics(avgMetrics);
+        console.error('Benchmark test failures:', validation.failures);
+      // Log benchmark results for regression tracking
+      console.log('Performance Benchmark Results:', {
+        avgRenderTime: avgMetrics.renderTime.toFixed(2) + 'ms',
+        avgMemoryUsage: (avgMetrics.memoryUsage / 1024 / 1024).toFixed(2) + 'MB',
+        avgLayoutShifts: avgMetrics.layoutShifts.toFixed(3),
+        avgReRenders: avgMetrics.reRenderCount.toFixed(0),
+        avgHeapSize: (avgMetrics.javascriptHeapSize / 1024 / 1024).toFixed(2) + 'MB'
+});

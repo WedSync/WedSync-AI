@@ -1,0 +1,667 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { cookies } from 'next/headers';
+import { z } from 'zod';
+import { ratelimit } from '@/lib/rate-limiter';
+
+const performanceQuerySchema = z.object({
+  timeframe: z.enum(['1h', '24h', '7d', '30d']).default('24h'),
+  metrics: z.array(z.enum([
+    'query_performance',
+    'cache_efficiency',
+    'error_rates',
+    'resource_usage',
+    'user_patterns',
+    'data_quality'
+  ])).default(['query_performance', 'cache_efficiency']),
+  include_details: z.boolean().default(false)
+});
+
+interface QueryPerformanceMetric {
+  query_type: string;
+  average_duration_ms: number;
+  p95_duration_ms: number;
+  p99_duration_ms: number;
+  total_queries: number;
+  error_count: number;
+  error_rate: number;
+  cache_hit_rate: number;
+  data_processed_mb: number;
+}
+
+interface CacheEfficiencyMetric {
+  cache_type: string;
+  hit_rate: number;
+  miss_rate: number;
+  total_requests: number;
+  average_response_time_cached_ms: number;
+  average_response_time_uncached_ms: number;
+  cache_size_mb: number;
+  eviction_count: number;
+}
+
+interface ResourceUsageMetric {
+  timestamp: string;
+  cpu_usage_percent: number;
+  memory_usage_mb: number;
+  database_connections: number;
+  concurrent_requests: number;
+  queue_length: number;
+}
+
+// Performance monitoring service
+class AnalyticsPerformanceMonitor {
+  private static instance: AnalyticsPerformanceMonitor;
+  private metrics: Map<string, any[]> = new Map();
+  private readonly maxMetricsAge = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+  static getInstance(): AnalyticsPerformanceMonitor {
+    if (!AnalyticsPerformanceMonitor.instance) {
+      AnalyticsPerformanceMonitor.instance = new AnalyticsPerformanceMonitor();
+    }
+    return AnalyticsPerformanceMonitor.instance;
+  }
+
+  recordQueryPerformance(queryType: string, duration: number, success: boolean, dataSize: number = 0): void {
+    const metric = {
+      query_type: queryType,
+      duration_ms: duration,
+      success,
+      data_size_mb: dataSize / (1024 * 1024),
+      timestamp: new Date().toISOString()
+    };
+
+    if (!this.metrics.has('query_performance')) {
+      this.metrics.set('query_performance', []);
+    }
+    
+    this.metrics.get('query_performance')!.push(metric);
+    this.cleanupOldMetrics('query_performance');
+  }
+
+  recordCachePerformance(cacheType: string, hit: boolean, responseTime: number): void {
+    const metric = {
+      cache_type: cacheType,
+      hit,
+      response_time_ms: responseTime,
+      timestamp: new Date().toISOString()
+    };
+
+    if (!this.metrics.has('cache_performance')) {
+      this.metrics.set('cache_performance', []);
+    }
+    
+    this.metrics.get('cache_performance')!.push(metric);
+    this.cleanupOldMetrics('cache_performance');
+  }
+
+  recordResourceUsage(cpuPercent: number, memoryMB: number, dbConnections: number, concurrentRequests: number): void {
+    const metric = {
+      cpu_usage_percent: cpuPercent,
+      memory_usage_mb: memoryMB,
+      database_connections: dbConnections,
+      concurrent_requests: concurrentRequests,
+      timestamp: new Date().toISOString()
+    };
+
+    if (!this.metrics.has('resource_usage')) {
+      this.metrics.set('resource_usage', []);
+    }
+    
+    this.metrics.get('resource_usage')!.push(metric);
+    this.cleanupOldMetrics('resource_usage');
+  }
+
+  private cleanupOldMetrics(metricType: string): void {
+    const metrics = this.metrics.get(metricType);
+    if (!metrics) return;
+
+    const cutoffTime = Date.now() - this.maxMetricsAge;
+    const filteredMetrics = metrics.filter(m => 
+      new Date(m.timestamp).getTime() > cutoffTime
+    );
+
+    this.metrics.set(metricType, filteredMetrics);
+  }
+
+  getQueryPerformanceMetrics(timeframe: string): QueryPerformanceMetric[] {
+    const queryMetrics = this.metrics.get('query_performance') || [];
+    const cutoffTime = this.getCutoffTime(timeframe);
+    
+    const recentMetrics = queryMetrics.filter(m => 
+      new Date(m.timestamp).getTime() > cutoffTime
+    );
+
+    // Group by query type
+    const groupedMetrics = recentMetrics.reduce((acc: any, metric) => {
+      if (!acc[metric.query_type]) {
+        acc[metric.query_type] = [];
+      }
+      acc[metric.query_type].push(metric);
+      return acc;
+    }, {});
+
+    return Object.entries(groupedMetrics).map(([queryType, metrics]: [string, any[]]) => {
+      const durations = metrics.map(m => m.duration_ms).sort((a, b) => a - b);
+      const errors = metrics.filter(m => !m.success);
+      const dataProcessed = metrics.reduce((sum, m) => sum + m.data_size_mb, 0);
+
+      return {
+        query_type: queryType,
+        average_duration_ms: Math.round(durations.reduce((a, b) => a + b, 0) / durations.length),
+        p95_duration_ms: durations[Math.floor(durations.length * 0.95)] || 0,
+        p99_duration_ms: durations[Math.floor(durations.length * 0.99)] || 0,
+        total_queries: metrics.length,
+        error_count: errors.length,
+        error_rate: (errors.length / metrics.length) * 100,
+        cache_hit_rate: 0, // Would be calculated from cache metrics
+        data_processed_mb: Math.round(dataProcessed * 100) / 100
+      };
+    });
+  }
+
+  getCacheEfficiencyMetrics(timeframe: string): CacheEfficiencyMetric[] {
+    const cacheMetrics = this.metrics.get('cache_performance') || [];
+    const cutoffTime = this.getCutoffTime(timeframe);
+    
+    const recentMetrics = cacheMetrics.filter(m => 
+      new Date(m.timestamp).getTime() > cutoffTime
+    );
+
+    // Group by cache type
+    const groupedMetrics = recentMetrics.reduce((acc: any, metric) => {
+      if (!acc[metric.cache_type]) {
+        acc[metric.cache_type] = [];
+      }
+      acc[metric.cache_type].push(metric);
+      return acc;
+    }, {});
+
+    return Object.entries(groupedMetrics).map(([cacheType, metrics]: [string, any[]]) => {
+      const hits = metrics.filter(m => m.hit);
+      const misses = metrics.filter(m => !m.hit);
+      
+      const avgCachedTime = hits.length > 0 ? 
+        hits.reduce((sum, m) => sum + m.response_time_ms, 0) / hits.length : 0;
+      
+      const avgUncachedTime = misses.length > 0 ? 
+        misses.reduce((sum, m) => sum + m.response_time_ms, 0) / misses.length : 0;
+
+      return {
+        cache_type: cacheType,
+        hit_rate: (hits.length / metrics.length) * 100,
+        miss_rate: (misses.length / metrics.length) * 100,
+        total_requests: metrics.length,
+        average_response_time_cached_ms: Math.round(avgCachedTime),
+        average_response_time_uncached_ms: Math.round(avgUncachedTime),
+        cache_size_mb: 0, // Would be tracked separately
+        eviction_count: 0 // Would be tracked separately
+      };
+    });
+  }
+
+  getResourceUsageMetrics(timeframe: string): ResourceUsageMetric[] {
+    const resourceMetrics = this.metrics.get('resource_usage') || [];
+    const cutoffTime = this.getCutoffTime(timeframe);
+    
+    return resourceMetrics
+      .filter(m => new Date(m.timestamp).getTime() > cutoffTime)
+      .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+  }
+
+  private getCutoffTime(timeframe: string): number {
+    const now = Date.now();
+    switch (timeframe) {
+      case '1h':
+        return now - (60 * 60 * 1000);
+      case '24h':
+        return now - (24 * 60 * 60 * 1000);
+      case '7d':
+        return now - (7 * 24 * 60 * 60 * 1000);
+      case '30d':
+        return now - (30 * 24 * 60 * 60 * 1000);
+      default:
+        return now - (24 * 60 * 60 * 1000);
+    }
+  }
+
+  getSystemHealth(): {
+    status: 'healthy' | 'warning' | 'critical';
+    checks: Array<{
+      name: string;
+      status: 'pass' | 'warn' | 'fail';
+      message: string;
+      value?: number;
+      threshold?: number;
+    }>;
+  } {
+    const checks = [];
+
+    // Check recent query performance
+    const recentQueries = this.metrics.get('query_performance') || [];
+    const last5Minutes = recentQueries.filter(m => 
+      new Date(m.timestamp).getTime() > Date.now() - 5 * 60 * 1000
+    );
+
+    const avgDuration = last5Minutes.length > 0 ? 
+      last5Minutes.reduce((sum, m) => sum + m.duration_ms, 0) / last5Minutes.length : 0;
+
+    checks.push({
+      name: 'Query Performance',
+      status: avgDuration > 2000 ? 'fail' : avgDuration > 1000 ? 'warn' : 'pass',
+      message: `Average query duration: ${Math.round(avgDuration)}ms`,
+      value: avgDuration,
+      threshold: 1000
+    });
+
+    // Check error rates
+    const errors = last5Minutes.filter(m => !m.success);
+    const errorRate = last5Minutes.length > 0 ? (errors.length / last5Minutes.length) * 100 : 0;
+
+    checks.push({
+      name: 'Error Rate',
+      status: errorRate > 5 ? 'fail' : errorRate > 1 ? 'warn' : 'pass',
+      message: `Error rate: ${Math.round(errorRate * 100) / 100}%`,
+      value: errorRate,
+      threshold: 1
+    });
+
+    // Check cache performance
+    const recentCacheMetrics = this.metrics.get('cache_performance') || [];
+    const recentCache = recentCacheMetrics.filter(m => 
+      new Date(m.timestamp).getTime() > Date.now() - 5 * 60 * 1000
+    );
+
+    const cacheHits = recentCache.filter(m => m.hit);
+    const cacheHitRate = recentCache.length > 0 ? (cacheHits.length / recentCache.length) * 100 : 0;
+
+    checks.push({
+      name: 'Cache Hit Rate',
+      status: cacheHitRate < 50 ? 'warn' : cacheHitRate < 30 ? 'fail' : 'pass',
+      message: `Cache hit rate: ${Math.round(cacheHitRate)}%`,
+      value: cacheHitRate,
+      threshold: 50
+    });
+
+    // Determine overall status
+    const hasFailures = checks.some(c => c.status === 'fail');
+    const hasWarnings = checks.some(c => c.status === 'warn');
+    
+    const overallStatus = hasFailures ? 'critical' : hasWarnings ? 'warning' : 'healthy';
+
+    return {
+      status: overallStatus,
+      checks
+    };
+  }
+}
+
+// Export singleton
+export const performanceMonitor = AnalyticsPerformanceMonitor.getInstance();
+
+async function getQueryPerformanceData(
+  supabase: any,
+  timeframe: string
+): Promise<QueryPerformanceMetric[]> {
+  // Get actual query performance from database logs if available
+  // This would typically come from pg_stat_statements or similar
+  
+  // For now, return data from our performance monitor
+  const monitor = AnalyticsPerformanceMonitor.getInstance();
+  return monitor.getQueryPerformanceMetrics(timeframe);
+}
+
+async function getDatabasePerformanceMetrics(
+  supabase: any,
+  timeframe: string
+): Promise<any> {
+  try {
+    // Query database performance statistics
+    const { data: dbStats, error } = await supabase
+      .from('pg_stat_database')
+      .select(`
+        datname,
+        numbackends,
+        xact_commit,
+        xact_rollback,
+        blks_read,
+        blks_hit,
+        tup_returned,
+        tup_fetched,
+        tup_inserted,
+        tup_updated,
+        tup_deleted
+      `)
+      .eq('datname', process.env.DB_NAME || 'wedsync');
+
+    if (error) {
+      console.warn('Could not fetch database stats:', error);
+      return null;
+    }
+
+    const stats = dbStats?.[0];
+    if (!stats) return null;
+
+    // Calculate derived metrics
+    const cacheHitRatio = stats.blks_hit && stats.blks_read ? 
+      (stats.blks_hit / (stats.blks_hit + stats.blks_read)) * 100 : 0;
+
+    const transactionSuccessRate = stats.xact_commit && stats.xact_rollback ? 
+      (stats.xact_commit / (stats.xact_commit + stats.xact_rollback)) * 100 : 100;
+
+    return {
+      active_connections: stats.numbackends,
+      cache_hit_ratio: Math.round(cacheHitRatio * 100) / 100,
+      transaction_success_rate: Math.round(transactionSuccessRate * 100) / 100,
+      total_queries: stats.tup_returned + stats.tup_fetched,
+      data_modifications: stats.tup_inserted + stats.tup_updated + stats.tup_deleted
+    };
+
+  } catch (error) {
+    console.error('Database performance metrics error:', error);
+    return null;
+  }
+}
+
+async function getAnalyticsDataQualityMetrics(
+  supabase: any,
+  timeframe: string
+): Promise<any> {
+  const cutoffTime = new Date();
+  switch (timeframe) {
+    case '1h':
+      cutoffTime.setHours(cutoffTime.getHours() - 1);
+      break;
+    case '24h':
+      cutoffTime.setDate(cutoffTime.getDate() - 1);
+      break;
+    case '7d':
+      cutoffTime.setDate(cutoffTime.getDate() - 7);
+      break;
+    case '30d':
+      cutoffTime.setDate(cutoffTime.getDate() - 30);
+      break;
+  }
+
+  try {
+    // Check data completeness and quality
+    const qualityChecks = await Promise.all([
+      // Check for missing client_ids in engagement events
+      supabase
+        .from('client_engagement_events')
+        .select('count')
+        .is('client_id', null)
+        .gte('created_at', cutoffTime.toISOString())
+        .single(),
+
+      // Check for events with invalid event_types
+      supabase
+        .from('client_engagement_events')
+        .select('count')
+        .not('event_type', 'in', '(portal_login,form_submit,document_download,message_sent,email_open,email_click,call_scheduled,meeting_attended,payment_made,form_view,portal_view)')
+        .gte('created_at', cutoffTime.toISOString())
+        .single(),
+
+      // Check for duplicate events (same client, type, timestamp)
+      supabase
+        .rpc('check_duplicate_engagement_events', {
+          start_time: cutoffTime.toISOString()
+        }),
+
+      // Check journey progress consistency
+      supabase
+        .from('client_journey_progress')
+        .select('count')
+        .or('completion_percentage.lt.0,completion_percentage.gt.100')
+        .gte('updated_at', cutoffTime.toISOString())
+        .single()
+    ]);
+
+    const [missingClients, invalidEvents, duplicates, invalidProgress] = qualityChecks;
+
+    return {
+      missing_client_ids: missingClients.data?.count || 0,
+      invalid_event_types: invalidEvents.data?.count || 0,
+      duplicate_events: duplicates.data || 0,
+      invalid_progress_values: invalidProgress.data?.count || 0,
+      data_quality_score: 100 - Math.min(100, 
+        ((missingClients.data?.count || 0) + 
+         (invalidEvents.data?.count || 0) + 
+         (duplicates.data || 0) + 
+         (invalidProgress.data?.count || 0)) * 5
+      )
+    };
+
+  } catch (error) {
+    console.error('Data quality metrics error:', error);
+    return {
+      missing_client_ids: 0,
+      invalid_event_types: 0,
+      duplicate_events: 0,
+      invalid_progress_values: 0,
+      data_quality_score: 100
+    };
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const ip = request.ip || 'unknown';
+    
+    // Rate limiting for performance monitoring
+    const { success, limit, reset, remaining } = await ratelimit.limit(`performance_analytics_${ip}`);
+    
+    if (!success) {
+      return NextResponse.json(
+        { 
+          error: 'Rate limit exceeded',
+          limit,
+          reset: new Date(reset * 1000),
+          remaining 
+        },
+        { status: 429 }
+      );
+    }
+
+    const queryParams = {
+      timeframe: searchParams.get('timeframe') || '24h',
+      metrics: searchParams.get('metrics')?.split(',') || ['query_performance', 'cache_efficiency'],
+      include_details: searchParams.get('include_details') === 'true'
+    };
+
+    const validatedParams = performanceQuerySchema.parse(queryParams);
+    
+    const cookieStore = cookies();
+    const supabase = createClient(cookieStore);
+    
+    // Check authentication - performance metrics require admin access
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    // Verify admin access
+    const { data: userRole } = await supabase
+      .from('user_roles')
+      .select('role')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!userRole || !['admin', 'system_admin'].includes(userRole.role)) {
+      return NextResponse.json(
+        { error: 'Forbidden - Admin access required' },
+        { status: 403 }
+      );
+    }
+
+    const performanceData: any = {
+      metadata: {
+        timeframe: validatedParams.timeframe,
+        generated_at: new Date().toISOString(),
+        requested_metrics: validatedParams.metrics
+      },
+      system_health: performanceMonitor.getSystemHealth()
+    };
+
+    // Collect performance metrics
+    const metricsPromises = [];
+
+    if (validatedParams.metrics.includes('query_performance')) {
+      metricsPromises.push(
+        getQueryPerformanceData(supabase, validatedParams.timeframe)
+          .then(data => ({ query_performance: data }))
+      );
+    }
+
+    if (validatedParams.metrics.includes('cache_efficiency')) {
+      const cacheMetrics = performanceMonitor.getCacheEfficiencyMetrics(validatedParams.timeframe);
+      metricsPromises.push(Promise.resolve({ cache_efficiency: cacheMetrics }));
+    }
+
+    if (validatedParams.metrics.includes('resource_usage')) {
+      const resourceMetrics = performanceMonitor.getResourceUsageMetrics(validatedParams.timeframe);
+      metricsPromises.push(Promise.resolve({ resource_usage: resourceMetrics }));
+    }
+
+    if (validatedParams.metrics.includes('data_quality')) {
+      metricsPromises.push(
+        getAnalyticsDataQualityMetrics(supabase, validatedParams.timeframe)
+          .then(data => ({ data_quality: data }))
+      );
+    }
+
+    // Get database performance if requested
+    if (validatedParams.metrics.includes('database_performance') || validatedParams.include_details) {
+      metricsPromises.push(
+        getDatabasePerformanceMetrics(supabase, validatedParams.timeframe)
+          .then(data => ({ database_performance: data }))
+      );
+    }
+
+    // Wait for all metrics
+    const metricsResults = await Promise.all(metricsPromises);
+    
+    // Merge results
+    metricsResults.forEach(result => {
+      Object.assign(performanceData, result);
+    });
+
+    // Add recommendations based on performance data
+    performanceData.recommendations = generatePerformanceRecommendations(performanceData);
+
+    return NextResponse.json(performanceData, {
+      headers: {
+        'Cache-Control': 'no-cache, no-store, must-revalidate', // Performance data should not be cached
+        'X-Performance-Version': '1.0',
+        'X-System-Health': performanceData.system_health.status
+      }
+    });
+
+  } catch (error) {
+    console.error('Performance analytics error:', error);
+    
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid query parameters', details: error.errors },
+        { status: 400 }
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Failed to retrieve performance metrics', details: error instanceof Error ? error.message : 'Unknown error' },
+      { status: 500 }
+    );
+  }
+}
+
+function generatePerformanceRecommendations(performanceData: any): Array<{
+  type: 'optimization' | 'warning' | 'critical';
+  category: string;
+  message: string;
+  action: string;
+}> {
+  const recommendations = [];
+
+  // Query performance recommendations
+  if (performanceData.query_performance) {
+    const slowQueries = performanceData.query_performance.filter((q: QueryPerformanceMetric) => 
+      q.average_duration_ms > 1000
+    );
+
+    if (slowQueries.length > 0) {
+      recommendations.push({
+        type: 'optimization' as const,
+        category: 'Query Performance',
+        message: `${slowQueries.length} query types have average duration > 1000ms`,
+        action: 'Consider adding database indexes or optimizing query structure'
+      });
+    }
+  }
+
+  // Cache efficiency recommendations
+  if (performanceData.cache_efficiency) {
+    const lowHitRateCaches = performanceData.cache_efficiency.filter((c: CacheEfficiencyMetric) => 
+      c.hit_rate < 50
+    );
+
+    if (lowHitRateCaches.length > 0) {
+      recommendations.push({
+        type: 'optimization' as const,
+        category: 'Cache Performance',
+        message: `Cache hit rate below 50% for ${lowHitRateCaches.length} cache types`,
+        action: 'Review cache TTL settings and cache key strategies'
+      });
+    }
+  }
+
+  // System health recommendations
+  if (performanceData.system_health) {
+    const failedChecks = performanceData.system_health.checks.filter((c: any) => c.status === 'fail');
+    const warningChecks = performanceData.system_health.checks.filter((c: any) => c.status === 'warn');
+
+    failedChecks.forEach((check: any) => {
+      recommendations.push({
+        type: 'critical' as const,
+        category: 'System Health',
+        message: `Critical issue: ${check.message}`,
+        action: `Immediate attention required for ${check.name}`
+      });
+    });
+
+    warningChecks.forEach((check: any) => {
+      recommendations.push({
+        type: 'warning' as const,
+        category: 'System Health',
+        message: `Warning: ${check.message}`,
+        action: `Monitor and consider optimization for ${check.name}`
+      });
+    });
+  }
+
+  // Data quality recommendations
+  if (performanceData.data_quality && performanceData.data_quality.data_quality_score < 95) {
+    recommendations.push({
+      type: 'warning' as const,
+      category: 'Data Quality',
+      message: `Data quality score: ${performanceData.data_quality.data_quality_score}%`,
+      action: 'Review data validation rules and implement data cleaning procedures'
+    });
+  }
+
+  return recommendations;
+}
+
+// Middleware to record performance metrics for analytics endpoints
+export function recordAnalyticsPerformance(
+  queryType: string,
+  startTime: number,
+  success: boolean,
+  dataSize: number = 0
+): void {
+  const duration = Date.now() - startTime;
+  performanceMonitor.recordQueryPerformance(queryType, duration, success, dataSize);
+}

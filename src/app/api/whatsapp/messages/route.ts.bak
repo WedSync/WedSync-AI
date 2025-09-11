@@ -1,0 +1,138 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { createWhatsAppService } from '@/lib/whatsapp/service'
+import { z } from 'zod'
+
+// Validation schemas
+const sendMessageSchema = z.object({
+  to: z.string().min(10),
+  type: z.enum(['template', 'text', 'image', 'document']),
+  templateName: z.string().optional(),
+  languageCode: z.string().optional(),
+  components: z.array(z.any()).optional(),
+  text: z.string().optional(),
+  mediaUrl: z.string().optional(),
+  caption: z.string().optional(),
+  filename: z.string().optional(),
+  metadata: z.record(z.any()).optional()
+})
+
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json()
+    const validatedData = sendMessageSchema.parse(body)
+
+    const whatsAppService = createWhatsAppService()
+
+    let result
+
+    switch (validatedData.type) {
+      case 'template':
+        if (!validatedData.templateName || !validatedData.languageCode) {
+          return NextResponse.json(
+            { error: 'Template name and language code are required for template messages' },
+            { status: 400 }
+          )
+        }
+        result = await whatsAppService.sendTemplateMessage(
+          validatedData.to,
+          validatedData.templateName,
+          validatedData.languageCode,
+          validatedData.components,
+          validatedData.metadata
+        )
+        break
+
+      case 'text':
+        if (!validatedData.text) {
+          return NextResponse.json(
+            { error: 'Text content is required for text messages' },
+            { status: 400 }
+          )
+        }
+        result = await whatsAppService.sendTextMessage(
+          validatedData.to,
+          validatedData.text,
+          validatedData.metadata
+        )
+        break
+
+      case 'image':
+      case 'document':
+        if (!validatedData.mediaUrl) {
+          return NextResponse.json(
+            { error: 'Media URL is required for media messages' },
+            { status: 400 }
+          )
+        }
+        result = await whatsAppService.sendMediaMessage(
+          validatedData.to,
+          validatedData.type,
+          validatedData.mediaUrl,
+          validatedData.caption,
+          validatedData.filename,
+          validatedData.metadata
+        )
+        break
+    }
+
+    if (result.success) {
+      return NextResponse.json(
+        { 
+          success: true, 
+          messageId: result.messageId,
+          message: 'Message sent successfully' 
+        },
+        { status: 200 }
+      )
+    } else {
+      return NextResponse.json(
+        { error: result.error },
+        { status: 500 }
+      )
+    }
+
+  } catch (error) {
+    console.error('WhatsApp message API error:', error)
+    
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { 
+          error: 'Invalid request data',
+          details: error.errors
+        },
+        { status: 400 }
+      )
+    }
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const whatsAppService = createWhatsAppService()
+    const result = await whatsAppService.getMessageTemplates()
+
+    if (result.success) {
+      return NextResponse.json({
+        success: true,
+        templates: result.templates
+      })
+    } else {
+      return NextResponse.json(
+        { error: result.error },
+        { status: 500 }
+      )
+    }
+
+  } catch (error) {
+    console.error('WhatsApp templates API error:', error)
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}

@@ -1,0 +1,215 @@
+/**
+ * Individual Feedback Submission API Routes
+ * Feature: WS-236 User Feedback System
+ * Handles operations for specific feedback submissions
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { rateLimit } from '@/lib/rate-limiter';
+
+interface RouteContext {
+  params: { id: string };
+}
+
+/**
+ * GET /api/feedback/[id] - Get specific feedback submission
+ */
+export async function GET(request: NextRequest, { params }: RouteContext) {
+  try {
+    // Rate limiting
+    const rateLimitResult = await rateLimit(request, {
+      max: 100,
+      windowMs: 60000,
+    });
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { error: 'Too many requests' },
+        { status: 429, headers: rateLimitResult.headers },
+      );
+    }
+
+    const supabase = createClient();
+    const { id } = params;
+
+    // Validate ID format
+    if (!id || !/^[0-9a-f-]{36}$/.test(id)) {
+      return NextResponse.json(
+        { error: 'Invalid feedback ID format' },
+        { status: 400 },
+      );
+    }
+
+    // Check authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get user profile and organization
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('organization_id, role')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!userProfile?.organization_id) {
+      return NextResponse.json(
+        { error: 'User organization not found' },
+        { status: 403 },
+      );
+    }
+
+    // Fetch feedback submission with related data
+    const { data: feedback, error } = await supabase
+      .from('feedback_submissions')
+      .select(
+        `
+        *,
+        user:auth.users(email, raw_user_meta_data),
+        assigned_user:auth.users(email, raw_user_meta_data),
+        feedback_responses(
+          id,
+          response_text,
+          response_type,
+          is_customer_visible,
+          is_internal,
+          created_at,
+          updated_at,
+          author:auth.users(email, raw_user_meta_data)
+        ),
+        feedback_attachments(
+          id,
+          filename,
+          file_size,
+          file_type,
+          storage_path,
+          created_at,
+          uploaded_by:auth.users(email, raw_user_meta_data)
+        )
+      `,
+      )
+      .eq('id', id)
+      .eq('organization_id', userProfile.organization_id)
+      .is('deleted_at', null)
+      .single();
+
+    if (error || !feedback) {
+      return NextResponse.json(
+        { error: 'Feedback submission not found' },
+        { status: 404 },
+      );
+    }
+
+    // Filter internal responses for non-admin users
+    if (!['admin', 'owner'].includes(userProfile.role)) {
+      feedback.feedback_responses = feedback.feedback_responses?.filter(
+        (response: any) => !response.is_internal,
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      data: feedback,
+    });
+  } catch (error) {
+    console.error(`GET /api/feedback/${params.id} error:`, error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * DELETE /api/feedback/[id] - Soft delete feedback submission (admin only)
+ */
+export async function DELETE(request: NextRequest, { params }: RouteContext) {
+  try {
+    // Rate limiting
+    const rateLimitResult = await rateLimit(request, {
+      max: 20,
+      windowMs: 60000,
+    });
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { error: 'Too many requests' },
+        { status: 429, headers: rateLimitResult.headers },
+      );
+    }
+
+    const supabase = createClient();
+    const { id } = params;
+
+    // Validate ID format
+    if (!id || !/^[0-9a-f-]{36}$/.test(id)) {
+      return NextResponse.json(
+        { error: 'Invalid feedback ID format' },
+        { status: 400 },
+      );
+    }
+
+    // Check authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get user profile and check admin role
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('organization_id, role')
+      .eq('user_id', user.id)
+      .single();
+
+    if (
+      !userProfile?.organization_id ||
+      !['admin', 'owner'].includes(userProfile.role)
+    ) {
+      return NextResponse.json(
+        { error: 'Admin access required' },
+        { status: 403 },
+      );
+    }
+
+    // Soft delete feedback submission
+    const { data: feedback, error: deleteError } = await supabase
+      .from('feedback_submissions')
+      .update({
+        deleted_at: new Date().toISOString(),
+        status: 'closed',
+      })
+      .eq('id', id)
+      .eq('organization_id', userProfile.organization_id)
+      .is('deleted_at', null)
+      .select('id, subject')
+      .single();
+
+    if (deleteError || !feedback) {
+      return NextResponse.json(
+        {
+          error: 'Failed to delete feedback submission or submission not found',
+        },
+        { status: 404 },
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      data: { id: feedback.id },
+      message: 'Feedback submission deleted successfully',
+    });
+  } catch (error) {
+    console.error(`DELETE /api/feedback/${params.id} error:`, error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

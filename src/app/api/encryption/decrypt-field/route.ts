@@ -1,0 +1,176 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import { AdvancedEncryption } from '@/lib/security/advanced-encryption';
+import { z } from 'zod';
+
+const fieldDecryptionSchema = z.object({
+  tableId: z.string(),
+  fieldName: z.string(),
+  recordId: z.string().uuid(),
+  userPrivateKey: z.string(),
+});
+
+export async function POST(request: NextRequest) {
+  try {
+    const cookieStore = cookies();
+    const supabase = createRouteHandlerClient({ cookies: () => cookieStore });
+
+    // Verify authentication
+    const {
+      data: { session },
+      error: authError,
+    } = await supabase.auth.getSession();
+    if (authError || !session?.user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Validate request body
+    const body = await request.json();
+    const validation = fieldDecryptionSchema.safeParse(body);
+
+    if (!validation.success) {
+      return NextResponse.json(
+        {
+          error: 'Invalid request data',
+          details: validation.error.flatten(),
+        },
+        { status: 400 },
+      );
+    }
+
+    const { tableId, fieldName, recordId, userPrivateKey } = validation.data;
+
+    // Check if keys have been shredded
+    const { data: shreddedCheck } = await supabase
+      .from('shredded_keys')
+      .select('user_id')
+      .eq('user_id', session.user.id)
+      .single();
+
+    if (shreddedCheck) {
+      return NextResponse.json(
+        {
+          error: 'Cannot decrypt - keys have been crypto-shredded',
+          gdprCompliant: true,
+        },
+        { status: 403 },
+      );
+    }
+
+    // Get encrypted field from database
+    const { data: encryptedData, error: fetchError } = await supabase
+      .from('encrypted_fields')
+      .select('encrypted_value, nonce')
+      .eq('table_name', tableId)
+      .eq('column_name', fieldName)
+      .eq('record_id', recordId)
+      .eq('encryption_key_id', session.user.id)
+      .single();
+
+    if (fetchError || !encryptedData) {
+      return NextResponse.json(
+        {
+          error: 'Encrypted field not found',
+        },
+        { status: 404 },
+      );
+    }
+
+    // Get key version for this field
+    const { data: keyData } = await supabase
+      .from('user_encryption_keys')
+      .select('key_version, algorithm')
+      .eq('user_id', session.user.id)
+      .eq('status', 'active')
+      .single();
+
+    // Initialize encryption service
+    const encryption = new AdvancedEncryption();
+
+    // Measure decryption performance
+    const startTime = Date.now();
+
+    // Decrypt the field
+    const decryptedData = await encryption.decryptField(
+      {
+        ciphertext: encryptedData.encrypted_value,
+        nonce: encryptedData.nonce.toString('base64'),
+        algorithm: keyData?.algorithm || 'aes-256-gcm',
+        keyVersion: keyData?.key_version || 1,
+      },
+      userPrivateKey,
+    );
+
+    const decryptionTime = Date.now() - startTime;
+
+    // Record performance metrics
+    await encryption.recordPerformanceMetric(
+      'decrypt',
+      tableId,
+      fieldName,
+      Buffer.byteLength(decryptedData, 'utf8'),
+      decryptionTime,
+      session.user.id,
+    );
+
+    // Audit the operation
+    await supabase.from('encryption_audit').insert({
+      user_id: session.user.id,
+      operation: 'field_decryption',
+      field_reference: `${tableId}.${fieldName}`,
+      success: true,
+      ip_address:
+        request.headers.get('x-forwarded-for') ||
+        request.headers.get('x-real-ip'),
+      user_agent: request.headers.get('user-agent'),
+    });
+
+    return NextResponse.json({
+      success: true,
+      plaintext: decryptedData,
+      fieldId: `${tableId}.${fieldName}.${recordId}`,
+      decryptionTimeMs: decryptionTime,
+      message: 'Field decrypted successfully',
+    });
+  } catch (error) {
+    console.error('Field decryption error:', error);
+
+    // Determine if this is a key shredding error
+    const isShredded =
+      error instanceof Error &&
+      error.message.includes('Keys have been shredded');
+
+    // Audit failed operation
+    const cookieStore = cookies();
+    const supabase = createRouteHandlerClient({ cookies: () => cookieStore });
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+
+    if (session?.user) {
+      await supabase.from('encryption_audit').insert({
+        user_id: session.user.id,
+        operation: 'field_decryption',
+        field_reference: 'unknown',
+        success: false,
+        error_message: error instanceof Error ? error.message : 'Unknown error',
+        ip_address:
+          request.headers.get('x-forwarded-for') ||
+          request.headers.get('x-real-ip'),
+        user_agent: request.headers.get('user-agent'),
+      });
+    }
+
+    return NextResponse.json(
+      {
+        error: isShredded
+          ? 'Keys have been crypto-shredded'
+          : 'Failed to decrypt field',
+        message: error instanceof Error ? error.message : 'Unknown error',
+        gdprCompliant: isShredded,
+      },
+      { status: isShredded ? 403 : 500 },
+    );
+  }
+}

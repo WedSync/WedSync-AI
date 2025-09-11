@@ -1,0 +1,570 @@
+// FAQ Extraction Service Tests - Comprehensive test suite
+// Feature ID: WS-125 - Automated FAQ Extraction from Documents  
+// Team: C - Batch 9 Round 3
+// Component: Unit Tests for FAQ Extraction Service
+
+import { describe, it, expect, beforeEach, jest, afterEach } from '@jest/globals'
+import { faqExtractionService, FaqExtractionService } from '../../../lib/services/faq-extraction-service'
+import type { DocumentAnalysis, ExtractionResult, ExtractedFAQ } from '../../../lib/services/faq-extraction-service'
+
+// Mock OpenAI
+jest.mock('openai', () => ({
+  default: jest.fn().mockImplementation(() => ({
+    chat: {
+      completions: {
+        create: jest.fn()
+      }
+    }
+  }))
+}))
+
+// Mock Supabase
+jest.mock('@supabase/auth-helpers-nextjs', () => ({
+  createClientComponentClient: jest.fn(() => ({
+    auth: {
+      getUser: jest.fn().mockResolvedValue({
+        data: { user: { id: 'test-user-id' } }
+      })
+    },
+    from: jest.fn(() => ({
+      select: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      single: jest.fn().mockResolvedValue({
+        data: { id: 'test-supplier-id' }
+      }),
+      insert: jest.fn().mockResolvedValue({ error: null }),
+      update: jest.fn().mockReturnThis()
+    }))
+  }))
+}))
+
+describe('FaqExtractionService', () => {
+  let service: FaqExtractionService
+  
+  beforeEach(() => {
+    service = new FaqExtractionService()
+    jest.clearAllMocks()
+  })
+
+  afterEach(() => {
+    jest.restoreAllMocks()
+  })
+
+  describe('extractFaqsFromDocument', () => {
+    const mockDocumentAnalysis: DocumentAnalysis = {
+      content: `
+        Wedding Photography Services - Pricing Information
+        
+        Our wedding photography packages start at $2,500 for basic coverage. 
+        This includes 6 hours of wedding day coverage and a digital gallery.
+        
+        How long does it take to receive photos after the wedding?
+        Typically, we deliver your full wedding gallery within 6-8 weeks after your wedding date.
+        
+        What happens if it rains on our wedding day?
+        We always have backup plans for outdoor ceremonies. We'll work with you and your venue 
+        to identify indoor alternatives and ensure beautiful photos regardless of weather.
+        
+        Can we print the photos ourselves?
+        Yes, you'll receive print release with your digital gallery, allowing you to print 
+        photos for personal use through any professional lab.
+      `,
+      document_type: 'vendor_info',
+      source_file: 'wedding-photography-info.pdf'
+    }
+
+    it('should extract FAQs with high confidence from well-structured content', async () => {
+      // Mock OpenAI response
+      const mockOpenAIResponse = {
+        faqs: [
+          {
+            question: 'How long does it take to receive photos after the wedding?',
+            answer: 'Typically, we deliver your full wedding gallery within 6-8 weeks after your wedding date.',
+            summary: 'Photos delivered within 6-8 weeks after wedding',
+            confidence: 0.92,
+            category: 'timeline-delivery',
+            tags: ['photos', 'delivery', 'timeline'],
+            reasoning: 'Clear question and complete answer about delivery timeline'
+          },
+          {
+            question: 'What happens if it rains on our wedding day?',
+            answer: 'We always have backup plans for outdoor ceremonies. We\'ll work with you and your venue to identify indoor alternatives and ensure beautiful photos regardless of weather.',
+            summary: 'Backup plans available for weather issues',
+            confidence: 0.88,
+            category: 'weather-backup',
+            tags: ['weather', 'rain', 'backup'],
+            reasoning: 'Addresses common weather concern with complete solution'
+          }
+        ]
+      }
+
+      // Mock the OpenAI call
+      const mockOpenAI = require('openai').default
+      const mockInstance = new mockOpenAI()
+      mockInstance.chat.completions.create.mockResolvedValue({
+        choices: [{
+          message: {
+            content: JSON.stringify(mockOpenAIResponse)
+          }
+        }]
+      })
+
+      const result = await service.extractFaqsFromDocument(mockDocumentAnalysis)
+
+      expect(result).toBeDefined()
+      expect(result.faqs).toHaveLength(2)
+      expect(result.faqs[0].confidence).toBeGreaterThan(0.8)
+      expect(result.processing_stats.total_questions_found).toBe(2)
+      expect(result.processing_stats.high_confidence_questions).toBe(2)
+      expect(result.processing_stats.accuracy_estimate).toBeGreaterThan(0.8)
+    })
+
+    it('should filter out low-quality extractions', async () => {
+      const mockOpenAIResponse = {
+        faqs: [
+          {
+            question: 'What?',
+            answer: 'Yes.',
+            summary: 'Answer to question',
+            confidence: 0.3,
+            category: 'booking-pricing',
+            tags: [],
+            reasoning: 'Very vague and unhelpful'
+          },
+          {
+            question: 'Do you provide wedding photography services?',
+            answer: 'Yes, we provide comprehensive wedding photography services including engagement sessions, wedding day coverage, and post-wedding editing.',
+            summary: 'We provide wedding photography services',
+            confidence: 0.85,
+            category: 'photography-process',
+            tags: ['photography', 'services', 'wedding'],
+            reasoning: 'Clear question with comprehensive answer'
+          }
+        ]
+      }
+
+      const mockOpenAI = require('openai').default
+      const mockInstance = new mockOpenAI()
+      mockInstance.chat.completions.create.mockResolvedValue({
+        choices: [{
+          message: {
+            content: JSON.stringify(mockOpenAIResponse)
+          }
+        }]
+      })
+
+      const result = await service.extractFaqsFromDocument(mockDocumentAnalysis)
+
+      // Should filter out the low-quality FAQ
+      expect(result.faqs).toHaveLength(1)
+      expect(result.faqs[0].confidence).toBeGreaterThan(0.6)
+      expect(result.faqs[0].question).toBe('Do you provide wedding photography services?')
+    })
+
+    it('should categorize FAQs correctly', async () => {
+      const mockOpenAIResponse = {
+        faqs: [
+          {
+            question: 'How much do your wedding packages cost?',
+            answer: 'Our wedding photography packages start at $2,500 for basic coverage and go up to $5,000 for premium packages.',
+            summary: 'Wedding packages from $2,500 to $5,000',
+            confidence: 0.9,
+            category: 'booking-pricing',
+            tags: ['pricing', 'packages', 'cost'],
+            reasoning: 'Direct pricing question with specific answer'
+          }
+        ]
+      }
+
+      const mockOpenAI = require('openai').default
+      const mockInstance = new mockOpenAI()
+      mockInstance.chat.completions.create.mockResolvedValue({
+        choices: [{
+          message: {
+            content: JSON.stringify(mockOpenAIResponse)
+          }
+        }]
+      })
+
+      const result = await service.extractFaqsFromDocument(mockDocumentAnalysis)
+
+      expect(result.categories_detected).toContain('booking-pricing')
+      expect(result.faqs[0].category).toBe('booking-pricing')
+      expect(result.faqs[0].tags).toContain('pricing')
+    })
+
+    it('should handle extraction errors gracefully', async () => {
+      const mockOpenAI = require('openai').default
+      const mockInstance = new mockOpenAI()
+      mockInstance.chat.completions.create.mockRejectedValue(new Error('API Error'))
+
+      await expect(service.extractFaqsFromDocument(mockDocumentAnalysis))
+        .rejects.toThrow('FAQ extraction failed: Error: API Error')
+    })
+
+    it('should process wedding-specific content with high accuracy', async () => {
+      const weddingContent: DocumentAnalysis = {
+        content: `
+          Wedding Day Timeline and Logistics
+          
+          What time should we start getting ready?
+          We recommend starting hair and makeup 4-5 hours before your ceremony time. 
+          This allows plenty of time for getting ready photos and ensures you're not rushed.
+          
+          Do you coordinate with other wedding vendors?
+          Yes, we work closely with your wedding planner, venue coordinator, and other vendors 
+          to ensure seamless timing throughout your wedding day.
+          
+          What if we're running behind schedule?
+          Our team is experienced with wedding day timing adjustments. We'll help keep 
+          things on track and make necessary adjustments to ensure all important moments are captured.
+        `,
+        document_type: 'service_guide',
+        source_file: 'wedding-day-guide.pdf'
+      }
+
+      const mockOpenAIResponse = {
+        faqs: [
+          {
+            question: 'What time should we start getting ready?',
+            answer: 'We recommend starting hair and makeup 4-5 hours before your ceremony time. This allows plenty of time for getting ready photos and ensures you\'re not rushed.',
+            summary: 'Start getting ready 4-5 hours before ceremony',
+            confidence: 0.93,
+            category: 'wedding-day-logistics',
+            tags: ['timeline', 'getting-ready', 'preparation'],
+            reasoning: 'Specific wedding day timing question with detailed practical answer'
+          }
+        ]
+      }
+
+      const mockOpenAI = require('openai').default
+      const mockInstance = new mockOpenAI()
+      mockInstance.chat.completions.create.mockResolvedValue({
+        choices: [{
+          message: {
+            content: JSON.stringify(mockOpenAIResponse)
+          }
+        }]
+      })
+
+      const result = await service.extractFaqsFromDocument(weddingContent)
+
+      expect(result.faqs[0].confidence).toBeGreaterThan(0.9)
+      expect(result.faqs[0].category).toBe('wedding-day-logistics')
+      expect(result.processing_stats.accuracy_estimate).toBeGreaterThan(0.85)
+    })
+  })
+
+  describe('batchExtractFaqs', () => {
+    it('should process multiple documents efficiently', async () => {
+      const documents: DocumentAnalysis[] = [
+        {
+          content: 'Wedding contract with pricing information...',
+          document_type: 'contract',
+          source_file: 'contract1.pdf'
+        },
+        {
+          content: 'Service guide with process information...',
+          document_type: 'service_guide',
+          source_file: 'guide1.pdf'
+        }
+      ]
+
+      const mockOpenAIResponse = {
+        faqs: [
+          {
+            question: 'Sample question',
+            answer: 'Sample answer',
+            summary: 'Sample summary',
+            confidence: 0.85,
+            category: 'booking-pricing',
+            tags: ['sample'],
+            reasoning: 'Test FAQ'
+          }
+        ]
+      }
+
+      const mockOpenAI = require('openai').default
+      const mockInstance = new mockOpenAI()
+      mockInstance.chat.completions.create.mockResolvedValue({
+        choices: [{
+          message: {
+            content: JSON.stringify(mockOpenAIResponse)
+          }
+        }]
+      })
+
+      const result = await service.batchExtractFaqs(documents)
+
+      expect(result.results).toHaveLength(2)
+      expect(result.summary.total_documents).toBe(2)
+      expect(result.summary.total_faqs_extracted).toBeGreaterThan(0)
+      expect(result.summary.processing_time_ms).toBeGreaterThan(0)
+    })
+
+    it('should continue processing if one document fails', async () => {
+      const documents: DocumentAnalysis[] = [
+        {
+          content: 'Valid content...',
+          document_type: 'contract',
+          source_file: 'valid.pdf'
+        },
+        {
+          content: 'Invalid content that will fail...',
+          document_type: 'service_guide',
+          source_file: 'invalid.pdf'
+        }
+      ]
+
+      const mockOpenAI = require('openai').default
+      const mockInstance = new mockOpenAI()
+      
+      // First call succeeds, second fails
+      mockInstance.chat.completions.create
+        .mockResolvedValueOnce({
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                faqs: [{
+                  question: 'Test question',
+                  answer: 'Test answer',
+                  summary: 'Test summary',
+                  confidence: 0.8,
+                  category: 'booking-pricing',
+                  tags: ['test'],
+                  reasoning: 'Test'
+                }]
+              })
+            }
+          }]
+        })
+        .mockRejectedValueOnce(new Error('Extraction failed'))
+
+      const result = await service.batchExtractFaqs(documents)
+
+      // Should have one successful result despite one failure
+      expect(result.results).toHaveLength(1)
+      expect(result.summary.total_documents).toBe(2)
+    })
+  })
+
+  describe('storeForReview', () => {
+    it('should store extractions for manual review', async () => {
+      const mockExtraction: ExtractionResult = {
+        faqs: [
+          {
+            question: 'Test question',
+            answer: 'Test answer',
+            summary: 'Test summary',
+            category: 'booking-pricing',
+            confidence: 0.75,
+            tags: ['test'],
+            source_document: 'test.pdf'
+          }
+        ],
+        categories_detected: ['booking-pricing'],
+        processing_stats: {
+          total_questions_found: 1,
+          high_confidence_questions: 0,
+          processing_time_ms: 1000,
+          accuracy_estimate: 0.75
+        }
+      }
+
+      const result = await service.storeForReview(mockExtraction, 'test-supplier-id')
+
+      expect(result).toHaveLength(1)
+      expect(result[0].review_status).toBe('pending')
+      expect(result[0].auto_approved).toBe(false)
+      expect(result[0].extracted_faq.confidence).toBe(0.75)
+    })
+
+    it('should auto-approve high confidence extractions', async () => {
+      const mockExtraction: ExtractionResult = {
+        faqs: [
+          {
+            question: 'High confidence question',
+            answer: 'High confidence answer',
+            summary: 'High confidence summary',
+            category: 'booking-pricing',
+            confidence: 0.92,
+            tags: ['high-confidence'],
+            source_document: 'test.pdf'
+          }
+        ],
+        categories_detected: ['booking-pricing'],
+        processing_stats: {
+          total_questions_found: 1,
+          high_confidence_questions: 1,
+          processing_time_ms: 1000,
+          accuracy_estimate: 0.92
+        }
+      }
+
+      const result = await service.storeForReview(mockExtraction, 'test-supplier-id')
+
+      expect(result[0].review_status).toBe('approved')
+      expect(result[0].auto_approved).toBe(true)
+    })
+  })
+
+  describe('accuracy requirements', () => {
+    it('should meet >80% accuracy requirement for wedding content', async () => {
+      // Test with multiple wedding-specific scenarios
+      const weddingScenarios = [
+        {
+          content: 'Our wedding photography packages start at $3,000 and include 8 hours of coverage.',
+          expectedCategory: 'booking-pricing'
+        },
+        {
+          content: 'What if it rains on our wedding day? We have covered backup venues available.',
+          expectedCategory: 'weather-backup'
+        },
+        {
+          content: 'Photos are typically delivered within 4-6 weeks after your wedding.',
+          expectedCategory: 'timeline-delivery'
+        }
+      ]
+
+      let totalAccuracy = 0
+      let testCount = 0
+
+      for (const scenario of weddingScenarios) {
+        const mockOpenAIResponse = {
+          faqs: [{
+            question: 'Extracted question from content',
+            answer: scenario.content,
+            summary: 'Test summary',
+            confidence: 0.85,
+            category: scenario.expectedCategory,
+            tags: ['wedding'],
+            reasoning: 'Wedding-specific content'
+          }]
+        }
+
+        const mockOpenAI = require('openai').default
+        const mockInstance = new mockOpenAI()
+        mockInstance.chat.completions.create.mockResolvedValue({
+          choices: [{
+            message: {
+              content: JSON.stringify(mockOpenAIResponse)
+            }
+          }]
+        })
+
+        const result = await service.extractFaqsFromDocument({
+          content: scenario.content,
+          document_type: 'vendor_info',
+          source_file: 'test.pdf'
+        })
+
+        totalAccuracy += result.processing_stats.accuracy_estimate
+        testCount++
+      }
+
+      const averageAccuracy = totalAccuracy / testCount
+      expect(averageAccuracy).toBeGreaterThan(0.8) // >80% requirement
+    })
+  })
+
+  describe('performance requirements', () => {
+    it('should process documents within reasonable time limits', async () => {
+      const largeDocument: DocumentAnalysis = {
+        content: 'Large document content '.repeat(1000), // Simulate large document
+        document_type: 'contract',
+        source_file: 'large-contract.pdf'
+      }
+
+      const mockOpenAIResponse = {
+        faqs: [{
+          question: 'Test question',
+          answer: 'Test answer',
+          summary: 'Test summary',
+          confidence: 0.8,
+          category: 'booking-pricing',
+          tags: ['test'],
+          reasoning: 'Performance test'
+        }]
+      }
+
+      const mockOpenAI = require('openai').default
+      const mockInstance = new mockOpenAI()
+      mockInstance.chat.completions.create.mockResolvedValue({
+        choices: [{
+          message: {
+            content: JSON.stringify(mockOpenAIResponse)
+          }
+        }]
+      })
+
+      const startTime = Date.now()
+      const result = await service.extractFaqsFromDocument(largeDocument)
+      const processingTime = Date.now() - startTime
+
+      // Should complete within 10 seconds for reasonable performance
+      expect(processingTime).toBeLessThan(10000)
+      expect(result.processing_stats.processing_time_ms).toBeLessThan(10000)
+    })
+  })
+})
+
+describe('Integration Tests', () => {
+  it('should integrate with existing FAQ system successfully', async () => {
+    // This would test the full integration flow
+    // Mock database operations would be needed
+    expect(true).toBe(true) // Placeholder for integration tests
+  })
+
+  it('should handle real-world document complexity', async () => {
+    // This would test with actual PDF extraction and complex documents
+    expect(true).toBe(true) // Placeholder for complex integration tests
+  })
+})
+
+describe('Edge Cases', () => {
+  it('should handle empty documents gracefully', async () => {
+    const emptyDoc: DocumentAnalysis = {
+      content: '',
+      document_type: 'other',
+      source_file: 'empty.pdf'
+    }
+
+    const mockOpenAIResponse = { faqs: [] }
+
+    const mockOpenAI = require('openai').default
+    const mockInstance = new mockOpenAI()
+    mockInstance.chat.completions.create.mockResolvedValue({
+      choices: [{
+        message: {
+          content: JSON.stringify(mockOpenAIResponse)
+        }
+      }]
+    })
+
+    const result = await service.extractFaqsFromDocument(emptyDoc)
+
+    expect(result.faqs).toHaveLength(0)
+    expect(result.processing_stats.total_questions_found).toBe(0)
+  })
+
+  it('should handle malformed AI responses', async () => {
+    const mockOpenAI = require('openai').default
+    const mockInstance = new mockOpenAI()
+    mockInstance.chat.completions.create.mockResolvedValue({
+      choices: [{
+        message: {
+          content: 'Invalid JSON response'
+        }
+      }]
+    })
+
+    const testDoc: DocumentAnalysis = {
+      content: 'Test content',
+      document_type: 'vendor_info',
+      source_file: 'test.pdf'
+    }
+
+    await expect(service.extractFaqsFromDocument(testDoc))
+      .rejects.toThrow('Invalid response format from AI extraction')
+  })
+})

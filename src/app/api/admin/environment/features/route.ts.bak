@@ -1,0 +1,422 @@
+/**
+ * WS-194 Feature Flag Management API
+ * Team B - Backend/API Focus
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { featureFlagManager, evaluateFeatureFlag } from '@/lib/environment/feature-flag-manager';
+import { logger } from '@/lib/monitoring/structured-logger';
+import { metrics } from '@/lib/monitoring/metrics';
+
+export async function GET(request: NextRequest) {
+  const startTime = Date.now();
+  
+  try {
+    const url = new URL(request.url);
+    const action = url.searchParams.get('action');
+    const key = url.searchParams.get('key');
+    const environment = url.searchParams.get('environment');
+    const userId = url.searchParams.get('userId');
+    const organizationId = url.searchParams.get('organizationId');
+
+    logger.info('Feature flag request', { 
+      action,
+      key: key ? 'provided' : 'none',
+      environment,
+      userId: userId ? 'provided' : 'none',
+      userAgent: request.headers.get('user-agent'),
+      ip: request.ip
+    });
+
+    switch (action) {
+      case 'list':
+        // List all feature flags
+        const flags = await featureFlagManager.listFeatureFlags(environment || undefined);
+        
+        return NextResponse.json({
+          success: true,
+          data: {
+            flags: flags.map(flag => ({
+              id: flag.id,
+              key: flag.key,
+              name: flag.name,
+              description: flag.description,
+              type: flag.type,
+              isActive: flag.isActive,
+              environments: flag.environments,
+              weddingContext: flag.weddingContext,
+              createdAt: flag.createdAt,
+              updatedAt: flag.updatedAt
+            })),
+            total: flags.length,
+            environment: environment || 'all'
+          }
+        });
+
+      case 'evaluate':
+        if (!key) {
+          return NextResponse.json({
+            success: false,
+            error: { message: 'key required for evaluation' }
+          }, { status: 400 });
+        }
+
+        // Evaluate feature flag
+        const context = {
+          userId,
+          organizationId,
+          environment: environment || 'production',
+          isWeddingSeason: new Date().getMonth() >= 4 && new Date().getMonth() <= 9, // May-Oct
+          isSaturday: new Date().getDay() === 6
+        };
+
+        const evaluation = await evaluateFeatureFlag(key, context);
+
+        metrics.incrementCounter('api.environment.feature_flag_evaluated', 1, {
+          key,
+          enabled: evaluation.enabled.toString(),
+          environment: context.environment
+        });
+
+        return NextResponse.json({
+          success: true,
+          data: {
+            key,
+            evaluation: {
+              enabled: evaluation.enabled,
+              value: evaluation.value,
+              reason: evaluation.reason,
+              ruleId: evaluation.ruleId,
+              variant: evaluation.variant,
+              metadata: evaluation.metadata
+            },
+            context
+          }
+        });
+
+      case 'bulk_evaluate':
+        const keys = url.searchParams.get('keys')?.split(',') || [];
+        
+        if (keys.length === 0) {
+          return NextResponse.json({
+            success: false,
+            error: { message: 'keys required for bulk evaluation' }
+          }, { status: 400 });
+        }
+
+        const bulkContext = {
+          userId,
+          organizationId,
+          environment: environment || 'production',
+          isWeddingSeason: new Date().getMonth() >= 4 && new Date().getMonth() <= 9,
+          isSaturday: new Date().getDay() === 6
+        };
+
+        const bulkEvaluations = await featureFlagManager.evaluateFlags(keys, bulkContext);
+
+        metrics.incrementCounter('api.environment.feature_flags_bulk_evaluated', 1, {
+          count: keys.length.toString(),
+          environment: bulkContext.environment
+        });
+
+        return NextResponse.json({
+          success: true,
+          data: {
+            evaluations: bulkEvaluations,
+            context: bulkContext,
+            total: keys.length
+          }
+        });
+
+      case 'analytics':
+        if (!key) {
+          return NextResponse.json({
+            success: false,
+            error: { message: 'key required for analytics' }
+          }, { status: 400 });
+        }
+
+        const fromDate = url.searchParams.get('from') 
+          ? new Date(url.searchParams.get('from')!) 
+          : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000); // 7 days ago
+        
+        const toDate = url.searchParams.get('to') 
+          ? new Date(url.searchParams.get('to')!) 
+          : new Date();
+
+        const analytics = await featureFlagManager.getFlagAnalytics(key, {
+          from: fromDate,
+          to: toDate
+        });
+
+        return NextResponse.json({
+          success: true,
+          data: {
+            key,
+            timeRange: {
+              from: fromDate.toISOString(),
+              to: toDate.toISOString()
+            },
+            analytics
+          }
+        });
+
+      default:
+        return NextResponse.json({
+          success: false,
+          error: { message: 'Invalid action. Use: list, evaluate, bulk_evaluate, analytics' }
+        }, { status: 400 });
+    }
+
+  } catch (error) {
+    logger.error('Feature flag GET failed', error as Error, {
+      endpoint: '/api/admin/environment/features',
+      duration: Date.now() - startTime
+    });
+
+    metrics.incrementCounter('api.environment.features_failed', 1);
+
+    return NextResponse.json({
+      success: false,
+      error: {
+        message: 'Feature flag operation failed',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      }
+    }, { status: 500 });
+  }
+}
+
+export async function POST(request: NextRequest) {
+  const startTime = Date.now();
+  
+  try {
+    const body = await request.json();
+    const { action, key, ...data } = body;
+
+    logger.info('Feature flag POST request', { 
+      action,
+      key: key ? 'provided' : 'none',
+      userAgent: request.headers.get('user-agent'),
+      ip: request.ip
+    });
+
+    switch (action) {
+      case 'create':
+        const {
+          name,
+          description,
+          type = 'boolean',
+          defaultValue = false,
+          environments = {
+            development: { enabled: true, value: defaultValue },
+            staging: { enabled: true, value: defaultValue },
+            production: { enabled: false, value: defaultValue }
+          },
+          targetingRules = [],
+          weddingContext,
+          createdBy = 'api'
+        } = data;
+
+        if (!key || !name) {
+          return NextResponse.json({
+            success: false,
+            error: { message: 'key and name are required for creation' }
+          }, { status: 400 });
+        }
+
+        const flagId = await featureFlagManager.createFeatureFlag({
+          key,
+          name,
+          description: description || `${name} feature flag`,
+          type,
+          defaultValue,
+          environments,
+          targetingRules,
+          isActive: true,
+          createdBy,
+          weddingContext
+        });
+
+        metrics.incrementCounter('api.environment.feature_flag_created', 1, {
+          type,
+          affects_wedding_day: weddingContext?.affectsWeddingDay?.toString() || 'false'
+        });
+
+        return NextResponse.json({
+          success: true,
+          data: {
+            message: 'Feature flag created successfully',
+            flagId,
+            key,
+            name,
+            type,
+            environments
+          }
+        }, { status: 201 });
+
+      case 'update':
+        if (!key) {
+          return NextResponse.json({
+            success: false,
+            error: { message: 'key required for update' }
+          }, { status: 400 });
+        }
+
+        const updates = { ...data };
+        delete updates.action;
+        delete updates.key;
+
+        await featureFlagManager.updateFeatureFlag(key, updates);
+
+        metrics.incrementCounter('api.environment.feature_flag_updated', 1, {
+          key
+        });
+
+        return NextResponse.json({
+          success: true,
+          data: {
+            message: 'Feature flag updated successfully',
+            key,
+            updates: Object.keys(updates)
+          }
+        });
+
+      case 'emergency_disable':
+        if (!key) {
+          return NextResponse.json({
+            success: false,
+            error: { message: 'key required for emergency disable' }
+          }, { status: 400 });
+        }
+
+        const reason = data.reason || 'Emergency disable via API';
+
+        await featureFlagManager.emergencyDisableFlag(key, reason);
+
+        metrics.incrementCounter('api.environment.feature_flag_emergency_disabled', 1, {
+          key,
+          reason: 'api_triggered'
+        });
+
+        return NextResponse.json({
+          success: true,
+          data: {
+            message: 'Feature flag emergency disabled',
+            key,
+            reason,
+            timestamp: new Date().toISOString()
+          }
+        });
+
+      case 'toggle_environment':
+        if (!key) {
+          return NextResponse.json({
+            success: false,
+            error: { message: 'key and environment required for toggle' }
+          }, { status: 400 });
+        }
+
+        const { environment, enabled } = data;
+
+        if (!environment || typeof enabled !== 'boolean') {
+          return NextResponse.json({
+            success: false,
+            error: { message: 'environment and enabled (boolean) are required' }
+          }, { status: 400 });
+        }
+
+        // Update environment-specific setting
+        await featureFlagManager.updateFeatureFlag(key, {
+          [`environments.${environment}.enabled`]: enabled
+        });
+
+        metrics.incrementCounter('api.environment.feature_flag_toggled', 1, {
+          key,
+          environment,
+          enabled: enabled.toString()
+        });
+
+        return NextResponse.json({
+          success: true,
+          data: {
+            message: `Feature flag ${enabled ? 'enabled' : 'disabled'} in ${environment}`,
+            key,
+            environment,
+            enabled
+          }
+        });
+
+      default:
+        return NextResponse.json({
+          success: false,
+          error: { message: 'Invalid action. Use: create, update, emergency_disable, toggle_environment' }
+        }, { status: 400 });
+    }
+
+  } catch (error) {
+    logger.error('Feature flag POST failed', error as Error, {
+      endpoint: '/api/admin/environment/features',
+      duration: Date.now() - startTime
+    });
+
+    metrics.incrementCounter('api.environment.features_post_failed', 1);
+
+    return NextResponse.json({
+      success: false,
+      error: {
+        message: 'Feature flag operation failed',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      }
+    }, { status: 500 });
+  }
+}
+
+export async function DELETE(request: NextRequest) {
+  const startTime = Date.now();
+  
+  try {
+    const url = new URL(request.url);
+    const key = url.searchParams.get('key');
+
+    if (!key) {
+      return NextResponse.json({
+        success: false,
+        error: { message: 'key required for deletion' }
+      }, { status: 400 });
+    }
+
+    logger.info('Feature flag deletion requested', { 
+      key,
+      userAgent: request.headers.get('user-agent'),
+      ip: request.ip
+    });
+
+    await featureFlagManager.deleteFeatureFlag(key);
+
+    metrics.incrementCounter('api.environment.feature_flag_deleted', 1, {
+      key
+    });
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        message: `Feature flag ${key} deleted successfully`,
+        key
+      }
+    });
+
+  } catch (error) {
+    logger.error('Feature flag deletion failed', error as Error, {
+      endpoint: '/api/admin/environment/features',
+      duration: Date.now() - startTime
+    });
+
+    return NextResponse.json({
+      success: false,
+      error: {
+        message: 'Feature flag deletion failed',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      }
+    }, { status: 500 });
+  }
+}

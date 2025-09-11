@@ -1,0 +1,138 @@
+import Link from 'next/link'
+import { Button } from '@/components/ui/button'
+import { HeartIcon, SparklesIcon, UsersIcon, CalendarIcon } from '@heroicons/react/24/outline'
+
+export default function HomePage() {
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-pink-50 via-purple-50 to-indigo-50">
+      {/* Header */}
+      <header className="bg-white/80 backdrop-blur-sm border-b">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex justify-between items-center h-16">
+            <div className="flex items-center space-x-2">
+              <HeartIcon className="h-8 w-8 text-pink-600" />
+              <h1 className="text-2xl font-bold text-gray-900">WedSync</h1>
+            </div>
+            <div className="flex items-center space-x-4">
+              <Link href="/login">
+                <Button variant="outline">Sign In</Button>
+              </Link>
+              <Link href="/signup">
+                <Button>Get Started</Button>
+              </Link>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      {/* Hero Section */}
+      <section className="relative px-4 sm:px-6 lg:px-8 pt-20 pb-16">
+        <div className="max-w-4xl mx-auto text-center">
+          <h1 className="text-5xl md:text-6xl font-bold text-gray-900 mb-6">
+            Wedding Planning
+            <span className="text-transparent bg-clip-text bg-gradient-to-r from-pink-600 to-purple-600">
+              {' '}Made Simple
+            </span>
+          </h1>
+          <p className="text-xl text-gray-600 mb-8 max-w-2xl mx-auto">
+            Streamline your wedding planning with custom forms, guest management, 
+            and vendor coordination. Everything you need in one beautiful platform.
+          </p>
+          <div className="flex flex-col sm:flex-row gap-4 justify-center">
+            <Link href="/signup">
+              <Button size="lg" className="text-lg px-8">
+                Start Planning Today
+              </Button>
+            </Link>
+            <Link href="/login">
+              <Button variant="outline" size="lg" className="text-lg px-8">
+                Sign In
+              </Button>
+            </Link>
+          </div>
+        </div>
+      </section>
+
+      {/* Features Section */}
+      <section className="px-4 sm:px-6 lg:px-8 py-16">
+        <div className="max-w-6xl mx-auto">
+          <div className="text-center mb-16">
+            <h2 className="text-3xl font-bold text-gray-900 mb-4">
+              Everything You Need for Your Perfect Day
+            </h2>
+            <p className="text-gray-600 text-lg">
+              Powerful tools designed specifically for wedding planning
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+            <div className="bg-white rounded-lg shadow-lg p-6">
+              <div className="w-12 h-12 bg-pink-100 rounded-lg flex items-center justify-center mb-4">
+                <UsersIcon className="h-6 w-6 text-pink-600" />
+              </div>
+              <h3 className="text-xl font-semibold mb-2">Custom Forms</h3>
+              <p className="text-gray-600">
+                Create beautiful custom forms for RSVPs, meal preferences, 
+                song requests, and more
+              </p>
+            </div>
+
+            <div className="bg-white rounded-lg shadow-lg p-6">
+              <div className="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center mb-4">
+                <CalendarIcon className="h-6 w-6 text-purple-600" />
+              </div>
+              <h3 className="text-xl font-semibold mb-2">Guest Management</h3>
+              <p className="text-gray-600">
+                Track responses, manage guest lists, and organize seating 
+                arrangements effortlessly
+              </p>
+            </div>
+
+            <div className="bg-white rounded-lg shadow-lg p-6">
+              <div className="w-12 h-12 bg-indigo-100 rounded-lg flex items-center justify-center mb-4">
+                <SparklesIcon className="h-6 w-6 text-indigo-600" />
+              </div>
+              <h3 className="text-xl font-semibold mb-2">Vendor Coordination</h3>
+              <p className="text-gray-600">
+                Connect with vendors, track progress, and ensure everything 
+                runs smoothly
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* CTA Section */}
+      <section className="px-4 sm:px-6 lg:px-8 py-16">
+        <div className="max-w-4xl mx-auto text-center">
+          <h2 className="text-3xl font-bold text-gray-900 mb-4">
+            Ready to Start Planning?
+          </h2>
+          <p className="text-gray-600 text-lg mb-8">
+            Join thousands of couples who have simplified their wedding planning with WedSync
+          </p>
+          <Link href="/signup">
+            <Button size="lg" className="text-lg px-8">
+              Get Started Free
+            </Button>
+          </Link>
+        </div>
+      </section>
+
+      {/* Footer */}
+      <footer className="bg-gray-900 text-white px-4 sm:px-6 lg:px-8 py-12">
+        <div className="max-w-6xl mx-auto">
+          <div className="flex flex-col md:flex-row justify-between items-center">
+            <div className="flex items-center space-x-2 mb-4 md:mb-0">
+              <HeartIcon className="h-6 w-6 text-pink-400" />
+              <span className="text-xl font-bold">WedSync</span>
+            </div>
+            <div className="text-gray-400 text-sm">
+              © 2024 WedSync. All rights reserved.
+            </div>
+          </div>
+        </div>
+      </footer>
+    </div>
+  )
+}

@@ -1,0 +1,437 @@
+/**
+ * WS-133: Onboarding Automation Rules API
+ * API endpoints for managing automation rules in onboarding workflows
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { getServerSession } from 'next-auth/next';
+import { authOptions } from '@/lib/auth/config';
+import { rateLimit } from '@/lib/ratelimit';
+
+/**
+ * GET /api/customer-success/onboarding/automation-rules
+ * Get automation rules for the current user's workflow
+ */
+export async function GET(request: NextRequest) {
+  // Apply rate limiting
+  const identifier = request.ip ?? 'anonymous';
+  const { success } = await rateLimit.limit(identifier);
+
+  if (!success) {
+    return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  }
+
+  try {
+    const session = await getServerSession(authOptions);
+    if (!session?.user) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 },
+      );
+    }
+
+    // Mock automation rules data
+    const mockAutomationRules = [
+      {
+        id: 'rule-welcome-email',
+        name: 'Welcome Email Sequence',
+        description: 'Send personalized welcome email when user registers',
+        triggerEvent: 'user_registered',
+        conditions: [
+          {
+            field: 'user_type',
+            operator: 'equals' as const,
+            value: 'wedding_planner',
+          },
+        ],
+        actions: [
+          {
+            type: 'send_email' as const,
+            config: {
+              template: 'welcome_sequence',
+              delay_minutes: 0,
+              personalize: true,
+            },
+          },
+          {
+            type: 'create_notification' as const,
+            config: {
+              title: 'Welcome to WedSync!',
+              message: 'Get started with your onboarding journey',
+              priority: 'normal',
+            },
+            delayMinutes: 5,
+          },
+        ],
+        isActive: true,
+        executionCount: 47,
+        lastExecuted: new Date(Date.now() - 86400000 * 2),
+      },
+      {
+        id: 'rule-progress-nudge',
+        name: 'Progress Nudge Reminders',
+        description:
+          "Send reminders to users who haven't made progress in 24 hours",
+        triggerEvent: 'onboarding_stalled',
+        conditions: [
+          {
+            field: 'hours_since_last_activity',
+            operator: 'greater_than' as const,
+            value: 24,
+          },
+          {
+            field: 'completion_percentage',
+            operator: 'less_than' as const,
+            value: 80,
+          },
+        ],
+        actions: [
+          {
+            type: 'send_email' as const,
+            config: {
+              template: 'progress_nudge',
+              include_help_resources: true,
+            },
+          },
+          {
+            type: 'assign_task' as const,
+            config: {
+              task_type: 'support_outreach',
+              priority: 'medium',
+              assigned_to: 'customer_success_team',
+            },
+            delayMinutes: 60,
+          },
+        ],
+        isActive: true,
+        executionCount: 23,
+        lastExecuted: new Date(Date.now() - 86400000 * 1),
+      },
+      {
+        id: 'rule-milestone-celebration',
+        name: 'Milestone Celebration',
+        description:
+          'Celebrate when users complete major onboarding milestones',
+        triggerEvent: 'milestone_achieved',
+        conditions: [
+          {
+            field: 'milestone_type',
+            operator: 'equals' as const,
+            value: 'onboarding_stage_complete',
+          },
+        ],
+        actions: [
+          {
+            type: 'send_email' as const,
+            config: {
+              template: 'milestone_celebration',
+              include_progress_summary: true,
+            },
+          },
+          {
+            type: 'create_notification' as const,
+            config: {
+              title: 'Congratulations! 🎉',
+              message: "You've completed another milestone in your journey",
+              priority: 'high',
+              celebration: true,
+            },
+          },
+          {
+            type: 'update_status' as const,
+            config: {
+              field: 'engagement_level',
+              value: 'increase_by_10_percent',
+            },
+          },
+        ],
+        isActive: true,
+        executionCount: 18,
+        lastExecuted: new Date(Date.now() - 86400000 * 0.5),
+      },
+      {
+        id: 'rule-feature-spotlight',
+        name: 'Feature Spotlight',
+        description: 'Highlight relevant features based on user progress',
+        triggerEvent: 'stage_completed',
+        conditions: [
+          {
+            field: 'completed_stage',
+            operator: 'equals' as const,
+            value: 'setup',
+          },
+        ],
+        actions: [
+          {
+            type: 'create_notification' as const,
+            config: {
+              title: 'Unlock New Features!',
+              message: "You've unlocked advanced task management tools",
+              action_button: 'Explore Features',
+              action_url: '/features/task-management',
+            },
+          },
+          {
+            type: 'send_email' as const,
+            config: {
+              template: 'feature_spotlight',
+              featured_features: [
+                'task_management',
+                'timeline_view',
+                'collaboration_tools',
+              ],
+            },
+            delayMinutes: 30,
+          },
+        ],
+        isActive: true,
+        executionCount: 12,
+        lastExecuted: new Date(Date.now() - 86400000 * 3),
+      },
+      {
+        id: 'rule-at-risk-intervention',
+        name: 'At-Risk User Intervention',
+        description:
+          'Proactive outreach for users showing signs of disengagement',
+        triggerEvent: 'user_at_risk_detected',
+        conditions: [
+          {
+            field: 'health_score',
+            operator: 'less_than' as const,
+            value: 40,
+          },
+          {
+            field: 'days_since_last_login',
+            operator: 'greater_than' as const,
+            value: 3,
+          },
+        ],
+        actions: [
+          {
+            type: 'assign_task' as const,
+            config: {
+              task_type: 'personal_outreach',
+              priority: 'high',
+              assigned_to: 'customer_success_manager',
+              include_context: true,
+            },
+          },
+          {
+            type: 'send_email' as const,
+            config: {
+              template: 'at_risk_intervention',
+              include_calendar_booking: true,
+              sender: 'customer_success_team',
+            },
+            delayMinutes: 120,
+          },
+          {
+            type: 'trigger_webhook' as const,
+            config: {
+              url: '/api/internal/slack-alert',
+              payload: {
+                type: 'at_risk_user',
+                user_id: '{{user_id}}',
+                risk_factors: '{{risk_factors}}',
+              },
+            },
+          },
+        ],
+        isActive: true,
+        executionCount: 8,
+        lastExecuted: new Date(Date.now() - 86400000 * 5),
+      },
+      {
+        id: 'rule-completion-reward',
+        name: 'Onboarding Completion Reward',
+        description: 'Reward users who complete the full onboarding process',
+        triggerEvent: 'onboarding_completed',
+        conditions: [
+          {
+            field: 'completion_percentage',
+            operator: 'equals' as const,
+            value: 100,
+          },
+        ],
+        actions: [
+          {
+            type: 'send_email' as const,
+            config: {
+              template: 'onboarding_completion_reward',
+              include_certificate: true,
+              unlock_premium_features: true,
+            },
+          },
+          {
+            type: 'create_notification' as const,
+            config: {
+              title: 'Onboarding Complete! 🏆',
+              message:
+                "You've unlocked all features and earned your completion badge",
+              priority: 'high',
+              persistent: true,
+            },
+          },
+          {
+            type: 'update_status' as const,
+            config: {
+              field: 'user_tier',
+              value: 'power_user',
+            },
+          },
+        ],
+        isActive: true,
+        executionCount: 5,
+        lastExecuted: new Date(Date.now() - 86400000 * 7),
+      },
+    ];
+
+    return NextResponse.json({
+      success: true,
+      data: mockAutomationRules,
+    });
+  } catch (error) {
+    console.error('Automation rules API error:', error);
+    return NextResponse.json(
+      {
+        error: 'Failed to load automation rules',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * POST /api/customer-success/onboarding/automation-rules
+ * Create a new automation rule
+ */
+export async function POST(request: NextRequest) {
+  // Apply rate limiting
+  const identifier = request.ip ?? 'anonymous';
+  const { success } = await rateLimit.limit(identifier, {
+    requests: 10,
+    window: '1m',
+  });
+
+  if (!success) {
+    return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  }
+
+  try {
+    const session = await getServerSession(authOptions);
+    if (!session?.user?.isAdmin) {
+      return NextResponse.json(
+        { error: 'Admin access required' },
+        { status: 403 },
+      );
+    }
+
+    const ruleData = await request.json();
+
+    // Validate required fields
+    if (!ruleData.name || !ruleData.triggerEvent || !ruleData.actions) {
+      return NextResponse.json(
+        { error: 'Missing required fields: name, triggerEvent, actions' },
+        { status: 400 },
+      );
+    }
+
+    // Create new automation rule
+    const newRule = {
+      id: `rule-${Date.now()}`,
+      name: ruleData.name,
+      description: ruleData.description || '',
+      triggerEvent: ruleData.triggerEvent,
+      conditions: ruleData.conditions || [],
+      actions: ruleData.actions,
+      isActive: ruleData.isActive ?? true,
+      executionCount: 0,
+      createdAt: new Date(),
+      createdBy: session.user.id,
+    };
+
+    // In a real implementation, this would save to the database
+    console.log('Creating automation rule:', newRule);
+
+    return NextResponse.json(
+      {
+        success: true,
+        data: newRule,
+        message: 'Automation rule created successfully',
+      },
+      { status: 201 },
+    );
+  } catch (error) {
+    console.error('Create automation rule API error:', error);
+    return NextResponse.json(
+      {
+        error: 'Failed to create automation rule',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * PATCH /api/customer-success/onboarding/automation-rules
+ * Update an existing automation rule
+ */
+export async function PATCH(request: NextRequest) {
+  // Apply rate limiting
+  const identifier = request.ip ?? 'anonymous';
+  const { success } = await rateLimit.limit(identifier, {
+    requests: 20,
+    window: '1m',
+  });
+
+  if (!success) {
+    return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  }
+
+  try {
+    const session = await getServerSession(authOptions);
+    if (!session?.user?.isAdmin) {
+      return NextResponse.json(
+        { error: 'Admin access required' },
+        { status: 403 },
+      );
+    }
+
+    const { ruleId, updates } = await request.json();
+
+    if (!ruleId || !updates) {
+      return NextResponse.json(
+        { error: 'Missing ruleId or updates' },
+        { status: 400 },
+      );
+    }
+
+    // Update automation rule
+    const updatedRule = {
+      id: ruleId,
+      ...updates,
+      updatedAt: new Date(),
+      updatedBy: session.user.id,
+    };
+
+    // In a real implementation, this would update the database record
+    console.log('Updating automation rule:', updatedRule);
+
+    return NextResponse.json({
+      success: true,
+      data: updatedRule,
+      message: 'Automation rule updated successfully',
+    });
+  } catch (error) {
+    console.error('Update automation rule API error:', error);
+    return NextResponse.json(
+      {
+        error: 'Failed to update automation rule',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+      { status: 500 },
+    );
+  }
+}

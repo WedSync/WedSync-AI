@@ -1,0 +1,273 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@/lib/supabase/server'
+import { createGuestService, guestValidationSchemas } from '@/lib/services/guestService'
+import { z } from 'zod'
+
+// POST /api/guests/quick-add - Natural language parsing for guest creation
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = await createClient()
+    const { data: user } = await supabase.auth.getUser()
+    
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
+    const body = await request.json()
+    const validatedData = guestValidationSchemas.quickAdd.parse(body)
+
+    // Get user's organization
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', user.id)
+      .single()
+
+    if (!profile?.organization_id) {
+      return NextResponse.json({ error: 'No organization found' }, { status: 400 })
+    }
+
+    // Verify couple belongs to user's organization
+    const { data: client } = await supabase
+      .from('clients')
+      .select('id, first_name, last_name')
+      .eq('id', validatedData.couple_id)
+      .eq('organization_id', profile.organization_id)
+      .single()
+
+    if (!client) {
+      return NextResponse.json({ error: 'Client not found' }, { status: 404 })
+    }
+
+    // Initialize guest service
+    const guestService = await createGuestService()
+    
+    // Parse natural language input
+    const parseResult = guestService.parseNaturalLanguageNames(validatedData.name_input)
+    
+    if (parseResult.guests.length === 0) {
+      return NextResponse.json({
+        error: 'Could not parse guest names',
+        suggestion: 'Try formats like "John Smith", "John and Jane Smith", or "The Smith Family"'
+      }, { status: 400 })
+    }
+
+    // Check confidence score
+    if (parseResult.confidence_score < 50) {
+      return NextResponse.json({
+        error: 'Low confidence in name parsing',
+        parsed_result: parseResult,
+        suggestion: 'Please verify the parsed names are correct before proceeding'
+      }, { status: 422 })
+    }
+
+    // Convert parsed guests to insertable format
+    const guestsToCreate = parseResult.guests.map(parsedGuest => ({
+      couple_id: validatedData.couple_id,
+      first_name: parsedGuest.first_name,
+      last_name: parsedGuest.last_name,
+      category: validatedData.default_category,
+      side: validatedData.default_side,
+      age_group: 'adult' as const,
+      rsvp_status: 'pending' as const,
+      plus_one: parsedGuest.plus_one || false,
+      plus_one_name: parsedGuest.plus_one_name || null,
+      tags: [],
+      created_at: new Date().toISOString()
+    }))
+
+    // Check for duplicates for each guest
+    const duplicateChecks = await Promise.all(
+      guestsToCreate.map(async (guest, index) => {
+        const duplicates = await guestService.findDuplicateGuests(
+          validatedData.couple_id,
+          undefined, // no email for quick add
+          guest.first_name,
+          guest.last_name,
+          undefined // no phone for quick add
+        )
+        return {
+          index,
+          guest,
+          duplicates: duplicates.filter(d => d.match_score >= 70)
+        }
+      })
+    )
+
+    // Check if any potential duplicates exist
+    const potentialDuplicates = duplicateChecks.filter(check => check.duplicates.length > 0)
+    
+    if (potentialDuplicates.length > 0) {
+      return NextResponse.json({
+        error: 'Potential duplicates found',
+        parsed_result: parseResult,
+        potential_duplicates: potentialDuplicates.map(check => ({
+          parsed_name: `${check.guest.first_name} ${check.guest.last_name}`,
+          existing_guests: check.duplicates.map(d => ({
+            id: d.guest_id,
+            name: d.guest_name,
+            match_score: d.match_score,
+            match_reasons: d.match_reasons
+          }))
+        })),
+        suggestion: 'Review potential duplicates or use force_create=true to create anyway'
+      }, { status: 409 })
+    }
+
+    // Determine if we should create a household
+    const shouldCreateHousehold = parseResult.household_detected && guestsToCreate.length > 1
+
+    let householdId: string | null = null
+    if (shouldCreateHousehold) {
+      // Create household first
+      const householdName = guestService['generateHouseholdName'](guestsToCreate.map(g => ({
+        first_name: g.first_name,
+        last_name: g.last_name
+      } as any)))
+
+      const { data: household, error: householdError } = await supabase
+        .from('households')
+        .insert({
+          couple_id: validatedData.couple_id,
+          name: householdName,
+          total_members: guestsToCreate.length,
+          address: {},
+          created_at: new Date().toISOString()
+        })
+        .select()
+        .single()
+
+      if (!householdError && household) {
+        householdId = household.id
+        // Assign household to all guests
+        guestsToCreate.forEach(guest => {
+          guest.household_id = householdId
+        })
+      }
+    }
+
+    // Create guests
+    const { data: createdGuests, error: createError } = await supabase
+      .from('guests')
+      .insert(guestsToCreate)
+      .select(`
+        *,
+        households (
+          id, name, total_members
+        )
+      `)
+
+    if (createError) {
+      console.error('Error creating guests:', createError)
+      
+      // If household was created but guests failed, clean up
+      if (householdId) {
+        await supabase
+          .from('households')
+          .delete()
+          .eq('id', householdId)
+      }
+      
+      return NextResponse.json({ error: 'Failed to create guests' }, { status: 500 })
+    }
+
+    // If household was created, update primary contact
+    if (householdId && createdGuests && createdGuests.length > 0) {
+      await supabase
+        .from('households')
+        .update({ primary_contact_id: createdGuests[0].id })
+        .eq('id', householdId)
+    }
+
+    // Get updated analytics
+    const analytics = await guestService.calculateGuestCounts(validatedData.couple_id)
+
+    return NextResponse.json({
+      success: true,
+      parsed_result: parseResult,
+      created_guests: createdGuests,
+      household_created: !!householdId,
+      analytics,
+      performance_info: {
+        guests_created: createdGuests?.length || 0,
+        processing_time_ms: Date.now() - new Date().getTime(),
+        confidence_score: parseResult.confidence_score
+      }
+    }, { status: 201 })
+
+  } catch (error) {
+    console.error('Error in POST /api/guests/quick-add:', error)
+    
+    if (error instanceof z.ZodError) {
+      return NextResponse.json({
+        error: 'Validation failed',
+        details: error.errors
+      }, { status: 400 })
+    }
+
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+  }
+}
+
+// GET /api/guests/quick-add - Preview parsing without creating guests
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url)
+    const nameInput = searchParams.get('name_input')
+    
+    if (!nameInput) {
+      return NextResponse.json({ error: 'name_input parameter required' }, { status: 400 })
+    }
+
+    // Initialize guest service for parsing only
+    const guestService = await createGuestService()
+    const parseResult = guestService.parseNaturalLanguageNames(nameInput)
+    
+    return NextResponse.json({
+      success: true,
+      parsed_result: parseResult,
+      suggestions: generateParsingSuggestions(parseResult),
+      supported_formats: [
+        'John Smith',
+        'John and Jane Smith',
+        'John & Jane Smith', 
+        'Mr. and Mrs. Smith',
+        'The Smith Family',
+        'John Smith + 1',
+        'John Smith and guest',
+        'John, Jane, and Bob Smith'
+      ]
+    })
+
+  } catch (error) {
+    console.error('Error in GET /api/guests/quick-add:', error)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+  }
+}
+
+// Helper function to generate parsing suggestions
+function generateParsingSuggestions(parseResult: any): string[] {
+  const suggestions: string[] = []
+  
+  if (parseResult.confidence_score < 70) {
+    suggestions.push('Consider using a more standard format like "First Last" or "First and Second Last"')
+  }
+  
+  if (parseResult.guests.length === 0) {
+    suggestions.push('No valid names detected. Try formats like "John Smith" or "John and Jane Smith"')
+  }
+  
+  if (parseResult.guests.some((g: any) => g.first_name === 'Mr.' || g.first_name === 'Mrs.')) {
+    suggestions.push('Titles detected. You may want to replace "Mr." and "Mrs." with actual first names')
+  }
+  
+  if (parseResult.household_detected && parseResult.guests.length === 1) {
+    suggestions.push('Family/household detected but only one name parsed. Consider adding more family members')
+  }
+  
+  if (parseResult.guests.some((g: any) => g.plus_one)) {
+    suggestions.push('Plus-one detected. You can specify the plus-one name later or use "John and Jane Smith" format')
+  }
+  
+  return suggestions
+}

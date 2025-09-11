@@ -1,0 +1,283 @@
+import { SupplierScheduleFeedbackService } from '../supplier-schedule-feedback-service'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { SupplierFeedback, FeedbackResponse, FeedbackAnalytics } from '@/types/supplier-communication'
+import { createClient } from '@/lib/supabase/server'
+
+// Mock dependencies
+jest.mock('@/lib/supabase/server')
+// Mock data
+const mockFeedback: Omit<SupplierFeedback, 'id' | 'submitted_at' | 'status' | 'submitted_by_supplier'> = {
+  supplier_id: 'supplier-1',
+  organization_id: 'org-1',
+  event_id: 'event-1',
+  feedback_type: 'schedule_conflict',
+  conflict_type: 'time_overlap',
+  description: 'I have another booking at the same time',
+  urgency_level: 'high',
+  suggested_resolution: 'Can we move the start time to 2 PM?',
+  contact_preference: 'phone',
+  available_alternatives: [
+    { date: '2024-06-15', start_time: '14:00', end_time: '22:00' }
+  ],
+  client_id: 'client-1'
+}
+const mockSupabaseClient = {
+  from: jest.fn().mockReturnThis(),
+  select: jest.fn().mockReturnThis(),
+  insert: jest.fn().mockReturnThis(),
+  update: jest.fn().mockReturnThis(),
+  eq: jest.fn().mockReturnThis(),
+  gte: jest.fn().mockReturnThis(),
+  lte: jest.fn().mockReturnThis(),
+  order: jest.fn().mockReturnThis(),
+  single: jest.fn(),
+  data: null,
+  error: null
+describe('SupplierScheduleFeedbackService', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (createClient as jest.Mock).mockReturnValue(mockSupabaseClient)
+  })
+  describe('submitSupplierFeedback', () => {
+    it('should submit feedback successfully', async () => {
+      mockSupabaseClient.single.mockResolvedValue({
+        data: { id: 'feedback-123', submitted_at: new Date().toISOString() },
+        error: null
+      })
+      const result = await SupplierScheduleFeedbackService.submitSupplierFeedback(
+        mockFeedback,
+        'supplier-1'
+      )
+      expect(result.success).toBe(true)
+      expect(result.feedback_id).toBe('feedback-123')
+      expect(mockSupabaseClient.insert).toHaveBeenCalledWith({
+        ...mockFeedback,
+        submitted_by_supplier: 'supplier-1',
+        status: 'submitted',
+        submitted_at: expect.any(String)
+    })
+    it('should handle high urgency feedback with immediate notification', async () => {
+      const urgentFeedback = { ...mockFeedback, urgency_level: 'urgent' as const }
+      
+        data: { id: 'feedback-urgent', submitted_at: new Date().toISOString() },
+        urgentFeedback,
+      expect(result.requires_immediate_attention).toBe(true)
+        ...urgentFeedback,
+        submitted_at: expect.any(String),
+        requires_immediate_response: true
+    it('should validate required fields', async () => {
+      const incompleteFeebdack = { ...mockFeedback, feedback_type: undefined as any }
+        incompleteFeebdack,
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('Feedback type is required')
+    it('should handle database errors', async () => {
+        data: null,
+        error: { message: 'Database constraint violation' }
+      expect(result.error).toContain('Database constraint violation')
+    it('should handle different feedback types correctly', async () => {
+      const generalFeedback = {
+        feedback_type: 'general_feedback' as const,
+        conflict_type: undefined,
+        suggested_resolution: undefined
+      }
+        data: { id: 'feedback-general', submitted_at: new Date().toISOString() },
+        generalFeedback,
+      expect(result.feedback_id).toBe('feedback-general')
+  describe('getSupplierFeedbackHistory', () => {
+    const mockFeedbackHistory = [
+      {
+        id: 'feedback-1',
+        feedback_type: 'schedule_conflict',
+        description: 'Time conflict with another event',
+        status: 'resolved',
+        submitted_at: '2024-01-15T10:00:00Z',
+        resolved_at: '2024-01-15T14:00:00Z'
+      },
+        id: 'feedback-2',
+        feedback_type: 'general_feedback',
+        description: 'Great communication throughout the process',
+        status: 'acknowledged',
+        submitted_at: '2024-01-10T16:00:00Z'
+    ]
+    it('should retrieve feedback history successfully', async () => {
+      mockSupabaseClient.data = mockFeedbackHistory
+      mockSupabaseClient.error = null
+      const result = await SupplierScheduleFeedbackService.getSupplierFeedbackHistory(
+        'supplier-1',
+        'org-1'
+      expect(result.feedback_history).toHaveLength(2)
+      expect(result.feedback_history![0].id).toBe('feedback-1')
+      expect(result.feedback_history![0].status).toBe('resolved')
+      expect(mockSupabaseClient.select).toHaveBeenCalledWith('*')
+      expect(mockSupabaseClient.order).toHaveBeenCalledWith('submitted_at', { ascending: false })
+    it('should filter feedback by date range', async () => {
+      mockSupabaseClient.data = [mockFeedbackHistory[0]]
+        'org-1',
+        {
+          start_date: new Date('2024-01-15'),
+          end_date: new Date('2024-01-16')
+        }
+      expect(result.feedback_history).toHaveLength(1)
+      expect(mockSupabaseClient.gte).toHaveBeenCalledWith('submitted_at', '2024-01-15T00:00:00.000Z')
+      expect(mockSupabaseClient.lte).toHaveBeenCalledWith('submitted_at', '2024-01-16T00:00:00.000Z')
+    it('should filter feedback by type', async () => {
+          feedback_type: 'schedule_conflict'
+      expect(mockSupabaseClient.eq).toHaveBeenCalledWith('feedback_type', 'schedule_conflict')
+    it('should handle empty feedback history', async () => {
+      mockSupabaseClient.data = []
+      expect(result.feedback_history).toHaveLength(0)
+  describe('respondToSupplierFeedback', () => {
+    const mockResponse: FeedbackResponse = {
+      feedback_id: 'feedback-123',
+      response_type: 'resolution',
+      response_message: 'We have rescheduled your event to 2 PM as requested.',
+      action_taken: 'schedule_updated',
+      responder_id: 'admin-1',
+      responder_role: 'coordinator',
+      estimated_resolution_time: '2 hours',
+      follow_up_required: false
+    }
+    it('should respond to feedback successfully', async () => {
+        data: { 
+          id: 'response-123',
+          responded_at: new Date().toISOString(),
+          feedback: { status: 'in_progress' }
+        },
+      const result = await SupplierScheduleFeedbackService.respondToSupplierFeedback(
+        'feedback-123',
+        mockResponse,
+      expect(result.response_id).toBe('response-123')
+        ...mockResponse,
+        organization_id: 'org-1',
+        responded_at: expect.any(String)
+    it('should update feedback status based on response type', async () => {
+      const resolutionResponse = { ...mockResponse, response_type: 'resolution' as const }
+          id: 'response-resolution',
+          feedback: { status: 'resolved' }
+        resolutionResponse,
+      expect(mockSupabaseClient.update).toHaveBeenCalledWith({
+        resolved_at: expect.any(String)
+    it('should handle acknowledgment responses', async () => {
+      const ackResponse = { ...mockResponse, response_type: 'acknowledgment' as const }
+          id: 'response-ack',
+          feedback: { status: 'acknowledged' }
+        ackResponse,
+        status: 'acknowledged'
+    it('should handle invalid feedback ID', async () => {
+        '',
+      expect(result.error).toContain('Feedback ID is required')
+  describe('getOrganizationFeedbackAnalytics', () => {
+    const mockAnalyticsData = {
+      total_feedback: 150,
+      feedback_by_type: {
+        schedule_conflict: 75,
+        general_feedback: 45,
+        service_quality: 30
+      feedback_by_status: {
+        submitted: 25,
+        in_progress: 40,
+        resolved: 80,
+        acknowledged: 5
+      average_resolution_time: '4.2 hours',
+      satisfaction_metrics: {
+        positive_feedback: 90,
+        negative_feedback: 30,
+        neutral_feedback: 30,
+        average_rating: 4.2
+      supplier_feedback_frequency: [
+        { supplier_id: 'supplier-1', feedback_count: 12, resolution_rate: 0.92 },
+        { supplier_id: 'supplier-2', feedback_count: 8, resolution_rate: 0.88 }
+      ]
+    it('should generate feedback analytics successfully', async () => {
+      // Mock multiple database calls for analytics
+      mockSupabaseClient.data = mockAnalyticsData.total_feedback
+      const result = await SupplierScheduleFeedbackService.getOrganizationFeedbackAnalytics(
+          start_date: new Date('2024-01-01'),
+          end_date: new Date('2024-12-31')
+      expect(result.analytics).toBeDefined()
+      expect(result.analytics!.total_feedback).toBeGreaterThan(0)
+    it('should filter analytics by supplier', async () => {
+      mockSupabaseClient.data = 50
+          supplier_id: 'supplier-1',
+      expect(mockSupabaseClient.eq).toHaveBeenCalledWith('supplier_id', 'supplier-1')
+    it('should handle date range filtering', async () => {
+      mockSupabaseClient.data = 25
+          start_date: new Date('2024-06-01'),
+          end_date: new Date('2024-06-30')
+      expect(mockSupabaseClient.gte).toHaveBeenCalledWith('submitted_at', '2024-06-01T00:00:00.000Z')
+      expect(mockSupabaseClient.lte).toHaveBeenCalledWith('submitted_at', '2024-06-30T00:00:00.000Z')
+  describe('processAutoResponse', () => {
+    it('should automatically acknowledge low-priority feedback', async () => {
+      const lowPriorityFeedback = {
+        urgency_level: 'low' as const,
+        feedback_type: 'general_feedback' as const
+        data: { id: 'feedback-auto' },
+      const result = await SupplierScheduleFeedbackService.processAutoResponse(
+        'feedback-auto',
+        lowPriorityFeedback
+      expect(result.auto_response_sent).toBe(true)
+      expect(result.response_type).toBe('acknowledgment')
+    it('should not auto-respond to high-priority feedback', async () => {
+      const highPriorityFeedback = {
+        urgency_level: 'urgent' as const
+        'feedback-urgent',
+        highPriorityFeedback
+      expect(result.auto_response_sent).toBe(false)
+      expect(result.requires_manual_response).toBe(true)
+    it('should auto-resolve simple conflicts with available alternatives', async () => {
+      const resolvableFeedback = {
+        conflict_type: 'time_overlap',
+        available_alternatives: [
+          { date: '2024-06-15', start_time: '14:00', end_time: '22:00' }
+        ],
+        suggested_resolution: 'Move to 2 PM'
+        data: { id: 'feedback-resolvable' },
+        'feedback-resolvable',
+        resolvableFeedback
+      expect(result.response_type).toBe('suggested_resolution')
+  describe('error handling', () => {
+    it('should handle database connection errors', async () => {
+      mockSupabaseClient.single.mockRejectedValue(new Error('Database connection failed'))
+      expect(result.error).toContain('Database connection failed')
+    it('should handle invalid data format', async () => {
+      const invalidFeedback = { ...mockFeedback, urgency_level: 'invalid' as any }
+        invalidFeedback,
+      expect(result.error).toContain('Invalid urgency level')
+    it('should handle missing supplier ID', async () => {
+        ''
+      expect(result.error).toContain('Supplier ID is required')
+  describe('feedback validation', () => {
+    it('should validate schedule conflict feedback requirements', async () => {
+      const incompleteConflict = {
+        feedback_type: 'schedule_conflict' as const,
+        conflict_type: undefined as any
+        incompleteConflict,
+      expect(result.error).toContain('Conflict type is required for schedule conflict feedback')
+    it('should validate alternative availability format', async () => {
+      const invalidAlternatives = {
+          { date: 'invalid-date', start_time: '25:00', end_time: '30:00' }
+        ]
+        invalidAlternatives,
+      expect(result.error).toContain('Invalid alternative availability format')
+    it('should validate description length', async () => {
+      const longDescription = {
+        description: 'x'.repeat(2001) // Exceed 2000 character limit
+        longDescription,
+      expect(result.error).toContain('Description exceeds maximum length')
+  describe('notification triggering', () => {
+    it('should trigger notifications for urgent feedback', async () => {
+      const urgentFeedback = {
+          id: 'feedback-urgent',
+          submitted_at: new Date().toISOString()
+      expect(result.notification_triggered).toBe(true)
+      expect(result.notification_channels).toContain('email')
+      expect(result.notification_channels).toContain('sms')
+    it('should respect supplier contact preferences for notifications', async () => {
+      const emailOnlyFeedback = {
+        contact_preference: 'email' as const,
+        urgency_level: 'high' as const
+          id: 'feedback-email-only',
+        emailOnlyFeedback,
+      expect(result.notification_channels).toEqual(['email'])
+      expect(result.notification_channels).not.toContain('sms')
+})

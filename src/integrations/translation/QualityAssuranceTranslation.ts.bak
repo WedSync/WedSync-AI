@@ -1,0 +1,1032 @@
+/**
+ * Quality Assurance Translation Service for WedSync
+ * 
+ * Provides comprehensive translation quality validation with:
+ * - Multi-level quality scoring
+ * - Wedding industry terminology validation
+ * - Cultural appropriateness checking
+ * - Automated quality gates
+ * - Human validation workflows
+ * 
+ * @fileoverview WS-247 Quality Assurance Translation Implementation
+ * @version 1.0.0
+ * @author WedSync Development Team
+ */
+
+import { z } from 'zod';
+import { WeddingContentType } from './ProfessionalTranslationConnectors';
+
+/**
+ * Quality assessment levels
+ */
+export enum QualityLevel {
+  POOR = 'poor',           // 0-40 score
+  FAIR = 'fair',           // 40-60 score
+  GOOD = 'good',           // 60-80 score
+  EXCELLENT = 'excellent', // 80-95 score
+  PERFECT = 'perfect'      // 95-100 score
+}
+
+/**
+ * Quality assessment dimensions
+ */
+export interface QualityDimensions {
+  accuracy: number;           // 0-100: Semantic accuracy
+  fluency: number;           // 0-100: Natural language flow
+  terminology: number;       // 0-100: Domain-specific terminology
+  cultural_appropriateness: number; // 0-100: Cultural sensitivity
+  completeness: number;      // 0-100: Content completeness
+  consistency: number;       // 0-100: Style consistency
+}
+
+/**
+ * Quality assessment result
+ */
+export interface QualityAssessmentResult {
+  overall_score: number;
+  quality_level: QualityLevel;
+  dimensions: QualityDimensions;
+  issues: QualityIssue[];
+  recommendations: QualityRecommendation[];
+  requires_human_review: boolean;
+  confidence: number;
+  assessment_time: number;
+  metadata: QualityMetadata;
+}
+
+/**
+ * Quality issue detected during assessment
+ */
+export interface QualityIssue {
+  type: QualityIssueType;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  description: string;
+  location?: TextLocation;
+  suggested_fix?: string;
+  impact_score: number; // 0-100
+}
+
+/**
+ * Types of quality issues
+ */
+export enum QualityIssueType {
+  ACCURACY_ERROR = 'accuracy_error',
+  TERMINOLOGY_MISMATCH = 'terminology_mismatch',
+  CULTURAL_INSENSITIVITY = 'cultural_insensitivity',
+  GRAMMATICAL_ERROR = 'grammatical_error',
+  STYLE_INCONSISTENCY = 'style_inconsistency',
+  COMPLETENESS_ISSUE = 'completeness_issue',
+  CONTEXT_MISMATCH = 'context_mismatch',
+  WEDDING_PROTOCOL_VIOLATION = 'wedding_protocol_violation'
+}
+
+/**
+ * Quality improvement recommendations
+ */
+export interface QualityRecommendation {
+  type: 'terminology' | 'grammar' | 'style' | 'cultural' | 'accuracy';
+  priority: 'low' | 'medium' | 'high';
+  description: string;
+  action: string;
+  expected_improvement: number; // Points improvement
+}
+
+/**
+ * Text location for issue identification
+ */
+export interface TextLocation {
+  start_index: number;
+  end_index: number;
+  context: string;
+}
+
+/**
+ * Quality assessment metadata
+ */
+export interface QualityMetadata {
+  assessor_type: 'automated' | 'human' | 'hybrid';
+  assessment_date: string;
+  content_type: WeddingContentType;
+  language_pair: string;
+  reviewer_id?: string;
+  review_notes?: string;
+  validation_flags: string[];
+}
+
+/**
+ * Wedding terminology dictionary entry
+ */
+interface WeddingTerminologyEntry {
+  term: string;
+  category: string;
+  alternatives: string[];
+  cultural_context: Record<string, string>;
+  formality_level: 'casual' | 'formal' | 'very_formal';
+  usage_notes: string;
+}
+
+/**
+ * Quality gate configuration
+ */
+export interface QualityGateConfig {
+  min_overall_score: number;
+  min_dimension_scores: Partial<QualityDimensions>;
+  max_critical_issues: number;
+  max_high_issues: number;
+  require_human_review_threshold: number;
+  content_type_specific_rules: Record<WeddingContentType, QualityRules>;
+}
+
+/**
+ * Content-specific quality rules
+ */
+interface QualityRules {
+  terminology_weight: number;
+  cultural_weight: number;
+  accuracy_weight: number;
+  fluency_weight: number;
+  required_terms: string[];
+  forbidden_terms: string[];
+  min_formality_level: 'casual' | 'formal' | 'very_formal';
+}
+
+/**
+ * Translation quality assessment service
+ */
+export class QualityAssuranceTranslation {
+  private weddingTerminology: Map<string, WeddingTerminologyEntry[]> = new Map();
+  private culturalRules: Map<string, CulturalRule[]> = new Map();
+  private qualityGateConfig: QualityGateConfig;
+
+  constructor(config?: Partial<QualityGateConfig>) {
+    this.qualityGateConfig = this.getDefaultQualityGateConfig();
+    if (config) {
+      this.qualityGateConfig = { ...this.qualityGateConfig, ...config };
+    }
+    this.initializeWeddingTerminology();
+    this.initializeCulturalRules();
+  }
+
+  /**
+   * Perform comprehensive quality assessment
+   */
+  async assessTranslationQuality(
+    originalText: string,
+    translatedText: string,
+    sourceLanguage: string,
+    targetLanguage: string,
+    contentType: WeddingContentType,
+    context?: string
+  ): Promise<QualityAssessmentResult> {
+    const startTime = Date.now();
+
+    try {
+      // Validate input
+      this.validateAssessmentInput(originalText, translatedText, sourceLanguage, targetLanguage);
+
+      // Assess individual dimensions
+      const dimensions = await this.assessQualityDimensions(
+        originalText,
+        translatedText,
+        sourceLanguage,
+        targetLanguage,
+        contentType,
+        context
+      );
+
+      // Calculate overall score
+      const overallScore = this.calculateOverallScore(dimensions, contentType);
+
+      // Identify quality issues
+      const issues = await this.identifyQualityIssues(
+        originalText,
+        translatedText,
+        sourceLanguage,
+        targetLanguage,
+        contentType,
+        dimensions
+      );
+
+      // Generate recommendations
+      const recommendations = this.generateRecommendations(issues, dimensions, contentType);
+
+      // Determine if human review is required
+      const requiresHumanReview = this.shouldRequireHumanReview(
+        overallScore,
+        issues,
+        contentType
+      );
+
+      // Calculate confidence score
+      const confidence = this.calculateConfidenceScore(dimensions, issues.length);
+
+      const assessmentTime = Date.now() - startTime;
+
+      return {
+        overall_score: overallScore,
+        quality_level: this.getQualityLevel(overallScore),
+        dimensions,
+        issues,
+        recommendations,
+        requires_human_review: requiresHumanReview,
+        confidence,
+        assessment_time: assessmentTime,
+        metadata: {
+          assessor_type: 'automated',
+          assessment_date: new Date().toISOString(),
+          content_type: contentType,
+          language_pair: `${sourceLanguage}-${targetLanguage}`,
+          validation_flags: this.getValidationFlags(issues, contentType)
+        }
+      };
+    } catch (error) {
+      console.error('Error in quality assessment:', error);
+      throw new Error(`Quality assessment failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Check if translation passes quality gates
+   */
+  async passesQualityGate(
+    assessmentResult: QualityAssessmentResult,
+    contentType: WeddingContentType
+  ): Promise<{ passes: boolean; reasons: string[] }> {
+    const reasons: string[] = [];
+    let passes = true;
+
+    // Check overall score
+    if (assessmentResult.overall_score < this.qualityGateConfig.min_overall_score) {
+      passes = false;
+      reasons.push(`Overall score ${assessmentResult.overall_score} below minimum ${this.qualityGateConfig.min_overall_score}`);
+    }
+
+    // Check dimension scores
+    const minDimensions = this.qualityGateConfig.min_dimension_scores;
+    if (minDimensions.accuracy && assessmentResult.dimensions.accuracy < minDimensions.accuracy) {
+      passes = false;
+      reasons.push(`Accuracy score ${assessmentResult.dimensions.accuracy} below minimum ${minDimensions.accuracy}`);
+    }
+
+    // Check critical and high issues
+    const criticalIssues = assessmentResult.issues.filter(issue => issue.severity === 'critical').length;
+    const highIssues = assessmentResult.issues.filter(issue => issue.severity === 'high').length;
+
+    if (criticalIssues > this.qualityGateConfig.max_critical_issues) {
+      passes = false;
+      reasons.push(`Too many critical issues: ${criticalIssues} (max: ${this.qualityGateConfig.max_critical_issues})`);
+    }
+
+    if (highIssues > this.qualityGateConfig.max_high_issues) {
+      passes = false;
+      reasons.push(`Too many high-severity issues: ${highIssues} (max: ${this.qualityGateConfig.max_high_issues})`);
+    }
+
+    // Check content-specific rules
+    const contentRules = this.qualityGateConfig.content_type_specific_rules[contentType];
+    if (contentRules) {
+      const contentSpecificChecks = await this.checkContentSpecificRules(
+        assessmentResult,
+        contentRules
+      );
+      if (!contentSpecificChecks.passes) {
+        passes = false;
+        reasons.push(...contentSpecificChecks.reasons);
+      }
+    }
+
+    return { passes, reasons };
+  }
+
+  /**
+   * Assess individual quality dimensions
+   */
+  private async assessQualityDimensions(
+    originalText: string,
+    translatedText: string,
+    sourceLanguage: string,
+    targetLanguage: string,
+    contentType: WeddingContentType,
+    context?: string
+  ): Promise<QualityDimensions> {
+    return {
+      accuracy: await this.assessAccuracy(originalText, translatedText, sourceLanguage, targetLanguage),
+      fluency: await this.assessFluency(translatedText, targetLanguage),
+      terminology: await this.assessTerminology(originalText, translatedText, contentType, targetLanguage),
+      cultural_appropriateness: await this.assessCulturalAppropriateness(translatedText, targetLanguage, contentType),
+      completeness: await this.assessCompleteness(originalText, translatedText),
+      consistency: await this.assessConsistency(translatedText, contentType)
+    };
+  }
+
+  /**
+   * Assess translation accuracy
+   */
+  private async assessAccuracy(
+    originalText: string,
+    translatedText: string,
+    sourceLanguage: string,
+    targetLanguage: string
+  ): Promise<number> {
+    // Simplified accuracy assessment using text analysis
+    const originalWords = this.tokenize(originalText);
+    const translatedWords = this.tokenize(translatedText);
+
+    // Check for major content omissions or additions
+    const lengthRatio = translatedWords.length / originalWords.length;
+    let accuracyScore = 80; // Base score
+
+    // Penalize major length discrepancies
+    if (lengthRatio < 0.5 || lengthRatio > 2.0) {
+      accuracyScore -= 20;
+    } else if (lengthRatio < 0.8 || lengthRatio > 1.5) {
+      accuracyScore -= 10;
+    }
+
+    // Check for key information preservation (dates, names, numbers)
+    const originalEntities = this.extractEntities(originalText);
+    const translatedEntities = this.extractEntities(translatedText);
+    
+    const entityPreservationRate = this.calculateEntityPreservation(originalEntities, translatedEntities);
+    accuracyScore = Math.round(accuracyScore * (entityPreservationRate / 100));
+
+    return Math.max(0, Math.min(100, accuracyScore));
+  }
+
+  /**
+   * Assess translation fluency
+   */
+  private async assessFluency(translatedText: string, targetLanguage: string): Promise<number> {
+    let fluencyScore = 80; // Base score
+
+    // Check for common fluency issues
+    const sentences = translatedText.split(/[.!?]+/).filter(s => s.trim().length > 0);
+    
+    // Penalize very short or very long sentences
+    const avgSentenceLength = translatedText.length / sentences.length;
+    if (avgSentenceLength < 10 || avgSentenceLength > 200) {
+      fluencyScore -= 10;
+    }
+
+    // Check for repetitive patterns
+    const words = this.tokenize(translatedText);
+    const uniqueWords = new Set(words.map(w => w.toLowerCase()));
+    const lexicalDiversity = uniqueWords.size / words.length;
+    
+    if (lexicalDiversity < 0.3) {
+      fluencyScore -= 15;
+    } else if (lexicalDiversity > 0.8) {
+      fluencyScore += 5;
+    }
+
+    // Check for proper capitalization and punctuation
+    if (!this.hasProperCapitalization(translatedText)) {
+      fluencyScore -= 5;
+    }
+
+    return Math.max(0, Math.min(100, fluencyScore));
+  }
+
+  /**
+   * Assess wedding terminology usage
+   */
+  private async assessTerminology(
+    originalText: string,
+    translatedText: string,
+    contentType: WeddingContentType,
+    targetLanguage: string
+  ): Promise<number> {
+    const weddingTerms = this.weddingTerminology.get(targetLanguage) || [];
+    let terminologyScore = 70; // Base score
+
+    // Check for proper wedding terminology usage
+    const translatedLower = translatedText.toLowerCase();
+    let termsUsed = 0;
+    let termsCorrect = 0;
+
+    for (const termEntry of weddingTerms) {
+      if (translatedLower.includes(termEntry.term.toLowerCase())) {
+        termsUsed++;
+        // Check if the term is appropriate for the content type
+        if (this.isTermAppropriateForContent(termEntry, contentType)) {
+          termsCorrect++;
+        }
+      }
+    }
+
+    if (termsUsed > 0) {
+      const terminologyAccuracy = (termsCorrect / termsUsed) * 100;
+      terminologyScore = Math.round((terminologyScore + terminologyAccuracy) / 2);
+    }
+
+    // Bonus for using content-specific terminology
+    const contentSpecificTerms = this.getContentSpecificTerms(contentType, targetLanguage);
+    const contentTermsUsed = contentSpecificTerms.filter(term => 
+      translatedLower.includes(term.toLowerCase())
+    ).length;
+
+    if (contentTermsUsed > 0) {
+      terminologyScore += Math.min(10, contentTermsUsed * 2);
+    }
+
+    return Math.max(0, Math.min(100, terminologyScore));
+  }
+
+  /**
+   * Assess cultural appropriateness
+   */
+  private async assessCulturalAppropriateness(
+    translatedText: string,
+    targetLanguage: string,
+    contentType: WeddingContentType
+  ): Promise<number> {
+    const culturalRules = this.culturalRules.get(targetLanguage) || [];
+    let culturalScore = 85; // Base score
+
+    const textLower = translatedText.toLowerCase();
+
+    for (const rule of culturalRules) {
+      if (rule.applies_to_content.includes(contentType)) {
+        // Check for culturally inappropriate terms
+        for (const inappropriate of rule.inappropriate_terms) {
+          if (textLower.includes(inappropriate.toLowerCase())) {
+            culturalScore -= rule.severity_penalty;
+          }
+        }
+
+        // Check for required cultural elements
+        for (const required of rule.required_elements) {
+          if (!textLower.includes(required.toLowerCase())) {
+            culturalScore -= 5;
+          }
+        }
+      }
+    }
+
+    return Math.max(0, Math.min(100, culturalScore));
+  }
+
+  /**
+   * Assess translation completeness
+   */
+  private async assessCompleteness(originalText: string, translatedText: string): Promise<number> {
+    const originalSentences = originalText.split(/[.!?]+/).filter(s => s.trim().length > 0);
+    const translatedSentences = translatedText.split(/[.!?]+/).filter(s => s.trim().length > 0);
+
+    const sentenceRatio = translatedSentences.length / originalSentences.length;
+    
+    let completenessScore = 80; // Base score
+
+    // Major sentence count discrepancy indicates completeness issues
+    if (sentenceRatio < 0.7) {
+      completenessScore -= 30;
+    } else if (sentenceRatio < 0.9) {
+      completenessScore -= 10;
+    } else if (sentenceRatio > 1.3) {
+      completenessScore -= 15; // Too much addition can indicate issues too
+    }
+
+    // Check for common incompleteness indicators
+    const incompletePatterns = ['...', '[', '(missing', 'TODO', 'TBD'];
+    for (const pattern of incompletePatterns) {
+      if (translatedText.includes(pattern)) {
+        completenessScore -= 20;
+      }
+    }
+
+    return Math.max(0, Math.min(100, completenessScore));
+  }
+
+  /**
+   * Assess style consistency
+   */
+  private async assessConsistency(translatedText: string, contentType: WeddingContentType): Promise<number> {
+    let consistencyScore = 75; // Base score
+
+    // Check for consistent formality level
+    const formalityLevel = this.assessFormalityLevel(translatedText);
+    const expectedFormality = this.getExpectedFormality(contentType);
+
+    if (formalityLevel !== expectedFormality) {
+      consistencyScore -= 15;
+    }
+
+    // Check for consistent terminology usage
+    const terminologyConsistency = this.checkTerminologyConsistency(translatedText);
+    consistencyScore = Math.round((consistencyScore + terminologyConsistency) / 2);
+
+    // Check for consistent punctuation and formatting
+    const formatConsistency = this.checkFormatConsistency(translatedText);
+    consistencyScore = Math.round((consistencyScore + formatConsistency) / 2);
+
+    return Math.max(0, Math.min(100, consistencyScore));
+  }
+
+  /**
+   * Identify quality issues in the translation
+   */
+  private async identifyQualityIssues(
+    originalText: string,
+    translatedText: string,
+    sourceLanguage: string,
+    targetLanguage: string,
+    contentType: WeddingContentType,
+    dimensions: QualityDimensions
+  ): Promise<QualityIssue[]> {
+    const issues: QualityIssue[] = [];
+
+    // Accuracy issues
+    if (dimensions.accuracy < 60) {
+      issues.push({
+        type: QualityIssueType.ACCURACY_ERROR,
+        severity: dimensions.accuracy < 30 ? 'critical' : 'high',
+        description: 'Translation accuracy is below acceptable threshold',
+        impact_score: 100 - dimensions.accuracy,
+        suggested_fix: 'Review translation for semantic accuracy and missing content'
+      });
+    }
+
+    // Terminology issues
+    if (dimensions.terminology < 70) {
+      issues.push({
+        type: QualityIssueType.TERMINOLOGY_MISMATCH,
+        severity: dimensions.terminology < 50 ? 'high' : 'medium',
+        description: 'Wedding-specific terminology may be incorrect or missing',
+        impact_score: 100 - dimensions.terminology,
+        suggested_fix: 'Review and correct wedding industry terminology'
+      });
+    }
+
+    // Cultural issues
+    if (dimensions.cultural_appropriateness < 80) {
+      issues.push({
+        type: QualityIssueType.CULTURAL_INSENSITIVITY,
+        severity: dimensions.cultural_appropriateness < 60 ? 'high' : 'medium',
+        description: 'Cultural appropriateness concerns detected',
+        impact_score: 100 - dimensions.cultural_appropriateness,
+        suggested_fix: 'Review for cultural sensitivity and adapt as needed'
+      });
+    }
+
+    // Fluency issues
+    if (dimensions.fluency < 70) {
+      issues.push({
+        type: QualityIssueType.GRAMMATICAL_ERROR,
+        severity: dimensions.fluency < 50 ? 'high' : 'medium',
+        description: 'Fluency and grammatical issues detected',
+        impact_score: 100 - dimensions.fluency,
+        suggested_fix: 'Review grammar, sentence structure, and natural flow'
+      });
+    }
+
+    // Wedding protocol violations
+    const protocolViolations = this.checkWeddingProtocolViolations(translatedText, contentType);
+    issues.push(...protocolViolations);
+
+    return issues;
+  }
+
+  /**
+   * Generate quality improvement recommendations
+   */
+  private generateRecommendations(
+    issues: QualityIssue[],
+    dimensions: QualityDimensions,
+    contentType: WeddingContentType
+  ): QualityRecommendation[] {
+    const recommendations: QualityRecommendation[] = [];
+
+    // Prioritize recommendations based on impact
+    const highImpactIssues = issues.filter(issue => issue.impact_score > 20);
+
+    for (const issue of highImpactIssues) {
+      switch (issue.type) {
+        case QualityIssueType.TERMINOLOGY_MISMATCH:
+          recommendations.push({
+            type: 'terminology',
+            priority: 'high',
+            description: 'Improve wedding terminology accuracy',
+            action: 'Use WedSync terminology database for consistent translations',
+            expected_improvement: 15
+          });
+          break;
+
+        case QualityIssueType.CULTURAL_INSENSITIVITY:
+          recommendations.push({
+            type: 'cultural',
+            priority: 'high',
+            description: 'Enhance cultural appropriateness',
+            action: 'Review cultural guidelines for target market',
+            expected_improvement: 12
+          });
+          break;
+
+        case QualityIssueType.ACCURACY_ERROR:
+          recommendations.push({
+            type: 'accuracy',
+            priority: 'high',
+            description: 'Improve semantic accuracy',
+            action: 'Professional human review recommended',
+            expected_improvement: 20
+          });
+          break;
+      }
+    }
+
+    return recommendations;
+  }
+
+  /**
+   * Determine if human review is required
+   */
+  private shouldRequireHumanReview(
+    overallScore: number,
+    issues: QualityIssue[],
+    contentType: WeddingContentType
+  ): boolean {
+    // Always require review for critical content
+    const criticalContent = [
+      WeddingContentType.LEGAL_DOCUMENTS,
+      WeddingContentType.VOWS,
+      WeddingContentType.CEREMONY
+    ];
+
+    if (criticalContent.includes(contentType)) {
+      return true;
+    }
+
+    // Require review for low scores
+    if (overallScore < this.qualityGateConfig.require_human_review_threshold) {
+      return true;
+    }
+
+    // Require review for critical issues
+    const criticalIssues = issues.filter(issue => issue.severity === 'critical');
+    if (criticalIssues.length > 0) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Calculate overall quality score from dimensions
+   */
+  private calculateOverallScore(dimensions: QualityDimensions, contentType: WeddingContentType): number {
+    const contentRules = this.qualityGateConfig.content_type_specific_rules[contentType];
+    
+    if (contentRules) {
+      // Use content-specific weighting
+      return Math.round(
+        (dimensions.accuracy * contentRules.accuracy_weight +
+         dimensions.fluency * contentRules.fluency_weight +
+         dimensions.terminology * contentRules.terminology_weight +
+         dimensions.cultural_appropriateness * contentRules.cultural_weight +
+         dimensions.completeness * 0.15 +
+         dimensions.consistency * 0.1) / 
+        (contentRules.accuracy_weight + contentRules.fluency_weight + 
+         contentRules.terminology_weight + contentRules.cultural_weight + 0.25)
+      );
+    }
+
+    // Default weighting
+    return Math.round(
+      (dimensions.accuracy * 0.25 +
+       dimensions.fluency * 0.20 +
+       dimensions.terminology * 0.20 +
+       dimensions.cultural_appropriateness * 0.15 +
+       dimensions.completeness * 0.10 +
+       dimensions.consistency * 0.10)
+    );
+  }
+
+  /**
+   * Get quality level from score
+   */
+  private getQualityLevel(score: number): QualityLevel {
+    if (score >= 95) return QualityLevel.PERFECT;
+    if (score >= 80) return QualityLevel.EXCELLENT;
+    if (score >= 60) return QualityLevel.GOOD;
+    if (score >= 40) return QualityLevel.FAIR;
+    return QualityLevel.POOR;
+  }
+
+  /**
+   * Initialize wedding terminology database
+   */
+  private initializeWeddingTerminology(): void {
+    // This would typically load from a comprehensive database
+    const englishTerms: WeddingTerminologyEntry[] = [
+      {
+        term: 'ceremony',
+        category: 'event',
+        alternatives: ['wedding ceremony', 'nuptials'],
+        cultural_context: { formal: 'wedding ceremony', casual: 'ceremony' },
+        formality_level: 'formal',
+        usage_notes: 'Core wedding event term'
+      },
+      {
+        term: 'reception',
+        category: 'event',
+        alternatives: ['wedding reception', 'celebration'],
+        cultural_context: { formal: 'wedding reception', casual: 'party' },
+        formality_level: 'formal',
+        usage_notes: 'Post-ceremony celebration'
+      }
+      // Would include hundreds more terms
+    ];
+
+    this.weddingTerminology.set('en', englishTerms);
+  }
+
+  /**
+   * Initialize cultural rules
+   */
+  private initializeCulturalRules(): void {
+    // This would load comprehensive cultural guidelines
+    const englishRules: CulturalRule[] = [
+      {
+        language: 'en',
+        applies_to_content: [WeddingContentType.CEREMONY, WeddingContentType.VOWS],
+        inappropriate_terms: ['divorce', 'separation', 'break up'],
+        required_elements: [],
+        severity_penalty: 15,
+        description: 'Avoid negative relationship terms in wedding content'
+      }
+    ];
+
+    this.culturalRules.set('en', englishRules);
+  }
+
+  /**
+   * Get default quality gate configuration
+   */
+  private getDefaultQualityGateConfig(): QualityGateConfig {
+    return {
+      min_overall_score: 70,
+      min_dimension_scores: {
+        accuracy: 75,
+        terminology: 70
+      },
+      max_critical_issues: 0,
+      max_high_issues: 2,
+      require_human_review_threshold: 75,
+      content_type_specific_rules: {
+        [WeddingContentType.LEGAL_DOCUMENTS]: {
+          terminology_weight: 0.15,
+          cultural_weight: 0.10,
+          accuracy_weight: 0.40,
+          fluency_weight: 0.25,
+          required_terms: ['agreement', 'contract'],
+          forbidden_terms: ['informal', 'casual'],
+          min_formality_level: 'very_formal'
+        },
+        [WeddingContentType.INVITATION]: {
+          terminology_weight: 0.20,
+          cultural_weight: 0.25,
+          accuracy_weight: 0.20,
+          fluency_weight: 0.25,
+          required_terms: [],
+          forbidden_terms: ['cheap', 'budget'],
+          min_formality_level: 'formal'
+        },
+        [WeddingContentType.CEREMONY]: {
+          terminology_weight: 0.25,
+          cultural_weight: 0.30,
+          accuracy_weight: 0.25,
+          fluency_weight: 0.20,
+          required_terms: [],
+          forbidden_terms: ['divorce', 'break up'],
+          min_formality_level: 'very_formal'
+        },
+        [WeddingContentType.MENU]: {
+          terminology_weight: 0.15,
+          cultural_weight: 0.20,
+          accuracy_weight: 0.30,
+          fluency_weight: 0.25,
+          required_terms: [],
+          forbidden_terms: [],
+          min_formality_level: 'formal'
+        }
+      } as Record<WeddingContentType, QualityRules>
+    };
+  }
+
+  // Utility methods (simplified implementations)
+  private validateAssessmentInput(originalText: string, translatedText: string, sourceLanguage: string, targetLanguage: string): void {
+    if (!originalText?.trim()) throw new Error('Original text is required');
+    if (!translatedText?.trim()) throw new Error('Translated text is required');
+    if (!sourceLanguage) throw new Error('Source language is required');
+    if (!targetLanguage) throw new Error('Target language is required');
+  }
+
+  private tokenize(text: string): string[] {
+    return text.toLowerCase().split(/\W+/).filter(word => word.length > 0);
+  }
+
+  private extractEntities(text: string): string[] {
+    // Simplified entity extraction (dates, times, names, numbers)
+    const entities: string[] = [];
+    
+    // Extract dates
+    const dateMatches = text.match(/\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}/g);
+    if (dateMatches) entities.push(...dateMatches);
+    
+    // Extract times
+    const timeMatches = text.match(/\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?/g);
+    if (timeMatches) entities.push(...timeMatches);
+    
+    // Extract numbers
+    const numberMatches = text.match(/\b\d+\b/g);
+    if (numberMatches) entities.push(...numberMatches);
+    
+    return entities;
+  }
+
+  private calculateEntityPreservation(original: string[], translated: string[]): number {
+    if (original.length === 0) return 100;
+    
+    let preserved = 0;
+    for (const entity of original) {
+      if (translated.some(t => t.includes(entity) || entity.includes(t))) {
+        preserved++;
+      }
+    }
+    
+    return (preserved / original.length) * 100;
+  }
+
+  private hasProperCapitalization(text: string): boolean {
+    const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 0);
+    return sentences.every(sentence => {
+      const trimmed = sentence.trim();
+      return trimmed.length === 0 || /^[A-Z]/.test(trimmed);
+    });
+  }
+
+  private isTermAppropriateForContent(term: WeddingTerminologyEntry, contentType: WeddingContentType): boolean {
+    // Simplified logic - in reality would be more sophisticated
+    return true;
+  }
+
+  private getContentSpecificTerms(contentType: WeddingContentType, language: string): string[] {
+    // Return content-specific terms based on type
+    const termMap: Record<WeddingContentType, string[]> = {
+      [WeddingContentType.CEREMONY]: ['ceremony', 'vows', 'officiant', 'rings'],
+      [WeddingContentType.RECEPTION]: ['reception', 'dinner', 'dancing', 'celebration'],
+      [WeddingContentType.INVITATION]: ['invitation', 'RSVP', 'ceremony', 'reception'],
+      [WeddingContentType.MENU]: ['menu', 'dinner', 'appetizer', 'dessert']
+    } as Record<WeddingContentType, string[]>;
+
+    return termMap[contentType] || [];
+  }
+
+  private assessFormalityLevel(text: string): 'casual' | 'formal' | 'very_formal' {
+    const formalIndicators = ['cordially', 'request', 'honor', 'presence', 'ceremony'];
+    const casualIndicators = ['party', 'fun', 'celebrate', 'hang out'];
+    
+    const formalCount = formalIndicators.filter(indicator => 
+      text.toLowerCase().includes(indicator)
+    ).length;
+    
+    const casualCount = casualIndicators.filter(indicator => 
+      text.toLowerCase().includes(indicator)
+    ).length;
+    
+    if (formalCount > casualCount * 2) return 'very_formal';
+    if (formalCount > casualCount) return 'formal';
+    return 'casual';
+  }
+
+  private getExpectedFormality(contentType: WeddingContentType): 'casual' | 'formal' | 'very_formal' {
+    const formalityMap: Record<WeddingContentType, 'casual' | 'formal' | 'very_formal'> = {
+      [WeddingContentType.LEGAL_DOCUMENTS]: 'very_formal',
+      [WeddingContentType.CEREMONY]: 'very_formal',
+      [WeddingContentType.VOWS]: 'very_formal',
+      [WeddingContentType.INVITATION]: 'formal',
+      [WeddingContentType.PROGRAM]: 'formal',
+      [WeddingContentType.MENU]: 'formal',
+      [WeddingContentType.RECEPTION]: 'formal',
+      [WeddingContentType.VENDOR_COMMUNICATION]: 'formal',
+      [WeddingContentType.THANK_YOU]: 'formal',
+      [WeddingContentType.SIGNAGE]: 'casual'
+    };
+
+    return formalityMap[contentType] || 'formal';
+  }
+
+  private checkTerminologyConsistency(text: string): number {
+    // Check for consistent use of terms throughout the text
+    // Simplified implementation
+    return 80;
+  }
+
+  private checkFormatConsistency(text: string): number {
+    // Check for consistent formatting, punctuation, etc.
+    // Simplified implementation
+    return 85;
+  }
+
+  private checkWeddingProtocolViolations(text: string, contentType: WeddingContentType): QualityIssue[] {
+    const violations: QualityIssue[] = [];
+    const textLower = text.toLowerCase();
+    
+    // Check for inappropriate wedding content
+    const inappropriateTerms = ['divorce', 'break up', 'separation', 'ex-wife', 'ex-husband'];
+    
+    for (const term of inappropriateTerms) {
+      if (textLower.includes(term)) {
+        violations.push({
+          type: QualityIssueType.WEDDING_PROTOCOL_VIOLATION,
+          severity: 'high',
+          description: `Inappropriate term "${term}" found in wedding content`,
+          impact_score: 25,
+          suggested_fix: `Remove or replace "${term}" with appropriate wedding terminology`
+        });
+      }
+    }
+    
+    return violations;
+  }
+
+  private calculateConfidenceScore(dimensions: QualityDimensions, issueCount: number): number {
+    const avgDimensionScore = Object.values(dimensions).reduce((sum, score) => sum + score, 0) / Object.values(dimensions).length;
+    const issuePenalty = Math.min(issueCount * 5, 30);
+    return Math.max(0, Math.min(100, avgDimensionScore - issuePenalty));
+  }
+
+  private getValidationFlags(issues: QualityIssue[], contentType: WeddingContentType): string[] {
+    const flags: string[] = [];
+    
+    if (issues.some(i => i.severity === 'critical')) {
+      flags.push('CRITICAL_ISSUES');
+    }
+    
+    if (issues.some(i => i.type === QualityIssueType.CULTURAL_INSENSITIVITY)) {
+      flags.push('CULTURAL_REVIEW_NEEDED');
+    }
+    
+    if (issues.some(i => i.type === QualityIssueType.WEDDING_PROTOCOL_VIOLATION)) {
+      flags.push('WEDDING_PROTOCOL_VIOLATION');
+    }
+    
+    return flags;
+  }
+
+  private async checkContentSpecificRules(
+    assessmentResult: QualityAssessmentResult,
+    rules: QualityRules
+  ): Promise<{ passes: boolean; reasons: string[] }> {
+    // Implementation would check content-specific quality rules
+    return { passes: true, reasons: [] };
+  }
+}
+
+/**
+ * Cultural rule interface
+ */
+interface CulturalRule {
+  language: string;
+  applies_to_content: WeddingContentType[];
+  inappropriate_terms: string[];
+  required_elements: string[];
+  severity_penalty: number;
+  description: string;
+}
+
+/**
+ * Export singleton instance and utilities
+ */
+export const qualityAssuranceService = new QualityAssuranceTranslation();
+
+/**
+ * Quality scoring utilities
+ */
+export class QualityUtils {
+  /**
+   * Compare two quality assessments
+   */
+  static compareAssessments(
+    assessment1: QualityAssessmentResult,
+    assessment2: QualityAssessmentResult
+  ): { better: 'first' | 'second' | 'equal'; improvement: number } {
+    const diff = assessment1.overall_score - assessment2.overall_score;
+    
+    if (Math.abs(diff) <= 2) {
+      return { better: 'equal', improvement: 0 };
+    }
+    
+    return {
+      better: diff > 0 ? 'first' : 'second',
+      improvement: Math.abs(diff)
+    };
+  }
+
+  /**
+   * Calculate quality improvement potential
+   */
+  static calculateImprovementPotential(assessment: QualityAssessmentResult): number {
+    const lowestDimension = Math.min(...Object.values(assessment.dimensions));
+    return 100 - lowestDimension;
+  }
+}

@@ -1,0 +1,520 @@
+/**
+ * WS-191: Backup Status Monitoring API Route
+ * Real-time backup operation status with wedding context awareness
+ * SECURITY: Super admin authentication with organization scoping
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
+import { withSecureValidation } from '@/lib/validation/middleware';
+import { uuidSchema } from '@/lib/validation/schemas';
+import { createClient } from '@supabase/supabase-js';
+
+// Status query schema
+const statusQuerySchema = z.object({
+  backupId: z.string().optional(),
+  organizationId: uuidSchema.optional(),
+  status: z.enum(['pending', 'running', 'completed', 'failed']).optional(),
+  limit: z.number().int().min(1).max(100).default(20),
+  offset: z.number().int().min(0).default(0),
+  includeDetails: z.boolean().default(false),
+  weddingContext: z.boolean().default(false),
+});
+
+type StatusQuery = z.infer<typeof statusQuerySchema>;
+
+/**
+ * GET /api/backups/status - Get backup operation status
+ * Query parameters: backupId, organizationId, status, limit, offset, includeDetails, weddingContext
+ */
+export const GET = withSecureValidation(
+  statusQuerySchema,
+  async (request: NextRequest, validatedQuery: StatusQuery) => {
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+
+    try {
+      // Extract query parameters from URL
+      const url = new URL(request.url);
+      const queryParams: any = {};
+
+      url.searchParams.forEach((value, key) => {
+        if (key === 'limit' || key === 'offset') {
+          queryParams[key] = parseInt(value);
+        } else if (key === 'includeDetails' || key === 'weddingContext') {
+          queryParams[key] = value === 'true';
+        } else {
+          queryParams[key] = value;
+        }
+      });
+
+      // Validate query parameters
+      const validatedData = statusQuerySchema.parse(queryParams);
+
+      // CRITICAL: Super admin authentication required
+      const authHeader = request.headers.get('authorization');
+      if (!authHeader?.startsWith('Bearer ')) {
+        return NextResponse.json(
+          {
+            error: 'UNAUTHORIZED',
+            message: 'Authentication token required',
+            code: 'BACKUP_STATUS_001',
+          },
+          { status: 401 },
+        );
+      }
+
+      const token = authHeader.split(' ')[1];
+      const {
+        data: { user },
+        error: authError,
+      } = await supabase.auth.getUser(token);
+
+      if (authError || !user) {
+        return NextResponse.json(
+          {
+            error: 'UNAUTHORIZED',
+            message: 'Invalid authentication token',
+            code: 'BACKUP_STATUS_002',
+          },
+          { status: 401 },
+        );
+      }
+
+      // Verify admin role
+      const { data: userProfile } = await supabase
+        .from('users')
+        .select('role, organization_id')
+        .eq('id', user.id)
+        .single();
+
+      if (
+        !userProfile ||
+        ![
+          'super_admin',
+          'system_admin',
+          'admin',
+          'organization_admin',
+        ].includes(userProfile.role)
+      ) {
+        return NextResponse.json(
+          {
+            error: 'FORBIDDEN',
+            message: 'Insufficient privileges for backup status access',
+            code: 'BACKUP_STATUS_003',
+          },
+          { status: 403 },
+        );
+      }
+
+      // Build query based on user role and parameters
+      let query = supabase.from('backup_operations').select(`
+        id,
+        backup_name,
+        backup_type,
+        operation_type,
+        priority_level,
+        status,
+        started_at,
+        completed_at,
+        duration_seconds,
+        data_size_bytes,
+        record_count,
+        checksum,
+        validation_status,
+        organization_id,
+        target_tables,
+        wedding_data_categories,
+        error_message,
+        retry_count,
+        created_at,
+        updated_at
+      `);
+
+      // Apply filters based on request parameters
+      if (validatedData.backupId) {
+        query = query.eq('backup_name', validatedData.backupId);
+      }
+
+      if (validatedData.status) {
+        query = query.eq('status', validatedData.status);
+      }
+
+      // Organization access control
+      if (validatedData.organizationId) {
+        // Verify user has access to this organization
+        if (userProfile.role !== 'super_admin') {
+          const hasAccess = await validateOrganizationAccess(
+            user.id,
+            validatedData.organizationId,
+            userProfile.role,
+            supabase,
+          );
+
+          if (!hasAccess) {
+            return NextResponse.json(
+              {
+                error: 'FORBIDDEN',
+                message: 'No access to specified organization backup data',
+                code: 'BACKUP_STATUS_004',
+              },
+              { status: 403 },
+            );
+          }
+        }
+        query = query.eq('organization_id', validatedData.organizationId);
+      } else if (
+        userProfile.role === 'organization_admin' ||
+        userProfile.role === 'admin'
+      ) {
+        // Limit to user's organization if not super admin
+        query = query.eq('organization_id', userProfile.organization_id);
+      }
+
+      // Apply pagination
+      query = query
+        .order('created_at', { ascending: false })
+        .range(
+          validatedData.offset,
+          validatedData.offset + validatedData.limit - 1,
+        );
+
+      const { data: backupOperations, error: queryError } = await query;
+
+      if (queryError) {
+        console.error('Backup status query failed:', queryError);
+        return NextResponse.json(
+          {
+            error: 'QUERY_FAILED',
+            message: 'Failed to retrieve backup status',
+            code: 'BACKUP_STATUS_005',
+          },
+          { status: 500 },
+        );
+      }
+
+      // Process and enhance backup operation data
+      const enhancedOperations = await Promise.all(
+        backupOperations.map(async (operation) => {
+          const enhanced: any = {
+            backupId: operation.backup_name,
+            type: operation.backup_type,
+            operationType: operation.operation_type,
+            priority: operation.priority_level,
+            status: operation.status,
+            progress: calculateProgress(operation),
+            timing: {
+              startedAt: operation.started_at,
+              completedAt: operation.completed_at,
+              durationSeconds: operation.duration_seconds,
+              estimatedCompletion:
+                operation.status === 'running'
+                  ? estimateCompletion(operation)
+                  : null,
+            },
+            dataInfo: {
+              sizeBytes: operation.data_size_bytes,
+              sizeFormatted: formatBytes(operation.data_size_bytes),
+              recordCount: operation.record_count,
+              tablesIncluded: operation.target_tables?.length || 0,
+            },
+            validation: {
+              status: operation.validation_status,
+              checksum: operation.checksum
+                ? operation.checksum.substring(0, 16) + '...'
+                : null,
+            },
+            organizationId: operation.organization_id,
+            weddingDataCategories: operation.wedding_data_categories,
+            error: operation.error_message
+              ? {
+                  message: operation.error_message,
+                  retryCount: operation.retry_count,
+                }
+              : null,
+          };
+
+          // Include detailed information if requested
+          if (validatedData.includeDetails) {
+            enhanced.details = {
+              targetTables: operation.target_tables,
+              fullChecksum: operation.checksum,
+              createdAt: operation.created_at,
+              updatedAt: operation.updated_at,
+            };
+
+            // Get storage locations if available
+            const { data: storageLocations } = await supabase
+              .from('backup_operations')
+              .select('storage_location')
+              .eq('backup_name', operation.backup_name)
+              .single();
+
+            if (storageLocations?.storage_location) {
+              enhanced.details.storageLocation =
+                storageLocations.storage_location;
+            }
+          }
+
+          // Include wedding context if requested
+          if (validatedData.weddingContext && operation.organization_id) {
+            const weddingContext = await getWeddingContext(
+              operation.organization_id,
+              supabase,
+            );
+            enhanced.weddingContext = weddingContext;
+          }
+
+          return enhanced;
+        }),
+      );
+
+      // Get summary statistics
+      const { data: summaryStats } = await supabase
+        .from('backup_operations')
+        .select('status')
+        .eq(
+          'organization_id',
+          validatedData.organizationId || userProfile.organization_id,
+        );
+
+      const statusSummary = {
+        total: summaryStats?.length || 0,
+        pending:
+          summaryStats?.filter((s) => s.status === 'pending').length || 0,
+        running:
+          summaryStats?.filter((s) => s.status === 'running').length || 0,
+        completed:
+          summaryStats?.filter((s) => s.status === 'completed').length || 0,
+        failed: summaryStats?.filter((s) => s.status === 'failed').length || 0,
+      };
+
+      // Audit log access (low severity for status checks)
+      await logAuditEvent(supabase, {
+        action: 'backup_status_accessed',
+        userId: user.id,
+        organizationId:
+          validatedData.organizationId || userProfile.organization_id,
+        details: {
+          backupId: validatedData.backupId,
+          filters: {
+            status: validatedData.status,
+            limit: validatedData.limit,
+            includeDetails: validatedData.includeDetails,
+          },
+          resultCount: enhancedOperations.length,
+        },
+        ipAddress: request.headers.get('x-forwarded-for') || 'unknown',
+        severity: 'low',
+      });
+
+      return NextResponse.json({
+        success: true,
+        backupOperations: enhancedOperations,
+        pagination: {
+          offset: validatedData.offset,
+          limit: validatedData.limit,
+          hasMore: enhancedOperations.length === validatedData.limit,
+        },
+        summary: statusSummary,
+        metadata: {
+          timestamp: new Date().toISOString(),
+          userRole: userProfile.role,
+          organizationScope:
+            validatedData.organizationId || userProfile.organization_id,
+        },
+      });
+    } catch (error) {
+      console.error('Backup status monitoring failed:', error);
+
+      return NextResponse.json(
+        {
+          error: 'BACKUP_STATUS_FAILED',
+          message: 'Failed to retrieve backup status information',
+          code: 'BACKUP_STATUS_006',
+          timestamp: new Date().toISOString(),
+        },
+        { status: 500 },
+      );
+    }
+  },
+);
+
+// Helper functions
+function calculateProgress(operation: any): number {
+  if (operation.status === 'completed') return 100;
+  if (operation.status === 'failed') return 0;
+  if (operation.status === 'pending') return 0;
+
+  // For running backups, estimate progress based on time elapsed
+  if (operation.status === 'running' && operation.started_at) {
+    const startTime = new Date(operation.started_at).getTime();
+    const now = Date.now();
+    const elapsed = now - startTime;
+
+    // Estimate total time based on backup type
+    let estimatedTotal = 30 * 60 * 1000; // 30 minutes default
+    switch (operation.backup_type) {
+      case 'full':
+        estimatedTotal = 60 * 60 * 1000;
+        break; // 1 hour
+      case 'incremental':
+        estimatedTotal = 15 * 60 * 1000;
+        break; // 15 minutes
+      case 'differential':
+        estimatedTotal = 30 * 60 * 1000;
+        break; // 30 minutes
+      case 'wedding_specific':
+        estimatedTotal = 20 * 60 * 1000;
+        break; // 20 minutes
+    }
+
+    const progress = Math.min((elapsed / estimatedTotal) * 100, 95); // Cap at 95% until actual completion
+    return Math.round(progress);
+  }
+
+  return 0;
+}
+
+function estimateCompletion(operation: any): string | null {
+  if (operation.status !== 'running' || !operation.started_at) return null;
+
+  const startTime = new Date(operation.started_at);
+  let estimatedDuration = 30 * 60 * 1000; // 30 minutes default
+
+  switch (operation.backup_type) {
+    case 'full':
+      estimatedDuration = 60 * 60 * 1000;
+      break; // 1 hour
+    case 'incremental':
+      estimatedDuration = 15 * 60 * 1000;
+      break; // 15 minutes
+    case 'differential':
+      estimatedDuration = 30 * 60 * 1000;
+      break; // 30 minutes
+    case 'wedding_specific':
+      estimatedDuration = 20 * 60 * 1000;
+      break; // 20 minutes
+  }
+
+  const estimatedCompletion = new Date(startTime.getTime() + estimatedDuration);
+  return estimatedCompletion.toISOString();
+}
+
+function formatBytes(bytes: number | null): string {
+  if (!bytes) return '0 B';
+
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+async function validateOrganizationAccess(
+  userId: string,
+  organizationId: string,
+  userRole: string,
+  supabase: any,
+): Promise<boolean> {
+  if (userRole === 'super_admin') return true;
+
+  try {
+    const { data: membership } = await supabase
+      .from('users')
+      .select('organization_id, role')
+      .eq('id', userId)
+      .single();
+
+    return (
+      membership?.organization_id === organizationId &&
+      ['admin', 'organization_admin'].includes(membership.role)
+    );
+  } catch (error) {
+    console.error('Organization access validation failed:', error);
+    return false;
+  }
+}
+
+async function getWeddingContext(
+  organizationId: string,
+  supabase: any,
+): Promise<any> {
+  try {
+    const { data: clients } = await supabase
+      .from('clients')
+      .select('wedding_date, id')
+      .eq('organization_id', organizationId)
+      .gte('wedding_date', new Date().toISOString())
+      .order('wedding_date', { ascending: true })
+      .limit(3);
+
+    const upcomingWeddings =
+      clients?.map((client) => {
+        const weddingDate = new Date(client.wedding_date);
+        const daysUntil = Math.ceil(
+          (weddingDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24),
+        );
+
+        return {
+          id: client.id,
+          weddingDate: client.wedding_date,
+          daysUntilWedding: daysUntil,
+          critical: daysUntil <= 7,
+        };
+      }) || [];
+
+    // Get critical vendor count
+    const { count: vendorCount } = await supabase
+      .from('suppliers')
+      .select('*', { count: 'exact', head: true })
+      .eq('organization_id', organizationId)
+      .in('category', ['venue', 'photography', 'catering', 'music']);
+
+    return {
+      organizationId,
+      upcomingWeddings,
+      criticalVendorCount: vendorCount || 0,
+      hasUrgentBackupNeeds: upcomingWeddings.some((w) => w.critical),
+    };
+  } catch (error) {
+    console.error('Failed to get wedding context:', error);
+    return {
+      organizationId,
+      upcomingWeddings: [],
+      criticalVendorCount: 0,
+      hasUrgentBackupNeeds: false,
+    };
+  }
+}
+
+async function logAuditEvent(
+  supabase: any,
+  event: {
+    action: string;
+    userId: string;
+    organizationId?: string;
+    details: any;
+    ipAddress: string;
+    severity: 'low' | 'medium' | 'high';
+  },
+): Promise<void> {
+  try {
+    await supabase.from('audit_logs').insert({
+      table_name: 'backup_operations',
+      operation: event.action,
+      user_id: event.userId,
+      organization_id: event.organizationId,
+      new_data: {
+        details: event.details,
+        severity: event.severity,
+        ipAddress: event.ipAddress,
+        timestamp: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    console.error('Audit logging failed:', error);
+  }
+}

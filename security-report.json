@@ -1,0 +1,175 @@
+{
+  "timestamp": "2025-08-19T15:25:07.481Z",
+  "overallStatus": "needs-attention",
+  "securityScore": 97,
+  "tests": [
+    {
+      "name": "Unauthenticated API Access Protection",
+      "category": "authentication",
+      "description": "Verify API endpoints reject unauthenticated requests",
+      "status": "pass",
+      "details": "API returned status 401 for unauthenticated request"
+    },
+    {
+      "name": "Session Security Implementation",
+      "category": "session",
+      "description": "Verify session security manager is properly implemented",
+      "status": "pass",
+      "details": "Session security middleware with HMAC signing and fingerprinting"
+    },
+    {
+      "name": "Enhanced JWT Validation",
+      "category": "authentication",
+      "description": "Verify enhanced authentication middleware is implemented",
+      "status": "pass",
+      "details": "Enhanced auth middleware with session validation and revocation"
+    },
+    {
+      "name": "XSS Prevention in API Input",
+      "category": "input-validation",
+      "description": "Verify malicious scripts are sanitized in API inputs",
+      "status": "warning",
+      "details": "API properly requires authentication (status: 403)"
+    },
+    {
+      "name": "Input Validation Utilities",
+      "category": "input-validation",
+      "description": "Verify comprehensive input validation utilities exist",
+      "status": "pass",
+      "details": "Comprehensive input sanitization with UUID, email, HTML validation"
+    },
+    {
+      "name": "Zod Schema Validation",
+      "category": "input-validation",
+      "description": "Verify Zod schemas are implemented for input validation",
+      "status": "pass",
+      "details": "Zod validation found in API routes"
+    },
+    {
+      "name": "Secure Session Secret Configuration",
+      "category": "session",
+      "description": "Verify session secrets are properly configured and validated",
+      "status": "pass",
+      "details": "Session secret validation implemented"
+    },
+    {
+      "name": "Session Revocation Capability",
+      "category": "session",
+      "description": "Verify session revocation is implemented for security breaches",
+      "status": "pass",
+      "details": "Session revocation blacklist implemented"
+    },
+    {
+      "name": "Security Headers Implementation",
+      "category": "session",
+      "description": "Verify comprehensive security headers are set",
+      "status": "pass",
+      "details": "Security headers (HSTS, CSP, etc.) implemented"
+    },
+    {
+      "name": "File Type Validation",
+      "category": "file-upload",
+      "description": "Verify file uploads validate type using magic numbers",
+      "status": "pass",
+      "details": "Magic number validation implemented"
+    },
+    {
+      "name": "File Size Limits",
+      "category": "file-upload",
+      "description": "Verify file uploads enforce size limits",
+      "status": "pass",
+      "details": "File size limits implemented"
+    },
+    {
+      "name": "Virus Scanning",
+      "category": "file-upload",
+      "description": "Verify uploaded files are scanned for malware",
+      "status": "pass",
+      "details": "PDF validation and virus scanning implemented"
+    },
+    {
+      "name": "Secure File Storage",
+      "category": "file-upload",
+      "description": "Verify files are stored securely with encryption",
+      "status": "pass",
+      "details": "Encrypted file storage implemented"
+    },
+    {
+      "name": "Enhanced Error Handler",
+      "category": "error-handling",
+      "description": "Verify comprehensive error handling is implemented",
+      "status": "pass",
+      "details": "Circuit breaker and error categorization implemented"
+    },
+    {
+      "name": "Process Management",
+      "category": "error-handling",
+      "description": "Verify graceful shutdown and resource cleanup",
+      "status": "pass",
+      "details": "Process manager with cleanup handlers implemented"
+    },
+    {
+      "name": "Health Monitoring",
+      "category": "monitoring",
+      "description": "Verify system health monitoring endpoints exist",
+      "status": "pass",
+      "details": "Comprehensive health check API implemented"
+    },
+    {
+      "name": "Health Check Accessibility",
+      "category": "monitoring",
+      "description": "Verify health check endpoint is accessible",
+      "status": "warning",
+      "details": "Health check returned status 500"
+    },
+    {
+      "name": "Rate Limiting Implementation",
+      "category": "authentication",
+      "description": "Verify rate limiting is implemented to prevent abuse",
+      "status": "pass",
+      "details": "Secure rate limiter with cleanup implemented"
+    },
+    {
+      "name": "Security Headers Present",
+      "category": "session",
+      "description": "Verify security headers are set in HTTP responses",
+      "status": "pass",
+      "details": "Security headers found: X-Content-Type-Options, X-Frame-Options, X-XSS-Protection, Referrer-Policy"
+    },
+    {
+      "name": "Audit Logging",
+      "category": "monitoring",
+      "description": "Verify comprehensive audit logging is implemented",
+      "status": "pass",
+      "details": "Audit logger for security events implemented"
+    },
+    {
+      "name": "Structured Logging",
+      "category": "monitoring",
+      "description": "Verify structured logging for monitoring and debugging",
+      "status": "pass",
+      "details": "Structured logger implemented"
+    },
+    {
+      "name": "SQL Injection Prevention",
+      "category": "input-validation",
+      "description": "Verify SQL injection prevention measures are in place",
+      "status": "pass",
+      "details": "Parameterized queries and input validation implemented"
+    },
+    {
+      "name": "CSRF Protection",
+      "category": "session",
+      "description": "Verify CSRF token validation is implemented",
+      "status": "pass",
+      "details": "CSRF token validation implemented"
+    }
+  ],
+  "summary": {
+    "totalTests": 23,
+    "passed": 21,
+    "failed": 0,
+    "warnings": 2,
+    "skipped": 0
+  }
+}

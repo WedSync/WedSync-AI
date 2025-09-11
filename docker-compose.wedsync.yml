@@ -1,0 +1,96 @@
+# Reliable Docker Compose for WedSync - Single Application Container
+# This keeps things simple and working every time
+
+services:
+  # WedSync Next.js Application
+  wedsync:
+    build:
+      context: .
+      dockerfile: Dockerfile.reliable
+    container_name: wedsync-app
+    ports:
+      - "3000:3000"
+    environment:
+      # Core settings
+      - NODE_ENV=development
+      - HOSTNAME=0.0.0.0
+      - PORT=3000
+      
+      # Next.js settings
+      - NEXTAUTH_URL=http://localhost:3000
+      - NEXT_PUBLIC_APP_URL=http://localhost:3000
+      
+      # Database (using Supabase cloud)
+      - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@localhost:5432/wedsync}
+      
+      # File watching for hot reload
+      - CHOKIDAR_USEPOLLING=true
+      - WATCHPACK_POLLING=true
+      
+      # Disable telemetry
+      - NEXT_TELEMETRY_DISABLED=1
+    
+    # Mount source for development
+    volumes:
+      - ./src:/app/src:delegated
+      - ./public:/app/public:delegated
+      - ./styles:/app/styles:delegated
+      - ./.env.local:/app/.env.local:ro
+      - ./next.config.simple.js:/app/next.config.simple.js:ro
+      # Prevent node_modules from being overwritten
+      - /app/node_modules
+      - /app/.next
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    
+    # Restart policy
+    restart: unless-stopped
+    
+    # Network
+    networks:
+      - wedsync-network
+
+  # Optional: PostgreSQL for local development
+  # Uncomment if you want local database instead of Supabase
+  # postgres:
+  #   image: postgres:15-alpine
+  #   container_name: wedsync-postgres
+  #   ports:
+  #     - "5433:5432"  # Different port to avoid conflicts
+  #   environment:
+  #     - POSTGRES_USER=postgres
+  #     - POSTGRES_PASSWORD=postgres
+  #     - POSTGRES_DB=wedsync
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #   networks:
+  #     - wedsync-network
+  #   restart: unless-stopped
+
+  # Optional: Redis for caching
+  # Uncomment if needed for caching
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: wedsync-redis
+  #   ports:
+  #     - "6379:6379"
+  #   volumes:
+  #     - redis_data:/data
+  #   networks:
+  #     - wedsync-network
+  #   restart: unless-stopped
+
+networks:
+  wedsync-network:
+    driver: bridge
+    name: wedsync-network
+
+volumes:
+  postgres_data:
+  redis_data:

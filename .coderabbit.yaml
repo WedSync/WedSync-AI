@@ -1,0 +1,108 @@
+# CodeRabbit Configuration for WedSync
+# AI-Powered Code Review Settings
+
+# Review Settings
+reviews:
+  # Automatically review all PRs
+  auto_review: true
+  
+  # Review level (options: basic, standard, comprehensive)
+  level: comprehensive
+  
+  # Focus areas for WedSync
+  focus_areas:
+    - security
+    - performance
+    - type_safety
+    - react_best_practices
+    - accessibility
+    - business_logic
+
+# Language-Specific Settings
+languages:
+  typescript:
+    # Strict type checking
+    strict_mode: true
+    # Check for any types
+    no_any: true
+    
+  javascript:
+    # Modern JS practices
+    es6_required: true
+    
+  react:
+    # React 19 best practices
+    version: 19
+    # Check hooks rules
+    hooks_rules: true
+    # Accessibility checks
+    a11y_checks: true
+
+# Security Settings
+security:
+  # Check for exposed secrets
+  secret_scanning: true
+  # OWASP compliance
+  owasp_checks: true
+  # Check authentication on routes
+  auth_validation: true
+  # Input validation checks
+  input_sanitization: true
+
+# Performance Settings
+performance:
+  # Bundle size checks
+  bundle_size_limit: 500kb
+  # Component render checks
+  react_optimization: true
+  # Database query analysis
+  query_optimization: true
+
+# Custom Rules for WedSync
+custom_rules:
+  - name: "Verify Supabase RLS"
+    pattern: "supabase.*insert|update|delete"
+    message: "Ensure Row Level Security is configured"
+    
+  - name: "Check Stripe Security"
+    pattern: "stripe.*charge|payment"
+    message: "Verify authentication and idempotency"
+    
+  - name: "PDF Upload Validation"
+    pattern: "upload.*pdf|file.*upload"
+    message: "Ensure file type and size validation"
+
+# Integration Settings
+integrations:
+  # Work with our verification protocol
+  require_verification: true
+  # Check against our test coverage requirements
+  coverage_threshold: 80
+  
+# Comment Settings
+comments:
+  # How verbose should comments be
+  verbosity: balanced
+  # Include code suggestions
+  include_suggestions: true
+  # Add learning resources
+  include_docs: true
+
+# Ignore Patterns
+ignore:
+  - "*.test.ts"
+  - "*.spec.ts"
+  - "node_modules/**"
+  - ".next/**"
+  - "build/**"
+
+# WedSync Specific Checks
+project_specific:
+  # Wedding vendor domain checks
+  check_business_logic: true
+  # Multi-tenant security
+  tenant_isolation: true
+  # Payment compliance
+  pci_compliance: true
+  # GDPR compliance
+  data_privacy: true

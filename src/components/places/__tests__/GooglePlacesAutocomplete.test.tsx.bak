@@ -1,0 +1,730 @@
+/**
+ * Tests for GooglePlacesAutocomplete Component
+ * Comprehensive testing of the wedding venue search autocomplete component
+ */
+
+import React from 'react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { GooglePlacesAutocomplete } from '../GooglePlacesAutocomplete';
+import { useGooglePlaces } from '@/hooks/useGooglePlaces';
+import type { PlaceAutocompletePrediction, PlaceDetails } from '@/types/google-places';
+
+// Mock the hooks
+jest.mock('@/hooks/useGooglePlaces');
+const mockUseGooglePlaces = useGooglePlaces as jest.MockedFunction<typeof useGooglePlaces>;
+
+// Mock localStorage
+const mockLocalStorage = {
+  getItem: jest.fn(),
+  setItem: jest.fn(),
+  removeItem: jest.fn(),
+};
+Object.defineProperty(window, 'localStorage', { value: mockLocalStorage });
+
+// Test data
+const mockPredictions: PlaceAutocompletePrediction[] = [
+  {
+    place_id: 'venue-1',
+    description: 'Central Park Wedding Venue, New York, NY',
+    structured_formatting: {
+      main_text: 'Central Park Wedding Venue',
+      main_text_matched_substrings: [{ offset: 0, length: 7 }],
+      secondary_text: 'New York, NY',
+    },
+    terms: [
+      { offset: 0, value: 'Central' },
+      { offset: 8, value: 'Park' },
+      { offset: 13, value: 'Wedding' },
+      { offset: 21, value: 'Venue' },
+    ],
+    types: ['establishment', 'wedding_venue'],
+    matched_substrings: [{ offset: 0, length: 7 }],
+  },
+  {
+    place_id: 'venue-2',
+    description: 'Elegant Banquet Hall, New York, NY',
+    structured_formatting: {
+      main_text: 'Elegant Banquet Hall',
+      main_text_matched_substrings: [],
+      secondary_text: 'New York, NY',
+    },
+    terms: [
+      { offset: 0, value: 'Elegant' },
+      { offset: 8, value: 'Banquet' },
+      { offset: 16, value: 'Hall' },
+    ],
+    types: ['establishment', 'banquet_hall'],
+    matched_substrings: [],
+  },
+];
+
+const mockPlaceDetails: PlaceDetails = {
+  place_id: 'venue-1',
+  name: 'Central Park Wedding Venue',
+  formatted_address: '123 Central Park West, New York, NY 10025',
+  geometry: {
+    location: { lat: 40.7829, lng: -73.9654 },
+  },
+  types: ['establishment', 'wedding_venue'],
+  rating: 4.8,
+  user_ratings_total: 245,
+};
+
+// Default mock implementation
+const defaultMockHook = {
+  searchQuery: '',
+  setSearchQuery: jest.fn(),
+  predictions: [],
+  isSearching: false,
+  searchError: null,
+  getPlaceDetails: jest.fn(),
+  placeDetails: null,
+  isLoadingDetails: false,
+  detailsError: null,
+  searchNearby: jest.fn(),
+  nearbyPlaces: [],
+  isSearchingNearby: false,
+  nearbyError: null,
+  clearSearch: jest.fn(),
+  clearErrors: jest.fn(),
+};
+
+describe('GooglePlacesAutocomplete Component', () => {
+  beforeEach(() => {
+    mockUseGooglePlaces.mockReturnValue(defaultMockHook);
+    mockLocalStorage.getItem.mockReturnValue(null);
+    mockLocalStorage.setItem.mockClear();
+    mockLocalStorage.removeItem.mockClear();
+    jest.clearAllMocks();
+  });
+
+  describe('Rendering', () => {
+    it('should render with default props', () => {
+      render(<GooglePlacesAutocomplete />);
+
+      const input = screen.getByRole('textbox');
+      expect(input).toBeInTheDocument();
+      expect(input).toHaveAttribute(
+        'placeholder',
+        'Search for wedding venues, restaurants, or event spaces...'
+      );
+
+      const searchIcon = screen.getByTestId('search-icon') || document.querySelector('[data-testid="search-icon"]');
+      // Since we're using Lucide icons, we can check for the search functionality
+      expect(input).toHaveAttribute('aria-label', 'Search for wedding venues, restaurants, or event spaces...');
+    });
+
+    it('should render with custom placeholder', () => {
+      const customPlaceholder = 'Find your perfect wedding venue...';
+      render(<GooglePlacesAutocomplete placeholder={customPlaceholder} />);
+
+      const input = screen.getByRole('textbox');
+      expect(input).toHaveAttribute('placeholder', customPlaceholder);
+      expect(input).toHaveAttribute('aria-label', customPlaceholder);
+    });
+
+    it('should render with custom aria-label', () => {
+      const customLabel = 'Custom venue search';
+      render(<GooglePlacesAutocomplete aria-label={customLabel} />);
+
+      const input = screen.getByRole('textbox');
+      expect(input).toHaveAttribute('aria-label', customLabel);
+    });
+
+    it('should render in disabled state', () => {
+      render(<GooglePlacesAutocomplete disabled />);
+
+      const input = screen.getByRole('textbox');
+      expect(input).toBeDisabled();
+      expect(input).toHaveClass('cursor-not-allowed');
+    });
+
+    it('should render with error state', () => {
+      const errorMessage = 'Please select a valid venue';
+      render(<GooglePlacesAutocomplete error={errorMessage} />);
+
+      expect(screen.getByText(errorMessage)).toBeInTheDocument();
+      expect(screen.getByRole('alert')).toBeInTheDocument();
+
+      const input = screen.getByRole('textbox');
+      expect(input).toHaveClass('border-error-300');
+    });
+
+    it('should render as required field', () => {
+      render(<GooglePlacesAutocomplete required />);
+
+      const input = screen.getByRole('textbox');
+      expect(input).toBeRequired();
+    });
+  });
+
+  describe('Search Functionality', () => {
+    it('should update search query on input change', async () => {
+      const user = userEvent.setup();
+      const mockSetSearchQuery = jest.fn();
+      
+      mockUseGooglePlaces.mockReturnValue({
+        ...defaultMockHook,
+        setSearchQuery: mockSetSearchQuery,
+      });
+
+      render(<GooglePlacesAutocomplete />);
+
+      const input = screen.getByRole('textbox');
+      await user.type(input, 'wedding venue');
+
+      expect(mockSetSearchQuery).toHaveBeenCalledWith('w');
+      expect(mockSetSearchQuery).toHaveBeenCalledWith('we');
+      // ... and so on for each character
+    });
+
+    it('should display search predictions', async () => {
+      mockUseGooglePlaces.mockReturnValue({
+        ...defaultMockHook,
+        searchQuery: 'wedding',
+        predictions: mockPredictions,
+      });
+
+      render(<GooglePlacesAutocomplete />);
+
+      const input = screen.getByRole('textbox');
+      fireEvent.focus(input);
+
+      // Wait for dropdown to appear
+      await waitFor(() => {
+        expect(screen.getByText('Central Park Wedding Venue')).toBeInTheDocument();
+        expect(screen.getByText('Elegant Banquet Hall')).toBeInTheDocument();
+      });
+
+      // Check for wedding venue badge
+      expect(screen.getByText('Wedding Venue')).toBeInTheDocument();
+    });
+
+    it('should show loading state during search', () => {
+      mockUseGooglePlaces.mockReturnValue({
+        ...defaultMockHook,
+        isSearching: true,
+      });
+
+      render(<GooglePlacesAutocomplete />);
+
+      // Loading spinner should be visible
+      const spinner = document.querySelector('.animate-spin');
+      expect(spinner).toBeInTheDocument();
+    });
+
+    it('should display search error', () => {
+      const errorMessage = 'Failed to search venues';
+      mockUseGooglePlaces.mockReturnValue({
+        ...defaultMockHook,
+        searchError: errorMessage,
+      });
+
+      render(<GooglePlacesAutocomplete />);
+
+      expect(screen.getByText(errorMessage)).toBeInTheDocument();
+      expect(screen.getByRole('alert')).toBeInTheDocument();
+    });
+
+    it('should show no results message', async () => {
+      mockUseGooglePlaces.mockReturnValue({
+        ...defaultMockHook,
+        searchQuery: 'nonexistent venue',
+        predictions: [],
+        isSearching: false,
+      });
+
+      render(<GooglePlacesAutocomplete />);
+
+      const input = screen.getByRole('textbox');
+      fireEvent.focus(input);
+
+      await waitFor(() => {
+        expect(screen.getByText('No venues found for "nonexistent venue"')).toBeInTheDocument();
+        expect(screen.getByText('Try searching for a city, venue name, or address')).toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('Prediction Selection', () => {
+    it('should call onChange when prediction is selected', async () => {
+      const mockOnChange = jest.fn();
+      
+      mockUseGooglePlaces.mockReturnValue({
+        ...defaultMockHook,
+        searchQuery: 'wedding',
+        predictions: mockPredictions,
+      });
+
+      render(<GooglePlacesAutocomplete onChange={mockOnChange} />);
+
+      const input = screen.getByRole('textbox');
+      fireEvent.focus(input);
+
+      await waitFor(() => {
+        expect(screen.getByText('Central Park Wedding Venue')).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByText('Central Park Wedding Venue'));
+
+      expect(mockOnChange).toHaveBeenCalledWith(mockPredictions[0]);
+    });
+
+    it('should call onSelect with place details when prediction is selected', async () => {
+      const mockOnSelect = jest.fn();
+      const mockGetPlaceDetails = jest.fn().mockResolvedValue(mockPlaceDetails);
+      
+      mockUseGooglePlaces.mockReturnValue({
+        ...defaultMockHook,
+        searchQuery: 'wedding',
+        predictions: mockPredictions,
+        getPlaceDetails: mockGetPlaceDetails,
+      });
+
+      render(<GooglePlacesAutocomplete onSelect={mockOnSelect} />);
+
+      const input = screen.getByRole('textbox');
+      fireEvent.focus(input);
+
+      await waitFor(() => {
+        expect(screen.getByText('Central Park Wedding Venue')).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByText('Central Park Wedding Venue'));
+
+      expect(mockGetPlaceDetails).toHaveBeenCalledWith('venue-1');
+      
+      await waitFor(() => {
+        expect(mockOnSelect).toHaveBeenCalledWith(mockPlaceDetails);
+      });
+    });
+
+    it('should update input value when prediction is selected', async () => {
+      mockUseGooglePlaces.mockReturnValue({
+        ...defaultMockHook,
+        searchQuery: 'wedding',
+        predictions: mockPredictions,
+      });
+
+      render(<GooglePlacesAutocomplete />);
+
+      const input = screen.getByRole('textbox') as HTMLInputElement;
+      fireEvent.focus(input);
+
+      await waitFor(() => {
+        expect(screen.getByText('Central Park Wedding Venue')).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByText('Central Park Wedding Venue'));
+
+      expect(input.value).toBe('Central Park Wedding Venue, New York, NY');
+    });
+
+    it('should clear onChange when typing after selection', async () => {
+      const user = userEvent.setup();
+      const mockOnChange = jest.fn();
+      
+      mockUseGooglePlaces.mockReturnValue({
+        ...defaultMockHook,
+        predictions: mockPredictions,
+      });
+
+      render(<GooglePlacesAutocomplete onChange={mockOnChange} value="Selected Venue" />);
+
+      const input = screen.getByRole('textbox');
+      await user.type(input, ' extra text');
+
+      expect(mockOnChange).toHaveBeenCalledWith(null);
+    });
+  });
+
+  describe('Keyboard Navigation', () => {
+    beforeEach(() => {
+      mockUseGooglePlaces.mockReturnValue({
+        ...defaultMockHook,
+        searchQuery: 'wedding',
+        predictions: mockPredictions,
+      });
+    });
+
+    it('should handle arrow down navigation', async () => {
+      render(<GooglePlacesAutocomplete />);
+
+      const input = screen.getByRole('textbox');
+      fireEvent.focus(input);
+
+      await waitFor(() => {
+        expect(screen.getByText('Central Park Wedding Venue')).toBeInTheDocument();
+      });
+
+      // Arrow down should highlight first item
+      fireEvent.keyDown(input, { key: 'ArrowDown' });
+      
+      const firstOption = screen.getByText('Central Park Wedding Venue').closest('button');
+      expect(firstOption).toHaveClass('bg-primary-50');
+    });
+
+    it('should handle arrow up navigation', async () => {
+      render(<GooglePlacesAutocomplete />);
+
+      const input = screen.getByRole('textbox');
+      fireEvent.focus(input);
+
+      await waitFor(() => {
+        expect(screen.getByText('Central Park Wedding Venue')).toBeInTheDocument();
+      });
+
+      // Arrow down to select first, then arrow up
+      fireEvent.keyDown(input, { key: 'ArrowDown' });
+      fireEvent.keyDown(input, { key: 'ArrowDown' });
+      fireEvent.keyDown(input, { key: 'ArrowUp' });
+      
+      const firstOption = screen.getByText('Central Park Wedding Venue').closest('button');
+      expect(firstOption).toHaveClass('bg-primary-50');
+    });
+
+    it('should handle Enter key selection', async () => {
+      const mockOnChange = jest.fn();
+      
+      render(<GooglePlacesAutocomplete onChange={mockOnChange} />);
+
+      const input = screen.getByRole('textbox');
+      fireEvent.focus(input);
+
+      await waitFor(() => {
+        expect(screen.getByText('Central Park Wedding Venue')).toBeInTheDocument();
+      });
+
+      fireEvent.keyDown(input, { key: 'ArrowDown' });
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      expect(mockOnChange).toHaveBeenCalledWith(mockPredictions[0]);
+    });
+
+    it('should handle Escape key', async () => {
+      render(<GooglePlacesAutocomplete />);
+
+      const input = screen.getByRole('textbox');
+      fireEvent.focus(input);
+
+      await waitFor(() => {
+        expect(screen.getByText('Central Park Wedding Venue')).toBeInTheDocument();
+      });
+
+      fireEvent.keyDown(input, { key: 'Escape' });
+
+      // Dropdown should close
+      await waitFor(() => {
+        expect(screen.queryByText('Central Park Wedding Venue')).not.toBeInTheDocument();
+      });
+    });
+
+    it('should handle Tab key', async () => {
+      render(<GooglePlacesAutocomplete />);
+
+      const input = screen.getByRole('textbox');
+      fireEvent.focus(input);
+
+      await waitFor(() => {
+        expect(screen.getByText('Central Park Wedding Venue')).toBeInTheDocument();
+      });
+
+      fireEvent.keyDown(input, { key: 'Tab' });
+
+      // Dropdown should close
+      await waitFor(() => {
+        expect(screen.queryByText('Central Park Wedding Venue')).not.toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('Recent Searches', () => {
+    const recentSearches = [mockPredictions[0]];
+
+    beforeEach(() => {
+      mockLocalStorage.getItem.mockReturnValue(JSON.stringify(recentSearches));
+    });
+
+    it('should load recent searches from localStorage', () => {
+      render(<GooglePlacesAutocomplete showRecentSearches />);
+
+      expect(mockLocalStorage.getItem).toHaveBeenCalledWith('wedsync_recent_venue_searches');
+    });
+
+    it('should display recent searches when input is empty', async () => {
+      render(<GooglePlacesAutocomplete showRecentSearches />);
+
+      const input = screen.getByRole('textbox');
+      fireEvent.focus(input);
+
+      await waitFor(() => {
+        expect(screen.getByText('Recent Searches')).toBeInTheDocument();
+        expect(screen.getByText('Central Park Wedding Venue')).toBeInTheDocument();
+        expect(screen.getByText('Clear')).toBeInTheDocument();
+      });
+    });
+
+    it('should clear recent searches', async () => {
+      render(<GooglePlacesAutocomplete showRecentSearches />);
+
+      const input = screen.getByRole('textbox');
+      fireEvent.focus(input);
+
+      await waitFor(() => {
+        expect(screen.getByText('Clear')).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByText('Clear'));
+
+      expect(mockLocalStorage.removeItem).toHaveBeenCalledWith('wedsync_recent_venue_searches');
+    });
+
+    it('should save selected prediction to recent searches', async () => {
+      mockUseGooglePlaces.mockReturnValue({
+        ...defaultMockHook,
+        searchQuery: 'wedding',
+        predictions: mockPredictions,
+      });
+
+      render(<GooglePlacesAutocomplete showRecentSearches />);
+
+      const input = screen.getByRole('textbox');
+      fireEvent.focus(input);
+
+      await waitFor(() => {
+        expect(screen.getByText('Elegant Banquet Hall')).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByText('Elegant Banquet Hall'));
+
+      expect(mockLocalStorage.setItem).toHaveBeenCalledWith(
+        'wedsync_recent_venue_searches',
+        JSON.stringify([mockPredictions[1], mockPredictions[0]]) // New search first
+      );
+    });
+
+    it('should not show recent searches when showRecentSearches is false', () => {
+      render(<GooglePlacesAutocomplete showRecentSearches={false} />);
+
+      const input = screen.getByRole('textbox');
+      fireEvent.focus(input);
+
+      expect(screen.queryByText('Recent Searches')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('Clear Functionality', () => {
+    it('should show clear button when input has value', () => {
+      render(<GooglePlacesAutocomplete value="test value" />);
+
+      // Look for the X clear button
+      const clearButton = document.querySelector('button[aria-label="Clear search"]');
+      expect(clearButton).toBeInTheDocument();
+    });
+
+    it('should clear input when clear button is clicked', async () => {
+      const mockOnChange = jest.fn();
+      const mockClearSearch = jest.fn();
+      
+      mockUseGooglePlaces.mockReturnValue({
+        ...defaultMockHook,
+        clearSearch: mockClearSearch,
+      });
+
+      render(<GooglePlacesAutocomplete value="test value" onChange={mockOnChange} />);
+
+      const clearButton = document.querySelector('button[aria-label="Clear search"]');
+      expect(clearButton).toBeInTheDocument();
+
+      fireEvent.click(clearButton!);
+
+      expect(mockOnChange).toHaveBeenCalledWith(null);
+    });
+
+    it('should not show clear button when input is empty', () => {
+      render(<GooglePlacesAutocomplete value="" />);
+
+      const clearButton = document.querySelector('button[aria-label="Clear search"]');
+      expect(clearButton).not.toBeInTheDocument();
+    });
+  });
+
+  describe('Focus and Blur Handling', () => {
+    it('should open dropdown on focus', async () => {
+      mockUseGooglePlaces.mockReturnValue({
+        ...defaultMockHook,
+        searchQuery: 'wedding',
+        predictions: mockPredictions,
+      });
+
+      render(<GooglePlacesAutocomplete />);
+
+      const input = screen.getByRole('textbox');
+      fireEvent.focus(input);
+
+      await waitFor(() => {
+        expect(screen.getByText('Central Park Wedding Venue')).toBeInTheDocument();
+      });
+    });
+
+    it('should close dropdown on blur with delay', async () => {
+      mockUseGooglePlaces.mockReturnValue({
+        ...defaultMockHook,
+        searchQuery: 'wedding',
+        predictions: mockPredictions,
+      });
+
+      render(<GooglePlacesAutocomplete />);
+
+      const input = screen.getByRole('textbox');
+      fireEvent.focus(input);
+
+      await waitFor(() => {
+        expect(screen.getByText('Central Park Wedding Venue')).toBeInTheDocument();
+      });
+
+      fireEvent.blur(input);
+
+      // Should still be visible immediately
+      expect(screen.getByText('Central Park Wedding Venue')).toBeInTheDocument();
+
+      // Should close after delay
+      await act(async () => {
+        await new Promise(resolve => setTimeout(resolve, 200));
+      });
+
+      expect(screen.queryByText('Central Park Wedding Venue')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('Loading States', () => {
+    it('should show loading spinner during place details fetch', () => {
+      mockUseGooglePlaces.mockReturnValue({
+        ...defaultMockHook,
+        isLoadingDetails: true,
+      });
+
+      render(<GooglePlacesAutocomplete />);
+
+      const spinner = document.querySelector('.animate-spin');
+      expect(spinner).toBeInTheDocument();
+    });
+
+    it('should show loading spinner during search', () => {
+      mockUseGooglePlaces.mockReturnValue({
+        ...defaultMockHook,
+        isSearching: true,
+      });
+
+      render(<GooglePlacesAutocomplete />);
+
+      const spinner = document.querySelector('.animate-spin');
+      expect(spinner).toBeInTheDocument();
+    });
+  });
+
+  describe('Accessibility', () => {
+    it('should have correct ARIA attributes', () => {
+      render(<GooglePlacesAutocomplete />);
+
+      const input = screen.getByRole('textbox');
+      expect(input).toHaveAttribute('aria-expanded', 'false');
+      expect(input).toHaveAttribute('aria-haspopup', 'listbox');
+      expect(input).toHaveAttribute('aria-autocomplete', 'list');
+    });
+
+    it('should update ARIA attributes when dropdown opens', async () => {
+      mockUseGooglePlaces.mockReturnValue({
+        ...defaultMockHook,
+        searchQuery: 'wedding',
+        predictions: mockPredictions,
+      });
+
+      render(<GooglePlacesAutocomplete />);
+
+      const input = screen.getByRole('textbox');
+      fireEvent.focus(input);
+
+      await waitFor(() => {
+        expect(input).toHaveAttribute('aria-expanded', 'true');
+      });
+    });
+
+    it('should set activedescendant during keyboard navigation', async () => {
+      mockUseGooglePlaces.mockReturnValue({
+        ...defaultMockHook,
+        searchQuery: 'wedding',
+        predictions: mockPredictions,
+      });
+
+      render(<GooglePlacesAutocomplete />);
+
+      const input = screen.getByRole('textbox');
+      fireEvent.focus(input);
+
+      await waitFor(() => {
+        expect(screen.getByText('Central Park Wedding Venue')).toBeInTheDocument();
+      });
+
+      fireEvent.keyDown(input, { key: 'ArrowDown' });
+
+      expect(input).toHaveAttribute('aria-activedescendant', 'prediction-0');
+    });
+
+    it('should have role="listbox" on dropdown', async () => {
+      mockUseGooglePlaces.mockReturnValue({
+        ...defaultMockHook,
+        searchQuery: 'wedding',
+        predictions: mockPredictions,
+      });
+
+      render(<GooglePlacesAutocomplete />);
+
+      const input = screen.getByRole('textbox');
+      fireEvent.focus(input);
+
+      await waitFor(() => {
+        const listbox = screen.getByRole('listbox');
+        expect(listbox).toBeInTheDocument();
+      });
+    });
+
+    it('should have role="option" on each prediction', async () => {
+      mockUseGooglePlaces.mockReturnValue({
+        ...defaultMockHook,
+        searchQuery: 'wedding',
+        predictions: mockPredictions,
+      });
+
+      render(<GooglePlacesAutocomplete />);
+
+      const input = screen.getByRole('textbox');
+      fireEvent.focus(input);
+
+      await waitFor(() => {
+        const options = screen.getAllByRole('option');
+        expect(options).toHaveLength(2);
+      });
+    });
+  });
+
+  describe('External Value Control', () => {
+    it('should sync with external value changes', () => {
+      const { rerender } = render(<GooglePlacesAutocomplete value="initial value" />);
+
+      const input = screen.getByRole('textbox') as HTMLInputElement;
+      expect(input.value).toBe('initial value');
+
+      rerender(<GooglePlacesAutocomplete value="updated value" />);
+      expect(input.value).toBe('updated value');
+    });
+
+    it('should handle undefined value prop', () => {
+      render(<GooglePlacesAutocomplete value={undefined} />);
+
+      const input = screen.getByRole('textbox') as HTMLInputElement;
+      expect(input.value).toBe('');
+    });
+  });
+});

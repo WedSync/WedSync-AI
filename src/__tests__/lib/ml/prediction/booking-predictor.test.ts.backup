@@ -1,0 +1,428 @@
+// WS-055: Unit Tests for Booking Prediction Engine
+// Tests for the critical 24hr vs 5+ day booking probability logic
+
+import { BookingPredictor } from '@/lib/ml/prediction/booking-predictor'
+import type { ClientBehaviorData, BookingPrediction } from '@/lib/ml/prediction/types'
+
+// Mock Supabase client
+jest.mock('@/lib/supabase', () => ({
+  createSupabaseClient: () => ({
+    from: jest.fn(() => ({
+      select: jest.fn(() => ({
+        eq: jest.fn(() => ({
+          single: jest.fn()
+        }))
+      }))
+    }))
+  })
+}))
+
+describe('BookingPredictor', () => {
+  let predictor: BookingPredictor
+  let mockClientData: ClientBehaviorData
+
+  beforeEach(() => {
+    predictor = new BookingPredictor()
+    
+    // Base mock client data
+    mockClientData = {
+      client_id: 'test-client-123',
+      engagement_score: 75,
+      questionnaire_completed_at: new Date('2024-01-15T10:00:00Z'),
+      initial_contact_at: new Date('2024-01-15T08:00:00Z'), // 2 hours before questionnaire
+      last_activity_at: new Date('2024-01-16T10:00:00Z'),
+      responses_count: 5,
+      budget_range: 'medium',
+      venue_booked: false,
+      timeline_interactions: 8,
+      vendor_inquiries: 3,
+      document_downloads: 2,
+      pricing_views: 10,
+      session_duration_avg: 300, // 5 minutes
+      page_views_total: 25,
+      form_interactions: 7,
+      response_time_avg: 1800, // 30 minutes
+      message_length_avg: 150,
+      questions_asked: 4
+    }
+  })
+
+  describe('Core Prediction Logic', () => {
+    test('should predict high booking probability for 24hr questionnaire completion', async () => {
+      // Mock the fetchClientData method
+      jest.spyOn(predictor as any, 'fetchClientData').mockResolvedValue(mockClientData)
+
+      const prediction = await predictor.predictBookingProbability('test-client-123')
+
+      expect(prediction.probability).toBeGreaterThan(0.7) // Should be high for quick completion
+      expect(prediction.client_id).toBe('test-client-123')
+      expect(prediction.confidence).toBeGreaterThan(0.6)
+      expect(prediction.factors).toContain(
+        expect.objectContaining({
+          factor_type: 'quick_questionnaire_completion',
+          impact_score: expect.any(Number)
+        })
+      )
+    })
+
+    test('should predict low booking probability for 5+ day questionnaire delay', async () => {
+      // Client took 6 days to complete questionnaire (144 hours)
+      const delayedClient = {
+        ...mockClientData,
+        questionnaire_completed_at: new Date('2024-01-21T08:00:00Z'), // 6 days later
+        engagement_score: 40 // Lower engagement too
+      }
+
+      jest.spyOn(predictor as any, 'fetchClientData').mockResolvedValue(delayedClient)
+
+      const prediction = await predictor.predictBookingProbability('test-client-123')
+
+      expect(prediction.probability).toBeLessThan(0.3) // Should be low for delayed completion
+      expect(prediction.factors).toContain(
+        expect.objectContaining({
+          factor_type: 'quick_questionnaire_completion',
+          impact_score: expect.any(Number)
+        })
+      )
+    })
+
+    test('should handle client with no questionnaire completion', async () => {
+      const incompleteClient = {
+        ...mockClientData,
+        questionnaire_completed_at: null
+      }
+
+      jest.spyOn(predictor as any, 'fetchClientData').mockResolvedValue(incompleteClient)
+
+      const prediction = await predictor.predictBookingProbability('test-client-123')
+
+      expect(prediction.probability).toBeLessThan(0.4) // Should be low without completion
+      expect(prediction.confidence).toBeLessThan(0.8) // Lower confidence due to missing data
+    })
+  })
+
+  describe('Feature Extraction', () => {
+    test('should correctly extract timing features', () => {
+      const features = (predictor as any).extractFeatures(mockClientData)
+
+      expect(features.questionnaire_completion_speed).toBe(2) // 2 hours
+      expect(features.response_frequency).toBeGreaterThan(0)
+      expect(features.last_activity_recency).toBeGreaterThan(0)
+    })
+
+    test('should calculate engagement features correctly', () => {
+      const features = (predictor as any).extractFeatures(mockClientData)
+
+      expect(features.engagement_score_normalized).toBe(0.75) // 75/100
+      expect(features.session_depth).toBe(5) // 25 pages / 5 sessions
+      expect(features.total_interactions).toBe(18) // 7 + 8 + 3
+    })
+
+    test('should handle edge cases in feature extraction', () => {
+      const edgeCaseClient = {
+        ...mockClientData,
+        engagement_score: 0,
+        responses_count: 0,
+        page_views_total: 0,
+        response_time_avg: 0
+      }
+
+      const features = (predictor as any).extractFeatures(edgeCaseClient)
+
+      expect(features.engagement_score_normalized).toBe(0)
+      expect(features.session_depth).toBe(0)
+      expect(features.response_time_score).toBe(0)
+    })
+  })
+
+  describe('Prediction Model Logic', () => {
+    test('should implement the 24hr vs 5+ day requirement accurately', async () => {
+      // Test 24-hour completion
+      const quickClient = {
+        ...mockClientData,
+        questionnaire_completed_at: new Date('2024-01-15T20:00:00Z'), // 12 hours after contact
+        engagement_score: 85
+      }
+
+      // Test 5+ day delay
+      const slowClient = {
+        ...mockClientData,
+        questionnaire_completed_at: new Date('2024-01-20T08:00:00Z'), // 5 days later
+        engagement_score: 30
+      }
+
+      jest.spyOn(predictor as any, 'fetchClientData')
+        .mockResolvedValueOnce(quickClient)
+        .mockResolvedValueOnce(slowClient)
+
+      const quickPrediction = await predictor.predictBookingProbability('quick-client')
+      const slowPrediction = await predictor.predictBookingProbability('slow-client')
+
+      // The difference should be significant (targeting 80% vs 15% from requirements)
+      const probabilityDifference = quickPrediction.probability - slowPrediction.probability
+      expect(probabilityDifference).toBeGreaterThan(0.5) // At least 50% difference
+      
+      // Quick completion should be close to 80% target
+      expect(quickPrediction.probability).toBeGreaterThan(0.7)
+      
+      // Slow completion should be close to 15% target  
+      expect(slowPrediction.probability).toBeLessThan(0.3)
+    })
+
+    test('should apply venue booking status correctly', async () => {
+      const venueBookedClient = {
+        ...mockClientData,
+        venue_booked: true
+      }
+
+      jest.spyOn(predictor as any, 'fetchClientData').mockResolvedValue(venueBookedClient)
+
+      const prediction = await predictor.predictBookingProbability('venue-booked-client')
+
+      expect(prediction.probability).toBeGreaterThan(0.6) // Venue booking is strong signal
+      expect(prediction.factors).toContain(
+        expect.objectContaining({
+          factor_type: 'venue_urgency',
+          impact_score: expect.any(Number)
+        })
+      )
+    })
+  })
+
+  describe('Batch Processing', () => {
+    test('should handle batch predictions correctly', async () => {
+      const clientIds = ['client-1', 'client-2', 'client-3']
+      
+      jest.spyOn(predictor, 'predictBookingProbability')
+        .mockResolvedValueOnce({
+          client_id: 'client-1',
+          probability: 0.8,
+          confidence: 0.85,
+          factors: [],
+          risk_indicators: [],
+          model_version: '1.0.0',
+          prediction_date: new Date(),
+          inference_time_ms: 100
+        })
+        .mockResolvedValueOnce({
+          client_id: 'client-2', 
+          probability: 0.3,
+          confidence: 0.75,
+          factors: [],
+          risk_indicators: [],
+          model_version: '1.0.0',
+          prediction_date: new Date(),
+          inference_time_ms: 120
+        })
+        .mockResolvedValueOnce({
+          client_id: 'client-3',
+          probability: 0.6,
+          confidence: 0.80,
+          factors: [],
+          risk_indicators: [],
+          model_version: '1.0.0',
+          prediction_date: new Date(),
+          inference_time_ms: 90
+        })
+
+      const results = await predictor.batchPredictBookingProbability(clientIds)
+
+      expect(results).toHaveLength(3)
+      expect(results[0].client_id).toBe('client-1')
+      expect(results[1].client_id).toBe('client-2')
+      expect(results[2].client_id).toBe('client-3')
+    })
+
+    test('should handle batch processing errors gracefully', async () => {
+      const clientIds = ['valid-client', 'invalid-client']
+      
+      jest.spyOn(predictor, 'predictBookingProbability')
+        .mockResolvedValueOnce({
+          client_id: 'valid-client',
+          probability: 0.7,
+          confidence: 0.8,
+          factors: [],
+          risk_indicators: [],
+          model_version: '1.0.0',
+          prediction_date: new Date(),
+          inference_time_ms: 100
+        })
+        .mockRejectedValueOnce(new Error('Client not found'))
+
+      const results = await predictor.batchPredictBookingProbability(clientIds)
+
+      expect(results).toHaveLength(1) // Only successful prediction
+      expect(results[0].client_id).toBe('valid-client')
+    })
+  })
+
+  describe('Confidence Calculation', () => {
+    test('should calculate confidence based on data completeness', () => {
+      // High-quality data
+      const highQualityFeatures = {
+        total_interactions: 15,
+        questionnaire_completion_speed: 12,
+        engagement_score_normalized: 0.8,
+        response_time_score: 0.7
+      }
+
+      const highConfidence = (predictor as any).calculateConfidence(highQualityFeatures, 0.75)
+      expect(highConfidence).toBeGreaterThan(0.7)
+
+      // Low-quality data
+      const lowQualityFeatures = {
+        total_interactions: 1,
+        questionnaire_completion_speed: 0.5,
+        engagement_score_normalized: 0.2,
+        response_time_score: 0.1
+      }
+
+      const lowConfidence = (predictor as any).calculateConfidence(lowQualityFeatures, 0.25)
+      expect(lowConfidence).toBeLessThan(0.7)
+    })
+
+    test('should increase confidence for extreme predictions', () => {
+      const features = {
+        total_interactions: 10,
+        questionnaire_completion_speed: 24
+      }
+
+      const highProbConfidence = (predictor as any).calculateConfidence(features, 0.9)
+      const lowProbConfidence = (predictor as any).calculateConfidence(features, 0.1)
+      const midProbConfidence = (predictor as any).calculateConfidence(features, 0.5)
+
+      expect(highProbConfidence).toBeGreaterThan(midProbConfidence)
+      expect(lowProbConfidence).toBeGreaterThan(midProbConfidence)
+    })
+  })
+
+  describe('Risk Indicators', () => {
+    test('should identify risk indicators correctly', () => {
+      const riskFeatures = {
+        questionnaire_completion_speed: 144, // 6 days
+        last_activity_recency: 200, // 8+ days
+        engagement_score_normalized: 0.2
+      }
+
+      const riskClient = {
+        ...mockClientData,
+        engagement_score: 20
+      }
+
+      const riskIndicators = (predictor as any).identifyRiskIndicators(riskFeatures, riskClient)
+
+      expect(riskIndicators).toContain(
+        expect.objectContaining({
+          type: 'delayed_response',
+          severity: 'high'
+        })
+      )
+
+      expect(riskIndicators).toContain(
+        expect.objectContaining({
+          type: 'inactivity',
+          severity: 'medium'
+        })
+      )
+    })
+  })
+
+  describe('Performance Requirements', () => {
+    test('should complete predictions within performance requirements', async () => {
+      jest.spyOn(predictor as any, 'fetchClientData').mockResolvedValue(mockClientData)
+
+      const startTime = performance.now()
+      const prediction = await predictor.predictBookingProbability('test-client-123')
+      const endTime = performance.now()
+
+      expect(endTime - startTime).toBeLessThan(2000) // Should be under 2 seconds
+      expect(prediction.inference_time_ms).toBeLessThan(1000) // Internal tracking should be under 1 second
+    })
+  })
+
+  describe('Error Handling', () => {
+    test('should handle client data fetch errors', async () => {
+      jest.spyOn(predictor as any, 'fetchClientData').mockRejectedValue(new Error('Database error'))
+
+      await expect(predictor.predictBookingProbability('invalid-client'))
+        .rejects.toThrow('Database error')
+    })
+
+    test('should handle invalid client data gracefully', async () => {
+      const invalidClient = {
+        ...mockClientData,
+        engagement_score: null,
+        responses_count: null
+      }
+
+      jest.spyOn(predictor as any, 'fetchClientData').mockResolvedValue(invalidClient)
+
+      const prediction = await predictor.predictBookingProbability('invalid-client')
+
+      expect(prediction.probability).toBeGreaterThanOrEqual(0)
+      expect(prediction.probability).toBeLessThanOrEqual(1)
+      expect(prediction.confidence).toBeGreaterThanOrEqual(0.3) // Should have minimum confidence
+    })
+  })
+
+  describe('Caching', () => {
+    test('should cache predictions for performance', async () => {
+      const clientId = 'cached-client'
+      const mockPrediction: BookingPrediction = {
+        client_id: clientId,
+        probability: 0.75,
+        confidence: 0.85,
+        factors: [],
+        risk_indicators: [],
+        model_version: '1.0.0',
+        prediction_date: new Date(),
+        inference_time_ms: 100
+      }
+
+      // Mock the cache methods
+      jest.spyOn(predictor as any, 'getCachedPrediction')
+        .mockReturnValueOnce(null) // First call - no cache
+        .mockReturnValueOnce(mockPrediction) // Second call - cached
+
+      jest.spyOn(predictor as any, 'fetchClientData').mockResolvedValue(mockClientData)
+      jest.spyOn(predictor as any, 'setCachedPrediction').mockImplementation()
+
+      // First call should fetch from database
+      const firstCall = await predictor.predictBookingProbability(clientId)
+      
+      // Second call should return cached result
+      const secondCall = await predictor.predictBookingProbability(clientId)
+
+      expect(secondCall).toEqual(mockPrediction)
+    })
+  })
+
+  describe('Validation Against Historical Data', () => {
+    test('should validate predictions against outcomes', async () => {
+      // Mock validation data
+      const mockValidationData = [
+        { client_id: 'client-1', predicted_probability: 0.8, actual_outcome: 'booked' },
+        { client_id: 'client-2', predicted_probability: 0.3, actual_outcome: 'churned' },
+        { client_id: 'client-3', predicted_probability: 0.7, actual_outcome: 'booked' },
+        { client_id: 'client-4', predicted_probability: 0.2, actual_outcome: 'churned' }
+      ]
+
+      // Mock Supabase query
+      jest.spyOn(predictor['supabase'], 'from').mockReturnValue({
+        select: jest.fn().mockReturnValue({
+          gte: jest.fn().mockResolvedValue({
+            data: mockValidationData,
+            error: null
+          })
+        })
+      } as any)
+
+      const validationResults = await predictor.validateAgainstHistoricalData(30)
+
+      expect(validationResults.test_accuracy).toBeGreaterThan(0.8) // Should meet 80%+ requirement
+      expect(validationResults.validation_passed).toBe(true)
+      expect(validationResults.confusion_matrix).toHaveLength(2)
+      expect(validationResults.confusion_matrix[0]).toHaveLength(2)
+    })
+  })
+})

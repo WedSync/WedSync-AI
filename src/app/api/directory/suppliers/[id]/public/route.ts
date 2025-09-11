@@ -1,0 +1,291 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { id: string } },
+) {
+  try {
+    const supabase = await createClient();
+    const profileId = params.id;
+
+    // Get profile with related data
+    const { data: profile, error: profileError } = await supabase
+      .from('directory_supplier_profiles')
+      .select(
+        `
+        *,
+        directory_supplier_service_areas!inner(
+          id,
+          is_primary,
+          additional_fee,
+          directory_geographic_areas!inner(
+            id,
+            name,
+            display_name,
+            type,
+            parent_id
+          )
+        ),
+        directory_supplier_documents(
+          id,
+          document_type,
+          document_name,
+          file_url,
+          verification_status,
+          is_public
+        ),
+        directory_supplier_badges(
+          id,
+          badge_type,
+          badge_name,
+          badge_icon,
+          description,
+          awarded_at,
+          expires_at,
+          is_active
+        ),
+        directory_supplier_seo(
+          page_title,
+          meta_description,
+          meta_keywords,
+          og_title,
+          og_description,
+          og_image,
+          canonical_url,
+          custom_slug,
+          schema_markup
+        )
+      `,
+      )
+      .eq('id', profileId)
+      .eq('profile_status', 'published')
+      .single();
+
+    if (profileError || !profile) {
+      return NextResponse.json(
+        { error: 'Profile not found or not published' },
+        { status: 404 },
+      );
+    }
+
+    // Get completion data
+    const { data: completionData } = await supabase
+      .from('directory_profile_completion')
+      .select('*')
+      .eq('supplier_profile_id', profileId);
+
+    // Get supplier basic info
+    const { data: supplierInfo } = await supabase
+      .from('suppliers')
+      .select(
+        'business_name, description, website, phone, email, is_verified, average_rating, total_reviews',
+      )
+      .eq('id', profile.supplier_id)
+      .single();
+
+    // Increment profile views (fire and forget)
+    supabase
+      .from('directory_supplier_profiles')
+      .update({
+        profile_views: (profile.profile_views || 0) + 1,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', profileId)
+      .then();
+
+    // Filter documents to only show public ones
+    const publicDocuments =
+      profile.directory_supplier_documents?.filter(
+        (doc: any) => doc.is_public && doc.verification_status === 'approved',
+      ) || [];
+
+    // Filter active badges
+    const activeBadges =
+      profile.directory_supplier_badges?.filter(
+        (badge: any) =>
+          badge.is_active &&
+          (!badge.expires_at || new Date(badge.expires_at) > new Date()),
+      ) || [];
+
+    // Process service areas to include parent hierarchy
+    const processedServiceAreas = await Promise.all(
+      (profile.directory_supplier_service_areas || []).map(
+        async (area: any) => {
+          const hierarchy = await getGeographicHierarchy(
+            supabase,
+            area.directory_geographic_areas.id,
+          );
+          return {
+            ...area,
+            location: area.directory_geographic_areas,
+            hierarchy,
+          };
+        },
+      ),
+    );
+
+    // Calculate overall completion percentage
+    const overallCompletion =
+      completionData?.reduce(
+        (acc, section) => acc + (section.completion_percentage || 0),
+        0,
+      ) / (completionData?.length || 1);
+
+    // Prepare response data
+    const responseData = {
+      id: profile.id,
+      supplier_info: supplierInfo,
+
+      // Basic Information
+      legal_business_name: profile.legal_business_name,
+      trading_name: profile.trading_name,
+      established_year: profile.established_year,
+      business_structure: profile.business_structure,
+
+      // Service Information
+      service_offerings: profile.service_offerings || [],
+      specializations: profile.specializations || [],
+      languages_spoken: profile.languages_spoken || [],
+      service_areas: processedServiceAreas,
+      travel_policy: profile.travel_policy,
+
+      // Capacity & Availability
+      max_events_per_day: profile.max_events_per_day,
+      max_events_per_week: profile.max_events_per_week,
+      advance_booking_days: profile.advance_booking_days,
+      peak_season_months: profile.peak_season_months || [],
+
+      // Pricing
+      pricing_structure: profile.pricing_structure,
+      hourly_rate: profile.hourly_rate,
+      minimum_spend: profile.minimum_spend,
+      packages: profile.packages || [],
+      payment_terms: profile.payment_terms,
+      deposit_percentage: profile.deposit_percentage,
+      cancellation_policy: profile.cancellation_policy,
+
+      // Media
+      logo_url: profile.logo_url,
+      cover_image_url: profile.cover_image_url,
+      gallery_images: profile.gallery_images || [],
+      videos: profile.videos || [],
+      virtual_tour_url: profile.virtual_tour_url,
+
+      // Team & Contact
+      team_members: profile.team_members || [],
+      key_contact_name: profile.key_contact_name,
+      key_contact_role: profile.key_contact_role,
+      key_contact_email: profile.key_contact_email,
+      key_contact_phone: profile.key_contact_phone,
+
+      // Response Settings
+      response_time_commitment: profile.response_time_commitment,
+      preferred_contact_method: profile.preferred_contact_method,
+
+      // Marketing
+      unique_selling_points: profile.unique_selling_points || [],
+      style_tags: profile.style_tags || [],
+      ideal_client_description: profile.ideal_client_description,
+      featured_weddings: profile.featured_weddings || [],
+      press_mentions: profile.press_mentions || [],
+
+      // Awards & Credentials
+      awards: profile.awards || [],
+      professional_associations: profile.professional_associations || [],
+      accreditations: profile.accreditations || [],
+      insurance_details: profile.insurance_details,
+
+      // Verification & Trust
+      verification_status: profile.verification_status,
+      trust_score: profile.trust_score || 0,
+      badges: activeBadges,
+      public_documents: publicDocuments,
+
+      // Analytics (public)
+      profile_views: profile.profile_views || 0,
+      conversion_rate: profile.conversion_rate,
+
+      // Completion
+      profile_completion: Math.round(overallCompletion),
+      completion_sections: completionData,
+
+      // SEO Data
+      seo: profile.directory_supplier_seo?.[0] || null,
+
+      // Timestamps
+      created_at: profile.created_at,
+      updated_at: profile.updated_at,
+    };
+
+    return NextResponse.json(responseData);
+  } catch (error) {
+    console.error('Error fetching public profile:', error);
+    return NextResponse.json(
+      { error: 'Failed to fetch profile' },
+      { status: 500 },
+    );
+  }
+}
+
+// Helper function to build geographic hierarchy
+async function getGeographicHierarchy(
+  supabase: any,
+  areaId: string,
+): Promise<any[]> {
+  const hierarchy = [];
+  let currentId = areaId;
+
+  while (currentId) {
+    const { data: area } = await supabase
+      .from('directory_geographic_areas')
+      .select('id, name, display_name, type, parent_id')
+      .eq('id', currentId)
+      .single();
+
+    if (!area) break;
+
+    hierarchy.unshift({
+      id: area.id,
+      name: area.name,
+      display_name: area.display_name,
+      type: area.type,
+    });
+
+    currentId = area.parent_id;
+  }
+
+  return hierarchy;
+}
+
+// GET for slug-based access
+export async function GET_BY_SLUG(slug: string) {
+  try {
+    const supabase = await createClient();
+
+    // Find profile by slug
+    const { data: seoRecord } = await supabase
+      .from('directory_supplier_seo')
+      .select('supplier_profile_id')
+      .eq('custom_slug', slug)
+      .single();
+
+    if (!seoRecord) {
+      return NextResponse.json({ error: 'Profile not found' }, { status: 404 });
+    }
+
+    // Use the regular GET method with the profile ID
+    const mockRequest = new NextRequest(
+      'http://localhost/api/directory/suppliers/' +
+        seoRecord.supplier_profile_id +
+        '/public',
+    );
+    return GET(mockRequest, { params: { id: seoRecord.supplier_profile_id } });
+  } catch (error) {
+    console.error('Error fetching profile by slug:', error);
+    return NextResponse.json(
+      { error: 'Failed to fetch profile' },
+      { status: 500 },
+    );
+  }
+}

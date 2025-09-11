@@ -1,0 +1,782 @@
+/**
+ * @fileoverview Test suite for Enterprise Group Manager
+ * Tests hierarchical group management, permission inheritance, and role-based access
+ * @version 1.0.0
+ * @author WedSync Development Team
+ */
+
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { EnterpriseGroupManager } from '../EnterpriseGroupManager';
+import type {
+  GroupConfiguration,
+  GroupHierarchy,
+  PermissionSet,
+  GroupSyncResult,
+  AccessControlRule,
+} from '../EnterpriseGroupManager';
+import { createClient } from '@supabase/supabase-js';
+
+// Mock Supabase
+vi.mock('@supabase/supabase-js');
+const mockSupabase = {
+  from: vi.fn(() => ({
+    select: vi.fn(() => ({
+      eq: vi.fn(() => ({
+        single: vi.fn(() => ({ data: null, error: null })),
+        order: vi.fn(() => ({ data: [], error: null })),
+      })),
+      in: vi.fn(() => ({ data: [], error: null })),
+      contains: vi.fn(() => ({ data: [], error: null })),
+    })),
+    insert: vi.fn(() => ({ data: null, error: null })),
+    update: vi.fn(() => ({
+      eq: vi.fn(() => ({ data: null, error: null })),
+    })),
+    upsert: vi.fn(() => ({ data: null, error: null })),
+    delete: vi.fn(() => ({
+      eq: vi.fn(() => ({ data: null, error: null })),
+    })),
+  })),
+};
+
+vi.mocked(createClient).mockReturnValue(mockSupabase as any);
+
+describe('EnterpriseGroupManager', () => {
+  let groupManager: EnterpriseGroupManager;
+  let mockConfig: GroupConfiguration;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+
+    mockConfig = {
+      hierarchicalGroups: true,
+      permissionInheritance: true,
+      defaultPermissions: ['read_profile', 'update_profile'],
+      maxHierarchyDepth: 5,
+      groupTypes: {
+        business_unit: {
+          permissions: ['manage_team', 'view_analytics', 'budget_access'],
+          allowedChildren: ['department', 'project_team'],
+        },
+        department: {
+          permissions: ['department_management', 'resource_allocation'],
+          allowedChildren: ['team', 'project_team'],
+        },
+        team: {
+          permissions: ['team_collaboration', 'task_management'],
+          allowedChildren: [],
+        },
+        project_team: {
+          permissions: ['project_access', 'collaboration_tools'],
+          allowedChildren: [],
+        },
+      },
+      roleMapping: {
+        wedding_vendor: {
+          groups: ['vendors', 'wedding_services'],
+          permissions: [
+            'vendor_portal',
+            'booking_management',
+            'client_communication',
+          ],
+        },
+        venue_manager: {
+          groups: ['venues', 'wedding_services', 'facility_management'],
+          permissions: [
+            'venue_management',
+            'booking_calendar',
+            'facility_oversight',
+          ],
+        },
+        wedding_planner: {
+          groups: ['planners', 'coordination_team'],
+          permissions: [
+            'timeline_management',
+            'vendor_coordination',
+            'client_relations',
+          ],
+        },
+      },
+    };
+
+    groupManager = new EnterpriseGroupManager(
+      'fake-url',
+      'fake-key',
+      mockConfig,
+    );
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('Group Creation and Management', () => {
+    it('should create hierarchical group structure', async () => {
+      const groupHierarchy: GroupHierarchy = {
+        name: 'Wedding Services Division',
+        type: 'business_unit',
+        description: 'All wedding-related business operations',
+        permissions: [
+          'wedding_portfolio_access',
+          'client_management',
+          'vendor_coordination',
+        ],
+        children: [
+          {
+            name: 'Photography Department',
+            type: 'department',
+            description: 'Photography services and vendors',
+            permissions: ['photography_tools', 'image_management'],
+            children: [
+              {
+                name: 'Wedding Photographers',
+                type: 'team',
+                description: 'Professional wedding photographers',
+                permissions: ['shoot_scheduling', 'client_galleries'],
+              },
+              {
+                name: 'Portrait Photographers',
+                type: 'team',
+                description: 'Engagement and portrait photographers',
+                permissions: ['portrait_booking', 'studio_access'],
+              },
+            ],
+          },
+          {
+            name: 'Venues Department',
+            type: 'department',
+            description: 'Wedding venue partners',
+            permissions: ['venue_management', 'booking_calendar'],
+            children: [
+              {
+                name: 'Luxury Venues',
+                type: 'team',
+                description: 'High-end wedding venues',
+                permissions: ['premium_features', 'concierge_services'],
+              },
+            ],
+          },
+        ],
+      };
+
+      // Mock successful group creation
+      mockSupabase.from().insert.mockResolvedValue({
+        data: [{ id: 'group-123', name: 'Wedding Services Division' }],
+        error: null,
+      });
+
+      const result = await groupManager.createGroupHierarchy(groupHierarchy);
+
+      expect(result.success).toBe(true);
+      expect(result.rootGroupId).toBeDefined();
+      expect(result.totalGroupsCreated).toBe(5); // 1 root + 2 departments + 3 teams
+      expect(result.hierarchyDepth).toBe(3);
+    });
+
+    it('should update group permissions and inheritance', async () => {
+      const groupId = 'group-photography-dept';
+      const newPermissions: PermissionSet = {
+        inherited: ['wedding_portfolio_access', 'client_management'],
+        direct: ['photography_tools', 'image_management', 'equipment_booking'],
+        effective: [
+          'wedding_portfolio_access',
+          'client_management',
+          'photography_tools',
+          'image_management',
+          'equipment_booking',
+        ],
+      };
+
+      mockSupabase
+        .from()
+        .update()
+        .eq.mockResolvedValue({
+          data: [{ id: groupId, permissions: newPermissions.direct }],
+          error: null,
+        });
+
+      const result = await groupManager.updateGroupPermissions(
+        groupId,
+        newPermissions.direct,
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.effectivePermissions).toEqual(newPermissions.effective);
+    });
+
+    it('should enforce hierarchy depth limits', async () => {
+      const deepHierarchy: GroupHierarchy = {
+        name: 'Level 1',
+        type: 'business_unit',
+        children: [
+          {
+            name: 'Level 2',
+            type: 'department',
+            children: [
+              {
+                name: 'Level 3',
+                type: 'team',
+                children: [
+                  {
+                    name: 'Level 4',
+                    type: 'project_team',
+                    children: [
+                      {
+                        name: 'Level 5',
+                        type: 'project_team',
+                        children: [
+                          {
+                            name: 'Level 6', // Exceeds maxHierarchyDepth of 5
+                            type: 'project_team',
+                          },
+                        ],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const result = await groupManager.createGroupHierarchy(deepHierarchy);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('maximum hierarchy depth');
+    });
+  });
+
+  describe('Permission Inheritance', () => {
+    it('should calculate inherited permissions correctly', async () => {
+      const parentGroup = {
+        id: 'parent-group',
+        name: 'Wedding Services',
+        permissions: ['client_access', 'booking_management', 'portfolio_view'],
+      };
+
+      const childGroup = {
+        id: 'child-group',
+        name: 'Photography Team',
+        parentId: 'parent-group',
+        permissions: ['camera_equipment', 'editing_software'],
+      };
+
+      // Mock parent group retrieval
+      mockSupabase.from().select().eq().single.mockResolvedValueOnce({
+        data: parentGroup,
+        error: null,
+      });
+
+      const effectivePermissions =
+        await groupManager.calculateEffectivePermissions(childGroup.id);
+
+      expect(effectivePermissions.inherited).toEqual(parentGroup.permissions);
+      expect(effectivePermissions.direct).toEqual(childGroup.permissions);
+      expect(effectivePermissions.effective).toEqual([
+        ...parentGroup.permissions,
+        ...childGroup.permissions,
+      ]);
+    });
+
+    it('should handle multi-level inheritance', async () => {
+      const grandparentPermissions = ['system_access', 'data_read'];
+      const parentPermissions = ['team_management', 'resource_allocation'];
+      const childPermissions = ['task_assignment', 'progress_tracking'];
+
+      // Mock hierarchy retrieval
+      mockSupabase
+        .from()
+        .select()
+        .mockResolvedValueOnce({
+          data: [
+            {
+              id: 'grandparent',
+              permissions: grandparentPermissions,
+              parent_id: null,
+            },
+            {
+              id: 'parent',
+              permissions: parentPermissions,
+              parent_id: 'grandparent',
+            },
+            { id: 'child', permissions: childPermissions, parent_id: 'parent' },
+          ],
+          error: null,
+        });
+
+      const effectivePermissions =
+        await groupManager.calculateEffectivePermissions('child');
+
+      expect(effectivePermissions.effective).toEqual([
+        ...grandparentPermissions,
+        ...parentPermissions,
+        ...childPermissions,
+      ]);
+      expect(effectivePermissions.inheritanceChain).toHaveLength(3);
+    });
+
+    it('should detect and resolve permission conflicts', async () => {
+      const conflictingPermissions = {
+        inherited: ['read_only_access', 'limited_editing'],
+        direct: ['full_editing_access', 'admin_privileges'],
+        conflicts: [
+          {
+            permission: 'editing_access',
+            inheritedLevel: 'limited',
+            directLevel: 'full',
+            resolution: 'use_most_permissive',
+          },
+        ],
+      };
+
+      const resolution = await groupManager.resolvePermissionConflicts(
+        conflictingPermissions,
+      );
+
+      expect(resolution.resolvedPermissions).toContain('full_editing_access');
+      expect(resolution.conflictsResolved).toBe(1);
+      expect(resolution.strategy).toBe('use_most_permissive');
+    });
+  });
+
+  describe('Group Synchronization', () => {
+    it('should sync groups from identity provider', async () => {
+      const providerGroups = [
+        {
+          id: 'okta-group-1',
+          name: 'Wedding Photographers',
+          description: 'Professional wedding photographers',
+          members: ['user1', 'user2', 'user3'],
+          attributes: {
+            businessType: 'photography',
+            serviceLevel: 'premium',
+          },
+        },
+        {
+          id: 'okta-group-2',
+          name: 'Venue Managers',
+          description: 'Wedding venue management team',
+          members: ['user4', 'user5'],
+          attributes: {
+            businessType: 'venue',
+            facilityType: 'indoor_outdoor',
+          },
+        },
+      ];
+
+      const mockProvider = {
+        getGroups: vi.fn().mockResolvedValue(providerGroups),
+        getGroupMembers: vi.fn().mockImplementation((groupId) => {
+          const group = providerGroups.find((g) => g.id === groupId);
+          return Promise.resolve(group?.members || []);
+        }),
+      };
+
+      groupManager.registerProvider('okta', mockProvider);
+
+      const syncResult = await groupManager.syncGroupsFromProvider('okta');
+
+      expect(syncResult.success).toBe(true);
+      expect(syncResult.totalGroups).toBe(2);
+      expect(syncResult.syncedGroups).toBe(2);
+      expect(syncResult.totalMembers).toBe(5);
+    });
+
+    it('should handle group membership conflicts during sync', async () => {
+      const conflictingMemberships = [
+        {
+          userId: 'user-123',
+          groupId: 'photographers',
+          provider: 'okta',
+          membershipType: 'direct',
+        },
+        {
+          userId: 'user-123',
+          groupId: 'venues',
+          provider: 'azure-ad',
+          membershipType: 'inherited',
+        },
+      ];
+
+      const conflictResolution = await groupManager.resolveMembershipConflicts(
+        conflictingMemberships,
+      );
+
+      expect(conflictResolution.strategy).toBe('merge_memberships');
+      expect(conflictResolution.resolvedMemberships).toHaveLength(2);
+      expect(conflictResolution.user?.groups).toContain('photographers');
+      expect(conflictResolution.user?.groups).toContain('venues');
+    });
+  });
+
+  describe('Wedding Industry Group Management', () => {
+    it('should create wedding vendor group structure', async () => {
+      const vendorGroupStructure = {
+        name: 'Wedding Vendor Network',
+        type: 'business_unit',
+        children: [
+          {
+            name: 'Photography Services',
+            type: 'department',
+            children: [
+              { name: 'Wedding Photographers', type: 'team' },
+              { name: 'Engagement Photographers', type: 'team' },
+              { name: 'Event Photographers', type: 'team' },
+            ],
+          },
+          {
+            name: 'Venue Services',
+            type: 'department',
+            children: [
+              { name: 'Indoor Venues', type: 'team' },
+              { name: 'Outdoor Venues', type: 'team' },
+              { name: 'Destination Venues', type: 'team' },
+            ],
+          },
+          {
+            name: 'Planning Services',
+            type: 'department',
+            children: [
+              { name: 'Full-Service Planners', type: 'team' },
+              { name: 'Day-of Coordinators', type: 'team' },
+            ],
+          },
+        ],
+      };
+
+      const result =
+        await groupManager.createWeddingVendorGroups(vendorGroupStructure);
+
+      expect(result.success).toBe(true);
+      expect(result.serviceCategories).toEqual([
+        'Photography',
+        'Venue',
+        'Planning',
+      ]);
+      expect(result.totalVendorGroups).toBe(8); // 3 departments + 5 teams
+    });
+
+    it('should assign wedding-specific permissions', async () => {
+      const photographerGroup = 'wedding-photographers';
+      const weddingPermissions = [
+        'portfolio_management',
+        'booking_calendar',
+        'client_galleries',
+        'contract_management',
+        'payment_processing',
+        'timeline_coordination',
+        'venue_communication',
+      ];
+
+      const result = await groupManager.assignWeddingPermissions(
+        photographerGroup,
+        weddingPermissions,
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.assignedPermissions).toEqual(weddingPermissions);
+      expect(result.weddingSpecificFeatures).toContain('timeline_coordination');
+    });
+
+    it('should manage wedding team hierarchies', async () => {
+      const weddingTeamHierarchy = {
+        weddingId: 'wedding-123',
+        leadPlanner: {
+          userId: 'planner-sarah',
+          permissions: [
+            'full_access',
+            'client_communication',
+            'vendor_management',
+          ],
+        },
+        coordinators: [
+          {
+            userId: 'coordinator-mike',
+            permissions: ['timeline_management', 'vendor_coordination'],
+          },
+          {
+            userId: 'coordinator-jane',
+            permissions: ['guest_management', 'day_of_coordination'],
+          },
+        ],
+        vendors: [
+          {
+            userId: 'photographer-john',
+            vendorType: 'photographer',
+            permissions: [
+              'timeline_view',
+              'client_contact',
+              'deliverable_upload',
+            ],
+          },
+          {
+            userId: 'venue-manager',
+            vendorType: 'venue',
+            permissions: [
+              'facility_access',
+              'setup_coordination',
+              'guest_services',
+            ],
+          },
+        ],
+      };
+
+      const result =
+        await groupManager.createWeddingTeamStructure(weddingTeamHierarchy);
+
+      expect(result.success).toBe(true);
+      expect(result.teamMemberCount).toBe(5); // 1 planner + 2 coordinators + 2 vendors
+      expect(result.permissionStructure?.leadPlanner).toBeDefined();
+      expect(result.permissionStructure?.coordinators).toHaveLength(2);
+      expect(result.permissionStructure?.vendors).toHaveLength(2);
+    });
+  });
+
+  describe('Access Control Rules', () => {
+    it('should create conditional access rules', async () => {
+      const accessRule: AccessControlRule = {
+        name: 'Premium Vendor Access',
+        description: 'Enhanced features for premium wedding vendors',
+        conditions: [
+          { field: 'subscription_tier', operator: 'equals', value: 'premium' },
+          {
+            field: 'verification_status',
+            operator: 'equals',
+            value: 'verified',
+          },
+          {
+            field: 'business_type',
+            operator: 'in',
+            value: ['photographer', 'venue', 'florist'],
+          },
+        ],
+        permissions: [
+          'premium_marketing_tools',
+          'priority_support',
+          'advanced_analytics',
+          'featured_listings',
+          'bulk_communication_tools',
+        ],
+        restrictions: [
+          { resource: 'api_calls', limit: 10000, period: 'monthly' },
+          { resource: 'storage', limit: 50, unit: 'GB' },
+        ],
+      };
+
+      const result = await groupManager.createAccessControlRule(accessRule);
+
+      expect(result.success).toBe(true);
+      expect(result.ruleId).toBeDefined();
+      expect(result.affectedUsers).toBeDefined();
+    });
+
+    it('should evaluate access control rules for users', async () => {
+      const user = {
+        id: 'vendor-123',
+        subscription_tier: 'premium',
+        verification_status: 'verified',
+        business_type: 'photographer',
+        groups: ['wedding_photographers', 'premium_vendors'],
+      };
+
+      const evaluation = await groupManager.evaluateUserAccess(user.id);
+
+      expect(evaluation.hasAccess).toBe(true);
+      expect(evaluation.matchedRules).toContain('Premium Vendor Access');
+      expect(evaluation.effectivePermissions).toContain(
+        'premium_marketing_tools',
+      );
+      expect(evaluation.restrictions?.api_calls?.limit).toBe(10000);
+    });
+
+    it('should handle time-based access restrictions', async () => {
+      const timeBasedRule: AccessControlRule = {
+        name: 'Weekend Venue Access',
+        description: 'Special access during wedding season weekends',
+        conditions: [
+          { field: 'business_type', operator: 'equals', value: 'venue' },
+          {
+            field: 'day_of_week',
+            operator: 'in',
+            value: ['saturday', 'sunday'],
+          },
+          {
+            field: 'season',
+            operator: 'in',
+            value: ['spring', 'summer', 'fall'],
+          },
+        ],
+        permissions: ['weekend_premium_support', 'priority_booking_management'],
+        timeRestrictions: {
+          allowedHours: { start: 6, end: 23 },
+          timezone: 'America/New_York',
+          exceptions: ['christmas', 'new_years'],
+        },
+      };
+
+      // Mock current time as Saturday afternoon in wedding season
+      const mockDate = new Date('2024-06-15T14:00:00-04:00'); // Saturday
+      vi.setSystemTime(mockDate);
+
+      const evaluation = await groupManager.evaluateTimeBasedAccess(
+        'venue-123',
+        timeBasedRule,
+      );
+
+      expect(evaluation.hasAccess).toBe(true);
+      expect(evaluation.reason).toContain('within allowed hours');
+      expect(evaluation.expiresAt).toBeDefined();
+    });
+  });
+
+  describe('Group Analytics and Reporting', () => {
+    it('should generate group membership analytics', async () => {
+      // Mock group membership data
+      mockSupabase
+        .from()
+        .select()
+        .mockResolvedValue({
+          data: [
+            {
+              group_id: 'photographers',
+              user_count: 150,
+              business_type: 'photography',
+            },
+            { group_id: 'venues', user_count: 75, business_type: 'venue' },
+            { group_id: 'planners', user_count: 45, business_type: 'planning' },
+            {
+              group_id: 'florists',
+              user_count: 30,
+              business_type: 'floristry',
+            },
+          ],
+          error: null,
+        });
+
+      const analytics = await groupManager.generateGroupAnalytics();
+
+      expect(analytics.totalUsers).toBe(300);
+      expect(analytics.groupDistribution?.photographers).toBe(150);
+      expect(analytics.businessTypeBreakdown?.photography).toBe(150);
+      expect(analytics.largestGroup).toBe('photographers');
+    });
+
+    it('should track permission usage patterns', async () => {
+      const permissionUsage = await groupManager.analyzePermissionUsage({
+        timeRange: { from: new Date('2024-01-01'), to: new Date('2024-01-31') },
+        groupFilter: ['wedding_vendors'],
+      });
+
+      expect(permissionUsage.mostUsedPermissions).toBeDefined();
+      expect(permissionUsage.leastUsedPermissions).toBeDefined();
+      expect(permissionUsage.usageByGroup).toBeDefined();
+      expect(permissionUsage.trendsOverTime).toBeDefined();
+    });
+
+    it('should identify group management insights', async () => {
+      const insights = await groupManager.generateManagementInsights();
+
+      expect(insights.oversizedGroups).toBeDefined();
+      expect(insights.undersizedGroups).toBeDefined();
+      expect(insights.duplicatePermissions).toBeDefined();
+      expect(insights.optimizationRecommendations).toBeDefined();
+      expect(insights.securityConcerns).toBeDefined();
+    });
+  });
+
+  describe('Error Handling and Validation', () => {
+    it('should validate group creation constraints', async () => {
+      const invalidGroup = {
+        name: '', // Empty name
+        type: 'invalid_type',
+        permissions: ['non_existent_permission'],
+        parent: 'non_existent_parent',
+      };
+
+      const result = await groupManager.createGroup(invalidGroup);
+
+      expect(result.success).toBe(false);
+      expect(result.validationErrors).toBeDefined();
+      expect(result.validationErrors?.name).toContain('required');
+      expect(result.validationErrors?.type).toContain('invalid type');
+      expect(result.validationErrors?.permissions).toContain(
+        'non_existent_permission',
+      );
+    });
+
+    it('should prevent circular group hierarchies', async () => {
+      // Attempt to create a circular reference
+      const circularHierarchy = {
+        name: 'Group A',
+        children: [
+          {
+            name: 'Group B',
+            children: [
+              {
+                name: 'Group C',
+                children: [
+                  {
+                    name: 'Group A', // Circular reference
+                    type: 'team',
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const result = await groupManager.createGroupHierarchy(circularHierarchy);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('circular reference');
+    });
+
+    it('should handle group deletion with member cleanup', async () => {
+      const groupId = 'deprecated-group';
+      const membersToReassign = ['user1', 'user2', 'user3'];
+      const targetGroup = 'default-vendors';
+
+      // Mock group members retrieval
+      mockSupabase
+        .from()
+        .select()
+        .eq.mockResolvedValueOnce({
+          data: membersToReassign.map((userId) => ({
+            user_id: userId,
+            group_id: groupId,
+          })),
+          error: null,
+        });
+
+      const result = await groupManager.deleteGroup(groupId, {
+        reassignTo: targetGroup,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.membersReassigned).toBe(3);
+      expect(result.targetGroup).toBe(targetGroup);
+    });
+  });
+
+  describe('Health Monitoring', () => {
+    it('should monitor group sync health', async () => {
+      const healthStatus = await groupManager.checkSyncHealth();
+
+      expect(healthStatus.overall).toBeDefined();
+      expect(healthStatus.providers).toBeDefined();
+      expect(healthStatus.lastSyncTime).toBeDefined();
+      expect(healthStatus.pendingOperations).toBeDefined();
+    });
+
+    it('should detect group management anomalies', async () => {
+      const anomalies = await groupManager.detectAnomalies();
+
+      expect(anomalies.unusualGroupSizes).toBeDefined();
+      expect(anomalies.permissionSpread).toBeDefined();
+      expect(anomalies.membershipChanges).toBeDefined();
+      expect(anomalies.recommendations).toBeDefined();
+    });
+  });
+});

@@ -1,0 +1,199 @@
+/**
+ * WS-145: Performance Session Analytics API
+ * Endpoint for collecting session-level performance data
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+
+interface SessionMetrics {
+  metrics: Record<string, any[]>;
+  bundleStats: any[];
+  alerts: any[];
+  sessionEnd: number;
+  url: string;
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = createClient();
+    
+    // Get user session
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    
+    if (authError) {
+      console.error('Auth error:', authError);
+    }
+
+    const sessionData: SessionMetrics = await request.json();
+    const userAgent = request.headers.get('user-agent') || '';
+    
+    // Generate session ID based on timestamp and user
+    const sessionId = `${user?.id || 'anon'}-${sessionData.sessionEnd}`;
+    
+    // Calculate session summary metrics
+    const allMetrics = Object.values(sessionData.metrics).flat();
+    const lcpMetrics = allMetrics.filter(m => m.name === 'LCP');
+    const fidMetrics = allMetrics.filter(m => m.name === 'FID');
+    const clsMetrics = allMetrics.filter(m => m.name === 'CLS');
+    
+    const avgLcp = lcpMetrics.length > 0 ? 
+      lcpMetrics.reduce((sum, m) => sum + m.value, 0) / lcpMetrics.length : null;
+    const avgFid = fidMetrics.length > 0 ? 
+      fidMetrics.reduce((sum, m) => sum + m.value, 0) / fidMetrics.length : null;
+    const avgCls = clsMetrics.length > 0 ? 
+      clsMetrics.reduce((sum, m) => sum + m.value, 0) / clsMetrics.length : null;
+
+    // Determine overall session rating
+    const ratings = allMetrics.map(m => m.rating);
+    const overallRating = ratings.includes('poor') ? 'poor' : 
+      ratings.includes('needs-improvement') ? 'needs-improvement' : 'good';
+
+    // Get device type from first metric or user agent
+    const primaryDeviceType = allMetrics.length > 0 ? 
+      allMetrics[0].deviceType : 
+      /Mobile|Android|iPhone|iPad/i.test(userAgent) ? 'mobile' : 'desktop';
+
+    // Get connection type
+    const connectionTypes = allMetrics.map(m => m.connectionType).filter(Boolean);
+    const primaryConnectionType = connectionTypes.length > 0 ? 
+      connectionTypes[0] : null;
+
+    // Calculate session duration (we don't have session start, so estimate from first metric)
+    const timestamps = allMetrics.map(m => m.timestamp).filter(Boolean);
+    const sessionStart = timestamps.length > 0 ? Math.min(...timestamps) : sessionData.sessionEnd;
+    const sessionDuration = sessionData.sessionEnd - sessionStart;
+
+    // Insert or update performance session
+    const { error: sessionError } = await supabase
+      .from('performance_sessions')
+      .upsert({
+        session_id: sessionId,
+        user_id: user?.id || null,
+        total_page_views: Object.keys(sessionData.metrics).length,
+        avg_lcp_score: avgLcp,
+        avg_fid_score: avgFid,
+        avg_cls_score: avgCls,
+        overall_session_rating: overallRating,
+        session_start: new Date(sessionStart).toISOString(),
+        session_end: new Date(sessionData.sessionEnd).toISOString(),
+        session_duration_ms: sessionDuration,
+        primary_device_type: primaryDeviceType,
+        primary_connection_type: primaryConnectionType,
+        user_agent: userAgent
+      }, {
+        onConflict: 'session_id'
+      });
+
+    if (sessionError) {
+      console.error('Error saving performance session:', sessionError);
+      return NextResponse.json(
+        { error: 'Failed to save session data' },
+        { status: 500 }
+      );
+    }
+
+    // Log session summary for monitoring
+    console.log(`Performance session completed: ${sessionId}`, {
+      pageViews: Object.keys(sessionData.metrics).length,
+      avgLcp,
+      avgFid,
+      avgCls,
+      overallRating,
+      duration: sessionDuration,
+      deviceType: primaryDeviceType,
+      alertsCount: sessionData.alerts.length
+    });
+
+    return NextResponse.json({ 
+      success: true,
+      sessionId,
+      summary: {
+        pageViews: Object.keys(sessionData.metrics).length,
+        avgLcp,
+        avgFid,
+        avgCls,
+        overallRating,
+        duration: sessionDuration,
+        alertsCount: sessionData.alerts.length
+      }
+    });
+
+  } catch (error) {
+    console.error('Performance session analytics error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = createClient();
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    const url = new URL(request.url);
+    const limit = Math.min(parseInt(url.searchParams.get('limit') || '50'), 100);
+    const days = Math.min(parseInt(url.searchParams.get('days') || '7'), 30);
+    
+    // Get recent performance sessions
+    const { data: sessions, error } = await supabase
+      .from('performance_sessions')
+      .select('*')
+      .eq('user_id', user.id)
+      .gte('session_start', new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString())
+      .order('session_start', { ascending: false })
+      .limit(limit);
+
+    if (error) {
+      console.error('Error fetching performance sessions:', error);
+      return NextResponse.json(
+        { error: 'Failed to fetch session data' },
+        { status: 500 }
+      );
+    }
+
+    // Calculate aggregate statistics
+    const totalSessions = sessions?.length || 0;
+    const avgSessionDuration = totalSessions > 0 ? 
+      sessions!.reduce((sum, s) => sum + (s.session_duration_ms || 0), 0) / totalSessions : 0;
+    
+    const ratingCounts = sessions?.reduce((counts, session) => {
+      const rating = session.overall_session_rating || 'good';
+      counts[rating] = (counts[rating] || 0) + 1;
+      return counts;
+    }, {} as Record<string, number>) || {};
+
+    const deviceCounts = sessions?.reduce((counts, session) => {
+      const device = session.primary_device_type || 'desktop';
+      counts[device] = (counts[device] || 0) + 1;
+      return counts;
+    }, {} as Record<string, number>) || {};
+
+    return NextResponse.json({
+      sessions: sessions || [],
+      summary: {
+        totalSessions,
+        avgSessionDuration,
+        ratingDistribution: ratingCounts,
+        deviceDistribution: deviceCounts,
+        timeRange: `${days} days`
+      }
+    });
+
+  } catch (error) {
+    console.error('Performance session GET error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}

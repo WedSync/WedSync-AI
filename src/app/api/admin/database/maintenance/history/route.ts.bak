@@ -1,0 +1,577 @@
+/**
+ * WS-234 Database Maintenance History API
+ * GET /api/admin/database/maintenance/history
+ * 
+ * Retrieve database maintenance history, scheduled operations, and recommendations
+ * Admin-only access with filtering and pagination
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import { ratelimit } from '@/lib/ratelimit';
+
+// Rate limiting: 30 requests per minute for maintenance history
+const maintenanceHistoryRateLimit = ratelimit({
+  limiter: 'sliding_window_log',
+  max: 30,
+  window: '1 m',
+});
+
+interface MaintenanceAction {
+  id: string;
+  maintenanceType: string;
+  targetTable: string;
+  targetIndex?: string;
+  status: 'running' | 'completed' | 'failed';
+  startedAt: string;
+  completedAt?: string;
+  duration?: number;
+  beforeStats?: Record<string, any>;
+  afterStats?: Record<string, any>;
+  spaceReclaimedBytes: number;
+  errorMessage?: string;
+  initiatedBy: string;
+  weddingSeasonContext: boolean;
+}
+
+interface ScheduledMaintenance {
+  id: string;
+  scheduledFor: string;
+  maintenanceType: string;
+  targetTable: string;
+  priority: 'low' | 'medium' | 'high' | 'critical';
+  estimatedDuration: string;
+  weddingSeasonSafe: boolean;
+  prerequisites: string[];
+  description: string;
+}
+
+interface MaintenanceRecommendation {
+  id: string;
+  recommendationType: string;
+  targetTable: string;
+  priority: 'low' | 'medium' | 'high' | 'critical';
+  estimatedImpact: string;
+  reason: string;
+  action: string;
+  estimatedDuration: string;
+  weddingSeasonSafe: boolean;
+  lastRecommendedAt: string;
+  issueDetectedAt: string;
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    // Rate limiting check
+    const { success, limit, reset, remaining } = await maintenanceHistoryRateLimit.limit(
+      request.ip || 'anonymous'
+    );
+
+    if (!success) {
+      return NextResponse.json(
+        { 
+          error: 'Rate limit exceeded for maintenance history',
+          limit,
+          reset,
+          remaining: 0
+        },
+        { 
+          status: 429,
+          headers: {
+            'X-RateLimit-Limit': limit.toString(),
+            'X-RateLimit-Remaining': '0',
+            'X-RateLimit-Reset': reset.toString(),
+          }
+        }
+      );
+    }
+
+    // Initialize Supabase client
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
+
+    // Verify authentication and admin role
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Authentication required for maintenance history access' },
+        { status: 401 }
+      );
+    }
+
+    // Check admin role
+    const { data: profile, error: profileError } = await supabase
+      .from('user_profiles')
+      .select('role')
+      .eq('id', user.id)
+      .single();
+
+    if (profileError || profile?.role !== 'admin') {
+      return NextResponse.json(
+        { error: 'Admin access required for maintenance history' },
+        { status: 403 }
+      );
+    }
+
+    // Parse query parameters
+    const searchParams = request.nextUrl.searchParams;
+    const limit_param = parseInt(searchParams.get('limit') || '50');
+    const offset = parseInt(searchParams.get('offset') || '0');
+    const statusFilter = searchParams.get('status') || null;
+    const typeFilter = searchParams.get('type') || null;
+    const tableFilter = searchParams.get('table') || null;
+    const dateFrom = searchParams.get('dateFrom') || null;
+    const dateTo = searchParams.get('dateTo') || null;
+    const includeScheduled = searchParams.get('includeScheduled') === 'true';
+    const includeRecommendations = searchParams.get('includeRecommendations') === 'true';
+
+    // Validate parameters
+    const limitValue = Math.min(Math.max(limit_param, 1), 100); // Between 1 and 100
+
+    // Get maintenance history
+    const recentActions = await getMaintenanceHistory(
+      supabase, 
+      limitValue, 
+      offset, 
+      {
+        status: statusFilter,
+        type: typeFilter,
+        table: tableFilter,
+        dateFrom,
+        dateTo
+      }
+    );
+
+    // Get scheduled maintenance if requested
+    const scheduledActions = includeScheduled ? 
+      await getScheduledMaintenance(supabase) : [];
+
+    // Get maintenance recommendations if requested
+    const recommendations = includeRecommendations ? 
+      await getMaintenanceRecommendations(supabase) : [];
+
+    // Get summary statistics
+    const summaryStats = await getMaintenanceSummaryStats(supabase);
+
+    const response = {
+      success: true,
+      data: {
+        recentActions,
+        scheduledActions,
+        recommendations,
+        summary: summaryStats,
+        pagination: {
+          limit: limitValue,
+          offset,
+          total: recentActions.length,
+          hasMore: recentActions.length === limitValue
+        },
+        filters: {
+          status: statusFilter,
+          type: typeFilter,
+          table: tableFilter,
+          dateRange: dateFrom && dateTo ? { from: dateFrom, to: dateTo } : null
+        },
+        metadata: {
+          weddingSeasonActive: isWeddingSeasonActive(),
+          safeMaintenanceWindow: getSafeMaintenanceWindow(),
+          nextRecommendedMaintenance: await getNextRecommendedMaintenance(supabase),
+          criticalMaintenancePending: recommendations.filter(r => r.priority === 'critical').length
+        }
+      },
+      timestamp: new Date().toISOString()
+    };
+
+    return NextResponse.json(response, {
+      headers: {
+        'Cache-Control': 'no-cache, must-revalidate',
+        'X-RateLimit-Limit': limit.toString(),
+        'X-RateLimit-Remaining': remaining.toString(),
+        'X-RateLimit-Reset': reset.toString(),
+      }
+    });
+
+  } catch (error) {
+    console.error('Maintenance history API error:', error);
+    
+    return NextResponse.json(
+      { 
+        error: 'Internal server error',
+        message: 'Failed to retrieve maintenance history',
+        timestamp: new Date().toISOString()
+      },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * Get maintenance history with filtering
+ */
+async function getMaintenanceHistory(
+  supabase: any, 
+  limit: number, 
+  offset: number, 
+  filters: any
+): Promise<MaintenanceAction[]> {
+  try {
+    let query = supabase
+      .from('database_maintenance_log')
+      .select('*')
+      .order('started_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    // Apply filters
+    if (filters.status) {
+      query = query.eq('status', filters.status);
+    }
+    if (filters.type) {
+      query = query.eq('maintenance_type', filters.type);
+    }
+    if (filters.table) {
+      query = query.eq('target_table', filters.table);
+    }
+    if (filters.dateFrom) {
+      query = query.gte('started_at', filters.dateFrom);
+    }
+    if (filters.dateTo) {
+      query = query.lte('started_at', filters.dateTo);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    return (data || []).map((record: any) => ({
+      id: record.id,
+      maintenanceType: record.maintenance_type,
+      targetTable: record.target_table,
+      targetIndex: record.target_index,
+      status: record.status,
+      startedAt: record.started_at,
+      completedAt: record.completed_at,
+      duration: record.completed_at && record.started_at ? 
+        new Date(record.completed_at).getTime() - new Date(record.started_at).getTime() : 
+        undefined,
+      beforeStats: record.before_stats,
+      afterStats: record.after_stats,
+      spaceReclaimedBytes: record.space_reclaimed_bytes || 0,
+      errorMessage: record.error_message,
+      initiatedBy: record.initiated_by,
+      weddingSeasonContext: record.wedding_season_context
+    }));
+
+  } catch (error) {
+    console.error('Failed to get maintenance history:', error);
+    return [];
+  }
+}
+
+/**
+ * Get scheduled maintenance operations
+ */
+async function getScheduledMaintenance(supabase: any): Promise<ScheduledMaintenance[]> {
+  try {
+    // This would typically come from a scheduled_maintenance table
+    // For now, we'll generate recommendations based on current database state
+    
+    const scheduledOps: ScheduledMaintenance[] = [];
+    
+    // Check for tables that need regular VACUUM
+    const { data: bloatedTables } = await supabase.rpc('execute_sql', {
+      sql: `
+        SELECT 
+          schemaname,
+          tablename,
+          n_dead_tup,
+          n_tup_upd + n_tup_del as total_changes,
+          CASE 
+            WHEN n_dead_tup > 10000 THEN 'high'
+            WHEN n_dead_tup > 5000 THEN 'medium'
+            ELSE 'low'
+          END as priority
+        FROM pg_stat_user_tables
+        WHERE n_dead_tup > 1000
+        ORDER BY n_dead_tup DESC
+        LIMIT 10;
+      `
+    });
+
+    if (bloatedTables && bloatedTables.length > 0) {
+      bloatedTables.forEach((table: any, index: number) => {
+        const scheduledFor = new Date();
+        scheduledFor.setDate(scheduledFor.getDate() + (index + 1)); // Spread over next few days
+        
+        // Don't schedule on Saturdays (wedding days)
+        if (scheduledFor.getDay() === 6) {
+          scheduledFor.setDate(scheduledFor.getDate() + 2); // Move to Monday
+        }
+
+        scheduledOps.push({
+          id: `scheduled_vacuum_${table.tablename}`,
+          scheduledFor: scheduledFor.toISOString(),
+          maintenanceType: 'vacuum_table',
+          targetTable: table.tablename,
+          priority: table.priority,
+          estimatedDuration: table.n_dead_tup > 50000 ? '15-30 minutes' : '5-15 minutes',
+          weddingSeasonSafe: !isWeddingCriticalTable(table.tablename),
+          prerequisites: ['Low database activity', 'No active long-running queries'],
+          description: `VACUUM ${table.tablename} - ${table.n_dead_tup} dead tuples to clean up`
+        });
+      });
+    }
+
+    return scheduledOps;
+
+  } catch (error) {
+    console.error('Failed to get scheduled maintenance:', error);
+    return [];
+  }
+}
+
+/**
+ * Get maintenance recommendations
+ */
+async function getMaintenanceRecommendations(supabase: any): Promise<MaintenanceRecommendation[]> {
+  try {
+    const recommendations: MaintenanceRecommendation[] = [];
+
+    // Check for unused indexes
+    const { data: unusedIndexes } = await supabase.rpc('execute_sql', {
+      sql: `
+        SELECT 
+          schemaname,
+          tablename,
+          indexname,
+          pg_relation_size(indexrelid) as size_bytes,
+          idx_scan
+        FROM pg_stat_user_indexes
+        WHERE idx_scan < 10 
+          AND pg_relation_size(indexrelid) > 1048576
+        ORDER BY size_bytes DESC
+        LIMIT 10;
+      `
+    });
+
+    if (unusedIndexes && unusedIndexes.length > 0) {
+      unusedIndexes.forEach((index: any) => {
+        recommendations.push({
+          id: `unused_index_${index.indexname}`,
+          recommendationType: 'drop_unused_index',
+          targetTable: index.tablename,
+          priority: 'medium',
+          estimatedImpact: `Reclaim ${Math.round(index.size_bytes / 1024 / 1024)} MB storage`,
+          reason: `Index ${index.indexname} has only ${index.idx_scan} scans and uses ${Math.round(index.size_bytes / 1024 / 1024)} MB`,
+          action: `DROP INDEX ${index.indexname}`,
+          estimatedDuration: '< 1 minute',
+          weddingSeasonSafe: true,
+          lastRecommendedAt: new Date().toISOString(),
+          issueDetectedAt: new Date().toISOString()
+        });
+      });
+    }
+
+    // Check for missing indexes on frequently queried columns
+    const missingIndexRecommendations = await generateMissingIndexRecommendations(supabase);
+    recommendations.push(...missingIndexRecommendations);
+
+    // Check for table bloat requiring VACUUM
+    const { data: bloatedTables } = await supabase.rpc('execute_sql', {
+      sql: `
+        SELECT 
+          tablename,
+          n_dead_tup,
+          n_tup_upd + n_tup_del as total_changes
+        FROM pg_stat_user_tables
+        WHERE n_dead_tup > 5000
+        ORDER BY n_dead_tup DESC
+        LIMIT 5;
+      `
+    });
+
+    if (bloatedTables && bloatedTables.length > 0) {
+      bloatedTables.forEach((table: any) => {
+        const priority = table.n_dead_tup > 50000 ? 'high' : 'medium';
+        
+        recommendations.push({
+          id: `vacuum_bloated_${table.tablename}`,
+          recommendationType: 'vacuum_table',
+          targetTable: table.tablename,
+          priority: priority as any,
+          estimatedImpact: `Clean up ${table.n_dead_tup} dead tuples`,
+          reason: `Table has ${table.n_dead_tup} dead tuples affecting query performance`,
+          action: `VACUUM ANALYZE ${table.tablename}`,
+          estimatedDuration: table.n_dead_tup > 50000 ? '10-30 minutes' : '2-10 minutes',
+          weddingSeasonSafe: !isWeddingCriticalTable(table.tablename),
+          lastRecommendedAt: new Date().toISOString(),
+          issueDetectedAt: new Date().toISOString()
+        });
+      });
+    }
+
+    return recommendations;
+
+  } catch (error) {
+    console.error('Failed to get maintenance recommendations:', error);
+    return [];
+  }
+}
+
+/**
+ * Generate missing index recommendations based on slow queries
+ */
+async function generateMissingIndexRecommendations(supabase: any): Promise<MaintenanceRecommendation[]> {
+  try {
+    // This would analyze pg_stat_statements for missing index opportunities
+    const recommendations: MaintenanceRecommendation[] = [];
+
+    // Common patterns for wedding-critical tables
+    const commonPatterns = [
+      {
+        table: 'form_responses',
+        column: 'form_id',
+        reason: 'Frequent queries filtering by form_id',
+        priority: 'high'
+      },
+      {
+        table: 'journey_events',
+        column: 'client_id',
+        reason: 'Client timeline queries need index',
+        priority: 'critical'
+      },
+      {
+        table: 'email_logs',
+        column: 'sent_at',
+        reason: 'Date range queries on email logs',
+        priority: 'medium'
+      }
+    ];
+
+    commonPatterns.forEach((pattern) => {
+      recommendations.push({
+        id: `missing_index_${pattern.table}_${pattern.column}`,
+        recommendationType: 'create_index',
+        targetTable: pattern.table,
+        priority: pattern.priority as any,
+        estimatedImpact: '60-80% faster queries',
+        reason: pattern.reason,
+        action: `CREATE INDEX CONCURRENTLY idx_${pattern.table}_${pattern.column} ON ${pattern.table}(${pattern.column})`,
+        estimatedDuration: '2-5 minutes',
+        weddingSeasonSafe: true,
+        lastRecommendedAt: new Date().toISOString(),
+        issueDetectedAt: new Date().toISOString()
+      });
+    });
+
+    return recommendations;
+
+  } catch (error) {
+    console.error('Failed to generate missing index recommendations:', error);
+    return [];
+  }
+}
+
+/**
+ * Get maintenance summary statistics
+ */
+async function getMaintenanceSummaryStats(supabase: any): Promise<Record<string, any>> {
+  try {
+    const { data: stats } = await supabase.rpc('execute_sql', {
+      sql: `
+        SELECT
+          COUNT(*) as total_operations,
+          COUNT(*) FILTER (WHERE status = 'completed') as completed_operations,
+          COUNT(*) FILTER (WHERE status = 'failed') as failed_operations,
+          COUNT(*) FILTER (WHERE status = 'running') as running_operations,
+          SUM(space_reclaimed_bytes) as total_space_reclaimed,
+          COUNT(*) FILTER (WHERE started_at > NOW() - INTERVAL '7 days') as operations_last_week,
+          COUNT(*) FILTER (WHERE started_at > NOW() - INTERVAL '30 days' AND wedding_season_context = true) as wedding_season_operations
+        FROM database_maintenance_log
+        WHERE started_at > NOW() - INTERVAL '90 days';
+      `
+    });
+
+    return stats?.[0] || {};
+
+  } catch (error) {
+    console.error('Failed to get maintenance summary stats:', error);
+    return {};
+  }
+}
+
+/**
+ * Check if current month is wedding season
+ */
+function isWeddingSeasonActive(): boolean {
+  const month = new Date().getMonth() + 1;
+  return [5, 6, 7, 9, 10].includes(month);
+}
+
+/**
+ * Get safe maintenance window information
+ */
+function getSafeMaintenanceWindow(): { 
+  nextWindow: string; 
+  duration: string; 
+  restrictions: string[] 
+} {
+  const now = new Date();
+  const nextWindow = new Date(now);
+  
+  // Find next Tuesday-Thursday, 2-6 AM
+  while (nextWindow.getDay() < 2 || nextWindow.getDay() > 4) {
+    nextWindow.setDate(nextWindow.getDate() + 1);
+  }
+  
+  nextWindow.setHours(2, 0, 0, 0);
+  
+  return {
+    nextWindow: nextWindow.toISOString(),
+    duration: '4 hours (2 AM - 6 AM)',
+    restrictions: [
+      'No maintenance on Fridays 6 PM - Monday 6 AM (wedding period)',
+      'Wedding season requires extra caution (May-July, September-October)',
+      'Critical table maintenance requires advance planning'
+    ]
+  };
+}
+
+/**
+ * Get next recommended maintenance time
+ */
+async function getNextRecommendedMaintenance(supabase: any): Promise<string | null> {
+  try {
+    const { data: nextMaintenance } = await supabase
+      .from('database_maintenance_log')
+      .select('started_at')
+      .eq('status', 'running')
+      .order('started_at', { ascending: true })
+      .limit(1);
+
+    if (nextMaintenance && nextMaintenance.length > 0) {
+      return nextMaintenance[0].started_at;
+    }
+
+    // If no scheduled maintenance, recommend based on table bloat
+    const safeWindow = getSafeMaintenanceWindow();
+    return safeWindow.nextWindow;
+
+  } catch (error) {
+    console.error('Failed to get next recommended maintenance:', error);
+    return null;
+  }
+}
+
+/**
+ * Check if table is wedding-critical
+ */
+function isWeddingCriticalTable(tableName: string): boolean {
+  const criticalTables = [
+    'form_responses', 'form_fields', 'forms',
+    'journey_events', 'journey_instances', 'journeys',
+    'email_logs', 'email_templates', 'email_campaigns',
+    'clients', 'organizations', 'user_profiles',
+    'payment_history', 'invoices', 'webhook_events'
+  ];
+  
+  return criticalTables.some(table => tableName.includes(table));
+}

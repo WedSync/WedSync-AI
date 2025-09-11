@@ -1,0 +1,344 @@
+/**
+ * WS-166: Budget Export Status API - GET /api/wedme/budget/export-status/[exportId]
+ * Team B: Export status monitoring endpoint with detailed progress tracking
+ * 
+ * Features:
+ * - Real-time export status checking
+ * - Progress percentage calculation
+ * - Queue position tracking
+ * - Error details for failed exports
+ * - ETA calculations for generating exports
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { uuidSchema } from '@/lib/validation/schemas';
+import type { ExportStatusResponse } from '@/types/budget-export';
+
+interface RouteParams {
+  params: {
+    exportId: string;
+  };
+}
+
+/**
+ * Validate export ID parameter
+ */
+function validateExportId(exportId: string): { valid: boolean; error?: string } {
+  const result = uuidSchema.safeParse(exportId);
+  if (!result.success) {
+    return { valid: false, error: 'Invalid export ID format' };
+  }
+  return { valid: true };
+}
+
+/**
+ * Calculate progress percentage based on queue status and processing state
+ */
+function calculateProgress(exportStatus: string, queueStatus?: any): number {
+  switch (exportStatus) {
+    case 'generating':
+      if (!queueStatus) return 10; // Just queued
+      if (queueStatus.started_at && !queueStatus.completed_at) return 50; // Processing
+      return 10; // In queue
+    case 'completed':
+      return 100;
+    case 'failed':
+    case 'expired':
+      return 0;
+    default:
+      return 0;
+  }
+}
+
+/**
+ * Estimate completion time based on queue position and historical data
+ */
+function estimateCompletionTime(queuePosition: number, avgProcessingTime: number = 30): number {
+  // Base estimate: queue position * average processing time per export
+  // Add buffer time for safety
+  const baseEstimate = queuePosition * avgProcessingTime;
+  const bufferTime = Math.max(10, baseEstimate * 0.2); // 20% buffer, minimum 10 seconds
+  return Math.ceil(baseEstimate + bufferTime);
+}
+
+/**
+ * Get queue position for pending export
+ */
+async function getQueuePosition(supabase: any, exportId: string): Promise<{ position: number; totalInQueue: number }> {
+  // Get all queued items ordered by priority and creation time
+  const { data: queueItems, error } = await supabase
+    .from('export_queue')
+    .select('id, export_id, priority, created_at')
+    .is('completed_at', null)
+    .order('priority', { ascending: false })
+    .order('created_at', { ascending: true });
+
+  if (error || !queueItems) {
+    return { position: 0, totalInQueue: 0 };
+  }
+
+  const position = queueItems.findIndex(item => item.export_id === exportId);
+  return {
+    position: position >= 0 ? position + 1 : 0,
+    totalInQueue: queueItems.length
+  };
+}
+
+/**
+ * Get detailed export and queue status
+ */
+async function getExportStatus(supabase: any, exportId: string, userId: string) {
+  // Get export record
+  const { data: exportRecord, error: exportError } = await supabase
+    .from('budget_exports')
+    .select(`
+      id,
+      couple_id,
+      export_type,
+      file_name,
+      file_url,
+      file_size_bytes,
+      status,
+      generated_at,
+      expires_at,
+      download_count,
+      created_at,
+      updated_at
+    `)
+    .eq('id', exportId)
+    .single();
+
+  if (exportError || !exportRecord) {
+    throw new Error('Export not found');
+  }
+
+  // Verify user access
+  const { data: userProfile, error: profileError } = await supabase
+    .from('user_profiles')
+    .select('organization_id')
+    .eq('user_id', userId)
+    .single();
+
+  if (profileError || !userProfile) {
+    throw new Error('User profile not found');
+  }
+
+  // Check couple access
+  const { data: couple, error: coupleError } = await supabase
+    .from('couples')
+    .select('organization_id')
+    .eq('id', exportRecord.couple_id)
+    .eq('organization_id', userProfile.organization_id)
+    .single();
+
+  if (coupleError || !couple) {
+    throw new Error('Access denied to this export');
+  }
+
+  // Get queue status if export is still generating
+  let queueStatus = null;
+  let queuePosition = { position: 0, totalInQueue: 0 };
+  
+  if (exportRecord.status === 'generating') {
+    const { data: queueData, error: queueError } = await supabase
+      .from('export_queue')
+      .select(`
+        id,
+        priority,
+        started_at,
+        completed_at,
+        error_message,
+        retry_count,
+        created_at
+      `)
+      .eq('export_id', exportId)
+      .single();
+
+    if (!queueError && queueData) {
+      queueStatus = queueData;
+      queuePosition = await getQueuePosition(supabase, exportId);
+    }
+  }
+
+  return { exportRecord, queueStatus, queuePosition };
+}
+
+/**
+ * Main GET handler for export status checking
+ */
+export async function GET(
+  request: NextRequest,
+  { params }: RouteParams
+): Promise<NextResponse> {
+  try {
+    // Validate export ID
+    const validation = validateExportId(params.exportId);
+    if (!validation.valid) {
+      return NextResponse.json(
+        { error: 'INVALID_EXPORT_ID', message: validation.error },
+        { status: 400 }
+      );
+    }
+
+    // Initialize Supabase client
+    const supabase = await createClient();
+    
+    // Get authenticated user
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'UNAUTHORIZED', message: 'Authentication required' },
+        { status: 401 }
+      );
+    }
+
+    // Get export status details
+    const { exportRecord, queueStatus, queuePosition } = await getExportStatus(
+      supabase, 
+      params.exportId, 
+      user.id
+    );
+
+    // Calculate progress
+    const progress = calculateProgress(exportRecord.status, queueStatus);
+
+    // Build status response
+    const statusResponse: ExportStatusResponse = {
+      id: exportRecord.id,
+      status: exportRecord.status,
+      progress,
+      downloadCount: exportRecord.download_count,
+    };
+
+    // Add completed export details
+    if (exportRecord.status === 'completed') {
+      statusResponse.downloadUrl = `/api/wedme/budget/export/${exportRecord.id}`;
+      statusResponse.fileName = exportRecord.file_name;
+      statusResponse.fileSize = exportRecord.file_size_bytes;
+      statusResponse.generatedAt = exportRecord.generated_at;
+      statusResponse.expiresAt = exportRecord.expires_at;
+    }
+
+    // Add generating export details
+    if (exportRecord.status === 'generating' && queueStatus) {
+      // Estimate completion time
+      if (!queueStatus.started_at) {
+        // Still in queue
+        const estimatedSeconds = estimateCompletionTime(queuePosition.position);
+        statusResponse.estimatedCompletionTime = estimatedSeconds;
+        statusResponse.queuePosition = queuePosition.position;
+        statusResponse.totalInQueue = queuePosition.totalInQueue;
+      } else {
+        // Currently processing
+        const processingTime = Math.floor((Date.now() - new Date(queueStatus.started_at).getTime()) / 1000);
+        const estimatedSeconds = Math.max(30 - processingTime, 5); // Assume 30s processing time
+        statusResponse.estimatedCompletionTime = estimatedSeconds;
+      }
+    }
+
+    // Add error details for failed exports
+    if (exportRecord.status === 'failed' && queueStatus?.error_message) {
+      statusResponse.error = queueStatus.error_message;
+      statusResponse.retryCount = queueStatus.retry_count;
+    }
+
+    // Add expiration information
+    if (exportRecord.expires_at) {
+      const expiresAt = new Date(exportRecord.expires_at);
+      const now = new Date();
+      
+      if (expiresAt > now) {
+        statusResponse.expiresAt = exportRecord.expires_at;
+        statusResponse.timeUntilExpiry = Math.floor((expiresAt.getTime() - now.getTime()) / 1000);
+      } else {
+        // Mark as expired if not already
+        if (exportRecord.status !== 'expired') {
+          await supabase
+            .from('budget_exports')
+            .update({ status: 'expired', updated_at: new Date().toISOString() })
+            .eq('id', params.exportId);
+          
+          statusResponse.status = 'expired';
+        }
+      }
+    }
+
+    // Set appropriate status code
+    let statusCode = 200;
+    if (exportRecord.status === 'generating') {
+      statusCode = 202; // Accepted, still processing
+    } else if (exportRecord.status === 'failed' || exportRecord.status === 'expired') {
+      statusCode = 410; // Gone
+    }
+
+    return NextResponse.json(statusResponse, { 
+      status: statusCode,
+      headers: {
+        'Cache-Control': 'no-cache, must-revalidate',
+        'X-Export-Status': exportRecord.status,
+        'X-Progress': progress.toString()
+      }
+    });
+
+  } catch (error) {
+    console.error('Export status error:', error);
+    
+    // Handle specific error types
+    if (error instanceof Error) {
+      if (error.message === 'Export not found') {
+        return NextResponse.json(
+          { error: 'NOT_FOUND', message: 'Export not found' },
+          { status: 404 }
+        );
+      }
+      
+      if (error.message === 'Access denied to this export') {
+        return NextResponse.json(
+          { error: 'FORBIDDEN', message: 'Access denied to this export' },
+          { status: 403 }
+        );
+      }
+    }
+
+    return NextResponse.json(
+      {
+        error: 'STATUS_CHECK_FAILED',
+        message: 'Failed to check export status',
+        timestamp: new Date().toISOString()
+      },
+      { status: 500 }
+    );
+  }
+}
+
+// Handle unsupported methods
+export async function POST() {
+  return NextResponse.json(
+    { error: 'METHOD_NOT_ALLOWED', message: 'POST method not supported on this endpoint' },
+    { status: 405, headers: { 'Allow': 'GET' } }
+  );
+}
+
+export async function PUT() {
+  return NextResponse.json(
+    { error: 'METHOD_NOT_ALLOWED', message: 'PUT method not supported on this endpoint' },
+    { status: 405, headers: { 'Allow': 'GET' } }
+  );
+}
+
+export async function DELETE() {
+  return NextResponse.json(
+    { error: 'METHOD_NOT_ALLOWED', message: 'DELETE method not supported on this endpoint' },
+    { status: 405, headers: { 'Allow': 'GET' } }
+  );
+}
+
+// Optional: Add webhook support for real-time status updates
+export async function PATCH() {
+  return NextResponse.json(
+    { error: 'METHOD_NOT_ALLOWED', message: 'PATCH method not supported on this endpoint' },
+    { status: 405, headers: { 'Allow': 'GET' } }
+  );
+}

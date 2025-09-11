@@ -1,0 +1,122 @@
+'use client'
+
+import { useState } from 'react'
+import { Button } from '@/components/ui/button'
+import { createClient } from '@/lib/supabase/client'
+import { 
+  SiGoogle, 
+  SiApple 
+} from 'react-icons/si'
+
+interface OAuthSignupButtonsProps {
+  onSignupStart?: () => void
+  onSignupSuccess?: (user: any) => void
+  onSignupError?: (error: string) => void
+  redirectTo?: string
+  className?: string
+  invitationToken?: string
+}
+
+export default function OAuthSignupButtons({
+  onSignupStart,
+  onSignupSuccess,
+  onSignupError,
+  redirectTo = '/dashboard',
+  className = '',
+  invitationToken
+}: OAuthSignupButtonsProps) {
+  const [isLoadingGoogle, setIsLoadingGoogle] = useState(false)
+  const [isLoadingApple, setIsLoadingApple] = useState(false)
+  const supabase = createClient()
+
+  const handleOAuthSignup = async (provider: 'google' | 'apple') => {
+    try {
+      const setLoading = provider === 'google' ? setIsLoadingGoogle : setIsLoadingApple
+      setLoading(true)
+      onSignupStart?.()
+
+      // Build redirect URL with invitation token if provided
+      const baseRedirectUrl = `${window.location.origin}/auth/callback`
+      const redirectUrl = invitationToken 
+        ? `${baseRedirectUrl}?invitation=${invitationToken}&next=${redirectTo}`
+        : `${baseRedirectUrl}?next=${redirectTo}`
+
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider,
+        options: {
+          redirectTo: redirectUrl,
+          queryParams: invitationToken ? {
+            invitation_token: invitationToken,
+            signup_method: provider,
+            timestamp: Date.now().toString()
+          } : {
+            signup_method: provider,
+            timestamp: Date.now().toString()
+          }
+        }
+      })
+
+      if (error) {
+        throw error
+      }
+
+      // OAuth will redirect, so success callback might not be called immediately
+      if (data) {
+        onSignupSuccess?.(data)
+      }
+
+    } catch (error: any) {
+      console.error(`${provider} signup error:`, error)
+      const errorMessage = error.message || `Failed to sign up with ${provider}`
+      onSignupError?.(errorMessage)
+    } finally {
+      const setLoading = provider === 'google' ? setIsLoadingGoogle : setIsLoadingApple
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className={`space-y-3 ${className}`}>
+      {/* Google OAuth Button */}
+      <Button
+        type="button"
+        variant="outline"
+        onClick={() => handleOAuthSignup('google')}
+        disabled={isLoadingGoogle || isLoadingApple}
+        className="w-full flex items-center justify-center gap-3 py-6 border-2 hover:border-red-300 hover:bg-red-50 transition-colors"
+      >
+        <SiGoogle className="h-5 w-5 text-red-500" />
+        <span className="font-medium">
+          {isLoadingGoogle ? 'Connecting to Google...' : 'Continue with Google'}
+        </span>
+      </Button>
+
+      {/* Apple OAuth Button */}
+      <Button
+        type="button"
+        variant="outline"
+        onClick={() => handleOAuthSignup('apple')}
+        disabled={isLoadingGoogle || isLoadingApple}
+        className="w-full flex items-center justify-center gap-3 py-6 border-2 hover:border-gray-300 hover:bg-gray-50 transition-colors"
+      >
+        <SiApple className="h-5 w-5 text-gray-900" />
+        <span className="font-medium">
+          {isLoadingApple ? 'Connecting to Apple...' : 'Continue with Apple'}
+        </span>
+      </Button>
+
+      {/* Divider */}
+      <div className="relative my-6">
+        <div className="absolute inset-0 flex items-center">
+          <span className="w-full border-t border-gray-300" />
+        </div>
+        <div className="relative flex justify-center text-sm">
+          <span className="bg-white px-4 text-gray-500 font-medium">or</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Export component for reuse
+export { OAuthSignupButtons }

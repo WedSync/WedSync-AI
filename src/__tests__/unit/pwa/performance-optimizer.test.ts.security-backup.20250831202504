@@ -1,0 +1,462 @@
+/**
+ * WS-171: Unit Tests for PWA Performance Optimizer
+ * Comprehensive tests for offline performance optimization
+ */
+
+import { PWAPerformanceOptimizer, PerformanceMetrics, OfflineCapabilities, OptimizationStrategy, PreloadConfig } from '../../../lib/pwa/performance-optimizer';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { setupBrowserMocks, resetBrowserMocks } from '../setup/browser-api-mocks';
+import { PWACacheManager, CachePriority, WeddingDataType } from '../../../lib/pwa/cache-manager';
+import { PWAStorageOptimizer } from '../../../lib/pwa/storage-optimizer';
+// Mock Supabase client
+vi.mock('@supabase/supabase-js', () => ({
+  createClient: jest.fn(() => ({
+    from: jest.fn(() => ({
+      insert: vi.fn().mockResolvedValue({}),
+      select: vi.fn().mockResolvedValue({ data: [], error: null })
+    }))
+  }))
+}));
+// Mock performance API
+Object.defineProperty(global, 'performance', {
+  value: {
+    now: jest.fn(() => Date.now()),
+    memory: {
+      usedJSHeapSize: 1024 * 1024 * 10 // 10MB
+    }
+  },
+  writable: true
+});
+// Mock sessionStorage
+const mockSessionStorage = {
+  store: new Map<string, string>(),
+  getItem: jest.fn((key: string) => mockSessionStorage.store.get(key) || null),
+  setItem: jest.fn((key: string, value: string) => {
+    mockSessionStorage.store.set(key, value);
+  })
+};
+Object.defineProperty(global, 'sessionStorage', { value: mockSessionStorage });
+describe('PWAPerformanceOptimizer', () => {
+  beforeEach(() => {
+    setupBrowserMocks();
+    resetBrowserMocks();
+  });
+  let performanceOptimizer: PWAPerformanceOptimizer;
+  let mockCacheManager: jest.Mocked<PWACacheManager>;
+  let mockStorageOptimizer: jest.Mocked<PWAStorageOptimizer>;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSessionStorage.store.clear();
+    // Create mocked cache manager
+    mockCacheManager = {
+      set: vi.fn().mockResolvedValue(true),
+      get: vi.fn().mockResolvedValue(null),
+      has: vi.fn().mockReturnValue(false),
+      delete: vi.fn().mockResolvedValue(true),
+      clear: vi.fn().mockResolvedValue(0),
+      invalidate: vi.fn().mockResolvedValue(0),
+      preloadWeddingData: vi.fn().mockResolvedValue(undefined),
+      getStats: vi.fn().mockReturnValue({
+        totalEntries: 10,
+        totalSize: 1024 * 1024,
+        hitRate: 85,
+        missRate: 15,
+        priorityDistribution: {
+          [CachePriority.CRITICAL]: 5,
+          [CachePriority.HIGH]: 3,
+          [CachePriority.MEDIUM]: 2
+        },
+        dataTypeDistribution: {
+          [WeddingDataType.TIMELINE]: 5,
+          [WeddingDataType.VENDORS]: 3,
+          [WeddingDataType.TASKS]: 2
+        memoryUsage: 1024 * 1024,
+        lastCleanup: Date.now()
+      }),
+      export: vi.fn().mockReturnValue([]),
+      destroy: vi.fn()
+    } as any;
+    // Create mocked storage optimizer
+    mockStorageOptimizer = {
+      getStorageQuota: vi.fn().mockResolvedValue({
+        quota: 50 * 1024 * 1024 * 1024,
+        usage: 5 * 1024 * 1024 * 1024,
+        available: 45 * 1024 * 1024 * 1024,
+        usagePercentage: 10
+      getStorageBreakdown: vi.fn().mockResolvedValue({
+        cache: 2 * 1024 * 1024 * 1024,
+        indexedDB: 1 * 1024 * 1024 * 1024,
+        localStorage: 100 * 1024 * 1024,
+        webSQL: 0,
+        serviceWorker: 500 * 1024 * 1024,
+        other: 1.4 * 1024 * 1024 * 1024
+      checkStorageHealth: vi.fn().mockResolvedValue([{
+        type: 'info' as const,
+        threshold: 0,
+        currentUsage: 10,
+        message: 'Storage usage is normal',
+        timestamp: Date.now()
+      }]),
+      performScheduledCleanup: vi.fn().mockResolvedValue({
+        freedBytes: 1024 * 1024,
+        deletedEntries: 5,
+        cleanupDuration: 1000,
+        success: true,
+        errors: []
+      performEmergencyCleanup: vi.fn().mockResolvedValue({
+        freedBytes: 10 * 1024 * 1024,
+        deletedEntries: 50,
+        cleanupDuration: 5000,
+      getStorageStatus: vi.fn().mockResolvedValue({
+        quota: {
+          quota: 50 * 1024 * 1024 * 1024,
+          usage: 5 * 1024 * 1024 * 1024,
+          available: 45 * 1024 * 1024 * 1024,
+          usagePercentage: 10
+        breakdown: {},
+        alerts: [],
+      triggerCleanup: vi.fn().mockResolvedValue({
+      getConfig: vi.fn().mockReturnValue({
+        warningThreshold: 80,
+        criticalThreshold: 95,
+        autoCleanup: true,
+        cleanupInterval: 300000
+      updateConfig: vi.fn(),
+      isCleanupInProgress: vi.fn().mockReturnValue(false),
+    performanceOptimizer = new PWAPerformanceOptimizer(mockCacheManager, mockStorageOptimizer);
+  });
+  describe('Initialization', () => {
+  beforeEach(() => {
+    setupBrowserMocks();
+    resetBrowserMocks();
+  });
+    test('should initialize with cache and storage managers', () => {
+      expect(performanceOptimizer).toBeDefined();
+      expect(performanceOptimizer.isOptimizationInProgress()).toBe(false);
+    });
+    test('should initialize performance metrics', () => {
+      const metrics = performanceOptimizer.getPerformanceMetrics();
+      
+      expect(metrics).toBeDefined();
+      expect(metrics.cacheHitRate).toBeDefined();
+      expect(metrics.averageResponseTime).toBeDefined();
+      expect(metrics.offlineCapabilityScore).toBeDefined();
+      expect(metrics.criticalDataAvailability).toBeDefined();
+      expect(metrics.storageOptimizationScore).toBeDefined();
+      expect(metrics.userExperienceScore).toBeDefined();
+    test('should initialize optimization strategies', async () => {
+      const opportunities = await performanceOptimizer.getOptimizationOpportunities();
+      expect(Array.isArray(opportunities)).toBe(true);
+      expect(opportunities.length).toBeGreaterThanOrEqual(0);
+  describe('Performance Analysis', () => {
+  beforeEach(() => {
+    setupBrowserMocks();
+    resetBrowserMocks();
+  });
+    test('should analyze current performance', async () => {
+      const analysis = await performanceOptimizer.analyzePerformance();
+      expect(analysis.metrics).toBeDefined();
+      expect(analysis.opportunities).toBeDefined();
+      expect(analysis.recommendations).toBeDefined();
+      expect(Array.isArray(analysis.opportunities)).toBe(true);
+      expect(Array.isArray(analysis.recommendations)).toBe(true);
+    test('should calculate cache hit rate from cache manager', async () => {
+      mockCacheManager.getStats.mockReturnValue({
+        ...mockCacheManager.getStats(),
+        hitRate: 92
+      });
+      expect(analysis.metrics.cacheHitRate).toBe(92);
+    test('should calculate storage optimization score', async () => {
+      mockStorageOptimizer.getStorageStatus.mockResolvedValue({
+          usage: 5 * 1024 * 1024 * 1024, // 10% usage
+      expect(analysis.metrics.storageOptimizationScore).toBe(100); // Low usage = high score
+  describe('Wedding Day Optimization', () => {
+  beforeEach(() => {
+    setupBrowserMocks();
+    resetBrowserMocks();
+  });
+    const mockPreloadConfig: PreloadConfig = {
+      weddingId: 'wedding-123',
+      weddingDate: new Date(Date.now() + 24 * 60 * 60 * 1000), // Tomorrow
+      criticalVendorIds: ['vendor-1', 'vendor-2'],
+      keyGuestIds: ['guest-1', 'guest-2'],
+      timelineEvents: ['ceremony', 'reception'],
+      emergencyContacts: ['contact-1', 'contact-2']
+    };
+    test('should optimize for wedding day successfully', async () => {
+      const result = await performanceOptimizer.optimizeForWedding(mockPreloadConfig);
+      expect(result).toBe(true);
+      expect(mockCacheManager.set).toHaveBeenCalled();
+    test('should not start optimization if already in progress', async () => {
+      // Mock optimization in progress
+      (performanceOptimizer as any).isOptimizing = true;
+      expect(result).toBe(false);
+    test('should preload critical wedding data', async () => {
+      // Mock fetch methods to return test data
+      vi.spyOn(performanceOptimizer as any, 'fetchWeddingTimeline').mockResolvedValue({
+        events: ['ceremony', 'reception']
+      vi.spyOn(performanceOptimizer as any, 'fetchVendorData').mockResolvedValue({
+        name: 'Test Vendor',
+        contact: 'vendor@example.com'
+      vi.spyOn(performanceOptimizer as any, 'fetchEmergencyContacts').mockResolvedValue([
+        { name: 'Emergency Contact', phone: '911' }
+      ]);
+      expect(mockCacheManager.set).toHaveBeenCalledWith(
+        'wedding:wedding-123:timeline',
+        expect.any(Object),
+        expect.objectContaining({
+          priority: CachePriority.CRITICAL,
+          dataType: WeddingDataType.TIMELINE,
+          weddingId: 'wedding-123'
+        })
+      );
+    test('should handle wedding day optimization errors', async () => {
+      // Mock cache manager to throw error
+      mockCacheManager.set.mockRejectedValue(new Error('Cache error'));
+  describe('Cache Prioritization', () => {
+  beforeEach(() => {
+    setupBrowserMocks();
+    resetBrowserMocks();
+  });
+    test('should set wedding day priorities for imminent weddings', async () => {
+      const immediateWeddingConfig: PreloadConfig = {
+        ...mockPreloadConfig,
+        weddingDate: new Date(Date.now() + 2 * 60 * 60 * 1000) // 2 hours from now
+      };
+      const result = await performanceOptimizer.optimizeForWedding(immediateWeddingConfig);
+      // Should have set wedding day priorities
+    test('should set wedding week priorities for upcoming weddings', async () => {
+      const weekWeddingConfig: PreloadConfig = {
+        weddingDate: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000) // 3 days from now
+      const result = await performanceOptimizer.optimizeForWedding(weekWeddingConfig);
+      // Should have set wedding week priorities
+    test('should set standard priorities for distant weddings', async () => {
+      const distantWeddingConfig: PreloadConfig = {
+        weddingDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) // 30 days from now
+      const result = await performanceOptimizer.optimizeForWedding(distantWeddingConfig);
+      // Should have set standard priorities
+  describe('Offline Capabilities Assessment', () => {
+  beforeEach(() => {
+    setupBrowserMocks();
+    resetBrowserMocks();
+  });
+    test('should assess offline capabilities', async () => {
+      mockCacheManager.has
+        .mockReturnValueOnce(true)  // timeline
+        .mockReturnValueOnce(true)  // vendors
+        .mockReturnValueOnce(false) // tasks
+        .mockReturnValueOnce(true)  // guests
+        .mockReturnValueOnce(false) // communications
+        .mockReturnValueOnce(false); // photos
+      const capabilities = await (performanceOptimizer as any).assessOfflineCapabilities();
+      expect(capabilities.timeline).toBe(true);
+      expect(capabilities.vendors).toBe(true);
+      expect(capabilities.tasks).toBe(false);
+      expect(capabilities.guests).toBe(true);
+      expect(capabilities.communications).toBe(false);
+      expect(capabilities.photos).toBe(false);
+    test('should calculate offline capability score', async () => {
+        .mockReturnValueOnce(true)  // timeline (25 points)
+        .mockReturnValueOnce(true)  // vendors (20 points)
+        .mockReturnValueOnce(true)  // tasks (20 points)
+        .mockReturnValueOnce(true)  // communications (15 points)
+        .mockReturnValueOnce(false) // venues (0 points)
+        .mockReturnValueOnce(false); // guests (0 points)
+      const score = await (performanceOptimizer as any).calculateOfflineCapabilityScore();
+      expect(score).toBe(80); // 25+20+20+15 = 80
+  describe('Performance Recommendations', () => {
+  beforeEach(() => {
+    setupBrowserMocks();
+    resetBrowserMocks();
+  });
+    test('should generate recommendations for low cache hit rate', async () => {
+        hitRate: 60 // Low hit rate
+      expect(analysis.recommendations).toContain(
+        'Implement more aggressive cache warming strategies'
+    test('should generate recommendations for low offline capability', async () => {
+      // Mock low offline capability
+      mockCacheManager.has.mockReturnValue(false);
+        'Increase offline data preloading for critical wedding workflows'
+    test('should generate recommendations for poor storage optimization', async () => {
+          usage: 45 * 1024 * 1024 * 1024, // 90% usage
+          available: 5 * 1024 * 1024 * 1024,
+          usagePercentage: 90
+        'Optimize storage usage with more aggressive cleanup policies'
+    test('should generate recommendations for slow response times', async () => {
+      // Mock slow response time measurement
+      vi.spyOn(performanceOptimizer as any, 'measureAverageResponseTime')
+        .mockResolvedValue(300); // 300ms
+        'Implement better caching strategies to reduce response times'
+  describe('Critical Data Availability', () => {
+  beforeEach(() => {
+    setupBrowserMocks();
+    resetBrowserMocks();
+  });
+    test('should calculate critical data availability', async () => {
+        .mockReturnValueOnce(false) // emergency:contacts
+        .mockReturnValueOnce(true)  // active-tasks
+        .mockReturnValueOnce(false); // critical-vendors
+      const availability = await (performanceOptimizer as any).calculateCriticalDataAvailability();
+      expect(availability).toBe(50); // 2 out of 4 critical items available
+    test('should identify all critical data as available', async () => {
+      mockCacheManager.has.mockReturnValue(true); // All critical data available
+      expect(availability).toBe(100);
+    test('should identify no critical data as available', async () => {
+      mockCacheManager.has.mockReturnValue(false); // No critical data available
+      expect(availability).toBe(0);
+  describe('User Experience Score', () => {
+  beforeEach(() => {
+    setupBrowserMocks();
+    resetBrowserMocks();
+  });
+    test('should calculate user experience score', async () => {
+      // Set up good metrics
+        hitRate: 90
+      const score = await (performanceOptimizer as any).calculateUserExperienceScore();
+      expect(score).toBeGreaterThan(0);
+      expect(score).toBeLessThanOrEqual(100);
+    test('should weight different metrics appropriately', async () => {
+      // Mock perfect metrics
+        .mockResolvedValue(50); // 50ms - excellent
+        hitRate: 95 // Excellent hit rate
+      expect(score).toBeGreaterThan(80); // Should be high score
+  describe('Data Preloading', () => {
+  beforeEach(() => {
+    setupBrowserMocks();
+    resetBrowserMocks();
+  });
+    beforeEach(() => {
+      // Mock all fetch methods to return test data
+      vi.spyOn(performanceOptimizer as any, 'fetchWeddingTimeline')
+        .mockResolvedValue({ events: ['ceremony'] });
+      vi.spyOn(performanceOptimizer as any, 'fetchVendorData')
+        .mockResolvedValue({ name: 'Vendor' });
+      vi.spyOn(performanceOptimizer as any, 'fetchEmergencyContacts')
+        .mockResolvedValue([{ name: 'Emergency' }]);
+      vi.spyOn(performanceOptimizer as any, 'fetchGuestData')
+        .mockResolvedValue([{ name: 'Guest' }]);
+      vi.spyOn(performanceOptimizer as any, 'fetchVenueData')
+        .mockResolvedValue({ name: 'Venue' });
+      vi.spyOn(performanceOptimizer as any, 'fetchActiveTasks')
+        .mockResolvedValue([{ task: 'Setup' }]);
+    test('should preload wedding timeline', async () => {
+      await (performanceOptimizer as any).preloadWeddingTimeline('wedding-123', ['ceremony']);
+        { events: ['ceremony'] },
+          dataType: WeddingDataType.TIMELINE
+    test('should preload critical vendors', async () => {
+      await (performanceOptimizer as any).preloadCriticalVendors('wedding-123', ['vendor-1']);
+        'wedding:wedding-123:vendor:vendor-1',
+        { name: 'Vendor' },
+          dataType: WeddingDataType.VENDORS
+    test('should preload emergency contacts', async () => {
+      await (performanceOptimizer as any).preloadEmergencyContacts(['contact-1']);
+        'emergency:contacts',
+        [{ name: 'Emergency' }],
+          dataType: WeddingDataType.COMMUNICATIONS
+    test('should handle preload errors gracefully', async () => {
+        .mockRejectedValue(new Error('Network error'));
+      // Should not throw error
+      await expect((performanceOptimizer as any).preloadWeddingTimeline('wedding-123', ['ceremony']))
+        .resolves.not.toThrow();
+  describe('Performance Monitoring', () => {
+  beforeEach(() => {
+    setupBrowserMocks();
+    resetBrowserMocks();
+  });
+    test('should start performance monitoring', () => {
+      // Performance monitoring should be started during initialization
+    test('should track optimization events', async () => {
+      // Tracking would be verified through mocked Supabase calls
+  describe('Storage Integration', () => {
+  beforeEach(() => {
+    setupBrowserMocks();
+    resetBrowserMocks();
+  });
+    test('should optimize wedding day storage', async () => {
+      expect(mockStorageOptimizer.triggerCleanup).toHaveBeenCalledWith('scheduled');
+    test('should trigger storage cleanup before optimization', async () => {
+      expect(mockStorageOptimizer.triggerCleanup).toHaveBeenCalled();
+  describe('Error Handling', () => {
+  beforeEach(() => {
+    setupBrowserMocks();
+    resetBrowserMocks();
+  });
+    test('should handle cache manager errors during optimization', async () => {
+    test('should handle storage optimizer errors gracefully', async () => {
+      mockStorageOptimizer.triggerCleanup.mockRejectedValue(new Error('Storage error'));
+    test('should handle performance analysis errors', async () => {
+      mockCacheManager.getStats.mockImplementation(() => {
+        throw new Error('Stats error');
+      await expect(performanceOptimizer.analyzePerformance()).rejects.toThrow();
+  describe('Optimization Strategies', () => {
+  beforeEach(() => {
+    setupBrowserMocks();
+    resetBrowserMocks();
+  });
+    test('should identify relevant optimization opportunities', async () => {
+      // Mock low cache hit rate to trigger cache-related opportunities
+        hitRate: 70 // Below 80% threshold
+      const cacheOpportunities = opportunities.filter(op => 
+        op.name.includes('Cache') || op.name.includes('cache')
+      expect(cacheOpportunities.length).toBeGreaterThan(0);
+    test('should identify preloading opportunities for low offline scores', async () => {
+      const preloadingOpportunities = opportunities.filter(op => 
+        op.name.includes('Preloading') || op.name.includes('preload')
+      expect(preloadingOpportunities.length).toBeGreaterThan(0);
+  describe('Public API', () => {
+  beforeEach(() => {
+    setupBrowserMocks();
+    resetBrowserMocks();
+  });
+    test('should provide access to performance metrics', () => {
+      expect(typeof metrics.cacheHitRate).toBe('number');
+      expect(typeof metrics.averageResponseTime).toBe('number');
+      expect(typeof metrics.offlineCapabilityScore).toBe('number');
+    test('should provide optimization opportunities', async () => {
+      opportunities.forEach(opportunity => {
+        expect(opportunity.name).toBeDefined();
+        expect(opportunity.description).toBeDefined();
+        expect(opportunity.priority).toBeDefined();
+        expect(opportunity.estimatedImpact).toBeDefined();
+    test('should expose optimization status', () => {
+describe('Performance Optimizer Factory', () => {
+  beforeEach(() => {
+    setupBrowserMocks();
+    resetBrowserMocks();
+  });
+  test('should create performance optimizer with dependencies', () => {
+    const mockCache = {} as PWACacheManager;
+    const mockStorage = {} as PWAStorageOptimizer;
+    
+    const { createPerformanceOptimizer } = require('../../../lib/pwa/performance-optimizer');
+    const optimizer = createPerformanceOptimizer(mockCache, mockStorage);
+    expect(optimizer).toBeDefined();
+    expect(optimizer).toBeInstanceOf(PWAPerformanceOptimizer);
+describe('Integration Scenarios', () => {
+  beforeEach(() => {
+    setupBrowserMocks();
+    resetBrowserMocks();
+  });
+        totalSize: 1024 * 1024
+      preloadWeddingData: vi.fn().mockResolvedValue(undefined)
+        quota: { usagePercentage: 10 },
+        freedBytes: 1024,
+      })
+  test('should coordinate between cache and storage optimizers', async () => {
+    const config: PreloadConfig = {
+      weddingId: 'test-wedding',
+      weddingDate: new Date(),
+      criticalVendorIds: ['vendor-1'],
+      keyGuestIds: ['guest-1'],
+      timelineEvents: ['ceremony'],
+      emergencyContacts: ['contact-1']
+    const result = await performanceOptimizer.optimizeForWedding(config);
+    expect(result).toBe(true);
+    expect(mockCacheManager.set).toHaveBeenCalled();
+    expect(mockStorageOptimizer.triggerCleanup).toHaveBeenCalled();
+  test('should provide comprehensive performance analysis', async () => {
+    const analysis = await performanceOptimizer.analyzePerformance();
+    expect(analysis.metrics).toBeDefined();
+    expect(analysis.opportunities).toBeDefined();
+    expect(analysis.recommendations).toBeDefined();
+    expect(typeof analysis.metrics.userExperienceScore).toBe('number');

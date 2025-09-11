@@ -1,0 +1,22 @@
+/**
+ * ❌ RADIX UI COMPONENT - REMOVED
+ *
+ * This component used Radix UI which has been removed from the project.
+ * REPLACE WITH: Untitled UI Alert/Confirmation Modal
+ * See: WORKFLOW-V2-DRAFT/SAAS-UI-STYLE-GUIDE.md
+ */
+
+throw new Error(`
+🚨 RADIX UI ALERT DIALOG DETECTED
+
+REQUIRED ACTION:
+1. Replace with Untitled UI Alert Modal
+2. Follow SAAS-UI-STYLE-GUIDE.md
+3. Use only approved UI libraries
+
+DO NOT USE Radix UI components!
+`);
+
+export default function BrokenAlertDialog() {
+  return null;
+}

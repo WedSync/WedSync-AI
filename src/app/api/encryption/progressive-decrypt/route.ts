@@ -1,0 +1,461 @@
+/**
+ * WS-148 Round 2: Progressive Decryption API Endpoint
+ *
+ * POST /api/encryption/progressive-decrypt
+ *
+ * Mobile Performance Requirement: High-priority fields in under 3 seconds
+ * Security Level: P0 - CRITICAL
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import {
+  advancedEncryptionMiddleware,
+  FieldPriority,
+  DecryptedField,
+} from '@/lib/security/advanced-encryption-middleware';
+import { EncryptedField } from '@/lib/security/encryption';
+import { createClient } from '@supabase/supabase-js';
+import { z } from 'zod';
+
+// Request validation schema
+const ProgressiveDecryptRequestSchema = z.object({
+  encrypted_fields: z
+    .array(
+      z.object({
+        encrypted: z.string(),
+        metadata: z.object({
+          version: z.number(),
+          algorithm: z.string(),
+          keyId: z.string(),
+          vaultKeyId: z.string().optional(),
+          encryptedAt: z.string(),
+          fieldPath: z.string(),
+          tenant: z.string(),
+          iv: z.string(),
+          tag: z.string(),
+          salt: z.string(),
+        }),
+      }),
+    )
+    .min(1)
+    .max(100), // Support up to 100 fields per request
+  priority_order: z.array(
+    z.object({
+      fieldName: z.string(),
+      priority: z.number().int().positive(),
+    }),
+  ),
+  device_type: z
+    .enum(['mobile', 'tablet', 'desktop'])
+    .optional()
+    .default('mobile'),
+  stream_response: z.boolean().optional().default(false),
+});
+
+type ProgressiveDecryptRequest = z.infer<
+  typeof ProgressiveDecryptRequestSchema
+>;
+
+// Streaming response for real-time progressive decryption
+export async function POST(request: NextRequest) {
+  const startTime = performance.now();
+  const supabase = createClientComponentClient();
+
+  try {
+    // Authenticate user
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session?.user?.id) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 },
+      );
+    }
+
+    // Parse and validate request
+    const body = await request.json();
+    const validatedRequest = ProgressiveDecryptRequestSchema.parse(body);
+
+    // Get user key for tenant isolation
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('id', session.user.id)
+      .single();
+
+    if (!profile?.organization_id) {
+      return NextResponse.json(
+        { error: 'User organization not found' },
+        { status: 400 },
+      );
+    }
+
+    const userKey = profile.organization_id;
+
+    // Validate encrypted fields belong to user's tenant
+    for (const field of validatedRequest.encrypted_fields) {
+      if (field.metadata.tenant !== userKey) {
+        return NextResponse.json(
+          { error: 'Access denied: Invalid tenant for encrypted field' },
+          { status: 403 },
+        );
+      }
+    }
+
+    // Get or set field priorities based on device type
+    let priorityOrder = validatedRequest.priority_order;
+
+    // If no priority order provided, use device-specific defaults
+    if (priorityOrder.length === 0) {
+      const { data: devicePriorities } = await supabase
+        .from('encryption.field_priority_config')
+        .select('field_name, priority')
+        .eq('user_id', session.user.id)
+        .eq('device_type', validatedRequest.device_type)
+        .order('priority', { ascending: true });
+
+      if (devicePriorities && devicePriorities.length > 0) {
+        priorityOrder = devicePriorities.map((p) => ({
+          fieldName: p.field_name,
+          priority: p.priority,
+        }));
+      } else {
+        // Default mobile-optimized priorities
+        const defaultMobilePriorities: FieldPriority[] = [
+          { fieldName: 'fullName', priority: 1 },
+          { fieldName: 'email', priority: 2 },
+          { fieldName: 'phone', priority: 3 },
+          { fieldName: 'weddingDate', priority: 1 },
+          { fieldName: 'venue', priority: 2 },
+          { fieldName: 'address', priority: 4 },
+          { fieldName: 'notes', priority: 5 },
+        ];
+        priorityOrder = defaultMobilePriorities;
+      }
+    }
+
+    // Track progressive decryption operation
+    const { data: batchRecord } = await supabase
+      .from('encryption.batch_operations')
+      .insert({
+        user_id: session.user.id,
+        operation_type: 'progressive_decryption',
+        total_items: validatedRequest.encrypted_fields.length,
+        status: 'processing',
+      })
+      .select('batch_id')
+      .single();
+
+    // Handle streaming response for real-time updates
+    if (validatedRequest.stream_response) {
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream({
+        async start(controller) {
+          try {
+            let decryptedCount = 0;
+            let highPriorityComplete = false;
+            const highPriorityStartTime = performance.now();
+
+            // Process progressive decryption
+            for await (const decryptedField of advancedEncryptionMiddleware.progressiveDecryption(
+              validatedRequest.encrypted_fields,
+              userKey,
+              priorityOrder,
+            )) {
+              decryptedCount++;
+
+              // Track when high-priority fields are complete
+              if (!highPriorityComplete && decryptedField.priority === 'high') {
+                const highPriorityTime =
+                  performance.now() - highPriorityStartTime;
+                if (
+                  decryptedCount >=
+                  priorityOrder.filter((p) => p.priority <= 3).length
+                ) {
+                  highPriorityComplete = true;
+
+                  // Record high-priority performance
+                  await supabase
+                    .from('encryption.performance_metrics_v2')
+                    .insert({
+                      operation_type: 'progressive_decrypt_high_priority',
+                      user_id: session.user.id,
+                      field_count: decryptedCount,
+                      processing_time_ms: Math.round(highPriorityTime),
+                      success_rate: decryptedField.error ? 0 : 1,
+                    });
+
+                  // WS-148 Performance validation
+                  if (highPriorityTime > 3000) {
+                    console.warn(
+                      `WS-148 Mobile Performance Violation: High-priority decryption took ${highPriorityTime}ms (target: <3000ms)`,
+                    );
+                  }
+                }
+              }
+
+              // Stream each decrypted field
+              const chunk =
+                JSON.stringify({
+                  type: 'decrypted_field',
+                  data: decryptedField,
+                  progress: {
+                    completed: decryptedCount,
+                    total: validatedRequest.encrypted_fields.length,
+                    high_priority_complete: highPriorityComplete,
+                  },
+                }) + '\n';
+
+              controller.enqueue(encoder.encode(chunk));
+
+              // Update batch progress
+              if (
+                decryptedCount % 5 === 0 ||
+                decryptedCount === validatedRequest.encrypted_fields.length
+              ) {
+                await supabase
+                  .from('encryption.batch_operations')
+                  .update({
+                    completed_items: decryptedCount,
+                    status:
+                      decryptedCount ===
+                      validatedRequest.encrypted_fields.length
+                        ? 'completed'
+                        : 'processing',
+                  })
+                  .eq('batch_id', batchRecord?.batch_id);
+              }
+            }
+
+            // Send completion signal
+            const completionChunk =
+              JSON.stringify({
+                type: 'completion',
+                data: {
+                  total_processed: decryptedCount,
+                  batch_id: batchRecord?.batch_id,
+                  processing_time_ms: Math.round(performance.now() - startTime),
+                },
+              }) + '\n';
+
+            controller.enqueue(encoder.encode(completionChunk));
+            controller.close();
+          } catch (streamError) {
+            controller.error(streamError);
+          }
+        },
+      });
+
+      return new Response(stream, {
+        headers: {
+          'Content-Type': 'application/x-ndjson',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+        },
+      });
+    }
+
+    // Non-streaming response - collect all results
+    const decryptedFields: DecryptedField[] = [];
+    let highPriorityTime: number | null = null;
+    const highPriorityStartTime = performance.now();
+
+    for await (const decryptedField of advancedEncryptionMiddleware.progressiveDecryption(
+      validatedRequest.encrypted_fields,
+      userKey,
+      priorityOrder,
+    )) {
+      decryptedFields.push(decryptedField);
+
+      // Track high-priority completion time
+      if (!highPriorityTime && decryptedField.priority === 'high') {
+        const highPriorityCount = priorityOrder.filter(
+          (p) => p.priority <= 3,
+        ).length;
+        if (
+          decryptedFields.filter((f) => f.priority === 'high').length >=
+          highPriorityCount
+        ) {
+          highPriorityTime = performance.now() - highPriorityStartTime;
+        }
+      }
+    }
+
+    const totalTime = performance.now() - startTime;
+    const successCount = decryptedFields.filter((f) => !f.error).length;
+    const successRate = successCount / decryptedFields.length;
+
+    // Update final batch status
+    await supabase
+      .from('encryption.batch_operations')
+      .update({
+        completed_items: successCount,
+        failed_items: decryptedFields.length - successCount,
+        status: successRate === 1.0 ? 'completed' : 'partial_failure',
+        completed_at: new Date().toISOString(),
+      })
+      .eq('batch_id', batchRecord?.batch_id);
+
+    // Record performance metrics
+    if (highPriorityTime) {
+      await supabase.from('encryption.performance_metrics_v2').insert({
+        operation_type: 'progressive_decrypt_high_priority',
+        user_id: session.user.id,
+        field_count: decryptedFields.filter((f) => f.priority === 'high')
+          .length,
+        processing_time_ms: Math.round(highPriorityTime),
+        success_rate: successRate,
+      });
+    }
+
+    await supabase.from('encryption.performance_metrics_v2').insert({
+      operation_type: 'progressive_decrypt_total',
+      user_id: session.user.id,
+      field_count: decryptedFields.length,
+      processing_time_ms: Math.round(totalTime),
+      success_rate: successRate,
+      memory_usage_mb: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+    });
+
+    // WS-148 Performance Validation
+    const performanceValidation = {
+      meets_mobile_requirement: highPriorityTime
+        ? highPriorityTime < 3000
+        : true,
+      high_priority_time_ms: Math.round(highPriorityTime || 0),
+      total_time_ms: Math.round(totalTime),
+      target_high_priority_ms: 3000,
+      device_type: validatedRequest.device_type,
+      high_priority_fields: decryptedFields.filter((f) => f.priority === 'high')
+        .length,
+    };
+
+    return NextResponse.json({
+      success: true,
+      batch_id: batchRecord?.batch_id,
+      decrypted_fields: decryptedFields,
+      performance: performanceValidation,
+      summary: {
+        total_fields: decryptedFields.length,
+        successful: successCount,
+        failed: decryptedFields.length - successCount,
+        success_rate: Math.round(successRate * 100),
+        high_priority_fields: decryptedFields.filter(
+          (f) => f.priority === 'high',
+        ).length,
+        processing_time_ms: Math.round(totalTime),
+      },
+    });
+  } catch (error) {
+    console.error('Progressive decryption failed:', error);
+
+    // Record failure metrics
+    const totalTime = performance.now() - startTime;
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (session?.user?.id) {
+        await supabase.from('encryption.performance_metrics_v2').insert({
+          operation_type: 'progressive_decrypt_error',
+          user_id: session.user.id,
+          processing_time_ms: Math.round(totalTime),
+          success_rate: 0,
+          error_details: {
+            error: error instanceof Error ? error.message : 'Unknown error',
+            stack: error instanceof Error ? error.stack : null,
+          },
+        });
+      }
+    } catch (metricsError) {
+      console.error('Failed to record error metrics:', metricsError);
+    }
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Validation failed',
+          details: error.errors,
+        },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      {
+        error: 'Progressive decryption failed',
+        message:
+          process.env.NODE_ENV === 'development'
+            ? error instanceof Error
+              ? error.message
+              : 'Unknown error'
+            : 'Internal server error',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+// GET /api/encryption/progressive-decrypt - Get field priority configuration
+export async function GET(request: NextRequest) {
+  const supabase = createClientComponentClient();
+
+  try {
+    // Authenticate user
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session?.user?.id) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 },
+      );
+    }
+
+    // Get query parameters
+    const { searchParams } = new URL(request.url);
+    const deviceType = searchParams.get('device_type') || 'mobile';
+    const tableName = searchParams.get('table_name');
+
+    // Fetch user's field priority configuration
+    let query = supabase
+      .from('encryption.field_priority_config')
+      .select('*')
+      .eq('user_id', session.user.id)
+      .eq('device_type', deviceType)
+      .order('priority', { ascending: true });
+
+    if (tableName) {
+      query = query.eq('table_name', tableName);
+    }
+
+    const { data: priorities, error } = await query;
+
+    if (error) {
+      throw new Error(`Failed to fetch priorities: ${error.message}`);
+    }
+
+    return NextResponse.json({
+      success: true,
+      device_type: deviceType,
+      table_name: tableName,
+      priorities: priorities || [],
+      default_mobile_priorities: [
+        { table_name: 'clients', field_name: 'fullName', priority: 1 },
+        { table_name: 'clients', field_name: 'weddingDate', priority: 1 },
+        { table_name: 'clients', field_name: 'email', priority: 2 },
+        { table_name: 'clients', field_name: 'venue', priority: 2 },
+        { table_name: 'clients', field_name: 'phone', priority: 3 },
+        { table_name: 'clients', field_name: 'address', priority: 4 },
+        { table_name: 'clients', field_name: 'notes', priority: 5 },
+      ],
+    });
+  } catch (error) {
+    console.error('Failed to fetch field priorities:', error);
+    return NextResponse.json(
+      { error: 'Failed to fetch field priorities' },
+      { status: 500 },
+    );
+  }
+}

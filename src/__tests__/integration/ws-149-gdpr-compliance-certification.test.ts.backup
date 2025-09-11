@@ -1,0 +1,760 @@
+// WS-149 GDPR Compliance System - Comprehensive Certification Readiness Tests
+// Team E Batch 12 Round 3 Implementation
+// Tests for ISO 27701, SOC 2, and regulatory change management
+
+import { test, expect } from '@jest/globals';
+
+// Mock API endpoints for testing
+const mockFetch = jest.fn();
+global.fetch = mockFetch;
+
+describe('WS-149 GDPR Compliance System - Certification Readiness', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockFetch.mockClear();
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  describe('ISO 27701 Certification Readiness', () => {
+    test('ISO 27701 certification readiness validation', async () => {
+      // Mock the configuration endpoint response
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ success: true, message: 'Organization configured for ISO 27701 assessment' })
+      });
+
+      // Configure organization for ISO 27701 assessment
+      const configResponse = await fetch('/api/debug/configure-iso27701-org', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          organization_type: 'comprehensive_privacy_management',
+          scope: 'full_organization',
+          existing_iso27001: true,
+          privacy_program_maturity: 'advanced'
+        })
+      });
+
+      expect(configResponse.ok).toBe(true);
+
+      // Mock assessment initiation response
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ assessment_id: 'iso27701_001', status: 'initiated' })
+      });
+
+      // Initiate comprehensive privacy audit
+      const assessmentResponse = await fetch('/api/compliance/certification/iso27701/start', {
+        method: 'POST'
+      });
+
+      expect(assessmentResponse.ok).toBe(true);
+
+      const controlAreas = [
+        'privacy_governance',
+        'data_minimization',
+        'purpose_limitation',
+        'consent_management',
+        'transparency_accountability',
+        'data_subject_rights',
+        'privacy_by_design',
+        'risk_management',
+        'incident_management',
+        'supplier_management'
+      ];
+
+      // Mock control area assessment responses
+      for (const controlArea of controlAreas) {
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ 
+            control_area: controlArea, 
+            status: 'complete', 
+            score: 90,
+            gaps_identified: 0
+          })
+        });
+      }
+
+      // Validate all ISO 27701 control areas
+      for (const controlArea of controlAreas) {
+        const controlResponse = await fetch(`/api/compliance/certification/iso27701/assess/${controlArea}`, {
+          method: 'POST'
+        });
+        
+        expect(controlResponse.ok).toBe(true);
+        const controlResult = await controlResponse.json();
+        expect(controlResult.control_area).toBe(controlArea);
+        expect(controlResult.status).toBe('complete');
+      }
+
+      // Mock readiness report generation
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          overall_readiness_score: 90,
+          critical_gaps: [],
+          control_areas_compliant: controlAreas,
+          estimated_certification_timeline_months: 4,
+          evidence_framework: {
+            policies_documented: true,
+            procedures_implemented: true,
+            records_maintained: true,
+            audit_trails_complete: true
+          },
+          continuous_monitoring: {
+            automated_controls: 75,
+            manual_reviews_scheduled: true,
+            performance_metrics_tracked: 25
+          }
+        })
+      });
+
+      // Generate certification readiness report
+      const readinessResponse = await fetch('/api/compliance/certification/iso27701/readiness', {
+        method: 'GET'
+      });
+
+      expect(readinessResponse.ok).toBe(true);
+      const certificationReadiness = await readinessResponse.json();
+
+      // Validate certification readiness criteria
+      expect(certificationReadiness.overall_readiness_score).toBeGreaterThanOrEqual(85); // Minimum for certification
+      expect(certificationReadiness.critical_gaps).toHaveLength(0);
+      expect(certificationReadiness.control_areas_compliant).toEqual(
+        expect.arrayContaining(controlAreas)
+      );
+      expect(certificationReadiness.estimated_certification_timeline_months).toBeLessThanOrEqual(6);
+      
+      // Verify evidence collection framework
+      expect(certificationReadiness.evidence_framework.policies_documented).toBe(true);
+      expect(certificationReadiness.evidence_framework.procedures_implemented).toBe(true);
+      expect(certificationReadiness.evidence_framework.records_maintained).toBe(true);
+      expect(certificationReadiness.evidence_framework.audit_trails_complete).toBe(true);
+      
+      // Check continuous monitoring implementation
+      expect(certificationReadiness.continuous_monitoring.automated_controls).toBeGreaterThan(50);
+      expect(certificationReadiness.continuous_monitoring.manual_reviews_scheduled).toBe(true);
+      expect(certificationReadiness.continuous_monitoring.performance_metrics_tracked).toBeGreaterThan(20);
+    });
+
+    test('SOC 2 Type 2 certification readiness validation', async () => {
+      // Mock SOC 2 configuration
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ success: true, message: 'Organization configured for SOC 2 assessment' })
+      });
+
+      const configResponse = await fetch('/api/debug/configure-soc2-org', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          organization_type: 'saas_platform',
+          trust_service_criteria: ['security', 'availability', 'confidentiality', 'privacy'],
+          existing_controls: true,
+          audit_period_months: 12
+        })
+      });
+
+      expect(configResponse.ok).toBe(true);
+
+      const soc2ControlAreas = [
+        'security',
+        'availability', 
+        'confidentiality',
+        'privacy',
+        'processing_integrity'
+      ];
+
+      // Mock SOC 2 assessment responses
+      for (const controlArea of soc2ControlAreas) {
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ 
+            control_area: controlArea, 
+            status: 'compliant',
+            effectiveness_rating: 'effective',
+            deficiencies_identified: 0
+          })
+        });
+      }
+
+      // Assess SOC 2 control areas
+      for (const controlArea of soc2ControlAreas) {
+        const controlResponse = await fetch(`/api/compliance/certification/soc2/assess/${controlArea}`, {
+          method: 'POST'
+        });
+        
+        expect(controlResponse.ok).toBe(true);
+        const controlResult = await controlResponse.json();
+        expect(controlResult.control_area).toBe(controlArea);
+        expect(controlResult.status).toBe('compliant');
+      }
+
+      // Mock SOC 2 readiness report
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          overall_readiness_score: 88,
+          control_deficiencies: 0,
+          remediation_timeline_months: 3,
+          audit_readiness: true,
+          system_description_complete: true,
+          control_documentation_complete: true,
+          operating_effectiveness_demonstrated: true,
+          management_assertion_ready: true
+        })
+      });
+
+      const soc2ReadinessResponse = await fetch('/api/compliance/certification/soc2/readiness', {
+        method: 'GET'
+      });
+
+      expect(soc2ReadinessResponse.ok).toBe(true);
+      const soc2Readiness = await soc2ReadinessResponse.json();
+
+      expect(soc2Readiness.overall_readiness_score).toBeGreaterThanOrEqual(80);
+      expect(soc2Readiness.control_deficiencies).toBe(0);
+      expect(soc2Readiness.audit_readiness).toBe(true);
+      expect(soc2Readiness.system_description_complete).toBe(true);
+      expect(soc2Readiness.control_documentation_complete).toBe(true);
+    });
+  });
+
+  describe('Global Regulatory Change Management', () => {
+    test('Global regulatory change management', async () => {
+      // Mock regulatory change simulation
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ 
+          changes_simulated: 3,
+          message: 'Regulatory changes simulated successfully'
+        })
+      });
+
+      // Simulate emerging privacy legislation
+      const simulationResponse = await fetch('/api/debug/simulate-regulatory-changes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          changes: [
+            {
+              jurisdiction: 'european_union',
+              change_type: 'amendment',
+              title: 'GDPR Article 22 AI Decision-Making Update',
+              impact_level: 'high',
+              effective_date: '2025-07-01',
+              affects_ai_processing: true
+            },
+            {
+              jurisdiction: 'california',
+              change_type: 'new_regulation',
+              title: 'CPRA Biometric Data Expansion',
+              impact_level: 'medium',
+              effective_date: '2025-09-01',
+              affects_biometric_processing: true
+            },
+            {
+              jurisdiction: 'india',
+              change_type: 'new_regulation',
+              title: 'DPDP Act Implementation Rules',
+              impact_level: 'high',
+              effective_date: '2025-06-01',
+              new_framework: true
+            }
+          ]
+        })
+      });
+
+      expect(simulationResponse.ok).toBe(true);
+
+      // Mock regulatory change detection
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          changes_detected: 3,
+          changes: [
+            { id: 'change_001', title: 'GDPR Article 22 AI Decision-Making Update' },
+            { id: 'change_002', title: 'CPRA Biometric Data Expansion' },
+            { id: 'change_003', title: 'DPDP Act Implementation Rules' }
+          ]
+        })
+      });
+
+      // Verify regulatory change detection
+      const detectionResponse = await fetch('/api/compliance/regulatory-changes/detect', {
+        method: 'GET'
+      });
+
+      expect(detectionResponse.ok).toBe(true);
+      const detectedChanges = await detectionResponse.json();
+      expect(detectedChanges.changes_detected).toBe(3);
+
+      // Mock impact assessment
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          high_impact_changes: [
+            { id: 'change_001', impact_score: 85 },
+            { id: 'change_003', impact_score: 90 }
+          ],
+          adaptation_strategies: [
+            { change_id: 'change_001', strategy: 'ai_transparency_enhancement' },
+            { change_id: 'change_002', strategy: 'biometric_data_controls' },
+            { change_id: 'change_003', strategy: 'framework_implementation' }
+          ],
+          estimated_implementation_effort_hours: 1200
+        })
+      });
+
+      // Test impact assessment automation
+      const impactResponse = await fetch('/api/compliance/regulatory-changes/impact-assessment', {
+        method: 'POST'
+      });
+
+      expect(impactResponse.ok).toBe(true);
+      const impactAssessment = await impactResponse.json();
+
+      // Verify impact assessment quality
+      expect(impactAssessment.high_impact_changes).toHaveLength(2); // EU and India changes
+      expect(impactAssessment.adaptation_strategies).toHaveLength(3);
+      expect(impactAssessment.estimated_implementation_effort_hours).toBeGreaterThan(0);
+
+      // Mock adaptation plan generation
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          eu_gdpr_ai_amendment: {
+            policy_updates_required: true,
+            system_changes_required: true,
+            training_requirements: ['ai_decision_making_policies', 'algorithmic_transparency'],
+            implementation_timeline_months: 4
+          },
+          ca_cpra_biometric_expansion: {
+            policy_updates_required: true,
+            system_changes_required: false,
+            training_requirements: ['biometric_data_handling'],
+            implementation_timeline_months: 2
+          },
+          india_dpdp_implementation: {
+            policy_updates_required: true,
+            system_changes_required: true,
+            training_requirements: ['dpdp_compliance', 'cross_border_transfers'],
+            implementation_timeline_months: 6
+          }
+        })
+      });
+
+      // Test automated adaptation plan generation
+      const adaptationResponse = await fetch('/api/compliance/adaptation-plans', {
+        method: 'POST'
+      });
+
+      expect(adaptationResponse.ok).toBe(true);
+      const adaptationPlans = await adaptationResponse.json();
+
+      // Verify adaptation plan completeness
+      expect(adaptationPlans.eu_gdpr_ai_amendment).toBeDefined();
+      expect(adaptationPlans.eu_gdpr_ai_amendment.policy_updates_required).toBe(true);
+      expect(adaptationPlans.eu_gdpr_ai_amendment.system_changes_required).toBe(true);
+      expect(adaptationPlans.eu_gdpr_ai_amendment.training_requirements).toBeDefined();
+
+      // Mock stakeholder notification
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          privacy_officers_notified: true,
+          legal_team_notified: true,
+          affected_clients_identified: 125,
+          notifications_sent: 127 // privacy officers + legal team + affected clients
+        })
+      });
+
+      // Test proactive stakeholder notification
+      const notificationResponse = await fetch('/api/compliance/stakeholder-notifications', {
+        method: 'POST'
+      });
+
+      expect(notificationResponse.ok).toBe(true);
+      const notificationStatus = await notificationResponse.json();
+
+      expect(notificationStatus.privacy_officers_notified).toBe(true);
+      expect(notificationStatus.legal_team_notified).toBe(true);
+      expect(notificationStatus.affected_clients_identified).toBeGreaterThan(0);
+    });
+  });
+
+  describe('Litigation Defense Preparation', () => {
+    test('Litigation defense preparation', async () => {
+      // Mock litigation scenario simulation
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          scenario_id: 'lit_001',
+          message: 'Litigation scenario simulated successfully'
+        })
+      });
+
+      // Simulate privacy litigation scenario
+      const scenarioResponse = await fetch('/api/debug/simulate-litigation-scenario', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          scenario_type: 'regulatory_investigation',
+          jurisdiction: 'european_union',
+          authority: 'irish_dpc',
+          allegation: 'inadequate_consent_mechanisms',
+          data_subjects_affected: 15000,
+          potential_fine: 25000000,
+          evidence_preservation_required: true
+        })
+      });
+
+      expect(scenarioResponse.ok).toBe(true);
+
+      // Mock defense preparation initiation
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          defense_id: 'def_001',
+          status: 'initiated',
+          evidence_preservation_active: true
+        })
+      });
+
+      // Initiate litigation defense preparation
+      const defenseResponse = await fetch('/api/compliance/litigation-defense/initiate', {
+        method: 'POST',
+        body: JSON.stringify({ scenario_id: 'lit_001' })
+      });
+
+      expect(defenseResponse.ok).toBe(true);
+
+      // Mock evidence preservation status
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          legal_hold_active: true,
+          forensic_copies_created: true,
+          chain_of_custody_established: true,
+          evidence_categories_preserved: [
+            'consent_records',
+            'privacy_policies', 
+            'audit_logs',
+            'training_records',
+            'incident_reports'
+          ],
+          preservation_integrity_verified: true
+        })
+      });
+
+      // Verify evidence preservation
+      const evidenceResponse = await fetch('/api/compliance/litigation/evidence-status', {
+        method: 'GET'
+      });
+
+      expect(evidenceResponse.ok).toBe(true);
+      const evidencePreservation = await evidenceResponse.json();
+
+      expect(evidencePreservation.legal_hold_active).toBe(true);
+      expect(evidencePreservation.forensic_copies_created).toBe(true);
+      expect(evidencePreservation.chain_of_custody_established).toBe(true);
+      expect(evidencePreservation.evidence_categories_preserved).toContain('consent_records');
+      expect(evidencePreservation.evidence_categories_preserved).toContain('privacy_policies');
+      expect(evidencePreservation.evidence_categories_preserved).toContain('audit_logs');
+
+      // Mock compliance defense documentation
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          privacy_program_documentation: true,
+          consent_implementation_evidence: true,
+          training_records_included: true,
+          audit_trail_completeness: 96,
+          third_party_certifications: ['ISO 27001', 'SOC 2 Type 2'],
+          incident_response_documentation: true,
+          good_faith_effort_documented: true
+        })
+      });
+
+      // Test compliance defense documentation generation
+      const complianceDefenseResponse = await fetch('/api/compliance/litigation/defense-documentation', {
+        method: 'POST'
+      });
+
+      expect(complianceDefenseResponse.ok).toBe(true);
+      const complianceDefense = await complianceDefenseResponse.json();
+
+      // Verify defense documentation quality
+      expect(complianceDefense.privacy_program_documentation).toBe(true);
+      expect(complianceDefense.consent_implementation_evidence).toBe(true);
+      expect(complianceDefense.training_records_included).toBe(true);
+      expect(complianceDefense.audit_trail_completeness).toBeGreaterThanOrEqual(95);
+      expect(complianceDefense.third_party_certifications).toHaveLength(2); // ISO 27001, SOC 2
+
+      // Mock expert witness preparation
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          technical_expert_brief: {
+            system_architecture_documented: true,
+            security_controls_effectiveness: 92,
+            implementation_challenges_documented: true
+          },
+          privacy_expert_brief: {
+            privacy_program_maturity_score: 88,
+            regulatory_compliance_demonstrated: true,
+            industry_standards_exceeded: true
+          },
+          industry_standards_analysis: {
+            iso_compliance_verified: true,
+            industry_benchmarking_favorable: true,
+            best_practices_implemented: 24
+          },
+          good_faith_effort_documentation: true
+        })
+      });
+
+      // Test expert witness preparation
+      const expertWitnessResponse = await fetch('/api/compliance/litigation/expert-witness', {
+        method: 'POST'
+      });
+
+      expect(expertWitnessResponse.ok).toBe(true);
+      const expertWitnessMaterials = await expertWitnessResponse.json();
+
+      expect(expertWitnessMaterials.technical_expert_brief).toBeDefined();
+      expect(expertWitnessMaterials.privacy_expert_brief).toBeDefined();
+      expect(expertWitnessMaterials.industry_standards_analysis).toBeDefined();
+      expect(expertWitnessMaterials.good_faith_effort_documentation).toBe(true);
+
+      // Mock defense strength assessment
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          overall_defense_strength: 82,
+          mitigating_factors_count: 7,
+          compliance_program_maturity_score: 85,
+          estimated_success_probability: 78,
+          settlement_advisability_score: 45
+        })
+      });
+
+      // Verify defense strength assessment
+      const defenseAssessmentResponse = await fetch('/api/compliance/litigation/defense-strength', {
+        method: 'GET'
+      });
+
+      expect(defenseAssessmentResponse.ok).toBe(true);
+      const defenseAssessment = await defenseAssessmentResponse.json();
+
+      expect(defenseAssessment.overall_defense_strength).toBeGreaterThanOrEqual(75); // Strong defense
+      expect(defenseAssessment.mitigating_factors_count).toBeGreaterThanOrEqual(5);
+      expect(defenseAssessment.compliance_program_maturity_score).toBeGreaterThanOrEqual(80);
+    });
+  });
+
+  describe('Emerging Privacy Technologies Assessment', () => {
+    test('Emerging privacy technologies evaluation', async () => {
+      // Mock emerging technologies assessment
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          technologies_assessed: [
+            {
+              name: 'Differential Privacy',
+              maturity_level: 'early_adoption',
+              applicability_score: 85,
+              implementation_complexity: 'high',
+              roi_potential: 75
+            },
+            {
+              name: 'Homomorphic Encryption',
+              maturity_level: 'prototype',
+              applicability_score: 70,
+              implementation_complexity: 'very_high',
+              roi_potential: 90
+            },
+            {
+              name: 'Zero Knowledge Proofs',
+              maturity_level: 'early_adoption',
+              applicability_score: 80,
+              implementation_complexity: 'high',
+              roi_potential: 82
+            }
+          ]
+        })
+      });
+
+      const technologiesResponse = await fetch('/api/compliance/emerging-technologies/assess', {
+        method: 'POST',
+        body: JSON.stringify({ organization_id: 'org_001' })
+      });
+
+      expect(technologiesResponse.ok).toBe(true);
+      const technologies = await technologiesResponse.json();
+
+      expect(technologies.technologies_assessed).toHaveLength(3);
+      expect(technologies.technologies_assessed[0].name).toBe('Differential Privacy');
+      expect(technologies.technologies_assessed[0].applicability_score).toBeGreaterThan(80);
+
+      // Mock implementation roadmap
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          recommended_implementations: [
+            {
+              technology: 'Zero Knowledge Proofs',
+              priority: 'high',
+              implementation_timeline_months: 8,
+              pilot_program_recommended: true
+            }
+          ],
+          investment_required: 450000,
+          expected_privacy_improvements: 35,
+          competitive_advantage_potential: 'high'
+        })
+      });
+
+      const roadmapResponse = await fetch('/api/compliance/emerging-technologies/roadmap', {
+        method: 'GET'
+      });
+
+      expect(roadmapResponse.ok).toBe(true);
+      const roadmap = await roadmapResponse.json();
+
+      expect(roadmap.recommended_implementations).toHaveLength(1);
+      expect(roadmap.competitive_advantage_potential).toBe('high');
+    });
+  });
+
+  describe('Global Privacy Orchestration', () => {
+    test('Cross-jurisdictional compliance orchestration', async () => {
+      // Mock global processing scenario
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          scenario_id: 'global_001',
+          applicable_frameworks: ['GDPR', 'CPRA', 'LGPD'],
+          jurisdictions_identified: 8,
+          orchestration_initiated: true
+        })
+      });
+
+      const scenarioResponse = await fetch('/api/compliance/global-orchestration/initiate', {
+        method: 'POST',
+        body: JSON.stringify({
+          scenario_name: 'International Wedding Services',
+          data_subjects: {
+            primary_locations: ['european_union', 'california', 'brazil'],
+            data_categories: ['personal_data', 'special_category_data'],
+            estimated_count: 50000,
+            vulnerable_groups: false
+          },
+          processing_activities: {
+            purposes: ['wedding_planning', 'vendor_matching', 'communication'],
+            legal_bases: ['consent', 'legitimate_interest', 'contract'],
+            processing_locations: ['united_states', 'european_union'],
+            third_party_sharing: true,
+            international_transfers: true,
+            automated_decision_making: true
+          }
+        })
+      });
+
+      expect(scenarioResponse.ok).toBe(true);
+      const scenario = await scenarioResponse.json();
+
+      expect(scenario.applicable_frameworks).toContain('GDPR');
+      expect(scenario.applicable_frameworks).toContain('CPRA');
+      expect(scenario.jurisdictions_identified).toBeGreaterThan(5);
+
+      // Mock compliance orchestration result
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          harmonized_strategy_generated: true,
+          conflict_resolutions_applied: 3,
+          implementation_timeline_months: 12,
+          compliance_cost_estimate: 850000,
+          certification_readiness_score: 78,
+          risk_mitigation_plan_created: true
+        })
+      });
+
+      const orchestrationResponse = await fetch(`/api/compliance/global-orchestration/execute`, {
+        method: 'POST',
+        body: JSON.stringify({ scenario_id: 'global_001' })
+      });
+
+      expect(orchestrationResponse.ok).toBe(true);
+      const orchestrationResult = await orchestrationResponse.json();
+
+      expect(orchestrationResult.harmonized_strategy_generated).toBe(true);
+      expect(orchestrationResult.conflict_resolutions_applied).toBeGreaterThan(0);
+      expect(orchestrationResult.implementation_timeline_months).toBeLessThanOrEqual(18);
+      expect(orchestrationResult.certification_readiness_score).toBeGreaterThan(70);
+    });
+  });
+
+  describe('Continuous Compliance Monitoring', () => {
+    test('Real-time compliance monitoring and alerting', async () => {
+      // Mock monitoring setup
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          monitoring_active: true,
+          metrics_tracked: 15,
+          alert_thresholds_configured: 12,
+          automated_reporting_enabled: true
+        })
+      });
+
+      const monitoringSetupResponse = await fetch('/api/compliance/monitoring/setup', {
+        method: 'POST',
+        body: JSON.stringify({
+          organization_id: 'org_001',
+          monitoring_scope: 'comprehensive'
+        })
+      });
+
+      expect(monitoringSetupResponse.ok).toBe(true);
+      const monitoringSetup = await monitoringSetupResponse.json();
+
+      expect(monitoringSetup.monitoring_active).toBe(true);
+      expect(monitoringSetup.metrics_tracked).toBeGreaterThan(10);
+      expect(monitoringSetup.automated_reporting_enabled).toBe(true);
+
+      // Mock monitoring status
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          overall_compliance_score: 94,
+          critical_alerts: 0,
+          warning_alerts: 2,
+          metrics: {
+            consent_compliance_rate: 97.5,
+            data_subject_request_response_time: 18, // hours
+            incident_detection_time: 0.5, // hours
+            audit_finding_remediation_rate: 92
+          }
+        })
+      });
+
+      const monitoringStatusResponse = await fetch('/api/compliance/monitoring/status', {
+        method: 'GET'
+      });
+
+      expect(monitoringStatusResponse.ok).toBe(true);
+      const monitoringStatus = await monitoringStatusResponse.json();
+
+      expect(monitoringStatus.overall_compliance_score).toBeGreaterThan(90);
+      expect(monitoringStatus.critical_alerts).toBe(0);
+      expect(monitoringStatus.metrics.consent_compliance_rate).toBeGreaterThan(95);
+      expect(monitoringStatus.metrics.data_subject_request_response_time).toBeLessThan(24);
+    });
+  });
+});

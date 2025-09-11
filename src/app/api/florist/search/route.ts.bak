@@ -1,0 +1,125 @@
+// Flower Search API Route - WS-253 Team B
+// Secure AI-powered flower search with color matching and seasonal intelligence
+import { NextRequest, NextResponse } from 'next/server';
+import { withSecureValidation, CommonSchemas, getUserFromRequest } from '@/lib/security/withSecureValidation';
+import { FloristIntelligenceService } from '@/lib/florist/florist-intelligence-service';
+import { z } from 'zod';
+
+const FlowerSearchSchema = z.object({
+  colors: z.array(CommonSchemas.HexColor).optional(),
+  wedding_date: z.string().datetime().optional(),
+  style: CommonSchemas.WeddingStyle.optional(),
+  season: CommonSchemas.Season.optional(),
+  budget_range: CommonSchemas.BudgetRange.optional(),
+  exclude_allergens: z.array(CommonSchemas.AllergenType).optional(),
+  sustainability_minimum: z.number().min(0).max(1).optional(),
+  wedding_uses: z.array(z.enum(['bouquet', 'centerpiece', 'ceremony', 'boutonniere'])).optional(),
+  region: z.string().max(50).optional(),
+  limit: z.number().min(1).max(100).default(20)
+});
+
+export const POST = withSecureValidation(
+  FlowerSearchSchema,
+  async (validatedData, request: NextRequest) => {
+    try {
+      const user = await getUserFromRequest(request);
+      if (!user) {
+        return NextResponse.json({ 
+          success: false, 
+          error: 'Unauthorized',
+          code: 'UNAUTHORIZED'
+        }, { status: 401 });
+      }
+
+      // Convert wedding_date string to Date if provided
+      const searchCriteria = {
+        ...validatedData,
+        wedding_date: validatedData.wedding_date ? new Date(validatedData.wedding_date) : undefined
+      };
+
+      const floristService = new FloristIntelligenceService();
+      const results = await floristService.searchFlowersWithIntelligence(searchCriteria, user.id);
+
+      return NextResponse.json({
+        success: true,
+        ...results
+      });
+
+    } catch (error) {
+      console.error('Flower search API error:', error);
+      
+      // Handle specific error types
+      if (error.message.includes('rate limit')) {
+        return NextResponse.json(
+          { 
+            success: false, 
+            error: 'Rate limit exceeded. Please try again later.',
+            code: 'RATE_LIMIT_EXCEEDED'
+          }, 
+          { status: 429 }
+        );
+      }
+
+      return NextResponse.json(
+        { 
+          success: false, 
+          error: error.message || 'Internal server error',
+          code: 'FLOWER_SEARCH_FAILED'
+        }, 
+        { status: 500 }
+      );
+    }
+  },
+  {
+    rateLimit: { maxRequests: 100, windowMs: 60 * 60 * 1000 }, // 100 requests per hour
+    requireAuth: true,
+    auditAction: 'flower_search'
+  }
+);
+
+// GET method for simple searches (backwards compatibility)
+export async function GET(request: NextRequest) {
+  try {
+    const user = await getUserFromRequest(request);
+    if (!user) {
+      return NextResponse.json({ 
+        success: false, 
+        error: 'Unauthorized' 
+      }, { status: 401 });
+    }
+
+    const { searchParams } = new URL(request.url);
+    const colors = searchParams.get('colors')?.split(',').filter(color => /^#[0-9A-F]{6}$/i.test(color)) || undefined;
+    const season = searchParams.get('season') as any || undefined;
+    const style = searchParams.get('style') as any || undefined;
+    const limit = Math.min(parseInt(searchParams.get('limit') || '20'), 100);
+
+    // Validate enum values
+    const validSeasons = ['spring', 'summer', 'fall', 'winter'];
+    const validStyles = ['romantic', 'modern', 'rustic', 'classic', 'bohemian', 'minimalist'];
+    
+    const floristService = new FloristIntelligenceService();
+    const results = await floristService.searchFlowersWithIntelligence({
+      colors,
+      season: validSeasons.includes(season) ? season : undefined,
+      style: validStyles.includes(style) ? style : undefined,
+      limit
+    }, user.id);
+
+    return NextResponse.json({
+      success: true,
+      ...results
+    });
+
+  } catch (error) {
+    console.error('Flower search GET error:', error);
+    return NextResponse.json(
+      { 
+        success: false, 
+        error: error.message || 'Internal server error',
+        code: 'FLOWER_SEARCH_FAILED'
+      }, 
+      { status: 500 }
+    );
+  }
+}

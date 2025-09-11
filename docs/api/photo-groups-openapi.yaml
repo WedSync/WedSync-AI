@@ -1,0 +1,756 @@
+openapi: 3.1.0
+info:
+  title: WedSync Photo Groups API
+  version: 1.0.0
+  description: |
+    Production-ready API for managing wedding photo groups with real-time collaboration,
+    high performance, and zero-tolerance for data loss. Built for WS-153 requirements.
+  contact:
+    name: WedSync Team B
+    email: api-support@wedsync.com
+  license:
+    name: Proprietary
+    url: https://wedsync.com/api-license
+
+servers:
+  - url: https://api.wedsync.com/v1
+    description: Production Server
+  - url: https://staging-api.wedsync.com/v1
+    description: Staging Server  
+  - url: http://localhost:3000/api
+    description: Development Server
+
+security:
+  - BearerAuth: []
+  - ApiKeyAuth: []
+
+tags:
+  - name: Photo Groups
+    description: Core photo group management operations
+  - name: Health
+    description: System health and monitoring endpoints
+  - name: Metrics
+    description: Performance metrics and analytics
+  - name: Real-time
+    description: WebSocket real-time collaboration
+
+paths:
+  /photo-groups:
+    get:
+      tags: [Photo Groups]
+      summary: List photo groups
+      description: Retrieve all photo groups for a couple with filtering and pagination
+      operationId: listPhotoGroups
+      parameters:
+        - name: couple_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: UUID of the couple
+        - name: photo_type
+          in: query
+          schema:
+            type: string
+            enum: [family, friends, bridal_party, groomsmen, bridesmaids, children, special, formal, candid]
+          description: Filter by photo type
+        - name: include_assignments
+          in: query
+          schema:
+            type: boolean
+            default: false
+          description: Include guest assignments in response
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+          description: Number of results per page
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+          description: Pagination offset
+      responses:
+        '200':
+          description: Successfully retrieved photo groups
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PhotoGroup'
+              examples:
+                success:
+                  value:
+                    - id: "550e8400-e29b-41d4-a716-446655440000"
+                      couple_id: "123e4567-e89b-12d3-a456-426614174000"
+                      name: "Bridal Party Photos"
+                      photo_type: "bridal_party"
+                      priority: 1
+                      estimated_time_minutes: 15
+                      created_at: "2025-01-20T10:30:00Z"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    
+    post:
+      tags: [Photo Groups]
+      summary: Create photo group
+      description: Create a new photo group with optional guest assignments
+      operationId: createPhotoGroup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePhotoGroupRequest'
+            examples:
+              basic:
+                summary: Basic photo group
+                value:
+                  couple_id: "123e4567-e89b-12d3-a456-426614174000"
+                  name: "Family Portraits"
+                  photo_type: "family"
+                  priority: 1
+              withGuests:
+                summary: With guest assignments
+                value:
+                  couple_id: "123e4567-e89b-12d3-a456-426614174000"
+                  name: "Bridal Party"
+                  photo_type: "bridal_party"
+                  guest_ids: ["guest-1", "guest-2", "guest-3"]
+                  estimated_time_minutes: 20
+      responses:
+        '201':
+          description: Photo group created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PhotoGroup'
+          headers:
+            Location:
+              description: URI of the created resource
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /photo-groups/{id}:
+    get:
+      tags: [Photo Groups]
+      summary: Get photo group by ID
+      operationId: getPhotoGroup
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Photo group details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PhotoGroup'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    
+    put:
+      tags: [Photo Groups]
+      summary: Update photo group
+      operationId: updatePhotoGroup
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePhotoGroupRequest'
+      responses:
+        '200':
+          description: Photo group updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PhotoGroup'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    
+    delete:
+      tags: [Photo Groups]
+      summary: Delete photo group
+      operationId: deletePhotoGroup
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Photo group deleted successfully
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /photo-groups/reorder:
+    patch:
+      tags: [Photo Groups]
+      summary: Reorder photo groups
+      description: Bulk update photo group priorities for drag-and-drop reordering
+      operationId: reorderPhotoGroups
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                group_orders:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                        format: uuid
+                      priority:
+                        type: integer
+                        minimum: 1
+                    required: [id, priority]
+              required: [group_orders]
+      responses:
+        '200':
+          description: Groups reordered successfully
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /photo-groups/health:
+    get:
+      tags: [Health]
+      summary: Health check endpoint
+      description: |
+        Comprehensive health check for photo groups API including database,
+        storage, real-time, and processing status
+      operationId: healthCheck
+      security: []
+      responses:
+        '200':
+          description: System is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthCheckResponse'
+        '503':
+          description: System is unhealthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthCheckResponse'
+
+  /photo-groups/metrics:
+    get:
+      tags: [Metrics]
+      summary: Get API metrics
+      description: Retrieve detailed performance and usage metrics
+      operationId: getMetrics
+      parameters:
+        - name: period
+          in: query
+          schema:
+            type: string
+            enum: [last_minute, last_hour, last_day, last_week]
+            default: last_hour
+        - name: detailed
+          in: query
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Metrics retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricsResponse'
+
+  /photo-groups/realtime/{couple_id}:
+    get:
+      tags: [Real-time]
+      summary: WebSocket endpoint for real-time collaboration
+      description: |
+        Establishes WebSocket connection for real-time photo group updates.
+        Supports up to 100 concurrent connections per couple.
+      operationId: realtimeWebSocket
+      parameters:
+        - name: couple_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '101':
+          description: Switching Protocols to WebSocket
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT authentication token
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key for service-to-service communication
+
+  schemas:
+    PhotoGroup:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique identifier
+        couple_id:
+          type: string
+          format: uuid
+          description: Associated couple ID
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Group name
+        description:
+          type: string
+          maxLength: 1000
+          description: Optional description
+        photo_type:
+          type: string
+          enum: [family, friends, bridal_party, groomsmen, bridesmaids, children, special, formal, candid]
+          description: Type of photo group
+        priority:
+          type: integer
+          minimum: 0
+          description: Display order priority
+        estimated_time_minutes:
+          type: integer
+          minimum: 1
+          maximum: 120
+          description: Estimated time for photo session
+        location:
+          type: string
+          maxLength: 200
+          description: Photo location
+        timeline_slot:
+          type: string
+          maxLength: 100
+          description: Timeline slot identifier
+        photographer_notes:
+          type: string
+          description: Notes for photographer
+        assignments:
+          type: array
+          items:
+            $ref: '#/components/schemas/PhotoGroupAssignment'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required: [id, couple_id, name, priority, created_at]
+
+    PhotoGroupAssignment:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        photo_group_id:
+          type: string
+          format: uuid
+        guest_id:
+          type: string
+          format: uuid
+        is_primary:
+          type: boolean
+          default: false
+        position_notes:
+          type: string
+        guest:
+          $ref: '#/components/schemas/Guest'
+      required: [id, photo_group_id, guest_id]
+
+    Guest:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        first_name:
+          type: string
+        last_name:
+          type: string
+        side:
+          type: string
+          enum: [bride, groom, both]
+        category:
+          type: string
+          enum: [family, friend, wedding_party, vendor, other]
+      required: [id, first_name, last_name]
+
+    CreatePhotoGroupRequest:
+      type: object
+      properties:
+        couple_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 1000
+        photo_type:
+          type: string
+          enum: [family, friends, bridal_party, groomsmen, bridesmaids, children, special, formal, candid]
+        priority:
+          type: integer
+          minimum: 0
+        estimated_time_minutes:
+          type: integer
+          minimum: 1
+          maximum: 120
+          default: 5
+        location:
+          type: string
+          maxLength: 200
+        timeline_slot:
+          type: string
+          maxLength: 100
+        photographer_notes:
+          type: string
+        guest_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+      required: [couple_id, name]
+
+    UpdatePhotoGroupRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 1000
+        photo_type:
+          type: string
+          enum: [family, friends, bridal_party, groomsmen, bridesmaids, children, special, formal, candid]
+        priority:
+          type: integer
+          minimum: 0
+        estimated_time_minutes:
+          type: integer
+          minimum: 1
+          maximum: 120
+        location:
+          type: string
+          maxLength: 200
+        timeline_slot:
+          type: string
+          maxLength: 100
+        photographer_notes:
+          type: string
+        guest_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+
+    HealthCheckResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+        timestamp:
+          type: string
+          format: date-time
+        uptime:
+          type: integer
+          description: Uptime in milliseconds
+        checks:
+          type: object
+          properties:
+            database:
+              $ref: '#/components/schemas/CheckStatus'
+            storage:
+              $ref: '#/components/schemas/CheckStatus'
+            realtime:
+              $ref: '#/components/schemas/CheckStatus'
+            memory:
+              $ref: '#/components/schemas/CheckStatus'
+            photoProcessing:
+              $ref: '#/components/schemas/CheckStatus'
+        metrics:
+          type: object
+          properties:
+            requestsPerMinute:
+              type: number
+            averageResponseTime:
+              type: number
+            errorRate:
+              type: number
+            activeConnections:
+              type: integer
+            queuedJobs:
+              type: integer
+        version:
+          type: string
+      required: [status, timestamp]
+
+    CheckStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [pass, warn, fail]
+        responseTime:
+          type: number
+          description: Response time in milliseconds
+        message:
+          type: string
+        details:
+          type: object
+      required: [status, responseTime]
+
+    MetricsResponse:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        period:
+          type: string
+          enum: [last_minute, last_hour, last_day, last_week]
+        api:
+          type: object
+          properties:
+            totalRequests:
+              type: integer
+            successRate:
+              type: number
+            errorRate:
+              type: number
+            averageResponseTime:
+              type: number
+            p95ResponseTime:
+              type: number
+            p99ResponseTime:
+              type: number
+            requestsByMethod:
+              type: object
+              additionalProperties:
+                type: integer
+            requestsByEndpoint:
+              type: object
+              additionalProperties:
+                type: integer
+            errorsByType:
+              type: object
+              additionalProperties:
+                type: integer
+        realtime:
+          type: object
+          properties:
+            activeConnections:
+              type: integer
+            messagesPerMinute:
+              type: number
+            averageLatency:
+              type: number
+        storage:
+          type: object
+          properties:
+            totalPhotoGroups:
+              type: integer
+            totalPhotos:
+              type: integer
+            storageUsedGB:
+              type: number
+        performance:
+          type: object
+          properties:
+            cpuUsage:
+              type: number
+            memoryUsage:
+              type: number
+            databaseConnections:
+              type: integer
+            cacheHitRate:
+              type: number
+        alerts:
+          type: array
+          items:
+            type: object
+            properties:
+              level:
+                type: string
+                enum: [info, warning, error, critical]
+              message:
+                type: string
+              timestamp:
+                type: string
+                format: date-time
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: Machine-readable error code
+            message:
+              type: string
+              description: Human-readable error message
+            details:
+              type: object
+              description: Additional error context
+            timestamp:
+              type: string
+              format: date-time
+            requestId:
+              type: string
+              description: Unique request identifier for debugging
+            retryable:
+              type: boolean
+              description: Whether the request can be retried
+            retryAfter:
+              type: integer
+              description: Seconds to wait before retrying
+          required: [code, message, timestamp, requestId, retryable]
+
+  responses:
+    BadRequest:
+      description: Invalid request parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: "VALIDATION_ERROR"
+              message: "Invalid input data provided"
+              timestamp: "2025-01-20T10:30:00Z"
+              requestId: "pg-lz4n8-00001-xyz789abc"
+              retryable: false
+
+    Unauthorized:
+      description: Authentication required
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: "UNAUTHORIZED"
+              message: "Authentication required"
+              timestamp: "2025-01-20T10:30:00Z"
+              requestId: "pg-lz4n8-00002-def456ghi"
+              retryable: false
+
+    Forbidden:
+      description: Access denied
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: "INSUFFICIENT_PERMISSIONS"
+              message: "You do not have permission to access this resource"
+              timestamp: "2025-01-20T10:30:00Z"
+              requestId: "pg-lz4n8-00003-jkl789mno"
+              retryable: false
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: "PHOTO_GROUP_NOT_FOUND"
+              message: "Photo group not found"
+              timestamp: "2025-01-20T10:30:00Z"
+              requestId: "pg-lz4n8-00004-pqr012stu"
+              retryable: false
+
+    Conflict:
+      description: Resource conflict
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: "DUPLICATE_ENTRY"
+              message: "Resource already exists"
+              timestamp: "2025-01-20T10:30:00Z"
+              requestId: "pg-lz4n8-00005-vwx345yz0"
+              retryable: false
+
+    InternalServerError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: "INTERNAL_ERROR"
+              message: "An unexpected error occurred. Please try again later."
+              timestamp: "2025-01-20T10:30:00Z"
+              requestId: "pg-lz4n8-00006-abc123def"
+              retryable: true
+              retryAfter: 10

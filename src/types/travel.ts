@@ -1,0 +1,142 @@
+export interface Location {
+  lat: number;
+  lng: number;
+  address?: string;
+  name?: string;
+}
+
+export interface RouteStop {
+  id: string;
+  location: Location;
+  name: string;
+  arrivalTime?: string;
+  departureTime?: string;
+  stopDuration?: number; // minutes
+  type: 'pickup' | 'venue' | 'destination';
+}
+
+export interface TrafficConditions {
+  currentDelay: number; // minutes
+  expectedDelay: number; // minutes
+  severity: 'light' | 'moderate' | 'heavy';
+  description: string;
+}
+
+export interface RouteSegment {
+  start: Location;
+  end: Location;
+  distance: number; // meters
+  duration: number; // seconds
+  durationInTraffic: number; // seconds with current traffic
+  traffic: TrafficConditions;
+  instructions: string[];
+}
+
+export interface TravelRoute {
+  id: string;
+  name: string;
+  stops: RouteStop[];
+  segments: RouteSegment[];
+  totalDistance: number; // meters
+  totalDuration: number; // seconds
+  totalDurationInTraffic: number; // seconds with traffic
+  createdAt: string;
+  lastCalculated: string;
+  bufferTime: number; // recommended buffer in minutes
+}
+
+export interface RouteOptimizationOptions {
+  optimize: boolean;
+  avoidTolls: boolean;
+  avoidHighways: boolean;
+  departureTime?: string; // ISO string
+  trafficModel: 'best_guess' | 'pessimistic' | 'optimistic';
+}
+
+export interface TravelTimeCalculation {
+  routeId: string;
+  departureTime: string;
+  arrivalTime: string;
+  totalTravelTime: number; // minutes
+  bufferTime: number; // minutes
+  confidence: 'high' | 'medium' | 'low';
+  alternativeRoutes?: TravelRoute[];
+  warnings: string[];
+}
+
+export interface SavedRoute {
+  id: string;
+  name: string;
+  description?: string;
+  userId: string;
+  route: TravelRoute;
+  isTemplate: boolean;
+  useCount: number;
+  lastUsed: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RouteAnalytics {
+  routeId: string;
+  averageDuration: number;
+  fastestTime: number;
+  slowestTime: number;
+  reliability: number; // 0-100%
+  trafficPatterns: {
+    [timeSlot: string]: {
+      duration: number;
+      traffic: 'light' | 'moderate' | 'heavy';
+    };
+  };
+}
+
+export interface GoogleMapsDirectionsResponse {
+  routes: {
+    legs: Array<{
+      distance: { text: string; value: number };
+      duration: { text: string; value: number };
+      duration_in_traffic?: { text: string; value: number };
+      steps: Array<{
+        html_instructions: string;
+        distance: { text: string; value: number };
+        duration: { text: string; value: number };
+      }>;
+    }>;
+    overview_polyline: { points: string };
+    summary: string;
+    warnings: string[];
+  }[];
+  status: string;
+}
+
+export interface DistanceMatrixResponse {
+  rows: Array<{
+    elements: Array<{
+      distance: { text: string; value: number };
+      duration: { text: string; value: number };
+      duration_in_traffic?: { text: string; value: number };
+      status: string;
+    }>;
+  }>;
+  origin_addresses: string[];
+  destination_addresses: string[];
+  status: string;
+}
+
+export interface RouteValidationError {
+  type: 'invalid_location' | 'no_route_found' | 'api_error' | 'rate_limited';
+  message: string;
+  details?: any;
+}
+
+export interface TravelCalculatorConfig {
+  apiKey: string;
+  defaultBufferTime: number; // minutes
+  maxRouteStops: number;
+  cacheExpiration: number; // seconds
+  rateLimiting: {
+    requestsPerMinute: number;
+    burstLimit: number;
+  };
+}

@@ -1,0 +1,662 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@/lib/supabase/server'
+import { z } from 'zod'
+import rateLimit from '@/lib/rate-limit'
+import { sanitizeString, sanitizeHTML, validateAndSanitizeObject, isValidUUID } from '@/lib/security/input-validation'
+import { PersonalizationEngine } from '@/lib/communications/personalization-engine'
+
+// Rate limiting for template operations
+const templateRateLimit = rateLimit({
+  interval: 60 * 1000, // 1 minute
+  uniqueTokenPerInterval: 200
+})
+
+// Template validation schema
+const templateSchema = z.object({
+  name: z.string().min(1).max(255),
+  description: z.string().max(1000).optional(),
+  template_type: z.enum(['wedding_update', 'venue_change', 'menu_info', 'rsvp_reminder', 'thank_you', 'custom']),
+  category: z.string().max(50).default('custom'),
+  channels: z.array(z.enum(['email', 'sms'])).min(1),
+  subject: z.string().max(255).optional(),
+  content: z.string().min(1).max(5000),
+  variables: z.array(z.string()).default([]),
+  is_active: z.boolean().default(true)
+})
+
+const templateUpdateSchema = templateSchema.partial()
+
+interface TemplateWithTokens {
+  id: string
+  organization_id: string
+  name: string
+  description?: string
+  template_type: string
+  category: string
+  channels: string[]
+  subject?: string
+  content: string
+  variables: string[]
+  detected_tokens: string[]
+  is_system_template: boolean
+  is_active: boolean
+  usage_count: number
+  created_by: string
+  created_at: string
+  updated_at: string
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    // Rate limiting
+    const identifier = request.ip || 'anonymous'
+    const { success } = await templateRateLimit.check(50, identifier)
+    
+    if (!success) {
+      return NextResponse.json(
+        { error: 'Too many template requests' },
+        { status: 429 }
+      )
+    }
+
+    const supabase = await createClient()
+    const { searchParams } = new URL(request.url)
+    
+    // Get pagination parameters
+    const page = parseInt(searchParams.get('page') || '1')
+    const limit = Math.min(parseInt(searchParams.get('limit') || '50'), 100)
+    const offset = (page - 1) * limit
+    
+    // Get filter parameters
+    const templateType = searchParams.get('template_type')
+    const category = searchParams.get('category')
+    const channels = searchParams.get('channels')?.split(',')
+    const isActive = searchParams.get('is_active')
+    const includeSystem = searchParams.get('include_system') === 'true'
+    const searchQuery = searchParams.get('search')
+
+    // Get user and organization
+    const { data: user } = await supabase.auth.getUser()
+    if (!user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      )
+    }
+
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', user.id)
+      .single()
+
+    if (!userProfile?.organization_id) {
+      return NextResponse.json(
+        { error: 'Organization not found' },
+        { status: 404 }
+      )
+    }
+
+    // Build query
+    let query = supabase
+      .from('communication_templates')
+      .select('*')
+
+    // Apply organization filter (include system templates if requested)
+    if (includeSystem) {
+      query = query.or(`organization_id.eq.${userProfile.organization_id},is_system_template.eq.true`)
+    } else {
+      query = query.eq('organization_id', userProfile.organization_id)
+    }
+
+    // Apply filters
+    if (templateType) {
+      query = query.eq('template_type', templateType)
+    }
+
+    if (category) {
+      query = query.eq('category', category)
+    }
+
+    if (channels) {
+      query = query.overlaps('channels', channels)
+    }
+
+    if (isActive !== null) {
+      query = query.eq('is_active', isActive === 'true')
+    }
+
+    if (searchQuery) {
+      query = query.or(`name.ilike.%${searchQuery}%,description.ilike.%${searchQuery}%,content.ilike.%${searchQuery}%`)
+    }
+
+    // Apply ordering and pagination
+    query = query
+      .order('is_system_template', { ascending: false }) // System templates first
+      .order('usage_count', { ascending: false }) // Most used first
+      .order('created_at', { ascending: false }) // Newest first
+      .range(offset, offset + limit - 1)
+
+    const { data: templates, error } = await query
+
+    if (error) {
+      console.error('Error fetching templates:', error)
+      return NextResponse.json(
+        { error: 'Failed to fetch templates' },
+        { status: 500 }
+      )
+    }
+
+    // Enhance templates with detected tokens
+    const personalizationEngine = new PersonalizationEngine()
+    const enhancedTemplates: TemplateWithTokens[] = (templates || []).map(template => {
+      const detectedTokens = [
+        ...personalizationEngine.extractTokens(template.content || ''),
+        ...(template.subject ? personalizationEngine.extractTokens(template.subject) : [])
+      ]
+
+      return {
+        ...template,
+        detected_tokens: [...new Set(detectedTokens)] // Remove duplicates
+      }
+    })
+
+    // Get total count for pagination
+    let countQuery = supabase
+      .from('communication_templates')
+      .select('*', { count: 'exact', head: true })
+
+    if (includeSystem) {
+      countQuery = countQuery.or(`organization_id.eq.${userProfile.organization_id},is_system_template.eq.true`)
+    } else {
+      countQuery = countQuery.eq('organization_id', userProfile.organization_id)
+    }
+
+    if (templateType) countQuery = countQuery.eq('template_type', templateType)
+    if (category) countQuery = countQuery.eq('category', category)
+    if (channels) countQuery = countQuery.overlaps('channels', channels)
+    if (isActive !== null) countQuery = countQuery.eq('is_active', isActive === 'true')
+    if (searchQuery) {
+      countQuery = countQuery.or(`name.ilike.%${searchQuery}%,description.ilike.%${searchQuery}%,content.ilike.%${searchQuery}%`)
+    }
+
+    const { count: totalCount } = await countQuery
+
+    return NextResponse.json({
+      templates: enhancedTemplates,
+      pagination: {
+        page,
+        limit,
+        total: totalCount || 0,
+        pages: Math.ceil((totalCount || 0) / limit),
+        has_next: offset + limit < (totalCount || 0),
+        has_prev: page > 1
+      }
+    })
+
+  } catch (error) {
+    console.error('Error in templates GET:', error)
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    // Rate limiting
+    const identifier = request.ip || 'anonymous'
+    const { success } = await templateRateLimit.check(10, identifier)
+    
+    if (!success) {
+      return NextResponse.json(
+        { error: 'Too many template creation requests' },
+        { status: 429 }
+      )
+    }
+
+    const supabase = await createClient()
+    
+    // Get and verify user
+    const { data: user } = await supabase.auth.getUser()
+    if (!user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      )
+    }
+
+    // Get user profile and verify permissions
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('organization_id, role')
+      .eq('user_id', user.id)
+      .single()
+
+    if (!userProfile?.organization_id) {
+      return NextResponse.json(
+        { error: 'Organization not found' },
+        { status: 404 }
+      )
+    }
+
+    // Check if user has permission to create templates
+    if (!['OWNER', 'ADMIN', 'MEMBER'].includes(userProfile.role)) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions to create templates' },
+        { status: 403 }
+      )
+    }
+
+    // Validate request body
+    const rawBody = await request.json()
+    const validatedData = templateSchema.parse(rawBody)
+    
+    // Sanitize content
+    const sanitizedContent = sanitizeHTML(validatedData.content)
+    const sanitizedName = sanitizeString(validatedData.name, 255)
+    const sanitizedDescription = validatedData.description ? 
+      sanitizeString(validatedData.description, 1000) : null
+    const sanitizedSubject = validatedData.subject ? 
+      sanitizeString(validatedData.subject, 255) : null
+
+    // Extract tokens from content for auto-detection
+    const personalizationEngine = new PersonalizationEngine()
+    const detectedTokens = [
+      ...personalizationEngine.extractTokens(sanitizedContent),
+      ...(sanitizedSubject ? personalizationEngine.extractTokens(sanitizedSubject) : [])
+    ]
+
+    // Merge provided variables with detected tokens
+    const allVariables = [...new Set([...validatedData.variables, ...detectedTokens])]
+
+    // Create template
+    const templateData = {
+      organization_id: userProfile.organization_id,
+      name: sanitizedName,
+      description: sanitizedDescription,
+      template_type: validatedData.template_type,
+      category: validatedData.category,
+      channels: validatedData.channels,
+      subject: sanitizedSubject,
+      content: sanitizedContent,
+      variables: allVariables,
+      is_active: validatedData.is_active,
+      created_by: user.id
+    }
+
+    const { data: template, error: templateError } = await supabase
+      .from('communication_templates')
+      .insert(templateData)
+      .select(`
+        *,
+        creator:user_profiles!communication_templates_created_by_fkey(display_name)
+      `)
+      .single()
+
+    if (templateError) {
+      console.error('Error creating template:', templateError)
+      
+      if (templateError.code === '23505') { // Unique constraint violation
+        return NextResponse.json(
+          { error: 'Template name already exists in this organization' },
+          { status: 409 }
+        )
+      }
+      
+      return NextResponse.json(
+        { error: 'Failed to create template' },
+        { status: 500 }
+      )
+    }
+
+    // Return template with detected tokens
+    const enhancedTemplate: TemplateWithTokens = {
+      ...template,
+      detected_tokens: detectedTokens
+    }
+
+    return NextResponse.json({ template: enhancedTemplate }, { status: 201 })
+
+  } catch (error) {
+    console.error('Error in templates POST:', error)
+    
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { 
+          error: 'Invalid template data',
+          details: error.errors.map(err => ({
+            field: err.path.join('.'),
+            message: err.message
+          }))
+        },
+        { status: 400 }
+      )
+    }
+    
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}
+
+export async function PUT(request: NextRequest) {
+  try {
+    // Rate limiting
+    const identifier = request.ip || 'anonymous'
+    const { success } = await templateRateLimit.check(10, identifier)
+    
+    if (!success) {
+      return NextResponse.json(
+        { error: 'Too many template update requests' },
+        { status: 429 }
+      )
+    }
+
+    const supabase = await createClient()
+    const { searchParams } = new URL(request.url)
+    const templateId = searchParams.get('id')
+
+    if (!templateId || !isValidUUID(templateId)) {
+      return NextResponse.json(
+        { error: 'Invalid template ID' },
+        { status: 400 }
+      )
+    }
+
+    // Get and verify user
+    const { data: user } = await supabase.auth.getUser()
+    if (!user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      )
+    }
+
+    // Get user profile
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('organization_id, role')
+      .eq('user_id', user.id)
+      .single()
+
+    if (!userProfile?.organization_id) {
+      return NextResponse.json(
+        { error: 'Organization not found' },
+        { status: 404 }
+      )
+    }
+
+    // Get existing template and verify ownership
+    const { data: existingTemplate } = await supabase
+      .from('communication_templates')
+      .select('*')
+      .eq('id', templateId)
+      .eq('organization_id', userProfile.organization_id)
+      .eq('is_system_template', false) // Can't edit system templates
+      .single()
+
+    if (!existingTemplate) {
+      return NextResponse.json(
+        { error: 'Template not found or cannot be edited' },
+        { status: 404 }
+      )
+    }
+
+    // Check permissions
+    if (!['OWNER', 'ADMIN', 'MEMBER'].includes(userProfile.role)) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions to update template' },
+        { status: 403 }
+      )
+    }
+
+    // Validate request body
+    const rawBody = await request.json()
+    const validatedData = templateUpdateSchema.parse(rawBody)
+
+    // Sanitize updated content
+    const updateData: any = {}
+
+    if (validatedData.name) {
+      updateData.name = sanitizeString(validatedData.name, 255)
+    }
+
+    if (validatedData.description !== undefined) {
+      updateData.description = validatedData.description ? 
+        sanitizeString(validatedData.description, 1000) : null
+    }
+
+    if (validatedData.content) {
+      updateData.content = sanitizeHTML(validatedData.content)
+    }
+
+    if (validatedData.subject !== undefined) {
+      updateData.subject = validatedData.subject ? 
+        sanitizeString(validatedData.subject, 255) : null
+    }
+
+    if (validatedData.template_type) {
+      updateData.template_type = validatedData.template_type
+    }
+
+    if (validatedData.category) {
+      updateData.category = validatedData.category
+    }
+
+    if (validatedData.channels) {
+      updateData.channels = validatedData.channels
+    }
+
+    if (validatedData.is_active !== undefined) {
+      updateData.is_active = validatedData.is_active
+    }
+
+    // Re-detect tokens if content changed
+    if (updateData.content || updateData.subject !== undefined) {
+      const personalizationEngine = new PersonalizationEngine()
+      const detectedTokens = [
+        ...personalizationEngine.extractTokens(updateData.content || existingTemplate.content),
+        ...(updateData.subject !== undefined ? 
+            (updateData.subject ? personalizationEngine.extractTokens(updateData.subject) : []) :
+            (existingTemplate.subject ? personalizationEngine.extractTokens(existingTemplate.subject) : []))
+      ]
+
+      // Merge with provided variables or existing variables
+      const existingVariables = validatedData.variables || existingTemplate.variables || []
+      updateData.variables = [...new Set([...existingVariables, ...detectedTokens])]
+    } else if (validatedData.variables) {
+      updateData.variables = validatedData.variables
+    }
+
+    // Update template
+    const { data: updatedTemplate, error: updateError } = await supabase
+      .from('communication_templates')
+      .update(updateData)
+      .eq('id', templateId)
+      .select(`
+        *,
+        creator:user_profiles!communication_templates_created_by_fkey(display_name)
+      `)
+      .single()
+
+    if (updateError) {
+      console.error('Error updating template:', updateError)
+      
+      if (updateError.code === '23505') { // Unique constraint violation
+        return NextResponse.json(
+          { error: 'Template name already exists in this organization' },
+          { status: 409 }
+        )
+      }
+      
+      return NextResponse.json(
+        { error: 'Failed to update template' },
+        { status: 500 }
+      )
+    }
+
+    // Return updated template with detected tokens
+    const personalizationEngine = new PersonalizationEngine()
+    const detectedTokens = [
+      ...personalizationEngine.extractTokens(updatedTemplate.content || ''),
+      ...(updatedTemplate.subject ? personalizationEngine.extractTokens(updatedTemplate.subject) : [])
+    ]
+
+    const enhancedTemplate: TemplateWithTokens = {
+      ...updatedTemplate,
+      detected_tokens: detectedTokens
+    }
+
+    return NextResponse.json({ template: enhancedTemplate })
+
+  } catch (error) {
+    console.error('Error in templates PUT:', error)
+    
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { 
+          error: 'Invalid template data',
+          details: error.errors.map(err => ({
+            field: err.path.join('.'),
+            message: err.message
+          }))
+        },
+        { status: 400 }
+      )
+    }
+    
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}
+
+export async function DELETE(request: NextRequest) {
+  try {
+    // Rate limiting
+    const identifier = request.ip || 'anonymous'
+    const { success } = await templateRateLimit.check(10, identifier)
+    
+    if (!success) {
+      return NextResponse.json(
+        { error: 'Too many template deletion requests' },
+        { status: 429 }
+      )
+    }
+
+    const supabase = await createClient()
+    const { searchParams } = new URL(request.url)
+    const templateId = searchParams.get('id')
+
+    if (!templateId || !isValidUUID(templateId)) {
+      return NextResponse.json(
+        { error: 'Invalid template ID' },
+        { status: 400 }
+      )
+    }
+
+    // Get and verify user
+    const { data: user } = await supabase.auth.getUser()
+    if (!user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      )
+    }
+
+    // Get user profile
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('organization_id, role')
+      .eq('user_id', user.id)
+      .single()
+
+    if (!userProfile?.organization_id) {
+      return NextResponse.json(
+        { error: 'Organization not found' },
+        { status: 404 }
+      )
+    }
+
+    // Check permissions
+    if (!['OWNER', 'ADMIN'].includes(userProfile.role)) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions to delete template' },
+        { status: 403 }
+      )
+    }
+
+    // Verify template exists and can be deleted
+    const { data: existingTemplate } = await supabase
+      .from('communication_templates')
+      .select('is_system_template, usage_count')
+      .eq('id', templateId)
+      .eq('organization_id', userProfile.organization_id)
+      .single()
+
+    if (!existingTemplate) {
+      return NextResponse.json(
+        { error: 'Template not found' },
+        { status: 404 }
+      )
+    }
+
+    if (existingTemplate.is_system_template) {
+      return NextResponse.json(
+        { error: 'Cannot delete system templates' },
+        { status: 403 }
+      )
+    }
+
+    // Soft delete by marking as inactive instead of hard delete if template has been used
+    if (existingTemplate.usage_count > 0) {
+      const { error: updateError } = await supabase
+        .from('communication_templates')
+        .update({ is_active: false })
+        .eq('id', templateId)
+
+      if (updateError) {
+        console.error('Error deactivating template:', updateError)
+        return NextResponse.json(
+          { error: 'Failed to deactivate template' },
+          { status: 500 }
+        )
+      }
+
+      return NextResponse.json({ 
+        message: 'Template deactivated (soft deleted due to usage history)',
+        soft_delete: true
+      })
+    }
+
+    // Hard delete if template has never been used
+    const { error: deleteError } = await supabase
+      .from('communication_templates')
+      .delete()
+      .eq('id', templateId)
+
+    if (deleteError) {
+      console.error('Error deleting template:', deleteError)
+      return NextResponse.json(
+        { error: 'Failed to delete template' },
+        { status: 500 }
+      )
+    }
+
+    return NextResponse.json({ 
+      message: 'Template deleted successfully',
+      soft_delete: false
+    })
+
+  } catch (error) {
+    console.error('Error in templates DELETE:', error)
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}

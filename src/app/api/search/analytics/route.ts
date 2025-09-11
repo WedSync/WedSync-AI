@@ -1,0 +1,643 @@
+/**
+ * WS-248: Advanced Search System - Search Analytics and Tracking API
+ *
+ * GET /api/search/analytics
+ * POST /api/search/analytics/events
+ *
+ * Search behavior tracking, performance monitoring, and optimization
+ * analytics with ML-powered insights for wedding vendor discovery.
+ *
+ * Team B - Round 1 - Advanced Search Backend Focus
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+import { SearchAnalytics } from '@/lib/services/search/SearchAnalytics';
+
+// =====================================================================================
+// VALIDATION SCHEMAS
+// =====================================================================================
+
+const AnalyticsQuerySchema = z.object({
+  metrics: z
+    .array(
+      z.enum([
+        'search_volume',
+        'popular_queries',
+        'click_through_rates',
+        'conversion_rates',
+        'user_engagement',
+        'performance_metrics',
+        'facet_usage',
+        'geographic_trends',
+        'vendor_discovery_patterns',
+        'search_funnel_analysis',
+      ]),
+    )
+    .default(['search_volume', 'popular_queries']),
+  timeRange: z.object({
+    start: z.string(),
+    end: z.string(),
+    granularity: z.enum(['hour', 'day', 'week', 'month']).default('day'),
+  }),
+  filters: z
+    .object({
+      userTypes: z.array(z.string()).optional(),
+      searchTypes: z.array(z.string()).optional(),
+      locations: z.array(z.string()).optional(),
+      vendorTypes: z.array(z.string()).optional(),
+      deviceTypes: z.array(z.string()).optional(),
+    })
+    .optional(),
+  aggregations: z
+    .object({
+      groupBy: z.array(z.string()).optional(),
+      includeComparisons: z.boolean().default(false),
+      includeBreakdowns: z.boolean().default(true),
+    })
+    .optional(),
+});
+
+const EventTrackingSchema = z.object({
+  events: z
+    .array(
+      z.object({
+        eventType: z.enum([
+          'search_performed',
+          'result_clicked',
+          'vendor_contacted',
+          'booking_initiated',
+          'facet_applied',
+          'query_refined',
+          'suggestion_selected',
+          'search_abandoned',
+        ]),
+        sessionId: z.string(),
+        userId: z.string().optional(),
+        searchId: z.string().optional(),
+        timestamp: z.string().optional(),
+        properties: z
+          .object({
+            query: z.string().optional(),
+            searchType: z.string().optional(),
+            resultPosition: z.number().optional(),
+            vendorId: z.string().optional(),
+            facetName: z.string().optional(),
+            facetValue: z.string().optional(),
+            deviceInfo: z
+              .object({
+                type: z.string(),
+                browser: z.string(),
+                os: z.string(),
+              })
+              .optional(),
+            location: z
+              .object({
+                latitude: z.number(),
+                longitude: z.number(),
+                city: z.string(),
+                state: z.string(),
+              })
+              .optional(),
+          })
+          .optional(),
+      }),
+    )
+    .max(100),
+});
+
+// =====================================================================================
+// TYPES & INTERFACES
+// =====================================================================================
+
+interface SearchMetric {
+  name: string;
+  value: number | string;
+  change?: {
+    value: number;
+    percentage: number;
+    direction: 'up' | 'down' | 'stable';
+  };
+  trend?: Array<{
+    timestamp: string;
+    value: number;
+  }>;
+  breakdown?: Record<string, number>;
+}
+
+interface AnalyticsResponse {
+  success: boolean;
+  data: {
+    metrics: SearchMetric[];
+    insights: Array<{
+      type: 'trend' | 'anomaly' | 'opportunity' | 'alert';
+      title: string;
+      description: string;
+      severity: 'low' | 'medium' | 'high';
+      actionable: boolean;
+      recommendations?: string[];
+    }>;
+    metadata: {
+      timeRange: {
+        start: string;
+        end: string;
+        granularity: string;
+      };
+      totalQueries: number;
+      totalUsers: number;
+      executionTime: number;
+      cacheHit: boolean;
+    };
+  };
+  error?: string;
+}
+
+interface EventTrackingResponse {
+  success: boolean;
+  processed: number;
+  failed: number;
+  errors?: Array<{
+    event: any;
+    error: string;
+  }>;
+}
+
+// =====================================================================================
+// API HANDLERS
+// =====================================================================================
+
+export async function GET(request: NextRequest) {
+  const startTime = Date.now();
+
+  try {
+    const supabase = createClient();
+    const { searchParams } = request.nextUrl;
+
+    // Authenticate user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { success: false, error: 'Authentication required' },
+        { status: 401 },
+      );
+    }
+
+    // Parse request parameters
+    const requestData = {
+      metrics: searchParams.get('metrics')?.split(',') || [
+        'search_volume',
+        'popular_queries',
+      ],
+      timeRange: {
+        start:
+          searchParams.get('start') ||
+          new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+        end: searchParams.get('end') || new Date().toISOString(),
+        granularity: searchParams.get('granularity') || 'day',
+      },
+      filters: {
+        userTypes: searchParams.get('user_types')?.split(','),
+        searchTypes: searchParams.get('search_types')?.split(','),
+        locations: searchParams.get('locations')?.split(','),
+        vendorTypes: searchParams.get('vendor_types')?.split(','),
+        deviceTypes: searchParams.get('device_types')?.split(','),
+      },
+      aggregations: {
+        groupBy: searchParams.get('group_by')?.split(','),
+        includeComparisons: searchParams.get('comparisons') === 'true',
+        includeBreakdowns: searchParams.get('breakdowns') !== 'false',
+      },
+    };
+
+    // Validate parameters
+    const validation = AnalyticsQuerySchema.safeParse(requestData);
+    if (!validation.success) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Invalid analytics query parameters',
+          details: validation.error.errors,
+        },
+        { status: 400 },
+      );
+    }
+
+    const params = validation.data;
+
+    // Check user permissions for analytics access
+    const hasAnalyticsAccess = await checkAnalyticsPermissions(
+      supabase,
+      user.id,
+    );
+    if (!hasAnalyticsAccess) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Insufficient permissions for analytics data',
+        },
+        { status: 403 },
+      );
+    }
+
+    // Initialize analytics service
+    const analyticsService = new SearchAnalytics(supabase);
+
+    // Check cache first
+    const cacheKey = generateCacheKey(params);
+    const cachedData = await getCachedAnalytics(supabase, cacheKey);
+
+    let metrics: SearchMetric[];
+    let cacheHit = false;
+
+    if (
+      cachedData &&
+      !isDataStale(cachedData.timestamp, params.timeRange.granularity)
+    ) {
+      metrics = cachedData.metrics;
+      cacheHit = true;
+    } else {
+      // Generate fresh analytics
+      metrics = await analyticsService.generateMetrics(params);
+
+      // Cache the results
+      await cacheAnalytics(supabase, cacheKey, metrics);
+    }
+
+    // Generate insights
+    const insights = await analyticsService.generateInsights(metrics, params);
+
+    // Get metadata
+    const metadata = await getAnalyticsMetadata(supabase, params);
+
+    const response: AnalyticsResponse = {
+      success: true,
+      data: {
+        metrics,
+        insights,
+        metadata: {
+          ...metadata,
+          executionTime: Date.now() - startTime,
+          cacheHit,
+        },
+      },
+    };
+
+    // Add performance headers
+    const headers = {
+      'X-Execution-Time': (Date.now() - startTime).toString(),
+      'X-Cache-Hit': cacheHit.toString(),
+      'Cache-Control': getCacheControl(params.timeRange.granularity),
+    };
+
+    return NextResponse.json(response, { headers });
+  } catch (error) {
+    console.error('Analytics API error:', error);
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Failed to retrieve analytics data',
+        executionTime: Date.now() - startTime,
+      },
+      { status: 500 },
+    );
+  }
+}
+
+export async function POST(request: NextRequest) {
+  const startTime = Date.now();
+
+  try {
+    const supabase = createClient();
+    const body = await request.json();
+
+    // Validate event tracking data
+    const validation = EventTrackingSchema.safeParse(body);
+    if (!validation.success) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Invalid event tracking data',
+          details: validation.error.errors,
+        },
+        { status: 400 },
+      );
+    }
+
+    const { events } = validation.data;
+
+    // Initialize analytics service
+    const analyticsService = new SearchAnalytics(supabase);
+
+    // Process events
+    const results = await analyticsService.trackEvents(events);
+
+    const response: EventTrackingResponse = {
+      success: results.processed > 0,
+      processed: results.processed,
+      failed: results.failed,
+      errors: results.errors,
+    };
+
+    return NextResponse.json(response);
+  } catch (error) {
+    console.error('Event tracking API error:', error);
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Failed to track events',
+        processed: 0,
+        failed: -1,
+      },
+      { status: 500 },
+    );
+  }
+}
+
+// =====================================================================================
+// ANALYTICS GENERATION
+// =====================================================================================
+
+async function generateSearchVolumeMetrics(
+  supabase: any,
+  params: any,
+): Promise<SearchMetric> {
+  const { data: volumeData, error } = await supabase
+    .from('search_analytics')
+    .select('search_timestamp')
+    .gte('search_timestamp', params.timeRange.start)
+    .lte('search_timestamp', params.timeRange.end);
+
+  if (error) {
+    console.error('Search volume query error:', error);
+    return {
+      name: 'search_volume',
+      value: 0,
+    };
+  }
+
+  const totalQueries = volumeData?.length || 0;
+
+  // Calculate trend data based on granularity
+  const trend = await calculateTrendData(
+    supabase,
+    'search_analytics',
+    'search_timestamp',
+    params.timeRange,
+    'COUNT(*)',
+  );
+
+  return {
+    name: 'search_volume',
+    value: totalQueries,
+    trend,
+    breakdown: await getSearchVolumeBreakdown(supabase, params),
+  };
+}
+
+async function generatePopularQueriesMetrics(
+  supabase: any,
+  params: any,
+): Promise<SearchMetric> {
+  const { data: queryData, error } = await supabase
+    .from('search_analytics')
+    .select('search_query, COUNT(*) as count')
+    .gte('search_timestamp', params.timeRange.start)
+    .lte('search_timestamp', params.timeRange.end)
+    .group('search_query')
+    .order('count', { ascending: false })
+    .limit(20);
+
+  if (error) {
+    console.error('Popular queries error:', error);
+    return {
+      name: 'popular_queries',
+      value: 'No data',
+    };
+  }
+
+  const breakdown = Object.fromEntries(
+    queryData?.map((item: any) => [item.search_query, item.count]) || [],
+  );
+
+  return {
+    name: 'popular_queries',
+    value: queryData?.[0]?.search_query || 'No queries',
+    breakdown,
+  };
+}
+
+async function generateClickThroughRateMetrics(
+  supabase: any,
+  params: any,
+): Promise<SearchMetric> {
+  const { data: ctrData } = await supabase.rpc('calculate_search_ctr', {
+    start_date: params.timeRange.start,
+    end_date: params.timeRange.end,
+  });
+
+  const averageCTR = ctrData?.[0]?.average_ctr || 0;
+
+  return {
+    name: 'click_through_rates',
+    value: `${(averageCTR * 100).toFixed(2)}%`,
+    trend: await calculateTrendData(
+      supabase,
+      'search_click_events',
+      'timestamp',
+      params.timeRange,
+      'AVG(CASE WHEN clicked THEN 1.0 ELSE 0.0 END)',
+    ),
+  };
+}
+
+async function generateConversionRateMetrics(
+  supabase: any,
+  params: any,
+): Promise<SearchMetric> {
+  const { data: conversionData } = await supabase.rpc(
+    'calculate_search_conversion_rate',
+    {
+      start_date: params.timeRange.start,
+      end_date: params.timeRange.end,
+    },
+  );
+
+  const conversionRate = conversionData?.[0]?.conversion_rate || 0;
+
+  return {
+    name: 'conversion_rates',
+    value: `${(conversionRate * 100).toFixed(2)}%`,
+    breakdown: await getConversionBreakdown(supabase, params),
+  };
+}
+
+// =====================================================================================
+// HELPER FUNCTIONS
+// =====================================================================================
+
+async function checkAnalyticsPermissions(
+  supabase: any,
+  userId: string,
+): Promise<boolean> {
+  try {
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('role, permissions')
+      .eq('id', userId)
+      .single();
+
+    return (
+      userProfile &&
+      (['admin', 'super_admin', 'analyst'].includes(userProfile.role) ||
+        userProfile.permissions?.includes('analytics_read'))
+    );
+  } catch (error) {
+    console.error('Permission check error:', error);
+    return false;
+  }
+}
+
+async function calculateTrendData(
+  supabase: any,
+  tableName: string,
+  timestampColumn: string,
+  timeRange: any,
+  aggregateFunction: string,
+) {
+  const { data: trendData } = await supabase.rpc('calculate_time_series_data', {
+    table_name: tableName,
+    timestamp_column: timestampColumn,
+    start_date: timeRange.start,
+    end_date: timeRange.end,
+    granularity: timeRange.granularity,
+    aggregate_function: aggregateFunction,
+  });
+
+  return (
+    trendData?.map((item: any) => ({
+      timestamp: item.timestamp,
+      value: parseFloat(item.value) || 0,
+    })) || []
+  );
+}
+
+async function getSearchVolumeBreakdown(supabase: any, params: any) {
+  const { data: breakdown } = await supabase
+    .from('search_analytics')
+    .select('search_type, COUNT(*) as count')
+    .gte('search_timestamp', params.timeRange.start)
+    .lte('search_timestamp', params.timeRange.end)
+    .group('search_type')
+    .order('count', { ascending: false });
+
+  return Object.fromEntries(
+    breakdown?.map((item: any) => [item.search_type, item.count]) || [],
+  );
+}
+
+async function getConversionBreakdown(supabase: any, params: any) {
+  const { data: breakdown } = await supabase.rpc('get_conversion_breakdown', {
+    start_date: params.timeRange.start,
+    end_date: params.timeRange.end,
+  });
+
+  return Object.fromEntries(
+    breakdown?.map((item: any) => [item.vendor_type, item.conversion_rate]) ||
+      [],
+  );
+}
+
+async function getAnalyticsMetadata(supabase: any, params: any) {
+  const [totalQueries, totalUsers] = await Promise.all([
+    supabase
+      .from('search_analytics')
+      .select('id', { count: 'exact' })
+      .gte('search_timestamp', params.timeRange.start)
+      .lte('search_timestamp', params.timeRange.end),
+
+    supabase
+      .from('search_analytics')
+      .select('user_id', { count: 'exact' })
+      .gte('search_timestamp', params.timeRange.start)
+      .lte('search_timestamp', params.timeRange.end)
+      .group('user_id'),
+  ]);
+
+  return {
+    timeRange: params.timeRange,
+    totalQueries: totalQueries.count || 0,
+    totalUsers: totalUsers.count || 0,
+  };
+}
+
+function generateCacheKey(params: any): string {
+  const keyData = {
+    metrics: params.metrics.sort(),
+    timeRange: params.timeRange,
+    filters: params.filters,
+  };
+
+  return `analytics_${Buffer.from(JSON.stringify(keyData)).toString('base64')}`;
+}
+
+async function getCachedAnalytics(supabase: any, cacheKey: string) {
+  try {
+    const { data } = await supabase
+      .from('analytics_cache')
+      .select('data, timestamp')
+      .eq('cache_key', cacheKey)
+      .single();
+
+    return data ? { metrics: data.data, timestamp: data.timestamp } : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+async function cacheAnalytics(
+  supabase: any,
+  cacheKey: string,
+  metrics: SearchMetric[],
+) {
+  try {
+    await supabase.from('analytics_cache').upsert({
+      cache_key: cacheKey,
+      data: metrics,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error('Cache write error:', error);
+  }
+}
+
+function isDataStale(cacheTimestamp: string, granularity: string): boolean {
+  const now = Date.now();
+  const cacheTime = new Date(cacheTimestamp).getTime();
+  const staleLimits = {
+    hour: 15 * 60 * 1000, // 15 minutes
+    day: 60 * 60 * 1000, // 1 hour
+    week: 4 * 60 * 60 * 1000, // 4 hours
+    month: 24 * 60 * 60 * 1000, // 24 hours
+  };
+
+  return now - cacheTime > staleLimits[granularity];
+}
+
+function getCacheControl(granularity: string): string {
+  const cacheTimes = {
+    hour: 'public, max-age=900', // 15 minutes
+    day: 'public, max-age=3600', // 1 hour
+    week: 'public, max-age=14400', // 4 hours
+    month: 'public, max-age=86400', // 24 hours
+  };
+
+  return cacheTimes[granularity] || 'public, max-age=3600';
+}
+
+export const dynamic = 'force-dynamic';

@@ -1,0 +1,268 @@
+import { renderHook, act } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { useNetworkState } from '@/hooks/useNetworkState';
+import { NetworkMonitor } from '@/lib/offline/network-monitor';
+
+// Mock the NetworkMonitor
+jest.mock('@/lib/offline/network-monitor');
+const mockNetworkMonitor = {
+  getCurrentState: jest.fn(),
+  getCurrentQuality: jest.fn(),
+  isOnline: jest.fn(),
+  startMonitoring: jest.fn(),
+  stopMonitoring: jest.fn(),
+  on: jest.fn(),
+  removeListener: jest.fn(),
+  testCurrentConnection: jest.fn(),
+  setVenueProfile: jest.fn(),
+  performComprehensiveTest: jest.fn(),
+  destroy: jest.fn(),
+};
+(NetworkMonitor as jest.Mock).mockImplementation(() => mockNetworkMonitor);
+describe('useNetworkState', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    
+    // Default network state
+    mockNetworkMonitor.getCurrentState.mockReturnValue({
+      isOnline: true,
+      quality: 'excellent',
+      metrics: {
+        bandwidth: 10,
+        latency: 50,
+        packetLoss: 0,
+        stability: 0.95,
+      },
+      venueProfile: null,
+      lastUpdated: Date.now(),
+    });
+    mockNetworkMonitor.getCurrentQuality.mockReturnValue('excellent');
+    mockNetworkMonitor.isOnline.mockReturnValue(true);
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+  describe('basic functionality', () => {
+    it('should initialize with current network state', () => {
+      const { result } = renderHook(() => useNetworkState());
+      expect(result.current.isOnline).toBe(true);
+      expect(result.current.quality).toBe('excellent');
+      expect(result.current.metrics).toBeDefined();
+      expect(result.current.metrics.bandwidth).toBe(10);
+      expect(result.current.metrics.latency).toBe(50);
+    it('should start monitoring on mount', () => {
+      renderHook(() => useNetworkState());
+      expect(mockNetworkMonitor.startMonitoring).toHaveBeenCalled();
+      expect(mockNetworkMonitor.on).toHaveBeenCalledWith('state-change', expect.any(Function));
+    it('should stop monitoring on unmount', () => {
+      const { unmount } = renderHook(() => useNetworkState());
+      unmount();
+      expect(mockNetworkMonitor.stopMonitoring).toHaveBeenCalled();
+      expect(mockNetworkMonitor.removeListener).toHaveBeenCalledWith('state-change', expect.any(Function));
+      expect(mockNetworkMonitor.destroy).toHaveBeenCalled();
+  describe('state updates', () => {
+    it('should update state when network state changes', () => {
+      // Simulate network state change
+      const stateChangeCallback = mockNetworkMonitor.on.mock.calls
+        .find(call => call[0] === 'state-change')?.[1];
+      expect(stateChangeCallback).toBeDefined();
+      const newState = {
+        isOnline: false,
+        quality: 'offline',
+        metrics: {
+          bandwidth: 0,
+          latency: Infinity,
+          packetLoss: 100,
+          stability: 0,
+        },
+        venueProfile: null,
+        lastUpdated: Date.now(),
+      };
+      act(() => {
+        stateChangeCallback(newState);
+      });
+      expect(result.current.isOnline).toBe(false);
+      expect(result.current.quality).toBe('offline');
+      expect(result.current.metrics.bandwidth).toBe(0);
+    it('should update venue-specific information', () => {
+      const stateWithVenue = {
+        isOnline: true,
+        quality: 'fair',
+          bandwidth: 2,
+          latency: 300,
+          packetLoss: 3,
+          stability: 0.7,
+        venueProfile: {
+          name: 'Mountain Resort',
+          averageBandwidth: 1.5,
+          reliabilityScore: 0.6,
+          peakHours: ['18:00-22:00'],
+          networkChallenges: ['weak_signal', 'weather_dependent'],
+        stateChangeCallback(stateWithVenue);
+      expect(result.current.venueProfile?.name).toBe('Mountain Resort');
+      expect(result.current.venueProfile?.networkChallenges).toContain('weak_signal');
+  describe('user-friendly messaging', () => {
+    it('should provide wedding coordinator friendly messages for excellent connection', () => {
+      expect(result.current.userMessage).toContain('excellent');
+      expect(result.current.recommendation).toContain('All features available');
+    it('should provide helpful messages for poor connection', () => {
+      mockNetworkMonitor.getCurrentState.mockReturnValue({
+        quality: 'poor',
+          bandwidth: 0.5,
+          latency: 800,
+          packetLoss: 8,
+          stability: 0.4,
+      mockNetworkMonitor.getCurrentQuality.mockReturnValue('poor');
+      expect(result.current.userMessage).toContain('poor');
+      expect(result.current.recommendation).toContain('Consider postponing');
+    it('should provide offline messaging', () => {
+      mockNetworkMonitor.isOnline.mockReturnValue(false);
+      mockNetworkMonitor.getCurrentQuality.mockReturnValue('offline');
+      expect(result.current.userMessage).toContain('offline');
+      expect(result.current.recommendation).toContain('working offline');
+    it('should provide venue-specific warnings', () => {
+      const stateWithChallenges = {
+          bandwidth: 1.5,
+          latency: 400,
+          packetLoss: 5,
+          stability: 0.6,
+          name: 'Remote Barn Venue',
+          averageBandwidth: 1,
+          reliabilityScore: 0.5,
+          peakHours: ['17:00-23:00'],
+          networkChallenges: ['weak_signal', 'equipment_interference'],
+      mockNetworkMonitor.getCurrentState.mockReturnValue(stateWithChallenges);
+      const { result, rerender } = renderHook(() => useNetworkState());
+      // Trigger re-render to pick up new mock values
+      rerender();
+      expect(result.current.venueWarning).toBeDefined();
+      expect(result.current.venueWarning).toContain('Remote Barn Venue');
+      expect(result.current.venueWarning).toContain('signal issues');
+  describe('testing functionality', () => {
+    it('should perform connection test', async () => {
+      mockNetworkMonitor.testCurrentConnection.mockResolvedValue({
+        success: true,
+        quality: 'good',
+          bandwidth: 5,
+          latency: 100,
+          packetLoss: 1,
+          stability: 0.9,
+      await act(async () => {
+        await result.current.testConnection();
+      expect(mockNetworkMonitor.testCurrentConnection).toHaveBeenCalled();
+      expect(result.current.isTestingConnection).toBe(false);
+    it('should handle connection test errors', async () => {
+      mockNetworkMonitor.testCurrentConnection.mockRejectedValue(new Error('Test failed'));
+      expect(result.current.testError).toBe('Test failed');
+    it('should perform comprehensive test', async () => {
+      const comprehensiveResult = {
+        downloadSpeed: { speedMbps: 8, latency: 80, success: true },
+        uploadSpeed: { speedMbps: 3, latency: 90, success: true },
+        latency: { averageLatency: 85, packetLoss: 1, success: true },
+        qualityLevel: 'good',
+        recommendation: 'Good connection for most wedding coordination tasks',
+      mockNetworkMonitor.performComprehensiveTest.mockResolvedValue(comprehensiveResult);
+        await result.current.runComprehensiveTest();
+      expect(mockNetworkMonitor.performComprehensiveTest).toHaveBeenCalled();
+      expect(result.current.comprehensiveTestResult).toEqual(comprehensiveResult);
+      expect(result.current.isRunningComprehensiveTest).toBe(false);
+  describe('venue profile management', () => {
+    it('should set venue profile', async () => {
+      const venueProfile = {
+        name: 'Beachside Resort',
+        averageBandwidth: 5,
+        reliabilityScore: 0.8,
+        peakHours: ['19:00-23:00'],
+        result.current.setVenueProfile(venueProfile);
+      expect(mockNetworkMonitor.setVenueProfile).toHaveBeenCalledWith(venueProfile);
+    it('should detect peak hours and provide warnings', () => {
+      // Mock current time to be in peak hours
+      const mockDate = new Date('2024-01-01T20:00:00Z');
+      jest.spyOn(global, 'Date').mockImplementation(() => mockDate as any);
+      const stateWithPeakHours = {
+          latency: 250,
+          name: 'Grand Ballroom',
+          averageBandwidth: 3,
+          reliabilityScore: 0.75,
+          peakHours: ['19:00-23:00'],
+      mockNetworkMonitor.getCurrentState.mockReturnValue(stateWithPeakHours);
+      expect(result.current.isPeakHours).toBe(true);
+      expect(result.current.venueWarning).toContain('peak hours');
+      jest.restoreAllMocks();
+  describe('error handling', () => {
+    it('should handle network monitor initialization failure', () => {
+      (NetworkMonitor as jest.Mock).mockImplementation(() => {
+        throw new Error('NetworkMonitor initialization failed');
+      // Should provide fallback state
+      expect(result.current.isOnline).toBe(true); // Default online state
+      expect(result.current.quality).toBe('unknown');
+    it('should handle state change callback errors', () => {
+      expect(() => {
+        act(() => {
+          // Call with invalid state
+          stateChangeCallback(null);
+        });
+      }).not.toThrow();
+      // Should maintain previous valid state
+    it('should handle missing network monitor methods gracefully', () => {
+      mockNetworkMonitor.testCurrentConnection = undefined;
+        result.current.testConnection();
+  describe('performance and optimization', () => {
+    it('should not create new network monitor instance on re-renders', () => {
+      const { rerender } = renderHook(() => useNetworkState());
+      const initialCallCount = (NetworkMonitor as jest.Mock).mock.calls.length;
+      // Re-render multiple times
+      expect((NetworkMonitor as jest.Mock).mock.calls.length).toBe(initialCallCount);
+    it('should debounce rapid state changes', () => {
+      // Simulate rapid state changes
+      const states = [
+        { isOnline: true, quality: 'good' },
+        { isOnline: true, quality: 'excellent' },
+        { isOnline: true, quality: 'fair' },
+      ];
+      states.forEach(state => {
+          stateChangeCallback({
+            ...state,
+            metrics: { bandwidth: 5, latency: 100, packetLoss: 1, stability: 0.9 },
+            venueProfile: null,
+            lastUpdated: Date.now(),
+          });
+      // Should handle all updates without issues
+      expect(result.current.quality).toBe('good');
+  describe('edge cases', () => {
+    it('should handle undefined venue profile', () => {
+      const stateWithoutVenue = {
+        quality: 'excellent',
+          bandwidth: 10,
+          latency: 50,
+          packetLoss: 0,
+          stability: 0.95,
+      mockNetworkMonitor.getCurrentState.mockReturnValue(stateWithoutVenue);
+      expect(result.current.venueProfile).toBeNull();
+      expect(result.current.venueWarning).toBeUndefined();
+      expect(result.current.isPeakHours).toBe(false);
+    it('should handle extreme network metrics', () => {
+      const extremeState = {
+          bandwidth: 0.001, // Extremely low bandwidth
+          latency: 10000, // Very high latency
+          packetLoss: 50, // High packet loss
+          stability: 0.1, // Very unstable
+      mockNetworkMonitor.getCurrentState.mockReturnValue(extremeState);
+      expect(result.current.metrics.bandwidth).toBe(0.001);
+      expect(result.current.userMessage).toBeDefined();
+      expect(result.current.recommendation).toBeDefined();
+    it('should handle time zone differences in peak hours', () => {
+        name: 'International Resort',
+        averageBandwidth: 3,
+        reliabilityScore: 0.7,
+        peakHours: ['14:00-18:00'], // Different timezone
+      const stateWithTimezone = {
+          bandwidth: 4,
+          latency: 150,
+          packetLoss: 2,
+          stability: 0.8,
+        venueProfile,
+      mockNetworkMonitor.getCurrentState.mockReturnValue(stateWithTimezone);
+      expect(result.current.venueProfile).toEqual(venueProfile);
+      // Peak hours detection should work regardless of timezone
+      expect(typeof result.current.isPeakHours).toBe('boolean');
+});

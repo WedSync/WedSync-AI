@@ -1,0 +1,431 @@
+/**
+ * WS-133: Onboarding Tasks API
+ * API endpoints for managing individual onboarding tasks
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { getServerSession } from 'next-auth/next';
+import { authOptions } from '@/lib/auth/config';
+import { rateLimit } from '@/lib/ratelimit';
+
+/**
+ * PATCH /api/customer-success/onboarding/tasks
+ * Update task status or progress
+ */
+export async function PATCH(request: NextRequest) {
+  // Apply rate limiting
+  const identifier = request.ip ?? 'anonymous';
+  const { success } = await rateLimit.limit(identifier, {
+    requests: 30,
+    window: '1m',
+  });
+
+  if (!success) {
+    return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  }
+
+  try {
+    const session = await getServerSession(authOptions);
+    if (!session?.user) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 },
+      );
+    }
+
+    const { taskId, action, metadata } = await request.json();
+
+    // Validate required parameters
+    if (!taskId || !action) {
+      return NextResponse.json(
+        { error: 'Missing required parameters: taskId, action' },
+        { status: 400 },
+      );
+    }
+
+    // Validate action type
+    if (!['start', 'complete', 'skip', 'fail', 'retry'].includes(action)) {
+      return NextResponse.json(
+        {
+          error:
+            'Invalid action. Must be one of: start, complete, skip, fail, retry',
+        },
+        { status: 400 },
+      );
+    }
+
+    // Process task action
+    const taskUpdate = {
+      taskId,
+      action,
+      userId: session.user.id,
+      timestamp: new Date(),
+      metadata: metadata || {},
+      previousStatus: 'pending', // In real implementation, fetch from database
+    };
+
+    // Mock task status mapping
+    const statusMapping: Record<string, string> = {
+      start: 'in_progress',
+      complete: 'completed',
+      skip: 'skipped',
+      fail: 'failed',
+      retry: 'in_progress',
+    };
+
+    const newStatus = statusMapping[action];
+
+    // Simulate task validation and business logic
+    let validationResult = {
+      success: true,
+      message: 'Task updated successfully',
+    };
+
+    if (action === 'complete') {
+      // Mock validation for task completion
+      if (taskId === 'setup-2' && !metadata?.clientData) {
+        validationResult = {
+          success: false,
+          message: 'Client data is required to complete this task',
+        };
+      }
+    }
+
+    if (!validationResult.success) {
+      return NextResponse.json(
+        { error: validationResult.message },
+        { status: 400 },
+      );
+    }
+
+    // Simulate triggering automation rules
+    const triggeredAutomation = [];
+    if (action === 'complete') {
+      triggeredAutomation.push({
+        ruleId: 'rule-milestone-celebration',
+        triggerType: 'task_completed',
+        scheduledActions: ['send_email', 'create_notification'],
+      });
+    } else if (action === 'start') {
+      triggeredAutomation.push({
+        ruleId: 'rule-progress-tracking',
+        triggerType: 'task_started',
+        scheduledActions: ['update_analytics'],
+      });
+    }
+
+    // Calculate impact on stage and overall progress
+    const progressImpact = {
+      stageProgress:
+        action === 'complete' ? '+15%' : action === 'start' ? '+5%' : '0%',
+      overallProgress: action === 'complete' ? '+3.2%' : '0%',
+      milestoneContribution: action === 'complete' ? 25 : 0,
+    };
+
+    // Mock updated task data
+    const updatedTask = {
+      id: taskId,
+      status: newStatus,
+      updatedAt: new Date(),
+      completedAt: action === 'complete' ? new Date() : null,
+      attempts: action === 'retry' ? 2 : 1,
+      lastAttemptAt: new Date(),
+      metadata: {
+        ...metadata,
+        updatedBy: session.user.id,
+        action: action,
+      },
+    };
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        taskUpdate: updatedTask,
+        progressImpact,
+        triggeredAutomation,
+        message: validationResult.message,
+        nextSuggestedActions: getNextSuggestedActions(taskId, action),
+      },
+    });
+  } catch (error) {
+    console.error('Task update API error:', error);
+    return NextResponse.json(
+      {
+        error: 'Failed to update task',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * GET /api/customer-success/onboarding/tasks
+ * Get tasks for the current user with optional filtering
+ */
+export async function GET(request: NextRequest) {
+  // Apply rate limiting
+  const identifier = request.ip ?? 'anonymous';
+  const { success } = await rateLimit.limit(identifier);
+
+  if (!success) {
+    return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  }
+
+  try {
+    const session = await getServerSession(authOptions);
+    if (!session?.user) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 },
+      );
+    }
+
+    const { searchParams } = new URL(request.url);
+    const status = searchParams.get('status');
+    const stageId = searchParams.get('stageId');
+    const includeCompleted = searchParams.get('includeCompleted') === 'true';
+
+    // Mock task data with filtering
+    const allTasks = [
+      {
+        id: 'welcome-1',
+        title: 'Complete Your Profile',
+        description: 'Add your business details and profile information',
+        type: 'form',
+        status: 'completed',
+        stageId: 'welcome-stage',
+        estimatedMinutes: 15,
+        required: true,
+        completedAt: new Date(Date.now() - 86400000 * 2),
+        attempts: 1,
+        progressWeight: 0.15,
+      },
+      {
+        id: 'welcome-2',
+        title: 'Take the Welcome Tour',
+        description: 'Learn about key features and navigation',
+        type: 'tutorial',
+        status: 'completed',
+        stageId: 'welcome-stage',
+        estimatedMinutes: 15,
+        required: true,
+        completedAt: new Date(Date.now() - 86400000 * 2),
+        attempts: 1,
+        progressWeight: 0.15,
+      },
+      {
+        id: 'setup-1',
+        title: 'Configure Business Settings',
+        description: 'Set up your business hours, services, and pricing',
+        type: 'form',
+        status: 'completed',
+        stageId: 'setup-stage',
+        estimatedMinutes: 20,
+        required: true,
+        completedAt: new Date(Date.now() - 86400000 * 1),
+        attempts: 1,
+        progressWeight: 0.2,
+      },
+      {
+        id: 'setup-2',
+        title: 'Add Your First Client',
+        description: 'Create a client profile to start managing weddings',
+        type: 'action',
+        status: 'in_progress',
+        stageId: 'setup-stage',
+        estimatedMinutes: 25,
+        required: true,
+        attempts: 2,
+        lastAttemptAt: new Date(Date.now() - 86400000 * 0.5),
+        progressWeight: 0.25,
+      },
+      {
+        id: 'features-1',
+        title: 'Create a Task List',
+        description: 'Set up your first wedding task list',
+        type: 'action',
+        status: 'pending',
+        stageId: 'features-stage',
+        estimatedMinutes: 20,
+        required: true,
+        attempts: 0,
+        progressWeight: 0.2,
+      },
+    ];
+
+    // Apply filters
+    let filteredTasks = allTasks;
+
+    if (status) {
+      filteredTasks = filteredTasks.filter((task) => task.status === status);
+    }
+
+    if (stageId) {
+      filteredTasks = filteredTasks.filter((task) => task.stageId === stageId);
+    }
+
+    if (!includeCompleted) {
+      filteredTasks = filteredTasks.filter(
+        (task) => task.status !== 'completed',
+      );
+    }
+
+    // Add computed fields
+    const enhancedTasks = filteredTasks.map((task) => ({
+      ...task,
+      isOverdue: isTaskOverdue(task),
+      timeSpent: calculateTimeSpent(task),
+      nextSteps: getTaskNextSteps(task),
+      helpResources: getTaskHelpResources(task.id),
+      dependencies: getTaskDependencies(task.id),
+      successCriteria: getTaskSuccessCriteria(task.id),
+    }));
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        tasks: enhancedTasks,
+        summary: {
+          total: enhancedTasks.length,
+          completed: enhancedTasks.filter((t) => t.status === 'completed')
+            .length,
+          inProgress: enhancedTasks.filter((t) => t.status === 'in_progress')
+            .length,
+          pending: enhancedTasks.filter((t) => t.status === 'pending').length,
+          overdue: enhancedTasks.filter((t) => t.isOverdue).length,
+        },
+      },
+    });
+  } catch (error) {
+    console.error('Tasks API error:', error);
+    return NextResponse.json(
+      {
+        error: 'Failed to retrieve tasks',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+// Helper functions
+function getNextSuggestedActions(taskId: string, action: string): string[] {
+  const suggestions: Record<string, string[]> = {
+    'welcome-1':
+      action === 'complete'
+        ? ['Take the welcome tour', 'Explore your dashboard']
+        : ['Fill out all required fields', 'Upload profile picture'],
+    'setup-2':
+      action === 'complete'
+        ? [
+            'Set up task lists for your client',
+            'Configure communication preferences',
+          ]
+        : ['Gather client information', 'Check our client setup guide'],
+    'features-1':
+      action === 'complete'
+        ? ['Invite team members', 'Set up automated reminders']
+        : ['Watch our task management tutorial', 'Start with basic tasks'],
+  };
+
+  return suggestions[taskId] || ['Continue with the next available task'];
+}
+
+function isTaskOverdue(task: any): boolean {
+  // Mock logic - in real implementation, check against due dates
+  if (task.status === 'in_progress' && task.attempts > 2) {
+    return true;
+  }
+  return false;
+}
+
+function calculateTimeSpent(task: any): number {
+  // Mock logic - in real implementation, track actual time
+  if (task.status === 'completed') {
+    return task.estimatedMinutes;
+  } else if (task.status === 'in_progress') {
+    return Math.round(task.estimatedMinutes * 0.6);
+  }
+  return 0;
+}
+
+function getTaskNextSteps(task: any): string[] {
+  const nextSteps: Record<string, string[]> = {
+    'setup-2': [
+      'Collect client contact information',
+      'Set the wedding date',
+      'Add basic wedding details',
+      'Save and continue',
+    ],
+    'features-1': [
+      'Choose a wedding template',
+      'Add your first task',
+      'Set due dates',
+      'Assign responsibilities',
+    ],
+  };
+
+  return nextSteps[task.id] || ['Complete the task requirements'];
+}
+
+function getTaskHelpResources(taskId: string): any[] {
+  const resources: Record<string, any[]> = {
+    'setup-2': [
+      {
+        type: 'video',
+        title: 'Adding Your First Client',
+        url: '/help/videos/first-client',
+        duration: 8,
+      },
+      {
+        type: 'article',
+        title: 'Client Management Best Practices',
+        url: '/help/articles/client-management',
+        duration: 5,
+      },
+    ],
+    'features-1': [
+      {
+        type: 'tutorial',
+        title: 'Interactive Task List Builder',
+        url: '/help/tutorials/task-lists',
+        duration: 12,
+      },
+    ],
+  };
+
+  return resources[taskId] || [];
+}
+
+function getTaskDependencies(taskId: string): string[] {
+  const dependencies: Record<string, string[]> = {
+    'welcome-2': ['welcome-1'],
+    'setup-2': ['setup-1'],
+    'features-2': ['features-1'],
+    'features-3': [],
+  };
+
+  return dependencies[taskId] || [];
+}
+
+function getTaskSuccessCriteria(taskId: string): string[] {
+  const criteria: Record<string, string[]> = {
+    'welcome-1': [
+      'All required profile fields completed',
+      'Profile picture uploaded',
+    ],
+    'setup-2': [
+      'Client profile created',
+      'Wedding date set',
+      'Contact information added',
+    ],
+    'features-1': [
+      'Task list created',
+      'At least 3 tasks added',
+      'Due dates set',
+    ],
+  };
+
+  return criteria[taskId] || ['Complete all task requirements'];
+}

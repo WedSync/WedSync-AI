@@ -1,0 +1,548 @@
+/**
+ * WS-250: API Gateway Management System - External API Connector
+ * Team C - Round 1: Third-party API service integration and routing
+ *
+ * Handles external API connections with robust error handling, rate limiting,
+ * circuit breaker pattern, and wedding industry specific optimizations.
+ */
+
+import {
+  IntegrationConfig,
+  IntegrationCredentials,
+  IntegrationResponse,
+  IntegrationError,
+  ErrorCategory,
+  ErrorSeverity,
+  CircuitBreakerState,
+  RateLimiterState,
+  IntegrationMetrics,
+} from '../../types/integrations';
+import {
+  ApiResponse,
+  createSuccessResponse,
+  createErrorResponse,
+} from '../../types/api-handlers';
+
+export interface ExternalAPIConfig extends IntegrationConfig {
+  baseUrl: string;
+  version?: string;
+  headers?: Record<string, string>;
+  circuitBreaker?: {
+    failureThreshold: number;
+    recoveryTimeout: number;
+    monitoringWindow: number;
+  };
+  rateLimit?: {
+    requests: number;
+    windowMs: number;
+  };
+  weddingDayProtection?: boolean;
+}
+
+export interface APIEndpoint {
+  path: string;
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+  requiresAuth: boolean;
+  rateLimit?: number;
+  weddingDayRestricted?: boolean;
+}
+
+export interface ConnectionHealth {
+  isHealthy: boolean;
+  lastChecked: Date;
+  responseTime: number;
+  errorRate: number;
+  consecutiveFailures: number;
+  status: 'connected' | 'degraded' | 'disconnected';
+}
+
+export interface WeddingContext {
+  weddingDate?: Date;
+  isWeddingWeekend: boolean;
+  priority: 'low' | 'medium' | 'high' | 'critical';
+  vendorType?: string;
+}
+
+export class ExternalAPIConnector {
+  private config: ExternalAPIConfig;
+  private credentials: IntegrationCredentials;
+  private circuitBreaker: CircuitBreakerState;
+  private rateLimiter: RateLimiterState;
+  private metrics: IntegrationMetrics;
+  private healthStatus: ConnectionHealth;
+  private readonly maxRetries = 3;
+  private readonly weddingDayProtection: boolean;
+
+  constructor(config: ExternalAPIConfig, credentials: IntegrationCredentials) {
+    this.config = config;
+    this.credentials = credentials;
+    this.weddingDayProtection = config.weddingDayProtection ?? true;
+
+    // Initialize circuit breaker
+    this.circuitBreaker = {
+      state: 'closed',
+      failureCount: 0,
+      lastFailureTime: null,
+      nextAttemptTime: null,
+    };
+
+    // Initialize rate limiter
+    this.rateLimiter = {
+      tokens: config.rateLimit?.requests ?? 100,
+      lastRefill: new Date(),
+      windowStart: new Date(),
+    };
+
+    // Initialize metrics
+    this.metrics = {
+      requestCount: 0,
+      successCount: 0,
+      failureCount: 0,
+      averageResponseTime: 0,
+      lastRequestTime: new Date(),
+      circuitBreakerState: this.circuitBreaker,
+      rateLimiterState: this.rateLimiter,
+    };
+
+    // Initialize health status
+    this.healthStatus = {
+      isHealthy: true,
+      lastChecked: new Date(),
+      responseTime: 0,
+      errorRate: 0,
+      consecutiveFailures: 0,
+      status: 'connected',
+    };
+  }
+
+  /**
+   * Execute API request with full error handling and circuit breaker protection
+   */
+  async executeRequest<T>(
+    endpoint: APIEndpoint,
+    data?: any,
+    context?: WeddingContext,
+  ): Promise<IntegrationResponse<T>> {
+    try {
+      // Wedding day protection
+      if (this.shouldBlockWeddingDayRequest(context)) {
+        throw new IntegrationError(
+          'Request blocked due to wedding day protection',
+          'WEDDING_DAY_BLOCKED',
+          ErrorCategory.SYSTEM,
+        );
+      }
+
+      // Circuit breaker check
+      if (this.circuitBreaker.state === 'open') {
+        if (!this.shouldAttemptRecovery()) {
+          throw new IntegrationError(
+            'Circuit breaker is open',
+            'CIRCUIT_BREAKER_OPEN',
+            ErrorCategory.SYSTEM,
+          );
+        }
+        this.circuitBreaker.state = 'half-open';
+      }
+
+      // Rate limiting check
+      if (!this.checkRateLimit()) {
+        throw new IntegrationError(
+          'Rate limit exceeded',
+          'RATE_LIMIT_EXCEEDED',
+          ErrorCategory.RATE_LIMIT,
+        );
+      }
+
+      const startTime = Date.now();
+      const response = await this.makeHttpRequest<T>(endpoint, data);
+      const responseTime = Date.now() - startTime;
+
+      // Update metrics on success
+      this.updateMetricsOnSuccess(responseTime);
+      this.updateHealthStatus(responseTime, true);
+
+      // Reset circuit breaker on success
+      if (this.circuitBreaker.state === 'half-open') {
+        this.circuitBreaker.state = 'closed';
+        this.circuitBreaker.failureCount = 0;
+      }
+
+      return {
+        success: true,
+        data: response,
+      };
+    } catch (error) {
+      // Handle errors and update metrics
+      this.updateMetricsOnFailure();
+      this.updateHealthStatus(0, false);
+      this.updateCircuitBreakerOnFailure();
+
+      if (error instanceof IntegrationError) {
+        return {
+          success: false,
+          error: error.message,
+        };
+      }
+
+      return {
+        success: false,
+        error:
+          error instanceof Error ? error.message : 'Unknown error occurred',
+      };
+    }
+  }
+
+  /**
+   * Batch processing for multiple API calls with wedding-aware prioritization
+   */
+  async executeBatch<T>(
+    requests: Array<{
+      endpoint: APIEndpoint;
+      data?: any;
+      context?: WeddingContext;
+    }>,
+    options?: {
+      maxConcurrent?: number;
+      prioritizeWeddingDay?: boolean;
+    },
+  ): Promise<IntegrationResponse<T[]>> {
+    const { maxConcurrent = 5, prioritizeWeddingDay = true } = options || {};
+
+    try {
+      // Sort requests by priority if wedding day prioritization is enabled
+      const sortedRequests = prioritizeWeddingDay
+        ? this.prioritizeWeddingRequests(requests)
+        : requests;
+
+      const results: T[] = [];
+      const chunks = this.chunkArray(sortedRequests, maxConcurrent);
+
+      for (const chunk of chunks) {
+        const promises = chunk.map(({ endpoint, data, context }) =>
+          this.executeRequest<T>(endpoint, data, context),
+        );
+
+        const chunkResults = await Promise.allSettled(promises);
+
+        for (const result of chunkResults) {
+          if (result.status === 'fulfilled' && result.value.success) {
+            results.push(result.value.data!);
+          }
+        }
+      }
+
+      return {
+        success: true,
+        data: results,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error:
+          error instanceof Error ? error.message : 'Batch execution failed',
+      };
+    }
+  }
+
+  /**
+   * Health check with wedding industry specific validations
+   */
+  async performHealthCheck(): Promise<ConnectionHealth> {
+    try {
+      const startTime = Date.now();
+
+      // Use a lightweight endpoint for health check
+      const healthEndpoint: APIEndpoint = {
+        path: '/health',
+        method: 'GET',
+        requiresAuth: false,
+      };
+
+      const response = await this.makeHttpRequest(healthEndpoint);
+      const responseTime = Date.now() - startTime;
+
+      this.healthStatus = {
+        isHealthy: true,
+        lastChecked: new Date(),
+        responseTime,
+        errorRate: this.calculateErrorRate(),
+        consecutiveFailures: 0,
+        status: this.determineConnectionStatus(),
+      };
+
+      return this.healthStatus;
+    } catch (error) {
+      this.healthStatus = {
+        isHealthy: false,
+        lastChecked: new Date(),
+        responseTime: 0,
+        errorRate: this.calculateErrorRate(),
+        consecutiveFailures: this.healthStatus.consecutiveFailures + 1,
+        status: 'disconnected',
+      };
+
+      return this.healthStatus;
+    }
+  }
+
+  /**
+   * Get comprehensive metrics for monitoring
+   */
+  getMetrics(): IntegrationMetrics {
+    return {
+      ...this.metrics,
+      circuitBreakerState: { ...this.circuitBreaker },
+      rateLimiterState: { ...this.rateLimiter },
+    };
+  }
+
+  /**
+   * Get current connection health
+   */
+  getHealthStatus(): ConnectionHealth {
+    return { ...this.healthStatus };
+  }
+
+  /**
+   * Reset circuit breaker (admin function)
+   */
+  resetCircuitBreaker(): void {
+    this.circuitBreaker = {
+      state: 'closed',
+      failureCount: 0,
+      lastFailureTime: null,
+      nextAttemptTime: null,
+    };
+  }
+
+  // Private methods
+
+  private async makeHttpRequest<T>(
+    endpoint: APIEndpoint,
+    data?: any,
+  ): Promise<T> {
+    const url = `${this.config.baseUrl}${endpoint.path}`;
+    const headers = {
+      'Content-Type': 'application/json',
+      ...this.config.headers,
+      ...this.getAuthHeaders(),
+    };
+
+    const requestConfig: RequestInit = {
+      method: endpoint.method,
+      headers,
+      ...(data && { body: JSON.stringify(data) }),
+    };
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(
+      () => controller.abort(),
+      this.config.timeout || 10000,
+    );
+
+    try {
+      const response = await fetch(url, {
+        ...requestConfig,
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        throw new IntegrationError(
+          `HTTP ${response.status}: ${response.statusText}`,
+          `HTTP_${response.status}`,
+          ErrorCategory.EXTERNAL_API,
+        );
+      }
+
+      return await response.json();
+    } catch (error) {
+      clearTimeout(timeoutId);
+
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new IntegrationError(
+          'Request timeout',
+          'TIMEOUT',
+          ErrorCategory.NETWORK,
+        );
+      }
+
+      throw error;
+    }
+  }
+
+  private getAuthHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {};
+
+    if (this.credentials.apiKey) {
+      headers['Authorization'] = `Bearer ${this.credentials.apiKey}`;
+    }
+
+    if (this.credentials.accessToken) {
+      headers['Authorization'] = `Bearer ${this.credentials.accessToken}`;
+    }
+
+    return headers;
+  }
+
+  private shouldBlockWeddingDayRequest(context?: WeddingContext): boolean {
+    if (!this.weddingDayProtection || !context) return false;
+
+    const today = new Date();
+    const isWeekend = today.getDay() === 0 || today.getDay() === 6;
+
+    // Block non-critical requests on wedding weekends
+    if (
+      context.isWeddingWeekend &&
+      isWeekend &&
+      context.priority !== 'critical'
+    ) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private checkRateLimit(): boolean {
+    const now = new Date();
+    const windowMs = this.config.rateLimit?.windowMs || 60000;
+    const maxRequests = this.config.rateLimit?.requests || 100;
+
+    // Reset window if needed
+    if (now.getTime() - this.rateLimiter.windowStart.getTime() >= windowMs) {
+      this.rateLimiter.tokens = maxRequests;
+      this.rateLimiter.windowStart = now;
+      this.rateLimiter.lastRefill = now;
+    }
+
+    if (this.rateLimiter.tokens <= 0) {
+      return false;
+    }
+
+    this.rateLimiter.tokens--;
+    return true;
+  }
+
+  private shouldAttemptRecovery(): boolean {
+    if (!this.circuitBreaker.nextAttemptTime) return false;
+    return Date.now() >= this.circuitBreaker.nextAttemptTime.getTime();
+  }
+
+  private updateMetricsOnSuccess(responseTime: number): void {
+    this.metrics.requestCount++;
+    this.metrics.successCount++;
+    this.metrics.lastRequestTime = new Date();
+
+    // Update average response time
+    const total =
+      this.metrics.averageResponseTime * (this.metrics.requestCount - 1);
+    this.metrics.averageResponseTime =
+      (total + responseTime) / this.metrics.requestCount;
+  }
+
+  private updateMetricsOnFailure(): void {
+    this.metrics.requestCount++;
+    this.metrics.failureCount++;
+    this.metrics.lastRequestTime = new Date();
+  }
+
+  private updateCircuitBreakerOnFailure(): void {
+    this.circuitBreaker.failureCount++;
+    this.circuitBreaker.lastFailureTime = new Date();
+
+    const threshold = this.config.circuitBreaker?.failureThreshold || 5;
+    if (this.circuitBreaker.failureCount >= threshold) {
+      this.circuitBreaker.state = 'open';
+      const recoveryTimeout =
+        this.config.circuitBreaker?.recoveryTimeout || 60000;
+      this.circuitBreaker.nextAttemptTime = new Date(
+        Date.now() + recoveryTimeout,
+      );
+    }
+  }
+
+  private updateHealthStatus(responseTime: number, success: boolean): void {
+    this.healthStatus.lastChecked = new Date();
+
+    if (success) {
+      this.healthStatus.consecutiveFailures = 0;
+      this.healthStatus.responseTime = responseTime;
+    } else {
+      this.healthStatus.consecutiveFailures++;
+    }
+
+    this.healthStatus.errorRate = this.calculateErrorRate();
+    this.healthStatus.status = this.determineConnectionStatus();
+    this.healthStatus.isHealthy = this.healthStatus.status !== 'disconnected';
+  }
+
+  private calculateErrorRate(): number {
+    if (this.metrics.requestCount === 0) return 0;
+    return (this.metrics.failureCount / this.metrics.requestCount) * 100;
+  }
+
+  private determineConnectionStatus():
+    | 'connected'
+    | 'degraded'
+    | 'disconnected' {
+    if (this.healthStatus.consecutiveFailures >= 5) {
+      return 'disconnected';
+    } else if (
+      this.healthStatus.consecutiveFailures >= 2 ||
+      this.healthStatus.errorRate > 10
+    ) {
+      return 'degraded';
+    }
+    return 'connected';
+  }
+
+  private prioritizeWeddingRequests<T>(
+    requests: Array<{
+      endpoint: APIEndpoint;
+      data?: any;
+      context?: WeddingContext;
+    }>,
+  ): Array<{
+    endpoint: APIEndpoint;
+    data?: any;
+    context?: WeddingContext;
+  }> {
+    return requests.sort((a, b) => {
+      const priorityA = this.getRequestPriority(a.context);
+      const priorityB = this.getRequestPriority(b.context);
+      return priorityB - priorityA;
+    });
+  }
+
+  private getRequestPriority(context?: WeddingContext): number {
+    if (!context) return 0;
+
+    const priorities = {
+      critical: 4,
+      high: 3,
+      medium: 2,
+      low: 1,
+    };
+
+    let priority = priorities[context.priority] || 1;
+
+    // Boost priority for wedding day/weekend
+    if (context.isWeddingWeekend) {
+      priority += 2;
+    }
+
+    return priority;
+  }
+
+  private chunkArray<T>(array: T[], chunkSize: number): T[][] {
+    const chunks: T[][] = [];
+    for (let i = 0; i < array.length; i += chunkSize) {
+      chunks.push(array.slice(i, i + chunkSize));
+    }
+    return chunks;
+  }
+}
+
+export default ExternalAPIConnector;

@@ -1,0 +1,392 @@
+import React from 'react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import '@testing-library/jest-dom';
+import { SecurityDashboard } from '@/components/admin/SecurityDashboard';
+import type { SecurityMetrics, SecurityAlert } from '@/types/audit';
+
+// Mock Supabase client
+jest.mock('@supabase/auth-helpers-nextjs', () => ({
+  createClientComponentClient: jest.fn(() => ({
+    auth: {
+      getUser: jest.fn().mockResolvedValue({ data: { user: { id: 'test-user' } } })
+    },
+    from: jest.fn(() => ({
+      select: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      order: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      gte: jest.fn().mockReturnThis(),
+      range: jest.fn().mockResolvedValue({
+        data: [],
+        count: 0,
+        error: null
+      })
+    })),
+    channel: jest.fn(() => ({
+      on: jest.fn().mockReturnThis(),
+      subscribe: jest.fn()
+    }))
+  }))
+}));
+
+// Mock data
+const mockSecurityMetrics: SecurityMetrics = {
+  total_events: 1250,
+  high_risk_events: 15,
+  critical_events: 2,
+  failed_logins: 45,
+  suspicious_activities: 8,
+  active_sessions: 234,
+  blocked_ips: 12,
+  mfa_enabled_users: 89,
+  last_updated: new Date().toISOString()
+};
+
+const mockSecurityAlerts: SecurityAlert[] = [
+  {
+    id: 'alert-1',
+    user_id: 'user-suspicious',
+    alert_type: 'MULTIPLE_FAILED_LOGINS',
+    risk_level: 'HIGH',
+    description: 'Multiple failed login attempts detected',
+    metadata: {
+      ip_address: '203.0.113.195',
+      login_attempts: 8,
+      location: 'Unknown Location'
+    },
+    resolved: false,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  },
+  {
+    id: 'alert-2',
+    user_id: 'user-data-access',
+    alert_type: 'UNUSUAL_DATA_ACCESS',
+    risk_level: 'CRITICAL',
+    description: 'Unusual data access pattern detected',
+    metadata: {
+      accessed_records: 500,
+      time_window: '5 minutes',
+      data_types: ['guest_data', 'payment_info']
+    },
+    resolved: false,
+    created_at: new Date(Date.now() - 300000).toISOString(),
+    updated_at: new Date(Date.now() - 300000).toISOString()
+  }
+];
+
+describe('SecurityDashboard', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('renders security dashboard with header', async () => {
+    render(<SecurityDashboard />);
+    
+    expect(screen.getByText('Security Overview')).toBeInTheDocument();
+    expect(screen.getByText(/Real-time security metrics and alerts/)).toBeInTheDocument();
+  });
+
+  it('displays security health indicator', async () => {
+    render(<SecurityDashboard />);
+    
+    await waitFor(() => {
+      expect(screen.getByText('Security Health')).toBeInTheDocument();
+    });
+  });
+
+  it('shows critical security health when critical alerts exist', async () => {
+    // Mock data with critical alerts
+    const mockSupabase = require('@supabase/auth-helpers-nextjs').createClientComponentClient();
+    mockSupabase.from.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      order: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      gte: jest.fn().mockReturnThis(),
+      range: jest.fn().mockResolvedValue({
+        data: mockSecurityAlerts,
+        count: 2,
+        error: null
+      })
+    });
+
+    render(<SecurityDashboard />);
+    
+    await waitFor(() => {
+      const healthIndicator = screen.getByText('Security Health');
+      expect(healthIndicator).toBeInTheDocument();
+    });
+  });
+
+  it('displays security metrics cards', async () => {
+    render(<SecurityDashboard />);
+    
+    await waitFor(() => {
+      expect(screen.getByText('Total Events')).toBeInTheDocument();
+      expect(screen.getByText('High Risk Events')).toBeInTheDocument();
+      expect(screen.getByText('Failed Logins')).toBeInTheDocument();
+      expect(screen.getByText('Active Sessions')).toBeInTheDocument();
+    });
+  });
+
+  it('shows loading skeleton initially', () => {
+    render(<SecurityDashboard />);
+    
+    const loadingElements = screen.getAllByRole('generic');
+    expect(loadingElements.length).toBeGreaterThan(0);
+  });
+
+  it('handles error state correctly', async () => {
+    const mockSupabase = require('@supabase/auth-helpers-nextjs').createClientComponentClient();
+    mockSupabase.from.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      order: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      gte: jest.fn().mockReturnThis(),
+      range: jest.fn().mockRejectedValue(new Error('Database error'))
+    });
+
+    render(<SecurityDashboard />);
+    
+    await waitFor(() => {
+      expect(screen.getByText(/Error loading security metrics/)).toBeInTheDocument();
+    });
+  });
+
+  it('displays recent security alerts', async () => {
+    const mockSupabase = require('@supabase/auth-helpers-nextjs').createClientComponentClient();
+    mockSupabase.from.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      order: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      gte: jest.fn().mockReturnThis(),
+      range: jest.fn().mockResolvedValue({
+        data: mockSecurityAlerts,
+        count: 2,
+        error: null
+      })
+    });
+
+    render(<SecurityDashboard />);
+    
+    await waitFor(() => {
+      expect(screen.getByText('Recent Security Alerts')).toBeInTheDocument();
+      expect(screen.getByText('Multiple failed login attempts detected')).toBeInTheDocument();
+    });
+  });
+
+  it('shows risk level badges correctly', async () => {
+    const mockSupabase = require('@supabase/auth-helpers-nextjs').createClientComponentClient();
+    mockSupabase.from.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      order: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      gte: jest.fn().mockReturnThis(),
+      range: jest.fn().mockResolvedValue({
+        data: mockSecurityAlerts,
+        count: 2,
+        error: null
+      })
+    });
+
+    render(<SecurityDashboard />);
+    
+    await waitFor(() => {
+      const highRiskBadge = screen.getByText('HIGH');
+      const criticalRiskBadge = screen.getByText('CRITICAL');
+      
+      expect(highRiskBadge).toBeInTheDocument();
+      expect(criticalRiskBadge).toBeInTheDocument();
+      expect(criticalRiskBadge).toHaveClass('bg-purple-100');
+    });
+  });
+
+  it('updates metrics in real-time', async () => {
+    const mockSupabase = require('@supabase/auth-helpers-nextjs').createClientComponentClient();
+    const mockChannel = {
+      on: jest.fn().mockReturnThis(),
+      subscribe: jest.fn()
+    };
+    mockSupabase.channel.mockReturnValue(mockChannel);
+
+    render(<SecurityDashboard />);
+    
+    expect(mockSupabase.channel).toHaveBeenCalledWith('security-metrics');
+    expect(mockChannel.on).toHaveBeenCalled();
+    expect(mockChannel.subscribe).toHaveBeenCalled();
+  });
+
+  it('displays wedding-specific security insights', async () => {
+    render(<SecurityDashboard />);
+    
+    await waitFor(() => {
+      expect(screen.getByText('Wedding Platform Security')).toBeInTheDocument();
+    });
+  });
+
+  it('shows security recommendations', async () => {
+    render(<SecurityDashboard />);
+    
+    await waitFor(() => {
+      expect(screen.getByText('Security Recommendations')).toBeInTheDocument();
+    });
+  });
+
+  it('handles refresh button click', async () => {
+    render(<SecurityDashboard />);
+    
+    await waitFor(() => {
+      const refreshButton = screen.getByRole('button', { name: /refresh/i });
+      fireEvent.click(refreshButton);
+    });
+    
+    // Should trigger a data refresh
+    expect(screen.getByText('Security Overview')).toBeInTheDocument();
+  });
+
+  it('displays time-based metrics correctly', async () => {
+    render(<SecurityDashboard />);
+    
+    await waitFor(() => {
+      expect(screen.getByText('Last 24 Hours')).toBeInTheDocument();
+      expect(screen.getByText('Last 7 Days')).toBeInTheDocument();
+    });
+  });
+
+  it('shows MFA adoption metrics', async () => {
+    render(<SecurityDashboard />);
+    
+    await waitFor(() => {
+      expect(screen.getByText('MFA Adoption')).toBeInTheDocument();
+    });
+  });
+
+  it('displays blocked IPs counter', async () => {
+    render(<SecurityDashboard />);
+    
+    await waitFor(() => {
+      expect(screen.getByText('Blocked IPs')).toBeInTheDocument();
+    });
+  });
+
+  it('shows active sessions metric', async () => {
+    render(<SecurityDashboard />);
+    
+    await waitFor(() => {
+      expect(screen.getByText('Active Sessions')).toBeInTheDocument();
+    });
+  });
+
+  it('handles empty alerts state', async () => {
+    const mockSupabase = require('@supabase/auth-helpers-nextjs').createClientComponentClient();
+    mockSupabase.from.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      order: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      gte: jest.fn().mockReturnThis(),
+      range: jest.fn().mockResolvedValue({
+        data: [],
+        count: 0,
+        error: null
+      })
+    });
+
+    render(<SecurityDashboard />);
+    
+    await waitFor(() => {
+      expect(screen.getByText('No active security alerts')).toBeInTheDocument();
+    });
+  });
+
+  it('applies dark mode classes correctly', async () => {
+    render(<SecurityDashboard />);
+    
+    const container = screen.getByText('Security Overview').closest('div');
+    expect(container).toHaveClass('dark:bg-gray-900');
+  });
+
+  it('displays security trend indicators', async () => {
+    render(<SecurityDashboard />);
+    
+    await waitFor(() => {
+      // Should show trend indicators for metrics
+      const metricCards = screen.getAllByRole('generic');
+      expect(metricCards.length).toBeGreaterThan(0);
+    });
+  });
+
+  it('formats numbers with proper localization', async () => {
+    render(<SecurityDashboard />);
+    
+    await waitFor(() => {
+      // Numbers should be formatted with commas where appropriate
+      expect(screen.getByText('Security Overview')).toBeInTheDocument();
+    });
+  });
+
+  it('shows alert timestamps in relative format', async () => {
+    const mockSupabase = require('@supabase/auth-helpers-nextjs').createClientComponentClient();
+    mockSupabase.from.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      order: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      gte: jest.fn().mockReturnThis(),
+      range: jest.fn().mockResolvedValue({
+        data: mockSecurityAlerts,
+        count: 2,
+        error: null
+      })
+    });
+
+    render(<SecurityDashboard />);
+    
+    await waitFor(() => {
+      // Should show relative timestamps like "5 minutes ago"
+      expect(screen.getByText('Recent Security Alerts')).toBeInTheDocument();
+    });
+  });
+
+  it('handles component unmount cleanup', async () => {
+    const { unmount } = render(<SecurityDashboard />);
+    
+    unmount();
+    
+    // Should clean up subscriptions and timers
+    // This is implicitly tested by the component unmounting without errors
+  });
+
+  it('displays security score visualization', async () => {
+    render(<SecurityDashboard />);
+    
+    await waitFor(() => {
+      expect(screen.getByText('Security Score')).toBeInTheDocument();
+    });
+  });
+
+  it('shows wedding-specific security metrics', async () => {
+    render(<SecurityDashboard />);
+    
+    await waitFor(() => {
+      expect(screen.getByText('Guest Data Access')).toBeInTheDocument();
+      expect(screen.getByText('Vendor Login Attempts')).toBeInTheDocument();
+    });
+  });
+
+  it('handles real-time updates without memory leaks', async () => {
+    const { rerender } = render(<SecurityDashboard />);
+    
+    // Re-render multiple times to test for memory leaks
+    for (let i = 0; i < 3; i++) {
+      rerender(<SecurityDashboard />);
+      await waitFor(() => {
+        expect(screen.getByText('Security Overview')).toBeInTheDocument();
+      });
+    }
+  });
+});

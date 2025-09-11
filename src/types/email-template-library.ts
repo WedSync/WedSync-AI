@@ -1,0 +1,234 @@
+// Core email template interface
+export interface EmailTemplate {
+  id: string;
+  name: string;
+  subject: string;
+  content: string;
+  category:
+    | 'welcome'
+    | 'payment_reminder'
+    | 'meeting_confirmation'
+    | 'thank_you'
+    | 'client_communication'
+    | 'custom';
+  status: 'active' | 'draft' | 'archived';
+  created_at: string;
+  updated_at: string;
+  user_id?: string;
+  usage_count: number;
+  is_favorite: boolean;
+  variables: string[];
+  metadata: {
+    author_name?: string;
+    description?: string;
+    tags?: string[];
+  };
+  profiles?: {
+    full_name: string;
+  };
+}
+
+// Filter interfaces
+export interface EmailTemplateFilters {
+  search?: string;
+  categories?: string[];
+  statuses?: string[];
+  showFavorites?: boolean;
+  dateRange?: {
+    from: Date;
+    to?: Date;
+  };
+  usageRange?: {
+    min?: number;
+    max?: number;
+  };
+  sortBy?: string;
+  page?: number;
+  limit?: number;
+}
+
+// Bulk action types
+export interface BulkAction {
+  type:
+    | 'activate'
+    | 'archive'
+    | 'delete'
+    | 'move_folder'
+    | 'export'
+    | 'create_folder';
+  templateIds: string[];
+  metadata?: {
+    folderId?: string;
+    folderName?: string;
+    format?: string;
+  };
+}
+
+// Merge field interface
+export interface MergeField {
+  key: string;
+  label: string;
+  description: string;
+  type: 'text' | 'email' | 'phone' | 'url' | 'date' | 'currency';
+  required?: boolean;
+  category?: string;
+}
+
+// Template library response
+export interface TemplateLibraryResponse {
+  templates: EmailTemplate[];
+  totalCount: number;
+  totalPages: number;
+}
+
+// Folder interface
+export interface TemplateFolder {
+  id: string;
+  name: string;
+  description?: string;
+  template_count?: number;
+}
+
+// Component props interfaces
+export interface TemplateCardProps {
+  template: EmailTemplate;
+  viewMode: 'grid' | 'list';
+  selected: boolean;
+  isActive?: boolean;
+  selectionMode?: boolean;
+  onSelect: (template: EmailTemplate) => void;
+  onToggleSelect: (templateId: string, selected: boolean) => void;
+  onAction: (templateId: string, action: string) => void;
+}
+
+export interface TemplateFiltersProps {
+  filters: EmailTemplateFilters;
+  onFiltersChange: (filters: EmailTemplateFilters) => void;
+  onClearFilters: () => void;
+  templateCounts?: Record<string, number>;
+}
+
+export interface TemplateBulkActionsProps {
+  selectedTemplates: string[];
+  onAction: (action: BulkAction) => void;
+  onClearSelection: () => void;
+  isLoading?: boolean;
+  progress?: {
+    current: number;
+    total: number;
+    operation: string;
+  };
+  error?: string;
+  onDismissError?: () => void;
+  folders?: TemplateFolder[];
+  selectionInfo?: {
+    allActive: boolean;
+    allArchived: boolean;
+    mixed: boolean;
+  };
+}
+
+export interface EmailTemplateEditorProps {
+  template?: EmailTemplate;
+  onSave: (template: EmailTemplate) => void;
+  onCancel: () => void;
+  mergeFields: MergeField[];
+}
+
+export interface EmailTemplateLibraryProps {
+  selectionMode?: boolean;
+  onSelectTemplate?: (template: EmailTemplate) => void;
+}
+
+// Template editor form data
+export interface TemplateFormData {
+  name: string;
+  category: EmailTemplate['category'];
+  subject: string;
+  content: string;
+  description?: string;
+  variables?: string[];
+  status?: EmailTemplate['status'];
+}
+
+// Template preview data
+export interface TemplatePreviewData {
+  subject: string;
+  html_content: string;
+  text_content?: string;
+}
+
+// Editor state
+export interface EditorState {
+  isDirty: boolean;
+  isValid: boolean;
+  errors: Record<string, string>;
+  draftSaved?: boolean;
+  lastSaveTime?: Date;
+}
+
+// Pagination info
+export interface PaginationInfo {
+  currentPage: number;
+  totalPages: number;
+  totalItems: number;
+  itemsPerPage: number;
+}
+
+// Search and filter state
+export interface LibraryState {
+  templates: EmailTemplate[];
+  filteredTemplates: EmailTemplate[];
+  filters: EmailTemplateFilters;
+  selectedTemplates: string[];
+  viewMode: 'grid' | 'list';
+  isLoading: boolean;
+  error?: string;
+  pagination: PaginationInfo;
+}
+
+// Template categories with metadata
+export interface TemplateCategory {
+  value: EmailTemplate['category'];
+  label: string;
+  description: string;
+  icon?: string;
+  color?: string;
+}
+
+// Template statistics
+export interface TemplateStats {
+  totalTemplates: number;
+  activeTemplates: number;
+  draftTemplates: number;
+  archivedTemplates: number;
+  favoriteTemplates: number;
+  totalUsage: number;
+  mostUsedTemplate?: EmailTemplate;
+  recentlyCreated: EmailTemplate[];
+}
+
+// Export options
+export interface ExportOptions {
+  format: 'json' | 'csv' | 'html';
+  includeMetadata: boolean;
+  includeUsageStats: boolean;
+  dateRange?: {
+    from: Date;
+    to: Date;
+  };
+}
+
+// Import data structure
+export interface ImportData {
+  templates: Partial<EmailTemplate>[];
+  mergeFields?: MergeField[];
+  folders?: TemplateFolder[];
+}
+
+// Template validation result
+export interface ValidationResult {
+  isValid: boolean;
+  errors: string[];
+  warnings?: string[];
+}

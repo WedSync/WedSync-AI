@@ -1,0 +1,94 @@
+/**
+ * WS-132 Trial Management - Trial Countdown Component
+ * Visual countdown timer with urgency indicators following Untitled UI patterns
+ */
+
+'use client';
+
+import React from 'react';
+import { Clock, AlertCircle, Zap } from 'lucide-react';
+import { Badge } from '@/components/untitled-ui/badge';
+import { cn } from '@/lib/utils';
+
+interface TrialCountdownProps {
+  daysRemaining: number;
+  urgencyLevel: 'low' | 'medium' | 'high';
+  className?: string;
+  size?: 'sm' | 'md' | 'lg';
+  showIcon?: boolean;
+}
+
+export function TrialCountdown({
+  daysRemaining,
+  urgencyLevel,
+  className = '',
+  size = 'md',
+  showIcon = true,
+}: TrialCountdownProps) {
+  const getUrgencyColor = () => {
+    switch (urgencyLevel) {
+      case 'high':
+        return 'error';
+      case 'medium':
+        return 'warning';
+      default:
+        return 'success';
+    }
+  };
+
+  const getUrgencyIcon = () => {
+    switch (urgencyLevel) {
+      case 'high':
+        return <AlertCircle className="h-4 w-4" />;
+      case 'medium':
+        return <Zap className="h-4 w-4" />;
+      default:
+        return <Clock className="h-4 w-4" />;
+    }
+  };
+
+  const getUrgencyMessage = () => {
+    if (daysRemaining === 0) {
+      return 'Trial expires today!';
+    } else if (daysRemaining === 1) {
+      return '1 day remaining';
+    } else if (daysRemaining <= 3) {
+      return `${daysRemaining} days remaining`;
+    } else if (daysRemaining <= 7) {
+      return `${daysRemaining} days left`;
+    } else {
+      return `${daysRemaining} days remaining`;
+    }
+  };
+
+  const sizeClasses = {
+    sm: 'text-xs px-2 py-1',
+    md: 'text-sm px-3 py-1.5',
+    lg: 'text-base px-4 py-2',
+  };
+
+  return (
+    <div className={cn('flex items-center space-x-2', className)}>
+      <Badge
+        variant={getUrgencyColor()}
+        className={cn(
+          'font-semibold flex items-center space-x-1',
+          sizeClasses[size],
+        )}
+      >
+        {showIcon && getUrgencyIcon()}
+        <span>{getUrgencyMessage()}</span>
+      </Badge>
+
+      {urgencyLevel === 'high' && (
+        <div className="flex items-center">
+          <div className="animate-pulse flex space-x-1">
+            <div className="h-1.5 w-1.5 bg-red-500 rounded-full"></div>
+            <div className="h-1.5 w-1.5 bg-red-500 rounded-full animation-delay-100"></div>
+            <div className="h-1.5 w-1.5 bg-red-500 rounded-full animation-delay-200"></div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

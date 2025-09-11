@@ -1,0 +1,406 @@
+/**
+ * WS-166: Budget Export Download API - GET /api/wedme/budget/export/[exportId]
+ * Team B: Secure file download endpoint with access control
+ *
+ * Features:
+ * - Secure file streaming from Supabase Storage
+ * - Download count tracking and analytics
+ * - Expiration checking and cleanup
+ * - Access control and authorization
+ * - Proper content headers for file downloads
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { uuidSchema } from '@/lib/validation/schemas';
+
+interface RouteParams {
+  params: {
+    exportId: string;
+  };
+}
+
+/**
+ * Validate and sanitize export ID parameter
+ */
+function validateExportId(exportId: string): {
+  valid: boolean;
+  error?: string;
+} {
+  const result = uuidSchema.safeParse(exportId);
+  if (!result.success) {
+    return { valid: false, error: 'Invalid export ID format' };
+  }
+  return { valid: true };
+}
+
+/**
+ * Get export record with security checks
+ */
+async function getExportRecord(
+  supabase: any,
+  exportId: string,
+  userId: string,
+) {
+  // Get export record with couple information
+  const { data: exportRecord, error: exportError } = await supabase
+    .from('budget_exports')
+    .select(
+      `
+      id,
+      couple_id,
+      export_type,
+      file_name,
+      file_url,
+      file_size_bytes,
+      status,
+      expires_at,
+      download_count,
+      created_at
+    `,
+    )
+    .eq('id', exportId)
+    .single();
+
+  if (exportError || !exportRecord) {
+    throw new Error('Export not found');
+  }
+
+  // Verify user has access to this couple's data
+  const { data: userProfile, error: profileError } = await supabase
+    .from('user_profiles')
+    .select('organization_id')
+    .eq('user_id', userId)
+    .single();
+
+  if (profileError || !userProfile) {
+    throw new Error('User profile not found');
+  }
+
+  // Check if couple belongs to user's organization
+  const { data: couple, error: coupleError } = await supabase
+    .from('couples')
+    .select('organization_id')
+    .eq('id', exportRecord.couple_id)
+    .eq('organization_id', userProfile.organization_id)
+    .single();
+
+  if (coupleError || !couple) {
+    throw new Error('Access denied to this export');
+  }
+
+  return exportRecord;
+}
+
+/**
+ * Update download count and analytics
+ */
+async function trackDownload(
+  supabase: any,
+  exportId: string,
+  userAgent?: string,
+) {
+  // Increment download count
+  const { error: updateError } = await supabase
+    .from('budget_exports')
+    .update({
+      download_count: supabase.raw('download_count + 1'),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', exportId);
+
+  if (updateError) {
+    console.warn('Failed to update download count:', updateError);
+  }
+
+  // Log download analytics (optional)
+  try {
+    await supabase.from('export_analytics').insert({
+      export_id: exportId,
+      action: 'download',
+      user_agent: userAgent?.substring(0, 255),
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.warn('Failed to log download analytics:', error);
+  }
+}
+
+/**
+ * Get file content type based on export format
+ */
+function getContentType(exportType: string): string {
+  switch (exportType.toLowerCase()) {
+    case 'pdf':
+      return 'application/pdf';
+    case 'csv':
+      return 'text/csv';
+    case 'excel':
+      return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
+/**
+ * Create content disposition header for download
+ */
+function getContentDisposition(
+  fileName: string,
+  inline: boolean = false,
+): string {
+  const disposition = inline ? 'inline' : 'attachment';
+  const sanitizedFilename = fileName.replace(/[^\w\-_\.]|\.{2,}/g, '_');
+  return `${disposition}; filename="${sanitizedFilename}"`;
+}
+
+/**
+ * Stream file from Supabase Storage
+ */
+async function streamFileFromStorage(
+  supabase: any,
+  fileUrl: string,
+): Promise<Response> {
+  try {
+    // Extract bucket and path from Supabase Storage URL
+    const urlParts = fileUrl.split('/');
+    const bucketName = 'budget-exports'; // Our dedicated bucket
+    const filePath = urlParts[urlParts.length - 1];
+
+    // Download file from Supabase Storage
+    const { data: fileData, error: downloadError } = await supabase.storage
+      .from(bucketName)
+      .download(filePath);
+
+    if (downloadError || !fileData) {
+      throw new Error(
+        `File download failed: ${downloadError?.message || 'File not found'}`,
+      );
+    }
+
+    // Create ReadableStream from blob
+    return new Response(fileData.stream(), {
+      status: 200,
+      headers: {
+        'Content-Length': fileData.size.toString(),
+      },
+    });
+  } catch (error) {
+    console.error('Storage streaming error:', error);
+    throw new Error('Failed to stream file from storage');
+  }
+}
+
+/**
+ * Main GET handler for export file downloads
+ */
+export async function GET(
+  request: NextRequest,
+  { params }: RouteParams,
+): Promise<NextResponse> {
+  try {
+    // Validate export ID
+    const validation = validateExportId(params.exportId);
+    if (!validation.valid) {
+      return NextResponse.json(
+        { error: 'INVALID_EXPORT_ID', message: validation.error },
+        { status: 400 },
+      );
+    }
+
+    // Initialize Supabase client
+    const supabase = await createClient();
+
+    // Get authenticated user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'UNAUTHORIZED', message: 'Authentication required' },
+        { status: 401 },
+      );
+    }
+
+    // Get and validate export record
+    const exportRecord = await getExportRecord(
+      supabase,
+      params.exportId,
+      user.id,
+    );
+
+    // Check export status
+    if (exportRecord.status === 'generating') {
+      return NextResponse.json(
+        {
+          error: 'EXPORT_NOT_READY',
+          message: 'Export is still being generated',
+          status: exportRecord.status,
+        },
+        { status: 202 }, // Accepted but not ready
+      );
+    }
+
+    if (exportRecord.status === 'failed') {
+      return NextResponse.json(
+        { error: 'EXPORT_FAILED', message: 'Export generation failed' },
+        { status: 410 }, // Gone
+      );
+    }
+
+    if (exportRecord.status === 'expired') {
+      return NextResponse.json(
+        {
+          error: 'EXPORT_EXPIRED',
+          message: 'Export has expired and is no longer available',
+        },
+        { status: 410 }, // Gone
+      );
+    }
+
+    // Check if export has expired
+    if (
+      exportRecord.expires_at &&
+      new Date(exportRecord.expires_at) < new Date()
+    ) {
+      // Mark as expired in database
+      await supabase
+        .from('budget_exports')
+        .update({ status: 'expired', updated_at: new Date().toISOString() })
+        .eq('id', params.exportId);
+
+      return NextResponse.json(
+        {
+          error: 'EXPORT_EXPIRED',
+          message: 'Export has expired and is no longer available',
+        },
+        { status: 410 }, // Gone
+      );
+    }
+
+    // Check if file URL exists
+    if (!exportRecord.file_url) {
+      return NextResponse.json(
+        { error: 'FILE_NOT_FOUND', message: 'Export file not available' },
+        { status: 404 },
+      );
+    }
+
+    // Parse query parameters
+    const url = new URL(request.url);
+    const inline = url.searchParams.get('inline') === 'true';
+
+    // Track download
+    const userAgent = request.headers.get('user-agent');
+    await trackDownload(supabase, params.exportId, userAgent || undefined);
+
+    // Stream file from storage
+    const fileStream = await streamFileFromStorage(
+      supabase,
+      exportRecord.file_url,
+    );
+
+    // Prepare headers
+    const headers = new Headers();
+    headers.set('Content-Type', getContentType(exportRecord.export_type));
+    headers.set(
+      'Content-Disposition',
+      getContentDisposition(exportRecord.file_name, inline),
+    );
+    headers.set(
+      'Cache-Control',
+      'private, no-cache, no-store, must-revalidate',
+    );
+    headers.set('X-Export-Id', params.exportId);
+    headers.set(
+      'X-Download-Count',
+      (exportRecord.download_count + 1).toString(),
+    );
+
+    if (exportRecord.file_size_bytes) {
+      headers.set('Content-Length', exportRecord.file_size_bytes.toString());
+    }
+
+    // Add security headers
+    headers.set('X-Content-Type-Options', 'nosniff');
+    headers.set('X-Frame-Options', 'DENY');
+    headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+
+    // Return file stream
+    return new NextResponse(fileStream.body, {
+      status: 200,
+      headers,
+    });
+  } catch (error) {
+    console.error('Export download error:', error);
+
+    // Handle specific error types
+    if (error instanceof Error) {
+      if (error.message === 'Export not found') {
+        return NextResponse.json(
+          { error: 'NOT_FOUND', message: 'Export not found' },
+          { status: 404 },
+        );
+      }
+
+      if (error.message === 'Access denied to this export') {
+        return NextResponse.json(
+          { error: 'FORBIDDEN', message: 'Access denied to this export' },
+          { status: 403 },
+        );
+      }
+
+      if (
+        error.message.includes('File download failed') ||
+        error.message.includes('Failed to stream')
+      ) {
+        return NextResponse.json(
+          { error: 'FILE_ERROR', message: 'Failed to retrieve export file' },
+          { status: 500 },
+        );
+      }
+    }
+
+    return NextResponse.json(
+      {
+        error: 'DOWNLOAD_FAILED',
+        message: 'Failed to download export',
+        timestamp: new Date().toISOString(),
+      },
+      { status: 500 },
+    );
+  }
+}
+
+// Handle unsupported methods
+export async function POST() {
+  return NextResponse.json(
+    {
+      error: 'METHOD_NOT_ALLOWED',
+      message: 'POST method not supported on this endpoint',
+    },
+    { status: 405, headers: { Allow: 'GET' } },
+  );
+}
+
+export async function PUT() {
+  return NextResponse.json(
+    {
+      error: 'METHOD_NOT_ALLOWED',
+      message: 'PUT method not supported on this endpoint',
+    },
+    { status: 405, headers: { Allow: 'GET' } },
+  );
+}
+
+export async function DELETE() {
+  return NextResponse.json(
+    {
+      error: 'METHOD_NOT_ALLOWED',
+      message: 'DELETE method not supported on this endpoint',
+    },
+    { status: 405, headers: { Allow: 'GET' } },
+  );
+}

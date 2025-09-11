@@ -1,0 +1,377 @@
+/**
+ * Tests for useMobileErrorRecovery hook - Intelligent mobile error recovery with wedding-aware strategies
+ * WS-198 Error Handling System - Team D Mobile & PWA Architecture
+ */
+
+import { renderHook, act, waitFor } from '@testing-library/react'
+import { useMobileErrorRecovery } from '../../hooks/useMobileErrorRecovery'
+
+// Mock the dependent hooks
+jest.mock('../../hooks/useNetworkState', () => ({
+  useNetworkState: jest.fn()
+}))
+
+jest.mock('../../hooks/useDeviceCapabilities', () => ({
+  useDeviceCapabilities: jest.fn()
+}))
+
+import { useNetworkState } from '../../hooks/useNetworkState'
+import { useDeviceCapabilities } from '../../hooks/useDeviceCapabilities'
+
+const mockUseNetworkState = useNetworkState as jest.MockedFunction<typeof useNetworkState>
+const mockUseDeviceCapabilities = useDeviceCapabilities as jest.MockedFunction<typeof useDeviceCapabilities>
+
+// Mock console methods to avoid noise in tests
+const mockConsole = {
+  error: jest.fn(),
+  warn: jest.fn(),
+  log: jest.fn()
+}
+Object.assign(console, mockConsole)
+
+describe('useMobileErrorRecovery', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+    
+    // Default good network state
+    mockUseNetworkState.mockReturnValue({
+      networkState: {
+        isOnline: true,
+        type: 'wifi',
+        effectiveType: '4g',
+        downlink: 10,
+        rtt: 50,
+        saveData: false,
+        quality: 'good',
+        isWeddingEmergency: false
+      }
+    })
+    
+    // Default good device capabilities
+    mockUseDeviceCapabilities.mockReturnValue({
+      capabilities: {
+        hasCamera: true,
+        hasMicrophone: true,
+        hasGPS: true,
+        batteryLevel: 0.8,
+        isCharging: false,
+        isBatteryLow: false,
+        deviceMemory: 8,
+        hardwareConcurrency: 4,
+        connectionType: 'wifi',
+        isWeddingOptimizedDevice: true
+      }
+    })
+  })
+
+  it('should initialize with default recovery state', () => {
+    const { result } = renderHook(() => useMobileErrorRecovery())
+    
+    expect(result.current.isRecovering).toBe(false)
+    expect(result.current.recoveryAttempts).toBe(0)
+    expect(result.current.lastError).toBe(null)
+    expect(result.current.recoveryStrategy).toBe('standard')
+    expect(result.current.canRetry).toBe(true)
+  })
+
+  it('should handle API errors with standard recovery strategy', async () => {
+    const { result } = renderHook(() => useMobileErrorRecovery())
+    
+    const mockError = new Error('API Error')
+    const mockRetryFunction = jest.fn().mockResolvedValue('success')
+    
+    act(() => {
+      result.current.handleError(mockError, mockRetryFunction, 'api_call')
+    })
+    
+    expect(result.current.isRecovering).toBe(true)
+    expect(result.current.lastError).toBe(mockError)
+    
+    await waitFor(() => {
+      expect(result.current.isRecovering).toBe(false)
+      expect(mockRetryFunction).toHaveBeenCalledWith(1)
+    })
+  })
+
+  it('should use wedding emergency strategy for critical errors on wedding day', async () => {
+    // Mock wedding day emergency network
+    mockUseNetworkState.mockReturnValue({
+      networkState: {
+        isOnline: true,
+        type: 'cellular',
+        effectiveType: 'slow-2g',
+        downlink: 0.5,
+        rtt: 2000,
+        saveData: false,
+        quality: 'poor',
+        isWeddingEmergency: true
+      }
+    })
+    
+    const { result } = renderHook(() => useMobileErrorRecovery())
+    
+    const mockError = new Error('Photo upload failed')
+    const mockRetryFunction = jest.fn()
+      .mockRejectedValueOnce(new Error('Still failing'))
+      .mockResolvedValue('success')
+    
+    act(() => {
+      result.current.handleError(mockError, mockRetryFunction, 'photo_upload')
+    })
+    
+    expect(result.current.recoveryStrategy).toBe('wedding_emergency')
+    
+    await waitFor(() => {
+      expect(result.current.isRecovering).toBe(false)
+      expect(mockRetryFunction).toHaveBeenCalledTimes(2)
+    }, { timeout: 10000 })
+  })
+
+  it('should use conservative strategy for low battery devices', async () => {
+    // Mock low battery device
+    mockUseDeviceCapabilities.mockReturnValue({
+      capabilities: {
+        hasCamera: true,
+        hasMicrophone: true,
+        hasGPS: true,
+        batteryLevel: 0.1, // 10% battery
+        isCharging: false,
+        isBatteryLow: true,
+        deviceMemory: 4,
+        hardwareConcurrency: 2,
+        connectionType: 'cellular',
+        isWeddingOptimizedDevice: false
+      }
+    })
+    
+    const { result } = renderHook(() => useMobileErrorRecovery())
+    
+    const mockError = new Error('Network timeout')
+    const mockRetryFunction = jest.fn().mockResolvedValue('success')
+    
+    act(() => {
+      result.current.handleError(mockError, mockRetryFunction, 'api_call')
+    })
+    
+    expect(result.current.recoveryStrategy).toBe('conservative')
+    
+    await waitFor(() => {
+      expect(result.current.isRecovering).toBe(false)
+      expect(mockRetryFunction).toHaveBeenCalledWith(1)
+    })
+  })
+
+  it('should use aggressive strategy for high-end devices with good connection', () => {
+    // Mock high-end device with excellent connection
+    mockUseNetworkState.mockReturnValue({
+      networkState: {
+        isOnline: true,
+        type: 'wifi',
+        effectiveType: '4g',
+        downlink: 20,
+        rtt: 30,
+        saveData: false,
+        quality: 'excellent',
+        isWeddingEmergency: false
+      }
+    })
+    
+    mockUseDeviceCapabilities.mockReturnValue({
+      capabilities: {
+        hasCamera: true,
+        hasMicrophone: true,
+        hasGPS: true,
+        batteryLevel: 0.9,
+        isCharging: true,
+        isBatteryLow: false,
+        deviceMemory: 16,
+        hardwareConcurrency: 8,
+        connectionType: 'wifi',
+        isWeddingOptimizedDevice: true
+      }
+    })
+    
+    const { result } = renderHook(() => useMobileErrorRecovery())
+    
+    const mockError = new Error('Temporary server error')
+    const mockRetryFunction = jest.fn().mockResolvedValue('success')
+    
+    act(() => {
+      result.current.handleError(mockError, mockRetryFunction, 'api_call')
+    })
+    
+    expect(result.current.recoveryStrategy).toBe('aggressive')
+  })
+
+  it('should respect maximum retry limits', async () => {
+    const { result } = renderHook(() => useMobileErrorRecovery())
+    
+    const mockError = new Error('Persistent failure')
+    const mockRetryFunction = jest.fn().mockRejectedValue(new Error('Still failing'))
+    
+    act(() => {
+      result.current.handleError(mockError, mockRetryFunction, 'api_call')
+    })
+    
+    await waitFor(() => {
+      expect(result.current.canRetry).toBe(false)
+      expect(result.current.recoveryAttempts).toBeGreaterThanOrEqual(3)
+    }, { timeout: 15000 })
+  })
+
+  it('should handle network offline scenario', async () => {
+    // Mock offline state
+    mockUseNetworkState.mockReturnValue({
+      networkState: {
+        isOnline: false,
+        type: 'none',
+        effectiveType: 'slow-2g',
+        downlink: 0,
+        rtt: 0,
+        saveData: false,
+        quality: 'offline',
+        isWeddingEmergency: false
+      }
+    })
+    
+    const { result } = renderHook(() => useMobileErrorRecovery())
+    
+    const mockError = new Error('Network error')
+    const mockRetryFunction = jest.fn().mockRejectedValue(new Error('Still offline'))
+    
+    act(() => {
+      result.current.handleError(mockError, mockRetryFunction, 'api_call')
+    })
+    
+    expect(result.current.recoveryStrategy).toBe('offline_mode')
+    
+    await waitFor(() => {
+      expect(result.current.isRecovering).toBe(false)
+    }, { timeout: 5000 })
+  })
+
+  it('should clear recovery state on successful retry', async () => {
+    const { result } = renderHook(() => useMobileErrorRecovery())
+    
+    const mockError = new Error('Temporary error')
+    const mockRetryFunction = jest.fn().mockResolvedValue('success')
+    
+    act(() => {
+      result.current.handleError(mockError, mockRetryFunction, 'api_call')
+    })
+    
+    await waitFor(() => {
+      expect(result.current.isRecovering).toBe(false)
+      expect(result.current.lastError).toBe(null)
+      expect(result.current.recoveryAttempts).toBe(0)
+    })
+  })
+
+  it('should handle different error types with appropriate strategies', async () => {
+    const { result } = renderHook(() => useMobileErrorRecovery())
+    
+    const errorScenarios = [
+      {
+        type: 'photo_upload',
+        error: new Error('Photo upload failed'),
+        expectedStrategy: 'standard'
+      },
+      {
+        type: 'payment_processing',
+        error: new Error('Payment failed'),
+        expectedStrategy: 'standard'
+      },
+      {
+        type: 'timeline_update',
+        error: new Error('Timeline sync failed'),
+        expectedStrategy: 'standard'
+      }
+    ]
+    
+    for (const scenario of errorScenarios) {
+      const mockRetryFunction = jest.fn().mockResolvedValue('success')
+      
+      act(() => {
+        result.current.handleError(scenario.error, mockRetryFunction, scenario.type)
+      })
+      
+      expect(result.current.recoveryStrategy).toBe(scenario.expectedStrategy)
+      
+      await waitFor(() => {
+        expect(result.current.isRecovering).toBe(false)
+      })
+    }
+  })
+
+  it('should provide clear recovery state for UI feedback', () => {
+    const { result } = renderHook(() => useMobileErrorRecovery())
+    
+    expect(result.current).toHaveProperty('isRecovering')
+    expect(result.current).toHaveProperty('recoveryAttempts')
+    expect(result.current).toHaveProperty('lastError')
+    expect(result.current).toHaveProperty('recoveryStrategy')
+    expect(result.current).toHaveProperty('canRetry')
+    expect(result.current).toHaveProperty('handleError')
+    expect(result.current).toHaveProperty('clearError')
+  })
+
+  it('should clear error state when clearError is called', () => {
+    const { result } = renderHook(() => useMobileErrorRecovery())
+    
+    const mockError = new Error('Test error')
+    const mockRetryFunction = jest.fn()
+    
+    act(() => {
+      result.current.handleError(mockError, mockRetryFunction, 'api_call')
+    })
+    
+    expect(result.current.lastError).toBe(mockError)
+    
+    act(() => {
+      result.current.clearError()
+    })
+    
+    expect(result.current.lastError).toBe(null)
+    expect(result.current.recoveryAttempts).toBe(0)
+    expect(result.current.canRetry).toBe(true)
+  })
+
+  it('should handle wedding day photo upload failures with maximum urgency', async () => {
+    // Mock wedding emergency conditions
+    mockUseNetworkState.mockReturnValue({
+      networkState: {
+        isOnline: true,
+        type: 'cellular',
+        effectiveType: '3g',
+        downlink: 2,
+        rtt: 500,
+        saveData: false,
+        quality: 'fair',
+        isWeddingEmergency: true
+      }
+    })
+    
+    const { result } = renderHook(() => useMobileErrorRecovery())
+    
+    const mockError = new Error('Critical ceremony photo upload failed')
+    let attemptCount = 0
+    const mockRetryFunction = jest.fn().mockImplementation(() => {
+      attemptCount++
+      if (attemptCount < 3) {
+        return Promise.reject(new Error('Still failing'))
+      }
+      return Promise.resolve('success')
+    })
+    
+    act(() => {
+      result.current.handleError(mockError, mockRetryFunction, 'photo_upload')
+    })
+    
+    expect(result.current.recoveryStrategy).toBe('wedding_emergency')
+    
+    await waitFor(() => {
+      expect(result.current.isRecovering).toBe(false)
+      expect(mockRetryFunction).toHaveBeenCalledTimes(3)
+    }, { timeout: 20000 })
+  })
+})

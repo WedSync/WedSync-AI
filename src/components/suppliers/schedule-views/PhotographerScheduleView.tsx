@@ -1,0 +1,609 @@
+'use client';
+
+import React, { useState } from 'react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import {
+  Camera,
+  Clock,
+  MapPin,
+  Users,
+  Lightbulb,
+  CheckCircle2,
+  AlertTriangle,
+  Calendar,
+  Settings,
+  FileText,
+  Star,
+} from 'lucide-react';
+import { format } from 'date-fns';
+import { cn } from '@/lib/utils';
+import {
+  VendorSpecificScheduleViewProps,
+  PhotographerScheduleData,
+  ShotListItem,
+  ScheduleConfirmation,
+  ScheduleChangeRequest,
+} from './types';
+
+export function PhotographerScheduleView({
+  schedule,
+  vendorData,
+  onConfirmSchedule,
+  onRequestChange,
+  onUpdateStatus,
+}: VendorSpecificScheduleViewProps) {
+  const [confirmationNotes, setConfirmationNotes] = useState('');
+  const [selectedShotItems, setSelectedShotItems] = useState<Set<string>>(
+    new Set(),
+  );
+  const [equipmentNotes, setEquipmentNotes] = useState<Record<string, string>>(
+    {},
+  );
+
+  // Mock photographer-specific data (in real app, this would come from vendorData)
+  const photographerData: PhotographerScheduleData =
+    vendorData?.photographerData || {
+      shotList: [
+        {
+          id: 'shot-1',
+          title: 'Getting Ready - Bride',
+          description: 'Candid shots of bride preparation',
+          location: 'Bridal Suite',
+          timeSlot: '14:00-15:30',
+          participants: ['Bride', 'Bridesmaids', 'Mother of Bride'],
+          equipment: ['85mm lens', 'natural lighting', 'reflector'],
+          priority: 1,
+          completed: false,
+        },
+        {
+          id: 'shot-2',
+          title: 'First Look',
+          description: 'Private moment between couple',
+          location: 'Garden Gazebo',
+          timeSlot: '15:45-16:15',
+          participants: ['Bride', 'Groom'],
+          equipment: ['50mm lens', 'backup camera', 'telephoto lens'],
+          priority: 1,
+          completed: false,
+        },
+        {
+          id: 'shot-3',
+          title: 'Family Portraits',
+          description: 'Formal family group photos',
+          location: 'Main Hall Steps',
+          timeSlot: '17:30-18:15',
+          participants: ['Full Wedding Party', 'Families'],
+          equipment: ['wide angle lens', 'tripod', 'flash'],
+          priority: 2,
+          completed: false,
+        },
+        {
+          id: 'shot-4',
+          title: 'Reception Candids',
+          description: 'Dancing and celebration shots',
+          location: 'Reception Hall',
+          timeSlot: '20:00-23:00',
+          participants: ['All Guests'],
+          equipment: ['fast lens', 'flash', 'backup batteries'],
+          priority: 2,
+          completed: false,
+        },
+      ],
+      equipmentChecklist: [
+        {
+          id: 'eq-1',
+          name: 'Primary Camera Body',
+          status: 'ready',
+          notes: 'Canon 5D Mark IV',
+        },
+        {
+          id: 'eq-2',
+          name: 'Backup Camera Body',
+          status: 'ready',
+          notes: 'Canon 6D Mark II',
+        },
+        { id: 'eq-3', name: '24-70mm f/2.8 Lens', status: 'ready' },
+        { id: 'eq-4', name: '85mm f/1.4 Lens', status: 'ready' },
+        {
+          id: 'eq-5',
+          name: 'Flash Unit',
+          status: 'needs_check',
+          notes: 'Check battery level',
+        },
+        { id: 'eq-6', name: 'Extra Batteries (6)', status: 'ready' },
+        { id: 'eq-7', name: 'Memory Cards (8GB x4)', status: 'ready' },
+        { id: 'eq-8', name: 'Tripod', status: 'ready' },
+      ],
+      lightingNotes: [
+        {
+          location: 'Bridal Suite',
+          conditions: 'North-facing windows, soft natural light',
+          equipment: ['Reflector', 'Diffuser'],
+          settings: 'ISO 400, f/2.8, natural WB',
+        },
+        {
+          location: 'Garden Gazebo',
+          conditions: 'Afternoon sun, dappled shade',
+          equipment: ['Fill flash'],
+          settings: 'ISO 200, f/4, daylight WB',
+        },
+        {
+          location: 'Reception Hall',
+          conditions: 'Mixed lighting - tungsten + LED',
+          equipment: ['Bounce flash', 'Diffuser'],
+          settings: 'ISO 800-1600, f/2.8, auto WB',
+        },
+      ],
+      timelineMarkers: [
+        { time: '13:30', event: 'Arrive & Setup', importance: 'high' },
+        { time: '16:30', event: 'Ceremony Begins', importance: 'high' },
+        { time: '17:00', event: 'Golden Hour Starts', importance: 'medium' },
+        { time: '19:30', event: 'Sunset Photos', importance: 'high' },
+        { time: '21:00', event: 'First Dance', importance: 'high' },
+      ],
+    };
+
+  const handleConfirmSchedule = () => {
+    const confirmation: ScheduleConfirmation = {
+      scheduleId: schedule.supplierId,
+      supplierId: schedule.supplierId,
+      confirmedAt: new Date(),
+      status: 'confirmed',
+      notes: confirmationNotes,
+      conditions: [],
+      signedBy: schedule.supplierName,
+    };
+    onConfirmSchedule(confirmation);
+  };
+
+  const handleRequestChange = (itemId: string, reason: string) => {
+    const changeRequest: ScheduleChangeRequest = {
+      id: `change-${Date.now()}`,
+      scheduleItemId: itemId,
+      requestType: 'time_change',
+      currentValue: 'current_time',
+      requestedValue: 'new_time',
+      reason,
+      priority: 'medium',
+      requestedBy: schedule.supplierName,
+      requestedAt: new Date(),
+      additionalNotes: 'Requested via photographer schedule view',
+    };
+    onRequestChange(changeRequest);
+  };
+
+  const toggleShotItem = (shotId: string) => {
+    const newSelected = new Set(selectedShotItems);
+    if (newSelected.has(shotId)) {
+      newSelected.delete(shotId);
+    } else {
+      newSelected.add(shotId);
+    }
+    setSelectedShotItems(newSelected);
+  };
+
+  const getPhaseIcon = (phase: string) => {
+    const icons = {
+      arrival: Clock,
+      setup: Settings,
+      preparation: Users,
+      performance: Camera,
+      breakdown: Settings,
+    };
+    const IconComponent = icons[phase as keyof typeof icons] || Camera;
+    return <IconComponent className="h-4 w-4" />;
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-3">
+            <Camera className="h-6 w-6" />
+            <div>
+              <div className="text-xl font-bold">{schedule.supplierName}</div>
+              <div className="text-sm font-normal text-gray-500">
+                Photography Schedule
+              </div>
+            </div>
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
+            <div className="text-center">
+              <div className="text-2xl font-bold text-blue-600">
+                {photographerData.shotList.length}
+              </div>
+              <div className="text-sm text-gray-500">Shot List Items</div>
+            </div>
+            <div className="text-center">
+              <div className="text-2xl font-bold text-green-600">
+                {
+                  photographerData.equipmentChecklist.filter(
+                    (eq) => eq.status === 'ready',
+                  ).length
+                }
+                /{photographerData.equipmentChecklist.length}
+              </div>
+              <div className="text-sm text-gray-500">Equipment Ready</div>
+            </div>
+            <div className="text-center">
+              <div className="text-2xl font-bold text-purple-600">
+                {
+                  photographerData.timelineMarkers.filter(
+                    (m) => m.importance === 'high',
+                  ).length
+                }
+              </div>
+              <div className="text-sm text-gray-500">Key Moments</div>
+            </div>
+            <div className="text-center">
+              <div
+                className={cn(
+                  'text-2xl font-bold',
+                  schedule.conflicts.length === 0
+                    ? 'text-green-600'
+                    : 'text-red-600',
+                )}
+              >
+                {schedule.conflicts.length}
+              </div>
+              <div className="text-sm text-gray-500">Conflicts</div>
+            </div>
+          </div>
+
+          <div className="flex gap-2">
+            <Button onClick={handleConfirmSchedule} className="flex-1">
+              <CheckCircle2 className="h-4 w-4 mr-2" />
+              Confirm Photography Schedule
+            </Button>
+            <Button variant="outline">
+              <FileText className="h-4 w-4 mr-2" />
+              Export Shot List
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Conflicts */}
+      {schedule.conflicts.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-red-600">
+              <AlertTriangle className="h-5 w-5" />
+              Photography Schedule Conflicts
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              {schedule.conflicts.map((conflict) => (
+                <Alert key={conflict.id} variant="destructive">
+                  <AlertTriangle className="h-4 w-4" />
+                  <AlertDescription>
+                    <div className="font-medium">{conflict.description}</div>
+                    <div className="text-sm mt-1">
+                      Suggestion: {conflict.suggestion}
+                    </div>
+                  </AlertDescription>
+                </Alert>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Main Tabs */}
+      <Card>
+        <CardContent className="p-0">
+          <Tabs defaultValue="schedule" className="w-full">
+            <div className="px-6 pt-6">
+              <TabsList className="grid w-full grid-cols-5">
+                <TabsTrigger value="schedule">Schedule</TabsTrigger>
+                <TabsTrigger value="shotlist">Shot List</TabsTrigger>
+                <TabsTrigger value="equipment">Equipment</TabsTrigger>
+                <TabsTrigger value="lighting">Lighting</TabsTrigger>
+                <TabsTrigger value="timeline">Timeline</TabsTrigger>
+              </TabsList>
+            </div>
+
+            {/* Schedule Tab */}
+            <TabsContent value="schedule" className="px-6 pb-6">
+              <ScrollArea className="h-96">
+                <div className="space-y-4">
+                  {schedule.scheduleItems.map((item, index) => (
+                    <div key={item.id} className="border rounded-lg p-4">
+                      <div className="flex items-start justify-between">
+                        <div className="flex items-start gap-3">
+                          <div className="mt-1">{getPhaseIcon(item.phase)}</div>
+                          <div className="flex-1">
+                            <h4 className="font-medium">{item.title}</h4>
+                            <div className="flex items-center gap-4 text-sm text-gray-500 mt-1">
+                              <div className="flex items-center gap-1">
+                                <Clock className="h-3 w-3" />
+                                {format(item.startTime, 'HH:mm')} -{' '}
+                                {format(item.endTime, 'HH:mm')}
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <MapPin className="h-3 w-3" />
+                                {item.location}
+                              </div>
+                            </div>
+                            <p className="text-sm text-gray-600 mt-2">
+                              {item.description}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Badge variant="outline" className="capitalize">
+                            {item.phase}
+                          </Badge>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() =>
+                              handleRequestChange(
+                                item.id,
+                                'Time adjustment needed',
+                              )
+                            }
+                          >
+                            Request Change
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
+            </TabsContent>
+
+            {/* Shot List Tab */}
+            <TabsContent value="shotlist" className="px-6 pb-6">
+              <ScrollArea className="h-96">
+                <div className="space-y-4">
+                  {photographerData.shotList.map((shot) => (
+                    <div key={shot.id} className="border rounded-lg p-4">
+                      <div className="flex items-start gap-3">
+                        <Checkbox
+                          checked={selectedShotItems.has(shot.id)}
+                          onCheckedChange={() => toggleShotItem(shot.id)}
+                          className="mt-1"
+                        />
+                        <div className="flex-1">
+                          <div className="flex items-start justify-between">
+                            <div>
+                              <h4 className="font-medium">{shot.title}</h4>
+                              <p className="text-sm text-gray-600 mt-1">
+                                {shot.description}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              {shot.priority === 1 && (
+                                <Star className="h-4 w-4 text-yellow-500 fill-current" />
+                              )}
+                              <Badge
+                                variant={
+                                  shot.priority === 1 ? 'default' : 'secondary'
+                                }
+                              >
+                                Priority {shot.priority}
+                              </Badge>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-3">
+                            <div>
+                              <div className="text-xs font-medium text-gray-500 mb-1">
+                                TIME SLOT
+                              </div>
+                              <div className="text-sm">{shot.timeSlot}</div>
+                            </div>
+                            <div>
+                              <div className="text-xs font-medium text-gray-500 mb-1">
+                                LOCATION
+                              </div>
+                              <div className="text-sm">{shot.location}</div>
+                            </div>
+                            <div>
+                              <div className="text-xs font-medium text-gray-500 mb-1">
+                                PARTICIPANTS
+                              </div>
+                              <div className="text-sm">
+                                {shot.participants.join(', ')}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="mt-3">
+                            <div className="text-xs font-medium text-gray-500 mb-1">
+                              EQUIPMENT
+                            </div>
+                            <div className="flex flex-wrap gap-1">
+                              {shot.equipment.map((eq) => (
+                                <Badge
+                                  key={eq}
+                                  variant="outline"
+                                  className="text-xs"
+                                >
+                                  {eq}
+                                </Badge>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
+            </TabsContent>
+
+            {/* Equipment Tab */}
+            <TabsContent value="equipment" className="px-6 pb-6">
+              <ScrollArea className="h-96">
+                <div className="space-y-3">
+                  {photographerData.equipmentChecklist.map((equipment) => (
+                    <div key={equipment.id} className="border rounded-lg p-4">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <Checkbox
+                            checked={equipment.status === 'ready'}
+                            disabled
+                          />
+                          <div>
+                            <div className="font-medium">{equipment.name}</div>
+                            {equipment.notes && (
+                              <div className="text-sm text-gray-500">
+                                {equipment.notes}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Badge
+                            variant={
+                              equipment.status === 'ready'
+                                ? 'default'
+                                : 'destructive'
+                            }
+                            className="capitalize"
+                          >
+                            {equipment.status.replace('_', ' ')}
+                          </Badge>
+                        </div>
+                      </div>
+
+                      <div className="mt-2">
+                        <Input
+                          placeholder="Add equipment notes..."
+                          value={equipmentNotes[equipment.id] || ''}
+                          onChange={(e) =>
+                            setEquipmentNotes({
+                              ...equipmentNotes,
+                              [equipment.id]: e.target.value,
+                            })
+                          }
+                          className="text-sm"
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
+            </TabsContent>
+
+            {/* Lighting Tab */}
+            <TabsContent value="lighting" className="px-6 pb-6">
+              <ScrollArea className="h-96">
+                <div className="space-y-4">
+                  {photographerData.lightingNotes.map((note, index) => (
+                    <div key={index} className="border rounded-lg p-4">
+                      <div className="flex items-start gap-3">
+                        <Lightbulb className="h-5 w-5 text-yellow-500 mt-1" />
+                        <div className="flex-1">
+                          <h4 className="font-medium">{note.location}</h4>
+                          <p className="text-sm text-gray-600 mt-1">
+                            {note.conditions}
+                          </p>
+
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3">
+                            <div>
+                              <div className="text-xs font-medium text-gray-500 mb-1">
+                                EQUIPMENT NEEDED
+                              </div>
+                              <div className="flex flex-wrap gap-1">
+                                {note.equipment.map((eq) => (
+                                  <Badge
+                                    key={eq}
+                                    variant="outline"
+                                    className="text-xs"
+                                  >
+                                    {eq}
+                                  </Badge>
+                                ))}
+                              </div>
+                            </div>
+                            <div>
+                              <div className="text-xs font-medium text-gray-500 mb-1">
+                                RECOMMENDED SETTINGS
+                              </div>
+                              <div className="text-sm font-mono bg-gray-100 px-2 py-1 rounded">
+                                {note.settings}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
+            </TabsContent>
+
+            {/* Timeline Tab */}
+            <TabsContent value="timeline" className="px-6 pb-6">
+              <ScrollArea className="h-96">
+                <div className="space-y-3">
+                  {photographerData.timelineMarkers.map((marker, index) => (
+                    <div
+                      key={index}
+                      className="flex items-center gap-4 p-3 border rounded-lg"
+                    >
+                      <div className="text-sm font-mono bg-gray-100 px-2 py-1 rounded">
+                        {marker.time}
+                      </div>
+                      <div className="flex-1">
+                        <div className="font-medium">{marker.event}</div>
+                      </div>
+                      <Badge
+                        variant={
+                          marker.importance === 'high' ? 'default' : 'secondary'
+                        }
+                        className="capitalize"
+                      >
+                        {marker.importance}
+                      </Badge>
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
+            </TabsContent>
+          </Tabs>
+        </CardContent>
+      </Card>
+
+      {/* Confirmation Section */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Schedule Confirmation</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-4">
+            <Textarea
+              placeholder="Add any notes or special requirements..."
+              value={confirmationNotes}
+              onChange={(e) => setConfirmationNotes(e.target.value)}
+              className="min-h-[100px]"
+            />
+            <div className="flex justify-end gap-2">
+              <Button variant="outline">Save Draft</Button>
+              <Button onClick={handleConfirmSchedule}>
+                <CheckCircle2 className="h-4 w-4 mr-2" />
+                Confirm Photography Schedule
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}

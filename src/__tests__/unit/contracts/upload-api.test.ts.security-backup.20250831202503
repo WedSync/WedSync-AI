@@ -1,0 +1,195 @@
+/**
+ * @vitest-environment node
+ */
+
+import { NextRequest } from 'next/server'
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { POST } from '@/app/api/contracts/upload/route'
+import { createClient } from '@/lib/supabase/server'
+// Mock Supabase client
+jest.mock('@/lib/supabase/server', () => ({
+  createClient: jest.fn()
+}))
+// Mock crypto module
+jest.mock('crypto', () => ({
+  randomBytes: jest.fn(() => ({ toString: () => 'abc123def' })),
+  createHash: jest.fn(() => ({
+    update: jest.fn().mockReturnThis(),
+    digest: jest.fn(() => 'mock-file-hash')
+  }))
+describe('/api/contracts/upload', () => {
+  let mockSupabase: any
+  let mockUser: any
+  let mockProfile: any
+  let mockContract: any
+  beforeEach(() => {
+    mockUser = {
+      id: 'user-123',
+      email: 'test@example.com'
+    }
+    
+    mockProfile = {
+      organization_id: 'org-123'
+    mockContract = {
+      id: 'contract-123',
+      title: 'Test Contract',
+      contract_number: 'CON-2025-001'
+    mockSupabase = {
+      auth: {
+        getUser: jest.fn().mockResolvedValue({
+          data: { user: mockUser }
+        })
+      },
+      from: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      single: jest.fn(),
+      insert: jest.fn().mockReturnThis(),
+      update: jest.fn().mockReturnThis(),
+      storage: {
+        from: jest.fn().mockReturnValue({
+          upload: jest.fn().mockResolvedValue({
+            data: { path: 'test-path' },
+            error: null
+          }),
+          remove: jest.fn().mockResolvedValue({ error: null })
+      }
+    ;(createClient as jest.Mock).mockResolvedValue(mockSupabase)
+    // Mock successful profile and contract lookups
+    mockSupabase.single = jest.fn()
+      .mockResolvedValueOnce({ data: mockProfile })
+      .mockResolvedValueOnce({ data: mockContract })
+      .mockResolvedValueOnce({ data: null }) // Contract category lookup
+      .mockResolvedValueOnce({ data: { id: 'doc-category-123' } }) // Document category lookup
+      .mockResolvedValueOnce({ // Document creation
+        data: { 
+          id: 'document-123',
+          title: 'Test Contract Document',
+          file_hash: 'mock-file-hash'
+        }
+      })
+    mockSupabase.insert = jest.fn().mockReturnValue({
+      select: jest.fn().mockReturnValue({
+        single: jest.fn().mockResolvedValue({
+          data: { 
+            id: 'document-123',
+            title: 'Test Contract Document'
+          }
+    })
+  })
+  afterEach(() => {
+    jest.clearAllMocks()
+  describe('POST /api/contracts/upload', () => {
+    const createMockFile = (name: string, type: string, size: number) => {
+      const file = {
+        name,
+        type,
+        size,
+        arrayBuffer: jest.fn().mockResolvedValue(new ArrayBuffer(size))
+      } as unknown as File
+      return file
+    const createFormData = (file: File, metadata: any) => {
+      const formData = new FormData()
+      formData.append('file', file)
+      formData.append('metadata', JSON.stringify(metadata))
+      return formData
+    const validMetadata = {
+      contract_id: 'contract-123',
+      document_type: 'original',
+      title: 'Wedding Photography Contract',
+      description: 'Original contract document',
+      security_level: 'standard',
+      is_compliance_required: false
+    it('should upload a PDF contract successfully', async () => {
+      const mockFile = createMockFile('contract.pdf', 'application/pdf', 1024 * 1024)
+      const formData = createFormData(mockFile, validMetadata)
+      // Mock FormData methods
+      const mockFormData = {
+        get: jest.fn()
+          .mockReturnValueOnce(mockFile)
+          .mockReturnValueOnce(JSON.stringify(validMetadata))
+      // Mock request with FormData
+      const request = {
+        formData: jest.fn().mockResolvedValue(mockFormData)
+      } as unknown as NextRequest
+      const response = await POST(request)
+      const data = await response.json()
+      expect(response.status).toBe(201)
+      expect(data.document).toBeDefined()
+      expect(data.message).toBe('Contract uploaded successfully')
+      expect(mockSupabase.storage.from).toHaveBeenCalledWith('contracts')
+    it('should update contract with document reference', async () => {
+      await POST(request)
+      expect(mockSupabase.from).toHaveBeenCalledWith('wedding_contracts')
+      expect(mockSupabase.update).toHaveBeenCalledWith({
+        original_document_id: 'document-123'
+    it('should update contract status when signed document uploaded', async () => {
+      const signedMetadata = {
+        ...validMetadata,
+        document_type: 'signed'
+      const mockFile = createMockFile('signed-contract.pdf', 'application/pdf', 1024 * 1024)
+          .mockReturnValueOnce(JSON.stringify(signedMetadata))
+        signed_document_id: 'document-123'
+        signing_status: 'fully_signed',
+        signed_date: expect.any(String),
+        status: 'active'
+    it('should reject non-PDF files', async () => {
+      const invalidFile = createMockFile('document.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 1024)
+          .mockReturnValueOnce(invalidFile)
+      expect(response.status).toBe(400)
+      expect(data.error).toBe('Invalid file type. Only PDF files are allowed for contracts.')
+    it('should reject files larger than 50MB', async () => {
+      const largeFile = createMockFile('large-contract.pdf', 'application/pdf', 51 * 1024 * 1024)
+          .mockReturnValueOnce(largeFile)
+      expect(data.error).toBe('File too large. Maximum size is 50MB.')
+    it('should return 400 when no file provided', async () => {
+          .mockReturnValueOnce(null)
+      expect(data.error).toBe('No file provided')
+    it('should validate metadata schema', async () => {
+      const invalidMetadata = {
+        document_type: 'invalid_type' // Invalid enum value
+      const mockFile = createMockFile('contract.pdf', 'application/pdf', 1024)
+          .mockReturnValueOnce(JSON.stringify(invalidMetadata))
+      expect(data.error).toBe('Invalid input')
+    it('should return 404 when contract not found', async () => {
+      mockSupabase.single = jest.fn()
+        .mockResolvedValueOnce({ data: mockProfile })
+        .mockResolvedValueOnce({ data: null }) // Contract not found
+      expect(response.status).toBe(404)
+      expect(data.error).toBe('Contract not found')
+    it('should handle storage upload errors', async () => {
+      mockSupabase.storage.from = jest.fn().mockReturnValue({
+        upload: jest.fn().mockResolvedValue({
+          data: null,
+          error: { message: 'Storage error' }
+      expect(response.status).toBe(500)
+      expect(data.error).toBe('Failed to upload file')
+    it('should cleanup uploaded file when document creation fails', async () => {
+      mockSupabase.insert = jest.fn().mockReturnValue({
+        select: jest.fn().mockReturnValue({
+          single: jest.fn().mockResolvedValue({
+            error: { message: 'Database error' }
+          })
+      expect(data.error).toBe('Failed to create document record')
+      expect(mockSupabase.storage.from().remove).toHaveBeenCalled()
+    it('should generate unique filename with timestamp and random ID', async () => {
+      const mockFile = createMockFile('original-contract.pdf', 'application/pdf', 1024)
+      expect(mockSupabase.storage.from().upload).toHaveBeenCalledWith(
+        expect.stringContaining('contract-CON-2025-001-original'),
+        expect.any(Uint8Array),
+        expect.objectContaining({
+          contentType: 'application/pdf'
+      )
+    it('should calculate and store file hash', async () => {
+      expect(mockSupabase.insert).toHaveBeenCalledWith(
+    it('should handle expiry date correctly', async () => {
+      const metadataWithExpiry = {
+        expiry_date: '2025-12-31T23:59:59.000Z'
+          .mockReturnValueOnce(JSON.stringify(metadataWithExpiry))
+          expiry_date: '2025-12-31'
+    it('should return 401 for unauthenticated requests', async () => {
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: null }
+      expect(response.status).toBe(401)
+      expect(data.error).toBe('Unauthorized')
+})

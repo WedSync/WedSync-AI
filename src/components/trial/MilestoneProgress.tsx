@@ -1,0 +1,349 @@
+/**
+ * WS-132 Trial Management - Milestone Progress Component
+ * Interactive milestone tracking with achievement celebrations
+ */
+
+'use client';
+
+import React, { useState } from 'react';
+import { Card } from '@/components/untitled-ui/card';
+import { Button } from '@/components/untitled-ui/button';
+import { Progress } from '@/components/untitled-ui/progress';
+import { Badge } from '@/components/untitled-ui/badge';
+import {
+  CheckCircle2,
+  Circle,
+  Clock,
+  Users,
+  Calendar,
+  MapPin,
+  FileText,
+  ChevronRight,
+  Sparkles,
+  Target,
+} from 'lucide-react';
+import { TrialMilestone } from '@/types/trial';
+import { cn } from '@/lib/utils';
+
+interface MilestoneProgressProps {
+  milestones: TrialMilestone[];
+  onMilestoneClick?: (milestone: TrialMilestone) => void;
+  className?: string;
+}
+
+export function MilestoneProgress({
+  milestones,
+  onMilestoneClick,
+  className = '',
+}: MilestoneProgressProps) {
+  const [selectedMilestone, setSelectedMilestone] =
+    useState<TrialMilestone | null>(null);
+
+  const getMilestoneIcon = (type: string) => {
+    switch (type) {
+      case 'first_client_connected':
+        return <Users className="h-5 w-5" />;
+      case 'initial_journey_created':
+        return <MapPin className="h-5 w-5" />;
+      case 'vendor_added':
+        return <FileText className="h-5 w-5" />;
+      case 'guest_list_imported':
+        return <Users className="h-5 w-5" />;
+      case 'timeline_created':
+        return <Calendar className="h-5 w-5" />;
+      default:
+        return <Target className="h-5 w-5" />;
+    }
+  };
+
+  const getImpactColor = (score: number) => {
+    if (score >= 9) return 'text-green-600 bg-green-100';
+    if (score >= 7) return 'text-blue-600 bg-blue-100';
+    if (score >= 5) return 'text-amber-600 bg-amber-100';
+    return 'text-gray-600 bg-gray-100';
+  };
+
+  const achievedCount = milestones.filter((m) => m.achieved).length;
+  const totalCount = milestones.length;
+  const progressPercentage =
+    totalCount > 0 ? (achievedCount / totalCount) * 100 : 0;
+
+  // Sort milestones: achieved first, then by impact score
+  const sortedMilestones = [...milestones].sort((a, b) => {
+    if (a.achieved && !b.achieved) return -1;
+    if (!a.achieved && b.achieved) return 1;
+    return b.value_impact_score - a.value_impact_score;
+  });
+
+  return (
+    <Card className={cn('p-6', className)}>
+      {/* Header */}
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900 flex items-center space-x-2">
+            <Target className="h-5 w-5 text-primary-600" />
+            <span>Trial Milestones</span>
+          </h3>
+          <p className="text-sm text-gray-600 mt-1">
+            Complete key actions to maximize your trial value
+          </p>
+        </div>
+        <Badge variant={progressPercentage === 100 ? 'success' : 'default'}>
+          {achievedCount}/{totalCount}
+        </Badge>
+      </div>
+
+      {/* Overall progress bar */}
+      <div className="mb-6">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-sm font-medium text-gray-700">
+            Overall Progress
+          </span>
+          <span className="text-sm text-gray-500">
+            {Math.round(progressPercentage)}%
+          </span>
+        </div>
+        <Progress value={progressPercentage} className="h-2" />
+      </div>
+
+      {/* Milestones list */}
+      <div className="space-y-3">
+        {sortedMilestones.map((milestone) => (
+          <div
+            key={milestone.id}
+            className={cn(
+              'flex items-center space-x-4 p-3 rounded-lg border transition-all cursor-pointer hover:shadow-sm',
+              milestone.achieved
+                ? 'bg-green-50 border-green-200'
+                : 'bg-gray-50 border-gray-200 hover:bg-gray-100',
+            )}
+            onClick={() => {
+              setSelectedMilestone(milestone);
+              onMilestoneClick?.(milestone);
+            }}
+          >
+            {/* Status icon */}
+            <div
+              className={cn(
+                'flex-shrink-0 p-2 rounded-full',
+                milestone.achieved ? 'bg-green-100' : 'bg-gray-100',
+              )}
+            >
+              {milestone.achieved ? (
+                <CheckCircle2 className="h-5 w-5 text-green-600" />
+              ) : (
+                <div
+                  className={cn(
+                    'p-1 rounded-full',
+                    getImpactColor(milestone.value_impact_score),
+                  )}
+                >
+                  {getMilestoneIcon(milestone.milestone_type)}
+                </div>
+              )}
+            </div>
+
+            {/* Content */}
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between">
+                <h4
+                  className={cn(
+                    'font-medium truncate',
+                    milestone.achieved ? 'text-green-800' : 'text-gray-900',
+                  )}
+                >
+                  {milestone.milestone_name}
+                </h4>
+                <div className="flex items-center space-x-2 ml-2">
+                  {/* Impact score indicator */}
+                  <div
+                    className={cn(
+                      'px-2 py-1 rounded-full text-xs font-medium',
+                      getImpactColor(milestone.value_impact_score),
+                    )}
+                  >
+                    Impact: {milestone.value_impact_score}/10
+                  </div>
+
+                  {/* Achievement time */}
+                  {milestone.achieved && milestone.achieved_at && (
+                    <div className="flex items-center space-x-1 text-xs text-green-600">
+                      <Clock className="h-3 w-3" />
+                      <span>
+                        {milestone.time_to_achieve_hours
+                          ? `${Math.round(milestone.time_to_achieve_hours)}h`
+                          : 'Completed'}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <p
+                className={cn(
+                  'text-sm mt-1',
+                  milestone.achieved ? 'text-green-700' : 'text-gray-600',
+                )}
+              >
+                {milestone.description}
+              </p>
+
+              {/* Achievement celebration */}
+              {milestone.achieved && (
+                <div className="flex items-center space-x-2 mt-2">
+                  <Sparkles className="h-4 w-4 text-yellow-500" />
+                  <span className="text-xs font-medium text-green-700">
+                    Milestone achieved! Great progress.
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {/* Action indicator */}
+            <ChevronRight
+              className={cn(
+                'h-4 w-4 flex-shrink-0',
+                milestone.achieved ? 'text-green-400' : 'text-gray-400',
+              )}
+            />
+          </div>
+        ))}
+      </div>
+
+      {/* Next milestone recommendation */}
+      {achievedCount < totalCount && (
+        <div className="mt-6 p-4 bg-primary-50 border border-primary-200 rounded-lg">
+          <div className="flex items-center justify-between">
+            <div>
+              <h4 className="font-medium text-primary-900">Keep Going!</h4>
+              <p className="text-sm text-primary-700 mt-1">
+                Complete your next milestone to unlock more value from your
+                trial.
+              </p>
+            </div>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => {
+                const nextMilestone = sortedMilestones.find((m) => !m.achieved);
+                if (nextMilestone) {
+                  setSelectedMilestone(nextMilestone);
+                  onMilestoneClick?.(nextMilestone);
+                }
+              }}
+            >
+              Show Me How
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Completion celebration */}
+      {achievedCount === totalCount && (
+        <div className="mt-6 p-4 bg-gradient-to-r from-green-50 to-emerald-50 border border-green-200 rounded-lg">
+          <div className="flex items-center space-x-3">
+            <div className="flex-shrink-0">
+              <div className="p-2 bg-green-100 rounded-full">
+                <Sparkles className="h-6 w-6 text-green-600" />
+              </div>
+            </div>
+            <div className="flex-1">
+              <h4 className="font-semibold text-green-900">
+                All Milestones Achieved! 🎉
+              </h4>
+              <p className="text-sm text-green-800 mt-1">
+                You've unlocked the full potential of WedSync Professional.
+                Ready to make it permanent?
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TODO: Milestone detail modal */}
+      {selectedMilestone && (
+        <div className="fixed inset-0 z-50 bg-gray-900/50 backdrop-blur-sm flex items-center justify-center p-4">
+          <Card className="max-w-md w-full p-6">
+            <div className="flex items-center space-x-3 mb-4">
+              <div
+                className={cn(
+                  'p-2 rounded-full',
+                  selectedMilestone.achieved ? 'bg-green-100' : 'bg-gray-100',
+                )}
+              >
+                {selectedMilestone.achieved ? (
+                  <CheckCircle2 className="h-6 w-6 text-green-600" />
+                ) : (
+                  getMilestoneIcon(selectedMilestone.milestone_type)
+                )}
+              </div>
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">
+                  {selectedMilestone.milestone_name}
+                </h3>
+                <Badge
+                  variant={selectedMilestone.achieved ? 'success' : 'default'}
+                  size="sm"
+                >
+                  {selectedMilestone.achieved ? 'Completed' : 'In Progress'}
+                </Badge>
+              </div>
+            </div>
+
+            <p className="text-gray-600 mb-4">
+              {selectedMilestone.description}
+            </p>
+
+            {selectedMilestone.achieved ? (
+              <div className="text-center">
+                <Sparkles className="h-8 w-8 text-yellow-500 mx-auto mb-2" />
+                <p className="font-medium text-green-800">
+                  Milestone Achieved!
+                </p>
+                {selectedMilestone.time_to_achieve_hours && (
+                  <p className="text-sm text-green-600">
+                    Completed in{' '}
+                    {Math.round(selectedMilestone.time_to_achieve_hours)} hours
+                  </p>
+                )}
+              </div>
+            ) : (
+              <div>
+                <h4 className="font-medium text-gray-900 mb-2">
+                  How to achieve this:
+                </h4>
+                {/* TODO: Add instructions from milestone definitions */}
+                <p className="text-sm text-gray-600">
+                  Follow the guided steps in the platform to complete this
+                  milestone.
+                </p>
+              </div>
+            )}
+
+            <div className="flex space-x-3 mt-6">
+              <Button
+                variant="outline"
+                onClick={() => setSelectedMilestone(null)}
+                className="flex-1"
+              >
+                Close
+              </Button>
+              {!selectedMilestone.achieved && (
+                <Button
+                  variant="primary"
+                  className="flex-1"
+                  onClick={() => {
+                    // TODO: Navigate to milestone action
+                    setSelectedMilestone(null);
+                  }}
+                >
+                  Get Started
+                </Button>
+              )}
+            </div>
+          </Card>
+        </div>
+      )}
+    </Card>
+  );
+}

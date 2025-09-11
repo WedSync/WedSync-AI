@@ -1,0 +1,379 @@
+/**
+ * WS-168: Customer Success Dashboard - Round 2 Browser MCP Testing
+ * Comprehensive interactive testing with Browser MCP for visual validation
+ * Team E - Round 2 Implementation
+ */
+
+import { test, expect } from '@playwright/test'
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+test.describe('Customer Success Dashboard - Browser MCP Interactive Testing', () => {
+  
+  test.beforeEach(async ({ page }) => {
+    // Navigate to the customer health dashboard
+    await page.goto('http://localhost:3000/admin/customer-health')
+  })
+  test('Dashboard loads with proper admin authentication', async ({ page, context }) => {
+    // Test Case: WS-168-TC-001
+    // Verify admin authentication and dashboard access
+    
+    await test.step('Verify authentication required', async () => {
+      // Should redirect to login if not authenticated
+      await expect(page.url()).toContain('/login')
+    })
+    await test.step('Login as admin user', async () => {
+      await page.fill('[data-testid="email-input"]', 'admin@wedsync.com')
+      await page.fill('[data-testid="password-input"]', 'admin123')
+      await page.click('[data-testid="login-button"]')
+      
+      // Wait for dashboard to load
+      await page.waitForURL('**/admin/customer-health')
+      await page.waitForLoadState('networkidle')
+    await test.step('Verify dashboard header and title', async () => {
+      await expect(page.locator('h1')).toContainText('Customer Success Dashboard')
+      await expect(page.locator('[data-testid="admin-access-badge"]')).toBeVisible()
+  test('Key metrics cards display correctly', async ({ page }) => {
+    // Test Case: WS-168-TC-002
+    // Verify key metrics cards render and display data
+    await test.step('Verify all metric cards are visible', async () => {
+      const metricCards = page.locator('[data-testid^="metric-card-"]')
+      await expect(metricCards).toHaveCount(4)
+      // Verify specific cards
+      await expect(page.locator('[data-testid="metric-card-total-suppliers"]')).toBeVisible()
+      await expect(page.locator('[data-testid="metric-card-avg-health"]')).toBeVisible()
+      await expect(page.locator('[data-testid="metric-card-critical-actions"]')).toBeVisible()
+      await expect(page.locator('[data-testid="metric-card-revenue"]')).toBeVisible()
+    await test.step('Verify metric values are numbers', async () => {
+      const totalSuppliers = await page.locator('[data-testid="total-suppliers-value"]').textContent()
+      const avgHealth = await page.locator('[data-testid="avg-health-value"]').textContent()
+      expect(totalSuppliers).toMatch(/^\d+$/)
+      expect(avgHealth).toMatch(/^\d+\.\d+$/)
+    await test.step('Capture dashboard overview screenshot', async () => {
+      await page.screenshot({ 
+        path: 'test-results/customer-success-overview.png',
+        fullPage: true 
+      })
+  test('Risk level distribution displays correctly', async ({ page }) => {
+    // Test Case: WS-168-TC-003
+    // Verify risk distribution visualization
+    await test.step('Verify risk distribution card', async () => {
+      await expect(page.locator('[data-testid="risk-distribution-card"]')).toBeVisible()
+      // Check all risk levels are shown
+      await expect(page.locator('[data-testid="healthy-count"]')).toBeVisible()
+      await expect(page.locator('[data-testid="at-risk-count"]')).toBeVisible()
+      await expect(page.locator('[data-testid="critical-count"]')).toBeVisible()
+    await test.step('Verify color coding', async () => {
+      const healthyIndicator = page.locator('[data-testid="healthy-indicator"]')
+      const atRiskIndicator = page.locator('[data-testid="at-risk-indicator"]')
+      const criticalIndicator = page.locator('[data-testid="critical-indicator"]')
+      await expect(healthyIndicator).toHaveCSS('background-color', 'rgb(34, 197, 94)') // green-500
+      await expect(atRiskIndicator).toHaveCSS('background-color', 'rgb(234, 179, 8)') // yellow-500
+      await expect(criticalIndicator).toHaveCSS('background-color', 'rgb(239, 68, 68)') // red-500
+  test('Supplier health table functionality', async ({ page }) => {
+    // Test Case: WS-168-TC-004
+    // Verify supplier table display and interactions
+    await test.step('Verify table headers', async () => {
+      const headers = [
+        'Supplier', 'Category', 'Health Score', 'Risk Level', 
+        'Active Clients', 'Revenue', 'Last Activity', 'Actions'
+      ]
+      for (const header of headers) {
+        await expect(page.locator(`th:has-text("${header}")`)).toBeVisible()
+      }
+    await test.step('Verify supplier rows load', async () => {
+      const supplierRows = page.locator('[data-testid^="supplier-row-"]')
+      await expect(supplierRows).toHaveCountGreaterThan(0)
+    await test.step('Test supplier row click interaction', async () => {
+      const firstSupplierRow = page.locator('[data-testid^="supplier-row-"]').first()
+      await firstSupplierRow.click()
+      // Verify row selection or detail expansion
+      await expect(firstSupplierRow).toHaveAttribute('aria-selected', 'true')
+    await test.step('Test View Details button', async () => {
+      const detailsButton = page.locator('[data-testid="view-details-btn"]').first()
+      await detailsButton.click()
+      // Should open supplier detail view or modal
+      await expect(page.locator('[data-testid="supplier-detail-modal"]')).toBeVisible()
+  test('Health trend chart visualization', async ({ page }) => {
+    // Test Case: WS-168-TC-005
+    // Verify health trend chart displays and is interactive
+    await test.step('Verify trend chart container', async () => {
+      await expect(page.locator('[data-testid="health-trend-chart"]')).toBeVisible()
+    await test.step('Verify chart has data points', async () => {
+      // Wait for chart to render
+      await page.waitForTimeout(2000)
+      // Check for SVG chart elements (Recharts creates SVG)
+      const chartSvg = page.locator('[data-testid="health-trend-chart"] svg')
+      await expect(chartSvg).toBeVisible()
+      // Verify chart has path elements (trend lines)
+      const trendLines = chartSvg.locator('path.recharts-line')
+      await expect(trendLines).toHaveCountGreaterThan(0)
+    await test.step('Test chart responsiveness', async () => {
+      // Test mobile viewport
+      await page.setViewportSize({ width: 375, height: 667 })
+      await page.waitForTimeout(1000)
+      // Restore desktop viewport
+      await page.setViewportSize({ width: 1280, height: 720 })
+  test('Intervention actions panel', async ({ page }) => {
+    // Test Case: WS-168-TC-006
+    // Verify intervention actions display and functionality
+    await test.step('Verify intervention panel', async () => {
+      await expect(page.locator('[data-testid="intervention-actions-panel"]')).toBeVisible()
+      await expect(page.locator('h3:has-text("Required Actions")')).toBeVisible()
+    await test.step('Verify intervention list', async () => {
+      const interventionItems = page.locator('[data-testid^="intervention-item-"]')
+      await expect(interventionItems).toHaveCountGreaterThan(0)
+    await test.step('Test intervention execution', async () => {
+      const executeButton = page.locator('[data-testid="execute-intervention-btn"]').first()
+      await executeButton.click()
+      // Should show confirmation dialog
+      await expect(page.locator('[data-testid="intervention-confirmation-modal"]')).toBeVisible()
+      // Confirm execution
+      await page.click('[data-testid="confirm-execution-btn"]')
+      // Verify success feedback
+      await expect(page.locator('[data-testid="success-toast"]')).toBeVisible()
+  test('Advanced metrics visualization', async ({ page }) => {
+    // Test Case: WS-168-TC-007
+    // Test the advanced health metrics visualization component
+    await test.step('Navigate to metrics visualization', async () => {
+      // If integrated into main dashboard, or navigate to separate page
+      await page.click('[data-testid="advanced-metrics-tab"]')
+    await test.step('Verify metrics dashboard loads', async () => {
+      await expect(page.locator('[data-testid="health-metrics-dashboard"]')).toBeVisible()
+      // Verify timeframe selector
+      await expect(page.locator('[data-testid="timeframe-selector"]')).toBeVisible()
+      // Verify view selector
+      await expect(page.locator('[data-testid="view-selector"]')).toBeVisible()
+    await test.step('Test timeframe switching', async () => {
+      // Test 7-day view
+      await page.click('[data-testid="timeframe-7d"]')
+      // Test 30-day view
+      await page.click('[data-testid="timeframe-30d"]')
+      // Test 90-day view
+      await page.click('[data-testid="timeframe-90d"]')
+    await test.step('Test view switching', async () => {
+      // Test trends view
+      await page.click('[data-testid="view-trends"]')
+      await expect(page.locator('[data-testid="trends-view"]')).toBeVisible()
+      // Test segments view
+      await page.click('[data-testid="view-segments"]')
+      await expect(page.locator('[data-testid="segments-view"]')).toBeVisible()
+      // Return to overview
+      await page.click('[data-testid="view-overview"]')
+      await expect(page.locator('[data-testid="overview-view"]')).toBeVisible()
+    await test.step('Capture advanced metrics screenshot', async () => {
+        path: 'test-results/advanced-metrics-dashboard.png',
+  test('Intervention workflow manager', async ({ page }) => {
+    // Test Case: WS-168-TC-008
+    // Test the advanced intervention manager component
+    await test.step('Navigate to intervention manager', async () => {
+      await page.click('[data-testid="intervention-manager-link"]')
+    await test.step('Verify workflow manager loads', async () => {
+      await expect(page.locator('[data-testid="intervention-manager"]')).toBeVisible()
+      await expect(page.locator('h1:has-text("Advanced Intervention Manager")')).toBeVisible()
+    await test.step('Test workflow creation', async () => {
+      await page.click('[data-testid="new-workflow-btn"]')
+      await expect(page.locator('[data-testid="workflow-creation-modal"]')).toBeVisible()
+      // Fill workflow form
+      await page.fill('[data-testid="supplier-name-input"]', 'Test Supplier')
+      await page.selectOption('[data-testid="risk-level-select"]', 'high')
+      await page.fill('[data-testid="health-score-input"]', '45')
+      await page.click('[data-testid="create-workflow-btn"]')
+      // Verify workflow created
+    await test.step('Test workflow step execution', async () => {
+      const workflowCard = page.locator('[data-testid^="workflow-card-"]').first()
+      await expect(workflowCard).toBeVisible()
+      const startButton = workflowCard.locator('[data-testid="start-step-btn"]')
+      await startButton.click()
+      // Verify step starts
+      await expect(workflowCard.locator('[data-testid="step-in-progress"]')).toBeVisible()
+    await test.step('Capture workflow manager screenshot', async () => {
+        path: 'test-results/intervention-workflow-manager.png',
+  test('Real-time updates functionality', async ({ page, context }) => {
+    // Test Case: WS-168-TC-009
+    // Test real-time updates using Supabase realtime
+    await test.step('Setup second browser context for simulation', async () => {
+      const adminPage = await context.newPage()
+      await adminPage.goto('http://localhost:3000/admin/customer-health')
+    await test.step('Monitor real-time health score updates', async () => {
+      // Simulate health score change in one context
+      // This would typically be done via API call or database trigger
+      // Monitor for real-time updates in the UI
+      const healthScoreElement = page.locator('[data-testid="avg-health-value"]')
+      const initialValue = await healthScoreElement.textContent()
+      // Trigger update (mock simulation)
+      await page.evaluate(() => {
+        // Simulate Supabase realtime event
+        window.dispatchEvent(new CustomEvent('supabase-update', {
+          detail: { table: 'customer_health', eventType: 'UPDATE' }
+        }))
+      // Wait for potential update
+    await test.step('Test notification system', async () => {
+      // Verify toast notifications appear for updates
+      await expect(page.locator('[data-testid="update-notification"]')).toBeVisible()
+  test('Mobile responsiveness', async ({ page }) => {
+    // Test Case: WS-168-TC-010
+    // Verify mobile responsive design
+    const mobileSizes = [
+      { width: 375, height: 667, name: 'iPhone SE' },
+      { width: 414, height: 896, name: 'iPhone 11' },
+      { width: 768, height: 1024, name: 'iPad' }
+    ]
+    for (const size of mobileSizes) {
+      await test.step(`Test ${size.name} viewport (${size.width}x${size.height})`, async () => {
+        await page.setViewportSize({ width: size.width, height: size.height })
+        await page.waitForTimeout(1000)
+        
+        // Verify key elements are visible and properly sized
+        await expect(page.locator('[data-testid="dashboard-header"]')).toBeVisible()
+        await expect(page.locator('[data-testid="metric-cards-grid"]')).toBeVisible()
+        // Verify mobile navigation if implemented
+        if (size.width < 768) {
+          await expect(page.locator('[data-testid="mobile-menu-toggle"]')).toBeVisible()
+        }
+        // Capture mobile screenshot
+        await page.screenshot({ 
+          path: `test-results/mobile-${size.name.toLowerCase().replace(' ', '-')}.png`,
+          fullPage: true 
+        })
+    }
+  test('Performance and loading states', async ({ page }) => {
+    // Test Case: WS-168-TC-011
+    // Verify loading states and performance
+    await test.step('Test loading states', async () => {
+      // Intercept API calls to simulate slow loading
+      await page.route('**/api/customer-success/health-score', async route => {
+        await page.waitForTimeout(2000) // Simulate slow API
+        route.continue()
+      await page.reload()
+      // Verify loading skeletons appear
+      await expect(page.locator('[data-testid="loading-skeleton"]')).toBeVisible()
+      // Wait for data to load
+      // Verify loading state is gone
+      await expect(page.locator('[data-testid="loading-skeleton"]')).not.toBeVisible()
+    await test.step('Measure page performance', async () => {
+      // Navigate to dashboard and measure load time
+      const startTime = Date.now()
+      await page.goto('http://localhost:3000/admin/customer-health')
+      const loadTime = Date.now() - startTime
+      // Verify reasonable load time (under 5 seconds)
+      expect(loadTime).toBeLessThan(5000)
+      console.log(`Dashboard load time: ${loadTime}ms`)
+  test('Error handling and edge cases', async ({ page }) => {
+    // Test Case: WS-168-TC-012
+    // Test error states and edge cases
+    await test.step('Test API error handling', async () => {
+      // Simulate API error
+      await page.route('**/api/customer-success/health-score', route => {
+        route.fulfill({ status: 500, body: '{"error": "Internal server error"}' })
+      // Verify error message appears
+      await expect(page.locator('[data-testid="error-message"]')).toBeVisible()
+      await expect(page.locator('[data-testid="error-message"]')).toContainText('Failed to load')
+    await test.step('Test retry functionality', async () => {
+      // Click retry button if available
+      const retryButton = page.locator('[data-testid="retry-button"]')
+      if (await retryButton.isVisible()) {
+        await retryButton.click()
+    await test.step('Test empty state handling', async () => {
+      // Simulate empty data response
+        route.fulfill({ 
+          status: 200, 
+          body: JSON.stringify({ data: { suppliers: [] } }) 
+      // Verify empty state message
+      await expect(page.locator('[data-testid="empty-state"]')).toBeVisible()
+      await expect(page.locator('[data-testid="empty-state"]')).toContainText('No suppliers found')
+  test('Accessibility compliance', async ({ page }) => {
+    // Test Case: WS-168-TC-013
+    // Verify accessibility compliance
+    await test.step('Test keyboard navigation', async () => {
+      // Tab through interactive elements
+      await page.keyboard.press('Tab')
+      await expect(page.locator(':focus')).toBeVisible()
+      // Continue tabbing through key elements
+      for (let i = 0; i < 10; i++) {
+        await page.keyboard.press('Tab')
+        const focused = await page.locator(':focus').count()
+        expect(focused).toBeGreaterThan(0)
+    await test.step('Test ARIA labels and roles', async () => {
+      // Verify main dashboard has proper role
+      await expect(page.locator('[role="main"]')).toBeVisible()
+      // Verify table has proper ARIA labels
+      await expect(page.locator('table[aria-label]')).toBeVisible()
+      // Verify buttons have accessible names
+      const buttons = page.locator('button')
+      const buttonCount = await buttons.count()
+      for (let i = 0; i < buttonCount; i++) {
+        const button = buttons.nth(i)
+        const hasAriaLabel = await button.getAttribute('aria-label')
+        const hasText = await button.textContent()
+        // Button should have either aria-label or visible text
+        expect(hasAriaLabel || hasText?.trim()).toBeTruthy()
+    await test.step('Test color contrast', async () => {
+      // This would typically use axe-core or similar tool
+      // For now, verify that text is visible against backgrounds
+      const textElements = page.locator('p, span, div, h1, h2, h3')
+      const count = await textElements.count()
+      // Sample check on first few text elements
+      for (let i = 0; i < Math.min(5, count); i++) {
+        const element = textElements.nth(i)
+        await expect(element).toBeVisible()
+})
+ * Browser MCP Interactive Testing Helper Functions
+ * These functions would be used with the Browser MCP for real-time testing
+// Example Browser MCP test functions that would be called directly:
+/*
+// Navigate to dashboard
+await mcp__browsermcp__browser_navigate({
+  url: "http://localhost:3000/admin/customer-health"
+});
+// Take page snapshot for element selection
+const snapshot = await mcp__browsermcp__browser_snapshot();
+// Click login button
+await mcp__browsermcp__browser_click({
+  element: "Login button",
+  ref: snapshot.querySelector('[data-testid="login-button"]')
+// Fill login form
+await mcp__browsermcp__browser_type({
+  element: "Email input field",
+  ref: snapshot.querySelector('[data-testid="email-input"]'),
+  text: "admin@wedsync.com",
+  submit: false
+  element: "Password input field",
+  ref: snapshot.querySelector('[data-testid="password-input"]'),
+  text: "admin123",
+  submit: true
+// Wait for dashboard to load
+await mcp__browsermcp__browser_wait({time: 3});
+// Take screenshot of dashboard
+await mcp__browsermcp__browser_screenshot();
+// Test responsive design
+const viewportSizes = [
+  {width: 375, height: 667},  // Mobile
+  {width: 768, height: 1024}, // Tablet
+  {width: 1920, height: 1080} // Desktop
+];
+for (const size of viewportSizes) {
+  await mcp__browsermcp__browser_resize(size);
+  await mcp__browsermcp__browser_wait({time: 1});
+  await mcp__browsermcp__browser_screenshot();
+}
+// Check for console errors
+const logs = await mcp__browsermcp__browser_get_console_logs();
+const errors = logs.filter(log => log.level === 'error');
+console.log(`Found ${errors.length} console errors`);
+// Test intervention workflow
+  element: "New Workflow button",
+  ref: snapshot.querySelector('[data-testid="new-workflow-btn"]')
+// Fill workflow form
+await mcp__browsermcp__browser_fill_form({
+  fields: [
+    {
+      name: "Supplier Name",
+      type: "textbox",
+      ref: snapshot.querySelector('[data-testid="supplier-name-input"]'),
+      value: "Test Supplier"
+    },
+      name: "Risk Level",
+      type: "combobox", 
+      ref: snapshot.querySelector('[data-testid="risk-level-select"]'),
+      value: "high"
+  ]
+*/

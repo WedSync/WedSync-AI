@@ -1,0 +1,551 @@
+'use client';
+
+import React, { 
+  createContext, 
+  useContext, 
+  useReducer, 
+  useCallback, 
+  useEffect, 
+  useRef 
+} from 'react';
+import { usePerformanceMonitor } from '@/hooks/usePerformanceOptimization';
+import { useOptimisticUpdates } from '../performance/OptimisticUpdateProvider';
+import { FormField, FormSection } from '@/types/forms';
+
+// Types for progressive saving
+interface SaveChunk {
+  id: string;
+  type: 'form_metadata' | 'section' | 'fields_batch';
+  data: any;
+  priority: 'high' | 'medium' | 'low';
+  timestamp: number;
+  size: number; // Estimated size in bytes
+  retryCount: number;
+  status: 'pending' | 'saving' | 'saved' | 'error';
+  error?: Error;
+}
+
+interface ProgressiveSavingState {
+  chunks: Record<string, SaveChunk>;
+  saveQueue: string[];
+  isOnline: boolean;
+  totalSize: number;
+  savedSize: number;
+  lastSaveTime: number | null;
+  saveInProgress: boolean;
+  maxChunkSize: number; // Max bytes per chunk
+  maxConcurrentSaves: number;
+  activeSaves: Set<string>;
+}
+
+type ProgressiveSavingAction =
+  | { type: 'ADD_CHUNK'; payload: Omit<SaveChunk, 'id' | 'timestamp' | 'retryCount' | 'status'> }
+  | { type: 'UPDATE_CHUNK'; payload: { id: string; updates: Partial<SaveChunk> } }
+  | { type: 'REMOVE_CHUNK'; payload: string }
+  | { type: 'SET_ONLINE_STATUS'; payload: boolean }
+  | { type: 'START_SAVE'; payload: string }
+  | { type: 'COMPLETE_SAVE'; payload: { id: string; success: boolean; error?: Error } }
+  | { type: 'CLEAR_SAVED_CHUNKS'; payload?: void };
+
+const initialState: ProgressiveSavingState = {
+  chunks: {},
+  saveQueue: [],
+  isOnline: true,
+  totalSize: 0,
+  savedSize: 0,
+  lastSaveTime: null,
+  saveInProgress: false,
+  maxChunkSize: 50 * 1024, // 50KB per chunk
+  maxConcurrentSaves: 3,
+  activeSaves: new Set()
+};
+
+function progressiveSavingReducer(
+  state: ProgressiveSavingState, 
+  action: ProgressiveSavingAction
+): ProgressiveSavingState {
+  switch (action.type) {
+    case 'ADD_CHUNK': {
+      const id = `chunk_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const chunk: SaveChunk = {
+        ...action.payload,
+        id,
+        timestamp: Date.now(),
+        retryCount: 0,
+        status: 'pending'
+      };
+
+      const newChunks = { ...state.chunks, [id]: chunk };
+      const newQueue = [...state.saveQueue];
+      
+      // Insert based on priority
+      const insertIndex = newQueue.findIndex(queueId => {
+        const existingChunk = state.chunks[queueId];
+        return existingChunk && getPriorityValue(existingChunk.priority) < getPriorityValue(chunk.priority);
+      });
+      
+      if (insertIndex === -1) {
+        newQueue.push(id);
+      } else {
+        newQueue.splice(insertIndex, 0, id);
+      }
+
+      return {
+        ...state,
+        chunks: newChunks,
+        saveQueue: newQueue,
+        totalSize: state.totalSize + chunk.size
+      };
+    }
+
+    case 'UPDATE_CHUNK': {
+      const { id, updates } = action.payload;
+      const existingChunk = state.chunks[id];
+      if (!existingChunk) return state;
+
+      const updatedChunk = { ...existingChunk, ...updates };
+      const sizeDelta = (updates.size || existingChunk.size) - existingChunk.size;
+
+      return {
+        ...state,
+        chunks: { ...state.chunks, [id]: updatedChunk },
+        totalSize: state.totalSize + sizeDelta
+      };
+    }
+
+    case 'REMOVE_CHUNK': {
+      const chunkId = action.payload;
+      const chunk = state.chunks[chunkId];
+      if (!chunk) return state;
+
+      const { [chunkId]: removed, ...remainingChunks } = state.chunks;
+      const newQueue = state.saveQueue.filter(id => id !== chunkId);
+      const newActiveSaves = new Set(state.activeSaves);
+      newActiveSaves.delete(chunkId);
+
+      return {
+        ...state,
+        chunks: remainingChunks,
+        saveQueue: newQueue,
+        activeSaves: newActiveSaves,
+        totalSize: state.totalSize - chunk.size,
+        savedSize: chunk.status === 'saved' ? state.savedSize - chunk.size : state.savedSize
+      };
+    }
+
+    case 'SET_ONLINE_STATUS':
+      return {
+        ...state,
+        isOnline: action.payload
+      };
+
+    case 'START_SAVE': {
+      const chunkId = action.payload;
+      const chunk = state.chunks[chunkId];
+      if (!chunk) return state;
+
+      const newActiveSaves = new Set(state.activeSaves);
+      newActiveSaves.add(chunkId);
+
+      return {
+        ...state,
+        chunks: {
+          ...state.chunks,
+          [chunkId]: { ...chunk, status: 'saving' }
+        },
+        activeSaves: newActiveSaves,
+        saveInProgress: true
+      };
+    }
+
+    case 'COMPLETE_SAVE': {
+      const { id, success, error } = action.payload;
+      const chunk = state.chunks[id];
+      if (!chunk) return state;
+
+      const newActiveSaves = new Set(state.activeSaves);
+      newActiveSaves.delete(id);
+
+      const newChunk = {
+        ...chunk,
+        status: success ? 'saved' as const : 'error' as const,
+        error,
+        retryCount: success ? chunk.retryCount : chunk.retryCount + 1
+      };
+
+      const newSavedSize = success 
+        ? state.savedSize + chunk.size
+        : state.savedSize;
+
+      return {
+        ...state,
+        chunks: { ...state.chunks, [id]: newChunk },
+        activeSaves: newActiveSaves,
+        saveInProgress: newActiveSaves.size > 0,
+        savedSize: newSavedSize,
+        lastSaveTime: success ? Date.now() : state.lastSaveTime,
+        saveQueue: success 
+          ? state.saveQueue.filter(queueId => queueId !== id)
+          : state.saveQueue
+      };
+    }
+
+    case 'CLEAR_SAVED_CHUNKS': {
+      const pendingChunks = Object.fromEntries(
+        Object.entries(state.chunks).filter(([_, chunk]) => chunk.status !== 'saved')
+      );
+      
+      return {
+        ...state,
+        chunks: pendingChunks,
+        savedSize: 0,
+        totalSize: Object.values(pendingChunks).reduce((sum, chunk) => sum + chunk.size, 0)
+      };
+    }
+
+    default:
+      return state;
+  }
+}
+
+// Helper function for priority comparison
+function getPriorityValue(priority: SaveChunk['priority']): number {
+  switch (priority) {
+    case 'high': return 3;
+    case 'medium': return 2;
+    case 'low': return 1;
+    default: return 0;
+  }
+}
+
+// Context interface
+interface ProgressiveSavingContextValue {
+  state: ProgressiveSavingState;
+  addFormMetadata: (metadata: any) => void;
+  addSection: (section: FormSection) => void;
+  addFieldsBatch: (fields: FormField[], sectionId?: string) => void;
+  saveNow: () => Promise<void>;
+  pauseSaving: () => void;
+  resumeSaving: () => void;
+  clearSavedData: () => void;
+  getSaveProgress: () => { percentage: number; status: string };
+}
+
+const ProgressiveSavingContext = createContext<ProgressiveSavingContextValue | null>(null);
+
+// Progressive saving configuration
+interface ProgressiveSavingConfig {
+  maxChunkSize?: number;
+  maxConcurrentSaves?: number;
+  autoSaveInterval?: number;
+  retryAttempts?: number;
+  onSaveChunk?: (chunk: SaveChunk) => Promise<void>;
+  onSaveComplete?: (success: boolean, totalTime: number) => void;
+  onError?: (error: Error, chunk: SaveChunk) => void;
+}
+
+export const ProgressiveSavingProvider: React.FC<{
+  children: React.ReactNode;
+  config?: ProgressiveSavingConfig;
+}> = ({ 
+  children, 
+  config = {} 
+}) => {
+  const [state, dispatch] = useReducer(progressiveSavingReducer, {
+    ...initialState,
+    maxChunkSize: config.maxChunkSize || initialState.maxChunkSize,
+    maxConcurrentSaves: config.maxConcurrentSaves || initialState.maxConcurrentSaves
+  });
+  
+  const { addOptimisticUpdate, commitUpdate, failUpdate } = useOptimisticUpdates();
+  const { logMetric } = usePerformanceMonitor('ProgressiveSavingProvider');
+  
+  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const pausedRef = useRef(false);
+  
+  // Network status monitoring
+  useEffect(() => {
+    const handleOnline = () => dispatch({ type: 'SET_ONLINE_STATUS', payload: true });
+    const handleOffline = () => dispatch({ type: 'SET_ONLINE_STATUS', payload: false });
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  // Process save queue
+  const processSaveQueue = useCallback(async () => {
+    if (pausedRef.current || !state.isOnline || state.activeSaves.size >= state.maxConcurrentSaves) {
+      return;
+    }
+
+    const availableSlots = state.maxConcurrentSaves - state.activeSaves.size;
+    const chunksToProcess = state.saveQueue
+      .slice(0, availableSlots)
+      .map(id => state.chunks[id])
+      .filter(chunk => chunk && chunk.status === 'pending' && chunk.retryCount < 3);
+
+    for (const chunk of chunksToProcess) {
+      if (chunk) {
+        await processChunk(chunk);
+      }
+    }
+  }, [state]);
+
+  // Process individual chunk
+  const processChunk = useCallback(async (chunk: SaveChunk) => {
+    const startTime = performance.now();
+    
+    // Start optimistic update
+    const optimisticId = addOptimisticUpdate({
+      type: 'progressive_save',
+      data: { chunkId: chunk.id, type: chunk.type },
+      originalData: null
+    });
+
+    dispatch({ type: 'START_SAVE', payload: chunk.id });
+    
+    try {
+      logMetric('chunkSaveStart', performance.now());
+      
+      if (config.onSaveChunk) {
+        await config.onSaveChunk(chunk);
+      } else {
+        // Default save implementation
+        await simulateChunkSave(chunk);
+      }
+      
+      const saveTime = performance.now() - startTime;
+      logMetric('chunkSaveTime', saveTime);
+      logMetric('chunkSaveSuccess', 1);
+      
+      dispatch({ type: 'COMPLETE_SAVE', payload: { id: chunk.id, success: true } });
+      commitUpdate(optimisticId);
+      
+    } catch (error) {
+      const saveTime = performance.now() - startTime;
+      logMetric('chunkSaveTime', saveTime);
+      logMetric('chunkSaveError', 1);
+      
+      dispatch({ 
+        type: 'COMPLETE_SAVE', 
+        payload: { id: chunk.id, success: false, error: error as Error } 
+      });
+      
+      failUpdate(optimisticId, error as Error);
+      config.onError?.(error as Error, chunk);
+    }
+  }, [addOptimisticUpdate, commitUpdate, failUpdate, config, logMetric]);
+
+  // Simulated chunk save (replace with actual API call)
+  const simulateChunkSave = useCallback(async (chunk: SaveChunk): Promise<void> => {
+    // Simulate network delay based on chunk size
+    const delay = Math.min(chunk.size / 1000, 2000); // Max 2 second delay
+    await new Promise(resolve => setTimeout(resolve, delay));
+    
+    // Simulate occasional failures for testing
+    if (Math.random() < 0.05 && chunk.retryCount === 0) {
+      throw new Error(`Simulated save error for chunk ${chunk.id}`);
+    }
+  }, []);
+
+  // Auto-process queue when state changes
+  useEffect(() => {
+    if (state.saveQueue.length > 0 && state.isOnline && !pausedRef.current) {
+      const timeoutId = setTimeout(processSaveQueue, 100);
+      return () => clearTimeout(timeoutId);
+    }
+  }, [state.saveQueue.length, state.isOnline, processSaveQueue]);
+
+  // Auto-save timer
+  useEffect(() => {
+    if (config.autoSaveInterval && config.autoSaveInterval > 0) {
+      const interval = setInterval(() => {
+        if (state.saveQueue.length > 0 && state.isOnline && !pausedRef.current) {
+          processSaveQueue();
+        }
+      }, config.autoSaveInterval);
+      
+      return () => clearInterval(interval);
+    }
+  }, [config.autoSaveInterval, state.saveQueue.length, state.isOnline, processSaveQueue]);
+
+  // Chunk creation helpers
+  const createChunk = useCallback((
+    type: SaveChunk['type'], 
+    data: any, 
+    priority: SaveChunk['priority'] = 'medium'
+  ): Omit<SaveChunk, 'id' | 'timestamp' | 'retryCount' | 'status'> => {
+    const serializedData = JSON.stringify(data);
+    const size = new Blob([serializedData]).size;
+    
+    return {
+      type,
+      data,
+      priority,
+      size
+    };
+  }, []);
+
+  // Public API methods
+  const addFormMetadata = useCallback((metadata: any) => {
+    const chunk = createChunk('form_metadata', metadata, 'high');
+    dispatch({ type: 'ADD_CHUNK', payload: chunk });
+    logMetric('metadataChunkAdded', 1);
+  }, [createChunk, logMetric]);
+
+  const addSection = useCallback((section: FormSection) => {
+    const chunk = createChunk('section', section, 'medium');
+    dispatch({ type: 'ADD_CHUNK', payload: chunk });
+    logMetric('sectionChunkAdded', 1);
+  }, [createChunk, logMetric]);
+
+  const addFieldsBatch = useCallback((fields: FormField[], sectionId?: string) => {
+    // Split large field batches into smaller chunks
+    const maxFieldsPerChunk = Math.floor(state.maxChunkSize / 1000); // Rough estimate
+    
+    for (let i = 0; i < fields.length; i += maxFieldsPerChunk) {
+      const batch = fields.slice(i, i + maxFieldsPerChunk);
+      const chunk = createChunk('fields_batch', { 
+        fields: batch, 
+        sectionId,
+        batchIndex: Math.floor(i / maxFieldsPerChunk)
+      }, 'low');
+      
+      dispatch({ type: 'ADD_CHUNK', payload: chunk });
+    }
+    
+    logMetric('fieldsBatchAdded', Math.ceil(fields.length / maxFieldsPerChunk));
+  }, [createChunk, state.maxChunkSize, logMetric]);
+
+  const saveNow = useCallback(async () => {
+    const startTime = performance.now();
+    pausedRef.current = false;
+    
+    // Process all pending chunks
+    while (state.saveQueue.length > 0 && state.isOnline) {
+      await processSaveQueue();
+      
+      // Wait a bit to avoid overwhelming the server
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    
+    const totalTime = performance.now() - startTime;
+    logMetric('fullSaveTime', totalTime);
+    config.onSaveComplete?.(state.saveQueue.length === 0, totalTime);
+  }, [state.saveQueue.length, state.isOnline, processSaveQueue, config, logMetric]);
+
+  const pauseSaving = useCallback(() => {
+    pausedRef.current = true;
+    logMetric('savingPaused', 1);
+  }, [logMetric]);
+
+  const resumeSaving = useCallback(() => {
+    pausedRef.current = false;
+    logMetric('savingResumed', 1);
+    processSaveQueue();
+  }, [processSaveQueue, logMetric]);
+
+  const clearSavedData = useCallback(() => {
+    dispatch({ type: 'CLEAR_SAVED_CHUNKS' });
+    logMetric('savedDataCleared', 1);
+  }, [logMetric]);
+
+  const getSaveProgress = useCallback(() => {
+    const percentage = state.totalSize > 0 ? (state.savedSize / state.totalSize) * 100 : 100;
+    
+    let status = 'idle';
+    if (state.saveInProgress) {
+      status = 'saving';
+    } else if (state.saveQueue.length === 0 && state.totalSize > 0) {
+      status = 'completed';
+    } else if (!state.isOnline) {
+      status = 'offline';
+    } else if (state.saveQueue.length > 0) {
+      status = 'pending';
+    }
+    
+    return { percentage, status };
+  }, [state]);
+
+  const value: ProgressiveSavingContextValue = {
+    state,
+    addFormMetadata,
+    addSection,
+    addFieldsBatch,
+    saveNow,
+    pauseSaving,
+    resumeSaving,
+    clearSavedData,
+    getSaveProgress
+  };
+
+  return (
+    <ProgressiveSavingContext.Provider value={value}>
+      {children}
+    </ProgressiveSavingContext.Provider>
+  );
+};
+
+// Hook to use progressive saving
+export const useProgressiveSaving = () => {
+  const context = useContext(ProgressiveSavingContext);
+  if (!context) {
+    throw new Error('useProgressiveSaving must be used within ProgressiveSavingProvider');
+  }
+  return context;
+};
+
+// Hook for form-specific progressive saving
+export const useFormProgressiveSaving = () => {
+  const {
+    addFormMetadata,
+    addSection,
+    addFieldsBatch,
+    saveNow,
+    getSaveProgress,
+    state
+  } = useProgressiveSaving();
+
+  const saveFormData = useCallback((formData: {
+    metadata?: any;
+    sections?: FormSection[];
+    fields?: FormField[];
+  }) => {
+    if (formData.metadata) {
+      addFormMetadata(formData.metadata);
+    }
+    
+    if (formData.sections) {
+      formData.sections.forEach(section => addSection(section));
+    }
+    
+    if (formData.fields) {
+      addFieldsBatch(formData.fields);
+    }
+  }, [addFormMetadata, addSection, addFieldsBatch]);
+
+  const getFormSaveStatus = useCallback(() => {
+    const progress = getSaveProgress();
+    const pendingChunks = Object.values(state.chunks).filter(chunk => 
+      chunk.status === 'pending' || chunk.status === 'saving'
+    ).length;
+    
+    return {
+      ...progress,
+      pendingChunks,
+      isOnline: state.isOnline,
+      lastSaveTime: state.lastSaveTime
+    };
+  }, [getSaveProgress, state]);
+
+  return {
+    saveFormData,
+    saveNow,
+    getFormSaveStatus
+  };
+};

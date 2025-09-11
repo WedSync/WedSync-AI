@@ -1,0 +1,28 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { DeploymentManager } from '@/lib/services/DeploymentManager';
+
+export async function GET(request: NextRequest) {
+  const deploymentManager = new DeploymentManager();
+  
+  try {
+    const healthCheck = await deploymentManager.performHealthCheck();
+    
+    return NextResponse.json({
+      success: healthCheck.success,
+      timestamp: healthCheck.timestamp,
+      checks: healthCheck.checks,
+      performance: healthCheck.performance,
+      error: healthCheck.error
+    }, {
+      status: healthCheck.success ? 200 : 503
+    });
+  } catch (error) {
+    return NextResponse.json({
+      success: false,
+      timestamp: new Date().toISOString(),
+      error: error instanceof Error ? error.message : 'Health check failed'
+    }, {
+      status: 503
+    });
+  }
+}

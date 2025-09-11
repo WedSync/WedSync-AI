@@ -1,0 +1,70 @@
+export interface TaskCategory {
+  id: string;
+  name: string;
+  display_name: string;
+  description?: string;
+  color: string;
+  icon: string;
+  is_default: boolean;
+  is_active: boolean;
+  sort_order: number;
+  organization_id?: string;
+  created_at: string;
+  updated_at: string;
+  created_by?: string;
+}
+
+export interface CategoryTask {
+  id: string;
+  title: string;
+  description?: string;
+  status: 'pending' | 'in_progress' | 'completed' | 'cancelled';
+  priority: 'low' | 'medium' | 'high' | 'urgent';
+  due_date?: string;
+  assigned_to?: string;
+  category: string;
+  tags?: string[];
+  metadata?: Record<string, any>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CategoryGroup {
+  category: TaskCategory;
+  tasks: CategoryTask[];
+  stats: {
+    total: number;
+    completed: number;
+    inProgress: number;
+    pending: number;
+    overdue: number;
+  };
+}
+
+export interface CategoryFilter {
+  search?: string;
+  status?: CategoryTask['status'][];
+  priority?: CategoryTask['priority'][];
+  assignedTo?: string[];
+  dateRange?: {
+    start: Date;
+    end: Date;
+  };
+}
+
+export interface CategorySyncStatus {
+  categoryId: string;
+  lastSynced?: Date;
+  pendingChanges: number;
+  syncError?: string;
+  isOnline: boolean;
+}
+
+export type CategoryPhase = 'setup' | 'ceremony' | 'reception' | 'breakdown';
+
+export interface CategoryPhaseMapping {
+  phase: CategoryPhase;
+  categories: string[];
+  color: string;
+  order: number;
+}

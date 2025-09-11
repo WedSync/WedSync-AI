@@ -1,0 +1,512 @@
+/**
+ * Individual Cloud Provider API Routes
+ * GET /api/cloud/providers/[id] - Get provider details
+ * PUT /api/cloud/providers/[id] - Update provider configuration
+ * DELETE /api/cloud/providers/[id] - Remove provider
+ * WS-257 Team B Implementation
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { MultiCloudOrchestrationService } from '@/lib/services/cloud-orchestration-service';
+import {
+  updateCloudProviderSchema,
+  validateCloudProviderCredentials,
+  sanitizeCloudProviderCredentials,
+} from '@/lib/validations/cloud-infrastructure';
+import type { CloudProvider } from '@/types/cloud-infrastructure';
+import { z } from 'zod';
+
+// Rate limiting configuration
+const RATE_LIMITS = {
+  GET: { requests: 200, windowMs: 60000 }, // 200 requests per minute
+  PUT: { requests: 30, windowMs: 60000 }, // 30 requests per minute
+  DELETE: { requests: 10, windowMs: 60000 }, // 10 requests per minute
+};
+
+// Request rate limiting store (in production, use Redis)
+const requestCounts = new Map<string, { count: number; resetTime: number }>();
+
+function checkRateLimit(method: string, clientId: string): boolean {
+  const limit = RATE_LIMITS[method as keyof typeof RATE_LIMITS];
+  if (!limit) return true;
+
+  const now = Date.now();
+  const key = `${method}:${clientId}`;
+  const current = requestCounts.get(key);
+
+  if (!current || now > current.resetTime) {
+    requestCounts.set(key, { count: 1, resetTime: now + limit.windowMs });
+    return true;
+  }
+
+  if (current.count >= limit.requests) {
+    return false;
+  }
+
+  current.count++;
+  return true;
+}
+
+function getClientId(request: NextRequest): string {
+  const forwarded = request.headers.get('x-forwarded-for');
+  const ip = forwarded ? forwarded.split(',')[0] : request.ip || 'unknown';
+  return `ip:${ip}`;
+}
+
+async function getUserFromAuth(request: NextRequest) {
+  try {
+    const supabase = createClient();
+    const {
+      data: { user },
+      error,
+    } = await supabase.auth.getUser();
+
+    if (error || !user) {
+      throw new Error('Authentication required');
+    }
+
+    // Get user's organization
+    const { data: userData, error: userError } = await supabase
+      .from('users')
+      .select('organization_id, role, permissions')
+      .eq('id', user.id)
+      .single();
+
+    if (userError || !userData) {
+      throw new Error('User not found');
+    }
+
+    return {
+      userId: user.id,
+      email: user.email!,
+      organizationId: userData.organization_id,
+      role: userData.role,
+      permissions: userData.permissions || [],
+    };
+  } catch (error) {
+    throw new Error('Authentication failed');
+  }
+}
+
+interface RouteParams {
+  params: {
+    id: string;
+  };
+}
+
+/**
+ * GET /api/cloud/providers/[id]
+ * Get detailed information about a specific cloud provider
+ */
+export async function GET(request: NextRequest, { params }: RouteParams) {
+  try {
+    // Rate limiting
+    const clientId = getClientId(request);
+    if (!checkRateLimit('GET', clientId)) {
+      return NextResponse.json(
+        { error: 'Rate limit exceeded' },
+        { status: 429 },
+      );
+    }
+
+    // Authentication
+    const user = await getUserFromAuth(request);
+
+    const { id: providerId } = params;
+
+    if (!providerId || providerId.trim() === '') {
+      return NextResponse.json(
+        { error: 'Provider ID is required' },
+        { status: 400 },
+      );
+    }
+
+    // Create orchestration service
+    const orchestrationService = new MultiCloudOrchestrationService({
+      organizationId: user.organizationId,
+      userId: user.userId,
+    });
+
+    // Get provider
+    const provider = await orchestrationService.getCloudProvider(providerId);
+    const providerConfig = provider.getProvider();
+
+    // Sanitize response (remove credentials)
+    const sanitizedProvider = {
+      id: providerConfig.id,
+      organizationId: providerConfig.organizationId,
+      name: providerConfig.name,
+      providerType: providerConfig.providerType,
+      region: providerConfig.region,
+      configuration: providerConfig.configuration,
+      isActive: providerConfig.isActive,
+      lastSyncAt: providerConfig.lastSyncAt,
+      syncStatus: providerConfig.syncStatus,
+      errorMessage: providerConfig.errorMessage,
+      createdAt: providerConfig.createdAt,
+      updatedAt: providerConfig.updatedAt,
+      createdBy: providerConfig.createdBy,
+      // Additional runtime information
+      authenticationStatus: provider.getAuthenticationStatus(),
+      lastConnectionTest: provider.getLastConnectionTest(),
+      connectionLatency: provider.getConnectionLatency(),
+    };
+
+    return NextResponse.json(sanitizedProvider);
+  } catch (error) {
+    console.error('Error getting cloud provider:', error);
+
+    if (error instanceof Error) {
+      if (error.message.includes('Authentication')) {
+        return NextResponse.json({ error: error.message }, { status: 401 });
+      }
+      if (error.message.includes('not found')) {
+        return NextResponse.json(
+          { error: 'Provider not found' },
+          { status: 404 },
+        );
+      }
+    }
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * PUT /api/cloud/providers/[id]
+ * Update cloud provider configuration
+ */
+export async function PUT(request: NextRequest, { params }: RouteParams) {
+  try {
+    // Rate limiting
+    const clientId = getClientId(request);
+    if (!checkRateLimit('PUT', clientId)) {
+      return NextResponse.json(
+        { error: 'Rate limit exceeded' },
+        { status: 429 },
+      );
+    }
+
+    // Authentication
+    const user = await getUserFromAuth(request);
+
+    // Check permissions
+    if (!['owner', 'admin', 'manager'].includes(user.role)) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions' },
+        { status: 403 },
+      );
+    }
+
+    const { id: providerId } = params;
+
+    if (!providerId || providerId.trim() === '') {
+      return NextResponse.json(
+        { error: 'Provider ID is required' },
+        { status: 400 },
+      );
+    }
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validatedData = updateCloudProviderSchema.parse(body);
+
+    // Create orchestration service
+    const orchestrationService = new MultiCloudOrchestrationService({
+      organizationId: user.organizationId,
+      userId: user.userId,
+    });
+
+    // Get existing provider
+    const existingProvider =
+      await orchestrationService.getCloudProvider(providerId);
+    const existingConfig = existingProvider.getProvider();
+
+    // Prepare updated configuration
+    const updatedConfig: CloudProvider = {
+      ...existingConfig,
+      ...(validatedData.name && { name: validatedData.name }),
+      ...(validatedData.region && { region: validatedData.region }),
+      ...(validatedData.configuration && {
+        configuration: {
+          ...existingConfig.configuration,
+          ...validatedData.configuration,
+        },
+      }),
+      ...(validatedData.isActive !== undefined && {
+        isActive: validatedData.isActive,
+      }),
+      updatedAt: new Date(),
+    };
+
+    // Handle credentials update
+    if (validatedData.credentials) {
+      if (
+        !validateCloudProviderCredentials(
+          existingConfig.providerType,
+          validatedData.credentials,
+        )
+      ) {
+        return NextResponse.json(
+          { error: 'Invalid credentials for the specified provider type' },
+          { status: 400 },
+        );
+      }
+      updatedConfig.credentials = validatedData.credentials;
+    }
+
+    // Update provider in database
+    const supabase = createClient();
+    const { error } = await supabase
+      .from('cloud_providers')
+      .update({
+        name: updatedConfig.name,
+        region: updatedConfig.region,
+        ...(validatedData.credentials && {
+          credentials: updatedConfig.credentials,
+        }),
+        configuration: updatedConfig.configuration,
+        is_active: updatedConfig.isActive,
+        updated_at: updatedConfig.updatedAt.toISOString(),
+      })
+      .eq('id', providerId)
+      .eq('organization_id', user.organizationId);
+
+    if (error) {
+      throw new Error(`Failed to update provider: ${error.message}`);
+    }
+
+    // Re-authenticate if credentials were updated
+    if (validatedData.credentials) {
+      try {
+        await existingProvider.authenticate(updatedConfig.credentials);
+      } catch (authError) {
+        return NextResponse.json(
+          { error: 'Authentication failed with new credentials' },
+          { status: 400 },
+        );
+      }
+    }
+
+    // Audit log
+    const auditData = {
+      action: 'UPDATE_CLOUD_PROVIDER',
+      resourceType: 'cloud_provider',
+      resourceId: providerId,
+      oldValues: {
+        ...existingConfig,
+        credentials: sanitizeCloudProviderCredentials(
+          existingConfig.credentials,
+        ),
+      },
+      newValues: {
+        ...updatedConfig,
+        credentials: sanitizeCloudProviderCredentials(
+          updatedConfig.credentials,
+        ),
+      },
+      changes: validatedData,
+      metadata: {
+        userAgent: request.headers.get('user-agent'),
+        ipAddress: getClientId(request),
+      },
+    };
+
+    console.log('Cloud provider updated:', auditData);
+
+    // Return sanitized response
+    const response = {
+      id: updatedConfig.id,
+      organizationId: updatedConfig.organizationId,
+      name: updatedConfig.name,
+      providerType: updatedConfig.providerType,
+      region: updatedConfig.region,
+      configuration: updatedConfig.configuration,
+      isActive: updatedConfig.isActive,
+      lastSyncAt: updatedConfig.lastSyncAt,
+      syncStatus: updatedConfig.syncStatus,
+      errorMessage: updatedConfig.errorMessage,
+      createdAt: updatedConfig.createdAt,
+      updatedAt: updatedConfig.updatedAt,
+      createdBy: updatedConfig.createdBy,
+      // Never return credentials in response
+    };
+
+    return NextResponse.json(response);
+  } catch (error) {
+    console.error('Error updating cloud provider:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Validation error',
+          details: error.errors.map((e) => ({
+            field: e.path.join('.'),
+            message: e.message,
+          })),
+        },
+        { status: 400 },
+      );
+    }
+
+    if (error instanceof Error) {
+      if (error.message.includes('Authentication')) {
+        return NextResponse.json({ error: error.message }, { status: 401 });
+      }
+      if (
+        error.message.includes('permission') ||
+        error.message.includes('Insufficient')
+      ) {
+        return NextResponse.json({ error: error.message }, { status: 403 });
+      }
+      if (error.message.includes('not found')) {
+        return NextResponse.json(
+          { error: 'Provider not found' },
+          { status: 404 },
+        );
+      }
+      if (
+        error.message.includes('credential') ||
+        error.message.includes('Invalid')
+      ) {
+        return NextResponse.json({ error: error.message }, { status: 400 });
+      }
+    }
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * DELETE /api/cloud/providers/[id]
+ * Remove a cloud provider
+ */
+export async function DELETE(request: NextRequest, { params }: RouteParams) {
+  try {
+    // Rate limiting
+    const clientId = getClientId(request);
+    if (!checkRateLimit('DELETE', clientId)) {
+      return NextResponse.json(
+        { error: 'Rate limit exceeded' },
+        { status: 429 },
+      );
+    }
+
+    // Authentication
+    const user = await getUserFromAuth(request);
+
+    // Check permissions - only owners and admins can delete providers
+    if (!['owner', 'admin'].includes(user.role)) {
+      return NextResponse.json(
+        {
+          error:
+            'Insufficient permissions. Only owners and admins can delete providers.',
+        },
+        { status: 403 },
+      );
+    }
+
+    const { id: providerId } = params;
+
+    if (!providerId || providerId.trim() === '') {
+      return NextResponse.json(
+        { error: 'Provider ID is required' },
+        { status: 400 },
+      );
+    }
+
+    // Create orchestration service
+    const orchestrationService = new MultiCloudOrchestrationService({
+      organizationId: user.organizationId,
+      userId: user.userId,
+    });
+
+    // Get existing provider for audit log
+    const existingProvider =
+      await orchestrationService.getCloudProvider(providerId);
+    const existingConfig = existingProvider.getProvider();
+
+    // Check for active resources
+    const activeResources =
+      await orchestrationService.getProviderResources(providerId);
+    if (activeResources.length > 0) {
+      return NextResponse.json(
+        {
+          error: `Cannot delete provider with ${activeResources.length} active resources`,
+          details: {
+            activeResourceCount: activeResources.length,
+            resourceTypes: [
+              ...new Set(activeResources.map((r) => r.resourceType)),
+            ],
+          },
+        },
+        { status: 409 }, // Conflict
+      );
+    }
+
+    // Remove provider through orchestration service
+    await orchestrationService.removeCloudProvider(providerId);
+
+    // Audit log
+    const auditData = {
+      action: 'DELETE_CLOUD_PROVIDER',
+      resourceType: 'cloud_provider',
+      resourceId: providerId,
+      oldValues: {
+        ...existingConfig,
+        credentials: sanitizeCloudProviderCredentials(
+          existingConfig.credentials,
+        ),
+      },
+      metadata: {
+        userAgent: request.headers.get('user-agent'),
+        ipAddress: getClientId(request),
+      },
+    };
+
+    console.log('Cloud provider deleted:', auditData);
+
+    return NextResponse.json(
+      {
+        message: 'Cloud provider deleted successfully',
+        id: providerId,
+      },
+      { status: 200 },
+    );
+  } catch (error) {
+    console.error('Error deleting cloud provider:', error);
+
+    if (error instanceof Error) {
+      if (error.message.includes('Authentication')) {
+        return NextResponse.json({ error: error.message }, { status: 401 });
+      }
+      if (
+        error.message.includes('permission') ||
+        error.message.includes('Insufficient')
+      ) {
+        return NextResponse.json({ error: error.message }, { status: 403 });
+      }
+      if (error.message.includes('not found')) {
+        return NextResponse.json(
+          { error: 'Provider not found' },
+          { status: 404 },
+        );
+      }
+      if (error.message.includes('Cannot delete provider')) {
+        return NextResponse.json({ error: error.message }, { status: 409 });
+      }
+    }
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

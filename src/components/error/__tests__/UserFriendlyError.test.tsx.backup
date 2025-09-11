@@ -1,0 +1,757 @@
+/**
+ * WS-198 User Friendly Error Test Suite
+ * Comprehensive tests for user-facing error displays with wedding context
+ */
+
+import React from 'react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { UserFriendlyError, weddingErrors } from '../UserFriendlyError'
+import type { WedSyncError, WeddingWorkflowContext } from '../UserFriendlyError'
+
+// Mock icons
+vi.mock('lucide-react', () => ({
+  AlertTriangle: () => <div data-testid="alert-triangle-icon" />,
+  Info: () => <div data-testid="info-icon" />,
+  AlertCircle: () => <div data-testid="alert-circle-icon" />,
+  XCircle: () => <div data-testid="x-circle-icon" />,
+  ChevronDown: () => <div data-testid="chevron-down-icon" />,
+  ChevronUp: () => <div data-testid="chevron-up-icon" />
+}))
+
+const createMockError = (overrides: Partial<WedSyncError> = {}): WedSyncError => ({
+  id: 'test-error-123',
+  type: 'test',
+  title: 'Test Error',
+  message: 'This is a test error message',
+  severity: 'error',
+  timestamp: new Date('2024-01-15T10:00:00Z'),
+  canRetry: true,
+  hasAlternative: false,
+  ...overrides
+})
+
+const createMockContext = (overrides: Partial<WeddingWorkflowContext> = {}): WeddingWorkflowContext => ({
+  page: 'test-page',
+  action: 'test-action',
+  clientId: 'client-123',
+  weddingDate: new Date('2024-06-15'),
+  ...overrides
+})
+
+describe('UserFriendlyError', () => {
+  const mockOnRetry = vi.fn()
+  const mockOnAlternative = vi.fn()
+  const mockOnContactSupport = vi.fn()
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  describe('Basic Error Display', () => {
+    it('renders error information correctly', () => {
+      const error = createMockError()
+      const context = createMockContext()
+
+      render(
+        <UserFriendlyError
+          error={error}
+          userType="supplier"
+          context={context}
+          onRetry={mockOnRetry}
+        />
+      )
+
+      expect(screen.getByText('Test Error')).toBeInTheDocument()
+      expect(screen.getByText('This is a test error message')).toBeInTheDocument()
+    })
+
+    it('displays correct severity styling and icons', () => {
+      const severityTests = [
+        { severity: 'info' as const, iconTestId: 'info-icon' },
+        { severity: 'warning' as const, iconTestId: 'alert-triangle-icon' },
+        { severity: 'error' as const, iconTestId: 'alert-circle-icon' },
+        { severity: 'critical' as const, iconTestId: 'x-circle-icon' }
+      ]
+
+      severityTests.forEach(({ severity, iconTestId }) => {
+        const error = createMockError({ severity })
+        const context = createMockContext()
+
+        const { unmount } = render(
+          <UserFriendlyError
+            error={error}
+            userType="supplier"
+            context={context}
+          />
+        )
+
+        expect(screen.getByTestId(iconTestId)).toBeInTheDocument()
+        unmount()
+      })
+    })
+
+    it('applies custom className when provided', () => {
+      const error = createMockError()
+      const context = createMockContext()
+
+      const { container } = render(
+        <UserFriendlyError
+          error={error}
+          userType="supplier"
+          context={context}
+          className="custom-class"
+        />
+      )
+
+      expect(container.firstChild).toHaveClass('custom-class')
+    })
+  })
+
+  describe('Wedding Day Emergency Banner', () => {
+    it('shows emergency banner for critical wedding day errors', () => {
+      const error = createMockError({
+        severity: 'critical',
+        context: { isWeddingDay: true }
+      })
+      const context = createMockContext()
+
+      render(
+        <UserFriendlyError
+          error={error}
+          userType="supplier"
+          context={context}
+        />
+      )
+
+      expect(screen.getByText('Wedding Day Emergency - Immediate Attention Required')).toBeInTheDocument()
+    })
+
+    it('does not show emergency banner for non-wedding day errors', () => {
+      const error = createMockError({
+        severity: 'critical',
+        context: { isWeddingDay: false }
+      })
+      const context = createMockContext()
+
+      render(
+        <UserFriendlyError
+          error={error}
+          userType="supplier"
+          context={context}
+        />
+      )
+
+      expect(screen.queryByText('Wedding Day Emergency')).not.toBeInTheDocument()
+    })
+
+    it('does not show emergency banner for non-critical errors on wedding day', () => {
+      const error = createMockError({
+        severity: 'warning',
+        context: { isWeddingDay: true }
+      })
+      const context = createMockContext()
+
+      render(
+        <UserFriendlyError
+          error={error}
+          userType="supplier"
+          context={context}
+        />
+      )
+
+      expect(screen.queryByText('Wedding Day Emergency')).not.toBeInTheDocument()
+    })
+  })
+
+  describe('Wedding Context Messaging', () => {
+    it('displays wedding context information', () => {
+      const error = createMockError({ type: 'network' })
+      const context = createMockContext()
+
+      render(
+        <UserFriendlyError
+          error={error}
+          userType="supplier"
+          context={context}
+        />
+      )
+
+      expect(screen.getByText(/Wedding Context:/)).toBeInTheDocument()
+    })
+
+    it('customizes network error messages for wedding venues', () => {
+      const error = createMockError({
+        type: 'network',
+        context: { isWeddingDay: false }
+      })
+      const context = createMockContext()
+
+      render(
+        <UserFriendlyError
+          error={error}
+          userType="supplier"
+          context={context}
+        />
+      )
+
+      expect(screen.getByText(/Network connectivity issue/)).toBeInTheDocument()
+      expect(screen.getByText(/Your wedding planning work continues to be saved offline/)).toBeInTheDocument()
+    })
+
+    it('customizes upload error messages for photographers', () => {
+      const error = createMockError({
+        type: 'upload',
+        context: { supplierType: 'photographer' }
+      })
+      const context = createMockContext()
+
+      render(
+        <UserFriendlyError
+          error={error}
+          userType="supplier"
+          context={context}
+        />
+      )
+
+      expect(screen.getByText(/Photo upload temporarily paused/)).toBeInTheDocument()
+      expect(screen.getByText(/Wedding photos and documents are precious/)).toBeInTheDocument()
+    })
+
+    it('customizes form error messages for couples', () => {
+      const error = createMockError({ type: 'form' })
+      const context = createMockContext()
+
+      render(
+        <UserFriendlyError
+          error={error}
+          userType="couple"
+          context={context}
+        />
+      )
+
+      expect(screen.getByText(/Your wedding form responses are saved/)).toBeInTheDocument()
+    })
+  })
+
+  describe('Recovery Actions', () => {
+    it('displays retry button when error can be retried', () => {
+      const error = createMockError({ canRetry: true })
+      const context = createMockContext()
+
+      render(
+        <UserFriendlyError
+          error={error}
+          userType="supplier"
+          context={context}
+          onRetry={mockOnRetry}
+        />
+      )
+
+      const retryButton = screen.getByText('Try Again')
+      expect(retryButton).toBeInTheDocument()
+
+      fireEvent.click(retryButton)
+      expect(mockOnRetry).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not display retry button when error cannot be retried', () => {
+      const error = createMockError({ canRetry: false })
+      const context = createMockContext()
+
+      render(
+        <UserFriendlyError
+          error={error}
+          userType="supplier"
+          context={context}
+          onRetry={mockOnRetry}
+        />
+      )
+
+      expect(screen.queryByText('Try Again')).not.toBeInTheDocument()
+    })
+
+    it('displays alternative action button when available', () => {
+      const error = createMockError({ 
+        hasAlternative: true,
+        type: 'upload'
+      })
+      const context = createMockContext()
+
+      render(
+        <UserFriendlyError
+          error={error}
+          userType="supplier"
+          context={context}
+          onAlternative={mockOnAlternative}
+        />
+      )
+
+      const alternativeButton = screen.getByText('Try Different Format')
+      expect(alternativeButton).toBeInTheDocument()
+
+      fireEvent.click(alternativeButton)
+      expect(mockOnAlternative).toHaveBeenCalledTimes(1)
+    })
+
+    it('displays support button for critical errors', () => {
+      const error = createMockError({ severity: 'critical' })
+      const context = createMockContext()
+
+      render(
+        <UserFriendlyError
+          error={error}
+          userType="supplier"
+          context={context}
+          onContactSupport={mockOnContactSupport}
+        />
+      )
+
+      const supportButton = screen.getByText('Contact Support')
+      expect(supportButton).toBeInTheDocument()
+
+      fireEvent.click(supportButton)
+      expect(mockOnContactSupport).toHaveBeenCalledTimes(1)
+    })
+
+    it('displays support button when needsSupport is true', () => {
+      const error = createMockError({ 
+        context: { needsSupport: true }
+      })
+      const context = createMockContext()
+
+      render(
+        <UserFriendlyError
+          error={error}
+          userType="supplier"
+          context={context}
+          onContactSupport={mockOnContactSupport}
+        />
+      )
+
+      expect(screen.getByText('Contact Support')).toBeInTheDocument()
+    })
+  })
+
+  describe('Estimated Fix Time', () => {
+    it('displays estimated fix time when available', () => {
+      const error = createMockError({
+        context: { estimatedFixTime: '2-3 minutes' }
+      })
+      const context = createMockContext()
+
+      render(
+        <UserFriendlyError
+          error={error}
+          userType="supplier"
+          context={context}
+        />
+      )
+
+      expect(screen.getByText('Estimated resolution:')).toBeInTheDocument()
+      expect(screen.getByText('2-3 minutes')).toBeInTheDocument()
+    })
+
+    it('does not display estimated fix time when not available', () => {
+      const error = createMockError()
+      const context = createMockContext()
+
+      render(
+        <UserFriendlyError
+          error={error}
+          userType="supplier"
+          context={context}
+        />
+      )
+
+      expect(screen.queryByText('Estimated resolution:')).not.toBeInTheDocument()
+    })
+  })
+
+  describe('Technical Details Disclosure', () => {
+    it('shows technical details button', () => {
+      const error = createMockError()
+      const context = createMockContext()
+
+      render(
+        <UserFriendlyError
+          error={error}
+          userType="supplier"
+          context={context}
+        />
+      )
+
+      expect(screen.getByText('Technical Details')).toBeInTheDocument()
+    })
+
+    it('expands technical details when clicked', () => {
+      const error = createMockError()
+      const context = createMockContext()
+
+      render(
+        <UserFriendlyError
+          error={error}
+          userType="supplier"
+          context={context}
+        />
+      )
+
+      const detailsButton = screen.getByText('Technical Details')
+      fireEvent.click(detailsButton)
+
+      expect(screen.getByText('Error ID:')).toBeInTheDocument()
+      expect(screen.getByText('Type:')).toBeInTheDocument()
+      expect(screen.getByText('Time:')).toBeInTheDocument()
+      expect(screen.getByText('Message:')).toBeInTheDocument()
+      expect(screen.getByText('Context:')).toBeInTheDocument()
+    })
+
+    it('collapses technical details when clicked again', () => {
+      const error = createMockError()
+      const context = createMockContext()
+
+      render(
+        <UserFriendlyError
+          error={error}
+          userType="supplier"
+          context={context}
+        />
+      )
+
+      const detailsButton = screen.getByText('Technical Details')
+      
+      // Expand
+      fireEvent.click(detailsButton)
+      expect(screen.getByText('Error ID:')).toBeInTheDocument()
+      
+      // Collapse
+      fireEvent.click(detailsButton)
+      expect(screen.queryByText('Error ID:')).not.toBeInTheDocument()
+    })
+
+    it('displays client ID when available in context', () => {
+      const error = createMockError()
+      const context = createMockContext({ clientId: 'client-456' })
+
+      render(
+        <UserFriendlyError
+          error={error}
+          userType="supplier"
+          context={context}
+        />
+      )
+
+      const detailsButton = screen.getByText('Technical Details')
+      fireEvent.click(detailsButton)
+
+      expect(screen.getByText('Client:')).toBeInTheDocument()
+      expect(screen.getByText('client-456')).toBeInTheDocument()
+    })
+  })
+
+  describe('Alternative Labels', () => {
+    it('uses context-appropriate alternative labels', () => {
+      const testCases = [
+        { type: 'network', expectedLabel: 'Work Offline' },
+        { type: 'upload', expectedLabel: 'Try Different Format' },
+        { type: 'payment', expectedLabel: 'Try Different Card' },
+        { type: 'form', expectedLabel: 'Save & Continue Later' },
+        { type: 'calendar', expectedLabel: 'View Offline Schedule' },
+        { type: 'vendor', expectedLabel: 'Send Manual Message' }
+      ]
+
+      testCases.forEach(({ type, expectedLabel }) => {
+        const error = createMockError({ 
+          type,
+          hasAlternative: true
+        })
+        const context = createMockContext()
+
+        const { unmount } = render(
+          <UserFriendlyError
+            error={error}
+            userType="supplier"
+            context={context}
+            onAlternative={mockOnAlternative}
+          />
+        )
+
+        expect(screen.getByText(expectedLabel)).toBeInTheDocument()
+        unmount()
+      })
+    })
+  })
+})
+
+describe('Wedding Error Factories', () => {
+  describe('photoUploadFailed', () => {
+    it('creates photo upload error correctly', () => {
+      const error = weddingErrors.photoUploadFailed({
+        supplierType: 'photographer'
+      })
+
+      expect(error.type).toBe('upload')
+      expect(error.title).toBe('Photo Upload Failed')
+      expect(error.severity).toBe('error')
+      expect(error.canRetry).toBe(true)
+      expect(error.hasAlternative).toBe(true)
+    })
+
+    it('generates unique error IDs', () => {
+      const error1 = weddingErrors.photoUploadFailed()
+      const error2 = weddingErrors.photoUploadFailed()
+
+      expect(error1.id).not.toBe(error2.id)
+    })
+  })
+
+  describe('weddingDayEmergency', () => {
+    it('creates wedding day emergency error correctly', () => {
+      const error = weddingErrors.weddingDayEmergency()
+
+      expect(error.type).toBe('network')
+      expect(error.title).toBe('Wedding Day Technical Issue')
+      expect(error.severity).toBe('critical')
+      expect(error.context?.isWeddingDay).toBe(true)
+      expect(error.canRetry).toBe(false)
+    })
+
+    it('marks as needing support', () => {
+      const error = weddingErrors.weddingDayEmergency()
+
+      expect(error.context?.needsSupport).toBe(true)
+    })
+  })
+
+  describe('paymentProcessingError', () => {
+    it('creates payment error correctly', () => {
+      const error = weddingErrors.paymentProcessingError()
+
+      expect(error.type).toBe('payment')
+      expect(error.title).toBe('Payment Processing Issue')
+      expect(error.severity).toBe('error')
+      expect(error.canRetry).toBe(true)
+      expect(error.hasAlternative).toBe(true)
+    })
+  })
+
+  describe('formDataLost', () => {
+    it('creates form data error correctly', () => {
+      const error = weddingErrors.formDataLost()
+
+      expect(error.type).toBe('form')
+      expect(error.title).toBe('Form Progress Saved')
+      expect(error.severity).toBe('warning')
+      expect(error.canRetry).toBe(true)
+      expect(error.hasAlternative).toBe(false)
+    })
+  })
+
+  describe('vendorConnectionFailed', () => {
+    it('creates vendor connection error correctly', () => {
+      const error = weddingErrors.vendorConnectionFailed({
+        supplierType: 'florist'
+      })
+
+      expect(error.type).toBe('vendor')
+      expect(error.title).toBe('Vendor Communication Issue')
+      expect(error.severity).toBe('warning')
+      expect(error.canRetry).toBe(true)
+      expect(error.hasAlternative).toBe(true)
+    })
+  })
+
+  describe('calendarSyncError', () => {
+    it('creates calendar sync error correctly', () => {
+      const error = weddingErrors.calendarSyncError()
+
+      expect(error.type).toBe('calendar')
+      expect(error.title).toBe('Calendar Sync Issue')
+      expect(error.severity).toBe('error')
+      expect(error.canRetry).toBe(true)
+      expect(error.hasAlternative).toBe(true)
+    })
+  })
+
+  describe('offlineMode', () => {
+    it('creates offline mode info correctly', () => {
+      const error = weddingErrors.offlineMode()
+
+      expect(error.type).toBe('network')
+      expect(error.title).toBe('Working Offline')
+      expect(error.severity).toBe('info')
+      expect(error.canRetry).toBe(false)
+      expect(error.hasAlternative).toBe(false)
+      expect(error.context?.estimatedFixTime).toBe('When internet returns')
+    })
+  })
+})
+
+describe('Error Message Customization', () => {
+  describe('Network Errors', () => {
+    it('customizes message for wedding day network issues', () => {
+      const error = createMockError({
+        type: 'network',
+        context: { isWeddingDay: true }
+      })
+      const context = createMockContext()
+
+      render(
+        <UserFriendlyError
+          error={error}
+          userType="supplier"
+          context={context}
+        />
+      )
+
+      expect(screen.getByText(/Connection issues detected at wedding venue/)).toBeInTheDocument()
+      expect(screen.getByText(/Wedding venues often have limited WiFi/)).toBeInTheDocument()
+    })
+
+    it('customizes message for regular network issues', () => {
+      const error = createMockError({
+        type: 'network',
+        context: { isWeddingDay: false }
+      })
+      const context = createMockContext()
+
+      render(
+        <UserFriendlyError
+          error={error}
+          userType="supplier"
+          context={context}
+        />
+      )
+
+      expect(screen.getByText(/Network connectivity issue/)).toBeInTheDocument()
+      expect(screen.getByText(/Your wedding planning work continues/)).toBeInTheDocument()
+    })
+  })
+
+  describe('Upload Errors', () => {
+    it('customizes message for photographer upload errors', () => {
+      const error = createMockError({
+        type: 'upload',
+        context: { supplierType: 'photographer' }
+      })
+      const context = createMockContext()
+
+      render(
+        <UserFriendlyError
+          error={error}
+          userType="supplier"
+          context={context}
+        />
+      )
+
+      expect(screen.getByText(/Photo upload temporarily paused/)).toBeInTheDocument()
+    })
+
+    it('customizes message for general file upload errors', () => {
+      const error = createMockError({
+        type: 'upload',
+        context: { supplierType: 'venue' }
+      })
+      const context = createMockContext()
+
+      render(
+        <UserFriendlyError
+          error={error}
+          userType="supplier"
+          context={context}
+        />
+      )
+
+      expect(screen.getByText(/File upload issue detected/)).toBeInTheDocument()
+    })
+  })
+
+  describe('Form Errors', () => {
+    it('customizes message for couple form errors', () => {
+      const error = createMockError({ type: 'form' })
+      const context = createMockContext()
+
+      render(
+        <UserFriendlyError
+          error={error}
+          userType="couple"
+          context={context}
+        />
+      )
+
+      expect(screen.getByText(/Your wedding form responses are saved/)).toBeInTheDocument()
+    })
+
+    it('customizes message for supplier form errors', () => {
+      const error = createMockError({ type: 'form' })
+      const context = createMockContext()
+
+      render(
+        <UserFriendlyError
+          error={error}
+          userType="supplier"
+          context={context}
+        />
+      )
+
+      expect(screen.getByText(/Client form data is protected/)).toBeInTheDocument()
+    })
+  })
+})
+
+describe('Accessibility', () => {
+  it('provides proper ARIA labels for buttons', () => {
+    const error = createMockError({ canRetry: true, hasAlternative: true })
+    const context = createMockContext()
+
+    render(
+      <UserFriendlyError
+        error={error}
+        userType="supplier"
+        context={context}
+        onRetry={mockOnRetry}
+        onAlternative={mockOnAlternative}
+        onContactSupport={mockOnContactSupport}
+      />
+    )
+
+    // All action buttons should be properly accessible
+    expect(screen.getByText('Try Again')).toBeInTheDocument()
+    expect(screen.getByText('Try Alternative')).toBeInTheDocument() // Default alternative label
+  })
+
+  it('uses semantic HTML structure', () => {
+    const error = createMockError()
+    const context = createMockContext()
+
+    const { container } = render(
+      <UserFriendlyError
+        error={error}
+        userType="supplier"
+        context={context}
+      />
+    )
+
+    // Should use proper heading hierarchy and semantic elements
+    expect(container.querySelector('h3')).toBeInTheDocument()
+  })
+
+  it('provides proper focus management', () => {
+    const error = createMockError()
+    const context = createMockContext()
+
+    render(
+      <UserFriendlyError
+        error={error}
+        userType="supplier"
+        context={context}
+      />
+    )
+
+    const detailsButton = screen.getByText('Technical Details')
+    
+    fireEvent.click(detailsButton)
+    // Focus should be managed properly when expanding/collapsing details
+    expect(detailsButton).toBeInTheDocument()
+  })
+})

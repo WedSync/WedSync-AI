@@ -1,0 +1,177 @@
+'use client';
+
+import React from 'react';
+import { motion } from 'framer-motion';
+import { CheckIcon, ExclamationTriangleIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { cn } from '@/lib/utils';
+
+interface FieldConfidenceScoreProps {
+  confidence: number; // 0 to 1
+  fieldName: string;
+  isAutoFilled: boolean;
+  onAccept?: () => void;
+  onReject?: () => void;
+  onEdit?: () => void;
+  size?: 'sm' | 'md' | 'lg';
+}
+
+export function FieldConfidenceScore({
+  confidence,
+  fieldName,
+  isAutoFilled,
+  onAccept,
+  onReject,
+  onEdit,
+  size = 'md'
+}: FieldConfidenceScoreProps) {
+  const percentage = Math.round(confidence * 100);
+  
+  const getConfidenceColor = () => {
+    if (confidence >= 0.9) return 'text-green-600 bg-green-50 border-green-200';
+    if (confidence >= 0.7) return 'text-yellow-600 bg-yellow-50 border-yellow-200';
+    return 'text-red-600 bg-red-50 border-red-200';
+  };
+  
+  const getConfidenceIcon = () => {
+    if (confidence >= 0.9) return <CheckIcon className="h-4 w-4" />;
+    if (confidence >= 0.7) return <ExclamationTriangleIcon className="h-4 w-4" />;
+    return <XMarkIcon className="h-4 w-4" />;
+  };
+  
+  const getConfidenceLabel = () => {
+    if (confidence >= 0.9) return 'High confidence';
+    if (confidence >= 0.7) return 'Medium confidence';
+    return 'Low confidence';
+  };
+
+  const sizeClasses = {
+    sm: 'text-xs px-2 py-1',
+    md: 'text-sm px-3 py-1.5',
+    lg: 'text-base px-4 py-2'
+  };
+
+  if (!isAutoFilled) {
+    return null;
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.9 }}
+      animate={{ opacity: 1, scale: 1 }}
+      transition={{ duration: 0.2 }}
+      className="flex items-center space-x-2"
+    >
+      <div
+        className={cn(
+          "inline-flex items-center space-x-1.5 rounded-full border",
+          getConfidenceColor(),
+          sizeClasses[size]
+        )}
+      >
+        {getConfidenceIcon()}
+        <span className="font-medium">{percentage}%</span>
+        <span className="text-xs opacity-75">{getConfidenceLabel()}</span>
+      </div>
+      
+      {(onAccept || onReject || onEdit) && (
+        <div className="flex items-center space-x-1">
+          {onAccept && (
+            <button
+              onClick={onAccept}
+              className="p-1 rounded hover:bg-green-100 text-green-600 transition-colors"
+              title="Accept auto-filled value"
+            >
+              <CheckIcon className="h-4 w-4" />
+            </button>
+          )}
+          {onEdit && (
+            <button
+              onClick={onEdit}
+              className="p-1 rounded hover:bg-blue-100 text-blue-600 transition-colors"
+              title="Edit value"
+            >
+              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} 
+                  d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+              </svg>
+            </button>
+          )}
+          {onReject && (
+            <button
+              onClick={onReject}
+              className="p-1 rounded hover:bg-red-100 text-red-600 transition-colors"
+              title="Clear auto-filled value"
+            >
+              <XMarkIcon className="h-4 w-4" />
+            </button>
+          )}
+        </div>
+      )}
+    </motion.div>
+  );
+}
+
+interface BatchConfidenceActionsProps {
+  fieldsCount: number;
+  highConfidenceCount: number;
+  mediumConfidenceCount: number;
+  lowConfidenceCount: number;
+  onAcceptAll: () => void;
+  onRejectAll: () => void;
+  onAcceptHighConfidence: () => void;
+}
+
+export function BatchConfidenceActions({
+  fieldsCount,
+  highConfidenceCount,
+  mediumConfidenceCount,
+  lowConfidenceCount,
+  onAcceptAll,
+  onRejectAll,
+  onAcceptHighConfidence
+}: BatchConfidenceActionsProps) {
+  return (
+    <div className="bg-white border border-gray-200 rounded-lg p-4">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-sm font-medium text-gray-900">
+          Auto-populated fields ({fieldsCount})
+        </h3>
+        <div className="flex items-center space-x-4 text-xs">
+          <span className="flex items-center space-x-1">
+            <span className="w-2 h-2 rounded-full bg-green-500"></span>
+            <span>{highConfidenceCount} high</span>
+          </span>
+          <span className="flex items-center space-x-1">
+            <span className="w-2 h-2 rounded-full bg-yellow-500"></span>
+            <span>{mediumConfidenceCount} medium</span>
+          </span>
+          <span className="flex items-center space-x-1">
+            <span className="w-2 h-2 rounded-full bg-red-500"></span>
+            <span>{lowConfidenceCount} low</span>
+          </span>
+        </div>
+      </div>
+      
+      <div className="flex items-center space-x-2">
+        <button
+          onClick={onAcceptAll}
+          className="flex-1 px-3 py-1.5 bg-green-600 text-white text-sm rounded-md hover:bg-green-700 transition-colors"
+        >
+          Accept All
+        </button>
+        <button
+          onClick={onAcceptHighConfidence}
+          className="flex-1 px-3 py-1.5 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 transition-colors"
+        >
+          Accept High Confidence
+        </button>
+        <button
+          onClick={onRejectAll}
+          className="flex-1 px-3 py-1.5 bg-gray-600 text-white text-sm rounded-md hover:bg-gray-700 transition-colors"
+        >
+          Clear All
+        </button>
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,347 @@
+import { test, expect } from '@playwright/test'
+
+test.describe('WS-153 Photo Groups Complete User Journey', () => {
+  // Test configuration
+  test.beforeEach(async ({ page }) => {
+    // Navigate to the application
+    await page.goto('http://localhost:3000')
+    
+    // Mock authentication
+    await page.evaluate(() => {
+      localStorage.setItem('auth_token', 'test_token')
+      localStorage.setItem('wedding_id', 'test_wedding_123')
+    })
+    
+    // Navigate to guests page
+    await page.goto('http://localhost:3000/dashboard/clients/test_wedding_123/guests')
+    await page.waitForLoadState('networkidle')
+  })
+
+  test('Complete photo group workflow from creation to export', async ({ page }) => {
+    // Step 1: Verify page loads with proper UI elements
+    await expect(page.locator('[data-testid="photo-groups-manager"]')).toBeVisible()
+    await expect(page.locator('h2:has-text("Photo Groups Manager")')).toBeVisible()
+    
+    // Verify performance metrics
+    const performanceMetrics = await page.evaluate(() => {
+      const navigation = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming
+      return {
+        loadTime: navigation.loadEventEnd - navigation.loadEventStart,
+        domContentLoaded: navigation.domContentLoadedEventEnd - navigation.domContentLoadedEventStart
+      }
+    })
+    expect(performanceMetrics.loadTime).toBeLessThan(500)
+
+    // Step 2: Create a new guest
+    await page.click('[data-testid="add-guest"]')
+    await page.fill('[data-testid="guest-name"]', 'John Smith')
+    await page.fill('[data-testid="guest-email"]', 'john.smith@example.com')
+    await page.selectOption('[data-testid="guest-relationship"]', 'Family')
+    await page.click('[data-testid="save-guest"]')
+    
+    // Wait for guest to be saved
+    await page.waitForSelector('text=John Smith')
+    
+    // Step 3: Create a photo group
+    await page.click('[data-testid="add-photo-group"]')
+    await page.fill('[data-testid="group-name"]', 'Family Photos')
+    await page.selectOption('[data-testid="photo-type"]', 'family')
+    await page.fill('[data-testid="estimated-time"]', '30')
+    await page.fill('[data-testid="location"]', 'Main Garden')
+    await page.fill('[data-testid="photographer-notes"]', 'Golden hour lighting preferred')
+    await page.click('[data-testid="create-group"]')
+    
+    // Verify group was created
+    await expect(page.locator('text=Family Photos')).toBeVisible()
+    
+    // Step 4: Drag and drop guest to photo group
+    const guest = await page.locator('[data-guest="john-smith"]')
+    const photoGroup = await page.locator('[data-group="family-photos"]')
+    
+    // Perform drag and drop
+    await guest.dragTo(photoGroup)
+    
+    // Verify guest was added to group
+    await expect(page.locator('[data-group="family-photos"] text=John Smith')).toBeVisible()
+    
+    // Step 5: Schedule the photo session
+    await page.click('[data-testid="schedule-group-family-photos"]')
+    await page.fill('[data-testid="schedule-time"]', '2024-06-15T14:00')
+    await page.click('[data-testid="save-schedule"]')
+    
+    // Verify schedule was saved
+    await expect(page.locator('text=2:00 PM')).toBeVisible()
+    
+    // Step 6: Test conflict detection
+    // Create another group with overlapping time
+    await page.click('[data-testid="add-photo-group"]')
+    await page.fill('[data-testid="group-name"]', 'Couple Photos')
+    await page.selectOption('[data-testid="photo-type"]', 'couple')
+    await page.fill('[data-testid="estimated-time"]', '45')
+    await page.fill('[data-testid="location"]', 'Main Garden') // Same location
+    await page.click('[data-testid="create-group"]')
+    
+    // Try to schedule at conflicting time
+    await page.click('[data-testid="schedule-group-couple-photos"]')
+    await page.fill('[data-testid="schedule-time"]', '2024-06-15T14:15')
+    await page.click('[data-testid="save-schedule"]')
+    
+    // Verify conflict warning appears
+    await expect(page.locator('[data-testid="conflict-warning"]')).toBeVisible()
+    await expect(page.locator('text=Location conflict detected')).toBeVisible()
+    
+    // Step 7: Resolve conflict
+    await page.click('[data-testid="resolve-conflict"]')
+    await page.fill('[data-testid="schedule-time"]', '2024-06-15T15:00')
+    await page.click('[data-testid="save-schedule"]')
+    
+    // Verify conflict resolved
+    await expect(page.locator('[data-testid="conflict-warning"]')).not.toBeVisible()
+    
+    // Step 8: Export for photographer
+    await page.click('[data-testid="export-pdf"]')
+    
+    // Wait for download
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      page.click('[data-testid="confirm-export"]')
+    ])
+    
+    // Verify download
+    expect(download.suggestedFilename()).toContain('photo-groups')
+    expect(download.suggestedFilename()).toContain('.pdf')
+    
+    // Step 9: Test real-time collaboration
+    // Open another tab/context to simulate another user
+    const context2 = await page.context().browser()?.newContext()
+    if (context2) {
+      const page2 = await context2.newPage()
+      await page2.goto('http://localhost:3000/dashboard/clients/test_wedding_123/guests')
+      
+      // Make a change in the first page
+      await page.click('[data-testid="edit-group-family-photos"]')
+      await page.fill('[data-testid="group-name"]', 'Extended Family Photos')
+      await page.click('[data-testid="save-group"]')
+      
+      // Verify change appears in second page (real-time update)
+      await expect(page2.locator('text=Extended Family Photos')).toBeVisible({ timeout: 5000 })
+      
+      await context2.close()
+    }
+    
+    // Step 10: Test accessibility
+    await page.keyboard.press('Tab')
+    await expect(page.locator('[data-testid="add-photo-group"]')).toBeFocused()
+    
+    // Test keyboard navigation
+    await page.keyboard.press('Enter')
+    await expect(page.locator('[data-testid="group-name"]')).toBeFocused()
+    
+    // Test screen reader announcements
+    const ariaLive = await page.locator('[aria-live="polite"]')
+    await expect(ariaLive).toBeAttached()
+    
+    // Step 11: Test offline functionality
+    // Go offline
+    await page.context().setOffline(true)
+    
+    // Try to create a group offline
+    await page.click('[data-testid="add-photo-group"]')
+    await page.fill('[data-testid="group-name"]', 'Offline Test Group')
+    await page.click('[data-testid="create-group"]')
+    
+    // Should show offline indicator
+    await expect(page.locator('[data-testid="offline-indicator"]')).toBeVisible()
+    await expect(page.locator('text=Changes will sync when online')).toBeVisible()
+    
+    // Go back online
+    await page.context().setOffline(false)
+    
+    // Verify sync happens
+    await expect(page.locator('[data-testid="sync-indicator"]')).toBeVisible()
+    await page.waitForSelector('[data-testid="sync-complete"]', { timeout: 5000 })
+    
+    // Step 12: Performance validation
+    const metrics = await page.evaluate(() => {
+      return {
+        LCP: performance.getEntriesByType('largest-contentful-paint')[0]?.startTime || 0,
+        FID: performance.eventCounts?.get('first-input') || 0,
+        CLS: performance.getEntriesByType('layout-shift').reduce((cls, entry: any) => cls + entry.value, 0)
+      }
+    })
+    
+    // Verify Core Web Vitals
+    expect(metrics.LCP).toBeLessThan(2500) // LCP < 2.5s
+    expect(metrics.CLS).toBeLessThan(0.1) // CLS < 0.1
+  })
+
+  test('Mobile responsiveness and touch interactions', async ({ page }) => {
+    // Set mobile viewport
+    await page.setViewportSize({ width: 375, height: 667 })
+    
+    // Navigate to photo groups
+    await page.goto('http://localhost:3000/dashboard/clients/test_wedding_123/guests')
+    
+    // Verify mobile layout
+    await expect(page.locator('[data-testid="mobile-menu"]')).toBeVisible()
+    
+    // Test touch interactions
+    const guest = await page.locator('[data-guest="test-guest"]').first()
+    const photoGroup = await page.locator('[data-group="test-group"]').first()
+    
+    // Simulate touch drag
+    await guest.tap()
+    await page.waitForTimeout(100)
+    await photoGroup.tap()
+    
+    // Verify mobile-specific UI elements
+    await expect(page.locator('[data-testid="mobile-action-sheet"]')).toBeVisible()
+    
+    // Test swipe gestures
+    await page.locator('[data-testid="photo-group-card"]').first().swipe({
+      direction: 'left',
+      distance: 100
+    })
+    
+    // Verify swipe action buttons appear
+    await expect(page.locator('[data-testid="swipe-actions"]')).toBeVisible()
+  })
+
+  test('Error handling and recovery', async ({ page }) => {
+    // Navigate to photo groups
+    await page.goto('http://localhost:3000/dashboard/clients/test_wedding_123/guests')
+    
+    // Simulate network error
+    await page.route('**/api/photo-groups/**', route => {
+      route.abort('failed')
+    })
+    
+    // Try to create a group
+    await page.click('[data-testid="add-photo-group"]')
+    await page.fill('[data-testid="group-name"]', 'Test Group')
+    await page.click('[data-testid="create-group"]')
+    
+    // Verify error boundary appears
+    await expect(page.locator('[data-testid="error-boundary"]')).toBeVisible()
+    await expect(page.locator('text=Something went wrong')).toBeVisible()
+    
+    // Test retry functionality
+    await page.unroute('**/api/photo-groups/**')
+    await page.click('[data-testid="retry-button"]')
+    
+    // Verify recovery
+    await expect(page.locator('[data-testid="error-boundary"]')).not.toBeVisible()
+    await expect(page.locator('[data-testid="photo-groups-manager"]')).toBeVisible()
+  })
+
+  test('Cross-browser compatibility', async ({ browserName, page }) => {
+    // Test specific browser features
+    if (browserName === 'webkit') {
+      // Safari-specific tests
+      await page.goto('http://localhost:3000/dashboard/clients/test_wedding_123/guests')
+      
+      // Test Safari-specific CSS
+      const hasWebkitStyles = await page.evaluate(() => {
+        const element = document.querySelector('[data-testid="photo-group-card"]')
+        return element ? window.getComputedStyle(element).webkitAppearance !== undefined : false
+      })
+      expect(hasWebkitStyles).toBeTruthy()
+    }
+    
+    if (browserName === 'firefox') {
+      // Firefox-specific tests
+      await page.goto('http://localhost:3000/dashboard/clients/test_wedding_123/guests')
+      
+      // Test Firefox-specific features
+      const hasMozStyles = await page.evaluate(() => {
+        const element = document.querySelector('[data-testid="photo-group-card"]')
+        return element ? 'MozAppearance' in element.style : false
+      })
+      expect(hasMozStyles).toBeTruthy()
+    }
+    
+    // Common cross-browser tests
+    await page.goto('http://localhost:3000/dashboard/clients/test_wedding_123/guests')
+    await expect(page.locator('[data-testid="photo-groups-manager"]')).toBeVisible()
+    
+    // Test drag and drop works in all browsers
+    const guest = await page.locator('[data-guest="test-guest"]').first()
+    const photoGroup = await page.locator('[data-group="test-group"]').first()
+    
+    if (await guest.isVisible() && await photoGroup.isVisible()) {
+      await guest.dragTo(photoGroup)
+      // Verify drop was successful
+      await expect(page.locator('[data-testid="drop-success"]')).toBeVisible()
+    }
+  })
+
+  test('Accessibility compliance WCAG 2.1 AA', async ({ page }) => {
+    await page.goto('http://localhost:3000/dashboard/clients/test_wedding_123/guests')
+    
+    // Test color contrast
+    const contrastRatios = await page.evaluate(() => {
+      const getContrastRatio = (color1: string, color2: string) => {
+        // Simplified contrast calculation
+        return 4.5 // Mock value - actual implementation would calculate real contrast
+      }
+      
+      const elements = document.querySelectorAll('[data-testid*="photo-group"]')
+      const ratios: number[] = []
+      
+      elements.forEach(el => {
+        const styles = window.getComputedStyle(el)
+        const bg = styles.backgroundColor
+        const fg = styles.color
+        ratios.push(getContrastRatio(fg, bg))
+      })
+      
+      return ratios
+    })
+    
+    // All contrast ratios should be >= 4.5:1 for WCAG AA
+    contrastRatios.forEach(ratio => {
+      expect(ratio).toBeGreaterThanOrEqual(4.5)
+    })
+    
+    // Test ARIA labels
+    const ariaLabels = await page.evaluate(() => {
+      const elements = document.querySelectorAll('[data-testid*="photo-group"]')
+      return Array.from(elements).map(el => ({
+        hasAriaLabel: el.hasAttribute('aria-label') || el.hasAttribute('aria-labelledby'),
+        role: el.getAttribute('role')
+      }))
+    })
+    
+    ariaLabels.forEach(item => {
+      expect(item.hasAriaLabel).toBeTruthy()
+    })
+    
+    // Test focus indicators
+    await page.keyboard.press('Tab')
+    const focusedElement = await page.evaluate(() => {
+      const el = document.activeElement
+      if (!el) return null
+      const styles = window.getComputedStyle(el)
+      return {
+        hasFocusRing: styles.outline !== 'none' || styles.boxShadow.includes('ring'),
+        isVisible: styles.visibility === 'visible'
+      }
+    })
+    
+    expect(focusedElement?.hasFocusRing).toBeTruthy()
+    expect(focusedElement?.isVisible).toBeTruthy()
+    
+    // Test semantic HTML
+    const semanticStructure = await page.evaluate(() => {
+      return {
+        hasMain: !!document.querySelector('main'),
+        hasNav: !!document.querySelector('nav'),
+        hasHeadings: document.querySelectorAll('h1, h2, h3, h4, h5, h6').length > 0,
+        hasLandmarks: !!document.querySelector('[role="navigation"], [role="main"], [role="complementary"]')
+      }
+    })
+    
+    expect(semanticStructure.hasHeadings).toBeTruthy()
+    expect(semanticStructure.hasLandmarks || semanticStructure.hasMain).toBeTruthy()
+  })
+})

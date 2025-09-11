@@ -1,0 +1,44 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "incremental": true,
+    "tsBuildInfoFile": ".next/cache/tsconfig.build.tsbuildinfo",
+    "skipLibCheck": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "removeComments": true
+  },
+  "include": [
+    "src/**/*.ts", 
+    "src/**/*.tsx",
+    "next-env.d.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "**/*.test.ts",
+    "**/*.test.tsx", 
+    "**/*.spec.ts",
+    "**/*.spec.tsx",
+    "**/__tests__/**/*",
+    "**/*test*/**/*",
+    "src/tests/**/*",
+    "src/__tests__/**/*",
+    "tests/**/*",
+    "benchmarks/**/*",
+    "docs/**/*",
+    "scripts/**/*",
+    "playwright*/**/*",
+    "WORKFLOW*/**/*",
+    "TEST-WORKFLOW/**/*",
+    "EVIDENCE-PACKAGE*/**/*",
+    "CORE-SPECIFICATIONS/**/*",
+    ".serena/**/*",
+    ".playwright-mcp/**/*",
+    ".next",
+    "out",
+    "dist", 
+    "build",
+    "coverage",
+    "test-results"
+  ]
+}

@@ -1,0 +1,551 @@
+'use client';
+
+import React, { useState } from 'react';
+import {
+  Calendar,
+  Clock,
+  CheckCircle,
+  AlertTriangle,
+  XCircle,
+  Play,
+  Pause,
+  Square,
+  RefreshCw,
+  Activity,
+  Zap,
+  TrendingUp,
+  ChevronDown,
+  ChevronUp,
+  Wifi,
+  Database,
+  Upload,
+  Download,
+} from 'lucide-react';
+
+interface SyncStatus {
+  isRunning: boolean;
+  status: 'idle' | 'connecting' | 'syncing' | 'completed' | 'error' | 'paused';
+  progress: {
+    totalEvents: number;
+    processedEvents: number;
+    createdEvents: number;
+    updatedEvents: number;
+    errorEvents: number;
+    conflictEvents: number;
+  };
+  currentOperation: string;
+  startTime?: Date;
+  endTime?: Date;
+  estimatedTimeRemaining?: number;
+  caldavMetrics: {
+    propfindRequests: number;
+    getRequests: number;
+    putRequests: number;
+    serverResponseTime: number;
+    dataTransferred: number;
+  };
+}
+
+interface AppleSyncStatusProps {
+  syncStatus: SyncStatus;
+  onPause?: () => void;
+  onResume?: () => void;
+  onCancel?: () => void;
+  onRetry?: () => void;
+  showDetails?: boolean;
+  onToggleDetails?: () => void;
+}
+
+interface SyncHistoryItem {
+  id: string;
+  timestamp: Date;
+  operation: string;
+  status: 'success' | 'error' | 'warning';
+  details: string;
+  duration?: number;
+}
+
+const AppleSyncStatus: React.FC<AppleSyncStatusProps> = ({
+  syncStatus,
+  onPause,
+  onResume,
+  onCancel,
+  onRetry,
+  showDetails = false,
+  onToggleDetails,
+}) => {
+  const [detailsExpanded, setDetailsExpanded] = useState(showDetails);
+  const [syncHistory] = useState<SyncHistoryItem[]>([
+    {
+      id: '1',
+      timestamp: new Date(Date.now() - 300000),
+      operation: 'PROPFIND /calendar/',
+      status: 'success',
+      details: 'Retrieved calendar collection',
+      duration: 145,
+    },
+    {
+      id: '2',
+      timestamp: new Date(Date.now() - 240000),
+      operation: 'GET /events/wedding-timeline.ics',
+      status: 'success',
+      details: 'Downloaded wedding timeline events',
+      duration: 892,
+    },
+    {
+      id: '3',
+      timestamp: new Date(Date.now() - 180000),
+      operation: 'PUT /events/venue-setup.ics',
+      status: 'error',
+      details: 'Conflict detected with existing event',
+      duration: 234,
+    },
+  ]);
+
+  // Calculate progress percentage
+  const progressPercentage =
+    syncStatus.progress.totalEvents > 0
+      ? (syncStatus.progress.processedEvents /
+          syncStatus.progress.totalEvents) *
+        100
+      : 0;
+
+  // Calculate sync speed
+  const syncSpeed = syncStatus.startTime
+    ? syncStatus.progress.processedEvents /
+      ((Date.now() - syncStatus.startTime.getTime()) / 1000)
+    : 0;
+
+  // Format time remaining
+  const formatTimeRemaining = (seconds?: number) => {
+    if (!seconds) return 'Calculating...';
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  // Format data size
+  const formatDataSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  // Status colors and icons
+  const getStatusConfig = () => {
+    switch (syncStatus.status) {
+      case 'connecting':
+        return {
+          color: 'text-amber-600',
+          bgColor: 'bg-amber-50',
+          borderColor: 'border-amber-200',
+          icon: Wifi,
+          label: 'Connecting to Apple Calendar',
+        };
+      case 'syncing':
+        return {
+          color: 'text-primary-600',
+          bgColor: 'bg-primary-50',
+          borderColor: 'border-primary-200',
+          icon: RefreshCw,
+          label: 'Synchronizing Events',
+        };
+      case 'completed':
+        return {
+          color: 'text-green-600',
+          bgColor: 'bg-green-50',
+          borderColor: 'border-green-200',
+          icon: CheckCircle,
+          label: 'Sync Completed Successfully',
+        };
+      case 'error':
+        return {
+          color: 'text-red-600',
+          bgColor: 'bg-red-50',
+          borderColor: 'border-red-200',
+          icon: XCircle,
+          label: 'Sync Failed - Check Connection',
+        };
+      case 'paused':
+        return {
+          color: 'text-gray-600',
+          bgColor: 'bg-gray-50',
+          borderColor: 'border-gray-200',
+          icon: Pause,
+          label: 'Sync Paused',
+        };
+      default:
+        return {
+          color: 'text-gray-500',
+          bgColor: 'bg-gray-50',
+          borderColor: 'border-gray-200',
+          icon: Calendar,
+          label: 'Ready to Sync',
+        };
+    }
+  };
+
+  const statusConfig = getStatusConfig();
+  const StatusIcon = statusConfig.icon;
+
+  const toggleDetails = () => {
+    setDetailsExpanded(!detailsExpanded);
+    onToggleDetails?.();
+  };
+
+  return (
+    <div className="w-full max-w-4xl mx-auto bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+      {/* Header */}
+      <div
+        className={`px-6 py-4 ${statusConfig.bgColor} ${statusConfig.borderColor} border-b`}
+      >
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-3">
+            <div
+              className={`p-2 rounded-lg bg-white shadow-sm ${statusConfig.borderColor} border`}
+            >
+              <StatusIcon
+                className={`w-6 h-6 ${statusConfig.color} ${
+                  syncStatus.status === 'syncing' ? 'animate-spin' : ''
+                }`}
+              />
+            </div>
+            <div>
+              <h2 className="text-xl font-semibold text-gray-900">
+                Apple Calendar Sync
+              </h2>
+              <p className={`text-sm font-medium ${statusConfig.color}`}>
+                {statusConfig.label}
+              </p>
+            </div>
+          </div>
+
+          {/* Control Buttons */}
+          <div className="flex items-center space-x-2">
+            {syncStatus.status === 'syncing' && (
+              <>
+                <button
+                  onClick={onPause}
+                  className="px-3 py-2 bg-white border border-gray-200 text-gray-700 rounded-lg hover:bg-gray-50 focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors flex items-center space-x-2 text-sm font-medium"
+                >
+                  <Pause className="w-4 h-4" />
+                  <span>Pause</span>
+                </button>
+                <button
+                  onClick={onCancel}
+                  className="px-3 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 focus:ring-2 focus:ring-red-500 focus:ring-offset-2 transition-colors flex items-center space-x-2 text-sm font-medium"
+                >
+                  <Square className="w-4 h-4" />
+                  <span>Cancel</span>
+                </button>
+              </>
+            )}
+
+            {syncStatus.status === 'paused' && (
+              <button
+                onClick={onResume}
+                className="px-3 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors flex items-center space-x-2 text-sm font-medium"
+              >
+                <Play className="w-4 h-4" />
+                <span>Resume</span>
+              </button>
+            )}
+
+            {(syncStatus.status === 'error' ||
+              syncStatus.status === 'idle') && (
+              <button
+                onClick={onRetry}
+                className="px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 focus:ring-2 focus:ring-green-500 focus:ring-offset-2 transition-colors flex items-center space-x-2 text-sm font-medium"
+              >
+                <RefreshCw className="w-4 h-4" />
+                <span>
+                  {syncStatus.status === 'error' ? 'Retry' : 'Start Sync'}
+                </span>
+              </button>
+            )}
+
+            <button
+              onClick={toggleDetails}
+              className="px-3 py-2 bg-white border border-gray-200 text-gray-700 rounded-lg hover:bg-gray-50 focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors flex items-center space-x-2 text-sm font-medium"
+            >
+              {detailsExpanded ? (
+                <ChevronUp className="w-4 h-4" />
+              ) : (
+                <ChevronDown className="w-4 h-4" />
+              )}
+              <span>Details</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Progress Section */}
+      {syncStatus.isRunning && (
+        <div className="px-6 py-4 bg-gray-50 border-b border-gray-200">
+          {/* Progress Bar */}
+          <div className="mb-4">
+            <div className="flex justify-between text-sm text-gray-600 mb-2">
+              <span>
+                Progress: {syncStatus.progress.processedEvents} /{' '}
+                {syncStatus.progress.totalEvents} events
+              </span>
+              <span>{progressPercentage.toFixed(1)}%</span>
+            </div>
+            <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
+              <div
+                className="bg-primary-600 h-full rounded-full transition-all duration-500 ease-out relative"
+                style={{ width: `${Math.min(progressPercentage, 100)}%` }}
+              >
+                <div className="absolute inset-0 bg-gradient-to-r from-primary-500 to-primary-600 opacity-75" />
+                {syncStatus.status === 'syncing' && (
+                  <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white to-transparent opacity-30 animate-pulse" />
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Current Operation */}
+          <div className="flex items-center space-x-3 text-sm text-gray-600">
+            <Activity className="w-4 h-4 animate-pulse" />
+            <span className="font-medium">{syncStatus.currentOperation}</span>
+            {syncStatus.estimatedTimeRemaining &&
+              syncStatus.estimatedTimeRemaining > 0 && (
+                <span className="text-gray-500">
+                  • {formatTimeRemaining(syncStatus.estimatedTimeRemaining)}{' '}
+                  remaining
+                </span>
+              )}
+          </div>
+        </div>
+      )}
+
+      {/* Quick Stats */}
+      <div className="px-6 py-4 border-b border-gray-200">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="text-center">
+            <div className="flex items-center justify-center w-10 h-10 bg-green-100 rounded-lg mx-auto mb-2">
+              <CheckCircle className="w-5 h-5 text-green-600" />
+            </div>
+            <div className="text-xl font-semibold text-gray-900">
+              {syncStatus.progress.createdEvents +
+                syncStatus.progress.updatedEvents}
+            </div>
+            <div className="text-sm text-gray-500">Synced</div>
+          </div>
+
+          <div className="text-center">
+            <div className="flex items-center justify-center w-10 h-10 bg-amber-100 rounded-lg mx-auto mb-2">
+              <AlertTriangle className="w-5 h-5 text-amber-600" />
+            </div>
+            <div className="text-xl font-semibold text-gray-900">
+              {syncStatus.progress.conflictEvents}
+            </div>
+            <div className="text-sm text-gray-500">Conflicts</div>
+          </div>
+
+          <div className="text-center">
+            <div className="flex items-center justify-center w-10 h-10 bg-red-100 rounded-lg mx-auto mb-2">
+              <XCircle className="w-5 h-5 text-red-600" />
+            </div>
+            <div className="text-xl font-semibold text-gray-900">
+              {syncStatus.progress.errorEvents}
+            </div>
+            <div className="text-sm text-gray-500">Errors</div>
+          </div>
+
+          <div className="text-center">
+            <div className="flex items-center justify-center w-10 h-10 bg-primary-100 rounded-lg mx-auto mb-2">
+              <TrendingUp className="w-5 h-5 text-primary-600" />
+            </div>
+            <div className="text-xl font-semibold text-gray-900">
+              {syncSpeed > 0 ? syncSpeed.toFixed(1) : '0.0'}/s
+            </div>
+            <div className="text-sm text-gray-500">Speed</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Detailed Information */}
+      <div
+        className={`overflow-hidden transition-all duration-300 ${detailsExpanded ? 'max-h-screen opacity-100' : 'max-h-0 opacity-0'}`}
+      >
+        <div className="px-6 py-4 space-y-6">
+          {/* CalDAV Metrics */}
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center space-x-2">
+              <Database className="w-5 h-5 text-gray-600" />
+              <span>CalDAV Protocol Metrics</span>
+            </h3>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm font-medium text-gray-600">
+                    PROPFIND Requests
+                  </span>
+                  <Database className="w-4 h-4 text-gray-400" />
+                </div>
+                <div className="text-2xl font-semibold text-gray-900">
+                  {syncStatus.caldavMetrics.propfindRequests}
+                </div>
+                <div className="text-sm text-gray-500">Calendar discovery</div>
+              </div>
+
+              <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm font-medium text-gray-600">
+                    GET Requests
+                  </span>
+                  <Download className="w-4 h-4 text-gray-400" />
+                </div>
+                <div className="text-2xl font-semibold text-gray-900">
+                  {syncStatus.caldavMetrics.getRequests}
+                </div>
+                <div className="text-sm text-gray-500">Event downloads</div>
+              </div>
+
+              <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm font-medium text-gray-600">
+                    PUT Requests
+                  </span>
+                  <Upload className="w-4 h-4 text-gray-400" />
+                </div>
+                <div className="text-2xl font-semibold text-gray-900">
+                  {syncStatus.caldavMetrics.putRequests}
+                </div>
+                <div className="text-sm text-gray-500">Event uploads</div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+              <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm font-medium text-gray-600">
+                    Server Response Time
+                  </span>
+                  <Zap className="w-4 h-4 text-gray-400" />
+                </div>
+                <div className="text-2xl font-semibold text-gray-900">
+                  {syncStatus.caldavMetrics.serverResponseTime}ms
+                </div>
+                <div className="text-sm text-gray-500">Average response</div>
+              </div>
+
+              <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm font-medium text-gray-600">
+                    Data Transferred
+                  </span>
+                  <Activity className="w-4 h-4 text-gray-400" />
+                </div>
+                <div className="text-2xl font-semibold text-gray-900">
+                  {formatDataSize(syncStatus.caldavMetrics.dataTransferred)}
+                </div>
+                <div className="text-sm text-gray-500">Total bandwidth</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Sync History Timeline */}
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center space-x-2">
+              <Clock className="w-5 h-5 text-gray-600" />
+              <span>Recent Operations</span>
+            </h3>
+            <div className="space-y-3">
+              {syncHistory.map((item) => (
+                <div
+                  key={item.id}
+                  className="flex items-center space-x-4 p-3 bg-gray-50 rounded-lg border border-gray-200"
+                >
+                  <div
+                    className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                      item.status === 'success'
+                        ? 'bg-green-500'
+                        : item.status === 'error'
+                          ? 'bg-red-500'
+                          : 'bg-amber-500'
+                    }`}
+                  />
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium text-gray-900">
+                        {item.operation}
+                      </span>
+                      <span className="text-xs text-gray-500">
+                        {item.timestamp.toLocaleTimeString()}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between mt-1">
+                      <span className="text-sm text-gray-600">
+                        {item.details}
+                      </span>
+                      {item.duration && (
+                        <span className="text-xs text-gray-500">
+                          {item.duration}ms
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Connection Health */}
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center space-x-2">
+              <Wifi className="w-5 h-5 text-gray-600" />
+              <span>Connection Health</span>
+            </h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="flex items-center space-x-3 p-3 bg-green-50 rounded-lg border border-green-200">
+                <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse" />
+                <div>
+                  <div className="text-sm font-medium text-green-900">
+                    Apple CalDAV Server
+                  </div>
+                  <div className="text-xs text-green-600">
+                    Connected and responding
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center space-x-3 p-3 bg-primary-50 rounded-lg border border-primary-200">
+                <div className="w-3 h-3 bg-primary-500 rounded-full" />
+                <div>
+                  <div className="text-sm font-medium text-primary-900">
+                    SSL Certificate
+                  </div>
+                  <div className="text-xs text-primary-600">
+                    Valid and secure
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Wedding Professional Tips */}
+          <div className="bg-rose-50 border border-rose-200 rounded-lg p-4">
+            <div className="flex items-start space-x-3">
+              <Calendar className="w-5 h-5 text-rose-600 mt-0.5" />
+              <div>
+                <h4 className="text-sm font-medium text-rose-900 mb-2">
+                  Wedding Professional Tips
+                </h4>
+                <ul className="text-xs text-rose-800 space-y-1">
+                  <li>• Monitor sync speed during busy wedding season</li>
+                  <li>• Watch for conflicts when timeline changes occur</li>
+                  <li>• Use pause/resume during client meetings if needed</li>
+                  <li>• Check connection health before important syncs</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default AppleSyncStatus;

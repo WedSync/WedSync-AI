@@ -1,0 +1,435 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { format } from 'date-fns';
+import { CheckCircle, Clock, AlertCircle, Send } from 'lucide-react';
+
+interface MeetingPreparationTask {
+  id: string;
+  title: string;
+  description: string;
+  due_date: string;
+  assignee_type: 'planner' | 'client';
+  status: 'pending' | 'in_progress' | 'completed' | 'skipped' | 'overdue';
+  is_required: boolean;
+  step_order: number;
+  notes?: string;
+  completed_at?: string;
+  completed_by?: string;
+  template_content?: string;
+}
+
+interface PreparationStatus {
+  totalTasks: number;
+  completedTasks: number;
+  requiredTasks: number;
+  completedRequiredTasks: number;
+  overdueTasks: number;
+  upcomingTasks: number;
+  completionPercentage: number;
+  isReady: boolean;
+}
+
+interface MeetingPreparationPanelProps {
+  bookingId: string;
+  userType: 'planner' | 'client';
+  userId: string;
+}
+
+export default function MeetingPreparationPanel({
+  bookingId,
+  userType,
+  userId,
+}: MeetingPreparationPanelProps) {
+  const [tasks, setTasks] = useState<MeetingPreparationTask[]>([]);
+  const [status, setStatus] = useState<PreparationStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [updatingTask, setUpdatingTask] = useState<string | null>(null);
+  const [sendingReminder, setSendingReminder] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetchPreparationData();
+  }, [bookingId]);
+
+  const fetchPreparationData = async () => {
+    try {
+      setLoading(true);
+      const response = await fetch(`/api/booking/${bookingId}/preparation`);
+      const data = await response.json();
+
+      if (response.ok) {
+        setTasks(data.tasks || []);
+        setStatus(data.preparationStatus);
+      } else {
+        console.error('Failed to fetch preparation data:', data.error);
+      }
+    } catch (error) {
+      console.error('Error fetching preparation data:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const updateTaskStatus = async (
+    taskId: string,
+    newStatus: 'pending' | 'in_progress' | 'completed' | 'skipped',
+    notes?: string,
+  ) => {
+    try {
+      setUpdatingTask(taskId);
+
+      const response = await fetch(`/api/booking/${bookingId}/preparation`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          taskId,
+          status: newStatus,
+          userId,
+          notes,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        // Update local state
+        setTasks((prevTasks) =>
+          prevTasks.map((task) =>
+            task.id === taskId
+              ? {
+                  ...task,
+                  status: newStatus,
+                  notes,
+                  completed_at:
+                    newStatus === 'completed'
+                      ? new Date().toISOString()
+                      : undefined,
+                }
+              : task,
+          ),
+        );
+        setStatus(data.preparationStatus);
+      } else {
+        alert(`Failed to update task: ${data.error}`);
+      }
+    } catch (error) {
+      console.error('Error updating task:', error);
+      alert('Failed to update task. Please try again.');
+    } finally {
+      setUpdatingTask(null);
+    }
+  };
+
+  const sendTaskReminder = async (taskId: string) => {
+    try {
+      setSendingReminder(taskId);
+
+      const response = await fetch('/api/booking/tasks/remind', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ taskId }),
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        alert('Reminder sent successfully!');
+      } else {
+        alert(`Failed to send reminder: ${data.error}`);
+      }
+    } catch (error) {
+      console.error('Error sending reminder:', error);
+      alert('Failed to send reminder. Please try again.');
+    } finally {
+      setSendingReminder(null);
+    }
+  };
+
+  const getStatusIcon = (status: string) => {
+    switch (status) {
+      case 'completed':
+        return <CheckCircle className="h-5 w-5 text-success-500" />;
+      case 'in_progress':
+        return <Clock className="h-5 w-5 text-warning-500" />;
+      case 'overdue':
+        return <AlertCircle className="h-5 w-5 text-error-500" />;
+      default:
+        return <Clock className="h-5 w-5 text-gray-400" />;
+    }
+  };
+
+  const getStatusColor = (status: string, isRequired: boolean) => {
+    switch (status) {
+      case 'completed':
+        return 'bg-success-50 text-success-700 border-success-200';
+      case 'in_progress':
+        return 'bg-warning-50 text-warning-700 border-warning-200';
+      case 'overdue':
+        return 'bg-error-50 text-error-700 border-error-200';
+      default:
+        return isRequired
+          ? 'bg-primary-50 text-primary-700 border-primary-200'
+          : 'bg-gray-50 text-gray-700 border-gray-200';
+    }
+  };
+
+  const getDueDateText = (dueDate: string) => {
+    const due = new Date(dueDate);
+    const now = new Date();
+    const diffHours = Math.round(
+      (due.getTime() - now.getTime()) / (1000 * 60 * 60),
+    );
+
+    if (diffHours < 0) {
+      return `Overdue by ${Math.abs(diffHours)} hour${Math.abs(diffHours) !== 1 ? 's' : ''}`;
+    } else if (diffHours < 24) {
+      return `Due in ${diffHours} hour${diffHours !== 1 ? 's' : ''}`;
+    } else {
+      const diffDays = Math.round(diffHours / 24);
+      return `Due in ${diffDays} day${diffDays !== 1 ? 's' : ''}`;
+    }
+  };
+
+  // Filter tasks based on user type
+  const userTasks = tasks.filter(
+    (task) => userType === 'planner' || task.assignee_type === userType,
+  );
+
+  if (loading) {
+    return (
+      <div className="bg-white border border-gray-200 rounded-xl p-6">
+        <div className="animate-pulse">
+          <div className="h-6 bg-gray-200 rounded mb-4 w-1/3"></div>
+          <div className="space-y-3">
+            {[1, 2, 3].map((i) => (
+              <div key={i} className="h-16 bg-gray-100 rounded-lg"></div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (userTasks.length === 0) {
+    return (
+      <div className="bg-white border border-gray-200 rounded-xl p-6">
+        <h3 className="text-lg font-semibold text-gray-900 mb-4">
+          Meeting Preparation
+        </h3>
+        <div className="text-center py-8">
+          <CheckCircle className="h-12 w-12 text-success-500 mx-auto mb-4" />
+          <p className="text-gray-600">No preparation tasks required</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-white border border-gray-200 rounded-xl p-6 shadow-xs">
+      <div className="flex items-center justify-between mb-6">
+        <h3 className="text-lg font-semibold text-gray-900">
+          Meeting Preparation
+        </h3>
+
+        {status && (
+          <div className="flex items-center space-x-4">
+            <div className="text-sm text-gray-600">
+              Progress: {status.completionPercentage}%
+            </div>
+            <div className="w-24 bg-gray-200 rounded-full h-2">
+              <div
+                className="bg-primary-600 h-2 rounded-full transition-all duration-300"
+                style={{ width: `${status.completionPercentage}%` }}
+              ></div>
+            </div>
+            {status.isReady && (
+              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-success-50 text-success-700 border border-success-200">
+                Ready
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+
+      {status && status.overdueTasks > 0 && (
+        <div className="mb-4 p-4 bg-error-50 border border-error-200 rounded-lg">
+          <div className="flex items-center">
+            <AlertCircle className="h-5 w-5 text-error-500 mr-2" />
+            <p className="text-sm font-medium text-error-700">
+              {status.overdueTasks} overdue task
+              {status.overdueTasks !== 1 ? 's' : ''} requiring attention
+            </p>
+          </div>
+        </div>
+      )}
+
+      <div className="space-y-4">
+        {userTasks.map((task) => (
+          <div
+            key={task.id}
+            className={`border rounded-lg p-4 transition-all duration-200 ${getStatusColor(task.status, task.is_required)}`}
+          >
+            <div className="flex items-start justify-between">
+              <div className="flex items-start space-x-3 flex-1">
+                {getStatusIcon(task.status)}
+
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center space-x-2 mb-1">
+                    <h4 className="font-medium text-gray-900">{task.title}</h4>
+                    {task.is_required && (
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-primary-100 text-primary-700">
+                        Required
+                      </span>
+                    )}
+                  </div>
+
+                  <p className="text-sm text-gray-600 mb-2">
+                    {task.description}
+                  </p>
+
+                  {task.template_content && task.status !== 'completed' && (
+                    <div className="mt-2 p-3 bg-gray-50 rounded-md">
+                      <p className="text-xs font-medium text-gray-700 mb-1">
+                        Guidelines:
+                      </p>
+                      <p className="text-xs text-gray-600 whitespace-pre-wrap">
+                        {task.template_content}
+                      </p>
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-between mt-3">
+                    <div className="text-xs text-gray-500">
+                      Due:{' '}
+                      {format(new Date(task.due_date), 'MMM d, yyyy h:mm a')}
+                      <span
+                        className={`ml-2 ${task.status === 'overdue' ? 'text-error-600 font-medium' : ''}`}
+                      >
+                        ({getDueDateText(task.due_date)})
+                      </span>
+                    </div>
+
+                    <div className="flex items-center space-x-2">
+                      {/* Show reminder button for planners on client tasks */}
+                      {userType === 'planner' &&
+                        task.assignee_type === 'client' &&
+                        task.status !== 'completed' && (
+                          <button
+                            onClick={() => sendTaskReminder(task.id)}
+                            disabled={sendingReminder === task.id}
+                            className="inline-flex items-center px-2 py-1 text-xs font-medium text-primary-700 bg-primary-50 rounded-md hover:bg-primary-100 disabled:opacity-50"
+                          >
+                            <Send className="h-3 w-3 mr-1" />
+                            {sendingReminder === task.id
+                              ? 'Sending...'
+                              : 'Remind'}
+                          </button>
+                        )}
+
+                      {/* Task action buttons */}
+                      {(task.assignee_type === userType ||
+                        userType === 'planner') &&
+                        task.status !== 'completed' && (
+                          <div className="flex space-x-1">
+                            {task.status === 'pending' && (
+                              <button
+                                onClick={() =>
+                                  updateTaskStatus(task.id, 'in_progress')
+                                }
+                                disabled={updatingTask === task.id}
+                                className="px-2 py-1 text-xs font-medium text-warning-700 bg-warning-50 rounded-md hover:bg-warning-100 disabled:opacity-50"
+                              >
+                                Start
+                              </button>
+                            )}
+
+                            <button
+                              onClick={() =>
+                                updateTaskStatus(task.id, 'completed')
+                              }
+                              disabled={updatingTask === task.id}
+                              className="px-2 py-1 text-xs font-medium text-success-700 bg-success-50 rounded-md hover:bg-success-100 disabled:opacity-50"
+                            >
+                              {updatingTask === task.id
+                                ? 'Updating...'
+                                : 'Complete'}
+                            </button>
+
+                            {!task.is_required && (
+                              <button
+                                onClick={() =>
+                                  updateTaskStatus(task.id, 'skipped')
+                                }
+                                disabled={updatingTask === task.id}
+                                className="px-2 py-1 text-xs font-medium text-gray-700 bg-gray-50 rounded-md hover:bg-gray-100 disabled:opacity-50"
+                              >
+                                Skip
+                              </button>
+                            )}
+                          </div>
+                        )}
+                    </div>
+                  </div>
+
+                  {task.notes && (
+                    <div className="mt-2 p-2 bg-gray-50 rounded-md">
+                      <p className="text-xs font-medium text-gray-700 mb-1">
+                        Notes:
+                      </p>
+                      <p className="text-xs text-gray-600">{task.notes}</p>
+                    </div>
+                  )}
+
+                  {task.completed_at && (
+                    <div className="mt-2 text-xs text-success-600">
+                      Completed on{' '}
+                      {format(
+                        new Date(task.completed_at),
+                        'MMM d, yyyy h:mm a',
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {status && (
+        <div className="mt-6 pt-4 border-t border-gray-200">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
+            <div>
+              <div className="text-lg font-semibold text-gray-900">
+                {status.completedTasks}
+              </div>
+              <div className="text-sm text-gray-600">Completed</div>
+            </div>
+            <div>
+              <div className="text-lg font-semibold text-gray-900">
+                {status.totalTasks - status.completedTasks}
+              </div>
+              <div className="text-sm text-gray-600">Remaining</div>
+            </div>
+            <div>
+              <div className="text-lg font-semibold text-error-600">
+                {status.overdueTasks}
+              </div>
+              <div className="text-sm text-gray-600">Overdue</div>
+            </div>
+            <div>
+              <div className="text-lg font-semibold text-warning-600">
+                {status.upcomingTasks}
+              </div>
+              <div className="text-sm text-gray-600">Due Soon</div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

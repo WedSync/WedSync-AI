@@ -1,0 +1,441 @@
+'use client'
+
+import { useState, useEffect } from 'react'
+import { createClient } from '@/utils/supabase/client'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Badge } from '@/components/ui/badge'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { 
+  Select, 
+  SelectContent, 
+  SelectItem, 
+  SelectTrigger, 
+  SelectValue 
+} from '@/components/ui/select'
+import { 
+  Settings, 
+  Shield, 
+  CheckCircle, 
+  AlertTriangle, 
+  Plus,
+  ExternalLink 
+} from 'lucide-react'
+
+interface SSOProviderConfig {
+  id: string
+  name: string
+  type: 'saml' | 'oidc' | 'oauth'
+  status: 'active' | 'pending' | 'disabled'
+  metadata: {
+    entityId?: string
+    ssoUrl?: string
+    certificateFingerprint?: string
+    clientId?: string
+    clientSecret?: string
+    issuer?: string
+    jwksUri?: string
+  }
+  domains: string[]
+  userCount: number
+  lastSync?: Date
+  configuration: {
+    autoProvisioning: boolean
+    attributeMapping: {
+      email: string
+      firstName: string
+      lastName: string
+      groups: string
+    }
+    defaultRole: string
+    allowedGroups: string[]
+  }
+}
+
+interface EnterpriseProviderSelectorProps {
+  organizationId: string
+  onProviderSelect?: (provider: SSOProviderConfig) => void
+  onProviderConfigure?: (provider: SSOProviderConfig) => void
+  readonly?: boolean
+}
+
+const providerTemplates = [
+  {
+    type: 'saml',
+    name: 'SAML 2.0',
+    description: 'Generic SAML 2.0 provider for enterprise identity systems',
+    icon: '🔐',
+    popular: false
+  },
+  {
+    type: 'oidc',
+    name: 'OpenID Connect',
+    description: 'Modern OIDC provider for OAuth 2.0 based authentication',
+    icon: '🔑',
+    popular: true
+  },
+  {
+    type: 'oauth',
+    name: 'Microsoft Azure AD',
+    description: 'Microsoft Azure Active Directory / Entra ID',
+    icon: '🏢',
+    popular: true
+  },
+  {
+    type: 'oauth',
+    name: 'Google Workspace',
+    description: 'Google Workspace (formerly G Suite) authentication',
+    icon: '🔍',
+    popular: true
+  },
+  {
+    type: 'saml',
+    name: 'Okta',
+    description: 'Okta identity and access management platform',
+    icon: '⭕',
+    popular: true
+  },
+  {
+    type: 'saml',
+    name: 'Ping Identity',
+    description: 'PingFederate and PingOne identity solutions',
+    icon: '🎯',
+    popular: false
+  },
+  {
+    type: 'oidc',
+    name: 'Auth0',
+    description: 'Auth0 identity platform with enterprise features',
+    icon: '🔒',
+    popular: false
+  }
+]
+
+export default function EnterpriseProviderSelector({
+  organizationId,
+  onProviderSelect,
+  onProviderConfigure,
+  readonly = false
+}: EnterpriseProviderSelectorProps) {
+  const [providers, setProviders] = useState<SSOProviderConfig[]>([])
+  const [selectedProvider, setSelectedProvider] = useState<SSOProviderConfig | null>(null)
+  const [isLoading, setIsLoading] = useState(true)
+  const [showAddProvider, setShowAddProvider] = useState(false)
+  const [newProviderType, setNewProviderType] = useState<'saml' | 'oidc' | 'oauth'>('oidc')
+  const supabase = createClient()
+
+  useEffect(() => {
+    loadProviders()
+  }, [organizationId])
+
+  const loadProviders = async () => {
+    setIsLoading(true)
+    try {
+      const { data, error } = await supabase
+        .from('sso_providers')
+        .select(`
+          *,
+          sso_provider_stats (
+            user_count,
+            last_sync
+          )
+        `)
+        .eq('organization_id', organizationId)
+        .order('created_at', { ascending: false })
+
+      if (error) throw error
+
+      const formattedProviders: SSOProviderConfig[] = data.map(provider => ({
+        id: provider.id,
+        name: provider.name,
+        type: provider.type,
+        status: provider.enabled ? 'active' : 'disabled',
+        metadata: provider.metadata || {},
+        domains: provider.allowed_domains || [],
+        userCount: provider.sso_provider_stats?.[0]?.user_count || 0,
+        lastSync: provider.sso_provider_stats?.[0]?.last_sync 
+          ? new Date(provider.sso_provider_stats[0].last_sync) 
+          : undefined,
+        configuration: {
+          autoProvisioning: provider.auto_provisioning || false,
+          attributeMapping: provider.attribute_mapping || {
+            email: 'email',
+            firstName: 'given_name',
+            lastName: 'family_name',
+            groups: 'groups'
+          },
+          defaultRole: provider.default_role || 'member',
+          allowedGroups: provider.allowed_groups || []
+        }
+      }))
+
+      setProviders(formattedProviders)
+    } catch (error) {
+      console.error('Error loading SSO providers:', error)
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const getStatusBadge = (status: string) => {
+    const statusConfig = {
+      active: { variant: 'success' as const, text: 'Active', icon: CheckCircle },
+      pending: { variant: 'warning' as const, text: 'Pending', icon: AlertTriangle },
+      disabled: { variant: 'secondary' as const, text: 'Disabled', icon: AlertTriangle }
+    }
+    
+    const config = statusConfig[status as keyof typeof statusConfig]
+    const Icon = config.icon
+    
+    return (
+      <Badge variant={config.variant} className="flex items-center gap-1">
+        <Icon className="h-3 w-3" />
+        {config.text}
+      </Badge>
+    )
+  }
+
+  const handleProviderClick = (provider: SSOProviderConfig) => {
+    setSelectedProvider(provider)
+    onProviderSelect?.(provider)
+  }
+
+  const handleConfigureProvider = (provider: SSOProviderConfig) => {
+    onProviderConfigure?.(provider)
+  }
+
+  const createNewProvider = async () => {
+    try {
+      const template = providerTemplates.find(t => t.type === newProviderType)
+      if (!template) return
+
+      const { data, error } = await supabase
+        .from('sso_providers')
+        .insert({
+          organization_id: organizationId,
+          name: template.name,
+          type: newProviderType,
+          enabled: false,
+          metadata: {},
+          allowed_domains: [],
+          auto_provisioning: false,
+          attribute_mapping: {
+            email: 'email',
+            firstName: 'given_name',
+            lastName: 'family_name',
+            groups: 'groups'
+          },
+          default_role: 'member',
+          allowed_groups: []
+        })
+        .select()
+        .single()
+
+      if (error) throw error
+
+      // Reload providers
+      await loadProviders()
+      setShowAddProvider(false)
+      
+      // Select the new provider for configuration
+      const newProvider: SSOProviderConfig = {
+        id: data.id,
+        name: data.name,
+        type: data.type,
+        status: 'pending',
+        metadata: {},
+        domains: [],
+        userCount: 0,
+        configuration: {
+          autoProvisioning: false,
+          attributeMapping: {
+            email: 'email',
+            firstName: 'given_name',
+            lastName: 'family_name',
+            groups: 'groups'
+          },
+          defaultRole: 'member',
+          allowedGroups: []
+        }
+      }
+      
+      setSelectedProvider(newProvider)
+      onProviderConfigure?.(newProvider)
+    } catch (error) {
+      console.error('Error creating SSO provider:', error)
+    }
+  }
+
+  if (isLoading) {
+    return (
+      <Card>
+        <CardContent className="p-6">
+          <div className="flex items-center justify-center">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+          </div>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-bold flex items-center gap-2">
+            <Shield className="h-6 w-6" />
+            SSO Providers
+          </h2>
+          <p className="text-muted-foreground">
+            Manage enterprise authentication providers for your wedding business
+          </p>
+        </div>
+        {!readonly && (
+          <Button onClick={() => setShowAddProvider(true)}>
+            <Plus className="h-4 w-4 mr-2" />
+            Add Provider
+          </Button>
+        )}
+      </div>
+
+      {/* Existing Providers */}
+      {providers.length > 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {providers.map((provider) => (
+            <Card 
+              key={provider.id}
+              className={`cursor-pointer transition-all hover:shadow-md ${
+                selectedProvider?.id === provider.id ? 'ring-2 ring-primary' : ''
+              }`}
+              onClick={() => handleProviderClick(provider)}
+            >
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-lg">{provider.name}</CardTitle>
+                  {getStatusBadge(provider.status)}
+                </div>
+                <Badge variant="outline" className="w-fit">
+                  {provider.type.toUpperCase()}
+                </Badge>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="text-sm text-muted-foreground">
+                  <p><strong>{provider.userCount}</strong> users authenticated</p>
+                  {provider.domains.length > 0 && (
+                    <p><strong>Domains:</strong> {provider.domains.join(', ')}</p>
+                  )}
+                  {provider.lastSync && (
+                    <p><strong>Last sync:</strong> {provider.lastSync.toLocaleDateString()}</p>
+                  )}
+                </div>
+                
+                {!readonly && (
+                  <div className="flex gap-2">
+                    <Button 
+                      size="sm" 
+                      variant="outline"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        handleConfigureProvider(provider)
+                      }}
+                    >
+                      <Settings className="h-3 w-3 mr-1" />
+                      Configure
+                    </Button>
+                    <Button 
+                      size="sm" 
+                      variant="ghost"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        // Open test login in new tab
+                        window.open(`/auth/sso/test/${provider.id}`, '_blank')
+                      }}
+                    >
+                      <ExternalLink className="h-3 w-3 mr-1" />
+                      Test
+                    </Button>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {/* Empty State */}
+      {providers.length === 0 && (
+        <Card>
+          <CardContent className="p-12 text-center">
+            <Shield className="h-16 w-16 mx-auto text-muted-foreground mb-4" />
+            <h3 className="text-xl font-medium mb-2">No SSO Providers Configured</h3>
+            <p className="text-muted-foreground mb-6">
+              Set up enterprise authentication for your wedding vendor team
+            </p>
+            {!readonly && (
+              <Button onClick={() => setShowAddProvider(true)}>
+                <Plus className="h-4 w-4 mr-2" />
+                Add Your First Provider
+              </Button>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Add Provider Modal/Section */}
+      {showAddProvider && !readonly && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Add New SSO Provider</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div>
+              <Label>Provider Type</Label>
+              <Select value={newProviderType} onValueChange={(value: 'saml' | 'oidc' | 'oauth') => setNewProviderType(value)}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {providerTemplates.map((template) => (
+                    <SelectItem key={`${template.type}-${template.name}`} value={template.type}>
+                      <div className="flex items-center gap-2">
+                        <span>{template.icon}</span>
+                        <div>
+                          <p>{template.name}</p>
+                          {template.popular && (
+                            <Badge variant="secondary" className="text-xs">Popular</Badge>
+                          )}
+                        </div>
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <Alert>
+              <AlertDescription>
+                🎊 <strong>Wedding Business Tip:</strong> Most wedding venues and suppliers use 
+                Microsoft or Google for email. SAML is typically used by larger venue chains 
+                and enterprise photography studios.
+              </AlertDescription>
+            </Alert>
+
+            <div className="flex gap-2">
+              <Button onClick={createNewProvider}>
+                Create Provider
+              </Button>
+              <Button variant="outline" onClick={() => setShowAddProvider(false)}>
+                Cancel
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  )
+}
+
+export type { SSOProviderConfig, EnterpriseProviderSelectorProps }

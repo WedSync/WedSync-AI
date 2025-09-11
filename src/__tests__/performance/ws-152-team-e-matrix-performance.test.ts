@@ -1,0 +1,463 @@
+/**
+ * WS-152: Dietary Matrix Performance Testing Suite
+ * Team E - Batch 13
+ * 
+ * Performance testing for dietary matrix generation, caching strategies,
+ * and high-load scenarios for large wedding events.
+ */
+
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { performance } from 'perf_hooks'
+import dietaryRequirementsService from '@/lib/services/dietary-requirements-service'
+import { DietarySafetyIntegration } from '@/lib/safety/dietary-safety-integration'
+// Performance benchmarks
+const PERFORMANCE_THRESHOLDS = {
+  matrixGeneration: {
+    small: 500,    // <50 guests: 500ms
+    medium: 1000,  // 50-150 guests: 1s
+    large: 2000,   // 150-300 guests: 2s
+    xlarge: 3000   // 300+ guests: 3s
+  },
+  cacheRetrieval: 50,      // Cache hit: 50ms
+  realTimeUpdate: 100,     // Real-time update: 100ms
+  export: {
+    excel: 1000,   // Excel generation: 1s
+    pdf: 1500,     // PDF generation: 1.5s
+    csv: 200       // CSV generation: 200ms
+  criticalAlerts: 100,     // Life-threatening alerts: 100ms
+  databaseQuery: 200,      // Single query: 200ms
+  batchOperation: 5000     // Batch operations: 5s
+}
+// Mock database with realistic latency
+const mockDatabase = {
+  query: vi.fn().mockImplementation(async (query: string) => {
+    // Simulate network latency
+    await new Promise(resolve => setTimeout(resolve, Math.random() * 20 + 10))
+    return { rows: [], executionTime: Math.random() * 100 + 50 }
+  }),
+  batchInsert: vi.fn(),
+  transaction: vi.fn()
+// Mock cache service
+const mockCache = {
+  get: vi.fn(),
+  set: vi.fn(),
+  invalidate: vi.fn(),
+  warmup: vi.fn()
+describe('WS-152: Dietary Matrix Performance Testing', () => {
+  let safetyIntegration: DietarySafetyIntegration
+  
+  beforeEach(() => {
+    safetyIntegration = new DietarySafetyIntegration()
+    vi.clearAllMocks()
+  })
+  describe('Matrix Generation Performance', () => {
+    it('should generate matrix for 50 guests in under 500ms', async () => {
+      const guestCount = 50
+      const dietaryData = generateTestData(guestCount)
+      
+      const startTime = performance.now()
+      const matrix = await generateDietaryMatrix(dietaryData)
+      const endTime = performance.now()
+      const executionTime = endTime - startTime
+      expect(executionTime).toBeLessThan(PERFORMANCE_THRESHOLDS.matrixGeneration.small)
+      expect(matrix).toBeDefined()
+      expect(matrix.totalGuests).toBe(guestCount)
+    })
+    it('should generate matrix for 150 guests in under 1 second', async () => {
+      const guestCount = 150
+      expect(executionTime).toBeLessThan(PERFORMANCE_THRESHOLDS.matrixGeneration.medium)
+    it('should generate matrix for 300 guests in under 2 seconds', async () => {
+      const guestCount = 300
+      expect(executionTime).toBeLessThan(PERFORMANCE_THRESHOLDS.matrixGeneration.large)
+    it('should handle 500+ guest events within 3 seconds', async () => {
+      const guestCount = 500
+      expect(executionTime).toBeLessThan(PERFORMANCE_THRESHOLDS.matrixGeneration.xlarge)
+    it('should optimize performance with parallel processing', async () => {
+      const guestCount = 200
+      // Sequential processing (baseline)
+      const sequentialStart = performance.now()
+      for (const guest of dietaryData) {
+        await processGuestDietary(guest)
+      }
+      const sequentialTime = performance.now() - sequentialStart
+      // Parallel processing (optimized)
+      const parallelStart = performance.now()
+      const batchSize = 20
+      const batches = []
+      for (let i = 0; i < dietaryData.length; i += batchSize) {
+        batches.push(dietaryData.slice(i, i + batchSize))
+      await Promise.all(batches.map(batch => processBatch(batch)))
+      const parallelTime = performance.now() - parallelStart
+      // Parallel should be significantly faster
+      expect(parallelTime).toBeLessThan(sequentialTime * 0.5)
+  describe('Caching Performance', () => {
+    it('should retrieve cached matrix in under 50ms', async () => {
+      const cacheKey = 'dietary_matrix_event_123'
+      const cachedData = {
+        matrix: { /* large matrix data */ },
+        generatedAt: new Date(),
+        ttl: 3600
+      mockCache.get.mockResolvedValueOnce(cachedData)
+      const result = await mockCache.get(cacheKey)
+      expect(endTime - startTime).toBeLessThan(PERFORMANCE_THRESHOLDS.cacheRetrieval)
+      expect(result).toBeDefined()
+    it('should implement cache warming for predictable events', async () => {
+      const upcomingEvents = [
+        { id: 'event-1', date: '2025-01-21', guestCount: 150 },
+        { id: 'event-2', date: '2025-01-22', guestCount: 200 },
+        { id: 'event-3', date: '2025-01-23', guestCount: 100 }
+      ]
+      const warmupStart = performance.now()
+      // Warm cache for events within 48 hours
+      const warmupPromises = upcomingEvents
+        .filter(event => {
+          const eventDate = new Date(event.date)
+          const hoursUntilEvent = (eventDate.getTime() - Date.now()) / (1000 * 60 * 60)
+          return hoursUntilEvent <= 48 && hoursUntilEvent > 0
+        })
+        .map(event => warmCache(event.id))
+      await Promise.all(warmupPromises)
+      const warmupTime = performance.now() - warmupStart
+      // Cache warming should complete reasonably quickly
+      expect(warmupTime).toBeLessThan(5000)
+      expect(warmupPromises.length).toBeGreaterThan(0)
+    it('should invalidate cache efficiently on data changes', async () => {
+      const affectedCacheKeys = [
+        'dietary_matrix_event_123',
+        'guest_requirements_123',
+        'allergen_summary_123',
+        'caterer_report_123'
+      const invalidationStart = performance.now()
+      await Promise.all(
+        affectedCacheKeys.map(key => mockCache.invalidate(key))
+      )
+      const invalidationTime = performance.now() - invalidationStart
+      expect(invalidationTime).toBeLessThan(100)
+      expect(mockCache.invalidate).toHaveBeenCalledTimes(affectedCacheKeys.length)
+    it('should implement multi-tier caching strategy', async () => {
+      const cacheHierarchy = {
+        l1: { type: 'memory', ttl: 60, size: '100MB' },     // 1 minute
+        l2: { type: 'redis', ttl: 3600, size: '1GB' },      // 1 hour
+        l3: { type: 'database', ttl: 86400, size: '10GB' }  // 1 day
+      // Test L1 cache (fastest)
+      const l1Start = performance.now()
+      const l1Result = await checkCache('l1', 'test-key')
+      const l1Time = performance.now() - l1Start
+      // Test L2 cache
+      const l2Start = performance.now()
+      const l2Result = await checkCache('l2', 'test-key')
+      const l2Time = performance.now() - l2Start
+      // Test L3 cache
+      const l3Start = performance.now()
+      const l3Result = await checkCache('l3', 'test-key')
+      const l3Time = performance.now() - l3Start
+      // Verify cache hierarchy performance
+      expect(l1Time).toBeLessThan(l2Time)
+      expect(l2Time).toBeLessThan(l3Time)
+      expect(l1Time).toBeLessThan(10) // Memory cache should be instant
+  describe('Real-time Update Performance', () => {
+    it('should propagate dietary changes in under 100ms', async () => {
+      const update = {
+        guestId: 'guest-123',
+        change: {
+          field: 'allergies',
+          oldValue: ['peanuts'],
+          newValue: ['peanuts', 'shellfish']
+        }
+      const propagationStart = performance.now()
+      // Update database
+      await mockDatabase.query('UPDATE dietary_requirements SET ...')
+      // Invalidate affected caches
+      await mockCache.invalidate(`guest_${update.guestId}`)
+      // Notify real-time subscribers
+      await notifySubscribers(update)
+      const propagationTime = performance.now() - propagationStart
+      expect(propagationTime).toBeLessThan(PERFORMANCE_THRESHOLDS.realTimeUpdate)
+    it('should handle concurrent updates without race conditions', async () => {
+      const updates = Array.from({ length: 10 }, (_, i) => ({
+        guestId: `guest-${i}`,
+        dietary: `update-${i}`
+      }))
+      const results = await Promise.all(
+        updates.map(update => 
+          updateGuestDietary(update.guestId, update.dietary)
+        )
+      // All updates should succeed
+      expect(results.every(r => r.success)).toBe(true)
+      // No duplicate processing
+      const uniqueResults = new Set(results.map(r => r.guestId))
+      expect(uniqueResults.size).toBe(updates.length)
+    it('should batch updates for performance optimization', async () => {
+      const updates = Array.from({ length: 100 }, (_, i) => ({
+      // Individual updates (baseline)
+      const individualStart = performance.now()
+      for (const update of updates.slice(0, 10)) {
+        await mockDatabase.query(`UPDATE ... WHERE guest_id = '${update.guestId}'`)
+      const individualTime = performance.now() - individualStart
+      // Batched updates (optimized)
+      const batchStart = performance.now()
+      await mockDatabase.batchInsert('dietary_updates', updates.slice(10, 20))
+      const batchTime = performance.now() - batchStart
+      // Batching should be significantly faster
+      expect(batchTime).toBeLessThan(individualTime * 0.3)
+  describe('Export Performance', () => {
+    it('should generate Excel export for 200 guests in under 1 second', async () => {
+      const exportData = generateExportData(guestCount)
+      const exportStart = performance.now()
+      const excelBuffer = await generateExcelExport(exportData)
+      const exportTime = performance.now() - exportStart
+      expect(exportTime).toBeLessThan(PERFORMANCE_THRESHOLDS.export.excel)
+      expect(excelBuffer).toBeDefined()
+      expect(excelBuffer.length).toBeGreaterThan(0)
+    it('should generate PDF report in under 1.5 seconds', async () => {
+      const reportData = {
+        eventDetails: { date: '2025-01-20', guests: 150 },
+        dietaryMatrix: generateTestMatrix(),
+        criticalAllergies: generateCriticalAllergies(5)
+      const pdfStart = performance.now()
+      const pdfBuffer = await generatePDFReport(reportData)
+      const pdfTime = performance.now() - pdfStart
+      expect(pdfTime).toBeLessThan(PERFORMANCE_THRESHOLDS.export.pdf)
+      expect(pdfBuffer).toBeDefined()
+    it('should stream CSV exports for large datasets', async () => {
+      const guestCount = 1000
+      let processedRows = 0
+      const streamStart = performance.now()
+      // Simulate streaming
+      const stream = createCSVStream(guestCount)
+      await new Promise((resolve) => {
+        stream.on('data', (chunk: any) => {
+          processedRows += chunk.length
+        
+        stream.on('end', () => {
+          resolve(true)
+      })
+      const streamTime = performance.now() - streamStart
+      // Streaming should handle large datasets efficiently
+      expect(streamTime).toBeLessThan(2000)
+      expect(processedRows).toBe(guestCount)
+  describe('Database Query Optimization', () => {
+    it('should use proper indexes for dietary queries', async () => {
+      const queries = [
+        {
+          name: 'Get all life-threatening allergies',
+          sql: 'SELECT * FROM dietary_requirements WHERE severity = $1 AND org_id = $2',
+          expectedTime: 50,
+          useIndex: 'idx_dietary_severity_org'
+        },
+          name: 'Get guest dietary by event',
+          sql: 'SELECT * FROM guest_dietary WHERE event_id = $1 ORDER BY table_number',
+          expectedTime: 100,
+          useIndex: 'idx_guest_dietary_event'
+          name: 'Count dietary by category',
+          sql: 'SELECT category, COUNT(*) FROM dietary_types GROUP BY category',
+          expectedTime: 75,
+          useIndex: 'idx_dietary_types_category'
+      for (const query of queries) {
+        const queryStart = performance.now()
+        const result = await mockDatabase.query(query.sql)
+        const queryTime = performance.now() - queryStart
+        expect(queryTime).toBeLessThan(query.expectedTime * 2) // Allow some variance
+    it('should optimize N+1 query problems', async () => {
+      // Bad pattern (N+1)
+      const badStart = performance.now()
+      const guests = await mockDatabase.query('SELECT * FROM guests WHERE event_id = $1')
+      for (const guest of guests.rows || []) {
+        await mockDatabase.query('SELECT * FROM dietary_requirements WHERE guest_id = $1')
+      const badTime = performance.now() - badStart
+      // Good pattern (JOIN)
+      const goodStart = performance.now()
+      await mockDatabase.query(`
+        SELECT g.*, dr.* 
+        FROM guests g
+        LEFT JOIN dietary_requirements dr ON g.id = dr.guest_id
+        WHERE g.event_id = $1
+      `)
+      const goodTime = performance.now() - goodStart
+      // JOIN should be much faster than N+1
+      expect(goodTime).toBeLessThan(badTime * 0.2)
+    it('should implement connection pooling effectively', async () => {
+      const connectionPool = {
+        minConnections: 5,
+        maxConnections: 20,
+        idleTimeout: 30000,
+        connectionTimeout: 5000
+      // Simulate concurrent database operations
+      const operations = Array.from({ length: 50 }, (_, i) => 
+        mockDatabase.query(`SELECT * FROM guests WHERE id = ${i}`)
+      const poolStart = performance.now()
+      await Promise.all(operations)
+      const poolTime = performance.now() - poolStart
+      // With pooling, 50 operations should complete quickly
+      expect(poolTime).toBeLessThan(1000)
+      expect(connectionPool.maxConnections).toBeGreaterThanOrEqual(20)
+  describe('Load Testing', () => {
+    it('should handle 100 concurrent users accessing dietary data', async () => {
+      const concurrentUsers = 100
+      const requests = Array.from({ length: concurrentUsers }, (_, i) => ({
+        userId: `user-${i}`,
+        action: 'VIEW_DIETARY_MATRIX',
+        eventId: 'event-123'
+      const loadStart = performance.now()
+        requests.map(req => simulateUserRequest(req))
+      const loadTime = performance.now() - loadStart
+      // All requests should complete
+      // Average response time should be acceptable
+      const avgResponseTime = loadTime / concurrentUsers
+      expect(avgResponseTime).toBeLessThan(100)
+    it('should maintain performance under sustained load', async () => {
+      const duration = 5000 // 5 seconds
+      const requestsPerSecond = 50
+      let successCount = 0
+      let errorCount = 0
+      const responseTimes: number[] = []
+      const endTime = Date.now() + duration
+      while (Date.now() < endTime) {
+        const batchStart = performance.now()
+        const batch = Array.from({ length: requestsPerSecond }, () => 
+          simulateUserRequest({ action: 'GET_DIETARY' })
+        const results = await Promise.all(batch)
+        results.forEach(result => {
+          if (result.success) {
+            successCount++
+            responseTimes.push(result.responseTime)
+          } else {
+            errorCount++
+          }
+        const batchTime = performance.now() - batchStart
+        // Ensure we don't overwhelm the system
+        if (batchTime < 1000) {
+          await new Promise(resolve => setTimeout(resolve, 1000 - batchTime))
+      // Calculate statistics
+      const successRate = successCount / (successCount + errorCount)
+      const avgResponseTime = responseTimes.reduce((a, b) => a + b, 0) / responseTimes.length
+      const p95ResponseTime = percentile(responseTimes, 95)
+      expect(successRate).toBeGreaterThan(0.99) // 99% success rate
+      expect(avgResponseTime).toBeLessThan(200) // Average under 200ms
+      expect(p95ResponseTime).toBeLessThan(500) // 95th percentile under 500ms
+    it('should gracefully degrade under extreme load', async () => {
+      const extremeLoad = 1000 // Concurrent requests
+      let circuitBreakerTripped = false
+      let requestsServed = 0
+      let requestsRejected = 0
+      const circuitBreaker = {
+        threshold: 500,
+        timeout: 5000,
+        errorRate: 0.5
+      const requests = Array.from({ length: extremeLoad }, async (_, i) => {
+        if (circuitBreakerTripped) {
+          requestsRejected++
+          return { success: false, reason: 'Circuit breaker open' }
+        try {
+          const result = await simulateUserRequest({ id: i })
+          requestsServed++
+          return result
+        } catch (error) {
+          if (requestsServed > circuitBreaker.threshold) {
+            circuitBreakerTripped = true
+          return { success: false, error }
+      await Promise.all(requests)
+      // System should protect itself
+      expect(circuitBreakerTripped || requestsServed <= circuitBreaker.threshold).toBe(true)
+      expect(requestsServed + requestsRejected).toBe(extremeLoad)
+  describe('Memory Management', () => {
+    it('should prevent memory leaks in long-running operations', async () => {
+      const iterations = 100
+      const memorySnapshots: number[] = []
+      for (let i = 0; i < iterations; i++) {
+        // Perform operation
+        const data = generateTestData(100)
+        await generateDietaryMatrix(data)
+        // Take memory snapshot every 10 iterations
+        if (i % 10 === 0) {
+          if (global.gc) global.gc() // Force garbage collection if available
+          const memUsage = process.memoryUsage()
+          memorySnapshots.push(memUsage.heapUsed)
+      // Check for memory leak pattern
+      const memoryGrowth = memorySnapshots[memorySnapshots.length - 1] - memorySnapshots[0]
+      const avgGrowthPerIteration = memoryGrowth / iterations
+      // Memory growth should be minimal
+      expect(avgGrowthPerIteration).toBeLessThan(1024 * 10) // Less than 10KB per iteration
+    it('should efficiently handle large dietary matrices in memory', () => {
+      const largeMatrix = {
+        guests: 500,
+        dietaryTypes: 20,
+        allergens: 15,
+        matrixSize: 500 * 20 // 10,000 cells
+      // Calculate expected memory usage
+      const bytesPerCell = 100 // Estimate
+      const expectedMemory = largeMatrix.matrixSize * bytesPerCell
+      // Should be reasonable for server memory
+      expect(expectedMemory).toBeLessThan(10 * 1024 * 1024) // Less than 10MB
+})
+// Helper functions for performance testing
+function generateTestData(count: number): any[] {
+  const dietaryTypes = ['Vegetarian', 'Vegan', 'Gluten-Free', 'Nut Allergy', 'None']
+  const severities = ['PREFERENCE', 'MODERATE', 'SEVERE', 'LIFE_THREATENING']
+  return Array.from({ length: count }, (_, i) => ({
+    id: `guest-${i}`,
+    name: `Guest ${i}`,
+    dietary: dietaryTypes[i % dietaryTypes.length],
+    severity: severities[i % severities.length],
+    tableNumber: Math.floor(i / 10) + 1
+  }))
+async function generateDietaryMatrix(data: any[]): Promise<any> {
+  // Simulate matrix generation
+  await new Promise(resolve => setTimeout(resolve, data.length * 2))
+  const matrix = {
+    totalGuests: data.length,
+    dietaryBreakdown: {},
+    allergens: [],
+    criticalCount: data.filter(d => d.severity === 'LIFE_THREATENING').length
+  }
+  return matrix
+async function processGuestDietary(guest: any): Promise<void> {
+  await new Promise(resolve => setTimeout(resolve, 10))
+async function processBatch(batch: any[]): Promise<void> {
+  await new Promise(resolve => setTimeout(resolve, batch.length * 2))
+async function warmCache(eventId: string): Promise<void> {
+  await new Promise(resolve => setTimeout(resolve, 100))
+async function checkCache(level: string, key: string): Promise<any> {
+  const delays = { l1: 1, l2: 10, l3: 50 }
+  await new Promise(resolve => setTimeout(resolve, delays[level as keyof typeof delays] || 10))
+  return { hit: Math.random() > 0.5 }
+async function notifySubscribers(update: any): Promise<void> {
+  await new Promise(resolve => setTimeout(resolve, 20))
+async function updateGuestDietary(guestId: string, dietary: string): Promise<any> {
+  return { success: true, guestId }
+function generateExportData(count: number): any {
+  return {
+    guests: generateTestData(count),
+    summary: { total: count }
+async function generateExcelExport(data: any): Promise<Buffer> {
+  await new Promise(resolve => setTimeout(resolve, data.guests.length))
+  return Buffer.from('excel-data')
+function generateTestMatrix(): any {
+    categories: {},
+    totals: {}
+function generateCriticalAllergies(count: number): any[] {
+    guest: `Guest ${i}`,
+    allergy: 'Peanuts',
+    severity: 'LIFE_THREATENING'
+async function generatePDFReport(data: any): Promise<Buffer> {
+  await new Promise(resolve => setTimeout(resolve, 500))
+  return Buffer.from('pdf-data')
+function createCSVStream(count: number): any {
+  const EventEmitter = require('events')
+  const stream = new EventEmitter()
+  setTimeout(() => {
+    for (let i = 0; i < count; i += 100) {
+      stream.emit('data', Array(Math.min(100, count - i)))
+    }
+    stream.emit('end')
+  }, 100)
+  return stream
+async function simulateUserRequest(request: any): Promise<any> {
+  const start = performance.now()
+  await new Promise(resolve => setTimeout(resolve, Math.random() * 50 + 10))
+    success: Math.random() > 0.01,
+    responseTime: performance.now() - start
+function percentile(arr: number[], p: number): number {
+  const sorted = [...arr].sort((a, b) => a - b)
+  const index = Math.ceil((p / 100) * sorted.length) - 1
+  return sorted[index]

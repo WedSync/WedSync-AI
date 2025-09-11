@@ -1,0 +1,600 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+
+// Validation schemas for batch operations
+const BatchHelperAssignmentSchema = z.object({
+  operation: z.enum(['create', 'update', 'delete']),
+  assignments: z.array(
+    z.object({
+      id: z.string().optional(),
+      wedding_id: z.string(),
+      helper_id: z.string(),
+      task_name: z.string(),
+      description: z.string().optional(),
+      scheduled_time: z.string(),
+      status: z
+        .enum([
+          'pending',
+          'confirmed',
+          'in_progress',
+          'completed',
+          'cancelled',
+          'no_show',
+        ])
+        .optional(),
+      location: z.string().optional(),
+      requirements: z.array(z.string()).optional(),
+      assigned_by_id: z.string(),
+      priority: z
+        .enum(['low', 'medium', 'high', 'urgent'])
+        .optional()
+        .default('medium'),
+    }),
+  ),
+});
+
+const BatchBudgetCategorySchema = z.object({
+  operation: z.enum(['create', 'update', 'delete']),
+  categories: z.array(
+    z.object({
+      id: z.string().optional(),
+      wedding_id: z.string(),
+      category_name: z.string(),
+      allocated_amount: z.number(),
+      color: z.string().optional(),
+      description: z.string().optional(),
+      priority: z.number().optional(),
+      is_custom: z.boolean().optional().default(false),
+    }),
+  ),
+});
+
+const BatchExpenseSchema = z.object({
+  operation: z.enum(['create', 'update', 'delete']),
+  expenses: z.array(
+    z.object({
+      id: z.string().optional(),
+      wedding_id: z.string(),
+      budget_category_id: z.string(),
+      vendor_name: z.string(),
+      amount: z.number(),
+      description: z.string(),
+      date_incurred: z.string(),
+      payment_status: z
+        .enum(['pending', 'paid', 'overdue', 'cancelled'])
+        .optional()
+        .default('pending'),
+      payment_method: z.string().optional(),
+      receipt_urls: z.array(z.string()).optional(),
+      notes: z.string().optional(),
+      tags: z.array(z.string()).optional(),
+    }),
+  ),
+});
+
+const BatchDeleteSchema = z.object({
+  table: z.enum(['helper_assignments', 'budget_categories', 'expenses']),
+  filters: z.object({
+    wedding_id: z.string(),
+    ids: z.array(z.string()).optional(),
+    date_range: z
+      .object({
+        start: z.string(),
+        end: z.string(),
+      })
+      .optional(),
+    status: z.string().optional(),
+    category_id: z.string().optional(),
+  }),
+});
+
+// POST /api/batch - Handle various batch operations
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = createClient();
+    const body = await request.json();
+    const { operation_type, data } = body;
+
+    // Get authenticated user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    switch (operation_type) {
+      case 'helper_assignments':
+        return await handleBatchHelperAssignments(supabase, data, user.id);
+
+      case 'budget_categories':
+        return await handleBatchBudgetCategories(supabase, data, user.id);
+
+      case 'expenses':
+        return await handleBatchExpenses(supabase, data, user.id);
+
+      case 'csv_import':
+        return await handleCSVImport(supabase, data, user.id);
+
+      default:
+        return NextResponse.json(
+          { error: 'Invalid operation_type' },
+          { status: 400 },
+        );
+    }
+  } catch (error) {
+    console.error('Batch operation error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error during batch operation' },
+      { status: 500 },
+    );
+  }
+}
+
+// Handle batch helper assignment operations
+async function handleBatchHelperAssignments(
+  supabase: any,
+  data: any,
+  userId: string,
+) {
+  const validation = BatchHelperAssignmentSchema.safeParse(data);
+  if (!validation.success) {
+    return NextResponse.json(
+      {
+        error: 'Invalid helper assignment data',
+        details: validation.error.errors,
+      },
+      { status: 400 },
+    );
+  }
+
+  const { operation, assignments } = validation.data;
+  const results = [];
+  const errors = [];
+
+  try {
+    // Start a transaction for batch operations
+    for (const assignment of assignments) {
+      try {
+        let result;
+
+        switch (operation) {
+          case 'create':
+            const { data: createData, error: createError } = await supabase
+              .from('helper_assignments')
+              .insert({
+                ...assignment,
+                assigned_by_id: userId,
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+              })
+              .select()
+              .single();
+
+            if (createError) throw createError;
+            result = createData;
+            break;
+
+          case 'update':
+            if (!assignment.id)
+              throw new Error('Assignment ID required for update');
+
+            const { data: updateData, error: updateError } = await supabase
+              .from('helper_assignments')
+              .update({
+                ...assignment,
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', assignment.id)
+              .eq('wedding_id', assignment.wedding_id) // Security check
+              .select()
+              .single();
+
+            if (updateError) throw updateError;
+            result = updateData;
+            break;
+
+          case 'delete':
+            if (!assignment.id)
+              throw new Error('Assignment ID required for delete');
+
+            const { error: deleteError } = await supabase
+              .from('helper_assignments')
+              .update({ deleted_at: new Date().toISOString() })
+              .eq('id', assignment.id)
+              .eq('wedding_id', assignment.wedding_id); // Security check
+
+            if (deleteError) throw deleteError;
+            result = { id: assignment.id, deleted: true };
+            break;
+        }
+
+        results.push(result);
+      } catch (error) {
+        errors.push({
+          assignment: assignment,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+    }
+
+    return NextResponse.json({
+      success: true,
+      results,
+      errors: errors.length > 0 ? errors : undefined,
+      summary: {
+        total: assignments.length,
+        successful: results.length,
+        failed: errors.length,
+      },
+    });
+  } catch (error) {
+    return NextResponse.json(
+      { error: 'Batch helper assignment operation failed', details: error },
+      { status: 500 },
+    );
+  }
+}
+
+// Handle batch budget category operations
+async function handleBatchBudgetCategories(
+  supabase: any,
+  data: any,
+  userId: string,
+) {
+  const validation = BatchBudgetCategorySchema.safeParse(data);
+  if (!validation.success) {
+    return NextResponse.json(
+      {
+        error: 'Invalid budget category data',
+        details: validation.error.errors,
+      },
+      { status: 400 },
+    );
+  }
+
+  const { operation, categories } = validation.data;
+  const results = [];
+  const errors = [];
+
+  try {
+    for (const category of categories) {
+      try {
+        let result;
+
+        switch (operation) {
+          case 'create':
+            const { data: createData, error: createError } = await supabase
+              .from('budget_categories')
+              .insert({
+                ...category,
+                created_by_id: userId,
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+              })
+              .select()
+              .single();
+
+            if (createError) throw createError;
+            result = createData;
+            break;
+
+          case 'update':
+            if (!category.id)
+              throw new Error('Category ID required for update');
+
+            const { data: updateData, error: updateError } = await supabase
+              .from('budget_categories')
+              .update({
+                ...category,
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', category.id)
+              .eq('wedding_id', category.wedding_id) // Security check
+              .select()
+              .single();
+
+            if (updateError) throw updateError;
+            result = updateData;
+            break;
+
+          case 'delete':
+            if (!category.id)
+              throw new Error('Category ID required for delete');
+
+            const { error: deleteError } = await supabase
+              .from('budget_categories')
+              .update({ deleted_at: new Date().toISOString() })
+              .eq('id', category.id)
+              .eq('wedding_id', category.wedding_id); // Security check
+
+            if (deleteError) throw deleteError;
+            result = { id: category.id, deleted: true };
+            break;
+        }
+
+        results.push(result);
+      } catch (error) {
+        errors.push({
+          category: category,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+    }
+
+    // Refresh materialized view after budget changes
+    if (results.length > 0) {
+      await supabase.rpc('refresh_wedding_budget_analytics');
+    }
+
+    return NextResponse.json({
+      success: true,
+      results,
+      errors: errors.length > 0 ? errors : undefined,
+      summary: {
+        total: categories.length,
+        successful: results.length,
+        failed: errors.length,
+      },
+    });
+  } catch (error) {
+    return NextResponse.json(
+      { error: 'Batch budget category operation failed', details: error },
+      { status: 500 },
+    );
+  }
+}
+
+// Handle batch expense operations
+async function handleBatchExpenses(supabase: any, data: any, userId: string) {
+  const validation = BatchExpenseSchema.safeParse(data);
+  if (!validation.success) {
+    return NextResponse.json(
+      { error: 'Invalid expense data', details: validation.error.errors },
+      { status: 400 },
+    );
+  }
+
+  const { operation, expenses } = validation.data;
+  const results = [];
+  const errors = [];
+
+  try {
+    for (const expense of expenses) {
+      try {
+        let result;
+
+        switch (operation) {
+          case 'create':
+            const { data: createData, error: createError } = await supabase
+              .from('expenses')
+              .insert({
+                ...expense,
+                created_by_id: userId,
+                status: 'pending',
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+              })
+              .select()
+              .single();
+
+            if (createError) throw createError;
+            result = createData;
+            break;
+
+          case 'update':
+            if (!expense.id) throw new Error('Expense ID required for update');
+
+            const { data: updateData, error: updateError } = await supabase
+              .from('expenses')
+              .update({
+                ...expense,
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', expense.id)
+              .eq('wedding_id', expense.wedding_id) // Security check
+              .select()
+              .single();
+
+            if (updateError) throw updateError;
+            result = updateData;
+            break;
+
+          case 'delete':
+            if (!expense.id) throw new Error('Expense ID required for delete');
+
+            const { error: deleteError } = await supabase
+              .from('expenses')
+              .update({ deleted_at: new Date().toISOString() })
+              .eq('id', expense.id)
+              .eq('wedding_id', expense.wedding_id); // Security check
+
+            if (deleteError) throw deleteError;
+            result = { id: expense.id, deleted: true };
+            break;
+        }
+
+        results.push(result);
+      } catch (error) {
+        errors.push({
+          expense: expense,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+    }
+
+    // Refresh materialized view after expense changes
+    if (results.length > 0) {
+      await supabase.rpc('refresh_wedding_budget_analytics');
+    }
+
+    return NextResponse.json({
+      success: true,
+      results,
+      errors: errors.length > 0 ? errors : undefined,
+      summary: {
+        total: expenses.length,
+        successful: results.length,
+        failed: errors.length,
+      },
+    });
+  } catch (error) {
+    return NextResponse.json(
+      { error: 'Batch expense operation failed', details: error },
+      { status: 500 },
+    );
+  }
+}
+
+// Handle CSV import for expenses
+async function handleCSVImport(supabase: any, data: any, userId: string) {
+  const { csv_data, wedding_id, mapping } = data;
+
+  if (!csv_data || !wedding_id || !mapping) {
+    return NextResponse.json(
+      { error: 'CSV data, wedding_id, and field mapping are required' },
+      { status: 400 },
+    );
+  }
+
+  try {
+    const expenses = [];
+    const errors = [];
+
+    // Parse CSV data and map to expense objects
+    for (const [index, row] of csv_data.entries()) {
+      try {
+        const expense = {
+          wedding_id,
+          vendor_name: row[mapping.vendor_name] || 'Unknown Vendor',
+          amount: parseFloat(row[mapping.amount]) || 0,
+          description: row[mapping.description] || '',
+          date_incurred: row[mapping.date_incurred] || new Date().toISOString(),
+          budget_category_id: row[mapping.budget_category_id] || null,
+          payment_status: row[mapping.payment_status] || 'pending',
+          payment_method: row[mapping.payment_method] || null,
+          notes: row[mapping.notes] || null,
+          tags: row[mapping.tags]
+            ? row[mapping.tags].split(',').map((t) => t.trim())
+            : [],
+        };
+
+        expenses.push(expense);
+      } catch (error) {
+        errors.push({
+          row: index + 1,
+          data: row,
+          error: error instanceof Error ? error.message : 'Parsing error',
+        });
+      }
+    }
+
+    // Batch insert expenses
+    const batchResult = await handleBatchExpenses(
+      supabase,
+      {
+        operation: 'create',
+        expenses,
+      },
+      userId,
+    );
+
+    return NextResponse.json({
+      success: true,
+      imported: expenses.length - errors.length,
+      parsing_errors: errors,
+      batch_result: batchResult,
+    });
+  } catch (error) {
+    return NextResponse.json(
+      { error: 'CSV import failed', details: error },
+      { status: 500 },
+    );
+  }
+}
+
+// DELETE /api/batch - Handle batch delete operations with filters
+export async function DELETE(request: NextRequest) {
+  try {
+    const supabase = createClient();
+    const body = await request.json();
+
+    // Get authenticated user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const validation = BatchDeleteSchema.safeParse(body);
+    if (!validation.success) {
+      return NextResponse.json(
+        {
+          error: 'Invalid delete parameters',
+          details: validation.error.errors,
+        },
+        { status: 400 },
+      );
+    }
+
+    const { table, filters } = validation.data;
+    let query = supabase.from(table);
+
+    // Apply filters
+    query = query.eq('wedding_id', filters.wedding_id);
+
+    if (filters.ids && filters.ids.length > 0) {
+      query = query.in('id', filters.ids);
+    }
+
+    if (filters.date_range) {
+      const dateField = table === 'expenses' ? 'date_incurred' : 'created_at';
+      query = query
+        .gte(dateField, filters.date_range.start)
+        .lte(dateField, filters.date_range.end);
+    }
+
+    if (filters.status) {
+      query = query.eq('status', filters.status);
+    }
+
+    if (filters.category_id) {
+      const categoryField =
+        table === 'expenses' ? 'budget_category_id' : 'category_id';
+      query = query.eq(categoryField, filters.category_id);
+    }
+
+    // Perform soft delete
+    const { data: deletedRecords, error } = await query
+      .update({ deleted_at: new Date().toISOString() })
+      .select('id');
+
+    if (error) {
+      return NextResponse.json(
+        { error: 'Delete operation failed', details: error },
+        { status: 500 },
+      );
+    }
+
+    // Refresh materialized view if budget-related data was deleted
+    if (table === 'budget_categories' || table === 'expenses') {
+      await supabase.rpc('refresh_wedding_budget_analytics');
+    }
+
+    return NextResponse.json({
+      success: true,
+      deleted_count: deletedRecords?.length || 0,
+      deleted_ids: deletedRecords?.map((r) => r.id) || [],
+    });
+  } catch (error) {
+    console.error('Batch delete error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error during batch delete' },
+      { status: 500 },
+    );
+  }
+}

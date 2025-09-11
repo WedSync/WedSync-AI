@@ -1,0 +1,206 @@
+/**
+ * Smart Mapping Analysis API Endpoint
+ * POST /api/document-processing/mapping/analyze
+ * Analyzes extracted fields and suggests intelligent mappings
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { SmartMappingService } from '@/lib/services/smart-mapping-service';
+import { FieldExtractionService } from '@/lib/services/field-extraction-service';
+import { auth } from '@/lib/auth';
+import { z } from 'zod';
+
+// Request validation schema
+const AnalyzeRequestSchema = z.object({
+  documentId: z.string().min(1),
+  options: z
+    .object({
+      confidenceThreshold: z.number().min(0).max(1).optional(),
+      enableSemanticMatching: z.boolean().optional(),
+      enableLearningMode: z.boolean().optional(),
+      prioritizeAccuracy: z.boolean().optional(),
+      allowMultipleMatches: z.boolean().optional(),
+      includeContextAnalysis: z.boolean().optional(),
+    })
+    .optional(),
+  targetSchemaId: z.string().optional(),
+});
+
+export async function POST(request: NextRequest) {
+  const startTime = Date.now();
+
+  try {
+    // Authenticate user
+    const session = await auth();
+    if (!session?.user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Parse and validate request
+    const body = await request.json();
+    const validatedData = AnalyzeRequestSchema.parse(body);
+
+    // Initialize services
+    const smartMappingService = new SmartMappingService();
+    const fieldExtractionService = new FieldExtractionService();
+
+    // Get extracted fields from the document
+    const extractionResult = await fieldExtractionService.getExtractionResults(
+      validatedData.documentId,
+    );
+    if (!extractionResult || !extractionResult.fields) {
+      return NextResponse.json(
+        {
+          error: 'Document not found or extraction not complete',
+          code: 'EXTRACTION_NOT_FOUND',
+        },
+        { status: 404 },
+      );
+    }
+
+    // Convert extracted fields to smart mapping format
+    const extractedFields = extractionResult.fields.map((field) => ({
+      id: field.fieldId,
+      name: field.name,
+      value: field.value,
+      type: field.type,
+      confidence: field.confidence,
+      position: field.position,
+      context: [],
+    }));
+
+    // Get target schema if specified
+    let targetSchema;
+    if (validatedData.targetSchemaId) {
+      // This would typically fetch from database
+      // For now using default wedding schema
+      targetSchema = await smartMappingService['getDefaultWeddingSchema']();
+    }
+
+    // Perform smart mapping analysis
+    const mappingRequest = {
+      documentId: validatedData.documentId,
+      extractedFields,
+      targetSchema,
+      options: {
+        confidenceThreshold: validatedData.options?.confidenceThreshold || 0.7,
+        enableSemanticMatching:
+          validatedData.options?.enableSemanticMatching !== false,
+        enableLearningMode: validatedData.options?.enableLearningMode !== false,
+        prioritizeAccuracy: validatedData.options?.prioritizeAccuracy || false,
+        allowMultipleMatches:
+          validatedData.options?.allowMultipleMatches || false,
+        includeContextAnalysis:
+          validatedData.options?.includeContextAnalysis || true,
+      },
+    };
+
+    const result =
+      await smartMappingService.performSmartMapping(mappingRequest);
+
+    // Log mapping analysis for monitoring
+    console.log(
+      `Smart mapping analysis completed for document ${validatedData.documentId}:`,
+      {
+        accuracy: result.accuracy,
+        mappingCount: result.mappings.length,
+        unmappedCount: result.unmappedFields.length,
+        processingTime: result.processingTime,
+        userId: session.user.id,
+      },
+    );
+
+    // Return results
+    return NextResponse.json({
+      success: result.success,
+      data: {
+        mappings: result.mappings.map((mapping) => ({
+          id: `${mapping.sourceFieldId}_${mapping.targetFieldId}`,
+          sourceFieldId: mapping.sourceFieldId,
+          targetFieldId: mapping.targetFieldId,
+          confidence: Math.round(mapping.confidence * 100) / 100,
+          mappingType: mapping.mappingType,
+          reasoning: mapping.reasoning,
+          alternatives: mapping.alternatives?.map((alt) => ({
+            targetFieldId: alt.targetFieldId,
+            confidence: Math.round(alt.confidence * 100) / 100,
+            reasoning: alt.reasoning,
+          })),
+        })),
+        unmappedFields: result.unmappedFields.map((field) => ({
+          id: field.id,
+          name: field.name,
+          value: field.value,
+          type: field.type,
+          confidence: Math.round(field.confidence * 100) / 100,
+        })),
+        accuracy: Math.round(result.accuracy * 100) / 100,
+        suggestions: result.suggestions.map((suggestion) => ({
+          type: suggestion.type,
+          description: suggestion.description,
+          fieldIds: suggestion.fieldIds,
+          confidence: Math.round(suggestion.confidence * 100) / 100,
+        })),
+        metrics: {
+          totalFields: extractedFields.length,
+          mappedFields: result.mappings.length,
+          unmappedFields: result.unmappedFields.length,
+          averageConfidence: Math.round(result.accuracy * 100) / 100,
+          processingTime: result.processingTime,
+        },
+      },
+      errors: result.errors,
+    });
+  } catch (error) {
+    console.error('Smart mapping analysis error:', error);
+
+    // Handle validation errors
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Invalid request data',
+          details: error.errors,
+          code: 'VALIDATION_ERROR',
+        },
+        { status: 400 },
+      );
+    }
+
+    // Handle service errors
+    if (error instanceof Error) {
+      return NextResponse.json(
+        {
+          error: 'Mapping analysis failed',
+          message: error.message,
+          code: 'ANALYSIS_ERROR',
+        },
+        { status: 500 },
+      );
+    }
+
+    // Generic error
+    return NextResponse.json(
+      {
+        error: 'Internal server error',
+        code: 'INTERNAL_ERROR',
+      },
+      { status: 500 },
+    );
+  } finally {
+    // Log processing time for monitoring
+    const processingTime = Date.now() - startTime;
+    console.log(
+      `Smart mapping analysis API call completed in ${processingTime}ms`,
+    );
+  }
+}
+
+export async function GET(request: NextRequest) {
+  return NextResponse.json(
+    {
+      error: 'Method not allowed',
+      message: 'Use POST to analyze document field mappings',
+    },
+    { status: 405 },
+  );
+}

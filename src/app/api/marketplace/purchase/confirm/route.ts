@@ -1,0 +1,68 @@
+/**
+ * WS-115: Purchase Confirmation API Endpoint
+ * Confirms payment and completes the purchase
+ *
+ * Team C - Batch 9 - Round 1
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { MarketplacePurchaseService } from '@/lib/services/marketplace-purchase-service';
+import { createClient } from '@/lib/supabase/server';
+import { cookies } from 'next/headers';
+
+/**
+ * POST /api/marketplace/purchase/confirm
+ * Confirm payment and complete purchase
+ */
+export async function POST(request: NextRequest) {
+  const supabase = await createClient(cookies());
+
+  try {
+    // Authenticate user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Parse request body
+    const body = await request.json();
+    const { paymentIntentId } = body;
+
+    if (!paymentIntentId) {
+      return NextResponse.json(
+        { error: 'Payment intent ID is required' },
+        { status: 400 },
+      );
+    }
+
+    // Confirm payment
+    const result =
+      await MarketplacePurchaseService.confirmPayment(paymentIntentId);
+
+    if (!result.success) {
+      return NextResponse.json(
+        { error: 'Payment confirmation failed' },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      {
+        success: true,
+        purchaseId: result.purchaseId,
+        message: 'Purchase completed successfully',
+      },
+      { status: 200 },
+    );
+  } catch (error: any) {
+    console.error('Error confirming payment:', error);
+    return NextResponse.json(
+      { error: error.message || 'Failed to confirm payment' },
+      { status: 500 },
+    );
+  }
+}

@@ -1,0 +1,621 @@
+// /api/catering/menu/generate/route.ts
+// WS-254: AI-Powered Menu Generation API
+// Generates optimized wedding menus based on dietary requirements
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import { z } from 'zod';
+import { withSecureValidation } from '@/lib/security/withSecureValidation';
+import OpenAI from 'openai';
+
+// Initialize OpenAI client
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY!,
+});
+
+// Validation schemas
+const MenuGenerationRequestSchema = z.object({
+  wedding_id: z.string().uuid('Invalid wedding ID'),
+  guest_count: z
+    .number()
+    .min(1)
+    .max(1000, 'Guest count must be between 1-1000'),
+  dietary_requirements: z.object({
+    allergies: z.array(z.string()).default([]),
+    diets: z.array(z.string()).default([]),
+    medical: z.array(z.string()).default([]),
+    preferences: z.array(z.string()).default([]),
+  }),
+  menu_style: z.enum(
+    ['formal', 'buffet', 'family-style', 'cocktail', 'casual'],
+    {
+      errorMap: () => ({ message: 'Invalid menu style' }),
+    },
+  ),
+  budget_per_person: z
+    .number()
+    .min(10)
+    .max(500, 'Budget per person must be between $10-$500'),
+  meal_type: z.enum(['lunch', 'dinner', 'brunch', 'cocktail'], {
+    errorMap: () => ({ message: 'Invalid meal type' }),
+  }),
+  cultural_requirements: z.array(z.string()).default([]),
+  seasonal_preferences: z.array(z.string()).default([]),
+  venue_restrictions: z.array(z.string()).default([]),
+  supplier_specialties: z.array(z.string()).default([]),
+});
+
+interface MenuDish {
+  id: string;
+  name: string;
+  description: string;
+  ingredients: string[];
+  allergens: string[];
+  dietary_tags: string[];
+  cost: number;
+  prep_time: number;
+}
+
+interface MenuCourse {
+  id: string;
+  name: string;
+  type: 'appetizer' | 'main' | 'dessert' | 'side';
+  dishes: MenuDish[];
+}
+
+interface MenuOption {
+  id: string;
+  name: string;
+  description: string;
+  courses: MenuCourse[];
+  compliance_score: number;
+  total_cost: number;
+  cost_per_person: number;
+  preparation_time: number;
+  warnings: string[];
+  ai_confidence: number;
+  created_at: string;
+}
+
+// Helper function to calculate compliance score
+function calculateComplianceScore(
+  generatedMenu: any,
+  dietaryRequirements: any,
+): { score: number; warnings: string[] } {
+  const warnings: string[] = [];
+  let totalRequirements = 0;
+  let satisfiedRequirements = 0;
+
+  // Count all dietary requirements
+  Object.values(dietaryRequirements).forEach((reqArray: any) => {
+    if (Array.isArray(reqArray)) {
+      totalRequirements += reqArray.length;
+    }
+  });
+
+  if (totalRequirements === 0) {
+    return { score: 1.0, warnings: [] };
+  }
+
+  // Analyze each course for compliance
+  generatedMenu.courses?.forEach((course: any) => {
+    course.dishes?.forEach((dish: any) => {
+      // Check allergen compliance
+      dietaryRequirements.allergies?.forEach((allergy: string) => {
+        if (
+          dish.allergens?.some(
+            (a: string) =>
+              a.toLowerCase().includes(allergy.toLowerCase()) ||
+              allergy.toLowerCase().includes(a.toLowerCase()),
+          )
+        ) {
+          warnings.push(`${dish.name} contains ${allergy} allergen`);
+        } else {
+          satisfiedRequirements += 0.5; // Partial credit for allergen-free dishes
+        }
+      });
+
+      // Check dietary tag compliance
+      dietaryRequirements.diets?.forEach((diet: string) => {
+        if (
+          dish.dietary_tags?.some(
+            (tag: string) =>
+              tag.toLowerCase().includes(diet.toLowerCase()) ||
+              diet.toLowerCase().includes(tag.toLowerCase()),
+          )
+        ) {
+          satisfiedRequirements += 1;
+        }
+      });
+    });
+  });
+
+  // Calculate final score
+  const score = Math.min(1.0, satisfiedRequirements / totalRequirements);
+
+  // Add warnings for low compliance
+  if (score < 0.7) {
+    warnings.push('Menu may not fully accommodate all dietary requirements');
+  }
+  if (score < 0.5) {
+    warnings.push('High risk: Multiple dietary requirements not addressed');
+  }
+
+  return { score, warnings };
+}
+
+// Generate menu using OpenAI
+async function generateMenuWithAI(requestData: any): Promise<any> {
+  const prompt = `
+You are a professional wedding caterer with 20+ years of experience. Generate a complete wedding menu based on these requirements:
+
+**Wedding Details:**
+- Guest Count: ${requestData.guest_count}
+- Budget Per Person: $${requestData.budget_per_person}
+- Menu Style: ${requestData.menu_style}
+- Meal Type: ${requestData.meal_type}
+
+**Dietary Requirements (CRITICAL - These are non-negotiable):**
+- Allergies: ${requestData.dietary_requirements.allergies.join(', ') || 'None'}
+- Dietary Restrictions: ${requestData.dietary_requirements.diets.join(', ') || 'None'}
+- Medical Requirements: ${requestData.dietary_requirements.medical.join(', ') || 'None'}
+- Preferences: ${requestData.dietary_requirements.preferences.join(', ') || 'None'}
+
+**Additional Preferences:**
+- Cultural Requirements: ${requestData.cultural_requirements.join(', ') || 'None'}
+- Seasonal Preferences: ${requestData.seasonal_preferences.join(', ') || 'None'}
+- Venue Restrictions: ${requestData.venue_restrictions.join(', ') || 'None'}
+
+**SAFETY REQUIREMENTS:**
+- NEVER include ingredients that conflict with allergies
+- Always provide alternatives for dietary restrictions
+- Flag potential cross-contamination risks
+- Include preparation notes for high-severity requirements
+
+Generate 3 different menu options with the following JSON structure:
+
+{
+  "menu_options": [
+    {
+      "name": "Menu Option Name",
+      "description": "Brief description of the menu theme",
+      "courses": [
+        {
+          "name": "Course Name (e.g., Appetizers)",
+          "type": "appetizer|main|dessert|side",
+          "dishes": [
+            {
+              "name": "Dish Name",
+              "description": "Detailed dish description",
+              "ingredients": ["ingredient1", "ingredient2"],
+              "allergens": ["allergen1", "allergen2"],
+              "dietary_tags": ["vegan", "gluten-free", etc.],
+              "cost": 12.50,
+              "prep_time": 30
+            }
+          ]
+        }
+      ],
+      "total_cost": 2500.00,
+      "cost_per_person": 25.00,
+      "preparation_time": 4,
+      "warnings": ["Any safety warnings or notes"],
+      "ai_confidence": 0.95
+    }
+  ]
+}
+
+Focus on:
+1. Guest safety (no allergen conflicts)
+2. Dietary inclusion (options for everyone)
+3. Budget compliance (within ±10% of target)
+4. Practical preparation (realistic timing)
+5. Wedding appropriateness (elegant, memorable)
+
+REMEMBER: This is for a wedding - guests expect quality and safety. When in doubt, err on the side of caution.
+`;
+
+  const response = await openai.chat.completions.create({
+    model: 'gpt-4-turbo-preview',
+    messages: [
+      {
+        role: 'system',
+        content:
+          'You are an expert wedding caterer specializing in dietary-safe menu planning. Always prioritize guest safety and dietary compliance.',
+      },
+      {
+        role: 'user',
+        content: prompt,
+      },
+    ],
+    temperature: 0.7,
+    max_tokens: 4000,
+    response_format: { type: 'json_object' },
+  });
+
+  const content = response.choices[0]?.message?.content;
+  if (!content) {
+    throw new Error('No response from AI service');
+  }
+
+  try {
+    return JSON.parse(content);
+  } catch (parseError) {
+    console.error('Failed to parse AI response:', parseError);
+    throw new Error('Invalid response format from AI service');
+  }
+}
+
+// POST /api/catering/menu/generate - Generate AI menu suggestions (SECURED)
+export async function POST(request: NextRequest) {
+  return withSecureValidation(
+    request,
+    async ({ body, user, request: validatedRequest }) => {
+      try {
+        // Validate request body against schema
+        const validatedData = MenuGenerationRequestSchema.parse(body);
+
+        const supabase = createClient(
+          process.env.NEXT_PUBLIC_SUPABASE_URL!,
+          process.env.SUPABASE_SERVICE_ROLE_KEY!,
+        );
+
+        // Verify user has access to the wedding
+        const { data: wedding, error: weddingError } = await supabase
+          .from('weddings')
+          .select('id, couple_name')
+          .eq('id', validatedData.wedding_id)
+          .eq('supplier_id', user.id)
+          .single();
+
+        if (weddingError || !wedding) {
+          return NextResponse.json(
+            {
+              success: false,
+              error: 'Wedding not found or access denied',
+              code: 'ACCESS_DENIED',
+            },
+            { status: 403 },
+          );
+        }
+
+        // Get existing dietary requirements from database
+        const { data: dbRequirements, error: reqError } = await supabase
+          .from('dietary_requirements')
+          .select('category, notes, severity, verified')
+          .eq('wedding_id', validatedData.wedding_id)
+          .eq('supplier_id', user.id);
+
+        if (reqError) {
+          console.warn(
+            'Could not fetch dietary requirements:',
+            reqError.message,
+          );
+        }
+
+        // Enhance dietary requirements with database data
+        const enhancedRequirements = { ...validatedData.dietary_requirements };
+        dbRequirements?.forEach((req) => {
+          const category = (req.category +
+            's') as keyof typeof enhancedRequirements;
+          if (
+            enhancedRequirements[category] &&
+            !enhancedRequirements[category].includes(req.notes)
+          ) {
+            enhancedRequirements[category].push(req.notes);
+          }
+        });
+
+        // Generate menu using AI
+        const aiResponse = await generateMenuWithAI({
+          ...validatedData,
+          dietary_requirements: enhancedRequirements,
+        });
+
+        if (
+          !aiResponse.menu_options ||
+          !Array.isArray(aiResponse.menu_options)
+        ) {
+          throw new Error('Invalid menu generation response');
+        }
+
+        // Process and enhance each menu option
+        const processedMenus: MenuOption[] = aiResponse.menu_options.map(
+          (menu: any, index: number) => {
+            // Calculate compliance score and warnings
+            const compliance = calculateComplianceScore(
+              menu,
+              enhancedRequirements,
+            );
+
+            // Generate unique ID
+            const menuId = `menu_${Date.now()}_${index}`;
+
+            // Ensure all required fields
+            return {
+              id: menuId,
+              name: menu.name || `Menu Option ${index + 1}`,
+              description: menu.description || 'AI-generated wedding menu',
+              courses: menu.courses || [],
+              compliance_score: compliance.score,
+              total_cost:
+                menu.total_cost ||
+                validatedData.guest_count *
+                  (menu.cost_per_person || validatedData.budget_per_person),
+              cost_per_person:
+                menu.cost_per_person || validatedData.budget_per_person,
+              preparation_time: menu.preparation_time || 4,
+              warnings: [...(menu.warnings || []), ...compliance.warnings],
+              ai_confidence: menu.ai_confidence || 0.8,
+              created_at: new Date().toISOString(),
+            };
+          },
+        );
+
+        // Store suggestions in database for future reference
+        const suggestionPromises = processedMenus.map(async (menu) => {
+          const { error: insertError } = await supabase
+            .from('ai_menu_suggestions')
+            .insert({
+              wedding_id: validatedData.wedding_id,
+              supplier_id: user.id,
+              menu_name: menu.name,
+              description: menu.description,
+              courses: menu.courses,
+              compliance_score: menu.compliance_score,
+              total_cost: menu.total_cost,
+              cost_per_person: menu.cost_per_person,
+              preparation_time: menu.preparation_time,
+              warnings: menu.warnings,
+              ai_confidence: menu.ai_confidence,
+              guest_count: validatedData.guest_count,
+              dietary_requirements_considered:
+                Object.values(enhancedRequirements).flat().length,
+            });
+
+          if (insertError) {
+            console.warn(
+              'Failed to store menu suggestion:',
+              insertError.message,
+            );
+          }
+        });
+
+        await Promise.allSettled(suggestionPromises);
+
+        // Return results with metadata
+        const result = {
+          menu_options: processedMenus,
+          generation_metadata: {
+            wedding_id: validatedData.wedding_id,
+            wedding_name: wedding.couple_name,
+            guest_count: validatedData.guest_count,
+            dietary_requirements_count:
+              Object.values(enhancedRequirements).flat().length,
+            high_risk_requirements:
+              dbRequirements?.filter((req) => req.severity >= 4).length || 0,
+            unverified_requirements:
+              dbRequirements?.filter((req) => !req.verified).length || 0,
+            generated_at: new Date().toISOString(),
+            ai_model: 'gpt-4-turbo-preview',
+            processing_time_ms: Date.now() - parseInt(Date.now().toString()),
+          },
+        };
+
+        return NextResponse.json(
+          {
+            success: true,
+            data: result,
+            message: `Generated ${result.menu_options.length} menu options successfully`,
+          },
+          { status: 201 },
+        );
+      } catch (error) {
+        console.error('Failed to generate menu:', error);
+
+        if (error instanceof z.ZodError) {
+          return NextResponse.json(
+            {
+              success: false,
+              error: 'Validation failed',
+              code: 'VALIDATION_ERROR',
+              details: error.errors,
+            },
+            { status: 400 },
+          );
+        }
+
+        // Handle specific error types
+        if (error instanceof Error) {
+          if (error.message.includes('not found or access denied')) {
+            return NextResponse.json(
+              {
+                success: false,
+                error: 'Wedding not found or access denied',
+                code: 'ACCESS_DENIED',
+              },
+              { status: 403 },
+            );
+          }
+
+          if (error.message.includes('No response from AI service')) {
+            return NextResponse.json(
+              {
+                success: false,
+                error: 'AI menu generation service unavailable',
+                code: 'AI_SERVICE_ERROR',
+                details: 'Please try again in a few minutes',
+              },
+              { status: 503 },
+            );
+          }
+
+          if (error.message.includes('Invalid menu generation response')) {
+            return NextResponse.json(
+              {
+                success: false,
+                error: 'AI service returned invalid menu format',
+                code: 'AI_RESPONSE_ERROR',
+                details: 'The AI service did not return a valid menu structure',
+              },
+              { status: 502 },
+            );
+          }
+        }
+
+        return NextResponse.json(
+          {
+            success: false,
+            error: 'Failed to generate menu options',
+            code: 'GENERATION_FAILED',
+            details: error instanceof Error ? error.message : 'Unknown error',
+            suggestion: 'Please check your dietary requirements and try again',
+          },
+          { status: 500 },
+        );
+      }
+    },
+    {
+      requireAuth: true,
+      rateLimit: { requests: 5, window: '1m' }, // More restrictive for AI operations
+      validateBody: true,
+      logSensitiveData: false, // Don't log dietary information
+    },
+  )();
+}
+
+// GET /api/catering/menu/generate - Get previously generated menu suggestions (SECURED)
+export async function GET(request: NextRequest) {
+  return withSecureValidation(
+    request,
+    async ({ user, request: validatedRequest }) => {
+      try {
+        const url = new URL(validatedRequest.url);
+        const wedding_id = url.searchParams.get('wedding_id');
+        const limit = Math.min(
+          parseInt(url.searchParams.get('limit') || '10'),
+          50,
+        );
+
+        if (!wedding_id) {
+          return NextResponse.json(
+            {
+              success: false,
+              error: 'Wedding ID is required',
+              code: 'MISSING_WEDDING_ID',
+            },
+            { status: 400 },
+          );
+        }
+
+        // Verify UUID format
+        const uuidRegex =
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+        if (!uuidRegex.test(wedding_id)) {
+          return NextResponse.json(
+            {
+              success: false,
+              error: 'Invalid wedding ID format',
+              code: 'INVALID_WEDDING_ID',
+            },
+            { status: 400 },
+          );
+        }
+
+        const supabase = createClient(
+          process.env.NEXT_PUBLIC_SUPABASE_URL!,
+          process.env.SUPABASE_SERVICE_ROLE_KEY!,
+        );
+
+        // Verify user has access to the wedding
+        const { data: wedding, error: weddingError } = await supabase
+          .from('weddings')
+          .select('id, couple_name')
+          .eq('id', wedding_id)
+          .eq('supplier_id', user.id)
+          .single();
+
+        if (weddingError || !wedding) {
+          return NextResponse.json(
+            {
+              success: false,
+              error: 'Wedding not found or access denied',
+              code: 'ACCESS_DENIED',
+            },
+            { status: 403 },
+          );
+        }
+
+        // Get menu suggestions
+        const { data: suggestions, error: fetchError } = await supabase
+          .from('ai_menu_suggestions')
+          .select(
+            `
+            id,
+            menu_name,
+            description,
+            courses,
+            compliance_score,
+            total_cost,
+            cost_per_person,
+            preparation_time,
+            warnings,
+            ai_confidence,
+            guest_count,
+            dietary_requirements_considered,
+            created_at
+          `,
+          )
+          .eq('wedding_id', wedding_id)
+          .eq('supplier_id', user.id)
+          .order('created_at', { ascending: false })
+          .limit(limit);
+
+        if (fetchError) {
+          throw new Error(
+            `Failed to fetch menu suggestions: ${fetchError.message}`,
+          );
+        }
+
+        return NextResponse.json({
+          success: true,
+          data: {
+            suggestions: suggestions || [],
+            wedding: {
+              id: wedding.id,
+              name: wedding.couple_name,
+            },
+            total_count: suggestions?.length || 0,
+            pagination: {
+              limit,
+              total: suggestions?.length || 0,
+              has_more: false, // Simple implementation for now
+            },
+          },
+          meta: {
+            generated_at: new Date().toISOString(),
+            data_freshness: 'real-time',
+          },
+        });
+      } catch (error) {
+        console.error('Failed to fetch menu suggestions:', error);
+        return NextResponse.json(
+          {
+            success: false,
+            error: 'Failed to fetch menu suggestions',
+            code: 'FETCH_FAILED',
+            details: error instanceof Error ? error.message : 'Unknown error',
+          },
+          { status: 500 },
+        );
+      }
+    },
+    {
+      requireAuth: true,
+      rateLimit: { requests: 30, window: '1m' }, // 30 requests per minute for read operations
+      validateBody: false, // GET request, no body to validate
+      logSensitiveData: false, // Don't log dietary information
+    },
+  )();
+}

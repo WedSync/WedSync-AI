@@ -1,0 +1,148 @@
+/**
+ * Tests for useDeviceCapabilities hook - Device hardware and performance detection
+ * WS-198 Error Handling System - Team D Mobile & PWA Architecture
+ */
+
+import { renderHook, act, waitFor } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { useDeviceCapabilities } from '../../hooks/useDeviceCapabilities'
+// Mock navigator APIs
+const mockNavigator = {
+  mediaDevices: {
+    getUserMedia: vi.fn(),
+    enumerateDevices: vi.fn()
+  },
+  getBattery: vi.fn(),
+  geolocation: {
+    getCurrentPosition: vi.fn(),
+    watchPosition: vi.fn()
+  hardwareConcurrency: 4,
+  deviceMemory: 8
+}
+Object.defineProperty(window, 'navigator', {
+  value: mockNavigator,
+  writable: true
+})
+// Mock battery API
+const mockBattery = {
+  level: 0.8,
+  charging: false,
+  chargingTime: Infinity,
+  dischargingTime: 3600,
+  addEventListener: vi.fn(),
+  removeEventListener: vi.fn()
+describe('useDeviceCapabilities', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockNavigator.getBattery.mockResolvedValue(mockBattery)
+    mockNavigator.mediaDevices.enumerateDevices.mockResolvedValue([
+      { kind: 'videoinput', deviceId: 'camera1', label: 'Camera 1' },
+      { kind: 'audioinput', deviceId: 'mic1', label: 'Microphone 1' }
+    ] as MediaDeviceInfo[])
+    mockBattery.level = 0.8
+    mockBattery.charging = false
+  })
+  it('should initialize with default capabilities', () => {
+    const { result } = renderHook(() => useDeviceCapabilities())
+    
+    expect(result.current.capabilities).toEqual({
+      hasCamera: false,
+      hasMicrophone: false,
+      hasGPS: false,
+      batteryLevel: null,
+      isCharging: false,
+      isBatteryLow: false,
+      deviceMemory: 8,
+      hardwareConcurrency: 4,
+      connectionType: 'unknown',
+      isWeddingOptimizedDevice: false
+    })
+  it('should detect camera and microphone capabilities', async () => {
+    await waitFor(() => {
+      expect(result.current.capabilities.hasCamera).toBe(true)
+      expect(result.current.capabilities.hasMicrophone).toBe(true)
+  it('should detect GPS capability when available', () => {
+    expect(result.current.capabilities.hasGPS).toBe(true)
+  it('should handle missing GPS gracefully', () => {
+    // @ts-ignore
+    delete mockNavigator.geolocation
+    expect(result.current.capabilities.hasGPS).toBe(false)
+  it('should detect battery information', async () => {
+      expect(result.current.capabilities.batteryLevel).toBe(0.8)
+      expect(result.current.capabilities.isCharging).toBe(false)
+      expect(result.current.capabilities.isBatteryLow).toBe(false)
+  it('should detect low battery state', async () => {
+    mockBattery.level = 0.15 // 15% battery
+      expect(result.current.capabilities.batteryLevel).toBe(0.15)
+      expect(result.current.capabilities.isBatteryLow).toBe(true)
+  it('should detect charging state', async () => {
+    mockBattery.charging = true
+      expect(result.current.capabilities.isCharging).toBe(true)
+  it('should handle battery API not available', async () => {
+    mockNavigator.getBattery.mockRejectedValue(new Error('Battery API not available'))
+      expect(result.current.capabilities.batteryLevel).toBe(null)
+  it('should detect wedding-optimized device (high-end specs)', async () => {
+    mockNavigator.hardwareConcurrency = 8
+    mockNavigator.deviceMemory = 16
+    mockBattery.level = 0.9
+      expect(result.current.capabilities.isWeddingOptimizedDevice).toBe(true)
+  it('should not mark low-end device as wedding-optimized', async () => {
+    mockNavigator.hardwareConcurrency = 2
+    mockNavigator.deviceMemory = 2
+    mockBattery.level = 0.3
+      expect(result.current.capabilities.isWeddingOptimizedDevice).toBe(false)
+  it('should handle missing device memory gracefully', () => {
+    delete mockNavigator.deviceMemory
+    expect(result.current.capabilities.deviceMemory).toBe(null)
+  it('should handle media devices permission denied', async () => {
+    mockNavigator.mediaDevices.enumerateDevices.mockRejectedValue(
+      new Error('Permission denied')
+    )
+      expect(result.current.capabilities.hasCamera).toBe(false)
+      expect(result.current.capabilities.hasMicrophone).toBe(false)
+  it('should update battery level when battery events fire', async () => {
+    // Simulate battery level change
+    act(() => {
+      mockBattery.level = 0.5
+      const levelChangeHandler = mockBattery.addEventListener.mock.calls.find(
+        call => call[0] === 'levelchange'
+      )?.[1]
+      if (levelChangeHandler) levelChangeHandler()
+    expect(result.current.capabilities.batteryLevel).toBe(0.5)
+  it('should update charging state when charging events fire', async () => {
+    // Simulate charging state change
+      mockBattery.charging = true
+      const chargingChangeHandler = mockBattery.addEventListener.mock.calls.find(
+        call => call[0] === 'chargingchange'
+      if (chargingChangeHandler) chargingChangeHandler()
+    expect(result.current.capabilities.isCharging).toBe(true)
+  it('should detect various device scenarios', async () => {
+    const scenarios = [
+      {
+        name: 'High-end photographer device',
+        config: { hardwareConcurrency: 8, deviceMemory: 16, batteryLevel: 0.9 },
+        expectedOptimized: true
+      },
+        name: 'Mid-range venue coordinator device', 
+        config: { hardwareConcurrency: 4, deviceMemory: 4, batteryLevel: 0.6 },
+        expectedOptimized: false
+        name: 'Low-end guest device',
+        config: { hardwareConcurrency: 2, deviceMemory: 2, batteryLevel: 0.3 },
+      }
+    ]
+    for (const scenario of scenarios) {
+      mockNavigator.hardwareConcurrency = scenario.config.hardwareConcurrency
+      mockNavigator.deviceMemory = scenario.config.deviceMemory
+      mockBattery.level = scenario.config.batteryLevel
+      const { result } = renderHook(() => useDeviceCapabilities())
+      
+      await waitFor(() => {
+        expect(result.current.capabilities.isWeddingOptimizedDevice).toBe(scenario.expectedOptimized)
+      })
+    }
+  it('should clean up event listeners on unmount', async () => {
+    const { unmount } = renderHook(() => useDeviceCapabilities())
+      expect(mockNavigator.getBattery).toHaveBeenCalled()
+    unmount()
+    expect(mockBattery.removeEventListener).toHaveBeenCalledWith('levelchange', expect.any(Function))
+    expect(mockBattery.removeEventListener).toHaveBeenCalledWith('chargingchange', expect.any(Function))

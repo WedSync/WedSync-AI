@@ -1,0 +1,36 @@
+/**
+ * WS-116: Popular Wedding Locations API
+ * Get popular wedding locations and hotspots
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { geographicSearchService } from '@/lib/services/geographic-search-service';
+
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const limit = Math.min(parseInt(searchParams.get('limit') || '20'), 50); // Max 50 locations
+
+    const locations =
+      await geographicSearchService.getPopularWeddingLocations(limit);
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        locations,
+        count: locations.length,
+      },
+    });
+  } catch (error: any) {
+    console.error('Popular locations API error:', error);
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Failed to get popular locations',
+        message: error.message || 'Internal server error',
+      },
+      { status: 500 },
+    );
+  }
+}

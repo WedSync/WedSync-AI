@@ -1,0 +1,251 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { coupleAuthService, type CoupleSignupData } from '@/lib/services/coupleAuthService'
+import { createClient } from '@/lib/supabase/server'
+import { z } from 'zod'
+
+// Validation schema for signup data
+const signupSchema = z.object({
+  // Required fields
+  email: z.string().email('Invalid email address'),
+  password: z.string().min(8, 'Password must be at least 8 characters'),
+  firstName: z.string().min(1, 'First name is required'),
+  lastName: z.string().min(1, 'Last name is required'),
+  agreeToTerms: z.boolean().refine(val => val === true, 'Must agree to terms'),
+  agreeToPrivacy: z.boolean().refine(val => val === true, 'Must agree to privacy policy'),
+  
+  // Optional fields
+  confirmPassword: z.string().optional(),
+  weddingDate: z.string().optional(),
+  venueName: z.string().optional(),
+  venueAddress: z.string().optional(),
+  guestCount: z.string().optional(),
+  budget: z.string().optional(),
+  
+  // Partner details
+  hasPartner: z.boolean().optional(),
+  partnerFirstName: z.string().optional(),
+  partnerLastName: z.string().optional(),
+  partnerEmail: z.string().email().optional().or(z.literal('')),
+  partnerPhone: z.string().optional(),
+  
+  // Preferences
+  weddingStyle: z.string().optional(),
+  weddingTheme: z.string().optional(),
+  communicationPreference: z.string().optional(),
+  notifications: z.object({
+    email: z.boolean(),
+    sms: z.boolean(),
+    push: z.boolean()
+  }).optional(),
+  
+  // Legal
+  agreeToMarketing: z.boolean().optional(),
+  
+  // Context
+  invitationToken: z.string().optional()
+}).refine(data => {
+  // Validate password confirmation if provided
+  if (data.confirmPassword && data.password !== data.confirmPassword) {
+    return false
+  }
+  return true
+}, {
+  message: 'Passwords do not match',
+  path: ['confirmPassword']
+}).refine(data => {
+  // Validate partner details if hasPartner is true
+  if (data.hasPartner) {
+    return data.partnerFirstName && data.partnerLastName
+  }
+  return true
+}, {
+  message: 'Partner details required when adding partner',
+  path: ['partnerFirstName']
+})
+
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json()
+    
+    // Validate request data
+    const validationResult = signupSchema.safeParse(body)
+    if (!validationResult.success) {
+      const errors = validationResult.error.errors.map(err => ({
+        field: err.path.join('.'),
+        message: err.message
+      }))
+      
+      return NextResponse.json(
+        { 
+          error: 'Validation failed', 
+          details: errors,
+          message: errors[0]?.message || 'Invalid input data'
+        },
+        { status: 400 }
+      )
+    }
+
+    const signupData: CoupleSignupData = validationResult.data
+
+    // Additional server-side validations
+    if (signupData.invitationToken) {
+      const invitation = await coupleAuthService.validateInvitation(signupData.invitationToken)
+      if (!invitation.valid) {
+        return NextResponse.json(
+          { error: invitation.error || 'Invalid invitation' },
+          { status: 400 }
+        )
+      }
+    }
+
+    // Check if email already exists
+    const supabase = await createClient()
+    const { data: existingUser } = await supabase
+      .from('users')
+      .select('id')
+      .eq('email', signupData.email)
+      .single()
+
+    if (existingUser) {
+      return NextResponse.json(
+        { error: 'An account with this email already exists' },
+        { status: 409 }
+      )
+    }
+
+    // Create couple account
+    const result = await coupleAuthService.createCoupleAccount(signupData)
+
+    if (!result.success) {
+      return NextResponse.json(
+        { error: result.error || 'Signup failed' },
+        { status: 400 }
+      )
+    }
+
+    // Log successful signup
+    console.log('Couple signup successful:', {
+      userId: result.user?.id,
+      coupleId: result.couple?.id,
+      email: signupData.email,
+      hasInvitation: !!signupData.invitationToken,
+      timestamp: new Date().toISOString()
+    })
+
+    // Return success response
+    return NextResponse.json({
+      success: true,
+      message: 'Account created successfully',
+      user: {
+        id: result.user?.id,
+        email: result.user?.email,
+        role: 'couple'
+      },
+      couple: {
+        id: result.couple?.id,
+        onboarding_progress: result.couple?.onboarding_progress
+      },
+      redirect: result.redirect || '/dashboard',
+      next_step: signupData.invitationToken ? 'complete_onboarding' : 'setup_wedding_details'
+    })
+
+  } catch (error: any) {
+    console.error('Signup API error:', error)
+    
+    // Handle specific Supabase auth errors
+    if (error.message?.includes('email_address_invalid')) {
+      return NextResponse.json(
+        { error: 'Invalid email address format' },
+        { status: 400 }
+      )
+    }
+    
+    if (error.message?.includes('signup_disabled')) {
+      return NextResponse.json(
+        { error: 'Account creation is temporarily disabled' },
+        { status: 503 }
+      )
+    }
+    
+    if (error.message?.includes('password_too_short')) {
+      return NextResponse.json(
+        { error: 'Password must be at least 8 characters long' },
+        { status: 400 }
+      )
+    }
+    
+    if (error.message?.includes('email_rate_limit_exceeded')) {
+      return NextResponse.json(
+        { error: 'Too many signup attempts. Please try again later.' },
+        { status: 429 }
+      )
+    }
+
+    // Generic error response
+    return NextResponse.json(
+      { error: 'Internal server error. Please try again.' },
+      { status: 500 }
+    )
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url)
+    const invitationToken = searchParams.get('invitation')
+
+    if (!invitationToken) {
+      return NextResponse.json(
+        { error: 'Invitation token required' },
+        { status: 400 }
+      )
+    }
+
+    // Validate invitation and return prefilled data
+    const validation = await coupleAuthService.validateInvitation(invitationToken)
+    
+    if (!validation.valid) {
+      return NextResponse.json(
+        { error: validation.error || 'Invalid invitation' },
+        { status: 400 }
+      )
+    }
+
+    const invitation = validation.invitation!
+    const supplierName = invitation.vendors?.business_name || 
+      `${invitation.vendors?.first_name} ${invitation.vendors?.last_name}`.trim()
+
+    return NextResponse.json({
+      valid: true,
+      invitation: {
+        supplier_name: supplierName,
+        supplier_email: invitation.vendors?.email,
+        wedding_date: invitation.wedding_date,
+        venue_name: invitation.venue_name,
+        couple_name: invitation.couple_name,
+        couple_email: invitation.couple_email,
+        prefilled_data: invitation.prefilled_data || {},
+        expires_at: invitation.expires_at
+      }
+    })
+
+  } catch (error) {
+    console.error('Invitation validation error:', error)
+    return NextResponse.json(
+      { error: 'Failed to validate invitation' },
+      { status: 500 }
+    )
+  }
+}
+
+// Handle OPTIONS for CORS
+export async function OPTIONS(request: NextRequest) {
+  return new NextResponse(null, {
+    status: 200,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    },
+  })
+}

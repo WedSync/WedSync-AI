@@ -1,0 +1,273 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import { z } from 'zod';
+import rateLimit from '@/lib/rate-limiter';
+
+const limiter = rateLimit({
+  interval: 60 * 1000, // 1 minute
+  uniqueTokenPerInterval: 500,
+});
+
+const addCommentSchema = z.object({
+  content: z.string().min(1).max(5000),
+  voice_note_url: z.string().optional(),
+  voice_note_duration: z.number().optional(),
+});
+
+// GET /api/support/tickets/[id]/comments - Get ticket comments
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { id: string } },
+) {
+  try {
+    const supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+
+    // Authenticate user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 },
+      );
+    }
+
+    // Apply rate limiting
+    try {
+      await limiter.check(NextResponse.next(), 60, user.id); // 60 requests per minute
+    } catch {
+      return NextResponse.json(
+        { error: 'Rate limit exceeded' },
+        { status: 429 },
+      );
+    }
+
+    const ticketId = params.id;
+
+    // Check if user owns the ticket
+    const { data: ticket, error: ticketError } = await supabase
+      .from('support_tickets')
+      .select('id')
+      .eq('id', ticketId)
+      .eq('user_id', user.id)
+      .single();
+
+    if (ticketError || !ticket) {
+      return NextResponse.json({ error: 'Ticket not found' }, { status: 404 });
+    }
+
+    // Parse query parameters
+    const { searchParams } = new URL(request.url);
+    const limit = Math.min(parseInt(searchParams.get('limit') || '50'), 100);
+    const offset = parseInt(searchParams.get('offset') || '0');
+    const includeInternal = searchParams.get('include_internal') === 'true';
+
+    // Fetch comments
+    let query = supabase
+      .from('support_ticket_comments')
+      .select('*')
+      .eq('ticket_id', ticketId)
+      .order('created_at', { ascending: true })
+      .range(offset, offset + limit - 1);
+
+    // Exclude internal comments for customers (unless specifically requested)
+    if (!includeInternal) {
+      query = query.eq('is_internal', false);
+    }
+
+    const { data: comments, error, count } = await query;
+
+    if (error) {
+      console.error('Error fetching comments:', error);
+      return NextResponse.json(
+        { error: 'Failed to fetch comments' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({
+      comments,
+      pagination: {
+        total: count || 0,
+        offset,
+        limit,
+        hasMore: (count || 0) > offset + limit,
+      },
+    });
+  } catch (error) {
+    console.error('Error in GET /api/support/tickets/[id]/comments:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+// POST /api/support/tickets/[id]/comments - Add comment to ticket
+export async function POST(
+  request: NextRequest,
+  { params }: { params: { id: string } },
+) {
+  try {
+    const supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+
+    // Authenticate user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 },
+      );
+    }
+
+    // Apply rate limiting for comment creation
+    try {
+      await limiter.check(NextResponse.next(), 20, user.id); // 20 comments per minute
+    } catch {
+      return NextResponse.json(
+        {
+          error:
+            'Rate limit exceeded - please wait before adding another comment',
+        },
+        { status: 429 },
+      );
+    }
+
+    const ticketId = params.id;
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validationResult = addCommentSchema.safeParse(body);
+
+    if (!validationResult.success) {
+      return NextResponse.json(
+        {
+          error: 'Invalid request data',
+          details: validationResult.error.issues,
+        },
+        { status: 400 },
+      );
+    }
+
+    const { content, voice_note_url, voice_note_duration } =
+      validationResult.data;
+
+    // Check if ticket exists and user owns it
+    const { data: ticket, error: ticketError } = await supabase
+      .from('support_tickets')
+      .select('id, status, priority')
+      .eq('id', ticketId)
+      .eq('user_id', user.id)
+      .single();
+
+    if (ticketError || !ticket) {
+      return NextResponse.json({ error: 'Ticket not found' }, { status: 404 });
+    }
+
+    // Don't allow comments on closed tickets
+    if (ticket.status === 'closed') {
+      return NextResponse.json(
+        { error: 'Cannot add comments to closed tickets' },
+        { status: 400 },
+      );
+    }
+
+    // Get user details for comment attribution
+    const authorName =
+      user.user_metadata?.full_name || user.email || 'Customer';
+
+    // Create the comment
+    const { data: comment, error: insertError } = await supabase
+      .from('support_ticket_comments')
+      .insert({
+        ticket_id: ticketId,
+        content,
+        voice_note_url: voice_note_url || null,
+        voice_note_duration: voice_note_duration || null,
+        is_internal: false,
+        is_system_message: false,
+        author_id: user.id,
+        author_name: authorName,
+        author_role: 'customer',
+      })
+      .select('*')
+      .single();
+
+    if (insertError) {
+      console.error('Error creating comment:', insertError);
+      return NextResponse.json(
+        { error: 'Failed to add comment' },
+        { status: 500 },
+      );
+    }
+
+    // Update ticket's last activity timestamp and status
+    const ticketUpdates: any = {
+      updated_at: new Date().toISOString(),
+    };
+
+    // If ticket was resolved, mark it as waiting for response when customer adds comment
+    if (ticket.status === 'resolved') {
+      ticketUpdates.status = 'waiting_response';
+      ticketUpdates.resolved_at = null;
+    }
+
+    await supabase
+      .from('support_tickets')
+      .update(ticketUpdates)
+      .eq('id', ticketId);
+
+    // For wedding day emergencies, send immediate notification
+    if (ticket.priority === 'wedding_day') {
+      console.log(
+        `WEDDING DAY COMMENT: New comment on emergency ticket ${ticketId}`,
+      );
+
+      // Add system comment noting the urgency
+      await supabase.from('support_ticket_comments').insert({
+        ticket_id: ticketId,
+        content:
+          '🚨 Wedding day emergency - customer has added a new comment requiring immediate attention',
+        is_internal: true,
+        is_system_message: true,
+        author_id: user.id,
+        author_name: 'System',
+        author_role: 'system',
+      });
+    }
+
+    return NextResponse.json(
+      {
+        success: true,
+        comment: {
+          id: comment.id,
+          content: comment.content,
+          voice_note_url: comment.voice_note_url,
+          voice_note_duration: comment.voice_note_duration,
+          author_name: comment.author_name,
+          author_role: comment.author_role,
+          created_at: comment.created_at,
+        },
+      },
+      { status: 201 },
+    );
+  } catch (error) {
+    console.error('Error in POST /api/support/tickets/[id]/comments:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

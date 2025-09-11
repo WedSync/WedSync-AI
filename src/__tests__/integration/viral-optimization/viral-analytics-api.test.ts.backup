@@ -1,0 +1,505 @@
+/**
+ * Integration Tests - Viral Analytics API
+ * WS-141 Round 2: End-to-end API testing for viral analytics
+ */
+
+import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals'
+import { createMocks } from 'node-mocks-http'
+import { NextRequest } from 'next/server'
+import { GET, POST } from '@/app/api/viral/analytics/route'
+
+// Mock dependencies
+jest.mock('next-auth', () => ({
+  getServerSession: jest.fn()
+}))
+
+jest.mock('@/lib/auth', () => ({
+  authOptions: {}
+}))
+
+jest.mock('@/lib/ratelimit', () => ({
+  rateLimit: {
+    check: jest.fn()
+  }
+}))
+
+jest.mock('@/lib/services/viral-analytics-service', () => ({
+  ViralAnalyticsService: {
+    analyzeGenerations: jest.fn(),
+    analyzeChannelPerformance: jest.fn(),
+    analyzeOptimalTiming: jest.fn(),
+    analyzeGeographicSpread: jest.fn(),
+    analyzeViralCohorts: jest.fn(),
+    getViralAnalyticsSummary: jest.fn()
+  }
+}))
+
+// Mock data
+const mockGenerationAnalysis = [
+  {
+    generation: 1,
+    total_invites_sent: 1000,
+    total_responses: 300,
+    total_signups: 150,
+    conversion_rate: 15.0,
+    average_time_to_response: 4.5,
+    viral_coefficient: 0,
+    dropoff_rate: 0,
+    most_active_connector: 'user-123',
+    geographic_spread: 5
+  },
+  {
+    generation: 2,
+    total_invites_sent: 800,
+    total_responses: 200,
+    total_signups: 100,
+    conversion_rate: 12.5,
+    average_time_to_response: 6.2,
+    viral_coefficient: 0.67,
+    dropoff_rate: 20.0,
+    most_active_connector: 'user-456',
+    geographic_spread: 3
+  }
+]
+
+const mockChannelPerformance = [
+  {
+    channel: 'email',
+    total_sent: 5000,
+    delivered_count: 4800,
+    opened_count: 2400,
+    clicked_count: 1200,
+    responded_count: 600,
+    signup_count: 300,
+    delivery_rate: 96.0,
+    open_rate: 50.0,
+    click_rate: 50.0,
+    response_rate: 12.5,
+    conversion_rate: 6.0,
+    average_response_time: 5.2,
+    cost_per_signup: 3.50,
+    roi_score: 285.7,
+    preferred_demographics: ['25-34', '35-44']
+  },
+  {
+    channel: 'whatsapp',
+    total_sent: 3000,
+    delivered_count: 2950,
+    opened_count: 2360,
+    clicked_count: 1416,
+    responded_count: 708,
+    signup_count: 425,
+    delivery_rate: 98.3,
+    open_rate: 80.0,
+    click_rate: 60.0,
+    response_rate: 24.0,
+    conversion_rate: 14.2,
+    average_response_time: 2.1,
+    cost_per_signup: 2.25,
+    roi_score: 422.2,
+    preferred_demographics: ['25-34']
+  }
+]
+
+const mockAuthSession = {
+  user: {
+    id: 'user-123',
+    email: 'test@example.com',
+    role: 'marketing_manager'
+  }
+}
+
+describe('Viral Analytics API Integration Tests', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+    
+    // Setup default mocks
+    const { getServerSession } = require('next-auth')
+    const { rateLimit } = require('@/lib/ratelimit')
+    
+    getServerSession.mockResolvedValue(mockAuthSession)
+    rateLimit.check.mockResolvedValue({ allowed: true, remaining: 20 })
+  })
+
+  afterEach(() => {
+    jest.restoreAllMocks()
+  })
+
+  describe('GET /api/viral/analytics', () => {
+    it('should return generation analysis with valid parameters', async () => {
+      const { ViralAnalyticsService } = require('@/lib/services/viral-analytics-service')
+      ViralAnalyticsService.analyzeGenerations.mockResolvedValue(mockGenerationAnalysis)
+
+      const url = 'http://localhost:3000/api/viral/analytics?analysis_type=generation&timeframe=30d'
+      const request = new NextRequest(url, { method: 'GET' })
+
+      const response = await GET(request)
+      const data = await response.json()
+
+      expect(response.status).toBe(200)
+      expect(data.success).toBe(true)
+      expect(data.data.analysis_type).toBe('generation')
+      expect(data.data.generation_analysis).toHaveLength(2)
+      expect(data.data.generation_analysis[0].generation).toBe(1)
+      expect(data.data.generation_analysis[0].conversion_rate).toBe(15.0)
+
+      expect(ViralAnalyticsService.analyzeGenerations).toHaveBeenCalledWith(
+        '30 days',
+        10 // default max_generations
+      )
+    })
+
+    it('should return channel performance analysis', async () => {
+      const { ViralAnalyticsService } = require('@/lib/services/viral-analytics-service')
+      ViralAnalyticsService.analyzeChannelPerformance.mockResolvedValue(mockChannelPerformance)
+
+      const url = 'http://localhost:3000/api/viral/analytics?analysis_type=channel&timeframe=90d'
+      const request = new NextRequest(url, { method: 'GET' })
+
+      const response = await GET(request)
+      const data = await response.json()
+
+      expect(response.status).toBe(200)
+      expect(data.data.channel_performance).toHaveLength(2)
+      expect(data.data.channel_performance[0].channel).toBe('email')
+      expect(data.data.channel_performance[1].channel).toBe('whatsapp')
+      expect(data.data.channel_performance[1].roi_score).toBe(422.2)
+    })
+
+    it('should require authentication', async () => {
+      const { getServerSession } = require('next-auth')
+      getServerSession.mockResolvedValue(null)
+
+      const url = 'http://localhost:3000/api/viral/analytics'
+      const request = new NextRequest(url, { method: 'GET' })
+
+      const response = await GET(request)
+      const data = await response.json()
+
+      expect(response.status).toBe(401)
+      expect(data.error).toBe('UNAUTHORIZED')
+      expect(data.message).toBe('Authentication required')
+    })
+
+    it('should require appropriate permissions', async () => {
+      const { getServerSession } = require('next-auth')
+      getServerSession.mockResolvedValue({
+        user: {
+          id: 'user-123',
+          email: 'test@example.com',
+          role: 'basic_user' // Insufficient permissions
+        }
+      })
+
+      const url = 'http://localhost:3000/api/viral/analytics'
+      const request = new NextRequest(url, { method: 'GET' })
+
+      const response = await GET(request)
+      const data = await response.json()
+
+      expect(response.status).toBe(403)
+      expect(data.error).toBe('FORBIDDEN')
+      expect(data.message).toBe('Insufficient permissions for viral analytics access')
+    })
+
+    it('should enforce rate limiting', async () => {
+      const { rateLimit } = require('@/lib/ratelimit')
+      rateLimit.check.mockResolvedValue({
+        allowed: false,
+        retryAfter: 60,
+        remaining: 0
+      })
+
+      const url = 'http://localhost:3000/api/viral/analytics'
+      const request = new NextRequest(url, { method: 'GET' })
+
+      const response = await GET(request)
+      const data = await response.json()
+
+      expect(response.status).toBe(429)
+      expect(data.error).toBe('RATE_LIMITED')
+      expect(data.retry_after).toBe(60)
+    })
+
+    it('should validate query parameters', async () => {
+      const url = 'http://localhost:3000/api/viral/analytics?analysis_type=invalid&timeframe=bad'
+      const request = new NextRequest(url, { method: 'GET' })
+
+      const response = await GET(request)
+      const data = await response.json()
+
+      expect(response.status).toBe(400)
+      expect(data.error).toBe('INVALID_QUERY_PARAMETERS')
+      expect(data.details).toBeInstanceOf(Array)
+    })
+
+    it('should return viral analytics summary by default', async () => {
+      const { ViralAnalyticsService } = require('@/lib/services/viral-analytics-service')
+      const mockSummary = {
+        generation_analysis: mockGenerationAnalysis,
+        channel_performance: mockChannelPerformance,
+        geographic_spread: [],
+        summary: {
+          total_generations: 2,
+          best_performing_channel: 'whatsapp',
+          top_viral_region: null,
+          overall_viral_coefficient: 0.335,
+          processing_time_ms: 45
+        }
+      }
+      
+      ViralAnalyticsService.getViralAnalyticsSummary.mockResolvedValue(mockSummary)
+
+      const url = 'http://localhost:3000/api/viral/analytics'
+      const request = new NextRequest(url, { method: 'GET' })
+
+      const response = await GET(request)
+      const data = await response.json()
+
+      expect(response.status).toBe(200)
+      expect(data.data.summary).toBeDefined()
+      expect(data.data.summary.best_performing_channel).toBe('whatsapp')
+      expect(data.data.summary.total_generations).toBe(2)
+    })
+
+    it('should include performance metrics in response', async () => {
+      const { ViralAnalyticsService } = require('@/lib/services/viral-analytics-service')
+      ViralAnalyticsService.analyzeChannelPerformance.mockResolvedValue(mockChannelPerformance)
+
+      const url = 'http://localhost:3000/api/viral/analytics?analysis_type=channel'
+      const request = new NextRequest(url, { method: 'GET' })
+
+      const response = await GET(request)
+      const data = await response.json()
+
+      expect(data.data.performance_metrics).toBeDefined()
+      expect(data.data.performance_metrics.query_time_ms).toBeDefined()
+      expect(data.data.performance_metrics.cache_hit).toBe(false)
+      expect(data.data.performance_metrics.data_freshness).toBeDefined()
+    })
+
+    it('should set appropriate cache headers', async () => {
+      const { ViralAnalyticsService } = require('@/lib/services/viral-analytics-service')
+      ViralAnalyticsService.analyzeChannelPerformance.mockResolvedValue(mockChannelPerformance)
+
+      const url = 'http://localhost:3000/api/viral/analytics?analysis_type=channel'
+      const request = new NextRequest(url, { method: 'GET' })
+
+      const response = await GET(request)
+
+      expect(response.headers.get('Cache-Control')).toContain('private')
+      expect(response.headers.get('X-Processing-Time')).toBeDefined()
+      expect(response.headers.get('X-Analysis-Type')).toBe('channel')
+      expect(response.headers.get('X-Data-Privacy')).toBe('aggregated-only')
+    })
+
+    it('should handle service errors gracefully', async () => {
+      const { ViralAnalyticsService } = require('@/lib/services/viral-analytics-service')
+      ViralAnalyticsService.analyzeChannelPerformance.mockRejectedValue(new Error('Database connection failed'))
+
+      const url = 'http://localhost:3000/api/viral/analytics?analysis_type=channel'
+      const request = new NextRequest(url, { method: 'GET' })
+
+      const response = await GET(request)
+      const data = await response.json()
+
+      expect(response.status).toBe(500)
+      expect(data.error).toBe('INTERNAL_SERVER_ERROR')
+      expect(data.message).toBe('Failed to process viral analytics request')
+      expect(data.processing_time).toBeDefined()
+    })
+
+    it('should meet performance requirement of under 200ms for analytics', async () => {
+      const { ViralAnalyticsService } = require('@/lib/services/viral-analytics-service')
+      ViralAnalyticsService.getViralAnalyticsSummary.mockResolvedValue({
+        summary: { processing_time_ms: 150 }
+      })
+
+      const url = 'http://localhost:3000/api/viral/analytics'
+      const request = new NextRequest(url, { method: 'GET' })
+
+      const startTime = Date.now()
+      await GET(request)
+      const endTime = Date.now()
+
+      expect(endTime - startTime).toBeLessThan(200)
+    })
+  })
+
+  describe('POST /api/viral/analytics', () => {
+    it('should handle analytics refresh requests', async () => {
+      const request = new NextRequest('http://localhost:3000/api/viral/analytics', {
+        method: 'POST',
+        body: JSON.stringify({
+          refresh_type: 'cache_clear',
+          target_analysis: ['generation', 'channel']
+        }),
+        headers: { 'Content-Type': 'application/json' }
+      })
+
+      const response = await POST(request)
+      const data = await response.json()
+
+      expect(response.status).toBe(200)
+      expect(data.success).toBe(true)
+      expect(data.data.refresh_type).toBe('cache_clear')
+      expect(data.data.cache_cleared).toBe(true)
+      expect(data.data.initiated_by).toBe(mockAuthSession.user.email)
+    })
+
+    it('should require admin permissions for refresh operations', async () => {
+      const { getServerSession } = require('next-auth')
+      getServerSession.mockResolvedValue({
+        user: {
+          id: 'user-123',
+          email: 'test@example.com',
+          role: 'marketing_manager' // Not admin or data_analyst
+        }
+      })
+
+      const request = new NextRequest('http://localhost:3000/api/viral/analytics', {
+        method: 'POST',
+        body: JSON.stringify({ refresh_type: 'full_recompute' }),
+        headers: { 'Content-Type': 'application/json' }
+      })
+
+      const response = await POST(request)
+      const data = await response.json()
+
+      expect(response.status).toBe(403)
+      expect(data.error).toBe('FORBIDDEN')
+    })
+
+    it('should apply stricter rate limiting for refresh operations', async () => {
+      const { rateLimit } = require('@/lib/ratelimit')
+      rateLimit.check.mockResolvedValue({
+        allowed: false,
+        retryAfter: 900,
+        remaining: 0
+      })
+
+      const request = new NextRequest('http://localhost:3000/api/viral/analytics', {
+        method: 'POST',
+        body: JSON.stringify({ refresh_type: 'data_refresh' }),
+        headers: { 'Content-Type': 'application/json' }
+      })
+
+      const response = await POST(request)
+      const data = await response.json()
+
+      expect(response.status).toBe(429)
+      expect(data.retry_after).toBe(900)
+    })
+
+    it('should validate refresh request body', async () => {
+      const request = new NextRequest('http://localhost:3000/api/viral/analytics', {
+        method: 'POST',
+        body: JSON.stringify({
+          refresh_type: 'invalid_type',
+          target_analysis: ['invalid_analysis']
+        }),
+        headers: { 'Content-Type': 'application/json' }
+      })
+
+      const response = await POST(request)
+      const data = await response.json()
+
+      expect(response.status).toBe(400)
+      expect(data.error).toBe('INVALID_REQUEST_BODY')
+      expect(data.details).toBeInstanceOf(Array)
+    })
+
+    it('should handle different refresh types correctly', async () => {
+      const mockGetAdmin = {
+        user: {
+          id: 'admin-123',
+          email: 'admin@example.com',
+          role: 'admin'
+        }
+      }
+
+      const { getServerSession } = require('next-auth')
+      getServerSession.mockResolvedValue(mockGetAdmin)
+
+      // Test data refresh
+      const dataRefreshRequest = new NextRequest('http://localhost:3000/api/viral/analytics', {
+        method: 'POST',
+        body: JSON.stringify({ refresh_type: 'data_refresh' }),
+        headers: { 'Content-Type': 'application/json' }
+      })
+
+      const dataRefreshResponse = await POST(dataRefreshRequest)
+      const dataRefreshData = await dataRefreshResponse.json()
+
+      expect(dataRefreshData.data.data_refresh_queued).toBe(true)
+      expect(dataRefreshData.data.estimated_completion).toBeDefined()
+
+      // Test full recompute
+      const recomputeRequest = new NextRequest('http://localhost:3000/api/viral/analytics', {
+        method: 'POST',
+        body: JSON.stringify({ refresh_type: 'full_recompute' }),
+        headers: { 'Content-Type': 'application/json' }
+      })
+
+      const recomputeResponse = await POST(recomputeRequest)
+      const recomputeData = await recomputeResponse.json()
+
+      expect(recomputeData.data.recompute_queued).toBe(true)
+    })
+  })
+
+  describe('Cross-cutting Concerns', () => {
+    it('should include security headers in all responses', async () => {
+      const { ViralAnalyticsService } = require('@/lib/services/viral-analytics-service')
+      ViralAnalyticsService.getViralAnalyticsSummary.mockResolvedValue({ summary: {} })
+
+      const url = 'http://localhost:3000/api/viral/analytics'
+      const request = new NextRequest(url, { method: 'GET' })
+
+      const response = await GET(request)
+
+      expect(response.headers.get('X-Rate-Limit-Remaining')).toBeDefined()
+      expect(response.headers.get('X-Processing-Time')).toBeDefined()
+    })
+
+    it('should handle concurrent requests properly', async () => {
+      const { ViralAnalyticsService } = require('@/lib/services/viral-analytics-service')
+      ViralAnalyticsService.getViralAnalyticsSummary.mockResolvedValue({ summary: {} })
+
+      const url = 'http://localhost:3000/api/viral/analytics'
+      const requests = Array(5).fill(null).map(() => 
+        new NextRequest(url, { method: 'GET' })
+      )
+
+      const responses = await Promise.all(
+        requests.map(request => GET(request))
+      )
+
+      responses.forEach(response => {
+        expect(response.status).toBe(200)
+      })
+    })
+
+    it('should log performance warnings for slow requests', async () => {
+      const consoleSpy = jest.spyOn(console, 'warn').mockImplementation()
+      
+      const { ViralAnalyticsService } = require('@/lib/services/viral-analytics-service')
+      ViralAnalyticsService.getViralAnalyticsSummary.mockImplementation(() => 
+        new Promise(resolve => 
+          setTimeout(() => resolve({ summary: {} }), 250) // Slow response
+        )
+      )
+
+      const url = 'http://localhost:3000/api/viral/analytics'
+      const request = new NextRequest(url, { method: 'GET' })
+
+      await GET(request)
+
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining('approaching 200ms limit')
+      )
+
+      consoleSpy.mockRestore()
+    })
+  })
+})

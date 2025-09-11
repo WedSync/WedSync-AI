@@ -1,0 +1,301 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+
+const DietaryRequirementSchema = z.object({
+  guest_id: z.string().uuid(),
+  requirement_type: z.enum([
+    'vegetarian',
+    'vegan',
+    'gluten_free',
+    'dairy_free',
+    'nut_free',
+    'shellfish_free',
+    'kosher',
+    'halal',
+    'diabetic',
+    'low_sodium',
+    'other',
+  ]),
+  severity: z.enum(['mild', 'moderate', 'severe', 'life_threatening']),
+  notes: z.string().optional(),
+  medical_documentation_url: z.string().url().optional(),
+});
+
+export async function GET(request: NextRequest) {
+  const searchParams = request.nextUrl.searchParams;
+  const guestId = searchParams.get('guest_id');
+  const coupleId = searchParams.get('couple_id');
+
+  try {
+    const supabase = await createClient();
+    const { data: user } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    let query = supabase.from('dietary_requirements').select(`
+        *,
+        guest:guests(
+          id,
+          first_name,
+          last_name,
+          couple_id
+        )
+      `);
+
+    if (guestId) {
+      query = query.eq('guest_id', guestId);
+    } else if (coupleId) {
+      // Get all dietary requirements for a couple
+      const { data: guestIds } = await supabase
+        .from('guests')
+        .select('id')
+        .eq('couple_id', coupleId);
+
+      const ids = guestIds?.map((g) => g.id) || [];
+      if (ids.length > 0) {
+        query = query.in('guest_id', ids);
+      }
+    }
+
+    const { data, error } = await query.order('severity', { ascending: false });
+
+    if (error) {
+      console.error('Error fetching dietary requirements:', error);
+      return NextResponse.json(
+        { error: 'Failed to fetch dietary requirements' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json(data);
+  } catch (error) {
+    console.error('Dietary requirements API error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const { data: user } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const validatedData = DietaryRequirementSchema.parse(body);
+
+    // Verify user has access to this guest
+    const { data: guest } = await supabase
+      .from('guests')
+      .select(
+        `
+        id,
+        couple_id,
+        clients!inner(
+          organization_id,
+          user_profiles!inner(user_id)
+        )
+      `,
+      )
+      .eq('id', validatedData.guest_id)
+      .eq('clients.user_profiles.user_id', user.id)
+      .single();
+
+    if (!guest) {
+      return NextResponse.json(
+        { error: 'Guest not found or access denied' },
+        { status: 403 },
+      );
+    }
+
+    const { data, error } = await supabase
+      .from('dietary_requirements')
+      .insert(validatedData)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error creating dietary requirement:', error);
+      return NextResponse.json(
+        { error: 'Failed to create dietary requirement' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json(data, { status: 201 });
+  } catch (error) {
+    console.error('Dietary requirements POST error:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid data', details: error.errors },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function PUT(request: NextRequest) {
+  const searchParams = request.nextUrl.searchParams;
+  const id = searchParams.get('id');
+
+  if (!id) {
+    return NextResponse.json(
+      { error: 'Requirement ID is required' },
+      { status: 400 },
+    );
+  }
+
+  try {
+    const supabase = await createClient();
+    const { data: user } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const updates = DietaryRequirementSchema.partial().parse(body);
+
+    // Verify user has access to this requirement
+    const { data: requirement } = await supabase
+      .from('dietary_requirements')
+      .select(
+        `
+        id,
+        guest:guests(
+          couple_id,
+          clients!inner(
+            organization_id,
+            user_profiles!inner(user_id)
+          )
+        )
+      `,
+      )
+      .eq('id', id)
+      .eq('guest.clients.user_profiles.user_id', user.id)
+      .single();
+
+    if (!requirement) {
+      return NextResponse.json(
+        { error: 'Requirement not found or access denied' },
+        { status: 403 },
+      );
+    }
+
+    const { data, error } = await supabase
+      .from('dietary_requirements')
+      .update({
+        ...updates,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error updating dietary requirement:', error);
+      return NextResponse.json(
+        { error: 'Failed to update dietary requirement' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json(data);
+  } catch (error) {
+    console.error('Dietary requirements PUT error:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid data', details: error.errors },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function DELETE(request: NextRequest) {
+  const searchParams = request.nextUrl.searchParams;
+  const id = searchParams.get('id');
+
+  if (!id) {
+    return NextResponse.json(
+      { error: 'Requirement ID is required' },
+      { status: 400 },
+    );
+  }
+
+  try {
+    const supabase = await createClient();
+    const { data: user } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Verify user has access to this requirement
+    const { data: requirement } = await supabase
+      .from('dietary_requirements')
+      .select(
+        `
+        id,
+        guest:guests(
+          couple_id,
+          clients!inner(
+            organization_id,
+            user_profiles!inner(user_id)
+          )
+        )
+      `,
+      )
+      .eq('id', id)
+      .eq('guest.clients.user_profiles.user_id', user.id)
+      .single();
+
+    if (!requirement) {
+      return NextResponse.json(
+        { error: 'Requirement not found or access denied' },
+        { status: 403 },
+      );
+    }
+
+    const { error } = await supabase
+      .from('dietary_requirements')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      console.error('Error deleting dietary requirement:', error);
+      return NextResponse.json(
+        { error: 'Failed to delete dietary requirement' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error('Dietary requirements DELETE error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

@@ -1,0 +1,416 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@/lib/supabase/server'
+import { rateLimit, rateLimitConfigs } from '@/lib/rate-limit'
+import { z } from 'zod'
+import DOMPurify from 'isomorphic-dompurify'
+
+// Tag assignment validation schemas
+const assignTagsSchema = z.object({
+  tag_ids: z.array(z.string().uuid()).min(1).max(20)
+})
+
+const removeTagsSchema = z.object({
+  tag_ids: z.array(z.string().uuid()).min(1)
+})
+
+// Comprehensive input sanitization
+function sanitizeData(data: any): any {
+  if (typeof data === 'string') {
+    return DOMPurify.sanitize(data, { 
+      ALLOWED_TAGS: [], 
+      ALLOWED_ATTR: [],
+      KEEP_CONTENT: true 
+    });
+  }
+  
+  if (Array.isArray(data)) {
+    return data.map(sanitizeData);
+  }
+  
+  if (data && typeof data === 'object') {
+    const sanitized: any = {};
+    for (const [key, value] of Object.entries(data)) {
+      sanitized[key] = sanitizeData(value);
+    }
+    return sanitized;
+  }
+  
+  return data;
+}
+
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    // Apply rate limiting
+    const rateLimiter = rateLimit(rateLimitConfigs.api)
+    const rateLimitResult = await rateLimiter(request)
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { error: 'Rate limit exceeded' },
+        { 
+          status: 429,
+          headers: {
+            'Retry-After': rateLimitResult.retryAfter?.toString() || '60'
+          }
+        }
+      )
+    }
+
+    // Extract async params - Next.js 15 requirement
+    const resolvedParams = await params
+
+    const supabase = await createClient()
+    const { data: user } = await supabase.auth.getUser()
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', user.id)
+      .single()
+
+    if (!profile?.organization_id) {
+      return NextResponse.json({ error: 'No organization found' }, { status: 400 })
+    }
+
+    const clientId = resolvedParams.id
+    if (!clientId) {
+      return NextResponse.json({ error: 'Client ID is required' }, { status: 400 })
+    }
+
+    // Verify client exists and belongs to organization
+    const { data: client } = await supabase
+      .from('clients')
+      .select('id')
+      .eq('id', clientId)
+      .eq('organization_id', profile.organization_id)
+      .single()
+
+    if (!client) {
+      return NextResponse.json({ error: 'Client not found' }, { status: 404 })
+    }
+
+    // Get client's tags
+    const { data, error } = await supabase
+      .from('client_tags')
+      .select(`
+        tag_id,
+        assigned_at,
+        tags (
+          id,
+          name,
+          description,
+          color,
+          category,
+          created_at
+        )
+      `)
+      .eq('client_id', clientId)
+      .order('assigned_at', { ascending: false })
+
+    if (error) {
+      throw error
+    }
+
+    const clientTags = data?.map(ct => ({
+      ...ct.tags,
+      assigned_at: ct.assigned_at
+    })) || []
+
+    return NextResponse.json({
+      client_id: clientId,
+      tags: clientTags
+    })
+  } catch (error) {
+    console.error('Error fetching client tags:', error)
+    return NextResponse.json(
+      { error: 'Failed to fetch client tags' },
+      { status: 500 }
+    )
+  }
+}
+
+export async function POST(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    // Apply rate limiting
+    const rateLimiter = rateLimit(rateLimitConfigs.api)
+    const rateLimitResult = await rateLimiter(request)
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { error: 'Rate limit exceeded' },
+        { 
+          status: 429,
+          headers: {
+            'Retry-After': rateLimitResult.retryAfter?.toString() || '60'
+          }
+        }
+      )
+    }
+
+    // Extract async params - Next.js 15 requirement
+    const resolvedParams = await params
+
+    const supabase = await createClient()
+    const { data: user } = await supabase.auth.getUser()
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', user.id)
+      .single()
+
+    if (!profile?.organization_id) {
+      return NextResponse.json({ error: 'No organization found' }, { status: 400 })
+    }
+
+    const clientId = resolvedParams.id
+    if (!clientId) {
+      return NextResponse.json({ error: 'Client ID is required' }, { status: 400 })
+    }
+
+    const rawBody = await request.json()
+    
+    // Sanitize input data first
+    const sanitizedBody = sanitizeData(rawBody);
+    
+    // Validate sanitized request body
+    const validatedData = assignTagsSchema.parse(sanitizedBody);
+
+    // Verify client exists and belongs to organization
+    const { data: client } = await supabase
+      .from('clients')
+      .select('id, first_name, last_name')
+      .eq('id', clientId)
+      .eq('organization_id', profile.organization_id)
+      .single()
+
+    if (!client) {
+      return NextResponse.json({ error: 'Client not found' }, { status: 404 })
+    }
+
+    // Verify all tags exist and belong to organization
+    const { data: tags } = await supabase
+      .from('tags')
+      .select('id, name')
+      .eq('organization_id', profile.organization_id)
+      .in('id', validatedData.tag_ids)
+
+    if (!tags || tags.length !== validatedData.tag_ids.length) {
+      return NextResponse.json({ error: 'One or more tags not found' }, { status: 404 })
+    }
+
+    // Get existing assignments to avoid duplicates
+    const { data: existingAssignments } = await supabase
+      .from('client_tags')
+      .select('tag_id')
+      .eq('client_id', clientId)
+      .in('tag_id', validatedData.tag_ids)
+
+    const existingTagIds = new Set(existingAssignments?.map(a => a.tag_id) || [])
+    const newTagIds = validatedData.tag_ids.filter(id => !existingTagIds.has(id))
+
+    if (newTagIds.length === 0) {
+      return NextResponse.json({
+        success: true,
+        message: 'All tags are already assigned to this client',
+        assigned_tags: []
+      })
+    }
+
+    // Create new assignments
+    const assignmentsToCreate = newTagIds.map(tagId => ({
+      client_id: clientId,
+      tag_id: tagId,
+      assigned_by: user.id,
+      assigned_at: new Date().toISOString()
+    }))
+
+    const { data: newAssignments, error } = await supabase
+      .from('client_tags')
+      .insert(assignmentsToCreate)
+      .select(`
+        tag_id,
+        assigned_at,
+        tags (
+          id,
+          name,
+          description,
+          color,
+          category
+        )
+      `)
+
+    if (error) {
+      throw error
+    }
+
+    // Log activity
+    const tagNames = tags.filter(t => newTagIds.includes(t.id)).map(t => t.name)
+    const sanitizedClientName = `${client.first_name || ''} ${client.last_name || ''}`.trim() || 'Client'
+    
+    await supabase
+      .from('client_activities')
+      .insert({
+        client_id: clientId,
+        organization_id: profile.organization_id,
+        activity_type: 'tags_assigned',
+        activity_title: 'Tags assigned',
+        activity_description: `Tags assigned: ${tagNames.join(', ')}`,
+        performed_by: user.id
+      })
+
+    const assignedTags = newAssignments?.map(assignment => ({
+      ...assignment.tags,
+      assigned_at: assignment.assigned_at
+    })) || []
+
+    return NextResponse.json({
+      success: true,
+      message: `${assignedTags.length} tag${assignedTags.length !== 1 ? 's' : ''} assigned successfully`,
+      assigned_tags: assignedTags
+    })
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Validation error', details: error.errors },
+        { status: 400 }
+      )
+    }
+    console.error('Error assigning tags:', error)
+    return NextResponse.json(
+      { error: 'Failed to assign tags' },
+      { status: 500 }
+    )
+  }
+}
+
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    // Apply rate limiting
+    const rateLimiter = rateLimit(rateLimitConfigs.api)
+    const rateLimitResult = await rateLimiter(request)
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { error: 'Rate limit exceeded' },
+        { 
+          status: 429,
+          headers: {
+            'Retry-After': rateLimitResult.retryAfter?.toString() || '60'
+          }
+        }
+      )
+    }
+
+    // Extract async params - Next.js 15 requirement
+    const resolvedParams = await params
+
+    const supabase = await createClient()
+    const { data: user } = await supabase.auth.getUser()
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', user.id)
+      .single()
+
+    if (!profile?.organization_id) {
+      return NextResponse.json({ error: 'No organization found' }, { status: 400 })
+    }
+
+    const clientId = resolvedParams.id
+    if (!clientId) {
+      return NextResponse.json({ error: 'Client ID is required' }, { status: 400 })
+    }
+
+    const rawBody = await request.json()
+    
+    // Sanitize input data first
+    const sanitizedBody = sanitizeData(rawBody);
+    
+    // Validate sanitized request body
+    const validatedData = removeTagsSchema.parse(sanitizedBody);
+
+    // Verify client exists and belongs to organization
+    const { data: client } = await supabase
+      .from('clients')
+      .select('id, first_name, last_name')
+      .eq('id', clientId)
+      .eq('organization_id', profile.organization_id)
+      .single()
+
+    if (!client) {
+      return NextResponse.json({ error: 'Client not found' }, { status: 404 })
+    }
+
+    // Get tag names for logging
+    const { data: tags } = await supabase
+      .from('tags')
+      .select('id, name')
+      .eq('organization_id', profile.organization_id)
+      .in('id', validatedData.tag_ids)
+
+    // Remove tag assignments
+    const { error } = await supabase
+      .from('client_tags')
+      .delete()
+      .eq('client_id', clientId)
+      .in('tag_id', validatedData.tag_ids)
+
+    if (error) {
+      throw error
+    }
+
+    // Log activity
+    if (tags && tags.length > 0) {
+      const tagNames = tags.map(t => t.name)
+      const sanitizedClientName = `${client.first_name || ''} ${client.last_name || ''}`.trim() || 'Client'
+      
+      await supabase
+        .from('client_activities')
+        .insert({
+          client_id: clientId,
+          organization_id: profile.organization_id,
+          activity_type: 'tags_removed',
+          activity_title: 'Tags removed',
+          activity_description: `Tags removed: ${tagNames.join(', ')}`,
+          performed_by: user.id
+        })
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: `${validatedData.tag_ids.length} tag${validatedData.tag_ids.length !== 1 ? 's' : ''} removed successfully`
+    })
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Validation error', details: error.errors },
+        { status: 400 }
+      )
+    }
+    console.error('Error removing tags:', error)
+    return NextResponse.json(
+      { error: 'Failed to remove tags' },
+      { status: 500 }
+    )
+  }
+}

@@ -1,0 +1,58 @@
+// /api/api-keys/scopes/route.ts
+// WS-072: API Scopes Management
+// Returns available API scopes for key creation
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import { apiKeyService } from '@/lib/services/apiKeyService';
+import { createAPIError, createAPIResponse } from '@/lib/auth/apiKeyAuth';
+
+// GET /api/api-keys/scopes - Get available API scopes
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = createServerComponentClient({ cookies });
+    
+    // Verify authentication
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return createAPIError('Unauthorized', 'AUTH_REQUIRED', 401);
+    }
+
+    // Get available scopes
+    const scopes = await apiKeyService.getAvailableScopes();
+
+    // Group scopes by resource for better organization
+    const groupedScopes = scopes.reduce((acc, scope) => {
+      const [action, resource] = scope.scope.split(':');
+      
+      if (!acc[resource]) {
+        acc[resource] = [];
+      }
+      
+      acc[resource].push({
+        scope: scope.scope,
+        action,
+        description: scope.description
+      });
+      
+      return acc;
+    }, {} as Record<string, Array<{ scope: string; action: string; description: string }>>);
+
+    return createAPIResponse({
+      scopes,
+      groupedByResource: groupedScopes,
+      actions: ['read', 'write', 'delete', 'manage', 'admin'],
+      resources: Object.keys(groupedScopes).sort()
+    });
+    
+  } catch (error) {
+    console.error('Failed to get API scopes:', error);
+    return createAPIError(
+      'Failed to get API scopes',
+      'SCOPES_FAILED',
+      500,
+      error instanceof Error ? error.message : 'Unknown error'
+    );
+  }
+}

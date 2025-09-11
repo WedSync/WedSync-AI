@@ -1,0 +1,309 @@
+# WedSync Bulletproof Docker Setup - Optimized for 24/7 Development
+# Based on Docker Builder learnings and best practices
+
+# Shared logging configuration
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+    labels: "service,version"
+
+# Shared restart policy
+x-restart-policy: &restart-policy
+  restart: unless-stopped
+
+services:
+  # WedSync Application - Bulletproof Development Server
+  wedsync:
+    image: node:20-alpine
+    container_name: wedsync-bulletproof
+    hostname: wedsync-app
+    
+    ports:
+      - "3000:3000"
+    
+    environment:
+      # Core Next.js settings
+      - NODE_ENV=development
+      - HOSTNAME=0.0.0.0
+      - PORT=3000
+      
+      # Database connections
+      - DATABASE_URL=postgresql://postgres.azhgptjkqiiqvvvhapml:postgres@aws-0-us-west-1.pooler.supabase.com:6543/postgres
+      - NEXT_PUBLIC_SUPABASE_URL=https://azhgptjkqiiqvvvhapml.supabase.co
+      - NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF6aGdwdGprcWlpcXZ2dmhhcG1sIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzUyMTk4MDUsImV4cCI6MjA1MDc5NTgwNX0.oXoH0zRHEI71mLIcuwXsxR_CWMkZL5JsVgE5BG9LzY0
+      - NEXT_PUBLIC_STORAGE_BUCKET=wedsync-uploads
+      - NEXTAUTH_URL=http://localhost:3000
+      - NEXT_PUBLIC_APP_URL=http://localhost:3000
+      
+      # Performance optimizations
+      - NODE_OPTIONS=--max-old-space-size=8192 --max-semi-space-size=1024
+      - NEXT_PUBLIC_ENABLE_REALTIME_SYNC=true
+      - NEXT_TELEMETRY_DISABLED=1
+      
+      # Docker file watching
+      - CHOKIDAR_USEPOLLING=true
+      - WATCHPACK_POLLING=true
+      - CHOKIDAR_INTERVAL=1000
+      - CHOKIDAR_BINARYINTERVAL=2000
+      
+      # Development optimizations
+      - FORCE_COLOR=1
+      - NPM_CONFIG_COLOR=always
+    
+    working_dir: /app
+    
+    # Optimized startup command with error handling
+    command: |
+      sh -c "
+        set -e
+        echo '🚀 Starting WedSync Bulletproof Setup...'
+        
+        echo '📦 Installing system dependencies...'
+        apk add --no-cache --update \
+          python3 py3-pip make g++ \
+          cairo-dev jpeg-dev pango-dev giflib-dev pixman-dev \
+          curl git bash procps htop \
+          pkgconfig libffi-dev \
+          && echo '✅ System dependencies installed'
+        
+        echo '🔧 Preparing configuration...'
+        if [ -f next.config.simple.js ]; then
+          cp next.config.simple.js next.config.js
+          echo '✅ Using simplified Next.js config'
+        fi
+        
+        echo '📚 Installing npm dependencies...'
+        if [ ! -d node_modules ] || [ package.json -nt node_modules ]; then
+          npm install --legacy-peer-deps --no-audit --progress=true
+          echo '✅ Dependencies installed successfully'
+        else
+          echo '⚡ Dependencies already installed, skipping'
+        fi
+        
+        echo '🌐 Starting Next.js development server...'
+        exec npm run dev -- --hostname 0.0.0.0 --port 3000
+      "
+    
+    volumes:
+      # Source code mounts (optimized for performance)
+      - ./src:/app/src:cached
+      - ./public:/app/public:cached
+      - ./styles:/app/styles:cached
+      - ./components:/app/components:cached
+      - ./lib:/app/lib:cached
+      - ./hooks:/app/hooks:cached
+      - ./utils:/app/utils:cached
+      - ./types:/app/types:cached
+      - ./app:/app/app:cached
+      
+      # Configuration files
+      - ./package.json:/app/package.json:ro
+      - ./package-lock.json:/app/package-lock.json:cached
+      - ./next.config.js:/app/next.config.js:cached
+      - ./next.config.simple.js:/app/next.config.simple.js:ro
+      - ./tailwind.config.js:/app/tailwind.config.js:ro
+      - ./tsconfig.json:/app/tsconfig.json:ro
+      - ./.env.local:/app/.env.local:ro
+      
+      # Persistent volumes (prevents reinstall on restart)
+      - wedsync_node_modules:/app/node_modules
+      - wedsync_next_cache:/app/.next
+      - wedsync_npm_cache:/root/.npm
+      
+      # Logs
+      - wedsync_logs:/app/logs
+    
+    <<: *restart-policy
+    logging: *default-logging
+    
+    networks:
+      - wedsync-network
+    
+    # Comprehensive health check
+    healthcheck:
+      test: |
+        curl -f http://localhost:3000/api/health 2>/dev/null ||
+        curl -f http://localhost:3000 2>/dev/null ||
+        (echo "❌ Health check failed" && exit 1)
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s  # 3 minutes for initial startup
+    
+    # Resource limits to prevent system overload
+    deploy:
+      resources:
+        limits:
+          memory: 6G
+          cpus: '4.0'
+        reservations:
+          memory: 2G
+          cpus: '1.0'
+    
+    # Labels for monitoring
+    labels:
+      - "wedsync.service=app"
+      - "wedsync.version=bulletproof"
+      - "wedsync.environment=development"
+
+  # PostgreSQL for local development (optional - can use Supabase)
+  postgres-local:
+    image: postgres:15-alpine
+    container_name: wedsync-postgres-local
+    
+    environment:
+      - POSTGRES_DB=wedsync_dev
+      - POSTGRES_USER=wedsync
+      - POSTGRES_PASSWORD=wedsync_dev_pass
+      - POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256
+    
+    ports:
+      - "5433:5432"  # Different port to avoid conflicts
+    
+    volumes:
+      - postgres_local_data:/var/lib/postgresql/data
+      - ./supabase/migrations:/docker-entrypoint-initdb.d:ro
+    
+    <<: *restart-policy
+    logging: *default-logging
+    
+    networks:
+      - wedsync-network
+    
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wedsync -d wedsync_dev"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    
+    # Optimize PostgreSQL for development
+    command: |
+      postgres
+        -c max_connections=100
+        -c shared_buffers=256MB
+        -c effective_cache_size=1GB
+        -c maintenance_work_mem=64MB
+        -c checkpoint_completion_target=0.9
+        -c wal_buffers=16MB
+        -c default_statistics_target=100
+        -c random_page_cost=1.1
+        -c effective_io_concurrency=200
+    
+    profiles:
+      - local-db  # Only start with --profile local-db
+
+  # Redis for caching and sessions
+  redis:
+    image: redis:7-alpine
+    container_name: wedsync-redis-bulletproof
+    
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --save 60 1000
+      --tcp-keepalive 60
+    
+    ports:
+      - "6379:6379"
+    
+    volumes:
+      - redis_data:/data
+    
+    <<: *restart-policy
+    logging: *default-logging
+    
+    networks:
+      - wedsync-network
+    
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    
+    profiles:
+      - caching  # Only start with --profile caching
+
+  # System monitoring
+  watchtower:
+    image: containrrr/watchtower
+    container_name: wedsync-watchtower
+    
+    command: --cleanup --interval 3600 --include-restarting
+    
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    
+    <<: *restart-policy
+    logging: *default-logging
+    
+    networks:
+      - wedsync-network
+    
+    profiles:
+      - monitoring
+
+  # Log aggregation
+  dozzle:
+    image: amir20/dozzle:latest
+    container_name: wedsync-logs
+    
+    ports:
+      - "9999:8080"
+    
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    
+    environment:
+      - DOZZLE_TAILSIZE=1000
+      - DOZZLE_FILTER=name=wedsync
+    
+    <<: *restart-policy
+    logging: *default-logging
+    
+    networks:
+      - wedsync-network
+    
+    profiles:
+      - monitoring
+
+networks:
+  wedsync-network:
+    driver: bridge
+    name: wedsync-bulletproof-network
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  # Persistent application data
+  wedsync_node_modules:
+    driver: local
+    name: wedsync_node_modules_bulletproof
+  
+  wedsync_next_cache:
+    driver: local
+    name: wedsync_next_cache_bulletproof
+  
+  wedsync_npm_cache:
+    driver: local
+    name: wedsync_npm_cache_bulletproof
+  
+  wedsync_logs:
+    driver: local
+    name: wedsync_logs_bulletproof
+  
+  # Database data
+  postgres_local_data:
+    driver: local
+    name: wedsync_postgres_local_bulletproof
+  
+  redis_data:
+    driver: local
+    name: wedsync_redis_bulletproof

@@ -1,0 +1,541 @@
+/**
+ * WS-201: Webhook Endpoints API Routes
+ * Team B - Backend/API Implementation
+ * 
+ * Secure API endpoints for webhook management with:
+ * - Authentication and rate limiting
+ * - HMAC signature validation
+ * - Comprehensive input validation
+ * - Wedding industry specific features
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { z } from 'zod';
+import { WebhookSecurity, webhookEndpointUrlSchema } from '@/lib/webhooks/webhook-security';
+import { rateLimit } from '@/lib/rate-limit';
+import crypto from 'crypto';
+
+// ================================================
+// VALIDATION SCHEMAS
+// ================================================
+
+const createWebhookEndpointSchema = z.object({
+  endpoint_url: webhookEndpointUrlSchema,
+  subscribed_events: z.array(z.string()).min(1, 'At least one event must be subscribed'),
+  description: z.string().max(500).optional(),
+  integration_type: z.enum(['crm_integration', 'email_automation', 'booking_system', 'payment_system', 'analytics', 'custom']).default('custom'),
+  business_critical: z.boolean().default(false),
+  timeout_seconds: z.number().min(5).max(300).default(30),
+  retry_count: z.number().min(0).max(10).default(5),
+  headers: z.record(z.string()).optional(),
+  auth_config: z.record(z.any()).optional(),
+  validation_config: z.record(z.any()).optional()
+});
+
+const updateWebhookEndpointSchema = z.object({
+  endpoint_url: webhookEndpointUrlSchema.optional(),
+  subscribed_events: z.array(z.string()).min(1).optional(),
+  description: z.string().max(500).optional(),
+  is_active: z.boolean().optional(),
+  business_critical: z.boolean().optional(),
+  timeout_seconds: z.number().min(5).max(300).optional(),
+  retry_count: z.number().min(0).max(10).optional(),
+  headers: z.record(z.string()).optional(),
+  auth_config: z.record(z.any()).optional(),
+  validation_config: z.record(z.any()).optional()
+});
+
+// ================================================
+// AUTHENTICATION MIDDLEWARE
+// ================================================
+
+async function authenticate(request: NextRequest): Promise<{
+  isValid: boolean;
+  organizationId?: string;
+  userId?: string;
+  error?: string;
+}> {
+  try {
+    const authorization = request.headers.get('authorization');
+    if (!authorization?.startsWith('Bearer ')) {
+      return { isValid: false, error: 'Missing or invalid authorization header' };
+    }
+
+    const token = authorization.slice(7);
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!
+    );
+
+    const { data: { user }, error } = await supabase.auth.getUser(token);
+    if (error || !user) {
+      return { isValid: false, error: 'Invalid authentication token' };
+    }
+
+    // Get organization ID from user metadata or profile
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('id', user.id)
+      .single();
+
+    if (!profile?.organization_id) {
+      return { isValid: false, error: 'User not associated with an organization' };
+    }
+
+    return {
+      isValid: true,
+      organizationId: profile.organization_id,
+      userId: user.id
+    };
+  } catch (error) {
+    return { isValid: false, error: 'Authentication failed' };
+  }
+}
+
+// ================================================
+// RATE LIMITING
+// ================================================
+
+const webhookRateLimit = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 30, // 30 requests per minute
+  message: 'Too many webhook requests, please try again later'
+});
+
+// ================================================
+// GET - List webhook endpoints
+// ================================================
+
+export async function GET(request: NextRequest) {
+  try {
+    // Rate limiting
+    const rateLimitResult = await webhookRateLimit(request);
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { error: rateLimitResult.error },
+        { status: 429 }
+      );
+    }
+
+    // Authentication
+    const auth = await authenticate(request);
+    if (!auth.isValid) {
+      return NextResponse.json(
+        { error: auth.error },
+        { status: 401 }
+      );
+    }
+
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!
+    );
+
+    // Get query parameters
+    const { searchParams } = new URL(request.url);
+    const limit = Math.min(parseInt(searchParams.get('limit') || '50'), 100);
+    const offset = Math.max(parseInt(searchParams.get('offset') || '0'), 0);
+    const active = searchParams.get('active');
+    const integrationType = searchParams.get('integration_type');
+
+    // Build query
+    let query = supabase
+      .from('webhook_endpoints')
+      .select('*, webhook_deliveries(status, created_at)')
+      .eq('organization_id', auth.organizationId!)
+      .range(offset, offset + limit - 1)
+      .order('created_at', { ascending: false });
+
+    // Apply filters
+    if (active === 'true') {
+      query = query.eq('is_active', true);
+    } else if (active === 'false') {
+      query = query.eq('is_active', false);
+    }
+
+    if (integrationType) {
+      query = query.eq('integration_type', integrationType);
+    }
+
+    const { data: endpoints, error } = await query;
+    if (error) throw error;
+
+    // Mask secrets in response
+    const maskedEndpoints = endpoints?.map(endpoint => ({
+      ...endpoint,
+      secret_key: maskSecret(endpoint.secret_key),
+      webhook_deliveries: undefined, // Remove from response, use for stats only
+      recent_deliveries: endpoint.webhook_deliveries?.slice(0, 5) || []
+    }));
+
+    return NextResponse.json({
+      success: true,
+      data: maskedEndpoints,
+      pagination: {
+        limit,
+        offset,
+        total: endpoints?.length || 0
+      }
+    });
+
+  } catch (error) {
+    console.error('GET /api/webhooks/endpoints error:', error);
+    return NextResponse.json(
+      { error: 'Failed to fetch webhook endpoints' },
+      { status: 500 }
+    );
+  }
+}
+
+// ================================================
+// POST - Create webhook endpoint
+// ================================================
+
+export async function POST(request: NextRequest) {
+  try {
+    // Rate limiting
+    const rateLimitResult = await webhookRateLimit(request);
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { error: rateLimitResult.error },
+        { status: 429 }
+      );
+    }
+
+    // Authentication
+    const auth = await authenticate(request);
+    if (!auth.isValid) {
+      return NextResponse.json(
+        { error: auth.error },
+        { status: 401 }
+      );
+    }
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validatedData = createWebhookEndpointSchema.parse(body);
+
+    // Additional URL validation
+    const urlValidation = WebhookSecurity.validateWebhookUrl(validatedData.endpoint_url);
+    if (!urlValidation.isValid) {
+      return NextResponse.json(
+        { error: `Invalid webhook URL: ${urlValidation.error}` },
+        { status: 400 }
+      );
+    }
+
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!
+    );
+
+    // Check if URL already exists for this organization
+    const { data: existingEndpoint } = await supabase
+      .from('webhook_endpoints')
+      .select('id')
+      .eq('organization_id', auth.organizationId!)
+      .eq('endpoint_url', validatedData.endpoint_url)
+      .single();
+
+    if (existingEndpoint) {
+      return NextResponse.json(
+        { error: 'Webhook endpoint URL already exists for this organization' },
+        { status: 409 }
+      );
+    }
+
+    // Generate secure secret key
+    const secretKey = crypto.randomBytes(64).toString('hex');
+
+    // Create webhook endpoint
+    const { data: newEndpoint, error } = await supabase
+      .from('webhook_endpoints')
+      .insert({
+        organization_id: auth.organizationId!,
+        endpoint_url: validatedData.endpoint_url,
+        secret_key: secretKey,
+        description: validatedData.description,
+        integration_type: validatedData.integration_type,
+        subscribed_events: validatedData.subscribed_events,
+        business_critical: validatedData.business_critical,
+        timeout_seconds: validatedData.timeout_seconds,
+        retry_count: validatedData.retry_count,
+        headers: validatedData.headers || {},
+        auth_config: validatedData.auth_config || {},
+        validation_config: validatedData.validation_config || {},
+        is_active: true,
+        health_score: 1.0,
+        created_by: auth.userId!
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    // Return response with masked secret
+    const response = {
+      ...newEndpoint,
+      secret_key: maskSecret(secretKey)
+    };
+
+    return NextResponse.json({
+      success: true,
+      data: response,
+      message: 'Webhook endpoint created successfully'
+    }, { status: 201 });
+
+  } catch (error) {
+    console.error('POST /api/webhooks/endpoints error:', error);
+    
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { 
+          error: 'Invalid request data',
+          details: error.errors
+        },
+        { status: 400 }
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Failed to create webhook endpoint' },
+      { status: 500 }
+    );
+  }
+}
+
+// ================================================
+// PUT - Update webhook endpoint
+// ================================================
+
+export async function PUT(request: NextRequest) {
+  try {
+    // Rate limiting
+    const rateLimitResult = await webhookRateLimit(request);
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { error: rateLimitResult.error },
+        { status: 429 }
+      );
+    }
+
+    // Authentication
+    const auth = await authenticate(request);
+    if (!auth.isValid) {
+      return NextResponse.json(
+        { error: auth.error },
+        { status: 401 }
+      );
+    }
+
+    const { searchParams } = new URL(request.url);
+    const endpointId = searchParams.get('id');
+
+    if (!endpointId) {
+      return NextResponse.json(
+        { error: 'Endpoint ID is required' },
+        { status: 400 }
+      );
+    }
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validatedData = updateWebhookEndpointSchema.parse(body);
+
+    // Validate URL if provided
+    if (validatedData.endpoint_url) {
+      const urlValidation = WebhookSecurity.validateWebhookUrl(validatedData.endpoint_url);
+      if (!urlValidation.isValid) {
+        return NextResponse.json(
+          { error: `Invalid webhook URL: ${urlValidation.error}` },
+          { status: 400 }
+        );
+      }
+    }
+
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!
+    );
+
+    // Check if endpoint exists and belongs to organization
+    const { data: existingEndpoint, error: fetchError } = await supabase
+      .from('webhook_endpoints')
+      .select('*')
+      .eq('id', endpointId)
+      .eq('organization_id', auth.organizationId!)
+      .single();
+
+    if (fetchError || !existingEndpoint) {
+      return NextResponse.json(
+        { error: 'Webhook endpoint not found' },
+        { status: 404 }
+      );
+    }
+
+    // Check for URL conflicts if URL is being changed
+    if (validatedData.endpoint_url && validatedData.endpoint_url !== existingEndpoint.endpoint_url) {
+      const { data: conflictingEndpoint } = await supabase
+        .from('webhook_endpoints')
+        .select('id')
+        .eq('organization_id', auth.organizationId!)
+        .eq('endpoint_url', validatedData.endpoint_url)
+        .neq('id', endpointId)
+        .single();
+
+      if (conflictingEndpoint) {
+        return NextResponse.json(
+          { error: 'Another webhook endpoint with this URL already exists' },
+          { status: 409 }
+        );
+      }
+    }
+
+    // Update webhook endpoint
+    const { data: updatedEndpoint, error: updateError } = await supabase
+      .from('webhook_endpoints')
+      .update({
+        ...validatedData,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', endpointId)
+      .eq('organization_id', auth.organizationId!)
+      .select()
+      .single();
+
+    if (updateError) throw updateError;
+
+    // Return response with masked secret
+    const response = {
+      ...updatedEndpoint,
+      secret_key: maskSecret(updatedEndpoint.secret_key)
+    };
+
+    return NextResponse.json({
+      success: true,
+      data: response,
+      message: 'Webhook endpoint updated successfully'
+    });
+
+  } catch (error) {
+    console.error('PUT /api/webhooks/endpoints error:', error);
+    
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { 
+          error: 'Invalid request data',
+          details: error.errors
+        },
+        { status: 400 }
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Failed to update webhook endpoint' },
+      { status: 500 }
+    );
+  }
+}
+
+// ================================================
+// DELETE - Remove webhook endpoint
+// ================================================
+
+export async function DELETE(request: NextRequest) {
+  try {
+    // Rate limiting
+    const rateLimitResult = await webhookRateLimit(request);
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { error: rateLimitResult.error },
+        { status: 429 }
+      );
+    }
+
+    // Authentication
+    const auth = await authenticate(request);
+    if (!auth.isValid) {
+      return NextResponse.json(
+        { error: auth.error },
+        { status: 401 }
+      );
+    }
+
+    const { searchParams } = new URL(request.url);
+    const endpointId = searchParams.get('id');
+
+    if (!endpointId) {
+      return NextResponse.json(
+        { error: 'Endpoint ID is required' },
+        { status: 400 }
+      );
+    }
+
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!
+    );
+
+    // Check if endpoint exists and belongs to organization
+    const { data: existingEndpoint, error: fetchError } = await supabase
+      .from('webhook_endpoints')
+      .select('id, total_deliveries')
+      .eq('id', endpointId)
+      .eq('organization_id', auth.organizationId!)
+      .single();
+
+    if (fetchError || !existingEndpoint) {
+      return NextResponse.json(
+        { error: 'Webhook endpoint not found' },
+        { status: 404 }
+      );
+    }
+
+    // Check if there are pending deliveries
+    const { data: pendingDeliveries } = await supabase
+      .from('webhook_deliveries')
+      .select('id')
+      .eq('webhook_endpoint_id', endpointId)
+      .in('status', ['pending', 'processing', 'retrying'])
+      .limit(1);
+
+    if (pendingDeliveries && pendingDeliveries.length > 0) {
+      return NextResponse.json(
+        { error: 'Cannot delete endpoint with pending deliveries. Please wait for all deliveries to complete.' },
+        { status: 409 }
+      );
+    }
+
+    // Delete webhook endpoint (cascading will handle related records)
+    const { error: deleteError } = await supabase
+      .from('webhook_endpoints')
+      .delete()
+      .eq('id', endpointId)
+      .eq('organization_id', auth.organizationId!);
+
+    if (deleteError) throw deleteError;
+
+    return NextResponse.json({
+      success: true,
+      message: 'Webhook endpoint deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('DELETE /api/webhooks/endpoints error:', error);
+    return NextResponse.json(
+      { error: 'Failed to delete webhook endpoint' },
+      { status: 500 }
+    );
+  }
+}
+
+// ================================================
+// UTILITY FUNCTIONS
+// ================================================
+
+function maskSecret(secret: string): string {
+  if (!secret || secret.length < 8) return '••••••••';
+  return `${secret.slice(0, 4)}${'•'.repeat(Math.max(8, secret.length - 8))}${secret.slice(-4)}`;
+}

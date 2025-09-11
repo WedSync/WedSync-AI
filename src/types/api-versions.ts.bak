@@ -1,0 +1,175 @@
+// API Versioning Types for WS-200 - Team A Implementation
+export interface APIVersionData {
+  versions: APIVersionInfo[];
+  usage_analytics: VersionUsageAnalytics[];
+  migration_progress: MigrationProgressSummary;
+  deprecation_schedule: DeprecationSchedule[];
+  client_breakdown: ClientBreakdownData[];
+  wedding_season_impact: SeasonImpactAnalysis;
+}
+
+export interface APIVersionInfo {
+  version: string;
+  status: 'development' | 'beta' | 'stable' | 'deprecated' | 'sunset';
+  release_date: string;
+  deprecation_date?: string;
+  sunset_date?: string;
+  active_clients: number;
+  monthly_requests: number;
+  wedding_features: string[];
+  breaking_changes: string[];
+}
+
+export interface VersionUsageAnalytics {
+  version: string;
+  unique_clients: number;
+  total_requests: number;
+  wedding_bookings_affected: number;
+  peak_usage_periods: PeakUsagePeriod[];
+  geographic_distribution: GeographicUsage[];
+}
+
+export interface PeakUsagePeriod {
+  period: string;
+  requests_per_hour: number;
+  wedding_season_correlation: number;
+}
+
+export interface GeographicUsage {
+  region: string;
+  client_count: number;
+  request_volume: number;
+}
+
+export interface MigrationProgressSummary {
+  total_migrations: number;
+  completed_migrations: number;
+  in_progress_migrations: number;
+  failed_migrations: number;
+  wedding_critical_migrations: number;
+  estimated_completion_date: string;
+}
+
+export interface DeprecationSchedule {
+  version: string;
+  description: string;
+  deprecation_date: string;
+  sunset_date: string;
+  affected_clients: number;
+  wedding_impact_level: 'low' | 'medium' | 'high' | 'critical';
+  migration_resources: MigrationResource[];
+}
+
+export interface MigrationResource {
+  type: 'guide' | 'tool' | 'support';
+  title: string;
+  url: string;
+  estimated_time: string;
+}
+
+export interface ClientBreakdownData {
+  client_id: string;
+  business_name: string;
+  business_type: 'photographer' | 'venue' | 'caterer' | 'planner' | 'florist' | 'other';
+  current_version: string;
+  integration_complexity: 'simple' | 'moderate' | 'complex';
+  last_api_call: string;
+  migration_status: 'not_started' | 'in_progress' | 'completed' | 'failed';
+  wedding_season_priority: boolean;
+}
+
+export interface SeasonImpactAnalysis {
+  peak_wedding_months: string[];
+  migration_window_recommendations: MigrationWindow[];
+  business_impact_projections: BusinessImpactProjection[];
+}
+
+export interface MigrationWindow {
+  start_date: string;
+  end_date: string;
+  recommended_versions: string[];
+  risk_level: 'low' | 'medium' | 'high';
+  affected_wedding_count: number;
+}
+
+export interface BusinessImpactProjection {
+  version: string;
+  migration_period: string;
+  projected_downtime: string;
+  revenue_impact_estimate: number;
+  wedding_disruption_risk: number;
+}
+
+export interface MigrationPlan {
+  from_version: string;
+  to_version: string;
+  total_estimated_hours: number;
+  steps: MigrationStep[];
+  benefits: string[];
+  breaking_changes: BreakingChange[];
+  rollback_plan: RollbackStep[];
+  wedding_testing_requirements: WeddingTestingRequirement[];
+}
+
+export interface MigrationStep {
+  step_number: number;
+  title: string;
+  description: string;
+  estimated_time: string;
+  difficulty: 'easy' | 'moderate' | 'difficult';
+  dependencies: string[];
+  testing_requirements: string[];
+  wedding_specific_notes: string[];
+}
+
+export interface BreakingChange {
+  endpoint: string;
+  change_type: 'removed' | 'modified' | 'deprecated';
+  description: string;
+  migration_instructions: string;
+  wedding_feature_impact: string[];
+}
+
+export interface RollbackStep {
+  step_number: number;
+  description: string;
+  estimated_time: string;
+  data_preservation_notes: string;
+}
+
+export interface WeddingTestingRequirement {
+  feature: string;
+  test_scenarios: string[];
+  seasonal_considerations: string[];
+  client_notification_needed: boolean;
+}
+
+// API Response types
+export interface APIVersionResponse {
+  success: boolean;
+  data: APIVersionData;
+  message?: string;
+}
+
+export interface MigrationPlanResponse {
+  success: boolean;
+  data: MigrationPlan;
+  message?: string;
+}
+
+// Form types for admin interfaces
+export interface CreateVersionRequest {
+  version: string;
+  status: APIVersionInfo['status'];
+  wedding_features: string[];
+  breaking_changes: string[];
+  release_notes: string;
+}
+
+export interface ScheduleDeprecationRequest {
+  version: string;
+  deprecation_date: string;
+  sunset_date: string;
+  notification_strategy: 'immediate' | 'gradual' | 'seasonal';
+  migration_resources: MigrationResource[];
+}

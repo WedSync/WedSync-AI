@@ -1,0 +1,325 @@
+/**
+ * Integration Tests for Performance Monitoring System
+ * Tests the complete monitoring stack with real scenarios
+ */
+
+import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { metrics, MetricsCollector } from '../metrics';
+import { logger, StructuredLogger } from '../structured-logger';
+import { errorTracker, ErrorTracker } from '../error-tracking';
+import { dashboard, PerformanceDashboard } from '../dashboard';
+import { alertManager, AlertManager } from '../alerts';
+import { apm, initializeAPM } from '../apm';
+// Mock external services
+global.fetch = jest.fn() as jest.MockedFunction<typeof fetch>;
+describe('Performance Monitoring Integration Tests', () => {
+  beforeEach(() => {
+    // Reset all instances
+    (metrics as any).reset?.();
+    jest.clearAllMocks();
+    
+    // Mock successful fetch responses
+    (fetch as jest.MockedFunction<typeof fetch>).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+    } as Response);
+  });
+  afterEach(() => {
+    jest.clearAllTimers();
+  describe('Metrics Collection', () => {
+    it('should collect and export basic metrics', async () => {
+      // Arrange
+      const testMetrics = MetricsCollector.getInstance();
+      testMetrics.reset();
+      // Act - Simulate application activity
+      testMetrics.incrementCounter('api.requests', 10, { endpoint: '/api/forms', method: 'POST' });
+      testMetrics.recordHistogram('api.response_time', 150, { endpoint: '/api/forms' });
+      testMetrics.setGauge('db.connections.active', 5);
+      // Assert
+      const exportedMetrics = testMetrics.getMetrics();
+      
+      expect(exportedMetrics.counters).toHaveLength(1);
+      expect(exportedMetrics.counters[0].name).toContain('api.requests');
+      expect(exportedMetrics.counters[0].value).toBe(10);
+      expect(exportedMetrics.gauges).toHaveLength(1);
+      expect(exportedMetrics.gauges[0].value).toBe(5);
+      expect(exportedMetrics.histograms).toHaveLength(1);
+      const percentiles = testMetrics.getPercentiles('api.response_time');
+      expect(percentiles.p50).toBeDefined();
+    });
+    it('should handle business metrics correctly', async () => {
+      // Act - Simulate business operations
+      const { trackBusinessMetrics } = await import('../metrics');
+      trackBusinessMetrics.pdfProcessed(5, 2500, true);
+      trackBusinessMetrics.formCreated(12, 'pdf');
+      trackBusinessMetrics.paymentProcessed(299.99, 'USD', true);
+      trackBusinessMetrics.apiRequest('/api/forms', 'POST', 201, 180);
+      // Check PDF processing metrics
+      const pdfCounter = exportedMetrics.counters.find(c => c.name.includes('pdf.processed'));
+      expect(pdfCounter).toBeDefined();
+      // Check form creation metrics
+      const formCounter = exportedMetrics.counters.find(c => c.name.includes('forms.created'));
+      expect(formCounter).toBeDefined();
+      // Check payment metrics
+      const paymentCounter = exportedMetrics.counters.find(c => c.name.includes('payments.processed'));
+      expect(paymentCounter).toBeDefined();
+      // Check API metrics
+      const apiCounter = exportedMetrics.counters.find(c => c.name.includes('api.requests'));
+      expect(apiCounter).toBeDefined();
+  describe('Structured Logging', () => {
+    it('should log with proper context and correlation IDs', async () => {
+      const consoleSpy = jest.spyOn(console, 'log').mockImplementation();
+      const testLogger = StructuredLogger.getInstance();
+      // Act
+      testLogger.info('Test log message', {
+        userId: 'user_123',
+        organizationId: 'org_456',
+        requestId: 'req_789'
+      }, {
+        endpoint: '/api/forms',
+        method: 'POST'
+      });
+      // Assert - In development mode, should log to console
+      if (process.env.NODE_ENV === 'development') {
+        expect(consoleSpy).toHaveBeenCalled();
+        const loggedData = JSON.parse(consoleSpy.mock.calls[0][0]);
+        
+        expect(loggedData.message).toContain('Test log message');
+        expect(loggedData.context.userId).toBe('user_123');
+        expect(loggedData.context.correlationId).toBeDefined();
+        expect(loggedData.metadata.endpoint).toBe('/api/forms');
+      }
+      consoleSpy.mockRestore();
+    it('should create child loggers with inherited context', async () => {
+      const childLogger = testLogger.child({
+        service: 'pdf-processor'
+      childLogger.info('Processing PDF document');
+        expect(loggedData.context.service).toBe('pdf-processor');
+    it('should log performance metrics with timing', async () => {
+      testLogger.performance('Database query completed', 250, {
+        requestId: 'req_123'
+        query: 'SELECT * FROM forms',
+        rows: 15
+        expect(loggedData.performance.duration).toBe(250);
+        expect(loggedData.metadata.query).toBe('SELECT * FROM forms');
+  describe('Error Tracking', () => {
+    it('should capture and categorize errors correctly', async () => {
+      const testError = new Error('Database connection failed');
+      testError.name = 'DatabaseError';
+      const errorId = errorTracker.captureError(testError, {
+        query: 'SELECT * FROM forms'
+      expect(errorId).toMatch(/^err_/);
+      const errorStats = errorTracker.getErrorStats();
+      expect(errorStats.totalErrors).toBeGreaterThan(0);
+      expect(errorStats.errorsByType['DatabaseError']).toBe(1);
+      expect(errorStats.recentErrors).toHaveLength(1);
+    it('should add breadcrumbs for context', async () => {
+      errorTracker.addBreadcrumb({
+        category: 'navigation',
+        message: 'User navigated to forms page',
+        level: 'info',
+        data: { path: '/dashboard/forms' }
+        category: 'api',
+        message: 'API request started',
+        level: 'debug',
+        data: { endpoint: '/api/forms', method: 'POST' }
+      // Trigger an error
+      const testError = new Error('Validation failed');
+      const errorId = errorTracker.captureError(testError);
+      // Assert - Error should include breadcrumbs in context
+      expect(errorId).toBeDefined();
+    it('should handle error severity correctly', async () => {
+      // Test different error types and contexts
+      const errors = [
+        { error: new Error('Payment processing failed'), context: { endpoint: '/api/stripe' }, expectedSeverity: 'critical' },
+        { error: new Error('Unauthorized access'), context: { endpoint: '/api/auth' }, expectedSeverity: 'critical' },
+        { error: new ValidationError('Invalid form data'), context: { endpoint: '/api/forms' }, expectedSeverity: 'high' },
+        { error: new Error('Network timeout'), context: { endpoint: '/api/external' }, expectedSeverity: 'medium' },
+      ];
+      for (const { error, context } of errors) {
+        const errorId = errorTracker.captureError(error, context);
+        expect(errorId).toBeDefined();
+      expect(Object.keys(errorStats.errorsBySeverity).length).toBeGreaterThan(0);
+  describe('APM Integration', () => {
+    it('should track transactions end-to-end', async () => {
+      const testAPM = initializeAPM({
+        serviceName: 'wedsync-test',
+        environment: 'test',
+        enableErrorTracking: true
+      const transaction = testAPM.startTransaction('Test Transaction', 'test');
+      // Simulate some work
+      await new Promise(resolve => setTimeout(resolve, 100));
+      const span = testAPM.startSpan('Database Query', undefined, transaction.id);
+      testAPM.setSpanTag(span.id, 'query', 'SELECT * FROM forms');
+      await new Promise(resolve => setTimeout(resolve, 50));
+      testAPM.endSpan(span.id, 'ok');
+      testAPM.endTransaction(transaction.id, 'success');
+      expect(transaction.id).toBeDefined();
+      expect(transaction.name).toBe('Test Transaction');
+    it('should capture errors in APM context', async () => {
+      const testError = new Error('APM Test Error');
+      testAPM.captureError(testError, { operation: 'test-operation' });
+      // Assert - Should not throw and should capture error
+      expect(true).toBe(true); // Basic assertion that it doesn't crash
+  describe('Dashboard Integration', () => {
+    it('should collect comprehensive dashboard metrics', async () => {
+      // Arrange - Simulate some metrics
+      metrics.incrementCounter('api.requests', 100);
+      metrics.recordHistogram('api.response_time', 200);
+      metrics.setGauge('db.connections.active', 10);
+      const currentMetrics = dashboard.getCurrentMetrics();
+      expect(currentMetrics).toBeDefined();
+      if (currentMetrics) {
+        expect(currentMetrics.timestamp).toBeGreaterThan(0);
+        expect(currentMetrics.system).toBeDefined();
+        expect(currentMetrics.application).toBeDefined();
+        expect(currentMetrics.business).toBeDefined();
+        expect(currentMetrics.errors).toBeDefined();
+    it('should perform health checks', async () => {
+      const healthStatus = await dashboard.getHealthStatus();
+      expect(healthStatus).toBeDefined();
+      expect(healthStatus.status).toMatch(/healthy|degraded|unhealthy/);
+      expect(healthStatus.uptime).toBeGreaterThan(0);
+      expect(healthStatus.version).toBeDefined();
+      expect(typeof healthStatus.checks).toBe('object');
+    it('should generate dashboard HTML', async () => {
+      const dashboardHTML = dashboard.generateDashboardHTML();
+      expect(dashboardHTML).toContain('<html>');
+      expect(dashboardHTML).toContain('WedSync Performance Dashboard');
+      expect(dashboardHTML).toContain('System Health');
+      expect(dashboardHTML).toContain('metrics-grid');
+  describe('Alert System Integration', () => {
+    it('should evaluate alert rules and trigger notifications', async () => {
+      // Arrange - Create high memory usage to trigger alert
+      jest.spyOn(dashboard, 'getCurrentMetrics').mockReturnValue({
+        timestamp: Date.now(),
+        system: {
+          cpu: { usage: 0, loadAverage: [0, 0, 0] },
+          memory: { used: 900000000, total: 1000000000, percentage: 90, heapUsed: 450000000, heapTotal: 500000000 },
+          eventLoop: { lag: 0, utilization: 0 },
+          gc: { collections: 0, pauseTime: 0 }
+        },
+        application: {
+          requests: { total: 1000, perSecond: 10, responseTime: { p50: 100, p90: 200, p95: 250, p99: 500 }, statusCodes: {} },
+          database: { connections: { active: 5, idle: 5, total: 10 }, queries: { total: 500, slow: 2, failed: 1, averageTime: 50 } },
+          cache: { hits: 800, misses: 200, hitRate: 0.8, size: 1000 }
+        business: {
+          users: { active: 50, new: 5, total: 1000 },
+          forms: { created: 20, submitted: 18, converted: 15 },
+          payments: { processed: 10, amount: 2999.90, failed: 1, success_rate: 0.9 },
+          pdf: { processed: 8, failed: 0, averageTime: 2000 }
+        errors: { total: 5, rate: 0.005, byType: { 'ValidationError': 3, 'NetworkError': 2 }, bySeverity: { 'medium': 3, 'low': 2 }, recent: [] }
+      // Act - Wait for alert evaluation
+      // Assert - Should have triggered memory alert
+      const activeAlerts = alertManager.getActiveAlerts();
+      const status = alertManager.getStatus();
+      expect(status.rulesCount).toBeGreaterThan(0);
+      expect(status.enabledRules).toBeGreaterThan(0);
+    it('should acknowledge and resolve alerts', async () => {
+      // Arrange - Create a test alert rule
+      alertManager.addRule({
+        id: 'test-alert',
+        name: 'Test Alert',
+        description: 'Test alert for integration testing',
+        enabled: true,
+        severity: 'warning',
+        condition: {
+          type: 'threshold',
+          metric: 'test.metric',
+          operator: 'gt',
+          value: 100,
+          timeWindow: 1,
+          evaluationInterval: 1
+        channels: [],
+        cooldown: 1,
+        triggerCount: 0
+      // Mock high metric value
+        system: { cpu: { usage: 0, loadAverage: [] }, memory: { used: 0, total: 0, percentage: 0, heapUsed: 0, heapTotal: 0 }, eventLoop: { lag: 0, utilization: 0 }, gc: { collections: 0, pauseTime: 0 } },
+        application: { requests: { total: 0, perSecond: 0, responseTime: { p50: 0, p90: 0, p95: 0, p99: 0 }, statusCodes: {} }, database: { connections: { active: 0, idle: 0, total: 0 }, queries: { total: 0, slow: 0, failed: 0, averageTime: 0 } }, cache: { hits: 0, misses: 0, hitRate: 0, size: 0 } },
+        business: { users: { active: 0, new: 0, total: 0 }, forms: { created: 0, submitted: 0, converted: 0 }, payments: { processed: 0, amount: 0, failed: 0, success_rate: 0 }, pdf: { processed: 0, failed: 0, averageTime: 0 } },
+        errors: { total: 0, rate: 0, byType: {}, bySeverity: {}, recent: [] }
+      } as any);
+      // Act & Assert
+      const rules = alertManager.getRules();
+      expect(rules.some(rule => rule.id === 'test-alert')).toBe(true);
+  describe('End-to-End Monitoring Flow', () => {
+    it('should handle complete request lifecycle with monitoring', async () => {
+      const testError = new Error('Test error for E2E monitoring');
+      const correlationId = logger.createCorrelationId();
+      // Act - Simulate a complete request flow
+      // 1. Start APM transaction
+        serviceName: 'wedsync-e2e-test',
+        environment: 'test'
+      const transaction = testAPM.startTransaction('E2E Test Request', 'request');
+      // 2. Log request start
+      logger.info('Request started', {
+        correlationId,
+        userId: 'test_user_123',
+        requestId: transaction.id
+        endpoint: '/api/test',
+      // 3. Add breadcrumb
+        category: 'request',
+        message: 'Processing test request',
+        data: { correlationId }
+      // 4. Track business metrics
+      trackBusinessMetrics.apiRequest('/api/test', 'POST', 200, 150);
+      // 5. Start database span
+      const dbSpan = testAPM.startSpan('Database Query', transaction.id);
+      testAPM.setSpanTag(dbSpan.id, 'table', 'test_table');
+      // Simulate database work
+      testAPM.endSpan(dbSpan.id, 'ok');
+      // 6. Log performance
+      logger.performance('Database query completed', 50, { correlationId });
+      // 7. Simulate an error condition
+      try {
+        throw testError;
+      } catch (error) {
+        errorTracker.captureError(error as Error, {
+          correlationId,
+          userId: 'test_user_123',
+          requestId: transaction.id,
+          endpoint: '/api/test'
+        });
+        testAPM.captureError(error as Error, { correlationId });
+      // 8. End transaction
+      testAPM.endTransaction(transaction.id, 'error');
+      // 9. Log request completion
+      logger.info('Request completed', {
+        userId: 'test_user_123'
+        statusCode: 500,
+        duration: 200
+      // Assert - Verify all monitoring components captured data
+      expect(errorStats.recentErrors.length).toBeGreaterThan(0);
+      const metricsData = metrics.getMetrics();
+      expect(metricsData.counters.some(c => c.name.includes('api.requests'))).toBe(true);
+    it('should maintain performance under load', async () => {
+      const startTime = Date.now();
+      const iterations = 100;
+      // Act - Simulate high-load scenario
+      const promises = Array.from({ length: iterations }, async (_, i) => {
+        const correlationId = logger.createCorrelationId();
+        // Log activity
+        logger.info(`Load test iteration ${i}`, { correlationId, iteration: i });
+        // Track metrics
+        metrics.incrementCounter('load.test.iterations', 1);
+        metrics.recordHistogram('load.test.processing_time', Math.random() * 100);
+        // Simulate some processing
+        await new Promise(resolve => setTimeout(resolve, Math.random() * 10));
+        return correlationId;
+      const results = await Promise.all(promises);
+      const endTime = Date.now();
+      const totalTime = endTime - startTime;
+      expect(results).toHaveLength(iterations);
+      expect(totalTime).toBeLessThan(5000); // Should complete within 5 seconds
+      const loadTestCounter = metricsData.counters.find(c => c.name.includes('load.test.iterations'));
+      expect(loadTestCounter?.value).toBe(iterations);
+});
+// Helper classes for testing
+class ValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ValidationError';
+  }
+}

@@ -1,0 +1,517 @@
+/**
+ * WS-140 Trial Management System - Round 2: Trial Milestones Component
+ * Celebrates achievements with animations, confetti effects, and milestone celebrations
+ * Enhanced with Framer Motion animations and interactive engagement elements
+ */
+
+'use client';
+
+import React, { useState, useEffect } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { Card } from '@/components/untitled-ui/card';
+import { Badge } from '@/components/untitled-ui/badge';
+import { Button } from '@/components/untitled-ui/button';
+import {
+  CheckCircle,
+  Trophy,
+  Sparkles,
+  Target,
+  Clock,
+  PartyPopper,
+  Star,
+  Zap,
+  Gift,
+  Crown,
+  Rocket,
+  Heart,
+} from 'lucide-react';
+import {
+  TrialMilestone,
+  MILESTONE_DEFINITIONS,
+  MilestoneType,
+} from '@/types/trial';
+
+interface ConfettiParticle {
+  id: string;
+  x: number;
+  y: number;
+  color: string;
+  delay: number;
+}
+
+interface TrialMilestonesProps {
+  milestones: TrialMilestone[];
+  className?: string;
+  onCelebrationComplete?: (milestone: TrialMilestone) => void;
+  showConfetti?: boolean;
+}
+
+const milestoneIcons = {
+  first_client_connected: Heart,
+  initial_journey_created: Rocket,
+  vendor_added: Star,
+  guest_list_imported: PartyPopper,
+  timeline_created: Target,
+};
+
+const celebrationColors = {
+  first_client_connected: 'from-pink-400 to-rose-600',
+  initial_journey_created: 'from-blue-400 to-indigo-600',
+  vendor_added: 'from-yellow-400 to-orange-600',
+  guest_list_imported: 'from-green-400 to-emerald-600',
+  timeline_created: 'from-purple-400 to-violet-600',
+};
+
+function ConfettiEffect({
+  show,
+  onComplete,
+}: {
+  show: boolean;
+  onComplete?: () => void;
+}) {
+  const [particles, setParticles] = useState<ConfettiParticle[]>([]);
+
+  useEffect(() => {
+    if (!show) return;
+
+    const colors = [
+      '#FF6B6B',
+      '#4ECDC4',
+      '#45B7D1',
+      '#FFA726',
+      '#AB47BC',
+      '#66BB6A',
+    ];
+    const newParticles: ConfettiParticle[] = [];
+
+    for (let i = 0; i < 30; i++) {
+      newParticles.push({
+        id: `particle-${i}`,
+        x: Math.random() * 100,
+        y: Math.random() * 100,
+        color: colors[Math.floor(Math.random() * colors.length)],
+        delay: Math.random() * 0.5,
+      });
+    }
+
+    setParticles(newParticles);
+
+    const timer = setTimeout(() => {
+      setParticles([]);
+      onComplete?.();
+    }, 2500);
+
+    return () => clearTimeout(timer);
+  }, [show, onComplete]);
+
+  return (
+    <div className="fixed inset-0 pointer-events-none z-50 overflow-hidden">
+      <AnimatePresence>
+        {particles.map((particle) => (
+          <motion.div
+            key={particle.id}
+            initial={{
+              x: `${particle.x}vw`,
+              y: '-10vh',
+              rotate: 0,
+              scale: 0,
+            }}
+            animate={{
+              x: `${particle.x + (Math.random() - 0.5) * 20}vw`,
+              y: '110vh',
+              rotate: 360,
+              scale: 1,
+            }}
+            exit={{ opacity: 0 }}
+            transition={{
+              duration: 2,
+              delay: particle.delay,
+              ease: 'easeOut',
+            }}
+            className="absolute w-3 h-3 rounded-full"
+            style={{ backgroundColor: particle.color }}
+          />
+        ))}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+function MilestoneCelebration({
+  milestone,
+  onClose,
+}: {
+  milestone: TrialMilestone;
+  onClose: () => void;
+}) {
+  const Icon =
+    milestoneIcons[milestone.milestone_type as MilestoneType] || Trophy;
+  const colorClass =
+    celebrationColors[milestone.milestone_type as MilestoneType] ||
+    'from-blue-400 to-indigo-600';
+  const timeSaved =
+    MILESTONE_DEFINITIONS[milestone.milestone_type as MilestoneType]
+      ?.estimated_time_savings_hours || 1;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.8 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.8 }}
+      className="fixed inset-0 z-40 flex items-center justify-center p-4 bg-black bg-opacity-50"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ y: 50 }}
+        animate={{ y: 0 }}
+        className="bg-white rounded-2xl p-8 max-w-md w-full mx-4 text-center relative overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Background gradient */}
+        <div
+          className={`absolute inset-0 bg-gradient-to-br ${colorClass} opacity-10`}
+        />
+
+        {/* Trophy icon with animation */}
+        <motion.div
+          initial={{ scale: 0, rotate: -180 }}
+          animate={{ scale: 1, rotate: 0 }}
+          transition={{ delay: 0.3, type: 'spring', stiffness: 200 }}
+          className="relative mb-6"
+        >
+          <div
+            className={`w-20 h-20 mx-auto bg-gradient-to-br ${colorClass} rounded-full flex items-center justify-center shadow-lg`}
+          >
+            <Icon className="w-10 h-10 text-white" />
+          </div>
+          <motion.div
+            animate={{
+              scale: [1, 1.1, 1],
+              opacity: [0.5, 0.8, 0.5],
+            }}
+            transition={{
+              repeat: Infinity,
+              duration: 2,
+              delay: 0.5,
+            }}
+            className="absolute inset-0 w-20 h-20 mx-auto bg-gradient-to-br from-yellow-400 to-amber-500 rounded-full opacity-20"
+          />
+        </motion.div>
+
+        {/* Celebration text */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.5 }}
+        >
+          <h3 className="text-2xl font-bold text-gray-900 mb-2">
+            Congratulations! 🎉
+          </h3>
+          <p className="text-lg font-semibold text-primary-600 mb-1">
+            {milestone.milestone_name}
+          </p>
+          <p className="text-gray-600 mb-6">{milestone.description}</p>
+        </motion.div>
+
+        {/* Impact metrics */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.7 }}
+          className="grid grid-cols-2 gap-4 mb-6"
+        >
+          <div className="bg-green-50 rounded-lg p-3">
+            <Clock className="w-5 h-5 text-green-600 mx-auto mb-1" />
+            <p className="text-sm font-medium text-green-800">
+              {timeSaved}h saved
+            </p>
+          </div>
+          <div className="bg-blue-50 rounded-lg p-3">
+            <Zap className="w-5 h-5 text-blue-600 mx-auto mb-1" />
+            <p className="text-sm font-medium text-blue-800">
+              Impact: {milestone.value_impact_score}/10
+            </p>
+          </div>
+        </motion.div>
+
+        {/* Continue button */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.9 }}
+        >
+          <Button onClick={onClose} className="w-full" variant="primary">
+            <Sparkles className="w-4 h-4 mr-2" />
+            Continue Journey
+          </Button>
+        </motion.div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function MilestoneCard({
+  milestone,
+  index,
+  onCelebrate,
+}: {
+  milestone: TrialMilestone;
+  index: number;
+  onCelebrate: (milestone: TrialMilestone) => void;
+}) {
+  const Icon =
+    milestoneIcons[milestone.milestone_type as MilestoneType] || Trophy;
+  const colorClass =
+    celebrationColors[milestone.milestone_type as MilestoneType] ||
+    'from-blue-400 to-indigo-600';
+  const definition =
+    MILESTONE_DEFINITIONS[milestone.milestone_type as MilestoneType];
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: index * 0.1 }}
+      whileHover={{ scale: 1.02, y: -2 }}
+      className="relative"
+    >
+      <Card
+        className={`p-6 transition-all duration-200 ${
+          milestone.achieved
+            ? 'bg-gradient-to-br from-green-50 to-emerald-50 border-green-200 shadow-lg'
+            : 'bg-white border-gray-200 hover:border-primary-300 hover:shadow-md'
+        }`}
+      >
+        {/* Achievement badge */}
+        {milestone.achieved && (
+          <motion.div
+            initial={{ scale: 0, rotate: -90 }}
+            animate={{ scale: 1, rotate: 0 }}
+            className="absolute -top-2 -right-2 z-10"
+          >
+            <div className="bg-green-500 text-white rounded-full p-2 shadow-lg">
+              <CheckCircle className="w-4 h-4" />
+            </div>
+          </motion.div>
+        )}
+
+        <div className="flex items-start space-x-4">
+          {/* Icon */}
+          <motion.div
+            whileHover={{ rotate: 5 }}
+            className={`p-3 rounded-xl bg-gradient-to-br ${colorClass} shadow-md flex-shrink-0`}
+          >
+            <Icon className="w-6 h-6 text-white" />
+          </motion.div>
+
+          {/* Content */}
+          <div className="flex-1 min-w-0">
+            <div className="flex items-start justify-between mb-2">
+              <h4
+                className={`font-semibold ${
+                  milestone.achieved ? 'text-green-900' : 'text-gray-900'
+                }`}
+              >
+                {milestone.milestone_name}
+              </h4>
+              <Badge
+                variant={milestone.achieved ? 'success' : 'secondary'}
+                size="sm"
+              >
+                {milestone.achieved ? 'Complete' : 'Pending'}
+              </Badge>
+            </div>
+
+            <p
+              className={`text-sm mb-4 ${
+                milestone.achieved ? 'text-green-700' : 'text-gray-600'
+              }`}
+            >
+              {milestone.description}
+            </p>
+
+            {/* Metrics */}
+            <div className="flex items-center space-x-4 mb-4">
+              <div className="flex items-center space-x-1">
+                <Clock className="w-4 h-4 text-blue-500" />
+                <span className="text-sm text-gray-600">
+                  Save {definition?.estimated_time_savings_hours}h
+                </span>
+              </div>
+              <div className="flex items-center space-x-1">
+                <Target className="w-4 h-4 text-purple-500" />
+                <span className="text-sm text-gray-600">
+                  Impact: {milestone.value_impact_score}/10
+                </span>
+              </div>
+            </div>
+
+            {/* Achievement date or action button */}
+            {milestone.achieved ? (
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                  <Trophy className="w-4 h-4 text-amber-500" />
+                  <span className="text-sm text-gray-600">
+                    Completed{' '}
+                    {milestone.achieved_at
+                      ? new Date(milestone.achieved_at).toLocaleDateString()
+                      : 'recently'}
+                  </span>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => onCelebrate(milestone)}
+                  className="text-green-600 border-green-200 hover:bg-green-50"
+                >
+                  <PartyPopper className="w-3 h-3 mr-1" />
+                  Celebrate
+                </Button>
+              </div>
+            ) : (
+              <div className="flex items-center space-x-2">
+                <div className="flex-1 bg-gray-200 rounded-full h-2">
+                  <motion.div
+                    initial={{ width: 0 }}
+                    animate={{ width: '30%' }}
+                    transition={{ duration: 1, delay: index * 0.2 }}
+                    className={`h-2 rounded-full bg-gradient-to-r ${colorClass}`}
+                  />
+                </div>
+                <Button size="sm" variant="primary">
+                  Start
+                </Button>
+              </div>
+            )}
+          </div>
+        </div>
+      </Card>
+    </motion.div>
+  );
+}
+
+export function TrialMilestones({
+  milestones = [],
+  className = '',
+  onCelebrationComplete,
+  showConfetti = true,
+}: TrialMilestonesProps) {
+  const [celebratingMilestone, setCelebratingMilestone] =
+    useState<TrialMilestone | null>(null);
+  const [showConfettiEffect, setShowConfettiEffect] = useState(false);
+
+  const achievedMilestones = milestones.filter((m) => m.achieved);
+  const pendingMilestones = milestones.filter((m) => !m.achieved);
+  const totalTimesSaved = achievedMilestones.reduce((acc, milestone) => {
+    return (
+      acc +
+      (MILESTONE_DEFINITIONS[milestone.milestone_type as MilestoneType]
+        ?.estimated_time_savings_hours || 0)
+    );
+  }, 0);
+
+  const handleCelebrate = (milestone: TrialMilestone) => {
+    setCelebratingMilestone(milestone);
+    if (showConfetti) {
+      setShowConfettiEffect(true);
+    }
+  };
+
+  const closeCelebration = () => {
+    setCelebratingMilestone(null);
+    setShowConfettiEffect(false);
+    if (celebratingMilestone) {
+      onCelebrationComplete?.(celebratingMilestone);
+    }
+  };
+
+  return (
+    <div className={`space-y-6 ${className}`}>
+      {/* Header with achievements summary */}
+      <motion.div
+        initial={{ opacity: 0, y: -20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="text-center"
+      >
+        <div className="flex items-center justify-center space-x-2 mb-2">
+          <Trophy className="w-6 h-6 text-amber-500" />
+          <h2 className="text-2xl font-bold text-gray-900">
+            Your Achievements
+          </h2>
+          <Crown className="w-6 h-6 text-amber-500" />
+        </div>
+        <p className="text-gray-600 mb-4">
+          Celebrate your progress and unlock new capabilities
+        </p>
+
+        {achievedMilestones.length > 0 && (
+          <motion.div
+            initial={{ scale: 0 }}
+            animate={{ scale: 1 }}
+            transition={{ delay: 0.3, type: 'spring' }}
+            className="inline-flex items-center space-x-4 bg-gradient-to-r from-green-500 to-emerald-600 text-white rounded-full px-6 py-3 shadow-lg"
+          >
+            <div className="flex items-center space-x-1">
+              <CheckCircle className="w-5 h-5" />
+              <span className="font-semibold">
+                {achievedMilestones.length}/{milestones.length} Complete
+              </span>
+            </div>
+            <div className="w-px h-4 bg-white/30" />
+            <div className="flex items-center space-x-1">
+              <Clock className="w-5 h-5" />
+              <span className="font-semibold">{totalTimesSaved}h Saved</span>
+            </div>
+          </motion.div>
+        )}
+      </motion.div>
+
+      {/* Achievement cards */}
+      <div className="grid gap-4">
+        {[...achievedMilestones, ...pendingMilestones].map(
+          (milestone, index) => (
+            <MilestoneCard
+              key={milestone.id}
+              milestone={milestone}
+              index={index}
+              onCelebrate={handleCelebrate}
+            />
+          ),
+        )}
+      </div>
+
+      {/* Empty state */}
+      {milestones.length === 0 && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className="text-center py-12"
+        >
+          <Gift className="w-16 h-16 text-gray-400 mx-auto mb-4" />
+          <h3 className="text-lg font-medium text-gray-900 mb-2">
+            Start Your Journey
+          </h3>
+          <p className="text-gray-600">
+            Begin using WedSync features to unlock milestone achievements
+          </p>
+        </motion.div>
+      )}
+
+      {/* Confetti effect */}
+      <ConfettiEffect
+        show={showConfettiEffect}
+        onComplete={() => setShowConfettiEffect(false)}
+      />
+
+      {/* Celebration modal */}
+      <AnimatePresence>
+        {celebratingMilestone && (
+          <MilestoneCelebration
+            milestone={celebratingMilestone}
+            onClose={closeCelebration}
+          />
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}

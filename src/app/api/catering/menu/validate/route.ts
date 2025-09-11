@@ -1,0 +1,654 @@
+/**
+ * WS-254: Menu Validation API Endpoint
+ * Validates menu compliance with dietary requirements
+ * Team B Backend Implementation
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { withSecureValidation } from '@/lib/security/withSecureValidation';
+import { DietaryAnalysisService } from '@/lib/services/DietaryAnalysisService';
+import { z } from 'zod';
+import { createClient } from '@supabase/supabase-js';
+import type { Database } from '@/types/database';
+
+// Validation schema for menu validation
+const menuValidationSchema = z.object({
+  weddingId: z.string().uuid('Invalid wedding ID'),
+  menuId: z.string().uuid('Invalid menu ID').optional(),
+  menuData: z
+    .object({
+      courses: z.array(
+        z.object({
+          name: z.string().min(1),
+          dishes: z.array(
+            z.object({
+              name: z.string().min(1),
+              ingredients: z.array(z.string()),
+              allergens: z.array(z.string()).optional().default([]),
+              dietaryTags: z.array(z.string()).optional().default([]),
+            }),
+          ),
+        }),
+      ),
+    })
+    .optional(),
+  validationLevel: z
+    .enum(['basic', 'comprehensive', 'strict'])
+    .default('comprehensive'),
+  includeAlternatives: z.boolean().default(true),
+});
+
+/**
+ * POST /api/catering/menu/validate
+ * Validate menu against dietary requirements
+ */
+export async function POST(request: NextRequest) {
+  const startTime = Date.now();
+
+  try {
+    // Initialize Supabase client
+    const supabase = createClient<Database>(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+
+    // Get authenticated user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        {
+          error: 'Authentication required',
+          code: 'AUTH_REQUIRED',
+        },
+        { status: 401 },
+      );
+    }
+
+    // Parse and validate request
+    return await withSecureValidation(
+      request,
+      async ({ body, user: validatedUser }) => {
+        const validatedBody = menuValidationSchema.parse(body);
+
+        // Verify wedding access
+        const { data: wedding, error: weddingError } = await supabase
+          .from('weddings')
+          .select('id, wedding_date')
+          .eq('id', validatedBody.weddingId)
+          .eq('supplier_id', user.id)
+          .single();
+
+        if (weddingError || !wedding) {
+          throw new Error('Wedding not found or access denied');
+        }
+
+        let menuToValidate = validatedBody.menuData;
+
+        // If menuId provided, fetch menu from database
+        if (validatedBody.menuId) {
+          const { data: savedMenu, error: menuError } = await supabase
+            .from('wedding_menus')
+            .select('menu_structure')
+            .eq('id', validatedBody.menuId)
+            .eq('wedding_id', validatedBody.weddingId)
+            .eq('supplier_id', user.id)
+            .single();
+
+          if (menuError || !savedMenu) {
+            throw new Error('Menu not found or access denied');
+          }
+
+          menuToValidate = savedMenu.menu_structure;
+        }
+
+        if (!menuToValidate) {
+          throw new Error('Menu data is required for validation');
+        }
+
+        // Get dietary requirements
+        const { data: requirements, error: reqError } = await supabase
+          .from('guest_dietary_requirements')
+          .select(
+            `
+          *,
+          dietary_categories (
+            name,
+            category_type,
+            severity_level,
+            common_triggers,
+            cross_contamination_risk
+          )
+        `,
+          )
+          .eq('wedding_id', validatedBody.weddingId);
+
+        if (reqError) {
+          console.error('Error fetching dietary requirements:', reqError);
+          throw new Error('Failed to fetch dietary requirements');
+        }
+
+        // Initialize dietary analysis service
+        const dietaryService = new DietaryAnalysisService();
+
+        // Perform validation based on level
+        let validationResult: any;
+
+        switch (validatedBody.validationLevel) {
+          case 'basic':
+            validationResult = await performBasicValidation(
+              menuToValidate,
+              requirements || [],
+              dietaryService,
+            );
+            break;
+
+          case 'comprehensive':
+            validationResult = await performComprehensiveValidation(
+              menuToValidate,
+              requirements || [],
+              dietaryService,
+              validatedBody.includeAlternatives,
+            );
+            break;
+
+          case 'strict':
+            validationResult = await performStrictValidation(
+              menuToValidate,
+              requirements || [],
+              dietaryService,
+              validatedBody.includeAlternatives,
+            );
+            break;
+        }
+
+        // Save validation results if menuId provided
+        if (validatedBody.menuId) {
+          await saveValidationResults(
+            validatedBody.menuId,
+            validationResult,
+            validatedBody.validationLevel,
+            supabase,
+          );
+        }
+
+        return NextResponse.json(
+          {
+            success: true,
+            data: {
+              ...validationResult,
+              validationLevel: validatedBody.validationLevel,
+              processingTime: Date.now() - startTime,
+              validatedAt: new Date().toISOString(),
+            },
+          },
+          { status: 200 },
+        );
+      },
+    )(menuValidationSchema);
+  } catch (error) {
+    console.error('Menu validation failed:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Invalid request data',
+          code: 'VALIDATION_ERROR',
+          details: error.errors.map((err) => ({
+            field: err.path.join('.'),
+            message: err.message,
+          })),
+        },
+        { status: 400 },
+      );
+    }
+
+    if (error instanceof Error) {
+      if (error.message.includes('not found')) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: error.message,
+            code: 'NOT_FOUND',
+          },
+          { status: 404 },
+        );
+      }
+
+      if (error.message.includes('access denied')) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: 'Access denied',
+            code: 'ACCESS_DENIED',
+          },
+          { status: 403 },
+        );
+      }
+    }
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Menu validation failed',
+        code: 'VALIDATION_FAILED',
+        details: error instanceof Error ? error.message : 'Unknown error',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * Basic validation - check for obvious conflicts only
+ */
+async function performBasicValidation(
+  menuData: any,
+  requirements: any[],
+  dietaryService: DietaryAnalysisService,
+) {
+  const conflicts: any[] = [];
+  const warnings: string[] = [];
+  let complianceScore = 1.0;
+
+  // Check for known allergen conflicts
+  for (const course of menuData.courses || []) {
+    for (const dish of course.dishes || []) {
+      for (const requirement of requirements) {
+        if (requirement.dietary_categories?.category_type === 'allergy') {
+          const commonTriggers =
+            requirement.dietary_categories.common_triggers || [];
+
+          for (const allergen of dish.allergens || []) {
+            if (
+              commonTriggers.some(
+                (trigger: string) =>
+                  allergen.toLowerCase().includes(trigger.toLowerCase()) ||
+                  trigger.toLowerCase().includes(allergen.toLowerCase()),
+              )
+            ) {
+              conflicts.push({
+                type: 'allergen_conflict',
+                guestName: requirement.guest_name,
+                dishName: dish.name,
+                conflictItem: allergen,
+                severity: requirement.severity_level,
+                riskLevel:
+                  requirement.severity_level >= 4 ? 'critical' : 'medium',
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (conflicts.length > 0) {
+    complianceScore = Math.max(0.3, 1 - conflicts.length * 0.1);
+    warnings.push(`Found ${conflicts.length} potential conflicts`);
+  }
+
+  return {
+    isCompliant: conflicts.length === 0,
+    complianceScore,
+    conflicts,
+    warnings,
+    summary: {
+      totalConflicts: conflicts.length,
+      criticalConflicts: conflicts.filter(
+        (c: any) => c.riskLevel === 'critical',
+      ).length,
+      requirementsChecked: requirements.length,
+    },
+  };
+}
+
+/**
+ * Comprehensive validation - detailed analysis with AI support
+ */
+async function performComprehensiveValidation(
+  menuData: any,
+  requirements: any[],
+  dietaryService: DietaryAnalysisService,
+  includeAlternatives: boolean = true,
+) {
+  const basicResult = await performBasicValidation(
+    menuData,
+    requirements,
+    dietaryService,
+  );
+
+  // Enhanced analysis with ingredient-level checking
+  const enhancedConflicts: any[] = [...basicResult.conflicts];
+  const crossContaminationRisks: any[] = [];
+  const alternatives: any[] = [];
+
+  // Analyze each dish ingredients
+  for (const course of menuData.courses || []) {
+    for (const dish of course.dishes || []) {
+      try {
+        // AI-powered ingredient analysis
+        const ingredientAnalysis =
+          await dietaryService.analyzeIngredientAllergens(
+            dish.ingredients || [],
+          );
+
+        // Check for cross-contamination risks
+        if (ingredientAnalysis.crossContaminationRisk) {
+          crossContaminationRisks.push({
+            dishName: dish.name,
+            courseName: course.name,
+            risks: ingredientAnalysis.details,
+            recommendations: ingredientAnalysis.recommendations,
+          });
+        }
+
+        // Find additional conflicts not caught by basic validation
+        for (const allergenDetail of ingredientAnalysis.details) {
+          for (const requirement of requirements) {
+            if (
+              requirement.dietary_categories?.name ===
+              allergenDetail.allergenType
+            ) {
+              const existingConflict = enhancedConflicts.find(
+                (c) =>
+                  c.guestName === requirement.guest_name &&
+                  c.dishName === dish.name,
+              );
+
+              if (!existingConflict) {
+                enhancedConflicts.push({
+                  type: 'ingredient_conflict',
+                  guestName: requirement.guest_name,
+                  dishName: dish.name,
+                  conflictItem: allergenDetail.ingredient,
+                  allergenType: allergenDetail.allergenType,
+                  severity: requirement.severity_level,
+                  riskLevel:
+                    allergenDetail.severity >= 4 ? 'critical' : 'medium',
+                  confidence: ingredientAnalysis.confidence,
+                });
+              }
+            }
+          }
+        }
+
+        // Generate alternatives if requested
+        if (
+          includeAlternatives &&
+          enhancedConflicts.some((c) => c.dishName === dish.name)
+        ) {
+          try {
+            const relevantRestrictions = requirements
+              .filter((req) =>
+                enhancedConflicts.some(
+                  (c) =>
+                    c.guestName === req.guest_name && c.dishName === dish.name,
+                ),
+              )
+              .map((req) => req.dietary_categories?.name)
+              .filter(Boolean);
+
+            if (relevantRestrictions.length > 0) {
+              for (const ingredient of dish.ingredients || []) {
+                const substitutions =
+                  await dietaryService.suggestIngredientSubstitutions(
+                    ingredient,
+                    relevantRestrictions,
+                  );
+
+                if (substitutions.length > 0) {
+                  alternatives.push({
+                    originalDish: dish.name,
+                    originalIngredient: ingredient,
+                    substitutions: substitutions.slice(0, 3), // Top 3 alternatives
+                  });
+                }
+              }
+            }
+          } catch (altError) {
+            console.warn('Failed to generate alternatives:', altError);
+          }
+        }
+      } catch (analysisError) {
+        console.warn(
+          `Failed to analyze ingredients for ${dish.name}:`,
+          analysisError,
+        );
+      }
+    }
+  }
+
+  // Calculate enhanced compliance score
+  const totalIssues = enhancedConflicts.length + crossContaminationRisks.length;
+  const criticalIssues = enhancedConflicts.filter(
+    (c) => c.riskLevel === 'critical',
+  ).length;
+
+  let enhancedComplianceScore = 1.0;
+  if (totalIssues > 0) {
+    enhancedComplianceScore = Math.max(
+      0.1,
+      1 - totalIssues * 0.08 - criticalIssues * 0.15,
+    );
+  }
+
+  const warnings = [...basicResult.warnings];
+  if (crossContaminationRisks.length > 0) {
+    warnings.push(
+      `${crossContaminationRisks.length} dishes have cross-contamination risks`,
+    );
+  }
+
+  return {
+    isCompliant: totalIssues === 0,
+    complianceScore: enhancedComplianceScore,
+    conflicts: enhancedConflicts,
+    crossContaminationRisks,
+    alternatives: includeAlternatives ? alternatives : [],
+    warnings,
+    summary: {
+      totalConflicts: enhancedConflicts.length,
+      criticalConflicts: criticalIssues,
+      crossContaminationRisks: crossContaminationRisks.length,
+      alternativesGenerated: alternatives.length,
+      requirementsChecked: requirements.length,
+      dishesAnalyzed:
+        menuData.courses?.reduce(
+          (total: number, course: any) => total + (course.dishes?.length || 0),
+          0,
+        ) || 0,
+    },
+  };
+}
+
+/**
+ * Strict validation - zero-tolerance approach
+ */
+async function performStrictValidation(
+  menuData: any,
+  requirements: any[],
+  dietaryService: DietaryAnalysisService,
+  includeAlternatives: boolean = true,
+) {
+  const comprehensiveResult = await performComprehensiveValidation(
+    menuData,
+    requirements,
+    dietaryService,
+    includeAlternatives,
+  );
+
+  // Additional strict checks
+  const strictViolations: any[] = [];
+
+  // Check for any unverified requirements
+  const unverifiedRequirements = requirements.filter(
+    (req) => !req.verified_by_guest,
+  );
+  if (unverifiedRequirements.length > 0) {
+    strictViolations.push({
+      type: 'unverified_requirements',
+      count: unverifiedRequirements.length,
+      guests: unverifiedRequirements.map((req) => req.guest_name),
+      message: 'Some dietary requirements have not been verified by guests',
+    });
+  }
+
+  // Check for high-severity requirements without emergency contacts
+  const highSeverityNoContact = requirements.filter(
+    (req) => req.severity_level >= 4 && !req.emergency_contact,
+  );
+  if (highSeverityNoContact.length > 0) {
+    strictViolations.push({
+      type: 'missing_emergency_contacts',
+      count: highSeverityNoContact.length,
+      guests: highSeverityNoContact.map((req) => req.guest_name),
+      message:
+        'High-severity requirements missing emergency contact information',
+    });
+  }
+
+  // In strict mode, any cross-contamination risk is a violation
+  const crossContaminationViolations =
+    comprehensiveResult.crossContaminationRisks.map((risk) => ({
+      type: 'cross_contamination_risk',
+      dishName: risk.dishName,
+      courseName: risk.courseName,
+      message: `Cross-contamination risk detected in ${risk.dishName}`,
+    }));
+
+  // Calculate strict compliance score (much lower tolerance)
+  const allViolations = [
+    ...comprehensiveResult.conflicts,
+    ...strictViolations,
+    ...crossContaminationViolations,
+  ];
+
+  const strictComplianceScore = allViolations.length === 0 ? 1.0 : 0.0;
+
+  const strictWarnings = [...comprehensiveResult.warnings];
+  if (strictViolations.length > 0) {
+    strictWarnings.push(
+      `${strictViolations.length} strict validation violations found`,
+    );
+  }
+
+  return {
+    ...comprehensiveResult,
+    isCompliant: allViolations.length === 0,
+    complianceScore: strictComplianceScore,
+    strictViolations,
+    allViolations,
+    warnings: strictWarnings,
+    summary: {
+      ...comprehensiveResult.summary,
+      strictViolations: strictViolations.length,
+      totalViolations: allViolations.length,
+      passesStrictValidation: allViolations.length === 0,
+    },
+  };
+}
+
+/**
+ * Save validation results to database
+ */
+async function saveValidationResults(
+  menuId: string,
+  validationResult: any,
+  validationLevel: string,
+  supabase: ReturnType<typeof createClient>,
+) {
+  try {
+    const { error } = await supabase.from('menu_validation_results').insert({
+      menu_id: menuId,
+      validation_level: validationLevel,
+      compliance_score: validationResult.complianceScore,
+      is_compliant: validationResult.isCompliant,
+      conflicts_found: validationResult.conflicts?.length || 0,
+      warnings: validationResult.warnings || [],
+      validation_summary: validationResult.summary,
+      detailed_results: {
+        conflicts: validationResult.conflicts,
+        alternatives: validationResult.alternatives,
+        crossContaminationRisks: validationResult.crossContaminationRisks,
+        strictViolations: validationResult.strictViolations,
+      },
+    });
+
+    if (error) {
+      console.error('Failed to save validation results:', error);
+    }
+  } catch (error) {
+    console.error('Error saving validation results:', error);
+  }
+}
+
+/**
+ * GET method to retrieve validation history
+ */
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = createClient<Database>(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Authentication required', code: 'AUTH_REQUIRED' },
+        { status: 401 },
+      );
+    }
+
+    const url = new URL(request.url);
+    const menuId = url.searchParams.get('menuId');
+    const weddingId = url.searchParams.get('weddingId');
+
+    if (!menuId && !weddingId) {
+      return NextResponse.json(
+        { error: 'Menu ID or Wedding ID required', code: 'MISSING_PARAMETERS' },
+        { status: 400 },
+      );
+    }
+
+    let query = supabase
+      .from('menu_validation_results')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (menuId) {
+      query = query.eq('menu_id', menuId);
+    }
+
+    if (weddingId) {
+      query = query.eq('wedding_id', weddingId);
+    }
+
+    const { data: results, error } = await query;
+
+    if (error) {
+      throw new Error(`Failed to fetch validation results: ${error.message}`);
+    }
+
+    return NextResponse.json({
+      success: true,
+      data: results || [],
+    });
+  } catch (error) {
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Failed to fetch validation results',
+        code: 'FETCH_FAILED',
+      },
+      { status: 500 },
+    );
+  }
+}

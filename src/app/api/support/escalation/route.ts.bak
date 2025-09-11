@@ -1,0 +1,684 @@
+/**
+ * WS-235: Automated Escalation and SLA Monitoring System
+ * 
+ * This system provides:
+ * - Real-time SLA breach detection
+ * - Automatic escalation workflows
+ * - Wedding day emergency protocols
+ * - Management notification systems
+ * - Performance tracking and analytics
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+
+// SLA Configuration by tier and priority
+const SLA_CONFIGS = {
+  ENTERPRISE: {
+    critical: { response_time: 30, resolution_time: 240 }, // 30 min response, 4 hours resolution
+    high: { response_time: 60, resolution_time: 480 },     // 1 hour response, 8 hours resolution
+    medium: { response_time: 240, resolution_time: 1440 }, // 4 hours response, 24 hours resolution
+    low: { response_time: 1440, resolution_time: 4320 }    // 24 hours response, 72 hours resolution
+  },
+  SCALE: {
+    critical: { response_time: 60, resolution_time: 480 },  // 1 hour response, 8 hours resolution
+    high: { response_time: 240, resolution_time: 1440 },    // 4 hours response, 24 hours resolution
+    medium: { response_time: 1440, resolution_time: 2880 }, // 24 hours response, 48 hours resolution
+    low: { response_time: 2880, resolution_time: 7200 }     // 48 hours response, 120 hours resolution
+  },
+  PROFESSIONAL: {
+    critical: { response_time: 120, resolution_time: 720 }, // 2 hours response, 12 hours resolution
+    high: { response_time: 480, resolution_time: 1440 },    // 8 hours response, 24 hours resolution
+    medium: { response_time: 1440, resolution_time: 4320 }, // 24 hours response, 72 hours resolution
+    low: { response_time: 4320, resolution_time: 10080 }    // 72 hours response, 168 hours resolution
+  },
+  STARTER: {
+    critical: { response_time: 240, resolution_time: 1440 }, // 4 hours response, 24 hours resolution
+    high: { response_time: 1440, resolution_time: 2880 },    // 24 hours response, 48 hours resolution
+    medium: { response_time: 2880, resolution_time: 7200 },  // 48 hours response, 120 hours resolution
+    low: { response_time: 7200, resolution_time: 20160 }     // 120 hours response, 336 hours resolution
+  },
+  FREE: {
+    critical: { response_time: 1440, resolution_time: 4320 }, // 24 hours response, 72 hours resolution
+    high: { response_time: 2880, resolution_time: 7200 },     // 48 hours response, 120 hours resolution
+    medium: { response_time: 4320, resolution_time: 10080 },  // 72 hours response, 168 hours resolution
+    low: { response_time: 10080, resolution_time: 20160 }     // 168 hours response, 336 hours resolution
+  }
+};
+
+// Escalation levels and actions
+const ESCALATION_LEVELS = [
+  {
+    level: 1,
+    name: 'Agent Reminder',
+    triggerAfter: 0.75, // 75% of SLA time
+    actions: ['notify_assigned_agent', 'log_reminder']
+  },
+  {
+    level: 2,
+    name: 'Supervisor Alert',
+    triggerAfter: 0.9, // 90% of SLA time
+    actions: ['notify_supervisor', 'suggest_reassignment']
+  },
+  {
+    level: 3,
+    name: 'Manager Escalation',
+    triggerAfter: 1.0, // 100% of SLA time (breach)
+    actions: ['notify_manager', 'auto_reassign_if_possible', 'log_sla_breach']
+  },
+  {
+    level: 4,
+    name: 'Executive Alert',
+    triggerAfter: 1.25, // 125% of SLA time
+    actions: ['notify_executive', 'create_incident', 'priority_boost']
+  }
+];
+
+// Wedding Day Emergency Protocols
+const WEDDING_DAY_PROTOCOLS = {
+  immediate: {
+    name: 'Wedding Day Immediate Response',
+    triggerConditions: ['is_wedding_day_issue', 'hours_until_wedding <= 8'],
+    actions: [
+      'notify_all_wedding_specialists',
+      'create_emergency_channel',
+      'bypass_normal_queue',
+      'executive_notification'
+    ],
+    maxResponseTime: 15 // 15 minutes maximum
+  },
+  urgent: {
+    name: 'Wedding Week Priority',
+    triggerConditions: ['hours_until_wedding <= 48'],
+    actions: [
+      'notify_wedding_specialists',
+      'priority_queue',
+      'manager_notification'
+    ],
+    maxResponseTime: 60 // 1 hour maximum
+  }
+};
+
+// Check for SLA breaches and trigger escalations
+async function checkSLABreaches(supabase: any) {
+  const now = new Date();
+  
+  // Get all open tickets that might need escalation
+  const { data: openTickets, error } = await supabase
+    .from('support_tickets')
+    .select(`
+      id,
+      subject,
+      status,
+      priority,
+      created_at,
+      first_response_at,
+      resolved_at,
+      sla_response_deadline,
+      sla_resolution_deadline,
+      is_wedding_day_issue,
+      hours_until_wedding,
+      assigned_agent_id,
+      organization_id,
+      user_tier,
+      escalation_level,
+      last_escalation_at,
+      organizations!inner(name, contact_email)
+    `)
+    .in('status', ['open', 'in_progress', 'pending_customer'])
+    .not('resolved_at', 'is', null);
+
+  if (error) {
+    console.error('Error fetching tickets for SLA check:', error);
+    return { processed: 0, escalated: 0, errors: [error.message] };
+  }
+
+  let processedCount = 0;
+  let escalatedCount = 0;
+  const errors = [];
+
+  for (const ticket of openTickets || []) {
+    try {
+      processedCount++;
+      
+      // Check if wedding day emergency protocols should trigger
+      const weddingEmergency = checkWeddingDayProtocols(ticket);
+      if (weddingEmergency.shouldEscalate) {
+        await triggerWeddingDayEscalation(supabase, ticket, weddingEmergency);
+        escalatedCount++;
+        continue;
+      }
+
+      // Check regular SLA escalations
+      const escalation = checkTicketEscalation(ticket, now);
+      if (escalation.shouldEscalate) {
+        await triggerEscalation(supabase, ticket, escalation);
+        escalatedCount++;
+      }
+
+    } catch (ticketError) {
+      console.error(`Error processing ticket ${ticket.id}:`, ticketError);
+      errors.push(`Ticket ${ticket.id}: ${ticketError.message}`);
+    }
+  }
+
+  return { processed: processedCount, escalated: escalatedCount, errors };
+}
+
+// Check if wedding day protocols should trigger
+function checkWeddingDayProtocols(ticket: any): {
+  shouldEscalate: boolean;
+  protocol?: any;
+  reason?: string;
+} {
+  // Immediate wedding day response needed
+  if (ticket.is_wedding_day_issue && ticket.hours_until_wedding <= 8) {
+    return {
+      shouldEscalate: true,
+      protocol: WEDDING_DAY_PROTOCOLS.immediate,
+      reason: 'Wedding day emergency - ceremony within 8 hours'
+    };
+  }
+
+  // Wedding week priority
+  if (ticket.hours_until_wedding && ticket.hours_until_wedding <= 48 && ticket.escalation_level === 0) {
+    return {
+      shouldEscalate: true,
+      protocol: WEDDING_DAY_PROTOCOLS.urgent,
+      reason: 'Wedding within 48 hours - priority escalation required'
+    };
+  }
+
+  return { shouldEscalate: false };
+}
+
+// Check if regular escalation is needed
+function checkTicketEscalation(ticket: any, now: Date): {
+  shouldEscalate: boolean;
+  level?: number;
+  reason?: string;
+  actions?: string[];
+} {
+  const createdAt = new Date(ticket.created_at);
+  const ageInMinutes = (now.getTime() - createdAt.getTime()) / (1000 * 60);
+
+  // Get SLA config for this ticket
+  const tierConfig = SLA_CONFIGS[ticket.user_tier] || SLA_CONFIGS.STARTER;
+  const slaConfig = tierConfig[ticket.priority] || tierConfig.medium;
+
+  // Check if this ticket needs response
+  const needsResponse = !ticket.first_response_at;
+  const responseTimeMinutes = needsResponse ? slaConfig.response_time : null;
+
+  // Check if this ticket needs resolution  
+  const needsResolution = !ticket.resolved_at;
+  const resolutionTimeMinutes = needsResolution ? slaConfig.resolution_time : null;
+
+  // Determine which SLA to check
+  let slaMinutes, slaType;
+  if (needsResponse) {
+    slaMinutes = responseTimeMinutes;
+    slaType = 'response';
+  } else if (needsResolution) {
+    slaMinutes = resolutionTimeMinutes;
+    slaType = 'resolution';
+  } else {
+    return { shouldEscalate: false }; // Ticket is resolved
+  }
+
+  // Find the appropriate escalation level
+  const currentLevel = ticket.escalation_level || 0;
+  const slaProgress = ageInMinutes / slaMinutes;
+
+  for (let i = ESCALATION_LEVELS.length - 1; i >= 0; i--) {
+    const level = ESCALATION_LEVELS[i];
+    
+    if (slaProgress >= level.triggerAfter && currentLevel < level.level) {
+      return {
+        shouldEscalate: true,
+        level: level.level,
+        reason: `${slaType.toUpperCase()} SLA at ${Math.round(slaProgress * 100)}% (${level.name})`,
+        actions: level.actions
+      };
+    }
+  }
+
+  return { shouldEscalate: false };
+}
+
+// Trigger wedding day emergency escalation
+async function triggerWeddingDayEscalation(supabase: any, ticket: any, emergency: any) {
+  console.log(`🚨 WEDDING DAY EMERGENCY: Ticket ${ticket.id} - ${emergency.reason}`);
+
+  // Update ticket with emergency status
+  await supabase
+    .from('support_tickets')
+    .update({
+      escalation_level: 999, // Special wedding day escalation level
+      last_escalation_at: new Date().toISOString(),
+      priority: 'critical', // Force to critical
+      status: 'emergency'
+    })
+    .eq('id', ticket.id);
+
+  // Log escalation event
+  await supabase
+    .from('support_escalations')
+    .insert({
+      ticket_id: ticket.id,
+      escalation_level: 999,
+      escalation_reason: emergency.reason,
+      escalation_type: 'wedding_day_emergency',
+      triggered_by: 'system',
+      actions_taken: emergency.protocol.actions,
+      created_at: new Date().toISOString()
+    });
+
+  // Execute emergency protocol actions
+  for (const action of emergency.protocol.actions) {
+    try {
+      await executeEscalationAction(supabase, ticket, action, emergency);
+    } catch (actionError) {
+      console.error(`Failed to execute wedding day action ${action}:`, actionError);
+    }
+  }
+}
+
+// Trigger regular escalation
+async function triggerEscalation(supabase: any, ticket: any, escalation: any) {
+  console.log(`📈 ESCALATION: Ticket ${ticket.id} to level ${escalation.level} - ${escalation.reason}`);
+
+  // Update ticket escalation level
+  await supabase
+    .from('support_tickets')
+    .update({
+      escalation_level: escalation.level,
+      last_escalation_at: new Date().toISOString()
+    })
+    .eq('id', ticket.id);
+
+  // Log escalation event
+  await supabase
+    .from('support_escalations')
+    .insert({
+      ticket_id: ticket.id,
+      escalation_level: escalation.level,
+      escalation_reason: escalation.reason,
+      escalation_type: 'sla_based',
+      triggered_by: 'system',
+      actions_taken: escalation.actions,
+      created_at: new Date().toISOString()
+    });
+
+  // Execute escalation actions
+  for (const action of escalation.actions) {
+    try {
+      await executeEscalationAction(supabase, ticket, action, escalation);
+    } catch (actionError) {
+      console.error(`Failed to execute escalation action ${action}:`, actionError);
+    }
+  }
+}
+
+// Execute specific escalation actions
+async function executeEscalationAction(supabase: any, ticket: any, action: string, context: any) {
+  switch (action) {
+    case 'notify_assigned_agent':
+      await notifyAssignedAgent(supabase, ticket);
+      break;
+      
+    case 'notify_supervisor':
+      await notifySupervisor(supabase, ticket);
+      break;
+      
+    case 'notify_manager':
+      await notifyManager(supabase, ticket);
+      break;
+      
+    case 'notify_executive':
+      await notifyExecutive(supabase, ticket, context);
+      break;
+      
+    case 'notify_all_wedding_specialists':
+      await notifyWeddingSpecialists(supabase, ticket, true);
+      break;
+      
+    case 'notify_wedding_specialists':
+      await notifyWeddingSpecialists(supabase, ticket, false);
+      break;
+      
+    case 'auto_reassign_if_possible':
+      await attemptAutoReassignment(supabase, ticket);
+      break;
+      
+    case 'log_sla_breach':
+      await logSLABreach(supabase, ticket);
+      break;
+      
+    case 'priority_boost':
+      await boostTicketPriority(supabase, ticket);
+      break;
+      
+    case 'create_emergency_channel':
+      await createEmergencyChannel(supabase, ticket);
+      break;
+      
+    default:
+      console.log(`Unknown escalation action: ${action}`);
+  }
+}
+
+// Notification functions (placeholders for integration with your notification system)
+async function notifyAssignedAgent(supabase: any, ticket: any) {
+  if (!ticket.assigned_agent_id) return;
+  
+  // Add notification record
+  await supabase
+    .from('notifications')
+    .insert({
+      user_id: ticket.assigned_agent_id,
+      type: 'ticket_escalation',
+      title: 'Ticket SLA Reminder',
+      message: `Ticket #${ticket.id}: "${ticket.subject}" is approaching its SLA deadline`,
+      data: { ticket_id: ticket.id, escalation_level: 1 },
+      created_at: new Date().toISOString()
+    });
+}
+
+async function notifySupervisor(supabase: any, ticket: any) {
+  // Get supervisors for this organization
+  const { data: supervisors } = await supabase
+    .from('support_agents')
+    .select('user_id')
+    .eq('organization_id', ticket.organization_id)
+    .eq('role', 'supervisor');
+
+  for (const supervisor of supervisors || []) {
+    await supabase
+      .from('notifications')
+      .insert({
+        user_id: supervisor.user_id,
+        type: 'ticket_escalation',
+        title: 'Ticket Requires Supervisor Attention',
+        message: `Ticket #${ticket.id} has been escalated and needs immediate attention`,
+        data: { ticket_id: ticket.id, escalation_level: 2 },
+        created_at: new Date().toISOString()
+      });
+  }
+}
+
+async function notifyManager(supabase: any, ticket: any) {
+  const { data: managers } = await supabase
+    .from('support_agents')
+    .select('user_id')
+    .eq('organization_id', ticket.organization_id)
+    .eq('role', 'manager');
+
+  for (const manager of managers || []) {
+    await supabase
+      .from('notifications')
+      .insert({
+        user_id: manager.user_id,
+        type: 'sla_breach',
+        title: 'SLA Breach Alert',
+        message: `URGENT: Ticket #${ticket.id} has breached its SLA deadline`,
+        data: { ticket_id: ticket.id, escalation_level: 3, sla_breached: true },
+        created_at: new Date().toISOString()
+      });
+  }
+}
+
+async function notifyExecutive(supabase: any, ticket: any, context: any) {
+  const { data: executives } = await supabase
+    .from('support_agents')
+    .select('user_id')
+    .eq('organization_id', ticket.organization_id)
+    .eq('role', 'executive');
+
+  for (const executive of executives || []) {
+    await supabase
+      .from('notifications')
+      .insert({
+        user_id: executive.user_id,
+        type: 'executive_alert',
+        title: 'Critical Support Escalation',
+        message: `CRITICAL: Ticket #${ticket.id} requires executive attention. Customer satisfaction at risk.`,
+        data: { ticket_id: ticket.id, escalation_level: 4, executive_required: true },
+        created_at: new Date().toISOString()
+      });
+  }
+}
+
+async function notifyWeddingSpecialists(supabase: any, ticket: any, isEmergency: boolean = false) {
+  const { data: specialists } = await supabase
+    .from('support_agents')
+    .select('user_id')
+    .eq('organization_id', ticket.organization_id)
+    .eq('is_wedding_day_specialist', true)
+    .eq('is_available', true);
+
+  const title = isEmergency ? 'WEDDING DAY EMERGENCY' : 'Wedding Priority Ticket';
+  const urgencyLevel = isEmergency ? 'EMERGENCY' : 'HIGH';
+
+  for (const specialist of specialists || []) {
+    await supabase
+      .from('notifications')
+      .insert({
+        user_id: specialist.user_id,
+        type: isEmergency ? 'wedding_emergency' : 'wedding_priority',
+        title: title,
+        message: `${urgencyLevel}: Wedding-related ticket #${ticket.id} needs immediate attention`,
+        data: { 
+          ticket_id: ticket.id, 
+          is_wedding_emergency: isEmergency,
+          hours_until_wedding: ticket.hours_until_wedding
+        },
+        created_at: new Date().toISOString()
+      });
+  }
+}
+
+async function attemptAutoReassignment(supabase: any, ticket: any) {
+  // Find the best available agent for reassignment
+  const { data: availableAgents } = await supabase
+    .from('support_agents')
+    .select('*')
+    .eq('organization_id', ticket.organization_id)
+    .eq('is_available', true)
+    .neq('user_id', ticket.assigned_agent_id)
+    .lt('current_ticket_count', supabase.raw('max_concurrent_tickets'));
+
+  if (availableAgents?.length > 0) {
+    // Simple reassignment to agent with lowest workload
+    const bestAgent = availableAgents.reduce((best, current) => 
+      current.current_ticket_count < best.current_ticket_count ? current : best
+    );
+
+    await supabase
+      .from('support_tickets')
+      .update({ assigned_agent_id: bestAgent.user_id })
+      .eq('id', ticket.id);
+
+    // Notify new agent
+    await notifyAssignedAgent(supabase, { ...ticket, assigned_agent_id: bestAgent.user_id });
+  }
+}
+
+async function logSLABreach(supabase: any, ticket: any) {
+  await supabase
+    .from('support_sla_events')
+    .insert({
+      ticket_id: ticket.id,
+      event_type: 'breach',
+      sla_type: ticket.first_response_at ? 'resolution' : 'response',
+      breach_time: new Date().toISOString(),
+      severity: ticket.is_wedding_day_issue ? 'critical' : 'high',
+      created_at: new Date().toISOString()
+    });
+}
+
+async function boostTicketPriority(supabase: any, ticket: any) {
+  const priorityMap = { low: 'medium', medium: 'high', high: 'critical' };
+  const newPriority = priorityMap[ticket.priority] || ticket.priority;
+
+  if (newPriority !== ticket.priority) {
+    await supabase
+      .from('support_tickets')
+      .update({ priority: newPriority })
+      .eq('id', ticket.id);
+  }
+}
+
+async function createEmergencyChannel(supabase: any, ticket: any) {
+  // Create a dedicated communication channel for wedding day emergencies
+  await supabase
+    .from('emergency_channels')
+    .insert({
+      ticket_id: ticket.id,
+      channel_name: `wedding-emergency-${ticket.id}`,
+      created_for: 'wedding_day_issue',
+      expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(), // 24 hours
+      created_at: new Date().toISOString()
+    });
+}
+
+// Main API endpoints
+export async function POST(request: NextRequest) {
+  try {
+    const cookieStore = cookies();
+    const supabase = createRouteHandlerClient({ cookies: () => cookieStore });
+
+    // Authenticate user
+    const { data: { session }, error: authError } = await supabase.auth.getSession();
+    if (authError || !session) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const { action, ticketId } = body;
+
+    switch (action) {
+      case 'check_sla_breaches':
+        // Manual trigger of SLA breach checking (usually run by cron)
+        const result = await checkSLABreaches(supabase);
+        return NextResponse.json({
+          success: true,
+          message: 'SLA breach check completed',
+          result
+        });
+
+      case 'escalate_ticket':
+        // Manual escalation of specific ticket
+        if (!ticketId) {
+          return NextResponse.json({ error: 'ticketId required' }, { status: 400 });
+        }
+
+        const { data: ticket } = await supabase
+          .from('support_tickets')
+          .select('*')
+          .eq('id', ticketId)
+          .single();
+
+        if (!ticket) {
+          return NextResponse.json({ error: 'Ticket not found' }, { status: 404 });
+        }
+
+        const escalation = checkTicketEscalation(ticket, new Date());
+        if (escalation.shouldEscalate) {
+          await triggerEscalation(supabase, ticket, escalation);
+          return NextResponse.json({
+            success: true,
+            message: `Ticket ${ticketId} escalated to level ${escalation.level}`
+          });
+        } else {
+          return NextResponse.json({
+            success: false,
+            message: 'Ticket does not require escalation at this time'
+          });
+        }
+
+      default:
+        return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
+    }
+
+  } catch (error) {
+    console.error('Escalation API error:', error);
+    return NextResponse.json({
+      error: 'Escalation system error',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    }, { status: 500 });
+  }
+}
+
+// GET endpoint for escalation stats and monitoring
+export async function GET(request: NextRequest) {
+  try {
+    const cookieStore = cookies();
+    const supabase = createRouteHandlerClient({ cookies: () => cookieStore });
+
+    const { data: { session }, error: authError } = await supabase.auth.getSession();
+    if (authError || !session) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { searchParams } = new URL(request.url);
+    const action = searchParams.get('action');
+
+    if (action === 'stats') {
+      // Get escalation statistics
+      const { data: userProfile } = await supabase
+        .from('user_profiles')
+        .select('organization_id')
+        .eq('user_id', session.user.id)
+        .single();
+
+      if (!userProfile?.organization_id) {
+        return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+      }
+
+      const { data: escalations } = await supabase
+        .from('support_escalations')
+        .select('escalation_level, escalation_type, created_at')
+        .eq('organization_id', userProfile.organization_id)
+        .gte('created_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString());
+
+      const stats = {
+        totalEscalations: escalations?.length || 0,
+        byLevel: {},
+        byType: {},
+        weddingEmergencies: 0,
+        slaBreaches: 0
+      };
+
+      escalations?.forEach(esc => {
+        stats.byLevel[esc.escalation_level] = (stats.byLevel[esc.escalation_level] || 0) + 1;
+        stats.byType[esc.escalation_type] = (stats.byType[esc.escalation_type] || 0) + 1;
+        
+        if (esc.escalation_type === 'wedding_day_emergency') {
+          stats.weddingEmergencies++;
+        }
+        if (esc.escalation_level >= 3) {
+          stats.slaBreaches++;
+        }
+      });
+
+      return NextResponse.json({ stats });
+    }
+
+    return NextResponse.json({
+      message: 'Support Escalation & SLA Monitoring System',
+      version: '1.0.0',
+      availableActions: ['check_sla_breaches', 'escalate_ticket'],
+      slaLevels: ESCALATION_LEVELS,
+      weddingProtocols: WEDDING_DAY_PROTOCOLS
+    });
+
+  } catch (error) {
+    console.error('Escalation GET error:', error);
+    return NextResponse.json({
+      error: 'Request failed',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    }, { status: 500 });
+  }
+}

@@ -1,0 +1,108 @@
+// WebSocket Channel Types for WS-203
+// Wedding industry specific channel management types
+
+export interface ChannelInfo {
+  id: string;
+  name: string;
+  type: ChannelType;
+  scope: ChannelScope;
+  entity: string;
+  entityId: string;
+  lastActivity?: Date;
+  isPrivate?: boolean;
+  memberCount?: number;
+  unreadCount?: number;
+}
+
+export type ChannelScope =
+  | 'supplier'
+  | 'couple'
+  | 'collaboration'
+  | 'form'
+  | 'journey';
+
+export type ChannelType =
+  | 'dashboard'
+  | 'wedding'
+  | 'venue'
+  | 'planning'
+  | 'vendor'
+  | 'emergency';
+
+export interface ChannelMessage {
+  id: string;
+  channelName: string;
+  senderId: string;
+  senderName: string;
+  senderRole: 'supplier' | 'couple' | 'vendor' | 'admin';
+  message: string;
+  messageType: 'text' | 'status' | 'emergency' | 'file' | 'image';
+  timestamp: Date;
+  priority: 'low' | 'normal' | 'high' | 'urgent';
+  readBy: string[];
+  metadata?: {
+    weddingId?: string;
+    taskId?: string;
+    fileUrl?: string;
+    imageUrl?: string;
+  };
+}
+
+export interface QueuedMessage {
+  id: string;
+  channelName: string;
+  message: string;
+  messageType: ChannelMessage['messageType'];
+  payload: Record<string, string | number | boolean>;
+  created_at: string;
+  delivery_status: 'pending' | 'delivering' | 'delivered' | 'failed';
+  retry_count: number;
+  max_retries: number;
+}
+
+export interface ChannelStatus {
+  connected: boolean;
+  memberCount: number;
+  lastActivity?: Date;
+  unreadCount: number;
+  priority: 'low' | 'normal' | 'high' | 'urgent';
+  typingUsers: string[];
+}
+
+export interface ChannelSubscription {
+  channelName: string;
+  isActive: boolean;
+  lastSeen: Date;
+  notifications: boolean;
+}
+
+export interface WeddingChannelContext {
+  weddingId: string;
+  weddingDate: string;
+  suppliers: string[];
+  couple: {
+    bride: string;
+    groom: string;
+  };
+  phase: 'planning' | 'week-of' | 'day-of' | 'post-wedding';
+}
+
+// Wedding specific channel naming convention: {scope}:{entity}:{id}
+export type ChannelName = `${ChannelScope}:${string}:${string}`;
+
+// Tier-based channel limits
+export interface ChannelLimits {
+  free: 3;
+  starter: 5;
+  professional: 10;
+  scale: 15;
+  enterprise: -1; // unlimited
+}
+
+export interface ChannelPermissions {
+  canCreate: boolean;
+  canJoin: boolean;
+  canMessage: boolean;
+  canModerate: boolean;
+  canDelete: boolean;
+}

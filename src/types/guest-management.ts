@@ -1,0 +1,402 @@
+// Guest Management Types - WS-056
+export interface Guest {
+  id: string;
+  couple_id: string;
+  household_id?: string;
+  first_name: string;
+  last_name: string;
+  email?: string;
+  phone?: string;
+  address?: Record<string, any>;
+  category: 'family' | 'friends' | 'work' | 'other';
+  side: 'partner1' | 'partner2' | 'mutual';
+  plus_one: boolean;
+  plus_one_name?: string;
+  age_group: 'adult' | 'child' | 'infant';
+  table_number?: number;
+  helper_role?: string;
+  dietary_restrictions?: string;
+  special_needs?: string;
+  rsvp_status: 'pending' | 'attending' | 'declined' | 'maybe';
+  rsvp_date?: string;
+  tags: string[];
+  notes?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Household {
+  id: string;
+  couple_id: string;
+  name: string;
+  primary_contact_id?: string;
+  address: Record<string, any>;
+  invitation_sent: boolean;
+  invitation_sent_date?: string;
+  total_members: number;
+  adults: number;
+  children: number;
+  infants: number;
+  created_at: string;
+  updated_at: string;
+
+  // Relations
+  primary_contact?: Partial<Guest>;
+  guests?: Partial<Guest>[];
+}
+
+export interface GuestImportSession {
+  id: string;
+  couple_id: string;
+  import_type: 'csv' | 'google_contacts' | 'manual' | 'excel';
+  file_name?: string;
+  original_file_name?: string;
+  file_size?: number;
+  total_rows?: number;
+  processed_rows: number;
+  successful_imports: number;
+  failed_imports: number;
+  status: 'processing' | 'completed' | 'failed' | 'cancelled';
+  error_log: ImportError[];
+  mapping_config: Record<string, string>;
+  performance_metrics: ImportPerformanceMetrics;
+  created_at: string;
+  completed_at?: string;
+}
+
+export interface GuestImportHistory {
+  id: string;
+  import_session_id: string;
+  guest_id?: string;
+  action: 'created' | 'updated' | 'skipped' | 'error';
+  original_data?: Record<string, any>;
+  processed_data?: Record<string, any>;
+  error_message?: string;
+  created_at: string;
+}
+
+export interface ImportError {
+  row: number;
+  field: string;
+  message: string;
+  value: string;
+}
+
+export interface ImportPerformanceMetrics {
+  processing_time_ms: number;
+  file_size_mb: string;
+  batch_size: number;
+  batches_processed: number;
+}
+
+export interface GuestAnalytics {
+  total_guests: number;
+  adults: number;
+  children: number;
+  infants: number;
+  attending: number;
+  declined: number;
+  pending: number;
+  maybe: number;
+  family: number;
+  friends: number;
+  work: number;
+  other: number;
+  partner1_side: number;
+  partner2_side: number;
+  mutual_side: number;
+  with_plus_ones: number;
+  with_dietary_restrictions: number;
+  with_special_needs: number;
+  households: number;
+  avg_household_size: number;
+  last_updated: string;
+}
+
+export interface GuestSearchParams {
+  couple_id: string;
+  search?: string;
+  category?: Guest['category'];
+  rsvp_status?: Guest['rsvp_status'];
+  age_group?: Guest['age_group'];
+  side?: Guest['side'];
+  has_dietary_restrictions?: boolean;
+  has_plus_one?: boolean;
+  page?: number;
+  limit?: number;
+}
+
+export interface GuestSearchResult extends Guest {
+  household_name?: string;
+  rank?: number;
+}
+
+export interface DuplicateGuest {
+  guest_id: string;
+  match_score: number;
+  match_fields: string[];
+  guest_name: string;
+  guest_email?: string;
+}
+
+// UI State Types
+export interface GuestListFilters {
+  search: string;
+  category: Guest['category'] | 'all';
+  rsvp_status: Guest['rsvp_status'] | 'all';
+  age_group: Guest['age_group'] | 'all';
+  side: Guest['side'] | 'all';
+  has_dietary_restrictions?: boolean;
+  has_plus_one?: boolean;
+  show_households: boolean;
+}
+
+export interface GuestListSort {
+  field: keyof Guest | 'household_name';
+  direction: 'asc' | 'desc';
+}
+
+export interface GuestListView {
+  type: 'table' | 'cards' | 'households';
+  density: 'compact' | 'normal' | 'spacious';
+  columns: string[];
+}
+
+export interface BulkOperationsState {
+  selectedGuests: Set<string>;
+  isSelectionMode: boolean;
+  operationType?:
+    | 'update'
+    | 'delete'
+    | 'export'
+    | 'assign_table'
+    | 'send_invitations';
+  showModal: boolean;
+}
+
+export interface BulkUpdateData {
+  category?: Guest['category'];
+  side?: Guest['side'];
+  table_number?: number;
+  rsvp_status?: Guest['rsvp_status'];
+  tags?: string[];
+  dietary_restrictions?: string;
+  special_needs?: string;
+  helper_role?: string;
+}
+
+// Google Contacts Types
+export interface GoogleContact {
+  resourceName: string;
+  etag: string;
+  names?: Array<{
+    givenName?: string;
+    familyName?: string;
+    displayName?: string;
+  }>;
+  emailAddresses?: Array<{
+    value: string;
+    type?: string;
+  }>;
+  phoneNumbers?: Array<{
+    value: string;
+    type?: string;
+  }>;
+  addresses?: Array<{
+    formattedValue?: string;
+    streetAddress?: string;
+    city?: string;
+    region?: string;
+    postalCode?: string;
+    country?: string;
+  }>;
+  organizations?: Array<{
+    name?: string;
+    title?: string;
+  }>;
+}
+
+export interface GoogleContactsImportConfig {
+  access_token: string;
+  refresh_token?: string;
+  connection_name: string;
+  auto_categorize: boolean;
+  import_work_contacts: boolean;
+}
+
+// Import Wizard Types
+export interface ImportWizardStep {
+  id: 'upload' | 'mapping' | 'preview' | 'process' | 'complete';
+  title: string;
+  description: string;
+  completed: boolean;
+  canSkip?: boolean;
+}
+
+export interface ColumnMapping {
+  source: string;
+  target: keyof Guest | '';
+  confidence: number;
+  required: boolean;
+}
+
+export interface ImportPreview {
+  total_rows: number;
+  sample_data: Partial<Guest>[];
+  column_mappings: ColumnMapping[];
+  validation_errors: ImportError[];
+  duplicate_previews: DuplicateGuest[];
+}
+
+// Export Types
+export interface GuestExportConfig {
+  format: 'csv' | 'xlsx' | 'pdf';
+  include_fields: (keyof Guest | 'household_name')[];
+  filters?: Partial<GuestSearchParams>;
+  grouping?: 'none' | 'category' | 'household' | 'table';
+  include_statistics: boolean;
+}
+
+export interface GuestExportResult {
+  success: boolean;
+  download_url?: string;
+  file_name: string;
+  file_size: number;
+  record_count: number;
+  error?: string;
+}
+
+// Virtual Scrolling Types
+export interface VirtualScrollConfig {
+  itemHeight: number;
+  containerHeight: number;
+  overscan: number;
+  threshold: number;
+}
+
+export interface VirtualScrollState {
+  scrollTop: number;
+  startIndex: number;
+  endIndex: number;
+  visibleItems: Guest[];
+  totalHeight: number;
+}
+
+// Keyboard Shortcuts
+export interface KeyboardShortcut {
+  key: string;
+  ctrlKey?: boolean;
+  shiftKey?: boolean;
+  altKey?: boolean;
+  action: string;
+  description: string;
+}
+
+// Mobile Responsive Types
+export interface MobileGuestActions {
+  swipeActions: Array<{
+    icon: string;
+    label: string;
+    action: string;
+    color: string;
+  }>;
+  longPressActions: Array<{
+    icon: string;
+    label: string;
+    action: string;
+  }>;
+}
+
+// Table Assignment Types
+export interface TableAssignment {
+  table_number: number;
+  table_name?: string;
+  max_seats: number;
+  assigned_guests: Guest[];
+  remaining_seats: number;
+}
+
+export interface TablePlan {
+  tables: TableAssignment[];
+  unassigned_guests: Guest[];
+  total_tables: number;
+  total_assigned: number;
+  total_capacity: number;
+}
+
+// Communication Types
+export interface GuestCommunication {
+  id: string;
+  guest_ids: string[];
+  type: 'email' | 'sms' | 'whatsapp';
+  template_id?: string;
+  subject?: string;
+  message: string;
+  scheduled_for?: string;
+  sent_at?: string;
+  status: 'draft' | 'scheduled' | 'sent' | 'failed';
+  delivery_stats: {
+    sent: number;
+    delivered: number;
+    failed: number;
+    opened?: number;
+    clicked?: number;
+  };
+}
+
+// Form Validation Types
+export interface GuestFormData
+  extends Omit<Guest, 'id' | 'created_at' | 'updated_at'> {
+  id?: string;
+}
+
+export interface GuestFormErrors {
+  [key: string]: string | undefined;
+}
+
+// API Response Types
+export interface GuestListResponse {
+  success: boolean;
+  data: GuestSearchResult[];
+  analytics: GuestAnalytics;
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    hasMore: boolean;
+  };
+}
+
+export interface BulkOperationResponse {
+  success: boolean;
+  updated_count?: number;
+  deleted_count?: number;
+  message: string;
+  errors?: ImportError[];
+}
+
+export interface ImportResponse {
+  success: boolean;
+  import_session_id: string;
+  total_clients: number;
+  successful_imports: number;
+  failed_imports: number;
+  errors: ImportError[];
+  performance_metrics: ImportPerformanceMetrics;
+  households_created?: number;
+}
+
+// Real-time Updates
+export interface GuestRealtimeUpdate {
+  type:
+    | 'guest_created'
+    | 'guest_updated'
+    | 'guest_deleted'
+    | 'household_created'
+    | 'household_updated';
+  guest_id?: string;
+  household_id?: string;
+  couple_id: string;
+  data?: Partial<Guest | Household>;
+  timestamp: string;
+}

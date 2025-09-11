@@ -1,0 +1,329 @@
+# WS-131: Billing System Load Testing Configuration
+# Comprehensive load testing scenarios for high-volume billing operations
+
+config:
+  target: 'https://wedsync.com'  # Replace with your target URL
+  phases:
+    # Warm-up phase
+    - duration: 60
+      arrivalRate: 10
+      name: "Warm-up"
+    
+    # Ramp-up phase  
+    - duration: 300
+      arrivalRate: 50
+      rampTo: 200
+      name: "Ramp-up to peak load"
+    
+    # Peak load phase
+    - duration: 600
+      arrivalRate: 200
+      name: "Peak load - 200 concurrent users"
+    
+    # Spike test
+    - duration: 120
+      arrivalRate: 500
+      name: "Spike test - 500 concurrent users"
+    
+    # Sustained high load
+    - duration: 900
+      arrivalRate: 300
+      name: "Sustained high load"
+    
+    # Cool-down
+    - duration: 180
+      arrivalRate: 300
+      rampTo: 0
+      name: "Cool-down"
+
+  # Performance thresholds
+  ensure:
+    - http.response_time.p95: 2000  # 95th percentile under 2s
+    - http.response_time.p99: 5000  # 99th percentile under 5s
+    - http.response_time.mean: 1000  # Average under 1s
+    - http.request_rate: 200         # At least 200 req/sec
+    - http.codes.200: 0.95           # 95% success rate minimum
+    - http.codes.500: 0.01           # Less than 1% server errors
+
+  # Load testing plugins
+  plugins:
+    expect: {}
+    metrics-by-endpoint: 
+      useOnlyRequestNames: true
+    publish-metrics:
+      - type: datadog
+        apiKey: "{{ $env.DATADOG_API_KEY }}"
+        tags:
+          - "test:billing-load-test"
+          - "environment:production"
+          - "feature:ws-131"
+
+  # HTTP settings
+  http:
+    timeout: 30
+    maxSockets: 1000
+    
+  # Environment variables
+  variables:
+    apiKey: "{{ $env.API_KEY }}"
+    stripeKey: "{{ $env.STRIPE_PUBLISHABLE_KEY }}"
+
+# Scenario definitions
+scenarios:
+  
+  # Core billing API endpoints
+  - name: "Billing Dashboard Load"
+    weight: 20
+    flow:
+      - get:
+          url: "/api/billing/tiers"
+          headers:
+            Authorization: "Bearer {{ apiKey }}"
+          expect:
+            - statusCode: 200
+            - hasProperty: "success"
+          capture:
+            - json: "$.data.plans"
+              as: "plans"
+      
+      - think: 2
+      
+      - get:
+          url: "/api/billing/usage/ai"
+          headers:
+            Authorization: "Bearer {{ apiKey }}"
+          expect:
+            - statusCode: 200
+            - contentType: json
+          capture:
+            - json: "$.ai_services"
+              as: "usage"
+      
+      - think: 1
+      
+      - get:
+          url: "/api/billing/subscription"
+          headers:
+            Authorization: "Bearer {{ apiKey }}"
+          expect:
+            - statusCode: [200, 404]
+
+  # Subscription management operations
+  - name: "Subscription Operations"
+    weight: 25
+    flow:
+      - post:
+          url: "/api/billing/subscription/upgrade"
+          headers:
+            Authorization: "Bearer {{ apiKey }}"
+            Content-Type: "application/json"
+          json:
+            plan_id: "professional"
+            billing_cycle: "monthly"
+            payment_method: "pm_card_visa"
+          expect:
+            - statusCode: [200, 400, 409]
+          capture:
+            - json: "$.data.subscription.id"
+              as: "subscriptionId"
+      
+      - think: 5
+      
+      - get:
+          url: "/api/billing/subscription/{{ subscriptionId }}"
+          headers:
+            Authorization: "Bearer {{ apiKey }}"
+          expect:
+            - statusCode: [200, 404]
+      
+      - think: 2
+      
+      - post:
+          url: "/api/billing/subscription/{{ subscriptionId }}/cancel"
+          headers:
+            Authorization: "Bearer {{ apiKey }}"
+            Content-Type: "application/json"
+          json:
+            reason: "load_test"
+          expect:
+            - statusCode: [200, 400, 404]
+
+  # Payment processing stress test
+  - name: "Payment Processing"
+    weight: 30
+    flow:
+      - post:
+          url: "/api/billing/payments/create-intent"
+          headers:
+            Authorization: "Bearer {{ apiKey }}"
+            Content-Type: "application/json"
+          json:
+            amount: 2900
+            currency: "usd"
+            payment_method: "pm_card_visa"
+          expect:
+            - statusCode: [200, 400]
+          capture:
+            - json: "$.client_secret"
+              as: "clientSecret"
+            - json: "$.payment_intent_id"
+              as: "paymentIntentId"
+      
+      - think: 3
+      
+      - post:
+          url: "/api/billing/payments/confirm"
+          headers:
+            Authorization: "Bearer {{ apiKey }}"
+            Content-Type: "application/json"
+          json:
+            payment_intent_id: "{{ paymentIntentId }}"
+            client_secret: "{{ clientSecret }}"
+          expect:
+            - statusCode: [200, 400, 402]
+
+  # AI Usage tracking under load
+  - name: "AI Usage Tracking"
+    weight: 15
+    flow:
+      - post:
+          url: "/api/billing/usage/record"
+          headers:
+            Authorization: "Bearer {{ apiKey }}"
+            Content-Type: "application/json"
+          json:
+            metric_name: "ai_photo_analysis" 
+            quantity: 1
+            metadata:
+              test_scenario: "load_test"
+              timestamp: "{{ $now }}"
+          expect:
+            - statusCode: [200, 429]  # 429 for rate limiting
+      
+      - think: 1
+      
+      - get:
+          url: "/api/billing/usage/summary"
+          headers:
+            Authorization: "Bearer {{ apiKey }}"
+          expect:
+            - statusCode: 200
+
+  # Cache performance testing
+  - name: "Cache Performance"
+    weight: 5
+    flow:
+      - get:
+          url: "/api/billing/cache/metrics"
+          headers:
+            Authorization: "Bearer {{ apiKey }}"
+          expect:
+            - statusCode: 200
+            - hasProperty: "hit_ratio"
+          capture:
+            - json: "$.hit_ratio"
+              as: "hitRatio"
+      
+      - log: "Cache hit ratio: {{ hitRatio }}"
+
+  # Monitoring and performance endpoints
+  - name: "Performance Monitoring"
+    weight: 5
+    flow:
+      - get:
+          url: "/api/billing/monitoring?action=health"
+          headers:
+            Authorization: "Bearer {{ apiKey }}"
+          expect:
+            - statusCode: 200
+            - hasProperty: "overall_status"
+      
+      - get:
+          url: "/api/billing/monitoring?action=metrics&metric=payment_success_rate&range=1h"
+          headers:
+            Authorization: "Bearer {{ apiKey }}"
+          expect:
+            - statusCode: 200
+
+# Custom functions for complex scenarios
+functions:
+  generateTestUser: |
+    function(context, events, done) {
+      context.vars.testUserId = 'load_test_' + Math.random().toString(36).substr(2, 9);
+      context.vars.testEmail = context.vars.testUserId + '@loadtest.wedsync.com';
+      return done();
+    }
+
+  validatePaymentResponse: |
+    function(requestParams, response, context, ee, next) {
+      if (response.body && typeof response.body === 'string') {
+        try {
+          const data = JSON.parse(response.body);
+          if (data.success === false && data.error) {
+            ee.emit('customStat', 'payment_errors', 1);
+            console.log('Payment error:', data.error);
+          }
+        } catch (e) {
+          console.log('Failed to parse response:', e);
+        }
+      }
+      return next();
+    }
+
+  trackCachePerformance: |
+    function(requestParams, response, context, ee, next) {
+      if (response.body) {
+        try {
+          const data = JSON.parse(response.body);
+          if (data.hit_ratio !== undefined) {
+            ee.emit('customStat', 'cache_hit_ratio', data.hit_ratio);
+          }
+          if (data.response_time_ms) {
+            ee.emit('customStat', 'cache_response_time', data.response_time_ms);
+          }
+        } catch (e) {
+          // Ignore parsing errors
+        }
+      }
+      return next();
+    }
+
+# Error handling scenarios
+- name: "Error Handling Stress Test"
+  weight: 10
+  flow:
+    # Test rate limiting
+    - loop:
+        - post:
+            url: "/api/billing/payments/create-intent"
+            headers:
+              Authorization: "Bearer {{ apiKey }}"
+              Content-Type: "application/json"
+            json:
+              amount: 100
+              currency: "usd"
+        count: 50
+        over: 1  # 50 requests in 1 second to trigger rate limiting
+    
+    - think: 5
+    
+    # Test invalid payment methods
+    - post:
+        url: "/api/billing/payments/create-intent"
+        headers:
+          Authorization: "Bearer {{ apiKey }}"
+          Content-Type: "application/json"
+        json:
+          amount: 2900
+          currency: "usd"
+          payment_method: "pm_card_chargeDeclined"
+        expect:
+          - statusCode: [200, 400, 402]
+    
+    # Test database stress
+    - get:
+        url: "/api/billing/analytics/revenue?period=all"
+        headers:
+          Authorization: "Bearer {{ apiKey }}"
+        expect:
+          - statusCode: [200, 503, 504]  # May timeout under load

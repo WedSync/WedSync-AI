@@ -1,0 +1,479 @@
+import { SupplierScheduleSMSService } from '../supplier-schedule-sms-service'
+import { EnhancedSMSService } from '../enhanced-sms-service'
+import { SupplierContactInfo, SupplierScheduleEvent, ScheduleChangeDetails } from '@/types/supplier-communication'
+import { createClient } from '@/lib/supabase/server'
+
+// Mock dependencies
+jest.mock('../enhanced-sms-service')
+jest.mock('@/lib/supabase/server')
+
+// Mock data
+const mockSupplier: SupplierContactInfo = {
+  id: 'supplier-1',
+  name: 'John Doe',
+  email: 'john@photography.com',
+  phone: '+1234567890',
+  company_name: 'John Photography',
+  role: 'photographer',
+  organization_id: 'org-1'
+}
+
+const mockScheduleEvent: SupplierScheduleEvent = {
+  id: 'event-1',
+  title: 'Wedding Photography',
+  start_time: new Date('2024-06-15T10:00:00Z'),
+  end_time: new Date('2024-06-15T18:00:00Z'),
+  location: 'Grand Hotel',
+  event_type: 'wedding_day',
+  couple_names: 'Alice & Bob',
+  wedding_date: new Date('2024-06-15'),
+  supplier_id: 'supplier-1',
+  organization_id: 'org-1',
+  client_id: 'client-1',
+  status: 'scheduled'
+}
+
+const mockChangeDetails: ScheduleChangeDetails = {
+  change_type: 'time_update',
+  original_values: { start_time: '09:00', end_time: '17:00' },
+  new_values: { start_time: '10:00', end_time: '18:00' },
+  change_reason: 'Client requested later start time',
+  urgency_level: 'urgent'
+}
+
+const mockSupabaseClient = {
+  from: jest.fn().mockReturnThis(),
+  select: jest.fn().mockReturnThis(),
+  insert: jest.fn().mockReturnThis(),
+  update: jest.fn().mockReturnThis(),
+  eq: jest.fn().mockReturnThis(),
+  single: jest.fn(),
+  data: null,
+  error: null
+}
+
+const mockSMSService = {
+  sendSMS: jest.fn(),
+  sendBulkSMS: jest.fn(),
+  logSMSActivity: jest.fn()
+}
+
+describe('SupplierScheduleSMSService', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (createClient as jest.Mock).mockReturnValue(mockSupabaseClient);
+    (EnhancedSMSService as jest.MockedClass<typeof EnhancedSMSService>).mockImplementation(() => mockSMSService as any)
+  })
+
+  describe('sendUrgentScheduleChangeNotification', () => {
+    it('should send urgent SMS notification successfully', async () => {
+      mockSMSService.sendSMS.mockResolvedValue({
+        success: true,
+        messageId: 'sms-123',
+        provider: 'twilio'
+      })
+      mockSupabaseClient.single.mockResolvedValue({
+        data: { notification_preferences: { sms_notifications: true } },
+        error: null
+      })
+
+      const result = await SupplierScheduleSMSService.sendUrgentScheduleChangeNotification(
+        mockSupplier,
+        mockScheduleEvent,
+        mockChangeDetails
+      )
+
+      expect(result.success).toBe(true)
+      expect(result.sms_id).toBe('sms-123')
+      expect(mockSMSService.sendSMS).toHaveBeenCalledWith(
+        mockSupplier.phone,
+        expect.stringContaining('URGENT'),
+        expect.objectContaining({
+          priority: 'high',
+          messageType: 'urgent_schedule_change'
+        })
+      )
+    })
+
+    it('should handle SMS disabled in preferences', async () => {
+      mockSupabaseClient.single.mockResolvedValue({
+        data: { notification_preferences: { sms_notifications: false } },
+        error: null
+      })
+
+      const result = await SupplierScheduleSMSService.sendUrgentScheduleChangeNotification(
+        mockSupplier,
+        mockScheduleEvent,
+        mockChangeDetails
+      )
+
+      expect(result.success).toBe(true)
+      expect(result.skipped).toBe(true)
+      expect(result.reason).toBe('SMS notifications disabled')
+      expect(mockSMSService.sendSMS).not.toHaveBeenCalled()
+    })
+
+    it('should handle invalid phone number', async () => {
+      const supplierWithInvalidPhone = { ...mockSupplier, phone: 'invalid' }
+      mockSupabaseClient.single.mockResolvedValue({
+        data: { notification_preferences: { sms_notifications: true } },
+        error: null
+      })
+
+      const result = await SupplierScheduleSMSService.sendUrgentScheduleChangeNotification(
+        supplierWithInvalidPhone,
+        mockScheduleEvent,
+        mockChangeDetails
+      )
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('Invalid phone number')
+    })
+
+    it('should format urgent message correctly', async () => {
+      mockSMSService.sendSMS.mockResolvedValue({
+        success: true,
+        messageId: 'sms-123'
+      })
+      mockSupabaseClient.single.mockResolvedValue({
+        data: { notification_preferences: { sms_notifications: true } },
+        error: null
+      })
+
+      await SupplierScheduleSMSService.sendUrgentScheduleChangeNotification(
+        mockSupplier,
+        mockScheduleEvent,
+        mockChangeDetails
+      )
+
+      const [[phone, message, options]] = mockSMSService.sendSMS.mock.calls
+      
+      expect(phone).toBe(mockSupplier.phone)
+      expect(message).toContain('URGENT')
+      expect(message).toContain(mockScheduleEvent.couple_names)
+      expect(message).toContain('Jun 15')
+      expect(options.priority).toBe('high')
+    })
+  })
+
+  describe('sendScheduleReminderSMS', () => {
+    it('should send reminder SMS with proper timing', async () => {
+      mockSMSService.sendSMS.mockResolvedValue({
+        success: true,
+        messageId: 'sms-reminder'
+      })
+      mockSupabaseClient.single.mockResolvedValue({
+        data: { notification_preferences: { sms_notifications: true } },
+        error: null
+      })
+
+      const result = await SupplierScheduleSMSService.sendScheduleReminderSMS(
+        mockSupplier,
+        mockScheduleEvent,
+        { hours_before: 2 }
+      )
+
+      expect(result.success).toBe(true)
+      expect(mockSMSService.sendSMS).toHaveBeenCalledWith(
+        mockSupplier.phone,
+        expect.stringContaining('Reminder'),
+        expect.objectContaining({
+          messageType: 'schedule_reminder'
+        })
+      )
+    })
+
+    it('should handle different reminder types', async () => {
+      mockSMSService.sendSMS.mockResolvedValue({
+        success: true,
+        messageId: 'sms-reminder'
+      })
+      mockSupabaseClient.single.mockResolvedValue({
+        data: { notification_preferences: { sms_notifications: true } },
+        error: null
+      })
+
+      // Test 24 hours reminder
+      await SupplierScheduleSMSService.sendScheduleReminderSMS(
+        mockSupplier,
+        mockScheduleEvent,
+        { hours_before: 24 }
+      )
+
+      const [[, message]] = mockSMSService.sendSMS.mock.calls
+      expect(message).toContain('24 hours')
+    })
+  })
+
+  describe('sendConflictAlertSMS', () => {
+    const mockConflictDetails = {
+      conflict_type: 'double_booking',
+      conflicting_event: 'Another Wedding',
+      conflict_time: new Date('2024-06-15T10:00:00Z'),
+      resolution_required: true
+    }
+
+    it('should send conflict alert SMS', async () => {
+      mockSMSService.sendSMS.mockResolvedValue({
+        success: true,
+        messageId: 'sms-conflict'
+      })
+      mockSupabaseClient.single.mockResolvedValue({
+        data: { notification_preferences: { sms_notifications: true } },
+        error: null
+      })
+
+      const result = await SupplierScheduleSMSService.sendConflictAlertSMS(
+        mockSupplier,
+        mockScheduleEvent,
+        mockConflictDetails
+      )
+
+      expect(result.success).toBe(true)
+      expect(mockSMSService.sendSMS).toHaveBeenCalledWith(
+        mockSupplier.phone,
+        expect.stringContaining('CONFLICT'),
+        expect.objectContaining({
+          priority: 'high',
+          messageType: 'schedule_conflict'
+        })
+      )
+    })
+
+    it('should include conflict resolution instructions', async () => {
+      mockSMSService.sendSMS.mockResolvedValue({
+        success: true,
+        messageId: 'sms-conflict'
+      })
+      mockSupabaseClient.single.mockResolvedValue({
+        data: { notification_preferences: { sms_notifications: true } },
+        error: null
+      })
+
+      await SupplierScheduleSMSService.sendConflictAlertSMS(
+        mockSupplier,
+        mockScheduleEvent,
+        mockConflictDetails
+      )
+
+      const [[, message]] = mockSMSService.sendSMS.mock.calls
+      expect(message).toContain('Reply CONFIRM or DECLINE')
+    })
+  })
+
+  describe('sendBulkSupplierNotifications', () => {
+    const mockSuppliers = [
+      mockSupplier,
+      { ...mockSupplier, id: 'supplier-2', phone: '+0987654321' }
+    ]
+    const mockEvents = [
+      mockScheduleEvent,
+      { ...mockScheduleEvent, id: 'event-2', supplier_id: 'supplier-2' }
+    ]
+
+    it('should send bulk SMS notifications', async () => {
+      mockSMSService.sendSMS
+        .mockResolvedValueOnce({ success: true, messageId: 'sms-1' })
+        .mockResolvedValueOnce({ success: true, messageId: 'sms-2' })
+      
+      mockSupabaseClient.single
+        .mockResolvedValue({ data: { notification_preferences: { sms_notifications: true } }, error: null })
+
+      const result = await SupplierScheduleSMSService.sendBulkSupplierNotifications(
+        mockSuppliers.map((supplier, index) => ({
+          supplier,
+          scheduleEvent: mockEvents[index],
+          message: `Update for ${supplier.name}`
+        })),
+        'schedule_update'
+      )
+
+      expect(result.success).toBe(true)
+      expect(result.sent_count).toBe(2)
+      expect(result.failed_count).toBe(0)
+      expect(mockSMSService.sendSMS).toHaveBeenCalledTimes(2)
+    })
+
+    it('should handle partial failures in bulk SMS', async () => {
+      mockSMSService.sendSMS
+        .mockResolvedValueOnce({ success: true, messageId: 'sms-1' })
+        .mockResolvedValueOnce({ success: false, error: 'Invalid phone number' })
+      
+      mockSupabaseClient.single
+        .mockResolvedValue({ data: { notification_preferences: { sms_notifications: true } }, error: null })
+
+      const result = await SupplierScheduleSMSService.sendBulkSupplierNotifications(
+        mockSuppliers.map((supplier, index) => ({
+          supplier,
+          scheduleEvent: mockEvents[index],
+          message: `Update for ${supplier.name}`
+        })),
+        'schedule_update'
+      )
+
+      expect(result.success).toBe(true)
+      expect(result.sent_count).toBe(1)
+      expect(result.failed_count).toBe(1)
+    })
+  })
+
+  describe('processSupplierSMSResponse', () => {
+    const mockIncomingSMS = {
+      from: '+1234567890',
+      message: 'CONFIRM',
+      messageId: 'incoming-123',
+      timestamp: new Date()
+    }
+
+    it('should process confirmation response', async () => {
+      mockSupabaseClient.single.mockResolvedValue({
+        data: {
+          id: 'pending-123',
+          supplier_id: 'supplier-1',
+          organization_id: 'org-1',
+          event_type: 'schedule_conflict'
+        },
+        error: null
+      })
+
+      const result = await SupplierScheduleSMSService.processSupplierSMSResponse(
+        mockIncomingSMS.from,
+        mockIncomingSMS.message,
+        mockIncomingSMS.messageId
+      )
+
+      expect(result.success).toBe(true)
+      expect(result.response_type).toBe('confirmation')
+      expect(result.action_taken).toBe('confirmed')
+    })
+
+    it('should process decline response', async () => {
+      mockSupabaseClient.single.mockResolvedValue({
+        data: {
+          id: 'pending-123',
+          supplier_id: 'supplier-1',
+          organization_id: 'org-1',
+          event_type: 'schedule_conflict'
+        },
+        error: null
+      })
+
+      const result = await SupplierScheduleSMSService.processSupplierSMSResponse(
+        mockIncomingSMS.from,
+        'DECLINE',
+        mockIncomingSMS.messageId
+      )
+
+      expect(result.success).toBe(true)
+      expect(result.response_type).toBe('decline')
+      expect(result.action_taken).toBe('declined')
+    })
+
+    it('should handle unknown responses', async () => {
+      const result = await SupplierScheduleSMSService.processSupplierSMSResponse(
+        mockIncomingSMS.from,
+        'UNKNOWN RESPONSE',
+        mockIncomingSMS.messageId
+      )
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('Unknown response')
+    })
+  })
+
+  describe('error handling', () => {
+    it('should handle SMS service failures', async () => {
+      mockSupabaseClient.single.mockResolvedValue({
+        data: { notification_preferences: { sms_notifications: true } },
+        error: null
+      })
+      mockSMSService.sendSMS.mockResolvedValue({
+        success: false,
+        error: 'SMS service unavailable'
+      })
+
+      const result = await SupplierScheduleSMSService.sendUrgentScheduleChangeNotification(
+        mockSupplier,
+        mockScheduleEvent,
+        mockChangeDetails
+      )
+
+      expect(result.success).toBe(false)
+      expect(result.error).toBe('SMS service unavailable')
+    })
+
+    it('should validate phone number format', async () => {
+      const supplierWithoutPhone = { ...mockSupplier, phone: '' }
+      
+      const result = await SupplierScheduleSMSService.sendUrgentScheduleChangeNotification(
+        supplierWithoutPhone,
+        mockScheduleEvent,
+        mockChangeDetails
+      )
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('Valid phone number required')
+    })
+
+    it('should handle database errors', async () => {
+      mockSupabaseClient.single.mockResolvedValue({
+        data: null,
+        error: { message: 'Database connection failed' }
+      })
+
+      const result = await SupplierScheduleSMSService.sendUrgentScheduleChangeNotification(
+        mockSupplier,
+        mockScheduleEvent,
+        mockChangeDetails
+      )
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('Database connection failed')
+    })
+  })
+
+  describe('message formatting', () => {
+    it('should format urgent messages within SMS length limits', async () => {
+      mockSMSService.sendSMS.mockResolvedValue({
+        success: true,
+        messageId: 'sms-123'
+      })
+      mockSupabaseClient.single.mockResolvedValue({
+        data: { notification_preferences: { sms_notifications: true } },
+        error: null
+      })
+
+      await SupplierScheduleSMSService.sendUrgentScheduleChangeNotification(
+        mockSupplier,
+        mockScheduleEvent,
+        mockChangeDetails
+      )
+
+      const [[, message]] = mockSMSService.sendSMS.mock.calls
+      expect(message.length).toBeLessThan(160) // SMS limit
+    })
+
+    it('should include essential information in urgent messages', async () => {
+      mockSMSService.sendSMS.mockResolvedValue({
+        success: true,
+        messageId: 'sms-123'
+      })
+      mockSupabaseClient.single.mockResolvedValue({
+        data: { notification_preferences: { sms_notifications: true } },
+        error: null
+      })
+
+      await SupplierScheduleSMSService.sendUrgentScheduleChangeNotification(
+        mockSupplier,
+        mockScheduleEvent,
+        mockChangeDetails
+      )
+
+      const [[, message]] = mockSMSService.sendSMS.mock.calls
+      
+      expect(message).toContain('URGENT')
+      expect(message).toContain(mockScheduleEvent.couple_names)
+      expect(message).toContain('Jun 15') // Date format
+    })
+  })
+})

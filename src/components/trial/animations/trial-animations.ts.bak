@@ -1,0 +1,409 @@
+/**
+ * WS-140 Trial Management System - Round 2: Animation Utilities
+ * Smooth transitions, micro-interactions, and enhanced visual feedback
+ * Built with Framer Motion for performance-optimized animations
+ */
+
+
+// Variants // Variants removed - use inline props
+// Transition // Transition removed - use inline props
+
+// Stagger animation for lists and grids
+export const staggerContainer: Variants = {
+  initial: {},
+  animate: {
+    transition: {
+      staggerChildren: 0.1,
+      delayChildren: 0.3
+    }
+  }
+};
+
+export const staggerItem: Variants = {
+  initial: { opacity: 0, y: 20 },
+  animate: {
+    opacity: 1,
+    y: 0,
+    transition: {
+      type: "spring",
+      stiffness: 300,
+      damping: 25
+    }
+  },
+  exit: {
+    opacity: 0,
+    y: -20,
+    transition: { duration: 0.2 }
+  }
+};
+
+// Slide animations for panels and modals
+export const slideInFromRight: Variants = {
+  initial: { x: '100%', opacity: 0 },
+  animate: { 
+    x: 0, 
+    opacity: 1,
+    transition: {
+      type: "spring",
+      stiffness: 300,
+      damping: 30
+    }
+  },
+  exit: { 
+    x: '100%', 
+    opacity: 0,
+    transition: { duration: 0.3, ease: "easeInOut" }
+  }
+};
+
+export const slideInFromLeft: Variants = {
+  initial: { x: '-100%', opacity: 0 },
+  animate: { 
+    x: 0, 
+    opacity: 1,
+    transition: {
+      type: "spring",
+      stiffness: 300,
+      damping: 30
+    }
+  },
+  exit: { 
+    x: '-100%', 
+    opacity: 0,
+    transition: { duration: 0.3, ease: "easeInOut" }
+  }
+};
+
+export const slideInFromBottom: Variants = {
+  initial: { y: '100%', opacity: 0 },
+  animate: { 
+    y: 0, 
+    opacity: 1,
+    transition: {
+      type: "spring",
+      stiffness: 400,
+      damping: 30
+    }
+  },
+  exit: { 
+    y: '100%', 
+    opacity: 0,
+    transition: { duration: 0.3, ease: "easeInOut" }
+  }
+};
+
+// Scale animations for buttons and interactive elements
+export const scaleOnHover: Variants = {
+  initial: { scale: 1 },
+  hover: { 
+    scale: 1.05,
+    transition: { duration: 0.2, ease: "easeOut" }
+  },
+  tap: { 
+    scale: 0.95,
+    transition: { duration: 0.1, ease: "easeInOut" }
+  }
+};
+
+export const scaleOnTap: Variants = {
+  initial: { scale: 1 },
+  tap: { 
+    scale: 0.95,
+    transition: { duration: 0.1, ease: "easeInOut" }
+  }
+};
+
+// Fade animations
+export const fadeIn: Variants = {
+  initial: { opacity: 0 },
+  animate: { 
+    opacity: 1,
+    transition: { duration: 0.3, ease: "easeOut" }
+  },
+  exit: { 
+    opacity: 0,
+    transition: { duration: 0.2, ease: "easeIn" }
+  }
+};
+
+export const fadeInUp: Variants = {
+  initial: { opacity: 0, y: 20 },
+  animate: { 
+    opacity: 1, 
+    y: 0,
+    transition: {
+      duration: 0.4,
+      ease: "easeOut"
+    }
+  },
+  exit: {
+    opacity: 0,
+    y: -20,
+    transition: { duration: 0.2, ease: "easeIn" }
+  }
+};
+
+// Progress bar animations
+export const progressFill: Variants = {
+  initial: { width: 0 },
+  animate: (width: number) => ({
+    width: `${width}%`,
+    transition: {
+      duration: 1.5,
+      ease: "easeOut",
+      delay: 0.2
+    }
+  })
+};
+
+// Pulse animation for attention-grabbing elements
+export const pulse: Variants = {
+  animate: {
+    scale: [1, 1.05, 1],
+    opacity: [0.7, 1, 0.7],
+    transition: {
+      duration: 2,
+      repeat: Infinity,
+      ease: "easeInOut"
+    }
+  }
+};
+
+// Bounce animation for celebration elements
+export const bounceIn: Variants = {
+  initial: { scale: 0, opacity: 0 },
+  animate: {
+    scale: 1,
+    opacity: 1,
+    transition: {
+      type: "spring",
+      stiffness: 500,
+      damping: 15,
+      duration: 0.8
+    }
+  }
+};
+
+// Floating animation for decorative elements
+export const float: Variants = {
+  animate: {
+    y: [-10, 10, -10],
+    transition: {
+      duration: 4,
+      repeat: Infinity,
+      ease: "easeInOut"
+    }
+  }
+};
+
+// Rotate animation for loading or interactive states
+export const rotate: Variants = {
+  animate: {
+    rotate: 360,
+    transition: {
+      duration: 2,
+      repeat: Infinity,
+      ease: "linear"
+    }
+  }
+};
+
+// Shake animation for error states or attention
+export const shake: Variants = {
+  animate: {
+    x: [-5, 5, -5, 5, 0],
+    transition: { duration: 0.5, ease: "easeInOut" }
+  }
+};
+
+// Card hover animation
+export const cardHover: Variants = {
+  initial: { 
+    scale: 1,
+    boxShadow: "0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)"
+  },
+  hover: {
+    scale: 1.02,
+    y: -4,
+    boxShadow: "0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1)",
+    transition: {
+      type: "spring",
+      stiffness: 400,
+      damping: 25
+    }
+  }
+};
+
+// Milestone achievement animation
+export const milestoneAchieved: Variants = {
+  initial: { scale: 0, rotate: -180, opacity: 0 },
+  animate: {
+    scale: [0, 1.2, 1],
+    rotate: [0, 10, 0],
+    opacity: 1,
+    transition: {
+      type: "spring",
+      stiffness: 300,
+      damping: 20,
+      duration: 0.8
+    }
+  }
+};
+
+// Notification slide-in from top
+export const notificationSlide: Variants = {
+  initial: { y: -100, opacity: 0 },
+  animate: {
+    y: 0,
+    opacity: 1,
+    transition: {
+      type: "spring",
+      stiffness: 400,
+      damping: 25
+    }
+  },
+  exit: {
+    y: -100,
+    opacity: 0,
+    transition: { duration: 0.3, ease: "easeInOut" }
+  }
+};
+
+// Progressive reveal for tip cards
+export const tipReveal: Variants = {
+  initial: { 
+    opacity: 0, 
+    scale: 0.9,
+    y: 20
+  },
+  animate: (index: number) => ({
+    opacity: 1,
+    scale: 1,
+    y: 0,
+    transition: {
+      delay: index * 0.1,
+      type: "spring",
+      stiffness: 300,
+      damping: 25
+    }
+  }),
+  exit: {
+    opacity: 0,
+    scale: 0.9,
+    x: -100,
+    transition: { duration: 0.3 }
+  }
+};
+
+// Activity feed item entrance
+export const activityEnter: Variants = {
+  initial: { 
+    opacity: 0, 
+    x: -50,
+    scale: 0.95
+  },
+  animate: {
+    opacity: 1,
+    x: 0,
+    scale: 1,
+    transition: {
+      type: "spring",
+      stiffness: 300,
+      damping: 25
+    }
+  },
+  exit: {
+    opacity: 0,
+    x: 50,
+    scale: 0.95,
+    transition: { duration: 0.2 }
+  }
+};
+
+// Common transition settings
+export const springTransition: Transition = {
+  type: "spring",
+  stiffness: 300,
+  damping: 25
+};
+
+export const easeTransition: Transition = {
+  duration: 0.3,
+  ease: "easeInOut"
+};
+
+export const fastTransition: Transition = {
+  duration: 0.15,
+  ease: "easeOut"
+};
+
+// Modal backdrop animation
+export const backdropFade: Variants = {
+  initial: { opacity: 0 },
+  animate: { 
+    opacity: 1,
+    transition: { duration: 0.2 }
+  },
+  exit: { 
+    opacity: 0,
+    transition: { duration: 0.2 }
+  }
+};
+
+// Loading state animations
+export const loadingPulse: Variants = {
+  animate: {
+    opacity: [0.5, 1, 0.5],
+    transition: {
+      duration: 1.5,
+      repeat: Infinity,
+      ease: "easeInOut"
+    }
+  }
+};
+
+// Success checkmark animation
+export const successCheck: Variants = {
+  initial: { pathLength: 0, opacity: 0 },
+  animate: {
+    pathLength: 1,
+    opacity: 1,
+    transition: {
+      pathLength: { delay: 0.2, duration: 0.6, ease: "easeInOut" },
+      opacity: { duration: 0.1 }
+    }
+  }
+};
+
+// Button press animation
+export const buttonPress: Variants = {
+  tap: {
+    scale: 0.95,
+    transition: { duration: 0.1, ease: "easeInOut" }
+  }
+};
+
+// Tooltip animation
+export const tooltipAnimation: Variants = {
+  initial: { 
+    opacity: 0,
+    scale: 0.9,
+    y: 10
+  },
+  animate: {
+    opacity: 1,
+    scale: 1,
+    y: 0,
+    transition: {
+      type: "spring",
+      stiffness: 500,
+      damping: 30
+    }
+  },
+  exit: {
+    opacity: 0,
+    scale: 0.9,
+    y: 10,
+    transition: { duration: 0.15 }
+  }
+};

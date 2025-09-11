@@ -1,0 +1,404 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import Stripe from 'stripe';
+import { SubscriptionService } from '@/lib/services/subscriptionService';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+);
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
+  apiVersion: '2023-10-16',
+});
+
+const subscriptionService = new SubscriptionService(supabase, stripe);
+
+interface DowngradeRequest {
+  targetPlan: string; // tier name (starter, professional, premium, enterprise)
+  billingCycle: 'monthly' | 'yearly';
+  effectiveDate?: 'immediate' | 'end_of_period';
+  confirmDataLoss?: boolean; // Required when downgrading may cause data loss
+}
+
+/**
+ * POST /api/billing/subscription/downgrade
+ * Downgrade user's subscription to a lower tier
+ * Handles data loss warnings and period-end scheduling
+ */
+export async function POST(request: NextRequest) {
+  try {
+    // Authenticate user
+    const authUser = await getAuthenticatedUser(request);
+    if (!authUser) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body: DowngradeRequest = await request.json();
+    const {
+      targetPlan,
+      billingCycle,
+      effectiveDate = 'end_of_period',
+      confirmDataLoss = false,
+    } = body;
+
+    // Validate required fields
+    if (!targetPlan || !billingCycle) {
+      return NextResponse.json(
+        { error: 'targetPlan and billingCycle are required' },
+        { status: 400 },
+      );
+    }
+
+    // Validate inputs
+    if (!['monthly', 'yearly'].includes(billingCycle)) {
+      return NextResponse.json(
+        { error: 'billingCycle must be "monthly" or "yearly"' },
+        { status: 400 },
+      );
+    }
+
+    if (!['immediate', 'end_of_period'].includes(effectiveDate)) {
+      return NextResponse.json(
+        { error: 'effectiveDate must be "immediate" or "end_of_period"' },
+        { status: 400 },
+      );
+    }
+
+    // Get current subscription
+    const currentSubscription = await subscriptionService.getUserSubscription(
+      authUser.id,
+    );
+
+    if (!currentSubscription?.subscription) {
+      return NextResponse.json(
+        { error: 'No active subscription found' },
+        { status: 404 },
+      );
+    }
+
+    // Get target plan details
+    const { data: targetPlanData, error: planError } = await supabase
+      .from('subscription_plans')
+      .select('*')
+      .eq('tier', targetPlan)
+      .eq('is_active', true)
+      .single();
+
+    if (planError || !targetPlanData) {
+      return NextResponse.json(
+        { error: 'Target plan not found or inactive' },
+        { status: 404 },
+      );
+    }
+
+    // Get current plan details for validation
+    const { data: currentPlanData } = await supabase
+      .from('subscription_plans')
+      .select('*')
+      .eq('id', currentSubscription.subscription.plan_id)
+      .single();
+
+    if (!currentPlanData) {
+      return NextResponse.json(
+        { error: 'Current plan not found' },
+        { status: 404 },
+      );
+    }
+
+    // Validate downgrade path (prevent upgrades)
+    if (currentPlanData.sort_order <= targetPlanData.sort_order) {
+      return NextResponse.json(
+        {
+          error:
+            'Cannot downgrade to a higher or same tier. Use upgrade endpoint instead.',
+        },
+        { status: 400 },
+      );
+    }
+
+    // Check for potential data loss
+    const dataLossWarnings = analyzeDataLossRisk(
+      currentSubscription.usage || {},
+      currentPlanData.limits,
+      targetPlanData.limits,
+    );
+
+    // Require confirmation if there's risk of data loss
+    if (dataLossWarnings.hasDataLossRisk && !confirmDataLoss) {
+      return NextResponse.json(
+        {
+          error: 'Data loss confirmation required',
+          data_loss_warnings: dataLossWarnings,
+          requires_confirmation: true,
+          message:
+            'Your current usage exceeds the limits of the target plan. Please confirm you understand data may be restricted or lost.',
+        },
+        { status: 409 },
+      ); // Conflict status
+    }
+
+    // Special handling for downgrade to starter (free) plan
+    if (targetPlan === 'starter') {
+      if (effectiveDate === 'immediate') {
+        // Cancel subscription immediately
+        const cancelResult = await subscriptionService.cancelSubscription(
+          currentSubscription.subscription.stripe_subscription_id,
+          false, // Cancel immediately
+        );
+
+        result = {
+          subscription: cancelResult.subscription,
+          downgrade_effective: new Date().toISOString(),
+          billing_change: 'cancelled_immediately',
+        };
+      } else {
+        // Cancel at period end
+        const cancelResult = await subscriptionService.cancelSubscription(
+          currentSubscription.subscription.stripe_subscription_id,
+          true, // Cancel at period end
+        );
+
+        result = {
+          subscription: cancelResult.subscription,
+          downgrade_effective:
+            currentSubscription.subscription.current_period_end,
+          billing_change: 'cancelled_at_period_end',
+        };
+      }
+    } else {
+      // Downgrade to a paid plan
+      const stripePriceId =
+        billingCycle === 'yearly'
+          ? targetPlanData.yearly_stripe_price_id
+          : targetPlanData.stripe_price_id;
+
+      if (!stripePriceId) {
+        return NextResponse.json(
+          {
+            error: `No Stripe price ID configured for ${targetPlan} ${billingCycle} billing`,
+          },
+          { status: 400 },
+        );
+      }
+
+      if (effectiveDate === 'immediate') {
+        // Immediate downgrade with proration
+        result = await subscriptionService.updateSubscription(
+          currentSubscription.subscription.stripe_subscription_id,
+          {
+            priceId: stripePriceId,
+            prorationBehavior: 'create_prorations',
+          },
+        );
+        result.downgrade_effective = new Date().toISOString();
+        result.billing_change = 'immediate_with_proration';
+      } else {
+        // Schedule downgrade for end of period
+        // This requires using Stripe's subscription schedule or modification
+        await stripe.subscriptions.update(
+          currentSubscription.subscription.stripe_subscription_id,
+          {
+            cancel_at_period_end: false,
+            items: [
+              {
+                id: currentSubscription.subscription.stripe_subscription_id, // This needs the subscription item ID
+                price: stripePriceId,
+              },
+            ],
+            proration_behavior: 'none',
+          },
+        );
+
+        result = {
+          subscription: currentSubscription.subscription,
+          downgrade_effective:
+            currentSubscription.subscription.current_period_end,
+          billing_change: 'scheduled_for_period_end',
+        };
+      }
+    }
+
+    // Track downgrade event
+    await supabase.from('subscription_events').insert({
+      user_id: authUser.id,
+      subscription_id: currentSubscription.subscription.id,
+      event_type: 'downgrade',
+      event_data: {
+        from_plan: currentPlanData.tier,
+        to_plan: targetPlan,
+        billing_cycle: billingCycle,
+        effective_date: effectiveDate,
+        data_loss_warnings: dataLossWarnings,
+        confirmed_data_loss: confirmDataLoss,
+      },
+    });
+
+    let result: any;
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        subscription: result.subscription,
+        plan: {
+          tier: targetPlanData.tier,
+          name: targetPlanData.display_name,
+          price:
+            billingCycle === 'yearly'
+              ? targetPlanData.yearly_price
+              : targetPlanData.price,
+          billing_cycle: billingCycle,
+          limits: targetPlanData.limits,
+          features: targetPlanData.features,
+        },
+        downgrade_effective: result.downgrade_effective,
+        billing_change: result.billing_change,
+        data_loss_warnings: dataLossWarnings,
+        next_billing_date: result.subscription?.current_period_end,
+      },
+      message: `Successfully scheduled downgrade to ${targetPlanData.display_name}`,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error('Downgrade API error:', error);
+
+    // Handle specific Stripe errors
+    if (error instanceof Stripe.errors.StripeError) {
+      return NextResponse.json(
+        {
+          error: 'Payment processing error',
+          details: error.message,
+          code: error.code,
+        },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * Analyze potential data loss when downgrading plans
+ */
+function analyzeDataLossRisk(
+  currentUsage: any,
+  currentLimits: any,
+  targetLimits: any,
+): {
+  hasDataLossRisk: boolean;
+  warnings: string[];
+  restrictions: string[];
+} {
+  const warnings: string[] = [];
+  const restrictions: string[] = [];
+
+  // Check each limit that might cause data issues
+  const checks = [
+    {
+      key: 'guests',
+      current: currentUsage.clients_count || 0,
+      limit: targetLimits.guests,
+      label: 'guests',
+      dataType: 'records',
+    },
+    {
+      key: 'events',
+      current: currentUsage.journeys_count || 0,
+      limit: targetLimits.events,
+      label: 'events',
+      dataType: 'records',
+    },
+    {
+      key: 'storage_gb',
+      current: currentUsage.storage_used_gb || 0,
+      limit: targetLimits.storage_gb,
+      label: 'storage',
+      dataType: 'files',
+    },
+    {
+      key: 'team_members',
+      current: currentUsage.team_members_count || 1,
+      limit: targetLimits.team_members,
+      label: 'team members',
+      dataType: 'accounts',
+    },
+  ];
+
+  checks.forEach(({ current, limit, label, dataType }) => {
+    if (limit !== -1 && current > limit) {
+      if (dataType === 'files') {
+        warnings.push(
+          `Your current ${label} usage (${current}GB) exceeds the new limit (${limit}GB). Some files may become inaccessible.`,
+        );
+        restrictions.push(`${label}_overflow`);
+      } else {
+        warnings.push(
+          `Your current ${current} ${label} exceeds the new limit of ${limit}. Some ${dataType} may be restricted.`,
+        );
+        restrictions.push(`${label}_overflow`);
+      }
+    }
+  });
+
+  // Check feature loss
+  const featureChecks = [
+    {
+      key: 'customBranding',
+      current: currentLimits.customBranding,
+      target: targetLimits.customBranding,
+      label: 'Custom branding',
+    },
+    {
+      key: 'analytics',
+      current: currentLimits.analytics,
+      target: targetLimits.analytics,
+      label: 'Advanced analytics',
+    },
+    {
+      key: 'apiAccess',
+      current: currentLimits.apiAccess,
+      target: targetLimits.apiAccess,
+      label: 'API access',
+    },
+  ];
+
+  featureChecks.forEach(({ current, target, label }) => {
+    if (current && !target) {
+      warnings.push(`${label} will be disabled in the new plan.`);
+      restrictions.push(
+        `feature_loss_${label.toLowerCase().replace(/\s+/g, '_')}`,
+      );
+    }
+  });
+
+  return {
+    hasDataLossRisk: warnings.length > 0,
+    warnings,
+    restrictions,
+  };
+}
+
+// Helper function to get authenticated user (same as upgrade endpoint)
+async function getAuthenticatedUser(request: NextRequest) {
+  const authHeader = request.headers.get('authorization');
+  if (!authHeader?.startsWith('Bearer ')) {
+    return null;
+  }
+
+  try {
+    const token = authHeader.substring(7);
+    const { data, error } = await supabase.auth.getUser(token);
+
+    if (error || !data.user) {
+      return null;
+    }
+
+    return data.user;
+  } catch {
+    return null;
+  }
+}

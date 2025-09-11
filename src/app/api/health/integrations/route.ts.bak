@@ -1,0 +1,326 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { OpenAIDietaryService } from '@/lib/integrations/OpenAIDietaryService'
+import { DietaryNotificationService } from '@/lib/integrations/DietaryNotificationService'
+import { createClient } from '@supabase/supabase-js'
+
+// Health check endpoint for all integrations
+export async function GET(request: NextRequest) {
+  const startTime = Date.now()
+  const healthCheck = {
+    timestamp: new Date().toISOString(),
+    status: 'healthy' as 'healthy' | 'degraded' | 'unhealthy',
+    services: {} as Record<string, any>,
+    overall: {
+      uptime: process.uptime(),
+      memory: process.memoryUsage(),
+      responseTime: 0
+    }
+  }
+
+  try {
+    // Check OpenAI Dietary Service
+    const openAIService = new OpenAIDietaryService({
+      apiKey: process.env.OPENAI_API_KEY!,
+      maxRetries: 1,
+      timeout: 5000
+    })
+
+    try {
+      const openAIHealth = await openAIService.getServiceHealth()
+      healthCheck.services.openai_dietary = {
+        status: openAIHealth.status,
+        lastCheck: new Date().toISOString(),
+        metrics: openAIHealth.metrics,
+        cacheSize: openAIHealth.cacheSize,
+        error: openAIHealth.error || null
+      }
+    } catch (error: any) {
+      healthCheck.services.openai_dietary = {
+        status: 'unhealthy',
+        lastCheck: new Date().toISOString(),
+        error: error.message,
+        metrics: null
+      }
+      healthCheck.status = 'degraded'
+    }
+
+    // Check Supabase Connection
+    try {
+      const supabase = createClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.SUPABASE_SERVICE_ROLE_KEY!
+      )
+
+      const { data, error } = await supabase
+        .from('user_profiles')
+        .select('id')
+        .limit(1)
+
+      healthCheck.services.supabase = {
+        status: error ? 'unhealthy' : 'healthy',
+        lastCheck: new Date().toISOString(),
+        error: error?.message || null,
+        connection: 'active'
+      }
+
+      if (error) {
+        healthCheck.status = 'degraded'
+      }
+    } catch (error: any) {
+      healthCheck.services.supabase = {
+        status: 'unhealthy',
+        lastCheck: new Date().toISOString(),
+        error: error.message,
+        connection: 'failed'
+      }
+      healthCheck.status = 'unhealthy'
+    }
+
+    // Check Notification Service
+    try {
+      const notificationService = new DietaryNotificationService()
+      const notificationHealth = await notificationService.getServiceHealth()
+      
+      healthCheck.services.notifications = {
+        status: notificationHealth.status,
+        lastCheck: new Date().toISOString(),
+        metrics: notificationHealth.metrics,
+        queueSize: notificationHealth.metrics.queueSize || 0
+      }
+
+      if (notificationHealth.status === 'unhealthy') {
+        healthCheck.status = 'degraded'
+      }
+    } catch (error: any) {
+      healthCheck.services.notifications = {
+        status: 'unhealthy',
+        lastCheck: new Date().toISOString(),
+        error: error.message,
+        queueSize: 0
+      }
+      healthCheck.status = 'degraded'
+    }
+
+    // Check External Services (Basic connectivity)
+    try {
+      // Check if we can reach external APIs
+      const externalChecks = await Promise.allSettled([
+        // OpenAI API connectivity
+        fetch('https://api.openai.com/v1/models', {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+            'Content-Type': 'application/json'
+          },
+          signal: AbortSignal.timeout(5000)
+        }).then(res => ({ service: 'openai_api', status: res.ok ? 'healthy' : 'unhealthy', statusCode: res.status })),
+        
+        // Resend API connectivity
+        fetch('https://api.resend.com/domains', {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
+            'Content-Type': 'application/json'
+          },
+          signal: AbortSignal.timeout(5000)
+        }).then(res => ({ service: 'resend_api', status: res.ok ? 'healthy' : 'unhealthy', statusCode: res.status }))
+      ])
+
+      healthCheck.services.external_apis = {}
+      
+      externalChecks.forEach((result, index) => {
+        if (result.status === 'fulfilled') {
+          const service = result.value.service
+          healthCheck.services.external_apis[service] = {
+            status: result.value.status,
+            statusCode: result.value.statusCode,
+            lastCheck: new Date().toISOString()
+          }
+        } else {
+          const serviceName = index === 0 ? 'openai_api' : 'resend_api'
+          healthCheck.services.external_apis[serviceName] = {
+            status: 'unhealthy',
+            error: 'Connection timeout or failed',
+            lastCheck: new Date().toISOString()
+          }
+          if (healthCheck.status === 'healthy') {
+            healthCheck.status = 'degraded'
+          }
+        }
+      })
+    } catch (error: any) {
+      healthCheck.services.external_apis = {
+        error: 'External API health check failed',
+        status: 'unknown'
+      }
+    }
+
+    // Check Database Tables (Dietary-specific)
+    try {
+      const supabase = createClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.SUPABASE_SERVICE_ROLE_KEY!
+      )
+
+      const tableChecks = await Promise.allSettled([
+        supabase.from('guest_dietary_requirements').select('count', { count: 'exact', head: true }),
+        supabase.from('dietary_categories').select('count', { count: 'exact', head: true }),
+        supabase.from('wedding_dietary_summaries').select('count', { count: 'exact', head: true }),
+        supabase.from('dietary_audit_log').select('count', { count: 'exact', head: true })
+      ])
+
+      const tableNames = ['guest_dietary_requirements', 'dietary_categories', 'wedding_dietary_summaries', 'dietary_audit_log']
+      
+      healthCheck.services.database_tables = {}
+      
+      tableChecks.forEach((result, index) => {
+        const tableName = tableNames[index]
+        if (result.status === 'fulfilled' && !result.value.error) {
+          healthCheck.services.database_tables[tableName] = {
+            status: 'healthy',
+            recordCount: result.value.count || 0,
+            lastCheck: new Date().toISOString()
+          }
+        } else {
+          healthCheck.services.database_tables[tableName] = {
+            status: 'unhealthy',
+            error: result.status === 'fulfilled' ? result.value.error?.message : 'Query failed',
+            lastCheck: new Date().toISOString()
+          }
+          if (healthCheck.status === 'healthy') {
+            healthCheck.status = 'degraded'
+          }
+        }
+      })
+    } catch (error: any) {
+      healthCheck.services.database_tables = {
+        error: 'Database table health check failed',
+        status: 'unknown'
+      }
+    }
+
+    // Calculate overall response time
+    healthCheck.overall.responseTime = Date.now() - startTime
+
+    // Log health check results
+    console.log(`[HEALTH CHECK] Overall status: ${healthCheck.status} (${healthCheck.overall.responseTime}ms)`, {
+      services: Object.keys(healthCheck.services).map(key => ({
+        name: key,
+        status: healthCheck.services[key].status
+      })),
+      responseTime: healthCheck.overall.responseTime
+    })
+
+    // Determine HTTP status code based on health
+    let statusCode = 200
+    if (healthCheck.status === 'degraded') {
+      statusCode = 207 // Multi-status
+    } else if (healthCheck.status === 'unhealthy') {
+      statusCode = 503 // Service Unavailable
+    }
+
+    return NextResponse.json(healthCheck, { 
+      status: statusCode,
+      headers: {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'X-Health-Check': healthCheck.status,
+        'X-Response-Time': `${healthCheck.overall.responseTime}ms`
+      }
+    })
+
+  } catch (error: any) {
+    console.error('[HEALTH CHECK ERROR]', error)
+    
+    return NextResponse.json({
+      timestamp: new Date().toISOString(),
+      status: 'unhealthy',
+      error: 'Health check system failure',
+      message: error.message,
+      overall: {
+        responseTime: Date.now() - startTime
+      }
+    }, { 
+      status: 503,
+      headers: {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'X-Health-Check': 'unhealthy'
+      }
+    })
+  }
+}
+
+// Detailed health endpoint with metrics
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json()
+    const { services = [], includeMetrics = true } = body
+
+    const detailedHealth = {
+      timestamp: new Date().toISOString(),
+      requestedServices: services,
+      results: {} as Record<string, any>
+    }
+
+    // If specific services requested, check only those
+    if (services.length > 0) {
+      for (const serviceName of services) {
+        switch (serviceName) {
+          case 'openai':
+            try {
+              const openAIService = new OpenAIDietaryService({
+                apiKey: process.env.OPENAI_API_KEY!,
+                maxRetries: 1,
+                timeout: 10000
+              })
+              detailedHealth.results.openai = await openAIService.getServiceHealth()
+            } catch (error: any) {
+              detailedHealth.results.openai = {
+                status: 'error',
+                message: error.message
+              }
+            }
+            break
+
+          case 'notifications':
+            try {
+              const notificationService = new DietaryNotificationService()
+              detailedHealth.results.notifications = await notificationService.getServiceHealth()
+            } catch (error: any) {
+              detailedHealth.results.notifications = {
+                status: 'error',
+                message: error.message
+              }
+            }
+            break
+
+          default:
+            detailedHealth.results[serviceName] = {
+              status: 'unknown',
+              message: 'Service not recognized'
+            }
+        }
+      }
+    }
+
+    // Add system metrics if requested
+    if (includeMetrics) {
+      detailedHealth.results.system_metrics = {
+        uptime: process.uptime(),
+        memory: process.memoryUsage(),
+        cpu: process.cpuUsage(),
+        platform: process.platform,
+        nodeVersion: process.version,
+        pid: process.pid
+      }
+    }
+
+    return NextResponse.json(detailedHealth)
+
+  } catch (error: any) {
+    return NextResponse.json({
+      error: 'Detailed health check failed',
+      message: error.message,
+      timestamp: new Date().toISOString()
+    }, { status: 500 })
+  }
+}

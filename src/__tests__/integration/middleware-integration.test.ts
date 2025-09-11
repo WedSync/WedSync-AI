@@ -1,0 +1,421 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { IntegrationGateway } from '../../middleware/integration-gateway';
+import { WebhookProcessor } from '../../middleware/webhook-processor';
+import { ServiceMesh } from '../../middleware/service-mesh';
+import { createHmac } from 'crypto';
+import Redis from 'ioredis';
+
+// Mock Redis
+vi.mock('ioredis');
+const mockRedis = {
+  incr: vi.fn(),
+  expire: vi.fn(),
+  hset: vi.fn(),
+  hgetall: vi.fn(),
+  hincrby: vi.fn(),
+  hget: vi.fn(),
+  lrem: vi.fn(),
+  lpush: vi.fn(),
+  brpop: vi.fn(),
+  llen: vi.fn(),
+  get: vi.fn(),
+  set: vi.fn(),
+  keys: vi.fn(),
+  del: vi.fn(),
+  publish: vi.fn(),
+  subscribe: vi.fn(),
+  on: vi.fn(),
+  disconnect: vi.fn()
+};
+// Mock fetch
+global.fetch = vi.fn();
+describe('Middleware Integration', () => {
+  let integrationGateway: IntegrationGateway;
+  let webhookProcessor: WebhookProcessor;
+  let serviceMesh: ServiceMesh;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (Redis as unknown).mockImplementation(() => mockRedis);
+    // Mock Redis operations to succeed
+    mockRedis.incr.mockResolvedValue(1);
+    mockRedis.expire.mockResolvedValue(1);
+    mockRedis.hset.mockResolvedValue(1);
+    mockRedis.hgetall.mockResolvedValue({});
+    mockRedis.hincrby.mockResolvedValue(1);
+    mockRedis.hget.mockResolvedValue('1');
+    mockRedis.lrem.mockResolvedValue(1);
+    mockRedis.lpush.mockResolvedValue(1);
+    mockRedis.brpop.mockResolvedValue(null);
+    mockRedis.llen.mockResolvedValue(0);
+    mockRedis.get.mockResolvedValue('0');
+    mockRedis.set.mockResolvedValue('OK');
+    mockRedis.keys.mockResolvedValue([]);
+    mockRedis.del.mockResolvedValue(1);
+    mockRedis.publish.mockResolvedValue(1);
+    mockRedis.subscribe.mockResolvedValue(undefined);
+    mockRedis.on.mockImplementation(() => {});
+    // Mock successful external API calls
+    (global.fetch as unknown).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ success: true }),
+      headers: new Headers({ 'content-type': 'application/json' })
+    });
+    integrationGateway = new IntegrationGateway();
+    webhookProcessor = new WebhookProcessor();
+    serviceMesh = new ServiceMesh();
+  });
+  afterEach(async () => {
+    await integrationGateway.disconnect();
+    await webhookProcessor.disconnect();
+    await serviceMesh.shutdown();
+  describe('Wedding Payment Flow Integration', () => {
+    it('should handle complete wedding payment flow', async () => {
+      // Step 1: Register wedding-related services
+      await serviceMesh.registerService({
+        serviceId: 'payment-processor-1',
+        serviceName: 'payment-processor',
+        version: '1.0.0',
+        endpoints: ['http://localhost:3001/api'],
+        healthCheck: 'http://localhost:3001/health',
+        metadata: { region: 'us-east-1' },
+        tags: ['payments', 'wedding']
+      });
+        serviceId: 'notification-service-1',
+        serviceName: 'notification-service',
+        endpoints: ['http://localhost:3002/api'],
+        healthCheck: 'http://localhost:3002/health',
+        tags: ['notifications', 'wedding']
+      // Step 2: Process payment through Integration Gateway
+      const paymentRequest = {
+        method: 'POST',
+        body: JSON.stringify({
+          amount: 500000, // $5000 wedding photography deposit
+          currency: 'usd',
+          metadata: {
+            wedding_id: 'wed_integration_test_123',
+            supplier_id: 'sup_photographer_456',
+            service_type: 'photography',
+            payment_type: 'deposit'
+          }
+        }),
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      };
+      // Mock Stripe payment response
+      (global.fetch as unknown).mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({
+          id: 'pi_integration_test',
+          object: 'payment_intent',
+          status: 'succeeded',
+          amount: 500000,
+          created: Math.floor(Date.now() / 1000),
+        headers: new Headers({ 'content-type': 'application/json' })
+      const paymentResponse = await integrationGateway.routeRequest(
+        'stripe_payments',
+        '/v1/payment_intents',
+        paymentRequest,
+        { 
+          requestId: 'integration-test-payment', 
+          clientId: 'wedding-client' 
+      );
+      expect(paymentResponse).toHaveProperty('id', 'pi_integration_test');
+      expect(paymentResponse).toHaveProperty('status', 'succeeded');
+      expect(paymentResponse.metadata).toHaveProperty('wedding_id', 'wed_integration_test_123');
+      // Step 3: Process webhook for payment success
+      const webhookPayload = JSON.stringify({
+        type: 'payment_intent.succeeded',
+        data: {
+          object: {
+            id: 'pi_integration_test',
+            status: 'succeeded',
+            amount: 500000,
+            metadata: {
+              wedding_id: 'wed_integration_test_123',
+              supplier_id: 'sup_photographer_456',
+              payment_type: 'deposit'
+            }
+      const timestamp = Math.floor(Date.now() / 1000);
+      const secret = process.env.STRIPE_WEBHOOK_SECRET || 'test-secret';
+      const signature = createHmac('sha256', secret)
+        .update(timestamp + '.' + webhookPayload, 'utf8')
+        .digest('hex');
+      const webhookRequest = {
+        text: () => Promise.resolve(webhookPayload),
+          get: (name: string) => {
+            if (name === 'stripe-signature') {
+              return `t=${timestamp},v1=${signature}`;
+            return null;
+      } as any;
+      const webhookResponse = await webhookProcessor.processWebhook(webhookRequest, 'stripe');
+      expect(webhookResponse.status).toBe(200);
+      // Step 4: Verify Service Mesh routing of wedding events
+      await serviceMesh.routeWeddingEvent(
+        'wed_integration_test_123',
+        'payment.deposit.completed',
+        {
+          supplierId: 'sup_photographer_456',
+          paymentId: 'pi_integration_test'
+      // Verify messages were queued for different services
+      expect(mockRedis.lpush).toHaveBeenCalledWith(
+        expect.stringMatching(/message_queue:notification-service/),
+        expect.stringContaining('wedding.payment.deposit.completed')
+        expect.stringMatching(/message_queue:analytics-service/),
+        expect.stringContaining('wedding.analytics.event')
+  describe('Supplier Booking Confirmation Flow', () => {
+    it('should handle complete supplier booking confirmation', async () => {
+      // Step 1: Set up supplier and notification services
+      const supplierService = {
+        serviceId: 'supplier-mgmt-1',
+        serviceName: 'supplier-management',
+        endpoints: ['http://localhost:3003/api'],
+        healthCheck: 'http://localhost:3003/health',
+        metadata: {},
+        lastHeartbeat: new Date(),
+        status: 'healthy' as const,
+        tags: ['suppliers', 'bookings']
+      serviceMesh['services'].set('supplier-mgmt-1', supplierService);
+      // Step 2: Process booking confirmation webhook from supplier platform
+      const bookingWebhookPayload = JSON.stringify({
+        event_type: 'booking.confirmed',
+        booking_id: 'book_integration_test_789',
+        wedding_id: 'wed_integration_test_123',
+        supplier_id: 'sup_venue_654',
+        booking_date: '2025-08-15T18:00:00Z',
+        venue_details: {
+          name: 'Beautiful Garden Venue',
+          capacity: 150,
+          location: 'Napa Valley, CA'
+      const supplierSecret = 'test-supplier-secret';
+      const supplierSignature = createHmac('sha256', supplierSecret)
+        .update(bookingWebhookPayload, 'utf8')
+      process.env.SUPPLIER_WEBHOOK_SECRET = supplierSecret;
+      const supplierWebhookRequest = {
+        text: () => Promise.resolve(bookingWebhookPayload),
+            if (name === 'x-supplier-signature') {
+              return `hmac-sha256=${supplierSignature}`;
+      const supplierWebhookResponse = await webhookProcessor.processWebhook(
+        supplierWebhookRequest, 
+        'supplier_platform'
+      expect(supplierWebhookResponse.status).toBe(200);
+      // Step 3: Route booking confirmation through service mesh
+        'booking.venue.confirmed',
+          supplierId: 'sup_venue_654',
+          bookingId: 'book_integration_test_789',
+          venue: 'Beautiful Garden Venue',
+          weddingDate: '2025-08-15T18:00:00Z'
+      // Step 4: Send confirmation email through Integration Gateway
+      const emailRequest = {
+          to: 'bride@example.com',
+          subject: 'Venue Booking Confirmed - Beautiful Garden Venue',
+          html: '<h1>Your venue booking is confirmed!</h1>',
+            supplier_id: 'sup_venue_654',
+            email_type: 'booking_confirmation'
+          id: 'email_integration_test',
+          status: 'sent',
+          subject: 'Venue Booking Confirmed - Beautiful Garden Venue'
+      const emailResponse = await integrationGateway.routeRequest(
+        'email_service',
+        '/emails',
+        emailRequest,
+          requestId: 'integration-booking-email', 
+          clientId: 'venue-system' 
+      expect(emailResponse).toHaveProperty('id', 'email_integration_test');
+      expect(emailResponse).toHaveProperty('status', 'sent');
+  describe('Service Health and Circuit Breaker Integration', () => {
+    it('should handle service failures gracefully across components', async () => {
+      // Step 1: Register a service that will fail
+        serviceId: 'failing-service-1',
+        serviceName: 'failing-service',
+        endpoints: ['http://localhost:9999/api'],
+        healthCheck: 'http://localhost:9999/health',
+        tags: ['test']
+      // Step 2: Mock service failure
+      (global.fetch as unknown).mockRejectedValue(new Error('Service unavailable'));
+      // Step 3: Try to send multiple requests through Integration Gateway
+      const failingRequests = Array(6).fill(null).map(() =>
+        integrationGateway.routeRequest(
+          'email_service',
+          '/test-endpoint',
+          { method: 'GET' },
+          { requestId: `failing-${Math.random()}`, clientId: 'test-client' }
+        ).catch(() => 'failed') // Catch errors to continue test
+      const results = await Promise.all(failingRequests);
+      
+      // All requests should fail
+      results.forEach(result => {
+        expect(result).toBe('failed');
+      // Step 4: Verify circuit breaker opened
+      const healthMetrics = await integrationGateway.getServiceHealth('email_service');
+      expect(healthMetrics?.consecutiveFailures).toBeGreaterThan(0);
+      // Step 5: Service mesh should also detect unhealthy service
+      const serviceMetrics = await serviceMesh.getServiceMetrics();
+      expect(serviceMetrics.totalServices).toBeGreaterThan(0);
+  describe('High Load Scenario', () => {
+    it('should handle high load across all middleware components', async () => {
+      // Set up multiple services for load testing
+      const services = ['payment-proc', 'notification', 'analytics', 'supplier-mgmt'].map((name, i) => ({
+        serviceId: `${name}-${i}`,
+        serviceName: name,
+        endpoints: [`http://localhost:300${i}/api`],
+        healthCheck: `http://localhost:300${i}/health`,
+        tags: ['load-test']
+      }));
+      for (const service of services) {
+        await serviceMesh.registerService(service);
+      }
+      // Simulate high load scenario: 100 concurrent payment + webhook + routing operations
+      const highLoadOperations = Array(100).fill(null).map(async (_, i) => {
+        try {
+          // 1. Payment processing
+          const paymentResponse = await integrationGateway.routeRequest(
+            'stripe_payments',
+            `/v1/test-payment-${i}`,
+            { 
+              method: 'POST',
+              body: JSON.stringify({ amount: 1000 * (i + 1) })
+            },
+            { requestId: `load-test-${i}`, clientId: `client-${i}` }
+          );
+          // 2. Wedding event routing
+          await serviceMesh.routeWeddingEvent(
+            `wed_load_test_${i}`,
+            'payment.processed',
+              paymentId: `payment_${i}`,
+              amount: 1000 * (i + 1)
+          // 3. Webhook processing simulation
+          const webhookPayload = JSON.stringify({
+            type: 'payment_intent.succeeded',
+            data: { object: { id: `pi_load_test_${i}` } }
+          });
+          const timestamp = Math.floor(Date.now() / 1000);
+          const secret = 'test-secret';
+          const signature = createHmac('sha256', secret)
+            .update(timestamp + '.' + webhookPayload, 'utf8')
+            .digest('hex');
+          process.env.STRIPE_WEBHOOK_SECRET = secret;
+          const webhookRequest = {
+            text: () => Promise.resolve(webhookPayload),
+            headers: {
+              get: () => `t=${timestamp},v1=${signature}`
+          } as any;
+          await webhookProcessor.processWebhook(webhookRequest, 'stripe');
+          return { success: true, index: i };
+        } catch (error) {
+          return { success: false, index: i, error };
+      const startTime = Date.now();
+      const results = await Promise.all(highLoadOperations);
+      const duration = Date.now() - startTime;
+      // Analyze results
+      const successCount = results.filter(r => r.success).length;
+      const failureCount = results.filter(r => !r.success).length;
+      console.log(`Load test completed: ${successCount} successes, ${failureCount} failures in ${duration}ms`);
+      // Expectations for high-load scenario
+      expect(successCount).toBeGreaterThan(90); // At least 90% success rate
+      expect(duration).toBeLessThan(5000); // Complete within 5 seconds
+      // Verify all middleware components are still healthy
+      const gatewayHealth = await integrationGateway.getAllServicesHealth();
+      const meshMetrics = await serviceMesh.getServiceMetrics();
+      const webhookStats = await webhookProcessor.getProcessingStats();
+      expect(gatewayHealth.length).toBeGreaterThan(0);
+      expect(meshMetrics.totalServices).toBeGreaterThan(0);
+      expect(typeof webhookStats.processedToday).toBe('number');
+  describe('Wedding Day Scenario Simulation', () => {
+    it('should handle typical wedding day event cascade', async () => {
+      const weddingId = 'wed_sarah_john_20250815';
+      const supplierId = 'sup_photographer_premium';
+      // Wedding Day Event Cascade Simulation
+      const events = [
+        // Morning: Final payment processed
+          type: 'payment',
+          data: { amount: 250000, paymentType: 'final', service: 'photography' }
+        },
+        // Service confirmations
+          type: 'booking_confirmation',
+          data: { service: 'photography', status: 'confirmed', arrivalTime: '14:00' }
+          type: 'booking_confirmation', 
+          data: { service: 'catering', status: 'confirmed', arrivalTime: '16:00' }
+        // Real-time updates during wedding
+          type: 'timeline_update',
+          data: { event: 'ceremony_start', actualTime: '17:30', plannedTime: '17:00' }
+          data: { event: 'photo_session', status: 'in_progress', location: 'garden' }
+        // Post-wedding
+          type: 'delivery',
+          data: { service: 'photography', deliverable: 'preview_gallery', status: 'ready' }
+      ];
+      // Process each event through the full middleware stack
+      for (const [index, event] of events.entries()) {
+        // 1. External API call (Integration Gateway)
+        if (event.type === 'payment') {
+            '/v1/payment_intents',
+            {
+              body: JSON.stringify({
+                amount: event.data.amount,
+                metadata: {
+                  wedding_id: weddingId,
+                  supplier_id: supplierId,
+                  payment_type: event.data.paymentType
+                }
+              })
+            { requestId: `wedding-day-payment-${index}`, clientId: 'wedding-coordinator' }
+          expect(paymentResponse).toHaveProperty('provider', 'stripe');
+        // 2. Webhook processing (simulating external service notifications)
+        const webhookPayload = JSON.stringify({
+          type: `wedding.${event.type}`,
+          wedding_id: weddingId,
+          supplier_id: supplierId,
+          data: event.data
+        });
+        const webhookRequest = {
+          text: () => Promise.resolve(webhookPayload),
+          headers: {
+            get: () => 'mock-signature' // Simplified for integration test
+        } as any;
+        // Mock signature verification to pass
+        vi.spyOn(webhookProcessor as any, 'verifySignature').mockResolvedValue(true);
+        
+        // 3. Service mesh event routing
+        await serviceMesh.routeWeddingEvent(weddingId, event.type, {
+          ...event.data,
+          supplierId,
+          timestamp: new Date().toISOString()
+      // Verify the wedding day event processing
+      expect(webhookStats).toBeDefined();
+      // All events should have been processed without overwhelming the system
+      expect(mockRedis.lpush).toHaveBeenCalledTimes(events.length * 3); // Each event routes to 3 services
+  describe('Error Recovery and Resilience', () => {
+    it('should demonstrate system resilience during partial failures', async () => {
+      // Scenario: Payment gateway is down, but other services should continue
+      // Step 1: Set up services with mixed health
+        serviceId: 'healthy-notification',
+        endpoints: ['http://localhost:3001'],
+        tags: ['notifications']
+      // Step 2: Mock payment gateway failure
+      (global.fetch as unknown).mockImplementation((url) => {
+        if (url.includes('stripe.com')) {
+          return Promise.reject(new Error('Payment gateway down'));
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ success: true }),
+          headers: new Headers({ 'content-type': 'application/json' })
+      // Step 3: Try payment processing (should fail)
+      await expect(
+          'stripe_payments',
+          '/v1/test',
+          { requestId: 'resilience-test', clientId: 'test' }
+        )
+      ).rejects.toThrow();
+      // Step 4: Other services should still work
+        '/emails/test',
+        { method: 'GET' },
+        { requestId: 'resilience-email', clientId: 'test' }
+      expect(emailResponse).toHaveProperty('provider', 'resend');
+      // Step 5: Service mesh should continue routing non-payment events
+      await serviceMesh.routeWeddingEvent('wed_resilience_test', 'reminder.sent', {
+        recipientType: 'couple',
+        message: 'Your wedding is in 7 days!'
+      // Verify system is still functioning for non-payment operations
+});

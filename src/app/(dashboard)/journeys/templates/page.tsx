@@ -1,0 +1,367 @@
+'use client';
+
+import { useState, useMemo, useEffect } from 'react';
+import { motion } from 'framer-motion';
+import Link from 'next/link';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Badge } from '@/components/ui/badge';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
+  Search,
+  Filter,
+  Sparkles,
+  Clock,
+  TrendingUp,
+  Camera,
+  Music,
+  Utensils,
+  Building,
+  Flower,
+  Calendar,
+  Users,
+  Car,
+  Cake,
+  Palette,
+  ChevronRight,
+  Eye,
+  Copy,
+  Lock,
+} from 'lucide-react';
+import {
+  JOURNEY_TEMPLATES,
+  getTemplatesByTier,
+  getTemplatesByCategory,
+  searchTemplates,
+  getPopularTemplates,
+} from '@/lib/journey/templates/library';
+import { VendorCategory, TemplateTier } from '@/lib/journey/templates/types';
+import { TemplatePreviewModal } from '@/components/journey-builder/TemplatePreviewModal';
+import { OverflowTemplateCard } from '@/components/journey-builder/OverflowTemplateCard';
+import { toast } from 'sonner';
+
+const categoryIcons: Record<VendorCategory, React.ReactNode> = {
+  photography: <Camera className="h-5 w-5" />,
+  videography: <Camera className="h-5 w-5" />,
+  venue: <Building className="h-5 w-5" />,
+  catering: <Utensils className="h-5 w-5" />,
+  dj: <Music className="h-5 w-5" />,
+  band: <Music className="h-5 w-5" />,
+  florist: <Flower className="h-5 w-5" />,
+  planner: <Calendar className="h-5 w-5" />,
+  hair_makeup: <Palette className="h-5 w-5" />,
+  transportation: <Car className="h-5 w-5" />,
+  cake: <Cake className="h-5 w-5" />,
+  rentals: <Users className="h-5 w-5" />,
+};
+
+const tierColors: Record<TemplateTier, string> = {
+  free: 'bg-gray-100 text-gray-800',
+  starter: 'bg-green-100 text-green-800',
+  professional: 'bg-blue-100 text-blue-800',
+  scale: 'bg-purple-100 text-purple-800',
+  enterprise: 'bg-red-100 text-red-800',
+};
+
+export default function JourneyTemplatesPage() {
+  const [searchTerm, setSearchTerm] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState<
+    VendorCategory | 'all'
+  >('all');
+  const [selectedTier, setSelectedTier] = useState<TemplateTier | 'all'>('all');
+  const [sortBy, setSortBy] = useState<'popularity' | 'name' | 'recent'>(
+    'popularity',
+  );
+  const [previewTemplate, setPreviewTemplate] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  // TODO: Get actual user tier from context
+  const userTier = 'professional';
+
+  // Load templates on mount
+  useEffect(() => {
+    // Simulate loading templates
+    setTimeout(() => {
+      setIsLoading(false);
+      console.log('Templates loaded:', JOURNEY_TEMPLATES.length);
+    }, 500);
+  }, []);
+
+  const filteredTemplates = useMemo(() => {
+    if (isLoading) return [];
+
+    let templates = [...JOURNEY_TEMPLATES];
+
+    // Filter by search term
+    if (searchTerm) {
+      templates = searchTemplates(searchTerm);
+    }
+
+    // Filter by category
+    if (selectedCategory !== 'all') {
+      templates = templates.filter((t) => t.category === selectedCategory);
+    }
+
+    // Filter by tier - show all templates but mark locked ones
+    if (selectedTier !== 'all') {
+      templates = templates.filter((t) => t.tier === selectedTier);
+    }
+
+    // Sort
+    switch (sortBy) {
+      case 'popularity':
+        templates.sort((a, b) => b.popularity - a.popularity);
+        break;
+      case 'name':
+        templates.sort((a, b) => a.name.localeCompare(b.name));
+        break;
+      case 'recent':
+        // Mock recent sorting (in production, use createdAt)
+        templates.reverse();
+        break;
+    }
+
+    return templates;
+  }, [searchTerm, selectedCategory, selectedTier, sortBy, isLoading]);
+
+  const popularTemplates = getPopularTemplates(3);
+
+  const handleUseTemplate = (templateId: string) => {
+    // Navigate to journey builder with template
+    window.location.href = `/journeys/builder?template=${templateId}`;
+  };
+
+  const handleDuplicateTemplate = (templateId: string) => {
+    toast.success('Template duplicated to your library');
+    // TODO: Implement template duplication
+  };
+
+  const isTemplateLocked = (tier: TemplateTier) => {
+    const tierHierarchy = {
+      free: 0,
+      starter: 1,
+      professional: 2,
+      scale: 3,
+      enterprise: 4,
+    };
+
+    return tierHierarchy[tier] > tierHierarchy[userTier as TemplateTier];
+  };
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="text-center">
+          <motion.div
+            animate={{ rotate: 360 }}
+            transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}
+            className="w-16 h-16 border-4 border-primary border-t-transparent rounded-full mx-auto mb-4"
+          />
+          <p className="text-muted-foreground">Loading templates...</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      className="container mx-auto py-8 px-4"
+    >
+      <motion.div
+        initial={{ y: -20, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        className="mb-8"
+      >
+        <h1 className="text-4xl font-bold mb-2 bg-gradient-to-r from-primary to-purple-600 bg-clip-text text-transparent">
+          Journey Templates
+        </h1>
+        <p className="text-muted-foreground text-lg">
+          Ready-to-use wedding industry workflows. Customize and launch in
+          minutes.
+        </p>
+      </motion.div>
+
+      {/* Popular Templates */}
+      <div className="mb-8">
+        <div className="flex items-center gap-2 mb-4">
+          <TrendingUp className="h-5 w-5 text-primary" />
+          <h2 className="text-xl font-semibold">Most Popular</h2>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {popularTemplates.map((template) => (
+            <Card
+              key={template.id}
+              className="hover:shadow-lg transition-shadow cursor-pointer"
+            >
+              <CardHeader className="pb-3">
+                <div className="flex items-start justify-between">
+                  <div className="flex items-center gap-2">
+                    {categoryIcons[template.category]}
+                    <CardTitle className="text-lg">{template.name}</CardTitle>
+                  </div>
+                  <Badge
+                    className={tierColors[template.tier]}
+                    variant="secondary"
+                  >
+                    {template.tier}
+                  </Badge>
+                </div>
+              </CardHeader>
+              <CardContent className="pb-3">
+                <CardDescription className="line-clamp-2">
+                  {template.description}
+                </CardDescription>
+                <div className="flex items-center gap-4 mt-3 text-sm text-muted-foreground">
+                  <span className="flex items-center gap-1">
+                    <Clock className="h-3 w-3" />
+                    {template.estimatedDuration}
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <Sparkles className="h-3 w-3" />
+                    {template.popularity}% popular
+                  </span>
+                </div>
+              </CardContent>
+              <CardFooter className="pt-3">
+                <Button
+                  size="sm"
+                  className="w-full"
+                  onClick={() => handleUseTemplate(template.id)}
+                >
+                  Use Template
+                  <ChevronRight className="h-4 w-4 ml-1" />
+                </Button>
+              </CardFooter>
+            </Card>
+          ))}
+        </div>
+      </div>
+
+      {/* Search and Filters */}
+      <div className="flex flex-col sm:flex-row gap-4 mb-6">
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            placeholder="Search templates..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="pl-10"
+          />
+        </div>
+
+        <Select
+          value={selectedCategory}
+          onValueChange={(v) =>
+            setSelectedCategory(v as VendorCategory | 'all')
+          }
+        >
+          <SelectTrigger className="w-full sm:w-[180px]">
+            <SelectValue placeholder="Category" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Categories</SelectItem>
+            <SelectItem value="photography">Photography</SelectItem>
+            <SelectItem value="venue">Venue</SelectItem>
+            <SelectItem value="catering">Catering</SelectItem>
+            <SelectItem value="dj">DJ/Band</SelectItem>
+            <SelectItem value="florist">Florist</SelectItem>
+            <SelectItem value="planner">Planner</SelectItem>
+          </SelectContent>
+        </Select>
+
+        <Select
+          value={selectedTier}
+          onValueChange={(v) => setSelectedTier(v as TemplateTier | 'all')}
+        >
+          <SelectTrigger className="w-full sm:w-[150px]">
+            <SelectValue placeholder="Tier" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Tiers</SelectItem>
+            <SelectItem value="free">Free</SelectItem>
+            <SelectItem value="starter">Starter</SelectItem>
+            <SelectItem value="professional">Professional</SelectItem>
+            <SelectItem value="scale">Scale</SelectItem>
+            <SelectItem value="enterprise">Enterprise</SelectItem>
+          </SelectContent>
+        </Select>
+
+        <Select
+          value={sortBy}
+          onValueChange={(v) =>
+            setSortBy(v as 'popularity' | 'name' | 'recent')
+          }
+        >
+          <SelectTrigger className="w-full sm:w-[150px]">
+            <SelectValue placeholder="Sort by" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="popularity">Most Popular</SelectItem>
+            <SelectItem value="name">Name</SelectItem>
+            <SelectItem value="recent">Most Recent</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* Template Grid with Overflow UI */}
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ delay: 0.2 }}
+        className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
+      >
+        {filteredTemplates.map((template, index) => {
+          const locked = isTemplateLocked(template.tier);
+          const isPopular = template.popularity > 85;
+
+          return (
+            <OverflowTemplateCard
+              key={template.id}
+              template={template}
+              isLocked={locked}
+              isPopular={isPopular}
+              onPreview={() => setPreviewTemplate(template.id)}
+              onUse={() => handleUseTemplate(template.id)}
+              index={index}
+            />
+          );
+        })}
+      </motion.div>
+
+      {filteredTemplates.length === 0 && (
+        <div className="text-center py-12">
+          <p className="text-muted-foreground">
+            No templates found matching your criteria.
+          </p>
+        </div>
+      )}
+
+      {/* Preview Modal */}
+      {previewTemplate && (
+        <TemplatePreviewModal
+          templateId={previewTemplate}
+          isOpen={!!previewTemplate}
+          onClose={() => setPreviewTemplate(null)}
+          onUse={() => handleUseTemplate(previewTemplate)}
+        />
+      )}
+    </motion.div>
+  );
+}

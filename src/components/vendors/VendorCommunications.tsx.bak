@@ -1,0 +1,657 @@
+'use client'
+
+import { useState, useEffect } from 'react'
+import { createClient } from '@/lib/supabase/client'
+import { Card } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Tabs } from '@/components/ui/tabs'
+import { 
+  ChatBubbleBottomCenterTextIcon,
+  UserGroupIcon,
+  BellIcon,
+  PaperAirplaneIcon,
+  MagnifyingGlassIcon,
+  FunnelIcon,
+  ClockIcon,
+  CheckCircleIcon,
+  ExclamationCircleIcon,
+  EllipsisVerticalIcon,
+  PhoneIcon,
+  EnvelopeIcon,
+  CalendarDaysIcon
+} from '@heroicons/react/20/solid'
+import { notificationEngine } from '@/lib/notifications/engine'
+
+interface VendorCommunication {
+  id: string
+  type: 'direct_message' | 'group_chat' | 'notification' | 'announcement'
+  from: {
+    id: string
+    name: string
+    role: 'vendor' | 'couple' | 'planner' | 'coordinator'
+    business_name?: string
+    category?: string
+    avatar?: string
+  }
+  to?: {
+    id: string
+    name: string
+    role: string
+  }
+  subject?: string
+  message: string
+  priority: 'low' | 'normal' | 'high' | 'urgent'
+  status: 'sent' | 'delivered' | 'read' | 'replied'
+  wedding_context?: {
+    wedding_id: string
+    couple_names: string
+    wedding_date: string
+    venue_name: string
+  }
+  attachments?: any[]
+  created_at: string
+  updated_at: string
+  is_group_message?: boolean
+  group_id?: string
+  participants?: any[]
+}
+
+interface VendorContact {
+  id: string
+  business_name: string
+  category: string
+  contact_name: string
+  email: string
+  phone?: string
+  role: string
+  shared_weddings: number
+  last_interaction: string
+  is_online: boolean
+  response_time_avg: string
+}
+
+export function VendorCommunications() {
+  const [communications, setCommunications] = useState<VendorCommunication[]>([])
+  const [vendorContacts, setVendorContacts] = useState<VendorContact[]>([])
+  const [activeTab, setActiveTab] = useState('messages')
+  const [searchTerm, setSearchTerm] = useState('')
+  const [priorityFilter, setPriorityFilter] = useState('all')
+  const [selectedCommunication, setSelectedCommunication] = useState<VendorCommunication | null>(null)
+  const [newMessage, setNewMessage] = useState('')
+  const [loading, setLoading] = useState(true)
+  const supabase = createClient()
+
+  useEffect(() => {
+    loadCommunications()
+    loadVendorContacts()
+  }, [])
+
+  async function loadCommunications() {
+    try {
+      // This would typically load from a communications table
+      // For now, we'll simulate the data
+      const mockCommunications: VendorCommunication[] = [
+        {
+          id: '1',
+          type: 'direct_message',
+          from: {
+            id: '2',
+            name: 'Sarah Wilson',
+            role: 'couple',
+            avatar: undefined
+          },
+          message: 'Hi! We wanted to check on the status of our floral arrangements for next weekend. Everything still on track?',
+          priority: 'normal',
+          status: 'read',
+          wedding_context: {
+            wedding_id: 'w1',
+            couple_names: 'Sarah & James Wilson',
+            wedding_date: '2024-02-15',
+            venue_name: 'Ashford Manor'
+          },
+          created_at: '2024-01-20T10:30:00Z',
+          updated_at: '2024-01-20T10:30:00Z'
+        },
+        {
+          id: '2',
+          type: 'group_chat',
+          from: {
+            id: '3',
+            name: 'Emma Thompson',
+            role: 'vendor',
+            business_name: 'Elegant Events Planning',
+            category: 'planning'
+          },
+          message: 'All vendors - reminder that the final walkthrough is scheduled for tomorrow at 2pm. Please confirm attendance.',
+          priority: 'high',
+          status: 'delivered',
+          wedding_context: {
+            wedding_id: 'w2',
+            couple_names: 'Emily & Michael Davis',
+            wedding_date: '2024-02-20',
+            venue_name: 'Garden View Hall'
+          },
+          is_group_message: true,
+          group_id: 'g1',
+          participants: [
+            { name: 'Perfect Photography', category: 'photography' },
+            { name: 'Sweet Sounds DJ', category: 'music' },
+            { name: 'Gourmet Catering Co', category: 'catering' }
+          ],
+          created_at: '2024-01-19T15:45:00Z',
+          updated_at: '2024-01-19T15:45:00Z'
+        },
+        {
+          id: '3',
+          type: 'notification',
+          from: {
+            id: 'system',
+            name: 'WedSync System',
+            role: 'coordinator'
+          },
+          message: 'Timeline updated for the Johnson wedding. New vendor coordination meeting scheduled.',
+          priority: 'normal',
+          status: 'delivered',
+          wedding_context: {
+            wedding_id: 'w3',
+            couple_names: 'Lisa & David Johnson',
+            wedding_date: '2024-03-01',
+            venue_name: 'Riverside Manor'
+          },
+          created_at: '2024-01-19T09:15:00Z',
+          updated_at: '2024-01-19T09:15:00Z'
+        }
+      ]
+
+      setCommunications(mockCommunications)
+    } catch (error) {
+      console.error('Error loading communications:', error)
+    }
+  }
+
+  async function loadVendorContacts() {
+    try {
+      // This would typically load from supplier connections
+      const mockContacts: VendorContact[] = [
+        {
+          id: '1',
+          business_name: 'Perfect Photography',
+          category: 'photography',
+          contact_name: 'John Smith',
+          email: 'john@perfectphoto.com',
+          phone: '+44 7555 123456',
+          role: 'photographer',
+          shared_weddings: 5,
+          last_interaction: '2024-01-19T14:30:00Z',
+          is_online: true,
+          response_time_avg: '2.5h'
+        },
+        {
+          id: '2',
+          business_name: 'Elegant Events Planning',
+          category: 'planning',
+          contact_name: 'Emma Thompson',
+          email: 'emma@elegantevents.co.uk',
+          phone: '+44 7555 234567',
+          role: 'planner',
+          shared_weddings: 8,
+          last_interaction: '2024-01-19T15:45:00Z',
+          is_online: false,
+          response_time_avg: '1.2h'
+        },
+        {
+          id: '3',
+          business_name: 'Sweet Sounds DJ',
+          category: 'music',
+          contact_name: 'Mike Johnson',
+          email: 'mike@sweetsounds.com',
+          role: 'dj',
+          shared_weddings: 3,
+          last_interaction: '2024-01-18T16:20:00Z',
+          is_online: true,
+          response_time_avg: '3.1h'
+        },
+        {
+          id: '4',
+          business_name: 'Gourmet Catering Co',
+          category: 'catering',
+          contact_name: 'Sarah Davis',
+          email: 'sarah@gourmetcatering.co.uk',
+          phone: '+44 7555 345678',
+          role: 'caterer',
+          shared_weddings: 6,
+          last_interaction: '2024-01-17T11:10:00Z',
+          is_online: false,
+          response_time_avg: '4.5h'
+        }
+      ]
+
+      setVendorContacts(mockContacts)
+    } catch (error) {
+      console.error('Error loading vendor contacts:', error)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function sendMessage() {
+    if (!newMessage.trim()) return
+
+    try {
+      // This would typically use the notification engine
+      await notificationEngine.sendNotification({
+        template_id: 'vendor_direct_message',
+        recipients: [{
+          id: 'recipient_id',
+          name: 'Recipient Name',
+          email: 'recipient@example.com',
+          type: 'vendor',
+          preferences: {
+            channels: [{ type: 'in_app', enabled: true, priority: 1 }]
+          }
+        }],
+        variables: {
+          message: newMessage,
+          sender_name: 'Your Business Name'
+        },
+        context: {
+          wedding_id: 'wedding_id',
+          vendor_id: 'your_vendor_id'
+        }
+      })
+
+      setNewMessage('')
+      loadCommunications() // Refresh
+    } catch (error) {
+      console.error('Error sending message:', error)
+    }
+  }
+
+  const filteredCommunications = communications.filter(comm => {
+    const matchesSearch = comm.message.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                         comm.from.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                         (comm.wedding_context?.couple_names.toLowerCase().includes(searchTerm.toLowerCase()) ?? false)
+    const matchesPriority = priorityFilter === 'all' || comm.priority === priorityFilter
+    return matchesSearch && matchesPriority
+  })
+
+  const getStatusIcon = (status: string) => {
+    switch (status) {
+      case 'read':
+        return <CheckCircleIcon className="size-4 text-green-500" />
+      case 'delivered':
+        return <CheckCircleIcon className="size-4 text-blue-500" />
+      case 'replied':
+        return <ChatBubbleBottomCenterTextIcon className="size-4 text-purple-500" />
+      default:
+        return <ClockIcon className="size-4 text-gray-400" />
+    }
+  }
+
+  const getPriorityBadge = (priority: string) => {
+    switch (priority) {
+      case 'urgent':
+        return <Badge className="bg-red-100 text-red-600">Urgent</Badge>
+      case 'high':
+        return <Badge className="bg-orange-100 text-orange-600">High</Badge>
+      case 'normal':
+        return <Badge className="bg-blue-100 text-blue-600">Normal</Badge>
+      default:
+        return <Badge className="bg-gray-100 text-gray-600">Low</Badge>
+    }
+  }
+
+  const formatTimeAgo = (dateString: string) => {
+    const now = new Date()
+    const date = new Date(dateString)
+    const diffMs = now.getTime() - date.getTime()
+    const diffMinutes = Math.floor(diffMs / (1000 * 60))
+    const diffHours = Math.floor(diffMinutes / 60)
+    const diffDays = Math.floor(diffHours / 24)
+
+    if (diffMinutes < 60) {
+      return `${diffMinutes}m ago`
+    } else if (diffHours < 24) {
+      return `${diffHours}h ago`
+    } else {
+      return `${diffDays}d ago`
+    }
+  }
+
+  const tabItems = [
+    {
+      key: 'messages',
+      name: 'Messages',
+      count: communications.filter(c => c.status !== 'read').length
+    },
+    {
+      key: 'contacts',
+      name: 'Vendor Network',
+      count: vendorContacts.length
+    },
+    {
+      key: 'groups',
+      name: 'Group Chats',
+      count: communications.filter(c => c.is_group_message).length
+    },
+    {
+      key: 'notifications',
+      name: 'Notifications',
+      count: communications.filter(c => c.type === 'notification' && c.status !== 'read').length
+    }
+  ]
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <div className="animate-pulse text-lg">Loading communications...</div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <h2 className="text-xl font-semibold">Vendor Communications</h2>
+        <Button>
+          <PaperAirplaneIcon className="size-4 mr-2" />
+          New Message
+        </Button>
+      </div>
+
+      {/* Tabs */}
+      <div className="border-b border-gray-200">
+        <nav className="-mb-px flex space-x-8">
+          {tabItems.map((tab) => (
+            <button
+              key={tab.key}
+              onClick={() => setActiveTab(tab.key)}
+              className={`
+                flex items-center gap-2 py-4 px-1 border-b-2 font-medium text-sm whitespace-nowrap
+                ${activeTab === tab.key
+                  ? 'border-purple-500 text-purple-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                }
+              `}
+            >
+              {tab.name}
+              {tab.count > 0 && (
+                <Badge className="ml-1 bg-red-100 text-red-600 text-xs">
+                  {tab.count}
+                </Badge>
+              )}
+            </button>
+          ))}
+        </nav>
+      </div>
+
+      {/* Search and Filters */}
+      <div className="flex gap-4">
+        <div className="flex-1">
+          <div className="relative">
+            <MagnifyingGlassIcon className="size-5 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
+            <Input
+              placeholder="Search messages, contacts, or weddings..."
+              className="pl-10"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+            />
+          </div>
+        </div>
+        <select 
+          className="px-3 py-2 border border-gray-300 rounded-md"
+          value={priorityFilter}
+          onChange={(e) => setPriorityFilter(e.target.value)}
+        >
+          <option value="all">All Priority</option>
+          <option value="urgent">Urgent</option>
+          <option value="high">High</option>
+          <option value="normal">Normal</option>
+          <option value="low">Low</option>
+        </select>
+      </div>
+
+      {/* Content based on active tab */}
+      {activeTab === 'messages' && (
+        <div className="space-y-4">
+          {filteredCommunications.length === 0 ? (
+            <Card className="p-12 text-center">
+              <ChatBubbleBottomCenterTextIcon className="size-16 mx-auto text-gray-300 mb-4" />
+              <h3 className="text-lg font-semibold text-gray-900 mb-2">No messages found</h3>
+              <p className="text-gray-600">
+                {searchTerm || priorityFilter !== 'all' 
+                  ? 'Try adjusting your search or filters'
+                  : 'Messages from couples and other vendors will appear here'
+                }
+              </p>
+            </Card>
+          ) : (
+            filteredCommunications.map(comm => (
+              <Card key={comm.id} className="p-4 hover:shadow-md transition-shadow cursor-pointer">
+                <div className="flex items-start gap-4">
+                  <div className="flex-shrink-0">
+                    <div className="size-10 bg-purple-100 rounded-full flex items-center justify-center">
+                      {comm.from.role === 'vendor' ? (
+                        <UserGroupIcon className="size-5 text-purple-600" />
+                      ) : (
+                        <ChatBubbleBottomCenterTextIcon className="size-5 text-purple-600" />
+                      )}
+                    </div>
+                  </div>
+                  
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="flex items-center gap-2">
+                        <h4 className="font-medium text-gray-900">
+                          {comm.from.business_name || comm.from.name}
+                        </h4>
+                        {comm.from.role === 'vendor' && comm.from.category && (
+                          <Badge className="text-xs bg-gray-100 text-gray-600 capitalize">
+                            {comm.from.category}
+                          </Badge>
+                        )}
+                        {comm.is_group_message && (
+                          <Badge className="text-xs bg-blue-100 text-blue-600">
+                            Group
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {getPriorityBadge(comm.priority)}
+                        {getStatusIcon(comm.status)}
+                        <span className="text-xs text-gray-500">
+                          {formatTimeAgo(comm.created_at)}
+                        </span>
+                      </div>
+                    </div>
+                    
+                    {comm.wedding_context && (
+                      <p className="text-xs text-gray-500 mb-1">
+                        Re: {comm.wedding_context.couple_names} - {new Date(comm.wedding_context.wedding_date).toLocaleDateString()}
+                      </p>
+                    )}
+                    
+                    <p className="text-sm text-gray-700 line-clamp-2">
+                      {comm.message}
+                    </p>
+                    
+                    {comm.is_group_message && comm.participants && (
+                      <div className="flex items-center gap-2 mt-2">
+                        <span className="text-xs text-gray-500">Participants:</span>
+                        <div className="flex flex-wrap gap-1">
+                          {comm.participants.slice(0, 3).map((participant, index) => (
+                            <Badge key={index} className="text-xs bg-gray-50 text-gray-600">
+                              {participant.name}
+                            </Badge>
+                          ))}
+                          {comm.participants.length > 3 && (
+                            <Badge className="text-xs bg-gray-50 text-gray-600">
+                              +{comm.participants.length - 3} more
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </Card>
+            ))
+          )}
+        </div>
+      )}
+
+      {activeTab === 'contacts' && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {vendorContacts.map(contact => (
+            <Card key={contact.id} className="p-4">
+              <div className="flex items-start justify-between mb-3">
+                <div className="flex-1">
+                  <h4 className="font-medium text-gray-900">{contact.business_name}</h4>
+                  <p className="text-sm text-gray-600">{contact.contact_name}</p>
+                  <Badge className="text-xs bg-gray-100 text-gray-600 capitalize mt-1">
+                    {contact.category}
+                  </Badge>
+                </div>
+                <div className="flex items-center gap-1">
+                  {contact.is_online ? (
+                    <div className="size-2 bg-green-400 rounded-full"></div>
+                  ) : (
+                    <div className="size-2 bg-gray-300 rounded-full"></div>
+                  )}
+                  <span className="text-xs text-gray-500">
+                    {contact.is_online ? 'Online' : 'Offline'}
+                  </span>
+                </div>
+              </div>
+              
+              <div className="space-y-2 text-sm text-gray-600 mb-4">
+                <div className="flex items-center justify-between">
+                  <span>Shared weddings</span>
+                  <span className="font-medium">{contact.shared_weddings}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>Avg response time</span>
+                  <span className="font-medium">{contact.response_time_avg}</span>
+                </div>
+                <div className="text-xs text-gray-500">
+                  Last interaction: {formatTimeAgo(contact.last_interaction)}
+                </div>
+              </div>
+              
+              <div className="flex gap-2">
+                <Button size="sm" variant="outline" className="flex-1">
+                  <ChatBubbleBottomCenterTextIcon className="size-4 mr-1" />
+                  Message
+                </Button>
+                <Button size="sm" variant="outline">
+                  <PhoneIcon className="size-4" />
+                </Button>
+                <Button size="sm" variant="outline">
+                  <EnvelopeIcon className="size-4" />
+                </Button>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {activeTab === 'groups' && (
+        <div className="space-y-4">
+          {communications.filter(c => c.is_group_message).length === 0 ? (
+            <Card className="p-12 text-center">
+              <UserGroupIcon className="size-16 mx-auto text-gray-300 mb-4" />
+              <h3 className="text-lg font-semibold text-gray-900 mb-2">No group chats</h3>
+              <p className="text-gray-600">Group conversations for specific weddings will appear here</p>
+            </Card>
+          ) : (
+            communications
+              .filter(c => c.is_group_message)
+              .map(comm => (
+                <Card key={comm.id} className="p-4">
+                  <div className="flex items-start gap-4">
+                    <div className="flex-shrink-0">
+                      <div className="size-12 bg-blue-100 rounded-full flex items-center justify-center">
+                        <UserGroupIcon className="size-6 text-blue-600" />
+                      </div>
+                    </div>
+                    <div className="flex-1">
+                      <div className="flex items-center justify-between mb-2">
+                        <h4 className="font-medium text-gray-900">
+                          {comm.wedding_context?.couple_names} Wedding Team
+                        </h4>
+                        <span className="text-xs text-gray-500">
+                          {formatTimeAgo(comm.created_at)}
+                        </span>
+                      </div>
+                      
+                      <p className="text-sm text-gray-600 mb-2">
+                        <strong>{comm.from.business_name}:</strong> {comm.message}
+                      </p>
+                      
+                      <div className="flex items-center justify-between">
+                        <div className="flex flex-wrap gap-1">
+                          {comm.participants?.map((participant, index) => (
+                            <Badge key={index} className="text-xs bg-gray-100 text-gray-600">
+                              {participant.name}
+                            </Badge>
+                          ))}
+                        </div>
+                        <Button size="sm" variant="outline">
+                          Join Chat
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                </Card>
+              ))
+          )}
+        </div>
+      )}
+
+      {activeTab === 'notifications' && (
+        <div className="space-y-4">
+          {communications.filter(c => c.type === 'notification').length === 0 ? (
+            <Card className="p-12 text-center">
+              <BellIcon className="size-16 mx-auto text-gray-300 mb-4" />
+              <h3 className="text-lg font-semibold text-gray-900 mb-2">No notifications</h3>
+              <p className="text-gray-600">System notifications and updates will appear here</p>
+            </Card>
+          ) : (
+            communications
+              .filter(c => c.type === 'notification')
+              .map(comm => (
+                <Card key={comm.id} className="p-4">
+                  <div className="flex items-start gap-4">
+                    <div className="flex-shrink-0">
+                      <div className="size-10 bg-gray-100 rounded-full flex items-center justify-center">
+                        <BellIcon className="size-5 text-gray-600" />
+                      </div>
+                    </div>
+                    <div className="flex-1">
+                      <div className="flex items-center justify-between mb-1">
+                        <h4 className="font-medium text-gray-900">System Notification</h4>
+                        <span className="text-xs text-gray-500">
+                          {formatTimeAgo(comm.created_at)}
+                        </span>
+                      </div>
+                      
+                      {comm.wedding_context && (
+                        <p className="text-xs text-gray-500 mb-1">
+                          Re: {comm.wedding_context.couple_names}
+                        </p>
+                      )}
+                      
+                      <p className="text-sm text-gray-700">{comm.message}</p>
+                    </div>
+                  </div>
+                </Card>
+              ))
+          )}
+        </div>
+      )}
+    </div>
+  )
+}

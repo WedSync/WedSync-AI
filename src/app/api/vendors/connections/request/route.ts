@@ -1,0 +1,158 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createServerClient } from '@supabase/ssr';
+import { cookies } from 'next/headers';
+
+export async function POST(request: NextRequest) {
+  try {
+    const { from_vendor_id, to_vendor_id, message } = await request.json();
+
+    if (!from_vendor_id || !to_vendor_id) {
+      return NextResponse.json(
+        { error: 'Both vendor IDs are required' },
+        { status: 400 },
+      );
+    }
+
+    if (from_vendor_id === to_vendor_id) {
+      return NextResponse.json(
+        { error: 'Cannot send connection request to yourself' },
+        { status: 400 },
+      );
+    }
+
+    const cookieStore = await cookies();
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL ||
+        (() => {
+          throw new Error(
+            'Missing environment variable: NEXT_PUBLIC_SUPABASE_URL',
+          );
+        })(),
+      process.env.SUPABASE_SERVICE_ROLE_KEY ||
+        (() => {
+          throw new Error(
+            'Missing environment variable: SUPABASE_SERVICE_ROLE_KEY',
+          );
+        })(),
+      {
+        cookies: {
+          get(name: string) {
+            return cookieStore.get(name)?.value;
+          },
+        },
+      },
+    );
+
+    // Check if vendors exist
+    const { data: fromVendor } = await supabase
+      .from('suppliers')
+      .select('business_name, primary_category')
+      .eq('id', from_vendor_id)
+      .single();
+
+    const { data: toVendor } = await supabase
+      .from('suppliers')
+      .select('business_name, primary_category')
+      .eq('id', to_vendor_id)
+      .single();
+
+    if (!fromVendor || !toVendor) {
+      return NextResponse.json(
+        { error: 'One or both vendors not found' },
+        { status: 404 },
+      );
+    }
+
+    // Check if connection already exists
+    const { data: existingConnection } = await supabase
+      .from('vendor_connections')
+      .select('id')
+      .or(
+        `and(vendor_id.eq.${from_vendor_id},connected_vendor_id.eq.${to_vendor_id}),and(vendor_id.eq.${to_vendor_id},connected_vendor_id.eq.${from_vendor_id})`,
+      )
+      .eq('status', 'accepted')
+      .single();
+
+    if (existingConnection) {
+      return NextResponse.json(
+        { error: 'Vendors are already connected' },
+        { status: 400 },
+      );
+    }
+
+    // Check if pending request already exists
+    const { data: existingRequest } = await supabase
+      .from('vendor_connection_requests')
+      .select('id, status')
+      .or(
+        `and(from_vendor_id.eq.${from_vendor_id},to_vendor_id.eq.${to_vendor_id}),and(from_vendor_id.eq.${to_vendor_id},to_vendor_id.eq.${from_vendor_id})`,
+      )
+      .eq('status', 'pending')
+      .single();
+
+    if (existingRequest) {
+      return NextResponse.json(
+        { error: 'A connection request already exists between these vendors' },
+        { status: 400 },
+      );
+    }
+
+    // Create the connection request
+    const { data: connectionRequest, error: requestError } = await supabase
+      .from('vendor_connection_requests')
+      .insert({
+        from_vendor_id,
+        to_vendor_id,
+        from_business_name: fromVendor.business_name,
+        to_business_name: toVendor.business_name,
+        message:
+          message ||
+          'I would like to connect with you for potential collaboration opportunities.',
+        status: 'pending',
+        category: fromVendor.primary_category,
+        created_at: new Date().toISOString(),
+      })
+      .select()
+      .single();
+
+    if (requestError) {
+      console.error('Error creating connection request:', requestError);
+      return NextResponse.json(
+        { error: 'Failed to send connection request' },
+        { status: 500 },
+      );
+    }
+
+    // Get mutual connections count for the notification
+    const { count: mutualConnections } = await supabase
+      .from('vendor_connections')
+      .select('id', { count: 'exact' })
+      .eq('vendor_id', from_vendor_id)
+      .in(
+        'connected_vendor_id',
+        supabase
+          .from('vendor_connections')
+          .select('connected_vendor_id')
+          .eq('vendor_id', to_vendor_id)
+          .eq('status', 'accepted'),
+      )
+      .eq('status', 'accepted');
+
+    // TODO: Send notification to the target vendor
+    // This could be implemented with a notification service or email
+
+    return NextResponse.json({
+      success: true,
+      request: {
+        ...connectionRequest,
+        mutual_connections: mutualConnections || 0,
+      },
+    });
+  } catch (error) {
+    console.error('Error in connection request:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

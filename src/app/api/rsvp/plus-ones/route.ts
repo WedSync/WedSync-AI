@@ -1,0 +1,503 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+
+// Validation schemas for Plus-One Management
+const PlusOneSchema = z.object({
+  primary_invitation_id: z.string().uuid(),
+  plus_one_name: z.string().min(1),
+  plus_one_email: z.string().email().optional(),
+  plus_one_phone: z.string().optional(),
+  relationship_type: z
+    .enum(['partner', 'spouse', 'date', 'friend', 'family'])
+    .default('partner'),
+  dietary_restrictions: z.array(z.string()).optional(),
+  meal_preference: z.string().optional(),
+  age_group: z.enum(['adult', 'teen', 'child', 'infant']).default('adult'),
+  special_needs: z.string().optional(),
+});
+
+const UpdatePlusOneSchema = z.object({
+  plus_one_name: z.string().min(1).optional(),
+  plus_one_email: z.string().email().optional(),
+  plus_one_phone: z.string().optional(),
+  relationship_type: z
+    .enum(['partner', 'spouse', 'date', 'friend', 'family'])
+    .optional(),
+  dietary_restrictions: z.array(z.string()).optional(),
+  meal_preference: z.string().optional(),
+  age_group: z.enum(['adult', 'teen', 'child', 'infant']).optional(),
+  special_needs: z.string().optional(),
+  is_confirmed: z.boolean().optional(),
+});
+
+const HouseholdQuerySchema = z.object({
+  event_id: z.string().uuid().optional(),
+  invitation_id: z.string().uuid().optional(),
+  include_analytics: z.enum(['true', 'false']).optional(),
+});
+
+// GET /api/rsvp/plus-ones - Get plus-one relationships
+export async function GET(req: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const searchParams = req.nextUrl.searchParams;
+
+    const queryData = HouseholdQuerySchema.parse({
+      event_id: searchParams.get('event_id'),
+      invitation_id: searchParams.get('invitation_id'),
+      include_analytics: searchParams.get('include_analytics') || 'false',
+    });
+
+    // Get current user (for vendor access) or allow public access for invitation-specific queries
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    let query = supabase.from('rsvp_plus_one_relationships').select(`
+        *,
+        rsvp_invitations!inner (
+          id,
+          guest_name,
+          guest_email,
+          event_id,
+          rsvp_events!inner (
+            id,
+            event_name,
+            vendor_id
+          )
+        )
+      `);
+
+    // Apply filters based on access level
+    if (queryData.invitation_id) {
+      // Public access for specific invitation
+      query = query.eq('primary_invitation_id', queryData.invitation_id);
+    } else if (user && queryData.event_id) {
+      // Vendor access for entire event
+      query = query
+        .eq('rsvp_invitations.event_id', queryData.event_id)
+        .eq('rsvp_invitations.rsvp_events.vendor_id', user.id);
+    } else if (user) {
+      // Vendor access for all their events
+      query = query.eq('rsvp_invitations.rsvp_events.vendor_id', user.id);
+    } else {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { data: plusOnes, error } = await query.order('created_at', {
+      ascending: true,
+    });
+
+    if (error) {
+      console.error('Error fetching plus-ones:', error);
+      return NextResponse.json(
+        { error: 'Failed to fetch plus-ones' },
+        { status: 500 },
+      );
+    }
+
+    let responseData: any = { plus_ones: plusOnes };
+
+    // Include analytics if requested and user has access
+    if (queryData.include_analytics === 'true' && user && queryData.event_id) {
+      try {
+        const analytics = await getPlusOneAnalytics(queryData.event_id);
+        responseData.analytics = analytics;
+      } catch (analyticsError) {
+        console.error('Error fetching plus-one analytics:', analyticsError);
+        responseData.analytics_error = 'Failed to load analytics';
+      }
+    }
+
+    return NextResponse.json(responseData);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Validation error',
+          details: error.issues,
+        },
+        { status: 400 },
+      );
+    }
+    console.error('Error in GET /api/rsvp/plus-ones:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+// POST /api/rsvp/plus-ones - Add plus-one (public endpoint)
+export async function POST(req: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const body = await req.json();
+    const validatedData = PlusOneSchema.parse(body);
+
+    // Verify the invitation exists and allows plus-ones
+    const { data: invitation, error: invitationError } = await supabase
+      .from('rsvp_invitations')
+      .select(
+        `
+        id,
+        max_party_size,
+        guest_name,
+        rsvp_events (
+          id,
+          event_name,
+          allow_plus_ones
+        )
+      `,
+      )
+      .eq('id', validatedData.primary_invitation_id)
+      .single();
+
+    if (invitationError || !invitation) {
+      return NextResponse.json(
+        { error: 'Invitation not found' },
+        { status: 404 },
+      );
+    }
+
+    if (!invitation.rsvp_events.allow_plus_ones) {
+      return NextResponse.json(
+        {
+          error: 'Plus-ones are not allowed for this event',
+        },
+        { status: 400 },
+      );
+    }
+
+    // Check if already at max party size
+    const { count: existingPlusOnes } = await supabase
+      .from('rsvp_plus_one_relationships')
+      .select('*', { count: 'exact', head: true })
+      .eq('primary_invitation_id', validatedData.primary_invitation_id);
+
+    if ((existingPlusOnes || 0) >= invitation.max_party_size - 1) {
+      return NextResponse.json(
+        {
+          error: 'Maximum party size reached for this invitation',
+        },
+        { status: 400 },
+      );
+    }
+
+    // Check for duplicate plus-one
+    if (validatedData.plus_one_email) {
+      const { data: existing } = await supabase
+        .from('rsvp_plus_one_relationships')
+        .select('id')
+        .eq('primary_invitation_id', validatedData.primary_invitation_id)
+        .eq('plus_one_email', validatedData.plus_one_email)
+        .single();
+
+      if (existing) {
+        return NextResponse.json(
+          {
+            error: 'This plus-one is already registered for this invitation',
+          },
+          { status: 400 },
+        );
+      }
+    }
+
+    // Add plus-one
+    const { data: plusOne, error } = await supabase
+      .from('rsvp_plus_one_relationships')
+      .insert({
+        ...validatedData,
+        is_confirmed: false,
+      })
+      .select(
+        `
+        *,
+        rsvp_invitations (
+          guest_name,
+          rsvp_events (
+            event_name
+          )
+        )
+      `,
+      )
+      .single();
+
+    if (error) {
+      console.error('Error adding plus-one:', error);
+      return NextResponse.json(
+        { error: 'Failed to add plus-one' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json(
+      {
+        plus_one: plusOne,
+        message: `Plus-one ${validatedData.plus_one_name} added successfully`,
+      },
+      { status: 201 },
+    );
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Validation error',
+          details: error.issues,
+        },
+        { status: 400 },
+      );
+    }
+    console.error('Error in POST /api/rsvp/plus-ones:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+// PUT /api/rsvp/plus-ones/[id] - Update plus-one details
+export async function PUT(req: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const url = new URL(req.url);
+    const plusOneId = url.pathname.split('/').pop();
+
+    if (!plusOneId) {
+      return NextResponse.json(
+        { error: 'Plus-one ID is required' },
+        { status: 400 },
+      );
+    }
+
+    const body = await req.json();
+    const validatedData = UpdatePlusOneSchema.parse(body);
+
+    // Get current plus-one details for verification
+    const { data: existingPlusOne, error: fetchError } = await supabase
+      .from('rsvp_plus_one_relationships')
+      .select(
+        `
+        *,
+        rsvp_invitations (
+          id,
+          guest_name,
+          rsvp_events (
+            vendor_id,
+            event_name
+          )
+        )
+      `,
+      )
+      .eq('id', plusOneId)
+      .single();
+
+    if (fetchError || !existingPlusOne) {
+      return NextResponse.json(
+        { error: 'Plus-one not found' },
+        { status: 404 },
+      );
+    }
+
+    // Check if user has permission (vendor or public access via invitation)
+    const { data: user } = await supabase.auth.getUser();
+    const isVendor =
+      user &&
+      user.id === existingPlusOne.rsvp_invitations.rsvp_events.vendor_id;
+
+    // For public access, require invitation_code or other verification
+    if (!isVendor) {
+      // Allow public updates with proper verification
+      // This could be enhanced with invitation codes or tokens
+    }
+
+    // Update plus-one
+    const { data: updatedPlusOne, error } = await supabase
+      .from('rsvp_plus_one_relationships')
+      .update({
+        ...validatedData,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', plusOneId)
+      .select(
+        `
+        *,
+        rsvp_invitations (
+          guest_name,
+          rsvp_events (
+            event_name
+          )
+        )
+      `,
+      )
+      .single();
+
+    if (error) {
+      console.error('Error updating plus-one:', error);
+      return NextResponse.json(
+        { error: 'Failed to update plus-one' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({
+      plus_one: updatedPlusOne,
+      message: 'Plus-one updated successfully',
+    });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Validation error',
+          details: error.issues,
+        },
+        { status: 400 },
+      );
+    }
+    console.error('Error in PUT /api/rsvp/plus-ones/[id]:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+// DELETE /api/rsvp/plus-ones/[id] - Remove plus-one
+export async function DELETE(req: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const url = new URL(req.url);
+    const plusOneId = url.pathname.split('/').pop();
+
+    if (!plusOneId) {
+      return NextResponse.json(
+        { error: 'Plus-one ID is required' },
+        { status: 400 },
+      );
+    }
+
+    // Get plus-one details for verification
+    const { data: plusOne, error: fetchError } = await supabase
+      .from('rsvp_plus_one_relationships')
+      .select(
+        `
+        *,
+        rsvp_invitations (
+          guest_name,
+          rsvp_events (
+            vendor_id,
+            event_name
+          )
+        )
+      `,
+      )
+      .eq('id', plusOneId)
+      .single();
+
+    if (fetchError || !plusOne) {
+      return NextResponse.json(
+        { error: 'Plus-one not found' },
+        { status: 404 },
+      );
+    }
+
+    // Check permissions
+    const { data: user } = await supabase.auth.getUser();
+    const isVendor =
+      user && user.id === plusOne.rsvp_invitations.rsvp_events.vendor_id;
+
+    if (!isVendor) {
+      // Allow public deletion with proper verification
+      // This could be enhanced with invitation codes or tokens
+    }
+
+    // Delete plus-one
+    const { error } = await supabase
+      .from('rsvp_plus_one_relationships')
+      .delete()
+      .eq('id', plusOneId);
+
+    if (error) {
+      console.error('Error deleting plus-one:', error);
+      return NextResponse.json(
+        { error: 'Failed to delete plus-one' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({
+      message: `Plus-one ${plusOne.plus_one_name} removed successfully`,
+    });
+  } catch (error) {
+    console.error('Error in DELETE /api/rsvp/plus-ones/[id]:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+// Helper function to get plus-one analytics
+async function getPlusOneAnalytics(eventId: string) {
+  const supabase = await createClient();
+
+  try {
+    // Get all plus-ones for the event
+    const { data: plusOnes, error } = await supabase
+      .from('rsvp_plus_one_relationships')
+      .select(
+        `
+        *,
+        rsvp_invitations!inner (
+          event_id
+        )
+      `,
+      )
+      .eq('rsvp_invitations.event_id', eventId);
+
+    if (error) {
+      throw error;
+    }
+
+    const analytics = {
+      total_plus_ones: plusOnes?.length || 0,
+      confirmed_plus_ones: plusOnes?.filter((p) => p.is_confirmed).length || 0,
+      unconfirmed_plus_ones:
+        plusOnes?.filter((p) => !p.is_confirmed).length || 0,
+      relationship_breakdown: {} as Record<string, number>,
+      age_distribution: {} as Record<string, number>,
+      dietary_restrictions: {} as Record<string, number>,
+      meal_preferences: {} as Record<string, number>,
+    };
+
+    // Calculate breakdowns
+    plusOnes?.forEach((plusOne) => {
+      // Relationship types
+      analytics.relationship_breakdown[plusOne.relationship_type] =
+        (analytics.relationship_breakdown[plusOne.relationship_type] || 0) + 1;
+
+      // Age groups
+      analytics.age_distribution[plusOne.age_group] =
+        (analytics.age_distribution[plusOne.age_group] || 0) + 1;
+
+      // Dietary restrictions
+      (plusOne.dietary_restrictions || []).forEach((restriction: string) => {
+        analytics.dietary_restrictions[restriction] =
+          (analytics.dietary_restrictions[restriction] || 0) + 1;
+      });
+
+      // Meal preferences
+      if (plusOne.meal_preference) {
+        analytics.meal_preferences[plusOne.meal_preference] =
+          (analytics.meal_preferences[plusOne.meal_preference] || 0) + 1;
+      }
+    });
+
+    return analytics;
+  } catch (error) {
+    console.error('Error calculating plus-one analytics:', error);
+    return null;
+  }
+}

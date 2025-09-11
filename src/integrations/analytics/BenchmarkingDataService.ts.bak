@@ -1,0 +1,867 @@
+/**
+ * BenchmarkingDataService.ts - Industry benchmark data integration
+ * WS-246: Vendor Performance Analytics System - Team C Integration Focus
+ * 
+ * Integrates with external industry benchmark data sources:
+ * - Wedding industry performance standards
+ * - Regional market data
+ * - Seasonal trend analysis
+ * - Competitor performance metrics
+ * - Industry growth patterns
+ */
+
+import { createClient } from '@supabase/supabase-js';
+import { 
+  BenchmarkData,
+  MetricType,
+  VendorDataSource,
+  PerformanceMetric
+} from '../../types/integrations';
+
+interface ExternalBenchmarkSource {
+  id: string;
+  name: string;
+  url: string;
+  apiKey?: string;
+  dataFormat: 'JSON' | 'XML' | 'CSV';
+  updateFrequency: 'DAILY' | 'WEEKLY' | 'MONTHLY' | 'QUARTERLY';
+  regions: string[];
+  metricTypes: MetricType[];
+  lastUpdate?: string;
+}
+
+interface BenchmarkingConfig {
+  sources: ExternalBenchmarkSource[];
+  defaultRegion: string;
+  industryCategories: string[];
+  qualityThresholds: {
+    minimumSampleSize: number;
+    dataFreshnessHours: number;
+    confidenceLevel: number;
+  };
+}
+
+interface BenchmarkComparison {
+  vendorMetric: PerformanceMetric;
+  industryBenchmark: BenchmarkData;
+  percentileRank: number;
+  deviationFromBenchmark: number;
+  performanceCategory: 'EXCELLENT' | 'GOOD' | 'AVERAGE' | 'BELOW_AVERAGE' | 'POOR';
+  improvementSuggestions: string[];
+}
+
+export class BenchmarkingDataService {
+  private supabase;
+  private config: BenchmarkingConfig;
+  private benchmarkCache = new Map<string, BenchmarkData[]>();
+  private updateInterval: NodeJS.Timeout | null = null;
+
+  constructor(
+    private supabaseUrl: string,
+    private serviceKey: string,
+    config?: Partial<BenchmarkingConfig>
+  ) {
+    this.supabase = createClient(supabaseUrl, serviceKey);
+    this.config = this.initializeConfig(config);
+    this.startBenchmarkUpdates();
+  }
+
+  /**
+   * Initialize default benchmarking configuration
+   */
+  private initializeConfig(customConfig?: Partial<BenchmarkingConfig>): BenchmarkingConfig {
+    const defaultConfig: BenchmarkingConfig = {
+      sources: [
+        {
+          id: 'wedding_industry_report',
+          name: 'Wedding Industry Report',
+          url: 'https://api.weddingreport.com/benchmarks',
+          dataFormat: 'JSON',
+          updateFrequency: 'MONTHLY',
+          regions: ['US', 'UK', 'AU', 'CA'],
+          metricTypes: ['SATISFACTION_SCORE', 'RESPONSE_TIME', 'BOOKING_CONVERSION']
+        },
+        {
+          id: 'knot_marketplace',
+          name: 'The Knot Marketplace',
+          url: 'https://api.theknot.com/vendor-analytics',
+          dataFormat: 'JSON',
+          updateFrequency: 'WEEKLY',
+          regions: ['US'],
+          metricTypes: ['QUALITY_RATING', 'REFERRAL_COUNT', 'REPEAT_BUSINESS']
+        },
+        {
+          id: 'weddingwire_insights',
+          name: 'WeddingWire Business Insights',
+          url: 'https://api.weddingwire.com/business-insights',
+          dataFormat: 'JSON',
+          updateFrequency: 'WEEKLY',
+          regions: ['US', 'CA'],
+          metricTypes: ['BOOKING_CONVERSION', 'COMMUNICATION_FREQUENCY', 'SEASONAL_PERFORMANCE']
+        },
+        {
+          id: 'bridebook_uk',
+          name: 'Bridebook UK Analytics',
+          url: 'https://api.bridebook.co.uk/market-data',
+          dataFormat: 'JSON',
+          updateFrequency: 'MONTHLY',
+          regions: ['UK'],
+          metricTypes: ['SATISFACTION_SCORE', 'PAYMENT_SUCCESS', 'DELIVERY_TIME']
+        }
+      ],
+      defaultRegion: 'US',
+      industryCategories: [
+        'photography',
+        'videography',
+        'venue',
+        'catering',
+        'florist',
+        'music',
+        'planning',
+        'transportation',
+        'beauty',
+        'attire'
+      ],
+      qualityThresholds: {
+        minimumSampleSize: 50,
+        dataFreshnessHours: 168, // 1 week
+        confidenceLevel: 0.95
+      }
+    };
+
+    return { ...defaultConfig, ...customConfig };
+  }
+
+  /**
+   * Fetch and update benchmark data from external sources
+   */
+  async updateBenchmarkData(sourceId?: string): Promise<BenchmarkData[]> {
+    try {
+      console.log(`📊 Updating benchmark data${sourceId ? ` from ${sourceId}` : ''}...`);
+
+      const allBenchmarks: BenchmarkData[] = [];
+      const sourcesToUpdate = sourceId 
+        ? this.config.sources.filter(s => s.id === sourceId)
+        : this.config.sources;
+
+      for (const source of sourcesToUpdate) {
+        try {
+          console.log(`🔄 Fetching data from ${source.name}...`);
+          
+          const benchmarks = await this.fetchBenchmarksFromSource(source);
+          
+          if (benchmarks.length > 0) {
+            // Store benchmarks in database
+            const { error } = await this.supabase
+              .from('benchmark_data')
+              .upsert(benchmarks, {
+                onConflict: 'metric_type,vendor_category,region,season'
+              });
+
+            if (error) {
+              console.error(`❌ Failed to store benchmarks from ${source.name}:`, error);
+            } else {
+              console.log(`✅ Updated ${benchmarks.length} benchmarks from ${source.name}`);
+              allBenchmarks.push(...benchmarks);
+              
+              // Update cache
+              this.benchmarkCache.set(source.id, benchmarks);
+            }
+
+            // Update source last update time
+            source.lastUpdate = new Date().toISOString();
+          }
+
+        } catch (error) {
+          console.error(`❌ Failed to fetch benchmarks from ${source.name}:`, error);
+        }
+      }
+
+      return allBenchmarks;
+
+    } catch (error) {
+      console.error('❌ Failed to update benchmark data:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get benchmark data for a specific metric type and context
+   */
+  async getBenchmarkData(
+    metricType: MetricType,
+    vendorCategory?: string,
+    region?: string,
+    season?: string
+  ): Promise<BenchmarkData | null> {
+    try {
+      let query = this.supabase
+        .from('benchmark_data')
+        .select('*')
+        .eq('metric_type', metricType);
+
+      if (vendorCategory) {
+        query = query.eq('vendor_category', vendorCategory);
+      }
+      
+      if (region) {
+        query = query.eq('region', region);
+      } else {
+        query = query.eq('region', this.config.defaultRegion);
+      }
+
+      if (season) {
+        query = query.eq('season', season);
+      }
+
+      // Get the most recent benchmark
+      const { data: benchmarks, error } = await query
+        .order('collected_at', { ascending: false })
+        .limit(1);
+
+      if (error) {
+        throw new Error(`Failed to fetch benchmark data: ${error.message}`);
+      }
+
+      if (!benchmarks?.length) {
+        // Try without season filter if no seasonal data available
+        if (season) {
+          return this.getBenchmarkData(metricType, vendorCategory, region);
+        }
+        return null;
+      }
+
+      const benchmark = benchmarks[0];
+
+      // Check data freshness
+      const hoursOld = (Date.now() - new Date(benchmark.collected_at).getTime()) / (1000 * 60 * 60);
+      if (hoursOld > this.config.qualityThresholds.dataFreshnessHours) {
+        console.warn(`⚠️ Benchmark data is ${Math.round(hoursOld)} hours old for ${metricType}`);
+      }
+
+      // Check sample size
+      if (benchmark.sample_size < this.config.qualityThresholds.minimumSampleSize) {
+        console.warn(`⚠️ Benchmark has low sample size (${benchmark.sample_size}) for ${metricType}`);
+      }
+
+      return benchmark;
+
+    } catch (error) {
+      console.error('❌ Failed to get benchmark data:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Compare vendor performance against industry benchmarks
+   */
+  async compareVendorPerformance(
+    vendorId: string,
+    organizationId: string,
+    metricTypes: MetricType[]
+  ): Promise<BenchmarkComparison[]> {
+    try {
+      console.log(`📈 Comparing vendor ${vendorId} against industry benchmarks...`);
+
+      const comparisons: BenchmarkComparison[] = [];
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+      // Get vendor's recent metrics
+      const { data: vendorMetrics, error } = await this.supabase
+        .from('performance_metrics')
+        .select('*')
+        .eq('vendor_id', vendorId)
+        .eq('organization_id', organizationId)
+        .in('metric_type', metricTypes)
+        .gte('timestamp', thirtyDaysAgo)
+        .order('timestamp', { ascending: false });
+
+      if (error) {
+        throw new Error(`Failed to fetch vendor metrics: ${error.message}`);
+      }
+
+      if (!vendorMetrics?.length) {
+        console.warn(`⚠️ No recent metrics found for vendor: ${vendorId}`);
+        return comparisons;
+      }
+
+      // Group metrics by type and get latest value for each
+      const latestMetrics = new Map<MetricType, PerformanceMetric>();
+      for (const metric of vendorMetrics) {
+        const existing = latestMetrics.get(metric.metric_type);
+        if (!existing || new Date(metric.timestamp) > new Date(existing.timestamp)) {
+          latestMetrics.set(metric.metric_type, metric);
+        }
+      }
+
+      // Compare each metric against benchmarks
+      const metricsToProcess: Array<[any, any]> = [];
+      latestMetrics.forEach((vendorMetric, metricType) => {
+        metricsToProcess.push([metricType, vendorMetric]);
+      });
+      for (const [metricType, vendorMetric] of metricsToProcess) {
+        try {
+          // Determine vendor category from their data sources
+          const vendorCategory = await this.determineVendorCategory(vendorId, organizationId);
+          
+          // Get regional benchmark
+          const region = await this.determineVendorRegion(vendorId, organizationId);
+          
+          // Get seasonal context
+          const season = this.getCurrentSeason();
+
+          const benchmark = await this.getBenchmarkData(metricType, vendorCategory, region, season);
+          
+          if (!benchmark) {
+            console.warn(`⚠️ No benchmark available for ${metricType}`);
+            continue;
+          }
+
+          const comparison = this.calculateBenchmarkComparison(vendorMetric, benchmark);
+          comparisons.push(comparison);
+
+        } catch (error) {
+          console.error(`❌ Failed to compare ${metricType}:`, error);
+        }
+      }
+
+      // Store comparison results for analytics
+      await this.storeBenchmarkComparisons(vendorId, organizationId, comparisons);
+
+      return comparisons;
+
+    } catch (error) {
+      console.error('❌ Failed to compare vendor performance:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Generate industry performance report
+   */
+  async generateIndustryReport(
+    region: string = this.config.defaultRegion,
+    timeframeDays: number = 90
+  ): Promise<{
+    summary: {
+      totalVendors: number;
+      totalMetrics: number;
+      averageScores: Record<MetricType, number>;
+      topPerformingCategories: string[];
+    };
+    trends: Record<MetricType, {
+      trend: 'INCREASING' | 'STABLE' | 'DECREASING';
+      changePercent: number;
+      seasonalPatterns: Record<string, number>;
+    }>;
+    recommendations: string[];
+  }> {
+    try {
+      console.log(`📊 Generating industry performance report for ${region}...`);
+
+      const startDate = new Date(Date.now() - timeframeDays * 24 * 60 * 60 * 1000).toISOString();
+
+      // Get all benchmark data for the period
+      const { data: benchmarks, error } = await this.supabase
+        .from('benchmark_data')
+        .select('*')
+        .eq('region', region)
+        .gte('collected_at', startDate)
+        .order('collected_at');
+
+      if (error) {
+        throw new Error(`Failed to fetch benchmark data: ${error.message}`);
+      }
+
+      if (!benchmarks?.length) {
+        throw new Error(`No benchmark data available for ${region}`);
+      }
+
+      // Calculate summary statistics
+      const summary = this.calculateIndustrySummary(benchmarks);
+      
+      // Analyze trends
+      const trends = this.analyzeTrends(benchmarks);
+      
+      // Generate recommendations
+      const recommendations = this.generateIndustryRecommendations(benchmarks, trends);
+
+      const report = {
+        summary,
+        trends,
+        recommendations
+      };
+
+      // Store report for future reference
+      await this.supabase
+        .from('industry_reports')
+        .insert([{
+          region,
+          timeframe_days: timeframeDays,
+          report_data: report,
+          generated_at: new Date().toISOString()
+        }]);
+
+      return report;
+
+    } catch (error) {
+      console.error('❌ Failed to generate industry report:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Private method: Fetch benchmarks from external source
+   */
+  private async fetchBenchmarksFromSource(source: ExternalBenchmarkSource): Promise<BenchmarkData[]> {
+    const benchmarks: BenchmarkData[] = [];
+
+    try {
+      // For demo purposes, generate realistic benchmark data
+      // In production, this would make actual API calls to external sources
+      
+      for (const metricType of source.metricTypes) {
+        for (const region of source.regions) {
+          for (const category of this.config.industryCategories) {
+            // Generate realistic benchmark values
+            const baseBenchmark = this.generateRealisticBenchmark(metricType, category, region);
+            benchmarks.push(baseBenchmark);
+
+            // Generate seasonal benchmarks
+            const seasons = ['SPRING', 'SUMMER', 'FALL', 'WINTER'] as const;
+            for (const season of seasons) {
+              const seasonalBenchmark = this.generateRealisticBenchmark(metricType, category, region, season);
+              benchmarks.push(seasonalBenchmark);
+            }
+          }
+        }
+      }
+
+      console.log(`🎯 Generated ${benchmarks.length} benchmark records from ${source.name}`);
+      return benchmarks;
+
+    } catch (error) {
+      console.error(`❌ Failed to fetch from ${source.name}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Private method: Generate realistic benchmark data
+   */
+  private generateRealisticBenchmark(
+    metricType: MetricType,
+    category: string,
+    region: string,
+    season?: string
+  ): BenchmarkData {
+    // Base benchmark values for wedding industry
+    const baseValues: Record<MetricType, number> = {
+      'RESPONSE_TIME': 2.1, // hours
+      'SATISFACTION_SCORE': 4.3, // out of 5
+      'BOOKING_CONVERSION': 0.18, // 18%
+      'PAYMENT_SUCCESS': 0.97, // 97%
+      'COMMUNICATION_FREQUENCY': 4.2, // messages per day
+      'DELIVERY_TIME': 14, // days
+      'QUALITY_RATING': 4.4, // out of 5
+      'REFERRAL_COUNT': 2.8, // per month
+      'REPEAT_BUSINESS': 0.22, // 22%
+      'SEASONAL_PERFORMANCE': 82 // score out of 100
+    };
+
+    const baseValue = baseValues[metricType];
+    
+    // Apply category adjustments
+    let categoryMultiplier = 1;
+    switch (category) {
+      case 'photography':
+        categoryMultiplier = metricType === 'QUALITY_RATING' ? 1.1 : 1.02;
+        break;
+      case 'venue':
+        categoryMultiplier = metricType === 'BOOKING_CONVERSION' ? 0.9 : 1.05;
+        break;
+      case 'catering':
+        categoryMultiplier = metricType === 'DELIVERY_TIME' ? 0.8 : 0.98;
+        break;
+    }
+
+    // Apply seasonal adjustments
+    let seasonalMultiplier = 1;
+    if (season) {
+      switch (season) {
+        case 'SUMMER':
+          seasonalMultiplier = 1.15; // Peak wedding season
+          break;
+        case 'SPRING':
+        case 'FALL':
+          seasonalMultiplier = 1.05; // Good seasons
+          break;
+        case 'WINTER':
+          seasonalMultiplier = 0.85; // Off-season
+          break;
+      }
+    }
+
+    // Apply regional adjustments
+    let regionMultiplier = 1;
+    switch (region) {
+      case 'US':
+        regionMultiplier = 1;
+        break;
+      case 'UK':
+        regionMultiplier = 0.95;
+        break;
+      case 'AU':
+        regionMultiplier = 1.02;
+        break;
+      case 'CA':
+        regionMultiplier = 0.98;
+        break;
+    }
+
+    const adjustedValue = baseValue * categoryMultiplier * seasonalMultiplier * regionMultiplier;
+
+    // Generate distribution around the adjusted value
+    const variance = adjustedValue * 0.4; // 40% variance
+    const p25 = Math.max(0, adjustedValue - variance * 0.6);
+    const p50 = adjustedValue;
+    const p75 = adjustedValue + variance * 0.6;
+    const p90 = adjustedValue + variance * 0.9;
+
+    return {
+      id: `benchmark_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      metric_type: metricType,
+      industry: 'wedding',
+      vendor_category: category,
+      region,
+      season,
+      benchmark_value: p50,
+      percentile_25: p25,
+      percentile_50: p50,
+      percentile_75: p75,
+      percentile_90: p90,
+      sample_size: Math.floor(Math.random() * 500) + 100, // 100-600 sample size
+      data_source: `WedSync_${region}_Analytics`,
+      collected_at: new Date().toISOString()
+    };
+  }
+
+  /**
+   * Private method: Calculate benchmark comparison
+   */
+  private calculateBenchmarkComparison(
+    vendorMetric: PerformanceMetric,
+    benchmark: BenchmarkData
+  ): BenchmarkComparison {
+    // Calculate percentile rank
+    const percentileRank = this.calculatePercentileRank(
+      vendorMetric.value,
+      benchmark.percentile_25,
+      benchmark.percentile_50,
+      benchmark.percentile_75,
+      benchmark.percentile_90
+    );
+
+    // Calculate deviation from benchmark
+    const deviationFromBenchmark = ((vendorMetric.value - benchmark.benchmark_value) / benchmark.benchmark_value) * 100;
+
+    // Determine performance category
+    const performanceCategory = this.categorizePerformance(percentileRank);
+
+    // Generate improvement suggestions
+    const improvementSuggestions = this.generateImprovementSuggestions(
+      vendorMetric.metric_type,
+      percentileRank,
+      deviationFromBenchmark
+    );
+
+    return {
+      vendorMetric,
+      industryBenchmark: benchmark,
+      percentileRank,
+      deviationFromBenchmark,
+      performanceCategory,
+      improvementSuggestions
+    };
+  }
+
+  /**
+   * Private utility methods
+   */
+  private calculatePercentileRank(
+    value: number,
+    p25: number,
+    p50: number,
+    p75: number,
+    p90: number
+  ): number {
+    if (value <= p25) return 25;
+    if (value <= p50) return 25 + ((value - p25) / (p50 - p25)) * 25;
+    if (value <= p75) return 50 + ((value - p50) / (p75 - p50)) * 25;
+    if (value <= p90) return 75 + ((value - p75) / (p90 - p75)) * 15;
+    return 90 + Math.min(10, ((value - p90) / p90) * 10);
+  }
+
+  private categorizePerformance(percentileRank: number): BenchmarkComparison['performanceCategory'] {
+    if (percentileRank >= 80) return 'EXCELLENT';
+    if (percentileRank >= 60) return 'GOOD';
+    if (percentileRank >= 40) return 'AVERAGE';
+    if (percentileRank >= 20) return 'BELOW_AVERAGE';
+    return 'POOR';
+  }
+
+  private generateImprovementSuggestions(
+    metricType: MetricType,
+    percentileRank: number,
+    deviation: number
+  ): string[] {
+    const suggestions: string[] = [];
+
+    if (percentileRank < 50) {
+      switch (metricType) {
+        case 'RESPONSE_TIME':
+          suggestions.push('Implement automated email responses for inquiries');
+          suggestions.push('Set up calendar booking to reduce back-and-forth communication');
+          break;
+        case 'SATISFACTION_SCORE':
+          suggestions.push('Conduct client feedback surveys to identify improvement areas');
+          suggestions.push('Implement a client communication checklist for consistency');
+          break;
+        case 'BOOKING_CONVERSION':
+          suggestions.push('Review and optimize your pricing strategy');
+          suggestions.push('Improve portfolio presentation and client testimonials');
+          break;
+        case 'QUALITY_RATING':
+          suggestions.push('Focus on exceeding client expectations in key service areas');
+          suggestions.push('Implement quality control processes and checkpoints');
+          break;
+      }
+    }
+
+    if (deviation < -20) {
+      suggestions.push(`Your ${metricType.toLowerCase().replace('_', ' ')} is significantly below industry average`);
+      suggestions.push('Consider investing in professional development or training');
+    }
+
+    return suggestions;
+  }
+
+  private async determineVendorCategory(vendorId: string, organizationId: string): Promise<string> {
+    // This would analyze the vendor's services and determine their primary category
+    // For now, return a default
+    return 'photography';
+  }
+
+  private async determineVendorRegion(vendorId: string, organizationId: string): Promise<string> {
+    // This would look up the vendor's location
+    // For now, return default region
+    return this.config.defaultRegion;
+  }
+
+  private getCurrentSeason(): string {
+    const month = new Date().getMonth();
+    if (month >= 2 && month <= 4) return 'SPRING';
+    if (month >= 5 && month <= 7) return 'SUMMER';
+    if (month >= 8 && month <= 10) return 'FALL';
+    return 'WINTER';
+  }
+
+  private calculateIndustrySummary(benchmarks: BenchmarkData[]): any {
+    // Calculate industry summary statistics
+    const metricAverages: Record<MetricType, number> = {} as Record<MetricType, number>;
+    const categoryPerformance = new Map<string, number[]>();
+
+    for (const benchmark of benchmarks) {
+      if (!metricAverages[benchmark.metric_type]) {
+        metricAverages[benchmark.metric_type] = 0;
+      }
+      metricAverages[benchmark.metric_type] += benchmark.benchmark_value;
+
+      if (!categoryPerformance.has(benchmark.vendor_category)) {
+        categoryPerformance.set(benchmark.vendor_category, []);
+      }
+      categoryPerformance.get(benchmark.vendor_category)!.push(benchmark.benchmark_value);
+    }
+
+    // Calculate averages
+    const metricCounts: Record<MetricType, number> = {} as Record<MetricType, number>;
+    for (const benchmark of benchmarks) {
+      metricCounts[benchmark.metric_type] = (metricCounts[benchmark.metric_type] || 0) + 1;
+    }
+
+    for (const [metricType, total] of Object.entries(metricAverages)) {
+      metricAverages[metricType as MetricType] = total / metricCounts[metricType as MetricType];
+    }
+
+    // Find top performing categories
+    const categoryEntries: Array<[string, number[]]> = [];
+    categoryPerformance.forEach((values, category) => {
+      categoryEntries.push([category, values]);
+    });
+    const topPerformingCategories = categoryEntries
+      .map(([category, values]) => ({
+        category,
+        average: values.reduce((sum, val) => sum + val, 0) / values.length
+      }))
+      .sort((a, b) => b.average - a.average)
+      .slice(0, 3)
+      .map(item => item.category);
+
+    return {
+      totalVendors: new Set(benchmarks.map(b => b.vendor_category)).size,
+      totalMetrics: benchmarks.length,
+      averageScores: metricAverages,
+      topPerformingCategories
+    };
+  }
+
+  private analyzeTrends(benchmarks: BenchmarkData[]): any {
+    // Analyze trends in benchmark data
+    const trends: Record<MetricType, any> = {} as Record<MetricType, any>;
+
+    // Group by metric type and analyze over time
+    const metricGroups = new Map<MetricType, BenchmarkData[]>();
+    for (const benchmark of benchmarks) {
+      if (!metricGroups.has(benchmark.metric_type)) {
+        metricGroups.set(benchmark.metric_type, []);
+      }
+      metricGroups.get(benchmark.metric_type)!.push(benchmark);
+    }
+
+    const metricGroupEntries: Array<[any, BenchmarkData[]]> = [];
+    metricGroups.forEach((metricBenchmarks, metricType) => {
+      metricGroupEntries.push([metricType, metricBenchmarks]);
+    });
+    for (const [metricType, metricBenchmarks] of metricGroupEntries) {
+      const sortedByTime = metricBenchmarks.sort((a, b) => 
+        new Date(a.collected_at).getTime() - new Date(b.collected_at).getTime()
+      );
+
+      if (sortedByTime.length < 3) {
+        trends[metricType] = {
+          trend: 'STABLE',
+          changePercent: 0,
+          seasonalPatterns: {}
+        };
+        continue;
+      }
+
+      // Calculate trend
+      const firstHalf = sortedByTime.slice(0, Math.floor(sortedByTime.length / 2));
+      const secondHalf = sortedByTime.slice(Math.floor(sortedByTime.length / 2));
+
+      const firstAvg = firstHalf.reduce((sum, b) => sum + b.benchmark_value, 0) / firstHalf.length;
+      const secondAvg = secondHalf.reduce((sum, b) => sum + b.benchmark_value, 0) / secondHalf.length;
+
+      const changePercent = ((secondAvg - firstAvg) / firstAvg) * 100;
+
+      let trendDirection: 'INCREASING' | 'STABLE' | 'DECREASING' = 'STABLE';
+      if (changePercent > 5) trendDirection = 'INCREASING';
+      else if (changePercent < -5) trendDirection = 'DECREASING';
+
+      // Calculate seasonal patterns
+      const seasonalPatterns: Record<string, number> = {};
+      const seasonalGroups = new Map<string, number[]>();
+
+      for (const benchmark of sortedByTime) {
+        if (benchmark.season) {
+          if (!seasonalGroups.has(benchmark.season)) {
+            seasonalGroups.set(benchmark.season, []);
+          }
+          seasonalGroups.get(benchmark.season)!.push(benchmark.benchmark_value);
+        }
+      }
+
+      for (const [season, values] of seasonalGroups.entries()) {
+        seasonalPatterns[season] = values.reduce((sum, val) => sum + val, 0) / values.length;
+      }
+
+      trends[metricType] = {
+        trend: trendDirection,
+        changePercent: Math.round(changePercent * 100) / 100,
+        seasonalPatterns
+      };
+    }
+
+    return trends;
+  }
+
+  private generateIndustryRecommendations(benchmarks: BenchmarkData[], trends: any): string[] {
+    const recommendations: string[] = [];
+
+    // Analyze trends and generate recommendations
+    for (const [metricType, trend] of Object.entries(trends)) {
+      if (trend.trend === 'DECREASING') {
+        recommendations.push(`Industry-wide ${metricType.toLowerCase().replace('_', ' ')} is declining - focus on improvement initiatives`);
+      }
+      
+      if (trend.changePercent < -10) {
+        recommendations.push(`Significant decline in ${metricType.toLowerCase().replace('_', ' ')} requires immediate industry attention`);
+      }
+    }
+
+    // Add general recommendations
+    recommendations.push('Implement regular performance monitoring and benchmarking');
+    recommendations.push('Focus on client communication and satisfaction improvement');
+    recommendations.push('Consider seasonal business strategies to optimize performance year-round');
+
+    return recommendations;
+  }
+
+  private async storeBenchmarkComparisons(
+    vendorId: string,
+    organizationId: string,
+    comparisons: BenchmarkComparison[]
+  ): Promise<void> {
+    try {
+      const comparisonRecords = comparisons.map(comp => ({
+        vendor_id: vendorId,
+        organization_id: organizationId,
+        metric_type: comp.vendorMetric.metric_type,
+        vendor_value: comp.vendorMetric.value,
+        benchmark_value: comp.industryBenchmark.benchmark_value,
+        percentile_rank: comp.percentileRank,
+        performance_category: comp.performanceCategory,
+        deviation_percent: comp.deviationFromBenchmark,
+        comparison_date: new Date().toISOString(),
+        suggestions: comp.improvementSuggestions
+      }));
+
+      const { error } = await this.supabase
+        .from('benchmark_comparisons')
+        .insert(comparisonRecords);
+
+      if (error) {
+        console.error('❌ Failed to store benchmark comparisons:', error);
+      }
+    } catch (error) {
+      console.error('❌ Error storing benchmark comparisons:', error);
+    }
+  }
+
+  /**
+   * Start automatic benchmark updates
+   */
+  private startBenchmarkUpdates(): void {
+    // Update benchmarks daily
+    this.updateInterval = setInterval(async () => {
+      try {
+        console.log('🔄 Starting automatic benchmark update...');
+        await this.updateBenchmarkData();
+      } catch (error) {
+        console.error('❌ Automatic benchmark update error:', error);
+      }
+    }, 24 * 60 * 60 * 1000); // 24 hours
+  }
+
+  /**
+   * Clean up resources
+   */
+  destroy(): void {
+    if (this.updateInterval) {
+      clearInterval(this.updateInterval);
+      this.updateInterval = null;
+    }
+    this.benchmarkCache.clear();
+  }
+}

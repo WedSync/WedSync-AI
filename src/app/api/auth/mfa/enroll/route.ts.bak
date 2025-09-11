@@ -1,0 +1,101 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@supabase/supabase-js'
+import { cookies } from 'next/headers'
+import { mfaService, MFAFactorType } from '@/lib/auth/mfa'
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      )
+    }
+
+    const body = await request.json()
+    const { factorType, phoneNumber } = body
+
+    if (!factorType || !['totp', 'phone'].includes(factorType)) {
+      return NextResponse.json(
+        { error: 'Invalid factor type' },
+        { status: 400 }
+      )
+    }
+
+    let result
+
+    if (factorType === MFAFactorType.TOTP) {
+      result = await mfaService.enrollTOTP(user.id)
+    } else if (factorType === MFAFactorType.SMS) {
+      if (!phoneNumber) {
+        return NextResponse.json(
+          { error: 'Phone number required for SMS MFA' },
+          { status: 400 }
+        )
+      }
+      result = await mfaService.enrollSMS(user.id, phoneNumber)
+    } else {
+      return NextResponse.json(
+        { error: 'Unsupported factor type' },
+        { status: 400 }
+      )
+    }
+
+    if (result.error) {
+      return NextResponse.json(
+        { error: result.error.message },
+        { status: 400 }
+      )
+    }
+
+    return NextResponse.json({
+      success: true,
+      data: result.data
+    })
+
+  } catch (error) {
+    console.error('MFA enrollment error:', error)
+    return NextResponse.json(
+      { error: 'Failed to enroll MFA' },
+      { status: 500 }
+    )
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      )
+    }
+
+    const result = await mfaService.listFactors(user.id)
+
+    if (result.error) {
+      return NextResponse.json(
+        { error: result.error.message },
+        { status: 400 }
+      )
+    }
+
+    return NextResponse.json({
+      success: true,
+      factors: result.data
+    })
+
+  } catch (error) {
+    console.error('MFA list error:', error)
+    return NextResponse.json(
+      { error: 'Failed to list MFA factors' },
+      { status: 500 }
+    )
+  }
+}

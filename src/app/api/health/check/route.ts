@@ -1,0 +1,143 @@
+/**
+ * Manual Health Check Endpoint
+ * Provides immediate health status for debugging and monitoring
+ * Complement to the automated cron health checks
+ */
+
+import { NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+
+interface SystemStatus {
+  status: 'healthy' | 'degraded' | 'down';
+  checks: {
+    database: boolean;
+    auth: boolean;
+    storage: boolean;
+  };
+  metrics: {
+    responseTime: number;
+    timestamp: string;
+    environment: string;
+  };
+  alerts: {
+    activeAlerts: number;
+    criticalAlerts: number;
+  };
+}
+
+export async function GET() {
+  const startTime = Date.now();
+
+  try {
+    const supabase = await createClient();
+
+    // Test database connectivity
+    const { error: dbError } = await supabase
+      .from('user_profiles')
+      .select('count')
+      .limit(1)
+      .single();
+
+    // Test auth service
+    const { error: authError } = await supabase.auth.getSession();
+
+    // Check for active monitoring alerts
+    const { data: alerts } = await supabase
+      .from('monitoring_events')
+      .select('severity')
+      .eq('resolved', false)
+      .gte(
+        'created_at',
+        new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+      );
+
+    const activeAlerts = alerts?.length || 0;
+    const criticalAlerts =
+      alerts?.filter((a) => a.severity === 'error').length || 0;
+
+    const responseTime = Date.now() - startTime;
+
+    const systemStatus: SystemStatus = {
+      status: dbError ? 'down' : criticalAlerts > 0 ? 'degraded' : 'healthy',
+      checks: {
+        database: !dbError,
+        auth: !authError,
+        storage: true, // Assume storage is healthy if DB is healthy
+      },
+      metrics: {
+        responseTime,
+        timestamp: new Date().toISOString(),
+        environment: process.env.NODE_ENV || 'development',
+      },
+      alerts: {
+        activeAlerts,
+        criticalAlerts,
+      },
+    };
+
+    // Return appropriate status code
+    const statusCode =
+      systemStatus.status === 'healthy'
+        ? 200
+        : systemStatus.status === 'degraded'
+          ? 206
+          : 503;
+
+    return NextResponse.json(systemStatus, {
+      status: statusCode,
+      headers: {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        Pragma: 'no-cache',
+        Expires: '0',
+      },
+    });
+  } catch (error) {
+    console.error('Health check failed:', error);
+
+    return NextResponse.json(
+      {
+        status: 'down',
+        checks: {
+          database: false,
+          auth: false,
+          storage: false,
+        },
+        metrics: {
+          responseTime: Date.now() - startTime,
+          timestamp: new Date().toISOString(),
+          environment: process.env.NODE_ENV || 'development',
+        },
+        alerts: {
+          activeAlerts: 0,
+          criticalAlerts: 0,
+        },
+        error: 'System health check failed',
+      },
+      { status: 503 },
+    );
+  }
+}
+
+// Also support HEAD requests for simple uptime checks
+export async function HEAD() {
+  try {
+    const supabase = await createClient();
+    const { error } = await supabase
+      .from('user_profiles')
+      .select('count')
+      .limit(1)
+      .single();
+
+    return new Response(null, {
+      status: error ? 503 : 200,
+      headers: {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+      },
+    });
+  } catch {
+    return new Response(null, { status: 503 });
+  }
+}
+
+export const runtime = 'edge';
+export const maxDuration = 10;

@@ -1,0 +1,386 @@
+{
+  "component_architecture_decision_framework": {
+    "last_updated": "2025-01-20",
+    "framework_purpose": "Systematic component selection and architecture decisions for WedSync wedding industry platform",
+    "decision_hierarchy": {
+      "level_1_platform_architecture": {
+        "react_patterns": {
+          "server_components_default": {
+            "use_for": [
+              "wedding_timeline_displays",
+              "vendor_portfolio_galleries", 
+              "static_content_pages",
+              "seo_critical_pages",
+              "data_fetching_heavy_components"
+            ],
+            "rationale": "Better performance, SEO, reduced JS bundle size",
+            "wedding_context": "Wedding vendor portfolios need fast loading for client presentations"
+          },
+          "client_components_selective": {
+            "use_for": [
+              "drag_drop_interactions",
+              "real_time_chat_systems",
+              "form_with_complex_validation",
+              "interactive_timeline_builders",
+              "photo_upload_components"
+            ],
+            "rationale": "Interactivity required, state management needed",
+            "wedding_context": "Wedding day coordination requires real-time interactions"
+          }
+        },
+        "state_management_pattern": {
+          "zustand_global": {
+            "use_for": [
+              "user_authentication_state",
+              "wedding_timeline_global_state",
+              "vendor_selection_across_pages",
+              "shopping_cart_functionality"
+            ],
+            "rationale": "Lightweight, TypeScript-first, works with SSR",
+            "wedding_context": "Wedding planning state persists across multiple vendor interactions"
+          },
+          "tanstack_query": {
+            "use_for": [
+              "vendor_data_fetching",
+              "wedding_photo_galleries",
+              "client_information_caching",
+              "real_time_availability_updates"
+            ],
+            "rationale": "Excellent caching, offline support, optimistic updates",
+            "wedding_context": "Wedding day requires reliable data sync even with poor venue WiFi"
+          },
+          "react_hook_form": {
+            "use_for": [
+              "vendor_onboarding_forms", 
+              "client_questionnaires",
+              "contract_generation_forms",
+              "booking_request_forms"
+            ],
+            "rationale": "Best performance, minimal re-renders, built-in validation",
+            "wedding_context": "Wedding forms are complex with conditional fields"
+          }
+        }
+      },
+      "level_2_component_selection": {
+        "ui_component_library_decisions": {
+          "untitled_ui": {
+            "primary_use": "Professional business components",
+            "components": [
+              "data_tables_for_vendor_analytics",
+              "professional_form_layouts",
+              "dashboard_navigation",
+              "settings_pages"
+            ],
+            "wedding_rationale": "Wedding vendors need professional, trustworthy interfaces"
+          },
+          "magic_ui": {
+            "primary_use": "Delightful interaction components",
+            "components": [
+              "animated_buttons_for_bookings",
+              "smooth_page_transitions", 
+              "celebration_micro_interactions",
+              "progress_indicators"
+            ],
+            "wedding_rationale": "Wedding industry needs emotional engagement and celebration moments"
+          },
+          "custom_components": {
+            "build_when": [
+              "wedding_specific_workflows",
+              "industry_compliance_requirements",
+              "complex_vendor_interactions",
+              "mobile_wedding_day_interfaces"
+            ],
+            "examples": [
+              "wedding_timeline_builder",
+              "vendor_coordination_dashboard",
+              "guest_seating_arranger",
+              "photo_gallery_organizer"
+            ]
+          }
+        },
+        "form_component_architecture": {
+          "simple_forms": {
+            "technology": "React Hook Form + Zod",
+            "use_cases": [
+              "contact_forms",
+              "basic_vendor_registration",
+              "simple_booking_requests"
+            ],
+            "pattern": "single_component_self_contained"
+          },
+          "complex_forms": {
+            "technology": "React Hook Form + Zod + Multi-step",
+            "use_cases": [
+              "vendor_onboarding_wizard",
+              "wedding_planning_questionnaire", 
+              "contract_generation_forms"
+            ],
+            "pattern": "multi_step_with_progress_state"
+          },
+          "dynamic_forms": {
+            "technology": "React Hook Form + JSON Schema + Form Builder",
+            "use_cases": [
+              "custom_client_questionnaires",
+              "vendor_service_packages",
+              "venue_requirements_forms"
+            ],
+            "pattern": "schema_driven_dynamic_generation"
+          }
+        }
+      },
+      "level_3_interaction_patterns": {
+        "drag_drop_implementation": {
+          "refer_to": "/tech-decisions/drag-drop-decision-matrix.json",
+          "quick_reference": {
+            "simple_reordering": "native_html5_drag",
+            "complex_constraints": "@dnd-kit",
+            "wedding_timeline_building": "@dnd-kit_with_collision_detection"
+          }
+        },
+        "real_time_patterns": {
+          "supabase_realtime": {
+            "use_for": [
+              "vendor_chat_systems",
+              "wedding_day_coordination",
+              "live_photo_sharing",
+              "timeline_updates"
+            ],
+            "implementation": "supabase_channels_with_optimistic_updates",
+            "wedding_context": "Wedding day requires instant communication between all vendors"
+          },
+          "polling_fallback": {
+            "use_for": [
+              "poor_signal_venues",
+              "battery_optimization",
+              "non_critical_updates"
+            ],
+            "pattern": "intelligent_polling_with_backoff"
+          }
+        },
+        "mobile_interaction_patterns": {
+          "thumb_zone_navigation": {
+            "implementation": "bottom_navigation_with_floating_action_button",
+            "critical_for": [
+              "wedding_day_coordinator_apps",
+              "photographer_mobile_workflows",
+              "venue_manager_tablets"
+            ]
+          },
+          "swipe_gestures": {
+            "refer_to": "/wedding-ux-intelligence.json -> swipe_gesture_library",
+            "context_aware": "different_gestures_per_user_role"
+          },
+          "offline_first": {
+            "implementation": "service_worker_with_background_sync",
+            "critical_for": "wedding_venues_with_poor_connectivity"
+          }
+        }
+      },
+      "level_4_performance_architecture": {
+        "image_handling": {
+          "wedding_photos": {
+            "technology": "next/image + supabase_storage + image_optimization",
+            "patterns": [
+              "progressive_loading_for_galleries",
+              "thumbnail_generation_pipeline",
+              "mobile_responsive_srcsets"
+            ],
+            "wedding_context": "Wedding photos are high-res and numerous - optimization critical"
+          },
+          "vendor_portfolios": {
+            "technology": "next/image + cdn + webp_conversion",
+            "patterns": [
+              "lazy_loading_with_intersection_observer",
+              "blur_placeholder_during_load",
+              "responsive_image_sizing"
+            ]
+          }
+        },
+        "code_splitting_strategy": {
+          "route_based": {
+            "automatic": "next_js_app_router_default",
+            "manual_optimization": [
+              "vendor_dashboard_chunks",
+              "admin_interface_chunks", 
+              "client_portal_chunks"
+            ]
+          },
+          "component_based": {
+            "heavy_components": [
+              "photo_editor_lazy_load",
+              "timeline_builder_dynamic_import",
+              "payment_forms_on_demand"
+            ]
+          }
+        },
+        "caching_strategy": {
+          "static_content": {
+            "technology": "next_js_static_generation + cdn",
+            "use_for": [
+              "vendor_portfolio_pages",
+              "service_description_pages",
+              "blog_content"
+            ]
+          },
+          "dynamic_content": {
+            "technology": "tanstack_query + supabase_caching",
+            "use_for": [
+              "wedding_timeline_data",
+              "vendor_availability",
+              "client_information"
+            ]
+          }
+        }
+      }
+    },
+    "wedding_specific_patterns": {
+      "emergency_access_patterns": {
+        "refer_to": "/emergency-quick-access-patterns.tsx",
+        "context": "Wedding day emergency scenarios require instant access to critical functions"
+      },
+      "vendor_workflow_patterns": {
+        "photographer_mobile": {
+          "key_components": [
+            "quick_photo_upload",
+            "timeline_milestone_marker",
+            "client_communication_widget"
+          ],
+          "interaction_pattern": "one_handed_operation_optimized"
+        },
+        "venue_coordinator_tablet": {
+          "key_components": [
+            "vendor_checkin_system",
+            "timeline_drag_drop_editor",
+            "emergency_contact_panel"
+          ],
+          "interaction_pattern": "landscape_optimized_with_large_touch_targets"
+        },
+        "couple_portal": {
+          "key_components": [
+            "vendor_communication_threads",
+            "photo_gallery_viewers",
+            "planning_progress_dashboard"
+          ],
+          "interaction_pattern": "mobile_first_with_desktop_enhancements"
+        }
+      },
+      "trust_building_components": {
+        "professional_presentation": [
+          "high_quality_image_galleries",
+          "smooth_loading_transitions",
+          "consistent_branding_elements"
+        ],
+        "security_visibility": [
+          "payment_security_badges",
+          "gdpr_compliance_indicators", 
+          "ssl_certificate_display"
+        ],
+        "social_proof": [
+          "verified_reviews_display",
+          "portfolio_showcase_carousels",
+          "testimonial_integration"
+        ]
+      }
+    },
+    "decision_templates": {
+      "new_component_evaluation": {
+        "step_1_complexity": "Simple, Moderate, or Complex interaction requirements?",
+        "step_2_mobile": "Will this be used on wedding day mobile devices?",
+        "step_3_real_time": "Does this need real-time updates?",
+        "step_4_performance": "Is this performance critical for user conversion?",
+        "step_5_accessibility": "Do wedding vendors with disabilities need to use this?",
+        "step_6_offline": "Must this work at venues with poor connectivity?",
+        "decision_matrix": "Combine answers to select appropriate technology stack"
+      },
+      "architecture_review_checklist": {
+        "performance": [
+          "First Contentful Paint < 1.2s",
+          "Time to Interactive < 2.5s",
+          "Mobile performance score > 90"
+        ],
+        "accessibility": [
+          "WCAG AA compliance",
+          "Screen reader compatibility", 
+          "Keyboard navigation support"
+        ],
+        "wedding_day_reliability": [
+          "Offline functionality for critical features",
+          "Error boundaries with graceful degradation",
+          "Loading states for all async operations"
+        ],
+        "mobile_optimization": [
+          "Touch targets minimum 48px",
+          "Thumb-zone navigation",
+          "One-handed operation support"
+        ]
+      }
+    },
+    "anti_patterns_to_avoid": {
+      "technology_choices": [
+        "Using client components for static content",
+        "Choosing complex libraries for simple use cases",
+        "Implementing custom solutions for solved problems",
+        "Ignoring mobile-first development"
+      ],
+      "wedding_industry_mistakes": [
+        "Designing for desktop when 60% use mobile",
+        "Complex workflows that break under stress",
+        "Ignoring poor venue WiFi connectivity",
+        "Missing emergency/quick access patterns",
+        "Forgetting wedding day is Saturday (no deployments)"
+      ],
+      "performance_mistakes": [
+        "Loading all photos at once in galleries",
+        "Not optimizing for 3G connections",
+        "Missing loading states on slow operations",
+        "Ignoring bundle size impact on mobile"
+      ]
+    },
+    "governance_enforcement": {
+      "automated_checks": {
+        "refer_to": "/ui-tech-governance-tools.sh",
+        "description": "Automated scanning for anti-patterns and compliance"
+      },
+      "review_requirements": {
+        "new_components": "Must document decision rationale using this framework",
+        "architecture_changes": "Require approval from UI/UX Specialist",
+        "performance_impact": "Lighthouse scores must not regress"
+      },
+      "documentation_standards": {
+        "component_docs": "Include wedding context and user role requirements",
+        "decision_records": "Document why technology was chosen over alternatives",
+        "maintenance_notes": "Include mobile testing requirements and accessibility notes"
+      }
+    }
+  },
+  "implementation_examples": {
+    "wedding_timeline_builder": {
+      "decision_process": [
+        "Complex drag-drop with time constraints → @dnd-kit",
+        "Real-time coordination needed → Supabase realtime",
+        "Mobile coordinator usage → Touch-optimized UI",
+        "Wedding day critical → Offline capability required"
+      ],
+      "technology_stack": {
+        "drag_drop": "@dnd-kit with collision detection",
+        "state": "Zustand + TanStack Query",
+        "real_time": "Supabase channels",
+        "offline": "Service worker with background sync"
+      }
+    },
+    "vendor_photo_gallery": {
+      "decision_process": [
+        "Performance critical for client presentations → Next/Image optimization",
+        "High-resolution wedding photos → Progressive loading",
+        "Mobile viewing common → Responsive images",
+        "SEO important for vendors → Server-side rendering"
+      ],
+      "technology_stack": {
+        "images": "Next/Image + Supabase Storage + WebP",
+        "loading": "Intersection Observer + blur placeholders",
+        "mobile": "Responsive srcsets + lazy loading",
+        "seo": "Server Components for initial render"
+      }
+    }
+  }
+}

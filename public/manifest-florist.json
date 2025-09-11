@@ -1,0 +1,139 @@
+{
+  "name": "WedSync Florist AI",
+  "short_name": "Florist AI",
+  "description": "AI-powered florist tools for wedding professionals",
+  "start_url": "/dashboard/florist/intelligence",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#3b82f6",
+  "orientation": "portrait-primary",
+  "scope": "/dashboard/florist/",
+  "categories": ["business", "productivity", "lifestyle"],
+  "lang": "en",
+  "dir": "ltr",
+  "icons": [
+    {
+      "src": "/icons/florist-72.png",
+      "sizes": "72x72",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/florist-96.png", 
+      "sizes": "96x96",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/florist-128.png",
+      "sizes": "128x128", 
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/florist-144.png",
+      "sizes": "144x144",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/florist-152.png",
+      "sizes": "152x152",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/florist-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/florist-384.png", 
+      "sizes": "384x384",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/florist-512.png",
+      "sizes": "512x512",
+      "type": "image/png", 
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Flower Search",
+      "short_name": "Search",
+      "description": "Search for flowers by color, type, and seasonality",
+      "url": "/dashboard/florist/intelligence?tab=search",
+      "icons": [
+        {
+          "src": "/icons/search-96.png",
+          "sizes": "96x96"
+        }
+      ]
+    },
+    {
+      "name": "Color Palette Generator", 
+      "short_name": "Palette",
+      "description": "Generate color palettes for wedding arrangements",
+      "url": "/dashboard/florist/intelligence?tab=palette",
+      "icons": [
+        {
+          "src": "/icons/palette-96.png",
+          "sizes": "96x96"
+        }
+      ]
+    },
+    {
+      "name": "Arrangement Planner",
+      "short_name": "Arrange", 
+      "description": "Plan and visualize flower arrangements",
+      "url": "/dashboard/florist/intelligence?tab=arrange",
+      "icons": [
+        {
+          "src": "/icons/arrange-96.png",
+          "sizes": "96x96"
+        }
+      ]
+    },
+    {
+      "name": "Sustainability Analyzer",
+      "short_name": "Sustain",
+      "description": "Analyze environmental impact of flower choices",
+      "url": "/dashboard/florist/intelligence?tab=sustain", 
+      "icons": [
+        {
+          "src": "/icons/sustain-96.png",
+          "sizes": "96x96"
+        }
+      ]
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "/screenshots/florist-mobile.png",
+      "sizes": "375x812",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "Florist AI mobile interface"
+    },
+    {
+      "src": "/screenshots/florist-tablet.png", 
+      "sizes": "768x1024",
+      "type": "image/png",
+      "form_factor": "wide",
+      "label": "Florist AI tablet interface"
+    }
+  ],
+  "edge_side_panel": {
+    "preferred_width": 480
+  },
+  "protocol_handlers": [
+    {
+      "protocol": "web+wedsync",
+      "url": "/dashboard/florist/intelligence?data=%s"
+    }
+  ]
+}

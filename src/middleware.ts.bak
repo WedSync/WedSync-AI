@@ -1,0 +1,282 @@
+import { type NextRequest, NextResponse } from 'next/server'
+// SENIOR CODE REVIEWER FIX: Corrected all import paths to match actual file structure
+import { updateSession } from '@/lib/supabase/middleware'
+import { CSRFTokenService } from '@/lib/csrf-token-edge'
+import { rateLimitService } from '@/lib/rate-limiter'
+import { createRateLimitErrorResponse, withRateLimitHeaders } from '@/lib/rate-limiter/headers'
+import { ddosProtection } from '@/lib/security/ddos-protection'
+import { withSecurityHeaders, handleCorsPreflightRequest } from '@/lib/security/security-headers'
+import { inputSanitizationMiddleware } from '@/lib/security/input-sanitization-middleware'
+import { logger } from '@/lib/monitoring/edge-logger'
+import { metrics } from '@/lib/monitoring/metrics'
+import { authMiddleware } from '@/middleware/auth'
+
+export async function middleware(request: NextRequest) {
+  const startTime = Date.now()
+  const path = request.nextUrl.pathname
+  const method = request.method
+
+  // Handle CORS preflight requests
+  if (method === 'OPTIONS') {
+    return withSecurityHeaders(handleCorsPreflightRequest(request), request)
+  }
+
+  // 🛡️ LAYER 1: DDoS Protection (Highest Priority)
+  const ddosResult = await ddosProtection.analyzeRequest(request)
+  if (!ddosResult.allowed) {
+    logger.warn('Request blocked by DDoS protection', {
+      ip: request.headers.get('x-forwarded-for') || 'unknown',
+      path,
+      reason: ddosResult.reason,
+      attackVectors: ddosResult.attackVectors?.map(v => v.type)
+    })
+
+    return withSecurityHeaders(
+      new NextResponse(
+        JSON.stringify({
+          error: 'Request blocked',
+          message: ddosResult.reason || 'Security policy violation',
+          retryAfter: ddosResult.mitigation?.duration
+        }),
+        {
+          status: 429,
+          headers: { 'Content-Type': 'application/json' }
+        }
+      ),
+      request
+    )
+  }
+
+  // 🛡️ LAYER 2: Multi-Tier Rate Limiting (Redis-based with sliding window)
+  const rateLimitResult = await rateLimitService.checkRateLimit(request)
+
+  if (!rateLimitResult.allowed) {
+    logger.warn('Request rate limited by multi-tier system', {
+      ip: request.headers.get('x-forwarded-for') || 'unknown',
+      path,
+      appliedTier: rateLimitResult.appliedTier,
+      tier: rateLimitResult.tier,
+      remaining: rateLimitResult.remaining,
+      limit: rateLimitResult.limit,
+      retryAfter: rateLimitResult.retryAfter,
+      bypassReason: rateLimitResult.bypassReason
+    })
+
+    return withSecurityHeaders(
+      createRateLimitErrorResponse(rateLimitResult, {
+        enhanced: true,
+        customMessage: `Rate limit exceeded for ${rateLimitResult.appliedTier} tier. ${rateLimitResult.retryAfter ? `Retry after ${rateLimitResult.retryAfter} seconds.` : 'Please try again later.'}`
+      }),
+      request
+    )
+  }
+
+  // 🛡️ LAYER 3: XSS Protection & Input Sanitization
+  const sanitizationResult = await inputSanitizationMiddleware.handle(request)
+  if (sanitizationResult) {
+    // Input sanitization triggered a response (redirect or error)
+    logger.info('Input sanitization action', {
+      ip: request.headers.get('x-forwarded-for') || 'unknown',
+      path,
+      action: sanitizationResult.status === 302 ? 'redirect' : 'blocked'
+    })
+    return withSecurityHeaders(sanitizationResult, request)
+  }
+
+  // 🛡️ LAYER 4: Authentication & Session Management
+  const response = await updateSession(request)
+
+  // Protected routes that require authentication
+  const protectedRoutes = [
+    '/dashboard',
+    '/clients',
+    '/vendors',
+    '/communications',
+    '/forms',
+    '/settings',
+    '/billing',
+  ]
+
+  // API routes that require authentication (except webhooks)
+  const protectedApiRoutes = [
+    '/api/clients',
+    '/api/suppliers',
+    '/api/vendor-categories',
+    '/api/communications',
+    '/api/stripe/create-checkout-session',
+    '/api/auth/mfa',
+    '/api/payments',
+    '/api/contracts',
+    '/api/vendor-payments',
+    '/api/api-keys',
+    '/api/billing',
+    '/api/team/permissions',
+  ]
+
+  // Public API routes that bypass authentication
+  const publicApiRoutes = [
+    '/api/stripe/webhook',
+    '/api/health',
+  ]
+
+  // CSRF protected endpoints (state-changing operations)
+  const csrfProtectedPaths = [
+    '/api/stripe',
+    '/api/forms',
+    '/api/clients',
+    '/api/suppliers',
+    '/api/communications',
+    '/api/pdf',
+    '/api/auth/mfa',
+    '/api/payments',
+    '/api/contracts',
+    '/api/vendor-payments',
+    '/api/api-keys',
+    '/api/billing',
+  ]
+
+  // CSRF exempt paths (webhooks, auth callbacks, GET requests)
+  const csrfExemptPaths = [
+    '/api/stripe/webhook',
+    '/api/auth/callback',
+    '/api/csrf-token',
+    '/api/health',
+  ]
+
+  // Check if the current path needs protection
+  const isProtectedRoute = protectedRoutes.some((route) =>
+    path.startsWith(route)
+  )
+  const isProtectedApiRoute = protectedApiRoutes.some((route) =>
+    path.startsWith(route)
+  )
+  const isPublicApiRoute = publicApiRoutes.some((route) =>
+    path.startsWith(route)
+  )
+
+  // Skip auth check for public API routes
+  if (isPublicApiRoute) {
+    return response
+  }
+
+  // CSRF Protection for state-changing requests
+  const needsCSRFProtection = csrfProtectedPaths.some((route) => path.startsWith(route)) &&
+                              !csrfExemptPaths.some((route) => path.startsWith(route)) &&
+                              !['GET', 'HEAD', 'OPTIONS'].includes(request.method)
+
+  if (needsCSRFProtection) {
+    const isValid = await CSRFTokenService.validateRequestToken(request)
+    if (!isValid) {
+      return CSRFTokenService.createErrorResponse('invalid')
+    }
+  }
+
+  // Check authentication for protected routes
+  if (isProtectedRoute || isProtectedApiRoute) {
+    const url = new URL(request.url)
+
+    // Enhanced authentication with MFA support
+    const authResult = await authMiddleware.processAuth(request)
+
+    if (!authResult.authenticated) {
+      if (isProtectedApiRoute) {
+        return NextResponse.json(
+          {
+            error: 'Authentication required',
+            sessionExpired: authResult.sessionExpired
+          },
+          { status: 401 }
+        )
+      }
+
+      // For web routes, redirect to login
+      const redirectUrl = new URL('/login', request.url)
+      redirectUrl.searchParams.set('redirect', path)
+      if (authResult.sessionExpired) {
+        redirectUrl.searchParams.set('reason', 'session_expired')
+      }
+      return NextResponse.redirect(redirectUrl)
+    }
+
+    // Check if MFA is required but not satisfied
+    if (authResult.requiresMFA && authResult.response) {
+      return authResult.response
+    }
+  }
+
+  // 🛡️ LAYER 5: Apply Comprehensive Security Headers
+  const res = response || NextResponse.next()
+
+  // Generate CSRF token for GET requests to protected areas
+  if (request.method === 'GET' &&
+      (protectedRoutes.some(route => path.startsWith(route)) ||
+       path.startsWith('/api/csrf-token'))) {
+    const tokenData = await CSRFTokenService.generateToken();
+    CSRFTokenService.setTokenCookie(res, tokenData);
+  }
+
+  // Add comprehensive rate limit headers to successful responses
+  if (rateLimitResult.allowed) {
+    // Apply enhanced multi-tier rate limit headers
+    withRateLimitHeaders(res, rateLimitResult, {
+      enhanced: true,
+      debug: process.env.NODE_ENV === 'development'
+    })
+  }
+
+  // Add request tracking headers
+  const requestId = crypto.randomUUID()
+  res.headers.set('X-Request-ID', requestId)
+  res.headers.set('X-Response-Time', (Date.now() - startTime).toString())
+
+  // 📊 Record Metrics
+  metrics.incrementCounter('middleware.requests', 1, {
+    method,
+    path: path.split('/').slice(0, 3).join('/'), // Anonymize deep paths
+    status: res.status?.toString() || '200',
+    blocked: (!ddosResult.allowed || !rateLimitResult.allowed).toString()
+  })
+
+  metrics.recordHistogram('middleware.duration', Date.now() - startTime, {
+    path_pattern: path.startsWith('/api/') ? 'api' : 'web'
+  })
+
+  // 🛡️ Apply Production Security Headers with XSS Protection
+  const secureResponse = withSecurityHeaders(res, request)
+
+  // Log security events for monitoring
+  if (ddosResult.attackVectors && ddosResult.attackVectors.length > 0) {
+    logger.info('Security analysis completed', {
+      requestId,
+      ip: request.headers.get('x-forwarded-for') || 'unknown',
+      path,
+      method,
+      userAgent: request.headers.get('user-agent'),
+      attackVectors: ddosResult.attackVectors.map(v => ({ type: v.type, severity: v.severity })),
+      rateLimitStatus: {
+        allowed: rateLimitResult.allowed,
+        appliedTier: rateLimitResult.appliedTier,
+        remaining: rateLimitResult.remaining,
+        limit: rateLimitResult.limit,
+        bypassReason: rateLimitResult.bypassReason
+      },
+      processingTime: Date.now() - startTime
+    })
+  }
+
+  return secureResponse
+}
+
+export const config = {
+  matcher: [
+    /*
+     * Match all request paths except:
+     * - _next/static (static files)
+     * - _next/image (image optimization files)
+     * - favicon.ico (favicon file)
+     * - images - .svg, .png, .jpg, .jpeg, .gif, .webp
+     * - public files
+     */
+    '/((?!_next/static|_next/image|favicon.ico|public|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+  ],
+}

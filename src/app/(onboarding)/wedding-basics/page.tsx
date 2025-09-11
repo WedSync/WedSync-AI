@@ -1,0 +1,368 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import { createClientSupabaseClient } from '@/lib/supabase/client';
+import { WeddingBasicsForm } from '@/components/onboarding/WeddingBasicsForm';
+import { useWeddingBasicsStore } from '@/lib/stores/weddingBasicsStore';
+import {
+  WeddingBasicsRequest,
+  WeddingBasicsResponse,
+} from '@/lib/validations/wedding-basics';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
+import { Progress } from '@/components/ui/progress';
+import { Button } from '@/components/ui/button';
+import {
+  ArrowLeft,
+  Heart,
+  MapPin,
+  Users,
+  Palette,
+  CheckCircle2,
+  AlertCircle,
+  Loader2,
+} from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+
+// Wedding Basics Setup Engine - Team B Implementation
+export default function WeddingBasicsPage() {
+  const router = useRouter();
+  const {
+    loadWeddingBasics,
+    saveWeddingBasics,
+    saveDraft,
+    isLoading,
+    data,
+    error: storeError,
+  } = useWeddingBasicsStore();
+
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitSuccess, setSubmitSuccess] = useState(false);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [user, setUser] = useState<any>(null);
+
+  // Check authentication and load existing data
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const supabase = createClientSupabaseClient();
+        const {
+          data: { user },
+          error,
+        } = await supabase.auth.getUser();
+
+        if (error || !user) {
+          router.push('/login?redirect=/onboarding/wedding-basics');
+          return;
+        }
+
+        setUser(user);
+        await loadWeddingBasics();
+      } catch (error) {
+        console.error('Auth check failed:', error);
+        router.push('/login?redirect=/onboarding/wedding-basics');
+      } finally {
+        setAuthLoading(false);
+      }
+    };
+
+    checkAuth();
+  }, [loadWeddingBasics, router]);
+
+  // Handle form submission
+  const handleSubmit = async (formData: WeddingBasicsRequest) => {
+    setIsSubmitting(true);
+    setSubmitError(null);
+    setSubmitSuccess(false);
+
+    try {
+      const result = await saveWeddingBasics(formData);
+
+      if (result.success) {
+        setSubmitSuccess(true);
+
+        // Navigate to next step after a short delay
+        setTimeout(() => {
+          router.push(`/onboarding/${result.nextStep || 'wedding-party'}`);
+        }, 1500);
+      } else {
+        setSubmitError(result.message || 'Failed to save wedding basics');
+      }
+    } catch (error) {
+      console.error('Failed to save wedding basics:', error);
+      setSubmitError(
+        error instanceof Error ? error.message : 'An unexpected error occurred',
+      );
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // Handle draft saving (auto-save)
+  const handleSaveDraft = async (draftData: Partial<WeddingBasicsRequest>) => {
+    try {
+      await saveDraft(draftData);
+    } catch (error) {
+      console.error('Failed to save draft:', error);
+      // Don't show error to user for auto-save failures
+    }
+  };
+
+  // Loading state
+  if (authLoading || isLoading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center space-y-4">
+          <Loader2 className="w-8 h-8 animate-spin mx-auto text-blue-600" />
+          <p className="text-gray-600">Loading your wedding details...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Progress calculation
+  const completionStatus = data?.completionStatus || {
+    weddingDate: false,
+    venue: false,
+    guestCount: false,
+    style: false,
+    overallProgress: 0,
+  };
+
+  const progressSteps = [
+    {
+      key: 'weddingDate',
+      label: 'Wedding Date',
+      icon: Heart,
+      completed: completionStatus.weddingDate,
+    },
+    {
+      key: 'venue',
+      label: 'Venues',
+      icon: MapPin,
+      completed: completionStatus.venue,
+    },
+    {
+      key: 'guestCount',
+      label: 'Guest Count',
+      icon: Users,
+      completed: completionStatus.guestCount,
+    },
+    {
+      key: 'style',
+      label: 'Wedding Style',
+      icon: Palette,
+      completed: completionStatus.style,
+    },
+  ];
+
+  return (
+    <div className="min-h-screen bg-gray-50">
+      {/* Header */}
+      <div className="bg-white shadow-sm border-b">
+        <div className="max-w-4xl mx-auto px-4 py-6">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-4">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => router.push('/onboarding')}
+                className="text-gray-600 hover:text-gray-900"
+              >
+                <ArrowLeft className="w-4 h-4 mr-2" />
+                Back
+              </Button>
+              <div>
+                <h1 className="text-3xl font-bold text-gray-900">
+                  Let's Start with the Basics
+                </h1>
+                <p className="text-lg text-gray-600 mt-1">
+                  Tell us about your wedding so we can personalize your
+                  experience
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Progress Bar */}
+          <div className="mt-6">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm font-medium text-gray-700">
+                Step 1 of 3: Wedding Basics
+              </span>
+              <span className="text-sm text-gray-500">
+                {completionStatus.overallProgress}% complete
+              </span>
+            </div>
+            <Progress
+              value={completionStatus.overallProgress}
+              className="w-full h-2"
+            />
+
+            {/* Progress Steps */}
+            <div className="flex justify-between mt-4">
+              {progressSteps.map((step, index) => {
+                const Icon = step.icon;
+                return (
+                  <div
+                    key={step.key}
+                    className={`flex items-center space-x-2 text-sm ${
+                      step.completed ? 'text-green-600' : 'text-gray-400'
+                    }`}
+                  >
+                    {step.completed ? (
+                      <CheckCircle2 className="w-4 h-4" />
+                    ) : (
+                      <Icon className="w-4 h-4" />
+                    )}
+                    <span>{step.label}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Main Content */}
+      <div className="max-w-4xl mx-auto px-4 py-8">
+        {/* Success Message */}
+        {submitSuccess && (
+          <Alert className="mb-6 border-green-200 bg-green-50">
+            <CheckCircle2 className="w-4 h-4 text-green-600" />
+            <AlertDescription className="text-green-800">
+              Wedding basics saved successfully! Redirecting to next step...
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {/* Error Messages */}
+        {(submitError || storeError) && (
+          <Alert className="mb-6 border-red-200 bg-red-50">
+            <AlertCircle className="w-4 h-4 text-red-600" />
+            <AlertDescription className="text-red-800">
+              {submitError || storeError}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {/* Information Card */}
+        <Card className="mb-8">
+          <CardHeader>
+            <CardTitle className="flex items-center">
+              <Heart className="w-5 h-5 mr-2 text-pink-500" />
+              Why We Need This Information
+            </CardTitle>
+            <CardDescription>
+              These basic details help us personalize your wedding planning
+              experience
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid md:grid-cols-2 gap-6">
+              <div className="space-y-3">
+                <div className="flex items-start space-x-3">
+                  <Heart className="w-4 h-4 mt-1 text-pink-500" />
+                  <div>
+                    <p className="font-medium text-gray-900">Wedding Date</p>
+                    <p className="text-sm text-gray-600">
+                      Helps us create your timeline and show relevant vendors
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-start space-x-3">
+                  <MapPin className="w-4 h-4 mt-1 text-blue-500" />
+                  <div>
+                    <p className="font-medium text-gray-900">Venues</p>
+                    <p className="text-sm text-gray-600">
+                      Finds nearby vendors and calculates travel times
+                    </p>
+                  </div>
+                </div>
+              </div>
+              <div className="space-y-3">
+                <div className="flex items-start space-x-3">
+                  <Users className="w-4 h-4 mt-1 text-green-500" />
+                  <div>
+                    <p className="font-medium text-gray-900">Guest Count</p>
+                    <p className="text-sm text-gray-600">
+                      Matches you with appropriately sized vendors and venues
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-start space-x-3">
+                  <Palette className="w-4 h-4 mt-1 text-purple-500" />
+                  <div>
+                    <p className="font-medium text-gray-900">Wedding Style</p>
+                    <p className="text-sm text-gray-600">
+                      Recommends vendors who specialize in your style
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Main Form */}
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <CardTitle>Wedding Basics</CardTitle>
+              {completionStatus.overallProgress > 0 && (
+                <Badge variant="secondary">
+                  {completionStatus.overallProgress}% Complete
+                </Badge>
+              )}
+            </div>
+            <CardDescription>
+              Fill in your wedding details below. You can save and continue
+              later at any time.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <WeddingBasicsForm
+              initialData={data}
+              onSubmit={handleSubmit}
+              onSaveDraft={handleSaveDraft}
+              isSubmitting={isSubmitting}
+              disabled={authLoading || isLoading}
+            />
+          </CardContent>
+        </Card>
+
+        {/* Help Section */}
+        <div className="mt-8 text-center">
+          <p className="text-sm text-gray-500 mb-2">
+            Need help? Our wedding planning experts are here for you
+          </p>
+          <Button variant="outline" size="sm">
+            Get Help with Wedding Basics
+          </Button>
+        </div>
+      </div>
+
+      {/* Footer */}
+      <div className="mt-16 border-t bg-white">
+        <div className="max-w-4xl mx-auto px-4 py-6">
+          <div className="flex items-center justify-between text-sm text-gray-500">
+            <p>© 2025 WedSync. Secure & confidential wedding planning.</p>
+            <div className="flex items-center space-x-4">
+              <span>🔒 Your data is encrypted & secure</span>
+              <span>•</span>
+              <span>💾 Auto-saves every 30 seconds</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

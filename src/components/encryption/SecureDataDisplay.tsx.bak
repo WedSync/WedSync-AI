@@ -1,0 +1,401 @@
+'use client';
+
+/**
+ * WS-175 Advanced Data Encryption - Team A Round 1
+ * SecureDataDisplay Component
+ * 
+ * Component that handles encrypted field display with secure toggle functionality.
+ * Provides safe display of sensitive wedding data with encryption status indicators.
+ */
+
+import React, { useState, useMemo } from 'react';
+import { cn } from '@/lib/utils';
+import { Card } from '@/components/untitled-ui/card';
+import { Button } from '@/components/untitled-ui/button';
+import { Input } from '@/components/untitled-ui/input';
+import { Badge } from '@/components/untitled-ui/badge';
+import { 
+  Eye, 
+  EyeOff, 
+  Lock, 
+  Unlock, 
+  Shield, 
+  ShieldCheck,
+  ShieldAlert,
+  Copy,
+  CheckCircle2,
+  AlertTriangle,
+  Loader2,
+  Edit3,
+  Save,
+  X,
+  Zap
+} from 'lucide-react';
+import { 
+  SecureDataDisplayProps,
+  FieldType,
+  EncryptionResult
+} from '@/types/encryption';
+import { EncryptionStatusIndicator } from './EncryptionStatusIndicator';
+
+export function SecureDataDisplay<T = any>({
+  encryptedData,
+  plainData,
+  fieldName,
+  fieldType,
+  onEncrypt,
+  onDecrypt,
+  showEncryptionStatus = true,
+  allowToggle = false,
+  readOnly = false,
+  redactSensitive = true,
+  maskPattern = '••••',
+  className,
+  loading = false,
+  error
+}: SecureDataDisplayProps<T>) {
+
+  const [isDecrypted, setIsDecrypted] = useState(!!plainData);
+  const [isToggling, setIsToggling] = useState(false);
+  const [showPlainText, setShowPlainText] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editValue, setEditValue] = useState('');
+  const [isCopied, setIsCopied] = useState(false);
+  const [currentData, setCurrentData] = useState<T | null>(plainData || null);
+
+  // Determine current encryption status
+  const encryptionStatus = useMemo(() => {
+    if (loading || isToggling) return 'loading';
+    if (error) return 'error';
+    if (isDecrypted && currentData !== null) return 'decrypted';
+    if (encryptedData) return 'encrypted';
+    return 'pending';
+  }, [loading, isToggling, error, isDecrypted, currentData, encryptedData]);
+
+  // Field-specific configuration
+  const fieldConfig = useMemo(() => {
+    const configs = {
+      email: {
+        label: 'Email Address',
+        icon: '✉️',
+        maskPattern: 'user@••••••.com',
+        sensitive: true,
+        placeholder: 'user@example.com'
+      },
+      phone: {
+        label: 'Phone Number',
+        icon: '📱',
+        maskPattern: '+1 (•••) •••-••••',
+        sensitive: true,
+        placeholder: '+1 (555) 123-4567'
+      },
+      notes: {
+        label: 'Private Notes',
+        icon: '📝',
+        maskPattern: 'Private notes hidden ••••••',
+        sensitive: true,
+        placeholder: 'Enter private notes...'
+      },
+      address: {
+        label: 'Address',
+        icon: '📍',
+        maskPattern: '•••• Street, City ••••••',
+        sensitive: true,
+        placeholder: '123 Main St, City, State'
+      },
+      dietary_requirements: {
+        label: 'Dietary Requirements',
+        icon: '🍽️',
+        maskPattern: 'Dietary info hidden ••••••',
+        sensitive: false,
+        placeholder: 'Vegetarian, No nuts, etc.'
+      },
+      contact_info: {
+        label: 'Contact Information',
+        icon: '📞',
+        maskPattern: 'Contact details hidden ••••••',
+        sensitive: true,
+        placeholder: 'Emergency contact details'
+      },
+      personal_details: {
+        label: 'Personal Details',
+        icon: '👤',
+        maskPattern: 'Personal information hidden ••••••',
+        sensitive: true,
+        placeholder: 'Personal information'
+      }
+    };
+
+    return configs[fieldType] || {
+      label: fieldName,
+      icon: '🔒',
+      maskPattern: maskPattern,
+      sensitive: true,
+      placeholder: 'Secure data'
+    };
+  }, [fieldType, fieldName, maskPattern]);
+
+  // Get display value based on current state
+  const displayValue = useMemo(() => {
+    if (loading || isToggling) return '';
+    if (error) return 'Error loading data';
+    
+    if (isDecrypted && currentData !== null) {
+      if (showPlainText || !fieldConfig.sensitive) {
+        return typeof currentData === 'string' ? currentData : JSON.stringify(currentData);
+      } else if (redactSensitive) {
+        return fieldConfig.maskPattern;
+      }
+    }
+    
+    if (encryptedData) {
+      return `🔒 Encrypted ${fieldConfig.label}`;
+    }
+    
+    return 'No data';
+  }, [loading, isToggling, error, isDecrypted, currentData, showPlainText, fieldConfig, redactSensitive, encryptedData]);
+
+  // Handle encryption toggle
+  const handleToggleEncryption = async () => {
+    if (isToggling || readOnly) return;
+
+    setIsToggling(true);
+    try {
+      if (isDecrypted && currentData !== null) {
+        // Encrypt the data
+        if (onEncrypt) {
+          const encrypted = await onEncrypt(currentData);
+          setIsDecrypted(false);
+          setCurrentData(null);
+          setShowPlainText(false);
+        }
+      } else if (encryptedData) {
+        // Decrypt the data
+        if (onDecrypt) {
+          const decrypted = await onDecrypt(encryptedData);
+          setCurrentData(decrypted);
+          setIsDecrypted(true);
+        }
+      }
+    } catch (err) {
+      console.error('Toggle encryption failed:', err);
+      // Error would be handled by parent component
+    } finally {
+      setIsToggling(false);
+    }
+  };
+
+  // Handle visibility toggle
+  const handleToggleVisibility = () => {
+    if (!isDecrypted || !fieldConfig.sensitive) return;
+    setShowPlainText(!showPlainText);
+  };
+
+  // Handle copy to clipboard
+  const handleCopy = async () => {
+    if (!isDecrypted || !currentData || !showPlainText) return;
+    
+    try {
+      const textToCopy = typeof currentData === 'string' ? currentData : JSON.stringify(currentData);
+      await navigator.clipboard.writeText(textToCopy);
+      setIsCopied(true);
+      setTimeout(() => setIsCopied(false), 2000);
+    } catch (err) {
+      console.error('Copy failed:', err);
+    }
+  };
+
+  // Handle edit mode
+  const handleStartEdit = () => {
+    if (readOnly || !isDecrypted || !currentData) return;
+    setIsEditing(true);
+    setEditValue(typeof currentData === 'string' ? currentData : JSON.stringify(currentData));
+  };
+
+  const handleSaveEdit = () => {
+    setCurrentData(editValue as T);
+    setIsEditing(false);
+  };
+
+  const handleCancelEdit = () => {
+    setIsEditing(false);
+    setEditValue('');
+  };
+
+  // Get encryption level based on data state
+  const encryptionLevel = useMemo(() => {
+    if (!encryptedData && !isDecrypted) return 'none';
+    if (encryptedData?.algorithm === 'aes-256-gcm') return 'maximum';
+    if (encryptedData?.algorithm === 'aes-256-cbc') return 'high';
+    return 'standard';
+  }, [encryptedData, isDecrypted]);
+
+  return (
+    <Card className={cn('p-4', className)}>
+      {/* Header with field info and status */}
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <span className="text-lg">{fieldConfig.icon}</span>
+          <div>
+            <h3 className="font-medium text-sm">{fieldConfig.label}</h3>
+            {fieldName && fieldName !== fieldConfig.label && (
+              <p className="text-xs text-gray-500">({fieldName})</p>
+            )}
+          </div>
+        </div>
+
+        {showEncryptionStatus && (
+          <EncryptionStatusIndicator
+            status={encryptionStatus}
+            level={encryptionLevel}
+            size="sm"
+            variant="badge"
+          />
+        )}
+      </div>
+
+      {/* Error Display */}
+      {error && (
+        <div className="mb-3 p-2 bg-red-50 border border-red-200 rounded text-red-700 text-sm flex items-center gap-2">
+          <AlertTriangle className="h-4 w-4" />
+          {error}
+        </div>
+      )}
+
+      {/* Data Display/Edit Area */}
+      <div className="space-y-3">
+        {isEditing ? (
+          <div className="space-y-2">
+            <Input
+              value={editValue}
+              onChange={(e) => setEditValue(e.target.value)}
+              placeholder={fieldConfig.placeholder}
+              className="font-mono text-sm"
+            />
+            <div className="flex gap-2">
+              <Button size="sm" onClick={handleSaveEdit} className="flex items-center gap-1">
+                <Save className="h-3 w-3" />
+                Save
+              </Button>
+              <Button size="sm" variant="outline" onClick={handleCancelEdit} className="flex items-center gap-1">
+                <X className="h-3 w-3" />
+                Cancel
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="relative">
+            <div className={cn(
+              'p-3 bg-gray-50 rounded border text-sm font-mono min-h-[2.5rem] flex items-center',
+              loading && 'animate-pulse',
+              error && 'bg-red-50 border-red-200 text-red-700'
+            )}>
+              {loading || isToggling ? (
+                <div className="flex items-center gap-2 text-gray-500">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  {isToggling ? 'Processing...' : 'Loading...'}
+                </div>
+              ) : (
+                <span className={cn(
+                  displayValue.includes('••••') && 'text-gray-600 select-none',
+                  displayValue.startsWith('🔒') && 'text-blue-600'
+                )}>
+                  {displayValue}
+                </span>
+              )}
+            </div>
+
+            {/* Action Buttons */}
+            {!loading && !error && (
+              <div className="flex items-center gap-1 mt-2">
+                {allowToggle && (onEncrypt || onDecrypt) && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleToggleEncryption}
+                    disabled={isToggling}
+                    className="flex items-center gap-1"
+                  >
+                    {isToggling ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : isDecrypted ? (
+                      <Lock className="h-3 w-3" />
+                    ) : (
+                      <Unlock className="h-3 w-3" />
+                    )}
+                    {isDecrypted ? 'Encrypt' : 'Decrypt'}
+                  </Button>
+                )}
+
+                {isDecrypted && fieldConfig.sensitive && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleToggleVisibility}
+                    className="flex items-center gap-1"
+                  >
+                    {showPlainText ? (
+                      <EyeOff className="h-3 w-3" />
+                    ) : (
+                      <Eye className="h-3 w-3" />
+                    )}
+                    {showPlainText ? 'Hide' : 'Show'}
+                  </Button>
+                )}
+
+                {isDecrypted && showPlainText && currentData && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleCopy}
+                    className="flex items-center gap-1"
+                  >
+                    {isCopied ? (
+                      <CheckCircle2 className="h-3 w-3 text-green-600" />
+                    ) : (
+                      <Copy className="h-3 w-3" />
+                    )}
+                    {isCopied ? 'Copied' : 'Copy'}
+                  </Button>
+                )}
+
+                {isDecrypted && !readOnly && currentData && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleStartEdit}
+                    className="flex items-center gap-1"
+                  >
+                    <Edit3 className="h-3 w-3" />
+                    Edit
+                  </Button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Metadata */}
+      {encryptedData && showEncryptionStatus && (
+        <div className="mt-3 pt-3 border-t text-xs text-gray-500 space-y-1">
+          <div className="flex items-center gap-4">
+            <span>Algorithm: {encryptedData.algorithm}</span>
+            <span>Key ID: {encryptedData.keyId.slice(0, 8)}...</span>
+            {encryptedData.version && (
+              <span>Version: {encryptedData.version}</span>
+            )}
+          </div>
+          {encryptedData.authTag && (
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="h-3 w-3 text-green-600" />
+              <span>Authenticated encryption verified</span>
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+export default SecureDataDisplay;

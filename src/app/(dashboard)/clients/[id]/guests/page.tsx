@@ -1,0 +1,113 @@
+import { Suspense } from 'react';
+import { createClient } from '@/lib/supabase/server';
+import { notFound, redirect } from 'next/navigation';
+import { GuestListManager } from '@/components/guests/GuestListManager';
+import { GuestAnalyticsDashboard } from '@/components/guests/GuestAnalyticsDashboard';
+import { GuestListLoadingSkeleton } from '@/components/guests/GuestListLoadingSkeleton';
+import { extractSearchParams } from '@/types/next15-params';
+
+interface GuestListPageProps {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{
+    view?: 'table' | 'cards' | 'households';
+    search?: string;
+    category?: string;
+    rsvp_status?: string;
+    page?: string;
+    limit?: string;
+  }>;
+}
+
+export default async function GuestListPage({
+  params,
+  searchParams,
+}: GuestListPageProps) {
+  const { id } = await params;
+  const supabase = await createClient();
+  const { data: user } = await supabase.auth.getUser();
+
+  if (!user) {
+    redirect('/login');
+  }
+
+  // Get user's organization
+  const { data: profile } = await supabase
+    .from('user_profiles')
+    .select('organization_id')
+    .eq('user_id', user.id)
+    .single();
+
+  if (!profile?.organization_id) {
+    redirect('/dashboard');
+  }
+
+  // Verify client exists and belongs to user's organization
+  const { data: client, error: clientError } = await supabase
+    .from('clients')
+    .select('id, first_name, last_name, partner_first_name, partner_last_name')
+    .eq('id', id)
+    .eq('organization_id', profile.organization_id)
+    .single();
+
+  if (clientError || !client) {
+    notFound();
+  }
+
+  const resolvedSearchParams = await extractSearchParams(searchParams);
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight text-gray-900 dark:text-white">
+            Guest List
+          </h1>
+          <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+            Manage guests for {client.first_name} {client.last_name}
+            {client.partner_first_name &&
+              ` & ${client.partner_first_name} ${client.partner_last_name}`}
+          </p>
+        </div>
+      </div>
+
+      {/* Analytics Dashboard */}
+      <Suspense
+        fallback={<div className="h-32 bg-gray-50 rounded-lg animate-pulse" />}
+      >
+        <GuestAnalyticsDashboard coupleId={id} />
+      </Suspense>
+
+      {/* Main Guest List */}
+      <Suspense fallback={<GuestListLoadingSkeleton />}>
+        <GuestListManager
+          coupleId={id}
+          initialParams={resolvedSearchParams}
+          clientName={`${client.first_name} ${client.last_name}`}
+        />
+      </Suspense>
+    </div>
+  );
+}
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  const { id } = await params;
+  const supabase = await createClient();
+  const { data: client } = await supabase
+    .from('clients')
+    .select('first_name, last_name')
+    .eq('id', id)
+    .single();
+
+  return {
+    title: client
+      ? `Guest List - ${client.first_name} ${client.last_name} | WedSync`
+      : 'Guest List | WedSync',
+    description:
+      'Manage wedding guests, track RSVPs, and organize seating arrangements.',
+  };
+}

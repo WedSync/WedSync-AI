@@ -1,0 +1,337 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+
+// Validation schema for verification submission
+const verificationSchema = z.object({
+  documents: z.array(
+    z.object({
+      type: z.enum([
+        'insurance',
+        'license',
+        'certification',
+        'registration',
+        'other',
+      ]),
+      name: z.string(),
+      file_url: z.string().url(),
+      expiry_date: z.string().optional(),
+    }),
+  ),
+  business_verification: z.object({
+    company_house_number: z.string().optional(),
+    vat_registration: z.string().optional(),
+    trading_address: z.object({
+      street: z.string(),
+      city: z.string(),
+      postcode: z.string(),
+      country: z.string(),
+    }),
+    contact_verification: z.object({
+      phone: z.string(),
+      email: z.string().email(),
+      website: z.string().url().optional(),
+    }),
+  }),
+  additional_info: z.string().optional(),
+});
+
+// Admin verification decision schema
+const adminVerificationSchema = z.object({
+  decision: z.enum(['approve', 'reject']),
+  notes: z.string(),
+  trust_score: z.number().min(0).max(100).optional(),
+  badges: z.array(z.string()).default([]),
+});
+
+export async function POST(
+  request: NextRequest,
+  { params }: { params: { id: string } },
+) {
+  try {
+    const supabase = await createClient();
+    const profileId = params.id;
+
+    // Check authentication
+    const { data: user } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get user profile
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('id, organization_id, role')
+      .eq('id', user.id)
+      .single();
+
+    if (!userProfile?.organization_id) {
+      return NextResponse.json(
+        { error: 'No organization found' },
+        { status: 400 },
+      );
+    }
+
+    // Check if profile exists and belongs to user's organization
+    const { data: profile } = await supabase
+      .from('directory_supplier_profiles')
+      .select('id, organization_id, verification_status')
+      .eq('id', profileId)
+      .single();
+
+    if (!profile) {
+      return NextResponse.json({ error: 'Profile not found' }, { status: 404 });
+    }
+
+    if (profile.organization_id !== userProfile.organization_id) {
+      return NextResponse.json(
+        { error: 'Unauthorized to submit verification' },
+        { status: 403 },
+      );
+    }
+
+    if (profile.verification_status === 'pending') {
+      return NextResponse.json(
+        { error: 'Verification already pending review' },
+        { status: 409 },
+      );
+    }
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validatedData = verificationSchema.parse(body);
+
+    // Store verification documents
+    const documentPromises = validatedData.documents.map((doc) =>
+      supabase.from('directory_supplier_documents').insert({
+        supplier_profile_id: profileId,
+        document_type: doc.type,
+        document_name: doc.name,
+        file_url: doc.file_url,
+        expiry_date: doc.expiry_date || null,
+        verification_status: 'pending',
+        is_public: false,
+      }),
+    );
+
+    await Promise.all(documentPromises);
+
+    // Update profile with verification submission
+    const { data: updatedProfile, error: updateError } = await supabase
+      .from('directory_supplier_profiles')
+      .update({
+        verification_status: 'pending',
+        verification_documents: validatedData,
+        verification_submitted_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', profileId)
+      .select()
+      .single();
+
+    if (updateError) {
+      console.error('Error updating verification status:', updateError);
+      throw updateError;
+    }
+
+    // Send notification to admin team (placeholder - would integrate with notification system)
+    // await sendAdminNotification('verification_submitted', { profileId, supplierName: profile.business_name })
+
+    return NextResponse.json({
+      success: true,
+      profile: updatedProfile,
+      message:
+        'Verification submitted successfully. Our team will review within 3-5 business days.',
+    });
+  } catch (error) {
+    console.error('Error submitting verification:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Validation error', details: error.errors },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Failed to submit verification' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function PUT(
+  request: NextRequest,
+  { params }: { params: { id: string } },
+) {
+  try {
+    const supabase = await createClient();
+    const profileId = params.id;
+
+    // Check authentication
+    const { data: user } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get user profile and check admin privileges
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('id, role')
+      .eq('id', user.id)
+      .single();
+
+    if (!userProfile || !['admin', 'super_admin'].includes(userProfile.role)) {
+      return NextResponse.json(
+        { error: 'Admin privileges required' },
+        { status: 403 },
+      );
+    }
+
+    // Check if profile exists
+    const { data: profile } = await supabase
+      .from('directory_supplier_profiles')
+      .select('id, verification_status')
+      .eq('id', profileId)
+      .single();
+
+    if (!profile) {
+      return NextResponse.json({ error: 'Profile not found' }, { status: 404 });
+    }
+
+    if (profile.verification_status !== 'pending') {
+      return NextResponse.json(
+        { error: 'No pending verification to process' },
+        { status: 400 },
+      );
+    }
+
+    // Parse and validate admin decision
+    const body = await request.json();
+    const validatedData = adminVerificationSchema.parse(body);
+
+    const newStatus =
+      validatedData.decision === 'approve' ? 'verified' : 'rejected';
+    const trustScore =
+      validatedData.decision === 'approve'
+        ? validatedData.trust_score || 75
+        : 0;
+
+    // Update profile verification status
+    const { data: updatedProfile, error: updateError } = await supabase
+      .from('directory_supplier_profiles')
+      .update({
+        verification_status: newStatus,
+        verification_completed_at: new Date().toISOString(),
+        verification_notes: validatedData.notes,
+        trust_score: trustScore,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', profileId)
+      .select()
+      .single();
+
+    if (updateError) {
+      console.error('Error updating verification:', updateError);
+      throw updateError;
+    }
+
+    // Update document statuses
+    await supabase
+      .from('directory_supplier_documents')
+      .update({
+        verification_status:
+          validatedData.decision === 'approve' ? 'approved' : 'rejected',
+        verified_by: userProfile.id,
+        verified_at: new Date().toISOString(),
+        rejection_reason:
+          validatedData.decision === 'reject' ? validatedData.notes : null,
+      })
+      .eq('supplier_profile_id', profileId)
+      .eq('verification_status', 'pending');
+
+    // Add badges if approved
+    if (
+      validatedData.decision === 'approve' &&
+      validatedData.badges.length > 0
+    ) {
+      const badgePromises = validatedData.badges.map((badgeType) =>
+        supabase.from('directory_supplier_badges').insert({
+          supplier_profile_id: profileId,
+          badge_type: badgeType,
+          badge_name: getBadgeName(badgeType),
+          badge_icon: getBadgeIcon(badgeType),
+          description: getBadgeDescription(badgeType),
+          awarded_at: new Date().toISOString(),
+          is_active: true,
+        }),
+      );
+
+      await Promise.all(badgePromises);
+    }
+
+    // Send notification to supplier (placeholder)
+    // await sendSupplierNotification(profileId, validatedData.decision, validatedData.notes)
+
+    return NextResponse.json({
+      success: true,
+      profile: updatedProfile,
+      decision: validatedData.decision,
+      message: `Verification ${validatedData.decision}d successfully`,
+    });
+  } catch (error) {
+    console.error('Error processing verification:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Validation error', details: error.errors },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Failed to process verification' },
+      { status: 500 },
+    );
+  }
+}
+
+// Helper functions for badge management
+function getBadgeName(badgeType: string): string {
+  const badgeNames: Record<string, string> = {
+    verified: 'Verified Business',
+    premium: 'Premium Supplier',
+    top_rated: 'Top Rated',
+    eco_friendly: 'Eco Friendly',
+    luxury: 'Luxury Service',
+    budget_friendly: 'Budget Friendly',
+    quick_response: 'Quick Response',
+  };
+  return badgeNames[badgeType] || 'Verified';
+}
+
+function getBadgeIcon(badgeType: string): string {
+  const badgeIcons: Record<string, string> = {
+    verified: 'shield-check',
+    premium: 'star',
+    top_rated: 'award',
+    eco_friendly: 'leaf',
+    luxury: 'crown',
+    budget_friendly: 'pound-sterling',
+    quick_response: 'zap',
+  };
+  return badgeIcons[badgeType] || 'shield-check';
+}
+
+function getBadgeDescription(badgeType: string): string {
+  const descriptions: Record<string, string> = {
+    verified: 'Business identity and credentials verified',
+    premium: 'Premium quality service provider',
+    top_rated: 'Consistently high customer ratings',
+    eco_friendly: 'Environmentally conscious practices',
+    luxury: 'High-end luxury wedding services',
+    budget_friendly: 'Great value for money',
+    quick_response: 'Responds to inquiries within 2 hours',
+  };
+  return descriptions[badgeType] || 'Verified supplier';
+}

@@ -1,0 +1,210 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { supabase } from '@/lib/supabase/server';
+import { logger } from '@/lib/logger';
+import { headers } from 'next/headers';
+import { z } from 'zod';
+
+const installPromptSchema = z.object({
+  event_type: z.enum(['prompt_shown', 'prompt_dismissed', 'prompt_accepted']),
+  user_id: z.string().uuid().optional(),
+  session_id: z.string().min(1),
+  device_info: z
+    .object({
+      viewport_width: z.number().optional(),
+      viewport_height: z.number().optional(),
+      is_mobile: z.boolean().optional(),
+      is_ios: z.boolean().optional(),
+      is_android: z.boolean().optional(),
+      browser_name: z
+        .string()
+        .optional()
+        .transform((val) => (val ? sanitizeBrowserName(val) : null)),
+      connection_type: z
+        .enum(['slow-2g', '2g', '3g', '4g', 'wifi', 'unknown'])
+        .optional(),
+    })
+    .optional(),
+  prompt_context: z
+    .object({
+      page_url: z.string().transform((val) => sanitizeUrl(val)),
+      user_gesture: z.boolean().optional(),
+      days_since_last_prompt: z.number().optional(),
+      previous_dismissals: z.number().optional(),
+    })
+    .optional(),
+  wedding_context: z
+    .object({
+      has_active_wedding: z.boolean().optional(),
+      days_until_wedding: z.number().optional(),
+      supplier_type: z
+        .enum([
+          'photographer',
+          'florist',
+          'caterer',
+          'venue',
+          'planner',
+          'other',
+        ])
+        .optional(),
+    })
+    .optional(),
+});
+
+function sanitizeBrowserName(browserName: string): string {
+  const allowed = ['chrome', 'firefox', 'safari', 'edge', 'opera', 'other'];
+  const normalized = browserName.toLowerCase();
+  return allowed.find((name) => normalized.includes(name)) || 'other';
+}
+
+function sanitizeUrl(url: string): string {
+  try {
+    const urlObj = new URL(url);
+    return `${urlObj.protocol}//${urlObj.host}${urlObj.pathname}`;
+  } catch {
+    return '/unknown';
+  }
+}
+
+function sanitizeUserAgent(userAgent: string): string {
+  return userAgent
+    .replace(/\d+\.\d+\.\d+/g, 'x.x.x')
+    .replace(/Chrome\/[\d\.]+/g, 'Chrome/x.x.x')
+    .replace(/Safari\/[\d\.]+/g, 'Safari/x.x.x')
+    .replace(/Version\/[\d\.]+/g, 'Version/x.x.x');
+}
+
+async function getClientInfo(request: NextRequest) {
+  const headersList = await headers();
+  const userAgent = headersList.get('user-agent') || '';
+  const ip =
+    headersList.get('x-forwarded-for') ||
+    headersList.get('x-real-ip') ||
+    'unknown';
+
+  return {
+    sanitized_user_agent: sanitizeUserAgent(userAgent),
+    client_ip_hash: await hashIP(ip),
+    timestamp: new Date().toISOString(),
+  };
+}
+
+async function hashIP(ip: string): Promise<string> {
+  if (typeof crypto === 'undefined' || !crypto.subtle) {
+    return 'hashed';
+  }
+
+  try {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(
+      ip + process.env.IP_HASH_SALT || 'default-salt',
+    );
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('')
+      .slice(0, 16);
+  } catch {
+    return 'hash_error';
+  }
+}
+
+async function logInstallPromptEvent(data: any, clientInfo: any) {
+  try {
+    const { error } = await supabase.from('pwa_installation_events').insert({
+      event_type: data.event_type,
+      user_id: data.user_id,
+      session_id: data.session_id,
+      device_info: data.device_info,
+      prompt_context: data.prompt_context,
+      wedding_context: data.wedding_context,
+      client_info: clientInfo,
+      created_at: new Date().toISOString(),
+    });
+
+    if (error) {
+      logger.error('Failed to log PWA install prompt event', { error, data });
+      return false;
+    }
+
+    logger.info('PWA install prompt event logged', {
+      event_type: data.event_type,
+      user_id: data.user_id ? 'present' : 'anonymous',
+      session_id: data.session_id.slice(0, 8) + '...',
+    });
+
+    return true;
+  } catch (error) {
+    logger.error('Exception logging PWA install prompt event', { error });
+    return false;
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+
+    const validation = installPromptSchema.safeParse(body);
+    if (!validation.success) {
+      logger.warn('Invalid PWA install prompt data', {
+        errors: validation.error.errors,
+        body,
+      });
+
+      return NextResponse.json(
+        {
+          error: 'Invalid request data',
+          details: validation.error.errors,
+        },
+        { status: 400 },
+      );
+    }
+
+    const data = validation.data;
+    const clientInfo = await getClientInfo(request);
+
+    const success = await logInstallPromptEvent(data, clientInfo);
+
+    if (!success) {
+      return NextResponse.json(
+        {
+          error: 'Failed to log event',
+        },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json(
+      {
+        success: true,
+        message: 'Install prompt event logged successfully',
+      },
+      {
+        status: 201,
+        headers: {
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          Pragma: 'no-cache',
+          Expires: '0',
+        },
+      },
+    );
+  } catch (error) {
+    logger.error('PWA install prompt API error', { error });
+
+    return NextResponse.json(
+      {
+        error: 'Internal server error',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+export async function GET() {
+  return NextResponse.json(
+    {
+      error: 'Method not allowed',
+    },
+    { status: 405 },
+  );
+}

@@ -1,0 +1,529 @@
+/**
+ * Unit Tests - Viral A/B Testing Service
+ * WS-141 Round 2: Comprehensive test coverage for A/B testing framework
+ */
+
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { ViralABTestingService, type RelationshipType } from '@/lib/services/viral-ab-testing-service'
+
+// Mock Supabase
+jest.mock('@/lib/supabase/client', () => ({
+  supabase: {
+    rpc: jest.fn(),
+    from: jest.fn().mockReturnThis(),
+    select: jest.fn().mockReturnThis(),
+    insert: jest.fn().mockReturnThis(),
+    update: jest.fn().mockReturnThis(),
+    eq: jest.fn().mockReturnThis(),
+    gte: jest.fn().mockReturnThis(),
+    order: jest.fn().mockReturnThis(),
+    limit: jest.fn().mockReturnThis(),
+    single: jest.fn()
+  }
+}))
+
+// Mock data
+const mockTemplateVariants = [
+  {
+    id: 'variant-1',
+    variant_name: 'control',
+    template: 'Hey {{name}}, you should try WedSync!',
+    is_control: true,
+    is_active: true,
+    weight: 50
+  },
+  {
+    id: 'variant-2', 
+    variant_name: 'variant_a',
+    template: 'Hi {{name}}! WedSync has been amazing for my wedding planning',
+    is_control: false,
+    is_active: true,
+    weight: 50
+  }
+]
+
+const mockPerformanceData = [
+  {
+    variant: 'control',
+    sent_count: 1000,
+    opened_count: 300,
+    clicked_count: 150,
+    converted_count: 75,
+    open_rate: 30.0,
+    click_rate: 50.0,
+    conversion_rate: 7.5
+  },
+  {
+    variant: 'variant_a',
+    sent_count: 1000,
+    opened_count: 450,
+    clicked_count: 270,
+    converted_count: 135,
+    open_rate: 45.0,
+    click_rate: 60.0,
+    conversion_rate: 13.5
+  }
+]
+
+describe('ViralABTestingService', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+  })
+
+  afterEach(() => {
+    jest.restoreAllMocks()
+  })
+
+  describe('selectInvitationVariant', () => {
+    it('should select a template variant for past_client relationship', async () => {
+      const mockSupabase = require('@/lib/supabase/client').supabase
+      
+      mockSupabase.rpc.mockResolvedValue({
+        data: mockTemplateVariants,
+        error: null
+      })
+
+      const result = await ViralABTestingService.selectInvitationVariant(
+        'past_client',
+        'user-123'
+      )
+
+      expect(result).toBeDefined()
+      expect(result.variant).toMatch(/^(control|variant_a)$/)
+      expect(result.template).toContain('{{name}}')
+      expect(result.tracking_id).toBeDefined()
+      expect(['control', 'variant_a', 'variant_b', 'variant_c']).toContain(result.test_group)
+      
+      expect(mockSupabase.rpc).toHaveBeenCalledWith(
+        'get_active_template_variants',
+        expect.objectContaining({
+          relationship_type: 'past_client'
+        })
+      )
+    })
+
+    it('should return fallback template when no variants available', async () => {
+      const mockSupabase = require('@/lib/supabase/client').supabase
+      
+      mockSupabase.rpc.mockResolvedValue({
+        data: [],
+        error: null
+      })
+
+      const result = await ViralABTestingService.selectInvitationVariant(
+        'vendor',
+        'user-456'
+      )
+
+      expect(result.variant).toBe('fallback')
+      expect(result.template).toContain('fallback')
+      expect(result.test_group).toBe('control')
+    })
+
+    it('should handle sticky user assignment correctly', async () => {
+      const mockSupabase = require('@/lib/supabase/client').supabase
+      
+      // Mock existing assignment
+      mockSupabase.from.mockImplementation((table) => {
+        if (table === 'user_variant_assignments') {
+          return {
+            select: () => ({
+              eq: () => ({
+                single: () => Promise.resolve({
+                  data: { variant_id: 'variant-1', tracking_id: 'existing-123' },
+                  error: null
+                })
+              })
+            })
+          }
+        }
+        return mockSupabase
+      })
+
+      mockSupabase.rpc.mockResolvedValue({
+        data: mockTemplateVariants,
+        error: null
+      })
+
+      const result = await ViralABTestingService.selectInvitationVariant(
+        'friend',
+        'user-789'
+      )
+
+      expect(result.tracking_id).toBe('existing-123')
+    })
+
+    it('should handle database errors gracefully', async () => {
+      const mockSupabase = require('@/lib/supabase/client').supabase
+      
+      mockSupabase.rpc.mockResolvedValue({
+        data: null,
+        error: { message: 'Database connection failed' }
+      })
+
+      await expect(
+        ViralABTestingService.selectInvitationVariant('past_client', 'user-123')
+      ).rejects.toThrow('Failed to select invitation variant')
+    })
+
+    it('should meet performance requirement of under 50ms', async () => {
+      const mockSupabase = require('@/lib/supabase/client').supabase
+      
+      mockSupabase.rpc.mockResolvedValue({
+        data: mockTemplateVariants,
+        error: null
+      })
+
+      const startTime = Date.now()
+      await ViralABTestingService.selectInvitationVariant('past_client', 'user-123')
+      const endTime = Date.now()
+
+      expect(endTime - startTime).toBeLessThan(50)
+    })
+  })
+
+  describe('analyzeVariantPerformance', () => {
+    it('should analyze performance for all relationship types', async () => {
+      const mockSupabase = require('@/lib/supabase/client').supabase
+      
+      mockSupabase.rpc.mockResolvedValue({
+        data: mockPerformanceData,
+        error: null
+      })
+
+      const results = await ViralABTestingService.analyzeVariantPerformance(
+        undefined,
+        '30 days'
+      )
+
+      expect(results).toHaveLength(2)
+      expect(results[0].variant).toBe('control')
+      expect(results[0].conversion_rate).toBe(7.5)
+      expect(results[1].variant).toBe('variant_a')
+      expect(results[1].conversion_rate).toBe(13.5)
+
+      expect(mockSupabase.rpc).toHaveBeenCalledWith(
+        'analyze_ab_test_performance',
+        expect.objectContaining({
+          p_timeframe: '30 days'
+        })
+      )
+    })
+
+    it('should filter by relationship type when provided', async () => {
+      const mockSupabase = require('@/lib/supabase/client').supabase
+      
+      mockSupabase.rpc.mockResolvedValue({
+        data: mockPerformanceData.slice(0, 1),
+        error: null
+      })
+
+      const results = await ViralABTestingService.analyzeVariantPerformance(
+        'past_client',
+        '30 days'
+      )
+
+      expect(results).toHaveLength(1)
+      expect(mockSupabase.rpc).toHaveBeenCalledWith(
+        'analyze_ab_test_performance',
+        expect.objectContaining({
+          p_relationship_type: 'past_client',
+          p_timeframe: '30 days'
+        })
+      )
+    })
+
+    it('should calculate statistical significance correctly', async () => {
+      const mockSupabase = require('@/lib/supabase/client').supabase
+      
+      const significantData = mockPerformanceData.map((item, index) => ({
+        ...item,
+        statistical_significance: index === 1 ? 0.95 : 0.85,
+        confidence_interval: {
+          lower: item.conversion_rate - 2.0,
+          upper: item.conversion_rate + 2.0
+        }
+      }))
+
+      mockSupabase.rpc.mockResolvedValue({
+        data: significantData,
+        error: null
+      })
+
+      const results = await ViralABTestingService.analyzeVariantPerformance()
+
+      expect(results[1].statistical_significance).toBe(0.95)
+      expect(results[1].confidence_interval).toBeDefined()
+    })
+
+    it('should meet performance requirement of under 200ms', async () => {
+      const mockSupabase = require('@/lib/supabase/client').supabase
+      
+      mockSupabase.rpc.mockResolvedValue({
+        data: mockPerformanceData,
+        error: null
+      })
+
+      const startTime = Date.now()
+      await ViralABTestingService.analyzeVariantPerformance()
+      const endTime = Date.now()
+
+      expect(endTime - startTime).toBeLessThan(200)
+    })
+  })
+
+  describe('promoteWinningVariants', () => {
+    it('should promote statistically significant winners', async () => {
+      const mockSupabase = require('@/lib/supabase/client').supabase
+      
+      // Mock performance analysis with clear winner
+      mockSupabase.rpc
+        .mockResolvedValueOnce({
+          data: mockPerformanceData.map((item, index) => ({
+            ...item,
+            statistical_significance: index === 1 ? 0.97 : 0.85
+          })),
+          error: null
+        })
+        .mockResolvedValueOnce({
+          data: [{ promoted_count: 1, disabled_count: 1 }],
+          error: null
+        })
+
+      const result = await ViralABTestingService.promoteWinningVariants()
+
+      expect(result.promoted).toContain('variant_a')
+      expect(result.disabled.length).toBeGreaterThan(0)
+      expect(mockSupabase.rpc).toHaveBeenCalledWith('promote_winning_variants')
+    })
+
+    it('should not promote without statistical significance', async () => {
+      const mockSupabase = require('@/lib/supabase/client').supabase
+      
+      // Mock performance analysis with no clear winner
+      mockSupabase.rpc
+        .mockResolvedValueOnce({
+          data: mockPerformanceData.map(item => ({
+            ...item,
+            statistical_significance: 0.80
+          })),
+          error: null
+        })
+
+      const result = await ViralABTestingService.promoteWinningVariants()
+
+      expect(result.promoted).toHaveLength(0)
+      expect(result.disabled).toHaveLength(0)
+    })
+  })
+
+  describe('recordTestResult', () => {
+    it('should record A/B test result with proper validation', async () => {
+      const mockSupabase = require('@/lib/supabase/client').supabase
+      
+      mockSupabase.from.mockImplementation(() => ({
+        insert: () => ({
+          select: () => Promise.resolve({
+            data: [{
+              id: 'result-123',
+              template_variant_id: 'variant-1',
+              user_id: 'user-123',
+              result_type: 'opened',
+              test_group: 'variant_a'
+            }],
+            error: null
+          })
+        })
+      }))
+
+      await ViralABTestingService.recordTestResult(
+        'tracking-123',
+        'opened',
+        'user-123',
+        { opened_at: new Date().toISOString() }
+      )
+
+      expect(mockSupabase.from).toHaveBeenCalledWith('viral_ab_test_results')
+    })
+
+    it('should validate tracking ID format', async () => {
+      await expect(
+        ViralABTestingService.recordTestResult(
+          'invalid-tracking',
+          'opened',
+          'user-123'
+        )
+      ).rejects.toThrow()
+    })
+
+    it('should handle duplicate result recording', async () => {
+      const mockSupabase = require('@/lib/supabase/client').supabase
+      
+      mockSupabase.from.mockImplementation(() => ({
+        insert: () => ({
+          select: () => Promise.resolve({
+            data: null,
+            error: { code: '23505', message: 'duplicate key value violates unique constraint' }
+          })
+        })
+      }))
+
+      // Should not throw error for duplicate, but should log warning
+      await expect(
+        ViralABTestingService.recordTestResult(
+          'ab-test-12345678-1234-4567-8901-123456789012-past_client',
+          'opened',
+          'user-123'
+        )
+      ).resolves.not.toThrow()
+    })
+  })
+
+  describe('getTemplateVariants', () => {
+    it('should retrieve active variants for relationship type', async () => {
+      const mockSupabase = require('@/lib/supabase/client').supabase
+      
+      mockSupabase.from.mockImplementation(() => ({
+        select: () => ({
+          eq: () => ({
+            eq: () => ({
+              order: () => Promise.resolve({
+                data: mockTemplateVariants,
+                error: null
+              })
+            })
+          })
+        })
+      }))
+
+      const variants = await ViralABTestingService.getTemplateVariants('past_client')
+
+      expect(variants).toHaveLength(2)
+      expect(variants[0].variant_name).toBe('control')
+      expect(variants[1].variant_name).toBe('variant_a')
+    })
+
+    it('should handle empty variant list', async () => {
+      const mockSupabase = require('@/lib/supabase/client').supabase
+      
+      mockSupabase.from.mockImplementation(() => ({
+        select: () => ({
+          eq: () => ({
+            eq: () => ({
+              order: () => Promise.resolve({
+                data: [],
+                error: null
+              })
+            })
+          })
+        })
+      }))
+
+      const variants = await ViralABTestingService.getTemplateVariants('vendor')
+
+      expect(variants).toHaveLength(0)
+    })
+  })
+
+  describe('Weighted Random Selection', () => {
+    it('should respect variant weights in selection', () => {
+      const variants = [
+        { ...mockTemplateVariants[0], weight: 80 },
+        { ...mockTemplateVariants[1], weight: 20 }
+      ]
+
+      // Run selection multiple times to test distribution
+      const selections = []
+      for (let i = 0; i < 100; i++) {
+        // Mock Math.random for predictable testing
+        jest.spyOn(Math, 'random').mockReturnValue(i / 100)
+        
+        const selected = ViralABTestingService['selectVariantByWeight'](variants)
+        selections.push(selected.variant_name)
+        
+        jest.restoreAllMocks()
+      }
+
+      // Should have more 'control' selections than 'variant_a' due to 80/20 weight
+      const controlCount = selections.filter(s => s === 'control').length
+      const variantCount = selections.filter(s => s === 'variant_a').length
+      
+      expect(controlCount).toBeGreaterThan(variantCount)
+    })
+
+    it('should handle equal weights correctly', () => {
+      const variants = mockTemplateVariants
+
+      jest.spyOn(Math, 'random').mockReturnValue(0.5)
+      
+      const selected = ViralABTestingService['selectVariantByWeight'](variants)
+      
+      expect(['control', 'variant_a']).toContain(selected.variant_name)
+      
+      jest.restoreAllMocks()
+    })
+  })
+
+  describe('Template Variable Substitution', () => {
+    it('should substitute template variables correctly', () => {
+      const template = 'Hey {{name}}, check out WedSync! Use code {{code}} for {{discount}}% off'
+      const variables = {
+        name: 'John',
+        code: 'WEDDING20',
+        discount: '20'
+      }
+
+      const result = ViralABTestingService['substituteTemplateVariables'](template, variables)
+
+      expect(result).toBe('Hey John, check out WedSync! Use code WEDDING20 for 20% off')
+    })
+
+    it('should handle missing variables gracefully', () => {
+      const template = 'Hey {{name}}, check out {{product}}!'
+      const variables = { name: 'John' }
+
+      const result = ViralABTestingService['substituteTemplateVariables'](template, variables)
+
+      expect(result).toBe('Hey John, check out {{product}}!')
+    })
+
+    it('should escape HTML in variables for security', () => {
+      const template = 'Hello {{name}}!'
+      const variables = { name: '<script>alert("xss")</script>' }
+
+      const result = ViralABTestingService['substituteTemplateVariables'](template, variables, true)
+
+      expect(result).not.toContain('<script>')
+      expect(result).toContain('&lt;script&gt;')
+    })
+  })
+
+  describe('Error Handling', () => {
+    it('should handle network timeouts gracefully', async () => {
+      const mockSupabase = require('@/lib/supabase/client').supabase
+      
+      mockSupabase.rpc.mockImplementation(() => 
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Network timeout')), 100)
+        )
+      )
+
+      await expect(
+        ViralABTestingService.selectInvitationVariant('past_client', 'user-123')
+      ).rejects.toThrow('Failed to select invitation variant')
+    })
+
+    it('should validate user input parameters', async () => {
+      await expect(
+        ViralABTestingService.selectInvitationVariant(
+          'invalid_type' as RelationshipType,
+          'user-123'
+        )
+      ).rejects.toThrow()
+
+      await expect(
+        ViralABTestingService.selectInvitationVariant('past_client', '')
+      ).rejects.toThrow()
+    })
+  })
+})

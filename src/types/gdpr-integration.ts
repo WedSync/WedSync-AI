@@ -1,0 +1,720 @@
+import { z } from 'zod';
+
+// Core GDPR Types
+export interface GDPRUser {
+  id: string;
+  email: string;
+  name?: string;
+  consentStatus: ConsentStatus;
+  privacyPreferences: PrivacyPreferences;
+  dataSubjectRights: DataSubjectRights;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface ConsentStatus {
+  hasDataProcessingConsent: boolean;
+  hasMarketingConsent: boolean;
+  hasPhotoSharingConsent: boolean;
+  hasAnalyticsConsent: boolean;
+  consentTimestamp: Date;
+  consentVersion: string;
+  expiryDate?: Date;
+  withdrawnAt?: Date;
+}
+
+export interface PrivacyPreferences {
+  allowDataProcessing: boolean;
+  allowMarketing: boolean;
+  allowThirdPartySharing: boolean;
+  allowCrossBorderTransfer: boolean;
+  allowAutomatedDecisionMaking: boolean;
+  preferredContactMethod: 'email' | 'phone' | 'sms' | 'none';
+  dataRetentionPeriod?: number;
+}
+
+export interface DataSubjectRights {
+  accessRequests: DataAccessRequest[];
+  rectificationRequests: DataRectificationRequest[];
+  erasureRequests: DataErasureRequest[];
+  portabilityRequests: DataPortabilityRequest[];
+  restrictionRequests: ProcessingRestrictionRequest[];
+}
+
+// Workflow Privacy Types
+export interface WorkflowPrivacyConfig {
+  workflowId: string;
+  name: string;
+  description: string;
+  privacyHooks: PrivacyHook[];
+  retentionPolicies: RetentionPolicy[];
+  consentRequirements: ConsentRequirement[];
+  dataMinimization: DataMinimizationRule[];
+}
+
+export interface PrivacyHook {
+  id: string;
+  trigger: HookTrigger;
+  action: HookAction;
+  condition?: HookCondition;
+  priority: number;
+  enabled: boolean;
+}
+
+export interface HookTrigger {
+  event:
+    | 'data_create'
+    | 'data_update'
+    | 'data_delete'
+    | 'data_access'
+    | 'workflow_start'
+    | 'workflow_end';
+  entityType: string;
+  dataFields?: string[];
+}
+
+export interface HookAction {
+  type:
+    | 'log_privacy_event'
+    | 'check_consent'
+    | 'minimize_data'
+    | 'notify_user'
+    | 'block_operation';
+  parameters: Record<string, any>;
+  async: boolean;
+}
+
+export interface HookCondition {
+  field: string;
+  operator:
+    | 'equals'
+    | 'not_equals'
+    | 'contains'
+    | 'not_contains'
+    | 'greater_than'
+    | 'less_than';
+  value: any;
+}
+
+// Consent Automation Types
+export interface ConsentRule {
+  id: string;
+  name: string;
+  description: string;
+  triggers: ConsentTrigger[];
+  consentType: ConsentType;
+  requirement: ConsentRequirement;
+  automation: ConsentAutomation;
+}
+
+export interface ConsentTrigger {
+  dataType: DataType;
+  operation: DataOperation;
+  threshold?: ConsentThreshold;
+}
+
+export interface ConsentThreshold {
+  field: string;
+  value: number;
+  operator: 'greater_than' | 'less_than' | 'equals';
+}
+
+export interface ConsentAutomation {
+  autoPrompt: boolean;
+  autoGrant: boolean;
+  autoExpire: boolean;
+  conditions: ConsentCondition[];
+  promptText?: string;
+  grantConditions?: string[];
+  expiryPeriod?: number;
+}
+
+export interface ConsentCondition {
+  type:
+    | 'user_type'
+    | 'data_sensitivity'
+    | 'processing_purpose'
+    | 'third_party_sharing';
+  value: any;
+  required: boolean;
+}
+
+// Privacy Impact Types
+export interface PrivacyImpactAnalysis {
+  operationId: string;
+  riskScore: number;
+  riskLevel: RiskLevel;
+  factors: RiskFactor[];
+  mitigations: Mitigation[];
+  recommendations: Recommendation[];
+  complianceStatus: ComplianceStatus;
+  assessmentDate: Date;
+  nextReviewDate: Date;
+}
+
+export interface RiskFactor {
+  type: RiskFactorType;
+  severity: Severity;
+  description: string;
+  weight: number;
+  impact: string;
+}
+
+export interface Mitigation {
+  id: string;
+  description: string;
+  implementation: MitigationImplementation;
+  effectiveness: number;
+  cost: MitigationCost;
+  timeline: string;
+}
+
+export interface MitigationImplementation {
+  type: 'technical' | 'organizational' | 'legal';
+  measures: string[];
+  responsible: string;
+  deadline?: Date;
+  status: 'planned' | 'in_progress' | 'completed' | 'deferred';
+}
+
+export interface Recommendation {
+  priority: Priority;
+  category: RecommendationCategory;
+  action: string;
+  rationale: string;
+  effort: EffortLevel;
+  impact: ImpactLevel;
+}
+
+// Data Subject Rights Types
+export interface DataAccessRequest {
+  id: string;
+  userId: string;
+  requestDate: Date;
+  status: RequestStatus;
+  dataCategories: string[];
+  response?: DataAccessResponse;
+  completedDate?: Date;
+}
+
+export interface DataAccessResponse {
+  personalData: PersonalDataExport;
+  processingActivities: ProcessingActivity[];
+  thirdPartySharing: ThirdPartySharing[];
+  retentionPeriods: RetentionInfo[];
+  exportFormat: 'JSON' | 'CSV' | 'PDF';
+  generatedDate: Date;
+}
+
+export interface DataRectificationRequest {
+  id: string;
+  userId: string;
+  requestDate: Date;
+  status: RequestStatus;
+  corrections: DataCorrection[];
+  justification: string;
+  verificationRequired: boolean;
+  completedDate?: Date;
+}
+
+export interface DataCorrection {
+  field: string;
+  currentValue: any;
+  newValue: any;
+  verified: boolean;
+  evidence?: string;
+}
+
+export interface DataErasureRequest {
+  id: string;
+  userId: string;
+  requestDate: Date;
+  status: RequestStatus;
+  reason: ErasureReason;
+  dataCategories: string[];
+  exceptions: ErasureException[];
+  completedDate?: Date;
+  verificationHash?: string;
+}
+
+export interface DataPortabilityRequest {
+  id: string;
+  userId: string;
+  requestDate: Date;
+  status: RequestStatus;
+  dataCategories: string[];
+  format: 'JSON' | 'CSV' | 'XML';
+  response?: PortabilityResponse;
+  completedDate?: Date;
+}
+
+export interface ProcessingRestrictionRequest {
+  id: string;
+  userId: string;
+  requestDate: Date;
+  status: RequestStatus;
+  restrictions: ProcessingRestriction[];
+  reason: RestrictionReason;
+  temporaryMeasures: string[];
+  completedDate?: Date;
+}
+
+// Middleware Types
+export interface GDPRMiddlewareOptions {
+  enableAutoConsent: boolean;
+  enableImpactTracking: boolean;
+  enableDataMinimization: boolean;
+  enableAuditLogging: boolean;
+  exemptPaths: string[];
+  rateLimiting: RateLimitConfig;
+  errorHandling: ErrorHandlingConfig;
+}
+
+export interface RateLimitConfig {
+  enabled: boolean;
+  windowMs: number;
+  maxRequests: number;
+  skipSuccessfulRequests: boolean;
+}
+
+export interface ErrorHandlingConfig {
+  logErrors: boolean;
+  returnGenericErrors: boolean;
+  notifyAdministrators: boolean;
+  fallbackBehavior: 'block' | 'allow' | 'prompt';
+}
+
+// Audit and Logging Types
+export interface PrivacyAuditLog {
+  id: string;
+  timestamp: Date;
+  userId?: string;
+  sessionId: string;
+  operation: PrivacyOperation;
+  entityType: string;
+  entityId?: string;
+  changes: AuditChange[];
+  metadata: AuditMetadata;
+  complianceVerified: boolean;
+}
+
+export interface AuditChange {
+  field: string;
+  oldValue?: any;
+  newValue?: any;
+  changeType: 'create' | 'update' | 'delete' | 'access';
+  sensitivityLevel: SensitivityLevel;
+}
+
+export interface AuditMetadata {
+  ipAddress?: string;
+  userAgent?: string;
+  requestPath: string;
+  requestMethod: string;
+  consentStatus: ConsentStatus;
+  privacyImpactScore?: number;
+  dataProcessingLegalBasis: LegalBasis;
+}
+
+// Enums and Type Unions
+export type DataType =
+  | 'personal_identifiers'
+  | 'contact_information'
+  | 'demographic_data'
+  | 'financial_data'
+  | 'health_data'
+  | 'biometric_data'
+  | 'location_data'
+  | 'behavioral_data'
+  | 'preference_data'
+  | 'communication_data'
+  | 'metadata';
+
+export type DataOperation =
+  | 'collect'
+  | 'store'
+  | 'process'
+  | 'analyze'
+  | 'share'
+  | 'transfer'
+  | 'delete'
+  | 'access';
+
+export type ConsentType =
+  | 'essential'
+  | 'functional'
+  | 'analytical'
+  | 'marketing'
+  | 'personalization'
+  | 'third_party'
+  | 'research'
+  | 'legal_compliance';
+
+export type SensitivityLevel =
+  | 'public'
+  | 'internal'
+  | 'confidential'
+  | 'restricted'
+  | 'special_category';
+
+export type RiskLevel = 'negligible' | 'low' | 'medium' | 'high' | 'critical';
+
+export type RiskFactorType =
+  | 'data_volume'
+  | 'data_sensitivity'
+  | 'processing_complexity'
+  | 'third_party_involvement'
+  | 'cross_border_transfer'
+  | 'automated_decision_making'
+  | 'data_subject_vulnerability'
+  | 'potential_harm'
+  | 'security_risks';
+
+export type Severity = 'low' | 'medium' | 'high';
+
+export type MitigationCost = 'low' | 'medium' | 'high' | 'very_high';
+
+export type Priority = 'low' | 'medium' | 'high' | 'critical';
+
+export type RecommendationCategory =
+  | 'technical'
+  | 'organizational'
+  | 'legal'
+  | 'training'
+  | 'documentation';
+
+export type EffortLevel = 'minimal' | 'low' | 'medium' | 'high' | 'extensive';
+
+export type ImpactLevel =
+  | 'negligible'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'transformative';
+
+export type RequestStatus =
+  | 'pending'
+  | 'in_progress'
+  | 'completed'
+  | 'rejected'
+  | 'cancelled'
+  | 'expired';
+
+export type ErasureReason =
+  | 'consent_withdrawn'
+  | 'purpose_fulfilled'
+  | 'unlawful_processing'
+  | 'legal_obligation'
+  | 'public_interest'
+  | 'legitimate_interests_overridden';
+
+export type RestrictionReason =
+  | 'accuracy_contested'
+  | 'unlawful_processing'
+  | 'legal_claim_needed'
+  | 'objection_pending';
+
+export type LegalBasis =
+  | 'consent'
+  | 'contract'
+  | 'legal_obligation'
+  | 'vital_interests'
+  | 'public_task'
+  | 'legitimate_interests';
+
+export type PrivacyOperation =
+  | 'data_collection'
+  | 'data_processing'
+  | 'data_sharing'
+  | 'data_access'
+  | 'data_rectification'
+  | 'data_erasure'
+  | 'data_portability'
+  | 'processing_restriction'
+  | 'consent_management'
+  | 'audit_logging';
+
+export type ComplianceStatus =
+  | 'compliant'
+  | 'non_compliant'
+  | 'partially_compliant'
+  | 'under_review'
+  | 'exempted';
+
+// Schema Validators
+export const gdprUserSchema = z.object({
+  id: z.string().uuid(),
+  email: z.string().email(),
+  name: z.string().optional(),
+  consentStatus: z.object({
+    hasDataProcessingConsent: z.boolean(),
+    hasMarketingConsent: z.boolean(),
+    hasPhotoSharingConsent: z.boolean(),
+    hasAnalyticsConsent: z.boolean(),
+    consentTimestamp: z.date(),
+    consentVersion: z.string(),
+    expiryDate: z.date().optional(),
+    withdrawnAt: z.date().optional(),
+  }),
+  privacyPreferences: z.object({
+    allowDataProcessing: z.boolean(),
+    allowMarketing: z.boolean(),
+    allowThirdPartySharing: z.boolean(),
+    allowCrossBorderTransfer: z.boolean(),
+    allowAutomatedDecisionMaking: z.boolean(),
+    preferredContactMethod: z.enum(['email', 'phone', 'sms', 'none']),
+    dataRetentionPeriod: z.number().optional(),
+  }),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export const consentRuleSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().min(1),
+  description: z.string(),
+  triggers: z.array(
+    z.object({
+      dataType: z.enum([
+        'personal_identifiers',
+        'contact_information',
+        'demographic_data',
+        'financial_data',
+        'health_data',
+        'biometric_data',
+        'location_data',
+        'behavioral_data',
+        'preference_data',
+        'communication_data',
+        'metadata',
+      ]),
+      operation: z.enum([
+        'collect',
+        'store',
+        'process',
+        'analyze',
+        'share',
+        'transfer',
+        'delete',
+        'access',
+      ]),
+      threshold: z
+        .object({
+          field: z.string(),
+          value: z.number(),
+          operator: z.enum(['greater_than', 'less_than', 'equals']),
+        })
+        .optional(),
+    }),
+  ),
+  consentType: z.enum([
+    'essential',
+    'functional',
+    'analytical',
+    'marketing',
+    'personalization',
+    'third_party',
+    'research',
+    'legal_compliance',
+  ]),
+  automation: z.object({
+    autoPrompt: z.boolean(),
+    autoGrant: z.boolean(),
+    autoExpire: z.boolean(),
+    conditions: z.array(
+      z.object({
+        type: z.enum([
+          'user_type',
+          'data_sensitivity',
+          'processing_purpose',
+          'third_party_sharing',
+        ]),
+        value: z.any(),
+        required: z.boolean(),
+      }),
+    ),
+    promptText: z.string().optional(),
+    grantConditions: z.array(z.string()).optional(),
+    expiryPeriod: z.number().optional(),
+  }),
+});
+
+export const privacyAuditLogSchema = z.object({
+  id: z.string().uuid(),
+  timestamp: z.date(),
+  userId: z.string().uuid().optional(),
+  sessionId: z.string(),
+  operation: z.enum([
+    'data_collection',
+    'data_processing',
+    'data_sharing',
+    'data_access',
+    'data_rectification',
+    'data_erasure',
+    'data_portability',
+    'processing_restriction',
+    'consent_management',
+    'audit_logging',
+  ]),
+  entityType: z.string(),
+  entityId: z.string().optional(),
+  changes: z.array(
+    z.object({
+      field: z.string(),
+      oldValue: z.any().optional(),
+      newValue: z.any().optional(),
+      changeType: z.enum(['create', 'update', 'delete', 'access']),
+      sensitivityLevel: z.enum([
+        'public',
+        'internal',
+        'confidential',
+        'restricted',
+        'special_category',
+      ]),
+    }),
+  ),
+  metadata: z.object({
+    ipAddress: z.string().optional(),
+    userAgent: z.string().optional(),
+    requestPath: z.string(),
+    requestMethod: z.string(),
+    consentStatus: z.object({
+      hasDataProcessingConsent: z.boolean(),
+      hasMarketingConsent: z.boolean(),
+      hasPhotoSharingConsent: z.boolean(),
+      hasAnalyticsConsent: z.boolean(),
+      consentTimestamp: z.date(),
+      consentVersion: z.string(),
+      expiryDate: z.date().optional(),
+      withdrawnAt: z.date().optional(),
+    }),
+    privacyImpactScore: z.number().optional(),
+    dataProcessingLegalBasis: z.enum([
+      'consent',
+      'contract',
+      'legal_obligation',
+      'vital_interests',
+      'public_task',
+      'legitimate_interests',
+    ]),
+  }),
+  complianceVerified: z.boolean(),
+});
+
+// Utility Types
+export interface RetentionPolicy {
+  id: string;
+  dataType: DataType;
+  retentionPeriod: number; // in days
+  reason: string;
+  automaticDeletion: boolean;
+  reviewPeriod: number; // in days
+}
+
+export interface ConsentRequirement {
+  id: string;
+  dataType: DataType;
+  operation: DataOperation;
+  consentType: ConsentType;
+  required: boolean;
+  legalBasis: LegalBasis;
+}
+
+export interface DataMinimizationRule {
+  id: string;
+  purpose: string;
+  allowedFields: string[];
+  forbiddenFields: string[];
+  transformations: DataTransformation[];
+}
+
+export interface DataTransformation {
+  field: string;
+  method: 'anonymize' | 'pseudonymize' | 'hash' | 'encrypt' | 'mask' | 'remove';
+  parameters?: Record<string, any>;
+}
+
+export interface PersonalDataExport {
+  userId: string;
+  exportDate: Date;
+  dataCategories: Record<DataType, any>;
+  processingHistory: ProcessingActivity[];
+  consents: ConsentRecord[];
+  metadata: ExportMetadata;
+}
+
+export interface ProcessingActivity {
+  id: string;
+  purpose: string;
+  legalBasis: LegalBasis;
+  dataTypes: DataType[];
+  recipients: string[];
+  retentionPeriod: number;
+  crossBorderTransfers: string[];
+  automatedDecisionMaking: boolean;
+  startDate: Date;
+  endDate?: Date;
+}
+
+export interface ThirdPartySharing {
+  recipient: string;
+  purpose: string;
+  dataTypes: DataType[];
+  legalBasis: LegalBasis;
+  safeguards: string[];
+  location: string;
+  retentionPeriod: number;
+}
+
+export interface RetentionInfo {
+  dataType: DataType;
+  retentionPeriod: number;
+  deletionSchedule: Date;
+  reason: string;
+}
+
+export interface ErasureException {
+  reason: string;
+  dataCategory: DataType;
+  legalBasis: string;
+  retentionPeriod: number;
+}
+
+export interface PortabilityResponse {
+  data: any;
+  format: 'JSON' | 'CSV' | 'XML';
+  generatedDate: Date;
+  checksum: string;
+  downloadUrl: string;
+  expiryDate: Date;
+}
+
+export interface ProcessingRestriction {
+  dataType: DataType;
+  operations: DataOperation[];
+  reason: string;
+  startDate: Date;
+  endDate?: Date;
+  exceptions: string[];
+}
+
+export interface ConsentRecord {
+  id: string;
+  consentType: ConsentType;
+  granted: boolean;
+  timestamp: Date;
+  expiryDate?: Date;
+  withdrawnAt?: Date;
+  legalBasis: LegalBasis;
+  purpose: string;
+  version: string;
+}
+
+export interface ExportMetadata {
+  format: string;
+  version: string;
+  generatedBy: string;
+  processingTime: number;
+  dataIntegrityHash: string;
+  compressionUsed: boolean;
+}

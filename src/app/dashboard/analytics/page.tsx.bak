@@ -1,0 +1,261 @@
+'use client';
+
+import React, { useState, useEffect, useCallback } from 'react';
+import { motion } from 'framer-motion';
+
+import VendorAnalyticsDashboard from '../../../components/analytics/VendorAnalyticsDashboard';
+import type {
+  VendorPerformanceMetrics,
+  AnalyticsDashboardData,
+  AnalyticsFilters,
+} from '../../../types/analytics';
+
+// Mock data generator for development
+function generateMockData(): {
+  vendorMetrics: VendorPerformanceMetrics[];
+  dashboardData: AnalyticsDashboardData;
+} {
+  // Generate realistic mock vendor data
+  const vendorTypes = ['photographer', 'venue', 'florist', 'caterer', 'dj', 'videographer', 'planner'] as const;
+  const vendorNames = [
+    'Perfect Moments Photography', 'Elegant Venue Co', 'Blooming Florals', 'Gourmet Catering',
+    'Elite Entertainment', 'Premium Video Productions', 'Dream Wedding Planners', 'Classic Photography',
+    'Garden Venue Rentals', 'Fresh Flower Studio', 'Delicious Dining', 'Party DJ Services',
+    'Professional Videography', 'Complete Wedding Solutions', 'Artistic Photography',
+    'Luxury Venues Ltd', 'Petal Perfect Florists', 'Fine Food Catering', 'Music Makers DJ',
+    'Cinema Wedding Films', 'Wedding Coordination Experts', 'Capture the Moment',
+    'Vintage Venue Spaces', 'Botanical Blooms', 'Culinary Creations', 'Sound & Light Entertainment'
+  ];
+
+  const vendorMetrics: VendorPerformanceMetrics[] = vendorNames.map((name, index) => ({
+    vendorId: `vendor_${index + 1}`,
+    vendorName: name,
+    vendorType: vendorTypes[index % vendorTypes.length],
+    responseTimeMinutes: Math.floor(Math.random() * 480) + 15, // 15 minutes to 8 hours
+    bookingSuccessRate: Math.random() * 0.7 + 0.3, // 30% to 100%
+    customerSatisfactionScore: Math.random() * 2 + 3, // 3.0 to 5.0
+    totalBookings: Math.floor(Math.random() * 200) + 10,
+    completedWeddings: Math.floor(Math.random() * 150) + 5,
+    averageRating: Math.random() * 2 + 3, // 3.0 to 5.0
+    reliabilityScore: Math.floor(Math.random() * 30) + 70, // 70 to 100
+    communicationScore: Math.floor(Math.random() * 30) + 70, // 70 to 100
+    qualityScore: Math.floor(Math.random() * 30) + 70, // 70 to 100
+    totalRevenue: Math.floor(Math.random() * 500000) + 50000, // £50k to £550k
+    repeatClientRate: Math.random() * 0.4 + 0.1, // 10% to 50%
+    onTimeDeliveryRate: Math.random() * 0.3 + 0.7, // 70% to 100%
+    lastActive: new Date(Date.now() - Math.floor(Math.random() * 30) * 24 * 60 * 60 * 1000),
+    isActive: Math.random() > 0.1, // 90% active
+  }));
+
+  // Calculate dashboard data from vendor metrics
+  const activeVendors = vendorMetrics.filter(v => v.isActive).length;
+  const totalBookings = vendorMetrics.reduce((sum, v) => sum + v.totalBookings, 0);
+  const totalRevenue = vendorMetrics.reduce((sum, v) => sum + v.totalRevenue, 0);
+  const avgResponseTime = vendorMetrics.reduce((sum, v) => sum + v.responseTimeMinutes, 0) / vendorMetrics.length;
+  const avgBookingSuccessRate = vendorMetrics.reduce((sum, v) => sum + v.bookingSuccessRate, 0) / vendorMetrics.length;
+  const avgCustomerSatisfaction = vendorMetrics.reduce((sum, v) => sum + v.customerSatisfactionScore, 0) / vendorMetrics.length;
+
+  const dashboardData: AnalyticsDashboardData = {
+    totalVendors: vendorMetrics.length,
+    activeVendors,
+    averageResponseTime: avgResponseTime,
+    averageBookingSuccessRate: avgBookingSuccessRate,
+    averageCustomerSatisfaction: avgCustomerSatisfaction,
+    totalRevenue,
+    topPerformers: vendorMetrics
+      .sort((a, b) => (b.totalRevenue + b.totalBookings * 1000) - (a.totalRevenue + a.totalBookings * 1000))
+      .slice(0, 5),
+    recentActivity: [],
+    performanceTrends: [],
+  };
+
+  return { vendorMetrics, dashboardData };
+}
+
+// Sanitize user input to prevent XSS
+function sanitizeString(input: string): string {
+  return input
+    .replace(/[<>]/g, '')
+    .replace(/javascript:/gi, '')
+    .replace(/on\w+\s*=/gi, '')
+    .trim();
+}
+
+export default function AnalyticsPage() {
+  const [data, setData] = useState<{
+    vendorMetrics: VendorPerformanceMetrics[];
+    dashboardData: AnalyticsDashboardData;
+  } | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // Initialize data
+  useEffect(() => {
+    const initializeData = async () => {
+      try {
+        setIsLoading(true);
+        
+        // In a real application, this would be an API call
+        // const response = await fetch('/api/analytics/vendor-performance');
+        // const data = await response.json();
+        
+        // Simulate API delay
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        const mockData = generateMockData();
+        setData(mockData);
+        setError(null);
+      } catch (err) {
+        console.error('Failed to load analytics data:', err);
+        setError('Failed to load analytics data. Please try again.');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    initializeData();
+  }, []);
+
+  // Handle data refresh
+  const handleRefresh = useCallback(async () => {
+    try {
+      setIsLoading(true);
+      
+      // Simulate API call delay
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      const mockData = generateMockData();
+      setData(mockData);
+      setError(null);
+    } catch (err) {
+      console.error('Failed to refresh data:', err);
+      setError('Failed to refresh data. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  // Handle filter changes
+  const handleFilterChange = useCallback((filters: AnalyticsFilters) => {
+    // Sanitize search query input
+    if (filters.searchQuery) {
+      filters.searchQuery = sanitizeString(filters.searchQuery);
+    }
+
+    // In a real application, this would trigger an API call with filters
+    console.log('Filters changed:', filters);
+    
+    // For demo purposes, we'll just log the filters
+    // In production, you would send these filters to your API endpoint
+    // const response = await fetch('/api/analytics/vendor-performance', {
+    //   method: 'POST',
+    //   headers: { 'Content-Type': 'application/json' },
+    //   body: JSON.stringify({ filters })
+    // });
+  }, []);
+
+  // Handle data export
+  const handleExportData = useCallback(async (format: 'csv' | 'pdf') => {
+    try {
+      if (!data) return;
+
+      // In a real application, this would call an API endpoint
+      console.log(`Exporting data in ${format} format`);
+      
+      // Mock export functionality
+      const filename = `vendor-analytics-${new Date().toISOString().split('T')[0]}.${format}`;
+      
+      if (format === 'csv') {
+        const csvData = data.vendorMetrics.map(vendor => ({
+          'Vendor Name': vendor.vendorName,
+          'Vendor Type': vendor.vendorType,
+          'Response Time (min)': vendor.responseTimeMinutes,
+          'Booking Success Rate (%)': Math.round(vendor.bookingSuccessRate * 100),
+          'Customer Satisfaction': vendor.customerSatisfactionScore.toFixed(1),
+          'Total Bookings': vendor.totalBookings,
+          'Total Revenue (£)': vendor.totalRevenue,
+          'Average Rating': vendor.averageRating.toFixed(1),
+        }));
+        
+        // Create CSV content
+        const headers = Object.keys(csvData[0]).join(',');
+        const rows = csvData.map(row => Object.values(row).join(','));
+        const csvContent = [headers, ...rows].join('\n');
+        
+        // Trigger download
+        const blob = new Blob([csvContent], { type: 'text/csv' });
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        window.URL.revokeObjectURL(url);
+      }
+    } catch (err) {
+      console.error('Export failed:', err);
+      setError('Export failed. Please try again.');
+    }
+  }, [data]);
+
+  // Loading state
+  if (isLoading && !data) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.9 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="bg-white rounded-lg p-8 shadow-sm"
+        >
+          <div className="flex items-center space-x-3">
+            <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600"></div>
+            <span className="text-gray-600">Loading vendor analytics...</span>
+          </div>
+        </motion.div>
+      </div>
+    );
+  }
+
+  // Error state
+  if (error) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.9 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="bg-white rounded-lg p-8 shadow-sm text-center"
+        >
+          <div className="text-red-600 text-lg font-medium mb-2">Error</div>
+          <div className="text-gray-600 mb-4">{error}</div>
+          <button
+            onClick={handleRefresh}
+            className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            Try Again
+          </button>
+        </motion.div>
+      </div>
+    );
+  }
+
+  if (!data) {
+    return null;
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="min-h-screen bg-gray-50 py-6"
+    >
+      <VendorAnalyticsDashboard
+        vendorMetrics={data.vendorMetrics}
+        dashboardData={data.dashboardData}
+        onRefresh={handleRefresh}
+        onFilterChange={handleFilterChange}
+        onExportData={handleExportData}
+      />
+    </motion.div>
+  );
+}

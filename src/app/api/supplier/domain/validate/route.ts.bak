@@ -1,0 +1,182 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
+
+// Validation schema
+const validateDomainSchema = z.object({
+  domain: z.string().min(1).regex(/^[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]$/, 'Invalid domain format')
+});
+
+export interface DomainValidationResult {
+  valid: boolean;
+  available: boolean;
+  errors: string[];
+  suggestions?: string[];
+}
+
+// POST /api/supplier/domain/validate - Validate domain availability and format
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const { domain } = validateDomainSchema.parse(body);
+
+    const normalizedDomain = domain.toLowerCase().trim();
+    const result: DomainValidationResult = {
+      valid: false,
+      available: false,
+      errors: [],
+      suggestions: []
+    };
+
+    // Basic format validation
+    const domainRegex = /^[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]$/;
+    if (!domainRegex.test(normalizedDomain)) {
+      result.errors.push('Invalid domain format. Use alphanumeric characters and dots only.');
+      return NextResponse.json({ success: true, data: result });
+    }
+
+    // Check minimum length
+    if (normalizedDomain.length < 3) {
+      result.errors.push('Domain must be at least 3 characters long.');
+      return NextResponse.json({ success: true, data: result });
+    }
+
+    // Check maximum length
+    if (normalizedDomain.length > 253) {
+      result.errors.push('Domain must be less than 254 characters long.');
+      return NextResponse.json({ success: true, data: result });
+    }
+
+    // Check for valid TLD
+    const parts = normalizedDomain.split('.');
+    if (parts.length < 2) {
+      result.errors.push('Domain must include a valid top-level domain (e.g., .com, .org).');
+      return NextResponse.json({ success: true, data: result });
+    }
+
+    const tld = parts[parts.length - 1];
+    if (tld.length < 2) {
+      result.errors.push('Top-level domain must be at least 2 characters long.');
+      return NextResponse.json({ success: true, data: result });
+    }
+
+    // Check for reserved/protected domains
+    const reservedDomains = [
+      'localhost',
+      'wedsync.app',
+      'wedsync.com',
+      'suppliers.wedsync.app',
+      'api.wedsync.app',
+      'admin.wedsync.app'
+    ];
+
+    if (reservedDomains.some(reserved => normalizedDomain.includes(reserved))) {
+      result.errors.push('This domain is reserved and cannot be used.');
+      result.suggestions?.push('Try using a subdomain of your own domain (e.g., portal.yourbusiness.com)');
+      return NextResponse.json({ success: true, data: result });
+    }
+
+    // Check for common invalid patterns
+    if (normalizedDomain.startsWith('-') || normalizedDomain.endsWith('-')) {
+      result.errors.push('Domain cannot start or end with a hyphen.');
+      return NextResponse.json({ success: true, data: result });
+    }
+
+    if (normalizedDomain.includes('..')) {
+      result.errors.push('Domain cannot contain consecutive dots.');
+      return NextResponse.json({ success: true, data: result });
+    }
+
+    // Check for subdomain appropriateness
+    if (parts.length > 3) {
+      result.errors.push('Domain has too many subdomains. Use a simpler structure (e.g., portal.yourbusiness.com).');
+      return NextResponse.json({ success: true, data: result });
+    }
+
+    // Validate subdomain patterns for wedding businesses
+    const firstPart = parts[0];
+    const suggestedSubdomains = ['portal', 'client', 'clients', 'app', 'wedding', 'plan'];
+    
+    if (parts.length >= 2 && !suggestedSubdomains.some(sub => firstPart.includes(sub))) {
+      result.suggestions?.push('Consider using professional subdomains like: portal.yourbusiness.com, clients.yourbusiness.com');
+    }
+
+    // Basic DNS availability check (simplified for demo)
+    try {
+      // In a real implementation, you would use dns.resolve() here
+      // For now, we'll simulate availability checking
+      const isAvailable = await checkDomainAvailability(normalizedDomain);
+      result.available = isAvailable;
+      
+      if (!isAvailable) {
+        result.errors.push('This domain appears to already be configured in our system or is not available.');
+        result.suggestions?.push('Try a different subdomain or contact support if this is your domain.');
+      }
+    } catch (dnsError) {
+      // If DNS check fails, we'll assume it might be available but warn the user
+      result.available = true;
+      result.suggestions?.push('Unable to verify domain availability. Please ensure you own this domain.');
+    }
+
+    // If no errors, mark as valid
+    if (result.errors.length === 0) {
+      result.valid = true;
+      result.available = result.available !== false; // Default to true if not explicitly false
+    }
+
+    // Add helpful suggestions for wedding businesses
+    if (result.valid && result.available) {
+      result.suggestions = [
+        'This domain looks good! Make sure you have DNS access to add the required records.',
+        'Tip: Use a professional subdomain like "portal" or "clients" for the best client experience.'
+      ];
+    }
+
+    return NextResponse.json({
+      success: true,
+      data: result
+    });
+
+  } catch (error) {
+    console.error('Domain validation error:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { 
+          success: false, 
+          error: 'Invalid request parameters',
+          details: error.errors 
+        },
+        { status: 400 }
+      );
+    }
+
+    return NextResponse.json(
+      { success: false, error: 'Domain validation failed' },
+      { status: 500 }
+    );
+  }
+}
+
+// Helper function to check domain availability
+async function checkDomainAvailability(domain: string): Promise<boolean> {
+  // In a real implementation, this would:
+  // 1. Check if domain is already configured in your system
+  // 2. Perform DNS lookups to see if domain exists
+  // 3. Check domain registration status
+  // 4. Verify domain is not on blocklists
+  
+  // For demo purposes, simulate availability check
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      // Simulate some domains being unavailable
+      const unavailableDomains = [
+        'test.wedsync.app',
+        'demo.wedsync.app',
+        'admin.example.com'
+      ];
+      
+      const isAvailable = !unavailableDomains.includes(domain);
+      resolve(isAvailable);
+    }, 500); // Simulate network delay
+  });
+}

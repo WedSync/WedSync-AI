@@ -1,0 +1,379 @@
+'use client';
+
+import React from 'react';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import {
+  FileText,
+  Plus,
+  AlertCircle,
+  Clock,
+  Users,
+  Eye,
+  Settings,
+} from 'lucide-react';
+
+interface FormNodeConfigProps {
+  config: Record<string, any>;
+  onChange: (config: Record<string, any>) => void;
+}
+
+const availableForms = [
+  {
+    id: 'wedding-details',
+    name: 'Wedding Details Form',
+    description: 'Collect basic wedding information',
+    fields: ['wedding_date', 'venue', 'guest_count', 'style_preferences'],
+    estimatedTime: '5-7 minutes',
+  },
+  {
+    id: 'client-preferences',
+    name: 'Client Preferences',
+    description: 'Photography style and preferences',
+    fields: [
+      'photo_style',
+      'must_have_shots',
+      'family_photos',
+      'special_requests',
+    ],
+    estimatedTime: '8-10 minutes',
+  },
+  {
+    id: 'contact-info',
+    name: 'Contact Information',
+    description: 'Extended contact details',
+    fields: ['phone', 'address', 'emergency_contact', 'social_media'],
+    estimatedTime: '3-5 minutes',
+  },
+  {
+    id: 'package-selection',
+    name: 'Package Selection',
+    description: 'Choose photography packages',
+    fields: ['package_type', 'add_ons', 'timeline', 'special_requests'],
+    estimatedTime: '10-15 minutes',
+  },
+];
+
+const formFields = [
+  { id: 'wedding_date', name: 'Wedding Date', type: 'date', required: true },
+  { id: 'venue', name: 'Venue Name', type: 'text', required: true },
+  { id: 'guest_count', name: 'Guest Count', type: 'number', required: false },
+  {
+    id: 'style_preferences',
+    name: 'Style Preferences',
+    type: 'select',
+    required: false,
+  },
+  {
+    id: 'photo_style',
+    name: 'Photography Style',
+    type: 'select',
+    required: true,
+  },
+  {
+    id: 'must_have_shots',
+    name: 'Must-Have Shots',
+    type: 'textarea',
+    required: false,
+  },
+  {
+    id: 'family_photos',
+    name: 'Family Photo Requirements',
+    type: 'textarea',
+    required: false,
+  },
+  { id: 'phone', name: 'Phone Number', type: 'tel', required: true },
+  { id: 'address', name: 'Address', type: 'text', required: false },
+  {
+    id: 'emergency_contact',
+    name: 'Emergency Contact',
+    type: 'text',
+    required: false,
+  },
+];
+
+export function FormNodeConfig({ config, onChange }: FormNodeConfigProps) {
+  const handleFieldChange = (field: string, value: any) => {
+    onChange({ [field]: value });
+  };
+
+  const handleFormSelect = (formId: string) => {
+    const selectedForm = availableForms.find((f) => f.id === formId);
+    if (selectedForm) {
+      onChange({
+        formId,
+        formName: selectedForm.name,
+        fields: selectedForm.fields,
+        estimatedTime: selectedForm.estimatedTime,
+      });
+    }
+  };
+
+  const handleFieldToggle = (fieldId: string) => {
+    const currentFields = config.fields || [];
+    const newFields = currentFields.includes(fieldId)
+      ? currentFields.filter((f: string) => f !== fieldId)
+      : [...currentFields, fieldId];
+
+    handleFieldChange('fields', newFields);
+  };
+
+  const selectedForm = availableForms.find((f) => f.id === config.formId);
+
+  return (
+    <div className="space-y-4">
+      {/* Form Selection */}
+      <div>
+        <label className="text-sm font-medium text-foreground block mb-2">
+          Select Form Template
+        </label>
+        <select
+          value={config.formId || ''}
+          onChange={(e) => handleFormSelect(e.target.value)}
+          className="w-full px-3 py-2 border border-gray-300 rounded-md bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+        >
+          <option value="">Choose a form...</option>
+          {availableForms.map((form) => (
+            <option key={form.id} value={form.id}>
+              {form.name}
+            </option>
+          ))}
+        </select>
+        {selectedForm && (
+          <div className="mt-2 p-2 bg-muted/50 rounded text-xs">
+            <p className="text-muted-foreground">{selectedForm.description}</p>
+            <p className="text-muted-foreground mt-1">
+              <Clock className="inline h-3 w-3 mr-1" />
+              Est. completion time: {selectedForm.estimatedTime}
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* Custom Form Name */}
+      {config.formId && (
+        <div>
+          <label className="text-sm font-medium text-foreground block mb-2">
+            Display Name
+          </label>
+          <input
+            type="text"
+            value={config.formName || ''}
+            onChange={(e) => handleFieldChange('formName', e.target.value)}
+            className="w-full px-3 py-2 border border-gray-300 rounded-md bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            placeholder="Custom form name..."
+          />
+        </div>
+      )}
+
+      {/* Form Fields Configuration */}
+      {config.formId && (
+        <div>
+          <label className="text-sm font-medium text-foreground block mb-2">
+            Form Fields
+          </label>
+          <div className="space-y-2 max-h-48 overflow-y-auto">
+            {formFields.map((field) => (
+              <div
+                key={field.id}
+                className="flex items-center justify-between p-2 border border-gray-300 rounded"
+              >
+                <div className="flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    checked={(config.fields || []).includes(field.id)}
+                    onChange={() => handleFieldToggle(field.id)}
+                    className="rounded border-gray-300"
+                  />
+                  <div>
+                    <span className="text-sm font-medium">{field.name}</span>
+                    <div className="flex items-center space-x-2">
+                      <Badge variant="outline" className="text-xs">
+                        {field.type}
+                      </Badge>
+                      {field.required && (
+                        <Badge variant="destructive" className="text-xs">
+                          Required
+                        </Badge>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Target Audience */}
+      <div>
+        <label className="text-sm font-medium text-foreground block mb-2">
+          Target Audience
+        </label>
+        <div className="grid grid-cols-2 gap-2">
+          {[
+            { value: 'client', label: 'Client Only' },
+            { value: 'vendor', label: 'Vendor Only' },
+            { value: 'both', label: 'Both' },
+            { value: 'team', label: 'Team Member' },
+          ].map((option) => (
+            <Button
+              key={option.value}
+              variant={config.audience === option.value ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => handleFieldChange('audience', option.value)}
+              className="flex items-center space-x-1"
+            >
+              <Users className="h-3 w-3" />
+              <span>{option.label}</span>
+            </Button>
+          ))}
+        </div>
+      </div>
+
+      {/* Form Settings */}
+      <div>
+        <label className="text-sm font-medium text-foreground block mb-2">
+          Form Settings
+        </label>
+        <div className="space-y-2">
+          <label className="flex items-center space-x-2">
+            <input
+              type="checkbox"
+              checked={config.required || false}
+              onChange={(e) => handleFieldChange('required', e.target.checked)}
+              className="rounded border-gray-300"
+            />
+            <AlertCircle className="h-4 w-4" />
+            <span className="text-sm">
+              Required form (blocks progress until completed)
+            </span>
+          </label>
+
+          <label className="flex items-center space-x-2">
+            <input
+              type="checkbox"
+              checked={config.reminder || false}
+              onChange={(e) => handleFieldChange('reminder', e.target.checked)}
+              className="rounded border-gray-300"
+            />
+            <Clock className="h-4 w-4" />
+            <span className="text-sm">Send reminder if not completed</span>
+          </label>
+
+          <label className="flex items-center space-x-2">
+            <input
+              type="checkbox"
+              checked={config.saveProgress || false}
+              onChange={(e) =>
+                handleFieldChange('saveProgress', e.target.checked)
+              }
+              className="rounded border-gray-300"
+            />
+            <FileText className="h-4 w-4" />
+            <span className="text-sm">Allow saving progress</span>
+          </label>
+
+          <label className="flex items-center space-x-2">
+            <input
+              type="checkbox"
+              checked={config.showProgress || false}
+              onChange={(e) =>
+                handleFieldChange('showProgress', e.target.checked)
+              }
+              className="rounded border-gray-300"
+            />
+            <Settings className="h-4 w-4" />
+            <span className="text-sm">Show progress indicator</span>
+          </label>
+        </div>
+      </div>
+
+      {/* Reminder Settings */}
+      {config.reminder && (
+        <div>
+          <label className="text-sm font-medium text-foreground block mb-2">
+            Reminder Settings
+          </label>
+          <div className="space-y-2">
+            <div className="flex items-center space-x-2">
+              <span className="text-sm">Send reminder after</span>
+              <input
+                type="number"
+                min="1"
+                max="30"
+                value={config.reminderDelay || 3}
+                onChange={(e) =>
+                  handleFieldChange(
+                    'reminderDelay',
+                    parseInt(e.target.value) || 3,
+                  )
+                }
+                className="w-16 px-2 py-1 border border-gray-300 rounded text-sm"
+              />
+              <span className="text-sm">days</span>
+            </div>
+
+            <div className="flex items-center space-x-2">
+              <span className="text-sm">Maximum reminders:</span>
+              <input
+                type="number"
+                min="1"
+                max="5"
+                value={config.maxReminders || 2}
+                onChange={(e) =>
+                  handleFieldChange(
+                    'maxReminders',
+                    parseInt(e.target.value) || 2,
+                  )
+                }
+                className="w-16 px-2 py-1 border border-gray-300 rounded text-sm"
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Actions */}
+      <div className="pt-2 space-y-2">
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-full flex items-center justify-center space-x-2"
+          disabled={!config.formId}
+        >
+          <Eye className="h-4 w-4" />
+          <span>Preview Form</span>
+        </Button>
+
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-full flex items-center justify-center space-x-2"
+        >
+          <Plus className="h-4 w-4" />
+          <span>Create Custom Form</span>
+        </Button>
+      </div>
+
+      {/* Configuration Summary */}
+      {config.formId && (
+        <div className="mt-4 p-3 bg-muted/50 rounded-lg">
+          <h4 className="text-sm font-medium mb-2">Form Configuration</h4>
+          <div className="text-xs text-muted-foreground space-y-1">
+            <p>Form: {config.formName}</p>
+            <p>Fields: {(config.fields || []).length} selected</p>
+            <p>Audience: {config.audience || 'client'}</p>
+            <p>Required: {config.required ? 'Yes' : 'No'}</p>
+            {config.reminder && (
+              <p>
+                Reminders: Up to {config.maxReminders || 2} after{' '}
+                {config.reminderDelay || 3} days
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

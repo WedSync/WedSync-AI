@@ -1,0 +1,281 @@
+// Rate Limiting Types for WS-199 Implementation
+// Team A - Frontend/UI Focus
+
+export interface RateLimitMetrics {
+  id: string;
+  userId: string;
+  organizationId: string;
+  endpoint: string;
+  requestsUsed: number;
+  requestsAllowed: number;
+  resetTime: Date;
+  subscriptionTier: SubscriptionTier;
+  status: RateLimitStatus;
+  weddingContext?: WeddingRateLimitContext;
+}
+
+export interface RateViolation {
+  id: string;
+  userId: string;
+  organizationId: string;
+  endpoint: string;
+  violationType: ViolationType;
+  timestamp: Date;
+  requestsAttempted: number;
+  requestsAllowed: number;
+  userAgent: string;
+  ipAddress: string;
+  retryAfter: number;
+  upgradeRecommendation?: UpgradeRecommendation;
+}
+
+export interface TierLimits {
+  tier: SubscriptionTier;
+  monthlyRequestLimit: number;
+  dailyRequestLimit: number;
+  rateLimitPerMinute: number;
+  burstAllowance: number;
+  endpointLimits: EndpointLimit[];
+  weddingSeasonMultiplier: number;
+  features: string[];
+  price: number;
+}
+
+export interface UsageMetrics {
+  totalRequests: number;
+  dailyRequests: number;
+  hourlyRequests: number;
+  remainingQuota: number;
+  usagePercentage: number;
+  peakUsageTime: Date;
+  averageResponseTime: number;
+  errorRate: number;
+}
+
+export interface SubscriptionLimits {
+  currentTier: SubscriptionTier;
+  nextTier?: SubscriptionTier;
+  monthlyLimit: number;
+  dailyLimit: number;
+  minutelyLimit: number;
+  upgradeRequired: boolean;
+  daysUntilReset: number;
+}
+
+export interface EndpointUsage {
+  endpoint: string;
+  method: string;
+  requestCount: number;
+  errorCount: number;
+  averageLatency: number;
+  rateLimitHits: number;
+  weddingIndustryRelevance: WeddingRelevanceLevel;
+  description: string;
+}
+
+export interface SuspiciousPattern {
+  id: string;
+  patternType: PatternType;
+  severity: SecuritySeverity;
+  detectedAt: Date;
+  userId: string;
+  organizationId: string;
+  requestCount: number;
+  timeWindow: string;
+  indicators: string[];
+  riskScore: number;
+  automatedAction?: AutomatedResponse;
+}
+
+export interface AutomatedResponse {
+  id: string;
+  action: ResponseAction;
+  appliedAt: Date;
+  duration: number;
+  rateLimitAdjustment?: number;
+  blockDuration?: number;
+  notificationSent: boolean;
+  escalationLevel: number;
+}
+
+export interface ViolationHistory {
+  userId: string;
+  organizationId: string;
+  violations: RateViolation[];
+  totalViolations: number;
+  recentViolations: number;
+  escalationLevel: number;
+  lastViolation: Date;
+  averageTimeBetweenViolations: number;
+}
+
+export interface WeddingRateLimitContext {
+  contextType: WeddingContextType;
+  seasonalMultiplier: number;
+  isPeakSeason: boolean;
+  weddingDate?: Date;
+  supplierType?: SupplierType;
+  couplePhase?: PlanningPhase;
+  urgency: UrgencyLevel;
+  specialEvents?: SpecialEvent[];
+}
+
+export interface UpgradeRecommendation {
+  currentTier: SubscriptionTier;
+  recommendedTier: SubscriptionTier;
+  monthlySavings?: number;
+  additionalRequests: number;
+  additionalFeatures: string[];
+  urgencyScore: number;
+  weddingDeadlineImpact?: boolean;
+  customMessage: string;
+}
+
+export interface EndpointLimit {
+  endpoint: string;
+  requestsPerMinute: number;
+  requestsPerHour: number;
+  requestsPerDay: number;
+  burstAllowance: number;
+  priority: number;
+}
+
+// Enums
+
+export enum SubscriptionTier {
+  FREE = 'FREE',
+  STARTER = 'STARTER',
+  PROFESSIONAL = 'PROFESSIONAL',
+  SCALE = 'SCALE',
+  ENTERPRISE = 'ENTERPRISE',
+}
+
+export enum RateLimitStatus {
+  SAFE = 'SAFE', // Well within limits (0-60%)
+  MODERATE = 'MODERATE', // Normal usage (60-80%)
+  HIGH = 'HIGH', // Approaching limits (80-95%)
+  EXCEEDED = 'EXCEEDED', // Limits exceeded (95-100%)
+}
+
+export enum ViolationType {
+  RATE_LIMIT_EXCEEDED = 'RATE_LIMIT_EXCEEDED',
+  BURST_LIMIT_EXCEEDED = 'BURST_LIMIT_EXCEEDED',
+  DAILY_LIMIT_EXCEEDED = 'DAILY_LIMIT_EXCEEDED',
+  MONTHLY_LIMIT_EXCEEDED = 'MONTHLY_LIMIT_EXCEEDED',
+  SUSPICIOUS_PATTERN = 'SUSPICIOUS_PATTERN',
+  AUTOMATED_ABUSE = 'AUTOMATED_ABUSE',
+}
+
+export enum PatternType {
+  HIGH_FREQUENCY_REQUESTS = 'HIGH_FREQUENCY_REQUESTS',
+  DISTRIBUTED_ATTACK = 'DISTRIBUTED_ATTACK',
+  CREDENTIAL_STUFFING = 'CREDENTIAL_STUFFING',
+  API_SCRAPING = 'API_SCRAPING',
+  WEDDING_DATA_HARVESTING = 'WEDDING_DATA_HARVESTING',
+  SUPPLIER_LIST_SCRAPING = 'SUPPLIER_LIST_SCRAPING',
+}
+
+export enum SecuritySeverity {
+  LOW = 'LOW',
+  MEDIUM = 'MEDIUM',
+  HIGH = 'HIGH',
+  CRITICAL = 'CRITICAL',
+}
+
+export enum ResponseAction {
+  SOFT_THROTTLE = 'SOFT_THROTTLE',
+  HARD_THROTTLE = 'HARD_THROTTLE',
+  TEMPORARY_BLOCK = 'TEMPORARY_BLOCK',
+  PERMANENT_BLOCK = 'PERMANENT_BLOCK',
+  REQUIRE_CAPTCHA = 'REQUIRE_CAPTCHA',
+  ESCALATE_TO_HUMAN = 'ESCALATE_TO_HUMAN',
+}
+
+export enum WeddingContextType {
+  SUPPLIER_API_USAGE = 'SUPPLIER_API_USAGE',
+  COUPLE_FORM_SUBMISSION = 'COUPLE_FORM_SUBMISSION',
+  PHOTOGRAPHER_UPLOAD = 'PHOTOGRAPHER_UPLOAD',
+  VENUE_BOOKING_CHECK = 'VENUE_BOOKING_CHECK',
+  BRIDAL_SHOW_TRAFFIC = 'BRIDAL_SHOW_TRAFFIC',
+  WEDDING_SEASON_PEAK = 'WEDDING_SEASON_PEAK',
+}
+
+export enum SupplierType {
+  PHOTOGRAPHER = 'PHOTOGRAPHER',
+  VENUE = 'VENUE',
+  FLORIST = 'FLORIST',
+  CATERING = 'CATERING',
+  MUSIC_DJ = 'MUSIC_DJ',
+  VIDEOGRAPHY = 'VIDEOGRAPHY',
+  WEDDING_PLANNER = 'WEDDING_PLANNER',
+}
+
+export enum PlanningPhase {
+  EARLY_PLANNING = 'EARLY_PLANNING', // 12+ months before
+  ACTIVE_PLANNING = 'ACTIVE_PLANNING', // 6-12 months before
+  FINAL_PLANNING = 'FINAL_PLANNING', // 3-6 months before
+  CRUNCH_TIME = 'CRUNCH_TIME', // 1-3 months before
+  LAST_MINUTE = 'LAST_MINUTE', // Less than 1 month
+  WEDDING_WEEK = 'WEDDING_WEEK', // Wedding week
+}
+
+export enum UrgencyLevel {
+  LOW = 'LOW',
+  MODERATE = 'MODERATE',
+  HIGH = 'HIGH',
+  URGENT = 'URGENT',
+  CRITICAL = 'CRITICAL',
+}
+
+export enum SpecialEvent {
+  BRIDAL_SHOW = 'BRIDAL_SHOW',
+  WEDDING_FAIR = 'WEDDING_FAIR',
+  VENUE_OPEN_HOUSE = 'VENUE_OPEN_HOUSE',
+  SUPPLIER_SHOWCASE = 'SUPPLIER_SHOWCASE',
+  SEASONAL_PROMOTION = 'SEASONAL_PROMOTION',
+}
+
+export enum WeddingRelevanceLevel {
+  CRITICAL = 'CRITICAL', // Core wedding functionality
+  HIGH = 'HIGH', // Important wedding features
+  MEDIUM = 'MEDIUM', // Supporting wedding features
+  LOW = 'LOW', // General platform features
+  ADMINISTRATIVE = 'ADMINISTRATIVE', // Backend/admin only
+}
+
+// Color constants for UI
+export const RATE_LIMIT_COLORS = {
+  [RateLimitStatus.SAFE]: '#10B981', // Green
+  [RateLimitStatus.MODERATE]: '#3B82F6', // Blue
+  [RateLimitStatus.HIGH]: '#F59E0B', // Yellow
+  [RateLimitStatus.EXCEEDED]: '#EF4444', // Red
+} as const;
+
+export const SEVERITY_COLORS = {
+  [SecuritySeverity.LOW]: '#10B981', // Green
+  [SecuritySeverity.MEDIUM]: '#F59E0B', // Yellow
+  [SecuritySeverity.HIGH]: '#EF4444', // Red
+  [SecuritySeverity.CRITICAL]: '#DC2626', // Dark Red
+} as const;
+
+// Wedding season detection helpers
+export const PEAK_WEDDING_MONTHS = [4, 5, 6, 7, 8, 9, 10]; // Apr-Oct
+export const BRIDAL_SHOW_MONTHS = [1, 2, 3, 11, 12]; // Jan-Mar, Nov-Dec
+
+export function isPeakWeddingSeason(date: Date = new Date()): boolean {
+  return PEAK_WEDDING_MONTHS.includes(date.getMonth() + 1);
+}
+
+export function isBridalShowSeason(date: Date = new Date()): boolean {
+  return BRIDAL_SHOW_MONTHS.includes(date.getMonth() + 1);
+}
+
+export function getSeasonalMultiplier(date: Date = new Date()): number {
+  if (isPeakWeddingSeason(date)) {
+    return 2.5; // 2.5x normal traffic during wedding season
+  }
+  if (isBridalShowSeason(date)) {
+    return 1.8; // 1.8x normal traffic during bridal show season
+  }
+  return 1.0; // Normal traffic
+}

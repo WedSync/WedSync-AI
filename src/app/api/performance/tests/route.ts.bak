@@ -1,0 +1,563 @@
+/**
+ * WS-180 Performance Testing Framework - Main Test Management API
+ * Team B - Round 1 Implementation
+ * 
+ * Provides CRUD operations for performance test configurations, results,
+ * and status tracking with wedding-specific context and security.
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { performanceMonitor } from '@/lib/testing/performance-monitor';
+import { performanceBaselineManager } from '@/lib/testing/performance-baseline-manager';
+
+// Types for API requests/responses
+interface PerformanceTestListRequest {
+  testType?: string;
+  testScenario?: string;
+  environment?: string;
+  status?: string;
+  weddingSeason?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+interface PerformanceTestResponse {
+  id: string;
+  name: string;
+  testType: string;
+  testScenario: string;
+  status: string;
+  environment: string;
+  weddingSeason: boolean;
+  userType: string;
+  weddingSizeCategory: string;
+  performanceScore?: number;
+  startTime?: string;
+  endTime?: string;
+  duration?: number;
+  createdAt: string;
+  createdBy?: string;
+  metrics?: any;
+  baselineComparison?: any;
+}
+
+/**
+ * GET /api/performance/tests
+ * Lists performance test configurations and results with filtering
+ */
+export async function GET(request: NextRequest): Promise<NextResponse> {
+  try {
+    const supabase = createClient();
+    
+    // Verify admin/engineer authentication
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 }
+      );
+    }
+
+    // Check user role (admin or engineer only)
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('role')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!profile || !['admin', 'engineer'].includes(profile.role)) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions. Admin or engineer role required.' },
+        { status: 403 }
+      );
+    }
+
+    // Parse query parameters
+    const { searchParams } = new URL(request.url);
+    const filters: PerformanceTestListRequest = {
+      testType: searchParams.get('testType') || undefined,
+      testScenario: searchParams.get('testScenario') || undefined,
+      environment: searchParams.get('environment') || undefined,
+      status: searchParams.get('status') || undefined,
+      weddingSeason: searchParams.get('weddingSeason') === 'true' || undefined,
+      limit: parseInt(searchParams.get('limit') || '50'),
+      offset: parseInt(searchParams.get('offset') || '0')
+    };
+
+    // Build query with filters
+    let query = supabase
+      .from('performance_test_runs')
+      .select(`
+        id,
+        name,
+        test_type,
+        test_scenario,
+        status,
+        environment,
+        wedding_season,
+        user_type,
+        wedding_size_category,
+        performance_score,
+        start_time,
+        end_time,
+        duration_ms,
+        created_at,
+        created_by,
+        metrics,
+        baseline_comparison
+      `)
+      .order('created_at', { ascending: false });
+
+    // Apply filters
+    if (filters.testType) {
+      query = query.eq('test_type', filters.testType);
+    }
+    if (filters.testScenario) {
+      query = query.eq('test_scenario', filters.testScenario);
+    }
+    if (filters.environment) {
+      query = query.eq('environment', filters.environment);
+    }
+    if (filters.status) {
+      query = query.eq('status', filters.status);
+    }
+    if (filters.weddingSeason !== undefined) {
+      query = query.eq('wedding_season', filters.weddingSeason);
+    }
+
+    // Apply pagination
+    query = query.range(filters.offset!, filters.offset! + filters.limit! - 1);
+
+    const { data: tests, error, count } = await query;
+
+    if (error) {
+      console.error('Database query error:', error);
+      return NextResponse.json(
+        { error: 'Failed to fetch performance tests' },
+        { status: 500 }
+      );
+    }
+
+    // Transform data for response
+    const testResponses: PerformanceTestResponse[] = (tests || []).map(test => ({
+      id: test.id,
+      name: test.name,
+      testType: test.test_type,
+      testScenario: test.test_scenario,
+      status: test.status,
+      environment: test.environment,
+      weddingSeason: test.wedding_season,
+      userType: test.user_type,
+      weddingSizeCategory: test.wedding_size_category,
+      performanceScore: test.performance_score,
+      startTime: test.start_time,
+      endTime: test.end_time,
+      duration: test.duration_ms,
+      createdAt: test.created_at,
+      createdBy: test.created_by,
+      metrics: test.metrics,
+      baselineComparison: test.baseline_comparison
+    }));
+
+    // Get test statistics for dashboard
+    const { data: stats } = await supabase
+      .from('performance_test_runs')
+      .select('status, test_type')
+      .gte('created_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString());
+
+    const testStats = {
+      totalTests: tests?.length || 0,
+      runningTests: stats?.filter(t => t.status === 'running').length || 0,
+      completedTests: stats?.filter(t => t.status === 'completed').length || 0,
+      failedTests: stats?.filter(t => t.status === 'failed').length || 0,
+      testTypes: [...new Set(stats?.map(t => t.test_type) || [])].length
+    };
+
+    return NextResponse.json({
+      tests: testResponses,
+      pagination: {
+        offset: filters.offset,
+        limit: filters.limit,
+        total: count || testResponses.length
+      },
+      stats: testStats
+    });
+
+  } catch (error) {
+    console.error('Error in GET /api/performance/tests:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * POST /api/performance/tests
+ * Creates a new performance test configuration (not execution)
+ */
+export async function POST(request: NextRequest): Promise<NextResponse> {
+  try {
+    const supabase = createClient();
+    
+    // Verify admin/engineer authentication
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 }
+      );
+    }
+
+    // Check user role
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('role')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!profile || !['admin', 'engineer'].includes(profile.role)) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions. Admin or engineer role required.' },
+        { status: 403 }
+      );
+    }
+
+    // Parse request body
+    const body = await request.json();
+    const {
+      name,
+      testType,
+      testScenario,
+      userType,
+      weddingSizeCategory,
+      environment,
+      testConfiguration,
+      notes
+    } = body;
+
+    // Validate required fields
+    const requiredFields = ['name', 'testType', 'testScenario', 'userType', 'environment'];
+    const missing = requiredFields.filter(field => !body[field]);
+    
+    if (missing.length > 0) {
+      return NextResponse.json(
+        { error: `Missing required fields: ${missing.join(', ')}` },
+        { status: 400 }
+      );
+    }
+
+    // Validate enum values
+    const validTestTypes = ['load', 'stress', 'spike', 'endurance', 'volume', 'smoke'];
+    const validUserTypes = ['couple', 'supplier', 'admin', 'guest', 'anonymous'];
+    const validEnvironments = ['development', 'staging', 'production'];
+    const validWeddingSizes = ['small', 'medium', 'large', 'xl'];
+
+    if (!validTestTypes.includes(testType)) {
+      return NextResponse.json(
+        { error: `Invalid testType. Must be one of: ${validTestTypes.join(', ')}` },
+        { status: 400 }
+      );
+    }
+
+    if (!validUserTypes.includes(userType)) {
+      return NextResponse.json(
+        { error: `Invalid userType. Must be one of: ${validUserTypes.join(', ')}` },
+        { status: 400 }
+      );
+    }
+
+    if (!validEnvironments.includes(environment)) {
+      return NextResponse.json(
+        { error: `Invalid environment. Must be one of: ${validEnvironments.join(', ')}` },
+        { status: 400 }
+      );
+    }
+
+    if (weddingSizeCategory && !validWeddingSizes.includes(weddingSizeCategory)) {
+      return NextResponse.json(
+        { error: `Invalid weddingSizeCategory. Must be one of: ${validWeddingSizes.join(', ')}` },
+        { status: 400 }
+      );
+    }
+
+    // Create test configuration record
+    const { data: testRun, error } = await supabase
+      .from('performance_test_runs')
+      .insert({
+        name,
+        test_type: testType,
+        test_scenario: testScenario,
+        status: 'pending',
+        user_type: userType,
+        wedding_size_category: weddingSizeCategory || 'medium',
+        environment,
+        test_configuration: testConfiguration || {},
+        notes,
+        created_by: user.id
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Database insert error:', error);
+      return NextResponse.json(
+        { error: 'Failed to create test configuration' },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({
+      message: 'Test configuration created successfully',
+      test: {
+        id: testRun.id,
+        name: testRun.name,
+        testType: testRun.test_type,
+        testScenario: testRun.test_scenario,
+        status: testRun.status,
+        environment: testRun.environment,
+        createdAt: testRun.created_at
+      }
+    }, { status: 201 });
+
+  } catch (error) {
+    console.error('Error in POST /api/performance/tests:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * PUT /api/performance/tests/[id]
+ * Updates an existing performance test configuration
+ */
+export async function PUT(request: NextRequest): Promise<NextResponse> {
+  try {
+    const supabase = createClient();
+    
+    // Verify admin/engineer authentication
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 }
+      );
+    }
+
+    // Check user role
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('role')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!profile || !['admin', 'engineer'].includes(profile.role)) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions. Admin or engineer role required.' },
+        { status: 403 }
+      );
+    }
+
+    // Get test ID from URL
+    const { searchParams } = new URL(request.url);
+    const testId = searchParams.get('id');
+
+    if (!testId) {
+      return NextResponse.json(
+        { error: 'Test ID is required' },
+        { status: 400 }
+      );
+    }
+
+    // Parse request body
+    const body = await request.json();
+    const updateData: any = {};
+
+    // Only update provided fields
+    const allowedFields = [
+      'name', 'testType', 'testScenario', 'userType', 
+      'weddingSizeCategory', 'environment', 'testConfiguration', 'notes'
+    ];
+
+    for (const field of allowedFields) {
+      if (body[field] !== undefined) {
+        // Map camelCase to snake_case for database
+        const dbField = field === 'testType' ? 'test_type' :
+                       field === 'testScenario' ? 'test_scenario' :
+                       field === 'userType' ? 'user_type' :
+                       field === 'weddingSizeCategory' ? 'wedding_size_category' :
+                       field === 'testConfiguration' ? 'test_configuration' :
+                       field;
+        
+        updateData[dbField] = body[field];
+      }
+    }
+
+    if (Object.keys(updateData).length === 0) {
+      return NextResponse.json(
+        { error: 'No valid fields provided for update' },
+        { status: 400 }
+      );
+    }
+
+    // Check if test exists and user has permission
+    const { data: existingTest } = await supabase
+      .from('performance_test_runs')
+      .select('created_by, status')
+      .eq('id', testId)
+      .single();
+
+    if (!existingTest) {
+      return NextResponse.json(
+        { error: 'Test not found' },
+        { status: 404 }
+      );
+    }
+
+    // Only admin or test creator can update
+    if (profile.role !== 'admin' && existingTest.created_by !== user.id) {
+      return NextResponse.json(
+        { error: 'You can only update tests you created' },
+        { status: 403 }
+      );
+    }
+
+    // Don't allow updates to running or completed tests
+    if (['running', 'completed'].includes(existingTest.status)) {
+      return NextResponse.json(
+        { error: 'Cannot update running or completed tests' },
+        { status: 409 }
+      );
+    }
+
+    // Update the test
+    const { data: updatedTest, error } = await supabase
+      .from('performance_test_runs')
+      .update(updateData)
+      .eq('id', testId)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Database update error:', error);
+      return NextResponse.json(
+        { error: 'Failed to update test configuration' },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({
+      message: 'Test configuration updated successfully',
+      test: {
+        id: updatedTest.id,
+        name: updatedTest.name,
+        testType: updatedTest.test_type,
+        testScenario: updatedTest.test_scenario,
+        status: updatedTest.status,
+        environment: updatedTest.environment,
+        updatedAt: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    console.error('Error in PUT /api/performance/tests:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * DELETE /api/performance/tests/[id]
+ * Deletes a performance test configuration (admin only)
+ */
+export async function DELETE(request: NextRequest): Promise<NextResponse> {
+  try {
+    const supabase = createClient();
+    
+    // Verify admin authentication
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 }
+      );
+    }
+
+    // Check user role (admin only for deletions)
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('role')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!profile || profile.role !== 'admin') {
+      return NextResponse.json(
+        { error: 'Admin privileges required for test deletion' },
+        { status: 403 }
+      );
+    }
+
+    // Get test ID from URL
+    const { searchParams } = new URL(request.url);
+    const testId = searchParams.get('id');
+
+    if (!testId) {
+      return NextResponse.json(
+        { error: 'Test ID is required' },
+        { status: 400 }
+      );
+    }
+
+    // Check if test exists
+    const { data: existingTest } = await supabase
+      .from('performance_test_runs')
+      .select('status')
+      .eq('id', testId)
+      .single();
+
+    if (!existingTest) {
+      return NextResponse.json(
+        { error: 'Test not found' },
+        { status: 404 }
+      );
+    }
+
+    // Don't allow deletion of running tests
+    if (existingTest.status === 'running') {
+      return NextResponse.json(
+        { error: 'Cannot delete running tests. Cancel the test first.' },
+        { status: 409 }
+      );
+    }
+
+    // Delete the test
+    const { error } = await supabase
+      .from('performance_test_runs')
+      .delete()
+      .eq('id', testId);
+
+    if (error) {
+      console.error('Database delete error:', error);
+      return NextResponse.json(
+        { error: 'Failed to delete test configuration' },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({
+      message: 'Test configuration deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('Error in DELETE /api/performance/tests:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}

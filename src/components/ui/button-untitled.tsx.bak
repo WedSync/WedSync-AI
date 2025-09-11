@@ -1,0 +1,202 @@
+import * as React from 'react'
+import { cva, type VariantProps } from 'class-variance-authority'
+import { cn } from '@/lib/utils'
+
+// Enhanced button variants following Untitled UI patterns
+const buttonVariants = cva(
+  'inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 active:scale-[0.98]',
+  {
+    variants: {
+      variant: {
+        // Core Untitled UI variants
+        primary: 'bg-brand-600 text-white hover:bg-brand-700 shadow-sm',
+        secondary: 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50 shadow-sm',
+        tertiary: 'text-brand-700 hover:bg-brand-50',
+        destructive: 'bg-error text-white hover:bg-red-600 shadow-sm',
+        outline: 'border border-brand-300 text-brand-700 hover:bg-brand-50',
+        ghost: 'text-gray-600 hover:bg-gray-100 hover:text-gray-900',
+        link: 'text-brand-700 underline-offset-4 hover:underline',
+        
+        // Wedding-specific variants (preserved)
+        wedding: 'bg-gradient-to-r from-rose-500 to-pink-500 text-white hover:from-rose-600 hover:to-pink-600 shadow-lg hover:shadow-xl',
+        elegant: 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white hover:from-purple-700 hover:to-indigo-700 shadow-lg hover:shadow-xl',
+        romantic: 'bg-gradient-to-r from-pink-400 to-rose-400 text-white hover:from-pink-500 hover:to-rose-500 shadow-md hover:shadow-lg',
+        luxury: 'bg-gradient-to-r from-amber-400 to-yellow-400 text-gray-900 hover:from-amber-500 hover:to-yellow-500 shadow-lg hover:shadow-xl border border-amber-300',
+        
+        // Vendor-specific variants (preserved)
+        photographer: 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-md',
+        venue: 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-md',
+        florist: 'bg-pink-600 text-white hover:bg-pink-700 shadow-md',
+        caterer: 'bg-orange-600 text-white hover:bg-orange-700 shadow-md',
+        
+        // Action-specific variants (preserved)
+        save: 'bg-green-600 text-white hover:bg-green-700 shadow-sm',
+        cancel: 'bg-gray-500 text-white hover:bg-gray-600',
+        edit: 'bg-yellow-500 text-gray-900 hover:bg-yellow-600',
+        delete: 'bg-red-600 text-white hover:bg-red-700',
+        approve: 'bg-emerald-600 text-white hover:bg-emerald-700',
+        reject: 'bg-red-500 text-white hover:bg-red-600',
+        
+        // Status variants (preserved)
+        success: 'bg-green-500 text-white hover:bg-green-600 shadow-sm',
+        warning: 'bg-yellow-500 text-gray-900 hover:bg-yellow-600 shadow-sm',
+        info: 'bg-blue-500 text-white hover:bg-blue-600 shadow-sm',
+        
+        // Special effects (preserved)
+        gradient: 'bg-gradient-to-r from-purple-500 to-pink-500 text-white hover:from-purple-600 hover:to-pink-600 shadow-lg',
+        shine: 'bg-gray-900 text-white hover:bg-gray-800 relative overflow-hidden before:absolute before:inset-0 before:bg-gradient-to-r before:from-transparent before:via-white/20 before:to-transparent before:translate-x-[-100%] hover:before:translate-x-[100%] before:transition-transform before:duration-700',
+        glass: 'bg-white/10 backdrop-blur-sm border border-white/20 text-gray-900 hover:bg-white/20',
+        
+        // Mobile optimized (preserved)
+        touch: 'bg-blue-600 text-white hover:bg-blue-700 min-h-[44px] shadow-sm',
+        
+        // Link styles (preserved)
+        linkDanger: 'text-red-600 hover:text-red-800 hover:underline p-0 h-auto',
+      },
+      size: {
+        xs: 'h-8 px-3 text-xs',
+        sm: 'h-9 px-3.5 text-sm',
+        md: 'h-10 px-4 text-sm',
+        lg: 'h-11 px-5 text-base',
+        xl: 'h-12 px-6 text-base',
+        // Touch-optimized sizes
+        touch: 'min-h-[44px] px-6 text-base', // iOS standard
+        touchLg: 'min-h-[48px] px-8 text-lg', // Android standard
+        // Icon sizes
+        iconXs: 'h-8 w-8',
+        iconSm: 'h-9 w-9',
+        iconMd: 'h-10 w-10',
+        iconLg: 'h-11 w-11',
+      },
+      fullWidth: {
+        true: 'w-full',
+        false: '',
+      },
+    },
+    defaultVariants: {
+      variant: 'primary',
+      size: 'md',
+      fullWidth: false,
+    },
+  }
+)
+
+// Loading spinner component
+const LoadingSpinner = () => (
+  <svg 
+    className="animate-spin h-4 w-4" 
+    xmlns="http://www.w3.org/2000/svg" 
+    fill="none" 
+    viewBox="0 0 24 24"
+    aria-hidden="true"
+  >
+    <circle 
+      className="opacity-25" 
+      cx="12" 
+      cy="12" 
+      r="10" 
+      stroke="currentColor" 
+      strokeWidth="4"
+    />
+    <path 
+      className="opacity-75" 
+      fill="currentColor" 
+      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+    />
+  </svg>
+)
+
+export interface ButtonProps
+  extends React.ButtonHTMLAttributes<HTMLButtonElement>,
+    VariantProps<typeof buttonVariants> {
+  asChild?: boolean
+  loading?: boolean
+  loadingText?: string
+  leftIcon?: React.ReactNode
+  rightIcon?: React.ReactNode
+}
+
+const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
+  ({ 
+    className, 
+    variant, 
+    size, 
+    fullWidth,
+    asChild = false,
+    loading = false,
+    loadingText,
+    leftIcon,
+    rightIcon,
+    disabled,
+    children,
+    ...props 
+  }, ref) => {
+    // If asChild is true, just render children with props spread
+    if (asChild) {
+      return React.cloneElement(
+        React.Children.only(children as React.ReactElement),
+        {
+          className: cn(
+            buttonVariants({ variant, size, fullWidth, className })
+          ),
+          ref,
+          disabled: disabled || loading,
+          'aria-busy': loading,
+          'aria-disabled': disabled || loading,
+          ...props
+        }
+      )
+    }
+    
+    // Ensure proper touch target size for mobile
+    const touchOptimizedSize = size === 'xs' || size === 'sm' ? 'touch' : size
+    const finalSize = props.onTouchStart ? touchOptimizedSize : size
+    
+    return (
+      <button
+        className={cn(
+          buttonVariants({ variant, size: finalSize, fullWidth, className })
+        )}
+        ref={ref}
+        disabled={disabled || loading}
+        aria-busy={loading}
+        aria-disabled={disabled || loading}
+        {...props}
+      >
+        {loading && (
+          <span className="mr-2 inline-flex">
+            <LoadingSpinner />
+          </span>
+        )}
+        {!loading && leftIcon && (
+          <span className="mr-2 inline-flex">{leftIcon}</span>
+        )}
+        <span className="inline-flex items-center">
+          {loading && loadingText ? loadingText : children}
+        </span>
+        {!loading && rightIcon && (
+          <span className="ml-2 inline-flex">{rightIcon}</span>
+        )}
+      </button>
+    )
+  }
+)
+Button.displayName = "Button"
+
+// Wedding-specific button presets for common use cases
+export const WeddingButton = React.forwardRef<HTMLButtonElement, Omit<ButtonProps, 'variant'>>(
+  (props, ref) => <Button {...props} variant="wedding" ref={ref} />
+)
+WeddingButton.displayName = "WeddingButton"
+
+export const ElegantButton = React.forwardRef<HTMLButtonElement, Omit<ButtonProps, 'variant'>>(
+  (props, ref) => <Button {...props} variant="elegant" ref={ref} />
+)
+ElegantButton.displayName = "ElegantButton"
+
+export const VendorButton = React.forwardRef<HTMLButtonElement, ButtonProps & { vendorType: 'photographer' | 'venue' | 'florist' | 'caterer' }>(
+  ({ vendorType, ...props }, ref) => <Button {...props} variant={vendorType} ref={ref} />
+)
+VendorButton.displayName = "VendorButton"
+
+export { Button, buttonVariants }

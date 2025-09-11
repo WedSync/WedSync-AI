@@ -1,0 +1,545 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import { z } from 'zod';
+import Decimal from 'decimal.js';
+import { rateLimit } from '@/lib/rate-limit';
+import { BudgetCalculationService } from '@/lib/services/budget-calculation-service';
+import { AIBudgetOptimizer } from '@/lib/services/ai-budget-optimizer';
+
+// Zod validation schemas for budget optimization
+const OptimizeBudgetSchema = z.object({
+  client_id: z.string().uuid('Invalid client ID'),
+  wedding_date: z.string().datetime('Invalid wedding date'),
+  guest_count: z.number().int().min(1).max(10000),
+  venue_location: z.string().min(1).max(255),
+  current_budget: z
+    .string()
+    .refine(
+      (val) => !isNaN(Number(val)) && Number(val) > 0,
+      'Current budget must be a positive number',
+    ),
+  currency: z.enum(['GBP', 'USD', 'EUR', 'AUD', 'CAD']),
+  categories: z
+    .array(
+      z.object({
+        category_name: z.string().min(1).max(100),
+        current_allocation: z
+          .string()
+          .refine(
+            (val) => !isNaN(Number(val)) && Number(val) >= 0,
+            'Current allocation must be a non-negative number',
+          ),
+        priority: z.number().int().min(1).max(10).default(5),
+        is_flexible: z.boolean().default(true),
+      }),
+    )
+    .min(1, 'At least one budget category is required'),
+  optimization_goals: z
+    .object({
+      primary_goal: z
+        .enum(['minimize_cost', 'maximize_value', 'balance_budget'])
+        .default('balance_budget'),
+      risk_tolerance: z
+        .enum(['conservative', 'moderate', 'aggressive'])
+        .default('moderate'),
+      savings_target_percentage: z.number().min(0).max(50).optional(),
+    })
+    .default({
+      primary_goal: 'balance_budget',
+      risk_tolerance: 'moderate',
+    }),
+});
+
+const GetOptimizationSchema = z.object({
+  client_id: z.string().uuid('Invalid client ID'),
+  optimization_id: z.string().uuid('Invalid optimization ID').optional(),
+});
+
+export async function POST(request: NextRequest) {
+  try {
+    const cookieStore = await cookies();
+    const supabase = createRouteHandlerClient({ cookies: () => cookieStore });
+
+    // Verify authentication
+    const {
+      data: { session },
+      error: authError,
+    } = await supabase.auth.getSession();
+    if (authError || !session?.user?.id) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 },
+      );
+    }
+
+    // Rate limiting for budget optimization (5 requests per hour)
+    const rateLimitResult = await rateLimit(
+      request,
+      'budget-optimize',
+      5,
+      3600,
+    );
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        {
+          error: 'Rate limit exceeded',
+          message:
+            'Too many optimization requests. Please wait before requesting another optimization.',
+          retryAfter: rateLimitResult.retryAfter,
+        },
+        { status: 429 },
+      );
+    }
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validationResult = OptimizeBudgetSchema.safeParse(body);
+
+    if (!validationResult.success) {
+      return NextResponse.json(
+        {
+          error: 'Invalid input data',
+          details: validationResult.error.errors,
+        },
+        { status: 400 },
+      );
+    }
+
+    const optimizationData = validationResult.data;
+
+    // Verify user has access to this client
+    const { data: client, error: clientError } = await supabase
+      .from('clients')
+      .select('id, organization_id, name')
+      .eq('id', optimizationData.client_id)
+      .single();
+
+    if (clientError || !client) {
+      return NextResponse.json({ error: 'Client not found' }, { status: 404 });
+    }
+
+    // Check user permissions
+    const { data: userAccess, error: accessError } = await supabase
+      .from('user_organization_roles')
+      .select('organization_id, role')
+      .eq('user_id', session.user.id)
+      .eq('organization_id', client.organization_id)
+      .eq('status', 'active')
+      .single();
+
+    if (accessError || !userAccess) {
+      return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+    }
+
+    // Initialize budget calculation service
+    const budgetService = new BudgetCalculationService(
+      optimizationData.currency,
+    );
+    const aiOptimizer = new AIBudgetOptimizer();
+
+    // Convert string amounts to Decimal for precise calculations
+    const currentBudget = new Decimal(optimizationData.current_budget);
+    const categories = optimizationData.categories.map((cat) => ({
+      ...cat,
+      current_allocation: new Decimal(cat.current_allocation),
+    }));
+
+    // Validate budget allocation doesn't exceed total by more than 10%
+    const totalAllocated = categories.reduce(
+      (sum, cat) => sum.add(cat.current_allocation),
+      new Decimal(0),
+    );
+    if (totalAllocated.gt(currentBudget.mul(1.1))) {
+      return NextResponse.json(
+        {
+          error: 'Budget over-allocation',
+          message: 'Total category allocations exceed budget by more than 10%',
+        },
+        { status: 400 },
+      );
+    }
+
+    // Get market pricing data for optimization context
+    const marketPricing = await budgetService.getMarketPricingData(
+      optimizationData.venue_location,
+      categories.map((c) => c.category_name),
+      optimizationData.currency,
+    );
+
+    // Run AI optimization
+    const optimizationResult = await aiOptimizer.optimizeBudget({
+      currentBudget: currentBudget.toString(),
+      categories: categories.map((c) => ({
+        ...c,
+        current_allocation: c.current_allocation.toString(),
+      })),
+      weddingDate: optimizationData.wedding_date,
+      guestCount: optimizationData.guest_count,
+      venueLocation: optimizationData.venue_location,
+      marketPricing,
+      goals: optimizationData.optimization_goals,
+    });
+
+    // Calculate potential savings
+    const potentialSavings = budgetService.calculatePotentialSavings(
+      categories.map((c) => ({
+        ...c,
+        current_allocation: c.current_allocation.toString(),
+      })),
+      optimizationResult.optimizedAllocations,
+    );
+
+    // Save optimization to database
+    const { data: optimization, error: saveError } = await supabase
+      .from('budget_optimizations')
+      .insert({
+        organization_id: client.organization_id,
+        client_id: optimizationData.client_id,
+        wedding_date: optimizationData.wedding_date,
+        guest_count: optimizationData.guest_count,
+        venue_location: optimizationData.venue_location,
+        current_budget: optimizationData.current_budget,
+        currency: optimizationData.currency,
+        optimization_score: optimizationResult.optimizationScore,
+        potential_savings: potentialSavings.totalSavings,
+        optimization_status: 'completed',
+        ai_model_version: optimizationResult.modelVersion,
+        market_position: optimizationResult.marketPosition,
+        regional_multiplier: optimizationResult.regionalMultiplier,
+        seasonal_multiplier: optimizationResult.seasonalMultiplier,
+        last_analyzed_at: new Date().toISOString(),
+      })
+      .select()
+      .single();
+
+    if (saveError) {
+      console.error('Error saving budget optimization:', saveError);
+      return NextResponse.json(
+        { error: 'Failed to save optimization results' },
+        { status: 500 },
+      );
+    }
+
+    // Save individual recommendations
+    if (
+      optimizationResult.recommendations &&
+      optimizationResult.recommendations.length > 0
+    ) {
+      const recommendations = optimizationResult.recommendations.map((rec) => ({
+        optimization_id: optimization.id,
+        category_name: rec.categoryName,
+        recommendation_type: rec.type,
+        current_allocation: rec.currentAllocation,
+        recommended_allocation: rec.recommendedAllocation,
+        potential_saving: rec.potentialSaving,
+        confidence_score: rec.confidenceScore,
+        reasoning: rec.reasoning,
+        supporting_data: rec.supportingData || {},
+        status: 'pending',
+      }));
+
+      const { error: recError } = await supabase
+        .from('budget_recommendations')
+        .insert(recommendations);
+
+      if (recError) {
+        console.error('Error saving recommendations:', recError);
+        // Continue - don't fail the request for recommendation save errors
+      }
+    }
+
+    // Log the optimization event
+    await supabase.from('financial_data_audit').insert({
+      table_name: 'budget_optimizations',
+      record_id: optimization.id,
+      organization_id: client.organization_id,
+      action_type: 'CREATE',
+      user_id: session.user.id,
+      new_values: {
+        client_id: optimizationData.client_id,
+        optimization_score: optimizationResult.optimizationScore,
+        potential_savings: potentialSavings.totalSavings,
+        timestamp: new Date().toISOString(),
+      },
+    });
+
+    return NextResponse.json({
+      success: true,
+      optimization_id: optimization.id,
+      optimization_score: optimizationResult.optimizationScore,
+      potential_savings: {
+        total_amount: potentialSavings.totalSavings,
+        percentage: potentialSavings.percentageSavings,
+        currency: optimizationData.currency,
+      },
+      market_analysis: {
+        market_position: optimizationResult.marketPosition,
+        regional_multiplier: optimizationResult.regionalMultiplier,
+        seasonal_multiplier: optimizationResult.seasonalMultiplier,
+      },
+      recommendations: optimizationResult.recommendations || [],
+      optimized_allocations: optimizationResult.optimizedAllocations,
+      confidence_score: optimizationResult.confidenceScore,
+      expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), // 7 days
+      message: 'Budget optimization completed successfully',
+    });
+  } catch (error) {
+    console.error('Budget optimization error:', error);
+    return NextResponse.json(
+      {
+        error: 'Internal server error',
+        message: 'An unexpected error occurred during budget optimization',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const cookieStore = await cookies();
+    const supabase = createRouteHandlerClient({ cookies: () => cookieStore });
+
+    // Verify authentication
+    const {
+      data: { session },
+      error: authError,
+    } = await supabase.auth.getSession();
+    if (authError || !session?.user?.id) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 },
+      );
+    }
+
+    // Parse query parameters
+    const { searchParams } = new URL(request.url);
+    const queryData = {
+      client_id: searchParams.get('client_id'),
+      optimization_id: searchParams.get('optimization_id') || undefined,
+    };
+
+    const validationResult = GetOptimizationSchema.safeParse(queryData);
+    if (!validationResult.success) {
+      return NextResponse.json(
+        {
+          error: 'Invalid query parameters',
+          details: validationResult.error.errors,
+        },
+        { status: 400 },
+      );
+    }
+
+    const { client_id, optimization_id } = validationResult.data;
+
+    // Verify user has access to this client
+    const { data: client, error: clientError } = await supabase
+      .from('clients')
+      .select('id, organization_id, name')
+      .eq('id', client_id)
+      .single();
+
+    if (clientError || !client) {
+      return NextResponse.json({ error: 'Client not found' }, { status: 404 });
+    }
+
+    // Check user permissions
+    const { data: userAccess, error: accessError } = await supabase
+      .from('user_organization_roles')
+      .select('organization_id, role')
+      .eq('user_id', session.user.id)
+      .eq('organization_id', client.organization_id)
+      .eq('status', 'active')
+      .single();
+
+    if (accessError || !userAccess) {
+      return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+    }
+
+    // Get optimization(s)
+    let query = supabase
+      .from('budget_optimizations')
+      .select(
+        `
+        *,
+        budget_recommendations (
+          id,
+          category_name,
+          recommendation_type,
+          current_allocation,
+          recommended_allocation,
+          potential_saving,
+          confidence_score,
+          reasoning,
+          status,
+          user_feedback,
+          created_at
+        )
+      `,
+      )
+      .eq('organization_id', client.organization_id)
+      .eq('client_id', client_id)
+      .order('last_analyzed_at', { ascending: false });
+
+    if (optimization_id) {
+      query = query.eq('id', optimization_id).single();
+    } else {
+      query = query.limit(10); // Limit to last 10 optimizations
+    }
+
+    const { data: optimizations, error } = await query;
+
+    if (error) {
+      console.error('Error fetching optimizations:', error);
+      return NextResponse.json(
+        { error: 'Failed to fetch optimization data' },
+        { status: 500 },
+      );
+    }
+
+    // Log the data access
+    await supabase.from('financial_data_audit').insert({
+      table_name: 'budget_optimizations',
+      record_id: optimization_id || 'multiple',
+      organization_id: client.organization_id,
+      action_type: 'READ',
+      user_id: session.user.id,
+      new_values: {
+        client_id,
+        access_type: optimization_id ? 'single' : 'list',
+        timestamp: new Date().toISOString(),
+      },
+    });
+
+    return NextResponse.json({
+      success: true,
+      data: optimizations,
+      client: {
+        id: client.id,
+        name: client.name,
+      },
+    });
+  } catch (error) {
+    console.error('GET budget optimization error:', error);
+    return NextResponse.json(
+      {
+        error: 'Internal server error',
+        message: 'Failed to retrieve optimization data',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+export async function PUT(request: NextRequest) {
+  try {
+    const cookieStore = await cookies();
+    const supabase = createRouteHandlerClient({ cookies: () => cookieStore });
+
+    // Verify authentication
+    const {
+      data: { session },
+      error: authError,
+    } = await supabase.auth.getSession();
+    if (authError || !session?.user?.id) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 },
+      );
+    }
+
+    // Parse request body for recommendation feedback
+    const body = await request.json();
+    const { optimization_id, recommendation_id, action, feedback } = body;
+
+    if (!optimization_id || !recommendation_id || !action) {
+      return NextResponse.json(
+        { error: 'Missing required parameters' },
+        { status: 400 },
+      );
+    }
+
+    // Verify user has access to this optimization
+    const { data: optimization, error: optError } = await supabase
+      .from('budget_optimizations')
+      .select('id, organization_id, client_id')
+      .eq('id', optimization_id)
+      .single();
+
+    if (optError || !optimization) {
+      return NextResponse.json(
+        { error: 'Optimization not found' },
+        { status: 404 },
+      );
+    }
+
+    // Check user permissions
+    const { data: userAccess, error: accessError } = await supabase
+      .from('user_organization_roles')
+      .select('organization_id, role')
+      .eq('user_id', session.user.id)
+      .eq('organization_id', optimization.organization_id)
+      .eq('status', 'active')
+      .single();
+
+    if (accessError || !userAccess) {
+      return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+    }
+
+    // Update recommendation status
+    const { data: recommendation, error: updateError } = await supabase
+      .from('budget_recommendations')
+      .update({
+        status:
+          action === 'accept'
+            ? 'accepted'
+            : action === 'reject'
+              ? 'rejected'
+              : 'presented',
+        user_feedback: action,
+        applied_at: action === 'accept' ? new Date().toISOString() : null,
+      })
+      .eq('id', recommendation_id)
+      .eq('optimization_id', optimization_id)
+      .select()
+      .single();
+
+    if (updateError) {
+      console.error('Error updating recommendation:', updateError);
+      return NextResponse.json(
+        { error: 'Failed to update recommendation' },
+        { status: 500 },
+      );
+    }
+
+    // Log the feedback
+    await supabase.from('financial_data_audit').insert({
+      table_name: 'budget_recommendations',
+      record_id: recommendation_id,
+      organization_id: optimization.organization_id,
+      action_type: 'UPDATE',
+      user_id: session.user.id,
+      new_values: {
+        recommendation_action: action,
+        feedback: feedback || null,
+        timestamp: new Date().toISOString(),
+      },
+    });
+
+    return NextResponse.json({
+      success: true,
+      recommendation: recommendation,
+      message: `Recommendation ${action}ed successfully`,
+    });
+  } catch (error) {
+    console.error('PUT budget optimization error:', error);
+    return NextResponse.json(
+      {
+        error: 'Internal server error',
+        message: 'Failed to update recommendation',
+      },
+      { status: 500 },
+    );
+  }
+}

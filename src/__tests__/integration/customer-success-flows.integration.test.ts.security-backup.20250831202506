@@ -1,0 +1,472 @@
+/**
+ * WS-142: Customer Success - Integration Tests
+ * Comprehensive integration tests for customer success system flows
+ */
+
+import { describe, expect, test, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { customerHealthService } from '@/lib/services/customer-health-service';
+import { activityTracker } from '@/lib/services/activity-tracker';
+import { riskAssessmentService } from '@/lib/services/risk-assessment';
+import { milestoneService } from '@/lib/services/milestone-service';
+import { progressMonitor } from '@/lib/services/progress-monitor';
+import { celebrationEngine } from '@/lib/services/celebration-engine';
+import { rewardManager } from '@/lib/services/reward-manager';
+import { interventionEngine } from '@/lib/services/intervention-engine';
+import { triggerManager } from '@/lib/services/trigger-manager';
+import { emailAutomation } from '@/lib/services/email-automation';
+import { schedulingService } from '@/lib/services/scheduling-service';
+import { metricsAggregator } from '@/lib/services/metrics-aggregator';
+// Test data interfaces
+interface TestUser {
+  id: string;
+  email: string;
+  organizationId: string;
+  name: string;
+}
+interface TestActivity {
+  action: string;
+  feature: string;
+  metadata?: Record<string, any>;
+describe('Customer Success System - Integration Tests', () => {
+  let testUser: TestUser;
+  let testOrganization: string;
+  beforeAll(() => {
+    testOrganization = 'test-org-' + crypto.randomUUID();
+    testUser = {
+      id: 'test-user-' + crypto.randomUUID(),
+      email: 'test@example.com',
+      organizationId: testOrganization,
+      name: 'Test User'
+    };
+  });
+  afterAll(() => {
+    // Cleanup test data if needed
+  beforeEach(() => {
+    // Reset any test state
+  afterEach(() => {
+    // Cleanup after each test
+  describe('Health Score System Integration', () => {
+    test('should calculate health score from user activities', async () => {
+      // Track some user activities
+      await activityTracker.trackActivity(testUser.id, testOrganization, {
+        action: 'login',
+        feature: 'dashboard',
+        sessionId: crypto.randomUUID(),
+        timestamp: new Date(),
+        metadata: { source: 'web' }
+      });
+        action: 'feature_used',
+        feature: 'client_management',
+        metadata: { clientId: 'test-client-1' }
+        feature: 'guest_list',
+        metadata: { guestsAdded: 5 }
+      // Calculate health score
+      const healthResult = await customerHealthService.calculateHealthScoreFromActivity(
+        testUser.id,
+        testOrganization,
+        '7d'
+      );
+      expect(healthResult).toBeDefined();
+      expect(healthResult.healthScore).toBeDefined();
+      expect(healthResult.healthScore.overall_score).toBeGreaterThanOrEqual(0);
+      expect(healthResult.healthScore.overall_score).toBeLessThanOrEqual(100);
+      expect(healthResult.healthScore.activity_score).toBeGreaterThan(0);
+      expect(healthResult.activitySummary).toBeDefined();
+      expect(healthResult.recommendations).toBeDefined();
+    });
+    test('should identify risk indicators from low activity', async () => {
+      // Simulate low activity user
+      const lowActivityUser = {
+        id: 'low-activity-' + crypto.randomUUID(),
+        email: 'lowactivity@example.com',
+        organizationId: testOrganization,
+        name: 'Low Activity User'
+      };
+      // Only minimal activity
+      await activityTracker.trackActivity(lowActivityUser.id, testOrganization, {
+        timestamp: new Date(Date.now() - 6 * 24 * 60 * 60 * 1000), // 6 days ago
+        lowActivityUser.id,
+      expect(healthResult.healthScore.overall_score).toBeLessThan(50);
+      expect(healthResult.riskIndicators.length).toBeGreaterThan(0);
+      expect(healthResult.riskIndicators).toContain('low_activity');
+    test('should track feature adoption metrics', async () => {
+      const adoptionMetrics = await activityTracker.getFeatureAdoptionMetrics(
+      expect(adoptionMetrics).toBeDefined();
+      expect(adoptionMetrics.featuresUsed).toBeGreaterThan(0);
+      expect(adoptionMetrics.featureUsageBreakdown).toBeDefined();
+      expect(adoptionMetrics.adoptionTrend).toBeDefined();
+  describe('Risk Assessment Integration', () => {
+    test('should perform comprehensive risk assessment', async () => {
+      const riskAssessment = await riskAssessmentService.assessUserRisk(
+        {
+          includeTrendAnalysis: true,
+          includeRecommendations: true
+        }
+      expect(riskAssessment).toBeDefined();
+      expect(riskAssessment.overallRiskScore).toBeGreaterThanOrEqual(0);
+      expect(riskAssessment.overallRiskScore).toBeLessThanOrEqual(100);
+      expect(riskAssessment.riskLevel).toMatch(/^(low|medium|high|critical)$/);
+      expect(riskAssessment.riskCategory).toBeDefined();
+      expect(riskAssessment.churnProbability).toBeGreaterThanOrEqual(0);
+      expect(riskAssessment.churnProbability).toBeLessThanOrEqual(1);
+      // Check risk components
+      expect(riskAssessment.engagementRisk).toBeDefined();
+      expect(riskAssessment.adoptionRisk).toBeDefined();
+      expect(riskAssessment.satisfactionRisk).toBeDefined();
+      expect(riskAssessment.retentionRisk).toBeDefined();
+      expect(riskAssessment.valueRealizationRisk).toBeDefined();
+      expect(riskAssessment.riskIndicators).toBeDefined();
+      expect(Array.isArray(riskAssessment.riskIndicators)).toBe(true);
+      expect(riskAssessment.interventionRecommendations).toBeDefined();
+      expect(Array.isArray(riskAssessment.interventionRecommendations)).toBe(true);
+    test('should process batch risk assessments', async () => {
+      const users = [testUser.id, 'user2-' + crypto.randomUUID(), 'user3-' + crypto.randomUUID()];
+      
+      const batchResults = await riskAssessmentService.batchAssessRisk(
+        users,
+        testOrganization
+      expect(batchResults.size).toBe(users.length);
+      for (const [userId, assessment] of batchResults) {
+        if (assessment) {
+          expect(assessment.userId).toBe(userId);
+          expect(assessment.overallRiskScore).toBeGreaterThanOrEqual(0);
+          expect(assessment.overallRiskScore).toBeLessThanOrEqual(100);
+      }
+    test('should generate risk trends', async () => {
+      const trends = await riskAssessmentService.getRiskTrends(testOrganization, '7d');
+      expect(trends).toBeDefined();
+      expect(trends.averageRiskScore).toBeGreaterThanOrEqual(0);
+      expect(trends.averageRiskScore).toBeLessThanOrEqual(100);
+      expect(trends.riskDistribution).toBeDefined();
+      expect(trends.totalUsers).toBeGreaterThanOrEqual(0);
+      expect(trends.usersAtRisk).toBeGreaterThanOrEqual(0);
+      expect(trends.trendDirection).toMatch(/^(improving|stable|deteriorating)$/);
+  describe('Milestone System Integration', () => {
+    test('should create and track milestone progress', async () => {
+      // Create a test milestone
+      const milestone = await milestoneService.createMilestone({
+        userId: testUser.id,
+        milestoneType: 'onboarding',
+        category: 'setup',
+        title: 'Complete Profile Setup',
+        description: 'Set up complete wedding profile with venue and date',
+        targetValue: 100,
+        isVisible: true,
+        isRequired: true,
+        weight: 1,
+        estimatedDays: 7,
+        rewardPoints: 50,
+        celebrationTriggers: [{
+          triggerId: crypto.randomUUID(),
+          triggerType: 'immediate',
+          celebrationType: 'in_app',
+          template: 'milestone_achieved'
+        }],
+        tags: ['onboarding', 'profile']
+      expect(milestone).toBeDefined();
+      expect(milestone.id).toBeDefined();
+      expect(milestone.title).toBe('Complete Profile Setup');
+      expect(milestone.progress).toBe(0);
+      expect(milestone.achieved).toBe(false);
+      // Update milestone progress
+      const progressUpdate = await milestoneService.updateProgress(
+        milestone.id,
+        75,
+        'manual',
+        { reason: 'User completed venue selection' }
+      expect(progressUpdate).toBeDefined();
+      expect(progressUpdate.newProgress).toBe(75);
+      expect(progressUpdate.progressDelta).toBe(75);
+      // Get updated milestone
+      const milestones = await milestoneService.getUserMilestones(testUser.id);
+      const updatedMilestone = milestones.find(m => m.id === milestone.id);
+      expect(updatedMilestone).toBeDefined();
+      expect(updatedMilestone!.progress).toBe(75);
+      expect(updatedMilestone!.achieved).toBe(false);
+      // Complete the milestone
+      await milestoneService.updateProgress(milestone.id, 100, 'manual');
+      const completedMilestones = await milestoneService.getUserMilestones(testUser.id, {
+        includeAchieved: true
+      const completedMilestone = completedMilestones.find(m => m.id === milestone.id);
+      expect(completedMilestone).toBeDefined();
+      expect(completedMilestone!.progress).toBe(100);
+      expect(completedMilestone!.achieved).toBe(true);
+      expect(completedMilestone!.achievedAt).toBeDefined();
+    test('should monitor progress and generate insights', async () => {
+      // Initialize progress monitoring
+      await progressMonitor.initializeUserProgress(testUser.id, testOrganization);
+      // Get progress metrics
+      const metrics = await progressMonitor.getProgressMetrics(testUser.id, '7d');
+      expect(metrics).toBeDefined();
+      expect(metrics.activeMilestones).toBeGreaterThanOrEqual(0);
+      expect(metrics.completedMilestones).toBeGreaterThanOrEqual(0);
+      expect(metrics.totalProgressEvents).toBeGreaterThanOrEqual(0);
+      expect(metrics.riskOfStagnation).toBeGreaterThanOrEqual(0);
+      expect(metrics.riskOfStagnation).toBeLessThanOrEqual(100);
+      expect(Array.isArray(metrics.fastestProgressing)).toBe(true);
+      expect(Array.isArray(metrics.projectedCompletions)).toBe(true);
+    test('should trigger celebrations for milestone achievements', async () => {
+      // This test would verify that celebrations are triggered
+      // when milestones are completed
+      const celebrationResult = await celebrationEngine.triggerCelebration({
+        type: 'milestone_achieved',
+        milestoneId: 'test-milestone-id',
+        milestoneTitle: 'Test Milestone',
+        trigger: 'immediate',
+        celebrationType: 'in_app',
+        personalizationData: {
+          userName: testUser.name,
+          milestoneName: 'Test Milestone'
+      expect(celebrationResult).toBeDefined();
+      expect(celebrationResult.success).toBe(true);
+      expect(celebrationResult.celebrationId).toBeDefined();
+    test('should award and track rewards', async () => {
+      // Create a mock milestone for reward testing
+      const mockMilestone = {
+        id: 'reward-test-' + crypto.randomUUID(),
+        title: 'Reward Test Milestone',
+        rewardPoints: 100,
+        achieved: true,
+        achievedAt: new Date()
+      // Award milestone reward
+      const rewardTransaction = await rewardManager.awardMilestoneReward(
+        mockMilestone as any
+      expect(rewardTransaction).toBeDefined();
+      expect(rewardTransaction.points).toBe(100);
+      expect(rewardTransaction.reason).toContain('milestone');
+      // Get user reward account
+      const rewardAccount = await rewardManager.getUserRewardAccount(testUser.id);
+      expect(rewardAccount).toBeDefined();
+      expect(rewardAccount.totalPoints).toBeGreaterThanOrEqual(100);
+      expect(rewardAccount.availablePoints).toBeGreaterThanOrEqual(100);
+      expect(rewardAccount.transactions.length).toBeGreaterThan(0);
+  describe('Automated Intervention System Integration', () => {
+    test('should create and process intervention rules', async () => {
+      // Create trigger rule
+      const triggerRule = await triggerManager.createTriggerRule({
+        name: 'Health Score Decline Test',
+        description: 'Test trigger for health score decline',
+        eventType: 'health_score_decline',
+        conditions: [{
+          field: 'data.healthScore',
+          operator: 'lt',
+          value: 50
+        frequency: {
+          maxPerDay: 1,
+          cooldownHours: 24,
+          respectUserPreferences: true
+        },
+        priority: 'high'
+      }, testOrganization);
+      expect(triggerRule).toBeDefined();
+      expect(triggerRule.id).toBeDefined();
+      expect(triggerRule.isActive).toBe(true);
+      // Create intervention rule
+      const interventionRule = await interventionEngine.createInterventionRule({
+        name: 'Health Score Intervention Test',
+        description: 'Test intervention for low health scores',
+        trigger: {
+          event: 'health_score_decline',
+          source: 'health_scoring',
+          conditions: {}
+        intervention: {
+          type: 'email_sequence',
+          config: {
+            templateId: 'health_score_improvement',
+            personalization: {
+              improvementTips: true
+            }
+          },
+          timing: 'delayed',
+          delay: 300 // 5 minutes
+        conditions: [],
+      expect(interventionRule).toBeDefined();
+      expect(interventionRule.id).toBeDefined();
+      // Process trigger event
+      const triggeredEvents = await triggerManager.processEvent(
+        'health_score_decline',
+        'health_scoring',
+        { healthScore: 45, previousScore: 70 }
+      expect(Array.isArray(triggeredEvents)).toBe(true);
+    test('should schedule and execute email automation', async () => {
+      // Create email template
+      const template = await emailAutomation.createEmailTemplate({
+        name: 'Test Intervention Email',
+        type: 'engagement_boost',
+        subject: 'Let\'s get back on track with your wedding planning',
+        htmlContent: '<p>Hi {{firstName}}, we noticed you haven\'t been active lately...</p>',
+        textContent: 'Hi {{firstName}}, we noticed you haven\'t been active lately...',
+        variables: ['firstName'],
+        metadata: {
+          category: 'success',
+          priority: 'medium',
+          expectedOpenRate: 0.25,
+          expectedClickRate: 0.05,
+          tags: ['engagement', 'intervention']
+      expect(template).toBeDefined();
+      expect(template.id).toBeDefined();
+      // Send intervention email
+      const deliveryResult = await emailAutomation.sendInterventionEmail(
+        template.id,
+        { firstName: testUser.name.split(' ')[0] }
+      expect(deliveryResult).toBeDefined();
+      expect(deliveryResult.messageId).toBeDefined();
+      expect(deliveryResult.provider).toBeDefined();
+      expect(deliveryResult.deliveredAt).toBeDefined();
+    test('should schedule tasks with proper timing', async () => {
+      // Schedule a delayed task
+      const scheduledTask = await schedulingService.scheduleDelayed(
+        'test-intervention-' + crypto.randomUUID(),
+        60, // 1 minute delay
+        'intervention_execution',
+          userId: testUser.id,
+          organizationId: testOrganization,
+          interventionType: 'email_sequence'
+        { priority: 'high' }
+      expect(scheduledTask).toBeDefined();
+      expect(scheduledTask.id).toBeDefined();
+      expect(scheduledTask.status).toBe('pending');
+      expect(scheduledTask.scheduledAt).toBeDefined();
+      // Get task status
+      const taskStatus = schedulingService.getTaskStatus(scheduledTask.id);
+      expect(taskStatus).toBeDefined();
+      expect(taskStatus!.id).toBe(scheduledTask.id);
+      // Cancel the task (to avoid actual execution in test)
+      const cancelled = await schedulingService.cancelTask(scheduledTask.id);
+      expect(cancelled).toBe(true);
+  describe('Metrics and Aggregation Integration', () => {
+    test('should aggregate daily metrics', async () => {
+      const job = await metricsAggregator.scheduleAggregation(
+        'health_scores',
+        '2024-01-20', // Test date
+        { includeUserBreakdown: true }
+      expect(job).toBeDefined();
+      expect(job.id).toBeDefined();
+      expect(job.status).toBe('scheduled');
+      // Process the job
+      const results = await metricsAggregator.processJob(job.id);
+      expect(results).toBeDefined();
+      expect(results.success).toBe(true);
+      expect(results.recordsProcessed).toBeGreaterThanOrEqual(0);
+    test('should run daily aggregation workflow', async () => {
+      const results = await metricsAggregator.runDailyAggregation(testOrganization);
+      expect(results.totalJobs).toBeGreaterThan(0);
+      expect(results.successful).toBeGreaterThanOrEqual(0);
+      expect(results.failed).toBeGreaterThanOrEqual(0);
+      expect(results.completedAt).toBeDefined();
+  describe('End-to-End Customer Success Flow', () => {
+    test('should complete full customer success cycle', async () => {
+      const e2eUser = {
+        id: 'e2e-user-' + crypto.randomUUID(),
+        email: 'e2e@example.com',
+        name: 'E2E Test User'
+      // Step 1: User performs activities
+      await activityTracker.trackActivity(e2eUser.id, testOrganization, {
+        action: 'signup',
+        feature: 'registration',
+        metadata: { source: 'web', plan: 'pro' }
+        action: 'profile_setup',
+        feature: 'onboarding',
+        metadata: { completionPercentage: 60 }
+      // Step 2: Health score gets calculated
+        e2eUser.id,
+      expect(healthResult.healthScore.overall_score).toBeGreaterThan(0);
+      // Step 3: Risk assessment performed
+      // Step 4: Milestone created and tracked
+        userId: e2eUser.id,
+        title: 'E2E Test Milestone',
+        description: 'Complete onboarding process',
+        rewardPoints: 25,
+        celebrationTriggers: [],
+        estimatedDays: 3,
+        tags: ['e2e-test']
+      await milestoneService.updateProgress(milestone.id, 100, 'automatic');
+      // Step 5: Verify milestone completion triggered rewards
+      const rewardAccount = await rewardManager.getUserRewardAccount(e2eUser.id);
+      expect(rewardAccount.totalPoints).toBeGreaterThanOrEqual(25);
+      // Step 6: Check that all components worked together
+      const finalHealthResult = await customerHealthService.calculateHealthScoreFromActivity(
+      expect(finalHealthResult.healthScore.overall_score).toBeGreaterThan(
+        healthResult.healthScore.overall_score
+      // Step 7: Verify metrics aggregation captures all activities
+      const userProfile = await activityTracker.getUserAdoptionProfile(e2eUser.id);
+      expect(userProfile.totalActions).toBeGreaterThanOrEqual(2);
+      expect(userProfile.uniqueFeatures).toBeGreaterThanOrEqual(2);
+    test('should handle high-risk user intervention flow', async () => {
+      const riskUser = {
+        id: 'risk-user-' + crypto.randomUUID(),
+        email: 'risk@example.com',
+        name: 'High Risk User'
+      // Simulate high-risk behavior (minimal activity, old signup)
+      await activityTracker.trackActivity(riskUser.id, testOrganization, {
+        timestamp: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000), // 14 days ago
+      // Only one login, long ago
+        timestamp: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000), // 10 days ago
+      // Assess risk (should be high)
+        riskUser.id,
+        { includeRecommendations: true }
+      expect(riskAssessment.riskLevel).toMatch(/^(high|critical)$/);
+      expect(riskAssessment.interventionRecommendations.length).toBeGreaterThan(0);
+      // Health score should be low
+      expect(healthResult.healthScore.overall_score).toBeLessThan(40);
+      // This should trigger intervention recommendations
+      const interventionRecommendation = riskAssessment.interventionRecommendations.find(
+        r => r.type === 'engagement_boost' || r.type === 'onboarding_assistance'
+      expect(interventionRecommendation).toBeDefined();
+  describe('System Performance and Reliability', () => {
+    test('should handle concurrent health score calculations', async () => {
+      const concurrentUsers = Array.from({ length: 5 }, (_, i) => ({
+        id: `concurrent-user-${i}-${crypto.randomUUID()}`,
+        organizationId: testOrganization
+      }));
+      // Track activities for all users concurrently
+      await Promise.all(
+        concurrentUsers.map(user =>
+          activityTracker.trackActivity(user.id, testOrganization, {
+            action: 'feature_used',
+            feature: 'dashboard',
+            sessionId: crypto.randomUUID(),
+            timestamp: new Date(),
+            metadata: { concurrentTest: true }
+          })
+        )
+      // Calculate health scores concurrently
+      const healthPromises = concurrentUsers.map(user =>
+        customerHealthService.calculateHealthScoreFromActivity(user.id, testOrganization, '7d')
+      const healthResults = await Promise.all(healthPromises);
+      expect(healthResults.length).toBe(5);
+      healthResults.forEach(result => {
+        expect(result).toBeDefined();
+        expect(result.healthScore.overall_score).toBeGreaterThanOrEqual(0);
+    test('should handle error conditions gracefully', async () => {
+      // Test with invalid user ID
+      await expect(
+        customerHealthService.calculateHealthScoreFromActivity('invalid-user', testOrganization, '7d')
+      ).resolves.toBeDefined(); // Should not throw, but return default/empty result
+      // Test with invalid organization
+        riskAssessmentService.assessUserRisk(testUser.id, 'invalid-org')
+      ).resolves.toBeDefined(); // Should handle gracefully
+      // Test milestone service with invalid data
+        milestoneService.updateProgress('invalid-milestone', 50, 'manual')
+      ).rejects.toThrow(); // This should throw as milestone doesn't exist
+    test('should maintain data consistency across services', async () => {
+      const consistencyUser = {
+        id: 'consistency-user-' + crypto.randomUUID(),
+      // Track activity
+      await activityTracker.trackActivity(consistencyUser.id, testOrganization, {
+        metadata: { guestsAdded: 10 }
+      const healthResult1 = await customerHealthService.calculateHealthScoreFromActivity(
+        consistencyUser.id,
+      // Track more activity
+        feature: 'vendor_search',
+        metadata: { searchQuery: 'photographers' }
+      // Recalculate health score
+      const healthResult2 = await customerHealthService.calculateHealthScoreFromActivity(
+      // Health score should improve with more activity
+      expect(healthResult2.healthScore.overall_score).toBeGreaterThanOrEqual(
+        healthResult1.healthScore.overall_score
+      // Activity summary should reflect new activity
+      expect(healthResult2.activitySummary.totalActions).toBeGreaterThan(
+        healthResult1.activitySummary.totalActions
+});

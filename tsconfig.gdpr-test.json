@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "src/components/gdpr/*.tsx",
+    "src/types/gdpr.ts"
+  ],
+  "exclude": []
+}

@@ -1,0 +1,379 @@
+/**
+ * API Usage Export Endpoint
+ * WS-233: Export API usage data to CSV format
+ * 
+ * Provides CSV export functionality for:
+ * - Raw API usage logs
+ * - Aggregated usage summaries
+ * - Organization usage reports
+ * - Performance metrics
+ */
+
+import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@supabase/supabase-js'
+import { Database } from '@/types/database'
+
+// Initialize Supabase client
+const supabase = createClient<Database>(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false
+    }
+  }
+)
+
+/**
+ * Convert array of objects to CSV format
+ */
+function arrayToCSV(data: any[]): string {
+  if (data.length === 0) {
+    return ''
+  }
+
+  const headers = Object.keys(data[0])
+  const csvRows = []
+
+  // Add headers
+  csvRows.push(headers.join(','))
+
+  // Add data rows
+  for (const row of data) {
+    const values = headers.map(header => {
+      const value = row[header]
+      // Handle values that contain commas, quotes, or newlines
+      if (typeof value === 'string' && (value.includes(',') || value.includes('"') || value.includes('\n'))) {
+        return `"${value.replace(/"/g, '""')}"`
+      }
+      return value ?? ''
+    })
+    csvRows.push(values.join(','))
+  }
+
+  return csvRows.join('\n')
+}
+
+/**
+ * Get time range bounds for queries
+ */
+function getTimeRange(range: string): { start: Date; end: Date } {
+  const end = new Date()
+  let start: Date
+
+  switch (range) {
+    case '1h':
+      start = new Date(end.getTime() - 60 * 60 * 1000)
+      break
+    case '24h':
+      start = new Date(end.getTime() - 24 * 60 * 60 * 1000)
+      break
+    case '7d':
+      start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000)
+      break
+    case '30d':
+    default:
+      start = new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000)
+      break
+  }
+
+  return { start, end }
+}
+
+/**
+ * GET /api/admin/api-usage/export
+ * Export API usage data as CSV
+ */
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url)
+    const range = searchParams.get('range') || '24h'
+    const type = searchParams.get('type') || 'logs' // logs, summary, organizations, errors
+    const organizationId = searchParams.get('organizationId')
+    const tier = searchParams.get('tier')
+
+    // Verify admin access
+    const authHeader = request.headers.get('authorization')
+    if (!authHeader?.startsWith('Bearer ')) {
+      return NextResponse.json({ error: 'Authentication required' }, { status: 401 })
+    }
+
+    const token = authHeader.slice(7)
+    const { data: user } = await supabase.auth.getUser(token)
+    if (!user) {
+      return NextResponse.json({ error: 'Invalid token' }, { status: 401 })
+    }
+
+    // Check if user is admin
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('user_type')
+      .eq('user_id', user.user.id)
+      .single()
+
+    if (profile?.user_type !== 'admin') {
+      return NextResponse.json({ error: 'Admin access required' }, { status: 403 })
+    }
+
+    const { start, end } = getTimeRange(range)
+    let data: any[] = []
+    let filename = `api-usage-${type}-${range}`
+
+    switch (type) {
+      case 'logs':
+        // Export raw API usage logs
+        let logsQuery = supabase
+          .from('api_usage_logs')
+          .select(`
+            timestamp,
+            organization_id,
+            user_id,
+            endpoint,
+            method,
+            status_code,
+            response_time_ms,
+            request_size_bytes,
+            response_size_bytes,
+            ip_address,
+            user_agent,
+            rate_limited,
+            subscription_tier
+          `)
+          .gte('timestamp', start.toISOString())
+          .lte('timestamp', end.toISOString())
+          .order('timestamp', { ascending: false })
+          .limit(10000) // Limit for performance
+
+        if (organizationId) {
+          logsQuery = logsQuery.eq('organization_id', organizationId)
+        }
+
+        if (tier) {
+          logsQuery = logsQuery.eq('subscription_tier', tier)
+        }
+
+        const { data: logs, error: logsError } = await logsQuery
+
+        if (logsError) throw logsError
+
+        data = logs?.map(log => ({
+          timestamp: log.timestamp,
+          organization_id: log.organization_id,
+          user_id: log.user_id,
+          endpoint: log.endpoint,
+          method: log.method,
+          status_code: log.status_code,
+          response_time_ms: log.response_time_ms,
+          request_size_bytes: log.request_size_bytes,
+          response_size_bytes: log.response_size_bytes,
+          ip_address: log.ip_address,
+          user_agent: log.user_agent,
+          rate_limited: log.rate_limited,
+          subscription_tier: log.subscription_tier
+        })) || []
+        break
+
+      case 'summary':
+        // Export daily usage summaries
+        const { data: summaries, error: summariesError } = await supabase
+          .from('api_usage_summary')
+          .select('*')
+          .gte('date', start.toISOString().split('T')[0])
+          .lte('date', end.toISOString().split('T')[0])
+          .order('date', { ascending: false })
+
+        if (summariesError) throw summariesError
+
+        data = summaries?.map(summary => ({
+          date: summary.date,
+          organization_id: summary.organization_id,
+          total_requests: summary.total_requests,
+          unique_endpoints: summary.unique_endpoints,
+          avg_response_time_ms: summary.total_requests > 0 ? 
+            Math.round(summary.total_response_time_ms / summary.total_requests) : 0,
+          total_request_size_mb: Math.round(summary.total_request_size_bytes / 1024 / 1024),
+          total_response_size_mb: Math.round(summary.total_response_size_bytes / 1024 / 1024),
+          error_count: summary.error_count,
+          error_rate_percent: summary.total_requests > 0 ? 
+            Math.round((summary.error_count / summary.total_requests) * 100) : 0,
+          rate_limited_count: summary.rate_limited_count,
+          subscription_tier: summary.subscription_tier
+        })) || []
+        break
+
+      case 'organizations':
+        // Export organization usage report
+        const { data: organizations, error: orgsError } = await supabase
+          .from('organizations')
+          .select('id, name, subscription_tier, created_at')
+
+        if (orgsError) throw orgsError
+
+        // Get usage stats for each organization
+        const orgData = []
+        for (const org of organizations || []) {
+          const { data: orgLogs } = await supabase
+            .from('api_usage_logs')
+            .select('status_code, response_time_ms')
+            .eq('organization_id', org.id)
+            .gte('timestamp', start.toISOString())
+            .lte('timestamp', end.toISOString())
+
+          const totalRequests = orgLogs?.length || 0
+          const errorCount = orgLogs?.filter(log => log.status_code >= 400).length || 0
+          const avgResponseTime = totalRequests > 0 ?
+            Math.round(orgLogs!.reduce((sum, log) => sum + log.response_time_ms, 0) / totalRequests) : 0
+
+          orgData.push({
+            organization_id: org.id,
+            organization_name: org.name,
+            subscription_tier: org.subscription_tier,
+            member_since: org.created_at,
+            total_requests: totalRequests,
+            error_count: errorCount,
+            error_rate_percent: totalRequests > 0 ? Math.round((errorCount / totalRequests) * 100) : 0,
+            avg_response_time_ms: avgResponseTime
+          })
+        }
+
+        data = orgData.sort((a, b) => b.total_requests - a.total_requests)
+        break
+
+      case 'errors':
+        // Export error analysis
+        const { data: errorLogs, error: errorsError } = await supabase
+          .from('api_usage_logs')
+          .select('timestamp, organization_id, endpoint, method, status_code, response_time_ms, user_agent, ip_address')
+          .gte('status_code', 400)
+          .gte('timestamp', start.toISOString())
+          .lte('timestamp', end.toISOString())
+          .order('timestamp', { ascending: false })
+          .limit(5000)
+
+        if (errorsError) throw errorsError
+
+        data = errorLogs?.map(log => ({
+          timestamp: log.timestamp,
+          organization_id: log.organization_id,
+          endpoint: log.endpoint,
+          method: log.method,
+          status_code: log.status_code,
+          response_time_ms: log.response_time_ms,
+          user_agent: log.user_agent,
+          ip_address: log.ip_address
+        })) || []
+        break
+
+      default:
+        return NextResponse.json({ error: 'Invalid export type' }, { status: 400 })
+    }
+
+    // Generate CSV content
+    const csvContent = arrayToCSV(data)
+    
+    if (!csvContent) {
+      return NextResponse.json({ error: 'No data found for the specified criteria' }, { status: 404 })
+    }
+
+    // Create response with CSV data
+    const response = new NextResponse(csvContent, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/csv',
+        'Content-Disposition': `attachment; filename="${filename}-${new Date().toISOString().split('T')[0]}.csv"`,
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0'
+      }
+    })
+
+    return response
+
+  } catch (error) {
+    console.error('API usage export error:', error)
+    return NextResponse.json(
+      { 
+        error: 'Failed to export API usage data',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      { status: 500 }
+    )
+  }
+}
+
+/**
+ * POST /api/admin/api-usage/export
+ * Export custom query results as CSV
+ */
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json()
+    const { query, filename } = body
+
+    // Verify admin access
+    const authHeader = request.headers.get('authorization')
+    if (!authHeader?.startsWith('Bearer ')) {
+      return NextResponse.json({ error: 'Authentication required' }, { status: 401 })
+    }
+
+    const token = authHeader.slice(7)
+    const { data: user } = await supabase.auth.getUser(token)
+    if (!user) {
+      return NextResponse.json({ error: 'Invalid token' }, { status: 401 })
+    }
+
+    // Check if user is admin
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('user_type')
+      .eq('user_id', user.user.id)
+      .single()
+
+    if (profile?.user_type !== 'admin') {
+      return NextResponse.json({ error: 'Admin access required' }, { status: 403 })
+    }
+
+    // Execute custom query (simplified - would need more robust validation)
+    // This is a basic implementation - in production, you'd want more security
+    const { data: results, error } = await supabase
+      .from('api_usage_logs')
+      .select(query)
+      .limit(10000) // Safety limit
+
+    if (error) {
+      throw error
+    }
+
+    // Generate CSV content
+    const csvContent = arrayToCSV(results || [])
+    
+    if (!csvContent) {
+      return NextResponse.json({ error: 'No data found' }, { status: 404 })
+    }
+
+    // Create response with CSV data
+    const response = new NextResponse(csvContent, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/csv',
+        'Content-Disposition': `attachment; filename="${filename || 'custom-query'}-${new Date().toISOString().split('T')[0]}.csv"`,
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0'
+      }
+    })
+
+    return response
+
+  } catch (error) {
+    console.error('Custom export error:', error)
+    return NextResponse.json(
+      { 
+        error: 'Failed to export custom query results',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      { status: 500 }
+    )
+  }
+}

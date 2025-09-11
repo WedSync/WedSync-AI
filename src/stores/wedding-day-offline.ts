@@ -1,0 +1,430 @@
+'use client';
+
+import React from 'react';
+import { create } from 'zustand';
+import { persist, createJSONStorage } from 'zustand/middleware';
+import type {
+  WeddingDayCoordination,
+  VendorCheckIn,
+  TimelineEvent,
+  WeddingDayIssue,
+  WeatherCondition,
+  CoordinatorPresence,
+} from '@/types/wedding-day';
+
+export interface OfflineAction {
+  id: string;
+  type:
+    | 'vendor_checkin'
+    | 'timeline_update'
+    | 'issue_create'
+    | 'issue_update'
+    | 'status_update';
+  data: unknown;
+  timestamp: string;
+  weddingId: string;
+  retryCount: number;
+  status: 'pending' | 'syncing' | 'failed' | 'synced';
+}
+
+export interface WeddingDayOfflineState {
+  // Connection status
+  isOnline: boolean;
+  lastSyncTime: string | null;
+  syncInProgress: boolean;
+
+  // Cached data
+  coordination: WeddingDayCoordination | null;
+  vendors: Record<string, VendorCheckIn>;
+  timeline: Record<string, TimelineEvent>;
+  issues: Record<string, WeddingDayIssue>;
+  weather: WeatherCondition | null;
+  coordinatorPresence: Record<string, CoordinatorPresence[]>;
+
+  // Offline actions queue
+  pendingActions: OfflineAction[];
+  failedActions: OfflineAction[];
+
+  // Actions
+  setOnlineStatus: (isOnline: boolean) => void;
+  updateCoordination: (coordination: WeddingDayCoordination) => void;
+  updateVendor: (vendor: VendorCheckIn) => void;
+  updateVendors: (vendors: VendorCheckIn[]) => void;
+  updateTimelineEvent: (event: TimelineEvent) => void;
+  updateTimeline: (timeline: TimelineEvent[]) => void;
+  updateIssue: (issue: WeddingDayIssue) => void;
+  updateIssues: (issues: WeddingDayIssue[]) => void;
+  updateWeather: (weather: WeatherCondition) => void;
+  updatePresence: (presence: Record<string, CoordinatorPresence[]>) => void;
+
+  // Offline actions
+  queueAction: (
+    action: Omit<OfflineAction, 'id' | 'retryCount' | 'status'>,
+  ) => void;
+  removeAction: (actionId: string) => void;
+  markActionSynced: (actionId: string) => void;
+  markActionFailed: (actionId: string) => void;
+  retryAction: (actionId: string) => void;
+  clearSyncedActions: () => void;
+
+  // Sync management
+  setSyncInProgress: (inProgress: boolean) => void;
+  setLastSyncTime: (time: string) => void;
+
+  // Data getters
+  getVendorList: () => VendorCheckIn[];
+  getTimelineList: () => TimelineEvent[];
+  getIssueList: () => WeddingDayIssue[];
+  getPendingActionsCount: () => number;
+  getFailedActionsCount: () => number;
+
+  // Reset/clear
+  clearOfflineData: () => void;
+  clearPendingActions: () => void;
+}
+
+const useWeddingDayOfflineStore = create<WeddingDayOfflineState>()(
+  persist(
+    (set, get) => ({
+      // Initial state
+      isOnline: typeof window !== 'undefined' ? navigator.onLine : true,
+      lastSyncTime: null,
+      syncInProgress: false,
+
+      coordination: null,
+      vendors: {},
+      timeline: {},
+      issues: {},
+      weather: null,
+      coordinatorPresence: {},
+
+      pendingActions: [],
+      failedActions: [],
+
+      // Connection management
+      setOnlineStatus: (isOnline: boolean) => {
+        set({ isOnline });
+
+        // Trigger sync when coming back online
+        if (isOnline && get().pendingActions.length > 0) {
+          console.log(
+            'Connection restored, pending actions to sync:',
+            get().pendingActions.length,
+          );
+        }
+      },
+
+      // Data updates
+      updateCoordination: (coordination: WeddingDayCoordination) => {
+        set({ coordination });
+      },
+
+      updateVendor: (vendor: VendorCheckIn) => {
+        set((state) => ({
+          vendors: {
+            ...state.vendors,
+            [vendor.id]: vendor,
+          },
+        }));
+      },
+
+      updateVendors: (vendors: VendorCheckIn[]) => {
+        const vendorMap = vendors.reduce(
+          (acc, vendor) => {
+            acc[vendor.id] = vendor;
+            return acc;
+          },
+          {} as Record<string, VendorCheckIn>,
+        );
+
+        set({ vendors: vendorMap });
+      },
+
+      updateTimelineEvent: (event: TimelineEvent) => {
+        set((state) => ({
+          timeline: {
+            ...state.timeline,
+            [event.id]: event,
+          },
+        }));
+      },
+
+      updateTimeline: (timeline: TimelineEvent[]) => {
+        const timelineMap = timeline.reduce(
+          (acc, event) => {
+            acc[event.id] = event;
+            return acc;
+          },
+          {} as Record<string, TimelineEvent>,
+        );
+
+        set({ timeline: timelineMap });
+      },
+
+      updateIssue: (issue: WeddingDayIssue) => {
+        set((state) => ({
+          issues: {
+            ...state.issues,
+            [issue.id]: issue,
+          },
+        }));
+      },
+
+      updateIssues: (issues: WeddingDayIssue[]) => {
+        const issueMap = issues.reduce(
+          (acc, issue) => {
+            acc[issue.id] = issue;
+            return acc;
+          },
+          {} as Record<string, WeddingDayIssue>,
+        );
+
+        set({ issues: issueMap });
+      },
+
+      updateWeather: (weather: WeatherCondition) => {
+        set({ weather });
+      },
+
+      updatePresence: (presence: Record<string, CoordinatorPresence[]>) => {
+        set({ coordinatorPresence: presence });
+      },
+
+      // Offline action queue management
+      queueAction: (actionData) => {
+        const action: OfflineAction = {
+          id: `action-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          ...actionData,
+          timestamp: new Date().toISOString(),
+          retryCount: 0,
+          status: 'pending',
+        };
+
+        set((state) => ({
+          pendingActions: [...state.pendingActions, action],
+        }));
+
+        // Log for debugging
+        console.log('Queued offline action:', action);
+      },
+
+      removeAction: (actionId: string) => {
+        set((state) => ({
+          pendingActions: state.pendingActions.filter((a) => a.id !== actionId),
+          failedActions: state.failedActions.filter((a) => a.id !== actionId),
+        }));
+      },
+
+      markActionSynced: (actionId: string) => {
+        set((state) => ({
+          pendingActions: state.pendingActions.filter((a) => a.id !== actionId),
+          failedActions: state.failedActions.filter((a) => a.id !== actionId),
+        }));
+      },
+
+      markActionFailed: (actionId: string) => {
+        set((state) => {
+          const action = state.pendingActions.find((a) => a.id === actionId);
+          if (!action) return state;
+
+          const failedAction = {
+            ...action,
+            status: 'failed' as const,
+            retryCount: action.retryCount + 1,
+          };
+
+          return {
+            pendingActions: state.pendingActions.filter(
+              (a) => a.id !== actionId,
+            ),
+            failedActions: [...state.failedActions, failedAction],
+          };
+        });
+      },
+
+      retryAction: (actionId: string) => {
+        set((state) => {
+          const action = state.failedActions.find((a) => a.id === actionId);
+          if (!action) return state;
+
+          const retryAction = {
+            ...action,
+            status: 'pending' as const,
+            timestamp: new Date().toISOString(),
+          };
+
+          return {
+            failedActions: state.failedActions.filter((a) => a.id !== actionId),
+            pendingActions: [...state.pendingActions, retryAction],
+          };
+        });
+      },
+
+      clearSyncedActions: () => {
+        set((state) => ({
+          pendingActions: state.pendingActions.filter(
+            (a) => a.status !== 'synced',
+          ),
+          failedActions: state.failedActions.filter(
+            (a) => a.status !== 'synced',
+          ),
+        }));
+      },
+
+      // Sync management
+      setSyncInProgress: (inProgress: boolean) => {
+        set({ syncInProgress: inProgress });
+      },
+
+      setLastSyncTime: (time: string) => {
+        set({ lastSyncTime: time });
+      },
+
+      // Data getters
+      getVendorList: () => {
+        return Object.values(get().vendors).sort((a: any, b: any) =>
+          a.vendorName.localeCompare(b.vendorName),
+        );
+      },
+
+      getTimelineList: () => {
+        return Object.values(get().timeline).sort(
+          (a: any, b: any) =>
+            new Date(a.startTime).getTime() - new Date(b.startTime).getTime(),
+        );
+      },
+
+      getIssueList: () => {
+        const issues = Object.values(get().issues);
+        const severityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
+
+        return issues.sort((a: any, b: any) => {
+          const aSeverity =
+            severityOrder[a.severity as keyof typeof severityOrder];
+          const bSeverity =
+            severityOrder[b.severity as keyof typeof severityOrder];
+
+          if (aSeverity !== bSeverity) {
+            return aSeverity - bSeverity;
+          }
+
+          return (
+            new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+          );
+        });
+      },
+
+      getPendingActionsCount: () => {
+        return get().pendingActions.length;
+      },
+
+      getFailedActionsCount: () => {
+        return get().failedActions.length;
+      },
+
+      // Reset/clear functions
+      clearOfflineData: () => {
+        set({
+          coordination: null,
+          vendors: {},
+          timeline: {},
+          issues: {},
+          weather: null,
+          coordinatorPresence: {},
+          lastSyncTime: null,
+        });
+      },
+
+      clearPendingActions: () => {
+        set({
+          pendingActions: [],
+          failedActions: [],
+        });
+      },
+    }),
+    {
+      name: 'wedding-day-offline-storage',
+      storage: createJSONStorage(() => localStorage),
+
+      // Only persist certain fields
+      partialize: (state) => ({
+        vendors: state.vendors,
+        timeline: state.timeline,
+        issues: state.issues,
+        weather: state.weather,
+        coordination: state.coordination,
+        pendingActions: state.pendingActions,
+        failedActions: state.failedActions,
+        lastSyncTime: state.lastSyncTime,
+      }),
+
+      // Handle rehydration
+      onRehydrateStorage: () => (state) => {
+        if (state) {
+          // Set initial online status
+          state.isOnline =
+            typeof window !== 'undefined' ? navigator.onLine : true;
+          state.syncInProgress = false;
+
+          console.log('Wedding day offline store rehydrated', {
+            vendors: Object.keys(state.vendors).length,
+            timeline: Object.keys(state.timeline).length,
+            issues: Object.keys(state.issues).length,
+            pendingActions: state.pendingActions.length,
+            failedActions: state.failedActions.length,
+          });
+        }
+      },
+    },
+  ),
+);
+
+// Connection status hook
+export const useConnectionStatus = () => {
+  const { isOnline, setOnlineStatus, syncInProgress, lastSyncTime } =
+    useWeddingDayOfflineStore();
+
+  // Listen for online/offline events
+  React.useEffect(() => {
+    const handleOnline = () => setOnlineStatus(true);
+    const handleOffline = () => setOnlineStatus(false);
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, [setOnlineStatus]);
+
+  return {
+    isOnline,
+    syncInProgress,
+    lastSyncTime,
+  };
+};
+
+// Offline sync status hook
+export const useOfflineSyncStatus = () => {
+  const {
+    pendingActions,
+    failedActions,
+    getPendingActionsCount,
+    getFailedActionsCount,
+    isOnline,
+    syncInProgress,
+  } = useWeddingDayOfflineStore();
+
+  return {
+    pendingCount: getPendingActionsCount(),
+    failedCount: getFailedActionsCount(),
+    hasUnsyncedData: pendingActions.length > 0 || failedActions.length > 0,
+    isOnline,
+    syncInProgress,
+    pendingActions,
+    failedActions,
+  };
+};
+
+export default useWeddingDayOfflineStore;

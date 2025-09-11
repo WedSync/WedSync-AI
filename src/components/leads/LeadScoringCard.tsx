@@ -1,0 +1,247 @@
+'use client';
+
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
+import { Progress } from '@/components/ui/progress';
+import {
+  ArrowTrendingUpIcon,
+  ArrowTrendingDownIcon,
+  MinusIcon,
+  StarIcon,
+  InformationCircleIcon,
+  ArrowPathIcon,
+} from '@heroicons/react/20/solid';
+import { useState } from 'react';
+
+interface LeadScore {
+  totalScore: number;
+  grade: 'A+' | 'A' | 'B' | 'C' | 'D' | 'F';
+  components: {
+    demographic: number;
+    behavioral: number;
+    engagement: number;
+    fit: number;
+  };
+  trend: 'up' | 'down' | 'stable' | 'new';
+  lastCalculated: string;
+  qualificationStatus: 'qualified' | 'unqualified' | 'needs_review';
+}
+
+interface LeadScoringCardProps {
+  leadId: string;
+  currentScore: LeadScore;
+  onRecalculate?: () => void;
+  isRecalculating?: boolean;
+}
+
+export default function LeadScoringCard({
+  leadId,
+  currentScore,
+  onRecalculate,
+  isRecalculating = false,
+}: LeadScoringCardProps) {
+  const [showDetails, setShowDetails] = useState(false);
+
+  const gradeColors = {
+    'A+': 'emerald',
+    A: 'green',
+    B: 'blue',
+    C: 'yellow',
+    D: 'orange',
+    F: 'red',
+  } as const;
+
+  const getTrendIcon = (trend: string) => {
+    switch (trend) {
+      case 'up':
+        return <ArrowTrendingUpIcon className="h-4 w-4 text-green-500" />;
+      case 'down':
+        return <ArrowTrendingDownIcon className="h-4 w-4 text-red-500" />;
+      case 'stable':
+        return <MinusIcon className="h-4 w-4 text-gray-400" />;
+      default:
+        return <StarIcon className="h-4 w-4 text-blue-500" />;
+    }
+  };
+
+  const getQualificationColor = (status: string) => {
+    switch (status) {
+      case 'qualified':
+        return 'green';
+      case 'needs_review':
+        return 'yellow';
+      case 'unqualified':
+        return 'red';
+      default:
+        return 'gray';
+    }
+  };
+
+  const getComponentLabel = (component: string) => {
+    switch (component) {
+      case 'demographic':
+        return 'Demographic Fit';
+      case 'behavioral':
+        return 'Behavioral Signals';
+      case 'engagement':
+        return 'Engagement Level';
+      case 'fit':
+        return 'Service Fit';
+      default:
+        return component;
+    }
+  };
+
+  const getScoreDescription = (score: number) => {
+    if (score >= 90) return 'Exceptional lead - immediate priority';
+    if (score >= 80) return 'Excellent lead - high priority';
+    if (score >= 70) return 'Good lead - standard follow-up';
+    if (score >= 60) return 'Moderate lead - nurture sequence';
+    if (score >= 50) return 'Developing lead - monitor progress';
+    return 'Low priority - long-term nurture';
+  };
+
+  const getRecommendations = (score: LeadScore) => {
+    const recommendations: string[] = [];
+
+    if (score.grade === 'A+' || score.grade === 'A') {
+      recommendations.push('Schedule consultation call immediately');
+      recommendations.push('Send premium package information');
+    } else if (score.grade === 'B') {
+      recommendations.push('Send detailed portfolio and pricing');
+      recommendations.push('Schedule discovery call within 48 hours');
+    } else if (score.grade === 'C') {
+      recommendations.push('Add to nurture email sequence');
+      recommendations.push('Send educational content');
+    } else {
+      recommendations.push('Monitor for engagement changes');
+      recommendations.push('Add to long-term nurture campaign');
+    }
+
+    // Component-specific recommendations
+    if (score.components.behavioral < 10) {
+      recommendations.push('Encourage form completion with incentive');
+    }
+    if (score.components.engagement < 10) {
+      recommendations.push('Increase communication frequency');
+    }
+    if (score.components.demographic < 15) {
+      recommendations.push('Gather more demographic information');
+    }
+
+    return recommendations.slice(0, 4); // Limit to top 4 recommendations
+  };
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
+        <CardTitle className="text-lg font-semibold">Lead Score</CardTitle>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowDetails(!showDetails)}
+          >
+            <InformationCircleIcon className="h-4 w-4" />
+            {showDetails ? 'Hide' : 'Details'}
+          </Button>
+          {onRecalculate && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onRecalculate}
+              disabled={isRecalculating}
+            >
+              <ArrowPathIcon
+                className={`h-4 w-4 ${isRecalculating ? 'animate-spin' : ''}`}
+              />
+              Recalculate
+            </Button>
+          )}
+        </div>
+      </CardHeader>
+
+      <CardContent className="space-y-4">
+        {/* Main Score Display */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="text-3xl font-bold text-gray-900">
+              {currentScore.totalScore}
+            </div>
+            <div className="flex flex-col">
+              <Badge color={gradeColors[currentScore.grade]}>
+                Grade {currentScore.grade}
+              </Badge>
+              <div className="flex items-center gap-1 mt-1">
+                {getTrendIcon(currentScore.trend)}
+                <span className="text-xs text-gray-500 capitalize">
+                  {currentScore.trend}
+                </span>
+              </div>
+            </div>
+          </div>
+          <div className="text-right">
+            <Badge
+              color={getQualificationColor(currentScore.qualificationStatus)}
+            >
+              {currentScore.qualificationStatus.replace('_', ' ')}
+            </Badge>
+            <div className="text-xs text-gray-500 mt-1">
+              Updated{' '}
+              {new Date(currentScore.lastCalculated).toLocaleDateString()}
+            </div>
+          </div>
+        </div>
+
+        {/* Score Description */}
+        <div className="text-sm text-gray-600 bg-gray-50 p-3 rounded-lg">
+          {getScoreDescription(currentScore.totalScore)}
+        </div>
+
+        {/* Component Breakdown */}
+        {showDetails && (
+          <div className="space-y-3">
+            <h4 className="font-medium text-gray-900">Score Breakdown</h4>
+            {Object.entries(currentScore.components).map(
+              ([component, score]) => (
+                <div key={component} className="space-y-1">
+                  <div className="flex justify-between text-sm">
+                    <span>{getComponentLabel(component)}</span>
+                    <span className="font-medium">{score}/25</span>
+                  </div>
+                  <Progress value={(score / 25) * 100} className="h-2" />
+                </div>
+              ),
+            )}
+          </div>
+        )}
+
+        {/* Recommendations */}
+        {showDetails && (
+          <div className="space-y-3">
+            <h4 className="font-medium text-gray-900">Recommended Actions</h4>
+            <ul className="space-y-2">
+              {getRecommendations(currentScore).map((recommendation, index) => (
+                <li key={index} className="flex items-start gap-2 text-sm">
+                  <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-2 flex-shrink-0" />
+                  <span>{recommendation}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* Quick Actions */}
+        <div className="flex gap-2 pt-2 border-t">
+          <Button variant="outline" size="sm" className="flex-1">
+            View History
+          </Button>
+          <Button variant="outline" size="sm" className="flex-1">
+            Adjust Scoring
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}

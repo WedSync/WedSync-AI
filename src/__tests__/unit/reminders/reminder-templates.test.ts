@@ -1,0 +1,217 @@
+// WS-084: Unit Tests for Reminder Template Resolution
+// Tests template variable replacement and validation
+
+import { describe, it, expect } from 'vitest';
+// Template resolution utility function (extracted from service for testing)
+function resolveTemplate(template: string, data: Record<string, any>): string {
+  if (!template) return '';
+  
+  let resolved = template;
+  // Replace template variables like {variableName}
+  Object.keys(data).forEach(key => {
+    const regex = new RegExp(`\\{${key}\\}`, 'g');
+    resolved = resolved.replace(regex, String(data[key] || ''));
+  });
+  return resolved;
+}
+describe('Reminder Template Resolution', () => {
+  describe('Basic Template Resolution', () => {
+    it('should replace single template variable', () => {
+      const template = 'Hello {name}!';
+      const data = { name: 'John' };
+      
+      const result = resolveTemplate(template, data);
+      expect(result).toBe('Hello John!');
+    });
+    it('should replace multiple template variables', () => {
+      const template = 'Payment of {amount} for {service} is due on {date}';
+      const data = {
+        amount: '$1,500',
+        service: 'Wedding Photography',
+        date: 'February 15th'
+      };
+      expect(result).toBe('Payment of $1,500 for Wedding Photography is due on February 15th');
+    it('should replace repeated template variables', () => {
+      const template = '{name}, your payment of {amount} is due. Please pay {amount} by the due date.';
+      const data = { name: 'Sarah', amount: '$2,000' };
+      expect(result).toBe('Sarah, your payment of $2,000 is due. Please pay $2,000 by the due date.');
+    it('should handle case-sensitive variable names', () => {
+      const template = 'Hello {Name} and {name}!';
+      const data = { Name: 'John', name: 'jane' };
+      expect(result).toBe('Hello John and jane!');
+  describe('Edge Cases', () => {
+    it('should handle missing template variables', () => {
+      const template = 'Hello {name}, your {service} appointment is at {time}';
+      const data = { name: 'John' }; // Missing service and time
+      expect(result).toBe('Hello John, your  appointment is at ');
+    it('should handle empty template', () => {
+      const template = '';
+      expect(result).toBe('');
+    it('should handle empty data object', () => {
+      const data = {};
+      expect(result).toBe('Hello !');
+    it('should handle null/undefined values', () => {
+      const template = 'Hello {name}! Your balance is {balance}.';
+      const data = { name: null, balance: undefined };
+      expect(result).toBe('Hello null! Your balance is undefined.');
+    it('should handle numeric values', () => {
+      const template = 'You have {count} items costing ${total}';
+      const data = { count: 5, total: 299.99 };
+      expect(result).toBe('You have 5 items costing $299.99');
+    it('should handle boolean values', () => {
+      const template = 'Payment complete: {isPaid}, Confirmed: {isConfirmed}';
+      const data = { isPaid: true, isConfirmed: false };
+      expect(result).toBe('Payment complete: true, Confirmed: false');
+  describe('Complex Templates', () => {
+    it('should handle HTML email template', () => {
+      const template = `
+        <html>
+          <body>
+            <h1>Hello {clientName}!</h1>
+            <p>Your payment of <strong>{amount}</strong> for {serviceName} is due on {dueDate}.</p>
+            <p>Please visit our <a href="{paymentUrl}">payment portal</a> to complete your payment.</p>
+            <p>Best regards,<br>The {companyName} Team</p>
+          </body>
+        </html>
+      `;
+        clientName: 'Sarah Johnson',
+        amount: '$2,500',
+        serviceName: 'Wedding Photography Package',
+        dueDate: 'March 15, 2024',
+        paymentUrl: 'https://wedsync.com/pay/abc123',
+        companyName: 'WedSync'
+      expect(result).toContain('<h1>Hello Sarah Johnson!</h1>');
+      expect(result).toContain('<strong>$2,500</strong>');
+      expect(result).toContain('Wedding Photography Package');
+      expect(result).toContain('March 15, 2024');
+      expect(result).toContain('href="https://wedsync.com/pay/abc123"');
+      expect(result).toContain('The WedSync Team');
+    it('should handle SMS template with line breaks', () => {
+      const template = `Hi {clientName}!\n\nReminder: {taskName} is due in {daysRemaining} days.\n\nPlease complete by {dueDate}.\n\nThanks!`;
+        clientName: 'Mike',
+        taskName: 'Final headcount confirmation',
+        daysRemaining: 3,
+        dueDate: 'Feb 20'
+      expect(result).toBe(`Hi Mike!\n\nReminder: Final headcount confirmation is due in 3 days.\n\nPlease complete by Feb 20.\n\nThanks!`);
+    it('should handle template with special characters', () => {
+      const template = 'Price: {currency}{amount} (incl. {taxRate}% tax) - Status: {status}';
+        currency: '$',
+        amount: '1,250.00',
+        taxRate: 8.5,
+        status: 'Pending ⏳'
+      expect(result).toBe('Price: $1,250.00 (incl. 8.5% tax) - Status: Pending ⏳');
+  describe('Real-world Wedding Templates', () => {
+    it('should handle payment reminder template', () => {
+      const template = `Dear {clientName},
+This is a friendly reminder that your {paymentType} payment of {amount} for {serviceName} is due on {dueDate}.
+Payment Details:
+- Amount: {amount}
+- Service: {serviceName}
+- Due Date: {dueDate}
+- Invoice #: {invoiceNumber}
+Please make your payment at: {paymentUrl}
+If you have any questions, please contact us at {contactEmail} or {contactPhone}.
+Best regards,
+{plannerName}
+{companyName}`;
+        clientName: 'Emma & James Wilson',
+        paymentType: 'Final',
+        amount: '$3,500',
+        serviceName: 'Full Wedding Coordination',
+        dueDate: 'March 1, 2024',
+        invoiceNumber: 'INV-2024-001',
+        paymentUrl: 'https://wedsync.com/payments/inv-2024-001',
+        contactEmail: 'hello@dreamweddings.com',
+        contactPhone: '(555) 123-4567',
+        plannerName: 'Sarah Thompson',
+        companyName: 'Dream Weddings'
+      expect(result).toContain('Dear Emma & James Wilson,');
+      expect(result).toContain('Final payment of $3,500');
+      expect(result).toContain('Full Wedding Coordination');
+      expect(result).toContain('March 1, 2024');
+      expect(result).toContain('INV-2024-001');
+      expect(result).toContain('https://wedsync.com/payments/inv-2024-001');
+      expect(result).toContain('Sarah Thompson');
+      expect(result).toContain('Dream Weddings');
+    it('should handle vendor task reminder template', () => {
+      const template = `Hi {vendorName},
+This is a reminder that you have an upcoming task for the {coupleName} wedding:
+Task: {taskName}
+Due Date: {dueDate}
+Priority: {priority}
+{taskDescription}
+Wedding Details:
+- Date: {weddingDate}
+- Venue: {venueName}
+- Contact: {plannerName} ({plannerEmail})
+Please confirm completion by replying to this message or updating your status in our system.
+Thank you!
+        vendorName: 'Bella Rosa Florists',
+        coupleName: 'Sarah & Michael',
+        taskName: 'Submit final floral arrangements',
+        dueDate: 'February 28, 2024',
+        priority: 'High',
+        taskDescription: 'Please submit photos and descriptions of all centerpieces, bridal bouquet, and ceremony arrangements for final approval.',
+        weddingDate: 'April 15, 2024',
+        venueName: 'Grandview Gardens',
+        plannerName: 'Lisa Chen',
+        plannerEmail: 'lisa@wedsync.com',
+      expect(result).toContain('Hi Bella Rosa Florists,');
+      expect(result).toContain('Sarah & Michael wedding');
+      expect(result).toContain('Submit final floral arrangements');
+      expect(result).toContain('February 28, 2024');
+      expect(result).toContain('Priority: High');
+      expect(result).toContain('April 15, 2024');
+      expect(result).toContain('Grandview Gardens');
+      expect(result).toContain('Lisa Chen (lisa@wedsync.com)');
+    it('should handle milestone reminder template', () => {
+      const template = `🎉 Wedding Milestone Alert! 🎉
+Hi {coupleName}!
+You're {daysUntilWedding} days away from your big day - how exciting! 
+Upcoming Milestone: {milestoneName}
+Target Date: {milestoneDate}
+Here's what you need to complete:
+{todoList}
+Your wedding timeline:
+- Wedding Date: {weddingDate}
+- Guest Count: {guestCount}
+Need help? We're here for you!
+📞 {plannerPhone}
+📧 {plannerEmail}
+Let's make your dream wedding come true! ✨`;
+        coupleName: 'Jennifer & David',
+        daysUntilWedding: 45,
+        milestoneName: 'Final Menu Selection',
+        milestoneDate: 'March 10, 2024',
+        todoList: '• Choose appetizers (3 options)\n• Select main course options\n• Confirm dietary restrictions\n• Approve final headcount',
+        weddingDate: 'May 18, 2024',
+        venueName: 'Sunset Beach Resort',
+        guestCount: 150,
+        plannerName: 'Amanda Rodriguez',
+        plannerPhone: '(555) 987-6543',
+        plannerEmail: 'amanda@dreamweddings.com'
+      expect(result).toContain('Hi Jennifer & David!');
+      expect(result).toContain("You're 45 days away");
+      expect(result).toContain('Final Menu Selection');
+      expect(result).toContain('March 10, 2024');
+      expect(result).toContain('• Choose appetizers');
+      expect(result).toContain('May 18, 2024');
+      expect(result).toContain('Sunset Beach Resort');
+      expect(result).toContain('Guest Count: 150');
+      expect(result).toContain('Amanda Rodriguez');
+      expect(result).toContain('(555) 987-6543');
+  describe('Template Validation', () => {
+    it('should identify all variables in template', () => {
+      const template = 'Hello {name}, your {item} costs {price}. Contact {support}.';
+      const variableMatches = template.match(/\{([^}]+)\}/g);
+      const variables = variableMatches?.map(match => match.slice(1, -1)) || [];
+      expect(variables).toEqual(['name', 'item', 'price', 'support']);
+    it('should handle nested braces gracefully', () => {
+      const template = 'Code: {code} and {{notAVariable}} and {realVariable}';
+      const data = { code: 'ABC123', realVariable: 'success' };
+      expect(result).toBe('Code: ABC123 and {{notAVariable}} and success');
+    it('should handle malformed variables', () => {
+      const template = 'Hello {name and {item} and } and {valid}';
+      const data = { name: 'John', item: 'book', valid: 'test' };
+      expect(result).toBe('Hello {name and book and } and test');
+});

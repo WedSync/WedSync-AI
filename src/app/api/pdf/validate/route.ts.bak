@@ -1,0 +1,333 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { readFile } from 'fs/promises';
+import { validateAuth } from '@/lib/auth-middleware';
+import { QualityAssessment } from '@/lib/ocr/processing-pipeline';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+interface ValidationResult {
+  isValid: boolean;
+  issues: string[];
+  recommendations: string[];
+  qualityScore: number;
+  metadata: {
+    fileSize: number;
+    pageCount?: number;
+    hasText?: boolean;
+    isScanned?: boolean;
+  };
+}
+
+// Analyze PDF structure and quality
+async function analyzePDFQuality(filePath: string): Promise<QualityAssessment> {
+  const issues: string[] = [];
+  const recommendations: string[] = [];
+  
+  try {
+    // Read PDF file
+    const fileBuffer = await readFile(filePath);
+    const fileSizeMB = fileBuffer.length / (1024 * 1024);
+    
+    // Basic PDF validation
+    if (!fileBuffer.toString('latin1').includes('%PDF-')) {
+      issues.push('Invalid PDF format');
+      return {
+        score: 0,
+        issues,
+        recommendations: ['Upload a valid PDF file'],
+        isProcessable: false,
+      };
+    }
+
+    // Check file size
+    if (fileSizeMB > 50) {
+      issues.push('File size exceeds 50MB limit');
+      recommendations.push('Compress the PDF to reduce file size');
+    } else if (fileSizeMB > 25) {
+      recommendations.push('Large file detected - processing may take longer');
+    }
+
+    if (fileSizeMB < 0.1) {
+      issues.push('File appears to be too small or empty');
+    }
+
+    // Check for password protection
+    const content = fileBuffer.toString('latin1');
+    if (content.includes('/Encrypt')) {
+      issues.push('PDF appears to be password protected or encrypted');
+      recommendations.push('Remove password protection before uploading');
+    }
+
+    // Analyze text content
+    let hasText = false;
+    let isScanned = false;
+
+    // Look for text objects in PDF
+    if (content.includes('/Text') || content.includes('BT ') || content.includes('Tj')) {
+      hasText = true;
+    } else if (content.includes('/Image') || content.includes('/DCTDecode') || content.includes('/JPXDecode')) {
+      isScanned = true;
+      recommendations.push('Scanned PDF detected - OCR processing will be used');
+    }
+
+    // Check for form fields
+    let hasFormFields = false;
+    if (content.includes('/AcroForm') || content.includes('/Field')) {
+      hasFormFields = true;
+      recommendations.push('PDF form fields detected - these will be processed');
+    }
+
+    // Estimate page count (rough approximation)
+    const pageMatches = content.match(/\/Page[\s\n]/g);
+    const estimatedPageCount = pageMatches ? pageMatches.length : 1;
+
+    if (estimatedPageCount > 20) {
+      recommendations.push('Large document detected - consider splitting into smaller files');
+    }
+
+    // Calculate quality score
+    let score = 100;
+    
+    // Penalize issues
+    score -= issues.length * 25;
+    
+    // Adjust for content type
+    if (hasText) {
+      score += 10; // Bonus for text-based PDFs
+    }
+    if (hasFormFields) {
+      score += 15; // Bonus for form fields
+    }
+    if (isScanned) {
+      score -= 10; // Penalty for scanned documents (harder OCR)
+    }
+    
+    // File size considerations
+    if (fileSizeMB > 10) {
+      score -= 5; // Small penalty for large files
+    }
+    if (fileSizeMB < 1) {
+      score -= 5; // Small penalty for very small files
+    }
+
+    score = Math.max(0, Math.min(100, score));
+
+    const isProcessable = score >= 30 && !issues.some(issue => 
+      issue.includes('Invalid PDF') || issue.includes('password protected')
+    );
+
+    if (!isProcessable && score < 30) {
+      recommendations.push('PDF quality is too low for reliable processing');
+    }
+
+    return {
+      score,
+      issues,
+      recommendations,
+      isProcessable,
+    };
+
+  } catch (error) {
+    console.error('PDF analysis error:', error);
+    return {
+      score: 0,
+      issues: [`Analysis failed: ${error.message}`],
+      recommendations: ['Please try uploading the file again'],
+      isProcessable: false,
+    };
+  }
+}
+
+// Detect malicious content patterns
+async function scanForMaliciousContent(filePath: string): Promise<{ isClean: boolean; threats: string[] }> {
+  try {
+    const fileBuffer = await readFile(filePath);
+    const content = fileBuffer.toString('latin1');
+    const threats: string[] = [];
+
+    // JavaScript detection
+    if (content.match(/\/JS\s*\(/i) || content.match(/\/JavaScript\s*\(/i)) {
+      threats.push('JavaScript code detected');
+    }
+
+    // Action detection (potentially malicious)
+    if (content.includes('/Action')) {
+      threats.push('PDF actions detected');
+    }
+
+    // URI actions
+    if (content.includes('/URI')) {
+      threats.push('External links detected');
+    }
+
+    // Embedded files
+    if (content.includes('/EmbeddedFile')) {
+      threats.push('Embedded files detected');
+    }
+
+    // Form submissions
+    if (content.includes('/SubmitForm')) {
+      threats.push('Form submission actions detected');
+    }
+
+    return {
+      isClean: threats.length === 0,
+      threats,
+    };
+
+  } catch (error) {
+    console.error('Malicious content scan error:', error);
+    return {
+      isClean: false,
+      threats: ['Scan failed - file may be corrupted'],
+    };
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    // Authentication
+    const authResult = await validateAuth(request);
+    if (!authResult.success || !authResult.user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    const { uploadId } = await request.json();
+
+    if (!uploadId) {
+      return NextResponse.json(
+        { error: 'Upload ID is required' },
+        { status: 400 }
+      );
+    }
+
+    // Get upload metadata
+    const { data: upload, error: uploadError } = await supabase
+      .from('pdf_imports')
+      .select('*')
+      .eq('id', uploadId)
+      .eq('user_id', authResult.user.id)
+      .single();
+
+    if (uploadError || !upload) {
+      return NextResponse.json(
+        { error: 'Upload not found' },
+        { status: 404 }
+      );
+    }
+
+    // Analyze PDF quality
+    const qualityAnalysis = await analyzePDFQuality(upload.file_path);
+
+    // Scan for malicious content
+    const securityScan = await scanForMaliciousContent(upload.file_path);
+
+    // Combine results
+    const allIssues = [...qualityAnalysis.issues];
+    const allRecommendations = [...qualityAnalysis.recommendations];
+
+    if (!securityScan.isClean) {
+      allIssues.push(...securityScan.threats);
+      allRecommendations.push('File contains potentially unsafe content');
+    }
+
+    const isValid = qualityAnalysis.isProcessable && securityScan.isClean;
+
+    // Get file stats
+    const fileBuffer = await readFile(upload.file_path);
+    const metadata = {
+      fileSize: fileBuffer.length,
+      hasText: fileBuffer.toString('latin1').includes('BT '),
+      isScanned: fileBuffer.toString('latin1').includes('/Image'),
+    };
+
+    const result: ValidationResult = {
+      isValid,
+      issues: allIssues,
+      recommendations: allRecommendations,
+      qualityScore: qualityAnalysis.score,
+      metadata,
+    };
+
+    // Update upload status
+    const newStatus = isValid ? 'validated' : 'validation_failed';
+    await supabase
+      .from('pdf_imports')
+      .update({
+        upload_status: newStatus,
+      })
+      .eq('id', uploadId);
+
+    return NextResponse.json({
+      success: true,
+      validation: result,
+    });
+
+  } catch (error) {
+    console.error('Validation error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error during validation' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    // Authentication
+    const authResult = await validateAuth(request);
+    if (!authResult.success || !authResult.user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    const { searchParams } = new URL(request.url);
+    const uploadId = searchParams.get('uploadId');
+
+    if (!uploadId) {
+      return NextResponse.json(
+        { error: 'Upload ID is required' },
+        { status: 400 }
+      );
+    }
+
+    // Get upload with validation status
+    const { data: upload, error } = await supabase
+      .from('pdf_imports')
+      .select('*')
+      .eq('id', uploadId)
+      .eq('user_id', authResult.user.id)
+      .single();
+
+    if (error || !upload) {
+      return NextResponse.json(
+        { error: 'Upload not found' },
+        { status: 404 }
+      );
+    }
+
+    return NextResponse.json({
+      uploadId: upload.id,
+      filename: upload.original_filename,
+      fileSize: upload.file_size,
+      status: upload.upload_status,
+      uploadedAt: upload.created_at,
+    });
+
+  } catch (error) {
+    console.error('Get validation status error:', error);
+    return NextResponse.json(
+      { error: 'Failed to get validation status' },
+      { status: 500 }
+    );
+  }
+}

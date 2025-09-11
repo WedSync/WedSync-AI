@@ -1,0 +1,200 @@
+/**
+ * WS-242: AI PDF Analysis System - Main Analysis API
+ * Team D: AI/ML Engineering & Optimization
+ * 
+ * API endpoint for wedding PDF field extraction with AI
+ * Implements cost-optimized processing and intelligent field detection
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { aiPDFAnalysisService } from '@/lib/ai/pdf-analysis/ai-pdf-analysis-service';
+import {
+  AnalysisRequest,
+  ProcessingResult,
+  ProcessingOptions,
+  AIProcessingError
+} from '@/lib/ai/pdf-analysis/types';
+
+export async function POST(request: NextRequest) {
+  try {
+    console.log('AI PDF Analysis API called');
+
+    // Parse request body
+    const body = await request.json();
+
+    // Validate required fields
+    if (!body.pdf_id || !body.user_id || !body.pages) {
+      return NextResponse.json(
+        { error: 'Missing required fields: pdf_id, user_id, or pages' },
+        { status: 400 }
+      );
+    }
+
+    // Validate user tier (important for cost optimization)
+    const validTiers = ['free', 'starter', 'professional', 'scale', 'enterprise'];
+    if (!validTiers.includes(body.user_tier)) {
+      return NextResponse.json(
+        { error: 'Invalid user tier. Must be one of: ' + validTiers.join(', ') },
+        { status: 400 }
+      );
+    }
+
+    // Validate page data
+    if (!Array.isArray(body.pages) || body.pages.length === 0) {
+      return NextResponse.json(
+        { error: 'Pages must be a non-empty array' },
+        { status: 400 }
+      );
+    }
+
+    if (body.pages.length > 50) {
+      return NextResponse.json(
+        { error: 'Maximum 50 pages allowed per analysis' },
+        { status: 400 }
+      );
+    }
+
+    // Validate each page
+    for (const page of body.pages) {
+      if (!page.image_data || !page.image_format) {
+        return NextResponse.json(
+          { error: `Missing image_data or image_format for page ${page.page_number}` },
+          { status: 400 }
+        );
+      }
+    }
+
+    // Build analysis request
+    const analysisRequest: AnalysisRequest = {
+      pdf_id: body.pdf_id,
+      user_id: body.user_id,
+      user_tier: body.user_tier,
+      urgency_level: body.urgency_level || 'normal',
+      pages: body.pages,
+      processing_options: body.processing_options || {
+        accuracy_level: 'balanced',
+        cost_optimization: true,
+        batch_processing: false,
+        wedding_season_mode: false
+      }
+    };
+
+    console.log(`Processing AI PDF analysis for user ${body.user_id} (${body.user_tier})`);
+    console.log(`Pages: ${body.pages.length}, Urgency: ${analysisRequest.urgency_level}`);
+
+    // Process with AI service
+    const result: ProcessingResult = await aiPDFAnalysisService.analyzePDF(analysisRequest);
+
+    console.log(`AI PDF analysis completed successfully:`);
+    console.log(`- Fields extracted: ${result.extracted_fields.length}`);
+    console.log(`- Processing time: ${result.processing_time}ms`);
+    console.log(`- Cost incurred: £${result.cost_incurred}`);
+    console.log(`- Accuracy score: ${result.accuracy_score}`);
+
+    // Return successful result
+    return NextResponse.json({
+      success: true,
+      result: result,
+      message: `Successfully extracted ${result.extracted_fields.length} fields from PDF`,
+      metadata: {
+        processing_time: result.processing_time,
+        cost_incurred: result.cost_incurred,
+        accuracy_score: result.accuracy_score,
+        fields_by_category: getFieldsByCategory(result.extracted_fields),
+        confidence_summary: getConfidenceSummary(result.confidence_distribution)
+      }
+    });
+
+  } catch (error) {
+    console.error('AI PDF Analysis API error:', error);
+
+    // Handle AI processing errors specifically
+    if (error instanceof AIProcessingError) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: error.message,
+          error_type: error.error_type,
+          error_id: error.error_id,
+          recovery_suggestions: error.recovery_suggestions,
+          timestamp: error.timestamp
+        },
+        { status: 422 } // Unprocessable Entity
+      );
+    }
+
+    // Handle other errors
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Internal server error during PDF analysis',
+        message: 'An unexpected error occurred while processing your PDF',
+        timestamp: new Date().toISOString()
+      },
+      { status: 500 }
+    );
+  }
+}
+
+// GET endpoint for retrieving processing status
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const requestId = searchParams.get('request_id');
+
+    if (!requestId) {
+      return NextResponse.json(
+        { error: 'Missing request_id parameter' },
+        { status: 400 }
+      );
+    }
+
+    console.log(`Getting processing status for request: ${requestId}`);
+
+    const status = await aiPDFAnalysisService.getProcessingStatus(requestId);
+
+    return NextResponse.json({
+      success: true,
+      status: status
+    });
+
+  } catch (error) {
+    console.error('Error retrieving processing status:', error);
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Failed to retrieve processing status',
+        timestamp: new Date().toISOString()
+      },
+      { status: 500 }
+    );
+  }
+}
+
+// Helper functions
+function getFieldsByCategory(fields: any[]): Record<string, number> {
+  const categoryCounts: Record<string, number> = {};
+  
+  for (const field of fields) {
+    const category = field.wedding_category || 'unknown';
+    categoryCounts[category] = (categoryCounts[category] || 0) + 1;
+  }
+  
+  return categoryCounts;
+}
+
+function getConfidenceSummary(distribution: Record<string, number>): {
+  high_confidence: number;
+  medium_confidence: number;
+  low_confidence: number;
+  total_fields: number;
+} {
+  const total = Object.values(distribution).reduce((sum, count) => sum + count, 0);
+  
+  return {
+    high_confidence: distribution.high || 0,
+    medium_confidence: distribution.medium || 0,
+    low_confidence: distribution.low || 0,
+    total_fields: total
+  };
+}

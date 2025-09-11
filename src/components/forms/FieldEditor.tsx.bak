@@ -1,0 +1,272 @@
+'use client';
+
+import { FormField, FormFieldOption } from '@/types/forms';
+import { Button } from '@/components/ui/button';
+import { TrashIcon, PlusIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { nanoid } from 'nanoid';
+import { useState } from 'react';
+
+interface FieldEditorProps {
+  field: FormField;
+  onUpdate: (updates: Partial<FormField>) => void;
+  onDelete: () => void;
+}
+
+export function FieldEditor({ field, onUpdate, onDelete }: FieldEditorProps) {
+  const [showValidation, setShowValidation] = useState(false);
+  const [showConditional, setShowConditional] = useState(false);
+
+  const handleAddOption = () => {
+    const newOption: FormFieldOption = {
+      id: nanoid(),
+      label: `Option ${(field.options?.length || 0) + 1}`,
+      value: `option_${(field.options?.length || 0) + 1}`
+    };
+    onUpdate({ options: [...(field.options || []), newOption] });
+  };
+
+  const handleUpdateOption = (optionId: string, updates: Partial<FormFieldOption>) => {
+    onUpdate({
+      options: field.options?.map(opt => 
+        opt.id === optionId ? { ...opt, ...updates } : opt
+      )
+    });
+  };
+
+  const handleDeleteOption = (optionId: string) => {
+    onUpdate({
+      options: field.options?.filter(opt => opt.id !== optionId)
+    });
+  };
+
+  const hasOptions = ['select', 'radio', 'checkbox'].includes(field.type);
+  const hasPlaceholder = ['text', 'email', 'tel', 'textarea', 'number', 'date', 'time'].includes(field.type);
+  const hasValidation = !['heading', 'paragraph', 'divider', 'image'].includes(field.type);
+
+  return (
+    <div className="h-full flex flex-col">
+      {/* Header */}
+      <div className="p-4 border-b">
+        <h3 className="text-lg font-semibold">Field Properties</h3>
+        <p className="text-sm text-gray-500 mt-1">Customize your {field.type} field</p>
+      </div>
+
+      {/* Scrollable Content */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-6">
+        {/* Basic Properties */}
+        <div>
+          <h4 className="text-sm font-medium text-gray-700 mb-3">Basic</h4>
+          <div className="space-y-3">
+            <div>
+              <label className="block text-sm text-gray-600 mb-1">Label</label>
+              <input
+                type="text"
+                value={field.label}
+                onChange={(e) => onUpdate({ label: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+              />
+            </div>
+
+            {hasPlaceholder && (
+              <div>
+                <label className="block text-sm text-gray-600 mb-1">Placeholder</label>
+                <input
+                  type="text"
+                  value={field.placeholder || ''}
+                  onChange={(e) => onUpdate({ placeholder: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                />
+              </div>
+            )}
+
+            <div>
+              <label className="block text-sm text-gray-600 mb-1">Helper Text</label>
+              <input
+                type="text"
+                value={field.helperText || ''}
+                onChange={(e) => onUpdate({ helperText: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                placeholder="Add helpful instructions..."
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm text-gray-600 mb-1">Field Width</label>
+              <select
+                value={field.width || 'full'}
+                onChange={(e) => onUpdate({ width: e.target.value as any })}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+              >
+                <option value="full">Full Width</option>
+                <option value="half">Half Width</option>
+                <option value="third">Third Width</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        {/* Options for select, radio, checkbox */}
+        {hasOptions && (
+          <div>
+            <h4 className="text-sm font-medium text-gray-700 mb-3">Options</h4>
+            <div className="space-y-2">
+              {field.options?.map((option) => (
+                <div key={option.id} className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={option.label}
+                    onChange={(e) => handleUpdateOption(option.id, { label: e.target.value })}
+                    className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  />
+                  <button
+                    onClick={() => handleDeleteOption(option.id)}
+                    className="p-2 text-red-500 hover:bg-red-50 rounded"
+                  >
+                    <XMarkIcon className="h-4 w-4" />
+                  </button>
+                </div>
+              ))}
+              <Button
+                variant="outline"
+                onClick={handleAddOption}
+                className="w-full"
+              >
+                <PlusIcon className="h-4 w-4 mr-2" />
+                Add Option
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Validation */}
+        {hasValidation && (
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="text-sm font-medium text-gray-700">Validation</h4>
+              <button
+                onClick={() => setShowValidation(!showValidation)}
+                className="text-sm text-purple-600 hover:text-purple-700"
+              >
+                {showValidation ? 'Hide' : 'Show'}
+              </button>
+            </div>
+            
+            {showValidation && (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm text-gray-600">Required</label>
+                  <Switch
+                    checked={field.validation?.required || false}
+                    onChange={(checked) => onUpdate({
+                      validation: { ...field.validation, required: checked }
+                    })}
+                  />
+                </div>
+
+                {['text', 'textarea'].includes(field.type) && (
+                  <>
+                    <div>
+                      <label className="block text-sm text-gray-600 mb-1">Min Length</label>
+                      <input
+                        type="number"
+                        value={field.validation?.minLength || ''}
+                        onChange={(e) => onUpdate({
+                          validation: { ...field.validation, minLength: parseInt(e.target.value) }
+                        })}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm text-gray-600 mb-1">Max Length</label>
+                      <input
+                        type="number"
+                        value={field.validation?.maxLength || ''}
+                        onChange={(e) => onUpdate({
+                          validation: { ...field.validation, maxLength: parseInt(e.target.value) }
+                        })}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      />
+                    </div>
+                  </>
+                )}
+
+                {field.type === 'number' && (
+                  <>
+                    <div>
+                      <label className="block text-sm text-gray-600 mb-1">Min Value</label>
+                      <input
+                        type="number"
+                        value={field.validation?.min || ''}
+                        onChange={(e) => onUpdate({
+                          validation: { ...field.validation, min: parseInt(e.target.value) }
+                        })}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm text-gray-600 mb-1">Max Value</label>
+                      <input
+                        type="number"
+                        value={field.validation?.max || ''}
+                        onChange={(e) => onUpdate({
+                          validation: { ...field.validation, max: parseInt(e.target.value) }
+                        })}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      />
+                    </div>
+                  </>
+                )}
+
+                <div>
+                  <label className="block text-sm text-gray-600 mb-1">Custom Error Message</label>
+                  <input
+                    type="text"
+                    value={field.validation?.customMessage || ''}
+                    onChange={(e) => onUpdate({
+                      validation: { ...field.validation, customMessage: e.target.value }
+                    })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    placeholder="Custom validation message..."
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Conditional Logic */}
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <h4 className="text-sm font-medium text-gray-700">Conditional Logic</h4>
+            <button
+              onClick={() => setShowConditional(!showConditional)}
+              className="text-sm text-purple-600 hover:text-purple-700"
+            >
+              {showConditional ? 'Hide' : 'Show'}
+            </button>
+          </div>
+          
+          {showConditional && (
+            <div className="p-3 bg-gray-50 rounded-md">
+              <p className="text-sm text-gray-500">
+                Conditional logic will be available in the next update
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Footer Actions */}
+      <div className="p-4 border-t">
+        <Button
+          variant="outline"
+          onClick={onDelete}
+          className="w-full text-red-600 hover:bg-red-50"
+        >
+          <TrashIcon className="h-4 w-4 mr-2" />
+          Delete Field
+        </Button>
+      </div>
+    </div>
+  );
+}

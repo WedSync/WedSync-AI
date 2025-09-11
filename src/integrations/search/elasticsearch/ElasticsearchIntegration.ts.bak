@@ -1,0 +1,494 @@
+/**
+ * WS-248: ElasticsearchIntegration.ts - Advanced Search System Team C Round 1
+ * 
+ * Production-ready Elasticsearch integration for WedSync wedding vendor search
+ * with comprehensive error handling, wedding day protection, and optimization
+ */
+
+import { Client, ClientOptions } from '@elastic/elasticsearch';
+import { z } from 'zod';
+
+// Wedding-specific vendor schema
+export const WeddingVendorSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().min(1),
+  type: z.enum([
+    'photographer', 'videographer', 'venue', 'caterer', 
+    'florist', 'music', 'planning', 'transport', 'other'
+  ]),
+  location: z.object({
+    lat: z.number(),
+    lon: z.number(),
+    address: z.string(),
+    city: z.string(),
+    region: z.string(),
+    country: z.string(),
+    postcode: z.string()
+  }),
+  priceRange: z.object({
+    min: z.number().min(0),
+    max: z.number().min(0),
+    currency: z.string().length(3)
+  }),
+  services: z.array(z.string()),
+  rating: z.number().min(0).max(5),
+  reviewCount: z.number().min(0),
+  availability: z.array(z.string()),
+  portfolio: z.array(z.string()),
+  tags: z.array(z.string()),
+  isActive: z.boolean(),
+  lastUpdated: z.string().datetime()
+});
+
+export type WeddingVendor = z.infer<typeof WeddingVendorSchema>;
+
+export interface WeddingSearchQuery {
+  query?: string;
+  vendorTypes?: string[];
+  location?: {
+    center: { lat: number; lon: number };
+    radius: string;
+  };
+  priceRange?: {
+    min?: number;
+    max?: number;
+    currency: string;
+  };
+  availability?: {
+    from: string;
+    to: string;
+  };
+  rating?: {
+    min: number;
+  };
+  services?: string[];
+  tags?: string[];
+  sortBy?: 'relevance' | 'price_asc' | 'price_desc' | 'rating' | 'distance';
+  limit?: number;
+  offset?: number;
+}
+
+export interface SearchResult<T = WeddingVendor> {
+  hits: {
+    total: { value: number; relation: string };
+    hits: Array<{
+      _id: string;
+      _source: T;
+      _score: number;
+      sort?: number[];
+    }>;
+  };
+  took: number;
+  aggregations?: Record<string, any>;
+}
+
+/**
+ * Production-ready Elasticsearch client for wedding vendor search
+ */
+export class ElasticsearchIntegration {
+  private client: Client;
+  private healthStatus: 'healthy' | 'degraded' | 'unhealthy' = 'unhealthy';
+  private readonly VENDOR_INDEX = 'wedding_vendors';
+
+  constructor(config: { nodes: string[]; auth?: any }) {
+    const clientOptions: ClientOptions = {
+      nodes: config.nodes,
+      auth: config.auth,
+      maxRetries: 3,
+      requestTimeout: 30000,
+      sniffOnStart: true,
+      sniffInterval: 300000,
+    };
+
+    this.client = new Client(clientOptions);
+    this.setupHealthMonitoring();
+  }
+
+  /**
+   * Initialize wedding vendor search indices
+   */
+  async initializeIndices(): Promise<void> {
+    try {
+      await this.createVendorIndex();
+      console.log('[ElasticSearch] Wedding vendor indices initialized successfully');
+    } catch (error) {
+      console.error('[ElasticSearch] Failed to initialize indices:', error);
+      throw new Error(`Index initialization failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Create optimized wedding vendor index
+   */
+  private async createVendorIndex(): Promise<void> {
+    const indexExists = await this.client.indices.exists({
+      index: this.VENDOR_INDEX
+    });
+
+    if (!indexExists) {
+      await this.client.indices.create({
+        index: this.VENDOR_INDEX,
+        settings: {
+          number_of_shards: 3,
+          number_of_replicas: 1,
+          analysis: {
+            analyzer: {
+              wedding_text: {
+                type: 'custom',
+                tokenizer: 'standard',
+                filter: ['lowercase', 'wedding_synonym', 'stop', 'snowball']
+              }
+            },
+            filter: {
+              wedding_synonym: {
+                type: 'synonym',
+                synonyms: [
+                  'photographer,photography',
+                  'videographer,videography,cinematographer',
+                  'florist,flowers',
+                  'dj,music,band',
+                  'venue,location,space',
+                  'catering,food,caterer'
+                ]
+              }
+            }
+          }
+        },
+        mappings: {
+          properties: {
+            id: { type: 'keyword' },
+            name: { 
+              type: 'text',
+              analyzer: 'wedding_text',
+              fields: {
+                keyword: { type: 'keyword' },
+                suggest: { type: 'completion' }
+              }
+            },
+            type: { type: 'keyword' },
+            location: {
+              type: 'object',
+              properties: {
+                coordinates: { type: 'geo_point' },
+                address: { type: 'text' },
+                city: { type: 'keyword' },
+                region: { type: 'keyword' },
+                country: { type: 'keyword' }
+              }
+            },
+            priceRange: {
+              type: 'object',
+              properties: {
+                min: { type: 'float' },
+                max: { type: 'float' },
+                currency: { type: 'keyword' }
+              }
+            },
+            services: { type: 'keyword' },
+            rating: { type: 'float' },
+            reviewCount: { type: 'integer' },
+            availability: { type: 'date' },
+            isActive: { type: 'boolean' },
+            lastUpdated: { type: 'date' }
+          }
+        }
+      });
+
+      console.log(`[ElasticSearch] Created ${this.VENDOR_INDEX} index`);
+    }
+  }
+
+  /**
+   * Search wedding vendors with comprehensive filtering
+   */
+  async searchVendors(searchQuery: WeddingSearchQuery): Promise<SearchResult<WeddingVendor>> {
+    const startTime = Date.now();
+    
+    try {
+      const searchRequest = this.buildVendorSearchQuery(searchQuery);
+      const response = await this.client.search(searchRequest);
+      
+      return response as SearchResult<WeddingVendor>;
+      
+    } catch (error) {
+      console.error('[ElasticSearch] Vendor search failed:', error);
+      
+      // Wedding day fallback
+      if (this.isWeddingCriticalTime()) {
+        return await this.fallbackSearch(searchQuery);
+      }
+      
+      throw error;
+    }
+  }
+
+  /**
+   * Build wedding vendor search query
+   */
+  private buildVendorSearchQuery(query: WeddingSearchQuery): any {
+    const must: any[] = [];
+    const filter: any[] = [];
+
+    // Always filter for active vendors
+    filter.push({ term: { isActive: true } });
+
+    // Text search
+    if (query.query) {
+      must.push({
+        multi_match: {
+          query: query.query,
+          fields: ['name^3', 'services^2', 'tags^1.5'],
+          type: 'best_fields',
+          fuzziness: 'AUTO'
+        }
+      });
+    }
+
+    // Vendor type filtering
+    if (query.vendorTypes?.length) {
+      filter.push({ terms: { type: query.vendorTypes } });
+    }
+
+    // Location search
+    if (query.location) {
+      filter.push({
+        geo_distance: {
+          distance: query.location.radius,
+          'location.coordinates': query.location.center
+        }
+      });
+    }
+
+    // Price filtering
+    if (query.priceRange) {
+      const priceFilters: any[] = [];
+      
+      if (query.priceRange.min !== undefined) {
+        priceFilters.push({ range: { 'priceRange.min': { gte: query.priceRange.min } } });
+      }
+      
+      if (query.priceRange.max !== undefined) {
+        priceFilters.push({ range: { 'priceRange.max': { lte: query.priceRange.max } } });
+      }
+
+      if (priceFilters.length > 0) {
+        filter.push({ bool: { must: priceFilters } });
+      }
+    }
+
+    // Rating filtering
+    if (query.rating?.min) {
+      filter.push({ range: { rating: { gte: query.rating.min } } });
+    }
+
+    return {
+      index: this.VENDOR_INDEX,
+      body: {
+        query: {
+          bool: {
+            must,
+            filter,
+            minimum_should_match: must.length > 0 ? 1 : 0
+          }
+        },
+        sort: this.buildSortConfiguration(query),
+        size: query.limit || 20,
+        from: query.offset || 0
+      }
+    };
+  }
+
+  /**
+   * Build sort configuration
+   */
+  private buildSortConfiguration(query: WeddingSearchQuery): any[] {
+    const sort: any[] = [];
+
+    switch (query.sortBy) {
+      case 'price_asc':
+        sort.push({ 'priceRange.min': { order: 'asc' } });
+        break;
+      case 'price_desc':
+        sort.push({ 'priceRange.max': { order: 'desc' } });
+        break;
+      case 'rating':
+        sort.push({ rating: { order: 'desc' } });
+        break;
+      case 'distance':
+        if (query.location) {
+          sort.push({
+            _geo_distance: {
+              'location.coordinates': query.location.center,
+              order: 'asc',
+              unit: 'km'
+            }
+          });
+        }
+        break;
+      default:
+        sort.push('_score');
+        break;
+    }
+
+    return sort;
+  }
+
+  /**
+   * Index wedding vendor
+   */
+  async indexVendor(vendor: WeddingVendor): Promise<void> {
+    try {
+      const validatedVendor = WeddingVendorSchema.parse(vendor);
+
+      await this.client.index({
+        index: this.VENDOR_INDEX,
+        id: vendor.id,
+        body: {
+          ...validatedVendor,
+          location: {
+            ...validatedVendor.location,
+            coordinates: {
+              lat: validatedVendor.location.lat,
+              lon: validatedVendor.location.lon
+            }
+          }
+        },
+        refresh: 'wait_for'
+      });
+
+      console.log(`[ElasticSearch] Indexed vendor: ${vendor.name}`);
+    } catch (error) {
+      console.error('[ElasticSearch] Failed to index vendor:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Health monitoring
+   */
+  private setupHealthMonitoring(): void {
+    setInterval(async () => {
+      try {
+        await this.performHealthCheck();
+      } catch (error) {
+        console.error('[ElasticSearch] Health check failed:', error);
+        this.healthStatus = 'unhealthy';
+      }
+    }, 30000);
+
+    this.performHealthCheck().catch(() => {
+      this.healthStatus = 'unhealthy';
+    });
+  }
+
+  /**
+   * Health check
+   */
+  private async performHealthCheck(): Promise<void> {
+    try {
+      const clusterHealth = await this.client.cluster.health({ timeout: '5s' });
+
+      if (clusterHealth.status === 'green') {
+        this.healthStatus = 'healthy';
+      } else if (clusterHealth.status === 'yellow') {
+        this.healthStatus = 'degraded';
+      } else {
+        this.healthStatus = 'unhealthy';
+      }
+    } catch (error) {
+      this.healthStatus = 'unhealthy';
+      throw error;
+    }
+  }
+
+  /**
+   * Wedding day fallback search
+   */
+  private async fallbackSearch(query: WeddingSearchQuery): Promise<SearchResult<WeddingVendor>> {
+    console.warn('[ElasticSearch] Using fallback search due to service degradation');
+    
+    try {
+      const response = await this.client.search({
+        index: this.VENDOR_INDEX,
+        body: {
+          query: {
+            bool: {
+              must: query.query ? [{
+                simple_query_string: {
+                  query: query.query,
+                  fields: ['name', 'services']
+                }
+              }] : [{ match_all: {} }],
+              filter: [
+                { term: { isActive: true } },
+                ...(query.vendorTypes ? [{ terms: { type: query.vendorTypes } }] : [])
+              ]
+            }
+          },
+          size: Math.min(query.limit || 10, 50),
+          sort: [{ rating: { order: 'desc' } }]
+        },
+        timeout: '2s'
+      });
+
+      return response as SearchResult<WeddingVendor>;
+    } catch (fallbackError) {
+      console.error('[ElasticSearch] Fallback search also failed:', fallbackError);
+      
+      return {
+        hits: {
+          total: { value: 0, relation: 'eq' },
+          hits: []
+        },
+        took: 0
+      };
+    }
+  }
+
+  /**
+   * Check if current time is critical for weddings
+   */
+  private isWeddingCriticalTime(): boolean {
+    const now = new Date();
+    const dayOfWeek = now.getDay();
+    const hour = now.getHours();
+    
+    // Saturday (6) or Friday evening/Sunday morning
+    return dayOfWeek === 6 || 
+           (dayOfWeek === 5 && hour >= 18) || 
+           (dayOfWeek === 0 && hour <= 12);
+  }
+
+  /**
+   * Get service metrics
+   */
+  getMetrics(): { healthStatus: string } {
+    return { healthStatus: this.healthStatus };
+  }
+
+  /**
+   * Graceful shutdown
+   */
+  async shutdown(): Promise<void> {
+    try {
+      await this.client.close();
+      console.log('[ElasticSearch] Client shut down gracefully');
+    } catch (error) {
+      console.error('[ElasticSearch] Error during shutdown:', error);
+    }
+  }
+}
+
+// Export default configuration
+export const defaultWedSyncSearchConfig = {
+  nodes: [process.env.ELASTICSEARCH_URL || 'http://localhost:9200'],
+  auth: {
+    username: process.env.ELASTICSEARCH_USERNAME,
+    password: process.env.ELASTICSEARCH_PASSWORD,
+    apiKey: process.env.ELASTICSEARCH_API_KEY
+  }
+};
+
+export function createElasticsearchIntegration(config: any): ElasticsearchIntegration {
+  return new ElasticsearchIntegration(config);
+}

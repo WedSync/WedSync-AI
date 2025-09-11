@@ -1,0 +1,272 @@
+/**
+ * WS-209: AI Content Personalization API Endpoint
+ * POST /api/ai/personalize - Personalize content with wedding context
+ * Team B - Secure implementation with authentication, validation, and rate limiting
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { 
+  personalizationEngine,
+  PersonalizationRequestSchema,
+  PersonalizationRequest,
+  PersonalizationResponse
+} from '@/lib/ai/personalization-engine';
+import { defaultRateLimiter } from '@/lib/rate-limit';
+import { z } from 'zod';
+
+// Initialize Supabase client
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL || (() => { throw new Error("Missing environment variable: NEXT_PUBLIC_SUPABASE_URL") })(),
+  process.env.SUPABASE_SERVICE_ROLE_KEY || (() => { throw new Error("Missing environment variable: SUPABASE_SERVICE_ROLE_KEY") })()
+);
+
+// Rate limiting configuration for AI personalization
+const AI_PERSONALIZATION_RATE_LIMITS: Record<string, { requests: number; window: number }> = {
+  'FREE': { requests: 0, window: 3600 }, // No AI access on free tier
+  'STARTER': { requests: 0, window: 3600 }, // No AI access on starter tier  
+  'PROFESSIONAL': { requests: 50, window: 3600 }, // 50 requests per hour for pro
+  'SCALE': { requests: 200, window: 3600 }, // 200 requests per hour for scale
+  'ENTERPRISE': { requests: 1000, window: 3600 } // 1000 requests per hour for enterprise
+};
+
+// Request validation schema
+const PersonalizeRequestSchema = z.object({
+  content: z.string().min(1).max(10000),
+  weddingContext: z.object({
+    coupleNames: z.object({
+      partner1: z.string().min(1),
+      partner2: z.string().min(1)
+    }).optional(),
+    weddingDate: z.string().optional(),
+    venue: z.string().optional(),
+    weddingStyle: z.enum([
+      'classic', 'modern', 'rustic', 'bohemian', 'vintage', 'luxury',
+      'minimalist', 'outdoor', 'destination', 'intimate', 'traditional'
+    ]).optional(),
+    guestCount: z.number().min(1).max(1000).optional(),
+    budget: z.number().min(0).optional(),
+    specialRequests: z.string().optional(),
+    vendorType: z.string().optional(),
+    customVariables: z.record(z.string(), z.any()).optional()
+  }),
+  personalizationSettings: z.object({
+    tone: z.enum([
+      'romantic', 'elegant', 'playful', 'sophisticated', 'warm', 'professional',
+      'intimate', 'celebratory', 'nostalgic', 'joyful', 'formal', 'casual'
+    ]),
+    context: z.enum([
+      'email', 'sms', 'proposal', 'contract', 'invoice', 'timeline',
+      'checklist', 'questionnaire', 'website', 'social_media'
+    ]),
+    formality: z.enum(['formal', 'informal', 'balanced']),
+    personalizationLevel: z.enum(['light', 'moderate', 'heavy']),
+    preserveStructure: z.boolean().default(true),
+    includeEmoji: z.boolean().default(false)
+  }),
+  performanceTracking: z.boolean().default(true)
+});
+
+/**
+ * Authenticate user and get supplier information
+ */
+async function authenticateUser(request: NextRequest) {
+  const authHeader = request.headers.get('authorization');
+  if (!authHeader?.startsWith('Bearer ')) {
+    throw new Error('Missing or invalid authorization header');
+  }
+
+  const token = authHeader.substring(7);
+  const { data: { user }, error } = await supabase.auth.getUser(token);
+  
+  if (error || !user) {
+    throw new Error('Invalid authentication token');
+  }
+
+  // Get supplier information
+  const { data: supplier, error: supplierError } = await supabase
+    .from('suppliers')
+    .select(`
+      id,
+      subscription_tier,
+      organization_id,
+      ai_credits_used,
+      ai_credits_limit
+    `)
+    .eq('user_id', user.id)
+    .single();
+
+  if (supplierError || !supplier) {
+    throw new Error('Supplier not found');
+  }
+
+  return { user, supplier };
+}
+
+/**
+ * Check subscription tier access for AI features
+ */
+function validateAIAccess(subscriptionTier: string, aiCreditsUsed: number, aiCreditsLimit: number | null) {
+  const tierConfig = AI_PERSONALIZATION_RATE_LIMITS[subscriptionTier.toUpperCase()];
+  
+  if (!tierConfig || tierConfig.requests === 0) {
+    throw new Error(`AI personalization not available for ${subscriptionTier} tier. Upgrade to Professional or higher.`);
+  }
+
+  // Check credits if applicable
+  if (aiCreditsLimit !== null && aiCreditsUsed >= aiCreditsLimit) {
+    throw new Error('AI credits limit reached. Upgrade your plan or wait for renewal.');
+  }
+
+  return tierConfig;
+}
+
+/**
+ * POST /api/ai/personalize
+ * Personalize content with wedding context
+ */
+export async function POST(request: NextRequest) {
+  try {
+    // Parse and validate request body
+    const body = await request.json();
+    const validatedData = PersonalizeRequestSchema.parse(body);
+
+    // Authenticate user
+    const { user, supplier } = await authenticateUser(request);
+
+    // Validate AI access
+    const tierConfig = validateAIAccess(
+      supplier.subscription_tier,
+      supplier.ai_credits_used || 0,
+      supplier.ai_credits_limit
+    );
+
+    // Apply rate limiting
+    const rateLimitKey = `ai-personalize:${supplier.id}`;
+    const rateLimitResult = await defaultRateLimiter.check(
+      rateLimitKey,
+      tierConfig.requests,
+      tierConfig.window * 1000
+    );
+
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { 
+          error: 'Rate limit exceeded',
+          retryAfter: rateLimitResult.retryAfter,
+          limit: tierConfig.requests,
+          window: tierConfig.window
+        },
+        { status: 429 }
+      );
+    }
+
+    // Build personalization request
+    const personalizationRequest: PersonalizationRequest = {
+      ...validatedData,
+      supplierId: supplier.id,
+      performanceTracking: validatedData.performanceTracking ?? true
+    };
+
+    // Execute personalization
+    const startTime = Date.now();
+    const result = await personalizationEngine.personalizeContent(personalizationRequest);
+    const processingTime = Date.now() - startTime;
+
+    // Update AI credits usage
+    if (supplier.ai_credits_limit !== null) {
+      await supabase
+        .from('suppliers')
+        .update({ 
+          ai_credits_used: (supplier.ai_credits_used || 0) + 1,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', supplier.id);
+    }
+
+    // Log the personalization request
+    await supabase
+      .from('personalizations')
+      .insert({
+        supplier_id: supplier.id,
+        original_content: result.originalContent,
+        personalized_content: result.personalizedContent,
+        context_type: personalizationRequest.personalizationSettings.context,
+        tone: personalizationRequest.personalizationSettings.tone,
+        confidence_score: result.confidence,
+        processing_time_ms: processingTime,
+        tokens_used: result.tokens.total,
+        variables_used: result.variables,
+        created_at: new Date().toISOString()
+      });
+
+    // Return successful response
+    return NextResponse.json({
+      success: true,
+      data: {
+        personalizedContent: result.personalizedContent,
+        confidence: result.confidence,
+        processingTime: result.processingTime,
+        variablesUsed: Object.keys(result.variables).length,
+        metadata: result.metadata
+      },
+      usage: {
+        creditsUsed: (supplier.ai_credits_used || 0) + 1,
+        creditsLimit: supplier.ai_credits_limit,
+        rateLimitRemaining: rateLimitResult.remaining
+      }
+    });
+
+  } catch (error) {
+    console.error('Personalization API error:', error);
+    
+    // Handle specific error types
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { 
+          error: 'Validation error',
+          details: error.errors.map(e => ({
+            field: e.path.join('.'),
+            message: e.message
+          }))
+        },
+        { status: 400 }
+      );
+    }
+
+    if (error instanceof Error) {
+      // Handle known error types
+      if (error.message.includes('authentication')) {
+        return NextResponse.json({ error: error.message }, { status: 401 });
+      }
+      if (error.message.includes('not available') || error.message.includes('Upgrade')) {
+        return NextResponse.json({ error: error.message }, { status: 403 });
+      }
+      if (error.message.includes('Rate limit') || error.message.includes('credits limit')) {
+        return NextResponse.json({ error: error.message }, { status: 429 });
+      }
+    }
+
+    return NextResponse.json(
+      { 
+        error: 'Internal server error',
+        message: 'Failed to personalize content. Please try again.'
+      },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * OPTIONS handler for CORS
+ */
+export async function OPTIONS() {
+  return new NextResponse(null, {
+    status: 200,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    },
+  });
+}

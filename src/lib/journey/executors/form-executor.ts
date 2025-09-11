@@ -1,0 +1,339 @@
+import { BaseNodeExecutor } from './base';
+import { NodeExecutorContext, NodeExecutorResult } from './types';
+import { createClient } from '@/lib/supabase/server';
+
+interface FormNodeConfig {
+  formId?: string;
+  formSlug?: string;
+  formName?: string;
+  recipientType?: 'client' | 'vendor' | 'custom';
+  recipientEmail?: string;
+  dueDate?: string;
+  reminderEnabled?: boolean;
+  reminderDays?: number[];
+  prefillData?: Record<string, any>;
+  trackCompletion?: boolean;
+}
+
+export class FormNodeExecutor extends BaseNodeExecutor {
+  private supabase = createClient();
+
+  async execute(
+    context: NodeExecutorContext,
+    config: FormNodeConfig,
+  ): Promise<NodeExecutorResult> {
+    try {
+      // Get or create form
+      const form = await this.getOrCreateForm(context, config);
+
+      // Determine recipient
+      const recipientEmail = this.getRecipientEmail(context, config);
+      if (!recipientEmail) {
+        throw new Error('No form recipient could be determined');
+      }
+
+      // Create form submission link
+      const submissionLink = await this.createSubmissionLink(
+        context,
+        form.id,
+        recipientEmail,
+        config,
+      );
+
+      // Send form invitation
+      await this.sendFormInvitation(
+        context,
+        form,
+        submissionLink,
+        recipientEmail,
+        config,
+      );
+
+      // Set up reminders if enabled
+      if (config.reminderEnabled && config.reminderDays) {
+        await this.scheduleReminders(context, form.id, recipientEmail, config);
+      }
+
+      // Track form sending
+      await this.trackFormSent(
+        context,
+        form.id,
+        recipientEmail,
+        submissionLink,
+      );
+
+      this.logger.info('Form sent successfully', {
+        executionId: context.executionId,
+        stepId: context.stepId,
+        formId: form.id,
+        recipient: recipientEmail,
+      });
+
+      return {
+        success: true,
+        output: {
+          formId: form.id,
+          formName: form.name,
+          submissionLink,
+          recipient: recipientEmail,
+          dueDate: config.dueDate,
+          sentAt: new Date().toISOString(),
+        },
+      };
+    } catch (error) {
+      this.logger.error('Form node execution failed', {
+        executionId: context.executionId,
+        stepId: context.stepId,
+        error,
+      });
+
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Form sending failed',
+      };
+    }
+  }
+
+  private async getOrCreateForm(
+    context: NodeExecutorContext,
+    config: FormNodeConfig,
+  ): Promise<any> {
+    // Try to find existing form
+    if (config.formId) {
+      const { data, error } = await this.supabase
+        .from('forms')
+        .select('*')
+        .eq('id', config.formId)
+        .single();
+
+      if (data) return data;
+    }
+
+    if (config.formSlug) {
+      const { data, error } = await this.supabase
+        .from('forms')
+        .select('*')
+        .eq('slug', config.formSlug)
+        .single();
+
+      if (data) return data;
+    }
+
+    // Create new form if not found
+    const { data: newForm, error } = await this.supabase
+      .from('forms')
+      .insert({
+        name: config.formName || 'Journey Form',
+        slug: this.generateSlug(config.formName || 'journey-form'),
+        fields: this.getDefaultFormFields(context),
+        settings: {
+          requireSignature: false,
+          allowSave: true,
+          showProgress: true,
+        },
+        created_by: context.vendorData?.id,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      throw new Error(`Failed to create form: ${error.message}`);
+    }
+
+    return newForm;
+  }
+
+  private async createSubmissionLink(
+    context: NodeExecutorContext,
+    formId: string,
+    recipientEmail: string,
+    config: FormNodeConfig,
+  ): Promise<string> {
+    // Create unique submission token
+    const token = this.generateToken();
+
+    // Prepare prefill data
+    const prefillData = {
+      ...config.prefillData,
+      client_name: context.clientData?.name,
+      client_email: context.clientData?.email,
+      vendor_name: context.vendorData?.name,
+      wedding_date: context.clientData?.weddingDate,
+    };
+
+    // Create form submission record
+    const { data, error } = await this.supabase
+      .from('form_submissions')
+      .insert({
+        form_id: formId,
+        token,
+        recipient_email: recipientEmail,
+        journey_execution_id: context.executionId,
+        prefill_data: prefillData,
+        due_date: config.dueDate,
+        status: 'pending',
+      })
+      .select()
+      .single();
+
+    if (error) {
+      throw new Error(`Failed to create submission link: ${error.message}`);
+    }
+
+    // Generate the submission URL
+    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://wedsync.com';
+    return `${baseUrl}/forms/submit/${token}`;
+  }
+
+  private async sendFormInvitation(
+    context: NodeExecutorContext,
+    form: any,
+    submissionLink: string,
+    recipientEmail: string,
+    config: FormNodeConfig,
+  ): Promise<void> {
+    // This would integrate with the email service
+    const emailContent = {
+      to: recipientEmail,
+      subject: `Please complete: ${form.name}`,
+      template_id: 'form_invitation',
+      template_data: {
+        form_name: form.name,
+        submission_link: submissionLink,
+        due_date: config.dueDate,
+        vendor_name: context.vendorData?.name,
+        client_name: context.clientData?.name,
+      },
+    };
+
+    // Send via email service (simplified for this example)
+    const { error } = await this.supabase.from('email_queue').insert({
+      ...emailContent,
+      journey_execution_id: context.executionId,
+      scheduled_for: new Date().toISOString(),
+    });
+
+    if (error) {
+      throw new Error(`Failed to send form invitation: ${error.message}`);
+    }
+  }
+
+  private async scheduleReminders(
+    context: NodeExecutorContext,
+    formId: string,
+    recipientEmail: string,
+    config: FormNodeConfig,
+  ): Promise<void> {
+    if (!config.dueDate || !config.reminderDays) {
+      return;
+    }
+
+    const dueDate = new Date(config.dueDate);
+    const reminders = config.reminderDays.map((days) => {
+      const reminderDate = new Date(dueDate);
+      reminderDate.setDate(dueDate.getDate() - days);
+      return {
+        form_id: formId,
+        recipient_email: recipientEmail,
+        journey_execution_id: context.executionId,
+        scheduled_for: reminderDate.toISOString(),
+        days_before_due: days,
+        status: 'scheduled',
+      };
+    });
+
+    const { error } = await this.supabase
+      .from('form_reminders')
+      .insert(reminders);
+
+    if (error) {
+      this.logger.warn('Failed to schedule form reminders', {
+        executionId: context.executionId,
+        error,
+      });
+    }
+  }
+
+  private async trackFormSent(
+    context: NodeExecutorContext,
+    formId: string,
+    recipientEmail: string,
+    submissionLink: string,
+  ): Promise<void> {
+    const { error } = await this.supabase.from('journey_form_tracking').insert({
+      execution_id: context.executionId,
+      step_id: context.stepId,
+      form_id: formId,
+      recipient_email: recipientEmail,
+      submission_link: submissionLink,
+      sent_at: new Date().toISOString(),
+    });
+
+    if (error) {
+      this.logger.warn('Failed to track form sending', {
+        executionId: context.executionId,
+        error,
+      });
+    }
+  }
+
+  private getRecipientEmail(
+    context: NodeExecutorContext,
+    config: FormNodeConfig,
+  ): string | null {
+    if (config.recipientEmail) {
+      return config.recipientEmail;
+    }
+
+    switch (config.recipientType) {
+      case 'client':
+        return context.clientData?.email || null;
+      case 'vendor':
+        return context.vendorData?.email || null;
+      default:
+        return context.clientData?.email || null;
+    }
+  }
+
+  private generateSlug(name: string): string {
+    return name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+  }
+
+  private generateToken(): string {
+    return Array.from(crypto.getRandomValues(new Uint8Array(32)))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+  }
+
+  private getDefaultFormFields(context: NodeExecutorContext): any[] {
+    return [
+      {
+        id: 'name',
+        type: 'text',
+        label: 'Full Name',
+        required: true,
+      },
+      {
+        id: 'email',
+        type: 'email',
+        label: 'Email Address',
+        required: true,
+      },
+      {
+        id: 'phone',
+        type: 'tel',
+        label: 'Phone Number',
+        required: false,
+      },
+      {
+        id: 'wedding_date',
+        type: 'date',
+        label: 'Wedding Date',
+        required: true,
+      },
+    ];
+  }
+}

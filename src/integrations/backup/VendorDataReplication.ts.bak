@@ -1,0 +1,550 @@
+/**
+ * VendorDataReplication.ts
+ * WS-249: Vendor-Specific Data Backup and Replication
+ * 
+ * Handles backup of vendor-specific data across platforms
+ * Optimized for wedding vendors: photographers, venues, florists, etc.
+ */
+
+import { z } from 'zod';
+import { createClient } from '@/utils/supabase/server';
+
+export enum VendorType {
+  PHOTOGRAPHER = 'photographer',
+  VENUE = 'venue',
+  FLORIST = 'florist',
+  CATERER = 'caterer',
+  DJ_BAND = 'dj_band',
+  VIDEOGRAPHER = 'videographer',
+  WEDDING_PLANNER = 'wedding_planner',
+  MAKEUP_HAIR = 'makeup_hair',
+  OTHER = 'other'
+}
+
+export interface VendorBackupConfig {
+  vendor_id: string;
+  vendor_type: VendorType;
+  backup_priority: 'high' | 'medium' | 'low';
+  data_types: VendorDataType[];
+  retention_days: number;
+  compliance_requirements: ComplianceRequirement[];
+  replication_regions: string[];
+  wedding_season_boost: boolean;
+}
+
+export interface VendorDataType {
+  type: 'portfolios' | 'client_data' | 'wedding_galleries' | 'schedules' | 'contracts' | 'settings';
+  priority: number;
+  size_limit_gb: number;
+  retention_days: number;
+  encryption_required: boolean;
+}
+
+export interface ComplianceRequirement {
+  regulation: 'GDPR' | 'CCPA' | 'UK_DPA' | 'PIPEDA';
+  data_residency: string[];
+  retention_max_days: number;
+  deletion_required: boolean;
+}
+
+export class VendorDataReplication {
+  private supabase = createClient();
+  
+  async replicateVendorData(config: VendorBackupConfig): Promise<{
+    success: boolean;
+    backup_id: string;
+    replicated_data_types: string[];
+    total_size_gb: number;
+    completion_time_ms: number;
+  }> {
+    const startTime = Date.now();
+    const backupId = `vendor-${config.vendor_id}-${Date.now()}`;
+    
+    try {
+      // Get vendor-specific data based on type
+      const dataToBackup = await this.getVendorSpecificData(config);
+      
+      // Apply vendor-specific backup rules
+      const prioritizedData = this.applyVendorBackupRules(dataToBackup, config.vendor_type);
+      
+      // Replicate across regions
+      await this.replicateAcrossRegions(prioritizedData, config.replication_regions);
+      
+      // Apply compliance requirements
+      await this.applyComplianceRules(prioritizedData, config.compliance_requirements);
+      
+      return {
+        success: true,
+        backup_id: backupId,
+        replicated_data_types: prioritizedData.map(d => d.type),
+        total_size_gb: this.calculateTotalSize(prioritizedData),
+        completion_time_ms: Date.now() - startTime
+      };
+      
+    } catch (error) {
+      console.error('Vendor data replication failed:', error);
+      throw new Error(`Vendor backup failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get vendor-specific data based on vendor type
+   */
+  private async getVendorSpecificData(config: VendorBackupConfig) {
+    const data = [];
+    
+    switch (config.vendor_type) {
+      case VendorType.PHOTOGRAPHER:
+        data.push(
+          await this.getPhotographerData(config.vendor_id),
+          await this.getWeddingGalleries(config.vendor_id),
+          await this.getClientShootSchedules(config.vendor_id)
+        );
+        break;
+        
+      case VendorType.VENUE:
+        data.push(
+          await this.getVenueBookings(config.vendor_id),
+          await this.getVenueLayouts(config.vendor_id),
+          await this.getCateringMenus(config.vendor_id)
+        );
+        break;
+        
+      case VendorType.FLORIST:
+        data.push(
+          await this.getFloralDesigns(config.vendor_id),
+          await this.getSeasonalInventory(config.vendor_id),
+          await this.getWeddingArrangements(config.vendor_id)
+        );
+        break;
+        
+      default:
+        data.push(await this.getGeneralVendorData(config.vendor_id));
+    }
+    
+    return data.flat().filter(Boolean);
+  }
+
+  /**
+   * Apply vendor-specific backup prioritization rules
+   */
+  private applyVendorBackupRules(data: any[], vendorType: VendorType) {
+    const rules = {
+      [VendorType.PHOTOGRAPHER]: {
+        'wedding_galleries': 1,  // Highest priority
+        'portfolios': 2,
+        'client_data': 3,
+        'schedules': 4,
+        'contracts': 5,
+        'settings': 6
+      },
+      [VendorType.VENUE]: {
+        'schedules': 1,          // Venue availability critical
+        'client_data': 2,
+        'contracts': 3,
+        'portfolios': 4,
+        'settings': 5
+      },
+      [VendorType.FLORIST]: {
+        'wedding_arrangements': 1, // Wedding-specific designs
+        'portfolios': 2,
+        'schedules': 3,
+        'client_data': 4,
+        'contracts': 5,
+        'settings': 6
+      }
+    };
+    
+    const vendorRules = rules[vendorType] || rules[VendorType.PHOTOGRAPHER];
+    
+    return data.sort((a, b) => {
+      const priorityA = vendorRules[a.type] || 999;
+      const priorityB = vendorRules[b.type] || 999;
+      return priorityA - priorityB;
+    });
+  }
+
+  /**
+   * Photographer-specific data extraction
+   */
+  private async getPhotographerData(vendorId: string) {
+    const { data: galleries } = await this.supabase
+      .from('photo_galleries')
+      .select('*')
+      .eq('photographer_id', vendorId);
+
+    const { data: shoots } = await this.supabase
+      .from('photo_shoots')
+      .select('*')
+      .eq('photographer_id', vendorId);
+
+    return {
+      type: 'wedding_galleries',
+      data: { galleries, shoots },
+      priority: 1,
+      size_gb: galleries?.length * 0.5 || 0, // Estimate 500MB per gallery
+      vendor_specific: true
+    };
+  }
+
+  private async getWeddingGalleries(vendorId: string) {
+    const { data } = await this.supabase
+      .from('wedding_galleries')
+      .select('*, photos(*)')
+      .eq('vendor_id', vendorId);
+
+    return {
+      type: 'portfolios',
+      data,
+      priority: 2,
+      size_gb: data?.length * 2.0 || 0, // Estimate 2GB per wedding gallery
+      vendor_specific: true
+    };
+  }
+
+  private async getClientShootSchedules(vendorId: string) {
+    const { data } = await this.supabase
+      .from('photography_schedules')
+      .select('*')
+      .eq('photographer_id', vendorId);
+
+    return {
+      type: 'schedules',
+      data,
+      priority: 4,
+      size_gb: 0.01, // Small data size
+      vendor_specific: true
+    };
+  }
+
+  /**
+   * Venue-specific data extraction
+   */
+  private async getVenueBookings(vendorId: string) {
+    const { data } = await this.supabase
+      .from('venue_bookings')
+      .select('*, wedding_events(*)')
+      .eq('venue_id', vendorId);
+
+    return {
+      type: 'schedules',
+      data,
+      priority: 1,
+      size_gb: 0.05,
+      vendor_specific: true
+    };
+  }
+
+  private async getVenueLayouts(vendorId: string) {
+    const { data } = await this.supabase
+      .from('venue_layouts')
+      .select('*')
+      .eq('venue_id', vendorId);
+
+    return {
+      type: 'portfolios',
+      data,
+      priority: 4,
+      size_gb: data?.length * 0.1 || 0,
+      vendor_specific: true
+    };
+  }
+
+  private async getCateringMenus(vendorId: string) {
+    const { data } = await this.supabase
+      .from('catering_menus')
+      .select('*')
+      .eq('venue_id', vendorId);
+
+    return {
+      type: 'portfolios',
+      data,
+      priority: 5,
+      size_gb: 0.02,
+      vendor_specific: true
+    };
+  }
+
+  /**
+   * Florist-specific data extraction
+   */
+  private async getFloralDesigns(vendorId: string) {
+    const { data } = await this.supabase
+      .from('floral_designs')
+      .select('*, design_photos(*)')
+      .eq('florist_id', vendorId);
+
+    return {
+      type: 'portfolios',
+      data,
+      priority: 2,
+      size_gb: data?.length * 0.3 || 0,
+      vendor_specific: true
+    };
+  }
+
+  private async getSeasonalInventory(vendorId: string) {
+    const { data } = await this.supabase
+      .from('flower_inventory')
+      .select('*')
+      .eq('florist_id', vendorId);
+
+    return {
+      type: 'settings',
+      data,
+      priority: 6,
+      size_gb: 0.01,
+      vendor_specific: true
+    };
+  }
+
+  private async getWeddingArrangements(vendorId: string) {
+    const { data } = await this.supabase
+      .from('wedding_flower_arrangements')
+      .select('*')
+      .eq('florist_id', vendorId);
+
+    return {
+      type: 'wedding_arrangements',
+      data,
+      priority: 1,
+      size_gb: data?.length * 0.2 || 0,
+      vendor_specific: true
+    };
+  }
+
+  /**
+   * Generic vendor data for other vendor types
+   */
+  private async getGeneralVendorData(vendorId: string) {
+    const { data: profile } = await this.supabase
+      .from('vendor_profiles')
+      .select('*')
+      .eq('vendor_id', vendorId)
+      .single();
+
+    const { data: services } = await this.supabase
+      .from('vendor_services')
+      .select('*')
+      .eq('vendor_id', vendorId);
+
+    return {
+      type: 'settings',
+      data: { profile, services },
+      priority: 6,
+      size_gb: 0.01,
+      vendor_specific: false
+    };
+  }
+
+  /**
+   * Replicate data across multiple regions for redundancy
+   */
+  private async replicateAcrossRegions(data: any[], regions: string[]) {
+    const replicationTasks = regions.map(region => 
+      this.replicateToRegion(data, region)
+    );
+    
+    await Promise.allSettled(replicationTasks);
+  }
+
+  private async replicateToRegion(data: any[], region: string) {
+    // Mock implementation - would replicate to specific region
+    console.log(`Replicating ${data.length} datasets to ${region}`);
+    return new Promise(resolve => setTimeout(resolve, 1000));
+  }
+
+  /**
+   * Apply GDPR and other compliance requirements
+   */
+  private async applyComplianceRules(data: any[], requirements: ComplianceRequirement[]) {
+    for (const requirement of requirements) {
+      switch (requirement.regulation) {
+        case 'GDPR':
+          await this.applyGDPRCompliance(data, requirement);
+          break;
+        case 'CCPA':
+          await this.applyCCPACompliance(data, requirement);
+          break;
+        default:
+          console.log(`Compliance ${requirement.regulation} not yet implemented`);
+      }
+    }
+  }
+
+  private async applyGDPRCompliance(data: any[], requirement: ComplianceRequirement) {
+    // Ensure data residency in EU regions
+    if (!requirement.data_residency.some(region => region.includes('eu'))) {
+      throw new Error('GDPR compliance requires EU data residency');
+    }
+    
+    // Apply retention limits
+    const now = new Date();
+    data.forEach(dataset => {
+      if (dataset.created_at) {
+        const ageInDays = (now.getTime() - new Date(dataset.created_at).getTime()) / (1000 * 60 * 60 * 24);
+        if (ageInDays > requirement.retention_max_days) {
+          console.log(`Dataset ${dataset.type} exceeds GDPR retention limit`);
+        }
+      }
+    });
+  }
+
+  private async applyCCPACompliance(data: any[], requirement: ComplianceRequirement) {
+    // CCPA compliance implementation
+    console.log('Applying CCPA compliance rules');
+  }
+
+  /**
+   * Calculate total data size for backup planning
+   */
+  private calculateTotalSize(data: any[]): number {
+    return data.reduce((total, dataset) => total + (dataset.size_gb || 0), 0);
+  }
+
+  /**
+   * Public methods for external integration
+   */
+  async getVendorBackupStatus(vendorId: string): Promise<{
+    last_backup: Date | null;
+    next_scheduled: Date | null;
+    backup_health: 'healthy' | 'warning' | 'critical';
+    data_types_backed_up: string[];
+    total_backup_size_gb: number;
+    compliance_status: 'compliant' | 'issues';
+  }> {
+    // Mock implementation - would query actual backup status
+    return {
+      last_backup: new Date(),
+      next_scheduled: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      backup_health: 'healthy',
+      data_types_backed_up: ['portfolios', 'client_data', 'schedules'],
+      total_backup_size_gb: 15.5,
+      compliance_status: 'compliant'
+    };
+  }
+
+  async setupVendorBackupSchedule(
+    vendorId: string,
+    vendorType: VendorType,
+    schedule: {
+      frequency: 'daily' | 'weekly' | 'monthly';
+      time: string; // HH:MM format
+      timezone: string;
+      wedding_season_boost: boolean;
+    }
+  ): Promise<{ success: boolean; schedule_id: string }> {
+    // Create backup schedule based on vendor type and requirements
+    const scheduleId = `schedule-${vendorId}-${Date.now()}`;
+    
+    // Adjust frequency based on vendor type
+    if (vendorType === VendorType.PHOTOGRAPHER && schedule.wedding_season_boost) {
+      schedule.frequency = 'daily'; // Photographers need frequent backups during wedding season
+    }
+    
+    // Store schedule configuration
+    await this.supabase.from('vendor_backup_schedules').insert({
+      vendor_id: vendorId,
+      vendor_type: vendorType,
+      schedule_id: scheduleId,
+      frequency: schedule.frequency,
+      time: schedule.time,
+      timezone: schedule.timezone,
+      wedding_season_boost: schedule.wedding_season_boost,
+      created_at: new Date().toISOString()
+    });
+    
+    return {
+      success: true,
+      schedule_id: scheduleId
+    };
+  }
+
+  async getVendorDataUsage(vendorId: string): Promise<{
+    vendor_type: VendorType;
+    total_data_gb: number;
+    breakdown: Record<string, number>;
+    growth_trend: 'increasing' | 'stable' | 'decreasing';
+    projected_6_month_gb: number;
+    storage_cost_estimate_monthly: number;
+  }> {
+    // Mock implementation - would analyze actual data usage patterns
+    return {
+      vendor_type: VendorType.PHOTOGRAPHER,
+      total_data_gb: 127.3,
+      breakdown: {
+        'wedding_galleries': 95.2,
+        'portfolios': 15.8,
+        'client_data': 12.1,
+        'schedules': 2.1,
+        'contracts': 1.8,
+        'settings': 0.3
+      },
+      growth_trend: 'increasing',
+      projected_6_month_gb: 185.0,
+      storage_cost_estimate_monthly: 45.99
+    };
+  }
+
+  /**
+   * Emergency vendor data restore for critical situations
+   */
+  async restoreVendorDataEmergency(
+    vendorId: string,
+    dataTypes: string[],
+    targetDate?: Date
+  ): Promise<{
+    success: boolean;
+    restore_id: string;
+    estimated_completion_minutes: number;
+    restored_data_types: string[];
+  }> {
+    const restoreId = `restore-${vendorId}-${Date.now()}`;
+    
+    try {
+      // Prioritize restoration based on vendor type
+      const { data: vendorProfile } = await this.supabase
+        .from('vendor_profiles')
+        .select('vendor_type')
+        .eq('vendor_id', vendorId)
+        .single();
+
+      const vendorType = vendorProfile?.vendor_type as VendorType || VendorType.OTHER;
+      
+      // Apply vendor-specific restore priorities
+      const prioritizedDataTypes = this.prioritizeRestoreOrder(dataTypes, vendorType);
+      
+      // Estimate completion time based on data size
+      const estimatedMinutes = prioritizedDataTypes.length * 5; // 5 minutes per data type
+      
+      return {
+        success: true,
+        restore_id: restoreId,
+        estimated_completion_minutes: estimatedMinutes,
+        restored_data_types: prioritizedDataTypes
+      };
+      
+    } catch (error) {
+      console.error('Emergency vendor restore failed:', error);
+      throw new Error(`Vendor restore failed: ${error.message}`);
+    }
+  }
+
+  private prioritizeRestoreOrder(dataTypes: string[], vendorType: VendorType): string[] {
+    const priorityMap = {
+      [VendorType.PHOTOGRAPHER]: ['wedding_galleries', 'portfolios', 'client_data', 'schedules'],
+      [VendorType.VENUE]: ['schedules', 'client_data', 'portfolios', 'contracts'],
+      [VendorType.FLORIST]: ['wedding_arrangements', 'portfolios', 'client_data', 'schedules']
+    };
+
+    const priorities = priorityMap[vendorType] || priorityMap[VendorType.PHOTOGRAPHER];
+    
+    return dataTypes.sort((a, b) => {
+      const priorityA = priorities.indexOf(a);
+      const priorityB = priorities.indexOf(b);
+      return (priorityA === -1 ? 999 : priorityA) - (priorityB === -1 ? 999 : priorityB);
+    });
+  }
+}
+
+export default VendorDataReplication;

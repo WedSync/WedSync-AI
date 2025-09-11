@@ -1,0 +1,466 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+import DOMPurify from 'isomorphic-dompurify';
+
+// Core fields schema based on specifications
+const coreFieldsSchema = z.object({
+  // Couple Information
+  couple: z
+    .object({
+      partner1_name: z.string().optional(),
+      partner2_name: z.string().optional(),
+      email: z.string().email().optional(),
+      phone: z.string().optional(),
+      address: z
+        .object({
+          street: z.string().optional(),
+          city: z.string().optional(),
+          state: z.string().optional(),
+          zip: z.string().optional(),
+          country: z.string().optional(),
+        })
+        .optional(),
+      preferred_contact: z.enum(['email', 'phone', 'text']).optional(),
+    })
+    .optional(),
+
+  // Wedding Details
+  wedding: z
+    .object({
+      wedding_date: z.string().datetime().optional(),
+      ceremony_venue: z
+        .object({
+          name: z.string().optional(),
+          address: z.string().optional(),
+          contact: z.string().optional(),
+        })
+        .optional(),
+      reception_venue: z
+        .object({
+          name: z.string().optional(),
+          address: z.string().optional(),
+          contact: z.string().optional(),
+        })
+        .optional(),
+      guest_count: z
+        .object({
+          adults: z.number().optional(),
+          children: z.number().optional(),
+          total: z.number().optional(),
+        })
+        .optional(),
+      ceremony_time: z.string().optional(),
+      reception_time: z.string().optional(),
+      wedding_style: z.array(z.string()).optional(),
+      color_scheme: z.array(z.string()).optional(),
+    })
+    .optional(),
+
+  // Key People
+  key_people: z
+    .object({
+      wedding_party: z
+        .array(
+          z.object({
+            name: z.string(),
+            role: z.string(),
+            email: z.string().email().optional(),
+            phone: z.string().optional(),
+          }),
+        )
+        .optional(),
+      parents: z
+        .array(
+          z.object({
+            name: z.string(),
+            relationship: z.string(),
+            email: z.string().email().optional(),
+            phone: z.string().optional(),
+          }),
+        )
+        .optional(),
+      coordinator: z
+        .object({
+          name: z.string(),
+          email: z.string().email().optional(),
+          phone: z.string().optional(),
+        })
+        .optional(),
+      other_vendors: z
+        .array(
+          z.object({
+            name: z.string(),
+            service: z.string(),
+            email: z.string().email().optional(),
+            phone: z.string().optional(),
+          }),
+        )
+        .optional(),
+    })
+    .optional(),
+});
+
+// Field mapping configuration
+const fieldMappingSchema = z.object({
+  formFieldId: z.string(),
+  coreFieldPath: z.string(),
+  transformRule: z.enum(['direct', 'format', 'split', 'concat']).optional(),
+});
+
+// POST /api/forms/[id]/sync-core-fields - Sync form fields with core fields
+export async function POST(
+  request: NextRequest,
+  { params }: { params: { id: string } },
+) {
+  try {
+    const formId = params.id;
+    const supabase = await createClient();
+
+    // Authentication check
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get the form and verify ownership
+    const { data: form, error: formError } = await supabase
+      .from('forms')
+      .select(
+        `
+        id,
+        title,
+        form_data,
+        created_by,
+        organization_id,
+        core_fields_mapping
+      `,
+      )
+      .eq('id', formId)
+      .eq('created_by', user.id)
+      .single();
+
+    if (formError || !form) {
+      return NextResponse.json(
+        { error: 'Form not found or access denied' },
+        { status: 404 },
+      );
+    }
+
+    // Parse request body - field mappings
+    const body = await request.json();
+    const { mappings, autoDetect = false } = body;
+
+    let fieldMappings = mappings;
+
+    // Auto-detect core fields if requested
+    if (autoDetect) {
+      fieldMappings = await autoDetectCoreFields(form.form_data);
+    }
+
+    // Validate mappings
+    const validatedMappings = z.array(fieldMappingSchema).parse(fieldMappings);
+
+    // Store core fields mapping
+    const { data: updatedForm, error: updateError } = await supabase
+      .from('forms')
+      .update({
+        core_fields_mapping: validatedMappings,
+        has_core_fields: true,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', formId)
+      .select()
+      .single();
+
+    if (updateError) {
+      throw new Error(
+        `Failed to update core fields mapping: ${updateError.message}`,
+      );
+    }
+
+    // Create or update core fields record for this organization
+    const { data: coreFields, error: coreFieldsError } = await supabase
+      .from('core_fields_data')
+      .upsert({
+        organization_id: form.organization_id,
+        form_id: formId,
+        mappings: validatedMappings,
+        last_synced: new Date().toISOString(),
+      })
+      .select()
+      .single();
+
+    if (coreFieldsError) {
+      console.error('Core fields sync error:', coreFieldsError);
+    }
+
+    return NextResponse.json({
+      success: true,
+      mappings: validatedMappings,
+      message: 'Core fields synchronized successfully',
+      autoDetected: autoDetect,
+    });
+  } catch (error) {
+    console.error('Core fields sync error:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Invalid field mapping configuration',
+          details: error.errors,
+        },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Failed to sync core fields' },
+      { status: 500 },
+    );
+  }
+}
+
+// GET /api/forms/[id]/sync-core-fields - Get current core field mappings
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { id: string } },
+) {
+  try {
+    const formId = params.id;
+    const supabase = await createClient();
+
+    // Authentication check
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get form with core fields mapping
+    const { data: form, error: formError } = await supabase
+      .from('forms')
+      .select(
+        `
+        id,
+        title,
+        core_fields_mapping,
+        has_core_fields
+      `,
+      )
+      .eq('id', formId)
+      .eq('created_by', user.id)
+      .single();
+
+    if (formError || !form) {
+      return NextResponse.json(
+        { error: 'Form not found or access denied' },
+        { status: 404 },
+      );
+    }
+
+    // Get organization's core fields data if available
+    const { data: coreFieldsData, error: coreFieldsError } = await supabase
+      .from('core_fields_data')
+      .select('*')
+      .eq('form_id', formId)
+      .single();
+
+    return NextResponse.json({
+      formId,
+      title: form.title,
+      hasCoreFields: form.has_core_fields || false,
+      mappings: form.core_fields_mapping || [],
+      coreFieldsData: coreFieldsData?.data || null,
+      lastSynced: coreFieldsData?.last_synced || null,
+    });
+  } catch (error) {
+    console.error('Get core fields error:', error);
+    return NextResponse.json(
+      { error: 'Failed to get core field mappings' },
+      { status: 500 },
+    );
+  }
+}
+
+// Helper function to auto-detect core fields from form data
+async function autoDetectCoreFields(formData: any): Promise<any[]> {
+  const mappings: any[] = [];
+  const fields = formData?.fields || [];
+
+  // Common field patterns for auto-detection
+  const patterns = {
+    // Couple fields
+    partner1_name: /^(bride|partner[_\s]?1|first[_\s]?partner)[_\s]?name$/i,
+    partner2_name: /^(groom|partner[_\s]?2|second[_\s]?partner)[_\s]?name$/i,
+    email: /^(email|contact[_\s]?email|primary[_\s]?email)$/i,
+    phone: /^(phone|mobile|contact[_\s]?(phone|number))$/i,
+
+    // Wedding fields
+    wedding_date: /^(wedding[_\s]?date|event[_\s]?date|ceremony[_\s]?date)$/i,
+    ceremony_venue: /^(ceremony[_\s]?(venue|location)|church)$/i,
+    reception_venue: /^(reception[_\s]?(venue|location)|party[_\s]?venue)$/i,
+    guest_count:
+      /^(guest[_\s]?count|number[_\s]?of[_\s]?guests|total[_\s]?guests)$/i,
+    ceremony_time: /^(ceremony[_\s]?time|start[_\s]?time)$/i,
+
+    // Additional patterns
+    wedding_style: /^(wedding[_\s]?style|theme|wedding[_\s]?theme)$/i,
+    color_scheme: /^(color[_\s]?scheme|colors|wedding[_\s]?colors)$/i,
+  };
+
+  // Iterate through form fields and detect core field matches
+  for (const field of fields) {
+    const fieldId = field.id;
+    const fieldLabel =
+      field.label?.toLowerCase().replace(/[^a-z0-9_\s]/g, '') || '';
+
+    for (const [coreField, pattern] of Object.entries(patterns)) {
+      if (pattern.test(fieldLabel) || pattern.test(fieldId)) {
+        mappings.push({
+          formFieldId: fieldId,
+          coreFieldPath: coreField,
+          transformRule: 'direct',
+        });
+        break;
+      }
+    }
+  }
+
+  return mappings;
+}
+
+// PUT /api/forms/[id]/sync-core-fields - Update core fields data from submission
+export async function PUT(
+  request: NextRequest,
+  { params }: { params: { id: string } },
+) {
+  try {
+    const formId = params.id;
+    const supabase = await createClient();
+
+    const body = await request.json();
+    const { submissionData, submissionId } = body;
+
+    if (!submissionData || !submissionId) {
+      return NextResponse.json(
+        { error: 'Submission data and ID are required' },
+        { status: 400 },
+      );
+    }
+
+    // Get form with core fields mapping
+    const { data: form, error: formError } = await supabase
+      .from('forms')
+      .select(
+        `
+        id,
+        organization_id,
+        core_fields_mapping,
+        has_core_fields
+      `,
+      )
+      .eq('id', formId)
+      .single();
+
+    if (formError || !form || !form.has_core_fields) {
+      return NextResponse.json(
+        { error: 'Form not found or core fields not configured' },
+        { status: 404 },
+      );
+    }
+
+    // Extract core fields from submission based on mappings
+    const coreFieldsData: any = {
+      couple: {},
+      wedding: {},
+      key_people: {},
+    };
+
+    for (const mapping of form.core_fields_mapping || []) {
+      const formValue = submissionData[mapping.formFieldId];
+
+      if (formValue !== undefined && formValue !== null && formValue !== '') {
+        // Apply transformation rules if needed
+        let transformedValue = formValue;
+
+        if (mapping.transformRule === 'format') {
+          // Apply formatting transformations
+          if (typeof formValue === 'string') {
+            transformedValue = DOMPurify.sanitize(formValue.trim());
+          }
+        }
+
+        // Set the value in the core fields structure
+        setNestedValue(coreFieldsData, mapping.coreFieldPath, transformedValue);
+      }
+    }
+
+    // Validate core fields data
+    const validatedCoreFields = coreFieldsSchema.parse(coreFieldsData);
+
+    // Update or create core fields record
+    const { data: updatedCoreFields, error: updateError } = await supabase
+      .from('core_fields_data')
+      .upsert({
+        organization_id: form.organization_id,
+        form_id: formId,
+        submission_id: submissionId,
+        data: validatedCoreFields,
+        last_synced: new Date().toISOString(),
+        updated_from_submission: submissionId,
+      })
+      .select()
+      .single();
+
+    if (updateError) {
+      throw new Error(
+        `Failed to update core fields data: ${updateError.message}`,
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      coreFields: validatedCoreFields,
+      message: 'Core fields updated from submission',
+    });
+  } catch (error) {
+    console.error('Core fields update error:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Invalid core fields data',
+          details: error.errors,
+        },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Failed to update core fields' },
+      { status: 500 },
+    );
+  }
+}
+
+// Helper function to set nested object values from path
+function setNestedValue(obj: any, path: string, value: any): void {
+  const keys = path.split('.');
+  let current = obj;
+
+  for (let i = 0; i < keys.length - 1; i++) {
+    const key = keys[i];
+    if (!current[key]) {
+      current[key] = {};
+    }
+    current = current[key];
+  }
+
+  current[keys[keys.length - 1]] = value;
+}

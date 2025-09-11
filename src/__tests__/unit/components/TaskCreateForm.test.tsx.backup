@@ -1,0 +1,560 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { TaskCreateForm } from '@/components/workflow/tasks/TaskCreateForm';
+import { TaskCategory, TaskPriority, TaskCreateInput } from '@/types/workflow';
+
+// Mock data
+const mockTeamMembers = [
+  {
+    id: 'member-1',
+    name: 'John Doe',
+    email: 'john@example.com',
+    role: 'coordinator',
+    specialties: ['venue_management', 'logistics'] as TaskCategory[]
+  },
+  {
+    id: 'member-2',
+    name: 'Jane Smith',
+    email: 'jane@example.com',
+    role: 'photographer',
+    specialties: ['photography'] as TaskCategory[]
+  },
+  {
+    id: 'member-3',
+    name: 'Admin User',
+    email: 'admin@example.com',
+    role: 'admin',
+    specialties: [] as TaskCategory[]
+  }
+];
+
+const mockAvailableTasks = [
+  {
+    id: 'task-1',
+    title: 'Venue Setup',
+    category: 'venue_management' as TaskCategory
+  },
+  {
+    id: 'task-2',
+    title: 'Photography Session',
+    category: 'photography' as TaskCategory
+  }
+];
+
+const mockProps = {
+  weddingId: 'wedding-123',
+  teamMembers: mockTeamMembers,
+  availableTasks: mockAvailableTasks,
+  onSubmit: vi.fn(),
+  onCancel: vi.fn(),
+  isSubmitting: false
+};
+
+describe('TaskCreateForm Component', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  describe('Form Rendering', () => {
+    it('renders the form with all required fields', () => {
+      render(<TaskCreateForm {...mockProps} />);
+
+      // Check form title and description
+      expect(screen.getByText('Create New Task')).toBeInTheDocument();
+      expect(screen.getByText('Add a new task to the wedding workflow')).toBeInTheDocument();
+
+      // Check required fields
+      expect(screen.getByLabelText(/task title/i)).toBeInTheDocument();
+      expect(screen.getByLabelText(/category/i)).toBeInTheDocument();
+      expect(screen.getByLabelText(/deadline/i)).toBeInTheDocument();
+      expect(screen.getByLabelText(/duration \(hours\)/i)).toBeInTheDocument();
+      
+      // Check optional fields
+      expect(screen.getByLabelText(/description/i)).toBeInTheDocument();
+      expect(screen.getByLabelText(/priority/i)).toBeInTheDocument();
+      expect(screen.getByLabelText(/assign to/i)).toBeInTheDocument();
+      expect(screen.getByLabelText(/buffer time/i)).toBeInTheDocument();
+
+      // Check action buttons
+      expect(screen.getByRole('button', { name: /cancel/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /create task/i })).toBeInTheDocument();
+    });
+
+    it('renders all task categories in select dropdown', () => {
+      render(<TaskCreateForm {...mockProps} />);
+      
+      const categorySelect = screen.getByLabelText(/category/i);
+      fireEvent.click(categorySelect);
+
+      const expectedCategories = [
+        'Venue Management',
+        'Vendor Coordination', 
+        'Client Management',
+        'Logistics',
+        'Design',
+        'Photography',
+        'Catering',
+        'Florals',
+        'Music',
+        'Transportation'
+      ];
+
+      expectedCategories.forEach(category => {
+        expect(screen.getByText(category)).toBeInTheDocument();
+      });
+    });
+
+    it('renders all priority options', () => {
+      render(<TaskCreateForm {...mockProps} />);
+      
+      const prioritySelect = screen.getByLabelText(/priority/i);
+      
+      // Priority should default to medium
+      expect(prioritySelect).toHaveValue('medium');
+      
+      // Check all options exist
+      const options = screen.getAllByRole('option');
+      const priorityOptions = options.filter(option => 
+        ['Low', 'Medium', 'High', 'Critical'].includes(option.textContent || '')
+      );
+      
+      expect(priorityOptions).toHaveLength(4);
+    });
+
+    it('shows team members in assignee dropdown', () => {
+      render(<TaskCreateForm {...mockProps} />);
+      
+      const assigneeSelect = screen.getByLabelText(/assign to/i);
+      fireEvent.click(assigneeSelect);
+
+      mockTeamMembers.forEach(member => {
+        expect(screen.getByText(`${member.name} (${member.role})`)).toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('Form Validation', () => {
+    it('shows validation errors for required fields when submitted empty', async () => {
+      const user = userEvent.setup();
+      render(<TaskCreateForm {...mockProps} />);
+
+      const submitButton = screen.getByRole('button', { name: /create task/i });
+      await user.click(submitButton);
+
+      // Check for validation error messages
+      await waitFor(() => {
+        expect(screen.getByText('Title is required')).toBeInTheDocument();
+        expect(screen.getByText('Category is required')).toBeInTheDocument();
+        expect(screen.getByText('Deadline is required')).toBeInTheDocument();
+      });
+
+      // Verify onSubmit was not called due to validation errors
+      expect(mockProps.onSubmit).not.toHaveBeenCalled();
+    });
+
+    it('validates duration field is greater than 0', async () => {
+      const user = userEvent.setup();
+      render(<TaskCreateForm {...mockProps} />);
+
+      // Fill required fields but set invalid duration
+      await user.type(screen.getByLabelText(/task title/i), 'Test Task');
+      await user.selectOptions(screen.getByLabelText(/category/i), 'venue_management');
+      await user.type(screen.getByLabelText(/deadline/i), '2024-12-31T10:00');
+      await user.clear(screen.getByLabelText(/duration \(hours\)/i));
+      await user.type(screen.getByLabelText(/duration \(hours\)/i), '0');
+
+      const submitButton = screen.getByRole('button', { name: /create task/i });
+      await user.click(submitButton);
+
+      await waitFor(() => {
+        expect(screen.getByText('Duration must be greater than 0')).toBeInTheDocument();
+      });
+
+      expect(mockProps.onSubmit).not.toHaveBeenCalled();
+    });
+
+    it('validates empty title field', async () => {
+      const user = userEvent.setup();
+      render(<TaskCreateForm {...mockProps} />);
+
+      // Fill other required fields but leave title empty
+      await user.selectOptions(screen.getByLabelText(/category/i), 'venue_management');
+      await user.type(screen.getByLabelText(/deadline/i), '2024-12-31T10:00');
+
+      const submitButton = screen.getByRole('button', { name: /create task/i });
+      await user.click(submitButton);
+
+      await waitFor(() => {
+        expect(screen.getByText('Title is required')).toBeInTheDocument();
+      });
+
+      expect(mockProps.onSubmit).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Form Interaction', () => {
+    it('updates form fields when user types', async () => {
+      const user = userEvent.setup();
+      render(<TaskCreateForm {...mockProps} />);
+
+      const titleField = screen.getByLabelText(/task title/i);
+      const descriptionField = screen.getByLabelText(/description/i);
+
+      await user.type(titleField, 'Wedding Photography Session');
+      await user.type(descriptionField, 'Capture beautiful moments during the ceremony');
+
+      expect(titleField).toHaveValue('Wedding Photography Session');
+      expect(descriptionField).toHaveValue('Capture beautiful moments during the ceremony');
+    });
+
+    it('updates select fields when user changes selection', async () => {
+      const user = userEvent.setup();
+      render(<TaskCreateForm {...mockProps} />);
+
+      const categorySelect = screen.getByLabelText(/category/i);
+      const prioritySelect = screen.getByLabelText(/priority/i);
+
+      await user.selectOptions(categorySelect, 'photography');
+      await user.selectOptions(prioritySelect, 'high');
+
+      expect(categorySelect).toHaveValue('photography');
+      expect(prioritySelect).toHaveValue('high');
+    });
+
+    it('filters team members based on selected category', async () => {
+      const user = userEvent.setup();
+      render(<TaskCreateForm {...mockProps} />);
+
+      // Select photography category
+      await user.selectOptions(screen.getByLabelText(/category/i), 'photography');
+
+      const assigneeSelect = screen.getByLabelText(/assign to/i);
+      fireEvent.click(assigneeSelect);
+
+      // Should show photographer and admin (who can work on any category)
+      expect(screen.getByText('Jane Smith (photographer)')).toBeInTheDocument();
+      expect(screen.getByText('Admin User (admin)')).toBeInTheDocument();
+
+      // Should not show coordinator since they don't specialize in photography
+      expect(screen.queryByText('John Doe (coordinator)')).not.toBeInTheDocument();
+    });
+
+    it('shows warning when no team members specialize in selected category', async () => {
+      const user = userEvent.setup();
+      render(<TaskCreateForm {...mockProps} />);
+
+      // Select a category that no team member specializes in
+      await user.selectOptions(screen.getByLabelText(/category/i), 'catering');
+
+      await waitFor(() => {
+        expect(screen.getByText('No team members specialize in this category')).toBeInTheDocument();
+      });
+    });
+
+    it('resets assignee when category changes', async () => {
+      const user = userEvent.setup();
+      render(<TaskCreateForm {...mockProps} />);
+
+      // First select a category and assignee
+      await user.selectOptions(screen.getByLabelText(/category/i), 'venue_management');
+      await user.selectOptions(screen.getByLabelText(/assign to/i), 'member-1');
+
+      expect(screen.getByLabelText(/assign to/i)).toHaveValue('member-1');
+
+      // Change category - assignee should reset
+      await user.selectOptions(screen.getByLabelText(/category/i), 'photography');
+
+      expect(screen.getByLabelText(/assign to/i)).toHaveValue('');
+    });
+  });
+
+  describe('Dependency Management', () => {
+    it('shows "Add Dependency" button', () => {
+      render(<TaskCreateForm {...mockProps} />);
+      
+      expect(screen.getByRole('button', { name: /add dependency/i })).toBeInTheDocument();
+    });
+
+    it('adds a dependency when "Add Dependency" is clicked', async () => {
+      const user = userEvent.setup();
+      render(<TaskCreateForm {...mockProps} />);
+
+      const addButton = screen.getByRole('button', { name: /add dependency/i });
+      await user.click(addButton);
+
+      // Should show dependency form
+      expect(screen.getByText('Select task')).toBeInTheDocument();
+      expect(screen.getByText('Finish to Start')).toBeInTheDocument();
+    });
+
+    it('removes dependency when remove button is clicked', async () => {
+      const user = userEvent.setup();
+      render(<TaskCreateForm {...mockProps} />);
+
+      // Add a dependency first
+      const addButton = screen.getByRole('button', { name: /add dependency/i });
+      await user.click(addButton);
+
+      // Should show remove button (X icon)
+      const removeButton = screen.getByRole('button', { name: '' }); // X button has no text
+      await user.click(removeButton);
+
+      // Dependency should be removed
+      expect(screen.queryByText('Select task')).not.toBeInTheDocument();
+    });
+
+    it('disables "Add Dependency" button when no available tasks', () => {
+      const propsWithoutTasks = { ...mockProps, availableTasks: [] };
+      render(<TaskCreateForm {...propsWithoutTasks} />);
+
+      const addButton = screen.getByRole('button', { name: /add dependency/i });
+      expect(addButton).toBeDisabled();
+    });
+
+    it('shows message when no tasks available for dependencies', () => {
+      const propsWithoutTasks = { ...mockProps, availableTasks: [] };
+      render(<TaskCreateForm {...propsWithoutTasks} />);
+
+      expect(screen.getByText('No existing tasks available for dependencies')).toBeInTheDocument();
+    });
+  });
+
+  describe('Form Submission', () => {
+    it('submits form with valid data', async () => {
+      const user = userEvent.setup();
+      render(<TaskCreateForm {...mockProps} />);
+
+      // Fill all required fields
+      await user.type(screen.getByLabelText(/task title/i), 'Test Wedding Task');
+      await user.type(screen.getByLabelText(/description/i), 'This is a test task description');
+      await user.selectOptions(screen.getByLabelText(/category/i), 'venue_management');
+      await user.selectOptions(screen.getByLabelText(/priority/i), 'high');
+      await user.selectOptions(screen.getByLabelText(/assign to/i), 'member-1');
+      await user.type(screen.getByLabelText(/deadline/i), '2024-12-31T15:30');
+      await user.clear(screen.getByLabelText(/duration \(hours\)/i));
+      await user.type(screen.getByLabelText(/duration \(hours\)/i), '4');
+      await user.type(screen.getByLabelText(/buffer time/i), '0.5');
+
+      const submitButton = screen.getByRole('button', { name: /create task/i });
+      await user.click(submitButton);
+
+      await waitFor(() => {
+        expect(mockProps.onSubmit).toHaveBeenCalledWith({
+          wedding_id: 'wedding-123',
+          title: 'Test Wedding Task',
+          description: 'This is a test task description',
+          category: 'venue_management',
+          priority: 'high',
+          assigned_to: 'member-1',
+          deadline: '2024-12-31T15:30',
+          estimated_duration: 4,
+          buffer_time: 0.5,
+          dependencies: []
+        });
+      });
+    });
+
+    it('submits form with minimum required fields', async () => {
+      const user = userEvent.setup();
+      render(<TaskCreateForm {...mockProps} />);
+
+      // Fill only required fields
+      await user.type(screen.getByLabelText(/task title/i), 'Minimal Task');
+      await user.selectOptions(screen.getByLabelText(/category/i), 'logistics');
+      await user.type(screen.getByLabelText(/deadline/i), '2024-12-25T12:00');
+
+      const submitButton = screen.getByRole('button', { name: /create task/i });
+      await user.click(submitButton);
+
+      await waitFor(() => {
+        expect(mockProps.onSubmit).toHaveBeenCalledWith(
+          expect.objectContaining({
+            wedding_id: 'wedding-123',
+            title: 'Minimal Task',
+            category: 'logistics',
+            deadline: '2024-12-25T12:00',
+            priority: 'medium', // Default value
+            estimated_duration: 2, // Default value
+            buffer_time: 0, // Default value
+            dependencies: []
+          })
+        );
+      });
+    });
+
+    it('submits form with dependencies', async () => {
+      const user = userEvent.setup();
+      render(<TaskCreateForm {...mockProps} />);
+
+      // Fill required fields
+      await user.type(screen.getByLabelText(/task title/i), 'Task with Dependency');
+      await user.selectOptions(screen.getByLabelText(/category/i), 'photography');
+      await user.type(screen.getByLabelText(/deadline/i), '2024-12-31T10:00');
+
+      // Add dependency
+      const addButton = screen.getByRole('button', { name: /add dependency/i });
+      await user.click(addButton);
+
+      // Configure dependency
+      const taskSelects = screen.getAllByDisplayValue('');
+      const taskSelect = taskSelects.find(select => 
+        select.querySelector('option[value="task-1"]')
+      ) as HTMLSelectElement;
+      
+      if (taskSelect) {
+        await user.selectOptions(taskSelect, 'task-1');
+      }
+
+      const submitButton = screen.getByRole('button', { name: /create task/i });
+      await user.click(submitButton);
+
+      await waitFor(() => {
+        expect(mockProps.onSubmit).toHaveBeenCalledWith(
+          expect.objectContaining({
+            dependencies: [
+              {
+                predecessor_task_id: 'task-1',
+                dependency_type: 'finish_to_start',
+                lag_time: 0
+              }
+            ]
+          })
+        );
+      });
+    });
+
+    it('calls onCancel when cancel button is clicked', async () => {
+      const user = userEvent.setup();
+      render(<TaskCreateForm {...mockProps} />);
+
+      const cancelButton = screen.getByRole('button', { name: /cancel/i });
+      await user.click(cancelButton);
+
+      expect(mockProps.onCancel).toHaveBeenCalled();
+    });
+
+    it('disables submit button when isSubmitting is true', () => {
+      const submittingProps = { ...mockProps, isSubmitting: true };
+      render(<TaskCreateForm {...submittingProps} />);
+
+      const submitButton = screen.getByRole('button', { name: /creating.../i });
+      expect(submitButton).toBeDisabled();
+    });
+
+    it('shows "Creating..." text when isSubmitting is true', () => {
+      const submittingProps = { ...mockProps, isSubmitting: true };
+      render(<TaskCreateForm {...submittingProps} />);
+
+      expect(screen.getByRole('button', { name: /creating.../i })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /create task/i })).not.toBeInTheDocument();
+    });
+  });
+
+  describe('Default Values', () => {
+    it('initializes with correct default values', () => {
+      render(<TaskCreateForm {...mockProps} />);
+
+      // Priority should default to medium
+      expect(screen.getByLabelText(/priority/i)).toHaveValue('medium');
+      
+      // Duration should default to 2
+      expect(screen.getByLabelText(/duration \(hours\)/i)).toHaveValue(2);
+      
+      // Buffer time should default to 0
+      expect(screen.getByLabelText(/buffer time/i)).toHaveValue(0);
+      
+      // Wedding ID should be set
+      // (This is internal state, we can only verify through submission)
+    });
+  });
+
+  describe('Accessibility', () => {
+    it('associates labels with form controls correctly', () => {
+      render(<TaskCreateForm {...mockProps} />);
+
+      // Check that labels are properly associated
+      const titleInput = screen.getByLabelText(/task title/i);
+      expect(titleInput).toBeInTheDocument();
+
+      const categorySelect = screen.getByLabelText(/category/i);
+      expect(categorySelect).toBeInTheDocument();
+
+      const prioritySelect = screen.getByLabelText(/priority/i);
+      expect(prioritySelect).toBeInTheDocument();
+    });
+
+    it('shows validation errors with proper color styling', async () => {
+      const user = userEvent.setup();
+      render(<TaskCreateForm {...mockProps} />);
+
+      const submitButton = screen.getByRole('button', { name: /create task/i });
+      await user.click(submitButton);
+
+      await waitFor(() => {
+        const titleInput = screen.getByLabelText(/task title/i);
+        expect(titleInput).toHaveClass('border-red-300');
+        
+        const categorySelect = screen.getByLabelText(/category/i);
+        expect(categorySelect).toHaveClass('border-red-300');
+      });
+    });
+
+    it('has proper focus states on form elements', () => {
+      render(<TaskCreateForm {...mockProps} />);
+
+      const titleInput = screen.getByLabelText(/task title/i);
+      expect(titleInput).toHaveClass('focus:ring-primary-100');
+      expect(titleInput).toHaveClass('focus:border-primary-300');
+    });
+  });
+
+  describe('Edge Cases', () => {
+    it('handles empty team members array', () => {
+      const propsWithNoMembers = { ...mockProps, teamMembers: [] };
+      render(<TaskCreateForm {...propsWithNoMembers} />);
+
+      const assigneeSelect = screen.getByLabelText(/assign to/i);
+      fireEvent.click(assigneeSelect);
+
+      // Should only show "Assign later" option
+      const options = screen.getAllByRole('option');
+      const assigneeOptions = options.filter(option => 
+        option.closest('select') === assigneeSelect
+      );
+      
+      expect(assigneeOptions).toHaveLength(1);
+      expect(assigneeOptions[0]).toHaveTextContent('Assign later');
+    });
+
+    it('handles decimal values for duration and buffer time', async () => {
+      const user = userEvent.setup();
+      render(<TaskCreateForm {...mockProps} />);
+
+      // Test decimal duration
+      await user.clear(screen.getByLabelText(/duration \(hours\)/i));
+      await user.type(screen.getByLabelText(/duration \(hours\)/i), '2.5');
+
+      // Test decimal buffer time
+      await user.clear(screen.getByLabelText(/buffer time/i));
+      await user.type(screen.getByLabelText(/buffer time/i), '0.25');
+
+      expect(screen.getByLabelText(/duration \(hours\)/i)).toHaveValue(2.5);
+      expect(screen.getByLabelText(/buffer time/i)).toHaveValue(0.25);
+    });
+
+    it('handles long text inputs without breaking layout', async () => {
+      const user = userEvent.setup();
+      render(<TaskCreateForm {...mockProps} />);
+
+      const longTitle = 'This is a very long task title that might exceed normal expectations for task naming conventions in wedding planning workflows';
+      const longDescription = 'This is an extremely detailed description that covers multiple aspects of the wedding task including specific requirements, timing considerations, vendor coordination details, guest management aspects, and various other important factors that need to be considered during the execution of this particular task in the wedding planning process.';
+
+      await user.type(screen.getByLabelText(/task title/i), longTitle);
+      await user.type(screen.getByLabelText(/description/i), longDescription);
+
+      expect(screen.getByLabelText(/task title/i)).toHaveValue(longTitle);
+      expect(screen.getByLabelText(/description/i)).toHaveValue(longDescription);
+    });
+  });
+});

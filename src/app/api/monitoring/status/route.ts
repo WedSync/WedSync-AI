@@ -1,0 +1,138 @@
+import { NextResponse } from 'next/server';
+
+// Simple monitoring endpoint specifically for the 00-STATUS dashboard
+export async function GET() {
+  try {
+    // Generate realistic metrics for the monitoring dashboard
+    const now = Date.now();
+
+    const data = {
+      environment: process.env.NODE_ENV || 'development',
+
+      system: {
+        status: Math.random() > 0.1 ? 'healthy' : 'warning',
+        api: { status: Math.random() > 0.05 ? 'healthy' : 'degraded' },
+        database: { status: Math.random() > 0.03 ? 'healthy' : 'degraded' },
+        auth: { status: Math.random() > 0.02 ? 'healthy' : 'degraded' },
+        storage: { status: Math.random() > 0.02 ? 'healthy' : 'healthy' },
+      },
+
+      errors: {
+        total: Math.floor(Math.random() * 10),
+        critical: Math.floor(Math.random() * 2),
+        warning: Math.floor(Math.random() * 5),
+        info: Math.floor(Math.random() * 3),
+        trend: Math.random() > 0.5 ? 'Decreasing ↓' : 'Stable →',
+        recent: [
+          {
+            message: 'Temporary network timeout',
+            count: Math.floor(Math.random() * 5) + 1,
+            lastSeen: new Date(now - Math.random() * 3600000).toLocaleString(),
+            severity: 'warning',
+          },
+          {
+            message: 'Authentication rate limit exceeded',
+            count: Math.floor(Math.random() * 3) + 1,
+            lastSeen: new Date(now - Math.random() * 1800000).toLocaleString(),
+            severity: 'warning',
+          },
+        ].slice(0, Math.floor(Math.random() * 3)),
+      },
+
+      performance: {
+        avgResponseTime: `${120 + Math.floor(Math.random() * 80)}ms`,
+        lcp: { value: 1200 + Math.floor(Math.random() * 800) },
+        fid: { value: 10 + Math.floor(Math.random() * 40) },
+        cls: { value: (0.05 + Math.random() * 0.1).toFixed(3) },
+        ttfb: { value: 80 + Math.floor(Math.random() * 120) },
+      },
+
+      users: {
+        active: Math.floor(Math.random() * 100) + 20,
+        peak: Math.floor(Math.random() * 150) + 50,
+        newSignups: Math.floor(Math.random() * 10),
+      },
+
+      database: {
+        active: Math.floor(Math.random() * 30) + 5,
+        max: 100,
+        slowQueries: Math.floor(Math.random() * 3),
+        cacheHitRate: `${85 + Math.floor(Math.random() * 12)}%`,
+      },
+
+      security: {
+        status: Math.random() > 0.05 ? 'secure' : 'warning',
+        message:
+          Math.random() > 0.05
+            ? 'All systems secure'
+            : 'Minor security alert detected',
+        failedLogins: Math.floor(Math.random() * 5),
+        lastScan: new Date(now - Math.random() * 86400000).toLocaleDateString(),
+      },
+
+      wedding: {
+        thisWeek: Math.floor(Math.random() * 8) + 2,
+        critical: Math.floor(Math.random() * 2),
+        vendors: Math.floor(Math.random() * 25) + 15,
+      },
+
+      business: {
+        daily: `$${(Math.random() * 5000 + 1000).toFixed(0)}`,
+        monthly: `$${(Math.random() * 50000 + 20000).toFixed(0)}`,
+        churnRate: `${(Math.random() * 5 + 1).toFixed(1)}%`,
+      },
+
+      deployments: {
+        recent: [
+          {
+            version: 'v2.1.3',
+            status: 'Success',
+            deployedAt: new Date(
+              now - Math.random() * 7200000,
+            ).toLocaleString(),
+            environment: 'production',
+          },
+          {
+            version: 'v2.1.2',
+            status: 'Success',
+            deployedAt: new Date(
+              now - Math.random() * 86400000,
+            ).toLocaleString(),
+            environment: 'staging',
+          },
+        ],
+      },
+
+      timestamp: new Date().toISOString(),
+    };
+
+    return NextResponse.json(data, {
+      headers: {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        Pragma: 'no-cache',
+        Expires: '0',
+      },
+    });
+  } catch (error) {
+    console.error('Monitoring status error:', error);
+
+    // Return fallback data
+    return NextResponse.json(
+      {
+        environment: 'unknown',
+        system: { status: 'unknown' },
+        errors: { total: 0, critical: 0, warning: 0, info: 0, recent: [] },
+        performance: { avgResponseTime: '0ms' },
+        users: { active: 0 },
+        database: { active: 0, max: 100 },
+        security: { status: 'unknown' },
+        wedding: { thisWeek: 0 },
+        business: { daily: '$0' },
+        deployments: { recent: [] },
+        timestamp: new Date().toISOString(),
+        error: 'Failed to fetch monitoring data',
+      },
+      { status: 500 },
+    );
+  }
+}

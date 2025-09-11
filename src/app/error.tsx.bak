@@ -1,0 +1,147 @@
+'use client';
+
+import { useEffect } from 'react';
+import { AlertTriangle, RefreshCw, Home, MessageCircle } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { errorTracker } from '@/lib/monitoring/error-tracking';
+
+interface ErrorPageProps {
+  error: Error & { digest?: string };
+  reset: () => void;
+}
+
+export default function Error({ error, reset }: ErrorPageProps) {
+  useEffect(() => {
+    // Capture the error with context
+    const errorId = errorTracker.captureError(error, {
+      userId: getUserId(),
+      endpoint: window.location.pathname,
+      userAgent: navigator.userAgent,
+      timestamp: Date.now(),
+      environment: process.env.NODE_ENV || 'development',
+    }, {
+      error_digest: error.digest,
+      page_type: 'global_error',
+      source: 'next_js_error_boundary',
+      url: window.location.href
+    });
+
+    console.error('Global error captured:', error, 'Error ID:', errorId);
+  }, [error]);
+
+  const getUserId = (): string | undefined => {
+    if (typeof window !== 'undefined') {
+      try {
+        const userData = localStorage.getItem('user') || sessionStorage.getItem('user');
+        if (userData) {
+          const parsed = JSON.parse(userData);
+          return parsed.id || parsed.user_id;
+        }
+      } catch {
+        // Ignore errors
+      }
+    }
+    return undefined;
+  };
+
+  const handleSendFeedback = () => {
+    const feedback = prompt('What were you trying to do when this error occurred?');
+    if (feedback) {
+      fetch('/api/errors/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          errorId: `global_${Date.now()}`,
+          feedback,
+          context: 'global_error_page',
+          url: window.location.href,
+          userAgent: navigator.userAgent
+        })
+      }).then(() => {
+        alert('Thank you for your feedback! We will investigate this issue.');
+      }).catch(() => {
+        alert('Unable to send feedback. Please contact support directly.');
+      });
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-background flex items-center justify-center p-6">
+      <Card className="max-w-md w-full">
+        <CardHeader>
+          <CardTitle className="text-center text-red-600">
+            <div className="flex justify-center mb-3">
+              <div className="bg-red-100 rounded-full p-4">
+                <AlertTriangle className="h-12 w-12 text-red-600" />
+              </div>
+            </div>
+            Something went wrong!
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="text-center">
+            <p className="text-muted-foreground mb-4">
+              We're sorry, but something unexpected happened. Our team has been notified and is working to fix this issue.
+            </p>
+            
+            <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg mb-4">
+              <h4 className="font-semibold text-blue-800 mb-2">🏔️ What happened?</h4>
+              <p className="text-sm text-blue-700">
+                The application encountered an error while processing your request. 
+                Don't worry - your wedding data is safe and this won't affect your other activities.
+              </p>
+            </div>
+
+            {process.env.NODE_ENV === 'development' && (
+              <div className="p-3 bg-gray-100 rounded-lg text-left mb-4">
+                <p className="text-xs font-mono text-red-600 break-words">
+                  {error.message}
+                </p>
+                {error.digest && (
+                  <p className="text-xs font-mono text-gray-500 mt-1">
+                    Digest: {error.digest}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-3">
+            <div className="flex gap-3">
+              <Button 
+                onClick={reset} 
+                className="flex-1 flex items-center justify-center gap-2"
+              >
+                <RefreshCw className="h-4 w-4" />
+                Try Again
+              </Button>
+              <Button 
+                variant="outline" 
+                onClick={handleSendFeedback}
+                className="flex-1 flex items-center justify-center gap-2"
+              >
+                <MessageCircle className="h-4 w-4" />
+                Report Issue
+              </Button>
+            </div>
+            
+            <Button 
+              variant="ghost" 
+              onClick={() => window.location.href = '/'}
+              className="w-full flex items-center justify-center gap-2"
+            >
+              <Home className="h-4 w-4" />
+              Return to Dashboard
+            </Button>
+          </div>
+
+          <div className="text-center text-xs text-muted-foreground">
+            <p>If this problem persists, please contact support.</p>
+            <p className="mt-1">Error occurred at {new Date().toLocaleString()}</p>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}

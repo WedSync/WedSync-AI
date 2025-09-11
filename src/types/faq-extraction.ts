@@ -1,0 +1,314 @@
+// TypeScript type definitions for FAQ Extraction system
+
+export interface ExtractedFAQ {
+  id: string;
+  question: string;
+  answer: string;
+  confidence: number;
+  sourceUrl: string;
+  category?: string;
+  status: 'pending' | 'approved' | 'rejected';
+  extractionDate: string;
+  lastModified?: string;
+}
+
+export interface FAQCategory {
+  id: string;
+  name: string;
+  description?: string;
+  color: string;
+  icon?: string;
+  count: number;
+  isActive: boolean;
+  sortOrder: number;
+  autoCategorizationRules: string[];
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface DiscoveredPage {
+  url: string;
+  title: string;
+  description?: string;
+  faqCount: number;
+  selected: boolean;
+}
+
+export interface ExtractionState {
+  currentStep: number;
+  websiteUrl: string;
+  discoveredPages: DiscoveredPage[];
+  selectedPages: string[];
+  extractedFAQs: ExtractedFAQ[];
+  categories: FAQCategory[];
+  isProcessing: boolean;
+  error: string | null;
+  progress: number;
+}
+
+export interface ReviewAction {
+  type:
+    | 'approve'
+    | 'reject'
+    | 'edit'
+    | 'delete'
+    | 'bulk_approve'
+    | 'bulk_reject'
+    | 'bulk_delete';
+  faqIds: string[];
+  data?: Record<string, unknown>;
+}
+
+export interface AutoCategorizationRule {
+  id: string;
+  categoryId: string;
+  keywords: string[];
+  priority: number;
+  isActive: boolean;
+}
+
+export interface CategoryTemplate {
+  id: string;
+  name: string;
+  description: string;
+  categories: Omit<FAQCategory, 'id' | 'count' | 'createdAt' | 'updatedAt'>[];
+}
+
+export type WizardStep = 1 | 2 | 3 | 4 | 5 | 6;
+export type FilterType =
+  | 'all'
+  | 'pending'
+  | 'approved'
+  | 'rejected'
+  | 'high_confidence'
+  | 'low_confidence';
+export type SortType = 'date' | 'confidence' | 'category' | 'status';
+
+// Component Props Interfaces
+export interface FAQExtractionWizardProps {
+  onComplete?: (faqs: ExtractedFAQ[]) => void;
+  onCancel?: () => void;
+  initialUrl?: string;
+}
+
+export interface FAQReviewQueueProps {
+  extractedFAQs: ExtractedFAQ[];
+  categories: FAQCategory[];
+  onApprove: (faqId: string) => void;
+  onReject: (faqId: string, reason?: string) => void;
+  onEdit: (faqId: string, updates: Partial<ExtractedFAQ>) => void;
+  onDelete: (faqId: string) => void;
+  onBulkAction: (action: ReviewAction) => void;
+  onCategoryChange: (faqId: string, categoryId: string) => void;
+  isLoading?: boolean;
+}
+
+export interface FAQCategoryManagerProps {
+  categories: FAQCategory[];
+  templates?: CategoryTemplate[];
+  onCategoryCreate: (
+    category: Omit<FAQCategory, 'id' | 'count' | 'createdAt' | 'updatedAt'>,
+  ) => void;
+  onCategoryUpdate: (categoryId: string, updates: Partial<FAQCategory>) => void;
+  onCategoryDelete: (categoryId: string) => void;
+  onCategoryReorder: (categories: FAQCategory[]) => void;
+  onRulesUpdate: (rules: AutoCategorizationRule[]) => void;
+  autoCategorizationRules?: AutoCategorizationRule[];
+  isLoading?: boolean;
+}
+
+// API Response Types
+export interface ExtractionApiResponse {
+  success: boolean;
+  data?: {
+    extractedFAQs: ExtractedFAQ[];
+    totalPages: number;
+    processedPages: string[];
+    errors: string[];
+  };
+  error?: string;
+}
+
+export interface CategoryApiResponse {
+  success: boolean;
+  data?: FAQCategory[];
+  error?: string;
+}
+
+// Utility Types
+export interface CategoryColor {
+  name: string;
+  value: string;
+  preview: string;
+}
+
+export interface ExtractionProgress {
+  currentPage: number;
+  totalPages: number;
+  currentStep: string;
+  progress: number;
+  estimatedTimeRemaining?: number;
+}
+
+// Constants
+export const EXTRACTION_STEPS = [
+  { id: 1, title: 'Website URL', description: 'Enter website to extract from' },
+  { id: 2, title: 'Page Discovery', description: 'Select pages to analyze' },
+  { id: 3, title: 'Processing', description: 'Extracting FAQ content' },
+  { id: 4, title: 'Review FAQs', description: 'Review extracted content' },
+  { id: 5, title: 'Categorize', description: 'Assign categories' },
+  { id: 6, title: 'Complete', description: 'Extraction complete' },
+] as const;
+
+export const CATEGORY_COLORS: CategoryColor[] = [
+  {
+    name: 'Blue',
+    value: 'bg-blue-100 text-blue-800 border-blue-200',
+    preview: 'bg-blue-500',
+  },
+  {
+    name: 'Green',
+    value: 'bg-green-100 text-green-800 border-green-200',
+    preview: 'bg-green-500',
+  },
+  {
+    name: 'Purple',
+    value: 'bg-purple-100 text-purple-800 border-purple-200',
+    preview: 'bg-purple-500',
+  },
+  {
+    name: 'Amber',
+    value: 'bg-amber-100 text-amber-800 border-amber-200',
+    preview: 'bg-amber-500',
+  },
+  {
+    name: 'Pink',
+    value: 'bg-pink-100 text-pink-800 border-pink-200',
+    preview: 'bg-pink-500',
+  },
+  {
+    name: 'Indigo',
+    value: 'bg-indigo-100 text-indigo-800 border-indigo-200',
+    preview: 'bg-indigo-500',
+  },
+  {
+    name: 'Gray',
+    value: 'bg-gray-100 text-gray-800 border-gray-200',
+    preview: 'bg-gray-500',
+  },
+  {
+    name: 'Red',
+    value: 'bg-red-100 text-red-800 border-red-200',
+    preview: 'bg-red-500',
+  },
+] as const;
+
+export const DEFAULT_CATEGORIES: FAQCategory[] = [
+  {
+    id: 'general',
+    name: 'General',
+    color: 'bg-blue-100 text-blue-800',
+    count: 0,
+    isActive: true,
+    sortOrder: 1,
+    autoCategorizationRules: [],
+    createdAt: '',
+  },
+  {
+    id: 'pricing',
+    name: 'Pricing',
+    color: 'bg-green-100 text-green-800',
+    count: 0,
+    isActive: true,
+    sortOrder: 2,
+    autoCategorizationRules: [],
+    createdAt: '',
+  },
+  {
+    id: 'services',
+    name: 'Services',
+    color: 'bg-purple-100 text-purple-800',
+    count: 0,
+    isActive: true,
+    sortOrder: 3,
+    autoCategorizationRules: [],
+    createdAt: '',
+  },
+  {
+    id: 'booking',
+    name: 'Booking',
+    color: 'bg-amber-100 text-amber-800',
+    count: 0,
+    isActive: true,
+    sortOrder: 4,
+    autoCategorizationRules: [],
+    createdAt: '',
+  },
+  {
+    id: 'technical',
+    name: 'Technical',
+    color: 'bg-gray-100 text-gray-800',
+    count: 0,
+    isActive: true,
+    sortOrder: 5,
+    autoCategorizationRules: [],
+    createdAt: '',
+  },
+] as const;
+
+// Type Guards
+export function isValidWizardStep(step: number): step is WizardStep {
+  return step >= 1 && step <= 6;
+}
+
+export function isExtractedFAQ(obj: any): obj is ExtractedFAQ {
+  return (
+    typeof obj === 'object' &&
+    typeof obj.id === 'string' &&
+    typeof obj.question === 'string' &&
+    typeof obj.answer === 'string' &&
+    typeof obj.confidence === 'number' &&
+    typeof obj.sourceUrl === 'string' &&
+    ['pending', 'approved', 'rejected'].includes(obj.status)
+  );
+}
+
+export function isFAQCategory(obj: any): obj is FAQCategory {
+  return (
+    typeof obj === 'object' &&
+    typeof obj.id === 'string' &&
+    typeof obj.name === 'string' &&
+    typeof obj.color === 'string' &&
+    typeof obj.count === 'number' &&
+    typeof obj.isActive === 'boolean' &&
+    typeof obj.sortOrder === 'number' &&
+    Array.isArray(obj.autoCategorizationRules)
+  );
+}
+
+// Validation schemas (for use with Zod or similar)
+export const extractedFAQSchema = {
+  id: 'string',
+  question: 'string',
+  answer: 'string',
+  confidence: 'number',
+  sourceUrl: 'string',
+  category: 'string?',
+  status: ['pending', 'approved', 'rejected'],
+  extractionDate: 'string',
+  lastModified: 'string?',
+} as const;
+
+export const categorySchema = {
+  id: 'string',
+  name: 'string',
+  description: 'string?',
+  color: 'string',
+  icon: 'string?',
+  count: 'number',
+  isActive: 'boolean',
+  sortOrder: 'number',
+  autoCategorizationRules: 'string[]',
+  createdAt: 'string',
+  updatedAt: 'string?',
+} as const;

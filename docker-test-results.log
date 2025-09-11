@@ -1,0 +1,409 @@
+
+> wedsync@0.1.0 test
+> jest
+
+FAIL tests/security/core-fields-security.test.ts
+  ● Core Fields Security Tests › XSS Prevention › should remove HTML tags but keep content
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: "John & Jane's Wedding"
+    Received: "John &amp; Jane's Wedding"
+
+      59 |       const input = "<h1>John & Jane's Wedding</h1>";
+      60 |       const sanitized = sanitizeInput(input);
+    > 61 |       expect(sanitized).toBe("John & Jane's Wedding");
+         |                         ^
+      62 |     });
+      63 |
+      64 |     test('should handle nested script tags', () => {
+
+      at Object.toBe (tests/security/core-fields-security.test.ts:61:25)
+
+  ● Core Fields Security Tests › Input Size Validation › should reject very long field names
+
+    expect(received).toContain(expected) // indexOf
+
+    Expected substring: "field name"
+    Received string:    "Validation error occurred"
+
+      88 |       const result = validateCoreFieldValue(longFieldName, 'value');
+      89 |       expect(result.valid).toBe(false);
+    > 90 |       expect(result.error).toContain('field name');
+         |                            ^
+      91 |     });
+      92 |   });
+      93 |
+
+      at Object.toContain (tests/security/core-fields-security.test.ts:90:28)
+
+  ● Core Fields Security Tests › Phone Number Validation › should validate phone numbers correctly
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: true
+    Received: false
+
+      165 |       validPhones.forEach(phone => {
+      166 |         const result = validateCoreFieldValue('bride_phone', phone);
+    > 167 |         expect(result.valid).toBe(true);
+          |                              ^
+      168 |       });
+      169 |
+      170 |       const invalidPhones = [
+
+      at toBe (tests/security/core-fields-security.test.ts:167:30)
+          at Array.forEach (<anonymous>)
+      at Object.forEach (tests/security/core-fields-security.test.ts:165:19)
+
+  ● Core Fields Security Tests › Batch Field Validation › should validate multiple fields and return sanitized values
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: true
+    Received: false
+
+      255 |       const result = validateCoreFields(fields);
+      256 |       
+    > 257 |       expect(result.valid).toBe(true);
+          |                            ^
+      258 |       expect(result.sanitized.bride_first_name).toBe('Jane');
+      259 |       expect(result.sanitized.bride_email).toBe('jane@example.com');
+      260 |       expect(result.sanitized.groom_first_name).toBe('John');
+
+      at Object.toBe (tests/security/core-fields-security.test.ts:257:28)
+
+  ● Core Fields Security Tests › Unknown Field Handling › should sanitize unknown string fields
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: true
+    Received: false
+
+      283 |     test('should sanitize unknown string fields', () => {
+      284 |       const result = validateCoreFieldValue('custom_field', '<script>test</script>');
+    > 285 |       expect(result.valid).toBe(true);
+          |                            ^
+      286 |       expect(result.sanitized).toBe('test');
+      287 |     });
+      288 |
+
+      at Object.toBe (tests/security/core-fields-security.test.ts:285:28)
+
+  ● Core Fields Security Tests › Edge Cases › should handle null values for optional fields
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: true
+    Received: false
+
+      303 |     test('should handle null values for optional fields', () => {
+      304 |       const result = validateCoreFieldValue('notes', null);
+    > 305 |       expect(result.valid).toBe(true);
+          |                            ^
+      306 |     });
+      307 |
+      308 |     test('should handle undefined values for optional fields', () => {
+
+      at Object.toBe (tests/security/core-fields-security.test.ts:305:28)
+
+FAIL tests/integration/cross-session-validation.test.ts
+  ● Console
+
+    console.error
+      FetchError {
+        message: 'request to https://test.supabase.co/auth/v1/signup failed, reason: getaddrinfo ENOTFOUND test.supabase.co',
+        type: 'system',
+        errno: 'ENOTFOUND',
+        code: 'ENOTFOUND'
+      }
+
+      40 |     
+      41 |     // Create test user
+    > 42 |     const { data: authData, error } = await supabase.auth.signUp({
+         |                                       ^
+      43 |       email: 'cross-validation-test@example.com',
+      44 |       password: 'SecurePassword123!'
+      45 |     })
+
+      at _handleRequest (node_modules/@supabase/auth-js/src/lib/fetch.ts:188:13)
+      at _request (node_modules/@supabase/auth-js/src/lib/fetch.ts:157:16)
+      at SupabaseAuthClient.signUp (node_modules/@supabase/auth-js/src/GoTrueClient.ts:502:15)
+      at Object.<anonymous> (tests/integration/cross-session-validation.test.ts:42:39)
+
+  ● Cross-Session Validation Tests › Frontend-Backend Validation Synchronization › should maintain consistent validation rules between frontend and backend
+
+    Test user creation failed: request to https://test.supabase.co/auth/v1/signup failed, reason: getaddrinfo ENOTFOUND test.supabase.co
+
+      45 |     })
+      46 |     
+    > 47 |     if (error) throw new Error(`Test user creation failed: ${error.message}`)
+         |                      ^
+      48 |     
+      49 |     testUserId = authData?.user?.id || ''
+      50 |     authToken = authData?.session?.access_token || ''
+
+      at Object.<anonymous> (tests/integration/cross-session-validation.test.ts:47:22)
+
+  ● Cross-Session Validation Tests › Frontend-Backend Validation Synchronization › should handle edge cases consistently across sessions
+
+    Test user creation failed: request to https://test.supabase.co/auth/v1/signup failed, reason: getaddrinfo ENOTFOUND test.supabase.co
+
+      45 |     })
+      46 |     
+    > 47 |     if (error) throw new Error(`Test user creation failed: ${error.message}`)
+         |                      ^
+      48 |     
+      49 |     testUserId = authData?.user?.id || ''
+      50 |     authToken = authData?.session?.access_token || ''
+
+      at Object.<anonymous> (tests/integration/cross-session-validation.test.ts:47:22)
+
+  ● Cross-Session Validation Tests › Authentication State Validation › should validate authentication consistently across API calls
+
+    Test user creation failed: request to https://test.supabase.co/auth/v1/signup failed, reason: getaddrinfo ENOTFOUND test.supabase.co
+
+      45 |     })
+      46 |     
+    > 47 |     if (error) throw new Error(`Test user creation failed: ${error.message}`)
+         |                      ^
+      48 |     
+      49 |     testUserId = authData?.user?.id || ''
+      50 |     authToken = authData?.session?.access_token || ''
+
+      at Object.<anonymous> (tests/integration/cross-session-validation.test.ts:47:22)
+
+  ● Cross-Session Validation Tests › Authentication State Validation › should handle session expiration consistently
+
+    Test user creation failed: request to https://test.supabase.co/auth/v1/signup failed, reason: getaddrinfo ENOTFOUND test.supabase.co
+
+      45 |     })
+      46 |     
+    > 47 |     if (error) throw new Error(`Test user creation failed: ${error.message}`)
+         |                      ^
+      48 |     
+      49 |     testUserId = authData?.user?.id || ''
+      50 |     authToken = authData?.session?.access_token || ''
+
+      at Object.<anonymous> (tests/integration/cross-session-validation.test.ts:47:22)
+
+  ● Cross-Session Validation Tests › Form Data Validation Pipeline › should process form data through complete validation pipeline
+
+    Test user creation failed: request to https://test.supabase.co/auth/v1/signup failed, reason: getaddrinfo ENOTFOUND test.supabase.co
+
+      45 |     })
+      46 |     
+    > 47 |     if (error) throw new Error(`Test user creation failed: ${error.message}`)
+         |                      ^
+      48 |     
+      49 |     testUserId = authData?.user?.id || ''
+      50 |     authToken = authData?.session?.access_token || ''
+
+      at Object.<anonymous> (tests/integration/cross-session-validation.test.ts:47:22)
+
+  ● Cross-Session Validation Tests › Form Data Validation Pipeline › should handle form submission validation across sessions
+
+    Test user creation failed: request to https://test.supabase.co/auth/v1/signup failed, reason: getaddrinfo ENOTFOUND test.supabase.co
+
+      45 |     })
+      46 |     
+    > 47 |     if (error) throw new Error(`Test user creation failed: ${error.message}`)
+         |                      ^
+      48 |     
+      49 |     testUserId = authData?.user?.id || ''
+      50 |     authToken = authData?.session?.access_token || ''
+
+      at Object.<anonymous> (tests/integration/cross-session-validation.test.ts:47:22)
+
+  ● Cross-Session Validation Tests › Security Validation Coordination › should validate CSRF tokens consistently across form operations
+
+    Test user creation failed: request to https://test.supabase.co/auth/v1/signup failed, reason: getaddrinfo ENOTFOUND test.supabase.co
+
+      45 |     })
+      46 |     
+    > 47 |     if (error) throw new Error(`Test user creation failed: ${error.message}`)
+         |                      ^
+      48 |     
+      49 |     testUserId = authData?.user?.id || ''
+      50 |     authToken = authData?.session?.access_token || ''
+
+      at Object.<anonymous> (tests/integration/cross-session-validation.test.ts:47:22)
+
+  ● Cross-Session Validation Tests › Security Validation Coordination › should apply rate limiting consistently across endpoints
+
+    Test user creation failed: request to https://test.supabase.co/auth/v1/signup failed, reason: getaddrinfo ENOTFOUND test.supabase.co
+
+      45 |     })
+      46 |     
+    > 47 |     if (error) throw new Error(`Test user creation failed: ${error.message}`)
+         |                      ^
+      48 |     
+      49 |     testUserId = authData?.user?.id || ''
+      50 |     authToken = authData?.session?.access_token || ''
+
+      at Object.<anonymous> (tests/integration/cross-session-validation.test.ts:47:22)
+
+  ● Cross-Session Validation Tests › Error Handling Validation › should provide consistent error messages across sessions
+
+    Test user creation failed: request to https://test.supabase.co/auth/v1/signup failed, reason: getaddrinfo ENOTFOUND test.supabase.co
+
+      45 |     })
+      46 |     
+    > 47 |     if (error) throw new Error(`Test user creation failed: ${error.message}`)
+         |                      ^
+      48 |     
+      49 |     testUserId = authData?.user?.id || ''
+      50 |     authToken = authData?.session?.access_token || ''
+
+      at Object.<anonymous> (tests/integration/cross-session-validation.test.ts:47:22)
+
+  ● Cross-Session Validation Tests › Error Handling Validation › should handle validation errors gracefully with recovery options
+
+    Test user creation failed: request to https://test.supabase.co/auth/v1/signup failed, reason: getaddrinfo ENOTFOUND test.supabase.co
+
+      45 |     })
+      46 |     
+    > 47 |     if (error) throw new Error(`Test user creation failed: ${error.message}`)
+         |                      ^
+      48 |     
+      49 |     testUserId = authData?.user?.id || ''
+      50 |     authToken = authData?.session?.access_token || ''
+
+      at Object.<anonymous> (tests/integration/cross-session-validation.test.ts:47:22)
+
+FAIL tests/integration/form-data-flow.test.ts
+  ● Console
+
+    console.error
+      FetchError {
+        message: 'request to https://test.supabase.co/auth/v1/signup failed, reason: getaddrinfo ENOTFOUND test.supabase.co',
+        type: 'system',
+        errno: 'ENOTFOUND',
+        code: 'ENOTFOUND'
+      }
+
+      24 |     
+      25 |     // Create test user
+    > 26 |     const { data: authData, error } = await supabase.auth.signUp({
+         |                                       ^
+      27 |       email: 'form-flow-test@example.com',
+      28 |       password: 'SecurePassword123!'
+      29 |     })
+
+      at _handleRequest (node_modules/@supabase/auth-js/src/lib/fetch.ts:188:13)
+      at _request (node_modules/@supabase/auth-js/src/lib/fetch.ts:157:16)
+      at SupabaseAuthClient.signUp (node_modules/@supabase/auth-js/src/GoTrueClient.ts:502:15)
+      at Object.<anonymous> (tests/integration/form-data-flow.test.ts:26:39)
+
+  ● Form Submission → Storage → Retrieval Workflow › Basic Form Data Lifecycle › should complete full form data lifecycle: create → submit → store → retrieve
+
+    Test user creation failed: request to https://test.supabase.co/auth/v1/signup failed, reason: getaddrinfo ENOTFOUND test.supabase.co
+
+      29 |     })
+      30 |     
+    > 31 |     if (error) throw new Error(`Test user creation failed: ${error.message}`)
+         |                      ^
+      32 |     testUserId = authData?.user?.id || ''
+      33 |   })
+      34 |   
+
+      at Object.<anonymous> (tests/integration/form-data-flow.test.ts:31:22)
+
+  ● Form Submission → Storage → Retrieval Workflow › Basic Form Data Lifecycle › should handle malicious data sanitization in the complete flow
+
+    Test user creation failed: request to https://test.supabase.co/auth/v1/signup failed, reason: getaddrinfo ENOTFOUND test.supabase.co
+
+      29 |     })
+      30 |     
+    > 31 |     if (error) throw new Error(`Test user creation failed: ${error.message}`)
+         |                      ^
+      32 |     testUserId = authData?.user?.id || ''
+      33 |   })
+      34 |   
+
+      at Object.<anonymous> (tests/integration/form-data-flow.test.ts:31:22)
+
+  ● Form Submission → Storage → Retrieval Workflow › Complex Data Types and Validation › should handle file upload metadata through the complete flow
+
+    Test user creation failed: request to https://test.supabase.co/auth/v1/signup failed, reason: getaddrinfo ENOTFOUND test.supabase.co
+
+      29 |     })
+      30 |     
+    > 31 |     if (error) throw new Error(`Test user creation failed: ${error.message}`)
+         |                      ^
+      32 |     testUserId = authData?.user?.id || ''
+      33 |   })
+      34 |   
+
+      at Object.<anonymous> (tests/integration/form-data-flow.test.ts:31:22)
+
+  ● Form Submission → Storage → Retrieval Workflow › Complex Data Types and Validation › should handle conditional field logic in data flow
+
+    Test user creation failed: request to https://test.supabase.co/auth/v1/signup failed, reason: getaddrinfo ENOTFOUND test.supabase.co
+
+      29 |     })
+      30 |     
+    > 31 |     if (error) throw new Error(`Test user creation failed: ${error.message}`)
+         |                      ^
+      32 |     testUserId = authData?.user?.id || ''
+      33 |   })
+      34 |   
+
+      at Object.<anonymous> (tests/integration/form-data-flow.test.ts:31:22)
+
+  ● Form Submission → Storage → Retrieval Workflow › Data Retrieval and Aggregation › should aggregate form submission data correctly
+
+    Test user creation failed: request to https://test.supabase.co/auth/v1/signup failed, reason: getaddrinfo ENOTFOUND test.supabase.co
+
+      29 |     })
+      30 |     
+    > 31 |     if (error) throw new Error(`Test user creation failed: ${error.message}`)
+         |                      ^
+      32 |     testUserId = authData?.user?.id || ''
+      33 |   })
+      34 |   
+
+      at Object.<anonymous> (tests/integration/form-data-flow.test.ts:31:22)
+
+  ● Form Submission → Storage → Retrieval Workflow › Data Retrieval and Aggregation › should handle complex data filtering and searching
+
+    Test user creation failed: request to https://test.supabase.co/auth/v1/signup failed, reason: getaddrinfo ENOTFOUND test.supabase.co
+
+      29 |     })
+      30 |     
+    > 31 |     if (error) throw new Error(`Test user creation failed: ${error.message}`)
+         |                      ^
+      32 |     testUserId = authData?.user?.id || ''
+      33 |   })
+      34 |   
+
+      at Object.<anonymous> (tests/integration/form-data-flow.test.ts:31:22)
+
+  ● Form Submission → Storage → Retrieval Workflow › Data Integrity and Error Handling › should maintain referential integrity between forms and submissions
+
+    Test user creation failed: request to https://test.supabase.co/auth/v1/signup failed, reason: getaddrinfo ENOTFOUND test.supabase.co
+
+      29 |     })
+      30 |     
+    > 31 |     if (error) throw new Error(`Test user creation failed: ${error.message}`)
+         |                      ^
+      32 |     testUserId = authData?.user?.id || ''
+      33 |   })
+      34 |   
+
+      at Object.<anonymous> (tests/integration/form-data-flow.test.ts:31:22)
+
+  ● Form Submission → Storage → Retrieval Workflow › Data Integrity and Error Handling › should handle concurrent submissions gracefully
+
+    Test user creation failed: request to https://test.supabase.co/auth/v1/signup failed, reason: getaddrinfo ENOTFOUND test.supabase.co
+
+      29 |     })
+      30 |     
+    > 31 |     if (error) throw new Error(`Test user creation failed: ${error.message}`)
+         |                      ^
+      32 |     testUserId = authData?.user?.id || ''
+      33 |   })
+      34 |   
+
+      at Object.<anonymous> (tests/integration/form-data-flow.test.ts:31:22)
+

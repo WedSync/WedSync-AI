@@ -1,0 +1,178 @@
+/**
+ * Facebook Graph API Webhook Handler
+ * WS-047: Review Collection System - Facebook Webhooks
+ * 
+ * Handles Facebook Graph API webhook notifications for page reviews and ratings
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { webhookManager } from '@/lib/webhooks/webhook-manager';
+import { webhookRateLimiter } from '@/lib/security/webhook-validation';
+import crypto from 'crypto';
+
+export async function GET(request: NextRequest) {
+  try {
+    const url = new URL(request.url);
+    const mode = url.searchParams.get('hub.mode');
+    const token = url.searchParams.get('hub.verify_token');
+    const challenge = url.searchParams.get('hub.challenge');
+
+    // Facebook webhook verification
+    if (mode === 'subscribe' && token === process.env.FACEBOOK_WEBHOOK_VERIFY_TOKEN) {
+      console.log('Facebook webhook subscription verified');
+      return new NextResponse(challenge, { status: 200 });
+    }
+
+    return new NextResponse('Forbidden', { status: 403 });
+  } catch (error) {
+    console.error('Facebook webhook verification error:', error);
+    return new NextResponse('Internal Server Error', { status: 500 });
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const clientIP = request.headers.get('x-forwarded-for') || 
+                    request.headers.get('x-real-ip') || 
+                    'unknown';
+    
+    // Rate limiting
+    const rateLimitResult = webhookRateLimiter.isAllowed(clientIP);
+    if (!rateLimitResult.allowed) {
+      return new NextResponse('Rate limit exceeded', { 
+        status: 429,
+        headers: {
+          'Retry-After': Math.ceil((rateLimitResult.resetTime - Date.now()) / 1000).toString()
+        }
+      });
+    }
+
+    // Get request body and signature
+    const body = await request.text();
+    const signature = request.headers.get('x-hub-signature-256');
+
+    if (!signature) {
+      console.warn('Facebook webhook received without signature');
+      return new NextResponse('Missing signature', { status: 400 });
+    }
+
+    // Verify Facebook webhook signature
+    const expectedSignature = crypto
+      .createHmac('sha256', process.env.FACEBOOK_WEBHOOK_SECRET!)
+      .update(body)
+      .digest('hex');
+
+    const providedSignature = signature.replace('sha256=', '');
+
+    if (!crypto.timingSafeEqual(
+      Buffer.from(expectedSignature, 'hex'),
+      Buffer.from(providedSignature, 'hex')
+    )) {
+      console.warn('Facebook webhook signature verification failed');
+      return new NextResponse('Invalid signature', { status: 401 });
+    }
+
+    // Parse webhook payload
+    let webhookData;
+    try {
+      webhookData = JSON.parse(body);
+    } catch (error) {
+      console.error('Failed to parse Facebook webhook payload:', error);
+      return new NextResponse('Invalid JSON payload', { status: 400 });
+    }
+
+    // Process Facebook webhook entries
+    if (webhookData.entry && Array.isArray(webhookData.entry)) {
+      for (const entry of webhookData.entry) {
+        await processFacebookEntry(entry);
+      }
+    }
+
+    return new NextResponse('OK', { status: 200 });
+
+  } catch (error) {
+    console.error('Facebook webhook processing error:', error);
+    
+    if (error instanceof Error && error.message.includes('Rate limit')) {
+      return new NextResponse('Rate limit exceeded', { status: 429 });
+    }
+    
+    return new NextResponse('Webhook processing failed', { status: 500 });
+  }
+}
+
+/**
+ * Process individual Facebook webhook entry
+ */
+async function processFacebookEntry(entry: any): Promise<void> {
+  const pageId = entry.id;
+  const timestamp = entry.time;
+
+  // Process changes in the entry
+  if (entry.changes && Array.isArray(entry.changes)) {
+    for (const change of entry.changes) {
+      await processFacebookChange(pageId, change, timestamp);
+    }
+  }
+}
+
+/**
+ * Process individual Facebook webhook change
+ */
+async function processFacebookChange(
+  pageId: string, 
+  change: any, 
+  timestamp: number
+): Promise<void> {
+  const field = change.field;
+  const value = change.value;
+
+  // Create webhook event based on change type
+  const webhookEvent = {
+    id: crypto.randomUUID(),
+    source: 'facebook',
+    event: field, // 'ratings', 'feed', etc.
+    timestamp: new Date(timestamp * 1000).toISOString(),
+    data: {
+      page_id: pageId,
+      field,
+      value,
+      raw_change: change,
+    },
+    supplierId: await findSupplierIdByPageId(pageId),
+    resourceId: pageId,
+  };
+
+  // Process the webhook event
+  await webhookManager.processWebhook('facebook', webhookEvent);
+
+  console.log(`Facebook webhook processed: ${field} for page ${pageId}`);
+}
+
+/**
+ * Find supplier ID associated with a Facebook page
+ */
+async function findSupplierIdByPageId(pageId: string): Promise<string | undefined> {
+  // This would query the database to find which supplier owns this Facebook page
+  // For now, return undefined - this would be implemented with actual database query
+  
+  try {
+    const { createClient } = await import('@supabase/supabase-js');
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!
+    );
+
+    const { data } = await supabase
+      .from('platform_connections')
+      .select('supplier_id')
+      .eq('platform', 'facebook')
+      .eq('platform_resource_id', pageId)
+      .single();
+
+    return data?.supplier_id;
+  } catch (error) {
+    console.error('Failed to find supplier for Facebook page:', error);
+    return undefined;
+  }
+}

@@ -1,0 +1,575 @@
+/**
+ * Save Smart Mapping Template API Endpoint
+ * POST /api/document-processing/mapping/save-template
+ * Saves a successful mapping session as a reusable template
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { SmartMappingService } from '@/lib/services/smart-mapping-service';
+import { auth } from '@/lib/auth';
+import { createClient } from '@supabase/supabase-js';
+import { z } from 'zod';
+
+// Request validation schema
+const SaveTemplateSchema = z
+  .object({
+    sessionId: z.string().min(1).optional(),
+    documentId: z.string().min(1).optional(),
+    templateName: z.string().min(1).max(100),
+    description: z.string().max(500).optional(),
+    mappings: z.array(
+      z.object({
+        sourceFieldId: z.string(),
+        targetFieldId: z.string(),
+        confidence: z.number().min(0).max(1),
+        mappingType: z.enum([
+          'exact',
+          'semantic',
+          'pattern',
+          'contextual',
+          'learned',
+        ]),
+        reasoning: z.string(),
+      }),
+    ),
+    sourceSchema: z.string().optional(),
+    targetSchema: z.string().optional(),
+    isPublic: z.boolean().optional(),
+    tags: z.array(z.string().max(50)).optional(),
+    category: z.string().max(50).optional(),
+    preservePrivacy: z.boolean().optional(),
+  })
+  .refine((data) => data.sessionId || data.documentId, {
+    message: 'Either sessionId or documentId must be provided',
+    path: ['sessionId'],
+  });
+
+export async function POST(request: NextRequest) {
+  const startTime = Date.now();
+
+  try {
+    // Authenticate user
+    const session = await auth();
+    if (!session?.user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Parse and validate request
+    const body = await request.json();
+    const validatedData = SaveTemplateSchema.parse(body);
+
+    // Initialize services
+    const smartMappingService = new SmartMappingService();
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    );
+
+    // Get mapping session data if sessionId provided
+    let sessionData = null;
+    if (validatedData.sessionId) {
+      const { data } = await supabase
+        .from('smart_mapping_sessions')
+        .select('*')
+        .eq('id', validatedData.sessionId)
+        .eq('user_id', session.user.id)
+        .single();
+
+      sessionData = data;
+
+      if (!sessionData) {
+        return NextResponse.json(
+          {
+            error: 'Mapping session not found or access denied',
+            code: 'SESSION_NOT_FOUND',
+          },
+          { status: 404 },
+        );
+      }
+    }
+
+    // Check for duplicate template names
+    const { data: existingTemplate } = await supabase
+      .from('mapping_templates')
+      .select('id')
+      .eq('name', validatedData.templateName)
+      .eq('created_by', session.user.id)
+      .single();
+
+    if (existingTemplate) {
+      return NextResponse.json(
+        {
+          error: 'A template with this name already exists',
+          code: 'DUPLICATE_TEMPLATE_NAME',
+          suggestion: `Try adding a version number or date to make it unique`,
+        },
+        { status: 409 },
+      );
+    }
+
+    // Determine source and target schemas
+    let sourceSchema = validatedData.sourceSchema;
+    let targetSchema = validatedData.targetSchema || 'wedding_default';
+
+    if (sessionData && !sourceSchema) {
+      // Try to infer source schema from document type
+      const { data: documentData } = await supabase
+        .from('business_documents')
+        .select('category_id, mime_type')
+        .eq('id', sessionData.document_id)
+        .single();
+
+      sourceSchema = documentData?.category_id || 'general_document';
+    }
+
+    // Calculate template accuracy and statistics
+    const accuracy = calculateTemplateAccuracy(validatedData.mappings);
+    const templateStats = analyzeTemplateQuality(
+      validatedData.mappings,
+      sessionData,
+    );
+
+    // Apply privacy preservations if requested
+    let processedMappings = validatedData.mappings;
+    if (validatedData.preservePrivacy) {
+      processedMappings = anonymizeMappings(validatedData.mappings);
+    }
+
+    // Create template data
+    const templateData = {
+      name: validatedData.templateName,
+      description: validatedData.description,
+      sourceSchema: sourceSchema || 'document_extraction',
+      targetSchema: targetSchema,
+      mappings: processedMappings,
+      accuracy,
+      isPublic: validatedData.isPublic || false,
+      createdBy: session.user.id,
+    };
+
+    // Save template using service
+    const createdTemplate =
+      await smartMappingService.saveMappingTemplate(templateData);
+
+    // Save additional metadata
+    await saveTemplateMetadata(
+      createdTemplate.id,
+      validatedData,
+      templateStats,
+      sessionData,
+      supabase,
+    );
+
+    // Save tags if provided
+    if (validatedData.tags && validatedData.tags.length > 0) {
+      await saveTemplateTags(createdTemplate.id, validatedData.tags, supabase);
+    }
+
+    // Initialize usage statistics
+    await initializeTemplateStats(
+      createdTemplate.id,
+      accuracy,
+      templateStats,
+      supabase,
+    );
+
+    // Update user's template creation count
+    await updateUserTemplateCount(session.user.id, supabase);
+
+    // If this is a high-quality template, suggest making it public
+    const publicSuggestion = shouldSuggestPublic(templateStats, accuracy);
+
+    // Log template creation
+    console.log(`Mapping template saved by user ${session.user.id}:`, {
+      templateId: createdTemplate.id,
+      name: validatedData.templateName,
+      accuracy,
+      isPublic: validatedData.isPublic,
+      mappingCount: processedMappings.length,
+      qualityScore: templateStats.qualityScore,
+    });
+
+    // Prepare response
+    const response = {
+      success: true,
+      data: {
+        template: {
+          ...createdTemplate,
+          tags: validatedData.tags || [],
+          category: validatedData.category,
+          statistics: {
+            accuracy,
+            mappingCount: processedMappings.length,
+            qualityScore: templateStats.qualityScore,
+            estimatedReusability: templateStats.reusabilityScore,
+          },
+          userInteraction: {
+            isOwner: true,
+            hasUsed: false,
+          },
+        },
+        insights: {
+          qualityAssessment: templateStats.qualityAssessment,
+          reusabilityPrediction: templateStats.reusabilityPrediction,
+          improvementSuggestions: templateStats.improvementSuggestions,
+        },
+        recommendations: {
+          publicSuggestion,
+          relatedTemplates: await findRelatedTemplates(
+            createdTemplate,
+            supabase,
+          ),
+        },
+        message: `Template "${validatedData.templateName}" saved successfully`,
+      },
+    };
+
+    return NextResponse.json(response, { status: 201 });
+  } catch (error) {
+    console.error('Save mapping template error:', error);
+
+    // Handle validation errors
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Invalid template data',
+          details: error.errors,
+          code: 'VALIDATION_ERROR',
+        },
+        { status: 400 },
+      );
+    }
+
+    // Handle service errors
+    if (error instanceof Error) {
+      return NextResponse.json(
+        {
+          error: 'Failed to save template',
+          message: error.message,
+          code: 'SAVE_ERROR',
+        },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json(
+      {
+        error: 'Internal server error',
+        code: 'INTERNAL_ERROR',
+      },
+      { status: 500 },
+    );
+  } finally {
+    const processingTime = Date.now() - startTime;
+    console.log(`Save template API call completed in ${processingTime}ms`);
+  }
+}
+
+/**
+ * Calculate template accuracy based on mapping confidences
+ */
+function calculateTemplateAccuracy(mappings: any[]): number {
+  if (mappings.length === 0) return 0;
+
+  // Weight different mapping types differently
+  const typeWeights = {
+    exact: 1.0,
+    semantic: 0.9,
+    pattern: 0.8,
+    contextual: 0.7,
+    learned: 0.85,
+  };
+
+  let weightedSum = 0;
+  let totalWeight = 0;
+
+  for (const mapping of mappings) {
+    const weight =
+      typeWeights[mapping.mappingType as keyof typeof typeWeights] || 0.8;
+    weightedSum += mapping.confidence * weight;
+    totalWeight += weight;
+  }
+
+  return totalWeight > 0 ? weightedSum / totalWeight : 0;
+}
+
+/**
+ * Analyze template quality and reusability
+ */
+function analyzeTemplateQuality(mappings: any[], sessionData: any) {
+  const stats = {
+    qualityScore: 0,
+    reusabilityScore: 0,
+    qualityAssessment: '',
+    reusabilityPrediction: '',
+    improvementSuggestions: [] as string[],
+  };
+
+  // Analyze mapping distribution
+  const mappingTypes = mappings.reduce((acc: any, m) => {
+    acc[m.mappingType] = (acc[m.mappingType] || 0) + 1;
+    return acc;
+  }, {});
+
+  const exactCount = mappingTypes.exact || 0;
+  const semanticCount = mappingTypes.semantic || 0;
+  const totalMappings = mappings.length;
+
+  // Quality score calculation
+  let qualityScore = 0;
+
+  // High confidence mappings boost quality
+  const highConfidenceMappings = mappings.filter(
+    (m) => m.confidence >= 0.8,
+  ).length;
+  qualityScore += (highConfidenceMappings / totalMappings) * 40;
+
+  // Exact matches are high quality
+  qualityScore += (exactCount / totalMappings) * 30;
+
+  // Semantic matches show good understanding
+  qualityScore += (semanticCount / totalMappings) * 20;
+
+  // Diversity in mapping types shows robustness
+  const typeCount = Object.keys(mappingTypes).length;
+  qualityScore += Math.min(typeCount * 2.5, 10);
+
+  stats.qualityScore = Math.min(qualityScore, 100);
+
+  // Quality assessment
+  if (stats.qualityScore >= 85) {
+    stats.qualityAssessment =
+      'Excellent - High confidence mappings with good coverage';
+  } else if (stats.qualityScore >= 70) {
+    stats.qualityAssessment =
+      'Good - Reliable mappings with room for improvement';
+  } else if (stats.qualityScore >= 50) {
+    stats.qualityAssessment =
+      'Fair - Some reliable mappings but needs refinement';
+  } else {
+    stats.qualityAssessment = 'Poor - Low confidence mappings, requires review';
+  }
+
+  // Reusability score
+  let reusabilityScore = 0;
+
+  // Templates with many exact matches are more reusable
+  reusabilityScore += (exactCount / totalMappings) * 35;
+
+  // Balanced confidence distribution indicates stability
+  const avgConfidence =
+    mappings.reduce((sum, m) => sum + m.confidence, 0) / totalMappings;
+  reusabilityScore += avgConfidence * 25;
+
+  // Semantic mappings indicate flexibility
+  reusabilityScore += (semanticCount / totalMappings) * 20;
+
+  // Reasonable template size (not too specific, not too vague)
+  if (totalMappings >= 5 && totalMappings <= 20) {
+    reusabilityScore += 20;
+  } else if (totalMappings >= 3) {
+    reusabilityScore += 10;
+  }
+
+  stats.reusabilityScore = Math.min(reusabilityScore, 100);
+
+  // Reusability prediction
+  if (stats.reusabilityScore >= 80) {
+    stats.reusabilityPrediction =
+      'Highly reusable - Suitable for similar documents';
+  } else if (stats.reusabilityScore >= 60) {
+    stats.reusabilityPrediction =
+      'Moderately reusable - Good for similar use cases';
+  } else if (stats.reusabilityScore >= 40) {
+    stats.reusabilityPrediction =
+      'Limited reusability - May need customization';
+  } else {
+    stats.reusabilityPrediction = 'Low reusability - Very document-specific';
+  }
+
+  // Improvement suggestions
+  if (exactCount / totalMappings < 0.3) {
+    stats.improvementSuggestions.push(
+      'Consider adding more exact field name matches for better reliability',
+    );
+  }
+
+  if (avgConfidence < 0.7) {
+    stats.improvementSuggestions.push(
+      'Review low confidence mappings to improve overall template quality',
+    );
+  }
+
+  if (totalMappings < 5) {
+    stats.improvementSuggestions.push(
+      'Add more field mappings to increase template utility',
+    );
+  }
+
+  if (Object.keys(mappingTypes).length === 1) {
+    stats.improvementSuggestions.push(
+      'Consider using multiple mapping strategies for better robustness',
+    );
+  }
+
+  return stats;
+}
+
+/**
+ * Anonymize mappings for privacy
+ */
+function anonymizeMappings(mappings: any[]): any[] {
+  return mappings.map((mapping) => ({
+    ...mapping,
+    // Remove specific reasoning that might contain sensitive info
+    reasoning: mapping.reasoning.replace(/("[^"]*")/g, '"[anonymized]"'),
+    // Keep mapping structure but anonymize specific references
+    sourceFieldId: mapping.sourceFieldId.replace(/\d+/g, 'X'),
+  }));
+}
+
+/**
+ * Save additional template metadata
+ */
+async function saveTemplateMetadata(
+  templateId: string,
+  templateData: any,
+  stats: any,
+  sessionData: any,
+  supabase: any,
+): Promise<void> {
+  try {
+    await supabase.from('template_metadata').insert({
+      template_id: templateId,
+      category: templateData.category,
+      quality_score: stats.qualityScore,
+      reusability_score: stats.reusabilityScore,
+      source_session_id: sessionData?.id,
+      source_document_id: templateData.documentId,
+      privacy_preserved: templateData.preservePrivacy || false,
+      created_at: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error('Error saving template metadata:', error);
+  }
+}
+
+/**
+ * Save template tags
+ */
+async function saveTemplateTags(
+  templateId: string,
+  tags: string[],
+  supabase: any,
+): Promise<void> {
+  try {
+    const tagInserts = tags.map((tag) => ({
+      template_id: templateId,
+      tag: tag.toLowerCase().trim(),
+      created_at: new Date().toISOString(),
+    }));
+
+    await supabase.from('template_tags').insert(tagInserts);
+  } catch (error) {
+    console.error('Error saving template tags:', error);
+  }
+}
+
+/**
+ * Initialize template usage statistics
+ */
+async function initializeTemplateStats(
+  templateId: string,
+  accuracy: number,
+  qualityStats: any,
+  supabase: any,
+): Promise<void> {
+  try {
+    await supabase.from('template_usage_stats').insert({
+      template_id: templateId,
+      success_rate: accuracy,
+      total_applications: 0,
+      quality_score: qualityStats.qualityScore,
+      reusability_score: qualityStats.reusabilityScore,
+      created_at: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error('Error initializing template stats:', error);
+  }
+}
+
+/**
+ * Update user's template creation count
+ */
+async function updateUserTemplateCount(
+  userId: string,
+  supabase: any,
+): Promise<void> {
+  try {
+    await supabase.rpc('increment_user_template_count', { user_id: userId });
+  } catch (error) {
+    console.error('Error updating user template count:', error);
+  }
+}
+
+/**
+ * Determine if template should be suggested to be public
+ */
+function shouldSuggestPublic(
+  stats: any,
+  accuracy: number,
+): {
+  suggest: boolean;
+  reason: string;
+} {
+  if (
+    stats.qualityScore >= 85 &&
+    accuracy >= 0.8 &&
+    stats.reusabilityScore >= 75
+  ) {
+    return {
+      suggest: true,
+      reason:
+        'This high-quality template could benefit other users with similar documents',
+    };
+  }
+
+  return {
+    suggest: false,
+    reason: 'Consider improving template quality before sharing publicly',
+  };
+}
+
+/**
+ * Find related templates
+ */
+async function findRelatedTemplates(
+  template: any,
+  supabase: any,
+): Promise<any[]> {
+  try {
+    const { data: relatedTemplates } = await supabase
+      .from('mapping_templates')
+      .select('id, name, accuracy, usage_count')
+      .eq('target_schema', template.targetSchema)
+      .eq('is_public', true)
+      .neq('id', template.id)
+      .order('usage_count', { ascending: false })
+      .limit(3);
+
+    return relatedTemplates || [];
+  } catch (error) {
+    console.error('Error finding related templates:', error);
+    return [];
+  }
+}
+
+export async function GET(request: NextRequest) {
+  return NextResponse.json(
+    {
+      error: 'Method not allowed',
+      message: 'Use POST to save mapping templates',
+    },
+    { status: 405 },
+  );
+}

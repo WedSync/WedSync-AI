@@ -1,0 +1,594 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@/lib/supabase/server'
+import { z } from 'zod'
+import rateLimit from '@/lib/rate-limit'
+import { sanitizeString, sanitizeHTML, isValidUUID } from '@/lib/security/input-validation'
+import { PersonalizationEngine } from '@/lib/communications/personalization-engine'
+import { EmailService } from '@/lib/email/service'
+import { smsService } from '@/lib/sms/twilio'
+
+// Rate limiting for test operations
+const testRateLimit = rateLimit({
+  interval: 60 * 1000, // 1 minute
+  uniqueTokenPerInterval: 50 // Lower limit for test operations
+})
+
+// Test validation schema
+const testMessageSchema = z.object({
+  test_type: z.enum(['preview', 'validate', 'send_test']),
+  template_id: z.string().uuid().optional(),
+  recipients: z.array(z.object({
+    id: z.string().uuid().optional(),
+    type: z.enum(['client', 'vendor', 'guest']).default('guest'),
+    email: z.string().email().optional(),
+    phone: z.string().optional(),
+    name: z.string(),
+    data: z.record(z.any()).optional()
+  })).min(1).max(10), // Limit test recipients
+  channels: z.array(z.enum(['email', 'sms'])).min(1),
+  subject: z.string().min(1).max(200).optional(),
+  message: z.string().min(1).max(5000).optional(),
+  template_type: z.enum(['wedding_update', 'venue_change', 'menu_info', 'rsvp_reminder', 'thank_you', 'custom']).default('custom'),
+  personalization: z.boolean().default(true),
+  fallback_variables: z.record(z.string()).optional()
+})
+
+interface TestResult {
+  test_type: 'preview' | 'validate' | 'send_test'
+  success: boolean
+  results: Array<{
+    recipient_id?: string
+    recipient_name: string
+    channels: ('email' | 'sms')[]
+    email?: {
+      subject?: string
+      content: string
+      html_content?: string
+      tokens_found: string[]
+      tokens_replaced: string[]
+      missing_tokens: string[]
+      validation_errors?: string[]
+      test_sent?: boolean
+      test_error?: string
+    }
+    sms?: {
+      content: string
+      segments: number
+      estimated_cost: number
+      tokens_found: string[]
+      tokens_replaced: string[]
+      missing_tokens: string[]
+      validation_errors?: string[]
+      test_sent?: boolean
+      test_error?: string
+    }
+    personalization?: {
+      variables_used: string[]
+      variables_missing: string[]
+      fallbacks_applied: string[]
+    }
+  }>
+  summary: {
+    total_recipients: number
+    channels_tested: string[]
+    total_tokens_found: number
+    total_missing_tokens: number
+    validation_passed: boolean
+    estimated_total_cost?: number
+  }
+  warnings?: string[]
+  errors?: string[]
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    // Rate limiting
+    const identifier = request.ip || 'anonymous'
+    const { success } = await testRateLimit.check(20, identifier)
+    
+    if (!success) {
+      return NextResponse.json(
+        { error: 'Too many test requests' },
+        { status: 429 }
+      )
+    }
+
+    const supabase = await createClient()
+    
+    // Get and verify user
+    const { data: user } = await supabase.auth.getUser()
+    if (!user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      )
+    }
+
+    // Get user profile and organization
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('organization_id, display_name, role')
+      .eq('user_id', user.id)
+      .single()
+
+    if (!userProfile?.organization_id) {
+      return NextResponse.json(
+        { error: 'Organization not found' },
+        { status: 404 }
+      )
+    }
+
+    // Validate request body
+    const rawBody = await request.json()
+    const validatedData = testMessageSchema.parse(rawBody)
+
+    let messageContent = ''
+    let messageSubject = validatedData.subject
+    let templateVariables: string[] = []
+
+    // Get template if specified
+    if (validatedData.template_id) {
+      const { data: template } = await supabase
+        .from('communication_templates')
+        .select('*')
+        .eq('id', validatedData.template_id)
+        .or(`organization_id.eq.${userProfile.organization_id},is_system_template.eq.true`)
+        .eq('is_active', true)
+        .single()
+
+      if (!template) {
+        return NextResponse.json(
+          { error: 'Template not found or inactive' },
+          { status: 404 }
+        )
+      }
+
+      messageContent = template.content
+      messageSubject = template.subject || validatedData.subject
+      templateVariables = template.variables || []
+
+      // Check channel compatibility
+      const unsupportedChannels = validatedData.channels.filter(
+        channel => !template.channels.includes(channel)
+      )
+      
+      if (unsupportedChannels.length > 0) {
+        return NextResponse.json(
+          { error: `Template does not support channels: ${unsupportedChannels.join(', ')}` },
+          { status: 400 }
+        )
+      }
+
+    } else if (validatedData.message) {
+      messageContent = validatedData.message
+    } else {
+      return NextResponse.json(
+        { error: 'Either template_id or message content is required' },
+        { status: 400 }
+      )
+    }
+
+    // Sanitize content
+    const sanitizedMessage = sanitizeHTML(messageContent)
+    const sanitizedSubject = messageSubject ? sanitizeString(messageSubject, 200) : undefined
+
+    // Initialize personalization engine
+    const personalizationEngine = new PersonalizationEngine()
+    
+    // Get organization for SMS cost calculations
+    const { data: organization } = await supabase
+      .from('organizations')
+      .select('pricing_tier')
+      .eq('id', userProfile.organization_id)
+      .single()
+
+    const testResult: TestResult = {
+      test_type: validatedData.test_type,
+      success: true,
+      results: [],
+      summary: {
+        total_recipients: validatedData.recipients.length,
+        channels_tested: validatedData.channels,
+        total_tokens_found: 0,
+        total_missing_tokens: 0,
+        validation_passed: true,
+        estimated_total_cost: 0
+      },
+      warnings: [],
+      errors: []
+    }
+
+    // Process each recipient
+    for (const recipient of validatedData.recipients) {
+      const recipientResult: TestResult['results'][0] = {
+        recipient_id: recipient.id,
+        recipient_name: recipient.name,
+        channels: []
+      }
+
+      // Create personalization variables
+      let personalizationVars = {}
+      if (validatedData.personalization && recipient.data) {
+        personalizationVars = {
+          ...personalizationEngine.generateFallbackVariables(),
+          ...personalizationEngine.createGuestVariables({
+            name: recipient.name,
+            email: recipient.email,
+            phone: recipient.phone,
+            ...recipient.data
+          }),
+          ...validatedData.fallback_variables
+        }
+      } else {
+        personalizationVars = {
+          ...personalizationEngine.generateFallbackVariables(),
+          guest_name: recipient.name,
+          ...validatedData.fallback_variables
+        }
+      }
+
+      // Test Email Channel
+      if (validatedData.channels.includes('email')) {
+        recipientResult.channels.push('email')
+
+        if (!recipient.email && validatedData.test_type === 'send_test') {
+          testResult.warnings?.push(`Recipient ${recipient.name} has no email address for testing`)
+        }
+
+        // Generate email preview
+        const emailPreview = personalizationEngine.generatePreview(
+          sanitizedMessage,
+          personalizationVars,
+          { allowHtml: true, maxLength: 5000 }
+        )
+
+        const subjectPreview = sanitizedSubject ? 
+          personalizationEngine.generatePreview(sanitizedSubject, personalizationVars) : 
+          undefined
+
+        recipientResult.email = {
+          subject: subjectPreview?.personalizedContent,
+          content: emailPreview.personalizedContent,
+          html_content: emailPreview.personalizedContent.replace(/\n/g, '<br>'),
+          tokens_found: emailPreview.tokensFound,
+          tokens_replaced: emailPreview.tokensReplaced,
+          missing_tokens: emailPreview.missingTokens,
+          validation_errors: []
+        }
+
+        // Validate email content
+        if (emailPreview.personalizedContent.length === 0) {
+          recipientResult.email.validation_errors?.push('Email content is empty after personalization')
+          testResult.summary.validation_passed = false
+        }
+
+        if (emailPreview.missingTokens.length > 0) {
+          recipientResult.email.validation_errors?.push(`Missing tokens: ${emailPreview.missingTokens.join(', ')}`)
+        }
+
+        // Test send if requested
+        if (validatedData.test_type === 'send_test' && recipient.email) {
+          try {
+            // Send actual test email with [TEST] prefix
+            const testSubject = `[TEST] ${subjectPreview?.personalizedContent || 'Test Message'}`
+            const testContent = `
+              <div style="border: 3px solid #f59e0b; padding: 20px; margin-bottom: 20px; background-color: #fef3c7; color: #92400e; border-radius: 8px;">
+                <strong>🧪 THIS IS A TEST MESSAGE</strong><br>
+                <small>Test sent to: ${recipient.email}<br>
+                Test sent by: ${userProfile.display_name}<br>
+                Test sent at: ${new Date().toLocaleString()}</small>
+              </div>
+              ${emailPreview.personalizedContent}
+            `
+
+            await EmailService.sendEmail({
+              to: recipient.email,
+              subject: testSubject,
+              template: { type: 'div', props: { dangerouslySetInnerHTML: { __html: testContent } } } as any,
+              organizationId: userProfile.organization_id,
+              recipientType: recipient.type,
+              templateType: 'test_message',
+              priority: 'normal'
+            })
+
+            recipientResult.email.test_sent = true
+
+          } catch (error) {
+            recipientResult.email.test_sent = false
+            recipientResult.email.test_error = error instanceof Error ? error.message : 'Unknown error'
+            testResult.errors?.push(`Failed to send test email to ${recipient.name}: ${recipientResult.email.test_error}`)
+          }
+        }
+
+        testResult.summary.total_tokens_found += emailPreview.tokensFound.length
+        testResult.summary.total_missing_tokens += emailPreview.missingTokens.length
+      }
+
+      // Test SMS Channel
+      if (validatedData.channels.includes('sms')) {
+        recipientResult.channels.push('sms')
+
+        if (!recipient.phone && validatedData.test_type === 'send_test') {
+          testResult.warnings?.push(`Recipient ${recipient.name} has no phone number for testing`)
+        }
+
+        // Generate SMS preview (SMS content is plain text)
+        const smsPreview = personalizationEngine.generatePreview(
+          sanitizedMessage.replace(/<[^>]*>/g, '').replace(/\n/g, ' '), // Strip HTML and normalize whitespace
+          personalizationVars,
+          { allowHtml: false, maxLength: 320 } // SMS limit with some buffer
+        )
+
+        // Calculate segments and cost
+        const segments = Math.ceil(smsPreview.personalizedContent.length / 160)
+        const estimatedCost = segments * (recipient.phone?.startsWith('+1') ? 0.0075 : 0.05) // Simplified pricing
+
+        recipientResult.sms = {
+          content: smsPreview.personalizedContent,
+          segments,
+          estimated_cost: estimatedCost,
+          tokens_found: smsPreview.tokensFound,
+          tokens_replaced: smsPreview.tokensReplaced,
+          missing_tokens: smsPreview.missingTokens,
+          validation_errors: []
+        }
+
+        // Validate SMS content
+        if (smsPreview.personalizedContent.length === 0) {
+          recipientResult.sms.validation_errors?.push('SMS content is empty after personalization')
+          testResult.summary.validation_passed = false
+        }
+
+        if (smsPreview.personalizedContent.length > 320) {
+          recipientResult.sms.validation_errors?.push(`SMS content too long: ${smsPreview.personalizedContent.length} characters (max 320)`)
+        }
+
+        if (smsPreview.missingTokens.length > 0) {
+          recipientResult.sms.validation_errors?.push(`Missing tokens: ${smsPreview.missingTokens.join(', ')}`)
+        }
+
+        // Test send if requested
+        if (validatedData.test_type === 'send_test' && recipient.phone && organization) {
+          try {
+            const testContent = `[TEST] ${smsPreview.personalizedContent} - Test sent to ${recipient.phone} by ${userProfile.display_name} at ${new Date().toLocaleString()}`
+            
+            const result = await smsService.sendSMS({
+              to: recipient.phone,
+              templateType: 'custom',
+              variables: { message: testContent },
+              organizationId: userProfile.organization_id,
+              organizationTier: organization.pricing_tier as any,
+              priority: 'normal'
+            })
+
+            recipientResult.sms.test_sent = true
+
+          } catch (error) {
+            recipientResult.sms.test_sent = false
+            recipientResult.sms.test_error = error instanceof Error ? error.message : 'Unknown error'
+            testResult.errors?.push(`Failed to send test SMS to ${recipient.name}: ${recipientResult.sms.test_error}`)
+          }
+        }
+
+        testResult.summary.total_tokens_found += smsPreview.tokensFound.length
+        testResult.summary.total_missing_tokens += smsPreview.missingTokens.length
+        testResult.summary.estimated_total_cost = (testResult.summary.estimated_total_cost || 0) + estimatedCost
+      }
+
+      // Add personalization summary
+      if (validatedData.personalization) {
+        const allTokensFound = new Set([
+          ...(recipientResult.email?.tokens_found || []),
+          ...(recipientResult.sms?.tokens_found || [])
+        ])
+        
+        const allMissingTokens = new Set([
+          ...(recipientResult.email?.missing_tokens || []),
+          ...(recipientResult.sms?.missing_tokens || [])
+        ])
+
+        const allVariablesUsed = Object.keys(personalizationVars).filter(key => 
+          allTokensFound.has(key) && !allMissingTokens.has(key)
+        )
+
+        recipientResult.personalization = {
+          variables_used: allVariablesUsed,
+          variables_missing: Array.from(allMissingTokens),
+          fallbacks_applied: Object.keys(validatedData.fallback_variables || {})
+        }
+      }
+
+      testResult.results.push(recipientResult)
+    }
+
+    // Add general warnings
+    if (testResult.summary.total_missing_tokens > 0) {
+      testResult.warnings?.push(`Found ${testResult.summary.total_missing_tokens} missing personalization tokens across all recipients`)
+    }
+
+    if (validatedData.test_type === 'send_test') {
+      testResult.warnings?.push('Test messages have been sent with [TEST] prefixes. These are real messages but clearly marked as tests.')
+    }
+
+    // Check if any critical errors occurred
+    if (testResult.errors?.length === 0 && testResult.summary.validation_passed) {
+      testResult.success = true
+    } else {
+      testResult.success = false
+    }
+
+    return NextResponse.json(testResult)
+
+  } catch (error) {
+    console.error('Error in test POST:', error)
+    
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { 
+          error: 'Invalid test data',
+          details: error.errors.map(err => ({
+            field: err.path.join('.'),
+            message: err.message
+          }))
+        },
+        { status: 400 }
+      )
+    }
+    
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}
+
+// Get test message examples and templates
+export async function GET(request: NextRequest) {
+  try {
+    // Rate limiting
+    const identifier = request.ip || 'anonymous'
+    const { success } = await testRateLimit.check(30, identifier)
+    
+    if (!success) {
+      return NextResponse.json(
+        { error: 'Too many requests' },
+        { status: 429 }
+      )
+    }
+
+    const { searchParams } = new URL(request.url)
+    const exampleType = searchParams.get('type') || 'all'
+
+    const examples = {
+      sample_recipients: [
+        {
+          id: 'test-recipient-1',
+          type: 'guest',
+          email: 'test@example.com',
+          phone: '+1234567890',
+          name: 'John Doe',
+          data: {
+            guest_name: 'John Doe',
+            first_name: 'John',
+            last_name: 'Doe',
+            dietary_restrictions: 'Vegetarian',
+            plus_one: 'Yes',
+            table_number: '5'
+          }
+        }
+      ],
+      
+      sample_variables: {
+        guest_name: 'John Doe',
+        couple_names: 'Sarah & Michael',
+        wedding_date: 'Saturday, June 15th, 2024',
+        wedding_time: '4:00 PM',
+        venue_name: 'Grand Ballroom',
+        venue_address: '123 Wedding St, City, State 12345',
+        vendor_name: 'Perfect Weddings Co',
+        rsvp_deadline: 'May 15th, 2024',
+        rsvp_link: 'https://wedsync.com/rsvp/abc123'
+      },
+
+      sample_messages: {
+        wedding_update: {
+          subject: 'Important Update: {{couple_names}} Wedding',
+          content: `Hi {{guest_name}},
+
+We have an important update about {{couple_names}} wedding on {{wedding_date}}:
+
+{{update_message}}
+
+Please visit your wedding portal for more details: {{portal_link}}
+
+Best regards,
+{{vendor_name}}`
+        },
+        
+        venue_change: {
+          subject: 'URGENT: Venue Change for {{couple_names}} Wedding',
+          content: `Hi {{guest_name}},
+
+Important venue change for {{couple_names}} wedding:
+
+New Venue: {{new_venue_name}}
+Address: {{new_venue_address}}
+Date & Time: {{wedding_date}} at {{wedding_time}}
+
+Please update your calendar and contact us with questions.
+
+{{vendor_name}}`
+        },
+
+        rsvp_reminder: {
+          subject: 'RSVP Reminder: {{couple_names}} Wedding',
+          content: `Hi {{guest_name}},
+
+Please RSVP for {{couple_names}} wedding on {{wedding_date}}.
+
+RSVP by: {{rsvp_deadline}}
+RSVP here: {{rsvp_link}}
+
+We need your response for catering and seating.
+
+Thank you!
+{{vendor_name}}`
+        }
+      },
+
+      available_tokens: [
+        'guest_name', 'first_name', 'last_name',
+        'couple_names', 'bride_name', 'groom_name',
+        'wedding_date', 'wedding_time',
+        'venue_name', 'venue_address',
+        'vendor_name', 'business_name',
+        'rsvp_deadline', 'rsvp_link', 'portal_link',
+        'dietary_restrictions', 'table_number', 'plus_one',
+        'update_message', 'contact_info'
+      ],
+
+      test_types: [
+        {
+          type: 'preview',
+          name: 'Preview Only',
+          description: 'Generate personalized message previews without sending'
+        },
+        {
+          type: 'validate',
+          name: 'Validate Content',
+          description: 'Check for missing tokens and content issues'
+        },
+        {
+          type: 'send_test',
+          name: 'Send Test Messages',
+          description: 'Actually send test messages (marked with [TEST] prefix)'
+        }
+      ]
+    }
+
+    if (exampleType === 'recipients') {
+      return NextResponse.json({ sample_recipients: examples.sample_recipients })
+    }
+
+    if (exampleType === 'variables') {
+      return NextResponse.json({ sample_variables: examples.sample_variables })
+    }
+
+    if (exampleType === 'messages') {
+      return NextResponse.json({ sample_messages: examples.sample_messages })
+    }
+
+    if (exampleType === 'tokens') {
+      return NextResponse.json({ available_tokens: examples.available_tokens })
+    }
+
+    return NextResponse.json(examples)
+
+  } catch (error) {
+    console.error('Error in test GET:', error)
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}

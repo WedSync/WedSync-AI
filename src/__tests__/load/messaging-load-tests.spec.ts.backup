@@ -1,0 +1,550 @@
+import { test, expect } from '@playwright/test'
+import { performance } from 'perf_hooks'
+
+/**
+ * Production Load Testing Suite for WS-155 Messaging System
+ * Tests system performance under realistic production loads
+ */
+
+interface LoadTestMetrics {
+  totalRequests: number
+  successfulRequests: number
+  failedRequests: number
+  averageResponseTime: number
+  p95ResponseTime: number
+  p99ResponseTime: number
+  requestsPerSecond: number
+  errorRate: number
+  throughput: number
+}
+
+interface LoadTestConfig {
+  concurrentUsers: number
+  testDurationMs: number
+  rampUpTimeMs: number
+  recipientsPerCampaign: number
+  campaignsToCreate: number
+}
+
+// Production-like load test configurations
+const LOAD_CONFIGS = {
+  light: {
+    concurrentUsers: 10,
+    testDurationMs: 60000, // 1 minute
+    rampUpTimeMs: 10000,   // 10 seconds
+    recipientsPerCampaign: 100,
+    campaignsToCreate: 5
+  },
+  moderate: {
+    concurrentUsers: 50,
+    testDurationMs: 300000, // 5 minutes
+    rampUpTimeMs: 30000,    // 30 seconds
+    recipientsPerCampaign: 500,
+    campaignsToCreate: 10
+  },
+  heavy: {
+    concurrentUsers: 100,
+    testDurationMs: 600000, // 10 minutes
+    rampUpTimeMs: 60000,    // 1 minute
+    recipientsPerCampaign: 1000,
+    campaignsToCreate: 20
+  },
+  peak: {
+    concurrentUsers: 200,
+    testDurationMs: 900000, // 15 minutes
+    rampUpTimeMs: 120000,   // 2 minutes
+    recipientsPerCampaign: 2000,
+    campaignsToCreate: 50
+  }
+}
+
+class LoadTestRunner {
+  private metrics: LoadTestMetrics = {
+    totalRequests: 0,
+    successfulRequests: 0,
+    failedRequests: 0,
+    averageResponseTime: 0,
+    p95ResponseTime: 0,
+    p99ResponseTime: 0,
+    requestsPerSecond: 0,
+    errorRate: 0,
+    throughput: 0
+  }
+
+  private responseTimes: number[] = []
+  private startTime: number = 0
+
+  constructor(private config: LoadTestConfig) {}
+
+  async runLoadTest(): Promise<LoadTestMetrics> {
+    this.startTime = performance.now()
+    const promises: Promise<void>[] = []
+
+    // Ramp up users gradually
+    const usersPerBatch = Math.max(1, Math.floor(this.config.concurrentUsers / 10))
+    const batchDelay = this.config.rampUpTimeMs / 10
+
+    for (let batch = 0; batch < 10; batch++) {
+      setTimeout(() => {
+        const batchPromises = Array.from({ length: usersPerBatch }, () =>
+          this.simulateUser()
+        )
+        promises.push(...batchPromises)
+      }, batch * batchDelay)
+    }
+
+    // Wait for test duration
+    await new Promise(resolve => setTimeout(resolve, this.config.testDurationMs))
+
+    // Wait for all requests to complete
+    await Promise.allSettled(promises)
+
+    return this.calculateMetrics()
+  }
+
+  private async simulateUser(): Promise<void> {
+    const userStartTime = performance.now()
+    const userDuration = this.config.testDurationMs - (userStartTime - this.startTime)
+
+    while (performance.now() - userStartTime < userDuration) {
+      try {
+        // Simulate realistic user behavior
+        await this.createCampaign()
+        await this.addRecipients()
+        await this.sendCampaign()
+        await this.checkStatus()
+        
+        // Random delay between actions (1-5 seconds)
+        await new Promise(resolve => 
+          setTimeout(resolve, 1000 + Math.random() * 4000)
+        )
+      } catch (error) {
+        this.metrics.failedRequests++
+      }
+    }
+  }
+
+  private async createCampaign(): Promise<void> {
+    const startTime = performance.now()
+    
+    try {
+      const response = await fetch('/api/communications/campaigns', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: `Load Test Campaign ${Date.now()}`,
+          description: 'Automated load test campaign',
+          organizationId: 'test-org-id'
+        })
+      })
+
+      const endTime = performance.now()
+      this.recordRequest(endTime - startTime, response.ok)
+
+      if (!response.ok) {
+        throw new Error(`Campaign creation failed: ${response.status}`)
+      }
+    } catch (error) {
+      const endTime = performance.now()
+      this.recordRequest(endTime - startTime, false)
+      throw error
+    }
+  }
+
+  private async addRecipients(): Promise<void> {
+    const startTime = performance.now()
+    
+    // Generate test recipients
+    const recipients = Array.from({ length: this.config.recipientsPerCampaign }, (_, i) => ({
+      email: `loadtest${i}@example.com`,
+      name: `Load Test User ${i}`,
+      phone: `+1555000${String(i).padStart(4, '0')}`
+    }))
+
+    try {
+      const response = await fetch('/api/communications/recipients/bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          campaignId: 'test-campaign-id',
+          recipients
+        })
+      })
+
+      const endTime = performance.now()
+      this.recordRequest(endTime - startTime, response.ok)
+
+      if (!response.ok) {
+        throw new Error(`Recipients addition failed: ${response.status}`)
+      }
+    } catch (error) {
+      const endTime = performance.now()
+      this.recordRequest(endTime - startTime, false)
+      throw error
+    }
+  }
+
+  private async sendCampaign(): Promise<void> {
+    const startTime = performance.now()
+
+    try {
+      const response = await fetch('/api/communications/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          campaignId: 'test-campaign-id',
+          subject: 'Load Test Message',
+          message: 'This is a load test message for {{guest_name}}',
+          channels: ['email', 'sms'],
+          scheduleType: 'immediate'
+        })
+      })
+
+      const endTime = performance.now()
+      this.recordRequest(endTime - startTime, response.ok)
+
+      if (!response.ok) {
+        throw new Error(`Campaign send failed: ${response.status}`)
+      }
+    } catch (error) {
+      const endTime = performance.now()
+      this.recordRequest(endTime - startTime, false)
+      throw error
+    }
+  }
+
+  private async checkStatus(): Promise<void> {
+    const startTime = performance.now()
+
+    try {
+      const response = await fetch('/api/communications/campaigns/test-campaign-id/status')
+
+      const endTime = performance.now()
+      this.recordRequest(endTime - startTime, response.ok)
+
+      if (!response.ok) {
+        throw new Error(`Status check failed: ${response.status}`)
+      }
+    } catch (error) {
+      const endTime = performance.now()
+      this.recordRequest(endTime - startTime, false)
+      throw error
+    }
+  }
+
+  private recordRequest(responseTime: number, success: boolean): void {
+    this.metrics.totalRequests++
+    this.responseTimes.push(responseTime)
+
+    if (success) {
+      this.metrics.successfulRequests++
+    } else {
+      this.metrics.failedRequests++
+    }
+  }
+
+  private calculateMetrics(): LoadTestMetrics {
+    const totalTime = (performance.now() - this.startTime) / 1000 // Convert to seconds
+
+    // Sort response times for percentile calculations
+    this.responseTimes.sort((a, b) => a - b)
+
+    const p95Index = Math.floor(this.responseTimes.length * 0.95)
+    const p99Index = Math.floor(this.responseTimes.length * 0.99)
+
+    this.metrics.averageResponseTime = 
+      this.responseTimes.reduce((sum, time) => sum + time, 0) / this.responseTimes.length
+
+    this.metrics.p95ResponseTime = this.responseTimes[p95Index] || 0
+    this.metrics.p99ResponseTime = this.responseTimes[p99Index] || 0
+    this.metrics.requestsPerSecond = this.metrics.totalRequests / totalTime
+    this.metrics.errorRate = (this.metrics.failedRequests / this.metrics.totalRequests) * 100
+    this.metrics.throughput = this.metrics.successfulRequests / totalTime
+
+    return this.metrics
+  }
+}
+
+test.describe('Production Load Tests', () => {
+  test('Light load - 10 concurrent users', async () => {
+    const runner = new LoadTestRunner(LOAD_CONFIGS.light)
+    const metrics = await runner.runLoadTest()
+
+    // Assertions for light load
+    expect(metrics.errorRate).toBeLessThan(1) // Less than 1% error rate
+    expect(metrics.averageResponseTime).toBeLessThan(2000) // Under 2 seconds average
+    expect(metrics.p95ResponseTime).toBeLessThan(5000) // 95% under 5 seconds
+    expect(metrics.requestsPerSecond).toBeGreaterThan(1) // At least 1 RPS
+
+    console.log('Light Load Test Results:', metrics)
+  })
+
+  test('Moderate load - 50 concurrent users', async () => {
+    const runner = new LoadTestRunner(LOAD_CONFIGS.moderate)
+    const metrics = await runner.runLoadTest()
+
+    // Assertions for moderate load
+    expect(metrics.errorRate).toBeLessThan(2) // Less than 2% error rate
+    expect(metrics.averageResponseTime).toBeLessThan(3000) // Under 3 seconds average
+    expect(metrics.p95ResponseTime).toBeLessThan(8000) // 95% under 8 seconds
+    expect(metrics.requestsPerSecond).toBeGreaterThan(5) // At least 5 RPS
+
+    console.log('Moderate Load Test Results:', metrics)
+  })
+
+  test('Heavy load - 100 concurrent users', async () => {
+    const runner = new LoadTestRunner(LOAD_CONFIGS.heavy)
+    const metrics = await runner.runLoadTest()
+
+    // Assertions for heavy load
+    expect(metrics.errorRate).toBeLessThan(5) // Less than 5% error rate
+    expect(metrics.averageResponseTime).toBeLessThan(5000) // Under 5 seconds average
+    expect(metrics.p95ResponseTime).toBeLessThan(15000) // 95% under 15 seconds
+    expect(metrics.requestsPerSecond).toBeGreaterThan(8) // At least 8 RPS
+
+    console.log('Heavy Load Test Results:', metrics)
+  })
+
+  test('Peak load - 200 concurrent users', async ({ page }, testInfo) => {
+    // Only run peak load tests in CI or when explicitly requested
+    if (!process.env.RUN_PEAK_LOAD_TESTS && !testInfo.title.includes('peak')) {
+      test.skip()
+    }
+
+    const runner = new LoadTestRunner(LOAD_CONFIGS.peak)
+    const metrics = await runner.runLoadTest()
+
+    // More lenient assertions for peak load
+    expect(metrics.errorRate).toBeLessThan(10) // Less than 10% error rate
+    expect(metrics.averageResponseTime).toBeLessThan(10000) // Under 10 seconds average
+    expect(metrics.p95ResponseTime).toBeLessThan(30000) // 95% under 30 seconds
+    expect(metrics.requestsPerSecond).toBeGreaterThan(10) // At least 10 RPS
+
+    console.log('Peak Load Test Results:', metrics)
+  })
+})
+
+test.describe('Database Load Tests', () => {
+  test('Database connection pool under load', async () => {
+    const concurrentQueries = 100
+    const queriesPerConnection = 50
+
+    const startTime = performance.now()
+    const promises = Array.from({ length: concurrentQueries }, async () => {
+      // Simulate multiple database operations per connection
+      for (let i = 0; i < queriesPerConnection; i++) {
+        await fetch('/api/communications/campaigns/test-query', {
+          method: 'GET'
+        })
+      }
+    })
+
+    await Promise.allSettled(promises)
+    const endTime = performance.now()
+    const totalTime = endTime - startTime
+
+    // Verify performance under database load
+    expect(totalTime).toBeLessThan(60000) // Should complete within 60 seconds
+    console.log(`Database load test completed in ${totalTime.toFixed(2)}ms`)
+  })
+
+  test('Large dataset query performance', async () => {
+    const startTime = performance.now()
+
+    // Query with large result set
+    const response = await fetch('/api/communications/campaigns/analytics?limit=10000')
+    
+    const endTime = performance.now()
+    const queryTime = endTime - startTime
+
+    expect(response.ok).toBeTruthy()
+    expect(queryTime).toBeLessThan(10000) // Should complete within 10 seconds
+
+    const data = await response.json()
+    expect(data.length).toBeGreaterThan(0)
+
+    console.log(`Large dataset query completed in ${queryTime.toFixed(2)}ms`)
+  })
+})
+
+test.describe('Email Service Load Tests', () => {
+  test('Bulk email sending performance', async () => {
+    const emailCounts = [100, 500, 1000, 2000]
+    const results: Array<{ count: number; time: number; rate: number }> = []
+
+    for (const count of emailCounts) {
+      const startTime = performance.now()
+
+      const response = await fetch('/api/communications/email/bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          recipientCount: count,
+          subject: 'Load Test Email',
+          template: 'test-template',
+          variables: { test: 'value' }
+        })
+      })
+
+      const endTime = performance.now()
+      const totalTime = endTime - startTime
+
+      expect(response.ok).toBeTruthy()
+
+      const emailsPerSecond = (count / totalTime) * 1000
+      results.push({
+        count,
+        time: totalTime,
+        rate: emailsPerSecond
+      })
+
+      console.log(`${count} emails: ${totalTime.toFixed(2)}ms (${emailsPerSecond.toFixed(2)} emails/sec)`)
+    }
+
+    // Verify scaling efficiency
+    const largestTest = results[results.length - 1]
+    expect(largestTest.rate).toBeGreaterThan(5) // At least 5 emails per second for largest batch
+  })
+
+  test('Email queue processing under load', async () => {
+    // Add many messages to queue
+    const queuePromises = Array.from({ length: 1000 }, (_, i) =>
+      fetch('/api/communications/queue/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'email',
+          recipient: `loadtest${i}@example.com`,
+          subject: 'Queue Load Test',
+          content: `Test message ${i}`,
+          priority: Math.random() > 0.5 ? 'high' : 'normal'
+        })
+      })
+    )
+
+    await Promise.allSettled(queuePromises)
+
+    // Trigger queue processing
+    const startTime = performance.now()
+    
+    const processResponse = await fetch('/api/communications/queue/process', {
+      method: 'POST'
+    })
+
+    expect(processResponse.ok).toBeTruthy()
+
+    // Wait for processing to complete
+    let processed = 0
+    let attempts = 0
+    const maxAttempts = 60 // 5 minutes max wait
+
+    while (processed < 1000 && attempts < maxAttempts) {
+      await new Promise(resolve => setTimeout(resolve, 5000)) // Wait 5 seconds
+      
+      const statusResponse = await fetch('/api/communications/queue/status')
+      const status = await statusResponse.json()
+      
+      processed = status.processed
+      attempts++
+    }
+
+    const endTime = performance.now()
+    const totalTime = endTime - startTime
+
+    expect(processed).toBe(1000)
+    expect(totalTime).toBeLessThan(300000) // Should process within 5 minutes
+
+    console.log(`Queue processing: ${totalTime.toFixed(2)}ms for 1000 messages`)
+  })
+})
+
+test.describe('SMS Service Load Tests', () => {
+  test('Bulk SMS sending performance', async () => {
+    const smsCount = 500 // Lower than email due to cost
+
+    const startTime = performance.now()
+
+    const response = await fetch('/api/communications/sms/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        recipientCount: smsCount,
+        message: 'Load test SMS message',
+        template: 'test-sms-template'
+      })
+    })
+
+    const endTime = performance.now()
+    const totalTime = endTime - startTime
+
+    expect(response.ok).toBeTruthy()
+
+    const smsPerSecond = (smsCount / totalTime) * 1000
+    expect(smsPerSecond).toBeGreaterThan(1) // At least 1 SMS per second
+
+    console.log(`${smsCount} SMS: ${totalTime.toFixed(2)}ms (${smsPerSecond.toFixed(2)} SMS/sec)`)
+  })
+})
+
+test.describe('Memory and Resource Tests', () => {
+  test('Memory usage during large campaigns', async ({ page }) => {
+    // Navigate to communications page
+    await page.goto('/communications/new')
+
+    // Monitor initial memory
+    const initialMemory = await page.evaluate(() => {
+      return (performance as any).memory?.usedJSHeapSize || 0
+    })
+
+    // Create large campaign with many recipients
+    await page.fill('input[name="campaignName"]', 'Memory Test Campaign')
+    await page.click('button:has-text("Next")')
+
+    // Add large recipient list
+    const largeRecipientCSV = Array.from({ length: 10000 }, (_, i) =>
+      `recipient${i}@test.com,Recipient ${i}`
+    ).join('\n')
+
+    await page.setInputFiles('input[type="file"]', {
+      name: 'large-recipients.csv',
+      mimeType: 'text/csv',
+      buffer: Buffer.from(`email,name\n${largeRecipientCSV}`)
+    })
+
+    await page.click('button:has-text("Import")')
+    await page.waitForSelector('.import-success')
+
+    // Monitor memory after large operation
+    const peakMemory = await page.evaluate(() => {
+      return (performance as any).memory?.usedJSHeapSize || 0
+    })
+
+    // Navigate away to trigger cleanup
+    await page.goto('/dashboard')
+    
+    // Wait for garbage collection
+    await page.waitForTimeout(5000)
+
+    const finalMemory = await page.evaluate(() => {
+      return (performance as any).memory?.usedJSHeapSize || 0
+    })
+
+    // Memory should not grow excessively
+    const memoryGrowth = peakMemory - initialMemory
+    const memoryRecovery = peakMemory - finalMemory
+
+    console.log('Memory Usage:', {
+      initial: initialMemory,
+      peak: peakMemory,
+      final: finalMemory,
+      growth: memoryGrowth,
+      recovery: memoryRecovery
+    })
+
+    // Memory growth should be reasonable
+    expect(memoryGrowth).toBeLessThan(100 * 1024 * 1024) // Less than 100MB growth
+    
+    // Should recover at least 50% of peak memory
+    expect(memoryRecovery).toBeGreaterThan(memoryGrowth * 0.5)
+  })
+})

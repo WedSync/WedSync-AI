@@ -1,0 +1,182 @@
+/**
+ * @fileoverview Review Campaign Analytics API Endpoint
+ * WS-047: Review Collection System Analytics Dashboard & Testing Framework
+ *
+ * Provides detailed analytics for specific review campaigns
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import { AnalyticsCache } from '@/lib/caching/analytics-cache';
+import { rateLimit } from '@/lib/rate-limiter';
+
+const paramsSchema = z.object({
+  campaignId: z.string().uuid('Invalid campaign ID format'),
+});
+
+const querySchema = z.object({
+  metrics: z
+    .string()
+    .optional()
+    .transform((val) =>
+      val
+        ? val
+            .split(',')
+            .filter((m) =>
+              ['requests', 'opens', 'responses', 'ratings'].includes(m),
+            )
+        : [],
+    ),
+  granularity: z.enum(['hour', 'day', 'week']).default('day'),
+});
+
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { campaignId: string } },
+) {
+  const startTime = performance.now();
+
+  try {
+    // Rate limiting
+    const rateLimitResult = await rateLimit(request, {
+      requests: 50,
+      window: 60 * 1000,
+      identifier: 'campaign-analytics',
+    });
+
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { error: 'Rate limit exceeded' },
+        { status: 429 },
+      );
+    }
+
+    // Validate parameters
+    const paramsResult = paramsSchema.safeParse(params);
+    if (!paramsResult.success) {
+      return NextResponse.json(
+        { error: 'Invalid campaign ID' },
+        { status: 400 },
+      );
+    }
+
+    const url = new URL(request.url);
+    const queryParams = Object.fromEntries(url.searchParams);
+    const queryResult = querySchema.safeParse(queryParams);
+
+    if (!queryResult.success) {
+      return NextResponse.json(
+        { error: 'Invalid query parameters' },
+        { status: 400 },
+      );
+    }
+
+    const { campaignId } = paramsResult.data;
+    const { metrics, granularity } = queryResult.data;
+
+    // Authentication
+    const supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+
+    if (!session) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Check campaign access
+    const { data: campaign, error: campaignError } = await supabase
+      .from('review_campaigns')
+      .select('id, supplier_id, name, status, created_at')
+      .eq('id', campaignId)
+      .single();
+
+    if (campaignError || !campaign) {
+      return NextResponse.json(
+        { error: 'Campaign not found' },
+        { status: 404 },
+      );
+    }
+
+    // Verify user has access to this campaign
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('role, supplier_id')
+      .eq('id', session.user.id)
+      .single();
+
+    const hasAccess =
+      userProfile?.role === 'admin' ||
+      (userProfile?.role === 'supplier' &&
+        userProfile.supplier_id === campaign.supplier_id);
+
+    if (!hasAccess) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
+
+    // Check cache
+    const cache = AnalyticsCache.getInstance();
+    const cacheKey = `campaign_${campaignId}_${granularity}_${metrics.join(',')}`;
+    const cached = cache.get(cacheKey);
+
+    if (cached) {
+      return NextResponse.json(cached);
+    }
+
+    // Fetch campaign analytics
+    const { data: analyticsData, error } = await supabase.rpc(
+      'get_campaign_analytics',
+      {
+        p_campaign_id: campaignId,
+        p_granularity: granularity,
+      },
+    );
+
+    if (error) {
+      console.error('Campaign analytics error:', error);
+      return NextResponse.json(
+        { error: 'Failed to fetch campaign analytics' },
+        { status: 500 },
+      );
+    }
+
+    const responseData = {
+      campaign: {
+        id: campaign.id,
+        name: campaign.name,
+        status: campaign.status,
+        createdAt: campaign.created_at,
+      },
+      analytics: {
+        totalRequests: analyticsData?.total_requests || 0,
+        totalOpens: analyticsData?.total_opens || 0,
+        totalResponses: analyticsData?.total_responses || 0,
+        averageRating: analyticsData?.average_rating || 0,
+        openRate: analyticsData?.open_rate || 0,
+        responseRate: analyticsData?.response_rate || 0,
+        timeline: analyticsData?.timeline || [],
+      },
+      metadata: {
+        granularity,
+        queryTime: performance.now() - startTime,
+        lastUpdated: new Date().toISOString(),
+      },
+    };
+
+    // Cache for 2 minutes
+    cache.set(cacheKey, responseData, 2 * 60 * 1000);
+
+    return NextResponse.json(responseData);
+  } catch (error) {
+    console.error('Campaign analytics API error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

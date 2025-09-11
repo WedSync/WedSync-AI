@@ -1,0 +1,620 @@
+/**
+ * Advanced Offline Features Test Suite
+ * Tests ML conflict resolution, team integrations, and adaptive sync
+ */
+
+import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
+import { MLConflictResolver } from '@/lib/offline/ml-conflict-resolver';
+import { OfflineViralIntegration } from '@/lib/offline/offline-viral-integration';
+import { OfflineSuccessIntegration } from '@/lib/offline/offline-success-integration';
+import { OfflineMarketingIntegration } from '@/lib/offline/offline-marketing-integration';
+import { AdaptiveSyncManager } from '@/lib/offline/adaptive-sync-manager';
+import { offlineDB } from '@/lib/database/offline-database';
+
+// Mock fetch for API calls
+global.fetch = jest.fn();
+
+// Mock navigator.onLine
+Object.defineProperty(navigator, 'onLine', {
+  writable: true,
+  value: true
+});
+
+// Mock crypto.randomUUID
+global.crypto = {
+  randomUUID: jest.fn(() => 'test-uuid-' + Math.random().toString(36).substr(2, 9))
+} as any;
+
+describe('ML Conflict Resolution', () => {
+  const mockConflict = {
+    id: 'conflict-1',
+    resourceType: 'client' as const,
+    field: 'name',
+    clientValue: 'John Smith',
+    serverValue: 'John Doe',
+    clientTimestamp: new Date(Date.now() - 60000).toISOString(), // 1 minute ago
+    serverTimestamp: new Date(Date.now() - 120000).toISOString(), // 2 minutes ago
+    userId: 'user-123'
+  };
+  
+  const mockUserContext = {
+    userId: 'user-123',
+    userRole: 'coordinator' as const,
+    organizationId: 'org-456',
+    experienceLevel: 0.8
+  };
+  
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+  
+  describe('Intelligent Conflict Resolution', () => {
+    it('should resolve conflicts with ML-powered suggestions', async () => {
+      const resolution = await MLConflictResolver.resolveConflictIntelligently(
+        mockConflict,
+        mockUserContext
+      );
+      
+      expect(resolution).toBeDefined();
+      expect(resolution.recommendedAction).toMatch(/client_wins|server_wins|merge|user_choice/);
+      expect(resolution.confidence).toBeGreaterThanOrEqual(0);
+      expect(resolution.confidence).toBeLessThanOrEqual(1);
+      expect(resolution.explanation).toBeTruthy();
+      expect(resolution.alternativeOptions).toBeInstanceOf(Array);
+    });
+    
+    it('should favor client changes for recent edits', async () => {
+      const recentConflict = {
+        ...mockConflict,
+        clientTimestamp: new Date(Date.now() - 30000).toISOString() // 30 seconds ago
+      };
+      
+      const resolution = await MLConflictResolver.resolveConflictIntelligently(
+        recentConflict,
+        mockUserContext
+      );
+      
+      // Recent edits should increase likelihood of client_wins
+      if (resolution.recommendedAction === 'client_wins') {
+        expect(resolution.confidence).toBeGreaterThan(0.5);
+      }
+      
+      expect(resolution.explanation).toContain('recent');
+    });
+    
+    it('should favor server for critical data', async () => {
+      const criticalConflict = {
+        ...mockConflict,
+        resourceType: 'contract' as const,
+        field: 'amount'
+      };
+      
+      const resolution = await MLConflictResolver.resolveConflictIntelligently(
+        criticalConflict,
+        mockUserContext
+      );
+      
+      // Critical data might favor server_wins or user_choice
+      expect(['server_wins', 'user_choice']).toContain(resolution.recommendedAction);
+      expect(resolution.explanation).toMatch(/critical|important/i);
+    });
+    
+    it('should suggest merge for compatible changes', async () => {
+      const mergeableConflict = {
+        ...mockConflict,
+        clientValue: { firstName: 'John', lastName: 'Smith' },
+        serverValue: { firstName: 'John', lastName: 'Doe', email: 'john@example.com' }
+      };
+      
+      const resolution = await MLConflictResolver.resolveConflictIntelligently(
+        mergeableConflict,
+        mockUserContext
+      );
+      
+      // Object changes might suggest merge
+      if (resolution.recommendedAction === 'merge') {
+        expect(resolution.explanation).toContain('merge');
+      }
+    });
+    
+    it('should apply user choice and track satisfaction', async () => {
+      await MLConflictResolver.applyUserChoice(
+        'conflict-1',
+        'client_wins',
+        5 // satisfaction score
+      );
+      
+      // Verify the choice was recorded
+      const history = await offlineDB.conflictHistory
+        .where('conflictId')
+        .equals('conflict-1')
+        .first();
+      
+      expect(history?.userChoice).toBe('client_wins');
+      expect(history?.userSatisfaction).toBe(5);
+    });
+  });
+});
+
+describe('Offline Viral Integration', () => {
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    // Clear viral actions table
+    await offlineDB.viralActions.clear();
+    await offlineDB.syncQueue.clear();
+  });
+  
+  describe('Viral Action Tracking', () => {
+    it('should track viral actions offline', async () => {
+      await OfflineViralIntegration.trackViralActionOffline(
+        'supplier-123',
+        'newclient@example.com',
+        'sent_invite',
+        { weddingId: 'wedding-456', source: 'email' }
+      );
+      
+      // Check action was stored
+      const actions = await offlineDB.viralActions.toArray();
+      expect(actions).toHaveLength(1);
+      expect(actions[0].actorId).toBe('supplier-123');
+      expect(actions[0].recipientEmail).toBe('newclient@example.com');
+      expect(actions[0].actionType).toBe('sent_invite');
+      
+      // Check sync queue
+      const syncItems = await offlineDB.syncQueue
+        .where('type')
+        .equals('viral_action')
+        .toArray();
+      
+      expect(syncItems).toHaveLength(1);
+      expect(syncItems[0].priority).toBeGreaterThanOrEqual(5);
+    });
+    
+    it('should prioritize conversion events', async () => {
+      await OfflineViralIntegration.trackViralActionOffline(
+        'supplier-123',
+        'client@example.com',
+        'accepted_invite',
+        { weddingId: 'wedding-456' }
+      );
+      
+      const syncItems = await offlineDB.syncQueue
+        .where('type')
+        .equals('viral_action')
+        .toArray();
+      
+      expect(syncItems[0].priority).toBeGreaterThanOrEqual(8);
+    });
+    
+    it('should update local viral metrics', async () => {
+      await OfflineViralIntegration.trackViralActionOffline(
+        'supplier-123',
+        'client1@example.com',
+        'sent_invite',
+        {}
+      );
+      
+      await OfflineViralIntegration.trackViralActionOffline(
+        'supplier-123',
+        'client2@example.com',
+        'accepted_invite',
+        {}
+      );
+      
+      const metrics = await OfflineViralIntegration.getOfflineViralMetrics('supplier-123');
+      
+      expect(metrics).toBeDefined();
+      expect(metrics?.totalInvitesSent).toBe(1);
+      expect(metrics?.totalInvitesAccepted).toBe(1);
+      expect(metrics?.viralCoefficient).toBe(1); // 1 accepted / 1 sent
+    });
+  });
+  
+  describe('Viral Queue Processing', () => {
+    it('should batch viral actions for sync', async () => {
+      // Add multiple viral actions
+      for (let i = 0; i < 5; i++) {
+        await OfflineViralIntegration.trackViralActionOffline(
+          'supplier-123',
+          `client${i}@example.com`,
+          'sent_invite',
+          {}
+        );
+      }
+      
+      // Mock successful sync
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          processed: Array(5).fill({ serverId: 'server-id' }),
+          updatedMetrics: {}
+        })
+      });
+      
+      // Process queue
+      navigator.onLine = true;
+      await OfflineViralIntegration.processOfflineViralQueue();
+      
+      // Verify API was called
+      expect(global.fetch).toHaveBeenCalledWith(
+        '/api/viral/offline-sync',
+        expect.objectContaining({
+          method: 'POST',
+          headers: expect.objectContaining({
+            'X-Offline-Sync': 'true'
+          })
+        })
+      );
+    });
+  });
+});
+
+describe('Offline Customer Success Integration', () => {
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    await offlineDB.milestones.clear();
+    await offlineDB.healthScores.clear();
+  });
+  
+  describe('Milestone Tracking', () => {
+    it('should track milestones offline with celebrations', async () => {
+      const celebrationSpy = jest.fn();
+      window.addEventListener('success-celebration', celebrationSpy);
+      
+      await OfflineSuccessIntegration.trackMilestoneOffline(
+        'supplier-123',
+        'first_form_created',
+        { formId: 'form-456' }
+      );
+      
+      // Check milestone was stored
+      const milestones = await offlineDB.milestones.toArray();
+      expect(milestones).toHaveLength(1);
+      expect(milestones[0].milestoneType).toBe('first_form_created');
+      expect(milestones[0].celebrationType).toBe('confetti');
+      
+      // Check celebration was triggered
+      expect(celebrationSpy).toHaveBeenCalled();
+      
+      window.removeEventListener('success-celebration', celebrationSpy);
+    });
+    
+    it('should boost health score for milestone achievement', async () => {
+      // Set initial health score
+      await offlineDB.healthScores.put({
+        supplierId: 'supplier-123',
+        score: 70,
+        riskLevel: 'at_risk',
+        factors: {
+          engagement: 60,
+          adoption: 70,
+          satisfaction: 75,
+          growth: 70,
+          retention: 75
+        },
+        lastUpdated: new Date().toISOString(),
+        syncStatus: 'pending'
+      });
+      
+      await OfflineSuccessIntegration.trackMilestoneOffline(
+        'supplier-123',
+        'tenth_client',
+        { clientCount: 10 }
+      );
+      
+      // Check health score was boosted
+      const updatedScore = await offlineDB.healthScores
+        .where('supplierId')
+        .equals('supplier-123')
+        .first();
+      
+      expect(updatedScore?.score).toBeGreaterThan(70);
+      expect(updatedScore?.riskLevel).toBe('healthy');
+    });
+  });
+  
+  describe('Health Score Calculation', () => {
+    it('should calculate health score based on activities', async () => {
+      const activities = [
+        { id: '1', supplierId: 'supplier-123', type: 'login' as const, timestamp: new Date().toISOString(), impactScore: 5 },
+        { id: '2', supplierId: 'supplier-123', type: 'form_created' as const, timestamp: new Date().toISOString(), impactScore: 10 },
+        { id: '3', supplierId: 'supplier-123', type: 'client_added' as const, timestamp: new Date().toISOString(), impactScore: 15 },
+        { id: '4', supplierId: 'supplier-123', type: 'feature_used' as const, timestamp: new Date().toISOString(), impactScore: 5 }
+      ];
+      
+      await OfflineSuccessIntegration.updateHealthScoreOffline(
+        'supplier-123',
+        activities
+      );
+      
+      const healthScore = await offlineDB.healthScores
+        .where('supplierId')
+        .equals('supplier-123')
+        .first();
+      
+      expect(healthScore).toBeDefined();
+      expect(healthScore?.score).toBeGreaterThan(0);
+      expect(healthScore?.score).toBeLessThanOrEqual(100);
+      expect(['healthy', 'at_risk', 'critical']).toContain(healthScore?.riskLevel);
+    });
+    
+    it('should schedule intervention for at-risk suppliers', async () => {
+      const activities = [
+        { id: '1', supplierId: 'supplier-123', type: 'support_ticket' as const, timestamp: new Date().toISOString(), impactScore: -10 }
+      ];
+      
+      await OfflineSuccessIntegration.updateHealthScoreOffline(
+        'supplier-123',
+        activities
+      );
+      
+      // Check if intervention was scheduled
+      const interventions = await offlineDB.interventions
+        .where('supplierId')
+        .equals('supplier-123')
+        .toArray();
+      
+      if (interventions.length > 0) {
+        expect(interventions[0].status).toBe('pending');
+        expect(['email', 'in_app', 'phone', 'coaching']).toContain(interventions[0].type);
+      }
+    });
+  });
+});
+
+describe('Offline Marketing Integration', () => {
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    await offlineDB.marketingEngagements.clear();
+    await offlineDB.attributions.clear();
+  });
+  
+  describe('Campaign Engagement Tracking', () => {
+    it('should track campaign engagements offline', async () => {
+      await OfflineMarketingIntegration.trackCampaignEngagementOffline(
+        'user-123',
+        'campaign-456',
+        'clicked',
+        { source: 'email', medium: 'newsletter' }
+      );
+      
+      const engagements = await offlineDB.marketingEngagements.toArray();
+      expect(engagements).toHaveLength(1);
+      expect(engagements[0].engagementType).toBe('clicked');
+      expect(engagements[0].metadata.source).toBe('email');
+    });
+    
+    it('should calculate multi-touch attribution', async () => {
+      // Track multiple touchpoints
+      await OfflineMarketingIntegration.trackCampaignEngagementOffline(
+        'user-123', 'campaign-1', 'opened', { source: 'email' }
+      );
+      
+      await OfflineMarketingIntegration.trackCampaignEngagementOffline(
+        'user-123', 'campaign-2', 'clicked', { source: 'social' }
+      );
+      
+      await OfflineMarketingIntegration.trackCampaignEngagementOffline(
+        'user-123', 'campaign-3', 'converted', { source: 'email', value: 100 }
+      );
+      
+      const attribution = await offlineDB.attributions
+        .where('userId')
+        .equals('user-123')
+        .first();
+      
+      expect(attribution).toBeDefined();
+      expect(attribution?.touchpoints).toHaveLength(3);
+      expect(attribution?.firstTouch?.campaignId).toBe('campaign-1');
+      expect(attribution?.lastTouch?.campaignId).toBe('campaign-3');
+      expect(attribution?.conversionValue).toBe(100);
+      
+      // Check multi-touch models
+      expect(attribution?.multiTouch.linear).toBeDefined();
+      expect(attribution?.multiTouch.timeDecay).toBeDefined();
+      expect(attribution?.multiTouch.positionBased).toBeDefined();
+    });
+  });
+  
+  describe('Email Queue Management', () => {
+    it('should queue emails for offline sending', async () => {
+      await OfflineMarketingIntegration.queueEmailOffline(
+        'campaign-123',
+        'recipient-456',
+        'Test Subject',
+        '<p>Test Content</p>',
+        new Date(Date.now() + 3600000) // 1 hour from now
+      );
+      
+      const emailQueue = await offlineDB.emailQueue.toArray();
+      expect(emailQueue).toHaveLength(1);
+      expect(emailQueue[0].status).toBe('queued');
+      expect(emailQueue[0].subject).toBe('Test Subject');
+    });
+  });
+});
+
+describe('Adaptive Sync Manager', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+  
+  describe('Network Detection', () => {
+    it('should detect network conditions and select strategy', async () => {
+      // Mock Network Information API
+      (navigator as any).connection = {
+        effectiveType: '4g',
+        downlink: 15,
+        rtt: 50,
+        saveData: false
+      };
+      
+      const status = AdaptiveSyncManager.getSyncStatus();
+      
+      // Should select aggressive strategy for good connection
+      if (status.strategy) {
+        expect(status.strategy.type).toBe('aggressive');
+        expect(status.strategy.batchSize).toBeGreaterThan(50);
+        expect(status.strategy.parallelRequests).toBeGreaterThan(3);
+      }
+    });
+    
+    it('should adapt to slow network conditions', async () => {
+      (navigator as any).connection = {
+        effectiveType: '2g',
+        downlink: 0.5,
+        rtt: 500,
+        saveData: true
+      };
+      
+      const status = AdaptiveSyncManager.getSyncStatus();
+      
+      if (status.strategy) {
+        expect(status.strategy.type).toBe('minimal');
+        expect(status.strategy.batchSize).toBeLessThan(10);
+        expect(status.strategy.compressionLevel).toBe('high');
+        expect(status.strategy.includeMediaFiles).toBe(false);
+      }
+    });
+  });
+  
+  describe('Sync Optimization', () => {
+    it('should prioritize high-priority items on slow networks', async () => {
+      // Add items with different priorities
+      await offlineDB.syncQueue.bulkAdd([
+        { type: 'test', priority: 3, status: 'pending', timestamp: new Date().toISOString() },
+        { type: 'test', priority: 9, status: 'pending', timestamp: new Date().toISOString() },
+        { type: 'test', priority: 5, status: 'pending', timestamp: new Date().toISOString() }
+      ]);
+      
+      // Mock slow network
+      (navigator as any).connection = {
+        effectiveType: 'slow-2g',
+        downlink: 0.1,
+        rtt: 1000,
+        saveData: true
+      };
+      
+      // Mock fetch
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        json: async () => ({ success: true })
+      });
+      
+      navigator.onLine = true;
+      await AdaptiveSyncManager.optimizeSyncForNetwork();
+      
+      // Should have synced high-priority item
+      const syncedItems = await offlineDB.syncQueue
+        .where('status')
+        .equals('completed')
+        .toArray();
+      
+      // On slow network, should sync high priority items
+      const highPrioritySync = syncedItems.some(item => item.priority >= 7);
+      expect(highPrioritySync).toBeTruthy();
+    });
+  });
+  
+  describe('Sync Metrics', () => {
+    it('should track sync performance metrics', async () => {
+      const initialStatus = AdaptiveSyncManager.getSyncStatus();
+      const initialSynced = initialStatus.metrics.totalSynced;
+      
+      // Add test item
+      await offlineDB.syncQueue.add({
+        type: 'test',
+        data: { test: 'data' },
+        priority: 5,
+        status: 'pending',
+        timestamp: new Date().toISOString()
+      });
+      
+      // Mock successful sync
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        json: async () => ({ success: true })
+      });
+      
+      navigator.onLine = true;
+      await AdaptiveSyncManager.optimizeSyncForNetwork();
+      
+      const updatedStatus = AdaptiveSyncManager.getSyncStatus();
+      
+      expect(updatedStatus.metrics.totalSynced).toBeGreaterThan(initialSynced);
+      expect(updatedStatus.metrics.lastSyncTime).toBeTruthy();
+      expect(updatedStatus.metrics.averageSyncTime).toBeGreaterThanOrEqual(0);
+    });
+  });
+});
+
+describe('Integration Tests', () => {
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    await offlineDB.syncQueue.clear();
+  });
+  
+  it('should handle multiple team features working offline simultaneously', async () => {
+    // Track viral action
+    await OfflineViralIntegration.trackViralActionOffline(
+      'supplier-123',
+      'client@example.com',
+      'sent_invite',
+      {}
+    );
+    
+    // Track milestone
+    await OfflineSuccessIntegration.trackMilestoneOffline(
+      'supplier-123',
+      'first_form_created',
+      {}
+    );
+    
+    // Track marketing engagement
+    await OfflineMarketingIntegration.trackCampaignEngagementOffline(
+      'user-123',
+      'campaign-123',
+      'clicked',
+      {}
+    );
+    
+    // Check all items are queued
+    const syncQueue = await offlineDB.syncQueue.toArray();
+    expect(syncQueue.length).toBeGreaterThanOrEqual(3);
+    
+    // Check different types
+    const types = new Set(syncQueue.map(item => item.type));
+    expect(types.has('viral_action')).toBeTruthy();
+    expect(types.has('success_milestone')).toBeTruthy();
+    expect(types.has('marketing_engagement')).toBeTruthy();
+  });
+  
+  it('should handle offline to online transition gracefully', async () => {
+    // Start offline
+    navigator.onLine = false;
+    
+    // Add items while offline
+    await OfflineViralIntegration.trackViralActionOffline(
+      'supplier-123',
+      'offline@example.com',
+      'sent_invite',
+      {}
+    );
+    
+    // Go online
+    navigator.onLine = true;
+    window.dispatchEvent(new Event('online'));
+    
+    // Mock successful sync
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      json: async () => ({ success: true })
+    });
+    
+    // Wait for automatic sync
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    // Verify fetch was called (automatic sync on online event)
+    expect(global.fetch).toHaveBeenCalled();
+  });
+});

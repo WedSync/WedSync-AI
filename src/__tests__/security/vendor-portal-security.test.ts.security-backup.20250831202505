@@ -1,0 +1,167 @@
+import { GET as getPerformance } from '@/app/api/vendor-portal/performance/route'
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { GET as getWeddings } from '@/app/api/vendor-portal/weddings/route'
+import { GET as getCommunications } from '@/app/api/vendor-portal/communications/route'
+import { createClient } from '@/lib/supabase/server'
+import { NextRequest } from 'next/server'
+
+// Mock dependencies
+jest.mock('@/lib/supabase/server')
+const mockCreateClient = createClient as jest.MockedFunction<typeof createClient>
+// Mock Supabase client
+const mockSupabaseClient = {
+  auth: {
+    getUser: jest.fn(),
+  },
+  from: jest.fn(() => ({
+    select: jest.fn(() => ({
+      eq: jest.fn(() => ({
+        single: jest.fn(),
+        order: jest.fn(() => ({
+          limit: jest.fn(),
+        })),
+      })),
+    })),
+  })),
+}
+describe('Vendor Portal Security Tests', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+    mockCreateClient.mockReturnValue(mockSupabaseClient as any)
+  })
+  describe('Authentication Security', () => {
+    it('blocks unauthenticated access to performance API', async () => {
+      mockSupabaseClient.auth.getUser.mockResolvedValue({
+        data: { user: null },
+        error: new Error('Not authenticated'),
+      })
+      const request = new NextRequest('http://localhost:3000/api/vendor-portal/performance?vendor_id=vendor1')
+      const response = await getPerformance(request)
+      expect(response.status).toBe(401)
+      const data = await response.json()
+      expect(data.error).toBe('Unauthorized')
+    })
+    it('blocks unauthenticated access to weddings API', async () => {
+      const request = new NextRequest('http://localhost:3000/api/vendor-portal/weddings?vendor_id=vendor1')
+      const response = await getWeddings(request)
+    it('blocks unauthenticated access to communications API', async () => {
+      const request = new NextRequest('http://localhost:3000/api/vendor-portal/communications?vendor_id=vendor1')
+      const response = await getCommunications(request)
+  describe('Authorization Security', () => {
+    it('blocks access to vendors from different organizations in performance API', async () => {
+      // Mock authenticated user
+        data: { user: { id: 'user1' } },
+        error: null,
+      // Mock vendor from different organization
+      mockSupabaseClient.from().select().eq().single
+        .mockResolvedValueOnce({
+          data: { id: 'vendor1', organization_id: 'other-org' },
+          error: null,
+        })
+          data: { organization_id: 'my-org' },
+      expect(response.status).toBe(404)
+      expect(data.error).toBe('Vendor not found')
+    it('blocks access to weddings from different organizations', async () => {
+          data: { organization_id: 'other-org' },
+      expect(response.status).toBe(403)
+    it('allows access to vendors from same organization', async () => {
+      // Mock vendor from same organization
+      const mockVendor = {
+        id: 'vendor1',
+        organization_id: 'my-org',
+        business_name: 'Test Photography',
+        average_rating: 4.5,
+        total_reviews: 25,
+      }
+        .mockResolvedValueOnce({ data: mockVendor, error: null })
+      mockSupabaseClient.from().select().eq().eq().gte()
+        .mockResolvedValue({ data: [], error: null })
+      expect(response.status).toBe(200)
+  describe('Data Access Security', () => {
+    it('only returns weddings assigned to the specific vendor', async () => {
+      const mockWeddings = [
+        {
+          id: 'connection1',
+          clients: {
+            id: 'client1',
+            first_name: 'John',
+            last_name: 'Doe',
+            wedding_date: '2024-06-15',
+            venue_name: 'Test Venue',
+          },
+        },
+      ]
+      mockSupabaseClient.from().select().eq()
+        .mockImplementationOnce(() => ({
+          order: jest.fn(() => ({
+            limit: jest.fn(() => Promise.resolve({
+              data: mockWeddings,
+              error: null,
+            })),
+          })),
+        }))
+      
+      // Verify that the query filters by supplier_id
+      expect(mockSupabaseClient.from).toHaveBeenCalledWith('supplier_client_connections')
+    it('filters performance data by vendor and date range', async () => {
+        .mockResolvedValue({ data: mockVendor, error: null })
+      const request = new NextRequest('http://localhost:3000/api/vendor-portal/performance?vendor_id=vendor1&period=1month')
+      // Verify performance data is filtered by vendor
+      expect(mockSupabaseClient.from).toHaveBeenCalledWith('suppliers')
+    it('ensures communication data is organization-scoped', async () => {
+        .mockResolvedValue({
+      mockSupabaseClient.from().select().eq().order()
+  describe('Input Validation Security', () => {
+    it('rejects requests without vendor_id parameter', async () => {
+      const request = new NextRequest('http://localhost:3000/api/vendor-portal/performance')
+      expect(response.status).toBe(400)
+      expect(data.error).toBe('Vendor ID required')
+    it('validates vendor_id format and existence', async () => {
+          data: null,
+          error: new Error('Not found'),
+      const request = new NextRequest('http://localhost:3000/api/vendor-portal/performance?vendor_id=invalid-vendor-id')
+    it('sanitizes and validates period parameter', async () => {
+      // Test with valid period
+      const validRequest = new NextRequest('http://localhost:3000/api/vendor-portal/performance?vendor_id=vendor1&period=1month')
+      const validResponse = await getPerformance(validRequest)
+      expect(validResponse.status).toBe(200)
+      // Test with invalid period - should default to 6months
+      const invalidRequest = new NextRequest('http://localhost:3000/api/vendor-portal/performance?vendor_id=vendor1&period=invalid_period')
+      const invalidResponse = await getPerformance(invalidRequest)
+      expect(invalidResponse.status).toBe(200) // Should still work with default period
+  describe('Rate Limiting and DoS Protection', () => {
+    it('handles database query errors gracefully', async () => {
+        .mockRejectedValue(new Error('Database connection failed'))
+      expect(response.status).toBe(500)
+      expect(data.error).toBe('Internal server error')
+    it('handles malformed JSON payloads in POST requests', async () => {
+      // Create a request with malformed JSON
+      const request = new NextRequest('http://localhost:3000/api/vendor-portal/communications', {
+        method: 'POST',
+        body: '{invalid-json',
+        headers: {
+          'Content-Type': 'application/json',
+      expect(response.status).toBe(500) // Should handle JSON parse error
+  describe('Data Sanitization', () => {
+    it('prevents SQL injection in search parameters', async () => {
+      // Attempt SQL injection in vendor_id parameter
+      const maliciousRequest = new NextRequest("http://localhost:3000/api/vendor-portal/weddings?vendor_id=vendor1'; DROP TABLE suppliers; --")
+      const response = await getWeddings(maliciousRequest)
+      // Should either be 404 (vendor not found) or handle the malicious input safely
+      expect([404, 403, 500].includes(response.status)).toBe(true)
+    it('sanitizes user input in performance metrics', async () => {
+        business_name: 'Test Photography<script>alert("xss")</script>',
+      // The API should return data without executing any scripts
+      expect(data).toBeDefined()
+  describe('Session Security', () => {
+    it('validates session expiry', async () => {
+      // Mock expired session
+        error: new Error('Session expired'),
+    it('prevents session fixation attacks', async () => {
+      // Mock user with valid session
+      // Test with potentially malicious session token in headers
+      const request = new NextRequest('http://localhost:3000/api/vendor-portal/performance?vendor_id=vendor1', {
+          'Authorization': 'Bearer malicious-token-attempt',
+          'X-Forwarded-For': '127.0.0.1',
+      // Should use Supabase's built-in session validation
+})

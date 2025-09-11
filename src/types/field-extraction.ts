@@ -1,0 +1,237 @@
+/**
+ * Field Extraction System Types
+ * WS-122: Automated Field Extraction from Documents
+ * Team E - Batch 9 - Round 2
+ */
+
+export type FieldType =
+  | 'text'
+  | 'number'
+  | 'date'
+  | 'email'
+  | 'phone'
+  | 'currency'
+  | 'percentage'
+  | 'address'
+  | 'url'
+  | 'boolean'
+  | 'array'
+  | 'object';
+
+export type ExtractionStatus =
+  | 'pending'
+  | 'processing'
+  | 'completed'
+  | 'failed'
+  | 'partial';
+
+export type ValidationStatus = 'valid' | 'invalid' | 'warning' | 'skipped';
+
+export type ExportFormat =
+  | 'json'
+  | 'csv'
+  | 'xml'
+  | 'excel'
+  | 'pdf'
+  | 'structured-json';
+
+export type ConfidenceLevel =
+  | 'very-high'
+  | 'high'
+  | 'medium'
+  | 'low'
+  | 'very-low';
+
+export interface FieldDefinition {
+  id: string;
+  name: string;
+  type: FieldType;
+  required: boolean;
+  pattern?: RegExp | string;
+  validation?: ValidationRule[];
+  defaultValue?: any;
+  description?: string;
+  aliases?: string[];
+  position?: FieldPosition;
+  extractionHints?: string[];
+}
+
+export interface FieldPosition {
+  page?: number;
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+  section?: string;
+}
+
+export interface ValidationRule {
+  type:
+    | 'required'
+    | 'pattern'
+    | 'range'
+    | 'length'
+    | 'custom'
+    | 'format'
+    | 'dependency';
+  value?: any;
+  message?: string;
+  validator?: (value: any, document?: ExtractedDocument) => boolean;
+  dependsOn?: string[];
+}
+
+export interface ExtractedField {
+  fieldId: string;
+  name: string;
+  value: any;
+  originalValue: string;
+  type: FieldType;
+  confidence: number;
+  confidenceLevel: ConfidenceLevel;
+  validationStatus: ValidationStatus;
+  validationErrors?: string[];
+  position?: FieldPosition;
+  extractedAt: string;
+  metadata?: Record<string, any>;
+}
+
+export interface ExtractedDocument {
+  id: string;
+  documentId: string;
+  templateId?: string;
+  status: ExtractionStatus;
+  fields: ExtractedField[];
+  totalFields: number;
+  successfulFields: number;
+  failedFields: number;
+  averageConfidence: number;
+  extractionTime: number;
+  errors?: ExtractionError[];
+  metadata?: DocumentMetadata;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ExtractionError {
+  fieldId?: string;
+  type: 'field' | 'document' | 'processing' | 'validation';
+  code: string;
+  message: string;
+  details?: any;
+}
+
+export interface DocumentMetadata {
+  fileName: string;
+  fileType: string;
+  fileSize: number;
+  pageCount?: number;
+  language?: string;
+  encoding?: string;
+  checksum?: string;
+  processingEngine?: string;
+}
+
+export interface ExtractionTemplate {
+  id: string;
+  name: string;
+  description?: string;
+  documentType: string;
+  fields: FieldDefinition[];
+  preprocessingRules?: PreprocessingRule[];
+  postProcessingRules?: PostProcessingRule[];
+  validationSchema?: ValidationSchema;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PreprocessingRule {
+  type: 'normalize' | 'clean' | 'transform' | 'enhance';
+  apply: (input: string) => string;
+}
+
+export interface PostProcessingRule {
+  type: 'format' | 'aggregate' | 'calculate' | 'enrich';
+  apply: (fields: ExtractedField[]) => ExtractedField[];
+}
+
+export interface ValidationSchema {
+  rules: ValidationRule[];
+  crossFieldValidation?: CrossFieldValidation[];
+}
+
+export interface CrossFieldValidation {
+  fields: string[];
+  validator: (fields: Record<string, any>) => boolean;
+  message: string;
+}
+
+export interface ExtractionRequest {
+  documentId: string;
+  templateId?: string;
+  fields?: string[];
+  options?: ExtractionOptions;
+}
+
+export interface ExtractionOptions {
+  ocr?: boolean;
+  language?: string;
+  enhanceImage?: boolean;
+  fuzzyMatching?: boolean;
+  confidenceThreshold?: number;
+  maxRetries?: number;
+  timeout?: number;
+}
+
+export interface ExtractionResult {
+  success: boolean;
+  document?: ExtractedDocument;
+  errors?: ExtractionError[];
+  processingTime: number;
+  retryCount?: number;
+}
+
+export interface ExportRequest {
+  documentId: string;
+  format: ExportFormat;
+  fields?: string[];
+  options?: ExportOptions;
+}
+
+export interface ExportOptions {
+  includeMetadata?: boolean;
+  includeValidation?: boolean;
+  includePosition?: boolean;
+  dateFormat?: string;
+  numberFormat?: string;
+  customMapping?: Record<string, string>;
+}
+
+export interface ExportResult {
+  success: boolean;
+  data?: any;
+  format: ExportFormat;
+  fileName?: string;
+  size?: number;
+  errors?: string[];
+}
+
+export interface FieldStatistics {
+  fieldId: string;
+  extractionCount: number;
+  successRate: number;
+  averageConfidence: number;
+  commonErrors: string[];
+  averageProcessingTime: number;
+}
+
+export interface ExtractionAnalytics {
+  totalDocuments: number;
+  successfulExtractions: number;
+  failedExtractions: number;
+  averageAccuracy: number;
+  averageProcessingTime: number;
+  fieldStatistics: FieldStatistics[];
+  periodStart: string;
+  periodEnd: string;
+}

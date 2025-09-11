@@ -1,0 +1,178 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { cookies } from 'next/headers';
+
+export async function GET(req: NextRequest) {
+  try {
+    const cookieStore = cookies();
+    const supabase = createClient(cookieStore);
+    
+    // Get the current session
+    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    
+    if (sessionError || !session) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get supplier profile
+    const { data: supplier, error: supplierError } = await supabase
+      .from('vendors')
+      .select('id')
+      .eq('user_id', session.user.id)
+      .single();
+
+    if (supplierError || !supplier) {
+      return NextResponse.json({ error: 'Supplier not found' }, { status: 404 });
+    }
+
+    // Get notifications from communications table
+    const { data: communications, error: commError } = await supabase
+      .from('communications')
+      .select('*')
+      .eq('recipient_id', session.user.id)
+      .order('created_at', { ascending: false })
+      .limit(50);
+
+    if (commError) {
+      console.error('Error fetching communications:', commError);
+    }
+
+    // Transform communications to notifications format
+    const notifications = (communications || []).map(comm => ({
+      id: comm.id,
+      vendor_id: supplier.id,
+      type: getNotificationType(comm.subject, comm.content),
+      title: comm.subject || 'New Message',
+      message: comm.content,
+      priority: getPriority(comm.subject, comm.content),
+      data: comm.metadata || {},
+      read: comm.status === 'read',
+      action_required: isActionRequired(comm.content),
+      action_url: getActionUrl(comm.metadata),
+      expires_at: null,
+      created_at: comm.created_at,
+      read_at: comm.status === 'read' ? comm.sent_at : null,
+    }));
+
+    // Add some mock supplier-specific notifications
+    const mockNotifications = [
+      {
+        id: 'mock-1',
+        vendor_id: supplier.id,
+        type: 'booking_inquiry',
+        title: 'New Booking Inquiry',
+        message: 'You have a new wedding photography inquiry for June 2024',
+        priority: 'high',
+        data: { booking_id: 'booking-123' },
+        read: false,
+        action_required: true,
+        action_url: '/supplier-portal/bookings/booking-123',
+        expires_at: null,
+        created_at: new Date(Date.now() - 1000 * 60 * 30).toISOString(), // 30 minutes ago
+        read_at: null,
+      },
+      {
+        id: 'mock-2',
+        vendor_id: supplier.id,
+        type: 'schedule_change',
+        title: 'Schedule Update',
+        message: 'Wedding ceremony time changed to 4:00 PM for the Smith wedding',
+        priority: 'medium',
+        data: { event_id: 'event-456' },
+        read: false,
+        action_required: true,
+        action_url: '/supplier-portal/schedule/events/event-456',
+        expires_at: null,
+        created_at: new Date(Date.now() - 1000 * 60 * 60 * 2).toISOString(), // 2 hours ago
+        read_at: null,
+      },
+      {
+        id: 'mock-3',
+        vendor_id: supplier.id,
+        type: 'payment_received',
+        title: 'Payment Received',
+        message: 'Deposit payment of $500 received for the Johnson wedding',
+        priority: 'normal',
+        data: { payment_id: 'payment-789' },
+        read: true,
+        action_required: false,
+        action_url: '/supplier-portal/bookings/payment-789',
+        expires_at: null,
+        created_at: new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString(), // 1 day ago
+        read_at: new Date(Date.now() - 1000 * 60 * 60 * 12).toISOString(), // 12 hours ago
+      },
+    ];
+
+    // Combine and sort notifications
+    const allNotifications = [...notifications, ...mockNotifications]
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+    const unreadCount = allNotifications.filter(n => !n.read).length;
+
+    return NextResponse.json({
+      notifications: allNotifications,
+      unread_count: unreadCount,
+      total_count: allNotifications.length,
+    });
+
+  } catch (error) {
+    console.error('Error in supplier notifications API:', error);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
+}
+
+// Helper functions
+function getNotificationType(subject?: string, content?: string): string {
+  if (!subject && !content) return 'system_update';
+  
+  const text = (subject + ' ' + content).toLowerCase();
+  
+  if (text.includes('booking') || text.includes('inquiry')) return 'booking_inquiry';
+  if (text.includes('payment')) return 'payment_received';
+  if (text.includes('contract')) return 'contract_signed';
+  if (text.includes('schedule') || text.includes('time')) return 'schedule_change';
+  if (text.includes('cancel')) return 'booking_cancelled';
+  if (text.includes('confirm')) return 'booking_confirmed';
+  if (text.includes('review')) return 'review_received';
+  if (text.includes('reminder')) return 'reminder';
+  
+  return 'system_update';
+}
+
+function getPriority(subject?: string, content?: string): string {
+  if (!subject && !content) return 'normal';
+  
+  const text = (subject + ' ' + content).toLowerCase();
+  
+  if (text.includes('urgent') || text.includes('emergency') || text.includes('conflict')) {
+    return 'urgent';
+  }
+  if (text.includes('inquiry') || text.includes('schedule change') || text.includes('payment')) {
+    return 'high';
+  }
+  if (text.includes('reminder') || text.includes('update')) {
+    return 'medium';
+  }
+  
+  return 'normal';
+}
+
+function isActionRequired(content?: string): boolean {
+  if (!content) return false;
+  
+  const text = content.toLowerCase();
+  return text.includes('respond') || 
+         text.includes('confirm') || 
+         text.includes('review') || 
+         text.includes('action required');
+}
+
+function getActionUrl(metadata?: any): string | undefined {
+  if (!metadata) return undefined;
+  
+  if (metadata.booking_id) return `/supplier-portal/bookings/${metadata.booking_id}`;
+  if (metadata.event_id) return `/supplier-portal/schedule/events/${metadata.event_id}`;
+  if (metadata.payment_id) return `/supplier-portal/bookings/payment-${metadata.payment_id}`;
+  
+  return undefined;
+}

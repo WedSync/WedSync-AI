@@ -1,0 +1,122 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { fieldEngine } from '@/lib/field-engine/FieldEngine';
+import { FormField } from '@/types/forms';
+import { z } from 'zod';
+
+// Validation schemas
+const validateSingleFieldSchema = z.object({
+  field: z.object({
+    id: z.string(),
+    type: z.string(),
+    label: z.string(),
+    required: z.boolean().optional(),
+    validation: z.object({
+      required: z.boolean().optional(),
+      minLength: z.number().optional(),
+      maxLength: z.number().optional(),
+      pattern: z.string().optional(),
+      min: z.number().optional(),
+      max: z.number().optional(),
+      customMessage: z.string().optional()
+    }).optional(),
+    options: z.array(z.object({
+      id: z.string(),
+      label: z.string(),
+      value: z.string()
+    })).optional()
+  }),
+  value: z.any()
+});
+
+const validateMultipleFieldsSchema = z.object({
+  fields: z.array(z.object({
+    id: z.string(),
+    type: z.string(),
+    label: z.string(),
+    required: z.boolean().optional(),
+    validation: z.any().optional(),
+    conditionalLogic: z.any().optional()
+  })),
+  values: z.record(z.any())
+});
+
+/**
+ * POST /api/fields/validate - Validate field values
+ */
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+
+    // Determine if this is single field or multiple fields validation
+    if (body.field && body.value !== undefined) {
+      // Single field validation
+      const { field, value } = validateSingleFieldSchema.parse(body);
+      
+      const validationResult = fieldEngine.validateField(field as FormField, value);
+      
+      return NextResponse.json({
+        success: true,
+        data: {
+          fieldId: field.id,
+          isValid: validationResult.isValid,
+          errors: validationResult.errors,
+          warnings: validationResult.warnings || []
+        }
+      });
+
+    } else if (body.fields && body.values) {
+      // Multiple fields validation
+      const { fields, values } = validateMultipleFieldsSchema.parse(body);
+      
+      const validationResult = fieldEngine.validateFields(fields as FormField[], values);
+      
+      // Group results by field
+      const fieldResults = fields.reduce((acc, field) => {
+        const fieldErrors = validationResult.errors.filter(e => e.field === field.id);
+        const fieldWarnings = (validationResult.warnings || []).filter(w => w.field === field.id);
+        
+        acc[field.id] = {
+          isValid: fieldErrors.length === 0,
+          errors: fieldErrors,
+          warnings: fieldWarnings
+        };
+        
+        return acc;
+      }, {} as Record<string, any>);
+
+      return NextResponse.json({
+        success: true,
+        data: {
+          overall: {
+            isValid: validationResult.isValid,
+            totalErrors: validationResult.errors.length,
+            totalWarnings: (validationResult.warnings || []).length
+          },
+          fields: fieldResults,
+          crossFieldIssues: {
+            errors: validationResult.errors.filter(e => e.type === 'crossField'),
+            warnings: (validationResult.warnings || []).filter(w => w.field === 'crossField')
+          }
+        }
+      });
+    } else {
+      return NextResponse.json({
+        error: 'Invalid request format. Expected either {field, value} or {fields, values}'
+      }, { status: 400 });
+    }
+
+  } catch (error) {
+    console.error('POST /api/fields/validate error:', error);
+    
+    if (error instanceof z.ZodError) {
+      return NextResponse.json({
+        error: 'Validation error',
+        details: error.errors
+      }, { status: 400 });
+    }
+
+    return NextResponse.json({ 
+      error: 'Internal server error' 
+    }, { status: 500 });
+  }
+}

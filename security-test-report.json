@@ -1,0 +1,119 @@
+{
+  "timestamp": "2025-08-14T16:09:21.945Z",
+  "totalTests": 22,
+  "passedTests": 18,
+  "failedTests": 4,
+  "successRate": 81.81818181818183,
+  "results": [
+    {
+      "test": "Valid form validation",
+      "passed": true,
+      "details": "Form schema validation passed"
+    },
+    {
+      "test": "XSS prevention in schema",
+      "passed": false,
+      "details": "Schema should have rejected malicious content"
+    },
+    {
+      "test": "XSS payload blocking",
+      "passed": true,
+      "details": "Blocked 8/8 payloads (100.0%)"
+    },
+    {
+      "test": "CSRF token uniqueness",
+      "passed": true,
+      "details": "Generated tokens are unique"
+    },
+    {
+      "test": "CSRF token format",
+      "passed": true,
+      "details": "Token follows secure hex format"
+    },
+    {
+      "test": "CSRF token length",
+      "passed": true,
+      "details": "Token length is 64 characters: 64"
+    },
+    {
+      "test": "Input sanitization: Normal text should pass through",
+      "passed": true,
+      "details": "Input: \"Normal text\" -> Output: \"Normal text\""
+    },
+    {
+      "test": "Input sanitization: Script tags should be rejected",
+      "passed": false,
+      "details": "Input: \"<script>alert(\"xss\")</script>\" -> Output: \"\""
+    },
+    {
+      "test": "Input sanitization: Valid email should pass",
+      "passed": true,
+      "details": "Input: \"test@example.com\" -> Output: \"test@example.com\""
+    },
+    {
+      "test": "Input sanitization: Invalid email should be rejected",
+      "passed": true,
+      "details": "Input: \"not-an-email\" -> Output: \"null\""
+    },
+    {
+      "test": "Input sanitization: Valid phone should pass",
+      "passed": true,
+      "details": "Input: \"+1-555-123-4567\" -> Output: \"+1-555-123-4567\""
+    },
+    {
+      "test": "Input sanitization: Invalid phone should be rejected",
+      "passed": true,
+      "details": "Input: \"abc123\" -> Output: \"null\""
+    },
+    {
+      "test": "Overall input sanitization",
+      "passed": false,
+      "details": "5/6 tests passed (83.3%)"
+    },
+    {
+      "test": "File upload: Valid PDF should be accepted",
+      "passed": true,
+      "details": "Type: true, Size: true, Name: true -> Accept"
+    },
+    {
+      "test": "File upload: Valid image should be accepted",
+      "passed": true,
+      "details": "Type: true, Size: true, Name: true -> Accept"
+    },
+    {
+      "test": "File upload: Executable files should be rejected",
+      "passed": true,
+      "details": "Type: false, Size: true, Name: true -> Reject"
+    },
+    {
+      "test": "File upload: Oversized files should be rejected",
+      "passed": true,
+      "details": "Type: true, Size: false, Name: true -> Reject"
+    },
+    {
+      "test": "File upload: Path traversal attempts should be rejected",
+      "passed": true,
+      "details": "Type: true, Size: true, Name: false -> Reject"
+    },
+    {
+      "test": "File upload security",
+      "passed": true,
+      "details": "5/5 tests passed (100.0%)"
+    },
+    {
+      "test": "Valid form submission",
+      "passed": true,
+      "details": "Submission validation passed"
+    },
+    {
+      "test": "Malicious submission rejection",
+      "passed": false,
+      "details": "Schema should have rejected malicious submission"
+    },
+    {
+      "test": "TypeScript type safety",
+      "passed": true,
+      "details": "Type definitions are properly enforced"
+    }
+  ]
+}

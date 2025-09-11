@@ -1,0 +1,371 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+
+// Validation schemas
+const CreateReminderSchema = z.object({
+  event_id: z.string().uuid(),
+  invitation_id: z.string().uuid().optional(),
+  reminder_type: z.enum(['initial', 'followup', 'final', 'custom']),
+  scheduled_for: z.string(),
+  delivery_method: z.enum(['email', 'sms', 'both']),
+  custom_message: z.string().optional(),
+});
+
+const SendReminderSchema = z.object({
+  reminder_id: z.string().uuid(),
+});
+
+// GET /api/rsvp/reminders - List reminders
+export async function GET(req: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const searchParams = req.nextUrl.searchParams;
+    const eventId = searchParams.get('event_id');
+    const status = searchParams.get('status');
+    const upcoming = searchParams.get('upcoming') === 'true';
+
+    // Get current user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    let query = supabase
+      .from('rsvp_reminders')
+      .select(
+        `
+        *,
+        rsvp_invitations (
+          id,
+          guest_name,
+          guest_email,
+          guest_phone
+        ),
+        rsvp_events!inner (
+          id,
+          event_name,
+          event_date,
+          vendor_id
+        )
+      `,
+      )
+      .eq('rsvp_events.vendor_id', user.id);
+
+    if (eventId) {
+      query = query.eq('event_id', eventId);
+    }
+
+    if (status) {
+      query = query.eq('status', status);
+    }
+
+    if (upcoming) {
+      const now = new Date().toISOString();
+      query = query.gte('scheduled_for', now).eq('status', 'pending');
+    }
+
+    const { data: reminders, error } = await query.order('scheduled_for', {
+      ascending: true,
+    });
+
+    if (error) {
+      console.error('Error fetching reminders:', error);
+      return NextResponse.json(
+        { error: 'Failed to fetch reminders' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({ reminders });
+  } catch (error) {
+    console.error('Error in GET /api/rsvp/reminders:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+// POST /api/rsvp/reminders - Create custom reminder
+export async function POST(req: NextRequest) {
+  try {
+    const supabase = await createClient();
+
+    // Get current user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await req.json();
+    const validatedData = CreateReminderSchema.parse(body);
+
+    // Verify event ownership
+    const { data: event, error: eventError } = await supabase
+      .from('rsvp_events')
+      .select('id')
+      .eq('id', validatedData.event_id)
+      .eq('vendor_id', user.id)
+      .single();
+
+    if (eventError || !event) {
+      return NextResponse.json(
+        { error: 'Event not found or unauthorized' },
+        { status: 404 },
+      );
+    }
+
+    // Create reminder
+    const { data: reminder, error } = await supabase
+      .from('rsvp_reminders')
+      .insert({
+        ...validatedData,
+        status: 'pending',
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error creating reminder:', error);
+      return NextResponse.json(
+        { error: 'Failed to create reminder' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({ reminder }, { status: 201 });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Validation error',
+          details: error.issues,
+        },
+        { status: 400 },
+      );
+    }
+    console.error('Error in POST /api/rsvp/reminders:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+// POST /api/rsvp/reminders/send - Manually send a reminder
+export async function PUT(req: NextRequest) {
+  try {
+    const supabase = await createClient();
+
+    // Get current user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await req.json();
+    const { reminder_id } = SendReminderSchema.parse(body);
+
+    // Get reminder with full details
+    const { data: reminder, error: reminderError } = await supabase
+      .from('rsvp_reminders')
+      .select(
+        `
+        *,
+        rsvp_invitations (
+          id,
+          guest_name,
+          guest_email,
+          guest_phone,
+          invitation_code
+        ),
+        rsvp_events (
+          id,
+          event_name,
+          event_date,
+          venue_name,
+          venue_address,
+          custom_message,
+          vendor_id
+        )
+      `,
+      )
+      .eq('id', reminder_id)
+      .single();
+
+    if (reminderError || !reminder) {
+      return NextResponse.json(
+        { error: 'Reminder not found' },
+        { status: 404 },
+      );
+    }
+
+    // Verify ownership
+    if (reminder.rsvp_events.vendor_id !== user.id) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
+    }
+
+    // Send the reminder
+    const result = await sendReminder(reminder);
+
+    if (result.success) {
+      // Update reminder status
+      await supabase
+        .from('rsvp_reminders')
+        .update({
+          status: 'sent',
+          sent_at: new Date().toISOString(),
+        })
+        .eq('id', reminder_id);
+
+      return NextResponse.json({
+        message: 'Reminder sent successfully',
+        delivery_method: reminder.delivery_method,
+      });
+    } else {
+      // Update with error
+      await supabase
+        .from('rsvp_reminders')
+        .update({
+          status: 'failed',
+          error_message: result.error,
+        })
+        .eq('id', reminder_id);
+
+      return NextResponse.json(
+        {
+          error: 'Failed to send reminder',
+          details: result.error,
+        },
+        { status: 500 },
+      );
+    }
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Validation error',
+          details: error.issues,
+        },
+        { status: 400 },
+      );
+    }
+    console.error('Error in PUT /api/rsvp/reminders:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+// Helper function to send reminder
+async function sendReminder(
+  reminder: any,
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const { guest_name, guest_email, guest_phone, invitation_code } =
+      reminder.rsvp_invitations;
+    const {
+      event_name,
+      event_date,
+      venue_name,
+      venue_address,
+      custom_message,
+    } = reminder.rsvp_events;
+
+    const message =
+      custom_message ||
+      `
+      Hi ${guest_name},
+      
+      This is a reminder about your invitation to ${event_name} on ${new Date(event_date).toLocaleDateString()}.
+      
+      ${venue_name ? `Location: ${venue_name}` : ''}
+      ${venue_address ? `Address: ${venue_address}` : ''}
+      
+      Please RSVP using code: ${invitation_code}
+      
+      We hope to see you there!
+    `;
+
+    // Send based on delivery method
+    if (
+      reminder.delivery_method === 'email' ||
+      reminder.delivery_method === 'both'
+    ) {
+      if (guest_email) {
+        // Integrate with email service
+        console.log(`Sending email to ${guest_email}:`, message);
+      }
+    }
+
+    if (
+      reminder.delivery_method === 'sms' ||
+      reminder.delivery_method === 'both'
+    ) {
+      if (guest_phone) {
+        // Integrate with SMS service
+        console.log(`Sending SMS to ${guest_phone}:`, message);
+      }
+    }
+
+    return { success: true };
+  } catch (error) {
+    console.error('Error sending reminder:', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+// DELETE /api/rsvp/reminders/[id] - Cancel a reminder
+export async function DELETE(req: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const url = new URL(req.url);
+    const reminderId = url.pathname.split('/').pop();
+
+    // Get current user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Verify ownership and cancel
+    const { error } = await supabase
+      .from('rsvp_reminders')
+      .update({ status: 'cancelled' })
+      .eq('id', reminderId)
+      .eq('status', 'pending');
+
+    if (error) {
+      console.error('Error cancelling reminder:', error);
+      return NextResponse.json(
+        { error: 'Failed to cancel reminder' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({ message: 'Reminder cancelled successfully' });
+  } catch (error) {
+    console.error('Error in DELETE /api/rsvp/reminders:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

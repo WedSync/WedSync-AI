@@ -1,0 +1,645 @@
+/**
+ * WS-130 Round 3: Photography AI Full Integration E2E Tests
+ * Comprehensive end-to-end testing of all team integrations with UI validation
+ */
+
+import { test, expect, Page } from '@playwright/test';
+import { createClient } from '@supabase/supabase-js';
+
+// Test configuration
+const TEST_CONFIG = {
+  baseURL: process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000',
+  supabaseURL: process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  supabaseKey: process.env.SUPABASE_ANON_KEY!,
+  testTimeout: 30000
+};
+
+// Test data
+const mockClient = {
+  id: 'test-client-e2e-123',
+  name: 'E2E Test Wedding',
+  wedding_date: '2024-06-15T18:00:00Z',
+  style_preferences: 'romantic'
+};
+
+const mockUser = {
+  email: 'test-e2e@wedsync.com',
+  password: 'TestPassword123!',
+  plan: 'premium'
+};
+
+const testImageUrls = [
+  'https://images.unsplash.com/photo-1511285560929-80b456fea0bc',
+  'https://images.unsplash.com/photo-1519741497674-611481863552'
+];
+
+test.describe('Photography AI Integration E2E Tests', () => {
+  let page: Page;
+  let supabase: any;
+
+  test.beforeAll(async () => {
+    // Initialize Supabase for test data setup
+    supabase = createClient(TEST_CONFIG.supabaseURL, TEST_CONFIG.supabaseKey);
+  });
+
+  test.beforeEach(async ({ page: testPage, browserName }) => {
+    page = testPage;
+
+    // Set longer timeout for AI processing
+    test.setTimeout(TEST_CONFIG.testTimeout);
+
+    // Mock external AI services for consistent testing
+    await mockAIServices(page);
+
+    // Authenticate user
+    await authenticateTestUser(page);
+
+    // Navigate to photography AI dashboard
+    await page.goto('/dashboard/clients/test-client-e2e-123/photography/ai-analysis');
+    await page.waitForLoadState('networkidle');
+  });
+
+  test.afterEach(async () => {
+    // Cleanup test data
+    await cleanupTestData();
+  });
+
+  test.describe('Full Team Integration Workflow', () => {
+    test('should complete full photography AI analysis with all team integrations', async () => {
+      // Step 1: Configure analysis preferences
+      await page.click('[data-testid="integration-settings"]');
+      
+      // Enable all team integrations
+      await page.check('[data-testid="sync-with-music"]');
+      await page.check('[data-testid="sync-with-floral"]');
+      await page.check('[data-testid="track-usage"]');
+      
+      // Verify integration toggles are accessible
+      await expect(page.locator('[data-testid="sync-with-music"]')).toHaveAttribute('aria-label', /sync with music ai/i);
+      await expect(page.locator('[data-testid="sync-with-floral"]')).toHaveAttribute('aria-label', /sync with floral ai/i);
+      
+      await page.click('[data-testid="save-preferences"]');
+      await page.waitForSelector('[data-testid="preferences-saved"]');
+
+      // Step 2: Upload mood board images
+      await page.locator('[data-testid="mood-board-upload"]').setInputFiles([
+        'tests/fixtures/wedding-inspiration-1.jpg',
+        'tests/fixtures/wedding-inspiration-2.jpg'
+      ]);
+
+      // Verify upload success
+      await page.waitForSelector('[data-testid="uploaded-images"]');
+      const uploadedImages = page.locator('[data-testid="uploaded-image"]');
+      await expect(uploadedImages).toHaveCount(2);
+
+      // Step 3: Configure wedding details
+      await page.selectOption('[data-testid="wedding-style-selector"]', 'romantic');
+      
+      // Add preferred colors using color picker
+      await page.click('[data-testid="color-picker-button"]');
+      await page.click('[data-testid="color-swatch"][data-color="#F5F5DC"]'); // Beige
+      await page.click('[data-testid="color-swatch"][data-color="#8B4513"]'); // Saddle brown
+      await page.click('[data-testid="color-picker-close"]');
+
+      // Verify selected colors are displayed
+      const selectedColors = page.locator('[data-testid="selected-color"]');
+      await expect(selectedColors).toHaveCount(2);
+
+      // Set budget range
+      await page.fill('[data-testid="budget-min"]', '2000');
+      await page.fill('[data-testid="budget-max"]', '5000');
+
+      // Step 4: Start integrated analysis
+      await page.click('[data-testid="start-analysis"]');
+      
+      // Verify loading state with accessibility
+      await page.waitForSelector('[data-testid="analysis-loading"]');
+      const loadingIndicator = page.locator('[data-testid="analysis-progress"]');
+      await expect(loadingIndicator).toHaveAttribute('role', 'progressbar');
+      await expect(loadingIndicator).toHaveAttribute('aria-label', /analyzing/i);
+
+      // Wait for analysis completion (with extended timeout for AI processing)
+      await page.waitForSelector('[data-testid="analysis-complete"]', { timeout: 25000 });
+
+      // Step 5: Verify photography analysis results
+      const photographySection = page.locator('[data-testid="photography-analysis"]');
+      await expect(photographySection).toBeVisible();
+      
+      // Check mood board generation
+      const moodBoard = page.locator('[data-testid="generated-mood-board"]');
+      await expect(moodBoard).toBeVisible();
+      await expect(moodBoard).toHaveAttribute('role', 'img');
+      
+      // Verify dominant colors extraction
+      const dominantColors = page.locator('[data-testid="dominant-colors"] [data-testid="color-swatch"]');
+      await expect(dominantColors.first()).toBeVisible();
+
+      // Check style analysis
+      const styleAnalysis = page.locator('[data-testid="style-analysis"]');
+      await expect(styleAnalysis).toBeVisible();
+      await expect(styleAnalysis).toContainText(/romantic/i);
+
+      // Verify confidence scores
+      const confidenceScore = page.locator('[data-testid="confidence-score"]');
+      await expect(confidenceScore).toContainText(/%/);
+
+      // Step 6: Verify Music AI integration (Team A)
+      const musicSection = page.locator('[data-testid="style-consistency"]');
+      await expect(musicSection).toBeVisible();
+      
+      // Check style match score
+      const styleMatchScore = page.locator('[data-testid="style-match-score"]');
+      await expect(styleMatchScore).toContainText(/\d+%/);
+      
+      // Verify music recommendations
+      const musicRecommendations = page.locator('[data-testid="music-recommendations"] [data-testid="recommended-track"]');
+      await expect(musicRecommendations.first()).toBeVisible();
+      
+      // Check accessibility of music recommendations
+      await expect(musicRecommendations.first()).toHaveAttribute('role', 'button');
+      await expect(musicRecommendations.first()).toHaveAttribute('aria-label');
+
+      // Verify Team A integration score
+      const teamAScore = page.locator('[data-testid="team-a-integration-score"]');
+      await expect(teamAScore).toContainText(/\d+%/);
+
+      // Step 7: Verify Floral AI integration (Team B)
+      const floralSection = page.locator('[data-testid="color-harmony"]');
+      await expect(floralSection).toBeVisible();
+      
+      // Check color harmony score
+      const harmonyScore = page.locator('[data-testid="color-harmony-score"]');
+      await expect(harmonyScore).toContainText(/\d+%/);
+      
+      // Verify floral recommendations
+      const floralRecommendations = page.locator('[data-testid="floral-recommendations"] [data-testid="recommended-flower"]');
+      await expect(floralRecommendations.first()).toBeVisible();
+      
+      // Check seasonal alignment
+      const seasonalAlignment = page.locator('[data-testid="seasonal-alignment"]');
+      await expect(seasonalAlignment).toBeVisible();
+
+      // Verify Team B integration score
+      const teamBScore = page.locator('[data-testid="team-b-integration-score"]');
+      await expect(teamBScore).toContainText(/\d+%/);
+
+      // Step 8: Verify Pricing insights (Team D)
+      const pricingSection = page.locator('[data-testid="pricing-insights"]');
+      await expect(pricingSection).toBeVisible();
+      
+      // Check estimated cost
+      const estimatedCost = page.locator('[data-testid="estimated-cost"]');
+      await expect(estimatedCost).toContainText(/\$\d+/);
+      
+      // Verify feature accessibility
+      const featureAccess = page.locator('[data-testid="feature-accessibility"]');
+      await expect(featureAccess).toContainText(/premium/i);
+
+      // Check budget recommendations
+      const budgetRecommendations = page.locator('[data-testid="budget-recommendations"]');
+      await expect(budgetRecommendations).toBeVisible();
+
+      // Verify Team D integration score
+      const teamDScore = page.locator('[data-testid="team-d-integration-score"]');
+      await expect(teamDScore).toContainText(/\d+%/);
+
+      // Step 9: Verify Trial metrics (Team E)
+      const trialSection = page.locator('[data-testid="trial-metrics"]');
+      await expect(trialSection).toBeVisible();
+      
+      // Check usage tracking
+      const usageCount = page.locator('[data-testid="usage-count"]');
+      await expect(usageCount).toContainText(/\d+/);
+      
+      // Verify ROI prediction
+      const roiPrediction = page.locator('[data-testid="roi-prediction"]');
+      await expect(roiPrediction).toContainText(/\d+%/);
+      
+      // Check conversion likelihood
+      const conversionLikelihood = page.locator('[data-testid="conversion-likelihood"]');
+      await expect(conversionLikelihood).toContainText(/\d+%/);
+
+      // Verify Team E integration score
+      const teamEScore = page.locator('[data-testid="team-e-integration-score"]');
+      await expect(teamEScore).toContainText(/\d+%/);
+
+      // Step 10: Verify overall integration metrics
+      const integrationMetrics = page.locator('[data-testid="integration-metrics"]');
+      await expect(integrationMetrics).toBeVisible();
+      
+      // Check overall coherence score
+      const coherenceScore = page.locator('[data-testid="overall-coherence-score"]');
+      await expect(coherenceScore).toContainText(/\d+%/);
+      
+      // Verify teams integrated list
+      const teamsIntegrated = page.locator('[data-testid="teams-integrated"] [data-testid="integrated-team"]');
+      await expect(teamsIntegrated).toHaveCount(4); // music_ai, floral_ai, pricing, trials
+      
+      // Check processing performance
+      const processingTime = page.locator('[data-testid="processing-time"]');
+      await expect(processingTime).toContainText(/\d+ms/);
+      
+      // Verify cache hit rate
+      const cacheHitRate = page.locator('[data-testid="cache-hit-rate"]');
+      await expect(cacheHitRate).toContainText(/\d+%/);
+    });
+
+    test('should handle partial integration gracefully', async () => {
+      // Configure with only some integrations enabled
+      await page.click('[data-testid="integration-settings"]');
+      await page.check('[data-testid="sync-with-music"]');
+      await page.uncheck('[data-testid="sync-with-floral"]');
+      await page.check('[data-testid="track-usage"]');
+      await page.click('[data-testid="save-preferences"]');
+
+      // Upload images and start analysis
+      await page.locator('[data-testid="mood-board-upload"]').setInputFiles([
+        'tests/fixtures/wedding-inspiration-1.jpg'
+      ]);
+      await page.selectOption('[data-testid="wedding-style-selector"]', 'romantic');
+      await page.click('[data-testid="start-analysis"]');
+
+      await page.waitForSelector('[data-testid="analysis-complete"]', { timeout: 25000 });
+
+      // Verify partial integration
+      await expect(page.locator('[data-testid="style-consistency"]')).toBeVisible();
+      await expect(page.locator('[data-testid="color-harmony"]')).not.toBeVisible();
+      await expect(page.locator('[data-testid="trial-metrics"]')).toBeVisible();
+
+      // Check teams integrated count
+      const teamsIntegrated = page.locator('[data-testid="teams-integrated"] [data-testid="integrated-team"]');
+      await expect(teamsIntegrated).toHaveCount(3); // music_ai, pricing, trials
+    });
+
+    test('should handle integration failures gracefully', async () => {
+      // Mock music AI service failure
+      await page.route('**/api/music/style-consistency', route => {
+        route.fulfill({
+          status: 503,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'Service temporarily unavailable' })
+        });
+      });
+
+      await page.locator('[data-testid="mood-board-upload"]').setInputFiles([
+        'tests/fixtures/wedding-inspiration-1.jpg'
+      ]);
+      await page.selectOption('[data-testid="wedding-style-selector"]', 'romantic');
+      await page.click('[data-testid="start-analysis"]');
+
+      await page.waitForSelector('[data-testid="analysis-complete"]', { timeout: 25000 });
+
+      // Verify graceful error handling
+      const errorSection = page.locator('[data-testid="integration-errors"]');
+      await expect(errorSection).toBeVisible();
+      
+      const musicError = page.locator('[data-testid="music-ai-error"]');
+      await expect(musicError).toContainText(/unavailable/i);
+      await expect(musicError).toHaveAttribute('role', 'alert');
+
+      // Verify other integrations still work
+      await expect(page.locator('[data-testid="color-harmony"]')).toBeVisible();
+      await expect(page.locator('[data-testid="trial-metrics"]')).toBeVisible();
+    });
+  });
+
+  test.describe('Rate Limiting and Caching', () => {
+    test('should respect rate limits for different plan tiers', async () => {
+      // Test with starter plan user
+      await authenticateUserWithPlan('starter');
+      await page.goto('/dashboard/clients/test-client-e2e-123/photography/ai-analysis');
+
+      // Verify usage display for limited plan
+      const usageMeter = page.locator('[data-testid="usage-meter"]');
+      await expect(usageMeter).toBeVisible();
+      await expect(usageMeter).toContainText(/5 uses/i);
+
+      // Start analysis
+      await page.locator('[data-testid="mood-board-upload"]').setInputFiles([
+        'tests/fixtures/wedding-inspiration-1.jpg'
+      ]);
+      await page.click('[data-testid="start-analysis"]');
+
+      await page.waitForSelector('[data-testid="analysis-complete"]', { timeout: 25000 });
+
+      // Verify usage counter updated
+      const updatedUsage = page.locator('[data-testid="remaining-uses"]');
+      await expect(updatedUsage).toContainText(/4 remaining/i);
+    });
+
+    test('should show upgrade prompt when rate limit exceeded', async () => {
+      // Mock rate limit exceeded response
+      await page.route('**/api/photography/analyze', route => {
+        route.fulfill({
+          status: 429,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            success: false,
+            error: {
+              code: 'RATE_LIMIT_EXCEEDED',
+              message: 'Monthly limit exceeded'
+            }
+          })
+        });
+      });
+
+      await page.click('[data-testid="start-analysis"]');
+
+      // Verify rate limit error handling
+      await page.waitForSelector('[data-testid="rate-limit-error"]');
+      const errorMessage = page.locator('[data-testid="rate-limit-message"]');
+      await expect(errorMessage).toContainText(/limit exceeded/i);
+
+      // Verify upgrade prompt
+      const upgradePrompt = page.locator('[data-testid="upgrade-prompt"]');
+      await expect(upgradePrompt).toBeVisible();
+      
+      const upgradeButton = page.locator('[data-testid="upgrade-plan-button"]');
+      await expect(upgradeButton).toBeVisible();
+      await expect(upgradeButton).toHaveAttribute('aria-label', /upgrade to premium/i);
+    });
+
+    test('should utilize caching for repeated requests', async () => {
+      // First request
+      await page.locator('[data-testid="mood-board-upload"]').setInputFiles([
+        'tests/fixtures/wedding-inspiration-1.jpg'
+      ]);
+      await page.selectOption('[data-testid="wedding-style-selector"]', 'romantic');
+      
+      const firstRequestTime = Date.now();
+      await page.click('[data-testid="start-analysis"]');
+      await page.waitForSelector('[data-testid="analysis-complete"]', { timeout: 25000 });
+      const firstDuration = Date.now() - firstRequestTime;
+
+      // Clear results and make identical request
+      await page.click('[data-testid="clear-results"]');
+      
+      const secondRequestTime = Date.now();
+      await page.click('[data-testid="start-analysis"]');
+      await page.waitForSelector('[data-testid="analysis-complete"]', { timeout: 25000 });
+      const secondDuration = Date.now() - secondRequestTime;
+
+      // Second request should be significantly faster due to caching
+      expect(secondDuration).toBeLessThan(firstDuration * 0.5);
+
+      // Verify cache hit indicator
+      const cacheIndicator = page.locator('[data-testid="cache-hit-indicator"]');
+      await expect(cacheIndicator).toBeVisible();
+    });
+  });
+
+  test.describe('Performance and User Experience', () => {
+    test('should complete analysis within performance requirements', async () => {
+      const startTime = Date.now();
+      
+      await page.locator('[data-testid="mood-board-upload"]').setInputFiles([
+        'tests/fixtures/wedding-inspiration-1.jpg'
+      ]);
+      await page.selectOption('[data-testid="wedding-style-selector"]', 'romantic');
+      await page.click('[data-testid="start-analysis"]');
+      
+      await page.waitForSelector('[data-testid="analysis-complete"]', { timeout: 25000 });
+      
+      const totalTime = Date.now() - startTime;
+      
+      // Analysis should complete within 20 seconds
+      expect(totalTime).toBeLessThan(20000);
+      
+      // Verify performance metrics are displayed
+      const performanceMetrics = page.locator('[data-testid="performance-metrics"]');
+      await expect(performanceMetrics).toBeVisible();
+    });
+
+    test('should provide real-time progress updates', async () => {
+      await page.locator('[data-testid="mood-board-upload"]').setInputFiles([
+        'tests/fixtures/wedding-inspiration-1.jpg'
+      ]);
+      await page.click('[data-testid="start-analysis"]');
+      
+      // Verify progress stages
+      await page.waitForSelector('[data-testid="progress-stage-photography"]');
+      await expect(page.locator('[data-testid="progress-stage-photography"]')).toContainText(/analyzing images/i);
+      
+      await page.waitForSelector('[data-testid="progress-stage-integration"]');
+      await expect(page.locator('[data-testid="progress-stage-integration"]')).toContainText(/integrating with teams/i);
+      
+      // Verify progress percentage updates
+      const progressBar = page.locator('[data-testid="analysis-progress-bar"]');
+      await expect(progressBar).toHaveAttribute('aria-valuenow');
+      
+      // Wait for completion
+      await page.waitForSelector('[data-testid="analysis-complete"]', { timeout: 25000 });
+    });
+
+    test('should maintain responsive design across screen sizes', async () => {
+      // Test mobile viewport
+      await page.setViewportSize({ width: 375, height: 667 });
+      await page.reload();
+      
+      // Verify mobile layout
+      await expect(page.locator('[data-testid="mobile-layout"]')).toBeVisible();
+      
+      // Test tablet viewport
+      await page.setViewportSize({ width: 768, height: 1024 });
+      await page.reload();
+      
+      // Verify tablet layout
+      await expect(page.locator('[data-testid="tablet-layout"]')).toBeVisible();
+      
+      // Test desktop viewport
+      await page.setViewportSize({ width: 1920, height: 1080 });
+      await page.reload();
+      
+      // Verify desktop layout
+      await expect(page.locator('[data-testid="desktop-layout"]')).toBeVisible();
+    });
+  });
+
+  test.describe('Accessibility and Usability', () => {
+    test('should meet WCAG AA accessibility standards', async () => {
+      // Test keyboard navigation
+      await page.keyboard.press('Tab');
+      let focusedElement = page.locator(':focus');
+      await expect(focusedElement).toBeVisible();
+      
+      // Navigate through all interactive elements
+      const interactiveElements = await page.locator('button, input, select, [tabindex="0"]').count();
+      
+      for (let i = 0; i < Math.min(interactiveElements, 20); i++) {
+        await page.keyboard.press('Tab');
+        focusedElement = page.locator(':focus');
+        await expect(focusedElement).toBeVisible();
+        
+        // Verify focus indicator
+        await expect(focusedElement).toHaveCSS('outline-style', 'solid');
+      }
+      
+      // Test screen reader support
+      const headings = page.locator('h1, h2, h3, h4, h5, h6');
+      const headingCount = await headings.count();
+      expect(headingCount).toBeGreaterThan(0);
+      
+      // Verify ARIA labels
+      const buttons = page.locator('button');
+      const buttonCount = await buttons.count();
+      
+      for (let i = 0; i < buttonCount; i++) {
+        const button = buttons.nth(i);
+        const ariaLabel = await button.getAttribute('aria-label');
+        const textContent = await button.textContent();
+        
+        // Each button should have either aria-label or text content
+        expect(ariaLabel || (textContent && textContent.trim().length > 0)).toBeTruthy();
+      }
+    });
+
+    test('should provide clear error messages and recovery options', async () => {
+      // Mock network error
+      await page.route('**/api/photography/analyze', route => {
+        route.fulfill({
+          status: 500,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            success: false,
+            error: {
+              code: 'INTERNAL_ERROR',
+              message: 'Analysis failed due to server error'
+            }
+          })
+        });
+      });
+
+      await page.click('[data-testid="start-analysis"]');
+      
+      await page.waitForSelector('[data-testid="analysis-error"]');
+      
+      // Verify error message clarity
+      const errorMessage = page.locator('[data-testid="error-message"]');
+      await expect(errorMessage).toContainText(/server error/i);
+      await expect(errorMessage).toHaveAttribute('role', 'alert');
+      
+      // Verify recovery options
+      const retryButton = page.locator('[data-testid="retry-analysis"]');
+      await expect(retryButton).toBeVisible();
+      await expect(retryButton).toHaveAttribute('aria-label', /retry analysis/i);
+      
+      const supportLink = page.locator('[data-testid="contact-support"]');
+      await expect(supportLink).toBeVisible();
+    });
+  });
+
+  test.describe('Security and Data Protection', () => {
+    test('should protect against unauthorized access', async () => {
+      // Clear authentication
+      await page.context().clearCookies();
+      await page.goto('/dashboard/clients/test-client-e2e-123/photography/ai-analysis');
+      
+      // Should redirect to login
+      await expect(page).toHaveURL(/\/auth\/login/);
+    });
+
+    test('should validate file uploads securely', async () => {
+      // Test invalid file type
+      await page.locator('[data-testid="mood-board-upload"]').setInputFiles([
+        'tests/fixtures/malicious-file.exe'
+      ]);
+      
+      // Should show validation error
+      await page.waitForSelector('[data-testid="file-validation-error"]');
+      const errorMessage = page.locator('[data-testid="file-validation-error"]');
+      await expect(errorMessage).toContainText(/invalid file type/i);
+    });
+
+    test('should sanitize user inputs', async () => {
+      // Test XSS attempt in style selector
+      await page.selectOption('[data-testid="wedding-style-selector"]', '<script>alert("xss")</script>');
+      
+      // Should not execute script and should sanitize input
+      await page.waitForTimeout(1000);
+      const alertDialog = page.locator('.swal2-popup');
+      await expect(alertDialog).not.toBeVisible();
+    });
+  });
+
+  // Helper functions
+  async function mockAIServices(page: Page) {
+    // Mock photography AI service
+    await page.route('**/api/photography/analyze', route => {
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          data: {
+            photography_analysis: {
+              mood_board_id: 'test-mood-123',
+              dominant_colors: ['#F5F5DC', '#8B4513'],
+              style_analysis: {
+                primary_style: 'romantic',
+                confidence_score: 0.92
+              },
+              recommendations: []
+            },
+            style_consistency: {
+              style_match_score: 0.89,
+              music_recommendations: [
+                { track_name: 'Perfect', artist: 'Ed Sheeran', style_compatibility: 0.91 }
+              ],
+              team_a_integration_score: 0.91
+            },
+            color_harmony: {
+              color_harmony_score: 0.94,
+              floral_recommendations: [
+                { flower_type: 'Garden Roses', color: '#F5F5DC', harmony_score: 0.96 }
+              ],
+              team_b_integration_score: 0.92
+            },
+            pricing_insights: {
+              estimated_cost: 3500,
+              feature_accessibility: 'premium_tier',
+              team_d_integration_score: 0.87
+            },
+            trial_metrics: {
+              usage_count: 1,
+              remaining_uses: 99,
+              roi_prediction: 0.78,
+              team_e_integration_score: 0.83
+            },
+            integration_metrics: {
+              overall_coherence_score: 0.89,
+              processing_time_ms: 2500,
+              teams_integrated: ['music_ai', 'floral_ai', 'pricing', 'trials'],
+              cache_hit_rate: 0.25
+            }
+          }
+        })
+      });
+    });
+  }
+
+  async function authenticateTestUser(page: Page) {
+    await page.goto('/auth/login');
+    await page.fill('[data-testid="email-input"]', mockUser.email);
+    await page.fill('[data-testid="password-input"]', mockUser.password);
+    await page.click('[data-testid="login-button"]');
+    await page.waitForURL('**/dashboard**');
+  }
+
+  async function authenticateUserWithPlan(plan: string) {
+    await page.goto('/auth/login');
+    await page.fill('[data-testid="email-input"]', `test-${plan}@wedsync.com`);
+    await page.fill('[data-testid="password-input"]', mockUser.password);
+    await page.click('[data-testid="login-button"]');
+    await page.waitForURL('**/dashboard**');
+  }
+
+  async function cleanupTestData() {
+    // Cleanup test analysis records
+    if (supabase) {
+      await supabase
+        .from('photo_analysis_records')
+        .delete()
+        .ilike('client_id', 'test-client-e2e%');
+    }
+  }
+});

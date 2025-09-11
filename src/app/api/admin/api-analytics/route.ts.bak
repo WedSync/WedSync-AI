@@ -1,0 +1,102 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { withAPIMiddleware, APIMiddlewarePresets } from '@/lib/middleware/rate-limiting';
+import { apiUsageTracker } from '@/lib/middleware/rate-limiting';
+
+/**
+ * WS-233: API Analytics - Historical Analytics Endpoint
+ * Returns historical API usage analytics for specified time periods
+ */
+export async function GET(request: NextRequest) {
+  return withAPIMiddleware(
+    request,
+    async (context) => {
+      try {
+        const { searchParams } = new URL(request.url);
+        const period = searchParams.get('period') as 'hour' | 'day' | 'week' | 'month' || 'day';
+        const supplierId = searchParams.get('supplier_id') || undefined;
+        const userId = searchParams.get('user_id') || undefined;
+
+        // Validate period parameter
+        if (!['hour', 'day', 'week', 'month'].includes(period)) {
+          return NextResponse.json({
+            success: false,
+            error: 'Invalid period parameter. Must be one of: hour, day, week, month',
+            requestId: context.requestId,
+          }, { status: 400 });
+        }
+
+        // Get analytics data from the usage tracker
+        const analytics = await apiUsageTracker.getUsageAnalytics(
+          period,
+          supplierId,
+          userId
+        );
+
+        return NextResponse.json({
+          success: true,
+          data: analytics,
+          filters: {
+            period,
+            supplier_id: supplierId,
+            user_id: userId,
+          },
+          timestamp: new Date().toISOString(),
+          requestId: context.requestId,
+        });
+
+      } catch (error) {
+        console.error('Failed to fetch analytics:', error);
+        
+        return NextResponse.json({
+          success: false,
+          error: 'Failed to fetch analytics data',
+          requestId: context.requestId,
+        }, { status: 500 });
+      }
+    },
+    APIMiddlewarePresets.admin
+  );
+}
+
+/**
+ * Example of the data structure returned:
+ * {
+ *   success: true,
+ *   data: {
+ *     period: "day",
+ *     totalRequests: 15600,
+ *     successfulRequests: 14820,
+ *     failedRequests: 780,
+ *     rateLimitedRequests: 45,
+ *     averageResponseTime: 185,
+ *     p95ResponseTime: 450,
+ *     topEndpoints: [
+ *       { endpoint: "/api/forms/submit", count: 4500, avgResponseTime: 120 },
+ *       { endpoint: "/api/guests", count: 3200, avgResponseTime: 95 },
+ *       { endpoint: "/api/suppliers/search", count: 1800, avgResponseTime: 340 }
+ *     ],
+ *     errorBreakdown: [
+ *       { error: "HTTP_429", count: 45 },
+ *       { error: "validation_error", count: 234 },
+ *       { error: "HTTP_500", count: 12 }
+ *     ],
+ *     tierUsageBreakdown: [
+ *       { tier: "premium", requests: 8500, percentage: 54.5 },
+ *       { tier: "basic", requests: 4200, percentage: 26.9 },
+ *       { tier: "free", requests: 2900, percentage: 18.6 }
+ *     ],
+ *     peakHours: [
+ *       { hour: 14, requests: 890 },
+ *       { hour: 15, requests: 856 },
+ *       { hour: 13, requests: 782 }
+ *     ]
+ *   },
+ *   filters: {
+ *     period: "day",
+ *     supplier_id: null,
+ *     user_id: null
+ *   },
+ *   timestamp: "2025-01-20T10:30:00Z",
+ *   requestId: "req_1642674600_def456"
+ * }
+ */

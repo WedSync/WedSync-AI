@@ -1,0 +1,374 @@
+'use client';
+
+import React, { useState } from 'react';
+import {
+  Cog8ToothIcon,
+  CalendarIcon,
+  BellIcon,
+  UserCircleIcon,
+  ShieldCheckIcon,
+  CreditCardIcon,
+  DevicePhoneMobileIcon,
+  LinkIcon,
+  KeyIcon,
+  GlobeAltIcon,
+  SwatchIcon,
+} from '@heroicons/react/20/solid';
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
+
+export default function SettingsPage() {
+  const pathname = usePathname();
+
+  const settingsCategories = [
+    {
+      id: 'branding',
+      title: 'Branding & Theme',
+      description: 'Customize your client portal with your business branding',
+      icon: SwatchIcon,
+      href: '/settings/branding',
+      badge: 'Professional',
+      items: [
+        { label: 'Logo & Colors', href: '/settings/branding' },
+        { label: 'Typography', href: '/settings/branding#typography' },
+        { label: 'Custom CSS', href: '/settings/branding#advanced' },
+      ],
+    },
+    {
+      id: 'calendar',
+      title: 'Calendar Integration',
+      description: 'Connect your external calendars and sync events',
+      icon: CalendarIcon,
+      href: '/settings/calendar-integration',
+      badge: 'New',
+      items: [
+        {
+          label: 'Apple Calendar',
+          href: '/settings/calendar-integration/apple',
+        },
+        { label: 'Outlook', href: '/settings/calendar-integration/outlook' },
+        {
+          label: 'Google Calendar',
+          href: '/settings/calendar-integration/google',
+        },
+      ],
+    },
+    {
+      id: 'notifications',
+      title: 'Notifications',
+      description: 'Manage your notification preferences and alerts',
+      icon: BellIcon,
+      href: '/settings/notifications',
+      items: [
+        { label: 'Email Preferences', href: '/settings/notifications/email' },
+        { label: 'SMS Settings', href: '/settings/notifications/sms' },
+        { label: 'Push Notifications', href: '/settings/notifications/push' },
+      ],
+    },
+    {
+      id: 'profile',
+      title: 'Profile & Account',
+      description: 'Update your personal information and account details',
+      icon: UserCircleIcon,
+      href: '/settings/profile',
+      items: [
+        { label: 'Personal Info', href: '/settings/profile/personal' },
+        { label: 'Organization', href: '/settings/profile/organization' },
+        { label: 'Avatar & Branding', href: '/settings/profile/branding' },
+      ],
+    },
+    {
+      id: 'security',
+      title: 'Security & Privacy',
+      description: 'Manage your security settings and privacy preferences',
+      icon: ShieldCheckIcon,
+      href: '/settings/security',
+      items: [
+        {
+          label: 'Password & Authentication',
+          href: '/settings/security/password',
+        },
+        { label: 'Two-Factor Auth', href: '/settings/security/2fa' },
+        { label: 'Privacy Settings', href: '/settings/security/privacy' },
+      ],
+    },
+    {
+      id: 'billing',
+      title: 'Billing & Subscription',
+      description: 'Manage your subscription, billing, and payment methods',
+      icon: CreditCardIcon,
+      href: '/settings/billing',
+      items: [
+        { label: 'Subscription Plan', href: '/settings/billing/subscription' },
+        { label: 'Payment Methods', href: '/settings/billing/payment' },
+        { label: 'Billing History', href: '/settings/billing/history' },
+      ],
+    },
+    {
+      id: 'mobile',
+      title: 'Mobile & PWA',
+      description:
+        'Configure mobile app settings and progressive web app features',
+      icon: DevicePhoneMobileIcon,
+      href: '/settings/mobile',
+      items: [
+        { label: 'App Preferences', href: '/settings/mobile/preferences' },
+        { label: 'Offline Settings', href: '/settings/mobile/offline' },
+        { label: 'Device Sync', href: '/settings/mobile/sync' },
+      ],
+    },
+    {
+      id: 'integrations',
+      title: 'Integrations',
+      description: 'Connect with third-party services and manage API access',
+      icon: LinkIcon,
+      href: '/settings/integrations',
+      items: [
+        { label: 'CRM Integration', href: '/settings/integrations/crm' },
+        {
+          label: 'Payment Processors',
+          href: '/settings/integrations/payments',
+        },
+        { label: 'API Keys', href: '/settings/integrations/api' },
+      ],
+    },
+    {
+      id: 'advanced',
+      title: 'Advanced Settings',
+      description: 'Developer options and advanced configuration',
+      icon: KeyIcon,
+      href: '/settings/advanced',
+      items: [
+        { label: 'Developer Console', href: '/settings/advanced/developer' },
+        { label: 'Webhook Management', href: '/settings/advanced/webhooks' },
+        { label: 'Data Export', href: '/settings/advanced/export' },
+      ],
+    },
+  ];
+
+  return (
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      {/* Header */}
+      <div className="pb-5 border-b border-gray-200">
+        <div className="flex items-center">
+          <Cog8ToothIcon className="h-8 w-8 text-gray-400 mr-3" />
+          <div>
+            <h1 className="text-2xl font-bold leading-7 text-gray-900 sm:truncate">
+              Settings
+            </h1>
+            <p className="mt-1 text-sm text-gray-500">
+              Manage your account, integrations, and application preferences
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Quick Actions */}
+      <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <Link
+          href="/settings/branding"
+          className="relative rounded-lg border border-gray-300 bg-white px-6 py-5 shadow-sm hover:border-gray-400 focus-within:ring-2 focus-within:ring-indigo-500 focus-within:ring-offset-2"
+        >
+          <div>
+            <span className="rounded-lg inline-flex p-3 bg-purple-50 text-purple-600">
+              <SwatchIcon className="h-6 w-6" />
+            </span>
+          </div>
+          <div className="mt-4">
+            <h3 className="text-sm font-medium text-gray-900">
+              <span className="absolute inset-0" aria-hidden="true" />
+              Customize Branding
+            </h3>
+            <p className="mt-1 text-sm text-gray-500">
+              Add your logo and colors to client portals
+            </p>
+            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-800 mt-2">
+              Professional
+            </span>
+          </div>
+        </Link>
+
+        <Link
+          href="/settings/calendar-integration/apple"
+          className="relative rounded-lg border border-gray-300 bg-white px-6 py-5 shadow-sm hover:border-gray-400 focus-within:ring-2 focus-within:ring-indigo-500 focus-within:ring-offset-2"
+        >
+          <div>
+            <span className="rounded-lg inline-flex p-3 bg-blue-50 text-blue-600">
+              <CalendarIcon className="h-6 w-6" />
+            </span>
+          </div>
+          <div className="mt-4">
+            <h3 className="text-sm font-medium text-gray-900">
+              <span className="absolute inset-0" aria-hidden="true" />
+              Connect Apple Calendar
+            </h3>
+            <p className="mt-1 text-sm text-gray-500">
+              Sync your wedding events with iCloud Calendar
+            </p>
+            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800 mt-2">
+              New Feature
+            </span>
+          </div>
+        </Link>
+
+        <Link
+          href="/settings/notifications"
+          className="relative rounded-lg border border-gray-300 bg-white px-6 py-5 shadow-sm hover:border-gray-400"
+        >
+          <div>
+            <span className="rounded-lg inline-flex p-3 bg-yellow-50 text-yellow-600">
+              <BellIcon className="h-6 w-6" />
+            </span>
+          </div>
+          <div className="mt-4">
+            <h3 className="text-sm font-medium text-gray-900">
+              <span className="absolute inset-0" aria-hidden="true" />
+              Notification Settings
+            </h3>
+            <p className="mt-1 text-sm text-gray-500">
+              Configure alerts and communication preferences
+            </p>
+          </div>
+        </Link>
+
+        <Link
+          href="/settings/security"
+          className="relative rounded-lg border border-gray-300 bg-white px-6 py-5 shadow-sm hover:border-gray-400"
+        >
+          <div>
+            <span className="rounded-lg inline-flex p-3 bg-green-50 text-green-600">
+              <ShieldCheckIcon className="h-6 w-6" />
+            </span>
+          </div>
+          <div className="mt-4">
+            <h3 className="text-sm font-medium text-gray-900">
+              <span className="absolute inset-0" aria-hidden="true" />
+              Security & Privacy
+            </h3>
+            <p className="mt-1 text-sm text-gray-500">
+              Manage security settings and data privacy
+            </p>
+          </div>
+        </Link>
+
+        <Link
+          href="/settings/billing"
+          className="relative rounded-lg border border-gray-300 bg-white px-6 py-5 shadow-sm hover:border-gray-400"
+        >
+          <div>
+            <span className="rounded-lg inline-flex p-3 bg-purple-50 text-purple-600">
+              <CreditCardIcon className="h-6 w-6" />
+            </span>
+          </div>
+          <div className="mt-4">
+            <h3 className="text-sm font-medium text-gray-900">
+              <span className="absolute inset-0" aria-hidden="true" />
+              Billing & Plans
+            </h3>
+            <p className="mt-1 text-sm text-gray-500">
+              View subscription details and payment history
+            </p>
+          </div>
+        </Link>
+      </div>
+
+      {/* All Settings Categories */}
+      <div className="mt-8">
+        <h2 className="text-lg font-medium text-gray-900 mb-4">All Settings</h2>
+        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+          {settingsCategories.map((category) => {
+            const Icon = category.icon;
+            return (
+              <div
+                key={category.id}
+                className="bg-white overflow-hidden shadow rounded-lg border border-gray-200 hover:shadow-md transition-shadow duration-200"
+              >
+                <div className="p-6">
+                  <div className="flex items-center">
+                    <div className="flex-shrink-0">
+                      <Icon className="h-8 w-8 text-gray-400" />
+                    </div>
+                    <div className="ml-4 flex-1">
+                      <div className="flex items-center">
+                        <h3 className="text-lg font-medium text-gray-900">
+                          {category.title}
+                        </h3>
+                        {category.badge && (
+                          <span className="ml-2 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                            {category.badge}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-sm text-gray-500 mt-1">
+                        {category.description}
+                      </p>
+                    </div>
+                  </div>
+
+                  {category.items && (
+                    <div className="mt-4 space-y-2">
+                      {category.items.slice(0, 3).map((item) => (
+                        <Link
+                          key={item.href}
+                          href={item.href}
+                          className="block text-sm text-indigo-600 hover:text-indigo-500 font-medium"
+                        >
+                          {item.label}
+                        </Link>
+                      ))}
+                      {category.items.length > 3 && (
+                        <Link
+                          href={category.href}
+                          className="block text-sm text-gray-500 hover:text-gray-700"
+                        >
+                          View all ({category.items.length})
+                        </Link>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="mt-4">
+                    <Link
+                      href={category.href}
+                      className="text-sm font-medium text-indigo-600 hover:text-indigo-500"
+                    >
+                      Configure →
+                    </Link>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Support Section */}
+      <div className="mt-12 bg-gray-50 rounded-lg p-6">
+        <div className="flex items-center">
+          <GlobeAltIcon className="h-8 w-8 text-gray-400" />
+          <div className="ml-4">
+            <h3 className="text-lg font-medium text-gray-900">Need Help?</h3>
+            <p className="text-sm text-gray-500 mt-1">
+              Check our documentation or contact support for assistance with
+              settings
+            </p>
+          </div>
+        </div>
+        <div className="mt-4 flex space-x-4">
+          <Link
+            href="/help/settings"
+            className="text-sm font-medium text-indigo-600 hover:text-indigo-500"
+          >
+            View Documentation
+          </Link>
+          <Link
+            href="/support"
+            className="text-sm font-medium text-indigo-600 hover:text-indigo-500"
+          >
+            Contact Support
+          </Link>
+        </div>
+      </div>
+    </div>
+  );
+}

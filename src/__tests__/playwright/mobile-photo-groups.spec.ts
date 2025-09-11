@@ -1,0 +1,332 @@
+/**
+ * Mobile Photo Groups - Comprehensive Playwright Tests
+ * WS-153 - Mobile-first photo groups management testing
+ * 
+ * Test Coverage:
+ * - Multiple mobile viewports (iPhone SE, iPhone 12 Pro, iPhone 14 Pro Max, Pixel 7)
+ * - Touch interactions (tap, long-press, swipe, drag-drop, pinch-zoom)
+ * - Touch target minimum size validation (44px)
+ * - Performance testing (60fps, <3s loading)
+ * - Offline functionality
+ * - Pull-to-refresh
+ * - Accessibility compliance
+ * - Cross-browser compatibility (iOS Safari, Android Chrome)
+ */
+
+import { test, expect, devices, Page, BrowserContext } from '@playwright/test';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+// Mobile device configurations for testing
+const MOBILE_DEVICES = [
+  {
+    name: 'iPhone SE',
+    ...devices['iPhone SE'],
+    viewport: { width: 375, height: 667 }
+  },
+    name: 'iPhone 12 Pro', 
+    ...devices['iPhone 12 Pro'],
+    viewport: { width: 390, height: 844 }
+    name: 'iPhone 14 Pro Max',
+    ...devices['iPhone 14 Pro Max'], 
+    viewport: { width: 428, height: 926 }
+    name: 'Pixel 7',
+    ...devices['Pixel 7'],
+    viewport: { width: 412, height: 915 }
+  }
+];
+// Test data for photo groups
+const TEST_PHOTO_GROUPS = [
+    name: 'Family Photos',
+    type: 'family',
+    estimatedTime: 30,
+    guestCount: 8
+    name: 'Bridal Party',
+    type: 'bridal_party', 
+    estimatedTime: 45,
+    guestCount: 6
+// Helper function to simulate touch interactions
+async function simulateTouch(page: Page, selector: string, action: 'tap' | 'longPress' | 'swipe') {
+  const element = page.locator(selector);
+  await element.waitFor({ state: 'visible' });
+  
+  switch (action) {
+    case 'tap':
+      await element.tap();
+      break;
+    case 'longPress':
+      await element.tap({ timeout: 1000 });
+    case 'swipe':
+      const box = await element.boundingBox();
+      if (box) {
+        await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
+        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+        await page.mouse.down();
+        await page.mouse.move(box.x + box.width / 2 + 100, box.y + box.height / 2);
+        await page.mouse.up();
+      }
+}
+// Helper function to measure touch target sizes
+async function validateTouchTargetSize(page: Page, selector: string, minSize: number = 44) {
+  const box = await element.boundingBox();
+  expect(box).toBeTruthy();
+  expect(box!.width).toBeGreaterThanOrEqual(minSize);
+  expect(box!.height).toBeGreaterThanOrEqual(minSize);
+// Helper function to measure performance
+async function measureLoadTime(page: Page): Promise<number> {
+  const startTime = Date.now();
+  await page.waitForLoadState('networkidle');
+  return Date.now() - startTime;
+// Test suite for each mobile device
+for (const device of MOBILE_DEVICES) {
+  test.describe(`WedMe Photo Groups - ${device.name}`, () => {
+    let context: BrowserContext;
+    let page: Page;
+    test.beforeAll(async ({ browser }) => {
+      context = await browser.newContext({
+        ...device,
+        permissions: ['camera', 'microphone', 'geolocation'],
+        geolocation: { latitude: 37.7749, longitude: -122.4194 },
+      });
+      page = await context.newPage();
+    });
+    test.afterAll(async () => {
+      await context.close();
+    test('should load WedMe photo groups page within 3 seconds', async () => {
+      const loadTime = await measureLoadTime(page);
+      
+      await page.goto('/wedme/photo-groups');
+      // Verify page loads within performance requirement
+      expect(loadTime).toBeLessThan(3000);
+      // Verify main elements are present
+      await expect(page.locator('[data-testid="wedme-header"]')).toBeVisible();
+      await expect(page.locator('[data-testid="photo-groups-manager"]')).toBeVisible();
+      // Verify mobile-optimized layout
+      const viewport = page.viewportSize();
+      expect(viewport?.width).toBeLessThanOrEqual(428);
+    test('should have properly sized touch targets (minimum 44px)', async () => {
+      // Test header back button
+      await validateTouchTargetSize(page, '[data-testid="back-button"]', 44);
+      // Test action buttons
+      await validateTouchTargetSize(page, '[data-testid="add-group-button"]', 44);
+      await validateTouchTargetSize(page, '[data-testid="search-button"]', 44);
+      // Test photo group items
+      const groupItems = page.locator('[data-testid^="photo-group-item-"]');
+      const count = await groupItems.count();
+      for (let i = 0; i < count; i++) {
+        await validateTouchTargetSize(page, `[data-testid="photo-group-item-${i}"]`, 44);
+    test('should support touch interactions - tap, long-press, swipe', async () => {
+      // Create a test photo group for interaction testing
+      await simulateTouch(page, '[data-testid="add-group-button"]', 'tap');
+      // Fill out the form
+      await page.fill('[data-testid="group-name-input"]', 'Touch Test Group');
+      await page.selectOption('[data-testid="group-type-select"]', 'family');
+      await page.fill('[data-testid="estimated-time-input"]', '30');
+      // Submit form
+      await simulateTouch(page, '[data-testid="save-group-button"]', 'tap');
+      // Wait for group to be created
+      await expect(page.locator('[data-testid*="touch-test-group"]')).toBeVisible();
+      // Test long-press for context menu
+      await simulateTouch(page, '[data-testid*="touch-test-group"]', 'longPress');
+      await expect(page.locator('[data-testid="context-menu"]')).toBeVisible();
+      // Test swipe actions
+      await simulateTouch(page, '[data-testid*="touch-test-group"]', 'swipe');
+      await expect(page.locator('[data-testid="swipe-actions"]')).toBeVisible();
+    test('should support drag and drop functionality', async () => {
+      // Wait for photo groups to load
+      await page.waitForSelector('[data-testid^="photo-group-item-"]');
+      const sourceGroup = page.locator('[data-testid^="photo-group-item-"]').first();
+      const targetGroup = page.locator('[data-testid^="photo-group-item-"]').nth(1);
+      // Simulate drag and drop
+      const sourceBox = await sourceGroup.boundingBox();
+      const targetBox = await targetGroup.boundingBox();
+      if (sourceBox && targetBox) {
+        // Start drag
+        await page.touchscreen.tap(sourceBox.x + sourceBox.width / 2, sourceBox.y + sourceBox.height / 2);
+        await page.mouse.move(sourceBox.x + sourceBox.width / 2, sourceBox.y + sourceBox.height / 2);
+        
+        // Move to target
+        await page.mouse.move(targetBox.x + targetBox.width / 2, targetBox.y + targetBox.height / 2, { steps: 5 });
+        // Drop
+        // Verify drag feedback was shown
+        await expect(page.locator('[data-testid="drag-preview"]')).toHaveCount(0);
+    test('should support pull-to-refresh functionality', async () => {
+      // Scroll to top
+      await page.evaluate(() => window.scrollTo(0, 0));
+      // Simulate pull-to-refresh gesture
+      if (viewport) {
+        const startX = viewport.width / 2;
+        const startY = 100;
+        const endY = 300;
+        await page.touchscreen.tap(startX, startY);
+        await page.mouse.move(startX, startY);
+        await page.mouse.move(startX, endY, { steps: 10 });
+        await page.waitForTimeout(100); // Hold for pull-to-refresh
+        // Verify refresh indicator appears
+        await expect(page.locator('[data-testid="pull-refresh-indicator"]')).toBeVisible();
+        // Wait for refresh to complete
+        await page.waitForTimeout(2000);
+        await expect(page.locator('[data-testid="pull-refresh-indicator"]')).toHaveCount(0);
+    test('should handle pinch-zoom on photo thumbnails', async () => {
+      // Navigate to a photo group with images
+      await simulateTouch(page, '[data-testid^="photo-group-item-"]', 'tap');
+      // Wait for photo grid to load
+      await expect(page.locator('[data-testid="photo-grid"]')).toBeVisible();
+      const photoThumbnail = page.locator('[data-testid^="photo-thumbnail-"]').first();
+      if (await photoThumbnail.count() > 0) {
+        const box = await photoThumbnail.boundingBox();
+        if (box) {
+          // Simulate pinch-zoom gesture
+          const centerX = box.x + box.width / 2;
+          const centerY = box.y + box.height / 2;
+          
+          // Start with two touches close together
+          await page.touchscreen.tap(centerX - 20, centerY);
+          await page.touchscreen.tap(centerX + 20, centerY);
+          // Move touches apart to simulate zoom
+          await page.mouse.move(centerX - 50, centerY);
+          await page.mouse.move(centerX + 50, centerY);
+          // Verify zoom overlay or modal appears
+          await expect(page.locator('[data-testid="photo-zoom-overlay"]')).toBeVisible();
+        }
+    test('should maintain 60fps during scroll interactions', async () => {
+      // Start performance monitoring
+      await page.evaluate(() => {
+        (window as unknown).frameCount = 0;
+        (window as unknown).startTime = Date.now();
+        const countFrames = () => {
+          (window as unknown).frameCount++;
+          requestAnimationFrame(countFrames);
+        };
+        requestAnimationFrame(countFrames);
+      // Perform continuous scroll for 2 seconds
+        const scrollDistance = viewport.height * 3;
+        const scrollSteps = 60; // 30fps for 2 seconds
+        const stepDistance = scrollDistance / scrollSteps;
+        for (let i = 0; i < scrollSteps; i++) {
+          await page.evaluate((step) => {
+            window.scrollBy(0, step);
+          }, stepDistance);
+          await page.waitForTimeout(33); // ~30fps
+      // Measure final frame rate
+      const fps = await page.evaluate(() => {
+        const elapsed = (Date.now() - (window as unknown).startTime) / 1000;
+        return Math.round((window as unknown).frameCount / elapsed);
+      // Verify frame rate is close to 60fps (allow some variance)
+      expect(fps).toBeGreaterThan(45);
+    test('should work in offline mode', async () => {
+      // Wait for initial load
+      await page.waitForLoadState('networkidle');
+      // Go offline
+      await context.setOffline(true);
+      // Verify offline indicator appears
+      await expect(page.locator('[data-testid="offline-indicator"]')).toBeVisible();
+      // Verify cached content is still accessible
+      // Test offline interactions
+      await expect(page.locator('[data-testid="photo-group-form"]')).toBeVisible();
+      // Fill form offline
+      await page.fill('[data-testid="group-name-input"]', 'Offline Test Group');
+      // Verify offline queue notification
+      await expect(page.locator('[data-testid="offline-queue-notification"]')).toBeVisible();
+      // Go back online
+      await context.setOffline(false);
+      // Wait for sync to complete
+      await page.waitForTimeout(2000);
+      await expect(page.locator('[data-testid="sync-complete-notification"]')).toBeVisible();
+    test('should be accessible with screen readers', async () => {
+      // Check ARIA labels and roles
+      await expect(page.locator('[data-testid="wedme-header"]')).toHaveAttribute('role', 'banner');
+      await expect(page.locator('[data-testid="photo-groups-manager"]')).toHaveAttribute('role', 'main');
+      // Check button accessibility
+      const addButton = page.locator('[data-testid="add-group-button"]');
+      await expect(addButton).toHaveAttribute('aria-label');
+      await expect(addButton).not.toHaveAttribute('aria-disabled');
+      // Check keyboard navigation
+      await addButton.focus();
+      await page.keyboard.press('Enter');
+      // Check form accessibility
+      const nameInput = page.locator('[data-testid="group-name-input"]');
+      await expect(nameInput).toHaveAttribute('aria-label');
+      await expect(nameInput).not.toHaveAttribute('aria-invalid', 'true');
+    test('should handle network errors gracefully', async () => {
+      // Simulate network error during action
+      await page.route('**/api/photo-groups/**', route => {
+        route.abort('networkerror');
+      // Attempt to create a photo group
+      await page.fill('[data-testid="group-name-input"]', 'Network Error Test');
+      // Verify error handling
+      await expect(page.locator('[data-testid="error-notification"]')).toBeVisible();
+      await expect(page.locator('[data-testid="retry-button"]')).toBeVisible();
+      // Test retry functionality
+      await page.unroute('**/api/photo-groups/**');
+      await simulateTouch(page, '[data-testid="retry-button"]', 'tap');
+      // Verify success after retry
+      await expect(page.locator('[data-testid="success-notification"]')).toBeVisible();
+  });
+// Cross-browser compatibility tests
+test.describe('Cross-Browser Compatibility', () => {
+  test('should work correctly in iOS Safari simulation', async ({ browser }) => {
+    const context = await browser.newContext({
+      ...devices['iPhone 12 Pro'],
+      userAgent: devices['iPhone 12 Pro'].userAgent?.replace('Chrome', 'Safari')
+    
+    const page = await context.newPage();
+    await page.goto('/wedme/photo-groups');
+    // Test iOS-specific behaviors
+    await expect(page.locator('[data-testid="wedme-header"]')).toBeVisible();
+    // Test touch events work correctly
+    await simulateTouch(page, '[data-testid="add-group-button"]', 'tap');
+    await expect(page.locator('[data-testid="photo-group-form"]')).toBeVisible();
+    await context.close();
+  test('should work correctly in Android Chrome simulation', async ({ browser }) => {
+      ...devices['Pixel 7']
+    // Test Android-specific behaviors
+});
+// Performance benchmarking tests
+test.describe('Performance Benchmarks', () => {
+  test('should meet Core Web Vitals standards', async ({ page }) => {
+    const metrics = await page.evaluate(() => {
+      return new Promise((resolve) => {
+        new PerformanceObserver((list) => {
+          const entries = list.getEntries();
+          const lcp = entries.find(entry => entry.entryType === 'largest-contentful-paint');
+          const fid = entries.find(entry => entry.entryType === 'first-input-delay');
+          const cls = entries.find(entry => entry.entryType === 'layout-shift');
+          resolve({
+            lcp: lcp?.startTime || 0,
+            fid: (fid as unknown)?.processingStart - (fid as unknown)?.startTime || 0,
+            cls: (cls as unknown)?.value || 0
+          });
+        }).observe({ entryTypes: ['largest-contentful-paint', 'first-input-delay', 'layout-shift'] });
+        // Fallback timeout
+        setTimeout(() => resolve({ lcp: 0, fid: 0, cls: 0 }), 5000);
+    // Verify Core Web Vitals thresholds
+    expect((metrics as unknown).lcp).toBeLessThan(2500); // LCP < 2.5s
+    expect((metrics as unknown).fid).toBeLessThan(100);  // FID < 100ms
+    expect((metrics as unknown).cls).toBeLessThan(0.1);  // CLS < 0.1
+  test('should maintain performance with large datasets', async ({ page }) => {
+    // Mock large dataset
+    await page.route('**/api/photo-groups**', route => {
+      const mockGroups = Array.from({ length: 100 }, (_, i) => ({
+        id: `group-${i}`,
+        name: `Photo Group ${i}`,
+        type: 'family',
+        estimatedTime: 30,
+        photos: Array.from({ length: 20 }, (_, j) => ({
+          id: `photo-${i}-${j}`,
+          url: `https://picsum.photos/200/200?random=${i}${j}`
+        }))
+      }));
+      route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ success: true, data: mockGroups })
+    const startTime = Date.now();
+    await page.waitForSelector('[data-testid^="photo-group-item-"]');
+    const loadTime = Date.now() - startTime;
+    // Verify large dataset loads within acceptable time
+    expect(loadTime).toBeLessThan(5000);
+    // Test scroll performance with large dataset
+    await page.evaluate(() => {
+      window.scrollTo(0, document.body.scrollHeight);
+    await page.waitForTimeout(1000);
+    // Verify all items are still responsive
+    await simulateTouch(page, '[data-testid^="photo-group-item-"]', 'tap');
+    await expect(page.locator('[data-testid="photo-group-detail"]')).toBeVisible();

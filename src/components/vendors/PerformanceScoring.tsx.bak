@@ -1,0 +1,498 @@
+'use client'
+
+import { useState, useEffect } from 'react'
+import { createClient } from '@/lib/supabase/client'
+import { Card } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Progress } from '@/components/ui/progress'
+import { 
+  StarIcon,
+  TrophyIcon,
+  ClockIcon,
+  CheckCircleIcon,
+  ExclamationTriangleIcon,
+  ChartBarIcon,
+  CalendarDaysIcon,
+  UserGroupIcon,
+  ArrowTrendingUpIcon,
+  ArrowTrendingDownIcon
+} from '@heroicons/react/20/solid'
+
+interface VendorProfile {
+  id: string
+  business_name: string
+  primary_category: string
+  average_rating: number
+  total_reviews: number
+  is_verified: boolean
+  profile_completion_score: number
+}
+
+interface PerformanceMetrics {
+  overall_score: number
+  delivery_score: number
+  communication_score: number
+  quality_score: number
+  reliability_score: number
+  customer_satisfaction: number
+  on_time_delivery_rate: number
+  response_time_hours: number
+  repeat_customer_rate: number
+  recommendation_rate: number
+  completed_weddings: number
+  active_weddings: number
+  total_revenue: number
+  average_project_value: number
+  performance_trend: 'up' | 'down' | 'stable'
+  recent_feedback: any[]
+  achievements: any[]
+  areas_for_improvement: string[]
+}
+
+interface Props {
+  profile: VendorProfile
+}
+
+export function PerformanceScoring({ profile }: Props) {
+  const [performanceMetrics, setPerformanceMetrics] = useState<PerformanceMetrics | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [selectedPeriod, setSelectedPeriod] = useState('6months')
+  const supabase = createClient()
+
+  useEffect(() => {
+    loadPerformanceMetrics()
+  }, [profile.id, selectedPeriod])
+
+  async function loadPerformanceMetrics() {
+    try {
+      setLoading(true)
+      
+      // In a real implementation, this would fetch from actual performance tables
+      // For now, we'll simulate the data based on the profile
+      
+      const mockMetrics: PerformanceMetrics = {
+        overall_score: Math.min(95, 70 + (profile.average_rating * 5) + (profile.total_reviews * 0.5)),
+        delivery_score: 92,
+        communication_score: 88,
+        quality_score: profile.average_rating * 20,
+        reliability_score: 94,
+        customer_satisfaction: profile.average_rating * 20,
+        on_time_delivery_rate: 94,
+        response_time_hours: 4.2,
+        repeat_customer_rate: 35,
+        recommendation_rate: 87,
+        completed_weddings: Math.max(1, profile.total_reviews),
+        active_weddings: Math.floor(Math.random() * 8) + 2,
+        total_revenue: 45000 + (profile.total_reviews * 2500),
+        average_project_value: 2500 + (profile.average_rating * 500),
+        performance_trend: profile.average_rating > 4.2 ? 'up' : profile.average_rating < 3.8 ? 'down' : 'stable',
+        recent_feedback: [
+          {
+            id: '1',
+            couple_names: 'Sarah & James',
+            rating: 5,
+            comment: 'Absolutely wonderful service! Everything was perfect on our special day.',
+            date: '2024-01-15',
+            wedding_date: '2024-01-10'
+          },
+          {
+            id: '2',
+            couple_names: 'Emily & Michael',
+            rating: 4,
+            comment: 'Great communication throughout the process. Very professional.',
+            date: '2024-01-10',
+            wedding_date: '2024-01-05'
+          },
+          {
+            id: '3',
+            couple_names: 'Lisa & David',
+            rating: 5,
+            comment: 'Exceeded our expectations! Highly recommend to other couples.',
+            date: '2024-01-05',
+            wedding_date: '2023-12-30'
+          }
+        ],
+        achievements: [
+          {
+            id: '1',
+            title: 'Top Rated Vendor',
+            description: 'Maintained 4.5+ star rating for 6 months',
+            icon: 'star',
+            earned_date: '2024-01-01'
+          },
+          {
+            id: '2',
+            title: 'Reliable Partner',
+            description: '95%+ on-time delivery rate',
+            icon: 'clock',
+            earned_date: '2023-12-15'
+          },
+          {
+            id: '3',
+            title: 'Customer Champion',
+            description: '50+ positive reviews',
+            icon: 'trophy',
+            earned_date: '2023-11-20'
+          }
+        ],
+        areas_for_improvement: [
+          'Reduce average response time to under 3 hours',
+          'Increase repeat customer rate to 40%',
+          'Improve pre-wedding consultation process'
+        ]
+      }
+
+      setPerformanceMetrics(mockMetrics)
+    } catch (error) {
+      console.error('Error loading performance metrics:', error)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const getScoreColor = (score: number) => {
+    if (score >= 90) return 'text-green-600'
+    if (score >= 75) return 'text-yellow-600'
+    if (score >= 60) return 'text-orange-600'
+    return 'text-red-600'
+  }
+
+  const getScoreBackground = (score: number) => {
+    if (score >= 90) return 'bg-green-500'
+    if (score >= 75) return 'bg-yellow-500'
+    if (score >= 60) return 'bg-orange-500'
+    return 'bg-red-500'
+  }
+
+  const getTrendIcon = (trend: string) => {
+    switch (trend) {
+      case 'up':
+        return <ArrowTrendingUpIcon className="size-5 text-green-500" />
+      case 'down':
+        return <ArrowTrendingDownIcon className="size-5 text-red-500" />
+      default:
+        return <ChartBarIcon className="size-5 text-gray-500" />
+    }
+  }
+
+  const getAchievementIcon = (iconType: string) => {
+    switch (iconType) {
+      case 'star':
+        return <StarIcon className="size-6 text-yellow-500" />
+      case 'clock':
+        return <ClockIcon className="size-6 text-blue-500" />
+      case 'trophy':
+        return <TrophyIcon className="size-6 text-purple-500" />
+      default:
+        return <CheckCircleIcon className="size-6 text-green-500" />
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <div className="animate-pulse text-lg">Loading performance data...</div>
+      </div>
+    )
+  }
+
+  if (!performanceMetrics) {
+    return (
+      <div className="text-center py-12">
+        <ExclamationTriangleIcon className="size-16 mx-auto text-gray-300 mb-4" />
+        <h3 className="text-lg font-semibold text-gray-900 mb-2">Performance Data Unavailable</h3>
+        <p className="text-gray-600">Complete more weddings to see your performance metrics.</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Period Selector */}
+      <div className="flex items-center justify-between">
+        <h2 className="text-xl font-semibold">Performance Dashboard</h2>
+        <select 
+          className="px-3 py-2 border border-gray-300 rounded-md text-sm"
+          value={selectedPeriod}
+          onChange={(e) => setSelectedPeriod(e.target.value)}
+        >
+          <option value="1month">Last Month</option>
+          <option value="3months">Last 3 Months</option>
+          <option value="6months">Last 6 Months</option>
+          <option value="1year">Last Year</option>
+          <option value="all">All Time</option>
+        </select>
+      </div>
+
+      {/* Overall Score */}
+      <Card className="p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-semibold">Overall Performance Score</h3>
+          {getTrendIcon(performanceMetrics.performance_trend)}
+        </div>
+        
+        <div className="flex items-end gap-8">
+          <div className="flex-1">
+            <div className="flex items-baseline gap-2">
+              <span className={`text-4xl font-bold ${getScoreColor(performanceMetrics.overall_score)}`}>
+                {performanceMetrics.overall_score}
+              </span>
+              <span className="text-xl text-gray-500">/100</span>
+            </div>
+            <div className="mt-2">
+              <Progress 
+                value={performanceMetrics.overall_score} 
+                className="h-3"
+              />
+            </div>
+            <p className="text-sm text-gray-600 mt-2">
+              {performanceMetrics.performance_trend === 'up' && 'Trending upward ↗️'}
+              {performanceMetrics.performance_trend === 'down' && 'Trending downward ↘️'}
+              {performanceMetrics.performance_trend === 'stable' && 'Stable performance →'}
+            </p>
+          </div>
+          
+          <div className="text-right">
+            <div className="text-2xl font-bold text-gray-900">
+              #{Math.floor(Math.random() * 50) + 1}
+            </div>
+            <div className="text-sm text-gray-600">
+              in {profile.primary_category}
+            </div>
+          </div>
+        </div>
+      </Card>
+
+      {/* Score Breakdown */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <Card className="p-4">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm font-medium text-gray-600">Delivery</span>
+            <CheckCircleIcon className="size-5 text-green-500" />
+          </div>
+          <div className="flex items-baseline gap-1">
+            <span className={`text-2xl font-bold ${getScoreColor(performanceMetrics.delivery_score)}`}>
+              {performanceMetrics.delivery_score}
+            </span>
+            <span className="text-gray-500">/100</span>
+          </div>
+          <Progress value={performanceMetrics.delivery_score} className="mt-2 h-2" />
+        </Card>
+
+        <Card className="p-4">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm font-medium text-gray-600">Communication</span>
+            <ClockIcon className="size-5 text-blue-500" />
+          </div>
+          <div className="flex items-baseline gap-1">
+            <span className={`text-2xl font-bold ${getScoreColor(performanceMetrics.communication_score)}`}>
+              {performanceMetrics.communication_score}
+            </span>
+            <span className="text-gray-500">/100</span>
+          </div>
+          <Progress value={performanceMetrics.communication_score} className="mt-2 h-2" />
+        </Card>
+
+        <Card className="p-4">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm font-medium text-gray-600">Quality</span>
+            <StarIcon className="size-5 text-yellow-500" />
+          </div>
+          <div className="flex items-baseline gap-1">
+            <span className={`text-2xl font-bold ${getScoreColor(performanceMetrics.quality_score)}`}>
+              {performanceMetrics.quality_score}
+            </span>
+            <span className="text-gray-500">/100</span>
+          </div>
+          <Progress value={performanceMetrics.quality_score} className="mt-2 h-2" />
+        </Card>
+
+        <Card className="p-4">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm font-medium text-gray-600">Reliability</span>
+            <TrophyIcon className="size-5 text-purple-500" />
+          </div>
+          <div className="flex items-baseline gap-1">
+            <span className={`text-2xl font-bold ${getScoreColor(performanceMetrics.reliability_score)}`}>
+              {performanceMetrics.reliability_score}
+            </span>
+            <span className="text-gray-500">/100</span>
+          </div>
+          <Progress value={performanceMetrics.reliability_score} className="mt-2 h-2" />
+        </Card>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Key Metrics */}
+        <Card className="p-6">
+          <h3 className="text-lg font-semibold mb-4">Key Performance Metrics</h3>
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <span className="text-gray-600">On-Time Delivery Rate</span>
+              <div className="flex items-center gap-2">
+                <span className="font-semibold">{performanceMetrics.on_time_delivery_rate}%</span>
+                {performanceMetrics.on_time_delivery_rate >= 90 ? (
+                  <CheckCircleIcon className="size-4 text-green-500" />
+                ) : (
+                  <ExclamationTriangleIcon className="size-4 text-orange-500" />
+                )}
+              </div>
+            </div>
+            
+            <div className="flex items-center justify-between">
+              <span className="text-gray-600">Average Response Time</span>
+              <span className="font-semibold">{performanceMetrics.response_time_hours}h</span>
+            </div>
+            
+            <div className="flex items-center justify-between">
+              <span className="text-gray-600">Customer Satisfaction</span>
+              <div className="flex items-center gap-1">
+                <StarIcon className="size-4 text-yellow-400" />
+                <span className="font-semibold">{(performanceMetrics.customer_satisfaction / 20).toFixed(1)}/5</span>
+              </div>
+            </div>
+            
+            <div className="flex items-center justify-between">
+              <span className="text-gray-600">Repeat Customer Rate</span>
+              <span className="font-semibold">{performanceMetrics.repeat_customer_rate}%</span>
+            </div>
+            
+            <div className="flex items-center justify-between">
+              <span className="text-gray-600">Recommendation Rate</span>
+              <span className="font-semibold">{performanceMetrics.recommendation_rate}%</span>
+            </div>
+          </div>
+        </Card>
+
+        {/* Business Metrics */}
+        <Card className="p-6">
+          <h3 className="text-lg font-semibold mb-4">Business Performance</h3>
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <span className="text-gray-600">Completed Weddings</span>
+              <span className="font-semibold">{performanceMetrics.completed_weddings}</span>
+            </div>
+            
+            <div className="flex items-center justify-between">
+              <span className="text-gray-600">Active Weddings</span>
+              <span className="font-semibold">{performanceMetrics.active_weddings}</span>
+            </div>
+            
+            <div className="flex items-center justify-between">
+              <span className="text-gray-600">Total Revenue</span>
+              <span className="font-semibold">£{performanceMetrics.total_revenue.toLocaleString()}</span>
+            </div>
+            
+            <div className="flex items-center justify-between">
+              <span className="text-gray-600">Avg Project Value</span>
+              <span className="font-semibold">£{performanceMetrics.average_project_value.toLocaleString()}</span>
+            </div>
+            
+            <div className="flex items-center justify-between">
+              <span className="text-gray-600">Total Reviews</span>
+              <span className="font-semibold">{profile.total_reviews}</span>
+            </div>
+          </div>
+        </Card>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Recent Feedback */}
+        <Card className="p-6">
+          <h3 className="text-lg font-semibold mb-4">Recent Client Feedback</h3>
+          {performanceMetrics.recent_feedback.length === 0 ? (
+            <div className="text-center py-6 text-gray-500">
+              <UserGroupIcon className="size-12 mx-auto mb-2 text-gray-300" />
+              <p>No recent feedback available</p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {performanceMetrics.recent_feedback.map(feedback => (
+                <div key={feedback.id} className="border border-gray-200 rounded-lg p-4">
+                  <div className="flex items-start justify-between mb-2">
+                    <div>
+                      <p className="font-medium text-gray-900">{feedback.couple_names}</p>
+                      <p className="text-sm text-gray-500">Wedding: {new Date(feedback.wedding_date).toLocaleDateString()}</p>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      {Array.from({ length: 5 }).map((_, i) => (
+                        <StarIcon
+                          key={i}
+                          className={`size-4 ${i < feedback.rating ? 'text-yellow-400' : 'text-gray-300'}`}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                  <p className="text-sm text-gray-700">{feedback.comment}</p>
+                  <p className="text-xs text-gray-500 mt-2">
+                    {new Date(feedback.date).toLocaleDateString()}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+
+        {/* Achievements */}
+        <Card className="p-6">
+          <h3 className="text-lg font-semibold mb-4">Achievements & Badges</h3>
+          {performanceMetrics.achievements.length === 0 ? (
+            <div className="text-center py-6 text-gray-500">
+              <TrophyIcon className="size-12 mx-auto mb-2 text-gray-300" />
+              <p>No achievements earned yet</p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {performanceMetrics.achievements.map(achievement => (
+                <div key={achievement.id} className="flex items-start gap-3 p-3 bg-gray-50 rounded-lg">
+                  {getAchievementIcon(achievement.icon)}
+                  <div className="flex-1">
+                    <h4 className="font-medium text-gray-900">{achievement.title}</h4>
+                    <p className="text-sm text-gray-600 mt-1">{achievement.description}</p>
+                    <p className="text-xs text-gray-500 mt-2">
+                      Earned: {new Date(achievement.earned_date).toLocaleDateString()}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      </div>
+
+      {/* Areas for Improvement */}
+      <Card className="p-6">
+        <h3 className="text-lg font-semibold mb-4">Areas for Improvement</h3>
+        {performanceMetrics.areas_for_improvement.length === 0 ? (
+          <div className="text-center py-6 text-gray-500">
+            <CheckCircleIcon className="size-12 mx-auto mb-2 text-green-300" />
+            <p>Great job! No specific areas for improvement identified.</p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {performanceMetrics.areas_for_improvement.map((improvement, index) => (
+              <div key={index} className="flex items-start gap-3 p-3 border border-orange-200 bg-orange-50 rounded-lg">
+                <ExclamationTriangleIcon className="size-5 text-orange-500 flex-shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <p className="text-sm text-orange-800">{improvement}</p>
+                </div>
+                <Button size="sm" variant="outline" className="text-orange-600 border-orange-300">
+                  Action Plan
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      {/* Export Options */}
+      <div className="flex justify-end">
+        <Button variant="outline">
+          <ChartBarIcon className="size-4 mr-2" />
+          Export Performance Report
+        </Button>
+      </div>
+    </div>
+  )
+}

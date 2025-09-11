@@ -1,0 +1,747 @@
+/**
+ * Platform Manager - Unified Review Platform Interface
+ * WS-047: Review Collection System
+ *
+ * Unified interface for managing multiple review platforms (Google Business, Facebook)
+ * with credential management, platform status monitoring, and automatic failover
+ */
+
+import { EncryptionService } from '@/middleware/encryption';
+import { createClient } from '@supabase/supabase-js';
+import GoogleBusinessProfileService, {
+  GoogleBusinessConfig,
+  GoogleReview,
+} from '../integrations/google-business-profile';
+import FacebookGraphService, {
+  FacebookConfig,
+  FacebookReview,
+} from '../integrations/facebook-graph';
+import CredentialManager from '../integrations/credential-manager';
+
+export interface PlatformConfig {
+  google_business?: GoogleBusinessConfig;
+  facebook?: FacebookConfig;
+}
+
+export interface UnifiedReview {
+  id: string;
+  platform: 'google_business' | 'facebook';
+  platform_review_id: string;
+  supplier_id: string;
+  location_id: string;
+  reviewer: {
+    id?: string;
+    name: string;
+    avatar_url?: string;
+    is_anonymous: boolean;
+  };
+  rating: number; // Normalized to 1-5 scale
+  review_text?: string;
+  created_at: string;
+  updated_at: string;
+  replied_at?: string;
+  reply_text?: string;
+  status: 'new' | 'read' | 'replied' | 'hidden';
+  sentiment?: 'positive' | 'negative' | 'neutral';
+  raw_data: any;
+}
+
+export interface PlatformStatus {
+  platform: 'google_business' | 'facebook';
+  supplier_id: string;
+  connected: boolean;
+  status: 'active' | 'error' | 'expired' | 'disabled';
+  last_sync: string | null;
+  error_message?: string;
+  connection_date: string;
+  locations: Array<{
+    id: string;
+    name: string;
+    status: 'active' | 'error';
+    review_count: number;
+    average_rating: number;
+  }>;
+}
+
+export interface PlatformMetrics {
+  supplier_id: string;
+  total_reviews: number;
+  average_rating: number;
+  platforms: {
+    google_business?: {
+      connected: boolean;
+      review_count: number;
+      average_rating: number;
+      last_sync: string | null;
+    };
+    facebook?: {
+      connected: boolean;
+      review_count: number;
+      average_rating: number;
+      last_sync: string | null;
+    };
+  };
+  recent_reviews: UnifiedReview[];
+  review_trends: {
+    period: string;
+    total_reviews: number;
+    average_rating: number;
+  }[];
+}
+
+export interface AutoFailoverConfig {
+  enabled: boolean;
+  retry_attempts: number;
+  fallback_order: ('google_business' | 'facebook')[];
+  error_threshold: number;
+  recovery_check_interval: number;
+}
+
+export class PlatformManager {
+  private encryption: EncryptionService;
+  private supabase;
+  private credentialManager: CredentialManager;
+  private googleService?: GoogleBusinessProfileService;
+  private facebookService?: FacebookGraphService;
+  private platformStatuses: Map<string, PlatformStatus> = new Map();
+  private failoverConfig: AutoFailoverConfig;
+
+  constructor(config: PlatformConfig) {
+    this.encryption = new EncryptionService();
+    this.supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+    this.credentialManager = new CredentialManager();
+
+    // Initialize platform services
+    if (config.google_business) {
+      this.googleService = new GoogleBusinessProfileService(
+        config.google_business,
+      );
+    }
+
+    if (config.facebook) {
+      this.facebookService = new FacebookGraphService(config.facebook);
+    }
+
+    // Default failover configuration
+    this.failoverConfig = {
+      enabled: true,
+      retry_attempts: 3,
+      fallback_order: ['google_business', 'facebook'],
+      error_threshold: 5,
+      recovery_check_interval: 300000, // 5 minutes
+    };
+
+    this.startHealthMonitoring();
+  }
+
+  /**
+   * Connect a supplier to a review platform
+   */
+  async connectPlatform(
+    supplierId: string,
+    platform: 'google_business' | 'facebook',
+  ): Promise<{ url: string; state: string }> {
+    switch (platform) {
+      case 'google_business':
+        if (!this.googleService) {
+          throw new Error('Google Business Profile service not configured');
+        }
+        return this.googleService.generateAuthUrl(supplierId);
+
+      case 'facebook':
+        if (!this.facebookService) {
+          throw new Error('Facebook service not configured');
+        }
+        return this.facebookService.generateAuthUrl(supplierId);
+
+      default:
+        throw new Error(`Unsupported platform: ${platform}`);
+    }
+  }
+
+  /**
+   * Complete OAuth flow for a platform
+   */
+  async completeConnection(
+    platform: 'google_business' | 'facebook',
+    code: string,
+    state: string,
+  ): Promise<{ supplierId: string; success: boolean }> {
+    let result;
+
+    switch (platform) {
+      case 'google_business':
+        if (!this.googleService) {
+          throw new Error('Google Business Profile service not configured');
+        }
+        result = await this.googleService.exchangeCodeForTokens(code, state);
+        break;
+
+      case 'facebook':
+        if (!this.facebookService) {
+          throw new Error('Facebook service not configured');
+        }
+        result = await this.facebookService.exchangeCodeForTokens(code, state);
+        break;
+
+      default:
+        throw new Error(`Unsupported platform: ${platform}`);
+    }
+
+    // Update platform status
+    await this.updatePlatformStatus(result.supplierId, platform, 'active');
+
+    // Initialize sync for the new connection
+    await this.syncPlatformData(result.supplierId, platform);
+
+    return { supplierId: result.supplierId, success: true };
+  }
+
+  /**
+   * Get unified reviews across all connected platforms
+   */
+  async getUnifiedReviews(
+    supplierId: string,
+    options: {
+      limit?: number;
+      offset?: number;
+      platforms?: ('google_business' | 'facebook')[];
+      date_from?: Date;
+      date_to?: Date;
+      status?: string;
+    } = {},
+  ): Promise<{ reviews: UnifiedReview[]; total: number }> {
+    const {
+      limit = 50,
+      offset = 0,
+      platforms,
+      date_from,
+      date_to,
+      status,
+    } = options;
+
+    let query = this.supabase
+      .from('unified_reviews')
+      .select('*', { count: 'exact' })
+      .eq('supplier_id', supplierId)
+      .order('created_at', { ascending: false });
+
+    if (platforms && platforms.length > 0) {
+      query = query.in('platform', platforms);
+    }
+
+    if (date_from) {
+      query = query.gte('created_at', date_from.toISOString());
+    }
+
+    if (date_to) {
+      query = query.lte('created_at', date_to.toISOString());
+    }
+
+    if (status) {
+      query = query.eq('status', status);
+    }
+
+    query = query.range(offset, offset + limit - 1);
+
+    const { data: reviews, error, count } = await query;
+
+    if (error) {
+      throw new Error(`Failed to fetch reviews: ${error.message}`);
+    }
+
+    return {
+      reviews: reviews || [],
+      total: count || 0,
+    };
+  }
+
+  /**
+   * Reply to a review across platforms
+   */
+  async replyToReview(
+    supplierId: string,
+    reviewId: string,
+    message: string,
+  ): Promise<boolean> {
+    const { data: review } = await this.supabase
+      .from('unified_reviews')
+      .select('platform, platform_review_id, location_id')
+      .eq('id', reviewId)
+      .eq('supplier_id', supplierId)
+      .single();
+
+    if (!review) {
+      throw new Error('Review not found');
+    }
+
+    let success = false;
+
+    try {
+      switch (review.platform) {
+        case 'google_business':
+          if (!this.googleService) {
+            throw new Error('Google Business Profile service not available');
+          }
+          await this.googleService.replyToReview(
+            supplierId,
+            review.location_id,
+            review.platform_review_id,
+            message,
+          );
+          success = true;
+          break;
+
+        case 'facebook':
+          if (!this.facebookService) {
+            throw new Error('Facebook service not available');
+          }
+          await this.facebookService.respondToReview(
+            supplierId,
+            review.location_id,
+            review.platform_review_id,
+            message,
+          );
+          success = true;
+          break;
+
+        default:
+          throw new Error(`Unsupported platform: ${review.platform}`);
+      }
+
+      if (success) {
+        // Update review status
+        await this.supabase
+          .from('unified_reviews')
+          .update({
+            status: 'replied',
+            replied_at: new Date().toISOString(),
+            reply_text: message,
+          })
+          .eq('id', reviewId);
+      }
+
+      return success;
+    } catch (error) {
+      console.error(`Failed to reply to review on ${review.platform}:`, error);
+
+      // Log the error and attempt failover if enabled
+      if (this.failoverConfig.enabled) {
+        return this.attemptFailoverReply(
+          supplierId,
+          reviewId,
+          message,
+          review.platform,
+        );
+      }
+
+      throw error;
+    }
+  }
+
+  /**
+   * Sync data from all connected platforms
+   */
+  async syncAllPlatforms(supplierId: string): Promise<{
+    google_business?: { success: boolean; count: number; error?: string };
+    facebook?: { success: boolean; count: number; error?: string };
+  }> {
+    const results: any = {};
+    const connectedPlatforms = await this.getConnectedPlatforms(supplierId);
+
+    for (const platform of connectedPlatforms) {
+      try {
+        const count = await this.syncPlatformData(supplierId, platform);
+        results[platform] = { success: true, count };
+      } catch (error) {
+        results[platform] = {
+          success: false,
+          count: 0,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        };
+
+        // Update platform status on error
+        await this.updatePlatformStatus(
+          supplierId,
+          platform,
+          'error',
+          error instanceof Error ? error.message : 'Sync failed',
+        );
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Get platform connection statuses
+   */
+  async getPlatformStatuses(supplierId: string): Promise<PlatformStatus[]> {
+    const statuses: PlatformStatus[] = [];
+
+    // Check Google Business Profile status
+    if (this.googleService) {
+      const status = await this.checkPlatformStatus(
+        supplierId,
+        'google_business',
+      );
+      if (status) statuses.push(status);
+    }
+
+    // Check Facebook status
+    if (this.facebookService) {
+      const status = await this.checkPlatformStatus(supplierId, 'facebook');
+      if (status) statuses.push(status);
+    }
+
+    return statuses;
+  }
+
+  /**
+   * Get comprehensive platform metrics
+   */
+  async getPlatformMetrics(supplierId: string): Promise<PlatformMetrics> {
+    const [reviews, platformStatuses] = await Promise.all([
+      this.getUnifiedReviews(supplierId, { limit: 10 }),
+      this.getPlatformStatuses(supplierId),
+    ]);
+
+    const metrics: PlatformMetrics = {
+      supplier_id: supplierId,
+      total_reviews: reviews.total,
+      average_rating: 0,
+      platforms: {},
+      recent_reviews: reviews.reviews,
+      review_trends: [],
+    };
+
+    // Calculate overall metrics
+    if (reviews.reviews.length > 0) {
+      metrics.average_rating =
+        reviews.reviews.reduce((sum, r) => sum + r.rating, 0) /
+        reviews.reviews.length;
+    }
+
+    // Platform-specific metrics
+    for (const status of platformStatuses) {
+      const platformReviews = reviews.reviews.filter(
+        (r) => r.platform === status.platform,
+      );
+      const platformMetrics = {
+        connected: status.connected,
+        review_count: platformReviews.length,
+        average_rating:
+          platformReviews.length > 0
+            ? platformReviews.reduce((sum, r) => sum + r.rating, 0) /
+              platformReviews.length
+            : 0,
+        last_sync: status.last_sync,
+      };
+
+      metrics.platforms[status.platform] = platformMetrics;
+    }
+
+    // Get review trends (last 6 months)
+    metrics.review_trends = await this.getReviewTrends(supplierId, 6);
+
+    return metrics;
+  }
+
+  /**
+   * Disconnect a platform
+   */
+  async disconnectPlatform(
+    supplierId: string,
+    platform: 'google_business' | 'facebook',
+  ): Promise<boolean> {
+    try {
+      switch (platform) {
+        case 'google_business':
+          if (this.googleService) {
+            await this.googleService.disconnect(supplierId);
+          }
+          break;
+
+        case 'facebook':
+          if (this.facebookService) {
+            await this.facebookService.disconnect(supplierId);
+          }
+          break;
+
+        default:
+          throw new Error(`Unsupported platform: ${platform}`);
+      }
+
+      // Update platform status
+      await this.updatePlatformStatus(supplierId, platform, 'disabled');
+
+      return true;
+    } catch (error) {
+      console.error(`Failed to disconnect ${platform}:`, error);
+      return false;
+    }
+  }
+
+  /**
+   * Private helper methods
+   */
+  private async syncPlatformData(
+    supplierId: string,
+    platform: 'google_business' | 'facebook',
+  ): Promise<number> {
+    let count = 0;
+
+    try {
+      switch (platform) {
+        case 'google_business':
+          count = await this.syncGoogleBusinessData(supplierId);
+          break;
+
+        case 'facebook':
+          count = await this.syncFacebookData(supplierId);
+          break;
+
+        default:
+          throw new Error(`Unsupported platform: ${platform}`);
+      }
+
+      // Update last sync time
+      await this.updatePlatformStatus(
+        supplierId,
+        platform,
+        'active',
+        undefined,
+        new Date(),
+      );
+
+      return count;
+    } catch (error) {
+      await this.updatePlatformStatus(
+        supplierId,
+        platform,
+        'error',
+        error instanceof Error ? error.message : 'Sync failed',
+      );
+      throw error;
+    }
+  }
+
+  private async syncGoogleBusinessData(supplierId: string): Promise<number> {
+    if (!this.googleService) {
+      throw new Error('Google Business Profile service not available');
+    }
+
+    let totalCount = 0;
+
+    // Get all accounts and locations for the supplier
+    const accounts = await this.googleService.getAccounts(supplierId);
+
+    for (const account of accounts) {
+      const locations = await this.googleService.getLocations(
+        supplierId,
+        account.name,
+      );
+
+      for (const location of locations) {
+        const reviews = await this.googleService.getReviews(
+          supplierId,
+          location.name,
+        );
+
+        for (const review of reviews) {
+          await this.storeUnifiedReview(
+            supplierId,
+            'google_business',
+            location.name,
+            review,
+          );
+          totalCount++;
+        }
+      }
+    }
+
+    return totalCount;
+  }
+
+  private async syncFacebookData(supplierId: string): Promise<number> {
+    if (!this.facebookService) {
+      throw new Error('Facebook service not available');
+    }
+
+    let totalCount = 0;
+
+    // Get all pages for the supplier
+    const pages = await this.facebookService.getPages(supplierId);
+
+    for (const page of pages) {
+      const reviews = await this.facebookService.getReviews(
+        supplierId,
+        page.id,
+      );
+
+      for (const review of reviews) {
+        await this.storeUnifiedReview(supplierId, 'facebook', page.id, review);
+        totalCount++;
+      }
+    }
+
+    return totalCount;
+  }
+
+  private async storeUnifiedReview(
+    supplierId: string,
+    platform: 'google_business' | 'facebook',
+    locationId: string,
+    reviewData: GoogleReview | FacebookReview,
+  ): Promise<void> {
+    const unifiedReview: Partial<UnifiedReview> = {
+      platform,
+      supplier_id: supplierId,
+      location_id: locationId,
+      raw_data: reviewData,
+      status: 'new',
+    };
+
+    // Normalize data based on platform
+    if (platform === 'google_business') {
+      const googleReview = reviewData as GoogleReview;
+      unifiedReview.platform_review_id = googleReview.reviewId;
+      unifiedReview.reviewer = {
+        name: googleReview.reviewer.displayName,
+        avatar_url: googleReview.reviewer.profilePhotoUrl,
+        is_anonymous: googleReview.reviewer.isAnonymous,
+      };
+      unifiedReview.rating = this.convertGoogleRating(googleReview.starRating);
+      unifiedReview.review_text = googleReview.comment;
+      unifiedReview.created_at = googleReview.createTime;
+      unifiedReview.updated_at = googleReview.updateTime;
+
+      if (googleReview.reviewReply) {
+        unifiedReview.replied_at = googleReview.reviewReply.updateTime;
+        unifiedReview.reply_text = googleReview.reviewReply.comment;
+        unifiedReview.status = 'replied';
+      }
+    } else if (platform === 'facebook') {
+      const facebookReview = reviewData as FacebookReview;
+      unifiedReview.platform_review_id = facebookReview.id;
+      unifiedReview.reviewer = {
+        id: facebookReview.reviewer.id,
+        name: facebookReview.reviewer.name,
+        avatar_url: facebookReview.reviewer.picture?.data?.url,
+        is_anonymous: false,
+      };
+      unifiedReview.rating = facebookReview.rating;
+      unifiedReview.review_text =
+        facebookReview.review_text || facebookReview.open_graph_story?.message;
+      unifiedReview.created_at = facebookReview.created_time;
+      unifiedReview.updated_at = facebookReview.created_time;
+    }
+
+    // Store in database
+    await this.supabase.from('unified_reviews').upsert(unifiedReview, {
+      onConflict: 'supplier_id,platform,platform_review_id',
+    });
+  }
+
+  private convertGoogleRating(starRating: string): number {
+    const ratingMap: Record<string, number> = {
+      ONE: 1,
+      TWO: 2,
+      THREE: 3,
+      FOUR: 4,
+      FIVE: 5,
+    };
+    return ratingMap[starRating] || 0;
+  }
+
+  private async updatePlatformStatus(
+    supplierId: string,
+    platform: 'google_business' | 'facebook',
+    status: 'active' | 'error' | 'expired' | 'disabled',
+    errorMessage?: string,
+    lastSync?: Date,
+  ): Promise<void> {
+    await this.supabase.from('platform_connections').upsert({
+      supplier_id: supplierId,
+      platform,
+      status,
+      error_message: errorMessage,
+      last_sync: lastSync?.toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+  }
+
+  private async checkPlatformStatus(
+    supplierId: string,
+    platform: 'google_business' | 'facebook',
+  ): Promise<PlatformStatus | null> {
+    const { data } = await this.supabase
+      .from('platform_connections')
+      .select('*')
+      .eq('supplier_id', supplierId)
+      .eq('platform', platform)
+      .single();
+
+    if (!data) return null;
+
+    return {
+      platform,
+      supplier_id: supplierId,
+      connected: data.status === 'active',
+      status: data.status,
+      last_sync: data.last_sync,
+      error_message: data.error_message,
+      connection_date: data.created_at,
+      locations: [], // Would be populated from separate query
+    };
+  }
+
+  private async getConnectedPlatforms(
+    supplierId: string,
+  ): Promise<('google_business' | 'facebook')[]> {
+    const { data } = await this.supabase
+      .from('platform_connections')
+      .select('platform')
+      .eq('supplier_id', supplierId)
+      .eq('status', 'active');
+
+    return data?.map((d) => d.platform) || [];
+  }
+
+  private async getReviewTrends(
+    supplierId: string,
+    months: number,
+  ): Promise<any[]> {
+    // Implementation for getting review trends over time
+    // This would query the database for historical review data
+    return [];
+  }
+
+  private async attemptFailoverReply(
+    supplierId: string,
+    reviewId: string,
+    message: string,
+    failedPlatform: string,
+  ): Promise<boolean> {
+    // Implementation for failover logic
+    console.log(`Attempting failover for review reply on ${failedPlatform}`);
+    return false;
+  }
+
+  private startHealthMonitoring(): void {
+    // Start background monitoring of platform health
+    setInterval(() => {
+      this.performHealthChecks();
+    }, this.failoverConfig.recovery_check_interval);
+  }
+
+  private async performHealthChecks(): Promise<void> {
+    // Implementation for periodic health checks
+    console.log('Performing platform health checks...');
+  }
+}
+
+export default PlatformManager;

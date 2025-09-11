@@ -1,0 +1,357 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { VerificationOrchestrator, ExternalCallbackData } from '@/lib/integrations/verification/verification-orchestrator';
+import { Logger } from '@/lib/logging/Logger';
+import { createClient } from '@/lib/supabase/server';
+import crypto from 'crypto';
+
+const logger = new Logger('VerificationWebhookAPI');
+
+export interface VerificationWebhookRequest {
+  service_id: string;
+  verification_id: string;
+  workflow_id: string;
+  status: 'completed' | 'failed' | 'requires_action';
+  data: ExternalServiceResponse;
+  signature: string;
+  timestamp: string;
+}
+
+export interface ExternalServiceResponse {
+  result: 'success' | 'failure' | 'pending';
+  confidence_score?: number;
+  verification_data?: Record<string, any>;
+  errors?: Array<{
+    code: string;
+    message: string;
+    field?: string;
+  }>;
+  next_actions?: string[];
+  expiry_date?: string;
+}
+
+export interface VerificationWebhookResponse {
+  success: boolean;
+  data: {
+    acknowledged: boolean;
+    next_steps: string[];
+    workflow_status: string;
+    processing_time_ms: number;
+  };
+  errors?: WebhookError[];
+}
+
+export interface WebhookError {
+  code: string;
+  message: string;
+  field?: string;
+}
+
+// POST /api/integrations/verification/webhook - Handle external service callbacks
+export async function POST(request: NextRequest) {
+  const startTime = Date.now();
+  
+  try {
+    logger.info('Processing verification webhook callback');
+
+    // Parse request body
+    const body: VerificationWebhookRequest = await request.json();
+
+    // Validate required fields
+    const validationErrors = validateWebhookRequest(body);
+    if (validationErrors.length > 0) {
+      return NextResponse.json({
+        success: false,
+        errors: validationErrors
+      }, { status: 400 });
+    }
+
+    // Verify webhook signature
+    const isValidSignature = await verifyWebhookSignature(request, body);
+    if (!isValidSignature) {
+      logger.warn('Invalid webhook signature', { serviceId: body.service_id });
+      return NextResponse.json({
+        success: false,
+        errors: [{ code: 'INVALID_SIGNATURE', message: 'Webhook signature verification failed' }]
+      }, { status: 401 });
+    }
+
+    // Transform request to callback data format
+    const callbackData: ExternalCallbackData = {
+      serviceId: body.service_id,
+      verificationId: body.verification_id,
+      workflowId: body.workflow_id,
+      status: mapExternalStatus(body.status),
+      data: body.data,
+      signature: body.signature,
+      timestamp: body.timestamp
+    };
+
+    // Process callback through orchestrator
+    const orchestrator = new VerificationOrchestrator();
+    const result = await orchestrator.processExternalCallback(
+      body.service_id,
+      callbackData
+    );
+
+    // Log webhook processing
+    await logWebhookProcessing(body, result, Date.now() - startTime);
+
+    // Prepare response
+    const response: VerificationWebhookResponse = {
+      success: true,
+      data: {
+        acknowledged: result.acknowledged,
+        next_steps: result.nextSteps,
+        workflow_status: result.workflowStatus,
+        processing_time_ms: Date.now() - startTime
+      }
+    };
+
+    logger.info('Webhook processed successfully', {
+      workflowId: body.workflow_id,
+      status: result.workflowStatus,
+      processingTime: Date.now() - startTime
+    });
+
+    return NextResponse.json(response);
+
+  } catch (error) {
+    logger.error('Failed to process verification webhook', error);
+
+    const response: VerificationWebhookResponse = {
+      success: false,
+      data: {
+        acknowledged: false,
+        next_steps: [],
+        workflow_status: 'failed',
+        processing_time_ms: Date.now() - startTime
+      },
+      errors: [{
+        code: 'INTERNAL_ERROR',
+        message: 'Failed to process webhook'
+      }]
+    };
+
+    return NextResponse.json(response, { status: 500 });
+  }
+}
+
+// GET /api/integrations/verification/webhook - Get webhook configuration
+export async function GET() {
+  try {
+    logger.info('Getting webhook configuration');
+
+    const supabase = createClient();
+    const { data: config, error } = await supabase
+      .from('webhook_configurations')
+      .select('*')
+      .eq('type', 'verification')
+      .single();
+
+    if (error) {
+      logger.error('Failed to get webhook configuration', error);
+      return NextResponse.json({
+        success: false,
+        error: 'Configuration not found'
+      }, { status: 404 });
+    }
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        webhook_url: `${process.env.NEXT_PUBLIC_APP_URL}/api/integrations/verification/webhook`,
+        supported_events: [
+          'verification.completed',
+          'verification.failed',
+          'verification.requires_action'
+        ],
+        signature_method: 'HMAC-SHA256',
+        timeout: config.timeout || 30000,
+        retry_attempts: config.retry_attempts || 3
+      }
+    });
+
+  } catch (error) {
+    logger.error('Failed to get webhook configuration', error);
+    return NextResponse.json({
+      success: false,
+      error: 'Failed to get configuration'
+    }, { status: 500 });
+  }
+}
+
+// PUT /api/integrations/verification/webhook - Update webhook configuration
+export async function PUT(request: NextRequest) {
+  try {
+    logger.info('Updating webhook configuration');
+
+    const body = await request.json();
+    const supabase = createClient();
+
+    // Validate configuration
+    if (!body.service_id || !body.webhook_url) {
+      return NextResponse.json({
+        success: false,
+        error: 'service_id and webhook_url are required'
+      }, { status: 400 });
+    }
+
+    // Update configuration
+    const { data, error } = await supabase
+      .from('webhook_configurations')
+      .upsert({
+        service_id: body.service_id,
+        webhook_url: body.webhook_url,
+        secret_key: body.secret_key,
+        timeout: body.timeout || 30000,
+        retry_attempts: body.retry_attempts || 3,
+        is_enabled: body.is_enabled !== false,
+        updated_at: new Date().toISOString()
+      })
+      .select()
+      .single();
+
+    if (error) {
+      logger.error('Failed to update webhook configuration', error);
+      return NextResponse.json({
+        success: false,
+        error: 'Failed to update configuration'
+      }, { status: 500 });
+    }
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        message: 'Webhook configuration updated successfully',
+        configuration: data
+      }
+    });
+
+  } catch (error) {
+    logger.error('Failed to update webhook configuration', error);
+    return NextResponse.json({
+      success: false,
+      error: 'Failed to update configuration'
+    }, { status: 500 });
+  }
+}
+
+// Helper functions
+function validateWebhookRequest(body: VerificationWebhookRequest): WebhookError[] {
+  const errors: WebhookError[] = [];
+
+  if (!body.service_id) {
+    errors.push({ code: 'MISSING_FIELD', message: 'service_id is required', field: 'service_id' });
+  }
+
+  if (!body.verification_id) {
+    errors.push({ code: 'MISSING_FIELD', message: 'verification_id is required', field: 'verification_id' });
+  }
+
+  if (!body.workflow_id) {
+    errors.push({ code: 'MISSING_FIELD', message: 'workflow_id is required', field: 'workflow_id' });
+  }
+
+  if (!body.status) {
+    errors.push({ code: 'MISSING_FIELD', message: 'status is required', field: 'status' });
+  } else if (!['completed', 'failed', 'requires_action'].includes(body.status)) {
+    errors.push({ code: 'INVALID_VALUE', message: 'status must be completed, failed, or requires_action', field: 'status' });
+  }
+
+  if (!body.signature) {
+    errors.push({ code: 'MISSING_FIELD', message: 'signature is required', field: 'signature' });
+  }
+
+  if (!body.timestamp) {
+    errors.push({ code: 'MISSING_FIELD', message: 'timestamp is required', field: 'timestamp' });
+  } else {
+    // Validate timestamp is within acceptable range (5 minutes)
+    const timestamp = new Date(body.timestamp);
+    const now = new Date();
+    const timeDiff = Math.abs(now.getTime() - timestamp.getTime());
+    
+    if (timeDiff > 5 * 60 * 1000) {
+      errors.push({ code: 'INVALID_TIMESTAMP', message: 'timestamp is too old or too far in future', field: 'timestamp' });
+    }
+  }
+
+  return errors;
+}
+
+async function verifyWebhookSignature(request: NextRequest, body: VerificationWebhookRequest): Promise<boolean> {
+  try {
+    // Get webhook secret for the service
+    const supabase = createClient();
+    const { data: config, error } = await supabase
+      .from('webhook_configurations')
+      .select('secret_key')
+      .eq('service_id', body.service_id)
+      .single();
+
+    if (error || !config?.secret_key) {
+      logger.warn('Webhook secret not found for service', { serviceId: body.service_id });
+      return false;
+    }
+
+    // Get raw body for signature verification
+    const rawBody = JSON.stringify(body);
+    const expectedSignature = crypto
+      .createHmac('sha256', config.secret_key)
+      .update(rawBody)
+      .digest('hex');
+
+    // Compare signatures
+    const receivedSignature = body.signature.replace('sha256=', '');
+    return crypto.timingSafeEqual(
+      Buffer.from(expectedSignature),
+      Buffer.from(receivedSignature)
+    );
+
+  } catch (error) {
+    logger.error('Failed to verify webhook signature', error);
+    return false;
+  }
+}
+
+function mapExternalStatus(externalStatus: string): 'success' | 'failure' | 'requires_action' {
+  switch (externalStatus) {
+    case 'completed':
+      return 'success';
+    case 'failed':
+      return 'failure';
+    case 'requires_action':
+      return 'requires_action';
+    default:
+      return 'failure';
+  }
+}
+
+async function logWebhookProcessing(
+  request: VerificationWebhookRequest,
+  result: any,
+  processingTime: number
+): Promise<void> {
+  try {
+    const supabase = createClient();
+    await supabase
+      .from('webhook_logs')
+      .insert({
+        id: crypto.randomUUID(),
+        service_id: request.service_id,
+        verification_id: request.verification_id,
+        workflow_id: request.workflow_id,
+        status: request.status,
+        processing_time_ms: processingTime,
+        acknowledged: result.acknowledged,
+        workflow_status: result.workflowStatus,
+        created_at: new Date().toISOString(),
+        metadata: {
+          next_steps: result.nextSteps,
+          requires_notification: result.requiresNotification
+        }
+      });
+  } catch (error) {
+    logger.error('Failed to log webhook processing', error);
+    // Don't throw error as webhook processing was successful
+  }
+}

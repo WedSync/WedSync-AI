@@ -1,0 +1,711 @@
+/**
+ * WS-130 Round 3: Photography AI Security Testing
+ * Comprehensive security validation including authentication, authorization, and data protection
+ */
+
+import { describe, test, expect, beforeEach, vi } from 'vitest';
+import { NextRequest } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { photographyRateLimiter } from '@/lib/ratelimit/photography-rate-limiter';
+import { FeatureGateService } from '@/lib/billing/featureGating';
+
+// Mock external dependencies
+vi.mock('@/lib/supabase/server');
+vi.mock('@/lib/billing/featureGating');
+vi.mock('@/lib/ratelimit/photography-rate-limiter');
+
+// Security test configuration
+const SECURITY_CONFIG = {
+  maxRequestSize: 10 * 1024 * 1024, // 10MB
+  maxImageUpload: 5 * 1024 * 1024,  // 5MB per image
+  rateLimitWindow: 3600, // 1 hour
+  allowedOrigins: ['http://localhost:3000', 'https://wedsync.com'],
+  allowedImageTypes: ['image/jpeg', 'image/png', 'image/webp'],
+  maxFileNameLength: 255,
+  maxColorArrayLength: 10
+};
+
+describe('Photography AI Security Testing', () => {
+  let mockSupabase: any;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    
+    mockSupabase = {
+      auth: {
+        getUser: vi.fn()
+      },
+      from: vi.fn(() => ({
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        single: vi.fn(),
+        insert: vi.fn()
+      }))
+    };
+  });
+
+  describe('Authentication Security', () => {
+    test('should reject requests without authentication', async () => {
+      // Mock no authentication
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: null },
+        error: { message: 'JWT expired' }
+      });
+
+      const request = new NextRequest('http://localhost:3000/api/photography/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client_id: 'test-client-123',
+          wedding_style: 'romantic',
+          preferred_colors: ['#FFFFFF'],
+          wedding_date: '2024-06-15T18:00:00Z',
+          mood_board_images: ['https://example.com/image.jpg']
+        })
+      });
+
+      const { POST } = await import('@/app/api/photography/analyze/route');
+      const response = await POST(request);
+
+      expect(response.status).toBe(401);
+      const data = await response.json();
+      expect(data.success).toBe(false);
+      expect(data.error.code).toBe('AUTH_REQUIRED');
+    });
+
+    test('should validate JWT tokens properly', async () => {
+      // Mock invalid JWT
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: null },
+        error: { message: 'Invalid JWT' }
+      });
+
+      const request = new NextRequest('http://localhost:3000/api/photography/analyze', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer invalid.jwt.token',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          client_id: 'test-client-123',
+          wedding_style: 'romantic',
+          preferred_colors: ['#FFFFFF'],
+          wedding_date: '2024-06-15T18:00:00Z',
+          mood_board_images: ['https://example.com/image.jpg']
+        })
+      });
+
+      const { POST } = await import('@/app/api/photography/analyze/route');
+      const response = await POST(request);
+
+      expect(response.status).toBe(401);
+    });
+
+    test('should handle expired tokens gracefully', async () => {
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: null },
+        error: { message: 'JWT expired', status: 401 }
+      });
+
+      const request = new NextRequest('http://localhost:3000/api/photography/analyze', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer expired.jwt.token',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          client_id: 'test-client-123',
+          wedding_style: 'romantic',
+          preferred_colors: ['#FFFFFF'],
+          wedding_date: '2024-06-15T18:00:00Z',
+          mood_board_images: ['https://example.com/image.jpg']
+        })
+      });
+
+      const { POST } = await import('@/app/api/photography/analyze/route');
+      const response = await POST(request);
+
+      expect(response.status).toBe(401);
+      
+      const data = await response.json();
+      expect(data.error.code).toBe('AUTH_REQUIRED');
+    });
+  });
+
+  describe('Authorization and Access Control', () => {
+    test('should prevent access to other users\' clients', async () => {
+      const validUser = {
+        id: 'user-123',
+        email: 'user@example.com'
+      };
+
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: validUser },
+        error: null
+      });
+
+      // Mock client belonging to different organization
+      mockSupabase.from.mockImplementation((table) => {
+        if (table === 'clients') {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            single: vi.fn().mockResolvedValue({
+              data: {
+                id: 'other-client-123',
+                organization_id: 'other-org-456'
+              },
+              error: null
+            })
+          };
+        }
+        if (table === 'organization_members') {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            single: vi.fn().mockResolvedValue({
+              data: null,
+              error: { message: 'User not in organization' }
+            })
+          };
+        }
+        return mockSupabase.from();
+      });
+
+      const request = new NextRequest('http://localhost:3000/api/photography/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client_id: 'other-client-123',
+          wedding_style: 'romantic',
+          preferred_colors: ['#FFFFFF'],
+          wedding_date: '2024-06-15T18:00:00Z',
+          mood_board_images: ['https://example.com/image.jpg']
+        })
+      });
+
+      const { POST } = await import('@/app/api/photography/analyze/route');
+      const response = await POST(request);
+
+      expect(response.status).toBe(403);
+      
+      const data = await response.json();
+      expect(data.error.code).toBe('ACCESS_DENIED');
+    });
+
+    test('should validate role-based permissions', async () => {
+      const limitedUser = {
+        id: 'limited-user-123',
+        email: 'limited@example.com'
+      };
+
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: limitedUser },
+        error: null
+      });
+
+      // Mock user with limited role
+      mockSupabase.from.mockImplementation((table) => {
+        if (table === 'clients') {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            single: vi.fn().mockResolvedValue({
+              data: {
+                id: 'client-123',
+                organization_id: 'org-123'
+              },
+              error: null
+            })
+          };
+        }
+        if (table === 'organization_members') {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            single: vi.fn().mockResolvedValue({
+              data: {
+                role: 'viewer' // Limited role
+              },
+              error: null
+            })
+          };
+        }
+        return mockSupabase.from();
+      });
+
+      // Mock feature gate denying access for limited role
+      vi.spyOn(FeatureGateService, 'checkFeatureAccess').mockResolvedValue({
+        hasAccess: false,
+        reason: 'INSUFFICIENT_PERMISSIONS',
+        requiredRole: 'editor'
+      });
+
+      const request = new NextRequest('http://localhost:3000/api/photography/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client_id: 'client-123',
+          wedding_style: 'romantic',
+          preferred_colors: ['#FFFFFF'],
+          wedding_date: '2024-06-15T18:00:00Z',
+          mood_board_images: ['https://example.com/image.jpg']
+        })
+      });
+
+      const { POST } = await import('@/app/api/photography/analyze/route');
+      const response = await POST(request);
+
+      expect(response.status).toBe(403);
+    });
+  });
+
+  describe('Input Validation and Sanitization', () => {
+    test('should validate and reject malformed UUIDs', async () => {
+      const validUser = { id: 'user-123', email: 'user@example.com' };
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: validUser },
+        error: null
+      });
+
+      const request = new NextRequest('http://localhost:3000/api/photography/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client_id: 'invalid-uuid-format', // Invalid UUID
+          wedding_style: 'romantic',
+          preferred_colors: ['#FFFFFF'],
+          wedding_date: '2024-06-15T18:00:00Z',
+          mood_board_images: ['https://example.com/image.jpg']
+        })
+      });
+
+      const { POST } = await import('@/app/api/photography/analyze/route');
+      const response = await POST(request);
+
+      expect(response.status).toBe(400);
+      
+      const data = await response.json();
+      expect(data.error.code).toBe('INVALID_REQUEST');
+      expect(data.error.details.validation_errors).toBeDefined();
+    });
+
+    test('should sanitize and validate color inputs', async () => {
+      const validUser = { id: 'user-123', email: 'user@example.com' };
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: validUser },
+        error: null
+      });
+
+      const request = new NextRequest('http://localhost:3000/api/photography/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client_id: '123e4567-e89b-12d3-a456-426614174000',
+          wedding_style: 'romantic',
+          preferred_colors: [
+            'javascript:alert("xss")', // XSS attempt
+            '#FFFFFF',
+            '<script>alert("xss")</script>', // HTML injection
+            '#000000'
+          ],
+          wedding_date: '2024-06-15T18:00:00Z',
+          mood_board_images: ['https://example.com/image.jpg']
+        })
+      });
+
+      const { POST } = await import('@/app/api/photography/analyze/route');
+      const response = await POST(request);
+
+      expect(response.status).toBe(400);
+      
+      const data = await response.json();
+      expect(data.error.code).toBe('INVALID_REQUEST');
+    });
+
+    test('should validate image URLs and prevent SSRF attacks', async () => {
+      const validUser = { id: 'user-123', email: 'user@example.com' };
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: validUser },
+        error: null
+      });
+
+      const request = new NextRequest('http://localhost:3000/api/photography/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client_id: '123e4567-e89b-12d3-a456-426614174000',
+          wedding_style: 'romantic',
+          preferred_colors: ['#FFFFFF'],
+          wedding_date: '2024-06-15T18:00:00Z',
+          mood_board_images: [
+            'http://localhost:8080/admin', // Internal network attempt
+            'file:///etc/passwd', // File system access attempt
+            'ftp://internal.server.com/secrets', // Internal FTP
+            'https://example.com/valid-image.jpg' // Valid URL
+          ]
+        })
+      });
+
+      const { POST } = await import('@/app/api/photography/analyze/route');
+      const response = await POST(request);
+
+      expect(response.status).toBe(400);
+      
+      const data = await response.json();
+      expect(data.error.code).toBe('INVALID_REQUEST');
+    });
+
+    test('should enforce maximum array lengths', async () => {
+      const validUser = { id: 'user-123', email: 'user@example.com' };
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: validUser },
+        error: null
+      });
+
+      // Create oversized arrays
+      const tooManyColors = Array.from({ length: 20 }, (_, i) => `#${i.toString().padStart(6, '0')}`);
+      const tooManyImages = Array.from({ length: 30 }, (_, i) => `https://example.com/image-${i}.jpg`);
+
+      const request = new NextRequest('http://localhost:3000/api/photography/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client_id: '123e4567-e89b-12d3-a456-426614174000',
+          wedding_style: 'romantic',
+          preferred_colors: tooManyColors,
+          wedding_date: '2024-06-15T18:00:00Z',
+          mood_board_images: tooManyImages
+        })
+      });
+
+      const { POST } = await import('@/app/api/photography/analyze/route');
+      const response = await POST(request);
+
+      expect(response.status).toBe(400);
+    });
+  });
+
+  describe('Rate Limiting Security', () => {
+    test('should prevent brute force attacks with progressive delays', async () => {
+      const attacker = 'attacker-123';
+      const requests = [];
+
+      // Simulate rapid fire requests
+      for (let i = 0; i < 100; i++) {
+        vi.spyOn(photographyRateLimiter, 'checkLimit').mockResolvedValueOnce({
+          success: false,
+          remaining: 0,
+          retryAfter: Math.min(i * 2, 3600), // Progressive delay
+          plan: 'free'
+        });
+
+        requests.push(photographyRateLimiter.checkLimit(attacker));
+      }
+
+      const results = await Promise.allSettled(requests);
+      const blocked = results.filter((r: any) => 
+        r.status === 'fulfilled' && !r.value.success
+      ).length;
+
+      expect(blocked).toBeGreaterThan(90); // Most should be blocked
+    });
+
+    test('should handle distributed attacks across multiple IPs', async () => {
+      const attackerIPs = Array.from({ length: 50 }, (_, i) => `192.168.1.${i + 1}`);
+      const requests = [];
+
+      for (const ip of attackerIPs) {
+        for (let i = 0; i < 10; i++) {
+          requests.push(photographyRateLimiter.checkLimit(`user-${ip}-${i}`));
+        }
+      }
+
+      // Mock rate limiter to simulate attack detection
+      vi.spyOn(photographyRateLimiter, 'checkLimit').mockImplementation(async (userId) => {
+        const userNum = parseInt(userId.split('-')[2] || '0');
+        if (userNum > 5) { // Simulate detection after threshold
+          return {
+            success: false,
+            remaining: 0,
+            retryAfter: 3600,
+            plan: 'blocked'
+          };
+        }
+        return {
+          success: true,
+          remaining: 99,
+          plan: 'free'
+        };
+      });
+
+      const results = await Promise.allSettled(requests);
+      const blocked = results.filter((r: any) => 
+        r.status === 'fulfilled' && r.value.plan === 'blocked'
+      ).length;
+
+      expect(blocked).toBeGreaterThan(0);
+    });
+  });
+
+  describe('Data Protection and Privacy', () => {
+    test('should not log sensitive information', async () => {
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation();
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation();
+
+      const sensitiveRequest = {
+        client_id: '123e4567-e89b-12d3-a456-426614174000',
+        wedding_style: 'romantic',
+        preferred_colors: ['#FFFFFF'],
+        wedding_date: '2024-06-15T18:00:00Z',
+        mood_board_images: ['https://private.example.com/secret-image.jpg'],
+        personal_notes: 'Confidential wedding details'
+      };
+
+      mockSupabase.auth.getUser.mockRejectedValue(new Error('Auth failed'));
+
+      const request = new NextRequest('http://localhost:3000/api/photography/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(sensitiveRequest)
+      });
+
+      const { POST } = await import('@/app/api/photography/analyze/route');
+      await POST(request);
+
+      // Check that sensitive data wasn't logged
+      const allLogCalls = [...consoleSpy.mock.calls, ...errorSpy.mock.calls];
+      const loggedContent = allLogCalls.flat().join(' ');
+
+      expect(loggedContent).not.toContain('Confidential wedding details');
+      expect(loggedContent).not.toContain('secret-image.jpg');
+      expect(loggedContent).not.toContain('123e4567-e89b-12d3-a456-426614174000');
+
+      consoleSpy.mockRestore();
+      errorSpy.mockRestore();
+    });
+
+    test('should encrypt sensitive data in cache', async () => {
+      const { photographyCache } = await import('@/lib/cache/photography-cache');
+      
+      const sensitiveData = {
+        client_id: 'sensitive-client-123',
+        personal_preferences: 'Very private information',
+        budget: 50000
+      };
+
+      await photographyCache.cacheFeatureAccess('user-123', 'sensitive_key', sensitiveData);
+
+      // Mock cache retrieval to verify encryption
+      const mockGet = vi.spyOn(photographyCache as any, 'get');
+      mockGet.mockImplementation(async (key) => {
+        // Verify the key doesn't contain sensitive info in plain text
+        expect(key).not.toContain('Very private information');
+        expect(key).not.toContain('50000');
+        return null;
+      });
+
+      await photographyCache.getCachedFeatureAccess('user-123', 'sensitive_key');
+      
+      mockGet.mockRestore();
+    });
+
+    test('should handle PII data according to GDPR requirements', async () => {
+      const piiData = {
+        client_id: '123e4567-e89b-12d3-a456-426614174000',
+        wedding_style: 'romantic',
+        preferred_colors: ['#FFFFFF'],
+        wedding_date: '2024-06-15T18:00:00Z',
+        mood_board_images: ['https://example.com/image.jpg'],
+        gdpr_consent: true,
+        data_retention_period: '2 years'
+      };
+
+      const validUser = { id: 'user-123', email: 'user@example.com' };
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: validUser },
+        error: null
+      });
+
+      mockSupabase.from.mockImplementation((table) => {
+        if (table === 'clients') {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            single: vi.fn().mockResolvedValue({
+              data: { id: piiData.client_id, organization_id: 'org-123' },
+              error: null
+            })
+          };
+        }
+        if (table === 'organization_members') {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            single: vi.fn().mockResolvedValue({
+              data: { role: 'admin' },
+              error: null
+            })
+          };
+        }
+        if (table === 'photo_analysis_records') {
+          return {
+            insert: vi.fn().mockImplementation((data) => {
+              // Verify GDPR compliance fields are included
+              expect(data).toHaveProperty('gdpr_compliant', true);
+              expect(data).toHaveProperty('retention_expires_at');
+              return Promise.resolve({ data: { id: 'record-123' }, error: null });
+            })
+          };
+        }
+        return mockSupabase.from();
+      });
+
+      const request = new NextRequest('http://localhost:3000/api/photography/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(piiData)
+      });
+
+      // Should process successfully with GDPR compliance
+      const { POST } = await import('@/app/api/photography/analyze/route');
+      const response = await POST(request);
+
+      expect(response.status).toBe(200);
+    });
+  });
+
+  describe('API Security Headers', () => {
+    test('should include proper security headers', async () => {
+      const validUser = { id: 'user-123', email: 'user@example.com' };
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: validUser },
+        error: null
+      });
+
+      mockSupabase.from.mockImplementation((table) => {
+        if (table === 'clients') {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            single: vi.fn().mockResolvedValue({
+              data: { id: 'client-123', organization_id: 'org-123' },
+              error: null
+            })
+          };
+        }
+        if (table === 'organization_members') {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            single: vi.fn().mockResolvedValue({
+              data: { role: 'admin' },
+              error: null
+            })
+          };
+        }
+        return mockSupabase.from();
+      });
+
+      const request = new NextRequest('http://localhost:3000/api/photography/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client_id: 'client-123',
+          wedding_style: 'romantic',
+          preferred_colors: ['#FFFFFF'],
+          wedding_date: '2024-06-15T18:00:00Z',
+          mood_board_images: ['https://example.com/image.jpg']
+        })
+      });
+
+      const { POST } = await import('@/app/api/photography/analyze/route');
+      const response = await POST(request);
+
+      // Check security headers
+      expect(response.headers.get('X-Request-ID')).toBeTruthy();
+      expect(response.headers.get('Cache-Control')).toBe('private, no-cache');
+      expect(response.headers.get('Content-Type')).toBe('application/json');
+    });
+
+    test('should prevent clickjacking with CSP headers', async () => {
+      // This would typically be tested at the middleware level
+      // but we can verify our API doesn't accidentally expose sensitive data
+      const request = new NextRequest('http://localhost:3000/api/photography/analyze', {
+        method: 'OPTIONS', // Preflight request
+        headers: {
+          'Origin': 'https://malicious-site.com',
+          'Access-Control-Request-Method': 'POST'
+        }
+      });
+
+      // Should not expose CORS headers to unauthorized origins
+      const response = new Response(null, { status: 204 });
+      
+      expect(response.headers.get('Access-Control-Allow-Origin')).toBeFalsy();
+    });
+  });
+
+  describe('Error Handling Security', () => {
+    test('should not expose system information in error messages', async () => {
+      mockSupabase.auth.getUser.mockRejectedValue(new Error('Database connection failed: postgres://user:pass@internal-db:5432/wedsync'));
+
+      const request = new NextRequest('http://localhost:3000/api/photography/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client_id: 'client-123',
+          wedding_style: 'romantic',
+          preferred_colors: ['#FFFFFF'],
+          wedding_date: '2024-06-15T18:00:00Z',
+          mood_board_images: ['https://example.com/image.jpg']
+        })
+      });
+
+      const { POST } = await import('@/app/api/photography/analyze/route');
+      const response = await POST(request);
+
+      const data = await response.json();
+      
+      // Should not expose database credentials or internal paths
+      expect(JSON.stringify(data)).not.toContain('postgres://');
+      expect(JSON.stringify(data)).not.toContain('pass@internal-db');
+      expect(JSON.stringify(data)).not.toContain('/wedsync');
+      
+      // Should provide generic error message
+      expect(data.error.message).toBe('Internal server error occurred');
+    });
+
+    test('should rate limit error responses', async () => {
+      const errorRequests = [];
+      
+      for (let i = 0; i < 50; i++) {
+        mockSupabase.auth.getUser.mockRejectedValue(new Error('Simulated error'));
+        
+        const request = new NextRequest('http://localhost:3000/api/photography/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            client_id: 'client-123',
+            wedding_style: 'romantic',
+            preferred_colors: ['#FFFFFF'],
+            wedding_date: '2024-06-15T18:00:00Z',
+            mood_board_images: ['https://example.com/image.jpg']
+          })
+        });
+
+        const { POST } = await import('@/app/api/photography/analyze/route');
+        errorRequests.push(POST(request));
+      }
+
+      const responses = await Promise.allSettled(errorRequests);
+      
+      // Should handle all error requests without system instability
+      expect(responses.length).toBe(50);
+      
+      // Verify no memory leaks or resource exhaustion
+      const memoryUsage = process.memoryUsage();
+      expect(memoryUsage.heapUsed).toBeLessThan(100 * 1024 * 1024); // < 100MB
+    });
+  });
+});

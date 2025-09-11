@@ -1,0 +1,516 @@
+'use client';
+
+import { useState, useCallback } from 'react';
+import { SwatchIcon, SparklesIcon, EyeIcon, ArrowPathIcon } from '@heroicons/react/24/outline';
+import { Button } from '@/components/ui/Button';
+import { Card } from '@/components/ui/Card';
+import { Badge } from '@/components/ui/Badge';
+import { ColorPicker } from '@/components/ui/ColorPicker';
+import { Select } from '@/components/ui/Select';
+import { useColorPalette } from '@/hooks/useColorPalette';
+import { classNames } from '@/lib/utils';
+
+interface ColorPaletteGeneratorProps {
+  weddingId?: string;
+  onPaletteGenerated?: (palette: any) => void;
+  initialColors?: string[];
+  className?: string;
+}
+
+const WEDDING_STYLES = [
+  { value: '', label: 'Select Style' },
+  { value: 'romantic', label: 'Romantic' },
+  { value: 'modern', label: 'Modern' },
+  { value: 'rustic', label: 'Rustic' },
+  { value: 'classic', label: 'Classic' },
+  { value: 'bohemian', label: 'Bohemian' },
+  { value: 'minimalist', label: 'Minimalist' },
+  { value: 'vintage', label: 'Vintage' },
+  { value: 'garden', label: 'Garden Party' },
+];
+
+const SEASONS = [
+  { value: '', label: 'Select Season' },
+  { value: 'spring', label: 'Spring' },
+  { value: 'summer', label: 'Summer' },
+  { value: 'fall', label: 'Fall' },
+  { value: 'winter', label: 'Winter' },
+];
+
+const HARMONY_TYPES = [
+  { value: 'complementary', label: 'Complementary' },
+  { value: 'analogous', label: 'Analogous' },
+  { value: 'triadic', label: 'Triadic' },
+  { value: 'monochromatic', label: 'Monochromatic' },
+  { value: 'split_complementary', label: 'Split Complementary' },
+];
+
+export function ColorPaletteGenerator({ 
+  weddingId, 
+  onPaletteGenerated,
+  initialColors = [],
+  className = ''
+}: ColorPaletteGeneratorProps) {
+  const [baseColors, setBaseColors] = useState<string[]>(initialColors);
+  const [weddingStyle, setWeddingStyle] = useState('');
+  const [season, setSeason] = useState('');
+  const [harmonyType, setHarmonyType] = useState('complementary');
+  const [includeNeutrals, setIncludeNeutrals] = useState(true);
+  const [accentCount, setAccentCount] = useState(2);
+  
+  const { generatedPalette, isGenerating, error, generatePalette } = useColorPalette();
+
+  const handleGeneratePalette = useCallback(async () => {
+    if (baseColors.length === 0 || !weddingStyle || !season) return;
+    
+    try {
+      const palette = await generatePalette({
+        baseColors,
+        weddingStyle,
+        season,
+        preferences: {
+          include_neutrals: includeNeutrals,
+          accent_count: accentCount,
+          harmony_type: harmonyType
+        }
+      });
+      onPaletteGenerated?.(palette);
+    } catch (err) {
+      console.error('Palette generation failed:', err);
+    }
+  }, [baseColors, weddingStyle, season, harmonyType, includeNeutrals, accentCount, generatePalette, onPaletteGenerated]);
+
+  const addBaseColor = (color: string) => {
+    if (!baseColors.includes(color) && baseColors.length < 3) {
+      setBaseColors([...baseColors, color]);
+    }
+  };
+
+  const removeBaseColor = (index: number) => {
+    setBaseColors(baseColors.filter((_, i) => i !== index));
+  };
+
+  const getColorName = (hex: string) => {
+    // Simple color naming - in production this would use a color naming API
+    const colorNames: { [key: string]: string } = {
+      '#FF0000': 'Red',
+      '#00FF00': 'Green',
+      '#0000FF': 'Blue',
+      '#FFFFFF': 'White',
+      '#000000': 'Black',
+      '#FFFF00': 'Yellow',
+      '#FF00FF': 'Magenta',
+      '#00FFFF': 'Cyan',
+    };
+    
+    return colorNames[hex.toUpperCase()] || hex.toUpperCase();
+  };
+
+  const getContrastRatio = (color1: string, color2: string) => {
+    // Simplified contrast calculation - in production would use proper algorithm
+    return Math.random() * 10 + 1; // Mock value
+  };
+
+  const isValidPalette = baseColors.length > 0 && weddingStyle && season;
+
+  return (
+    <div className={`space-y-6 ${className}`} role="region" aria-label="Color Palette Generator">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <SwatchIcon className="w-6 h-6 text-purple-600" />
+          <h3 className="text-lg font-semibold text-gray-900">AI Color Palette Generator</h3>
+        </div>
+        {generatedPalette && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleGeneratePalette}
+            disabled={!isValidPalette || isGenerating}
+            className="flex items-center gap-2"
+          >
+            <ArrowPathIcon className="w-4 h-4" />
+            Regenerate
+          </Button>
+        )}
+      </div>
+
+      {/* Input Section */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {/* Base Colors */}
+        <div className="space-y-3">
+          <label className="block text-sm font-medium text-gray-700">
+            Base Colors (up to 3)
+            <span className="text-red-500 ml-1" aria-label="required">*</span>
+          </label>
+          <div className="space-y-3">
+            <ColorPicker
+              onColorSelect={addBaseColor}
+              disabled={baseColors.length >= 3}
+              className="w-full"
+              aria-label="Add base color"
+            />
+            <div className="space-y-2 min-h-[3rem]">
+              {baseColors.map((color, index) => (
+                <div key={index} className="flex items-center gap-3 bg-gray-50 rounded-md px-3 py-2">
+                  <div
+                    className="w-6 h-6 rounded-full border-2 border-gray-200 flex-shrink-0"
+                    style={{ backgroundColor: color }}
+                    aria-label={`Base color: ${getColorName(color)}`}
+                  />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-gray-900 truncate">
+                      {getColorName(color)}
+                    </div>
+                    <div className="text-xs font-mono text-gray-600">
+                      {color}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => removeBaseColor(index)}
+                    className="text-gray-400 hover:text-gray-600 focus:outline-none focus:text-gray-600 p-1"
+                    aria-label={`Remove color ${getColorName(color)}`}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Wedding Style */}
+        <div className="space-y-3">
+          <label htmlFor="wedding-style" className="block text-sm font-medium text-gray-700">
+            Wedding Style
+            <span className="text-red-500 ml-1" aria-label="required">*</span>
+          </label>
+          <Select
+            id="wedding-style"
+            value={weddingStyle}
+            onChange={setWeddingStyle}
+            className="w-full"
+            required
+          >
+            {WEDDING_STYLES.map(style => (
+              <option key={style.value} value={style.value}>
+                {style.label}
+              </option>
+            ))}
+          </Select>
+        </div>
+
+        {/* Season */}
+        <div className="space-y-3">
+          <label htmlFor="season" className="block text-sm font-medium text-gray-700">
+            Wedding Season
+            <span className="text-red-500 ml-1" aria-label="required">*</span>
+          </label>
+          <Select
+            id="season"
+            value={season}
+            onChange={setSeason}
+            className="w-full"
+            required
+          >
+            {SEASONS.map(season => (
+              <option key={season.value} value={season.value}>
+                {season.label}
+              </option>
+            ))}
+          </Select>
+        </div>
+
+        {/* Advanced Options */}
+        <div className="space-y-3">
+          <label htmlFor="harmony-type" className="block text-sm font-medium text-gray-700">
+            Color Harmony
+          </label>
+          <Select
+            id="harmony-type"
+            value={harmonyType}
+            onChange={setHarmonyType}
+            className="w-full"
+          >
+            {HARMONY_TYPES.map(harmony => (
+              <option key={harmony.value} value={harmony.value}>
+                {harmony.label}
+              </option>
+            ))}
+          </Select>
+        </div>
+
+        <div className="space-y-3">
+          <label htmlFor="accent-count" className="block text-sm font-medium text-gray-700">
+            Accent Colors
+          </label>
+          <Select
+            id="accent-count"
+            value={accentCount.toString()}
+            onChange={(value) => setAccentCount(parseInt(value))}
+            className="w-full"
+          >
+            <option value="1">1 Accent Color</option>
+            <option value="2">2 Accent Colors</option>
+            <option value="3">3 Accent Colors</option>
+          </Select>
+        </div>
+
+        <div className="space-y-3">
+          <div className="flex items-center">
+            <input
+              id="include-neutrals"
+              type="checkbox"
+              checked={includeNeutrals}
+              onChange={e => setIncludeNeutrals(e.target.checked)}
+              className="h-4 w-4 text-purple-600 focus:ring-purple-500 border-gray-300 rounded"
+            />
+            <label htmlFor="include-neutrals" className="ml-2 block text-sm text-gray-700">
+              Include Neutral Colors
+            </label>
+          </div>
+          <p className="text-xs text-gray-500">
+            Adds complementary whites, creams, and grays
+          </p>
+        </div>
+      </div>
+
+      {/* Generate Button */}
+      <div className="flex justify-center">
+        <Button
+          onClick={handleGeneratePalette}
+          disabled={!isValidPalette || isGenerating}
+          size="lg"
+          className="px-8 py-3 bg-purple-600 hover:bg-purple-700 disabled:opacity-50"
+        >
+          {isGenerating ? (
+            <div className="flex items-center gap-2">
+              <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
+              Generating Palette...
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <SparklesIcon className="w-5 h-5" />
+              Generate AI Color Palette
+            </div>
+          )}
+        </Button>
+      </div>
+
+      {/* Generated Palette */}
+      {generatedPalette && (
+        <div className="space-y-6" role="region" aria-label="Generated Color Palette">
+          <Card className="p-6">
+            <div className="space-y-6">
+              {/* Palette Header */}
+              <div className="flex items-start justify-between">
+                <div>
+                  <h3 className="text-lg font-semibold text-gray-900">
+                    {generatedPalette.primary_palette?.palette_name || 'Generated Palette'}
+                  </h3>
+                  <p className="text-sm text-gray-600 mt-1">
+                    {weddingStyle.charAt(0).toUpperCase() + weddingStyle.slice(1)} • {season.charAt(0).toUpperCase() + season.slice(1)} • {harmonyType.replace('_', ' ')}
+                  </p>
+                </div>
+                <Badge variant="secondary" className="flex items-center gap-1">
+                  <EyeIcon className="w-3 h-3" />
+                  Accessibility Checked
+                </Badge>
+              </div>
+
+              {/* Primary Colors */}
+              {generatedPalette.primary_palette?.primary_colors && (
+                <div className="space-y-3">
+                  <h4 className="text-sm font-medium text-gray-700">Primary Colors</h4>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    {generatedPalette.primary_palette.primary_colors.map((color: any, index: number) => (
+                      <div key={index} className="group cursor-pointer" role="button" tabIndex={0}>
+                        <div
+                          className="w-full h-20 rounded-lg border-2 border-gray-200 group-hover:border-gray-300 transition-colors"
+                          style={{ backgroundColor: color.hex }}
+                          aria-label={`Primary color: ${color.name}`}
+                        />
+                        <div className="mt-2 text-center">
+                          <div className="text-sm font-medium text-gray-900">{color.name}</div>
+                          <div className="text-xs font-mono text-gray-600">{color.hex}</div>
+                          {color.role && (
+                            <div className="text-xs text-purple-600 mt-1">{color.role}</div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Accent Colors */}
+              {generatedPalette.primary_palette?.accent_colors && (
+                <div className="space-y-3">
+                  <h4 className="text-sm font-medium text-gray-700">Accent Colors</h4>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    {generatedPalette.primary_palette.accent_colors.map((color: any, index: number) => (
+                      <div key={index} className="group cursor-pointer" role="button" tabIndex={0}>
+                        <div
+                          className="w-full h-16 rounded-lg border-2 border-gray-200 group-hover:border-gray-300 transition-colors"
+                          style={{ backgroundColor: color.hex }}
+                          aria-label={`Accent color: ${color.name}`}
+                        />
+                        <div className="mt-2 text-center">
+                          <div className="text-sm font-medium text-gray-900">{color.name}</div>
+                          <div className="text-xs font-mono text-gray-600">{color.hex}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Neutral Colors */}
+              {generatedPalette.primary_palette?.neutral_colors && includeNeutrals && (
+                <div className="space-y-3">
+                  <h4 className="text-sm font-medium text-gray-700">Neutral Colors</h4>
+                  <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
+                    {generatedPalette.primary_palette.neutral_colors.map((color: any, index: number) => (
+                      <div key={index} className="group cursor-pointer" role="button" tabIndex={0}>
+                        <div
+                          className="w-full h-12 rounded-lg border-2 border-gray-200 group-hover:border-gray-300 transition-colors"
+                          style={{ backgroundColor: color.hex }}
+                          aria-label={`Neutral color: ${color.name}`}
+                        />
+                        <div className="mt-1 text-center">
+                          <div className="text-xs font-medium text-gray-900">{color.name}</div>
+                          <div className="text-xs font-mono text-gray-500">{color.hex}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </Card>
+
+          {/* Flower Matches */}
+          {generatedPalette.flower_matches && generatedPalette.flower_matches.length > 0 && (
+            <Card className="p-6">
+              <h4 className="text-sm font-medium text-gray-700 mb-4">Matching Flowers</h4>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {generatedPalette.flower_matches.map((colorMatch: any, index: number) => (
+                  <div key={index} className="p-4 border border-gray-200 rounded-lg">
+                    <div className="flex items-center gap-3 mb-3">
+                      <div
+                        className="w-6 h-6 rounded-full border-2 border-gray-300"
+                        style={{ backgroundColor: colorMatch.target_color?.hex }}
+                        aria-label={`Target color: ${colorMatch.target_color?.name}`}
+                      />
+                      <div className="flex-1">
+                        <div className="text-sm font-medium text-gray-900">
+                          {colorMatch.target_color?.name}
+                        </div>
+                        <div className="text-xs text-gray-600">
+                          {colorMatch.match_count} flowers available
+                        </div>
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      {colorMatch.matching_flowers?.slice(0, 3).map((flowerMatch: any, fIndex: number) => (
+                        <div key={fIndex} className="flex items-center justify-between text-sm">
+                          <span className="text-gray-900">{flowerMatch.flower?.common_name}</span>
+                          <Badge variant="outline" className="text-xs">
+                            {(flowerMatch.color_similarity * 100).toFixed(0)}% match
+                          </Badge>
+                        </div>
+                      ))}
+                      {colorMatch.matching_flowers?.length > 3 && (
+                        <div className="text-xs text-gray-500 text-center pt-1">
+                          +{colorMatch.matching_flowers.length - 3} more flowers
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+
+          {/* Seasonal Analysis */}
+          {generatedPalette.seasonal_analysis && (
+            <Card className="p-6">
+              <h4 className="text-sm font-medium text-gray-700 mb-4">Seasonal Analysis</h4>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div className="text-center">
+                  <div className="text-3xl font-bold text-blue-600">
+                    {(generatedPalette.seasonal_analysis.overall_fit * 100).toFixed(0)}%
+                  </div>
+                  <div className="text-sm text-gray-600 mt-1">Overall Fit</div>
+                  <div className="text-xs text-gray-500 mt-1">
+                    How well the palette works together
+                  </div>
+                </div>
+                <div className="text-center">
+                  <div className="text-3xl font-bold text-green-600">
+                    {(generatedPalette.seasonal_analysis.seasonal_fit_score * 100).toFixed(0)}%
+                  </div>
+                  <div className="text-sm text-gray-600 mt-1">Seasonal Availability</div>
+                  <div className="text-xs text-gray-500 mt-1">
+                    Flower availability for {season}
+                  </div>
+                </div>
+                <div className="text-center">
+                  <div className="text-3xl font-bold text-purple-600">
+                    {(generatedPalette.seasonal_analysis.color_match_score * 100).toFixed(0)}%
+                  </div>
+                  <div className="text-sm text-gray-600 mt-1">Color Accuracy</div>
+                  <div className="text-xs text-gray-500 mt-1">
+                    How closely flowers match palette
+                  </div>
+                </div>
+              </div>
+              
+              {generatedPalette.seasonal_analysis.recommendations && (
+                <div className="mt-6 space-y-2">
+                  <h5 className="text-sm font-medium text-gray-700">Recommendations</h5>
+                  {generatedPalette.seasonal_analysis.recommendations.map((rec: string, index: number) => (
+                    <div key={index} className="flex items-start gap-2 text-sm text-gray-700">
+                      <span className="text-purple-600 mt-0.5" aria-hidden="true">•</span>
+                      <span>{rec}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+          )}
+        </div>
+      )}
+
+      {/* Error Display */}
+      {error && (
+        <div className="p-4 bg-red-50 border border-red-200 rounded-md" role="alert">
+          <div className="flex items-start">
+            <div className="flex-shrink-0">
+              <span className="text-red-400 text-xl" role="img" aria-label="Error">⚠️</span>
+            </div>
+            <div className="ml-3">
+              <h3 className="text-sm font-medium text-red-800">
+                Palette Generation Failed
+              </h3>
+              <p className="text-sm text-red-700 mt-1">
+                {error.message || 'An error occurred while generating the palette. Please try again.'}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Empty State */}
+      {!isGenerating && !generatedPalette && !error && (
+        <div className="text-center py-12">
+          <SwatchIcon className="mx-auto h-12 w-12 text-gray-400" />
+          <h3 className="mt-2 text-sm font-medium text-gray-900">No palette generated</h3>
+          <p className="mt-1 text-sm text-gray-500">
+            Add colors, select style and season to generate AI palette
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,259 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import { z } from 'zod';
+import { Logger } from '@/lib/logging/Logger';
+
+const logger = new Logger('FeatureRequestsAPI');
+
+// Query parameters schema
+const QuerySchema = z.object({
+  page: z.coerce.number().min(1).default(1),
+  limit: z.coerce.number().min(1).max(100).default(20),
+  status: z.enum(['submitted', 'analyzing', 'analyzed', 'in_progress', 'completed', 'declined']).optional(),
+  priority_level: z.enum(['low', 'medium', 'high', 'critical']).optional(),
+  category: z.enum(['forms', 'timeline', 'guest-management', 'payments', 'integration', 'mobile', 'analytics', 'communication']).optional(),
+  user_role: z.enum(['photographer', 'venue', 'planner', 'florist', 'caterer', 'couple', 'admin']).optional(),
+  sort_by: z.enum(['created_at', 'rice_score', 'priority_level', 'title']).default('created_at'),
+  sort_order: z.enum(['asc', 'desc']).default('desc'),
+  search: z.string().optional()
+});
+
+// GET - List feature requests
+export async function GET(request: NextRequest) {
+  try {
+    // Authentication
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
+    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    
+    if (sessionError || !session) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get user profile
+    const { data: profile, error: profileError } = await supabase
+      .from('user_profiles')
+      .select('*, organizations(*)')
+      .eq('user_id', session.user.id)
+      .single();
+
+    if (profileError || !profile) {
+      return NextResponse.json({ error: 'User profile not found' }, { status: 404 });
+    }
+
+    // Parse query parameters
+    const url = new URL(request.url);
+    const query = QuerySchema.parse(Object.fromEntries(url.searchParams));
+
+    // Build base query
+    let baseQuery = supabase
+      .from('feature_requests')
+      .select(`
+        *,
+        user_profiles!inner(name, role),
+        organizations!inner(name, tier)
+      `);
+
+    // Apply filters based on user role
+    if (profile.role === 'admin' || profile.role === 'owner') {
+      // Admins can see all requests
+    } else {
+      // Regular users can only see their own organization's requests
+      baseQuery = baseQuery.eq('organization_id', profile.organization_id);
+    }
+
+    // Apply filters
+    if (query.status) {
+      baseQuery = baseQuery.eq('status', query.status);
+    }
+    
+    if (query.priority_level) {
+      baseQuery = baseQuery.eq('priority_level', query.priority_level);
+    }
+    
+    if (query.category) {
+      baseQuery = baseQuery.eq('category', query.category);
+    }
+    
+    if (query.user_role) {
+      baseQuery = baseQuery.eq('user_role', query.user_role);
+    }
+
+    // Apply search
+    if (query.search) {
+      baseQuery = baseQuery.or(`title.ilike.%${query.search}%,description.ilike.%${query.search}%`);
+    }
+
+    // Apply sorting
+    let orderColumn = query.sort_by;
+    if (query.sort_by === 'rice_score') {
+      orderColumn = 'rice_score';
+    } else if (query.sort_by === 'priority_level') {
+      // Custom ordering for priority levels
+      baseQuery = baseQuery.order('priority_level', { 
+        ascending: query.sort_order === 'asc'
+      });
+    }
+
+    if (query.sort_by !== 'priority_level') {
+      baseQuery = baseQuery.order(orderColumn, { 
+        ascending: query.sort_order === 'asc' 
+      });
+    }
+
+    // Get total count for pagination
+    const { count, error: countError } = await supabase
+      .from('feature_requests')
+      .select('*', { count: 'exact', head: true })
+      .eq('organization_id', profile.role === 'admin' ? undefined : profile.organization_id);
+
+    if (countError) {
+      logger.error('Failed to get feature requests count', { error: countError });
+    }
+
+    // Apply pagination
+    const offset = (query.page - 1) * query.limit;
+    baseQuery = baseQuery.range(offset, offset + query.limit - 1);
+
+    // Execute query
+    const { data: requests, error } = await baseQuery;
+
+    if (error) {
+      logger.error('Failed to fetch feature requests', { error });
+      return NextResponse.json({ error: 'Failed to fetch feature requests' }, { status: 500 });
+    }
+
+    // Calculate pagination metadata
+    const totalPages = Math.ceil((count || 0) / query.limit);
+    const hasNextPage = query.page < totalPages;
+    const hasPrevPage = query.page > 1;
+
+    return NextResponse.json({
+      data: requests || [],
+      pagination: {
+        page: query.page,
+        limit: query.limit,
+        total: count || 0,
+        totalPages,
+        hasNextPage,
+        hasPrevPage
+      },
+      filters: {
+        status: query.status,
+        priority_level: query.priority_level,
+        category: query.category,
+        user_role: query.user_role,
+        search: query.search
+      }
+    });
+
+  } catch (error) {
+    logger.error('Feature requests API error', { error });
+    
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid query parameters', details: error.errors },
+        { status: 400 }
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+// POST - Create new feature request
+export async function POST(request: NextRequest) {
+  try {
+    // Authentication
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
+    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    
+    if (sessionError || !session) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get user profile
+    const { data: profile, error: profileError } = await supabase
+      .from('user_profiles')
+      .select('*, organizations(*)')
+      .eq('user_id', session.user.id)
+      .single();
+
+    if (profileError || !profile) {
+      return NextResponse.json({ error: 'User profile not found' }, { status: 404 });
+    }
+
+    // Parse request body
+    const CreateRequestSchema = z.object({
+      title: z.string().min(10).max(200),
+      description: z.string().min(20).max(2000),
+      category: z.enum(['forms', 'timeline', 'guest-management', 'payments', 'integration', 'mobile', 'analytics', 'communication']).optional(),
+      urgency_signals: z.array(z.string()).optional(),
+      expected_impact: z.enum(['low', 'medium', 'high', 'critical']).optional(),
+      business_justification: z.string().optional(),
+      attachments: z.array(z.string()).optional()
+    });
+
+    const body = await request.json();
+    const validatedRequest = CreateRequestSchema.parse(body);
+
+    // Create feature request
+    const { data: newRequest, error: insertError } = await supabase
+      .from('feature_requests')
+      .insert([{
+        title: validatedRequest.title,
+        description: validatedRequest.description,
+        category: validatedRequest.category,
+        user_id: session.user.id,
+        organization_id: profile.organization_id,
+        user_role: profile.role,
+        status: 'submitted',
+        expected_impact: validatedRequest.expected_impact || 'medium',
+        metadata: {
+          urgency_signals: validatedRequest.urgency_signals || [],
+          business_justification: validatedRequest.business_justification,
+          attachments: validatedRequest.attachments || [],
+          user_tier: profile.organizations?.tier || 'free',
+          organization_size: profile.organizations?.size || 'small'
+        }
+      }])
+      .select(`
+        *,
+        user_profiles!inner(name, role),
+        organizations!inner(name, tier)
+      `)
+      .single();
+
+    if (insertError) {
+      logger.error('Failed to create feature request', { error: insertError });
+      return NextResponse.json({ error: 'Failed to create feature request' }, { status: 500 });
+    }
+
+    logger.info('Feature request created', {
+      requestId: newRequest.id,
+      title: newRequest.title,
+      userId: session.user.id,
+      organizationId: profile.organization_id
+    });
+
+    return NextResponse.json(newRequest, { status: 201 });
+
+  } catch (error) {
+    logger.error('Create feature request error', { error });
+    
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid request data', details: error.errors },
+        { status: 400 }
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}

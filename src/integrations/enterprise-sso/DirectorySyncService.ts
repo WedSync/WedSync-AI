@@ -1,0 +1,739 @@
+/**
+ * Enterprise Directory Synchronization Service
+ *
+ * Automated synchronization service for enterprise user directories.
+ * Handles bulk user imports, incremental sync, and directory change detection
+ * from multiple identity providers to keep WedSync user base current
+ * with enterprise identity systems.
+ *
+ * Critical for large wedding venues and hospitality groups that frequently
+ * onboard/offboard staff, change roles, or reorganize departments.
+ * Ensures WedSync permissions stay synchronized with corporate directory changes.
+ *
+ * @author WedSync Enterprise Team C
+ * @version 1.0.0
+ */
+
+import { createClient } from '@supabase/supabase-js';
+import { Database } from '../../types/database';
+import {
+  IdentityProviderConnector,
+  IdentityProviderConfig,
+  EnterpriseUserAttributes,
+} from './IdentityProviderConnector';
+import { ActiveDirectoryIntegration } from './ActiveDirectoryIntegration';
+import { OktaConnector } from './OktaConnector';
+import { AzureADIntegration } from './AzureADIntegration';
+import { Auth0Integration } from './Auth0Integration';
+
+/**
+ * Directory synchronization configuration
+ */
+export interface DirectorySyncConfig {
+  providerId: string;
+  syncSchedule: 'hourly' | 'daily' | 'weekly' | 'manual';
+  batchSize: number;
+  enableIncrementalSync: boolean;
+  autoProvisionUsers: boolean;
+  autoDisableUsers: boolean;
+  conflictResolution: 'provider_wins' | 'wedsync_wins' | 'merge' | 'manual';
+  attributeMapping: Record<string, string>;
+  syncFilters?: {
+    includeGroups?: string[];
+    excludeGroups?: string[];
+    includeDepartments?: string[];
+    excludeDepartments?: string[];
+    activeUsersOnly?: boolean;
+  };
+  notifications: {
+    email?: string[];
+    webhook?: string;
+    slack?: string;
+  };
+}
+
+/**
+ * Synchronization result
+ */
+export interface SyncResult {
+  syncId: string;
+  providerId: string;
+  startTime: Date;
+  endTime: Date;
+  status: 'success' | 'partial' | 'failed';
+  totalUsers: number;
+  usersCreated: number;
+  usersUpdated: number;
+  usersDeactivated: number;
+  groupsCreated: number;
+  groupsUpdated: number;
+  errors: Array<{
+    type: 'user' | 'group' | 'permission';
+    identifier: string;
+    error: string;
+    severity: 'low' | 'medium' | 'high' | 'critical';
+  }>;
+  warnings: Array<{
+    type: string;
+    message: string;
+    count: number;
+  }>;
+  nextSyncScheduled?: Date;
+}
+
+/**
+ * User change detection
+ */
+interface UserChange {
+  type: 'create' | 'update' | 'delete' | 'disable';
+  userId: string;
+  email: string;
+  previousAttributes?: EnterpriseUserAttributes;
+  newAttributes?: EnterpriseUserAttributes;
+  changedFields: string[];
+  timestamp: Date;
+}
+
+/**
+ * Directory sync state tracking
+ */
+interface SyncState {
+  providerId: string;
+  lastSyncTime: Date;
+  lastSuccessfulSync: Date;
+  syncChecksum: string;
+  userCount: number;
+  groupCount: number;
+  consecutiveFailures: number;
+  isRunning: boolean;
+}
+
+/**
+ * Enterprise Directory Synchronization Service
+ *
+ * Orchestrates automated synchronization between enterprise identity providers
+ * and WedSync's user management system, ensuring consistent user access
+ * across wedding planning operations.
+ */
+export class DirectorySyncService {
+  private supabase: ReturnType<typeof createClient<Database>>;
+  private identityConnector: IdentityProviderConnector;
+  private syncConfigs: Map<string, DirectorySyncConfig> = new Map();
+  private syncStates: Map<string, SyncState> = new Map();
+  private syncTimers: Map<string, NodeJS.Timeout> = new Map();
+
+  // Provider-specific integrations
+  private adIntegration?: ActiveDirectoryIntegration;
+  private oktaConnector?: OktaConnector;
+  private azureIntegration?: AzureADIntegration;
+  private auth0Integration?: Auth0Integration;
+
+  constructor(
+    supabaseUrl: string,
+    supabaseServiceKey: string,
+    identityConnector: IdentityProviderConnector,
+  ) {
+    this.supabase = createClient<Database>(supabaseUrl, supabaseServiceKey);
+    this.identityConnector = identityConnector;
+  }
+
+  /**
+   * Configure directory synchronization for a provider
+   */
+  async configureSyncForProvider(
+    providerId: string,
+    syncConfig: DirectorySyncConfig,
+  ): Promise<void> {
+    try {
+      // Validate configuration
+      await this.validateSyncConfig(syncConfig);
+
+      // Store configuration
+      await this.supabase.from('directory_sync_configs').upsert({
+        provider_id: providerId,
+        sync_schedule: syncConfig.syncSchedule,
+        batch_size: syncConfig.batchSize,
+        enable_incremental_sync: syncConfig.enableIncrementalSync,
+        auto_provision_users: syncConfig.autoProvisionUsers,
+        auto_disable_users: syncConfig.autoDisableUsers,
+        conflict_resolution: syncConfig.conflictResolution,
+        attribute_mapping: syncConfig.attributeMapping,
+        sync_filters: syncConfig.syncFilters || {},
+        notifications: syncConfig.notifications,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+
+      // Cache configuration
+      this.syncConfigs.set(providerId, syncConfig);
+
+      // Initialize sync state
+      await this.initializeSyncState(providerId);
+
+      // Schedule automatic sync if configured
+      if (syncConfig.syncSchedule !== 'manual') {
+        this.scheduleSync(providerId, syncConfig.syncSchedule);
+      }
+
+      console.log(`Directory sync configured for provider: ${providerId}`);
+    } catch (error) {
+      console.error(
+        `Failed to configure sync for provider ${providerId}:`,
+        error,
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Execute full directory synchronization
+   */
+  async executeFullSync(
+    providerId: string,
+    options: {
+      dryRun?: boolean;
+      notifyOnCompletion?: boolean;
+    } = {},
+  ): Promise<SyncResult> {
+    const syncId = `sync_${providerId}_${Date.now()}`;
+    const startTime = new Date();
+
+    try {
+      console.log(`Starting full directory sync for provider: ${providerId}`);
+
+      const syncConfig = this.syncConfigs.get(providerId);
+      if (!syncConfig) {
+        throw new Error(
+          `No sync configuration found for provider: ${providerId}`,
+        );
+      }
+
+      // Update sync state to running
+      await this.updateSyncState(providerId, { isRunning: true });
+
+      // Initialize result tracking
+      const result: SyncResult = {
+        syncId,
+        providerId,
+        startTime,
+        endTime: new Date(), // Will be updated
+        status: 'success',
+        totalUsers: 0,
+        usersCreated: 0,
+        usersUpdated: 0,
+        usersDeactivated: 0,
+        groupsCreated: 0,
+        groupsUpdated: 0,
+        errors: [],
+        warnings: [],
+      };
+
+      // Get provider configuration
+      const provider = await this.getProviderConfig(providerId);
+      if (!provider) {
+        throw new Error(`Provider configuration not found: ${providerId}`);
+      }
+
+      // Execute provider-specific sync
+      await this.executeProviderSync(
+        provider,
+        syncConfig,
+        result,
+        options.dryRun,
+      );
+
+      // Update sync state
+      const endTime = new Date();
+      result.endTime = endTime;
+
+      await this.updateSyncState(providerId, {
+        isRunning: false,
+        lastSyncTime: endTime,
+        lastSuccessfulSync: result.status === 'success' ? endTime : undefined,
+        consecutiveFailures:
+          result.status === 'success'
+            ? 0
+            : (this.syncStates.get(providerId)?.consecutiveFailures || 0) + 1,
+      });
+
+      // Store sync result
+      await this.storeSyncResult(result);
+
+      // Send notifications
+      if (options.notifyOnCompletion) {
+        await this.sendSyncNotification(result, syncConfig);
+      }
+
+      console.log(`Directory sync completed for provider: ${providerId}`, {
+        duration: endTime.getTime() - startTime.getTime(),
+        usersProcessed: result.totalUsers,
+        status: result.status,
+      });
+
+      return result;
+    } catch (error) {
+      console.error(`Directory sync failed for provider ${providerId}:`, error);
+
+      const failedResult: SyncResult = {
+        syncId,
+        providerId,
+        startTime,
+        endTime: new Date(),
+        status: 'failed',
+        totalUsers: 0,
+        usersCreated: 0,
+        usersUpdated: 0,
+        usersDeactivated: 0,
+        groupsCreated: 0,
+        groupsUpdated: 0,
+        errors: [
+          {
+            type: 'user',
+            identifier: 'sync_process',
+            error:
+              error instanceof Error ? error.message : 'Unknown sync error',
+            severity: 'critical',
+          },
+        ],
+        warnings: [],
+      };
+
+      await this.updateSyncState(providerId, { isRunning: false });
+      await this.storeSyncResult(failedResult);
+
+      return failedResult;
+    }
+  }
+
+  /**
+   * Execute incremental synchronization
+   * Only syncs changes since last successful sync
+   */
+  async executeIncrementalSync(
+    providerId: string,
+    since?: Date,
+  ): Promise<SyncResult> {
+    const syncConfig = this.syncConfigs.get(providerId);
+    if (!syncConfig || !syncConfig.enableIncrementalSync) {
+      throw new Error(
+        `Incremental sync not configured for provider: ${providerId}`,
+      );
+    }
+
+    const syncState = this.syncStates.get(providerId);
+    const sinceDate =
+      since ||
+      syncState?.lastSuccessfulSync ||
+      new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+    console.log(
+      `Starting incremental sync for provider: ${providerId}, since: ${sinceDate}`,
+    );
+
+    // Get changes since last sync
+    const changes = await this.detectUserChanges(providerId, sinceDate);
+
+    // Process changes
+    const result: SyncResult = {
+      syncId: `inc_sync_${providerId}_${Date.now()}`,
+      providerId,
+      startTime: new Date(),
+      endTime: new Date(),
+      status: 'success',
+      totalUsers: changes.length,
+      usersCreated: 0,
+      usersUpdated: 0,
+      usersDeactivated: 0,
+      groupsCreated: 0,
+      groupsUpdated: 0,
+      errors: [],
+      warnings: [],
+    };
+
+    for (const change of changes) {
+      try {
+        await this.processUserChange(change, syncConfig);
+
+        switch (change.type) {
+          case 'create':
+            result.usersCreated++;
+            break;
+          case 'update':
+            result.usersUpdated++;
+            break;
+          case 'disable':
+          case 'delete':
+            result.usersDeactivated++;
+            break;
+        }
+      } catch (error) {
+        result.errors.push({
+          type: 'user',
+          identifier: change.email,
+          error: error instanceof Error ? error.message : 'Processing failed',
+          severity: 'medium',
+        });
+      }
+    }
+
+    result.endTime = new Date();
+    result.status =
+      result.errors.length === 0
+        ? 'success'
+        : result.errors.length < changes.length
+          ? 'partial'
+          : 'failed';
+
+    await this.storeSyncResult(result);
+
+    return result;
+  }
+
+  /**
+   * Get synchronization status for all configured providers
+   */
+  async getSyncStatus(): Promise<
+    Array<{
+      providerId: string;
+      config: DirectorySyncConfig;
+      state: SyncState;
+      lastResult?: SyncResult;
+    }>
+  > {
+    const statuses = [];
+
+    for (const [providerId, config] of this.syncConfigs) {
+      const state = this.syncStates.get(providerId);
+      const lastResult = await this.getLastSyncResult(providerId);
+
+      if (state) {
+        statuses.push({
+          providerId,
+          config,
+          state,
+          lastResult,
+        });
+      }
+    }
+
+    return statuses;
+  }
+
+  /**
+   * Validate sync configuration
+   */
+  private async validateSyncConfig(config: DirectorySyncConfig): Promise<void> {
+    if (!config.providerId) {
+      throw new Error('Provider ID is required');
+    }
+
+    if (config.batchSize <= 0 || config.batchSize > 10000) {
+      throw new Error('Batch size must be between 1 and 10000');
+    }
+
+    if (
+      !config.attributeMapping ||
+      Object.keys(config.attributeMapping).length === 0
+    ) {
+      throw new Error('Attribute mapping is required');
+    }
+
+    // Validate provider exists
+    const provider = await this.getProviderConfig(config.providerId);
+    if (!provider) {
+      throw new Error(`Provider not found: ${config.providerId}`);
+    }
+  }
+
+  /**
+   * Initialize sync state for a provider
+   */
+  private async initializeSyncState(providerId: string): Promise<void> {
+    const existing = await this.supabase
+      .from('directory_sync_states')
+      .select('*')
+      .eq('provider_id', providerId)
+      .single();
+
+    if (!existing.data) {
+      const initialState: SyncState = {
+        providerId,
+        lastSyncTime: new Date(0),
+        lastSuccessfulSync: new Date(0),
+        syncChecksum: '',
+        userCount: 0,
+        groupCount: 0,
+        consecutiveFailures: 0,
+        isRunning: false,
+      };
+
+      await this.supabase.from('directory_sync_states').insert({
+        provider_id: providerId,
+        last_sync_time: initialState.lastSyncTime.toISOString(),
+        last_successful_sync: initialState.lastSuccessfulSync.toISOString(),
+        sync_checksum: initialState.syncChecksum,
+        user_count: initialState.userCount,
+        group_count: initialState.groupCount,
+        consecutive_failures: initialState.consecutiveFailures,
+        is_running: initialState.isRunning,
+      });
+
+      this.syncStates.set(providerId, initialState);
+    } else {
+      const state: SyncState = {
+        providerId: existing.data.provider_id,
+        lastSyncTime: new Date(existing.data.last_sync_time),
+        lastSuccessfulSync: new Date(existing.data.last_successful_sync),
+        syncChecksum: existing.data.sync_checksum,
+        userCount: existing.data.user_count,
+        groupCount: existing.data.group_count,
+        consecutiveFailures: existing.data.consecutive_failures,
+        isRunning: existing.data.is_running,
+      };
+
+      this.syncStates.set(providerId, state);
+    }
+  }
+
+  /**
+   * Schedule automatic synchronization
+   */
+  private scheduleSync(providerId: string, schedule: string): void {
+    // Clear existing timer
+    const existingTimer = this.syncTimers.get(providerId);
+    if (existingTimer) {
+      clearInterval(existingTimer);
+    }
+
+    let intervalMs: number;
+
+    switch (schedule) {
+      case 'hourly':
+        intervalMs = 60 * 60 * 1000; // 1 hour
+        break;
+      case 'daily':
+        intervalMs = 24 * 60 * 60 * 1000; // 24 hours
+        break;
+      case 'weekly':
+        intervalMs = 7 * 24 * 60 * 60 * 1000; // 7 days
+        break;
+      default:
+        return; // Manual sync only
+    }
+
+    const timer = setInterval(async () => {
+      try {
+        console.log(`Executing scheduled sync for provider: ${providerId}`);
+        const syncConfig = this.syncConfigs.get(providerId);
+
+        if (syncConfig?.enableIncrementalSync) {
+          await this.executeIncrementalSync(providerId);
+        } else {
+          await this.executeFullSync(providerId, { notifyOnCompletion: true });
+        }
+      } catch (error) {
+        console.error(
+          `Scheduled sync failed for provider ${providerId}:`,
+          error,
+        );
+      }
+    }, intervalMs);
+
+    this.syncTimers.set(providerId, timer);
+    console.log(`Scheduled ${schedule} sync for provider: ${providerId}`);
+  }
+
+  /**
+   * Execute provider-specific synchronization
+   */
+  private async executeProviderSync(
+    provider: IdentityProviderConfig,
+    syncConfig: DirectorySyncConfig,
+    result: SyncResult,
+    isDryRun?: boolean,
+  ): Promise<void> {
+    switch (provider.type) {
+      case 'active_directory':
+        if (!this.adIntegration) {
+          throw new Error('Active Directory integration not initialized');
+        }
+        await this.syncActiveDirectory(provider, syncConfig, result, isDryRun);
+        break;
+
+      case 'okta':
+        if (!this.oktaConnector) {
+          throw new Error('Okta connector not initialized');
+        }
+        await this.syncOkta(provider, syncConfig, result, isDryRun);
+        break;
+
+      case 'azure_ad':
+        if (!this.azureIntegration) {
+          throw new Error('Azure AD integration not initialized');
+        }
+        await this.syncAzureAD(provider, syncConfig, result, isDryRun);
+        break;
+
+      case 'auth0':
+        if (!this.auth0Integration) {
+          throw new Error('Auth0 integration not initialized');
+        }
+        await this.syncAuth0(provider, syncConfig, result, isDryRun);
+        break;
+
+      default:
+        throw new Error(`Unsupported provider type: ${provider.type}`);
+    }
+  }
+
+  // Provider-specific sync implementations would go here
+  private async syncActiveDirectory(
+    provider: IdentityProviderConfig,
+    syncConfig: DirectorySyncConfig,
+    result: SyncResult,
+    isDryRun?: boolean,
+  ): Promise<void> {
+    // Implementation would use ActiveDirectoryIntegration.synchronizeDirectory()
+    console.log('Syncing Active Directory...');
+  }
+
+  private async syncOkta(
+    provider: IdentityProviderConfig,
+    syncConfig: DirectorySyncConfig,
+    result: SyncResult,
+    isDryRun?: boolean,
+  ): Promise<void> {
+    // Implementation would use Okta Management API
+    console.log('Syncing Okta...');
+  }
+
+  private async syncAzureAD(
+    provider: IdentityProviderConfig,
+    syncConfig: DirectorySyncConfig,
+    result: SyncResult,
+    isDryRun?: boolean,
+  ): Promise<void> {
+    // Implementation would use AzureADIntegration.synchronizeDirectory()
+    console.log('Syncing Azure AD...');
+  }
+
+  private async syncAuth0(
+    provider: IdentityProviderConfig,
+    syncConfig: DirectorySyncConfig,
+    result: SyncResult,
+    isDryRun?: boolean,
+  ): Promise<void> {
+    // Implementation would use Auth0 Management API
+    console.log('Syncing Auth0...');
+  }
+
+  // Helper methods
+  private async getProviderConfig(
+    providerId: string,
+  ): Promise<IdentityProviderConfig | null> {
+    const { data } = await this.supabase
+      .from('identity_providers')
+      .select('*')
+      .eq('id', providerId)
+      .single();
+
+    return data?.config || null;
+  }
+
+  private async updateSyncState(
+    providerId: string,
+    updates: Partial<SyncState>,
+  ): Promise<void> {
+    const currentState = this.syncStates.get(providerId);
+    if (!currentState) return;
+
+    const newState = { ...currentState, ...updates };
+    this.syncStates.set(providerId, newState);
+
+    await this.supabase
+      .from('directory_sync_states')
+      .update({
+        last_sync_time: newState.lastSyncTime.toISOString(),
+        last_successful_sync: newState.lastSuccessfulSync.toISOString(),
+        sync_checksum: newState.syncChecksum,
+        user_count: newState.userCount,
+        group_count: newState.groupCount,
+        consecutive_failures: newState.consecutiveFailures,
+        is_running: newState.isRunning,
+      })
+      .eq('provider_id', providerId);
+  }
+
+  private async storeSyncResult(result: SyncResult): Promise<void> {
+    await this.supabase.from('directory_sync_results').insert({
+      sync_id: result.syncId,
+      provider_id: result.providerId,
+      start_time: result.startTime.toISOString(),
+      end_time: result.endTime.toISOString(),
+      status: result.status,
+      total_users: result.totalUsers,
+      users_created: result.usersCreated,
+      users_updated: result.usersUpdated,
+      users_deactivated: result.usersDeactivated,
+      groups_created: result.groupsCreated,
+      groups_updated: result.groupsUpdated,
+      errors: result.errors,
+      warnings: result.warnings,
+    });
+  }
+
+  private async getLastSyncResult(
+    providerId: string,
+  ): Promise<SyncResult | undefined> {
+    const { data } = await this.supabase
+      .from('directory_sync_results')
+      .select('*')
+      .eq('provider_id', providerId)
+      .order('start_time', { ascending: false })
+      .limit(1)
+      .single();
+
+    if (!data) return undefined;
+
+    return {
+      syncId: data.sync_id,
+      providerId: data.provider_id,
+      startTime: new Date(data.start_time),
+      endTime: new Date(data.end_time),
+      status: data.status,
+      totalUsers: data.total_users,
+      usersCreated: data.users_created,
+      usersUpdated: data.users_updated,
+      usersDeactivated: data.users_deactivated,
+      groupsCreated: data.groups_created,
+      groupsUpdated: data.groups_updated,
+      errors: data.errors || [],
+      warnings: data.warnings || [],
+    };
+  }
+
+  private async detectUserChanges(
+    providerId: string,
+    since: Date,
+  ): Promise<UserChange[]> {
+    // Implementation would query provider's change log or delta API
+    // This is a simplified placeholder
+    return [];
+  }
+
+  private async processUserChange(
+    change: UserChange,
+    syncConfig: DirectorySyncConfig,
+  ): Promise<void> {
+    // Implementation would apply user changes to WedSync database
+    console.log(`Processing user change: ${change.type} for ${change.email}`);
+  }
+
+  private async sendSyncNotification(
+    result: SyncResult,
+    config: DirectorySyncConfig,
+  ): Promise<void> {
+    // Implementation would send notifications via email, webhook, or Slack
+    console.log(`Sending sync notification for ${result.providerId}`);
+  }
+}

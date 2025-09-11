@@ -1,0 +1,161 @@
+/**
+ * API Route: Generate Color Palette for Wedding Florist Intelligence
+ * POST /api/florist/palette/generate - WS-253 Team C Implementation
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { getOpenAIFloristClient } from '@/lib/integrations/openai-florist-client';
+import { checkTierRateLimit } from '@/lib/middleware/rate-limit';
+import { z } from 'zod';
+
+// Request validation schema
+const generatePaletteSchema = z.object({
+  baseColors: z.array(z.string().regex(/^#[0-9A-Fa-f]{6}$/, 'Invalid hex color format')).min(1).max(5),
+  style: z.enum(['romantic', 'modern', 'rustic', 'classic', 'bohemian']),
+  season: z.enum(['spring', 'summer', 'fall', 'winter']),
+  preferences: z.object({
+    include_neutrals: z.boolean().optional().default(true),
+    accent_count: z.number().min(1).max(5).optional().default(2),
+    harmony_type: z.enum(['complementary', 'analogous', 'triadic', 'split-complementary', 'monochromatic']).optional()
+  }).optional().default({})
+});
+
+type GeneratePaletteRequest = z.infer<typeof generatePaletteSchema>;
+
+export async function POST(request: NextRequest) {
+  try {
+    // Get user info from headers (set by middleware)
+    const userId = request.headers.get('x-user-id');
+    const userTier = request.headers.get('x-user-tier') || 'FREE';
+
+    if (!userId) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 }
+      );
+    }
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validatedData = generatePaletteSchema.parse(body);
+
+    // Rate limiting check
+    const rateLimit = await checkTierRateLimit(userId, userTier as any, 'colorPalette');
+    if (!rateLimit.allowed) {
+      return NextResponse.json(
+        { 
+          error: 'Rate limit exceeded',
+          message: `Color palette generation limit reached. Try again in ${rateLimit.retryAfter} seconds.`,
+          retryAfter: rateLimit.retryAfter
+        },
+        { 
+          status: 429,
+          headers: {
+            'Retry-After': rateLimit.retryAfter?.toString() || '3600',
+            'X-RateLimit-Limit': rateLimit.totalHits?.toString() || '0',
+            'X-RateLimit-Remaining': rateLimit.remaining.toString(),
+            'X-RateLimit-Reset': rateLimit.resetTime.toString()
+          }
+        }
+      );
+    }
+
+    // Get florist client and generate palette
+    const floristClient = getOpenAIFloristClient();
+    const result = await floristClient.generateColorPalette(validatedData, {
+      userId,
+      userTier
+    });
+
+    // Add rate limit headers to successful response
+    const response = NextResponse.json({
+      success: true,
+      data: result,
+      metadata: {
+        user_id: userId,
+        user_tier: userTier,
+        request_timestamp: new Date().toISOString(),
+        cached: result.cached || false
+      }
+    });
+
+    response.headers.set('X-RateLimit-Limit', '100');
+    response.headers.set('X-RateLimit-Remaining', rateLimit.remaining.toString());
+    response.headers.set('X-RateLimit-Reset', rateLimit.resetTime.toString());
+
+    return response;
+
+  } catch (error) {
+    console.error('Color palette generation error:', error);
+
+    // Handle validation errors
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { 
+          error: 'Validation failed',
+          details: error.errors.map(err => ({
+            field: err.path.join('.'),
+            message: err.message
+          }))
+        },
+        { status: 400 }
+      );
+    }
+
+    // Handle specific AI service errors
+    if (error instanceof Error) {
+      if (error.message.includes('rate_limit_exceeded')) {
+        return NextResponse.json(
+          { error: 'AI service rate limit exceeded. Please try again in a few minutes.' },
+          { status: 429 }
+        );
+      }
+
+      if (error.message.includes('insufficient_quota')) {
+        return NextResponse.json(
+          { error: 'AI service quota exceeded. Please contact support.' },
+          { status: 503 }
+        );
+      }
+
+      if (error.message.includes('Circuit breaker')) {
+        return NextResponse.json(
+          { error: 'AI service temporarily unavailable. Please try again in a few minutes.' },
+          { status: 503 }
+        );
+      }
+    }
+
+    // Generic error response
+    return NextResponse.json(
+      { 
+        error: 'Failed to generate color palette',
+        message: 'An unexpected error occurred. Please try again.',
+        timestamp: new Date().toISOString()
+      },
+      { status: 500 }
+    );
+  }
+}
+
+// Handle unsupported methods
+export async function GET() {
+  return NextResponse.json(
+    { error: 'Method not allowed', message: 'Use POST to generate color palettes' },
+    { status: 405 }
+  );
+}
+
+export async function PUT() {
+  return NextResponse.json(
+    { error: 'Method not allowed', message: 'Use POST to generate color palettes' },
+    { status: 405 }
+  );
+}
+
+export async function DELETE() {
+  return NextResponse.json(
+    { error: 'Method not allowed', message: 'Use POST to generate color palettes' },
+    { status: 405 }
+  );
+}

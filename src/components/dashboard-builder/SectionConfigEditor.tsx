@@ -1,0 +1,1001 @@
+'use client';
+
+import React, { useState } from 'react';
+import {
+  Settings,
+  Clock,
+  Eye,
+  EyeOff,
+  Calendar,
+  Package,
+  Users,
+  AlertCircle,
+  Plus,
+  Trash2,
+  ChevronDown,
+  ChevronUp,
+  Filter,
+  Sparkles,
+  Target,
+  Shield,
+  CheckCircle,
+} from 'lucide-react';
+import { Button } from '@/components/ui/button-untitled';
+import { Input } from '@/components/ui/input-untitled';
+import { Card } from '@/components/ui/card-untitled';
+import { Badge } from '@/components/ui/badge';
+import { Switch } from '@/components/ui/switch';
+import { cn } from '@/lib/utils';
+import { format, addMonths, subMonths, differenceInDays } from 'date-fns';
+
+// Timeline milestones for wedding planning
+const WEDDING_MILESTONES = [
+  {
+    id: '12_months_before',
+    label: '12 Months Before',
+    value: -365,
+    category: 'early',
+  },
+  {
+    id: '9_months_before',
+    label: '9 Months Before',
+    value: -270,
+    category: 'early',
+  },
+  {
+    id: '6_months_before',
+    label: '6 Months Before',
+    value: -180,
+    category: 'mid',
+  },
+  {
+    id: '3_months_before',
+    label: '3 Months Before',
+    value: -90,
+    category: 'late',
+  },
+  {
+    id: '2_months_before',
+    label: '2 Months Before',
+    value: -60,
+    category: 'late',
+  },
+  {
+    id: '1_month_before',
+    label: '1 Month Before',
+    value: -30,
+    category: 'final',
+  },
+  {
+    id: '2_weeks_before',
+    label: '2 Weeks Before',
+    value: -14,
+    category: 'final',
+  },
+  { id: '1_week_before', label: '1 Week Before', value: -7, category: 'final' },
+  { id: 'wedding_day', label: 'Wedding Day', value: 0, category: 'day' },
+  { id: '1_week_after', label: '1 Week After', value: 7, category: 'post' },
+  { id: '1_month_after', label: '1 Month After', value: 30, category: 'post' },
+  {
+    id: '3_months_after',
+    label: '3 Months After',
+    value: 90,
+    category: 'post',
+  },
+];
+
+// Package levels for visibility rules
+const PACKAGE_LEVELS = [
+  {
+    id: 'bronze',
+    label: 'Bronze Package',
+    color: 'bg-amber-100 text-amber-800',
+  },
+  { id: 'silver', label: 'Silver Package', color: 'bg-gray-100 text-gray-800' },
+  { id: 'gold', label: 'Gold Package', color: 'bg-yellow-100 text-yellow-800' },
+  {
+    id: 'platinum',
+    label: 'Platinum Package',
+    color: 'bg-purple-100 text-purple-800',
+  },
+  { id: 'custom', label: 'Custom Package', color: 'bg-blue-100 text-blue-800' },
+];
+
+// Form states for intelligent display
+const FORM_STATES = [
+  { id: 'not_started', label: 'Not Started', icon: Clock },
+  { id: 'in_progress', label: 'In Progress', icon: AlertCircle },
+  { id: 'completed', label: 'Completed', icon: CheckCircle },
+  { id: 'approved', label: 'Approved', icon: Shield },
+];
+
+interface VisibilityRule {
+  id: string;
+  type:
+    | 'timeline'
+    | 'package'
+    | 'form_state'
+    | 'custom'
+    | 'milestone_completed';
+  condition: string;
+  value: any;
+  operator:
+    | 'equals'
+    | 'not_equals'
+    | 'greater_than'
+    | 'less_than'
+    | 'between'
+    | 'in'
+    | 'not_in';
+  logic?: 'and' | 'or';
+  description?: string;
+}
+
+interface ContentConfiguration {
+  autoHideCompleted: boolean;
+  progressiveReveal: boolean;
+  milestoneTriggered: boolean;
+  conditionalContent: {
+    [key: string]: {
+      condition: string;
+      content: any;
+    };
+  };
+  priorityOrder: number;
+  refreshInterval?: number;
+}
+
+interface SectionConfig {
+  id: string;
+  sectionType: string;
+  title: string;
+  visibilityRules: VisibilityRule[];
+  contentConfig: ContentConfiguration;
+  styleConfig: {
+    theme: 'default' | 'minimal' | 'card' | 'feature';
+    animation: 'none' | 'fade' | 'slide' | 'scale';
+    borderStyle: 'none' | 'solid' | 'dashed' | 'gradient';
+    shadowLevel: 'none' | 'sm' | 'md' | 'lg' | 'xl';
+  };
+  mobileConfig: {
+    hidden: boolean;
+    collapsible: boolean;
+    priorityOrder: number;
+  };
+  notifications: {
+    onShow: boolean;
+    onHide: boolean;
+    onContentChange: boolean;
+  };
+}
+
+interface SectionConfigEditorProps {
+  section: SectionConfig;
+  clientWeddingDate?: Date;
+  clientPackageLevel?: string;
+  onUpdate: (config: SectionConfig) => void;
+  onDelete?: () => void;
+}
+
+export default function SectionConfigEditor({
+  section,
+  clientWeddingDate,
+  clientPackageLevel,
+  onUpdate,
+  onDelete,
+}: SectionConfigEditorProps) {
+  const [activeTab, setActiveTab] = useState<
+    'visibility' | 'content' | 'style' | 'mobile'
+  >('visibility');
+  const [expandedRule, setExpandedRule] = useState<string | null>(null);
+  const [isTestingRules, setIsTestingRules] = useState(false);
+  const [testResults, setTestResults] = useState<
+    { passed: boolean; message: string }[]
+  >([]);
+
+  // Add new visibility rule
+  const addVisibilityRule = (type: VisibilityRule['type']) => {
+    const newRule: VisibilityRule = {
+      id: `rule-${Date.now()}`,
+      type,
+      condition: type === 'timeline' ? '6_months_before' : '',
+      value: '',
+      operator: 'equals',
+      logic: section.visibilityRules.length > 0 ? 'and' : undefined,
+      description: '',
+    };
+
+    onUpdate({
+      ...section,
+      visibilityRules: [...section.visibilityRules, newRule],
+    });
+  };
+
+  // Update visibility rule
+  const updateVisibilityRule = (
+    ruleId: string,
+    updates: Partial<VisibilityRule>,
+  ) => {
+    onUpdate({
+      ...section,
+      visibilityRules: section.visibilityRules.map((rule) =>
+        rule.id === ruleId ? { ...rule, ...updates } : rule,
+      ),
+    });
+  };
+
+  // Remove visibility rule
+  const removeVisibilityRule = (ruleId: string) => {
+    onUpdate({
+      ...section,
+      visibilityRules: section.visibilityRules.filter(
+        (rule) => rule.id !== ruleId,
+      ),
+    });
+  };
+
+  // Test visibility rules
+  const testVisibilityRules = () => {
+    setIsTestingRules(true);
+    const results: { passed: boolean; message: string }[] = [];
+
+    section.visibilityRules.forEach((rule) => {
+      let passed = false;
+      let message = '';
+
+      switch (rule.type) {
+        case 'timeline':
+          if (clientWeddingDate) {
+            const daysUntilWedding = differenceInDays(
+              clientWeddingDate,
+              new Date(),
+            );
+            const milestone = WEDDING_MILESTONES.find(
+              (m) => m.id === rule.condition,
+            );
+
+            if (milestone) {
+              switch (rule.operator) {
+                case 'equals':
+                  passed = Math.abs(daysUntilWedding - milestone.value) < 7;
+                  message = `${milestone.label}: ${passed ? 'Active' : 'Not Active'}`;
+                  break;
+                case 'greater_than':
+                  passed = daysUntilWedding > milestone.value;
+                  message = `More than ${milestone.label}: ${passed ? 'Yes' : 'No'}`;
+                  break;
+                case 'less_than':
+                  passed = daysUntilWedding < milestone.value;
+                  message = `Less than ${milestone.label}: ${passed ? 'Yes' : 'No'}`;
+                  break;
+                case 'between':
+                  const [start, end] = rule.value.split(',').map(Number);
+                  passed = daysUntilWedding >= start && daysUntilWedding <= end;
+                  message = `Between ${start} and ${end} days: ${passed ? 'Yes' : 'No'}`;
+                  break;
+              }
+            }
+          } else {
+            message = 'No wedding date set for testing';
+          }
+          break;
+
+        case 'package':
+          if (clientPackageLevel) {
+            const packages = Array.isArray(rule.value)
+              ? rule.value
+              : [rule.value];
+            passed =
+              rule.operator === 'in'
+                ? packages.includes(clientPackageLevel)
+                : !packages.includes(clientPackageLevel);
+            message = `Package ${rule.operator === 'in' ? 'is' : 'is not'} ${packages.join(', ')}: ${passed ? 'Yes' : 'No'}`;
+          } else {
+            message = 'No package level set for testing';
+          }
+          break;
+
+        case 'form_state':
+          // This would check actual form completion status
+          message = 'Form state checking requires live data';
+          break;
+
+        case 'milestone_completed':
+          // This would check milestone completion
+          message = 'Milestone completion checking requires live data';
+          break;
+
+        case 'custom':
+          message = 'Custom rule evaluation requires runtime context';
+          break;
+      }
+
+      results.push({ passed, message });
+    });
+
+    setTestResults(results);
+    setTimeout(() => setIsTestingRules(false), 2000);
+  };
+
+  // Calculate days until wedding for preview
+  const getDaysUntilWedding = () => {
+    if (!clientWeddingDate) return null;
+    return differenceInDays(clientWeddingDate, new Date());
+  };
+
+  const daysUntilWedding = getDaysUntilWedding();
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-start justify-between">
+        <div>
+          <h3 className="text-lg font-semibold flex items-center gap-2">
+            <Settings className="h-5 w-5" />
+            {section.title} Configuration
+          </h3>
+          <p className="text-sm text-gray-600 mt-1">
+            Configure visibility rules and content behavior
+          </p>
+        </div>
+
+        {onDelete && (
+          <Button
+            variant="ghost"
+            size="sm"
+            leftIcon={<Trash2 className="h-4 w-4" />}
+            onClick={onDelete}
+            className="text-error-600 hover:text-error-700"
+          >
+            Remove Section
+          </Button>
+        )}
+      </div>
+
+      {/* Wedding Context */}
+      {(clientWeddingDate || clientPackageLevel) && (
+        <Card className="p-4 bg-primary-50 border-primary-200">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <Calendar className="h-5 w-5 text-primary-600" />
+              <div>
+                <p className="text-sm font-medium text-primary-900">
+                  Test Context
+                </p>
+                <div className="flex items-center gap-4 mt-1">
+                  {clientWeddingDate && (
+                    <span className="text-xs text-primary-700">
+                      Wedding: {format(clientWeddingDate, 'PPP')} (
+                      {daysUntilWedding} days)
+                    </span>
+                  )}
+                  {clientPackageLevel && (
+                    <Badge
+                      className={
+                        PACKAGE_LEVELS.find((p) => p.id === clientPackageLevel)
+                          ?.color || ''
+                      }
+                    >
+                      {PACKAGE_LEVELS.find((p) => p.id === clientPackageLevel)
+                        ?.label || clientPackageLevel}
+                    </Badge>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <Button
+              variant="secondary"
+              size="sm"
+              leftIcon={<Sparkles className="h-4 w-4" />}
+              onClick={testVisibilityRules}
+              loading={isTestingRules}
+            >
+              Test Rules
+            </Button>
+          </div>
+        </Card>
+      )}
+
+      {/* Tab Navigation */}
+      <div className="flex gap-2 border-b border-gray-200">
+        <button
+          className={cn(
+            'px-4 py-2 text-sm font-medium border-b-2 transition-colors',
+            activeTab === 'visibility'
+              ? 'border-primary-600 text-primary-600'
+              : 'border-transparent text-gray-600 hover:text-gray-900',
+          )}
+          onClick={() => setActiveTab('visibility')}
+        >
+          <Eye className="inline-block h-4 w-4 mr-2" />
+          Visibility Rules
+        </button>
+        <button
+          className={cn(
+            'px-4 py-2 text-sm font-medium border-b-2 transition-colors',
+            activeTab === 'content'
+              ? 'border-primary-600 text-primary-600'
+              : 'border-transparent text-gray-600 hover:text-gray-900',
+          )}
+          onClick={() => setActiveTab('content')}
+        >
+          <Filter className="inline-block h-4 w-4 mr-2" />
+          Content Config
+        </button>
+        <button
+          className={cn(
+            'px-4 py-2 text-sm font-medium border-b-2 transition-colors',
+            activeTab === 'style'
+              ? 'border-primary-600 text-primary-600'
+              : 'border-transparent text-gray-600 hover:text-gray-900',
+          )}
+          onClick={() => setActiveTab('style')}
+        >
+          <Sparkles className="inline-block h-4 w-4 mr-2" />
+          Style & Animation
+        </button>
+        <button
+          className={cn(
+            'px-4 py-2 text-sm font-medium border-b-2 transition-colors',
+            activeTab === 'mobile'
+              ? 'border-primary-600 text-primary-600'
+              : 'border-transparent text-gray-600 hover:text-gray-900',
+          )}
+          onClick={() => setActiveTab('mobile')}
+        >
+          <Users className="inline-block h-4 w-4 mr-2" />
+          Mobile Settings
+        </button>
+      </div>
+
+      {/* Tab Content */}
+      <div className="min-h-[400px]">
+        {/* Visibility Rules Tab */}
+        {activeTab === 'visibility' && (
+          <div className="space-y-4">
+            {/* Existing Rules */}
+            {section.visibilityRules.length > 0 && (
+              <div className="space-y-3">
+                {section.visibilityRules.map((rule, index) => (
+                  <Card
+                    key={rule.id}
+                    className={cn(
+                      'p-4 transition-all',
+                      expandedRule === rule.id ? 'ring-2 ring-primary-500' : '',
+                    )}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-3">
+                          {index > 0 && (
+                            <Badge
+                              variant="outline"
+                              className="uppercase text-xs"
+                            >
+                              {rule.logic}
+                            </Badge>
+                          )}
+
+                          <select
+                            className="px-3 py-1 text-sm border border-gray-300 rounded-lg"
+                            value={rule.type}
+                            onChange={(e) =>
+                              updateVisibilityRule(rule.id, {
+                                type: e.target.value as VisibilityRule['type'],
+                              })
+                            }
+                          >
+                            <option value="timeline">Timeline-based</option>
+                            <option value="package">Package Level</option>
+                            <option value="form_state">Form State</option>
+                            <option value="milestone_completed">
+                              Milestone Completed
+                            </option>
+                            <option value="custom">Custom Condition</option>
+                          </select>
+
+                          {rule.type === 'timeline' && (
+                            <>
+                              <select
+                                className="px-3 py-1 text-sm border border-gray-300 rounded-lg"
+                                value={rule.condition}
+                                onChange={(e) =>
+                                  updateVisibilityRule(rule.id, {
+                                    condition: e.target.value,
+                                  })
+                                }
+                              >
+                                {WEDDING_MILESTONES.map((milestone) => (
+                                  <option
+                                    key={milestone.id}
+                                    value={milestone.id}
+                                  >
+                                    {milestone.label}
+                                  </option>
+                                ))}
+                              </select>
+
+                              <select
+                                className="px-3 py-1 text-sm border border-gray-300 rounded-lg"
+                                value={rule.operator}
+                                onChange={(e) =>
+                                  updateVisibilityRule(rule.id, {
+                                    operator: e.target
+                                      .value as VisibilityRule['operator'],
+                                  })
+                                }
+                              >
+                                <option value="equals">Exactly at</option>
+                                <option value="greater_than">After</option>
+                                <option value="less_than">Before</option>
+                                <option value="between">Between</option>
+                              </select>
+                            </>
+                          )}
+
+                          {rule.type === 'package' && (
+                            <>
+                              <select
+                                className="px-3 py-1 text-sm border border-gray-300 rounded-lg"
+                                value={rule.operator}
+                                onChange={(e) =>
+                                  updateVisibilityRule(rule.id, {
+                                    operator: e.target
+                                      .value as VisibilityRule['operator'],
+                                  })
+                                }
+                              >
+                                <option value="in">Is one of</option>
+                                <option value="not_in">Is not one of</option>
+                              </select>
+
+                              <div className="flex gap-2">
+                                {PACKAGE_LEVELS.map((pkg) => (
+                                  <label
+                                    key={pkg.id}
+                                    className="flex items-center gap-1"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={
+                                        Array.isArray(rule.value) &&
+                                        rule.value.includes(pkg.id)
+                                      }
+                                      onChange={(e) => {
+                                        const current = Array.isArray(
+                                          rule.value,
+                                        )
+                                          ? rule.value
+                                          : [];
+                                        const updated = e.target.checked
+                                          ? [...current, pkg.id]
+                                          : current.filter((v) => v !== pkg.id);
+                                        updateVisibilityRule(rule.id, {
+                                          value: updated,
+                                        });
+                                      }}
+                                      className="rounded"
+                                    />
+                                    <span className="text-xs">{pkg.label}</span>
+                                  </label>
+                                ))}
+                              </div>
+                            </>
+                          )}
+
+                          {rule.type === 'custom' && (
+                            <Input
+                              placeholder="e.g., client.budget > 50000"
+                              value={rule.condition}
+                              onChange={(e) =>
+                                updateVisibilityRule(rule.id, {
+                                  condition: e.target.value,
+                                })
+                              }
+                              className="flex-1 text-sm"
+                            />
+                          )}
+                        </div>
+
+                        {/* Test Result */}
+                        {testResults[index] && (
+                          <div
+                            className={cn(
+                              'mt-2 text-xs flex items-center gap-2',
+                              testResults[index].passed
+                                ? 'text-success-600'
+                                : 'text-gray-600',
+                            )}
+                          >
+                            {testResults[index].passed ? (
+                              <CheckCircle className="h-3 w-3" />
+                            ) : (
+                              <AlertCircle className="h-3 w-3" />
+                            )}
+                            {testResults[index].message}
+                          </div>
+                        )}
+
+                        {/* Description */}
+                        <button
+                          onClick={() =>
+                            setExpandedRule(
+                              expandedRule === rule.id ? null : rule.id,
+                            )
+                          }
+                          className="mt-2 text-xs text-primary-600 hover:text-primary-700 flex items-center gap-1"
+                        >
+                          {expandedRule === rule.id ? (
+                            <ChevronUp className="h-3 w-3" />
+                          ) : (
+                            <ChevronDown className="h-3 w-3" />
+                          )}
+                          Add description
+                        </button>
+
+                        {expandedRule === rule.id && (
+                          <Input
+                            placeholder="Describe when this rule applies..."
+                            value={rule.description || ''}
+                            onChange={(e) =>
+                              updateVisibilityRule(rule.id, {
+                                description: e.target.value,
+                              })
+                            }
+                            className="mt-2 text-sm"
+                          />
+                        )}
+                      </div>
+
+                      <button
+                        onClick={() => removeVisibilityRule(rule.id)}
+                        className="ml-2 p-1 text-gray-400 hover:text-error-600 transition-colors"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </Card>
+                ))}
+              </div>
+            )}
+
+            {/* Add Rule Buttons */}
+            <div className="flex flex-wrap gap-2 pt-4 border-t border-gray-200">
+              <Button
+                variant="secondary"
+                size="sm"
+                leftIcon={<Plus className="h-4 w-4" />}
+                onClick={() => addVisibilityRule('timeline')}
+              >
+                Add Timeline Rule
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                leftIcon={<Plus className="h-4 w-4" />}
+                onClick={() => addVisibilityRule('package')}
+              >
+                Add Package Rule
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                leftIcon={<Plus className="h-4 w-4" />}
+                onClick={() => addVisibilityRule('form_state')}
+              >
+                Add Form State Rule
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                leftIcon={<Plus className="h-4 w-4" />}
+                onClick={() => addVisibilityRule('custom')}
+              >
+                Add Custom Rule
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Content Configuration Tab */}
+        {activeTab === 'content' && (
+          <div className="space-y-6">
+            <Card className="p-4">
+              <h4 className="font-medium mb-4">Content Behavior</h4>
+
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="font-medium text-sm">Auto-hide Completed</p>
+                    <p className="text-xs text-gray-600">
+                      Automatically hide forms when completed
+                    </p>
+                  </div>
+                  <Switch
+                    checked={section.contentConfig.autoHideCompleted}
+                    onCheckedChange={(checked) =>
+                      onUpdate({
+                        ...section,
+                        contentConfig: {
+                          ...section.contentConfig,
+                          autoHideCompleted: checked,
+                        },
+                      })
+                    }
+                  />
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="font-medium text-sm">Progressive Reveal</p>
+                    <p className="text-xs text-gray-600">
+                      Show content gradually as wedding approaches
+                    </p>
+                  </div>
+                  <Switch
+                    checked={section.contentConfig.progressiveReveal}
+                    onCheckedChange={(checked) =>
+                      onUpdate({
+                        ...section,
+                        contentConfig: {
+                          ...section.contentConfig,
+                          progressiveReveal: checked,
+                        },
+                      })
+                    }
+                  />
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="font-medium text-sm">Milestone Triggered</p>
+                    <p className="text-xs text-gray-600">
+                      Update content when milestones are reached
+                    </p>
+                  </div>
+                  <Switch
+                    checked={section.contentConfig.milestoneTriggered}
+                    onCheckedChange={(checked) =>
+                      onUpdate({
+                        ...section,
+                        contentConfig: {
+                          ...section.contentConfig,
+                          milestoneTriggered: checked,
+                        },
+                      })
+                    }
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Priority Order</label>
+                  <Input
+                    type="number"
+                    min="0"
+                    max="100"
+                    value={section.contentConfig.priorityOrder}
+                    onChange={(e) =>
+                      onUpdate({
+                        ...section,
+                        contentConfig: {
+                          ...section.contentConfig,
+                          priorityOrder: parseInt(e.target.value),
+                        },
+                      })
+                    }
+                    className="w-24"
+                  />
+                  <p className="text-xs text-gray-600">
+                    Lower numbers appear first
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">
+                    Refresh Interval (minutes)
+                  </label>
+                  <Input
+                    type="number"
+                    min="0"
+                    value={section.contentConfig.refreshInterval || 0}
+                    onChange={(e) =>
+                      onUpdate({
+                        ...section,
+                        contentConfig: {
+                          ...section.contentConfig,
+                          refreshInterval:
+                            parseInt(e.target.value) || undefined,
+                        },
+                      })
+                    }
+                    className="w-24"
+                  />
+                  <p className="text-xs text-gray-600">0 = no auto-refresh</p>
+                </div>
+              </div>
+            </Card>
+          </div>
+        )}
+
+        {/* Style Configuration Tab */}
+        {activeTab === 'style' && (
+          <div className="space-y-6">
+            <Card className="p-4">
+              <h4 className="font-medium mb-4">Visual Style</h4>
+
+              <div className="grid gap-4">
+                <div>
+                  <label className="text-sm font-medium">Theme</label>
+                  <select
+                    className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg"
+                    value={section.styleConfig.theme}
+                    onChange={(e) =>
+                      onUpdate({
+                        ...section,
+                        styleConfig: {
+                          ...section.styleConfig,
+                          theme: e.target.value as any,
+                        },
+                      })
+                    }
+                  >
+                    <option value="default">Default</option>
+                    <option value="minimal">Minimal</option>
+                    <option value="card">Card</option>
+                    <option value="feature">Feature</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-sm font-medium">Animation</label>
+                  <select
+                    className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg"
+                    value={section.styleConfig.animation}
+                    onChange={(e) =>
+                      onUpdate({
+                        ...section,
+                        styleConfig: {
+                          ...section.styleConfig,
+                          animation: e.target.value as any,
+                        },
+                      })
+                    }
+                  >
+                    <option value="none">None</option>
+                    <option value="fade">Fade In</option>
+                    <option value="slide">Slide In</option>
+                    <option value="scale">Scale In</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-sm font-medium">Border Style</label>
+                  <select
+                    className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg"
+                    value={section.styleConfig.borderStyle}
+                    onChange={(e) =>
+                      onUpdate({
+                        ...section,
+                        styleConfig: {
+                          ...section.styleConfig,
+                          borderStyle: e.target.value as any,
+                        },
+                      })
+                    }
+                  >
+                    <option value="none">None</option>
+                    <option value="solid">Solid</option>
+                    <option value="dashed">Dashed</option>
+                    <option value="gradient">Gradient</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-sm font-medium">Shadow</label>
+                  <select
+                    className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg"
+                    value={section.styleConfig.shadowLevel}
+                    onChange={(e) =>
+                      onUpdate({
+                        ...section,
+                        styleConfig: {
+                          ...section.styleConfig,
+                          shadowLevel: e.target.value as any,
+                        },
+                      })
+                    }
+                  >
+                    <option value="none">None</option>
+                    <option value="sm">Small</option>
+                    <option value="md">Medium</option>
+                    <option value="lg">Large</option>
+                    <option value="xl">Extra Large</option>
+                  </select>
+                </div>
+              </div>
+            </Card>
+          </div>
+        )}
+
+        {/* Mobile Configuration Tab */}
+        {activeTab === 'mobile' && (
+          <div className="space-y-6">
+            <Card className="p-4">
+              <h4 className="font-medium mb-4">Mobile Behavior</h4>
+
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="font-medium text-sm">Hide on Mobile</p>
+                    <p className="text-xs text-gray-600">
+                      Section not visible on mobile devices
+                    </p>
+                  </div>
+                  <Switch
+                    checked={section.mobileConfig.hidden}
+                    onCheckedChange={(checked) =>
+                      onUpdate({
+                        ...section,
+                        mobileConfig: {
+                          ...section.mobileConfig,
+                          hidden: checked,
+                        },
+                      })
+                    }
+                  />
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="font-medium text-sm">Collapsible</p>
+                    <p className="text-xs text-gray-600">
+                      Allow users to collapse/expand section
+                    </p>
+                  </div>
+                  <Switch
+                    checked={section.mobileConfig.collapsible}
+                    onCheckedChange={(checked) =>
+                      onUpdate({
+                        ...section,
+                        mobileConfig: {
+                          ...section.mobileConfig,
+                          collapsible: checked,
+                        },
+                      })
+                    }
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">
+                    Mobile Priority Order
+                  </label>
+                  <Input
+                    type="number"
+                    min="0"
+                    max="100"
+                    value={section.mobileConfig.priorityOrder}
+                    onChange={(e) =>
+                      onUpdate({
+                        ...section,
+                        mobileConfig: {
+                          ...section.mobileConfig,
+                          priorityOrder: parseInt(e.target.value),
+                        },
+                      })
+                    }
+                    className="w-24"
+                  />
+                  <p className="text-xs text-gray-600">
+                    Lower numbers appear first on mobile
+                  </p>
+                </div>
+              </div>
+            </Card>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

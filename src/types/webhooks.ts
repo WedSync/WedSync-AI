@@ -1,0 +1,335 @@
+// Webhook Types for WS-201 - Team A Implementation
+// Location: /wedsync/src/types/webhooks.ts
+// Wedding industry webhook management types
+
+export interface WebhookEndpoint {
+  id: string;
+  organizationId: string;
+  url: string;
+  secret: string;
+  events: WebhookEventType[];
+  description?: string;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+  lastDeliveryAt?: string;
+  createdBy: string;
+  // Health metrics
+  successRate: number;
+  totalDeliveries: number;
+  failedDeliveries: number;
+  averageResponseTime?: number;
+}
+
+export interface WebhookDelivery {
+  id: string;
+  endpointId: string;
+  eventType: string;
+  eventId: string;
+  payload: Record<string, any>;
+  status: WebhookDeliveryStatus;
+  attempts: number;
+  maxAttempts: number;
+  responseCode?: number;
+  responseBody?: string;
+  errorMessage?: string;
+  deliveredAt?: string;
+  nextRetryAt?: string;
+  createdAt: string;
+  responseTime?: number;
+}
+
+export type WebhookDeliveryStatus =
+  | 'pending'
+  | 'success'
+  | 'failed'
+  | 'retrying'
+  | 'cancelled';
+
+export interface WebhookEventType {
+  id: string;
+  name: string;
+  category: WebhookEventCategory;
+  description: string;
+  samplePayload?: Record<string, any>;
+  frequency: 'high' | 'medium' | 'low';
+  isActive: boolean;
+}
+
+export type WebhookEventCategory =
+  | 'client_management'
+  | 'forms_documents'
+  | 'payments'
+  | 'communications'
+  | 'bookings'
+  | 'timeline'
+  | 'gallery'
+  | 'reports';
+
+export interface WebhookConfig {
+  url: string;
+  events: string[];
+  description?: string;
+  retryConfig?: WebhookRetryConfig;
+}
+
+export interface WebhookRetryConfig {
+  maxAttempts: number;
+  backoffMultiplier: number;
+  initialDelay: number;
+  maxDelay: number;
+}
+
+export interface WebhookTestResult {
+  success: boolean;
+  responseCode?: number;
+  responseTime: number;
+  errorMessage?: string;
+  timestamp: string;
+}
+
+export interface DeliveryMetrics {
+  endpointId: string;
+  successRate: number;
+  totalDeliveries: number;
+  failedDeliveries: number;
+  averageResponseTime: number;
+  lastDelivery?: string;
+  status: 'healthy' | 'degraded' | 'failing' | 'inactive';
+}
+
+export interface FailedDelivery {
+  id: string;
+  endpointId: string;
+  eventType: string;
+  attempts: number;
+  lastAttemptAt: string;
+  errorMessage: string;
+  canRetry: boolean;
+  nextRetryAt?: string;
+  payload: Record<string, any>;
+}
+
+// Wedding-specific event definitions
+export const WEDDING_WEBHOOK_EVENTS: Record<
+  WebhookEventCategory,
+  WebhookEventType[]
+> = {
+  client_management: [
+    {
+      id: 'client.created',
+      name: 'Client Created',
+      category: 'client_management',
+      description: 'New client added to your system',
+      frequency: 'medium',
+      isActive: true,
+    },
+    {
+      id: 'client.updated',
+      name: 'Client Updated',
+      category: 'client_management',
+      description: 'Client information modified',
+      frequency: 'low',
+      isActive: true,
+    },
+    {
+      id: 'client.wedding_date_changed',
+      name: 'Wedding Date Changed',
+      category: 'client_management',
+      description: 'Critical: Wedding date has been modified',
+      frequency: 'low',
+      isActive: true,
+    },
+  ],
+  forms_documents: [
+    {
+      id: 'form.submitted',
+      name: 'Form Submitted',
+      category: 'forms_documents',
+      description: 'Client submitted a form (questionnaire, timeline, etc.)',
+      frequency: 'high',
+      isActive: true,
+    },
+    {
+      id: 'document.uploaded',
+      name: 'Document Uploaded',
+      category: 'forms_documents',
+      description: 'Client uploaded a document (contract, inspiration, etc.)',
+      frequency: 'medium',
+      isActive: true,
+    },
+    {
+      id: 'contract.signed',
+      name: 'Contract Signed',
+      category: 'forms_documents',
+      description: 'Digital contract has been signed',
+      frequency: 'low',
+      isActive: true,
+    },
+  ],
+  payments: [
+    {
+      id: 'payment.received',
+      name: 'Payment Received',
+      category: 'payments',
+      description: 'Payment successfully processed',
+      frequency: 'medium',
+      isActive: true,
+    },
+    {
+      id: 'invoice.created',
+      name: 'Invoice Created',
+      category: 'payments',
+      description: 'New invoice generated for client',
+      frequency: 'medium',
+      isActive: true,
+    },
+    {
+      id: 'payment.failed',
+      name: 'Payment Failed',
+      category: 'payments',
+      description: 'Payment attempt failed - requires attention',
+      frequency: 'low',
+      isActive: true,
+    },
+  ],
+  communications: [
+    {
+      id: 'email.sent',
+      name: 'Email Sent',
+      category: 'communications',
+      description: 'Automated email sent to client',
+      frequency: 'high',
+      isActive: true,
+    },
+    {
+      id: 'message.received',
+      name: 'Message Received',
+      category: 'communications',
+      description: 'Client sent a message through your portal',
+      frequency: 'medium',
+      isActive: true,
+    },
+    {
+      id: 'reminder.triggered',
+      name: 'Reminder Triggered',
+      category: 'communications',
+      description: 'Automated reminder sent (timeline, payment, etc.)',
+      frequency: 'medium',
+      isActive: true,
+    },
+  ],
+  bookings: [
+    {
+      id: 'booking.created',
+      name: 'Booking Created',
+      category: 'bookings',
+      description: 'New booking/engagement created',
+      frequency: 'low',
+      isActive: true,
+    },
+    {
+      id: 'booking.updated',
+      name: 'Booking Updated',
+      category: 'bookings',
+      description: 'Booking details modified',
+      frequency: 'low',
+      isActive: true,
+    },
+  ],
+  timeline: [
+    {
+      id: 'timeline.created',
+      name: 'Timeline Created',
+      category: 'timeline',
+      description: 'Wedding timeline finalized by client',
+      frequency: 'low',
+      isActive: true,
+    },
+    {
+      id: 'timeline.updated',
+      name: 'Timeline Updated',
+      category: 'timeline',
+      description: 'Wedding timeline modified by client',
+      frequency: 'medium',
+      isActive: true,
+    },
+  ],
+  gallery: [
+    {
+      id: 'gallery.photos_uploaded',
+      name: 'Photos Uploaded',
+      category: 'gallery',
+      description: 'New photos added to client gallery',
+      frequency: 'medium',
+      isActive: true,
+    },
+    {
+      id: 'gallery.shared',
+      name: 'Gallery Shared',
+      category: 'gallery',
+      description: 'Gallery link shared with client or family',
+      frequency: 'low',
+      isActive: true,
+    },
+  ],
+  reports: [
+    {
+      id: 'report.generated',
+      name: 'Report Generated',
+      category: 'reports',
+      description:
+        'Automated report generated (monthly, wedding summary, etc.)',
+      frequency: 'low',
+      isActive: true,
+    },
+  ],
+};
+
+// Helper function to get all available events
+export const getAllWebhookEvents = (): WebhookEventType[] => {
+  return Object.values(WEDDING_WEBHOOK_EVENTS).flat();
+};
+
+// Helper function to get events by category
+export const getEventsByCategory = (
+  category: WebhookEventCategory,
+): WebhookEventType[] => {
+  return WEDDING_WEBHOOK_EVENTS[category] || [];
+};
+
+// Helper function to mask webhook secrets
+export const maskWebhookSecret = (secret: string): string => {
+  if (!secret || secret.length < 8) return '••••••••';
+  return `${secret.slice(0, 4)}${'•'.repeat(Math.max(8, secret.length - 8))}${secret.slice(-4)}`;
+};
+
+// Helper function to get status color
+export const getDeliveryStatusColor = (
+  status: WebhookDeliveryStatus,
+): string => {
+  switch (status) {
+    case 'success':
+      return 'text-green-700 bg-green-50 border-green-200';
+    case 'failed':
+      return 'text-red-700 bg-red-50 border-red-200';
+    case 'pending':
+      return 'text-yellow-700 bg-yellow-50 border-yellow-200';
+    case 'retrying':
+      return 'text-blue-700 bg-blue-50 border-blue-200';
+    case 'cancelled':
+      return 'text-gray-700 bg-gray-50 border-gray-200';
+    default:
+      return 'text-gray-700 bg-gray-50 border-gray-200';
+  }
+};
+
+// Helper function to determine endpoint health status
+export const getEndpointHealthStatus = (
+  metrics: DeliveryMetrics,
+): 'healthy' | 'degraded' | 'failing' | 'inactive' => {
+  if (metrics.totalDeliveries === 0) return 'inactive';
+  if (metrics.successRate >= 95) return 'healthy';
+  if (metrics.successRate >= 80) return 'degraded';
+  return 'failing';
+};

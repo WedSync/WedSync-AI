@@ -1,0 +1,50 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { fieldEngine } from '@/lib/field-engine/FieldEngine';
+
+/**
+ * GET /api/fields/templates/[templateId] - Get specific field template
+ */
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { templateId: string } },
+) {
+  try {
+    const { templateId } = params;
+
+    if (!templateId) {
+      return NextResponse.json(
+        {
+          error: 'Template ID is required',
+        },
+        { status: 400 },
+      );
+    }
+
+    // Get template from FieldEngine
+    const template = fieldEngine.getFieldTemplate(templateId);
+
+    if (!template) {
+      return NextResponse.json(
+        {
+          error: 'Template not found',
+          templateId,
+        },
+        { status: 404 },
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      data: template,
+    });
+  } catch (error) {
+    console.error('GET /api/fields/templates/[templateId] error:', error);
+
+    return NextResponse.json(
+      {
+        error: 'Internal server error',
+      },
+      { status: 500 },
+    );
+  }
+}

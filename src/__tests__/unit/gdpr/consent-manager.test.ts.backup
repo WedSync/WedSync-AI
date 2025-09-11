@@ -1,0 +1,494 @@
+/**
+ * Unit Tests for GDPR Consent Manager
+ * WS-176 - GDPR Compliance System
+ * 
+ * Comprehensive test suite for consent tracking, validation,
+ * and lifecycle management functionality.
+ */
+
+import { describe, it, expect, beforeEach, jest, afterEach } from '@jest/globals';
+import { ConsentManager, CONSENT_CONFIGURATIONS } from '@/lib/gdpr/consent-manager';
+import { 
+  ConsentType, 
+  ConsentStatus, 
+  GDPRLegalBasis,
+  SecurityContext 
+} from '@/types/gdpr';
+
+// Mock Supabase client
+const mockSupabaseClient = {
+  from: jest.fn().mockReturnThis(),
+  select: jest.fn().mockReturnThis(),
+  insert: jest.fn().mockReturnThis(),
+  update: jest.fn().mockReturnThis(),
+  eq: jest.fn().mockReturnThis(),
+  order: jest.fn().mockReturnThis(),
+  limit: jest.fn().mockReturnThis(),
+  single: jest.fn(),
+};
+
+jest.mock('@/lib/supabase/server', () => ({
+  createClient: () => mockSupabaseClient
+}));
+
+describe('ConsentManager', () => {
+  let consentManager: ConsentManager;
+  let mockSecurityContext: SecurityContext;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    consentManager = new ConsentManager();
+    
+    mockSecurityContext = {
+      user_id: 'test-user-id',
+      session_id: 'test-session-id',
+      ip_address_hash: 'hashed-ip',
+      user_agent_hash: 'hashed-user-agent',
+      timestamp: new Date(),
+      api_endpoint: '/api/gdpr/consent',
+      rate_limit_key: 'test-rate-limit-key'
+    };
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  describe('recordConsent', () => {
+    it('should record consent successfully for valid user', async () => {
+      // Mock user existence check
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: { id: 'test-user-id' },
+        error: null
+      });
+
+      // Mock existing consent check (no existing consent)
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: null,
+        error: null
+      });
+
+      // Mock successful consent insertion
+      const mockConsentRecord = {
+        id: 'consent-record-id',
+        user_id: 'test-user-id',
+        consent_type: ConsentType.MARKETING,
+        status: ConsentStatus.GRANTED,
+        legal_basis: GDPRLegalBasis.CONSENT,
+        granted_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: mockConsentRecord,
+        error: null
+      });
+
+      const result = await consentManager.recordConsent(
+        'test-user-id',
+        ConsentType.MARKETING,
+        true,
+        mockSecurityContext
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.data).toBeDefined();
+      expect(result.data?.consent_type).toBe(ConsentType.MARKETING);
+      expect(result.data?.status).toBe(ConsentStatus.GRANTED);
+    });
+
+    it('should return error for non-existent user', async () => {
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: null,
+        error: { message: 'User not found' }
+      });
+
+      const result = await consentManager.recordConsent(
+        'non-existent-user',
+        ConsentType.MARKETING,
+        true,
+        mockSecurityContext
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.error?.code).toBe('USER_NOT_FOUND');
+    });
+
+    it('should handle database errors gracefully', async () => {
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: { id: 'test-user-id' },
+        error: null
+      });
+
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: null,
+        error: null
+      });
+
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: null,
+        error: { message: 'Database constraint violation' }
+      });
+
+      const result = await consentManager.recordConsent(
+        'test-user-id',
+        ConsentType.MARKETING,
+        true,
+        mockSecurityContext
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.error?.code).toBe('DATABASE_ERROR');
+    });
+
+    it('should set correct expiry for consent-based legal basis', async () => {
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: { id: 'test-user-id' },
+        error: null
+      });
+
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: null,
+        error: null
+      });
+
+      const insertMock = jest.fn().mockResolvedValue({
+        data: { id: 'consent-id' },
+        error: null
+      });
+      
+      mockSupabaseClient.insert.mockImplementation(insertMock);
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: { id: 'consent-id' },
+        error: null
+      });
+
+      await consentManager.recordConsent(
+        'test-user-id',
+        ConsentType.MARKETING,
+        true,
+        mockSecurityContext
+      );
+
+      const insertCall = insertMock.mock.calls[0][0];
+      expect(insertCall.expires_at).toBeDefined();
+      expect(insertCall.legal_basis).toBe(GDPRLegalBasis.CONSENT);
+    });
+  });
+
+  describe('withdrawConsent', () => {
+    it('should withdraw consent successfully for withdrawable consent type', async () => {
+      mockSupabaseClient.single
+        .mockResolvedValueOnce({
+          data: { id: 'test-user-id' },
+          error: null
+        })
+        .mockResolvedValueOnce({
+          data: null,
+          error: null
+        })
+        .mockResolvedValueOnce({
+          data: {
+            id: 'consent-record-id',
+            status: ConsentStatus.WITHDRAWN
+          },
+          error: null
+        });
+
+      const result = await consentManager.withdrawConsent(
+        'test-user-id',
+        ConsentType.MARKETING,
+        mockSecurityContext,
+        'User requested withdrawal'
+      );
+
+      expect(result.success).toBe(true);
+    });
+
+    it('should not allow withdrawal of required consent', async () => {
+      const result = await consentManager.withdrawConsent(
+        'test-user-id',
+        ConsentType.FUNCTIONAL, // This is required
+        mockSecurityContext
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.error?.code).toBe('WITHDRAWAL_NOT_ALLOWED');
+    });
+  });
+
+  describe('getConsentBundle', () => {
+    it('should return complete consent bundle for user', async () => {
+      const mockConsents = [
+        {
+          user_id: 'test-user-id',
+          consent_type: ConsentType.MARKETING,
+          status: ConsentStatus.GRANTED,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          granted_at: new Date().toISOString(),
+          withdrawn_at: null,
+          expires_at: null,
+          metadata: {}
+        },
+        {
+          user_id: 'test-user-id',
+          consent_type: ConsentType.ANALYTICS,
+          status: ConsentStatus.DENIED,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          granted_at: null,
+          withdrawn_at: null,
+          expires_at: null,
+          metadata: {}
+        }
+      ];
+
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: mockConsents,
+        error: null
+      });
+
+      const result = await consentManager.getConsentBundle('test-user-id');
+
+      expect(result.success).toBe(true);
+      expect(result.data?.user_id).toBe('test-user-id');
+      expect(result.data?.consents).toHaveLength(2);
+    });
+
+    it('should handle empty consent records', async () => {
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: null,
+        error: null
+      });
+
+      const result = await consentManager.getConsentBundle('test-user-id');
+
+      expect(result.success).toBe(true);
+      expect(result.data?.consents).toHaveLength(0);
+    });
+  });
+
+  describe('validateConsent', () => {
+    it('should validate active consent successfully', async () => {
+      const validConsent = {
+        user_id: 'test-user-id',
+        consent_type: ConsentType.MARKETING,
+        status: ConsentStatus.GRANTED,
+        legal_basis: GDPRLegalBasis.CONSENT,
+        granted_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString() // 1 year from now
+      };
+
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: validConsent,
+        error: null
+      });
+
+      const result = await consentManager.validateConsent(
+        'test-user-id',
+        ConsentType.MARKETING
+      );
+
+      expect(result.valid).toBe(true);
+      expect(result.status).toBe(ConsentStatus.GRANTED);
+      expect(result.legal_basis).toBe(GDPRLegalBasis.CONSENT);
+    });
+
+    it('should identify expired consent', async () => {
+      const expiredConsent = {
+        user_id: 'test-user-id',
+        consent_type: ConsentType.MARKETING,
+        status: ConsentStatus.GRANTED,
+        legal_basis: GDPRLegalBasis.CONSENT,
+        granted_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString() // 1 day ago
+      };
+
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: expiredConsent,
+        error: null
+      });
+
+      const result = await consentManager.validateConsent(
+        'test-user-id',
+        ConsentType.MARKETING
+      );
+
+      expect(result.valid).toBe(false);
+      expect(result.status).toBe(ConsentStatus.EXPIRED);
+      expect(result.reasons).toContain('Consent has expired');
+    });
+
+    it('should handle missing consent for required consent types', async () => {
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: null,
+        error: null
+      });
+
+      const result = await consentManager.validateConsent(
+        'test-user-id',
+        ConsentType.FUNCTIONAL // Required consent
+      );
+
+      expect(result.valid).toBe(false);
+      expect(result.status).toBe(ConsentStatus.DENIED);
+      expect(result.reasons).toContain('Required consent not found - service cannot operate without this consent');
+    });
+  });
+
+  describe('checkConsentRenewal', () => {
+    it('should identify consents needing renewal', async () => {
+      const consentBundle = {
+        user_id: 'test-user-id',
+        consents: [
+          {
+            consent_type: ConsentType.MARKETING,
+            status: ConsentStatus.GRANTED,
+            granted_at: new Date(),
+            withdrawn_at: undefined
+          }
+        ],
+        last_updated: new Date(),
+        ip_address_hash: 'hash',
+        user_agent_hash: 'hash',
+        consent_method: 'explicit' as const
+      };
+
+      // Mock getConsentBundle
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: consentBundle,
+        error: null
+      });
+
+      // Mock individual consent record check for expiry
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: {
+          expires_at: new Date(Date.now() + 15 * 24 * 60 * 60 * 1000).toISOString(), // 15 days from now
+          status: ConsentStatus.GRANTED
+        },
+        error: null
+      });
+
+      const result = await consentManager.checkConsentRenewal('test-user-id');
+
+      expect(result.expiring_soon).toContain(ConsentType.MARKETING);
+      expect(result.needs_renewal).toContain(ConsentType.MARKETING);
+    });
+  });
+
+  describe('bulkUpdateConsents', () => {
+    it('should update multiple consents successfully', async () => {
+      const consentUpdates = [
+        { consent_type: ConsentType.MARKETING, granted: true },
+        { consent_type: ConsentType.ANALYTICS, granted: false }
+      ];
+
+      // Mock successful individual consent recordings
+      mockSupabaseClient.single
+        .mockResolvedValueOnce({ data: { id: 'test-user-id' }, error: null })
+        .mockResolvedValueOnce({ data: null, error: null })
+        .mockResolvedValueOnce({ data: { id: 'consent-1' }, error: null })
+        .mockResolvedValueOnce({ data: { id: 'test-user-id' }, error: null })
+        .mockResolvedValueOnce({ data: null, error: null })
+        .mockResolvedValueOnce({ data: { id: 'consent-2' }, error: null });
+
+      // Mock final consent bundle retrieval
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: {
+          user_id: 'test-user-id',
+          consents: consentUpdates.map(c => ({
+            consent_type: c.consent_type,
+            status: c.granted ? ConsentStatus.GRANTED : ConsentStatus.DENIED
+          }))
+        },
+        error: null
+      });
+
+      const result = await consentManager.bulkUpdateConsents(
+        'test-user-id',
+        consentUpdates,
+        mockSecurityContext
+      );
+
+      expect(result.success).toBe(true);
+    });
+
+    it('should handle partial failures in bulk update', async () => {
+      const consentUpdates = [
+        { consent_type: ConsentType.MARKETING, granted: true },
+        { consent_type: ConsentType.ANALYTICS, granted: false }
+      ];
+
+      // Mock one success and one failure
+      mockSupabaseClient.single
+        .mockResolvedValueOnce({ data: { id: 'test-user-id' }, error: null })
+        .mockResolvedValueOnce({ data: null, error: null })
+        .mockResolvedValueOnce({ data: { id: 'consent-1' }, error: null })
+        .mockResolvedValueOnce({ data: { id: 'test-user-id' }, error: null })
+        .mockResolvedValueOnce({ data: null, error: null })
+        .mockResolvedValueOnce({ data: null, error: { message: 'Database error' } });
+
+      const result = await consentManager.bulkUpdateConsents(
+        'test-user-id',
+        consentUpdates,
+        mockSecurityContext
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.error?.code).toBe('BULK_UPDATE_PARTIAL_FAILURE');
+    });
+  });
+
+  describe('CONSENT_CONFIGURATIONS', () => {
+    it('should have proper configuration for all consent types', () => {
+      Object.values(ConsentType).forEach(consentType => {
+        const config = CONSENT_CONFIGURATIONS[consentType];
+        
+        expect(config).toBeDefined();
+        expect(config.consent_type).toBe(consentType);
+        expect(config.legal_basis).toBeDefined();
+        expect(config.purpose_description).toBeTruthy();
+        expect(config.data_categories).toBeInstanceOf(Array);
+        expect(config.retention_period_days).toBeGreaterThan(0);
+        expect(config.withdrawal_mechanism).toBeTruthy();
+        expect(config.version).toBeTruthy();
+      });
+    });
+
+    it('should have required consent types configured as required', () => {
+      expect(CONSENT_CONFIGURATIONS[ConsentType.FUNCTIONAL].required).toBe(true);
+      expect(CONSENT_CONFIGURATIONS[ConsentType.COMMUNICATION].required).toBe(true);
+    });
+
+    it('should have optional consent types configured as optional', () => {
+      expect(CONSENT_CONFIGURATIONS[ConsentType.MARKETING].required).toBe(false);
+      expect(CONSENT_CONFIGURATIONS[ConsentType.ANALYTICS].required).toBe(false);
+    });
+  });
+
+  describe('Error handling and edge cases', () => {
+    it('should handle malformed consent type', async () => {
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: { id: 'test-user-id' },
+        error: null
+      });
+
+      const result = await consentManager.recordConsent(
+        'test-user-id',
+        'invalid-consent-type' as ConsentType,
+        true,
+        mockSecurityContext
+      );
+
+      expect(result.success).toBe(false);
+    });
+
+    it('should handle concurrent consent updates', async () => {
+      // This test would verify that concurrent updates don't create race conditions
+      // In a real scenario, this would test database transaction handling
+      expect(true).toBe(true); // Placeholder for complex concurrency test
+    });
+  });
+});

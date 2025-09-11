@@ -1,0 +1,103 @@
+// WS-010 Round 2: ML Timeline Optimization API Route
+// Next.js 15 App Router API endpoint for timeline optimization
+
+import { NextRequest, NextResponse } from 'next/server';
+import { mlAPI } from '@/lib/ml/ml-api';
+import { MLTimelineRequest, MLTimelineResponse } from '@/lib/ml/types';
+
+export const runtime = 'edge'; // Use Edge Runtime for better performance
+
+/**
+ * POST /api/ml/timeline - Optimize timeline using ML
+ */
+export async function POST(request: NextRequest): Promise<NextResponse<MLTimelineResponse>> {
+  try {
+    // Parse request body
+    const body: MLTimelineRequest = await request.json();
+
+    // Validate required fields
+    if (!body.timeline_id) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'timeline_id is required',
+          inference_time_ms: 0,
+          model_version: 'error'
+        },
+        { status: 400 }
+      );
+    }
+
+    // Run ML timeline optimization
+    const result = await mlAPI.optimizeTimeline(body);
+
+    // Return appropriate status code based on result
+    const statusCode = result.success ? 200 : 500;
+    
+    return NextResponse.json(result, { 
+      status: statusCode,
+      headers: {
+        'Cache-Control': 'no-cache, no-store, max-age=0',
+        'X-ML-Model-Version': result.model_version,
+        'X-Inference-Time': result.inference_time_ms.toString()
+      }
+    });
+
+  } catch (error) {
+    console.error('ML timeline optimization API error:', error);
+    
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Internal server error during ML optimization',
+        inference_time_ms: 0,
+        model_version: 'error'
+      },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * GET /api/ml/timeline?timeline_id=xxx - Get cached optimization results
+ */
+export async function GET(request: NextRequest): Promise<NextResponse> {
+  try {
+    const { searchParams } = new URL(request.url);
+    const timelineId = searchParams.get('timeline_id');
+
+    if (!timelineId) {
+      return NextResponse.json(
+        { error: 'timeline_id parameter is required' },
+        { status: 400 }
+      );
+    }
+
+    // For GET requests, we'll return a quick status
+    // In production, this might return cached results
+    const healthCheck = await mlAPI.validateModelHealth();
+    
+    return NextResponse.json({
+      timeline_id: timelineId,
+      ml_status: healthCheck.overall_health,
+      available_features: {
+        conflict_detection: healthCheck.conflict_detector.status === 'healthy',
+        vendor_analysis: healthCheck.vendor_analyzer.status === 'healthy',
+        timeline_optimization: healthCheck.timeline_optimizer.status === 'healthy'
+      },
+      model_versions: {
+        conflict_detector: '1.0.0',
+        vendor_analyzer: '1.0.0',
+        timeline_optimizer: '1.0.0'
+      }
+    });
+
+  } catch (error) {
+    console.error('ML timeline status API error:', error);
+    
+    return NextResponse.json(
+      { error: 'Failed to get timeline ML status' },
+      { status: 500 }
+    );
+  }
+}

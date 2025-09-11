@@ -1,0 +1,438 @@
+import React from 'react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { InstallButton } from '../InstallButton';
+import { usePWAInstall } from '@/hooks/usePWAInstall';
+
+// Mock the usePWAInstall hook
+jest.mock('@/hooks/usePWAInstall');
+
+// Mock framer-motion to avoid animation issues in tests
+jest.mock('framer-motion', () => ({
+  motion: {
+    div: ({ children, ...props }: any) => <div {...props}>{children}</div>
+  },
+  AnimatePresence: ({ children }: any) => children
+}));
+
+// Mock lucide-react icons
+jest.mock('lucide-react', () => ({
+  Download: ({ className }: { className?: string }) => <div data-testid="download-icon" className={className} />,
+  Smartphone: ({ className }: { className?: string }) => <div data-testid="smartphone-icon" className={className} />,
+  CheckCircle: ({ className }: { className?: string }) => <div data-testid="check-icon" className={className} />,
+  X: ({ className }: { className?: string }) => <div data-testid="x-icon" className={className} />,
+  Share: ({ className }: { className?: string }) => <div data-testid="share-icon" className={className} />,
+  Plus: ({ className }: { className?: string }) => <div data-testid="plus-icon" className={className} />
+}));
+
+const mockUsePWAInstall = usePWAInstall as jest.MockedFunction<typeof usePWAInstall>;
+
+describe('InstallButton Component', () => {
+  const defaultMockHookReturn = {
+    platform: 'desktop' as const,
+    installState: 'available' as const,
+    isInstallable: true,
+    isInstalled: false,
+    canShowPrompt: true,
+    showInstallPrompt: jest.fn(),
+    dismissPrompt: jest.fn(),
+    checkInstallability: jest.fn(),
+    trackInstallEvent: jest.fn()
+  };
+
+  beforeEach(() => {
+    mockUsePWAInstall.mockReturnValue(defaultMockHookReturn);
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('Rendering Behavior', () => {
+    it('should render install button when installable', () => {
+      render(<InstallButton />);
+      
+      expect(screen.getByTestId('pwa-install-button')).toBeInTheDocument();
+      expect(screen.getByText('Install WedSync')).toBeInTheDocument();
+      expect(screen.getByTestId('download-icon')).toBeInTheDocument();
+    });
+
+    it('should not render when not installable', () => {
+      mockUsePWAInstall.mockReturnValue({
+        ...defaultMockHookReturn,
+        isInstallable: false
+      });
+
+      const { container } = render(<InstallButton />);
+      expect(container.firstChild).toBeNull();
+    });
+
+    it('should not render when already installed', () => {
+      mockUsePWAInstall.mockReturnValue({
+        ...defaultMockHookReturn,
+        isInstalled: true,
+        isInstallable: false
+      });
+
+      const { container } = render(<InstallButton />);
+      expect(container.firstChild).toBeNull();
+    });
+  });
+
+  describe('Platform-Specific Content', () => {
+    it('should show iOS-specific content for iOS platform', () => {
+      mockUsePWAInstall.mockReturnValue({
+        ...defaultMockHookReturn,
+        platform: 'ios'
+      });
+
+      render(<InstallButton />);
+      
+      expect(screen.getByText('Add to Home Screen')).toBeInTheDocument();
+      expect(screen.getByTestId('smartphone-icon')).toBeInTheDocument();
+      expect(screen.getByRole('button')).toHaveAttribute('aria-label', 'Add WedSync to your home screen');
+    });
+
+    it('should show Android-specific content for Android platform', () => {
+      mockUsePWAInstall.mockReturnValue({
+        ...defaultMockHookReturn,
+        platform: 'android'
+      });
+
+      render(<InstallButton />);
+      
+      expect(screen.getByText('Install App')).toBeInTheDocument();
+      expect(screen.getByTestId('download-icon')).toBeInTheDocument();
+      expect(screen.getByRole('button')).toHaveAttribute('aria-label', 'Install WedSync app');
+    });
+
+    it('should show desktop-specific content for desktop platform', () => {
+      render(<InstallButton />);
+      
+      expect(screen.getByText('Install WedSync')).toBeInTheDocument();
+      expect(screen.getByTestId('download-icon')).toBeInTheDocument();
+      expect(screen.getByRole('button')).toHaveAttribute('aria-label', 'Install WedSync as desktop app');
+    });
+  });
+
+  describe('Button Variants and Sizes', () => {
+    it('should apply primary variant classes correctly', () => {
+      render(<InstallButton variant="primary" />);
+      
+      const button = screen.getByRole('button');
+      expect(button).toHaveClass('bg-primary-600');
+      expect(button).toHaveClass('hover:bg-primary-700');
+      expect(button).toHaveClass('text-white');
+    });
+
+    it('should apply secondary variant classes correctly', () => {
+      render(<InstallButton variant="secondary" />);
+      
+      const button = screen.getByRole('button');
+      expect(button).toHaveClass('bg-white');
+      expect(button).toHaveClass('text-gray-900');
+      expect(button).toHaveClass('border-gray-300');
+    });
+
+    it('should apply icon-only variant correctly', () => {
+      render(<InstallButton variant="icon-only" />);
+      
+      const button = screen.getByRole('button');
+      expect(button).toHaveClass('p-2');
+      expect(screen.queryByText('Install WedSync')).not.toBeInTheDocument();
+    });
+
+    it('should apply size classes correctly', () => {
+      const { rerender } = render(<InstallButton size="xs" />);
+      expect(screen.getByRole('button')).toHaveClass('px-3', 'py-2', 'text-xs');
+
+      rerender(<InstallButton size="lg" />);
+      expect(screen.getByRole('button')).toHaveClass('px-4.5', 'py-2.5', 'text-base');
+    });
+
+    it('should hide label when showLabel is false', () => {
+      render(<InstallButton showLabel={false} />);
+      
+      expect(screen.queryByText('Install WedSync')).not.toBeInTheDocument();
+      expect(screen.getByTestId('download-icon')).toBeInTheDocument();
+    });
+  });
+
+  describe('Button States', () => {
+    it('should be disabled when canShowPrompt is false', () => {
+      mockUsePWAInstall.mockReturnValue({
+        ...defaultMockHookReturn,
+        canShowPrompt: false
+      });
+
+      render(<InstallButton />);
+      
+      const button = screen.getByRole('button');
+      expect(button).toBeDisabled();
+    });
+
+    it('should show loading state during install process', async () => {
+      const mockShowPrompt = jest.fn().mockImplementation(() => new Promise(resolve => setTimeout(() => resolve(true), 100)));
+      
+      mockUsePWAInstall.mockReturnValue({
+        ...defaultMockHookReturn,
+        showInstallPrompt: mockShowPrompt
+      });
+
+      render(<InstallButton />);
+      
+      const button = screen.getByRole('button');
+      fireEvent.click(button);
+
+      // Should show loading spinner
+      expect(button.querySelector('.animate-spin')).toBeInTheDocument();
+      expect(button).toBeDisabled();
+      expect(screen.queryByTestId('download-icon')).not.toBeInTheDocument();
+
+      await waitFor(() => {
+        expect(button.querySelector('.animate-spin')).not.toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('Install Flow Interactions', () => {
+    it('should call showInstallPrompt when clicked', async () => {
+      const mockShowPrompt = jest.fn().mockResolvedValue(true);
+      const mockOnInstallStart = jest.fn();
+      const mockOnInstallComplete = jest.fn();
+      
+      mockUsePWAInstall.mockReturnValue({
+        ...defaultMockHookReturn,
+        showInstallPrompt: mockShowPrompt
+      });
+
+      render(
+        <InstallButton
+          source="dashboard"
+          onInstallStart={mockOnInstallStart}
+          onInstallComplete={mockOnInstallComplete}
+        />
+      );
+      
+      const button = screen.getByRole('button');
+      fireEvent.click(button);
+
+      expect(mockOnInstallStart).toHaveBeenCalled();
+      expect(defaultMockHookReturn.trackInstallEvent).toHaveBeenCalledWith(
+        'install_button_clicked',
+        { source: 'dashboard' }
+      );
+      expect(mockShowPrompt).toHaveBeenCalledWith('dashboard');
+
+      await waitFor(() => {
+        expect(mockOnInstallComplete).toHaveBeenCalled();
+      });
+    });
+
+    it('should handle install dismissal correctly', async () => {
+      const mockShowPrompt = jest.fn().mockResolvedValue(false);
+      const mockOnInstallDismiss = jest.fn();
+      
+      mockUsePWAInstall.mockReturnValue({
+        ...defaultMockHookReturn,
+        showInstallPrompt: mockShowPrompt
+      });
+
+      render(<InstallButton onInstallDismiss={mockOnInstallDismiss} />);
+      
+      const button = screen.getByRole('button');
+      fireEvent.click(button);
+
+      await waitFor(() => {
+        expect(mockOnInstallDismiss).toHaveBeenCalled();
+      });
+    });
+
+    it('should handle install errors gracefully', async () => {
+      const mockShowPrompt = jest.fn().mockRejectedValue(new Error('Install failed'));
+      const mockOnInstallDismiss = jest.fn();
+      const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
+      
+      mockUsePWAInstall.mockReturnValue({
+        ...defaultMockHookReturn,
+        showInstallPrompt: mockShowPrompt
+      });
+
+      render(<InstallButton onInstallDismiss={mockOnInstallDismiss} />);
+      
+      const button = screen.getByRole('button');
+      fireEvent.click(button);
+
+      await waitFor(() => {
+        expect(consoleSpy).toHaveBeenCalledWith('Install button error:', expect.any(Error));
+        expect(mockOnInstallDismiss).toHaveBeenCalled();
+      });
+
+      consoleSpy.mockRestore();
+    });
+  });
+
+  describe('iOS Install Instructions Modal', () => {
+    beforeEach(() => {
+      mockUsePWAInstall.mockReturnValue({
+        ...defaultMockHookReturn,
+        platform: 'ios'
+      });
+    });
+
+    it('should show iOS instructions modal when iOS install succeeds', async () => {
+      const mockShowPrompt = jest.fn().mockResolvedValue(true);
+      
+      mockUsePWAInstall.mockReturnValue({
+        ...defaultMockHookReturn,
+        platform: 'ios',
+        showInstallPrompt: mockShowPrompt
+      });
+
+      render(<InstallButton />);
+      
+      const button = screen.getByRole('button');
+      fireEvent.click(button);
+
+      await waitFor(() => {
+        expect(screen.getByText('Install WedSync')).toBeInTheDocument();
+        expect(screen.getByText('Add to your iPhone home screen')).toBeInTheDocument();
+        expect(screen.getByText('Tap the Share button')).toBeInTheDocument();
+      });
+    });
+
+    it('should close iOS instructions modal when Got it button clicked', async () => {
+      const mockShowPrompt = jest.fn().mockResolvedValue(true);
+      const mockOnInstallComplete = jest.fn();
+      
+      mockUsePWAInstall.mockReturnValue({
+        ...defaultMockHookReturn,
+        platform: 'ios',
+        showInstallPrompt: mockShowPrompt
+      });
+
+      render(<InstallButton onInstallComplete={mockOnInstallComplete} />);
+      
+      const button = screen.getByRole('button');
+      fireEvent.click(button);
+
+      await waitFor(() => {
+        expect(screen.getByText('Got it!')).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByText('Got it!'));
+
+      await waitFor(() => {
+        expect(screen.queryByText('Install WedSync')).not.toBeInTheDocument();
+        expect(mockOnInstallComplete).toHaveBeenCalled();
+      });
+    });
+
+    it('should track iOS instructions events correctly', async () => {
+      const mockShowPrompt = jest.fn().mockResolvedValue(true);
+      
+      mockUsePWAInstall.mockReturnValue({
+        ...defaultMockHookReturn,
+        platform: 'ios',
+        showInstallPrompt: mockShowPrompt
+      });
+
+      render(<InstallButton />);
+      
+      const button = screen.getByRole('button');
+      fireEvent.click(button);
+
+      await waitFor(() => {
+        expect(defaultMockHookReturn.trackInstallEvent).toHaveBeenCalledWith('ios_instructions_shown');
+      });
+
+      fireEvent.click(screen.getByText('Got it!'));
+
+      expect(defaultMockHookReturn.trackInstallEvent).toHaveBeenCalledWith('ios_instructions_completed');
+    });
+  });
+
+  describe('Custom Props and Styling', () => {
+    it('should apply custom className correctly', () => {
+      render(<InstallButton className="custom-class" />);
+      
+      const button = screen.getByRole('button');
+      expect(button).toHaveClass('custom-class');
+    });
+
+    it('should forward additional props to button element', () => {
+      render(<InstallButton data-custom="test-value" />);
+      
+      const button = screen.getByRole('button');
+      expect(button).toHaveAttribute('data-custom', 'test-value');
+    });
+
+    it('should use custom aria-label when provided', () => {
+      render(<InstallButton aria-label="Custom install label" />);
+      
+      const button = screen.getByRole('button');
+      expect(button).toHaveAttribute('aria-label', 'Custom install label');
+    });
+  });
+
+  describe('Accessibility', () => {
+    it('should have correct ARIA attributes', () => {
+      render(<InstallButton />);
+      
+      const button = screen.getByRole('button');
+      expect(button).toHaveAttribute('type', 'button');
+      expect(button).toHaveAttribute('aria-label', 'Install WedSync as desktop app');
+      expect(button).toHaveAttribute('data-testid', 'pwa-install-button');
+    });
+
+    it('should be keyboard accessible', () => {
+      const mockShowPrompt = jest.fn().mockResolvedValue(true);
+      
+      mockUsePWAInstall.mockReturnValue({
+        ...defaultMockHookReturn,
+        showInstallPrompt: mockShowPrompt
+      });
+
+      render(<InstallButton />);
+      
+      const button = screen.getByRole('button');
+      button.focus();
+      fireEvent.keyDown(button, { key: 'Enter' });
+
+      expect(mockShowPrompt).toHaveBeenCalled();
+    });
+
+    it('should have proper focus states', () => {
+      render(<InstallButton />);
+      
+      const button = screen.getByRole('button');
+      expect(button).toHaveClass('focus:outline-none');
+      expect(button).toHaveClass('focus:ring-4');
+    });
+  });
+
+  describe('Analytics Integration', () => {
+    it('should track button clicks with correct source', () => {
+      render(<InstallButton source="timeline" />);
+      
+      const button = screen.getByRole('button');
+      fireEvent.click(button);
+
+      expect(defaultMockHookReturn.trackInstallEvent).toHaveBeenCalledWith(
+        'install_button_clicked',
+        { source: 'timeline' }
+      );
+    });
+
+    it('should use default source when not provided', () => {
+      render(<InstallButton />);
+      
+      const button = screen.getByRole('button');
+      fireEvent.click(button);
+
+      expect(defaultMockHookReturn.trackInstallEvent).toHaveBeenCalledWith(
+        'install_button_clicked',
+        { source: 'button' }
+      );
+    });
+  });
+});

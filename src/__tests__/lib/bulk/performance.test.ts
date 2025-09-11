@@ -1,0 +1,222 @@
+/**
+ * WS-004: Bulk Operations Performance Validation Tests
+ * Validates performance requirements for large-scale bulk operations
+ */
+
+import { test, expect } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { bulkOperationsService } from '@/lib/bulk/bulk-operations'
+// Mock Supabase client
+const mockSupabase = {
+  from: jest.fn(() => ({
+    select: jest.fn(() => ({
+      in: jest.fn(() => ({
+        eq: jest.fn(() => Promise.resolve({ data: [], error: null }))
+      }))
+    })),
+    update: jest.fn(() => ({
+      in: jest.fn(() => Promise.resolve({ data: [], error: null }))
+    delete: jest.fn(() => ({
+    insert: jest.fn(() => Promise.resolve({ data: [], error: null }))
+  }))
+}
+// Mock notification engine
+vi.mock('@/lib/notifications/engine', () => ({
+  notificationEngine: {
+    sendNotification: jest.fn(() => Promise.resolve([]))
+  }
+}))
+vi.mock('@/lib/supabase/client', () => ({
+  createClient: () => mockSupabase
+describe('Bulk Operations Performance Tests', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+  test('Bulk select 1000 clients in <2 seconds', async () => {
+    const startTime = performance.now()
+    
+    // Mock selector function that simulates fetching 1000 clients
+    const mockSelector = async (offset: number, limit: number) => {
+      // Simulate database query time (should be fast for performance)
+      await new Promise(resolve => setTimeout(resolve, 1))
+      
+      return Array.from({ length: limit }, (_, i) => ({
+        id: `client-${offset + i + 1}`
+    }
+    const service = bulkOperationsService
+    const selectedIds = await service.optimizedBulkSelect(mockSelector, 1000, { chunkSize: 100 })
+    const endTime = performance.now()
+    const duration = endTime - startTime
+    // Performance requirement: <2 seconds for 1000 client selection
+    expect(duration).toBeLessThan(2000)
+    expect(selectedIds.size).toBe(1000)
+  test('Bulk status update 100 clients in <5 seconds', async () => {
+    const clientIds = Array.from({ length: 100 }, (_, i) => `client-${i + 1}`)
+    // Mock successful database updates
+    mockSupabase.from.mockImplementation(() => ({
+      update: jest.fn(() => ({
+        in: jest.fn(() => Promise.resolve({ data: clientIds.map(id => ({ id })), error: null }))
+      })),
+      insert: jest.fn(() => Promise.resolve({ data: [], error: null }))
+    }))
+    const result = await service.executeBulkOperation(
+      'status_update',
+      clientIds,
+      { new_status: 'completed' },
+      { batchSize: 20 }
+    )
+    // Performance requirement: <5 seconds for 100 client status update
+    expect(duration).toBeLessThan(5000)
+    expect(result.completed).toBe(100)
+    expect(result.failed).toBe(0)
+  test('Bulk tag update 500 clients in <8 seconds', async () => {
+    const clientIds = Array.from({ length: 500 }, (_, i) => `client-${i + 1}`)
+    // Mock database responses for tag operations
+    mockSupabase.from.mockImplementation((table: string) => {
+      if (table === 'clients') {
+        return {
+          select: jest.fn(() => ({
+            in: jest.fn(() => Promise.resolve({
+              data: clientIds.map(id => ({ id, tags: ['existing'] })),
+              error: null
+            }))
+          })),
+          upsert: jest.fn(() => Promise.resolve({ data: [], error: null }))
+        }
+      }
+      return {
+        insert: jest.fn(() => Promise.resolve({ data: [], error: null }))
+    })
+      'tag_add',
+      { tags: ['premium', 'summer'] },
+      { batchSize: 50 }
+    // Performance requirement: <8 seconds for 500 client tag update
+    expect(duration).toBeLessThan(8000)
+    expect(result.completed).toBe(500)
+  test('Bulk delete 50 clients in <3 seconds', async () => {
+    const clientIds = Array.from({ length: 50 }, (_, i) => `client-${i + 1}`)
+    // Mock database responses for delete operations
+        delete: jest.fn(() => ({
+          in: jest.fn(() => Promise.resolve({ data: [], error: null }))
+        })),
+        select: jest.fn(() => ({
+          in: jest.fn(() => Promise.resolve({
+            data: clientIds.map(id => ({ id, name: `Client ${id}` })),
+            error: null
+          }))
+      'delete',
+      {},
+      { batchSize: 10, enableRollback: true }
+    // Performance requirement: <3 seconds for 50 client delete
+    expect(duration).toBeLessThan(3000)
+    expect(result.completed).toBe(50)
+  test('Memory usage stays within bounds for large selections', async () => {
+    // Get initial memory usage (if available)
+    const initialMemory = (performance as unknown).memory?.usedJSHeapSize || 0
+    // Create large selection manager
+    const selectionManager = service.createSelectionManager(10000)
+    // Simulate adding many selections
+    for (let i = 0; i < 5000; i++) {
+      selectionManager.selectedIds.add(`client-${i}`)
+    const postSelectionMemory = (performance as unknown).memory?.usedJSHeapSize || 0
+    // If memory info is available, check memory usage
+    if (initialMemory > 0 && postSelectionMemory > 0) {
+      const memoryIncrease = postSelectionMemory - initialMemory
+      // Should not use more than 50MB for 5000 selections
+      expect(memoryIncrease).toBeLessThan(50 * 1024 * 1024)
+    expect(selectionManager.selectedIds.size).toBe(5000)
+  test('Database operations use optimized batch queries', async () => {
+    const clientIds = Array.from({ length: 200 }, (_, i) => `client-${i + 1}`)
+    let batchCount = 0
+        in: jest.fn((ids: string[]) => {
+          batchCount++
+          expect(ids.length).toBeLessThanOrEqual(100) // Verify batch size
+          return Promise.resolve({ data: [], error: null })
+        })
+    await service.executeBulkOperation(
+      { batchSize: 100 }
+    // Verify operations were batched appropriately
+    expect(batchCount).toBe(2) // 200 clients / 100 batch size = 2 batches
+  test('UI remains responsive during bulk operations', async () => {
+    const clientIds = Array.from({ length: 1000 }, (_, i) => `client-${i + 1}`)
+    let progressCallbackCount = 0
+    let lastProgressTime = 0
+    const progressCallback = () => {
+      const now = Date.now()
+      if (lastProgressTime > 0) {
+        const timeSinceLastUpdate = now - lastProgressTime
+        // Verify progress updates are not too frequent (should be throttled)
+        expect(timeSinceLastUpdate).toBeGreaterThan(400) // 500ms throttle with some tolerance
+      lastProgressTime = now
+      progressCallbackCount++
+    // Mock rapid database operations
+        in: jest.fn(() => {
+          // Simulate fast operation to test throttling
+      { batchSize: 50, progressCallback }
+    // Verify progress callbacks were throttled for UI responsiveness
+    expect(progressCallbackCount).toBeGreaterThan(0)
+    expect(progressCallbackCount).toBeLessThan(clientIds.length / 10) // Much fewer callbacks than operations
+  test('Progress updates every 500ms during operations', async () => {
+    const progressTimes: number[] = []
+      progressTimes.push(Date.now())
+    // Mock slower operations to test timing
+          return new Promise(resolve => {
+            setTimeout(() => {
+              resolve({ data: [], error: null })
+            }, 100) // 100ms per batch
+          })
+      { batchSize: 10, progressCallback }
+    // Verify progress updates occurred at reasonable intervals
+    if (progressTimes.length > 1) {
+      for (let i = 1; i < progressTimes.length; i++) {
+        const interval = progressTimes[i] - progressTimes[i - 1]
+        expect(interval).toBeGreaterThan(400) // Throttled to ~500ms
+  test('Performance metrics calculation', async () => {
+    // Test performance estimation for different operations
+    const statusUpdateMetrics = await service.getPerformanceMetrics('status_update', 1000)
+    expect(statusUpdateMetrics.estimatedDuration).toBeGreaterThan(0)
+    expect(statusUpdateMetrics.memoryRequirement).toBeGreaterThan(0)
+    expect(statusUpdateMetrics.recommendedBatchSize).toBeGreaterThan(100)
+    const deleteMetrics = await service.getPerformanceMetrics('delete', 100)
+    expect(deleteMetrics.estimatedDuration).toBeGreaterThan(statusUpdateMetrics.estimatedDuration / 10)
+    expect(deleteMetrics.recommendedBatchSize).toBeGreaterThan(0)
+    // Verify larger datasets get larger batch sizes for efficiency
+    const largeDatasetMetrics = await service.getPerformanceMetrics('status_update', 50000)
+    expect(largeDatasetMetrics.recommendedBatchSize).toBeGreaterThan(statusUpdateMetrics.recommendedBatchSize)
+  test('Streaming export performance for large datasets', async () => {
+    const clientIds = Array.from({ length: 2000 }, (_, i) => `client-${i + 1}`)
+    // Mock database response for export
+      select: jest.fn(() => ({
+        in: jest.fn((ids: string[]) => Promise.resolve({
+          data: ids.map(id => ({
+            id,
+            first_name: `Client ${id}`,
+            email: `${id}@example.com`
+          error: null
+        }))
+    let chunkCount = 0
+    const exportGenerator = service.streamingExport(
+      ['id', 'first_name', 'email'],
+      'csv'
+    // Process all chunks
+    for await (const chunk of exportGenerator) {
+      chunkCount++
+      expect(typeof chunk).toBe('string')
+    // Verify streaming export is reasonably fast and processes in chunks
+    expect(duration).toBeLessThan(10000) // Should complete in <10 seconds
+    expect(chunkCount).toBeGreaterThan(1) // Should be chunked, not single large response
+  test('Concurrent operation handling', async () => {
+    const clientIds1 = Array.from({ length: 50 }, (_, i) => `client-${i + 1}`)
+    const clientIds2 = Array.from({ length: 50 }, (_, i) => `client-${i + 51}`)
+    // Mock database operations
+        in: jest.fn(() => Promise.resolve({ data: [], error: null }))
+    // Start two operations concurrently
+    const [result1, result2] = await Promise.all([
+      service.executeBulkOperation('status_update', clientIds1, { new_status: 'booked' }),
+      service.executeBulkOperation('status_update', clientIds2, { new_status: 'completed' })
+    ])
+    // Both operations should complete successfully
+    expect(result1.completed).toBe(50)
+    expect(result2.completed).toBe(50)
+    // Concurrent execution should be faster than sequential
+})

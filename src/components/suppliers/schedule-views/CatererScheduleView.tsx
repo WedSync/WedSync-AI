@@ -1,0 +1,262 @@
+'use client';
+
+import React, { useState } from 'react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import {
+  Utensils,
+  Clock,
+  AlertTriangle,
+  CheckCircle2,
+  Users,
+  ChefHat,
+} from 'lucide-react';
+import { format } from 'date-fns';
+import { VendorSpecificScheduleViewProps } from './types';
+
+export function CatererScheduleView({
+  schedule,
+  vendorData,
+  onConfirmSchedule,
+  onRequestChange,
+  onUpdateStatus,
+}: VendorSpecificScheduleViewProps) {
+  const [confirmationNotes, setConfirmationNotes] = useState('');
+
+  // Mock caterer data
+  const catererData = vendorData?.catererData || {
+    menuTimeline: [
+      {
+        id: '1',
+        dishName: 'Appetizers',
+        prepTime: 120,
+        cookTime: 30,
+        serviceTime: '18:00',
+        servingSize: 150,
+      },
+      {
+        id: '2',
+        dishName: 'Main Course',
+        prepTime: 180,
+        cookTime: 45,
+        serviceTime: '19:30',
+        servingSize: 150,
+      },
+      {
+        id: '3',
+        dishName: 'Wedding Cake',
+        prepTime: 30,
+        cookTime: 0,
+        serviceTime: '21:00',
+        servingSize: 150,
+      },
+    ],
+    dietaryAlerts: [
+      {
+        guestName: 'Jane Smith',
+        restriction: 'Gluten-Free',
+        severity: 'allergy',
+      },
+      {
+        guestName: 'John Doe',
+        restriction: 'Vegetarian',
+        severity: 'preference',
+      },
+    ],
+    staffAssignments: [
+      {
+        staffMember: 'Chef Maria',
+        role: 'Head Chef',
+        startTime: '14:00',
+        endTime: '22:00',
+      },
+      {
+        staffMember: 'Server Tom',
+        role: 'Lead Server',
+        startTime: '17:00',
+        endTime: '23:00',
+      },
+    ],
+  };
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-3">
+            <Utensils className="h-6 w-6" />
+            <div>
+              <div className="text-xl font-bold">{schedule.supplierName}</div>
+              <div className="text-sm font-normal text-gray-500">
+                Catering Schedule
+              </div>
+            </div>
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+            <div className="text-center">
+              <div className="text-2xl font-bold text-blue-600">
+                {catererData.menuTimeline.length}
+              </div>
+              <div className="text-sm text-gray-500">Menu Items</div>
+            </div>
+            <div className="text-center">
+              <div className="text-2xl font-bold text-red-600">
+                {catererData.dietaryAlerts.length}
+              </div>
+              <div className="text-sm text-gray-500">Dietary Alerts</div>
+            </div>
+            <div className="text-center">
+              <div className="text-2xl font-bold text-green-600">
+                {catererData.staffAssignments.length}
+              </div>
+              <div className="text-sm text-gray-500">Staff Members</div>
+            </div>
+            <div className="text-center">
+              <div className="text-2xl font-bold text-purple-600">150</div>
+              <div className="text-sm text-gray-500">Guest Count</div>
+            </div>
+          </div>
+          <Button
+            onClick={() =>
+              onConfirmSchedule({
+                scheduleId: schedule.supplierId,
+                supplierId: schedule.supplierId,
+                confirmedAt: new Date(),
+                status: 'confirmed',
+                notes: confirmationNotes,
+                conditions: [],
+                signedBy: schedule.supplierName,
+              })
+            }
+            className="w-full"
+          >
+            <CheckCircle2 className="h-4 w-4 mr-2" />
+            Confirm Catering Schedule
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="p-0">
+          <Tabs defaultValue="menu" className="w-full">
+            <div className="px-6 pt-6">
+              <TabsList className="grid w-full grid-cols-4">
+                <TabsTrigger value="menu">Menu Timeline</TabsTrigger>
+                <TabsTrigger value="dietary">Dietary Alerts</TabsTrigger>
+                <TabsTrigger value="staff">Staff Schedule</TabsTrigger>
+                <TabsTrigger value="schedule">Full Schedule</TabsTrigger>
+              </TabsList>
+            </div>
+
+            <TabsContent value="menu" className="px-6 pb-6">
+              <ScrollArea className="h-80">
+                <div className="space-y-3">
+                  {catererData.menuTimeline.map((item) => (
+                    <div key={item.id} className="border rounded-lg p-4">
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <h4 className="font-medium">{item.dishName}</h4>
+                          <p className="text-sm text-gray-500">
+                            Service: {item.serviceTime}
+                          </p>
+                          <p className="text-sm text-gray-500">
+                            Serving: {item.servingSize} guests
+                          </p>
+                        </div>
+                        <Badge variant="outline">
+                          Prep: {item.prepTime}min
+                        </Badge>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
+            </TabsContent>
+
+            <TabsContent value="dietary" className="px-6 pb-6">
+              <ScrollArea className="h-80">
+                <div className="space-y-3">
+                  {catererData.dietaryAlerts.map((alert, index) => (
+                    <div key={index} className="border rounded-lg p-4">
+                      <div className="flex items-center gap-3">
+                        <AlertTriangle
+                          className={
+                            alert.severity === 'allergy'
+                              ? 'h-5 w-5 text-red-500'
+                              : 'h-5 w-5 text-yellow-500'
+                          }
+                        />
+                        <div>
+                          <h4 className="font-medium">{alert.guestName}</h4>
+                          <p className="text-sm text-gray-600">
+                            {alert.restriction}
+                          </p>
+                        </div>
+                        <Badge
+                          variant={
+                            alert.severity === 'allergy'
+                              ? 'destructive'
+                              : 'secondary'
+                          }
+                        >
+                          {alert.severity}
+                        </Badge>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
+            </TabsContent>
+
+            <TabsContent value="staff" className="px-6 pb-6">
+              <ScrollArea className="h-80">
+                <div className="space-y-3">
+                  {catererData.staffAssignments.map((staff, index) => (
+                    <div key={index} className="border rounded-lg p-4">
+                      <div className="flex items-center gap-3">
+                        <ChefHat className="h-5 w-5 text-blue-500" />
+                        <div className="flex-1">
+                          <h4 className="font-medium">{staff.staffMember}</h4>
+                          <p className="text-sm text-gray-600">{staff.role}</p>
+                          <p className="text-sm text-gray-500">
+                            {staff.startTime} - {staff.endTime}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
+            </TabsContent>
+
+            <TabsContent value="schedule" className="px-6 pb-6">
+              <ScrollArea className="h-80">
+                <div className="space-y-3">
+                  {schedule.scheduleItems.map((item) => (
+                    <div key={item.id} className="border rounded-lg p-4">
+                      <div className="flex items-center gap-3">
+                        <Clock className="h-4 w-4 text-gray-500" />
+                        <div>
+                          <h4 className="font-medium">{item.title}</h4>
+                          <p className="text-sm text-gray-500">
+                            {format(item.startTime, 'HH:mm')} -{' '}
+                            {format(item.endTime, 'HH:mm')}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
+            </TabsContent>
+          </Tabs>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}

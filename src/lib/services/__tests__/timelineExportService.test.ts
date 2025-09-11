@@ -1,0 +1,329 @@
+// =====================================================
+// TIMELINE EXPORT SERVICE UNIT TESTS
+// Comprehensive test coverage for export functionality
+// Feature ID: WS-160 - Timeline Builder UI
+// Created: 2025-01-20
+
+import { TimelineExportService, validateExportOptions } from '../timelineExportService'
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import type { WeddingTimeline, TimelineEvent, ExportOptions } from '@/types/timeline'
+// TEST SETUP & MOCKS
+// Mock external dependencies
+jest.mock('jspdf', () => ({
+  jsPDF: jest.fn().mockImplementation(() => ({
+    internal: {
+      pageSize: {
+        getWidth: () => 210,
+        getHeight: () => 297
+      }
+    },
+    setFontSize: jest.fn(),
+    setFont: jest.fn(),
+    setTextColor: jest.fn(),
+    text: jest.fn(),
+    line: jest.fn(),
+    addPage: jest.fn(),
+    splitTextToSize: jest.fn().mockReturnValue(['split text']),
+    output: jest.fn().mockReturnValue(new Blob(['pdf content'], { type: 'application/pdf' }))
+  }))
+}))
+jest.mock('xlsx', () => ({
+  utils: {
+    book_new: jest.fn().mockReturnValue({}),
+    aoa_to_sheet: jest.fn().mockReturnValue({}),
+    book_append_sheet: jest.fn()
+  },
+  write: jest.fn().mockReturnValue(new ArrayBuffer(8))
+// TEST HELPERS
+const createMockTimeline = (overrides: Partial<WeddingTimeline> = {}): WeddingTimeline => ({
+  id: 'timeline-1',
+  organization_id: 'org-1',
+  client_id: 'client-1',
+  name: 'Sarah & John Wedding',
+  wedding_date: '2025-06-15',
+  timezone: 'America/New_York',
+  start_time: '09:00',
+  end_time: '23:00',
+  buffer_time_minutes: 15,
+  allow_vendor_edits: true,
+  require_approval: false,
+  version: 1,
+  is_published: false,
+  status: 'draft',
+  created_at: '2025-01-20T10:00:00Z',
+  updated_at: '2025-01-20T10:00:00Z',
+  ...overrides
+})
+const createMockEvent = (overrides: Partial<TimelineEvent> = {}): TimelineEvent => ({
+  id: 'event-1',
+  timeline_id: 'timeline-1',
+  title: 'Wedding Ceremony',
+  description: 'Beautiful outdoor ceremony',
+  event_type: 'ceremony',
+  category: 'ceremony',
+  start_time: '2025-06-15T14:00:00Z',
+  end_time: '2025-06-15T15:00:00Z',
+  duration_minutes: 60,
+  location: 'Garden Pavilion',
+  location_details: 'Behind the main building',
+  priority: 'critical',
+  status: 'confirmed',
+  is_locked: false,
+  is_flexible: false,
+  weather_dependent: true,
+  color: '#ff6b6b',
+  icon: 'heart',
+  display_order: 1,
+  layer: 0,
+  internal_notes: 'Check weather forecast',
+  vendor_notes: 'Setup chairs 1 hour early',
+  created_by: 'planner-1',
+  updated_by: 'planner-1',
+const createMockExportOptions = (overrides: Partial<ExportOptions> = {}): ExportOptions => ({
+  format: 'pdf',
+  include_vendor_details: true,
+  include_internal_notes: false,
+  includeColors: true,
+  includeNotes: true,
+  pageOrientation: 'portrait',
+  fontSize: 'medium',
+  groupByCategory: false,
+  showBufferTimes: false,
+  showTravelTimes: false,
+  includeEmptyEvents: false,
+// MAIN TEST SUITE
+describe('TimelineExportService', () => {
+  let exportService: TimelineExportService
+  let progressCallback: jest.Mock
+  let mockTimeline: WeddingTimeline
+  let mockEvents: TimelineEvent[]
+  beforeEach(() => {
+    progressCallback = jest.fn()
+    exportService = new TimelineExportService(progressCallback)
+    
+    mockTimeline = createMockTimeline()
+    mockEvents = [
+      createMockEvent({
+        id: 'event-1',
+        title: 'Bridal Preparation',
+        event_type: 'preparation',
+        start_time: '2025-06-15T09:00:00Z',
+        end_time: '2025-06-15T12:00:00Z'
+      }),
+        id: 'event-2',
+        title: 'Wedding Ceremony',
+        event_type: 'ceremony',
+        start_time: '2025-06-15T14:00:00Z',
+        end_time: '2025-06-15T15:00:00Z'
+        id: 'event-3',
+        title: 'Reception',
+        event_type: 'reception',
+        start_time: '2025-06-15T18:00:00Z',
+        end_time: '2025-06-15T23:00:00Z'
+      })
+    ]
+  })
+  afterEach(() => {
+    jest.clearAllMocks()
+  // =====================================================
+  // PDF EXPORT TESTS
+  describe('PDF Export', () => {
+    it('should export timeline to PDF successfully', async () => {
+      const options = createMockExportOptions({ format: 'pdf' })
+      
+      const result = await exportService.exportTimeline(mockTimeline, mockEvents, options)
+      expect(result.success).toBe(true)
+      expect(result.blob).toBeInstanceOf(Blob)
+      expect(result.filename).toContain('.pdf')
+      expect(progressCallback).toHaveBeenCalled()
+    })
+    it('should include vendor details when option is enabled', async () => {
+      const eventsWithVendors = [
+        createMockEvent({
+          vendors: [{
+            id: 'vendor-1',
+            event_id: 'event-1',
+            vendor_id: 'v1',
+            role: 'primary',
+            confirmation_status: 'confirmed',
+            assigned_at: '2025-01-20T10:00:00Z',
+            vendor: {
+              id: 'v1',
+              business_name: 'ABC Catering',
+              business_type: 'Catering',
+              email: 'contact@abccatering.com'
+            }
+          }] as any
+        })
+      ]
+      const options = createMockExportOptions({ 
+        format: 'pdf',
+        include_vendor_details: true 
+      const result = await exportService.exportTimeline(mockTimeline, eventsWithVendors, options)
+    it('should handle different page orientations', async () => {
+      const portraitOptions = createMockExportOptions({ 
+        pageOrientation: 'portrait' 
+      const landscapeOptions = createMockExportOptions({ 
+        pageOrientation: 'landscape' 
+      const portraitResult = await exportService.exportTimeline(mockTimeline, mockEvents, portraitOptions)
+      const landscapeResult = await exportService.exportTimeline(mockTimeline, mockEvents, landscapeOptions)
+      expect(portraitResult.success).toBe(true)
+      expect(landscapeResult.success).toBe(true)
+    it('should handle different font sizes', async () => {
+        fontSize: 'large' 
+  // CSV EXPORT TESTS
+  describe('CSV Export', () => {
+    it('should export timeline to CSV successfully', async () => {
+      const options = createMockExportOptions({ format: 'csv' })
+      expect(result.filename).toContain('.csv')
+      expect(result.blob?.type).toContain('text/csv')
+    it('should include all required CSV headers', async () => {
+      // Verify blob content contains headers
+      if (result.blob) {
+        const text = await result.blob.text()
+        expect(text).toContain('Start Time')
+        expect(text).toContain('End Time')
+        expect(text).toContain('Event Title')
+        expect(text).toContain('Location')
+    it('should handle vendor details in CSV', async () => {
+      const eventsWithVendors = [createMockEvent({
+        vendors: [{
+          id: 'vendor-1',
+          event_id: 'event-1',
+          vendor_id: 'v1',
+          role: 'primary',
+          confirmation_status: 'confirmed',
+          assigned_at: '2025-01-20T10:00:00Z',
+          vendor: {
+            id: 'v1',
+            business_name: 'Test Vendor',
+            business_type: 'Photography',
+            email: 'test@vendor.com'
+          }
+        }] as any
+      })]
+        format: 'csv',
+        expect(text).toContain('Primary Vendor')
+        expect(text).toContain('Test Vendor')
+    it('should escape CSV special characters', async () => {
+      const eventWithCommas = createMockEvent({
+        title: 'Event with, commas and "quotes"',
+        description: 'Description with, special characters'
+      const result = await exportService.exportTimeline(mockTimeline, [eventWithCommas], options)
+        expect(text).toContain('""quotes""') // Properly escaped quotes
+  // EXCEL EXPORT TESTS
+  describe('Excel Export', () => {
+    it('should export timeline to Excel successfully', async () => {
+      const options = createMockExportOptions({ format: 'excel' })
+      expect(result.filename).toContain('.xlsx')
+    it('should create multiple worksheets', async () => {
+      const XLSX = require('xlsx')
+        format: 'excel',
+      await exportService.exportTimeline(mockTimeline, mockEvents, options)
+      // Verify that multiple sheets were created
+      expect(XLSX.utils.book_append_sheet).toHaveBeenCalledTimes(2) // Summary + Events
+  // ICAL EXPORT TESTS
+  describe('iCal Export', () => {
+    it('should export timeline to iCal successfully', async () => {
+      const options = createMockExportOptions({ format: 'ical' })
+      expect(result.filename).toContain('.ics')
+      expect(result.blob?.type).toContain('text/calendar')
+    it('should generate valid iCal content', async () => {
+        expect(text).toContain('BEGIN:VCALENDAR')
+        expect(text).toContain('END:VCALENDAR')
+        expect(text).toContain('BEGIN:VEVENT')
+        expect(text).toContain('END:VEVENT')
+        expect(text).toContain('SUMMARY:')
+        expect(text).toContain('DTSTART:')
+        expect(text).toContain('DTEND:')
+  // GOOGLE CALENDAR EXPORT TESTS
+  describe('Google Calendar Export', () => {
+    it('should export timeline for Google Calendar successfully', async () => {
+      const options = createMockExportOptions({ format: 'google' })
+      expect(result.downloadUrl).toContain('calendar.google.com')
+  // PROGRESS CALLBACK TESTS
+  describe('Progress Tracking', () => {
+    it('should call progress callback during export', async () => {
+      expect(progressCallback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          stage: 'preparing',
+          progress: 0,
+          message: 'Preparing export...'
+      )
+          stage: 'complete',
+          progress: 100
+    it('should track progress through different stages', async () => {
+      const calls = progressCallback.mock.calls
+      const stages = calls.map(call => call[0].stage)
+      expect(stages).toContain('preparing')
+      expect(stages).toContain('processing')
+      expect(stages).toContain('complete')
+  // ERROR HANDLING TESTS
+  describe('Error Handling', () => {
+    it('should handle invalid timeline data gracefully', async () => {
+      const invalidTimeline = null as any
+      const options = createMockExportOptions()
+      const result = await exportService.exportTimeline(invalidTimeline, mockEvents, options)
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('Timeline and events are required')
+    it('should handle empty events array', async () => {
+      const result = await exportService.exportTimeline(mockTimeline, [], options)
+      expect(result.blob).toBeDefined()
+    it('should handle unsupported export format', async () => {
+      const options = createMockExportOptions({ format: 'unsupported' as any })
+      expect(result.error).toContain('Unsupported export format')
+  // OPTION FILTERING TESTS
+  describe('Option Filtering', () => {
+    it('should filter events by category when groupByCategory is enabled', async () => {
+      const categorizedEvents = [
+        createMockEvent({ category: 'ceremony', title: 'Ceremony Event' }),
+        createMockEvent({ category: 'reception', title: 'Reception Event' }),
+        createMockEvent({ category: 'ceremony', title: 'Another Ceremony Event' })
+        groupByCategory: true 
+      const result = await exportService.exportTimeline(mockTimeline, categorizedEvents, options)
+    it('should exclude empty events when includeEmptyEvents is false', async () => {
+      const eventsWithEmpty = [
+        createMockEvent({ title: 'Valid Event' }),
+        createMockEvent({ title: '', start_time: '', end_time: '' })
+        includeEmptyEvents: false 
+      const result = await exportService.exportTimeline(mockTimeline, eventsWithEmpty, options)
+  // PERFORMANCE TESTS
+  describe('Performance', () => {
+    it('should handle large number of events efficiently', async () => {
+      const manyEvents = Array.from({ length: 100 }, (_, i) => 
+          id: `event-${i}`,
+          title: `Event ${i}`,
+          start_time: new Date(2025, 5, 15, 10 + i).toISOString(),
+          end_time: new Date(2025, 5, 15, 11 + i).toISOString()
+      const startTime = performance.now()
+      const result = await exportService.exportTimeline(mockTimeline, manyEvents, options)
+      const endTime = performance.now()
+      expect(endTime - startTime).toBeLessThan(5000) // Should complete in under 5 seconds
+// VALIDATION UTILITY TESTS
+describe('Export Validation Utilities', () => {
+  describe('validateExportOptions', () => {
+    it('should validate correct options', () => {
+      const validOptions = createMockExportOptions()
+      const result = validateExportOptions(validOptions)
+      expect(result.valid).toBe(true)
+      expect(result.errors).toHaveLength(0)
+    it('should reject missing format', () => {
+      const invalidOptions = createMockExportOptions({ format: undefined as any })
+      const result = validateExportOptions(invalidOptions)
+      expect(result.valid).toBe(false)
+      expect(result.errors).toContain('Export format is required')
+    it('should reject invalid format', () => {
+      const invalidOptions = createMockExportOptions({ format: 'invalid' as any })
+      expect(result.errors).toContain('Invalid export format')
+    it('should reject invalid font size', () => {
+      const invalidOptions = createMockExportOptions({ fontSize: 'huge' as any })
+      expect(result.errors).toContain('Invalid font size option')
+    it('should reject invalid page orientation', () => {
+      const invalidOptions = createMockExportOptions({ pageOrientation: 'diagonal' as any })
+      expect(result.errors).toContain('Invalid page orientation option')
+    it('should collect multiple validation errors', () => {
+      const invalidOptions = createMockExportOptions({
+        format: 'invalid' as any,
+        fontSize: 'huge' as any,
+        pageOrientation: 'diagonal' as any
+      expect(result.errors.length).toBeGreaterThan(1)

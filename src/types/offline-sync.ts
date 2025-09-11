@@ -1,0 +1,667 @@
+/**
+ * WS-188: Offline Sync Type Definitions
+ * Team B - Backend Focus - Comprehensive type definitions for offline sync system
+ *
+ * Provides complete TypeScript type definitions for the enhanced offline functionality system
+ */
+
+import { z } from 'zod';
+
+// === Core Sync Types ===
+
+export type SyncAction = 'create' | 'update' | 'delete';
+export type SyncStatus = 'pending' | 'processing' | 'completed' | 'failed';
+export type ConflictResolutionStrategy =
+  | 'client_wins'
+  | 'server_wins'
+  | 'merge_automatic'
+  | 'merge_manual'
+  | 'skip';
+export type ConnectionQuality = 'offline' | 'poor' | 'good' | 'excellent';
+export type CachePriorityLevel =
+  | 'critical'
+  | 'high'
+  | 'medium'
+  | 'low'
+  | 'background';
+export type CompressionLevel = 'none' | 'low' | 'medium' | 'high';
+export type ExpirationPolicy =
+  | 'wedding_day'
+  | 'fixed_duration'
+  | 'never_expire'
+  | 'access_based';
+
+// === Sync Change Types ===
+
+export interface SyncChange {
+  id: string;
+  action: SyncAction;
+  table: string;
+  recordId: string;
+  data: Record<string, any>;
+  timestamp: string;
+  clientVersion?: string;
+  deviceId?: string;
+  checksum?: string;
+  priority?: number;
+  retryCount?: number;
+  lastError?: string;
+}
+
+export interface SyncBatchRequest {
+  changes: SyncChange[];
+  lastSyncTime: string;
+  batchId: string;
+  deviceInfo?: DeviceInfo;
+  options?: SyncOptions;
+}
+
+export interface SyncOptions {
+  conflictResolution?: ConflictResolutionStrategy;
+  validateChecksums?: boolean;
+  dryRun?: boolean;
+  maxRetries?: number;
+  timeoutMs?: number;
+}
+
+export interface DeviceInfo {
+  deviceId: string;
+  appVersion: string;
+  platform: string;
+  osVersion?: string;
+  connectionQuality?: ConnectionQuality;
+  storageQuotaMB?: number;
+  lastActivity?: string;
+}
+
+// === Sync Response Types ===
+
+export interface SyncResponse {
+  success: boolean;
+  sessionId: string;
+  processed: ProcessedItem[];
+  conflicts: ConflictItem[];
+  failures: FailureItem[];
+  serverChanges: ServerChange[];
+  nextSyncTime?: string;
+  processingTime: number;
+  metadata?: SyncResponseMetadata;
+}
+
+export interface ProcessedItem {
+  changeId: string;
+  serverId: string;
+  action: SyncAction;
+  timestamp?: string;
+  warnings?: string[];
+}
+
+export interface FailureItem {
+  changeId: string;
+  table: string;
+  error: string;
+  retryable: boolean;
+  retryAfter?: string;
+  suggestions?: string[];
+}
+
+export interface ServerChange {
+  table: string;
+  id: string;
+  action: SyncAction;
+  data: Record<string, any>;
+  timestamp: string;
+  version?: string;
+}
+
+export interface SyncResponseMetadata {
+  queuePosition?: number;
+  estimatedCompletionTime?: string;
+  performanceMetrics?: SyncPerformanceMetrics;
+}
+
+// === Conflict Resolution Types ===
+
+export interface ConflictItem {
+  changeId: string;
+  table: string;
+  recordId: string;
+  conflictType: ConflictType;
+  clientData: Record<string, any>;
+  serverData: Record<string, any>;
+  conflictFields: string[];
+  resolution?: ConflictResolution;
+  createdAt: string;
+  priority?: number;
+}
+
+export type ConflictType =
+  | 'data_conflict' // Different field values
+  | 'delete_conflict' // Client deleted, server modified
+  | 'concurrent_edit' // Simultaneous edits
+  | 'schema_mismatch' // Schema version differences
+  | 'permission_conflict' // Permission changes
+  | 'dependency_conflict'; // Related record conflicts
+
+export interface ConflictResolution {
+  strategy: ConflictResolutionStrategy;
+  resolvedData?: Record<string, any>;
+  userComment?: string;
+  resolvedAt?: string;
+  resolvedBy?: string;
+  applied: boolean;
+  confidence?: number; // 0-100 for automatic resolutions
+}
+
+export interface ConflictResolutionRequest {
+  conflictId: string;
+  resolution: {
+    strategy: ConflictResolutionStrategy;
+    mergedData?: Record<string, any>;
+    userComment?: string;
+    applyToSimilar?: boolean;
+  };
+  deviceId?: string;
+  sessionId?: string;
+}
+
+export interface BatchConflictResolutionRequest {
+  resolutions: ConflictResolutionRequest[];
+  globalStrategy?: ConflictResolutionStrategy;
+  sessionId?: string;
+}
+
+// === Device Sync Status Types ===
+
+export interface DeviceSyncStatus {
+  deviceId: string;
+  isOnline: boolean;
+  lastSyncTime?: string;
+  syncInProgress: boolean;
+  connectionQuality: ConnectionQuality;
+  appVersion?: string;
+  platform?: string;
+  lastActivity?: string;
+}
+
+export interface DeviceSyncStatusResponse {
+  success: boolean;
+  deviceId: string;
+  status: DeviceSyncStatus;
+  queue: SyncQueueStatus;
+  conflicts: ConflictStatus;
+  performance: DevicePerformanceMetrics;
+  lastUpdated: string;
+}
+
+export interface SyncQueueStatus {
+  totalItems: number;
+  pendingItems: number;
+  processingItems: number;
+  failedItems: number;
+  estimatedCompletionTime?: string;
+  estimatedCompletionMs: number;
+  items: SyncQueueItem[];
+}
+
+export interface SyncQueueItem {
+  id: string;
+  operationType: SyncAction;
+  priority: number;
+  status: SyncStatus;
+  createdAt: string;
+  updatedAt: string;
+  retryCount: number;
+  lastError?: string;
+  dataSizeBytes: number;
+  estimatedProcessingTimeMs?: number;
+}
+
+export interface ConflictStatus {
+  total: number;
+  pending: ConflictItem[];
+  requiresManualResolution: number;
+}
+
+// === Cache Management Types ===
+
+export interface CacheResource {
+  resourceType: ResourceType;
+  resourceId: string;
+  priority: number;
+  sizeMB: number;
+  lastAccessed: string;
+  expirationTime: string;
+  compressionLevel: CompressionLevel;
+  deviceId?: string;
+  weddingDayBoost?: number;
+}
+
+export type ResourceType =
+  | 'wedding'
+  | 'client'
+  | 'vendor'
+  | 'timeline_item'
+  | 'budget_item'
+  | 'photo'
+  | 'document';
+
+export interface CachePriorityRequest {
+  resources: {
+    resourceType: ResourceType;
+    resourceId: string;
+    priority: CachePriorityLevel;
+    expirationPolicy?: ExpirationPolicy;
+    customExpiration?: string;
+    preloadData?: boolean;
+    compressionLevel?: CompressionLevel;
+  }[];
+  weddingDate?: string;
+  deviceInfo?: DeviceInfo;
+  globalSettings?: CacheGlobalSettings;
+}
+
+export interface CacheGlobalSettings {
+  enableProactiveCaching?: boolean;
+  maxCacheSizeMB?: number;
+  weddingDayBoostFactor?: number;
+  autoCleanupThresholdPercent?: number;
+}
+
+export interface CacheStorageInfo {
+  totalQuotaMB: number;
+  usedSpaceMB: number;
+  availableSpaceMB: number;
+  criticalItemsMB: number;
+  highPriorityItemsMB: number;
+  expiredItemsMB: number;
+  fragmentationPercent: number;
+}
+
+export interface CacheOptimizationResult {
+  freedSpaceMB: number;
+  itemsRemoved: number;
+  optimizationActions: Array<{
+    action: string;
+    sizeMB: number;
+    count: number;
+  }>;
+  storageHealthScore: number;
+}
+
+// === Performance Metrics Types ===
+
+export interface SyncPerformanceMetrics {
+  avgProcessingTimeMs: number;
+  maxProcessingTimeMs: number;
+  avgItemsPerBatch: number;
+  totalSyncSessions: number;
+  totalConflicts: number;
+  totalFailures: number;
+  avgThroughputPerSecond: number;
+  successRate: number;
+  conflictRate: number;
+}
+
+export interface DevicePerformanceMetrics {
+  healthScore: number;
+  averageProcessingTime: number;
+  maxProcessingTime: number;
+  averageItemsPerBatch: number;
+  totalSyncSessions: number;
+  totalConflicts: number;
+  totalFailures: number;
+  averageThroughput: number;
+  successRate: number;
+  conflictRate: number;
+}
+
+export interface QueueAnalyticsResponse {
+  success: boolean;
+  timeRange: string;
+  startTime: string;
+  endTime: string;
+  deviceId: string;
+  healthScore: number;
+  analytics: {
+    queue: QueuePerformanceMetrics;
+    conflicts: ConflictAnalytics;
+    throughput: ThroughputMetrics;
+    devices: DevicePerformanceBreakdown[];
+    errors: ErrorAnalysis;
+    optimization: OptimizationInsights;
+  };
+}
+
+export interface QueuePerformanceMetrics {
+  totalItems: number;
+  completedItems: number;
+  failedItems: number;
+  pendingItems: number;
+  processingItems: number;
+  successRate: number;
+  avgProcessingTimeSeconds: number;
+  maxProcessingTimeSeconds: number;
+  avgPriority: number;
+  avgRetryCount: number;
+}
+
+export interface ConflictAnalytics {
+  totalConflicts: number;
+  resolvedConflicts: number;
+  pendingConflicts: number;
+  clientWins: number;
+  serverWins: number;
+  autoMerged: number;
+  manualMerged: number;
+  resolutionRate: number;
+  avgResolutionTimeSeconds: number;
+  conflictsByType: ConflictTypeBreakdown[];
+  autoResolutionRate: number;
+}
+
+export interface ConflictTypeBreakdown {
+  conflictType: ConflictType;
+  tableName: string;
+  totalConflicts: number;
+  resolvedConflicts: number;
+  avgResolutionTimeSeconds: number;
+}
+
+export interface ThroughputMetrics {
+  hourlyBreakdown: HourlyThroughput[];
+  totalItemsProcessed: number;
+  totalItemsSynced: number;
+  avgProcessingTimeMs: number;
+  avgThroughputPerSecond: number;
+  peakThroughputPerSecond: number;
+}
+
+export interface HourlyThroughput {
+  hour: string;
+  itemsProcessed: number;
+  avgProcessingTimeMs: number;
+  totalItemsSynced: number;
+  avgThroughputPerSecond: number;
+  peakThroughputPerSecond: number;
+}
+
+export interface DevicePerformanceBreakdown {
+  deviceId: string;
+  syncSessions: number;
+  avgProcessingTimeMs: number;
+  avgItemsPerSession: number;
+  avgThroughput: number;
+  totalConflicts: number;
+  totalFailures: number;
+  lastSyncTime: string;
+  successRate: number;
+}
+
+export interface ErrorAnalysis {
+  topErrors: ErrorOccurrence[];
+  errorCategories: ErrorCategories;
+  totalErrors: number;
+}
+
+export interface ErrorOccurrence {
+  errorMessage: string;
+  occurrenceCount: number;
+  lastOccurrence: string;
+  avgRetryCount: number;
+  operationType: SyncAction;
+  tableName: string;
+}
+
+export interface ErrorCategories {
+  network: number;
+  validation: number;
+  permission: number;
+  conflict: number;
+  system: number;
+  unknown: number;
+}
+
+export interface OptimizationInsights {
+  recommendations: string[];
+  potentialImprovements: string[];
+  riskFactors: string[];
+  performanceScore: number;
+}
+
+// === Custom Analytics Types ===
+
+export interface CustomAnalyticsRequest {
+  startTime: string;
+  endTime: string;
+  metrics: AnalyticsMetricType[];
+  groupBy?: AnalyticsGroupBy;
+  filters?: AnalyticsFilters;
+}
+
+export type AnalyticsMetricType =
+  | 'queue_performance'
+  | 'conflict_analysis'
+  | 'throughput'
+  | 'device_breakdown'
+  | 'error_patterns'
+  | 'optimization_recommendations'
+  | 'user_behavior'
+  | 'resource_utilization';
+
+export type AnalyticsGroupBy =
+  | 'hour'
+  | 'day'
+  | 'week'
+  | 'device'
+  | 'operation_type';
+
+export interface AnalyticsFilters {
+  deviceId?: string;
+  operationType?: SyncAction;
+  priority?: number;
+  status?: SyncStatus;
+}
+
+export interface CustomAnalyticsResponse {
+  success: boolean;
+  reportId: string;
+  parameters: CustomAnalyticsRequest;
+  generatedAt: string;
+  data: Record<string, any>;
+}
+
+// === Multi-Device Sync Types ===
+
+export interface MultiDeviceSyncResult {
+  syncedResources: Array<{
+    resourceId: string;
+    deviceId: string;
+    action: 'copied' | 'updated' | 'removed';
+  }>;
+  conflicts: Array<{
+    resourceId: string;
+    conflictType: string;
+    resolution: string;
+  }>;
+  errors: Array<{
+    deviceId: string;
+    error: string;
+  }>;
+  consistencyScore: number;
+}
+
+// === Wedding Context Types ===
+
+export interface WeddingContext {
+  weddingId: string;
+  weddingDate: string;
+  currentPhase: WeddingPhase;
+  daysUntilWedding: number;
+  priorityBoostFactor: number;
+}
+
+export type WeddingPhase =
+  | 'planning' // > 30 days before wedding
+  | 'preparation' // 30-7 days before wedding
+  | 'final_week' // 7-1 days before wedding
+  | 'wedding_day' // Day of wedding
+  | 'post_wedding'; // After wedding
+
+// === Error Types ===
+
+export interface SyncError extends Error {
+  code: string;
+  retryable: boolean;
+  conflictData?: ConflictItem;
+  deviceId?: string;
+  sessionId?: string;
+}
+
+export interface ValidationError extends SyncError {
+  fieldErrors: Array<{
+    field: string;
+    message: string;
+    value?: any;
+  }>;
+}
+
+// === Utility Types ===
+
+export interface PaginatedResponse<T> {
+  data: T[];
+  pagination: {
+    page: number;
+    pageSize: number;
+    total: number;
+    hasNextPage: boolean;
+    hasPreviousPage: boolean;
+  };
+}
+
+export interface ApiResponse<T = any> {
+  success: boolean;
+  data?: T;
+  error?: string;
+  details?: string;
+  timestamp: string;
+}
+
+export interface BulkOperationResult<T> {
+  successful: T[];
+  failed: Array<{
+    item: T;
+    error: string;
+  }>;
+  summary: {
+    total: number;
+    successful: number;
+    failed: number;
+  };
+}
+
+// === Zod Schemas for Validation ===
+
+export const SyncChangeSchema = z.object({
+  id: z.string().uuid(),
+  action: z.enum(['create', 'update', 'delete']),
+  table: z.string().min(1).max(50),
+  recordId: z.string().uuid(),
+  data: z.object({}).passthrough(),
+  timestamp: z.string().datetime(),
+  clientVersion: z.string().optional(),
+  deviceId: z.string().optional(),
+  checksum: z.string().optional(),
+  priority: z.number().min(1).max(10).optional(),
+  retryCount: z.number().min(0).optional(),
+  lastError: z.string().optional(),
+});
+
+export const DeviceInfoSchema = z.object({
+  deviceId: z.string().min(1),
+  appVersion: z.string().min(1),
+  platform: z.string().min(1),
+  osVersion: z.string().optional(),
+  connectionQuality: z
+    .enum(['offline', 'poor', 'good', 'excellent'])
+    .optional(),
+  storageQuotaMB: z.number().min(10).max(10000).optional(),
+  lastActivity: z.string().datetime().optional(),
+});
+
+export const SyncOptionsSchema = z.object({
+  conflictResolution: z
+    .enum([
+      'client_wins',
+      'server_wins',
+      'merge_automatic',
+      'merge_manual',
+      'skip',
+    ])
+    .optional(),
+  validateChecksums: z.boolean().optional(),
+  dryRun: z.boolean().optional(),
+  maxRetries: z.number().min(0).max(10).optional(),
+  timeoutMs: z.number().min(1000).max(300000).optional(),
+});
+
+export const SyncBatchRequestSchema = z.object({
+  changes: z.array(SyncChangeSchema).min(1).max(100),
+  lastSyncTime: z.string().datetime(),
+  batchId: z.string().uuid(),
+  deviceInfo: DeviceInfoSchema.optional(),
+  options: SyncOptionsSchema.optional(),
+});
+
+// === Type Guards ===
+
+export function isSyncError(error: any): error is SyncError {
+  return error instanceof Error && 'code' in error && 'retryable' in error;
+}
+
+export function isValidationError(error: any): error is ValidationError {
+  return isSyncError(error) && 'fieldErrors' in error;
+}
+
+export function isConflictResolvable(conflict: ConflictItem): boolean {
+  return (
+    conflict.conflictType !== 'schema_mismatch' &&
+    conflict.conflictType !== 'permission_conflict'
+  );
+}
+
+export function requiresManualResolution(conflict: ConflictItem): boolean {
+  return (
+    conflict.conflictType === 'concurrent_edit' ||
+    conflict.conflictType === 'dependency_conflict' ||
+    (conflict.conflictFields && conflict.conflictFields.length > 3)
+  );
+}
+
+// === Constants ===
+
+export const SYNC_CONSTANTS = {
+  MAX_BATCH_SIZE: 100,
+  MAX_RETRY_COUNT: 3,
+  DEFAULT_TIMEOUT_MS: 30000,
+  MAX_CONFLICT_AGE_DAYS: 7,
+  DEFAULT_CACHE_SIZE_MB: 200,
+  MAX_CACHE_SIZE_MB: 2000,
+  WEDDING_DAY_PRIORITY_BOOST: 3,
+  CLEANUP_THRESHOLD_PERCENT: 85,
+} as const;
+
+export const PRIORITY_LEVELS = {
+  CRITICAL: 10,
+  HIGH: 8,
+  MEDIUM: 6,
+  LOW: 4,
+  BACKGROUND: 2,
+} as const;
+
+export const WEDDING_DAY_BOOSTS = {
+  WEDDING_DAY: 3,
+  WEEK_BEFORE: 2,
+  MONTH_BEFORE: 1,
+  DEFAULT: 0,
+} as const;

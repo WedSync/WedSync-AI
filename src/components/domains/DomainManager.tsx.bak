@@ -1,0 +1,519 @@
+'use client';
+
+import React, { useState, useEffect, useCallback } from 'react';
+import { 
+  Domain, 
+  DomainStatus, 
+  HealthStatus, 
+  SSLStatus,
+  DomainTableRow,
+  DomainFilters,
+  DomainSort,
+  DomainMetrics 
+} from '@/types/domains';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Badge } from '@/components/ui/badge';
+import { 
+  Table, 
+  TableBody, 
+  TableCell, 
+  TableHead, 
+  TableHeader, 
+  TableRow 
+} from '@/components/ui/table';
+import { 
+  Select, 
+  SelectContent, 
+  SelectItem, 
+  SelectTrigger, 
+  SelectValue 
+} from '@/components/ui/select';
+import { 
+  AlertTriangle, 
+  CheckCircle, 
+  Clock, 
+  Globe, 
+  Plus, 
+  Search, 
+  Settings, 
+  Shield,
+  TrendingUp,
+  XCircle,
+  Filter,
+  ExternalLink
+} from 'lucide-react';
+import { cn } from '@/lib/utils';
+
+interface DomainManagerProps {
+  organizationId: string;
+  className?: string;
+}
+
+const DOMAIN_STATUS_COLORS: Record<DomainStatus, string> = {
+  pending: 'bg-yellow-100 text-yellow-800 border-yellow-200',
+  verifying: 'bg-blue-100 text-blue-800 border-blue-200',
+  verified: 'bg-green-100 text-green-800 border-green-200',
+  active: 'bg-emerald-100 text-emerald-800 border-emerald-200',
+  suspended: 'bg-orange-100 text-orange-800 border-orange-200',
+  failed: 'bg-red-100 text-red-800 border-red-200',
+  expired: 'bg-gray-100 text-gray-800 border-gray-200'
+};
+
+const HEALTH_STATUS_COLORS: Record<HealthStatus, string> = {
+  healthy: 'bg-green-100 text-green-800 border-green-200',
+  degraded: 'bg-yellow-100 text-yellow-800 border-yellow-200',
+  unhealthy: 'bg-red-100 text-red-800 border-red-200',
+  unknown: 'bg-gray-100 text-gray-800 border-gray-200'
+};
+
+const SSL_STATUS_COLORS: Record<SSLStatus, string> = {
+  pending: 'bg-yellow-100 text-yellow-800 border-yellow-200',
+  provisioning: 'bg-blue-100 text-blue-800 border-blue-200',
+  issued: 'bg-green-100 text-green-800 border-green-200',
+  active: 'bg-emerald-100 text-emerald-800 border-emerald-200',
+  expiring: 'bg-orange-100 text-orange-800 border-orange-200',
+  expired: 'bg-red-100 text-red-800 border-red-200',
+  revoked: 'bg-red-100 text-red-800 border-red-200',
+  failed: 'bg-red-100 text-red-800 border-red-200'
+};
+
+export function DomainManager({ organizationId, className }: DomainManagerProps) {
+  const [domains, setDomains] = useState<DomainTableRow[]>([]);
+  const [metrics, setMetrics] = useState<DomainMetrics | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  
+  // Filters and search
+  const [filters, setFilters] = useState<DomainFilters>({
+    organization_id: organizationId
+  });
+  const [sort, setSort] = useState<DomainSort>({
+    field: 'created_at',
+    direction: 'desc'
+  });
+  const [searchTerm, setSearchTerm] = useState('');
+  const [showFilters, setShowFilters] = useState(false);
+
+  // Load domains
+  const loadDomains = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(null);
+
+      const queryParams = new URLSearchParams();
+      if (filters.status?.length) {
+        queryParams.append('status', filters.status.join(','));
+      }
+      if (filters.health_status?.length) {
+        queryParams.append('health_status', filters.health_status.join(','));
+      }
+      if (filters.ssl_status?.length) {
+        queryParams.append('ssl_status', filters.ssl_status.join(','));
+      }
+      if (filters.has_alerts !== undefined) {
+        queryParams.append('has_alerts', filters.has_alerts.toString());
+      }
+      if (searchTerm) {
+        queryParams.append('search', searchTerm);
+      }
+      queryParams.append('sort', `${sort.field}:${sort.direction}`);
+
+      const response = await fetch("/api/placeholder");
+      if (!response.ok) {
+        throw new Error('Failed to load domains');
+      }
+
+      const data = await response.json();
+      setDomains(data.domains);
+      setMetrics(data.metrics);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load domains');
+    } finally {
+      setLoading(false);
+    }
+  }, [filters, sort, searchTerm]);
+
+  // Load domains on component mount and when dependencies change
+  useEffect(() => {
+    loadDomains();
+  }, [loadDomains]);
+
+  // Search handler with debounce
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      loadDomains();
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [searchTerm]);
+
+  const handleAddDomain = () => {
+    // Open add domain modal/page
+    console.log('Add domain clicked');
+  };
+
+  const handleDomainClick = (domain: DomainTableRow) => {
+    // Navigate to domain detail page
+    console.log('Domain clicked:', domain.id);
+  };
+
+  const formatDate = (dateString: string | undefined) => {
+    if (!dateString) return 'N/A';
+    return new Date(dateString).toLocaleDateString();
+  };
+
+  const formatResponseTime = (ms: number | undefined) => {
+    if (!ms) return 'N/A';
+    return `${ms}ms`;
+  };
+
+  const getDaysUntilExpiry = (expiresAt: string | undefined) => {
+    if (!expiresAt) return null;
+    const now = new Date();
+    const expiry = new Date(expiresAt);
+    const diffTime = expiry.getTime() - now.getTime();
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    return diffDays;
+  };
+
+  if (loading && domains.length === 0) {
+    return (
+      <Card className={className}>
+        <CardContent className="p-6">
+          <div className="flex items-center justify-center h-32">
+            <div className="animate-pulse flex space-x-4">
+              <div className="rounded-full bg-slate-200 h-6 w-6"></div>
+              <div className="flex-1 space-y-2 py-1">
+                <div className="h-4 bg-slate-200 rounded w-32"></div>
+                <div className="h-4 bg-slate-200 rounded w-24"></div>
+              </div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (error) {
+    return (
+      <Card className={className}>
+        <CardContent className="p-6">
+          <div className="flex items-center justify-center h-32">
+            <div className="text-center">
+              <XCircle className="h-8 w-8 text-red-500 mx-auto mb-2" />
+              <p className="text-sm text-gray-600">{error}</p>
+              <Button 
+                onClick={loadDomains} 
+                variant="outline" 
+                size="sm" 
+                className="mt-2"
+              >
+                Retry
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <div className={cn('space-y-6', className)}>
+      {/* Metrics Cards */}
+      {metrics && (
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-muted-foreground">Total Domains</p>
+                  <p className="text-2xl font-bold">{metrics.total_domains}</p>
+                </div>
+                <Globe className="h-8 w-8 text-blue-600" />
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-muted-foreground">Active</p>
+                  <p className="text-2xl font-bold text-green-600">{metrics.active_domains}</p>
+                </div>
+                <CheckCircle className="h-8 w-8 text-green-600" />
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-muted-foreground">SSL Expiring</p>
+                  <p className="text-2xl font-bold text-orange-600">{metrics.expiring_certificates}</p>
+                </div>
+                <Shield className="h-8 w-8 text-orange-600" />
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-muted-foreground">Avg Response</p>
+                  <p className="text-2xl font-bold">{Math.round(metrics.average_response_time)}ms</p>
+                </div>
+                <TrendingUp className="h-8 w-8 text-purple-600" />
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Main Domains Card */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="flex items-center gap-2">
+                <Globe className="h-5 w-5" />
+                Custom Domains
+              </CardTitle>
+              <CardDescription>
+                Manage your organization's custom domains, SSL certificates, and health monitoring
+              </CardDescription>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowFilters(!showFilters)}
+                className={cn(showFilters && "bg-accent")}
+              >
+                <Filter className="h-4 w-4" />
+              </Button>
+              <Button onClick={handleAddDomain} size="sm">
+                <Plus className="h-4 w-4 mr-2" />
+                Add Domain
+              </Button>
+            </div>
+          </div>
+
+          {/* Search and Filters */}
+          <div className="space-y-4">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Search domains..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="pl-10"
+              />
+            </div>
+
+            {showFilters && (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 p-4 border rounded-lg bg-muted/50">
+                <Select
+                  value={filters.status?.join(',') || ''}
+                  onValueChange={(value) => setFilters({
+                    ...filters,
+                    status: value ? value.split(',') as DomainStatus[] : undefined
+                  })}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Status filter" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">All Statuses</SelectItem>
+                    <SelectItem value="active">Active</SelectItem>
+                    <SelectItem value="verified">Verified</SelectItem>
+                    <SelectItem value="pending">Pending</SelectItem>
+                    <SelectItem value="failed">Failed</SelectItem>
+                  </SelectContent>
+                </Select>
+
+                <Select
+                  value={filters.health_status?.join(',') || ''}
+                  onValueChange={(value) => setFilters({
+                    ...filters,
+                    health_status: value ? value.split(',') as HealthStatus[] : undefined
+                  })}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Health filter" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">All Health</SelectItem>
+                    <SelectItem value="healthy">Healthy</SelectItem>
+                    <SelectItem value="degraded">Degraded</SelectItem>
+                    <SelectItem value="unhealthy">Unhealthy</SelectItem>
+                  </SelectContent>
+                </Select>
+
+                <Select
+                  value={filters.ssl_status?.join(',') || ''}
+                  onValueChange={(value) => setFilters({
+                    ...filters,
+                    ssl_status: value ? value.split(',') as SSLStatus[] : undefined
+                  })}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="SSL filter" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">All SSL</SelectItem>
+                    <SelectItem value="active">Active</SelectItem>
+                    <SelectItem value="expiring">Expiring</SelectItem>
+                    <SelectItem value="expired">Expired</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+          </div>
+        </CardHeader>
+
+        <CardContent>
+          {domains.length === 0 ? (
+            <div className="text-center py-8">
+              <Globe className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+              <p className="text-lg font-medium">No custom domains</p>
+              <p className="text-muted-foreground mb-4">
+                Add your first custom domain to get started with white-label branding
+              </p>
+              <Button onClick={handleAddDomain}>
+                <Plus className="h-4 w-4 mr-2" />
+                Add Your First Domain
+              </Button>
+            </div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Domain</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Health</TableHead>
+                  <TableHead>SSL</TableHead>
+                  <TableHead>Response Time</TableHead>
+                  <TableHead>Created</TableHead>
+                  <TableHead className="w-[100px]">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {domains.map((domain) => (
+                  <TableRow 
+                    key={domain.id}
+                    className="cursor-pointer hover:bg-muted/50"
+                    onClick={() => handleDomainClick(domain)}
+                  >
+                    <TableCell>
+                      <div className="flex flex-col">
+                        <span className="font-medium">{domain.full_domain}</span>
+                        {domain.is_primary && (
+                          <Badge variant="secondary" className="w-fit text-xs mt-1">
+                            Primary
+                          </Badge>
+                        )}
+                        {domain.unresolved_alerts_count > 0 && (
+                          <div className="flex items-center gap-1 mt-1">
+                            <AlertTriangle className="h-3 w-3 text-orange-500" />
+                            <span className="text-xs text-orange-600">
+                              {domain.unresolved_alerts_count} alert{domain.unresolved_alerts_count !== 1 ? 's' : ''}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <Badge 
+                        variant="outline" 
+                        className={cn("capitalize", DOMAIN_STATUS_COLORS[domain.status])}
+                      >
+                        {domain.status}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      {domain.health_status ? (
+                        <Badge 
+                          variant="outline" 
+                          className={cn("capitalize", HEALTH_STATUS_COLORS[domain.health_status])}
+                        >
+                          {domain.health_status}
+                        </Badge>
+                      ) : (
+                        <span className="text-muted-foreground">-</span>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex flex-col">
+                        {domain.ssl_expires_at ? (
+                          <>
+                            <Badge variant="outline" className="w-fit mb-1">
+                              Active
+                            </Badge>
+                            {domain.days_until_ssl_expiry !== undefined && (
+                              <span className={cn(
+                                "text-xs",
+                                domain.days_until_ssl_expiry < 30 ? "text-orange-600" : "text-muted-foreground"
+                              )}>
+                                {domain.days_until_ssl_expiry > 0 
+                                  ? `${domain.days_until_ssl_expiry} days left`
+                                  : 'Expired'
+                                }
+                              </span>
+                            )}
+                          </>
+                        ) : (
+                          <Badge variant="outline" className="w-fit">
+                            None
+                          </Badge>
+                        )}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <span className="text-sm">
+                        {formatResponseTime(domain.response_time_ms)}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      <span className="text-sm text-muted-foreground">
+                        {formatDate(domain.created_at)}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-1">
+                        <Button variant="ghost" size="sm" asChild>
+                          <a 
+                            href={`https://${domain.full_domain}`} 
+                            target="_blank" 
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <ExternalLink className="h-4 w-4" />
+                          </a>
+                        </Button>
+                        <Button 
+                          variant="ghost" 
+                          size="sm"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            console.log('Settings clicked for:', domain.id);
+                          }}
+                        >
+                          <Settings className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}

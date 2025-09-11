@@ -1,0 +1,50 @@
+/**
+ * API Gateway Health Endpoint - System health monitoring
+ * WS-250 - Health checks and system status
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { apiRoutingEngine } from '@/lib/services/api-gateway/APIRoutingEngine';
+import { loadBalancingService } from '@/lib/services/api-gateway/LoadBalancingService';
+import { rateLimitingEngine } from '@/lib/services/api-gateway/RateLimitingEngine';
+import { weddingAPIProtection } from '@/lib/services/api-gateway/WeddingAPIProtection';
+
+export async function GET(request: NextRequest) {
+  try {
+    const healthChecks = {
+      timestamp: new Date().toISOString(),
+      status: 'healthy',
+      components: {
+        routing: {
+          status: 'healthy',
+          stats: apiRoutingEngine.getRoutingStats()
+        },
+        loadBalancing: {
+          status: 'healthy',
+          stats: loadBalancingService.getLoadBalancingStats()
+        },
+        rateLimiting: {
+          status: 'healthy',
+          stats: rateLimitingEngine.getRateLimitingStats()
+        },
+        weddingProtection: {
+          status: 'healthy',
+          protectionActive: weddingAPIProtection.getProtectionStatus().saturdayProtectionActive
+        }
+      },
+      uptime: process.uptime(),
+      version: '1.0.0'
+    };
+
+    return NextResponse.json({
+      success: true,
+      data: healthChecks
+    });
+
+  } catch (error) {
+    return NextResponse.json(
+      { success: false, error: 'Health check failed' },
+      { status: 500 }
+    );
+  }
+}

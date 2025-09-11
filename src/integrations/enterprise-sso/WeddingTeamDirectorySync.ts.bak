@@ -1,0 +1,1174 @@
+/**
+ * Wedding Team Directory Synchronization System
+ * 
+ * Specialized directory synchronization service for wedding teams, bridal parties,
+ * and event coordination across multiple platforms and systems. Manages complex
+ * wedding hierarchies, role assignments, and collaborative access across vendors,
+ * venues, and planning platforms.
+ * 
+ * Wedding industry directory scenarios:
+ * - Multi-vendor wedding team coordination (photographer + videographer + planner)
+ * - Bridal party management across planning apps (The Knot, Zola, AllSeated)
+ * - Venue coordination teams (venue manager, coordinator, catering, setup crew)
+ * - Wedding planning platform integrations (HoneyBook + Aisle Planner + Tave)
+ * - Corporate event teams for large wedding venues
+ * - Seasonal staff management for wedding venues and rental companies
+ * - Wedding party apps synchronization (Bach, Wedding Party, Bridebook)
+ * 
+ * @author WedSync Enterprise Team C
+ * @version 1.0.0
+ */
+
+import { createClient } from '@supabase/supabase-js';
+import { Database } from '../../types/database';
+import { DirectorySyncService, DirectorySyncConfig } from './DirectorySyncService';
+import { EnterpriseUserAttributes } from './IdentityProviderConnector';
+
+/**
+ * Wedding team member roles
+ */
+export type WeddingTeamRole = 
+  | 'bride'
+  | 'groom'
+  | 'maid_of_honor'
+  | 'best_man'
+  | 'bridesmaid'
+  | 'groomsman'
+  | 'flower_girl'
+  | 'ring_bearer'
+  | 'mother_of_bride'
+  | 'father_of_bride'
+  | 'mother_of_groom'
+  | 'father_of_groom'
+  | 'wedding_planner'
+  | 'venue_coordinator'
+  | 'photographer'
+  | 'videographer'
+  | 'florist'
+  | 'caterer'
+  | 'dj_band'
+  | 'officiant'
+  | 'baker'
+  | 'transportation'
+  | 'venue_staff'
+  | 'setup_crew'
+  | 'security'
+  | 'guest';
+
+/**
+ * Wedding team member information
+ */
+export interface WeddingTeamMember {
+  memberId: string;
+  weddingId: string;
+  role: WeddingTeamRole;
+  category: 'couple' | 'bridal_party' | 'family' | 'vendor' | 'venue_staff' | 'guest';
+  
+  // Personal information
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone?: string;
+  address?: {
+    street: string;
+    city: string;
+    state: string;
+    zipCode: string;
+    country: string;
+  };
+  
+  // Wedding-specific details
+  isAttendingCeremony: boolean;
+  isAttendingReception: boolean;
+  plusOne?: {
+    name: string;
+    email?: string;
+    phone?: string;
+  };
+  dietaryRestrictions?: string[];
+  accommodationNeeds?: string;
+  
+  // Vendor-specific information
+  businessName?: string;
+  serviceType?: string;
+  contractValue?: number;
+  paymentSchedule?: Array<{
+    dueDate: Date;
+    amount: number;
+    description: string;
+    status: 'pending' | 'paid' | 'overdue';
+  }>;
+  
+  // Access and permissions
+  hasAppAccess: boolean;
+  accessLevel: 'full' | 'limited' | 'view_only' | 'none';
+  permissions: string[];
+  inviteStatus: 'not_sent' | 'sent' | 'accepted' | 'declined' | 'bounced';
+  inviteSentAt?: Date;
+  responseDate?: Date;
+  
+  // Platform synchronization
+  externalIds: Record<string, string>; // platform -> external ID
+  platformProfiles?: Record<string, {
+    profileUrl: string;
+    verified: boolean;
+    lastSync: Date;
+    syncErrors?: string[];
+  }>;
+  
+  // Communication preferences
+  preferredContactMethod: 'email' | 'phone' | 'text' | 'app';
+  notificationSettings: {
+    taskAssignments: boolean;
+    scheduleChanges: boolean;
+    messageUpdates: boolean;
+    photoSharing: boolean;
+    emergencyOnly: boolean;
+  };
+  
+  // Metadata and timeline
+  addedDate: Date;
+  lastActive?: Date;
+  notes?: string;
+  customFields?: Record<string, unknown>;
+}
+
+/**
+ * Wedding team directory configuration
+ */
+export interface WeddingTeamDirectory {
+  directoryId: string;
+  weddingId: string;
+  weddingDate: Date;
+  venueName: string;
+  coupleNames: string;
+  
+  // Directory settings
+  isActive: boolean;
+  accessLevel: 'public' | 'private' | 'vendor_only' | 'family_only';
+  requiresApproval: boolean;
+  autoSyncEnabled: boolean;
+  
+  // Platform integrations
+  connectedPlatforms: Array<{
+    platformId: string;
+    platformName: string;
+    syncType: 'bidirectional' | 'import_only' | 'export_only';
+    lastSyncAt?: Date;
+    syncStatus: 'active' | 'paused' | 'error';
+    syncErrors?: string[];
+  }>;
+  
+  // Team composition
+  totalMembers: number;
+  membersByCategory: Record<string, number>;
+  membersByRole: Record<WeddingTeamRole, number>;
+  
+  // Permissions and access
+  defaultPermissions: string[];
+  rolePermissions: Record<WeddingTeamRole, string[]>;
+  inviteTemplate?: string;
+  
+  // Metadata
+  createdDate: Date;
+  lastModified: Date;
+  createdBy: string;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Platform integration configuration
+ */
+interface PlatformIntegration {
+  platformId: string;
+  platformName: string;
+  platformType: 'planning_app' | 'vendor_management' | 'guest_management' | 'communication' | 'social';
+  
+  // Authentication
+  authMethod: 'oauth2' | 'api_key' | 'webhook' | 'csv_import';
+  credentials: {
+    clientId?: string;
+    clientSecret?: string;
+    apiKey?: string;
+    webhookUrl?: string;
+    webhookSecret?: string;
+  };
+  
+  // Sync configuration
+  syncInterval: 'realtime' | 'hourly' | 'daily' | 'manual';
+  syncDirection: 'bidirectional' | 'import_only' | 'export_only';
+  fieldMapping: Record<string, string>; // platform field -> WedSync field
+  
+  // Platform capabilities
+  supportedFeatures: Array<
+    'member_management' | 'role_assignment' | 'messaging' | 'photo_sharing' | 
+    'task_management' | 'payment_tracking' | 'guest_rsvp' | 'vendor_coordination'
+  >;
+  
+  // Data filtering
+  syncFilters?: {
+    includeRoles?: WeddingTeamRole[];
+    excludeRoles?: WeddingTeamRole[];
+    includeCategories?: string[];
+    excludeCategories?: string[];
+    activeOnly?: boolean;
+  };
+}
+
+/**
+ * Directory synchronization result
+ */
+interface TeamDirectorySyncResult {
+  directoryId: string;
+  platform: string;
+  syncType: 'full' | 'incremental';
+  startTime: Date;
+  endTime: Date;
+  
+  // Results
+  totalProcessed: number;
+  membersAdded: number;
+  membersUpdated: number;
+  membersRemoved: number;
+  conflicts: Array<{
+    memberId: string;
+    conflictType: 'duplicate' | 'role_change' | 'data_mismatch';
+    resolution: 'auto_resolved' | 'manual_required';
+    details: string;
+  }>;
+  
+  // Errors and warnings
+  errors: Array<{
+    memberId?: string;
+    errorType: string;
+    message: string;
+    severity: 'low' | 'medium' | 'high';
+  }>;
+  warnings: string[];
+  
+  // Statistics
+  syncDuration: number;
+  successRate: number;
+  dataQualityScore: number;
+}
+
+/**
+ * Wedding Team Directory Synchronization Service
+ * 
+ * Manages complex wedding team hierarchies and synchronizes member data
+ * across multiple wedding planning and coordination platforms.
+ */
+export class WeddingTeamDirectorySync {
+  private supabase: ReturnType<typeof createClient<Database>>;
+  private directorySyncService: DirectorySyncService;
+  private platformIntegrations: Map<string, PlatformIntegration> = new Map();
+  private teamDirectories: Map<string, WeddingTeamDirectory> = new Map();
+  
+  constructor(
+    supabaseUrl: string,
+    supabaseServiceKey: string,
+    directorySyncService: DirectorySyncService
+  ) {
+    this.supabase = createClient<Database>(supabaseUrl, supabaseServiceKey);
+    this.directorySyncService = directorySyncService;
+    this.loadPlatformIntegrations();
+    this.loadTeamDirectories();
+  }
+
+  /**
+   * Create wedding team directory
+   */
+  async createWeddingTeamDirectory(
+    weddingId: string,
+    directoryData: {
+      weddingDate: Date;
+      venueName: string;
+      coupleNames: string;
+      accessLevel: WeddingTeamDirectory['accessLevel'];
+      requiresApproval?: boolean;
+      autoSyncEnabled?: boolean;
+      defaultPermissions?: string[];
+      createdBy: string;
+    }
+  ): Promise<string> {
+    try {
+      const directoryId = this.generateDirectoryId(weddingId);
+      
+      const directory: WeddingTeamDirectory = {
+        directoryId,
+        weddingId,
+        weddingDate: directoryData.weddingDate,
+        venueName: directoryData.venueName,
+        coupleNames: directoryData.coupleNames,
+        isActive: true,
+        accessLevel: directoryData.accessLevel,
+        requiresApproval: directoryData.requiresApproval || false,
+        autoSyncEnabled: directoryData.autoSyncEnabled || true,
+        connectedPlatforms: [],
+        totalMembers: 0,
+        membersByCategory: {},
+        membersByRole: {} as Record<WeddingTeamRole, number>,
+        defaultPermissions: directoryData.defaultPermissions || ['view_schedule', 'view_contacts'],
+        rolePermissions: this.getDefaultRolePermissions(),
+        createdDate: new Date(),
+        lastModified: new Date(),
+        createdBy: directoryData.createdBy
+      };
+      
+      // Store directory
+      await this.supabase
+        .from('wedding_team_directories')
+        .insert({
+          directory_id: directoryId,
+          wedding_id: weddingId,
+          wedding_date: directory.weddingDate.toISOString().split('T')[0],
+          venue_name: directory.venueName,
+          couple_names: directory.coupleNames,
+          is_active: directory.isActive,
+          access_level: directory.accessLevel,
+          requires_approval: directory.requiresApproval,
+          auto_sync_enabled: directory.autoSyncEnabled,
+          connected_platforms: directory.connectedPlatforms,
+          default_permissions: directory.defaultPermissions,
+          role_permissions: directory.rolePermissions,
+          created_date: directory.createdDate.toISOString(),
+          created_by: directory.createdBy,
+          metadata: directory.metadata || {}
+        });
+      
+      // Cache directory
+      this.teamDirectories.set(directoryId, directory);
+      
+      console.log(`Wedding team directory created: ${directoryId} for wedding ${weddingId}`);
+      
+      return directoryId;
+      
+    } catch (error) {
+      console.error('Failed to create wedding team directory:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Add team member to wedding directory
+   */
+  async addTeamMember(
+    directoryId: string,
+    memberData: Omit<WeddingTeamMember, 'memberId' | 'weddingId' | 'addedDate' | 'externalIds' | 'platformProfiles'>
+  ): Promise<string> {
+    try {
+      const directory = await this.getTeamDirectory(directoryId);
+      if (!directory) {
+        throw new Error('Wedding team directory not found');
+      }
+      
+      const memberId = this.generateMemberId();
+      
+      const member: WeddingTeamMember = {
+        ...memberData,
+        memberId,
+        weddingId: directory.weddingId,
+        addedDate: new Date(),
+        externalIds: {},
+        platformProfiles: {}
+      };
+      
+      // Validate member data
+      this.validateTeamMember(member);
+      
+      // Store member
+      await this.supabase
+        .from('wedding_team_members')
+        .insert({
+          member_id: memberId,
+          directory_id: directoryId,
+          wedding_id: directory.weddingId,
+          role: member.role,
+          category: member.category,
+          first_name: member.firstName,
+          last_name: member.lastName,
+          email: member.email,
+          phone: member.phone,
+          address: member.address,
+          is_attending_ceremony: member.isAttendingCeremony,
+          is_attending_reception: member.isAttendingReception,
+          plus_one: member.plusOne,
+          dietary_restrictions: member.dietaryRestrictions,
+          accommodation_needs: member.accommodationNeeds,
+          business_name: member.businessName,
+          service_type: member.serviceType,
+          contract_value: member.contractValue,
+          payment_schedule: member.paymentSchedule,
+          has_app_access: member.hasAppAccess,
+          access_level: member.accessLevel,
+          permissions: member.permissions,
+          invite_status: member.inviteStatus,
+          preferred_contact_method: member.preferredContactMethod,
+          notification_settings: member.notificationSettings,
+          added_date: member.addedDate.toISOString(),
+          notes: member.notes,
+          custom_fields: member.customFields || {}
+        });
+      
+      // Update directory statistics
+      await this.updateDirectoryStatistics(directoryId);
+      
+      // Send member invitation if configured
+      if (member.hasAppAccess && member.inviteStatus === 'not_sent') {
+        await this.sendMemberInvitation(member, directory);
+      }
+      
+      // Sync to connected platforms if auto-sync is enabled
+      if (directory.autoSyncEnabled) {
+        await this.syncMemberToConnectedPlatforms(directoryId, member);
+      }
+      
+      console.log(`Team member added: ${member.firstName} ${member.lastName} (${memberId})`);
+      
+      return memberId;
+      
+    } catch (error) {
+      console.error('Failed to add team member:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Synchronize wedding team with external platform
+   */
+  async synchronizeWithPlatform(
+    directoryId: string,
+    platformId: string,
+    syncType: 'full' | 'incremental' = 'incremental'
+  ): Promise<TeamDirectorySyncResult> {
+    const startTime = new Date();
+    
+    try {
+      console.log(`Starting ${syncType} sync: directory ${directoryId} with platform ${platformId}`);
+      
+      const directory = await this.getTeamDirectory(directoryId);
+      if (!directory) {
+        throw new Error('Wedding team directory not found');
+      }
+      
+      const platform = this.platformIntegrations.get(platformId);
+      if (!platform) {
+        throw new Error(`Platform integration not found: ${platformId}`);
+      }
+      
+      const result: TeamDirectorySyncResult = {
+        directoryId,
+        platform: platformId,
+        syncType,
+        startTime,
+        endTime: new Date(),
+        totalProcessed: 0,
+        membersAdded: 0,
+        membersUpdated: 0,
+        membersRemoved: 0,
+        conflicts: [],
+        errors: [],
+        warnings: [],
+        syncDuration: 0,
+        successRate: 0,
+        dataQualityScore: 0
+      };
+      
+      // Get platform data based on sync direction
+      let platformMembers: any[] = [];
+      
+      if (platform.syncDirection === 'import_only' || platform.syncDirection === 'bidirectional') {
+        platformMembers = await this.fetchMembersFromPlatform(platform, directory);
+      }
+      
+      // Process platform members
+      for (const platformMember of platformMembers) {
+        try {
+          const mappedMember = this.mapPlatformMemberToWedSync(platformMember, platform);
+          const existingMember = await this.findMemberByExternalId(
+            directoryId,
+            platformId,
+            platformMember.id
+          );
+          
+          if (existingMember) {
+            // Update existing member
+            const conflicts = this.detectMemberConflicts(existingMember, mappedMember);
+            
+            if (conflicts.length > 0) {
+              for (const conflict of conflicts) {
+                result.conflicts.push({
+                  memberId: existingMember.memberId,
+                  conflictType: conflict.type,
+                  resolution: conflict.autoResolve ? 'auto_resolved' : 'manual_required',
+                  details: conflict.description
+                });
+                
+                if (conflict.autoResolve) {
+                  await this.resolveConflict(existingMember.memberId, conflict);
+                }
+              }
+            }
+            
+            if (conflicts.every(c => c.autoResolve)) {
+              await this.updateTeamMember(existingMember.memberId, mappedMember);
+              result.membersUpdated++;
+            }
+            
+          } else {
+            // Add new member
+            const newMemberId = await this.addTeamMember(directoryId, mappedMember);
+            await this.linkMemberToExternalId(newMemberId, platformId, platformMember.id);
+            result.membersAdded++;
+          }
+          
+          result.totalProcessed++;
+          
+        } catch (error) {
+          result.errors.push({
+            memberId: platformMember.id,
+            errorType: 'processing_error',
+            message: error instanceof Error ? error.message : 'Unknown error',
+            severity: 'medium'
+          });
+        }
+      }
+      
+      // Export members to platform if bidirectional
+      if (platform.syncDirection === 'export_only' || platform.syncDirection === 'bidirectional') {
+        await this.exportMembersToExternalPlatform(directoryId, platform, result);
+      }
+      
+      // Calculate results
+      const endTime = new Date();
+      result.endTime = endTime;
+      result.syncDuration = endTime.getTime() - startTime.getTime();
+      result.successRate = result.totalProcessed > 0 
+        ? ((result.totalProcessed - result.errors.length) / result.totalProcessed) * 100 
+        : 100;
+      result.dataQualityScore = this.calculateDataQualityScore(result);
+      
+      // Store sync result
+      await this.storeSyncResult(result);
+      
+      // Update platform sync status
+      await this.updatePlatformSyncStatus(directoryId, platformId, result);
+      
+      console.log(`Sync completed: ${result.totalProcessed} processed, ${result.membersAdded} added, ${result.membersUpdated} updated`);
+      
+      return result;
+      
+    } catch (error) {
+      console.error(`Platform sync failed:`, error);
+      
+      const failedResult: TeamDirectorySyncResult = {
+        directoryId,
+        platform: platformId,
+        syncType,
+        startTime,
+        endTime: new Date(),
+        totalProcessed: 0,
+        membersAdded: 0,
+        membersUpdated: 0,
+        membersRemoved: 0,
+        conflicts: [],
+        errors: [{
+          errorType: 'sync_error',
+          message: error instanceof Error ? error.message : 'Sync failed',
+          severity: 'high'
+        }],
+        warnings: [],
+        syncDuration: new Date().getTime() - startTime.getTime(),
+        successRate: 0,
+        dataQualityScore: 0
+      };
+      
+      await this.storeSyncResult(failedResult);
+      return failedResult;
+    }
+  }
+
+  /**
+   * Configure platform integration for wedding team directory
+   */
+  async configurePlatformIntegration(
+    directoryId: string,
+    platformId: string,
+    config: {
+      syncType: 'bidirectional' | 'import_only' | 'export_only';
+      syncInterval?: 'realtime' | 'hourly' | 'daily' | 'manual';
+      fieldMapping?: Record<string, string>;
+      syncFilters?: PlatformIntegration['syncFilters'];
+    }
+  ): Promise<void> {
+    try {
+      const directory = await this.getTeamDirectory(directoryId);
+      if (!directory) {
+        throw new Error('Wedding team directory not found');
+      }
+      
+      const platform = this.platformIntegrations.get(platformId);
+      if (!platform) {
+        throw new Error(`Platform integration not available: ${platformId}`);
+      }
+      
+      // Test platform connection
+      await this.testPlatformConnection(platform);
+      
+      // Update directory's connected platforms
+      const existingPlatformIndex = directory.connectedPlatforms.findIndex(
+        p => p.platformId === platformId
+      );
+      
+      const platformConnection = {
+        platformId,
+        platformName: platform.platformName,
+        syncType: config.syncType,
+        lastSyncAt: undefined,
+        syncStatus: 'active' as const
+      };
+      
+      if (existingPlatformIndex >= 0) {
+        directory.connectedPlatforms[existingPlatformIndex] = platformConnection;
+      } else {
+        directory.connectedPlatforms.push(platformConnection);
+      }
+      
+      // Update database
+      await this.supabase
+        .from('wedding_team_directories')
+        .update({
+          connected_platforms: directory.connectedPlatforms,
+          last_modified: new Date().toISOString()
+        })
+        .eq('directory_id', directoryId);
+      
+      // Store platform-specific configuration
+      await this.supabase
+        .from('directory_platform_configs')
+        .upsert({
+          directory_id: directoryId,
+          platform_id: platformId,
+          sync_type: config.syncType,
+          sync_interval: config.syncInterval || 'daily',
+          field_mapping: config.fieldMapping || platform.fieldMapping,
+          sync_filters: config.syncFilters || {},
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        });
+      
+      console.log(`Platform integration configured: ${platform.platformName} for directory ${directoryId}`);
+      
+    } catch (error) {
+      console.error('Failed to configure platform integration:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get wedding team directory with member statistics
+   */
+  async getTeamDirectoryWithStats(directoryId: string): Promise<{
+    directory: WeddingTeamDirectory;
+    members: WeddingTeamMember[];
+    statistics: {
+      totalMembers: number;
+      membersByRole: Record<WeddingTeamRole, number>;
+      membersByCategory: Record<string, number>;
+      rsvpStatus: {
+        ceremony: { attending: number; notAttending: number; pending: number };
+        reception: { attending: number; notAttending: number; pending: number };
+      };
+      inviteStatus: Record<string, number>;
+      platformSyncStatus: Record<string, { lastSync: Date; errors: number }>;
+    };
+  } | null> {
+    try {
+      const directory = await this.getTeamDirectory(directoryId);
+      if (!directory) return null;
+      
+      // Get all members
+      const { data: membersData } = await this.supabase
+        .from('wedding_team_members')
+        .select('*')
+        .eq('directory_id', directoryId)
+        .order('added_date', { ascending: true });
+      
+      const members = membersData?.map(this.transformMemberData) || [];
+      
+      // Calculate statistics
+      const statistics = this.calculateDirectoryStatistics(members);
+      
+      return {
+        directory,
+        members,
+        statistics
+      };
+      
+    } catch (error) {
+      console.error('Failed to get team directory with stats:', error);
+      return null;
+    }
+  }
+
+  // Private helper methods
+  private generateDirectoryId(weddingId: string): string {
+    return `dir_${weddingId}_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+  }
+
+  private generateMemberId(): string {
+    return `member_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+  }
+
+  private getDefaultRolePermissions(): Record<WeddingTeamRole, string[]> {
+    // Simplified role permissions - would be more comprehensive in production
+    const defaultPermissions = ['view_schedule', 'view_contacts'];
+    const vendorPermissions = [...defaultPermissions, 'edit_profile', 'manage_bookings'];
+    const plannerPermissions = [...vendorPermissions, 'manage_team', 'full_access'];
+    
+    const rolePermissions: Record<WeddingTeamRole, string[]> = {} as Record<WeddingTeamRole, string[]>;
+    
+    // Set default permissions for all roles
+    Object.values(['bride', 'groom', 'maid_of_honor', 'best_man'] as WeddingTeamRole[]).forEach(role => {
+      rolePermissions[role] = plannerPermissions;
+    });
+    
+    // Vendor roles get vendor permissions
+    Object.values(['photographer', 'videographer', 'florist', 'caterer', 'dj_band'] as WeddingTeamRole[]).forEach(role => {
+      rolePermissions[role] = vendorPermissions;
+    });
+    
+    return rolePermissions;
+  }
+
+  private validateTeamMember(member: WeddingTeamMember): void {
+    if (!member.firstName || !member.lastName || !member.email) {
+      throw new Error('First name, last name, and email are required');
+    }
+    
+    if (!member.role || !member.category) {
+      throw new Error('Role and category are required');
+    }
+    
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(member.email)) {
+      throw new Error('Invalid email format');
+    }
+  }
+
+  private async loadPlatformIntegrations(): Promise<void> {
+    try {
+      const { data: integrations } = await this.supabase
+        .from('platform_integrations')
+        .select('*')
+        .eq('is_active', true);
+      
+      if (integrations) {
+        for (const integration of integrations) {
+          this.platformIntegrations.set(integration.platform_id, {
+            platformId: integration.platform_id,
+            platformName: integration.platform_name,
+            platformType: integration.platform_type,
+            authMethod: integration.auth_method,
+            credentials: integration.credentials,
+            syncInterval: integration.sync_interval,
+            syncDirection: integration.sync_direction,
+            fieldMapping: integration.field_mapping,
+            supportedFeatures: integration.supported_features,
+            syncFilters: integration.sync_filters
+          });
+        }
+      }
+      
+      console.log(`Loaded ${this.platformIntegrations.size} platform integrations`);
+      
+    } catch (error) {
+      console.error('Failed to load platform integrations:', error);
+    }
+  }
+
+  private async loadTeamDirectories(): Promise<void> {
+    try {
+      const { data: directories } = await this.supabase
+        .from('wedding_team_directories')
+        .select('*')
+        .eq('is_active', true);
+      
+      if (directories) {
+        for (const dir of directories) {
+          this.teamDirectories.set(dir.directory_id, this.transformDirectoryData(dir));
+        }
+      }
+      
+      console.log(`Loaded ${this.teamDirectories.size} wedding team directories`);
+      
+    } catch (error) {
+      console.error('Failed to load team directories:', error);
+    }
+  }
+
+  private transformDirectoryData(data: any): WeddingTeamDirectory {
+    return {
+      directoryId: data.directory_id,
+      weddingId: data.wedding_id,
+      weddingDate: new Date(data.wedding_date),
+      venueName: data.venue_name,
+      coupleNames: data.couple_names,
+      isActive: data.is_active,
+      accessLevel: data.access_level,
+      requiresApproval: data.requires_approval,
+      autoSyncEnabled: data.auto_sync_enabled,
+      connectedPlatforms: data.connected_platforms || [],
+      totalMembers: data.total_members || 0,
+      membersByCategory: data.members_by_category || {},
+      membersByRole: data.members_by_role || {},
+      defaultPermissions: data.default_permissions || [],
+      rolePermissions: data.role_permissions || {},
+      inviteTemplate: data.invite_template,
+      createdDate: new Date(data.created_date),
+      lastModified: new Date(data.last_modified),
+      createdBy: data.created_by,
+      metadata: data.metadata || {}
+    };
+  }
+
+  private transformMemberData(data: any): WeddingTeamMember {
+    return {
+      memberId: data.member_id,
+      weddingId: data.wedding_id,
+      role: data.role,
+      category: data.category,
+      firstName: data.first_name,
+      lastName: data.last_name,
+      email: data.email,
+      phone: data.phone,
+      address: data.address,
+      isAttendingCeremony: data.is_attending_ceremony,
+      isAttendingReception: data.is_attending_reception,
+      plusOne: data.plus_one,
+      dietaryRestrictions: data.dietary_restrictions,
+      accommodationNeeds: data.accommodation_needs,
+      businessName: data.business_name,
+      serviceType: data.service_type,
+      contractValue: data.contract_value,
+      paymentSchedule: data.payment_schedule,
+      hasAppAccess: data.has_app_access,
+      accessLevel: data.access_level,
+      permissions: data.permissions || [],
+      inviteStatus: data.invite_status,
+      inviteSentAt: data.invite_sent_at ? new Date(data.invite_sent_at) : undefined,
+      responseDate: data.response_date ? new Date(data.response_date) : undefined,
+      externalIds: data.external_ids || {},
+      platformProfiles: data.platform_profiles || {},
+      preferredContactMethod: data.preferred_contact_method,
+      notificationSettings: data.notification_settings || {},
+      addedDate: new Date(data.added_date),
+      lastActive: data.last_active ? new Date(data.last_active) : undefined,
+      notes: data.notes,
+      customFields: data.custom_fields || {}
+    };
+  }
+
+  private async getTeamDirectory(directoryId: string): Promise<WeddingTeamDirectory | null> {
+    const cached = this.teamDirectories.get(directoryId);
+    if (cached) return cached;
+    
+    const { data } = await this.supabase
+      .from('wedding_team_directories')
+      .select('*')
+      .eq('directory_id', directoryId)
+      .single();
+    
+    if (!data) return null;
+    
+    const directory = this.transformDirectoryData(data);
+    this.teamDirectories.set(directoryId, directory);
+    return directory;
+  }
+
+  // Platform integration helper methods (simplified implementations)
+  private async testPlatformConnection(platform: PlatformIntegration): Promise<void> {
+    console.log(`Testing connection to platform: ${platform.platformName}`);
+    // Implementation would test actual platform connectivity
+  }
+
+  private async fetchMembersFromPlatform(
+    platform: PlatformIntegration,
+    directory: WeddingTeamDirectory
+  ): Promise<any[]> {
+    // Implementation would fetch data from platform API
+    console.log(`Fetching members from ${platform.platformName}`);
+    return [];
+  }
+
+  private mapPlatformMemberToWedSync(
+    platformMember: any,
+    platform: PlatformIntegration
+  ): Omit<WeddingTeamMember, 'memberId' | 'weddingId' | 'addedDate' | 'externalIds' | 'platformProfiles'> {
+    // Implementation would map platform data to WedSync format
+    const mapped: Omit<WeddingTeamMember, 'memberId' | 'weddingId' | 'addedDate' | 'externalIds' | 'platformProfiles'> = {
+      firstName: platformMember.firstName,
+      lastName: platformMember.lastName,
+      email: platformMember.email,
+      role: platformMember.role || 'guest',
+      category: 'guest',
+      isAttendingCeremony: true,
+      isAttendingReception: true,
+      hasAppAccess: false,
+      accessLevel: 'view_only',
+      permissions: [],
+      inviteStatus: 'not_sent',
+      preferredContactMethod: 'email',
+      notificationSettings: {
+        taskAssignments: false,
+        scheduleChanges: false,
+        messageUpdates: false,
+        photoSharing: false,
+        emergencyOnly: true
+      }
+    };
+    
+    return mapped;
+  }
+
+  private async findMemberByExternalId(
+    directoryId: string,
+    platformId: string,
+    externalId: string
+  ): Promise<WeddingTeamMember | null> {
+    const { data } = await this.supabase
+      .from('wedding_team_members')
+      .select('*')
+      .eq('directory_id', directoryId)
+      .contains('external_ids', { [platformId]: externalId })
+      .single();
+    
+    return data ? this.transformMemberData(data) : null;
+  }
+
+  private detectMemberConflicts(
+    existing: WeddingTeamMember,
+    incoming: Partial<WeddingTeamMember>
+  ): Array<{
+    type: 'duplicate' | 'role_change' | 'data_mismatch';
+    description: string;
+    autoResolve: boolean;
+  }> {
+    const conflicts = [];
+    
+    if (existing.role !== incoming.role) {
+      conflicts.push({
+        type: 'role_change' as const,
+        description: `Role changed from ${existing.role} to ${incoming.role}`,
+        autoResolve: true
+      });
+    }
+    
+    if (existing.email !== incoming.email) {
+      conflicts.push({
+        type: 'data_mismatch' as const,
+        description: `Email mismatch: ${existing.email} vs ${incoming.email}`,
+        autoResolve: false
+      });
+    }
+    
+    return conflicts;
+  }
+
+  private async resolveConflict(
+    memberId: string,
+    conflict: any
+  ): Promise<void> {
+    console.log(`Resolving conflict for member ${memberId}: ${conflict.description}`);
+  }
+
+  private async updateTeamMember(
+    memberId: string,
+    updates: Partial<WeddingTeamMember>
+  ): Promise<void> {
+    await this.supabase
+      .from('wedding_team_members')
+      .update({
+        first_name: updates.firstName,
+        last_name: updates.lastName,
+        email: updates.email,
+        phone: updates.phone,
+        role: updates.role,
+        // ... other fields
+        updated_at: new Date().toISOString()
+      })
+      .eq('member_id', memberId);
+  }
+
+  private async linkMemberToExternalId(
+    memberId: string,
+    platformId: string,
+    externalId: string
+  ): Promise<void> {
+    const { data: member } = await this.supabase
+      .from('wedding_team_members')
+      .select('external_ids')
+      .eq('member_id', memberId)
+      .single();
+    
+    const externalIds = member?.external_ids || {};
+    externalIds[platformId] = externalId;
+    
+    await this.supabase
+      .from('wedding_team_members')
+      .update({ external_ids: externalIds })
+      .eq('member_id', memberId);
+  }
+
+  private async exportMembersToExternalPlatform(
+    directoryId: string,
+    platform: PlatformIntegration,
+    result: TeamDirectorySyncResult
+  ): Promise<void> {
+    console.log(`Exporting members to ${platform.platformName}`);
+    // Implementation would export data to platform
+  }
+
+  private calculateDataQualityScore(result: TeamDirectorySyncResult): number {
+    // Simplified quality scoring
+    const errorWeight = 0.7;
+    const conflictWeight = 0.3;
+    
+    const errorScore = result.totalProcessed > 0 
+      ? Math.max(0, 100 - (result.errors.length / result.totalProcessed) * 100 * errorWeight)
+      : 100;
+      
+    const conflictScore = result.totalProcessed > 0
+      ? Math.max(0, 100 - (result.conflicts.length / result.totalProcessed) * 100 * conflictWeight)
+      : 100;
+    
+    return Math.round((errorScore + conflictScore) / 2);
+  }
+
+  private async storeSyncResult(result: TeamDirectorySyncResult): Promise<void> {
+    await this.supabase
+      .from('team_directory_sync_results')
+      .insert({
+        directory_id: result.directoryId,
+        platform: result.platform,
+        sync_type: result.syncType,
+        start_time: result.startTime.toISOString(),
+        end_time: result.endTime.toISOString(),
+        total_processed: result.totalProcessed,
+        members_added: result.membersAdded,
+        members_updated: result.membersUpdated,
+        members_removed: result.membersRemoved,
+        conflicts: result.conflicts,
+        errors: result.errors,
+        warnings: result.warnings,
+        sync_duration: result.syncDuration,
+        success_rate: result.successRate,
+        data_quality_score: result.dataQualityScore
+      });
+  }
+
+  private async updatePlatformSyncStatus(
+    directoryId: string,
+    platformId: string,
+    result: TeamDirectorySyncResult
+  ): Promise<void> {
+    const directory = this.teamDirectories.get(directoryId);
+    if (!directory) return;
+    
+    const platformIndex = directory.connectedPlatforms.findIndex(
+      p => p.platformId === platformId
+    );
+    
+    if (platformIndex >= 0) {
+      directory.connectedPlatforms[platformIndex].lastSyncAt = result.endTime;
+      directory.connectedPlatforms[platformIndex].syncStatus = 
+        result.errors.length > 0 ? 'error' : 'active';
+      directory.connectedPlatforms[platformIndex].syncErrors = 
+        result.errors.map(e => e.message);
+      
+      await this.supabase
+        .from('wedding_team_directories')
+        .update({ connected_platforms: directory.connectedPlatforms })
+        .eq('directory_id', directoryId);
+    }
+  }
+
+  private async updateDirectoryStatistics(directoryId: string): Promise<void> {
+    const { data: members } = await this.supabase
+      .from('wedding_team_members')
+      .select('role, category')
+      .eq('directory_id', directoryId);
+    
+    if (members) {
+      const membersByRole = {} as Record<WeddingTeamRole, number>;
+      const membersByCategory = {} as Record<string, number>;
+      
+      for (const member of members) {
+        membersByRole[member.role as WeddingTeamRole] = 
+          (membersByRole[member.role as WeddingTeamRole] || 0) + 1;
+        membersByCategory[member.category] = 
+          (membersByCategory[member.category] || 0) + 1;
+      }
+      
+      await this.supabase
+        .from('wedding_team_directories')
+        .update({
+          total_members: members.length,
+          members_by_role: membersByRole,
+          members_by_category: membersByCategory,
+          last_modified: new Date().toISOString()
+        })
+        .eq('directory_id', directoryId);
+    }
+  }
+
+  private calculateDirectoryStatistics(members: WeddingTeamMember[]): any {
+    const stats = {
+      totalMembers: members.length,
+      membersByRole: {} as Record<WeddingTeamRole, number>,
+      membersByCategory: {} as Record<string, number>,
+      rsvpStatus: {
+        ceremony: { attending: 0, notAttending: 0, pending: 0 },
+        reception: { attending: 0, notAttending: 0, pending: 0 }
+      },
+      inviteStatus: {} as Record<string, number>,
+      platformSyncStatus: {} as Record<string, { lastSync: Date; errors: number }>
+    };
+    
+    for (const member of members) {
+      // Count by role
+      stats.membersByRole[member.role] = (stats.membersByRole[member.role] || 0) + 1;
+      
+      // Count by category
+      stats.membersByCategory[member.category] = (stats.membersByCategory[member.category] || 0) + 1;
+      
+      // RSVP status
+      if (member.isAttendingCeremony) {
+        stats.rsvpStatus.ceremony.attending++;
+      }
+      if (member.isAttendingReception) {
+        stats.rsvpStatus.reception.attending++;
+      }
+      
+      // Invite status
+      stats.inviteStatus[member.inviteStatus] = (stats.inviteStatus[member.inviteStatus] || 0) + 1;
+    }
+    
+    return stats;
+  }
+
+  private async sendMemberInvitation(
+    member: WeddingTeamMember,
+    directory: WeddingTeamDirectory
+  ): Promise<void> {
+    console.log(`Sending invitation to ${member.firstName} ${member.lastName} for wedding ${directory.weddingId}`);
+  }
+
+  private async syncMemberToConnectedPlatforms(
+    directoryId: string,
+    member: WeddingTeamMember
+  ): Promise<void> {
+    console.log(`Syncing member ${member.firstName} ${member.lastName} to connected platforms`);
+  }
+}

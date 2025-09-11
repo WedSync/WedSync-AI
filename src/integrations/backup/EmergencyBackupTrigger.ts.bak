@@ -1,0 +1,351 @@
+/**
+ * EmergencyBackupTrigger.ts
+ * WS-249: Emergency Backup Trigger System
+ * 
+ * Handles crisis-triggered backup activations for wedding emergencies
+ * Monitors system health and triggers automated backups
+ */
+
+export enum EmergencyType {
+  WEDDING_DAY_FAILURE = 'wedding_day_failure',
+  SYSTEM_OUTAGE = 'system_outage',
+  DATA_CORRUPTION = 'data_corruption',
+  VENDOR_EMERGENCY = 'vendor_emergency',
+  VENUE_CONNECTIVITY_LOSS = 'venue_connectivity_loss',
+  CRITICAL_ERROR = 'critical_error'
+}
+
+export interface EmergencyTrigger {
+  trigger_id: string;
+  emergency_type: EmergencyType;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  organization_id: string;
+  wedding_id?: string;
+  trigger_conditions: TriggerCondition[];
+  backup_actions: BackupAction[];
+  notification_channels: string[];
+}
+
+export interface TriggerCondition {
+  condition_type: 'response_time' | 'error_rate' | 'system_health' | 'manual';
+  threshold: number;
+  duration_seconds: number;
+  check_interval_seconds: number;
+}
+
+export interface BackupAction {
+  action_type: 'immediate_backup' | 'full_system_backup' | 'priority_data_backup';
+  data_types: string[];
+  destinations: string[];
+  max_execution_time_minutes: number;
+}
+
+export interface EmergencyBackupResult {
+  success: boolean;
+  trigger_id: string;
+  backup_id: string;
+  actions_executed: number;
+  execution_time_ms: number;
+  wedding_impact_assessment: WeddingImpact;
+}
+
+export interface WeddingImpact {
+  active_weddings_affected: number;
+  critical_systems_impacted: string[];
+  vendor_notifications_sent: number;
+  estimated_resolution_minutes: number;
+}
+
+export class EmergencyBackupTrigger {
+  private activeTriggers = new Map<string, EmergencyTrigger>();
+  private monitoringInterval: NodeJS.Timeout | null = null;
+
+  constructor() {
+    this.startMonitoring();
+  }
+
+  async createEmergencyTrigger(trigger: EmergencyTrigger): Promise<string> {
+    const triggerId = `emergency-${trigger.emergency_type}-${Date.now()}`;
+    
+    const emergencyTrigger = {
+      ...trigger,
+      trigger_id: triggerId
+    };
+    
+    this.activeTriggers.set(triggerId, emergencyTrigger);
+    
+    // Log trigger creation
+    console.log(`Emergency trigger created: ${triggerId} for ${trigger.emergency_type}`);
+    
+    return triggerId;
+  }
+
+  async activateEmergencyBackup(
+    emergencyType: EmergencyType,
+    organizationId: string,
+    weddingId?: string,
+    severity: 'low' | 'medium' | 'high' | 'critical' = 'high'
+  ): Promise<EmergencyBackupResult> {
+    const startTime = Date.now();
+    const triggerId = `activated-${emergencyType}-${Date.now()}`;
+    const backupId = `emergency-backup-${triggerId}`;
+    
+    try {
+      console.log(`🚨 EMERGENCY BACKUP ACTIVATED: ${emergencyType}`);
+      
+      // Assess wedding impact immediately
+      const weddingImpact = await this.assessWeddingImpact(organizationId, weddingId);
+      
+      // Determine backup actions based on emergency type and severity
+      const actions = this.determineBackupActions(emergencyType, severity, weddingImpact);
+      
+      // Execute backup actions in priority order
+      let executedActions = 0;
+      for (const action of actions) {
+        await this.executeBackupAction(action, organizationId);
+        executedActions++;
+      }
+      
+      // Send emergency notifications
+      await this.sendEmergencyNotifications(emergencyType, organizationId, weddingImpact);
+      
+      return {
+        success: true,
+        trigger_id: triggerId,
+        backup_id: backupId,
+        actions_executed: executedActions,
+        execution_time_ms: Date.now() - startTime,
+        wedding_impact_assessment: weddingImpact
+      };
+      
+    } catch (error) {
+      console.error('Emergency backup activation failed:', error);
+      throw new Error(`Emergency backup failed: ${error.message}`);
+    }
+  }
+
+  private async assessWeddingImpact(
+    organizationId: string,
+    weddingId?: string
+  ): Promise<WeddingImpact> {
+    // Check for active weddings today
+    const today = new Date();
+    const isWeekend = today.getDay() === 0 || today.getDay() === 6; // Sunday or Saturday
+    
+    // Mock assessment - would query actual wedding data
+    const activeWeddings = isWeekend ? 3 : 0;
+    const criticalSystems = ['photo_galleries', 'vendor_communications', 'payment_processing'];
+    
+    return {
+      active_weddings_affected: activeWeddings,
+      critical_systems_impacted: criticalSystems,
+      vendor_notifications_sent: 0, // Will be updated after notifications
+      estimated_resolution_minutes: this.calculateResolutionTime(activeWeddings)
+    };
+  }
+
+  private determineBackupActions(
+    emergencyType: EmergencyType,
+    severity: 'low' | 'medium' | 'high' | 'critical',
+    impact: WeddingImpact
+  ): BackupAction[] {
+    const actions: BackupAction[] = [];
+    
+    // Always prioritize wedding-critical data
+    if (impact.active_weddings_affected > 0) {
+      actions.push({
+        action_type: 'priority_data_backup',
+        data_types: ['wedding_photos', 'vendor_schedules', 'client_communications'],
+        destinations: ['local', 'aws', 'azure'],
+        max_execution_time_minutes: 15 // Wedding day SLA
+      });
+    }
+    
+    // Add additional actions based on emergency type
+    switch (emergencyType) {
+      case EmergencyType.WEDDING_DAY_FAILURE:
+        actions.push({
+          action_type: 'immediate_backup',
+          data_types: ['all_wedding_data'],
+          destinations: ['all_available'],
+          max_execution_time_minutes: 10
+        });
+        break;
+        
+      case EmergencyType.SYSTEM_OUTAGE:
+        actions.push({
+          action_type: 'full_system_backup',
+          data_types: ['all_data'],
+          destinations: ['primary_backup', 'secondary_backup'],
+          max_execution_time_minutes: 60
+        });
+        break;
+        
+      case EmergencyType.DATA_CORRUPTION:
+        actions.push({
+          action_type: 'priority_data_backup',
+          data_types: ['uncorrupted_data'],
+          destinations: ['verified_backups'],
+          max_execution_time_minutes: 30
+        });
+        break;
+    }
+    
+    return actions;
+  }
+
+  private async executeBackupAction(action: BackupAction, organizationId: string): Promise<void> {
+    console.log(`Executing backup action: ${action.action_type}`);
+    
+    // Mock execution - would trigger actual backup systems
+    switch (action.action_type) {
+      case 'immediate_backup':
+        await this.triggerImmediateBackup(organizationId, action);
+        break;
+      case 'full_system_backup':
+        await this.triggerFullSystemBackup(organizationId, action);
+        break;
+      case 'priority_data_backup':
+        await this.triggerPriorityDataBackup(organizationId, action);
+        break;
+    }
+  }
+
+  private async triggerImmediateBackup(organizationId: string, action: BackupAction): Promise<void> {
+    // Mock immediate backup trigger
+    console.log(`Immediate backup triggered for organization ${organizationId}`);
+  }
+
+  private async triggerFullSystemBackup(organizationId: string, action: BackupAction): Promise<void> {
+    // Mock full system backup trigger
+    console.log(`Full system backup triggered for organization ${organizationId}`);
+  }
+
+  private async triggerPriorityDataBackup(organizationId: string, action: BackupAction): Promise<void> {
+    // Mock priority data backup trigger
+    console.log(`Priority data backup triggered for organization ${organizationId}`);
+  }
+
+  private async sendEmergencyNotifications(
+    emergencyType: EmergencyType,
+    organizationId: string,
+    impact: WeddingImpact
+  ): Promise<void> {
+    const urgencyLevel = impact.active_weddings_affected > 0 ? 'CRITICAL' : 'HIGH';
+    
+    console.log(`📧 Sending ${urgencyLevel} emergency notifications`);
+    
+    // Mock notification sending
+    impact.vendor_notifications_sent = impact.active_weddings_affected * 3; // Estimate 3 vendors per wedding
+  }
+
+  private calculateResolutionTime(activeWeddings: number): number {
+    // Base resolution time + additional time per active wedding
+    const baseTime = 30; // 30 minutes base
+    const perWeddingTime = 15; // 15 minutes per wedding
+    
+    return baseTime + (activeWeddings * perWeddingTime);
+  }
+
+  private startMonitoring(): void {
+    // Monitor system health every 30 seconds
+    this.monitoringInterval = setInterval(async () => {
+      await this.checkEmergencyConditions();
+    }, 30000);
+  }
+
+  private async checkEmergencyConditions(): Promise<void> {
+    // Check all active triggers for condition matches
+    for (const [triggerId, trigger] of this.activeTriggers.entries()) {
+      const shouldTrigger = await this.evaluateTriggerConditions(trigger);
+      
+      if (shouldTrigger) {
+        console.log(`🚨 Emergency conditions met for trigger: ${triggerId}`);
+        
+        await this.activateEmergencyBackup(
+          trigger.emergency_type,
+          trigger.organization_id,
+          trigger.wedding_id,
+          trigger.severity
+        );
+        
+        // Remove trigger after activation (single-use)
+        this.activeTriggers.delete(triggerId);
+      }
+    }
+  }
+
+  private async evaluateTriggerConditions(trigger: EmergencyTrigger): Promise<boolean> {
+    // Mock condition evaluation - would check actual system metrics
+    for (const condition of trigger.trigger_conditions) {
+      switch (condition.condition_type) {
+        case 'response_time':
+          const responseTime = await this.getAverageResponseTime();
+          if (responseTime > condition.threshold) return true;
+          break;
+          
+        case 'error_rate':
+          const errorRate = await this.getErrorRate();
+          if (errorRate > condition.threshold) return true;
+          break;
+          
+        case 'system_health':
+          const healthScore = await this.getSystemHealthScore();
+          if (healthScore < condition.threshold) return true;
+          break;
+          
+        case 'manual':
+          // Manual triggers are activated externally
+          return false;
+      }
+    }
+    
+    return false;
+  }
+
+  // Mock monitoring methods - would integrate with actual monitoring systems
+  private async getAverageResponseTime(): Promise<number> {
+    return Math.random() * 1000 + 200; // 200-1200ms
+  }
+
+  private async getErrorRate(): Promise<number> {
+    return Math.random() * 5; // 0-5% error rate
+  }
+
+  private async getSystemHealthScore(): Promise<number> {
+    return Math.random() * 30 + 70; // 70-100 health score
+  }
+
+  async getEmergencyStatus(): Promise<{
+    active_triggers: number;
+    last_emergency: Date | null;
+    wedding_day_mode: boolean;
+    system_health_score: number;
+  }> {
+    const today = new Date();
+    const isWeekend = today.getDay() === 0 || today.getDay() === 6;
+    
+    return {
+      active_triggers: this.activeTriggers.size,
+      last_emergency: null, // Would track last emergency
+      wedding_day_mode: isWeekend,
+      system_health_score: await this.getSystemHealthScore()
+    };
+  }
+
+  async deactivateTrigger(triggerId: string): Promise<boolean> {
+    const deleted = this.activeTriggers.delete(triggerId);
+    console.log(`Emergency trigger ${triggerId} ${deleted ? 'deactivated' : 'not found'}`);
+    return deleted;
+  }
+
+  destroy(): void {
+    if (this.monitoringInterval) {
+      clearInterval(this.monitoringInterval);
+      this.monitoringInterval = null;
+    }
+    this.activeTriggers.clear();
+  }
+}
+
+export default EmergencyBackupTrigger;

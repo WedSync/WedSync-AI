@@ -1,0 +1,66 @@
+{
+  "name": "@wedsync/performance-tests",
+  "version": "1.0.0",
+  "description": "WedSync Performance Testing Framework for WS-257 Cloud Infrastructure Management",
+  "private": true,
+  "scripts": {
+    "test:performance": "tsx runner/performance-test-runner.ts",
+    "test:performance:wedding": "playwright test scenarios/wedding-day-load.test.ts",
+    "test:performance:mobile": "playwright test scenarios/mobile-performance.test.ts",
+    "test:performance:api": "playwright test scenarios/api-performance.test.ts",
+    "test:performance:all": "npm run test:performance -- --suites=wedding-day-load,mobile-performance,api-performance",
+    "test:performance:parallel": "npm run test:performance -- --parallel=true",
+    "test:performance:staging": "npm run test:performance -- --environment=staging",
+    "test:performance:production": "npm run test:performance -- --environment=production",
+    "test:performance:quick": "npm run test:performance -- --suites=api-performance",
+    "test:performance:wedding-day": "npm run test:performance -- --suites=wedding-day-load --environment=production",
+    "test:performance:regression": "tsx scripts/regression-check.ts",
+    "test:performance:trend": "tsx scripts/trend-analysis.ts",
+    "test:performance:setup": "npm run db:test:setup && npm run services:check",
+    "test:performance:cleanup": "tsx scripts/cleanup.ts",
+    "performance:monitor": "tsx scripts/continuous-monitoring.ts",
+    "performance:baseline": "tsx scripts/create-baseline.ts",
+    "performance:report": "tsx scripts/generate-report.ts",
+    "performance:dashboard": "tsx scripts/update-dashboard.ts"
+  },
+  "dependencies": {
+    "@playwright/test": "^1.40.0",
+    "tsx": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "config": {
+    "performance": {
+      "defaultEnvironment": "local",
+      "defaultSuites": ["wedding-day-load", "mobile-performance", "api-performance"],
+      "reportFormats": ["json", "html"],
+      "parallel": true,
+      "maxConcurrency": 4,
+      "timeout": 600000,
+      "retries": 1,
+      "thresholds": {
+        "dashboardLoading": 2000,
+        "realTimeUpdates": 500,
+        "mobileTouch": 100,
+        "apiResponse": 200,
+        "cacheHitRate": 90,
+        "uptime": 100,
+        "bundleSize": 250,
+        "errorRate": 1.0
+      }
+    }
+  },
+  "keywords": [
+    "performance",
+    "testing",
+    "wedding",
+    "wedsync",
+    "load-testing",
+    "mobile-performance",
+    "api-testing",
+    "playwright",
+    "ci-cd"
+  ]
+}

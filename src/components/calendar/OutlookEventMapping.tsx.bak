@@ -1,0 +1,480 @@
+/**
+ * Outlook Event Mapping Component
+ * Event mapping configuration and conflict resolution interface
+ * 
+ * Features:
+ * - Event mapping configuration between WedSync and Outlook
+ * - Side-by-side conflict resolution interface
+ * - Manual conflict resolution controls
+ * - Batch conflict resolution options
+ * - Wedding-specific event type mapping
+ */
+
+'use client';
+
+import React, { useState, useCallback } from 'react';
+import { Button } from '@/components/untitled-ui/Button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/untitled-ui/Card';
+import { Badge } from '@/components/untitled-ui/Badge';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/untitled-ui/Select';
+import { 
+  Calendar, 
+  ArrowRight, 
+  AlertTriangle, 
+  CheckCircle2, 
+  XCircle, 
+  Clock,
+  Users,
+  MapPin,
+  Camera,
+  Heart,
+  Briefcase,
+  Settings,
+  RefreshCw
+} from 'lucide-react';
+import { 
+  OutlookEventMappingProps, 
+  OutlookEventMapping as MappingType, 
+  EventConflict, 
+  WeddingEventType 
+} from '@/types/outlook';
+
+export function OutlookEventMapping({ 
+  mappings, 
+  onMappingChange, 
+  onSave, 
+  isLoading = false,
+  className = '' 
+}: OutlookEventMappingProps) {
+  const [activeTab, setActiveTab] = useState<'mappings' | 'conflicts'>('mappings');
+  const [selectedConflict, setSelectedConflict] = useState<EventConflict | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+
+  // Mock conflicts data - in real implementation, fetch from useOutlookSync
+  const mockConflicts: EventConflict[] = [
+    {
+      conflictId: '1',
+      type: 'time_overlap',
+      severity: 'high',
+      sourceEvent: {
+        id: '1',
+        title: 'Wedding Ceremony - Sarah & John',
+        description: 'Main ceremony at Ashridge House',
+        start: '2024-06-15T14:00:00Z',
+        end: '2024-06-15T16:00:00Z',
+        location: 'Ashridge House, Hertfordshire',
+        type: 'wedding_ceremony',
+        priority: 'high',
+        status: 'confirmed',
+        reminderMinutes: [30, 60],
+        createdAt: '2024-01-15T10:00:00Z',
+        updatedAt: '2024-01-15T10:00:00Z'
+      },
+      conflictingEvent: {
+        id: '2',
+        title: 'Venue Visit - Emily & Tom',
+        description: 'Venue walkthrough and consultation',
+        start: '2024-06-15T15:00:00Z',
+        end: '2024-06-15T17:00:00Z',
+        location: 'Ashridge House, Hertfordshire',
+        type: 'venue_visit',
+        priority: 'medium',
+        status: 'tentative',
+        reminderMinutes: [30],
+        createdAt: '2024-01-15T09:00:00Z',
+        updatedAt: '2024-01-15T09:00:00Z'
+      },
+      suggestedResolution: {
+        type: 'reschedule',
+        action: 'Move venue visit to next available slot',
+        newDateTime: '2024-06-16T15:00:00Z',
+        impact: ['Requires client notification', 'May delay decision timeline']
+      }
+    },
+    {
+      conflictId: '2',
+      type: 'double_booking',
+      severity: 'critical',
+      sourceEvent: {
+        id: '3',
+        title: 'Engagement Shoot - Lisa & Mark',
+        description: 'Pre-wedding photography session',
+        start: '2024-06-20T10:00:00Z',
+        end: '2024-06-20T12:00:00Z',
+        location: 'Hyde Park, London',
+        type: 'engagement_shoot',
+        priority: 'high',
+        status: 'confirmed',
+        reminderMinutes: [60, 30],
+        createdAt: '2024-01-15T11:00:00Z',
+        updatedAt: '2024-01-15T11:00:00Z'
+      },
+      conflictingEvent: {
+        id: '4',
+        title: 'Client Consultation - Alex & Sam',
+        description: 'Wedding planning consultation',
+        start: '2024-06-20T10:30:00Z',
+        end: '2024-06-20T11:30:00Z',
+        location: 'WedSync Office',
+        type: 'consultation',
+        priority: 'medium',
+        status: 'confirmed',
+        reminderMinutes: [30],
+        createdAt: '2024-01-15T12:00:00Z',
+        updatedAt: '2024-01-15T12:00:00Z'
+      },
+      suggestedResolution: {
+        type: 'reschedule',
+        action: 'Reschedule consultation to available slot',
+        newDateTime: '2024-06-20T14:00:00Z',
+        impact: ['Client notification required', 'Potential delay in booking']
+      }
+    }
+  ];
+
+  const weddingEventTypes: { value: WeddingEventType; label: string; icon: React.ReactNode; color: string }[] = [
+    { value: 'consultation', label: 'Client Consultation', icon: <Users className="w-4 h-4" />, color: 'text-primary-600' },
+    { value: 'client_meeting', label: 'Client Meeting', icon: <Users className="w-4 h-4" />, color: 'text-primary-600' },
+    { value: 'venue_visit', label: 'Venue Visit', icon: <MapPin className="w-4 h-4" />, color: 'text-blue-600' },
+    { value: 'vendor_meeting', label: 'Vendor Meeting', icon: <Briefcase className="w-4 h-4" />, color: 'text-green-600' },
+    { value: 'engagement_shoot', label: 'Engagement Shoot', icon: <Camera className="w-4 h-4" />, color: 'text-purple-600' },
+    { value: 'wedding_ceremony', label: 'Wedding Ceremony', icon: <Heart className="w-4 h-4" />, color: 'text-rose-600' },
+    { value: 'wedding_reception', label: 'Wedding Reception', icon: <Heart className="w-4 h-4" />, color: 'text-rose-600' },
+    { value: 'preparation', label: 'Preparation', icon: <Settings className="w-4 h-4" />, color: 'text-gray-600' },
+    { value: 'rehearsal', label: 'Rehearsal', icon: <Clock className="w-4 h-4" />, color: 'text-orange-600' },
+    { value: 'vendor_coordination', label: 'Vendor Coordination', icon: <Briefcase className="w-4 h-4" />, color: 'text-green-600' },
+    { value: 'equipment_prep', label: 'Equipment Prep', icon: <Settings className="w-4 h-4" />, color: 'text-gray-600' },
+    { value: 'editing_session', label: 'Editing Session', icon: <Camera className="w-4 h-4" />, color: 'text-purple-600' },
+    { value: 'delivery_meeting', label: 'Delivery Meeting', icon: <Users className="w-4 h-4" />, color: 'text-primary-600' },
+    { value: 'follow_up', label: 'Follow-up', icon: <Clock className="w-4 h-4" />, color: 'text-orange-600' }
+  ];
+
+  const handleSave = useCallback(async () => {
+    setIsSaving(true);
+    try {
+      await onSave();
+    } finally {
+      setIsSaving(false);
+    }
+  }, [onSave]);
+
+  const handleMappingUpdate = useCallback((mappingId: string, updates: Partial<MappingType>) => {
+    const updatedMappings = mappings.map(mapping =>
+      mapping.id === mappingId ? { ...mapping, ...updates } : mapping
+    );
+    onMappingChange(updatedMappings);
+  }, [mappings, onMappingChange]);
+
+  const getConflictSeverityColor = (severity: EventConflict['severity']) => {
+    switch (severity) {
+      case 'critical': return 'text-error-600 bg-error-50 border-error-200';
+      case 'high': return 'text-warning-600 bg-warning-50 border-warning-200';
+      case 'medium': return 'text-blue-600 bg-blue-50 border-blue-200';
+      default: return 'text-gray-600 bg-gray-50 border-gray-200';
+    }
+  };
+
+  const getEventTypeInfo = (type: WeddingEventType) => {
+    return weddingEventTypes.find(t => t.value === type) || weddingEventTypes[0];
+  };
+
+  return (
+    <div className={`space-y-6 ${className}`}>
+      {/* Tab Navigation */}
+      <div className="border-b border-gray-200">
+        <nav className="-mb-px flex space-x-8">
+          <button
+            onClick={() => setActiveTab('mappings')}
+            className={`py-2 px-1 border-b-2 font-medium text-sm ${
+              activeTab === 'mappings'
+                ? 'border-primary-500 text-primary-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            }`}
+          >
+            Event Mappings
+          </button>
+          <button
+            onClick={() => setActiveTab('conflicts')}
+            className={`py-2 px-1 border-b-2 font-medium text-sm relative ${
+              activeTab === 'conflicts'
+                ? 'border-primary-500 text-primary-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            }`}
+          >
+            Conflicts
+            {mockConflicts.length > 0 && (
+              <Badge className="ml-2 bg-error-500 text-white text-xs">{mockConflicts.length}</Badge>
+            )}
+          </button>
+        </nav>
+      </div>
+
+      {/* Event Mappings Tab */}
+      {activeTab === 'mappings' && (
+        <div className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Event Type Mapping</CardTitle>
+              <CardDescription>
+                Configure how WedSync event types map to Outlook categories
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {mappings.map((mapping) => {
+                const eventTypeInfo = getEventTypeInfo(mapping.weddingEventType);
+                return (
+                  <div key={mapping.id} className="flex items-center space-x-4 p-4 border border-gray-200 rounded-lg">
+                    {/* WedSync Event Type */}
+                    <div className="flex items-center space-x-3 flex-1">
+                      <div className={`${eventTypeInfo.color}`}>
+                        {eventTypeInfo.icon}
+                      </div>
+                      <div>
+                        <p className="font-medium text-gray-900">{eventTypeInfo.label}</p>
+                        <p className="text-sm text-gray-500">WedSync Event</p>
+                      </div>
+                    </div>
+
+                    <ArrowRight className="w-4 h-4 text-gray-400" />
+
+                    {/* Outlook Category */}
+                    <div className="flex-1">
+                      <Select
+                        value={mapping.outlookCategory}
+                        onValueChange={(value) => handleMappingUpdate(mapping.id, { outlookCategory: value })}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select Outlook category" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="Business">🔷 Business</SelectItem>
+                          <SelectItem value="Personal">🟢 Personal</SelectItem>
+                          <SelectItem value="Wedding">💒 Wedding</SelectItem>
+                          <SelectItem value="Important">🔴 Important</SelectItem>
+                          <SelectItem value="Travel">✈️ Travel</SelectItem>
+                          <SelectItem value="Holiday">🌴 Holiday</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    {/* Sync Direction */}
+                    <div className="flex-1">
+                      <Select
+                        value={mapping.syncDirection}
+                        onValueChange={(value: any) => handleMappingUpdate(mapping.id, { syncDirection: value })}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="bidirectional">↔️ Bidirectional</SelectItem>
+                          <SelectItem value="wedsync_to_outlook">→ WedSync to Outlook</SelectItem>
+                          <SelectItem value="outlook_to_wedsync">← Outlook to WedSync</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    {/* Active Toggle */}
+                    <div className="flex items-center">
+                      <input
+                        type="checkbox"
+                        checked={mapping.isActive}
+                        onChange={(e) => handleMappingUpdate(mapping.id, { isActive: e.target.checked })}
+                        className="form-checkbox text-primary-600"
+                      />
+                      <span className="ml-2 text-sm text-gray-700">Active</span>
+                    </div>
+                  </div>
+                );
+              })}
+              
+              <div className="flex justify-end space-x-3 pt-4 border-t">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    // Reset mappings to default
+                    const defaultMappings = mappings.map(m => ({ ...m, outlookCategory: 'Business', syncDirection: 'bidirectional' as const }));
+                    onMappingChange(defaultMappings);
+                  }}
+                >
+                  Reset to Defaults
+                </Button>
+                <Button
+                  onClick={handleSave}
+                  disabled={isSaving || isLoading}
+                >
+                  {isSaving ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                      Saving...
+                    </>
+                  ) : (
+                    'Save Mappings'
+                  )}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Conflicts Tab */}
+      {activeTab === 'conflicts' && (
+        <div className="space-y-6">
+          {mockConflicts.length === 0 ? (
+            <Card>
+              <CardContent className="text-center py-12">
+                <CheckCircle2 className="w-12 h-12 text-success-500 mx-auto mb-4" />
+                <h3 className="text-lg font-medium text-gray-900 mb-2">No Conflicts Found</h3>
+                <p className="text-gray-600">All your events are synchronized without conflicts.</p>
+              </CardContent>
+            </Card>
+          ) : (
+            <>
+              {/* Conflicts List */}
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <CardTitle>Event Conflicts ({mockConflicts.length})</CardTitle>
+                      <CardDescription>
+                        Resolve scheduling conflicts between WedSync and Outlook
+                      </CardDescription>
+                    </div>
+                    <Button variant="outline" size="sm">
+                      Resolve All
+                    </Button>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {mockConflicts.map((conflict) => (
+                    <div
+                      key={conflict.conflictId}
+                      className="border border-gray-200 rounded-lg p-4 hover:border-gray-300 cursor-pointer transition-colors"
+                      onClick={() => setSelectedConflict(conflict)}
+                    >
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1">
+                          <div className="flex items-center space-x-2 mb-2">
+                            <Badge className={`${getConflictSeverityColor(conflict.severity)} border text-xs`}>
+                              {conflict.severity.toUpperCase()}
+                            </Badge>
+                            <Badge variant="outline" className="text-xs">
+                              {conflict.type.replace('_', ' ').toUpperCase()}
+                            </Badge>
+                          </div>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {/* Source Event */}
+                            <div className="space-y-1">
+                              <p className="text-sm text-gray-500">WedSync Event</p>
+                              <p className="font-medium text-gray-900">{conflict.sourceEvent.title}</p>
+                              <p className="text-sm text-gray-600">
+                                {new Date(conflict.sourceEvent.start).toLocaleString()} - {new Date(conflict.sourceEvent.end).toLocaleString()}
+                              </p>
+                              <p className="text-sm text-gray-500">{conflict.sourceEvent.location}</p>
+                            </div>
+                            
+                            {/* Conflicting Event */}
+                            <div className="space-y-1">
+                              <p className="text-sm text-gray-500">Outlook Event</p>
+                              <p className="font-medium text-gray-900">{conflict.conflictingEvent.title}</p>
+                              <p className="text-sm text-gray-600">
+                                {new Date(conflict.conflictingEvent.start).toLocaleString()} - {new Date(conflict.conflictingEvent.end).toLocaleString()}
+                              </p>
+                              <p className="text-sm text-gray-500">{conflict.conflictingEvent.location}</p>
+                            </div>
+                          </div>
+                        </div>
+                        <ArrowRight className="w-4 h-4 text-gray-400 mt-8" />
+                      </div>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+
+              {/* Selected Conflict Resolution */}
+              {selectedConflict && (
+                <Card className="border-warning-200">
+                  <CardHeader>
+                    <CardTitle className="flex items-center">
+                      <AlertTriangle className="w-5 h-5 text-warning-600 mr-2" />
+                      Resolve Conflict
+                    </CardTitle>
+                    <CardDescription>
+                      Choose how to resolve this scheduling conflict
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-6">
+                    {/* Suggested Resolution */}
+                    {selectedConflict.suggestedResolution && (
+                      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                        <h4 className="font-medium text-blue-900 mb-2">Suggested Resolution</h4>
+                        <p className="text-blue-800 mb-3">{selectedConflict.suggestedResolution.action}</p>
+                        {selectedConflict.suggestedResolution.newDateTime && (
+                          <p className="text-sm text-blue-700">
+                            New time: {new Date(selectedConflict.suggestedResolution.newDateTime).toLocaleString()}
+                          </p>
+                        )}
+                        <div className="mt-3">
+                          <p className="text-sm font-medium text-blue-900 mb-1">Impact:</p>
+                          <ul className="text-sm text-blue-800 space-y-1">
+                            {selectedConflict.suggestedResolution.impact.map((impact, index) => (
+                              <li key={index} className="flex items-center">
+                                <span className="w-1 h-1 bg-blue-600 rounded-full mr-2" />
+                                {impact}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Resolution Actions */}
+                    <div className="space-y-3">
+                      <h4 className="font-medium text-gray-900">Choose Resolution:</h4>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <Button variant="outline" className="justify-start h-auto p-4">
+                          <div className="text-left">
+                            <p className="font-medium">Accept Suggestion</p>
+                            <p className="text-sm text-gray-600">Apply the suggested resolution</p>
+                          </div>
+                        </Button>
+                        <Button variant="outline" className="justify-start h-auto p-4">
+                          <div className="text-left">
+                            <p className="font-medium">Manual Reschedule</p>
+                            <p className="text-sm text-gray-600">Choose different time manually</p>
+                          </div>
+                        </Button>
+                        <Button variant="outline" className="justify-start h-auto p-4">
+                          <div className="text-left">
+                            <p className="font-medium">Keep WedSync</p>
+                            <p className="text-sm text-gray-600">Prioritize WedSync event</p>
+                          </div>
+                        </Button>
+                        <Button variant="outline" className="justify-start h-auto p-4">
+                          <div className="text-left">
+                            <p className="font-medium">Keep Outlook</p>
+                            <p className="text-sm text-gray-600">Prioritize Outlook event</p>
+                          </div>
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="flex justify-end space-x-3 pt-4 border-t">
+                      <Button variant="outline" onClick={() => setSelectedConflict(null)}>
+                        Cancel
+                      </Button>
+                      <Button>
+                        Apply Resolution
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,440 @@
+'use client';
+
+import React, { useState, useEffect } from 'react';
+import {
+  Check,
+  Filter,
+  X,
+  Search,
+  Users,
+  Calendar,
+  Flag,
+  Layers,
+} from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Badge } from '@/components/ui/badge';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { Checkbox } from '@/components/ui/checkbox';
+import { cn } from '@/lib/utils';
+import {
+  TaskCategoryService,
+  TaskCategory,
+  PHASE_CONFIG,
+} from '@/lib/services/taskCategories';
+
+interface FilterState {
+  categories: string[];
+  phases: string[];
+  statuses: string[];
+  priorities: string[];
+  assignees: string[];
+  searchTerm: string;
+  dateRange: {
+    start?: Date;
+    end?: Date;
+  };
+}
+
+interface CategoryFilterProps {
+  weddingId: string;
+  organizationId: string;
+  onFiltersChange: (filters: FilterState) => void;
+  className?: string;
+}
+
+export default function CategoryFilter({
+  weddingId,
+  organizationId,
+  onFiltersChange,
+  className,
+}: CategoryFilterProps) {
+  const [categories, setCategories] = useState<TaskCategory[]>([]);
+  const [filters, setFilters] = useState<FilterState>({
+    categories: [],
+    phases: [],
+    statuses: [],
+    priorities: [],
+    assignees: [],
+    searchTerm: '',
+    dateRange: {},
+  });
+  const [isOpen, setIsOpen] = useState(false);
+  const [activeFilterCount, setActiveFilterCount] = useState(0);
+
+  // Load categories on mount
+  useEffect(() => {
+    loadCategories();
+  }, [organizationId]);
+
+  // Update active filter count
+  useEffect(() => {
+    const count =
+      filters.categories.length +
+      filters.phases.length +
+      filters.statuses.length +
+      filters.priorities.length +
+      filters.assignees.length +
+      (filters.searchTerm ? 1 : 0) +
+      (filters.dateRange.start ? 1 : 0);
+
+    setActiveFilterCount(count);
+  }, [filters]);
+
+  const loadCategories = async () => {
+    try {
+      const data = await TaskCategoryService.getCategories(organizationId);
+      setCategories(data);
+    } catch (error) {
+      console.error('Error loading categories:', error);
+    }
+  };
+
+  const handleFilterChange = (newFilters: Partial<FilterState>) => {
+    const updated = { ...filters, ...newFilters };
+    setFilters(updated);
+    onFiltersChange(updated);
+  };
+
+  const toggleCategory = (categoryId: string) => {
+    const newCategories = filters.categories.includes(categoryId)
+      ? filters.categories.filter((id) => id !== categoryId)
+      : [...filters.categories, categoryId];
+
+    handleFilterChange({ categories: newCategories });
+  };
+
+  const togglePhase = (phase: string) => {
+    const newPhases = filters.phases.includes(phase)
+      ? filters.phases.filter((p) => p !== phase)
+      : [...filters.phases, phase];
+
+    handleFilterChange({ phases: newPhases });
+  };
+
+  const toggleStatus = (status: string) => {
+    const newStatuses = filters.statuses.includes(status)
+      ? filters.statuses.filter((s) => s !== status)
+      : [...filters.statuses, status];
+
+    handleFilterChange({ statuses: newStatuses });
+  };
+
+  const togglePriority = (priority: string) => {
+    const newPriorities = filters.priorities.includes(priority)
+      ? filters.priorities.filter((p) => p !== priority)
+      : [...filters.priorities, priority];
+
+    handleFilterChange({ priorities: newPriorities });
+  };
+
+  const clearAllFilters = () => {
+    const cleared: FilterState = {
+      categories: [],
+      phases: [],
+      statuses: [],
+      priorities: [],
+      assignees: [],
+      searchTerm: '',
+      dateRange: {},
+    };
+    setFilters(cleared);
+    onFiltersChange(cleared);
+  };
+
+  const statusOptions = [
+    { value: 'todo', label: 'To Do', icon: '⏳', color: 'bg-gray-100' },
+    {
+      value: 'in_progress',
+      label: 'In Progress',
+      icon: '🔄',
+      color: 'bg-blue-100',
+    },
+    { value: 'review', label: 'Review', icon: '👀', color: 'bg-yellow-100' },
+    {
+      value: 'completed',
+      label: 'Completed',
+      icon: '✅',
+      color: 'bg-green-100',
+    },
+    { value: 'blocked', label: 'Blocked', icon: '🚫', color: 'bg-red-100' },
+    {
+      value: 'cancelled',
+      label: 'Cancelled',
+      icon: '❌',
+      color: 'bg-gray-100',
+    },
+  ];
+
+  const priorityOptions = [
+    { value: 'critical', label: 'Critical', color: 'bg-red-500' },
+    { value: 'high', label: 'High', color: 'bg-orange-500' },
+    { value: 'medium', label: 'Medium', color: 'bg-yellow-500' },
+    { value: 'low', label: 'Low', color: 'bg-green-500' },
+  ];
+
+  return (
+    <div className={cn('flex items-center gap-2', className)}>
+      {/* Search Input */}
+      <div className="relative flex-1 max-w-sm">
+        <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
+        <Input
+          type="text"
+          placeholder="Search tasks..."
+          value={filters.searchTerm}
+          onChange={(e) => handleFilterChange({ searchTerm: e.target.value })}
+          className="pl-9 pr-3"
+        />
+      </div>
+
+      {/* Quick Filters */}
+      <div className="flex items-center gap-2">
+        {/* Phase Quick Filter */}
+        <Select
+          value={filters.phases[0] || 'all'}
+          onValueChange={(value) => {
+            if (value === 'all') {
+              handleFilterChange({ phases: [] });
+            } else {
+              handleFilterChange({ phases: [value] });
+            }
+          }}
+        >
+          <SelectTrigger className="w-[140px]">
+            <SelectValue placeholder="All Phases" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Phases</SelectItem>
+            {Object.entries(PHASE_CONFIG).map(([key, config]) => (
+              <SelectItem key={key} value={key}>
+                <span className="flex items-center gap-2">
+                  <span>{config.icon}</span>
+                  <span>{config.label}</span>
+                </span>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        {/* Status Quick Filter */}
+        <Select
+          value={filters.statuses[0] || 'all'}
+          onValueChange={(value) => {
+            if (value === 'all') {
+              handleFilterChange({ statuses: [] });
+            } else {
+              handleFilterChange({ statuses: [value] });
+            }
+          }}
+        >
+          <SelectTrigger className="w-[140px]">
+            <SelectValue placeholder="All Status" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Status</SelectItem>
+            {statusOptions.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                <span className="flex items-center gap-2">
+                  <span>{option.icon}</span>
+                  <span>{option.label}</span>
+                </span>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* Advanced Filters */}
+      <Popover open={isOpen} onOpenChange={setIsOpen}>
+        <PopoverTrigger asChild>
+          <Button variant="outline" className="relative">
+            <Filter className="w-4 h-4 mr-2" />
+            Filters
+            {activeFilterCount > 0 && (
+              <Badge
+                variant="destructive"
+                className="absolute -top-2 -right-2 h-5 w-5 p-0 flex items-center justify-center"
+              >
+                {activeFilterCount}
+              </Badge>
+            )}
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="w-[400px] p-0" align="end">
+          <div className="p-4 border-b">
+            <div className="flex items-center justify-between">
+              <h3 className="font-semibold text-lg">Advanced Filters</h3>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setIsOpen(false)}
+                className="h-8 w-8 p-0"
+              >
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
+            {activeFilterCount > 0 && (
+              <Button
+                variant="link"
+                size="sm"
+                onClick={clearAllFilters}
+                className="text-destructive p-0 h-auto mt-1"
+              >
+                Clear all filters
+              </Button>
+            )}
+          </div>
+
+          <div className="p-4 space-y-4 max-h-[500px] overflow-y-auto">
+            {/* Categories */}
+            <div>
+              <div className="flex items-center gap-2 mb-2">
+                <Layers className="w-4 h-4 text-gray-500" />
+                <label className="text-sm font-medium">Categories</label>
+              </div>
+              <div className="space-y-2">
+                {categories.map((category) => (
+                  <label
+                    key={category.id}
+                    className="flex items-center gap-2 cursor-pointer hover:bg-gray-50 p-1 rounded"
+                  >
+                    <Checkbox
+                      checked={filters.categories.includes(category.id)}
+                      onCheckedChange={() => toggleCategory(category.id)}
+                    />
+                    <div
+                      className="w-3 h-3 rounded-full"
+                      style={{ backgroundColor: category.color_hex }}
+                    />
+                    <span className="text-sm flex-1">{category.name}</span>
+                    <span className="text-xs text-gray-500">
+                      {PHASE_CONFIG[category.phase]?.icon}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            {/* Phases */}
+            <div>
+              <div className="flex items-center gap-2 mb-2">
+                <Calendar className="w-4 h-4 text-gray-500" />
+                <label className="text-sm font-medium">Wedding Phases</label>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {Object.entries(PHASE_CONFIG).map(([key, config]) => (
+                  <label
+                    key={key}
+                    className="flex items-center gap-2 cursor-pointer hover:bg-gray-50 p-1 rounded"
+                  >
+                    <Checkbox
+                      checked={filters.phases.includes(key)}
+                      onCheckedChange={() => togglePhase(key)}
+                    />
+                    <span className="text-sm">
+                      {config.icon} {config.label}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            {/* Status */}
+            <div>
+              <div className="flex items-center gap-2 mb-2">
+                <Check className="w-4 h-4 text-gray-500" />
+                <label className="text-sm font-medium">Task Status</label>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {statusOptions.map((option) => (
+                  <label
+                    key={option.value}
+                    className="flex items-center gap-2 cursor-pointer hover:bg-gray-50 p-1 rounded"
+                  >
+                    <Checkbox
+                      checked={filters.statuses.includes(option.value)}
+                      onCheckedChange={() => toggleStatus(option.value)}
+                    />
+                    <span className="text-sm">
+                      {option.icon} {option.label}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            {/* Priority */}
+            <div>
+              <div className="flex items-center gap-2 mb-2">
+                <Flag className="w-4 h-4 text-gray-500" />
+                <label className="text-sm font-medium">Priority</label>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {priorityOptions.map((option) => (
+                  <label
+                    key={option.value}
+                    className="flex items-center gap-2 cursor-pointer hover:bg-gray-50 p-1 rounded"
+                  >
+                    <Checkbox
+                      checked={filters.priorities.includes(option.value)}
+                      onCheckedChange={() => togglePriority(option.value)}
+                    />
+                    <div className="flex items-center gap-2">
+                      <div
+                        className={cn('w-2 h-2 rounded-full', option.color)}
+                      />
+                      <span className="text-sm">{option.label}</span>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="p-4 border-t bg-gray-50">
+            <Button onClick={() => setIsOpen(false)} className="w-full">
+              Apply Filters
+            </Button>
+          </div>
+        </PopoverContent>
+      </Popover>
+
+      {/* Active Filter Tags */}
+      {activeFilterCount > 0 && (
+        <div className="flex items-center gap-1 flex-wrap">
+          {filters.categories.length > 0 && (
+            <Badge variant="secondary" className="text-xs">
+              {filters.categories.length} categories
+            </Badge>
+          )}
+          {filters.phases.length > 0 && (
+            <Badge variant="secondary" className="text-xs">
+              {filters.phases.length} phases
+            </Badge>
+          )}
+          {filters.statuses.length > 0 && (
+            <Badge variant="secondary" className="text-xs">
+              {filters.statuses.length} statuses
+            </Badge>
+          )}
+          {filters.priorities.length > 0 && (
+            <Badge variant="secondary" className="text-xs">
+              {filters.priorities.length} priorities
+            </Badge>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}

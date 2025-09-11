@@ -1,0 +1,258 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = createServerComponentClient({ cookies });
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+
+    if (!session) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get user's organization
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('id', session.user.id)
+      .single();
+
+    if (!profile) {
+      return NextResponse.json({ error: 'Profile not found' }, { status: 404 });
+    }
+
+    const searchParams = request.nextUrl.searchParams;
+    const dynamic = searchParams.get('dynamic');
+    const limit = parseInt(searchParams.get('limit') || '50');
+    const offset = parseInt(searchParams.get('offset') || '0');
+
+    let query = supabase
+      .from('user_segments')
+      .select(
+        `
+        *,
+        created_by_user:auth.users!user_segments_created_by_fkey(email),
+        memberships:user_segment_memberships(count)
+      `,
+      )
+      .eq('organization_id', profile.organization_id)
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (dynamic !== null) {
+      query = query.eq('dynamic', dynamic === 'true');
+    }
+
+    const { data: segments, error } = await query;
+
+    if (error) {
+      console.error('Error fetching segments:', error);
+      return NextResponse.json(
+        { error: 'Failed to fetch segments' },
+        { status: 500 },
+      );
+    }
+
+    // Get total count for pagination
+    const { count: totalCount, error: countError } = await supabase
+      .from('user_segments')
+      .select('*', { count: 'exact', head: true })
+      .eq('organization_id', profile.organization_id);
+
+    if (countError) {
+      console.error('Error getting segment count:', countError);
+    }
+
+    return NextResponse.json({
+      segments,
+      pagination: {
+        total: totalCount || 0,
+        limit,
+        offset,
+        hasMore: (totalCount || 0) > offset + limit,
+      },
+    });
+  } catch (error) {
+    console.error('API error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = createServerComponentClient({ cookies });
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+
+    if (!session) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get user's organization
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('id', session.user.id)
+      .single();
+
+    if (!profile) {
+      return NextResponse.json({ error: 'Profile not found' }, { status: 404 });
+    }
+
+    const body = await request.json();
+    const { name, description, rules = {}, dynamic = true } = body;
+
+    // Validate required fields
+    if (!name) {
+      return NextResponse.json({ error: 'Name is required' }, { status: 400 });
+    }
+
+    // Validate rules structure (basic validation)
+    if (rules && typeof rules !== 'object') {
+      return NextResponse.json(
+        { error: 'Rules must be a valid JSON object' },
+        { status: 400 },
+      );
+    }
+
+    const { data: segment, error } = await supabase
+      .from('user_segments')
+      .insert({
+        name,
+        description,
+        rules,
+        dynamic,
+        organization_id: profile.organization_id,
+        created_by: session.user.id,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error creating segment:', error);
+      return NextResponse.json(
+        { error: 'Failed to create segment' },
+        { status: 500 },
+      );
+    }
+
+    // If dynamic segment, trigger initial calculation
+    if (dynamic) {
+      await calculateSegmentMembership(
+        supabase,
+        segment.id,
+        rules,
+        profile.organization_id,
+      );
+    }
+
+    return NextResponse.json({ segment }, { status: 201 });
+  } catch (error) {
+    console.error('API error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+// Helper function to calculate segment membership
+async function calculateSegmentMembership(
+  supabase: any,
+  segmentId: string,
+  rules: any,
+  organizationId: string,
+) {
+  try {
+    // This is a simplified implementation
+    // In a real system, you'd have more sophisticated rule evaluation
+
+    let clientQuery = supabase
+      .from('clients')
+      .select('id, name, email, wedding_date, created_at, metadata')
+      .eq('organization_id', organizationId);
+
+    // Apply basic rules (this can be extended significantly)
+    if (rules.wedding_date_range) {
+      const { start, end } = rules.wedding_date_range;
+      if (start) clientQuery = clientQuery.gte('wedding_date', start);
+      if (end) clientQuery = clientQuery.lte('wedding_date', end);
+    }
+
+    if (rules.created_after) {
+      clientQuery = clientQuery.gte('created_at', rules.created_after);
+    }
+
+    if (rules.email_domain) {
+      clientQuery = clientQuery.ilike('email', `%@${rules.email_domain}`);
+    }
+
+    const { data: clients, error } = await clientQuery;
+
+    if (error) {
+      console.error('Error querying clients for segment:', error);
+      return;
+    }
+
+    if (!clients || clients.length === 0) {
+      return;
+    }
+
+    // Insert segment memberships
+    const memberships = clients.map((client: any) => ({
+      segment_id: segmentId,
+      client_id: client.id,
+      score: calculateRelevanceScore(client, rules), // Custom scoring logic
+    }));
+
+    const { error: insertError } = await supabase
+      .from('user_segment_memberships')
+      .insert(memberships);
+
+    if (insertError) {
+      console.error('Error inserting segment memberships:', insertError);
+    }
+  } catch (error) {
+    console.error('Error calculating segment membership:', error);
+  }
+}
+
+function calculateRelevanceScore(client: any, rules: any): number {
+  // Simplified scoring algorithm
+  let score = 1.0;
+
+  // Example: Higher score for clients with upcoming weddings
+  if (client.wedding_date) {
+    const weddingDate = new Date(client.wedding_date);
+    const now = new Date();
+    const daysUntilWedding = Math.floor(
+      (weddingDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24),
+    );
+
+    if (daysUntilWedding >= 0 && daysUntilWedding <= 365) {
+      score += 0.2; // Boost for upcoming weddings
+    }
+  }
+
+  // Example: Score based on client creation recency
+  if (client.created_at) {
+    const createdDate = new Date(client.created_at);
+    const now = new Date();
+    const daysAgo = Math.floor(
+      (now.getTime() - createdDate.getTime()) / (1000 * 60 * 60 * 24),
+    );
+
+    if (daysAgo <= 30) {
+      score += 0.1; // Boost for recent clients
+    }
+  }
+
+  return Math.min(score, 1.0);
+}

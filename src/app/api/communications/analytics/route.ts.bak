@@ -1,0 +1,487 @@
+import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@/lib/supabase/server";
+import { z } from "zod";
+
+// WS-155: Analytics APIs for Communication Metrics
+const analyticsQuerySchema = z.object({
+  startDate: z.string().datetime(),
+  endDate: z.string().datetime(),
+  metrics: z.array(z.enum([
+    "sent", "delivered", "opened", "clicked", "bounced", "unsubscribed",
+    "delivery_rate", "open_rate", "click_rate", "bounce_rate", "unsubscribe_rate"
+  ])).optional(),
+  groupBy: z.enum(["day", "week", "month", "campaign", "channel"]).optional(),
+  campaignIds: z.array(z.string()).optional(),
+  channels: z.array(z.enum(["email", "sms", "push"])).optional()
+});
+
+export async function GET(req: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const { data: user } = await supabase.auth.getUser();
+    
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const url = new URL(req.url);
+    const params = {
+      startDate: url.searchParams.get("startDate") || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+      endDate: url.searchParams.get("endDate") || new Date().toISOString(),
+      metrics: url.searchParams.get("metrics")?.split(",") || ["sent", "delivered", "opened", "clicked"],
+      groupBy: url.searchParams.get("groupBy") || "day",
+      campaignIds: url.searchParams.get("campaignIds")?.split(","),
+      channels: url.searchParams.get("channels")?.split(",") || ["email", "sms"]
+    };
+
+    // Validate parameters
+    const validatedParams = analyticsQuerySchema.parse(params);
+
+    // Fetch email analytics
+    const emailAnalytics = await getEmailAnalytics(supabase, user.id, validatedParams);
+    
+    // Fetch SMS analytics
+    const smsAnalytics = await getSMSAnalytics(supabase, user.id, validatedParams);
+    
+    // Combine and aggregate metrics
+    const combinedMetrics = aggregateMetrics(emailAnalytics, smsAnalytics, validatedParams);
+    
+    // Calculate performance scores
+    const performanceScores = calculatePerformanceScores(combinedMetrics);
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        summary: combinedMetrics.summary,
+        timeSeries: combinedMetrics.timeSeries,
+        performance: performanceScores,
+        byChannel: combinedMetrics.byChannel,
+        topPerformers: combinedMetrics.topPerformers
+      }
+    });
+
+  } catch (error) {
+    console.error("Analytics error:", error);
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: "Invalid query parameters", details: error.errors },
+        { status: 400 }
+      );
+    }
+    return NextResponse.json(
+      { error: "Failed to fetch analytics" },
+      { status: 500 }
+    );
+  }
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const { data: user } = await supabase.auth.getUser();
+    
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const { action, data } = await req.json();
+
+    switch (action) {
+      case "track_open":
+        await trackEmailOpen(supabase, data);
+        break;
+      
+      case "track_click":
+        await trackEmailClick(supabase, data);
+        break;
+      
+      case "track_conversion":
+        await trackConversion(supabase, data);
+        break;
+      
+      case "track_unsubscribe":
+        await trackUnsubscribe(supabase, data);
+        break;
+      
+      default:
+        return NextResponse.json(
+          { error: "Invalid tracking action" },
+          { status: 400 }
+        );
+    }
+
+    return NextResponse.json({ success: true });
+
+  } catch (error) {
+    console.error("Track event error:", error);
+    return NextResponse.json(
+      { error: "Failed to track event" },
+      { status: 500 }
+    );
+  }
+}
+
+// Get detailed campaign analytics
+export async function getCampaignAnalytics(req: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const { data: user } = await supabase.auth.getUser();
+    
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const url = new URL(req.url);
+    const campaignId = url.searchParams.get("campaignId");
+
+    if (!campaignId) {
+      return NextResponse.json(
+        { error: "Campaign ID is required" },
+        { status: 400 }
+      );
+    }
+
+    // Get campaign details
+    const { data: campaign } = await supabase
+      .from("communication_campaigns")
+      .select("*")
+      .eq("id", campaignId)
+      .eq("organization_id", user.id)
+      .single();
+
+    if (!campaign) {
+      return NextResponse.json(
+        { error: "Campaign not found" },
+        { status: 404 }
+      );
+    }
+
+    // Get detailed metrics
+    const metrics = await getCampaignMetrics(supabase, campaignId);
+    
+    // Get recipient engagement
+    const engagement = await getRecipientEngagement(supabase, campaignId);
+    
+    // Get delivery issues
+    const issues = await getDeliveryIssues(supabase, campaignId);
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        campaign,
+        metrics,
+        engagement,
+        issues,
+        recommendations: generateRecommendations(metrics, engagement, issues)
+      }
+    });
+
+  } catch (error) {
+    console.error("Campaign analytics error:", error);
+    return NextResponse.json(
+      { error: "Failed to fetch campaign analytics" },
+      { status: 500 }
+    );
+  }
+}
+
+// Helper functions
+async function getEmailAnalytics(supabase: any, organizationId: string, params: any) {
+  const { data } = await supabase
+    .from("email_analytics")
+    .select("*")
+    .eq("organization_id", organizationId)
+    .gte("created_at", params.startDate)
+    .lte("created_at", params.endDate);
+
+  return processAnalyticsData(data || [], "email");
+}
+
+async function getSMSAnalytics(supabase: any, organizationId: string, params: any) {
+  const { data } = await supabase
+    .from("sms_analytics")
+    .select("*")
+    .eq("organization_id", organizationId)
+    .gte("created_at", params.startDate)
+    .lte("created_at", params.endDate);
+
+  return processAnalyticsData(data || [], "sms");
+}
+
+function processAnalyticsData(data: any[], channel: string) {
+  const processed = {
+    total: data.length,
+    sent: 0,
+    delivered: 0,
+    opened: 0,
+    clicked: 0,
+    bounced: 0,
+    unsubscribed: 0,
+    byDay: {} as Record<string, any>
+  };
+
+  for (const item of data) {
+    const day = new Date(item.created_at).toISOString().split("T")[0];
+    
+    if (!processed.byDay[day]) {
+      processed.byDay[day] = {
+        sent: 0,
+        delivered: 0,
+        opened: 0,
+        clicked: 0,
+        bounced: 0,
+        unsubscribed: 0
+      };
+    }
+
+    processed.sent++;
+    processed.byDay[day].sent++;
+
+    if (item.status === "delivered") {
+      processed.delivered++;
+      processed.byDay[day].delivered++;
+    }
+    
+    if (item.opened_at) {
+      processed.opened++;
+      processed.byDay[day].opened++;
+    }
+    
+    if (item.clicked_at) {
+      processed.clicked++;
+      processed.byDay[day].clicked++;
+    }
+    
+    if (item.bounced_at) {
+      processed.bounced++;
+      processed.byDay[day].bounced++;
+    }
+    
+    if (item.unsubscribed_at) {
+      processed.unsubscribed++;
+      processed.byDay[day].unsubscribed++;
+    }
+  }
+
+  return processed;
+}
+
+function aggregateMetrics(emailData: any, smsData: any, params: any) {
+  const summary = {
+    total: emailData.total + smsData.total,
+    sent: emailData.sent + smsData.sent,
+    delivered: emailData.delivered + smsData.delivered,
+    opened: emailData.opened + smsData.opened,
+    clicked: emailData.clicked + smsData.clicked,
+    bounced: emailData.bounced + smsData.bounced,
+    unsubscribed: emailData.unsubscribed + smsData.unsubscribed,
+    deliveryRate: 0,
+    openRate: 0,
+    clickRate: 0,
+    bounceRate: 0,
+    unsubscribeRate: 0
+  };
+
+  // Calculate rates
+  if (summary.sent > 0) {
+    summary.deliveryRate = (summary.delivered / summary.sent) * 100;
+    summary.openRate = (summary.opened / summary.delivered) * 100;
+    summary.clickRate = (summary.clicked / summary.opened) * 100;
+    summary.bounceRate = (summary.bounced / summary.sent) * 100;
+    summary.unsubscribeRate = (summary.unsubscribed / summary.sent) * 100;
+  }
+
+  // Aggregate time series data
+  const timeSeries = mergeTimeSeries(emailData.byDay, smsData.byDay);
+
+  // Channel breakdown
+  const byChannel = {
+    email: {
+      sent: emailData.sent,
+      delivered: emailData.delivered,
+      opened: emailData.opened,
+      clicked: emailData.clicked,
+      deliveryRate: emailData.sent > 0 ? (emailData.delivered / emailData.sent) * 100 : 0,
+      openRate: emailData.delivered > 0 ? (emailData.opened / emailData.delivered) * 100 : 0
+    },
+    sms: {
+      sent: smsData.sent,
+      delivered: smsData.delivered,
+      opened: smsData.opened,
+      clicked: smsData.clicked,
+      deliveryRate: smsData.sent > 0 ? (smsData.delivered / smsData.sent) * 100 : 0,
+      openRate: smsData.delivered > 0 ? (smsData.opened / smsData.delivered) * 100 : 0
+    }
+  };
+
+  // Identify top performers
+  const topPerformers = identifyTopPerformers(timeSeries);
+
+  return {
+    summary,
+    timeSeries,
+    byChannel,
+    topPerformers
+  };
+}
+
+function mergeTimeSeries(emailByDay: any, smsByDay: any) {
+  const merged: Record<string, any> = {};
+  
+  // Merge email data
+  for (const [day, data] of Object.entries(emailByDay)) {
+    merged[day] = { ...data, channel: "combined" };
+  }
+  
+  // Add SMS data
+  for (const [day, data] of Object.entries(smsByDay)) {
+    if (merged[day]) {
+      for (const key in data) {
+        if (typeof data[key] === "number") {
+          merged[day][key] = (merged[day][key] || 0) + data[key];
+        }
+      }
+    } else {
+      merged[day] = { ...data, channel: "combined" };
+    }
+  }
+  
+  return Object.entries(merged)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([date, data]) => ({ date, ...data }));
+}
+
+function identifyTopPerformers(timeSeries: any[]) {
+  return timeSeries
+    .sort((a, b) => {
+      const scoreA = (a.opened / a.sent) * 100 + (a.clicked / a.opened) * 50;
+      const scoreB = (b.opened / b.sent) * 100 + (b.clicked / b.opened) * 50;
+      return scoreB - scoreA;
+    })
+    .slice(0, 5);
+}
+
+function calculatePerformanceScores(metrics: any) {
+  const benchmarks = {
+    deliveryRate: 95,
+    openRate: 25,
+    clickRate: 3,
+    bounceRate: 2,
+    unsubscribeRate: 0.5
+  };
+
+  const scores = {
+    overall: 0,
+    delivery: Math.min(100, (metrics.summary.deliveryRate / benchmarks.deliveryRate) * 100),
+    engagement: Math.min(100, (metrics.summary.openRate / benchmarks.openRate) * 100),
+    quality: Math.max(0, 100 - ((metrics.summary.bounceRate / benchmarks.bounceRate) * 50)),
+    retention: Math.max(0, 100 - ((metrics.summary.unsubscribeRate / benchmarks.unsubscribeRate) * 50))
+  };
+
+  scores.overall = (scores.delivery + scores.engagement + scores.quality + scores.retention) / 4;
+
+  return scores;
+}
+
+async function trackEmailOpen(supabase: any, data: any) {
+  await supabase
+    .from("email_analytics")
+    .update({ opened_at: new Date().toISOString() })
+    .eq("id", data.emailId);
+}
+
+async function trackEmailClick(supabase: any, data: any) {
+  await supabase
+    .from("email_analytics")
+    .update({ 
+      clicked_at: new Date().toISOString(),
+      click_count: supabase.rpc("increment", { x: 1 })
+    })
+    .eq("id", data.emailId);
+}
+
+async function trackConversion(supabase: any, data: any) {
+  await supabase
+    .from("communication_conversions")
+    .insert({
+      campaign_id: data.campaignId,
+      recipient_id: data.recipientId,
+      conversion_type: data.type,
+      conversion_value: data.value,
+      converted_at: new Date().toISOString()
+    });
+}
+
+async function trackUnsubscribe(supabase: any, data: any) {
+  await supabase
+    .from("email_analytics")
+    .update({ unsubscribed_at: new Date().toISOString() })
+    .eq("id", data.emailId);
+
+  // Also update recipient preferences
+  await supabase
+    .from("recipient_preferences")
+    .update({ 
+      unsubscribed: true,
+      unsubscribed_at: new Date().toISOString()
+    })
+    .eq("recipient_id", data.recipientId);
+}
+
+async function getCampaignMetrics(supabase: any, campaignId: string) {
+  const { data } = await supabase
+    .from("campaign_metrics")
+    .select("*")
+    .eq("campaign_id", campaignId)
+    .single();
+
+  return data || {};
+}
+
+async function getRecipientEngagement(supabase: any, campaignId: string) {
+  const { data } = await supabase
+    .from("recipient_engagement")
+    .select("*")
+    .eq("campaign_id", campaignId);
+
+  return data || [];
+}
+
+async function getDeliveryIssues(supabase: any, campaignId: string) {
+  const { data } = await supabase
+    .from("delivery_issues")
+    .select("*")
+    .eq("campaign_id", campaignId);
+
+  return data || [];
+}
+
+function generateRecommendations(metrics: any, engagement: any, issues: any) {
+  const recommendations = [];
+
+  if (metrics.openRate < 20) {
+    recommendations.push({
+      type: "improvement",
+      priority: "high",
+      message: "Low open rate detected. Consider improving subject lines and send timing."
+    });
+  }
+
+  if (metrics.bounceRate > 5) {
+    recommendations.push({
+      type: "warning",
+      priority: "high",
+      message: "High bounce rate. Clean your email list and verify addresses."
+    });
+  }
+
+  if (metrics.clickRate < 2) {
+    recommendations.push({
+      type: "improvement",
+      priority: "medium",
+      message: "Low click rate. Improve call-to-action buttons and content relevance."
+    });
+  }
+
+  return recommendations;
+}

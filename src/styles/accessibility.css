@@ -1,0 +1,265 @@
+/* B-MAD Enhanced Accessibility Styles - Beyond WCAG AA Compliance */
+
+/* High Contrast Mode - WCAG AAA Level */
+.a11y-high-contrast {
+  --contrast-bg: #000000;
+  --contrast-text: #ffffff;
+  --contrast-border: #ffffff;
+  --contrast-focus: #ffff00;
+  --contrast-error: #ff6b6b;
+  --contrast-success: #51cf66;
+}
+
+.a11y-high-contrast * {
+  background-color: var(--contrast-bg) !important;
+  color: var(--contrast-text) !important;
+  border-color: var(--contrast-border) !important;
+}
+
+.a11y-high-contrast button,
+.a11y-high-contrast input,
+.a11y-high-contrast textarea,
+.a11y-high-contrast select {
+  background-color: var(--contrast-text) !important;
+  color: var(--contrast-bg) !important;
+  border: 2px solid var(--contrast-border) !important;
+}
+
+.a11y-high-contrast :focus {
+  outline: 3px solid var(--contrast-focus) !important;
+  outline-offset: 2px !important;
+}
+
+/* Reduced Motion - Respects user preferences */
+.a11y-reduce-motion,
+.a11y-reduce-motion * {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+
+/* Larger Text - 125% base size for better readability */
+.a11y-larger-text {
+  font-size: 125% !important;
+}
+
+.a11y-larger-text h1 { font-size: 2.5rem !important; }
+.a11y-larger-text h2 { font-size: 2rem !important; }
+.a11y-larger-text h3 { font-size: 1.75rem !important; }
+.a11y-larger-text h4 { font-size: 1.5rem !important; }
+.a11y-larger-text p,
+.a11y-larger-text li,
+.a11y-larger-text span { font-size: 1.125rem !important; }
+
+/* Dyslexic Font - OpenDyslexic or similar alternative */
+.a11y-dyslexic-font,
+.a11y-dyslexic-font * {
+  font-family: 'OpenDyslexic', 'Comic Sans MS', cursive !important;
+}
+
+/* Enhanced Focus Indicators - Thick, high contrast */
+.a11y-enhanced-focus :focus {
+  outline: 4px solid #0066cc !important;
+  outline-offset: 3px !important;
+  box-shadow: 0 0 0 2px #ffffff, 0 0 0 6px #0066cc !important;
+}
+
+.a11y-enhanced-focus button:focus,
+.a11y-enhanced-focus input:focus,
+.a11y-enhanced-focus textarea:focus,
+.a11y-enhanced-focus select:focus {
+  box-shadow: 
+    0 0 0 2px #ffffff,
+    0 0 0 6px #0066cc,
+    0 4px 12px rgba(0, 102, 204, 0.3) !important;
+}
+
+/* Screen Reader Only Content */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.sr-only:focus,
+.focus\:not-sr-only:focus {
+  position: static;
+  width: auto;
+  height: auto;
+  padding: inherit;
+  margin: inherit;
+  overflow: visible;
+  clip: auto;
+  white-space: normal;
+}
+
+/* Skip Links Styling */
+.skip-links a {
+  transform: translateY(-100%);
+  transition: transform 0.3s ease;
+}
+
+.skip-links a:focus {
+  transform: translateY(0);
+}
+
+/* Wedding Industry Specific Accessibility Enhancements */
+
+/* Form Field Enhancements */
+.wedding-form-field {
+  position: relative;
+}
+
+.wedding-form-field:focus-within::before {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border: 2px solid #8b5cf6;
+  border-radius: 8px;
+  pointer-events: none;
+}
+
+/* Vendor Type Color Coding for Accessibility */
+.vendor-photographer { border-left: 4px solid #6366f1; }
+.vendor-venue { border-left: 4px solid #059669; }
+.vendor-florist { border-left: 4px solid #16a34a; }
+.vendor-caterer { border-left: 4px solid #ea580c; }
+
+/* Mobile Touch Target Enhancements */
+@media (max-width: 768px) {
+  .touch-target {
+    min-height: 48px;
+    min-width: 48px;
+  }
+  
+  .touch-target-large {
+    min-height: 56px;
+    min-width: 56px;
+  }
+}
+
+/* Print Styles for Accessibility */
+@media print {
+  .skip-links,
+  .a11y-settings-panel {
+    display: none !important;
+  }
+  
+  /* Ensure sufficient contrast in print */
+  * {
+    background: white !important;
+    color: black !important;
+  }
+  
+  a {
+    color: black !important;
+    text-decoration: underline !important;
+  }
+}
+
+/* Keyboard Navigation Enhancements */
+[data-focus-visible-added] {
+  outline: 3px solid #0066cc !important;
+  outline-offset: 2px !important;
+}
+
+/* Error State Enhancements */
+.error-field {
+  border-color: #dc2626 !important;
+  box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.1) !important;
+}
+
+.error-field:focus {
+  box-shadow: 
+    0 0 0 3px rgba(220, 38, 38, 0.1),
+    0 0 0 6px #0066cc !important;
+}
+
+/* Success State Enhancements */
+.success-field {
+  border-color: #16a34a !important;
+  box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.1) !important;
+}
+
+/* Loading State Accessibility */
+.loading-spinner {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.a11y-reduce-motion .loading-spinner {
+  animation: none !important;
+}
+
+/* Notification and Alert Enhancements */
+.alert {
+  border: 2px solid;
+  border-radius: 8px;
+  padding: 16px;
+  margin: 16px 0;
+}
+
+.alert-info {
+  background-color: #eff6ff;
+  border-color: #3b82f6;
+  color: #1e40af;
+}
+
+.alert-warning {
+  background-color: #fffbeb;
+  border-color: #f59e0b;
+  color: #92400e;
+}
+
+.alert-error {
+  background-color: #fef2f2;
+  border-color: #ef4444;
+  color: #dc2626;
+}
+
+.alert-success {
+  background-color: #f0fdf4;
+  border-color: #22c55e;
+  color: #15803d;
+}
+
+/* Safe Area Support for Mobile */
+.safe-area-pb {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.safe-area-pt {
+  padding-top: env(safe-area-inset-top);
+}
+
+/* Wedding Industry Color Palette - Accessible Combinations */
+:root {
+  --wedding-rose: #fb7185;
+  --wedding-purple: #8b5cf6;
+  --wedding-gold: #fbbf24;
+  --wedding-sage: #10b981;
+  
+  /* High contrast alternatives */
+  --wedding-rose-contrast: #be185d;
+  --wedding-purple-contrast: #6d28d9;
+  --wedding-gold-contrast: #d97706;
+  --wedding-sage-contrast: #059669;
+}
+
+.a11y-high-contrast :root {
+  --wedding-rose: var(--wedding-rose-contrast);
+  --wedding-purple: var(--wedding-purple-contrast);
+  --wedding-gold: var(--wedding-gold-contrast);
+  --wedding-sage: var(--wedding-sage-contrast);
+}

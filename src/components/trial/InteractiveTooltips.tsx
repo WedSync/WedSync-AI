@@ -1,0 +1,608 @@
+/**
+ * WS-140 Trial Management System - Round 2: Interactive Tooltips Component
+ * Guided feature discovery with interactive tooltips and onboarding hints
+ * Provides contextual help and progressive disclosure of features
+ */
+
+'use client';
+
+import React, { useState, useEffect, useRef } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { createPortal } from 'react-dom';
+import { Card } from '@/components/untitled-ui/card';
+import { Badge } from '@/components/untitled-ui/badge';
+import { Button } from '@/components/untitled-ui/button';
+import {
+  HelpCircle,
+  X,
+  ChevronLeft,
+  ChevronRight,
+  Play,
+  Lightbulb,
+  Target,
+  Clock,
+  Sparkles,
+  ArrowRight,
+  CheckCircle,
+  Zap,
+  Gift,
+  Star,
+  BookOpen,
+} from 'lucide-react';
+import { tooltipAnimation } from './animations/trial-animations';
+
+interface TooltipStep {
+  id: string;
+  target: string; // CSS selector
+  title: string;
+  content: string;
+  placement: 'top' | 'bottom' | 'left' | 'right' | 'auto';
+  action?: {
+    label: string;
+    url?: string;
+    onClick?: () => void;
+  };
+  timeSavingTip?: string;
+  category: 'feature' | 'productivity' | 'milestone' | 'optimization';
+  priority: 'low' | 'medium' | 'high';
+  dismissible: boolean;
+}
+
+interface TooltipPosition {
+  x: number;
+  y: number;
+  placement: 'top' | 'bottom' | 'left' | 'right';
+}
+
+interface InteractiveTooltipsProps {
+  steps?: TooltipStep[];
+  autoStart?: boolean;
+  showProgress?: boolean;
+  onComplete?: () => void;
+  onSkip?: () => void;
+  className?: string;
+}
+
+// Sample tooltip steps for trial features
+const TRIAL_TOOLTIP_STEPS: TooltipStep[] = [
+  {
+    id: 'client-add-button',
+    target: '[data-tooltip="add-client"]',
+    title: 'Add Your First Client',
+    content:
+      'Click here to add your first client and start building your wedding portfolio. This unlocks timeline creation and guest management features.',
+    placement: 'bottom',
+    action: {
+      label: 'Add Client Now',
+      url: '/clients/new',
+    },
+    timeSavingTip: 'Save 2+ hours per client with automated workflows',
+    category: 'milestone',
+    priority: 'high',
+    dismissible: true,
+  },
+  {
+    id: 'journey-builder',
+    target: '[data-tooltip="journey-builder"]',
+    title: 'Automate Client Communication',
+    content:
+      'Create automated email journeys that nurture clients from inquiry to wedding day. Set it once, save hours every week.',
+    placement: 'right',
+    action: {
+      label: 'Build Journey',
+      url: '/journeys/builder',
+    },
+    timeSavingTip: 'Automated sequences save 8+ hours per week',
+    category: 'feature',
+    priority: 'high',
+    dismissible: true,
+  },
+  {
+    id: 'timeline-templates',
+    target: '[data-tooltip="timeline-templates"]',
+    title: 'Use Proven Timeline Templates',
+    content:
+      'Start with our industry-tested wedding timeline templates. Customize them for each client in minutes instead of hours.',
+    placement: 'top',
+    action: {
+      label: 'Browse Templates',
+      url: '/timelines/templates',
+    },
+    timeSavingTip: 'Templates save 3 hours per wedding timeline',
+    category: 'productivity',
+    priority: 'high',
+    dismissible: true,
+  },
+  {
+    id: 'vendor-network',
+    target: '[data-tooltip="vendor-network"]',
+    title: 'Connect Your Vendor Network',
+    content:
+      'Add trusted vendors for seamless coordination and better rates. Build your professional network within WedSync.',
+    placement: 'left',
+    action: {
+      label: 'Add Vendors',
+      url: '/vendors',
+    },
+    timeSavingTip: 'Streamlined vendor communication saves 2 hours per wedding',
+    category: 'feature',
+    priority: 'medium',
+    dismissible: true,
+  },
+  {
+    id: 'guest-import',
+    target: '[data-tooltip="guest-import"]',
+    title: 'Bulk Import Guest Lists',
+    content:
+      'Upload CSV files or connect with existing tools to import guest lists instantly. No more manual data entry.',
+    placement: 'bottom',
+    action: {
+      label: 'Import Guests',
+      url: '/guests/import',
+    },
+    timeSavingTip: 'Import 200+ guests in under 2 minutes',
+    category: 'productivity',
+    priority: 'medium',
+    dismissible: true,
+  },
+  {
+    id: 'mobile-app',
+    target: '[data-tooltip="mobile-app"]',
+    title: 'Get the Mobile App',
+    content:
+      'Stay connected with clients on-the-go. Respond to messages, update timelines, and manage weddings from anywhere.',
+    placement: 'auto',
+    action: {
+      label: 'Download App',
+      url: '/mobile',
+    },
+    timeSavingTip: 'Respond 3x faster with mobile notifications',
+    category: 'optimization',
+    priority: 'low',
+    dismissible: true,
+  },
+];
+
+const categoryIcons = {
+  feature: Sparkles,
+  productivity: Target,
+  milestone: Star,
+  optimization: Zap,
+};
+
+const categoryColors = {
+  feature: 'text-purple-600 bg-purple-100',
+  productivity: 'text-green-600 bg-green-100',
+  milestone: 'text-amber-600 bg-amber-100',
+  optimization: 'text-blue-600 bg-blue-100',
+};
+
+const priorityColors = {
+  low: 'border-gray-300',
+  medium: 'border-blue-400',
+  high: 'border-green-500',
+};
+
+function calculateTooltipPosition(
+  targetElement: Element,
+  tooltipElement: HTMLDivElement | null,
+  preferredPlacement: string,
+): TooltipPosition {
+  if (!tooltipElement) {
+    return { x: 0, y: 0, placement: 'bottom' };
+  }
+
+  const targetRect = targetElement.getBoundingClientRect();
+  const tooltipRect = tooltipElement.getBoundingClientRect();
+  const viewport = {
+    width: window.innerWidth,
+    height: window.innerHeight,
+  };
+
+  const spacing = 12; // Gap between target and tooltip
+  let x = 0;
+  let y = 0;
+  let placement: 'top' | 'bottom' | 'left' | 'right' = 'bottom';
+
+  // Try preferred placement first, then fallback
+  const placements =
+    preferredPlacement === 'auto'
+      ? ['bottom', 'top', 'right', 'left']
+      : [preferredPlacement, 'bottom', 'top', 'right', 'left'];
+
+  for (const p of placements) {
+    let testX = 0;
+    let testY = 0;
+
+    switch (p) {
+      case 'top':
+        testX = targetRect.left + targetRect.width / 2 - tooltipRect.width / 2;
+        testY = targetRect.top - tooltipRect.height - spacing;
+        break;
+      case 'bottom':
+        testX = targetRect.left + targetRect.width / 2 - tooltipRect.width / 2;
+        testY = targetRect.bottom + spacing;
+        break;
+      case 'left':
+        testX = targetRect.left - tooltipRect.width - spacing;
+        testY = targetRect.top + targetRect.height / 2 - tooltipRect.height / 2;
+        break;
+      case 'right':
+        testX = targetRect.right + spacing;
+        testY = targetRect.top + targetRect.height / 2 - tooltipRect.height / 2;
+        break;
+    }
+
+    // Check if tooltip fits in viewport
+    const fitsX = testX >= 0 && testX + tooltipRect.width <= viewport.width;
+    const fitsY = testY >= 0 && testY + tooltipRect.height <= viewport.height;
+
+    if (fitsX && fitsY) {
+      x = testX;
+      y = testY;
+      placement = p as any;
+      break;
+    }
+  }
+
+  // Ensure tooltip stays within viewport bounds
+  x = Math.max(8, Math.min(x, viewport.width - tooltipRect.width - 8));
+  y = Math.max(8, Math.min(y, viewport.height - tooltipRect.height - 8));
+
+  return { x, y, placement };
+}
+
+function TooltipContent({
+  step,
+  onNext,
+  onPrev,
+  onSkip,
+  onAction,
+  currentIndex,
+  totalSteps,
+  showProgress,
+}: {
+  step: TooltipStep;
+  onNext?: () => void;
+  onPrev?: () => void;
+  onSkip?: () => void;
+  onAction?: () => void;
+  currentIndex: number;
+  totalSteps: number;
+  showProgress: boolean;
+}) {
+  const CategoryIcon = categoryIcons[step.category];
+
+  return (
+    <Card
+      className={`p-4 max-w-sm shadow-lg border-l-4 ${priorityColors[step.priority]} bg-white`}
+    >
+      {/* Header */}
+      <div className="flex items-start justify-between mb-3">
+        <div className="flex items-center space-x-2">
+          <div className={`p-1.5 rounded-md ${categoryColors[step.category]}`}>
+            <CategoryIcon className="w-4 h-4" />
+          </div>
+          <h4 className="font-semibold text-gray-900 text-sm">{step.title}</h4>
+        </div>
+        {step.dismissible && (
+          <button
+            onClick={onSkip}
+            className="text-gray-400 hover:text-gray-600 transition-colors"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        )}
+      </div>
+
+      {/* Content */}
+      <p className="text-sm text-gray-600 mb-3 leading-relaxed">
+        {step.content}
+      </p>
+
+      {/* Time saving tip */}
+      {step.timeSavingTip && (
+        <div className="mb-3 p-2 bg-green-50 border border-green-200 rounded-lg">
+          <div className="flex items-center space-x-1 mb-1">
+            <Clock className="w-3 h-3 text-green-600" />
+            <span className="text-xs font-medium text-green-800">
+              Time Saver
+            </span>
+          </div>
+          <p className="text-xs text-green-700">{step.timeSavingTip}</p>
+        </div>
+      )}
+
+      {/* Action button */}
+      {step.action && (
+        <div className="mb-3">
+          <Button
+            size="sm"
+            variant="primary"
+            onClick={onAction}
+            className="w-full font-medium"
+          >
+            {step.action.label}
+            <ArrowRight className="w-3 h-3 ml-1" />
+          </Button>
+        </div>
+      )}
+
+      {/* Navigation */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center space-x-2">
+          {currentIndex > 0 && (
+            <Button size="sm" variant="outline" onClick={onPrev}>
+              <ChevronLeft className="w-3 h-3" />
+            </Button>
+          )}
+          {currentIndex < totalSteps - 1 && (
+            <Button size="sm" variant="outline" onClick={onNext}>
+              <ChevronRight className="w-3 h-3" />
+            </Button>
+          )}
+        </div>
+
+        {/* Progress */}
+        {showProgress && (
+          <div className="flex items-center space-x-2">
+            <span className="text-xs text-gray-500">
+              {currentIndex + 1} of {totalSteps}
+            </span>
+            <div className="w-16 h-1 bg-gray-200 rounded-full overflow-hidden">
+              <motion.div
+                initial={{ width: 0 }}
+                animate={{
+                  width: `${((currentIndex + 1) / totalSteps) * 100}%`,
+                }}
+                transition={{ duration: 0.3 }}
+                className="h-full bg-primary-500"
+              />
+            </div>
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+export function InteractiveTooltips({
+  steps = TRIAL_TOOLTIP_STEPS,
+  autoStart = false,
+  showProgress = true,
+  onComplete,
+  onSkip,
+  className = '',
+}: InteractiveTooltipsProps) {
+  const [currentStep, setCurrentStep] = useState<number>(-1);
+  const [isActive, setIsActive] = useState(autoStart);
+  const [position, setPosition] = useState<TooltipPosition>({
+    x: 0,
+    y: 0,
+    placement: 'bottom',
+  });
+  const [highlightedElement, setHighlightedElement] = useState<Element | null>(
+    null,
+  );
+  const tooltipRef = useRef<HTMLDivElement>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
+
+  const activeStep = currentStep >= 0 ? steps[currentStep] : null;
+
+  // Calculate tooltip position when step changes
+  useEffect(() => {
+    if (!activeStep || !isActive) return;
+
+    const targetElement = document.querySelector(activeStep.target);
+    if (!targetElement || !tooltipRef.current) return;
+
+    setHighlightedElement(targetElement);
+    const pos = calculateTooltipPosition(
+      targetElement,
+      tooltipRef.current,
+      activeStep.placement,
+    );
+    setPosition(pos);
+
+    // Scroll target into view if needed
+    targetElement.scrollIntoView({
+      behavior: 'smooth',
+      block: 'center',
+      inline: 'center',
+    });
+  }, [activeStep, isActive]);
+
+  // Start tour
+  const startTour = () => {
+    setIsActive(true);
+    setCurrentStep(0);
+  };
+
+  // Navigate to next step
+  const handleNext = () => {
+    if (currentStep < steps.length - 1) {
+      setCurrentStep(currentStep + 1);
+    } else {
+      handleComplete();
+    }
+  };
+
+  // Navigate to previous step
+  const handlePrev = () => {
+    if (currentStep > 0) {
+      setCurrentStep(currentStep - 1);
+    }
+  };
+
+  // Skip tour
+  const handleSkip = () => {
+    setIsActive(false);
+    setCurrentStep(-1);
+    setHighlightedElement(null);
+    onSkip?.();
+  };
+
+  // Complete tour
+  const handleComplete = () => {
+    setIsActive(false);
+    setCurrentStep(-1);
+    setHighlightedElement(null);
+    onComplete?.();
+  };
+
+  // Handle action button click
+  const handleAction = () => {
+    if (activeStep?.action) {
+      if (activeStep.action.url) {
+        window.location.href = activeStep.action.url;
+      } else if (activeStep.action.onClick) {
+        activeStep.action.onClick();
+      }
+    }
+    handleNext();
+  };
+
+  // Render spotlight overlay
+  const renderOverlay = () => {
+    if (!isActive || !highlightedElement) return null;
+
+    const targetRect = highlightedElement.getBoundingClientRect();
+    const padding = 8;
+
+    return createPortal(
+      <div
+        ref={overlayRef}
+        className="fixed inset-0 z-40 pointer-events-none"
+        style={{ backgroundColor: 'rgba(0, 0, 0, 0.4)' }}
+      >
+        {/* Spotlight hole */}
+        <div
+          className="absolute bg-transparent border-2 border-primary-500 rounded-lg shadow-lg"
+          style={{
+            left: targetRect.left - padding,
+            top: targetRect.top - padding,
+            width: targetRect.width + padding * 2,
+            height: targetRect.height + padding * 2,
+            boxShadow: `0 0 0 9999px rgba(0, 0, 0, 0.4)`,
+          }}
+        />
+      </div>,
+      document.body,
+    );
+  };
+
+  // Render tooltip
+  const renderTooltip = () => {
+    if (!isActive || !activeStep) return null;
+
+    return createPortal(
+      <AnimatePresence>
+        <motion.div
+          ref={tooltipRef}
+          variants={tooltipAnimation}
+          initial="initial"
+          animate="animate"
+          exit="exit"
+          className="fixed z-50 pointer-events-auto"
+          style={{
+            left: position.x,
+            top: position.y,
+          }}
+        >
+          <TooltipContent
+            step={activeStep}
+            onNext={handleNext}
+            onPrev={handlePrev}
+            onSkip={handleSkip}
+            onAction={handleAction}
+            currentIndex={currentStep}
+            totalSteps={steps.length}
+            showProgress={showProgress}
+          />
+        </motion.div>
+      </AnimatePresence>,
+      document.body,
+    );
+  };
+
+  // Auto-start tour when component mounts
+  useEffect(() => {
+    if (autoStart) {
+      const timer = setTimeout(startTour, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [autoStart]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      setIsActive(false);
+      setHighlightedElement(null);
+    };
+  }, []);
+
+  return (
+    <div className={className}>
+      {/* Tour trigger button */}
+      {!isActive && (
+        <Button
+          onClick={startTour}
+          variant="outline"
+          size="sm"
+          className="fixed bottom-4 right-4 z-30 shadow-lg"
+        >
+          <Lightbulb className="w-4 h-4 mr-1" />
+          Feature Tour
+        </Button>
+      )}
+
+      {/* Overlay */}
+      {renderOverlay()}
+
+      {/* Tooltip */}
+      {renderTooltip()}
+    </div>
+  );
+}
+
+// Hook for programmatically triggering tooltips
+export function useTrialTooltips() {
+  const [tooltipState, setTooltipState] = useState({
+    isActive: false,
+    currentStep: -1,
+  });
+
+  const showTooltip = (target: string, content: Partial<TooltipStep>) => {
+    const tooltipStep: TooltipStep = {
+      id: `tooltip-${Date.now()}`,
+      target,
+      title: content.title || 'Tip',
+      content: content.content || '',
+      placement: content.placement || 'auto',
+      category: content.category || 'feature',
+      priority: content.priority || 'medium',
+      dismissible: content.dismissible !== false,
+      ...content,
+    };
+
+    setTooltipState({
+      isActive: true,
+      currentStep: 0,
+    });
+
+    return tooltipStep;
+  };
+
+  const hideTooltip = () => {
+    setTooltipState({
+      isActive: false,
+      currentStep: -1,
+    });
+  };
+
+  return {
+    showTooltip,
+    hideTooltip,
+    isActive: tooltipState.isActive,
+  };
+}

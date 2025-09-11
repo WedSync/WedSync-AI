@@ -1,0 +1,269 @@
+'use client';
+
+import React from 'react';
+import { useDraggable } from '@dnd-kit/core';
+import { motion } from 'framer-motion';
+import {
+  Mail,
+  Calendar,
+  FileText,
+  GitBranch,
+  Star,
+  Users,
+  Split,
+  PlayCircle,
+  CheckCircle,
+  Clock,
+  Sparkles,
+} from 'lucide-react';
+
+interface DraggableNodeProps {
+  id: string;
+  label: string;
+  icon: React.ReactNode;
+  description: string;
+  gradient: string;
+  badge?: string;
+}
+
+function DraggableNode({
+  id,
+  label,
+  icon,
+  description,
+  gradient,
+  badge,
+}: DraggableNodeProps) {
+  const { attributes, listeners, setNodeRef, transform, isDragging } =
+    useDraggable({
+      id,
+    });
+
+  const style = transform
+    ? {
+        transform: `translate3d(${transform.x}px, ${transform.y}px, 0)`,
+      }
+    : undefined;
+
+  return (
+    <motion.div
+      ref={setNodeRef}
+      style={style}
+      {...listeners}
+      {...attributes}
+      data-node-type={id}
+      draggable="true"
+      whileHover={{ scale: 1.02, y: -2 }}
+      whileTap={{ scale: 0.98 }}
+      className={`
+        relative p-4 rounded-xl cursor-move transition-all overflow-hidden
+        ${isDragging ? 'opacity-50 shadow-2xl scale-105 z-50' : ''}
+      `}
+    >
+      {/* Gradient background */}
+      <div
+        className={`absolute inset-0 bg-gradient-to-br ${gradient} opacity-90`}
+      />
+
+      {/* Glass overlay */}
+      <div className="absolute inset-0 bg-white/10 backdrop-blur-sm" />
+
+      {/* Badge */}
+      {badge && (
+        <div className="absolute top-2 right-2 z-20">
+          <motion.div
+            initial={{ scale: 0 }}
+            animate={{ scale: 1 }}
+            className="bg-yellow-400 text-yellow-900 text-xs font-bold px-2 py-0.5 rounded-full flex items-center gap-1"
+          >
+            <Sparkles className="h-3 w-3" />
+            {badge}
+          </motion.div>
+        </div>
+      )}
+
+      {/* Content */}
+      <div className="relative z-10 flex items-start space-x-3">
+        <motion.div
+          whileHover={{ rotate: 360 }}
+          transition={{ duration: 0.5 }}
+          className="bg-white/20 text-white p-2 rounded-lg mt-0.5"
+        >
+          {icon}
+        </motion.div>
+        <div className="flex-1 min-w-0">
+          <h4 className="text-sm font-semibold text-white">{label}</h4>
+          <p className="text-xs text-white/80 mt-0.5">{description}</p>
+        </div>
+      </div>
+
+      {/* Hover glow effect */}
+      <motion.div
+        className="absolute inset-0 rounded-xl pointer-events-none"
+        initial={{ opacity: 0 }}
+        whileHover={{ opacity: 1 }}
+        style={{
+          background:
+            'radial-gradient(circle at center, rgba(255,255,255,0.2) 0%, transparent 70%)',
+        }}
+      />
+    </motion.div>
+  );
+}
+
+const nodeCategories = [
+  {
+    name: 'Triggers',
+    description: 'Start and end your journey',
+    nodes: [
+      {
+        id: 'start',
+        label: 'Start',
+        icon: <PlayCircle className="h-5 w-5" />,
+        description: 'Journey entry point',
+        gradient: 'from-teal-500 to-cyan-500',
+      },
+      {
+        id: 'end',
+        label: 'End',
+        icon: <CheckCircle className="h-5 w-5" />,
+        description: 'Journey completion',
+        gradient: 'from-gray-600 to-gray-500',
+      },
+    ],
+  },
+  {
+    name: 'Communication',
+    description: 'Engage with your clients',
+    nodes: [
+      {
+        id: 'email',
+        label: 'Email',
+        icon: <Mail className="h-5 w-5" />,
+        description: 'Send automated emails',
+        gradient: 'from-blue-500 to-cyan-400',
+        badge: 'Popular',
+      },
+      {
+        id: 'form',
+        label: 'Form',
+        icon: <FileText className="h-5 w-5" />,
+        description: 'Collect information',
+        gradient: 'from-green-500 to-emerald-400',
+      },
+      {
+        id: 'review',
+        label: 'Review Request',
+        icon: <Star className="h-5 w-5" />,
+        description: 'Request client reviews',
+        gradient: 'from-yellow-500 to-yellow-400',
+      },
+    ],
+  },
+  {
+    name: 'Timing',
+    description: 'Control the flow of time',
+    nodes: [
+      {
+        id: 'delay',
+        label: 'Delay',
+        icon: <Clock className="h-5 w-5" />,
+        description: 'Wait before next step',
+        gradient: 'from-violet-500 to-purple-500',
+        badge: 'New',
+      },
+      {
+        id: 'timeline',
+        label: 'Timeline',
+        icon: <Calendar className="h-5 w-5" />,
+        description: 'Wedding date milestone',
+        gradient: 'from-purple-500 to-pink-500',
+      },
+      {
+        id: 'meeting',
+        label: 'Meeting',
+        icon: <Users className="h-5 w-5" />,
+        description: 'Schedule consultation',
+        gradient: 'from-indigo-500 to-blue-500',
+      },
+    ],
+  },
+  {
+    name: 'Logic',
+    description: 'Add intelligence to your flow',
+    nodes: [
+      {
+        id: 'condition',
+        label: 'Condition',
+        icon: <GitBranch className="h-5 w-5" />,
+        description: 'If/then branching',
+        gradient: 'from-orange-500 to-amber-400',
+      },
+      {
+        id: 'split',
+        label: 'Split Test',
+        icon: <Split className="h-5 w-5" />,
+        description: 'A/B testing paths',
+        gradient: 'from-red-500 to-rose-400',
+      },
+    ],
+  },
+];
+
+export function OverflowNodePalette() {
+  return (
+    <motion.div
+      initial={{ x: -20, opacity: 0 }}
+      animate={{ x: 0, opacity: 1 }}
+      className="w-80 border-r bg-gradient-to-b from-background to-background/95 p-5 overflow-y-auto"
+    >
+      <div className="mb-6">
+        <h2 className="text-xl font-bold bg-gradient-to-r from-primary to-purple-600 bg-clip-text text-transparent">
+          Journey Nodes
+        </h2>
+        <p className="text-sm text-muted-foreground mt-1">
+          Drag nodes to build your workflow
+        </p>
+      </div>
+
+      <div className="space-y-8">
+        {nodeCategories.map((category, categoryIndex) => (
+          <motion.div
+            key={category.name}
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: categoryIndex * 0.1 }}
+          >
+            <div className="mb-4">
+              <h3 className="text-sm font-semibold text-foreground">
+                {category.name}
+              </h3>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {category.description}
+              </p>
+            </div>
+            <div className="space-y-3">
+              {category.nodes.map((node, nodeIndex) => (
+                <motion.div
+                  key={node.id}
+                  initial={{ opacity: 0, x: -20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: categoryIndex * 0.1 + nodeIndex * 0.05 }}
+                >
+                  <DraggableNode
+                    id={node.id}
+                    label={node.label}
+                    icon={node.icon}
+                    description={node.description}
+                    gradient={node.gradient}
+                    badge={node.badge}
+                  />
+                </motion.div>
+              ))}
+            </div>
+          </motion.div>
+        ))}
+      </div>
+    </motion.div>
+  );
+}

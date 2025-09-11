@@ -1,0 +1,178 @@
+/**
+ * WS-116: Supplier Service Area Management API
+ * CRUD operations for supplier service areas
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { serviceRadiusCalculator } from '@/lib/services/service-radius-calculator';
+
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const supplierId = params.id;
+    
+    // Validate UUID format
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(supplierId)) {
+      return NextResponse.json(
+        { error: 'Invalid supplier ID format' },
+        { status: 400 }
+      );
+    }
+
+    // Get query parameters
+    const { searchParams } = new URL(request.url);
+    const includeAnalysis = searchParams.get('includeAnalysis') === 'true';
+    const includeOptimization = searchParams.get('includeOptimization') === 'true';
+
+    let response: any = {
+      supplierId,
+      serviceArea: null
+    };
+
+    try {
+      // Get service area analysis
+      if (includeAnalysis) {
+        response.analysis = await serviceRadiusCalculator.analyzeServiceArea(supplierId);
+      }
+
+      // Get optimization recommendations
+      if (includeOptimization) {
+        response.optimization = await serviceRadiusCalculator.optimizeServiceArea(supplierId);
+      }
+
+      return NextResponse.json({
+        success: true,
+        data: response
+      });
+
+    } catch (analysisError: any) {
+      // If analysis fails but we still want to return basic data
+      return NextResponse.json({
+        success: true,
+        data: response,
+        warnings: [`Analysis failed: ${analysisError.message}`]
+      });
+    }
+
+  } catch (error: any) {
+    console.error('Service area GET API error:', error);
+    
+    return NextResponse.json(
+      { 
+        success: false,
+        error: 'Failed to get service area',
+        message: error.message || 'Internal server error'
+      },
+      { status: 500 }
+    );
+  }
+}
+
+export async function PUT(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const supplierId = params.id;
+    
+    // Validate UUID format
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(supplierId)) {
+      return NextResponse.json(
+        { error: 'Invalid supplier ID format' },
+        { status: 400 }
+      );
+    }
+
+    const body = await request.json();
+    
+    // Validate required fields
+    const { serviceType, baseLocation } = body;
+    
+    if (!serviceType || !['radius', 'polygon', 'regions', 'nationwide'].includes(serviceType)) {
+      return NextResponse.json(
+        { error: 'Valid service type is required (radius, polygon, regions, nationwide)' },
+        { status: 400 }
+      );
+    }
+
+    if (!baseLocation || !baseLocation.latitude || !baseLocation.longitude) {
+      return NextResponse.json(
+        { error: 'Valid base location with latitude and longitude is required' },
+        { status: 400 }
+      );
+    }
+
+    // Validate coordinates
+    if (
+      baseLocation.latitude < -90 || baseLocation.latitude > 90 ||
+      baseLocation.longitude < -180 || baseLocation.longitude > 180
+    ) {
+      return NextResponse.json(
+        { error: 'Invalid latitude or longitude values' },
+        { status: 400 }
+      );
+    }
+
+    // Validate service type specific requirements
+    if (serviceType === 'radius' && (!body.radiusKm || body.radiusKm < 1 || body.radiusKm > 1000)) {
+      return NextResponse.json(
+        { error: 'Valid radius in kilometers (1-1000) is required for radius service type' },
+        { status: 400 }
+      );
+    }
+
+    if (serviceType === 'polygon' && (!body.polygonCoordinates || !Array.isArray(body.polygonCoordinates))) {
+      return NextResponse.json(
+        { error: 'Valid polygon coordinates are required for polygon service type' },
+        { status: 400 }
+      );
+    }
+
+    if (serviceType === 'regions' && !body.specificRegions) {
+      return NextResponse.json(
+        { error: 'Specific regions are required for regions service type' },
+        { status: 400 }
+      );
+    }
+
+    // Create service area configuration
+    const config = {
+      supplierId,
+      baseLocation,
+      serviceType,
+      radiusKm: body.radiusKm,
+      travelTimeMaxMinutes: body.travelTimeMaxMinutes,
+      polygonCoordinates: body.polygonCoordinates,
+      specificRegions: body.specificRegions,
+      maxDistanceKm: body.maxDistanceKm,
+      additionalTravelCost: body.additionalTravelCost,
+      minimumBookingValue: body.minimumBookingValue,
+      nationwideCoverage: body.nationwideCoverage || false,
+      internationalCoverage: body.internationalCoverage || false,
+      notes: body.notes
+    };
+
+    const result = await serviceRadiusCalculator.updateServiceArea(config);
+
+    return NextResponse.json({
+      success: true,
+      data: result
+    });
+
+  } catch (error: any) {
+    console.error('Service area PUT API error:', error);
+    
+    return NextResponse.json(
+      { 
+        success: false,
+        error: 'Failed to update service area',
+        message: error.message || 'Internal server error'
+      },
+      { status: 500 }
+    );
+  }
+}

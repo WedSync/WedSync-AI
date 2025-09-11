@@ -1,0 +1,246 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createServerClient } from '@supabase/ssr';
+import { cookies } from 'next/headers';
+import { sectionVisibilityService } from '@/lib/services/section-visibility-service';
+
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id } = await params;
+  try {
+    // CRITICAL SECURITY FIX - Authentication required for client data access
+    const cookieStore = await cookies()
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      {
+        cookies: {
+          get(name: string) {
+            return cookieStore.get(name)?.value
+          },
+        },
+      }
+    )
+
+    // Check authentication - CRITICAL SECURITY REQUIREMENT
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized - Authentication required' }, { status: 401 })
+    }
+    // Get client milestones with completion status
+    const { data: client } = await supabase
+      .from('clients')
+      .select('wedding_date')
+      .eq('id', id)
+      .single();
+
+    if (!client) {
+      return NextResponse.json(
+        { error: 'Client not found' },
+        { status: 404 }
+      );
+    }
+
+    // Get all milestones
+    const { data: allMilestones } = await supabase
+      .from('wedding_milestones')
+      .select('*')
+      .order('days_from_wedding', { ascending: true });
+
+    // Get completed milestones
+    const { data: completedMilestones } = await supabase
+      .from('client_milestone_completion')
+      .select('*')
+      .eq('client_id', id);
+
+    const completedKeys = new Set(completedMilestones?.map(m => m.milestone_key) || []);
+
+    // Calculate current milestone status
+    const milestonesWithStatus = allMilestones?.map(milestone => {
+      const isCompleted = completedKeys.has(milestone.milestone_key);
+      const completion = completedMilestones?.find(c => c.milestone_key === milestone.milestone_key);
+      
+      let status = 'upcoming';
+      if (isCompleted) {
+        status = 'completed';
+      } else if (client.wedding_date) {
+        const daysUntilWedding = Math.floor(
+          (new Date(client.wedding_date).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24)
+        );
+        
+        if (daysUntilWedding <= Math.abs(milestone.days_from_wedding)) {
+          status = 'due';
+        }
+      }
+
+      return {
+        ...milestone,
+        status,
+        completed_at: completion?.completed_at,
+        completed_by: completion?.completed_by,
+        auto_completed: completion?.auto_completed
+      };
+    }) || [];
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        milestones: milestonesWithStatus,
+        wedding_date: client.wedding_date,
+        total_milestones: allMilestones?.length || 0,
+        completed_count: completedMilestones?.length || 0
+      }
+    });
+
+  } catch (error) {
+    console.error('Get milestones error:', error);
+    return NextResponse.json(
+      { error: 'Failed to fetch milestones' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function POST(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id } = await params;
+  try {
+    const body = await request.json();
+    const { action, milestone_key, completed_by } = body;
+
+    switch (action) {
+      case 'complete_milestone':
+        if (!milestone_key) {
+          return NextResponse.json(
+            { error: 'milestone_key is required for complete_milestone action' },
+            { status: 400 }
+          );
+        }
+
+        const result = await sectionVisibilityService.processMilestoneCompletion(
+          id,
+          milestone_key,
+          completed_by,
+          false
+        );
+
+        return NextResponse.json({
+          success: true,
+          data: result
+        });
+
+      case 'process_timeline':
+        // Get client wedding date
+        const { data: client } = await supabase
+          .from('clients')
+          .select('wedding_date')
+          .eq('id', id)
+          .single();
+
+        if (!client?.wedding_date) {
+          return NextResponse.json(
+            { error: 'Client wedding date not set' },
+            { status: 400 }
+          );
+        }
+
+        const timelineResult = await sectionVisibilityService.processTimelineMilestones(
+          id,
+          new Date(client.wedding_date)
+        );
+
+        return NextResponse.json({
+          success: true,
+          data: timelineResult
+        });
+
+      case 'schedule_processing':
+        // Get client wedding date
+        const { data: scheduleClient } = await supabase
+          .from('clients')
+          .select('wedding_date')
+          .eq('id', id)
+          .single();
+
+        if (!scheduleClient?.wedding_date) {
+          return NextResponse.json(
+            { error: 'Client wedding date not set' },
+            { status: 400 }
+          );
+        }
+
+        await sectionVisibilityService.scheduleAutomaticMilestoneProcessing(
+          id,
+          new Date(scheduleClient.wedding_date)
+        );
+
+        return NextResponse.json({
+          success: true,
+          data: { message: 'Automatic milestone processing scheduled' }
+        });
+
+      default:
+        return NextResponse.json(
+          { error: 'Invalid action' },
+          { status: 400 }
+        );
+    }
+
+  } catch (error) {
+    console.error('Milestone processing error:', error);
+    return NextResponse.json(
+      { error: 'Failed to process milestone action' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id } = await params;
+  try {
+    const { searchParams } = new URL(request.url);
+    const milestoneKey = searchParams.get('milestone_key');
+
+    if (!milestoneKey) {
+      return NextResponse.json(
+        { error: 'milestone_key parameter is required' },
+        { status: 400 }
+      );
+    }
+
+    // Remove milestone completion
+    const { data, error } = await supabase
+      .from('client_milestone_completion')
+      .delete()
+      .eq('client_id', id)
+      .eq('milestone_key', milestoneKey);
+
+    if (error) {
+      throw error;
+    }
+
+    // Invalidate visibility cache for this client
+    await supabase
+      .from('section_visibility_cache')
+      .delete()
+      .eq('client_id', id);
+
+    return NextResponse.json({
+      success: true,
+      data: { message: 'Milestone completion removed' }
+    });
+
+  } catch (error) {
+    console.error('Remove milestone completion error:', error);
+    return NextResponse.json(
+      { error: 'Failed to remove milestone completion' },
+      { status: 500 }
+    );
+  }
+}

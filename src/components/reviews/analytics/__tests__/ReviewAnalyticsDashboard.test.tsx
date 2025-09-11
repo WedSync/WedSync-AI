@@ -1,0 +1,216 @@
+/**
+ * @fileoverview Unit Tests for ReviewAnalyticsDashboard
+ * WS-047: Review Collection System Analytics Dashboard & Testing Framework
+ * 
+ * Test Coverage: Component rendering, data fetching, error handling, real-time updates
+ */
+
+import React from 'react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { ReviewAnalyticsDashboard } from '../ReviewAnalyticsDashboard';
+import * as supabaseHooks from '@/hooks/useSupabaseRealtime';
+// Mock dependencies
+vi.mock('@/hooks/useSupabaseRealtime');
+vi.mock('@/lib/caching/cache-manager', () => ({
+  CacheManager: {
+    getInstance: () => ({
+      get: vi.fn(),
+      set: vi.fn(),
+      invalidate: vi.fn(),
+    }),
+  },
+}));
+vi.mock('@/lib/monitoring/performance-monitor', () => ({
+  PerformanceMonitor: {
+      measureDashboardLoad: vi.fn(),
+      measureChartRender: vi.fn(),
+      measureApiCall: vi.fn(),
+// Mock fetch globally
+const mockFetch = vi.fn();
+global.fetch = mockFetch;
+// Mock data
+const mockAnalyticsData = {
+  totalReviews: 156,
+  averageRating: 4.7,
+  responseRate: 0.89,
+  sentimentScore: 0.82,
+  monthlyGrowth: 0.15,
+  chartData: {
+    trends: [
+      { date: '2024-01', reviews: 45, rating: 4.5 },
+      { date: '2024-02', reviews: 52, rating: 4.6 },
+      { date: '2024-03', reviews: 59, rating: 4.7 },
+    ],
+    distribution: [
+      { rating: 5, count: 89 },
+      { rating: 4, count: 45 },
+      { rating: 3, count: 15 },
+      { rating: 2, count: 5 },
+      { rating: 1, count: 2 },
+    sources: [
+      { platform: 'Google', count: 78, percentage: 50 },
+      { platform: 'Yelp', count: 47, percentage: 30 },
+      { platform: 'Facebook', count: 31, percentage: 20 },
+  lastUpdated: new Date().toISOString(),
+};
+describe('ReviewAnalyticsDashboard', () => {
+  const defaultProps = {
+    supplierId: 'test-supplier-id',
+    dateRange: {
+      start: new Date('2024-01-01'),
+      end: new Date('2024-03-31'),
+    },
+  };
+  beforeEach(() => {
+    vi.clearAllMocks();
+    
+    // Mock successful API response
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => mockAnalyticsData,
+    });
+    // Mock Supabase realtime hook
+    vi.mocked(supabaseHooks.useSupabaseRealtime).mockReturnValue({
+      isConnected: true,
+      subscribe: vi.fn(),
+      unsubscribe: vi.fn(),
+  });
+  afterEach(() => {
+    vi.resetAllMocks();
+  describe('Component Rendering', () => {
+    it('renders loading state initially', () => {
+      render(<ReviewAnalyticsDashboard {...defaultProps} />);
+      expect(screen.getByTestId('dashboard-skeleton')).toBeInTheDocument();
+    it('renders dashboard content after data loads', async () => {
+      
+      await waitFor(() => {
+        expect(screen.getByTestId('analytics-dashboard')).toBeInTheDocument();
+      });
+      // Check for metrics cards
+      expect(screen.getByTestId('metric-total-reviews')).toBeInTheDocument();
+      expect(screen.getByTestId('metric-average-rating')).toBeInTheDocument();
+      expect(screen.getByTestId('metric-response-rate')).toBeInTheDocument();
+      expect(screen.getByTestId('metric-sentiment-score')).toBeInTheDocument();
+      // Check for chart containers
+      expect(screen.getByTestId('review-trends-chart')).toBeInTheDocument();
+      expect(screen.getByTestId('rating-distribution-chart')).toBeInTheDocument();
+      expect(screen.getByTestId('review-sources-chart')).toBeInTheDocument();
+    it('displays correct metric values', async () => {
+        expect(screen.getByText('156')).toBeInTheDocument(); // Total reviews
+        expect(screen.getByText('4.7')).toBeInTheDocument(); // Average rating
+        expect(screen.getByText('89%')).toBeInTheDocument(); // Response rate
+        expect(screen.getByText('82%')).toBeInTheDocument(); // Sentiment score
+  describe('Error Handling', () => {
+    it('displays error state when API fails', async () => {
+      mockFetch.mockRejectedValue(new Error('API Error'));
+        expect(screen.getByTestId('error-message')).toBeInTheDocument();
+        expect(screen.getByText(/Failed to load analytics data/)).toBeInTheDocument();
+    it('displays retry button on error', async () => {
+      mockFetch.mockRejectedValue(new Error('Network Error'));
+        expect(screen.getByTestId('retry-button')).toBeInTheDocument();
+    it('retries data fetching when retry button is clicked', async () => {
+      mockFetch
+        .mockRejectedValueOnce(new Error('Network Error'))
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => mockAnalyticsData,
+        });
+      // Wait for error state
+      // Click retry
+      fireEvent.click(screen.getByTestId('retry-button'));
+      // Should show loading then success
+    it('handles 403 Forbidden error appropriately', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 403,
+        json: async () => ({ error: 'Forbidden' }),
+        expect(screen.getByText(/Access denied/)).toBeInTheDocument();
+    it('handles 404 Not Found error appropriately', async () => {
+        status: 404,
+        json: async () => ({ error: 'Not found' }),
+        expect(screen.getByText(/No data available/)).toBeInTheDocument();
+  describe('Real-time Updates', () => {
+    it('subscribes to real-time updates on mount', () => {
+      const mockSubscribe = vi.fn();
+      vi.mocked(supabaseHooks.useSupabaseRealtime).mockReturnValue({
+        isConnected: true,
+        subscribe: mockSubscribe,
+        unsubscribe: vi.fn(),
+      expect(mockSubscribe).toHaveBeenCalledWith(
+        'reviews',
+        expect.any(Function)
+      );
+    it('handles real-time connection status', () => {
+        isConnected: false,
+        subscribe: vi.fn(),
+      expect(screen.getByTestId('connection-status')).toHaveTextContent('Disconnected');
+    it('refreshes data when real-time update received', async () => {
+      let realtimeCallback: ((data: any) => void) | undefined;
+        subscribe: vi.fn().mockImplementation((table, callback) => {
+          realtimeCallback = callback;
+        }),
+      // Wait for initial load
+      // Clear previous fetch calls
+      mockFetch.mockClear();
+      // Trigger real-time update
+      const updateData = { eventType: 'INSERT', table: 'reviews' };
+      realtimeCallback?.(updateData);
+      // Should trigger data refresh
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+  describe('Performance', () => {
+    it('measures dashboard load time', async () => {
+      const mockMeasureDashboardLoad = vi.fn();
+      vi.doMock('@/lib/monitoring/performance-monitor', () => ({
+        PerformanceMonitor: {
+          getInstance: () => ({
+            measureDashboardLoad: mockMeasureDashboardLoad,
+            measureChartRender: vi.fn(),
+            measureApiCall: vi.fn(),
+          }),
+        },
+      }));
+      expect(mockMeasureDashboardLoad).toHaveBeenCalled();
+    it('uses cache for subsequent requests', async () => {
+      const mockCache = {
+        get: vi.fn().mockReturnValue(mockAnalyticsData),
+        set: vi.fn(),
+        invalidate: vi.fn(),
+      };
+      vi.doMock('@/lib/caching/cache-manager', () => ({
+        CacheManager: {
+          getInstance: () => mockCache,
+      // Should use cached data, not fetch
+      expect(mockCache.get).toHaveBeenCalled();
+      expect(mockFetch).not.toHaveBeenCalled();
+  describe('Accessibility', () => {
+    it('has proper ARIA labels', async () => {
+        expect(screen.getByRole('main')).toHaveAttribute(
+          'aria-label',
+          'Review Analytics Dashboard'
+        );
+    it('has proper heading structure', async () => {
+        expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(
+          'Review Analytics'
+    it('supports keyboard navigation', async () => {
+        const refreshButton = screen.getByTestId('refresh-button');
+        expect(refreshButton).toHaveAttribute('tabIndex', '0');
+  describe('Props and Configuration', () => {
+    it('handles missing supplierId prop', async () => {
+      render(<ReviewAnalyticsDashboard dateRange={defaultProps.dateRange} />);
+        expect(mockFetch).toHaveBeenCalledWith(
+          expect.stringContaining('/api/analytics/reviews/overview/all'),
+          expect.any(Object)
+    it('formats date range correctly in API call', async () => {
+          expect.stringContaining(
+            'dateRange=2024-01-01,2024-03-31'
+          ),
+    it('handles custom refresh interval', () => {
+      render(
+        <ReviewAnalyticsDashboard 
+          {...defaultProps} 
+          refreshInterval={30000}
+        />
+      // Should set up interval for auto-refresh
+      expect(setInterval).toHaveBeenCalledWith(expect.any(Function), 30000);
+});

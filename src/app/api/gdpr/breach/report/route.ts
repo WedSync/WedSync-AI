@@ -1,0 +1,100 @@
+/**
+ * GDPR Data Breach Reporting API
+ * POST /api/gdpr/breach/report
+ * WS-149: Reports and manages data breach incidents
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { gdprService } from '@/lib/services/gdpr-compliance-service';
+import { createClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+
+const DataBreachReportSchema = z.object({
+  breach_type: z.enum([
+    'confidentiality',
+    'integrity',
+    'availability',
+    'combined',
+  ]),
+  breach_cause: z.enum([
+    'cyber_attack',
+    'human_error',
+    'system_failure',
+    'physical_breach',
+    'third_party',
+    'malicious_insider',
+    'accidental_disclosure',
+  ]),
+  severity_level: z.enum(['low', 'medium', 'high', 'critical']),
+  occurred_at: z.string(),
+  discovered_at: z.string(),
+  data_subjects_affected: z.number(),
+  data_categories_affected: z.array(z.string()),
+  potential_consequences: z.string(),
+  risk_assessment: z.record(z.any()),
+  containment_measures: z.record(z.any()),
+});
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = createClient();
+
+    // Check authentication - only admins and security officers can report breaches
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Check if user has permission to report breaches
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('role')
+      .eq('id', user.id)
+      .single();
+
+    const allowedRoles = ['admin', 'dpo', 'privacy_officer', 'security_admin'];
+    if (!profile || !allowedRoles.includes(profile.role)) {
+      return NextResponse.json(
+        {
+          error:
+            'Permission denied. Only security personnel can report breaches.',
+        },
+        { status: 403 },
+      );
+    }
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validatedData = DataBreachReportSchema.parse(body);
+
+    // Report the breach
+    const result = await gdprService.reportDataBreach(validatedData);
+
+    // Return success response
+    return NextResponse.json({
+      success: true,
+      breach_id: result.breach.breach_id,
+      status: result.breach.status,
+      assessment: result.assessment,
+      message: `Data breach reported successfully. Reference: ${result.breach.breach_id}`,
+    });
+  } catch (error) {
+    console.error('Error reporting data breach:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid breach report data', details: error.errors },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Failed to report data breach' },
+      { status: 500 },
+    );
+  }
+}

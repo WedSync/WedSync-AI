@@ -1,0 +1,689 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { NextRequest } from 'next/server'
+import { testApiHandler } from 'next-test-api-route-handler'
+import { createMocks } from 'node-mocks-http'
+
+// Mock Supabase
+const mockSupabase = {
+  auth: {
+    getUser: vi.fn(),
+    signInWithPassword: vi.fn(),
+    signUp: vi.fn(),
+    signOut: vi.fn(),
+    refreshSession: vi.fn(),
+  },
+  from: vi.fn(() => ({
+    select: vi.fn().mockReturnThis(),
+    insert: vi.fn().mockReturnThis(),
+    update: vi.fn().mockReturnThis(),
+    eq: vi.fn().mockReturnThis(),
+    single: vi.fn(),
+  })),
+}
+
+vi.mock('@/lib/supabase/server', () => ({
+  createClient: () => mockSupabase,
+}))
+
+// Mock rate limiting
+vi.mock('@/lib/rate-limit', () => ({
+  rateLimit: vi.fn(() => null),
+  rateLimitConfigs: {
+    auth: { windowMs: 900000, max: 5 },
+    api: { windowMs: 60000, max: 100 },
+  },
+}))
+
+// Mock validation schemas
+vi.mock('@/lib/validations/auth', () => ({
+  signInSchema: {
+    parse: vi.fn((data) => data),
+  },
+  signUpSchema: {
+    parse: vi.fn((data) => data),
+  },
+}))
+
+describe('Authentication API', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  describe('POST /api/auth/signin', () => {
+    it('successfully authenticates valid wedding photographer credentials', async () => {
+      const mockUser = {
+        id: 'test-user-id',
+        email: 'photographer@weddingstudio.com',
+        user_metadata: {
+          name: 'John Smith Photography',
+          role: 'photographer',
+        },
+      }
+
+      const mockProfile = {
+        user_id: 'test-user-id',
+        organization_id: 'wedding-studio-123',
+        role: 'photographer',
+        subscription_status: 'active',
+      }
+
+      mockSupabase.auth.signInWithPassword.mockResolvedValue({
+        data: { user: mockUser },
+        error: null,
+      })
+
+      mockSupabase.from().select().eq().single.mockResolvedValue({
+        data: mockProfile,
+        error: null,
+      })
+
+      const { req, res } = createMocks({
+        method: 'POST',
+        body: {
+          email: 'photographer@weddingstudio.com',
+          password: 'securepassword123',
+        },
+      })
+
+      // Import the actual route handler
+      const handler = await import('@/app/api/auth/signin/route')
+      await handler.POST(req as NextRequest)
+
+      expect(mockSupabase.auth.signInWithPassword).toHaveBeenCalledWith({
+        email: 'photographer@weddingstudio.com',
+        password: 'securepassword123',
+      })
+
+      expect(res._getStatusCode()).toBe(200)
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.user).toEqual(mockUser)
+      expect(responseData.profile).toEqual(mockProfile)
+    })
+
+    it('rejects invalid wedding professional credentials', async () => {
+      mockSupabase.auth.signInWithPassword.mockResolvedValue({
+        data: { user: null },
+        error: { message: 'Invalid login credentials' },
+      })
+
+      const { req, res } = createMocks({
+        method: 'POST',
+        body: {
+          email: 'invalid@example.com',
+          password: 'wrongpassword',
+        },
+      })
+
+      const handler = await import('@/app/api/auth/signin/route')
+      await handler.POST(req as NextRequest)
+
+      expect(res._getStatusCode()).toBe(401)
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.error).toBe('Invalid login credentials')
+    })
+
+    it('enforces rate limiting for signin attempts', async () => {
+      const { rateLimit } = await import('@/lib/rate-limit')
+      const rateLimitResponse = new Response('Rate limit exceeded', { status: 429 })
+      ;(rateLimit as any).mockResolvedValue(rateLimitResponse)
+
+      const { req } = createMocks({
+        method: 'POST',
+        body: {
+          email: 'photographer@example.com',
+          password: 'password',
+        },
+      })
+
+      const handler = await import('@/app/api/auth/signin/route')
+      const response = await handler.POST(req as NextRequest)
+
+      expect(response.status).toBe(429)
+      expect(rateLimit).toHaveBeenCalledWith(req, expect.any(Object))
+    })
+
+    it('validates input data format for wedding accounts', async () => {
+      const { req, res } = createMocks({
+        method: 'POST',
+        body: {
+          email: 'invalid-email',
+          password: '', // Empty password
+        },
+      })
+
+      const handler = await import('@/app/api/auth/signin/route')
+      await handler.POST(req as NextRequest)
+
+      expect(res._getStatusCode()).toBe(400)
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.error).toContain('validation')
+    })
+
+    it('handles wedding studio account activation', async () => {
+      const mockUser = {
+        id: 'test-user-id',
+        email: 'studio@weddings.com',
+        email_confirmed_at: null,
+        user_metadata: { role: 'photographer' },
+      }
+
+      mockSupabase.auth.signInWithPassword.mockResolvedValue({
+        data: { user: mockUser },
+        error: null,
+      })
+
+      const { req, res } = createMocks({
+        method: 'POST',
+        body: {
+          email: 'studio@weddings.com',
+          password: 'password123',
+        },
+      })
+
+      const handler = await import('@/app/api/auth/signin/route')
+      await handler.POST(req as NextRequest)
+
+      expect(res._getStatusCode()).toBe(403)
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.error).toBe('Please verify your email address')
+    })
+
+    it('handles multi-factor authentication for wedding professionals', async () => {
+      const mockUser = {
+        id: 'test-user-id',
+        email: 'pro@weddingstudio.com',
+        user_metadata: { mfa_enabled: true },
+      }
+
+      mockSupabase.auth.signInWithPassword.mockResolvedValue({
+        data: { user: mockUser },
+        error: { message: 'MFA required' },
+      })
+
+      const { req, res } = createMocks({
+        method: 'POST',
+        body: {
+          email: 'pro@weddingstudio.com',
+          password: 'password123',
+        },
+      })
+
+      const handler = await import('@/app/api/auth/signin/route')
+      await handler.POST(req as NextRequest)
+
+      expect(res._getStatusCode()).toBe(200)
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.mfa_required).toBe(true)
+      expect(responseData.next_step).toBe('verify_mfa_token')
+    })
+  })
+
+  describe('POST /api/auth/signup', () => {
+    it('creates new wedding professional account successfully', async () => {
+      const newUser = {
+        id: 'new-user-id',
+        email: 'newphotographer@studio.com',
+        user_metadata: {
+          name: 'New Wedding Studio',
+          role: 'photographer',
+          business_type: 'photography',
+        },
+      }
+
+      mockSupabase.auth.signUp.mockResolvedValue({
+        data: { user: newUser },
+        error: null,
+      })
+
+      mockSupabase.from().insert.mockResolvedValue({
+        data: [{ user_id: 'new-user-id', role: 'photographer' }],
+        error: null,
+      })
+
+      const { req, res } = createMocks({
+        method: 'POST',
+        body: {
+          email: 'newphotographer@studio.com',
+          password: 'securepassword123',
+          name: 'New Wedding Studio',
+          role: 'photographer',
+          business_type: 'photography',
+          terms_accepted: true,
+          privacy_accepted: true,
+        },
+      })
+
+      const handler = await import('@/app/api/auth/signup/route')
+      await handler.POST(req as NextRequest)
+
+      expect(mockSupabase.auth.signUp).toHaveBeenCalledWith({
+        email: 'newphotographer@studio.com',
+        password: 'securepassword123',
+        options: {
+          data: {
+            name: 'New Wedding Studio',
+            role: 'photographer',
+            business_type: 'photography',
+          },
+        },
+      })
+
+      expect(res._getStatusCode()).toBe(201)
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.message).toBe('Account created successfully')
+      expect(responseData.verification_required).toBe(true)
+    })
+
+    it('prevents duplicate wedding professional accounts', async () => {
+      mockSupabase.auth.signUp.mockResolvedValue({
+        data: { user: null },
+        error: { message: 'User already registered' },
+      })
+
+      const { req, res } = createMocks({
+        method: 'POST',
+        body: {
+          email: 'existing@studio.com',
+          password: 'password123',
+          name: 'Existing Studio',
+          role: 'photographer',
+          terms_accepted: true,
+          privacy_accepted: true,
+        },
+      })
+
+      const handler = await import('@/app/api/auth/signup/route')
+      await handler.POST(req as NextRequest)
+
+      expect(res._getStatusCode()).toBe(409)
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.error).toBe('Account already exists')
+    })
+
+    it('validates required terms acceptance for wedding professionals', async () => {
+      const { req, res } = createMocks({
+        method: 'POST',
+        body: {
+          email: 'photographer@studio.com',
+          password: 'password123',
+          name: 'Wedding Studio',
+          role: 'photographer',
+          terms_accepted: false, // Not accepted
+          privacy_accepted: true,
+        },
+      })
+
+      const handler = await import('@/app/api/auth/signup/route')
+      await handler.POST(req as NextRequest)
+
+      expect(res._getStatusCode()).toBe(400)
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.error).toContain('terms')
+    })
+
+    it('validates wedding business types', async () => {
+      const { req, res } = createMocks({
+        method: 'POST',
+        body: {
+          email: 'vendor@example.com',
+          password: 'password123',
+          name: 'Wedding Vendor',
+          role: 'vendor',
+          business_type: 'invalid_type',
+          terms_accepted: true,
+          privacy_accepted: true,
+        },
+      })
+
+      const handler = await import('@/app/api/auth/signup/route')
+      await handler.POST(req as NextRequest)
+
+      expect(res._getStatusCode()).toBe(400)
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.error).toContain('business_type')
+    })
+
+    it('creates user profile after successful wedding account creation', async () => {
+      const newUser = {
+        id: 'new-user-id',
+        email: 'planner@weddings.com',
+        user_metadata: { name: 'Wedding Planner Co', role: 'planner' },
+      }
+
+      mockSupabase.auth.signUp.mockResolvedValue({
+        data: { user: newUser },
+        error: null,
+      })
+
+      const mockProfileData = {
+        user_id: 'new-user-id',
+        email: 'planner@weddings.com',
+        name: 'Wedding Planner Co',
+        role: 'planner',
+        business_type: 'planning',
+        subscription_status: 'trial',
+        trial_ends_at: expect.any(String),
+      }
+
+      mockSupabase.from().insert.mockResolvedValue({
+        data: [mockProfileData],
+        error: null,
+      })
+
+      const { req, res } = createMocks({
+        method: 'POST',
+        body: {
+          email: 'planner@weddings.com',
+          password: 'password123',
+          name: 'Wedding Planner Co',
+          role: 'planner',
+          business_type: 'planning',
+          terms_accepted: true,
+          privacy_accepted: true,
+        },
+      })
+
+      const handler = await import('@/app/api/auth/signup/route')
+      await handler.POST(req as NextRequest)
+
+      expect(mockSupabase.from).toHaveBeenCalledWith('user_profiles')
+      expect(res._getStatusCode()).toBe(201)
+    })
+  })
+
+  describe('POST /api/auth/logout', () => {
+    it('successfully logs out wedding professional', async () => {
+      mockSupabase.auth.signOut.mockResolvedValue({
+        error: null,
+      })
+
+      const { req, res } = createMocks({
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer valid-session-token',
+        },
+      })
+
+      const handler = await import('@/app/api/auth/logout/route')
+      await handler.POST(req as NextRequest)
+
+      expect(mockSupabase.auth.signOut).toHaveBeenCalled()
+      expect(res._getStatusCode()).toBe(200)
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.message).toBe('Logged out successfully')
+    })
+
+    it('handles logout with invalid session gracefully', async () => {
+      mockSupabase.auth.signOut.mockResolvedValue({
+        error: { message: 'Invalid session' },
+      })
+
+      const { req, res } = createMocks({
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer invalid-token',
+        },
+      })
+
+      const handler = await import('@/app/api/auth/logout/route')
+      await handler.POST(req as NextRequest)
+
+      expect(res._getStatusCode()).toBe(200) // Still success for security
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.message).toBe('Logged out successfully')
+    })
+  })
+
+  describe('GET /api/auth/session', () => {
+    it('returns valid wedding professional session', async () => {
+      const mockUser = {
+        id: 'test-user-id',
+        email: 'photographer@studio.com',
+        role: 'photographer',
+        user_metadata: {
+          name: 'Wedding Photography Studio',
+          subscription_status: 'active',
+        },
+      }
+
+      const mockProfile = {
+        user_id: 'test-user-id',
+        organization_id: 'studio-org-123',
+        role: 'photographer',
+        permissions: ['read_clients', 'write_clients', 'manage_weddings'],
+        subscription_status: 'active',
+        subscription_plan: 'professional',
+      }
+
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: mockUser },
+        error: null,
+      })
+
+      mockSupabase.from().select().eq().single.mockResolvedValue({
+        data: mockProfile,
+        error: null,
+      })
+
+      const { req, res } = createMocks({
+        method: 'GET',
+        headers: {
+          authorization: 'Bearer valid-session-token',
+        },
+      })
+
+      const handler = await import('@/app/api/auth/session/route')
+      await handler.GET(req as NextRequest)
+
+      expect(res._getStatusCode()).toBe(200)
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.user).toEqual(mockUser)
+      expect(responseData.profile).toEqual(mockProfile)
+      expect(responseData.permissions).toEqual(mockProfile.permissions)
+    })
+
+    it('returns 401 for invalid wedding professional session', async () => {
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: null },
+        error: { message: 'Invalid session' },
+      })
+
+      const { req, res } = createMocks({
+        method: 'GET',
+        headers: {
+          authorization: 'Bearer invalid-token',
+        },
+      })
+
+      const handler = await import('@/app/api/auth/session/route')
+      await handler.GET(req as NextRequest)
+
+      expect(res._getStatusCode()).toBe(401)
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.error).toBe('Unauthorized')
+    })
+
+    it('handles expired wedding professional subscriptions', async () => {
+      const mockUser = {
+        id: 'test-user-id',
+        email: 'photographer@studio.com',
+        role: 'photographer',
+      }
+
+      const mockProfile = {
+        user_id: 'test-user-id',
+        role: 'photographer',
+        subscription_status: 'expired',
+        subscription_plan: 'professional',
+        subscription_expires_at: '2023-01-01T00:00:00Z',
+      }
+
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: mockUser },
+        error: null,
+      })
+
+      mockSupabase.from().select().eq().single.mockResolvedValue({
+        data: mockProfile,
+        error: null,
+      })
+
+      const { req, res } = createMocks({
+        method: 'GET',
+        headers: {
+          authorization: 'Bearer valid-session-token',
+        },
+      })
+
+      const handler = await import('@/app/api/auth/session/route')
+      await handler.GET(req as NextRequest)
+
+      expect(res._getStatusCode()).toBe(200)
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.subscription_warning).toBe('Subscription expired')
+      expect(responseData.limited_access).toBe(true)
+    })
+  })
+
+  describe('Error Handling', () => {
+    it('handles database connection errors during authentication', async () => {
+      mockSupabase.auth.signInWithPassword.mockRejectedValue(
+        new Error('Database connection failed')
+      )
+
+      const { req, res } = createMocks({
+        method: 'POST',
+        body: {
+          email: 'photographer@studio.com',
+          password: 'password123',
+        },
+      })
+
+      const handler = await import('@/app/api/auth/signin/route')
+      await handler.POST(req as NextRequest)
+
+      expect(res._getStatusCode()).toBe(500)
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.error).toBe('Internal server error')
+    })
+
+    it('handles malformed request bodies gracefully', async () => {
+      const { req, res } = createMocks({
+        method: 'POST',
+        body: 'invalid-json',
+        headers: {
+          'content-type': 'application/json',
+        },
+      })
+
+      const handler = await import('@/app/api/auth/signin/route')
+      await handler.POST(req as NextRequest)
+
+      expect(res._getStatusCode()).toBe(400)
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.error).toContain('Invalid request format')
+    })
+
+    it('sanitizes input data to prevent XSS in wedding forms', async () => {
+      const maliciousInput = {
+        email: 'photographer@studio.com',
+        password: 'password123',
+        name: '<script>alert("xss")</script>Wedding Studio',
+        business_type: 'photography',
+      }
+
+      const { req, res } = createMocks({
+        method: 'POST',
+        body: maliciousInput,
+      })
+
+      const handler = await import('@/app/api/auth/signup/route')
+      await handler.POST(req as NextRequest)
+
+      // Verify that malicious script tags are sanitized
+      expect(mockSupabase.auth.signUp).toHaveBeenCalledWith({
+        email: 'photographer@studio.com',
+        password: 'password123',
+        options: {
+          data: expect.objectContaining({
+            name: 'Wedding Studio', // Script tags removed
+            business_type: 'photography',
+          }),
+        },
+      })
+    })
+  })
+
+  describe('Security Features', () => {
+    it('implements proper CSRF protection for wedding forms', async () => {
+      const { req, res } = createMocks({
+        method: 'POST',
+        body: {
+          email: 'photographer@studio.com',
+          password: 'password123',
+        },
+        headers: {
+          origin: 'https://malicious-site.com',
+        },
+      })
+
+      const handler = await import('@/app/api/auth/signin/route')
+      await handler.POST(req as NextRequest)
+
+      expect(res._getStatusCode()).toBe(403)
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.error).toContain('CSRF')
+    })
+
+    it('validates password strength for wedding professional accounts', async () => {
+      const { req, res } = createMocks({
+        method: 'POST',
+        body: {
+          email: 'photographer@studio.com',
+          password: '123', // Weak password
+          name: 'Wedding Studio',
+          role: 'photographer',
+          terms_accepted: true,
+          privacy_accepted: true,
+        },
+      })
+
+      const handler = await import('@/app/api/auth/signup/route')
+      await handler.POST(req as NextRequest)
+
+      expect(res._getStatusCode()).toBe(400)
+      const responseData = JSON.parse(res._getData())
+      expect(responseData.error).toContain('password strength')
+    })
+
+    it('implements account lockout after failed login attempts', async () => {
+      // Simulate multiple failed attempts
+      mockSupabase.auth.signInWithPassword.mockResolvedValue({
+        data: { user: null },
+        error: { message: 'Invalid login credentials' },
+      })
+
+      const requests = Array.from({ length: 6 }, (_, i) => 
+        createMocks({
+          method: 'POST',
+          body: {
+            email: 'photographer@studio.com',
+            password: 'wrongpassword',
+          },
+        })
+      )
+
+      const handler = await import('@/app/api/auth/signin/route')
+
+      // Make 6 failed attempts
+      for (const { req, res } of requests) {
+        await handler.POST(req as NextRequest)
+      }
+
+      const lastResponse = requests[5].res
+      expect(lastResponse._getStatusCode()).toBe(429)
+      const responseData = JSON.parse(lastResponse._getData())
+      expect(responseData.error).toContain('account locked')
+    })
+  })
+})

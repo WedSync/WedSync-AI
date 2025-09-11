@@ -1,0 +1,319 @@
+/**
+ * Advanced Mobile Systems Integration Tests
+ * Comprehensive testing for WS-162, WS-163, and WS-164 advanced mobile features
+ */
+
+import { describe, test, expect, beforeEach, afterEach, jest } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { BackgroundSyncManager } from '../../lib/mobile/background-sync'
+import { AdvancedBudgetManager } from '../../lib/mobile/advanced-budget-system'
+import { RealTimeCollaborationManager } from '../../lib/mobile/real-time-collaboration'
+import { AIExpenseTrackingManager } from '../../lib/mobile/ai-expense-tracker'
+import { SmartExpenseSuggestionsEngine } from '../../lib/mobile/smart-expense-suggestions'
+import { AIExpenseSearchEngine } from '../../lib/mobile/ai-expense-search'
+import { AdvancedPerformanceOptimizer } from '../../lib/mobile/performance-optimizer'
+import { UXEnhancementEngine } from '../../lib/mobile/ux-enhancement-engine'
+// Mock external dependencies
+vi.mock('../../lib/mobile/database-manager')
+vi.mock('../../lib/mobile/supabase-client')
+describe('WS-162: Advanced Helper Schedule Mobile', () => {
+  let backgroundSync: BackgroundSyncManager
+  
+  beforeEach(() => {
+    backgroundSync = new BackgroundSyncManager()
+  })
+  test('should initialize background sync with proper configuration', async () => {
+    expect(backgroundSync).toBeInstanceOf(BackgroundSyncManager)
+    
+    const config = backgroundSync.getConfig()
+    expect(config.enableBackgroundSync).toBe(true)
+    expect(config.maxRetryAttempts).toBeGreaterThan(0)
+    expect(config.syncInterval).toBeGreaterThan(0)
+  test('should handle offline data queuing correctly', async () => {
+    const testData = {
+      type: 'schedule_update',
+      data: { taskId: '123', status: 'completed' },
+      priority: 'high' as const,
+      timestamp: new Date()
+    }
+    await backgroundSync.queueOperation(testData)
+    const queuedOperations = backgroundSync.getQueuedOperations()
+    expect(queuedOperations).toHaveLength(1)
+    expect(queuedOperations[0].type).toBe('schedule_update')
+    expect(queuedOperations[0].priority).toBe('high')
+  test('should sync queued operations when back online', async () => {
+    const syncSpy = vi.spyOn(backgroundSync, 'syncQueuedOperations')
+    // Queue operations while offline
+    await backgroundSync.queueOperation({
+    })
+    // Simulate coming back online
+    await backgroundSync.handleConnectivityChange(true)
+    expect(syncSpy).toHaveBeenCalled()
+  test('should handle sync conflicts intelligently', async () => {
+    const conflictData = {
+      local: { taskId: '123', status: 'completed', lastModified: new Date(Date.now() - 1000) },
+      remote: { taskId: '123', status: 'in-progress', lastModified: new Date() }
+    const resolution = await backgroundSync.resolveConflict(conflictData.local, conflictData.remote)
+    // Should favor more recent timestamp
+    expect(resolution.status).toBe('in-progress')
+    expect(resolution.lastModified).toEqual(conflictData.remote.lastModified)
+  test('should manage battery-aware sync scheduling', async () => {
+    // Mock low battery scenario
+    Object.defineProperty(navigator, 'getBattery', {
+      value: () => Promise.resolve({ level: 0.15, charging: false })
+    const scheduleResult = await backgroundSync.scheduleNextSync()
+    // Should schedule sync for later when battery is low
+    expect(scheduleResult.delayMultiplier).toBeGreaterThan(1.5)
+  test('should validate wedding-specific conflict resolution', async () => {
+    const weddingConflict = {
+      local: { vendorId: '456', bookingStatus: 'confirmed', weddingDate: '2024-06-15' },
+      remote: { vendorId: '456', bookingStatus: 'pending', weddingDate: '2024-06-15' }
+    const resolution = await backgroundSync.resolveWeddingConflict(weddingConflict.local, weddingConflict.remote)
+    // Should favor confirmed bookings in wedding context
+    expect(resolution.bookingStatus).toBe('confirmed')
+})
+describe('WS-163: Advanced Budget Mobile Experience', () => {
+  let budgetManager: AdvancedBudgetManager
+  let collaborationManager: RealTimeCollaborationManager
+    budgetManager = new AdvancedBudgetManager()
+    collaborationManager = new RealTimeCollaborationManager()
+  test('should create budget with comprehensive categories', async () => {
+    const budgetData = {
+      weddingId: 'wedding-123',
+      totalBudget: 50000,
+      categories: [
+        { name: 'venue', allocated: 15000, spent: 0 },
+        { name: 'catering', allocated: 12000, spent: 0 },
+        { name: 'photography', allocated: 5000, spent: 0 }
+      ]
+    const budget = await budgetManager.createBudget(budgetData)
+    expect(budget).toBeDefined()
+    expect(budget.totalBudget).toBe(50000)
+    expect(budget.categories).toHaveLength(3)
+    expect(budget.categories.find(c => c.name === 'venue')?.allocated).toBe(15000)
+  test('should handle real-time collaborative editing', async () => {
+    const sessionId = 'collab-session-123'
+    await collaborationManager.joinSession(sessionId, 'user-456')
+    const updateSpy = vi.spyOn(collaborationManager, 'broadcastUpdate')
+    const budgetUpdate = {
+      categoryId: 'venue-cat-1',
+      field: 'allocated',
+      value: 16000,
+      userId: 'user-456',
+    await collaborationManager.handleBudgetUpdate(budgetUpdate)
+    expect(updateSpy).toHaveBeenCalledWith(sessionId, budgetUpdate)
+  test('should detect and resolve editing conflicts', async () => {
+    const conflict = {
+      currentValue: 15000,
+      user1Change: { value: 16000, timestamp: new Date(Date.now() - 1000), userId: 'user-1' },
+      user2Change: { value: 15500, timestamp: new Date(), userId: 'user-2' }
+    const resolution = await collaborationManager.resolveConflict(conflict)
+    // Should favor more recent change
+    expect(resolution.resolvedValue).toBe(15500)
+    expect(resolution.winningUserId).toBe('user-2')
+  test('should provide budget recommendations', async () => {
+    const budgetAnalysis = {
+      totalSpent: 35000,
+      monthsToWedding: 4,
+        { name: 'venue', allocated: 15000, spent: 15000 },
+        { name: 'catering', allocated: 12000, spent: 8000 },
+        { name: 'photography', allocated: 5000, spent: 2500 }
+    const recommendations = await budgetManager.generateRecommendations(budgetAnalysis)
+    expect(recommendations).toHaveLength(expectedRecommendationCount)
+    expect(recommendations.some(r => r.type === 'overspending_alert')).toBe(true)
+  test('should track budget velocity and predictions', async () => {
+    const spendingHistory = [
+      { date: new Date('2024-01-01'), amount: 5000, category: 'venue' },
+      { date: new Date('2024-01-15'), amount: 3000, category: 'catering' },
+      { date: new Date('2024-02-01'), amount: 2500, category: 'photography' }
+    ]
+    const velocity = await budgetManager.calculateSpendingVelocity(spendingHistory, 4)
+    const prediction = await budgetManager.predictBudgetCompletion(velocity, 15000)
+    expect(velocity.monthlyRate).toBeGreaterThan(0)
+    expect(prediction.estimatedCompletionDate).toBeInstanceOf(Date)
+    expect(prediction.budgetHealthScore).toBeGreaterThanOrEqual(0)
+    expect(prediction.budgetHealthScore).toBeLessThanOrEqual(1)
+describe('WS-164: Advanced Mobile Expense Tracking', () => {
+  let expenseTracker: AIExpenseTrackingManager
+  let suggestionsEngine: SmartExpenseSuggestionsEngine
+  let searchEngine: AIExpenseSearchEngine
+    expenseTracker = new AIExpenseTrackingManager()
+    suggestionsEngine = new SmartExpenseSuggestionsEngine()
+    searchEngine = new AIExpenseSearchEngine()
+  test('should process receipts with AI-powered OCR', async () => {
+    const mockReceiptImage = new Uint8Array([/* mock image data */])
+    const processedReceipt = await expenseTracker.processReceiptImage(mockReceiptImage)
+    expect(processedReceipt).toBeDefined()
+    expect(processedReceipt.merchantName).toBeDefined()
+    expect(processedReceipt.amount).toBeGreaterThan(0)
+    expect(processedReceipt.date).toBeInstanceOf(Date)
+    expect(processedReceipt.confidence).toBeGreaterThan(0.7)
+  test('should categorize expenses automatically with high accuracy', async () => {
+    const expenses = [
+      { description: 'Wedding dress from Davids Bridal', amount: 800 },
+      { description: 'Venue deposit for Grand Ballroom', amount: 5000 },
+      { description: 'Photographer consultation', amount: 150 }
+    for (const expense of expenses) {
+      const categorized = await expenseTracker.categorizeExpense(expense)
+      
+      expect(categorized.category).toBeDefined()
+      expect(categorized.confidence).toBeGreaterThan(0.8)
+      if (expense.description.includes('dress')) {
+        expect(categorized.category).toBe('attire')
+      } else if (expense.description.includes('venue')) {
+        expect(categorized.category).toBe('venue')
+      } else if (expense.description.includes('photographer')) {
+        expect(categorized.category).toBe('photography')
+      }
+  test('should detect duplicate expenses accurately', async () => {
+    const expense1 = {
+      merchantName: 'Wedding Florist Co',
+      amount: 450.00,
+      date: new Date('2024-01-15'),
+      description: 'Bridal bouquet and centerpieces'
+    const expense2 = {
+      description: 'Bridal bouquet and centerpiece'
+    const duplicateCheck = await expenseTracker.detectDuplicate(expense1, expense2)
+    expect(duplicateCheck.isDuplicate).toBe(true)
+    expect(duplicateCheck.similarity).toBeGreaterThan(0.95)
+    expect(duplicateCheck.matchedFields).toContain('merchant')
+    expect(duplicateCheck.matchedFields).toContain('amount')
+    expect(duplicateCheck.matchedFields).toContain('date')
+  test('should generate intelligent expense suggestions', async () => {
+    const weddingId = 'wedding-123'
+    const suggestions = await suggestionsEngine.generateSmartSuggestions(weddingId)
+    expect(suggestions).toHaveLength(lessThanOrEqual(10))
+    const highPrioritySuggestions = suggestions.filter(s => s.priority === 'high')
+    expect(highPrioritySuggestions.length).toBeGreaterThan(0)
+    // Test suggestion types
+    const suggestionTypes = suggestions.map(s => s.type)
+    expect(suggestionTypes).toContain('recurring')
+    expect(suggestionTypes).toContain('seasonal')
+  test('should perform natural language search', async () => {
+    const searchResults = await searchEngine.naturalLanguageSearch(
+      'show me all photography expenses over $1000 from last month',
+      'wedding-123'
+    )
+    expect(searchResults.results).toBeDefined()
+    expect(searchResults.insights.intent).toBe('search')
+    expect(searchResults.insights.entities.categories).toContain('photography')
+    expect(searchResults.insights.entities.amounts).toContain(1000)
+    expect(searchResults.suggestions.length).toBeGreaterThan(0)
+  test('should provide contextual search suggestions', async () => {
+    const autocomplete = await searchEngine.smartAutocomplete('venue dep', 'wedding-123')
+    expect(autocomplete).toBeDefined()
+    expect(autocomplete.some(suggestion => 
+      suggestion.toLowerCase().includes('venue')
+    )).toBe(true)
+  test('should integrate with banking systems', async () => {
+    // Mock banking integration
+    const mockBankConnection = {
+      bankName: 'Chase Bank',
+      accountType: 'checking',
+      lastFourDigits: '1234'
+    const transactions = await expenseTracker.syncBankTransactions(mockBankConnection)
+    expect(transactions).toBeDefined()
+    expect(Array.isArray(transactions)).toBe(true)
+    // Validate transaction categorization
+    if (transactions.length > 0) {
+      const categorizedTransactions = transactions.filter(t => t.weddingRelated === true)
+      expect(categorizedTransactions.length).toBeGreaterThanOrEqual(0)
+describe('Performance & UX Optimizations', () => {
+  let performanceOptimizer: AdvancedPerformanceOptimizer
+  let uxEngine: UXEnhancementEngine
+    performanceOptimizer = new AdvancedPerformanceOptimizer()
+    uxEngine = new UXEnhancementEngine()
+  test('should monitor performance metrics accurately', async () => {
+    const metrics = performanceOptimizer.getPerformanceMetrics()
+    expect(metrics).toBeDefined()
+    expect(metrics.device_type).toMatch(/mobile|tablet|desktop/)
+    expect(metrics.connection_type).toMatch(/4g|3g|wifi|slow-2g/)
+    expect(metrics.battery_level).toBeGreaterThanOrEqual(0)
+    expect(metrics.battery_level).toBeLessThanOrEqual(1)
+  test('should apply performance optimizations based on conditions', async () => {
+    // Mock poor performance conditions
+    const mockPoorMetrics = {
+      first_contentful_paint: 3000,
+      largest_contentful_paint: 5000,
+      cumulative_layout_shift: 0.3,
+      first_input_delay: 400
+    const optimizationsApplied = await performanceOptimizer.evaluateAndApplyOptimizations(mockPoorMetrics)
+    expect(optimizationsApplied).toHaveLength(greaterThan(0))
+    expect(optimizationsApplied).toContain('improve_fcp')
+    expect(optimizationsApplied).toContain('improve_lcp')
+  test('should adapt to battery and network conditions', async () => {
+    // Mock low battery
+    await performanceOptimizer.handleBatteryChange()
+    const config = performanceOptimizer.getConfig()
+    expect(config.battery_save_mode).toBe(true)
+  test('should provide comprehensive UX enhancements', async () => {
+    const uxMetrics = uxEngine.getUXMetrics()
+    expect(uxMetrics).toBeDefined()
+    expect(typeof uxMetrics.interaction_time).toBe('number')
+    expect(typeof uxMetrics.task_completion_rate).toBe('number')
+    expect(typeof uxMetrics.accessibility_score).toBe('number')
+  test('should handle gesture interactions', async () => {
+    const mockGestureEvent = {
+      type: 'swipe',
+      direction: 'right',
+      element: document.createElement('div')
+    const gestureHandled = await uxEngine.handleGesture(mockGestureEvent)
+    expect(gestureHandled).toBe(true)
+  test('should provide accessibility enhancements', async () => {
+    const accessibilityFeatures = uxEngine.getAccessibilityFeatures()
+    expect(accessibilityFeatures).toBeDefined()
+    expect(typeof accessibilityFeatures.screen_reader_support).toBe('boolean')
+    expect(typeof accessibilityFeatures.keyboard_navigation).toBe('boolean')
+    expect(typeof accessibilityFeatures.high_contrast_mode).toBe('boolean')
+describe('Integration Tests - Full System', () => {
+  test('should handle complete wedding expense workflow', async () => {
+    const weddingId = 'wedding-integration-test'
+    // 1. Initialize all systems
+    const backgroundSync = new BackgroundSyncManager()
+    const budgetManager = new AdvancedBudgetManager()
+    const expenseTracker = new AIExpenseTrackingManager()
+    // 2. Create budget
+    const budget = await budgetManager.createBudget({
+      weddingId,
+      totalBudget: 30000,
+        { name: 'venue', allocated: 10000, spent: 0 },
+        { name: 'catering', allocated: 8000, spent: 0 }
+    // 3. Add expense via receipt processing
+    const mockReceiptImage = new Uint8Array([1, 2, 3, 4]) // Mock image data
+    const processedExpense = await expenseTracker.processReceiptImage(mockReceiptImage)
+    expect(processedExpense).toBeDefined()
+    // 4. Sync offline operations
+      type: 'expense_create',
+      data: processedExpense,
+      priority: 'medium',
+    const queuedOps = backgroundSync.getQueuedOperations()
+    expect(queuedOps).toHaveLength(1)
+    // 5. Validate budget update
+    const updatedBudget = await budgetManager.getBudget(weddingId)
+    expect(updatedBudget).toBeDefined()
+  test('should maintain data consistency across systems', async () => {
+    const weddingId = 'wedding-consistency-test'
+    // Create expense in multiple systems
+    const expenseData = {
+      id: 'expense-123',
+      amount: 1500,
+      category: 'photography',
+      description: 'Wedding photographer deposit'
+    // Add to expense tracker
+    await expenseTracker.createExpense(expenseData)
+    // Update budget
+    await budgetManager.addExpenseToBudget(weddingId, expenseData)
+    // Queue for sync
+      type: 'expense_budget_update',
+      data: expenseData,
+      priority: 'high',
+    // Verify consistency
+    const expense = await expenseTracker.getExpense(expenseData.id)
+    const budget = await budgetManager.getBudget(weddingId)
+    expect(expense.amount).toBe(expenseData.amount)
+    expect(budget.categories.find(c => c.name === 'photography')?.spent).toBeGreaterThanOrEqual(expenseData.amount)
+    expect(queuedOps.some(op => op.data.id === expenseData.id)).toBe(true)
+// Test utilities and helpers
+const greaterThan = (value: number) => (actual: number) => actual > value
+const lessThanOrEqual = (value: number) => (actual: number) => actual <= value
+const expectedRecommendationCount = 3 // Adjust based on implementation

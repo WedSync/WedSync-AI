@@ -1,0 +1,866 @@
+src/app/(dashboard)/clients/[id]/edit/page.tsx(178,17): error TS2322: Type '{ children: (string | Element)[]; href: string; plain: true; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'href' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'. Did you mean 'ref'?
+src/app/(dashboard)/clients/[id]/edit/page.tsx(455,15): error TS17001: JSX elements cannot have multiple attributes with the same name.
+src/app/(dashboard)/clients/[id]/edit/page.tsx(461,19): error TS2322: Type '{ children: string; href: string; outline: true; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'href' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'. Did you mean 'ref'?
+src/app/(dashboard)/clients/import/page.tsx(191,19): error TS2322: Type '{ children: (string | Element)[]; href: string; plain: true; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'href' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'. Did you mean 'ref'?
+src/app/(dashboard)/clients/import/page.tsx(232,21): error TS2322: Type '{ children: string; href: string; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'href' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'. Did you mean 'ref'?
+src/app/(dashboard)/clients/import/page.tsx(235,21): error TS2322: Type '{ children: string; href: string; outline: true; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'href' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'. Did you mean 'ref'?
+src/app/(dashboard)/clients/import/page.tsx(247,17): error TS2322: Type '{ children: (string | Element)[]; href: string; plain: true; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'href' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'. Did you mean 'ref'?
+src/app/(dashboard)/clients/import/page.tsx(298,15): error TS2322: Type '{ children: string; onClick: () => void; outline: true; color: string; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'outline' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+src/app/(dashboard)/clients/import/page.tsx(351,19): error TS2322: Type '{ children: string; onClick: () => void; outline: true; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'outline' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+src/app/(dashboard)/clients/new/page.tsx(97,17): error TS2322: Type '{ children: (string | Element)[]; href: string; plain: true; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'href' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'. Did you mean 'ref'?
+src/app/(dashboard)/clients/new/page.tsx(335,19): error TS2322: Type '{ children: string; href: string; outline: true; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'href' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'. Did you mean 'ref'?
+src/app/(dashboard)/clients/page.tsx(94,49): error TS2339: Property '0' does not exist on type 'any[] | null'.
+src/app/(dashboard)/clients/page.tsx(123,19): error TS2322: Type '{ children: (string | Element)[]; href: string; outline: true; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'href' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'. Did you mean 'ref'?
+src/app/(dashboard)/clients/page.tsx(127,19): error TS2322: Type '{ children: (string | Element)[]; href: string; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'href' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'. Did you mean 'ref'?
+src/app/(dashboard)/clients/page.tsx(136,12): error TS2304: Cannot find name 'InputGroup'.
+src/app/(dashboard)/clients/page.tsx(143,13): error TS2304: Cannot find name 'InputGroup'.
+src/app/(dashboard)/clients/page.tsx(152,17): error TS2322: Type '{ children: (string | Element)[]; outline: true; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'outline' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+src/app/(dashboard)/clients/page.tsx(159,10): error TS2304: Cannot find name 'Table'.
+src/app/(dashboard)/clients/page.tsx(160,12): error TS2304: Cannot find name 'TableHead'.
+src/app/(dashboard)/clients/page.tsx(161,14): error TS2304: Cannot find name 'TableRow'.
+src/app/(dashboard)/clients/page.tsx(162,16): error TS2304: Cannot find name 'TableHeader'.
+src/app/(dashboard)/clients/page.tsx(162,36): error TS2304: Cannot find name 'TableHeader'.
+src/app/(dashboard)/clients/page.tsx(163,16): error TS2304: Cannot find name 'TableHeader'.
+src/app/(dashboard)/clients/page.tsx(163,42): error TS2304: Cannot find name 'TableHeader'.
+src/app/(dashboard)/clients/page.tsx(164,16): error TS2304: Cannot find name 'TableHeader'.
+src/app/(dashboard)/clients/page.tsx(164,35): error TS2304: Cannot find name 'TableHeader'.
+src/app/(dashboard)/clients/page.tsx(165,16): error TS2304: Cannot find name 'TableHeader'.
+src/app/(dashboard)/clients/page.tsx(165,36): error TS2304: Cannot find name 'TableHeader'.
+src/app/(dashboard)/clients/page.tsx(166,16): error TS2304: Cannot find name 'TableHeader'.
+src/app/(dashboard)/clients/page.tsx(166,37): error TS2304: Cannot find name 'TableHeader'.
+src/app/(dashboard)/clients/page.tsx(167,16): error TS2304: Cannot find name 'TableHeader'.
+src/app/(dashboard)/clients/page.tsx(167,35): error TS2304: Cannot find name 'TableHeader'.
+src/app/(dashboard)/clients/page.tsx(168,16): error TS2304: Cannot find name 'TableHeader'.
+src/app/(dashboard)/clients/page.tsx(170,17): error TS2304: Cannot find name 'TableHeader'.
+src/app/(dashboard)/clients/page.tsx(171,15): error TS2304: Cannot find name 'TableRow'.
+src/app/(dashboard)/clients/page.tsx(172,13): error TS2304: Cannot find name 'TableHead'.
+src/app/(dashboard)/clients/page.tsx(173,12): error TS2304: Cannot find name 'TableBody'.
+src/app/(dashboard)/clients/page.tsx(174,14): error TS18047: 'clients' is possibly 'null'.
+src/app/(dashboard)/clients/page.tsx(175,16): error TS2304: Cannot find name 'TableRow'.
+src/app/(dashboard)/clients/page.tsx(176,18): error TS2304: Cannot find name 'TableCell'.
+src/app/(dashboard)/clients/page.tsx(186,31): error TS2322: Type '{ children: (string | Element)[]; href: string; size: "sm"; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'href' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'. Did you mean 'ref'?
+src/app/(dashboard)/clients/page.tsx(190,31): error TS2322: Type '{ children: (string | Element)[]; href: string; outline: true; size: "sm"; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'href' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'. Did you mean 'ref'?
+src/app/(dashboard)/clients/page.tsx(196,19): error TS2304: Cannot find name 'TableCell'.
+src/app/(dashboard)/clients/page.tsx(197,17): error TS2304: Cannot find name 'TableRow'.
+src/app/(dashboard)/clients/page.tsx(199,15): error TS18047: 'clients' is possibly 'null'.
+src/app/(dashboard)/clients/page.tsx(204,20): error TS2304: Cannot find name 'TableRow'.
+src/app/(dashboard)/clients/page.tsx(205,22): error TS2304: Cannot find name 'TableCell'.
+src/app/(dashboard)/clients/page.tsx(225,23): error TS2304: Cannot find name 'TableCell'.
+src/app/(dashboard)/clients/page.tsx(226,22): error TS2304: Cannot find name 'TableCell'.
+src/app/(dashboard)/clients/page.tsx(245,23): error TS2304: Cannot find name 'TableCell'.
+src/app/(dashboard)/clients/page.tsx(246,22): error TS2304: Cannot find name 'TableCell'.
+src/app/(dashboard)/clients/page.tsx(250,23): error TS2304: Cannot find name 'TableCell'.
+src/app/(dashboard)/clients/page.tsx(251,22): error TS2304: Cannot find name 'TableCell'.
+src/app/(dashboard)/clients/page.tsx(256,23): error TS2304: Cannot find name 'TableCell'.
+src/app/(dashboard)/clients/page.tsx(257,22): error TS2304: Cannot find name 'TableCell'.
+src/app/(dashboard)/clients/page.tsx(270,23): error TS2304: Cannot find name 'TableCell'.
+src/app/(dashboard)/clients/page.tsx(271,22): error TS2304: Cannot find name 'TableCell'.
+src/app/(dashboard)/clients/page.tsx(280,27): error TS2322: Type '{ children: string; size: "sm"; outline: true; href: string; className: string; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'outline' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+src/app/(dashboard)/clients/page.tsx(287,23): error TS2304: Cannot find name 'TableCell'.
+src/app/(dashboard)/clients/page.tsx(288,22): error TS2304: Cannot find name 'TableCell'.
+src/app/(dashboard)/clients/page.tsx(290,26): error TS2304: Cannot find name 'Dropdown'.
+src/app/(dashboard)/clients/page.tsx(291,28): error TS2304: Cannot find name 'DropdownButton'.
+src/app/(dashboard)/clients/page.tsx(293,29): error TS2304: Cannot find name 'DropdownButton'.
+src/app/(dashboard)/clients/page.tsx(294,28): error TS2304: Cannot find name 'DropdownMenu'.
+src/app/(dashboard)/clients/page.tsx(295,30): error TS2304: Cannot find name 'DropdownItem'.
+src/app/(dashboard)/clients/page.tsx(298,31): error TS2304: Cannot find name 'DropdownItem'.
+src/app/(dashboard)/clients/page.tsx(299,30): error TS2304: Cannot find name 'DropdownItem'.
+src/app/(dashboard)/clients/page.tsx(302,31): error TS2304: Cannot find name 'DropdownItem'.
+src/app/(dashboard)/clients/page.tsx(303,30): error TS2304: Cannot find name 'DropdownItem'.
+src/app/(dashboard)/clients/page.tsx(306,31): error TS2304: Cannot find name 'DropdownItem'.
+src/app/(dashboard)/clients/page.tsx(307,30): error TS2304: Cannot find name 'DropdownItem'.
+src/app/(dashboard)/clients/page.tsx(310,31): error TS2304: Cannot find name 'DropdownItem'.
+src/app/(dashboard)/clients/page.tsx(311,29): error TS2304: Cannot find name 'DropdownMenu'.
+src/app/(dashboard)/clients/page.tsx(312,27): error TS2304: Cannot find name 'Dropdown'.
+src/app/(dashboard)/clients/page.tsx(314,23): error TS2304: Cannot find name 'TableCell'.
+src/app/(dashboard)/clients/page.tsx(315,21): error TS2304: Cannot find name 'TableRow'.
+src/app/(dashboard)/clients/page.tsx(319,13): error TS2304: Cannot find name 'TableBody'.
+src/app/(dashboard)/clients/page.tsx(320,11): error TS2304: Cannot find name 'Table'.
+src/app/(dashboard)/clients/page.tsx(323,8): error TS18047: 'clients' is possibly 'null'.
+src/app/(dashboard)/clients/page.tsx(326,22): error TS18047: 'clients' is possibly 'null'.
+src/app/(dashboard)/clients/page.tsx(326,45): error TS18047: 'clients' is possibly 'null'.
+src/app/(dashboard)/clients/page.tsx(329,20): error TS18047: 'clients' is possibly 'null'.
+src/app/(dashboard)/clients/page.tsx(330,20): error TS18047: 'clients' is possibly 'null'.
+src/app/(dashboard)/clients/page.tsx(331,20): error TS18047: 'clients' is possibly 'null'.
+src/app/(dashboard)/layout.tsx(42,6): error TS2552: Cannot find name 'Navbar'. Did you mean 'navbar'?
+src/app/(dashboard)/layout.tsx(43,8): error TS2304: Cannot find name 'NavbarSpacer'.
+src/app/(dashboard)/layout.tsx(44,8): error TS2304: Cannot find name 'NavbarSection'.
+src/app/(dashboard)/layout.tsx(45,10): error TS2304: Cannot find name 'NavbarItem'.
+src/app/(dashboard)/layout.tsx(47,11): error TS2304: Cannot find name 'NavbarItem'.
+src/app/(dashboard)/layout.tsx(48,10): error TS2304: Cannot find name 'NavbarItem'.
+src/app/(dashboard)/layout.tsx(50,11): error TS2304: Cannot find name 'NavbarItem'.
+src/app/(dashboard)/layout.tsx(51,10): error TS2304: Cannot find name 'Dropdown'.
+src/app/(dashboard)/layout.tsx(52,12): error TS2304: Cannot find name 'DropdownButton'.
+src/app/(dashboard)/layout.tsx(52,31): error TS2304: Cannot find name 'NavbarItem'.
+src/app/(dashboard)/layout.tsx(53,14): error TS2304: Cannot find name 'Avatar'.
+src/app/(dashboard)/layout.tsx(54,13): error TS2304: Cannot find name 'DropdownButton'.
+src/app/(dashboard)/layout.tsx(55,12): error TS2304: Cannot find name 'DropdownMenu'.
+src/app/(dashboard)/layout.tsx(56,14): error TS2304: Cannot find name 'DropdownItem'.
+src/app/(dashboard)/layout.tsx(58,16): error TS2304: Cannot find name 'DropdownLabel'.
+src/app/(dashboard)/layout.tsx(58,42): error TS2304: Cannot find name 'DropdownLabel'.
+src/app/(dashboard)/layout.tsx(59,15): error TS2304: Cannot find name 'DropdownItem'.
+src/app/(dashboard)/layout.tsx(60,14): error TS2304: Cannot find name 'DropdownItem'.
+src/app/(dashboard)/layout.tsx(62,16): error TS2304: Cannot find name 'DropdownLabel'.
+src/app/(dashboard)/layout.tsx(62,40): error TS2304: Cannot find name 'DropdownLabel'.
+src/app/(dashboard)/layout.tsx(63,15): error TS2304: Cannot find name 'DropdownItem'.
+src/app/(dashboard)/layout.tsx(64,14): error TS2304: Cannot find name 'DropdownDivider'.
+src/app/(dashboard)/layout.tsx(65,14): error TS2304: Cannot find name 'DropdownItem'.
+src/app/(dashboard)/layout.tsx(66,16): error TS2304: Cannot find name 'DropdownLabel'.
+src/app/(dashboard)/layout.tsx(66,46): error TS2304: Cannot find name 'DropdownLabel'.
+src/app/(dashboard)/layout.tsx(67,15): error TS2304: Cannot find name 'DropdownItem'.
+src/app/(dashboard)/layout.tsx(68,14): error TS2304: Cannot find name 'DropdownItem'.
+src/app/(dashboard)/layout.tsx(69,16): error TS2304: Cannot find name 'DropdownLabel'.
+src/app/(dashboard)/layout.tsx(69,46): error TS2304: Cannot find name 'DropdownLabel'.
+src/app/(dashboard)/layout.tsx(70,15): error TS2304: Cannot find name 'DropdownItem'.
+src/app/(dashboard)/layout.tsx(71,14): error TS2304: Cannot find name 'DropdownDivider'.
+src/app/(dashboard)/layout.tsx(72,14): error TS2304: Cannot find name 'DropdownItem'.
+src/app/(dashboard)/layout.tsx(74,16): error TS2304: Cannot find name 'DropdownLabel'.
+src/app/(dashboard)/layout.tsx(74,40): error TS2304: Cannot find name 'DropdownLabel'.
+src/app/(dashboard)/layout.tsx(75,15): error TS2304: Cannot find name 'DropdownItem'.
+src/app/(dashboard)/layout.tsx(76,13): error TS2304: Cannot find name 'DropdownMenu'.
+src/app/(dashboard)/layout.tsx(77,11): error TS2304: Cannot find name 'Dropdown'.
+src/app/(dashboard)/layout.tsx(78,9): error TS2304: Cannot find name 'NavbarSection'.
+src/app/(dashboard)/layout.tsx(79,7): error TS2304: Cannot find name 'Navbar'.
+src/app/(dashboard)/layout.tsx(83,6): error TS2304: Cannot find name 'Sidebar'.
+src/app/(dashboard)/layout.tsx(84,8): error TS2304: Cannot find name 'SidebarHeader'.
+src/app/(dashboard)/layout.tsx(85,10): error TS2304: Cannot find name 'SidebarItem'.
+src/app/(dashboard)/layout.tsx(95,11): error TS2304: Cannot find name 'SidebarItem'.
+src/app/(dashboard)/layout.tsx(96,9): error TS2304: Cannot find name 'SidebarHeader'.
+src/app/(dashboard)/layout.tsx(98,8): error TS2304: Cannot find name 'SidebarBody'.
+src/app/(dashboard)/layout.tsx(99,10): error TS2304: Cannot find name 'SidebarSection'.
+src/app/(dashboard)/layout.tsx(100,12): error TS2304: Cannot find name 'SidebarItem'.
+src/app/(dashboard)/layout.tsx(102,14): error TS2304: Cannot find name 'SidebarLabel'.
+src/app/(dashboard)/layout.tsx(102,38): error TS2304: Cannot find name 'SidebarLabel'.
+src/app/(dashboard)/layout.tsx(103,13): error TS2304: Cannot find name 'SidebarItem'.
+src/app/(dashboard)/layout.tsx(104,12): error TS2304: Cannot find name 'SidebarItem'.
+src/app/(dashboard)/layout.tsx(106,14): error TS2304: Cannot find name 'SidebarLabel'.
+src/app/(dashboard)/layout.tsx(106,36): error TS2304: Cannot find name 'SidebarLabel'.
+src/app/(dashboard)/layout.tsx(107,13): error TS2304: Cannot find name 'SidebarItem'.
+src/app/(dashboard)/layout.tsx(108,12): error TS2304: Cannot find name 'SidebarItem'.
+src/app/(dashboard)/layout.tsx(110,14): error TS2304: Cannot find name 'SidebarLabel'.
+src/app/(dashboard)/layout.tsx(110,45): error TS2304: Cannot find name 'SidebarLabel'.
+src/app/(dashboard)/layout.tsx(111,13): error TS2304: Cannot find name 'SidebarItem'.
+src/app/(dashboard)/layout.tsx(112,12): error TS2304: Cannot find name 'SidebarItem'.
+src/app/(dashboard)/layout.tsx(114,14): error TS2304: Cannot find name 'SidebarLabel'.
+src/app/(dashboard)/layout.tsx(114,34): error TS2304: Cannot find name 'SidebarLabel'.
+src/app/(dashboard)/layout.tsx(115,13): error TS2304: Cannot find name 'SidebarItem'.
+src/app/(dashboard)/layout.tsx(116,12): error TS2304: Cannot find name 'SidebarItem'.
+src/app/(dashboard)/layout.tsx(118,14): error TS2304: Cannot find name 'SidebarLabel'.
+src/app/(dashboard)/layout.tsx(118,37): error TS2304: Cannot find name 'SidebarLabel'.
+src/app/(dashboard)/layout.tsx(119,13): error TS2304: Cannot find name 'SidebarItem'.
+src/app/(dashboard)/layout.tsx(120,12): error TS2304: Cannot find name 'SidebarItem'.
+src/app/(dashboard)/layout.tsx(122,14): error TS2304: Cannot find name 'SidebarLabel'.
+src/app/(dashboard)/layout.tsx(122,46): error TS2304: Cannot find name 'SidebarLabel'.
+src/app/(dashboard)/layout.tsx(123,13): error TS2304: Cannot find name 'SidebarItem'.
+src/app/(dashboard)/layout.tsx(124,11): error TS2304: Cannot find name 'SidebarSection'.
+src/app/(dashboard)/layout.tsx(126,10): error TS2304: Cannot find name 'SidebarSection'.
+src/app/(dashboard)/layout.tsx(127,12): error TS2304: Cannot find name 'SidebarLabel'.
+src/app/(dashboard)/layout.tsx(127,38): error TS2304: Cannot find name 'SidebarLabel'.
+src/app/(dashboard)/layout.tsx(128,12): error TS2304: Cannot find name 'SidebarItem'.
+src/app/(dashboard)/layout.tsx(130,14): error TS2304: Cannot find name 'SidebarLabel'.
+src/app/(dashboard)/layout.tsx(130,38): error TS2304: Cannot find name 'SidebarLabel'.
+src/app/(dashboard)/layout.tsx(131,13): error TS2304: Cannot find name 'SidebarItem'.
+src/app/(dashboard)/layout.tsx(132,12): error TS2304: Cannot find name 'SidebarItem'.
+src/app/(dashboard)/layout.tsx(134,14): error TS2304: Cannot find name 'SidebarLabel'.
+src/app/(dashboard)/layout.tsx(134,40): error TS2304: Cannot find name 'SidebarLabel'.
+src/app/(dashboard)/layout.tsx(135,13): error TS2304: Cannot find name 'SidebarItem'.
+src/app/(dashboard)/layout.tsx(136,11): error TS2304: Cannot find name 'SidebarSection'.
+src/app/(dashboard)/layout.tsx(138,10): error TS2304: Cannot find name 'SidebarSpacer'.
+src/app/(dashboard)/layout.tsx(140,10): error TS2304: Cannot find name 'SidebarSection'.
+src/app/(dashboard)/layout.tsx(141,12): error TS2304: Cannot find name 'SidebarItem'.
+src/app/(dashboard)/layout.tsx(143,14): error TS2304: Cannot find name 'SidebarLabel'.
+src/app/(dashboard)/layout.tsx(143,38): error TS2304: Cannot find name 'SidebarLabel'.
+src/app/(dashboard)/layout.tsx(144,13): error TS2304: Cannot find name 'SidebarItem'.
+src/app/(dashboard)/layout.tsx(145,12): error TS2304: Cannot find name 'SidebarItem'.
+src/app/(dashboard)/layout.tsx(147,14): error TS2304: Cannot find name 'SidebarLabel'.
+src/app/(dashboard)/layout.tsx(147,37): error TS2304: Cannot find name 'SidebarLabel'.
+src/app/(dashboard)/layout.tsx(148,13): error TS2304: Cannot find name 'SidebarItem'.
+src/app/(dashboard)/layout.tsx(149,11): error TS2304: Cannot find name 'SidebarSection'.
+src/app/(dashboard)/layout.tsx(150,9): error TS2304: Cannot find name 'SidebarBody'.
+src/app/(dashboard)/layout.tsx(152,8): error TS2304: Cannot find name 'SidebarFooter'.
+src/app/(dashboard)/layout.tsx(153,10): error TS2304: Cannot find name 'Dropdown'.
+src/app/(dashboard)/layout.tsx(154,12): error TS2304: Cannot find name 'DropdownButton'.
+src/app/(dashboard)/layout.tsx(154,31): error TS2304: Cannot find name 'SidebarItem'.
+src/app/(dashboard)/layout.tsx(156,16): error TS2304: Cannot find name 'Avatar'.
+src/app/(dashboard)/layout.tsx(167,13): error TS2304: Cannot find name 'DropdownButton'.
+src/app/(dashboard)/layout.tsx(168,12): error TS2304: Cannot find name 'DropdownMenu'.
+src/app/(dashboard)/layout.tsx(169,14): error TS2304: Cannot find name 'DropdownItem'.
+src/app/(dashboard)/layout.tsx(171,16): error TS2304: Cannot find name 'DropdownLabel'.
+src/app/(dashboard)/layout.tsx(171,42): error TS2304: Cannot find name 'DropdownLabel'.
+src/app/(dashboard)/layout.tsx(172,15): error TS2304: Cannot find name 'DropdownItem'.
+src/app/(dashboard)/layout.tsx(173,14): error TS2304: Cannot find name 'DropdownItem'.
+src/app/(dashboard)/layout.tsx(175,16): error TS2304: Cannot find name 'DropdownLabel'.
+src/app/(dashboard)/layout.tsx(175,40): error TS2304: Cannot find name 'DropdownLabel'.
+src/app/(dashboard)/layout.tsx(176,15): error TS2304: Cannot find name 'DropdownItem'.
+src/app/(dashboard)/layout.tsx(177,14): error TS2304: Cannot find name 'DropdownDivider'.
+src/app/(dashboard)/layout.tsx(178,14): error TS2304: Cannot find name 'DropdownItem'.
+src/app/(dashboard)/layout.tsx(179,16): error TS2304: Cannot find name 'DropdownLabel'.
+src/app/(dashboard)/layout.tsx(179,46): error TS2304: Cannot find name 'DropdownLabel'.
+src/app/(dashboard)/layout.tsx(180,15): error TS2304: Cannot find name 'DropdownItem'.
+src/app/(dashboard)/layout.tsx(181,14): error TS2304: Cannot find name 'DropdownItem'.
+src/app/(dashboard)/layout.tsx(182,16): error TS2304: Cannot find name 'DropdownLabel'.
+src/app/(dashboard)/layout.tsx(182,46): error TS2304: Cannot find name 'DropdownLabel'.
+src/app/(dashboard)/layout.tsx(183,15): error TS2304: Cannot find name 'DropdownItem'.
+src/app/(dashboard)/layout.tsx(184,14): error TS2304: Cannot find name 'DropdownDivider'.
+src/app/(dashboard)/layout.tsx(185,14): error TS2304: Cannot find name 'DropdownItem'.
+src/app/(dashboard)/layout.tsx(187,16): error TS2304: Cannot find name 'DropdownLabel'.
+src/app/(dashboard)/layout.tsx(187,40): error TS2304: Cannot find name 'DropdownLabel'.
+src/app/(dashboard)/layout.tsx(188,15): error TS2304: Cannot find name 'DropdownItem'.
+src/app/(dashboard)/layout.tsx(189,13): error TS2304: Cannot find name 'DropdownMenu'.
+src/app/(dashboard)/layout.tsx(190,11): error TS2304: Cannot find name 'Dropdown'.
+src/app/(dashboard)/layout.tsx(191,9): error TS2304: Cannot find name 'SidebarFooter'.
+src/app/(dashboard)/layout.tsx(192,7): error TS2304: Cannot find name 'Sidebar'.
+src/app/(dashboard)/layout.tsx(196,6): error TS2304: Cannot find name 'SidebarLayout'.
+src/app/(dashboard)/layout.tsx(198,7): error TS2304: Cannot find name 'SidebarLayout'.
+src/app/(dashboard)/page.tsx(198,23): error TS2322: Type '{ children: (string | Element)[]; href: string; plain: true; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'href' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'. Did you mean 'ref'?
+src/app/(dashboard)/page.tsx(245,25): error TS2322: Type '{ children: (string | Element)[]; href: string; className: string; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'href' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'. Did you mean 'ref'?
+src/app/(dashboard)/page.tsx(259,23): error TS2322: Type '{ children: (string | Element)[]; href: string; plain: true; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'href' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'. Did you mean 'ref'?
+src/app/(dashboard)/page.tsx(331,21): error TS2322: Type '{ children: (string | Element)[]; href: string; outline: true; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'href' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'. Did you mean 'ref'?
+src/app/(dashboard)/page.tsx(335,21): error TS2322: Type '{ children: (string | Element)[]; href: string; outline: true; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'href' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'. Did you mean 'ref'?
+src/app/(dashboard)/page.tsx(339,21): error TS2322: Type '{ children: (string | Element)[]; href: string; outline: true; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'href' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'. Did you mean 'ref'?
+src/app/(dashboard)/page.tsx(343,21): error TS2322: Type '{ children: (string | Element)[]; href: string; outline: true; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'href' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'. Did you mean 'ref'?
+src/app/(dashboard)/vendors/[id]/edit/page.tsx(22,44): error TS2339: Property 'vendors' does not exist on type '{ organizations: { Row: { id: string; name: string; slug: string; domain: string | null; pricing_tier: "FREE" | "ENTERPRISE" | "SCALE" | "PROFESSIONAL" | "STARTER"; max_users: number; max_forms: number; ... 15 more ...; updated_at: string; }; Insert: Omit<...> & { ...; }; Update: Partial<...>; }; ... 13 more ...; no...'.
+src/app/(dashboard)/vendors/[id]/edit/page.tsx(198,17): error TS2322: Type '{ children: (string | Element)[]; href: string; plain: true; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'href' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'. Did you mean 'ref'?
+src/app/(dashboard)/vendors/[id]/edit/page.tsx(395,62): error TS2322: Type '{ children: string; type: "button"; onClick: () => void; outline: true; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'outline' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+src/app/(dashboard)/vendors/[id]/edit/page.tsx(442,19): error TS2322: Type '(checked: boolean) => void' is not assignable to type 'ChangeEventHandler<HTMLInputElement>'.
+  Types of parameters 'checked' and 'event' are incompatible.
+    Type 'ChangeEvent<HTMLInputElement>' is not assignable to type 'boolean'.
+src/app/(dashboard)/vendors/[id]/edit/page.tsx(470,13): error TS17001: JSX elements cannot have multiple attributes with the same name.
+src/app/(dashboard)/vendors/[id]/edit/page.tsx(475,19): error TS2322: Type '{ children: string; href: string; outline: true; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'href' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'. Did you mean 'ref'?
+src/app/(dashboard)/vendors/[id]/page.tsx(130,17): error TS2322: Type '{ children: (string | Element)[]; href: string; plain: true; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'href' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'. Did you mean 'ref'?
+src/app/(dashboard)/vendors/[id]/page.tsx(195,23): error TS2322: Type '{ children: (string | Element)[]; href: string; outline: true; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'href' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'. Did you mean 'ref'?
+src/app/(dashboard)/vendors/[id]/page.tsx(199,35): error TS2322: Type '{ children: (string | Element)[]; color: string; outline: true; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'outline' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+src/app/(dashboard)/vendors/[id]/page.tsx(268,16): error TS2304: Cannot find name 'DescriptionList'.
+src/app/(dashboard)/vendors/[id]/page.tsx(271,22): error TS2304: Cannot find name 'DescriptionTerm'.
+src/app/(dashboard)/vendors/[id]/page.tsx(271,54): error TS2304: Cannot find name 'DescriptionTerm'.
+src/app/(dashboard)/vendors/[id]/page.tsx(272,22): error TS2304: Cannot find name 'DescriptionDetails'.
+src/app/(dashboard)/vendors/[id]/page.tsx(272,64): error TS2304: Cannot find name 'DescriptionDetails'.
+src/app/(dashboard)/vendors/[id]/page.tsx(277,22): error TS2304: Cannot find name 'DescriptionTerm'.
+src/app/(dashboard)/vendors/[id]/page.tsx(277,45): error TS2304: Cannot find name 'DescriptionTerm'.
+src/app/(dashboard)/vendors/[id]/page.tsx(278,22): error TS2304: Cannot find name 'DescriptionDetails'.
+src/app/(dashboard)/vendors/[id]/page.tsx(282,23): error TS2304: Cannot find name 'DescriptionDetails'.
+src/app/(dashboard)/vendors/[id]/page.tsx(287,22): error TS2304: Cannot find name 'DescriptionTerm'.
+src/app/(dashboard)/vendors/[id]/page.tsx(287,45): error TS2304: Cannot find name 'DescriptionTerm'.
+src/app/(dashboard)/vendors/[id]/page.tsx(288,22): error TS2304: Cannot find name 'DescriptionDetails'.
+src/app/(dashboard)/vendors/[id]/page.tsx(292,23): error TS2304: Cannot find name 'DescriptionDetails'.
+src/app/(dashboard)/vendors/[id]/page.tsx(297,22): error TS2304: Cannot find name 'DescriptionTerm'.
+src/app/(dashboard)/vendors/[id]/page.tsx(297,47): error TS2304: Cannot find name 'DescriptionTerm'.
+src/app/(dashboard)/vendors/[id]/page.tsx(298,22): error TS2304: Cannot find name 'DescriptionDetails'.
+src/app/(dashboard)/vendors/[id]/page.tsx(302,23): error TS2304: Cannot find name 'DescriptionDetails'.
+src/app/(dashboard)/vendors/[id]/page.tsx(307,22): error TS2304: Cannot find name 'DescriptionTerm'.
+src/app/(dashboard)/vendors/[id]/page.tsx(307,47): error TS2304: Cannot find name 'DescriptionTerm'.
+src/app/(dashboard)/vendors/[id]/page.tsx(308,22): error TS2304: Cannot find name 'DescriptionDetails'.
+src/app/(dashboard)/vendors/[id]/page.tsx(308,59): error TS2304: Cannot find name 'DescriptionDetails'.
+src/app/(dashboard)/vendors/[id]/page.tsx(311,17): error TS2304: Cannot find name 'DescriptionList'.
+src/app/(dashboard)/vendors/[id]/page.tsx(374,25): error TS2322: Type '{ children: string; href: string; plain: true; size: "sm"; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'href' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'. Did you mean 'ref'?
+src/app/(dashboard)/vendors/[id]/page.tsx(386,40): error TS2339: Property 'id' does not exist on type '{ id: any; first_name: any; last_name: any; partner_first_name: any; wedding_date: any; status: any; }[]'.
+src/app/(dashboard)/vendors/[id]/page.tsx(389,54): error TS2339: Property 'id' does not exist on type '{ id: any; first_name: any; last_name: any; partner_first_name: any; wedding_date: any; status: any; }[]'.
+src/app/(dashboard)/vendors/[id]/page.tsx(392,37): error TS2339: Property 'first_name' does not exist on type '{ id: any; first_name: any; last_name: any; partner_first_name: any; wedding_date: any; status: any; }[]'.
+src/app/(dashboard)/vendors/[id]/page.tsx(392,57): error TS2339: Property 'last_name' does not exist on type '{ id: any; first_name: any; last_name: any; partner_first_name: any; wedding_date: any; status: any; }[]'.
+src/app/(dashboard)/vendors/[id]/page.tsx(393,37): error TS2339: Property 'partner_first_name' does not exist on type '{ id: any; first_name: any; last_name: any; partner_first_name: any; wedding_date: any; status: any; }[]'.
+src/app/(dashboard)/vendors/[id]/page.tsx(393,72): error TS2339: Property 'partner_first_name' does not exist on type '{ id: any; first_name: any; last_name: any; partner_first_name: any; wedding_date: any; status: any; }[]'.
+src/app/(dashboard)/vendors/[id]/page.tsx(395,35): error TS2339: Property 'wedding_date' does not exist on type '{ id: any; first_name: any; last_name: any; partner_first_name: any; wedding_date: any; status: any; }[]'.
+src/app/(dashboard)/vendors/[id]/page.tsx(397,55): error TS2339: Property 'wedding_date' does not exist on type '{ id: any; first_name: any; last_name: any; partner_first_name: any; wedding_date: any; status: any; }[]'.
+src/app/(dashboard)/vendors/[id]/page.tsx(401,46): error TS2339: Property 'status' does not exist on type '{ id: any; first_name: any; last_name: any; partner_first_name: any; wedding_date: any; status: any; }[]'.
+src/app/(dashboard)/vendors/[id]/page.tsx(402,35): error TS2339: Property 'status' does not exist on type '{ id: any; first_name: any; last_name: any; partner_first_name: any; wedding_date: any; status: any; }[]'.
+src/app/(dashboard)/vendors/[id]/page.tsx(414,27): error TS2322: Type '{ children: string; href: string; className: string; size: "sm"; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'href' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'. Did you mean 'ref'?
+src/app/(dashboard)/vendors/[id]/page.tsx(428,23): error TS2322: Type '{ children: (string | Element)[]; href: string; outline: true; className: string; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'href' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'. Did you mean 'ref'?
+src/app/(dashboard)/vendors/[id]/page.tsx(432,23): error TS2322: Type '{ children: (string | Element)[]; href: string; outline: true; className: string; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'href' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'. Did you mean 'ref'?
+src/app/(dashboard)/vendors/[id]/page.tsx(436,23): error TS2322: Type '{ children: (string | Element)[]; href: string; outline: true; className: string; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'href' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'. Did you mean 'ref'?
+src/app/(dashboard)/vendors/[id]/page.tsx(449,16): error TS2304: Cannot find name 'DescriptionList'.
+src/app/(dashboard)/vendors/[id]/page.tsx(450,18): error TS2304: Cannot find name 'DescriptionTerm'.
+src/app/(dashboard)/vendors/[id]/page.tsx(450,41): error TS2304: Cannot find name 'DescriptionTerm'.
+src/app/(dashboard)/vendors/[id]/page.tsx(451,18): error TS2304: Cannot find name 'DescriptionDetails'.
+src/app/(dashboard)/vendors/[id]/page.tsx(453,19): error TS2304: Cannot find name 'DescriptionDetails'.
+src/app/(dashboard)/vendors/[id]/page.tsx(457,22): error TS2304: Cannot find name 'DescriptionTerm'.
+src/app/(dashboard)/vendors/[id]/page.tsx(457,52): error TS2304: Cannot find name 'DescriptionTerm'.
+src/app/(dashboard)/vendors/[id]/page.tsx(458,22): error TS2304: Cannot find name 'DescriptionDetails'.
+src/app/(dashboard)/vendors/[id]/page.tsx(460,23): error TS2304: Cannot find name 'DescriptionDetails'.
+src/app/(dashboard)/vendors/[id]/page.tsx(464,18): error TS2304: Cannot find name 'DescriptionTerm'.
+src/app/(dashboard)/vendors/[id]/page.tsx(464,45): error TS2304: Cannot find name 'DescriptionTerm'.
+src/app/(dashboard)/vendors/[id]/page.tsx(465,18): error TS2304: Cannot find name 'DescriptionDetails'.
+src/app/(dashboard)/vendors/[id]/page.tsx(467,19): error TS2304: Cannot find name 'DescriptionDetails'.
+src/app/(dashboard)/vendors/[id]/page.tsx(468,17): error TS2304: Cannot find name 'DescriptionList'.
+src/app/(dashboard)/vendors/page.tsx(105,17): error TS2322: Type '{ children: (string | Element)[]; href: string; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'href' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'. Did you mean 'ref'?
+src/app/(dashboard)/vendors/page.tsx(113,12): error TS2304: Cannot find name 'InputGroup'.
+src/app/(dashboard)/vendors/page.tsx(120,13): error TS2304: Cannot find name 'InputGroup'.
+src/app/(dashboard)/vendors/page.tsx(130,10): error TS2304: Cannot find name 'InputGroup'.
+src/app/(dashboard)/vendors/page.tsx(137,11): error TS2304: Cannot find name 'InputGroup'.
+src/app/(dashboard)/vendors/page.tsx(138,17): error TS2322: Type '{ children: (string | Element)[]; outline: true; }' is not assignable to type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+  Property 'outline' does not exist on type 'IntrinsicAttributes & ButtonProps & RefAttributes<HTMLButtonElement>'.
+src/app/(dashboard)/vendors/page.tsx(144,8): error TS18047: 'suppliers' is possibly 'null'.
+src/app/(dashboard)/vendors/page.tsx(154,12): error TS18047: 'suppliers' is possibly 'null'.
+src/app/(dashboard)/vendors/page.tsx(240,8): error TS18047: 'suppliers' is possibly 'null'.
+src/app/(dashboard)/vendors/page.tsx(243,22): error TS18047: 'suppliers' is possibly 'null'.
+src/app/(dashboard)/vendors/page.tsx(243,47): error TS18047: 'suppliers' is possibly 'null'.
+src/app/(dashboard)/vendors/page.tsx(246,20): error TS18047: 'suppliers' is possibly 'null'.
+src/app/(dashboard)/vendors/page.tsx(247,20): error TS18047: 'suppliers' is possibly 'null'.
+src/app/api/auth/[...nextauth]/route.ts(1,22): error TS2307: Cannot find module 'next-auth' or its corresponding type declarations.
+src/app/api/clients/route.ts(10,54): error TS2554: Expected 0-1 arguments, but got 2.
+src/app/api/clients/route.ts(73,53): error TS2339: Property 'errors' does not exist on type 'ZodError<unknown>'.
+src/app/api/clients/route.ts(88,54): error TS2554: Expected 0-1 arguments, but got 2.
+src/app/api/clients/route.ts(136,36): error TS2339: Property 'first_name' does not exist on type '{ organization_id: any; }'.
+src/app/api/clients/route.ts(143,53): error TS2339: Property 'errors' does not exist on type 'ZodError<unknown>'.
+src/app/api/communications/activity-feed/route.ts(173,11): error TS2322: Type '{ organization_id: any; entity_type: any; entity_id: any; activity_type: any; title: any; description: any; actor_id: string; actor_name: any; actor_type: "client" | "vendor" | "system"; target_user_ids: any; is_public: any; icon: any; color: any; data: any; }' is not assignable to type 'Omit<{ id: string; organization_id: string; entity_type: "message" | "payment" | "booking" | "client" | "vendor" | "form"; entity_id: string; activity_type: string; title: string; description: string | null; ... 9 more ...; created_at: string; }, "created_at" | "id"> & { ...; }'.
+  Property 'read_by' is missing in type '{ organization_id: any; entity_type: any; entity_id: any; activity_type: any; title: any; description: any; actor_id: string; actor_name: any; actor_type: "client" | "vendor" | "system"; target_user_ids: any; is_public: any; icon: any; color: any; data: any; }' but required in type 'Omit<{ id: string; organization_id: string; entity_type: "message" | "payment" | "booking" | "client" | "vendor" | "form"; entity_id: string; activity_type: string; title: string; description: string | null; ... 9 more ...; created_at: string; }, "created_at" | "id">'.
+src/app/api/communications/conversations/route.ts(135,11): error TS2322: Type '{ client_id: any; vendor_id: any; organization_id: any; subject: any; status: "active"; last_message_at: string; unread_count_client: number; unread_count_vendor: number; client_typing: false; vendor_typing: false; }' is not assignable to type 'Omit<{ id: string; client_id: string; vendor_id: string; organization_id: string; subject: string | null; status: "active" | "archived" | "closed"; last_message_at: string; last_message_preview: string | null; ... 8 more ...; updated_at: string; }, "created_at" | ... 1 more ... | "updated_at"> & { ...; }'.
+  Type '{ client_id: any; vendor_id: any; organization_id: any; subject: any; status: "active"; last_message_at: string; unread_count_client: number; unread_count_vendor: number; client_typing: false; vendor_typing: false; }' is missing the following properties from type 'Omit<{ id: string; client_id: string; vendor_id: string; organization_id: string; subject: string | null; status: "active" | "archived" | "closed"; last_message_at: string; last_message_preview: string | null; ... 8 more ...; updated_at: string; }, "created_at" | ... 1 more ... | "updated_at">': metadata, last_message_preview, client_last_seen, vendor_last_seen
+src/app/api/communications/messages/route.ts(161,11): error TS2322: Type '{ conversation_id: any; sender_id: string; sender_type: "client" | "vendor"; sender_name: any; sender_avatar_url: any; recipient_id: any; recipient_type: "client" | "vendor"; organization_id: any; ... 6 more ...; reply_to_message_id: any; }' is not assignable to type 'Omit<{ id: string; conversation_id: string; sender_id: string; sender_type: "client" | "vendor" | "system"; sender_name: string; sender_avatar_url: string | null; recipient_id: string; ... 12 more ...; updated_at: string; }, "created_at" | ... 1 more ... | "updated_at"> & { ...; }'.
+  Type '{ conversation_id: any; sender_id: string; sender_type: "client" | "vendor"; sender_name: any; sender_avatar_url: any; recipient_id: any; recipient_type: "client" | "vendor"; organization_id: any; ... 6 more ...; reply_to_message_id: any; }' is missing the following properties from type 'Omit<{ id: string; conversation_id: string; sender_id: string; sender_type: "client" | "vendor" | "system"; sender_name: string; sender_avatar_url: string | null; recipient_id: string; recipient_type: "client" | "vendor"; ... 11 more ...; updated_at: string; }, "created_at" | ... 1 more ... | "updated_at">': read_at, thread_id
+src/app/api/communications/messages/route.ts(208,38): error TS2339: Property 'raw' does not exist on type 'SupabaseClient<any, "public", any>'.
+src/app/api/communications/notifications/email/route.ts(55,11): error TS2322: Type '{ organization_id: any; recipient_email: any; recipient_name: any; recipient_id: any; recipient_type: any; sender_id: string; sender_name: any; template_type: any; subject: any; html_content: any; ... 6 more ...; retry_count: number; }' is not assignable to type 'Omit<{ id: string; organization_id: string; recipient_email: string; recipient_name: string | null; recipient_id: string | null; recipient_type: "client" | "vendor" | "admin"; sender_id: string | null; ... 21 more ...; updated_at: string; }, "created_at" | ... 1 more ... | "updated_at"> & { ...; }'.
+  Type '{ organization_id: any; recipient_email: any; recipient_name: any; recipient_id: any; recipient_type: any; sender_id: string; sender_name: any; template_type: any; subject: any; html_content: any; ... 6 more ...; retry_count: number; }' is missing the following properties from type 'Omit<{ id: string; organization_id: string; recipient_email: string; recipient_name: string | null; recipient_id: string | null; recipient_type: "client" | "vendor" | "admin"; sender_id: string | null; ... 21 more ...; updated_at: string; }, "created_at" | ... 1 more ... | "updated_at">': metadata, template_id, provider_id, provider_response, and 5 more.
+src/app/api/core-fields/extract/route.ts(148,57): error TS2339: Property 'errors' does not exist on type 'ZodError<unknown>'.
+src/app/api/core-fields/populate/route.ts(77,43): error TS2339: Property 'errors' does not exist on type 'ZodError<{ formId: string; clientId: string; formFields: { id: string; label: string; type: "number" | "currency" | "date" | "text" | "time" | "email" | "phone" | "file" | "textarea" | "select" | "radio" | "checkbox"; value?: any; }[]; }>'.
+src/app/api/core-fields/populate/route.ts(77,54): error TS7006: Parameter 'e' implicitly has an 'any' type.
+src/app/api/core-fields/populate/route.ts(181,26): error TS2339: Property 'errors' does not exist on type 'ZodError<unknown>'.
+src/app/api/core-fields/populate/route.ts(181,37): error TS7006: Parameter 'e' implicitly has an 'any' type.
+src/app/api/core-fields/populate/route.ts(237,43): error TS2339: Property 'errors' does not exist on type 'ZodError<{ weddingId: string; updates: { bride_first_name?: string | undefined; bride_last_name?: string | undefined; groom_first_name?: string | undefined; groom_last_name?: string | undefined; ... 16 more ...; special_requests?: string | undefined; }; source?: "form_submission" | ... 2 more ... | undefined; }>'.
+src/app/api/core-fields/populate/route.ts(237,54): error TS7006: Parameter 'e' implicitly has an 'any' type.
+src/app/api/forms/[id]/route.ts(5,23): error TS2307: Cannot find module 'isomorphic-dompurify' or its corresponding type declarations.
+src/app/api/forms/[id]/route.ts(11,3): error TS2353: Object literal may only specify known properties, and 'interval' does not exist in type 'Options'.
+src/app/api/forms/[id]/route.ts(64,32): error TS2339: Property 'ip' does not exist on type 'NextRequest'.
+src/app/api/forms/[id]/route.ts(65,45): error TS2339: Property 'check' does not exist on type '(req: NextRequest) => Promise<{ success: boolean; limit: number; remaining: number; reset: number; retryAfter?: number | undefined; }>'.
+src/app/api/forms/[id]/route.ts(190,32): error TS2339: Property 'ip' does not exist on type 'NextRequest'.
+src/app/api/forms/[id]/route.ts(191,45): error TS2339: Property 'check' does not exist on type '(req: NextRequest) => Promise<{ success: boolean; limit: number; remaining: number; reset: number; retryAfter?: number | undefined; }>'.
+src/app/api/forms/[id]/route.ts(279,26): error TS2339: Property 'errors' does not exist on type 'ZodError<unknown>'.
+src/app/api/forms/[id]/route.ts(279,37): error TS7006: Parameter 'err' implicitly has an 'any' type.
+src/app/api/forms/[id]/route.ts(306,32): error TS2339: Property 'ip' does not exist on type 'NextRequest'.
+src/app/api/forms/[id]/route.ts(307,45): error TS2339: Property 'check' does not exist on type '(req: NextRequest) => Promise<{ success: boolean; limit: number; remaining: number; reset: number; retryAfter?: number | undefined; }>'.
+src/app/api/forms/[id]/submit/route.ts(6,23): error TS2307: Cannot find module 'isomorphic-dompurify' or its corresponding type declarations.
+src/app/api/forms/[id]/submit/route.ts(13,3): error TS2353: Object literal may only specify known properties, and 'interval' does not exist in type 'Options'.
+src/app/api/forms/[id]/submit/route.ts(79,30): error TS2339: Property 'ip' does not exist on type 'NextRequest'.
+src/app/api/forms/[id]/submit/route.ts(80,47): error TS2339: Property 'check' does not exist on type '(req: NextRequest) => Promise<{ success: boolean; limit: number; remaining: number; reset: number; retryAfter?: number | undefined; }>'.
+src/app/api/forms/[id]/submit/route.ts(193,14): error TS2339: Property 'sections' does not exist on type '{ id: any; title: any; status: any; form_data: any; expires_at: any; max_submissions: any; sharing_settings: any; settings: any; clients: { id: any; company_name: any; user_id: any; }[]; }'.
+src/app/api/forms/[id]/submit/route.ts(195,12): error TS2339: Property 'sections' does not exist on type '{ id: any; title: any; status: any; form_data: any; expires_at: any; max_submissions: any; sharing_settings: any; settings: any; clients: { id: any; company_name: any; user_id: any; }[]; }'.
+src/app/api/forms/[id]/submit/route.ts(275,34): error TS2339: Property 'type' does not exist on type 'object'.
+src/app/api/forms/[id]/submit/route.ts(275,80): error TS2339: Property 'type' does not exist on type 'object'.
+src/app/api/forms/[id]/submit/route.ts(279,34): error TS2339: Property 'size' does not exist on type 'object'.
+src/app/api/forms/[id]/submit/route.ts(279,57): error TS2339: Property 'size' does not exist on type 'object'.
+src/app/api/forms/[id]/submit/route.ts(332,31): error TS2339: Property 'id' does not exist on type '{ id: any; company_name: any; user_id: any; }[]'.
+src/app/api/forms/[id]/submit/route.ts(361,60): error TS2339: Property 'user_id' does not exist on type '{ id: any; company_name: any; user_id: any; }[]'.
+src/app/api/forms/[id]/submit/route.ts(363,63): error TS2339: Property 'user_id' does not exist on type '{ id: any; company_name: any; user_id: any; }[]'.
+src/app/api/forms/[id]/submit/route.ts(368,41): error TS2339: Property 'company_name' does not exist on type '{ id: any; company_name: any; user_id: any; }[]'.
+src/app/api/forms/[id]/submit/route.ts(374,42): error TS2339: Property 'id' does not exist on type '{ id: any; company_name: any; user_id: any; }[]'.
+src/app/api/forms/[id]/submit/route.ts(375,44): error TS2339: Property 'company_name' does not exist on type '{ id: any; company_name: any; user_id: any; }[]'.
+src/app/api/forms/[id]/submit/route.ts(394,43): error TS2339: Property 'id' does not exist on type '{ id: any; company_name: any; user_id: any; }[]'.
+src/app/api/forms/[id]/submit/route.ts(428,25): error TS18046: 'emailError' is of type 'unknown'.
+src/app/api/forms/[id]/submit/route.ts(449,26): error TS2339: Property 'errors' does not exist on type 'ZodError<unknown>'.
+src/app/api/forms/[id]/submit/route.ts(449,37): error TS7006: Parameter 'err' implicitly has an 'any' type.
+src/app/api/forms/[id]/submit/route.ts(477,32): error TS2339: Property 'ip' does not exist on type 'NextRequest'.
+src/app/api/forms/[id]/submit/route.ts(478,47): error TS2339: Property 'check' does not exist on type '(req: NextRequest) => Promise<{ success: boolean; limit: number; remaining: number; reset: number; retryAfter?: number | undefined; }>'.
+src/app/api/forms/[id]/sync-core-fields/route.ts(4,23): error TS2307: Cannot find module 'isomorphic-dompurify' or its corresponding type declarations.
+src/app/api/forms/[id]/sync-core-fields/route.ts(183,26): error TS2339: Property 'errors' does not exist on type 'ZodError<unknown>'.
+src/app/api/forms/[id]/sync-core-fields/route.ts(402,26): error TS2339: Property 'errors' does not exist on type 'ZodError<unknown>'.
+src/app/api/forms/create-from-pdf/route.ts(9,14): error TS2554: Expected 2-3 arguments, but got 1.
+src/app/api/forms/create-from-pdf/route.ts(174,57): error TS2339: Property 'errors' does not exist on type 'ZodError<unknown>'.
+src/app/api/forms/route.ts(6,23): error TS2307: Cannot find module 'isomorphic-dompurify' or its corresponding type declarations.
+src/app/api/forms/route.ts(11,3): error TS2353: Object literal may only specify known properties, and 'interval' does not exist in type 'Options'.
+src/app/api/forms/route.ts(56,32): error TS2339: Property 'ip' does not exist on type 'NextRequest'.
+src/app/api/forms/route.ts(57,45): error TS2339: Property 'check' does not exist on type '(req: NextRequest) => Promise<{ success: boolean; limit: number; remaining: number; reset: number; retryAfter?: number | undefined; }>'.
+src/app/api/forms/route.ts(137,32): error TS2339: Property 'ip' does not exist on type 'NextRequest'.
+src/app/api/forms/route.ts(138,45): error TS2339: Property 'check' does not exist on type '(req: NextRequest) => Promise<{ success: boolean; limit: number; remaining: number; reset: number; retryAfter?: number | undefined; }>'.
+src/app/api/forms/route.ts(213,26): error TS2339: Property 'errors' does not exist on type 'ZodError<unknown>'.
+src/app/api/forms/route.ts(213,37): error TS7006: Parameter 'err' implicitly has an 'any' type.
+src/app/api/forms/route.ts(235,32): error TS2339: Property 'ip' does not exist on type 'NextRequest'.
+src/app/api/forms/route.ts(236,45): error TS2339: Property 'check' does not exist on type '(req: NextRequest) => Promise<{ success: boolean; limit: number; remaining: number; reset: number; retryAfter?: number | undefined; }>'.
+src/app/api/forms/route.ts(337,30): error TS2339: Property 'ip' does not exist on type 'NextRequest'.
+src/app/api/forms/route.ts(364,26): error TS2339: Property 'errors' does not exist on type 'ZodError<unknown>'.
+src/app/api/forms/route.ts(364,37): error TS7006: Parameter 'err' implicitly has an 'any' type.
+src/app/api/forms/submit/route.ts(63,42): error TS2339: Property 'created_by' does not exist on type 'never'.
+src/app/api/forms/submit/route.ts(64,14): error TS2339: Property 'status' does not exist on type 'never'.
+src/app/api/forms/submit/route.ts(75,14): error TS2339: Property 'settings' does not exist on type 'never'.
+src/app/api/forms/submit/route.ts(86,79): error TS2339: Property 'sections' does not exist on type 'never'.
+src/app/api/forms/submit/route.ts(153,8): error TS2339: Property 'catch' does not exist on type 'PromiseLike<void>'.
+src/app/api/forms/submit/route.ts(153,14): error TS7006: Parameter 'error' implicitly has an 'any' type.
+src/app/api/forms/submit/route.ts(161,23): error TS18047: 'submitResult.data' is possibly 'null'.
+src/app/api/forms/submit/route.ts(162,23): error TS2339: Property 'settings' does not exist on type 'never'.
+src/app/api/forms/submit/route.ts(163,24): error TS2339: Property 'settings' does not exist on type 'never'.
+src/app/api/forms/verify-password/route.ts(4,20): error TS2307: Cannot find module 'bcryptjs' or its corresponding type declarations.
+src/app/api/forms/verify-password/route.ts(5,22): error TS2307: Cannot find module 'jsonwebtoken' or its corresponding type declarations.
+src/app/api/forms/verify-password/route.ts(10,3): error TS2353: Object literal may only specify known properties, and 'interval' does not exist in type 'Options'.
+src/app/api/forms/verify-password/route.ts(22,30): error TS2339: Property 'ip' does not exist on type 'NextRequest'.
+src/app/api/forms/verify-password/route.ts(23,49): error TS2339: Property 'check' does not exist on type '(req: NextRequest) => Promise<{ success: boolean; limit: number; remaining: number; reset: number; retryAfter?: number | undefined; }>'.
+src/app/api/pdf/process-and-create/route.ts(149,42): error TS2339: Property 'processPDFWithProgress' does not exist on type 'OptimizedProcessor'.
+src/app/api/pdf/process-and-create/route.ts(151,10): error TS7006: Parameter 'progress' implicitly has an 'any' type.
+src/app/api/pdf/process-and-create/route.ts(179,64): error TS7006: Parameter 'line' implicitly has an 'any' type.
+src/app/api/pdf/process-and-create/route.ts(311,8): error TS2339: Property 'catch' does not exist on type 'PromiseLike<void>'.
+src/app/api/pdf/process-and-create/route.ts(311,14): error TS7006: Parameter 'error' implicitly has an 'any' type.
+src/app/api/pdf/process-and-create/route.ts(344,26): error TS2339: Property 'errors' does not exist on type 'ZodError<unknown>'.
+src/app/api/pdf/process-and-create/route.ts(344,37): error TS7006: Parameter 'err' implicitly has an 'any' type.
+src/app/api/pdf/process/route.ts(4,24): error TS2305: Module '"@/lib/auth-middleware"' has no exported member 'authenticateRequest'.
+src/app/api/pdf/process/route.ts(163,25): error TS2769: No overload matches this call.
+  Overload 1 of 2, '(def: { qualityCheck: boolean; parallel: boolean; skipCache: boolean; priority: number; autoCreateForm: boolean; } | undefined): ZodDefault<ZodOptional<ZodObject<{ qualityCheck: ZodDefault<ZodOptional<ZodBoolean>>; parallel: ZodDefault<...>; skipCache: ZodDefault<...>; priority: ZodDefault<...>; autoCreateForm: ZodDefault<...>; }, $strip>>>', gave the following error.
+    Argument of type '{}' is not assignable to parameter of type '{ qualityCheck: boolean; parallel: boolean; skipCache: boolean; priority: number; autoCreateForm: boolean; }'.
+      Type '{}' is missing the following properties from type '{ qualityCheck: boolean; parallel: boolean; skipCache: boolean; priority: number; autoCreateForm: boolean; }': qualityCheck, parallel, skipCache, priority, autoCreateForm
+  Overload 2 of 2, '(def: () => { qualityCheck: boolean; parallel: boolean; skipCache: boolean; priority: number; autoCreateForm: boolean; }): ZodDefault<ZodOptional<ZodObject<{ qualityCheck: ZodDefault<ZodOptional<ZodBoolean>>; parallel: ZodDefault<...>; skipCache: ZodDefault<...>; priority: ZodDefault<...>; autoCreateForm: ZodDefault<...>; }, $strip>>>', gave the following error.
+    Argument of type '{}' is not assignable to parameter of type '() => { qualityCheck: boolean; parallel: boolean; skipCache: boolean; priority: number; autoCreateForm: boolean; }'.
+      Type '{}' provides no match for the signature '(): { qualityCheck: boolean; parallel: boolean; skipCache: boolean; priority: number; autoCreateForm: boolean; }'.
+src/app/api/pdf/process/route.ts(220,63): error TS2345: Argument of type 'ArrayBufferLike' is not assignable to parameter of type 'ArrayBuffer'.
+  Type 'SharedArrayBuffer' is missing the following properties from type 'ArrayBuffer': resizable, resize, detached, transfer, transferToFixedLength
+src/app/api/pdf/process/route.ts(226,9): error TS2322: Type '{ coreFieldKey: null; coreFieldConfidence: number; validated: false; contextClues: never[]; nearbyFields: never[]; id: string; type: string; label: string; value: string; confidence: number; pageNumber: number; isGuestField?: boolean | undefined; guestRecordId?: string | undefined; validationStatus?: "invalid" | ......' is not assignable to type 'EnhancedField[]'.
+  Property 'boundingBox' is missing in type '{ coreFieldKey: null; coreFieldConfidence: number; validated: false; contextClues: never[]; nearbyFields: never[]; id: string; type: string; label: string; value: string; confidence: number; pageNumber: number; isGuestField?: boolean; guestRecordId?: string; validationStatus?: "valid" | "invalid" | "needs_review"; d...' but required in type 'EnhancedField'.
+src/app/api/pdf/process/route.ts(492,57): error TS2339: Property 'errors' does not exist on type 'ZodError<unknown>'.
+src/app/api/pdf/validate/route.ts(5,10): error TS2305: Module '"@/lib/ocr/processing-pipeline"' has no exported member 'QualityAssessment'.
+src/app/api/pdf/validate/route.ts(138,36): error TS18046: 'error' is of type 'unknown'.
+src/app/api/security/pci-compliance/route.ts(186,26): error TS2339: Property 'errors' does not exist on type 'ZodError<unknown>'.
+src/app/api/security/pci-compliance/route.ts(220,26): error TS2339: Property 'errors' does not exist on type 'ZodError<unknown>'.
+src/app/api/stripe/create-checkout-session/route.ts(14,3): error TS2322: Type '"2024-12-18.acacia"' is not assignable to type '"2025-07-30.basil"'.
+src/app/api/stripe/create-checkout-session/route.ts(229,23): error TS7053: Element implicitly has an 'any' type because expression of type 'any' can't be used to index type '{ monthly: string; yearly: string; }'.
+src/app/api/stripe/create-checkout-session/route.ts(233,21): error TS7053: Element implicitly has an 'any' type because expression of type 'any' can't be used to index type '{ monthly: string; yearly: string; }'.
+src/app/api/stripe/create-checkout-session/route.ts(353,13): error TS2304: Cannot find name 'user'.
+src/app/api/stripe/create-checkout-session/route.ts(353,21): error TS2304: Cannot find name 'userProfile'.
+src/app/api/stripe/create-checkout-session/route.ts(355,13): error TS2304: Cannot find name 'user'.
+src/app/api/stripe/create-checkout-session/route.ts(356,13): error TS2304: Cannot find name 'userProfile'.
+src/app/api/stripe/create-checkout-session/route.ts(359,21): error TS2304: Cannot find name 'sanitizedTier'.
+src/app/api/stripe/create-checkout-session/route.ts(360,30): error TS2304: Cannot find name 'sanitizedBillingCycle'.
+src/app/api/stripe/create-checkout-session/route.ts(361,27): error TS2552: Cannot find name 'requestId'. Did you mean 'request'?
+src/app/api/stripe/webhook/route.ts(19,3): error TS2322: Type '"2024-12-18.acacia"' is not assignable to type '"2025-07-30.basil"'.
+src/app/api/stripe/webhook/route.ts(293,53): error TS2339: Property 'current_period_start' does not exist on type 'Response<Subscription>'.
+src/app/api/stripe/webhook/route.ts(294,51): error TS2339: Property 'current_period_end' does not exist on type 'Response<Subscription>'.
+src/app/api/stripe/webhook/route.ts(405,51): error TS2339: Property 'current_period_start' does not exist on type 'Subscription'.
+src/app/api/stripe/webhook/route.ts(406,49): error TS2339: Property 'current_period_end' does not exist on type 'Subscription'.
+src/app/api/stripe/webhook/route.ts(559,41): error TS2339: Property 'payment_intent' does not exist on type 'Invoice'.
+src/app/api/stripe/webhook/route.ts(560,39): error TS2339: Property 'subscription' does not exist on type 'Invoice'.
+src/app/api/stripe/webhook/route.ts(580,39): error TS2339: Property 'subscription' does not exist on type 'Invoice'.
+src/app/api/stripe/webhook/route.ts(675,24): error TS2551: Property 'sendPaymentFailedNotification' does not exist on type 'typeof EmailService'. Did you mean 'sendPaymentNotification'?
+src/app/api/stripe/webhook/route.ts(761,10): error TS2678: Type '"PRO"' is not comparable to type 'SubscriptionTier'.
+src/app/api/stripe/webhook/route.ts(763,10): error TS2678: Type '"BUSINESS"' is not comparable to type 'SubscriptionTier'.
+src/app/forms/[slug]/page.tsx(2,45): error TS2307: Cannot find module '@supabase/auth-helpers-nextjs' or its corresponding type declarations.
+src/app/forms/[slug]/page.tsx(112,31): error TS2339: Property 'get' does not exist on type 'Promise<ReadonlyRequestCookies>'.
+src/app/forms/[slug]/password/page.tsx(2,45): error TS2307: Cannot find module '@supabase/auth-helpers-nextjs' or its corresponding type declarations.
+src/app/forms/[slug]/receipt/page.tsx(2,45): error TS2307: Cannot find module '@supabase/auth-helpers-nextjs' or its corresponding type declarations.
+src/app/forms/[slug]/receipt/page.tsx(168,26): error TS2322: Type '"success"' is not assignable to type '"default" | "secondary" | "outline" | "destructive" | null | undefined'.
+src/app/forms/builder/page.tsx(2,10): error TS2305: Module '"@/components/ui/LoadingSkeleton"' has no exported member 'LoadingSkeleton'.
+src/app/forms/builder/page.tsx(68,11): error TS2322: Type '{ initialTemplate: string | undefined; mode: string | undefined; }' is not assignable to type 'IntrinsicAttributes & FormBuilderProps'.
+  Property 'initialTemplate' does not exist on type 'IntrinsicAttributes & FormBuilderProps'.
+src/app/forms/import/page.tsx(6,23): error TS2307: Cannot find module 'sonner' or its corresponding type declarations.
+src/app/forms/test-core-fields/page.tsx(255,18): error TS2304: Cannot find name 'InformationCircleIcon'.
+src/components/LazyComponents.tsx(27,75): error TS2339: Property 'default' does not exist on type 'typeof import("/app/src/components/forms/OptimizedFormBuilder")'.
+src/components/LazyComponents.tsx(43,16): error TS2307: Cannot find module '@/components/pdf/PDFViewer' or its corresponding type declarations.
+src/components/LazyComponents.tsx(51,16): error TS2307: Cannot find module '@/components/pdf/PDFImportFlow' or its corresponding type declarations.
+src/components/LazyComponents.tsx(68,16): error TS2307: Cannot find module '@/components/charts/AnalyticsCharts' or its corresponding type declarations.
+src/components/LazyComponents.tsx(77,16): error TS2307: Cannot find module '@/components/payment/StripeCheckout' or its corresponding type declarations.
+src/components/LazyComponents.tsx(85,16): error TS2307: Cannot find module '@/app/pricing/page' or its corresponding type declarations.
+src/components/LazyComponents.tsx(93,16): error TS2307: Cannot find module '@/components/email/TemplateEditor' or its corresponding type declarations.
+src/components/LazyComponents.tsx(102,16): error TS2307: Cannot find module '@/components/modals/ClientDetailsModal' or its corresponding type declarations.
+src/components/LazyComponents.tsx(109,16): error TS2307: Cannot find module '@/components/modals/FormEditorModal' or its corresponding type declarations.
+src/components/LazyComponents.tsx(124,5): error TS2322: Type '(() => Element) | ComponentType' is not assignable to type '((loadingProps: DynamicOptionsLoadingProps) => ReactNode) | undefined'.
+  Type 'ComponentClass<{}, any>' is not assignable to type '(loadingProps: DynamicOptionsLoadingProps) => ReactNode'.
+    Type 'ComponentClass<{}, any>' provides no match for the signature '(loadingProps: DynamicOptionsLoadingProps): ReactNode'.
+src/components/LazyComponents.tsx(144,14): error TS2307: Cannot find module '@/components/pdf/PDFViewer' or its corresponding type declarations.
+src/components/LazyComponents.tsx(145,14): error TS2307: Cannot find module '@/components/pdf/PDFImportFlow' or its corresponding type declarations.
+src/components/LazyComponents.tsx(148,14): error TS2307: Cannot find module '@/app/pricing/page' or its corresponding type declarations.
+src/components/LazyComponents.tsx(149,14): error TS2307: Cannot find module '@/components/payment/StripeCheckout' or its corresponding type declarations.
+src/components/forms/ClientFormSubmission.tsx(8,26): error TS2307: Cannot find module '@/components/ui/skeleton' or its corresponding type declarations.
+src/components/forms/ClientFormSubmission.tsx(10,33): error TS2307: Cannot find module '@/hooks/useFormAutoSave' or its corresponding type declarations.
+src/components/forms/ClientFormSubmission.tsx(23,23): error TS2307: Cannot find module 'sonner' or its corresponding type declarations.
+src/components/forms/ClientFormSubmission.tsx(51,38): error TS2554: Expected 0 arguments, but got 1.
+src/components/forms/ClientFormSubmission.tsx(71,17): error TS2339: Property 'trackProgress' does not exist on type '{ trackEvent: (eventName: string, properties?: Record<string, any> | undefined) => void; trackFormSubmission: (formId: string, formData: any) => void; trackFieldInteraction: (fieldName: string, action: string) => void; }'.
+src/components/forms/ClientFormSubmission.tsx(103,17): error TS2554: Expected 2 arguments, but got 1.
+src/components/forms/ClientFormSubmission.tsx(114,15): error TS2339: Property 'trackProgress' does not exist on type '{ trackEvent: (eventName: string, properties?: Record<string, any> | undefined) => void; trackFormSubmission: (formId: string, formData: any) => void; trackFieldInteraction: (fieldName: string, action: string) => void; }'.
+src/components/forms/ClientFormSubmission.tsx(123,17): error TS2554: Expected 2 arguments, but got 1.
+src/components/forms/ClientFormSubmission.tsx(141,19): error TS2554: Expected 2 arguments, but got 1.
+src/components/forms/ClientFormSubmission.tsx(224,33): error TS2339: Property 'sessionId' does not exist on type '{ trackEvent: (eventName: string, properties?: Record<string, any> | undefined) => void; trackFormSubmission: (formId: string, formData: any) => void; trackFieldInteraction: (fieldName: string, action: string) => void; }'.
+src/components/forms/ClientFormSubmission.tsx(236,17): error TS2339: Property 'trackCompletion' does not exist on type '{ trackEvent: (eventName: string, properties?: Record<string, any> | undefined) => void; trackFormSubmission: (formId: string, formData: any) => void; trackFieldInteraction: (fieldName: string, action: string) => void; }'.
+src/components/forms/ClientFormSubmission.tsx(278,104): error TS2339: Property 'sessionId' does not exist on type '{ trackEvent: (eventName: string, properties?: Record<string, any> | undefined) => void; trackFormSubmission: (formId: string, formData: any) => void; trackFieldInteraction: (fieldName: string, action: string) => void; }'.
+src/components/forms/ClientFormSubmission.tsx(301,30): error TS7006: Parameter 'serverData' implicitly has an 'any' type.
+src/components/forms/ClientFormSubmission.tsx(303,8): error TS2322: Type '({ formData: autoSaveData, updateFormData, saveState, forceSave }: { formData: any; updateFormData: any; saveState: any; forceSave: any; }) => Element' is not assignable to type 'ReactNode'.
+src/components/forms/ClientFormSubmission.tsx(303,21): error TS7031: Binding element 'autoSaveData' implicitly has an 'any' type.
+src/components/forms/ClientFormSubmission.tsx(303,35): error TS7031: Binding element 'updateFormData' implicitly has an 'any' type.
+src/components/forms/ClientFormSubmission.tsx(303,51): error TS7031: Binding element 'saveState' implicitly has an 'any' type.
+src/components/forms/ClientFormSubmission.tsx(303,62): error TS7031: Binding element 'forceSave' implicitly has an 'any' type.
+src/components/forms/EnhancedFormBuilder.tsx(81,24): error TS2339: Property 'metadata' does not exist on type 'FormField'.
+src/components/forms/EnhancedFormBuilder.tsx(111,7): error TS2322: Type 'string[] | undefined' is not assignable to type 'FormFieldOption[] | undefined'.
+  Type 'string[]' is not assignable to type 'FormFieldOption[]'.
+    Type 'string' is not assignable to type 'FormFieldOption'.
+src/components/forms/EnhancedFormBuilder.tsx(276,11): error TS2322: Type '{ onAddField: (fieldType: string) => void; selectedField: string | null; fields: FormField[]; onUpdateField: (fieldId: string, updates: Partial<FormField>) => void; className: string; }' is not assignable to type 'IntrinsicAttributes & OptimizedFieldPaletteProps'.
+  Property 'onAddField' does not exist on type 'IntrinsicAttributes & OptimizedFieldPaletteProps'.
+src/components/forms/EnhancedFormBuilder.tsx(311,15): error TS2322: Type '{ fields: FormField[]; title: string; className: string; }' is not assignable to type 'IntrinsicAttributes & FormPreviewProps'.
+  Property 'fields' does not exist on type 'IntrinsicAttributes & FormPreviewProps'.
+src/components/forms/EnhancedFormBuilder.tsx(325,15): error TS2322: Type '{ fields: { className: string; id: string; type: FormFieldType; label: string; placeholder?: string | undefined; helperText?: string | undefined; defaultValue?: any; required?: boolean | undefined; ... 4 more ...; order?: number | undefined; }[]; ... 6 more ...; className: string; }' is not assignable to type 'IntrinsicAttributes & OptimizedFormCanvasProps'.
+  Property 'selectedField' does not exist on type 'IntrinsicAttributes & OptimizedFormCanvasProps'.
+src/components/forms/EnhancedFormBuilder.tsx(421,11): error TS2322: Type '{ onAddField: (type: string) => void; selectedField: string | null; fields: FormField[]; onUpdateField: (id: string, updates: Partial<FormField>) => void; className: string; isMobile: boolean; }' is not assignable to type 'IntrinsicAttributes & OptimizedFieldPaletteProps'.
+  Property 'onAddField' does not exist on type 'IntrinsicAttributes & OptimizedFieldPaletteProps'.
+src/components/forms/FieldEditor.tsx(158,20): error TS2304: Cannot find name 'Switch'.
+src/components/forms/FieldEditor.tsx(160,32): error TS7006: Parameter 'checked' implicitly has an 'any' type.
+src/components/forms/FormBuilder.tsx(21,34): error TS2305: Module '"@/types/forms"' has no exported member 'FormRow'.
+src/components/forms/FormBuilder.tsx(309,19): error TS2322: Type '{ sections: FormSection[]; setSections: Dispatch<SetStateAction<FormSection[]>>; rows: FormRow[]; setRows: Dispatch<SetStateAction<FormRow[]>>; onFieldSelect: Dispatch<...>; selectedFieldId: string | undefined; }' is not assignable to type 'IntrinsicAttributes & FormCanvasProps'.
+  Property 'rows' does not exist on type 'IntrinsicAttributes & FormCanvasProps'.
+src/components/forms/FormCanvas.tsx(3,34): error TS2305: Module '"@/types/forms"' has no exported member 'FormRow'.
+src/components/forms/FormCanvas.tsx(49,39): error TS2345: Argument of type 'Transform | null' is not assignable to parameter of type '{ x: number; y: number; scaleX?: number | undefined; scaleY?: number | undefined; }'.
+  Type 'null' is not assignable to type '{ x: number; y: number; scaleX?: number | undefined; scaleY?: number | undefined; }'.
+src/components/forms/FormCanvas.tsx(370,32): error TS7006: Parameter 'field' implicitly has an 'any' type.
+src/components/forms/FormCanvas.tsx(389,85): error TS2339: Property 'rows' does not exist on type 'FormCanvasProps'.
+src/components/forms/FormCanvas.tsx(389,91): error TS2339: Property 'setRows' does not exist on type 'FormCanvasProps'.
+src/components/forms/FormCanvas.tsx(406,51): error TS7006: Parameter 'f' implicitly has an 'any' type.
+src/components/forms/FormCanvas.tsx(452,37): error TS7006: Parameter 'f' implicitly has an 'any' type.
+src/components/forms/LazyFormBuilder.tsx(12,41): error TS2322: Type 'Promise<typeof import("/app/src/components/forms/OptimizedFormBuilder")>' is not assignable to type 'Promise<{ default: ComponentType<any>; }>'.
+  Property 'default' is missing in type 'typeof import("/app/src/components/forms/OptimizedFormBuilder")' but required in type '{ default: ComponentType<any>; }'.
+src/components/forms/OptimizedFormBuilder.tsx(13,44): error TS2307: Cannot find module './CoreFieldsMapper' or its corresponding type declarations.
+src/components/forms/OptimizedFormBuilder.tsx(52,7): error TS2322: Type 'string[] | undefined' is not assignable to type 'FormFieldOption[] | undefined'.
+  Type 'string[]' is not assignable to type 'FormFieldOption[]'.
+    Type 'string' is not assignable to type 'FormFieldOption'.
+src/components/forms/OptimizedFormBuilder.tsx(184,11): error TS2322: Type '{ onAddField: (fieldType: string) => void; selectedField: string | null; fields: FormField[]; onUpdateField: (fieldId: string, updates: Partial<FormField>) => void; className: string; }' is not assignable to type 'IntrinsicAttributes'.
+  Property 'onAddField' does not exist on type 'IntrinsicAttributes'.
+src/components/forms/OptimizedFormBuilder.tsx(207,15): error TS2322: Type '{ fields: FormField[]; title: string; className: string; }' is not assignable to type 'IntrinsicAttributes & FormPreviewProps'.
+  Property 'fields' does not exist on type 'IntrinsicAttributes & FormPreviewProps'.
+src/components/forms/OptimizedFormBuilder.tsx(214,13): error TS2322: Type '{ fields: FormField[]; selectedField: string | null; onSelectField: (fieldId: string | null) => void; onUpdateField: (fieldId: string, updates: Partial<FormField>) => void; onDeleteField: (fieldId: string) => void; onReorderFields: (startIndex: number, endIndex: number) => void; isPreview: boolean; className: string...' is not assignable to type 'IntrinsicAttributes & FormCanvasProps'.
+  Property 'fields' does not exist on type 'IntrinsicAttributes & FormCanvasProps'.
+src/components/forms/OptimizedFormBuilder.tsx(293,19): error TS2322: Type '{ availableFields: { id: string; type: string; label: string; required: boolean; }[]; mappedFields: FormField[]; onFieldsChange: (fields: any) => void; }' is not assignable to type 'IntrinsicAttributes'.
+  Property 'availableFields' does not exist on type 'IntrinsicAttributes'.
+src/components/forms/OptimizedFormBuilder.tsx(303,36): error TS7006: Parameter 'fields' implicitly has an 'any' type.
+src/components/forms/OptimizedFormBuilder.tsx(378,11): error TS2322: Type '{ onAddField: (type: string) => void; selectedField: string | null; fields: FormField[]; onUpdateField: (id: string, updates: Partial<FormField>) => void; className: string; isMobile: boolean; }' is not assignable to type 'IntrinsicAttributes'.
+  Property 'onAddField' does not exist on type 'IntrinsicAttributes'.
+src/components/forms/PasswordProtectedFormAccess.tsx(9,23): error TS2307: Cannot find module 'sonner' or its corresponding type declarations.
+src/components/messaging/ActivityFeed.tsx(293,30): error TS2304: Cannot find name 'Avatar'.
+src/components/messaging/ActivityFeed.tsx(295,31): error TS2304: Cannot find name 'Avatar'.
+src/components/messaging/ActivityFeed.tsx(307,34): error TS2322: Type '{ children: "message" | "payment" | "booking" | "client" | "vendor" | "form"; size: string; color: string; }' is not assignable to type 'IntrinsicAttributes & BadgeProps'.
+  Property 'size' does not exist on type 'IntrinsicAttributes & BadgeProps'.
+src/components/messaging/ConversationList.tsx(219,22): error TS2304: Cannot find name 'Avatar'.
+src/components/messaging/ConversationList.tsx(225,23): error TS2304: Cannot find name 'Avatar'.
+src/components/messaging/MessageThread.tsx(82,19): error TS2345: Argument of type 'RealtimeMessage[]' is not assignable to parameter of type 'SetStateAction<Message[]>'.
+  Type 'RealtimeMessage[]' is not assignable to type 'Message[]'.
+    Type 'RealtimeMessage' is not assignable to type 'Message'.
+      Type 'RealtimeMessage' is not assignable to type '{ id: string; conversation_id: string; sender_id: string; sender_type: "client" | "vendor" | "system"; sender_name: string; sender_avatar_url: string | null; recipient_id: string; recipient_type: "client" | "vendor"; ... 11 more ...; updated_at: string; }'.
+        Types of property 'sender_avatar_url' are incompatible.
+          Type 'string | null | undefined' is not assignable to type 'string | null'.
+            Type 'undefined' is not assignable to type 'string | null'.
+src/components/messaging/MessageThread.tsx(241,14): error TS2304: Cannot find name 'Avatar'.
+src/components/messaging/MessageThread.tsx(243,15): error TS2304: Cannot find name 'Avatar'.
+src/components/messaging/MessageThread.tsx(248,69): error TS2339: Property 'wedding_date' does not exist on type '{ id: string; first_name: string | null; last_name: string | null; email: string | null; }'.
+src/components/messaging/MessageThread.tsx(250,65): error TS2339: Property 'wedding_date' does not exist on type '{ id: string; first_name: string | null; last_name: string | null; email: string | null; }'.
+src/components/messaging/MessageThread.tsx(292,24): error TS2304: Cannot find name 'Avatar'.
+src/components/messaging/MessageThread.tsx(294,25): error TS2304: Cannot find name 'Avatar'.
+src/components/messaging/MessageThread.tsx(325,24): error TS2304: Cannot find name 'Avatar'.
+src/components/messaging/MessageThread.tsx(327,25): error TS2304: Cannot find name 'Avatar'.
+src/components/messaging/MessagingLayout.tsx(201,8): error TS2304: Cannot find name 'Dialog'.
+src/components/messaging/MessagingLayout.tsx(274,9): error TS2304: Cannot find name 'Dialog'.
+src/components/onboarding/KeyboardShortcuts.tsx(8,28): error TS2307: Cannot find module 'react-hotkeys-hook' or its corresponding type declarations.
+src/components/onboarding/OnboardingTour.tsx(4,22): error TS2307: Cannot find module 'shepherd.js' or its corresponding type declarations.
+src/components/pdf/FieldMappingInterface.tsx(168,14): error TS2304: Cannot find name 'Heading'.
+src/components/pdf/FieldMappingInterface.tsx(168,47): error TS2304: Cannot find name 'Heading'.
+src/components/pdf/FieldMappingInterface.tsx(169,13): error TS2607: JSX element class does not support attributes because it does not have a 'props' property.
+src/components/pdf/FieldMappingInterface.tsx(169,14): error TS2786: 'Text' cannot be used as a JSX component.
+  Its type '{ new (data?: string | undefined): Text; prototype: Text; }' is not a valid JSX element type.
+    Type '{ new (data?: string | undefined): Text; prototype: Text; }' is not assignable to type 'new (props: any, context: any) => Component<any, any, any>'.
+      Type 'Text' is missing the following properties from type 'Component<any, any, any>': context, setState, forceUpdate, render, and 2 more.
+src/components/pdf/FieldMappingInterface.tsx(193,14): error TS2304: Cannot find name 'Select'.
+src/components/pdf/FieldMappingInterface.tsx(195,26): error TS7006: Parameter 'e' implicitly has an 'any' type.
+src/components/pdf/FieldMappingInterface.tsx(201,15): error TS2304: Cannot find name 'Select'.
+src/components/pdf/FieldMappingInterface.tsx(204,12): error TS2304: Cannot find name 'Checkbox'.
+src/components/pdf/FieldMappingInterface.tsx(209,13): error TS2304: Cannot find name 'Checkbox'.
+src/components/pdf/FieldMappingInterface.tsx(217,14): error TS2304: Cannot find name 'Heading'.
+src/components/pdf/FieldMappingInterface.tsx(220,15): error TS2304: Cannot find name 'Heading'.
+src/components/pdf/FieldMappingInterface.tsx(221,13): error TS2607: JSX element class does not support attributes because it does not have a 'props' property.
+src/components/pdf/FieldMappingInterface.tsx(221,14): error TS2786: 'Text' cannot be used as a JSX component.
+  Its type '{ new (data?: string | undefined): Text; prototype: Text; }' is not a valid JSX element type.
+    Type '{ new (data?: string | undefined): Text; prototype: Text; }' is not assignable to type 'new (props: any, context: any) => Component<any, any, any>'.
+      Type 'Text' is missing the following properties from type 'Component<any, any, any>': context, setState, forceUpdate, render, and 2 more.
+src/components/pdf/FieldMappingInterface.tsx(255,20): error TS2304: Cannot find name 'Select'.
+src/components/pdf/FieldMappingInterface.tsx(257,32): error TS7006: Parameter 'e' implicitly has an 'any' type.
+src/components/pdf/FieldMappingInterface.tsx(268,21): error TS2304: Cannot find name 'Select'.
+src/components/pdf/FieldMappingInterface.tsx(278,14): error TS2304: Cannot find name 'Heading'.
+src/components/pdf/FieldMappingInterface.tsx(281,15): error TS2304: Cannot find name 'Heading'.
+src/components/pdf/FieldMappingInterface.tsx(282,13): error TS2607: JSX element class does not support attributes because it does not have a 'props' property.
+src/components/pdf/FieldMappingInterface.tsx(282,14): error TS2786: 'Text' cannot be used as a JSX component.
+  Its type '{ new (data?: string | undefined): Text; prototype: Text; }' is not a valid JSX element type.
+    Type '{ new (data?: string | undefined): Text; prototype: Text; }' is not assignable to type 'new (props: any, context: any) => Component<any, any, any>'.
+      Type 'Text' is missing the following properties from type 'Component<any, any, any>': context, setState, forceUpdate, render, and 2 more.
+src/components/pdf/FieldMappingInterface.tsx(370,18): error TS2786: 'Text' cannot be used as a JSX component.
+  Its type '{ new (data?: string | undefined): Text; prototype: Text; }' is not a valid JSX element type.
+    Type '{ new (data?: string | undefined): Text; prototype: Text; }' is not assignable to type 'new (props: any, context: any) => Component<any, any, any>'.
+      Type 'Text' is missing the following properties from type 'Component<any, any, any>': context, setState, forceUpdate, render, and 2 more.
+src/components/pdf/PDFUploader.tsx(110,51): error TS18046: 'error' is of type 'unknown'.
+src/components/pdf/PDFUploader.tsx(113,23): error TS18046: 'error' is of type 'unknown'.
+src/components/pdf/PDFUploader.tsx(159,51): error TS18046: 'error' is of type 'unknown'.
+src/components/pdf/PDFUploader.tsx(186,51): error TS18046: 'error' is of type 'unknown'.
+src/components/pdf/PDFUploader.tsx(263,48): error TS18046: 'error' is of type 'unknown'.
+src/components/ui/MagicAnimations.tsx(5,51): error TS2305: Module '"lucide-react"' has no exported member 'Confetti'.
+src/components/ui/MagicAnimations.tsx(65,49): error TS2769: No overload matches this call.
+  Overload 1 of 3, '(callback: () => void, delay?: number | undefined): Timeout', gave the following error.
+    Argument of type '(() => void) | undefined' is not assignable to parameter of type '() => void'.
+      Type 'undefined' is not assignable to type '() => void'.
+  Overload 2 of 3, '(callback: (_: void) => void, delay?: number | undefined): Timeout', gave the following error.
+    Argument of type '(() => void) | undefined' is not assignable to parameter of type '(_: void) => void'.
+      Type 'undefined' is not assignable to type '(_: void) => void'.
+  Overload 3 of 3, '(handler: TimerHandler, timeout?: number | undefined, ...arguments: any[]): number', gave the following error.
+    Argument of type '(() => void) | undefined' is not assignable to parameter of type 'TimerHandler'.
+      Type 'undefined' is not assignable to type 'TimerHandler'.
+src/components/ui/progress.tsx(4,36): error TS2307: Cannot find module '@radix-ui/react-progress' or its corresponding type declarations.
+src/hooks/useAutoSave.tsx(4,45): error TS2307: Cannot find module '@supabase/auth-helpers-nextjs' or its corresponding type declarations.
+src/hooks/useAutoSave.tsx(35,24): error TS2554: Expected 1 arguments, but got 0.
+src/hooks/useCoreFields.ts(32,31): error TS2554: Expected 1 arguments, but got 0.
+src/lib/activity/service.ts(27,11): error TS2322: Type '{ organization_id: string; entity_type: "message" | "payment" | "booking" | "client" | "vendor" | "form"; entity_id: string; activity_type: string; title: string; description: string | null; ... 7 more ...; data: Record<...> | null; }' is not assignable to type 'Omit<{ id: string; organization_id: string; entity_type: "message" | "payment" | "booking" | "client" | "vendor" | "form"; entity_id: string; activity_type: string; title: string; description: string | null; ... 9 more ...; created_at: string; }, "created_at" | "id"> & { ...; }'.
+  Property 'read_by' is missing in type '{ organization_id: string; entity_type: "message" | "payment" | "booking" | "client" | "vendor" | "form"; entity_id: string; activity_type: string; title: string; description: string | null; ... 7 more ...; data: Record<...> | null; }' but required in type 'Omit<{ id: string; organization_id: string; entity_type: "message" | "payment" | "booking" | "client" | "vendor" | "form"; entity_id: string; activity_type: string; title: string; description: string | null; ... 9 more ...; created_at: string; }, "created_at" | "id">'.
+src/lib/auth-middleware.ts(28,32): error TS2339: Property 'getAll' does not exist on type 'Promise<ReadonlyRequestCookies>'.
+src/lib/auth-middleware.ts(33,29): error TS2339: Property 'set' does not exist on type 'Promise<ReadonlyRequestCookies>'.
+src/lib/auth-middleware.ts(97,21): error TS2339: Property 'supabase' does not exist on type 'NextResponse<{ error: string; code: string; }> | { user: AuthUser; session: Session; supabase: SupabaseClient<any, "public", any>; }'.
+  Property 'supabase' does not exist on type 'NextResponse<{ error: string; code: string; }>'.
+src/lib/auth-middleware.ts(111,23): error TS2339: Property 'user' does not exist on type 'NextResponse<{ error: string; code: string; }> | { user: AuthUser; session: Session; supabase: SupabaseClient<any, "public", any>; }'.
+  Property 'user' does not exist on type 'NextResponse<{ error: string; code: string; }>'.
+src/lib/auth-middleware.ts(164,32): error TS2339: Property 'getAll' does not exist on type 'Promise<ReadonlyRequestCookies>'.
+src/lib/auth-middleware.ts(169,29): error TS2339: Property 'set' does not exist on type 'Promise<ReadonlyRequestCookies>'.
+src/lib/auth.ts(1,33): error TS2307: Cannot find module 'next-auth' or its corresponding type declarations.
+src/lib/auth.ts(2,31): error TS2307: Cannot find module '@next-auth/prisma-adapter' or its corresponding type declarations.
+src/lib/auth.ts(4,33): error TS2307: Cannot find module 'next-auth/providers/credentials' or its corresponding type declarations.
+src/lib/auth.ts(5,20): error TS2307: Cannot find module 'bcryptjs' or its corresponding type declarations.
+src/lib/auth.ts(6,34): error TS2307: Cannot find module 'next-auth' or its corresponding type declarations.
+src/lib/auth.ts(17,23): error TS7006: Parameter 'credentials' implicitly has an 'any' type.
+src/lib/auth.ts(48,17): error TS7031: Binding element 'token' implicitly has an 'any' type.
+src/lib/auth.ts(48,24): error TS7031: Binding element 'user' implicitly has an 'any' type.
+src/lib/auth.ts(55,21): error TS7031: Binding element 'session' implicitly has an 'any' type.
+src/lib/auth.ts(55,30): error TS7031: Binding element 'token' implicitly has an 'any' type.
+src/lib/auth/enterprise-oauth-system.ts(23,17): error TS2307: Cannot find module 'jsonwebtoken' or its corresponding type declarations.
+src/lib/auth/enterprise-oauth-system.ts(220,40): error TS2339: Property 'SECURITY_VIOLATION' does not exist on type 'typeof AuditEventType'.
+src/lib/auth/enterprise-oauth-system.ts(337,38): error TS2339: Property 'TOKEN_REFRESH' does not exist on type 'typeof AuditEventType'.
+src/lib/auth/enterprise-oauth-system.ts(370,34): error TS2339: Property 'TOKEN_REVOKED' does not exist on type 'typeof AuditEventType'.
+src/lib/auth/enterprise-oauth-system.ts(399,36): error TS2339: Property 'TOKEN_CLEANUP' does not exist on type 'typeof AuditEventType'.
+src/lib/auth/enterprise-oauth-system.ts(424,15): error TS2339: Property 'ip' does not exist on type 'NextRequest'.
+src/lib/auth/enterprise-oauth-system.ts(515,38): error TS2339: Property 'SECURITY_VIOLATION' does not exist on type 'typeof AuditEventType'.
+src/lib/auth/wedding-season-rate-limiter.ts(263,36): error TS2339: Property 'RATE_LIMIT_ERROR' does not exist on type 'typeof AuditEventType'.
+src/lib/auth/wedding-season-rate-limiter.ts(558,15): error TS2339: Property 'ip' does not exist on type 'NextRequest'.
+src/lib/cache/redis-cache.ts(6,19): error TS2307: Cannot find module 'ioredis' or its corresponding type declarations.
+src/lib/cache/redis-cache.ts(63,25): error TS7006: Parameter 'times' implicitly has an 'any' type.
+src/lib/cache/redis-cache.ts(68,28): error TS7006: Parameter 'err' implicitly has an 'any' type.
+src/lib/cache/redis-cache.ts(82,32): error TS7006: Parameter 'error' implicitly has an 'any' type.
+src/lib/comprehensive-security-middleware.ts(21,23): error TS2307: Cannot find module 'isomorphic-dompurify' or its corresponding type declarations.
+src/lib/comprehensive-security-middleware.ts(154,13): error TS2339: Property 'ip' does not exist on type 'NextRequest'.
+src/lib/comprehensive-security-middleware.ts(220,21): error TS2448: Block-scoped variable 'authResult' used before its declaration.
+src/lib/comprehensive-security-middleware.ts(220,21): error TS2454: Variable 'authResult' is used before being assigned.
+src/lib/comprehensive-security-middleware.ts(221,29): error TS2448: Block-scoped variable 'authResult' used before its declaration.
+src/lib/comprehensive-security-middleware.ts(221,29): error TS2454: Variable 'authResult' is used before being assigned.
+src/lib/comprehensive-security-middleware.ts(222,31): error TS2448: Block-scoped variable 'authResult' used before its declaration.
+src/lib/comprehensive-security-middleware.ts(222,31): error TS2454: Variable 'authResult' is used before being assigned.
+src/lib/comprehensive-security-middleware.ts(222,49): error TS2339: Property 'subscriptionTier' does not exist on type 'AuthUser'.
+src/lib/comprehensive-security-middleware.ts(223,25): error TS2448: Block-scoped variable 'authResult' used before its declaration.
+src/lib/comprehensive-security-middleware.ts(223,25): error TS2454: Variable 'authResult' is used before being assigned.
+src/lib/comprehensive-security-middleware.ts(223,43): error TS2339: Property 'vendorType' does not exist on type 'AuthUser'.
+src/lib/comprehensive-security-middleware.ts(283,60): error TS2339: Property 'VALIDATION_FAILED' does not exist on type 'typeof AuditEventType'.
+src/lib/comprehensive-security-middleware.ts(293,66): error TS2339: Property 'errors' does not exist on type 'ZodError<unknown>'.
+src/lib/comprehensive-security-middleware.ts(332,54): error TS2339: Property 'CSRF_VIOLATION' does not exist on type 'typeof AuditEventType'.
+src/lib/comprehensive-security-middleware.ts(359,22): error TS2448: Block-scoped variable 'securityLevel' used before its declaration.
+src/lib/comprehensive-security-middleware.ts(359,22): error TS2454: Variable 'securityLevel' is used before being assigned.
+src/lib/comprehensive-security-middleware.ts(365,54): error TS2339: Property 'PCI_COMPLIANCE_VIOLATION' does not exist on type 'typeof AuditEventType'.
+src/lib/comprehensive-security-middleware.ts(377,58): error TS2345: Argument of type 'EnhancedAuthResult | null' is not assignable to parameter of type 'EnhancedAuthResult | undefined'.
+  Type 'null' is not assignable to type 'EnhancedAuthResult | undefined'.
+src/lib/comprehensive-security-middleware.ts(392,52): error TS2339: Property 'API_ACCESS' does not exist on type 'typeof AuditEventType'.
+src/lib/comprehensive-security-middleware.ts(434,50): error TS2339: Property 'SYSTEM_ERROR' does not exist on type 'typeof AuditEventType'.
+src/lib/comprehensive-security-middleware.ts(472,22): error TS2339: Property 'CSRF_VIOLATION' does not exist on type 'typeof AuditEventType'.
+src/lib/comprehensive-security-middleware.ts(473,22): error TS2339: Property 'SYSTEM_ERROR' does not exist on type 'typeof AuditEventType'.
+src/lib/comprehensive-security-middleware.ts(478,22): error TS2339: Property 'VALIDATION_FAILED' does not exist on type 'typeof AuditEventType'.
+src/lib/core-fields-manager.ts(4,45): error TS2307: Cannot find module '@supabase/auth-helpers-nextjs' or its corresponding type declarations.
+src/lib/crypto-utils.ts(1,35): error TS2724: '"crypto"' has no exported member named 'createCipherGCM'. Did you mean 'createCipher'?
+src/lib/crypto-utils.ts(1,52): error TS2724: '"crypto"' has no exported member named 'createDecipherGCM'. Did you mean 'createDecipher'?
+src/lib/database-optimizer.ts(314,20): error TS2322: Type '{ data: T; fromL1: boolean; fromL2: boolean; }' is not assignable to type 'T'.
+  'T' could be instantiated with an arbitrary type which could be unrelated to '{ data: T; fromL1: boolean; fromL2: boolean; }'.
+src/lib/database-optimizer.ts(328,47): error TS2345: Argument of type 'number | undefined' is not assignable to parameter of type '{ ttl?: number | undefined; priority?: "low" | "medium" | "high" | undefined; tags?: string[] | undefined; queryMetadata?: QueryMetadata | undefined; } | undefined'.
+  Type 'number' has no properties in common with type '{ ttl?: number | undefined; priority?: "low" | "medium" | "high" | undefined; tags?: string[] | undefined; queryMetadata?: QueryMetadata | undefined; }'.
+src/lib/database-optimizer.ts(609,48): error TS2559: Type 'number' has no properties in common with type '{ ttl?: number | undefined; priority?: "low" | "medium" | "high" | undefined; tags?: string[] | undefined; queryMetadata?: QueryMetadata | undefined; }'.
+src/lib/database/advanced-query-optimizer.ts(180,36): error TS2339: Property 'SYSTEM_ERROR' does not exist on type 'typeof AuditEventType'.
+src/lib/email/service.ts(173,7): error TS2322: Type 'Promise<string>' is not assignable to type 'string'.
+src/lib/email/service.ts(174,7): error TS2322: Type 'Promise<string>' is not assignable to type 'string'.
+src/lib/email/service.ts(196,9): error TS2322: Type 'Promise<string>' is not assignable to type 'string'.
+src/lib/email/service.ts(197,9): error TS2322: Type 'Promise<string>' is not assignable to type 'string'.
+src/lib/email/service.ts(205,11): error TS2345: Argument of type 'ErrorResponse' is not assignable to parameter of type 'ProviderResponse'.
+  Index signature for type 'string' is missing in type 'ErrorResponse'.
+src/lib/email/service.ts(216,9): error TS2345: Argument of type 'CreateEmailResponseSuccess' is not assignable to parameter of type 'ProviderResponse'.
+  Index signature for type 'string' is missing in type 'CreateEmailResponseSuccess'.
+src/lib/enhanced-auth-middleware.ts(39,47): error TS2339: Property 'user' does not exist on type 'NextResponse<{ error: string; code: string; }> | { user: AuthUser; session: Session; supabase: SupabaseClient<any, "public", any>; }'.
+  Property 'user' does not exist on type 'NextResponse<{ error: string; code: string; }>'.
+src/lib/enhanced-auth-middleware.ts(44,40): error TS2339: Property 'user' does not exist on type 'NextResponse<{ error: string; code: string; }> | { user: AuthUser; session: Session; supabase: SupabaseClient<any, "public", any>; }'.
+  Property 'user' does not exist on type 'NextResponse<{ error: string; code: string; }>'.
+src/lib/enhanced-auth-middleware.ts(68,20): error TS2339: Property 'user' does not exist on type 'NextResponse<{ error: string; code: string; }> | { user: AuthUser; session: Session; supabase: SupabaseClient<any, "public", any>; }'.
+  Property 'user' does not exist on type 'NextResponse<{ error: string; code: string; }>'.
+src/lib/enhanced-auth-middleware.ts(69,20): error TS2339: Property 'user' does not exist on type 'NextResponse<{ error: string; code: string; }> | { user: AuthUser; session: Session; supabase: SupabaseClient<any, "public", any>; }'.
+  Property 'user' does not exist on type 'NextResponse<{ error: string; code: string; }>'.
+src/lib/enhanced-auth-middleware.ts(85,5): error TS2322: Type '{ secureSession: SecureSessionData | null; [INTERNALS]: { cookies: ResponseCookies; url?: NextURL | undefined; body?: { ...; } | undefined; }; ... 15 more ...; text(): Promise<...>; } | { ...; }' is not assignable to type 'NextResponse<unknown> | EnhancedAuthResult'.
+  Type '{ secureSession: SecureSessionData | null; [INTERNALS]: { cookies: ResponseCookies; url?: NextURL; body?: { ...; } | undefined; }; ... 15 more ...; text(): Promise<string>; }' is not assignable to type 'NextResponse<unknown> | EnhancedAuthResult'.
+    Property 'cookies' is missing in type '{ secureSession: SecureSessionData | null; [INTERNALS]: { cookies: ResponseCookies; url?: NextURL; body?: { ...; } | undefined; }; ... 15 more ...; text(): Promise<string>; }' but required in type 'NextResponse<unknown>'.
+src/lib/enhanced-auth-middleware.ts(256,15): error TS2339: Property 'ip' does not exist on type 'NextRequest'.
+src/lib/form-validation.ts(23,9): error TS2353: Object literal may only specify known properties, and 'required_error' does not exist in type '{ error?: string | $ZodErrorMap<$ZodIssueInvalidType<unknown>> | undefined; message?: string | undefined; }'.
+src/lib/form-validation.ts(27,17): error TS2339: Property 'min' does not exist on type 'FormField'.
+src/lib/form-validation.ts(28,52): error TS2339: Property 'min' does not exist on type 'FormField'.
+src/lib/form-validation.ts(28,83): error TS2339: Property 'min' does not exist on type 'FormField'.
+src/lib/form-validation.ts(30,17): error TS2339: Property 'max' does not exist on type 'FormField'.
+src/lib/form-validation.ts(31,52): error TS2339: Property 'max' does not exist on type 'FormField'.
+src/lib/form-validation.ts(31,83): error TS2339: Property 'max' does not exist on type 'FormField'.
+src/lib/form-validation.ts(60,15): error TS2339: Property 'minLength' does not exist on type 'FormField'.
+src/lib/form-validation.ts(61,23): error TS2339: Property 'min' does not exist on type 'ZodType<unknown, unknown, $ZodTypeInternals<unknown, unknown>>'.
+src/lib/form-validation.ts(61,33): error TS2339: Property 'minLength' does not exist on type 'FormField'.
+src/lib/form-validation.ts(61,71): error TS2339: Property 'minLength' does not exist on type 'FormField'.
+src/lib/form-validation.ts(64,15): error TS2339: Property 'maxLength' does not exist on type 'FormField'.
+src/lib/form-validation.ts(65,23): error TS2339: Property 'max' does not exist on type 'ZodType<unknown, unknown, $ZodTypeInternals<unknown, unknown>>'.
+src/lib/form-validation.ts(65,33): error TS2339: Property 'maxLength' does not exist on type 'FormField'.
+src/lib/form-validation.ts(65,71): error TS2339: Property 'maxLength' does not exist on type 'FormField'.
+src/lib/form-validation.ts(68,15): error TS2339: Property 'pattern' does not exist on type 'FormField'.
+src/lib/form-validation.ts(70,40): error TS2339: Property 'pattern' does not exist on type 'FormField'.
+src/lib/form-validation.ts(71,25): error TS2339: Property 'regex' does not exist on type 'ZodType<unknown, unknown, $ZodTypeInternals<unknown, unknown>>'.
+src/lib/form-validation.ts(73,55): error TS2339: Property 'pattern' does not exist on type 'FormField'.
+src/lib/form-validation.ts(105,20): error TS2339: Property 'errors' does not exist on type 'ZodError<unknown>'.
+src/lib/form-validation.ts(123,13): error TS2339: Property 'errors' does not exist on type 'ZodError<unknown>'.
+src/lib/form-validation.ts(123,28): error TS7006: Parameter 'err' implicitly has an 'any' type.
+src/lib/form-validation.ts(179,13): error TS2339: Property 'minLength' does not exist on type 'FormField'.
+src/lib/form-validation.ts(179,32): error TS2339: Property 'maxLength' does not exist on type 'FormField'.
+src/lib/form-validation.ts(180,28): error TS2339: Property 'minLength' does not exist on type 'FormField'.
+src/lib/form-validation.ts(180,47): error TS2339: Property 'maxLength' does not exist on type 'FormField'.
+src/lib/form-validation.ts(181,20): error TS2339: Property 'minLength' does not exist on type 'FormField'.
+src/lib/form-validation.ts(182,32): error TS2339: Property 'minLength' does not exist on type 'FormField'.
+src/lib/form-validation.ts(183,20): error TS2339: Property 'maxLength' does not exist on type 'FormField'.
+src/lib/form-validation.ts(184,32): error TS2339: Property 'maxLength' does not exist on type 'FormField'.
+src/lib/form-validation.ts(195,41): error TS2339: Property 'min' does not exist on type 'FormField'.
+src/lib/form-validation.ts(195,68): error TS2339: Property 'max' does not exist on type 'FormField'.
+src/lib/form-validation.ts(196,15): error TS2339: Property 'min' does not exist on type 'FormField'.
+src/lib/form-validation.ts(196,42): error TS2339: Property 'max' does not exist on type 'FormField'.
+src/lib/form-validation.ts(197,38): error TS2339: Property 'min' does not exist on type 'FormField'.
+src/lib/form-validation.ts(197,55): error TS2339: Property 'max' does not exist on type 'FormField'.
+src/lib/form-validation.ts(198,22): error TS2339: Property 'min' does not exist on type 'FormField'.
+src/lib/form-validation.ts(199,38): error TS2339: Property 'min' does not exist on type 'FormField'.
+src/lib/form-validation.ts(200,22): error TS2339: Property 'max' does not exist on type 'FormField'.
+src/lib/form-validation.ts(201,38): error TS2339: Property 'max' does not exist on type 'FormField'.
+src/lib/journey/engine.ts(334,48): error TS2339: Property 'sendTemplateEmail' does not exist on type 'EmailService'.
+src/lib/monitoring/business-metrics.ts(6,10): error TS2305: Module '"@/lib/supabase/client"' has no exported member 'supabase'.
+src/lib/monitoring/business-metrics.ts(169,43): error TS7006: Parameter 'p' implicitly has an 'any' type.
+src/lib/monitoring/business-metrics.ts(170,39): error TS7006: Parameter 'p' implicitly has an 'any' type.
+src/lib/monitoring/business-metrics.ts(173,16): error TS7006: Parameter 'p' implicitly has an 'any' type.
+src/lib/monitoring/business-metrics.ts(174,12): error TS7006: Parameter 'p' implicitly has an 'any' type.
+src/lib/monitoring/business-metrics.ts(177,33): error TS7006: Parameter 'a' implicitly has an 'any' type.
+src/lib/monitoring/business-metrics.ts(177,36): error TS7006: Parameter 'b' implicitly has an 'any' type.
+src/lib/monitoring/business-metrics.ts(182,24): error TS7006: Parameter 'p' implicitly has an 'any' type.
+src/lib/monitoring/business-metrics.ts(183,16): error TS7006: Parameter 'p' implicitly has an 'any' type.
+src/lib/monitoring/business-metrics.ts(213,40): error TS7006: Parameter 'f' implicitly has an 'any' type.
+src/lib/monitoring/business-metrics.ts(215,36): error TS7006: Parameter 'f' implicitly has an 'any' type.
+src/lib/monitoring/business-metrics.ts(219,29): error TS7006: Parameter 'a' implicitly has an 'any' type.
+src/lib/monitoring/business-metrics.ts(219,32): error TS7006: Parameter 'b' implicitly has an 'any' type.
+src/lib/monitoring/business-metrics.ts(222,54): error TS7006: Parameter 's' implicitly has an 'any' type.
+src/lib/monitoring/business-metrics.ts(245,41): error TS7006: Parameter 'p' implicitly has an 'any' type.
+src/lib/monitoring/business-metrics.ts(246,37): error TS7006: Parameter 'p' implicitly has an 'any' type.
+src/lib/monitoring/business-metrics.ts(248,45): error TS7006: Parameter 'sum' implicitly has an 'any' type.
+src/lib/monitoring/business-metrics.ts(248,50): error TS7006: Parameter 'p' implicitly has an 'any' type.
+src/lib/monitoring/business-metrics.ts(254,47): error TS7006: Parameter 'p' implicitly has an 'any' type.
+src/lib/monitoring/slack-notifications.ts(6,27): error TS2307: Cannot find module '@slack/web-api' or its corresponding type declarations.
+src/lib/monitoring/slack-notifications.ts(85,11): error TS2353: Object literal may only specify known properties, and 'fields' does not exist in type '{ type: string; text: { type: string; text: string; }; }'.
+src/lib/monitoring/slack-notifications.ts(135,11): error TS2353: Object literal may only specify known properties, and 'elements' does not exist in type '{ type: string; text: { type: string; text: string; }; }'.
+src/lib/monitoring/slack-notifications.ts(195,11): error TS2353: Object literal may only specify known properties, and 'fields' does not exist in type '{ type: string; text: { type: string; text: string; }; }'.
+src/lib/monitoring/slack-notifications.ts(201,9): error TS2353: Object literal may only specify known properties, and 'elements' does not exist in type '{ type: string; text: { type: string; text: string; }; }'.
+src/lib/monitoring/slack-notifications.ts(251,11): error TS2353: Object literal may only specify known properties, and 'fields' does not exist in type '{ type: string; text: { type: string; text: string; }; }'.
+src/lib/ocr/enhanced-pdf-validator.ts(109,21): error TS2352: Conversion of type 'number' to type 'ThreatLevel' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+src/lib/ocr/enhanced-pdf-validator.ts(109,30): error TS2345: Argument of type 'ThreatLevel' is not assignable to parameter of type 'number'.
+  Type 'ThreatLevel' is not assignable to type 'number'.
+src/lib/ocr/enhanced-pdf-validator.ts(144,23): error TS2352: Conversion of type 'number' to type 'ThreatLevel' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+src/lib/ocr/enhanced-pdf-validator.ts(144,32): error TS2345: Argument of type 'ThreatLevel' is not assignable to parameter of type 'number'.
+src/lib/ocr/enhanced-pdf-validator.ts(151,21): error TS2352: Conversion of type 'number' to type 'ThreatLevel' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+src/lib/ocr/enhanced-pdf-validator.ts(151,30): error TS2345: Argument of type 'ThreatLevel' is not assignable to parameter of type 'number'.
+src/lib/ocr/enhanced-pdf-validator.ts(248,21): error TS2352: Conversion of type 'number' to type 'ThreatLevel' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+src/lib/ocr/enhanced-pdf-validator.ts(248,30): error TS2345: Argument of type 'ThreatLevel' is not assignable to parameter of type 'number'.
+  Type 'ThreatLevel' is not assignable to type 'number'.
+src/lib/ocr/enhanced-pdf-validator.ts(254,21): error TS2352: Conversion of type 'number' to type 'ThreatLevel' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+src/lib/ocr/enhanced-pdf-validator.ts(254,30): error TS2345: Argument of type 'ThreatLevel' is not assignable to parameter of type 'number'.
+src/lib/ocr/enhanced-pdf-validator.ts(260,21): error TS2352: Conversion of type 'number' to type 'ThreatLevel' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+src/lib/ocr/enhanced-pdf-validator.ts(260,30): error TS2345: Argument of type 'ThreatLevel' is not assignable to parameter of type 'number'.
+src/lib/ocr/enhanced-pdf-validator.ts(275,25): error TS2352: Conversion of type 'number' to type 'ThreatLevel' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+src/lib/ocr/enhanced-pdf-validator.ts(275,34): error TS2345: Argument of type 'ThreatLevel' is not assignable to parameter of type 'number'.
+src/lib/ocr/enterprise-wedding-helpers.ts(8,10): error TS2459: Module '"./optimized-processor"' declares 'GuestRecord' locally, but it is not exported.
+src/lib/ocr/enterprise-wedding-helpers.ts(8,23): error TS2459: Module '"./optimized-processor"' declares 'ExtractedField' locally, but it is not exported.
+src/lib/ocr/enterprise-wedding-helpers.ts(8,39): error TS2459: Module '"./optimized-processor"' declares 'WeddingProcessingMetadata' locally, but it is not exported.
+src/lib/ocr/google-vision.ts(1,38): error TS2307: Cannot find module '@google-cloud/vision' or its corresponding type declarations.
+src/lib/ocr/google-vision.ts(195,24): error TS7053: Element implicitly has an 'any' type because expression of type 'string' can't be used to index type '{ email: RegExp[]; phone: RegExp[]; date: RegExp[]; name: RegExp[]; address: RegExp[]; number: RegExp[]; time: RegExp[]; venue: RegExp[]; }'.
+  No index signature with a parameter of type 'string' was found on type '{ email: RegExp[]; phone: RegExp[]; date: RegExp[]; name: RegExp[]; address: RegExp[]; number: RegExp[]; time: RegExp[]; venue: RegExp[]; }'.
+src/lib/ocr/google-vision.ts(198,24): error TS7006: Parameter 'pattern' implicitly has an 'any' type.
+src/lib/ocr/google-vision.ts(457,30): error TS7053: Element implicitly has an 'any' type because expression of type 'string' can't be used to index type '{ email: string[]; phone: string[]; date: string[]; name: string[]; venue: string[]; time: string[]; number: string[]; }'.
+  No index signature with a parameter of type 'string' was found on type '{ email: string[]; phone: string[]; date: string[]; name: string[]; venue: string[]; time: string[]; number: string[]; }'.
+src/lib/ocr/google-vision.ts(458,50): error TS7006: Parameter 'label' implicitly has an 'any' type.
+src/lib/ocr/optimized-processor.ts(2,27): error TS2307: Cannot find module 'pdfjs-dist' or its corresponding type declarations.
+src/lib/ocr/optimized-processor.ts(3,38): error TS2307: Cannot find module 'tesseract.js' or its corresponding type declarations.
+src/lib/ocr/optimized-processor.ts(174,36): error TS2339: Property 'SYSTEM_INFO' does not exist on type 'typeof AuditEventType'.
+src/lib/ocr/optimized-processor.ts(262,18): error TS7053: Element implicitly has an 'any' type because expression of type 'any' can't be used to index type '{ urgent: number; high: number; medium: number; low: number; }'.
+src/lib/ocr/optimized-processor.ts(262,46): error TS7053: Element implicitly has an 'any' type because expression of type 'any' can't be used to index type '{ urgent: number; high: number; medium: number; low: number; }'.
+src/lib/ocr/optimized-processor.ts(480,36): error TS2339: Property 'SYSTEM_INFO' does not exist on type 'typeof AuditEventType'.
+src/lib/ocr/processing-pipeline.ts(231,39): error TS18047: 'detection.field_key' is possibly 'null'.
+src/lib/ocr/processing-pipeline.ts(496,11): error TS2367: This comparison appears to be unintentional because the types '"number" | "date" | "text" | "signature" | "email" | "tel" | "select" | "checkbox"' and '"time"' have no overlap.
+src/lib/password.ts(1,20): error TS2307: Cannot find module 'bcrypt' or its corresponding type declarations.
+src/lib/prisma.ts(1,30): error TS2307: Cannot find module '@prisma/client' or its corresponding type declarations.
+src/lib/secure-file-storage.ts(205,11): error TS2322: Type 'Buffer<ArrayBufferLike>' is not assignable to type 'Buffer<ArrayBuffer>'.
+  Type 'ArrayBufferLike' is not assignable to type 'ArrayBuffer'.
+    Type 'SharedArrayBuffer' is missing the following properties from type 'ArrayBuffer': resizable, resize, detached, transfer, transferToFixedLength
+src/lib/security-alerting-system.ts(686,56): error TS1501: This regular expression flag is only available when targeting 'es2018' or later.
+src/lib/security-audit-logger.ts(469,15): error TS2339: Property 'ip' does not exist on type 'NextRequest'.
+src/lib/security-event-monitor.ts(326,50): error TS7006: Parameter 'event' implicitly has an 'any' type.
+src/lib/security-event-monitor.ts(615,42): error TS7006: Parameter 'e' implicitly has an 'any' type.
+src/lib/security-event-monitor.ts(616,38): error TS7006: Parameter 'e' implicitly has an 'any' type.
+src/lib/security-event-monitor.ts(617,40): error TS7006: Parameter 'e' implicitly has an 'any' type.
+src/lib/security-event-monitor.ts(618,37): error TS7006: Parameter 'e' implicitly has an 'any' type.
+src/lib/security-event-monitor.ts(622,20): error TS7006: Parameter 'e' implicitly has an 'any' type.
+src/lib/security-event-monitor.ts(633,20): error TS7006: Parameter 'e' implicitly has an 'any' type.
+src/lib/security-event-monitor.ts(653,42): error TS7006: Parameter 'e' implicitly has an 'any' type.
+src/lib/security-event-monitor.ts(654,41): error TS7006: Parameter 'e' implicitly has an 'any' type.
+src/lib/security-event-monitor.ts(655,42): error TS7006: Parameter 'e' implicitly has an 'any' type.
+src/lib/security/api-key-rotation.ts(346,21): error TS2339: Property 'metadata' does not exist on type 'ApiKey'.
+src/lib/security/ddos-protection.ts(254,27): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.
+  Type 'string' is not assignable to type 'number'.
+src/lib/security/pci-dss-compliance.ts(410,36): error TS2339: Property 'PAYMENT_VALIDATION' does not exist on type 'typeof AuditEventType'.
+src/lib/security/pci-dss-compliance.ts(691,34): error TS2339: Property 'SECURITY_COMPLIANCE' does not exist on type 'typeof AuditEventType'.
+src/lib/session-security.ts(252,15): error TS2339: Property 'ip' does not exist on type 'NextRequest'.
+src/lib/sms/twilio.ts(1,20): error TS2307: Cannot find module 'twilio' or its corresponding type declarations.
+src/lib/sms/twilio.ts(2,54): error TS2307: Cannot find module 'libphonenumber-js' or its corresponding type declarations.
+src/lib/sms/twilio.ts(337,7): error TS2322: Type 'string' is not assignable to type '"Hi {{first_name}}! Reminder: {{vendor_name}} form due {{due_date}}. Complete here: {{short_link}}" | "{{vendor_name}}: Payment reminder for {{service_type}}. Due {{due_date}}. Pay: {{payment_link}}" | "{{days}} days until your wedding! {{vendor_name}} needs final details: {{link}}" | "Reminder: {{appointment_type}}...'.
+src/lib/sms/twilio.ts(341,5): error TS2322: Type 'string' is not assignable to type '"Hi {{first_name}}! Reminder: {{vendor_name}} form due {{due_date}}. Complete here: {{short_link}}" | "{{vendor_name}}: Payment reminder for {{service_type}}. Due {{due_date}}. Pay: {{payment_link}}" | "{{days}} days until your wedding! {{vendor_name}} needs final details: {{link}}" | "Reminder: {{appointment_type}}...'.
+src/lib/stripe-config.ts(295,11): error TS2367: This comparison appears to be unintentional because the types '"FREE" | "SCALE" | "PROFESSIONAL" | "STARTER"' and '"ENTERPRISE"' have no overlap.
+src/lib/stripe-config.ts(336,41): error TS2367: This comparison appears to be unintentional because the types 'string' and 'boolean' have no overlap.
+src/lib/supabase/realtime.ts(12,18): error TS2430: Interface 'RealtimeMessage' incorrectly extends interface '{ id: string; conversation_id: string; sender_id: string; sender_type: "client" | "vendor" | "system"; sender_name: string; sender_avatar_url: string | null; recipient_id: string; recipient_type: "client" | "vendor"; ... 11 more ...; updated_at: string; }'.
+  Types of property 'sender_avatar_url' are incompatible.
+    Type 'string | null | undefined' is not assignable to type 'string | null'.
+      Type 'undefined' is not assignable to type 'string | null'.
+src/lib/tier-limits.ts(5,45): error TS2307: Cannot find module '@supabase/auth-helpers-nextjs' or its corresponding type declarations.
+src/lib/tier-limits.ts(411,14): error TS2367: This comparison appears to be unintentional because the types 'string' and 'boolean' have no overlap.
+src/lib/tier-limits.ts(510,7): error TS2322: Type 'string | boolean' is not assignable to type 'boolean'.
+  Type 'string' is not assignable to type 'boolean'.
+src/lib/tier-limits.ts(524,16): error TS2339: Property 'team_members' does not exist on type 'TierLimits'.
+src/lib/tier-limits.ts(528,44): error TS2339: Property 'team_members' does not exist on type 'TierLimits'.
+src/lib/tier-limits.ts(532,23): error TS2339: Property 'team_members' does not exist on type 'TierLimits'.
+src/lib/tier-limits.ts(533,55): error TS2339: Property 'team_members' does not exist on type 'TierLimits'.
+src/lib/tier-limits.ts(559,21): error TS2339: Property 'team_members' does not exist on type 'TierLimits'.
+src/lib/validations/core-fields.ts(2,23): error TS2307: Cannot find module 'isomorphic-dompurify' or its corresponding type declarations.
+src/lib/validations/core-fields.ts(145,56): error TS2339: Property 'errors' does not exist on type 'ZodError<string>'.
+src/lib/validations/core-fields.ts(182,31): error TS2339: Property 'errors' does not exist on type 'ZodError<string | Date | undefined> | ZodError<number | undefined>'.
+  Property 'errors' does not exist on type 'ZodError<string | Date | undefined>'.
+src/lib/validations/forms.ts(132,5): error TS2554: Expected 2-3 arguments, but got 1.
+src/lib/webhooks/webhook-manager.ts(518,22): error TS2576: Property 'handleWebhook' does not exist on type 'EmailService'. Did you mean to access the static member 'EmailService.handleWebhook' instead?
+src/lib/webhooks/webhook-manager.ts(522,22): error TS2576: Property 'handleWebhook' does not exist on type 'EmailService'. Did you mean to access the static member 'EmailService.handleWebhook' instead?
+src/lib/webhooks/webhook-manager.ts(526,22): error TS2576: Property 'handleWebhook' does not exist on type 'EmailService'. Did you mean to access the static member 'EmailService.handleWebhook' instead?
+src/lib/webhooks/webhook-manager.ts(530,22): error TS2576: Property 'handleWebhook' does not exist on type 'EmailService'. Did you mean to access the static member 'EmailService.handleWebhook' instead?

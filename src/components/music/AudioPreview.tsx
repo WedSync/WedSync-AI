@@ -1,0 +1,535 @@
+'use client';
+
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import ReactPlayer from 'react-player';
+import { Card, CardContent } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Slider } from '@/components/ui/slider';
+import {
+  Play,
+  Pause,
+  Volume2,
+  VolumeX,
+  SkipBack,
+  SkipForward,
+  X,
+  Maximize2,
+  Minimize2,
+} from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+
+import type { MusicTrack } from '@/types/music';
+
+interface AudioPreviewProps {
+  track: MusicTrack | null;
+  onClose?: () => void;
+  autoPlay?: boolean;
+  volume?: number;
+  onPlayStatusChange?: (playing: boolean) => void;
+  onTrackEnd?: () => void;
+  className?: string;
+}
+
+interface PlayerState {
+  playing: boolean;
+  volume: number;
+  muted: boolean;
+  duration: number;
+  currentTime: number;
+  buffered: number;
+  seeking: boolean;
+}
+
+export function AudioPreview({
+  track,
+  onClose,
+  autoPlay = false,
+  volume = 0.8,
+  onPlayStatusChange,
+  onTrackEnd,
+  className = '',
+}: AudioPreviewProps) {
+  const playerRef = useRef<ReactPlayer>(null);
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  const [playerState, setPlayerState] = useState<PlayerState>({
+    playing: false,
+    volume: volume,
+    muted: false,
+    duration: 0,
+    currentTime: 0,
+    buffered: 0,
+    seeking: false,
+  });
+
+  const [error, setError] = useState<string | null>(null);
+  const [isReady, setIsReady] = useState(false);
+
+  // Get preview URL for the track
+  const getPreviewUrl = useCallback((track: MusicTrack): string | null => {
+    // Priority order: Spotify -> Apple Music -> YouTube
+    if (track.spotify_id) {
+      return `https://open.spotify.com/embed/track/${track.spotify_id}`;
+    }
+    if (track.apple_music_id) {
+      return `https://music.apple.com/song/${track.apple_music_id}`;
+    }
+    if (track.youtube_id) {
+      return `https://www.youtube.com/watch?v=${track.youtube_id}`;
+    }
+    return null;
+  }, []);
+
+  const previewUrl = track ? getPreviewUrl(track) : null;
+
+  // Auto play when track changes
+  useEffect(() => {
+    if (track && autoPlay && isReady) {
+      setPlayerState((prev) => ({ ...prev, playing: true }));
+    }
+  }, [track, autoPlay, isReady]);
+
+  // Notify parent of play status changes
+  useEffect(() => {
+    if (onPlayStatusChange) {
+      onPlayStatusChange(playerState.playing);
+    }
+  }, [playerState.playing, onPlayStatusChange]);
+
+  // Reset state when track changes
+  useEffect(() => {
+    if (track) {
+      setPlayerState((prev) => ({
+        ...prev,
+        playing: autoPlay,
+        currentTime: 0,
+        duration: 0,
+        buffered: 0,
+      }));
+      setError(null);
+      setIsReady(false);
+    }
+  }, [track, autoPlay]);
+
+  // Player event handlers
+  const handlePlay = useCallback(() => {
+    setPlayerState((prev) => ({ ...prev, playing: true }));
+  }, []);
+
+  const handlePause = useCallback(() => {
+    setPlayerState((prev) => ({ ...prev, playing: false }));
+  }, []);
+
+  const handleReady = useCallback(() => {
+    setIsReady(true);
+    if (playerRef.current) {
+      const duration = playerRef.current.getDuration();
+      setPlayerState((prev) => ({ ...prev, duration }));
+    }
+  }, []);
+
+  const handleProgress = useCallback(
+    ({ played, playedSeconds, loaded }: any) => {
+      if (!playerState.seeking) {
+        setPlayerState((prev) => ({
+          ...prev,
+          currentTime: playedSeconds,
+          buffered: loaded,
+        }));
+      }
+    },
+    [playerState.seeking],
+  );
+
+  const handleDuration = useCallback((duration: number) => {
+    setPlayerState((prev) => ({ ...prev, duration }));
+  }, []);
+
+  const handleEnded = useCallback(() => {
+    setPlayerState((prev) => ({ ...prev, playing: false, currentTime: 0 }));
+    if (onTrackEnd) {
+      onTrackEnd();
+    }
+  }, [onTrackEnd]);
+
+  const handleError = useCallback((error: any) => {
+    console.error('Audio preview error:', error);
+    setError('Unable to load audio preview');
+    setPlayerState((prev) => ({ ...prev, playing: false }));
+  }, []);
+
+  // Control handlers
+  const togglePlayPause = useCallback(() => {
+    setPlayerState((prev) => ({ ...prev, playing: !prev.playing }));
+  }, []);
+
+  const toggleMute = useCallback(() => {
+    setPlayerState((prev) => ({ ...prev, muted: !prev.muted }));
+  }, []);
+
+  const handleVolumeChange = useCallback((value: number[]) => {
+    const newVolume = value[0] / 100;
+    setPlayerState((prev) => ({
+      ...prev,
+      volume: newVolume,
+      muted: newVolume === 0,
+    }));
+  }, []);
+
+  const handleSeekStart = useCallback(() => {
+    setPlayerState((prev) => ({ ...prev, seeking: true }));
+  }, []);
+
+  const handleSeekChange = useCallback(
+    (value: number[]) => {
+      const newTime = (value[0] / 100) * playerState.duration;
+      setPlayerState((prev) => ({ ...prev, currentTime: newTime }));
+    },
+    [playerState.duration],
+  );
+
+  const handleSeekEnd = useCallback(() => {
+    if (playerRef.current) {
+      const seekTo = playerState.currentTime / playerState.duration;
+      playerRef.current.seekTo(seekTo);
+    }
+    setPlayerState((prev) => ({ ...prev, seeking: false }));
+  }, [playerState.currentTime, playerState.duration]);
+
+  const skipBackward = useCallback(() => {
+    const newTime = Math.max(0, playerState.currentTime - 10);
+    if (playerRef.current) {
+      playerRef.current.seekTo(newTime / playerState.duration);
+    }
+  }, [playerState.currentTime, playerState.duration]);
+
+  const skipForward = useCallback(() => {
+    const newTime = Math.min(
+      playerState.duration,
+      playerState.currentTime + 10,
+    );
+    if (playerRef.current) {
+      playerRef.current.seekTo(newTime / playerState.duration);
+    }
+  }, [playerState.currentTime, playerState.duration]);
+
+  // Format time display
+  const formatTime = useCallback((seconds: number): string => {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  }, []);
+
+  if (!track) {
+    return null;
+  }
+
+  // Compact mini player
+  const MiniPlayer = () => (
+    <motion.div
+      initial={{ opacity: 0, y: 100 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: 100 }}
+      className={`
+        bg-white rounded-2xl shadow-xl border border-gray-200
+        p-4 w-80 ${className}
+      `}
+    >
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex-1 min-w-0">
+          <h4 className="font-semibold text-gray-900 truncate text-sm">
+            {track.title}
+          </h4>
+          <p className="text-xs text-gray-600 truncate">by {track.artist}</p>
+        </div>
+
+        <div className="flex items-center gap-1 ml-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setIsExpanded(true)}
+            className="p-1.5"
+          >
+            <Maximize2 className="w-3 h-3" />
+          </Button>
+
+          {onClose && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onClose}
+              className="p-1.5"
+            >
+              <X className="w-3 h-3" />
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {/* Progress Bar */}
+      <div className="mb-3">
+        <Slider
+          value={[
+            playerState.duration > 0
+              ? (playerState.currentTime / playerState.duration) * 100
+              : 0,
+          ]}
+          onValueChange={handleSeekChange}
+          onPointerDown={handleSeekStart}
+          onPointerUp={handleSeekEnd}
+          className="w-full"
+          disabled={!isReady}
+        />
+        <div className="flex items-center justify-between text-xs text-gray-500 mt-1">
+          <span>{formatTime(playerState.currentTime)}</span>
+          <span>{formatTime(playerState.duration)}</span>
+        </div>
+      </div>
+
+      {/* Controls */}
+      <div className="flex items-center justify-center gap-2">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={skipBackward}
+          disabled={!isReady}
+          className="p-1.5"
+        >
+          <SkipBack className="w-4 h-4" />
+        </Button>
+
+        <Button
+          onClick={togglePlayPause}
+          disabled={!isReady || !!error}
+          className="p-2"
+          size="sm"
+        >
+          {playerState.playing ? (
+            <Pause className="w-4 h-4" />
+          ) : (
+            <Play className="w-4 h-4" />
+          )}
+        </Button>
+
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={skipForward}
+          disabled={!isReady}
+          className="p-1.5"
+        >
+          <SkipForward className="w-4 h-4" />
+        </Button>
+
+        <div className="flex items-center gap-1 ml-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={toggleMute}
+            className="p-1.5"
+          >
+            {playerState.muted || playerState.volume === 0 ? (
+              <VolumeX className="w-3 h-3" />
+            ) : (
+              <Volume2 className="w-3 h-3" />
+            )}
+          </Button>
+        </div>
+      </div>
+
+      {/* Error State */}
+      {error && (
+        <div className="mt-2 text-xs text-red-600 text-center">{error}</div>
+      )}
+
+      {/* Loading State */}
+      {!isReady && !error && (
+        <div className="mt-2 text-xs text-gray-500 text-center">
+          Loading preview...
+        </div>
+      )}
+
+      {/* Hidden Player */}
+      {previewUrl && (
+        <div className="hidden">
+          <ReactPlayer
+            ref={playerRef}
+            url={previewUrl}
+            playing={playerState.playing}
+            volume={playerState.muted ? 0 : playerState.volume}
+            onReady={handleReady}
+            onPlay={handlePlay}
+            onPause={handlePause}
+            onProgress={handleProgress}
+            onDuration={handleDuration}
+            onEnded={handleEnded}
+            onError={handleError}
+            config={{
+              youtube: {
+                playerVars: {
+                  start: 30, // Start 30 seconds in for better preview
+                  end: 90, // End after 60 seconds
+                },
+              },
+            }}
+          />
+        </div>
+      )}
+    </motion.div>
+  );
+
+  // Expanded player
+  const ExpandedPlayer = () => (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.9 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.9 }}
+      className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4"
+      onClick={() => setIsExpanded(false)}
+    >
+      <motion.div
+        onClick={(e) => e.stopPropagation()}
+        className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-lg"
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between mb-6">
+          <div className="flex-1 min-w-0">
+            <h2 className="text-xl font-bold text-gray-900 truncate">
+              {track.title}
+            </h2>
+            <p className="text-gray-600 truncate">by {track.artist}</p>
+            {track.album && (
+              <p className="text-sm text-gray-500 truncate">
+                Album: {track.album}
+              </p>
+            )}
+          </div>
+
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setIsExpanded(false)}
+          >
+            <Minimize2 className="w-4 h-4" />
+          </Button>
+        </div>
+
+        {/* Waveform / Progress */}
+        <div className="mb-8">
+          <Slider
+            value={[
+              playerState.duration > 0
+                ? (playerState.currentTime / playerState.duration) * 100
+                : 0,
+            ]}
+            onValueChange={handleSeekChange}
+            onPointerDown={handleSeekStart}
+            onPointerUp={handleSeekEnd}
+            className="w-full mb-2"
+            disabled={!isReady}
+          />
+          <div className="flex items-center justify-between text-sm text-gray-500">
+            <span>{formatTime(playerState.currentTime)}</span>
+            <span>{formatTime(playerState.duration)}</span>
+          </div>
+        </div>
+
+        {/* Main Controls */}
+        <div className="flex items-center justify-center gap-4 mb-6">
+          <Button variant="outline" onClick={skipBackward} disabled={!isReady}>
+            <SkipBack className="w-5 h-5" />
+          </Button>
+
+          <Button
+            size="lg"
+            onClick={togglePlayPause}
+            disabled={!isReady || !!error}
+            className="p-4 rounded-full"
+          >
+            {playerState.playing ? (
+              <Pause className="w-6 h-6" />
+            ) : (
+              <Play className="w-6 h-6" />
+            )}
+          </Button>
+
+          <Button variant="outline" onClick={skipForward} disabled={!isReady}>
+            <SkipForward className="w-5 h-5" />
+          </Button>
+        </div>
+
+        {/* Volume Control */}
+        <div className="flex items-center gap-3 mb-4">
+          <Button variant="ghost" size="sm" onClick={toggleMute}>
+            {playerState.muted || playerState.volume === 0 ? (
+              <VolumeX className="w-4 h-4" />
+            ) : (
+              <Volume2 className="w-4 h-4" />
+            )}
+          </Button>
+
+          <Slider
+            value={[playerState.muted ? 0 : playerState.volume * 100]}
+            onValueChange={handleVolumeChange}
+            className="flex-1"
+            max={100}
+            step={1}
+          />
+        </div>
+
+        {/* Error/Loading States */}
+        {error && <div className="text-center text-red-600 mb-4">{error}</div>}
+
+        {!isReady && !error && (
+          <div className="text-center text-gray-500 mb-4">
+            Loading preview...
+          </div>
+        )}
+
+        {/* Close Button */}
+        <div className="flex justify-center">
+          <Button variant="outline" onClick={() => setIsExpanded(false)}>
+            Close Player
+          </Button>
+        </div>
+
+        {/* Hidden Player */}
+        {previewUrl && (
+          <div className="hidden">
+            <ReactPlayer
+              ref={playerRef}
+              url={previewUrl}
+              playing={playerState.playing}
+              volume={playerState.muted ? 0 : playerState.volume}
+              onReady={handleReady}
+              onPlay={handlePlay}
+              onPause={handlePause}
+              onProgress={handleProgress}
+              onDuration={handleDuration}
+              onEnded={handleEnded}
+              onError={handleError}
+              config={{
+                youtube: {
+                  playerVars: {
+                    start: 30,
+                    end: 90,
+                  },
+                },
+              }}
+            />
+          </div>
+        )}
+      </motion.div>
+    </motion.div>
+  );
+
+  return (
+    <AnimatePresence mode="wait">
+      {isExpanded ? (
+        <ExpandedPlayer key="expanded" />
+      ) : (
+        <MiniPlayer key="mini" />
+      )}
+    </AnimatePresence>
+  );
+}

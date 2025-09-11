@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  # Simplified Next.js app without complex volume mounting
+  app:
+    image: node:20-alpine
+    container_name: wedsync-simple
+    working_dir: /app
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - HOSTNAME=0.0.0.0
+      - PORT=3000
+      - CHOKIDAR_USEPOLLING=true
+      - WATCHPACK_POLLING=true
+    command: >
+      sh -c "
+        echo 'Installing system dependencies...' &&
+        apk add --no-cache git curl &&
+        echo 'Installing npm dependencies...' &&
+        npm install --legacy-peer-deps &&
+        echo 'Starting Next.js development server...' &&
+        npm run dev -- --hostname 0.0.0.0 --port 3000
+      "
+    volumes:
+      - .:/app
+      - /app/node_modules
+    networks:
+      - wedsync-network
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: wedsync-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=wedsync
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - wedsync-network
+
+  # Redis for caching
+  redis:
+    image: redis:7-alpine
+    container_name: wedsync-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - wedsync-network
+
+networks:
+  wedsync-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:

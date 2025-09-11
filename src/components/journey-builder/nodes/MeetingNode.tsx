@@ -1,0 +1,16 @@
+'use client';
+
+import React from 'react';
+import { NodeProps } from '@xyflow/react';
+import { Users } from 'lucide-react';
+import { BaseNode } from './BaseNode';
+
+export function MeetingNode(props: NodeProps) {
+  return (
+    <BaseNode
+      {...props}
+      icon={<Users className="h-4 w-4" />}
+      color="bg-indigo-500"
+    />
+  );
+}

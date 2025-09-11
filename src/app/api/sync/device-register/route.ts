@@ -1,0 +1,548 @@
+/**
+ * Device Registration API for Cross-Device Sync
+ * Registers and manages devices for executive metrics synchronization
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+
+interface DeviceRegistrationRequest {
+  deviceId: string;
+  deviceName?: string;
+  deviceType: 'mobile' | 'tablet' | 'desktop';
+  userAgent: string;
+  platform: string;
+  capabilities: {
+    pushNotifications: boolean;
+    backgroundSync: boolean;
+    offline: boolean;
+  };
+  fingerprint?: string;
+}
+
+interface DeviceResponse {
+  success: boolean;
+  device?: {
+    id: string;
+    name: string;
+    type: string;
+    registered: boolean;
+    lastSeen: string;
+    syncEnabled: boolean;
+  };
+  error?: string;
+}
+
+export async function POST(
+  request: NextRequest,
+): Promise<NextResponse<DeviceResponse>> {
+  try {
+    const supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+
+    // Check authentication
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) {
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized' },
+        { status: 401 },
+      );
+    }
+
+    const body: DeviceRegistrationRequest = await request.json();
+    const {
+      deviceId,
+      deviceName,
+      deviceType,
+      userAgent,
+      platform,
+      capabilities,
+      fingerprint,
+    } = body;
+
+    // Validate request
+    if (!deviceId || !deviceType || !userAgent || !platform) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            'Missing required fields: deviceId, deviceType, userAgent, platform',
+        },
+        { status: 400 },
+      );
+    }
+
+    const userId = session.user.id;
+    const now = new Date().toISOString();
+
+    // Generate device name if not provided
+    const finalDeviceName =
+      deviceName || generateDeviceName(deviceType, platform);
+
+    // Check if device already exists
+    const { data: existingDevice } = await supabase
+      .from('sync_devices')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('device_id', deviceId)
+      .single();
+
+    let deviceData;
+
+    if (existingDevice) {
+      // Update existing device
+      const { data: updatedDevice, error: updateError } = await supabase
+        .from('sync_devices')
+        .update({
+          device_name: finalDeviceName,
+          device_type: deviceType,
+          user_agent: userAgent,
+          platform: platform,
+          capabilities: capabilities,
+          fingerprint: fingerprint,
+          last_seen: now,
+          updated_at: now,
+        })
+        .eq('user_id', userId)
+        .eq('device_id', deviceId)
+        .select()
+        .single();
+
+      if (updateError) {
+        console.error('Error updating device:', updateError);
+        return NextResponse.json(
+          {
+            success: false,
+            error: 'Failed to update device',
+          },
+          { status: 500 },
+        );
+      }
+
+      deviceData = updatedDevice;
+    } else {
+      // Register new device
+      const { data: newDevice, error: insertError } = await supabase
+        .from('sync_devices')
+        .insert({
+          user_id: userId,
+          device_id: deviceId,
+          device_name: finalDeviceName,
+          device_type: deviceType,
+          user_agent: userAgent,
+          platform: platform,
+          capabilities: capabilities,
+          fingerprint: fingerprint,
+          sync_enabled: true,
+          last_seen: now,
+          registered_at: now,
+          updated_at: now,
+        })
+        .select()
+        .single();
+
+      if (insertError) {
+        console.error('Error registering device:', insertError);
+        return NextResponse.json(
+          {
+            success: false,
+            error: 'Failed to register device',
+          },
+          { status: 500 },
+        );
+      }
+
+      deviceData = newDevice;
+
+      // Create device sync status entry
+      const { error: statusError } = await supabase
+        .from('device_sync_status')
+        .insert({
+          user_id: userId,
+          device_id: deviceId,
+          last_sync: null,
+          sync_pending: false,
+          last_metrics_sync: null,
+          last_alerts_sync: null,
+          created_at: now,
+        });
+
+      if (statusError) {
+        console.error('Error creating sync status:', statusError);
+      }
+    }
+
+    // Update user's device count
+    const { error: userUpdateError } = await supabase
+      .from('user_sync_settings')
+      .upsert(
+        {
+          user_id: userId,
+          total_devices: await getDeviceCount(supabase, userId),
+          last_device_registration: now,
+          updated_at: now,
+        },
+        { onConflict: 'user_id' },
+      );
+
+    if (userUpdateError) {
+      console.error('Error updating user sync settings:', userUpdateError);
+    }
+
+    // Broadcast device registration to other devices
+    const { error: broadcastError } = await supabase
+      .channel('device-sync')
+      .send({
+        type: 'broadcast',
+        event: 'device-registered',
+        payload: {
+          userId,
+          deviceId,
+          deviceName: finalDeviceName,
+          deviceType,
+          timestamp: now,
+        },
+      });
+
+    if (broadcastError) {
+      console.error('Error broadcasting device registration:', broadcastError);
+    }
+
+    return NextResponse.json({
+      success: true,
+      device: {
+        id: deviceData.device_id,
+        name: deviceData.device_name,
+        type: deviceData.device_type,
+        registered: true,
+        lastSeen: deviceData.last_seen,
+        syncEnabled: deviceData.sync_enabled,
+      },
+    });
+  } catch (error) {
+    console.error('Device registration error:', error);
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Internal server error',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+export async function GET(
+  request: NextRequest,
+): Promise<
+  NextResponse<{ success: boolean; devices?: any[]; error?: string }>
+> {
+  try {
+    const supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+
+    // Check authentication
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) {
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized' },
+        { status: 401 },
+      );
+    }
+
+    const userId = session.user.id;
+
+    // Get all devices for user
+    const { data: devices, error: fetchError } = await supabase
+      .from('sync_devices')
+      .select(
+        `
+        device_id,
+        device_name,
+        device_type,
+        platform,
+        capabilities,
+        sync_enabled,
+        last_seen,
+        registered_at,
+        device_sync_status (
+          last_sync,
+          sync_pending,
+          last_metrics_sync,
+          last_alerts_sync
+        )
+      `,
+      )
+      .eq('user_id', userId)
+      .order('last_seen', { ascending: false });
+
+    if (fetchError) {
+      console.error('Error fetching devices:', fetchError);
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Failed to fetch devices',
+        },
+        { status: 500 },
+      );
+    }
+
+    // Format device data
+    const formattedDevices = devices.map((device) => ({
+      id: device.device_id,
+      name: device.device_name,
+      type: device.device_type,
+      platform: device.platform,
+      capabilities: device.capabilities,
+      syncEnabled: device.sync_enabled,
+      lastSeen: device.last_seen,
+      registeredAt: device.registered_at,
+      syncStatus: device.device_sync_status?.[0] || null,
+    }));
+
+    return NextResponse.json({
+      success: true,
+      devices: formattedDevices,
+    });
+  } catch (error) {
+    console.error('Error getting devices:', error);
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Internal server error',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+export async function PATCH(
+  request: NextRequest,
+): Promise<NextResponse<DeviceResponse>> {
+  try {
+    const supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+
+    // Check authentication
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) {
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized' },
+        { status: 401 },
+      );
+    }
+
+    const { searchParams } = new URL(request.url);
+    const deviceId = searchParams.get('deviceId');
+
+    if (!deviceId) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Device ID required',
+        },
+        { status: 400 },
+      );
+    }
+
+    const body = await request.json();
+    const { syncEnabled, deviceName } = body;
+
+    const userId = session.user.id;
+
+    // Update device settings
+    const updates: any = {
+      updated_at: new Date().toISOString(),
+    };
+
+    if (typeof syncEnabled === 'boolean') {
+      updates.sync_enabled = syncEnabled;
+    }
+
+    if (deviceName) {
+      updates.device_name = deviceName;
+    }
+
+    const { data: updatedDevice, error: updateError } = await supabase
+      .from('sync_devices')
+      .update(updates)
+      .eq('user_id', userId)
+      .eq('device_id', deviceId)
+      .select()
+      .single();
+
+    if (updateError) {
+      console.error('Error updating device settings:', updateError);
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Failed to update device',
+        },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      device: {
+        id: updatedDevice.device_id,
+        name: updatedDevice.device_name,
+        type: updatedDevice.device_type,
+        registered: true,
+        lastSeen: updatedDevice.last_seen,
+        syncEnabled: updatedDevice.sync_enabled,
+      },
+    });
+  } catch (error) {
+    console.error('Device update error:', error);
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Internal server error',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+export async function DELETE(
+  request: NextRequest,
+): Promise<NextResponse<{ success: boolean; error?: string }>> {
+  try {
+    const supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+
+    // Check authentication
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) {
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized' },
+        { status: 401 },
+      );
+    }
+
+    const { searchParams } = new URL(request.url);
+    const deviceId = searchParams.get('deviceId');
+
+    if (!deviceId) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Device ID required',
+        },
+        { status: 400 },
+      );
+    }
+
+    const userId = session.user.id;
+
+    // Delete device sync status first (foreign key constraint)
+    const { error: statusDeleteError } = await supabase
+      .from('device_sync_status')
+      .delete()
+      .eq('user_id', userId)
+      .eq('device_id', deviceId);
+
+    if (statusDeleteError) {
+      console.error('Error deleting device sync status:', statusDeleteError);
+    }
+
+    // Delete device
+    const { error: deleteError } = await supabase
+      .from('sync_devices')
+      .delete()
+      .eq('user_id', userId)
+      .eq('device_id', deviceId);
+
+    if (deleteError) {
+      console.error('Error deleting device:', deleteError);
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Failed to delete device',
+        },
+        { status: 500 },
+      );
+    }
+
+    // Update user's device count
+    const { error: userUpdateError } = await supabase
+      .from('user_sync_settings')
+      .upsert(
+        {
+          user_id: userId,
+          total_devices: await getDeviceCount(supabase, userId),
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'user_id' },
+      );
+
+    if (userUpdateError) {
+      console.error('Error updating user sync settings:', userUpdateError);
+    }
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error('Device deletion error:', error);
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Internal server error',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+// Helper functions
+function generateDeviceName(deviceType: string, platform: string): string {
+  const typeNames = {
+    mobile: 'Mobile',
+    tablet: 'Tablet',
+    desktop: 'Desktop',
+  };
+
+  const platformNames: Record<string, string> = {
+    android: 'Android',
+    ios: 'iOS',
+    windows: 'Windows',
+    macos: 'macOS',
+    linux: 'Linux',
+    web: 'Web',
+  };
+
+  const typeName = typeNames[deviceType as keyof typeof typeNames] || 'Device';
+  const platformName = platformNames[platform.toLowerCase()] || platform;
+
+  return `${typeName} (${platformName})`;
+}
+
+async function getDeviceCount(supabase: any, userId: string): Promise<number> {
+  const { count, error } = await supabase
+    .from('sync_devices')
+    .select('*', { count: 'exact', head: true })
+    .eq('user_id', userId);
+
+  if (error) {
+    console.error('Error counting devices:', error);
+    return 0;
+  }
+
+  return count || 0;
+}

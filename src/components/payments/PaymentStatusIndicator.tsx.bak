@@ -1,0 +1,214 @@
+'use client';
+
+import React from 'react';
+import { cn } from '@/lib/utils';
+import { CheckCircle, Clock, AlertTriangle, Calendar } from 'lucide-react';
+
+type PaymentStatus = 'upcoming' | 'due' | 'overdue' | 'paid';
+
+interface PaymentStatusIndicatorProps {
+  status: PaymentStatus;
+  size?: 'sm' | 'md' | 'lg';
+  showIcon?: boolean;
+  showText?: boolean;
+  className?: string;
+}
+
+export function PaymentStatusIndicator({ 
+  status, 
+  size = 'md',
+  showIcon = false,
+  showText = false,
+  className = ''
+}: PaymentStatusIndicatorProps) {
+  
+  // Status configuration following Untitled UI color system
+  const statusConfig = {
+    upcoming: {
+      color: 'bg-blue-500',
+      borderColor: 'border-blue-200',
+      textColor: 'text-blue-700',
+      bgColor: 'bg-blue-50',
+      icon: Clock,
+      label: 'Upcoming payment',
+      description: 'Payment scheduled for future date'
+    },
+    due: {
+      color: 'bg-yellow-500', 
+      borderColor: 'border-yellow-200',
+      textColor: 'text-yellow-700',
+      bgColor: 'bg-yellow-50',
+      icon: AlertTriangle,
+      label: 'Payment due soon',
+      description: 'Payment due within next 7 days'
+    },
+    overdue: {
+      color: 'bg-red-500',
+      borderColor: 'border-red-300',
+      textColor: 'text-red-700',
+      bgColor: 'bg-red-50',
+      icon: AlertTriangle,
+      label: 'Payment is overdue',
+      description: 'Payment past due date - urgent action needed',
+      urgent: true
+    },
+    paid: {
+      color: 'bg-green-500',
+      borderColor: 'border-green-200', 
+      textColor: 'text-green-700',
+      bgColor: 'bg-green-50',
+      icon: CheckCircle,
+      label: 'Payment completed',
+      description: 'Payment successfully processed'
+    }
+  };
+
+  // Size variants following Untitled UI scale
+  const sizeVariants = {
+    sm: {
+      dot: 'w-2 h-2',
+      icon: 'w-3 h-3',
+      text: 'text-xs',
+      padding: 'px-1.5 py-0.5'
+    },
+    md: {
+      dot: 'w-3 h-3', 
+      icon: 'w-4 h-4',
+      text: 'text-sm',
+      padding: 'px-2.5 py-1'
+    },
+    lg: {
+      dot: 'w-4 h-4',
+      icon: 'w-5 h-5', 
+      text: 'text-base',
+      padding: 'px-3 py-1.5'
+    }
+  };
+
+  const config = statusConfig[status];
+  const sizeConfig = sizeVariants[size];
+  const IconComponent = config.icon;
+
+  // For dot-only display (calendar indicators)
+  if (!showIcon && !showText) {
+    return (
+      <div
+        data-testid={`status-indicator-${status}`}
+        className={cn(
+          'rounded-full',
+          config.color,
+          sizeConfig.dot,
+          config.urgent && 'animate-pulse',
+          className
+        )}
+        role="status"
+        aria-label={config.label}
+        title={config.description}
+      />
+    );
+  }
+
+  // For badge-style display (payment lists)
+  if (showText) {
+    return (
+      <span
+        data-testid={`status-badge-${status}`}
+        className={cn(
+          'inline-flex items-center rounded-full font-medium border',
+          config.bgColor,
+          config.borderColor,
+          config.textColor,
+          sizeConfig.text,
+          sizeConfig.padding,
+          config.urgent && 'animate-pulse',
+          className
+        )}
+        role="status"
+        aria-label={config.label}
+      >
+        {showIcon && (
+          <IconComponent 
+            className={cn(sizeConfig.icon, 'mr-1')}
+            aria-hidden="true"
+          />
+        )}
+        <span className="capitalize">{status}</span>
+      </span>
+    );
+  }
+
+  // For icon-only display
+  if (showIcon) {
+    return (
+      <div
+        data-testid={`status-icon-${status}`}
+        className={cn(
+          'rounded-full p-1',
+          config.bgColor,
+          config.urgent && 'animate-pulse',
+          className
+        )}
+        role="status"
+        aria-label={config.label}
+        title={config.description}
+      >
+        <IconComponent 
+          className={cn(sizeConfig.icon, config.textColor)}
+          aria-hidden="true"
+        />
+      </div>
+    );
+  }
+
+  return null;
+}
+
+// Wedding-specific status utilities
+export const PaymentStatusUtils = {
+  // Get urgency level for wedding planning
+  getUrgencyLevel: (status: PaymentStatus, dueDate: string, weddingDate: string): 'low' | 'medium' | 'high' | 'critical' => {
+    if (status === 'paid') return 'low';
+    if (status === 'overdue') return 'critical';
+    
+    const due = new Date(dueDate);
+    const wedding = new Date(weddingDate);
+    const daysUntilDue = Math.ceil((due.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+    const daysUntilWedding = Math.ceil((wedding.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+    
+    // Critical if payment due within 3 days of wedding
+    if (daysUntilWedding <= 7 && daysUntilDue <= 3) return 'critical';
+    
+    // High if due within 7 days
+    if (daysUntilDue <= 7) return 'high';
+    
+    // Medium if due within 30 days
+    if (daysUntilDue <= 30) return 'medium';
+    
+    return 'low';
+  },
+
+  // Get wedding-context messages
+  getWeddingContextMessage: (status: PaymentStatus, vendorName: string, daysUntilWedding: number): string => {
+    const messages = {
+      upcoming: `Payment to ${vendorName} scheduled - no action needed yet`,
+      due: `${vendorName} payment due soon - consider marking as paid when completed`,
+      overdue: `⚠️ URGENT: ${vendorName} payment overdue - may affect wedding services`,
+      paid: `✓ ${vendorName} payment completed - one less thing to worry about!`
+    };
+
+    if (daysUntilWedding <= 30 && (status === 'due' || status === 'overdue')) {
+      return `${messages[status]} (Wedding in ${daysUntilWedding} days)`;
+    }
+
+    return messages[status];
+  },
+
+  // Calculate priority score for sorting
+  getPriorityScore: (payment: { status: PaymentStatus; due_date: string; amount: number }): number => {
+    const statusWeights = { overdue: 1000, due: 100, upcoming: 10, paid: 1 };
+    const daysUntilDue = Math.ceil((new Date(payment.due_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+    const amountWeight = payment.amount / 100000; // Larger amounts get slight priority
+    
+    return statusWeights[payment.status] + (100 - Math.min(daysUntilDue, 100)) + amountWeight;
+  }
+};

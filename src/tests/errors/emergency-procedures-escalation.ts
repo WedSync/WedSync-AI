@@ -1,0 +1,1174 @@
+/**
+ * Emergency Procedures and Escalation Matrix Documentation
+ *
+ * Comprehensive emergency response procedures for wedding-critical incidents.
+ * Defines clear escalation paths, communication protocols, and decision-making frameworks
+ * to ensure rapid response and minimize impact on wedding experiences.
+ *
+ * Team E - QA & Documentation Lead
+ * WS-198 Error Handling System Implementation
+ */
+
+export interface EmergencyContact {
+  id: string;
+  name: string;
+  role: string;
+  department: string;
+  primaryPhone: string;
+  secondaryPhone?: string;
+  email: string;
+  alternativeEmail?: string;
+  availability: string;
+  timezone: string;
+  expertise: string[];
+  maxResponseTime: string;
+  escalationLevel: number;
+  decisionAuthority: string[];
+}
+
+export interface IncidentSeverity {
+  level: 'P0' | 'P1' | 'P2' | 'P3' | 'P4';
+  name: string;
+  description: string;
+  weddingImpact: string;
+  maxResponseTime: string;
+  escalationTrigger: string;
+  communicationFrequency: string;
+  approvalRequired: boolean;
+  postmortemRequired: boolean;
+  legalNotificationRequired: boolean;
+}
+
+export interface EscalationPath {
+  severityLevel: string;
+  initialResponse: string[];
+  after15Minutes: string[];
+  after30Minutes: string[];
+  after1Hour: string[];
+  after2Hours: string[];
+  executiveEscalation: string[];
+  boardNotification?: string[];
+  externalEscalation?: string[];
+}
+
+export interface CommunicationProtocol {
+  audience: string;
+  initialMessage: string;
+  updateFrequency: string;
+  channels: string[];
+  messageTemplate: string;
+  approvalRequired: boolean;
+  legalReview: boolean;
+}
+
+export interface EmergencyProcedure {
+  id: string;
+  title: string;
+  description: string;
+  triggers: string[];
+  severity: IncidentSeverity['level'];
+  immediateActions: EmergencyAction[];
+  escalationPath: EscalationPath;
+  communicationProtocols: CommunicationProtocol[];
+  decisionPoints: DecisionPoint[];
+  resourceRequirements: string[];
+  legalConsiderations: string[];
+  businessContinuityActions: string[];
+  recoveryProcedures: string[];
+  postIncidentActions: string[];
+}
+
+export interface EmergencyAction {
+  id: string;
+  action: string;
+  responsible: string;
+  timeframe: string;
+  priority: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
+  prerequisites: string[];
+  successCriteria: string[];
+  fallbackOptions: string[];
+  resourcesRequired: string[];
+  riskMitigation: string[];
+}
+
+export interface DecisionPoint {
+  id: string;
+  question: string;
+  context: string;
+  timeConstraint: string;
+  decisionMaker: string;
+  requiredInformation: string[];
+  options: DecisionOption[];
+  escalationIfNoDecision: string;
+}
+
+export interface DecisionOption {
+  option: string;
+  consequences: string[];
+  requirements: string[];
+  nextActions: string[];
+  riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+}
+
+export interface IncidentCommandStructure {
+  incidentCommander: string;
+  operationsLead: string;
+  communicationsLead: string;
+  technicalLead: string;
+  businessLead: string;
+  legalLead?: string;
+  externalRelationsLead?: string;
+}
+
+export class EmergencyProceduresSystem {
+  private emergencyContacts: Map<string, EmergencyContact> = new Map();
+  private severityLevels: Map<string, IncidentSeverity> = new Map();
+  private procedures: Map<string, EmergencyProcedure> = new Map();
+  private commandStructure: IncidentCommandStructure;
+
+  constructor() {
+    this.initializeEmergencyContacts();
+    this.initializeSeverityLevels();
+    this.initializeEmergencyProcedures();
+    this.initializeCommandStructure();
+  }
+
+  private initializeEmergencyContacts(): void {
+    const contacts: EmergencyContact[] = [
+      {
+        id: 'INCIDENT_COMMANDER',
+        name: 'Sarah Mitchell',
+        role: 'Chief Operations Officer',
+        department: 'Executive',
+        primaryPhone: '+44-7700-900001',
+        secondaryPhone: '+44-20-7946-0001',
+        email: 'sarah.mitchell@wedsync.com',
+        alternativeEmail: 'emergency.coo@wedsync.com',
+        availability: '24/7 On-Call (Wedding Seasons)',
+        timezone: 'GMT',
+        expertise: [
+          'Crisis Management',
+          'Business Operations',
+          'Vendor Relations',
+        ],
+        maxResponseTime: '5 minutes',
+        escalationLevel: 1,
+        decisionAuthority: [
+          'Service restoration',
+          'Vendor compensation',
+          'Public communications',
+        ],
+      },
+      {
+        id: 'TECH_EMERGENCY_LEAD',
+        name: 'James Rodriguez',
+        role: 'Chief Technology Officer',
+        department: 'Engineering',
+        primaryPhone: '+44-7700-900002',
+        secondaryPhone: '+44-20-7946-0002',
+        email: 'james.rodriguez@wedsync.com',
+        alternativeEmail: 'emergency.cto@wedsync.com',
+        availability: '24/7',
+        timezone: 'GMT',
+        expertise: [
+          'System Architecture',
+          'Database Recovery',
+          'Security Incidents',
+        ],
+        maxResponseTime: '3 minutes',
+        escalationLevel: 1,
+        decisionAuthority: [
+          'System changes',
+          'Security decisions',
+          'Data recovery',
+        ],
+      },
+      {
+        id: 'WEDDING_COORDINATOR_LEAD',
+        name: 'Emma Thompson',
+        role: 'Head of Wedding Services',
+        department: 'Operations',
+        primaryPhone: '+44-7700-900003',
+        email: 'emma.thompson@wedsync.com',
+        availability: '6am-11pm (Wedding Days: 24/7)',
+        timezone: 'GMT',
+        expertise: [
+          'Wedding Coordination',
+          'Vendor Management',
+          'Crisis Communication',
+        ],
+        maxResponseTime: '2 minutes (wedding days), 10 minutes (other)',
+        escalationLevel: 1,
+        decisionAuthority: [
+          'Vendor replacement',
+          'Wedding timeline changes',
+          'Guest communications',
+        ],
+      },
+      {
+        id: 'COMMUNICATIONS_DIRECTOR',
+        name: 'Michael Chen',
+        role: 'Director of Communications',
+        department: 'Marketing',
+        primaryPhone: '+44-7700-900004',
+        email: 'michael.chen@wedsync.com',
+        availability: '8am-10pm',
+        timezone: 'GMT',
+        expertise: [
+          'Public Relations',
+          'Crisis Communications',
+          'Social Media',
+        ],
+        maxResponseTime: '15 minutes',
+        escalationLevel: 2,
+        decisionAuthority: [
+          'Public statements',
+          'Media responses',
+          'Social media actions',
+        ],
+      },
+      {
+        id: 'LEGAL_COUNSEL',
+        name: 'Victoria Adams',
+        role: 'General Counsel',
+        department: 'Legal',
+        primaryPhone: '+44-7700-900005',
+        email: 'victoria.adams@wedsync.com',
+        availability: '9am-6pm (Emergency on-call)',
+        timezone: 'GMT',
+        expertise: ['Contract Law', 'Privacy Regulations', 'Liability Issues'],
+        maxResponseTime: '30 minutes',
+        escalationLevel: 2,
+        decisionAuthority: [
+          'Legal risk assessment',
+          'Regulatory notifications',
+          'Contract disputes',
+        ],
+      },
+      {
+        id: 'CEO',
+        name: 'Alexander Hamilton',
+        role: 'Chief Executive Officer',
+        department: 'Executive',
+        primaryPhone: '+44-7700-900006',
+        secondaryPhone: '+44-20-7946-0006',
+        email: 'alexander.hamilton@wedsync.com',
+        availability: 'Executive Escalation Only',
+        timezone: 'GMT',
+        expertise: [
+          'Executive Decisions',
+          'Board Relations',
+          'Strategic Communications',
+        ],
+        maxResponseTime: '60 minutes',
+        escalationLevel: 3,
+        decisionAuthority: [
+          'Major financial decisions',
+          'Board notifications',
+          'Company statements',
+        ],
+      },
+    ];
+
+    contacts.forEach((contact) =>
+      this.emergencyContacts.set(contact.id, contact),
+    );
+  }
+
+  private initializeSeverityLevels(): void {
+    const severities: IncidentSeverity[] = [
+      {
+        level: 'P0',
+        name: 'CRITICAL - Wedding Day Service Outage',
+        description:
+          'Complete service failure affecting active weddings or preventing wedding-day coordination',
+        weddingImpact:
+          'CATASTROPHIC - Active wedding coordination disrupted, multiple couples affected',
+        maxResponseTime: '2 minutes',
+        escalationTrigger: '5 minutes without resolution',
+        communicationFrequency: 'Every 5 minutes',
+        approvalRequired: false,
+        postmortemRequired: true,
+        legalNotificationRequired: true,
+      },
+      {
+        level: 'P1',
+        name: 'HIGH - Critical Business Function Down',
+        description:
+          'Major system failure affecting core wedding planning functions or vendor operations',
+        weddingImpact:
+          'SEVERE - Wedding planning significantly impacted, vendor operations disrupted',
+        maxResponseTime: '10 minutes',
+        escalationTrigger: '30 minutes without resolution',
+        communicationFrequency: 'Every 15 minutes',
+        approvalRequired: false,
+        postmortemRequired: true,
+        legalNotificationRequired: false,
+      },
+      {
+        level: 'P2',
+        name: 'MEDIUM - Service Degradation',
+        description:
+          'Partial service failure or significant performance degradation affecting user experience',
+        weddingImpact:
+          'MODERATE - Some wedding functions affected, workarounds available',
+        maxResponseTime: '30 minutes',
+        escalationTrigger: '2 hours without resolution',
+        communicationFrequency: 'Every 30 minutes',
+        approvalRequired: true,
+        postmortemRequired: true,
+        legalNotificationRequired: false,
+      },
+      {
+        level: 'P3',
+        name: 'LOW - Minor Issues',
+        description:
+          'Minor functionality issues or cosmetic problems not affecting core operations',
+        weddingImpact:
+          'MINIMAL - Minor inconveniences, full functionality maintained',
+        maxResponseTime: '2 hours',
+        escalationTrigger: '24 hours without resolution',
+        communicationFrequency: 'Daily updates',
+        approvalRequired: true,
+        postmortemRequired: false,
+        legalNotificationRequired: false,
+      },
+      {
+        level: 'P4',
+        name: 'INFORMATIONAL - Monitoring Alerts',
+        description:
+          'System alerts or monitoring notifications requiring investigation',
+        weddingImpact: 'NONE - No user impact detected',
+        maxResponseTime: '24 hours',
+        escalationTrigger: 'At engineer discretion',
+        communicationFrequency: 'As needed',
+        approvalRequired: false,
+        postmortemRequired: false,
+        legalNotificationRequired: false,
+      },
+    ];
+
+    severities.forEach((severity) =>
+      this.severityLevels.set(severity.level, severity),
+    );
+  }
+
+  private initializeEmergencyProcedures(): void {
+    // P0 - Wedding Day Complete System Outage
+    this.addProcedure({
+      id: 'P0_WEDDING_DAY_OUTAGE',
+      title: 'Wedding Day Complete System Outage',
+      description:
+        'Complete WedSync platform failure during active wedding coordination',
+      triggers: [
+        'Platform returning 5xx errors for >2 minutes',
+        'Database completely unavailable',
+        'Authentication system down',
+        'Multiple wedding coordinators report total system failure',
+      ],
+      severity: 'P0',
+      immediateActions: [
+        {
+          id: 'P0_ACTION_001',
+          action: 'Declare P0 Incident and Activate Emergency Command Center',
+          responsible: 'First Responder (Any On-Call Engineer)',
+          timeframe: '30 seconds',
+          priority: 'CRITICAL',
+          prerequisites: ['Incident detected', 'Initial assessment completed'],
+          successCriteria: [
+            'Incident declared',
+            'Command center activated',
+            'Key stakeholders notified',
+          ],
+          fallbackOptions: ['Manual notification if automated systems fail'],
+          resourcesRequired: [
+            'Emergency communication channels',
+            'Incident management system',
+          ],
+          riskMitigation: [
+            'Backup communication methods',
+            'Pre-defined contact lists',
+          ],
+        },
+        {
+          id: 'P0_ACTION_002',
+          action: 'Activate All Wedding Day Emergency Protocols',
+          responsible: 'Wedding Coordinator Lead',
+          timeframe: '1 minute',
+          priority: 'CRITICAL',
+          prerequisites: ['Incident confirmed affecting weddings'],
+          successCriteria: [
+            'All active wedding coordinators contacted',
+            'Backup coordination methods activated',
+          ],
+          fallbackOptions: [
+            'Direct phone calls to wedding venues',
+            'WhatsApp emergency groups',
+          ],
+          resourcesRequired: [
+            'Wedding coordinator contact list',
+            'Venue emergency contacts',
+          ],
+          riskMitigation: ['Pre-positioned backup staff at major venues'],
+        },
+        {
+          id: 'P0_ACTION_003',
+          action: 'Attempt Immediate System Recovery',
+          responsible: 'Technical Emergency Lead',
+          timeframe: '3 minutes',
+          priority: 'CRITICAL',
+          prerequisites: [
+            'System status assessed',
+            'Recovery options identified',
+          ],
+          successCriteria: [
+            'Recovery attempt initiated',
+            'Progress communicated to command center',
+          ],
+          fallbackOptions: [
+            'Activate disaster recovery site',
+            'Enable read-only mode',
+          ],
+          resourcesRequired: [
+            'System admin access',
+            'Recovery procedures',
+            'Backup systems',
+          ],
+          riskMitigation: ['Automated failover systems', 'Backup data centers'],
+        },
+      ],
+      escalationPath: {
+        severityLevel: 'P0',
+        initialResponse: [
+          'TECH_EMERGENCY_LEAD',
+          'WEDDING_COORDINATOR_LEAD',
+          'INCIDENT_COMMANDER',
+        ],
+        after15Minutes: ['CEO', 'COMMUNICATIONS_DIRECTOR'],
+        after30Minutes: ['LEGAL_COUNSEL', 'External Vendor Partners'],
+        after1Hour: ['Board Notification', 'Insurance Provider'],
+        after2Hours: ['Public Relations Team', 'Regulatory Notifications'],
+        executiveEscalation: ['Immediate CEO and Board notification'],
+        boardNotification: ['Within 30 minutes of incident'],
+        externalEscalation: [
+          'Vendor partners',
+          'Key venue relationships',
+          'Insurance claims',
+        ],
+      },
+      communicationProtocols: [
+        {
+          audience: 'Active Wedding Coordinators',
+          initialMessage:
+            'URGENT: System outage detected. Switch to emergency coordination protocols immediately.',
+          updateFrequency: 'Every 5 minutes',
+          channels: ['SMS', 'WhatsApp', 'Direct phone calls'],
+          messageTemplate:
+            'STATUS UPDATE: [TIME] - [CURRENT STATUS] - [ESTIMATED RESOLUTION] - [COORDINATOR ACTIONS]',
+          approvalRequired: false,
+          legalReview: false,
+        },
+        {
+          audience: 'Affected Couples',
+          initialMessage:
+            'We are experiencing technical difficulties. Your wedding coordination continues with backup systems.',
+          updateFrequency: 'Every 15 minutes',
+          channels: ['SMS', 'Email', 'Phone calls from coordinators'],
+          messageTemplate:
+            'UPDATE [TIME]: We are working to restore full systems. Your wedding coordinator is managing everything manually. No disruption to your special day.',
+          approvalRequired: true,
+          legalReview: false,
+        },
+        {
+          audience: 'Vendor Partners',
+          initialMessage:
+            'System outage affecting coordination tools. Emergency communication channels active.',
+          updateFrequency: 'Every 10 minutes',
+          channels: ['SMS', 'WhatsApp Business', 'Direct calls'],
+          messageTemplate:
+            'VENDOR ALERT [TIME]: [STATUS] - Continue wedding services as planned. Coordinator contact: [PHONE]',
+          approvalRequired: false,
+          legalReview: false,
+        },
+      ],
+      decisionPoints: [
+        {
+          id: 'P0_DECISION_001',
+          question:
+            'Should we activate disaster recovery site if primary recovery fails within 10 minutes?',
+          context: 'Primary systems not responding, weddings in progress',
+          timeConstraint: '10 minutes from incident start',
+          decisionMaker: 'TECH_EMERGENCY_LEAD',
+          requiredInformation: [
+            'Current recovery progress',
+            'DR site readiness',
+            'Data synchronization status',
+          ],
+          options: [
+            {
+              option: 'Activate disaster recovery site',
+              consequences: [
+                '30-60 minute full recovery time',
+                'Potential minor data loss',
+                'Full system restoration',
+              ],
+              requirements: ['DR site operational', 'Data sync acceptable'],
+              nextActions: [
+                'Initiate DR failover',
+                'Notify all stakeholders',
+                'Begin data validation',
+              ],
+              riskLevel: 'MEDIUM',
+            },
+            {
+              option: 'Continue primary site recovery efforts',
+              consequences: [
+                'Faster recovery if successful',
+                'Risk of extended outage',
+                'No data loss',
+              ],
+              requirements: ['Technical team confidence in fix'],
+              nextActions: [
+                'Continue troubleshooting',
+                'Prepare DR as backup',
+                'Frequent status updates',
+              ],
+              riskLevel: 'HIGH',
+            },
+          ],
+          escalationIfNoDecision: 'Auto-escalate to CEO after 15 minutes',
+        },
+      ],
+      resourceRequirements: [
+        'Emergency command center activation',
+        '24/7 technical support team',
+        'Wedding coordinator emergency response team',
+        'Backup communication systems',
+        'Disaster recovery infrastructure',
+        'Legal and PR support teams',
+      ],
+      legalConsiderations: [
+        'Contract obligations to couples and vendors',
+        'Service level agreement compliance',
+        'Data protection and privacy requirements',
+        'Insurance claim procedures',
+        'Regulatory notification requirements',
+      ],
+      businessContinuityActions: [
+        'Activate manual wedding coordination procedures',
+        'Enable backup payment processing systems',
+        'Switch to alternative vendor communication channels',
+        'Implement paper-based guest management',
+        'Activate emergency supplier network',
+      ],
+      recoveryProcedures: [
+        'System health validation and monitoring',
+        'Data integrity verification',
+        'Service restoration in priority order',
+        'User communication and support',
+        'Performance monitoring and optimization',
+        'Full system testing and validation',
+      ],
+      postIncidentActions: [
+        'Comprehensive incident postmortem within 24 hours',
+        'Root cause analysis with timeline',
+        'Action plan development for prevention',
+        'Stakeholder communication and apologies',
+        'Process improvement implementation',
+        'Legal and insurance documentation',
+        'Team debriefing and support',
+      ],
+    });
+
+    // P1 - Payment System Failure
+    this.addProcedure({
+      id: 'P1_PAYMENT_SYSTEM_FAILURE',
+      title: 'Payment System Complete Failure',
+      description:
+        'Critical payment processing system failure affecting vendor payments and subscriptions',
+      triggers: [
+        'Stripe webhook failures for >10 minutes',
+        'Payment database unavailable',
+        'Multiple failed payment attempts reported',
+        'Subscription billing system down',
+      ],
+      severity: 'P1',
+      immediateActions: [
+        {
+          id: 'P1_PAY_001',
+          action: 'Assess Payment System Status and Impact',
+          responsible: 'Technical Emergency Lead',
+          timeframe: '5 minutes',
+          priority: 'CRITICAL',
+          prerequisites: ['Payment failure confirmed'],
+          successCriteria: [
+            'Impact scope determined',
+            'Affected systems identified',
+            'Recovery options assessed',
+          ],
+          fallbackOptions: ['Manual payment processing activation'],
+          resourcesRequired: [
+            'Payment system monitoring',
+            'Stripe dashboard access',
+          ],
+          riskMitigation: ['Backup payment processor ready'],
+        },
+        {
+          id: 'P1_PAY_002',
+          action: 'Activate Backup Payment Systems',
+          responsible: 'Operations Lead',
+          timeframe: '10 minutes',
+          priority: 'HIGH',
+          prerequisites: ['Primary payment system confirmed down'],
+          successCriteria: [
+            'Backup processor activated',
+            'Payment flow restored',
+          ],
+          fallbackOptions: [
+            'Manual payment recording',
+            'Deferred payment processing',
+          ],
+          resourcesRequired: [
+            'Backup payment processor credentials',
+            'Emergency procedures',
+          ],
+          riskMitigation: ['Pre-tested backup systems'],
+        },
+      ],
+      escalationPath: {
+        severityLevel: 'P1',
+        initialResponse: ['TECH_EMERGENCY_LEAD', 'INCIDENT_COMMANDER'],
+        after15Minutes: ['CEO notification'],
+        after30Minutes: ['Communications team', 'Legal counsel'],
+        after1Hour: ['Board notification if business critical'],
+        after2Hours: ['External partner coordination'],
+        executiveEscalation: ['CEO notification after 30 minutes'],
+      },
+      communicationProtocols: [
+        {
+          audience: 'Affected Vendors',
+          initialMessage:
+            'Temporary payment processing issue detected. Payments will be processed as soon as systems are restored.',
+          updateFrequency: 'Every 30 minutes',
+          channels: ['Email', 'SMS to critical vendors'],
+          messageTemplate:
+            'PAYMENT UPDATE: [STATUS] - Your payment is queued and will process automatically when systems are restored.',
+          approvalRequired: true,
+          legalReview: false,
+        },
+      ],
+      decisionPoints: [
+        {
+          id: 'P1_PAY_DECISION_001',
+          question:
+            'Should we process payments manually if system recovery exceeds 2 hours?',
+          context: 'Extended payment system outage affecting vendor payments',
+          timeConstraint: '2 hours from incident',
+          decisionMaker: 'INCIDENT_COMMANDER',
+          requiredInformation: [
+            'Number of affected payments',
+            'Manual processing capacity',
+            'Risk assessment',
+          ],
+          options: [
+            {
+              option: 'Activate manual payment processing',
+              consequences: [
+                'Time-intensive process',
+                'Higher error risk',
+                'Vendor satisfaction maintained',
+              ],
+              requirements: [
+                'Additional staff activation',
+                'Manual verification procedures',
+              ],
+              nextActions: [
+                'Deploy additional staff',
+                'Implement verification procedures',
+              ],
+              riskLevel: 'MEDIUM',
+            },
+            {
+              option: 'Wait for system recovery',
+              consequences: [
+                'Vendor payment delays',
+                'Potential relationship strain',
+                'System integrity maintained',
+              ],
+              requirements: ['Clear vendor communication'],
+              nextActions: [
+                'Enhanced vendor communication',
+                'Expedited resolution',
+              ],
+              riskLevel: 'HIGH',
+            },
+          ],
+          escalationIfNoDecision:
+            'Auto-approve manual processing after 3 hours',
+        },
+      ],
+      resourceRequirements: [
+        'Payment system technical expertise',
+        'Backup payment processor access',
+        'Manual payment processing procedures',
+        'Vendor communication systems',
+        'Financial reconciliation capabilities',
+      ],
+      legalConsiderations: [
+        'Vendor payment contractual obligations',
+        'PCI DSS compliance during manual processing',
+        'Financial audit trail maintenance',
+        'Consumer protection regulations',
+      ],
+      businessContinuityActions: [
+        'Activate backup payment processors',
+        'Enable manual payment workflows',
+        'Implement emergency vendor communication',
+        'Activate financial reconciliation procedures',
+      ],
+      recoveryProcedures: [
+        'Payment system restoration and validation',
+        'Payment queue processing',
+        'Financial reconciliation',
+        'Audit trail verification',
+        'System monitoring enhancement',
+      ],
+      postIncidentActions: [
+        'Payment system incident analysis',
+        'Vendor relationship assessment',
+        'Process improvement implementation',
+        'Financial impact assessment',
+        'Audit trail documentation',
+      ],
+    });
+  }
+
+  private initializeCommandStructure(): void {
+    this.commandStructure = {
+      incidentCommander: 'INCIDENT_COMMANDER',
+      operationsLead: 'WEDDING_COORDINATOR_LEAD',
+      communicationsLead: 'COMMUNICATIONS_DIRECTOR',
+      technicalLead: 'TECH_EMERGENCY_LEAD',
+      businessLead: 'INCIDENT_COMMANDER',
+      legalLead: 'LEGAL_COUNSEL',
+    };
+  }
+
+  private addProcedure(procedure: EmergencyProcedure): void {
+    this.procedures.set(procedure.id, procedure);
+  }
+
+  public getProcedure(id: string): EmergencyProcedure | undefined {
+    return this.procedures.get(id);
+  }
+
+  public getProceduresBySeverity(
+    severity: IncidentSeverity['level'],
+  ): EmergencyProcedure[] {
+    return Array.from(this.procedures.values()).filter(
+      (p) => p.severity === severity,
+    );
+  }
+
+  public generateEmergencyContactCard(): string {
+    const primaryContacts = Array.from(this.emergencyContacts.values())
+      .filter((contact) => contact.escalationLevel === 1)
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    return `
+=== WEDSYNC EMERGENCY CONTACT CARD ===
+KEEP THIS ACCESSIBLE 24/7
+
+🚨 PRIMARY EMERGENCY CONTACTS:
+${primaryContacts
+  .map(
+    (contact) =>
+      `${contact.role}:\n  ${contact.name}\n  📞 ${contact.primaryPhone}\n  📧 ${contact.email}\n  ⏱️ Response: ${contact.maxResponseTime}`,
+  )
+  .join('\n\n')}
+
+⚡ EMERGENCY DECLARATION HOTLINE:
+📞 +44-7700-900999 (Automated incident declaration)
+
+🏥 WEDDING DAY CRISIS LINE:
+📞 +44-7700-900111 (Direct to Wedding Emergency Team)
+
+🔥 SEVERITY LEVELS:
+P0 - CRITICAL: Wedding Day Service Outage (2min response)
+P1 - HIGH: Major System Failure (10min response)  
+P2 - MEDIUM: Service Degradation (30min response)
+P3 - LOW: Minor Issues (2hr response)
+
+📋 WHEN TO ESCALATE:
+• ANY issue affecting active weddings = IMMEDIATE P0
+• Payment system down = P1
+• Multiple customer complaints = P1
+• Security breach = P0
+• Data loss = P0
+
+🚨 REMEMBER: When in doubt, escalate UP!
+Wedding days are SACRED - act fast, ask questions later.
+
+Card Valid: ${new Date().toLocaleDateString()}
+==========================================
+`;
+  }
+
+  public generateIncidentDeclarationGuide(): string {
+    return `
+=== INCIDENT DECLARATION QUICK GUIDE ===
+
+🚨 STEP 1: ASSESS SEVERITY (30 seconds)
+Ask yourself:
+• Are active weddings affected? → P0
+• Are payments failing? → P1  
+• Are core functions down? → P1
+• Is it just slow/buggy? → P2
+
+🚨 STEP 2: DECLARE INCIDENT (60 seconds)
+P0/P1 - CALL IMMEDIATELY:
+📞 ${this.emergencyContacts.get('TECH_EMERGENCY_LEAD')?.primaryPhone}
+📞 ${this.emergencyContacts.get('INCIDENT_COMMANDER')?.primaryPhone}
+
+P2/P3 - USE INCIDENT SYSTEM:
+🌐 incidents.wedsync.com/declare
+
+🚨 STEP 3: INITIAL COMMUNICATION (90 seconds)
+Say/Write EXACTLY:
+"INCIDENT DECLARED - [SEVERITY] - [BRIEF DESCRIPTION] - [YOUR NAME] - [YOUR PHONE]"
+
+Example: "INCIDENT DECLARED - P0 - Complete system outage affecting 3 weddings - Sarah Mitchell - +44-7700-900001"
+
+🚨 STEP 4: JOIN INCIDENT CHANNEL
+Slack: #incident-response-[incident-id]
+Phone Bridge: Auto-dialed for P0/P1
+
+🚨 STEP 5: FOLLOW COMMANDS
+The Incident Commander will direct all actions.
+Your job: Provide information, execute instructions.
+
+⚠️ DO NOT:
+• Try to fix things alone during P0/P1
+• Communicate with customers without approval
+• Make decisions outside your authority
+• Leave your post without replacement
+
+✅ DO:
+• Stay calm and factual
+• Follow instructions precisely
+• Communicate status clearly
+• Document everything
+
+🏆 REMEMBER: Better to over-escalate than under-escalate.
+Wedding coordinators will thank you for erring on the side of caution.
+==============================================
+`;
+  }
+
+  public generateEscalationMatrix(): string {
+    const matrix = Array.from(this.severityLevels.values()).sort((a, b) =>
+      a.level.localeCompare(b.level),
+    );
+
+    return `
+=== ESCALATION MATRIX ===
+
+${matrix
+  .map((severity) => {
+    const procedure = Array.from(this.procedures.values()).find(
+      (p) => p.severity === severity.level,
+    );
+    const escalationPath = procedure?.escalationPath;
+
+    return `
+📊 ${severity.level} - ${severity.name}
+Wedding Impact: ${severity.weddingImpact}
+Response Time: ${severity.maxResponseTime}
+Update Frequency: ${severity.communicationFrequency}
+
+Escalation Timeline:
+⏰ 0-${severity.maxResponseTime}: ${escalationPath?.initialResponse.join(', ') || 'Initial team'}
+⏰ After 15min: ${escalationPath?.after15Minutes.join(', ') || 'Management team'}  
+⏰ After 30min: ${escalationPath?.after30Minutes.join(', ') || 'Executive team'}
+⏰ After 1hr: ${escalationPath?.after1Hour.join(', ') || 'Board notification'}
+⏰ After 2hr: ${escalationPath?.after2Hours.join(', ') || 'External escalation'}
+
+Required Actions:
+${severity.approvalRequired ? '• Requires approval for major actions' : '• No approval required - act immediately'}
+${severity.postmortemRequired ? '• Postmortem required within 24 hours' : '• No postmortem required'}
+${severity.legalNotificationRequired ? '• Legal team must be notified immediately' : '• Legal notification not required'}
+---`;
+  })
+  .join('\n')}
+
+🎯 SPECIAL ESCALATION RULES:
+
+WEDDING DAY RULES (Saturdays + Sundays):
+• ANY P2 becomes P1 if wedding is same/next day
+• ALL wedding venue issues escalate to Wedding Coordinator Lead
+• CEO notification for ANY P0 within 15 minutes
+
+PAYMENT ISSUES:
+• Vendor payment failures → Always P1
+• Couple payment issues → P2 (unless wedding day)
+• Subscription billing → P3
+
+SECURITY INCIDENTS:
+• Data breach → Immediate P0
+• Suspected attack → P1  
+• Privacy violation → P1 (with Legal)
+
+VENDOR RELATIONS:
+• Key vendor partnership at risk → P1
+• Vendor complaints about system → P2
+• New vendor onboarding issues → P3
+
+Remember: When in doubt, escalate UP and escalate FAST.
+Wedding industry operates on trust - protect it at all costs.
+=====================================
+`;
+  }
+
+  public generateWeddingDayProtocol(): string {
+    return `
+=== WEDDING DAY EMERGENCY PROTOCOL ===
+SPECIAL PROCEDURES FOR SATURDAYS & SUNDAYS
+
+🏆 WEDDING DAY COMMANDMENTS:
+1. Wedding days are SACRED - nothing can fail
+2. Couples' emotions are at peak - handle with extreme care  
+3. Vendors are stressed - be their support system
+4. Venues are busy - be clear and concise
+5. Families are watching - we represent the entire industry
+
+🚨 WEDDING DAY INCIDENT CLASSIFICATION:
+ANY issue affecting a wedding happening TODAY = P0
+ANY issue affecting a wedding happening TOMORROW = P1
+ALL other issues escalated one level (P2→P1, P3→P2)
+
+⚡ RESPONSE TIME ADJUSTMENTS:
+P0: 60 seconds (not 2 minutes)
+P1: 5 minutes (not 10 minutes)
+P2: 15 minutes (not 30 minutes)
+
+📞 WEDDING DAY HOTLINE: +44-7700-900111
+Direct line to Wedding Emergency Response Team
+Staffed 24/7 on weekends during wedding season
+
+🎯 COMMUNICATION PRIORITIES:
+1. Wedding Coordinator (immediate)
+2. Venue Staff (within 2 minutes)
+3. Affected Couple (within 5 minutes, via coordinator)
+4. Vendor Partners (within 5 minutes)
+5. Internal Team (ongoing updates)
+
+📋 WEDDING DAY DECISION AUTHORITY:
+Wedding Coordinator Lead has FULL authority to:
+• Authorize emergency vendor replacements
+• Approve immediate system bypasses
+• Redirect technical resources
+• Make on-the-spot vendor payments
+• Communicate directly with couples
+
+🛡️ PROTECTION PROTOCOLS:
+• NO system deployments on wedding days (Friday 6PM - Monday 6AM)
+• NO maintenance windows during wedding hours (6AM - 11PM weekends)
+• ALL changes require Wedding Coordinator approval
+• Backup systems must be HOT and ready
+
+🚑 EMERGENCY RESOURCES:
+• Pre-positioned backup staff at major venues
+• Emergency vendor network on standby
+• Rapid replacement equipment available
+• Direct lines to venue emergency services
+
+📊 SUCCESS METRICS:
+• Wedding day uptime: 100% (no exceptions)
+• Coordinator response time: <60 seconds
+• Issue resolution: <10 minutes for P0, <30 minutes for P1
+• Couple satisfaction: No degradation due to technical issues
+
+🎉 REMEMBER: We're not just fixing technical problems - 
+we're protecting once-in-a-lifetime moments that can never be repeated.
+Every couple deserves their perfect day, and we're the guardians of that dream.
+
+Wedding Day Protocol Last Updated: ${new Date().toLocaleDateString()}
+===========================================
+`;
+  }
+
+  public generatePostIncidentTemplate(): string {
+    return `
+=== POST-INCIDENT REVIEW TEMPLATE ===
+
+📊 INCIDENT SUMMARY
+Incident ID: [AUTO-GENERATED]
+Severity: [P0/P1/P2/P3]
+Start Time: [YYYY-MM-DD HH:MM:SS GMT]
+End Time: [YYYY-MM-DD HH:MM:SS GMT]
+Total Duration: [HH:MM:SS]
+Incident Commander: [NAME]
+
+🎯 BUSINESS IMPACT
+Weddings Affected: [NUMBER]
+Couples Impacted: [NUMBER]  
+Vendors Affected: [NUMBER]
+Revenue Impact: [£AMOUNT]
+Reputation Impact: [HIGH/MEDIUM/LOW]
+Wedding Day Impact: [YES/NO - If yes, detailed explanation required]
+
+📈 TIMELINE OF EVENTS
+[HH:MM] Event description
+[HH:MM] Action taken
+[HH:MM] Decision point
+[HH:MM] Resolution achieved
+[HH:MM] All clear declared
+
+🔍 ROOT CAUSE ANALYSIS
+Primary Cause: [Technical/Process/Human/External]
+Contributing Factors:
+• Factor 1: [Description]
+• Factor 2: [Description]
+• Factor 3: [Description]
+
+Why did this happen? [5 Whys Analysis]
+1. Why? [Answer]
+2. Why? [Answer]  
+3. Why? [Answer]
+4. Why? [Answer]
+5. Why? [Answer]
+
+✅ WHAT WENT WELL
+• Response time achievements
+• Communication effectiveness
+• Team coordination successes
+• Prevention measure successes
+
+❌ WHAT WENT POORLY
+• Response delays
+• Communication breakdowns
+• Process failures
+• Tool/system inadequacies
+
+📋 ACTION ITEMS
+[HIGH PRIORITY - Complete within 1 week]
+• Action 1: [Description] - Owner: [Name] - Due: [Date]
+• Action 2: [Description] - Owner: [Name] - Due: [Date]
+
+[MEDIUM PRIORITY - Complete within 1 month]
+• Action 3: [Description] - Owner: [Name] - Due: [Date]
+• Action 4: [Description] - Owner: [Name] - Due: [Date]
+
+[LONG TERM - Complete within 3 months]
+• Action 5: [Description] - Owner: [Name] - Due: [Date]
+
+💡 PREVENTION MEASURES
+• Monitoring improvements
+• Process enhancements
+• Training requirements
+• Tool/system upgrades
+• Documentation updates
+
+💰 FINANCIAL IMPACT
+Direct Costs:
+• System recovery: [£AMOUNT]
+• Additional staff: [£AMOUNT]
+• Vendor compensation: [£AMOUNT]
+• Emergency supplies: [£AMOUNT]
+
+Indirect Costs:
+• Lost revenue: [£AMOUNT]
+• Customer compensation: [£AMOUNT]
+• Reputation management: [£AMOUNT]
+
+Total Cost: [£AMOUNT]
+
+📞 STAKEHOLDER COMMUNICATION
+Customers Notified: [NUMBER] via [CHANNELS]
+Vendors Notified: [NUMBER] via [CHANNELS]
+Internal Teams: [TEAMS] via [CHANNELS]
+Executive Updates: [FREQUENCY]
+Board Notification: [YES/NO]
+
+🏆 LESSONS LEARNED
+Key Takeaways:
+1. [Lesson 1]
+2. [Lesson 2]
+3. [Lesson 3]
+
+Industry Best Practices to Adopt:
+• [Practice 1]
+• [Practice 2]
+
+Changes to Emergency Procedures:
+• [Change 1]
+• [Change 2]
+
+📅 REVIEW SCHEDULE
+24-Hour Review: [DATE] - Status: [COMPLETE/PENDING]
+1-Week Follow-up: [DATE] - Status: [COMPLETE/PENDING]
+1-Month Assessment: [DATE] - Status: [COMPLETE/PENDING]
+Quarterly Review: [DATE] - Status: [COMPLETE/PENDING]
+
+✍️ APPROVALS
+Incident Commander: [NAME] [DATE]
+Technical Lead: [NAME] [DATE]
+Operations Lead: [NAME] [DATE]  
+Legal Review: [NAME] [DATE] (if required)
+Executive Sponsor: [NAME] [DATE]
+
+📚 ATTACHMENTS
+• Detailed timeline with screenshots
+• System logs and error messages
+• Customer communication records
+• Vendor correspondence
+• Financial impact calculations
+• Technical root cause analysis
+
+Review Completed By: [NAME]
+Review Date: [YYYY-MM-DD]
+Next Review Due: [YYYY-MM-DD]
+=======================================
+`;
+  }
+
+  public getEmergencyContacts(): Map<string, EmergencyContact> {
+    return this.emergencyContacts;
+  }
+
+  public getSeverityLevels(): Map<string, IncidentSeverity> {
+    return this.severityLevels;
+  }
+
+  public getAllProcedures(): Map<string, EmergencyProcedure> {
+    return this.procedures;
+  }
+
+  public getCommandStructure(): IncidentCommandStructure {
+    return this.commandStructure;
+  }
+}
+
+// Export singleton for global use
+export const emergencyProcedures = new EmergencyProceduresSystem();
+
+// Quick access functions
+export function getEmergencyContactCard(): string {
+  return emergencyProcedures.generateEmergencyContactCard();
+}
+
+export function getIncidentDeclarationGuide(): string {
+  return emergencyProcedures.generateIncidentDeclarationGuide();
+}
+
+export function getEscalationMatrix(): string {
+  return emergencyProcedures.generateEscalationMatrix();
+}
+
+export function getWeddingDayProtocol(): string {
+  return emergencyProcedures.generateWeddingDayProtocol();
+}
+
+export function getPostIncidentTemplate(): string {
+  return emergencyProcedures.generatePostIncidentTemplate();
+}

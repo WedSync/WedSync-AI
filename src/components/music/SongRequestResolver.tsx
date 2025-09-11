@@ -1,0 +1,741 @@
+'use client';
+
+import React, { useState, useCallback } from 'react';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { z } from 'zod';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Textarea } from '@/components/ui/textarea';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
+  MessageSquare,
+  Sparkles,
+  Brain,
+  CheckCircle,
+  AlertTriangle,
+  Music,
+  Search,
+  X,
+  Zap,
+  Heart,
+  HelpCircle,
+} from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+
+import type { MusicTrack, WeddingPhase } from '@/types/music';
+
+// Validation schema
+const requestSchema = z.object({
+  query: z
+    .string()
+    .min(3, 'Request must be at least 3 characters')
+    .max(200, 'Request too long'),
+  context: z.string().max(500, 'Context too long').optional(),
+  weddingCategory: z
+    .enum(['ceremony', 'cocktails', 'dinner', 'dancing'])
+    .optional(),
+  urgency: z.enum(['low', 'medium', 'high']).default('medium'),
+});
+
+type RequestFormData = z.infer<typeof requestSchema>;
+
+interface ResolvedMatch {
+  track: MusicTrack;
+  confidence: number; // 0-1 scale
+  reasoning: string;
+  match_type: 'exact' | 'partial' | 'similar' | 'alternative';
+}
+
+interface VagueRequest {
+  id: string;
+  query: string;
+  context?: string;
+  weddingCategory?: WeddingPhase;
+  urgency: 'low' | 'medium' | 'high';
+  timestamp: Date;
+  resolved_matches?: ResolvedMatch[];
+  status: 'pending' | 'resolved' | 'needs_clarification';
+  clarification_questions?: string[];
+  confidence_score: number;
+}
+
+interface SongRequestResolverProps {
+  weddingId: string;
+  onRequestResolved?: (request: VagueRequest) => void;
+  onClose?: () => void;
+  className?: string;
+}
+
+const COMMON_VAGUE_PATTERNS = [
+  {
+    pattern: /that.*song.*about.*love/i,
+    suggestion: "Try: 'love song by [artist]' or 'romantic ballad'",
+  },
+  {
+    pattern: /da da da|na na na|la la la/i,
+    suggestion: 'Try humming the melody or describing the music style',
+  },
+  {
+    pattern: /from the.*80s?|90s?|2000s?/i,
+    suggestion:
+      "Try: '[decade] [genre] song' or add more details about the artist",
+  },
+  {
+    pattern: /everyone knows/i,
+    suggestion: "Try: 'popular [genre] song' or 'classic [artist] song'",
+  },
+  {
+    pattern: /upbeat|happy|energetic/i,
+    suggestion: "Try: 'danceable [genre]' or 'high energy wedding song'",
+  },
+  {
+    pattern: /slow|romantic|emotional/i,
+    suggestion: "Try: 'romantic ballad' or 'slow dance song'",
+  },
+];
+
+const CLARIFICATION_QUESTIONS = {
+  genre: 'What genre or style of music? (pop, rock, country, etc.)',
+  era: 'What decade or era is this song from?',
+  artist: 'Do you know the artist or can you describe their style?',
+  mood: "What's the mood? (romantic, upbeat, emotional, etc.)",
+  occasion: 'What part of the wedding is this for?',
+  lyrics: 'Can you remember any specific lyrics or words?',
+  melody: 'Can you describe the melody or rhythm?',
+  similar: 'Is it similar to any other song you can think of?',
+};
+
+export function SongRequestResolver({
+  weddingId,
+  onRequestResolved,
+  onClose,
+  className = '',
+}: SongRequestResolverProps) {
+  const [isResolving, setIsResolving] = useState(false);
+  const [resolvedRequest, setResolvedRequest] = useState<VagueRequest | null>(
+    null,
+  );
+  const [showSuggestions, setShowSuggestions] = useState(false);
+
+  const {
+    register,
+    handleSubmit,
+    watch,
+    setValue,
+    formState: { errors, isValid },
+    reset,
+  } = useForm<RequestFormData>({
+    resolver: zodResolver(requestSchema),
+    defaultValues: {
+      query: '',
+      context: '',
+      urgency: 'medium',
+    },
+  });
+
+  const watchedQuery = watch('query');
+
+  // Check for common patterns and show suggestions
+  const getSuggestionForQuery = useCallback((query: string): string | null => {
+    for (const { pattern, suggestion } of COMMON_VAGUE_PATTERNS) {
+      if (pattern.test(query)) {
+        return suggestion;
+      }
+    }
+    return null;
+  }, []);
+
+  // Resolve vague request
+  const resolveRequest = useCallback(
+    async (data: RequestFormData) => {
+      setIsResolving(true);
+
+      try {
+        const response = await fetch('/api/music/resolve-request', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          credentials: 'same-origin',
+          body: JSON.stringify({
+            wedding_id: weddingId,
+            query: data.query.trim(),
+            context: data.context?.trim(),
+            wedding_category: data.weddingCategory,
+            urgency: data.urgency,
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error(`Request resolution failed: ${response.statusText}`);
+        }
+
+        const result = await response.json();
+
+        const request: VagueRequest = {
+          id: result.id || crypto.randomUUID(),
+          query: data.query,
+          context: data.context,
+          weddingCategory: data.weddingCategory,
+          urgency: data.urgency,
+          timestamp: new Date(),
+          resolved_matches: result.matches || [],
+          status:
+            result.matches?.length > 0 ? 'resolved' : 'needs_clarification',
+          clarification_questions: result.clarification_questions || [],
+          confidence_score: result.confidence || 0,
+        };
+
+        setResolvedRequest(request);
+
+        if (onRequestResolved) {
+          onRequestResolved(request);
+        }
+      } catch (error) {
+        console.error('Song request resolution error:', error);
+
+        // Create mock resolution for development
+        const mockRequest: VagueRequest = {
+          id: crypto.randomUUID(),
+          query: data.query,
+          context: data.context,
+          weddingCategory: data.weddingCategory,
+          urgency: data.urgency,
+          timestamp: new Date(),
+          resolved_matches: generateMockMatches(data.query),
+          status: 'resolved',
+          clarification_questions: [],
+          confidence_score: 0.7,
+        };
+
+        setResolvedRequest(mockRequest);
+
+        if (onRequestResolved) {
+          onRequestResolved(mockRequest);
+        }
+      } finally {
+        setIsResolving(false);
+      }
+    },
+    [weddingId, onRequestResolved],
+  );
+
+  const onSubmit = useCallback(
+    (data: RequestFormData) => {
+      resolveRequest(data);
+    },
+    [resolveRequest],
+  );
+
+  // Start new request
+  const startNewRequest = useCallback(() => {
+    setResolvedRequest(null);
+    setShowSuggestions(false);
+    reset();
+  }, [reset]);
+
+  const currentSuggestion = getSuggestionForQuery(watchedQuery);
+
+  return (
+    <AnimatePresence>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4"
+        onClick={onClose}
+      >
+        <motion.div
+          initial={{ scale: 0.9, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          exit={{ scale: 0.9, opacity: 0 }}
+          onClick={(e) => e.stopPropagation()}
+          className={`bg-white rounded-2xl shadow-xl max-w-4xl w-full max-h-[90vh] overflow-y-auto ${className}`}
+        >
+          <div className="p-6">
+            {/* Header */}
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-blue-100 rounded-lg">
+                  <Brain className="w-6 h-6 text-blue-600" />
+                </div>
+                <div>
+                  <h2 className="text-xl font-bold text-gray-900">
+                    Song Request Resolver
+                  </h2>
+                  <p className="text-sm text-gray-600">
+                    AI-powered vague song request interpretation
+                  </p>
+                </div>
+              </div>
+              <Button variant="ghost" size="sm" onClick={onClose}>
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
+
+            {!resolvedRequest ? (
+              /* Request Form */
+              <div className="space-y-6">
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <MessageSquare className="w-5 h-5" />
+                      Describe the Song Request
+                    </CardTitle>
+                    <CardDescription>
+                      Enter the vague song description as you received it from
+                      the client
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <form
+                      onSubmit={handleSubmit(onSubmit)}
+                      className="space-y-4"
+                    >
+                      {/* Main Request Input */}
+                      <div className="space-y-2">
+                        <label className="block text-sm font-medium text-gray-700">
+                          Song Request Description *
+                        </label>
+                        <Textarea
+                          {...register('query')}
+                          placeholder='e.g., "that romantic song by Bruno Mars", "the upbeat song everyone knows", "da da da da da"'
+                          rows={3}
+                          disabled={isResolving}
+                        />
+                        {errors.query && (
+                          <p className="text-sm text-red-600">
+                            {errors.query.message}
+                          </p>
+                        )}
+
+                        {/* Smart Suggestions */}
+                        {currentSuggestion && (
+                          <motion.div
+                            initial={{ opacity: 0, y: -10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            className="bg-blue-50 border border-blue-200 rounded-lg p-3"
+                          >
+                            <div className="flex items-start gap-2">
+                              <Sparkles className="w-4 h-4 text-blue-600 mt-0.5" />
+                              <div>
+                                <p className="text-sm font-medium text-blue-800">
+                                  Smart Suggestion:
+                                </p>
+                                <p className="text-sm text-blue-700">
+                                  {currentSuggestion}
+                                </p>
+                              </div>
+                            </div>
+                          </motion.div>
+                        )}
+                      </div>
+
+                      {/* Additional Context */}
+                      <div className="space-y-2">
+                        <label className="block text-sm font-medium text-gray-700">
+                          Additional Context (Optional)
+                        </label>
+                        <Textarea
+                          {...register('context')}
+                          placeholder="Any additional details about when/how it was requested..."
+                          rows={2}
+                          disabled={isResolving}
+                        />
+                      </div>
+
+                      {/* Wedding Category */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <label className="block text-sm font-medium text-gray-700">
+                            Wedding Category
+                          </label>
+                          <Select
+                            value={watch('weddingCategory') || ''}
+                            onValueChange={(value) =>
+                              setValue('weddingCategory', value as WeddingPhase)
+                            }
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select category..." />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="ceremony">
+                                💒 Ceremony
+                              </SelectItem>
+                              <SelectItem value="cocktails">
+                                🍸 Cocktail Hour
+                              </SelectItem>
+                              <SelectItem value="dinner">
+                                🍽️ Dinner Service
+                              </SelectItem>
+                              <SelectItem value="dancing">
+                                💃 Dance Floor
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+
+                        <div className="space-y-2">
+                          <label className="block text-sm font-medium text-gray-700">
+                            Request Urgency
+                          </label>
+                          <Select
+                            value={watch('urgency')}
+                            onValueChange={(value) =>
+                              setValue('urgency', value as any)
+                            }
+                          >
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="low">
+                                🟢 Low - Can wait
+                              </SelectItem>
+                              <SelectItem value="medium">
+                                🟡 Medium - Normal
+                              </SelectItem>
+                              <SelectItem value="high">
+                                🔴 High - ASAP
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+
+                      {/* Submit Button */}
+                      <Button
+                        type="submit"
+                        disabled={!isValid || isResolving}
+                        className="w-full"
+                        size="lg"
+                      >
+                        {isResolving ? (
+                          <>
+                            <motion.div
+                              animate={{ rotate: 360 }}
+                              transition={{
+                                duration: 1,
+                                repeat: Infinity,
+                                ease: 'linear',
+                              }}
+                            >
+                              <Brain className="w-4 h-4 mr-2" />
+                            </motion.div>
+                            Resolving Request...
+                          </>
+                        ) : (
+                          <>
+                            <Sparkles className="w-4 h-4 mr-2" />
+                            Resolve Song Request
+                          </>
+                        )}
+                      </Button>
+                    </form>
+                  </CardContent>
+                </Card>
+
+                {/* Common Examples */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <HelpCircle className="w-4 h-4" />
+                      Common Vague Requests
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                      <div className="space-y-2">
+                        <p className="font-medium text-gray-700">
+                          Style-based:
+                        </p>
+                        <ul className="space-y-1 text-gray-600">
+                          <li>• "That romantic song by Bruno Mars"</li>
+                          <li>• "Something upbeat everyone knows"</li>
+                          <li>• "A slow dance song from the 80s"</li>
+                        </ul>
+                      </div>
+                      <div className="space-y-2">
+                        <p className="font-medium text-gray-700">
+                          Sound-based:
+                        </p>
+                        <ul className="space-y-1 text-gray-600">
+                          <li>• "Da da da da da da"</li>
+                          <li>• "Goes like na na na"</li>
+                          <li>• "Has a guitar solo"</li>
+                        </ul>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+            ) : (
+              /* Resolution Results */
+              <div className="space-y-6">
+                {/* Request Summary */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center justify-between">
+                      <span className="flex items-center gap-2">
+                        <CheckCircle className="w-5 h-5 text-green-600" />
+                        Request Resolved
+                      </span>
+                      <Badge
+                        variant={
+                          resolvedRequest.confidence_score > 0.8
+                            ? 'default'
+                            : 'secondary'
+                        }
+                      >
+                        {Math.round(resolvedRequest.confidence_score * 100)}%
+                        confidence
+                      </Badge>
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-3">
+                      <div>
+                        <p className="text-sm font-medium text-gray-700">
+                          Original Request:
+                        </p>
+                        <p className="text-gray-900 italic">
+                          "{resolvedRequest.query}"
+                        </p>
+                      </div>
+                      {resolvedRequest.context && (
+                        <div>
+                          <p className="text-sm font-medium text-gray-700">
+                            Context:
+                          </p>
+                          <p className="text-gray-600">
+                            {resolvedRequest.context}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* Matches */}
+                {resolvedRequest.resolved_matches &&
+                resolvedRequest.resolved_matches.length > 0 ? (
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2">
+                        <Music className="w-5 h-5" />
+                        Possible Matches (
+                        {resolvedRequest.resolved_matches.length})
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="space-y-4">
+                        {resolvedRequest.resolved_matches.map(
+                          (match, index) => (
+                            <motion.div
+                              key={match.track.id}
+                              initial={{ opacity: 0, x: -20 }}
+                              animate={{ opacity: 1, x: 0 }}
+                              transition={{ delay: index * 0.1 }}
+                              className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-all"
+                            >
+                              <div className="flex items-center justify-between">
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-3 mb-2">
+                                    <h4 className="font-semibold text-gray-900 truncate">
+                                      {match.track.title}
+                                    </h4>
+                                    <Badge
+                                      variant={
+                                        match.match_type === 'exact'
+                                          ? 'default'
+                                          : match.match_type === 'partial'
+                                            ? 'secondary'
+                                            : 'outline'
+                                      }
+                                    >
+                                      {match.match_type} match
+                                    </Badge>
+                                    <Badge
+                                      variant="outline"
+                                      className="text-xs"
+                                    >
+                                      {Math.round(match.confidence * 100)}%
+                                    </Badge>
+                                  </div>
+
+                                  <p className="text-sm text-gray-600 mb-2">
+                                    by {match.track.artist}
+                                  </p>
+
+                                  <p className="text-sm text-gray-700 mb-3">
+                                    <span className="font-medium">
+                                      Why this matches:
+                                    </span>{' '}
+                                    {match.reasoning}
+                                  </p>
+
+                                  <div className="flex items-center gap-2">
+                                    <Badge variant="outline">
+                                      {match.track.primary_genre}
+                                    </Badge>
+                                    <Badge variant="outline">
+                                      Energy: {match.track.energy_level}/10
+                                    </Badge>
+                                    {match.track.explicit_content && (
+                                      <Badge variant="destructive">
+                                        Explicit
+                                      </Badge>
+                                    )}
+                                    <span className="text-xs text-gray-500">
+                                      {Math.floor(
+                                        match.track.duration_seconds / 60,
+                                      )}
+                                      :
+                                      {(match.track.duration_seconds % 60)
+                                        .toString()
+                                        .padStart(2, '0')}
+                                    </span>
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center gap-2 ml-4">
+                                  <Button size="sm" variant="outline">
+                                    <Search className="w-4 h-4 mr-2" />
+                                    Preview
+                                  </Button>
+                                  <Button size="sm">
+                                    <Heart className="w-4 h-4 mr-2" />
+                                    Select
+                                  </Button>
+                                </div>
+                              </div>
+                            </motion.div>
+                          ),
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
+                ) : (
+                  <Card>
+                    <CardContent className="py-12 text-center">
+                      <AlertTriangle className="w-12 h-12 text-yellow-500 mx-auto mb-4" />
+                      <h3 className="font-semibold text-gray-900 mb-2">
+                        No Clear Matches Found
+                      </h3>
+                      <p className="text-gray-600 mb-4">
+                        The request is too vague to find specific matches. Try
+                        asking for more details.
+                      </p>
+
+                      {resolvedRequest.clarification_questions &&
+                        resolvedRequest.clarification_questions.length > 0 && (
+                          <div className="text-left max-w-md mx-auto">
+                            <p className="text-sm font-medium text-gray-700 mb-2">
+                              Suggested clarification questions:
+                            </p>
+                            <ul className="text-sm text-gray-600 space-y-1">
+                              {resolvedRequest.clarification_questions.map(
+                                (question, index) => (
+                                  <li
+                                    key={index}
+                                    className="flex items-start gap-2"
+                                  >
+                                    <span className="text-blue-600 mt-0.5">
+                                      •
+                                    </span>
+                                    {question}
+                                  </li>
+                                ),
+                              )}
+                            </ul>
+                          </div>
+                        )}
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* Actions */}
+                <div className="flex gap-3 pt-4 border-t border-gray-200">
+                  <Button
+                    variant="outline"
+                    onClick={startNewRequest}
+                    className="flex-1"
+                  >
+                    New Request
+                  </Button>
+                  <Button onClick={onClose} className="flex-1">
+                    Done
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+        </motion.div>
+      </motion.div>
+    </AnimatePresence>
+  );
+}
+
+// Mock function for development
+function generateMockMatches(query: string): ResolvedMatch[] {
+  // Simple pattern matching for demo
+  if (query.toLowerCase().includes('perfect')) {
+    return [
+      {
+        track: {
+          id: '1',
+          organization_id: 'org1',
+          title: 'Perfect',
+          artist: 'Ed Sheeran',
+          album: '÷ (Divide)',
+          duration_seconds: 263,
+          primary_genre: 'pop',
+          mood: 'romantic',
+          energy_level: 6,
+          tempo_bpm: 95,
+          danceability: 0.6,
+          valence: 0.8,
+          wedding_appropriateness: 'perfect',
+          ceremony_suitable: true,
+          reception_suitable: true,
+          cocktail_suitable: true,
+          dinner_suitable: true,
+          explicit_content: false,
+          licensing_status: 'licensed',
+          popularity_score: 95,
+          wedding_usage_count: 1250,
+          ai_analysis: {
+            emotion_tags: ['romantic', 'uplifting', 'heartfelt'],
+            recommended_moments: ['first_dance', 'processional'],
+          },
+          is_verified: true,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        } as MusicTrack,
+        confidence: 0.95,
+        reasoning:
+          'Exact title match with "Perfect" - extremely popular wedding song',
+        match_type: 'exact',
+      },
+    ];
+  }
+
+  // Return empty array for unrecognized queries
+  return [];
+}

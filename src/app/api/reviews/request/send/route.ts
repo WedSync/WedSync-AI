@@ -1,0 +1,84 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createSecureRoute, SecurityPresets } from '@/lib/middleware/security';
+import { auditLogger } from '@/lib/middleware/audit';
+import { ReviewEngine } from '@/lib/reviews/review-engine';
+import { reviewRequestCreateSchema } from '@/lib/validations/review-schemas';
+
+/**
+ * POST /api/reviews/request/send - Send review request to client
+ */
+export const POST = createSecureRoute(
+  {
+    ...SecurityPresets.EMAIL_API, // Strict rate limiting for email operations
+    validateBody: reviewRequestCreateSchema,
+  },
+  async (req, context) => {
+    const reviewEngine = new ReviewEngine();
+    const requestData = (req as any).validatedData.body;
+
+    try {
+      // Create and optionally send review request
+      const reviewRequest = await reviewEngine.createReviewRequest({
+        campaign_id: requestData.campaign_id,
+        client_id: requestData.client_id,
+        client_email: requestData.client_email,
+        client_name: requestData.client_name,
+        wedding_date: requestData.wedding_date,
+        send_immediately: requestData.send_immediately || false,
+      });
+
+      return NextResponse.json(
+        {
+          id: reviewRequest.id,
+          status: reviewRequest.status,
+          scheduled_send_at: reviewRequest.scheduled_send_at,
+          message:
+            reviewRequest.status === 'sent'
+              ? 'Review request sent successfully'
+              : 'Review request scheduled successfully',
+        },
+        { status: 201 },
+      );
+    } catch (error) {
+      console.error('Failed to create review request:', error);
+
+      // Log failed attempt
+      await auditLogger.logRequestEvent(
+        'created',
+        'failed',
+        requestData.campaign_id,
+        req.userId,
+        req.supplierId,
+        {
+          error: error instanceof Error ? error.message : 'Unknown error',
+          client_email: requestData.client_email,
+          wedding_date: requestData.wedding_date,
+        },
+      );
+
+      if (error instanceof Error) {
+        if (error.message.includes('Campaign not found')) {
+          return NextResponse.json(
+            { error: 'Campaign not found or inactive' },
+            { status: 404 },
+          );
+        }
+
+        if (error.message.includes('already exists')) {
+          return NextResponse.json(
+            {
+              error:
+                'Review request already exists for this client and campaign',
+            },
+            { status: 409 },
+          );
+        }
+      }
+
+      return NextResponse.json(
+        { error: 'Failed to create review request' },
+        { status: 500 },
+      );
+    }
+  },
+);

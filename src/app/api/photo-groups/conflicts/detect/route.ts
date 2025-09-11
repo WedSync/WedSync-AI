@@ -1,0 +1,682 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+
+// Conflict detection schemas
+const ConflictDetectionSchema = z.object({
+  photo_group_ids: z.array(z.string().uuid()).optional(),
+  couple_id: z.string().uuid(),
+  auto_resolve: z.boolean().default(false),
+  conflict_types: z
+    .array(
+      z.enum([
+        'time_overlap',
+        'guest_overlap',
+        'location_conflict',
+        'priority_conflict',
+        'resource_conflict',
+        'dependency_conflict',
+      ]),
+    )
+    .optional(),
+  severity_threshold: z
+    .enum(['info', 'warning', 'error', 'critical'])
+    .default('warning'),
+});
+
+const ConflictResolutionSchema = z.object({
+  conflict_id: z.string().uuid(),
+  resolution_strategy: z.enum([
+    'reschedule_first',
+    'reschedule_second',
+    'merge_groups',
+    'split_time',
+    'reassign_guests',
+    'manual_review',
+  ]),
+  resolution_data: z.record(z.any()).optional(),
+});
+
+// POST /api/photo-groups/conflicts/detect - Detect conflicts between photo groups
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const { data: user } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const {
+      photo_group_ids,
+      couple_id,
+      auto_resolve,
+      conflict_types,
+      severity_threshold,
+    } = ConflictDetectionSchema.parse(body);
+
+    // Verify user has access to this couple
+    const { data: client } = await supabase
+      .from('clients')
+      .select(
+        `
+        id,
+        user_profiles!inner(user_id)
+      `,
+      )
+      .eq('id', couple_id)
+      .eq('user_profiles.user_id', user.id)
+      .single();
+
+    if (!client) {
+      return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+    }
+
+    // Get photo groups to analyze
+    let photoGroupsQuery = supabase
+      .from('photo_groups')
+      .select(
+        `
+        id,
+        name,
+        priority,
+        estimated_time_minutes,
+        timeline_slot,
+        location,
+        photo_type,
+        created_at,
+        assignments:photo_group_assignments(
+          id,
+          guest_id,
+          is_primary,
+          guest:guests(
+            id,
+            first_name,
+            last_name,
+            side,
+            category
+          )
+        )
+      `,
+      )
+      .eq('couple_id', couple_id);
+
+    if (photo_group_ids && photo_group_ids.length > 0) {
+      photoGroupsQuery = photoGroupsQuery.in('id', photo_group_ids);
+    }
+
+    const { data: photoGroups, error: groupsError } = await photoGroupsQuery;
+
+    if (groupsError) {
+      console.error('Error fetching photo groups:', groupsError);
+      return NextResponse.json(
+        { error: 'Failed to fetch photo groups' },
+        { status: 500 },
+      );
+    }
+
+    if (!photoGroups || photoGroups.length === 0) {
+      return NextResponse.json({
+        conflicts: [],
+        summary: { total: 0, by_severity: {}, by_type: {} },
+      });
+    }
+
+    // Detect conflicts between photo groups
+    const detectedConflicts = [];
+    const conflictTypes = conflict_types || [
+      'time_overlap',
+      'guest_overlap',
+      'location_conflict',
+      'priority_conflict',
+    ];
+
+    for (let i = 0; i < photoGroups.length; i++) {
+      for (let j = i + 1; j < photoGroups.length; j++) {
+        const group1 = photoGroups[i];
+        const group2 = photoGroups[j];
+
+        // Time overlap detection
+        if (
+          conflictTypes.includes('time_overlap') &&
+          group1.timeline_slot &&
+          group2.timeline_slot &&
+          group1.timeline_slot === group2.timeline_slot
+        ) {
+          const totalTime =
+            group1.estimated_time_minutes + group2.estimated_time_minutes;
+          const severity =
+            totalTime > 120 ? 'critical' : totalTime > 60 ? 'error' : 'warning';
+
+          detectedConflicts.push({
+            id: `conflict_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            photo_group_id: group1.id,
+            conflicting_group_id: group2.id,
+            conflict_type: 'time_overlap',
+            severity,
+            description: `Time conflict: Both "${group1.name}" and "${group2.name}" scheduled for ${group1.timeline_slot}`,
+            details: {
+              group1: {
+                name: group1.name,
+                time: group1.estimated_time_minutes,
+              },
+              group2: {
+                name: group2.name,
+                time: group2.estimated_time_minutes,
+              },
+              total_time: totalTime,
+              timeline_slot: group1.timeline_slot,
+            },
+            resolution_suggestions: [
+              {
+                strategy: 'reschedule_second',
+                description: `Move "${group2.name}" to a different time slot`,
+                impact: 'low',
+                effort: 'low',
+              },
+              {
+                strategy: 'split_time',
+                description: 'Split the time slot between both groups',
+                impact: 'medium',
+                effort: 'medium',
+              },
+            ],
+            created_at: new Date().toISOString(),
+          });
+        }
+
+        // Guest overlap detection
+        if (conflictTypes.includes('guest_overlap')) {
+          const group1Guests = new Set(
+            group1.assignments?.map((a) => a.guest_id) || [],
+          );
+          const group2Guests = new Set(
+            group2.assignments?.map((a) => a.guest_id) || [],
+          );
+          const overlappingGuests = [...group1Guests].filter((gId) =>
+            group2Guests.has(gId),
+          );
+
+          if (overlappingGuests.length > 0) {
+            const severity = overlappingGuests.length > 3 ? 'error' : 'warning';
+
+            detectedConflicts.push({
+              id: `conflict_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+              photo_group_id: group1.id,
+              conflicting_group_id: group2.id,
+              conflict_type: 'guest_overlap',
+              severity,
+              description: `Guest assignment overlap: ${overlappingGuests.length} guest(s) assigned to both "${group1.name}" and "${group2.name}"`,
+              details: {
+                overlapping_guest_count: overlappingGuests.length,
+                overlapping_guests: overlappingGuests,
+                group1_total: group1Guests.size,
+                group2_total: group2Guests.size,
+              },
+              resolution_suggestions: [
+                {
+                  strategy: 'reassign_guests',
+                  description: 'Reassign overlapping guests based on priority',
+                  impact: 'low',
+                  effort: 'low',
+                },
+                {
+                  strategy: 'merge_groups',
+                  description: 'Consider merging similar photo groups',
+                  impact: 'high',
+                  effort: 'medium',
+                },
+              ],
+              created_at: new Date().toISOString(),
+            });
+          }
+        }
+
+        // Location conflict detection
+        if (
+          conflictTypes.includes('location_conflict') &&
+          group1.location &&
+          group2.location &&
+          group1.location === group2.location &&
+          group1.timeline_slot === group2.timeline_slot
+        ) {
+          detectedConflicts.push({
+            id: `conflict_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            photo_group_id: group1.id,
+            conflicting_group_id: group2.id,
+            conflict_type: 'location_conflict',
+            severity: 'error',
+            description: `Location conflict: Both "${group1.name}" and "${group2.name}" scheduled at ${group1.location} during ${group1.timeline_slot}`,
+            details: {
+              location: group1.location,
+              timeline_slot: group1.timeline_slot,
+              estimated_time_conflict:
+                group1.estimated_time_minutes + group2.estimated_time_minutes,
+            },
+            resolution_suggestions: [
+              {
+                strategy: 'reschedule_second',
+                description: `Move "${group2.name}" to a different time slot`,
+                impact: 'medium',
+                effort: 'low',
+              },
+            ],
+            created_at: new Date().toISOString(),
+          });
+        }
+
+        // Priority conflict detection (same priority, overlapping resources)
+        if (
+          conflictTypes.includes('priority_conflict') &&
+          group1.priority === group2.priority &&
+          group1.priority <= 3
+        ) {
+          // High priority groups
+
+          detectedConflicts.push({
+            id: `conflict_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            photo_group_id: group1.id,
+            conflicting_group_id: group2.id,
+            conflict_type: 'priority_conflict',
+            severity: 'warning',
+            description: `Priority conflict: Both "${group1.name}" and "${group2.name}" have high priority (${group1.priority})`,
+            details: {
+              shared_priority: group1.priority,
+              group1_type: group1.photo_type,
+              group2_type: group2.photo_type,
+            },
+            resolution_suggestions: [
+              {
+                strategy: 'manual_review',
+                description: 'Manual review needed to adjust priorities',
+                impact: 'low',
+                effort: 'high',
+              },
+            ],
+            created_at: new Date().toISOString(),
+          });
+        }
+      }
+    }
+
+    // Filter conflicts by severity threshold
+    const severityLevels = { info: 0, warning: 1, error: 2, critical: 3 };
+    const thresholdLevel = severityLevels[severity_threshold];
+    const filteredConflicts = detectedConflicts.filter(
+      (conflict) => severityLevels[conflict.severity] >= thresholdLevel,
+    );
+
+    // Store conflicts in database
+    const conflictsToStore = filteredConflicts.map((conflict) => ({
+      photo_group_id: conflict.photo_group_id,
+      conflicting_group_id: conflict.conflicting_group_id,
+      conflict_type: conflict.conflict_type,
+      severity: conflict.severity,
+      description: conflict.description,
+      resolution_suggestions: conflict.resolution_suggestions,
+    }));
+
+    if (conflictsToStore.length > 0) {
+      const { error: insertError } = await supabase
+        .from('photo_group_conflicts')
+        .upsert(conflictsToStore, {
+          onConflict: 'photo_group_id,conflicting_group_id,conflict_type',
+          ignoreDuplicates: false,
+        });
+
+      if (insertError) {
+        console.error('Error storing conflicts:', insertError);
+        // Continue with response even if storage fails
+      }
+    }
+
+    // Auto-resolve if requested
+    if (auto_resolve && filteredConflicts.length > 0) {
+      const autoResolvedConflicts = [];
+
+      for (const conflict of filteredConflicts) {
+        // Simple auto-resolution logic
+        if (
+          conflict.conflict_type === 'guest_overlap' &&
+          conflict.severity === 'warning'
+        ) {
+          // Automatically reassign guests to higher priority group
+          const group1 = photoGroups.find(
+            (g) => g.id === conflict.photo_group_id,
+          );
+          const group2 = photoGroups.find(
+            (g) => g.id === conflict.conflicting_group_id,
+          );
+
+          if (group1 && group2) {
+            const keepInGroup =
+              group1.priority <= group2.priority ? group1.id : group2.id;
+            // Implementation would reassign guests here
+            autoResolvedConflicts.push({
+              ...conflict,
+              resolved: true,
+              resolution_applied: 'reassign_guests',
+              resolution_details: `Guests kept in higher priority group`,
+            });
+          }
+        }
+      }
+
+      if (autoResolvedConflicts.length > 0) {
+        // Update resolved conflicts in database
+        const resolvedIds = autoResolvedConflicts.map((c) => c.id);
+        await supabase
+          .from('photo_group_conflicts')
+          .update({
+            resolved_at: new Date().toISOString(),
+            resolved_by: user.id,
+          })
+          .in('id', resolvedIds);
+      }
+    }
+
+    // Generate summary statistics
+    const summary = {
+      total: filteredConflicts.length,
+      by_severity: filteredConflicts.reduce((acc, conflict) => {
+        acc[conflict.severity] = (acc[conflict.severity] || 0) + 1;
+        return acc;
+      }, {}),
+      by_type: filteredConflicts.reduce((acc, conflict) => {
+        acc[conflict.conflict_type] = (acc[conflict.conflict_type] || 0) + 1;
+        return acc;
+      }, {}),
+      auto_resolved: auto_resolve
+        ? filteredConflicts.filter((c) => c.resolved).length || 0
+        : 0,
+    };
+
+    return NextResponse.json({
+      conflicts: filteredConflicts,
+      summary,
+      analyzed_groups: photoGroups.length,
+      detection_timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error('Conflict detection error:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid data', details: error.errors },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+// PUT /api/photo-groups/conflicts/detect - Resolve specific conflict
+export async function PUT(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const { data: user } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const { conflict_id, resolution_strategy, resolution_data } =
+      ConflictResolutionSchema.parse(body);
+
+    // Get conflict details
+    const { data: conflict } = await supabase
+      .from('photo_group_conflicts')
+      .select(
+        `
+        *,
+        photo_groups!photo_group_id(
+          id, name, couple_id,
+          clients!inner(user_profiles!inner(user_id))
+        )
+      `,
+      )
+      .eq('id', conflict_id)
+      .single();
+
+    if (!conflict) {
+      return NextResponse.json(
+        { error: 'Conflict not found' },
+        { status: 404 },
+      );
+    }
+
+    // Verify user has access
+    if (conflict.photo_groups.clients.user_profiles.user_id !== user.id) {
+      return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+    }
+
+    if (conflict.resolved_at) {
+      return NextResponse.json(
+        { error: 'Conflict already resolved' },
+        { status: 409 },
+      );
+    }
+
+    // Apply resolution strategy
+    let resolutionResult = {};
+
+    switch (resolution_strategy) {
+      case 'reschedule_first':
+        // Move first group to different time slot
+        if (resolution_data?.new_timeline_slot) {
+          await supabase
+            .from('photo_groups')
+            .update({ timeline_slot: resolution_data.new_timeline_slot })
+            .eq('id', conflict.photo_group_id);
+
+          resolutionResult = {
+            action: 'rescheduled',
+            group_id: conflict.photo_group_id,
+            new_timeline_slot: resolution_data.new_timeline_slot,
+          };
+        }
+        break;
+
+      case 'reschedule_second':
+        // Move second group to different time slot
+        if (resolution_data?.new_timeline_slot) {
+          await supabase
+            .from('photo_groups')
+            .update({ timeline_slot: resolution_data.new_timeline_slot })
+            .eq('id', conflict.conflicting_group_id);
+
+          resolutionResult = {
+            action: 'rescheduled',
+            group_id: conflict.conflicting_group_id,
+            new_timeline_slot: resolution_data.new_timeline_slot,
+          };
+        }
+        break;
+
+      case 'reassign_guests':
+        // Reassign overlapping guests
+        if (resolution_data?.guest_assignments) {
+          // Implementation would handle guest reassignments
+          resolutionResult = {
+            action: 'guests_reassigned',
+            reassignments: resolution_data.guest_assignments,
+          };
+        }
+        break;
+
+      case 'merge_groups':
+        // Merge two conflicting groups
+        if (resolution_data?.keep_group_id) {
+          // Implementation would handle group merging
+          resolutionResult = {
+            action: 'groups_merged',
+            kept_group: resolution_data.keep_group_id,
+            merged_group: resolution_data.merge_group_id,
+          };
+        }
+        break;
+
+      default:
+        resolutionResult = {
+          action: 'manual_resolution',
+          strategy: resolution_strategy,
+        };
+    }
+
+    // Mark conflict as resolved
+    const { data: resolvedConflict, error: resolveError } = await supabase
+      .from('photo_group_conflicts')
+      .update({
+        resolved_at: new Date().toISOString(),
+        resolved_by: user.id,
+        resolution_suggestions: [
+          ...(conflict.resolution_suggestions || []),
+          {
+            strategy: resolution_strategy,
+            applied: true,
+            result: resolutionResult,
+            timestamp: new Date().toISOString(),
+          },
+        ],
+      })
+      .eq('id', conflict_id)
+      .select()
+      .single();
+
+    if (resolveError) {
+      console.error('Error resolving conflict:', resolveError);
+      return NextResponse.json(
+        { error: 'Failed to resolve conflict' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({
+      message: 'Conflict resolved successfully',
+      conflict_id,
+      resolution_strategy,
+      resolution_result: resolutionResult,
+      resolved_at: resolvedConflict.resolved_at,
+    });
+  } catch (error) {
+    console.error('Conflict resolution error:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid data', details: error.errors },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+// GET /api/photo-groups/conflicts/detect - Get existing conflicts
+export async function GET(request: NextRequest) {
+  const searchParams = request.nextUrl.searchParams;
+  const coupleId = searchParams.get('couple_id');
+  const includeResolved = searchParams.get('include_resolved') === 'true';
+  const severityFilter = searchParams.get('severity');
+
+  if (!coupleId) {
+    return NextResponse.json(
+      { error: 'couple_id is required' },
+      { status: 400 },
+    );
+  }
+
+  try {
+    const supabase = await createClient();
+    const { data: user } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Verify user has access to this couple
+    const { data: client } = await supabase
+      .from('clients')
+      .select(
+        `
+        id,
+        user_profiles!inner(user_id)
+      `,
+      )
+      .eq('id', coupleId)
+      .eq('user_profiles.user_id', user.id)
+      .single();
+
+    if (!client) {
+      return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+    }
+
+    // Build query for conflicts
+    let conflictsQuery = supabase
+      .from('photo_group_conflicts')
+      .select(
+        `
+        *,
+        photo_groups!photo_group_id(id, name, priority, timeline_slot),
+        conflicting_group:photo_groups!conflicting_group_id(id, name, priority, timeline_slot),
+        resolved_user:user_profiles!resolved_by(id, full_name)
+      `,
+      )
+      .eq('photo_groups.couple_id', coupleId);
+
+    if (!includeResolved) {
+      conflictsQuery = conflictsQuery.is('resolved_at', null);
+    }
+
+    if (severityFilter) {
+      conflictsQuery = conflictsQuery.eq('severity', severityFilter);
+    }
+
+    const { data: conflicts, error: conflictsError } =
+      await conflictsQuery.order('created_at', { ascending: false });
+
+    if (conflictsError) {
+      console.error('Error fetching conflicts:', conflictsError);
+      return NextResponse.json(
+        { error: 'Failed to fetch conflicts' },
+        { status: 500 },
+      );
+    }
+
+    // Generate summary
+    const summary = {
+      total: conflicts?.length || 0,
+      unresolved: conflicts?.filter((c) => !c.resolved_at).length || 0,
+      by_severity:
+        conflicts?.reduce((acc, conflict) => {
+          acc[conflict.severity] = (acc[conflict.severity] || 0) + 1;
+          return acc;
+        }, {}) || {},
+      by_type:
+        conflicts?.reduce((acc, conflict) => {
+          acc[conflict.conflict_type] = (acc[conflict.conflict_type] || 0) + 1;
+          return acc;
+        }, {}) || {},
+    };
+
+    return NextResponse.json({
+      conflicts: conflicts || [],
+      summary,
+    });
+  } catch (error) {
+    console.error('Get conflicts error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

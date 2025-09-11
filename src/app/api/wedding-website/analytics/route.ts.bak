@@ -1,0 +1,601 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+
+interface AnalyticsConfig {
+  google_analytics: {
+    enabled: boolean;
+    tracking_id?: string;
+    ga4_measurement_id?: string;
+  };
+  facebook_pixel: {
+    enabled: boolean;
+    pixel_id?: string;
+  };
+  custom_analytics: {
+    enabled: boolean;
+    script_url?: string;
+    tracking_code?: string;
+  };
+  privacy_settings: {
+    gdpr_compliance: boolean;
+    cookie_consent: boolean;
+    anonymize_ip: boolean;
+  };
+  events_tracking: {
+    page_views: boolean;
+    rsvp_submissions: boolean;
+    photo_uploads: boolean;
+    vendor_clicks: boolean;
+    download_tracking: boolean;
+  };
+}
+
+interface AnalyticsMetrics {
+  page_views: {
+    total: number;
+    unique: number;
+    daily_average: number;
+    top_pages: Array<{ page: string; views: number }>;
+  };
+  user_engagement: {
+    bounce_rate: number;
+    average_session_duration: number;
+    pages_per_session: number;
+    returning_visitors: number;
+  };
+  rsvp_analytics: {
+    total_rsvps: number;
+    rsvp_conversion_rate: number;
+    rsvp_by_source: Record<string, number>;
+  };
+  device_breakdown: {
+    desktop: number;
+    mobile: number;
+    tablet: number;
+  };
+  geographic_data: {
+    top_countries: Array<{ country: string; visitors: number }>;
+    top_cities: Array<{ city: string; visitors: number }>;
+  };
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const websiteId = searchParams.get('website_id');
+    const dateRange = searchParams.get('date_range') || '30d';
+
+    if (!websiteId) {
+      return NextResponse.json(
+        { error: 'Website ID is required' },
+        { status: 400 }
+      );
+    }
+
+    const supabase = await createClient();
+
+    // Get website analytics configuration
+    const { data: website, error: websiteError } = await supabase
+      .from('wedding_websites')
+      .select(`
+        id,
+        domain,
+        analytics_config,
+        analytics_enabled
+      `)
+      .eq('id', websiteId)
+      .single();
+
+    if (websiteError || !website) {
+      return NextResponse.json(
+        { error: 'Wedding website not found' },
+        { status: 404 }
+      );
+    }
+
+    // Get analytics metrics
+    const metrics = await getAnalyticsMetrics(websiteId, dateRange);
+
+    // Get recent events
+    const recentEvents = await getRecentAnalyticsEvents(websiteId);
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        website_id: website.id,
+        domain: website.domain,
+        analytics_enabled: website.analytics_enabled || false,
+        config: website.analytics_config || getDefaultAnalyticsConfig(),
+        metrics,
+        recent_events: recentEvents,
+        tracking_script: generateTrackingScript(website.analytics_config),
+        recommendations: generateAnalyticsRecommendations(website, metrics)
+      }
+    });
+
+  } catch (error) {
+    console.error('Error in analytics endpoint:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const { websiteId, action, config, event } = await request.json();
+
+    if (!websiteId) {
+      return NextResponse.json(
+        { error: 'Website ID is required' },
+        { status: 400 }
+      );
+    }
+
+    const supabase = await createClient();
+
+    switch (action) {
+      case 'configure':
+        return await configureAnalytics(supabase, websiteId, config);
+      case 'track_event':
+        return await trackCustomEvent(supabase, websiteId, event);
+      case 'enable':
+        return await enableAnalytics(supabase, websiteId);
+      case 'disable':
+        return await disableAnalytics(supabase, websiteId);
+      case 'export_data':
+        return await exportAnalyticsData(supabase, websiteId, config);
+      default:
+        return NextResponse.json(
+          { error: 'Invalid action' },
+          { status: 400 }
+        );
+    }
+
+  } catch (error) {
+    console.error('Error in analytics configuration endpoint:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+async function configureAnalytics(supabase: any, websiteId: string, config: Partial<AnalyticsConfig>) {
+  // Validate analytics configuration
+  const errors = validateAnalyticsConfig(config);
+  if (errors.length > 0) {
+    return NextResponse.json(
+      { error: 'Invalid configuration', details: errors },
+      { status: 400 }
+    );
+  }
+
+  // Update website with analytics configuration
+  const { data, error: updateError } = await supabase
+    .from('wedding_websites')
+    .update({
+      analytics_config: {
+        ...getDefaultAnalyticsConfig(),
+        ...config,
+        configured_at: new Date().toISOString()
+      },
+      analytics_enabled: true
+    })
+    .eq('id', websiteId)
+    .select()
+    .single();
+
+  if (updateError) {
+    console.error('Error updating analytics configuration:', updateError);
+    return NextResponse.json(
+      { error: 'Failed to save analytics configuration' },
+      { status: 500 }
+    );
+  }
+
+  // Generate tracking script
+  const trackingScript = generateTrackingScript(data.analytics_config);
+
+  return NextResponse.json({
+    success: true,
+    data: {
+      message: 'Analytics configured successfully',
+      config: data.analytics_config,
+      tracking_script: trackingScript,
+      next_steps: [
+        'Copy the tracking script to your website header',
+        'Test event tracking functionality',
+        'Monitor analytics dashboard for data'
+      ]
+    }
+  });
+}
+
+async function trackCustomEvent(supabase: any, websiteId: string, event: any) {
+  // Record custom event
+  const { data, error } = await supabase
+    .from('analytics_events')
+    .insert({
+      website_id: websiteId,
+      event_name: event.name,
+      event_category: event.category || 'custom',
+      event_properties: event.properties || {},
+      user_agent: event.user_agent,
+      ip_address: event.ip_address,
+      referrer: event.referrer,
+      page_url: event.page_url,
+      timestamp: new Date().toISOString()
+    })
+    .select()
+    .single();
+
+  if (error) {
+    console.error('Error tracking event:', error);
+    return NextResponse.json(
+      { error: 'Failed to track event' },
+      { status: 500 }
+    );
+  }
+
+  return NextResponse.json({
+    success: true,
+    data: {
+      event_id: data.id,
+      message: 'Event tracked successfully'
+    }
+  });
+}
+
+async function enableAnalytics(supabase: any, websiteId: string) {
+  const { error } = await supabase
+    .from('wedding_websites')
+    .update({ analytics_enabled: true })
+    .eq('id', websiteId);
+
+  if (error) {
+    return NextResponse.json(
+      { error: 'Failed to enable analytics' },
+      { status: 500 }
+    );
+  }
+
+  return NextResponse.json({
+    success: true,
+    data: { message: 'Analytics enabled successfully' }
+  });
+}
+
+async function disableAnalytics(supabase: any, websiteId: string) {
+  const { error } = await supabase
+    .from('wedding_websites')
+    .update({ analytics_enabled: false })
+    .eq('id', websiteId);
+
+  if (error) {
+    return NextResponse.json(
+      { error: 'Failed to disable analytics' },
+      { status: 500 }
+    );
+  }
+
+  return NextResponse.json({
+    success: true,
+    data: { message: 'Analytics disabled successfully' }
+  });
+}
+
+async function exportAnalyticsData(supabase: any, websiteId: string, options: any) {
+  const { date_range, format, include_events } = options;
+
+  // Get analytics data
+  let query = supabase
+    .from('analytics_events')
+    .select('*')
+    .eq('website_id', websiteId);
+
+  if (date_range) {
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - parseInt(date_range.replace('d', '')));
+    query = query.gte('timestamp', startDate.toISOString());
+  }
+
+  const { data: events, error } = await query.limit(10000);
+
+  if (error) {
+    return NextResponse.json(
+      { error: 'Failed to export analytics data' },
+      { status: 500 }
+    );
+  }
+
+  // Generate export file
+  const exportData = {
+    website_id: websiteId,
+    export_date: new Date().toISOString(),
+    date_range,
+    total_events: events?.length || 0,
+    events: include_events ? events : undefined,
+    summary: generateAnalyticsSummary(events || [])
+  };
+
+  return NextResponse.json({
+    success: true,
+    data: {
+      export_data: exportData,
+      download_url: `/api/wedding-website/analytics/export/${websiteId}`,
+      format,
+      file_size: `${JSON.stringify(exportData).length} bytes`
+    }
+  });
+}
+
+async function getAnalyticsMetrics(websiteId: string, dateRange: string): Promise<AnalyticsMetrics> {
+  // In a real implementation, this would query actual analytics data
+  // For simulation, generate realistic metrics
+  
+  const daysBack = parseInt(dateRange.replace('d', ''));
+  const baseViews = Math.floor(Math.random() * 1000) + 200;
+
+  return {
+    page_views: {
+      total: baseViews,
+      unique: Math.floor(baseViews * 0.7),
+      daily_average: Math.floor(baseViews / daysBack),
+      top_pages: [
+        { page: '/', views: Math.floor(baseViews * 0.4) },
+        { page: '/rsvp', views: Math.floor(baseViews * 0.2) },
+        { page: '/photos', views: Math.floor(baseViews * 0.15) },
+        { page: '/vendors', views: Math.floor(baseViews * 0.1) }
+      ]
+    },
+    user_engagement: {
+      bounce_rate: 0.35 + Math.random() * 0.2, // 35-55%
+      average_session_duration: 120 + Math.random() * 180, // 2-5 minutes
+      pages_per_session: 2 + Math.random() * 2, // 2-4 pages
+      returning_visitors: Math.floor(baseViews * 0.3)
+    },
+    rsvp_analytics: {
+      total_rsvps: Math.floor(baseViews * 0.15),
+      rsvp_conversion_rate: 0.1 + Math.random() * 0.1, // 10-20%
+      rsvp_by_source: {
+        direct: Math.floor(baseViews * 0.5),
+        social: Math.floor(baseViews * 0.3),
+        email: Math.floor(baseViews * 0.2)
+      }
+    },
+    device_breakdown: {
+      mobile: Math.floor(baseViews * 0.6),
+      desktop: Math.floor(baseViews * 0.3),
+      tablet: Math.floor(baseViews * 0.1)
+    },
+    geographic_data: {
+      top_countries: [
+        { country: 'United States', visitors: Math.floor(baseViews * 0.7) },
+        { country: 'Canada', visitors: Math.floor(baseViews * 0.15) },
+        { country: 'United Kingdom', visitors: Math.floor(baseViews * 0.1) }
+      ],
+      top_cities: [
+        { city: 'New York', visitors: Math.floor(baseViews * 0.2) },
+        { city: 'Los Angeles', visitors: Math.floor(baseViews * 0.15) },
+        { city: 'Chicago', visitors: Math.floor(baseViews * 0.1) }
+      ]
+    }
+  };
+}
+
+async function getRecentAnalyticsEvents(websiteId: string) {
+  // Simulate recent events
+  const events = [
+    'page_view', 'rsvp_submission', 'photo_upload', 'vendor_click', 'download'
+  ];
+
+  return Array.from({ length: 10 }, (_, i) => ({
+    id: `event_${i}`,
+    event_name: events[Math.floor(Math.random() * events.length)],
+    timestamp: new Date(Date.now() - Math.random() * 24 * 60 * 60 * 1000).toISOString(),
+    properties: {
+      page: '/',
+      user_agent: 'Mozilla/5.0...',
+      referrer: Math.random() > 0.5 ? 'https://google.com' : 'direct'
+    }
+  }));
+}
+
+function getDefaultAnalyticsConfig(): AnalyticsConfig {
+  return {
+    google_analytics: {
+      enabled: false
+    },
+    facebook_pixel: {
+      enabled: false
+    },
+    custom_analytics: {
+      enabled: false
+    },
+    privacy_settings: {
+      gdpr_compliance: true,
+      cookie_consent: true,
+      anonymize_ip: true
+    },
+    events_tracking: {
+      page_views: true,
+      rsvp_submissions: true,
+      photo_uploads: true,
+      vendor_clicks: true,
+      download_tracking: true
+    }
+  };
+}
+
+function validateAnalyticsConfig(config: Partial<AnalyticsConfig>): string[] {
+  const errors = [];
+
+  if (config.google_analytics?.enabled && !config.google_analytics.ga4_measurement_id) {
+    errors.push('Google Analytics GA4 Measurement ID is required when enabled');
+  }
+
+  if (config.facebook_pixel?.enabled && !config.facebook_pixel.pixel_id) {
+    errors.push('Facebook Pixel ID is required when enabled');
+  }
+
+  if (config.custom_analytics?.enabled && !config.custom_analytics.tracking_code) {
+    errors.push('Custom analytics tracking code is required when enabled');
+  }
+
+  return errors;
+}
+
+function generateTrackingScript(config: AnalyticsConfig | null): string {
+  if (!config) return '';
+
+  let script = '<!-- WedSync Analytics -->\n';
+
+  // Google Analytics
+  if (config.google_analytics?.enabled && config.google_analytics.ga4_measurement_id) {
+    script += `
+<!-- Google Analytics -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=${config.google_analytics.ga4_measurement_id}"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', '${config.google_analytics.ga4_measurement_id}', {
+    anonymize_ip: ${config.privacy_settings?.anonymize_ip || true}
+  });
+</script>
+`;
+  }
+
+  // Facebook Pixel
+  if (config.facebook_pixel?.enabled && config.facebook_pixel.pixel_id) {
+    script += `
+<!-- Facebook Pixel -->
+<script>
+  !function(f,b,e,v,n,t,s)
+  {if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+  n.callMethod.apply(n,arguments):n.queue.push(arguments)};
+  if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';
+  n.queue=[];t=b.createElement(e);t.async=!0;
+  t.src=v;s=b.getElementsByTagName(e)[0];
+  s.parentNode.insertBefore(t,s)}(window, document,'script',
+  'https://connect.facebook.net/en_US/fbevents.js');
+  fbq('init', '${config.facebook_pixel.pixel_id}');
+  fbq('track', 'PageView');
+</script>
+`;
+  }
+
+  // Custom Analytics
+  if (config.custom_analytics?.enabled && config.custom_analytics.tracking_code) {
+    script += `
+<!-- Custom Analytics -->
+${config.custom_analytics.tracking_code}
+`;
+  }
+
+  // Event tracking
+  if (config.events_tracking) {
+    script += `
+<!-- Event Tracking -->
+<script>
+  window.WedSyncAnalytics = {
+    track: function(eventName, properties) {
+      // Send to configured analytics providers
+      ${config.google_analytics?.enabled ? 'gtag("event", eventName, properties);' : ''}
+      ${config.facebook_pixel?.enabled ? 'fbq("track", eventName, properties);' : ''}
+      
+      // Send to WedSync analytics
+      fetch('/api/wedding-website/analytics', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          websiteId: '${config}',
+          action: 'track_event',
+          event: {
+            name: eventName,
+            properties: properties,
+            page_url: window.location.href,
+            referrer: document.referrer,
+            user_agent: navigator.userAgent
+          }
+        })
+      }).catch(console.error);
+    }
+  };
+  
+  // Auto-track events
+  ${config.events_tracking.page_views ? `
+  // Track page views
+  WedSyncAnalytics.track('page_view', {
+    page_title: document.title,
+    page_location: window.location.href
+  });
+  ` : ''}
+  
+  ${config.events_tracking.rsvp_submissions ? `
+  // Track RSVP submissions
+  document.addEventListener('submit', function(e) {
+    if (e.target.matches('[data-rsvp-form]')) {
+      WedSyncAnalytics.track('rsvp_submission', {
+        form_id: e.target.id
+      });
+    }
+  });
+  ` : ''}
+</script>
+`;
+  }
+
+  return script;
+}
+
+function generateAnalyticsRecommendations(website: any, metrics: AnalyticsMetrics | null) {
+  const recommendations = [];
+
+  if (!website.analytics_enabled) {
+    recommendations.push({
+      type: 'info',
+      title: 'Enable Analytics',
+      description: 'Start tracking your website performance and user behavior',
+      priority: 'high'
+    });
+  }
+
+  if (metrics && metrics.user_engagement.bounce_rate > 0.6) {
+    recommendations.push({
+      type: 'warning',
+      title: 'High Bounce Rate',
+      description: 'Consider improving page load speed and content engagement',
+      priority: 'medium'
+    });
+  }
+
+  if (metrics && metrics.device_breakdown.mobile > metrics.device_breakdown.desktop) {
+    recommendations.push({
+      type: 'info',
+      title: 'Mobile Optimization',
+      description: 'Most visitors use mobile devices - ensure mobile experience is optimized',
+      priority: 'high'
+    });
+  }
+
+  return recommendations;
+}
+
+function generateAnalyticsSummary(events: any[]) {
+  const eventCounts = events.reduce((acc, event) => {
+    acc[event.event_name] = (acc[event.event_name] || 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
+
+  return {
+    total_events: events.length,
+    event_breakdown: eventCounts,
+    date_range: {
+      start: events.length > 0 ? events[events.length - 1].timestamp : null,
+      end: events.length > 0 ? events[0].timestamp : null
+    }
+  };
+}

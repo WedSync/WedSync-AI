@@ -1,0 +1,173 @@
+import { createClient } from '@supabase/supabase-js';
+import { NextRequest, NextResponse } from 'next/server';
+import { Database } from '@/types/database';
+import { JourneyStateMachine } from '@/lib/journey-engine/state-machine';
+
+const supabase = createClient<Database>(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+type InstanceAction = 'pause' | 'resume' | 'cancel' | 'retry';
+
+export async function POST(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string; action: InstanceAction }> }
+) {
+  try {
+    const { id: instanceId, action } = params;
+
+    // Get current instance state
+    const { data: instance, error: fetchError } = await supabase
+      .from('journey_instances')
+      .select('state, journey_id, client_id')
+      .eq('id', instanceId)
+      .single();
+
+    if (fetchError || !instance) {
+      return NextResponse.json(
+        { error: 'Instance not found' },
+        { status: 404 }
+      );
+    }
+
+    const currentState = instance.state as any;
+    let newState: string;
+    let updateData: any = {};
+
+    // Determine new state and validation
+    switch (action) {
+      case 'pause':
+        if (currentState !== 'active') {
+          return NextResponse.json(
+            { error: 'Can only pause active instances' },
+            { status: 400 }
+          );
+        }
+        newState = 'paused';
+        updateData = {
+          state: newState,
+          paused_at: new Date().toISOString()
+        };
+        break;
+
+      case 'resume':
+        if (currentState !== 'paused') {
+          return NextResponse.json(
+            { error: 'Can only resume paused instances' },
+            { status: 400 }
+          );
+        }
+        newState = 'active';
+        updateData = {
+          state: newState,
+          resumed_at: new Date().toISOString()
+        };
+        break;
+
+      case 'cancel':
+        if (!['active', 'paused'].includes(currentState)) {
+          return NextResponse.json(
+            { error: 'Can only cancel active or paused instances' },
+            { status: 400 }
+          );
+        }
+        newState = 'cancelled';
+        updateData = {
+          state: newState,
+          completed_at: new Date().toISOString()
+        };
+        break;
+
+      case 'retry':
+        if (currentState !== 'failed') {
+          return NextResponse.json(
+            { error: 'Can only retry failed instances' },
+            { status: 400 }
+          );
+        }
+        newState = 'active';
+        updateData = {
+          state: newState,
+          retry_count: 0, // Reset retry count
+          error_count: 0, // Reset error count
+          last_error: null,
+          failed_at: null,
+          resumed_at: new Date().toISOString()
+        };
+        break;
+
+      default:
+        return NextResponse.json(
+          { error: 'Invalid action' },
+          { status: 400 }
+        );
+    }
+
+    // Use state machine for validation and transition
+    const transitionResult = await JourneyStateMachine.transitionInstance(
+      instanceId,
+      currentState,
+      newState as any,
+      `Manual ${action} via API`
+    );
+
+    if (!transitionResult) {
+      return NextResponse.json(
+        { error: 'State transition failed' },
+        { status: 500 }
+      );
+    }
+
+    // Cancel pending schedules for pause/cancel actions
+    if (['pause', 'cancel'].includes(action)) {
+      await supabase
+        .from('journey_schedules')
+        .update({ status: 'cancelled' })
+        .eq('instance_id', instanceId)
+        .eq('status', 'pending');
+    }
+
+    // Reactivate schedules for resume action
+    if (action === 'resume') {
+      await supabase
+        .from('journey_schedules')
+        .update({ status: 'pending' })
+        .eq('instance_id', instanceId)
+        .eq('status', 'paused');
+    }
+
+    // Create audit log
+    await supabase
+      .from('journey_events')
+      .insert({
+        journey_id: instance.journey_id,
+        instance_id: instanceId,
+        client_id: instance.client_id,
+        event_type: 'manual_intervention',
+        event_source: 'api',
+        event_data: {
+          action,
+          previousState: currentState,
+          newState,
+          timestamp: new Date().toISOString(),
+          userAgent: request.headers.get('user-agent')
+        }
+      });
+
+    return NextResponse.json({
+      success: true,
+      message: `Instance ${action}d successfully`,
+      instance_id: instanceId,
+      previous_state: currentState,
+      new_state: newState
+    });
+
+  } catch (error) {
+    console.error(`Error ${action}ing instance:`, error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}

@@ -1,0 +1,233 @@
+/**
+ * Comprehensive Unit Tests for Enhanced useOfflineData Hook
+ * WS-172 Round 3: Offline Storage Integration
+ * 
+ * Testing Requirements:
+ * - >80% coverage requirement
+ * - Performance validation (<50ms)
+ * - Security integration testing
+ * - Wedding-specific business logic
+ * - Error handling and recovery
+ */
+
+import { renderHook, act, waitFor } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { useOfflineWeddingData } from '../useOfflineData'
+import { SecureOfflineStorage } from '@/lib/security/offline-encryption'
+import { syncManager } from '@/lib/offline/sync-manager'
+import { offlineDB } from '@/lib/offline/offline-database'
+// Mock dependencies
+vi.mock('@/lib/security/offline-encryption')
+vi.mock('@/lib/offline/sync-manager')
+vi.mock('@/lib/offline/offline-database')
+// Mock data
+const mockWeddingData = {
+  id: 'wedding-123',
+  coupleId: 'couple-456',
+  weddingDate: '2024-06-15',
+  venue: {
+    name: 'Garden Venue',
+    address: '123 Wedding St',
+    contact: { phone: '+1-555-0123' }
+  },
+  timeline: [
+    { id: 'timeline-1', time: '14:00', event: 'Ceremony', status: 'confirmed' }
+  ],
+  vendors: [
+    { id: 'vendor-1', name: 'Flowers R Us', status: 'confirmed', type: 'florist' }
+  emergencyContacts: [
+    { name: 'Wedding Planner', phone: '+1-555-0987' }
+  status: 'active'
+}
+const mockSyncStatus = {
+  isOnline: true,
+  isSyncing: false,
+  pendingCount: 0,
+  failedCount: 0,
+  totalCount: 0,
+  lastSyncTime: new Date().toISOString(),
+  pendingItems: []
+describe('useOfflineWeddingData Enhanced Hook', () => {
+  let mockSecureStorage: any
+  let mockSyncManager: any
+  let mockOfflineDB: any
+  beforeEach(() => {
+    // Reset all mocks
+    vi.clearAllMocks()
+    
+    // Setup mock implementations
+    mockSecureStorage = {
+      getInstance: vi.fn(),
+      retrieveWeddingData: vi.fn(),
+      storeWeddingData: vi.fn()
+    }
+    mockSyncManager = {
+      getStatus: vi.fn().mockResolvedValue(mockSyncStatus),
+      onStatusChange: vi.fn(),
+      removeStatusListener: vi.fn(),
+      queueAction: vi.fn(),
+      forcSync: vi.fn()
+    mockOfflineDB = {
+      weddings: {
+        get: vi.fn(),
+        update: vi.fn(),
+        put: vi.fn()
+      }
+    // Apply mocks
+    vi.mocked(SecureOfflineStorage.getInstance).mockReturnValue(mockSecureStorage)
+    vi.mocked(SecureOfflineStorage.retrieveWeddingData).mockResolvedValue(mockWeddingData)
+    vi.mocked(syncManager).mockReturnValue(mockSyncManager)
+    vi.mocked(offlineDB).mockReturnValue(mockOfflineDB)
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+  describe('Performance Requirements', () => {
+    it('should load wedding data in <50ms', async () => {
+      // Mock fast retrieval
+      vi.mocked(SecureOfflineStorage.retrieveWeddingData).mockResolvedValue(mockWeddingData)
+      
+      const startTime = performance.now()
+      const { result } = renderHook(() => 
+        useOfflineWeddingData('wedding-123', { 
+          enableEncryption: true,
+          performanceMode: true 
+        })
+      )
+      await waitFor(() => {
+        expect(result.current.isLoading).toBe(false)
+      })
+      const loadTime = performance.now() - startTime
+      // Verify data loaded
+      expect(result.current.data).toEqual(mockWeddingData)
+      expect(result.current.error).toBeNull()
+      // Verify performance metrics
+      expect(result.current.performanceMetrics?.loadTime).toBeDefined()
+      expect(result.current.performanceMetrics?.loadTime).toBeLessThan(50)
+    })
+    it('should use memoized cache for repeated requests', async () => {
+        useOfflineWeddingData('wedding-123', { performanceMode: true })
+      // First load
+      const firstLoadMetrics = result.current.performanceMetrics
+      // Second load should use cache
+      act(() => {
+        result.current.refresh()
+        expect(result.current.performanceMetrics?.cacheHits).toBeGreaterThan(firstLoadMetrics?.cacheHits || 0)
+    it('should warn when load time exceeds 50ms', async () => {
+      const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      // Mock slow retrieval
+      vi.mocked(SecureOfflineStorage.retrieveWeddingData).mockImplementation(() =>
+        new Promise(resolve => setTimeout(() => resolve(mockWeddingData), 100))
+        useOfflineWeddingData('wedding-123', { enableEncryption: true })
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Wedding data load exceeded 50ms:')
+      consoleSpy.mockRestore()
+  describe('Security Integration', () => {
+    it('should use secure storage when encryption is enabled', async () => {
+      expect(SecureOfflineStorage.retrieveWeddingData).toHaveBeenCalledWith('wedding-123')
+    it('should use regular storage when encryption is disabled', async () => {
+      vi.mocked(offlineDB.weddings.get).mockResolvedValue(mockWeddingData)
+        useOfflineWeddingData('wedding-123', { enableEncryption: false })
+      expect(offlineDB.weddings.get).toHaveBeenCalledWith('wedding-123')
+      expect(SecureOfflineStorage.retrieveWeddingData).not.toHaveBeenCalled()
+    it('should handle encryption errors gracefully', async () => {
+      vi.mocked(SecureOfflineStorage.retrieveWeddingData).mockRejectedValue(
+        new Error('Decryption failed')
+      expect(result.current.error).toBe('Decryption failed')
+      expect(result.current.data).toBeNull()
+  describe('Wedding-Specific Business Logic', () => {
+    it('should prioritize emergency contact updates', async () => {
+        useOfflineWeddingData('wedding-123')
+      // Update emergency contacts
+      const emergencyUpdate = {
+        emergencyContacts: [{ name: 'Emergency Coordinator', phone: '+1-911-0000' }],
+        status: 'emergency'
+      await act(async () => {
+        await result.current.updateWedding('wedding-123', emergencyUpdate)
+      // Verify high priority sync
+      expect(mockSyncManager.queueAction).toHaveBeenCalledWith(
+        'client_update',
+        'update',
+        expect.any(Object),
+        { priority: 10 } // Emergency priority
+    it('should handle timeline updates with high priority', async () => {
+      const timelineUpdate = {
+        timeline: [
+          { id: 'timeline-2', time: '15:30', event: 'Reception', status: 'updated' }
+        ]
+        await result.current.updateWedding('wedding-123', timelineUpdate)
+        { priority: 8 } // High priority
+    it('should retry critical updates on failure', async () => {
+      vi.mocked(SecureOfflineStorage.storeWeddingData).mockRejectedValueOnce(
+        new Error('Storage failed')
+      const criticalUpdate = {
+        emergencyContacts: [{ name: 'Emergency', phone: '+1-911' }]
+        await result.current.updateWedding('wedding-123', criticalUpdate)
+      // Should have error state
+      expect(result.current.error).toBe('Update failed')
+      // Wait for retry (2 second delay)
+        await new Promise(resolve => setTimeout(resolve, 2100))
+  describe('Error Handling and Recovery', () => {
+    it('should handle network failures gracefully', async () => {
+        new Error('Network error')
+      expect(result.current.error).toBe('Network error')
+    it('should clear cache on update operations', async () => {
+      // Update should clear cache
+        await result.current.updateWedding('wedding-123', { status: 'updated' })
+      // Next load should be cache miss
+        expect(result.current.performanceMetrics?.cacheMisses).toBeGreaterThan(0)
+    it('should debounce rapid updates', async () => {
+      vi.useFakeTimers()
+      // Make rapid updates
+        result.current.updateWedding('wedding-123', { status: 'update1' })
+        result.current.updateWedding('wedding-123', { status: 'update2' })
+        result.current.updateWedding('wedding-123', { status: 'update3' })
+      // Fast-forward debounce timer
+        vi.advanceTimersByTime(300)
+      // Only last update should be processed
+        expect(mockSyncManager.queueAction).toHaveBeenCalledTimes(1)
+      vi.useRealTimers()
+  describe('Sync Status Integration', () => {
+    it('should track sync status changes', async () => {
+        expect(result.current.syncStatus).toEqual(mockSyncStatus)
+      // Simulate status change
+      const newStatus = { ...mockSyncStatus, isSyncing: true, pendingCount: 2 }
+        const statusCallback = mockSyncManager.onStatusChange.mock.calls[0][0]
+        statusCallback(newStatus)
+      expect(result.current.syncStatus).toEqual(newStatus)
+    it('should cleanup listeners on unmount', () => {
+      const { unmount } = renderHook(() => 
+      unmount()
+      expect(mockSyncManager.removeStatusListener).toHaveBeenCalledTimes(1)
+  describe('Today\'s Weddings Functionality', () => {
+    it('should load today\'s weddings when no specific ID provided', async () => {
+      const todaysWeddings = [{
+        ...mockWeddingData,
+        date: new Date().toISOString().split('T')[0]
+      }]
+      vi.mocked(offlineDB.weddings.where).mockReturnValue({
+        equals: vi.fn().mockReturnValue({
+          and: vi.fn().mockReturnValue({
+            sortBy: vi.fn().mockResolvedValue(todaysWeddings)
+          })
+        useOfflineWeddingData() // No wedding ID
+      expect(result.current.data).toEqual(todaysWeddings[0])
+    it('should handle no weddings scheduled for today', async () => {
+            sortBy: vi.fn().mockResolvedValue([])
+        useOfflineWeddingData()
+      expect(result.current.error).toBe('No weddings scheduled for today')
+  describe('Auto-refresh Functionality', () => {
+    it('should auto-refresh data when enabled', async () => {
+          autoRefresh: true, 
+          refreshInterval: 1000 
+      // Clear initial call
+      vi.clearAllMocks()
+      // Fast-forward refresh interval
+        vi.advanceTimersByTime(1000)
+        expect(SecureOfflineStorage.retrieveWeddingData).toHaveBeenCalledWith('wedding-123')
+    it('should not auto-refresh when disabled', async () => {
+      renderHook(() => 
+          autoRefresh: false 
+      // Clear initial calls
+      // Fast-forward time
+        vi.advanceTimersByTime(30000)
+})

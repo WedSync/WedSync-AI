@@ -1,0 +1,1 @@
+CREATE TABLE IF NOT EXISTS migration_test_v2 (id SERIAL PRIMARY KEY, test_name TEXT, created_at TIMESTAMP DEFAULT NOW());

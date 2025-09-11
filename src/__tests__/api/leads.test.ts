@@ -1,0 +1,181 @@
+import { describe, it, expect, jest, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { NextRequest } from 'next/server'
+import { GET, PATCH } from '@/app/api/leads/route'
+
+// Mock Supabase
+const mockSupabaseClient = {
+  auth: {
+    getUser: vi.fn()
+  },
+  from: jest.fn(() => mockSupabaseClient),
+  select: jest.fn(() => mockSupabaseClient),
+  eq: jest.fn(() => mockSupabaseClient),
+  neq: jest.fn(() => mockSupabaseClient),
+  gte: jest.fn(() => mockSupabaseClient),
+  lte: jest.fn(() => mockSupabaseClient),
+  or: jest.fn(() => mockSupabaseClient),
+  order: jest.fn(() => mockSupabaseClient),
+  range: jest.fn(() => mockSupabaseClient),
+  single: vi.fn(),
+  update: jest.fn(() => mockSupabaseClient),
+  insert: jest.fn(() => mockSupabaseClient),
+  rpc: vi.fn()
+}
+vi.mock('@/lib/supabase/server', () => ({
+  createClient: jest.fn(() => mockSupabaseClient)
+}))
+vi.mock('@/lib/rate-limit', () => ({
+  rateLimit: jest.fn(() => Promise.resolve(null)),
+  rateLimitConfigs: {
+    api: { requests: 100, window: 60000 }
+  }
+describe('/api/leads', () => {
+  const mockUser = { id: 'user-123', email: 'test@example.com' }
+  const mockProfile = { organization_id: 'org-123' }
+  beforeEach(() => {
+    vi.clearAllMocks()
+    
+    mockSupabaseClient.auth.getUser.mockResolvedValue({
+      data: { user: mockUser },
+      error: null
+    })
+    mockSupabaseClient.single.mockResolvedValue({
+      data: mockProfile,
+  })
+  afterEach(() => {
+  describe('GET /api/leads', () => {
+    it('should return leads with default parameters', async () => {
+      const mockLeads = [
+        {
+          id: 'lead-1',
+          first_name: 'John',
+          last_name: 'Doe',
+          email: 'john@example.com',
+          status: 'new',
+          lead_score: 75,
+          lead_grade: 'B',
+          created_at: '2024-01-01T00:00:00Z',
+          lead_scores: {
+            total_score: 75,
+            score_grade: 'B',
+            last_calculated_at: '2024-01-01T00:00:00Z'
+          }
+        }
+      ]
+      // Mock the query chain for leads
+      mockSupabaseClient.from.mockReturnValueOnce({
+        ...mockSupabaseClient,
+        data: mockLeads,
+        error: null,
+        count: 1
+      })
+      // Mock the query chain for stats
+        error: null
+      const request = new NextRequest('http://localhost:3000/api/leads')
+      const response = await GET(request)
+      const data = await response.json()
+      expect(response.status).toBe(200)
+      expect(data.leads).toHaveLength(1)
+      expect(data.leads[0].id).toBe('lead-1')
+      expect(data.summary.totalLeads).toBe(1)
+      expect(data.pagination.total).toBe(1)
+    it('should apply status filter', async () => {
+      const request = new NextRequest('http://localhost:3000/api/leads?status=qualified')
+      
+      mockSupabaseClient.from.mockReturnValue({
+        data: [],
+        count: 0
+      await GET(request)
+      expect(mockSupabaseClient.eq).toHaveBeenCalledWith('status', 'qualified')
+    it('should apply search filter', async () => {
+      const request = new NextRequest('http://localhost:3000/api/leads?search=john')
+      expect(mockSupabaseClient.or).toHaveBeenCalledWith(
+        expect.stringContaining('first_name.ilike.%john%')
+      )
+    it('should apply score range filters', async () => {
+      const request = new NextRequest('http://localhost:3000/api/leads?minScore=50&maxScore=90')
+      expect(mockSupabaseClient.gte).toHaveBeenCalledWith('lead_score', 50)
+      expect(mockSupabaseClient.lte).toHaveBeenCalledWith('lead_score', 90)
+    it('should handle unauthorized user', async () => {
+      mockSupabaseClient.auth.getUser.mockResolvedValue({
+        data: { user: null },
+      expect(response.status).toBe(401)
+    it('should handle missing organization', async () => {
+      mockSupabaseClient.single.mockResolvedValue({
+        data: null,
+      expect(response.status).toBe(400)
+    it('should handle database errors', async () => {
+        error: new Error('Database error'),
+        count: null
+      expect(response.status).toBe(500)
+    it('should validate invalid parameters', async () => {
+      const request = new NextRequest('http://localhost:3000/api/leads?minScore=150&maxScore=-10')
+      expect(data.error).toBe('Validation error')
+  describe('PATCH /api/leads', () => {
+    const validUpdateData = {
+      clientIds: ['client-1', 'client-2'],
+      updates: {
+        status: 'qualified',
+        priority: 'high',
+        followUpDate: '2024-02-01T10:00:00Z'
+      }
+    }
+    it('should update multiple leads successfully', async () => {
+      const mockClient = {
+        id: 'client-1',
+        status: 'new',
+        organization_id: 'org-123'
+      const mockUpdatedClient = {
+        ...mockClient,
+        lead_priority: 'high'
+      // Mock client lookup
+      mockSupabaseClient.single.mockResolvedValueOnce({
+        data: mockClient,
+      // Mock update operation
+      mockSupabaseClient.update.mockReturnValueOnce({
+        data: mockUpdatedClient,
+      // Mock RPC calls
+      mockSupabaseClient.rpc.mockResolvedValue({
+        data: true,
+      // Mock activity logging
+      mockSupabaseClient.insert.mockResolvedValue({
+        data: {},
+      const request = new NextRequest('http://localhost:3000/api/leads', {
+        method: 'PATCH',
+        body: JSON.stringify(validUpdateData)
+      const response = await PATCH(request)
+      expect(data.summary.successful).toBeGreaterThan(0)
+      expect(mockSupabaseClient.rpc).toHaveBeenCalledWith('update_lead_status', expect.any(Object))
+    it('should handle partial failures', async () => {
+      const mockClient1 = { id: 'client-1', status: 'new', organization_id: 'org-123' }
+      // Mock successful client lookup for first client
+      mockSupabaseClient.single
+        .mockResolvedValueOnce({ data: mockClient1, error: null })
+        .mockResolvedValueOnce({ data: null, error: new Error('Client not found') })
+      mockSupabaseClient.update.mockReturnValue({
+        data: mockClient1,
+      expect(data.summary.successful).toBe(1)
+      expect(data.summary.failed).toBe(1)
+      expect(data.errors).toHaveLength(1)
+    it('should validate request body', async () => {
+      const invalidData = {
+        clientIds: ['invalid-uuid'],
+        updates: {
+          priority: 'invalid-priority'
+        body: JSON.stringify(invalidData)
+    it('should only update clients belonging to user organization', async () => {
+        data: null, // Client not found due to organization filter
+        body: JSON.stringify({
+          clientIds: ['client-1'],
+          updates: { status: 'qualified' }
+        })
+      expect(data.summary.successful).toBe(0)
+    it('should update lead score after status change', async () => {
+      mockSupabaseClient.rpc
+        .mockResolvedValueOnce({ data: true, error: null }) // update_lead_status
+        .mockResolvedValueOnce({ data: 85, error: null })   // calculate_lead_score
+      await PATCH(request)
+      expect(mockSupabaseClient.rpc).toHaveBeenCalledWith('calculate_lead_score', {
+        client_uuid: 'client-1'
+})

@@ -1,0 +1,293 @@
+import { createClient } from '@/lib/supabase/server'
+import { NextRequest, NextResponse } from 'next/server'
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = await createClient()
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
+    const { searchParams } = new URL(request.url)
+    const vendorId = searchParams.get('vendor_id')
+    const status = searchParams.get('status')
+    const limit = parseInt(searchParams.get('limit') || '50')
+
+    if (!vendorId) {
+      return NextResponse.json({ error: 'Vendor ID required' }, { status: 400 })
+    }
+
+    // Verify vendor belongs to user's organization
+    const { data: vendor, error: vendorError } = await supabase
+      .from('suppliers')
+      .select('organization_id')
+      .eq('id', vendorId)
+      .single()
+
+    if (vendorError || !vendor) {
+      return NextResponse.json({ error: 'Vendor not found' }, { status: 404 })
+    }
+
+    // Get user's organization
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', user.id)
+      .single()
+
+    if (vendor.organization_id !== userProfile?.organization_id) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 403 })
+    }
+
+    // Build query for wedding assignments
+    let query = supabase
+      .from('supplier_client_connections')
+      .select(`
+        *,
+        clients (
+          id,
+          first_name,
+          last_name,
+          partner_first_name,
+          partner_last_name,
+          email,
+          phone,
+          wedding_date,
+          venue_name,
+          venue_address,
+          guest_count,
+          budget_range,
+          status,
+          notes,
+          created_at
+        )
+      `)
+      .eq('supplier_id', vendorId)
+      .eq('connection_status', 'active')
+
+    if (status && status !== 'all') {
+      // Filter by wedding status
+      const now = new Date().toISOString().split('T')[0]
+      switch (status) {
+        case 'upcoming':
+          query = query.gte('clients.wedding_date', now)
+          break
+        case 'active':
+          query = query.lt('clients.wedding_date', now).neq('clients.status', 'completed')
+          break
+        case 'completed':
+          query = query.eq('clients.status', 'completed')
+          break
+      }
+    }
+
+    const { data: connections, error: connectionsError } = await query
+      .order('clients.wedding_date', { ascending: true })
+      .limit(limit)
+
+    if (connectionsError) {
+      console.error('Error fetching wedding connections:', connectionsError)
+      return NextResponse.json({ error: connectionsError.message }, { status: 500 })
+    }
+
+    // Format the response
+    const weddings = await Promise.all(connections?.map(async (connection) => {
+      const client = connection.clients
+      
+      // Get other vendors for this wedding
+      const { data: otherVendors } = await supabase
+        .from('supplier_client_connections')
+        .select(`
+          suppliers (
+            business_name,
+            primary_category,
+            email,
+            phone
+          )
+        `)
+        .eq('client_id', client.id)
+        .neq('id', connection.id)
+
+      // Determine wedding status
+      const weddingDate = new Date(client.wedding_date)
+      const today = new Date()
+      let weddingStatus = 'active'
+      
+      if (client.status === 'completed') {
+        weddingStatus = 'completed'
+      } else if (weddingDate > today) {
+        weddingStatus = 'upcoming'
+      }
+
+      return {
+        id: connection.id,
+        wedding_id: client.id,
+        couple_names: `${client.first_name || ''} ${client.last_name || ''}${
+          client.partner_first_name ? ` & ${client.partner_first_name} ${client.partner_last_name || ''}` : ''
+        }`.trim(),
+        couple_email: client.email,
+        couple_phone: client.phone,
+        wedding_date: client.wedding_date,
+        venue_name: client.venue_name || 'TBD',
+        venue_address: client.venue_address,
+        guest_count: client.guest_count,
+        budget_range: client.budget_range,
+        status: weddingStatus,
+        timeline_access: connection.can_view_core_fields,
+        communication_enabled: true,
+        notes: client.notes,
+        other_vendors: otherVendors?.map(v => v.suppliers).filter(Boolean) || [],
+        connection_created: connection.created_at,
+        next_milestone: {
+          title: 'Initial Meeting',
+          date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+          description: 'Schedule initial consultation with couple'
+        }
+      }
+    }) || [])
+
+    return NextResponse.json({
+      weddings,
+      total: weddings.length,
+      vendor_id: vendorId
+    })
+
+  } catch (error) {
+    console.error('Error in vendor weddings API:', error)
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = await createClient()
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
+    const body = await request.json()
+    const { vendor_id, client_id, connection_type = 'primary' } = body
+
+    // Verify permissions
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', user.id)
+      .single()
+
+    const { data: vendor } = await supabase
+      .from('suppliers')
+      .select('organization_id')
+      .eq('id', vendor_id)
+      .single()
+
+    if (!vendor || vendor.organization_id !== userProfile?.organization_id) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 403 })
+    }
+
+    // Create the connection
+    const { data, error } = await supabase
+      .from('supplier_client_connections')
+      .insert({
+        supplier_id: vendor_id,
+        client_id,
+        organization_id: userProfile.organization_id,
+        connection_type,
+        connection_status: 'active',
+        can_view_core_fields: true,
+        can_edit_core_fields: false,
+        connected_at: new Date().toISOString()
+      })
+      .select()
+      .single()
+
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 400 })
+    }
+
+    // Log the activity
+    await supabase
+      .from('client_activities')
+      .insert({
+        client_id,
+        organization_id: userProfile.organization_id,
+        activity_type: 'vendor_assigned',
+        activity_title: 'Vendor Assigned',
+        activity_description: `Vendor ${vendor_id} assigned to wedding`,
+        performed_by: user.id,
+        performed_by_name: `${userProfile.first_name} ${userProfile.last_name}`,
+        metadata: { vendor_id, connection_type }
+      })
+
+    return NextResponse.json(data)
+
+  } catch (error) {
+    console.error('Error creating vendor connection:', error)
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}
+
+export async function PUT(request: NextRequest) {
+  try {
+    const supabase = await createClient()
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
+    const body = await request.json()
+    const { connection_id, updates } = body
+
+    // Verify connection exists and belongs to user's organization
+    const { data: connection } = await supabase
+      .from('supplier_client_connections')
+      .select('organization_id')
+      .eq('id', connection_id)
+      .single()
+
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', user.id)
+      .single()
+
+    if (!connection || connection.organization_id !== userProfile?.organization_id) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 403 })
+    }
+
+    // Update the connection
+    const { data, error } = await supabase
+      .from('supplier_client_connections')
+      .update({
+        ...updates,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', connection_id)
+      .select()
+      .single()
+
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 400 })
+    }
+
+    return NextResponse.json(data)
+
+  } catch (error) {
+    console.error('Error updating vendor connection:', error)
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}

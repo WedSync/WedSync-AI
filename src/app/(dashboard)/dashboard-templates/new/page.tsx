@@ -1,0 +1,52 @@
+import { createClient } from '@/lib/supabase/server';
+import { redirect } from 'next/navigation';
+import DashboardTemplateBuilder from '@/components/dashboard-templates/DashboardTemplateBuilder';
+import { DashboardTemplateService } from '@/lib/services/dashboardTemplateService';
+
+export default async function NewTemplatePage() {
+  const supabase = await createClient();
+
+  // Get current user
+  const { data: user } = await supabase.auth.getUser();
+  if (!user) {
+    redirect('/auth/login');
+  }
+
+  // Initialize template service
+  const templateService = new DashboardTemplateService(supabase, user.id);
+
+  const handleSaveTemplate = async (template: unknown, sections: unknown[]) => {
+    'use server';
+
+    const supabase = await createClient();
+    const { data: user } = await supabase.auth.getUser();
+
+    if (!user) {
+      throw new Error('Not authenticated');
+    }
+
+    const templateService = new DashboardTemplateService(supabase, user.id);
+    const result = await templateService.createTemplate(template, sections);
+
+    // Redirect to template list on success
+    redirect('/dashboard-templates');
+  };
+
+  const handlePreviewTemplate = async (templateId: string) => {
+    'use server';
+
+    // This would normally open a preview window or redirect to preview page
+    // For now, we'll just redirect to the template list
+    redirect(`/dashboard-templates/${templateId}/preview`);
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-50">
+      <DashboardTemplateBuilder
+        supplierId={user.id}
+        onSave={handleSaveTemplate}
+        onPreview={handlePreviewTemplate}
+      />
+    </div>
+  );
+}

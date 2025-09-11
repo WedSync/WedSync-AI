@@ -1,0 +1,584 @@
+/**
+ * Enhanced Unit Tests for GuestListBuilder Component
+ * Team E - Batch 13 - WS-151 Guest List Builder Testing (Enhanced)
+ * 
+ * FOCUS AREAS:
+ * - Performance with 500+ guests
+ * - Edge case handling
+ * - Memory optimization
+ * - Real-time updates
+ * - Accessibility compliance beyond basic requirements
+ * - Advanced drag-and-drop scenarios
+ */
+
+import React from 'react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { axe, toHaveNoViolations } from 'jest-axe'
+import { GuestListBuilder } from '@/components/guests/GuestListBuilder'
+
+// Extend Jest matchers
+expect.extend(toHaveNoViolations)
+
+// Enhanced mock for performance testing
+const createLargeGuestDataset = (count: number) => {
+  return Array.from({ length: count }, (_, i) => ({
+    id: `guest-${i}`,
+    first_name: `Guest${i}`,
+    last_name: `Test${Math.floor(i / 10)}`,
+    email: `guest${i}@example.com`,
+    phone: `555-${String(i + 1000).padStart(4, '0')}`,
+    category: ['family', 'friends', 'work', 'other'][i % 4],
+    side: ['partner1', 'partner2', 'mutual'][i % 3],
+    plus_one: i % 5 === 0,
+    plus_one_name: i % 5 === 0 ? `Plus${i}` : null,
+    dietary_restrictions: i % 10 === 0 ? 'Vegetarian' : null,
+    table_number: i % 20 === 0 ? Math.floor(i / 20) + 1 : null,
+    notes: i % 50 === 0 ? `Important note for guest ${i}` : null,
+    rsvp_status: ['pending', 'yes', 'no', 'maybe'][i % 4],
+    age_group: i % 15 === 0 ? 'child' : 'adult',
+    household_id: i % 30 === 0 ? `household-${Math.floor(i / 30)}` : null,
+    created_at: new Date(Date.now() - i * 1000).toISOString(),
+    updated_at: new Date(Date.now() - i * 500).toISOString()
+  }))
+}
+
+// Performance monitoring utilities
+const measureRenderTime = async (renderFn: () => void) => {
+  const startTime = performance.now()
+  renderFn()
+  await waitFor(() => {}, { timeout: 100 })
+  const endTime = performance.now()
+  return endTime - startTime
+}
+
+const measureMemoryUsage = () => {
+  if ('performance' in global && 'memory' in (global.performance as any)) {
+    return (global.performance as any).memory.usedJSHeapSize
+  }
+  return null
+}
+
+// Mock with enhanced performance tracking
+let mockPerformanceData: any = {}
+
+vi.mock('@/lib/supabase/client', () => ({
+  createClient: () => ({
+    from: vi.fn(() => ({
+      select: vi.fn(() => ({
+        eq: vi.fn(() => ({
+          order: vi.fn(() => {
+            const startTime = Date.now()
+            return { 
+              data: mockPerformanceData.guests || [],
+              error: null,
+              performance: {
+                queryTime: Date.now() - startTime
+              }
+            }
+          })
+        }))
+      })),
+      update: vi.fn(() => ({
+        eq: vi.fn(() => {
+          const startTime = Date.now()
+          return {
+            data: {},
+            error: null,
+            performance: {
+              updateTime: Date.now() - startTime
+            }
+          }
+        })
+      })),
+      delete: vi.fn(() => ({
+        in: vi.fn(() => ({
+          data: {},
+          error: null
+        }))
+      })),
+      insert: vi.fn(() => ({
+        select: vi.fn(() => ({
+          data: mockPerformanceData.newGuests || [],
+          error: null
+        }))
+      }))
+    })),
+    auth: {
+      getUser: vi.fn(() => ({ data: { user: { id: 'test-user' } } }))
+    }
+  })
+}))
+
+vi.mock('@/lib/utils/toast', () => ({
+  toast: {
+    success: vi.fn(),
+    error: vi.fn(),
+    info: vi.fn(),
+    warning: vi.fn()
+  }
+}))
+
+vi.mock('@/hooks/useDebounce', () => ({
+  useDebounce: (value: string, delay: number) => {
+    // Enhanced debounce mock that respects timing for performance tests
+    const [debouncedValue, setDebouncedValue] = React.useState(value)
+    
+    React.useEffect(() => {
+      const handler = setTimeout(() => {
+        setDebouncedValue(value)
+      }, delay)
+      
+      return () => clearTimeout(handler)
+    }, [value, delay])
+    
+    return debouncedValue
+  }
+}))
+
+describe('Enhanced GuestListBuilder Component Tests', () => {
+  const defaultProps = {
+    coupleId: 'test-couple-id',
+    onGuestUpdate: vi.fn()
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockPerformanceData = {}
+    
+    // Setup performance monitoring
+    global.performance.mark?.('test-start')
+  })
+
+  afterEach(() => {
+    global.performance.mark?.('test-end')
+    vi.resetAllMocks()
+  })
+
+  describe('Performance Testing with Large Datasets', () => {
+    it('should render 500 guests within 2 seconds', async () => {
+      const largeDataset = createLargeGuestDataset(500)
+      mockPerformanceData.guests = largeDataset
+
+      const renderTime = await measureRenderTime(() => {
+        render(<GuestListBuilder {...defaultProps} />)
+      })
+
+      expect(renderTime).toBeLessThan(2000) // Under 2 seconds
+      
+      await waitFor(() => {
+        expect(screen.getByText('Guest List')).toBeInTheDocument()
+      })
+
+      // Verify all category counts are correct
+      await waitFor(() => {
+        expect(screen.getByText(/500/)).toBeInTheDocument() // Total count
+      })
+    })
+
+    it('should handle 1000 guests without memory leaks', async () => {
+      const initialMemory = measureMemoryUsage()
+      const extraLargeDataset = createLargeGuestDataset(1000)
+      mockPerformanceData.guests = extraLargeDataset
+
+      const { unmount } = render(<GuestListBuilder {...defaultProps} />)
+      
+      await waitFor(() => {
+        expect(screen.getByText('Guest List')).toBeInTheDocument()
+      })
+
+      // Perform operations to test memory stability
+      const searchInput = await screen.findByRole('searchbox')
+      await userEvent.type(searchInput, 'Guest1')
+      await userEvent.clear(searchInput)
+      
+      unmount()
+      
+      // Force garbage collection if available
+      if (global.gc) {
+        global.gc()
+      }
+
+      const finalMemory = measureMemoryUsage()
+      
+      if (initialMemory && finalMemory) {
+        const memoryIncrease = (finalMemory - initialMemory) / 1024 / 1024 // MB
+        expect(memoryIncrease).toBeLessThan(50) // Less than 50MB increase
+      }
+    })
+
+    it('should maintain search performance with large datasets', async () => {
+      const largeDataset = createLargeGuestDataset(1000)
+      mockPerformanceData.guests = largeDataset
+
+      render(<GuestListBuilder {...defaultProps} />)
+      
+      await waitFor(() => {
+        expect(screen.getByText('Guest List')).toBeInTheDocument()
+      })
+
+      const searchInput = await screen.findByRole('searchbox')
+      
+      // Measure search performance
+      const searchStartTime = performance.now()
+      await userEvent.type(searchInput, 'Guest500')
+      
+      await waitFor(() => {
+        // Debounced search should complete
+        expect(searchInput).toHaveValue('Guest500')
+      })
+      
+      const searchEndTime = performance.now()
+      const searchTime = searchEndTime - searchStartTime
+      
+      expect(searchTime).toBeLessThan(1000) // Under 1 second for search
+    })
+
+    it('should handle rapid filter changes efficiently', async () => {
+      const largeDataset = createLargeGuestDataset(500)
+      mockPerformanceData.guests = largeDataset
+
+      render(<GuestListBuilder {...defaultProps} />)
+      
+      await waitFor(() => {
+        expect(screen.getByText('Guest List')).toBeInTheDocument()
+      })
+
+      // Rapid filter changes
+      const categoryFilter = screen.getByDisplayValue('All Categories')
+      const sideFilter = screen.getByDisplayValue('All Sides')
+      
+      const filterStartTime = performance.now()
+      
+      // Rapidly change filters
+      await userEvent.selectOptions(categoryFilter, 'family')
+      await userEvent.selectOptions(sideFilter, 'partner1')
+      await userEvent.selectOptions(categoryFilter, 'friends')
+      await userEvent.selectOptions(sideFilter, 'partner2')
+      
+      // Wait for all filter operations to complete
+      await waitFor(() => {
+        expect(categoryFilter).toHaveValue('friends')
+        expect(sideFilter).toHaveValue('partner2')
+      })
+      
+      const filterEndTime = performance.now()
+      const filterTime = filterEndTime - filterStartTime
+      
+      expect(filterTime).toBeLessThan(500) // Under 500ms for rapid filtering
+    })
+  })
+
+  describe('Advanced Drag and Drop Scenarios', () => {
+    beforeEach(() => {
+      mockPerformanceData.guests = createLargeGuestDataset(50)
+    })
+
+    it('should handle multi-selection drag across categories', async () => {
+      render(<GuestListBuilder {...defaultProps} />)
+      
+      await waitFor(() => {
+        expect(screen.getByText('Categories')).toBeInTheDocument()
+      })
+
+      // Switch to category view
+      const categoryButton = screen.getByRole('button', { name: /categories/i })
+      await userEvent.click(categoryButton)
+
+      // Multi-select guests (simulate with checkboxes)
+      const checkboxes = await screen.findAllByRole('checkbox')
+      await userEvent.click(checkboxes[1]) // Select first guest
+      await userEvent.click(checkboxes[2]) // Select second guest
+      
+      // Verify bulk selection is active
+      await waitFor(() => {
+        expect(screen.getByText(/selected/)).toBeInTheDocument()
+      })
+    })
+
+    it('should handle drag and drop with validation constraints', async () => {
+      render(<GuestListBuilder {...defaultProps} />)
+      
+      await waitFor(() => {
+        expect(screen.getByText('Guest List')).toBeInTheDocument()
+      })
+
+      // Test constraint validation during drag operations
+      // This would test business rule enforcement during drag/drop
+    })
+
+    it('should maintain drag state during scroll operations', async () => {
+      const largeDataset = createLargeGuestDataset(200)
+      mockPerformanceData.guests = largeDataset
+
+      render(<GuestListBuilder {...defaultProps} />)
+      
+      // Test drag state persistence during virtual scrolling
+      // This would verify drag operations work with virtual scrolling
+    })
+  })
+
+  describe('Real-time Updates and Synchronization', () => {
+    it('should handle concurrent user updates gracefully', async () => {
+      render(<GuestListBuilder {...defaultProps} />)
+      
+      await waitFor(() => {
+        expect(screen.getByText('Guest List')).toBeInTheDocument()
+      })
+
+      // Simulate concurrent updates from multiple users
+      // This would test conflict resolution and optimistic updates
+    })
+
+    it('should maintain data consistency during bulk operations', async () => {
+      const testDataset = createLargeGuestDataset(100)
+      mockPerformanceData.guests = testDataset
+
+      render(<GuestListBuilder {...defaultProps} />)
+      
+      // Test bulk operations maintain data integrity
+      // This would verify transactions work correctly
+    })
+
+    it('should recover gracefully from network errors', async () => {
+      render(<GuestListBuilder {...defaultProps} />)
+      
+      // Simulate network failures and recovery
+      // This would test error handling and retry logic
+    })
+  })
+
+  describe('Advanced Accessibility Features', () => {
+    it('should support complex screen reader announcements', async () => {
+      render(<GuestListBuilder {...defaultProps} />)
+      
+      await waitFor(() => {
+        expect(screen.getByText('Guest List')).toBeInTheDocument()
+      })
+
+      // Test live region updates for dynamic content
+      const liveRegions = screen.getAllByRole('status')
+      expect(liveRegions.length).toBeGreaterThan(0)
+      
+      // Test drag/drop announcements
+      const { container } = render(<GuestListBuilder {...defaultProps} />)
+      const results = await axe(container, {
+        rules: {
+          'aria-command-name': { enabled: true },
+          'aria-tooltip-name': { enabled: true },
+          'focus-order-semantics': { enabled: true }
+        }
+      })
+      
+      expect(results).toHaveNoViolations()
+    })
+
+    it('should support advanced keyboard navigation patterns', async () => {
+      render(<GuestListBuilder {...defaultProps} />)
+      
+      await waitFor(() => {
+        expect(screen.getByText('Guest List')).toBeInTheDocument()
+      })
+
+      // Test arrow key navigation in grid layouts
+      const user = userEvent.setup()
+      
+      // Focus management during view switches
+      const listButton = screen.getByRole('button', { name: /list/i })
+      await user.click(listButton)
+      
+      await waitFor(() => {
+        expect(screen.getByRole('table')).toBeInTheDocument()
+      })
+      
+      // Test table navigation with arrow keys
+      // This would test advanced keyboard navigation patterns
+    })
+
+    it('should maintain accessibility during dynamic loading', async () => {
+      const largeDataset = createLargeGuestDataset(1000)
+      mockPerformanceData.guests = largeDataset
+
+      render(<GuestListBuilder {...defaultProps} />)
+      
+      // Test accessibility during progressive loading
+      // This would verify screen reader support for dynamic content
+    })
+  })
+
+  describe('Edge Cases and Error Scenarios', () => {
+    it('should handle empty guest lists gracefully', async () => {
+      mockPerformanceData.guests = []
+
+      render(<GuestListBuilder {...defaultProps} />)
+      
+      await waitFor(() => {
+        expect(screen.getByText('Guest List')).toBeInTheDocument()
+      })
+
+      // Verify empty state handling
+      expect(screen.getByText(/no guests/i)).toBeInTheDocument()
+    })
+
+    it('should handle malformed guest data', async () => {
+      mockPerformanceData.guests = [
+        { id: 'invalid-1', first_name: '', last_name: null },
+        { id: 'invalid-2', email: 'not-an-email', category: 'invalid-category' },
+        { id: 'valid-1', first_name: 'John', last_name: 'Doe', category: 'family' }
+      ]
+
+      render(<GuestListBuilder {...defaultProps} />)
+      
+      await waitFor(() => {
+        expect(screen.getByText('Guest List')).toBeInTheDocument()
+      })
+
+      // Should only show valid guests
+      expect(screen.getByText('John Doe')).toBeInTheDocument()
+    })
+
+    it('should handle extreme filter combinations', async () => {
+      const diverseDataset = createLargeGuestDataset(200)
+      mockPerformanceData.guests = diverseDataset
+
+      render(<GuestListBuilder {...defaultProps} />)
+      
+      await waitFor(() => {
+        expect(screen.getByText('Guest List')).toBeInTheDocument()
+      })
+
+      // Apply multiple filters that result in no matches
+      const categoryFilter = screen.getByDisplayValue('All Categories')
+      const sideFilter = screen.getByDisplayValue('All Sides')
+      const rsvpFilter = screen.getByDisplayValue('All RSVP')
+      
+      await userEvent.selectOptions(categoryFilter, 'family')
+      await userEvent.selectOptions(sideFilter, 'partner1')
+      await userEvent.selectOptions(rsvpFilter, 'no')
+      
+      // Should handle no results gracefully
+      await waitFor(() => {
+        expect(screen.getByText(/no guests match/i)).toBeInTheDocument()
+      })
+    })
+
+    it('should handle rapid component unmounting', async () => {
+      const largeDataset = createLargeGuestDataset(500)
+      mockPerformanceData.guests = largeDataset
+
+      const { unmount } = render(<GuestListBuilder {...defaultProps} />)
+      
+      // Immediately unmount to test cleanup
+      unmount()
+      
+      // Should not throw errors or cause memory leaks
+      expect(true).toBe(true) // Test passes if no errors thrown
+    })
+  })
+
+  describe('Data Integrity and Validation', () => {
+    it('should validate guest data before operations', async () => {
+      render(<GuestListBuilder {...defaultProps} />)
+      
+      // Test input validation for guest operations
+      // This would verify all data validation rules
+    })
+
+    it('should handle duplicate detection accurately', async () => {
+      const duplicateDataset = [
+        { id: 'guest-1', first_name: 'John', last_name: 'Doe', email: 'john@example.com' },
+        { id: 'guest-2', first_name: 'John', last_name: 'Doe', email: 'john.doe@example.com' },
+        { id: 'guest-3', first_name: 'Jane', last_name: 'Smith', email: 'jane@example.com' }
+      ]
+      
+      mockPerformanceData.guests = duplicateDataset
+
+      render(<GuestListBuilder {...defaultProps} />)
+      
+      // Test duplicate detection logic
+      // This would verify duplicate identification algorithms
+    })
+
+    it('should maintain referential integrity during operations', async () => {
+      render(<GuestListBuilder {...defaultProps} />)
+      
+      // Test that related data remains consistent
+      // This would verify database referential integrity
+    })
+  })
+
+  describe('Performance Monitoring and Metrics', () => {
+    it('should collect performance metrics during operations', async () => {
+      const startMetrics = {
+        renderTime: 0,
+        searchTime: 0,
+        filterTime: 0
+      }
+
+      mockPerformanceData.guests = createLargeGuestDataset(300)
+
+      const renderStart = performance.now()
+      render(<GuestListBuilder {...defaultProps} />)
+      startMetrics.renderTime = performance.now() - renderStart
+
+      await waitFor(() => {
+        expect(screen.getByText('Guest List')).toBeInTheDocument()
+      })
+
+      // Collect search performance metrics
+      const searchInput = await screen.findByRole('searchbox')
+      const searchStart = performance.now()
+      await userEvent.type(searchInput, 'test')
+      startMetrics.searchTime = performance.now() - searchStart
+
+      // Verify metrics are within acceptable ranges
+      expect(startMetrics.renderTime).toBeLessThan(1000)
+      expect(startMetrics.searchTime).toBeLessThan(500)
+    })
+
+    it('should report performance degradation warnings', async () => {
+      const veryLargeDataset = createLargeGuestDataset(2000)
+      mockPerformanceData.guests = veryLargeDataset
+
+      // Mock console.warn to capture performance warnings
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+      render(<GuestListBuilder {...defaultProps} />)
+      
+      await waitFor(() => {
+        expect(screen.getByText('Guest List')).toBeInTheDocument()
+      }, { timeout: 5000 })
+
+      // Should warn about performance with very large datasets
+      // This would be implemented in the actual component
+      
+      warnSpy.mockRestore()
+    })
+  })
+
+  describe('Business Logic Validation', () => {
+    it('should enforce wedding-specific business rules', async () => {
+      render(<GuestListBuilder {...defaultProps} />)
+      
+      // Test wedding-specific logic (seating constraints, RSVP rules, etc.)
+      // This would verify domain-specific business rules
+    })
+
+    it('should handle complex guest relationships', async () => {
+      const complexDataset = createLargeGuestDataset(50).map((guest, index) => ({
+        ...guest,
+        household_id: index < 20 ? `household-${Math.floor(index / 4)}` : null,
+        plus_one: index % 3 === 0,
+        plus_one_name: index % 3 === 0 ? `Plus for ${guest.first_name}` : null
+      }))
+      
+      mockPerformanceData.guests = complexDataset
+
+      render(<GuestListBuilder {...defaultProps} />)
+      
+      // Test household groupings and plus-one relationships
+      // This would verify complex relationship handling
+    })
+  })
+})

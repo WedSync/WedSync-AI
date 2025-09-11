@@ -1,0 +1,556 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { Switch } from '@/components/ui/switch';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { toast } from 'sonner';
+import { 
+  Globe, 
+  Lock, 
+  Code, 
+  Search, 
+  Languages, 
+  Eye, 
+  EyeOff,
+  Save,
+  Publish,
+  Settings,
+  Palette,
+  Heart,
+  Users,
+  Gift,
+  MapPin,
+  Plus,
+  Edit,
+  Trash2,
+  Move
+} from 'lucide-react';
+
+export default function WeddingWebsitePage() {
+  const [isPublished, setIsPublished] = useState(false);
+  const [isPasswordProtected, setIsPasswordProtected] = useState(false);
+  const [selectedLanguage, setSelectedLanguage] = useState('en');
+  const [customCSS, setCustomCSS] = useState('');
+  const [seoSettings, setSeoSettings] = useState({
+    title: '',
+    description: '',
+    keywords: ''
+  });
+
+  const handlePublish = async () => {
+    try {
+      setIsPublished(!isPublished);
+      toast.success(isPublished ? 'Website unpublished' : 'Website published successfully!');
+    } catch (error) {
+      toast.error('Failed to update publish status');
+    }
+  };
+
+  const handleSaveCSS = () => {
+    toast.success('Custom CSS saved successfully');
+  };
+
+  const handleSaveSEO = () => {
+    toast.success('SEO settings saved successfully');
+  };
+
+  return (
+    <div className="container mx-auto py-8 space-y-6">
+      <div className="flex justify-between items-center">
+        <div>
+          <h1 className="text-3xl font-bold">Wedding Website Builder</h1>
+          <p className="text-muted-foreground mt-2">Create and customize your wedding website</p>
+        </div>
+        <div className="flex gap-3">
+          <Button variant="outline" className="gap-2">
+            <Eye className="h-4 w-4" />
+            Preview
+          </Button>
+          <Button 
+            onClick={handlePublish}
+            variant={isPublished ? "destructive" : "default"}
+            className="gap-2"
+          >
+            {isPublished ? (
+              <>
+                <EyeOff className="h-4 w-4" />
+                Unpublish
+              </>
+            ) : (
+              <>
+                <Publish className="h-4 w-4" />
+                Publish
+              </>
+            )}
+          </Button>
+        </div>
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center justify-between">
+            Website Status
+            <Badge variant={isPublished ? "success" : "secondary"}>
+              {isPublished ? "Published" : "Draft"}
+            </Badge>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="space-y-1">
+              <Label className="flex items-center gap-2">
+                <Lock className="h-4 w-4" />
+                Password Protection
+              </Label>
+              <p className="text-sm text-muted-foreground">
+                Require a password to view your website
+              </p>
+            </div>
+            <Switch
+              checked={isPasswordProtected}
+              onCheckedChange={setIsPasswordProtected}
+            />
+          </div>
+          {isPasswordProtected && (
+            <div className="space-y-2 pl-6">
+              <Label htmlFor="website-password">Website Password</Label>
+              <Input
+                id="website-password"
+                type="password"
+                placeholder="Enter password for guests"
+              />
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Tabs defaultValue="content" className="space-y-4">
+        <TabsList className="grid grid-cols-6 w-full">
+          <TabsTrigger value="content" className="gap-2">
+            <Heart className="h-4 w-4" />
+            Content
+          </TabsTrigger>
+          <TabsTrigger value="story" className="gap-2">
+            <Heart className="h-4 w-4" />
+            Our Story
+          </TabsTrigger>
+          <TabsTrigger value="party" className="gap-2">
+            <Users className="h-4 w-4" />
+            Wedding Party
+          </TabsTrigger>
+          <TabsTrigger value="registry" className="gap-2">
+            <Gift className="h-4 w-4" />
+            Registry
+          </TabsTrigger>
+          <TabsTrigger value="travel" className="gap-2">
+            <MapPin className="h-4 w-4" />
+            Travel
+          </TabsTrigger>
+          <TabsTrigger value="settings" className="gap-2">
+            <Settings className="h-4 w-4" />
+            Settings
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="content">
+          <Card>
+            <CardHeader>
+              <CardTitle>Website Content</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="hero-title">Hero Title</Label>
+                  <Input id="hero-title" placeholder="John & Jane" />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="wedding-date">Wedding Date</Label>
+                  <Input id="wedding-date" type="date" />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="welcome-message">Welcome Message</Label>
+                <Textarea
+                  id="welcome-message"
+                  placeholder="Welcome to our wedding website..."
+                  rows={4}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="venue-name">Venue Name</Label>
+                  <Input id="venue-name" placeholder="The Grand Ballroom" />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="venue-address">Venue Address</Label>
+                  <Input id="venue-address" placeholder="123 Wedding Lane" />
+                </div>
+              </div>
+              <Button className="w-full">Save Content</Button>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="story">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center justify-between">
+                Our Story Timeline
+                <Button size="sm" className="gap-2">
+                  <Plus className="h-4 w-4" />
+                  Add Story
+                </Button>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                <div className="border rounded-lg p-4 space-y-3">
+                  <div className="flex items-start justify-between">
+                    <div className="space-y-1">
+                      <h3 className="font-semibold">How We Met</h3>
+                      <p className="text-sm text-muted-foreground">June 15, 2020</p>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button size="sm" variant="ghost">
+                        <Edit className="h-4 w-4" />
+                      </Button>
+                      <Button size="sm" variant="ghost">
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                  <p className="text-sm">We first met at a coffee shop in downtown...</p>
+                </div>
+                <div className="border rounded-lg p-4 space-y-3">
+                  <div className="flex items-start justify-between">
+                    <div className="space-y-1">
+                      <h3 className="font-semibold">First Date</h3>
+                      <p className="text-sm text-muted-foreground">July 1, 2020</p>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button size="sm" variant="ghost">
+                        <Edit className="h-4 w-4" />
+                      </Button>
+                      <Button size="sm" variant="ghost">
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                  <p className="text-sm">Our first official date was at the local Italian restaurant...</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="party">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center justify-between">
+                Wedding Party
+                <Button size="sm" className="gap-2">
+                  <Plus className="h-4 w-4" />
+                  Add Member
+                </Button>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="border rounded-lg p-4">
+                  <div className="flex items-start justify-between mb-3">
+                    <div>
+                      <h3 className="font-semibold">Sarah Johnson</h3>
+                      <Badge variant="secondary">Maid of Honor</Badge>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button size="sm" variant="ghost">
+                        <Edit className="h-4 w-4" />
+                      </Button>
+                      <Button size="sm" variant="ghost">
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    Best friend since college and partner in all adventures.
+                  </p>
+                </div>
+                <div className="border rounded-lg p-4">
+                  <div className="flex items-start justify-between mb-3">
+                    <div>
+                      <h3 className="font-semibold">Michael Smith</h3>
+                      <Badge variant="secondary">Best Man</Badge>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button size="sm" variant="ghost">
+                        <Edit className="h-4 w-4" />
+                      </Button>
+                      <Button size="sm" variant="ghost">
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    Brother and lifelong best friend.
+                  </p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="registry">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center justify-between">
+                Registry Links
+                <Button size="sm" className="gap-2">
+                  <Plus className="h-4 w-4" />
+                  Add Registry
+                </Button>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between p-3 border rounded-lg">
+                  <div className="flex items-center gap-3">
+                    <Gift className="h-5 w-5 text-muted-foreground" />
+                    <div>
+                      <p className="font-medium">Amazon</p>
+                      <p className="text-sm text-muted-foreground">amazon.com/wedding-registry</p>
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button size="sm" variant="ghost">
+                      <Edit className="h-4 w-4" />
+                    </Button>
+                    <Button size="sm" variant="ghost">
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between p-3 border rounded-lg">
+                  <div className="flex items-center gap-3">
+                    <Gift className="h-5 w-5 text-muted-foreground" />
+                    <div>
+                      <p className="font-medium">Target</p>
+                      <p className="text-sm text-muted-foreground">target.com/gift-registry</p>
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button size="sm" variant="ghost">
+                      <Edit className="h-4 w-4" />
+                    </Button>
+                    <Button size="sm" variant="ghost">
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="travel">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center justify-between">
+                Travel Information
+                <Button size="sm" className="gap-2">
+                  <Plus className="h-4 w-4" />
+                  Add Location
+                </Button>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                <div className="border rounded-lg p-4">
+                  <div className="flex items-start justify-between mb-2">
+                    <div>
+                      <h3 className="font-semibold">Grand Hotel Downtown</h3>
+                      <Badge variant="outline">Accommodation</Badge>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button size="sm" variant="ghost">
+                        <Edit className="h-4 w-4" />
+                      </Button>
+                      <Button size="sm" variant="ghost">
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                  <p className="text-sm text-muted-foreground mb-2">
+                    Special wedding rates available. Use code: SMITH2024
+                  </p>
+                  <div className="text-sm space-y-1">
+                    <p className="flex items-center gap-2">
+                      <MapPin className="h-3 w-3" />
+                      123 Main Street, Downtown
+                    </p>
+                    <p className="text-primary">grandhoteldowntown.com</p>
+                  </div>
+                </div>
+                <div className="border rounded-lg p-4">
+                  <div className="flex items-start justify-between mb-2">
+                    <div>
+                      <h3 className="font-semibold">Airport Shuttle Service</h3>
+                      <Badge variant="outline">Transportation</Badge>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button size="sm" variant="ghost">
+                        <Edit className="h-4 w-4" />
+                      </Button>
+                      <Button size="sm" variant="ghost">
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    Complimentary shuttle from airport to venue
+                  </p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="settings">
+          <div className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Code className="h-5 w-5" />
+                  Custom CSS Editor
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="custom-css">Custom Styles</Label>
+                  <Textarea
+                    id="custom-css"
+                    value={customCSS}
+                    onChange={(e) => setCustomCSS(e.target.value)}
+                    placeholder="/* Add your custom CSS here */
+.hero-section {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+.wedding-date {
+  font-family: 'Playfair Display', serif;
+  font-size: 2rem;
+}"
+                    rows={10}
+                    className="font-mono text-sm"
+                  />
+                </div>
+                <Button onClick={handleSaveCSS} className="w-full">
+                  <Save className="mr-2 h-4 w-4" />
+                  Save Custom CSS
+                </Button>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Languages className="h-5 w-5" />
+                  Multi-Language Support
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="primary-language">Primary Language</Label>
+                  <Select value={selectedLanguage} onValueChange={setSelectedLanguage}>
+                    <SelectTrigger id="primary-language">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="en">English</SelectItem>
+                      <SelectItem value="es">Spanish</SelectItem>
+                      <SelectItem value="fr">French</SelectItem>
+                      <SelectItem value="de">German</SelectItem>
+                      <SelectItem value="it">Italian</SelectItem>
+                      <SelectItem value="pt">Portuguese</SelectItem>
+                      <SelectItem value="zh">Chinese</SelectItem>
+                      <SelectItem value="ja">Japanese</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Additional Languages</Label>
+                  <div className="flex flex-wrap gap-2">
+                    <Badge variant="secondary">Spanish</Badge>
+                    <Badge variant="secondary">French</Badge>
+                    <Button size="sm" variant="outline">
+                      <Plus className="h-3 w-3 mr-1" />
+                      Add Language
+                    </Button>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Search className="h-5 w-5" />
+                  SEO Optimization
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="seo-title">Page Title</Label>
+                  <Input
+                    id="seo-title"
+                    value={seoSettings.title}
+                    onChange={(e) => setSeoSettings({...seoSettings, title: e.target.value})}
+                    placeholder="John & Jane's Wedding - June 2024"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Recommended: 50-60 characters
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="seo-description">Meta Description</Label>
+                  <Textarea
+                    id="seo-description"
+                    value={seoSettings.description}
+                    onChange={(e) => setSeoSettings({...seoSettings, description: e.target.value})}
+                    placeholder="Join us for the wedding celebration of John Smith and Jane Doe on June 15, 2024..."
+                    rows={3}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Recommended: 150-160 characters
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="seo-keywords">Keywords</Label>
+                  <Input
+                    id="seo-keywords"
+                    value={seoSettings.keywords}
+                    onChange={(e) => setSeoSettings({...seoSettings, keywords: e.target.value})}
+                    placeholder="wedding, john smith, jane doe, june 2024, grand ballroom"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Separate keywords with commas
+                  </p>
+                </div>
+                <Button onClick={handleSaveSEO} className="w-full">
+                  <Save className="mr-2 h-4 w-4" />
+                  Save SEO Settings
+                </Button>
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}

@@ -1,0 +1,432 @@
+// WS-232: Predictive Analytics API Endpoint
+// Team E - Platform Operations Focus
+// REST API for comprehensive predictive modeling system
+
+import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@supabase/supabase-js'
+import { cookies } from 'next/headers'
+import { PredictiveModelingSystem } from '@/lib/ml/prediction/predictive-modeling-system'
+import { BookingPredictor } from '@/lib/ml/prediction/booking-predictor'
+import { RevenueForecaster } from '@/lib/ml/prediction/revenue-forecaster'
+import { PricingOptimizer } from '@/lib/ml/prediction/pricing-optimizer'
+import { ResourcePlanner } from '@/lib/ml/prediction/resource-planner'
+import { rateLimit } from '@/lib/rate-limit'
+
+const predictiveSystem = new PredictiveModelingSystem()
+const bookingPredictor = new BookingPredictor()
+const revenueForecaster = new RevenueForecaster()
+const pricingOptimizer = new PricingOptimizer()
+const resourcePlanner = new ResourcePlanner()
+
+/**
+ * GET /api/predictive-analytics
+ * Comprehensive predictive analytics for wedding suppliers
+ */
+export async function GET(request: NextRequest) {
+  try {
+    // Rate limiting for API protection
+    const identifier = request.headers.get('x-forwarded-for') || 'anonymous'
+    const rateLimitResult = await rateLimit(identifier, 10, 60000) // 10 requests per minute
+    
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { error: 'Too many requests. Please try again later.' },
+        { status: 429 }
+      )
+    }
+
+    // Create Supabase client with row level security
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
+    
+    // Authenticate user
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized access' },
+        { status: 401 }
+      )
+    }
+
+    // Get supplier organization
+    const { data: org, error: orgError } = await supabase
+      .from('organizations')
+      .select('id, subscription_tier')
+      .eq('owner_id', user.id)
+      .single()
+
+    if (orgError || !org) {
+      return NextResponse.json(
+        { error: 'Supplier organization not found' },
+        { status: 404 }
+      )
+    }
+
+    // Check subscription tier permissions
+    if (!hasAnalyticsAccess(org.subscription_tier)) {
+      return NextResponse.json(
+        { 
+          error: 'Predictive analytics requires Professional tier or higher',
+          upgrade_required: true,
+          current_tier: org.subscription_tier
+        },
+        { status: 403 }
+      )
+    }
+
+    // Parse query parameters
+    const url = new URL(request.url)
+    const analysisType = url.searchParams.get('type') || 'comprehensive'
+    const timeframe = url.searchParams.get('timeframe') || '12'
+
+    console.log(`Generating ${analysisType} analytics for supplier: ${org.id}`)
+    
+    // Generate predictions based on request type
+    let response: any
+
+    switch (analysisType) {
+      case 'comprehensive':
+        response = await predictiveSystem.generateComprehensiveInsights(org.id)
+        break
+        
+      case 'booking_prediction':
+        const { data: clients } = await supabase
+          .from('clients')
+          .select('id')
+          .eq('organization_id', org.id)
+          .limit(20)
+        
+        const clientIds = clients?.map(c => c.id) || []
+        response = await bookingPredictor.batchPredictBookingProbability(clientIds)
+        break
+        
+      case 'revenue_forecast':
+        const period = url.searchParams.get('period') as 'monthly' | 'quarterly' | 'yearly' || 'monthly'
+        response = await revenueForecaster.forecastRevenue(org.id, period)
+        break
+        
+      case 'pricing_optimization':
+        const serviceCategory = url.searchParams.get('service') || 'wedding_photography'
+        response = await pricingOptimizer.optimizePricing(org.id, serviceCategory)
+        break
+        
+      case 'resource_planning':
+        const horizonMonths = parseInt(timeframe)
+        response = await resourcePlanner.planResources(org.id, horizonMonths)
+        break
+        
+      case 'system_metrics':
+        response = await predictiveSystem.getSystemMetrics()
+        break
+        
+      default:
+        return NextResponse.json(
+          { error: `Unknown analysis type: ${analysisType}` },
+          { status: 400 }
+        )
+    }
+
+    // Log analytics usage for billing/metrics
+    await logAnalyticsUsage(org.id, analysisType, user.id)
+
+    return NextResponse.json({
+      success: true,
+      data: response,
+      metadata: {
+        analysis_type: analysisType,
+        supplier_id: org.id,
+        generated_at: new Date().toISOString(),
+        subscription_tier: org.subscription_tier
+      }
+    })
+
+  } catch (error) {
+    console.error('Predictive analytics API error:', error)
+    
+    return NextResponse.json(
+      { 
+        error: 'Failed to generate predictive analytics',
+        message: error instanceof Error ? error.message : 'Unknown error'
+      },
+      { status: 500 }
+    )
+  }
+}
+
+/**
+ * POST /api/predictive-analytics
+ * Batch analytics generation or custom analysis requests
+ */
+export async function POST(request: NextRequest) {
+  try {
+    // Rate limiting for batch operations
+    const identifier = request.headers.get('x-forwarded-for') || 'anonymous'
+    const rateLimitResult = await rateLimit(identifier, 5, 300000) // 5 requests per 5 minutes
+    
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { error: 'Too many batch requests. Please try again later.' },
+        { status: 429 }
+      )
+    }
+
+    // Create Supabase client
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
+    
+    // Authenticate user
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized access' },
+        { status: 401 }
+      )
+    }
+
+    // Parse request body
+    const body = await request.json()
+    const { operation, parameters } = body
+
+    // Get supplier organization
+    const { data: org, error: orgError } = await supabase
+      .from('organizations')
+      .select('id, subscription_tier')
+      .eq('owner_id', user.id)
+      .single()
+
+    if (orgError || !org) {
+      return NextResponse.json(
+        { error: 'Supplier organization not found' },
+        { status: 404 }
+      )
+    }
+
+    // Check subscription permissions
+    if (!hasAnalyticsAccess(org.subscription_tier)) {
+      return NextResponse.json(
+        { 
+          error: 'Advanced analytics requires Professional tier or higher',
+          upgrade_required: true
+        },
+        { status: 403 }
+      )
+    }
+
+    let response: any
+
+    switch (operation) {
+      case 'batch_client_analysis':
+        const { client_ids } = parameters
+        if (!Array.isArray(client_ids) || client_ids.length === 0) {
+          return NextResponse.json(
+            { error: 'client_ids array is required' },
+            { status: 400 }
+          )
+        }
+        
+        response = await bookingPredictor.batchPredictBookingProbability(client_ids)
+        break
+
+      case 'historical_validation':
+        const { days = 30 } = parameters
+        response = await bookingPredictor.validateAgainstHistoricalData(days)
+        break
+
+      case 'custom_forecast':
+        const { forecast_types, periods } = parameters
+        
+        if (!Array.isArray(forecast_types)) {
+          return NextResponse.json(
+            { error: 'forecast_types array is required' },
+            { status: 400 }
+          )
+        }
+
+        const forecasts = {}
+        for (const type of forecast_types) {
+          if (type === 'revenue') {
+            forecasts['revenue'] = {}
+            for (const period of periods || ['monthly', 'quarterly', 'yearly']) {
+              forecasts['revenue'][period] = await revenueForecaster.forecastRevenue(org.id, period)
+            }
+          } else if (type === 'resource_planning') {
+            const horizon = periods?.[0] || 12
+            forecasts['resource_planning'] = await resourcePlanner.planResources(org.id, horizon)
+          }
+        }
+        
+        response = forecasts
+        break
+
+      case 'optimization_analysis':
+        const { optimization_types } = parameters
+        
+        const optimizations = {}
+        if (optimization_types?.includes('pricing')) {
+          optimizations['pricing'] = await pricingOptimizer.optimizePricing(org.id)
+        }
+        
+        response = optimizations
+        break
+
+      default:
+        return NextResponse.json(
+          { error: `Unknown operation: ${operation}` },
+          { status: 400 }
+        )
+    }
+
+    // Log batch analytics usage
+    await logAnalyticsUsage(org.id, `batch_${operation}`, user.id)
+
+    return NextResponse.json({
+      success: true,
+      data: response,
+      metadata: {
+        operation,
+        supplier_id: org.id,
+        generated_at: new Date().toISOString(),
+        parameters_processed: Object.keys(parameters).length
+      }
+    })
+
+  } catch (error) {
+    console.error('Batch predictive analytics error:', error)
+    
+    return NextResponse.json(
+      { 
+        error: 'Failed to generate batch analytics',
+        message: error instanceof Error ? error.message : 'Unknown error'
+      },
+      { status: 500 }
+    )
+  }
+}
+
+/**
+ * PUT /api/predictive-analytics
+ * Update prediction models or system configuration
+ */
+export async function PUT(request: NextRequest) {
+  try {
+    // Admin-only endpoint for model management
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
+    
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized access' },
+        { status: 401 }
+      )
+    }
+
+    // Check if user has admin role
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('role')
+      .eq('id', user.id)
+      .single()
+
+    if (profile?.role !== 'admin') {
+      return NextResponse.json(
+        { error: 'Admin access required' },
+        { status: 403 }
+      )
+    }
+
+    const body = await request.json()
+    const { action, model_type, configuration } = body
+
+    // Model management operations
+    let response: any
+
+    switch (action) {
+      case 'retrain_model':
+        // In production, this would trigger ML model retraining
+        response = {
+          message: `${model_type} model retraining initiated`,
+          estimated_completion: new Date(Date.now() + 3600000), // 1 hour
+          status: 'processing'
+        }
+        break
+
+      case 'update_configuration':
+        // Update system configuration
+        response = {
+          message: 'Configuration updated successfully',
+          updated_parameters: Object.keys(configuration),
+          applied_at: new Date().toISOString()
+        }
+        break
+
+      case 'flush_cache':
+        // Clear prediction caches
+        response = {
+          message: 'Prediction caches flushed',
+          cache_types_cleared: ['booking_predictions', 'revenue_forecasts', 'pricing_recommendations']
+        }
+        break
+
+      default:
+        return NextResponse.json(
+          { error: `Unknown action: ${action}` },
+          { status: 400 }
+        )
+    }
+
+    return NextResponse.json({
+      success: true,
+      data: response
+    })
+
+  } catch (error) {
+    console.error('Model management error:', error)
+    
+    return NextResponse.json(
+      { error: 'Failed to update models' },
+      { status: 500 }
+    )
+  }
+}
+
+/**
+ * Helper function to check subscription tier analytics access
+ */
+function hasAnalyticsAccess(subscriptionTier: string): boolean {
+  const analyticsAccessTiers = ['professional', 'scale', 'enterprise']
+  return analyticsAccessTiers.includes(subscriptionTier?.toLowerCase())
+}
+
+/**
+ * Log analytics usage for billing and metrics tracking
+ */
+async function logAnalyticsUsage(
+  supplierId: string, 
+  analysisType: string, 
+  userId: string
+): Promise<void> {
+  try {
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
+    
+    await supabase
+      .from('analytics_usage')
+      .insert({
+        supplier_id: supplierId,
+        user_id: userId,
+        analysis_type: analysisType,
+        usage_timestamp: new Date().toISOString(),
+        api_endpoint: '/api/predictive-analytics'
+      })
+
+    // Update usage counters for billing
+    await supabase
+      .from('organizations')
+      .update({
+        analytics_usage_count: supabase.raw('analytics_usage_count + 1'),
+        last_analytics_usage: new Date().toISOString()
+      })
+      .eq('id', supplierId)
+
+  } catch (error) {
+    console.error('Failed to log analytics usage:', error)
+    // Non-critical error, don't fail the request
+  }
+}

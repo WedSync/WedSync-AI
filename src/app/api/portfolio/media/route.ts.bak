@@ -1,0 +1,291 @@
+// WS-119: Portfolio Media Management API
+// Team B Batch 9 Round 2
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import { portfolioService } from '@/lib/services/portfolioService';
+import { z } from 'zod';
+
+const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+const ALLOWED_TYPES = [
+  'image/jpeg',
+  'image/jpg', 
+  'image/png',
+  'image/webp',
+  'video/mp4',
+  'video/webm',
+  'video/mov'
+];
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
+    const { data: { session } } = await supabase.auth.getSession();
+
+    if (!session) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const formData = await request.formData();
+    const file = formData.get('file') as File;
+    const projectId = formData.get('project_id') as string;
+    const vendorId = formData.get('vendor_id') as string;
+    const title = formData.get('title') as string;
+    const caption = formData.get('caption') as string;
+    const altText = formData.get('alt_text') as string;
+    const tags = formData.get('tags') as string;
+    const isCover = formData.get('is_cover') === 'true';
+
+    if (!file) {
+      return NextResponse.json({ error: 'No file provided' }, { status: 400 });
+    }
+
+    if (!vendorId) {
+      return NextResponse.json({ error: 'Vendor ID is required' }, { status: 400 });
+    }
+
+    // Validate file size
+    if (file.size > MAX_FILE_SIZE) {
+      return NextResponse.json(
+        { error: 'File size too large. Maximum 50MB allowed.' },
+        { status: 400 }
+      );
+    }
+
+    // Validate file type
+    if (!ALLOWED_TYPES.includes(file.type)) {
+      return NextResponse.json(
+        { error: 'Invalid file type. Only images and videos are allowed.' },
+        { status: 400 }
+      );
+    }
+
+    // Get user's organization ID and verify permissions
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', session.user.id)
+      .single();
+
+    if (!userProfile) {
+      return NextResponse.json({ error: 'User profile not found' }, { status: 404 });
+    }
+
+    // Verify vendor belongs to user's organization
+    const { data: vendor } = await supabase
+      .from('vendors')
+      .select('organization_id')
+      .eq('id', vendorId)
+      .single();
+
+    if (!vendor || vendor.organization_id !== userProfile.organization_id) {
+      return NextResponse.json({ error: 'Vendor not found or access denied' }, { status: 403 });
+    }
+
+    // If project_id provided, verify it belongs to the vendor
+    if (projectId) {
+      const { data: project } = await supabase
+        .from('portfolio_projects')
+        .select('vendor_id')
+        .eq('id', projectId)
+        .single();
+
+      if (!project || project.vendor_id !== vendorId) {
+        return NextResponse.json({ error: 'Project not found or does not belong to vendor' }, { status: 403 });
+      }
+    }
+
+    // Upload media
+    const media = await portfolioService.uploadMedia({
+      file,
+      project_id: projectId || undefined,
+      vendor_id: vendorId,
+      title: title || undefined,
+      caption: caption || undefined,
+      alt_text: altText || undefined,
+      tags: tags ? tags.split(',').map(tag => tag.trim()) : [],
+      is_cover: isCover
+    });
+
+    return NextResponse.json({ media }, { status: 201 });
+
+  } catch (error: any) {
+    console.error('Media upload error:', error);
+    
+    return NextResponse.json(
+      { error: 'Failed to upload media', details: error.message },
+      { status: 500 }
+    );
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
+    const { data: { session } } = await supabase.auth.getSession();
+
+    if (!session) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { searchParams } = new URL(request.url);
+    const projectId = searchParams.get('project_id');
+
+    if (!projectId) {
+      return NextResponse.json({ error: 'Project ID is required' }, { status: 400 });
+    }
+
+    // Verify user has access to this project
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', session.user.id)
+      .single();
+
+    if (!userProfile) {
+      return NextResponse.json({ error: 'User profile not found' }, { status: 404 });
+    }
+
+    const { data: project } = await supabase
+      .from('portfolio_projects')
+      .select('organization_id')
+      .eq('id', projectId)
+      .single();
+
+    if (!project || project.organization_id !== userProfile.organization_id) {
+      return NextResponse.json({ error: 'Project not found or access denied' }, { status: 403 });
+    }
+
+    const media = await portfolioService.getMedia(projectId);
+
+    return NextResponse.json({ media });
+
+  } catch (error: any) {
+    console.error('Media GET error:', error);
+    
+    return NextResponse.json(
+      { error: 'Failed to fetch media' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function PATCH(request: NextRequest) {
+  try {
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
+    const { data: { session } } = await supabase.auth.getSession();
+
+    if (!session) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { searchParams } = new URL(request.url);
+    const mediaId = searchParams.get('id');
+
+    if (!mediaId) {
+      return NextResponse.json({ error: 'Media ID is required' }, { status: 400 });
+    }
+
+    const body = await request.json();
+    const updates = z.object({
+      title: z.string().optional(),
+      caption: z.string().optional(),
+      alt_text: z.string().optional(),
+      tags: z.array(z.string()).optional(),
+      is_cover: z.boolean().optional(),
+      display_order: z.number().optional()
+    }).parse(body);
+
+    // Verify user has access to this media
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', session.user.id)
+      .single();
+
+    if (!userProfile) {
+      return NextResponse.json({ error: 'User profile not found' }, { status: 404 });
+    }
+
+    const { data: existingMedia } = await supabase
+      .from('portfolio_media')
+      .select('organization_id')
+      .eq('id', mediaId)
+      .single();
+
+    if (!existingMedia || existingMedia.organization_id !== userProfile.organization_id) {
+      return NextResponse.json({ error: 'Media not found or access denied' }, { status: 403 });
+    }
+
+    const media = await portfolioService.updateMedia(mediaId, updates);
+
+    return NextResponse.json({ media });
+
+  } catch (error: any) {
+    console.error('Media PATCH error:', error);
+    
+    if (error?.name === 'ZodError') {
+      return NextResponse.json(
+        { error: 'Invalid request data', details: error.errors },
+        { status: 400 }
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Failed to update media' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function DELETE(request: NextRequest) {
+  try {
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
+    const { data: { session } } = await supabase.auth.getSession();
+
+    if (!session) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { searchParams } = new URL(request.url);
+    const mediaId = searchParams.get('id');
+
+    if (!mediaId) {
+      return NextResponse.json({ error: 'Media ID is required' }, { status: 400 });
+    }
+
+    // Verify user has access to this media
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', session.user.id)
+      .single();
+
+    if (!userProfile) {
+      return NextResponse.json({ error: 'User profile not found' }, { status: 404 });
+    }
+
+    const { data: existingMedia } = await supabase
+      .from('portfolio_media')
+      .select('organization_id')
+      .eq('id', mediaId)
+      .single();
+
+    if (!existingMedia || existingMedia.organization_id !== userProfile.organization_id) {
+      return NextResponse.json({ error: 'Media not found or access denied' }, { status: 403 });
+    }
+
+    await portfolioService.deleteMedia(mediaId);
+
+    return NextResponse.json({ success: true });
+
+  } catch (error: any) {
+    console.error('Media DELETE error:', error);
+    
+    return NextResponse.json(
+      { error: 'Failed to delete media' },
+      { status: 500 }
+    );
+  }
+}

@@ -1,0 +1,49 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { RSVPService } from '@/lib/services/rsvp-service';
+import { headers } from 'next/headers';
+
+// This endpoint should be called by a cron job service (e.g., Vercel Cron, GitHub Actions, or external service)
+// It processes all pending RSVP reminders
+
+export async function GET(req: NextRequest) {
+  try {
+    // Verify the request is authorized (add your own auth mechanism)
+    const headersList = await headers();
+    const authHeader = headersList.get('authorization');
+    const cronSecret = process.env.CRON_SECRET;
+    
+    if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    console.log('[RSVP Cron] Starting reminder processing...');
+
+    // Process pending reminders
+    const results = await RSVPService.processPendingReminders();
+
+    console.log(`[RSVP Cron] Processed ${results.sent} reminders successfully, ${results.failed} failed`);
+
+    if (results.errors.length > 0) {
+      console.error('[RSVP Cron] Errors:', results.errors);
+    }
+
+    return NextResponse.json({
+      success: true,
+      sent: results.sent,
+      failed: results.failed,
+      errors: results.errors,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('[RSVP Cron] Fatal error:', error);
+    return NextResponse.json({ 
+      error: 'Failed to process reminders',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    }, { status: 500 });
+  }
+}
+
+// Also support POST for flexibility
+export async function POST(req: NextRequest) {
+  return GET(req);
+}

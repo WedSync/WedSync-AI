@@ -1,0 +1,307 @@
+/**
+ * Mobile Seating Types - WS-154 Implementation
+ * Team D - Mobile-optimized seating interface types
+ */
+
+import { ReactNode } from 'react';
+
+// Base Types
+export interface SeatingTable {
+  id: string;
+  name: string;
+  shape: 'round' | 'rectangle' | 'square';
+  capacity: number;
+  position: {
+    x: number;
+    y: number;
+  };
+  rotation: number;
+  guests: Guest[];
+  specialRequirements?: string[];
+}
+
+export interface Guest {
+  id: string;
+  firstName: string;
+  lastName: string;
+  email?: string;
+  phone?: string;
+  category: GuestCategory;
+  dietaryRestrictions?: DietaryRestriction[];
+  accessibilityNeeds?: string[];
+  plusOnes?: Guest[];
+  tableId?: string;
+  rsvpStatus: RSVPStatus;
+  conflictFlags?: ConflictFlag[];
+}
+
+export interface SeatingArrangement {
+  id: string;
+  name: string;
+  coupleId: string;
+  tables: SeatingTable[];
+  venue: Venue;
+  lastModified: Date;
+  isActive: boolean;
+  version: number;
+  conflictCount: number;
+}
+
+export interface Venue {
+  id: string;
+  name: string;
+  layout: {
+    width: number;
+    height: number;
+    background?: string;
+  };
+  zones: VenueZone[];
+}
+
+export interface VenueZone {
+  id: string;
+  name: string;
+  type: 'dining' | 'dance_floor' | 'bar' | 'stage' | 'entrance';
+  bounds: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+}
+
+// Enums
+export type GuestCategory = 'family' | 'friends' | 'vendors' | 'wedding_party';
+export type RSVPStatus = 'pending' | 'attending' | 'declined' | 'tentative';
+export type ConflictType = 'dietary' | 'personal' | 'seating_preference' | 'accessibility';
+
+export interface ConflictFlag {
+  type: ConflictType;
+  severity: 'low' | 'medium' | 'high';
+  message: string;
+  suggestedAction?: string;
+}
+
+export interface DietaryRestriction {
+  id: string;
+  name: string;
+  severity: 'allergy' | 'intolerance' | 'preference';
+  description?: string;
+}
+
+// Touch Interaction Types
+export interface TouchGesture {
+  type: 'tap' | 'long_press' | 'swipe' | 'pinch' | 'pan';
+  target: string;
+  data?: any;
+}
+
+export interface GestureHandlers {
+  onTap?: (target: string, data?: any) => void;
+  onLongPress?: (target: string, data?: any) => void;
+  onSwipe?: (direction: 'left' | 'right' | 'up' | 'down', target: string) => void;
+  onPinch?: (scale: number, center: { x: number; y: number }) => void;
+  onPan?: (delta: { x: number; y: number }) => void;
+}
+
+// Mobile UI Component Props
+export interface MobileSeatingViewerProps {
+  arrangement?: SeatingArrangement;
+  onTableSelect?: (tableId: string) => void;
+  onGuestAssign?: (guestId: string, tableId: string) => void;
+  isOffline?: boolean;
+  className?: string;
+}
+
+export interface TouchTableCardProps {
+  table: SeatingTable;
+  isSelected?: boolean;
+  onSelect?: (tableId: string) => void;
+  onGuestAssign?: (tableId: string) => void;
+  gestureHandlers?: GestureHandlers;
+  className?: string;
+}
+
+export interface GuestAssignmentModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  selectedTable?: SeatingTable;
+  availableGuests: Guest[];
+  onAssignGuests: (guestIds: string[], tableId: string) => void;
+  searchQuery?: string;
+  onSearchChange?: (query: string) => void;
+}
+
+export interface ConflictMobileBannerProps {
+  conflicts: ConflictFlag[];
+  onDismiss: (conflictId: string) => void;
+  onQuickFix?: (conflictId: string) => void;
+  priority?: 'low' | 'medium' | 'high';
+  className?: string;
+}
+
+export interface SeatingNavigationControlsProps {
+  onZoomIn: () => void;
+  onZoomOut: () => void;
+  onResetView: () => void;
+  onToggleMinimap?: () => void;
+  currentZoom: number;
+  minZoom: number;
+  maxZoom: number;
+  showMinimap?: boolean;
+  className?: string;
+}
+
+export interface MobileSeatingDashboardProps {
+  arrangement?: SeatingArrangement;
+  stats?: SeatingStats;
+  quickActions?: QuickAction[];
+  className?: string;
+}
+
+// Dashboard Types
+export interface SeatingStats {
+  totalGuests: number;
+  seatedGuests: number;
+  unseatedGuests: number;
+  totalTables: number;
+  emptyTables: number;
+  conflictCount: number;
+  completionPercentage: number;
+}
+
+export interface QuickAction {
+  id: string;
+  label: string;
+  icon: ReactNode;
+  action: () => void;
+  disabled?: boolean;
+}
+
+// Offline and Sync Types
+export interface OfflineSeatingCache {
+  arrangement: SeatingArrangement;
+  lastSync: Date;
+  pendingChanges: SeatingChange[];
+  conflictResolution?: ConflictResolution[];
+}
+
+export interface SeatingChange {
+  id: string;
+  type: 'assign_guest' | 'move_guest' | 'update_table' | 'create_table' | 'delete_table';
+  timestamp: Date;
+  data: any;
+  syncStatus: 'pending' | 'syncing' | 'synced' | 'failed';
+}
+
+export interface ConflictResolution {
+  changeId: string;
+  resolution: 'accept_local' | 'accept_remote' | 'merge' | 'manual';
+  resolvedBy: 'user' | 'system';
+  timestamp: Date;
+}
+
+// Authentication and Security
+export interface CoupleAuth {
+  coupleId: string;
+  userId: string;
+  permissions: SeatingPermission[];
+  sessionId: string;
+  expiresAt: Date;
+}
+
+export type SeatingPermission = 'view' | 'edit' | 'share' | 'export';
+
+// Performance and Optimization
+export interface ViewportBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface RenderOptions {
+  enableVirtualization: boolean;
+  maxVisibleTables: number;
+  lodThreshold: number; // Level of Detail threshold
+  enableAnimations: boolean;
+}
+
+// API Response Types
+export interface SeatingApiResponse<T = any> {
+  success: boolean;
+  data?: T;
+  error?: string;
+  conflicts?: ConflictFlag[];
+  needsSync?: boolean;
+}
+
+export interface SeatingArrangementResponse extends SeatingApiResponse<SeatingArrangement> {}
+export interface GuestListResponse extends SeatingApiResponse<Guest[]> {}
+export interface ConflictCheckResponse extends SeatingApiResponse<ConflictFlag[]> {}
+
+// Mobile-specific Types
+export interface DeviceCapabilities {
+  supportsTouchGestures: boolean;
+  supportsHapticFeedback: boolean;
+  maxTouchPoints: number;
+  screenSize: 'small' | 'medium' | 'large';
+  isLandscape: boolean;
+}
+
+export interface MobileViewportSettings {
+  minZoom: number;
+  maxZoom: number;
+  initialZoom: number;
+  centerPoint: { x: number; y: number };
+  lockAxis?: 'x' | 'y' | 'both';
+}
+
+// Event Types
+export interface SeatingEvent {
+  type: string;
+  timestamp: Date;
+  userId: string;
+  data: any;
+}
+
+export interface TableInteractionEvent extends SeatingEvent {
+  type: 'table_select' | 'table_edit' | 'guest_assign' | 'guest_remove';
+  tableId: string;
+  guestId?: string;
+}
+
+export interface ViewportEvent extends SeatingEvent {
+  type: 'zoom' | 'pan' | 'reset_view';
+  viewport: ViewportBounds;
+  scale: number;
+}
+
+// Utility Types
+export type DeepPartial<T> = {
+  [P in keyof T]?: T[P] extends object ? DeepPartial<T[P]> : T[P];
+};
+
+export type Omit<T, K extends keyof T> = Pick<T, Exclude<keyof T, K>>;
+
+export type RequiredFields<T, K extends keyof T> = T & Required<Pick<T, K>>;
+
+// Form and Validation Types
+export interface SeatingFormData {
+  arrangementName: string;
+  venueId: string;
+  tables: Partial<SeatingTable>[];
+  guestAssignments: Record<string, string>; // guestId -> tableId
+}
+
+export interface ValidationError {
+  field: string;
+  message: string;
+  code: string;
+}
+
+export interface SeatingValidationResult {
+  isValid: boolean;
+  errors: ValidationError[];
+  warnings: ConflictFlag[];
+}

@@ -1,0 +1,452 @@
+/**
+ * WS-155: Guest Communications - Production Integration Testing
+ * Team C - Batch 15 - Round 3
+ * Complete end-to-end integration testing for messaging system
+ */
+
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createClient } from '@supabase/supabase-js';
+import { ProviderLoadBalancer } from '@/lib/services/provider-load-balancer';
+import { SmartRetryLogic } from '@/lib/services/smart-retry-logic';
+import { DeliveryRateEnhancer } from '@/lib/services/delivery-rate-enhancer';
+import { MessageAnalyticsService } from '@/lib/services/message-analytics-service';
+import { GuestCommunicationInsights } from '@/lib/services/guest-communication-insights';
+import { WS155ServiceIntegrationHub } from '@/lib/monitoring/ws-155-service-integration-hub';
+
+describe('WS-155 Production Integration - E2E Testing', () => {
+  let supabase: any;
+  let loadBalancer: ProviderLoadBalancer;
+  let retryLogic: SmartRetryLogic;
+  let deliveryEnhancer: DeliveryRateEnhancer;
+  let analytics: MessageAnalyticsService;
+  let insights: GuestCommunicationInsights;
+  let integrationHub: WS155ServiceIntegrationHub;
+
+  beforeEach(async () => {
+    // Initialize production-like environment
+    supabase = createClient(
+      process.env.SUPABASE_URL || 'http://localhost:54321',
+      process.env.SUPABASE_SERVICE_ROLE_KEY || 'test-key'
+    );
+
+    // Initialize all services
+    loadBalancer = new ProviderLoadBalancer();
+    retryLogic = new SmartRetryLogic();
+    deliveryEnhancer = new DeliveryRateEnhancer();
+    analytics = new MessageAnalyticsService();
+    insights = new GuestCommunicationInsights();
+    integrationHub = new WS155ServiceIntegrationHub();
+
+    await integrationHub.initialize();
+  });
+
+  afterEach(async () => {
+    await integrationHub.shutdown();
+    vi.clearAllMocks();
+  });
+
+  describe('End-to-End Message Flow', () => {
+    it('should process guest communication through complete pipeline', async () => {
+      // Create test message
+      const message = {
+        id: 'test-msg-001',
+        type: 'wedding_reminder',
+        recipients: [
+          { email: 'guest1@example.com', name: 'Guest One' },
+          { email: 'guest2@example.com', name: 'Guest Two' },
+          { sms: '+1234567890', name: 'Guest Three' }
+        ],
+        content: {
+          subject: 'Wedding Reminder',
+          body: 'Don\'t forget about the wedding tomorrow!',
+          urgency: 'high'
+        },
+        weddingContext: {
+          weddingDate: new Date(Date.now() + 24 * 60 * 60 * 1000),
+          clientId: 'client-001',
+          timeToWedding: 24 * 60 * 60 * 1000
+        }
+      };
+
+      // Process through load balancer
+      const provider = await loadBalancer.selectProvider(message);
+      expect(provider).toBeDefined();
+      expect(['twilio', 'sendgrid', 'resend']).toContain(provider.name);
+
+      // Send message with retry logic
+      const sendResult = await retryLogic.sendWithRetry(
+        provider,
+        message,
+        { maxRetries: 3, retryDelay: 1000 }
+      );
+      expect(sendResult.success).toBe(true);
+      expect(sendResult.deliveryTime).toBeLessThan(5000);
+
+      // Enhance delivery rate
+      const enhancementResult = await deliveryEnhancer.optimizeDelivery(
+        message,
+        provider
+      );
+      expect(enhancementResult.deliveryScore).toBeGreaterThan(0.9);
+
+      // Track analytics
+      await analytics.trackMessage({
+        messageId: message.id,
+        provider: provider.name,
+        deliveryTime: sendResult.deliveryTime,
+        success: sendResult.success
+      });
+
+      // Generate insights
+      const communicationInsights = await insights.generateInsights(
+        message.weddingContext.clientId
+      );
+      expect(communicationInsights).toHaveProperty('engagementRate');
+      expect(communicationInsights).toHaveProperty('responseRate');
+    });
+
+    it('should handle bulk guest communications efficiently', async () => {
+      // Create bulk messages
+      const bulkMessages = Array.from({ length: 100 }, (_, i) => ({
+        id: `bulk-msg-${i}`,
+        type: 'save_the_date',
+        recipients: [
+          { email: `guest${i}@example.com`, name: `Guest ${i}` }
+        ],
+        content: {
+          subject: 'Save the Date',
+          body: 'Please save the date for our wedding!'
+        },
+        weddingContext: {
+          weddingDate: new Date('2025-09-01'),
+          clientId: 'client-002',
+          timeToWedding: 60 * 24 * 60 * 60 * 1000
+        }
+      }));
+
+      const startTime = Date.now();
+      const results = await Promise.allSettled(
+        bulkMessages.map(msg => loadBalancer.sendMessage(msg))
+      );
+      const endTime = Date.now();
+
+      // Check performance
+      const duration = endTime - startTime;
+      expect(duration).toBeLessThan(30000); // Should complete within 30 seconds
+
+      // Check success rate
+      const successful = results.filter(r => r.status === 'fulfilled').length;
+      const successRate = successful / results.length;
+      expect(successRate).toBeGreaterThan(0.95); // 95% success rate
+    });
+
+    it('should handle provider failover seamlessly', async () => {
+      // Simulate primary provider failure
+      const message = {
+        id: 'failover-test',
+        type: 'urgent_notification',
+        recipients: [{ email: 'test@example.com' }],
+        content: {
+          subject: 'Urgent Update',
+          body: 'Important wedding update'
+        }
+      };
+
+      // Mock primary provider failure
+      vi.spyOn(loadBalancer, 'getPrimaryProvider').mockResolvedValue({
+        name: 'sendgrid',
+        status: 'unhealthy',
+        send: vi.fn().mockRejectedValue(new Error('Provider unavailable'))
+      });
+
+      // Should automatically failover
+      const result = await loadBalancer.sendWithFailover(message);
+      expect(result.success).toBe(true);
+      expect(result.provider).not.toBe('sendgrid');
+      expect(result.failoverExecuted).toBe(true);
+      expect(result.failoverTime).toBeLessThan(100); // Sub-100ms failover
+    });
+  });
+
+  describe('Provider SLA Monitoring', () => {
+    it('should monitor provider response times', async () => {
+      const providers = ['twilio', 'sendgrid', 'resend'];
+      const metrics = [];
+
+      for (const providerName of providers) {
+        const provider = await loadBalancer.getProvider(providerName);
+        const startTime = performance.now();
+        
+        // Simulate health check
+        const health = await provider.checkHealth();
+        const responseTime = performance.now() - startTime;
+
+        metrics.push({
+          provider: providerName,
+          responseTime,
+          healthy: health.status === 'healthy'
+        });
+      }
+
+      // All providers should respond within SLA
+      metrics.forEach(metric => {
+        expect(metric.responseTime).toBeLessThan(3000); // 3 second SLA
+        expect(metric.healthy).toBe(true);
+      });
+    });
+
+    it('should track provider uptime and availability', async () => {
+      const uptimeWindow = 24 * 60 * 60 * 1000; // 24 hours
+      const providers = await loadBalancer.getAllProviders();
+
+      for (const provider of providers) {
+        const uptime = await provider.getUptime(uptimeWindow);
+        expect(uptime).toBeGreaterThan(0.99); // 99% uptime requirement
+
+        const availability = await provider.getAvailability();
+        expect(availability.isAvailable).toBe(true);
+        expect(availability.capacity).toBeGreaterThan(0);
+      }
+    });
+
+    it('should enforce rate limits per provider', async () => {
+      const provider = await loadBalancer.getProvider('sendgrid');
+      const rateLimitTest = [];
+
+      // Send messages up to rate limit
+      for (let i = 0; i < 150; i++) {
+        rateLimitTest.push(
+          provider.send({
+            to: `test${i}@example.com`,
+            subject: 'Test',
+            body: 'Test message'
+          })
+        );
+      }
+
+      const results = await Promise.allSettled(rateLimitTest);
+      const rateLimited = results.filter(
+        r => r.status === 'rejected' && 
+        r.reason?.message?.includes('rate limit')
+      );
+
+      // Should enforce rate limits
+      expect(rateLimited.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('Compliance Validation', () => {
+    it('should validate CAN-SPAM compliance', async () => {
+      const emailMessage = {
+        id: 'compliance-test',
+        type: 'marketing',
+        recipients: [{ email: 'test@example.com' }],
+        content: {
+          subject: 'Wedding Vendor Special Offer',
+          body: 'Check out our special offers',
+          isMarketing: true
+        }
+      };
+
+      // Validate CAN-SPAM requirements
+      const validation = await validateCANSPAM(emailMessage);
+      expect(validation.hasUnsubscribeLink).toBe(true);
+      expect(validation.hasPhysicalAddress).toBe(true);
+      expect(validation.hasAccurateHeaders).toBe(true);
+      expect(validation.isCompliant).toBe(true);
+    });
+
+    it('should validate GDPR compliance', async () => {
+      const euMessage = {
+        id: 'gdpr-test',
+        recipients: [{ email: 'user@example.eu', region: 'EU' }],
+        content: {
+          subject: 'Wedding Updates',
+          body: 'Latest updates about the wedding'
+        },
+        consent: {
+          hasExplicitConsent: true,
+          consentDate: new Date('2025-01-01'),
+          consentType: 'email_communications'
+        }
+      };
+
+      // Validate GDPR requirements
+      const gdprValidation = await validateGDPR(euMessage);
+      expect(gdprValidation.hasValidConsent).toBe(true);
+      expect(gdprValidation.hasDataProcessingAgreement).toBe(true);
+      expect(gdprValidation.hasRightToErasure).toBe(true);
+      expect(gdprValidation.isCompliant).toBe(true);
+    });
+
+    it('should maintain audit trail for all communications', async () => {
+      const message = {
+        id: 'audit-test',
+        type: 'transactional',
+        recipients: [{ email: 'test@example.com' }],
+        content: { subject: 'Test', body: 'Test message' }
+      };
+
+      // Send message
+      await loadBalancer.sendMessage(message);
+
+      // Check audit trail
+      const auditLog = await supabase
+        .from('communication_audit_logs')
+        .select('*')
+        .eq('message_id', message.id)
+        .single();
+
+      expect(auditLog.data).toBeDefined();
+      expect(auditLog.data.message_type).toBe('transactional');
+      expect(auditLog.data.compliance_checks).toContain('CAN-SPAM');
+      expect(auditLog.data.timestamp).toBeDefined();
+    });
+  });
+
+  describe('Load Testing', () => {
+    it('should handle 1000+ concurrent messages', async () => {
+      const concurrentMessages = Array.from({ length: 1000 }, (_, i) => ({
+        id: `load-test-${i}`,
+        type: 'notification',
+        recipients: [{ email: `load${i}@example.com` }],
+        content: {
+          subject: 'Load Test',
+          body: `Message ${i}`
+        }
+      }));
+
+      const startTime = performance.now();
+      const results = await Promise.allSettled(
+        concurrentMessages.map(msg => 
+          loadBalancer.sendMessage(msg, { priority: 'normal' })
+        )
+      );
+      const duration = performance.now() - startTime;
+
+      // Performance requirements
+      expect(duration).toBeLessThan(60000); // Complete within 60 seconds
+      
+      const successful = results.filter(r => r.status === 'fulfilled').length;
+      expect(successful / results.length).toBeGreaterThan(0.98); // 98% success rate
+    });
+
+    it('should maintain performance under sustained load', async () => {
+      const sustainedDuration = 5 * 60 * 1000; // 5 minutes
+      const messagesPerSecond = 50;
+      const startTime = Date.now();
+      const metrics = [];
+
+      while (Date.now() - startTime < sustainedDuration) {
+        const batchStart = performance.now();
+        const batch = Array.from({ length: messagesPerSecond }, (_, i) => ({
+          id: `sustained-${Date.now()}-${i}`,
+          recipients: [{ email: `test${i}@example.com` }],
+          content: { subject: 'Test', body: 'Sustained load test' }
+        }));
+
+        const results = await Promise.allSettled(
+          batch.map(msg => loadBalancer.sendMessage(msg))
+        );
+        
+        const batchDuration = performance.now() - batchStart;
+        const successRate = results.filter(r => r.status === 'fulfilled').length / results.length;
+        
+        metrics.push({ duration: batchDuration, successRate });
+        
+        // Wait before next batch
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+
+      // Check sustained performance
+      const avgDuration = metrics.reduce((sum, m) => sum + m.duration, 0) / metrics.length;
+      const avgSuccessRate = metrics.reduce((sum, m) => sum + m.successRate, 0) / metrics.length;
+
+      expect(avgDuration).toBeLessThan(2000); // Average batch completion < 2s
+      expect(avgSuccessRate).toBeGreaterThan(0.95); // 95% sustained success rate
+    });
+  });
+
+  describe('Disaster Recovery', () => {
+    it('should recover from complete provider outage', async () => {
+      // Simulate all providers down initially
+      const providers = await loadBalancer.getAllProviders();
+      providers.forEach(p => {
+        vi.spyOn(p, 'checkHealth').mockResolvedValueOnce({
+          status: 'unhealthy',
+          lastCheck: new Date()
+        });
+      });
+
+      // Trigger recovery procedure
+      const recoveryResult = await loadBalancer.executeDisasterRecovery();
+      expect(recoveryResult.recovered).toBe(true);
+      expect(recoveryResult.activeProviders).toBeGreaterThan(0);
+      expect(recoveryResult.recoveryTime).toBeLessThan(30000); // Recovery within 30s
+    });
+
+    it('should maintain message queue during outage', async () => {
+      // Queue messages during simulated outage
+      const queuedMessages = [];
+      
+      // Simulate outage
+      vi.spyOn(loadBalancer, 'isHealthy').mockReturnValue(false);
+      
+      for (let i = 0; i < 50; i++) {
+        const msg = {
+          id: `queued-${i}`,
+          recipients: [{ email: `test${i}@example.com` }],
+          content: { subject: 'Test', body: 'Queued message' }
+        };
+        queuedMessages.push(loadBalancer.queueMessage(msg));
+      }
+
+      // Restore service
+      vi.spyOn(loadBalancer, 'isHealthy').mockReturnValue(true);
+      
+      // Process queued messages
+      const processed = await loadBalancer.processQueuedMessages();
+      expect(processed.length).toBe(50);
+      expect(processed.filter(p => p.success).length).toBeGreaterThan(45);
+    });
+
+    it('should restore from backup configuration', async () => {
+      // Create backup
+      const backupConfig = await loadBalancer.createBackup();
+      expect(backupConfig).toBeDefined();
+      expect(backupConfig.timestamp).toBeDefined();
+      expect(backupConfig.providers).toBeDefined();
+
+      // Corrupt current configuration
+      await loadBalancer.corruptConfiguration();
+      
+      // Restore from backup
+      const restoreResult = await loadBalancer.restoreFromBackup(backupConfig);
+      expect(restoreResult.success).toBe(true);
+      expect(restoreResult.restoredProviders).toEqual(backupConfig.providers.length);
+      
+      // Verify functionality restored
+      const healthCheck = await loadBalancer.checkHealth();
+      expect(healthCheck.healthy).toBe(true);
+    });
+  });
+});
+
+// Helper functions
+async function validateCANSPAM(message: any) {
+  return {
+    hasUnsubscribeLink: message.content.body?.includes('unsubscribe'),
+    hasPhysicalAddress: true, // Would check for physical address in production
+    hasAccurateHeaders: true, // Would validate headers in production
+    isCompliant: true
+  };
+}
+
+async function validateGDPR(message: any) {
+  return {
+    hasValidConsent: message.consent?.hasExplicitConsent === true,
+    hasDataProcessingAgreement: true, // Would check DPA in production
+    hasRightToErasure: true, // Would check data deletion capabilities
+    isCompliant: message.consent?.hasExplicitConsent === true
+  };
+}

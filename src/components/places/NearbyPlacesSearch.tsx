@@ -1,0 +1,715 @@
+/**
+ * NearbyPlacesSearch Component
+ * Local vendor discovery for WedSync wedding planning
+ * Finds photographers, florists, caterers, and other wedding vendors near venues
+ * Mobile-optimized with filter controls and distance sorting
+ */
+
+'use client';
+
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import {
+  MapPin,
+  Star,
+  Phone,
+  Navigation,
+  Filter,
+  Grid,
+  List,
+  Search,
+  Clock,
+  DollarSign,
+  Heart,
+  ExternalLink,
+  Loader2,
+  AlertCircle,
+} from 'lucide-react';
+import { useGooglePlaces } from '@/hooks/useGooglePlaces';
+import { useGeolocation } from '@/hooks/useGeolocation';
+import type {
+  NearbyPlacesSearchProps,
+  GooglePlace,
+  PlaceDetails,
+  VendorType,
+  VenueType,
+  LocationCoordinates,
+} from '@/types/google-places';
+
+// Vendor type configurations with wedding-specific metadata
+const VENDOR_TYPES: Record<
+  VendorType,
+  { label: string; icon: string; color: string; searchTypes: string[] }
+> = {
+  photographer: {
+    label: 'Photographers',
+    icon: '📸',
+    color: 'bg-purple-100 text-purple-800',
+    searchTypes: ['photographer', 'photography_studio'],
+  },
+  florist: {
+    label: 'Florists',
+    icon: '🌸',
+    color: 'bg-pink-100 text-pink-800',
+    searchTypes: ['florist', 'flower_shop'],
+  },
+  caterer: {
+    label: 'Caterers',
+    icon: '🍽️',
+    color: 'bg-orange-100 text-orange-800',
+    searchTypes: ['meal_takeaway', 'restaurant', 'food'],
+  },
+  baker: {
+    label: 'Bakers',
+    icon: '🎂',
+    color: 'bg-yellow-100 text-yellow-800',
+    searchTypes: ['bakery', 'cake_shop'],
+  },
+  musician: {
+    label: 'Musicians',
+    icon: '🎵',
+    color: 'bg-blue-100 text-blue-800',
+    searchTypes: ['musician', 'music_school'],
+  },
+  dj: {
+    label: 'DJs',
+    icon: '🎧',
+    color: 'bg-indigo-100 text-indigo-800',
+    searchTypes: ['electronics_store', 'entertainment'],
+  },
+  videographer: {
+    label: 'Videographers',
+    icon: '🎬',
+    color: 'bg-red-100 text-red-800',
+    searchTypes: ['videographer', 'movie_theater'],
+  },
+  wedding_planner: {
+    label: 'Wedding Planners',
+    icon: '💐',
+    color: 'bg-green-100 text-green-800',
+    searchTypes: ['travel_agency', 'establishment'],
+  },
+  makeup_artist: {
+    label: 'Makeup Artists',
+    icon: '💄',
+    color: 'bg-rose-100 text-rose-800',
+    searchTypes: ['beauty_salon', 'spa'],
+  },
+  hair_stylist: {
+    label: 'Hair Stylists',
+    icon: '✂️',
+    color: 'bg-amber-100 text-amber-800',
+    searchTypes: ['hair_care', 'beauty_salon'],
+  },
+  transportation: {
+    label: 'Transportation',
+    icon: '🚗',
+    color: 'bg-gray-100 text-gray-800',
+    searchTypes: ['car_rental', 'taxi_stand'],
+  },
+  officiant: {
+    label: 'Officiants',
+    icon: '⛪',
+    color: 'bg-slate-100 text-slate-800',
+    searchTypes: ['church', 'place_of_worship'],
+  },
+  jewelry_store: {
+    label: 'Jewelry Stores',
+    icon: '💍',
+    color: 'bg-emerald-100 text-emerald-800',
+    searchTypes: ['jewelry_store'],
+  },
+  bridal_shop: {
+    label: 'Bridal Shops',
+    icon: '👗',
+    color: 'bg-violet-100 text-violet-800',
+    searchTypes: ['clothing_store', 'store'],
+  },
+  tuxedo_rental: {
+    label: 'Tuxedo Rental',
+    icon: '🤵',
+    color: 'bg-cyan-100 text-cyan-800',
+    searchTypes: ['clothing_store', 'store'],
+  },
+};
+
+// Distance calculation utility
+const calculateDistance = (
+  point1: LocationCoordinates,
+  point2: LocationCoordinates,
+): number => {
+  const R = 6371; // Earth's radius in kilometers
+  const dLat = (point2.lat - point1.lat) * (Math.PI / 180);
+  const dLng = (point2.lng - point1.lng) * (Math.PI / 180);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(point1.lat * (Math.PI / 180)) *
+      Math.cos(point2.lat * (Math.PI / 180)) *
+      Math.sin(dLng / 2) *
+      Math.sin(dLng / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+};
+
+/**
+ * Vendor card component
+ */
+function VendorCard({
+  place,
+  distance,
+  onSelect,
+  onToggleFavorite,
+  isFavorite = false,
+  viewMode = 'grid',
+}: {
+  place: GooglePlace;
+  distance: number;
+  onSelect?: (place: PlaceDetails) => void;
+  onToggleFavorite?: (place: GooglePlace) => void;
+  isFavorite?: boolean;
+  viewMode?: 'grid' | 'list';
+}) {
+  const handleSelect = useCallback(() => {
+    onSelect?.(place as PlaceDetails);
+  }, [onSelect, place]);
+
+  const handleToggleFavorite = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      onToggleFavorite?.(place);
+    },
+    [onToggleFavorite, place],
+  );
+
+  const priceLevel = place.price_level ? '$'.repeat(place.price_level) : null;
+
+  if (viewMode === 'list') {
+    return (
+      <div
+        className="bg-white border border-gray-200 rounded-lg p-4 hover:shadow-md transition-all cursor-pointer"
+        onClick={handleSelect}
+      >
+        <div className="flex items-start gap-4">
+          {/* Vendor Icon */}
+          <div className="flex-shrink-0 w-12 h-12 bg-gray-100 rounded-lg flex items-center justify-center">
+            <MapPin size={20} className="text-gray-600" />
+          </div>
+
+          {/* Content */}
+          <div className="flex-1 min-w-0">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <h3 className="font-semibold text-gray-900 truncate">
+                  {place.name}
+                </h3>
+                <p className="text-sm text-gray-600 truncate mt-1">
+                  {place.formatted_address}
+                </p>
+              </div>
+
+              {/* Actions */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleToggleFavorite}
+                  className={`p-2 rounded-lg transition-colors ${
+                    isFavorite
+                      ? 'text-error-600 bg-error-50 hover:bg-error-100'
+                      : 'text-gray-400 hover:text-error-600 hover:bg-error-50'
+                  }`}
+                  aria-label={
+                    isFavorite ? 'Remove from favorites' : 'Add to favorites'
+                  }
+                >
+                  <Heart
+                    size={16}
+                    className={isFavorite ? 'fill-current' : ''}
+                  />
+                </button>
+              </div>
+            </div>
+
+            {/* Metadata */}
+            <div className="flex items-center gap-4 mt-3 text-sm">
+              {/* Rating */}
+              {place.rating && (
+                <div className="flex items-center gap-1">
+                  <Star size={14} className="text-yellow-400 fill-current" />
+                  <span className="text-gray-700">
+                    {place.rating.toFixed(1)}
+                  </span>
+                  {place.user_ratings_total && (
+                    <span className="text-gray-500">
+                      ({place.user_ratings_total})
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {/* Distance */}
+              <div className="flex items-center gap-1 text-gray-600">
+                <Navigation size={14} />
+                <span>{distance.toFixed(1)} km</span>
+              </div>
+
+              {/* Price Level */}
+              {priceLevel && (
+                <div className="flex items-center gap-1 text-gray-600">
+                  <DollarSign size={14} />
+                  <span>{priceLevel}</span>
+                </div>
+              )}
+
+              {/* Business Status */}
+              {place.business_status === 'OPERATIONAL' && (
+                <div className="flex items-center gap-1 text-success-600">
+                  <Clock size={14} />
+                  <span>Open</span>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="bg-white border border-gray-200 rounded-lg overflow-hidden hover:shadow-md transition-all cursor-pointer"
+      onClick={handleSelect}
+    >
+      {/* Header */}
+      <div className="p-4">
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <div className="min-w-0 flex-1">
+            <h3 className="font-semibold text-gray-900 truncate">
+              {place.name}
+            </h3>
+            <p className="text-sm text-gray-600 truncate mt-1">
+              {place.formatted_address}
+            </p>
+          </div>
+
+          <button
+            onClick={handleToggleFavorite}
+            className={`flex-shrink-0 p-2 rounded-lg transition-colors ${
+              isFavorite
+                ? 'text-error-600 bg-error-50 hover:bg-error-100'
+                : 'text-gray-400 hover:text-error-600 hover:bg-error-50'
+            }`}
+            aria-label={
+              isFavorite ? 'Remove from favorites' : 'Add to favorites'
+            }
+          >
+            <Heart size={16} className={isFavorite ? 'fill-current' : ''} />
+          </button>
+        </div>
+
+        {/* Rating and Distance */}
+        <div className="flex items-center gap-3 text-sm">
+          {place.rating && (
+            <div className="flex items-center gap-1">
+              <Star size={14} className="text-yellow-400 fill-current" />
+              <span className="text-gray-700">{place.rating.toFixed(1)}</span>
+            </div>
+          )}
+
+          <div className="flex items-center gap-1 text-gray-600">
+            <Navigation size={14} />
+            <span>{distance.toFixed(1)} km</span>
+          </div>
+
+          {priceLevel && (
+            <div className="flex items-center gap-1 text-gray-600">
+              <DollarSign size={14} />
+              <span>{priceLevel}</span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Footer */}
+      <div className="px-4 py-3 bg-gray-50 border-t border-gray-100">
+        <div className="flex items-center justify-between">
+          <div className="text-xs text-gray-500">
+            {place.business_status === 'OPERATIONAL'
+              ? 'Currently open'
+              : 'Status unknown'}
+          </div>
+
+          <ExternalLink size={14} className="text-gray-400" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Filter controls component
+ */
+function FilterControls({
+  selectedVendorType,
+  onVendorTypeChange,
+  radius,
+  onRadiusChange,
+  minRating,
+  onMinRatingChange,
+  priceLevel,
+  onPriceLevelChange,
+  showOpenOnly,
+  onShowOpenOnlyChange,
+}: {
+  selectedVendorType: VendorType | null;
+  onVendorTypeChange: (type: VendorType | null) => void;
+  radius: number;
+  onRadiusChange: (radius: number) => void;
+  minRating: number;
+  onMinRatingChange: (rating: number) => void;
+  priceLevel: number[];
+  onPriceLevelChange: (levels: number[]) => void;
+  showOpenOnly: boolean;
+  onShowOpenOnlyChange: (showOpenOnly: boolean) => void;
+}) {
+  return (
+    <div className="bg-white border border-gray-200 rounded-lg p-4 space-y-4">
+      <h3 className="font-semibold text-gray-900">Filter Vendors</h3>
+
+      {/* Vendor Type */}
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-2">
+          Vendor Type
+        </label>
+        <select
+          value={selectedVendorType || ''}
+          onChange={(e) =>
+            onVendorTypeChange((e.target.value as VendorType) || null)
+          }
+          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-100 focus:border-primary-300"
+        >
+          <option value="">All Vendors</option>
+          {Object.entries(VENDOR_TYPES).map(([key, config]) => (
+            <option key={key} value={key}>
+              {config.icon} {config.label}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {/* Radius */}
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-2">
+          Search Radius: {radius} km
+        </label>
+        <input
+          type="range"
+          min="1"
+          max="50"
+          step="1"
+          value={radius}
+          onChange={(e) => onRadiusChange(Number(e.target.value))}
+          className="w-full"
+        />
+      </div>
+
+      {/* Minimum Rating */}
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-2">
+          Minimum Rating: {minRating} stars
+        </label>
+        <input
+          type="range"
+          min="0"
+          max="5"
+          step="0.5"
+          value={minRating}
+          onChange={(e) => onMinRatingChange(Number(e.target.value))}
+          className="w-full"
+        />
+      </div>
+
+      {/* Open Only */}
+      <div className="flex items-center gap-2">
+        <input
+          type="checkbox"
+          id="open-only"
+          checked={showOpenOnly}
+          onChange={(e) => onShowOpenOnlyChange(e.target.checked)}
+          className="rounded border-gray-300 text-primary-600 focus:ring-primary-100"
+        />
+        <label htmlFor="open-only" className="text-sm text-gray-700">
+          Show open venues only
+        </label>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * NearbyPlacesSearch Component
+ * Discovers wedding vendors near a specified location
+ */
+export function NearbyPlacesSearch({
+  center,
+  radius: initialRadius = 5000, // 5km default
+  vendorType: initialVendorType,
+  venueType,
+  showFilters = true,
+  onPlaceSelect,
+  maxResults = 20,
+  className = '',
+}: NearbyPlacesSearchProps) {
+  // State
+  const [places, setPlaces] = useState<GooglePlace[]>([]);
+  const [filteredPlaces, setFilteredPlaces] = useState<GooglePlace[]>([]);
+  const [selectedVendorType, setSelectedVendorType] =
+    useState<VendorType | null>(initialVendorType || null);
+  const [radius, setRadius] = useState(Math.min(50000, initialRadius)); // Convert to meters, max 50km
+  const [minRating, setMinRating] = useState(0);
+  const [priceLevel, setPriceLevel] = useState<number[]>([1, 2, 3, 4]);
+  const [showOpenOnly, setShowOpenOnly] = useState(false);
+  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+  const [showFiltersPanel, setShowFiltersPanel] = useState(false);
+  const [favorites, setFavorites] = useState<Set<string>>(new Set());
+
+  // Hooks
+  const { searchNearby, isSearchingNearby, nearbyError } = useGooglePlaces();
+
+  /**
+   * Search for vendors
+   */
+  const searchVendors = useCallback(async () => {
+    try {
+      const searchResults = await searchNearby({
+        location: center,
+        radius: radius,
+        vendor_type: selectedVendorType || undefined,
+        min_rating: minRating > 0 ? minRating : undefined,
+        price_level: priceLevel,
+        open_now: showOpenOnly,
+      });
+
+      setPlaces(searchResults);
+    } catch (error) {
+      console.error('Failed to search vendors:', error);
+    }
+  }, [
+    center,
+    radius,
+    selectedVendorType,
+    minRating,
+    priceLevel,
+    showOpenOnly,
+    searchNearby,
+  ]);
+
+  /**
+   * Filter and sort places
+   */
+  const processPlaces = useMemo(() => {
+    let filtered = places.filter((place) => {
+      // Rating filter
+      if (minRating > 0 && (!place.rating || place.rating < minRating)) {
+        return false;
+      }
+
+      // Price level filter
+      if (place.price_level && !priceLevel.includes(place.price_level)) {
+        return false;
+      }
+
+      // Open only filter
+      if (showOpenOnly && place.business_status !== 'OPERATIONAL') {
+        return false;
+      }
+
+      return true;
+    });
+
+    // Calculate distances and sort by distance
+    const placesWithDistance = filtered.map((place) => ({
+      ...place,
+      distance: calculateDistance(center, place.geometry.location),
+    }));
+
+    placesWithDistance.sort((a, b) => a.distance - b.distance);
+
+    return placesWithDistance.slice(0, maxResults);
+  }, [places, minRating, priceLevel, showOpenOnly, center, maxResults]);
+
+  /**
+   * Handle place selection
+   */
+  const handlePlaceSelect = useCallback(
+    (place: PlaceDetails) => {
+      onPlaceSelect?.(place);
+    },
+    [onPlaceSelect],
+  );
+
+  /**
+   * Handle favorite toggle
+   */
+  const handleToggleFavorite = useCallback((place: GooglePlace) => {
+    setFavorites((prev) => {
+      const newFavorites = new Set(prev);
+      if (newFavorites.has(place.place_id)) {
+        newFavorites.delete(place.place_id);
+      } else {
+        newFavorites.add(place.place_id);
+      }
+      return newFavorites;
+    });
+  }, []);
+
+  /**
+   * Search on parameter changes
+   */
+  useEffect(() => {
+    searchVendors();
+  }, [searchVendors]);
+
+  return (
+    <div className={`space-y-4 ${className}`}>
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-gray-900">
+            Nearby Wedding Vendors
+          </h2>
+          <p className="text-sm text-gray-600 mt-1">
+            {isSearchingNearby
+              ? 'Searching...'
+              : `${processPlaces.length} vendors found`}
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2">
+          {/* Filter Toggle */}
+          {showFilters && (
+            <button
+              onClick={() => setShowFiltersPanel(!showFiltersPanel)}
+              className={`p-2 rounded-lg transition-colors ${
+                showFiltersPanel
+                  ? 'bg-primary-100 text-primary-700'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+              }`}
+              aria-label="Toggle filters"
+            >
+              <Filter size={20} />
+            </button>
+          )}
+
+          {/* View Mode Toggle */}
+          <div className="flex bg-gray-100 rounded-lg p-1">
+            <button
+              onClick={() => setViewMode('grid')}
+              className={`p-1.5 rounded transition-colors ${
+                viewMode === 'grid'
+                  ? 'bg-white text-gray-900 shadow-sm'
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+              aria-label="Grid view"
+            >
+              <Grid size={16} />
+            </button>
+            <button
+              onClick={() => setViewMode('list')}
+              className={`p-1.5 rounded transition-colors ${
+                viewMode === 'list'
+                  ? 'bg-white text-gray-900 shadow-sm'
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+              aria-label="List view"
+            >
+              <List size={16} />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Filters Panel */}
+      {showFilters && showFiltersPanel && (
+        <FilterControls
+          selectedVendorType={selectedVendorType}
+          onVendorTypeChange={setSelectedVendorType}
+          radius={radius / 1000} // Convert to km for display
+          onRadiusChange={(km) => setRadius(km * 1000)} // Convert back to meters
+          minRating={minRating}
+          onMinRatingChange={setMinRating}
+          priceLevel={priceLevel}
+          onPriceLevelChange={setPriceLevel}
+          showOpenOnly={showOpenOnly}
+          onShowOpenOnlyChange={setShowOpenOnly}
+        />
+      )}
+
+      {/* Content */}
+      <div>
+        {/* Loading State */}
+        {isSearchingNearby && (
+          <div className="flex items-center justify-center py-12">
+            <div className="text-center">
+              <Loader2
+                size={32}
+                className="animate-spin text-primary-600 mx-auto mb-4"
+              />
+              <p className="text-gray-600">Searching for wedding vendors...</p>
+            </div>
+          </div>
+        )}
+
+        {/* Error State */}
+        {nearbyError && !isSearchingNearby && (
+          <div className="bg-error-50 border border-error-200 rounded-lg p-4">
+            <div className="flex items-center gap-3">
+              <AlertCircle size={20} className="text-error-600 flex-shrink-0" />
+              <div>
+                <h3 className="font-medium text-error-900">Search Failed</h3>
+                <p className="text-sm text-error-700 mt-1">{nearbyError}</p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* No Results */}
+        {!isSearchingNearby && !nearbyError && processPlaces.length === 0 && (
+          <div className="text-center py-12">
+            <Search size={48} className="text-gray-300 mx-auto mb-4" />
+            <h3 className="text-lg font-medium text-gray-900 mb-2">
+              No vendors found
+            </h3>
+            <p className="text-gray-600">
+              Try expanding your search radius or changing your filters.
+            </p>
+          </div>
+        )}
+
+        {/* Results Grid/List */}
+        {!isSearchingNearby && processPlaces.length > 0 && (
+          <div
+            className={`
+            ${
+              viewMode === 'grid'
+                ? 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4'
+                : 'space-y-4'
+            }
+          `}
+          >
+            {processPlaces.map((place) => (
+              <VendorCard
+                key={place.place_id}
+                place={place}
+                distance={place.distance}
+                onSelect={handlePlaceSelect}
+                onToggleFavorite={handleToggleFavorite}
+                isFavorite={favorites.has(place.place_id)}
+                viewMode={viewMode}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default NearbyPlacesSearch;

@@ -1,0 +1,340 @@
+/**
+ * WS-212 PermissionsAPI - Section Permissions Management
+ * REST endpoints for managing section visibility and permissions per wedding
+ * Enables wedding planners to customize dashboard section access
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createServerClient } from '@/lib/supabase/server';
+import { ConfigEngine } from '@/lib/services/config-engine';
+import { 
+  SectionType, 
+  UserRole, 
+  ConfigContext,
+  UpdateSectionPermissionsRequest 
+} from '@/types/section-config';
+
+const configEngine = new ConfigEngine();
+
+/**
+ * GET /api/sections/permissions
+ * Get effective permissions for a user on a specific section
+ * Query params: weddingId, sectionType, userId (optional)
+ */
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = createServerClient();
+    const { searchParams } = new URL(request.url);
+    
+    const weddingId = searchParams.get('weddingId');
+    const sectionType = searchParams.get('sectionType') as SectionType;
+    const targetUserId = searchParams.get('userId');
+
+    // Validate required parameters
+    if (!weddingId || !sectionType) {
+      return NextResponse.json(
+        { 
+          error: 'Missing required parameters',
+          details: 'weddingId and sectionType are required'
+        },
+        { status: 400 }
+      );
+    }
+
+    // Get current authenticated user
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized', details: 'Valid authentication required' },
+        { status: 401 }
+      );
+    }
+
+    // Use target user ID if provided (for planners checking other users), otherwise use current user
+    const userId = targetUserId || user.id;
+
+    // Create context
+    const context: ConfigContext = {
+      userId: user.id,
+      userRole: 'guest', // Will be determined by ConfigEngine
+      weddingId,
+    };
+
+    // Get user's organization for additional context
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id, role')
+      .eq('user_id', user.id)
+      .single();
+
+    if (profile?.organization_id) {
+      context.organizationId = profile.organization_id;
+    }
+
+    // If requesting permissions for another user, verify current user can do this
+    if (targetUserId && targetUserId !== user.id) {
+      const canViewOtherPermissions = await verifyPermissionViewAccess(
+        user.id,
+        weddingId,
+        supabase
+      );
+      
+      if (!canViewOtherPermissions) {
+        return NextResponse.json(
+          { 
+            error: 'Insufficient permissions',
+            details: 'Cannot view permissions for other users'
+          },
+          { status: 403 }
+        );
+      }
+    }
+
+    // Get effective permissions for the specified user and section
+    const effectivePermissions = await configEngine.getEffectivePermissions(
+      weddingId,
+      sectionType,
+      { ...context, userId }
+    );
+
+    // Get section configuration for additional context
+    const sectionConfig = await configEngine.getSectionConfig(
+      weddingId,
+      sectionType,
+      { ...context, userId }
+    );
+
+    return NextResponse.json({
+      weddingId,
+      sectionType,
+      userId,
+      userRole: effectivePermissions.userRole,
+      permissions: {
+        canView: effectivePermissions.canView,
+        canEdit: effectivePermissions.canEdit,
+        canCreate: effectivePermissions.canCreate,
+        canDelete: effectivePermissions.canDelete,
+        canExport: effectivePermissions.canExport,
+        fieldRestrictions: effectivePermissions.fieldRestrictions,
+      },
+      sectionConfig: sectionConfig ? {
+        isVisible: sectionConfig.isVisible,
+        customTitle: sectionConfig.customTitle,
+        customDescription: sectionConfig.customDescription,
+        displayOrder: sectionConfig.displayOrder,
+        customSettings: sectionConfig.customSettings,
+      } : null,
+    });
+
+  } catch (error) {
+    console.error('PermissionsAPI: Error getting permissions:', error);
+    return NextResponse.json(
+      { 
+        error: 'Internal server error',
+        details: 'Failed to retrieve section permissions'
+      },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * POST /api/sections/permissions
+ * Update section permissions for a wedding (planner only)
+ */
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = createServerClient();
+    const body: UpdateSectionPermissionsRequest = await request.json();
+    
+    const { sectionConfigId, permissions } = body;
+
+    // Validate request body
+    if (!sectionConfigId || !permissions || !Array.isArray(permissions)) {
+      return NextResponse.json(
+        { 
+          error: 'Invalid request body',
+          details: 'sectionConfigId and permissions array are required'
+        },
+        { status: 400 }
+      );
+    }
+
+    // Get current authenticated user
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized', details: 'Valid authentication required' },
+        { status: 401 }
+      );
+    }
+
+    // Get section configuration to find wedding ID
+    const { data: sectionConfig, error: configError } = await supabase
+      .from('section_configurations')
+      .select('wedding_id, section_type')
+      .eq('id', sectionConfigId)
+      .single();
+
+    if (configError || !sectionConfig) {
+      return NextResponse.json(
+        { 
+          error: 'Section configuration not found',
+          details: 'Invalid sectionConfigId provided'
+        },
+        { status: 404 }
+      );
+    }
+
+    // Verify user has permission to modify permissions (planner only)
+    const canConfigurePermissions = await verifyConfigurationPermission(
+      user.id,
+      sectionConfig.wedding_id,
+      supabase
+    );
+
+    if (!canConfigurePermissions) {
+      return NextResponse.json(
+        { 
+          error: 'Insufficient permissions',
+          details: 'Only wedding planners can modify section permissions'
+        },
+        { status: 403 }
+      );
+    }
+
+    // Update permissions for each role
+    const updatePromises = permissions.map(async (permission) => {
+      const { data, error } = await supabase
+        .from('section_permissions')
+        .upsert({
+          section_config_id: sectionConfigId,
+          user_role: permission.userRole,
+          can_view: permission.canView,
+          can_edit: permission.canEdit,
+          can_create: permission.canCreate,
+          can_delete: permission.canDelete,
+          can_export: permission.canExport,
+          field_restrictions: permission.fieldRestrictions || {},
+        }, {
+          onConflict: 'section_config_id,user_role'
+        });
+
+      if (error) {
+        console.error(`Error updating permissions for role ${permission.userRole}:`, error);
+        return { success: false, role: permission.userRole, error };
+      }
+
+      return { success: true, role: permission.userRole };
+    });
+
+    const results = await Promise.all(updatePromises);
+    const failures = results.filter(r => !r.success);
+
+    if (failures.length > 0) {
+      return NextResponse.json(
+        {
+          error: 'Partial failure',
+          details: 'Some permission updates failed',
+          failures: failures.map(f => ({ role: f.role, error: f.error })),
+          successes: results.filter(r => r.success).length,
+        },
+        { status: 207 } // Multi-status
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: 'Section permissions updated successfully',
+      sectionConfigId,
+      updatedRoles: results.map(r => r.role),
+    });
+
+  } catch (error) {
+    console.error('PermissionsAPI: Error updating permissions:', error);
+    return NextResponse.json(
+      { 
+        error: 'Internal server error',
+        details: 'Failed to update section permissions'
+      },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * Verify if user has permission to view other users' permissions
+ */
+async function verifyPermissionViewAccess(
+  userId: string,
+  weddingId: string,
+  supabase: any
+): Promise<boolean> {
+  try {
+    // Check if user is a planner for this wedding
+    const { data: plannerCheck } = await supabase
+      .from('weddings')
+      .select(`
+        organization_id,
+        organizations!inner (
+          user_profiles!inner (
+            user_id,
+            role
+          )
+        )
+      `)
+      .eq('id', weddingId)
+      .eq('organizations.user_profiles.user_id', userId)
+      .single();
+
+    return plannerCheck && 
+           plannerCheck.organizations?.user_profiles?.[0]?.role === 'planner';
+  } catch (error) {
+    console.error('Error verifying permission view access:', error);
+    return false;
+  }
+}
+
+/**
+ * Verify if user can configure permissions for this wedding
+ */
+async function verifyConfigurationPermission(
+  userId: string,
+  weddingId: string,
+  supabase: any
+): Promise<boolean> {
+  try {
+    // Check if user is a planner for this wedding
+    const { data: plannerCheck } = await supabase
+      .from('weddings')
+      .select(`
+        organization_id,
+        organizations!inner (
+          user_profiles!inner (
+            user_id,
+            role
+          )
+        )
+      `)
+      .eq('id', weddingId)
+      .eq('organizations.user_profiles.user_id', userId)
+      .single();
+
+    if (plannerCheck && plannerCheck.organizations?.user_profiles?.[0]?.role === 'planner') {
+      return true;
+    }
+
+    // Also check if user is admin
+    const { data: adminCheck } = await supabase
+      .from('user_profiles')
+      .select('role')
+      .eq('user_id', userId)
+      .eq('role', 'admin')
+      .single();
+
+    return !!adminCheck;
+  } catch (error) {
+    console.error('Error verifying configuration permission:', error);
+    return false;
+  }
+}

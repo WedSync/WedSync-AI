@@ -1,0 +1,507 @@
+/**
+ * Feedback Submissions API Routes
+ * Feature: WS-236 User Feedback System
+ * Handles CRUD operations for feedback submissions
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
+import { createClient } from '@/lib/supabase/server';
+import { rateLimit } from '@/lib/rate-limiter';
+
+// Validation schemas
+const createFeedbackSchema = z.object({
+  feedback_type: z.enum([
+    'bug_report',
+    'feature_request',
+    'general_feedback',
+    'support_request',
+    'billing_inquiry',
+    'wedding_day_issue',
+    'vendor_complaint',
+    'couple_complaint',
+    'performance_issue',
+  ]),
+  category: z.string().optional(),
+  subject: z.string().min(3, 'Subject must be at least 3 characters').max(200),
+  description: z
+    .string()
+    .min(10, 'Description must be at least 10 characters')
+    .max(5000),
+  steps_to_reproduce: z.string().optional(),
+  expected_behavior: z.string().optional(),
+  actual_behavior: z.string().optional(),
+  priority: z
+    .enum(['low', 'medium', 'high', 'critical', 'wedding_day_urgent'])
+    .default('medium'),
+  source: z
+    .enum([
+      'web_app',
+      'mobile_app',
+      'email',
+      'phone',
+      'chat_widget',
+      'admin_portal',
+    ])
+    .default('web_app'),
+  wedding_date: z.string().optional(),
+  is_wedding_day_critical: z.boolean().default(false),
+  tags: z.array(z.string()).optional(),
+  browser_info: z
+    .object({
+      user_agent: z.string().optional(),
+      screen_resolution: z.string().optional(),
+      viewport_size: z.string().optional(),
+      browser_language: z.string().optional(),
+    })
+    .optional(),
+  device_info: z
+    .object({
+      platform: z.string().optional(),
+      device_type: z.string().optional(),
+      operating_system: z.string().optional(),
+    })
+    .optional(),
+  page_url: z.string().url().optional(),
+  metadata: z.record(z.any()).optional(),
+});
+
+const updateFeedbackSchema = z.object({
+  status: z
+    .enum([
+      'open',
+      'in_progress',
+      'resolved',
+      'closed',
+      'duplicate',
+      'wont_fix',
+    ])
+    .optional(),
+  priority: z
+    .enum(['low', 'medium', 'high', 'critical', 'wedding_day_urgent'])
+    .optional(),
+  assigned_to: z.string().uuid().optional(),
+  resolution_notes: z.string().optional(),
+  internal_notes: z.string().optional(),
+});
+
+const querySchema = z.object({
+  page: z.coerce.number().min(1).default(1),
+  limit: z.coerce.number().min(1).max(100).default(20),
+  status: z
+    .enum([
+      'open',
+      'in_progress',
+      'resolved',
+      'closed',
+      'duplicate',
+      'wont_fix',
+    ])
+    .optional(),
+  priority: z
+    .enum(['low', 'medium', 'high', 'critical', 'wedding_day_urgent'])
+    .optional(),
+  feedback_type: z
+    .enum([
+      'bug_report',
+      'feature_request',
+      'general_feedback',
+      'support_request',
+      'billing_inquiry',
+      'wedding_day_issue',
+      'vendor_complaint',
+      'couple_complaint',
+      'performance_issue',
+    ])
+    .optional(),
+  search: z.string().optional(),
+  assigned_to: z.string().uuid().optional(),
+  date_from: z.string().optional(),
+  date_to: z.string().optional(),
+  sort: z
+    .enum(['created_at', 'updated_at', 'priority', 'status'])
+    .default('created_at'),
+  order: z.enum(['asc', 'desc']).default('desc'),
+});
+
+/**
+ * GET /api/feedback - Retrieve feedback submissions with filtering and pagination
+ */
+export async function GET(request: NextRequest) {
+  try {
+    // Rate limiting
+    const rateLimitResult = await rateLimit(request, {
+      max: 100,
+      windowMs: 60000,
+    });
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { error: 'Too many requests' },
+        { status: 429, headers: rateLimitResult.headers },
+      );
+    }
+
+    const supabase = createClient();
+
+    // Check authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get user profile and organization
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('organization_id, role')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!userProfile?.organization_id) {
+      return NextResponse.json(
+        { error: 'User organization not found' },
+        { status: 403 },
+      );
+    }
+
+    // Parse and validate query parameters
+    const url = new URL(request.url);
+    const queryParams = Object.fromEntries(url.searchParams.entries());
+    const {
+      page,
+      limit,
+      status,
+      priority,
+      feedback_type,
+      search,
+      assigned_to,
+      date_from,
+      date_to,
+      sort,
+      order,
+    } = querySchema.parse(queryParams);
+
+    // Build query
+    let query = supabase
+      .from('feedback_submissions')
+      .select(
+        `
+        *,
+        user:auth.users(email, raw_user_meta_data),
+        assigned_user:auth.users(email, raw_user_meta_data),
+        feedback_responses(
+          id,
+          response_text,
+          response_type,
+          is_customer_visible,
+          created_at,
+          author:auth.users(email, raw_user_meta_data)
+        )
+      `,
+      )
+      .eq('organization_id', userProfile.organization_id)
+      .is('deleted_at', null);
+
+    // Apply filters
+    if (status) query = query.eq('status', status);
+    if (priority) query = query.eq('priority', priority);
+    if (feedback_type) query = query.eq('feedback_type', feedback_type);
+    if (assigned_to) query = query.eq('assigned_to', assigned_to);
+    if (date_from) query = query.gte('created_at', date_from);
+    if (date_to) query = query.lte('created_at', date_to);
+
+    // Apply search
+    if (search) {
+      query = query.or(
+        `subject.ilike.%${search}%,description.ilike.%${search}%`,
+      );
+    }
+
+    // Apply sorting
+    query = query.order(sort, { ascending: order === 'asc' });
+
+    // Apply pagination
+    const offset = (page - 1) * limit;
+    query = query.range(offset, offset + limit - 1);
+
+    const { data: submissions, error, count } = await query;
+
+    if (error) {
+      console.error('Error fetching feedback submissions:', error);
+      return NextResponse.json(
+        { error: 'Failed to fetch feedback submissions' },
+        { status: 500 },
+      );
+    }
+
+    // Get total count for pagination
+    const { count: totalCount } = await supabase
+      .from('feedback_submissions')
+      .select('*', { count: 'exact', head: true })
+      .eq('organization_id', userProfile.organization_id)
+      .is('deleted_at', null);
+
+    return NextResponse.json({
+      success: true,
+      data: submissions,
+      pagination: {
+        page,
+        limit,
+        total: totalCount || 0,
+        pages: Math.ceil((totalCount || 0) / limit),
+      },
+    });
+  } catch (error) {
+    console.error('GET /api/feedback error:', error);
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid query parameters', details: error.errors },
+        { status: 400 },
+      );
+    }
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * POST /api/feedback - Create a new feedback submission
+ */
+export async function POST(request: NextRequest) {
+  try {
+    // Rate limiting for feedback submissions
+    const rateLimitResult = await rateLimit(request, {
+      max: 10,
+      windowMs: 60000,
+    });
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        {
+          error:
+            'Too many feedback submissions. Please wait before submitting again.',
+        },
+        { status: 429, headers: rateLimitResult.headers },
+      );
+    }
+
+    const supabase = createClient();
+
+    // Check authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get user profile and organization
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('organization_id, role')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!userProfile?.organization_id) {
+      return NextResponse.json(
+        { error: 'User organization not found' },
+        { status: 403 },
+      );
+    }
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validatedData = createFeedbackSchema.parse(body);
+
+    // Validate wedding day critical logic
+    if (
+      validatedData.is_wedding_day_critical &&
+      !['critical', 'wedding_day_urgent'].includes(validatedData.priority)
+    ) {
+      validatedData.priority = 'wedding_day_urgent';
+    }
+
+    // Add user agent and page URL from headers
+    const userAgent = request.headers.get('user-agent');
+    const referer = request.headers.get('referer');
+
+    // Prepare database insert
+    const feedbackData = {
+      organization_id: userProfile.organization_id,
+      user_id: user.id,
+      ...validatedData,
+      user_agent: userAgent,
+      page_url: referer || validatedData.page_url,
+      wedding_date: validatedData.wedding_date
+        ? new Date(validatedData.wedding_date).toISOString()
+        : null,
+    };
+
+    // Insert feedback submission
+    const { data: feedback, error: insertError } = await supabase
+      .from('feedback_submissions')
+      .insert(feedbackData)
+      .select(
+        `
+        *,
+        user:auth.users(email, raw_user_meta_data)
+      `,
+      )
+      .single();
+
+    if (insertError) {
+      console.error('Error creating feedback submission:', insertError);
+      return NextResponse.json(
+        { error: 'Failed to create feedback submission' },
+        { status: 500 },
+      );
+    }
+
+    // Send notification for critical feedback (handled by database trigger)
+    // Additional notification logic can be added here if needed
+
+    return NextResponse.json(
+      {
+        success: true,
+        data: feedback,
+        message: 'Feedback submitted successfully',
+      },
+      { status: 201 },
+    );
+  } catch (error) {
+    console.error('POST /api/feedback error:', error);
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid feedback data', details: error.errors },
+        { status: 400 },
+      );
+    }
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * PATCH /api/feedback - Update feedback submission (admin only)
+ */
+export async function PATCH(request: NextRequest) {
+  try {
+    // Rate limiting
+    const rateLimitResult = await rateLimit(request, {
+      max: 50,
+      windowMs: 60000,
+    });
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { error: 'Too many requests' },
+        { status: 429, headers: rateLimitResult.headers },
+      );
+    }
+
+    const supabase = createClient();
+
+    // Check authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get user profile and check admin role
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('organization_id, role')
+      .eq('user_id', user.id)
+      .single();
+
+    if (
+      !userProfile?.organization_id ||
+      !['admin', 'owner'].includes(userProfile.role)
+    ) {
+      return NextResponse.json(
+        { error: 'Admin access required' },
+        { status: 403 },
+      );
+    }
+
+    // Parse and validate request body
+    const body = await request.json();
+    const { id, ...updateData } = body;
+
+    if (!id) {
+      return NextResponse.json(
+        { error: 'Feedback ID is required' },
+        { status: 400 },
+      );
+    }
+
+    const validatedData = updateFeedbackSchema.parse(updateData);
+
+    // Add resolved timestamp if status is resolved/closed
+    if (
+      ['resolved', 'closed'].includes(validatedData.status!) &&
+      !validatedData.resolution_notes
+    ) {
+      return NextResponse.json(
+        { error: 'Resolution notes are required when resolving feedback' },
+        { status: 400 },
+      );
+    }
+
+    const updatePayload = {
+      ...validatedData,
+      ...(['resolved', 'closed'].includes(validatedData.status!) && {
+        resolved_at: new Date().toISOString(),
+      }),
+    };
+
+    // Update feedback submission
+    const { data: feedback, error: updateError } = await supabase
+      .from('feedback_submissions')
+      .update(updatePayload)
+      .eq('id', id)
+      .eq('organization_id', userProfile.organization_id)
+      .select(
+        `
+        *,
+        user:auth.users(email, raw_user_meta_data),
+        assigned_user:auth.users(email, raw_user_meta_data)
+      `,
+      )
+      .single();
+
+    if (updateError) {
+      console.error('Error updating feedback submission:', updateError);
+      return NextResponse.json(
+        { error: 'Failed to update feedback submission' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      data: feedback,
+      message: 'Feedback updated successfully',
+    });
+  } catch (error) {
+    console.error('PATCH /api/feedback error:', error);
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid update data', details: error.errors },
+        { status: 400 },
+      );
+    }
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

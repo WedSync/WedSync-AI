@@ -1,0 +1,387 @@
+# AI Version Intelligence Services Docker Compose
+# WS-200 API Versioning Strategy - Team D Implementation
+# 
+# Complete AI/ML infrastructure for wedding industry API management
+
+version: '3.8'
+
+services:
+  # ====================================
+  # AI Core Services
+  # ====================================
+  
+  # Main AI Version Intelligence Engine
+  ai-version-intelligence:
+    build:
+      context: ../
+      dockerfile: docker/ai-services.Dockerfile
+      target: production
+    container_name: wedsync-ai-engine
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - AI_SERVICE_MODE=true
+      - WEDDING_INDUSTRY_MODE=true
+      - CULTURAL_INTELLIGENCE_ENABLED=true
+      
+      # OpenAI Configuration
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=gpt-4-turbo-preview
+      - OPENAI_MAX_TOKENS=4096
+      - OPENAI_TEMPERATURE=0.3
+      - OPENAI_MAX_CONCURRENT=10
+      
+      # Supabase Configuration
+      - NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
+      - NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      
+      # Redis Configuration
+      - REDIS_URL=redis://ai-redis:6379
+      - REDIS_TTL=3600
+      
+      # Wedding-specific settings
+      - WEDDING_DAY_PERFORMANCE_MODE=true
+      - PEAK_SEASON_SCALING=enabled
+      - CULTURAL_ANALYSIS_CACHE_TTL=3600
+      - MIGRATION_SAFETY_MODE=strict
+      
+      # Performance settings
+      - UV_THREADPOOL_SIZE=16
+      - MEMORY_LIMIT=2048m
+      - CPU_LIMIT=2000m
+    ports:
+      - "3001:3000"
+    volumes:
+      - ai-models:/app/ai-models
+      - ai-cache:/app/ai-cache
+      - ai-logs:/app/ai-logs
+      - wedding-data:/app/wedding-data
+      - cultural-data:/app/cultural-data
+    networks:
+      - ai-network
+      - app-network
+    depends_on:
+      - ai-redis
+      - ai-postgres
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health/ai"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2.0'
+        reservations:
+          memory: 1G
+          cpus: '1.0'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
+        labels: "service=ai-engine,environment=production"
+
+  # AI Model Training Service
+  ai-training:
+    build:
+      context: ../
+      dockerfile: docker/ai-services.Dockerfile
+      target: ai-training
+    container_name: wedsync-ai-training
+    restart: "no" # Only run when needed
+    environment:
+      - PYTHONPATH=/training
+      - TRAINING_MODE=true
+      - WEDDING_DATASET_SIZE=large
+      - CULTURAL_DATASET_ENABLED=true
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+    volumes:
+      - ai-models:/training/models
+      - wedding-training-data:/training/data
+      - ai-training-outputs:/training/outputs
+      - ai-notebooks:/training/notebooks
+    networks:
+      - ai-network
+    ports:
+      - "8888:8888"  # Jupyter
+      - "6006:6006"  # TensorBoard
+    profiles:
+      - training
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '4.0'
+        reservations:
+          memory: 2G
+          cpus: '2.0'
+
+  # ====================================
+  # Supporting Infrastructure
+  # ====================================
+
+  # Redis for AI caching and session management
+  ai-redis:
+    image: redis:7-alpine
+    container_name: wedsync-ai-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 1gb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - ai-redis-data:/data
+    networks:
+      - ai-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.1'
+
+  # PostgreSQL for AI training data and model tracking
+  ai-postgres:
+    image: postgres:15-alpine
+    container_name: wedsync-ai-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=wedsync_ai
+      - POSTGRES_USER=ai_user
+      - POSTGRES_PASSWORD=${AI_POSTGRES_PASSWORD:-ai_secure_password}
+      - POSTGRES_INITDB_ARGS=--encoding=UTF-8
+    ports:
+      - "5433:5432"
+    volumes:
+      - ai-postgres-data:/var/lib/postgresql/data
+      - ./init-ai-db.sql:/docker-entrypoint-initdb.d/init-ai-db.sql
+    networks:
+      - ai-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ai_user -d wedsync_ai"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 256M
+          cpus: '0.2'
+
+  # ====================================
+  # Monitoring and Observability
+  # ====================================
+
+  # Prometheus for metrics collection
+  ai-prometheus:
+    image: prom/prometheus:latest
+    container_name: wedsync-ai-prometheus
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--web.external-url=http://localhost:9090'
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus-ai.yml:/etc/prometheus/prometheus.yml
+      - ai-prometheus-data:/prometheus
+    networks:
+      - ai-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 128M
+          cpus: '0.1'
+
+  # Grafana for AI metrics visualization
+  ai-grafana:
+    image: grafana/grafana:latest
+    container_name: wedsync-ai-grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin123}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_INSTALL_PLUGINS=redis-datasource,postgres-datasource
+    ports:
+      - "3002:3000"
+    volumes:
+      - ai-grafana-data:/var/lib/grafana
+      - ./grafana/ai-dashboards:/var/lib/grafana/dashboards
+      - ./grafana/ai-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml
+      - ./grafana/ai-dashboard-config.yml:/etc/grafana/provisioning/dashboards/dashboards.yml
+    networks:
+      - ai-network
+    depends_on:
+      - ai-prometheus
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.3'
+        reservations:
+          memory: 128M
+          cpus: '0.1'
+
+  # AI Service Health Monitor
+  ai-healthcheck:
+    image: curlimages/curl:latest
+    container_name: wedsync-ai-healthcheck
+    restart: unless-stopped
+    command: >
+      sh -c "while true; do
+        curl -f http://ai-version-intelligence:3000/api/health/ai || echo 'AI Engine health check failed';
+        curl -f http://ai-redis:6379/ping || echo 'Redis health check failed';
+        sleep 30;
+      done"
+    networks:
+      - ai-network
+    depends_on:
+      - ai-version-intelligence
+      - ai-redis
+
+  # ====================================
+  # Wedding Day Emergency Services
+  # ====================================
+
+  # Wedding Day Performance Monitor
+  wedding-day-monitor:
+    image: wedsync/ai-engine:latest
+    container_name: wedsync-wedding-monitor
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - WEDDING_DAY_MONITOR=true
+      - ALERT_WEBHOOK_URL=${WEDDING_DAY_ALERT_WEBHOOK}
+      - RESPONSE_TIME_THRESHOLD=500
+      - ERROR_RATE_THRESHOLD=0.001
+    command: ["node", "scripts/wedding-day-monitor.js"]
+    networks:
+      - ai-network
+    depends_on:
+      - ai-version-intelligence
+    profiles:
+      - wedding-day
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.2'
+
+  # Cultural Events Calendar Service
+  cultural-calendar:
+    image: wedsync/ai-engine:latest
+    container_name: wedsync-cultural-calendar
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - CULTURAL_CALENDAR_MODE=true
+      - CALENDAR_UPDATE_INTERVAL=3600
+    command: ["node", "scripts/cultural-calendar-sync.js"]
+    volumes:
+      - cultural-data:/app/cultural-data
+    networks:
+      - ai-network
+    depends_on:
+      - ai-postgres
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.3'
+
+# ====================================
+# Networks
+# ====================================
+networks:
+  ai-network:
+    driver: bridge
+    name: wedsync-ai-network
+  app-network:
+    external: true
+    name: wedsync-app-network
+
+# ====================================
+# Volumes
+# ====================================
+volumes:
+  # AI Model and Data Storage
+  ai-models:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./ai-data/models
+  ai-cache:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./ai-data/cache
+  ai-logs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./ai-data/logs
+  wedding-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./ai-data/wedding-data
+  cultural-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./ai-data/cultural-data
+
+  # Training Data
+  wedding-training-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./ai-training/data
+  ai-training-outputs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./ai-training/outputs
+  ai-notebooks:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./ai-training/notebooks
+
+  # Database Storage
+  ai-redis-data:
+  ai-postgres-data:
+
+  # Monitoring Storage
+  ai-prometheus-data:
+  ai-grafana-data:

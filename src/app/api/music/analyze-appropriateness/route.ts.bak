@@ -1,0 +1,228 @@
+/**
+ * Music Appropriateness Analysis API Endpoint
+ * POST /api/music/analyze-appropriateness
+ * 
+ * Analyzes music tracks for wedding appropriateness using AI
+ */
+
+import type { NextRequest } from 'next/server';
+import { z } from 'zod';
+import { createPostRoute } from '../../../../lib/api/route-template';
+import { MUSIC_PERMISSION_SETS } from '../../../../lib/api/auth-middleware';
+import { withCustomRateLimit } from '../../../../lib/api/rate-limit-middleware';
+import { ApiException } from '../../../../lib/api/error-handler';
+import { secureStringSchema, uuidSchema } from '../../../../lib/validation/schemas';
+import type { ApiResponse, AuthenticatedUser } from '../../../../lib/api/types';
+
+// AI Analysis Request Schema
+const appropriatenessAnalysisSchema = z.object({
+  track: z.object({
+    title: secureStringSchema.max(200),
+    artist: secureStringSchema.max(200),
+    album: secureStringSchema.max(200).optional(),
+    external_id: z.string().max(100).optional(),
+    provider: z.enum(['spotify', 'apple', 'youtube', 'manual']).optional(),
+    lyrics_sample: secureStringSchema.max(1000).optional()
+  }),
+  wedding_context: z.object({
+    cultural_considerations: z.array(secureStringSchema).max(10).optional(),
+    guest_age_range: z.enum(['20s', '30s', '40s', '50+', 'mixed']).optional(),
+    venue_type: z.enum(['church', 'outdoor', 'ballroom', 'beach', 'other']).optional(),
+    event_type: z.enum(['ceremony', 'cocktail', 'dinner', 'reception', 'first_dance']).optional()
+  }).optional()
+});
+
+// AI Analysis Response
+interface AppropriatenessAnalysis {
+  readonly score: number; // 0.0-1.0 appropriateness score
+  readonly categories: readonly string[]; // ceremony, cocktail, etc.
+  readonly issues: readonly string[]; // potential concerns
+  readonly reasoning: string;
+  readonly energy_level: number; // 0.0-1.0
+  readonly confidence: number; // 0.0-1.0 AI confidence
+  readonly alternatives?: readonly string[]; // suggested alternatives if inappropriate
+}
+
+// Mock AI Analysis Service - replace with OpenAI integration
+class WeddingMusicAI {
+  async analyzeAppropriateness(
+    track: {
+      title: string;
+      artist: string;
+      album?: string;
+      lyrics_sample?: string;
+    },
+    context?: {
+      cultural_considerations?: readonly string[];
+      guest_age_range?: string;
+      venue_type?: string;
+      event_type?: string;
+    }
+  ): Promise<AppropriatenessAnalysis> {
+    // TODO: Replace with actual OpenAI API integration
+    // This would use OpenAI's structured output mode for consistent JSON responses
+    
+    // Mock analysis based on track title patterns
+    const title = track.title.toLowerCase();
+    const artist = track.artist.toLowerCase();
+    
+    let score = 0.8; // Default good score
+    let issues: string[] = [];
+    let categories: string[] = ['reception', 'cocktail'];
+    
+    // Basic inappropriate content detection (mock)
+    const inappropriateKeywords = [
+      'breakup', 'divorce', 'death', 'funeral', 'party', 'drunk', 'fight'
+    ];
+    
+    const hasInappropriateContent = inappropriateKeywords.some(keyword =>
+      title.includes(keyword) || artist.includes(keyword)
+    );
+    
+    if (hasInappropriateContent) {
+      score = 0.3;
+      issues.push('Contains themes that may not be appropriate for wedding celebrations');
+      categories = []; // Not suitable for any wedding events
+    }
+    
+    // Venue-specific adjustments
+    if (context?.venue_type === 'church') {
+      if (title.includes('dance') || title.includes('party')) {
+        score = Math.max(0.2, score - 0.3);
+        issues.push('May not be appropriate for religious ceremony venue');
+      }
+    }
+    
+    // Event-specific categorization
+    if (context?.event_type === 'ceremony') {
+      if (title.includes('dance') || title.includes('party')) {
+        score = Math.max(0.4, score - 0.2);
+        categories = categories.filter(c => c !== 'ceremony');
+      } else if (title.includes('love') || title.includes('forever')) {
+        categories.push('ceremony');
+        score = Math.min(1.0, score + 0.1);
+      }
+    }
+    
+    // Energy level estimation (mock)
+    let energyLevel = 0.6;
+    if (title.includes('slow') || title.includes('ballad')) energyLevel = 0.3;
+    if (title.includes('dance') || title.includes('party')) energyLevel = 0.9;
+    
+    const analysis: AppropriatenessAnalysis = {
+      score,
+      categories: [...new Set(categories)], // Remove duplicates
+      issues,
+      reasoning: score > 0.7 
+        ? `"${track.title}" by ${track.artist} appears to be appropriate for wedding celebrations with positive themes and suitable energy level.`
+        : score > 0.4
+        ? `"${track.title}" by ${track.artist} has some considerations for wedding use. Review the specific context and venue.`
+        : `"${track.title}" by ${track.artist} may not be suitable for wedding celebrations due to potentially inappropriate themes.`,
+      energy_level: energyLevel,
+      confidence: 0.85, // Mock confidence level
+      alternatives: score < 0.5 ? [
+        'All of Me by John Legend',
+        'Perfect by Ed Sheeran',
+        'Thinking Out Loud by Ed Sheeran'
+      ] : undefined
+    };
+    
+    return analysis;
+  }
+  
+  async cacheAnalysis(
+    trackId: string,
+    analysis: AppropriatenessAnalysis,
+    organizationId: string
+  ): Promise<void> {
+    // TODO: Implement caching to database
+    // This would store the AI analysis results for future reference
+    console.log(`Caching analysis for track ${trackId} in org ${organizationId}`);
+  }
+  
+  async getCachedAnalysis(
+    trackId: string,
+    organizationId: string
+  ): Promise<AppropriatenessAnalysis | null> {
+    // TODO: Implement cache retrieval from database
+    // Check if we've already analyzed this track recently
+    return null;
+  }
+}
+
+const weddingMusicAI = new WeddingMusicAI();
+
+// Custom rate limit for AI analysis (more restrictive due to external API costs)
+const withAnalysisRateLimit = withCustomRateLimit(50, 3600); // 50 requests per hour
+
+// Create the API route with all middleware applied
+export const POST = withAnalysisRateLimit(
+  createPostRoute<
+    z.infer<typeof appropriatenessAnalysisSchema>,
+    Record<string, string>,
+    ApiResponse<AppropriatenessAnalysis>
+  >({
+    permissions: MUSIC_PERMISSION_SETS.SEARCH_MUSIC, // Requires read permission
+    bodySchema: appropriatenessAnalysisSchema,
+    handler: async ({ user, body }): Promise<ApiResponse<AppropriatenessAnalysis>> => {
+      try {
+        const { track, wedding_context } = body;
+        
+        // Generate a track identifier for caching
+        const trackId = `${track.provider || 'manual'}-${track.external_id || `${track.artist}-${track.title}`.replace(/\s+/g, '-').toLowerCase()}`;
+        
+        // Check for cached analysis first
+        let analysis = await weddingMusicAI.getCachedAnalysis(trackId, user.organizationId);
+        
+        if (!analysis) {
+          // Perform new AI analysis
+          analysis = await weddingMusicAI.analyzeAppropriateness(
+            {
+              title: track.title,
+              artist: track.artist,
+              album: track.album,
+              lyrics_sample: track.lyrics_sample
+            },
+            wedding_context ? {
+              cultural_considerations: wedding_context.cultural_considerations,
+              guest_age_range: wedding_context.guest_age_range,
+              venue_type: wedding_context.venue_type,
+              event_type: wedding_context.event_type
+            } : undefined
+          );
+          
+          // Cache the result for future use
+          await weddingMusicAI.cacheAnalysis(trackId, analysis, user.organizationId);
+        }
+        
+        return {
+          success: true,
+          data: analysis
+        };
+        
+      } catch (error) {
+        if (error instanceof ApiException) {
+          throw error;
+        }
+        
+        console.error('Music appropriateness analysis failed:', error);
+        
+        // Handle external service errors gracefully
+        if (error instanceof Error && error.message.includes('OpenAI')) {
+          throw ApiException.internal(
+            'AI analysis service temporarily unavailable',
+            { service: 'openai' }
+          );
+        }
+        
+        throw ApiException.internal(
+          'Failed to analyze music appropriateness',
+          { originalError: error instanceof Error ? error.message : String(error) }
+        );
+      }
+    }
+  })
+);
+
+// Type-safe route exports
+export type MusicAppropriatenessRoute = typeof POST;

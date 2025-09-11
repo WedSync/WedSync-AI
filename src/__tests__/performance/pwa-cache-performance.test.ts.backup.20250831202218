@@ -1,0 +1,411 @@
+/**
+ * WS-171: PWA Cache Performance Validation Tests
+ * Performance benchmarks and validation for offline caching strategy
+ */
+
+import { PWACacheManager, CachePriority, WeddingDataType } from '../../lib/pwa/cache-manager';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { PWAStorageOptimizer } from '../../lib/pwa/storage-optimizer';
+import { PWAPerformanceOptimizer } from '../../lib/pwa/performance-optimizer';
+// Mock Supabase client for performance tests
+jest.mock('@supabase/supabase-js', () => ({
+  createClient: jest.fn(() => ({
+    from: jest.fn(() => ({
+      insert: jest.fn().mockResolvedValue({}),
+      select: jest.fn().mockResolvedValue({ data: [], error: null })
+    }))
+  }))
+}));
+// Mock globals for performance tests
+Object.defineProperty(global, 'performance', {
+  value: {
+    now: jest.fn(() => Date.now()),
+    memory: {
+      usedJSHeapSize: 1024 * 1024 * 10 // 10MB
+    }
+  },
+  writable: true
+});
+// Mock storage APIs
+const mockStorageEstimate = {
+  quota: 50 * 1024 * 1024 * 1024, // 50GB
+  usage: 5 * 1024 * 1024 * 1024,  // 5GB
+  usageDetails: {
+    caches: 2 * 1024 * 1024 * 1024,
+    indexedDB: 1 * 1024 * 1024 * 1024,
+    serviceWorker: 500 * 1024 * 1024
+  }
+};
+Object.defineProperty(global, 'navigator', {
+    storage: {
+      estimate: jest.fn().mockResolvedValue(mockStorageEstimate)
+// Mock localStorage with size tracking
+let localStorageSize = 0;
+const mockLocalStorage = {
+  store: new Map<string, string>(),
+  getItem: jest.fn((key: string) => mockLocalStorage.store.get(key) || null),
+  setItem: jest.fn((key: string, value: string) => {
+    const oldSize = mockLocalStorage.store.get(key)?.length || 0;
+    mockLocalStorage.store.set(key, value);
+    localStorageSize = localStorageSize - oldSize + value.length;
+  }),
+  removeItem: jest.fn((key: string) => {
+    const size = mockLocalStorage.store.get(key)?.length || 0;
+    mockLocalStorage.store.delete(key);
+    localStorageSize -= size;
+  clear: jest.fn(() => {
+    mockLocalStorage.store.clear();
+    localStorageSize = 0;
+  get size() { return localStorageSize; }
+Object.defineProperty(global, 'localStorage', { value: mockLocalStorage });
+// Mock sessionStorage
+Object.defineProperty(global, 'sessionStorage', { 
+  value: { 
+    getItem: jest.fn().mockReturnValue('test-session-id'),
+    setItem: jest.fn() 
+  } 
+// Mock document and window for performance tests
+Object.defineProperty(global, 'document', {
+    hidden: false, 
+    addEventListener: jest.fn(), 
+    removeEventListener: jest.fn() 
+Object.defineProperty(global, 'window', {
+describe('PWA Cache Performance Validation', () => {
+  let cacheManager: PWACacheManager;
+  let storageOptimizer: PWAStorageOptimizer;
+  beforeEach(() => {
+    jest.clearAllMocks();
+    cacheManager = new PWACacheManager({
+      maxSize: 50, // 50MB
+      defaultTTL: 3600000,
+      cleanupInterval: 300000,
+      persistOffline: true
+    });
+    storageOptimizer = new PWAStorageOptimizer({
+      warningThreshold: 80,
+      criticalThreshold: 95,
+      autoCleanup: true
+  });
+  afterEach(() => {
+    if (cacheManager) {
+      cacheManager.destroy();
+    if (storageOptimizer) {
+      storageOptimizer.destroy();
+  describe('Cache Operation Performance', () => {
+    test('should set cache entries within performance threshold', async () => {
+      const testData = { timeline: 'Wedding timeline data '.repeat(100) };
+      const iterations = 100;
+      const maxTimePerOperation = 10; // 10ms per operation
+      const startTime = performance.now();
+      for (let i = 0; i < iterations; i++) {
+        await cacheManager.set(`test:${i}`, testData, {
+          priority: CachePriority.HIGH,
+          dataType: WeddingDataType.TIMELINE
+        });
+      }
+      const endTime = performance.now();
+      const totalTime = endTime - startTime;
+      const averageTime = totalTime / iterations;
+      expect(averageTime).toBeLessThan(maxTimePerOperation);
+      console.log(`Average cache set time: ${averageTime.toFixed(2)}ms per operation`);
+    test('should get cache entries within performance threshold', async () => {
+      const testData = { vendors: 'Vendor data '.repeat(50) };
+      const maxTimePerOperation = 5; // 5ms per operation
+      // Pre-populate cache
+        await cacheManager.set(`vendor:${i}`, testData, {
+          dataType: WeddingDataType.VENDORS
+        const result = await cacheManager.get(`vendor:${i}`);
+        expect(result).toEqual(testData);
+      console.log(`Average cache get time: ${averageTime.toFixed(2)}ms per operation`);
+    test('should maintain performance with large cache sizes', async () => {
+      const largeData = { data: 'x'.repeat(10000) }; // ~10KB per entry
+      const entryCount = 500; // 5MB total
+      const maxSetTime = 20; // 20ms per operation
+      const maxGetTime = 5; // 5ms per operation
+      // Test set performance
+      const setStartTime = performance.now();
+      for (let i = 0; i < entryCount; i++) {
+        await cacheManager.set(`large:${i}`, largeData);
+      const setEndTime = performance.now();
+      const averageSetTime = (setEndTime - setStartTime) / entryCount;
+      expect(averageSetTime).toBeLessThan(maxSetTime);
+      // Test get performance
+      const getStartTime = performance.now();
+        await cacheManager.get(`large:${i}`);
+      const getEndTime = performance.now();
+      const averageGetTime = (getEndTime - getStartTime) / entryCount;
+      expect(averageGetTime).toBeLessThan(maxGetTime);
+      console.log(`Large cache set: ${averageSetTime.toFixed(2)}ms, get: ${averageGetTime.toFixed(2)}ms`);
+  describe('Cache Hit Rate Performance', () => {
+    test('should achieve high cache hit rates for wedding data', async () => {
+      const weddingData = {
+        timeline: { events: ['ceremony', 'reception'] },
+        vendors: { photographer: 'John Doe', caterer: 'Jane Smith' },
+        guests: { count: 150, dietary: ['vegetarian', 'gluten-free'] }
+      };
+      // Pre-populate cache with wedding data
+      await cacheManager.set('wedding:123:timeline', weddingData.timeline, {
+        priority: CachePriority.CRITICAL,
+        dataType: WeddingDataType.TIMELINE
+      });
+      await cacheManager.set('wedding:123:vendors', weddingData.vendors, {
+        priority: CachePriority.HIGH,
+        dataType: WeddingDataType.VENDORS
+      await cacheManager.set('wedding:123:guests', weddingData.guests, {
+        priority: CachePriority.MEDIUM,
+        dataType: WeddingDataType.GUESTS
+      // Simulate real usage patterns
+      const requests = [
+        'wedding:123:timeline', // High frequency
+        'wedding:123:timeline',
+        'wedding:123:vendors',   // Medium frequency
+        'wedding:123:vendors',
+        'wedding:123:guests',    // Lower frequency
+        'wedding:123:nonexistent' // Miss
+      ];
+      let hits = 0;
+      let total = requests.length;
+      for (const key of requests) {
+        const result = await cacheManager.get(key);
+        if (result !== null) {
+          hits++;
+        }
+      const hitRate = (hits / total) * 100;
+      expect(hitRate).toBeGreaterThanOrEqual(85); // 85% hit rate threshold
+      console.log(`Cache hit rate: ${hitRate.toFixed(1)}%`);
+    test('should maintain hit rates during concurrent access', async () => {
+      const testData = { data: 'concurrent test data' };
+      const concurrency = 20;
+      const requestsPerThread = 50;
+      for (let i = 0; i < 10; i++) {
+        await cacheManager.set(`concurrent:${i}`, testData);
+      // Create concurrent access patterns
+      const threads = Array.from({ length: concurrency }, async (_, threadId) => {
+        let hits = 0;
+        
+        for (let i = 0; i < requestsPerThread; i++) {
+          const key = `concurrent:${Math.floor(Math.random() * 10)}`;
+          const result = await cacheManager.get(key);
+          if (result !== null) {
+            hits++;
+          }
+        return hits;
+      const results = await Promise.all(threads);
+      const totalHits = results.reduce((sum, hits) => sum + hits, 0);
+      const totalRequests = concurrency * requestsPerThread;
+      const hitRate = (totalHits / totalRequests) * 100;
+      expect(hitRate).toBeGreaterThanOrEqual(80); // 80% hit rate under concurrency
+      console.log(`Concurrent access hit rate: ${hitRate.toFixed(1)}%`);
+  describe('Storage Optimization Performance', () => {
+    test('should perform storage cleanup within acceptable time', async () => {
+      // Fill storage with test data
+      const testData = { data: 'x'.repeat(1000) }; // 1KB per entry
+      const entryCount = 1000; // 1MB total
+        mockLocalStorage.setItem(`cleanup:${i}`, JSON.stringify(testData));
+      const maxCleanupTime = 5000; // 5 seconds max
+      const result = await storageOptimizer.performScheduledCleanup();
+      const cleanupTime = endTime - startTime;
+      expect(cleanupTime).toBeLessThan(maxCleanupTime);
+      expect(result.success).toBe(true);
+      expect(result.cleanupDuration).toBeGreaterThan(0);
+      console.log(`Cleanup time: ${cleanupTime.toFixed(2)}ms, freed: ${result.freedBytes} bytes`);
+    test('should monitor storage quota with minimal performance impact', async () => {
+      const maxTimePerCheck = 50; // 50ms per quota check
+        await storageOptimizer.getStorageQuota();
+      const averageTime = (endTime - startTime) / iterations;
+      expect(averageTime).toBeLessThan(maxTimePerCheck);
+      console.log(`Average quota check time: ${averageTime.toFixed(2)}ms`);
+    test('should perform emergency cleanup quickly when storage is critical', async () => {
+      // Simulate critical storage condition
+      navigator.storage.estimate = jest.fn().mockResolvedValue({
+        quota: 50 * 1024 * 1024 * 1024,
+        usage: 48.5 * 1024 * 1024 * 1024, // 97% usage
+        usageDetails: mockStorageEstimate.usageDetails
+      const maxEmergencyCleanupTime = 10000; // 10 seconds max for emergency
+      const result = await storageOptimizer.performEmergencyCleanup();
+      expect(cleanupTime).toBeLessThan(maxEmergencyCleanupTime);
+      console.log(`Emergency cleanup time: ${cleanupTime.toFixed(2)}ms`);
+  describe('Memory Usage Performance', () => {
+    test('should maintain reasonable memory usage during cache operations', async () => {
+      const initialMemory = performance.memory?.usedJSHeapSize || 0;
+      const testData = { data: 'x'.repeat(5000) }; // 5KB per entry
+      const entryCount = 200; // 1MB total
+      // Populate cache
+        await cacheManager.set(`memory:${i}`, testData, {
+          priority: CachePriority.MEDIUM,
+          dataType: WeddingDataType.PREFERENCES
+      const afterPopulateMemory = performance.memory?.usedJSHeapSize || 0;
+      const memoryIncrease = afterPopulateMemory - initialMemory;
+      const maxMemoryIncrease = 10 * 1024 * 1024; // 10MB max increase
+      expect(memoryIncrease).toBeLessThan(maxMemoryIncrease);
+      console.log(`Memory increase during caching: ${(memoryIncrease / 1024 / 1024).toFixed(2)}MB`);
+    test('should release memory during cleanup operations', async () => {
+      const testData = { data: 'x'.repeat(2000) }; // 2KB per entry
+      const entryCount = 500; // 1MB total
+      // Populate cache with short TTL
+        await cacheManager.set(`expire:${i}`, testData, {
+          customTTL: 100 // 100ms TTL
+      const beforeCleanupMemory = performance.memory?.usedJSHeapSize || 0;
+      // Wait for expiration and trigger cleanup
+      await new Promise(resolve => setTimeout(resolve, 200));
+      await (cacheManager as any).cleanup();
+      const afterCleanupMemory = performance.memory?.usedJSHeapSize || 0;
+      const memoryReduced = beforeCleanupMemory - afterCleanupMemory;
+      // Should release some memory (though exact amount depends on GC)
+      expect(memoryReduced).toBeGreaterThanOrEqual(0);
+      console.log(`Memory reduction after cleanup: ${(memoryReduced / 1024 / 1024).toFixed(2)}MB`);
+  describe('Offline Performance Optimization', () => {
+    test('should optimize for wedding day with minimal performance impact', async () => {
+      const performanceOptimizer = new PWAPerformanceOptimizer(cacheManager, storageOptimizer);
+      const preloadConfig = {
+        weddingId: 'perf-test-wedding',
+        weddingDate: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        criticalVendorIds: ['vendor-1', 'vendor-2', 'vendor-3'],
+        keyGuestIds: ['guest-1', 'guest-2'],
+        timelineEvents: ['ceremony', 'reception', 'photos'],
+        emergencyContacts: ['contact-1']
+      // Mock fetch methods to return test data quickly
+      jest.spyOn(performanceOptimizer as any, 'fetchWeddingTimeline')
+        .mockResolvedValue({ events: preloadConfig.timelineEvents });
+      jest.spyOn(performanceOptimizer as any, 'fetchVendorData')
+        .mockResolvedValue({ name: 'Test Vendor', contact: 'test@vendor.com' });
+      jest.spyOn(performanceOptimizer as any, 'fetchEmergencyContacts')
+        .mockResolvedValue([{ name: 'Emergency Contact', phone: '911' }]);
+      const maxOptimizationTime = 30000; // 30 seconds max
+      const result = await performanceOptimizer.optimizeForWedding(preloadConfig);
+      const optimizationTime = endTime - startTime;
+      expect(result).toBe(true);
+      expect(optimizationTime).toBeLessThan(maxOptimizationTime);
+      console.log(`Wedding day optimization time: ${optimizationTime.toFixed(2)}ms`);
+    test('should achieve target offline capability scores', async () => {
+      // Pre-cache critical wedding data
+      await cacheManager.set('timeline', { events: ['ceremony'] });
+      await cacheManager.set('vendors', { photographer: 'John' });
+      await cacheManager.set('tasks', { active: ['setup'] });
+      await cacheManager.set('communications', { emergency: ['911'] });
+      const analysis = await performanceOptimizer.analyzePerformance();
+      expect(analysis.metrics.offlineCapabilityScore).toBeGreaterThanOrEqual(70);
+      expect(analysis.metrics.criticalDataAvailability).toBeGreaterThanOrEqual(75);
+      expect(analysis.metrics.userExperienceScore).toBeGreaterThanOrEqual(60);
+      console.log('Offline capability scores:', {
+        offline: analysis.metrics.offlineCapabilityScore,
+        criticalData: analysis.metrics.criticalDataAvailability,
+        userExperience: analysis.metrics.userExperienceScore
+  describe('Stress Testing', () => {
+    test('should handle rapid cache operations without degradation', async () => {
+      const operationsCount = 1000;
+      const timeLimit = 10000; // 10 seconds
+      const testData = { data: 'stress test data' };
+      const operations = Array.from({ length: operationsCount }, async (_, i) => {
+        const key = `stress:${i}`;
+        // Mix of set and get operations
+        if (i % 2 === 0) {
+          return await cacheManager.set(key, testData);
+        } else {
+          return await cacheManager.get(`stress:${Math.floor(i / 2)}`);
+      await Promise.all(operations);
+      expect(totalTime).toBeLessThan(timeLimit);
+      const operationsPerSecond = (operationsCount / totalTime) * 1000;
+      expect(operationsPerSecond).toBeGreaterThan(100); // Minimum 100 ops/sec
+      console.log(`Stress test: ${operationsPerSecond.toFixed(0)} operations/second`);
+    test('should maintain performance under memory pressure', async () => {
+      const largeData = { data: 'x'.repeat(50000) }; // 50KB per entry
+      const entryCount = 100; // 5MB total
+      const maxTimePerOperation = 100; // 100ms per operation under pressure
+      const times: number[] = [];
+        const startTime = performance.now();
+        await cacheManager.set(`pressure:${i}`, largeData, {
+          priority: CachePriority.LOW // Use low priority to trigger eviction
+        const endTime = performance.now();
+        times.push(endTime - startTime);
+      const averageTime = times.reduce((sum, time) => sum + time, 0) / times.length;
+      const maxTime = Math.max(...times);
+      expect(maxTime).toBeLessThan(maxTimePerOperation * 3); // Allow some variance
+      console.log(`Under pressure - Average: ${averageTime.toFixed(2)}ms, Max: ${maxTime.toFixed(2)}ms`);
+  describe('Real-world Performance Simulation', () => {
+    test('should handle typical wedding day usage patterns', async () => {
+      const weddingDayOperations = [
+        // Morning: Check timeline frequently
+        ...Array(20).fill('timeline').map((type, i) => ({ type, key: `wedding:123:${type}`, data: { time: '9:00 AM' } })),
+        // Pre-ceremony: Vendor coordination
+        ...Array(15).fill('vendors').map((type, i) => ({ type, key: `wedding:123:vendor:${i}`, data: { status: 'ready' } })),
+        // During ceremony: Task updates
+        ...Array(10).fill('tasks').map((type, i) => ({ type, key: `wedding:123:task:${i}`, data: { completed: true } })),
+        // Reception: Guest management
+        ...Array(25).fill('guests').map((type, i) => ({ type, key: `wedding:123:guest:${i}`, data: { checkedIn: true } }))
+      const maxTotalTime = 5000; // 5 seconds for all operations
+      // Execute operations in realistic patterns
+      for (const operation of weddingDayOperations) {
+        await cacheManager.set(operation.key, operation.data, {
+          priority: operation.type === 'timeline' ? CachePriority.CRITICAL : CachePriority.HIGH,
+          dataType: operation.type as WeddingDataType
+      // Simulate frequent timeline checks
+      for (let i = 0; i < 50; i++) {
+        await cacheManager.get('wedding:123:timeline');
+      expect(totalTime).toBeLessThan(maxTotalTime);
+      const stats = cacheManager.getStats();
+      expect(stats.hitRate).toBeGreaterThan(70); // Good hit rate expected
+      console.log(`Wedding day simulation: ${totalTime.toFixed(2)}ms, ${stats.hitRate.toFixed(1)}% hit rate`);
+    test('should maintain performance during storage pressure', async () => {
+      // Simulate approaching storage limits
+        usage: 42 * 1024 * 1024 * 1024, // 84% usage
+      const testData = { data: 'storage pressure test data' };
+      const operationsCount = 100;
+      const maxAverageTime = 25; // 25ms average under pressure
+      for (let i = 0; i < operationsCount; i++) {
+        await cacheManager.set(`pressure:${i}`, testData);
+      expect(averageTime).toBeLessThan(maxAverageTime);
+      // Should trigger automatic cleanup
+      await storageOptimizer.checkStorageHealth();
+      console.log(`Storage pressure average time: ${averageTime.toFixed(2)}ms`);
+  describe('Performance Benchmarks', () => {
+    test('should meet wedding day performance requirements', async () => {
+      const requirements = {
+        cacheSetTime: 15,        // Max 15ms per cache set
+        cacheGetTime: 5,         // Max 5ms per cache get
+        hitRateThreshold: 85,    // Min 85% hit rate
+        cleanupTime: 3000,       // Max 3 seconds for cleanup
+        optimizationTime: 25000, // Max 25 seconds for wedding optimization
+        memoryLimit: 50 * 1024 * 1024 // Max 50MB additional memory
+      // Test cache performance
+      const testData = { wedding: 'performance benchmark data' };
+      
+      let setTime = performance.now();
+      await cacheManager.set('benchmark:test', testData);
+      setTime = performance.now() - setTime;
+      let getTime = performance.now();
+      await cacheManager.get('benchmark:test');
+      getTime = performance.now() - getTime;
+      expect(setTime).toBeLessThan(requirements.cacheSetTime);
+      expect(getTime).toBeLessThan(requirements.cacheGetTime);
+      console.log('Performance benchmarks:', {
+        setTime: `${setTime.toFixed(2)}ms (limit: ${requirements.cacheSetTime}ms)`,
+        getTime: `${getTime.toFixed(2)}ms (limit: ${requirements.cacheGetTime}ms)`,
+        hitRateTarget: `${requirements.hitRateThreshold}%`,
+        cleanupLimit: `${requirements.cleanupTime}ms`,
+        optimizationLimit: `${requirements.optimizationTime}ms`,
+        memoryLimit: `${requirements.memoryLimit / 1024 / 1024}MB`
+describe('Cache Performance Regression Tests', () => {
+  test('should not regress performance with new features', async () => {
+    // This test ensures that performance doesn't degrade as new features are added
+    const baselineMetrics = {
+      setCacheTime: 10,    // Baseline: 10ms
+      getCacheTime: 3,     // Baseline: 3ms
+      hitRate: 90          // Baseline: 90%
+    };
+    const cacheManager = new PWACacheManager();
+    const testData = { regression: 'test data' };
+    // Measure current performance
+    let setTime = performance.now();
+    await cacheManager.set('regression:test', testData);
+    setTime = performance.now() - setTime;
+    let getTime = performance.now();
+    await cacheManager.get('regression:test');
+    getTime = performance.now() - getTime;
+    // Performance should not be significantly worse than baseline
+    expect(setTime).toBeLessThan(baselineMetrics.setCacheTime * 1.5); // Allow 50% variance
+    expect(getTime).toBeLessThan(baselineMetrics.getCacheTime * 1.5);
+    cacheManager.destroy();
+    console.log('Regression test results:', {
+      setTime: `${setTime.toFixed(2)}ms (baseline: ${baselineMetrics.setCacheTime}ms)`,
+      getTime: `${getTime.toFixed(2)}ms (baseline: ${baselineMetrics.getCacheTime}ms)`

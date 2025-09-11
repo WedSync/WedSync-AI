@@ -1,0 +1,536 @@
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 2.53kB done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/node:20-alpine
+#2 ...
+
+#3 [auth] library/node:pull token for registry-1.docker.io
+#3 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/node:20-alpine
+#2 DONE 4.5s
+
+#4 [internal] load .dockerignore
+#4 transferring context: 2B done
+#4 DONE 0.0s
+
+#5 [runner 2/9] RUN apk add --no-cache curl
+#5 CACHED
+
+#6 [runner 3/9] RUN addgroup --system --gid 1001 nodejs
+#6 CACHED
+
+#7 [base 1/1] FROM docker.io/library/node:20-alpine@sha256:df02558528d3d3d0d621f112e232611aecfee7cbc654f6b375765f72bb262799
+#7 resolve docker.io/library/node:20-alpine@sha256:df02558528d3d3d0d621f112e232611aecfee7cbc654f6b375765f72bb262799 done
+#7 CACHED
+
+#8 [builder 1/4] WORKDIR /app
+#8 CACHED
+
+#9 [runner 4/9] RUN adduser --system --uid 1001 nextjs
+#9 CACHED
+
+#10 [internal] load build context
+#10 transferring context: 532.88MB 5.1s
+#10 ...
+
+#11 [deps 1/4] RUN apk add --no-cache     libc6-compat     python3     make     g++     cairo-dev     jpeg-dev     pango-dev     giflib-dev     pixman-dev
+#11 0.287 fetch https://dl-cdn.alpinelinux.org/alpine/v3.22/main/aarch64/APKINDEX.tar.gz
+#11 0.587 fetch https://dl-cdn.alpinelinux.org/alpine/v3.22/community/aarch64/APKINDEX.tar.gz
+#11 1.139 (1/142) Installing cairo-tools (1.18.4-r0)
+#11 1.179 (2/142) Installing libexpat (2.7.1-r0)
+#11 1.210 (3/142) Installing brotli-libs (1.1.0-r2)
+#11 1.289 (4/142) Installing libbz2 (1.0.8-r6)
+#11 1.320 (5/142) Installing libpng (1.6.47-r0)
+#11 1.359 (6/142) Installing freetype (2.13.3-r0)
+#11 1.454 (7/142) Installing fontconfig (2.15.0-r3)
+#11 1.528 (8/142) Installing expat (2.7.1-r0)
+#11 1.559 (9/142) Installing pkgconf (2.4.3-r0)
+#11 1.606 (10/142) Installing expat-dev (2.7.1-r0)
+#11 1.636 (11/142) Installing bzip2-dev (1.0.8-r6)
+#11 1.662 (12/142) Installing brotli (1.1.0-r2)
+#11 1.694 (13/142) Installing brotli-dev (1.1.0-r2)
+#11 1.721 (14/142) Installing zlib-dev (1.3.1-r2)
+#11 1.754 (15/142) Installing libpng-dev (1.6.47-r0)
+#11 1.782 (16/142) Installing freetype-dev (2.13.3-r0)
+#11 1.829 (17/142) Installing fontconfig-dev (2.15.0-r3)
+#11 1.855 (18/142) Installing libxau (1.0.12-r0)
+#11 1.879 (19/142) Installing xorgproto (2024.1-r0)
+#11 1.980 (20/142) Installing libxau-dev (1.0.12-r0)
+#11 2.027 (21/142) Installing libmd (1.1.0-r0)
+#11 2.057 (22/142) Installing libbsd (0.12.2-r0)
+#11 2.092 (23/142) Installing libxdmcp (1.1.5-r1)
+#11 2.118 (24/142) Installing libxcb (1.17.0-r0)
+#11 2.173 (25/142) Installing libx11 (1.8.11-r0)
+#11 2.319 (26/142) Installing libxext (1.3.6-r2)
+#11 2.346 (27/142) Installing libffi (3.4.8-r0)
+#11 2.378 (28/142) Installing gdbm (1.24-r0)
+#11 2.413 (29/142) Installing xz-libs (5.8.1-r0)
+#11 2.456 (30/142) Installing mpdecimal (4.0.1-r0)
+#11 2.488 (31/142) Installing ncurses-terminfo-base (6.5_p20250503-r0)
+#11 2.516 (32/142) Installing libncursesw (6.5_p20250503-r0)
+#11 2.563 (33/142) Installing libpanelw (6.5_p20250503-r0)
+#11 2.592 (34/142) Installing readline (8.2.13-r1)
+#11 2.635 (35/142) Installing sqlite-libs (3.49.2-r1)
+#11 2.796 (36/142) Installing python3 (3.12.11-r0)
+#11 3.721 (37/142) Installing python3-pycache-pyc0 (3.12.11-r0)
+#11 4.220 (38/142) Installing pyc (3.12.11-r0)
+#11 4.220 (39/142) Installing xcb-proto-pyc (1.17.0-r0)
+#11 4.265 (40/142) Installing python3-pyc (3.12.11-r0)
+#11 4.265 (41/142) Installing xcb-proto (1.17.0-r0)
+#11 4.305 (42/142) Installing libxdmcp-dev (1.1.5-r1)
+#11 4.340 (43/142) Installing libxcb-dev (1.17.0-r0)
+#11 4.421 (44/142) Installing xtrans (1.5.2-r0)
+#11 4.450 (45/142) Installing libx11-dev (1.8.11-r0)
+#11 4.489 (46/142) Installing libxext-dev (1.3.6-r2)
+#11 4.521 (47/142) Installing libxrender (0.9.12-r0)
+#11 4.548 (48/142) Installing libxrender-dev (0.9.12-r0)
+#11 4.583 (49/142) Installing pixman (0.46.4-r0)
+#11 4.632 (50/142) Installing pixman-dev (0.46.4-r0)
+#11 4.674 (51/142) Installing util-macros (1.20.1-r0)
+#11 4.697 (52/142) Installing xcb-util (0.4.1-r3)
+#11 4.726 (53/142) Installing xcb-util-dev (0.4.1-r3)
+#11 4.785 (54/142) Installing cairo (1.18.4-r0)
+#11 4.882 (55/142) Installing libintl (0.24.1-r0)
+#11 4.915 (56/142) Installing libeconf (0.6.3-r0)
+#11 4.948 (57/142) Installing libblkid (2.41-r9)
+#11 4.992 (58/142) Installing libmount (2.41-r9)
+#11 5.021 (59/142) Installing pcre2 (10.43-r1)
+#11 5.132 (60/142) Installing glib (2.84.4-r0)
+#11 5.386 (61/142) Installing cairo-gobject (1.18.4-r0)
+#11 5.410 (62/142) Installing libxml2 (2.13.8-r0)
+#11 5.511 (63/142) Installing libxml2-utils (2.13.8-r0)
+#11 5.564 (64/142) Installing docbook-xml (4.5-r10)
+#11 5.621 Executing docbook-xml-4.5-r10.post-install
+#11 5.772 (65/142) Installing libxslt (1.1.43-r3)
+#11 5.820 (66/142) Installing docbook-xsl-ns (1.79.2-r11)
+#11 6.184 Executing docbook-xsl-ns-1.79.2-r11.post-install
+#11 6.200 (67/142) Installing docbook-xsl-nons (1.79.2-r11)
+#11 6.495 Executing docbook-xsl-nons-1.79.2-r11.post-install
+#11 6.510 (68/142) Installing docbook-xsl (1.79.2-r11)
+#11 6.538 (69/142) Installing xz (5.8.1-r0)
+#11 6.574 (70/142) Installing gettext-asprintf (0.24.1-r0)
+#11 6.621 (71/142) Installing libunistring (1.3-r0)
+#11 6.747 (72/142) Installing gettext-libs (0.24.1-r0)
+#11 6.824 (73/142) Installing gettext-envsubst (0.24.1-r0)
+#11 6.869 (74/142) Installing libgomp (14.2.0-r6)
+#11 6.916 (75/142) Installing gettext (0.24.1-r0)
+#11 7.001 (76/142) Installing gettext-dev (0.24.1-r0)
+#11 7.089 (77/142) Installing py3-parsing (3.2.3-r0)
+#11 7.130 (78/142) Installing py3-parsing-pyc (3.2.3-r0)
+#11 7.170 (79/142) Installing py3-packaging (25.0-r0)
+#11 7.199 (80/142) Installing py3-packaging-pyc (25.0-r0)
+#11 7.241 (81/142) Installing linux-headers (6.14.2-r0)
+#11 7.461 (82/142) Installing libffi-dev (3.4.8-r0)
+#11 7.497 (83/142) Installing bsd-compat-headers (0.7.2-r6)
+#11 7.531 (84/142) Installing libformw (6.5_p20250503-r0)
+#11 7.557 (85/142) Installing libmenuw (6.5_p20250503-r0)
+#11 7.592 (86/142) Installing libncurses++ (6.5_p20250503-r0)
+#11 7.624 (87/142) Installing ncurses-dev (6.5_p20250503-r0)
+#11 7.671 (88/142) Installing libedit (20250104.3.1-r1)
+#11 7.711 (89/142) Installing libedit-dev (20250104.3.1-r1)
+#11 7.745 (90/142) Installing libpcre2-16 (10.43-r1)
+#11 7.812 (91/142) Installing libpcre2-32 (10.43-r1)
+#11 7.871 (92/142) Installing pcre2-dev (10.43-r1)
+#11 7.905 (93/142) Installing libuuid (2.41-r9)
+#11 7.934 (94/142) Installing libfdisk (2.41-r9)
+#11 7.968 (95/142) Installing liblastlog2 (2.41-r9)
+#11 8.024 (96/142) Installing libsmartcols (2.41-r9)
+#11 8.050 (97/142) Installing sqlite (3.49.2-r1)
+#11 8.165 (98/142) Installing sqlite-dev (3.49.2-r1)
+#11 8.218 (99/142) Installing util-linux-dev (2.41-r9)
+#11 8.255 (100/142) Installing glib-dev (2.84.4-r0)
+#11 8.504 (101/142) Installing cairo-dev (1.18.4-r0)
+#11 8.537 (102/142) Installing libstdc++-dev (14.2.0-r6)
+#11 9.057 (103/142) Installing jansson (2.14.1-r0)
+#11 9.114 (104/142) Installing zstd-libs (1.5.7-r0)
+#11 9.202 (105/142) Installing binutils (2.44-r2)
+#11 9.570 (106/142) Installing libatomic (14.2.0-r6)
+#11 9.593 (107/142) Installing gmp (6.3.0-r3)
+#11 ...
+
+#10 [internal] load build context
+#10 transferring context: 742.77MB 9.7s done
+#10 DONE 9.8s
+
+#11 [deps 1/4] RUN apk add --no-cache     libc6-compat     python3     make     g++     cairo-dev     jpeg-dev     pango-dev     giflib-dev     pixman-dev
+#11 9.638 (108/142) Installing isl26 (0.26-r1)
+#11 9.766 (109/142) Installing mpfr4 (4.2.1_p1-r0)
+#11 9.831 (110/142) Installing mpc1 (1.3.1-r1)
+#11 9.868 (111/142) Installing gcc (14.2.0-r6)
+#11 16.21 (112/142) Installing musl-dev (1.2.5-r10)
+#11 16.58 (113/142) Installing g++ (14.2.0-r6)
+#11 18.35 (114/142) Installing giflib (5.2.2-r1)
+#11 18.43 (115/142) Installing giflib-dev (5.2.2-r1)
+#11 18.50 (116/142) Installing libjpeg-turbo (3.1.0-r0)
+#11 18.57 (117/142) Installing libturbojpeg (3.1.0-r0)
+#11 18.65 (118/142) Installing libjpeg-turbo-dev (3.1.0-r0)
+#11 18.73 (119/142) Installing jpeg-dev (9f-r0)
+#11 18.73 (120/142) Installing musl-obstack (1.2.3-r2)
+#11 18.76 (121/142) Installing libucontext (1.3.2-r0)
+#11 18.80 (122/142) Installing gcompat (1.1.0-r4)
+#11 18.85 (123/142) Installing make (4.4.1-r3)
+#11 18.92 (124/142) Installing libxft (2.3.8-r3)
+#11 18.96 (125/142) Installing graphite2 (1.3.14-r6)
+#11 19.01 (126/142) Installing harfbuzz (11.2.1-r0)
+#11 19.09 (127/142) Installing fribidi (1.0.16-r1)
+#11 19.11 (128/142) Installing pango (1.56.3-r0)
+#11 19.18 (129/142) Installing pango-tools (1.56.3-r0)
+#11 19.21 (130/142) Installing fribidi-dev (1.0.16-r1)
+#11 19.25 (131/142) Installing harfbuzz-cairo (11.2.1-r0)
+#11 19.28 (132/142) Installing harfbuzz-gobject (11.2.1-r0)
+#11 19.32 (133/142) Installing icu-data-en (76.1-r1)
+#11 19.43 Executing icu-data-en-76.1-r1.post-install
+#11 19.44 *
+#11 19.44 * If you need ICU with non-English locales and legacy charset support, install
+#11 19.44 * package icu-data-full.
+#11 19.44 *
+#11 19.44 (134/142) Installing icu-libs (76.1-r1)
+#11 19.66 (135/142) Installing harfbuzz-icu (11.2.1-r0)
+#11 19.69 (136/142) Installing harfbuzz-subset (11.2.1-r0)
+#11 19.77 (137/142) Installing graphite2-dev (1.3.14-r6)
+#11 19.82 (138/142) Installing icu (76.1-r1)
+#11 19.97 (139/142) Installing icu-dev (76.1-r1)
+#11 20.11 (140/142) Installing harfbuzz-dev (11.2.1-r0)
+#11 20.17 (141/142) Installing libxft-dev (2.3.8-r3)
+#11 20.21 (142/142) Installing pango-dev (1.56.3-r0)
+#11 20.25 Executing busybox-1.37.0-r18.trigger
+#11 20.26 Executing glib-2.84.4-r0.trigger
+#11 20.26 No schema files found: doing nothing.
+#11 20.27 OK: 373 MiB in 160 packages
+#11 DONE 20.5s
+
+#12 [deps 2/4] WORKDIR /app
+#12 DONE 0.1s
+
+#13 [deps 3/4] COPY package.json package-lock.json* ./
+#13 DONE 0.7s
+
+#14 [deps 4/4] RUN   if [ -f package-lock.json ]; then npm ci --legacy-peer-deps;   else echo "Lockfile not found." && exit 1;   fi
+#14 7.562 npm warn deprecated rimraf@2.7.1: Rimraf versions prior to v4 are no longer supported
+#14 10.36 npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead
+#14 11.69 npm warn deprecated lodash.isequal@4.5.0: This package is deprecated. Use require('node:util').isDeepStrictEqual instead.
+#14 14.24 npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory. Do not use it. Check out lru-cache if you want a good and tested way to coalesce async requests by a key value, which is much more comprehensive and powerful.
+#14 14.65 npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported
+#14 14.95 npm warn deprecated fstream@1.0.12: This package is no longer supported.
+#14 20.06 npm warn deprecated @supabase/auth-helpers-shared@0.7.0: This package is now deprecated - please use the @supabase/ssr package instead.
+#14 20.16 npm warn deprecated @supabase/auth-helpers-nextjs@0.10.0: This package is now deprecated - please use the @supabase/ssr package instead.
+#14 81.26 
+#14 81.26 added 1171 packages, and audited 1172 packages in 1m
+#14 81.26 
+#14 81.26 248 packages are looking for funding
+#14 81.26   run `npm fund` for details
+#14 81.26 
+#14 81.26 found 0 vulnerabilities
+#14 81.26 npm notice
+#14 81.26 npm notice New major version of npm available! 10.8.2 -> 11.5.2
+#14 81.26 npm notice Changelog: https://github.com/npm/cli/releases/tag/v11.5.2
+#14 81.26 npm notice To update run: npm install -g npm@11.5.2
+#14 81.26 npm notice
+#14 DONE 81.5s
+
+#15 [builder 2/4] COPY --from=deps /app/node_modules ./node_modules
+#15 DONE 7.4s
+
+#16 [builder 3/4] COPY . .
+#16 DONE 29.3s
+
+#17 [builder 4/4] RUN npm run build
+#17 0.838 
+#17 0.838 > wedsync@0.1.0 build
+#17 0.838 > next build
+#17 0.838 
+#17 1.736    ▲ Next.js 15.4.6
+#17 1.737    - Environments: .env.local
+#17 1.737    - Experiments (use with caution):
+#17 1.737      ✓ optimizeCss
+#17 1.737      ✓ reactCompiler
+#17 1.737 
+#17 3.032    Creating an optimized production build ...
+#17 33.81 <w> [webpack.cache.PackFileCacheStrategy] Serializing big strings (108kiB) impacts deserialization performance (consider using Buffer instead and decode when needed)
+#17 39.09 [Error: You cannot use `@apply` inside `@keyframes`.]
+#17 45.91  ⚠ Compiled with warnings in 42s
+#17 45.91 
+#17 45.91 ./node_modules/@supabase/realtime-js/dist/module/lib/websocket-factory.js
+#17 45.91 A Node.js API is used (process.versions at line: 34) which is not supported in the Edge Runtime.
+#17 45.91 Learn more: https://nextjs.org/docs/api-reference/edge-runtime
+#17 45.91 
+#17 45.91 Import trace for requested module:
+#17 45.91 ./node_modules/@supabase/realtime-js/dist/module/lib/websocket-factory.js
+#17 45.91 ./node_modules/@supabase/realtime-js/dist/module/index.js
+#17 45.91 ./node_modules/@supabase/supabase-js/dist/module/index.js
+#17 45.91 ./src/lib/security/ddos-protection.ts
+#17 45.91 
+#17 45.91 ./node_modules/@supabase/realtime-js/dist/module/lib/websocket-factory.js
+#17 45.91 A Node.js API is used (process.versions at line: 35) which is not supported in the Edge Runtime.
+#17 45.91 Learn more: https://nextjs.org/docs/api-reference/edge-runtime
+#17 45.91 
+#17 45.91 Import trace for requested module:
+#17 45.91 ./node_modules/@supabase/realtime-js/dist/module/lib/websocket-factory.js
+#17 45.91 ./node_modules/@supabase/realtime-js/dist/module/index.js
+#17 45.91 ./node_modules/@supabase/supabase-js/dist/module/index.js
+#17 45.91 ./src/lib/security/ddos-protection.ts
+#17 45.91 
+#17 45.91 ./node_modules/@supabase/realtime-js/dist/module/lib/websocket-factory.js
+#17 45.91 A Node.js API is used (process.versions at line: 36) which is not supported in the Edge Runtime.
+#17 45.91 Learn more: https://nextjs.org/docs/api-reference/edge-runtime
+#17 45.91 
+#17 45.91 Import trace for requested module:
+#17 45.91 ./node_modules/@supabase/realtime-js/dist/module/lib/websocket-factory.js
+#17 45.91 ./node_modules/@supabase/realtime-js/dist/module/index.js
+#17 45.91 ./node_modules/@supabase/supabase-js/dist/module/index.js
+#17 45.91 ./src/lib/security/ddos-protection.ts
+#17 45.91 
+#17 45.91 ./src/lib/csrf-token.ts
+#17 45.91 A Node.js module is loaded ('crypto' at line 1) which is not supported in the Edge Runtime.
+#17 45.91 Learn More: https://nextjs.org/docs/messages/node-module-in-edge-runtime
+#17 45.91 
+#17 45.91 Import trace for requested module:
+#17 45.91 ./src/lib/csrf-token.ts
+#17 45.91 
+#17 45.91 ./src/lib/monitoring/structured-logger.ts
+#17 45.91 A Node.js API is used (process.memoryUsage at line: 87) which is not supported in the Edge Runtime.
+#17 45.91 Learn more: https://nextjs.org/docs/api-reference/edge-runtime
+#17 45.91 
+#17 45.91 Import trace for requested module:
+#17 45.91 ./src/lib/monitoring/structured-logger.ts
+#17 45.91 
+#17 45.91 ./src/lib/monitoring/structured-logger.ts
+#17 45.91 A Node.js API is used (process.cpuUsage at line: 88) which is not supported in the Edge Runtime.
+#17 45.91 Learn more: https://nextjs.org/docs/api-reference/edge-runtime
+#17 45.91 
+#17 45.91 Import trace for requested module:
+#17 45.91 ./src/lib/monitoring/structured-logger.ts
+#17 45.91 
+#17 45.91 ./node_modules/@supabase/supabase-js/dist/module/index.js
+#17 45.91 A Node.js API is used (process.version at line: 24) which is not supported in the Edge Runtime.
+#17 45.91 Learn more: https://nextjs.org/docs/api-reference/edge-runtime
+#17 45.91 
+#17 45.91 Import trace for requested module:
+#17 45.91 ./node_modules/@supabase/supabase-js/dist/module/index.js
+#17 45.91 ./src/lib/security/ddos-protection.ts
+#17 45.91 
+#17 45.91    Skipping validation of types
+#17 45.91    Skipping linting
+#17 46.14    Collecting page data ...
+#17 46.93 Twilio credentials not configured
+#17 47.66 Generated new encryption key. Set FILE_ENCRYPTION_KEY env variable: 542719d7dd8fc1f1811a65f90a367464bfcfaaf6a43057e4d9ebf5268c197cb3
+#17 47.69 Warning: Please use the `legacy` build in Node.js environments.
+#17 47.70 Failed to initialize enterprise features: Error: `cookies` was called outside a request scope. Read more: https://nextjs.org/docs/messages/next-dynamic-api-wrong-context
+#17 47.70     at n (.next/server/chunks/4999.js:1:14509)
+#17 47.70     at f (.next/server/chunks/747.js:1:166)
+#17 47.70     at m.initializeEnterpriseFeatures (.next/server/chunks/8179.js:1:12006)
+#17 47.70     at new m (.next/server/chunks/8179.js:1:11907)
+#17 47.70     at 98179 (.next/server/chunks/8179.js:1:22678)
+#17 47.70     at c (.next/server/webpack-runtime.js:1:128)
+#17 47.70     at 86340 (.next/server/app/api/pdf/process-and-create/route.js:1:1465)
+#17 47.70     at c (.next/server/webpack-runtime.js:1:128)
+#17 47.71 Missing Stripe price IDs: [
+#17 47.71   'STRIPE_PROFESSIONAL_MONTHLY_PRICE_ID',
+#17 47.71   'STRIPE_PROFESSIONAL_ANNUAL_PRICE_ID',
+#17 47.71   'STRIPE_BUSINESS_MONTHLY_PRICE_ID',
+#17 47.71   'STRIPE_BUSINESS_ANNUAL_PRICE_ID'
+#17 47.71 ]
+#17 47.71 Using test mode - configure these in .env for production
+#17 47.76 Twilio credentials not configured
+#17 47.77 Twilio credentials not configured
+#17 47.77 Twilio credentials not configured
+#17 47.80 [Error [PrismaClientInitializationError]: Prisma Client could not locate the Query Engine for runtime "linux-musl-arm64-openssl-3.0.x".
+#17 47.80 
+#17 47.80 This happened because Prisma Client was generated for "darwin-arm64", but the actual deployment required "linux-musl-arm64-openssl-3.0.x".
+#17 47.80 Add "linux-musl-arm64-openssl-3.0.x" to `binaryTargets` in the "schema.prisma" file and run `prisma generate` after saving it:
+#17 47.80 
+#17 47.80 generator client {
+#17 47.80   provider      = "prisma-client-js"
+#17 47.80   binaryTargets = ["native", "linux-musl-arm64-openssl-3.0.x"]
+#17 47.80 }
+#17 47.80 
+#17 47.80 The following locations have been searched:
+#17 47.80   /app/node_modules/.prisma/client
+#17 47.80   /app/node_modules/@prisma/client
+#17 47.80   /Users/skyphotography/CODE/WedSync-2.0/WedSync2/wedsync/node_modules/@prisma/client
+#17 47.80   /tmp/prisma-engines
+#17 47.80   /app/prisma] {
+#17 47.80   clientVersion: '6.14.0',
+#17 47.80   errorCode: undefined,
+#17 47.80   retryable: undefined
+#17 47.80 }
+#17 47.80 Twilio credentials not configured
+#17 48.08 Warning: Please use the `legacy` build in Node.js environments.
+#17 48.09 Failed to initialize enterprise features: Error: `cookies` was called outside a request scope. Read more: https://nextjs.org/docs/messages/next-dynamic-api-wrong-context
+#17 48.09     at n (.next/server/chunks/4999.js:1:14509)
+#17 48.09     at f (.next/server/chunks/6203.js:1:168)
+#17 48.09     at m.initializeEnterpriseFeatures (.next/server/chunks/8179.js:1:12006)
+#17 48.09     at new m (.next/server/chunks/8179.js:1:11907)
+#17 48.09     at 98179 (.next/server/chunks/8179.js:1:22678)
+#17 48.09     at c (.next/server/webpack-runtime.js:1:128)
+#17 48.09     at 9088 (.next/server/app/api/pdf/process/route.js:1:96732)
+#17 48.09     at c (.next/server/webpack-runtime.js:1:128)
+#17 51.51 (node:117) MetadataLookupWarning: received unexpected error = All promises were rejected code = UNKNOWN
+#17 51.51 (Use `node --trace-warnings ...` to show where the warning was created)
+#17 54.27    Generating static pages (0/53) ...
+#17 54.88 Twilio credentials not configured
+#17 55.02    Generating static pages (13/53) 
+#17 55.02 Merging inline stylesheets into a single <style> tag skipped, no inline stylesheets to merge
+#17 55.02 Merging inline stylesheets into a single <style> tag skipped, no inline stylesheets to merge
+#17 55.02 Error in FormBuilderPage: Error: Dynamic server usage: Route /forms/builder couldn't be rendered statically because it used ``await searchParams`, `searchParams.then`, or similar`. See more info here: https://nextjs.org/docs/messages/dynamic-server-error
+#17 55.02     at r (.next/server/chunks/2073.js:19:11054)
+#17 55.02     at Object.get (.next/server/chunks/5876.js:7:102338)
+#17 55.02     at e (.next/server/app/forms/builder/page.js:1:1277)
+#17 55.02     at i (.next/server/app/forms/builder/page.js:1:11162) {
+#17 55.02   description: "Route /forms/builder couldn't be rendered statically because it used ``await searchParams`, `searchParams.then`, or similar`. See more info here: https://nextjs.org/docs/messages/dynamic-server-error",
+#17 55.02   digest: 'DYNAMIC_SERVER_USAGE'
+#17 55.02 }
+#17 55.14    Generating static pages (26/53) 
+#17 55.14 Generated new encryption key. Set FILE_ENCRYPTION_KEY env variable: be63474e3b39ac323db5dc738c6c7348b8feb3fd66d88164cc0e15c09e9ed826
+#17 55.14 Failed to initialize enterprise features: Error: `cookies` was called outside a request scope. Read more: https://nextjs.org/docs/messages/next-dynamic-api-wrong-context
+#17 55.14     at n (.next/server/chunks/4999.js:1:14509)
+#17 55.14     at f (.next/server/chunks/6203.js:1:168)
+#17 55.14     at m.initializeEnterpriseFeatures (.next/server/chunks/8179.js:1:12006)
+#17 55.14     at new m (.next/server/chunks/8179.js:1:11907)
+#17 55.14     at 98179 (.next/server/chunks/8179.js:1:22678)
+#17 55.14     at c (.next/server/webpack-runtime.js:1:128)
+#17 55.14     at 86340 (.next/server/app/api/pdf/process-and-create/route.js:1:1465)
+#17 55.14     at c (.next/server/webpack-runtime.js:1:128)
+#17 55.22 Warning: Please use the `legacy` build in Node.js environments.
+#17 55.31 Missing Stripe price IDs: [
+#17 55.31   'STRIPE_PROFESSIONAL_MONTHLY_PRICE_ID',
+#17 55.31   'STRIPE_PROFESSIONAL_ANNUAL_PRICE_ID',
+#17 55.31   'STRIPE_BUSINESS_MONTHLY_PRICE_ID',
+#17 55.31   'STRIPE_BUSINESS_ANNUAL_PRICE_ID'
+#17 55.31 ]
+#17 55.31 Using test mode - configure these in .env for production
+#17 55.31 Twilio credentials not configured
+#17 55.57    Generating static pages (39/53) 
+#17 56.10 Warning: Please use the `legacy` build in Node.js environments.
+#17 56.22 Failed to initialize enterprise features: Error: `cookies` was called outside a request scope. Read more: https://nextjs.org/docs/messages/next-dynamic-api-wrong-context
+#17 56.22     at n (.next/server/chunks/4999.js:1:14509)
+#17 56.22     at f (.next/server/chunks/747.js:1:166)
+#17 56.22     at m.initializeEnterpriseFeatures (.next/server/chunks/8179.js:1:12006)
+#17 56.22     at new m (.next/server/chunks/8179.js:1:11907)
+#17 56.22     at 98179 (.next/server/chunks/8179.js:1:22678)
+#17 56.22     at c (.next/server/webpack-runtime.js:1:128)
+#17 56.22     at 9088 (.next/server/app/api/pdf/process/route.js:1:96732)
+#17 56.22     at c (.next/server/webpack-runtime.js:1:128)
+#17 56.22 (node:165) MetadataLookupWarning: received unexpected error = All promises were rejected code = UNKNOWN
+#17 56.22 (Use `node --trace-warnings ...` to show where the warning was created)
+#17 56.22  ✓ Generating static pages (53/53)
+#17 57.38    Finalizing page optimization ...
+#17 57.38    Collecting build traces ...
+#17 84.04  ⚠ Failed to copy traced files for /app/.next/server/app/(dashboard)/page.js [Error: ENOENT: no such file or directory, copyfile '/app/.next/server/app/(dashboard)/page_client-reference-manifest.js' -> '/app/.next/standalone/.next/server/app/(dashboard)/page_client-reference-manifest.js'] {
+#17 84.04   errno: -2,
+#17 84.04   code: 'ENOENT',
+#17 84.04   syscall: 'copyfile',
+#17 84.04   path: '/app/.next/server/app/(dashboard)/page_client-reference-manifest.js',
+#17 84.04   dest: '/app/.next/standalone/.next/server/app/(dashboard)/page_client-reference-manifest.js'
+#17 84.04 }
+#17 84.51 
+#17 84.53 Route (app)                                               Size  First Load JS
+#17 84.53 ┌ ○ /                                                    121 B         398 kB
+#17 84.53 ├ ○ /_not-found                                          193 B         398 kB
+#17 84.53 ├ ƒ /admin-dashboard                                   4.28 kB         437 kB
+#17 84.53 ├ ƒ /api/auth/[...nextauth]                              121 B         398 kB
+#17 84.53 ├ ƒ /api/auth/logout                                     121 B         398 kB
+#17 84.53 ├ ƒ /api/auth/refresh                                    121 B         398 kB
+#17 84.53 ├ ƒ /api/auth/session                                    121 B         398 kB
+#17 84.53 ├ ƒ /api/clients                                         121 B         398 kB
+#17 84.53 ├ ƒ /api/clients/[id]                                    121 B         398 kB
+#17 84.53 ├ ƒ /api/communications/activity-feed                    121 B         398 kB
+#17 84.53 ├ ƒ /api/communications/conversations                    121 B         398 kB
+#17 84.53 ├ ƒ /api/communications/messages                         119 B         398 kB
+#17 84.53 ├ ƒ /api/communications/messages/[id]/read               121 B         398 kB
+#17 84.53 ├ ƒ /api/communications/notifications/email              121 B         398 kB
+#17 84.53 ├ ƒ /api/communications/notifications/webhooks/resend    121 B         398 kB
+#17 84.53 ├ ƒ /api/core-fields                                     121 B         398 kB
+#17 84.53 ├ ƒ /api/core-fields/extract                             121 B         398 kB
+#17 84.53 ├ ƒ /api/core-fields/populate                            121 B         398 kB
+#17 84.53 ├ ƒ /api/csrf-token                                      120 B         398 kB
+#17 84.53 ├ ƒ /api/forms                                           121 B         398 kB
+#17 84.53 ├ ƒ /api/forms/[id]                                      121 B         398 kB
+#17 84.53 ├ ƒ /api/forms/[id]/submit                               121 B         398 kB
+#17 84.53 ├ ƒ /api/forms/[id]/sync-core-fields                     121 B         398 kB
+#17 84.53 ├ ƒ /api/forms/create-from-pdf                           121 B         398 kB
+#17 84.53 ├ ƒ /api/forms/submit                                    121 B         398 kB
+#17 84.53 ├ ƒ /api/forms/verify-password                           121 B         398 kB
+#17 84.53 ├ ƒ /api/health                                          121 B         398 kB
+#17 84.53 ├ ƒ /api/journeys                                        121 B         398 kB
+#17 84.53 ├ ƒ /api/journeys/[executionId]                          121 B         398 kB
+#17 84.53 ├ ƒ /api/pdf/process                                     121 B         398 kB
+#17 84.53 ├ ƒ /api/pdf/process-and-create                          121 B         398 kB
+#17 84.53 ├ ƒ /api/pdf/upload                                      121 B         398 kB
+#17 84.53 ├ ƒ /api/pdf/validate                                    119 B         398 kB
+#17 84.53 ├ ƒ /api/security/pci-compliance                         121 B         398 kB
+#17 84.53 ├ ƒ /api/sms/inbound                                     121 B         398 kB
+#17 84.53 ├ ƒ /api/sms/manage                                      121 B         398 kB
+#17 84.53 ├ ƒ /api/sms/webhook                                     121 B         398 kB
+#17 84.53 ├ ƒ /api/stripe/create-checkout-session                  121 B         398 kB
+#17 84.53 ├ ƒ /api/stripe/webhook                                  121 B         398 kB
+#17 84.53 ├ ƒ /api/suppliers                                       121 B         398 kB
+#17 84.53 ├ ƒ /api/suppliers/[id]                                  120 B         398 kB
+#17 84.53 ├ ƒ /api/vendor-categories                               121 B         398 kB
+#17 84.53 ├ ƒ /api/webhooks                                        121 B         398 kB
+#17 84.53 ├ ƒ /clients                                             121 B         398 kB
+#17 84.53 ├ ƒ /clients/[id]                                        990 B         434 kB
+#17 84.53 ├ ƒ /clients/[id]/edit                                 2.96 kB         474 kB
+#17 84.53 ├ ƒ /clients/import                                    9.38 kB         480 kB
+#17 84.53 ├ ƒ /clients/new                                       2.27 kB         473 kB
+#17 84.53 ├ ƒ /communications                                     4.9 kB         476 kB
+#17 84.53 ├ ○ /demo/secure-form                                    561 B         399 kB
+#17 84.53 ├ ƒ /forms/[slug]                                      6.22 kB         439 kB
+#17 84.53 ├ ƒ /forms/[slug]/password                              1.7 kB         434 kB
+#17 84.53 ├ ƒ /forms/[slug]/receipt                                121 B         398 kB
+#17 84.53 ├ ƒ /forms/builder                                     26.4 kB         497 kB
+#17 84.53 ├ ○ /forms/import                                      3.95 kB         437 kB
+#17 84.53 ├ ○ /forms/test-core-fields                            48.5 kB         519 kB
+#17 84.53 ├ ○ /login                                             1.18 kB         472 kB
+#17 84.53 ├ ○ /onboarding-demo                                   27.8 kB         460 kB
+#17 84.53 ├ ƒ /pdf/[id]/mapping                                  5.21 kB         476 kB
+#17 84.53 ├ ○ /pdf/import                                        5.22 kB         438 kB
+#17 84.53 ├ ○ /security-demo                                     4.61 kB         475 kB
+#17 84.53 ├ ○ /signup                                             1.6 kB         472 kB
+#17 84.53 ├ ƒ /test-communications                               2.31 kB         473 kB
+#17 84.53 ├ ƒ /vendors                                             121 B         398 kB
+#17 84.53 ├ ƒ /vendors/[id]                                        121 B         398 kB
+#17 84.53 └ ƒ /vendors/[id]/edit                                 3.03 kB         474 kB
+#17 84.53 + First Load JS shared by all                           399 kB
+#17 84.53   ├ chunks/commons-ed16f003351755b4.js                 80.1 kB
+#17 84.53   ├ chunks/framework-e80123368f67cab6.js                316 kB
+#17 84.53   └ other shared chunks (total)                        2.54 kB
+#17 84.53 
+#17 84.53 
+#17 84.53 ƒ Middleware                                           78.6 kB
+#17 84.53 
+#17 84.53 ○  (Static)   prerendered as static content
+#17 84.53 ƒ  (Dynamic)  server-rendered on demand
+#17 84.53 
+#17 84.64 npm notice
+#17 84.64 npm notice New major version of npm available! 10.8.2 -> 11.5.2
+#17 84.64 npm notice Changelog: https://github.com/npm/cli/releases/tag/v11.5.2
+#17 84.64 npm notice To update run: npm install -g npm@11.5.2
+#17 84.64 npm notice
+#17 DONE 84.8s
+
+#18 [runner 5/9] COPY --from=builder /app/public ./public
+#18 ERROR: failed to calculate checksum of ref u2cjgq7t917532fkbjyd7uqyy::g9vug1gmeyorlpu5cw6780wxv: "/app/public": not found
+------
+ > [runner 5/9] COPY --from=builder /app/public ./public:
+------
+
+ [33m5 warnings found (use docker --debug to expand):
+[0m - LegacyKeyValueFormat: "ENV key=value" should be used instead of legacy "ENV key value" format (line 36)
+ - LegacyKeyValueFormat: "ENV key=value" should be used instead of legacy "ENV key value" format (line 80)
+ - LegacyKeyValueFormat: "ENV key=value" should be used instead of legacy "ENV key value" format (line 81)
+ - LegacyKeyValueFormat: "ENV key=value" should be used instead of legacy "ENV key value" format (line 103)
+ - LegacyKeyValueFormat: "ENV key=value" should be used instead of legacy "ENV key value" format (line 104)
+Dockerfile:88
+--------------------
+  86 |     RUN adduser --system --uid 1001 nextjs
+  87 |     
+  88 | >>> COPY --from=builder /app/public ./public
+  89 |     
+  90 |     # Set the correct permission for prerender cache
+--------------------
+ERROR: failed to build: failed to solve: failed to compute cache key: failed to calculate checksum of ref u2cjgq7t917532fkbjyd7uqyy::g9vug1gmeyorlpu5cw6780wxv: "/app/public": not found

@@ -1,0 +1,518 @@
+import { EmailTemplate } from './email-template-library';
+import { PersonalizationToken } from './communications';
+
+// AI-specific extensions to email templates
+export interface AIEmailTemplate extends EmailTemplate {
+  ai_confidence_score: number;
+  ai_generation_prompt: string;
+  ai_model_used: string;
+  ai_generated_at: string;
+  ai_review_status: 'pending' | 'approved' | 'rejected' | 'modified';
+  ai_variant_group?: string; // For grouping A/B test variants
+  ai_personalization_data?: Record<string, any>;
+}
+
+// Email generation request configuration
+export interface EmailGenerationConfig {
+  stage: 'inquiry' | 'booking' | 'planning' | 'final' | 'post_wedding';
+  tone: 'formal' | 'friendly' | 'casual';
+  elements: {
+    pricing: boolean;
+    timeline: boolean;
+    next_steps: boolean;
+    portfolio: boolean;
+    testimonials: boolean;
+    availability: boolean;
+  };
+  client_context: ClientContext;
+  vendor_context: VendorContext;
+  custom_instructions?: string;
+  variant_count: number; // Number of variants to generate (default 5)
+}
+
+// Client context for personalization
+export interface ClientContext {
+  couple_names: string;
+  wedding_date?: string;
+  venue_name?: string;
+  venue_type?: 'indoor' | 'outdoor' | 'hybrid';
+  guest_count?: number;
+  style_preference?: string;
+  budget_range?: 'budget' | 'mid' | 'luxury';
+  special_requirements?: string;
+  previous_communication?: string[];
+}
+
+// Vendor context for personalization
+export interface VendorContext {
+  business_name: string;
+  primary_category: string;
+  years_experience?: number;
+  specialties: string[];
+  recent_work?: string[];
+  unique_selling_points: string[];
+  pricing_structure?: string;
+  availability_status: 'available' | 'limited' | 'booked';
+}
+
+// Generated email variant
+export interface AIEmailVariant {
+  id: string;
+  variant_number: number;
+  subject: string;
+  content: string;
+  confidence_score: number;
+  generation_reasoning: string;
+  personalization_tokens: string[];
+  estimated_read_time: number;
+  sentiment_score: number; // -1 to 1, positive is better
+  professionalism_score: number; // 0 to 1
+  persuasion_score: number; // 0 to 1
+  word_count: number;
+  character_count: number;
+  ai_insights: {
+    strengths: string[];
+    potential_improvements: string[];
+    recommended_for: string[];
+  };
+}
+
+// Email generation response
+export interface EmailGenerationResponse {
+  request_id: string;
+  status: 'success' | 'error' | 'partial';
+  variants: AIEmailVariant[];
+  generation_time_ms: number;
+  tokens_used: number;
+  cost_estimate: number;
+  error_message?: string;
+  warnings?: string[];
+  metadata: {
+    model_version: string;
+    prompt_version: string;
+    safety_checks_passed: boolean;
+    content_policy_compliance: boolean;
+  };
+}
+
+// Personalization rule for merge tags
+export interface PersonalizationRule {
+  id: string;
+  token: string;
+  display_name: string;
+  description: string;
+  default_value: string;
+  is_required: boolean;
+  validation_pattern?: string;
+  data_source: 'client' | 'vendor' | 'form' | 'manual';
+  auto_populate: boolean;
+  format_function?: string; // Optional formatting function name
+}
+
+// Email template state management
+export interface EmailTemplateState {
+  // Generation state
+  generationConfig: EmailGenerationConfig | null;
+  isGenerating: boolean;
+  generationProgress: number;
+  generationError: string | null;
+
+  // Generated variants
+  generatedVariants: AIEmailVariant[];
+  selectedVariant: AIEmailVariant | null;
+  variantComparisons: VariantComparison[];
+
+  // Personalization state
+  personalizationRules: PersonalizationRule[];
+  mergeTagValues: Record<string, string>;
+  previewData: EmailPreviewData | null;
+
+  // A/B testing state
+  abTestConfig: ABTestConfig | null;
+  abTestResults: ABTestResult[];
+
+  // UI state
+  activeStep:
+    | 'configure'
+    | 'generate'
+    | 'select'
+    | 'personalize'
+    | 'preview'
+    | 'send';
+  showPreview: boolean;
+  previewMode: 'desktop' | 'mobile';
+  isDirty: boolean;
+  lastSaved?: Date;
+}
+
+// A/B testing configuration
+export interface ABTestConfig {
+  test_name: string;
+  test_description?: string;
+  selected_variants: string[]; // AIEmailVariant IDs
+  sample_size: number;
+  duration_days: number;
+  success_metrics: (
+    | 'open_rate'
+    | 'click_rate'
+    | 'response_rate'
+    | 'booking_rate'
+  )[];
+  confidence_level: number; // e.g., 0.95 for 95%
+  minimum_detectable_effect: number; // e.g., 0.05 for 5% improvement
+  test_status: 'draft' | 'active' | 'completed' | 'paused';
+  start_date?: string;
+  end_date?: string;
+}
+
+// A/B test results
+export interface ABTestResult {
+  test_id: string;
+  variant_id: string;
+  variant_name: string;
+  sends: number;
+  opens: number;
+  clicks: number;
+  responses: number;
+  bookings: number;
+  open_rate: number;
+  click_rate: number;
+  response_rate: number;
+  booking_rate: number;
+  confidence_interval: {
+    lower: number;
+    upper: number;
+  };
+  statistical_significance: boolean;
+  is_winner: boolean;
+}
+
+// Variant comparison for decision making
+export interface VariantComparison {
+  variant_a_id: string;
+  variant_b_id: string;
+  comparison_type: 'tone' | 'length' | 'structure' | 'personalization';
+  differences: {
+    field: string;
+    variant_a_value: string;
+    variant_b_value: string;
+    improvement_suggestion?: string;
+  }[];
+  recommendation: 'prefer_a' | 'prefer_b' | 'no_preference';
+  reasoning: string;
+}
+
+// Email preview data with personalization
+export interface EmailPreviewData {
+  subject: string;
+  html_content: string;
+  text_content: string;
+  personalized_subject: string;
+  personalized_html_content: string;
+  personalized_text_content: string;
+  merge_tags_used: string[];
+  preview_client: ClientContext;
+  estimated_render_time: number;
+  content_warnings?: string[];
+}
+
+// Generation prompt template
+export interface PromptTemplate {
+  id: string;
+  name: string;
+  description: string;
+  system_prompt: string;
+  user_prompt_template: string;
+  required_context_fields: string[];
+  optional_context_fields: string[];
+  output_format: 'json' | 'markdown' | 'html';
+  version: string;
+  is_active: boolean;
+  performance_metrics: {
+    average_quality_score: number;
+    usage_count: number;
+    success_rate: number;
+    average_generation_time_ms: number;
+  };
+}
+
+// AI service configuration
+export interface AIServiceConfig {
+  provider: 'openai' | 'anthropic' | 'custom';
+  model: string;
+  temperature: number;
+  max_tokens: number;
+  top_p: number;
+  frequency_penalty: number;
+  presence_penalty: number;
+  stop_sequences?: string[];
+  safety_settings: {
+    content_policy_enforcement: boolean;
+    pii_detection: boolean;
+    profanity_filter: boolean;
+    bias_detection: boolean;
+  };
+  rate_limits: {
+    requests_per_minute: number;
+    tokens_per_minute: number;
+    concurrent_requests: number;
+  };
+}
+
+// API request types
+export interface GenerateEmailTemplateRequest {
+  config: EmailGenerationConfig;
+  service_config?: Partial<AIServiceConfig>;
+  prompt_template_id?: string;
+  organization_id: string;
+  user_id: string;
+}
+
+export interface PersonalizeEmailRequest {
+  template_id: string;
+  variant_id: string;
+  personalization_rules: PersonalizationRule[];
+  merge_tag_values: Record<string, string>;
+  client_data: ClientContext;
+  preview_mode?: boolean;
+}
+
+export interface CreateABTestRequest {
+  template_id: string;
+  variant_ids: string[];
+  config: ABTestConfig;
+  organization_id: string;
+}
+
+// Component prop types
+export interface EmailTemplateGeneratorProps {
+  onTemplatesGenerated: (variants: AIEmailVariant[]) => void;
+  clientContext?: ClientContext;
+  vendorContext?: VendorContext;
+  initialConfig?: Partial<EmailGenerationConfig>;
+  className?: string;
+}
+
+export interface TemplateVariantSelectorProps {
+  variants: AIEmailVariant[];
+  selectedVariant?: AIEmailVariant;
+  onSelect: (variant: AIEmailVariant) => void;
+  onEdit: (variant: AIEmailVariant) => void;
+  onABTest: (variants: AIEmailVariant[]) => void;
+  onPreview: (variant: AIEmailVariant) => void;
+  showComparison?: boolean;
+  comparisonMode?: 'side-by-side' | 'overlay' | 'diff';
+  className?: string;
+}
+
+export interface EmailPersonalizationPanelProps {
+  template: AIEmailVariant;
+  clientData: ClientContext;
+  personalizationRules: PersonalizationRule[];
+  onPersonalize: (
+    rules: PersonalizationRule[],
+    values: Record<string, string>,
+  ) => void;
+  onPreview: (previewData: EmailPreviewData) => void;
+  showLivePreview?: boolean;
+  className?: string;
+}
+
+export interface AIInsightsPanelProps {
+  variant: AIEmailVariant;
+  comparison?: VariantComparison;
+  showMetrics?: boolean;
+  showRecommendations?: boolean;
+  className?: string;
+}
+
+export interface EmailPreviewModalProps {
+  previewData: EmailPreviewData;
+  variant: AIEmailVariant;
+  isOpen: boolean;
+  onClose: () => void;
+  onSend: (variant: AIEmailVariant, previewData: EmailPreviewData) => void;
+  onEdit: () => void;
+  mode: 'desktop' | 'mobile' | 'both';
+}
+
+// Hook return types
+export interface UseEmailTemplateGeneratorReturn {
+  // State
+  config: EmailGenerationConfig | null;
+  variants: AIEmailVariant[];
+  selectedVariant: AIEmailVariant | null;
+  isGenerating: boolean;
+  generationError: string | null;
+  generationProgress: number;
+
+  // Actions
+  updateConfig: (config: Partial<EmailGenerationConfig>) => void;
+  generateTemplates: () => Promise<void>;
+  selectVariant: (variant: AIEmailVariant) => void;
+  regenerateVariant: (variantId: string, newPrompt?: string) => Promise<void>;
+  saveTemplate: (variant: AIEmailVariant, metadata?: any) => Promise<void>;
+
+  // Reset
+  reset: () => void;
+}
+
+export interface UseEmailPersonalizationReturn {
+  // State
+  rules: PersonalizationRule[];
+  mergeTagValues: Record<string, string>;
+  previewData: EmailPreviewData | null;
+  isPersonalizing: boolean;
+  personalizationError: string | null;
+
+  // Actions
+  updateRule: (rule: PersonalizationRule) => void;
+  updateMergeTagValue: (token: string, value: string) => void;
+  generatePreview: (template: AIEmailVariant) => Promise<void>;
+  applyPersonalization: (
+    template: AIEmailVariant,
+  ) => Promise<PersonalizedEmailResult>;
+
+  // Validation
+  validateMergeTags: () => ValidationResult[];
+  getRequiredMissingTags: () => string[];
+}
+
+export interface UseABTestingReturn {
+  // State
+  testConfig: ABTestConfig | null;
+  testResults: ABTestResult[];
+  activeTests: ABTestConfig[];
+
+  // Actions
+  createTest: (config: ABTestConfig, variantIds: string[]) => Promise<void>;
+  startTest: (testId: string) => Promise<void>;
+  pauseTest: (testId: string) => Promise<void>;
+  endTest: (testId: string) => Promise<void>;
+  getTestResults: (testId: string) => Promise<ABTestResult[]>;
+
+  // Analysis
+  calculateSignificance: (
+    variantA: ABTestResult,
+    variantB: ABTestResult,
+  ) => number;
+  getWinningVariant: (testResults: ABTestResult[]) => ABTestResult | null;
+}
+
+// Utility types
+export interface PersonalizedEmailResult {
+  personalized_subject: string;
+  personalized_content: string;
+  tokens_replaced: Record<string, string>;
+  tokens_missing: string[];
+  validation_errors: string[];
+  render_time_ms: number;
+}
+
+export interface ValidationResult {
+  field: string;
+  is_valid: boolean;
+  error_message?: string;
+  warning_message?: string;
+}
+
+// Constants
+export const AI_EMAIL_STAGES = [
+  {
+    value: 'inquiry',
+    label: 'Initial Inquiry',
+    description: 'First response to potential client',
+  },
+  {
+    value: 'booking',
+    label: 'Booking Stage',
+    description: 'Contract discussions and booking',
+  },
+  {
+    value: 'planning',
+    label: 'Planning Phase',
+    description: 'Wedding planning communications',
+  },
+  {
+    value: 'final',
+    label: 'Final Details',
+    description: 'Last-minute coordination',
+  },
+  {
+    value: 'post_wedding',
+    label: 'Post-Wedding',
+    description: 'Follow-up and delivery',
+  },
+] as const;
+
+export const AI_EMAIL_TONES = [
+  {
+    value: 'formal',
+    label: 'Formal',
+    description: 'Professional and traditional',
+  },
+  {
+    value: 'friendly',
+    label: 'Friendly',
+    description: 'Warm and approachable',
+  },
+  {
+    value: 'casual',
+    label: 'Casual',
+    description: 'Relaxed and conversational',
+  },
+] as const;
+
+export const AI_EMAIL_ELEMENTS = [
+  {
+    key: 'pricing',
+    label: 'Pricing Information',
+    description: 'Include package details and pricing',
+  },
+  {
+    key: 'timeline',
+    label: 'Timeline & Process',
+    description: 'Explain your workflow and timeline',
+  },
+  {
+    key: 'next_steps',
+    label: 'Next Steps',
+    description: 'Clear call-to-action and next steps',
+  },
+  {
+    key: 'portfolio',
+    label: 'Portfolio Links',
+    description: 'Link to relevant work examples',
+  },
+  {
+    key: 'testimonials',
+    label: 'Client Testimonials',
+    description: 'Include social proof',
+  },
+  {
+    key: 'availability',
+    label: 'Availability Status',
+    description: 'Current booking availability',
+  },
+] as const;
+
+// Error types
+export interface AIEmailError {
+  code:
+    | 'GENERATION_FAILED'
+    | 'INVALID_CONFIG'
+    | 'RATE_LIMITED'
+    | 'CONTENT_POLICY_VIOLATION'
+    | 'INSUFFICIENT_CONTEXT';
+  message: string;
+  details?: any;
+  retry_after?: number;
+  suggestion?: string;
+}
+
+export interface AIEmailServiceError extends Error {
+  code: string;
+  statusCode?: number;
+  retryable: boolean;
+  context?: any;
+}

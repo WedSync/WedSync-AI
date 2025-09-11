@@ -1,0 +1,285 @@
+/**
+ * WS-130: API Error Handler for AI Photography Features
+ * Centralized error handling for AI photography API routes
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { 
+  aiPhotographyErrorHandler, 
+  ErrorSeverity, 
+  ErrorCategory,
+  AiPhotographyError 
+} from '../../../../../lib/ai/photography/error-handler';
+
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const action = searchParams.get('action');
+    
+    switch (action) {
+      case 'stats':
+        return getErrorStats();
+      case 'health':
+        return getHealthStatus();
+      default:
+        return NextResponse.json(
+          { error: 'Invalid action parameter' },
+          { status: 400 }
+        );
+    }
+  } catch (error) {
+    console.error('Error in error handler API:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const action = searchParams.get('action');
+    
+    switch (action) {
+      case 'report':
+        return reportError(request);
+      case 'reset':
+        return resetErrorHandler();
+      default:
+        return NextResponse.json(
+          { error: 'Invalid action parameter' },
+          { status: 400 }
+        );
+    }
+  } catch (error) {
+    console.error('Error in error handler API:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * Get error statistics for monitoring dashboard
+ */
+async function getErrorStats(): Promise<NextResponse> {
+  try {
+    const stats = aiPhotographyErrorHandler.getErrorStats();
+    
+    return NextResponse.json({
+      success: true,
+      data: {
+        ...stats,
+        timestamp: new Date().toISOString(),
+        systemStatus: determineSystemStatus(stats)
+      }
+    });
+  } catch (error) {
+    return NextResponse.json(
+      { success: false, error: 'Failed to get error statistics' },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * Get health status of AI photography services
+ */
+async function getHealthStatus(): Promise<NextResponse> {
+  try {
+    const stats = aiPhotographyErrorHandler.getErrorStats();
+    
+    // Determine health based on recent errors and circuit breaker states
+    const isHealthy = Object.values(stats.circuitBreakerStates).every(state => state === 'CLOSED');
+    const recentCriticalErrors = stats.recentErrors.filter(
+      error => error.severity === ErrorSeverity.CRITICAL &&
+      Date.now() - error.timestamp.getTime() < 300000 // Last 5 minutes
+    ).length;
+    
+    const healthStatus = {
+      status: isHealthy && recentCriticalErrors === 0 ? 'healthy' : 'degraded',
+      services: {
+        colorAnalysis: stats.circuitBreakerStates['color-analysis'] === 'CLOSED' ? 'operational' : 'degraded',
+        styleMatching: stats.circuitBreakerStates['style-matching'] === 'CLOSED' ? 'operational' : 'degraded',
+        moodBoard: stats.circuitBreakerStates['mood-board'] === 'CLOSED' ? 'operational' : 'degraded',
+        openAiVision: stats.circuitBreakerStates['openai-vision'] === 'CLOSED' ? 'operational' : 'degraded'
+      },
+      metrics: {
+        totalErrors: stats.totalErrors,
+        recentCriticalErrors,
+        uptime: process.uptime()
+      },
+      timestamp: new Date().toISOString()
+    };
+    
+    const statusCode = healthStatus.status === 'healthy' ? 200 : 503;
+    
+    return NextResponse.json({
+      success: true,
+      data: healthStatus
+    }, { status: statusCode });
+  } catch (error) {
+    return NextResponse.json(
+      { 
+        success: false, 
+        error: 'Failed to get health status',
+        data: {
+          status: 'unknown',
+          services: {},
+          metrics: {},
+          timestamp: new Date().toISOString()
+        }
+      },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * Report a client-side error
+ */
+async function reportError(request: NextRequest): Promise<NextResponse> {
+  try {
+    const errorData = await request.json();
+    
+    // Validate error data
+    if (!errorData.message || !errorData.operation) {
+      return NextResponse.json(
+        { success: false, error: 'Invalid error data' },
+        { status: 400 }
+      );
+    }
+    
+    // Create standardized error
+    const aiError: AiPhotographyError = {
+      id: `client_error_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      category: mapClientErrorCategory(errorData.type || 'unknown'),
+      severity: mapClientErrorSeverity(errorData.severity || 'medium'),
+      message: errorData.message,
+      userMessage: errorData.userMessage || 'An error occurred in the AI photography features.',
+      context: {
+        operation: errorData.operation,
+        timestamp: new Date(),
+        userId: errorData.userId,
+        sessionId: errorData.sessionId,
+        imageId: errorData.imageId,
+        metadata: {
+          ...errorData.metadata,
+          source: 'client',
+          userAgent: request.headers.get('user-agent') || 'unknown',
+          referer: request.headers.get('referer') || 'unknown'
+        }
+      },
+      retryable: errorData.retryable || false,
+      suggestions: errorData.suggestions || [],
+      timestamp: new Date()
+    };
+    
+    // Log the error (in production, this would also send to monitoring service)
+    console.error('Client-reported AI Photography Error:', aiError);
+    
+    return NextResponse.json({
+      success: true,
+      data: {
+        errorId: aiError.id,
+        message: 'Error reported successfully',
+        suggestions: aiError.suggestions
+      }
+    });
+  } catch (error) {
+    return NextResponse.json(
+      { success: false, error: 'Failed to report error' },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * Reset error handler state (for maintenance/testing)
+ */
+async function resetErrorHandler(): Promise<NextResponse> {
+  try {
+    // In production, this would require admin authentication
+    const authHeader = process.env.NODE_ENV === 'development' ? 'valid' : 'invalid';
+    
+    if (authHeader !== 'valid') {
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+    
+    aiPhotographyErrorHandler.clearErrorLog();
+    aiPhotographyErrorHandler.resetCircuitBreakers();
+    
+    return NextResponse.json({
+      success: true,
+      data: {
+        message: 'Error handler reset successfully',
+        timestamp: new Date().toISOString()
+      }
+    });
+  } catch (error) {
+    return NextResponse.json(
+      { success: false, error: 'Failed to reset error handler' },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * Helper functions
+ */
+function determineSystemStatus(stats: any): string {
+  const totalErrors = stats.totalErrors;
+  const criticalErrors = stats.errorsBySeverity[ErrorSeverity.CRITICAL] || 0;
+  const openCircuitBreakers = Object.values(stats.circuitBreakerStates).filter(
+    state => state === 'OPEN'
+  ).length;
+  
+  if (criticalErrors > 0 || openCircuitBreakers > 0) {
+    return 'degraded';
+  }
+  
+  if (totalErrors > 50) { // Arbitrary threshold
+    return 'warning';
+  }
+  
+  return 'healthy';
+}
+
+function mapClientErrorCategory(type: string): ErrorCategory {
+  switch (type.toLowerCase()) {
+    case 'network':
+      return ErrorCategory.NETWORK_ERROR;
+    case 'timeout':
+      return ErrorCategory.TIMEOUT_ERROR;
+    case 'validation':
+      return ErrorCategory.VALIDATION_ERROR;
+    case 'auth':
+      return ErrorCategory.AUTHENTICATION_ERROR;
+    case 'processing':
+      return ErrorCategory.PROCESSING_ERROR;
+    case 'rate_limit':
+      return ErrorCategory.RATE_LIMIT_ERROR;
+    default:
+      return ErrorCategory.API_ERROR;
+  }
+}
+
+function mapClientErrorSeverity(severity: string): ErrorSeverity {
+  switch (severity.toLowerCase()) {
+    case 'critical':
+      return ErrorSeverity.CRITICAL;
+    case 'high':
+      return ErrorSeverity.HIGH;
+    case 'medium':
+      return ErrorSeverity.MEDIUM;
+    case 'low':
+      return ErrorSeverity.LOW;
+    default:
+      return ErrorSeverity.MEDIUM;
+  }
+}

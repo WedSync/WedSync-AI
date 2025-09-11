@@ -1,0 +1,529 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { 
+  DndContext, 
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  DragEndEvent,
+  DragOverlay,
+  DragStartEvent
+} from '@dnd-kit/core';
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { FormField, FormSection, FormRow, FIELD_TEMPLATES, FormFieldType } from '@/types/forms';
+import { nanoid } from 'nanoid';
+import { FieldPalette } from './FieldPalette';
+import { FormCanvas } from './FormCanvas';
+import { FieldEditor } from './FieldEditor';
+import { FormPreview } from './FormPreview';
+import { Button } from '@/components/ui/button';
+import { TemplateGallery } from '@/components/templates/TemplateGallery';
+import { TemplateModal } from '@/components/templates/TemplateModal';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { toast } from '@/lib/toast-helper';
+import { 
+  EyeIcon, 
+  Cog6ToothIcon, 
+  DocumentArrowDownIcon,
+  CloudArrowUpIcon,
+  FolderIcon
+} from '@heroicons/react/24/outline';
+
+interface FormBuilderProps {
+  formId?: string;
+  onSave?: (form: any) => void;
+  initialTemplate?: string;
+  mode?: string;
+}
+
+export function FormBuilder({ formId, onSave, initialTemplate, mode }: FormBuilderProps) {
+  const [activeTab, setActiveTab] = useState<'build' | 'preview' | 'settings'>('build');
+  const [sections, setSections] = useState<FormSection[]>([
+    {
+      id: nanoid(),
+      title: 'Section 1',
+      description: '',
+      fields: [],
+      order: 0
+    }
+  ]);
+  const [rows, setRows] = useState<FormRow[]>([]);
+  const [selectedField, setSelectedField] = useState<FormField | null>(null);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [formSettings, setFormSettings] = useState({
+    name: 'Untitled Form',
+    description: '',
+    submitButtonText: 'Submit',
+    successMessage: 'Thank you for your submission!',
+    notificationEmail: '',
+    autoSave: false,
+    requireLogin: false
+  });
+
+  // Template selection state
+  const [showTemplateGallery, setShowTemplateGallery] = useState(false);
+  const [selectedTemplate, setSelectedTemplate] = useState<any>(null);
+  const [showTemplateModal, setShowTemplateModal] = useState(false);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  );
+
+  const handleDragStart = (event: DragStartEvent) => {
+    setActiveId(event.active.id as string);
+  };
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    
+    if (!over) {
+      setActiveId(null);
+      return;
+    }
+
+    const activeData = active.data.current;
+    const overData = over.data?.current;
+
+    // Adding new field from palette to sections
+    if (activeData?.source === 'palette' && overData?.type === 'dropzone') {
+      const fieldType = activeData.fieldType as FormFieldType;
+      const template = FIELD_TEMPLATES[fieldType];
+      const newField: FormField = {
+        id: nanoid(),
+        ...template,
+        order: overData.fields?.length || 0
+      } as FormField;
+
+      setSections(prev => prev.map(section => {
+        if (section.id === overData.sectionId) {
+          return {
+            ...section,
+            fields: [...section.fields, newField]
+          };
+        }
+        return section;
+      }));
+    }
+
+    // Adding new field from palette to grid
+    if (activeData?.source === 'palette' && overData?.type === 'grid') {
+      const fieldType = activeData.fieldType as FormFieldType;
+      const template = FIELD_TEMPLATES[fieldType];
+      const newField: FormField = {
+        id: nanoid(),
+        ...template
+      } as FormField;
+
+      // Add to grid - create new row or add to existing
+      setRows(prev => {
+        if (prev.length === 0) {
+          // Create first row
+          const newRow: FormRow = {
+            id: nanoid(),
+            fields: [newField]
+          };
+          return [newRow];
+        } else {
+          // Add to last row if it has space, otherwise create new row
+          const lastRow = prev[prev.length - 1];
+          if (lastRow.fields.length < 4) {
+            // Add to existing row
+            return prev.map((row, index) => 
+              index === prev.length - 1 
+                ? { ...row, fields: [...row.fields, newField] }
+                : row
+            );
+          } else {
+            // Create new row
+            const newRow: FormRow = {
+              id: nanoid(),
+              fields: [newField]
+            };
+            return [...prev, newRow];
+          }
+        }
+      });
+    }
+
+    // Reordering existing fields
+    if (activeData?.type === 'field' && overData?.type === 'field') {
+      const activeSectionIndex = sections.findIndex(s => 
+        s.fields.some(f => f.id === active.id)
+      );
+      const overSectionIndex = sections.findIndex(s => 
+        s.fields.some(f => f.id === over.id)
+      );
+
+      if (activeSectionIndex === overSectionIndex) {
+        // Same section reorder
+        setSections(prev => prev.map((section, idx) => {
+          if (idx === activeSectionIndex) {
+            const oldIndex = section.fields.findIndex(f => f.id === active.id);
+            const newIndex = section.fields.findIndex(f => f.id === over.id);
+            return {
+              ...section,
+              fields: arrayMove(section.fields, oldIndex, newIndex).map((f, i) => ({
+                ...f,
+                order: i
+              }))
+            };
+          }
+          return section;
+        }));
+      }
+    }
+
+    setActiveId(null);
+  };
+
+  const handleFieldEdit = (fieldId: string, updates: Partial<FormField>) => {
+    setSections(prev => prev.map(section => ({
+      ...section,
+      fields: section.fields.map(field => 
+        field.id === fieldId ? { ...field, ...updates } : field
+      )
+    })));
+  };
+
+  const handleFieldDelete = (fieldId: string) => {
+    setSections(prev => prev.map(section => ({
+      ...section,
+      fields: section.fields.filter(field => field.id !== fieldId)
+    })));
+    setSelectedField(null);
+  };
+
+  const handleSave = async () => {
+    const formData = {
+      ...formSettings,
+      sections,
+      isPublished: false,
+      slug: formSettings.name.toLowerCase().replace(/\s+/g, '-')
+    };
+
+    if (onSave) {
+      await onSave(formData);
+    }
+  };
+
+  const handlePublish = async () => {
+    const formData = {
+      ...formSettings,
+      sections,
+      isPublished: true,
+      slug: formSettings.name.toLowerCase().replace(/\s+/g, '-')
+    };
+
+    if (onSave) {
+      await onSave(formData);
+    }
+  };
+
+  // Template handling functions
+  const handleTemplateSelect = (template: any) => {
+    setSelectedTemplate(template);
+    setShowTemplateModal(true);
+    setShowTemplateGallery(false);
+  };
+
+  const handleUseTemplate = async (template: any) => {
+    try {
+      toast.success(`Loading ${template.name}...`);
+      await loadTemplateData(template);
+      setShowTemplateModal(false);
+      toast.success(`${template.name} loaded successfully!`);
+    } catch (error) {
+      toast.error(`Failed to load template: ${template.name}`);
+    }
+  };
+
+  const loadTemplateData = async (template: any) => {
+    // Simulate loading delay
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    if (template.fields && template.fields.length > 0) {
+      // Load form template
+      const newSections = [{
+        id: nanoid(),
+        title: template.name,
+        description: template.description || '',
+        fields: template.fields.map((field: any, index: number) => ({
+          ...field,
+          id: nanoid(),
+          order: index
+        })),
+        order: 0
+      }];
+      
+      setSections(newSections);
+      setFormSettings(prev => ({
+        ...prev,
+        name: template.name,
+        description: template.description || ''
+      }));
+    }
+  };
+
+  // Effect for initial template loading
+  useEffect(() => {
+    if (initialTemplate && mode === 'template') {
+      // Show template gallery when in template mode
+      setShowTemplateGallery(true);
+    }
+  }, [initialTemplate, mode]);
+
+  return (
+    <div className="h-screen flex flex-col bg-gray-50">
+      {/* Header */}
+      <div className="bg-white border-b px-6 py-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <input
+              type="text"
+              value={formSettings.name}
+              onChange={(e) => setFormSettings(prev => ({ ...prev, name: e.target.value }))}
+              className="text-2xl font-semibold bg-transparent border-none focus:outline-none focus:ring-2 focus:ring-purple-500 rounded px-2 -ml-2"
+            />
+            <p className="text-sm text-gray-500 mt-1 ml-2">
+              {sections.reduce((acc, s) => acc + s.fields.length, 0)} fields • 
+              Last saved: {new Date().toLocaleTimeString()}
+            </p>
+          </div>
+          
+          <div className="flex items-center gap-3">
+            {/* Tab Switcher */}
+            <div className="flex bg-gray-100 rounded-lg p-1">
+              <button
+                onClick={() => setActiveTab('build')}
+                className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                  activeTab === 'build' 
+                    ? 'bg-white text-purple-600 shadow-sm' 
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                Build
+              </button>
+              <button
+                onClick={() => setActiveTab('preview')}
+                className={`px-4 py-2 rounded-md text-sm font-medium transition-colors flex items-center gap-2 ${
+                  activeTab === 'preview' 
+                    ? 'bg-white text-purple-600 shadow-sm' 
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                <EyeIcon className="h-4 w-4" />
+                Preview
+              </button>
+              <button
+                onClick={() => setActiveTab('settings')}
+                className={`px-4 py-2 rounded-md text-sm font-medium transition-colors flex items-center gap-2 ${
+                  activeTab === 'settings' 
+                    ? 'bg-white text-purple-600 shadow-sm' 
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                <Cog6ToothIcon className="h-4 w-4" />
+                Settings
+              </button>
+            </div>
+
+            {/* Action Buttons */}
+            <Button variant="outline" onClick={() => setShowTemplateGallery(true)}>
+              <FolderIcon className="h-4 w-4 mr-2" />
+              Templates
+            </Button>
+            <Button variant="outline" onClick={handleSave}>
+              <DocumentArrowDownIcon className="h-4 w-4 mr-2" />
+              Save Draft
+            </Button>
+            <Button onClick={handlePublish}>
+              <CloudArrowUpIcon className="h-4 w-4 mr-2" />
+              Publish
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      {/* Main Content */}
+      <div className="flex-1 overflow-hidden">
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragStart={handleDragStart}
+          onDragEnd={handleDragEnd}
+        >
+          {activeTab === 'build' && (
+            <div className="h-full flex">
+              {/* Left Sidebar - Field Palette */}
+              <div className="w-64 bg-white border-r overflow-y-auto">
+                <FieldPalette />
+              </div>
+
+              {/* Center - Form Canvas */}
+              <div className="flex-1 overflow-y-auto p-6">
+                <FormCanvas
+                  sections={sections}
+                  setSections={setSections}
+                  rows={rows}
+                  setRows={setRows}
+                  onFieldSelect={setSelectedField}
+                  selectedFieldId={selectedField?.id}
+                />
+              </div>
+
+              {/* Right Sidebar - Field Editor */}
+              <div className="w-80 bg-white border-l overflow-y-auto">
+                {selectedField ? (
+                  <FieldEditor
+                    field={selectedField}
+                    onUpdate={(updates) => handleFieldEdit(selectedField.id, updates)}
+                    onDelete={() => handleFieldDelete(selectedField.id)}
+                  />
+                ) : (
+                  <div className="p-6 text-center text-gray-500">
+                    <p className="text-sm">Select a field to edit its properties</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'preview' && (
+            <div className="h-full flex items-center justify-center p-6">
+              <div className="w-full max-w-2xl">
+                <FormPreview sections={sections} settings={formSettings} />
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'settings' && (
+            <div className="h-full overflow-y-auto p-6">
+              <div className="max-w-2xl mx-auto">
+                <h2 className="text-xl font-semibold mb-6">Form Settings</h2>
+                
+                <div className="bg-white rounded-lg p-6 space-y-6">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Form Description
+                    </label>
+                    <textarea
+                      value={formSettings.description}
+                      onChange={(e) => setFormSettings(prev => ({ ...prev, description: e.target.value }))}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      rows={3}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Submit Button Text
+                    </label>
+                    <input
+                      type="text"
+                      value={formSettings.submitButtonText}
+                      onChange={(e) => setFormSettings(prev => ({ ...prev, submitButtonText: e.target.value }))}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Success Message
+                    </label>
+                    <textarea
+                      value={formSettings.successMessage}
+                      onChange={(e) => setFormSettings(prev => ({ ...prev, successMessage: e.target.value }))}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      rows={2}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Notification Email
+                    </label>
+                    <input
+                      type="email"
+                      value={formSettings.notificationEmail}
+                      onChange={(e) => setFormSettings(prev => ({ ...prev, notificationEmail: e.target.value }))}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      placeholder="notifications@example.com"
+                    />
+                  </div>
+
+                  <div className="space-y-3">
+                    <label className="flex items-center">
+                      <input
+                        type="checkbox"
+                        checked={formSettings.autoSave}
+                        onChange={(e) => setFormSettings(prev => ({ ...prev, autoSave: e.target.checked }))}
+                        className="h-4 w-4 text-purple-600 focus:ring-purple-500 border-gray-300 rounded"
+                      />
+                      <span className="ml-2 text-sm text-gray-700">Enable auto-save</span>
+                    </label>
+
+                    <label className="flex items-center">
+                      <input
+                        type="checkbox"
+                        checked={formSettings.requireLogin}
+                        onChange={(e) => setFormSettings(prev => ({ ...prev, requireLogin: e.target.checked }))}
+                        className="h-4 w-4 text-purple-600 focus:ring-purple-500 border-gray-300 rounded"
+                      />
+                      <span className="ml-2 text-sm text-gray-700">Require login to submit</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <DragOverlay>
+            {activeId ? (
+              <div className="bg-white border-2 border-purple-500 rounded-lg p-3 shadow-lg opacity-80">
+                <p className="text-sm font-medium">Moving field...</p>
+              </div>
+            ) : null}
+          </DragOverlay>
+        </DndContext>
+      </div>
+
+      {/* Template Gallery Dialog */}
+      <Dialog open={showTemplateGallery} onOpenChange={setShowTemplateGallery}>
+        <DialogContent className="max-w-6xl max-h-[90vh]">
+          <DialogHeader>
+            <DialogTitle>Choose a Template</DialogTitle>
+          </DialogHeader>
+          <div className="flex-1 overflow-hidden">
+            <TemplateGallery
+              onSelect={handleTemplateSelect}
+              onPreview={(template) => toast.info(`Previewing ${template.name}`)}
+              showSearch={true}
+              showFilters={true}
+              columns={3}
+            />
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Template Detail Modal */}
+      <TemplateModal
+        template={selectedTemplate}
+        isOpen={showTemplateModal}
+        onClose={() => setShowTemplateModal(false)}
+        onSelect={handleUseTemplate}
+        onPreview={(template) => toast.info(`Previewing ${template.name}`)}
+      />
+    </div>
+  );
+}

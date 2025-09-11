@@ -1,0 +1,779 @@
+'use client';
+
+import { useState, useCallback, useMemo } from 'react';
+import {
+  LeafIcon,
+  TruckIcon,
+  BuildingOfficeIcon,
+  GlobeAltIcon,
+  ChartBarIcon,
+  InformationCircleIcon,
+  CheckCircleIcon,
+  ExclamationTriangleIcon,
+} from '@heroicons/react/24/outline';
+import { Button } from '@/components/ui/Button';
+import { Card } from '@/components/ui/Card';
+import { Badge } from '@/components/ui/Badge';
+import { Progress } from '@/components/ui/Progress';
+import { classNames } from '@/lib/utils';
+
+interface SustainabilityAnalyzerProps {
+  weddingId?: string;
+  selectedFlowers?: any[];
+  onAnalysisComplete?: (analysis: any) => void;
+  className?: string;
+}
+
+interface SustainabilityMetrics {
+  carbon_footprint: {
+    transportation: number;
+    cultivation: number;
+    packaging: number;
+    total_kg_co2: number;
+  };
+  water_usage: {
+    cultivation_liters: number;
+    processing_liters: number;
+    total_liters: number;
+  };
+  local_sourcing: {
+    local_percentage: number;
+    avg_transport_miles: number;
+    local_flowers: string[];
+    imported_flowers: string[];
+  };
+  certifications: {
+    organic_percentage: number;
+    fair_trade_percentage: number;
+    certified_flowers: string[];
+  };
+  seasonal_alignment: {
+    in_season_percentage: number;
+    out_of_season_impact: number;
+    seasonal_recommendations: string[];
+  };
+  overall_score: number;
+  grade: 'A+' | 'A' | 'B+' | 'B' | 'C+' | 'C' | 'D';
+  improvements: Array<{
+    category: string;
+    suggestion: string;
+    impact: 'high' | 'medium' | 'low';
+    co2_savings_kg?: number;
+  }>;
+}
+
+const SUSTAINABILITY_CATEGORIES = [
+  {
+    key: 'carbon_footprint',
+    name: 'Carbon Footprint',
+    icon: GlobeAltIcon,
+    description: 'Total CO₂ emissions from cultivation to delivery',
+  },
+  {
+    key: 'water_usage',
+    name: 'Water Usage',
+    icon: TruckIcon,
+    description: 'Water consumption for growing and processing',
+  },
+  {
+    key: 'local_sourcing',
+    name: 'Local Sourcing',
+    icon: BuildingOfficeIcon,
+    description: 'Percentage of locally grown flowers',
+  },
+  {
+    key: 'certifications',
+    name: 'Certifications',
+    icon: CheckCircleIcon,
+    description: 'Organic and fair trade certifications',
+  },
+];
+
+const GRADE_COLORS = {
+  'A+': 'text-green-700 bg-green-50 border-green-200',
+  A: 'text-green-600 bg-green-50 border-green-200',
+  'B+': 'text-lime-600 bg-lime-50 border-lime-200',
+  B: 'text-yellow-600 bg-yellow-50 border-yellow-200',
+  'C+': 'text-orange-600 bg-orange-50 border-orange-200',
+  C: 'text-red-600 bg-red-50 border-red-200',
+  D: 'text-red-700 bg-red-50 border-red-200',
+};
+
+const IMPACT_COLORS = {
+  high: 'bg-red-100 text-red-800',
+  medium: 'bg-yellow-100 text-yellow-800',
+  low: 'bg-green-100 text-green-800',
+};
+
+function MetricCard({
+  title,
+  value,
+  unit,
+  icon: Icon,
+  score,
+  description,
+  details,
+}: {
+  title: string;
+  value: number | string;
+  unit?: string;
+  icon: React.ComponentType<any>;
+  score?: number;
+  description?: string;
+  details?: React.ReactNode;
+}) {
+  const getScoreColor = (score: number) => {
+    if (score >= 80) return 'text-green-600';
+    if (score >= 60) return 'text-yellow-600';
+    return 'text-red-600';
+  };
+
+  return (
+    <Card className="p-4">
+      <div className="flex items-start justify-between mb-3">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-green-100 rounded-lg">
+            <Icon className="w-5 h-5 text-green-600" />
+          </div>
+          <div>
+            <h4 className="text-sm font-medium text-gray-900">{title}</h4>
+            {description && (
+              <p className="text-xs text-gray-600 mt-1">{description}</p>
+            )}
+          </div>
+        </div>
+        {score !== undefined && (
+          <div className={classNames('text-right', getScoreColor(score))}>
+            <div className="text-lg font-bold">{score}%</div>
+            <div className="text-xs">Score</div>
+          </div>
+        )}
+      </div>
+
+      <div className="space-y-2">
+        <div className="flex items-baseline gap-2">
+          <span className="text-2xl font-bold text-gray-900">{value}</span>
+          {unit && <span className="text-sm text-gray-600">{unit}</span>}
+        </div>
+
+        {score !== undefined && (
+          <Progress
+            value={score}
+            className="w-full h-2"
+            indicatorClassName={
+              score >= 80
+                ? 'bg-green-500'
+                : score >= 60
+                  ? 'bg-yellow-500'
+                  : 'bg-red-500'
+            }
+          />
+        )}
+
+        {details && <div className="mt-3 text-xs text-gray-600">{details}</div>}
+      </div>
+    </Card>
+  );
+}
+
+export function SustainabilityAnalyzer({
+  weddingId,
+  selectedFlowers = [],
+  onAnalysisComplete,
+  className = '',
+}: SustainabilityAnalyzerProps) {
+  const [analysis, setAnalysis] = useState<SustainabilityMetrics | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [showDetails, setShowDetails] = useState(false);
+
+  const runSustainabilityAnalysis = useCallback(async () => {
+    if (selectedFlowers.length === 0) {
+      setError('No flowers selected for analysis');
+      return;
+    }
+
+    setIsAnalyzing(true);
+    setError(null);
+
+    try {
+      // Simulate API call - in production this would call the sustainability service
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+
+      const mockAnalysis: SustainabilityMetrics = {
+        carbon_footprint: {
+          transportation: Math.random() * 5 + 2,
+          cultivation: Math.random() * 8 + 3,
+          packaging: Math.random() * 2 + 0.5,
+          total_kg_co2: 0,
+        },
+        water_usage: {
+          cultivation_liters: Math.random() * 500 + 200,
+          processing_liters: Math.random() * 100 + 50,
+          total_liters: 0,
+        },
+        local_sourcing: {
+          local_percentage: Math.random() * 40 + 40,
+          avg_transport_miles: Math.random() * 200 + 100,
+          local_flowers: selectedFlowers
+            .slice(0, Math.ceil(selectedFlowers.length * 0.6))
+            .map((f) => f.common_name),
+          imported_flowers: selectedFlowers
+            .slice(Math.ceil(selectedFlowers.length * 0.6))
+            .map((f) => f.common_name),
+        },
+        certifications: {
+          organic_percentage: Math.random() * 30 + 20,
+          fair_trade_percentage: Math.random() * 20 + 10,
+          certified_flowers: selectedFlowers
+            .slice(0, 2)
+            .map((f) => f.common_name),
+        },
+        seasonal_alignment: {
+          in_season_percentage: Math.random() * 30 + 60,
+          out_of_season_impact: Math.random() * 3 + 1,
+          seasonal_recommendations: [
+            'Consider substituting imported roses with local seasonal alternatives',
+            'Peonies are out of season - use garden roses instead',
+            'Add more locally grown greenery to reduce transportation',
+          ],
+        },
+        overall_score: 0,
+        grade: 'B+',
+        improvements: [
+          {
+            category: 'Local Sourcing',
+            suggestion: 'Replace imported roses with local garden roses',
+            impact: 'high',
+            co2_savings_kg: 2.3,
+          },
+          {
+            category: 'Seasonal Alignment',
+            suggestion: 'Use chrysanthemums instead of out-of-season peonies',
+            impact: 'medium',
+            co2_savings_kg: 1.1,
+          },
+          {
+            category: 'Transportation',
+            suggestion: 'Source all greenery from local farms',
+            impact: 'medium',
+            co2_savings_kg: 0.8,
+          },
+        ],
+      };
+
+      // Calculate totals
+      mockAnalysis.carbon_footprint.total_kg_co2 =
+        mockAnalysis.carbon_footprint.transportation +
+        mockAnalysis.carbon_footprint.cultivation +
+        mockAnalysis.carbon_footprint.packaging;
+
+      mockAnalysis.water_usage.total_liters =
+        mockAnalysis.water_usage.cultivation_liters +
+        mockAnalysis.water_usage.processing_liters;
+
+      // Calculate overall score
+      const carbonScore = Math.max(
+        0,
+        100 - (mockAnalysis.carbon_footprint.total_kg_co2 / 20) * 100,
+      );
+      const waterScore = Math.max(
+        0,
+        100 - (mockAnalysis.water_usage.total_liters / 1000) * 100,
+      );
+      const localScore = mockAnalysis.local_sourcing.local_percentage;
+      const certScore =
+        (mockAnalysis.certifications.organic_percentage +
+          mockAnalysis.certifications.fair_trade_percentage) /
+        2;
+      const seasonalScore =
+        mockAnalysis.seasonal_alignment.in_season_percentage;
+
+      mockAnalysis.overall_score = Math.round(
+        (carbonScore + waterScore + localScore + certScore + seasonalScore) / 5,
+      );
+
+      // Assign grade based on score
+      if (mockAnalysis.overall_score >= 95) mockAnalysis.grade = 'A+';
+      else if (mockAnalysis.overall_score >= 90) mockAnalysis.grade = 'A';
+      else if (mockAnalysis.overall_score >= 85) mockAnalysis.grade = 'B+';
+      else if (mockAnalysis.overall_score >= 80) mockAnalysis.grade = 'B';
+      else if (mockAnalysis.overall_score >= 75) mockAnalysis.grade = 'C+';
+      else if (mockAnalysis.overall_score >= 70) mockAnalysis.grade = 'C';
+      else mockAnalysis.grade = 'D';
+
+      setAnalysis(mockAnalysis);
+      onAnalysisComplete?.(mockAnalysis);
+    } catch (err) {
+      setError('Failed to analyze sustainability. Please try again.');
+      console.error('Sustainability analysis failed:', err);
+    } finally {
+      setIsAnalyzing(false);
+    }
+  }, [selectedFlowers, onAnalysisComplete]);
+
+  const carbonIntensity = useMemo(() => {
+    if (!analysis) return null;
+    const total = analysis.carbon_footprint.total_kg_co2;
+    const flowerCount = selectedFlowers.length;
+    return flowerCount > 0 ? (total / flowerCount).toFixed(2) : '0';
+  }, [analysis, selectedFlowers.length]);
+
+  const waterIntensity = useMemo(() => {
+    if (!analysis) return null;
+    const total = analysis.water_usage.total_liters;
+    const flowerCount = selectedFlowers.length;
+    return flowerCount > 0 ? Math.round(total / flowerCount) : 0;
+  }, [analysis, selectedFlowers.length]);
+
+  return (
+    <div
+      className={`space-y-6 ${className}`}
+      role="region"
+      aria-label="Sustainability Analyzer"
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <LeafIcon className="w-6 h-6 text-green-600" />
+          <h3 className="text-lg font-semibold text-gray-900">
+            Sustainability Analyzer
+          </h3>
+        </div>
+        {analysis && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowDetails(!showDetails)}
+            className="flex items-center gap-2"
+          >
+            <ChartBarIcon className="w-4 h-4" />
+            {showDetails ? 'Hide Details' : 'Show Details'}
+          </Button>
+        )}
+      </div>
+
+      {/* Selected Flowers Summary */}
+      <Card className="p-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h4 className="text-sm font-medium text-gray-900">
+              Analyzing {selectedFlowers.length} flower varieties
+            </h4>
+            <p className="text-sm text-gray-600 mt-1">
+              {selectedFlowers
+                .slice(0, 3)
+                .map((f) => f.common_name)
+                .join(', ')}
+              {selectedFlowers.length > 3 &&
+                ` and ${selectedFlowers.length - 3} more`}
+            </p>
+          </div>
+          <Button
+            onClick={runSustainabilityAnalysis}
+            disabled={selectedFlowers.length === 0 || isAnalyzing}
+            className="flex items-center gap-2"
+          >
+            {isAnalyzing ? (
+              <>
+                <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
+                Analyzing...
+              </>
+            ) : (
+              <>
+                <LeafIcon className="w-4 h-4" />
+                Run Sustainability Analysis
+              </>
+            )}
+          </Button>
+        </div>
+      </Card>
+
+      {/* Analysis Results */}
+      {analysis && (
+        <div className="space-y-6">
+          {/* Overall Score */}
+          <Card className="p-6 text-center">
+            <div className="space-y-4">
+              <div>
+                <div
+                  className={classNames(
+                    'inline-flex items-center px-4 py-2 rounded-lg text-2xl font-bold border-2',
+                    GRADE_COLORS[analysis.grade],
+                  )}
+                >
+                  Grade {analysis.grade}
+                </div>
+                <div className="mt-2 text-3xl font-bold text-gray-900">
+                  {analysis.overall_score}%
+                </div>
+                <div className="text-sm text-gray-600">
+                  Overall Sustainability Score
+                </div>
+              </div>
+
+              <Progress
+                value={analysis.overall_score}
+                className="w-full h-3"
+                indicatorClassName={
+                  analysis.overall_score >= 80
+                    ? 'bg-green-500'
+                    : analysis.overall_score >= 60
+                      ? 'bg-yellow-500'
+                      : 'bg-red-500'
+                }
+              />
+
+              <p className="text-sm text-gray-700 max-w-2xl mx-auto">
+                {analysis.overall_score >= 85
+                  ? 'Excellent! This flower selection has minimal environmental impact with strong local sourcing and seasonal alignment.'
+                  : analysis.overall_score >= 70
+                    ? 'Good sustainability profile with room for improvement in local sourcing and seasonal selection.'
+                    : 'This selection has a significant environmental impact. Consider the recommendations below to improve sustainability.'}
+              </p>
+            </div>
+          </Card>
+
+          {/* Key Metrics */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <MetricCard
+              title="Carbon Footprint"
+              value={analysis.carbon_footprint.total_kg_co2.toFixed(1)}
+              unit="kg CO₂"
+              icon={GlobeAltIcon}
+              score={Math.max(
+                0,
+                100 - (analysis.carbon_footprint.total_kg_co2 / 20) * 100,
+              )}
+              description="Total emissions from farm to venue"
+              details={
+                <div className="space-y-1">
+                  <div>
+                    Transportation:{' '}
+                    {analysis.carbon_footprint.transportation.toFixed(1)} kg
+                  </div>
+                  <div>
+                    Cultivation:{' '}
+                    {analysis.carbon_footprint.cultivation.toFixed(1)} kg
+                  </div>
+                  <div>
+                    Packaging: {analysis.carbon_footprint.packaging.toFixed(1)}{' '}
+                    kg
+                  </div>
+                </div>
+              }
+            />
+
+            <MetricCard
+              title="Water Usage"
+              value={Math.round(analysis.water_usage.total_liters)}
+              unit="liters"
+              icon={TruckIcon}
+              score={Math.max(
+                0,
+                100 - (analysis.water_usage.total_liters / 1000) * 100,
+              )}
+              description="Water consumed in production"
+              details={
+                <div className="space-y-1">
+                  <div>
+                    Cultivation:{' '}
+                    {Math.round(analysis.water_usage.cultivation_liters)} L
+                  </div>
+                  <div>
+                    Processing:{' '}
+                    {Math.round(analysis.water_usage.processing_liters)} L
+                  </div>
+                  <div>Per flower: {waterIntensity} L</div>
+                </div>
+              }
+            />
+
+            <MetricCard
+              title="Local Sourcing"
+              value={Math.round(analysis.local_sourcing.local_percentage)}
+              unit="%"
+              icon={BuildingOfficeIcon}
+              score={analysis.local_sourcing.local_percentage}
+              description="Locally grown flowers"
+              details={
+                <div className="space-y-1">
+                  <div>
+                    Avg transport:{' '}
+                    {Math.round(analysis.local_sourcing.avg_transport_miles)}{' '}
+                    miles
+                  </div>
+                  <div>
+                    Local varieties:{' '}
+                    {analysis.local_sourcing.local_flowers.length}
+                  </div>
+                  <div>
+                    Imported: {analysis.local_sourcing.imported_flowers.length}
+                  </div>
+                </div>
+              }
+            />
+
+            <MetricCard
+              title="Certifications"
+              value={Math.round(
+                (analysis.certifications.organic_percentage +
+                  analysis.certifications.fair_trade_percentage) /
+                  2,
+              )}
+              unit="%"
+              icon={CheckCircleIcon}
+              score={
+                (analysis.certifications.organic_percentage +
+                  analysis.certifications.fair_trade_percentage) /
+                2
+              }
+              description="Certified sustainable flowers"
+              details={
+                <div className="space-y-1">
+                  <div>
+                    Organic:{' '}
+                    {Math.round(analysis.certifications.organic_percentage)}%
+                  </div>
+                  <div>
+                    Fair Trade:{' '}
+                    {Math.round(analysis.certifications.fair_trade_percentage)}%
+                  </div>
+                  <div>
+                    Certified flowers:{' '}
+                    {analysis.certifications.certified_flowers.length}
+                  </div>
+                </div>
+              }
+            />
+          </div>
+
+          {/* Detailed Breakdown */}
+          {showDetails && (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Local vs Imported */}
+              <Card className="p-4">
+                <h4 className="text-sm font-medium text-gray-900 mb-3">
+                  Sourcing Breakdown
+                </h4>
+                <div className="space-y-4">
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-sm text-gray-700">
+                        Local Flowers
+                      </span>
+                      <Badge className="bg-green-100 text-green-800">
+                        {analysis.local_sourcing.local_flowers.length} varieties
+                      </Badge>
+                    </div>
+                    <div className="space-y-1">
+                      {analysis.local_sourcing.local_flowers.map(
+                        (flower, index) => (
+                          <div
+                            key={index}
+                            className="flex items-center gap-2 text-xs"
+                          >
+                            <CheckCircleIcon className="w-3 h-3 text-green-500" />
+                            <span>{flower}</span>
+                          </div>
+                        ),
+                      )}
+                    </div>
+                  </div>
+
+                  {analysis.local_sourcing.imported_flowers.length > 0 && (
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-sm text-gray-700">
+                          Imported Flowers
+                        </span>
+                        <Badge className="bg-orange-100 text-orange-800">
+                          {analysis.local_sourcing.imported_flowers.length}{' '}
+                          varieties
+                        </Badge>
+                      </div>
+                      <div className="space-y-1">
+                        {analysis.local_sourcing.imported_flowers.map(
+                          (flower, index) => (
+                            <div
+                              key={index}
+                              className="flex items-center gap-2 text-xs"
+                            >
+                              <TruckIcon className="w-3 h-3 text-orange-500" />
+                              <span>{flower}</span>
+                            </div>
+                          ),
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </Card>
+
+              {/* Seasonal Analysis */}
+              <Card className="p-4">
+                <h4 className="text-sm font-medium text-gray-900 mb-3">
+                  Seasonal Alignment
+                </h4>
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-700">
+                      In-Season Flowers
+                    </span>
+                    <div className="text-right">
+                      <div className="text-lg font-bold text-green-600">
+                        {Math.round(
+                          analysis.seasonal_alignment.in_season_percentage,
+                        )}
+                        %
+                      </div>
+                    </div>
+                  </div>
+
+                  <Progress
+                    value={analysis.seasonal_alignment.in_season_percentage}
+                    className="w-full h-2"
+                    indicatorClassName="bg-green-500"
+                  />
+
+                  <div className="space-y-2">
+                    <h5 className="text-xs font-medium text-gray-700">
+                      Recommendations
+                    </h5>
+                    {analysis.seasonal_alignment.seasonal_recommendations.map(
+                      (rec, index) => (
+                        <div
+                          key={index}
+                          className="flex items-start gap-2 text-xs text-gray-600"
+                        >
+                          <InformationCircleIcon className="w-3 h-3 text-blue-500 mt-0.5 flex-shrink-0" />
+                          <span>{rec}</span>
+                        </div>
+                      ),
+                    )}
+                  </div>
+                </div>
+              </Card>
+            </div>
+          )}
+
+          {/* Improvement Suggestions */}
+          <Card className="p-4">
+            <h4 className="text-sm font-medium text-gray-900 mb-3">
+              Improvement Opportunities
+            </h4>
+            <div className="space-y-3">
+              {analysis.improvements.map((improvement, index) => (
+                <div
+                  key={index}
+                  className="flex items-start gap-3 p-3 bg-gray-50 rounded-lg"
+                >
+                  <div className="flex-shrink-0">
+                    {improvement.impact === 'high' ? (
+                      <ExclamationTriangleIcon className="w-5 h-5 text-red-500" />
+                    ) : improvement.impact === 'medium' ? (
+                      <InformationCircleIcon className="w-5 h-5 text-yellow-500" />
+                    ) : (
+                      <CheckCircleIcon className="w-5 h-5 text-green-500" />
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-medium text-gray-900">
+                          {improvement.category}
+                        </div>
+                        <div className="text-sm text-gray-700 mt-1">
+                          {improvement.suggestion}
+                        </div>
+                      </div>
+                      <div className="text-right flex-shrink-0">
+                        <Badge
+                          className={classNames(
+                            'text-xs',
+                            IMPACT_COLORS[improvement.impact],
+                          )}
+                        >
+                          {improvement.impact} impact
+                        </Badge>
+                        {improvement.co2_savings_kg && (
+                          <div className="text-xs text-green-600 mt-1 font-medium">
+                            -{improvement.co2_savings_kg} kg CO₂
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          {/* Carbon Offset Information */}
+          <Card className="p-4 border-green-200 bg-green-50">
+            <div className="flex items-start gap-3">
+              <LeafIcon className="w-5 h-5 text-green-600 flex-shrink-0" />
+              <div>
+                <h4 className="text-sm font-medium text-green-900 mb-2">
+                  Carbon Offset Opportunity
+                </h4>
+                <p className="text-sm text-green-800 mb-3">
+                  This arrangement generates{' '}
+                  {analysis.carbon_footprint.total_kg_co2.toFixed(1)} kg of CO₂.
+                  Consider offsetting by planting{' '}
+                  {Math.ceil(analysis.carbon_footprint.total_kg_co2 / 10)} trees
+                  or supporting renewable energy projects.
+                </p>
+                <div className="flex items-center gap-4 text-xs text-green-700">
+                  <span>
+                    • Tree planting: ~$
+                    {(analysis.carbon_footprint.total_kg_co2 * 0.02).toFixed(2)}
+                  </span>
+                  <span>
+                    • Renewable energy: ~$
+                    {(analysis.carbon_footprint.total_kg_co2 * 0.015).toFixed(
+                      2,
+                    )}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {/* Error Display */}
+      {error && (
+        <div
+          className="p-4 bg-red-50 border border-red-200 rounded-md"
+          role="alert"
+        >
+          <div className="flex items-start">
+            <div className="flex-shrink-0">
+              <ExclamationTriangleIcon className="w-5 h-5 text-red-400" />
+            </div>
+            <div className="ml-3">
+              <h3 className="text-sm font-medium text-red-800">
+                Analysis Failed
+              </h3>
+              <p className="text-sm text-red-700 mt-1">{error}</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Empty State */}
+      {!isAnalyzing && !analysis && !error && selectedFlowers.length === 0 && (
+        <div className="text-center py-12">
+          <LeafIcon className="mx-auto h-12 w-12 text-gray-400" />
+          <h3 className="mt-2 text-sm font-medium text-gray-900">
+            No flowers to analyze
+          </h3>
+          <p className="mt-1 text-sm text-gray-500">
+            Select flowers from the search tab to analyze their sustainability
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}

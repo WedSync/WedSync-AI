@@ -1,0 +1,111 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import bcrypt from 'bcryptjs';
+import { cookies } from 'next/headers';
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const body = await request.json();
+    const { websiteId, password } = body;
+
+    if (!websiteId || !password) {
+      return NextResponse.json(
+        { error: 'Website ID and password are required' },
+        { status: 400 },
+      );
+    }
+
+    const { data: website, error } = await supabase
+      .from('wedding_websites')
+      .select('id, password_hash, is_password_protected')
+      .eq('id', websiteId)
+      .single();
+
+    if (error || !website) {
+      return NextResponse.json({ error: 'Website not found' }, { status: 404 });
+    }
+
+    if (!website.is_password_protected) {
+      return NextResponse.json({
+        verified: true,
+        message: 'Website is not password protected',
+      });
+    }
+
+    if (!website.password_hash) {
+      return NextResponse.json(
+        { error: 'Password not set for this website' },
+        { status: 500 },
+      );
+    }
+
+    const isValid = await bcrypt.compare(password, website.password_hash);
+
+    if (!isValid) {
+      return NextResponse.json({ error: 'Invalid password' }, { status: 401 });
+    }
+
+    const cookieStore = cookies();
+    cookieStore.set(`wedding_website_${websiteId}_auth`, 'true', {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 60 * 60 * 24 * 7,
+      path: '/',
+    });
+
+    return NextResponse.json({
+      verified: true,
+      message: 'Password verified successfully',
+    });
+  } catch (error) {
+    console.error('Error verifying password:', error);
+    return NextResponse.json(
+      { error: 'Failed to verify password' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const websiteId = searchParams.get('websiteId');
+
+    if (!websiteId) {
+      return NextResponse.json(
+        { error: 'Website ID is required' },
+        { status: 400 },
+      );
+    }
+
+    const cookieStore = cookies();
+    const authCookie = cookieStore.get(`wedding_website_${websiteId}_auth`);
+
+    const supabase = await createClient();
+    const { data: website, error } = await supabase
+      .from('wedding_websites')
+      .select('is_password_protected')
+      .eq('id', websiteId)
+      .single();
+
+    if (error || !website) {
+      return NextResponse.json({ error: 'Website not found' }, { status: 404 });
+    }
+
+    if (!website.is_password_protected) {
+      return NextResponse.json({ authenticated: true });
+    }
+
+    return NextResponse.json({
+      authenticated: authCookie?.value === 'true',
+    });
+  } catch (error) {
+    console.error('Error checking authentication:', error);
+    return NextResponse.json(
+      { error: 'Failed to check authentication' },
+      { status: 500 },
+    );
+  }
+}

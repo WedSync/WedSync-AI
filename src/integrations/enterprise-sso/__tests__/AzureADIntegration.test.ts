@@ -1,0 +1,762 @@
+/**
+ * @fileoverview Test suite for Azure AD Integration
+ * Tests Microsoft Graph API, MSAL authentication, and Azure AD-specific flows
+ * @version 1.0.0
+ * @author WedSync Development Team
+ */
+
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { AzureADIntegration } from '../AzureADIntegration';
+import type {
+  AzureADConfiguration,
+  AzureADAuthenticationResult,
+  GraphUser,
+  DeviceCodeResponse,
+} from '../AzureADIntegration';
+
+// Mock @azure/msal-node
+vi.mock('@azure/msal-node', () => ({
+  ConfidentialClientApplication: vi.fn(() => ({
+    acquireTokenByCode: vi.fn(),
+    acquireTokenByDeviceCode: vi.fn(),
+    acquireTokenSilent: vi.fn(),
+    getTokenCache: vi.fn(() => ({
+      getAllAccounts: vi.fn(),
+    })),
+  })),
+  PublicClientApplication: vi.fn(() => ({
+    acquireTokenByDeviceCode: vi.fn(),
+  })),
+}));
+
+// Mock Microsoft Graph SDK
+vi.mock('@microsoft/microsoft-graph-client', () => ({
+  Client: {
+    init: vi.fn(() => ({
+      api: vi.fn(() => ({
+        get: vi.fn(),
+        post: vi.fn(),
+        patch: vi.fn(),
+        delete: vi.fn(),
+        select: vi.fn().mockReturnThis(),
+        expand: vi.fn().mockReturnThis(),
+        filter: vi.fn().mockReturnThis(),
+        top: vi.fn().mockReturnThis(),
+      })),
+    })),
+  },
+}));
+
+// Mock node-fetch
+global.fetch = vi.fn();
+
+describe('AzureADIntegration', () => {
+  let azureADIntegration: AzureADIntegration;
+  let mockConfig: AzureADConfiguration;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+
+    mockConfig = {
+      tenantId: 'tenant-123-abc',
+      clientId: 'azure-client-id',
+      clientSecret: 'azure-client-secret',
+      redirectUri: 'https://app.wedsync.com/auth/azure/callback',
+      scopes: [
+        'User.Read',
+        'User.ReadBasic.All',
+        'Group.Read.All',
+        'Directory.Read.All',
+      ],
+      authority: 'https://login.microsoftonline.com/tenant-123-abc',
+      graphApiEndpoint: 'https://graph.microsoft.com/v1.0',
+      features: {
+        deviceCodeFlow: true,
+        conditionalAccess: true,
+        groupSync: true,
+        directorySync: true,
+      },
+    };
+
+    azureADIntegration = new AzureADIntegration(mockConfig);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('MSAL Authentication Flow', () => {
+    it('should generate authorization URL correctly', () => {
+      const state = 'azure-state-123';
+      const nonce = 'azure-nonce-456';
+
+      const authUrl = azureADIntegration.getAuthorizationUrl(state, nonce);
+
+      expect(authUrl).toContain(
+        'https://login.microsoftonline.com/tenant-123-abc/oauth2/v2.0/authorize',
+      );
+      expect(authUrl).toContain(`client_id=${mockConfig.clientId}`);
+      expect(authUrl).toContain(
+        `redirect_uri=${encodeURIComponent(mockConfig.redirectUri)}`,
+      );
+      expect(authUrl).toContain(`state=${state}`);
+      expect(authUrl).toContain(`nonce=${nonce}`);
+      expect(authUrl).toContain('response_type=code');
+    });
+
+    it('should exchange authorization code for tokens', async () => {
+      const mockTokenResponse = {
+        accessToken: 'azure-access-token',
+        idToken: 'azure-id-token',
+        account: {
+          homeAccountId: 'user-account-id',
+          environment: 'login.microsoftonline.com',
+          tenantId: 'tenant-123-abc',
+          username: 'user@company.com',
+          name: 'Test User',
+        },
+        scopes: ['User.Read'],
+        expiresOn: new Date(Date.now() + 3600000),
+      };
+
+      const mockMsalApp = {
+        acquireTokenByCode: vi.fn().mockResolvedValue(mockTokenResponse),
+      };
+
+      vi.mocked(
+        require('@azure/msal-node').ConfidentialClientApplication,
+      ).mockReturnValue(mockMsalApp);
+
+      const result = await azureADIntegration.exchangeCodeForTokens(
+        'auth-code',
+        'state',
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.tokens?.accessToken).toBe('azure-access-token');
+      expect(result.account?.username).toBe('user@company.com');
+
+      expect(mockMsalApp.acquireTokenByCode).toHaveBeenCalledWith({
+        code: 'auth-code',
+        scopes: mockConfig.scopes,
+        redirectUri: mockConfig.redirectUri,
+      });
+    });
+
+    it('should handle token exchange errors', async () => {
+      const mockMsalApp = {
+        acquireTokenByCode: vi
+          .fn()
+          .mockRejectedValue(
+            new Error(
+              'AADSTS70008: The provided authorization code is invalid',
+            ),
+          ),
+      };
+
+      vi.mocked(
+        require('@azure/msal-node').ConfidentialClientApplication,
+      ).mockReturnValue(mockMsalApp);
+
+      const result = await azureADIntegration.exchangeCodeForTokens(
+        'invalid-code',
+        'state',
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('AADSTS70008');
+    });
+  });
+
+  describe('Device Code Flow', () => {
+    it('should initiate device code flow', async () => {
+      const mockDeviceCodeResponse: DeviceCodeResponse = {
+        deviceCode: 'device-code-123',
+        userCode: 'USER-CODE',
+        verificationUri: 'https://microsoft.com/devicelogin',
+        expiresIn: 900,
+        interval: 5,
+        message:
+          'To sign in, use a web browser to open the page https://microsoft.com/devicelogin and enter the code USER-CODE to authenticate.',
+      };
+
+      const mockMsalApp = {
+        acquireTokenByDeviceCode: vi.fn().mockResolvedValue({
+          deviceCodeResponse: mockDeviceCodeResponse,
+        }),
+      };
+
+      vi.mocked(
+        require('@azure/msal-node').PublicClientApplication,
+      ).mockReturnValue(mockMsalApp);
+
+      const result = await azureADIntegration.initiateDeviceCodeFlow();
+
+      expect(result.success).toBe(true);
+      expect(result.deviceCode?.userCode).toBe('USER-CODE');
+      expect(result.deviceCode?.verificationUri).toBe(
+        'https://microsoft.com/devicelogin',
+      );
+    });
+
+    it('should complete device code authentication', async () => {
+      const mockTokenResponse = {
+        accessToken: 'device-access-token',
+        account: {
+          homeAccountId: 'device-user-id',
+          username: 'device@company.com',
+          name: 'Device User',
+        },
+      };
+
+      const mockMsalApp = {
+        acquireTokenByDeviceCode: vi.fn().mockImplementation((request) => {
+          return Promise.resolve(mockTokenResponse);
+        }),
+      };
+
+      vi.mocked(
+        require('@azure/msal-node').PublicClientApplication,
+      ).mockReturnValue(mockMsalApp);
+
+      const result =
+        await azureADIntegration.completeDeviceCodeFlow('device-code-123');
+
+      expect(result.success).toBe(true);
+      expect(result.tokens?.accessToken).toBe('device-access-token');
+      expect(result.account?.username).toBe('device@company.com');
+    });
+  });
+
+  describe('Microsoft Graph Integration', () => {
+    it('should fetch user profile from Graph API', async () => {
+      const mockGraphUser: GraphUser = {
+        id: 'graph-user-123',
+        userPrincipalName: 'user@company.com',
+        mail: 'user@company.com',
+        displayName: 'Graph User',
+        givenName: 'Graph',
+        surname: 'User',
+        jobTitle: 'Wedding Coordinator',
+        department: 'Events',
+        companyName: 'Wedding Company Inc',
+        businessPhones: ['+1234567890'],
+        mobilePhone: '+0987654321',
+      };
+
+      const mockGraphClient = {
+        api: vi.fn(() => ({
+          get: vi.fn().mockResolvedValue(mockGraphUser),
+          select: vi.fn().mockReturnThis(),
+        })),
+      };
+
+      vi.mocked(
+        require('@microsoft/microsoft-graph-client').Client.init,
+      ).mockReturnValue(mockGraphClient);
+
+      const userProfile = await azureADIntegration.getUserProfile(
+        'graph-user-123',
+        'access-token',
+      );
+
+      expect(userProfile).toBeDefined();
+      expect(userProfile?.displayName).toBe('Graph User');
+      expect(userProfile?.jobTitle).toBe('Wedding Coordinator');
+      expect(userProfile?.department).toBe('Events');
+
+      expect(mockGraphClient.api).toHaveBeenCalledWith('/users/graph-user-123');
+    });
+
+    it('should fetch user groups from Graph API', async () => {
+      const mockGroups = {
+        value: [
+          {
+            id: 'group-1',
+            displayName: 'Wedding Vendors',
+            description: 'All wedding vendor partners',
+          },
+          {
+            id: 'group-2',
+            displayName: 'Photographers',
+            description: 'Photography service providers',
+          },
+        ],
+      };
+
+      const mockGraphClient = {
+        api: vi.fn(() => ({
+          get: vi.fn().mockResolvedValue(mockGroups),
+        })),
+      };
+
+      vi.mocked(
+        require('@microsoft/microsoft-graph-client').Client.init,
+      ).mockReturnValue(mockGraphClient);
+
+      const groups = await azureADIntegration.getUserGroups(
+        'graph-user-123',
+        'access-token',
+      );
+
+      expect(groups).toHaveLength(2);
+      expect(groups[0]).toBe('Wedding Vendors');
+      expect(groups[1]).toBe('Photographers');
+
+      expect(mockGraphClient.api).toHaveBeenCalledWith(
+        '/users/graph-user-123/memberOf',
+      );
+    });
+
+    it('should search directory users', async () => {
+      const mockSearchResults = {
+        value: [
+          {
+            id: 'search-user-1',
+            displayName: 'Found User 1',
+            userPrincipalName: 'found1@company.com',
+            jobTitle: 'Event Planner',
+          },
+          {
+            id: 'search-user-2',
+            displayName: 'Found User 2',
+            userPrincipalName: 'found2@company.com',
+            jobTitle: 'Wedding Photographer',
+          },
+        ],
+      };
+
+      const mockGraphClient = {
+        api: vi.fn(() => ({
+          get: vi.fn().mockResolvedValue(mockSearchResults),
+          filter: vi.fn().mockReturnThis(),
+          select: vi.fn().mockReturnThis(),
+          top: vi.fn().mockReturnThis(),
+        })),
+      };
+
+      vi.mocked(
+        require('@microsoft/microsoft-graph-client').Client.init,
+      ).mockReturnValue(mockGraphClient);
+
+      const results = await azureADIntegration.searchDirectoryUsers(
+        {
+          jobTitle: 'Wedding',
+          department: 'Events',
+        },
+        'access-token',
+      );
+
+      expect(results).toHaveLength(2);
+      expect(results[0].displayName).toBe('Found User 1');
+      expect(results[1].jobTitle).toBe('Wedding Photographer');
+    });
+  });
+
+  describe('Directory Synchronization', () => {
+    it('should perform bulk directory sync', async () => {
+      const mockUsers = {
+        value: [
+          {
+            id: 'sync-user-1',
+            displayName: 'Sync User 1',
+            userPrincipalName: 'sync1@company.com',
+            jobTitle: 'Wedding Planner',
+            department: 'Events',
+          },
+          {
+            id: 'sync-user-2',
+            displayName: 'Sync User 2',
+            userPrincipalName: 'sync2@company.com',
+            jobTitle: 'Photographer',
+            department: 'Photography',
+          },
+        ],
+        '@odata.nextLink': null,
+      };
+
+      const mockGraphClient = {
+        api: vi.fn(() => ({
+          get: vi.fn().mockResolvedValue(mockUsers),
+          select: vi.fn().mockReturnThis(),
+          filter: vi.fn().mockReturnThis(),
+          top: vi.fn().mockReturnThis(),
+        })),
+      };
+
+      vi.mocked(
+        require('@microsoft/microsoft-graph-client').Client.init,
+      ).mockReturnValue(mockGraphClient);
+
+      const result =
+        await azureADIntegration.syncDirectoryUsers('access-token');
+
+      expect(result.success).toBe(true);
+      expect(result.totalUsers).toBe(2);
+      expect(result.syncedUsers).toBe(2);
+      expect(result.users).toHaveLength(2);
+    });
+
+    it('should handle paginated directory sync', async () => {
+      const mockPage1 = {
+        value: [
+          {
+            id: 'user-1',
+            displayName: 'User 1',
+            userPrincipalName: 'user1@company.com',
+          },
+        ],
+        '@odata.nextLink':
+          'https://graph.microsoft.com/v1.0/users?$skiptoken=page2',
+      };
+
+      const mockPage2 = {
+        value: [
+          {
+            id: 'user-2',
+            displayName: 'User 2',
+            userPrincipalName: 'user2@company.com',
+          },
+        ],
+        '@odata.nextLink': null,
+      };
+
+      const mockGraphClient = {
+        api: vi
+          .fn()
+          .mockReturnValueOnce({
+            get: vi.fn().mockResolvedValue(mockPage1),
+            select: vi.fn().mockReturnThis(),
+            top: vi.fn().mockReturnThis(),
+          })
+          .mockReturnValueOnce({
+            get: vi.fn().mockResolvedValue(mockPage2),
+          }),
+      };
+
+      vi.mocked(
+        require('@microsoft/microsoft-graph-client').Client.init,
+      ).mockReturnValue(mockGraphClient);
+
+      const result = await azureADIntegration.syncDirectoryUsers(
+        'access-token',
+        { pageSize: 1 },
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.totalUsers).toBe(2);
+      expect(result.users).toHaveLength(2);
+    });
+  });
+
+  describe('Conditional Access Integration', () => {
+    it('should evaluate conditional access policies', async () => {
+      const mockPolicyEvaluation = {
+        conditionalAccessPolicies: [
+          {
+            id: 'policy-1',
+            displayName: 'Require MFA for External Users',
+            state: 'enabled',
+            result: 'success',
+          },
+        ],
+        appliedConditionalAccessPolicies: [
+          {
+            id: 'policy-1',
+            displayName: 'Require MFA for External Users',
+            enforcedGrantControls: ['mfa'],
+            enforcedSessionControls: [],
+            result: 'success',
+          },
+        ],
+      };
+
+      vi.mocked(fetch).mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(mockPolicyEvaluation),
+      } as Response);
+
+      const result = await azureADIntegration.evaluateConditionalAccess(
+        'user-123',
+        'app-id',
+        'access-token',
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.policies).toHaveLength(1);
+      expect(result.policies?.[0].enforcedGrantControls).toContain('mfa');
+    });
+
+    it('should handle conditional access failures', async () => {
+      const mockPolicyFailure = {
+        conditionalAccessPolicies: [
+          {
+            id: 'policy-block',
+            displayName: 'Block Risky Sign-ins',
+            state: 'enabled',
+            result: 'failure',
+          },
+        ],
+      };
+
+      vi.mocked(fetch).mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(mockPolicyFailure),
+      } as Response);
+
+      const result = await azureADIntegration.evaluateConditionalAccess(
+        'risky-user',
+        'app-id',
+        'access-token',
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.blocked).toBe(true);
+    });
+  });
+
+  describe('Wedding Industry Integration', () => {
+    it('should authenticate wedding business users', async () => {
+      const mockBusinessTokenResponse = {
+        accessToken: 'business-access-token',
+        account: {
+          homeAccountId: 'business-user-123',
+          username: 'owner@weddingbusiness.com',
+          name: 'Business Owner',
+        },
+      };
+
+      const mockBusinessProfile: GraphUser = {
+        id: 'business-user-123',
+        userPrincipalName: 'owner@weddingbusiness.com',
+        displayName: 'Wedding Business Owner',
+        jobTitle: 'CEO',
+        department: 'Executive',
+        companyName: 'Elegant Weddings LLC',
+        businessPhones: ['+1555123456'],
+      };
+
+      const mockMsalApp = {
+        acquireTokenByCode: vi
+          .fn()
+          .mockResolvedValue(mockBusinessTokenResponse),
+      };
+
+      const mockGraphClient = {
+        api: vi.fn(() => ({
+          get: vi.fn().mockResolvedValue(mockBusinessProfile),
+          select: vi.fn().mockReturnThis(),
+        })),
+      };
+
+      vi.mocked(
+        require('@azure/msal-node').ConfidentialClientApplication,
+      ).mockReturnValue(mockMsalApp);
+      vi.mocked(
+        require('@microsoft/microsoft-graph-client').Client.init,
+      ).mockReturnValue(mockGraphClient);
+
+      const result =
+        await azureADIntegration.authenticateBusinessUser('auth-code');
+
+      expect(result.success).toBe(true);
+      expect(result.user?.companyName).toBe('Elegant Weddings LLC');
+      expect(result.user?.jobTitle).toBe('CEO');
+      expect(result.businessCategory).toBe('wedding_services');
+    });
+
+    it('should validate wedding vendor credentials', async () => {
+      const vendorProfile = {
+        companyName: 'Amazing Photography',
+        jobTitle: 'Lead Photographer',
+        department: 'Photography',
+        businessPhones: ['+1555987654'],
+        customAttributes: {
+          businessType: 'photographer',
+          yearsInBusiness: '8',
+          specialties: 'wedding,portrait,commercial',
+        },
+      };
+
+      const validation =
+        azureADIntegration.validateWeddingVendor(vendorProfile);
+
+      expect(validation.isValid).toBe(true);
+      expect(validation.vendorType).toBe('photographer');
+      expect(validation.credibilityScore).toBeGreaterThan(80);
+      expect(validation.requiredVerifications).toContain(
+        'business_registration',
+      );
+    });
+
+    it('should sync wedding team directory', async () => {
+      const mockTeamMembers = {
+        value: [
+          {
+            id: 'planner-1',
+            displayName: 'Sarah Wedding Planner',
+            jobTitle: 'Senior Wedding Planner',
+            department: 'Planning',
+            mail: 'sarah@weddingco.com',
+          },
+          {
+            id: 'coordinator-1',
+            displayName: 'Mike Event Coordinator',
+            jobTitle: 'Event Coordinator',
+            department: 'Coordination',
+            mail: 'mike@weddingco.com',
+          },
+        ],
+      };
+
+      const mockGraphClient = {
+        api: vi.fn(() => ({
+          get: vi.fn().mockResolvedValue(mockTeamMembers),
+          filter: vi.fn().mockReturnThis(),
+          select: vi.fn().mockReturnThis(),
+        })),
+      };
+
+      vi.mocked(
+        require('@microsoft/microsoft-graph-client').Client.init,
+      ).mockReturnValue(mockGraphClient);
+
+      const result = await azureADIntegration.syncWeddingTeam(
+        'group-wedding-team',
+        'access-token',
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.teamMembers).toHaveLength(2);
+      expect(result.teamMembers?.[0].role).toBe('planner');
+      expect(result.teamMembers?.[1].role).toBe('coordinator');
+    });
+  });
+
+  describe('Token Management', () => {
+    it('should refresh access tokens silently', async () => {
+      const mockRefreshResponse = {
+        accessToken: 'refreshed-access-token',
+        expiresOn: new Date(Date.now() + 3600000),
+        scopes: ['User.Read'],
+      };
+
+      const mockMsalApp = {
+        acquireTokenSilent: vi.fn().mockResolvedValue(mockRefreshResponse),
+        getTokenCache: vi.fn(() => ({
+          getAllAccounts: vi.fn().mockResolvedValue([
+            {
+              homeAccountId: 'user-account-id',
+              environment: 'login.microsoftonline.com',
+            },
+          ]),
+        })),
+      };
+
+      vi.mocked(
+        require('@azure/msal-node').ConfidentialClientApplication,
+      ).mockReturnValue(mockMsalApp);
+
+      const result =
+        await azureADIntegration.refreshAccessToken('user-account-id');
+
+      expect(result.success).toBe(true);
+      expect(result.accessToken).toBe('refreshed-access-token');
+    });
+
+    it('should handle token refresh failures', async () => {
+      const mockMsalApp = {
+        acquireTokenSilent: vi
+          .fn()
+          .mockRejectedValue(
+            new Error('AADSTS700082: The refresh token has expired'),
+          ),
+        getTokenCache: vi.fn(() => ({
+          getAllAccounts: vi.fn().mockResolvedValue([]),
+        })),
+      };
+
+      vi.mocked(
+        require('@azure/msal-node').ConfidentialClientApplication,
+      ).mockReturnValue(mockMsalApp);
+
+      const result =
+        await azureADIntegration.refreshAccessToken('expired-account');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('refresh token has expired');
+      expect(result.requiresReauth).toBe(true);
+    });
+  });
+
+  describe('Error Handling and Health Checks', () => {
+    it('should handle Graph API throttling', async () => {
+      const mockGraphClient = {
+        api: vi.fn(() => ({
+          get: vi.fn().mockRejectedValue({
+            code: 'TooManyRequests',
+            message: 'Rate limit exceeded',
+            retryAfter: 60,
+          }),
+          select: vi.fn().mockReturnThis(),
+        })),
+      };
+
+      vi.mocked(
+        require('@microsoft/microsoft-graph-client').Client.init,
+      ).mockReturnValue(mockGraphClient);
+
+      const result = await azureADIntegration.getUserProfile(
+        'throttled-user',
+        'access-token',
+      );
+
+      expect(result).toBeNull();
+      // Should implement retry with exponential backoff
+    });
+
+    it('should perform comprehensive health check', async () => {
+      // Mock successful MSAL token acquisition
+      const mockMsalApp = {
+        acquireTokenByCode: vi.fn().mockResolvedValue({
+          accessToken: 'health-check-token',
+        }),
+      };
+
+      // Mock successful Graph API call
+      const mockGraphClient = {
+        api: vi.fn(() => ({
+          get: vi.fn().mockResolvedValue({ id: 'health-check' }),
+        })),
+      };
+
+      vi.mocked(
+        require('@azure/msal-node').ConfidentialClientApplication,
+      ).mockReturnValue(mockMsalApp);
+      vi.mocked(
+        require('@microsoft/microsoft-graph-client').Client.init,
+      ).mockReturnValue(mockGraphClient);
+
+      const result = await azureADIntegration.healthCheck();
+
+      expect(result.healthy).toBe(true);
+      expect(result.services?.msal).toBe('healthy');
+      expect(result.services?.graph).toBe('healthy');
+      expect(result.responseTime).toBeDefined();
+    });
+
+    it('should detect service failures in health check', async () => {
+      vi.mocked(
+        require('@azure/msal-node').ConfidentialClientApplication,
+      ).mockImplementation(() => {
+        throw new Error('MSAL initialization failed');
+      });
+
+      const result = await azureADIntegration.healthCheck();
+
+      expect(result.healthy).toBe(false);
+      expect(result.services?.msal).toBe('unhealthy');
+      expect(result.error).toContain('MSAL initialization failed');
+    });
+  });
+});

@@ -1,0 +1,199 @@
+'use client';
+
+import React, { useState } from 'react';
+import { useRouter, usePathname } from 'next/navigation';
+import { cn } from '@/lib/utils';
+import {
+  Camera,
+  Calendar,
+  Users,
+  MessageCircle,
+  AlertTriangle,
+  Home,
+} from 'lucide-react';
+
+interface NavigationItem {
+  id: string;
+  label: string;
+  icon: React.ReactNode;
+  path: string;
+  priority: 'critical' | 'primary' | 'secondary';
+  context: 'photo' | 'client' | 'schedule' | 'emergency';
+  badge?: number;
+}
+
+interface ThumbNavigationBarProps {
+  className?: string;
+  emergencyMode?: boolean;
+  onEmergencyToggle?: (enabled: boolean) => void;
+}
+
+export const ThumbNavigationBar: React.FC<ThumbNavigationBarProps> = ({
+  className,
+  emergencyMode = false,
+  onEmergencyToggle,
+}) => {
+  const router = useRouter();
+  const pathname = usePathname();
+
+  const navigationItems: NavigationItem[] = [
+    {
+      id: 'dashboard',
+      label: 'Dashboard',
+      icon: <Home size={20} />,
+      path: '/dashboard',
+      priority: 'primary',
+      context: 'schedule',
+    },
+    {
+      id: 'photos',
+      label: 'Photos',
+      icon: <Camera size={20} />,
+      path: '/photos',
+      priority: 'critical',
+      context: 'photo',
+    },
+    {
+      id: 'schedule',
+      label: 'Schedule',
+      icon: <Calendar size={20} />,
+      path: '/schedule',
+      priority: 'primary',
+      context: 'schedule',
+    },
+    {
+      id: 'clients',
+      label: 'Clients',
+      icon: <Users size={20} />,
+      path: '/clients',
+      priority: 'primary',
+      context: 'client',
+    },
+    {
+      id: 'messages',
+      label: 'Messages',
+      icon: <MessageCircle size={20} />,
+      path: '/messages',
+      priority: 'secondary',
+      context: 'client',
+      badge: 3,
+    },
+  ];
+
+  const handleNavigation = (item: NavigationItem) => {
+    router.push(item.path);
+  };
+
+  const isActivePath = (path: string): boolean => {
+    return pathname.startsWith(path);
+  };
+
+  return (
+    <nav
+      className={cn(
+        'fixed bottom-0 left-0 right-0 z-50',
+        'bg-white/95 backdrop-blur-md border-t border-gray-200',
+        'safe-area-pb',
+        className,
+      )}
+    >
+      {emergencyMode && (
+        <div className="absolute top-0 left-0 right-0 bg-red-600 text-white text-center py-1 text-xs font-medium">
+          Emergency Mode Active
+        </div>
+      )}
+
+      <div className="flex items-center justify-around px-2 py-2">
+        {navigationItems.map((item) => {
+          const isActive = isActivePath(item.path);
+
+          return (
+            <button
+              key={item.id}
+              onClick={() => handleNavigation(item)}
+              className={cn(
+                'flex flex-col items-center justify-center relative',
+                'min-w-[56px] min-h-[56px] rounded-xl transition-all duration-200',
+                'touch-manipulation select-none outline-none',
+                'focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2',
+                'active:scale-95',
+                {
+                  'bg-blue-100 text-blue-600': isActive && !emergencyMode,
+                  'text-gray-600 hover:text-gray-800 hover:bg-gray-50':
+                    !isActive && !emergencyMode,
+                  'bg-red-100 text-red-600': isActive && emergencyMode,
+                  'text-red-400 hover:text-red-600 hover:bg-red-50':
+                    !isActive && emergencyMode,
+                },
+              )}
+            >
+              <div className="relative mb-1">
+                {item.icon}
+
+                {item.badge && item.badge > 0 && (
+                  <div className="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full min-w-[18px] h-4 flex items-center justify-center px-1">
+                    {item.badge > 99 ? '99+' : item.badge}
+                  </div>
+                )}
+              </div>
+
+              <span className="text-xs font-medium leading-none">
+                {item.label}
+              </span>
+
+              {isActive && (
+                <div
+                  className={cn(
+                    'absolute bottom-1 left-1/2 transform -translate-x-1/2',
+                    'w-1 h-1 rounded-full',
+                    {
+                      'bg-blue-600': !emergencyMode,
+                      'bg-red-600': emergencyMode,
+                    },
+                  )}
+                />
+              )}
+            </button>
+          );
+        })}
+
+        <button
+          onClick={() => onEmergencyToggle?.(!emergencyMode)}
+          className={cn(
+            'flex flex-col items-center justify-center relative',
+            'min-w-[56px] min-h-[56px] rounded-xl transition-all duration-200',
+            'touch-manipulation select-none outline-none',
+            'focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-2',
+            'active:scale-95',
+            {
+              'bg-red-600 text-white shadow-lg': emergencyMode,
+              'bg-red-100 text-red-600 hover:bg-red-200': !emergencyMode,
+            },
+          )}
+        >
+          <AlertTriangle size={20} />
+          <span className="text-xs font-medium leading-none mt-1">
+            {emergencyMode ? 'Exit' : 'SOS'}
+          </span>
+
+          {emergencyMode && (
+            <div className="absolute inset-0 rounded-xl animate-ping bg-red-400/50 pointer-events-none" />
+          )}
+        </button>
+      </div>
+    </nav>
+  );
+};
+
+export const useThumbNavigation = () => {
+  const [emergencyMode, setEmergencyMode] = useState(false);
+
+  const toggleEmergencyMode = () => {
+    setEmergencyMode((prev) => !prev);
+  };
+
+  return {
+    emergencyMode,
+    toggleEmergencyMode,
+  };
+};

@@ -1,0 +1,190 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { FAQWebhookProcessor } from '@/lib/integrations/faq-webhook-processor';
+import { createServerClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+
+const webhookProcessor = new FAQWebhookProcessor();
+
+const ExtractionCompleteEventSchema = z.object({
+  eventId: z.string().uuid(),
+  timestamp: z.string().datetime(),
+  jobId: z.string().uuid(),
+  organizationId: z.string().uuid(),
+  extractionResults: z.object({
+    totalFAQs: z.number().int().min(0),
+    successfulExtractions: z.number().int().min(0),
+    failedExtractions: z.number().int().min(0),
+    sources: z.array(
+      z.object({
+        url: z.string().url(),
+        faqCount: z.number().int().min(0),
+        status: z.enum(['success', 'failed', 'partial']),
+        error: z.string().optional(),
+      }),
+    ),
+    extractedFAQs: z.array(
+      z.object({
+        id: z.string().uuid(),
+        question: z.string().min(1),
+        answer: z.string().min(1),
+        sourceUrl: z.string().url(),
+        confidence: z.number().min(0).max(1),
+        category: z.string().optional(),
+        metadata: z.record(z.any()).optional(),
+      }),
+    ),
+  }),
+  metadata: z.object({
+    processingTimeMs: z.number().int().min(0),
+    providersUsed: z.array(z.string()),
+    retryAttempts: z.number().int().min(0),
+  }),
+});
+
+export async function POST(request: NextRequest) {
+  try {
+    // Get organization ID from auth context
+    const supabase = await createServerClient();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get user's organization
+    const { data: profile, error: profileError } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', user.id)
+      .single();
+
+    if (profileError || !profile?.organization_id) {
+      return NextResponse.json(
+        { error: 'Organization not found' },
+        { status: 403 },
+      );
+    }
+
+    // Get request body and signature
+    const body = await request.text();
+    const signature = request.headers.get('webhook-signature');
+    const contentType = request.headers.get('content-type');
+
+    if (!signature) {
+      return NextResponse.json(
+        { error: 'Missing webhook signature' },
+        { status: 401 },
+      );
+    }
+
+    if (contentType !== 'application/json') {
+      return NextResponse.json(
+        { error: 'Invalid content type. Expected application/json' },
+        { status: 400 },
+      );
+    }
+
+    // Parse and validate the event
+    let eventData;
+    try {
+      eventData = JSON.parse(body);
+    } catch (error) {
+      return NextResponse.json(
+        { error: 'Invalid JSON payload' },
+        { status: 400 },
+      );
+    }
+
+    const validationResult = ExtractionCompleteEventSchema.safeParse(eventData);
+    if (!validationResult.success) {
+      return NextResponse.json(
+        {
+          error: 'Invalid event data',
+          details: validationResult.error.errors,
+        },
+        { status: 400 },
+      );
+    }
+
+    const validatedEvent = validationResult.data;
+
+    // Verify organization ownership
+    if (validatedEvent.organizationId !== profile.organization_id) {
+      return NextResponse.json(
+        { error: 'Forbidden: Organization mismatch' },
+        { status: 403 },
+      );
+    }
+
+    // Get client IP for security logging
+    const clientIp =
+      request.headers.get('x-forwarded-for') ||
+      request.headers.get('x-real-ip') ||
+      '127.0.0.1';
+
+    // Process webhook with the FAQWebhookProcessor
+    const processingResult = await webhookProcessor.processWebhook(
+      {
+        type: 'faq.extraction.complete',
+        id: validatedEvent.eventId,
+        timestamp: new Date(validatedEvent.timestamp),
+        organizationId: validatedEvent.organizationId,
+        data: validatedEvent,
+      },
+      signature,
+      validatedEvent.organizationId,
+      clientIp,
+    );
+
+    if (!processingResult.success) {
+      return NextResponse.json(
+        {
+          error: 'Webhook processing failed',
+          details: processingResult.error,
+        },
+        { status: 500 },
+      );
+    }
+
+    // Log successful processing
+    console.log(`FAQ extraction webhook processed successfully`, {
+      eventId: validatedEvent.eventId,
+      organizationId: validatedEvent.organizationId,
+      jobId: validatedEvent.jobId,
+      totalFAQs: validatedEvent.extractionResults.totalFAQs,
+      processingTimeMs: processingResult.processingTimeMs,
+    });
+
+    return NextResponse.json({
+      success: true,
+      eventId: validatedEvent.eventId,
+      processingTimeMs: processingResult.processingTimeMs,
+      message: 'FAQ extraction completed successfully',
+    });
+  } catch (error) {
+    console.error('FAQ extraction webhook error:', error);
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function OPTIONS(request: NextRequest) {
+  return NextResponse.json(
+    {},
+    {
+      status: 200,
+      headers: {
+        Allow: 'POST, OPTIONS',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'webhook-signature, content-type',
+      },
+    },
+  );
+}

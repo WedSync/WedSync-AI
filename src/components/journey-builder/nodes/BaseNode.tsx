@@ -1,0 +1,44 @@
+'use client';
+
+import React from 'react';
+import { Handle, Position, NodeProps } from '@xyflow/react';
+
+interface BaseNodeProps extends NodeProps {
+  icon?: React.ReactNode;
+  color?: string;
+}
+
+export function BaseNode({
+  data,
+  icon,
+  color = 'bg-primary',
+  selected,
+}: BaseNodeProps) {
+  return (
+    <div
+      className={`
+        px-4 py-3 rounded-lg border-2 bg-card transition-all
+        ${selected ? 'border-primary shadow-lg' : 'border-gray-300'}
+        hover:shadow-md min-w-[150px]
+      `}
+    >
+      <Handle type="target" position={Position.Top} className="w-3 h-3" />
+
+      <div className="flex items-center space-x-2">
+        {icon && (
+          <div className={`${color} text-white p-1.5 rounded`}>{icon}</div>
+        )}
+        <div className="flex-1">
+          <div className="text-sm font-medium">{data.label}</div>
+          {data.description && (
+            <div className="text-xs text-muted-foreground mt-0.5">
+              {data.description}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <Handle type="source" position={Position.Bottom} className="w-3 h-3" />
+    </div>
+  );
+}

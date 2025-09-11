@@ -1,0 +1,15 @@
+{
+  "name": "wedsync-components",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "library",
+  "sourceRoot": "src/components",
+  "tags": ["scope:shared", "type:ui"],
+  "targets": {
+    "component-count": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "find src/components -name '*.tsx' | wc -l"
+      }
+    }
+  }
+}

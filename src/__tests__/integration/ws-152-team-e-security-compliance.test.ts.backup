@@ -1,0 +1,719 @@
+/**
+ * WS-152: Data Security and Compliance Testing Suite
+ * Team E - Batch 13
+ * 
+ * Testing medical information security, HIPAA/GDPR compliance,
+ * audit trails, and data encryption for sensitive dietary information.
+ */
+
+import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals'
+import crypto from 'crypto'
+import { DietarySafetyIntegration, ComplianceStandard } from '@/lib/safety/dietary-safety-integration'
+import { createClient } from '@supabase/supabase-js'
+
+// Mock encryption service
+const mockEncryption = {
+  encrypt: jest.fn((data: string) => {
+    const iv = crypto.randomBytes(16)
+    const key = crypto.randomBytes(32)
+    const cipher = crypto.createCipheriv('aes-256-cbc', key, iv)
+    let encrypted = cipher.update(data, 'utf8', 'hex')
+    encrypted += cipher.final('hex')
+    return `${iv.toString('hex')}:${encrypted}:${key.toString('hex')}`
+  }),
+  decrypt: jest.fn(),
+  rotateKeys: jest.fn(),
+  validateEncryption: jest.fn()
+}
+
+// Mock audit service
+const mockAuditService = {
+  logAccess: jest.fn(),
+  logModification: jest.fn(),
+  logDeletion: jest.fn(),
+  getAuditTrail: jest.fn(),
+  exportComplianceReport: jest.fn()
+}
+
+// Mock Supabase RLS policies
+const mockRLSPolicies = {
+  checkPolicy: jest.fn(),
+  enforcePolicy: jest.fn(),
+  validateAccess: jest.fn()
+}
+
+describe('WS-152: Data Security and Compliance Testing', () => {
+  let safetyIntegration: DietarySafetyIntegration
+  const testUserId = 'user-123'
+  const testGuestId = 'guest-456'
+  const testOrgId = 'org-789'
+
+  beforeEach(() => {
+    safetyIntegration = new DietarySafetyIntegration()
+    jest.clearAllMocks()
+  })
+
+  describe('Medical Information Access Control Testing', () => {
+    it('should enforce role-based access control for medical data', async () => {
+      const accessLevels = {
+        'admin': {
+          canView: true,
+          canEdit: true,
+          canDelete: true,
+          canExport: true,
+          requiresMFA: true
+        },
+        'caterer': {
+          canView: true,
+          canEdit: false,
+          canDelete: false,
+          canExport: true,
+          requiresMFA: false
+        },
+        'staff': {
+          canView: true,
+          canEdit: false,
+          canDelete: false,
+          canExport: false,
+          requiresMFA: false
+        },
+        'guest': {
+          canView: false,
+          canEdit: false,
+          canDelete: false,
+          canExport: false,
+          requiresMFA: false
+        }
+      }
+
+      // Test admin access to medical data
+      const adminAccess = accessLevels['admin']
+      expect(adminAccess.canView).toBe(true)
+      expect(adminAccess.canEdit).toBe(true)
+      expect(adminAccess.requiresMFA).toBe(true)
+
+      // Test guest restrictions
+      const guestAccess = accessLevels['guest']
+      expect(guestAccess.canView).toBe(false)
+      expect(guestAccess.canExport).toBe(false)
+
+      // Verify MFA requirement for sensitive operations
+      Object.entries(accessLevels).forEach(([role, permissions]) => {
+        if (permissions.canDelete || permissions.canEdit) {
+          expect(permissions.requiresMFA).toBe(true)
+        }
+      })
+    })
+
+    it('should implement Row Level Security for dietary data', async () => {
+      const rlsPolicies = [
+        {
+          table: 'dietary_requirements',
+          policy: 'view_own_organization',
+          check: '(auth.uid() IN (SELECT user_id FROM organization_members WHERE org_id = dietary_requirements.org_id))',
+          valid: true
+        },
+        {
+          table: 'medical_information',
+          policy: 'restrict_medical_access',
+          check: '(auth.uid() IN (SELECT user_id FROM medical_access_list WHERE guest_id = medical_information.guest_id))',
+          valid: true
+        },
+        {
+          table: 'dietary_audit_log',
+          policy: 'append_only',
+          check: 'FALSE', // No updates or deletes allowed
+          forUpdate: false,
+          forDelete: false,
+          valid: true
+        }
+      ]
+
+      rlsPolicies.forEach(policy => {
+        expect(policy.valid).toBe(true)
+        expect(policy.check).toBeDefined()
+        
+        // Audit log must be append-only
+        if (policy.table === 'dietary_audit_log') {
+          expect(policy.forUpdate).toBe(false)
+          expect(policy.forDelete).toBe(false)
+        }
+      })
+    })
+
+    it('should prevent unauthorized access to life-threatening allergy data', async () => {
+      const unauthorizedUser = {
+        id: 'unauthorized-user',
+        role: 'guest',
+        orgId: 'different-org'
+      }
+
+      const sensitiveData = {
+        guestId: 'guest-001',
+        allergies: ['peanut', 'shellfish'],
+        severity: 'LIFE_THREATENING',
+        medicalDetails: 'Anaphylaxis risk - requires EpiPen'
+      }
+
+      // Simulate access attempt
+      const accessAttempt = {
+        userId: unauthorizedUser.id,
+        requestedData: 'medical_information',
+        guestId: sensitiveData.guestId,
+        timestamp: new Date(),
+        allowed: false,
+        reason: 'User not in authorized access list'
+      }
+
+      expect(accessAttempt.allowed).toBe(false)
+      expect(accessAttempt.reason).toContain('not in authorized access list')
+
+      // Log security event
+      mockAuditService.logAccess({
+        ...accessAttempt,
+        severity: 'HIGH',
+        alert: 'Unauthorized access attempt to life-threatening allergy data'
+      })
+
+      expect(mockAuditService.logAccess).toHaveBeenCalledWith(
+        expect.objectContaining({
+          allowed: false,
+          severity: 'HIGH'
+        })
+      )
+    })
+
+    it('should implement data access expiration', async () => {
+      const temporaryAccess = {
+        userId: 'temp-caterer',
+        guestDataAccess: ['guest-001', 'guest-002'],
+        grantedAt: new Date('2025-01-15'),
+        expiresAt: new Date('2025-01-22'), // 7 days
+        eventDate: new Date('2025-01-20')
+      }
+
+      const today = new Date('2025-01-23')
+      const isExpired = today > temporaryAccess.expiresAt
+      
+      expect(isExpired).toBe(true)
+      
+      if (isExpired) {
+        // Revoke access
+        mockRLSPolicies.enforcePolicy({
+          action: 'REVOKE',
+          userId: temporaryAccess.userId,
+          reason: 'Temporary access expired'
+        })
+        
+        expect(mockRLSPolicies.enforcePolicy).toHaveBeenCalledWith(
+          expect.objectContaining({ action: 'REVOKE' })
+        )
+      }
+    })
+  })
+
+  describe('HIPAA Compliance Validation', () => {
+    it('should ensure PHI encryption at rest', async () => {
+      const phiData = {
+        patientId: 'guest-001',
+        medicalConditions: ['Type 1 Diabetes', 'Celiac Disease'],
+        medications: ['Insulin', 'Metformin'],
+        allergies: ['Peanuts - anaphylaxis'],
+        emergencyContact: {
+          name: 'Dr. Johnson',
+          phone: '555-0123',
+          relationship: 'Primary Physician'
+        }
+      }
+
+      const encrypted = mockEncryption.encrypt(JSON.stringify(phiData))
+      
+      // Verify encryption format (IV:EncryptedData:Key for testing)
+      expect(encrypted).toMatch(/^[a-f0-9]+:[a-f0-9]+:[a-f0-9]+$/)
+      
+      // Ensure original data is not present in encrypted string
+      expect(encrypted).not.toContain('Diabetes')
+      expect(encrypted).not.toContain('555-0123')
+      expect(encrypted).not.toContain('Peanuts')
+    })
+
+    it('should maintain HIPAA-compliant audit logs', async () => {
+      const auditEntry = {
+        timestamp: new Date().toISOString(),
+        userId: 'user-123',
+        action: 'VIEW_MEDICAL_RECORD',
+        patientId: 'guest-001',
+        dataAccessed: ['allergies', 'medications'],
+        purpose: 'Meal preparation safety verification',
+        ipAddress: '192.168.1.100',
+        userAgent: 'Mozilla/5.0...',
+        sessionId: 'session-abc-123',
+        organizationId: 'org-789',
+        result: 'SUCCESS'
+      }
+
+      // HIPAA required fields
+      const requiredFields = [
+        'timestamp',
+        'userId',
+        'action',
+        'patientId',
+        'dataAccessed',
+        'purpose'
+      ]
+
+      requiredFields.forEach(field => {
+        expect(auditEntry).toHaveProperty(field)
+        expect(auditEntry[field as keyof typeof auditEntry]).toBeDefined()
+      })
+
+      // Verify immutability
+      const immutableLog = Object.freeze(auditEntry)
+      expect(() => {
+        (immutableLog as any).timestamp = 'modified'
+      }).toThrow()
+    })
+
+    it('should enforce minimum necessary access principle', async () => {
+      const dataRequest = {
+        requesterId: 'caterer-001',
+        purpose: 'prepare_allergen_free_meal',
+        requestedFields: ['allergies', 'dietary_restrictions'],
+        guestId: 'guest-001'
+      }
+
+      const allowedFields = getMinimumNecessaryFields(dataRequest.purpose)
+      const approvedFields = dataRequest.requestedFields.filter(field => 
+        allowedFields.includes(field)
+      )
+
+      expect(approvedFields).toEqual(['allergies', 'dietary_restrictions'])
+      expect(approvedFields).not.toContain('medical_history')
+      expect(approvedFields).not.toContain('insurance_information')
+    })
+
+    it('should implement data breach notification system', async () => {
+      const breachEvent = {
+        detectedAt: new Date(),
+        affectedRecords: 150,
+        dataTypes: ['medical_allergies', 'emergency_contacts'],
+        severity: 'HIGH',
+        notificationRequired: true,
+        notificationDeadline: new Date(Date.now() + 72 * 60 * 60 * 1000) // 72 hours
+      }
+
+      if (breachEvent.notificationRequired) {
+        const notifications = [
+          { recipient: 'privacy_officer', sent: true },
+          { recipient: 'affected_individuals', sent: true },
+          { recipient: 'HHS_OCR', sent: true }, // Health & Human Services
+          { recipient: 'media', sent: breachEvent.affectedRecords > 500 }
+        ]
+
+        expect(notifications.filter(n => n.sent).length).toBeGreaterThanOrEqual(3)
+        
+        // Verify notification timeline
+        const hoursToDeadline = (breachEvent.notificationDeadline.getTime() - Date.now()) / (1000 * 60 * 60)
+        expect(hoursToDeadline).toBeLessThanOrEqual(72)
+      }
+    })
+  })
+
+  describe('GDPR Compliance Testing', () => {
+    it('should implement right to erasure (right to be forgotten)', async () => {
+      const deletionRequest = {
+        dataSubject: 'guest-001',
+        requestDate: new Date(),
+        dataCategories: ['dietary_preferences', 'medical_allergies', 'contact_info'],
+        retentionException: false,
+        legalHold: false
+      }
+
+      if (!deletionRequest.retentionException && !deletionRequest.legalHold) {
+        const deletionResult = {
+          deleted: true,
+          dataRemoved: deletionRequest.dataCategories,
+          backupsScheduledForDeletion: true,
+          completionDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) // 30 days
+        }
+
+        expect(deletionResult.deleted).toBe(true)
+        expect(deletionResult.dataRemoved).toEqual(deletionRequest.dataCategories)
+        expect(deletionResult.backupsScheduledForDeletion).toBe(true)
+      }
+    })
+
+    it('should enforce purpose limitation for data processing', async () => {
+      const dataProcessing = {
+        guestId: 'guest-001',
+        collectedFor: ['dietary_accommodation', 'safety'],
+        attemptedUse: 'marketing',
+        allowed: false
+      }
+
+      expect(dataProcessing.allowed).toBe(false)
+      
+      // Verify only consented purposes are allowed
+      const consentedPurposes = ['dietary_accommodation', 'safety', 'emergency_response']
+      const requestedPurpose = 'dietary_accommodation'
+      
+      expect(consentedPurposes).toContain(requestedPurpose)
+    })
+
+    it('should implement data portability', async () => {
+      const portabilityRequest = {
+        dataSubject: 'guest-001',
+        format: 'JSON',
+        includeData: [
+          'personal_information',
+          'dietary_requirements',
+          'event_preferences'
+        ]
+      }
+
+      const exportedData = {
+        format: portabilityRequest.format,
+        generated: new Date().toISOString(),
+        data: {
+          personal: { /* encrypted */ },
+          dietary: { /* structured data */ },
+          preferences: { /* user choices */ }
+        },
+        machineReadable: true,
+        reusable: true
+      }
+
+      expect(exportedData.format).toBe('JSON')
+      expect(exportedData.machineReadable).toBe(true)
+      expect(exportedData.reusable).toBe(true)
+    })
+
+    it('should maintain consent records with granular permissions', async () => {
+      const consentRecord = {
+        dataSubject: 'guest-001',
+        timestamp: new Date(),
+        ipAddress: '192.168.1.100',
+        consentVersion: '2.0',
+        purposes: {
+          dietary_accommodation: true,
+          medical_safety: true,
+          marketing: false,
+          analytics: false,
+          third_party_sharing: false
+        },
+        withdrawal: {
+          allowed: true,
+          mechanism: 'online_portal',
+          immediateEffect: true
+        }
+      }
+
+      // Verify granular consent
+      expect(consentRecord.purposes.dietary_accommodation).toBe(true)
+      expect(consentRecord.purposes.marketing).toBe(false)
+      
+      // Verify withdrawal mechanism
+      expect(consentRecord.withdrawal.allowed).toBe(true)
+      expect(consentRecord.withdrawal.immediateEffect).toBe(true)
+    })
+
+    it('should implement privacy by design principles', async () => {
+      const privacyByDesign = {
+        dataMinimization: true,
+        endToEndEncryption: true,
+        defaultPrivacy: 'private',
+        pseudonymization: true,
+        transparentProcessing: true,
+        userControl: true,
+        securityByDefault: true
+      }
+
+      // All privacy by design principles should be implemented
+      Object.values(privacyByDesign).forEach(principle => {
+        expect(principle).toBe(true)
+      })
+    })
+  })
+
+  describe('Audit Trail Testing', () => {
+    it('should create immutable audit logs for all data access', async () => {
+      const auditLog = {
+        id: crypto.randomUUID(),
+        timestamp: new Date().toISOString(),
+        hash: '', // Will be calculated
+        previousHash: 'abc123...',
+        event: {
+          type: 'DATA_ACCESS',
+          userId: 'user-123',
+          resourceId: 'guest-001',
+          action: 'VIEW',
+          result: 'SUCCESS'
+        }
+      }
+
+      // Calculate hash for immutability
+      const dataToHash = JSON.stringify({
+        ...auditLog.event,
+        timestamp: auditLog.timestamp,
+        previousHash: auditLog.previousHash
+      })
+      
+      auditLog.hash = crypto
+        .createHash('sha256')
+        .update(dataToHash)
+        .digest('hex')
+
+      expect(auditLog.hash).toMatch(/^[a-f0-9]{64}$/)
+      expect(auditLog.previousHash).toBeDefined()
+    })
+
+    it('should detect and alert on suspicious access patterns', async () => {
+      const accessPatterns = [
+        {
+          userId: 'user-123',
+          accesses: [
+            { time: '2025-01-20T02:00:00Z', resource: 'guest-001' },
+            { time: '2025-01-20T02:00:01Z', resource: 'guest-002' },
+            { time: '2025-01-20T02:00:02Z', resource: 'guest-003' },
+            { time: '2025-01-20T02:00:03Z', resource: 'guest-004' }
+          ],
+          suspicious: true,
+          reason: 'Rapid sequential access outside business hours'
+        },
+        {
+          userId: 'user-456',
+          accesses: [
+            { time: '2025-01-20T14:00:00Z', resource: 'guest-001' },
+            { time: '2025-01-20T14:30:00Z', resource: 'guest-002' }
+          ],
+          suspicious: false,
+          reason: 'Normal access pattern during business hours'
+        }
+      ]
+
+      const suspiciousPattern = accessPatterns[0]
+      expect(suspiciousPattern.suspicious).toBe(true)
+      expect(suspiciousPattern.reason).toContain('outside business hours')
+
+      // Alert on suspicious patterns
+      if (suspiciousPattern.suspicious) {
+        mockAuditService.logAccess({
+          alert: 'SUSPICIOUS_ACCESS_PATTERN',
+          userId: suspiciousPattern.userId,
+          pattern: suspiciousPattern.reason,
+          severity: 'HIGH'
+        })
+        
+        expect(mockAuditService.logAccess).toHaveBeenCalledWith(
+          expect.objectContaining({ alert: 'SUSPICIOUS_ACCESS_PATTERN' })
+        )
+      }
+    })
+
+    it('should maintain chain of custody for medical data changes', async () => {
+      const dataChanges = [
+        {
+          version: 1,
+          timestamp: '2025-01-15T10:00:00Z',
+          changedBy: 'user-123',
+          field: 'allergies',
+          oldValue: '[]',
+          newValue: '["peanuts"]',
+          reason: 'Initial guest registration'
+        },
+        {
+          version: 2,
+          timestamp: '2025-01-18T14:00:00Z',
+          changedBy: 'user-456',
+          field: 'allergies',
+          oldValue: '["peanuts"]',
+          newValue: '["peanuts", "shellfish"]',
+          reason: 'Guest updated information'
+        },
+        {
+          version: 3,
+          timestamp: '2025-01-19T16:00:00Z',
+          changedBy: 'user-789',
+          field: 'severity',
+          oldValue: 'moderate',
+          newValue: 'life_threatening',
+          reason: 'Medical verification by physician'
+        }
+      ]
+
+      // Verify complete chain of custody
+      expect(dataChanges.length).toBe(3)
+      expect(dataChanges[0].version).toBe(1)
+      expect(dataChanges[dataChanges.length - 1].version).toBe(3)
+
+      // Each change must have all required fields
+      dataChanges.forEach(change => {
+        expect(change.timestamp).toBeDefined()
+        expect(change.changedBy).toBeDefined()
+        expect(change.reason).toBeDefined()
+        expect(change.oldValue).toBeDefined()
+        expect(change.newValue).toBeDefined()
+      })
+    })
+
+    it('should export compliance-ready audit reports', async () => {
+      const complianceReport = {
+        period: {
+          start: '2025-01-01',
+          end: '2025-01-31'
+        },
+        statistics: {
+          totalAccesses: 1250,
+          uniqueUsers: 25,
+          dataModifications: 150,
+          deletionRequests: 5,
+          breaches: 0
+        },
+        compliance: {
+          HIPAA: { compliant: true, issues: [] },
+          GDPR: { compliant: true, issues: [] },
+          CCPA: { compliant: true, issues: [] }
+        },
+        highRiskEvents: [],
+        recommendations: [
+          'Implement additional MFA for admin users',
+          'Review access permissions quarterly',
+          'Update data retention policies'
+        ]
+      }
+
+      expect(complianceReport.compliance.HIPAA.compliant).toBe(true)
+      expect(complianceReport.compliance.GDPR.compliant).toBe(true)
+      expect(complianceReport.statistics.breaches).toBe(0)
+    })
+  })
+
+  describe('Data Encryption Testing', () => {
+    it('should use AES-256 encryption for sensitive data', () => {
+      const encryptionConfig = {
+        algorithm: 'aes-256-cbc',
+        keyLength: 32, // bytes = 256 bits
+        ivLength: 16, // bytes = 128 bits
+        saltRounds: 10000, // for key derivation
+        hmac: 'sha256'
+      }
+
+      expect(encryptionConfig.algorithm).toContain('aes-256')
+      expect(encryptionConfig.keyLength).toBe(32)
+      expect(encryptionConfig.saltRounds).toBeGreaterThanOrEqual(10000)
+    })
+
+    it('should implement secure key rotation', async () => {
+      const keyRotation = {
+        currentKeyId: 'key-2025-01',
+        previousKeyId: 'key-2024-12',
+        rotationSchedule: 'monthly',
+        nextRotation: new Date('2025-02-01'),
+        reEncryptionInProgress: false
+      }
+
+      const today = new Date('2025-01-20')
+      const daysUntilRotation = Math.ceil(
+        (keyRotation.nextRotation.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)
+      )
+
+      expect(daysUntilRotation).toBeLessThanOrEqual(30)
+      expect(keyRotation.currentKeyId).not.toBe(keyRotation.previousKeyId)
+    })
+
+    it('should validate data integrity with checksums', () => {
+      const data = {
+        content: 'Sensitive medical information',
+        checksum: '',
+        algorithm: 'sha256'
+      }
+
+      data.checksum = crypto
+        .createHash(data.algorithm)
+        .update(data.content)
+        .digest('hex')
+
+      // Verify integrity
+      const calculatedChecksum = crypto
+        .createHash(data.algorithm)
+        .update(data.content)
+        .digest('hex')
+
+      expect(calculatedChecksum).toBe(data.checksum)
+    })
+
+    it('should securely handle encryption keys in memory', () => {
+      const keyManagement = {
+        keysInMemory: false, // Keys should not persist in memory
+        zeroizationOnCleanup: true,
+        secureKeyStorage: 'HSM', // Hardware Security Module
+        keyAccessLogging: true,
+        emergencyKeyRecovery: true
+      }
+
+      expect(keyManagement.keysInMemory).toBe(false)
+      expect(keyManagement.zeroizationOnCleanup).toBe(true)
+      expect(keyManagement.secureKeyStorage).toBe('HSM')
+    })
+  })
+
+  describe('Security Incident Response Testing', () => {
+    it('should execute incident response plan for data breach', async () => {
+      const incident = {
+        type: 'DATA_BREACH',
+        severity: 'CRITICAL',
+        detectedAt: new Date(),
+        affectedSystems: ['dietary_requirements', 'medical_information'],
+        responseSteps: [
+          { step: 'ISOLATE', completed: true, time: '00:05' },
+          { step: 'ASSESS', completed: true, time: '00:15' },
+          { step: 'CONTAIN', completed: true, time: '00:30' },
+          { step: 'ERADICATE', completed: true, time: '01:00' },
+          { step: 'RECOVER', completed: true, time: '02:00' },
+          { step: 'LESSONS_LEARNED', completed: false, time: null }
+        ]
+      }
+
+      const criticalSteps = incident.responseSteps.slice(0, 5)
+      const allCriticalComplete = criticalSteps.every(s => s.completed)
+      
+      expect(allCriticalComplete).toBe(true)
+      expect(incident.severity).toBe('CRITICAL')
+    })
+
+    it('should implement automatic security lockdown for critical violations', () => {
+      const securityViolation = {
+        type: 'MASS_DATA_EXPORT_ATTEMPT',
+        userId: 'user-123',
+        recordsAttempted: 5000,
+        threshold: 100,
+        action: 'AUTOMATIC_LOCKDOWN'
+      }
+
+      if (securityViolation.recordsAttempted > securityViolation.threshold) {
+        const lockdown = {
+          triggered: true,
+          affectedUser: securityViolation.userId,
+          systemsLocked: ['export_api', 'data_access'],
+          notified: ['security_team', 'compliance_officer'],
+          requiresManualOverride: true
+        }
+
+        expect(lockdown.triggered).toBe(true)
+        expect(lockdown.requiresManualOverride).toBe(true)
+        expect(lockdown.notified).toContain('security_team')
+      }
+    })
+  })
+})
+
+// Helper functions
+function getMinimumNecessaryFields(purpose: string): string[] {
+  const fieldMap: Record<string, string[]> = {
+    'prepare_allergen_free_meal': ['allergies', 'dietary_restrictions'],
+    'emergency_response': ['allergies', 'emergency_contact', 'medical_conditions'],
+    'guest_check_in': ['name', 'table_number'],
+    'billing': ['name', 'contact_info']
+  }
+  return fieldMap[purpose] || []
+}

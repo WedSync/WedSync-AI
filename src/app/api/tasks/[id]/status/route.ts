@@ -1,0 +1,389 @@
+/**
+ * WS-159: Task Status Update API
+ * SECURITY: Uses mandatory withSecureValidation middleware
+ * Handles task status updates with history tracking and real-time notifications
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { withSecureValidation } from '@/lib/validation/middleware';
+import { taskStatusUpdateSchema } from '@/lib/validation/schemas';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import type {
+  TaskStatusUpdateRequest,
+  TaskStatusUpdateResponse,
+  TaskTrackingRealtimeEvent,
+} from '@/types/task-tracking';
+
+/**
+ * Update task status with history tracking and notifications
+ * POST /api/tasks/[id]/status
+ */
+export const POST = withSecureValidation(
+  taskStatusUpdateSchema,
+  async (request: NextRequest, validatedData: TaskStatusUpdateRequest) => {
+    try {
+      const supabase = createClient(
+        process.env.SUPABASE_URL!,
+        process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      );
+      const { id: taskId } = await await request.url
+        .split('/tasks/')[1]
+        .split('/')[0];
+
+      // Get authenticated user
+      const {
+        data: { user },
+        error: authError,
+      } = await supabase.auth.getUser();
+      if (authError || !user) {
+        return NextResponse.json(
+          { error: 'UNAUTHORIZED', message: 'Authentication required' },
+          { status: 401 },
+        );
+      }
+
+      // Get user's team member record
+      const { data: teamMember } = await supabase
+        .from('team_members')
+        .select('id, name, role')
+        .eq('user_id', user.id)
+        .single();
+
+      if (!teamMember) {
+        return NextResponse.json(
+          { error: 'FORBIDDEN', message: 'Team member not found' },
+          { status: 403 },
+        );
+      }
+
+      // Verify task assignment permissions
+      const { data: taskAssignment, error: assignmentError } = await supabase
+        .from('task_assignments')
+        .select(
+          `
+          id,
+          task_id,
+          assigned_to,
+          is_primary,
+          workflow_tasks!inner (
+            id,
+            title,
+            wedding_id,
+            status,
+            assigned_to,
+            created_by,
+            assigned_by,
+            progress_percentage
+          )
+        `,
+        )
+        .eq('id', validatedData.assignment_id)
+        .eq('assigned_to', teamMember.id)
+        .single();
+
+      if (assignmentError || !taskAssignment) {
+        return NextResponse.json(
+          {
+            error: 'FORBIDDEN',
+            message: 'Task assignment not found or access denied',
+          },
+          { status: 403 },
+        );
+      }
+
+      const task = taskAssignment.workflow_tasks;
+
+      // Validate status transition
+      const validTransitions = getValidStatusTransitions(task.status);
+      if (!validTransitions.includes(validatedData.new_status)) {
+        return NextResponse.json(
+          {
+            error: 'INVALID_TRANSITION',
+            message: `Cannot transition from ${task.status} to ${validatedData.new_status}`,
+            valid_transitions: validTransitions,
+          },
+          { status: 400 },
+        );
+      }
+
+      // Calculate progress percentage based on status if not provided
+      let progressPercentage = validatedData.progress_percentage;
+      if (progressPercentage === undefined) {
+        progressPercentage = getDefaultProgressForStatus(
+          validatedData.new_status,
+        );
+      }
+
+      // Use database function for atomic status update with history
+      const { data: updateResult, error: updateError } = await supabase.rpc(
+        'update_task_status_with_history',
+        {
+          task_id_param: task.id,
+          new_status_param: validatedData.new_status,
+          updated_by_param: teamMember.id,
+          comment_param:
+            validatedData.notes ||
+            `Status updated to ${validatedData.new_status}`,
+          progress_param: progressPercentage,
+        },
+      );
+
+      if (updateError) {
+        console.error('Task status update failed:', updateError);
+        return NextResponse.json(
+          { error: 'UPDATE_FAILED', message: 'Failed to update task status' },
+          { status: 500 },
+        );
+      }
+
+      // Handle photo evidence if provided
+      let photoEvidenceProcessed = 0;
+      if (
+        validatedData.completion_photos &&
+        validatedData.completion_photos.length > 0
+      ) {
+        for (const photoUrl of validatedData.completion_photos) {
+          const { error: photoError } = await supabase
+            .from('task_photo_evidence')
+            .insert({
+              task_id: task.id,
+              file_url: photoUrl,
+              uploaded_by: teamMember.id,
+              is_completion_proof: validatedData.new_status === 'completed',
+              verification_status: 'pending',
+            });
+
+          if (!photoError) {
+            photoEvidenceProcessed++;
+          }
+        }
+      }
+
+      // Get updated task with full details
+      const { data: updatedTask } = await supabase
+        .from('workflow_tasks')
+        .select(
+          `
+          *,
+          assigned_to_member:team_members!workflow_tasks_assigned_to_fkey(
+            id, name, email, role
+          ),
+          task_photo_evidence (
+            id, file_url, uploaded_by, upload_date, is_completion_proof
+          ),
+          task_status_history!task_status_history_task_id_fkey (
+            id, previous_status, new_status, updated_by, updated_at, comment
+          )
+        `,
+        )
+        .eq('id', task.id)
+        .single();
+
+      // Send real-time notification
+      const realtimeEvent: TaskTrackingRealtimeEvent = {
+        type: 'task_status_changed',
+        task_id: task.id,
+        wedding_id: task.wedding_id,
+        data: {
+          previous_status: task.status,
+          new_status: validatedData.new_status,
+          progress_percentage: progressPercentage,
+          updated_by: teamMember.name,
+          timestamp: new Date().toISOString(),
+        },
+        recipients: [
+          task.created_by,
+          task.assigned_by,
+          task.assigned_to,
+        ].filter(Boolean),
+      };
+
+      // Send to Supabase Realtime channel
+      await supabase.channel(`wedding:${task.wedding_id}`).send({
+        type: 'broadcast',
+        event: 'task_status_updated',
+        payload: realtimeEvent,
+      });
+
+      // Create notification records
+      const notificationPromises = realtimeEvent.recipients.map((recipientId) =>
+        supabase.from('task_notifications').insert({
+          task_id: task.id,
+          recipient_id: recipientId,
+          notification_type: 'status_change',
+          title: `Task Status Updated: ${task.title}`,
+          message: `${teamMember.name} updated task status from ${task.status} to ${validatedData.new_status}${validatedData.notes ? `. Notes: ${validatedData.notes}` : ''}`,
+          is_read: false,
+        }),
+      );
+
+      const notificationResults =
+        await Promise.allSettled(notificationPromises);
+      const notificationsSent = notificationResults.filter(
+        (result) => result.status === 'fulfilled',
+      ).length;
+
+      const response: TaskStatusUpdateResponse = {
+        success: true,
+        task: updatedTask,
+        status_history_id: updateResult?.[0]?.id || '',
+        notifications_sent: notificationsSent,
+        real_time_events_triggered: ['task_status_changed'],
+      };
+
+      return NextResponse.json(response, { status: 200 });
+    } catch (error) {
+      console.error('Task status update error:', error);
+      return NextResponse.json(
+        {
+          error: 'INTERNAL_SERVER_ERROR',
+          message: 'An unexpected error occurred during status update',
+        },
+        { status: 500 },
+      );
+    }
+  },
+);
+
+/**
+ * Get task status history and current status
+ * GET /api/tasks/[id]/status
+ */
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  try {
+    const supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+    const { id: taskId } = await params;
+
+    // Get authenticated user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'UNAUTHORIZED', message: 'Authentication required' },
+        { status: 401 },
+      );
+    }
+
+    // Get task with status history and verify access
+    const { data: taskData, error: taskError } = await supabase
+      .from('workflow_tasks')
+      .select(
+        `
+        id,
+        title,
+        status,
+        progress_percentage,
+        wedding_id,
+        assigned_to,
+        created_by,
+        assigned_by,
+        task_status_history!task_status_history_task_id_fkey (
+          id,
+          previous_status,
+          new_status,
+          updated_by,
+          updated_at,
+          comment,
+          progress_percentage,
+          team_members!task_status_history_updated_by_fkey (
+            id, name, role
+          )
+        )
+      `,
+      )
+      .eq('id', taskId)
+      .single();
+
+    if (taskError) {
+      return NextResponse.json(
+        { error: 'TASK_NOT_FOUND', message: 'Task not found' },
+        { status: 404 },
+      );
+    }
+
+    // Verify user has access to this task
+    const { data: teamMember } = await supabase
+      .from('team_members')
+      .select('id')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!teamMember) {
+      return NextResponse.json(
+        { error: 'FORBIDDEN', message: 'Access denied' },
+        { status: 403 },
+      );
+    }
+
+    const hasAccess =
+      taskData.assigned_to === teamMember.id ||
+      taskData.created_by === teamMember.id ||
+      taskData.assigned_by === teamMember.id;
+
+    if (!hasAccess) {
+      return NextResponse.json(
+        { error: 'FORBIDDEN', message: 'Access denied to task status' },
+        { status: 403 },
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      task_id: taskData.id,
+      title: taskData.title,
+      current_status: taskData.status,
+      progress_percentage: taskData.progress_percentage,
+      status_history: taskData.task_status_history.sort(
+        (a, b) =>
+          new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
+      ),
+    });
+  } catch (error) {
+    console.error('Get task status error:', error);
+    return NextResponse.json(
+      {
+        error: 'INTERNAL_SERVER_ERROR',
+        message: 'Failed to retrieve task status',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+// Helper functions
+function getValidStatusTransitions(currentStatus: string): string[] {
+  const transitions: Record<string, string[]> = {
+    pending: ['accepted', 'cancelled'],
+    accepted: ['in_progress', 'cancelled'],
+    in_progress: ['blocked', 'review', 'completed', 'cancelled'],
+    blocked: ['in_progress', 'cancelled'],
+    review: ['in_progress', 'completed', 'cancelled'],
+    completed: [], // Final state
+    cancelled: [], // Final state
+  };
+
+  return transitions[currentStatus] || [];
+}
+
+function getDefaultProgressForStatus(status: string): number {
+  const progressMap: Record<string, number> = {
+    pending: 0,
+    accepted: 5,
+    in_progress: 25,
+    blocked: 25, // Keep current progress
+    review: 90,
+    completed: 100,
+    cancelled: 0,
+  };
+
+  return progressMap[status] || 0;
+}

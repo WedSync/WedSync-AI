@@ -1,0 +1,549 @@
+/**
+ * WS-188: Priority Caching Control API
+ * Team B - Backend Focus - Set priority caching for critical wedding data
+ * 
+ * Manages intelligent caching with priority-based resource allocation
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
+import { withSecureValidation } from '@/lib/validation/middleware';
+
+// Use Supabase MCP for database operations
+const supabaseMcp = {
+  async executeQuery(query: string, params?: any[]) {
+    // This would use the actual Supabase MCP connection
+    return { data: [], error: null };
+  },
+  
+  async callFunction(functionName: string, params: any) {
+    // This would use the actual Supabase MCP function calling
+    return { data: null, error: null };
+  }
+};
+
+// Priority levels for wedding data
+const PRIORITY_LEVELS = {
+  CRITICAL: 10,    // Wedding day essentials (timeline, vendors, contacts)
+  HIGH: 8,         // Important planning data (budget, contracts, photos)
+  MEDIUM: 6,       // Regular planning items (notes, drafts, preferences)
+  LOW: 4,          // Archive data (old versions, completed tasks)
+  BACKGROUND: 2    // Non-essential data (analytics, logs)
+} as const;
+
+// Cache priority request schema
+const CachePrioritySchema = z.object({
+  resources: z.array(z.object({
+    resourceType: z.enum(['wedding', 'client', 'vendor', 'timeline_item', 'budget_item', 'photo', 'document']),
+    resourceId: z.string().uuid(),
+    priority: z.enum(['critical', 'high', 'medium', 'low', 'background']),
+    expirationPolicy: z.enum(['wedding_day', 'fixed_duration', 'never_expire', 'access_based']).optional(),
+    customExpiration: z.string().datetime().optional(),
+    preloadData: z.boolean().optional().default(false),
+    compressionLevel: z.enum(['none', 'low', 'medium', 'high']).optional().default('medium')
+  })),
+  weddingDate: z.string().datetime().optional(),
+  deviceInfo: z.object({
+    deviceId: z.string(),
+    storageQuotaMB: z.number().min(1).max(10000).optional(),
+    connectionQuality: z.enum(['offline', 'poor', 'good', 'excellent']).optional()
+  }).optional(),
+  globalSettings: z.object({
+    enableProactiveCaching: z.boolean().optional().default(true),
+    maxCacheSizeMB: z.number().min(10).max(5000).optional().default(500),
+    weddingDayBoostFactor: z.number().min(1).max(10).optional().default(3),
+    autoCleanupThresholdPercent: z.number().min(50).max(95).optional().default(85)
+  }).optional()
+});
+
+/**
+ * POST /api/offline/cache/priority - Set priority caching for critical wedding data
+ */
+export const POST = withSecureValidation(
+  CachePrioritySchema,
+  async (request: NextRequest, validatedData) => {
+    const userId = request.headers.get('x-user-id');
+    if (!userId) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const sessionId = crypto.randomUUID();
+    const startTime = Date.now();
+
+    try {
+      const results = [];
+      const errors = [];
+      
+      // Calculate wedding day proximity boost
+      const weddingDayBoost = validatedData.weddingDate 
+        ? calculateWeddingDayBoost(validatedData.weddingDate, validatedData.globalSettings?.weddingDayBoostFactor)
+        : 0;
+
+      // Process each resource priority setting
+      for (const resource of validatedData.resources) {
+        try {
+          // Validate resource ownership
+          const hasAccess = await validateResourceAccess(userId, resource.resourceType, resource.resourceId);
+          if (!hasAccess) {
+            errors.push({
+              resourceId: resource.resourceId,
+              resourceType: resource.resourceType,
+              error: 'Access denied or resource not found'
+            });
+            continue;
+          }
+
+          // Calculate final priority with wedding day boost
+          const basePriority = PRIORITY_LEVELS[resource.priority.toUpperCase() as keyof typeof PRIORITY_LEVELS];
+          const finalPriority = Math.min(basePriority + weddingDayBoost, 10);
+
+          // Calculate expiration time
+          const expirationTime = calculateExpirationTime(
+            resource.expirationPolicy || 'wedding_day',
+            resource.customExpiration,
+            validatedData.weddingDate
+          );
+
+          // Set cache priority
+          const cacheResult = await setCacheResourcePriority(userId, {
+            resourceType: resource.resourceType,
+            resourceId: resource.resourceId,
+            priority: finalPriority,
+            originalPriority: basePriority,
+            weddingDayBoost,
+            expirationTime,
+            preloadData: resource.preloadData,
+            compressionLevel: resource.compressionLevel,
+            deviceId: validatedData.deviceInfo?.deviceId
+          });
+
+          results.push({
+            resourceId: resource.resourceId,
+            resourceType: resource.resourceType,
+            priority: finalPriority,
+            originalPriority: basePriority,
+            weddingDayBoost,
+            expirationTime,
+            cacheKey: cacheResult.cacheKey,
+            estimatedSizeMB: cacheResult.estimatedSizeMB
+          });
+
+          // Preload data if requested
+          if (resource.preloadData) {
+            await preloadResourceData(
+              userId,
+              resource.resourceType,
+              resource.resourceId,
+              resource.compressionLevel || 'medium'
+            );
+          }
+
+        } catch (error) {
+          errors.push({
+            resourceId: resource.resourceId,
+            resourceType: resource.resourceType,
+            error: error instanceof Error ? error.message : 'Unknown error'
+          });
+        }
+      }
+
+      // Update global cache settings if provided
+      if (validatedData.globalSettings) {
+        await updateGlobalCacheSettings(userId, validatedData.globalSettings, validatedData.deviceInfo?.deviceId);
+      }
+
+      // Calculate cache storage summary
+      const storageSummary = await calculateCacheStorageSummary(userId, validatedData.deviceInfo?.deviceId);
+
+      // Check if cleanup is needed
+      const cleanupRecommendation = await evaluateCacheCleanup(
+        userId,
+        storageSummary,
+        validatedData.globalSettings?.autoCleanupThresholdPercent || 85
+      );
+
+      // Record cache management metrics
+      await recordCacheMetrics(userId, sessionId, {
+        resourcesProcessed: validatedData.resources.length,
+        successfulUpdates: results.length,
+        failures: errors.length,
+        weddingDayBoost,
+        totalCacheSizeMB: storageSummary.totalSizeMB,
+        processingTime: Date.now() - startTime
+      });
+
+      return NextResponse.json({
+        success: true,
+        sessionId,
+        results,
+        errors,
+        summary: {
+          totalResources: validatedData.resources.length,
+          updated: results.length,
+          failed: errors.length,
+          weddingDayBoost,
+          processingTime: Date.now() - startTime
+        },
+        storage: {
+          ...storageSummary,
+          cleanupRecommendation
+        }
+      });
+
+    } catch (error) {
+      console.error(`[Cache Priority Error] Session ${sessionId}:`, error);
+      return NextResponse.json({
+        error: 'Failed to set cache priorities',
+        sessionId,
+        details: error instanceof Error ? error.message : 'Unknown error'
+      }, { status: 500 });
+    }
+  }
+);
+
+/**
+ * GET /api/offline/cache/priority - Get current cache priority settings
+ */
+export async function GET(request: NextRequest) {
+  const userId = request.headers.get('x-user-id');
+  if (!userId) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  try {
+    const url = new URL(request.url);
+    const deviceId = url.searchParams.get('deviceId');
+    const resourceType = url.searchParams.get('resourceType');
+
+    // Get cache priorities
+    const { data: cachePriorities } = await supabaseMcp.executeQuery(`
+      SELECT 
+        resource_type,
+        resource_id,
+        priority,
+        original_priority,
+        wedding_day_boost,
+        expiration_time,
+        preload_enabled,
+        compression_level,
+        cache_key,
+        estimated_size_mb,
+        last_accessed,
+        hit_count,
+        created_at,
+        updated_at
+      FROM cache_metadata 
+      WHERE user_id = $1
+        AND (device_id = $2 OR $2 IS NULL)
+        AND (resource_type = $3 OR $3 IS NULL)
+        AND expiration_time > NOW()
+      ORDER BY priority DESC, last_accessed DESC
+      LIMIT 100
+    `, [userId, deviceId, resourceType]);
+
+    // Get global cache settings
+    const { data: globalSettings } = await supabaseMcp.executeQuery(`
+      SELECT 
+        enable_proactive_caching,
+        max_cache_size_mb,
+        wedding_day_boost_factor,
+        auto_cleanup_threshold_percent,
+        device_id,
+        updated_at
+      FROM cache_settings 
+      WHERE user_id = $1
+        AND (device_id = $2 OR $2 IS NULL)
+    `, [userId, deviceId]);
+
+    // Calculate storage summary
+    const storageSummary = await calculateCacheStorageSummary(userId, deviceId);
+
+    return NextResponse.json({
+      success: true,
+      priorities: cachePriorities || [],
+      settings: globalSettings?.[0] || null,
+      storage: storageSummary,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('[Cache Priority Get Error]:', error);
+    return NextResponse.json({
+      error: 'Failed to get cache priorities',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    }, { status: 500 });
+  }
+}
+
+/**
+ * Calculate wedding day proximity boost
+ */
+function calculateWeddingDayBoost(weddingDate: string, boostFactor: number = 3): number {
+  try {
+    const wedding = new Date(weddingDate);
+    const now = new Date();
+    const daysToWedding = Math.ceil((wedding.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+
+    if (daysToWedding < 0) {
+      return 0; // Wedding has passed
+    } else if (daysToWedding <= 1) {
+      return boostFactor; // Wedding day or day before
+    } else if (daysToWedding <= 7) {
+      return Math.ceil(boostFactor * 0.7); // Week before wedding
+    } else if (daysToWedding <= 30) {
+      return Math.ceil(boostFactor * 0.5); // Month before wedding
+    } else {
+      return Math.ceil(boostFactor * 0.3); // More than a month
+    }
+  } catch (error) {
+    console.error('[Wedding Day Boost Calculation Error]:', error);
+    return 0;
+  }
+}
+
+/**
+ * Calculate expiration time based on policy
+ */
+function calculateExpirationTime(
+  policy: string,
+  customExpiration?: string,
+  weddingDate?: string
+): string {
+  const now = new Date();
+
+  switch (policy) {
+    case 'wedding_day':
+      if (weddingDate) {
+        const wedding = new Date(weddingDate);
+        wedding.setDate(wedding.getDate() + 1); // Day after wedding
+        return wedding.toISOString();
+      }
+      // Fallback to 6 months if no wedding date
+      now.setMonth(now.getMonth() + 6);
+      return now.toISOString();
+
+    case 'fixed_duration':
+      if (customExpiration) {
+        return customExpiration;
+      }
+      // Fallback to 30 days
+      now.setDate(now.getDate() + 30);
+      return now.toISOString();
+
+    case 'never_expire':
+      // Set to far future (10 years)
+      now.setFullYear(now.getFullYear() + 10);
+      return now.toISOString();
+
+    case 'access_based':
+      // 90 days from last access (will be updated on access)
+      now.setDate(now.getDate() + 90);
+      return now.toISOString();
+
+    default:
+      // Default to 30 days
+      now.setDate(now.getDate() + 30);
+      return now.toISOString();
+  }
+}
+
+/**
+ * Validate user access to resource
+ */
+async function validateResourceAccess(userId: string, resourceType: string, resourceId: string): Promise<boolean> {
+  try {
+    const tableMap = {
+      wedding: 'weddings',
+      client: 'clients',
+      vendor: 'vendors',
+      timeline_item: 'timeline_items',
+      budget_item: 'budget_items',
+      photo: 'photos',
+      document: 'documents'
+    };
+
+    const tableName = tableMap[resourceType as keyof typeof tableMap];
+    if (!tableName) {
+      return false;
+    }
+
+    const { data } = await supabaseMcp.executeQuery(`
+      SELECT id FROM ${tableName} 
+      WHERE id = $1 AND user_id = $2
+    `, [resourceId, userId]);
+
+    return data && data.length > 0;
+  } catch (error) {
+    console.error('[Resource Access Validation Error]:', error);
+    return false;
+  }
+}
+
+/**
+ * Set cache resource priority
+ */
+async function setCacheResourcePriority(userId: string, options: any) {
+  const cacheKey = `${options.resourceType}:${options.resourceId}`;
+  
+  const { data: result } = await supabaseMcp.callFunction('set_cache_priority', {
+    p_user_id: userId,
+    p_resource_type: options.resourceType,
+    p_resource_id: options.resourceId,
+    p_priority: options.priority,
+    p_original_priority: options.originalPriority,
+    p_wedding_day_boost: options.weddingDayBoost,
+    p_expiration_time: options.expirationTime,
+    p_preload_enabled: options.preloadData,
+    p_compression_level: options.compressionLevel,
+    p_cache_key: cacheKey,
+    p_device_id: options.deviceId
+  });
+
+  return {
+    cacheKey,
+    estimatedSizeMB: result?.estimated_size_mb || 0
+  };
+}
+
+/**
+ * Preload resource data into cache
+ */
+async function preloadResourceData(
+  userId: string,
+  resourceType: string,
+  resourceId: string,
+  compressionLevel: string
+) {
+  try {
+    await supabaseMcp.callFunction('preload_cache_data', {
+      p_user_id: userId,
+      p_resource_type: resourceType,
+      p_resource_id: resourceId,
+      p_compression_level: compressionLevel
+    });
+  } catch (error) {
+    console.error(`[Preload Data Error] ${resourceType}:${resourceId}:`, error);
+    // Don't throw - preloading is best effort
+  }
+}
+
+/**
+ * Update global cache settings
+ */
+async function updateGlobalCacheSettings(userId: string, settings: any, deviceId?: string) {
+  try {
+    await supabaseMcp.callFunction('update_cache_settings', {
+      p_user_id: userId,
+      p_device_id: deviceId,
+      p_enable_proactive_caching: settings.enableProactiveCaching,
+      p_max_cache_size_mb: settings.maxCacheSizeMB,
+      p_wedding_day_boost_factor: settings.weddingDayBoostFactor,
+      p_auto_cleanup_threshold_percent: settings.autoCleanupThresholdPercent
+    });
+  } catch (error) {
+    console.error('[Global Cache Settings Error]:', error);
+  }
+}
+
+/**
+ * Calculate cache storage summary
+ */
+async function calculateCacheStorageSummary(userId: string, deviceId?: string) {
+  try {
+    const { data: summary } = await supabaseMcp.executeQuery(`
+      SELECT 
+        COUNT(*) as total_items,
+        SUM(estimated_size_mb) as total_size_mb,
+        AVG(priority) as avg_priority,
+        COUNT(CASE WHEN priority >= 8 THEN 1 END) as high_priority_items,
+        COUNT(CASE WHEN expiration_time < NOW() THEN 1 END) as expired_items,
+        MAX(last_accessed) as last_accessed_time
+      FROM cache_metadata 
+      WHERE user_id = $1 
+        AND (device_id = $2 OR $2 IS NULL)
+    `, [userId, deviceId]);
+
+    return summary?.[0] || {
+      total_items: 0,
+      total_size_mb: 0,
+      avg_priority: 0,
+      high_priority_items: 0,
+      expired_items: 0,
+      last_accessed_time: null
+    };
+  } catch (error) {
+    console.error('[Storage Summary Error]:', error);
+    return {
+      total_items: 0,
+      total_size_mb: 0,
+      avg_priority: 0,
+      high_priority_items: 0,
+      expired_items: 0,
+      last_accessed_time: null
+    };
+  }
+}
+
+/**
+ * Evaluate cache cleanup recommendation
+ */
+async function evaluateCacheCleanup(userId: string, storageSummary: any, thresholdPercent: number) {
+  try {
+    // Get cache settings to determine max size
+    const { data: settings } = await supabaseMcp.executeQuery(`
+      SELECT max_cache_size_mb FROM cache_settings 
+      WHERE user_id = $1 
+      LIMIT 1
+    `, [userId]);
+
+    const maxCacheSizeMB = settings?.[0]?.max_cache_size_mb || 500;
+    const currentSizeMB = storageSummary.total_size_mb || 0;
+    const usagePercent = (currentSizeMB / maxCacheSizeMB) * 100;
+
+    return {
+      recommendCleanup: usagePercent > thresholdPercent,
+      currentSizeMB,
+      maxCacheSizeMB,
+      usagePercent: Math.round(usagePercent),
+      expiredItems: storageSummary.expired_items || 0,
+      recommendation: usagePercent > thresholdPercent 
+        ? 'Cache cleanup recommended - storage usage above threshold'
+        : 'Cache storage within acceptable limits'
+    };
+  } catch (error) {
+    console.error('[Cache Cleanup Evaluation Error]:', error);
+    return {
+      recommendCleanup: false,
+      currentSizeMB: 0,
+      maxCacheSizeMB: 500,
+      usagePercent: 0,
+      expiredItems: 0,
+      recommendation: 'Unable to evaluate cache status'
+    };
+  }
+}
+
+/**
+ * Record cache management metrics
+ */
+async function recordCacheMetrics(userId: string, sessionId: string, metrics: any) {
+  try {
+    await supabaseMcp.executeQuery(`
+      INSERT INTO cache_management_metrics (
+        user_id, session_id, resources_processed, successful_updates,
+        failures, wedding_day_boost, total_cache_size_mb, processing_time_ms
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `, [
+      userId,
+      sessionId,
+      metrics.resourcesProcessed,
+      metrics.successfulUpdates,
+      metrics.failures,
+      metrics.weddingDayBoost,
+      metrics.totalCacheSizeMB,
+      metrics.processingTime
+    ]);
+  } catch (error) {
+    console.error('[Cache Metrics Recording Error]:', error);
+  }
+}

@@ -1,0 +1,122 @@
+/**
+ * Migration Adapter for gradual UI component transition
+ * Allows switching between old and new components via feature flags
+ */
+
+import React from 'react'
+
+// Import original components
+import { Button as OriginalButton } from './button'
+import { Input as OriginalInput } from './input'
+import { Card as OriginalCard } from './card'
+
+// Import Untitled UI versions
+import { Button as UntitledButton } from './button-untitled'
+import { Input as UntitledInput } from './input-untitled'
+import { Card as UntitledCard } from './card-untitled'
+
+// Feature flag configuration
+const MIGRATION_FLAGS = {
+  button: process.env.NEXT_PUBLIC_MIGRATE_BUTTON === 'true',
+  input: process.env.NEXT_PUBLIC_MIGRATE_INPUT === 'true',
+  card: process.env.NEXT_PUBLIC_MIGRATE_CARD === 'true',
+} as const
+
+// Type helper to get component props
+type ComponentProps<T> = T extends React.ComponentType<infer P> ? P : never
+
+// Migration wrapper components
+export const Button = React.forwardRef<
+  HTMLButtonElement,
+  ComponentProps<typeof OriginalButton> & ComponentProps<typeof UntitledButton>
+>((props, ref) => {
+  if (MIGRATION_FLAGS.button) {
+    return <UntitledButton {...props} ref={ref} />
+  }
+  return <OriginalButton {...props} ref={ref} />
+})
+Button.displayName = 'Button'
+
+export const Input = React.forwardRef<
+  HTMLInputElement,
+  ComponentProps<typeof OriginalInput> & ComponentProps<typeof UntitledInput>
+>((props, ref) => {
+  if (MIGRATION_FLAGS.input) {
+    return <UntitledInput {...props} ref={ref} />
+  }
+  return <OriginalInput {...props} ref={ref} />
+})
+Input.displayName = 'Input'
+
+export const Card = React.forwardRef<
+  HTMLDivElement,
+  ComponentProps<typeof OriginalCard> & ComponentProps<typeof UntitledCard>
+>((props, ref) => {
+  if (MIGRATION_FLAGS.card) {
+    return <UntitledCard {...props} ref={ref} />
+  }
+  return <OriginalCard {...props} ref={ref} />
+})
+Card.displayName = 'Card'
+
+// Development-only migration testing component
+export const MigrationTester = process.env.NODE_ENV === 'development' ? 
+  ({ componentName, children }: { componentName: string, children: React.ReactNode }) => {
+    const [showNew, setShowNew] = React.useState(false)
+    
+    return (
+      <div className="relative">
+        <div className="absolute top-0 right-0 z-10 bg-yellow-100 border border-yellow-400 rounded px-2 py-1 text-xs">
+          <span className="font-semibold">{componentName}</span>
+          <button
+            onClick={() => setShowNew(!showNew)}
+            className="ml-2 px-2 py-0.5 bg-yellow-200 rounded hover:bg-yellow-300"
+          >
+            {showNew ? 'Using New' : 'Using Old'}
+          </button>
+        </div>
+        <div className="pt-8">
+          {React.Children.map(children, child => {
+            if (React.isValidElement(child)) {
+              // Clone the child and override the migration flag
+              return React.cloneElement(child as any, {
+                'data-migration-override': showNew ? 'new' : 'old'
+              })
+            }
+            return child
+          })}
+        </div>
+      </div>
+    )
+  } : 
+  ({ children }: { children: React.ReactNode }) => <>{children}</>
+
+// Export re-mapped sub-components
+export { 
+  CardHeader, 
+  CardTitle, 
+  CardDescription, 
+  CardContent, 
+  CardFooter 
+} from './card-untitled'
+
+// Export wedding-specific presets
+export { 
+  WeddingButton, 
+  ElegantButton, 
+  VendorButton 
+} from './button-untitled'
+
+export { 
+  WeddingInput, 
+  ElegantInput,
+  Label,
+  HelperText
+} from './input-untitled'
+
+export { 
+  WeddingCard, 
+  ElegantCard, 
+  LuxuryCard,
+  VendorCard
+} from './card-untitled'

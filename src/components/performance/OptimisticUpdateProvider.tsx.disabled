@@ -1,0 +1,427 @@
+'use client';
+
+import React, { 
+  createContext, 
+  useContext, 
+  useReducer, 
+  useCallback, 
+  useRef, 
+  useEffect 
+} from 'react';
+import { usePerformanceMonitor } from '@/hooks/usePerformanceOptimization';
+
+// Types for optimistic updates
+interface OptimisticUpdate<T = any> {
+  id: string;
+  type: string;
+  data: T;
+  originalData?: T;
+  timestamp: number;
+  status: 'pending' | 'committed' | 'failed' | 'conflicted';
+  retryCount: number;
+  error?: Error;
+  conflictResolution?: 'client' | 'server' | 'merge' | 'manual';
+}
+
+interface ConflictResolutionStrategy<T = any> {
+  resolve: (clientData: T, serverData: T, originalData?: T) => T;
+  canAutoResolve: (clientData: T, serverData: T, originalData?: T) => boolean;
+}
+
+interface OptimisticState {
+  updates: Record<string, OptimisticUpdate>;
+  conflicts: OptimisticUpdate[];
+  isConnected: boolean;
+  syncQueue: string[];
+}
+
+type OptimisticAction = 
+  | { type: 'ADD_UPDATE'; payload: OptimisticUpdate }
+  | { type: 'COMMIT_UPDATE'; payload: { id: string; serverData?: any } }
+  | { type: 'FAIL_UPDATE'; payload: { id: string; error: Error } }
+  | { type: 'ADD_CONFLICT'; payload: OptimisticUpdate }
+  | { type: 'RESOLVE_CONFLICT'; payload: { id: string; resolution: any } }
+  | { type: 'REMOVE_UPDATE'; payload: string }
+  | { type: 'SET_CONNECTION'; payload: boolean }
+  | { type: 'QUEUE_SYNC'; payload: string }
+  | { type: 'REMOVE_FROM_QUEUE'; payload: string };
+
+const initialState: OptimisticState = {
+  updates: {},
+  conflicts: [],
+  isConnected: true,
+  syncQueue: []
+};
+
+function optimisticReducer(state: OptimisticState, action: OptimisticAction): OptimisticState {
+  switch (action.type) {
+    case 'ADD_UPDATE':
+      return {
+        ...state,
+        updates: {
+          ...state.updates,
+          [action.payload.id]: action.payload
+        }
+      };
+
+    case 'COMMIT_UPDATE':
+      const updateToCommit = state.updates[action.payload.id];
+      if (!updateToCommit) return state;
+
+      return {
+        ...state,
+        updates: {
+          ...state.updates,
+          [action.payload.id]: {
+            ...updateToCommit,
+            status: 'committed'
+          }
+        },
+        syncQueue: state.syncQueue.filter(id => id !== action.payload.id)
+      };
+
+    case 'FAIL_UPDATE':
+      const updateToFail = state.updates[action.payload.id];
+      if (!updateToFail) return state;
+
+      return {
+        ...state,
+        updates: {
+          ...state.updates,
+          [action.payload.id]: {
+            ...updateToFail,
+            status: 'failed',
+            error: action.payload.error,
+            retryCount: updateToFail.retryCount + 1
+          }
+        }
+      };
+
+    case 'ADD_CONFLICT':
+      return {
+        ...state,
+        conflicts: [...state.conflicts, action.payload],
+        updates: {
+          ...state.updates,
+          [action.payload.id]: {
+            ...action.payload,
+            status: 'conflicted'
+          }
+        }
+      };
+
+    case 'RESOLVE_CONFLICT':
+      return {
+        ...state,
+        conflicts: state.conflicts.filter(c => c.id !== action.payload.id),
+        updates: {
+          ...state.updates,
+          [action.payload.id]: {
+            ...state.updates[action.payload.id],
+            status: 'committed',
+            data: action.payload.resolution
+          }
+        }
+      };
+
+    case 'REMOVE_UPDATE':
+      const { [action.payload]: removed, ...remainingUpdates } = state.updates;
+      return {
+        ...state,
+        updates: remainingUpdates,
+        conflicts: state.conflicts.filter(c => c.id !== action.payload),
+        syncQueue: state.syncQueue.filter(id => id !== action.payload)
+      };
+
+    case 'SET_CONNECTION':
+      return {
+        ...state,
+        isConnected: action.payload
+      };
+
+    case 'QUEUE_SYNC':
+      return {
+        ...state,
+        syncQueue: state.syncQueue.includes(action.payload) 
+          ? state.syncQueue 
+          : [...state.syncQueue, action.payload]
+      };
+
+    case 'REMOVE_FROM_QUEUE':
+      return {
+        ...state,
+        syncQueue: state.syncQueue.filter(id => id !== action.payload)
+      };
+
+    default:
+      return state;
+  }
+}
+
+// Context for optimistic updates
+interface OptimisticContextValue {
+  state: OptimisticState;
+  addOptimisticUpdate: <T>(update: Omit<OptimisticUpdate<T>, 'id' | 'timestamp' | 'status' | 'retryCount'>) => string;
+  commitUpdate: (id: string, serverData?: any) => void;
+  failUpdate: (id: string, error: Error) => void;
+  resolveConflict: (id: string, resolution: any) => void;
+  retryUpdate: (id: string) => Promise<void>;
+  registerConflictResolver: <T>(type: string, resolver: ConflictResolutionStrategy<T>) => void;
+  getOptimisticData: <T>(type: string, key: string) => T | null;
+  clearUpdate: (id: string) => void;
+}
+
+const OptimisticContext = createContext<OptimisticContextValue | null>(null);
+
+// Built-in conflict resolution strategies
+const defaultConflictResolvers: Record<string, ConflictResolutionStrategy> = {
+  // Last write wins
+  lastWriteWins: {
+    resolve: (clientData, serverData) => serverData,
+    canAutoResolve: () => true
+  },
+
+  // Client wins
+  clientWins: {
+    resolve: (clientData) => clientData,
+    canAutoResolve: () => true
+  },
+
+  // Merge strategy for objects
+  deepMerge: {
+    resolve: (clientData, serverData, originalData) => {
+      if (typeof clientData === 'object' && typeof serverData === 'object') {
+        return { ...originalData, ...serverData, ...clientData };
+      }
+      return clientData;
+    },
+    canAutoResolve: (clientData, serverData) => 
+      typeof clientData === 'object' && typeof serverData === 'object'
+  },
+
+  // Field-level merging for form data
+  fieldLevelMerge: {
+    resolve: (clientData: any, serverData: any, originalData: any) => {
+      const result = { ...serverData };
+      
+      // Only keep client changes that don't conflict
+      Object.keys(clientData).forEach(key => {
+        if (originalData && clientData[key] !== originalData[key]) {
+          // Client changed this field
+          if (!serverData[key] || serverData[key] === originalData[key]) {
+            // Server didn't change it, use client version
+            result[key] = clientData[key];
+          }
+          // If both changed, keep server version (could be manual resolution)
+        }
+      });
+      
+      return result;
+    },
+    canAutoResolve: () => true
+  }
+};
+
+export const OptimisticUpdateProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [state, dispatch] = useReducer(optimisticReducer, initialState);
+  const conflictResolvers = useRef<Record<string, ConflictResolutionStrategy>>(defaultConflictResolvers);
+  const syncCallbacks = useRef<Record<string, (data: any) => Promise<any>>>({});
+  const { logMetric } = usePerformanceMonitor('OptimisticUpdateProvider');
+
+  // Network status monitoring
+  useEffect(() => {
+    const handleOnline = () => dispatch({ type: 'SET_CONNECTION', payload: true });
+    const handleOffline = () => dispatch({ type: 'SET_CONNECTION', payload: false });
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  // Background sync when connection restored
+  useEffect(() => {
+    if (state.isConnected && state.syncQueue.length > 0) {
+      // Sync queued updates
+      state.syncQueue.forEach(async (updateId) => {
+        const update = state.updates[updateId];
+        if (update && syncCallbacks.current[update.type]) {
+          try {
+            await syncCallbacks.current[update.type](update.data);
+            dispatch({ type: 'COMMIT_UPDATE', payload: { id: updateId } });
+          } catch (error) {
+            dispatch({ type: 'FAIL_UPDATE', payload: { id: updateId, error: error as Error } });
+          }
+        }
+      });
+    }
+  }, [state.isConnected, state.syncQueue]);
+
+  const addOptimisticUpdate = useCallback(<T>(
+    update: Omit<OptimisticUpdate<T>, 'id' | 'timestamp' | 'status' | 'retryCount'>
+  ): string => {
+    const startTime = performance.now();
+    const id = `${update.type}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    const optimisticUpdate: OptimisticUpdate<T> = {
+      ...update,
+      id,
+      timestamp: Date.now(),
+      status: 'pending',
+      retryCount: 0
+    };
+
+    dispatch({ type: 'ADD_UPDATE', payload: optimisticUpdate });
+    
+    if (!state.isConnected) {
+      dispatch({ type: 'QUEUE_SYNC', payload: id });
+    }
+
+    const updateTime = performance.now() - startTime;
+    logMetric('optimisticUpdateTime', updateTime);
+    
+    return id;
+  }, [state.isConnected, logMetric]);
+
+  const commitUpdate = useCallback((id: string, serverData?: any) => {
+    const update = state.updates[id];
+    if (!update) return;
+
+    // Check for conflicts
+    if (serverData && JSON.stringify(update.data) !== JSON.stringify(serverData)) {
+      const resolver = conflictResolvers.current[update.type];
+      
+      if (resolver && resolver.canAutoResolve(update.data, serverData, update.originalData)) {
+        const resolvedData = resolver.resolve(update.data, serverData, update.originalData);
+        dispatch({ type: 'RESOLVE_CONFLICT', payload: { id, resolution: resolvedData } });
+        logMetric('conflictAutoResolved', 1);
+      } else {
+        dispatch({ type: 'ADD_CONFLICT', payload: { ...update, status: 'conflicted' } });
+        logMetric('conflictDetected', 1);
+      }
+    } else {
+      dispatch({ type: 'COMMIT_UPDATE', payload: { id, serverData } });
+      logMetric('updateCommitted', 1);
+    }
+  }, [state.updates, logMetric]);
+
+  const failUpdate = useCallback((id: string, error: Error) => {
+    dispatch({ type: 'FAIL_UPDATE', payload: { id, error } });
+    logMetric('updateFailed', 1);
+    
+    const update = state.updates[id];
+    if (update && update.retryCount < 3) {
+      // Auto-retry with exponential backoff
+      setTimeout(() => {
+        retryUpdate(id);
+      }, Math.pow(2, update.retryCount) * 1000);
+    }
+  }, [state.updates, logMetric]);
+
+  const resolveConflict = useCallback((id: string, resolution: any) => {
+    dispatch({ type: 'RESOLVE_CONFLICT', payload: { id, resolution } });
+    logMetric('conflictManuallyResolved', 1);
+  }, [logMetric]);
+
+  const retryUpdate = useCallback(async (id: string) => {
+    const update = state.updates[id];
+    if (!update || !syncCallbacks.current[update.type]) return;
+
+    try {
+      const result = await syncCallbacks.current[update.type](update.data);
+      commitUpdate(id, result);
+    } catch (error) {
+      failUpdate(id, error as Error);
+    }
+  }, [state.updates, commitUpdate, failUpdate]);
+
+  const registerConflictResolver = useCallback(<T>(
+    type: string, 
+    resolver: ConflictResolutionStrategy<T>
+  ) => {
+    conflictResolvers.current[type] = resolver;
+  }, []);
+
+  const getOptimisticData = useCallback(<T>(type: string, key: string): T | null => {
+    const updates = Object.values(state.updates).filter(
+      update => update.type === type && update.status !== 'failed'
+    );
+    
+    const latestUpdate = updates.reduce((latest, current) => 
+      !latest || current.timestamp > latest.timestamp ? current : latest
+    , null);
+
+    return latestUpdate?.data || null;
+  }, [state.updates]);
+
+  const clearUpdate = useCallback((id: string) => {
+    dispatch({ type: 'REMOVE_UPDATE', payload: id });
+  }, []);
+
+  const value: OptimisticContextValue = {
+    state,
+    addOptimisticUpdate,
+    commitUpdate,
+    failUpdate,
+    resolveConflict,
+    retryUpdate,
+    registerConflictResolver,
+    getOptimisticData,
+    clearUpdate
+  };
+
+  return (
+    <OptimisticContext.Provider value={value}>
+      {children}
+    </OptimisticContext.Provider>
+  );
+};
+
+// Hook to use optimistic updates
+export const useOptimisticUpdates = () => {
+  const context = useContext(OptimisticContext);
+  if (!context) {
+    throw new Error('useOptimisticUpdates must be used within OptimisticUpdateProvider');
+  }
+  return context;
+};
+
+// Hook for specific entity optimistic updates
+export const useOptimisticEntity = <T>(entityType: string, entityId: string, initialData: T) => {
+  const { 
+    addOptimisticUpdate, 
+    getOptimisticData, 
+    state 
+  } = useOptimisticUpdates();
+
+  const optimisticData = getOptimisticData<T>(entityType, entityId) || initialData;
+  
+  const updateEntity = useCallback((updates: Partial<T>, syncFn: (data: T) => Promise<T>) => {
+    const newData = { ...optimisticData, ...updates };
+    
+    const updateId = addOptimisticUpdate({
+      type: entityType,
+      data: newData,
+      originalData: initialData
+    });
+
+    // Register sync callback
+    return updateId;
+  }, [entityType, optimisticData, initialData, addOptimisticUpdate]);
+
+  const pendingUpdates = Object.values(state.updates).filter(
+    update => update.type === entityType && update.status === 'pending'
+  );
+
+  return {
+    data: optimisticData,
+    updateEntity,
+    isPending: pendingUpdates.length > 0,
+    pendingCount: pendingUpdates.length
+  };
+};
+
+export default OptimisticUpdateProvider;

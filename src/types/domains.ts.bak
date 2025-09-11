@@ -1,0 +1,485 @@
+/**
+ * Custom Domains System Types (WS-222)
+ * Enterprise-grade domain management with DNS verification, SSL tracking, and health monitoring
+ */
+
+// Database enum types
+export type DomainStatus = 
+  | 'pending'
+  | 'verifying'
+  | 'verified'
+  | 'active'
+  | 'suspended'
+  | 'failed'
+  | 'expired';
+
+export type DNSRecordType = 
+  | 'A'
+  | 'AAAA'
+  | 'CNAME'
+  | 'MX'
+  | 'TXT'
+  | 'NS'
+  | 'SRV'
+  | 'PTR';
+
+export type VerificationMethod = 
+  | 'dns_txt'
+  | 'file_upload'
+  | 'email'
+  | 'meta_tag'
+  | 'cname';
+
+export type VerificationStatus = 
+  | 'pending'
+  | 'in_progress'
+  | 'verified'
+  | 'failed'
+  | 'expired';
+
+export type SSLStatus = 
+  | 'pending'
+  | 'provisioning'
+  | 'issued'
+  | 'active'
+  | 'expiring'
+  | 'expired'
+  | 'revoked'
+  | 'failed';
+
+export type HealthCheckType = 
+  | 'http'
+  | 'https'
+  | 'dns'
+  | 'ssl'
+  | 'performance';
+
+export type HealthStatus = 
+  | 'healthy'
+  | 'degraded'
+  | 'unhealthy'
+  | 'unknown';
+
+export type AlertSeverity = 'info' | 'warning' | 'error' | 'critical';
+
+// Main domain interface
+export interface Domain {
+  id: string;
+  organization_id: string;
+  
+  // Domain information
+  domain_name: string;
+  subdomain?: string;
+  full_domain: string; // Computed field
+  
+  // Status and configuration
+  status: DomainStatus;
+  is_primary: boolean;
+  is_wildcard: boolean;
+  
+  // DNS configuration
+  target_cname?: string;
+  custom_ip_address?: string;
+  
+  // Metadata
+  notes?: string;
+  configuration: Record<string, any>;
+  
+  // Audit fields
+  created_at: string;
+  updated_at: string;
+  created_by?: string;
+  verified_at?: string;
+  last_checked_at?: string;
+}
+
+// DNS record interface
+export interface DNSRecord {
+  id: string;
+  domain_id: string;
+  
+  // DNS record details
+  record_type: DNSRecordType;
+  name: string;
+  value: string;
+  ttl: number;
+  priority?: number;
+  
+  // Status and validation
+  is_verified: boolean;
+  last_verified_at?: string;
+  verification_error?: string;
+  
+  // Metadata
+  managed_by_wedsync: boolean;
+  notes?: string;
+  
+  // Audit fields
+  created_at: string;
+  updated_at: string;
+  created_by?: string;
+}
+
+// SSL certificate interface
+export interface SSLCertificate {
+  id: string;
+  domain_id: string;
+  
+  // Certificate details
+  certificate_authority: string;
+  certificate_type: string;
+  status: SSLStatus;
+  
+  // Certificate data (encrypted in production)
+  certificate_pem?: string;
+  private_key_pem?: string;
+  certificate_fingerprint?: string;
+  serial_number?: string;
+  
+  // Validity periods
+  issued_at?: string;
+  expires_at?: string;
+  renewed_at?: string;
+  
+  // Auto-renewal settings
+  auto_renew: boolean;
+  renewal_threshold_days: number;
+  
+  // Tracking
+  renewal_attempts: number;
+  last_renewal_attempt_at?: string;
+  renewal_error?: string;
+  
+  // Metadata
+  subject_alternative_names?: string[];
+  notes?: string;
+  
+  // Audit fields
+  created_at: string;
+  updated_at: string;
+  created_by?: string;
+}
+
+// Domain verification interface
+export interface DomainVerification {
+  id: string;
+  domain_id: string;
+  
+  // Verification details
+  verification_method: VerificationMethod;
+  status: VerificationStatus;
+  
+  // Verification tokens and data
+  verification_token: string;
+  verification_value?: string;
+  verification_file_path?: string;
+  verification_meta_tag?: string;
+  
+  // Verification results
+  verified_at?: string;
+  verification_error?: string;
+  verification_response?: Record<string, any>;
+  
+  // Retry logic
+  attempts: number;
+  max_attempts: number;
+  next_retry_at?: string;
+  
+  // Expiration
+  expires_at: string;
+  
+  // Audit fields
+  created_at: string;
+  updated_at: string;
+  created_by?: string;
+}
+
+// Domain health check interface
+export interface DomainHealthCheck {
+  id: string;
+  domain_id: string;
+  
+  // Health check configuration
+  check_type: HealthCheckType;
+  endpoint_path: string;
+  expected_status_code: number;
+  expected_response_time_ms: number;
+  
+  // Check results
+  status: HealthStatus;
+  response_time_ms?: number;
+  status_code?: number;
+  response_body?: string;
+  error_message?: string;
+  
+  // Performance metrics
+  dns_resolution_time_ms?: number;
+  ssl_handshake_time_ms?: number;
+  
+  // SSL-specific data
+  ssl_cert_expires_at?: string;
+  ssl_cert_issuer?: string;
+  ssl_cert_subject?: string;
+  
+  // Metadata
+  checked_at: string;
+  check_duration_ms?: number;
+  user_agent: string;
+  
+  // Audit fields
+  created_at: string;
+}
+
+// Domain alert interface
+export interface DomainAlert {
+  id: string;
+  domain_id: string;
+  
+  // Alert details
+  alert_type: string;
+  severity: AlertSeverity;
+  title: string;
+  message: string;
+  
+  // Alert data
+  alert_data: Record<string, any>;
+  
+  // Status
+  is_acknowledged: boolean;
+  acknowledged_at?: string;
+  acknowledged_by?: string;
+  
+  // Auto-resolution
+  is_resolved: boolean;
+  resolved_at?: string;
+  resolution_notes?: string;
+  
+  // Notification tracking
+  notifications_sent: Record<string, any>;
+  
+  // Audit fields
+  created_at: string;
+  updated_at: string;
+}
+
+// Domain health summary (from database function)
+export interface DomainHealthSummary {
+  domain_id: string;
+  last_check_at?: string;
+  status: HealthStatus;
+  response_time_ms?: number;
+  ssl_expires_at?: string;
+  ssl_status?: SSLStatus;
+  days_until_ssl_expiry?: number;
+}
+
+// API request/response types
+export interface CreateDomainRequest {
+  domain_name: string;
+  subdomain?: string;
+  is_primary?: boolean;
+  is_wildcard?: boolean;
+  target_cname?: string;
+  custom_ip_address?: string;
+  notes?: string;
+  configuration?: Record<string, any>;
+}
+
+export interface UpdateDomainRequest extends Partial<CreateDomainRequest> {
+  status?: DomainStatus;
+}
+
+export interface CreateDNSRecordRequest {
+  domain_id: string;
+  record_type: DNSRecordType;
+  name: string;
+  value: string;
+  ttl?: number;
+  priority?: number;
+  notes?: string;
+}
+
+export interface UpdateDNSRecordRequest extends Partial<Omit<CreateDNSRecordRequest, 'domain_id'>> {}
+
+export interface StartDomainVerificationRequest {
+  domain_id: string;
+  verification_method: VerificationMethod;
+}
+
+export interface VerifyDomainRequest {
+  verification_id: string;
+}
+
+export interface CreateHealthCheckRequest {
+  domain_id: string;
+  check_type: HealthCheckType;
+  endpoint_path?: string;
+  expected_status_code?: number;
+  expected_response_time_ms?: number;
+}
+
+export interface AcknowledgeAlertRequest {
+  alert_id: string;
+  notes?: string;
+}
+
+// API response types
+export interface DomainsListResponse {
+  domains: Domain[];
+  total_count: number;
+  page: number;
+  per_page: number;
+}
+
+export interface DomainWithRecords extends Domain {
+  dns_records: DNSRecord[];
+  ssl_certificates: SSLCertificate[];
+  verifications: DomainVerification[];
+  alerts: DomainAlert[];
+  health_summary: DomainHealthSummary;
+}
+
+export interface DNSRecordsListResponse {
+  dns_records: DNSRecord[];
+  domain: Domain;
+}
+
+export interface SSLCertificatesListResponse {
+  certificates: SSLCertificate[];
+  domain: Domain;
+}
+
+export interface DomainVerificationResponse {
+  verification: DomainVerification;
+  instructions: VerificationInstructions;
+}
+
+export interface VerificationInstructions {
+  method: VerificationMethod;
+  instructions: string;
+  dns_record?: {
+    type: string;
+    name: string;
+    value: string;
+  };
+  file_upload?: {
+    filename: string;
+    content: string;
+    path: string;
+  };
+  meta_tag?: {
+    name: string;
+    content: string;
+  };
+}
+
+export interface DomainHealthResponse {
+  health_checks: DomainHealthCheck[];
+  summary: DomainHealthSummary;
+  alerts: DomainAlert[];
+}
+
+// Form validation schemas (for use with react-hook-form and Zod)
+export interface DomainFormData {
+  domain_name: string;
+  subdomain: string;
+  is_primary: boolean;
+  is_wildcard: boolean;
+  target_cname: string;
+  custom_ip_address: string;
+  notes: string;
+}
+
+export interface DNSRecordFormData {
+  record_type: DNSRecordType;
+  name: string;
+  value: string;
+  ttl: number;
+  priority?: number;
+  notes: string;
+}
+
+// UI-specific types
+export interface DomainTableRow extends Domain {
+  health_status?: HealthStatus;
+  ssl_expires_at?: string;
+  days_until_ssl_expiry?: number;
+  unresolved_alerts_count: number;
+}
+
+export interface DomainStatusBadgeProps {
+  status: DomainStatus;
+  size?: 'sm' | 'md' | 'lg';
+}
+
+export interface SSLStatusBadgeProps {
+  status: SSLStatus;
+  expires_at?: string;
+  size?: 'sm' | 'md' | 'lg';
+}
+
+export interface HealthStatusBadgeProps {
+  status: HealthStatus;
+  response_time_ms?: number;
+  size?: 'sm' | 'md' | 'lg';
+}
+
+// Error types
+export interface DomainError {
+  code: string;
+  message: string;
+  field?: string;
+  details?: Record<string, any>;
+}
+
+export interface DomainValidationError extends DomainError {
+  field: string;
+}
+
+// Domain management utility types
+export interface DomainMetrics {
+  total_domains: number;
+  verified_domains: number;
+  active_domains: number;
+  pending_verifications: number;
+  expiring_certificates: number;
+  critical_alerts: number;
+  average_response_time: number;
+}
+
+export interface DomainFilters {
+  status?: DomainStatus[];
+  health_status?: HealthStatus[];
+  ssl_status?: SSLStatus[];
+  has_alerts?: boolean;
+  search?: string;
+  organization_id?: string;
+}
+
+export interface DomainSort {
+  field: keyof Domain | 'health_status' | 'ssl_expires_at';
+  direction: 'asc' | 'desc';
+}
+
+// Webhook types (for domain status updates)
+export interface DomainWebhookPayload {
+  event_type: 'domain.verified' | 'domain.failed' | 'ssl.renewed' | 'ssl.expiring' | 'health.degraded';
+  domain: Domain;
+  timestamp: string;
+  metadata?: Record<string, any>;
+}
+
+// Export all types as a single namespace for easier imports
+export namespace DomainsAPI {
+  export type Domain = Domain;
+  export type DNSRecord = DNSRecord;
+  export type SSLCertificate = SSLCertificate;
+  export type DomainVerification = DomainVerification;
+  export type DomainHealthCheck = DomainHealthCheck;
+  export type DomainAlert = DomainAlert;
+  export type DomainHealthSummary = DomainHealthSummary;
+  export type CreateDomainRequest = CreateDomainRequest;
+  export type UpdateDomainRequest = UpdateDomainRequest;
+  export type DomainsListResponse = DomainsListResponse;
+  export type DomainWithRecords = DomainWithRecords;
+}

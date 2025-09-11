@@ -1,0 +1,233 @@
+import { describe, it, expect, beforeEach, vi } from 'vitest'
+import request from 'supertest'
+import { createServer } from 'http'
+import { parse } from 'url'
+import next from 'next'
+import { testSupabase, testCleanup, testDataFactory, integrationHelpers } from '../../../tests/integration/setup'
+
+// WS-092: Client Management API Integration Tests
+// Critical for preventing wedding planning workflow failures
+const app = next({ dev: false })
+const handle = app.getRequestHandler()
+describe('Client Management API Integration', () => {
+  let server: any
+  let testClient: any
+  let authenticatedSession: any
+  beforeEach(async () => {
+    // Setup Next.js server for integration testing
+    await app.prepare()
+    server = createServer((req, res) => {
+      const parsedUrl = parse(req.url!, true)
+      handle(req, res, parsedUrl)
+    })
+    
+    // Create authenticated test context
+    const authContext = await integrationHelpers.createAuthenticatedContext('test-planner@wedsync.com')
+    authenticatedSession = authContext.session
+    // Create test client data
+    testClient = testDataFactory.createClient({
+      email: 'test-client@example.com',
+      wedding_date: '2025-06-15',
+      planner_id: authContext.user.id,
+  })
+  describe('POST /api/clients - Client Creation Workflow', () => {
+    it('should create a new client successfully', async () => {
+      const clientData = {
+        email: 'newclient@example.com',
+        first_name: 'John',
+        last_name: 'Smith',
+        partner_first_name: 'Jane',
+        partner_last_name: 'Doe',
+        wedding_date: '2025-08-20',
+        venue: 'Beautiful Garden Venue',
+        guest_count: 120,
+        budget: 45000,
+      }
+      const response = await request(server)
+        .post('/api/clients')
+        .set('Authorization', `Bearer ${authenticatedSession.access_token}`)
+        .send(clientData)
+        .expect('Content-Type', /json/)
+        .expect(201)
+      expect(response.body).toMatchObject({
+        success: true,
+        client: expect.objectContaining({
+          id: expect.any(String),
+          email: clientData.email,
+          first_name: clientData.first_name,
+          last_name: clientData.last_name,
+          wedding_date: clientData.wedding_date,
+          status: 'active',
+        })
+      })
+      // Verify database state
+      const dbClient = await integrationHelpers.verifyDatabaseState('clients', {
+        email: clientData.email
+      expect(dbClient).toHaveLength(1)
+      expect(dbClient[0]).toMatchObject({
+        email: clientData.email,
+        first_name: clientData.first_name,
+        status: 'active',
+    it('should reject duplicate client emails', async () => {
+      // Create initial client
+      await request(server)
+        .send(testClient)
+      // Attempt to create duplicate
+        .send({ ...testClient, id: undefined })
+        .expect(400)
+        success: false,
+        error: expect.stringContaining('already exists'),
+    it('should validate required fields', async () => {
+      const invalidData = {
+        email: 'invalid-email', // Invalid email format
+        first_name: '', // Required field empty
+        wedding_date: '2020-01-01', // Past date
+        .send(invalidData)
+        errors: expect.arrayContaining([
+          expect.objectContaining({
+            field: expect.stringMatching(/email|first_name|wedding_date/),
+            message: expect.any(String),
+          })
+        ])
+    it('should require authentication', async () => {
+        .expect(401)
+        error: expect.stringContaining('authentication'),
+  describe('GET /api/clients - Client Listing with Pagination', () => {
+    beforeEach(async () => {
+      // Create test clients for pagination testing
+      const clients = Array.from({ length: 25 }, (_, i) => 
+        testDataFactory.createClient({
+          email: `client-${i}@example.com`,
+          first_name: `Client${i}`,
+          wedding_date: `2025-0${(i % 12) + 1}-01`,
+      )
+      for (const client of clients) {
+        await testSupabase.from('clients').insert(client)
+    it('should return paginated client list', async () => {
+        .get('/api/clients')
+        .query({ page: 1, limit: 10 })
+        .expect(200)
+        clients: expect.arrayContaining([
+            id: expect.any(String),
+            email: expect.any(String),
+            first_name: expect.any(String),
+            wedding_date: expect.any(String),
+        ]),
+        pagination: {
+          page: 1,
+          limit: 10,
+          total: expect.any(Number),
+          pages: expect.any(Number),
+        }
+      expect(response.body.clients).toHaveLength(10)
+    it('should filter by wedding date range', async () => {
+        .query({
+          wedding_date_from: '2025-06-01',
+          wedding_date_to: '2025-08-31'
+      expect(response.body.success).toBe(true)
+      
+      // Verify all returned clients have wedding dates in range
+      response.body.clients.forEach((client: any) => {
+        const weddingDate = new Date(client.wedding_date)
+        expect(weddingDate.getTime()).toBeGreaterThanOrEqual(new Date('2025-06-01').getTime())
+        expect(weddingDate.getTime()).toBeLessThanOrEqual(new Date('2025-08-31').getTime())
+    it('should search clients by name', async () => {
+        .query({ search: 'Client1' })
+      // Verify search results contain the search term
+        expect(
+          client.first_name.toLowerCase().includes('client1') ||
+          client.last_name.toLowerCase().includes('client1') ||
+          client.email.toLowerCase().includes('client1')
+        ).toBe(true)
+  describe('PUT /api/clients/[id] - Client Update Workflows', () => {
+    let createdClient: any
+      const { data } = await testSupabase
+        .from('clients')
+        .insert(testClient)
+        .select()
+        .single()
+      createdClient = data
+    it('should update client information successfully', async () => {
+      const updateData = {
+        guest_count: 180,
+        venue: 'Updated Venue Name',
+        budget: 60000,
+        .put(`/api/clients/${createdClient.id}`)
+        .send(updateData)
+          id: createdClient.id,
+          guest_count: 180,
+          venue: 'Updated Venue Name',
+          budget: 60000,
+        id: createdClient.id
+      expect(dbClient[0]).toMatchObject(updateData)
+    it('should trigger workflow updates when wedding date changes', async () => {
+      const originalDate = createdClient.wedding_date
+      const newDate = '2025-12-15'
+        .send({ wedding_date: newDate })
+      // Wait for async workflow updates to complete
+      await integrationHelpers.waitFor(async () => {
+        const journeys = await integrationHelpers.verifyDatabaseState('journeys', {
+          client_id: createdClient.id
+        return journeys.some((journey: any) => 
+          journey.metadata?.wedding_date_updated === true
+        )
+      }, 10000)
+    it('should prevent unauthorized updates', async () => {
+      // Create different user session
+      const otherAuthContext = await integrationHelpers.createAuthenticatedContext('other-planner@wedsync.com')
+        .set('Authorization', `Bearer ${otherAuthContext.session.access_token}`)
+        .send({ guest_count: 999 })
+        .expect(403)
+        error: expect.stringContaining('access denied'),
+  describe('DELETE /api/clients/[id] - Client Deletion with Cleanup', () => {
+    let associatedJourney: any
+      // Create client with associated data
+      const { data: client } = await testSupabase
+      createdClient = client
+      // Create associated journey
+      associatedJourney = testDataFactory.createJourney(client.id)
+      await testSupabase.from('journeys').insert(associatedJourney)
+    it('should soft delete client and cascade to associated data', async () => {
+        .delete(`/api/clients/${createdClient.id}`)
+        message: expect.stringContaining('deleted'),
+      // Verify soft delete (status changed to 'deleted')
+      expect(dbClient[0].status).toBe('deleted')
+      expect(dbClient[0].deleted_at).toBeTruthy()
+      // Verify associated journey is also soft deleted
+      const dbJourney = await integrationHelpers.verifyDatabaseState('journeys', {
+        client_id: createdClient.id
+      expect(dbJourney[0].status).toBe('deleted')
+    it('should require confirmation for deletion', async () => {
+        .query({ confirm: 'false' })
+        error: expect.stringContaining('confirmation required'),
+  describe('POST /api/clients/import - Client Import Workflow', () => {
+    it('should import clients from CSV successfully', async () => {
+      const csvData = `email,first_name,last_name,wedding_date,venue,guest_count
+import1@example.com,John,Smith,2025-07-01,Garden Venue,100
+import2@example.com,Jane,Doe,2025-08-15,Beach Resort,150`
+        .post('/api/clients/import')
+        .attach('file', Buffer.from(csvData), 'clients.csv')
+        imported: 2,
+        errors: [],
+            email: 'import1@example.com',
+            first_name: 'John',
+          }),
+            email: 'import2@example.com',
+            first_name: 'Jane',
+      // Verify both clients were created in database
+      const dbClients = await integrationHelpers.verifyDatabaseState('clients', {
+        email: ['import1@example.com', 'import2@example.com']
+      expect(dbClients).toHaveLength(2)
+    it('should handle import validation errors', async () => {
+      const invalidCsvData = `email,first_name,last_name,wedding_date
+invalid-email,John,,2020-01-01
+valid@example.com,Jane,Doe,2025-08-15`
+        .attach('file', Buffer.from(invalidCsvData), 'clients.csv')
+        imported: 1, // Only valid row imported
+            row: 1,
+            errors: expect.arrayContaining([
+              expect.stringContaining('email'),
+              expect.stringContaining('last_name'),
+              expect.stringContaining('wedding_date'),
+            ])
+})

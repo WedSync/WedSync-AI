@@ -1,0 +1,422 @@
+/**
+ * Viral Attribution API - POST /api/viral/attribution
+ * Track referral chains and attribution events
+ * SECURITY: Authenticated, validated inputs, prevents attribution fraud
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
+import { getServerSession } from 'next-auth';
+import { authOptions } from '@/lib/auth';
+import { rateLimit } from '@/lib/ratelimit';
+import { uuidSchema } from '@/lib/validation/schemas';
+
+// Attribution tracking validation schema
+const attributionSchema = z.object({
+  referrer_id: uuidSchema.optional(),
+  referrer_tracking_code: z
+    .string()
+    .regex(/^[a-f0-9]{16}$/, 'Invalid tracking code format')
+    .optional(),
+  conversion_type: z.enum([
+    'signup',
+    'activation',
+    'first_invite',
+    'premium_upgrade',
+    'vendor_signup',
+  ]),
+  metadata: z
+    .object({
+      invitation_id: uuidSchema.optional(),
+      signup_method: z.enum(['email', 'google', 'manual']).optional(),
+      user_type: z.enum(['couple', 'vendor', 'admin']).optional(),
+      conversion_value: z.number().min(0).max(100000).optional(),
+      source_channel: z.enum(['email', 'sms', 'whatsapp', 'direct']).optional(),
+      wedding_context: z
+        .object({
+          wedding_date: z.string().datetime().optional(),
+          guest_count: z.number().int().min(1).max(1000).optional(),
+          budget_range: z.enum(['budget', 'mid', 'luxury']).optional(),
+        })
+        .optional(),
+    })
+    .optional(),
+});
+
+// Response type for attribution tracking
+interface AttributionResponse {
+  success: true;
+  data: {
+    attribution_id: string;
+    chain_position: number;
+    referrer_info?: {
+      id: string;
+      name: string;
+      user_type: string;
+      total_referrals: number;
+    };
+    attribution_chain: Array<{
+      user_id: string;
+      level: number;
+      conversion_type: string;
+      attributed_at: string;
+    }>;
+    rewards?: {
+      referrer_reward: number;
+      chain_bonus: number;
+      total_value: number;
+    };
+  };
+  computed_at: string;
+}
+
+export async function POST(request: NextRequest) {
+  const startTime = Date.now();
+
+  try {
+    // Authentication check
+    const session = await getServerSession(authOptions);
+    if (!session?.user) {
+      return NextResponse.json(
+        { error: 'UNAUTHORIZED', message: 'Authentication required' },
+        { status: 401 },
+      );
+    }
+
+    // Rate limiting for attribution tracking
+    const rateLimitResult = await rateLimit.check(
+      `attribution:${session.user.id}`,
+      20, // 20 attribution events
+      60, // per minute
+    );
+
+    if (!rateLimitResult.allowed) {
+      return NextResponse.json(
+        {
+          error: 'RATE_LIMITED',
+          message:
+            'Too many attribution events. Please wait before tracking more.',
+          retry_after: rateLimitResult.retryAfter,
+        },
+        { status: 429 },
+      );
+    }
+
+    // Parse and validate request body
+    let body: unknown;
+    try {
+      const text = await request.text();
+      body = text ? JSON.parse(text) : {};
+    } catch (error) {
+      return NextResponse.json(
+        {
+          error: 'INVALID_JSON',
+          message: 'Request body must be valid JSON',
+        },
+        { status: 400 },
+      );
+    }
+
+    const validationResult = attributionSchema.safeParse(body);
+    if (!validationResult.success) {
+      return NextResponse.json(
+        {
+          error: 'VALIDATION_ERROR',
+          message: 'Invalid attribution data',
+          errors: validationResult.error.errors.map(
+            (err) => `${err.path.join('.')}: ${err.message}`,
+          ),
+        },
+        { status: 400 },
+      );
+    }
+
+    const validatedData = validationResult.data;
+
+    // Resolve referrer ID from tracking code if provided
+    let referrerId = validatedData.referrer_id;
+    let invitationId = validatedData.metadata?.invitation_id;
+
+    if (validatedData.referrer_tracking_code && !referrerId) {
+      const referrerQuery = `
+        SELECT sender_id, id as invitation_id
+        FROM viral_invitations 
+        WHERE tracking_code = $1 
+          AND expires_at > NOW()
+          AND recipient_email = $2
+        ORDER BY created_at DESC 
+        LIMIT 1
+      `;
+
+      const referrerResult = await fetch('/api/internal/database', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: referrerQuery,
+          params: [validatedData.referrer_tracking_code, session.user.email],
+        }),
+      }).then((res) => res.json());
+
+      if (referrerResult.rows?.length > 0) {
+        referrerId = referrerResult.rows[0].sender_id;
+        invitationId = referrerResult.rows[0].invitation_id;
+      }
+    }
+
+    // Prevent self-attribution
+    if (referrerId === session.user.id) {
+      return NextResponse.json(
+        {
+          error: 'SELF_ATTRIBUTION',
+          message: 'Cannot attribute conversion to yourself',
+        },
+        { status: 400 },
+      );
+    }
+
+    // Check for duplicate attribution within time window
+    const duplicateCheck = `
+      SELECT id 
+      FROM viral_attributions 
+      WHERE user_id = $1 
+        AND conversion_type = $2 
+        AND created_at >= NOW() - INTERVAL '24 hours'
+    `;
+
+    const duplicateResult = await fetch('/api/internal/database', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        query: duplicateCheck,
+        params: [session.user.id, validatedData.conversion_type],
+      }),
+    }).then((res) => res.json());
+
+    if (duplicateResult.rows?.length > 0) {
+      return NextResponse.json(
+        {
+          error: 'DUPLICATE_ATTRIBUTION',
+          message: `Attribution for ${validatedData.conversion_type} already recorded within 24 hours`,
+        },
+        { status: 409 },
+      );
+    }
+
+    // Generate attribution ID
+    const attributionId = crypto.randomUUID();
+
+    // Build attribution chain if referrer exists
+    let chainPosition = 1;
+    let attributionChain: Array<{
+      user_id: string;
+      level: number;
+      conversion_type: string;
+      attributed_at: string;
+    }> = [];
+
+    let referrerInfo = null;
+    if (referrerId) {
+      // Get referrer's chain to determine position
+      const chainQuery = `
+        WITH RECURSIVE attribution_chain AS (
+          -- Base case: start with the referrer
+          SELECT 
+            user_id,
+            referrer_id,
+            1 as level,
+            conversion_type,
+            created_at as attributed_at
+          FROM viral_attributions 
+          WHERE user_id = $1
+          
+          UNION ALL
+          
+          -- Recursive case: follow the chain up
+          SELECT 
+            va.user_id,
+            va.referrer_id,
+            ac.level + 1,
+            va.conversion_type,
+            va.created_at
+          FROM viral_attributions va
+          JOIN attribution_chain ac ON va.user_id = ac.referrer_id
+          WHERE ac.level < 10  -- Prevent infinite loops
+        )
+        SELECT 
+          user_id,
+          level,
+          conversion_type,
+          attributed_at::text
+        FROM attribution_chain
+        ORDER BY level;
+      `;
+
+      const chainResult = await fetch('/api/internal/database', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: chainQuery,
+          params: [referrerId],
+        }),
+      }).then((res) => res.json());
+
+      if (chainResult.rows) {
+        attributionChain = chainResult.rows;
+        chainPosition = attributionChain.length + 1;
+      }
+
+      // Get referrer info
+      const referrerInfoQuery = `
+        SELECT 
+          u.id,
+          u.name,
+          u.user_type,
+          COUNT(va.id) as total_referrals
+        FROM users u
+        LEFT JOIN viral_attributions va ON u.id = va.referrer_id
+        WHERE u.id = $1
+        GROUP BY u.id, u.name, u.user_type
+      `;
+
+      const referrerInfoResult = await fetch('/api/internal/database', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: referrerInfoQuery,
+          params: [referrerId],
+        }),
+      }).then((res) => res.json());
+
+      if (referrerInfoResult.rows?.length > 0) {
+        const row = referrerInfoResult.rows[0];
+        referrerInfo = {
+          id: row.id,
+          name: row.name,
+          user_type: row.user_type,
+          total_referrals: parseInt(row.total_referrals),
+        };
+      }
+    }
+
+    // Calculate conversion value and rewards
+    const conversionValues = {
+      signup: 10,
+      activation: 25,
+      first_invite: 15,
+      premium_upgrade: 50,
+      vendor_signup: 75,
+    };
+
+    const conversionValue =
+      validatedData.metadata?.conversion_value ||
+      conversionValues[validatedData.conversion_type];
+
+    let rewards = null;
+    if (referrerId && conversionValue > 0) {
+      const referrerReward = Math.round(conversionValue * 0.3); // 30% to referrer
+      const chainBonus =
+        chainPosition > 2 ? Math.round(conversionValue * 0.1) : 0;
+      rewards = {
+        referrer_reward: referrerReward,
+        chain_bonus: chainBonus,
+        total_value: referrerReward + chainBonus,
+      };
+    }
+
+    // Insert attribution record
+    const insertQuery = `
+      INSERT INTO viral_attributions (
+        id,
+        user_id,
+        referrer_id,
+        invitation_id,
+        conversion_type,
+        conversion_value,
+        chain_position,
+        metadata,
+        created_at
+      ) VALUES (
+        $1, $2, $3, $4, $5, $6, $7, $8, NOW()
+      ) RETURNING id, created_at
+    `;
+
+    const insertResult = await fetch('/api/internal/database', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        query: insertQuery,
+        params: [
+          attributionId,
+          session.user.id,
+          referrerId,
+          invitationId,
+          validatedData.conversion_type,
+          conversionValue,
+          chainPosition,
+          JSON.stringify(validatedData.metadata || {}),
+        ],
+      }),
+    }).then((res) => res.json());
+
+    if (!insertResult.rows || insertResult.rows.length === 0) {
+      throw new Error('Failed to create attribution record');
+    }
+
+    // Update invitation status if linked
+    if (invitationId) {
+      await fetch('/api/internal/database', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: `
+            UPDATE viral_invitations 
+            SET status = 'accepted', accepted_at = NOW() 
+            WHERE id = $1
+          `,
+          params: [invitationId],
+        }),
+      });
+    }
+
+    const processingTime = Date.now() - startTime;
+
+    const response: AttributionResponse = {
+      success: true,
+      data: {
+        attribution_id: attributionId,
+        chain_position: chainPosition,
+        ...(referrerInfo && { referrer_info: referrerInfo }),
+        attribution_chain: [
+          ...attributionChain,
+          {
+            user_id: session.user.id,
+            level: chainPosition,
+            conversion_type: validatedData.conversion_type,
+            attributed_at: insertResult.rows[0].created_at,
+          },
+        ],
+        ...(rewards && { rewards }),
+      },
+      computed_at: new Date().toISOString(),
+    };
+
+    return NextResponse.json(response, {
+      status: 201,
+      headers: {
+        'X-Processing-Time': `${processingTime}ms`,
+        Location: `/api/viral/attribution/${session.user.id}`,
+      },
+    });
+  } catch (error) {
+    console.error('Viral attribution API error:', error);
+
+    return NextResponse.json(
+      {
+        error: 'INTERNAL_SERVER_ERROR',
+        message: 'Failed to track attribution',
+        timestamp: new Date().toISOString(),
+      },
+      { status: 500 },
+    );
+  }
+}

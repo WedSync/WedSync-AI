@@ -1,0 +1,907 @@
+import { NextRequest } from 'next/server';
+import { createHash, createHmac, timingSafeEqual } from 'crypto';
+import { Redis } from 'ioredis';
+
+interface WebhookConfig {
+  providerId: string;
+  secret: string;
+  signatureHeader: string;
+  signatureFormat: 'sha256' | 'sha1' | 'hmac-sha256' | 'stripe';
+  eventTypes: string[];
+  retryPolicy: {
+    maxAttempts: number;
+    backoffMs: number;
+    deadLetterQueue: string;
+  };
+}
+
+interface WebhookEvent {
+  id: string;
+  providerId: string;
+  eventType: string;
+  payload: any;
+  signature: string;
+  timestamp: Date;
+  processed: boolean;
+  attempts: number;
+  lastError?: string;
+  weddingId?: string;
+  supplierId?: string;
+  priority: 'high' | 'normal' | 'low';
+}
+
+interface EventProcessorContext {
+  eventId: string;
+  providerId: string;
+  eventType: string;
+  attempt: number;
+  weddingId?: string;
+  supplierId?: string;
+}
+
+type EventProcessor = (payload: any, context: EventProcessorContext) => Promise<void>;
+
+export class WebhookProcessor {
+  private redis: Redis;
+  private webhookConfigs: Map<string, WebhookConfig>;
+  private eventProcessors: Map<string, EventProcessor>;
+  private processingQueue: string = 'webhook_processing_queue';
+
+  constructor() {
+    this.redis = new Redis(process.env.REDIS_URL!);
+    this.webhookConfigs = new Map();
+    this.eventProcessors = new Map();
+    this.initializeWebhookConfigs();
+    this.registerEventProcessors();
+    this.startQueueProcessor();
+  }
+
+  private initializeWebhookConfigs(): void {
+    const configs: WebhookConfig[] = [
+      {
+        providerId: 'stripe',
+        secret: process.env.STRIPE_WEBHOOK_SECRET!,
+        signatureHeader: 'stripe-signature',
+        signatureFormat: 'stripe',
+        eventTypes: [
+          'payment_intent.succeeded',
+          'payment_intent.failed', 
+          'invoice.payment_succeeded',
+          'invoice.payment_failed',
+          'checkout.session.completed',
+          'customer.subscription.updated',
+          'customer.subscription.deleted'
+        ],
+        retryPolicy: { 
+          maxAttempts: 3, 
+          backoffMs: 2000, 
+          deadLetterQueue: 'webhook_dlq_stripe' 
+        }
+      },
+      {
+        providerId: 'supplier_platform',
+        secret: process.env.SUPPLIER_WEBHOOK_SECRET || 'default-supplier-secret',
+        signatureHeader: 'x-supplier-signature',
+        signatureFormat: 'sha256',
+        eventTypes: [
+          'booking.confirmed', 
+          'booking.cancelled', 
+          'booking.updated',
+          'availability.updated', 
+          'pricing.changed',
+          'service.created',
+          'service.updated'
+        ],
+        retryPolicy: { 
+          maxAttempts: 5, 
+          backoffMs: 1000, 
+          deadLetterQueue: 'webhook_dlq_supplier' 
+        }
+      },
+      {
+        providerId: 'email_provider',
+        secret: process.env.EMAIL_WEBHOOK_SECRET || process.env.RESEND_WEBHOOK_SECRET || 'default-email-secret',
+        signatureHeader: 'resend-signature',
+        signatureFormat: 'hmac-sha256',
+        eventTypes: [
+          'email.delivered', 
+          'email.bounced', 
+          'email.opened',
+          'email.clicked',
+          'email.complained',
+          'email.delivery_delayed'
+        ],
+        retryPolicy: { 
+          maxAttempts: 2, 
+          backoffMs: 3000, 
+          deadLetterQueue: 'webhook_dlq_email' 
+        }
+      },
+      {
+        providerId: 'sms_provider',
+        secret: process.env.TWILIO_WEBHOOK_SECRET || 'default-sms-secret',
+        signatureHeader: 'x-twilio-signature',
+        signatureFormat: 'sha1',
+        eventTypes: [
+          'message.delivered',
+          'message.failed',
+          'message.undelivered',
+          'message.read'
+        ],
+        retryPolicy: {
+          maxAttempts: 3,
+          backoffMs: 2000,
+          deadLetterQueue: 'webhook_dlq_sms'
+        }
+      }
+    ];
+
+    configs.forEach(config => {
+      this.webhookConfigs.set(config.providerId, config);
+    });
+
+    console.info(`[WebhookProcessor] Initialized ${configs.length} webhook configurations`);
+  }
+
+  async processWebhook(request: NextRequest, providerId: string): Promise<Response> {
+    const requestId = crypto.randomUUID();
+    const startTime = Date.now();
+
+    try {
+      // Get webhook configuration
+      const config = this.webhookConfigs.get(providerId);
+      if (!config) {
+        console.warn(`[WebhookProcessor] Provider not configured: ${providerId}`, { requestId });
+        return new Response('Provider not configured', { status: 400 });
+      }
+
+      // Extract payload and signature
+      const body = await request.text();
+      const signature = request.headers.get(config.signatureHeader);
+      
+      if (!signature) {
+        console.warn(`[WebhookProcessor] Missing signature header: ${config.signatureHeader}`, { 
+          requestId, 
+          providerId 
+        });
+        return new Response('Missing signature header', { status: 400 });
+      }
+
+      // Verify webhook signature
+      const isValidSignature = await this.verifySignature(config, body, signature);
+      if (!isValidSignature) {
+        console.warn(`[WebhookProcessor] Invalid webhook signature from ${providerId}`, { 
+          requestId,
+          signatureHeader: config.signatureHeader
+        });
+        return new Response('Invalid signature', { status: 401 });
+      }
+
+      // Parse and validate payload
+      let payload;
+      try {
+        payload = JSON.parse(body);
+      } catch (error) {
+        console.error(`[WebhookProcessor] Invalid JSON payload from ${providerId}:`, { 
+          requestId, 
+          error: error instanceof Error ? error.message : 'Unknown error' 
+        });
+        return new Response('Invalid JSON payload', { status: 400 });
+      }
+
+      // Determine event type based on provider
+      const eventType = this.extractEventType(providerId, payload);
+      
+      // Create webhook event
+      const webhookEvent: WebhookEvent = {
+        id: requestId,
+        providerId,
+        eventType,
+        payload,
+        signature,
+        timestamp: new Date(),
+        processed: false,
+        attempts: 0,
+        weddingId: this.extractWeddingId(payload),
+        supplierId: this.extractSupplierId(payload),
+        priority: this.determinePriority(providerId, eventType)
+      };
+
+      // Validate event type
+      if (!config.eventTypes.includes(eventType)) {
+        console.info(`[WebhookProcessor] Ignoring webhook event type: ${eventType}`, { 
+          requestId, 
+          providerId,
+          supportedTypes: config.eventTypes
+        });
+        return new Response('Event type not supported', { status: 200 });
+      }
+
+      // Store event for processing
+      await this.storeWebhookEvent(webhookEvent);
+
+      // Queue event for processing
+      await this.queueEventForProcessing(webhookEvent);
+
+      // Log successful receipt
+      console.info(`[WebhookProcessor] Webhook received from ${providerId}`, {
+        requestId,
+        eventType,
+        priority: webhookEvent.priority,
+        weddingId: webhookEvent.weddingId,
+        duration: Date.now() - startTime
+      });
+
+      return new Response('Webhook received', { status: 200 });
+
+    } catch (error) {
+      console.error(`[WebhookProcessor] Webhook processing error for ${providerId}:`, {
+        requestId,
+        error: error instanceof Error ? error.message : 'Unknown error',
+        duration: Date.now() - startTime
+      });
+
+      return new Response('Internal server error', { status: 500 });
+    }
+  }
+
+  private async verifySignature(config: WebhookConfig, payload: string, signature: string): Promise<boolean> {
+    try {
+      switch (config.signatureFormat) {
+        case 'stripe':
+          return this.verifyStripeSignature(payload, signature, config.secret);
+        
+        case 'hmac-sha256':
+          const expectedHmac = createHmac('sha256', config.secret).update(payload, 'utf8').digest('hex');
+          const receivedHmac = signature.replace(/^(sha256=|hmac-sha256=)/, '');
+          return timingSafeEqual(Buffer.from(expectedHmac), Buffer.from(receivedHmac));
+        
+        case 'sha256':
+          const expectedSha256 = createHash('sha256').update(payload + config.secret).digest('hex');
+          const receivedSha256 = signature.replace(/^sha256=/, '');
+          return timingSafeEqual(Buffer.from(expectedSha256), Buffer.from(receivedSha256));
+        
+        case 'sha1':
+          const expectedSha1 = createHash('sha1').update(payload + config.secret).digest('hex');
+          const receivedSha1 = signature.replace(/^sha1=/, '');
+          return timingSafeEqual(Buffer.from(expectedSha1), Buffer.from(receivedSha1));
+        
+        default:
+          console.error(`[WebhookProcessor] Unsupported signature format: ${config.signatureFormat}`);
+          return false;
+      }
+    } catch (error) {
+      console.error(`[WebhookProcessor] Signature verification error:`, {
+        providerId: config.providerId,
+        signatureFormat: config.signatureFormat,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+      return false;
+    }
+  }
+
+  private verifyStripeSignature(payload: string, signature: string, secret: string): boolean {
+    const elements = signature.split(',');
+    let timestamp: string | null = null;
+    let v1: string | null = null;
+
+    for (const element of elements) {
+      const [key, value] = element.split('=');
+      if (key === 't') timestamp = value;
+      if (key === 'v1') v1 = value;
+    }
+
+    if (!timestamp || !v1) return false;
+
+    // Check timestamp tolerance (5 minutes)
+    const timestampNum = parseInt(timestamp, 10);
+    const now = Math.floor(Date.now() / 1000);
+    if (Math.abs(now - timestampNum) > 300) {
+      console.warn(`[WebhookProcessor] Stripe webhook timestamp outside tolerance`);
+      return false;
+    }
+
+    const expectedSignature = createHmac('sha256', secret)
+      .update(timestamp + '.' + payload, 'utf8')
+      .digest('hex');
+
+    return timingSafeEqual(Buffer.from(expectedSignature), Buffer.from(v1));
+  }
+
+  private extractEventType(providerId: string, payload: any): string {
+    switch (providerId) {
+      case 'stripe':
+        return payload.type || 'unknown';
+      case 'supplier_platform':
+        return payload.event_type || payload.type || 'unknown';
+      case 'email_provider':
+        return payload.type || 'unknown';
+      case 'sms_provider':
+        return payload.MessageStatus ? `message.${payload.MessageStatus.toLowerCase()}` : 'unknown';
+      default:
+        return payload.type || payload.event_type || 'unknown';
+    }
+  }
+
+  private extractWeddingId(payload: any): string | undefined {
+    // Extract wedding ID from various payload structures
+    return payload.metadata?.wedding_id || 
+           payload.data?.object?.metadata?.wedding_id ||
+           payload.wedding_id ||
+           payload.data?.wedding_id;
+  }
+
+  private extractSupplierId(payload: any): string | undefined {
+    // Extract supplier ID from various payload structures
+    return payload.metadata?.supplier_id ||
+           payload.data?.object?.metadata?.supplier_id ||
+           payload.supplier_id ||
+           payload.data?.supplier_id;
+  }
+
+  private determinePriority(providerId: string, eventType: string): 'high' | 'normal' | 'low' {
+    // Wedding-critical events get high priority
+    const highPriorityEvents = [
+      'payment_intent.succeeded',
+      'payment_intent.failed',
+      'booking.confirmed',
+      'booking.cancelled'
+    ];
+
+    const lowPriorityEvents = [
+      'email.opened',
+      'email.clicked',
+      'message.read'
+    ];
+
+    if (highPriorityEvents.includes(eventType)) return 'high';
+    if (lowPriorityEvents.includes(eventType)) return 'low';
+    return 'normal';
+  }
+
+  private async storeWebhookEvent(event: WebhookEvent): Promise<void> {
+    const key = `webhook_event:${event.id}`;
+    await this.redis.hset(key, {
+      id: event.id,
+      providerId: event.providerId,
+      eventType: event.eventType,
+      payload: JSON.stringify(event.payload),
+      signature: event.signature,
+      timestamp: event.timestamp.toISOString(),
+      processed: event.processed ? 'true' : 'false',
+      attempts: event.attempts,
+      weddingId: event.weddingId || '',
+      supplierId: event.supplierId || '',
+      priority: event.priority
+    });
+
+    // Set expiration (30 days)
+    await this.redis.expire(key, 30 * 24 * 60 * 60);
+  }
+
+  private async queueEventForProcessing(event: WebhookEvent): Promise<void> {
+    const queueKey = `${this.processingQueue}:${event.priority}`;
+    await this.redis.lpush(queueKey, JSON.stringify({
+      eventId: event.id,
+      providerId: event.providerId,
+      eventType: event.eventType,
+      priority: event.priority,
+      timestamp: event.timestamp.toISOString()
+    }));
+  }
+
+  private startQueueProcessor(): void {
+    // Process high priority queue every 100ms
+    setInterval(() => this.processQueue('high'), 100);
+    
+    // Process normal priority queue every 500ms  
+    setInterval(() => this.processQueue('normal'), 500);
+    
+    // Process low priority queue every 2000ms
+    setInterval(() => this.processQueue('low'), 2000);
+
+    console.info(`[WebhookProcessor] Queue processors started`);
+  }
+
+  private async processQueue(priority: 'high' | 'normal' | 'low'): Promise<void> {
+    const queueKey = `${this.processingQueue}:${priority}`;
+    
+    try {
+      const eventData = await this.redis.brpop(queueKey, 1);
+      if (!eventData) return;
+
+      const queueItem = JSON.parse(eventData[1]);
+      const event = await this.getWebhookEvent(queueItem.eventId);
+      
+      if (event && !event.processed) {
+        await this.processWebhookEvent(event);
+      }
+    } catch (error) {
+      console.error(`[WebhookProcessor] Queue processing error for ${priority}:`, {
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
+  private async getWebhookEvent(eventId: string): Promise<WebhookEvent | null> {
+    const key = `webhook_event:${eventId}`;
+    const eventData = await this.redis.hgetall(key);
+    
+    if (!eventData.id) return null;
+
+    return {
+      id: eventData.id,
+      providerId: eventData.providerId,
+      eventType: eventData.eventType,
+      payload: JSON.parse(eventData.payload),
+      signature: eventData.signature,
+      timestamp: new Date(eventData.timestamp),
+      processed: eventData.processed === 'true',
+      attempts: parseInt(eventData.attempts),
+      lastError: eventData.lastError,
+      weddingId: eventData.weddingId || undefined,
+      supplierId: eventData.supplierId || undefined,
+      priority: eventData.priority as 'high' | 'normal' | 'low'
+    };
+  }
+
+  private async processWebhookEvent(event: WebhookEvent): Promise<void> {
+    const processorKey = `${event.providerId}.${event.eventType}`;
+    const processor = this.eventProcessors.get(processorKey);
+    
+    if (!processor) {
+      console.warn(`[WebhookProcessor] No processor found for ${processorKey}`, { 
+        eventId: event.id 
+      });
+      return;
+    }
+
+    const config = this.webhookConfigs.get(event.providerId)!;
+    let attempt = 0;
+
+    while (attempt < config.retryPolicy.maxAttempts) {
+      try {
+        attempt++;
+        event.attempts = attempt;
+
+        // Process the event
+        await processor(event.payload, {
+          eventId: event.id,
+          providerId: event.providerId,
+          eventType: event.eventType,
+          attempt,
+          weddingId: event.weddingId,
+          supplierId: event.supplierId
+        });
+
+        // Mark as processed
+        event.processed = true;
+        await this.updateWebhookEvent(event);
+
+        console.info(`[WebhookProcessor] Webhook event processed successfully`, {
+          eventId: event.id,
+          providerId: event.providerId,
+          eventType: event.eventType,
+          attempt,
+          weddingId: event.weddingId
+        });
+
+        return;
+
+      } catch (error) {
+        event.lastError = error instanceof Error ? error.message : 'Unknown error';
+        await this.updateWebhookEvent(event);
+
+        console.error(`[WebhookProcessor] Webhook event processing failed`, {
+          eventId: event.id,
+          providerId: event.providerId,
+          eventType: event.eventType,
+          attempt,
+          error: event.lastError,
+          weddingId: event.weddingId
+        });
+
+        if (attempt < config.retryPolicy.maxAttempts) {
+          // Wait before retry with exponential backoff
+          const delay = config.retryPolicy.backoffMs * Math.pow(2, attempt - 1);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        } else {
+          // Send to dead letter queue
+          await this.sendToDeadLetterQueue(event, config.retryPolicy.deadLetterQueue);
+        }
+      }
+    }
+  }
+
+  private async updateWebhookEvent(event: WebhookEvent): Promise<void> {
+    const key = `webhook_event:${event.id}`;
+    await this.redis.hset(key, {
+      processed: event.processed ? 'true' : 'false',
+      attempts: event.attempts,
+      lastError: event.lastError || ''
+    });
+  }
+
+  private async sendToDeadLetterQueue(event: WebhookEvent, queueName: string): Promise<void> {
+    await this.redis.lpush(queueName, JSON.stringify({
+      eventId: event.id,
+      providerId: event.providerId,
+      eventType: event.eventType,
+      payload: event.payload,
+      attempts: event.attempts,
+      lastError: event.lastError,
+      timestamp: event.timestamp.toISOString(),
+      failedAt: new Date().toISOString()
+    }));
+
+    console.error(`[WebhookProcessor] Event sent to dead letter queue`, {
+      eventId: event.id,
+      providerId: event.providerId,
+      eventType: event.eventType,
+      queue: queueName,
+      attempts: event.attempts
+    });
+  }
+
+  private registerEventProcessors(): void {
+    // Stripe payment processors
+    this.eventProcessors.set('stripe.payment_intent.succeeded', async (payload, context) => {
+      await this.processPaymentSuccess(payload, context);
+    });
+
+    this.eventProcessors.set('stripe.payment_intent.failed', async (payload, context) => {
+      await this.processPaymentFailure(payload, context);
+    });
+
+    this.eventProcessors.set('stripe.checkout.session.completed', async (payload, context) => {
+      await this.processCheckoutCompleted(payload, context);
+    });
+
+    // Supplier platform processors
+    this.eventProcessors.set('supplier_platform.booking.confirmed', async (payload, context) => {
+      await this.processBookingConfirmation(payload, context);
+    });
+
+    this.eventProcessors.set('supplier_platform.booking.cancelled', async (payload, context) => {
+      await this.processBookingCancellation(payload, context);
+    });
+
+    this.eventProcessors.set('supplier_platform.availability.updated', async (payload, context) => {
+      await this.processAvailabilityUpdate(payload, context);
+    });
+
+    // Email provider processors
+    this.eventProcessors.set('email_provider.email.delivered', async (payload, context) => {
+      await this.processEmailDelivered(payload, context);
+    });
+
+    this.eventProcessors.set('email_provider.email.bounced', async (payload, context) => {
+      await this.processEmailBounced(payload, context);
+    });
+
+    // SMS provider processors
+    this.eventProcessors.set('sms_provider.message.delivered', async (payload, context) => {
+      await this.processSMSDelivered(payload, context);
+    });
+
+    console.info(`[WebhookProcessor] Registered ${this.eventProcessors.size} event processors`);
+  }
+
+  // Wedding-specific event processors
+  private async processPaymentSuccess(payload: any, context: EventProcessorContext): Promise<void> {
+    const weddingId = payload.metadata?.wedding_id;
+    const supplierId = payload.metadata?.supplier_id;
+    const paymentAmount = payload.amount;
+    const paymentType = payload.metadata?.payment_type || 'payment';
+
+    console.info(`[WebhookProcessor] Processing payment success`, {
+      eventId: context.eventId,
+      weddingId,
+      supplierId,
+      amount: paymentAmount,
+      paymentType
+    });
+
+    try {
+      // Update wedding budget and payment status
+      await this.updateWeddingPaymentStatus(weddingId, supplierId, 'completed', paymentAmount);
+      
+      // Send confirmation to couple and supplier
+      await this.sendPaymentConfirmation(weddingId, supplierId, paymentAmount);
+      
+      // Update supplier availability if final payment
+      if (paymentType === 'final') {
+        await this.updateSupplierBookingStatus(supplierId, weddingId, 'confirmed');
+      }
+
+      console.info(`[WebhookProcessor] Payment success processed`, {
+        eventId: context.eventId,
+        weddingId,
+        supplierId
+      });
+    } catch (error) {
+      console.error(`[WebhookProcessor] Failed to process payment success:`, {
+        eventId: context.eventId,
+        weddingId,
+        supplierId,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+      throw error;
+    }
+  }
+
+  private async processPaymentFailure(payload: any, context: EventProcessorContext): Promise<void> {
+    const weddingId = payload.metadata?.wedding_id;
+    const supplierId = payload.metadata?.supplier_id;
+    const failureReason = payload.last_payment_error?.message || 'Payment failed';
+
+    console.info(`[WebhookProcessor] Processing payment failure`, {
+      eventId: context.eventId,
+      weddingId,
+      supplierId,
+      reason: failureReason
+    });
+
+    try {
+      // Update payment status to failed
+      await this.updateWeddingPaymentStatus(weddingId, supplierId, 'failed', 0);
+      
+      // Send failure notification
+      await this.sendPaymentFailureNotification(weddingId, supplierId, failureReason);
+      
+      // Mark booking as pending payment
+      await this.updateSupplierBookingStatus(supplierId, weddingId, 'pending_payment');
+
+    } catch (error) {
+      console.error(`[WebhookProcessor] Failed to process payment failure:`, {
+        eventId: context.eventId,
+        weddingId,
+        supplierId,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+      throw error;
+    }
+  }
+
+  private async processCheckoutCompleted(payload: any, context: EventProcessorContext): Promise<void> {
+    // Handle successful checkout session completion
+    const customerId = payload.data.object.customer;
+    const subscriptionId = payload.data.object.subscription;
+    
+    console.info(`[WebhookProcessor] Processing checkout completion`, {
+      eventId: context.eventId,
+      customerId,
+      subscriptionId
+    });
+
+    // Update subscription status and send welcome email
+    // Implementation depends on your subscription management system
+  }
+
+  private async processBookingConfirmation(payload: any, context: EventProcessorContext): Promise<void> {
+    const { booking_id, wedding_id, supplier_id, booking_date } = payload;
+
+    console.info(`[WebhookProcessor] Processing booking confirmation`, {
+      eventId: context.eventId,
+      bookingId: booking_id,
+      weddingId: wedding_id,
+      supplierId: supplier_id
+    });
+
+    try {
+      // Update booking status
+      await this.updateBookingStatus(booking_id, 'confirmed');
+      
+      // Send confirmation to couple
+      await this.sendBookingConfirmationToCouple(wedding_id, supplier_id, booking_date);
+      
+      // Update wedding timeline if needed
+      await this.updateWeddingTimeline(wedding_id, supplier_id, booking_date);
+
+    } catch (error) {
+      console.error(`[WebhookProcessor] Failed to process booking confirmation:`, {
+        eventId: context.eventId,
+        bookingId: booking_id,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+      throw error;
+    }
+  }
+
+  private async processBookingCancellation(payload: any, context: EventProcessorContext): Promise<void> {
+    const { booking_id, wedding_id, supplier_id, cancellation_reason } = payload;
+
+    console.info(`[WebhookProcessor] Processing booking cancellation`, {
+      eventId: context.eventId,
+      bookingId: booking_id,
+      weddingId: wedding_id,
+      reason: cancellation_reason
+    });
+
+    // Handle booking cancellation logic
+    // This would involve refund processing, timeline updates, etc.
+  }
+
+  private async processAvailabilityUpdate(payload: any, context: EventProcessorContext): Promise<void> {
+    const { supplier_id, available_dates, unavailable_dates } = payload;
+
+    console.info(`[WebhookProcessor] Processing availability update`, {
+      eventId: context.eventId,
+      supplierId: supplier_id,
+      availableDates: available_dates?.length || 0,
+      unavailableDates: unavailable_dates?.length || 0
+    });
+
+    // Update supplier availability in the system
+    // Notify couples with pending bookings if their dates become unavailable
+  }
+
+  private async processEmailDelivered(payload: any, context: EventProcessorContext): Promise<void> {
+    const { email_id, recipient, subject } = payload;
+
+    // Log email delivery for analytics
+    await this.logEmailEvent('delivered', email_id, recipient, subject);
+  }
+
+  private async processEmailBounced(payload: any, context: EventProcessorContext): Promise<void> {
+    const { email_id, recipient, bounce_reason } = payload;
+
+    // Log bounce and possibly update contact status
+    await this.logEmailEvent('bounced', email_id, recipient, bounce_reason);
+  }
+
+  private async processSMSDelivered(payload: any, context: EventProcessorContext): Promise<void> {
+    const { MessageSid, To, MessageStatus } = payload;
+
+    // Log SMS delivery
+    console.info(`[WebhookProcessor] SMS delivered`, {
+      messageSid: MessageSid,
+      to: To,
+      status: MessageStatus
+    });
+  }
+
+  // Helper methods for wedding-specific business logic
+  private async updateWeddingPaymentStatus(
+    weddingId: string, 
+    supplierId: string, 
+    status: string, 
+    amount: number
+  ): Promise<void> {
+    // This would update your database with the payment status
+    // Implementation depends on your database structure
+    console.info(`[WebhookProcessor] Updating payment status`, {
+      weddingId,
+      supplierId,
+      status,
+      amount
+    });
+  }
+
+  private async sendPaymentConfirmation(
+    weddingId: string, 
+    supplierId: string, 
+    amount: number
+  ): Promise<void> {
+    // Send confirmation emails/SMS to couple and supplier
+    console.info(`[WebhookProcessor] Sending payment confirmation`, {
+      weddingId,
+      supplierId,
+      amount
+    });
+  }
+
+  private async sendPaymentFailureNotification(
+    weddingId: string, 
+    supplierId: string, 
+    reason: string
+  ): Promise<void> {
+    // Send failure notification
+    console.info(`[WebhookProcessor] Sending payment failure notification`, {
+      weddingId,
+      supplierId,
+      reason
+    });
+  }
+
+  private async updateSupplierBookingStatus(
+    supplierId: string, 
+    weddingId: string, 
+    status: string
+  ): Promise<void> {
+    // Update booking status in database
+    console.info(`[WebhookProcessor] Updating booking status`, {
+      supplierId,
+      weddingId,
+      status
+    });
+  }
+
+  private async updateBookingStatus(bookingId: string, status: string): Promise<void> {
+    // Update booking status
+    console.info(`[WebhookProcessor] Updating booking status`, {
+      bookingId,
+      status
+    });
+  }
+
+  private async sendBookingConfirmationToCouple(
+    weddingId: string, 
+    supplierId: string, 
+    bookingDate: string
+  ): Promise<void> {
+    // Send booking confirmation
+    console.info(`[WebhookProcessor] Sending booking confirmation`, {
+      weddingId,
+      supplierId,
+      bookingDate
+    });
+  }
+
+  private async updateWeddingTimeline(
+    weddingId: string, 
+    supplierId: string, 
+    bookingDate: string
+  ): Promise<void> {
+    // Update wedding timeline
+    console.info(`[WebhookProcessor] Updating wedding timeline`, {
+      weddingId,
+      supplierId,
+      bookingDate
+    });
+  }
+
+  private async logEmailEvent(
+    eventType: string, 
+    emailId: string, 
+    recipient: string, 
+    details?: string
+  ): Promise<void> {
+    // Log email events for analytics
+    console.info(`[WebhookProcessor] Email event logged`, {
+      eventType,
+      emailId,
+      recipient,
+      details
+    });
+  }
+
+  async getDeadLetterQueueCount(queueName: string): Promise<number> {
+    return await this.redis.llen(queueName);
+  }
+
+  async getProcessingStats(): Promise<any> {
+    const stats = {
+      queues: {
+        high: await this.redis.llen(`${this.processingQueue}:high`),
+        normal: await this.redis.llen(`${this.processingQueue}:normal`),
+        low: await this.redis.llen(`${this.processingQueue}:low`)
+      },
+      deadLetterQueues: {},
+      processedToday: 0,
+      failedToday: 0
+    };
+
+    // Get dead letter queue counts
+    for (const [providerId, config] of this.webhookConfigs) {
+      stats.deadLetterQueues[providerId] = await this.redis.llen(config.retryPolicy.deadLetterQueue);
+    }
+
+    // Get today's processing stats
+    const today = new Date().toISOString().split('T')[0];
+    const processedKey = `webhook_stats:processed:${today}`;
+    const failedKey = `webhook_stats:failed:${today}`;
+    
+    stats.processedToday = parseInt(await this.redis.get(processedKey) || '0');
+    stats.failedToday = parseInt(await this.redis.get(failedKey) || '0');
+
+    return stats;
+  }
+
+  async disconnect(): Promise<void> {
+    await this.redis.disconnect();
+  }
+}
+
+// Export singleton instance
+export const webhookProcessor = new WebhookProcessor();

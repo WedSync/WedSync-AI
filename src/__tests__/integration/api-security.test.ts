@@ -1,0 +1,19 @@
+import {
+  describe,
+  it,
+  expect,
+  vi,
+  beforeEach,
+  afterEach,
+  beforeAll,
+  afterAll,
+  Mock,
+} from 'vitest';
+describe('API Security', () => {
+  it('should return 401 for unauthenticated requests', async () => {
+    const response = await fetch('http://localhost:3000/api/pdf/process', {
+      method: 'POST',
+    });
+    expect(response.status).toBe(401);
+  });
+});

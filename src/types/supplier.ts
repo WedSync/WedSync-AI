@@ -1,0 +1,263 @@
+export interface SupplierProfile {
+  id: string;
+  user_id: string;
+  business_name: string;
+  contact_name: string;
+  email: string;
+  phone?: string;
+  website?: string;
+  vendor_type: VendorType;
+  description?: string;
+  services: string[];
+  pricing: Record<string, any>;
+  availability: SupplierAvailability;
+  location: SupplierLocation;
+  portfolio_images: string[];
+  certifications: string[];
+  reviews_summary: ReviewsSummary;
+  status: VendorStatus;
+  featured: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export type VendorType =
+  | 'photographer'
+  | 'videographer'
+  | 'caterer'
+  | 'florist'
+  | 'musician'
+  | 'venue'
+  | 'planner'
+  | 'decorator'
+  | 'other';
+
+export type VendorStatus =
+  | 'active'
+  | 'inactive'
+  | 'pending_approval'
+  | 'suspended';
+
+export interface SupplierAvailability {
+  working_hours: {
+    [key: string]: {
+      start: string;
+      end: string;
+      available: boolean;
+    };
+  };
+  blackout_dates: string[];
+  advance_booking_days: number;
+  preparation_time_minutes: number;
+  breakdown_time_minutes: number;
+}
+
+export interface SupplierLocation {
+  address?: string;
+  city: string;
+  state: string;
+  zip_code?: string;
+  country: string;
+  latitude?: number;
+  longitude?: number;
+  service_radius_km: number;
+}
+
+export interface ReviewsSummary {
+  average_rating: number;
+  total_reviews: number;
+  rating_distribution: {
+    1: number;
+    2: number;
+    3: number;
+    4: number;
+    5: number;
+  };
+}
+
+export interface SupplierSchedule {
+  id: string;
+  vendor_id: string;
+  date: string;
+  todayEvents: ScheduleEvent[];
+  upcomingBookings: SupplierBooking[];
+  weeklySchedule: WeeklySchedule;
+  conflicts: ScheduleConflict[];
+  availability: DayAvailability[];
+  last_updated: string;
+}
+
+export interface ScheduleEvent {
+  id: string;
+  booking_id: string;
+  title: string;
+  description?: string;
+  start_time: string;
+  end_time: string;
+  location?: string;
+  client_name: string;
+  client_contact?: string;
+  event_type: string;
+  status: EventStatus;
+  preparation_time?: number;
+  breakdown_time?: number;
+  special_requirements?: string[];
+  notes?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export type EventStatus =
+  | 'confirmed'
+  | 'pending'
+  | 'in_progress'
+  | 'completed'
+  | 'cancelled'
+  | 'conflict';
+
+export interface SupplierBooking {
+  id: string;
+  wedding_id: string;
+  vendor_id: string;
+  client_name: string;
+  wedding_date: string;
+  service_details: {
+    type: string;
+    duration_hours: number;
+    setup_time?: number;
+    breakdown_time?: number;
+    location: string;
+    special_requirements?: string[];
+  };
+  booking_status: BookingStatus;
+  contract_status: ContractStatus;
+  payment_status: PaymentStatus;
+  total_amount: number;
+  deposit_amount?: number;
+  balance_due?: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export type BookingStatus =
+  | 'inquiry'
+  | 'quoted'
+  | 'booked'
+  | 'confirmed'
+  | 'completed'
+  | 'cancelled';
+
+export type ContractStatus = 'pending' | 'sent' | 'signed' | 'completed';
+
+export type PaymentStatus =
+  | 'pending'
+  | 'deposit_paid'
+  | 'paid_in_full'
+  | 'overdue'
+  | 'refunded';
+
+export interface WeeklySchedule {
+  week_start: string;
+  days: DaySchedule[];
+}
+
+export interface DaySchedule {
+  date: string;
+  events: ScheduleEvent[];
+  availability: DayAvailability;
+  conflicts: ScheduleConflict[];
+}
+
+export interface DayAvailability {
+  date: string;
+  available: boolean;
+  working_hours: {
+    start: string;
+    end: string;
+  };
+  booked_slots: TimeSlot[];
+  available_slots: TimeSlot[];
+}
+
+export interface TimeSlot {
+  start: string;
+  end: string;
+  available: boolean;
+  booking_id?: string;
+}
+
+export interface ScheduleConflict {
+  id: string;
+  type: ConflictType;
+  severity: ConflictSeverity;
+  title: string;
+  description: string;
+  affected_events: string[];
+  suggested_resolution?: string;
+  status: ConflictStatus;
+  created_at: string;
+  resolved_at?: string;
+}
+
+export type ConflictType =
+  | 'double_booking'
+  | 'travel_time'
+  | 'setup_overlap'
+  | 'availability'
+  | 'equipment';
+
+export type ConflictSeverity = 'low' | 'medium' | 'high' | 'critical';
+
+export type ConflictStatus =
+  | 'active'
+  | 'acknowledged'
+  | 'resolved'
+  | 'dismissed';
+
+export interface SupplierNotification {
+  id: string;
+  vendor_id: string;
+  type: NotificationType;
+  title: string;
+  message: string;
+  priority: NotificationPriority;
+  data?: Record<string, any>;
+  read: boolean;
+  action_required?: boolean;
+  action_url?: string;
+  expires_at?: string;
+  created_at: string;
+  read_at?: string;
+}
+
+export type NotificationType =
+  | 'booking_inquiry'
+  | 'booking_confirmed'
+  | 'booking_cancelled'
+  | 'schedule_change'
+  | 'payment_received'
+  | 'contract_signed'
+  | 'reminder'
+  | 'conflict_alert'
+  | 'review_received'
+  | 'system_update';
+
+export type NotificationPriority = 'low' | 'normal' | 'high' | 'urgent';
+
+export interface MobileSupplierView {
+  currentBookings: SupplierBooking[];
+  todayEvents: ScheduleEvent[];
+  upcomingEvents: ScheduleEvent[];
+  notifications: SupplierNotification[];
+  conflicts: ScheduleConflict[];
+  availability: DayAvailability[];
+}
+
+export interface SupplierDashboardStats {
+  today_events: number;
+  upcoming_bookings: number;
+  unread_notifications: number;
+  active_conflicts: number;
+  this_week_revenue: number;
+  pending_inquiries: number;
+}

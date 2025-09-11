@@ -1,0 +1,398 @@
+/**
+ * WS-194 Team D - Dynamic PWA Manifest Generation
+ * Environment-Aware PWA Manifest for Wedding Coordination Platform
+ *
+ * This file generates dynamic PWA manifests based on the current environment:
+ * - Development: Debug-friendly settings with orange theme
+ * - Staging: Testing-optimized with yellow theme
+ * - Production: Wedding-day optimized with professional indigo theme
+ */
+
+import type { MetadataRoute } from 'next';
+import { pwaEnvironmentManager } from '../../config/mobile/pwa-environments';
+
+/**
+ * Generate environment-aware PWA manifest
+ * Automatically detects environment and returns appropriate configuration
+ */
+export default function manifest(): MetadataRoute.Manifest {
+  // Get current environment configuration
+  const currentEnv = pwaEnvironmentManager.getCurrentEnvironment();
+  const config = pwaEnvironmentManager.getEnvironmentConfig(currentEnv);
+
+  console.log(
+    `[WS-194] Generating PWA manifest for environment: ${currentEnv}`,
+  );
+
+  // Create base manifest from environment config
+  const baseManifest: MetadataRoute.Manifest = {
+    name: config.manifest.name,
+    short_name: config.manifest.short_name,
+    description: config.manifest.description,
+    start_url: config.manifest.start_url,
+    display: config.manifest.display as any,
+    background_color: config.manifest.background_color,
+    theme_color: config.manifest.theme_color,
+    scope: config.manifest.scope,
+
+    // Icon configuration from environment
+    icons: config.manifest.icons.map((icon) => ({
+      src: icon.src,
+      sizes: icon.sizes,
+      type: icon.type,
+      purpose: icon.purpose as any,
+    })),
+
+    // PWA-specific configurations
+    orientation: 'portrait-primary',
+    lang: 'en-US',
+    dir: 'ltr',
+    categories: ['business', 'productivity', 'wedding'],
+    id: config.deployment.appStoreConfig.bundleId,
+
+    // Enhanced display options for modern PWAs
+    display_override: ['window-controls-overlay', 'standalone', 'minimal-ui'],
+    prefer_related_applications: false,
+
+    // Note: edge_side_panel not supported in current manifest types
+
+    // Protocol handler for deep links
+    protocol_handlers: [
+      {
+        protocol: 'web+wedsync',
+        url: `/handle-protocol?protocol=%s&env=${currentEnv}`,
+      },
+    ],
+
+    // File handlers for importing wedding data
+    file_handlers:
+      currentEnv === 'development'
+        ? [
+            {
+              action: '/debug/import',
+              accept: {
+                'application/json': ['.json'],
+                'text/csv': ['.csv'],
+                'application/vnd.ms-excel': ['.xls', '.xlsx'],
+              },
+            },
+          ]
+        : [
+            {
+              action: '/import',
+              accept: {
+                'text/csv': ['.csv'],
+                'application/vnd.ms-excel': ['.xls', '.xlsx'],
+              },
+            },
+          ],
+
+    // Share target for wedding coordination
+    share_target: {
+      action: '/share',
+      method: 'POST',
+      enctype: 'multipart/form-data',
+      params: {
+        title: 'title',
+        text: 'text',
+        url: 'url',
+        files: [
+          {
+            name: 'files',
+            accept: ['image/*', '.pdf', '.csv', '.xlsx'],
+          },
+        ],
+      },
+    },
+
+    // Launch handler for PWA
+    launch_handler: {
+      client_mode: 'focus-existing',
+    },
+  };
+
+  // Add environment-specific shortcuts
+  const shortcuts = getEnvironmentShortcuts(currentEnv);
+  if (shortcuts.length > 0) {
+    (baseManifest as any).shortcuts = shortcuts;
+  }
+
+  // Add environment-specific features
+  const features = getEnvironmentFeatures(currentEnv, config);
+  if (features.length > 0) {
+    (baseManifest as any).features = features;
+  }
+
+  // Add environment-specific screenshots
+  const screenshots = getEnvironmentScreenshots(currentEnv);
+  if (screenshots.length > 0) {
+    (baseManifest as any).screenshots = screenshots;
+  }
+
+  // Add related applications
+  (baseManifest as any).related_applications = [
+    {
+      platform: 'webapp',
+      url:
+        currentEnv === 'production'
+          ? 'https://app.wedsync.co/manifest.json'
+          : `https://${currentEnv}.wedsync.co/manifest.json`,
+    },
+  ];
+
+  return baseManifest;
+}
+
+/**
+ * Get environment-specific app shortcuts
+ */
+function getEnvironmentShortcuts(environment: string) {
+  const baseShortcuts = [
+    {
+      name: 'Wedding Day Dashboard',
+      short_name: 'Wedding Day',
+      description: 'Access wedding day coordination tools (works offline)',
+      url: `/dashboard/wedding-day?utm_source=pwa_shortcut&env=${environment}`,
+      icons: [
+        {
+          src: '/icons/wedding-day-192x192.svg',
+          sizes: '192x192',
+          type: 'image/svg+xml',
+        },
+      ],
+    },
+    {
+      name: 'Timeline',
+      short_name: 'Timeline',
+      description: 'View and manage timeline events (offline capable)',
+      url: `/dashboard/timeline?utm_source=pwa_shortcut&env=${environment}`,
+      icons: [
+        {
+          src: '/icons/timeline-192x192.svg',
+          sizes: '192x192',
+          type: 'image/svg+xml',
+        },
+      ],
+    },
+    {
+      name: 'Clients',
+      short_name: 'Clients',
+      description: 'Manage wedding clients and communications',
+      url: `/dashboard/clients?utm_source=pwa_shortcut&env=${environment}`,
+      icons: [
+        {
+          src: '/icons/clients-192x192.svg',
+          sizes: '192x192',
+          type: 'image/svg+xml',
+        },
+      ],
+    },
+    {
+      name: 'Emergency Response',
+      short_name: 'Emergency',
+      description: 'Emergency incident response dashboard (works offline)',
+      url: `/mobile-dashboard?mode=emergency&utm_source=pwa_shortcut&env=${environment}`,
+      icons: [
+        {
+          src: '/icons/emergency-192x192.png',
+          sizes: '192x192',
+          type: 'image/png',
+        },
+      ],
+    },
+    {
+      name: 'Vendor Check-In',
+      short_name: 'Check-In',
+      description: 'Quick vendor check-in for wedding day (offline first)',
+      url: `/dashboard/wedding-day/check-in?utm_source=pwa_shortcut&env=${environment}`,
+      icons: [
+        {
+          src: '/icons/checkin-192x192.svg',
+          sizes: '192x192',
+          type: 'image/svg+xml',
+        },
+      ],
+    },
+    {
+      name: 'Budget Tracker',
+      short_name: 'Budget',
+      description: 'Mobile budget management with real-time spending alerts',
+      url: `/budget/categories?utm_source=pwa_shortcut&env=${environment}`,
+      icons: [
+        {
+          src: '/icons/budget-192x192.svg',
+          sizes: '192x192',
+          type: 'image/svg+xml',
+        },
+      ],
+    },
+    {
+      name: 'Expense Capture',
+      short_name: 'Expenses',
+      description: 'Instant expense capture with camera and voice',
+      url: `/expenses/capture?utm_source=pwa_shortcut&env=${environment}`,
+      icons: [
+        {
+          src: '/icons/expenses-192x192.svg',
+          sizes: '192x192',
+          type: 'image/svg+xml',
+        },
+      ],
+    },
+  ];
+
+  // Add development-specific shortcuts
+  if (environment === 'development') {
+    baseShortcuts.push({
+      name: 'Debug Tools',
+      short_name: 'Debug',
+      description: 'Development debugging and testing tools',
+      url: '/dev-tools?utm_source=pwa_shortcut',
+      icons: [
+        {
+          src: '/icons/debug-192x192.svg',
+          sizes: '192x192',
+          type: 'image/svg+xml',
+        },
+      ],
+    });
+  }
+
+  // Add staging-specific shortcuts
+  if (environment === 'staging') {
+    baseShortcuts.push({
+      name: 'Test Scenarios',
+      short_name: 'Testing',
+      description: 'Access testing scenarios and validation tools',
+      url: '/test-scenarios?utm_source=pwa_shortcut',
+      icons: [
+        {
+          src: '/icons/testing-192x192.svg',
+          sizes: '192x192',
+          type: 'image/svg+xml',
+        },
+      ],
+    });
+  }
+
+  return baseShortcuts;
+}
+
+/**
+ * Get environment-specific feature list
+ */
+function getEnvironmentFeatures(environment: string, config: any) {
+  const baseFeatures = [
+    'Wedding Day Coordination',
+    'Offline Vendor Management',
+    'Real-time Timeline Updates',
+    'Emergency Response',
+    'Client Communication',
+    'Photo Groups Management',
+    'Helper Schedule Management',
+    'Budget Tracking',
+    'Expense Capture',
+    'Incident Reporting',
+    'Performance Monitoring',
+    'Push Notifications',
+    'Background Sync',
+    'Emergency Contact Integration',
+    'Voice Recording for Incidents',
+    'Photo Evidence Capture',
+    'GPS Location Tracking',
+    'Wedding Day Emergency Protocols',
+    'Venue Security Integration',
+  ];
+
+  // Add environment-specific features
+  if (config.deployment.features.debugMenu) {
+    baseFeatures.push('Debug Tools', 'Performance Profiling');
+  }
+
+  if (config.deployment.features.offlineDevTools) {
+    baseFeatures.push('Offline Development', 'Cache Management');
+  }
+
+  if (environment === 'staging') {
+    baseFeatures.push('Test Automation', 'Load Testing');
+  }
+
+  return baseFeatures;
+}
+
+/**
+ * Get environment-specific app screenshots
+ */
+function getEnvironmentScreenshots(environment: string) {
+  const prefix = environment === 'production' ? '' : `${environment}-`;
+
+  return [
+    {
+      src: `/app-store-assets/screenshots/${prefix}desktop-dashboard-1280x800.png`,
+      sizes: '1280x800',
+      type: 'image/png',
+      form_factor: 'wide',
+      platform: 'windows',
+      label: `Professional dashboard for wedding vendor management (${environment})`,
+    },
+    {
+      src: `/app-store-assets/screenshots/${prefix}desktop-clients-1280x800.png`,
+      sizes: '1280x800',
+      type: 'image/png',
+      form_factor: 'wide',
+      platform: 'windows',
+      label: `Client management and communication center (${environment})`,
+    },
+    {
+      src: `/app-store-assets/screenshots/${prefix}desktop-timeline-1280x800.png`,
+      sizes: '1280x800',
+      type: 'image/png',
+      form_factor: 'wide',
+      platform: 'windows',
+      label: `Wedding timeline automation and coordination (${environment})`,
+    },
+    {
+      src: `/app-store-assets/screenshots/${prefix}mobile-forms-750x1334.png`,
+      sizes: '750x1334',
+      type: 'image/png',
+      form_factor: 'narrow',
+      platform: 'ios',
+      label: `Mobile forms with offline support (${environment})`,
+    },
+    {
+      src: `/app-store-assets/screenshots/${prefix}mobile-dashboard-750x1334.png`,
+      sizes: '750x1334',
+      type: 'image/png',
+      form_factor: 'narrow',
+      platform: 'ios',
+      label: `Dashboard optimized for mobile vendors (${environment})`,
+    },
+    {
+      src: `/app-store-assets/screenshots/${prefix}mobile-wedding-day-750x1334.png`,
+      sizes: '750x1334',
+      type: 'image/png',
+      form_factor: 'narrow',
+      platform: 'ios',
+      label: `Wedding day coordination tools (${environment})`,
+    },
+    {
+      src: `/app-store-assets/screenshots/${prefix}android-dashboard-1080x1920.png`,
+      sizes: '1080x1920',
+      type: 'image/png',
+      form_factor: 'narrow',
+      platform: 'android',
+      label: `Android optimized vendor dashboard (${environment})`,
+    },
+    {
+      src: `/app-store-assets/screenshots/${prefix}android-timeline-1080x1920.png`,
+      sizes: '1080x1920',
+      type: 'image/png',
+      form_factor: 'narrow',
+      platform: 'android',
+      label: `Timeline management on Android (${environment})`,
+    },
+  ];
+}
+
+// Export type for external usage
+export type { MetadataRoute };

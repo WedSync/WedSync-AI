@@ -1,0 +1,256 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@/lib/supabase/server'
+import { z } from 'zod'
+import { verifyCoupleAccess } from '@/lib/validation/middleware'
+
+// Validation schema for updating arrangements
+const updateArrangementSchema = z.object({
+  arrangement_name: z.string().min(1).max(255).optional(),
+  arrangement_data: z.record(z.any()).optional(),
+  table_assignments: z.array(z.object({
+    guest_id: z.string().uuid(),
+    table_number: z.number().int().positive(),
+    seat_number: z.number().int().positive().optional()
+  })).optional(),
+  notes: z.string().max(1000).optional()
+})
+
+// GET /api/seating/arrangements/[id] - Retrieve saved arrangement
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id } = await params
+    const supabase = await createClient()
+    const { data: user } = await supabase.auth.getUser()
+    
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
+    // Get user's organization
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', user.id)
+      .single()
+
+    if (!profile?.organization_id) {
+      return NextResponse.json({ error: 'No organization found' }, { status: 400 })
+    }
+
+    // Get the arrangement with couple verification
+    const { data: arrangement, error } = await supabase
+      .from('seating_arrangements')
+      .select(`
+        id,
+        couple_id,
+        arrangement_name,
+        arrangement_data,
+        optimization_score,
+        conflicts,
+        metadata,
+        created_at,
+        updated_at,
+        clients!inner(organization_id)
+      `)
+      .eq('id', id)
+      .eq('clients.organization_id', profile.organization_id)
+      .single()
+
+    if (error || !arrangement) {
+      return NextResponse.json({ error: 'Arrangement not found' }, { status: 404 })
+    }
+
+    // Get detailed guest information for the arrangement
+    const { data: guests } = await supabase
+      .from('guests')
+      .select(`
+        id,
+        first_name,
+        last_name,
+        category,
+        dietary_restrictions,
+        special_needs
+      `)
+      .eq('couple_id', arrangement.couple_id)
+
+    // Get table configurations
+    const { data: tables } = await supabase
+      .from('reception_tables')
+      .select('*')
+      .eq('couple_id', arrangement.couple_id)
+
+    return NextResponse.json({
+      success: true,
+      arrangement: {
+        ...arrangement,
+        guests_details: guests || [],
+        table_configurations: tables || []
+      }
+    })
+
+  } catch (error) {
+    console.error('Get arrangement error:', error)
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}
+
+// PUT /api/seating/arrangements/[id] - Update seating arrangement
+export async function PUT(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id } = await params
+    const body = await request.json()
+    const validatedData = updateArrangementSchema.parse(body)
+    
+    const supabase = await createClient()
+    const { data: user } = await supabase.auth.getUser()
+    
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
+    // Get user's organization
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', user.id)
+      .single()
+
+    if (!profile?.organization_id) {
+      return NextResponse.json({ error: 'No organization found' }, { status: 400 })
+    }
+
+    // Verify arrangement ownership
+    const { data: existingArrangement } = await supabase
+      .from('seating_arrangements')
+      .select(`
+        id,
+        couple_id,
+        clients!inner(organization_id)
+      `)
+      .eq('id', id)
+      .eq('clients.organization_id', profile.organization_id)
+      .single()
+
+    if (!existingArrangement) {
+      return NextResponse.json({ error: 'Arrangement not found' }, { status: 404 })
+    }
+
+    // Update the arrangement
+    const updateData: any = {
+      updated_at: new Date().toISOString()
+    }
+
+    if (validatedData.arrangement_name) {
+      updateData.arrangement_name = validatedData.arrangement_name
+    }
+    
+    if (validatedData.arrangement_data) {
+      updateData.arrangement_data = validatedData.arrangement_data
+    }
+
+    // If table assignments are provided, update guest table assignments
+    if (validatedData.table_assignments) {
+      // Update guest table numbers
+      for (const assignment of validatedData.table_assignments) {
+        await supabase
+          .from('guests')
+          .update({ table_number: assignment.table_number })
+          .eq('id', assignment.guest_id)
+          .eq('couple_id', existingArrangement.couple_id)
+      }
+    }
+
+    const { data: updatedArrangement, error: updateError } = await supabase
+      .from('seating_arrangements')
+      .update(updateData)
+      .eq('id', id)
+      .select()
+      .single()
+
+    if (updateError) {
+      return NextResponse.json({ error: 'Failed to update arrangement' }, { status: 500 })
+    }
+
+    return NextResponse.json({
+      success: true,
+      arrangement: updatedArrangement
+    })
+
+  } catch (error) {
+    console.error('Update arrangement error:', error)
+    if (error instanceof z.ZodError) {
+      return NextResponse.json({ error: 'Invalid request data', details: error.errors }, { status: 400 })
+    }
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}
+
+// DELETE /api/seating/arrangements/[id] - Remove arrangement
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id } = await params
+    const supabase = await createClient()
+    const { data: user } = await supabase.auth.getUser()
+    
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
+    // Get user's organization
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', user.id)
+      .single()
+
+    if (!profile?.organization_id) {
+      return NextResponse.json({ error: 'No organization found' }, { status: 400 })
+    }
+
+    // Verify arrangement ownership and delete
+    const { error } = await supabase
+      .from('seating_arrangements')
+      .delete()
+      .eq('id', id)
+      .in('couple_id', 
+        supabase
+          .from('clients')
+          .select('id')
+          .eq('organization_id', profile.organization_id)
+      )
+
+    if (error) {
+      return NextResponse.json({ error: 'Failed to delete arrangement' }, { status: 500 })
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: 'Arrangement deleted successfully'
+    })
+
+  } catch (error) {
+    console.error('Delete arrangement error:', error)
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}
+
+export const runtime = 'nodejs'
+export const dynamic = 'force-dynamic'

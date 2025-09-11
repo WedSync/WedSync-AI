@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WedSync Development Monitor</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a1a;
+            color: #ffffff;
+            line-height: 1.6;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 1rem 2rem;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        .header h1 {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        
+        .card {
+            background: #2d2d2d;
+            border-radius: 8px;
+            padding: 1.5rem;
+            border-left: 4px solid #667eea;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        
+        .card h3 {
+            margin-bottom: 1rem;
+            color: #667eea;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        .status {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.875rem;
+            font-weight: 600;
+            margin-right: 0.5rem;
+        }
+        
+        .status.healthy {
+            background: #10b981;
+            color: white;
+        }
+        
+        .status.warning {
+            background: #f59e0b;
+            color: white;
+        }
+        
+        .status.error {
+            background: #ef4444;
+            color: white;
+        }
+        
+        .metric {
+            display: flex;
+            justify-content: space-between;
+            padding: 0.5rem 0;
+            border-bottom: 1px solid #404040;
+        }
+        
+        .metric:last-child {
+            border-bottom: none;
+        }
+        
+        .logs {
+            background: #1f1f1f;
+            padding: 1rem;
+            border-radius: 6px;
+            font-family: 'Monaco', 'Consolas', monospace;
+            font-size: 0.875rem;
+            max-height: 300px;
+            overflow-y: auto;
+            margin-top: 1rem;
+            border: 1px solid #404040;
+        }
+        
+        .log-entry {
+            margin-bottom: 0.5rem;
+            padding: 0.25rem;
+        }
+        
+        .log-error {
+            color: #ef4444;
+        }
+        
+        .log-warning {
+            color: #f59e0b;
+        }
+        
+        .log-info {
+            color: #10b981;
+        }
+        
+        .refresh-btn {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: background 0.2s;
+        }
+        
+        .refresh-btn:hover {
+            background: #5a6fd8;
+        }
+        
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .commands {
+            background: #2d2d2d;
+            padding: 1.5rem;
+            border-radius: 8px;
+            margin-top: 2rem;
+        }
+        
+        .commands h3 {
+            color: #667eea;
+            margin-bottom: 1rem;
+        }
+        
+        .command {
+            background: #1f1f1f;
+            padding: 0.75rem;
+            border-radius: 4px;
+            font-family: monospace;
+            margin-bottom: 0.5rem;
+            cursor: pointer;
+            transition: background 0.2s;
+            border: 1px solid #404040;
+        }
+        
+        .command:hover {
+            background: #404040;
+        }
+        
+        .timestamp {
+            color: #888;
+            font-size: 0.875rem;
+        }
+        
+        .error-count {
+            background: #ef4444;
+            color: white;
+            padding: 0.25rem 0.5rem;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            margin-left: 0.5rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>
+            🏥 WedSync Development Monitor
+            <span class="timestamp" id="lastUpdate"></span>
+        </h1>
+    </div>
+    
+    <div class="container">
+        <div class="grid">
+            <!-- Container Health -->
+            <div class="card">
+                <h3>🐳 Container Status</h3>
+                <div id="containerStatus">
+                    <div class="loading"></div> Loading container status...
+                </div>
+            </div>
+            
+            <!-- Resource Usage -->
+            <div class="card">
+                <h3>📊 Resource Usage</h3>
+                <div id="resourceUsage">
+                    <div class="loading"></div> Loading resource data...
+                </div>
+            </div>
+            
+            <!-- Build Status -->
+            <div class="card">
+                <h3>🔨 Build Status</h3>
+                <div id="buildStatus">
+                    <div class="loading"></div> Checking build status...
+                </div>
+            </div>
+            
+            <!-- Dependencies -->
+            <div class="card">
+                <h3>📦 Dependencies</h3>
+                <div id="dependencyStatus">
+                    <div class="loading"></div> Analyzing dependencies...
+                </div>
+            </div>
+        </div>
+        
+        <!-- Recent Errors -->
+        <div class="card">
+            <h3>🚨 Recent Errors <span class="error-count" id="errorCount">0</span></h3>
+            <button class="refresh-btn" onclick="refreshLogs()">Refresh Logs</button>
+            <div class="logs" id="errorLogs">
+                <div class="loading"></div> Loading recent errors...
+            </div>
+        </div>
+        
+        <!-- System Logs -->
+        <div class="card">
+            <h3>📋 System Logs</h3>
+            <button class="refresh-btn" onclick="refreshSystemLogs()">Refresh</button>
+            <div class="logs" id="systemLogs">
+                <div class="loading"></div> Loading system logs...
+            </div>
+        </div>
+        
+        <!-- Quick Commands -->
+        <div class="commands">
+            <h3>⚡ Quick Commands</h3>
+            <div class="command" onclick="copyToClipboard('docker-compose -f docker-compose.monitor.yml ps')">
+                docker-compose -f docker-compose.monitor.yml ps
+            </div>
+            <div class="command" onclick="copyToClipboard('docker-compose -f docker-compose.monitor.yml logs app --tail 50')">
+                docker-compose -f docker-compose.monitor.yml logs app --tail 50
+            </div>
+            <div class="command" onclick="copyToClipboard('docker-compose -f docker-compose.monitor.yml restart app')">
+                docker-compose -f docker-compose.monitor.yml restart app
+            </div>
+            <div class="command" onclick="copyToClipboard('docker stats --no-stream')">
+                docker stats --no-stream
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Mock data for demo - replace with real API calls
+        const mockData = {
+            containers: [
+                { name: 'wedsync-monitored', status: 'healthy', uptime: '2m 34s', memory: '892MB', cpu: '45%' },
+                { name: 'wedsync-postgres-monitored', status: 'healthy', uptime: '3m 12s', memory: '128MB', cpu: '5%' },
+                { name: 'wedsync-redis-monitored', status: 'healthy', uptime: '3m 8s', memory: '32MB', cpu: '2%' }
+            ],
+            resources: {
+                totalMemory: '4GB',
+                usedMemory: '1.2GB',
+                cpuUsage: '28%',
+                diskUsage: '450MB'
+            },
+            buildStatus: {
+                status: 'success',
+                buildTime: '45s',
+                lastBuild: '2 minutes ago',
+                errors: 0,
+                warnings: 3
+            },
+            dependencies: {
+                total: 330,
+                outdated: 12,
+                vulnerabilities: 5,
+                conflicts: 2
+            },
+            errors: [
+                { time: '12:34:56', type: 'error', message: 'Module not found: @sentry/nextjs' },
+                { time: '12:33:12', type: 'warning', message: 'Invalid next.config.js options detected' },
+                { time: '12:32:45', type: 'error', message: 'ENOTEMPTY: directory not empty' }
+            ]
+        };
+        
+        function updateLastUpdate() {
+            document.getElementById('lastUpdate').textContent = 'Last updated: ' + new Date().toLocaleTimeString();
+        }
+        
+        function updateContainerStatus() {
+            const container = document.getElementById('containerStatus');
+            let html = '';
+            
+            mockData.containers.forEach(c => {
+                const statusClass = c.status === 'healthy' ? 'healthy' : 'error';
+                html += `
+                    <div class="metric">
+                        <span>${c.name}</span>
+                        <div>
+                            <span class="status ${statusClass}">${c.status}</span>
+                        </div>
+                    </div>
+                    <div class="metric">
+                        <span>Memory</span>
+                        <span>${c.memory}</span>
+                    </div>
+                    <div class="metric">
+                        <span>CPU</span>
+                        <span>${c.cpu}</span>
+                    </div>
+                    <div class="metric">
+                        <span>Uptime</span>
+                        <span>${c.uptime}</span>
+                    </div>
+                `;
+            });
+            
+            container.innerHTML = html;
+        }
+        
+        function updateResourceUsage() {
+            const resources = document.getElementById('resourceUsage');
+            const data = mockData.resources;
+            
+            resources.innerHTML = `
+                <div class="metric">
+                    <span>Total Memory</span>
+                    <span>${data.totalMemory}</span>
+                </div>
+                <div class="metric">
+                    <span>Used Memory</span>
+                    <span>${data.usedMemory}</span>
+                </div>
+                <div class="metric">
+                    <span>CPU Usage</span>
+                    <span>${data.cpuUsage}</span>
+                </div>
+                <div class="metric">
+                    <span>Disk Usage</span>
+                    <span>${data.diskUsage}</span>
+                </div>
+            `;
+        }
+        
+        function updateBuildStatus() {
+            const build = document.getElementById('buildStatus');
+            const data = mockData.buildStatus;
+            const statusClass = data.status === 'success' ? 'healthy' : 'error';
+            
+            build.innerHTML = `
+                <div class="metric">
+                    <span>Status</span>
+                    <span class="status ${statusClass}">${data.status}</span>
+                </div>
+                <div class="metric">
+                    <span>Build Time</span>
+                    <span>${data.buildTime}</span>
+                </div>
+                <div class="metric">
+                    <span>Last Build</span>
+                    <span>${data.lastBuild}</span>
+                </div>
+                <div class="metric">
+                    <span>Errors</span>
+                    <span>${data.errors}</span>
+                </div>
+                <div class="metric">
+                    <span>Warnings</span>
+                    <span>${data.warnings}</span>
+                </div>
+            `;
+        }
+        
+        function updateDependencyStatus() {
+            const deps = document.getElementById('dependencyStatus');
+            const data = mockData.dependencies;
+            
+            deps.innerHTML = `
+                <div class="metric">
+                    <span>Total Packages</span>
+                    <span>${data.total}</span>
+                </div>
+                <div class="metric">
+                    <span>Outdated</span>
+                    <span class="status warning">${data.outdated}</span>
+                </div>
+                <div class="metric">
+                    <span>Vulnerabilities</span>
+                    <span class="status error">${data.vulnerabilities}</span>
+                </div>
+                <div class="metric">
+                    <span>Conflicts</span>
+                    <span class="status error">${data.conflicts}</span>
+                </div>
+            `;
+        }
+        
+        function updateErrorLogs() {
+            const errorLogs = document.getElementById('errorLogs');
+            const errorCount = document.getElementById('errorCount');
+            
+            let html = '';
+            let errorCountVal = 0;
+            
+            mockData.errors.forEach(error => {
+                const logClass = error.type === 'error' ? 'log-error' : 
+                               error.type === 'warning' ? 'log-warning' : 'log-info';
+                if (error.type === 'error') errorCountVal++;
+                
+                html += `<div class="log-entry ${logClass}">[${error.time}] ${error.type.toUpperCase()}: ${error.message}</div>`;
+            });
+            
+            errorLogs.innerHTML = html || 'No recent errors';
+            errorCount.textContent = errorCountVal;
+        }
+        
+        function updateSystemLogs() {
+            const systemLogs = document.getElementById('systemLogs');
+            systemLogs.innerHTML = `
+                <div class="log-entry log-info">[12:35:20] Starting Next.js development server...</div>
+                <div class="log-entry log-info">[12:35:18] Installing npm dependencies...</div>
+                <div class="log-entry log-warning">[12:35:15] Warning: peer dependency conflicts detected</div>
+                <div class="log-entry log-info">[12:35:10] Container wedsync-monitored starting...</div>
+                <div class="log-entry log-info">[12:35:08] Health check passed</div>
+            `;
+        }
+        
+        function refreshLogs() {
+            // In real implementation, fetch fresh data from API
+            updateErrorLogs();
+            updateLastUpdate();
+        }
+        
+        function refreshSystemLogs() {
+            updateSystemLogs();
+            updateLastUpdate();
+        }
+        
+        function copyToClipboard(text) {
+            navigator.clipboard.writeText(text);
+            // Show a temporary notification
+            const notification = document.createElement('div');
+            notification.textContent = 'Copied to clipboard!';
+            notification.style.cssText = `
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                background: #10b981;
+                color: white;
+                padding: 0.75rem 1rem;
+                border-radius: 6px;
+                z-index: 1000;
+                animation: slideIn 0.3s ease;
+            `;
+            document.body.appendChild(notification);
+            setTimeout(() => {
+                notification.remove();
+            }, 2000);
+        }
+        
+        // Initialize dashboard
+        function init() {
+            updateContainerStatus();
+            updateResourceUsage();
+            updateBuildStatus();
+            updateDependencyStatus();
+            updateErrorLogs();
+            updateSystemLogs();
+            updateLastUpdate();
+            
+            // Auto-refresh every 30 seconds
+            setInterval(() => {
+                updateContainerStatus();
+                updateResourceUsage();
+                updateBuildStatus();
+                updateErrorLogs();
+                updateLastUpdate();
+            }, 30000);
+        }
+        
+        // Start the dashboard
+        init();
+        
+        // Add CSS animation
+        const style = document.createElement('style');
+        style.textContent = `
+            @keyframes slideIn {
+                from { transform: translateX(100%); opacity: 0; }
+                to { transform: translateX(0); opacity: 1; }
+            }
+        `;
+        document.head.appendChild(style);
+    </script>
+</body>
+</html>

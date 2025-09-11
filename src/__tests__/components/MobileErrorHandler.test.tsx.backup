@@ -1,0 +1,395 @@
+/**
+ * Tests for MobileErrorHandler component - Touch-friendly error UI with wedding context awareness
+ * WS-198 Error Handling System - Team D Mobile & PWA Architecture
+ */
+
+import React from 'react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { MobileErrorHandler } from '../../components/MobileErrorHandler'
+
+// Mock the hooks
+jest.mock('../../hooks/useNetworkState', () => ({
+  useNetworkState: jest.fn()
+}))
+
+jest.mock('../../hooks/useDeviceCapabilities', () => ({
+  useDeviceCapabilities: jest.fn()
+}))
+
+jest.mock('../../hooks/useMobileErrorRecovery', () => ({
+  useMobileErrorRecovery: jest.fn()
+}))
+
+import { useNetworkState } from '../../hooks/useNetworkState'
+import { useDeviceCapabilities } from '../../hooks/useDeviceCapabilities'
+import { useMobileErrorRecovery } from '../../hooks/useMobileErrorRecovery'
+
+const mockUseNetworkState = useNetworkState as jest.MockedFunction<typeof useNetworkState>
+const mockUseDeviceCapabilities = useDeviceCapabilities as jest.MockedFunction<typeof useDeviceCapabilities>
+const mockUseMobileErrorRecovery = useMobileErrorRecovery as jest.MockedFunction<typeof useMobileErrorRecovery>
+
+// Mock props
+const defaultProps = {
+  isWeddingDay: false,
+  weddingDate: '2024-06-15',
+  onEmergencyContact: jest.fn(),
+  children: <div data-testid="child-content">App Content</div>
+}
+
+describe('MobileErrorHandler', () => {
+  const mockHandleError = jest.fn()
+  const mockClearError = jest.fn()
+
+  beforeEach(() => {
+    jest.clearAllMocks()
+    
+    // Default network state
+    mockUseNetworkState.mockReturnValue({
+      networkState: {
+        isOnline: true,
+        type: 'wifi',
+        effectiveType: '4g',
+        downlink: 10,
+        rtt: 50,
+        saveData: false,
+        quality: 'good',
+        isWeddingEmergency: false
+      }
+    })
+    
+    // Default device capabilities
+    mockUseDeviceCapabilities.mockReturnValue({
+      capabilities: {
+        hasCamera: true,
+        hasMicrophone: true,
+        hasGPS: true,
+        batteryLevel: 0.8,
+        isCharging: false,
+        isBatteryLow: false,
+        deviceMemory: 8,
+        hardwareConcurrency: 4,
+        connectionType: 'wifi',
+        isWeddingOptimizedDevice: true
+      }
+    })
+    
+    // Default error recovery state
+    mockUseMobileErrorRecovery.mockReturnValue({
+      isRecovering: false,
+      recoveryAttempts: 0,
+      lastError: null,
+      recoveryStrategy: 'standard',
+      canRetry: true,
+      handleError: mockHandleError,
+      clearError: mockClearError
+    })
+  })
+
+  it('should render children when no error is present', () => {
+    render(<MobileErrorHandler {...defaultProps} />)
+    
+    expect(screen.getByTestId('child-content')).toBeInTheDocument()
+    expect(screen.queryByText(/error occurred/i)).not.toBeInTheDocument()
+  })
+
+  it('should show error overlay when error occurs', () => {
+    mockUseMobileErrorRecovery.mockReturnValue({
+      isRecovering: false,
+      recoveryAttempts: 2,
+      lastError: new Error('Network connection failed'),
+      recoveryStrategy: 'standard',
+      canRetry: true,
+      handleError: mockHandleError,
+      clearError: mockClearError
+    })
+    
+    render(<MobileErrorHandler {...defaultProps} />)
+    
+    expect(screen.getByText(/error occurred/i)).toBeInTheDocument()
+    expect(screen.getByText(/network connection failed/i)).toBeInTheDocument()
+  })
+
+  it('should show wedding day specific error message', () => {
+    mockUseMobileErrorRecovery.mockReturnValue({
+      isRecovering: false,
+      recoveryAttempts: 1,
+      lastError: new Error('Photo upload failed'),
+      recoveryStrategy: 'wedding_emergency',
+      canRetry: true,
+      handleError: mockHandleError,
+      clearError: mockClearError
+    })
+    
+    render(<MobileErrorHandler {...defaultProps} isWeddingDay={true} />)
+    
+    expect(screen.getByText(/wedding day error/i)).toBeInTheDocument()
+    expect(screen.getByText(/photo upload failed/i)).toBeInTheDocument()
+    expect(screen.getByText(/emergency support/i)).toBeInTheDocument()
+  })
+
+  it('should show recovery progress when recovering', () => {
+    mockUseMobileErrorRecovery.mockReturnValue({
+      isRecovering: true,
+      recoveryAttempts: 2,
+      lastError: new Error('Connection timeout'),
+      recoveryStrategy: 'standard',
+      canRetry: true,
+      handleError: mockHandleError,
+      clearError: mockClearError
+    })
+    
+    render(<MobileErrorHandler {...defaultProps} />)
+    
+    expect(screen.getByText(/attempting recovery/i)).toBeInTheDocument()
+    expect(screen.getByText(/attempt 2/i)).toBeInTheDocument()
+  })
+
+  it('should show network status when offline', () => {
+    mockUseNetworkState.mockReturnValue({
+      networkState: {
+        isOnline: false,
+        type: 'none',
+        effectiveType: 'slow-2g',
+        downlink: 0,
+        rtt: 0,
+        saveData: false,
+        quality: 'offline',
+        isWeddingEmergency: false
+      }
+    })
+    
+    render(<MobileErrorHandler {...defaultProps} />)
+    
+    expect(screen.getByText(/offline/i)).toBeInTheDocument()
+    expect(screen.getByText(/connection will resume automatically/i)).toBeInTheDocument()
+  })
+
+  it('should show battery warning when battery is low', () => {
+    mockUseDeviceCapabilities.mockReturnValue({
+      capabilities: {
+        hasCamera: true,
+        hasMicrophone: true,
+        hasGPS: true,
+        batteryLevel: 0.1, // 10% battery
+        isCharging: false,
+        isBatteryLow: true,
+        deviceMemory: 4,
+        hardwareConcurrency: 2,
+        connectionType: 'cellular',
+        isWeddingOptimizedDevice: false
+      }
+    })
+    
+    render(<MobileErrorHandler {...defaultProps} />)
+    
+    expect(screen.getByText(/low battery/i)).toBeInTheDocument()
+    expect(screen.getByText(/10%/i)).toBeInTheDocument()
+  })
+
+  it('should handle retry button click', () => {
+    mockUseMobileErrorRecovery.mockReturnValue({
+      isRecovering: false,
+      recoveryAttempts: 1,
+      lastError: new Error('API call failed'),
+      recoveryStrategy: 'standard',
+      canRetry: true,
+      handleError: mockHandleError,
+      clearError: mockClearError
+    })
+    
+    render(<MobileErrorHandler {...defaultProps} />)
+    
+    const retryButton = screen.getByText(/try again/i)
+    fireEvent.click(retryButton)
+    
+    expect(mockClearError).toHaveBeenCalled()
+  })
+
+  it('should disable retry button when cannot retry', () => {
+    mockUseMobileErrorRecovery.mockReturnValue({
+      isRecovering: false,
+      recoveryAttempts: 5,
+      lastError: new Error('Persistent failure'),
+      recoveryStrategy: 'standard',
+      canRetry: false,
+      handleError: mockHandleError,
+      clearError: mockClearError
+    })
+    
+    render(<MobileErrorHandler {...defaultProps} />)
+    
+    const retryButton = screen.getByText(/try again/i)
+    expect(retryButton).toBeDisabled()
+  })
+
+  it('should show emergency contact button on wedding day', () => {
+    mockUseMobileErrorRecovery.mockReturnValue({
+      isRecovering: false,
+      recoveryAttempts: 2,
+      lastError: new Error('Critical error'),
+      recoveryStrategy: 'wedding_emergency',
+      canRetry: true,
+      handleError: mockHandleError,
+      clearError: mockClearError
+    })
+    
+    render(<MobileErrorHandler {...defaultProps} isWeddingDay={true} />)
+    
+    const emergencyButton = screen.getByText(/emergency support/i)
+    expect(emergencyButton).toBeInTheDocument()
+    
+    fireEvent.click(emergencyButton)
+    expect(defaultProps.onEmergencyContact).toHaveBeenCalled()
+  })
+
+  it('should show appropriate error icons for different error types', () => {
+    const errorTypes = [
+      { error: new Error('Network timeout'), expectedIcon: 'wifi-off' },
+      { error: new Error('Photo upload failed'), expectedIcon: 'camera-off' },
+      { error: new Error('Payment failed'), expectedIcon: 'credit-card' },
+      { error: new Error('GPS location failed'), expectedIcon: 'map-pin-off' }
+    ]
+    
+    errorTypes.forEach(({ error }) => {
+      mockUseMobileErrorRecovery.mockReturnValue({
+        isRecovering: false,
+        recoveryAttempts: 1,
+        lastError: error,
+        recoveryStrategy: 'standard',
+        canRetry: true,
+        handleError: mockHandleError,
+        clearError: mockClearError
+      })
+      
+      const { unmount } = render(<MobileErrorHandler {...defaultProps} />)
+      
+      // Error overlay should be visible
+      expect(screen.getByText(/error occurred/i)).toBeInTheDocument()
+      
+      unmount()
+    })
+  })
+
+  it('should handle touch gestures properly (swipe to dismiss)', async () => {
+    mockUseMobileErrorRecovery.mockReturnValue({
+      isRecovering: false,
+      recoveryAttempts: 1,
+      lastError: new Error('Minor error'),
+      recoveryStrategy: 'standard',
+      canRetry: true,
+      handleError: mockHandleError,
+      clearError: mockClearError
+    })
+    
+    render(<MobileErrorHandler {...defaultProps} />)
+    
+    const errorOverlay = screen.getByText(/error occurred/i).closest('div')
+    expect(errorOverlay).toBeInTheDocument()
+    
+    // Simulate swipe gesture
+    fireEvent.touchStart(errorOverlay!, {
+      touches: [{ clientX: 100, clientY: 100 }]
+    })
+    fireEvent.touchMove(errorOverlay!, {
+      touches: [{ clientX: 250, clientY: 100 }]
+    })
+    fireEvent.touchEnd(errorOverlay!)
+    
+    await waitFor(() => {
+      expect(mockClearError).toHaveBeenCalled()
+    })
+  })
+
+  it('should ensure minimum touch target sizes (48px)', () => {
+    mockUseMobileErrorRecovery.mockReturnValue({
+      isRecovering: false,
+      recoveryAttempts: 1,
+      lastError: new Error('Test error'),
+      recoveryStrategy: 'standard',
+      canRetry: true,
+      handleError: mockHandleError,
+      clearError: mockClearError
+    })
+    
+    render(<MobileErrorHandler {...defaultProps} />)
+    
+    const retryButton = screen.getByText(/try again/i)
+    const computedStyle = window.getComputedStyle(retryButton)
+    
+    // Button should meet minimum touch target size
+    expect(retryButton).toHaveStyle({
+      minHeight: '48px',
+      minWidth: '48px'
+    })
+  })
+
+  it('should show different recovery strategies appropriately', () => {
+    const strategies = [
+      { strategy: 'standard', expectedText: /standard recovery/i },
+      { strategy: 'aggressive', expectedText: /quick retry/i },
+      { strategy: 'conservative', expectedText: /conserving battery/i },
+      { strategy: 'wedding_emergency', expectedText: /emergency mode/i },
+      { strategy: 'offline_mode', expectedText: /offline mode/i }
+    ]
+    
+    strategies.forEach(({ strategy, expectedText }) => {
+      mockUseMobileErrorRecovery.mockReturnValue({
+        isRecovering: false,
+        recoveryAttempts: 1,
+        lastError: new Error('Test error'),
+        recoveryStrategy: strategy as any,
+        canRetry: true,
+        handleError: mockHandleError,
+        clearError: mockClearError
+      })
+      
+      const { unmount } = render(<MobileErrorHandler {...defaultProps} />)
+      
+      // Strategy indicator should be visible
+      expect(screen.getByText(expectedText)).toBeInTheDocument()
+      
+      unmount()
+    })
+  })
+
+  it('should handle poor network quality warnings', () => {
+    mockUseNetworkState.mockReturnValue({
+      networkState: {
+        isOnline: true,
+        type: 'cellular',
+        effectiveType: 'slow-2g',
+        downlink: 0.3,
+        rtt: 2000,
+        saveData: false,
+        quality: 'poor',
+        isWeddingEmergency: true
+      }
+    })
+    
+    render(<MobileErrorHandler {...defaultProps} isWeddingDay={true} />)
+    
+    expect(screen.getByText(/poor connection detected/i)).toBeInTheDocument()
+    expect(screen.getByText(/wedding emergency mode/i)).toBeInTheDocument()
+  })
+
+  it('should provide accessibility features', () => {
+    mockUseMobileErrorRecovery.mockReturnValue({
+      isRecovering: false,
+      recoveryAttempts: 1,
+      lastError: new Error('Accessibility test error'),
+      recoveryStrategy: 'standard',
+      canRetry: true,
+      handleError: mockHandleError,
+      clearError: mockClearError
+    })
+    
+    render(<MobileErrorHandler {...defaultProps} />)
+    
+    const errorOverlay = screen.getByRole('alert')
+    expect(errorOverlay).toBeInTheDocument()
+    expect(errorOverlay).toHaveAttribute('aria-live', 'polite')
+    
+    const retryButton = screen.getByText(/try again/i)
+    expect(retryButton).toHaveAttribute('aria-describedby')
+  })
+})

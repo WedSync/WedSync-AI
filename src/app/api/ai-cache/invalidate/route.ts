@@ -1,0 +1,422 @@
+/**
+ * WS-241 AI Caching Strategy System - Cache Invalidation Endpoint
+ * Handles cache invalidation with wedding-specific scoping
+ * Team B - Backend Infrastructure & API Development
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import {
+  WeddingAICacheService,
+  CacheType,
+} from '@/lib/ai-cache/WeddingAICacheService';
+import { ratelimit } from '@/lib/ratelimit';
+
+// Initialize cache service
+const cacheService = new WeddingAICacheService(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  process.env.REDIS_URL || 'redis://localhost:6379',
+);
+
+export async function POST(request: NextRequest) {
+  try {
+    const startTime = Date.now();
+
+    // Rate limiting - 10 invalidations per minute per user (more restrictive)
+    const identifier = request.headers.get('x-forwarded-for') || 'anonymous';
+    const { success, limit, remaining, reset } = await ratelimit.limit(
+      `invalidate:${identifier}`,
+    );
+
+    if (!success) {
+      return NextResponse.json(
+        { error: 'Too many invalidation requests. Please try again later.' },
+        {
+          status: 429,
+          headers: {
+            'X-RateLimit-Limit': limit.toString(),
+            'X-RateLimit-Remaining': remaining.toString(),
+            'X-RateLimit-Reset': reset.toString(),
+          },
+        },
+      );
+    }
+
+    // Parse request body
+    const body = await request.json();
+    const {
+      weddingId,
+      cacheTypes,
+      scope = 'wedding',
+      reason,
+      force = false,
+    } = body as {
+      weddingId?: string;
+      cacheTypes?: CacheType[];
+      scope?: 'global' | 'wedding' | 'user' | 'location';
+      reason?: string;
+      force?: boolean;
+    };
+
+    // Authentication check
+    const supabase = createRouteHandlerClient({ cookies: cookies() });
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized. Please log in to invalidate cache.' },
+        { status: 401 },
+      );
+    }
+
+    // Get user's organization and role
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id, role')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!profile?.organization_id) {
+      return NextResponse.json(
+        { error: 'User profile not found or no organization associated' },
+        { status: 404 },
+      );
+    }
+
+    // Authorization checks based on scope
+    const isAdmin = profile.role === 'OWNER' || profile.role === 'ADMIN';
+
+    if (scope === 'global' && !isAdmin) {
+      return NextResponse.json(
+        { error: 'Global cache invalidation requires admin privileges' },
+        { status: 403 },
+      );
+    }
+
+    if (scope === 'wedding' && weddingId) {
+      // Verify user has access to this wedding
+      const { data: wedding } = await supabase
+        .from('weddings')
+        .select('id, organization_id')
+        .eq('id', weddingId)
+        .eq('organization_id', profile.organization_id)
+        .single();
+
+      if (!wedding) {
+        return NextResponse.json(
+          { error: 'Wedding not found or access denied' },
+          { status: 404 },
+        );
+      }
+    }
+
+    // Safety check for global invalidations
+    if (scope === 'global' && !force) {
+      return NextResponse.json(
+        {
+          error:
+            'Global cache invalidation requires force=true parameter for safety',
+          warning:
+            'This will invalidate all cached data across the entire system',
+        },
+        { status: 400 },
+      );
+    }
+
+    console.log(
+      `Cache invalidation: scope=${scope}, cacheTypes=${cacheTypes?.join(',') || 'all'}, user=${user.id}, reason=${reason || 'not specified'}`,
+    );
+
+    // Record invalidation request for audit
+    const auditLog = {
+      user_id: user.id,
+      organization_id: profile.organization_id,
+      action: 'cache_invalidation',
+      details: {
+        scope,
+        weddingId,
+        cacheTypes,
+        reason,
+        timestamp: new Date().toISOString(),
+      },
+    };
+
+    await supabase.from('audit_logs').insert(auditLog);
+
+    // Perform cache invalidation
+    await cacheService.invalidateCache(weddingId, cacheTypes, scope);
+
+    // Get invalidation statistics
+    const stats = await getInvalidationStats(
+      supabase,
+      profile.organization_id,
+      scope,
+      cacheTypes,
+    );
+
+    const responseTimeMs = Date.now() - startTime;
+
+    return NextResponse.json(
+      {
+        success: true,
+        scope,
+        cacheTypes: cacheTypes || 'all',
+        weddingId,
+        invalidatedAt: new Date().toISOString(),
+        responseTimeMs,
+        stats,
+        auditLogged: true,
+      },
+      {
+        headers: {
+          'X-Response-Time': responseTimeMs.toString(),
+          'X-RateLimit-Remaining': remaining.toString(),
+          'X-Invalidation-Scope': scope,
+        },
+      },
+    );
+  } catch (error) {
+    console.error('Cache invalidation error:', error);
+
+    return NextResponse.json(
+      {
+        error: 'Failed to invalidate cache',
+        details: error instanceof Error ? error.message : 'Unknown error',
+        timestamp: new Date().toISOString(),
+      },
+      { status: 500 },
+    );
+  }
+}
+
+export async function GET(request: NextRequest) {
+  // Get invalidation rules and recent invalidations
+  try {
+    const url = new URL(request.url);
+    const scope = url.searchParams.get('scope');
+    const limit = parseInt(url.searchParams.get('limit') || '50');
+
+    // Authentication check
+    const supabase = createRouteHandlerClient({ cookies: cookies() });
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get user's organization
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id, role')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!profile?.organization_id) {
+      return NextResponse.json(
+        { error: 'User profile not found' },
+        { status: 404 },
+      );
+    }
+
+    // Get active invalidation rules
+    const { data: rules } = await supabase
+      .from('cache_invalidation_rules')
+      .select('*')
+      .eq('is_active', true)
+      .order('priority', { ascending: false })
+      .limit(20);
+
+    // Get recent audit logs for invalidations
+    let auditQuery = supabase
+      .from('audit_logs')
+      .select('*')
+      .eq('organization_id', profile.organization_id)
+      .eq('action', 'cache_invalidation')
+      .order('created_at', { ascending: false })
+      .limit(limit);
+
+    if (scope) {
+      auditQuery = auditQuery.contains('details', { scope });
+    }
+
+    const { data: recentInvalidations } = await auditQuery;
+
+    return NextResponse.json({
+      rules: rules || [],
+      recentInvalidations: recentInvalidations || [],
+      canInvalidateGlobal: profile.role === 'OWNER' || profile.role === 'ADMIN',
+    });
+  } catch (error) {
+    console.error('Error fetching invalidation data:', error);
+    return NextResponse.json(
+      {
+        error: 'Failed to fetch invalidation data',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+// Helper function to get invalidation statistics
+async function getInvalidationStats(
+  supabase: any,
+  organizationId: string,
+  scope: string,
+  cacheTypes?: CacheType[],
+): Promise<{
+  estimatedEntriesInvalidated: number;
+  cacheTypesAffected: CacheType[];
+  organizationImpact: boolean;
+}> {
+  try {
+    let query = supabase
+      .from('ai_cache_entries')
+      .select('cache_type', { count: 'exact', head: true })
+      .eq('validation_status', 'valid');
+
+    if (scope === 'wedding') {
+      query = query.eq('organization_id', organizationId);
+    } else if (scope === 'user') {
+      query = query.eq('organization_id', organizationId);
+    }
+
+    if (cacheTypes && cacheTypes.length > 0) {
+      query = query.in('cache_type', cacheTypes);
+    }
+
+    const { count } = await query;
+
+    // Get affected cache types
+    let typesQuery = supabase
+      .from('ai_cache_entries')
+      .select('cache_type')
+      .eq('validation_status', 'valid');
+
+    if (scope !== 'global') {
+      typesQuery = typesQuery.eq('organization_id', organizationId);
+    }
+
+    if (cacheTypes && cacheTypes.length > 0) {
+      typesQuery = typesQuery.in('cache_type', cacheTypes);
+    }
+
+    const { data: typeData } = await typesQuery.limit(100);
+    const uniqueCacheTypes = [
+      ...new Set((typeData || []).map((item) => item.cache_type)),
+    ];
+
+    return {
+      estimatedEntriesInvalidated: count || 0,
+      cacheTypesAffected: uniqueCacheTypes as CacheType[],
+      organizationImpact: scope === 'global' || scope === 'wedding',
+    };
+  } catch (error) {
+    console.error('Error getting invalidation stats:', error);
+    return {
+      estimatedEntriesInvalidated: 0,
+      cacheTypesAffected: [],
+      organizationImpact: false,
+    };
+  }
+}
+
+export async function DELETE(request: NextRequest) {
+  // Emergency cache wipe (admin only)
+  try {
+    const startTime = Date.now();
+
+    // Authentication check
+    const supabase = createRouteHandlerClient({ cookies: cookies() });
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get user's organization and role
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id, role')
+      .eq('user_id', user.id)
+      .single();
+
+    // Only owners can perform emergency cache wipe
+    if (profile?.role !== 'OWNER') {
+      return NextResponse.json(
+        { error: 'Emergency cache wipe requires owner privileges' },
+        { status: 403 },
+      );
+    }
+
+    // Parse confirmation from request
+    const body = await request.json();
+    const { confirmation, reason } = body;
+
+    if (confirmation !== 'EMERGENCY_WIPE_CONFIRMED') {
+      return NextResponse.json(
+        {
+          error: 'Emergency cache wipe requires explicit confirmation',
+          requiredConfirmation: 'EMERGENCY_WIPE_CONFIRMED',
+        },
+        { status: 400 },
+      );
+    }
+
+    console.warn(
+      `EMERGENCY CACHE WIPE initiated by user ${user.id}, org ${profile.organization_id}, reason: ${reason || 'not specified'}`,
+    );
+
+    // Record emergency action
+    await supabase.from('audit_logs').insert({
+      user_id: user.id,
+      organization_id: profile.organization_id,
+      action: 'emergency_cache_wipe',
+      details: {
+        reason,
+        timestamp: new Date().toISOString(),
+        severity: 'EMERGENCY',
+      },
+    });
+
+    // Perform global invalidation
+    await cacheService.invalidateCache(undefined, undefined, 'global');
+
+    const responseTimeMs = Date.now() - startTime;
+
+    return NextResponse.json(
+      {
+        success: true,
+        action: 'emergency_cache_wipe',
+        executedAt: new Date().toISOString(),
+        responseTimeMs,
+        warning: 'All cache data has been invalidated globally',
+      },
+      {
+        headers: {
+          'X-Emergency-Action': 'cache_wipe',
+          'X-Response-Time': responseTimeMs.toString(),
+        },
+      },
+    );
+  } catch (error) {
+    console.error('Emergency cache wipe error:', error);
+    return NextResponse.json(
+      {
+        error: 'Emergency cache wipe failed',
+        details: error instanceof Error ? error.message : 'Unknown error',
+      },
+      { status: 500 },
+    );
+  }
+}

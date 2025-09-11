@@ -1,0 +1,39 @@
+import { Metadata } from 'next';
+import { redirect } from 'next/navigation';
+import { cookies } from 'next/headers';
+import { createClient } from '@supabase/supabase-js';
+import CreatorAnalyticsDashboard from '@/components/marketplace/creator/analytics/CreatorAnalyticsDashboard';
+
+export const metadata: Metadata = {
+  title: 'Creator Analytics | WedSync Marketplace',
+  description: 'Track your template performance, revenue metrics, and optimize your marketplace presence',
+};
+
+export default async function CreatorAnalyticsPage() {
+  const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
+  
+  // Check authentication
+  const { data: { user }, error } = await supabase.auth.getUser();
+  
+  if (error || !user) {
+    redirect('/login');
+  }
+
+  // Check if user is a marketplace creator
+  const { data: creatorProfile } = await supabase
+    .from('user_profiles')
+    .select('id, role, marketplace_creator_status')
+    .eq('id', user.id)
+    .single();
+
+  // Redirect if not a creator
+  if (!creatorProfile?.marketplace_creator_status) {
+    redirect('/marketplace/creator/onboarding');
+  }
+
+  return (
+    <div className="container mx-auto py-6 px-4 max-w-7xl">
+      <CreatorAnalyticsDashboard creatorId={user.id} />
+    </div>
+  );
+}

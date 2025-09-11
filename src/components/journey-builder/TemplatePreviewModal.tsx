@@ -1,0 +1,295 @@
+'use client';
+
+import { useMemo } from 'react';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import {
+  ReactFlow,
+  Background,
+  Controls,
+  MiniMap,
+  Node,
+  Edge,
+} from '@xyflow/react';
+import '@xyflow/react/dist/style.css';
+import {
+  Clock,
+  TrendingUp,
+  Target,
+  Variable,
+  Workflow,
+  ChevronRight,
+  Copy,
+  Edit,
+} from 'lucide-react';
+import { JOURNEY_TEMPLATES } from '@/lib/journey/templates/library';
+import { JourneyTemplate } from '@/lib/journey/templates/types';
+
+interface TemplatePreviewModalProps {
+  templateId: string;
+  isOpen: boolean;
+  onClose: () => void;
+  onUse: () => void;
+}
+
+const tierColors = {
+  free: 'bg-gray-100 text-gray-800',
+  starter: 'bg-green-100 text-green-800',
+  professional: 'bg-blue-100 text-blue-800',
+  scale: 'bg-purple-100 text-purple-800',
+  enterprise: 'bg-red-100 text-red-800',
+};
+
+export function TemplatePreviewModal({
+  templateId,
+  isOpen,
+  onClose,
+  onUse,
+}: TemplatePreviewModalProps) {
+  const template = useMemo(() => {
+    return JOURNEY_TEMPLATES.find((t) => t.id === templateId);
+  }, [templateId]);
+
+  if (!template) return null;
+
+  const nodeTypes = {
+    trigger: 'input',
+    email: 'default',
+    sms: 'default',
+    form: 'default',
+    delay: 'default',
+    condition: 'default',
+    start: 'input',
+    end: 'output',
+  };
+
+  const styledNodes = template.nodes.map((node) => ({
+    ...node,
+    type: nodeTypes[node.type as keyof typeof nodeTypes] || 'default',
+    style: {
+      background:
+        node.type === 'trigger' || node.type === 'start'
+          ? '#10b981'
+          : node.type === 'email'
+            ? '#3b82f6'
+            : node.type === 'sms'
+              ? '#8b5cf6'
+              : node.type === 'form'
+                ? '#f59e0b'
+                : node.type === 'delay'
+                  ? '#6b7280'
+                  : node.type === 'condition'
+                    ? '#ef4444'
+                    : '#94a3b8',
+      color: '#fff',
+      border: '1px solid #e2e8f0',
+      borderRadius: '8px',
+      padding: '10px',
+      fontSize: '12px',
+      fontWeight: 500,
+    },
+  }));
+
+  return (
+    <Dialog open={isOpen} onOpenChange={onClose}>
+      <DialogContent className="max-w-5xl max-h-[90vh] p-0">
+        <DialogHeader className="p-6 pb-0">
+          <div className="flex items-start justify-between">
+            <div>
+              <DialogTitle className="text-2xl">{template.name}</DialogTitle>
+              <DialogDescription className="mt-2">
+                {template.description}
+              </DialogDescription>
+            </div>
+            <Badge className={tierColors[template.tier]} variant="secondary">
+              {template.tier}
+            </Badge>
+          </div>
+
+          <div className="flex items-center gap-6 mt-4 text-sm text-muted-foreground">
+            <span className="flex items-center gap-1">
+              <Clock className="h-4 w-4" />
+              {template.estimatedDuration}
+            </span>
+            <span className="flex items-center gap-1">
+              <TrendingUp className="h-4 w-4" />
+              {template.popularity}% popularity
+            </span>
+            <span className="flex items-center gap-1">
+              <Workflow className="h-4 w-4" />
+              {template.nodes.length} steps
+            </span>
+          </div>
+        </DialogHeader>
+
+        <Tabs defaultValue="flow" className="flex-1">
+          <TabsList className="mx-6">
+            <TabsTrigger value="flow">Journey Flow</TabsTrigger>
+            <TabsTrigger value="details">Details</TabsTrigger>
+            <TabsTrigger value="variables">Variables</TabsTrigger>
+            <TabsTrigger value="metrics">Success Metrics</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="flow" className="m-0 h-[400px]">
+            <ReactFlow
+              nodes={styledNodes}
+              edges={template.edges}
+              fitView
+              attributionPosition="bottom-left"
+              nodesDraggable={false}
+              nodesConnectable={false}
+              elementsSelectable={false}
+            >
+              <Background />
+              <Controls showInteractive={false} />
+              <MiniMap />
+            </ReactFlow>
+          </TabsContent>
+
+          <TabsContent value="details" className="m-0 p-6">
+            <ScrollArea className="h-[400px]">
+              <div className="space-y-6">
+                <div>
+                  <h3 className="font-semibold mb-3">Key Features</h3>
+                  <div className="space-y-2">
+                    {template.features?.map((feature, idx) => (
+                      <div key={idx} className="flex items-center gap-2">
+                        <ChevronRight className="h-4 w-4 text-primary" />
+                        <span>{feature}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <h3 className="font-semibold mb-3">Journey Steps</h3>
+                  <div className="space-y-3">
+                    {template.nodes.map((node, idx) => (
+                      <div key={node.id} className="flex items-start gap-3">
+                        <div className="flex items-center justify-center w-6 h-6 rounded-full bg-primary/10 text-primary text-xs font-semibold">
+                          {idx + 1}
+                        </div>
+                        <div className="flex-1">
+                          <div className="font-medium">{node.data.label}</div>
+                          {node.data.description && (
+                            <div className="text-sm text-muted-foreground mt-1">
+                              {node.data.description}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <h3 className="font-semibold mb-3">Tags</h3>
+                  <div className="flex flex-wrap gap-2">
+                    {template.tags.map((tag) => (
+                      <Badge key={tag} variant="outline">
+                        {tag}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </ScrollArea>
+          </TabsContent>
+
+          <TabsContent value="variables" className="m-0 p-6">
+            <ScrollArea className="h-[400px]">
+              <div className="space-y-4">
+                <p className="text-sm text-muted-foreground">
+                  These variables can be customized when using this template:
+                </p>
+                {template.variables.map((variable) => (
+                  <div key={variable.key} className="border rounded-lg p-4">
+                    <div className="flex items-start justify-between mb-2">
+                      <div>
+                        <div className="font-medium flex items-center gap-2">
+                          <Variable className="h-4 w-4" />
+                          {variable.label}
+                        </div>
+                        <code className="text-xs text-muted-foreground mt-1">
+                          {`{{${variable.key}}}`}
+                        </code>
+                      </div>
+                      <Badge variant="outline">{variable.type}</Badge>
+                    </div>
+                    {variable.description && (
+                      <p className="text-sm text-muted-foreground mt-2">
+                        {variable.description}
+                      </p>
+                    )}
+                    {variable.defaultValue && (
+                      <div className="mt-2 text-sm">
+                        <span className="text-muted-foreground">Default: </span>
+                        <span className="font-mono">
+                          {variable.defaultValue}
+                        </span>
+                      </div>
+                    )}
+                    {variable.required && (
+                      <Badge variant="destructive" className="mt-2 text-xs">
+                        Required
+                      </Badge>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </ScrollArea>
+          </TabsContent>
+
+          <TabsContent value="metrics" className="m-0 p-6">
+            <ScrollArea className="h-[400px]">
+              <div className="space-y-4">
+                <p className="text-sm text-muted-foreground">
+                  Track these metrics to measure journey success:
+                </p>
+                {template.successMetrics.map((metric) => (
+                  <div key={metric.name} className="border rounded-lg p-4">
+                    <div className="flex items-start justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <Target className="h-4 w-4 text-primary" />
+                        <span className="font-medium">{metric.name}</span>
+                      </div>
+                      <Badge variant="secondary">
+                        {metric.target}
+                        {metric.unit}
+                      </Badge>
+                    </div>
+                    {metric.description && (
+                      <p className="text-sm text-muted-foreground">
+                        {metric.description}
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </ScrollArea>
+          </TabsContent>
+        </Tabs>
+
+        <DialogFooter className="p-6 pt-0">
+          <Button variant="outline" onClick={onClose}>
+            Close
+          </Button>
+          <Button onClick={onUse}>
+            <Copy className="h-4 w-4 mr-2" />
+            Use This Template
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}

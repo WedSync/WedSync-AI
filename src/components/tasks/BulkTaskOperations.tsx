@@ -1,0 +1,947 @@
+'use client';
+
+import React, { useState, useMemo } from 'react';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '@/components/ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import {
+  CheckSquare,
+  Square,
+  Users,
+  Calendar,
+  Flag,
+  Trash2,
+  Edit,
+  Download,
+  Upload,
+  MoreHorizontal,
+  Filter,
+  Search,
+  RefreshCw,
+  Loader2,
+  CheckCircle,
+  AlertTriangle,
+  Clock,
+  Archive,
+  Copy,
+  Mail,
+  MessageSquare,
+  Play,
+} from 'lucide-react';
+import { toast } from '@/components/ui/use-toast';
+
+interface BulkTaskOperationsProps {
+  tasks: {
+    id: string;
+    title: string;
+    description: string;
+    category: string;
+    priority: string;
+    status: string;
+    deadline: string;
+    estimated_duration: number;
+    assigned_to: string | null;
+    assigned_to_name?: string;
+    wedding_id: string;
+    wedding_name?: string;
+    client_name?: string;
+  }[];
+  teamMembers: {
+    id: string;
+    name: string;
+    email: string;
+    role: string;
+  }[];
+  onRefresh?: () => void;
+}
+
+interface BulkOperation {
+  type:
+    | 'assign'
+    | 'status'
+    | 'priority'
+    | 'deadline'
+    | 'delete'
+    | 'archive'
+    | 'duplicate';
+  value?: any;
+  description: string;
+}
+
+interface FilterOptions {
+  status: string[];
+  priority: string[];
+  category: string[];
+  assigned_to: string[];
+  wedding_id: string[];
+}
+
+export default function BulkTaskOperations({
+  tasks,
+  teamMembers,
+  onRefresh,
+}: BulkTaskOperationsProps) {
+  const [selectedTasks, setSelectedTasks] = useState<string[]>([]);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [filters, setFilters] = useState<FilterOptions>({
+    status: [],
+    priority: [],
+    category: [],
+    assigned_to: [],
+    wedding_id: [],
+  });
+  const [loading, setLoading] = useState(false);
+  const [showBulkEdit, setShowBulkEdit] = useState(false);
+  const [bulkOperation, setBulkOperation] = useState<BulkOperation>({
+    type: 'assign',
+    description: '',
+  });
+
+  // Filter and search tasks
+  const filteredTasks = useMemo(() => {
+    return tasks.filter((task) => {
+      // Search filter
+      const matchesSearch =
+        !searchTerm ||
+        task.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        task.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        task.client_name?.toLowerCase().includes(searchTerm.toLowerCase());
+
+      // Status filter
+      const matchesStatus =
+        filters.status.length === 0 || filters.status.includes(task.status);
+
+      // Priority filter
+      const matchesPriority =
+        filters.priority.length === 0 ||
+        filters.priority.includes(task.priority);
+
+      // Category filter
+      const matchesCategory =
+        filters.category.length === 0 ||
+        filters.category.includes(task.category);
+
+      // Assignee filter
+      const matchesAssignee =
+        filters.assigned_to.length === 0 ||
+        filters.assigned_to.includes(task.assigned_to || 'unassigned');
+
+      // Wedding filter
+      const matchesWedding =
+        filters.wedding_id.length === 0 ||
+        filters.wedding_id.includes(task.wedding_id);
+
+      return (
+        matchesSearch &&
+        matchesStatus &&
+        matchesPriority &&
+        matchesCategory &&
+        matchesAssignee &&
+        matchesWedding
+      );
+    });
+  }, [tasks, searchTerm, filters]);
+
+  const handleSelectAll = (checked: boolean) => {
+    if (checked) {
+      setSelectedTasks(filteredTasks.map((task) => task.id));
+    } else {
+      setSelectedTasks([]);
+    }
+  };
+
+  const handleSelectTask = (taskId: string, checked: boolean) => {
+    if (checked) {
+      setSelectedTasks((prev) => [...prev, taskId]);
+    } else {
+      setSelectedTasks((prev) => prev.filter((id) => id !== taskId));
+    }
+  };
+
+  const isAllSelected =
+    filteredTasks.length > 0 && selectedTasks.length === filteredTasks.length;
+  const isIndeterminate =
+    selectedTasks.length > 0 && selectedTasks.length < filteredTasks.length;
+
+  const handleBulkOperation = async () => {
+    if (selectedTasks.length === 0) {
+      toast({
+        title: 'No Tasks Selected',
+        description:
+          'Please select at least one task to perform bulk operations',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const response = await fetch('/api/tasks/bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'bulk_operation',
+          data: {
+            task_ids: selectedTasks,
+            operation: bulkOperation,
+          },
+        }),
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        toast({
+          title: 'Bulk Operation Complete',
+          description: `Successfully updated ${selectedTasks.length} tasks`,
+        });
+
+        setSelectedTasks([]);
+        setShowBulkEdit(false);
+        if (onRefresh) onRefresh();
+      } else {
+        throw new Error(data.error);
+      }
+    } catch (error) {
+      console.error('Bulk operation failed:', error);
+      toast({
+        title: 'Operation Failed',
+        description: 'Failed to perform bulk operation',
+        variant: 'destructive',
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleQuickAction = async (action: string, value?: any) => {
+    if (selectedTasks.length === 0) {
+      toast({
+        title: 'No Tasks Selected',
+        description: 'Please select tasks first',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const operation: BulkOperation = {
+      type: action as any,
+      value,
+      description: getActionDescription(action, value),
+    };
+
+    setBulkOperation(operation);
+    await handleBulkOperation();
+  };
+
+  const getActionDescription = (action: string, value?: any): string => {
+    switch (action) {
+      case 'status':
+        return `Change status to ${value}`;
+      case 'priority':
+        return `Change priority to ${value}`;
+      case 'assign':
+        const member = teamMembers.find((m) => m.id === value);
+        return `Assign to ${member?.name || 'Unassigned'}`;
+      case 'delete':
+        return 'Delete selected tasks';
+      case 'archive':
+        return 'Archive selected tasks';
+      case 'duplicate':
+        return 'Duplicate selected tasks';
+      default:
+        return action;
+    }
+  };
+
+  const getStatusColor = (status: string) => {
+    const colors = {
+      todo: 'bg-gray-100 text-gray-800',
+      in_progress: 'bg-blue-100 text-blue-800',
+      review: 'bg-yellow-100 text-yellow-800',
+      completed: 'bg-green-100 text-green-800',
+      blocked: 'bg-red-100 text-red-800',
+      cancelled: 'bg-gray-100 text-gray-600',
+    };
+    return colors[status as keyof typeof colors] || 'bg-gray-100 text-gray-800';
+  };
+
+  const getPriorityColor = (priority: string) => {
+    const colors = {
+      critical: 'bg-red-100 text-red-800',
+      high: 'bg-orange-100 text-orange-800',
+      medium: 'bg-yellow-100 text-yellow-800',
+      low: 'bg-green-100 text-green-800',
+    };
+    return (
+      colors[priority as keyof typeof colors] || 'bg-gray-100 text-gray-800'
+    );
+  };
+
+  const uniqueValues = {
+    statuses: [...new Set(tasks.map((t) => t.status))],
+    priorities: [...new Set(tasks.map((t) => t.priority))],
+    categories: [...new Set(tasks.map((t) => t.category))],
+    weddings: [
+      ...new Set(
+        tasks.map((t) => ({
+          id: t.wedding_id,
+          name: t.wedding_name || t.wedding_id,
+        })),
+      ),
+    ],
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Header with Actions */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <h2 className="text-lg font-semibold">Bulk Task Operations</h2>
+          {selectedTasks.length > 0 && (
+            <Badge variant="secondary">
+              {selectedTasks.length} task{selectedTasks.length !== 1 ? 's' : ''}{' '}
+              selected
+            </Badge>
+          )}
+        </div>
+
+        <div className="flex items-center gap-2">
+          {selectedTasks.length > 0 && (
+            <>
+              {/* Quick Actions */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm">
+                    Quick Actions
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent>
+                  <DropdownMenuItem
+                    onClick={() => handleQuickAction('status', 'completed')}
+                  >
+                    <CheckCircle className="h-4 w-4 mr-2" />
+                    Mark as Complete
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => handleQuickAction('status', 'in_progress')}
+                  >
+                    <Play className="h-4 w-4 mr-2" />
+                    Mark as In Progress
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    onClick={() => handleQuickAction('priority', 'high')}
+                  >
+                    <Flag className="h-4 w-4 mr-2" />
+                    Set High Priority
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => handleQuickAction('priority', 'low')}
+                  >
+                    <Flag className="h-4 w-4 mr-2" />
+                    Set Low Priority
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    onClick={() => handleQuickAction('duplicate')}
+                  >
+                    <Copy className="h-4 w-4 mr-2" />
+                    Duplicate Tasks
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => handleQuickAction('archive')}
+                  >
+                    <Archive className="h-4 w-4 mr-2" />
+                    Archive Tasks
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+
+              <Dialog open={showBulkEdit} onOpenChange={setShowBulkEdit}>
+                <DialogTrigger asChild>
+                  <Button size="sm">
+                    <Edit className="h-4 w-4 mr-2" />
+                    Bulk Edit
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="max-w-md">
+                  <DialogHeader>
+                    <DialogTitle>
+                      Bulk Edit {selectedTasks.length} Tasks
+                    </DialogTitle>
+                    <DialogDescription>
+                      Apply changes to all selected tasks
+                    </DialogDescription>
+                  </DialogHeader>
+
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <Label>Operation</Label>
+                      <Select
+                        value={bulkOperation.type}
+                        onValueChange={(value) =>
+                          setBulkOperation((prev) => ({
+                            ...prev,
+                            type: value as any,
+                          }))
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="assign">
+                            Change Assignee
+                          </SelectItem>
+                          <SelectItem value="status">Change Status</SelectItem>
+                          <SelectItem value="priority">
+                            Change Priority
+                          </SelectItem>
+                          <SelectItem value="deadline">
+                            Update Deadline
+                          </SelectItem>
+                          <SelectItem value="delete">Delete Tasks</SelectItem>
+                          <SelectItem value="archive">Archive Tasks</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    {bulkOperation.type === 'assign' && (
+                      <div className="space-y-2">
+                        <Label>Assign To</Label>
+                        <Select
+                          value={bulkOperation.value || ''}
+                          onValueChange={(value) =>
+                            setBulkOperation((prev) => ({ ...prev, value }))
+                          }
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select team member" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="">Unassigned</SelectItem>
+                            {teamMembers.map((member) => (
+                              <SelectItem key={member.id} value={member.id}>
+                                {member.name} ({member.role})
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
+
+                    {bulkOperation.type === 'status' && (
+                      <div className="space-y-2">
+                        <Label>New Status</Label>
+                        <Select
+                          value={bulkOperation.value || ''}
+                          onValueChange={(value) =>
+                            setBulkOperation((prev) => ({ ...prev, value }))
+                          }
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select status" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="todo">To Do</SelectItem>
+                            <SelectItem value="in_progress">
+                              In Progress
+                            </SelectItem>
+                            <SelectItem value="review">Review</SelectItem>
+                            <SelectItem value="completed">Completed</SelectItem>
+                            <SelectItem value="blocked">Blocked</SelectItem>
+                            <SelectItem value="cancelled">Cancelled</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
+
+                    {bulkOperation.type === 'priority' && (
+                      <div className="space-y-2">
+                        <Label>New Priority</Label>
+                        <Select
+                          value={bulkOperation.value || ''}
+                          onValueChange={(value) =>
+                            setBulkOperation((prev) => ({ ...prev, value }))
+                          }
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select priority" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="critical">Critical</SelectItem>
+                            <SelectItem value="high">High</SelectItem>
+                            <SelectItem value="medium">Medium</SelectItem>
+                            <SelectItem value="low">Low</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
+
+                    {bulkOperation.type === 'deadline' && (
+                      <div className="space-y-2">
+                        <Label>New Deadline</Label>
+                        <Input
+                          type="datetime-local"
+                          value={bulkOperation.value || ''}
+                          onChange={(e) =>
+                            setBulkOperation((prev) => ({
+                              ...prev,
+                              value: e.target.value,
+                            }))
+                          }
+                        />
+                      </div>
+                    )}
+
+                    <div className="flex justify-end gap-2 pt-4">
+                      <Button
+                        variant="outline"
+                        onClick={() => setShowBulkEdit(false)}
+                      >
+                        Cancel
+                      </Button>
+                      <Button onClick={handleBulkOperation} disabled={loading}>
+                        {loading && (
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        )}
+                        Apply Changes
+                      </Button>
+                    </div>
+                  </div>
+                </DialogContent>
+              </Dialog>
+
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button variant="destructive" size="sm">
+                    <Trash2 className="h-4 w-4 mr-2" />
+                    Delete
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>
+                      Delete {selectedTasks.length} Tasks?
+                    </AlertDialogTitle>
+                    <AlertDialogDescription>
+                      This action cannot be undone. This will permanently delete
+                      the selected tasks.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction
+                      onClick={() => handleQuickAction('delete')}
+                      className="bg-red-600 hover:bg-red-700"
+                    >
+                      Delete Tasks
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Filters and Search */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Filters & Search</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
+            <div className="space-y-2">
+              <Label>Search</Label>
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
+                <Input
+                  placeholder="Search tasks..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="pl-10"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Status</Label>
+              <Select
+                value={filters.status.join(',')}
+                onValueChange={(value) =>
+                  setFilters((prev) => ({
+                    ...prev,
+                    status: value ? value.split(',') : [],
+                  }))
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="All statuses" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">All Statuses</SelectItem>
+                  {uniqueValues.statuses.map((status) => (
+                    <SelectItem key={status} value={status}>
+                      {status.replace('_', ' ').toUpperCase()}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Priority</Label>
+              <Select
+                value={filters.priority.join(',')}
+                onValueChange={(value) =>
+                  setFilters((prev) => ({
+                    ...prev,
+                    priority: value ? value.split(',') : [],
+                  }))
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="All priorities" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">All Priorities</SelectItem>
+                  {uniqueValues.priorities.map((priority) => (
+                    <SelectItem key={priority} value={priority}>
+                      {priority.toUpperCase()}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Category</Label>
+              <Select
+                value={filters.category.join(',')}
+                onValueChange={(value) =>
+                  setFilters((prev) => ({
+                    ...prev,
+                    category: value ? value.split(',') : [],
+                  }))
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="All categories" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">All Categories</SelectItem>
+                  {uniqueValues.categories.map((category) => (
+                    <SelectItem key={category} value={category}>
+                      {category.replace('_', ' ').toUpperCase()}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Assignee</Label>
+              <Select
+                value={filters.assigned_to.join(',')}
+                onValueChange={(value) =>
+                  setFilters((prev) => ({
+                    ...prev,
+                    assigned_to: value ? value.split(',') : [],
+                  }))
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="All assignees" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">All Assignees</SelectItem>
+                  <SelectItem value="unassigned">Unassigned</SelectItem>
+                  {teamMembers.map((member) => (
+                    <SelectItem key={member.id} value={member.id}>
+                      {member.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="flex items-end">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setSearchTerm('');
+                  setFilters({
+                    status: [],
+                    priority: [],
+                    category: [],
+                    assigned_to: [],
+                    wedding_id: [],
+                  });
+                }}
+                className="w-full"
+              >
+                <RefreshCw className="h-4 w-4 mr-2" />
+                Clear
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Tasks Table */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle>Tasks ({filteredTasks.length})</CardTitle>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm">
+                <Download className="h-4 w-4 mr-2" />
+                Export
+              </Button>
+              <Button variant="outline" size="sm">
+                <Upload className="h-4 w-4 mr-2" />
+                Import
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-12">
+                  <Checkbox
+                    checked={isAllSelected}
+                    indeterminate={isIndeterminate}
+                    onCheckedChange={handleSelectAll}
+                  />
+                </TableHead>
+                <TableHead>Task</TableHead>
+                <TableHead>Wedding</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Priority</TableHead>
+                <TableHead>Assignee</TableHead>
+                <TableHead>Deadline</TableHead>
+                <TableHead>Duration</TableHead>
+                <TableHead className="w-12"></TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {filteredTasks.length === 0 ? (
+                <TableRow>
+                  <TableCell
+                    colSpan={9}
+                    className="text-center py-8 text-gray-500"
+                  >
+                    No tasks match your filters
+                  </TableCell>
+                </TableRow>
+              ) : (
+                filteredTasks.map((task) => (
+                  <TableRow key={task.id}>
+                    <TableCell>
+                      <Checkbox
+                        checked={selectedTasks.includes(task.id)}
+                        onCheckedChange={(checked) =>
+                          handleSelectTask(task.id, checked as boolean)
+                        }
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <div>
+                        <p className="font-medium">{task.title}</p>
+                        <p className="text-sm text-gray-600">
+                          {task.category.replace('_', ' ')}
+                        </p>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <div>
+                        <p className="text-sm font-medium">
+                          {task.wedding_name || 'Untitled Wedding'}
+                        </p>
+                        <p className="text-xs text-gray-600">
+                          {task.client_name}
+                        </p>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <Badge className={getStatusColor(task.status)}>
+                        {task.status.replace('_', ' ')}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <Badge className={getPriorityColor(task.priority)}>
+                        {task.priority}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      {task.assigned_to_name ? (
+                        <div className="flex items-center gap-2">
+                          <Users className="h-4 w-4" />
+                          <span className="text-sm">
+                            {task.assigned_to_name}
+                          </span>
+                        </div>
+                      ) : (
+                        <span className="text-sm text-gray-500">
+                          Unassigned
+                        </span>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        <Clock className="h-4 w-4" />
+                        <span className="text-sm">
+                          {new Date(task.deadline).toLocaleDateString()}
+                        </span>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <span className="text-sm">
+                        {task.estimated_duration}h
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="sm">
+                            <MoreHorizontal className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent>
+                          <DropdownMenuItem>
+                            <Edit className="h-4 w-4 mr-2" />
+                            Edit
+                          </DropdownMenuItem>
+                          <DropdownMenuItem>
+                            <Copy className="h-4 w-4 mr-2" />
+                            Duplicate
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem className="text-red-600">
+                            <Trash2 className="h-4 w-4 mr-2" />
+                            Delete
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+
+      {/* Summary Stats */}
+      {selectedTasks.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Selection Summary</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="text-center">
+                <div className="text-2xl font-bold text-blue-600">
+                  {selectedTasks.length}
+                </div>
+                <p className="text-sm text-gray-600">Tasks Selected</p>
+              </div>
+              <div className="text-center">
+                <div className="text-2xl font-bold text-green-600">
+                  {
+                    selectedTasks.filter((id) => {
+                      const task = tasks.find((t) => t.id === id);
+                      return task?.status === 'completed';
+                    }).length
+                  }
+                </div>
+                <p className="text-sm text-gray-600">Completed</p>
+              </div>
+              <div className="text-center">
+                <div className="text-2xl font-bold text-orange-600">
+                  {
+                    selectedTasks.filter((id) => {
+                      const task = tasks.find((t) => t.id === id);
+                      return !task?.assigned_to;
+                    }).length
+                  }
+                </div>
+                <p className="text-sm text-gray-600">Unassigned</p>
+              </div>
+              <div className="text-center">
+                <div className="text-2xl font-bold text-red-600">
+                  {
+                    selectedTasks.filter((id) => {
+                      const task = tasks.find((t) => t.id === id);
+                      return (
+                        task &&
+                        new Date(task.deadline) < new Date() &&
+                        task.status !== 'completed'
+                      );
+                    }).length
+                  }
+                </div>
+                <p className="text-sm text-gray-600">Overdue</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}

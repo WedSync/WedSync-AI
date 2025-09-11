@@ -1,0 +1,145 @@
+/**
+ * GDPR Data Export API
+ * GET /api/gdpr/export/data-subject/[id]
+ * WS-149: Exports all personal data for a data subject
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { gdprService } from '@/lib/services/gdpr-compliance-service';
+
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { id: string } },
+) {
+  try {
+    const supabase = createClient();
+    const dataSubjectId = params.id;
+
+    // Check authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Check if user has permission to export this data
+    // Users can export their own data, admins can export any data
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('role')
+      .eq('id', user.id)
+      .single();
+
+    const isAdmin =
+      profile?.role === 'admin' ||
+      profile?.role === 'dpo' ||
+      profile?.role === 'privacy_officer';
+
+    if (dataSubjectId !== user.id && !isAdmin) {
+      return NextResponse.json({ error: 'Permission denied' }, { status: 403 });
+    }
+
+    // Export user data
+    const exportData = await exportUserData(dataSubjectId);
+
+    // Return the export data
+    return NextResponse.json(exportData);
+  } catch (error) {
+    console.error('Error exporting data:', error);
+    return NextResponse.json(
+      { error: 'Failed to export data' },
+      { status: 500 },
+    );
+  }
+}
+
+async function exportUserData(dataSubjectId: string) {
+  const supabase = createClient();
+
+  // Fetch all user data from various tables
+  const [profile, consents, communications, files] = await Promise.all([
+    // User profile
+    supabase.from('user_profiles').select('*').eq('id', dataSubjectId).single(),
+
+    // Consent records
+    supabase
+      .from('gdpr.consent_records')
+      .select('*')
+      .eq('data_subject_id', dataSubjectId),
+
+    // Communications
+    supabase
+      .from('communications')
+      .select('*')
+      .or(`sender_id.eq.${dataSubjectId},recipient_id.eq.${dataSubjectId}`),
+
+    // Files
+    supabase.from('files').select('*').eq('uploaded_by', dataSubjectId),
+  ]);
+
+  // Processing activities
+  const { data: processingActivities } = await supabase
+    .from('gdpr.processing_activities')
+    .select('*')
+    .eq('active', true);
+
+  // Count total records
+  let totalRecords = 0;
+  if (profile.data) totalRecords += 1;
+  if (consents.data) totalRecords += consents.data.length;
+  if (communications.data) totalRecords += communications.data.length;
+  if (files.data) totalRecords += files.data.length;
+
+  // Create verification hash
+  const dataString = JSON.stringify({
+    profile: profile.data,
+    consents: consents.data,
+    communications: communications.data,
+  });
+
+  const encoder = new TextEncoder();
+  const data = encoder.encode(dataString);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  const hashHex = hashArray
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+
+  return {
+    data_subject_id: dataSubjectId,
+    export_timestamp: new Date().toISOString(),
+    personal_data: {
+      profile_information: profile.data,
+      consent_history: consents.data || [],
+      communication_records: communications.data || [],
+      uploaded_files:
+        files.data?.map((f) => ({
+          filename: f.filename,
+          upload_date: f.created_at,
+          file_size: f.size,
+          file_type: f.mime_type,
+        })) || [],
+    },
+    processing_activities:
+      processingActivities?.map((activity) => ({
+        purpose: activity.purpose,
+        legal_basis: activity.legal_basis,
+        data_categories: activity.data_categories,
+        retention_period: activity.retention_period,
+        third_parties: activity.recipients || [],
+      })) || [],
+    metadata: {
+      export_format: 'json',
+      total_records: totalRecords,
+      date_range: {
+        from: profile.data?.created_at || null,
+        to: new Date().toISOString(),
+      },
+      verification_hash: hashHex,
+    },
+  };
+}

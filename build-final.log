@@ -1,0 +1,51 @@
+
+> wedsync@0.1.0 build
+> next build
+
+   ▲ Next.js 15.4.6
+   - Environments: .env.local
+   - Experiments (use with caution):
+     ✓ optimizeCss
+     ✓ reactCompiler
+
+   Creating an optimized production build ...
+ ✓ Compiled successfully in 6.0s
+   Skipping validation of types
+   Skipping linting
+   Collecting page data ...
+Generated new encryption key. Set FILE_ENCRYPTION_KEY env variable: eb882fca619fead7c7ed0de9fef74e71cb034f7657f605a3431e077f2b656c7e
+Twilio credentials not configured
+Twilio credentials not configured
+Missing Stripe price IDs: [
+  'STRIPE_PROFESSIONAL_MONTHLY_PRICE_ID',
+  'STRIPE_PROFESSIONAL_ANNUAL_PRICE_ID',
+  'STRIPE_BUSINESS_MONTHLY_PRICE_ID',
+  'STRIPE_BUSINESS_ANNUAL_PRICE_ID'
+]
+Using test mode - configure these in .env for production
+Twilio credentials not configured
+Warning: Please use the `legacy` build in Node.js environments.
+(node:89806) MetadataLookupWarning: received unexpected error = All promises were rejected code = UNKNOWN
+(Use `node --trace-warnings ...` to show where the warning was created)
+   Generating static pages (0/48) ...
+Twilio credentials not configured
+Merging inline stylesheets into a single <style> tag skipped, no inline stylesheets to merge
+Merging inline stylesheets into a single <style> tag skipped, no inline stylesheets to merge
+Generated new encryption key. Set FILE_ENCRYPTION_KEY env variable: 97480407a22b1f8b999a18408ae76b7e418eba5c4a0552bab3bac990928407dd
+   Generating static pages (12/48) 
+   Generating static pages (24/48) 
+Missing Stripe price IDs: [
+  'STRIPE_PROFESSIONAL_MONTHLY_PRICE_ID',
+  'STRIPE_PROFESSIONAL_ANNUAL_PRICE_ID',
+  'STRIPE_BUSINESS_MONTHLY_PRICE_ID',
+  'STRIPE_BUSINESS_ANNUAL_PRICE_ID'
+]
+Using test mode - configure these in .env for production
+Twilio credentials not configured
+Error occurred prerendering page "/forms/import". Read more: https://nextjs.org/docs/messages/prerender-error
+ReferenceError: Heading is not defined
+    at u (.next/server/app/forms/import/page.js:2:13508) {
+  digest: '1971344557'
+}
+Export encountered an error on /forms/import/page: /forms/import, exiting the build.
+ ⨯ Next.js build worker exited with code: 1 and signal: null

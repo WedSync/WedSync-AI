@@ -1,0 +1,327 @@
+'use client'
+
+import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import {
+  CheckCircleIcon,
+  ClockIcon,
+  UserIcon,
+  CalendarIcon
+} from '@heroicons/react/20/solid'
+import { format } from 'date-fns'
+
+interface StatusChange {
+  id: string
+  previousStatus: string | null
+  newStatus: string
+  statusChangedAt: string
+  changeReason?: string
+  notes?: string
+  timeInPreviousStatusHours?: number
+  changedByUser?: {
+    firstName: string
+    lastName: string
+  }
+  isAutomatedChange: boolean
+}
+
+interface StatusProgressionTimelineProps {
+  leadId: string
+  currentStatus: string
+  statusHistory: StatusChange[]
+  onStatusChange?: (newStatus: string) => void
+}
+
+const STATUS_CONFIG = {
+  new: { 
+    label: 'New Lead', 
+    color: 'blue', 
+    icon: '🆕',
+    description: 'Lead just entered the system'
+  },
+  contacted: { 
+    label: 'Contacted', 
+    color: 'yellow', 
+    icon: '📞',
+    description: 'Initial contact made'
+  },
+  qualified: { 
+    label: 'Qualified', 
+    color: 'green', 
+    icon: '✅',
+    description: 'Lead meets criteria'
+  },
+  quoted: { 
+    label: 'Quoted', 
+    color: 'purple', 
+    icon: '💰',
+    description: 'Proposal sent'
+  },
+  negotiating: { 
+    label: 'Negotiating', 
+    color: 'orange', 
+    icon: '🤝',
+    description: 'In discussions'
+  },
+  won: { 
+    label: 'Won', 
+    color: 'emerald', 
+    icon: '🎉',
+    description: 'Deal closed successfully'
+  },
+  lost: { 
+    label: 'Lost', 
+    color: 'red', 
+    icon: '❌',
+    description: 'Deal not successful'
+  },
+  archived: { 
+    label: 'Archived', 
+    color: 'gray', 
+    icon: '📦',
+    description: 'Lead archived'
+  }
+} as const
+
+const NEXT_STATUS_OPTIONS = {
+  new: ['contacted', 'qualified', 'lost'],
+  contacted: ['qualified', 'quoted', 'lost'],
+  qualified: ['quoted', 'negotiating', 'lost'],
+  quoted: ['negotiating', 'won', 'lost'],
+  negotiating: ['won', 'lost', 'quoted'],
+  won: ['archived'],
+  lost: ['archived'],
+  archived: []
+} as const
+
+export default function StatusProgressionTimeline({
+  leadId,
+  currentStatus,
+  statusHistory,
+  onStatusChange
+}: StatusProgressionTimelineProps) {
+  
+  const formatTimeInStatus = (hours: number | null | undefined): string => {
+    if (!hours) return 'Unknown'
+    
+    if (hours < 24) {
+      return `${Math.round(hours)}h`
+    } else if (hours < 168) { // Less than a week
+      return `${Math.round(hours / 24)}d`
+    } else {
+      return `${Math.round(hours / 168)}w`
+    }
+  }
+
+  const getStatusConfig = (status: string) => {
+    return STATUS_CONFIG[status as keyof typeof STATUS_CONFIG] || {
+      label: status,
+      color: 'gray',
+      icon: '❓',
+      description: 'Unknown status'
+    }
+  }
+
+  const getNextStatusOptions = (status: string) => {
+    return NEXT_STATUS_OPTIONS[status as keyof typeof NEXT_STATUS_OPTIONS] || []
+  }
+
+  const calculateAverageTimeInStatus = (status: string): number | null => {
+    const statusEntries = statusHistory.filter(h => h.previousStatus === status)
+    if (statusEntries.length === 0) return null
+    
+    const totalHours = statusEntries.reduce((sum, entry) => 
+      sum + (entry.timeInPreviousStatusHours || 0), 0)
+    
+    return Math.round(totalHours / statusEntries.length)
+  }
+
+  // Calculate current status duration
+  const getCurrentStatusDuration = (): string => {
+    const latestChange = statusHistory[0] // Assuming sorted by date desc
+    if (!latestChange) return 'Unknown'
+    
+    const hoursSince = Math.floor(
+      (new Date().getTime() - new Date(latestChange.statusChangedAt).getTime()) / (1000 * 60 * 60)
+    )
+    
+    return formatTimeInStatus(hoursSince)
+  }
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
+        <CardTitle className="text-lg font-semibold">Status Progression</CardTitle>
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-gray-500">
+            Current: {getCurrentStatusDuration()}
+          </span>
+          {getStatusConfig(currentStatus).icon}
+        </div>
+      </CardHeader>
+      
+      <CardContent className="space-y-6">
+        {/* Current Status */}
+        <div className="flex items-center justify-between p-4 bg-blue-50 rounded-lg">
+          <div className="flex items-center gap-3">
+            <div className="text-2xl">{getStatusConfig(currentStatus).icon}</div>
+            <div>
+              <div className="font-medium text-gray-900">
+                {getStatusConfig(currentStatus).label}
+              </div>
+              <div className="text-sm text-gray-600">
+                {getStatusConfig(currentStatus).description}
+              </div>
+            </div>
+          </div>
+          <Badge color={getStatusConfig(currentStatus).color as any}>
+            Current
+          </Badge>
+        </div>
+
+        {/* Quick Status Change */}
+        {onStatusChange && getNextStatusOptions(currentStatus).length > 0 && (
+          <div className="space-y-2">
+            <h4 className="font-medium text-gray-900">Quick Actions</h4>
+            <div className="flex flex-wrap gap-2">
+              {getNextStatusOptions(currentStatus).map((nextStatus) => {
+                const config = getStatusConfig(nextStatus)
+                return (
+                  <Button
+                    key={nextStatus}
+                    variant="outline"
+                    size="sm"
+                    onClick={() => onStatusChange(nextStatus)}
+                    className="text-xs"
+                  >
+                    <span className="mr-1">{config.icon}</span>
+                    {config.label}
+                  </Button>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Timeline */}
+        <div className="space-y-2">
+          <h4 className="font-medium text-gray-900">Status History</h4>
+          <div className="space-y-4">
+            {statusHistory.length === 0 ? (
+              <div className="text-center text-gray-500 py-8">
+                <ClockIcon className="h-8 w-8 mx-auto mb-2" />
+                <p>No status changes yet</p>
+              </div>
+            ) : (
+              statusHistory.map((change, index) => {
+                const config = getStatusConfig(change.newStatus)
+                const isLatest = index === 0
+                
+                return (
+                  <div key={change.id} className="relative flex gap-3">
+                    {/* Timeline line */}
+                    {index !== statusHistory.length - 1 && (
+                      <div className="absolute left-4 top-8 w-0.5 h-16 bg-gray-200" />
+                    )}
+                    
+                    {/* Status icon */}
+                    <div className={`flex-shrink-0 w-8 h-8 rounded-full border-2 flex items-center justify-center text-sm ${
+                      isLatest 
+                        ? 'border-blue-500 bg-blue-50' 
+                        : 'border-gray-300 bg-white'
+                    }`}>
+                      {isLatest ? (
+                        <CheckCircleIcon className="h-4 w-4 text-blue-500" />
+                      ) : (
+                        <span className="text-xs">{config.icon}</span>
+                      )}
+                    </div>
+                    
+                    {/* Status details */}
+                    <div className="flex-grow min-w-0">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium text-gray-900">
+                            {config.label}
+                          </span>
+                          {change.isAutomatedChange && (
+                            <Badge color="blue" className="text-xs">
+                              Auto
+                            </Badge>
+                          )}
+                        </div>
+                        <span className="text-xs text-gray-500">
+                          {format(new Date(change.statusChangedAt), 'MMM d, HH:mm')}
+                        </span>
+                      </div>
+                      
+                      {change.changeReason && (
+                        <div className="text-sm text-gray-600 mt-1">
+                          {change.changeReason}
+                        </div>
+                      )}
+                      
+                      {change.notes && (
+                        <div className="text-sm text-gray-500 mt-1 italic">
+                          "{change.notes}"
+                        </div>
+                      )}
+                      
+                      <div className="flex items-center gap-4 mt-2 text-xs text-gray-500">
+                        {change.changedByUser && (
+                          <div className="flex items-center gap-1">
+                            <UserIcon className="h-3 w-3" />
+                            {change.changedByUser.firstName} {change.changedByUser.lastName}
+                          </div>
+                        )}
+                        
+                        {change.timeInPreviousStatusHours && change.previousStatus && (
+                          <div className="flex items-center gap-1">
+                            <ClockIcon className="h-3 w-3" />
+                            {formatTimeInStatus(change.timeInPreviousStatusHours)} in {getStatusConfig(change.previousStatus).label.toLowerCase()}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )
+              })
+            )}
+          </div>
+        </div>
+
+        {/* Status Analytics */}
+        <div className="space-y-2 pt-4 border-t">
+          <h4 className="font-medium text-gray-900">Analytics</h4>
+          <div className="grid grid-cols-2 gap-4 text-sm">
+            <div>
+              <div className="text-gray-500">Total Status Changes</div>
+              <div className="font-medium">{statusHistory.length}</div>
+            </div>
+            <div>
+              <div className="text-gray-500">Current Duration</div>
+              <div className="font-medium">{getCurrentStatusDuration()}</div>
+            </div>
+          </div>
+          
+          {/* Average time in each status */}
+          <div className="space-y-1">
+            <div className="text-gray-500 text-sm">Average Time Per Status</div>
+            {Object.keys(STATUS_CONFIG).map((status) => {
+              const avgTime = calculateAverageTimeInStatus(status)
+              if (!avgTime) return null
+              
+              return (
+                <div key={status} className="flex justify-between text-xs">
+                  <span className="capitalize">{status}:</span>
+                  <span className="font-medium">{formatTimeInStatus(avgTime)}</span>
+                </div>
+              )
+            }).filter(Boolean)}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}

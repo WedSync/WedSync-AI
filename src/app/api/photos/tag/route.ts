@@ -1,0 +1,370 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+
+const tagSchema = z.object({
+  photoId: z.string(),
+  useAI: z.boolean().default(true),
+  manualTags: z.array(z.string()).optional(),
+});
+
+// Mock AI tagging function - in production, use OpenAI Vision API
+async function getAITags(
+  imageUrl: string,
+): Promise<Array<{ name: string; confidence: number }>> {
+  // Simulate AI processing delay
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+
+  // Mock AI tags based on wedding photography
+  const possibleTags = [
+    { name: 'couple', confidence: 0.95 },
+    { name: 'ceremony', confidence: 0.88 },
+    { name: 'outdoor', confidence: 0.92 },
+    { name: 'portrait', confidence: 0.85 },
+    { name: 'group', confidence: 0.78 },
+    { name: 'candid', confidence: 0.82 },
+    { name: 'reception', confidence: 0.75 },
+    { name: 'first-dance', confidence: 0.7 },
+    { name: 'sunset', confidence: 0.9 },
+    { name: 'golden-hour', confidence: 0.88 },
+    { name: 'rings', confidence: 0.65 },
+    { name: 'flowers', confidence: 0.72 },
+    { name: 'details', confidence: 0.68 },
+    { name: 'bride', confidence: 0.93 },
+    { name: 'groom', confidence: 0.91 },
+    { name: 'bridal-party', confidence: 0.8 },
+    { name: 'family', confidence: 0.76 },
+    { name: 'kiss', confidence: 0.69 },
+    { name: 'vows', confidence: 0.73 },
+    { name: 'celebration', confidence: 0.84 },
+  ];
+
+  // Randomly select 3-6 tags for this photo
+  const numTags = Math.floor(Math.random() * 4) + 3;
+  const selectedTags: Array<{ name: string; confidence: number }> = [];
+  const usedIndices = new Set<number>();
+
+  while (
+    selectedTags.length < numTags &&
+    usedIndices.size < possibleTags.length
+  ) {
+    const index = Math.floor(Math.random() * possibleTags.length);
+    if (!usedIndices.has(index)) {
+      usedIndices.add(index);
+      selectedTags.push(possibleTags[index]);
+    }
+  }
+
+  return selectedTags.sort((a, b) => b.confidence - a.confidence);
+}
+
+// Face detection mock - in production, use AI service
+async function detectFaces(imageUrl: string): Promise<
+  Array<{
+    id: string;
+    boundingBox: { x: number; y: number; width: number; height: number };
+    confidence: number;
+  }>
+> {
+  await new Promise((resolve) => setTimeout(resolve, 800));
+
+  // Mock face detection
+  const numFaces = Math.floor(Math.random() * 5);
+  const faces = [];
+
+  for (let i = 0; i < numFaces; i++) {
+    faces.push({
+      id: `face-${Date.now()}-${i}`,
+      boundingBox: {
+        x: Math.random() * 0.8,
+        y: Math.random() * 0.8,
+        width: 0.1 + Math.random() * 0.1,
+        height: 0.1 + Math.random() * 0.1,
+      },
+      confidence: 0.85 + Math.random() * 0.15,
+    });
+  }
+
+  return faces;
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+
+    // Check authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Parse request body
+    const body = await request.json();
+    const { photoId, useAI, manualTags } = tagSchema.parse(body);
+
+    // Get photo from database
+    const { data: photo, error: photoError } = await supabase
+      .from('photos')
+      .select('*')
+      .eq('id', photoId)
+      .single();
+
+    if (photoError || !photo) {
+      return NextResponse.json({ error: 'Photo not found' }, { status: 404 });
+    }
+
+    const allTags = [];
+    const timestamp = new Date().toISOString();
+
+    // Add manual tags if provided
+    if (manualTags && manualTags.length > 0) {
+      for (const tagName of manualTags) {
+        allTags.push({
+          id: `tag-${Date.now()}-${Math.random()}`,
+          photo_id: photoId,
+          name: tagName.toLowerCase().replace(/\s+/g, '-'),
+          type: 'manual',
+          confidence: null,
+          created_by: user.id,
+          created_at: timestamp,
+        });
+      }
+    }
+
+    // Get AI tags if requested
+    if (useAI) {
+      try {
+        // Get AI-generated tags
+        const aiTags = await getAITags(photo.url);
+
+        for (const tag of aiTags) {
+          allTags.push({
+            id: `tag-${Date.now()}-${Math.random()}`,
+            photo_id: photoId,
+            name: tag.name,
+            type: 'ai',
+            confidence: tag.confidence,
+            created_by: 'system',
+            created_at: timestamp,
+          });
+        }
+
+        // Detect faces
+        const faces = await detectFaces(photo.url);
+
+        if (faces.length > 0) {
+          // Add face detection tags
+          allTags.push({
+            id: `tag-${Date.now()}-${Math.random()}`,
+            photo_id: photoId,
+            name: `${faces.length}-faces`,
+            type: 'face',
+            confidence: Math.min(...faces.map((f) => f.confidence)),
+            created_by: 'system',
+            created_at: timestamp,
+            metadata: { faces },
+          });
+
+          // Store face data for future recognition
+          await supabase.from('photo_faces').insert(
+            faces.map((face) => ({
+              photo_id: photoId,
+              face_id: face.id,
+              bounding_box: face.boundingBox,
+              confidence: face.confidence,
+              created_at: timestamp,
+            })),
+          );
+        }
+      } catch (aiError) {
+        console.error('AI tagging error:', aiError);
+        // Continue without AI tags if there's an error
+      }
+    }
+
+    // Insert tags into database
+    if (allTags.length > 0) {
+      const { error: tagError } = await supabase
+        .from('photo_tags')
+        .insert(allTags);
+
+      if (tagError) {
+        console.error('Tag insertion error:', tagError);
+        return NextResponse.json(
+          { error: 'Failed to save tags' },
+          { status: 500 },
+        );
+      }
+
+      // Update photo's tags array
+      const { error: updateError } = await supabase
+        .from('photos')
+        .update({
+          tags: allTags.map((t) => ({
+            id: t.id,
+            name: t.name,
+            type: t.type,
+            confidence: t.confidence,
+            createdAt: t.created_at,
+          })),
+        })
+        .eq('id', photoId);
+
+      if (updateError) {
+        console.error('Photo update error:', updateError);
+      }
+    }
+
+    return NextResponse.json({
+      success: true,
+      photoId,
+      tags: allTags.map((t) => ({
+        id: t.id,
+        name: t.name,
+        type: t.type,
+        confidence: t.confidence,
+        createdAt: t.created_at,
+      })),
+      message: `Added ${allTags.length} tags to photo`,
+    });
+  } catch (error) {
+    console.error('Tag error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+
+    // Check authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get query parameters
+    const { searchParams } = new URL(request.url);
+    const photoId = searchParams.get('photoId');
+
+    if (!photoId) {
+      return NextResponse.json({ error: 'Photo ID required' }, { status: 400 });
+    }
+
+    // Get tags for the photo
+    const { data: tags, error } = await supabase
+      .from('photo_tags')
+      .select('*')
+      .eq('photo_id', photoId)
+      .order('confidence', { ascending: false });
+
+    if (error) {
+      console.error('Query error:', error);
+      return NextResponse.json(
+        { error: 'Failed to fetch tags' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      photoId,
+      tags: tags.map((t) => ({
+        id: t.id,
+        name: t.name,
+        type: t.type,
+        confidence: t.confidence,
+        createdAt: t.created_at,
+        createdBy: t.created_by,
+      })),
+    });
+  } catch (error) {
+    console.error('Fetch error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function DELETE(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+
+    // Check authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get tag ID from query
+    const { searchParams } = new URL(request.url);
+    const tagId = searchParams.get('tagId');
+    const photoId = searchParams.get('photoId');
+
+    if (!tagId || !photoId) {
+      return NextResponse.json(
+        { error: 'Tag ID and Photo ID required' },
+        { status: 400 },
+      );
+    }
+
+    // Delete the tag
+    const { error: deleteError } = await supabase
+      .from('photo_tags')
+      .delete()
+      .eq('id', tagId)
+      .eq('photo_id', photoId);
+
+    if (deleteError) {
+      console.error('Delete error:', deleteError);
+      return NextResponse.json(
+        { error: 'Failed to delete tag' },
+        { status: 500 },
+      );
+    }
+
+    // Update photo's tags array
+    const { data: remainingTags } = await supabase
+      .from('photo_tags')
+      .select('*')
+      .eq('photo_id', photoId);
+
+    await supabase
+      .from('photos')
+      .update({
+        tags:
+          remainingTags?.map((t) => ({
+            id: t.id,
+            name: t.name,
+            type: t.type,
+            confidence: t.confidence,
+            createdAt: t.created_at,
+          })) || [],
+      })
+      .eq('id', photoId);
+
+    return NextResponse.json({
+      success: true,
+      message: 'Tag deleted successfully',
+    });
+  } catch (error) {
+    console.error('Delete error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

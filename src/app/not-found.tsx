@@ -1,0 +1,223 @@
+'use client';
+
+import { useEffect } from 'react';
+import { Search, Home, ArrowLeft, Heart, Camera, Calendar } from 'lucide-react';
+import Link from 'next/link';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { errorTracker } from '@/lib/monitoring/error-tracking';
+
+export default function NotFound() {
+  useEffect(() => {
+    // Track 404 errors for analytics
+    errorTracker.addBreadcrumb({
+      category: 'navigation',
+      message: `404 error - Page not found: ${window.location.pathname}`,
+      level: 'info',
+      data: {
+        url: window.location.href,
+        referrer: document.referrer,
+        userAgent: navigator.userAgent,
+        timestamp: new Date().toISOString(),
+      },
+    });
+
+    // Create a synthetic error for tracking 404s
+    const notFoundError = new Error(
+      `Page not found: ${window.location.pathname}`,
+    );
+    notFoundError.name = '404Error';
+
+    errorTracker.captureError(
+      notFoundError,
+      {
+        endpoint: window.location.pathname,
+        method: 'GET',
+        timestamp: Date.now(),
+        environment: process.env.NODE_ENV || 'development',
+      },
+      {
+        error_type: '404_not_found',
+        requested_path: window.location.pathname,
+        referrer: document.referrer,
+        search_params: window.location.search,
+      },
+    );
+  }, []);
+
+  const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    const form = e.target as HTMLFormElement;
+    const formData = new FormData(form);
+    const searchTerm = formData.get('search') as string;
+
+    if (searchTerm.trim()) {
+      // Navigate to search results
+      window.location.href = `/search?q=${encodeURIComponent(searchTerm.trim())}`;
+    }
+  };
+
+  const quickLinks = [
+    {
+      title: 'Dashboard',
+      description: 'View your wedding overview',
+      href: '/',
+      icon: Home,
+      color: 'text-blue-600',
+    },
+    {
+      title: 'Clients',
+      description: 'Manage your wedding clients',
+      href: '/clients',
+      icon: Heart,
+      color: 'text-pink-600',
+    },
+    {
+      title: 'Vendors',
+      description: 'Work with wedding vendors',
+      href: '/vendors',
+      icon: Camera,
+      color: 'text-purple-600',
+    },
+    {
+      title: 'Timeline',
+      description: 'Plan your wedding timeline',
+      href: '/timeline',
+      icon: Calendar,
+      color: 'text-green-600',
+    },
+  ];
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-pink-50 flex items-center justify-center p-6">
+      <div className="max-w-2xl w-full space-y-8">
+        {/* Main 404 Card */}
+        <Card className="shadow-lg">
+          <CardHeader className="text-center pb-4">
+            <div className="flex justify-center mb-4">
+              <div className="relative">
+                <div className="w-24 h-24 bg-gradient-to-br from-pink-100 to-blue-100 rounded-full flex items-center justify-center">
+                  <span className="text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-pink-600 to-blue-600">
+                    404
+                  </span>
+                </div>
+                <div className="absolute -top-2 -right-2 w-8 h-8 bg-yellow-400 rounded-full flex items-center justify-center">
+                  <Search className="w-4 h-4 text-yellow-800" />
+                </div>
+              </div>
+            </div>
+            <CardTitle className="text-3xl font-bold text-gray-900">
+              Page Not Found
+            </CardTitle>
+            <p className="text-lg text-muted-foreground max-w-md mx-auto">
+              Oops! The wedding page you're looking for seems to have wandered
+              off to the reception.
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            {/* Current Path Display */}
+            <div className="p-4 bg-gray-50 rounded-lg">
+              <p className="text-sm text-gray-600 mb-1">
+                You were looking for:
+              </p>
+              <code className="text-sm font-mono text-red-600 break-all">
+                {typeof window !== 'undefined' ? window.location.pathname : ''}
+              </code>
+            </div>
+
+            {/* Search Form */}
+            <form onSubmit={handleSearch} className="space-y-3">
+              <p className="text-sm font-medium text-gray-700">
+                Search for what you need:
+              </p>
+              <div className="flex gap-2">
+                <Input
+                  name="search"
+                  placeholder="Search clients, vendors, or features..."
+                  className="flex-1"
+                />
+                <Button type="submit" className="flex items-center gap-2">
+                  <Search className="w-4 h-4" />
+                  Search
+                </Button>
+              </div>
+            </form>
+
+            {/* Action Buttons */}
+            <div className="flex gap-3">
+              <Button
+                variant="outline"
+                onClick={() => window.history.back()}
+                className="flex-1 flex items-center justify-center gap-2"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                Go Back
+              </Button>
+              <Link href="/" className="flex-1">
+                <Button className="w-full flex items-center justify-center gap-2">
+                  <Home className="w-4 h-4" />
+                  Dashboard
+                </Button>
+              </Link>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Quick Links */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-xl">Popular Destinations</CardTitle>
+            <p className="text-muted-foreground">
+              Here are some places you might want to visit:
+            </p>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {quickLinks.map((link) => {
+                const Icon = link.icon;
+                return (
+                  <Link
+                    key={link.href}
+                    href={link.href}
+                    className="p-4 border rounded-lg hover:shadow-md transition-all hover:border-primary/50 group"
+                  >
+                    <div className="flex items-start gap-3">
+                      <div
+                        className={`p-2 rounded-lg bg-gray-50 group-hover:bg-primary/10 transition-colors`}
+                      >
+                        <Icon
+                          className={`w-5 h-5 ${link.color} group-hover:text-primary`}
+                        />
+                      </div>
+                      <div className="flex-1">
+                        <h3 className="font-semibold text-gray-900 group-hover:text-primary transition-colors">
+                          {link.title}
+                        </h3>
+                        <p className="text-sm text-muted-foreground">
+                          {link.description}
+                        </p>
+                      </div>
+                    </div>
+                  </Link>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Wedding-themed Footer Message */}
+        <div className="text-center">
+          <p className="text-sm text-muted-foreground">
+            💍 Don't worry - even the best wedding plans sometimes need a little
+            redirect! 💒
+          </p>
+          <p className="text-xs text-muted-foreground mt-2">
+            If you think this page should exist, please contact our support
+            team.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}

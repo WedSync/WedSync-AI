@@ -1,0 +1,378 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import {
+  Domain,
+  DomainTableRow,
+  DomainMetrics,
+  CreateDomainRequest,
+  DomainFilters,
+  DomainSort,
+} from '@/types/domains';
+import { validateDomainForm } from '@/lib/domains/validation';
+
+/**
+ * GET /api/domains - List domains for organization with filtering and metrics
+ */
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+
+    // Verify authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 },
+      );
+    }
+
+    // Get user's organization
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id, role')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!profile?.organization_id) {
+      return NextResponse.json(
+        { error: 'Organization not found' },
+        { status: 404 },
+      );
+    }
+
+    // Parse query parameters
+    const { searchParams } = new URL(request.url);
+    const status = searchParams.get('status')?.split(',') || [];
+    const healthStatus = searchParams.get('health_status')?.split(',') || [];
+    const sslStatus = searchParams.get('ssl_status')?.split(',') || [];
+    const hasAlerts =
+      searchParams.get('has_alerts') === 'true' ? true : undefined;
+    const search = searchParams.get('search') || '';
+    const sort = searchParams.get('sort') || 'created_at:desc';
+    const page = parseInt(searchParams.get('page') || '1');
+    const perPage = parseInt(searchParams.get('per_page') || '10');
+
+    // Build base query
+    let domainsQuery = supabase
+      .from('domains')
+      .select(
+        `
+        *,
+        dns_records(count),
+        ssl_certificates!inner(status, expires_at),
+        domain_alerts!inner(id, is_resolved, severity),
+        domain_health_checks!inner(status, response_time_ms, checked_at)
+      `,
+      )
+      .eq('organization_id', profile.organization_id);
+
+    // Apply filters
+    if (status.length > 0) {
+      domainsQuery = domainsQuery.in('status', status);
+    }
+
+    if (search) {
+      domainsQuery = domainsQuery.or(`
+        domain_name.ilike.%${search}%,
+        subdomain.ilike.%${search}%,
+        full_domain.ilike.%${search}%
+      `);
+    }
+
+    // Apply sorting
+    const [sortField, sortDirection] = sort.split(':');
+    const ascending = sortDirection === 'asc';
+    domainsQuery = domainsQuery.order(sortField as keyof Domain, { ascending });
+
+    // Apply pagination
+    const from = (page - 1) * perPage;
+    const to = from + perPage - 1;
+    domainsQuery = domainsQuery.range(from, to);
+
+    const {
+      data: domainsData,
+      error: domainsError,
+      count,
+    } = await domainsQuery;
+
+    if (domainsError) {
+      console.error('Error fetching domains:', domainsError);
+      return NextResponse.json(
+        { error: 'Failed to fetch domains' },
+        { status: 500 },
+      );
+    }
+
+    // Transform data to include computed fields
+    const domains: DomainTableRow[] = (domainsData || []).map((domain) => {
+      // Get latest health check
+      const latestHealthCheck = domain.domain_health_checks?.sort(
+        (a: any, b: any) =>
+          new Date(b.checked_at).getTime() - new Date(a.checked_at).getTime(),
+      )[0];
+
+      // Get active SSL certificate
+      const activeCert = domain.ssl_certificates?.find(
+        (cert: any) => cert.status === 'active',
+      );
+
+      // Count unresolved alerts
+      const unresolvedAlerts =
+        domain.domain_alerts?.filter((alert: any) => !alert.is_resolved) || [];
+
+      // Calculate days until SSL expiry
+      let daysUntilSslExpiry: number | undefined;
+      if (activeCert?.expires_at) {
+        const now = new Date();
+        const expiry = new Date(activeCert.expires_at);
+        const diffTime = expiry.getTime() - now.getTime();
+        daysUntilSslExpiry = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      }
+
+      return {
+        ...domain,
+        health_status: latestHealthCheck?.status,
+        ssl_expires_at: activeCert?.expires_at,
+        days_until_ssl_expiry: daysUntilSslExpiry,
+        unresolved_alerts_count: unresolvedAlerts.length,
+        response_time_ms: latestHealthCheck?.response_time_ms,
+      };
+    });
+
+    // Calculate metrics
+    const metrics: DomainMetrics = {
+      total_domains: count || 0,
+      verified_domains: domains.filter((d) => d.status === 'verified').length,
+      active_domains: domains.filter((d) => d.status === 'active').length,
+      pending_verifications: domains.filter(
+        (d) => d.status === 'pending' || d.status === 'verifying',
+      ).length,
+      expiring_certificates: domains.filter(
+        (d) =>
+          d.days_until_ssl_expiry !== undefined &&
+          d.days_until_ssl_expiry <= 30,
+      ).length,
+      critical_alerts: domains.reduce(
+        (sum, d) => sum + d.unresolved_alerts_count,
+        0,
+      ),
+      average_response_time: domains.reduce((sum, d, _, arr) => {
+        const responseTime = d.response_time_ms || 0;
+        return sum + responseTime / arr.length;
+      }, 0),
+    };
+
+    return NextResponse.json({
+      domains,
+      metrics,
+      total_count: count,
+      page,
+      per_page: perPage,
+    });
+  } catch (error) {
+    console.error('Unexpected error in GET /api/domains:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * POST /api/domains - Create a new domain
+ */
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+
+    // Verify authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 },
+      );
+    }
+
+    // Get user's organization and role
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id, role')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!profile?.organization_id) {
+      return NextResponse.json(
+        { error: 'Organization not found' },
+        { status: 404 },
+      );
+    }
+
+    // Check permissions (only owners and admins can manage domains)
+    if (!['owner', 'admin'].includes(profile.role)) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions' },
+        { status: 403 },
+      );
+    }
+
+    // Parse and validate request body
+    const body: CreateDomainRequest = await request.json();
+
+    const validationResult = validateDomainForm({
+      domain_name: body.domain_name,
+      subdomain: body.subdomain || '',
+      is_primary: body.is_primary || false,
+      is_wildcard: body.is_wildcard || false,
+      target_cname: body.target_cname || '',
+      custom_ip_address: body.custom_ip_address || '',
+      notes: body.notes || '',
+    });
+
+    if (!validationResult.isValid) {
+      return NextResponse.json(
+        {
+          error: 'Validation failed',
+          details: validationResult.errors,
+          warnings: validationResult.warnings,
+        },
+        { status: 400 },
+      );
+    }
+
+    // Check if primary domain already exists
+    if (body.is_primary) {
+      const { data: existingPrimary } = await supabase
+        .from('domains')
+        .select('id')
+        .eq('organization_id', profile.organization_id)
+        .eq('is_primary', true)
+        .single();
+
+      if (existingPrimary) {
+        return NextResponse.json(
+          { error: 'Organization already has a primary domain' },
+          { status: 409 },
+        );
+      }
+    }
+
+    // Create domain
+    const { data: domain, error: createError } = await supabase
+      .from('domains')
+      .insert({
+        organization_id: profile.organization_id,
+        domain_name: body.domain_name,
+        subdomain: body.subdomain,
+        is_primary: body.is_primary || false,
+        is_wildcard: body.is_wildcard || false,
+        target_cname: body.target_cname,
+        custom_ip_address: body.custom_ip_address,
+        notes: body.notes,
+        configuration: body.configuration || {},
+        created_by: user.id,
+        status: 'pending',
+      })
+      .select()
+      .single();
+
+    if (createError) {
+      console.error('Error creating domain:', createError);
+      return NextResponse.json(
+        { error: 'Failed to create domain' },
+        { status: 500 },
+      );
+    }
+
+    // Create initial DNS records based on configuration
+    const dnsRecords = [];
+
+    if (body.target_cname) {
+      // Create CNAME record for subdomain or A record for root
+      if (body.subdomain) {
+        dnsRecords.push({
+          domain_id: domain.id,
+          record_type: 'CNAME',
+          name: body.subdomain,
+          value: body.target_cname,
+          ttl: 3600,
+          created_by: user.id,
+        });
+      } else {
+        // For root domains, we'll need to create instructions for user to set up
+        // CNAME records can't be set for root domains
+      }
+    }
+
+    if (body.custom_ip_address && !body.subdomain) {
+      // Create A record for root domain
+      dnsRecords.push({
+        domain_id: domain.id,
+        record_type: 'A',
+        name: '@',
+        value: body.custom_ip_address,
+        ttl: 3600,
+        created_by: user.id,
+      });
+    }
+
+    // Insert DNS records
+    if (dnsRecords.length > 0) {
+      const { error: dnsError } = await supabase
+        .from('dns_records')
+        .insert(dnsRecords);
+
+      if (dnsError) {
+        console.error('Error creating DNS records:', dnsError);
+        // Don't fail the domain creation, but log the error
+      }
+    }
+
+    // Start domain verification process
+    const { error: verificationError } = await supabase
+      .from('domain_verifications')
+      .insert({
+        domain_id: domain.id,
+        verification_method: 'dns_txt',
+        verification_token: generateVerificationToken(),
+        created_by: user.id,
+      });
+
+    if (verificationError) {
+      console.error('Error creating domain verification:', verificationError);
+    }
+
+    return NextResponse.json(domain, { status: 201 });
+  } catch (error) {
+    console.error('Unexpected error in POST /api/domains:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * Generate a secure verification token
+ */
+function generateVerificationToken(): string {
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  let result = '';
+  for (let i = 0; i < 32; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+}

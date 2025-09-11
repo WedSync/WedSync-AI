@@ -1,0 +1,293 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { WebSocketServer } from 'ws';
+import * as Y from 'yjs';
+import { CollaborationWebSocketHandler } from '@/lib/websocket/collaboration-websocket-handler';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+// Global WebSocket server instance
+let wss: WebSocketServer | null = null;
+let collaborationHandler: CollaborationWebSocketHandler | null = null;
+
+// Initialize WebSocket server if not already initialized
+function initializeWebSocketServer() {
+  if (!wss) {
+    wss = new WebSocketServer({ 
+      port: parseInt(process.env.WEBSOCKET_PORT || '3001'),
+      clientTracking: true,
+      maxPayload: 16 * 1024 * 1024, // 16MB max payload
+    });
+
+    collaborationHandler = new CollaborationWebSocketHandler(wss, supabase);
+
+    console.log(`WebSocket server started on port ${process.env.WEBSOCKET_PORT || '3001'}`);
+  }
+  
+  return { wss, collaborationHandler };
+}
+
+// GET /api/collaboration/websocket - WebSocket connection info
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const sessionId = searchParams.get('sessionId');
+
+    if (!sessionId) {
+      return NextResponse.json(
+        { success: false, error: 'Session ID is required' },
+        { status: 400 }
+      );
+    }
+
+    // Initialize WebSocket server if needed
+    const { wss: wsServer } = initializeWebSocketServer();
+
+    // Get session info
+    const { data: session, error } = await supabase
+      .from('collaboration_sessions')
+      .select('id, status, document_id, document_type, permissions')
+      .eq('id', sessionId)
+      .eq('status', 'active')
+      .single();
+
+    if (error || !session) {
+      return NextResponse.json(
+        { success: false, error: 'Session not found or inactive' },
+        { status: 404 }
+      );
+    }
+
+    // Return WebSocket connection info
+    return NextResponse.json({
+      success: true,
+      data: {
+        websocketUrl: `ws://localhost:${process.env.WEBSOCKET_PORT || '3001'}`,
+        sessionId: session.id,
+        documentId: session.document_id,
+        documentType: session.document_type,
+        connectionInfo: {
+          protocol: 'ws',
+          pingInterval: 30000, // 30 seconds
+          maxConnections: 100,
+          supportedOperations: [
+            'sync',
+            'awareness',
+            'cursor',
+            'presence',
+            'operation',
+            'document_update'
+          ]
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('WebSocket info error:', error);
+    return NextResponse.json(
+      { success: false, error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+// POST /api/collaboration/websocket - Manual WebSocket operations (for testing)
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const { action, sessionId, data } = body;
+
+    if (!action || !sessionId) {
+      return NextResponse.json(
+        { success: false, error: 'Action and sessionId are required' },
+        { status: 400 }
+      );
+    }
+
+    // Initialize WebSocket server if needed
+    const { collaborationHandler: handler } = initializeWebSocketServer();
+
+    if (!handler) {
+      return NextResponse.json(
+        { success: false, error: 'WebSocket handler not available' },
+        { status: 500 }
+      );
+    }
+
+    let result;
+
+    switch (action) {
+      case 'broadcast':
+        // Broadcast message to all session participants
+        result = await handler.broadcastToSession(sessionId, {
+          type: data.type || 'message',
+          data: data.payload,
+          timestamp: Date.now(),
+          sessionId,
+        });
+        break;
+
+      case 'get_participants':
+        // Get active participants for session
+        result = handler.getSessionParticipants(sessionId);
+        break;
+
+      case 'disconnect_user':
+        // Disconnect specific user from session
+        if (!data.userId) {
+          return NextResponse.json(
+            { success: false, error: 'User ID is required for disconnect action' },
+            { status: 400 }
+          );
+        }
+        result = await handler.disconnectUser(sessionId, data.userId);
+        break;
+
+      case 'get_document_state':
+        // Get current Y.js document state
+        result = await handler.getDocumentState(sessionId);
+        break;
+
+      case 'force_sync':
+        // Force document synchronization
+        result = await handler.forceSyncSession(sessionId);
+        break;
+
+      default:
+        return NextResponse.json(
+          { success: false, error: 'Unknown action' },
+          { status: 400 }
+        );
+    }
+
+    return NextResponse.json({
+      success: true,
+      action,
+      sessionId,
+      data: result,
+      timestamp: Date.now(),
+    });
+
+  } catch (error) {
+    console.error('WebSocket operation error:', error);
+    return NextResponse.json(
+      { success: false, error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+// PUT /api/collaboration/websocket - Update WebSocket server configuration
+export async function PUT(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const { maxConnections, pingInterval, compressionEnabled } = body;
+
+    // Initialize WebSocket server if needed
+    const { collaborationHandler: handler } = initializeWebSocketServer();
+
+    if (!handler) {
+      return NextResponse.json(
+        { success: false, error: 'WebSocket handler not available' },
+        { status: 500 }
+      );
+    }
+
+    // Update configuration
+    const config: any = {};
+    
+    if (typeof maxConnections === 'number') {
+      config.maxConnections = maxConnections;
+    }
+    
+    if (typeof pingInterval === 'number') {
+      config.pingInterval = pingInterval;
+    }
+    
+    if (typeof compressionEnabled === 'boolean') {
+      config.compressionEnabled = compressionEnabled;
+    }
+
+    handler.updateConfiguration(config);
+
+    return NextResponse.json({
+      success: true,
+      message: 'WebSocket configuration updated',
+      config: handler.getConfiguration(),
+    });
+
+  } catch (error) {
+    console.error('WebSocket configuration error:', error);
+    return NextResponse.json(
+      { success: false, error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+// DELETE /api/collaboration/websocket - Shutdown WebSocket server (for maintenance)
+export async function DELETE(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const force = searchParams.get('force') === 'true';
+
+    if (wss) {
+      // Gracefully close all connections
+      wss.clients.forEach((ws) => {
+        ws.close(1000, 'Server shutdown');
+      });
+
+      // Close server
+      await new Promise<void>((resolve, reject) => {
+        wss!.close((error) => {
+          if (error) {
+            reject(error);
+          } else {
+            resolve();
+          }
+        });
+      });
+
+      wss = null;
+      collaborationHandler = null;
+
+      console.log('WebSocket server shut down');
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: 'WebSocket server shut down successfully',
+    });
+
+  } catch (error) {
+    console.error('WebSocket shutdown error:', error);
+    return NextResponse.json(
+      { success: false, error: 'Failed to shutdown WebSocket server' },
+      { status: 500 }
+    );
+  }
+}
+
+// Health check endpoint
+export async function OPTIONS(request: NextRequest) {
+  const { wss: wsServer, collaborationHandler: handler } = initializeWebSocketServer();
+  
+  const health = {
+    status: 'healthy',
+    websocket: {
+      connected: wsServer ? wsServer.clients.size : 0,
+      maxConnections: handler?.getConfiguration()?.maxConnections || 100,
+      uptime: process.uptime(),
+    },
+    memory: process.memoryUsage(),
+    timestamp: Date.now(),
+  };
+
+  return NextResponse.json({
+    success: true,
+    health,
+  });
+}

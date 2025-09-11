@@ -1,0 +1,745 @@
+/**
+ * Outlook Sync Settings Component
+ * Comprehensive sync configuration panel for wedding professionals
+ *
+ * Features:
+ * - Sync direction configuration (bidirectional, one-way)
+ * - Event type selection (meetings, deadlines, wedding events)
+ * - Notification preferences
+ * - Calendar selection and naming options
+ * - Working hours and availability settings
+ */
+
+'use client';
+
+import React, { useState, useCallback } from 'react';
+import { Button } from '@/components/untitled-ui/Button';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/untitled-ui/Card';
+import { Badge } from '@/components/untitled-ui/Badge';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/untitled-ui/Select';
+import { Switch } from '@/components/untitled-ui/Switch';
+import { Input } from '@/components/untitled-ui/Input';
+import { Label } from '@/components/untitled-ui/Label';
+import {
+  Calendar,
+  Clock,
+  Bell,
+  Shield,
+  RefreshCw,
+  CheckCircle2,
+  AlertTriangle,
+  Settings,
+  Users,
+  MapPin,
+  Camera,
+  Heart,
+  Briefcase,
+  Save,
+  TestTube,
+} from 'lucide-react';
+import {
+  OutlookSyncSettingsProps,
+  OutlookSyncSettings as SettingsType,
+  SyncFrequency,
+  SyncDirection,
+  ConflictResolutionStrategy,
+  WeddingEventType,
+} from '@/types/outlook';
+
+export function OutlookSyncSettings({
+  settings,
+  onSettingsChange,
+  onSave,
+  onTest,
+  isLoading = false,
+  className = '',
+}: OutlookSyncSettingsProps) {
+  const [isSaving, setIsSaving] = useState(false);
+  const [isTesting, setIsTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{
+    success: boolean;
+    message: string;
+  } | null>(null);
+
+  const weddingEventTypes: {
+    value: WeddingEventType;
+    label: string;
+    icon: React.ReactNode;
+    description: string;
+  }[] = [
+    {
+      value: 'consultation',
+      label: 'Client Consultations',
+      icon: <Users className="w-4 h-4" />,
+      description: 'Initial meetings with prospective clients',
+    },
+    {
+      value: 'client_meeting',
+      label: 'Client Meetings',
+      icon: <Users className="w-4 h-4" />,
+      description: 'Follow-up meetings and planning sessions',
+    },
+    {
+      value: 'venue_visit',
+      label: 'Venue Visits',
+      icon: <MapPin className="w-4 h-4" />,
+      description: 'Site visits and venue walkthroughs',
+    },
+    {
+      value: 'vendor_meeting',
+      label: 'Vendor Meetings',
+      icon: <Briefcase className="w-4 h-4" />,
+      description: 'Coordination meetings with other vendors',
+    },
+    {
+      value: 'engagement_shoot',
+      label: 'Engagement Shoots',
+      icon: <Camera className="w-4 h-4" />,
+      description: 'Pre-wedding photography sessions',
+    },
+    {
+      value: 'wedding_ceremony',
+      label: 'Wedding Ceremonies',
+      icon: <Heart className="w-4 h-4" />,
+      description: 'Main wedding ceremony events',
+    },
+    {
+      value: 'wedding_reception',
+      label: 'Wedding Receptions',
+      icon: <Heart className="w-4 h-4" />,
+      description: 'Wedding reception and party events',
+    },
+    {
+      value: 'rehearsal',
+      label: 'Rehearsals',
+      icon: <Clock className="w-4 h-4" />,
+      description: 'Wedding rehearsal sessions',
+    },
+    {
+      value: 'preparation',
+      label: 'Preparation',
+      icon: <Settings className="w-4 h-4" />,
+      description: 'Equipment setup and preparation time',
+    },
+    {
+      value: 'vendor_coordination',
+      label: 'Vendor Coordination',
+      icon: <Briefcase className="w-4 h-4" />,
+      description: 'Coordination calls and planning',
+    },
+    {
+      value: 'equipment_prep',
+      label: 'Equipment Preparation',
+      icon: <Settings className="w-4 h-4" />,
+      description: 'Equipment setup and testing',
+    },
+    {
+      value: 'editing_session',
+      label: 'Editing Sessions',
+      icon: <Camera className="w-4 h-4" />,
+      description: 'Post-wedding photo and video editing',
+    },
+    {
+      value: 'delivery_meeting',
+      label: 'Delivery Meetings',
+      icon: <Users className="w-4 h-4" />,
+      description: 'Final delivery and handover meetings',
+    },
+    {
+      value: 'follow_up',
+      label: 'Follow-up',
+      icon: <Clock className="w-4 h-4" />,
+      description: 'Post-wedding follow-up calls',
+    },
+  ];
+
+  const handleSave = useCallback(async () => {
+    setIsSaving(true);
+    try {
+      const success = await onSave();
+      if (success) {
+        // Show success feedback
+      }
+    } finally {
+      setIsSaving(false);
+    }
+  }, [onSave]);
+
+  const handleTest = useCallback(async () => {
+    setIsTesting(true);
+    setTestResult(null);
+    try {
+      const success = await onTest();
+      setTestResult({
+        success,
+        message: success
+          ? 'Connection test successful! All systems working properly.'
+          : 'Connection test failed. Please check your settings and try again.',
+      });
+    } catch (error) {
+      setTestResult({
+        success: false,
+        message:
+          error instanceof Error
+            ? error.message
+            : 'Test failed with unknown error',
+      });
+    } finally {
+      setIsTesting(false);
+    }
+  }, [onTest]);
+
+  const updateSetting = useCallback(
+    (key: keyof SettingsType, value: any) => {
+      onSettingsChange({ ...settings, [key]: value });
+    },
+    [settings, onSettingsChange],
+  );
+
+  const updateNotificationPreference = useCallback(
+    (key: keyof SettingsType['notificationPreferences'], value: boolean) => {
+      onSettingsChange({
+        ...settings,
+        notificationPreferences: {
+          ...settings.notificationPreferences,
+          [key]: value,
+        },
+      });
+    },
+    [settings, onSettingsChange],
+  );
+
+  const updateCalendarSetting = useCallback(
+    (key: keyof SettingsType['calendarSettings'], value: any) => {
+      onSettingsChange({
+        ...settings,
+        calendarSettings: {
+          ...settings.calendarSettings,
+          [key]: value,
+        },
+      });
+    },
+    [settings, onSettingsChange],
+  );
+
+  const updatePrivacySetting = useCallback(
+    (key: keyof SettingsType['privacySettings'], value: boolean) => {
+      onSettingsChange({
+        ...settings,
+        privacySettings: {
+          ...settings.privacySettings,
+          [key]: value,
+        },
+      });
+    },
+    [settings, onSettingsChange],
+  );
+
+  return (
+    <div className={`space-y-6 ${className}`}>
+      {/* Connection Test */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="flex items-center">
+                <TestTube className="w-5 h-5 mr-2" />
+                Connection Test
+              </CardTitle>
+              <CardDescription>
+                Test your Outlook integration connection
+              </CardDescription>
+            </div>
+            <Button variant="outline" onClick={handleTest} disabled={isTesting}>
+              {isTesting ? (
+                <>
+                  <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                  Testing...
+                </>
+              ) : (
+                'Test Connection'
+              )}
+            </Button>
+          </div>
+        </CardHeader>
+        {testResult && (
+          <CardContent>
+            <div
+              className={`flex items-start space-x-3 p-4 rounded-lg ${
+                testResult.success
+                  ? 'bg-success-50 border border-success-200'
+                  : 'bg-error-50 border border-error-200'
+              }`}
+            >
+              {testResult.success ? (
+                <CheckCircle2 className="w-5 h-5 text-success-600 mt-0.5" />
+              ) : (
+                <AlertTriangle className="w-5 h-5 text-error-600 mt-0.5" />
+              )}
+              <div>
+                <p
+                  className={`font-medium ${testResult.success ? 'text-success-900' : 'text-error-900'}`}
+                >
+                  {testResult.success ? 'Test Passed' : 'Test Failed'}
+                </p>
+                <p
+                  className={`text-sm ${testResult.success ? 'text-success-700' : 'text-error-700'}`}
+                >
+                  {testResult.message}
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        )}
+      </Card>
+
+      {/* Sync Configuration */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center">
+            <RefreshCw className="w-5 h-5 mr-2" />
+            Sync Configuration
+          </CardTitle>
+          <CardDescription>
+            Configure how WedSync synchronizes with Outlook
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          {/* Sync Direction */}
+          <div className="space-y-3">
+            <Label className="text-base font-medium">Sync Direction</Label>
+            <Select
+              value={settings.syncDirection}
+              onValueChange={(value: SyncDirection) =>
+                updateSetting('syncDirection', value)
+              }
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="bidirectional">
+                  <div className="flex items-center space-x-2">
+                    <span>↔️</span>
+                    <div>
+                      <p>Bidirectional</p>
+                      <p className="text-xs text-gray-500">
+                        Changes sync both ways
+                      </p>
+                    </div>
+                  </div>
+                </SelectItem>
+                <SelectItem value="wedsync_to_outlook">
+                  <div className="flex items-center space-x-2">
+                    <span>→</span>
+                    <div>
+                      <p>WedSync to Outlook</p>
+                      <p className="text-xs text-gray-500">
+                        Only push changes to Outlook
+                      </p>
+                    </div>
+                  </div>
+                </SelectItem>
+                <SelectItem value="outlook_to_wedsync">
+                  <div className="flex items-center space-x-2">
+                    <span>←</span>
+                    <div>
+                      <p>Outlook to WedSync</p>
+                      <p className="text-xs text-gray-500">
+                        Only pull changes from Outlook
+                      </p>
+                    </div>
+                  </div>
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Sync Frequency */}
+          <div className="space-y-3">
+            <Label className="text-base font-medium">Sync Frequency</Label>
+            <Select
+              value={settings.syncFrequency}
+              onValueChange={(value: SyncFrequency) =>
+                updateSetting('syncFrequency', value)
+              }
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="realtime">
+                  Real-time (instant updates)
+                </SelectItem>
+                <SelectItem value="every_5_minutes">Every 5 minutes</SelectItem>
+                <SelectItem value="every_15_minutes">
+                  Every 15 minutes
+                </SelectItem>
+                <SelectItem value="hourly">Every hour</SelectItem>
+                <SelectItem value="daily">Daily</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Conflict Resolution */}
+          <div className="space-y-3">
+            <Label className="text-base font-medium">Conflict Resolution</Label>
+            <Select
+              value={settings.conflictResolutionStrategy}
+              onValueChange={(value: ConflictResolutionStrategy) =>
+                updateSetting('conflictResolutionStrategy', value)
+              }
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="manual_review">
+                  Manual Review (recommended)
+                </SelectItem>
+                <SelectItem value="auto_reschedule">
+                  Auto-reschedule conflicts
+                </SelectItem>
+                <SelectItem value="prioritize_wedsync">
+                  Always prioritize WedSync
+                </SelectItem>
+                <SelectItem value="prioritize_outlook">
+                  Always prioritize Outlook
+                </SelectItem>
+                <SelectItem value="create_duplicate">
+                  Create duplicate events
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Event Types */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center">
+            <Calendar className="w-5 h-5 mr-2" />
+            Event Types
+          </CardTitle>
+          <CardDescription>
+            Select which wedding event types to synchronize
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-3">
+            {weddingEventTypes.map((eventType) => (
+              <label
+                key={eventType.value}
+                className="flex items-center space-x-3 p-3 border border-gray-200 rounded-lg hover:bg-gray-50 cursor-pointer"
+              >
+                <input
+                  type="checkbox"
+                  checked={settings.enabledEventTypes.includes(eventType.value)}
+                  onChange={(e) => {
+                    const newTypes = e.target.checked
+                      ? [...settings.enabledEventTypes, eventType.value]
+                      : settings.enabledEventTypes.filter(
+                          (t) => t !== eventType.value,
+                        );
+                    updateSetting('enabledEventTypes', newTypes);
+                  }}
+                  className="form-checkbox text-primary-600"
+                />
+                <div className="text-primary-600">{eventType.icon}</div>
+                <div className="flex-1">
+                  <p className="font-medium text-gray-900">{eventType.label}</p>
+                  <p className="text-sm text-gray-600">
+                    {eventType.description}
+                  </p>
+                </div>
+              </label>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Calendar Settings */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center">
+            <Clock className="w-5 h-5 mr-2" />
+            Calendar Settings
+          </CardTitle>
+          <CardDescription>
+            Configure calendar-specific preferences
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          {/* Time Zone */}
+          <div className="space-y-3">
+            <Label className="text-base font-medium">Time Zone</Label>
+            <Select
+              value={settings.calendarSettings.timeZone}
+              onValueChange={(value) =>
+                updateCalendarSetting('timeZone', value)
+              }
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="Europe/London">London (GMT/BST)</SelectItem>
+                <SelectItem value="America/New_York">
+                  New York (EST/EDT)
+                </SelectItem>
+                <SelectItem value="America/Los_Angeles">
+                  Los Angeles (PST/PDT)
+                </SelectItem>
+                <SelectItem value="Europe/Paris">Paris (CET/CEST)</SelectItem>
+                <SelectItem value="Asia/Tokyo">Tokyo (JST)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Buffer Time */}
+          <div className="space-y-3">
+            <Label className="text-base font-medium">Travel Buffer Time</Label>
+            <div className="flex items-center space-x-2">
+              <Input
+                type="number"
+                value={settings.calendarSettings.bufferTimeMinutes}
+                onChange={(e) =>
+                  updateCalendarSetting(
+                    'bufferTimeMinutes',
+                    parseInt(e.target.value) || 0,
+                  )
+                }
+                className="w-24"
+              />
+              <span className="text-sm text-gray-600">
+                minutes before each event
+              </span>
+            </div>
+            <p className="text-xs text-gray-500">
+              Automatically adds travel time before venue visits and outdoor
+              shoots
+            </p>
+          </div>
+
+          {/* Default Event Duration */}
+          <div className="space-y-3">
+            <Label className="text-base font-medium">
+              Default Event Duration
+            </Label>
+            <div className="flex items-center space-x-2">
+              <Input
+                type="number"
+                value={settings.calendarSettings.defaultEventDuration}
+                onChange={(e) =>
+                  updateCalendarSetting(
+                    'defaultEventDuration',
+                    parseInt(e.target.value) || 60,
+                  )
+                }
+                className="w-24"
+              />
+              <span className="text-sm text-gray-600">
+                minutes for new events
+              </span>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Notification Preferences */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center">
+            <Bell className="w-5 h-5 mr-2" />
+            Notifications
+          </CardTitle>
+          <CardDescription>
+            Choose how you want to be notified about sync activities
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {[
+            {
+              key: 'syncStarted',
+              label: 'Sync Started',
+              description: 'When synchronization begins',
+            },
+            {
+              key: 'syncCompleted',
+              label: 'Sync Completed',
+              description: 'When synchronization finishes successfully',
+            },
+            {
+              key: 'syncErrors',
+              label: 'Sync Errors',
+              description: 'When synchronization encounters problems',
+            },
+            {
+              key: 'conflictsDetected',
+              label: 'Conflicts Detected',
+              description: 'When scheduling conflicts are found',
+            },
+            {
+              key: 'reminderChanges',
+              label: 'Reminder Changes',
+              description: 'When event reminders are modified',
+            },
+          ].map((notification) => (
+            <div
+              key={notification.key}
+              className="flex items-center justify-between"
+            >
+              <div>
+                <p className="font-medium text-gray-900">
+                  {notification.label}
+                </p>
+                <p className="text-sm text-gray-600">
+                  {notification.description}
+                </p>
+              </div>
+              <Switch
+                checked={
+                  settings.notificationPreferences[
+                    notification.key as keyof typeof settings.notificationPreferences
+                  ]
+                }
+                onCheckedChange={(checked) =>
+                  updateNotificationPreference(notification.key as any, checked)
+                }
+              />
+            </div>
+          ))}
+
+          <div className="pt-4 border-t space-y-4">
+            <p className="font-medium text-gray-900">Notification Methods</p>
+            {[
+              { key: 'emailNotifications', label: 'Email Notifications' },
+              { key: 'smsNotifications', label: 'SMS Notifications' },
+              { key: 'inAppNotifications', label: 'In-App Notifications' },
+            ].map((method) => (
+              <div
+                key={method.key}
+                className="flex items-center justify-between"
+              >
+                <span className="text-gray-900">{method.label}</span>
+                <Switch
+                  checked={
+                    settings.notificationPreferences[
+                      method.key as keyof typeof settings.notificationPreferences
+                    ]
+                  }
+                  onCheckedChange={(checked) =>
+                    updateNotificationPreference(method.key as any, checked)
+                  }
+                />
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Privacy Settings */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center">
+            <Shield className="w-5 h-5 mr-2" />
+            Privacy & Security
+          </CardTitle>
+          <CardDescription>
+            Control what information is shared with Outlook
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {[
+            {
+              key: 'shareClientNames',
+              label: 'Share Client Names',
+              description: 'Include client names in Outlook event titles',
+            },
+            {
+              key: 'shareVenueDetails',
+              label: 'Share Venue Details',
+              description: 'Include venue information and addresses',
+            },
+            {
+              key: 'shareFinancialInfo',
+              label: 'Share Financial Information',
+              description: 'Include pricing and payment details',
+            },
+            {
+              key: 'anonymizeClientData',
+              label: 'Anonymize Client Data',
+              description: 'Replace client names with initials',
+            },
+            {
+              key: 'encryptSensitiveData',
+              label: 'Encrypt Sensitive Data',
+              description: 'Encrypt confidential information before sync',
+            },
+          ].map((privacy) => (
+            <div key={privacy.key} className="flex items-start justify-between">
+              <div className="flex-1 mr-4">
+                <p className="font-medium text-gray-900">{privacy.label}</p>
+                <p className="text-sm text-gray-600">{privacy.description}</p>
+              </div>
+              <Switch
+                checked={
+                  settings.privacySettings[
+                    privacy.key as keyof typeof settings.privacySettings
+                  ]
+                }
+                onCheckedChange={(checked) =>
+                  updatePrivacySetting(privacy.key as any, checked)
+                }
+              />
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+
+      {/* Save Settings */}
+      <div className="flex justify-end space-x-3">
+        <Button
+          variant="outline"
+          onClick={() => {
+            // Reset to defaults
+            const defaultSettings: Partial<SettingsType> = {
+              syncFrequency: 'every_15_minutes',
+              syncDirection: 'bidirectional',
+              conflictResolutionStrategy: 'manual_review',
+            };
+            onSettingsChange({ ...settings, ...defaultSettings });
+          }}
+        >
+          Reset to Defaults
+        </Button>
+        <Button onClick={handleSave} disabled={isSaving || isLoading}>
+          {isSaving ? (
+            <>
+              <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+              Saving...
+            </>
+          ) : (
+            <>
+              <Save className="w-4 h-4 mr-2" />
+              Save Settings
+            </>
+          )}
+        </Button>
+      </div>
+    </div>
+  );
+}

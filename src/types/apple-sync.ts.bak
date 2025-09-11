@@ -1,0 +1,385 @@
+// Apple Calendar Integration Types for WS-218
+// Team C - Round 1 - CalDAV Sync Orchestration
+
+export interface AppleCalendarIntegration {
+  id: string;
+  userId: string;
+  calendarUrl: string;
+  credentials: CalDAVCredentials;
+  calendars: CalDAVCalendar[];
+  syncPreferences: SyncPreferences;
+  lastSyncAt?: Date;
+  nextSyncAt?: Date;
+  status: IntegrationStatus;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface CalDAVCredentials {
+  username: string;
+  password: string; // encrypted
+  serverUrl: string;
+  authenticationType: 'basic' | 'digest' | 'oauth';
+  accessToken?: string; // for OAuth
+  refreshToken?: string; // for OAuth
+}
+
+export interface CalDAVCalendar {
+  caldavUrl: string;
+  displayName: string;
+  description?: string;
+  color?: string;
+  lastKnownCTag: string;
+  lastSyncToken?: string;
+  isEnabled: boolean;
+  syncPriority: 'high' | 'medium' | 'low';
+}
+
+export interface SyncPreferences {
+  syncDirection: 'bidirectional' | 'to_apple' | 'from_apple';
+  conflictResolution: 'manual' | 'apple_wins' | 'wedsync_wins' | 'latest_wins';
+  syncInterval: 'manual' | 'real_time' | '5_minutes' | '15_minutes' | '1_hour';
+  pollIntervalMinutes: number;
+  enableWedlockSync: boolean;
+  syncEventTypes: EventType[];
+  excludePrivateEvents: boolean;
+}
+
+export type IntegrationStatus = 
+  | 'pending' 
+  | 'authenticating' 
+  | 'active' 
+  | 'error' 
+  | 'paused' 
+  | 'disconnected';
+
+export type EventType = 
+  | 'wedding_ceremony' 
+  | 'vendor_meeting' 
+  | 'client_appointment' 
+  | 'deadline' 
+  | 'task' 
+  | 'milestone';
+
+// CalDAV Protocol Types
+export interface CalDAVChanges {
+  calendars: CalDAVCalendar[];
+  events: {
+    created: CalDAVEvent[];
+    updated: CalDAVEvent[];
+    deleted: CalDAVEvent[];
+  };
+}
+
+export interface CalDAVEvent {
+  uid: string;
+  url: string;
+  etag: string;
+  calendarData: string; // iCalendar format
+  summary?: string;
+  description?: string;
+  startDate: Date;
+  endDate: Date;
+  isAllDay: boolean;
+  recurrenceRule?: string;
+  location?: string;
+  attendees?: CalDAVAttendee[];
+  lastModified: Date;
+}
+
+export interface CalDAVAttendee {
+  email: string;
+  name?: string;
+  role: 'chair' | 'required' | 'optional';
+  status: 'accepted' | 'declined' | 'tentative' | 'needs_action';
+}
+
+// Sync Orchestration Types
+export interface SyncSession {
+  id: string;
+  integrationId: string;
+  syncType: SyncType;
+  status: SyncStatus;
+  progress?: SyncProgress;
+  startedAt: Date;
+  completedAt?: Date;
+  result?: SyncResult;
+  error?: SyncError;
+}
+
+export type SyncType = 
+  | 'full' 
+  | 'incremental' 
+  | 'targeted' 
+  | 'conflict_resolution';
+
+export type SyncStatus = 
+  | 'pending' 
+  | 'running' 
+  | 'completed' 
+  | 'failed' 
+  | 'paused' 
+  | 'cancelled';
+
+export interface SyncProgress {
+  totalEvents: number;
+  processedEvents: number;
+  createdEvents: number;
+  updatedEvents: number;
+  deletedEvents: number;
+  currentOperation: string;
+  estimatedTimeRemaining?: number;
+}
+
+export interface SyncResult {
+  totalEvents: number;
+  processedEvents: number;
+  createdEvents: number;
+  updatedEvents: number;
+  deletedEvents: number;
+  conflicts: SyncConflict[];
+  duration: number;
+  syncedCalendars: string[];
+  errors: SyncError[];
+}
+
+export interface SyncConflict {
+  eventId: string;
+  type: ConflictType;
+  localEvent?: CalDAVEvent;
+  remoteEvent?: CalDAVEvent;
+  resolution?: ConflictResolution;
+  resolvedAt?: Date;
+  error?: string;
+}
+
+export type ConflictType = 
+  | 'creation_conflict' 
+  | 'update_conflict' 
+  | 'deletion_conflict' 
+  | 'creation_failed' 
+  | 'update_failed' 
+  | 'deletion_failed';
+
+export interface ConflictResolution {
+  strategy: 'manual' | 'apple_wins' | 'wedsync_wins' | 'latest_wins';
+  resolvedEvent: CalDAVEvent;
+  reasoning: string;
+}
+
+export interface SyncError {
+  code: string;
+  message: string;
+  context?: Record<string, any>;
+  timestamp: Date;
+  retryable: boolean;
+}
+
+// WebSocket Broadcast Types
+export interface WebSocketSyncStatus {
+  syncId: string;
+  status: SyncStatus;
+  progress?: SyncProgress;
+  result?: SyncResult;
+  error?: string;
+}
+
+export interface WebSocketEventUpdate {
+  type: 'event_created' | 'event_updated' | 'event_deleted';
+  eventId: string;
+  event?: CalDAVEvent;
+  integrationId: string;
+  timestamp: Date;
+}
+
+// Circuit Breaker Types
+export interface CircuitBreakerConfig {
+  failureThreshold: number;
+  resetTimeout: number;
+  monitoringPeriod: number;
+  halfOpenMaxCalls: number;
+  blacklistDuration?: number;
+}
+
+export type CircuitState = 'closed' | 'open' | 'half_open';
+
+export interface CircuitBreakerStats {
+  state: CircuitState;
+  failures: number;
+  successes: number;
+  lastFailureTime?: Date;
+  lastSuccessTime?: Date;
+  nextRetryTime?: Date;
+}
+
+// Background Job Types
+export interface CalDAVJob {
+  id: string;
+  userId: string;
+  type: CalDAVJobType;
+  data: CalDAVJobData;
+  priority: JobPriority;
+  status: JobStatus;
+  attempts: number;
+  maxAttempts: number;
+  scheduledAt: Date;
+  startedAt?: Date;
+  completedAt?: Date;
+  error?: string;
+  result?: any;
+}
+
+export type CalDAVJobType = 
+  | 'full_sync' 
+  | 'incremental_sync' 
+  | 'event_sync' 
+  | 'calendar_sync' 
+  | 'conflict_resolution' 
+  | 'cleanup';
+
+export interface CalDAVJobData {
+  integrationId: string;
+  syncOptions?: SyncOptions;
+  eventIds?: string[];
+  calendarUrls?: string[];
+  conflictIds?: string[];
+}
+
+export interface SyncOptions {
+  syncType: SyncType;
+  source: 'manual' | 'scheduled' | 'webhook' | 'scheduled_poll';
+  calendarUrl?: string;
+  eventUids?: string[];
+  changeType?: 'created' | 'updated' | 'deleted';
+  forceFullSync?: boolean;
+  priority?: JobPriority;
+}
+
+export type JobPriority = 'low' | 'normal' | 'high' | 'urgent';
+
+export type JobStatus = 
+  | 'pending' 
+  | 'running' 
+  | 'completed' 
+  | 'failed' 
+  | 'cancelled' 
+  | 'retrying';
+
+export interface JobResult {
+  success: boolean;
+  syncResult?: SyncResult;
+  error?: string;
+  duration: number;
+  processedAt: Date;
+}
+
+// Webhook Types
+export interface CalDAVWebhookPayload {
+  webhookId: string;
+  integrationId: string;
+  calendarUrl: string;
+  changeType: 'calendar_modified' | 'events_changed';
+  eventUids?: string[];
+  timestamp: Date;
+  signature: string;
+}
+
+export interface CalDAVSubscription {
+  id: string;
+  integrationId: string;
+  calendarUrl: string;
+  webhookUrl: string;
+  secretKey: string;
+  isActive: boolean;
+  lastTriggeredAt?: Date;
+  expiresAt?: Date;
+}
+
+export interface WebhookProcessResult {
+  success: boolean;
+  processed: number;
+  errors: string[];
+  syncTriggered: boolean;
+  processingTime: number;
+}
+
+// Event Coordination Types
+export interface EventSyncResult {
+  eventId: string;
+  success: boolean;
+  action: 'created' | 'updated' | 'deleted' | 'skipped';
+  conflicts?: SyncConflict[];
+  error?: string;
+}
+
+export interface ScheduleSyncResult {
+  vendorId: string;
+  eventCount: number;
+  successCount: number;
+  failureCount: number;
+  conflicts: SyncConflict[];
+  processingTime: number;
+}
+
+// Health Monitoring Types
+export interface IntegrationHealth {
+  integrationId: string;
+  isHealthy: boolean;
+  lastHealthCheck: Date;
+  caldavServerReachable: boolean;
+  authenticationValid: boolean;
+  syncLatency?: number;
+  errorRate?: number;
+  uptime: number;
+  issues: HealthIssue[];
+}
+
+export interface HealthIssue {
+  type: 'authentication' | 'connectivity' | 'performance' | 'sync_failure';
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  message: string;
+  firstOccurred: Date;
+  lastOccurred: Date;
+  count: number;
+}
+
+// Migration and Data Import Types
+export interface CalendarImportRequest {
+  userId: string;
+  integrationId: string;
+  importType: 'full' | 'date_range' | 'specific_events';
+  dateRange?: {
+    startDate: Date;
+    endDate: Date;
+  };
+  eventUids?: string[];
+  preserveExisting: boolean;
+  dryRun: boolean;
+}
+
+export interface CalendarImportResult {
+  requestId: string;
+  totalEvents: number;
+  importedEvents: number;
+  skippedEvents: number;
+  failedEvents: number;
+  conflicts: SyncConflict[];
+  duration: number;
+  warnings: string[];
+}
+
+// Rate Limiting Types
+export interface RateLimitConfig {
+  requestsPerMinute: number;
+  requestsPerHour: number;
+  burstLimit: number;
+  backoffMultiplier: number;
+  maxBackoffSeconds: number;
+}
+
+export interface RateLimitStatus {
+  remainingRequests: number;
+  resetTime: Date;
+  retryAfterSeconds?: number;
+  isLimited: boolean;
+}

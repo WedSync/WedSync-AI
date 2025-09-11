@@ -1,0 +1,338 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { supabase } from '@/lib/supabase/server';
+import { logger } from '@/lib/logger';
+import { headers } from 'next/headers';
+import { z } from 'zod';
+
+const usageMetricsSchema = z.object({
+  user_id: z.string().uuid().optional(),
+  session_id: z.string().min(1),
+  metric_type: z.enum([
+    'session_start',
+    'session_end',
+    'page_view',
+    'service_worker_update',
+    'cache_hit',
+    'cache_miss',
+    'offline_usage',
+    'performance_timing',
+  ]),
+  metric_data: z
+    .object({
+      page_url: z
+        .string()
+        .optional()
+        .transform((val) => (val ? sanitizeUrl(val) : null)),
+      duration_seconds: z.number().optional(),
+      is_standalone: z.boolean().optional(),
+      is_offline: z.boolean().optional(),
+      cache_hit_rate: z.number().min(0).max(1).optional(),
+      load_time_ms: z.number().optional(),
+      service_worker_version: z.string().optional(),
+      network_type: z
+        .enum(['wifi', '4g', '3g', '2g', 'slow-2g', 'unknown'])
+        .optional(),
+      battery_level: z.number().min(0).max(1).optional(),
+      memory_usage_mb: z.number().optional(),
+    })
+    .optional(),
+  wedding_activity: z
+    .object({
+      feature_used: z
+        .enum([
+          'guest_management',
+          'timeline_builder',
+          'task_tracking',
+          'photo_gallery',
+          'rsvp_form',
+          'vendor_communication',
+          'budget_tracker',
+          'seating_chart',
+          'other',
+        ])
+        .optional(),
+      action_type: z
+        .enum(['create', 'read', 'update', 'delete', 'share'])
+        .optional(),
+      offline_capable: z.boolean().optional(),
+      sync_required: z.boolean().optional(),
+      critical_data: z.boolean().optional(),
+    })
+    .optional(),
+  performance_metrics: z
+    .object({
+      first_contentful_paint: z.number().optional(),
+      largest_contentful_paint: z.number().optional(),
+      cumulative_layout_shift: z.number().optional(),
+      first_input_delay: z.number().optional(),
+      time_to_interactive: z.number().optional(),
+      service_worker_startup_time: z.number().optional(),
+    })
+    .optional(),
+  error_info: z
+    .object({
+      error_type: z.string().optional(),
+      error_message: z.string().optional(),
+      stack_trace: z
+        .string()
+        .optional()
+        .transform((val) => (val ? sanitizeStackTrace(val) : null)),
+    })
+    .optional(),
+});
+
+function sanitizeUrl(url: string): string {
+  try {
+    const urlObj = new URL(url);
+    const path = urlObj.pathname;
+
+    // Remove sensitive data from URL paths
+    const sanitizedPath = path
+      .replace(/\/\d+/g, '/[id]')
+      .replace(/\/users\/[^\/]+/g, '/users/[user]')
+      .replace(/\/weddings\/[^\/]+/g, '/weddings/[wedding]')
+      .replace(/\/clients\/[^\/]+/g, '/clients/[client]');
+
+    return `${urlObj.protocol}//${urlObj.host}${sanitizedPath}`;
+  } catch {
+    return '/unknown';
+  }
+}
+
+function sanitizeStackTrace(stackTrace: string): string {
+  return stackTrace
+    .split('\n')
+    .slice(0, 5) // Only keep first 5 lines
+    .map((line) => line.replace(/\/[^\/\s]+\/[^\/\s]+\/[^\/\s]+/g, '/[path]'))
+    .join('\n');
+}
+
+function sanitizeUserAgent(userAgent: string): string {
+  return userAgent
+    .replace(/\d+\.\d+\.\d+/g, 'x.x.x')
+    .replace(/Chrome\/[\d\.]+/g, 'Chrome/x.x.x')
+    .replace(/Safari\/[\d\.]+/g, 'Safari/x.x.x')
+    .replace(/Firefox\/[\d\.]+/g, 'Firefox/x.x.x')
+    .replace(/Edge\/[\d\.]+/g, 'Edge/x.x.x');
+}
+
+async function getClientInfo(request: NextRequest) {
+  const headersList = await headers();
+  const userAgent = headersList.get('user-agent') || '';
+  const ip =
+    headersList.get('x-forwarded-for') ||
+    headersList.get('x-real-ip') ||
+    'unknown';
+
+  return {
+    sanitized_user_agent: sanitizeUserAgent(userAgent),
+    client_ip_hash: await hashIP(ip),
+    timestamp: new Date().toISOString(),
+  };
+}
+
+async function hashIP(ip: string): Promise<string> {
+  if (typeof crypto === 'undefined' || !crypto.subtle) {
+    return 'hashed';
+  }
+
+  try {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(
+      ip + process.env.IP_HASH_SALT || 'wedsync-usage-salt-2025',
+    );
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('')
+      .slice(0, 16);
+  } catch {
+    return 'hash_error';
+  }
+}
+
+async function logUsageMetric(data: any, clientInfo: any) {
+  try {
+    const { error } = await supabase.from('pwa_usage_metrics').insert({
+      user_id: data.user_id,
+      session_id: data.session_id,
+      metric_type: data.metric_type,
+      metric_data: data.metric_data,
+      wedding_activity: data.wedding_activity,
+      performance_metrics: data.performance_metrics,
+      error_info: data.error_info,
+      client_info: clientInfo,
+      created_at: new Date().toISOString(),
+    });
+
+    if (error) {
+      logger.error('Failed to log PWA usage metric', {
+        error,
+        metric_type: data.metric_type,
+      });
+      return false;
+    }
+
+    // Update aggregated metrics for analytics
+    await updateAggregatedMetrics(data.metric_type, data.metric_data);
+
+    logger.info('PWA usage metric logged', {
+      metric_type: data.metric_type,
+      user_id: data.user_id ? 'present' : 'anonymous',
+      session_id: data.session_id.slice(0, 8) + '...',
+    });
+
+    return true;
+  } catch (error) {
+    logger.error('Exception logging PWA usage metric', { error });
+    return false;
+  }
+}
+
+async function updateAggregatedMetrics(metricType: string, metricData?: any) {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+
+    let aggregateUpdate = {
+      date: today,
+      metric_type: metricType,
+      total_count: 1,
+      updated_at: new Date().toISOString(),
+    };
+
+    // Add specific aggregations based on metric type
+    if (metricType === 'performance_timing' && metricData?.load_time_ms) {
+      aggregateUpdate = {
+        ...aggregateUpdate,
+        average_value: metricData.load_time_ms,
+        max_value: metricData.load_time_ms,
+        min_value: metricData.load_time_ms,
+      };
+    }
+
+    const { error } = await supabase
+      .from('pwa_analytics_summary')
+      .upsert(aggregateUpdate, {
+        onConflict: 'date,metric_type',
+        ignoreDuplicates: false,
+      });
+
+    if (error) {
+      logger.warn('Failed to update aggregated usage metrics', {
+        error,
+        metricType,
+      });
+    }
+  } catch (error) {
+    logger.error('Exception updating aggregated metrics', {
+      error,
+      metricType,
+    });
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+
+    // Handle batch requests
+    if (Array.isArray(body)) {
+      const results = await Promise.allSettled(
+        body.map(async (item) => {
+          const validation = usageMetricsSchema.safeParse(item);
+          if (!validation.success) {
+            return { success: false, error: validation.error.errors };
+          }
+
+          const clientInfo = await getClientInfo(request);
+          return await logUsageMetric(validation.data, clientInfo);
+        }),
+      );
+
+      const successCount = results.filter(
+        (r) => r.status === 'fulfilled' && r.value === true,
+      ).length;
+      const failureCount = results.length - successCount;
+
+      return NextResponse.json(
+        {
+          success: true,
+          message: `Processed ${results.length} metrics`,
+          successful: successCount,
+          failed: failureCount,
+        },
+        {
+          status: 201,
+          headers: {
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+          },
+        },
+      );
+    }
+
+    // Handle single request
+    const validation = usageMetricsSchema.safeParse(body);
+    if (!validation.success) {
+      logger.warn('Invalid PWA usage metrics data', {
+        errors: validation.error.errors,
+        body,
+      });
+
+      return NextResponse.json(
+        {
+          error: 'Invalid request data',
+          details: validation.error.errors,
+        },
+        { status: 400 },
+      );
+    }
+
+    const data = validation.data;
+    const clientInfo = await getClientInfo(request);
+
+    const success = await logUsageMetric(data, clientInfo);
+
+    if (!success) {
+      return NextResponse.json(
+        {
+          error: 'Failed to log usage metric',
+        },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json(
+      {
+        success: true,
+        message: 'Usage metric logged successfully',
+      },
+      {
+        status: 201,
+        headers: {
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          Pragma: 'no-cache',
+          Expires: '0',
+        },
+      },
+    );
+  } catch (error) {
+    logger.error('PWA usage metrics API error', { error });
+
+    return NextResponse.json(
+      {
+        error: 'Internal server error',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+export async function GET() {
+  return NextResponse.json(
+    {
+      error: 'Method not allowed',
+    },
+    { status: 405 },
+  );
+}

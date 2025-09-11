@@ -1,0 +1,288 @@
+/**
+ * WS-204: Presence Tracking API - Track Presence Endpoint
+ * 
+ * POST /api/presence/track
+ * 
+ * Handles real-time presence tracking with privacy controls and rate limiting.
+ * Integrates with Supabase Realtime for ephemeral presence and database for persistence.
+ * 
+ * Security Features:
+ * - Authentication required (JWT validation)
+ * - Rate limiting (1 update per second per user)
+ * - Input validation and sanitization
+ * - Privacy settings enforcement
+ * - Enterprise activity logging
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import { z } from 'zod';
+import { getPresenceManager } from '@/lib/presence/presence-manager';
+import { getActivityTracker } from '@/lib/presence/activity-tracker';
+import { ratelimit } from '@/lib/rate-limit';
+
+// ============================================================================
+// VALIDATION SCHEMAS
+// ============================================================================
+
+const trackPresenceSchema = z.object({
+  status: z.enum(['online', 'idle', 'away', 'busy']),
+  currentPage: z.string().optional(),
+  isTyping: z.boolean().optional(),
+  device: z.enum(['desktop', 'mobile', 'tablet']).optional(),
+  customStatus: z.string().max(100).optional(),
+  customEmoji: z.string().max(10).optional(),
+  sessionId: z.string().uuid().optional()
+});
+
+const deviceInfoSchema = z.object({
+  type: z.enum(['desktop', 'mobile', 'tablet']),
+  userAgent: z.string(),
+  platform: z.string().optional(),
+  screenSize: z.object({
+    width: z.number(),
+    height: z.number()
+  }).optional()
+});
+
+// ============================================================================
+// MAIN HANDLER
+// ============================================================================
+
+export async function POST(request: NextRequest) {
+  try {
+    // Initialize Supabase client for authentication
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
+    
+    // Get authenticated user
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Authentication required' }, 
+        { status: 401 }
+      );
+    }
+
+    // Rate limiting check (1 update per second per user)
+    const rateLimitResult = await ratelimit.limit(`presence:${user.id}`);
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { 
+          error: 'Rate limit exceeded',
+          retryAfter: rateLimitResult.reset 
+        },
+        { status: 429 }
+      );
+    }
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validationResult = trackPresenceSchema.safeParse(body);
+    
+    if (!validationResult.success) {
+      return NextResponse.json(
+        { 
+          error: 'Invalid request data',
+          details: validationResult.error.errors 
+        },
+        { status: 400 }
+      );
+    }
+
+    const presenceData = validationResult.data;
+
+    // Extract device information from headers
+    const userAgent = request.headers.get('user-agent') || '';
+    const deviceInfo = extractDeviceInfo(userAgent, body.deviceInfo);
+
+    // Validate device info
+    const deviceValidation = deviceInfoSchema.safeParse(deviceInfo);
+    if (!deviceValidation.success) {
+      return NextResponse.json(
+        { 
+          error: 'Invalid device information',
+          details: deviceValidation.error.errors 
+        },
+        { status: 400 }
+      );
+    }
+
+    // Initialize presence manager and activity tracker
+    const presenceManager = getPresenceManager();
+    const activityTracker = getActivityTracker();
+
+    // Track presence with all validation and logging
+    await presenceManager.trackUserPresence(user.id, presenceData);
+
+    // Track page view for analytics (if provided)
+    if (presenceData.currentPage) {
+      await activityTracker.trackPageView(
+        user.id, 
+        presenceData.currentPage, 
+        deviceValidation.data,
+        presenceData.sessionId
+      );
+    }
+
+    // Track status change interaction
+    await activityTracker.trackUserInteraction(
+      user.id,
+      'status_change',
+      {
+        fromStatus: await getLastUserStatus(user.id),
+        toStatus: presenceData.status,
+        device: deviceValidation.data.type,
+        page: presenceData.currentPage,
+        sessionId: presenceData.sessionId
+      }
+    );
+
+    // Generate response with tracking confirmation
+    const response = {
+      success: true,
+      timestamp: new Date().toISOString(),
+      status: presenceData.status,
+      broadcastId: generateBroadcastId(user.id, presenceData.status),
+      rateLimitRemaining: rateLimitResult.remaining,
+      rateLimitReset: rateLimitResult.reset
+    };
+
+    return NextResponse.json(response, { status: 200 });
+
+  } catch (error) {
+    console.error('Presence tracking error:', error);
+    
+    // Return appropriate error response
+    if (error instanceof Error) {
+      if (error.message.includes('Rate limit')) {
+        return NextResponse.json(
+          { error: 'Rate limit exceeded' },
+          { status: 429 }
+        );
+      }
+      if (error.message.includes('Permission')) {
+        return NextResponse.json(
+          { error: 'Insufficient permissions' },
+          { status: 403 }
+        );
+      }
+    }
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+/**
+ * Extract device information from user agent and request data
+ */
+function extractDeviceInfo(userAgent: string, providedDeviceInfo?: any): any {
+  // Basic device detection from user agent
+  let deviceType: 'desktop' | 'mobile' | 'tablet' = 'desktop';
+  
+  if (/Mobile|Android|iPhone|iPad/.test(userAgent)) {
+    deviceType = /iPad/.test(userAgent) ? 'tablet' : 'mobile';
+  }
+
+  // Extract platform information
+  let platform = 'unknown';
+  if (/Windows/.test(userAgent)) platform = 'windows';
+  else if (/Mac/.test(userAgent)) platform = 'macos';
+  else if (/Linux/.test(userAgent)) platform = 'linux';
+  else if (/Android/.test(userAgent)) platform = 'android';
+  else if (/iPhone|iPad/.test(userAgent)) platform = 'ios';
+
+  return {
+    type: providedDeviceInfo?.type || deviceType,
+    userAgent: sanitizeUserAgent(userAgent),
+    platform,
+    screenSize: providedDeviceInfo?.screenSize
+  };
+}
+
+/**
+ * Sanitize user agent string to remove potentially sensitive information
+ */
+function sanitizeUserAgent(userAgent: string): string {
+  return userAgent
+    .replace(/\([^)]*\)/g, '') // Remove detailed system info in parentheses
+    .replace(/Version\/[\d.]+/g, '') // Remove version numbers
+    .substring(0, 200) // Limit length
+    .trim();
+}
+
+/**
+ * Generate unique broadcast ID for presence update
+ */
+function generateBroadcastId(userId: string, status: string): string {
+  const timestamp = Date.now();
+  return `${userId.substring(0, 8)}-${status}-${timestamp}`;
+}
+
+/**
+ * Get user's last known status
+ */
+async function getLastUserStatus(userId: string): Promise<string> {
+  try {
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
+    
+    const { data } = await supabase
+      .from('user_last_seen')
+      .select('last_status')
+      .eq('user_id', userId)
+      .single();
+
+    return data?.last_status || 'offline';
+  } catch {
+    return 'offline';
+  }
+}
+
+// ============================================================================
+// ERROR HANDLING MIDDLEWARE
+// ============================================================================
+
+/**
+ * Standardized error response format
+ */
+function createErrorResponse(message: string, status: number, details?: any) {
+  return NextResponse.json(
+    {
+      error: message,
+      timestamp: new Date().toISOString(),
+      details
+    },
+    { status }
+  );
+}
+
+/**
+ * Validate required environment variables
+ */
+function validateEnvironment(): boolean {
+  const required = [
+    'NEXT_PUBLIC_SUPABASE_URL',
+    'SUPABASE_SERVICE_ROLE_KEY'
+  ];
+
+  for (const envVar of required) {
+    if (!process.env[envVar]) {
+      console.error(`Missing required environment variable: ${envVar}`);
+      return false;
+    }
+  }
+
+  return true;
+}
+
+// Validate environment on module load
+if (!validateEnvironment()) {
+  console.error('Presence tracking API: Environment validation failed');
+}

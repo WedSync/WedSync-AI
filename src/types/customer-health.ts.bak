@@ -1,0 +1,393 @@
+// WS-168: Customer Success Dashboard - TypeScript Interfaces for Health Data Models
+// Team D - Round 1 - Customer Health Database Schema Types
+
+// Customer Health Metrics Table Types
+export interface CustomerHealthRow {
+  id: string;
+  client_id: string;
+  organization_id: string;
+  
+  // Core Health Metrics
+  overall_health_score: number;
+  engagement_score: number;
+  progress_score: number;
+  satisfaction_score: number | null;
+  churn_risk_score: number;
+  
+  // Engagement Metrics
+  last_login_at: string | null;
+  total_logins: number;
+  days_since_last_activity: number;
+  session_duration_avg_minutes: number | null;
+  
+  // Feature Usage Tracking
+  features_used: Record<string, number>; // {"feature_name": usage_count}
+  form_completion_rate: number;
+  task_completion_rate: number;
+  
+  // Communication Health
+  messages_sent: number;
+  messages_received: number;
+  response_rate: number;
+  
+  // Progress Indicators
+  wedding_progress_percentage: number;
+  milestones_completed: number;
+  overdue_tasks: number;
+  
+  // Risk Factors
+  support_tickets_count: number;
+  payment_issues_count: number;
+  billing_status: string;
+  
+  // Metadata
+  score_calculation_version: string;
+  factors_considered: Record<string, any>;
+  calculated_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CustomerHealthInsert extends Omit<CustomerHealthRow, 'id' | 'created_at' | 'updated_at' | 'calculated_at'> {
+  id?: string;
+  created_at?: string;
+  updated_at?: string;
+  calculated_at?: string;
+}
+
+export interface CustomerHealthUpdate extends Partial<CustomerHealthInsert> {}
+
+// Success Milestones Table Types
+export interface SuccessMilestoneRow {
+  id: string;
+  client_id: string;
+  organization_id: string;
+  
+  // Milestone Details
+  milestone_type: string;
+  milestone_category: string;
+  milestone_name: string;
+  milestone_description: string | null;
+  
+  // Achievement Status
+  status: 'pending' | 'in_progress' | 'completed' | 'skipped';
+  priority: 'low' | 'medium' | 'high' | 'critical';
+  
+  // Progress Tracking
+  progress_percentage: number;
+  target_completion_date: string | null; // Date
+  actual_completion_date: string | null; // Date
+  estimated_hours: number | null;
+  actual_hours: number | null;
+  
+  // Scoring Impact
+  health_score_impact: number;
+  engagement_score_impact: number;
+  progress_score_impact: number;
+  
+  // Wedding Context
+  wedding_date: string | null; // Date
+  days_until_wedding: number | null;
+  is_critical_path: boolean;
+  
+  // Dependencies
+  prerequisite_milestone_ids: string[];
+  dependent_milestone_ids: string[];
+  
+  // Automation and Triggers
+  auto_generated: boolean;
+  trigger_conditions: Record<string, any>;
+  completion_triggers: Record<string, any>;
+  
+  // Assignment and Responsibility
+  assigned_user_id: string | null;
+  assigned_team: string | null;
+  requires_supplier_action: boolean;
+  supplier_dependencies: string[];
+  
+  // Metadata and Tracking
+  milestone_version: string;
+  template_id: string | null;
+  custom_fields: Record<string, any>;
+  notes: string | null;
+  
+  // Timestamps
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export interface SuccessMilestoneInsert extends Omit<SuccessMilestoneRow, 'id' | 'created_at' | 'updated_at'> {
+  id?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface SuccessMilestoneUpdate extends Partial<SuccessMilestoneInsert> {}
+
+// Support Interactions Table Types
+export interface SupportInteractionRow {
+  id: string;
+  client_id: string;
+  organization_id: string;
+  
+  // Interaction Classification
+  interaction_type: string;
+  interaction_category: string;
+  interaction_method: string;
+  
+  // Trigger and Context
+  trigger_event: string | null;
+  trigger_threshold: Record<string, any> | null;
+  health_score_at_interaction: number | null;
+  churn_risk_level: string | null;
+  
+  // Interaction Details
+  subject: string;
+  description: string | null;
+  interaction_data: Record<string, any>;
+  
+  // Priority and Urgency
+  priority: 'low' | 'medium' | 'high' | 'critical';
+  urgency: 'low' | 'medium' | 'high' | 'critical';
+  
+  // Assignment and Ownership
+  assigned_user_id: string | null;
+  assigned_team: string | null;
+  escalation_level: number;
+  
+  // Status Tracking
+  status: 'open' | 'in_progress' | 'pending_customer' | 'resolved' | 'closed' | 'escalated';
+  resolution_type: string | null;
+  
+  // Timeline and SLA
+  created_at: string;
+  updated_at: string;
+  first_response_at: string | null;
+  resolved_at: string | null;
+  closed_at: string | null;
+  
+  // SLA tracking
+  sla_target_response_hours: number;
+  sla_target_resolution_hours: number;
+  sla_response_met: boolean | null;
+  sla_resolution_met: boolean | null;
+  
+  // Customer Interaction
+  customer_contacted: boolean;
+  customer_response_received: boolean;
+  customer_satisfaction_rating: number | null; // 1-5
+  customer_feedback: string | null;
+  
+  // Outcome and Impact
+  outcome_category: string | null;
+  resolution_notes: string | null;
+  follow_up_required: boolean;
+  follow_up_date: string | null; // Date
+  
+  // Health Score Impact
+  health_score_impact_predicted: number | null;
+  health_score_impact_actual: number | null;
+  engagement_impact: number | null;
+  satisfaction_impact: number | null;
+  
+  // Related Records
+  related_milestone_id: string | null;
+  related_support_ticket_id: string | null;
+  related_interaction_ids: string[];
+  
+  // Automation and AI
+  auto_generated: boolean;
+  ai_sentiment_score: number | null; // -100 to +100
+  ai_suggested_actions: Record<string, any>;
+  ai_risk_assessment: Record<string, any>;
+  
+  // Communication Tracking
+  messages_sent: number;
+  messages_received: number;
+  total_touchpoints: number;
+  communication_preferences: Record<string, any>;
+  
+  // Metadata
+  interaction_version: string;
+  tags: string[];
+  custom_fields: Record<string, any>;
+}
+
+export interface SupportInteractionInsert extends Omit<SupportInteractionRow, 'id' | 'created_at' | 'updated_at'> {
+  id?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface SupportInteractionUpdate extends Partial<SupportInteractionInsert> {}
+
+// Extended Database Interface for Customer Health Tables
+export interface CustomerHealthDatabase {
+  public: {
+    Tables: {
+      customer_health: {
+        Row: CustomerHealthRow;
+        Insert: CustomerHealthInsert;
+        Update: CustomerHealthUpdate;
+      };
+      success_milestones: {
+        Row: SuccessMilestoneRow;
+        Insert: SuccessMilestoneInsert;
+        Update: SuccessMilestoneUpdate;
+      };
+      support_interactions: {
+        Row: SupportInteractionRow;
+        Insert: SupportInteractionInsert;
+        Update: SupportInteractionUpdate;
+      };
+    };
+  };
+}
+
+// Utility Types for Dashboard Components
+export interface CustomerHealthSummary {
+  client_id: string;
+  client_name: string;
+  overall_health_score: number;
+  churn_risk_score: number;
+  last_login_at: string | null;
+  days_since_last_activity: number;
+  milestones_completed: number;
+  overdue_tasks: number;
+  open_support_interactions: number;
+}
+
+export interface HealthScoreBreakdown {
+  overall_health_score: number;
+  engagement_score: number;
+  progress_score: number;
+  satisfaction_score: number | null;
+  churn_risk_score: number;
+  score_factors: {
+    login_frequency: number;
+    feature_adoption: number;
+    milestone_progress: number;
+    communication_health: number;
+    support_activity: number;
+  };
+}
+
+export interface MilestoneProgress {
+  total_milestones: number;
+  completed_milestones: number;
+  in_progress_milestones: number;
+  overdue_milestones: number;
+  critical_path_completion: number; // percentage
+  upcoming_milestones: SuccessMilestoneRow[];
+}
+
+export interface SupportInteractionSummary {
+  total_interactions: number;
+  open_interactions: number;
+  avg_response_time_hours: number;
+  avg_resolution_time_hours: number;
+  sla_compliance_rate: number;
+  customer_satisfaction_avg: number | null;
+  recent_interactions: SupportInteractionRow[];
+}
+
+// Health Score Calculation Types
+export interface HealthScoreConfig {
+  weights: {
+    engagement: number;
+    progress: number;
+    communication: number;
+    risk_factors: number;
+  };
+  thresholds: {
+    healthy: number;
+    at_risk: number;
+    critical: number;
+  };
+  calculation_version: string;
+}
+
+export interface HealthScoreFactors {
+  login_frequency_score: number;
+  feature_usage_score: number;
+  milestone_progress_score: number;
+  communication_score: number;
+  support_interaction_score: number;
+  payment_health_score: number;
+  engagement_trend_score: number;
+}
+
+// API Response Types
+export interface CustomerHealthResponse {
+  success: boolean;
+  data: {
+    health_data: CustomerHealthRow;
+    score_breakdown: HealthScoreBreakdown;
+    milestone_progress: MilestoneProgress;
+    support_summary: SupportInteractionSummary;
+  };
+  error?: string;
+}
+
+export interface DashboardAnalytics {
+  organization_id: string;
+  total_clients: number;
+  average_health_score: number;
+  at_risk_clients: number;
+  critical_clients: number;
+  churn_predictions: {
+    next_30_days: number;
+    next_90_days: number;
+  };
+  milestone_completion_rate: number;
+  avg_support_resolution_time: number;
+}
+
+// Filter and Sort Types for Dashboard
+export interface HealthDashboardFilters {
+  health_score_min?: number;
+  health_score_max?: number;
+  churn_risk_level?: 'low' | 'medium' | 'high' | 'critical';
+  last_activity_days?: number;
+  milestone_status?: 'on_track' | 'at_risk' | 'behind';
+  support_interaction_status?: 'none' | 'active' | 'resolved';
+  client_search?: string;
+}
+
+export interface HealthDashboardSort {
+  field: 'health_score' | 'churn_risk' | 'last_activity' | 'milestone_progress' | 'client_name';
+  direction: 'asc' | 'desc';
+}
+
+// Event Types for Real-time Updates
+export interface HealthScoreUpdateEvent {
+  type: 'health_score_update';
+  client_id: string;
+  organization_id: string;
+  previous_score: number;
+  new_score: number;
+  factors_changed: string[];
+  timestamp: string;
+}
+
+export interface MilestoneCompletionEvent {
+  type: 'milestone_completed';
+  client_id: string;
+  organization_id: string;
+  milestone_id: string;
+  milestone_name: string;
+  health_score_impact: number;
+  timestamp: string;
+}
+
+export interface SupportInteractionEvent {
+  type: 'support_interaction_created' | 'support_interaction_resolved';
+  client_id: string;
+  organization_id: string;
+  interaction_id: string;
+  interaction_type: string;
+  priority: string;
+  timestamp: string;
+}

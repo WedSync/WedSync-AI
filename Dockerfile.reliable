@@ -1,0 +1,49 @@
+# Reliable Dockerfile for WedSync - Works Every Time
+FROM node:20-alpine
+
+# Install system dependencies upfront
+RUN apk add --no-cache \
+    python3 \
+    make \
+    g++ \
+    cairo-dev \
+    jpeg-dev \
+    pango-dev \
+    giflib-dev \
+    pixman-dev \
+    curl \
+    git
+
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Remove package-lock if it exists to avoid version conflicts
+RUN rm -f package-lock.json
+
+# Fresh install with exact versions from package.json
+RUN npm install --legacy-peer-deps && \
+    npm cache clean --force
+
+# Copy application code
+COPY . .
+
+# Create necessary directories
+RUN mkdir -p .next && \
+    chmod -R 777 .next
+
+# Set environment for Docker
+ENV HOSTNAME=0.0.0.0
+ENV PORT=3000
+ENV NODE_ENV=development
+ENV NEXT_TELEMETRY_DISABLED=1
+
+# Enable file watching for Docker
+ENV CHOKIDAR_USEPOLLING=true
+ENV WATCHPACK_POLLING=true
+
+EXPOSE 3000
+
+# Use the fixed config and start dev server
+CMD ["sh", "-c", "cp next.config.simple.js next.config.js 2>/dev/null || true && npm run dev -- --hostname 0.0.0.0 --port 3000"]

@@ -1,0 +1,410 @@
+/**
+ * Comprehensive Integration Tests for Guest API Routes and Bulk Operations
+ * Team E - Batch 13 - WS-151 Guest List Builder API Testing
+ * 
+ * Testing Requirements:
+ * - All guest API endpoints functionality
+ * - Bulk operations performance and reliability
+ * - Data integrity and validation
+ * - Error handling and edge cases
+ * - Large dataset handling (500+ guests)
+ * - Concurrent operation handling
+ */
+
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { createClient } from '@supabase/supabase-js'
+import { Database } from '@/types/database'
+import Papa from 'papaparse'
+// Test configuration
+const TEST_SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!
+const TEST_SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+// Test data
+let supabase: ReturnType<typeof createClient<Database>>
+let testUser: any
+let testClient: any
+let testGuests: any[] = []
+describe('Guest API Routes and Bulk Operations Integration Tests', () => {
+  beforeAll(async () => {
+    supabase = createClient<Database>(TEST_SUPABASE_URL, TEST_SUPABASE_ANON_KEY)
+    
+    // Create test user and client
+    const { data: { user }, error: authError } = await supabase.auth.signUp({
+      email: `test-api-${Date.now()}@example.com`,
+      password: 'testpassword123',
+    })
+    expect(authError).toBeNull()
+    expect(user).toBeTruthy()
+    testUser = user
+    // Create test client
+    const { data: client, error: clientError } = await supabase
+      .from('clients')
+      .insert({
+        first_name: 'API',
+        last_name: 'TestCouple',
+        email: testUser.email,
+        wedding_date: '2025-12-31'
+      })
+      .select()
+      .single()
+    expect(clientError).toBeNull()
+    expect(client).toBeTruthy()
+    testClient = client
+  })
+  afterAll(async () => {
+    // Cleanup
+    if (testClient) {
+      await supabase.from('guests').delete().eq('couple_id', testClient.id)
+      await supabase.from('guest_import_sessions').delete().eq('couple_id', testClient.id)
+      await supabase.from('dietary_requirements').delete().eq('guest_id', 'IN', testGuests.map(g => g.id))
+      await supabase.from('photo_group_assignments').delete().eq('guest_id', 'IN', testGuests.map(g => g.id))
+      await supabase.from('clients').delete().eq('id', testClient.id)
+    }
+    if (testUser) {
+      await supabase.auth.signOut()
+  beforeEach(() => {
+    // Reset test data
+    testGuests = []
+  describe('Guest CRUD API Endpoints', () => {
+    it('should create a single guest via POST /api/guests', async () => {
+      const guestData = {
+        couple_id: testClient.id,
+        first_name: 'John',
+        last_name: 'Doe',
+        email: 'john.doe@example.com',
+        phone: '555-1234',
+        category: 'family',
+        side: 'partner1',
+        plus_one: true,
+        plus_one_name: 'Jane Doe',
+        dietary_restrictions: 'Vegetarian',
+        notes: 'Test guest'
+      }
+      const response = await fetch('/api/guests', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${testUser.access_token}`
+        },
+        body: JSON.stringify(guestData)
+      expect(response.status).toBe(201)
+      const createdGuest = await response.json()
+      
+      expect(createdGuest.first_name).toBe('John')
+      expect(createdGuest.last_name).toBe('Doe')
+      expect(createdGuest.email).toBe('john.doe@example.com')
+      expect(createdGuest.category).toBe('family')
+      expect(createdGuest.side).toBe('partner1')
+      expect(createdGuest.plus_one).toBe(true)
+      expect(createdGuest.plus_one_name).toBe('Jane Doe')
+      testGuests.push(createdGuest)
+    it('should get all guests for a couple via GET /api/guests', async () => {
+      // Create multiple test guests first
+      const guestsToCreate = [
+        {
+          couple_id: testClient.id,
+          first_name: 'Alice',
+          last_name: 'Smith',
+          email: 'alice@example.com',
+          category: 'friends',
+          side: 'partner2'
+          first_name: 'Bob',
+          last_name: 'Johnson',
+          email: 'bob@example.com',
+          category: 'work',
+          side: 'mutual'
+        }
+      ]
+      for (const guestData of guestsToCreate) {
+        const response = await fetch('/api/guests', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${testUser.access_token}`
+          },
+          body: JSON.stringify(guestData)
+        })
+        const guest = await response.json()
+        testGuests.push(guest)
+      // Now fetch all guests
+      const response = await fetch(`/api/guests?couple_id=${testClient.id}`, {
+      expect(response.status).toBe(200)
+      const guests = await response.json()
+      expect(Array.isArray(guests)).toBe(true)
+      expect(guests.length).toBeGreaterThanOrEqual(2)
+      // Verify guests belong to correct couple
+      guests.forEach(guest => {
+        expect(guest.couple_id).toBe(testClient.id)
+    it('should update a guest via PUT /api/guests/[id]', async () => {
+      // Create a guest first
+      const createResponse = await fetch('/api/guests', {
+        body: JSON.stringify({
+          first_name: 'Original',
+          last_name: 'Name',
+          email: 'original@example.com',
+          category: 'other'
+      const createdGuest = await createResponse.json()
+      // Update the guest
+      const updateData = {
+        first_name: 'Updated',
+        last_name: 'Name',
+        email: 'updated@example.com',
+        category: 'friends',
+        plus_one_name: 'Plus One Guest'
+      const updateResponse = await fetch(`/api/guests/${createdGuest.id}`, {
+        method: 'PUT',
+        body: JSON.stringify(updateData)
+      expect(updateResponse.status).toBe(200)
+      const updatedGuest = await updateResponse.json()
+      expect(updatedGuest.first_name).toBe('Updated')
+      expect(updatedGuest.email).toBe('updated@example.com')
+      expect(updatedGuest.category).toBe('friends')
+      expect(updatedGuest.plus_one).toBe(true)
+      expect(updatedGuest.plus_one_name).toBe('Plus One Guest')
+    it('should delete a guest via DELETE /api/guests/[id]', async () => {
+      // Create a guest to delete
+          first_name: 'ToDelete',
+          last_name: 'Guest',
+          email: 'todelete@example.com'
+      // Delete the guest
+      const deleteResponse = await fetch(`/api/guests/${createdGuest.id}`, {
+        method: 'DELETE',
+      expect(deleteResponse.status).toBe(200)
+      // Verify guest is deleted
+      const verifyResponse = await fetch(`/api/guests/${createdGuest.id}`, {
+      expect(verifyResponse.status).toBe(404)
+  describe('Bulk Operations API', () => {
+    beforeEach(async () => {
+      // Create test guests for bulk operations
+      const bulkGuests = Array.from({ length: 20 }, (_, i) => ({
+        first_name: `BulkGuest${i + 1}`,
+        last_name: `Test${i + 1}`,
+        email: `bulk${i + 1}@example.com`,
+        category: ['family', 'friends', 'work', 'other'][i % 4],
+        side: ['partner1', 'partner2', 'mutual'][i % 3]
+      }))
+      const { data: createdGuests, error } = await supabase
+        .from('guests')
+        .insert(bulkGuests)
+        .select()
+      expect(error).toBeNull()
+      testGuests.push(...createdGuests)
+    it('should perform bulk category update via POST /api/guests/bulk', async () => {
+      const guestIds = testGuests.slice(0, 5).map(g => g.id)
+      const response = await fetch('/api/guests/bulk', {
+          action: 'update_category',
+          guest_ids: guestIds,
+          category: 'family'
+      const result = await response.json()
+      expect(result.updated_count).toBe(5)
+      expect(result.success).toBe(true)
+      // Verify updates in database
+      const { data: updatedGuests } = await supabase
+        .select('*')
+        .in('id', guestIds)
+      updatedGuests.forEach(guest => {
+        expect(guest.category).toBe('family')
+    it('should perform bulk RSVP status update', async () => {
+      const guestIds = testGuests.slice(5, 10).map(g => g.id)
+          action: 'update_rsvp',
+          rsvp_status: 'yes'
+      // Verify RSVP updates
+        expect(guest.rsvp_status).toBe('yes')
+    it('should perform bulk table assignment', async () => {
+      const guestIds = testGuests.slice(10, 15).map(g => g.id)
+          action: 'assign_table',
+          table_number: 5
+      // Verify table assignments
+        expect(guest.table_number).toBe(5)
+    it('should perform bulk delete operation', async () => {
+      const guestIds = testGuests.slice(15, 20).map(g => g.id)
+          action: 'delete',
+          guest_ids: guestIds
+      expect(result.deleted_count).toBe(5)
+      // Verify guests are deleted
+      const { data: remainingGuests } = await supabase
+      expect(remainingGuests.length).toBe(0)
+  describe('Guest Import API', () => {
+    it('should handle CSV import via POST /api/guests/import', async () => {
+      const csvData = [
+        { 'First Name': 'Import1', 'Last Name': 'Test1', 'Email': 'import1@example.com', 'Category': 'family' },
+        { 'First Name': 'Import2', 'Last Name': 'Test2', 'Email': 'import2@example.com', 'Category': 'friends' },
+        { 'First Name': 'Import3', 'Last Name': 'Test3', 'Email': 'import3@example.com', 'Category': 'work' }
+      const csvContent = Papa.unparse(csvData)
+      const formData = new FormData()
+      const blob = new Blob([csvContent], { type: 'text/csv' })
+      formData.append('file', blob, 'import-test.csv')
+      formData.append('couple_id', testClient.id)
+      formData.append('mapping_config', JSON.stringify({
+        first_name: 'First Name',
+        last_name: 'Last Name',
+        email: 'Email',
+        category: 'Category'
+      const response = await fetch('/api/guests/import', {
+        body: formData,
+      expect(result.total_rows).toBe(3)
+      expect(result.successful_imports).toBe(3)
+      expect(result.failed_imports).toBe(0)
+      // Verify imported guests
+      const { data: importedGuests } = await supabase
+        .eq('couple_id', testClient.id)
+        .like('first_name', 'Import%')
+      expect(importedGuests.length).toBe(3)
+      testGuests.push(...importedGuests)
+    it('should handle validation errors during import', async () => {
+      const invalidCsvData = [
+        { 'First Name': '', 'Last Name': 'Invalid1', 'Email': 'not-an-email' },
+        { 'First Name': 'Valid', 'Last Name': 'Guest', 'Email': 'valid@example.com' }
+      const csvContent = Papa.unparse(invalidCsvData)
+      formData.append('file', blob, 'invalid-import.csv')
+        email: 'Email'
+      expect(result.total_rows).toBe(2)
+      expect(result.successful_imports).toBe(1)
+      expect(result.failed_imports).toBe(1)
+      expect(result.errors.length).toBeGreaterThan(0)
+    it('should handle large CSV import (500+ guests)', async () => {
+      const largeDataset = Array.from({ length: 550 }, (_, i) => ({
+        'First Name': `LargeGuest${i + 1}`,
+        'Last Name': `Test${i + 1}`,
+        'Email': `large${i + 1}@example.com`,
+        'Category': ['family', 'friends', 'work', 'other'][i % 4],
+        'Side': ['partner1', 'partner2', 'mutual'][i % 3],
+        'Plus One': i % 5 === 0 ? 'Yes' : 'No'
+      const csvContent = Papa.unparse(largeDataset)
+      formData.append('file', blob, 'large-import.csv')
+        category: 'Category',
+        side: 'Side',
+        plus_one: 'Plus One'
+      const startTime = Date.now()
+      const importTime = Date.now() - startTime
+      expect(result.total_rows).toBe(550)
+      expect(result.successful_imports).toBeGreaterThan(540) // Allow for minor validation failures
+      expect(importTime).toBeLessThan(30000) // Under 30 seconds
+      // Performance validation
+      expect(result.performance?.processing_time_ms).toBeLessThan(30000)
+      expect(result.performance?.processing_speed_per_second).toBeGreaterThan(10)
+      console.log(`✅ Large import: ${result.successful_imports} guests in ${importTime}ms`)
+  describe('Enhanced Import API', () => {
+    it('should handle enhanced import with batch processing', async () => {
+      const enhancedData = Array.from({ length: 100 }, (_, i) => ({
+        'First Name': `Enhanced${i + 1}`,
+        'Last Name': `Batch${i + 1}`,
+        'Email': `enhanced${i + 1}@example.com`,
+        'Phone': `555-${String(i + 1000).padStart(4, '0')}`,
+        'Dietary': i % 10 === 0 ? 'Vegetarian' : '',
+        'Table': Math.floor(i / 8) + 1
+      const csvContent = Papa.unparse(enhancedData)
+      formData.append('file', blob, 'enhanced-import.csv')
+        phone: 'Phone',
+        dietary_restrictions: 'Dietary',
+        table_number: 'Table'
+      formData.append('batch_size', '25')
+      const response = await fetch('/api/guests/import-enhanced', {
+      expect(result.total_rows).toBe(100)
+      expect(result.successful_imports).toBeGreaterThan(95)
+      expect(result.batch_results).toBeDefined()
+      expect(result.batch_results.length).toBe(4) // 100 / 25 = 4 batches
+      // Verify batch processing metrics
+      expect(result.performance.batch_size).toBe(25)
+      expect(result.performance.batches_processed).toBe(4)
+  describe('Data Integrity and Validation', () => {
+    it('should prevent duplicate email addresses', async () => {
+      // Create first guest
+      const firstGuest = {
+        first_name: 'First',
+        last_name: 'Guest',
+        email: 'duplicate@example.com'
+      const firstResponse = await fetch('/api/guests', {
+        body: JSON.stringify(firstGuest)
+      expect(firstResponse.status).toBe(201)
+      const createdGuest = await firstResponse.json()
+      // Try to create second guest with same email
+      const secondGuest = {
+        first_name: 'Second',
+      const secondResponse = await fetch('/api/guests', {
+        body: JSON.stringify(secondGuest)
+      expect(secondResponse.status).toBe(400)
+      const error = await secondResponse.json()
+      expect(error.error).toContain('email')
+    it('should validate required fields', async () => {
+      const invalidGuest = {
+        email: 'test@example.com'
+        // Missing first_name and last_name
+        body: JSON.stringify(invalidGuest)
+      expect(response.status).toBe(400)
+      const error = await response.json()
+      expect(error.error).toContain('required')
+    it('should validate email format', async () => {
+      const invalidEmailGuest = {
+        first_name: 'Test',
+        email: 'invalid-email-format'
+        body: JSON.stringify(invalidEmailGuest)
+  describe('Performance and Concurrency', () => {
+    it('should handle concurrent guest creation', async () => {
+      const concurrentGuests = Array.from({ length: 10 }, (_, i) => ({
+        first_name: `Concurrent${i}`,
+        last_name: `Test${i}`,
+        email: `concurrent${i}@example.com`,
+        category: 'friends'
+      const requests = concurrentGuests.map(guestData =>
+        fetch('/api/guests', {
+      )
+      const responses = await Promise.all(requests)
+      // All requests should succeed
+      responses.forEach(response => {
+        expect([200, 201]).toContain(response.status)
+      // Verify all guests were created
+      const { data: concurrentResults } = await supabase
+        .like('first_name', 'Concurrent%')
+      expect(concurrentResults.length).toBe(10)
+      testGuests.push(...concurrentResults)
+    it('should efficiently query large guest lists', async () => {
+      const response = await fetch(`/api/guests?couple_id=${testClient.id}&limit=1000`, {
+      const queryTime = Date.now() - startTime
+      expect(queryTime).toBeLessThan(2000) // Under 2 seconds
+      console.log(`✅ Large query: ${guests.length} guests in ${queryTime}ms`)
+    it('should handle bulk operations efficiently', async () => {
+      // Use existing test guests for bulk update
+      const guestIds = testGuests.slice(0, Math.min(50, testGuests.length)).map(g => g.id)
+          category: 'work'
+      const bulkTime = Date.now() - startTime
+      expect(bulkTime).toBeLessThan(5000) // Under 5 seconds
+      expect(result.updated_count).toBe(guestIds.length)
+      console.log(`✅ Bulk update: ${guestIds.length} guests in ${bulkTime}ms`)
+  describe('Error Handling and Edge Cases', () => {
+    it('should handle malformed request data', async () => {
+        body: 'invalid json'
+      expect(error.error).toBeDefined()
+    it('should handle unauthorized requests', async () => {
+          'Content-Type': 'application/json'
+          // No authorization header
+          first_name: 'Unauthorized',
+          last_name: 'Test'
+      expect(response.status).toBe(401)
+    it('should handle non-existent guest operations', async () => {
+      const response = await fetch('/api/guests/non-existent-id', {
+          first_name: 'Updated'
+      expect(response.status).toBe(404)
+    it('should handle database connection errors', async () => {
+      // This test would require mocking database failures
+      // In a real scenario, you'd mock the Supabase client to throw errors
+  describe('API Response Format Validation', () => {
+    it('should return consistent response format for guest creation', async () => {
+        first_name: 'Format',
+        last_name: 'Test',
+        email: 'format@example.com'
+      // Verify standard fields are present
+      expect(result).toHaveProperty('id')
+      expect(result).toHaveProperty('first_name')
+      expect(result).toHaveProperty('last_name')
+      expect(result).toHaveProperty('couple_id')
+      expect(result).toHaveProperty('created_at')
+      expect(result).toHaveProperty('updated_at')
+      testGuests.push(result)
+    it('should return proper error format for validation failures', async () => {
+          couple_id: testClient.id
+          // Missing required fields
+      expect(error).toHaveProperty('error')
+      expect(error).toHaveProperty('details')
+      expect(typeof error.error).toBe('string')
+})

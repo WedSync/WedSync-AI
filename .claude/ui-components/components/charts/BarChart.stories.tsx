@@ -1,0 +1,1 @@
+import type { Meta, StoryObj } from '@storybook/react'; import { BarChart } from './BarChart'; const meta:Meta<typeof BarChart>={title:'Charts/BarChart',component:BarChart,args:{values:[8,12,10,14,9,7,11],labels:['Mon','Tue','Wed','Thu','Fri','Sat','Sun'],title:'Tasks completed'}}; export default meta; type Story=StoryObj<typeof BarChart>; export const Default:Story={};

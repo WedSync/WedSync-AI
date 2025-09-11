@@ -1,0 +1,239 @@
+'use server';
+
+import { withSecureValidation } from '@/lib/validation/middleware';
+import {
+  reviewCampaignSchema,
+  type ReviewCampaignFormData,
+} from '@/lib/validations/review-schemas';
+import { createServerClient } from '@/lib/supabase/server';
+import { getCurrentUser } from '@/lib/auth/server-utils';
+import { revalidatePath } from 'next/cache';
+import { redirect } from 'next/navigation';
+
+export const createReviewCampaign = withSecureValidation(
+  reviewCampaignSchema,
+  async (validatedData: ReviewCampaignFormData, context) => {
+    // Get current user
+    const user = await getCurrentUser();
+    if (!user) {
+      throw new Error('Authentication required');
+    }
+
+    // Create Supabase client
+    const supabase = createServerClient();
+
+    // Check user permissions - must be supplier or admin
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('role, organization_id')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!profile || !['supplier', 'admin'].includes(profile.role)) {
+      throw new Error('Insufficient permissions to create review campaigns');
+    }
+
+    try {
+      // Insert campaign into database
+      const { data: campaign, error } = await supabase
+        .from('review_campaigns')
+        .insert({
+          name: validatedData.name,
+          supplier_id: profile.organization_id,
+          client_id: validatedData.client_id,
+          delay_days: validatedData.delay_days,
+          message_template: validatedData.message_template,
+          platforms: validatedData.platforms,
+          incentive_type: validatedData.incentive_type,
+          incentive_value: validatedData.incentive_value,
+          active: validatedData.active,
+          created_by: user.id,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Database error:', error);
+        throw new Error('Failed to create review campaign');
+      }
+
+      // Log the campaign creation for audit
+      await supabase.from('audit_logs').insert({
+        user_id: user.id,
+        action: 'create_review_campaign',
+        resource_type: 'review_campaign',
+        resource_id: campaign.id,
+        metadata: {
+          campaign_name: campaign.name,
+          platforms: campaign.platforms,
+          delay_days: campaign.delay_days,
+        },
+      });
+
+      // If campaign is active and has a client, schedule the first review request
+      if (campaign.active && campaign.client_id) {
+        await scheduleReviewRequest(campaign);
+      }
+
+      // Revalidate the campaigns page
+      revalidatePath('/reviews/campaigns');
+
+      return campaign;
+    } catch (error) {
+      console.error('Error creating review campaign:', error);
+      throw new Error(
+        error instanceof Error ? error.message : 'Failed to create campaign',
+      );
+    }
+  },
+  {
+    rateLimitKey: (context) => `create_campaign:${context.userId}`,
+    rateLimitMax: 10, // 10 campaigns per hour
+    rateLimitWindow: 3600,
+    requireAuth: true,
+    requireRole: ['supplier', 'admin'],
+  },
+);
+
+// Helper function to schedule review requests
+async function scheduleReviewRequest(campaign: any) {
+  const supabase = createServerClient();
+
+  try {
+    // Get client's wedding date
+    const { data: client } = await supabase
+      .from('clients')
+      .select('wedding_date, couple_name_1, couple_name_2, venue_name')
+      .eq('id', campaign.client_id)
+      .single();
+
+    if (!client || !client.wedding_date) {
+      console.warn(
+        'No wedding date found for client, cannot schedule review request',
+      );
+      return;
+    }
+
+    const weddingDate = new Date(client.wedding_date);
+    const scheduledDate = new Date(weddingDate);
+    scheduledDate.setDate(scheduledDate.getDate() + campaign.delay_days);
+
+    // Only schedule if the date is in the future
+    if (scheduledDate > new Date()) {
+      await supabase.from('review_requests').insert({
+        campaign_id: campaign.id,
+        client_id: campaign.client_id,
+        supplier_id: campaign.supplier_id,
+        scheduled_date: scheduledDate.toISOString(),
+        message_template: campaign.message_template,
+        platforms: campaign.platforms,
+        incentive_type: campaign.incentive_type,
+        incentive_value: campaign.incentive_value,
+        status: 'scheduled',
+      });
+    } else {
+      // Wedding was in the past, schedule for immediate sending
+      await supabase.from('review_requests').insert({
+        campaign_id: campaign.id,
+        client_id: campaign.client_id,
+        supplier_id: campaign.supplier_id,
+        scheduled_date: new Date().toISOString(),
+        message_template: campaign.message_template,
+        platforms: campaign.platforms,
+        incentive_type: campaign.incentive_type,
+        incentive_value: campaign.incentive_value,
+        status: 'pending',
+      });
+    }
+  } catch (error) {
+    console.error('Error scheduling review request:', error);
+    // Don't throw here - campaign creation should still succeed
+  }
+}
+
+// Update campaign server action
+export const updateReviewCampaign = withSecureValidation(
+  reviewCampaignSchema.extend({
+    id: reviewCampaignSchema.shape.id || reviewCampaignSchema.shape.name, // Ensure ID field
+  }),
+  async (validatedData: ReviewCampaignFormData & { id: string }, context) => {
+    const user = await getCurrentUser();
+    if (!user) {
+      throw new Error('Authentication required');
+    }
+
+    const supabase = createServerClient();
+
+    // Check ownership/permissions
+    const { data: campaign } = await supabase
+      .from('review_campaigns')
+      .select('supplier_id')
+      .eq('id', validatedData.id)
+      .single();
+
+    if (!campaign) {
+      throw new Error('Campaign not found');
+    }
+
+    // Verify user has access to this campaign
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id, role')
+      .eq('user_id', user.id)
+      .single();
+
+    if (
+      !profile ||
+      (profile.organization_id !== campaign.supplier_id &&
+        profile.role !== 'admin')
+    ) {
+      throw new Error('Access denied');
+    }
+
+    try {
+      const { data: updatedCampaign, error } = await supabase
+        .from('review_campaigns')
+        .update({
+          name: validatedData.name,
+          delay_days: validatedData.delay_days,
+          message_template: validatedData.message_template,
+          platforms: validatedData.platforms,
+          incentive_type: validatedData.incentive_type,
+          incentive_value: validatedData.incentive_value,
+          active: validatedData.active,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', validatedData.id)
+        .select()
+        .single();
+
+      if (error) {
+        throw new Error('Failed to update campaign');
+      }
+
+      // Log the update
+      await supabase.from('audit_logs').insert({
+        user_id: user.id,
+        action: 'update_review_campaign',
+        resource_type: 'review_campaign',
+        resource_id: updatedCampaign.id,
+        metadata: { campaign_name: updatedCampaign.name },
+      });
+
+      revalidatePath('/reviews/campaigns');
+      return updatedCampaign;
+    } catch (error) {
+      console.error('Error updating review campaign:', error);
+      throw new Error('Failed to update campaign');
+    }
+  },
+  {
+    rateLimitKey: (context) => `update_campaign:${context.userId}`,
+    rateLimitMax: 20,
+    rateLimitWindow: 3600,
+    requireAuth: true,
+    requireRole: ['supplier', 'admin'],
+  },
+);

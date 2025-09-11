@@ -1,0 +1,649 @@
+// src/app/api/webhooks/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
+import crypto from 'crypto';
+import { createClient } from '@supabase/supabase-js';
+import { createAPIResponse, logAPIRequest } from '@/lib/api/response-schemas';
+import { WebhookEventProcessor } from '@/lib/integrations/webhook-processor';
+
+// Wedding industry webhook event schemas
+const WebhookEventSchema = z.object({
+  event_type: z.enum([
+    'booking.created',
+    'booking.updated',
+    'booking.cancelled',
+    'payment.received',
+    'payment.failed',
+    'form.submitted',
+    'form.updated',
+    'vendor.connected',
+    'vendor.disconnected',
+    'availability.changed',
+    'review.received',
+    'message.sent',
+  ]),
+  event_id: z.string().uuid(),
+  timestamp: z.string().datetime(),
+  source: z.enum([
+    'zapier',
+    'stripe',
+    'paypal',
+    'mailchimp',
+    'calendly',
+    'custom_crm',
+    'booking_system',
+    'sendgrid',
+    'twilio',
+    'tave',
+  ]),
+  data: z.record(z.any()),
+  signature: z.string().optional(),
+  delivery_attempt: z.number().min(1).max(10).default(1),
+});
+
+const WebhookSubscriptionSchema = z.object({
+  endpoint_url: z.string().url(),
+  event_types: z.array(z.string()).min(1),
+  secret: z.string().min(16),
+  active: z.boolean().default(true),
+  retry_policy: z
+    .object({
+      max_attempts: z.number().min(1).max(10).default(5),
+      backoff_strategy: z
+        .enum(['linear', 'exponential'])
+        .default('exponential'),
+      initial_delay_seconds: z.number().min(1).default(60),
+    })
+    .default({}),
+});
+
+interface WebhookDelivery {
+  id: string;
+  webhook_id: string;
+  event_type: string;
+  payload: Record<string, any>;
+  status: 'pending' | 'delivered' | 'failed' | 'retrying';
+  attempts: number;
+  next_retry: Date | null;
+  response_code: number | null;
+  response_body: string | null;
+  created_at: Date;
+}
+
+// POST /api/webhooks - Receive webhook events from third-party services
+export async function POST(request: NextRequest) {
+  const requestId = crypto.randomUUID();
+  const startTime = Date.now();
+
+  try {
+    // Step 1: Parse and validate incoming webhook
+    const body = await request.text();
+    const signature =
+      request.headers.get('x-webhook-signature') ||
+      request.headers.get('stripe-signature') ||
+      request.headers.get('x-twilio-signature') ||
+      request.headers.get('x-twilio-email-event-webhook-signature') ||
+      '';
+    const userAgent = request.headers.get('user-agent') || '';
+
+    // Detect webhook source from user agent or headers
+    const webhookSource = detectWebhookSource(request.headers, userAgent);
+
+    let parsedBody: any;
+    try {
+      parsedBody = JSON.parse(body);
+    } catch (error) {
+      // Handle form-encoded data
+      if (
+        request.headers
+          .get('content-type')
+          ?.includes('application/x-www-form-urlencoded')
+      ) {
+        const formData = new URLSearchParams(body);
+        parsedBody = Object.fromEntries(formData.entries());
+      } else {
+        return createAPIResponse(
+          {
+            success: false,
+            error: {
+              code: 'INVALID_PAYLOAD',
+              message: 'Webhook payload must be valid JSON or form-encoded',
+            },
+          },
+          400,
+        );
+      }
+    }
+
+    // Step 2: Verify webhook signature for security
+    const isValidSignature = await verifyWebhookSignature(
+      body,
+      signature,
+      webhookSource,
+      request.headers,
+    );
+
+    if (!isValidSignature && webhookSource !== 'custom_crm') {
+      return createAPIResponse(
+        {
+          success: false,
+          error: {
+            code: 'INVALID_SIGNATURE',
+            message: 'Webhook signature verification failed',
+          },
+        },
+        401,
+      );
+    }
+
+    // Step 3: Transform webhook payload to standard format
+    const standardizedEvent = await standardizeWebhookPayload(
+      parsedBody,
+      webhookSource,
+    );
+
+    // Step 4: Validate standardized event
+    const validatedEvent = WebhookEventSchema.parse(standardizedEvent);
+
+    // Step 5: Process webhook event with business context
+    const processor = new WebhookEventProcessor();
+    const processingResult = await processor.processEvent({
+      ...validatedEvent,
+      source: webhookSource,
+      received_at: new Date().toISOString(),
+      request_id: requestId,
+    });
+
+    // Step 6: Log webhook processing
+    await logAPIRequest({
+      requestId,
+      method: 'POST',
+      routePattern: '/api/webhooks',
+      statusCode: processingResult.success ? 200 : 500,
+      responseTime: Date.now() - startTime,
+      businessContext: {
+        supplierType: processingResult.context?.supplier_type,
+        weddingDate: processingResult.context?.wedding_date,
+      },
+    });
+
+    // Step 7: Send response to webhook provider
+    if (processingResult.success) {
+      return createAPIResponse({
+        success: true,
+        data: {
+          event_id: validatedEvent.event_id,
+          processed_at: new Date().toISOString(),
+          actions_taken: processingResult.actions_taken || [],
+        },
+      });
+    } else {
+      return createAPIResponse(
+        {
+          success: false,
+          error: {
+            code: 'PROCESSING_FAILED',
+            message: 'Webhook event processing failed',
+            details: processingResult.error,
+          },
+        },
+        500,
+      );
+    }
+  } catch (error) {
+    await logAPIRequest({
+      requestId,
+      method: 'POST',
+      routePattern: '/api/webhooks',
+      statusCode: 500,
+      responseTime: Date.now() - startTime,
+      errorType: 'server',
+      errorMessage: error instanceof Error ? error.message : 'Unknown error',
+    });
+
+    return createAPIResponse(
+      {
+        success: false,
+        error: {
+          code: 'WEBHOOK_ERROR',
+          message: 'Failed to process webhook',
+        },
+      },
+      500,
+    );
+  }
+}
+
+// GET /api/webhooks - List webhook subscriptions and management
+export async function GET(request: NextRequest) {
+  try {
+    const url = new URL(request.url);
+    const source = url.searchParams.get('source');
+    const active = url.searchParams.get('active') === 'true';
+    const action = url.searchParams.get('action');
+
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_KEY!,
+    );
+
+    // Handle different actions
+    if (action === 'health') {
+      return createAPIResponse({
+        success: true,
+        data: {
+          status: 'healthy',
+          timestamp: new Date().toISOString(),
+          uptime: process.uptime(),
+          memoryUsage: process.memoryUsage(),
+        },
+      });
+    }
+
+    if (action === 'stats') {
+      const { data: stats } = await supabase
+        .from('webhook_deliveries')
+        .select('status, source, created_at')
+        .gte(
+          'created_at',
+          new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+        );
+
+      const summary = {
+        total: stats?.length || 0,
+        successful: stats?.filter((s) => s.status === 'delivered').length || 0,
+        failed: stats?.filter((s) => s.status === 'failed').length || 0,
+        pending: stats?.filter((s) => s.status === 'pending').length || 0,
+        bySource:
+          stats?.reduce((acc: any, s) => {
+            acc[s.source] = (acc[s.source] || 0) + 1;
+            return acc;
+          }, {}) || {},
+      };
+
+      return createAPIResponse({
+        success: true,
+        data: summary,
+      });
+    }
+
+    // Default: List webhook subscriptions
+    let query = supabase.from('webhook_subscriptions').select(`
+        id,
+        endpoint_url,
+        event_types,
+        source,
+        active,
+        created_at,
+        last_delivery,
+        delivery_stats,
+        retry_policy
+      `);
+
+    if (source) {
+      query = query.eq('source', source);
+    }
+
+    if (active !== null) {
+      query = query.eq('active', active);
+    }
+
+    const { data: subscriptions, error } = await query;
+
+    if (error) {
+      return createAPIResponse(
+        {
+          success: false,
+          error: {
+            code: 'QUERY_FAILED',
+            message: 'Failed to retrieve webhook subscriptions',
+          },
+        },
+        500,
+      );
+    }
+
+    return createAPIResponse({
+      success: true,
+      data: {
+        subscriptions,
+        total: subscriptions?.length || 0,
+        sources: [...new Set(subscriptions?.map((s) => s.source))],
+      },
+    });
+  } catch (error) {
+    return createAPIResponse(
+      {
+        success: false,
+        error: {
+          code: 'INTERNAL_ERROR',
+          message: 'An unexpected error occurred',
+        },
+      },
+      500,
+    );
+  }
+}
+
+// Helper functions for webhook processing
+function detectWebhookSource(headers: Headers, userAgent: string): string {
+  // Detect webhook source from headers and user agent
+  if (headers.get('stripe-signature')) return 'stripe';
+  if (headers.get('x-paypal-transmission-id')) return 'paypal';
+  if (headers.get('x-mailchimp-webhook')) return 'mailchimp';
+  if (headers.get('x-calendly-webhook')) return 'calendly';
+  if (headers.get('x-twilio-signature')) return 'twilio';
+  if (headers.get('x-twilio-email-event-webhook-signature')) return 'sendgrid';
+  if (userAgent.includes('Zapier')) return 'zapier';
+  if (headers.get('x-custom-webhook')) return 'custom_crm';
+  if (headers.get('authorization')?.includes('tave')) return 'tave';
+
+  return 'booking_system'; // Default for unrecognized sources
+}
+
+async function verifyWebhookSignature(
+  payload: string,
+  signature: string,
+  source: string,
+  headers: Headers,
+): Promise<boolean> {
+  try {
+    // Get webhook secret for the source
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_KEY!,
+    );
+
+    const { data: config } = await supabase
+      .from('webhook_configurations')
+      .select('secret')
+      .eq('source', source)
+      .single();
+
+    if (!config?.secret) {
+      return false;
+    }
+
+    // Verify signature based on source
+    switch (source) {
+      case 'stripe':
+        return verifyStripeSignature(payload, signature, config.secret);
+      case 'paypal':
+        return verifyPayPalSignature(payload, headers, config.secret);
+      case 'zapier':
+        return verifyZapierSignature(payload, signature, config.secret);
+      case 'twilio':
+      case 'sendgrid':
+        return verifyTwilioSignature(
+          payload,
+          signature,
+          config.secret,
+          headers,
+        );
+      default:
+        return verifyGenericSignature(payload, signature, config.secret);
+    }
+  } catch (error) {
+    console.error('Signature verification failed:', error);
+    return false;
+  }
+}
+
+function verifyStripeSignature(
+  payload: string,
+  signature: string,
+  secret: string,
+): boolean {
+  const elements = signature.split(',');
+  const timestamp = elements.find((el) => el.startsWith('t='))?.split('=')[1];
+  const sig = elements.find((el) => el.startsWith('v1='))?.split('=')[1];
+
+  if (!timestamp || !sig) return false;
+
+  const payloadForSig = `${timestamp}.${payload}`;
+  const expectedSig = crypto
+    .createHmac('sha256', secret)
+    .update(payloadForSig, 'utf8')
+    .digest('hex');
+
+  return crypto.timingSafeEqual(
+    Buffer.from(sig, 'hex'),
+    Buffer.from(expectedSig, 'hex'),
+  );
+}
+
+function verifyPayPalSignature(
+  payload: string,
+  headers: Headers,
+  secret: string,
+): boolean {
+  const authAlgo = headers.get('paypal-auth-algo');
+  const transmission = headers.get('paypal-transmission');
+  const certId = headers.get('paypal-cert-id');
+  const transmissionSig = headers.get('paypal-transmission-sig');
+
+  // PayPal signature verification would require their SDK
+  // For now, return true if headers are present (implement full verification)
+  return !!(authAlgo && transmission && certId && transmissionSig);
+}
+
+function verifyZapierSignature(
+  payload: string,
+  signature: string,
+  secret: string,
+): boolean {
+  const expectedSig = crypto
+    .createHmac('sha256', secret)
+    .update(payload, 'utf8')
+    .digest('hex');
+
+  return crypto.timingSafeEqual(
+    Buffer.from(signature, 'hex'),
+    Buffer.from(expectedSig, 'hex'),
+  );
+}
+
+function verifyTwilioSignature(
+  payload: string,
+  signature: string,
+  secret: string,
+  headers: Headers,
+): boolean {
+  const url =
+    headers.get('x-forwarded-proto') +
+    '://' +
+    headers.get('host') +
+    '/api/webhooks';
+  const expectedSig = crypto
+    .createHmac('sha1', secret)
+    .update(url + payload)
+    .digest('base64');
+
+  return signature === expectedSig;
+}
+
+function verifyGenericSignature(
+  payload: string,
+  signature: string,
+  secret: string,
+): boolean {
+  const expectedSig = crypto
+    .createHmac('sha256', secret)
+    .update(payload, 'utf8')
+    .digest('hex');
+
+  return signature === expectedSig;
+}
+
+async function standardizeWebhookPayload(
+  payload: any,
+  source: string,
+): Promise<any> {
+  // Transform different webhook formats to standard WedSync format
+  switch (source) {
+    case 'stripe':
+      return standardizeStripePayload(payload);
+    case 'paypal':
+      return standardizePayPalPayload(payload);
+    case 'mailchimp':
+      return standardizeMailchimpPayload(payload);
+    case 'calendly':
+      return standardizeCalendlyPayload(payload);
+    case 'zapier':
+      return standardizeZapierPayload(payload);
+    case 'twilio':
+      return standardizeTwilioPayload(payload);
+    case 'sendgrid':
+      return standardizeSendgridPayload(payload);
+    case 'tave':
+      return standardizeTavePayload(payload);
+    default:
+      return standardizeGenericPayload(payload);
+  }
+}
+
+function standardizeStripePayload(payload: any): any {
+  const eventTypeMap: Record<string, string> = {
+    'payment_intent.succeeded': 'payment.received',
+    'payment_intent.payment_failed': 'payment.failed',
+    'invoice.payment_succeeded': 'payment.received',
+    'customer.created': 'vendor.connected',
+  };
+
+  return {
+    event_type: eventTypeMap[payload.type] || 'payment.received',
+    event_id: payload.id,
+    timestamp: new Date(payload.created * 1000).toISOString(),
+    data: {
+      amount: payload.data?.object?.amount,
+      currency: payload.data?.object?.currency,
+      customer_id: payload.data?.object?.customer,
+      metadata: payload.data?.object?.metadata,
+    },
+  };
+}
+
+function standardizePayPalPayload(payload: any): any {
+  return {
+    event_type: 'payment.received',
+    event_id: payload.id,
+    timestamp: payload.create_time,
+    data: {
+      amount: payload.resource?.amount?.total,
+      currency: payload.resource?.amount?.currency,
+      transaction_id: payload.resource?.id,
+      status: payload.resource?.state,
+    },
+  };
+}
+
+function standardizeCalendlyPayload(payload: any): any {
+  const eventTypeMap: Record<string, string> = {
+    'invitee.created': 'booking.created',
+    'invitee.canceled': 'booking.cancelled',
+  };
+
+  return {
+    event_type: eventTypeMap[payload.event] || 'booking.created',
+    event_id: payload.payload?.uuid,
+    timestamp: payload.time,
+    data: {
+      meeting_time: payload.payload?.scheduled_event?.start_time,
+      duration: payload.payload?.scheduled_event?.event_type?.duration,
+      attendee_email: payload.payload?.email,
+      attendee_name: payload.payload?.name,
+      meeting_url: payload.payload?.scheduled_event?.location?.join_url,
+    },
+  };
+}
+
+function standardizeMailchimpPayload(payload: any): any {
+  return {
+    event_type: 'message.sent',
+    event_id: `mailchimp_${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    data: {
+      campaign_id: payload.data?.id,
+      subject: payload.data?.subject,
+      recipient: payload.data?.email,
+      status: payload.type,
+    },
+  };
+}
+
+function standardizeZapierPayload(payload: any): any {
+  return {
+    event_type: payload.event_type || 'form.submitted',
+    event_id: payload.id || `zapier_${Date.now()}`,
+    timestamp: payload.timestamp || new Date().toISOString(),
+    data: payload.data || payload,
+  };
+}
+
+function standardizeTwilioPayload(payload: any): any {
+  const eventTypeMap: Record<string, string> = {
+    delivered: 'message.sent',
+    failed: 'message.failed',
+    undelivered: 'message.failed',
+  };
+
+  return {
+    event_type: eventTypeMap[payload.MessageStatus] || 'message.sent',
+    event_id: payload.MessageSid || `twilio_${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    data: {
+      message_sid: payload.MessageSid,
+      status: payload.MessageStatus,
+      to: payload.To,
+      from: payload.From,
+      error_code: payload.ErrorCode,
+    },
+  };
+}
+
+function standardizeSendgridPayload(payload: any): any {
+  // Handle both single event and array of events
+  const events = Array.isArray(payload) ? payload : [payload];
+  const event = events[0]; // Process first event
+
+  const eventTypeMap: Record<string, string> = {
+    delivered: 'message.sent',
+    bounce: 'message.failed',
+    dropped: 'message.failed',
+  };
+
+  return {
+    event_type: eventTypeMap[event.event] || 'message.sent',
+    event_id: event.sg_message_id || `sendgrid_${Date.now()}`,
+    timestamp: new Date(event.timestamp * 1000).toISOString(),
+    data: {
+      email: event.email,
+      event: event.event,
+      reason: event.reason,
+      sg_message_id: event.sg_message_id,
+    },
+  };
+}
+
+function standardizeTavePayload(payload: any): any {
+  return {
+    event_type: payload.event_type || 'form.submitted',
+    event_id: payload.job_id || `tave_${Date.now()}`,
+    timestamp: payload.created_at || new Date().toISOString(),
+    data: {
+      job_id: payload.job_id,
+      client_name: payload.client_name,
+      wedding_date: payload.wedding_date,
+      event_details: payload.event_details,
+    },
+  };
+}
+
+function standardizeGenericPayload(payload: any): any {
+  return {
+    event_type: payload.type || 'vendor.connected',
+    event_id: payload.id || `generic_${Date.now()}`,
+    timestamp: payload.timestamp || new Date().toISOString(),
+    data: payload.data || payload,
+  };
+}

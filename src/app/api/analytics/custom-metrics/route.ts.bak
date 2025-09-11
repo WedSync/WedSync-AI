@@ -1,0 +1,29 @@
+import { NextRequest, NextResponse } from 'next/server';
+import logger from '@/lib/monitoring/logger';
+
+export async function POST(request: NextRequest) {
+  try {
+    const metrics = await request.json();
+
+    // Log custom metrics to our monitoring system
+    logger.info({
+      event_type: 'custom_metrics',
+      metric_name: metrics.name,
+      duration: metrics.duration,
+      start_time: metrics.startTime,
+      page_url: metrics.url,
+      business_type: metrics.business_type,
+      ...metrics.additionalData
+    }, `Custom Metric: ${metrics.name} = ${metrics.duration}ms`);
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    logger.error({ 
+      event_type: 'error',
+      api_endpoint: '/api/analytics/custom-metrics',
+      error: error instanceof Error ? error.message : 'Unknown error'
+    }, 'Failed to process custom metrics');
+    
+    return NextResponse.json({ error: 'Failed to process custom metrics' }, { status: 500 });
+  }
+}

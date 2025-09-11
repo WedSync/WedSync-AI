@@ -1,0 +1,449 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@/lib/supabase/server'
+import { z } from 'zod'
+import { withSecureValidation } from '@/lib/validation/middleware'
+import jwt from 'jsonwebtoken'
+
+// =====================================================
+// VALIDATION SCHEMAS
+// =====================================================
+
+const scheduleConfirmationSchema = z.object({
+  timeline_id: z.string().uuid(),
+  confirmation_status: z.enum(['confirmed', 'declined', 'partial']),
+  event_confirmations: z.array(z.object({
+    event_id: z.string().uuid(),
+    status: z.enum(['confirmed', 'declined', 'needs_adjustment']),
+    supplier_notes: z.string().optional(),
+    requested_changes: z.object({
+      arrival_time: z.string().optional(),
+      departure_time: z.string().optional(),
+      location_notes: z.string().optional(),
+      special_requirements: z.string().optional()
+    }).optional()
+  })).optional(),
+  overall_notes: z.string().optional(),
+  contact_person: z.object({
+    name: z.string().min(1),
+    phone: z.string().optional(),
+    email: z.string().email().optional()
+  }).optional(),
+  access_token: z.string().optional()
+})
+
+// =====================================================
+// HELPER FUNCTIONS
+// =====================================================
+
+async function verifySupplierConfirmationAccess(
+  supabase: any,
+  supplierId: string,
+  timelineId: string,
+  userId: string | null,
+  accessToken?: string
+) {
+  // If access token is provided, verify it
+  if (accessToken) {
+    try {
+      const decoded = jwt.verify(accessToken, process.env.JWT_SECRET!) as any
+      if (decoded.supplier_id !== supplierId || decoded.timeline_id !== timelineId) {
+        throw new Error('FORBIDDEN: Invalid access token for this schedule')
+      }
+      return { 
+        supplier_id: supplierId,
+        timeline_id: timelineId,
+        access_type: 'token'
+      }
+    } catch (error) {
+      throw new Error('FORBIDDEN: Invalid or expired access token')
+    }
+  }
+
+  // Otherwise require authenticated user with proper access
+  if (!userId) {
+    throw new Error('UNAUTHORIZED: Authentication or access token required')
+  }
+
+  const { data: profile, error: profileError } = await supabase
+    .from('user_profiles')
+    .select('organization_id')
+    .eq('user_id', userId)
+    .single()
+
+  if (profileError || !profile?.organization_id) {
+    throw new Error('UNAUTHORIZED: User organization not found')
+  }
+
+  // Verify supplier belongs to user's organization
+  const { data: supplier, error: supplierError } = await supabase
+    .from('suppliers')
+    .select('id, organization_id')
+    .eq('id', supplierId)
+    .eq('organization_id', profile.organization_id)
+    .single()
+
+  if (supplierError || !supplier) {
+    throw new Error('FORBIDDEN: Supplier not found or access denied')
+  }
+
+  // Verify timeline belongs to same organization
+  const { data: timeline, error: timelineError } = await supabase
+    .from('wedding_timelines')
+    .select('id, organization_id')
+    .eq('id', timelineId)
+    .eq('organization_id', profile.organization_id)
+    .single()
+
+  if (timelineError || !timeline) {
+    throw new Error('FORBIDDEN: Timeline not found or access denied')
+  }
+
+  return { 
+    supplier_id: supplierId,
+    timeline_id: timelineId,
+    access_type: 'authenticated',
+    organization_id: profile.organization_id
+  }
+}
+
+async function getExistingSchedule(
+  supabase: any,
+  supplierId: string,
+  timelineId: string
+) {
+  const { data: schedule, error } = await supabase
+    .from('supplier_schedules')
+    .select(`
+      id,
+      schedule_data,
+      status,
+      confirmation_status,
+      wedding_timelines:timeline_id (
+        timeline_name,
+        wedding_date,
+        organization_id
+      ),
+      suppliers:supplier_id (
+        business_name,
+        email,
+        phone
+      )
+    `)
+    .eq('supplier_id', supplierId)
+    .eq('timeline_id', timelineId)
+    .single()
+
+  if (error || !schedule) {
+    throw new Error('Schedule not found')
+  }
+
+  return schedule
+}
+
+async function sendConfirmationNotifications(
+  supabase: any,
+  confirmationData: any,
+  scheduleData: any,
+  supplierInfo: any
+) {
+  // Create notification record
+  const notificationData = {
+    type: 'schedule_confirmation',
+    supplier_id: confirmationData.supplier_id,
+    timeline_id: confirmationData.timeline_id,
+    status: confirmationData.confirmation_status,
+    details: {
+      supplier_name: supplierInfo.business_name,
+      confirmation_status: confirmationData.confirmation_status,
+      timeline_name: scheduleData.wedding_timelines?.timeline_name,
+      wedding_date: scheduleData.wedding_timelines?.wedding_date,
+      event_confirmations: confirmationData.event_confirmations,
+      overall_notes: confirmationData.overall_notes,
+      contact_person: confirmationData.contact_person,
+      confirmed_at: new Date().toISOString()
+    }
+  }
+
+  // Store notification (assuming we have a notifications table)
+  await supabase
+    .from('notifications')
+    .insert({
+      organization_id: scheduleData.wedding_timelines?.organization_id,
+      type: notificationData.type,
+      title: `Schedule ${confirmationData.confirmation_status} by ${supplierInfo.business_name}`,
+      message: `${supplierInfo.business_name} has ${confirmationData.confirmation_status} their wedding day schedule`,
+      data: notificationData.details,
+      created_at: new Date().toISOString()
+    })
+
+  // TODO: Send email notifications to wedding planners
+  // TODO: Send webhook notifications if configured
+  
+  return notificationData
+}
+
+// =====================================================
+// POST /api/suppliers/[id]/schedule/confirm - Confirm schedule
+// =====================================================
+
+export const POST = withSecureValidation(
+  scheduleConfirmationSchema,
+  async (request: NextRequest, validatedData: z.infer<typeof scheduleConfirmationSchema>) => {
+    try {
+      const supabase = await createClient()
+      const { params } = await request.json()
+      const supplierId = params.id
+
+      // Get authenticated user (if any)
+      const { data: user } = await supabase.auth.getUser()
+
+      // Verify access to supplier schedule
+      const accessInfo = await verifySupplierConfirmationAccess(
+        supabase,
+        supplierId,
+        validatedData.timeline_id,
+        user?.id || null,
+        validatedData.access_token
+      )
+
+      // Get existing schedule
+      const existingSchedule = await getExistingSchedule(
+        supabase,
+        supplierId,
+        validatedData.timeline_id
+      )
+
+      // Check if already confirmed
+      if (existingSchedule.confirmation_status === 'confirmed' && 
+          validatedData.confirmation_status === 'confirmed') {
+        return NextResponse.json({
+          success: true,
+          data: existingSchedule,
+          message: 'Schedule already confirmed',
+          already_confirmed: true
+        })
+      }
+
+      // Process event-level confirmations if provided
+      let updatedScheduleData = existingSchedule.schedule_data
+      if (validatedData.event_confirmations && validatedData.event_confirmations.length > 0) {
+        const eventConfirmations = validatedData.event_confirmations.reduce((acc: any, eventConf: any) => {
+          acc[eventConf.event_id] = eventConf
+          return acc
+        }, {})
+
+        // Update schedule items with confirmation details
+        if (updatedScheduleData.schedule_items) {
+          updatedScheduleData.schedule_items = updatedScheduleData.schedule_items.map((item: any) => ({
+            ...item,
+            confirmation: eventConfirmations[item.event_id] || { status: 'pending' },
+            supplier_confirmed_at: eventConfirmations[item.event_id] ? new Date().toISOString() : null
+          }))
+        }
+      }
+
+      // Update the schedule with confirmation details
+      const updateData = {
+        confirmation_status: validatedData.confirmation_status,
+        confirmed_at: new Date().toISOString(),
+        confirmed_by: user?.id || 'supplier_token',
+        schedule_data: updatedScheduleData,
+        supplier_notes: validatedData.overall_notes,
+        contact_person: validatedData.contact_person,
+        event_confirmations: validatedData.event_confirmations,
+        status: validatedData.confirmation_status === 'confirmed' ? 'confirmed' : 'needs_review',
+        updated_at: new Date().toISOString()
+      }
+
+      const { data: updatedSchedule, error: updateError } = await supabase
+        .from('supplier_schedules')
+        .update(updateData)
+        .eq('supplier_id', supplierId)
+        .eq('timeline_id', validatedData.timeline_id)
+        .select(`
+          *,
+          wedding_timelines:timeline_id (
+            id,
+            timeline_name,
+            wedding_date,
+            organization_id
+          ),
+          suppliers:supplier_id (
+            id,
+            business_name,
+            email,
+            phone,
+            primary_category
+          )
+        `)
+        .single()
+
+      if (updateError) {
+        console.error('Error updating schedule confirmation:', updateError)
+        return NextResponse.json(
+          { error: 'Failed to update schedule confirmation' },
+          { status: 500 }
+        )
+      }
+
+      // Send notifications about the confirmation
+      try {
+        await sendConfirmationNotifications(
+          supabase,
+          {
+            supplier_id: supplierId,
+            timeline_id: validatedData.timeline_id,
+            confirmation_status: validatedData.confirmation_status,
+            event_confirmations: validatedData.event_confirmations,
+            overall_notes: validatedData.overall_notes,
+            contact_person: validatedData.contact_person
+          },
+          updatedSchedule,
+          updatedSchedule.suppliers
+        )
+      } catch (notificationError) {
+        console.warn('Failed to send confirmation notifications:', notificationError)
+        // Don't fail the request if notifications fail
+      }
+
+      // Prepare response
+      const responseMessage = 
+        validatedData.confirmation_status === 'confirmed' 
+          ? 'Schedule confirmed successfully'
+          : validatedData.confirmation_status === 'declined'
+          ? 'Schedule declined - please contact the wedding planner'
+          : 'Schedule partially confirmed - review needed'
+
+      return NextResponse.json({
+        success: true,
+        data: {
+          id: updatedSchedule.id,
+          supplier_id: supplierId,
+          supplier_name: updatedSchedule.suppliers?.business_name,
+          timeline_id: validatedData.timeline_id,
+          timeline_name: updatedSchedule.wedding_timelines?.timeline_name,
+          wedding_date: updatedSchedule.wedding_timelines?.wedding_date,
+          confirmation_status: updatedSchedule.confirmation_status,
+          confirmed_at: updatedSchedule.confirmed_at,
+          schedule_summary: {
+            total_events: updatedSchedule.schedule_data?.total_events || 0,
+            confirmed_events: validatedData.event_confirmations?.filter(e => e.status === 'confirmed').length || 0,
+            declined_events: validatedData.event_confirmations?.filter(e => e.status === 'declined').length || 0,
+            needs_adjustment: validatedData.event_confirmations?.filter(e => e.status === 'needs_adjustment').length || 0
+          },
+          contact_person: validatedData.contact_person,
+          overall_notes: validatedData.overall_notes
+        },
+        message: responseMessage,
+        next_steps: validatedData.confirmation_status === 'confirmed' 
+          ? 'You will receive final details closer to the wedding date'
+          : validatedData.confirmation_status === 'declined'
+          ? 'The wedding planner will contact you to discuss alternatives'
+          : 'The wedding planner will review your feedback and get back to you'
+      }, { status: 200 })
+
+    } catch (error) {
+      console.error('Schedule confirmation error:', error)
+      
+      if (error instanceof z.ZodError) {
+        return NextResponse.json(
+          { 
+            error: 'Validation failed', 
+            details: error.errors.map(e => ({
+              path: e.path.join('.'),
+              message: e.message
+            }))
+          },
+          { status: 400 }
+        )
+      }
+      
+      const status = error instanceof Error && error.message.startsWith('UNAUTHORIZED') ? 401 :
+                     error instanceof Error && error.message.startsWith('FORBIDDEN') ? 403 : 500
+      return NextResponse.json(
+        { error: error instanceof Error ? error.message : 'Internal server error' },
+        { status }
+      )
+    }
+  }
+)
+
+// =====================================================
+// GET /api/suppliers/[id]/schedule/confirm - Get confirmation details
+// =====================================================
+
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const supabase = await createClient()
+    
+    // Get query parameters
+    const searchParams = request.nextUrl.searchParams
+    const timelineId = searchParams.get('timeline_id')
+    const accessToken = searchParams.get('access_token')
+
+    if (!timelineId) {
+      return NextResponse.json(
+        { error: 'timeline_id is required' },
+        { status: 400 }
+      )
+    }
+
+    // Get authenticated user (if any)
+    const { data: user } = await supabase.auth.getUser()
+
+    // Verify access
+    const accessInfo = await verifySupplierConfirmationAccess(
+      supabase,
+      params.id,
+      timelineId,
+      user?.id || null,
+      accessToken || undefined
+    )
+
+    // Get schedule details for confirmation
+    const existingSchedule = await getExistingSchedule(supabase, params.id, timelineId)
+
+    // Format response for confirmation interface
+    const confirmationData = {
+      schedule_id: existingSchedule.id,
+      supplier: existingSchedule.suppliers,
+      timeline: existingSchedule.wedding_timelines,
+      current_status: existingSchedule.confirmation_status || 'pending',
+      schedule_items: existingSchedule.schedule_data?.schedule_items?.map((item: any) => ({
+        event_id: item.event_id,
+        event_title: item.event_title,
+        event_description: item.event_description,
+        scheduled_arrival: item.scheduled_arrival,
+        event_start: item.event_start,
+        event_end: item.event_end,
+        scheduled_departure: item.scheduled_departure,
+        location: item.location,
+        location_details: item.location_details,
+        notes: item.notes,
+        current_confirmation: item.confirmation || { status: 'pending' }
+      })) || [],
+      generated_at: existingSchedule.schedule_data?.generated_at,
+      can_confirm: existingSchedule.confirmation_status !== 'confirmed'
+    }
+
+    return NextResponse.json({
+      success: true,
+      data: confirmationData
+    })
+
+  } catch (error) {
+    console.error('Schedule confirmation get error:', error)
+    const status = error instanceof Error && error.message.startsWith('UNAUTHORIZED') ? 401 :
+                   error instanceof Error && error.message.startsWith('FORBIDDEN') ? 403 : 500
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Internal server error' },
+      { status }
+    )
+  }
+}
+
+export const runtime = 'nodejs'
+export const dynamic = 'force-dynamic'

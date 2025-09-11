@@ -1,0 +1,67 @@
+/**
+ * GDPR Consent Withdrawal API
+ * POST /api/gdpr/consent/withdraw
+ * WS-149: Allows users to withdraw previously given consent
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { gdprService } from '@/lib/services/gdpr-compliance-service';
+import { createClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+
+const ConsentWithdrawalSchema = z.object({
+  purpose: z.string(),
+  withdrawal_method: z.string().optional().default('user_request')
+});
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = createClient();
+    
+    // Check authentication
+    const {
+      data: { user },
+      error: authError
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    // Parse and validate request body
+    const body = await request.json();
+    const { purpose, withdrawal_method } = ConsentWithdrawalSchema.parse(body);
+
+    // Withdraw consent for the authenticated user
+    const result = await gdprService.withdrawConsent(
+      user.id,
+      purpose,
+      withdrawal_method
+    );
+
+    // Return success response
+    return NextResponse.json({
+      success: true,
+      data: result.data,
+      message: `Consent for ${purpose} withdrawn successfully`
+    });
+    
+  } catch (error) {
+    console.error('Error withdrawing consent:', error);
+    
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid request data', details: error.errors },
+        { status: 400 }
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Failed to withdraw consent' },
+      { status: 500 }
+    );
+  }
+}

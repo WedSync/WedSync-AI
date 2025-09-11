@@ -1,0 +1,1333 @@
+'use client';
+
+import React, { useState, useEffect } from 'react';
+import { Button } from '@/components/ui/button';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { Badge } from '@/components/ui/badge';
+import { Progress } from '@/components/ui/progress';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
+import { useToast } from '@/hooks/use-toast';
+import {
+  Edit,
+  Save,
+  X,
+  Upload,
+  Eye,
+  BarChart3,
+  Settings,
+  FileText,
+  Shield,
+  Award,
+  Calendar,
+  MapPin,
+  DollarSign,
+  Users,
+  Image,
+  Phone,
+  Mail,
+  Globe,
+  Star,
+  TrendingUp,
+  ExternalLink,
+} from 'lucide-react';
+
+interface ProfileData {
+  id: string;
+  legal_business_name: string;
+  trading_name: string;
+  profile_status: string;
+  verification_status: string;
+  completion_step: number;
+  trust_score: number;
+  profile_views: number;
+  contact_clicks: number;
+  website_clicks: number;
+  logo_url?: string;
+  cover_image_url?: string;
+  gallery_images: Array<{ url: string; caption: string; category: string }>;
+  service_offerings: Array<{
+    name: string;
+    description: string;
+    category: string;
+  }>;
+  service_areas: string[];
+  pricing_structure: string;
+  packages: Array<{
+    name: string;
+    description: string;
+    price: number;
+    includes: string[];
+  }>;
+  team_members: Array<{
+    name: string;
+    role: string;
+    bio: string;
+    photo?: string;
+  }>;
+  key_contact_name: string;
+  key_contact_email: string;
+  key_contact_phone: string;
+  response_time_commitment: string;
+  preferred_contact_method: string;
+  auto_response_enabled: boolean;
+  auto_response_message: string;
+  badges: Array<{ badge_type: string; badge_name: string; badge_icon: string }>;
+  completion_sections: Array<{
+    section_name: string;
+    completion_percentage: number;
+    is_completed: boolean;
+  }>;
+  seo: {
+    page_title: string;
+    meta_description: string;
+    custom_slug: string;
+  };
+  created_at: string;
+  updated_at: string;
+}
+
+export function ProfileManagementDashboard({
+  profileId,
+}: {
+  profileId?: string;
+}) {
+  const [profile, setProfile] = useState<ProfileData | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setSaving] = useState(false);
+  const [editingSection, setEditingSection] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState('overview');
+  const [uploadingMedia, setUploadingMedia] = useState(false);
+
+  const { toast } = useToast();
+
+  useEffect(() => {
+    if (profileId) {
+      loadProfile(profileId);
+    }
+  }, [profileId]);
+
+  const loadProfile = async (id: string) => {
+    try {
+      // This would fetch the profile data
+      // For now, using mock data
+      const mockProfile: ProfileData = {
+        id: id,
+        legal_business_name: 'Elegant Wedding Photography',
+        trading_name: 'Elegant Weddings',
+        profile_status: 'published',
+        verification_status: 'verified',
+        completion_step: 6,
+        trust_score: 85,
+        profile_views: 1247,
+        contact_clicks: 89,
+        website_clicks: 156,
+        logo_url: '/api/placeholder/150/150',
+        cover_image_url: '/api/placeholder/800/400',
+        gallery_images: [
+          {
+            url: '/api/placeholder/300/200',
+            caption: 'Beautiful ceremony',
+            category: 'ceremony',
+          },
+          {
+            url: '/api/placeholder/300/200',
+            caption: 'Reception setup',
+            category: 'reception',
+          },
+        ],
+        service_offerings: [
+          {
+            name: 'Wedding Photography',
+            description: 'Full day wedding photography',
+            category: 'Photography',
+          },
+          {
+            name: 'Engagement Shoots',
+            description: 'Pre-wedding couple photography',
+            category: 'Photography',
+          },
+        ],
+        service_areas: ['london', 'manchester'],
+        pricing_structure: 'package',
+        packages: [
+          {
+            name: 'Essential Package',
+            description: 'Basic wedding coverage',
+            price: 1500,
+            includes: ['8 hours coverage', 'Online gallery'],
+          },
+          {
+            name: 'Premium Package',
+            description: 'Complete wedding coverage',
+            price: 2500,
+            includes: ['12 hours coverage', 'Engagement shoot', 'Album'],
+          },
+        ],
+        team_members: [
+          {
+            name: 'Sarah Johnson',
+            role: 'Lead Photographer',
+            bio: 'Professional photographer with 10 years experience',
+          },
+        ],
+        key_contact_name: 'Sarah Johnson',
+        key_contact_email: 'sarah@elegantweddings.com',
+        key_contact_phone: '+44 7123 456789',
+        response_time_commitment: 'within_day',
+        preferred_contact_method: 'email',
+        auto_response_enabled: true,
+        auto_response_message:
+          'Thank you for your inquiry! I will respond within 24 hours.',
+        badges: [
+          {
+            badge_type: 'verified',
+            badge_name: 'Verified Business',
+            badge_icon: 'shield-check',
+          },
+          {
+            badge_type: 'top_rated',
+            badge_name: 'Top Rated',
+            badge_icon: 'award',
+          },
+        ],
+        completion_sections: [
+          {
+            section_name: 'basic_information',
+            completion_percentage: 100,
+            is_completed: true,
+          },
+          {
+            section_name: 'service_details',
+            completion_percentage: 100,
+            is_completed: true,
+          },
+          {
+            section_name: 'media_gallery',
+            completion_percentage: 80,
+            is_completed: false,
+          },
+          {
+            section_name: 'pricing_packages',
+            completion_percentage: 100,
+            is_completed: true,
+          },
+          {
+            section_name: 'team_contact',
+            completion_percentage: 100,
+            is_completed: true,
+          },
+          {
+            section_name: 'verification',
+            completion_percentage: 100,
+            is_completed: true,
+          },
+        ],
+        seo: {
+          page_title:
+            'Elegant Wedding Photography - Professional Wedding Photographer',
+          meta_description:
+            'Award-winning wedding photographer specializing in elegant and romantic wedding photography.',
+          custom_slug: 'elegant-wedding-photography-london',
+        },
+        created_at: '2024-01-15T10:00:00Z',
+        updated_at: '2024-01-20T14:30:00Z',
+      };
+
+      setProfile(mockProfile);
+    } catch (error) {
+      console.error('Error loading profile:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to load profile data',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const saveProfile = async (updates: Partial<ProfileData>) => {
+    if (!profile) return;
+
+    setSaving(true);
+    try {
+      const response = await fetch(
+        `/api/directory/suppliers/${profile.id}/update`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(updates),
+        },
+      );
+
+      const result = await response.json();
+
+      if (response.ok) {
+        setProfile((prev) => (prev ? { ...prev, ...updates } : null));
+        toast({
+          title: 'Profile Updated',
+          description: 'Your changes have been saved successfully.',
+        });
+        setEditingSection(null);
+      } else {
+        throw new Error(result.error || 'Failed to save changes');
+      }
+    } catch (error) {
+      console.error('Error saving profile:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to save changes. Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const calculateOverallCompletion = () => {
+    if (!profile?.completion_sections) return 0;
+    const total = profile.completion_sections.reduce(
+      (sum, section) => sum + section.completion_percentage,
+      0,
+    );
+    return Math.round(total / profile.completion_sections.length);
+  };
+
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'published':
+        return 'bg-green-500';
+      case 'pending_review':
+        return 'bg-yellow-500';
+      case 'draft':
+        return 'bg-gray-500';
+      case 'suspended':
+        return 'bg-red-500';
+      default:
+        return 'bg-gray-500';
+    }
+  };
+
+  const getVerificationColor = (status: string) => {
+    switch (status) {
+      case 'verified':
+        return 'bg-green-500';
+      case 'pending':
+        return 'bg-yellow-500';
+      case 'rejected':
+        return 'bg-red-500';
+      default:
+        return 'bg-gray-500';
+    }
+  };
+
+  const handleMediaUpload = async (
+    file: File,
+    type: 'logo' | 'cover' | 'gallery',
+  ) => {
+    if (!profile) return;
+
+    setUploadingMedia(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('type', type);
+      formData.append('fileName', file.name);
+      formData.append('mimeType', file.type);
+
+      // Convert to expected format for API
+      const base64 = await fileToBase64(file);
+
+      const response = await fetch(
+        `/api/directory/suppliers/${profile.id}/media`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type,
+            file: base64,
+            fileName: file.name,
+            mimeType: file.type,
+          }),
+        },
+      );
+
+      const result = await response.json();
+
+      if (response.ok) {
+        // Update local state
+        if (type === 'logo') {
+          setProfile((prev) =>
+            prev ? { ...prev, logo_url: result.fileUrl } : null,
+          );
+        } else if (type === 'cover') {
+          setProfile((prev) =>
+            prev ? { ...prev, cover_image_url: result.fileUrl } : null,
+          );
+        } else if (type === 'gallery') {
+          const newImage = {
+            url: result.fileUrl,
+            caption: '',
+            category: 'general',
+          };
+          setProfile((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  gallery_images: [...prev.gallery_images, newImage],
+                }
+              : null,
+          );
+        }
+
+        toast({
+          title: 'Upload successful',
+          description: 'Your image has been uploaded successfully.',
+        });
+      } else {
+        throw new Error(result.error || 'Upload failed');
+      }
+    } catch (error) {
+      console.error('Upload error:', error);
+      toast({
+        title: 'Upload failed',
+        description: 'Failed to upload image. Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setUploadingMedia(false);
+    }
+  };
+
+  const fileToBase64 = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = (error) => reject(error);
+    });
+  };
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto"></div>
+          <p className="mt-2 text-muted-foreground">Loading profile...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!profile) {
+    return (
+      <div className="text-center py-8">
+        <p className="text-muted-foreground">Profile not found</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold">{profile.legal_business_name}</h1>
+          <p className="text-muted-foreground">Manage your supplier profile</p>
+        </div>
+
+        <div className="flex items-center space-x-3">
+          <Badge className={getStatusColor(profile.profile_status)}>
+            {profile.profile_status.charAt(0).toUpperCase() +
+              profile.profile_status.slice(1)}
+          </Badge>
+
+          <Badge className={getVerificationColor(profile.verification_status)}>
+            <Shield className="w-3 h-3 mr-1" />
+            {profile.verification_status.charAt(0).toUpperCase() +
+              profile.verification_status.slice(1)}
+          </Badge>
+
+          <Button variant="outline" asChild>
+            <a href={`/directory/${profile.seo.custom_slug}`} target="_blank">
+              <Eye className="w-4 h-4 mr-2" />
+              View Public Profile
+              <ExternalLink className="w-3 h-3 ml-2" />
+            </a>
+          </Button>
+        </div>
+      </div>
+
+      {/* Stats Overview */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">
+              Profile Completion
+            </CardTitle>
+            <BarChart3 className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-2">
+              <div className="text-2xl font-bold">
+                {calculateOverallCompletion()}%
+              </div>
+              <Progress value={calculateOverallCompletion()} className="h-2" />
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Trust Score</CardTitle>
+            <Award className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-green-600">
+              {profile.trust_score}/100
+            </div>
+            <p className="text-xs text-muted-foreground">Excellent rating</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Profile Views</CardTitle>
+            <Eye className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">
+              {profile.profile_views.toLocaleString()}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              +12% from last month
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Inquiries</CardTitle>
+            <TrendingUp className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{profile.contact_clicks}</div>
+            <p className="text-xs text-muted-foreground">This month</p>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Main Content */}
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+        <TabsList className="grid w-full grid-cols-6">
+          <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="business">Business</TabsTrigger>
+          <TabsTrigger value="services">Services</TabsTrigger>
+          <TabsTrigger value="media">Media</TabsTrigger>
+          <TabsTrigger value="settings">Settings</TabsTrigger>
+          <TabsTrigger value="analytics">Analytics</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="overview" className="space-y-6">
+          <ProfileOverview
+            profile={profile}
+            editingSection={editingSection}
+            setEditingSection={setEditingSection}
+            saveProfile={saveProfile}
+            isSaving={isSaving}
+          />
+        </TabsContent>
+
+        <TabsContent value="business" className="space-y-6">
+          <BusinessInformationTab
+            profile={profile}
+            editingSection={editingSection}
+            setEditingSection={setEditingSection}
+            saveProfile={saveProfile}
+            isSaving={isSaving}
+          />
+        </TabsContent>
+
+        <TabsContent value="services" className="space-y-6">
+          <ServicesTab
+            profile={profile}
+            editingSection={editingSection}
+            setEditingSection={setEditingSection}
+            saveProfile={saveProfile}
+            isSaving={isSaving}
+          />
+        </TabsContent>
+
+        <TabsContent value="media" className="space-y-6">
+          <MediaTab
+            profile={profile}
+            handleMediaUpload={handleMediaUpload}
+            uploadingMedia={uploadingMedia}
+            setProfile={setProfile}
+          />
+        </TabsContent>
+
+        <TabsContent value="settings" className="space-y-6">
+          <SettingsTab
+            profile={profile}
+            saveProfile={saveProfile}
+            isSaving={isSaving}
+          />
+        </TabsContent>
+
+        <TabsContent value="analytics" className="space-y-6">
+          <AnalyticsTab profile={profile} />
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}
+
+// Individual tab components
+function ProfileOverview({
+  profile,
+  editingSection,
+  setEditingSection,
+  saveProfile,
+  isSaving,
+}: any) {
+  return (
+    <div className="space-y-6">
+      {/* Profile Status */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Profile Status</CardTitle>
+          <CardDescription>
+            Current status and completion overview
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-4">
+            {/* Status badges */}
+            <div className="flex flex-wrap gap-2">
+              {profile.badges.map((badge: any, index: number) => (
+                <Badge
+                  key={index}
+                  variant="secondary"
+                  className="flex items-center space-x-1"
+                >
+                  <Award className="w-3 h-3" />
+                  <span>{badge.badge_name}</span>
+                </Badge>
+              ))}
+            </div>
+
+            {/* Completion sections */}
+            <div className="space-y-3">
+              <h4 className="font-medium">Section Completion</h4>
+              {profile.completion_sections.map(
+                (section: any, index: number) => (
+                  <div
+                    key={index}
+                    className="flex items-center justify-between"
+                  >
+                    <span className="text-sm capitalize">
+                      {section.section_name.replace('_', ' ')}
+                    </span>
+                    <div className="flex items-center space-x-2">
+                      <Progress
+                        value={section.completion_percentage}
+                        className="w-24 h-2"
+                      />
+                      <span className="text-sm text-muted-foreground w-12">
+                        {section.completion_percentage}%
+                      </span>
+                    </div>
+                  </div>
+                ),
+              )}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Quick Actions */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Quick Actions</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <Button variant="outline" className="h-20 flex-col">
+              <Calendar className="w-6 h-6 mb-2" />
+              <span className="text-sm">Update Availability</span>
+            </Button>
+
+            <Button variant="outline" className="h-20 flex-col">
+              <DollarSign className="w-6 h-6 mb-2" />
+              <span className="text-sm">Edit Pricing</span>
+            </Button>
+
+            <Button variant="outline" className="h-20 flex-col">
+              <Image className="w-6 h-6 mb-2" />
+              <span className="text-sm">Add Photos</span>
+            </Button>
+
+            <Button variant="outline" className="h-20 flex-col">
+              <Shield className="w-6 h-6 mb-2" />
+              <span className="text-sm">Verification</span>
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function BusinessInformationTab({
+  profile,
+  editingSection,
+  setEditingSection,
+  saveProfile,
+  isSaving,
+}: any) {
+  const [editData, setEditData] = useState({
+    legal_business_name: profile.legal_business_name,
+    trading_name: profile.trading_name,
+    key_contact_name: profile.key_contact_name,
+    key_contact_email: profile.key_contact_email,
+    key_contact_phone: profile.key_contact_phone,
+  });
+
+  const handleEdit = (section: string) => {
+    setEditingSection(section);
+    setEditData({
+      legal_business_name: profile.legal_business_name,
+      trading_name: profile.trading_name,
+      key_contact_name: profile.key_contact_name,
+      key_contact_email: profile.key_contact_email,
+      key_contact_phone: profile.key_contact_phone,
+    });
+  };
+
+  const handleSave = () => {
+    saveProfile(editData);
+  };
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between">
+        <div>
+          <CardTitle>Business Information</CardTitle>
+          <CardDescription>
+            Basic business details and contact information
+          </CardDescription>
+        </div>
+
+        {editingSection !== 'business' && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => handleEdit('business')}
+          >
+            <Edit className="w-4 h-4 mr-2" />
+            Edit
+          </Button>
+        )}
+      </CardHeader>
+
+      <CardContent className="space-y-4">
+        {editingSection === 'business' ? (
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="legal_business_name">Legal Business Name</Label>
+                <Input
+                  id="legal_business_name"
+                  value={editData.legal_business_name}
+                  onChange={(e) =>
+                    setEditData({
+                      ...editData,
+                      legal_business_name: e.target.value,
+                    })
+                  }
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="trading_name">Trading Name</Label>
+                <Input
+                  id="trading_name"
+                  value={editData.trading_name}
+                  onChange={(e) =>
+                    setEditData({ ...editData, trading_name: e.target.value })
+                  }
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="key_contact_name">Contact Name</Label>
+                <Input
+                  id="key_contact_name"
+                  value={editData.key_contact_name}
+                  onChange={(e) =>
+                    setEditData({
+                      ...editData,
+                      key_contact_name: e.target.value,
+                    })
+                  }
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="key_contact_email">Contact Email</Label>
+                <Input
+                  id="key_contact_email"
+                  type="email"
+                  value={editData.key_contact_email}
+                  onChange={(e) =>
+                    setEditData({
+                      ...editData,
+                      key_contact_email: e.target.value,
+                    })
+                  }
+                />
+              </div>
+
+              <div className="space-y-2 md:col-span-2">
+                <Label htmlFor="key_contact_phone">Contact Phone</Label>
+                <Input
+                  id="key_contact_phone"
+                  value={editData.key_contact_phone}
+                  onChange={(e) =>
+                    setEditData({
+                      ...editData,
+                      key_contact_phone: e.target.value,
+                    })
+                  }
+                />
+              </div>
+            </div>
+
+            <div className="flex space-x-2">
+              <Button onClick={handleSave} disabled={isSaving}>
+                <Save className="w-4 h-4 mr-2" />
+                {isSaving ? 'Saving...' : 'Save Changes'}
+              </Button>
+              <Button variant="outline" onClick={() => setEditingSection(null)}>
+                <X className="w-4 h-4 mr-2" />
+                Cancel
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <Label className="text-sm text-muted-foreground">
+                Legal Business Name
+              </Label>
+              <p className="font-medium">{profile.legal_business_name}</p>
+            </div>
+
+            <div>
+              <Label className="text-sm text-muted-foreground">
+                Trading Name
+              </Label>
+              <p className="font-medium">
+                {profile.trading_name || 'Not specified'}
+              </p>
+            </div>
+
+            <div>
+              <Label className="text-sm text-muted-foreground">
+                Contact Name
+              </Label>
+              <p className="font-medium">{profile.key_contact_name}</p>
+            </div>
+
+            <div>
+              <Label className="text-sm text-muted-foreground">
+                Contact Email
+              </Label>
+              <p className="font-medium flex items-center">
+                <Mail className="w-4 h-4 mr-2" />
+                {profile.key_contact_email}
+              </p>
+            </div>
+
+            <div>
+              <Label className="text-sm text-muted-foreground">
+                Contact Phone
+              </Label>
+              <p className="font-medium flex items-center">
+                <Phone className="w-4 h-4 mr-2" />
+                {profile.key_contact_phone}
+              </p>
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function ServicesTab({
+  profile,
+  editingSection,
+  setEditingSection,
+  saveProfile,
+  isSaving,
+}: any) {
+  return (
+    <div className="space-y-6">
+      {/* Service Offerings */}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <div>
+            <CardTitle>Service Offerings</CardTitle>
+            <CardDescription>Services you provide to clients</CardDescription>
+          </div>
+
+          <Button variant="outline" size="sm">
+            <Edit className="w-4 h-4 mr-2" />
+            Edit Services
+          </Button>
+        </CardHeader>
+
+        <CardContent>
+          <div className="space-y-3">
+            {profile.service_offerings.map((service: any, index: number) => (
+              <Card key={index} className="p-4">
+                <div className="flex justify-between items-start">
+                  <div>
+                    <h4 className="font-medium">{service.name}</h4>
+                    <p className="text-sm text-muted-foreground mb-2">
+                      {service.description}
+                    </p>
+                    <Badge variant="secondary">{service.category}</Badge>
+                  </div>
+                </div>
+              </Card>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Pricing Packages */}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <div>
+            <CardTitle>Pricing Packages</CardTitle>
+            <CardDescription>Your service packages and pricing</CardDescription>
+          </div>
+
+          <Button variant="outline" size="sm">
+            <Edit className="w-4 h-4 mr-2" />
+            Edit Pricing
+          </Button>
+        </CardHeader>
+
+        <CardContent>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {profile.packages.map((pkg: any, index: number) => (
+              <Card key={index} className="p-4">
+                <div className="space-y-3">
+                  <div className="flex justify-between items-start">
+                    <h4 className="font-medium">{pkg.name}</h4>
+                    <Badge variant="outline">£{pkg.price}</Badge>
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    {pkg.description}
+                  </p>
+                  <ul className="text-sm space-y-1">
+                    {pkg.includes.map((item: string, i: number) => (
+                      <li key={i} className="flex items-center">
+                        <div className="w-1 h-1 bg-primary rounded-full mr-2"></div>
+                        {item}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </Card>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function MediaTab({
+  profile,
+  handleMediaUpload,
+  uploadingMedia,
+  setProfile,
+}: any) {
+  const handleFileSelect = (
+    event: React.ChangeEvent<HTMLInputElement>,
+    type: 'logo' | 'cover' | 'gallery',
+  ) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      handleMediaUpload(file, type);
+    }
+  };
+
+  const removeGalleryImage = (index: number) => {
+    const newImages = profile.gallery_images.filter(
+      (_: any, i: number) => i !== index,
+    );
+    setProfile((prev: ProfileData) => ({ ...prev, gallery_images: newImages }));
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Logo */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Business Logo</CardTitle>
+          <CardDescription>
+            Your business logo displayed on your profile
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center space-x-4">
+            {profile.logo_url ? (
+              <img
+                src={profile.logo_url}
+                alt="Logo"
+                className="w-24 h-24 object-cover rounded-lg border"
+              />
+            ) : (
+              <div className="w-24 h-24 bg-muted rounded-lg flex items-center justify-center">
+                <Upload className="w-8 h-8 text-muted-foreground" />
+              </div>
+            )}
+
+            <div className="space-y-2">
+              <Label htmlFor="logo-upload" className="cursor-pointer">
+                <Button variant="outline" size="sm" disabled={uploadingMedia}>
+                  <Upload className="w-4 h-4 mr-2" />
+                  {profile.logo_url ? 'Change Logo' : 'Upload Logo'}
+                </Button>
+              </Label>
+              <Input
+                id="logo-upload"
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => handleFileSelect(e, 'logo')}
+              />
+              <p className="text-xs text-muted-foreground">
+                JPG, PNG up to 5MB
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Cover Image */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Cover Image</CardTitle>
+          <CardDescription>
+            Hero image displayed at the top of your profile
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-4">
+            {profile.cover_image_url ? (
+              <img
+                src={profile.cover_image_url}
+                alt="Cover"
+                className="w-full h-48 object-cover rounded-lg border"
+              />
+            ) : (
+              <div className="w-full h-48 bg-muted rounded-lg flex items-center justify-center">
+                <Upload className="w-12 h-12 text-muted-foreground" />
+              </div>
+            )}
+
+            <div>
+              <Label htmlFor="cover-upload" className="cursor-pointer">
+                <Button variant="outline" size="sm" disabled={uploadingMedia}>
+                  <Upload className="w-4 h-4 mr-2" />
+                  {profile.cover_image_url ? 'Change Cover' : 'Upload Cover'}
+                </Button>
+              </Label>
+              <Input
+                id="cover-upload"
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => handleFileSelect(e, 'cover')}
+              />
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Gallery */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Portfolio Gallery</CardTitle>
+          <CardDescription>Showcase your best work</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              {profile.gallery_images.map((image: any, index: number) => (
+                <div key={index} className="relative group">
+                  <img
+                    src={image.url}
+                    alt=""
+                    className="w-full h-32 object-cover rounded-lg"
+                  />
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity"
+                    onClick={() => removeGalleryImage(index)}
+                  >
+                    <X className="w-3 h-3" />
+                  </Button>
+                </div>
+              ))}
+
+              {/* Add new image */}
+              <div className="border-2 border-dashed border-muted-foreground rounded-lg h-32 flex items-center justify-center cursor-pointer hover:bg-muted/50">
+                <Label
+                  htmlFor="gallery-upload"
+                  className="cursor-pointer flex flex-col items-center"
+                >
+                  <Upload className="w-6 h-6 text-muted-foreground mb-2" />
+                  <span className="text-sm text-muted-foreground">
+                    Add Image
+                  </span>
+                </Label>
+                <Input
+                  id="gallery-upload"
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => handleFileSelect(e, 'gallery')}
+                />
+              </div>
+            </div>
+
+            {uploadingMedia && (
+              <div className="text-center text-muted-foreground">
+                Uploading...
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function SettingsTab({ profile, saveProfile, isSaving }: any) {
+  const [settings, setSettings] = useState({
+    response_time_commitment: profile.response_time_commitment,
+    preferred_contact_method: profile.preferred_contact_method,
+    auto_response_enabled: profile.auto_response_enabled,
+    auto_response_message: profile.auto_response_message,
+  });
+
+  const handleSave = () => {
+    saveProfile(settings);
+  };
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader>
+          <CardTitle>Response Settings</CardTitle>
+          <CardDescription>
+            How you want to handle client inquiries
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label>Response Time Commitment</Label>
+              <select
+                className="w-full p-2 border rounded-md"
+                value={settings.response_time_commitment}
+                onChange={(e) =>
+                  setSettings({
+                    ...settings,
+                    response_time_commitment: e.target.value,
+                  })
+                }
+              >
+                <option value="within_hour">Within 1 hour</option>
+                <option value="within_day">Within 24 hours</option>
+                <option value="within_2days">Within 2 days</option>
+              </select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Preferred Contact Method</Label>
+              <select
+                className="w-full p-2 border rounded-md"
+                value={settings.preferred_contact_method}
+                onChange={(e) =>
+                  setSettings({
+                    ...settings,
+                    preferred_contact_method: e.target.value,
+                  })
+                }
+              >
+                <option value="email">Email</option>
+                <option value="phone">Phone</option>
+                <option value="whatsapp">WhatsApp</option>
+                <option value="platform">Platform Messages</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <div className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                id="auto_response"
+                checked={settings.auto_response_enabled}
+                onChange={(e) =>
+                  setSettings({
+                    ...settings,
+                    auto_response_enabled: e.target.checked,
+                  })
+                }
+              />
+              <Label htmlFor="auto_response">Enable automatic response</Label>
+            </div>
+
+            {settings.auto_response_enabled && (
+              <div className="space-y-2">
+                <Label>Auto-response message</Label>
+                <Textarea
+                  value={settings.auto_response_message}
+                  onChange={(e) =>
+                    setSettings({
+                      ...settings,
+                      auto_response_message: e.target.value,
+                    })
+                  }
+                  placeholder="Thank you for your inquiry..."
+                />
+              </div>
+            )}
+          </div>
+
+          <Button onClick={handleSave} disabled={isSaving}>
+            <Save className="w-4 h-4 mr-2" />
+            {isSaving ? 'Saving...' : 'Save Settings'}
+          </Button>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function AnalyticsTab({ profile }: any) {
+  return (
+    <div className="space-y-6">
+      {/* Performance Metrics */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium">Total Views</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">
+              {profile.profile_views.toLocaleString()}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              +12% from last month
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium">
+              Contact Clicks
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{profile.contact_clicks}</div>
+            <p className="text-xs text-muted-foreground">
+              7.1% conversion rate
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium">
+              Website Clicks
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{profile.website_clicks}</div>
+            <p className="text-xs text-muted-foreground">
+              12.5% click-through rate
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* SEO Information */}
+      <Card>
+        <CardHeader>
+          <CardTitle>SEO Performance</CardTitle>
+          <CardDescription>
+            How your profile appears in search results
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div>
+            <Label className="text-sm text-muted-foreground">Page Title</Label>
+            <p className="font-medium">{profile.seo.page_title}</p>
+          </div>
+
+          <div>
+            <Label className="text-sm text-muted-foreground">
+              Meta Description
+            </Label>
+            <p className="text-sm">{profile.seo.meta_description}</p>
+          </div>
+
+          <div>
+            <Label className="text-sm text-muted-foreground">Profile URL</Label>
+            <p className="text-sm font-mono bg-muted px-2 py-1 rounded">
+              {`/directory/${profile.seo.custom_slug}`}
+            </p>
+          </div>
+
+          <Button variant="outline" size="sm">
+            <Edit className="w-4 h-4 mr-2" />
+            Edit SEO Settings
+          </Button>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}

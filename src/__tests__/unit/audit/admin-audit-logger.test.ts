@@ -1,0 +1,171 @@
+import { adminAuditLogger } from '@/lib/admin/auditLogger';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { createClient } from '@/lib/supabase/server';
+
+// Mock Supabase client
+vi.mock('@/lib/supabase/server', () => ({
+  createClient: vi.fn()
+}));
+describe('AdminAuditLogger', () => {
+  let mockSupabase: unknown;
+  let consoleSpy: jest.SpyInstance;
+  let consoleErrorSpy: jest.SpyInstance;
+  let consoleWarnSpy: jest.SpyInstance;
+  beforeEach(() => {
+    mockSupabase = {
+      from: vi.fn().mockReturnThis(),
+      insert: vi.fn().mockReturnThis(),
+      select: vi.fn().mockReturnThis(),
+      single: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      gte: vi.fn().mockReturnThis(),
+      lte: vi.fn().mockReturnThis(),
+      in: vi.fn().mockReturnThis(),
+      range: vi.fn().mockReturnThis(),
+      order: vi.fn().mockReturnThis(),
+      limit: vi.fn().mockReturnThis(),
+      delete: vi.fn().mockReturnThis(),
+      lt: vi.fn().mockReturnThis()
+    };
+    (createClient as ReturnType<typeof vi.fn>).mockReturnValue(mockSupabase);
+    
+    consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.clearAllMocks();
+    consoleSpy.mockRestore();
+    consoleErrorSpy.mockRestore();
+    consoleWarnSpy.mockRestore();
+  describe('logAction', () => {
+    it('should successfully log an audit action', async () => {
+      mockSupabase.from.mockImplementation(() => ({
+        insert: vi.fn().mockResolvedValue({ error: null })
+      }));
+      const entry = {
+        adminId: 'admin123',
+        adminEmail: 'admin@example.com',
+        action: 'user_created',
+        status: 'success' as const,
+        details: { userId: 'user123' },
+        timestamp: '2024-01-01T00:00:00.000Z',
+        clientIP: '192.168.1.1',
+        requiresMFA: false,
+        userAgent: 'Mozilla/5.0'
+      };
+      await adminAuditLogger.logAction(entry);
+      expect(mockSupabase.from).toHaveBeenCalledWith('admin_audit_log');
+      expect(consoleErrorSpy).not.toHaveBeenCalled();
+    });
+    it('should handle database insertion errors gracefully', async () => {
+      const dbError = new Error('Database connection failed');
+        insert: vi.fn().mockResolvedValue({ error: dbError })
+        requiresMFA: false
+      expect(consoleErrorSpy).toHaveBeenCalledWith('Failed to log admin audit entry:', dbError);
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        'AUDIT LOG (DB FAILED):',
+        expect.stringContaining(JSON.stringify(entry.action))
+      );
+    it('should fallback to console logging on unexpected errors', async () => {
+      mockSupabase.from.mockImplementation(() => {
+        throw new Error('Unexpected error');
+      });
+      expect(consoleErrorSpy).toHaveBeenCalledWith('Error in audit logger:', expect.any(Error));
+      expect(consoleWarnSpy).toHaveBeenCalledWith('AUDIT LOG (ERROR):', entry);
+  describe('getAuditEntries', () => {
+    it('should retrieve audit entries with filters', async () => {
+      const mockData = [
+        {
+          id: '1',
+          admin_id: 'admin123',
+          admin_email: 'admin@example.com',
+          action: 'user_created',
+          status: 'success',
+          details: { userId: 'user123' },
+          timestamp: '2024-01-01T00:00:00.000Z',
+          client_ip: '192.168.1.1',
+          requires_mfa: false,
+          user_agent: 'Mozilla/5.0'
+        }
+      ];
+        select: vi.fn().mockReturnThis(),
+        order: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        gte: vi.fn().mockReturnThis(),
+        lte: vi.fn().mockReturnThis(),
+        range: vi.fn().mockResolvedValue({ data: mockData, error: null })
+      const options = {
+        startDate: '2024-01-01T00:00:00.000Z',
+        endDate: '2024-01-02T00:00:00.000Z',
+        limit: 10,
+        offset: 0
+      const result = await adminAuditLogger.getAuditEntries(options);
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({
+        status: 'success'
+    it('should handle database query errors', async () => {
+      const dbError = new Error('Query failed');
+        range: vi.fn().mockResolvedValue({ data: null, error: dbError })
+      const result = await adminAuditLogger.getAuditEntries();
+      expect(result).toEqual([]);
+      expect(consoleErrorSpy).toHaveBeenCalledWith('Failed to fetch audit entries:', dbError);
+  describe('getAuditSummary', () => {
+    it('should generate audit summary statistics', async () => {
+      mockSupabase.from.mockImplementation((table: string) => ({
+        select: vi.fn().mockImplementation((columns: string, options?: any) => {
+          if (options?.count === 'exact') {
+            return Promise.resolve({ count: 100 });
+          }
+          return Promise.resolve({
+            data: [
+              { action: 'user_created' },
+              { action: 'user_deleted' }
+            ]
+          });
+        }),
+        in: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockReturnThis()
+      const summary = await adminAuditLogger.getAuditSummary(7);
+      expect(summary).toMatchObject({
+        totalActions: expect.any(Number),
+        successfulActions: expect.any(Number),
+        failedActions: expect.any(Number),
+        mfaRequiredActions: expect.any(Number),
+        topActions: expect.any(Array),
+        topAdmins: expect.any(Array)
+  describe('createAuditAlert', () => {
+    it('should create audit alerts for security violations', async () => {
+      await adminAuditLogger.createAuditAlert(
+        'Suspicious activity detected',
+        'security',
+        { details: 'Multiple failed login attempts' }
+      expect(mockSupabase.from).toHaveBeenCalledWith('system_alerts');
+  describe('logSecurityViolation', () => {
+    it('should log security violations and create alerts', async () => {
+      await adminAuditLogger.logSecurityViolation(
+        'admin123',
+        'admin@example.com',
+        'unauthorized_access',
+        { resource: '/admin/users' },
+        '192.168.1.1'
+  describe('logMfaFailure', () => {
+    it('should log MFA failures', async () => {
+      await adminAuditLogger.logMfaFailure(
+        'user_delete',
+        '192.168.1.1',
+        1
+    it('should create alert after multiple MFA failures', async () => {
+        3
+      // Should create both audit log and alert
+  describe('cleanupOldEntries', () => {
+    it('should cleanup old audit entries', async () => {
+        delete: vi.fn().mockReturnThis(),
+        lt: vi.fn().mockResolvedValue({ error: null })
+      await adminAuditLogger.cleanupOldEntries(30);
+      expect(consoleSpy).toHaveBeenCalledWith('Cleaned up audit entries older than 30 days');
+    it('should handle cleanup errors', async () => {
+      const dbError = new Error('Delete failed');
+        lt: vi.fn().mockResolvedValue({ error: dbError })
+      expect(consoleErrorSpy).toHaveBeenCalledWith('Failed to cleanup old audit entries:', dbError);
+});

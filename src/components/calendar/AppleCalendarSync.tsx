@@ -1,0 +1,373 @@
+'use client';
+
+import React, { useState, useCallback } from 'react';
+import {
+  Calendar,
+  Settings,
+  CheckCircle,
+  AlertCircle,
+  Sync,
+  Zap,
+} from 'lucide-react';
+// import { AppleCalDAVAuth } from './AppleCalDAVAuth';
+import { AppleCalendarSelector } from './AppleCalendarSelector';
+import { AppleSyncStatus } from './AppleSyncStatus';
+// import { AppleEventMapping } from './AppleEventMapping';
+// import { AppleSyncSettings } from './AppleSyncSettings';
+
+import {
+  CalDAVCredentials,
+  CalendarInfo,
+  SyncStatus,
+  ConflictInfo,
+  CalendarEvent,
+  SyncSettings,
+  AppleCalendarView,
+  ConflictResolution,
+  WeddingEventType,
+} from '@/types/apple-calendar';
+
+export interface AppleCalendarSyncProps {
+  className?: string;
+  onSyncStatusChange?: (status: SyncStatus) => void;
+  onConflictResolved?: (
+    conflictId: string,
+    resolution: ConflictResolution,
+  ) => void;
+  initialView?: AppleCalendarView;
+}
+
+export const AppleCalendarSync: React.FC<AppleCalendarSyncProps> = ({
+  className = '',
+  onSyncStatusChange,
+  onConflictResolved,
+  initialView = 'setup',
+}) => {
+  const [currentView, setCurrentView] =
+    useState<AppleCalendarView>(initialView);
+  const [credentials, setCredentials] = useState<CalDAVCredentials | null>(
+    null,
+  );
+  const [selectedCalendars, setSelectedCalendars] = useState<CalendarInfo[]>(
+    [],
+  );
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>({
+    isConnected: false,
+    calendarsDiscovered: 0,
+    eventsProcessed: 0,
+    conflictsFound: 0,
+    errorCount: 0,
+  });
+  const [conflicts, setConflicts] = useState<ConflictInfo[]>([]);
+  const [syncSettings, setSyncSettings] = useState<SyncSettings>({
+    syncDirection: 'bidirectional',
+    eventTypes: ['client_meeting', 'wedding_ceremony', 'wedding_reception'],
+    syncFrequency: 'realtime',
+    notifications: {
+      syncComplete: true,
+      conflictsFound: true,
+      errors: true,
+      deviceTypes: ['iPhone', 'iPad', 'Mac'],
+    },
+    autoResolveConflicts: false,
+    businessHoursOnly: true,
+    timezone: 'America/New_York',
+  });
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleAuthSuccess = useCallback((newCredentials: CalDAVCredentials) => {
+    setCredentials(newCredentials);
+    setError(null);
+    setSyncStatus((prev) => ({ ...prev, isConnected: true }));
+    setCurrentView('calendars');
+  }, []);
+
+  const handleAuthError = useCallback((errorMessage: string) => {
+    setError(errorMessage);
+    setSyncStatus((prev) => ({ ...prev, isConnected: false }));
+  }, []);
+
+  const handleCalendarSelection = useCallback((calendars: CalendarInfo[]) => {
+    setSelectedCalendars(calendars);
+    setSyncStatus((prev) => ({
+      ...prev,
+      calendarsDiscovered: calendars.length,
+    }));
+    setCurrentView('status');
+  }, []);
+
+  const handleStartSync = useCallback(async () => {
+    if (!credentials || selectedCalendars.length === 0) {
+      setError('Please complete setup and select calendars before syncing');
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      setSyncStatus((prev) => ({
+        ...prev,
+        syncProgress: 0,
+        currentOperation: 'Discovering calendars...',
+      }));
+
+      // Simulate CalDAV sync process
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+
+      setSyncStatus((prev) => ({
+        ...prev,
+        syncProgress: 25,
+        currentOperation: 'Processing events...',
+        eventsProcessed: 15,
+      }));
+
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+
+      setSyncStatus((prev) => ({
+        ...prev,
+        syncProgress: 75,
+        currentOperation: 'Resolving conflicts...',
+        eventsProcessed: 42,
+        conflictsFound: 3,
+      }));
+
+      // Simulate finding conflicts
+      const mockConflicts: ConflictInfo[] = [
+        {
+          id: 'conflict-1',
+          type: 'time_overlap',
+          severity: 'medium',
+          localEvent: {
+            id: 'local-1',
+            title: 'Venue Site Visit - Grand Ballroom',
+            startTime: new Date('2025-02-15T14:00:00'),
+            endTime: new Date('2025-02-15T15:30:00'),
+            eventType: 'venue_visit',
+            priority: 'high',
+            lastModified: new Date(),
+          },
+          remoteEvent: {
+            id: 'remote-1',
+            title: 'Client Consultation - Sarah & Mike',
+            startTime: new Date('2025-02-15T14:30:00'),
+            endTime: new Date('2025-02-15T16:00:00'),
+            eventType: 'client_meeting',
+            priority: 'high',
+            lastModified: new Date(),
+          },
+          suggestedResolution: 'manual',
+          weddingImpact: 'major',
+        },
+      ];
+
+      setConflicts(mockConflicts);
+
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+
+      setSyncStatus((prev) => ({
+        ...prev,
+        syncProgress: 100,
+        currentOperation: 'Sync completed',
+        lastSync: new Date(),
+        eventsProcessed: 67,
+      }));
+
+      onSyncStatusChange?.(syncStatus);
+
+      if (mockConflicts.length > 0) {
+        setCurrentView('conflicts');
+      }
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : 'CalDAV sync failed';
+      setError(errorMessage);
+      setSyncStatus((prev) => ({ ...prev, errorCount: prev.errorCount + 1 }));
+    } finally {
+      setIsLoading(false);
+    }
+  }, [credentials, selectedCalendars, syncStatus, onSyncStatusChange]);
+
+  const handleConflictResolution = useCallback(
+    (conflictId: string, resolution: ConflictResolution) => {
+      setConflicts((prev) => prev.filter((c) => c.id !== conflictId));
+      onConflictResolved?.(conflictId, resolution);
+
+      // If no more conflicts, show status view
+      if (conflicts.length <= 1) {
+        setCurrentView('status');
+      }
+    },
+    [conflicts.length, onConflictResolved],
+  );
+
+  const handleSettingsSave = useCallback(
+    (newSettings: SyncSettings) => {
+      setSyncSettings(newSettings);
+      // Trigger re-sync with new settings if connected
+      if (syncStatus.isConnected) {
+        handleStartSync();
+      }
+    },
+    [syncStatus.isConnected, handleStartSync],
+  );
+
+  const getViewTitle = () => {
+    switch (currentView) {
+      case 'setup':
+        return 'Apple Calendar Setup';
+      case 'calendars':
+        return 'Select Calendars';
+      case 'status':
+        return 'Sync Status';
+      case 'conflicts':
+        return 'Resolve Conflicts';
+      case 'settings':
+        return 'Sync Settings';
+      default:
+        return 'Apple Calendar Integration';
+    }
+  };
+
+  const getStatusColor = () => {
+    if (error) return 'text-red-600';
+    if (syncStatus.isConnected && syncStatus.lastSync) return 'text-green-600';
+    if (syncStatus.isConnected) return 'text-blue-600';
+    return 'text-gray-500';
+  };
+
+  const getStatusIcon = () => {
+    if (error) return <AlertCircle className="h-5 w-5 text-red-500" />;
+    if (syncStatus.isConnected && syncStatus.lastSync)
+      return <CheckCircle className="h-5 w-5 text-green-500" />;
+    if (syncStatus.isConnected)
+      return <Sync className="h-5 w-5 text-blue-500 animate-spin" />;
+    return <Calendar className="h-5 w-5 text-gray-400" />;
+  };
+
+  return (
+    <div
+      className={`bg-white rounded-2xl border border-gray-200 shadow-xs overflow-hidden ${className}`}
+    >
+      {/* Header */}
+      <div className="border-b border-gray-200 bg-gradient-to-r from-blue-50 to-indigo-50">
+        <div className="px-6 py-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-3">
+              {getStatusIcon()}
+              <div>
+                <h2 className="text-lg font-semibold text-gray-900">
+                  {getViewTitle()}
+                </h2>
+                <p className={`text-sm ${getStatusColor()}`}>
+                  {error
+                    ? error
+                    : syncStatus.isConnected
+                      ? `Connected • ${selectedCalendars.length} calendars`
+                      : 'Not connected'}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center space-x-2">
+              {syncStatus.isConnected && (
+                <button
+                  onClick={handleStartSync}
+                  disabled={isLoading}
+                  className="inline-flex items-center px-3 py-1.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-200"
+                >
+                  <Sync
+                    className={`h-4 w-4 mr-1.5 ${isLoading ? 'animate-spin' : ''}`}
+                  />
+                  {isLoading ? 'Syncing...' : 'Sync Now'}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Navigation Tabs */}
+        <div className="flex space-x-8 px-6 pb-4">
+          {[
+            { id: 'setup', label: 'Setup', icon: Settings },
+            { id: 'calendars', label: 'Calendars', icon: Calendar },
+            { id: 'status', label: 'Status', icon: CheckCircle },
+            {
+              id: 'conflicts',
+              label: 'Conflicts',
+              icon: AlertCircle,
+              badge: conflicts.length,
+            },
+            { id: 'settings', label: 'Settings', icon: Zap },
+          ].map(({ id, label, icon: Icon, badge }) => (
+            <button
+              key={id}
+              onClick={() => setCurrentView(id as AppleCalendarView)}
+              className={`relative inline-flex items-center py-2 text-sm font-medium transition-colors duration-200 ${
+                currentView === id
+                  ? 'text-blue-600 border-b-2 border-blue-600'
+                  : 'text-gray-500 hover:text-gray-700'
+              }`}
+              disabled={id === 'calendars' && !credentials}
+            >
+              <Icon className="h-4 w-4 mr-1.5" />
+              {label}
+              {badge !== undefined && badge > 0 && (
+                <span className="absolute -top-1 -right-1 inline-flex items-center justify-center px-1.5 py-0.5 text-xs font-bold leading-none text-white bg-red-500 rounded-full">
+                  {badge}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Content */}
+      <div className="p-6">
+        {error && (
+          <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg">
+            <div className="flex items-center">
+              <AlertCircle className="h-5 w-5 text-red-500 mr-2" />
+              <p className="text-sm text-red-700">{error}</p>
+            </div>
+          </div>
+        )}
+
+        {currentView === 'setup' && (
+          <div className="text-center p-8">
+            <p>Apple CalDAV setup component is being developed.</p>
+          </div>
+        )}
+
+        {currentView === 'calendars' && credentials && (
+          <AppleCalendarSelector
+            credentials={credentials}
+            selectedCalendars={selectedCalendars}
+            onSelectionChange={handleCalendarSelection}
+            eventTypes={syncSettings.eventTypes}
+          />
+        )}
+
+        {currentView === 'status' && (
+          <AppleSyncStatus
+            syncStatus={syncStatus}
+            onStartSync={handleStartSync}
+            isLoading={isLoading}
+          />
+        )}
+
+        {currentView === 'conflicts' && (
+          <div className="text-center p-8">
+            <p>Apple event mapping component is being developed.</p>
+          </div>
+        )}
+
+        {currentView === 'settings' && (
+          <div className="text-center p-8">
+            <p>Apple sync settings component is being developed.</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};

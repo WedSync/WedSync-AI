@@ -1,0 +1,200 @@
+'use client';
+
+import React, { FormEvent, ReactNode, useEffect } from 'react';
+import { useCSRF } from '@/hooks/useCSRF';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
+import { AlertCircle, RefreshCw } from 'lucide-react';
+
+interface CSRFProtectedFormProps {
+  children: ReactNode;
+  action?: string;
+  method?: 'POST' | 'PUT' | 'DELETE' | 'PATCH';
+  onSubmit?: (event: FormEvent<HTMLFormElement>) => void | Promise<void>;
+  className?: string;
+  autoRetryOnError?: boolean;
+  showLoadingState?: boolean;
+}
+
+/**
+ * Form component that automatically handles CSRF protection
+ * Injects CSRF tokens and provides error handling with retry mechanisms
+ */
+export function CSRFProtectedForm({
+  children,
+  action,
+  method = 'POST',
+  onSubmit,
+  className = '',
+  autoRetryOnError = true,
+  showLoadingState = true
+}: CSRFProtectedFormProps) {
+  const { 
+    token, 
+    isLoading, 
+    error, 
+    refreshToken, 
+    secureFetch,
+    getTokenForInput 
+  } = useCSRF();
+
+  // Auto-refresh token if there's an error and autoRetryOnError is enabled
+  useEffect(() => {
+    if (error && autoRetryOnError && !isLoading) {
+      const timer = setTimeout(() => {
+        refreshToken();
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [error, autoRetryOnError, isLoading, refreshToken]);
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    
+    if (!token) {
+      console.error('CSRF token not available for form submission');
+      return;
+    }
+
+    if (onSubmit) {
+      // If custom submit handler is provided, call it
+      await onSubmit(event);
+    } else {
+      // Default form submission with CSRF protection
+      const form = event.currentTarget;
+      const formData = new FormData(form);
+      
+      // Add CSRF token to form data
+      formData.append('csrf-token', token);
+      
+      if (action) {
+        try {
+          const response = await secureFetch(action, {
+            method,
+            body: formData
+          });
+
+          if (!response.ok) {
+            throw new Error(`Form submission failed: ${response.statusText}`);
+          }
+
+          // Handle successful submission
+          console.log('Form submitted successfully');
+          
+          // Optional: Trigger a custom event for success handling
+          const successEvent = new CustomEvent('csrf-form-success', {
+            detail: { response }
+          });
+          form.dispatchEvent(successEvent);
+
+        } catch (submitError) {
+          console.error('Form submission error:', submitError);
+          
+          // Trigger a custom event for error handling
+          const errorEvent = new CustomEvent('csrf-form-error', {
+            detail: { error: submitError }
+          });
+          form.dispatchEvent(errorEvent);
+        }
+      }
+    }
+  };
+
+  // Show loading state if requested
+  if (isLoading && showLoadingState) {
+    return (
+      <form className={`${className} opacity-50 pointer-events-none`}>
+        <div className="flex items-center justify-center p-4 space-x-2">
+          <RefreshCw className="h-4 w-4 animate-spin" />
+          <span>Initializing security...</span>
+        </div>
+        {children}
+      </form>
+    );
+  }
+
+  // Show error state with retry option
+  if (error && !autoRetryOnError) {
+    return (
+      <div className="space-y-4">
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription>
+            Security token error: {error}
+          </AlertDescription>
+        </Alert>
+        <Button 
+          onClick={refreshToken} 
+          variant="outline" 
+          className="w-full"
+        >
+          <RefreshCw className="mr-2 h-4 w-4" />
+          Retry Security Setup
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <form 
+      action={action}
+      method={method}
+      onSubmit={handleSubmit}
+      className={className}
+    >
+      {/* Hidden CSRF token field for traditional form submissions */}
+      <input 
+        type="hidden" 
+        name="csrf-token" 
+        value={token || ''} 
+      />
+      
+      {/* Hidden double submit cookie field as fallback */}
+      <input 
+        type="hidden" 
+        name="csrf-double-submit" 
+        value={token ? btoa(token) : ''} 
+      />
+      
+      {/* Show error alert if there's an error and auto-retry is enabled */}
+      {error && autoRetryOnError && (
+        <Alert variant="destructive" className="mb-4">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription>
+            Security token error: {error}. Retrying automatically...
+          </AlertDescription>
+        </Alert>
+      )}
+      
+      {children}
+    </form>
+  );
+}
+
+/**
+ * Hook for accessing CSRF token in custom form implementations
+ */
+export function useCSRFToken() {
+  const { token, getTokenForInput } = useCSRF();
+  
+  return {
+    token,
+    getTokenForInput,
+    addToFormData: (formData: FormData) => {
+      if (token) {
+        formData.append('csrf-token', token);
+        formData.append('csrf-double-submit', btoa(token));
+      }
+    },
+    addToHeaders: (headers: HeadersInit = {}): HeadersInit => {
+      if (token) {
+        return {
+          ...headers,
+          'X-CSRF-Token': token,
+          'X-CSRF-Double-Submit': btoa(token)
+        };
+      }
+      return headers;
+    }
+  };
+}

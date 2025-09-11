@@ -1,0 +1,120 @@
+'use client';
+
+import { useState } from 'react';
+import { TouchOptimizedCalendar } from '@/components/touch/TouchOptimizedCalendar';
+import { ScheduleFilters } from '@/components/supplier/mobile/ScheduleFilters';
+import { MobileScheduleView } from '@/components/supplier/schedule/MobileScheduleView';
+import { useSupplierSchedule } from '@/hooks/useSupplierSchedule';
+import { PullToRefresh } from '@/components/touch/PullToRefresh';
+import { Card } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Calendar, List, Settings } from 'lucide-react';
+import { cn } from '@/lib/utils';
+
+export default function SupplierSchedulePage() {
+  const [selectedDate, setSelectedDate] = useState(
+    new Date().toISOString().split('T')[0],
+  );
+  const [viewMode, setViewMode] = useState<'calendar' | 'list'>('calendar');
+  const [showFilters, setShowFilters] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const { schedule, loading, refetch } = useSupplierSchedule(selectedDate);
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    await refetch();
+    setRefreshing(false);
+  };
+
+  const viewModeButtons = [
+    {
+      id: 'calendar',
+      label: 'Calendar',
+      icon: Calendar,
+    },
+    {
+      id: 'list',
+      label: 'List',
+      icon: List,
+    },
+  ];
+
+  return (
+    <PullToRefresh onRefresh={handleRefresh} refreshing={refreshing}>
+      <div className="space-y-4 py-4">
+        {/* Header with view mode toggle */}
+        <Card className="p-4">
+          <div className="flex items-center justify-between">
+            <h1 className="text-xl font-semibold text-gray-900">My Schedule</h1>
+
+            <div className="flex items-center space-x-2">
+              {/* View mode toggle */}
+              <div className="flex bg-gray-100 rounded-lg p-1">
+                {viewModeButtons.map((mode) => {
+                  const Icon = mode.icon;
+                  const isActive = viewMode === mode.id;
+                  return (
+                    <button
+                      key={mode.id}
+                      onClick={() =>
+                        setViewMode(mode.id as 'calendar' | 'list')
+                      }
+                      className={cn(
+                        'flex items-center space-x-1 px-3 py-2 rounded-md text-sm font-medium transition-all',
+                        'touch-manipulation min-h-[44px]', // Accessibility: minimum touch target
+                        isActive
+                          ? 'bg-white text-pink-600 shadow-sm'
+                          : 'text-gray-600 hover:text-gray-900',
+                      )}
+                    >
+                      <Icon className="w-4 h-4" />
+                      <span className="hidden sm:inline">{mode.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Filters button */}
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={() => setShowFilters(!showFilters)}
+                className={cn(
+                  'h-10 w-10',
+                  showFilters && 'bg-pink-50 border-pink-300',
+                )}
+              >
+                <Settings className="w-4 h-4" />
+              </Button>
+            </div>
+          </div>
+
+          {/* Filters panel */}
+          {showFilters && (
+            <div className="mt-4 pt-4 border-t border-gray-200">
+              <ScheduleFilters onFiltersChange={() => refetch()} />
+            </div>
+          )}
+        </Card>
+
+        {/* Calendar or List View */}
+        {viewMode === 'calendar' ? (
+          <TouchOptimizedCalendar
+            selectedDate={selectedDate}
+            onDateSelect={setSelectedDate}
+            schedule={schedule}
+            loading={loading}
+          />
+        ) : (
+          <MobileScheduleView
+            schedule={schedule}
+            selectedDate={selectedDate}
+            loading={loading}
+            onDateSelect={setSelectedDate}
+          />
+        )}
+      </div>
+    </PullToRefresh>
+  );
+}

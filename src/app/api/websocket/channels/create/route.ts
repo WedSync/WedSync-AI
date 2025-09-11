@@ -1,0 +1,569 @@
+/**
+ * WebSocket Channel Creation API - WS-203 Team B Implementation
+ *
+ * Creates new WebSocket channels with wedding context isolation and security validation.
+ * Supports supplier dashboard channels, collaboration channels, and form response channels.
+ *
+ * Wedding Industry Features:
+ * - Multi-wedding isolation for suppliers managing 8+ simultaneous weddings
+ * - Organization-level permission validation
+ * - Channel naming convention: {scope}:{entity}:{entityId}
+ * - Wedding season traffic optimization with rate limiting
+ * - Comprehensive audit logging for liability protection
+ */
+
+import { NextRequest } from 'next/server';
+import { z } from 'zod';
+import { withSecureValidation } from '@/lib/validation/middleware';
+import { createClient } from '@/lib/supabase/server';
+import { ChannelManager } from '@/lib/websocket/channel-manager';
+import { rateLimitService } from '@/lib/rate-limit';
+import { logger } from '@/lib/monitoring/logger';
+
+// ================================================
+// VALIDATION SCHEMA
+// ================================================
+
+const channelCreationSchema = z.object({
+  scope: z.enum(
+    ['supplier', 'couple', 'collaboration', 'form', 'journey', 'admin'],
+    {
+      required_error: 'Channel scope is required',
+    },
+  ),
+  entity: z
+    .string()
+    .min(1, 'Entity identifier is required')
+    .max(50, 'Entity identifier too long'),
+  entityId: z.string().uuid('Entity ID must be a valid UUID'),
+  type: z
+    .enum(['private', 'shared', 'broadcast'])
+    .optional()
+    .default('private'),
+  maxSubscribers: z.number().int().min(1).max(1000).optional().default(100),
+  messageRetentionHours: z
+    .number()
+    .int()
+    .min(1)
+    .max(168)
+    .optional()
+    .default(24), // Max 7 days
+  metadata: z.record(z.any()).optional().default({}),
+
+  // Wedding context (optional but recommended)
+  weddingId: z.string().uuid().optional(),
+  supplierId: z.string().uuid().optional(),
+  coupleId: z.string().uuid().optional(),
+  organizationId: z.string().uuid().optional(),
+
+  // Rate limiting bypass for system channels
+  systemChannel: z.boolean().optional().default(false),
+});
+
+type ChannelCreationRequest = z.infer<typeof channelCreationSchema>;
+
+// ================================================
+// CHANNEL CREATION HANDLER
+// ================================================
+
+export const POST = withSecureValidation(
+  channelCreationSchema,
+  async (request: NextRequest, validatedData: ChannelCreationRequest) => {
+    const startTime = Date.now();
+
+    try {
+      // Get authenticated user
+      const supabase = createClient();
+      const {
+        data: { user },
+        error: authError,
+      } = await supabase.auth.getUser();
+
+      if (authError || !user) {
+        logger.warn('Unauthorized channel creation attempt', {
+          error: authError?.message,
+          ip: request.ip,
+          userAgent: request.headers.get('user-agent'),
+        });
+
+        return Response.json(
+          {
+            error: 'UNAUTHORIZED',
+            message: 'Authentication required to create channels',
+            code: 'AUTH_REQUIRED',
+          },
+          { status: 401 },
+        );
+      }
+
+      // Rate limiting (more generous for paid tiers)
+      if (!validatedData.systemChannel) {
+        const rateLimitKey = `websocket:channel:create:${user.id}`;
+        const allowed = await rateLimitService.checkLimit(
+          rateLimitKey,
+          20,
+          3600,
+        ); // 20 channels per hour
+
+        if (!allowed) {
+          logger.warn('Channel creation rate limit exceeded', {
+            userId: user.id,
+            scope: validatedData.scope,
+            entity: validatedData.entity,
+          });
+
+          return Response.json(
+            {
+              error: 'RATE_LIMITED',
+              message: 'Channel creation rate limit exceeded. Try again later.',
+              code: 'RATE_LIMIT_EXCEEDED',
+              retryAfter: 3600,
+            },
+            { status: 429 },
+          );
+        }
+      }
+
+      // Get user profile for permission validation
+      const { data: userProfile, error: profileError } = await supabase
+        .from('user_profiles')
+        .select('*')
+        .eq('user_id', user.id)
+        .single();
+
+      if (profileError || !userProfile) {
+        logger.error('Failed to get user profile for channel creation', {
+          error: profileError?.message,
+          userId: user.id,
+        });
+
+        return Response.json(
+          {
+            error: 'PROFILE_ERROR',
+            message: 'Unable to validate user permissions',
+            code: 'PROFILE_FETCH_FAILED',
+          },
+          { status: 400 },
+        );
+      }
+
+      // Validate permissions based on scope
+      const permissionResult = await validateChannelCreationPermissions(
+        validatedData,
+        user.id,
+        userProfile,
+        supabase,
+      );
+
+      if (!permissionResult.allowed) {
+        logger.warn('Insufficient permissions for channel creation', {
+          userId: user.id,
+          scope: validatedData.scope,
+          entity: validatedData.entity,
+          reason: permissionResult.reason,
+        });
+
+        return Response.json(
+          {
+            error: 'FORBIDDEN',
+            message:
+              permissionResult.reason ||
+              'Insufficient permissions to create channel',
+            code: 'PERMISSION_DENIED',
+          },
+          { status: 403 },
+        );
+      }
+
+      // Check subscription limits for channel creation
+      const subscriptionCheck = await validateSubscriptionLimits(
+        user.id,
+        userProfile,
+        supabase,
+      );
+      if (!subscriptionCheck.allowed) {
+        return Response.json(
+          {
+            error: 'SUBSCRIPTION_LIMIT',
+            message: subscriptionCheck.message,
+            code: 'SUBSCRIPTION_LIMIT_EXCEEDED',
+            currentPlan: subscriptionCheck.currentTier,
+            upgradeUrl: '/pricing',
+          },
+          { status: 402 },
+        );
+      }
+
+      // Initialize Channel Manager
+      const channelManager = new ChannelManager({
+        supabaseClient: supabase,
+        maxConnectionsPerUser: 50,
+        messageRateLimit: 100,
+        enableMetrics: true,
+      });
+
+      // Create the channel
+      const channel = await channelManager.createChannel(
+        validatedData.scope,
+        validatedData.entity,
+        validatedData.entityId,
+        user.id,
+        {
+          type: validatedData.type,
+          maxSubscribers: validatedData.maxSubscribers,
+          messageRetentionHours: validatedData.messageRetentionHours,
+          metadata: {
+            ...validatedData.metadata,
+            createdViaApi: true,
+            userAgent: request.headers.get('user-agent'),
+            ipAddress: request.ip,
+          },
+          weddingId: validatedData.weddingId,
+          supplierId: validatedData.supplierId,
+          coupleId: validatedData.coupleId,
+          organizationId:
+            validatedData.organizationId || userProfile.organization_id,
+        },
+      );
+
+      // Performance tracking
+      const latency = Date.now() - startTime;
+
+      // Success logging with wedding context
+      logger.info('WebSocket channel created successfully', {
+        channelId: channel.id,
+        channelName: channel.name,
+        scope: validatedData.scope,
+        entity: validatedData.entity,
+        entityId: validatedData.entityId,
+        userId: user.id,
+        organizationId: userProfile.organization_id,
+        weddingId: validatedData.weddingId,
+        type: channel.type,
+        maxSubscribers: channel.maxSubscribers,
+        latency: `${latency}ms`,
+        performance:
+          latency < 200
+            ? 'excellent'
+            : latency < 500
+              ? 'good'
+              : 'needs_optimization',
+      });
+
+      // Return channel details
+      return Response.json(
+        {
+          success: true,
+          channel: {
+            id: channel.id,
+            name: channel.name,
+            type: channel.type,
+            scope: channel.scope,
+            entity: channel.entity,
+            entityId: channel.entityId,
+            createdAt: channel.createdAt,
+            maxSubscribers: channel.maxSubscribers,
+            messageRetentionHours: channel.messageRetentionHours,
+            active: channel.active,
+            weddingId: channel.weddingId,
+            supplierId: channel.supplierId,
+            coupleId: channel.coupleId,
+            organizationId: channel.organizationId,
+          },
+          subscriptionUrl: `/api/websocket/channels/subscribe`,
+          broadcastUrl: `/api/websocket/channels/broadcast`,
+          websocketUrl: `ws://localhost:8082?userId=${user.id}&channelName=${channel.name}`,
+          performance: {
+            latency: `${latency}ms`,
+            target: '<200ms',
+          },
+        },
+        {
+          status: 201,
+          headers: {
+            'X-Channel-ID': channel.id,
+            'X-Performance-Latency': `${latency}ms`,
+          },
+        },
+      );
+    } catch (error) {
+      const latency = Date.now() - startTime;
+
+      logger.error('WebSocket channel creation failed', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+        stack: error instanceof Error ? error.stack : undefined,
+        scope: validatedData.scope,
+        entity: validatedData.entity,
+        entityId: validatedData.entityId,
+        latency: `${latency}ms`,
+        requestData: validatedData,
+      });
+
+      // Determine error type and response
+      if (error instanceof Error && error.message.includes('already exists')) {
+        return Response.json(
+          {
+            error: 'CHANNEL_EXISTS',
+            message: 'Channel with this name already exists',
+            code: 'DUPLICATE_CHANNEL',
+          },
+          { status: 409 },
+        );
+      }
+
+      return Response.json(
+        {
+          error: 'CHANNEL_CREATION_FAILED',
+          message: 'Failed to create WebSocket channel',
+          code: 'CREATION_ERROR',
+          details: process.env.NODE_ENV === 'development' ? error : undefined,
+        },
+        { status: 500 },
+      );
+    }
+  },
+);
+
+// ================================================
+// PERMISSION VALIDATION HELPERS
+// ================================================
+
+/**
+ * Validate user permissions for channel creation
+ */
+async function validateChannelCreationPermissions(
+  data: ChannelCreationRequest,
+  userId: string,
+  userProfile: any,
+  supabase: any,
+): Promise<{ allowed: boolean; reason?: string }> {
+  switch (data.scope) {
+    case 'supplier':
+      // Users can create supplier channels for their own organization
+      if (!userProfile.organization_id) {
+        return {
+          allowed: false,
+          reason: 'Organization membership required for supplier channels',
+        };
+      }
+
+      // Validate entityId matches a supplier in the organization
+      if (data.supplierId) {
+        const { data: supplier, error } = await supabase
+          .from('suppliers')
+          .select('organization_id')
+          .eq('id', data.supplierId)
+          .single();
+
+        if (
+          error ||
+          !supplier ||
+          supplier.organization_id !== userProfile.organization_id
+        ) {
+          return {
+            allowed: false,
+            reason: 'Invalid supplier or organization mismatch',
+          };
+        }
+      }
+      return { allowed: true };
+
+    case 'couple':
+      // Users can create couple channels if they are the couple or have admin access
+      if (data.coupleId) {
+        const { data: couple, error } = await supabase
+          .from('couples')
+          .select('user_id, partner_user_id')
+          .eq('id', data.coupleId)
+          .single();
+
+        if (error || !couple) {
+          return { allowed: false, reason: 'Invalid couple ID' };
+        }
+
+        const isCouple =
+          couple.user_id === userId || couple.partner_user_id === userId;
+        const isAdmin = userProfile.role === 'admin';
+
+        if (!isCouple && !isAdmin) {
+          return { allowed: false, reason: 'Access denied to couple channel' };
+        }
+      }
+      return { allowed: true };
+
+    case 'collaboration':
+      // Collaboration channels require both supplier and couple context
+      if (!data.supplierId || !data.coupleId) {
+        return {
+          allowed: false,
+          reason:
+            'Collaboration channels require both supplier and couple context',
+        };
+      }
+
+      // Validate user has access to either the supplier or couple side
+      const supplierAccess = await validateSupplierAccess(
+        data.supplierId,
+        userProfile,
+        supabase,
+      );
+      const coupleAccess = await validateCoupleAccess(
+        data.coupleId,
+        userId,
+        supabase,
+      );
+
+      if (!supplierAccess && !coupleAccess) {
+        return {
+          allowed: false,
+          reason: 'Access denied to collaboration channel',
+        };
+      }
+      return { allowed: true };
+
+    case 'form':
+    case 'journey':
+      // Form and journey channels can be created by suppliers for their clients
+      if (!userProfile.organization_id && userProfile.role !== 'admin') {
+        return {
+          allowed: false,
+          reason: 'Organization membership required for form/journey channels',
+        };
+      }
+      return { allowed: true };
+
+    case 'admin':
+      // Only admin users can create admin channels
+      if (userProfile.role !== 'admin') {
+        return {
+          allowed: false,
+          reason: 'Admin privileges required for admin channels',
+        };
+      }
+      return { allowed: true };
+
+    default:
+      return { allowed: false, reason: 'Invalid channel scope' };
+  }
+}
+
+/**
+ * Validate subscription limits for channel creation
+ */
+async function validateSubscriptionLimits(
+  userId: string,
+  userProfile: any,
+  supabase: any,
+): Promise<{ allowed: boolean; message?: string; currentTier?: string }> {
+  // Get user's organization subscription details
+  if (!userProfile.organization_id) {
+    return { allowed: true }; // Individual users have basic limits
+  }
+
+  const { data: organization, error } = await supabase
+    .from('organizations')
+    .select('pricing_tier, subscription_status, features')
+    .eq('id', userProfile.organization_id)
+    .single();
+
+  if (error || !organization) {
+    logger.warn('Unable to validate subscription limits', {
+      error: error?.message,
+      userId,
+      organizationId: userProfile.organization_id,
+    });
+    return { allowed: true }; // Err on the side of allowing if we can't check
+  }
+
+  // Check if subscription is active
+  if (
+    organization.subscription_status !== 'active' &&
+    organization.subscription_status !== 'trialing'
+  ) {
+    return {
+      allowed: false,
+      message: 'Active subscription required to create channels',
+      currentTier: organization.pricing_tier,
+    };
+  }
+
+  // Get current channel count for organization
+  const { count: channelCount, error: countError } = await supabase
+    .from('websocket_channels')
+    .select('*', { count: 'exact', head: true })
+    .eq('organization_id', userProfile.organization_id)
+    .eq('active', true);
+
+  if (countError) {
+    logger.warn('Unable to count existing channels for subscription check', {
+      error: countError.message,
+      organizationId: userProfile.organization_id,
+    });
+    return { allowed: true }; // Err on the side of allowing
+  }
+
+  // Define channel limits by tier
+  const channelLimits: Record<string, number> = {
+    FREE: 3,
+    STARTER: 10,
+    PROFESSIONAL: 50,
+    SCALE: 200,
+    ENTERPRISE: 1000,
+  };
+
+  const limit =
+    channelLimits[organization.pricing_tier] || channelLimits['FREE'];
+  const currentCount = channelCount || 0;
+
+  if (currentCount >= limit) {
+    return {
+      allowed: false,
+      message: `Channel limit reached (${limit} channels for ${organization.pricing_tier} tier)`,
+      currentTier: organization.pricing_tier,
+    };
+  }
+
+  return { allowed: true, currentTier: organization.pricing_tier };
+}
+
+/**
+ * Helper function to validate supplier access
+ */
+async function validateSupplierAccess(
+  supplierId: string,
+  userProfile: any,
+  supabase: any,
+): Promise<boolean> {
+  const { data: supplier, error } = await supabase
+    .from('suppliers')
+    .select('organization_id')
+    .eq('id', supplierId)
+    .single();
+
+  return (
+    !error &&
+    supplier &&
+    supplier.organization_id === userProfile.organization_id
+  );
+}
+
+/**
+ * Helper function to validate couple access
+ */
+async function validateCoupleAccess(
+  coupleId: string,
+  userId: string,
+  supabase: any,
+): Promise<boolean> {
+  const { data: couple, error } = await supabase
+    .from('couples')
+    .select('user_id, partner_user_id')
+    .eq('id', coupleId)
+    .single();
+
+  return (
+    !error &&
+    couple &&
+    (couple.user_id === userId || couple.partner_user_id === userId)
+  );
+}

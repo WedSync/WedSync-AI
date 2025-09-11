@@ -1,0 +1,417 @@
+import { createClient } from '@/lib/supabase/server';
+import { NextRequest, NextResponse } from 'next/server';
+import { notificationEngine } from '@/lib/notifications/engine';
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { searchParams } = new URL(request.url);
+    const vendorId = searchParams.get('vendor_id');
+    const type = searchParams.get('type'); // 'messages', 'notifications', 'group_chats'
+    const limit = parseInt(searchParams.get('limit') || '50');
+
+    if (!vendorId) {
+      return NextResponse.json(
+        { error: 'Vendor ID required' },
+        { status: 400 },
+      );
+    }
+
+    // Verify vendor belongs to user's organization
+    const { data: vendor, error: vendorError } = await supabase
+      .from('suppliers')
+      .select('organization_id, business_name')
+      .eq('id', vendorId)
+      .single();
+
+    if (vendorError || !vendor) {
+      return NextResponse.json({ error: 'Vendor not found' }, { status: 404 });
+    }
+
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', user.id)
+      .single();
+
+    if (vendor.organization_id !== userProfile?.organization_id) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
+    }
+
+    // Get communications based on type
+    const communications = [];
+
+    if (!type || type === 'messages' || type === 'all') {
+      // Get direct messages from clients
+      const { data: clientMessages } = await supabase
+        .from('client_activities')
+        .select(
+          `
+          *,
+          clients (
+            first_name,
+            last_name,
+            partner_first_name,
+            partner_last_name,
+            email,
+            wedding_date,
+            venue_name
+          )
+        `,
+        )
+        .eq('organization_id', vendor.organization_id)
+        .in('activity_type', ['message_sent', 'inquiry', 'feedback'])
+        .order('created_at', { ascending: false })
+        .limit(limit);
+
+      communications.push(
+        ...(clientMessages?.map((message) => ({
+          id: message.id,
+          type: 'direct_message',
+          from: {
+            id: message.client_id,
+            name: `${message.clients?.first_name || ''} ${message.clients?.last_name || ''}`.trim(),
+            role: 'couple',
+          },
+          message: message.activity_description || message.activity_title,
+          priority: 'normal',
+          status: 'delivered',
+          wedding_context: message.clients
+            ? {
+                wedding_id: message.client_id,
+                couple_names:
+                  `${message.clients.first_name || ''} ${message.clients.last_name || ''}${
+                    message.clients.partner_first_name
+                      ? ` & ${message.clients.partner_first_name} ${message.clients.partner_last_name || ''}`
+                      : ''
+                  }`.trim(),
+                wedding_date: message.clients.wedding_date,
+                venue_name: message.clients.venue_name || 'TBD',
+              }
+            : undefined,
+          created_at: message.created_at,
+          updated_at: message.created_at,
+        })) || []),
+      );
+    }
+
+    if (!type || type === 'notifications' || type === 'all') {
+      // Get in-app notifications
+      const { data: notifications } = await supabase
+        .from('in_app_notifications')
+        .select('*')
+        .eq('recipient_id', user.id)
+        .order('created_at', { ascending: false })
+        .limit(limit);
+
+      communications.push(
+        ...(notifications?.map((notification) => ({
+          id: notification.id,
+          type: 'notification',
+          from: {
+            id: 'system',
+            name: 'WedSync System',
+            role: 'coordinator',
+          },
+          message: notification.message,
+          priority: notification.priority || 'normal',
+          status: notification.is_read ? 'read' : 'delivered',
+          created_at: notification.created_at,
+          updated_at: notification.created_at,
+        })) || []),
+      );
+    }
+
+    // Sort by date
+    communications.sort(
+      (a, b) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+    );
+
+    // Get vendor contacts (other vendors in shared weddings)
+    const { data: sharedConnections } = await supabase
+      .from('supplier_client_connections')
+      .select(
+        `
+        client_id,
+        clients (
+          wedding_date
+        )
+      `,
+      )
+      .eq('supplier_id', vendorId)
+      .eq('connection_status', 'active');
+
+    const clientIds = sharedConnections?.map((c) => c.client_id) || [];
+
+    let vendorContacts = [];
+    if (clientIds.length > 0) {
+      const { data: otherConnections } = await supabase
+        .from('supplier_client_connections')
+        .select(
+          `
+          supplier_id,
+          client_id,
+          created_at,
+          suppliers (
+            business_name,
+            primary_category,
+            email,
+            phone,
+            response_time_hours
+          )
+        `,
+        )
+        .in('client_id', clientIds)
+        .neq('supplier_id', vendorId)
+        .eq('connection_status', 'active');
+
+      // Group by vendor and count shared weddings
+      const vendorMap = new Map();
+      otherConnections?.forEach((connection) => {
+        const vendorId = connection.supplier_id;
+        const vendor = connection.suppliers;
+
+        if (vendor && !vendorMap.has(vendorId)) {
+          vendorMap.set(vendorId, {
+            id: vendorId,
+            business_name: vendor.business_name,
+            category: vendor.primary_category,
+            contact_name: vendor.business_name, // Could be enhanced with actual contact name
+            email: vendor.email,
+            phone: vendor.phone,
+            role: vendor.primary_category,
+            shared_weddings: 1,
+            last_interaction: connection.created_at,
+            is_online: Math.random() > 0.5, // Mock online status
+            response_time_avg: vendor.response_time_hours
+              ? `${vendor.response_time_hours}h`
+              : '2.5h',
+          });
+        } else if (vendor) {
+          const existing = vendorMap.get(vendorId);
+          existing.shared_weddings += 1;
+          if (
+            new Date(connection.created_at) >
+            new Date(existing.last_interaction)
+          ) {
+            existing.last_interaction = connection.created_at;
+          }
+        }
+      });
+
+      vendorContacts = Array.from(vendorMap.values());
+    }
+
+    return NextResponse.json({
+      communications,
+      vendor_contacts: vendorContacts,
+      total: communications.length,
+    });
+  } catch (error) {
+    console.error('Error in vendor communications API:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const {
+      vendor_id,
+      recipient_id,
+      recipient_type, // 'vendor', 'couple', 'planner'
+      message,
+      subject,
+      wedding_id,
+      priority = 'normal',
+      channels = ['in_app', 'email'],
+    } = body;
+
+    if (!vendor_id || !recipient_id || !message) {
+      return NextResponse.json(
+        {
+          error: 'Vendor ID, recipient ID, and message are required',
+        },
+        { status: 400 },
+      );
+    }
+
+    // Get vendor details
+    const { data: vendor } = await supabase
+      .from('suppliers')
+      .select('business_name, organization_id')
+      .eq('id', vendor_id)
+      .single();
+
+    if (!vendor) {
+      return NextResponse.json({ error: 'Vendor not found' }, { status: 404 });
+    }
+
+    // Get recipient details
+    let recipient;
+    if (recipient_type === 'vendor') {
+      const { data: recipientVendor } = await supabase
+        .from('suppliers')
+        .select('business_name, email, phone')
+        .eq('id', recipient_id)
+        .single();
+
+      recipient = {
+        id: recipient_id,
+        name: recipientVendor?.business_name || 'Vendor',
+        email: recipientVendor?.email,
+        phone: recipientVendor?.phone,
+        type: 'vendor' as const,
+        preferences: {
+          channels: channels.map((ch) => ({
+            type: ch as any,
+            enabled: true,
+            priority: 1,
+          })),
+        },
+      };
+    } else if (recipient_type === 'couple') {
+      const { data: client } = await supabase
+        .from('clients')
+        .select('first_name, last_name, email, phone')
+        .eq('id', recipient_id)
+        .single();
+
+      recipient = {
+        id: recipient_id,
+        name: `${client?.first_name || ''} ${client?.last_name || ''}`.trim(),
+        email: client?.email,
+        phone: client?.phone,
+        type: 'couple' as const,
+        preferences: {
+          channels: channels.map((ch) => ({
+            type: ch as any,
+            enabled: true,
+            priority: 1,
+          })),
+        },
+      };
+    }
+
+    if (!recipient) {
+      return NextResponse.json(
+        { error: 'Recipient not found' },
+        { status: 404 },
+      );
+    }
+
+    // Send notification using the notification engine
+    const notificationResult = await notificationEngine.sendNotification({
+      template_id: 'vendor_communication',
+      recipients: [recipient],
+      variables: {
+        sender_name: vendor.business_name,
+        message,
+        subject: subject || 'Message from vendor',
+      },
+      context: {
+        wedding_id: wedding_id || '',
+        vendor_id,
+        urgency_override: priority,
+      },
+    });
+
+    // Log the communication
+    await supabase.from('client_activities').insert({
+      client_id: recipient_type === 'couple' ? recipient_id : null,
+      organization_id: vendor.organization_id,
+      activity_type: 'vendor_message',
+      activity_title: subject || 'Message from vendor',
+      activity_description: message,
+      performed_by: user.id,
+      related_entity_type: 'vendor',
+      related_entity_id: vendor_id,
+      metadata: {
+        recipient_type,
+        recipient_id,
+        wedding_id,
+        priority,
+        notification_ids: notificationResult.map((r) => r.notification_id),
+      },
+    });
+
+    return NextResponse.json({
+      success: true,
+      delivery_results: notificationResult,
+      message: 'Message sent successfully',
+    });
+  } catch (error) {
+    console.error('Error sending vendor communication:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function PATCH(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const { notification_id, action } = body; // action: 'mark_read', 'archive'
+
+    if (action === 'mark_read') {
+      const { data, error } = await supabase
+        .from('in_app_notifications')
+        .update({
+          is_read: true,
+          read_at: new Date().toISOString(),
+        })
+        .eq('id', notification_id)
+        .eq('recipient_id', user.id)
+        .select()
+        .single();
+
+      if (error) {
+        return NextResponse.json({ error: error.message }, { status: 400 });
+      }
+
+      return NextResponse.json(data);
+    }
+
+    return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
+  } catch (error) {
+    console.error('Error updating notification:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

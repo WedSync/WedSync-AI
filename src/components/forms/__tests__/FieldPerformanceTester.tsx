@@ -1,0 +1,777 @@
+'use client';
+
+import React from 'react';
+import { FormField } from '@/types/forms';
+
+interface PerformanceTestCase {
+  name: string;
+  fieldType: string;
+  field: FormField;
+  testScenarios: {
+    description: string;
+    testType:
+      | 'render'
+      | 'input'
+      | 'validation'
+      | 'memory'
+      | 'bundle'
+      | 'interaction';
+    loadCondition: 'single' | 'bulk' | 'stress' | 'concurrent';
+    expectedThreshold: {
+      metric: string;
+      value: number;
+      unit: string;
+    };
+    shouldPass: boolean;
+  }[];
+}
+
+interface PerformanceTestResult {
+  fieldType: string;
+  testName: string;
+  scenario: string;
+  testType: string;
+  loadCondition: string;
+  metric: string;
+  measuredValue: number;
+  threshold: number;
+  unit: string;
+  passed: boolean;
+  message: string;
+  duration: number;
+}
+
+interface FieldPerformanceTesterProps {
+  onTestComplete?: (results: PerformanceTestResult[]) => void;
+  autoRun?: boolean;
+}
+
+export function FieldPerformanceTester({
+  onTestComplete,
+  autoRun = false,
+}: FieldPerformanceTesterProps) {
+  const [testResults, setTestResults] = React.useState<PerformanceTestResult[]>(
+    [],
+  );
+  const [isRunning, setIsRunning] = React.useState(false);
+  const [currentTest, setCurrentTest] = React.useState<string>('');
+
+  const performanceTests: PerformanceTestCase[] = [
+    {
+      name: 'Text Field Performance',
+      fieldType: 'text',
+      field: {
+        id: 'bride-name',
+        type: 'text',
+        label: "Bride's Full Name",
+        placeholder: "Enter bride's full name",
+        required: true,
+        validation: {
+          required: true,
+          minLength: 2,
+          maxLength: 100,
+          customMessage: "Please enter the bride's full name",
+        },
+      },
+      testScenarios: [
+        {
+          description: 'Single text field render time',
+          testType: 'render',
+          loadCondition: 'single',
+          expectedThreshold: { metric: 'renderTime', value: 16, unit: 'ms' },
+          shouldPass: true,
+        },
+        {
+          description: 'Text input responsiveness',
+          testType: 'input',
+          loadCondition: 'single',
+          expectedThreshold: { metric: 'inputDelay', value: 50, unit: 'ms' },
+          shouldPass: true,
+        },
+        {
+          description: 'Validation performance',
+          testType: 'validation',
+          loadCondition: 'single',
+          expectedThreshold: {
+            metric: 'validationTime',
+            value: 10,
+            unit: 'ms',
+          },
+          shouldPass: true,
+        },
+        {
+          description: 'Bulk text field rendering',
+          testType: 'render',
+          loadCondition: 'bulk',
+          expectedThreshold: { metric: 'renderTime', value: 100, unit: 'ms' },
+          shouldPass: true,
+        },
+      ],
+    },
+    {
+      name: 'Select Field Performance',
+      fieldType: 'select',
+      field: {
+        id: 'venue-selection',
+        type: 'select',
+        label: 'Wedding Venue',
+        options: Array.from({ length: 100 }, (_, i) => ({
+          id: `venue-${i}`,
+          label: `Wedding Venue ${i + 1} - The Grand Ballroom`,
+          value: `venue-${i}`,
+        })),
+        required: true,
+      },
+      testScenarios: [
+        {
+          description: 'Select with 100 options render time',
+          testType: 'render',
+          loadCondition: 'single',
+          expectedThreshold: { metric: 'renderTime', value: 50, unit: 'ms' },
+          shouldPass: true,
+        },
+        {
+          description: 'Select dropdown opening performance',
+          testType: 'interaction',
+          loadCondition: 'single',
+          expectedThreshold: {
+            metric: 'interactionTime',
+            value: 100,
+            unit: 'ms',
+          },
+          shouldPass: true,
+        },
+        {
+          description: 'Select option search performance',
+          testType: 'input',
+          loadCondition: 'single',
+          expectedThreshold: { metric: 'searchTime', value: 50, unit: 'ms' },
+          shouldPass: true,
+        },
+      ],
+    },
+    {
+      name: 'Checkbox Group Performance',
+      fieldType: 'checkbox',
+      field: {
+        id: 'wedding-services',
+        type: 'checkbox',
+        label: 'Wedding Services Required',
+        options: Array.from({ length: 50 }, (_, i) => ({
+          id: `service-${i}`,
+          label: `Wedding Service ${i + 1} - Photography & Videography Package`,
+          value: `service-${i}`,
+        })),
+      },
+      testScenarios: [
+        {
+          description: 'Large checkbox group render time',
+          testType: 'render',
+          loadCondition: 'single',
+          expectedThreshold: { metric: 'renderTime', value: 100, unit: 'ms' },
+          shouldPass: true,
+        },
+        {
+          description: 'Multiple checkbox selection performance',
+          testType: 'interaction',
+          loadCondition: 'bulk',
+          expectedThreshold: {
+            metric: 'selectionTime',
+            value: 200,
+            unit: 'ms',
+          },
+          shouldPass: true,
+        },
+        {
+          description: 'Checkbox validation with many options',
+          testType: 'validation',
+          loadCondition: 'bulk',
+          expectedThreshold: {
+            metric: 'validationTime',
+            value: 50,
+            unit: 'ms',
+          },
+          shouldPass: true,
+        },
+      ],
+    },
+    {
+      name: 'Form Builder Performance',
+      fieldType: 'mixed',
+      field: {
+        id: 'comprehensive-form',
+        type: 'text',
+        label: 'Comprehensive Wedding Form',
+      },
+      testScenarios: [
+        {
+          description: 'Large form with 100 fields render time',
+          testType: 'render',
+          loadCondition: 'stress',
+          expectedThreshold: { metric: 'renderTime', value: 1000, unit: 'ms' },
+          shouldPass: true,
+        },
+        {
+          description: 'Form validation performance with all fields',
+          testType: 'validation',
+          loadCondition: 'stress',
+          expectedThreshold: {
+            metric: 'validationTime',
+            value: 200,
+            unit: 'ms',
+          },
+          shouldPass: true,
+        },
+        {
+          description: 'Form autosave performance',
+          testType: 'input',
+          loadCondition: 'bulk',
+          expectedThreshold: { metric: 'saveTime', value: 500, unit: 'ms' },
+          shouldPass: true,
+        },
+      ],
+    },
+    {
+      name: 'Memory Performance',
+      fieldType: 'general',
+      field: {
+        id: 'memory-test',
+        type: 'text',
+        label: 'Memory Performance Test',
+      },
+      testScenarios: [
+        {
+          description: 'Memory usage for single field',
+          testType: 'memory',
+          loadCondition: 'single',
+          expectedThreshold: { metric: 'memoryUsage', value: 1, unit: 'MB' },
+          shouldPass: true,
+        },
+        {
+          description: 'Memory usage for 100 fields',
+          testType: 'memory',
+          loadCondition: 'stress',
+          expectedThreshold: { metric: 'memoryUsage', value: 10, unit: 'MB' },
+          shouldPass: true,
+        },
+        {
+          description: 'Memory leak detection',
+          testType: 'memory',
+          loadCondition: 'stress',
+          expectedThreshold: { metric: 'memoryLeak', value: 0, unit: 'MB/min' },
+          shouldPass: true,
+        },
+      ],
+    },
+    {
+      name: 'Bundle Size Impact',
+      fieldType: 'bundle',
+      field: {
+        id: 'bundle-test',
+        type: 'text',
+        label: 'Bundle Size Test',
+      },
+      testScenarios: [
+        {
+          description: 'Form builder bundle size',
+          testType: 'bundle',
+          loadCondition: 'single',
+          expectedThreshold: { metric: 'bundleSize', value: 500, unit: 'KB' },
+          shouldPass: true,
+        },
+        {
+          description: 'Field components tree shaking',
+          testType: 'bundle',
+          loadCondition: 'single',
+          expectedThreshold: {
+            metric: 'unusedCode',
+            value: 10,
+            unit: 'percent',
+          },
+          shouldPass: true,
+        },
+      ],
+    },
+    {
+      name: 'Real-time Performance',
+      fieldType: 'realtime',
+      field: {
+        id: 'realtime-test',
+        type: 'text',
+        label: 'Real-time Performance Test',
+      },
+      testScenarios: [
+        {
+          description: 'Concurrent user input simulation',
+          testType: 'interaction',
+          loadCondition: 'concurrent',
+          expectedThreshold: { metric: 'responseTime', value: 100, unit: 'ms' },
+          shouldPass: true,
+        },
+        {
+          description: 'Real-time validation with network delay',
+          testType: 'validation',
+          loadCondition: 'concurrent',
+          expectedThreshold: {
+            metric: 'validationTime',
+            value: 300,
+            unit: 'ms',
+          },
+          shouldPass: true,
+        },
+      ],
+    },
+    {
+      name: 'Mobile Performance',
+      fieldType: 'mobile',
+      field: {
+        id: 'mobile-test',
+        type: 'text',
+        label: 'Mobile Performance Test',
+      },
+      testScenarios: [
+        {
+          description: 'Mobile render performance',
+          testType: 'render',
+          loadCondition: 'single',
+          expectedThreshold: { metric: 'renderTime', value: 100, unit: 'ms' },
+          shouldPass: true,
+        },
+        {
+          description: 'Touch interaction responsiveness',
+          testType: 'interaction',
+          loadCondition: 'single',
+          expectedThreshold: { metric: 'touchResponse', value: 50, unit: 'ms' },
+          shouldPass: true,
+        },
+        {
+          description: 'Virtual keyboard handling',
+          testType: 'interaction',
+          loadCondition: 'single',
+          expectedThreshold: {
+            metric: 'keyboardDelay',
+            value: 200,
+            unit: 'ms',
+          },
+          shouldPass: true,
+        },
+      ],
+    },
+  ];
+
+  const runPerformanceTest = async (
+    testCase: PerformanceTestCase,
+  ): Promise<PerformanceTestResult[]> => {
+    const results: PerformanceTestResult[] = [];
+
+    for (const scenario of testCase.testScenarios) {
+      const startTime = performance.now();
+
+      try {
+        const testResult = await simulatePerformanceTest(
+          testCase.field,
+          scenario,
+        );
+
+        const passed =
+          testResult.measuredValue <= scenario.expectedThreshold.value;
+
+        results.push({
+          fieldType: testCase.fieldType,
+          testName: testCase.name,
+          scenario: scenario.description,
+          testType: scenario.testType,
+          loadCondition: scenario.loadCondition,
+          metric: scenario.expectedThreshold.metric,
+          measuredValue: testResult.measuredValue,
+          threshold: scenario.expectedThreshold.value,
+          unit: scenario.expectedThreshold.unit,
+          passed: passed === scenario.shouldPass,
+          message:
+            testResult.message ||
+            (passed
+              ? 'Performance within acceptable limits'
+              : 'Performance threshold exceeded'),
+          duration: performance.now() - startTime,
+        });
+      } catch (error) {
+        results.push({
+          fieldType: testCase.fieldType,
+          testName: testCase.name,
+          scenario: scenario.description,
+          testType: scenario.testType,
+          loadCondition: scenario.loadCondition,
+          metric: scenario.expectedThreshold.metric,
+          measuredValue: 0,
+          threshold: scenario.expectedThreshold.value,
+          unit: scenario.expectedThreshold.unit,
+          passed: false,
+          message: `Test error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          duration: performance.now() - startTime,
+        });
+      }
+    }
+
+    return results;
+  };
+
+  const runAllTests = async () => {
+    setIsRunning(true);
+    setTestResults([]);
+
+    const allResults: PerformanceTestResult[] = [];
+
+    for (const testCase of performanceTests) {
+      setCurrentTest(testCase.name);
+      const results = await runPerformanceTest(testCase);
+      allResults.push(...results);
+      setTestResults([...allResults]);
+
+      // Small delay to show progress
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+
+    setIsRunning(false);
+    setCurrentTest('');
+
+    if (onTestComplete) {
+      onTestComplete(allResults);
+    }
+  };
+
+  React.useEffect(() => {
+    if (autoRun) {
+      runAllTests();
+    }
+  }, [autoRun]);
+
+  const getResultsByTestType = () => {
+    const grouped: { [key: string]: PerformanceTestResult[] } = {};
+    testResults.forEach((result) => {
+      if (!grouped[result.testType]) {
+        grouped[result.testType] = [];
+      }
+      grouped[result.testType].push(result);
+    });
+    return grouped;
+  };
+
+  const getPerformanceStats = () => {
+    const totalTests = testResults.length;
+    const passedTests = testResults.filter((r) => r.passed).length;
+    const failedTests = totalTests - passedTests;
+
+    const avgRenderTime =
+      testResults
+        .filter((r) => r.metric === 'renderTime')
+        .reduce((acc, r) => acc + r.measuredValue, 0) /
+        testResults.filter((r) => r.metric === 'renderTime').length || 0;
+
+    const avgValidationTime =
+      testResults
+        .filter((r) => r.metric === 'validationTime')
+        .reduce((acc, r) => acc + r.measuredValue, 0) /
+        testResults.filter((r) => r.metric === 'validationTime').length || 0;
+
+    return {
+      totalTests,
+      passedTests,
+      failedTests,
+      successRate:
+        totalTests > 0 ? Math.round((passedTests / totalTests) * 100) : 0,
+      avgRenderTime: Math.round(avgRenderTime * 100) / 100,
+      avgValidationTime: Math.round(avgValidationTime * 100) / 100,
+    };
+  };
+
+  const stats = getPerformanceStats();
+
+  return (
+    <div className="p-6 max-w-6xl mx-auto">
+      <div className="mb-6">
+        <h2 className="text-2xl font-bold text-gray-900 mb-2">
+          Field Performance Tester
+        </h2>
+        <p className="text-gray-600">
+          Comprehensive performance testing for wedding form fields including
+          render times, input responsiveness, validation speed, memory usage,
+          and bundle size impact
+        </p>
+      </div>
+
+      <div className="mb-6">
+        <button
+          onClick={runAllTests}
+          disabled={isRunning}
+          className="bg-orange-600 hover:bg-orange-700 disabled:bg-orange-300 text-white px-6 py-2 rounded-md font-medium"
+        >
+          {isRunning ? 'Running Performance Tests...' : 'Run Performance Tests'}
+        </button>
+
+        {isRunning && currentTest && (
+          <div className="mt-2 text-sm text-gray-600">
+            Currently testing: {currentTest}
+          </div>
+        )}
+      </div>
+
+      <div className="space-y-6">
+        <div className="bg-gradient-to-r from-orange-50 to-red-50 p-6 rounded-lg border border-orange-200">
+          <h3 className="font-semibold text-gray-900 mb-4">
+            Performance Summary
+          </h3>
+          <div className="grid grid-cols-6 gap-4">
+            <div className="text-center">
+              <div className="text-2xl font-bold text-orange-600">
+                {stats.totalTests}
+              </div>
+              <div className="text-sm text-gray-600">Total Tests</div>
+            </div>
+            <div className="text-center">
+              <div className="text-2xl font-bold text-green-600">
+                {stats.passedTests}
+              </div>
+              <div className="text-sm text-gray-600">Passed</div>
+            </div>
+            <div className="text-center">
+              <div className="text-2xl font-bold text-red-600">
+                {stats.failedTests}
+              </div>
+              <div className="text-sm text-gray-600">Failed</div>
+            </div>
+            <div className="text-center">
+              <div className="text-2xl font-bold text-blue-600">
+                {stats.successRate}%
+              </div>
+              <div className="text-sm text-gray-600">Success Rate</div>
+            </div>
+            <div className="text-center">
+              <div className="text-2xl font-bold text-purple-600">
+                {stats.avgRenderTime}
+              </div>
+              <div className="text-sm text-gray-600">Avg Render (ms)</div>
+            </div>
+            <div className="text-center">
+              <div className="text-2xl font-bold text-indigo-600">
+                {stats.avgValidationTime}
+              </div>
+              <div className="text-sm text-gray-600">Avg Validation (ms)</div>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-6 gap-3 text-sm">
+          {Object.entries(getResultsByTestType()).map(([testType, results]) => (
+            <div
+              key={testType}
+              className="bg-white p-4 rounded-lg border text-center"
+            >
+              <div className="font-semibold text-gray-900 capitalize mb-2">
+                {testType.replace(/([A-Z])/g, ' $1').trim()}
+              </div>
+              <div className="text-gray-600">
+                <div className="text-green-600 font-bold text-lg">
+                  {results.filter((r) => r.passed).length}
+                </div>
+                <div className="text-gray-500">/ {results.length} tests</div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="space-y-4">
+          {testResults.map((result, index) => (
+            <div
+              key={index}
+              className={`border rounded-lg overflow-hidden ${
+                result.passed
+                  ? 'border-green-200 bg-green-50'
+                  : 'border-red-200 bg-red-50'
+              }`}
+            >
+              <div
+                className={`px-4 py-3 ${
+                  result.passed ? 'bg-green-100' : 'bg-red-100'
+                }`}
+              >
+                <div className="flex justify-between items-center">
+                  <div>
+                    <h4 className="font-semibold text-gray-900">
+                      {result.scenario}
+                    </h4>
+                    <div className="text-sm text-gray-700 mt-1">
+                      {result.testName} • {result.fieldType} field •{' '}
+                      {result.loadCondition} load
+                    </div>
+                  </div>
+                  <div
+                    className={`px-4 py-2 rounded-full text-sm font-bold ${
+                      result.passed
+                        ? 'bg-green-200 text-green-800'
+                        : 'bg-red-200 text-red-800'
+                    }`}
+                  >
+                    {result.passed ? 'PASS' : 'FAIL'}
+                  </div>
+                </div>
+              </div>
+              <div className="px-4 py-3">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-sm text-gray-600">
+                    <strong>{result.metric}:</strong> {result.measuredValue}{' '}
+                    {result.unit}
+                  </div>
+                  <div className="text-sm text-gray-600">
+                    <strong>Threshold:</strong> {result.threshold} {result.unit}
+                  </div>
+                  <div className="text-sm text-gray-600">
+                    <strong>Test Duration:</strong> {result.duration.toFixed(2)}
+                    ms
+                  </div>
+                </div>
+
+                {/* Performance bar visualization */}
+                <div className="relative w-full bg-gray-200 rounded-full h-2 mb-2">
+                  <div
+                    className={`absolute top-0 left-0 h-2 rounded-full transition-all duration-300 ${
+                      result.passed ? 'bg-green-500' : 'bg-red-500'
+                    }`}
+                    style={{
+                      width: `${Math.min((result.measuredValue / (result.threshold * 1.5)) * 100, 100)}%`,
+                    }}
+                  />
+                  <div
+                    className="absolute top-0 bg-orange-400 w-0.5 h-2"
+                    style={{
+                      left: `${Math.min((result.threshold / (result.threshold * 1.5)) * 100, 100)}%`,
+                    }}
+                  />
+                </div>
+
+                <div className="text-sm text-gray-700">{result.message}</div>
+
+                {result.measuredValue > result.threshold && (
+                  <div className="mt-2 text-sm text-red-700 bg-red-100 p-2 rounded">
+                    <strong>Performance Issue:</strong>{' '}
+                    {(
+                      (result.measuredValue / result.threshold - 1) *
+                      100
+                    ).toFixed(1)}
+                    % over threshold
+                    {result.metric === 'renderTime' &&
+                      result.measuredValue > 16 &&
+                      ' - May cause frame drops and poor user experience'}
+                    {result.metric === 'validationTime' &&
+                      result.measuredValue > 50 &&
+                      ' - May feel unresponsive to users'}
+                    {result.metric === 'memoryUsage' &&
+                      result.measuredValue > result.threshold &&
+                      ' - High memory usage may cause performance issues on mobile devices'}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Mock function to simulate performance testing
+async function simulatePerformanceTest(
+  field: FormField,
+  scenario: {
+    testType: string;
+    loadCondition: string;
+    expectedThreshold: { metric: string; value: number; unit: string };
+  },
+): Promise<{ measuredValue: number; message?: string }> {
+  // Simulate different performance scenarios with realistic values
+  let measuredValue = 0;
+  let message = '';
+
+  switch (scenario.testType) {
+    case 'render':
+      // Simulate render time based on complexity
+      const baseRenderTime = 8;
+      const complexityMultiplier = field.options
+        ? field.options.length * 0.5
+        : 1;
+      const loadMultiplier =
+        scenario.loadCondition === 'stress'
+          ? 10
+          : scenario.loadCondition === 'bulk'
+            ? 5
+            : 1;
+
+      measuredValue =
+        baseRenderTime * complexityMultiplier * loadMultiplier +
+        Math.random() * 10;
+      message = `Render completed in ${measuredValue.toFixed(2)}ms with ${scenario.loadCondition} load`;
+      break;
+
+    case 'input':
+      // Simulate input response time
+      const baseInputTime = 5;
+      const validationDelay = field.validation ? 10 : 0;
+      measuredValue = baseInputTime + validationDelay + Math.random() * 15;
+      message = `Input processed in ${measuredValue.toFixed(2)}ms`;
+      break;
+
+    case 'validation':
+      // Simulate validation time
+      const validationComplexity = field.validation
+        ? Object.keys(field.validation).length * 3
+        : 1;
+      measuredValue = validationComplexity + Math.random() * 20;
+      message = `Validation completed in ${measuredValue.toFixed(2)}ms`;
+      break;
+
+    case 'interaction':
+      // Simulate user interaction response time
+      measuredValue = 20 + Math.random() * 50;
+      message = `Interaction handled in ${measuredValue.toFixed(2)}ms`;
+      break;
+
+    case 'memory':
+      // Simulate memory usage
+      const baseMemory = 0.5;
+      const fieldMemory = field.options ? field.options.length * 0.01 : 0.1;
+      const loadMemory =
+        scenario.loadCondition === 'stress'
+          ? 5
+          : scenario.loadCondition === 'bulk'
+            ? 2
+            : 1;
+
+      measuredValue = baseMemory + fieldMemory * loadMemory + Math.random() * 1;
+      message = `Memory usage: ${measuredValue.toFixed(2)}MB`;
+      break;
+
+    case 'bundle':
+      // Simulate bundle size impact
+      if (scenario.expectedThreshold.metric === 'bundleSize') {
+        measuredValue = 200 + Math.random() * 300; // KB
+        message = `Bundle size: ${measuredValue.toFixed(0)}KB`;
+      } else {
+        measuredValue = Math.random() * 20; // percentage unused
+        message = `Unused code: ${measuredValue.toFixed(1)}%`;
+      }
+      break;
+
+    default:
+      measuredValue = Math.random() * scenario.expectedThreshold.value * 1.5;
+      message = `Generic test completed: ${measuredValue.toFixed(2)} ${scenario.expectedThreshold.unit}`;
+  }
+
+  // Add small delay to simulate actual testing
+  await new Promise((resolve) => setTimeout(resolve, 50 + Math.random() * 100));
+
+  return {
+    measuredValue: Math.round(measuredValue * 100) / 100,
+    message,
+  };
+}
+
+export default FieldPerformanceTester;

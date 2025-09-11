@@ -1,0 +1,456 @@
+'use client';
+
+import React, {
+  useCallback,
+  useState,
+  useRef,
+  useMemo,
+  useEffect,
+} from 'react';
+import {
+  ReactFlow,
+  Node,
+  Edge,
+  Controls,
+  Background,
+  BackgroundVariant,
+  ReactFlowProvider,
+  useNodesState,
+  useEdgesState,
+  addEdge,
+  Connection,
+  MarkerType,
+  getIncomers,
+  getOutgoers,
+  getConnectedEdges,
+} from '@xyflow/react';
+import '@xyflow/react/dist/style.css';
+import { DndContext, DragEndEvent, DragOverlay } from '@dnd-kit/core';
+import { OverflowNodePalette } from './OverflowNodePalette';
+import { OverflowCanvasToolbar } from './OverflowCanvasToolbar';
+import { useCanvasStore } from './hooks/useCanvasState';
+import { canvasTransformer } from '@/lib/journey/canvas-to-execution';
+import { toast } from 'sonner';
+import {
+  OverflowEmailNode,
+  OverflowTimelineNode,
+  OverflowFormNode,
+  OverflowConditionNode,
+  OverflowReviewNode,
+  OverflowMeetingNode,
+  OverflowSplitNode,
+  OverflowStartNode,
+  OverflowEndNode,
+  OverflowDelayNode,
+} from './nodes/OverflowNodes';
+
+const nodeTypes = {
+  email: OverflowEmailNode,
+  timeline: OverflowTimelineNode,
+  form: OverflowFormNode,
+  condition: OverflowConditionNode,
+  review: OverflowReviewNode,
+  meeting: OverflowMeetingNode,
+  split: OverflowSplitNode,
+  start: OverflowStartNode,
+  end: OverflowEndNode,
+  delay: OverflowDelayNode,
+};
+
+const defaultEdgeOptions = {
+  animated: true,
+  type: 'bezier',
+  style: {
+    strokeWidth: 2,
+    stroke: '#6366f1',
+  },
+  markerEnd: {
+    type: MarkerType.ArrowClosed,
+    width: 25,
+    height: 25,
+    color: '#6366f1',
+  },
+};
+
+interface JourneyCanvasProps {
+  canvasId?: string;
+  readOnly?: boolean;
+  onSave?: (nodes: Node[], edges: Edge[]) => void;
+  onPreview?: () => void;
+  className?: string;
+}
+
+function JourneyCanvasInner({
+  canvasId,
+  readOnly = false,
+  onSave,
+  className,
+}: JourneyCanvasProps) {
+  const {
+    nodes: storedNodes,
+    edges: storedEdges,
+    loadCanvas,
+    saveToDatabase,
+    autoSave,
+    setNodes: setStoredNodes,
+    setEdges: setStoredEdges,
+    isLoading,
+    isSaving,
+    error,
+  } = useCanvasStore();
+
+  const [nodes, setNodes, onNodesChange] = useNodesState(
+    storedNodes.length > 0
+      ? storedNodes
+      : [
+          {
+            id: 'start-1',
+            type: 'start',
+            position: { x: 100, y: 200 },
+            data: { label: 'Journey Start' },
+          },
+        ],
+  );
+  const [edges, setEdges, onEdgesChange] = useEdgesState(storedEdges);
+  const [selectedNode, setSelectedNode] = useState<Node | null>(null);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const reactFlowWrapper = useRef<HTMLDivElement>(null);
+  const autoSaveTimeoutRef = useRef<NodeJS.Timeout>();
+
+  const onConnect = useCallback(
+    (params: Connection | Edge) =>
+      setEdges((eds) => addEdge({ ...params, ...defaultEdgeOptions }, eds)),
+    [setEdges],
+  );
+
+  const onNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
+    setSelectedNode(node);
+  }, []);
+
+  const onNodesDelete = useCallback(
+    (deleted: Node[]) => {
+      setEdges(
+        deleted.reduce((acc, node) => {
+          const incomers = getIncomers(node, nodes, edges);
+          const outgoers = getOutgoers(node, nodes, edges);
+          const connectedEdges = getConnectedEdges([node], edges);
+
+          const remainingEdges = acc.filter(
+            (edge) => !connectedEdges.includes(edge),
+          );
+
+          const createdEdges = incomers.flatMap(({ id: source }) =>
+            outgoers.map(({ id: target }) => ({
+              id: `${source}-${target}`,
+              source,
+              target,
+              ...defaultEdgeOptions,
+            })),
+          );
+
+          return [...remainingEdges, ...createdEdges];
+        }, edges),
+      );
+    },
+    [nodes, edges, setEdges],
+  );
+
+  const handleDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      if (!event.over || !reactFlowWrapper.current) return;
+
+      const reactFlowBounds = reactFlowWrapper.current.getBoundingClientRect();
+      const nodeType = event.active.id as string;
+
+      if (!nodeType) return;
+
+      const position = {
+        x:
+          event.active.rect.current.translated?.left - reactFlowBounds.left ||
+          100,
+        y:
+          event.active.rect.current.translated?.top - reactFlowBounds.top ||
+          100,
+      };
+
+      const newNode: Node = {
+        id: `${nodeType}-${Date.now()}`,
+        type: nodeType,
+        position,
+        data: {
+          label: `${nodeType.charAt(0).toUpperCase() + nodeType.slice(1)} Node`,
+          description: '',
+        },
+      };
+
+      setNodes((nds) => nds.concat(newNode));
+      setActiveId(null);
+    },
+    [setNodes],
+  );
+
+  // Load canvas on mount if canvasId is provided
+  useEffect(() => {
+    if (canvasId) {
+      loadCanvas(canvasId).catch(console.error);
+    }
+  }, [canvasId, loadCanvas]);
+
+  // Sync local state with store when canvas loads
+  useEffect(() => {
+    if (storedNodes.length > 0 || storedEdges.length > 0) {
+      setNodes(storedNodes);
+      setEdges(storedEdges);
+    }
+  }, [storedNodes, storedEdges, setNodes, setEdges]);
+
+  // Update store when nodes or edges change
+  useEffect(() => {
+    setStoredNodes(nodes);
+    setStoredEdges(edges);
+
+    // Auto-save after 2 seconds of inactivity
+    if (canvasId && !readOnly) {
+      if (autoSaveTimeoutRef.current) {
+        clearTimeout(autoSaveTimeoutRef.current);
+      }
+      autoSaveTimeoutRef.current = setTimeout(() => {
+        autoSave(canvasId).catch(console.error);
+      }, 2000);
+    }
+
+    return () => {
+      if (autoSaveTimeoutRef.current) {
+        clearTimeout(autoSaveTimeoutRef.current);
+      }
+    };
+  }, [
+    nodes,
+    edges,
+    canvasId,
+    readOnly,
+    setStoredNodes,
+    setStoredEdges,
+    autoSave,
+  ]);
+
+  const handleSave = useCallback(async () => {
+    if (onSave) {
+      onSave(nodes, edges);
+    }
+
+    if (canvasId) {
+      try {
+        await saveToDatabase(canvasId);
+        toast.success('Journey saved successfully');
+      } catch (error) {
+        console.error('Failed to save canvas:', error);
+        toast.error('Failed to save journey');
+      }
+    }
+  }, [nodes, edges, onSave, canvasId, saveToDatabase]);
+
+  const handleActivate = useCallback(async () => {
+    try {
+      // Validate the canvas first
+      const validation = canvasTransformer.validateCanvas(nodes, edges);
+
+      if (!validation.isValid) {
+        toast.error('Cannot activate journey', {
+          description: validation.errors[0],
+        });
+        return;
+      }
+
+      // Show warnings if any
+      if (validation.warnings.length > 0) {
+        validation.warnings.forEach((warning) => {
+          toast.warning(warning);
+        });
+      }
+
+      // Transform to execution format
+      const journeyDefinition = canvasTransformer.transformToExecution(
+        nodes,
+        edges,
+        'Wedding Journey', // TODO: Get journey name from UI
+      );
+
+      // Save the journey first
+      await handleSave();
+
+      // Persist to database with execution plan
+      const organizationId = 'org_default'; // TODO: Get from context
+      const journeyId = await canvasTransformer.persistToDatabase(
+        journeyDefinition,
+        organizationId,
+      );
+
+      // Activate the journey
+      await canvasTransformer.activateJourney(journeyId);
+
+      toast.success('Journey activated successfully', {
+        description:
+          'The journey is now running and will execute for new clients',
+      });
+
+      // TODO: Update UI to show active state
+    } catch (error) {
+      console.error('Failed to activate journey:', error);
+      toast.error('Failed to activate journey', {
+        description: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }, [nodes, edges, handleSave]);
+
+  const handlePause = useCallback(async () => {
+    // TODO: Implement pause functionality
+    toast.info('Pause functionality coming soon');
+  }, []);
+
+  const proOptions = useMemo(() => ({ hideAttribution: true }), []);
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
+          <p className="text-muted-foreground">Loading canvas...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <div className="text-center text-destructive">
+          <p className="font-semibold mb-2">Error loading canvas</p>
+          <p className="text-sm">{error}</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <DndContext
+      onDragEnd={handleDragEnd}
+      onDragStart={(e) => setActiveId(e.active.id as string)}
+    >
+      <div className={`flex h-full ${className || ''}`}>
+        <OverflowNodePalette />
+
+        <div className="flex-1 flex flex-col">
+          <OverflowCanvasToolbar
+            onSave={handleSave}
+            onActivate={handleActivate}
+            onPause={handlePause}
+            isSaving={isSaving}
+            isActive={false} // TODO: Get from journey state
+          />
+
+          <div
+            ref={reactFlowWrapper}
+            className="flex-1 relative overflow-hidden"
+            data-testid="react-flow-wrapper"
+          >
+            {/* Gradient overlay */}
+            <div className="absolute inset-0 bg-gradient-to-br from-primary/5 via-transparent to-purple-500/5 pointer-events-none z-10" />
+
+            <ReactFlow
+              nodes={nodes}
+              edges={edges}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onConnect={onConnect}
+              onNodeClick={onNodeClick}
+              onNodesDelete={onNodesDelete}
+              nodeTypes={nodeTypes}
+              defaultEdgeOptions={defaultEdgeOptions}
+              fitView
+              proOptions={proOptions}
+              deleteKeyCode={readOnly ? null : ['Backspace', 'Delete']}
+              className="overflow-ui-canvas"
+            >
+              <Controls className="bg-card/80 backdrop-blur-sm border rounded-lg" />
+              <Background
+                variant={BackgroundVariant.Dots}
+                gap={20}
+                size={2}
+                color="#6366f1"
+                className="opacity-30"
+              />
+            </ReactFlow>
+          </div>
+        </div>
+
+        {selectedNode && (
+          <div className="w-80 border-l bg-card p-4">
+            <h3 className="font-semibold mb-4">Node Configuration</h3>
+            <div className="space-y-4">
+              <div>
+                <label className="text-sm font-medium">Label</label>
+                <input
+                  type="text"
+                  value={selectedNode.data.label || ''}
+                  onChange={(e) => {
+                    setNodes((nds) =>
+                      nds.map((node) =>
+                        node.id === selectedNode.id
+                          ? {
+                              ...node,
+                              data: { ...node.data, label: e.target.value },
+                            }
+                          : node,
+                      ),
+                    );
+                  }}
+                  className="w-full mt-1 px-3 py-2 border rounded-md"
+                />
+              </div>
+              <div>
+                <label className="text-sm font-medium">Description</label>
+                <textarea
+                  value={selectedNode.data.description || ''}
+                  onChange={(e) => {
+                    setNodes((nds) =>
+                      nds.map((node) =>
+                        node.id === selectedNode.id
+                          ? {
+                              ...node,
+                              data: {
+                                ...node.data,
+                                description: e.target.value,
+                              },
+                            }
+                          : node,
+                      ),
+                    );
+                  }}
+                  className="w-full mt-1 px-3 py-2 border rounded-md"
+                  rows={3}
+                />
+              </div>
+            </div>
+          </div>
+        )}
+
+        <DragOverlay>
+          {activeId && (
+            <div className="px-4 py-2 bg-primary text-primary-foreground rounded-md shadow-lg">
+              {activeId}
+            </div>
+          )}
+        </DragOverlay>
+      </div>
+    </DndContext>
+  );
+}
+
+export function JourneyCanvas(props: JourneyCanvasProps) {
+  return (
+    <ReactFlowProvider>
+      <JourneyCanvasInner {...props} />
+    </ReactFlowProvider>
+  );
+}

@@ -1,0 +1,587 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+
+// Real-time collaboration schemas
+const CollaborationSessionSchema = z.object({
+  photo_group_id: z.string().uuid(),
+  action: z.enum(['join', 'leave', 'cursor_update', 'field_edit']),
+  cursor_position: z
+    .object({
+      field: z.string(),
+      position: z.number().optional(),
+    })
+    .optional(),
+  field_data: z
+    .object({
+      field: z.string(),
+      value: z.any(),
+      version: z.number(),
+    })
+    .optional(),
+});
+
+const RealtimeUpdateSchema = z.object({
+  type: z.enum([
+    'group_updated',
+    'assignment_changed',
+    'conflict_detected',
+    'user_joined',
+    'user_left',
+  ]),
+  photo_group_id: z.string().uuid(),
+  data: z.record(z.any()),
+  user_id: z.string().uuid(),
+  timestamp: z.string().datetime(),
+});
+
+// GET /api/photo-groups/realtime/[id] - Get collaboration session status
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { id: string } },
+) {
+  const { id: photoGroupId } = params;
+
+  if (!photoGroupId) {
+    return NextResponse.json(
+      { error: 'Photo group ID is required' },
+      { status: 400 },
+    );
+  }
+
+  try {
+    const supabase = await createClient();
+    const { data: user } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Verify user has access to this photo group
+    const { data: photoGroup } = await supabase
+      .from('photo_groups')
+      .select(
+        `
+        id,
+        name,
+        couple_id,
+        is_locked_for_editing,
+        locked_by,
+        locked_at,
+        version,
+        clients!inner(
+          user_profiles!inner(user_id)
+        )
+      `,
+      )
+      .eq('id', photoGroupId)
+      .eq('clients.user_profiles.user_id', user.id)
+      .single();
+
+    if (!photoGroup) {
+      return NextResponse.json(
+        { error: 'Photo group not found or access denied' },
+        { status: 403 },
+      );
+    }
+
+    // Get active collaboration sessions
+    const { data: activeSessions, error: sessionsError } = await supabase
+      .from('photo_group_collaboration_sessions')
+      .select(
+        `
+        id,
+        user_id,
+        session_token,
+        cursor_position,
+        is_active,
+        last_activity,
+        user_profiles!inner(
+          id,
+          full_name,
+          avatar_url
+        )
+      `,
+      )
+      .eq('photo_group_id', photoGroupId)
+      .eq('is_active', true)
+      .gte('last_activity', new Date(Date.now() - 5 * 60 * 1000).toISOString()); // Active in last 5 minutes
+
+    if (sessionsError) {
+      console.error('Error fetching collaboration sessions:', sessionsError);
+      return NextResponse.json(
+        { error: 'Failed to fetch collaboration status' },
+        { status: 500 },
+      );
+    }
+
+    // Get recent conflicts
+    const { data: recentConflicts } = await supabase
+      .from('photo_group_conflicts')
+      .select('*')
+      .eq('photo_group_id', photoGroupId)
+      .is('resolved_at', null)
+      .order('created_at', { ascending: false })
+      .limit(5);
+
+    const response = {
+      photo_group: {
+        id: photoGroup.id,
+        name: photoGroup.name,
+        is_locked: photoGroup.is_locked_for_editing,
+        locked_by: photoGroup.locked_by,
+        locked_at: photoGroup.locked_at,
+        version: photoGroup.version,
+      },
+      active_sessions:
+        activeSessions?.map((session) => ({
+          user_id: session.user_id,
+          user_name: session.user_profiles.full_name,
+          avatar_url: session.user_profiles.avatar_url,
+          cursor_position: session.cursor_position,
+          last_activity: session.last_activity,
+        })) || [],
+      active_conflicts: recentConflicts || [],
+      session_count: activeSessions?.length || 0,
+    };
+
+    return NextResponse.json(response);
+  } catch (error) {
+    console.error('Real-time collaboration GET error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+// POST /api/photo-groups/realtime/[id] - Join or update collaboration session
+export async function POST(
+  request: NextRequest,
+  { params }: { params: { id: string } },
+) {
+  const { id: photoGroupId } = params;
+
+  try {
+    const supabase = await createClient();
+    const { data: user } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const { action, cursor_position, field_data } =
+      CollaborationSessionSchema.parse(body);
+
+    // Get user profile
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('id')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!userProfile) {
+      return NextResponse.json(
+        { error: 'User profile not found' },
+        { status: 404 },
+      );
+    }
+
+    // Verify access to photo group
+    const { data: photoGroup } = await supabase
+      .from('photo_groups')
+      .select(
+        `
+        id,
+        name,
+        couple_id,
+        version,
+        is_locked_for_editing,
+        locked_by,
+        clients!inner(
+          user_profiles!inner(user_id)
+        )
+      `,
+      )
+      .eq('id', photoGroupId)
+      .eq('clients.user_profiles.user_id', user.id)
+      .single();
+
+    if (!photoGroup) {
+      return NextResponse.json(
+        { error: 'Photo group not found or access denied' },
+        { status: 403 },
+      );
+    }
+
+    let sessionToken = `session_${user.id}_${photoGroupId}_${Date.now()}`;
+    let responseData = {};
+
+    switch (action) {
+      case 'join':
+        // Create or update collaboration session
+        const { data: session, error: sessionError } = await supabase
+          .from('photo_group_collaboration_sessions')
+          .upsert(
+            {
+              photo_group_id: photoGroupId,
+              user_id: userProfile.id,
+              session_token: sessionToken,
+              cursor_position,
+              is_active: true,
+              last_activity: new Date().toISOString(),
+            },
+            {
+              onConflict: 'photo_group_id,user_id',
+              ignoreDuplicates: false,
+            },
+          )
+          .select()
+          .single();
+
+        if (sessionError) {
+          console.error('Error creating collaboration session:', sessionError);
+          return NextResponse.json(
+            { error: 'Failed to join collaboration' },
+            { status: 500 },
+          );
+        }
+
+        responseData = {
+          action: 'joined',
+          session_token: sessionToken,
+          photo_group_version: photoGroup.version,
+        };
+        break;
+
+      case 'leave':
+        // Deactivate collaboration session
+        await supabase
+          .from('photo_group_collaboration_sessions')
+          .update({ is_active: false })
+          .eq('photo_group_id', photoGroupId)
+          .eq('user_id', userProfile.id);
+
+        responseData = { action: 'left' };
+        break;
+
+      case 'cursor_update':
+        // Update cursor position
+        await supabase
+          .from('photo_group_collaboration_sessions')
+          .update({
+            cursor_position,
+            last_activity: new Date().toISOString(),
+          })
+          .eq('photo_group_id', photoGroupId)
+          .eq('user_id', userProfile.id);
+
+        responseData = { action: 'cursor_updated', cursor_position };
+        break;
+
+      case 'field_edit':
+        if (!field_data) {
+          return NextResponse.json(
+            { error: 'Field data is required for edit action' },
+            { status: 400 },
+          );
+        }
+
+        // Check for version conflicts
+        if (field_data.version !== photoGroup.version) {
+          return NextResponse.json(
+            {
+              error: 'Version conflict detected',
+              current_version: photoGroup.version,
+              client_version: field_data.version,
+            },
+            { status: 409 },
+          );
+        }
+
+        // Update the photo group field
+        const updateData: any = {
+          updated_at: new Date().toISOString(),
+          version: photoGroup.version + 1,
+        };
+        updateData[field_data.field] = field_data.value;
+
+        const { data: updatedGroup, error: updateError } = await supabase
+          .from('photo_groups')
+          .update(updateData)
+          .eq('id', photoGroupId)
+          .select()
+          .single();
+
+        if (updateError) {
+          console.error('Error updating photo group:', updateError);
+          return NextResponse.json(
+            { error: 'Failed to update photo group' },
+            { status: 500 },
+          );
+        }
+
+        // Update collaboration session activity
+        await supabase
+          .from('photo_group_collaboration_sessions')
+          .update({ last_activity: new Date().toISOString() })
+          .eq('photo_group_id', photoGroupId)
+          .eq('user_id', userProfile.id);
+
+        responseData = {
+          action: 'field_updated',
+          field: field_data.field,
+          new_version: updatedGroup.version,
+          updated_at: updatedGroup.updated_at,
+        };
+        break;
+    }
+
+    // Broadcast real-time update via Supabase Realtime
+    const realtimeUpdate = {
+      type: action === 'field_edit' ? 'group_updated' : `user_${action}`,
+      photo_group_id: photoGroupId,
+      data: responseData,
+      user_id: user.id,
+      timestamp: new Date().toISOString(),
+    };
+
+    // Send to Supabase Realtime channel
+    await supabase.channel(`photo_group_${photoGroupId}`).send({
+      type: 'broadcast',
+      event: 'collaboration_update',
+      payload: realtimeUpdate,
+    });
+
+    return NextResponse.json(responseData);
+  } catch (error) {
+    console.error('Real-time collaboration POST error:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid data', details: error.errors },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+// PUT /api/photo-groups/realtime/[id] - Lock/unlock photo group for editing
+export async function PUT(
+  request: NextRequest,
+  { params }: { params: { id: string } },
+) {
+  const { id: photoGroupId } = params;
+
+  try {
+    const supabase = await createClient();
+    const { data: user } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const { action, force_unlock } = z
+      .object({
+        action: z.enum(['lock', 'unlock']),
+        force_unlock: z.boolean().default(false),
+      })
+      .parse(body);
+
+    // Get user profile
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('id')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!userProfile) {
+      return NextResponse.json(
+        { error: 'User profile not found' },
+        { status: 404 },
+      );
+    }
+
+    // Verify access to photo group
+    const { data: photoGroup } = await supabase
+      .from('photo_groups')
+      .select(
+        `
+        id,
+        is_locked_for_editing,
+        locked_by,
+        locked_at,
+        clients!inner(
+          user_profiles!inner(user_id)
+        )
+      `,
+      )
+      .eq('id', photoGroupId)
+      .eq('clients.user_profiles.user_id', user.id)
+      .single();
+
+    if (!photoGroup) {
+      return NextResponse.json(
+        { error: 'Photo group not found or access denied' },
+        { status: 403 },
+      );
+    }
+
+    let updateData: any = {};
+    let responseMessage = '';
+
+    if (action === 'lock') {
+      // Check if already locked by another user
+      if (
+        photoGroup.is_locked_for_editing &&
+        photoGroup.locked_by !== userProfile.id
+      ) {
+        return NextResponse.json(
+          {
+            error: 'Photo group is already locked by another user',
+            locked_by: photoGroup.locked_by,
+            locked_at: photoGroup.locked_at,
+          },
+          { status: 423 },
+        );
+      }
+
+      updateData = {
+        is_locked_for_editing: true,
+        locked_by: userProfile.id,
+        locked_at: new Date().toISOString(),
+      };
+      responseMessage = 'Photo group locked successfully';
+    } else {
+      // Check if user can unlock (owner or force unlock)
+      if (
+        photoGroup.is_locked_for_editing &&
+        photoGroup.locked_by !== userProfile.id &&
+        !force_unlock
+      ) {
+        return NextResponse.json(
+          {
+            error: 'Cannot unlock photo group locked by another user',
+            locked_by: photoGroup.locked_by,
+          },
+          { status: 423 },
+        );
+      }
+
+      updateData = {
+        is_locked_for_editing: false,
+        locked_by: null,
+        locked_at: null,
+      };
+      responseMessage = 'Photo group unlocked successfully';
+    }
+
+    // Update photo group lock status
+    const { data: updatedGroup, error: updateError } = await supabase
+      .from('photo_groups')
+      .update(updateData)
+      .eq('id', photoGroupId)
+      .select('is_locked_for_editing, locked_by, locked_at')
+      .single();
+
+    if (updateError) {
+      console.error('Error updating photo group lock:', updateError);
+      return NextResponse.json(
+        { error: 'Failed to update lock status' },
+        { status: 500 },
+      );
+    }
+
+    // Broadcast lock status change
+    const realtimeUpdate = {
+      type: 'lock_status_changed',
+      photo_group_id: photoGroupId,
+      data: {
+        action,
+        is_locked: updatedGroup.is_locked_for_editing,
+        locked_by: updatedGroup.locked_by,
+        locked_at: updatedGroup.locked_at,
+      },
+      user_id: user.id,
+      timestamp: new Date().toISOString(),
+    };
+
+    await supabase.channel(`photo_group_${photoGroupId}`).send({
+      type: 'broadcast',
+      event: 'lock_status_update',
+      payload: realtimeUpdate,
+    });
+
+    return NextResponse.json({
+      message: responseMessage,
+      is_locked: updatedGroup.is_locked_for_editing,
+      locked_by: updatedGroup.locked_by,
+      locked_at: updatedGroup.locked_at,
+    });
+  } catch (error) {
+    console.error('Real-time collaboration PUT error:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid data', details: error.errors },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+// DELETE /api/photo-groups/realtime/[id] - Clean up inactive sessions
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: { id: string } },
+) {
+  const { id: photoGroupId } = params;
+
+  try {
+    const supabase = await createClient();
+    const { data: user } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Clean up sessions older than 30 minutes
+    const cutoffTime = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+
+    const { error: cleanupError } = await supabase
+      .from('photo_group_collaboration_sessions')
+      .delete()
+      .eq('photo_group_id', photoGroupId)
+      .or(`is_active.eq.false,last_activity.lt.${cutoffTime}`);
+
+    if (cleanupError) {
+      console.error('Error cleaning up collaboration sessions:', cleanupError);
+      return NextResponse.json(
+        { error: 'Failed to cleanup sessions' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({
+      message: 'Inactive sessions cleaned up successfully',
+    });
+  } catch (error) {
+    console.error('Real-time collaboration DELETE error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

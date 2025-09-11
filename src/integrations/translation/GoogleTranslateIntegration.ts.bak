@@ -1,0 +1,944 @@
+/**
+ * Google Translate API Integration for WedSync Multilingual Platform
+ * 
+ * Provides enterprise-grade translation services with:
+ * - Rate limiting and caching
+ * - Batch translation support
+ * - Wedding industry terminology validation
+ * - Quality assurance and confidence scoring
+ * - Graceful error handling and fallbacks
+ * 
+ * @fileoverview WS-247 Team C Round 1 - Google Translate Integration
+ * @version 1.0.0
+ * @author WedSync Development Team
+ */
+
+import { createClient } from '@supabase/supabase-js';
+import { createHash } from 'crypto';
+
+// ==========================================
+// TYPE DEFINITIONS
+// ==========================================
+
+/**
+ * Supported languages for wedding industry translations
+ */
+export type SupportedLanguage = 
+  | 'en' | 'es' | 'fr' | 'de' | 'it' | 'pt' | 'ru' | 'ja' | 'ko' | 'zh'
+  | 'nl' | 'sv' | 'da' | 'no' | 'fi' | 'pl' | 'cs' | 'hu' | 'ro' | 'bg'
+  | 'hr' | 'sk' | 'sl' | 'et' | 'lv' | 'lt' | 'mt' | 'el' | 'tr' | 'ar'
+  | 'he' | 'hi' | 'th' | 'vi' | 'id' | 'ms' | 'tl' | 'uk' | 'be' | 'ka';
+
+/**
+ * Translation request configuration
+ */
+export interface TranslationRequest {
+  /** Text to translate */
+  text: string;
+  /** Source language code */
+  sourceLanguage: SupportedLanguage;
+  /** Target language code */
+  targetLanguage: SupportedLanguage;
+  /** Context for better translation (e.g., 'wedding_planning', 'vendor_communication') */
+  context?: string;
+  /** Priority level for processing */
+  priority?: 'low' | 'normal' | 'high';
+  /** Enable wedding terminology validation */
+  validateTerminology?: boolean;
+}
+
+/**
+ * Batch translation request
+ */
+export interface BatchTranslationRequest {
+  /** Array of texts to translate */
+  texts: string[];
+  /** Source language code */
+  sourceLanguage: SupportedLanguage;
+  /** Target language code */
+  targetLanguage: SupportedLanguage;
+  /** Context for better translation */
+  context?: string;
+  /** Maximum batch size (default: 100) */
+  batchSize?: number;
+}
+
+/**
+ * Translation result with quality metrics
+ */
+export interface TranslationResult {
+  /** Original text */
+  originalText: string;
+  /** Translated text */
+  translatedText: string;
+  /** Source language detected/used */
+  sourceLanguage: SupportedLanguage;
+  /** Target language */
+  targetLanguage: SupportedLanguage;
+  /** Confidence score (0-1) */
+  confidence: number;
+  /** Whether result came from cache */
+  cached: boolean;
+  /** Processing time in milliseconds */
+  processingTime: number;
+  /** Wedding terminology validation results */
+  terminologyValidation?: TerminologyValidationResult;
+  /** Timestamp of translation */
+  timestamp: Date;
+}
+
+/**
+ * Batch translation result
+ */
+export interface BatchTranslationResult {
+  /** Array of translation results */
+  results: TranslationResult[];
+  /** Total processing time */
+  totalProcessingTime: number;
+  /** Number of successful translations */
+  successCount: number;
+  /** Number of failed translations */
+  errorCount: number;
+  /** Any errors encountered */
+  errors: TranslationError[];
+}
+
+/**
+ * Wedding terminology validation result
+ */
+export interface TerminologyValidationResult {
+  /** Whether terminology is valid */
+  isValid: boolean;
+  /** Confidence in terminology accuracy */
+  terminologyConfidence: number;
+  /** Suggested corrections */
+  suggestions: TerminologyCorrection[];
+  /** Industry-specific terms identified */
+  identifiedTerms: WeddingTerm[];
+}
+
+/**
+ * Wedding terminology correction suggestion
+ */
+export interface TerminologyCorrection {
+  /** Original term */
+  original: string;
+  /** Suggested correction */
+  suggestion: string;
+  /** Confidence in suggestion */
+  confidence: number;
+  /** Reason for suggestion */
+  reason: string;
+}
+
+/**
+ * Wedding industry term
+ */
+export interface WeddingTerm {
+  /** The term */
+  term: string;
+  /** Category (e.g., 'venue', 'catering', 'photography') */
+  category: string;
+  /** Confidence this is a wedding term */
+  confidence: number;
+}
+
+/**
+ * Translation error details
+ */
+// TranslationError interface removed - using class instead (defined below)
+
+/**
+ * Rate limiting configuration
+ */
+export interface RateLimitConfig {
+  /** Requests per minute */
+  requestsPerMinute: number;
+  /** Burst capacity */
+  burstCapacity: number;
+  /** Window size in milliseconds */
+  windowSize: number;
+}
+
+/**
+ * Cache configuration
+ */
+export interface CacheConfig {
+  /** Cache TTL in seconds */
+  ttl: number;
+  /** Maximum cache entries */
+  maxEntries: number;
+  /** Whether to use Supabase for persistent caching */
+  useSupabaseCache: boolean;
+}
+
+/**
+ * Google Translate API configuration
+ */
+export interface GoogleTranslateConfig {
+  /** Google Cloud API key */
+  apiKey: string;
+  /** Project ID */
+  projectId: string;
+  /** API endpoint URL */
+  endpoint?: string;
+  /** Rate limiting configuration */
+  rateLimit: RateLimitConfig;
+  /** Cache configuration */
+  cache: CacheConfig;
+  /** Enable advanced terminology validation */
+  enableTerminologyValidation: boolean;
+  /** Maximum retries for failed requests */
+  maxRetries: number;
+}
+
+// ==========================================
+// WEDDING TERMINOLOGY DATABASE
+// ==========================================
+
+/**
+ * Wedding industry terminology database
+ */
+const WEDDING_TERMINOLOGY: Record<string, WeddingTerm[]> = {
+  venue: [
+    { term: 'reception hall', category: 'venue', confidence: 0.9 },
+    { term: 'ceremony venue', category: 'venue', confidence: 0.9 },
+    { term: 'banquet hall', category: 'venue', confidence: 0.8 },
+    { term: 'wedding chapel', category: 'venue', confidence: 0.9 },
+    { term: 'outdoor pavilion', category: 'venue', confidence: 0.7 }
+  ],
+  catering: [
+    { term: 'wedding cake', category: 'catering', confidence: 0.9 },
+    { term: 'hors d\'oeuvres', category: 'catering', confidence: 0.8 },
+    { term: 'cocktail hour', category: 'catering', confidence: 0.8 },
+    { term: 'plated dinner', category: 'catering', confidence: 0.7 },
+    { term: 'buffet service', category: 'catering', confidence: 0.7 }
+  ],
+  photography: [
+    { term: 'engagement photos', category: 'photography', confidence: 0.9 },
+    { term: 'bridal portrait', category: 'photography', confidence: 0.8 },
+    { term: 'first look', category: 'photography', confidence: 0.9 },
+    { term: 'ceremony coverage', category: 'photography', confidence: 0.8 },
+    { term: 'reception photos', category: 'photography', confidence: 0.8 }
+  ],
+  planning: [
+    { term: 'save the date', category: 'planning', confidence: 0.9 },
+    { term: 'wedding timeline', category: 'planning', confidence: 0.8 },
+    { term: 'vendor coordination', category: 'planning', confidence: 0.7 },
+    { term: 'rehearsal dinner', category: 'planning', confidence: 0.8 },
+    { term: 'wedding party', category: 'planning', confidence: 0.7 }
+  ]
+};
+
+// ==========================================
+// RATE LIMITING IMPLEMENTATION
+// ==========================================
+
+/**
+ * Sliding window rate limiter
+ */
+class SlidingWindowRateLimiter {
+  private requests: Map<string, number[]> = new Map();
+  private config: RateLimitConfig;
+
+  constructor(config: RateLimitConfig) {
+    this.config = config;
+  }
+
+  /**
+   * Check if request is allowed under rate limit
+   */
+  public isAllowed(key: string): boolean {
+    const now = Date.now();
+    const windowStart = now - this.config.windowSize;
+    
+    // Get or create request history for this key
+    const requestHistory = this.requests.get(key) || [];
+    
+    // Filter out requests outside the current window
+    const recentRequests = requestHistory.filter(timestamp => timestamp > windowStart);
+    
+    // Check if we're under the limit
+    if (recentRequests.length >= this.config.requestsPerMinute) {
+      return false;
+    }
+    
+    // Add current request
+    recentRequests.push(now);
+    this.requests.set(key, recentRequests);
+    
+    return true;
+  }
+
+  /**
+   * Get remaining requests for a key
+   */
+  public getRemaining(key: string): number {
+    const now = Date.now();
+    const windowStart = now - this.config.windowSize;
+    const requestHistory = this.requests.get(key) || [];
+    const recentRequests = requestHistory.filter(timestamp => timestamp > windowStart);
+    
+    return Math.max(0, this.config.requestsPerMinute - recentRequests.length);
+  }
+}
+
+// ==========================================
+// CACHING IMPLEMENTATION
+// ==========================================
+
+/**
+ * Translation cache with memory and Supabase fallback
+ */
+class TranslationCache {
+  private memoryCache: Map<string, { data: TranslationResult; expiry: number }> = new Map();
+  private config: CacheConfig;
+  private supabase: any;
+
+  constructor(config: CacheConfig, supabaseUrl?: string, supabaseKey?: string) {
+    this.config = config;
+    
+    if (config.useSupabaseCache && supabaseUrl && supabaseKey) {
+      this.supabase = createClient(supabaseUrl, supabaseKey);
+    }
+  }
+
+  /**
+   * Generate cache key from translation request
+   */
+  private getCacheKey(text: string, sourceLanguage: string, targetLanguage: string, context?: string): string {
+    const hashInput = `${text}:${sourceLanguage}:${targetLanguage}:${context || ''}`;
+    return createHash('sha256').update(hashInput).digest('hex');
+  }
+
+  /**
+   * Get translation from cache
+   */
+  public async get(
+    text: string, 
+    sourceLanguage: string, 
+    targetLanguage: string, 
+    context?: string
+  ): Promise<TranslationResult | null> {
+    const key = this.getCacheKey(text, sourceLanguage, targetLanguage, context);
+    
+    // Check memory cache first
+    const memoryResult = this.memoryCache.get(key);
+    if (memoryResult && memoryResult.expiry > Date.now()) {
+      return { ...memoryResult.data, cached: true };
+    }
+    
+    // Check Supabase cache if enabled
+    if (this.supabase) {
+      try {
+        const { data } = await this.supabase
+          .from('translation_cache')
+          .select('*')
+          .eq('cache_key', key)
+          .gt('expires_at', new Date().toISOString())
+          .single();
+          
+        if (data) {
+          const result: TranslationResult = {
+            originalText: data.original_text,
+            translatedText: data.translated_text,
+            sourceLanguage: data.source_language,
+            targetLanguage: data.target_language,
+            confidence: data.confidence,
+            cached: true,
+            processingTime: 0,
+            timestamp: new Date(data.created_at)
+          };
+          
+          // Update memory cache
+          this.memoryCache.set(key, {
+            data: result,
+            expiry: Date.now() + (this.config.ttl * 1000)
+          });
+          
+          return result;
+        }
+      } catch (error) {
+        console.warn('Failed to retrieve from Supabase cache:', error);
+      }
+    }
+    
+    return null;
+  }
+
+  /**
+   * Store translation in cache
+   */
+  public async set(result: TranslationResult): Promise<void> {
+    const key = this.getCacheKey(
+      result.originalText, 
+      result.sourceLanguage, 
+      result.targetLanguage
+    );
+    
+    const expiry = Date.now() + (this.config.ttl * 1000);
+    
+    // Store in memory cache
+    this.memoryCache.set(key, { data: result, expiry });
+    
+    // Clean up memory cache if it gets too large
+    if (this.memoryCache.size > this.config.maxEntries) {
+      const oldestKey = Array.from(this.memoryCache.keys())[0];
+      this.memoryCache.delete(oldestKey);
+    }
+    
+    // Store in Supabase if enabled
+    if (this.supabase) {
+      try {
+        await this.supabase
+          .from('translation_cache')
+          .upsert({
+            cache_key: key,
+            original_text: result.originalText,
+            translated_text: result.translatedText,
+            source_language: result.sourceLanguage,
+            target_language: result.targetLanguage,
+            confidence: result.confidence,
+            expires_at: new Date(expiry).toISOString()
+          });
+      } catch (error) {
+        console.warn('Failed to store in Supabase cache:', error);
+      }
+    }
+  }
+}
+
+// ==========================================
+// MAIN INTEGRATION CLASS
+// ==========================================
+
+/**
+ * Google Translate API Integration for WedSync
+ * 
+ * Enterprise-grade translation service with:
+ * - Rate limiting and caching
+ * - Wedding terminology validation
+ * - Batch processing capabilities
+ * - Quality assurance integration
+ */
+export class GoogleTranslateIntegration {
+  private config: GoogleTranslateConfig;
+  private rateLimiter: SlidingWindowRateLimiter;
+  private cache: TranslationCache;
+  private readonly baseUrl: string;
+
+  constructor(config: GoogleTranslateConfig, supabaseUrl?: string, supabaseKey?: string) {
+    this.config = config;
+    this.rateLimiter = new SlidingWindowRateLimiter(config.rateLimit);
+    this.cache = new TranslationCache(config.cache, supabaseUrl, supabaseKey);
+    this.baseUrl = config.endpoint || 'https://translation.googleapis.com/language/translate/v2';
+  }
+
+  /**
+   * Translate a single text with comprehensive error handling and quality assurance
+   */
+  public async translateText(request: TranslationRequest): Promise<TranslationResult> {
+    const startTime = Date.now();
+    
+    try {
+      // Check cache first
+      const cachedResult = await this.cache.get(
+        request.text,
+        request.sourceLanguage,
+        request.targetLanguage,
+        request.context
+      );
+      
+      if (cachedResult) {
+        return cachedResult;
+      }
+      
+      // Check rate limiting
+      const rateLimitKey = `translation:${request.sourceLanguage}:${request.targetLanguage}`;
+      if (!this.rateLimiter.isAllowed(rateLimitKey)) {
+        throw new TranslationError({
+          code: 'RATE_LIMIT_EXCEEDED',
+          message: `Rate limit exceeded. ${this.rateLimiter.getRemaining(rateLimitKey)} requests remaining.`
+        });
+      }
+      
+      // Validate input
+      this.validateTranslationRequest(request);
+      
+      // Perform translation
+      const googleResponse = await this.callGoogleTranslateAPI(request);
+      
+      // Create result
+      const result: TranslationResult = {
+        originalText: request.text,
+        translatedText: googleResponse.translatedText,
+        sourceLanguage: googleResponse.detectedSourceLanguage || request.sourceLanguage,
+        targetLanguage: request.targetLanguage,
+        confidence: this.calculateConfidence(googleResponse),
+        cached: false,
+        processingTime: Date.now() - startTime,
+        timestamp: new Date()
+      };
+      
+      // Validate wedding terminology if requested
+      if (request.validateTerminology) {
+        result.terminologyValidation = await this.validateWeddingTerminology(
+          result.originalText,
+          result.translatedText,
+          result.targetLanguage
+        );
+      }
+      
+      // Cache the result
+      await this.cache.set(result);
+      
+      return result;
+      
+    } catch (error) {
+      throw this.handleTranslationError(error, request);
+    }
+  }
+
+  /**
+   * Translate multiple texts efficiently using batch processing
+   */
+  public async translateBatch(request: BatchTranslationRequest): Promise<BatchTranslationResult> {
+    const startTime = Date.now();
+    const results: TranslationResult[] = [];
+    const errors: TranslationError[] = [];
+    const batchSize = request.batchSize || 100;
+    
+    try {
+      // Process in batches to respect API limits
+      for (let i = 0; i < request.texts.length; i += batchSize) {
+        const batch = request.texts.slice(i, i + batchSize);
+        
+        const batchPromises = batch.map(async (text) => {
+          try {
+            const translationRequest: TranslationRequest = {
+              text,
+              sourceLanguage: request.sourceLanguage,
+              targetLanguage: request.targetLanguage,
+              context: request.context,
+              priority: 'normal'
+            };
+            
+            return await this.translateText(translationRequest);
+          } catch (error) {
+            errors.push(this.handleTranslationError(error, { text } as TranslationRequest));
+            return null;
+          }
+        });
+        
+        const batchResults = await Promise.allSettled(batchPromises);
+        
+        batchResults.forEach((result) => {
+          if (result.status === 'fulfilled' && result.value) {
+            results.push(result.value);
+          }
+        });
+      }
+      
+      return {
+        results,
+        totalProcessingTime: Date.now() - startTime,
+        successCount: results.length,
+        errorCount: errors.length,
+        errors
+      };
+      
+    } catch (error) {
+      throw new TranslationError({
+        code: 'BATCH_TRANSLATION_FAILED',
+        message: 'Batch translation failed',
+        context: { error: error instanceof Error ? error.message : String(error) }
+      });
+    }
+  }
+
+  /**
+   * Detect the language of input text
+   */
+  public async detectLanguage(text: string): Promise<{ language: SupportedLanguage; confidence: number }> {
+    try {
+      const response = await fetch(`${this.baseUrl}/detect`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.config.apiKey}`
+        },
+        body: JSON.stringify({
+          q: text
+        })
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Google Translate API error: ${response.status} ${response.statusText}`);
+      }
+      
+      const data = await response.json();
+      
+      return {
+        language: data.data.detections[0][0].language as SupportedLanguage,
+        confidence: data.data.detections[0][0].confidence
+      };
+      
+    } catch (error) {
+      throw new TranslationError({
+        code: 'LANGUAGE_DETECTION_FAILED',
+        message: 'Failed to detect language',
+        context: { error: error instanceof Error ? error.message : String(error) }
+      });
+    }
+  }
+
+  /**
+   * Get list of supported languages
+   */
+  public async getSupportedLanguages(): Promise<{ code: SupportedLanguage; name: string }[]> {
+    try {
+      const response = await fetch(`${this.baseUrl}/languages`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${this.config.apiKey}`
+        }
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Google Translate API error: ${response.status} ${response.statusText}`);
+      }
+      
+      const data = await response.json();
+      
+      return data.data.languages.map((lang: any) => ({
+        code: lang.language as SupportedLanguage,
+        name: lang.name || lang.language
+      }));
+      
+    } catch (error) {
+      throw new TranslationError({
+        code: 'SUPPORTED_LANGUAGES_FAILED',
+        message: 'Failed to get supported languages',
+        context: { error: error instanceof Error ? error.message : String(error) }
+      });
+    }
+  }
+
+  /**
+   * Get rate limiting status
+   */
+  public getRateLimitStatus(): { remaining: number; windowSize: number; limit: number } {
+    const key = 'global';
+    return {
+      remaining: this.rateLimiter.getRemaining(key),
+      windowSize: this.config.rateLimit.windowSize,
+      limit: this.config.rateLimit.requestsPerMinute
+    };
+  }
+
+  // ==========================================
+  // PRIVATE METHODS
+  // ==========================================
+
+  /**
+   * Call Google Translate API with retry logic
+   */
+  private async callGoogleTranslateAPI(request: TranslationRequest, retryCount = 0): Promise<any> {
+    try {
+      const response = await fetch(this.baseUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.config.apiKey}`
+        },
+        body: JSON.stringify({
+          q: request.text,
+          source: request.sourceLanguage,
+          target: request.targetLanguage,
+          format: 'text'
+        })
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Google Translate API error: ${response.status} ${response.statusText}`);
+      }
+      
+      const data = await response.json();
+      
+      return {
+        translatedText: data.data.translations[0].translatedText,
+        detectedSourceLanguage: data.data.translations[0].detectedSourceLanguage
+      };
+      
+    } catch (error) {
+      if (retryCount < this.config.maxRetries) {
+        // Exponential backoff
+        const delay = Math.pow(2, retryCount) * 1000;
+        await new Promise(resolve => setTimeout(resolve, delay));
+        return this.callGoogleTranslateAPI(request, retryCount + 1);
+      }
+      
+      throw error;
+    }
+  }
+
+  /**
+   * Calculate confidence score based on Google Translate response
+   */
+  private calculateConfidence(googleResponse: any): number {
+    // Google Translate doesn't always provide confidence scores
+    // We'll use heuristics based on response characteristics
+    let confidence = 0.8; // Base confidence
+    
+    // Adjust based on detected source language match
+    if (googleResponse.detectedSourceLanguage) {
+      confidence += 0.1;
+    }
+    
+    // Adjust based on text length (longer texts generally translate better)
+    const textLength = googleResponse.translatedText.length;
+    if (textLength > 100) {
+      confidence += 0.05;
+    } else if (textLength < 20) {
+      confidence -= 0.1;
+    }
+    
+    return Math.min(0.95, Math.max(0.1, confidence));
+  }
+
+  /**
+   * Validate wedding terminology in translations
+   */
+  private async validateWeddingTerminology(
+    originalText: string,
+    translatedText: string,
+    targetLanguage: SupportedLanguage
+  ): Promise<TerminologyValidationResult> {
+    const identifiedTerms: WeddingTerm[] = [];
+    const suggestions: TerminologyCorrection[] = [];
+    
+    // Check for wedding terms in original text
+    for (const [category, terms] of Object.entries(WEDDING_TERMINOLOGY)) {
+      for (const term of terms) {
+        if (originalText.toLowerCase().includes(term.term.toLowerCase())) {
+          identifiedTerms.push(term);
+        }
+      }
+    }
+    
+    // Basic validation - check if key terms are preserved
+    let terminologyConfidence = 0.8;
+    let isValid = true;
+    
+    // This is a simplified validation - in production, you'd want more sophisticated
+    // terminology checking, possibly using specialized wedding industry dictionaries
+    
+    if (identifiedTerms.length > 0) {
+      // Check if important terms are preserved in some form
+      const preservedTerms = identifiedTerms.filter(term => {
+        // This is a basic check - you'd want more sophisticated matching
+        return translatedText.toLowerCase().includes(term.term.split(' ')[0].toLowerCase());
+      });
+      
+      terminologyConfidence = preservedTerms.length / identifiedTerms.length;
+      isValid = terminologyConfidence > 0.6;
+    }
+    
+    return {
+      isValid,
+      terminologyConfidence,
+      suggestions,
+      identifiedTerms
+    };
+  }
+
+  /**
+   * Validate translation request parameters
+   */
+  private validateTranslationRequest(request: TranslationRequest): void {
+    if (!request.text || request.text.trim().length === 0) {
+      throw new TranslationError({
+        code: 'INVALID_TEXT',
+        message: 'Text to translate cannot be empty'
+      });
+    }
+    
+    if (request.text.length > 5000) {
+      throw new TranslationError({
+        code: 'TEXT_TOO_LONG',
+        message: 'Text exceeds maximum length of 5000 characters'
+      });
+    }
+    
+    if (request.sourceLanguage === request.targetLanguage) {
+      throw new TranslationError({
+        code: 'SAME_LANGUAGE',
+        message: 'Source and target languages cannot be the same'
+      });
+    }
+  }
+
+  /**
+   * Handle and normalize translation errors
+   */
+  private handleTranslationError(error: any, request: Partial<TranslationRequest>): TranslationError {
+    if (error instanceof TranslationError) {
+      return error;
+    }
+    
+    let code = 'TRANSLATION_FAILED';
+    let message = 'Translation failed';
+    
+    if (error instanceof Error) {
+      message = error.message;
+      
+      // Categorize common errors
+      if (error.message.includes('rate limit')) {
+        code = 'RATE_LIMIT_EXCEEDED';
+      } else if (error.message.includes('authentication')) {
+        code = 'AUTHENTICATION_FAILED';
+      } else if (error.message.includes('network') || error.message.includes('fetch')) {
+        code = 'NETWORK_ERROR';
+      } else if (error.message.includes('quota')) {
+        code = 'QUOTA_EXCEEDED';
+      }
+    }
+    
+    return new TranslationError({
+      code,
+      message,
+      originalText: request.text,
+      context: {
+        sourceLanguage: request.sourceLanguage,
+        targetLanguage: request.targetLanguage,
+        originalError: error instanceof Error ? error.message : String(error)
+      }
+    });
+  }
+}
+
+// ==========================================
+// ERROR CLASS
+// ==========================================
+
+/**
+ * Custom error class for translation operations
+ */
+export class TranslationError extends Error {
+  public readonly code: string;
+  public readonly originalText?: string;
+  public readonly context?: Record<string, unknown>;
+
+  constructor(details: {
+    code: string;
+    message: string;
+    originalText?: string;
+    context?: Record<string, unknown>;
+  }) {
+    super(details.message);
+    this.name = 'TranslationError';
+    this.code = details.code;
+    this.originalText = details.originalText;
+    this.context = details.context;
+  }
+}
+
+// ==========================================
+// FACTORY FUNCTION
+// ==========================================
+
+/**
+ * Create a configured Google Translate integration instance
+ */
+export function createGoogleTranslateIntegration(
+  config: Partial<GoogleTranslateConfig> & { apiKey: string; projectId: string },
+  supabaseUrl?: string,
+  supabaseKey?: string
+): GoogleTranslateIntegration {
+  const defaultConfig: GoogleTranslateConfig = {
+    ...config,
+    rateLimit: {
+      requestsPerMinute: 60,
+      burstCapacity: 10,
+      windowSize: 60 * 1000,
+      ...config.rateLimit
+    },
+    cache: {
+      ttl: 24 * 60 * 60, // 24 hours
+      maxEntries: 10000,
+      useSupabaseCache: true,
+      ...config.cache
+    },
+    enableTerminologyValidation: config.enableTerminologyValidation ?? true,
+    maxRetries: config.maxRetries ?? 3
+  };
+  
+  return new GoogleTranslateIntegration(defaultConfig, supabaseUrl, supabaseKey);
+}
+
+// ==========================================
+// USAGE EXAMPLES
+// ==========================================
+
+/**
+ * Example usage of the Google Translate Integration
+ * 
+ * @example
+ * ```typescript
+ * // Initialize the integration
+ * const translator = createGoogleTranslateIntegration({
+ *   apiKey: process.env.GOOGLE_TRANSLATE_API_KEY!,
+ *   projectId: process.env.GOOGLE_CLOUD_PROJECT_ID!,
+ *   rateLimit: {
+ *     requestsPerMinute: 100,
+ *     burstCapacity: 20,
+ *     windowSize: 60 * 1000
+ *   }
+ * });
+ * 
+ * // Translate a single text
+ * const result = await translator.translateText({
+ *   text: "Thank you for choosing our wedding photography services",
+ *   sourceLanguage: 'en',
+ *   targetLanguage: 'es',
+ *   context: 'wedding_photography',
+ *   validateTerminology: true
+ * });
+ * 
+ * console.log(result.translatedText);
+ * console.log(`Confidence: ${result.confidence}`);
+ * 
+ * // Batch translation
+ * const batchResult = await translator.translateBatch({
+ *   texts: [
+ *     "Wedding ceremony begins at 3 PM",
+ *     "Reception dinner will be served at 6 PM",
+ *     "Please confirm your attendance"
+ *   ],
+ *   sourceLanguage: 'en',
+ *   targetLanguage: 'fr',
+ *   context: 'wedding_invitations'
+ * });
+ * 
+ * console.log(`Translated ${batchResult.successCount} texts`);
+ * ```
+ */
+export const GoogleTranslateIntegrationExample = {
+  // Example configurations for different use cases
+  weddingPlatformConfig: {
+    apiKey: process.env.GOOGLE_TRANSLATE_API_KEY!,
+    projectId: process.env.GOOGLE_CLOUD_PROJECT_ID!,
+    rateLimit: {
+      requestsPerMinute: 200,
+      burstCapacity: 50,
+      windowSize: 60 * 1000
+    },
+    cache: {
+      ttl: 7 * 24 * 60 * 60, // 7 days for wedding content
+      maxEntries: 50000,
+      useSupabaseCache: true
+    },
+    enableTerminologyValidation: true,
+    maxRetries: 5
+  }
+};

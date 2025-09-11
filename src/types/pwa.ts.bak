@@ -1,0 +1,281 @@
+// PWA Installation Types for WedSync
+// This file provides type definitions for PWA install functionality across all components
+
+// Core platform detection types
+export type Platform = 'ios' | 'android' | 'desktop' | 'unsupported';
+export type InstallState = 'available' | 'installed' | 'unsupported' | 'dismissed' | 'loading';
+export type InstallSource = 'banner' | 'button' | 'menu' | 'onboarding' | 'dashboard' | 'timeline' | 'manual';
+
+// Browser-specific install prompt event
+export interface BeforeInstallPromptEvent extends Event {
+  readonly platforms: string[];
+  readonly userChoice: Promise<{
+    outcome: 'accepted' | 'dismissed';
+    platform: string;
+  }>;
+  prompt(): Promise<void>;
+}
+
+// Analytics event data structure for Team B integration
+export interface InstallEventData {
+  platform: Platform;
+  source: InstallSource;
+  timestamp: string;
+  user_id?: string;
+  session_id?: string;
+  wedding_id?: string;
+  vendor_type?: string;
+  install_step?: string;
+  error_message?: string;
+}
+
+// PWA install hook interface
+export interface PWAInstallHookReturn {
+  // State
+  platform: Platform;
+  installState: InstallState;
+  isInstallable: boolean;
+  isInstalled: boolean;
+  canShowPrompt: boolean;
+  isLoading: boolean;
+  
+  // Actions
+  showInstallPrompt: (source?: InstallSource) => Promise<boolean>;
+  dismissPrompt: () => void;
+  checkInstallability: () => void;
+  
+  // Analytics
+  trackInstallEvent: (eventType: string, data?: Partial<InstallEventData>) => void;
+}
+
+// Install button component props
+export interface InstallButtonProps {
+  variant?: 'primary' | 'secondary' | 'ghost' | 'icon-only';
+  size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl';
+  source?: InstallSource;
+  showLabel?: boolean;
+  className?: string;
+  disabled?: boolean;
+  
+  // Event handlers
+  onInstallStart?: () => void;
+  onInstallComplete?: () => void;
+  onInstallDismiss?: () => void;
+  onInstallError?: (error: Error) => void;
+  
+  // Accessibility
+  'aria-label'?: string;
+  'data-testid'?: string;
+}
+
+// Install instructions modal props
+export interface InstallInstructionsModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onDismiss?: () => void;
+  platform?: Platform;
+  source?: InstallSource;
+  className?: string;
+  
+  // Customization
+  showBenefits?: boolean;
+  customTitle?: string;
+  customDescription?: string;
+}
+
+// Success message component props
+export interface InstallSuccessMessageProps {
+  variant?: 'toast' | 'modal' | 'banner';
+  autoHide?: boolean;
+  autoHideDelay?: number;
+  showTips?: boolean;
+  className?: string;
+  
+  // Event handlers
+  onDismiss?: () => void;
+  onTipClick?: (tip: string) => void;
+}
+
+// Platform-specific capabilities
+export interface PlatformCapabilities {
+  platform: Platform;
+  supportsInstall: boolean;
+  supportsNotifications: boolean;
+  supportsOffline: boolean;
+  installMethod: 'native' | 'manual' | 'unsupported';
+  minVersion?: string;
+  browserName?: string;
+}
+
+// Install funnel analytics events
+export type InstallFunnelEvent = 
+  | 'install_prompt_available'
+  | 'install_prompt_shown'
+  | 'install_button_clicked'
+  | 'install_modal_opened'
+  | 'install_modal_dismissed'
+  | 'install_instructions_shown'
+  | 'install_instructions_completed'
+  | 'install_instructions_dismissed'
+  | 'install_started'
+  | 'install_accepted'
+  | 'install_dismissed'
+  | 'install_completed'
+  | 'install_error'
+  | 'success_message_shown'
+  | 'success_message_dismissed'
+  | 'ios_instructions_shown'
+  | 'ios_instructions_completed'
+  | 'ios_instructions_dismissed'
+  | 'android_native_install'
+  | 'desktop_native_install';
+
+// PWA manifest related types
+export interface PWAManifestDisplay {
+  display: 'fullscreen' | 'standalone' | 'minimal-ui' | 'browser';
+  theme_color: string;
+  background_color: string;
+  start_url: string;
+}
+
+// PWA installation criteria
+export interface PWAInstallCriteria {
+  hasManifest: boolean;
+  hasServiceWorker: boolean;
+  isSecureContext: boolean;
+  meetsEngagementHeuristics: boolean;
+  notPreviouslyInstalled: boolean;
+  platformSupported: boolean;
+}
+
+// Offline capability types
+export interface OfflineCapabilities {
+  canWorkOffline: boolean;
+  offlinePages: string[];
+  cacheStrategy: 'network-first' | 'cache-first' | 'network-only' | 'cache-only';
+  syncWhenOnline: boolean;
+}
+
+// PWA update types
+export interface PWAUpdateInfo {
+  hasUpdate: boolean;
+  version: string;
+  releaseNotes?: string;
+  isForced: boolean;
+  updateSize?: number;
+}
+
+// Wedding-specific PWA context
+export interface WeddingPWAContext {
+  wedding_id: string;
+  wedding_date: string;
+  role: 'couple' | 'vendor' | 'planner' | 'guest';
+  vendor_type?: string;
+  critical_features: string[];
+  offline_priority: 'high' | 'medium' | 'low';
+}
+
+// Error types for PWA operations
+export type PWAError = 
+  | 'install_prompt_unavailable'
+  | 'install_cancelled'
+  | 'install_failed'
+  | 'platform_unsupported'
+  | 'permissions_denied'
+  | 'network_error'
+  | 'storage_quota_exceeded'
+  | 'service_worker_error'
+  | 'manifest_invalid';
+
+export interface PWAErrorDetails {
+  code: PWAError;
+  message: string;
+  platform: Platform;
+  timestamp: string;
+  recoverable: boolean;
+  retryAction?: () => void;
+}
+
+// PWA install prompt customization
+export interface InstallPromptCustomization {
+  title?: string;
+  description?: string;
+  benefits?: string[];
+  primaryButtonText?: string;
+  secondaryButtonText?: string;
+  icon?: React.ComponentType<{ className?: string }>;
+  theme?: 'light' | 'dark' | 'auto';
+  position?: 'top' | 'bottom' | 'center';
+}
+
+// Team B analytics integration interface
+export interface AnalyticsIntegration {
+  track: (eventName: string, properties?: Record<string, any>) => void;
+  identify: (userId: string, traits?: Record<string, any>) => void;
+  page: (pageName: string, properties?: Record<string, any>) => void;
+  group: (groupId: string, traits?: Record<string, any>) => void;
+}
+
+// PWA storage and caching types
+export interface PWACacheConfig {
+  version: string;
+  staticAssets: string[];
+  dynamicRoutes: string[];
+  maxAge: number;
+  maxEntries: number;
+  strategy: 'stale-while-revalidate' | 'cache-first' | 'network-first';
+}
+
+// Global window extensions for PWA
+declare global {
+  interface Window {
+    // Analytics integration
+    analytics?: AnalyticsIntegration;
+    
+    // PWA events
+    addEventListener(type: 'beforeinstallprompt', listener: (event: BeforeInstallPromptEvent) => void): void;
+    addEventListener(type: 'appinstalled', listener: (event: Event) => void): void;
+    
+    // Service worker registration (extending global navigator)
+    // navigator property extension is handled globally
+    
+    // PWA display mode detection
+    matchMedia(query: '(display-mode: standalone)'): MediaQueryList;
+    matchMedia(query: '(display-mode: fullscreen)'): MediaQueryList;
+    matchMedia(query: '(display-mode: minimal-ui)'): MediaQueryList;
+  }
+}
+
+// Export utility type guards
+export const isPlatform = (platform: string): platform is Platform => {
+  return ['ios', 'android', 'desktop', 'unsupported'].includes(platform);
+};
+
+export const isInstallState = (state: string): state is InstallState => {
+  return ['available', 'installed', 'unsupported', 'dismissed', 'loading'].includes(state);
+};
+
+export const isInstallSource = (source: string): source is InstallSource => {
+  return ['banner', 'button', 'menu', 'onboarding', 'dashboard', 'timeline', 'manual'].includes(source);
+};
+
+// Type-safe event tracking helper
+export const createInstallEvent = (
+  eventType: InstallFunnelEvent,
+  platform: Platform,
+  source: InstallSource,
+  additionalData?: Partial<InstallEventData>
+): InstallEventData => {
+  return {
+    platform,
+    source,
+    timestamp: new Date().toISOString(),
+    ...additionalData
+  };
+};
+// Global navigator extension for PWA standalone mode
+declare global {
+  interface Navigator {
+    standalone?: boolean;
+  }
+}

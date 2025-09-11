@@ -1,0 +1,421 @@
+/**
+ * WS-155: Unit Tests for Advanced Messaging Features
+ * Testing smart composition, voice integration, offline sync, and notifications
+ */
+
+import { describe, it, expect, beforeEach, afterEach, vi as jest } from 'vitest';
+import { smartMessageComposer } from '@/lib/services/smart-message-composer';
+import { voiceMessageIntegration } from '@/lib/services/voice-message-integration';
+import { advancedOfflineSync } from '@/lib/services/advanced-offline-sync';
+import { pushNotificationSystem } from '@/lib/services/push-notification-system';
+import { eventTimelineMessaging } from '@/lib/services/event-timeline-messaging-integration';
+
+// Mock Supabase client
+jest.mock('@/lib/supabase/client', () => ({
+  supabase: {
+    from: jest.fn(() => ({
+      select: jest.fn(() => ({
+        eq: jest.fn(() => ({
+          single: jest.fn(() => Promise.resolve({ data: null, error: null })),
+          order: jest.fn(() => Promise.resolve({ data: [], error: null }))
+        })),
+        order: jest.fn(() => Promise.resolve({ data: [], error: null }))
+      })),
+      insert: jest.fn(() => Promise.resolve({ data: null, error: null })),
+      update: jest.fn(() => Promise.resolve({ data: null, error: null })),
+      delete: jest.fn(() => Promise.resolve({ data: null, error: null })),
+      upsert: jest.fn(() => Promise.resolve({ data: null, error: null }))
+    })),
+    storage: {
+      from: jest.fn(() => ({
+        upload: jest.fn(() => Promise.resolve({ data: null, error: null })),
+        getPublicUrl: jest.fn(() => ({ data: { publicUrl: 'test-url' } }))
+      }))
+    },
+    channel: jest.fn(() => ({
+      on: jest.fn(() => ({
+        subscribe: jest.fn()
+      }))
+    })),
+    auth: {
+      getUser: jest.fn(() => Promise.resolve({ data: { user: { id: 'test-user' } } }))
+    }
+  }
+}));
+
+describe('WS-155: Smart Message Composer', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('should generate message suggestions', async () => {
+    const request = {
+      guestId: 'guest-1',
+      weddingId: 'wedding-1',
+      context: 'invitation' as const,
+      tone: 'formal' as const,
+      language: 'en'
+    };
+
+    const suggestions = await smartMessageComposer.generateSuggestions(request);
+    
+    expect(Array.isArray(suggestions)).toBe(true);
+    expect(suggestions.length).toBeGreaterThan(0);
+    
+    if (suggestions.length > 0) {
+      const suggestion = suggestions[0];
+      expect(suggestion).toHaveProperty('id');
+      expect(suggestion).toHaveProperty('message');
+      expect(suggestion).toHaveProperty('confidence');
+      expect(suggestion).toHaveProperty('tone');
+      expect(suggestion).toHaveProperty('estimatedReadTime');
+      expect(suggestion).toHaveProperty('keywords');
+    }
+  });
+
+  it('should get fallback suggestions when AI is unavailable', async () => {
+    const request = {
+      guestId: 'guest-1',
+      weddingId: 'wedding-1',
+      context: 'reminder' as const,
+      tone: 'friendly' as const,
+      language: 'en'
+    };
+
+    const suggestions = await smartMessageComposer.generateSuggestions(request);
+    
+    expect(Array.isArray(suggestions)).toBe(true);
+    expect(suggestions.length).toBeGreaterThan(0);
+    expect(suggestions[0].confidence).toBeLessThanOrEqual(0.6);
+  });
+
+  it('should save user selection feedback', async () => {
+    await smartMessageComposer.saveUserSelection('user-1', 'suggestion-1', 'positive');
+    
+    // Verify that supabase.from was called
+    expect(require('@/lib/supabase/client').supabase.from).toHaveBeenCalledWith(
+      'message_composition_feedback'
+    );
+  });
+});
+
+describe('WS-155: Voice Message Integration', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('should check if voice recording is supported', () => {
+    const isSupported = voiceMessageIntegration.constructor.isSupported();
+    expect(typeof isSupported).toBe('boolean');
+  });
+
+  it('should get preferred mime type for recording', () => {
+    // Mock MediaRecorder.isTypeSupported
+    global.MediaRecorder = {
+      isTypeSupported: jest.fn((type) => type === 'audio/webm;codecs=opus')
+    } as any;
+
+    const voiceIntegration = new (voiceMessageIntegration.constructor as any)();
+    const mimeType = voiceIntegration.getPreferredMimeType();
+    
+    expect(mimeType).toBe('audio/webm;codecs=opus');
+  });
+
+  it('should handle voice message processing request', async () => {
+    const request = {
+      audioBlob: new Blob(['test'], { type: 'audio/webm' }),
+      duration: 10,
+      mimeType: 'audio/webm',
+      userId: 'user-1',
+      guestId: 'guest-1',
+      weddingId: 'wedding-1',
+      language: 'en-US'
+    };
+
+    // Mock fetch for transcription
+    global.fetch = jest.fn(() =>
+      Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({
+          text: 'Test transcription',
+          confidence: 0.9,
+          language: 'en-US',
+          duration: 10
+        })
+      } as Response)
+    );
+
+    const result = await voiceMessageIntegration.processVoiceMessage(request);
+    
+    expect(result).toHaveProperty('text');
+    expect(result).toHaveProperty('confidence');
+    expect(result).toHaveProperty('language');
+    expect(result).toHaveProperty('duration');
+  });
+});
+
+describe('WS-155: Advanced Offline Sync', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    
+    // Mock IndexedDB
+    const mockDB = {
+      syncQueue: { add: jest.fn(), count: jest.fn(() => 0), clear: jest.fn() },
+      conflicts: { add: jest.fn(), get: jest.fn(), update: jest.fn() },
+      metadata: { get: jest.fn(), put: jest.fn(), clear: jest.fn() },
+      messages: { bulkPut: jest.fn() },
+      guests: { bulkPut: jest.fn() },
+      templates: { bulkPut: jest.fn() }
+    };
+    
+    (advancedOfflineSync as any).db = mockDB;
+  });
+
+  it('should queue operation for sync', async () => {
+    await advancedOfflineSync.queueOperation(
+      'CREATE',
+      'messages',
+      'msg-1',
+      { content: 'Test message' }
+    );
+    
+    const db = (advancedOfflineSync as any).db;
+    expect(db.syncQueue.add).toHaveBeenCalled();
+  });
+
+  it('should get sync status', () => {
+    const status = advancedOfflineSync.getSyncStatus();
+    
+    expect(status).toHaveProperty('lastSync');
+    expect(status).toHaveProperty('pendingOperations');
+    expect(status).toHaveProperty('failedOperations');
+    expect(status).toHaveProperty('conflicts');
+    expect(status).toHaveProperty('isOnline');
+    expect(status).toHaveProperty('isSyncing');
+  });
+
+  it('should handle conflict resolution strategies', async () => {
+    const localData = { id: '1', content: 'Local', updated_at: '2024-01-02' };
+    const serverData = { id: '1', content: 'Server', updated_at: '2024-01-01' };
+    
+    const hasConflict = (advancedOfflineSync as any).hasConflict(localData, serverData);
+    expect(hasConflict).toBe(true);
+  });
+});
+
+describe('WS-155: Push Notification System', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    
+    // Mock navigator
+    Object.defineProperty(global, 'navigator', {
+      value: {
+        serviceWorker: {
+          register: jest.fn(() => Promise.resolve({
+            pushManager: {
+              getSubscription: jest.fn(() => Promise.resolve(null)),
+              subscribe: jest.fn(() => Promise.resolve({
+                toJSON: () => ({
+                  endpoint: 'test-endpoint',
+                  keys: { p256dh: 'test-key', auth: 'test-auth' }
+                })
+              }))
+            }
+          })),
+          addEventListener: jest.fn()
+        },
+        onLine: true,
+        platform: 'test',
+        userAgent: 'test-agent',
+        appVersion: '1.0',
+        language: 'en'
+      },
+      writable: true
+    });
+
+    Object.defineProperty(global, 'Notification', {
+      value: {
+        permission: 'default',
+        requestPermission: jest.fn(() => Promise.resolve('granted'))
+      },
+      writable: true
+    });
+  });
+
+  it('should check if push notifications are supported', () => {
+    const isSupported = pushNotificationSystem.constructor.isSupported();
+    expect(typeof isSupported).toBe('boolean');
+  });
+
+  it('should get permission status', () => {
+    const status = pushNotificationSystem.constructor.getPermissionStatus();
+    expect(['granted', 'denied', 'default']).toContain(status);
+  });
+
+  it('should send notification', async () => {
+    // Mock fetch for sending notification
+    global.fetch = jest.fn(() =>
+      Promise.resolve({
+        ok: true
+      } as Response)
+    );
+
+    await pushNotificationSystem.sendNotification(
+      'user-1',
+      'NEW_MESSAGE',
+      {
+        title: 'Test Notification',
+        body: 'Test message body'
+      }
+    );
+
+    // Verify notification was queued
+    expect(require('@/lib/supabase/client').supabase.from).toHaveBeenCalled();
+  });
+});
+
+describe('WS-155: Event Timeline Messaging', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('should link message to timeline event', async () => {
+    const result = await eventTimelineMessaging.linkMessageToEvent(
+      'msg-1',
+      'event-1',
+      'BEFORE_EVENT',
+      { triggerOffset: -30 }
+    );
+    
+    expect(result).toHaveProperty('id');
+    expect(result).toHaveProperty('eventId');
+    expect(result).toHaveProperty('messageId');
+    expect(result).toHaveProperty('triggerType');
+    expect(result).toHaveProperty('status');
+    expect(result).toHaveProperty('scheduledTime');
+  });
+
+  it('should create automated messages for event', async () => {
+    const event = {
+      id: 'event-1',
+      weddingId: 'wedding-1',
+      type: 'CEREMONY' as const,
+      name: 'Wedding Ceremony',
+      startTime: new Date()
+    };
+
+    const messages = await eventTimelineMessaging.createAutomatedMessagesForEvent(event);
+    expect(Array.isArray(messages)).toBe(true);
+  });
+
+  it('should get messaging timeline for wedding', async () => {
+    const timeline = await eventTimelineMessaging.getMessagingTimeline('wedding-1');
+    
+    if (timeline) {
+      expect(timeline).toHaveProperty('events');
+      expect(timeline).toHaveProperty('statistics');
+      expect(timeline.statistics).toHaveProperty('totalEvents');
+      expect(timeline.statistics).toHaveProperty('totalMessages');
+      expect(timeline.statistics).toHaveProperty('scheduledMessages');
+      expect(timeline.statistics).toHaveProperty('sentMessages');
+    }
+  });
+
+  it('should get upcoming messages', async () => {
+    const messages = await eventTimelineMessaging.getUpcomingMessages('wedding-1', 24);
+    expect(Array.isArray(messages)).toBe(true);
+  });
+});
+
+describe('WS-155: Integration Tests', () => {
+  it('should integrate smart composition with offline sync', async () => {
+    // Generate message suggestion
+    const suggestions = await smartMessageComposer.generateSuggestions({
+      guestId: 'guest-1',
+      weddingId: 'wedding-1',
+      context: 'invitation',
+      tone: 'formal',
+      language: 'en'
+    });
+
+    expect(suggestions.length).toBeGreaterThan(0);
+
+    // Queue message for offline sync
+    if (suggestions.length > 0) {
+      await advancedOfflineSync.queueOperation(
+        'CREATE',
+        'messages',
+        `msg-${Date.now()}`,
+        {
+          content: suggestions[0].message,
+          guest_id: 'guest-1',
+          wedding_id: 'wedding-1'
+        }
+      );
+    }
+
+    // Verify operation was queued
+    const pendingCount = await advancedOfflineSync.getPendingOperationsCount();
+    expect(pendingCount).toBeGreaterThanOrEqual(0);
+  });
+
+  it('should handle mobile-specific features', () => {
+    // Test mobile detection
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+      navigator.userAgent
+    );
+    
+    // Test vibration API availability
+    const hasVibration = 'vibrate' in navigator;
+    
+    // Test notification permission
+    const hasNotifications = 'Notification' in window;
+    
+    expect(typeof isMobile).toBe('boolean');
+    expect(typeof hasVibration).toBe('boolean');
+    expect(typeof hasNotifications).toBe('boolean');
+  });
+});
+
+// Performance tests
+describe('WS-155: Performance Tests', () => {
+  it('should generate suggestions within acceptable time', async () => {
+    const startTime = Date.now();
+    
+    await smartMessageComposer.generateSuggestions({
+      guestId: 'guest-1',
+      weddingId: 'wedding-1',
+      context: 'invitation',
+      tone: 'formal',
+      language: 'en'
+    });
+    
+    const endTime = Date.now();
+    const duration = endTime - startTime;
+    
+    // Should complete within 5 seconds
+    expect(duration).toBeLessThan(5000);
+  });
+
+  it('should handle batch operations efficiently', async () => {
+    const operations = [];
+    
+    for (let i = 0; i < 10; i++) {
+      operations.push(
+        advancedOfflineSync.queueOperation(
+          'CREATE',
+          'messages',
+          `msg-${i}`,
+          { content: `Message ${i}` }
+        )
+      );
+    }
+    
+    const startTime = Date.now();
+    await Promise.all(operations);
+    const endTime = Date.now();
+    
+    // Should handle 10 operations within 1 second
+    expect(endTime - startTime).toBeLessThan(1000);
+  });
+});

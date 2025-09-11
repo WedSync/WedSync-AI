@@ -1,0 +1,754 @@
+// WS-055: Unit Tests for Real-Time Scoring System
+// Tests for real-time activity processing and WebSocket updates
+
+import { RealTimeScoring } from '@/lib/ml/prediction/real-time-scoring'
+import { BookingPredictor } from '@/lib/ml/prediction/booking-predictor'
+import { ClientIntentScorer } from '@/lib/ml/prediction/intent-scorer'
+import type { RealTimeActivity, ScoreUpdate, IntentScore } from '@/lib/ml/prediction/types'
+
+// Mock dependencies
+jest.mock('@/lib/supabase', () => ({
+  createSupabaseClient: () => ({
+    from: jest.fn(() => ({
+      insert: jest.fn(),
+      select: jest.fn()
+    })),
+    channel: jest.fn(() => ({
+      on: jest.fn(() => ({
+        subscribe: jest.fn()
+      }))
+    }))
+  })
+}))
+
+jest.mock('@/lib/ml/prediction/booking-predictor')
+jest.mock('@/lib/ml/prediction/intent-scorer')
+
+describe('RealTimeScoring', () => {
+  let realTimeScoring: RealTimeScoring
+  let mockBookingPredictor: jest.Mocked<BookingPredictor>
+  let mockIntentScorer: jest.Mocked<ClientIntentScorer>
+
+  beforeEach(() => {
+    realTimeScoring = new RealTimeScoring()
+    
+    // Get mocked instances
+    mockBookingPredictor = (realTimeScoring as any).bookingPredictor
+    mockIntentScorer = (realTimeScoring as any).intentScorer
+
+    // Mock basic methods
+    mockIntentScorer.calculateIntentScore.mockResolvedValue({
+      client_id: 'test-client',
+      score: 75,
+      category: 'high',
+      indicators: [],
+      trend: 'stable',
+      last_updated: new Date()
+    })
+
+    mockBookingPredictor.predictBookingProbability.mockResolvedValue({
+      client_id: 'test-client',
+      probability: 0.7,
+      confidence: 0.8,
+      factors: [],
+      risk_indicators: [],
+      model_version: '1.0.0',
+      prediction_date: new Date(),
+      inference_time_ms: 100
+    })
+  })
+
+  describe('System Initialization', () => {
+    test('should initialize successfully', async () => {
+      const consoleSpy = jest.spyOn(console, 'log').mockImplementation()
+      
+      await realTimeScoring.initialize()
+      
+      expect(consoleSpy).toHaveBeenCalledWith('Initializing real-time scoring system...')
+      expect(consoleSpy).toHaveBeenCalledWith('Real-time scoring system initialized')
+      
+      consoleSpy.mockRestore()
+    })
+
+    test('should set up real-time subscriptions', async () => {
+      const mockChannel = {
+        on: jest.fn().mockReturnThis(),
+        subscribe: jest.fn()
+      }
+
+      jest.spyOn(realTimeScoring['supabase'], 'channel').mockReturnValue(mockChannel)
+
+      await realTimeScoring.initialize()
+
+      expect(realTimeScoring['supabase'].channel).toHaveBeenCalledWith('client_activities')
+      expect(realTimeScoring['supabase'].channel).toHaveBeenCalledWith('clients')
+      expect(mockChannel.on).toHaveBeenCalledWith('postgres_changes', expect.any(Object), expect.any(Function))
+    })
+  })
+
+  describe('Activity Processing', () => {
+    test('should process high-value activity immediately', async () => {
+      const highValueActivity: RealTimeActivity = {
+        client_id: 'test-client',
+        activity_type: 'booking_inquiry',
+        timestamp: new Date(),
+        metadata: { source: 'website' },
+        value_score: 9
+      }
+
+      jest.spyOn(realTimeScoring as any, 'processActivityImmediate').mockResolvedValue({
+        client_id: 'test-client',
+        previous_score: 70,
+        new_score: 85,
+        score_change: 15,
+        factors_changed: ['booking_inquiry'],
+        confidence: 0.9,
+        update_reason: 'Activity: booking_inquiry',
+        timestamp: new Date()
+      })
+
+      const result = await realTimeScoring.processActivity('test-client', highValueActivity)
+
+      expect(result.score_change).toBe(15)
+      expect(result.confidence).toBe(0.9)
+      expect((realTimeScoring as any).processActivityImmediate).toHaveBeenCalledWith('test-client', highValueActivity)
+    })
+
+    test('should queue normal-value activities for batch processing', async () => {
+      const normalActivity: RealTimeActivity = {
+        client_id: 'test-client',
+        activity_type: 'page_view',
+        timestamp: new Date(),
+        metadata: { page: 'pricing' },
+        value_score: 3
+      }
+
+      // Mock cache to return existing score
+      jest.spyOn(realTimeScoring as any, 'getCachedScore').mockReturnValue({
+        client_id: 'test-client',
+        intent_score: 75,
+        booking_probability: 0.7,
+        last_updated: Date.now(),
+        version: 1
+      })
+
+      const result = await realTimeScoring.processActivity('test-client', normalActivity)
+
+      expect(result.update_reason).toBe('Queued for batch processing')
+      expect(result.score_change).toBe(0) // No immediate change
+      expect((realTimeScoring as any).processingQueue).toContain(normalActivity)
+    })
+
+    test('should process urgent activities immediately regardless of value score', async () => {
+      const urgentActivity: RealTimeActivity = {
+        client_id: 'test-client',
+        activity_type: 'phone_call_request',
+        timestamp: new Date(),
+        metadata: {},
+        value_score: 5 // Not high value, but urgent type
+      }
+
+      jest.spyOn(realTimeScoring as any, 'isUrgentActivity').mockReturnValue(true)
+      jest.spyOn(realTimeScoring as any, 'processActivityImmediate').mockResolvedValue({
+        client_id: 'test-client',
+        previous_score: 60,
+        new_score: 75,
+        score_change: 15,
+        factors_changed: ['phone_call_request'],
+        confidence: 0.8,
+        update_reason: 'Activity: phone_call_request',
+        timestamp: new Date()
+      })
+
+      const result = await realTimeScoring.processActivity('test-client', urgentActivity)
+
+      expect((realTimeScoring as any).processActivityImmediate).toHaveBeenCalled()
+      expect(result.score_change).toBe(15)
+    })
+  })
+
+  describe('Immediate Activity Processing', () => {
+    test('should update scores and broadcast changes', async () => {
+      const activity: RealTimeActivity = {
+        client_id: 'test-client',
+        activity_type: 'vendor_inquiry',
+        timestamp: new Date(),
+        metadata: { vendor_id: 'photographer-123' },
+        value_score: 7
+      }
+
+      const mockIntentScore: IntentScore = {
+        client_id: 'test-client',
+        score: 80,
+        category: 'high',
+        indicators: [
+          {
+            indicator_type: 'active_venue_search',
+            strength: 8,
+            description: 'Active vendor research',
+            detected_at: new Date()
+          }
+        ],
+        trend: 'increasing',
+        last_updated: new Date()
+      }
+
+      mockIntentScorer.calculateIntentScore.mockResolvedValue(mockIntentScore)
+      jest.spyOn(realTimeScoring as any, 'getCachedScore').mockReturnValue({
+        client_id: 'test-client',
+        intent_score: 70,
+        booking_probability: 0.6,
+        last_updated: Date.now() - 30000,
+        version: 1
+      })
+      jest.spyOn(realTimeScoring as any, 'storeActivity').mockResolvedValue(undefined)
+      jest.spyOn(realTimeScoring as any, 'updateScoreCache').mockImplementation()
+      jest.spyOn(realTimeScoring as any, 'broadcastScoreUpdate').mockResolvedValue(undefined)
+
+      const result = await (realTimeScoring as any).processActivityImmediate('test-client', activity)
+
+      expect(result.previous_score).toBe(70)
+      expect(result.new_score).toBe(80)
+      expect(result.score_change).toBe(10)
+      expect(mockIntentScorer.calculateIntentScore).toHaveBeenCalledWith('test-client')
+      expect((realTimeScoring as any).broadcastScoreUpdate).toHaveBeenCalled()
+    })
+
+    test('should handle significant score changes', async () => {
+      const activity: RealTimeActivity = {
+        client_id: 'test-client',
+        activity_type: 'booking_inquiry',
+        timestamp: new Date(),
+        metadata: {},
+        value_score: 9
+      }
+
+      const mockIntentScore: IntentScore = {
+        client_id: 'test-client',
+        score: 90,
+        category: 'very_high',
+        indicators: [],
+        trend: 'increasing',
+        last_updated: new Date()
+      }
+
+      mockIntentScorer.calculateIntentScore.mockResolvedValue(mockIntentScore)
+      jest.spyOn(realTimeScoring as any, 'getCachedScore').mockReturnValue({
+        client_id: 'test-client',
+        intent_score: 60,
+        booking_probability: 0.5,
+        last_updated: Date.now() - 30000,
+        version: 1
+      })
+      jest.spyOn(realTimeScoring as any, 'isSignificantScoreChange').mockReturnValue(true)
+      jest.spyOn(realTimeScoring as any, 'handleSignificantScoreChange').mockResolvedValue(undefined)
+
+      await (realTimeScoring as any).processActivityImmediate('test-client', activity)
+
+      expect((realTimeScoring as any).handleSignificantScoreChange).toHaveBeenCalledWith(
+        expect.objectContaining({
+          client_id: 'test-client',
+          score_change: 30
+        }),
+        mockIntentScore
+      )
+    })
+
+    test('should measure and warn about slow processing', async () => {
+      const activity: RealTimeActivity = {
+        client_id: 'test-client',
+        activity_type: 'page_view',
+        timestamp: new Date(),
+        metadata: {},
+        value_score: 2
+      }
+
+      // Mock slow operations
+      mockIntentScorer.calculateIntentScore.mockImplementation(() => 
+        new Promise(resolve => setTimeout(() => resolve({
+          client_id: 'test-client',
+          score: 75,
+          category: 'high',
+          indicators: [],
+          trend: 'stable',
+          last_updated: new Date()
+        }), 600)) // 600ms delay
+      )
+
+      const consoleSpy = jest.spyOn(console, 'warn').mockImplementation()
+      jest.spyOn(realTimeScoring as any, 'getCachedScore').mockReturnValue(null)
+
+      await (realTimeScoring as any).processActivityImmediate('test-client', activity)
+
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Slow real-time processing')
+      )
+
+      consoleSpy.mockRestore()
+    })
+  })
+
+  describe('Batch Processing', () => {
+    test('should process batched activities for multiple clients', async () => {
+      const activities = [
+        {
+          client_id: 'client-1',
+          activity_type: 'page_view',
+          timestamp: new Date(),
+          metadata: {},
+          value_score: 3
+        },
+        {
+          client_id: 'client-1',
+          activity_type: 'form_interaction',
+          timestamp: new Date(),
+          metadata: {},
+          value_score: 4
+        },
+        {
+          client_id: 'client-2',
+          activity_type: 'vendor_inquiry',
+          timestamp: new Date(),
+          metadata: {},
+          value_score: 6
+        }
+      ]
+
+      // Add activities to processing queue
+      ;(realTimeScoring as any).processingQueue.push(...activities)
+
+      jest.spyOn(realTimeScoring as any, 'processBatchedActivities').mockResolvedValue(undefined)
+
+      await (realTimeScoring as any).processQueueBatch()
+
+      expect((realTimeScoring as any).processBatchedActivities).toHaveBeenCalledTimes(2) // Two clients
+      expect((realTimeScoring as any).processingQueue).toHaveLength(0) // Queue should be empty
+    })
+
+    test('should handle batch processing errors gracefully', async () => {
+      const activities = [
+        {
+          client_id: 'error-client',
+          activity_type: 'page_view',
+          timestamp: new Date(),
+          metadata: {},
+          value_score: 3
+        }
+      ]
+
+      ;(realTimeScoring as any).processingQueue.push(...activities)
+
+      jest.spyOn(realTimeScoring as any, 'processBatchedActivities').mockRejectedValue(new Error('Processing error'))
+      const consoleSpy = jest.spyOn(console, 'error').mockImplementation()
+
+      await (realTimeScoring as any).processQueueBatch()
+
+      expect((realTimeScoring as any).isProcessing).toBe(false) // Should reset processing flag
+      consoleSpy.mockRestore()
+    })
+
+    test('should process multiple activities for single client efficiently', async () => {
+      const clientActivities = [
+        {
+          client_id: 'batch-client',
+          activity_type: 'page_view',
+          timestamp: new Date(),
+          metadata: {},
+          value_score: 2
+        },
+        {
+          client_id: 'batch-client',
+          activity_type: 'pricing_view',
+          timestamp: new Date(),
+          metadata: {},
+          value_score: 4
+        },
+        {
+          client_id: 'batch-client',
+          activity_type: 'vendor_inquiry',
+          timestamp: new Date(),
+          metadata: {},
+          value_score: 7
+        }
+      ]
+
+      jest.spyOn(realTimeScoring as any, 'storeActivity').mockResolvedValue(undefined)
+      jest.spyOn(realTimeScoring as any, 'updateScoreCache').mockImplementation()
+      jest.spyOn(realTimeScoring as any, 'broadcastScoreUpdate').mockResolvedValue(undefined)
+
+      await (realTimeScoring as any).processBatchedActivities('batch-client', clientActivities)
+
+      expect(mockIntentScorer.calculateIntentScore).toHaveBeenCalledWith('batch-client')
+      expect(mockBookingPredictor.predictBookingProbability).toHaveBeenCalledWith('batch-client')
+      expect((realTimeScoring as any).storeActivity).toHaveBeenCalledTimes(3)
+      expect((realTimeScoring as any).broadcastScoreUpdate).toHaveBeenCalled()
+    })
+  })
+
+  describe('Score Change Analysis', () => {
+    test('should identify significant score changes', () => {
+      const significantChanges = [
+        { previous_score: 60, new_score: 80, score_change: 20 }, // Large change
+        { previous_score: 50, new_score: 65, score_change: 15 }, // Category boundary cross
+        { previous_score: 75, new_score: 85, score_change: 10 }, // High to very high
+      ]
+
+      significantChanges.forEach(change => {
+        const isSignificant = (realTimeScoring as any).isSignificantScoreChange(change)
+        expect(isSignificant).toBe(true)
+      })
+    })
+
+    test('should not flag minor score changes as significant', () => {
+      const minorChanges = [
+        { previous_score: 60, new_score: 65, score_change: 5 },
+        { previous_score: 70, new_score: 75, score_change: 5 },
+        { previous_score: 80, new_score: 82, score_change: 2 }
+      ]
+
+      minorChanges.forEach(change => {
+        const isSignificant = (realTimeScoring as any).isSignificantScoreChange(change)
+        expect(isSignificant).toBe(false)
+      })
+    })
+  })
+
+  describe('Caching System', () => {
+    test('should cache and retrieve scores correctly', () => {
+      const clientId = 'cache-test-client'
+      const intentScore: IntentScore = {
+        client_id: clientId,
+        score: 75,
+        category: 'high',
+        indicators: [],
+        trend: 'stable',
+        last_updated: new Date()
+      }
+
+      ;(realTimeScoring as any).updateScoreCache(clientId, intentScore, 0.7)
+
+      const cached = (realTimeScoring as any).getCachedScore(clientId)
+      expect(cached).toBeTruthy()
+      expect(cached.intent_score).toBe(75)
+      expect(cached.booking_probability).toBe(0.7)
+    })
+
+    test('should expire old cache entries', () => {
+      const clientId = 'expired-client'
+      const intentScore: IntentScore = {
+        client_id: clientId,
+        score: 60,
+        category: 'medium',
+        indicators: [],
+        trend: 'stable',
+        last_updated: new Date()
+      }
+
+      // Manually set expired cache entry
+      ;(realTimeScoring as any).scoreCache.set(clientId, {
+        client_id: clientId,
+        intent_score: 60,
+        booking_probability: 0.5,
+        last_updated: Date.now() - 400000, // 6+ minutes ago (expired)
+        version: 1
+      })
+
+      const cached = (realTimeScoring as any).getCachedScore(clientId)
+      expect(cached).toBeNull() // Should be null due to expiration
+    })
+
+    test('should clean up cache when it gets too large', () => {
+      const maxEntries = (realTimeScoring as any).config.caching.max_entries
+
+      // Fill cache beyond limit
+      for (let i = 0; i <= maxEntries + 10; i++) {
+        ;(realTimeScoring as any).updateScoreCache(`client-${i}`, {
+          client_id: `client-${i}`,
+          score: 50,
+          category: 'medium',
+          indicators: [],
+          trend: 'stable',
+          last_updated: new Date()
+        }, 0.5)
+      }
+
+      expect((realTimeScoring as any).scoreCache.size).toBeLessThanOrEqual(maxEntries)
+    })
+  })
+
+  describe('WebSocket Broadcasting', () => {
+    test('should broadcast score updates to connected clients', async () => {
+      const mockWebSocketClients = [
+        {
+          id: 'client-1',
+          send: jest.fn(),
+          readyState: 1 // WebSocket.OPEN
+        },
+        {
+          id: 'client-2',
+          send: jest.fn(),
+          readyState: 1
+        }
+      ]
+
+      realTimeScoring.setWebSocketClients(mockWebSocketClients)
+
+      const scoreUpdate: ScoreUpdate = {
+        client_id: 'test-client',
+        previous_score: 70,
+        new_score: 85,
+        score_change: 15,
+        factors_changed: ['vendor_inquiry'],
+        confidence: 0.8,
+        update_reason: 'Activity: vendor_inquiry',
+        timestamp: new Date()
+      }
+
+      await (realTimeScoring as any).broadcastScoreUpdate(scoreUpdate)
+
+      mockWebSocketClients.forEach(client => {
+        expect(client.send).toHaveBeenCalledWith(
+          JSON.stringify({
+            type: 'score_update',
+            ...scoreUpdate
+          })
+        )
+      })
+    })
+
+    test('should handle WebSocket send errors gracefully', async () => {
+      const mockWebSocketClients = [
+        {
+          id: 'error-client',
+          send: jest.fn().mockImplementation(() => {
+            throw new Error('WebSocket send error')
+          }),
+          readyState: 1
+        }
+      ]
+
+      realTimeScoring.setWebSocketClients(mockWebSocketClients)
+
+      const consoleSpy = jest.spyOn(console, 'error').mockImplementation()
+
+      const scoreUpdate: ScoreUpdate = {
+        client_id: 'test-client',
+        previous_score: 70,
+        new_score: 85,
+        score_change: 15,
+        factors_changed: [],
+        confidence: 0.8,
+        update_reason: 'Test update',
+        timestamp: new Date()
+      }
+
+      await (realTimeScoring as any).broadcastScoreUpdate(scoreUpdate)
+
+      expect(consoleSpy).toHaveBeenCalledWith('Error sending WebSocket message:', expect.any(Error))
+      consoleSpy.mockRestore()
+    })
+  })
+
+  describe('Notification Triggers', () => {
+    test('should trigger high intent notifications', async () => {
+      const intentScore: IntentScore = {
+        client_id: 'high-intent-client',
+        score: 90,
+        category: 'very_high',
+        indicators: [
+          {
+            indicator_type: 'active_venue_search',
+            strength: 9,
+            description: 'Very active research',
+            detected_at: new Date()
+          }
+        ],
+        trend: 'increasing',
+        last_updated: new Date()
+      }
+
+      const mockWebSocketClients = [
+        {
+          id: 'client-1',
+          send: jest.fn(),
+          readyState: 1
+        }
+      ]
+
+      realTimeScoring.setWebSocketClients(mockWebSocketClients)
+
+      await (realTimeScoring as any).triggerHighIntentNotification('high-intent-client', intentScore)
+
+      expect(mockWebSocketClients[0].send).toHaveBeenCalledWith(
+        expect.stringContaining('high_intent_notification')
+      )
+    })
+
+    test('should trigger churn risk alerts', async () => {
+      const scoreUpdate: ScoreUpdate = {
+        client_id: 'churn-risk-client',
+        previous_score: 70,
+        new_score: 45,
+        score_change: -25,
+        factors_changed: ['inactivity'],
+        confidence: 0.8,
+        update_reason: 'Declining engagement',
+        timestamp: new Date()
+      }
+
+      jest.spyOn(realTimeScoring['supabase'], 'from').mockReturnValue({
+        insert: jest.fn().mockResolvedValue({ data: null, error: null })
+      } as any)
+
+      await (realTimeScoring as any).triggerChurnRiskAlert('churn-risk-client', scoreUpdate)
+
+      expect(realTimeScoring['supabase'].from).toHaveBeenCalledWith('churn_risk_alerts')
+    })
+  })
+
+  describe('Utility Methods', () => {
+    test('should identify urgent activity types correctly', () => {
+      const urgentActivities = [
+        'booking_inquiry',
+        'phone_call_request', 
+        'urgent_message',
+        'consultation_request',
+        'contract_download'
+      ]
+
+      urgentActivities.forEach(activityType => {
+        const activity: RealTimeActivity = {
+          client_id: 'test',
+          activity_type: activityType,
+          timestamp: new Date(),
+          metadata: {},
+          value_score: 5
+        }
+
+        const isUrgent = (realTimeScoring as any).isUrgentActivity(activity)
+        expect(isUrgent).toBe(true)
+      })
+    })
+
+    test('should not mark normal activities as urgent', () => {
+      const normalActivities = ['page_view', 'form_interaction', 'document_download']
+
+      normalActivities.forEach(activityType => {
+        const activity: RealTimeActivity = {
+          client_id: 'test',
+          activity_type: activityType,
+          timestamp: new Date(),
+          metadata: {},
+          value_score: 5
+        }
+
+        const isUrgent = (realTimeScoring as any).isUrgentActivity(activity)
+        expect(isUrgent).toBe(false)
+      })
+    })
+
+    test('should identify changed factors correctly', () => {
+      const activity: RealTimeActivity = {
+        client_id: 'test',
+        activity_type: 'vendor_inquiry',
+        timestamp: new Date(),
+        metadata: {},
+        value_score: 8
+      }
+
+      const factors = (realTimeScoring as any).identifyChangedFactors(activity, 10)
+
+      expect(factors).toContain('vendor_inquiry')
+      expect(factors).toContain('positive_engagement')
+      expect(factors).toContain('high_value_activity')
+    })
+  })
+
+  describe('Public API Methods', () => {
+    test('should return current score from cache or database', async () => {
+      const clientId = 'api-test-client'
+
+      // Test with cache hit
+      jest.spyOn(realTimeScoring as any, 'getCachedScore').mockReturnValue({
+        client_id: clientId,
+        intent_score: 80,
+        booking_probability: 0.7,
+        last_updated: Date.now(),
+        version: 2
+      })
+
+      const cachedResult = await realTimeScoring.getCurrentScore(clientId)
+      expect(cachedResult.score).toBe(80)
+      expect(cachedResult.source).toBe('cache')
+      expect(cachedResult.version).toBe(2)
+
+      // Test with cache miss
+      jest.spyOn(realTimeScoring as any, 'getCachedScore').mockReturnValue(null)
+
+      const dbResult = await realTimeScoring.getCurrentScore(clientId)
+      expect(dbResult.source).toBe('database')
+      expect(dbResult.version).toBe(0)
+    })
+
+    test('should simulate TensorFlow predictions', async () => {
+      const features = {
+        engagement_score: 0.8,
+        response_time_avg: 300,
+        vendor_inquiries: 5
+      }
+
+      const prediction = await realTimeScoring.runTensorFlowPrediction(features)
+
+      expect(prediction.booking_probability).toBeGreaterThanOrEqual(0.3)
+      expect(prediction.booking_probability).toBeLessThanOrEqual(0.8)
+      expect(prediction.confidence).toBeGreaterThanOrEqual(0.7)
+      expect(prediction.model_version).toBe('1.0.0-tf')
+      expect(prediction.inference_time).toBeGreaterThan(0)
+    })
+
+    test('should provide fallback scoring when ML models fail', async () => {
+      const features = {
+        engagement_score: 75,
+        response_time_avg: 600, // 10 minutes
+        vendor_inquiries: 3
+      }
+
+      const fallbackScore = await realTimeScoring.calculateFallbackScore(features)
+
+      expect(fallbackScore.score).toBeGreaterThanOrEqual(0)
+      expect(fallbackScore.score).toBeLessThanOrEqual(100)
+      expect(fallbackScore.method).toBe('rule_based')
+    })
+  })
+
+  describe('Cleanup and Resource Management', () => {
+    test('should cleanup resources properly', async () => {
+      // Add some data to cleanup
+      ;(realTimeScoring as any).scoreCache.set('test-client', {
+        client_id: 'test-client',
+        intent_score: 75,
+        booking_probability: 0.7,
+        last_updated: Date.now(),
+        version: 1
+      })
+      
+      ;(realTimeScoring as any).processingQueue.push({
+        client_id: 'test',
+        activity_type: 'page_view',
+        timestamp: new Date(),
+        metadata: {},
+        value_score: 3
+      })
+
+      realTimeScoring.setWebSocketClients([
+        { id: 'client-1', send: jest.fn(), readyState: 1 }
+      ])
+
+      await realTimeScoring.cleanup()
+
+      expect((realTimeScoring as any).scoreCache.size).toBe(0)
+      expect((realTimeScoring as any).processingQueue.length).toBe(0)
+      expect((realTimeScoring as any).webSocketClients.length).toBe(0)
+    })
+  })
+})

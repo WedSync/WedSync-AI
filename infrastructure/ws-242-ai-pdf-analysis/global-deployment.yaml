@@ -1,0 +1,385 @@
+# global-deployment.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: regional-config
+  namespace: wedsync-pdf-analysis
+data:
+  regions.yaml: |
+    regions:
+      primary:
+        name: "us-east-1"
+        wedding_markets: ["New York", "Boston", "Philadelphia", "Washington DC"]
+        processing_priority: 1
+        capacity: "high"
+      
+      secondary:
+        name: "us-west-2" 
+        wedding_markets: ["Los Angeles", "San Francisco", "Seattle", "Las Vegas"]
+        processing_priority: 2
+        capacity: "high"
+      
+      europe:
+        name: "eu-west-1"
+        wedding_markets: ["London", "Paris", "Amsterdam", "Dublin"]
+        processing_priority: 3
+        capacity: "medium"
+      
+      asia_pacific:
+        name: "ap-southeast-2"
+        wedding_markets: ["Sydney", "Melbourne", "Auckland"]
+        processing_priority: 4
+        capacity: "low"
+    
+    failover_strategy:
+      primary_failure: "us-west-2"
+      secondary_failure: "eu-west-1" 
+      global_failure: "manual_intervention"
+    
+    data_residency:
+      gdpr_regions: ["eu-west-1"]
+      data_sovereignty: ["ap-southeast-2"]
+      cross_border_allowed: ["us-east-1", "us-west-2"]
+---
+# Global Load Balancer
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: pdf-analysis-global-cert
+spec:
+  domains:
+    - pdf-api.wedsync.com
+    - pdf-api-eu.wedsync.com
+    - pdf-api-ap.wedsync.com
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pdf-analysis-global-ingress
+  annotations:
+    kubernetes.io/ingress.global-static-ip-name: pdf-analysis-global-ip
+    networking.gke.io/managed-certificates: pdf-analysis-global-cert
+    cloud.google.com/load-balancer-type: "External"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    # Wedding season scaling annotations
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      # Wedding industry specific routing
+      set $wedding_season "normal";
+      set $market_region "default";
+      
+      # Detect wedding season (April-October peak)
+      if ($time_iso8601 ~ "2024-0[4-9]|2024-10") {
+        set $wedding_season "peak";
+      }
+      
+      # Route based on geographic location for wedding markets
+      if ($geoip_country_code = "US") {
+        set $market_region "us";
+      }
+      if ($geoip_country_code = "GB") {
+        set $market_region "eu";
+      }
+      if ($geoip_country_code = "AU") {
+        set $market_region "ap";
+      }
+      
+      # Add headers for processing optimization
+      proxy_set_header X-Wedding-Season $wedding_season;
+      proxy_set_header X-Market-Region $market_region;
+      proxy_set_header X-Processing-Priority "standard";
+spec:
+  rules:
+  - host: pdf-api.wedsync.com
+    http:
+      paths:
+      - path: /*
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: pdf-analysis-service
+            port:
+              number: 80
+  - host: pdf-api-eu.wedsync.com
+    http:
+      paths:
+      - path: /*
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: pdf-analysis-service-eu
+            port:
+              number: 80
+  - host: pdf-api-ap.wedsync.com
+    http:
+      paths:
+      - path: /*
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: pdf-analysis-service-ap
+            port:
+              number: 80
+---
+# Traffic Policy for Wedding Market Optimization
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: pdf-analysis-destination-rule
+  namespace: wedsync-pdf-analysis
+spec:
+  host: pdf-analysis-service
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 1000
+      http:
+        http1MaxPendingRequests: 100
+        http2MaxRequests: 1000
+        maxRequestsPerConnection: 10
+        maxRetries: 3
+        consecutiveGatewayErrors: 5
+        interval: 30s
+        baseEjectionTime: 30s
+    loadBalancer:
+      simple: LEAST_CONN  # Optimal for PDF processing workloads
+    outlierDetection:
+      consecutiveGatewayErrors: 3
+      consecutiveServerErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+  subsets:
+  - name: peak-season
+    labels:
+      season: peak
+    trafficPolicy:
+      connectionPool:
+        tcp:
+          maxConnections: 2000  # Higher capacity during wedding season
+        http:
+          http1MaxPendingRequests: 200
+          http2MaxRequests: 2000
+  - name: off-season
+    labels:
+      season: off
+    trafficPolicy:
+      connectionPool:
+        tcp:
+          maxConnections: 500   # Lower capacity during off-season
+        http:
+          http1MaxPendingRequests: 50
+          http2MaxRequests: 500
+---
+# Virtual Service for Wedding Market Routing
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: pdf-analysis-routing
+  namespace: wedsync-pdf-analysis
+spec:
+  hosts:
+  - pdf-api.wedsync.com
+  - pdf-api-eu.wedsync.com
+  - pdf-api-ap.wedsync.com
+  gateways:
+  - pdf-analysis-gateway
+  http:
+  # High priority for urgent wedding forms (day-of processing)
+  - match:
+    - headers:
+        x-processing-priority:
+          exact: "urgent"
+    route:
+    - destination:
+        host: pdf-analysis-service
+        subset: peak-season
+      weight: 100
+    timeout: 30s
+    retries:
+      attempts: 5
+      perTryTimeout: 10s
+  
+  # Wedding season routing (April-October)
+  - match:
+    - headers:
+        x-wedding-season:
+          exact: "peak"
+    route:
+    - destination:
+        host: pdf-analysis-service
+        subset: peak-season
+      weight: 80
+    - destination:
+        host: pdf-analysis-service-backup
+      weight: 20  # Load balance with backup region
+    timeout: 60s
+    
+  # Off-season routing (November-March)
+  - match:
+    - headers:
+        x-wedding-season:
+          exact: "normal"
+    route:
+    - destination:
+        host: pdf-analysis-service
+        subset: off-season
+      weight: 100
+    timeout: 120s  # Longer timeout acceptable during slow periods
+    
+  # Default routing
+  - route:
+    - destination:
+        host: pdf-analysis-service
+      weight: 100
+---
+# Gateway Configuration
+apiVersion: networking.istio.io/v1alpha3
+kind: Gateway
+metadata:
+  name: pdf-analysis-gateway
+  namespace: wedsync-pdf-analysis
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 443
+      name: https
+      protocol: HTTPS
+    tls:
+      mode: SIMPLE
+      credentialName: pdf-analysis-tls
+    hosts:
+    - pdf-api.wedsync.com
+    - pdf-api-eu.wedsync.com
+    - pdf-api-ap.wedsync.com
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - pdf-api.wedsync.com
+    - pdf-api-eu.wedsync.com
+    - pdf-api-ap.wedsync.com
+    # Redirect HTTP to HTTPS
+    redirect:
+      httpsRedirect: true
+---
+# Regional Service Configurations
+apiVersion: v1
+kind: Service
+metadata:
+  name: pdf-analysis-service-eu
+  namespace: wedsync-pdf-analysis
+  annotations:
+    cloud.google.com/neg: '{"ingress": true}'
+    cloud.google.com/backend-config: '{"default": "pdf-analysis-backendconfig"}'
+spec:
+  type: ClusterIP
+  selector:
+    app: pdf-analysis-worker
+    region: eu-west-1
+  ports:
+  - name: http
+    port: 80
+    targetPort: 3000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pdf-analysis-service-ap
+  namespace: wedsync-pdf-analysis
+  annotations:
+    cloud.google.com/neg: '{"ingress": true}'
+    cloud.google.com/backend-config: '{"default": "pdf-analysis-backendconfig"}'
+spec:
+  type: ClusterIP
+  selector:
+    app: pdf-analysis-worker
+    region: ap-southeast-2
+  ports:
+  - name: http
+    port: 80
+    targetPort: 3000
+---
+# Backend Configuration for Global Load Balancer
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: pdf-analysis-backendconfig
+  namespace: wedsync-pdf-analysis
+spec:
+  timeoutSec: 300  # 5 minute timeout for large PDF processing
+  connectionDraining:
+    drainingTimeoutSec: 60
+  healthCheck:
+    checkIntervalSec: 10
+    timeoutSec: 5
+    healthyThreshold: 1
+    unhealthyThreshold: 3
+    type: HTTP
+    requestPath: /health
+    port: 3000
+  sessionAffinity:
+    affinityType: "CLIENT_IP"
+    affinityCookieTtlSec: 3600  # 1 hour session affinity
+  cdn:
+    enabled: false  # Disable CDN for dynamic PDF processing
+  iap:
+    enabled: false
+  customRequestHeaders:
+    headers:
+    - "X-Forwarded-For:{client_ip}"
+    - "X-Wedding-Processing:true"
+---
+# Network Policy for Security
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: pdf-analysis-network-policy
+  namespace: wedsync-pdf-analysis
+spec:
+  podSelector:
+    matchLabels:
+      app: pdf-analysis-worker
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          role: pdf-gateway
+    - namespaceSelector:
+        matchLabels:
+          name: istio-system
+    ports:
+    - protocol: TCP
+      port: 3000
+  egress:
+  # Allow DNS resolution
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+  # Allow HTTPS to OpenAI API
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443
+  # Allow connection to Redis
+  - to:
+    - podSelector:
+        matchLabels:
+          app: redis-pdf-queue
+    ports:
+    - protocol: TCP
+      port: 6379
+  # Allow connection to Supabase
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 5432

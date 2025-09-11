@@ -1,0 +1,310 @@
+/**
+ * WS-132 Trial Management - Usage Meter Component
+ * Visual feature usage tracking with time savings breakdown
+ */
+
+'use client';
+
+import React, { useState } from 'react';
+import { Card } from '@/components/untitled-ui/card';
+import { Progress } from '@/components/untitled-ui/progress';
+import { Badge } from '@/components/untitled-ui/badge';
+import {
+  Activity,
+  Clock,
+  BarChart2,
+  TrendingUp,
+  Users,
+  Calendar,
+  Mail,
+  FileText,
+  Settings,
+  ChevronDown,
+  ChevronUp,
+} from 'lucide-react';
+import { TrialFeatureUsage } from '@/types/trial';
+import { cn } from '@/lib/utils';
+
+interface UsageMeterProps {
+  features: TrialFeatureUsage[];
+  totalTimeSaved: number;
+  className?: string;
+  showDetails?: boolean;
+}
+
+export function UsageMeter({
+  features,
+  totalTimeSaved,
+  className = '',
+  showDetails = false,
+}: UsageMeterProps) {
+  const [isExpanded, setIsExpanded] = useState(showDetails);
+
+  const getFeatureIcon = (featureKey: string) => {
+    switch (featureKey) {
+      case 'client_onboarding':
+        return <Users className="h-4 w-4" />;
+      case 'email_automation':
+        return <Mail className="h-4 w-4" />;
+      case 'guest_management':
+        return <Users className="h-4 w-4" />;
+      case 'vendor_communication':
+        return <FileText className="h-4 w-4" />;
+      case 'timeline_management':
+        return <Calendar className="h-4 w-4" />;
+      case 'task_automation':
+        return <Settings className="h-4 w-4" />;
+      default:
+        return <Activity className="h-4 w-4" />;
+    }
+  };
+
+  const getFeatureColor = (usage: number) => {
+    if (usage >= 10) return 'text-green-600 bg-green-100';
+    if (usage >= 5) return 'text-blue-600 bg-blue-100';
+    if (usage >= 2) return 'text-amber-600 bg-amber-100';
+    return 'text-gray-600 bg-gray-100';
+  };
+
+  // Sort features by usage count and time saved
+  const sortedFeatures = [...features].sort((a, b) => {
+    // Primary sort by usage count
+    if (a.usage_count !== b.usage_count) {
+      return b.usage_count - a.usage_count;
+    }
+    // Secondary sort by time saved
+    return b.time_saved_minutes - a.time_saved_minutes;
+  });
+
+  const topFeatures = sortedFeatures.slice(0, 3);
+  const maxUsage = Math.max(...features.map((f) => f.usage_count), 1);
+
+  // Calculate usage statistics
+  const totalUsages = features.reduce((sum, f) => sum + f.usage_count, 0);
+  const averageTimeSavedPerUsage =
+    totalUsages > 0
+      ? Math.round(
+          (features.reduce((sum, f) => sum + f.time_saved_minutes, 0) /
+            totalUsages) *
+            100,
+        ) / 100
+      : 0;
+
+  return (
+    <Card className={cn('p-6', className)}>
+      {/* Header */}
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900 flex items-center space-x-2">
+            <BarChart2 className="h-5 w-5 text-primary-600" />
+            <span>Feature Usage</span>
+          </h3>
+          <p className="text-sm text-gray-600 mt-1">
+            Track your platform engagement and time savings
+          </p>
+        </div>
+        <button
+          onClick={() => setIsExpanded(!isExpanded)}
+          className="flex items-center space-x-1 text-sm text-gray-500 hover:text-gray-700"
+        >
+          <span>{isExpanded ? 'Show Less' : 'Show All'}</span>
+          {isExpanded ? (
+            <ChevronUp className="h-4 w-4" />
+          ) : (
+            <ChevronDown className="h-4 w-4" />
+          )}
+        </button>
+      </div>
+
+      {/* Summary metrics */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+        <div className="text-center p-3 bg-blue-50 rounded-lg">
+          <div className="text-xl font-semibold text-blue-800">
+            {features.length}
+          </div>
+          <div className="text-xs text-blue-600 mt-1">Features Used</div>
+        </div>
+
+        <div className="text-center p-3 bg-green-50 rounded-lg">
+          <div className="text-xl font-semibold text-green-800">
+            {totalUsages}
+          </div>
+          <div className="text-xs text-green-600 mt-1">Total Uses</div>
+        </div>
+
+        <div className="text-center p-3 bg-purple-50 rounded-lg">
+          <div className="text-xl font-semibold text-purple-800">
+            {averageTimeSavedPerUsage}m
+          </div>
+          <div className="text-xs text-purple-600 mt-1">Avg. Time/Use</div>
+        </div>
+      </div>
+
+      {/* Top features preview */}
+      {!isExpanded && topFeatures.length > 0 && (
+        <div className="space-y-3 mb-4">
+          <h4 className="text-sm font-medium text-gray-700">
+            Most Used Features:
+          </h4>
+          {topFeatures.map((feature) => (
+            <div
+              key={feature.id}
+              className="flex items-center space-x-3 p-3 bg-gray-50 rounded-lg"
+            >
+              <div
+                className={cn(
+                  'p-2 rounded-lg',
+                  getFeatureColor(feature.usage_count),
+                )}
+              >
+                {getFeatureIcon(feature.feature_key)}
+              </div>
+              <div className="flex-1">
+                <div className="flex items-center justify-between">
+                  <span className="font-medium text-gray-900 text-sm">
+                    {feature.feature_name}
+                  </span>
+                  <Badge variant="default" size="sm">
+                    {feature.usage_count} uses
+                  </Badge>
+                </div>
+                <div className="flex items-center justify-between mt-1">
+                  <Progress
+                    value={(feature.usage_count / maxUsage) * 100}
+                    className="h-1.5 flex-1 mr-3"
+                  />
+                  <span className="text-xs text-gray-500 flex items-center space-x-1">
+                    <Clock className="h-3 w-3" />
+                    <span>{feature.time_saved_minutes}m saved</span>
+                  </span>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Detailed feature list */}
+      {isExpanded && (
+        <div className="space-y-4">
+          <h4 className="text-sm font-medium text-gray-700 border-b border-gray-200 pb-2">
+            All Features ({features.length})
+          </h4>
+
+          {sortedFeatures.length > 0 ? (
+            <div className="space-y-3">
+              {sortedFeatures.map((feature) => (
+                <div
+                  key={feature.id}
+                  className="flex items-center space-x-4 p-4 border border-gray-200 rounded-lg hover:bg-gray-50"
+                >
+                  {/* Icon */}
+                  <div
+                    className={cn(
+                      'p-2 rounded-lg',
+                      getFeatureColor(feature.usage_count),
+                    )}
+                  >
+                    {getFeatureIcon(feature.feature_key)}
+                  </div>
+
+                  {/* Content */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between mb-2">
+                      <h5 className="font-medium text-gray-900 truncate">
+                        {feature.feature_name}
+                      </h5>
+                      <div className="flex items-center space-x-2 ml-2">
+                        <Badge
+                          variant={
+                            feature.usage_count >= 5 ? 'success' : 'default'
+                          }
+                          size="sm"
+                        >
+                          {feature.usage_count} uses
+                        </Badge>
+                      </div>
+                    </div>
+
+                    {/* Usage bar */}
+                    <div className="flex items-center space-x-3">
+                      <Progress
+                        value={(feature.usage_count / maxUsage) * 100}
+                        className="h-2 flex-1"
+                      />
+                      <div className="flex items-center space-x-1 text-xs text-gray-500 min-w-0 flex-shrink-0">
+                        <Clock className="h-3 w-3" />
+                        <span>{feature.time_saved_minutes}m</span>
+                      </div>
+                    </div>
+
+                    {/* Last used */}
+                    <div className="text-xs text-gray-500 mt-2">
+                      Last used:{' '}
+                      {new Date(feature.last_used_at).toLocaleDateString()}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-center py-8 text-gray-500">
+              <Activity className="h-12 w-12 mx-auto mb-3 text-gray-300" />
+              <p>No feature usage tracked yet</p>
+              <p className="text-xs mt-1">
+                Start using WedSync features to see your usage statistics
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Usage insights */}
+      {features.length > 0 && (
+        <div className="mt-6 p-4 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg">
+          <div className="flex items-start space-x-3">
+            <TrendingUp className="h-5 w-5 text-blue-600 mt-0.5 flex-shrink-0" />
+            <div>
+              <h4 className="text-sm font-medium text-blue-900 mb-1">
+                Usage Insights
+              </h4>
+              <p className="text-xs text-blue-800">
+                {features.length >= 5
+                  ? "Excellent engagement! You're exploring many features."
+                  : totalUsages >= 10
+                    ? "Great usage patterns! You're getting familiar with key features."
+                    : 'Good start! Try exploring more features to maximize your trial value.'}
+              </p>
+              {totalTimeSaved >= 2 && (
+                <p className="text-xs text-blue-700 mt-1">
+                  You've saved {Math.round(totalTimeSaved)} hours - that's
+                  approximately ${Math.round(totalTimeSaved * 50)} in value!
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Encouragement for low usage */}
+      {features.length === 0 && (
+        <div className="text-center py-8">
+          <Activity className="h-16 w-16 mx-auto mb-4 text-gray-300" />
+          <h4 className="text-lg font-medium text-gray-700 mb-2">
+            Ready to explore WedSync?
+          </h4>
+          <p className="text-sm text-gray-600 mb-4">
+            Start using features to track your time savings and see your ROI
+            grow.
+          </p>
+          <div className="grid grid-cols-2 gap-2 text-xs text-gray-500">
+            <div>• Add your first client</div>
+            <div>• Create a journey</div>
+            <div>• Import guest list</div>
+            <div>• Setup automation</div>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}

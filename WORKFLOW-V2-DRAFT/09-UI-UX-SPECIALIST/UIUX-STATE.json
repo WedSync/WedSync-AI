@@ -1,0 +1,67 @@
+{
+  "uiux_state": {
+    "last_updated": "2025-01-20T15:30:00Z",
+    "current_mode": "READY_FOR_DECISIONS",
+    "pending_decisions": [
+      {
+        "id": "DECISION-001",
+        "feature": "WS-218",
+        "component": "Next drag-drop component",
+        "status": "awaiting_analysis",
+        "request_date": null,
+        "analysis_complete": false,
+        "user_approval": null,
+        "recommendation": null
+      }
+    ],
+    "governance_status": {
+      "last_scan_date": null,
+      "next_scan_due": "2025-01-20",
+      "critical_issues": [],
+      "pending_fixes": [],
+      "compliance_score": null
+    },
+    "technology_audit": {
+      "drag_drop_libraries": {
+        "@dnd-kit": {
+          "status": "approved_primary_choice",
+          "files_using": [],
+          "last_audit": null
+        },
+        "@hello-pangea/dnd": {
+          "status": "approved_kanban_workflows", 
+          "files_using": [],
+          "last_audit": null
+        },
+        "@xyflow/react": {
+          "status": "approved_specialized_workflows",
+          "files_using": [],
+          "last_audit": null
+        },
+        "react-dnd": {
+          "status": "legacy_migration_needed",
+          "files_using": [],
+          "migration_plan": "migrate_to_@dnd-kit"
+        },
+        "react-beautiful-dnd": {
+          "status": "deprecated_use_hello_pangea",
+          "files_using": [],
+          "action_required": "immediate_replacement"
+        }
+      }
+    },
+    "decision_history": [],
+    "next_actions": [
+      "Run initial governance scan to establish baseline",
+      "Process any pending drag-drop technology decisions",
+      "Review production files for compliance",
+      "Set up weekly governance monitoring"
+    ],
+    "instructions_for_claude": {
+      "on_session_start": "Read this file first. Process all 'pending_decisions'. Run governance scan if next_scan_due is past.",
+      "decision_process": "1. Analyze requirement, 2. Present structured approval request, 3. Wait for user approval, 4. Update this file with decision",
+      "state_management": "This file contains ALL state. Never assume memory from previous sessions. Always read this file first.", 
+      "governance_workflow": "Run scans weekly. Update this file with results. Track all compliance issues."
+    }
+  }
+}

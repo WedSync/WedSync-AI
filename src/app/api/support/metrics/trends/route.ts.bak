@@ -1,0 +1,268 @@
+/**
+ * Trends Metrics API
+ * WS-235: Support Operations Ticket Management System
+ * 
+ * Provides time-series metrics for trend analysis
+ * Routes: GET /api/support/metrics/trends
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+
+/**
+ * GET /api/support/metrics/trends - Get trend data for metrics
+ */
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = createServerComponentClient({ cookies });
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Verify user permissions (admin, manager, or support_agent)
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('role')
+      .eq('id', user.id)
+      .single();
+
+    if (!profile || !['admin', 'manager', 'support_agent'].includes(profile.role || '')) {
+      return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 });
+    }
+
+    // Get time range from query parameters
+    const { searchParams } = new URL(request.url);
+    const range = searchParams.get('range') || '7d';
+
+    // Calculate date range and intervals
+    const endDate = new Date();
+    const startDate = new Date();
+    let intervalDuration: 'hour' | 'day' | 'week' = 'day';
+    
+    switch (range) {
+      case '24h':
+        startDate.setHours(startDate.getHours() - 24);
+        intervalDuration = 'hour';
+        break;
+      case '7d':
+        startDate.setDate(startDate.getDate() - 7);
+        intervalDuration = 'day';
+        break;
+      case '30d':
+        startDate.setDate(startDate.getDate() - 30);
+        intervalDuration = 'day';
+        break;
+      case '90d':
+        startDate.setDate(startDate.getDate() - 90);
+        intervalDuration = 'week';
+        break;
+      default:
+        startDate.setDate(startDate.getDate() - 7);
+        intervalDuration = 'day';
+    }
+
+    try {
+      // Try to use stored procedure first
+      const { data: trends, error } = await supabase
+        .rpc('get_support_trends', {
+          start_date: startDate.toISOString(),
+          end_date: endDate.toISOString(),
+          interval_duration: intervalDuration
+        });
+
+      if (error || !trends) {
+        // Fall back to manual calculation
+        const fallbackTrends = await calculateTrendsManually(supabase, startDate, endDate, intervalDuration);
+        return NextResponse.json({
+          trends: fallbackTrends,
+          time_range: range,
+          interval: intervalDuration,
+          calculated_at: new Date().toISOString()
+        });
+      }
+
+      return NextResponse.json({
+        trends,
+        time_range: range,
+        interval: intervalDuration,
+        calculated_at: new Date().toISOString()
+      });
+
+    } catch (error) {
+      console.error('Error with stored procedure, falling back to manual calculation:', error);
+      const fallbackTrends = await calculateTrendsManually(supabase, startDate, endDate, intervalDuration);
+      return NextResponse.json({
+        trends: fallbackTrends,
+        time_range: range,
+        interval: intervalDuration,
+        calculated_at: new Date().toISOString()
+      });
+    }
+
+  } catch (error) {
+    console.error('GET /api/support/metrics/trends error:', error);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
+}
+
+/**
+ * Manual calculation of trend metrics
+ */
+async function calculateTrendsManually(
+  supabase: any, 
+  startDate: Date, 
+  endDate: Date, 
+  intervalDuration: 'hour' | 'day' | 'week'
+) {
+  try {
+    // Get all tickets in the time range
+    const { data: tickets } = await supabase
+      .from('support_tickets')
+      .select(`
+        id,
+        status,
+        priority,
+        category,
+        customer_tier,
+        created_at,
+        resolved_at,
+        first_response_at,
+        is_wedding_emergency
+      `)
+      .gte('created_at', startDate.toISOString())
+      .lte('created_at', endDate.toISOString());
+
+    if (!tickets) {
+      return [];
+    }
+
+    // Generate time intervals
+    const intervals = generateTimeIntervals(startDate, endDate, intervalDuration);
+    
+    // Calculate metrics for each interval
+    const trends = intervals.map(interval => {
+      const intervalStart = new Date(interval.start);
+      const intervalEnd = new Date(interval.end);
+
+      // Filter tickets for this interval
+      const intervalTickets = tickets.filter(ticket => {
+        const createdAt = new Date(ticket.created_at);
+        return createdAt >= intervalStart && createdAt < intervalEnd;
+      });
+
+      const resolvedTickets = tickets.filter(ticket => {
+        const resolvedAt = ticket.resolved_at ? new Date(ticket.resolved_at) : null;
+        return resolvedAt && resolvedAt >= intervalStart && resolvedAt < intervalEnd;
+      });
+
+      // Calculate response times for this interval
+      const responseTimes = intervalTickets
+        .filter(t => t.first_response_at)
+        .map(t => {
+          const created = new Date(t.created_at).getTime();
+          const responded = new Date(t.first_response_at).getTime();
+          return (responded - created) / (1000 * 60); // minutes
+        });
+
+      const avgResponseTime = responseTimes.length > 0 
+        ? responseTimes.reduce((a, b) => a + b, 0) / responseTimes.length 
+        : 0;
+
+      // Mock satisfaction score (would come from surveys)
+      const satisfactionScore = 4.0 + (Math.random() * 1.0); // 4.0 - 5.0 range
+
+      return {
+        date: interval.label,
+        tickets_created: intervalTickets.length,
+        tickets_resolved: resolvedTickets.length,
+        response_time: Math.round(avgResponseTime * 100) / 100, // Round to 2 decimals
+        satisfaction_score: Math.round(satisfactionScore * 10) / 10, // Round to 1 decimal
+        wedding_emergencies: intervalTickets.filter(t => t.is_wedding_emergency).length,
+        critical_tickets: intervalTickets.filter(t => t.priority === 'critical').length,
+        escalated_tickets: intervalTickets.filter(t => t.escalation_level > 0).length
+      };
+    });
+
+    return trends;
+
+  } catch (error) {
+    console.error('Error calculating trends manually:', error);
+    return [];
+  }
+}
+
+/**
+ * Generate time intervals for trend analysis
+ */
+function generateTimeIntervals(
+  startDate: Date, 
+  endDate: Date, 
+  intervalDuration: 'hour' | 'day' | 'week'
+): Array<{ start: string; end: string; label: string }> {
+  const intervals: Array<{ start: string; end: string; label: string }> = [];
+  const current = new Date(startDate);
+
+  while (current < endDate) {
+    const intervalStart = new Date(current);
+    let intervalEnd: Date;
+    let label: string;
+
+    switch (intervalDuration) {
+      case 'hour':
+        intervalEnd = new Date(current.getTime() + 60 * 60 * 1000);
+        label = intervalStart.toLocaleString('en-US', { 
+          month: 'short', 
+          day: 'numeric', 
+          hour: 'numeric',
+          hour12: false
+        });
+        current.setHours(current.getHours() + 1);
+        break;
+      
+      case 'day':
+        intervalEnd = new Date(current);
+        intervalEnd.setDate(intervalEnd.getDate() + 1);
+        label = intervalStart.toLocaleDateString('en-US', { 
+          month: 'short', 
+          day: 'numeric' 
+        });
+        current.setDate(current.getDate() + 1);
+        break;
+      
+      case 'week':
+        intervalEnd = new Date(current);
+        intervalEnd.setDate(intervalEnd.getDate() + 7);
+        const weekEnd = new Date(intervalEnd);
+        weekEnd.setDate(weekEnd.getDate() - 1);
+        label = `${intervalStart.toLocaleDateString('en-US', { 
+          month: 'short', 
+          day: 'numeric' 
+        })} - ${weekEnd.toLocaleDateString('en-US', { 
+          month: 'short', 
+          day: 'numeric' 
+        })}`;
+        current.setDate(current.getDate() + 7);
+        break;
+      
+      default:
+        intervalEnd = new Date(current);
+        intervalEnd.setDate(intervalEnd.getDate() + 1);
+        label = intervalStart.toLocaleDateString();
+        current.setDate(current.getDate() + 1);
+    }
+
+    // Don't include intervals that extend beyond the end date
+    if (intervalEnd <= endDate) {
+      intervals.push({
+        start: intervalStart.toISOString(),
+        end: intervalEnd.toISOString(),
+        label
+      });
+    }
+  }
+
+  return intervals;
+}

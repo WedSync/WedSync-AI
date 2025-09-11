@@ -1,0 +1,635 @@
+/**
+ * Widget API Tests - WS-037 Widget Endpoint Test Suite
+ * Team B - Round 2 Implementation
+ * Comprehensive testing for widget API endpoints
+ */
+
+import { NextRequest } from 'next/server'
+import { GET, PUT, POST, DELETE } from '@/app/api/dashboard/widgets/[type]/route'
+import { createClient } from '@/lib/supabase/server'
+import { WidgetService } from '@/lib/services/widgetService'
+
+// Mock dependencies
+jest.mock('@/lib/supabase/server')
+jest.mock('@/lib/services/widgetService')
+jest.mock('@/lib/rate-limit')
+
+const mockCreateClient = createClient as jest.MockedFunction<typeof createClient>
+const mockWidgetService = WidgetService as jest.MockedClass<typeof WidgetService>
+
+// Mock Supabase client
+const mockSupabaseClient = {
+  auth: {
+    getUser: jest.fn()
+  }
+}
+
+// Mock rate limiter
+const mockRateLimit = {
+  check: jest.fn().mockResolvedValue({
+    success: true,
+    limit: 300,
+    remaining: 299,
+    reset: Date.now() + 60000
+  })
+}
+
+// Mock user data
+const mockUser = {
+  id: '123e4567-e89b-12d3-a456-426614174000',
+  email: 'test@example.com'
+}
+
+// Mock widget data
+const mockWidgetData = {
+  widget_id: 'widget-123',
+  widget_type: 'summary',
+  data: {
+    total_weddings: 10,
+    active_weddings: 5,
+    total_revenue: 50000,
+    visible_metrics: ['total_weddings', 'active_weddings', 'total_revenue']
+  },
+  last_updated: new Date().toISOString(),
+  cache_expires: new Date(Date.now() + 300000).toISOString()
+}
+
+const mockWidget = {
+  id: 'widget-123',
+  supplier_id: mockUser.id,
+  widget_type: 'summary',
+  widget_config: {
+    title: 'Dashboard Summary',
+    showMetrics: ['total_weddings', 'active_weddings', 'total_revenue']
+  },
+  position_x: 0,
+  position_y: 0,
+  width: 2,
+  height: 1,
+  is_enabled: true,
+  created_at: new Date().toISOString(),
+  updated_at: new Date().toISOString()
+}
+
+// Helper to create mock context with params
+const createMockContext = (type: string) => ({
+  params: Promise.resolve({ type })
+})
+
+describe('Widget API', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+    mockCreateClient.mockReturnValue(mockSupabaseClient as any)
+    
+    // Mock rate limiter
+    require('@/lib/rate-limit').default = jest.fn(() => mockRateLimit)
+  })
+
+  describe('GET /api/dashboard/widgets/[type]', () => {
+    it('should return widget data for valid widget type', async () => {
+      // Setup mocks
+      mockSupabaseClient.auth.getUser.mockResolvedValue({
+        data: { user: mockUser },
+        error: null
+      })
+
+      const mockServiceInstance = {
+        getWidgetData: jest.fn().mockResolvedValue(mockWidgetData)
+      }
+      mockWidgetService.mockImplementation(() => mockServiceInstance as any)
+
+      // Create test request
+      const request = new NextRequest('http://localhost:3000/api/dashboard/widgets/summary', {
+        method: 'GET'
+      })
+
+      const context = createMockContext('summary')
+
+      // Execute
+      const response = await GET(request, context as any)
+      const data = await response.json()
+
+      // Assertions
+      expect(response.status).toBe(200)
+      expect(data.success).toBe(true)
+      expect(data.data.widget_type).toBe('summary')
+      expect(data.data.widget_data).toEqual(mockWidgetData.data)
+      expect(response.headers.get('X-Widget-Type')).toBe('summary')
+      expect(mockServiceInstance.getWidgetData).toHaveBeenCalledWith('summary', {})
+    })
+
+    it('should handle widget configuration parameters', async () => {
+      // Setup mocks
+      mockSupabaseClient.auth.getUser.mockResolvedValue({
+        data: { user: mockUser },
+        error: null
+      })
+
+      const mockServiceInstance = {
+        getWidgetData: jest.fn().mockResolvedValue(mockWidgetData)
+      }
+      mockWidgetService.mockImplementation(() => mockServiceInstance as any)
+
+      // Create test request with query parameters
+      const request = new NextRequest('http://localhost:3000/api/dashboard/widgets/upcoming_weddings?limit=10&daysAhead=30&showComparison=true', {
+        method: 'GET'
+      })
+
+      const context = createMockContext('upcoming_weddings')
+
+      // Execute
+      const response = await GET(request, context as any)
+      const data = await response.json()
+
+      // Assertions
+      expect(response.status).toBe(200)
+      expect(mockServiceInstance.getWidgetData).toHaveBeenCalledWith('upcoming_weddings', {
+        limit: 10,
+        daysAhead: 30,
+        showComparison: true
+      })
+    })
+
+    it('should return 400 for invalid widget type', async () => {
+      // Create test request with invalid widget type
+      const request = new NextRequest('http://localhost:3000/api/dashboard/widgets/invalid_type', {
+        method: 'GET'
+      })
+
+      const context = createMockContext('invalid_type')
+
+      // Execute
+      const response = await GET(request, context as any)
+      const data = await response.json()
+
+      // Assertions
+      expect(response.status).toBe(400)
+      expect(data.success).toBe(false)
+      expect(data.error).toContain('Invalid widget type')
+    })
+
+    it('should return 401 for unauthenticated user', async () => {
+      // Setup mocks
+      mockSupabaseClient.auth.getUser.mockResolvedValue({
+        data: { user: null },
+        error: new Error('Authentication required')
+      })
+
+      // Create test request
+      const request = new NextRequest('http://localhost:3000/api/dashboard/widgets/summary', {
+        method: 'GET'
+      })
+
+      const context = createMockContext('summary')
+
+      // Execute
+      const response = await GET(request, context as any)
+      const data = await response.json()
+
+      // Assertions
+      expect(response.status).toBe(401)
+      expect(data.success).toBe(false)
+      expect(data.error).toContain('Authentication required')
+    })
+
+    it('should handle rate limiting', async () => {
+      // Setup rate limit mock
+      mockRateLimit.check.mockResolvedValue({
+        success: false,
+        limit: 300,
+        remaining: 0,
+        reset: Date.now() + 60000,
+        retryAfter: 60
+      })
+
+      // Create test request
+      const request = new NextRequest('http://localhost:3000/api/dashboard/widgets/summary', {
+        method: 'GET'
+      })
+
+      const context = createMockContext('summary')
+
+      // Execute
+      const response = await GET(request, context as any)
+      const data = await response.json()
+
+      // Assertions
+      expect(response.status).toBe(429)
+      expect(data.error).toContain('Rate limit exceeded')
+      expect(response.headers.get('Retry-After')).toBe('60')
+    })
+
+    it('should handle array parameters correctly', async () => {
+      // Setup mocks
+      mockSupabaseClient.auth.getUser.mockResolvedValue({
+        data: { user: mockUser },
+        error: null
+      })
+
+      const mockServiceInstance = {
+        getWidgetData: jest.fn().mockResolvedValue(mockWidgetData)
+      }
+      mockWidgetService.mockImplementation(() => mockServiceInstance as any)
+
+      // Create test request with array parameters
+      const request = new NextRequest('http://localhost:3000/api/dashboard/widgets/tasks?showTypes=overdue,due_today&showMetrics=total,pending', {
+        method: 'GET'
+      })
+
+      const context = createMockContext('tasks')
+
+      // Execute
+      const response = await GET(request, context as any)
+
+      // Assertions
+      expect(response.status).toBe(200)
+      expect(mockServiceInstance.getWidgetData).toHaveBeenCalledWith('tasks', {
+        showTypes: ['overdue', 'due_today'],
+        showMetrics: ['total', 'pending']
+      })
+    })
+  })
+
+  describe('PUT /api/dashboard/widgets/[type]', () => {
+    it('should update widget configuration successfully', async () => {
+      // Setup mocks
+      mockSupabaseClient.auth.getUser.mockResolvedValue({
+        data: { user: mockUser },
+        error: null
+      })
+
+      const updatedWidget = { ...mockWidget, widget_config: { title: 'Updated Summary' } }
+      const mockServiceInstance = {
+        updateWidget: jest.fn().mockResolvedValue(updatedWidget)
+      }
+      mockWidgetService.mockImplementation(() => mockServiceInstance as any)
+
+      // Create test request
+      const request = new NextRequest('http://localhost:3000/api/dashboard/widgets/summary', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          widget_id: 'widget-123',
+          config: {
+            title: 'Updated Summary'
+          },
+          position: {
+            position_x: 2,
+            position_y: 1
+          },
+          is_enabled: true
+        })
+      })
+
+      const context = createMockContext('summary')
+
+      // Execute
+      const response = await PUT(request, context as any)
+      const data = await response.json()
+
+      // Assertions
+      expect(response.status).toBe(200)
+      expect(data.success).toBe(true)
+      expect(data.data.widget).toEqual(updatedWidget)
+      expect(mockServiceInstance.updateWidget).toHaveBeenCalledWith('widget-123', {
+        widget_config: { title: 'Updated Summary' },
+        position_x: 2,
+        position_y: 1,
+        is_enabled: true
+      })
+    })
+
+    it('should return 400 for invalid widget configuration', async () => {
+      // Setup mocks
+      mockSupabaseClient.auth.getUser.mockResolvedValue({
+        data: { user: mockUser },
+        error: null
+      })
+
+      // Create test request with invalid data
+      const request = new NextRequest('http://localhost:3000/api/dashboard/widgets/summary', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          widget_id: 'invalid-id', // Not a valid UUID
+          config: {
+            title: '' // Empty title
+          }
+        })
+      })
+
+      const context = createMockContext('summary')
+
+      // Execute
+      const response = await PUT(request, context as any)
+      const data = await response.json()
+
+      // Assertions
+      expect(response.status).toBe(400)
+      expect(data.success).toBe(false)
+      expect(data.error).toContain('Invalid')
+    })
+
+    it('should handle service errors gracefully', async () => {
+      // Setup mocks
+      mockSupabaseClient.auth.getUser.mockResolvedValue({
+        data: { user: mockUser },
+        error: null
+      })
+
+      const mockServiceInstance = {
+        updateWidget: jest.fn().mockRejectedValue(new Error('Widget not found'))
+      }
+      mockWidgetService.mockImplementation(() => mockServiceInstance as any)
+
+      // Create test request
+      const request = new NextRequest('http://localhost:3000/api/dashboard/widgets/summary', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          widget_id: 'widget-123',
+          config: {
+            title: 'Updated Summary'
+          }
+        })
+      })
+
+      const context = createMockContext('summary')
+
+      // Execute
+      const response = await PUT(request, context as any)
+      const data = await response.json()
+
+      // Assertions
+      expect(response.status).toBe(500)
+      expect(data.success).toBe(false)
+      expect(data.error).toContain('Widget not found')
+    })
+  })
+
+  describe('POST /api/dashboard/widgets/[type]', () => {
+    it('should add new widget successfully', async () => {
+      // Setup mocks
+      mockSupabaseClient.auth.getUser.mockResolvedValue({
+        data: { user: mockUser },
+        error: null
+      })
+
+      const mockServiceInstance = {
+        addWidget: jest.fn().mockResolvedValue(mockWidget)
+      }
+      mockWidgetService.mockImplementation(() => mockServiceInstance as any)
+
+      // Create test request
+      const request = new NextRequest('http://localhost:3000/api/dashboard/widgets/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          config: {
+            title: 'Recent Messages',
+            limit: 5,
+            unreadOnly: true
+          },
+          position: {
+            position_x: 4,
+            position_y: 2,
+            width: 2,
+            height: 1
+          }
+        })
+      })
+
+      const context = createMockContext('messages')
+
+      // Execute
+      const response = await POST(request, context as any)
+      const data = await response.json()
+
+      // Assertions
+      expect(response.status).toBe(201)
+      expect(data.success).toBe(true)
+      expect(data.data.widget).toEqual(mockWidget)
+      expect(mockServiceInstance.addWidget).toHaveBeenCalledWith(
+        'messages',
+        {
+          title: 'Recent Messages',
+          limit: 5,
+          unreadOnly: true
+        },
+        {
+          position_x: 4,
+          position_y: 2,
+          width: 2,
+          height: 1
+        }
+      )
+    })
+
+    it('should add widget with default configuration', async () => {
+      // Setup mocks
+      mockSupabaseClient.auth.getUser.mockResolvedValue({
+        data: { user: mockUser },
+        error: null
+      })
+
+      const mockServiceInstance = {
+        addWidget: jest.fn().mockResolvedValue(mockWidget)
+      }
+      mockWidgetService.mockImplementation(() => mockServiceInstance as any)
+
+      // Create test request with minimal data
+      const request = new NextRequest('http://localhost:3000/api/dashboard/widgets/revenue', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({})
+      })
+
+      const context = createMockContext('revenue')
+
+      // Execute
+      const response = await POST(request, context as any)
+      const data = await response.json()
+
+      // Assertions
+      expect(response.status).toBe(201)
+      expect(data.success).toBe(true)
+      expect(mockServiceInstance.addWidget).toHaveBeenCalledWith('revenue', undefined, undefined)
+    })
+  })
+
+  describe('DELETE /api/dashboard/widgets/[type]', () => {
+    it('should remove widget successfully', async () => {
+      // Setup mocks
+      mockSupabaseClient.auth.getUser.mockResolvedValue({
+        data: { user: mockUser },
+        error: null
+      })
+
+      const mockServiceInstance = {
+        removeWidget: jest.fn().mockResolvedValue(true)
+      }
+      mockWidgetService.mockImplementation(() => mockServiceInstance as any)
+
+      // Create test request
+      const request = new NextRequest('http://localhost:3000/api/dashboard/widgets/summary?widget_id=widget-123', {
+        method: 'DELETE'
+      })
+
+      const context = createMockContext('summary')
+
+      // Execute
+      const response = await DELETE(request, context as any)
+      const data = await response.json()
+
+      // Assertions
+      expect(response.status).toBe(200)
+      expect(data.success).toBe(true)
+      expect(data.data.widget_id).toBe('widget-123')
+      expect(mockServiceInstance.removeWidget).toHaveBeenCalledWith('widget-123')
+    })
+
+    it('should return 400 for missing widget_id', async () => {
+      // Setup mocks
+      mockSupabaseClient.auth.getUser.mockResolvedValue({
+        data: { user: mockUser },
+        error: null
+      })
+
+      // Create test request without widget_id
+      const request = new NextRequest('http://localhost:3000/api/dashboard/widgets/summary', {
+        method: 'DELETE'
+      })
+
+      const context = createMockContext('summary')
+
+      // Execute
+      const response = await DELETE(request, context as any)
+      const data = await response.json()
+
+      // Assertions
+      expect(response.status).toBe(400)
+      expect(data.error).toContain('Valid widget_id is required')
+    })
+
+    it('should return 400 for invalid widget_id format', async () => {
+      // Setup mocks
+      mockSupabaseClient.auth.getUser.mockResolvedValue({
+        data: { user: mockUser },
+        error: null
+      })
+
+      // Create test request with invalid UUID
+      const request = new NextRequest('http://localhost:3000/api/dashboard/widgets/summary?widget_id=invalid-id', {
+        method: 'DELETE'
+      })
+
+      const context = createMockContext('summary')
+
+      // Execute
+      const response = await DELETE(request, context as any)
+      const data = await response.json()
+
+      // Assertions
+      expect(response.status).toBe(400)
+      expect(data.error).toContain('Valid widget_id is required')
+    })
+
+    it('should return 404 when widget is not found', async () => {
+      // Setup mocks
+      mockSupabaseClient.auth.getUser.mockResolvedValue({
+        data: { user: mockUser },
+        error: null
+      })
+
+      const mockServiceInstance = {
+        removeWidget: jest.fn().mockResolvedValue(false)
+      }
+      mockWidgetService.mockImplementation(() => mockServiceInstance as any)
+
+      // Create test request
+      const request = new NextRequest('http://localhost:3000/api/dashboard/widgets/summary?widget_id=123e4567-e89b-12d3-a456-426614174000', {
+        method: 'DELETE'
+      })
+
+      const context = createMockContext('summary')
+
+      // Execute
+      const response = await DELETE(request, context as any)
+      const data = await response.json()
+
+      // Assertions
+      expect(response.status).toBe(404)
+      expect(data.error).toContain('Widget not found')
+    })
+  })
+
+  describe('Performance and Headers', () => {
+    it('should include performance metrics in response headers', async () => {
+      // Setup mocks
+      mockSupabaseClient.auth.getUser.mockResolvedValue({
+        data: { user: mockUser },
+        error: null
+      })
+
+      const mockServiceInstance = {
+        getWidgetData: jest.fn().mockResolvedValue(mockWidgetData)
+      }
+      mockWidgetService.mockImplementation(() => mockServiceInstance as any)
+
+      // Create test request
+      const request = new NextRequest('http://localhost:3000/api/dashboard/widgets/summary', {
+        method: 'GET'
+      })
+
+      const context = createMockContext('summary')
+
+      // Execute
+      const response = await GET(request, context as any)
+
+      // Assertions
+      expect(response.status).toBe(200)
+      expect(response.headers.get('X-Response-Time')).toBeDefined()
+      expect(response.headers.get('X-Widget-Type')).toBe('summary')
+      expect(response.headers.get('Cache-Control')).toBe('private, max-age=300')
+    })
+
+    it('should include rate limit headers', async () => {
+      // Setup mocks
+      mockSupabaseClient.auth.getUser.mockResolvedValue({
+        data: { user: mockUser },
+        error: null
+      })
+
+      const mockServiceInstance = {
+        getWidgetData: jest.fn().mockResolvedValue(mockWidgetData)
+      }
+      mockWidgetService.mockImplementation(() => mockServiceInstance as any)
+
+      // Create test request
+      const request = new NextRequest('http://localhost:3000/api/dashboard/widgets/summary', {
+        method: 'GET'
+      })
+
+      const context = createMockContext('summary')
+
+      // Execute
+      const response = await GET(request, context as any)
+
+      // Assertions
+      expect(response.status).toBe(200)
+      expect(response.headers.get('X-RateLimit-Limit')).toBe('300')
+      expect(response.headers.get('X-RateLimit-Remaining')).toBe('299')
+      expect(response.headers.get('X-RateLimit-Reset')).toBeDefined()
+    })
+  })
+})

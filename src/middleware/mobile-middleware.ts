@@ -1,0 +1,641 @@
+import { NextRequest, NextResponse, userAgent } from 'next/server';
+// import Redis from 'ioredis'; // Disabled for Edge Runtime compatibility
+
+export interface MobileContext {
+  deviceType: 'mobile' | 'tablet' | 'desktop' | 'tv';
+  platform: 'ios' | 'android' | 'windows' | 'macos' | 'linux' | 'unknown';
+  browserEngine: 'webkit' | 'blink' | 'gecko' | 'edge' | 'unknown';
+  supportsPWA: boolean;
+  supportsWebP: boolean;
+  networkQuality: 'fast' | 'medium' | 'slow' | 'offline';
+  batteryLevel?: number;
+  isLowPowerMode?: boolean;
+  screenSize: {
+    width: number;
+    height: number;
+    density: number;
+  };
+  capabilities: {
+    serviceWorker: boolean;
+    push: boolean;
+    notifications: boolean;
+    backgroundSync: boolean;
+    camera: boolean;
+    location: boolean;
+  };
+  // Additional properties for compatibility with main middleware
+  isMobile: boolean;
+  touchCapable: boolean;
+  isSlowConnection: boolean;
+}
+
+interface MobileOptimizationConfig {
+  imageOptimization: {
+    formats: string[];
+    qualityByConnection: Record<string, number>;
+    maxSizeByDevice: Record<string, number>;
+  };
+  caching: {
+    ttlByResourceType: Record<string, number>;
+    maxCacheSizeByDevice: Record<string, number>;
+    compressionLevel: number;
+  };
+  performance: {
+    maxConcurrentRequests: number;
+    requestTimeoutByConnection: Record<string, number>;
+    prefetchThreshold: number;
+  };
+}
+
+export class MobileMiddleware {
+  // Edge Runtime compatible in-memory cache
+  private memoryCache = new Map<string, {data: any, expiry: number}>();
+  private optimizationConfig: MobileOptimizationConfig;
+
+  constructor() {
+    this.initializeOptimizationConfig();
+  }
+
+  private initializeOptimizationConfig(): void {
+    this.optimizationConfig = {
+      imageOptimization: {
+        formats: ['webp', 'avif', 'jpeg', 'png'],
+        qualityByConnection: {
+          fast: 90,
+          medium: 75,
+          slow: 60,
+          offline: 0,
+        },
+        maxSizeByDevice: {
+          mobile: 800,
+          tablet: 1200,
+          desktop: 1920,
+        },
+      },
+      caching: {
+        ttlByResourceType: {
+          'wedding-data': 300, // 5 minutes
+          'supplier-profiles': 1800, // 30 minutes
+          'static-assets': 86400, // 24 hours
+          'user-preferences': 3600, // 1 hour
+        },
+        maxCacheSizeByDevice: {
+          mobile: 50 * 1024 * 1024, // 50MB
+          tablet: 100 * 1024 * 1024, // 100MB
+          desktop: 200 * 1024 * 1024, // 200MB
+        },
+        compressionLevel: 6,
+      },
+      performance: {
+        maxConcurrentRequests: 4,
+        requestTimeoutByConnection: {
+          fast: 10000,
+          medium: 20000,
+          slow: 30000,
+        },
+        prefetchThreshold: 0.7,
+      },
+    };
+  }
+
+  async processRequest(
+    request: NextRequest,
+  ): Promise<{ context: MobileContext; response?: NextResponse }> {
+    const userAgentData = userAgent(request);
+    const clientHints = this.extractClientHints(request);
+
+    // Detect mobile context
+    const context = await this.detectMobileContext(
+      userAgentData.ua,
+      clientHints,
+      request,
+    );
+
+    // Check if we should serve cached response
+    const cacheKey = this.generateCacheKey(request.url, context);
+    const cachedResponse = await this.getCachedResponse(cacheKey, context);
+
+    if (cachedResponse) {
+      return { context, response: cachedResponse };
+    }
+
+    return { context };
+  }
+
+  private extractClientHints(request: NextRequest): any {
+    return {
+      viewportWidth: parseInt(
+        request.headers.get('sec-ch-viewport-width') || '0',
+      ),
+      viewportHeight: parseInt(
+        request.headers.get('sec-ch-viewport-height') || '0',
+      ),
+      devicePixelRatio: parseFloat(request.headers.get('sec-ch-dpr') || '1'),
+      deviceMemory: parseFloat(
+        request.headers.get('sec-ch-device-memory') || '4',
+      ),
+      downlink: parseFloat(request.headers.get('sec-ch-downlink') || '10'),
+      effectiveType: request.headers.get('sec-ch-ect') || '4g',
+    };
+  }
+
+  private async detectMobileContext(
+    userAgentString: string,
+    clientHints: any,
+    request: NextRequest,
+  ): Promise<MobileContext> {
+    // Device type detection
+    const deviceType = this.detectDeviceType(userAgentString, clientHints);
+    const platform = this.detectPlatform(userAgentString);
+    const browserEngine = this.detectBrowserEngine(userAgentString);
+
+    // PWA and capability detection
+    const supportsPWA = this.detectPWASupport(userAgentString);
+    const supportsWebP =
+      request.headers.get('accept')?.includes('image/webp') || false;
+
+    // Network quality estimation
+    const networkQuality = this.estimateNetworkQuality(clientHints);
+
+    // Screen information from client hints or defaults
+    const screenSize = {
+      width:
+        clientHints.viewportWidth || this.getDefaultScreenWidth(deviceType),
+      height:
+        clientHints.viewportHeight || this.getDefaultScreenHeight(deviceType),
+      density: clientHints.devicePixelRatio || 1,
+    };
+
+    // Capability detection
+    const capabilities = {
+      serviceWorker: this.detectServiceWorkerSupport(userAgentString),
+      push: this.detectPushSupport(userAgentString),
+      notifications: this.detectNotificationSupport(userAgentString),
+      backgroundSync: this.detectBackgroundSyncSupport(userAgentString),
+      camera: platform === 'ios' || platform === 'android',
+      location: true, // Most modern browsers support geolocation
+    };
+
+    return {
+      deviceType,
+      platform,
+      browserEngine,
+      supportsPWA,
+      supportsWebP,
+      networkQuality,
+      screenSize,
+      capabilities,
+      // Compatibility properties
+      isMobile: deviceType === 'mobile',
+      touchCapable: deviceType === 'mobile' || deviceType === 'tablet',
+      isSlowConnection:
+        networkQuality === 'slow' || networkQuality === 'offline',
+    };
+  }
+
+  private detectDeviceType(
+    userAgent: string,
+    clientHints: any,
+  ): 'mobile' | 'tablet' | 'desktop' | 'tv' {
+    // Check viewport width first
+    if (clientHints.viewportWidth) {
+      if (clientHints.viewportWidth < 768) return 'mobile';
+      if (clientHints.viewportWidth < 1024) return 'tablet';
+      return 'desktop';
+    }
+
+    // Fallback to user agent parsing
+    const mobileRegex =
+      /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini/i;
+    const tabletRegex = /ipad|android.*(?!mobile)|tablet/i;
+
+    if (tabletRegex.test(userAgent)) return 'tablet';
+    if (mobileRegex.test(userAgent)) return 'mobile';
+
+    return 'desktop';
+  }
+
+  private detectPlatform(userAgent: string): MobileContext['platform'] {
+    if (/iphone|ipad|ipod/i.test(userAgent)) return 'ios';
+    if (/android/i.test(userAgent)) return 'android';
+    if (/windows/i.test(userAgent)) return 'windows';
+    if (/mac os x/i.test(userAgent)) return 'macos';
+    if (/linux/i.test(userAgent)) return 'linux';
+    return 'unknown';
+  }
+
+  private detectBrowserEngine(
+    userAgent: string,
+  ): MobileContext['browserEngine'] {
+    if (/webkit/i.test(userAgent) && /chrome/i.test(userAgent)) return 'blink';
+    if (/webkit/i.test(userAgent)) return 'webkit';
+    if (/gecko/i.test(userAgent)) return 'gecko';
+    if (/edge/i.test(userAgent)) return 'edge';
+    return 'unknown';
+  }
+
+  private detectPWASupport(userAgent: string): boolean {
+    // Most modern browsers support PWA features
+    return !/msie|trident/i.test(userAgent);
+  }
+
+  private detectServiceWorkerSupport(userAgent: string): boolean {
+    // Service workers supported in modern browsers
+    return !/msie|trident/i.test(userAgent) && !/android 4/i.test(userAgent);
+  }
+
+  private detectPushSupport(userAgent: string): boolean {
+    // Push notifications require HTTPS and modern browser
+    return this.detectServiceWorkerSupport(userAgent);
+  }
+
+  private detectNotificationSupport(userAgent: string): boolean {
+    return this.detectServiceWorkerSupport(userAgent);
+  }
+
+  private detectBackgroundSyncSupport(userAgent: string): boolean {
+    // Background sync is more limited - Chrome and Edge primarily
+    return /chrome|edge/i.test(userAgent) && !/msie|trident/i.test(userAgent);
+  }
+
+  private estimateNetworkQuality(
+    clientHints: any,
+  ): 'fast' | 'medium' | 'slow' | 'offline' {
+    const effectiveType = clientHints.effectiveType;
+    const downlink = clientHints.downlink;
+
+    if (!effectiveType && !downlink) return 'medium';
+
+    if (effectiveType === '4g' && downlink > 5) return 'fast';
+    if (effectiveType === '4g' || downlink > 2) return 'medium';
+    if (effectiveType === '3g' || effectiveType === '2g') return 'slow';
+
+    return 'medium';
+  }
+
+  private getDefaultScreenWidth(deviceType: string): number {
+    switch (deviceType) {
+      case 'mobile':
+        return 375;
+      case 'tablet':
+        return 768;
+      case 'desktop':
+        return 1920;
+      default:
+        return 375;
+    }
+  }
+
+  private getDefaultScreenHeight(deviceType: string): number {
+    switch (deviceType) {
+      case 'mobile':
+        return 667;
+      case 'tablet':
+        return 1024;
+      case 'desktop':
+        return 1080;
+      default:
+        return 667;
+    }
+  }
+
+  private generateCacheKey(url: string, context: MobileContext): string {
+    const urlObj = new URL(url);
+    return `mobile:${context.deviceType}:${context.networkQuality}:${urlObj.pathname}`;
+  }
+
+  private async getCachedResponse(
+    cacheKey: string,
+    context: MobileContext,
+  ): Promise<NextResponse | null> {
+    try {
+      const cached = this.memoryCache.get(cacheKey);
+      const now = Date.now();
+      if (cached && cached.expiry > now) {
+        const data = cached.data;
+        return new NextResponse(data.body, {
+          status: data.status,
+          headers: data.headers,
+        });
+      }
+    } catch (error) {
+      console.error('Cache retrieval error:', error);
+    }
+    return null;
+  }
+
+  async optimizeResponse(
+    response: NextResponse,
+    context: MobileContext,
+  ): Promise<NextResponse> {
+    const contentType = response.headers.get('content-type') || '';
+
+    // Handle different content types
+    if (contentType.includes('application/json')) {
+      return await this.optimizeJSONResponse(response, context);
+    } else if (contentType.includes('text/html')) {
+      return await this.optimizeHTMLResponse(response, context);
+    } else if (contentType.includes('image/')) {
+      return await this.optimizeImageResponse(response, context);
+    }
+
+    return response;
+  }
+
+  private async optimizeJSONResponse(
+    response: NextResponse,
+    context: MobileContext,
+  ): Promise<NextResponse> {
+    const data = await response.json();
+
+    // Apply mobile-specific data optimizations
+    let optimizedData = data;
+
+    // Reduce data payload for mobile devices
+    if (context.deviceType === 'mobile') {
+      optimizedData = this.reduceDataPayload(data, context);
+    }
+
+    // Apply compression based on network quality
+    const compressionLevel = this.getCompressionLevel(context.networkQuality);
+
+    const optimizedResponse = new NextResponse(JSON.stringify(optimizedData), {
+      status: response.status,
+      statusText: response.statusText,
+      headers: {
+        // SENIOR CODE REVIEWER FIX: Headers.entries() not available in all environments
+        ...Object.fromEntries(Array.from(response.headers.entries())),
+        'Content-Type': 'application/json',
+        'Content-Encoding': compressionLevel > 0 ? 'gzip' : '',
+        'Cache-Control': this.getCacheControl(context),
+        'X-Mobile-Optimized': 'true',
+        'X-Device-Type': context.deviceType,
+        'X-Network-Quality': context.networkQuality,
+      },
+    });
+
+    // Cache the optimized response
+    await this.cacheResponse(response, context, optimizedData);
+
+    return optimizedResponse;
+  }
+
+  private async optimizeHTMLResponse(
+    response: NextResponse,
+    context: MobileContext,
+  ): Promise<NextResponse> {
+    // For HTML responses, add mobile optimization headers
+    const optimizedResponse = new NextResponse(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: {
+        // SENIOR CODE REVIEWER FIX: Headers.entries() not available in all environments
+        ...Object.fromEntries(Array.from(response.headers.entries())),
+        'Cache-Control': this.getCacheControl(context),
+        'X-Mobile-Optimized': 'true',
+        'X-Device-Type': context.deviceType,
+        'X-Network-Quality': context.networkQuality,
+        'X-PWA-Support': context.supportsPWA.toString(),
+        'X-WebP-Support': context.supportsWebP.toString(),
+      },
+    });
+
+    return optimizedResponse;
+  }
+
+  private async optimizeImageResponse(
+    response: NextResponse,
+    context: MobileContext,
+  ): Promise<NextResponse> {
+    // Image optimization would typically be handled by a separate service
+    // Here we add headers to indicate optimization preferences
+    const quality =
+      this.optimizationConfig.imageOptimization.qualityByConnection[
+        context.networkQuality
+      ];
+    const maxSize =
+      this.optimizationConfig.imageOptimization.maxSizeByDevice[
+        context.deviceType
+      ];
+
+    const optimizedResponse = new NextResponse(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: {
+        // SENIOR CODE REVIEWER FIX: Headers.entries() not available in all environments
+        ...Object.fromEntries(Array.from(response.headers.entries())),
+        'Cache-Control': 'public, max-age=31536000, immutable',
+        'X-Image-Quality': quality.toString(),
+        'X-Image-Max-Size': maxSize.toString(),
+        'X-Mobile-Optimized': 'true',
+      },
+    });
+
+    return optimizedResponse;
+  }
+
+  private reduceDataPayload(data: any, context: MobileContext): any {
+    if (Array.isArray(data)) {
+      return data.map((item) => this.reduceDataPayload(item, context));
+    }
+
+    if (typeof data === 'object' && data !== null) {
+      const reduced: any = {};
+
+      // Wedding-specific mobile optimizations
+      for (const [key, value] of Object.entries(data)) {
+        switch (key) {
+          case 'supplier_profiles':
+            reduced[key] = this.reduceMobileSupplierProfiles(
+              value as any[],
+              context,
+            );
+            break;
+
+          case 'wedding_photos':
+            reduced[key] = this.reduceMobilePhotoData(value as any[], context);
+            break;
+
+          case 'timeline_events':
+            reduced[key] = this.reduceMobileTimelineEvents(
+              value as any[],
+              context,
+            );
+            break;
+
+          case 'budget_items':
+            reduced[key] = this.reduceMobileBudgetItems(
+              value as any[],
+              context,
+            );
+            break;
+
+          default:
+            // Keep essential fields, remove verbose descriptions on mobile
+            if (
+              context.deviceType === 'mobile' &&
+              key.includes('description') &&
+              typeof value === 'string' &&
+              value.length > 100
+            ) {
+              reduced[key] = value.substring(0, 100) + '...';
+            } else {
+              reduced[key] = this.reduceDataPayload(value, context);
+            }
+        }
+      }
+
+      return reduced;
+    }
+
+    return data;
+  }
+
+  private reduceMobileSupplierProfiles(
+    profiles: any[],
+    context: MobileContext,
+  ): any[] {
+    return profiles.map((profile) => ({
+      id: profile.id,
+      name: profile.name,
+      category: profile.category,
+      rating: profile.rating,
+      price_range: profile.price_range,
+      primary_image: this.optimizeImageForMobile(
+        profile.primary_image,
+        context,
+      ),
+      location: {
+        city: profile.location?.city,
+        state: profile.location?.state,
+      },
+      availability_status: profile.availability_status,
+      contact: {
+        phone: profile.contact?.phone,
+        email: profile.contact?.email,
+      },
+      // Remove detailed descriptions, portfolios, and reviews for mobile
+    }));
+  }
+
+  private reduceMobilePhotoData(photos: any[], context: MobileContext): any[] {
+    const maxPhotos = context.deviceType === 'mobile' ? 20 : 50;
+
+    return photos.slice(0, maxPhotos).map((photo) => ({
+      id: photo.id,
+      url: this.optimizeImageForMobile(photo.url, context),
+      thumbnail: this.optimizeImageForMobile(
+        photo.thumbnail,
+        context,
+        'thumbnail',
+      ),
+      alt: photo.alt,
+      upload_date: photo.upload_date,
+      category: photo.category,
+      // Remove EXIF data, full resolution URLs, etc. for mobile
+    }));
+  }
+
+  private reduceMobileTimelineEvents(
+    events: any[],
+    context: MobileContext,
+  ): any[] {
+    return events.map((event) => ({
+      id: event.id,
+      title: event.title,
+      start_time: event.start_time,
+      end_time: event.end_time,
+      status: event.status,
+      priority: event.priority,
+      supplier_id: event.supplier_id,
+      supplier_name: event.supplier_name,
+      // Remove detailed notes and attachments for mobile
+      notes:
+        context.deviceType === 'mobile'
+          ? event.notes?.substring(0, 50) + '...' || ''
+          : event.notes,
+    }));
+  }
+
+  private reduceMobileBudgetItems(items: any[], context: MobileContext): any[] {
+    return items.map((item) => ({
+      id: item.id,
+      category: item.category,
+      description:
+        context.deviceType === 'mobile'
+          ? item.description?.substring(0, 30) + '...'
+          : item.description,
+      budgeted_amount: item.budgeted_amount,
+      actual_amount: item.actual_amount,
+      status: item.status,
+      supplier_name: item.supplier_name,
+      // Remove detailed notes and attachments for mobile
+    }));
+  }
+
+  private optimizeImageForMobile(
+    imageUrl: string,
+    context: MobileContext,
+    variant: 'full' | 'thumbnail' = 'full',
+  ): string {
+    if (!imageUrl) return '';
+
+    const quality =
+      this.optimizationConfig.imageOptimization.qualityByConnection[
+        context.networkQuality
+      ];
+    const maxSize =
+      variant === 'thumbnail'
+        ? 150
+        : this.optimizationConfig.imageOptimization.maxSizeByDevice[
+            context.deviceType
+          ];
+    const format = context.supportsWebP ? 'webp' : 'jpeg';
+
+    // Add optimization parameters to image URL
+    const separator = imageUrl.includes('?') ? '&' : '?';
+    return `${imageUrl}${separator}format=${format}&quality=${quality}&w=${maxSize}&h=${maxSize}`;
+  }
+
+  private getCompressionLevel(networkQuality: string): number {
+    switch (networkQuality) {
+      case 'slow':
+        return 9;
+      case 'medium':
+        return 6;
+      case 'fast':
+        return 3;
+      default:
+        return 6;
+    }
+  }
+
+  private getCacheControl(context: MobileContext): string {
+    if (context.deviceType === 'mobile' && context.networkQuality === 'slow') {
+      return 'public, max-age=3600, stale-while-revalidate=86400';
+    }
+    return 'public, max-age=300, stale-while-revalidate=3600';
+  }
+
+  private async cacheResponse(
+    response: NextResponse,
+    context: MobileContext,
+    data: any,
+  ): Promise<void> {
+    try {
+      const cacheKey = this.generateCacheKey(response.url || '', context);
+      const cacheData = {
+        body: JSON.stringify(data),
+        status: response.status,
+        // SENIOR CODE REVIEWER FIX: Headers.entries() not available in all environments
+        headers: Object.fromEntries(Array.from(response.headers.entries())),
+      };
+
+      const ttl = context.networkQuality === 'slow' ? 3600 : 300; // Cache longer for slow connections
+      const expiryTime = Date.now() + (ttl * 1000);
+      this.memoryCache.set(cacheKey, { data: cacheData, expiry: expiryTime });
+    } catch (error) {
+      console.error('Cache storage error:', error);
+    }
+  }
+}

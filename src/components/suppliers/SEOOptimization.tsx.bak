@@ -1,0 +1,880 @@
+'use client'
+
+import React, { useState, useEffect } from 'react'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
+import { Badge } from '@/components/ui/badge'
+import { Progress } from '@/components/ui/progress'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { useToast } from '@/hooks/use-toast'
+import { 
+  Search, 
+  Eye, 
+  BarChart3, 
+  Globe, 
+  Edit, 
+  Save, 
+  X,
+  AlertCircle, 
+  CheckCircle, 
+  ExternalLink,
+  Copy,
+  RefreshCw,
+  TrendingUp
+} from 'lucide-react'
+
+interface SEOData {
+  page_title: string
+  meta_description: string
+  meta_keywords: string[]
+  og_title: string
+  og_description: string
+  og_image: string
+  canonical_url: string
+  custom_slug: string
+  sitemap_priority: number
+  sitemap_frequency: 'always' | 'hourly' | 'daily' | 'weekly' | 'monthly' | 'yearly' | 'never'
+  schema_markup: any
+}
+
+interface SEOAnalysis {
+  score: number
+  issues: Array<{
+    severity: 'error' | 'warning' | 'info'
+    category: string
+    message: string
+    suggestion: string
+  }>
+  opportunities: Array<{
+    category: string
+    message: string
+    impact: 'high' | 'medium' | 'low'
+  }>
+}
+
+const SITEMAP_FREQUENCIES = [
+  { value: 'always', label: 'Always' },
+  { value: 'hourly', label: 'Hourly' },
+  { value: 'daily', label: 'Daily' },
+  { value: 'weekly', label: 'Weekly' },
+  { value: 'monthly', label: 'Monthly' },
+  { value: 'yearly', label: 'Yearly' },
+  { value: 'never', label: 'Never' }
+]
+
+export function SEOOptimization({ profileId, businessName, serviceCategory }: { 
+  profileId: string
+  businessName: string 
+  serviceCategory: string 
+}) {
+  const [seoData, setSEOData] = useState<SEOData>({
+    page_title: '',
+    meta_description: '',
+    meta_keywords: [],
+    og_title: '',
+    og_description: '',
+    og_image: '',
+    canonical_url: '',
+    custom_slug: '',
+    sitemap_priority: 0.8,
+    sitemap_frequency: 'weekly',
+    schema_markup: {}
+  })
+  
+  const [seoAnalysis, setSEOAnalysis] = useState<SEOAnalysis | null>(null)
+  const [isLoading, setIsLoading] = useState(true)
+  const [isSaving, setIsSaving] = useState(false)
+  const [isAnalyzing, setIsAnalyzing] = useState(false)
+  const [activeTab, setActiveTab] = useState('basic')
+  
+  const { toast } = useToast()
+  
+  useEffect(() => {
+    loadSEOData()
+    generateSchemaMarkup()
+  }, [profileId])
+  
+  const loadSEOData = async () => {
+    try {
+      // This would load existing SEO data from the API
+      // For now, using mock data with intelligent defaults
+      const defaultSEO: SEOData = {
+        page_title: `${businessName} - Professional Wedding ${serviceCategory} | WedSync`,
+        meta_description: `Hire ${businessName} for your wedding. Professional ${serviceCategory.toLowerCase()} services with verified reviews and competitive pricing.`,
+        meta_keywords: [serviceCategory.toLowerCase(), 'wedding', 'photographer', 'UK', 'professional'],
+        og_title: `${businessName} - Wedding ${serviceCategory}`,
+        og_description: `Professional wedding ${serviceCategory.toLowerCase()} services by ${businessName}. View portfolio and get quotes.`,
+        og_image: '/api/placeholder/800/600',
+        canonical_url: `https://wedsync.com/directory/${generateSlug(businessName)}`,
+        custom_slug: generateSlug(businessName),
+        sitemap_priority: 0.8,
+        sitemap_frequency: 'weekly',
+        schema_markup: {}
+      }
+      
+      setSEOData(defaultSEO)
+      runSEOAnalysis(defaultSEO)
+    } catch (error) {
+      console.error('Error loading SEO data:', error)
+    } finally {
+      setIsLoading(false)
+    }
+  }
+  
+  const generateSlug = (name: string) => {
+    return name.toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, '')
+      .replace(/\s+/g, '-')
+      .replace(/-+/g, '-')
+      .trim()
+  }
+  
+  const generateSchemaMarkup = () => {
+    const schema = {
+      "@context": "https://schema.org",
+      "@type": "LocalBusiness",
+      "@id": `https://wedsync.com/directory/${seoData.custom_slug}`,
+      "name": businessName,
+      "description": seoData.meta_description,
+      "url": seoData.canonical_url,
+      "image": seoData.og_image,
+      "priceRange": "££-£££",
+      "serviceType": serviceCategory,
+      "areaServed": {
+        "@type": "Country",
+        "name": "United Kingdom"
+      },
+      "hasOfferCatalog": {
+        "@type": "OfferCatalog",
+        "name": `${serviceCategory} Services`,
+        "itemListElement": [
+          {
+            "@type": "Offer",
+            "itemOffered": {
+              "@type": "Service",
+              "name": `Wedding ${serviceCategory}`,
+              "serviceType": serviceCategory
+            }
+          }
+        ]
+      },
+      "aggregateRating": {
+        "@type": "AggregateRating",
+        "ratingValue": "4.8",
+        "reviewCount": "12"
+      }
+    }
+    
+    setSEOData(prev => ({ ...prev, schema_markup: schema }))
+  }
+  
+  const runSEOAnalysis = async (data: SEOData) => {
+    setIsAnalyzing(true)
+    try {
+      // Simulate SEO analysis
+      const issues = []
+      const opportunities = []
+      let score = 100
+      
+      // Title analysis
+      if (!data.page_title) {
+        issues.push({
+          severity: 'error' as const,
+          category: 'Title',
+          message: 'Page title is missing',
+          suggestion: 'Add a compelling page title with your business name and service'
+        })
+        score -= 15
+      } else if (data.page_title.length > 60) {
+        issues.push({
+          severity: 'warning' as const,
+          category: 'Title',
+          message: 'Page title is too long',
+          suggestion: 'Keep title under 60 characters for better display in search results'
+        })
+        score -= 5
+      } else if (data.page_title.length < 30) {
+        opportunities.push({
+          category: 'Title',
+          message: 'Title could be more descriptive',
+          impact: 'medium' as const
+        })
+      }
+      
+      // Description analysis
+      if (!data.meta_description) {
+        issues.push({
+          severity: 'error' as const,
+          category: 'Meta Description',
+          message: 'Meta description is missing',
+          suggestion: 'Add a compelling meta description to improve click-through rates'
+        })
+        score -= 15
+      } else if (data.meta_description.length > 160) {
+        issues.push({
+          severity: 'warning' as const,
+          category: 'Meta Description',
+          message: 'Meta description is too long',
+          suggestion: 'Keep description under 160 characters'
+        })
+        score -= 5
+      }
+      
+      // Keywords analysis
+      if (data.meta_keywords.length === 0) {
+        opportunities.push({
+          category: 'Keywords',
+          message: 'Add relevant keywords for better targeting',
+          impact: 'medium' as const
+        })
+      }
+      
+      // Social media optimization
+      if (!data.og_image) {
+        issues.push({
+          severity: 'warning' as const,
+          category: 'Social Media',
+          message: 'Open Graph image is missing',
+          suggestion: 'Add an attractive image for social media sharing'
+        })
+        score -= 10
+      }
+      
+      // Schema markup
+      if (!data.schema_markup || Object.keys(data.schema_markup).length === 0) {
+        opportunities.push({
+          category: 'Schema Markup',
+          message: 'Add structured data for better search visibility',
+          impact: 'high' as const
+        })
+      }
+      
+      setSEOAnalysis({ score: Math.max(0, score), issues, opportunities })
+    } catch (error) {
+      console.error('Error running SEO analysis:', error)
+    } finally {
+      setIsAnalyzing(false)
+    }
+  }
+  
+  const saveSEOData = async () => {
+    setIsSaving(true)
+    try {
+      // This would save to the API
+      // For now, just simulate the save
+      await new Promise(resolve => setTimeout(resolve, 1000))
+      
+      toast({
+        title: 'SEO settings saved',
+        description: 'Your SEO optimization has been updated successfully.'
+      })
+      
+      runSEOAnalysis(seoData)
+    } catch (error) {
+      console.error('Error saving SEO data:', error)
+      toast({
+        title: 'Error',
+        description: 'Failed to save SEO settings. Please try again.',
+        variant: 'destructive'
+      })
+    } finally {
+      setIsSaving(false)
+    }
+  }
+  
+  const generateSuggestions = () => {
+    const suggestions = {
+      title: `${businessName} - Award-Winning Wedding ${serviceCategory} | Book Today`,
+      description: `Transform your wedding day with ${businessName}'s professional ${serviceCategory.toLowerCase()} services. Verified reviews, competitive pricing, and exceptional quality guaranteed.`,
+      keywords: [
+        `wedding ${serviceCategory.toLowerCase()}`,
+        businessName.toLowerCase(),
+        'UK wedding services',
+        'professional wedding',
+        'wedding vendor',
+        'verified supplier'
+      ]
+    }
+    
+    setSEOData(prev => ({
+      ...prev,
+      page_title: suggestions.title,
+      meta_description: suggestions.description,
+      meta_keywords: suggestions.keywords,
+      og_title: suggestions.title,
+      og_description: suggestions.description
+    }))
+    
+    toast({
+      title: 'Suggestions applied',
+      description: 'SEO suggestions have been applied. Review and save the changes.'
+    })
+  }
+  
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text)
+    toast({
+      title: 'Copied',
+      description: 'Text copied to clipboard'
+    })
+  }
+  
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto"></div>
+          <p className="mt-2 text-muted-foreground">Loading SEO data...</p>
+        </div>
+      </div>
+    )
+  }
+  
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-bold">SEO Optimization</h2>
+          <p className="text-muted-foreground">Optimize your profile for search engines</p>
+        </div>
+        
+        <div className="flex items-center space-x-3">
+          {seoAnalysis && (
+            <Badge 
+              className={
+                seoAnalysis.score >= 80 ? 'bg-green-100 text-green-800' :
+                seoAnalysis.score >= 60 ? 'bg-yellow-100 text-yellow-800' :
+                'bg-red-100 text-red-800'
+              }
+            >
+              SEO Score: {seoAnalysis.score}/100
+            </Badge>
+          )}
+          
+          <Button variant="outline" onClick={() => runSEOAnalysis(seoData)} disabled={isAnalyzing}>
+            <RefreshCw className={`w-4 h-4 mr-2 ${isAnalyzing ? 'animate-spin' : ''}`} />
+            {isAnalyzing ? 'Analyzing...' : 'Analyze'}
+          </Button>
+          
+          <Button onClick={saveSEOData} disabled={isSaving}>
+            <Save className="w-4 h-4 mr-2" />
+            {isSaving ? 'Saving...' : 'Save Changes'}
+          </Button>
+        </div>
+      </div>
+      
+      {/* SEO Analysis Summary */}
+      {seoAnalysis && (
+        <Card className={
+          seoAnalysis.score >= 80 ? 'border-green-200 bg-green-50' :
+          seoAnalysis.score >= 60 ? 'border-yellow-200 bg-yellow-50' :
+          'border-red-200 bg-red-50'
+        }>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle className="flex items-center space-x-2">
+                  {seoAnalysis.score >= 80 ? (
+                    <CheckCircle className="w-5 h-5 text-green-600" />
+                  ) : (
+                    <AlertCircle className="w-5 h-5 text-yellow-600" />
+                  )}
+                  <span>SEO Health Check</span>
+                </CardTitle>
+                <CardDescription>
+                  {seoAnalysis.score >= 80 ? 'Excellent SEO optimization!' :
+                   seoAnalysis.score >= 60 ? 'Good SEO with room for improvement' :
+                   'SEO needs attention'}
+                </CardDescription>
+              </div>
+              
+              <div className="text-right">
+                <div className="text-2xl font-bold">
+                  {seoAnalysis.score}/100
+                </div>
+                <Progress value={seoAnalysis.score} className="w-24 h-2 mt-1" />
+              </div>
+            </div>
+          </CardHeader>
+          
+          <CardContent>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {seoAnalysis.issues.length > 0 && (
+                <div>
+                  <h4 className="font-semibold text-red-800 mb-2">Issues ({seoAnalysis.issues.length})</h4>
+                  <div className="space-y-2">
+                    {seoAnalysis.issues.slice(0, 3).map((issue, index) => (
+                      <div key={index} className="flex items-start space-x-2">
+                        <AlertCircle className="w-4 h-4 text-red-500 mt-0.5" />
+                        <div>
+                          <p className="text-sm font-medium">{issue.message}</p>
+                          <p className="text-xs text-muted-foreground">{issue.suggestion}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              
+              {seoAnalysis.opportunities.length > 0 && (
+                <div>
+                  <h4 className="font-semibold text-blue-800 mb-2">Opportunities ({seoAnalysis.opportunities.length})</h4>
+                  <div className="space-y-2">
+                    {seoAnalysis.opportunities.slice(0, 3).map((opp, index) => (
+                      <div key={index} className="flex items-start space-x-2">
+                        <TrendingUp className="w-4 h-4 text-blue-500 mt-0.5" />
+                        <div>
+                          <p className="text-sm font-medium">{opp.message}</p>
+                          <Badge variant="outline" className="text-xs">
+                            {opp.impact} impact
+                          </Badge>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+            
+            <div className="mt-4 pt-4 border-t">
+              <Button variant="outline" size="sm" onClick={generateSuggestions}>
+                <RefreshCw className="w-4 h-4 mr-2" />
+                Apply AI Suggestions
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+      
+      {/* SEO Configuration */}
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+        <TabsList className="grid w-full grid-cols-4">
+          <TabsTrigger value="basic">Basic SEO</TabsTrigger>
+          <TabsTrigger value="social">Social Media</TabsTrigger>
+          <TabsTrigger value="technical">Technical</TabsTrigger>
+          <TabsTrigger value="preview">Preview</TabsTrigger>
+        </TabsList>
+        
+        <TabsContent value="basic" className="space-y-6">
+          <BasicSEOSection seoData={seoData} setSEOData={setSEOData} />
+        </TabsContent>
+        
+        <TabsContent value="social" className="space-y-6">
+          <SocialMediaSEOSection seoData={seoData} setSEOData={setSEOData} />
+        </TabsContent>
+        
+        <TabsContent value="technical" className="space-y-6">
+          <TechnicalSEOSection seoData={seoData} setSEOData={setSEOData} />
+        </TabsContent>
+        
+        <TabsContent value="preview" className="space-y-6">
+          <SEOPreviewSection seoData={seoData} />
+        </TabsContent>
+      </Tabs>
+    </div>
+  )
+}
+
+// Basic SEO Section
+function BasicSEOSection({ seoData, setSEOData }: any) {
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader>
+          <CardTitle>Page Title & Description</CardTitle>
+          <CardDescription>The most important SEO elements for search rankings</CardDescription>
+        </CardHeader>
+        
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label htmlFor="page_title">Page Title</Label>
+              <span className="text-xs text-muted-foreground">
+                {seoData.page_title.length}/60 characters
+              </span>
+            </div>
+            <Input
+              id="page_title"
+              value={seoData.page_title}
+              onChange={(e) => setSEOData((prev: SEOData) => ({ ...prev, page_title: e.target.value }))}
+              placeholder="Your Business - Professional Wedding Services"
+              className={seoData.page_title.length > 60 ? 'border-red-500' : ''}
+            />
+            <p className="text-xs text-muted-foreground">
+              Appears as the clickable headline in search results. Keep under 60 characters.
+            </p>
+          </div>
+          
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label htmlFor="meta_description">Meta Description</Label>
+              <span className="text-xs text-muted-foreground">
+                {seoData.meta_description.length}/160 characters
+              </span>
+            </div>
+            <Textarea
+              id="meta_description"
+              value={seoData.meta_description}
+              onChange={(e) => setSEOData((prev: SEOData) => ({ ...prev, meta_description: e.target.value }))}
+              placeholder="Professional wedding services with verified reviews..."
+              rows={3}
+              className={seoData.meta_description.length > 160 ? 'border-red-500' : ''}
+            />
+            <p className="text-xs text-muted-foreground">
+              Appears below your title in search results. Keep under 160 characters.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+      
+      <Card>
+        <CardHeader>
+          <CardTitle>Keywords & URL</CardTitle>
+          <CardDescription>Help search engines understand your services</CardDescription>
+        </CardHeader>
+        
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="keywords">Target Keywords</Label>
+            <Input
+              id="keywords"
+              value={seoData.meta_keywords.join(', ')}
+              onChange={(e) => setSEOData((prev: SEOData) => ({ 
+                ...prev, 
+                meta_keywords: e.target.value.split(', ').filter(k => k.trim() !== '') 
+              }))}
+              placeholder="wedding photography, professional photographer, UK"
+            />
+            <p className="text-xs text-muted-foreground">
+              Separate keywords with commas. Focus on 3-5 main keywords.
+            </p>
+          </div>
+          
+          <div className="space-y-2">
+            <Label htmlFor="custom_slug">Custom URL Slug</Label>
+            <div className="flex items-center space-x-2">
+              <span className="text-sm text-muted-foreground">wedsync.com/directory/</span>
+              <Input
+                id="custom_slug"
+                value={seoData.custom_slug}
+                onChange={(e) => setSEOData((prev: SEOData) => ({ 
+                  ...prev, 
+                  custom_slug: e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '-') 
+                }))}
+                placeholder="your-business-name"
+                className="flex-1"
+              />
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Use lowercase letters, numbers, and hyphens only.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+// Social Media SEO Section
+function SocialMediaSEOSection({ seoData, setSEOData }: any) {
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader>
+          <CardTitle>Open Graph (Facebook, LinkedIn)</CardTitle>
+          <CardDescription>How your profile appears when shared on social media</CardDescription>
+        </CardHeader>
+        
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="og_title">Social Media Title</Label>
+            <Input
+              id="og_title"
+              value={seoData.og_title}
+              onChange={(e) => setSEOData((prev: SEOData) => ({ ...prev, og_title: e.target.value }))}
+              placeholder="Professional Wedding Photography Services"
+            />
+          </div>
+          
+          <div className="space-y-2">
+            <Label htmlFor="og_description">Social Media Description</Label>
+            <Textarea
+              id="og_description"
+              value={seoData.og_description}
+              onChange={(e) => setSEOData((prev: SEOData) => ({ ...prev, og_description: e.target.value }))}
+              placeholder="Capture your special day with our professional photography..."
+              rows={3}
+            />
+          </div>
+          
+          <div className="space-y-2">
+            <Label htmlFor="og_image">Social Media Image</Label>
+            <Input
+              id="og_image"
+              type="url"
+              value={seoData.og_image}
+              onChange={(e) => setSEOData((prev: SEOData) => ({ ...prev, og_image: e.target.value }))}
+              placeholder="https://example.com/image.jpg"
+            />
+            <p className="text-xs text-muted-foreground">
+              Recommended size: 1200x630 pixels. Must be publicly accessible.
+            </p>
+          </div>
+          
+          {seoData.og_image && (
+            <div className="border rounded-lg p-3 bg-muted">
+              <p className="text-sm font-medium mb-2">Preview:</p>
+              <div className="bg-white rounded border p-3 max-w-md">
+                <img src={seoData.og_image} alt="Social preview" className="w-full h-32 object-cover rounded mb-2" />
+                <h4 className="font-medium text-sm">{seoData.og_title}</h4>
+                <p className="text-xs text-muted-foreground line-clamp-2">{seoData.og_description}</p>
+                <p className="text-xs text-muted-foreground mt-1">wedsync.com</p>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+// Technical SEO Section
+function TechnicalSEOSection({ seoData, setSEOData }: any) {
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader>
+          <CardTitle>Technical Settings</CardTitle>
+          <CardDescription>Advanced SEO configuration</CardDescription>
+        </CardHeader>
+        
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="canonical_url">Canonical URL</Label>
+            <Input
+              id="canonical_url"
+              type="url"
+              value={seoData.canonical_url}
+              onChange={(e) => setSEOData((prev: SEOData) => ({ ...prev, canonical_url: e.target.value }))}
+              placeholder="https://wedsync.com/directory/your-business"
+            />
+            <p className="text-xs text-muted-foreground">
+              The preferred URL for this page to prevent duplicate content issues.
+            </p>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="sitemap_priority">Sitemap Priority</Label>
+              <Input
+                id="sitemap_priority"
+                type="number"
+                min="0"
+                max="1"
+                step="0.1"
+                value={seoData.sitemap_priority}
+                onChange={(e) => setSEOData((prev: SEOData) => ({ 
+                  ...prev, 
+                  sitemap_priority: parseFloat(e.target.value) 
+                }))}
+              />
+              <p className="text-xs text-muted-foreground">
+                0.0 to 1.0 - Higher values indicate more important pages.
+              </p>
+            </div>
+            
+            <div className="space-y-2">
+              <Label htmlFor="sitemap_frequency">Update Frequency</Label>
+              <Select
+                value={seoData.sitemap_frequency}
+                onValueChange={(value) => setSEOData((prev: SEOData) => ({ 
+                  ...prev, 
+                  sitemap_frequency: value 
+                }))}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {SITEMAP_FREQUENCIES.map(freq => (
+                    <SelectItem key={freq.value} value={freq.value}>
+                      {freq.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+      
+      <Card>
+        <CardHeader>
+          <CardTitle>Schema Markup</CardTitle>
+          <CardDescription>Structured data for rich search results</CardDescription>
+        </CardHeader>
+        
+        <CardContent>
+          <div className="space-y-4">
+            <div className="bg-muted rounded-lg p-4">
+              <div className="flex items-center justify-between mb-2">
+                <h4 className="font-medium">LocalBusiness Schema</h4>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => navigator.clipboard.writeText(JSON.stringify(seoData.schema_markup, null, 2))}
+                >
+                  <Copy className="w-4 h-4 mr-2" />
+                  Copy
+                </Button>
+              </div>
+              <pre className="text-xs overflow-auto max-h-40">
+                {JSON.stringify(seoData.schema_markup, null, 2)}
+              </pre>
+            </div>
+            
+            <div className="text-sm text-muted-foreground">
+              <p className="mb-2">This schema markup helps search engines understand:</p>
+              <ul className="list-disc list-inside space-y-1">
+                <li>Your business type and services</li>
+                <li>Location and service areas</li>
+                <li>Contact information</li>
+                <li>Reviews and ratings</li>
+                <li>Pricing information</li>
+              </ul>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+// SEO Preview Section
+function SEOPreviewSection({ seoData }: any) {
+  const fullUrl = `https://wedsync.com/directory/${seoData.custom_slug}`
+  
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader>
+          <CardTitle>Google Search Preview</CardTitle>
+          <CardDescription>How your profile will appear in Google search results</CardDescription>
+        </CardHeader>
+        
+        <CardContent>
+          <div className="border rounded-lg p-4 bg-white max-w-2xl">
+            <div className="space-y-1">
+              <h3 className="text-lg text-blue-600 hover:underline cursor-pointer">
+                {seoData.page_title || 'Your Business Name - Wedding Services'}
+              </h3>
+              <p className="text-green-700 text-sm">{fullUrl}</p>
+              <p className="text-gray-600 text-sm">
+                {seoData.meta_description || 'Your meta description will appear here...'}
+              </p>
+            </div>
+          </div>
+          
+          <div className="mt-4 text-sm text-muted-foreground">
+            <p>💡 Title should be compelling and under 60 characters</p>
+            <p>💡 Description should be descriptive and under 160 characters</p>
+          </div>
+        </CardContent>
+      </Card>
+      
+      <Card>
+        <CardHeader>
+          <CardTitle>Social Media Preview</CardTitle>
+          <CardDescription>How your profile will look when shared on social media</CardDescription>
+        </CardHeader>
+        
+        <CardContent>
+          <div className="border rounded-lg overflow-hidden max-w-md bg-white">
+            {seoData.og_image && (
+              <img src={seoData.og_image} alt="Social preview" className="w-full h-48 object-cover" />
+            )}
+            <div className="p-4">
+              <h4 className="font-semibold text-gray-900 mb-1">
+                {seoData.og_title || seoData.page_title}
+              </h4>
+              <p className="text-gray-600 text-sm mb-2 line-clamp-2">
+                {seoData.og_description || seoData.meta_description}
+              </p>
+              <p className="text-gray-500 text-xs uppercase">WEDSYNC.COM</p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+      
+      <Card>
+        <CardHeader>
+          <CardTitle>SEO Checklist</CardTitle>
+          <CardDescription>Essential items for optimal SEO performance</CardDescription>
+        </CardHeader>
+        
+        <CardContent>
+          <div className="space-y-3">
+            <div className="flex items-center space-x-3">
+              {seoData.page_title ? (
+                <CheckCircle className="w-5 h-5 text-green-600" />
+              ) : (
+                <X className="w-5 h-5 text-red-500" />
+              )}
+              <span className="text-sm">Page title is set</span>
+            </div>
+            
+            <div className="flex items-center space-x-3">
+              {seoData.meta_description ? (
+                <CheckCircle className="w-5 h-5 text-green-600" />
+              ) : (
+                <X className="w-5 h-5 text-red-500" />
+              )}
+              <span className="text-sm">Meta description is set</span>
+            </div>
+            
+            <div className="flex items-center space-x-3">
+              {seoData.meta_keywords.length > 0 ? (
+                <CheckCircle className="w-5 h-5 text-green-600" />
+              ) : (
+                <X className="w-5 h-5 text-red-500" />
+              )}
+              <span className="text-sm">Keywords are defined</span>
+            </div>
+            
+            <div className="flex items-center space-x-3">
+              {seoData.og_title && seoData.og_description ? (
+                <CheckCircle className="w-5 h-5 text-green-600" />
+              ) : (
+                <X className="w-5 h-5 text-red-500" />
+              )}
+              <span className="text-sm">Social media optimization complete</span>
+            </div>
+            
+            <div className="flex items-center space-x-3">
+              {seoData.custom_slug ? (
+                <CheckCircle className="w-5 h-5 text-green-600" />
+              ) : (
+                <X className="w-5 h-5 text-red-500" />
+              )}
+              <span className="text-sm">Custom URL slug is set</span>
+            </div>
+            
+            <div className="flex items-center space-x-3">
+              {seoData.schema_markup && Object.keys(seoData.schema_markup).length > 0 ? (
+                <CheckCircle className="w-5 h-5 text-green-600" />
+              ) : (
+                <X className="w-5 h-5 text-red-500" />
+              )}
+              <span className="text-sm">Schema markup is configured</span>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}

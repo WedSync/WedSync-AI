@@ -1,0 +1,693 @@
+import React from 'react';
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  within,
+} from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { DomainManager } from '../DomainManager';
+import { Domain, DomainTableRow, DomainMetrics } from '@/types/domains';
+
+// Mock fetch globally
+const mockFetch = jest.fn();
+global.fetch = mockFetch;
+
+// Mock Next.js router
+jest.mock('next/navigation', () => ({
+  useRouter: () => ({
+    push: jest.fn(),
+    replace: jest.fn(),
+    prefetch: jest.fn(),
+  }),
+}));
+
+// Mock UI components
+jest.mock('@/components/ui/card', () => ({
+  Card: ({ children, className }: any) => (
+    <div className={className} data-testid="card">
+      {children}
+    </div>
+  ),
+  CardContent: ({ children, className }: any) => (
+    <div className={className} data-testid="card-content">
+      {children}
+    </div>
+  ),
+  CardDescription: ({ children }: any) => (
+    <p data-testid="card-description">{children}</p>
+  ),
+  CardHeader: ({ children }: any) => (
+    <div data-testid="card-header">{children}</div>
+  ),
+  CardTitle: ({ children }: any) => (
+    <h3 data-testid="card-title">{children}</h3>
+  ),
+}));
+
+jest.mock('@/components/ui/button', () => ({
+  Button: ({ children, onClick, variant, size, className, ...props }: any) => (
+    <button
+      onClick={onClick}
+      className={className}
+      data-variant={variant}
+      data-size={size}
+      data-testid="button"
+      {...props}
+    >
+      {children}
+    </button>
+  ),
+}));
+
+jest.mock('@/components/ui/input', () => ({
+  Input: ({ placeholder, value, onChange, className, ...props }: any) => (
+    <input
+      placeholder={placeholder}
+      value={value}
+      onChange={onChange}
+      className={className}
+      data-testid="input"
+      {...props}
+    />
+  ),
+}));
+
+jest.mock('@/components/ui/badge', () => ({
+  Badge: ({ children, variant, className }: any) => (
+    <span className={className} data-variant={variant} data-testid="badge">
+      {children}
+    </span>
+  ),
+}));
+
+jest.mock('@/components/ui/table', () => ({
+  Table: ({ children }: any) => <table data-testid="table">{children}</table>,
+  TableBody: ({ children }: any) => (
+    <tbody data-testid="table-body">{children}</tbody>
+  ),
+  TableCell: ({ children, className }: any) => (
+    <td className={className} data-testid="table-cell">
+      {children}
+    </td>
+  ),
+  TableHead: ({ children, className }: any) => (
+    <th className={className} data-testid="table-head">
+      {children}
+    </th>
+  ),
+  TableHeader: ({ children }: any) => (
+    <thead data-testid="table-header">{children}</thead>
+  ),
+  TableRow: ({ children, onClick, className }: any) => (
+    <tr onClick={onClick} className={className} data-testid="table-row">
+      {children}
+    </tr>
+  ),
+}));
+
+jest.mock('@/components/ui/select', () => ({
+  Select: ({ children, value, onValueChange }: any) => (
+    <div data-testid="select" data-value={value}>
+      <button onClick={() => onValueChange?.('test-value')}>{children}</button>
+    </div>
+  ),
+  SelectContent: ({ children }: any) => (
+    <div data-testid="select-content">{children}</div>
+  ),
+  SelectItem: ({ children, value }: any) => (
+    <div data-testid="select-item" data-value={value}>
+      {children}
+    </div>
+  ),
+  SelectTrigger: ({ children }: any) => (
+    <div data-testid="select-trigger">{children}</div>
+  ),
+  SelectValue: ({ placeholder }: any) => (
+    <span data-testid="select-value">{placeholder}</span>
+  ),
+}));
+
+// Mock utility functions
+jest.mock('@/lib/utils', () => ({
+  cn: (...args: any[]) => args.filter(Boolean).join(' '),
+}));
+
+// Sample test data
+const mockMetrics: DomainMetrics = {
+  total_domains: 5,
+  verified_domains: 4,
+  active_domains: 3,
+  pending_verifications: 1,
+  expiring_certificates: 2,
+  critical_alerts: 1,
+  average_response_time: 145,
+};
+
+const mockDomains: DomainTableRow[] = [
+  {
+    id: 'domain-1',
+    organization_id: 'org-1',
+    domain_name: 'example.com',
+    subdomain: 'photos',
+    full_domain: 'photos.example.com',
+    status: 'active',
+    is_primary: true,
+    is_wildcard: false,
+    target_cname: 'wedsync.com',
+    custom_ip_address: undefined,
+    notes: 'Primary domain for photography',
+    configuration: {},
+    created_at: '2025-01-01T10:00:00Z',
+    updated_at: '2025-01-01T10:00:00Z',
+    created_by: 'user-1',
+    verified_at: '2025-01-01T10:30:00Z',
+    last_checked_at: '2025-01-01T15:00:00Z',
+    health_status: 'healthy',
+    ssl_expires_at: '2025-12-01T00:00:00Z',
+    days_until_ssl_expiry: 334,
+    unresolved_alerts_count: 0,
+    response_time_ms: 120,
+  },
+  {
+    id: 'domain-2',
+    organization_id: 'org-1',
+    domain_name: 'vendor.wedding',
+    subdomain: undefined,
+    full_domain: 'vendor.wedding',
+    status: 'pending',
+    is_primary: false,
+    is_wildcard: false,
+    target_cname: 'wedsync.com',
+    custom_ip_address: undefined,
+    notes: undefined,
+    configuration: {},
+    created_at: '2025-01-01T14:00:00Z',
+    updated_at: '2025-01-01T14:00:00Z',
+    created_by: 'user-1',
+    verified_at: undefined,
+    last_checked_at: undefined,
+    health_status: 'unknown',
+    ssl_expires_at: undefined,
+    days_until_ssl_expiry: undefined,
+    unresolved_alerts_count: 2,
+    response_time_ms: undefined,
+  },
+];
+
+describe('DomainManager', () => {
+  const defaultProps = {
+    organizationId: 'org-1',
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        domains: mockDomains,
+        metrics: mockMetrics,
+        total_count: mockDomains.length,
+        page: 1,
+        per_page: 10,
+      }),
+    });
+  });
+
+  describe('Rendering', () => {
+    it('renders loading state initially', async () => {
+      // Mock a slow response to test loading state
+      mockFetch.mockImplementation(
+        () => new Promise((resolve) => setTimeout(resolve, 1000)),
+      );
+
+      render(<DomainManager {...defaultProps} />);
+
+      expect(screen.getByTestId('card')).toBeInTheDocument();
+      expect(screen.getByText('animate-pulse')).toBeTruthy();
+    });
+
+    it('renders error state when fetch fails', async () => {
+      mockFetch.mockRejectedValue(new Error('Network error'));
+
+      render(<DomainManager {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Network error')).toBeInTheDocument();
+        expect(screen.getByText('Retry')).toBeInTheDocument();
+      });
+    });
+
+    it('renders metrics cards with correct values', async () => {
+      render(<DomainManager {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Total Domains')).toBeInTheDocument();
+        expect(screen.getByText('5')).toBeInTheDocument(); // total_domains
+        expect(screen.getByText('Active')).toBeInTheDocument();
+        expect(screen.getByText('3')).toBeInTheDocument(); // active_domains
+        expect(screen.getByText('SSL Expiring')).toBeInTheDocument();
+        expect(screen.getByText('2')).toBeInTheDocument(); // expiring_certificates
+        expect(screen.getByText('Avg Response')).toBeInTheDocument();
+        expect(screen.getByText('145ms')).toBeInTheDocument(); // average_response_time
+      });
+    });
+
+    it('renders domain table with correct data', async () => {
+      render(<DomainManager {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Custom Domains')).toBeInTheDocument();
+        expect(screen.getByText('photos.example.com')).toBeInTheDocument();
+        expect(screen.getByText('vendor.wedding')).toBeInTheDocument();
+        expect(screen.getByText('Primary')).toBeInTheDocument();
+        expect(screen.getByText('2 alerts')).toBeInTheDocument();
+      });
+    });
+
+    it('renders empty state when no domains exist', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          domains: [],
+          metrics: { ...mockMetrics, total_domains: 0 },
+          total_count: 0,
+        }),
+      });
+
+      render(<DomainManager {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('No custom domains')).toBeInTheDocument();
+        expect(
+          screen.getByText(
+            'Add your first custom domain to get started with white-label branding',
+          ),
+        ).toBeInTheDocument();
+        expect(screen.getByText('Add Your First Domain')).toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('Domain Status Display', () => {
+    it('displays correct status badges for different domain statuses', async () => {
+      const domainsWithStatuses: DomainTableRow[] = [
+        { ...mockDomains[0], status: 'active', id: 'active-domain' },
+        { ...mockDomains[0], status: 'pending', id: 'pending-domain' },
+        { ...mockDomains[0], status: 'failed', id: 'failed-domain' },
+        { ...mockDomains[0], status: 'expired', id: 'expired-domain' },
+      ];
+
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          domains: domainsWithStatuses,
+          metrics: mockMetrics,
+        }),
+      });
+
+      render(<DomainManager {...defaultProps} />);
+
+      await waitFor(() => {
+        const badges = screen.getAllByTestId('badge');
+        const statusBadges = badges.filter((badge) =>
+          ['active', 'pending', 'failed', 'expired'].includes(
+            badge.textContent?.toLowerCase() || '',
+          ),
+        );
+        expect(statusBadges).toHaveLength(4);
+      });
+    });
+
+    it('displays SSL certificate expiry warnings', async () => {
+      const domainWithExpiringSsl: DomainTableRow = {
+        ...mockDomains[0],
+        ssl_expires_at: '2025-02-15T00:00:00Z',
+        days_until_ssl_expiry: 15,
+      };
+
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          domains: [domainWithExpiringSsl],
+          metrics: mockMetrics,
+        }),
+      });
+
+      render(<DomainManager {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('15 days left')).toBeInTheDocument();
+      });
+    });
+
+    it('displays health status correctly', async () => {
+      const domainsWithHealthStatus: DomainTableRow[] = [
+        { ...mockDomains[0], health_status: 'healthy', id: 'healthy-domain' },
+        { ...mockDomains[0], health_status: 'degraded', id: 'degraded-domain' },
+        {
+          ...mockDomains[0],
+          health_status: 'unhealthy',
+          id: 'unhealthy-domain',
+        },
+      ];
+
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          domains: domainsWithHealthStatus,
+          metrics: mockMetrics,
+        }),
+      });
+
+      render(<DomainManager {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('healthy')).toBeInTheDocument();
+        expect(screen.getByText('degraded')).toBeInTheDocument();
+        expect(screen.getByText('unhealthy')).toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('User Interactions', () => {
+    it('handles add domain button click', async () => {
+      const consoleSpy = jest.spyOn(console, 'log').mockImplementation();
+
+      render(<DomainManager {...defaultProps} />);
+
+      await waitFor(() => {
+        const addButton = screen.getByText('Add Domain');
+        fireEvent.click(addButton);
+        expect(consoleSpy).toHaveBeenCalledWith('Add domain clicked');
+      });
+
+      consoleSpy.mockRestore();
+    });
+
+    it('handles domain row click', async () => {
+      const consoleSpy = jest.spyOn(console, 'log').mockImplementation();
+
+      render(<DomainManager {...defaultProps} />);
+
+      await waitFor(() => {
+        const domainRow = screen
+          .getByText('photos.example.com')
+          .closest('[data-testid="table-row"]');
+        if (domainRow) {
+          fireEvent.click(domainRow);
+          expect(consoleSpy).toHaveBeenCalledWith(
+            'Domain clicked:',
+            'domain-1',
+          );
+        }
+      });
+
+      consoleSpy.mockRestore();
+    });
+
+    it('handles search input changes', async () => {
+      const user = userEvent.setup();
+
+      render(<DomainManager {...defaultProps} />);
+
+      await waitFor(() => {
+        const searchInput = screen.getByPlaceholderText('Search domains...');
+        expect(searchInput).toBeInTheDocument();
+      });
+
+      const searchInput = screen.getByPlaceholderText('Search domains...');
+      await user.type(searchInput, 'example.com');
+
+      expect(searchInput).toHaveValue('example.com');
+
+      // Verify that search triggers API call after debounce
+      await waitFor(
+        () => {
+          expect(mockFetch).toHaveBeenCalledWith(
+            expect.stringContaining('/api/domains?'),
+          );
+        },
+        { timeout: 1000 },
+      );
+    });
+
+    it('toggles filters visibility', async () => {
+      render(<DomainManager {...defaultProps} />);
+
+      await waitFor(() => {
+        const filterButton = screen.getByTestId('button');
+        fireEvent.click(filterButton);
+      });
+
+      // Check if filter options are visible after click
+      expect(screen.getByText('Status filter')).toBeInTheDocument();
+      expect(screen.getByText('Health filter')).toBeInTheDocument();
+      expect(screen.getByText('SSL filter')).toBeInTheDocument();
+    });
+
+    it('handles external link clicks without triggering row click', async () => {
+      const consoleSpy = jest.spyOn(console, 'log').mockImplementation();
+
+      render(<DomainManager {...defaultProps} />);
+
+      await waitFor(() => {
+        // Find external link button and click it
+        const externalLinks = screen.getAllByRole('link');
+        if (externalLinks.length > 0) {
+          fireEvent.click(externalLinks[0]);
+        }
+      });
+
+      // Should not trigger domain click
+      expect(consoleSpy).not.toHaveBeenCalledWith(
+        'Domain clicked:',
+        expect.any(String),
+      );
+
+      consoleSpy.mockRestore();
+    });
+  });
+
+  describe('API Integration', () => {
+    it('makes correct API call with filters', async () => {
+      render(<DomainManager {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(mockFetch).toHaveBeenCalledWith(
+          expect.stringContaining('/api/domains?'),
+        );
+      });
+
+      const firstCall = mockFetch.mock.calls[0][0] as string;
+      expect(firstCall).toContain('sort=created_at:desc');
+    });
+
+    it('handles API errors gracefully', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+      });
+
+      render(<DomainManager {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Failed to load domains')).toBeInTheDocument();
+        expect(screen.getByText('Retry')).toBeInTheDocument();
+      });
+    });
+
+    it('retries API call when retry button is clicked', async () => {
+      // First call fails
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+      });
+
+      // Second call succeeds
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          domains: mockDomains,
+          metrics: mockMetrics,
+        }),
+      });
+
+      render(<DomainManager {...defaultProps} />);
+
+      // Wait for error state
+      await waitFor(() => {
+        expect(screen.getByText('Retry')).toBeInTheDocument();
+      });
+
+      // Click retry
+      const retryButton = screen.getByText('Retry');
+      fireEvent.click(retryButton);
+
+      // Wait for success state
+      await waitFor(() => {
+        expect(screen.getByText('Custom Domains')).toBeInTheDocument();
+        expect(screen.getByText('photos.example.com')).toBeInTheDocument();
+      });
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('Filtering and Sorting', () => {
+    it('applies status filter correctly', async () => {
+      render(<DomainManager {...defaultProps} />);
+
+      // Wait for initial load
+      await waitFor(() => {
+        expect(screen.getByText('Custom Domains')).toBeInTheDocument();
+      });
+
+      // Toggle filters
+      const filterButton = screen.getAllByTestId('button').find(
+        (btn) => btn.querySelector('svg'), // Filter icon
+      );
+      if (filterButton) {
+        fireEvent.click(filterButton);
+      }
+
+      await waitFor(() => {
+        expect(screen.getByText('Status filter')).toBeInTheDocument();
+      });
+
+      // Select status filter
+      const statusSelect = screen.getByTestId('select');
+      fireEvent.click(statusSelect.querySelector('button')!);
+
+      await waitFor(() => {
+        expect(mockFetch).toHaveBeenCalledWith(
+          expect.stringContaining('/api/domains?'),
+        );
+      });
+    });
+
+    it('applies search filter with debounce', async () => {
+      jest.useFakeTimers();
+
+      render(<DomainManager {...defaultProps} />);
+
+      await waitFor(() => {
+        const searchInput = screen.getByPlaceholderText('Search domains...');
+        fireEvent.change(searchInput, { target: { value: 'example' } });
+      });
+
+      // Fast-forward past debounce period
+      jest.advanceTimersByTime(500);
+
+      await waitFor(() => {
+        const lastCall = mockFetch.mock.calls[
+          mockFetch.mock.calls.length - 1
+        ][0] as string;
+        expect(lastCall).toContain('search=example');
+      });
+
+      jest.useRealTimers();
+    });
+  });
+
+  describe('Date and Time Formatting', () => {
+    it('formats dates correctly', async () => {
+      render(<DomainManager {...defaultProps} />);
+
+      await waitFor(() => {
+        // Check that dates are formatted (exact format may vary by locale)
+        const dateElements = screen.getAllByTestId('table-cell');
+        const dateElement = dateElements.find(
+          (el) =>
+            el.textContent?.includes('2025') ||
+            el.textContent?.includes('1/1/2025'),
+        );
+        expect(dateElement).toBeInTheDocument();
+      });
+    });
+
+    it('formats response times correctly', async () => {
+      render(<DomainManager {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('120ms')).toBeInTheDocument();
+      });
+    });
+
+    it('handles missing values gracefully', async () => {
+      const domainWithMissingData: DomainTableRow = {
+        ...mockDomains[0],
+        ssl_expires_at: undefined,
+        response_time_ms: undefined,
+        verified_at: undefined,
+      };
+
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          domains: [domainWithMissingData],
+          metrics: mockMetrics,
+        }),
+      });
+
+      render(<DomainManager {...defaultProps} />);
+
+      await waitFor(() => {
+        // Should display N/A or similar for missing values
+        const naCells = screen.getAllByText('N/A');
+        expect(naCells.length).toBeGreaterThan(0);
+      });
+    });
+  });
+
+  describe('Accessibility', () => {
+    it('has proper ARIA labels and roles', async () => {
+      render(<DomainManager {...defaultProps} />);
+
+      await waitFor(() => {
+        const table = screen.getByTestId('table');
+        expect(table).toHaveAttribute('role', 'table');
+      });
+    });
+
+    it('supports keyboard navigation', async () => {
+      const user = userEvent.setup();
+
+      render(<DomainManager {...defaultProps} />);
+
+      await waitFor(() => {
+        const searchInput = screen.getByPlaceholderText('Search domains...');
+        expect(searchInput).toBeInTheDocument();
+      });
+
+      // Test tab navigation
+      await user.tab();
+      expect(document.activeElement).toBe(
+        screen.getByPlaceholderText('Search domains...'),
+      );
+    });
+  });
+
+  describe('Responsive Behavior', () => {
+    it('adapts to different screen sizes', async () => {
+      // Mock window resize
+      Object.defineProperty(window, 'innerWidth', {
+        writable: true,
+        configurable: true,
+        value: 768,
+      });
+
+      render(<DomainManager {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Custom Domains')).toBeInTheDocument();
+      });
+
+      // Verify grid layout adapts (this is more about CSS classes which we can test)
+      const metricsCards = screen.getAllByTestId('card');
+      expect(metricsCards.length).toBeGreaterThan(0);
+    });
+  });
+});

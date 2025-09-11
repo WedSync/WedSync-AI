@@ -1,0 +1,567 @@
+import { type NextRequest, NextResponse } from "next/server";
+// Use Web Crypto API for Edge Runtime compatibility
+// import { randomUUID } from 'crypto';
+import { type AuthenticatedUser, authMiddleware } from "@/lib/middleware/auth";
+import { csrfMiddleware } from "@/lib/middleware/csrf";
+// import { rateLimiter, type RateLimitRequest } from '@/lib/middleware/rate-limiting';
+import {
+  logPerformanceMetric,
+  logRequest,
+  logSecurityEvent,
+  middlewareLogger,
+} from "@/lib/middleware/logging";
+import { requestValidator } from "@/lib/middleware/validation";
+import { type MobileContext, MobileMiddleware } from "@/middleware/mobile-middleware";
+
+// Comprehensive middleware for WedSync wedding industry platform
+// Integrates authentication, rate limiting, security logging, CSRF protection, validation, and mobile optimization
+
+// Initialize mobile middleware
+const mobileMiddleware = new MobileMiddleware();
+
+export async function middleware(request: NextRequest) {
+  const startTime = performance.now();
+  const requestId = crypto.randomUUID(); // Web Crypto API compatible with Edge Runtime
+  let mobileContext: MobileContext | undefined; // Declare in outer scope for error handling
+
+  try {
+    // Step 1: Extract request context
+    const url = new URL(request.url);
+    const ipAddress = getClientIP(request);
+    const userAgent = request.headers.get("user-agent") || "unknown";
+
+    // Step 2: Skip middleware for static assets and health checks
+    if (shouldSkipMiddleware(url.pathname)) {
+      return NextResponse.next();
+    }
+
+    // Step 2.5: Mobile Detection and Context (Wedding-specific mobile optimization)
+    let mobileOptimizationMs = 0;
+
+    const mobileStartTime = performance.now();
+    const mobileResult = await mobileMiddleware.processRequest(request);
+    mobileContext = mobileResult.context;
+    mobileOptimizationMs = performance.now() - mobileStartTime;
+
+    // If mobile middleware returned an early response (e.g., cached content), return it
+    if (mobileResult.response) {
+      return mobileResult.response;
+    }
+
+    // Step 3: Rate Limiting (Temporarily disabled due to Edge Runtime compatibility)
+    /* 
+    const rateLimitRequest: RateLimitRequest = {
+      identifier: ipAddress,
+      endpoint: url.pathname,
+      windowSeconds: 3600,
+      maxRequests: mobileContext?.deviceType === 'mobile' ? 120 : 100, // Higher limit for mobile (wedding coordination on-the-go)
+      subscriptionTier: 'free', // Will be updated after auth
+      requestId,
+    };
+
+    const rateLimitResult = await rateLimiter.checkRateLimit(rateLimitRequest);
+    if (!rateLimitResult.allowed) {
+      // Log rate limit violation
+      await logSecurityEvent({
+        eventType: 'rate_limit_exceeded',
+        requestId,
+        ipAddress,
+        userAgent,
+        requestPath: url.pathname,
+        requestMethod: request.method,
+        severity: 'medium',
+        description: rateLimitResult.reason || 'Rate limit exceeded',
+        actionTaken: 'throttled',
+        blockedDurationMinutes: rateLimitResult.retryAfterMinutes,
+      });
+
+      return NextResponse.json(
+        { 
+          error: 'Too many requests', 
+          retryAfter: rateLimitResult.retryAfterMinutes,
+          message: rateLimitResult.reason 
+        },
+        { 
+          status: 429,
+          headers: {
+            'Retry-After': (rateLimitResult.retryAfterMinutes || 1).toString(),
+            'X-RateLimit-Limit': rateLimitResult.limit.toString(),
+            'X-RateLimit-Remaining': '0',
+            'X-RateLimit-Reset': new Date(rateLimitResult.resetTime).toISOString(),
+          }
+        }
+      );
+    }
+    */
+
+    // Step 4: Authentication (for protected routes)
+    let authenticatedUser: AuthenticatedUser | undefined;
+    let authPerformanceMs = 0;
+
+    if (isProtectedRoute(url.pathname)) {
+      const authStartTime = performance.now();
+      const authResult = await authMiddleware.authenticateRequest(request, requestId);
+      authPerformanceMs = performance.now() - authStartTime;
+
+      if (!authResult.success) {
+        // Log authentication failure
+        await logSecurityEvent({
+          eventType: "auth_failure",
+          requestId,
+          ipAddress,
+          userAgent,
+          requestPath: url.pathname,
+          requestMethod: request.method,
+          severity: "high",
+          description: authResult.error || "Authentication failed",
+          actionTaken: "blocked",
+        });
+
+        return NextResponse.json(
+          { error: authResult.error || "Authentication required" },
+          { status: 401 }
+        );
+      }
+
+      authenticatedUser = authResult.user;
+
+      // Update rate limit request with user context
+      if (authenticatedUser) {
+        rateLimitRequest.userId = authenticatedUser.id;
+        rateLimitRequest.supplierId = authenticatedUser.supplier_id;
+        rateLimitRequest.subscriptionTier = authenticatedUser.subscription_tier;
+      }
+    }
+
+    // Step 5: CSRF Protection (for state-changing operations)
+    let csrfPerformanceMs = 0;
+    if (isStateChangingOperation(request.method)) {
+      const csrfStartTime = performance.now();
+      const csrfResult = await csrfMiddleware.validateCSRFToken(request, authenticatedUser?.id);
+      csrfPerformanceMs = performance.now() - csrfStartTime;
+
+      if (!csrfResult.success) {
+        // Log CSRF violation
+        await logSecurityEvent({
+          eventType: "csrf_violation",
+          requestId,
+          ipAddress,
+          userAgent,
+          requestPath: url.pathname,
+          requestMethod: request.method,
+          userId: authenticatedUser?.id,
+          severity: "high",
+          description: csrfResult.error || "CSRF token validation failed",
+          actionTaken: "blocked",
+        });
+
+        return NextResponse.json(
+          { error: csrfResult.error || "CSRF validation failed" },
+          { status: 403 }
+        );
+      }
+    }
+
+    // Step 6: Request Validation (for API endpoints with payloads)
+    let validationPerformanceMs = 0;
+    if (requiresValidation(url.pathname, request.method)) {
+      const validationStartTime = performance.now();
+
+      // Determine validation schema based on endpoint
+      const schemaKey = getValidationSchema(url.pathname);
+      if (schemaKey) {
+        const validationContext = {
+          userType: authenticatedUser?.user_type || "couple",
+          subscriptionTier: authenticatedUser?.subscription_tier || "free",
+          weddingDate: authenticatedUser?.wedding_date,
+          isWeddingSeason: isCurrentlyWeddingSeason(),
+        };
+
+        const validationResult = await requestValidator.validateRequest(
+          request,
+          schemaKey as
+            | "coupleProfile"
+            | "supplierProfile"
+            | "formSubmission"
+            | "bookingCreation"
+            | "paymentIntent",
+          validationContext as any
+        );
+
+        validationPerformanceMs = performance.now() - validationStartTime;
+
+        if (!validationResult.success) {
+          return NextResponse.json(
+            {
+              error: validationResult.error,
+              violations: validationResult.violations,
+            },
+            { status: 400 }
+          );
+        }
+      }
+    }
+
+    // Step 7: Create response with security headers
+    const response = NextResponse.next();
+
+    // Add comprehensive security headers
+    addSecurityHeaders(response);
+
+    // Add rate limit headers (disabled while rate limiting is commented out)
+    /* 
+    response.headers.set('X-RateLimit-Limit', rateLimitResult.limit.toString());
+    response.headers.set('X-RateLimit-Remaining', rateLimitResult.remaining.toString());
+    response.headers.set('X-RateLimit-Reset', new Date(rateLimitResult.resetTime).toISOString());
+    */
+
+    // Add authentication context headers for downstream handlers
+    if (authenticatedUser) {
+      response.headers.set("X-User-ID", authenticatedUser.id);
+      response.headers.set("X-User-Type", authenticatedUser.user_type);
+      response.headers.set("X-Subscription-Tier", authenticatedUser.subscription_tier);
+      response.headers.set("X-Session-ID", authenticatedUser.session_id);
+
+      if (authenticatedUser.supplier_id) {
+        response.headers.set("X-Supplier-ID", authenticatedUser.supplier_id);
+      }
+      if (authenticatedUser.couple_id) {
+        response.headers.set("X-Couple-ID", authenticatedUser.couple_id);
+      }
+    }
+
+    // Add mobile context headers for downstream handlers and client optimization
+    if (mobileContext) {
+      response.headers.set("X-Mobile-Device", mobileContext.isMobile ? "true" : "false");
+      response.headers.set("X-Device-Type", mobileContext.deviceType);
+      response.headers.set("X-Connection-Quality", mobileContext.networkQuality);
+      response.headers.set("X-Touch-Capable", mobileContext.touchCapable ? "true" : "false");
+
+      if (mobileContext.batteryLevel !== undefined) {
+        response.headers.set("X-Battery-Level", mobileContext.batteryLevel.toString());
+      }
+
+      if (mobileContext.screenSize) {
+        response.headers.set(
+          "X-Screen-Size",
+          `${mobileContext.screenSize.width}x${mobileContext.screenSize.height}`
+        );
+      }
+
+      // Wedding-specific mobile headers
+      if (mobileContext.isLowPowerMode) {
+        response.headers.set("X-Low-Power-Mode", "true");
+        response.headers.set("X-Reduce-Animations", "true");
+      }
+
+      if (mobileContext.isSlowConnection) {
+        response.headers.set("X-Slow-Connection", "true");
+        response.headers.set("X-Optimize-Images", "true");
+      }
+    }
+
+    // Add CSRF token for subsequent requests
+    if (authenticatedUser && isStateChangingOperation(request.method)) {
+      await csrfMiddleware.addCSRFTokenToResponse(response, request, authenticatedUser.id);
+    }
+
+    // Step 8: Log successful request
+    const totalResponseTime = performance.now() - startTime;
+
+    await logRequest({
+      requestId,
+      method: request.method,
+      path: url.pathname,
+      userId: authenticatedUser?.id,
+      supplierId: authenticatedUser?.supplier_id,
+      userAgent,
+      ipAddress,
+      subscriptionTier: authenticatedUser?.subscription_tier,
+      responseTime: totalResponseTime,
+      rateLimitRemaining: -1, // Disabled while rate limiting is commented out
+      isPublic: !isProtectedRoute(url.pathname),
+      businessContext: authenticatedUser
+        ? {
+            weddingDate: authenticatedUser.wedding_date,
+            supplierType: getSupplierTypeFromHeaders(request),
+          }
+        : undefined,
+      mobileContext: mobileContext
+        ? {
+            isMobile: mobileContext.isMobile,
+            deviceType: mobileContext.deviceType,
+            screenSize: mobileContext.screenSize
+              ? `${mobileContext.screenSize.width}x${mobileContext.screenSize.height}`
+              : undefined,
+            touchSupport: mobileContext.touchCapable,
+          }
+        : undefined,
+    });
+
+    // Step 9: Log middleware performance metrics
+    await logPerformanceMetric({
+      middlewareName: "auth",
+      executionTimeMs: authPerformanceMs,
+      endpointPattern: normalizeEndpointPattern(url.pathname),
+      requestMethod: request.method,
+      userType: authenticatedUser?.user_type || "anonymous",
+      isWeddingSeason: isCurrentlyWeddingSeason(),
+      success: true,
+    });
+
+    if (csrfPerformanceMs > 0) {
+      await logPerformanceMetric({
+        middlewareName: "csrf",
+        executionTimeMs: csrfPerformanceMs,
+        endpointPattern: normalizeEndpointPattern(url.pathname),
+        requestMethod: request.method,
+        userType: authenticatedUser?.user_type || "anonymous",
+        isWeddingSeason: isCurrentlyWeddingSeason(),
+        success: true,
+      });
+    }
+
+    if (validationPerformanceMs > 0) {
+      await logPerformanceMetric({
+        middlewareName: "validation",
+        executionTimeMs: validationPerformanceMs,
+        endpointPattern: normalizeEndpointPattern(url.pathname),
+        requestMethod: request.method,
+        userType: authenticatedUser?.user_type || "anonymous",
+        isWeddingSeason: isCurrentlyWeddingSeason(),
+        success: true,
+      });
+    }
+
+    // Log mobile optimization performance metrics
+    if (mobileOptimizationMs > 0) {
+      await logPerformanceMetric({
+        middlewareName: "mobile-optimization",
+        executionTimeMs: mobileOptimizationMs,
+        endpointPattern: normalizeEndpointPattern(url.pathname),
+        requestMethod: request.method,
+        userType: authenticatedUser?.user_type || "anonymous",
+        isWeddingSeason: isCurrentlyWeddingSeason(),
+        success: true,
+        additionalData: {
+          isMobile: mobileContext?.isMobile,
+          deviceType: mobileContext?.deviceType,
+          networkQuality: mobileContext?.networkQuality,
+          isLowPowerMode: mobileContext?.isLowPowerMode,
+          isSlowConnection: mobileContext?.isSlowConnection,
+          touchCapable: mobileContext?.touchCapable,
+          batteryLevel: mobileContext?.batteryLevel,
+          screenSize: mobileContext?.screenSize,
+        },
+      });
+    }
+
+    // Add processing time header
+    response.headers.set("X-Processing-Time", `${totalResponseTime.toFixed(2)}ms`);
+
+    return response;
+  } catch (error) {
+    console.error("Middleware critical error:", error);
+
+    // Log critical middleware error with mobile context
+    await logSecurityEvent({
+      eventType: "middleware_error",
+      requestId,
+      ipAddress: getClientIP(request),
+      userAgent: request.headers.get("user-agent") || "unknown",
+      requestPath: new URL(request.url).pathname,
+      requestMethod: request.method,
+      severity: "critical",
+      description: `Middleware critical failure: ${error instanceof Error ? error.message : "Unknown error"}`,
+      actionTaken: "alerted",
+      mobileContext: mobileContext
+        ? {
+            isMobile: mobileContext.isMobile,
+            deviceType: mobileContext.deviceType,
+            screenSize: mobileContext.screenSize
+              ? `${mobileContext.screenSize.width}x${mobileContext.screenSize.height}`
+              : undefined,
+            touchSupport: mobileContext.touchCapable,
+          }
+        : undefined,
+    });
+
+    // Fail secure - return service unavailable instead of allowing unprotected access
+    return new NextResponse(
+      JSON.stringify({
+        error: "Security system temporarily unavailable",
+        requestId,
+        timestamp: new Date().toISOString(),
+        support: "Please contact support if this issue persists",
+      }),
+      {
+        status: 503,
+        headers: {
+          "Content-Type": "application/json",
+          "Retry-After": "60", // Retry after 1 minute
+        },
+      }
+    );
+  }
+}
+
+// Helper functions
+function shouldSkipMiddleware(pathname: string): boolean {
+  const skipPatterns = [
+    "/_next/static",
+    "/_next/image",
+    "/favicon.ico",
+    "/robots.txt",
+    "/sitemap.xml",
+    "/manifest.json",
+    "/sw.js",
+    "/api/health",
+    "/api/status",
+  ];
+
+  return skipPatterns.some((pattern) => pathname.startsWith(pattern));
+}
+
+function isProtectedRoute(pathname: string): boolean {
+  const protectedPrefixes = [
+    "/api/suppliers",
+    "/api/clients",
+    "/api/couples",
+    "/api/forms/create",
+    "/api/forms/update",
+    "/api/forms/delete",
+    "/api/bookings",
+    "/api/payments",
+    "/api/admin",
+    "/api/settings",
+    "/dashboard",
+    "/(dashboard)",
+    "/admin",
+    "/settings",
+  ];
+
+  return protectedPrefixes.some((prefix) => pathname.startsWith(prefix));
+}
+
+function isStateChangingOperation(method: string): boolean {
+  return ["POST", "PUT", "PATCH", "DELETE"].includes(method);
+}
+
+function requiresValidation(pathname: string, method: string): boolean {
+  if (!isStateChangingOperation(method)) {
+    return false;
+  }
+
+  const validationEndpoints = [
+    "/api/couples/profile",
+    "/api/suppliers/profile",
+    "/api/forms/submit",
+    "/api/bookings/create",
+    "/api/payments/intent",
+  ];
+
+  return validationEndpoints.some((endpoint) => pathname.startsWith(endpoint));
+}
+
+function getValidationSchema(pathname: string): string | null {
+  if (pathname.startsWith("/api/couples/profile")) return "coupleProfile";
+  if (pathname.startsWith("/api/suppliers/profile")) return "supplierProfile";
+  if (pathname.startsWith("/api/forms/submit")) return "formSubmission";
+  if (pathname.startsWith("/api/bookings/create")) return "bookingCreation";
+  if (pathname.startsWith("/api/payments/intent")) return "paymentIntent";
+
+  return null;
+}
+
+function addSecurityHeaders(response: NextResponse): void {
+  // Core security headers
+  response.headers.set("X-Content-Type-Options", "nosniff");
+  response.headers.set("X-Frame-Options", "DENY");
+  response.headers.set("X-XSS-Protection", "1; mode=block");
+  response.headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
+
+  // HTTPS enforcement
+  if (process.env.NODE_ENV === "production") {
+    response.headers.set(
+      "Strict-Transport-Security",
+      "max-age=31536000; includeSubDomains; preload"
+    );
+  }
+
+  // Content Security Policy for wedding industry applications
+  response.headers.set(
+    "Content-Security-Policy",
+    [
+      "default-src 'self'",
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js.stripe.com https://maps.googleapis.com",
+      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+      "img-src 'self' data: https: blob:",
+      "font-src 'self' https://fonts.gstatic.com",
+      "connect-src 'self' https://api.stripe.com https://*.supabase.co wss://*.supabase.co",
+      "frame-src https://js.stripe.com https://hooks.stripe.com",
+      "object-src 'none'",
+      "base-uri 'self'",
+      "form-action 'self'",
+    ].join("; ")
+  );
+
+  // Additional wedding industry specific headers
+  response.headers.set("X-Wedding-Platform", "WedSync");
+  response.headers.set("X-Industry-Compliance", "wedding-vendors");
+}
+
+function getClientIP(request: NextRequest): string {
+  return (
+    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+    request.headers.get("x-real-ip") ||
+    "0.0.0.0"
+  );
+}
+
+function isCurrentlyWeddingSeason(): boolean {
+  const currentMonth = new Date().getMonth() + 1;
+  return currentMonth >= 4 && currentMonth <= 9; // April through September
+}
+
+function getSupplierTypeFromHeaders(request: NextRequest): string | undefined {
+  return request.headers.get("x-supplier-type") || undefined;
+}
+
+function normalizeEndpointPattern(pathname: string): string {
+  return pathname.replace(/\/\d+/g, "/:id").replace(/\/[a-f0-9-]{36}/g, "/:uuid");
+}
+
+// Middleware configuration - specify which routes to run middleware on
+export const config = {
+  matcher: [
+    /*
+     * Match all request paths except for the ones starting with:
+     * - _next/static (static files)
+     * - _next/image (image optimization files)
+     * - favicon.ico (favicon file)
+     * - public folder assets
+     */
+    "/((?!_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml|manifest.json|sw.js).*)",
+
+    // Specifically include all API routes
+    "/api/(.*)",
+
+    // Include all dashboard routes
+    "/dashboard/(.*)",
+    "/(dashboard)/(.*)",
+
+    // Include admin routes
+    "/admin/(.*)",
+
+    // Include auth routes for additional security
+    "/login",
+    "/register",
+    "/forgot-password",
+    "/reset-password",
+
+    // Include settings and profile routes
+    "/settings/(.*)",
+    "/profile/(.*)",
+  ],
+};
+export { middleware as default };

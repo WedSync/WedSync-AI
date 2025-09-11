@@ -1,0 +1,486 @@
+/**
+ * WS-189 Touch Analytics API - Team B Backend
+ * Privacy-compliant touch interaction analytics processing
+ * Supports millions of touch events with sub-50ms API response times
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+import crypto from 'crypto';
+
+// Touch Analytics Data Schema
+const TouchAnalyticsSchema = z.object({
+  user_id: z.string().optional(),
+  session_id: z.string(),
+  gesture_type: z.enum([
+    'emergency-call', 'photo-capture-confirm', 'guest-seating-assign',
+    'photo-group-navigate', 'supplier-message-send', 'task-status-update',
+    'menu-navigation', 'form-input', 'settings-access'
+  ]),
+  response_time: z.number().positive(),
+  success: z.boolean(),
+  device_info: z.object({
+    type: z.enum(['mobile', 'tablet', 'desktop']),
+    os: z.string().optional(),
+    browser: z.string().optional()
+  }),
+  workflow_context: z.object({
+    workflow_type: z.enum(['photo-coordination', 'guest-management', 'venue-coordination', 'emergency']),
+    urgency_level: z.enum(['emergency', 'high', 'normal', 'low'])
+  }),
+  timestamp: z.string().datetime(),
+  performance_metrics: z.object({
+    target_response_time: z.number(),
+    actual_response_time: z.number(),
+    success_rate: z.number().min(0).max(1),
+    optimization_applied: z.boolean().optional()
+  }).optional()
+});
+
+// Analytics Settings Schema
+const AnalyticsSettingsSchema = z.object({
+  user_id: z.string(),
+  consent_level: z.enum(['none', 'anonymous', 'identified']),
+  data_retention_days: z.number().int().min(0).max(365),
+  performance_tracking: z.boolean(),
+  usage_analytics: z.boolean(),
+  cross_device_sync: z.boolean(),
+  gdpr_consent_date: z.string().datetime().optional()
+});
+
+// Helper function to hash user identifiers for privacy
+function hashUserId(userId: string): string {
+  return crypto.createHash('sha256').update(userId).digest('hex');
+}
+
+// Helper function to anonymize device info
+function anonymizeDeviceInfo(deviceInfo: any) {
+  return {
+    type: deviceInfo.type,
+    os: deviceInfo.os ? deviceInfo.os.split(' ')[0] : undefined, // Keep only OS name, remove version
+    browser: deviceInfo.browser ? deviceInfo.browser.split(' ')[0] : undefined // Keep only browser name
+  };
+}
+
+/**
+ * POST /api/touch/analytics
+ * Process touch interaction data with privacy compliance
+ */
+export async function POST(request: NextRequest) {
+  try {
+    const startTime = Date.now();
+    const data = await request.json();
+    
+    // Validate input data
+    const validatedData = TouchAnalyticsSchema.parse(data);
+    
+    const supabase = createClient();
+    
+    // Hash user ID for privacy compliance
+    const hashedUserId = validatedData.user_id ? hashUserId(validatedData.user_id) : null;
+    
+    // Anonymize device information
+    const anonymizedDeviceInfo = anonymizeDeviceInfo(validatedData.device_info);
+    
+    // Check user consent preferences
+    let consentLevel = 'anonymous'; // Default to anonymous
+    if (hashedUserId) {
+      const { data: settings } = await supabase
+        .from('touch_analytics_settings')
+        .select('consent_level')
+        .eq('hashed_user_id', hashedUserId)
+        .single();
+      
+      consentLevel = settings?.consent_level || 'anonymous';
+    }
+    
+    // Don't store data if user has opted out
+    if (consentLevel === 'none') {
+      return NextResponse.json({ 
+        success: true, 
+        message: 'Analytics disabled by user preference',
+        processing_time: Date.now() - startTime
+      });
+    }
+    
+    // Prepare analytics record
+    const analyticsRecord = {
+      hashed_user_id: consentLevel === 'identified' ? hashedUserId : null,
+      session_id: validatedData.session_id,
+      gesture_type: validatedData.gesture_type,
+      response_time: validatedData.response_time,
+      success: validatedData.success,
+      device_info: anonymizedDeviceInfo,
+      workflow_context: validatedData.workflow_context,
+      timestamp: new Date(validatedData.timestamp).toISOString(),
+      target_response_time: validatedData.performance_metrics?.target_response_time,
+      performance_deviation: validatedData.performance_metrics ? 
+        validatedData.performance_metrics.actual_response_time - validatedData.performance_metrics.target_response_time : 0,
+      success_rate: validatedData.performance_metrics?.success_rate || (validatedData.success ? 1 : 0),
+      created_at: new Date().toISOString()
+    };
+    
+    // Insert analytics data with batch optimization
+    const { data: insertResult, error } = await supabase
+      .from('touch_analytics')
+      .insert([analyticsRecord])
+      .select('id');
+    
+    if (error) {
+      console.error('Touch analytics insertion error:', error);
+      return NextResponse.json(
+        { error: 'Failed to store analytics data', details: error.message },
+        { status: 500 }
+      );
+    }
+    
+    // Update real-time performance metrics
+    await updateRealtimeMetrics(supabase, validatedData.gesture_type, validatedData.response_time);
+    
+    // Check for performance issues and trigger alerts
+    const targetTime = validatedData.performance_metrics?.target_response_time || 100;
+    if (validatedData.response_time > targetTime * 1.5) {
+      await triggerPerformanceAlert(supabase, validatedData.gesture_type, validatedData.response_time, targetTime);
+    }
+    
+    const processingTime = Date.now() - startTime;
+    
+    return NextResponse.json({
+      success: true,
+      analytics_id: insertResult?.[0]?.id,
+      processing_time: processingTime,
+      performance_target_met: processingTime < 50, // Sub-50ms API target
+      consent_level: consentLevel
+    });
+    
+  } catch (error) {
+    console.error('Touch analytics API error:', error);
+    
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid request data', validation_errors: error.errors },
+        { status: 400 }
+      );
+    }
+    
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * PUT /api/touch/analytics/settings
+ * Update analytics collection preferences with user consent
+ */
+export async function PUT(request: NextRequest) {
+  try {
+    const data = await request.json();
+    const validatedSettings = AnalyticsSettingsSchema.parse(data);
+    
+    const supabase = createClient();
+    const hashedUserId = hashUserId(validatedSettings.user_id);
+    
+    // Upsert user analytics settings
+    const { data: result, error } = await supabase
+      .from('touch_analytics_settings')
+      .upsert({
+        hashed_user_id: hashedUserId,
+        consent_level: validatedSettings.consent_level,
+        data_retention_days: validatedSettings.data_retention_days,
+        performance_tracking: validatedSettings.performance_tracking,
+        usage_analytics: validatedSettings.usage_analytics,
+        cross_device_sync: validatedSettings.cross_device_sync,
+        gdpr_consent_date: validatedSettings.gdpr_consent_date || new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      }, {
+        onConflict: 'hashed_user_id'
+      })
+      .select();
+    
+    if (error) {
+      return NextResponse.json(
+        { error: 'Failed to update settings', details: error.message },
+        { status: 500 }
+      );
+    }
+    
+    // If user revoked consent, trigger data cleanup
+    if (validatedSettings.consent_level === 'none') {
+      await cleanupUserData(supabase, hashedUserId);
+    }
+    
+    return NextResponse.json({
+      success: true,
+      settings: result?.[0],
+      data_cleanup_initiated: validatedSettings.consent_level === 'none'
+    });
+    
+  } catch (error) {
+    console.error('Analytics settings update error:', error);
+    return NextResponse.json(
+      { error: 'Failed to update analytics settings' },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * GET /api/touch/analytics/dashboard
+ * Touch performance dashboard with aggregated metrics
+ */
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const timeRange = searchParams.get('timeRange') || '24h';
+    const gestureType = searchParams.get('gestureType');
+    const workflowType = searchParams.get('workflowType');
+    
+    const supabase = createClient();
+    
+    // Calculate time filter
+    const timeFilter = getTimeFilter(timeRange);
+    
+    // Build query with filters
+    let query = supabase
+      .from('touch_performance_metrics')
+      .select('*')
+      .gte('created_at', timeFilter);
+    
+    if (gestureType) {
+      query = query.eq('gesture_type', gestureType);
+    }
+    
+    if (workflowType) {
+      query = query.eq('workflow_type', workflowType);
+    }
+    
+    const { data: metrics, error } = await query.order('created_at', { ascending: false });
+    
+    if (error) {
+      return NextResponse.json(
+        { error: 'Failed to fetch dashboard metrics' },
+        { status: 500 }
+      );
+    }
+    
+    // Aggregate metrics for dashboard
+    const dashboardData = aggregateMetrics(metrics);
+    
+    return NextResponse.json({
+      success: true,
+      time_range: timeRange,
+      metrics: dashboardData,
+      last_updated: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('Dashboard API error:', error);
+    return NextResponse.json(
+      { error: 'Failed to load dashboard data' },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * DELETE /api/touch/analytics/user/[id]
+ * GDPR-compliant user data deletion
+ */
+export async function DELETE(request: NextRequest) {
+  try {
+    const url = new URL(request.url);
+    const userId = url.pathname.split('/').pop();
+    
+    if (!userId) {
+      return NextResponse.json({ error: 'User ID required' }, { status: 400 });
+    }
+    
+    const supabase = createClient();
+    const hashedUserId = hashUserId(userId);
+    
+    // Delete all user analytics data
+    const { error: analyticsError } = await supabase
+      .from('touch_analytics')
+      .delete()
+      .eq('hashed_user_id', hashedUserId);
+    
+    // Delete user settings
+    const { error: settingsError } = await supabase
+      .from('touch_analytics_settings')
+      .delete()
+      .eq('hashed_user_id', hashedUserId);
+    
+    // Delete user preferences
+    const { error: preferencesError } = await supabase
+      .from('user_touch_preferences')
+      .delete()
+      .eq('hashed_user_id', hashedUserId);
+    
+    if (analyticsError || settingsError || preferencesError) {
+      console.error('Data deletion errors:', { analyticsError, settingsError, preferencesError });
+      return NextResponse.json(
+        { error: 'Partial deletion failure - some data may remain' },
+        { status: 500 }
+      );
+    }
+    
+    // Log GDPR deletion request for compliance audit
+    await supabase
+      .from('gdpr_deletion_log')
+      .insert({
+        hashed_user_id: hashedUserId,
+        deletion_type: 'complete_touch_analytics',
+        requested_at: new Date().toISOString(),
+        completed_at: new Date().toISOString(),
+        status: 'completed'
+      });
+    
+    return NextResponse.json({
+      success: true,
+      user_id: userId,
+      deletion_completed: true,
+      deletion_timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('GDPR deletion error:', error);
+    return NextResponse.json(
+      { error: 'Failed to complete data deletion' },
+      { status: 500 }
+    );
+  }
+}
+
+// Helper Functions
+
+async function updateRealtimeMetrics(supabase: any, gestureType: string, responseTime: number) {
+  try {
+    // Update aggregated performance metrics
+    await supabase.rpc('update_touch_performance_metrics', {
+      p_gesture_type: gestureType,
+      p_response_time: responseTime,
+      p_timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Failed to update realtime metrics:', error);
+  }
+}
+
+async function triggerPerformanceAlert(supabase: any, gestureType: string, actualTime: number, targetTime: number) {
+  try {
+    await supabase
+      .from('performance_alerts')
+      .insert({
+        alert_type: 'touch_performance_degradation',
+        gesture_type: gestureType,
+        actual_response_time: actualTime,
+        target_response_time: targetTime,
+        severity: actualTime > targetTime * 2 ? 'high' : 'medium',
+        created_at: new Date().toISOString()
+      });
+  } catch (error) {
+    console.error('Failed to trigger performance alert:', error);
+  }
+}
+
+async function cleanupUserData(supabase: any, hashedUserId: string) {
+  try {
+    // Schedule background cleanup job
+    await supabase
+      .from('cleanup_jobs')
+      .insert({
+        job_type: 'user_data_cleanup',
+        hashed_user_id: hashedUserId,
+        status: 'pending',
+        created_at: new Date().toISOString()
+      });
+  } catch (error) {
+    console.error('Failed to schedule data cleanup:', error);
+  }
+}
+
+function getTimeFilter(timeRange: string): string {
+  const now = new Date();
+  switch (timeRange) {
+    case '1h':
+      return new Date(now.getTime() - 60 * 60 * 1000).toISOString();
+    case '24h':
+      return new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
+    case '7d':
+      return new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    case '30d':
+      return new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    default:
+      return new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
+  }
+}
+
+function aggregateMetrics(metrics: any[]): any {
+  if (!metrics || metrics.length === 0) {
+    return {
+      total_interactions: 0,
+      average_response_time: 0,
+      success_rate: 0,
+      performance_score: 0,
+      top_gestures: [],
+      workflow_breakdown: {}
+    };
+  }
+  
+  const totalInteractions = metrics.length;
+  const averageResponseTime = metrics.reduce((sum, m) => sum + m.avg_response_time, 0) / totalInteractions;
+  const successRate = metrics.reduce((sum, m) => sum + m.success_rate, 0) / totalInteractions;
+  
+  // Calculate performance score (0-100)
+  const performanceScore = Math.max(0, 100 - (averageResponseTime / 10)); // 10ms = 1 point deduction
+  
+  // Group by gesture type for top gestures
+  const gestureGroups = metrics.reduce((acc, m) => {
+    if (!acc[m.gesture_type]) {
+      acc[m.gesture_type] = { count: 0, totalTime: 0, successCount: 0 };
+    }
+    acc[m.gesture_type].count += m.interaction_count;
+    acc[m.gesture_type].totalTime += m.avg_response_time * m.interaction_count;
+    acc[m.gesture_type].successCount += m.success_rate * m.interaction_count;
+    return acc;
+  }, {});
+  
+  const topGestures = Object.entries(gestureGroups)
+    .map(([type, data]: [string, any]) => ({
+      gesture_type: type,
+      count: data.count,
+      avg_response_time: data.totalTime / data.count,
+      success_rate: data.successCount / data.count
+    }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 5);
+  
+  return {
+    total_interactions: totalInteractions,
+    average_response_time: Math.round(averageResponseTime * 100) / 100,
+    success_rate: Math.round(successRate * 10000) / 100, // Convert to percentage
+    performance_score: Math.round(performanceScore * 100) / 100,
+    top_gestures: topGestures,
+    workflow_breakdown: groupByWorkflow(metrics)
+  };
+}
+
+function groupByWorkflow(metrics: any[]): any {
+  return metrics.reduce((acc, m) => {
+    const workflow = m.workflow_type || 'unknown';
+    if (!acc[workflow]) {
+      acc[workflow] = {
+        count: 0,
+        avg_response_time: 0,
+        success_rate: 0
+      };
+    }
+    acc[workflow].count += m.interaction_count;
+    acc[workflow].avg_response_time = (acc[workflow].avg_response_time + m.avg_response_time) / 2;
+    acc[workflow].success_rate = (acc[workflow].success_rate + m.success_rate) / 2;
+    return acc;
+  }, {});
+}

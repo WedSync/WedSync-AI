@@ -1,0 +1,277 @@
+// WS-195: Business Metrics Dashboard Types
+// Wedding Industry Business Intelligence Types for MRR, Viral Growth, and Executive Reporting
+
+export interface DateRange {
+  start: Date;
+  end: Date;
+  period: 'day' | 'week' | 'month' | 'quarter' | 'year';
+}
+
+// Main Business Metrics Interface
+export interface BusinessMetrics {
+  mrr: MRRMetrics;
+  viral: ViralMetrics;
+  cac: CACMetrics;
+  health: BusinessHealth;
+  seasonality: WeddingSeasonality;
+  growth: GrowthMetrics;
+}
+
+// Monthly Recurring Revenue Tracking
+export interface MRRMetrics {
+  current: number;
+  previous: number;
+  growth: number;
+  growthPercent: number;
+  movements: MRRMovement[];
+  projections: GrowthProjection[];
+  breakdown: MRRBreakdown;
+}
+
+export interface MRRMovement {
+  type: 'new' | 'expansion' | 'contraction' | 'churn';
+  amount: number;
+  count: number;
+  description: string;
+  weddingContext: string; // e.g., "Peak wedding season acquisitions"
+}
+
+export interface MRRBreakdown {
+  byTier: Record<string, number>; // Starter, Professional, Scale, Enterprise
+  bySupplierType: Record<string, number>; // Photographers, Venues, Florists, etc.
+  byRegion: Record<string, number>;
+  bySeason: Record<string, number>; // Peak, Off-Peak, Shoulder
+}
+
+export interface GrowthProjection {
+  period: string;
+  projected: number;
+  confidence: 'high' | 'medium' | 'low';
+  assumptions: string[];
+}
+
+// Viral Coefficient and Referral Analysis
+export interface ViralMetrics {
+  coefficient: number;
+  trend: 'increasing' | 'stable' | 'decreasing';
+  referralData: ReferralFunnelData[];
+  conversionTrends: ConversionTrend[];
+  weddingViralEffects: WeddingViralEffects;
+}
+
+export interface ReferralFunnelData {
+  stage: string;
+  count: number;
+  conversionRate: number;
+  dropOffReason?: string;
+  weddingSeasonImpact: boolean;
+}
+
+export interface ConversionTrend {
+  period: string;
+  rate: number;
+  volume: number;
+  source: 'vendor_referral' | 'couple_referral' | 'marketplace_discovery';
+}
+
+export interface WeddingViralEffects {
+  coupleInviteRate: number; // How many couples invite new vendors
+  vendorCrossReferrals: number; // Vendor-to-vendor referrals
+  weddingShowcaseBoosts: number; // Portfolio sharing viral effects
+  seasonalMultiplier: number; // Wedding season viral amplification
+}
+
+// Customer Acquisition Cost Analysis
+export interface CACMetrics {
+  overall: number;
+  byChannel: Record<string, CACChannelData>;
+  trend: number; // Percentage change
+  ltv: number; // Lifetime value
+  ltvCacRatio: number;
+  paybackPeriod: number; // In months
+}
+
+export interface CACChannelData {
+  cost: number;
+  conversions: number;
+  cac: number;
+  roi: number;
+  weddingContext: string; // Channel-specific wedding industry insights
+}
+
+// Business Health Monitoring
+export interface BusinessHealth {
+  score: number; // 0-100
+  status: 'excellent' | 'healthy' | 'concerning' | 'critical';
+  indicators: HealthIndicator[];
+  alerts: BusinessAlert[];
+  trends: HealthTrend[];
+}
+
+export interface HealthIndicator {
+  name: string;
+  value: number;
+  target: number;
+  status: 'excellent' | 'healthy' | 'concerning' | 'critical';
+  trend: 'up' | 'down' | 'stable';
+  description: string;
+  weddingImpact: string; // How this affects wedding vendors
+}
+
+export interface BusinessAlert {
+  id: string;
+  severity: 'info' | 'warning' | 'error' | 'critical';
+  title: string;
+  description: string;
+  timestamp: Date;
+  actionRequired: boolean;
+  weddingContext: string;
+}
+
+export interface HealthTrend {
+  metric: string;
+  values: number[];
+  dates: Date[];
+  forecast: number[];
+}
+
+// Wedding Industry Seasonality
+export interface WeddingSeasonality {
+  currentSeason: 'peak' | 'shoulder' | 'off_peak';
+  seasonalImpact: SeasonalImpact;
+  monthlyTrends: MonthlyTrend[];
+  supplierTypeVariations: Record<string, SeasonalVariation>;
+}
+
+export interface SeasonalImpact {
+  mrrMultiplier: number;
+  acquisitionBoost: number;
+  churnReduction: number;
+  viralAmplification: number;
+}
+
+export interface MonthlyTrend {
+  month: string;
+  historicalMRR: number;
+  projectedMRR: number;
+  bookingVolume: number;
+  supplierActivity: number;
+}
+
+export interface SeasonalVariation {
+  supplierType: string;
+  peakMonths: string[];
+  variationCoefficient: number;
+  businessImpact: string;
+}
+
+// Growth Analytics
+export interface GrowthMetrics {
+  netRevenue: number;
+  grossRevenue: number;
+  churnRate: number;
+  expansionRate: number;
+  newCustomerRate: number;
+  cohortRetention: CohortRetention[];
+}
+
+export interface CohortRetention {
+  cohortMonth: string;
+  size: number;
+  retentionByMonth: Record<string, number>;
+  revenueByMonth: Record<string, number>;
+  supplierTypes: Record<string, number>;
+}
+
+// Component Props Interfaces
+export interface BusinessMetricsDashboardProps {
+  timeRange: DateRange;
+  userRole: 'admin' | 'executive' | 'finance';
+  realTimeUpdates: boolean;
+  businessMetrics: BusinessMetrics;
+  onTimeRangeChange: (range: DateRange) => void;
+  onMetricDrillDown: (metric: string, filters: Record<string, any>) => void;
+}
+
+export interface MRRTrackerProps {
+  mrrData: MRRMetrics;
+  timeRange: DateRange;
+  showProjections: boolean;
+  onMovementClick: (movement: MRRMovement) => void;
+}
+
+export interface ViralAnalysisProps {
+  viralMetrics: ViralMetrics;
+  timeRange: DateRange;
+  highlightWeddingSeason: boolean;
+  onFunnelStageClick: (stage: ReferralFunnelData) => void;
+}
+
+export interface CACAnalysisProps {
+  cacMetrics: CACMetrics;
+  timeRange: DateRange;
+  showChannelBreakdown: boolean;
+  onChannelSelect: (channel: string) => void;
+}
+
+export interface ExecutiveReportingProps {
+  businessMetrics: BusinessMetrics;
+  reportType: 'board' | 'investor' | 'monthly' | 'quarterly';
+  exportFormat?: 'pdf' | 'excel' | 'dashboard';
+  onExport?: (format: string) => void;
+}
+
+export interface BusinessHealthProps {
+  healthData: BusinessHealth;
+  showAlerts: boolean;
+  alertThreshold: 'all' | 'warning' | 'critical';
+  onAlertClick: (alert: BusinessAlert) => void;
+}
+
+// Chart Component Props
+export interface MetricsCardProps {
+  title: string;
+  value: number | string;
+  change?: number;
+  changeType?: 'positive' | 'negative' | 'neutral';
+  format?: 'currency' | 'percentage' | 'number';
+  description?: string;
+  weddingContext?: string;
+  size?: 'small' | 'medium' | 'large';
+  status?: 'excellent' | 'healthy' | 'concerning' | 'critical';
+}
+
+export interface ChartProps {
+  data: any[];
+  height?: number;
+  showLegend?: boolean;
+  interactive?: boolean;
+  weddingSeasonHighlight?: boolean;
+}
+
+// Real-time Update Types
+export interface RealTimeUpdate {
+  type: 'mrr' | 'viral' | 'cac' | 'health' | 'alert';
+  data: any;
+  timestamp: Date;
+  source: string;
+}
+
+export interface WebSocketMessage {
+  event: string;
+  data: RealTimeUpdate;
+  clientId: string;
+}
+
+// Export utility types
+export type MetricStatus = 'excellent' | 'healthy' | 'concerning' | 'critical';
+export type TrendDirection = 'up' | 'down' | 'stable';
+export type UserRole = 'admin' | 'executive' | 'finance';
+export type WeddingSeason = 'peak' | 'shoulder' | 'off_peak';
+export type SupplierType =
+  | 'photographer'
+  | 'venue'
+  | 'florist'
+  | 'caterer'
+  | 'band'
+  | 'other';

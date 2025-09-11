@@ -1,0 +1,1 @@
+import type { Meta, StoryObj } from '@storybook/react'; import { Sparkline } from './Sparkline'; const meta:Meta<typeof Sparkline>={title:'Charts/Sparkline',component:Sparkline,args:{values:[3,5,4,7,6,8,12,9,11,13,12,15],title:'Enquiries over time'}}; export default meta; type Story=StoryObj<typeof Sparkline>; export const Default:Story={};

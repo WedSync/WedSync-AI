@@ -1,0 +1,314 @@
+/**
+ * AI Knowledge Base Statistics API
+ * Team B - WS-210 Implementation
+ * 
+ * Provides detailed analytics and statistics about the knowledge base
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
+import { KnowledgeBaseEngine } from '@/lib/ai/knowledge-base-engine';
+import { createClient } from '@supabase/supabase-js';
+import { logger } from '@/lib/logger';
+import { ratelimit } from '@/lib/ratelimit';
+
+// Initialize services
+const knowledgeEngine = new KnowledgeBaseEngine(
+  process.env.NEXT_PUBLIC_SUPABASE_URL || (() => { throw new Error("Missing environment variable: NEXT_PUBLIC_SUPABASE_URL") })(),
+  process.env.SUPABASE_SERVICE_ROLE_KEY || (() => { throw new Error("Missing environment variable: SUPABASE_SERVICE_ROLE_KEY") })(),
+  process.env.OPENAI_API_KEY || (() => { throw new Error("Missing environment variable: OPENAI_API_KEY") })()
+);
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL || (() => { throw new Error("Missing environment variable: NEXT_PUBLIC_SUPABASE_URL") })(),
+  process.env.SUPABASE_SERVICE_ROLE_KEY || (() => { throw new Error("Missing environment variable: SUPABASE_SERVICE_ROLE_KEY") })()
+);
+
+// Request validation schemas
+const StatsQuerySchema = z.object({
+  organization_id: z.string().uuid(),
+  detailed: z.boolean().optional().default(false),
+  date_range: z.enum(['7d', '30d', '90d', 'all']).optional().default('30d'),
+});
+
+/**
+ * GET /api/ai/knowledge/stats - Get knowledge base statistics and analytics
+ */
+export async function GET(req: NextRequest) {
+  try {
+    const { searchParams } = new URL(req.url);
+    const organization_id = searchParams.get('organization_id');
+    const detailed = searchParams.get('detailed') === 'true';
+    const date_range = searchParams.get('date_range') || '30d';
+
+    // Validate required parameters
+    if (!organization_id) {
+      return NextResponse.json(
+        { error: 'Missing required parameter: organization_id' },
+        { status: 400 }
+      );
+    }
+
+    // Validate request
+    const validatedQuery = StatsQuerySchema.parse({
+      organization_id,
+      detailed,
+      date_range,
+    });
+
+    // Rate limiting
+    const rateLimitResult = await ratelimit.limit(organization_id);
+    if (!rateLimitResult.success) {
+      return NextResponse.json(
+        { 
+          error: 'Rate limit exceeded',
+          reset: rateLimitResult.reset,
+          remaining: rateLimitResult.remaining 
+        },
+        { status: 429 }
+      );
+    }
+
+    logger.info('Knowledge base stats requested', {
+      organization_id,
+      detailed,
+      date_range,
+    });
+
+    // Get basic stats
+    const basicStats = await knowledgeEngine.getKnowledgeBaseStats(organization_id);
+
+    // Calculate date range for filtering
+    const now = new Date();
+    let dateFilter = '';
+    switch (date_range) {
+      case '7d':
+        dateFilter = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+        break;
+      case '30d':
+        dateFilter = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
+        break;
+      case '90d':
+        dateFilter = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000).toISOString();
+        break;
+      case 'all':
+      default:
+        dateFilter = '1970-01-01T00:00:00.000Z';
+    }
+
+    // Build response with basic stats
+    const response: any = {
+      success: true,
+      organization_id,
+      date_range,
+      basic_stats: basicStats,
+      timestamp: new Date().toISOString(),
+    };
+
+    // Add detailed analytics if requested
+    if (detailed) {
+      try {
+        // Category distribution
+        const { data: categoryStats } = await supabase
+          .from('knowledge_documents')
+          .select('category, source_type')
+          .eq('organization_id', organization_id)
+          .gte('created_at', dateFilter);
+
+        const categoryDistribution = categoryStats?.reduce((acc, doc) => {
+          acc[doc.category] = (acc[doc.category] || 0) + 1;
+          return acc;
+        }, {} as Record<string, number>) || {};
+
+        const sourceTypeDistribution = categoryStats?.reduce((acc, doc) => {
+          acc[doc.source_type] = (acc[doc.source_type] || 0) + 1;
+          return acc;
+        }, {} as Record<string, number>) || {};
+
+        // Content volume stats
+        const { data: volumeStats } = await supabase
+          .from('knowledge_documents')
+          .select('content, created_at')
+          .eq('organization_id', organization_id)
+          .gte('created_at', dateFilter);
+
+        const contentStats = volumeStats?.reduce((acc, doc) => {
+          const wordCount = doc.content.split(/\s+/).length;
+          acc.total_words += wordCount;
+          acc.total_characters += doc.content.length;
+          acc.average_words = Math.round(acc.total_words / volumeStats.length);
+          return acc;
+        }, {
+          total_words: 0,
+          total_characters: 0,
+          average_words: 0,
+          total_documents: volumeStats?.length || 0,
+        });
+
+        // Activity timeline (documents created over time)
+        const { data: timelineData } = await supabase
+          .from('knowledge_documents')
+          .select('created_at')
+          .eq('organization_id', organization_id)
+          .gte('created_at', dateFilter)
+          .order('created_at', { ascending: true });
+
+        // Group by day/week based on date range
+        const timelineGrouping = date_range === '7d' ? 'day' : 'week';
+        const timeline = groupByTimePeriod(timelineData || [], timelineGrouping);
+
+        // Search performance metrics (if available)
+        // This would require implementing search analytics in the future
+        const searchMetrics = {
+          note: 'Search analytics not implemented yet',
+          average_response_time: null,
+          popular_queries: [],
+          search_success_rate: null,
+        };
+
+        // Top categories by usage
+        const topCategories = Object.entries(categoryDistribution)
+          .sort(([, a], [, b]) => b - a)
+          .slice(0, 10)
+          .map(([category, count]) => ({ category, count }));
+
+        response.detailed_analytics = {
+          category_distribution: categoryDistribution,
+          source_type_distribution: sourceTypeDistribution,
+          content_statistics: contentStats,
+          activity_timeline: timeline,
+          top_categories: topCategories,
+          search_metrics: searchMetrics,
+        };
+
+        // Storage and performance metrics
+        const { data: storageStats } = await supabase.rpc(
+          'get_knowledge_base_storage_stats',
+          { org_id: organization_id }
+        );
+
+        if (storageStats) {
+          response.detailed_analytics.storage_metrics = storageStats;
+        }
+
+      } catch (analyticsError) {
+        logger.warn('Failed to generate detailed analytics:', analyticsError);
+        response.detailed_analytics = {
+          error: 'Failed to generate detailed analytics',
+          message: 'Basic stats are still available',
+        };
+      }
+    }
+
+    // Add recommendations based on the data
+    response.recommendations = generateRecommendations(basicStats, response.detailed_analytics);
+
+    logger.info('Knowledge base stats generated successfully', {
+      organization_id,
+      total_documents: basicStats.total_documents,
+      categories_count: basicStats.categories?.length || 0,
+    });
+
+    return NextResponse.json(response);
+
+  } catch (error) {
+    logger.error('Knowledge base stats failed:', error);
+    
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { 
+          error: 'Invalid request parameters',
+          details: error.errors 
+        },
+        { status: 400 }
+      );
+    }
+
+    return NextResponse.json(
+      { 
+        error: 'Stats operation failed',
+        message: error instanceof Error ? error.message : 'Unknown error'
+      },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * Group data by time period for timeline analytics
+ */
+function groupByTimePeriod(data: any[], grouping: 'day' | 'week') {
+  const groups: Record<string, number> = {};
+  
+  data.forEach(item => {
+    const date = new Date(item.created_at);
+    let key: string;
+    
+    if (grouping === 'day') {
+      key = date.toISOString().split('T')[0]; // YYYY-MM-DD
+    } else {
+      // Group by week (Monday as start of week)
+      const monday = new Date(date);
+      monday.setDate(date.getDate() - ((date.getDay() + 6) % 7));
+      key = monday.toISOString().split('T')[0];
+    }
+    
+    groups[key] = (groups[key] || 0) + 1;
+  });
+  
+  return Object.entries(groups)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([period, count]) => ({ period, count }));
+}
+
+/**
+ * Generate recommendations based on knowledge base analytics
+ */
+function generateRecommendations(basicStats: any, detailedAnalytics?: any) {
+  const recommendations = [];
+  
+  // Document volume recommendations
+  if (basicStats.total_documents < 10) {
+    recommendations.push({
+      type: 'content',
+      priority: 'high',
+      message: 'Consider adding more documents to improve search quality. Aim for at least 20-30 core documents.',
+      action: 'Add more FAQ entries, service descriptions, and vendor information',
+    });
+  }
+  
+  // Category coverage recommendations  
+  if (basicStats.categories?.length < 5) {
+    recommendations.push({
+      type: 'categories',
+      priority: 'medium',
+      message: 'Diversify content across more categories to better serve different user needs.',
+      action: 'Add content for underrepresented wedding service categories',
+    });
+  }
+  
+  // Content quality recommendations
+  if (detailedAnalytics?.content_statistics?.average_words < 50) {
+    recommendations.push({
+      type: 'quality',
+      priority: 'medium',
+      message: 'Documents seem quite short. Longer, more detailed content improves search relevance.',
+      action: 'Expand existing documents with more comprehensive information',
+    });
+  }
+  
+  // Recent activity recommendations
+  const hasRecentActivity = basicStats.last_updated && 
+    new Date(basicStats.last_updated) > new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    
+  if (!hasRecentActivity) {
+    recommendations.push({
+      type: 'maintenance',
+      priority: 'low',
+      message: 'Knowledge base hasn\'t been updated recently. Fresh content improves user experience.',
+      action: 'Review and update existing content, add new seasonal information',
+    });
+  }
+  
+  return recommendations;
+}

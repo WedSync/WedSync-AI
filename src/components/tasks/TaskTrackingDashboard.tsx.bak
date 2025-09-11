@@ -1,0 +1,617 @@
+'use client'
+
+import { memo, useState, useEffect, useMemo } from 'react'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { 
+  Calendar,
+  Users,
+  AlertTriangle,
+  TrendingUp,
+  Search,
+  Filter,
+  Plus,
+  CheckCircle2,
+  Clock,
+  XCircle
+} from 'lucide-react'
+import { cn } from '@/lib/utils'
+
+// Task status and priority types following WS-159 specifications
+type TaskStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled' | 'blocked'
+type TaskPriority = 'low' | 'medium' | 'high' | 'urgent'
+
+interface TaskAssignee {
+  id: string
+  name: string
+  avatar?: string
+  role: string
+}
+
+interface Task {
+  id: string
+  title: string
+  description?: string
+  status: TaskStatus
+  priority: TaskPriority
+  progress: number // 0-100
+  assignees: TaskAssignee[]
+  dueDate?: Date
+  createdAt: Date
+  updatedAt: Date
+  category?: string
+  tags?: string[]
+  photoEvidence?: string[]
+  completedBy?: string
+  completionNotes?: string
+}
+
+interface TaskStats {
+  total: number
+  completed: number
+  inProgress: number
+  blocked: number
+  overdue: number
+  completionRate: number
+  avgCompletionTime: number // in days
+}
+
+interface TaskTrackingDashboardProps {
+  tasks: Task[]
+  onTaskClick?: (task: Task) => void
+  onCreateTask?: () => void
+  onUpdateTaskStatus?: (taskId: string, status: TaskStatus) => Promise<void>
+  onAssignTask?: (taskId: string, assigneeId: string) => Promise<void>
+  currentUserId: string
+  organizationId: string
+  realTimeUpdatesEnabled?: boolean
+  className?: string
+}
+
+// Calculate comprehensive task statistics
+function calculateTaskStats(tasks: Task[]): TaskStats {
+  const now = new Date()
+  const total = tasks.length
+  const completed = tasks.filter(t => t.status === 'completed').length
+  const inProgress = tasks.filter(t => t.status === 'in_progress').length
+  const blocked = tasks.filter(t => t.status === 'blocked').length
+  const overdue = tasks.filter(t => 
+    t.dueDate && t.dueDate < now && t.status !== 'completed'
+  ).length
+  
+  const completionRate = total > 0 ? (completed / total) * 100 : 0
+  
+  // Calculate average completion time
+  const completedTasks = tasks.filter(t => t.status === 'completed')
+  const avgCompletionTime = completedTasks.length > 0 
+    ? completedTasks.reduce((sum, task) => {
+        const createdDate = new Date(task.createdAt)
+        const updatedDate = new Date(task.updatedAt)
+        const daysDiff = Math.ceil((updatedDate.getTime() - createdDate.getTime()) / (1000 * 60 * 60 * 24))
+        return sum + daysDiff
+      }, 0) / completedTasks.length
+    : 0
+
+  return { total, completed, inProgress, blocked, overdue, completionRate, avgCompletionTime }
+}
+
+// Status configuration with wedding-appropriate styling
+const statusConfig = {
+  pending: {
+    label: 'Pending',
+    icon: Clock,
+    color: 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300',
+    count: 0
+  },
+  in_progress: {
+    label: 'In Progress', 
+    icon: TrendingUp,
+    color: 'bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300',
+    count: 0
+  },
+  completed: {
+    label: 'Completed',
+    icon: CheckCircle2,
+    color: 'bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300',
+    count: 0
+  },
+  blocked: {
+    label: 'Blocked',
+    icon: XCircle,
+    color: 'bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300',
+    count: 0
+  },
+  cancelled: {
+    label: 'Cancelled',
+    icon: XCircle,
+    color: 'bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300',
+    count: 0
+  }
+} as const
+
+// Priority configuration
+const priorityConfig = {
+  low: {
+    label: 'Low',
+    color: 'bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300'
+  },
+  medium: {
+    label: 'Medium', 
+    color: 'bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300'
+  },
+  high: {
+    label: 'High',
+    color: 'bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300'
+  },
+  urgent: {
+    label: 'Urgent',
+    color: 'bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300'
+  }
+} as const
+
+function TaskStatsOverview({ stats }: { stats: TaskStats }) {
+  return (
+    <div className="grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-6 gap-4 mb-6">
+      <Card className="bg-gradient-to-br from-blue-50 to-blue-100 dark:from-blue-950 dark:to-blue-900 border-blue-200 dark:border-blue-800">
+        <CardContent className="p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-blue-600 dark:text-blue-400">Total Tasks</p>
+              <p className="text-2xl font-bold text-blue-700 dark:text-blue-300">{stats.total}</p>
+            </div>
+            <TrendingUp className="h-8 w-8 text-blue-500" />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="bg-gradient-to-br from-green-50 to-green-100 dark:from-green-950 dark:to-green-900 border-green-200 dark:border-green-800">
+        <CardContent className="p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-green-600 dark:text-green-400">Completed</p>
+              <p className="text-2xl font-bold text-green-700 dark:text-green-300">{stats.completed}</p>
+              <p className="text-xs text-green-600 dark:text-green-400">
+                {stats.completionRate.toFixed(1)}% rate
+              </p>
+            </div>
+            <CheckCircle2 className="h-8 w-8 text-green-500" />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="bg-gradient-to-br from-amber-50 to-amber-100 dark:from-amber-950 dark:to-amber-900 border-amber-200 dark:border-amber-800">
+        <CardContent className="p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-amber-600 dark:text-amber-400">In Progress</p>
+              <p className="text-2xl font-bold text-amber-700 dark:text-amber-300">{stats.inProgress}</p>
+            </div>
+            <Clock className="h-8 w-8 text-amber-500" />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="bg-gradient-to-br from-red-50 to-red-100 dark:from-red-950 dark:to-red-900 border-red-200 dark:border-red-800">
+        <CardContent className="p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-red-600 dark:text-red-400">
+                {stats.overdue > 0 ? 'Overdue' : 'Blocked'}
+              </p>
+              <p className="text-2xl font-bold text-red-700 dark:text-red-300">
+                {stats.overdue > 0 ? stats.overdue : stats.blocked}
+              </p>
+            </div>
+            <AlertTriangle className="h-8 w-8 text-red-500" />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="bg-gradient-to-br from-purple-50 to-purple-100 dark:from-purple-950 dark:to-purple-900 border-purple-200 dark:border-purple-800">
+        <CardContent className="p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-purple-600 dark:text-purple-400">Avg. Completion</p>
+              <p className="text-2xl font-bold text-purple-700 dark:text-purple-300">
+                {stats.avgCompletionTime.toFixed(1)}
+              </p>
+              <p className="text-xs text-purple-600 dark:text-purple-400">days</p>
+            </div>
+            <Calendar className="h-8 w-8 text-purple-500" />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="bg-gradient-to-br from-indigo-50 to-indigo-100 dark:from-indigo-950 dark:to-indigo-900 border-indigo-200 dark:border-indigo-800">
+        <CardContent className="p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-indigo-600 dark:text-indigo-400">Team Members</p>
+              <p className="text-2xl font-bold text-indigo-700 dark:text-indigo-300">
+                {/* Calculate unique assignees */}
+                {new Set([...stats as any].flatMap((task: Task) => task.assignees?.map(a => a.id) || [])).size || 0}
+              </p>
+            </div>
+            <Users className="h-8 w-8 text-indigo-500" />
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+function TaskFiltersAndSearch({ 
+  searchQuery, 
+  setSearchQuery, 
+  statusFilter, 
+  setStatusFilter,
+  priorityFilter,
+  setPriorityFilter,
+  onCreateTask 
+}: {
+  searchQuery: string
+  setSearchQuery: (query: string) => void
+  statusFilter: TaskStatus | 'all'
+  setStatusFilter: (status: TaskStatus | 'all') => void
+  priorityFilter: TaskPriority | 'all'
+  setPriorityFilter: (priority: TaskPriority | 'all') => void
+  onCreateTask?: () => void
+}) {
+  return (
+    <div className="flex flex-col lg:flex-row gap-4 items-start lg:items-center justify-between bg-white dark:bg-gray-800 p-4 rounded-lg border shadow-sm mb-6">
+      <div className="flex flex-col sm:flex-row gap-4 flex-1">
+        {/* Search */}
+        <div className="relative flex-1 max-w-sm">
+          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+          <Input
+            placeholder="Search tasks..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="pl-9"
+            data-testid="task-search-input"
+          />
+        </div>
+
+        {/* Status Filter */}
+        <Select value={statusFilter} onValueChange={setStatusFilter}>
+          <SelectTrigger className="w-40" data-testid="status-filter">
+            <Filter className="h-4 w-4 mr-2" />
+            <SelectValue placeholder="Status" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Status</SelectItem>
+            <SelectItem value="pending">Pending</SelectItem>
+            <SelectItem value="in_progress">In Progress</SelectItem>
+            <SelectItem value="completed">Completed</SelectItem>
+            <SelectItem value="blocked">Blocked</SelectItem>
+            <SelectItem value="cancelled">Cancelled</SelectItem>
+          </SelectContent>
+        </Select>
+
+        {/* Priority Filter */}
+        <Select value={priorityFilter} onValueChange={setPriorityFilter}>
+          <SelectTrigger className="w-40" data-testid="priority-filter">
+            <SelectValue placeholder="Priority" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Priority</SelectItem>
+            <SelectItem value="urgent">Urgent</SelectItem>
+            <SelectItem value="high">High</SelectItem>
+            <SelectItem value="medium">Medium</SelectItem>
+            <SelectItem value="low">Low</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* Create Task Button */}
+      {onCreateTask && (
+        <Button 
+          onClick={onCreateTask} 
+          className="shrink-0 bg-primary-600 hover:bg-primary-700 text-white"
+          data-testid="create-task-button"
+        >
+          <Plus className="h-4 w-4 mr-2" />
+          New Task
+        </Button>
+      )}
+    </div>
+  )
+}
+
+export const TaskTrackingDashboard = memo<TaskTrackingDashboardProps>(({
+  tasks,
+  onTaskClick,
+  onCreateTask,
+  onUpdateTaskStatus,
+  onAssignTask,
+  currentUserId,
+  organizationId,
+  realTimeUpdatesEnabled = true,
+  className
+}) => {
+  // State management
+  const [searchQuery, setSearchQuery] = useState('')
+  const [statusFilter, setStatusFilter] = useState<TaskStatus | 'all'>('all')
+  const [priorityFilter, setPriorityFilter] = useState<TaskPriority | 'all'>('all')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // Calculate statistics
+  const stats = useMemo(() => calculateTaskStats(tasks), [tasks])
+
+  // Filter tasks based on search and filters
+  const filteredTasks = useMemo(() => {
+    return tasks.filter(task => {
+      const matchesSearch = !searchQuery || 
+        task.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        task.description?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        task.category?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        task.tags?.some(tag => tag.toLowerCase().includes(searchQuery.toLowerCase()))
+
+      const matchesStatus = statusFilter === 'all' || task.status === statusFilter
+      const matchesPriority = priorityFilter === 'all' || task.priority === priorityFilter
+
+      return matchesSearch && matchesStatus && matchesPriority
+    })
+  }, [tasks, searchQuery, statusFilter, priorityFilter])
+
+  // Group tasks by status for better visualization
+  const tasksByStatus = useMemo(() => {
+    const grouped = filteredTasks.reduce((acc, task) => {
+      if (!acc[task.status]) acc[task.status] = []
+      acc[task.status].push(task)
+      return acc
+    }, {} as Record<TaskStatus, Task[]>)
+
+    // Sort tasks within each status by priority and due date
+    Object.keys(grouped).forEach(status => {
+      grouped[status as TaskStatus].sort((a, b) => {
+        const priorityOrder = { urgent: 4, high: 3, medium: 2, low: 1 }
+        const priorityDiff = priorityOrder[b.priority] - priorityOrder[a.priority]
+        
+        if (priorityDiff !== 0) return priorityDiff
+        
+        // If priority is same, sort by due date
+        if (a.dueDate && b.dueDate) {
+          return new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime()
+        }
+        
+        return 0
+      })
+    })
+
+    return grouped
+  }, [filteredTasks])
+
+  // Real-time updates effect (placeholder for Supabase realtime)
+  useEffect(() => {
+    if (!realTimeUpdatesEnabled) return
+
+    // TODO: Implement Supabase realtime subscription
+    // const subscription = supabase
+    //   .channel('task_updates')
+    //   .on('postgres_changes', { event: '*', schema: 'public', table: 'workflow_tasks' }, handleTaskUpdate)
+    //   .subscribe()
+
+    // return () => subscription.unsubscribe()
+  }, [realTimeUpdatesEnabled, organizationId])
+
+  // Error handling
+  if (error) {
+    return (
+      <div className={cn('p-6', className)}>
+        <Card className="border-red-200 bg-red-50 dark:bg-red-950 dark:border-red-800">
+          <CardContent className="p-6 text-center">
+            <AlertTriangle className="h-12 w-12 text-red-500 mx-auto mb-4" />
+            <h3 className="text-lg font-medium text-red-700 dark:text-red-300 mb-2">
+              Error Loading Tasks
+            </h3>
+            <p className="text-red-600 dark:text-red-400">{error}</p>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
+
+  return (
+    <div className={cn('space-y-6', className)} data-testid="task-tracking-container">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
+            Wedding Task Tracking
+          </h1>
+          <p className="text-gray-600 dark:text-gray-400">
+            Monitor and manage your wedding preparation progress
+          </p>
+        </div>
+        
+        {loading && (
+          <div className="flex items-center text-sm text-gray-500">
+            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-primary-600 mr-2"></div>
+            Updating...
+          </div>
+        )}
+      </div>
+
+      {/* Statistics Overview */}
+      <TaskStatsOverview stats={stats} />
+
+      {/* Filters and Search */}
+      <TaskFiltersAndSearch 
+        searchQuery={searchQuery}
+        setSearchQuery={setSearchQuery}
+        statusFilter={statusFilter}
+        setStatusFilter={setStatusFilter}
+        priorityFilter={priorityFilter}
+        setPriorityFilter={setPriorityFilter}
+        onCreateTask={onCreateTask}
+      />
+
+      {/* Task Lists by Status */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5 gap-6">
+        {Object.entries(statusConfig).map(([status, config]) => {
+          const statusTasks = tasksByStatus[status as TaskStatus] || []
+          const StatusIcon = config.icon
+
+          return (
+            <div key={status} className="space-y-3">
+              {/* Status Header */}
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <StatusIcon className="h-5 w-5 text-gray-500" />
+                  <h3 className="font-semibold text-gray-900 dark:text-white">
+                    {config.label}
+                  </h3>
+                  <Badge variant="secondary" className="text-xs">
+                    {statusTasks.length}
+                  </Badge>
+                </div>
+              </div>
+
+              {/* Task Cards */}
+              <div className="space-y-3 min-h-[200px]">
+                {statusTasks.length > 0 ? (
+                  statusTasks.map((task) => (
+                    <TaskQuickCard 
+                      key={task.id}
+                      task={task}
+                      onClick={() => onTaskClick?.(task)}
+                      onUpdateStatus={onUpdateTaskStatus}
+                      onAssign={onAssignTask}
+                      currentUserId={currentUserId}
+                    />
+                  ))
+                ) : (
+                  <div className="text-center py-8 text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800 rounded-lg border-2 border-dashed">
+                    <StatusIcon className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                    <p className="text-sm">No {config.label.toLowerCase()} tasks</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Empty State */}
+      {tasks.length === 0 && (
+        <div className="text-center py-12">
+          <div className="mx-auto w-24 h-24 bg-gray-100 dark:bg-gray-800 rounded-full flex items-center justify-center mb-4">
+            <Calendar className="h-12 w-12 text-gray-400" />
+          </div>
+          <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">
+            No wedding tasks yet
+          </h3>
+          <p className="text-gray-600 dark:text-gray-400 mb-4">
+            Start organizing your wedding by creating your first task.
+          </p>
+          {onCreateTask && (
+            <Button onClick={onCreateTask} className="bg-primary-600 hover:bg-primary-700">
+              <Plus className="h-4 w-4 mr-2" />
+              Create First Task
+            </Button>
+          )}
+        </div>
+      )}
+    </div>
+  )
+})
+
+// Quick task card for dashboard columns
+interface TaskQuickCardProps {
+  task: Task
+  onClick: () => void
+  onUpdateStatus?: (taskId: string, status: TaskStatus) => Promise<void>
+  onAssign?: (taskId: string, assigneeId: string) => Promise<void>
+  currentUserId: string
+}
+
+function TaskQuickCard({ task, onClick, onUpdateStatus, onAssign, currentUserId }: TaskQuickCardProps) {
+  const isOverdue = task.dueDate && task.dueDate < new Date() && task.status !== 'completed'
+  const priorityInfo = priorityConfig[task.priority]
+
+  return (
+    <Card 
+      className={cn(
+        'group cursor-pointer transition-all duration-200 hover:shadow-md hover:-translate-y-1',
+        'focus:outline-none focus:ring-2 focus:ring-primary-500/20',
+        isOverdue && 'ring-2 ring-red-500/20 bg-red-50/50 dark:bg-red-950/20'
+      )}
+      onClick={onClick}
+      data-testid={`task-item-${task.id}`}
+      data-status={task.status}
+    >
+      <CardContent className="p-4 space-y-3">
+        {/* Header */}
+        <div className="flex items-start justify-between">
+          <div className="flex-1 min-w-0">
+            <h4 className="font-medium text-gray-900 dark:text-white truncate text-sm">
+              {task.title}
+            </h4>
+            {task.category && (
+              <Badge variant="outline" className="text-xs mt-1 w-fit">
+                {task.category}
+              </Badge>
+            )}
+          </div>
+          <Badge className={cn('text-xs ml-2', priorityInfo.color)}>
+            {priorityInfo.label}
+          </Badge>
+        </div>
+
+        {/* Progress */}
+        <div className="space-y-1">
+          <div className="flex justify-between text-xs text-gray-500">
+            <span>Progress</span>
+            <span>{task.progress}%</span>
+          </div>
+          <div className="w-full bg-gray-200 rounded-full h-1.5">
+            <div 
+              className={cn(
+                'h-1.5 rounded-full transition-all duration-300',
+                task.status === 'completed' ? 'bg-green-500' :
+                task.status === 'blocked' ? 'bg-red-500' :
+                task.status === 'in_progress' ? 'bg-blue-500' : 'bg-gray-400'
+              )}
+              style={{ width: `${task.progress}%` }}
+            />
+          </div>
+        </div>
+
+        {/* Due Date */}
+        {task.dueDate && (
+          <div className={cn(
+            'flex items-center gap-1 text-xs',
+            isOverdue 
+              ? 'text-red-600 dark:text-red-400 font-medium' 
+              : 'text-gray-500 dark:text-gray-400'
+          )}>
+            <Calendar className="h-3 w-3" />
+            <span>
+              {isOverdue ? 'Overdue' : 'Due'} {task.dueDate.toLocaleDateString()}
+            </span>
+          </div>
+        )}
+
+        {/* Assignees */}
+        {task.assignees.length > 0 && (
+          <div className="flex items-center gap-1">
+            <Users className="h-3 w-3 text-gray-400" />
+            <span className="text-xs text-gray-500 truncate">
+              {task.assignees.map(a => a.name).join(', ')}
+            </span>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+TaskTrackingDashboard.displayName = 'TaskTrackingDashboard'
+
+// Export types for use in other components
+export type { Task, TaskStatus, TaskPriority, TaskAssignee, TaskStats, TaskTrackingDashboardProps }

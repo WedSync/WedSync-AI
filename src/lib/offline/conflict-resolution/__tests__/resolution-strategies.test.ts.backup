@@ -1,0 +1,618 @@
+/**
+ * Unit Tests for Conflict Resolution Strategies
+ * Feature: WS-172 - Offline Functionality - Conflict Resolution
+ * Team: C - Batch 21 - Round 3
+ */
+
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { 
+  ConflictResolver, 
+  createTimelineResolver, 
+  createVendorResolver, 
+  createGuestListResolver,
+  resolveBatchConflicts 
+} from '../resolution-strategies';
+import type { 
+  DataConflict, 
+  VersionedData, 
+  TimelineItem, 
+  VendorContact, 
+  GuestEntry,
+  UserContext,
+  ConflictMetadata
+} from '../types';
+
+describe('ConflictResolver', () => {
+  let resolver: ConflictResolver<any>;
+  let mockUserContext: UserContext;
+
+  beforeEach(() => {
+    resolver = new ConflictResolver<any>();
+    mockUserContext = {
+      id: 'user-123',
+      role: 'bride',
+      deviceId: 'device-abc',
+      sessionId: 'session-def'
+    };
+  });
+
+  const createMockConflict = (
+    localData: any,
+    remoteData: any,
+    strategy: string = 'test-merge-fields',
+    severity: 'low' | 'medium' | 'high' | 'critical' = 'medium'
+  ): DataConflict<any> => {
+    const affectedFields = Object.keys(localData).filter(
+      key => JSON.stringify(localData[key]) !== JSON.stringify(remoteData[key])
+    );
+
+    return {
+      metadata: {
+        conflictId: 'test-conflict-123',
+        detectedAt: {
+          timestamp: Date.now(),
+          timezone: 'UTC',
+          deviceTime: Date.now()
+        },
+        affectedFields,
+        severity,
+        autoResolvable: true
+      } as ConflictMetadata,
+      dataType: 'timeline-item',
+      localVersion: {
+        id: 'item-123',
+        version: 1,
+        data: localData,
+        lastModified: {
+          timestamp: 1640995200000,
+          timezone: 'UTC',
+          deviceTime: 1640995200000
+        },
+        modifiedBy: mockUserContext,
+        checksum: 'local-checksum'
+      },
+      remoteVersion: {
+        id: 'item-123',
+        version: 2,
+        data: remoteData,
+        lastModified: {
+          timestamp: 1640995800000, // Later timestamp
+          timezone: 'UTC',
+          deviceTime: 1640995800000
+        },
+        modifiedBy: {
+          ...mockUserContext,
+          id: 'remote-user-456'
+        },
+        checksum: 'remote-checksum'
+      },
+      conflictType: {
+        type: 'field-conflict',
+        field: affectedFields[0] || 'unknown',
+        conflictingValues: affectedFields.map(field => [localData[field], remoteData[field]]).flat()
+      },
+      resolutionStrategy: strategy as any,
+      isResolved: false
+    };
+  };
+
+  describe('Last Write Wins Strategy', () => {
+    it('should resolve using most recent timestamp', async () => {
+      const conflict = createMockConflict(
+        { title: 'Local Title', priority: 3 },
+        { title: 'Remote Title', priority: 5 },
+        'test-last-write-wins'
+      );
+
+      const result = await resolver.resolveConflict(conflict);
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.resolvedData.title).toBe('Remote Title'); // Remote has later timestamp
+        expect(result.resolvedData.priority).toBe(5);
+        expect(result.audit.action).toBe('resolved');
+        expect(result.audit.details.strategy).toBe('last-write-wins');
+      }
+    });
+
+    it('should prefer local when timestamps are equal', async () => {
+      const conflict = createMockConflict(
+        { title: 'Local Title' },
+        { title: 'Remote Title' },
+        'test-last-write-wins'
+      );
+
+      // Make timestamps equal
+      conflict.remoteVersion.lastModified.timestamp = conflict.localVersion.lastModified.timestamp;
+
+      const result = await resolver.resolveConflict(conflict);
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.resolvedData.title).toBe('Local Title');
+      }
+    });
+  });
+
+  describe('Merge Fields Strategy', () => {
+    it('should merge arrays by union', async () => {
+      const conflict = createMockConflict(
+        { tags: ['ceremony', 'outdoor'], assignedTo: ['user-1'] },
+        { tags: ['ceremony', 'garden'], assignedTo: ['user-1', 'user-2'] },
+        'test-merge-fields'
+      );
+
+      const result = await resolver.resolveConflict(conflict);
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.resolvedData.tags).toEqual(expect.arrayContaining(['ceremony', 'outdoor', 'garden']));
+        expect(result.resolvedData.assignedTo).toEqual(expect.arrayContaining(['user-1', 'user-2']));
+        expect(result.audit.details.strategy).toBe('merge-fields');
+      }
+    });
+
+    it('should prefer longer strings for description fields', async () => {
+      const conflict = createMockConflict(
+        { description: 'Short desc', name: 'Brief' },
+        { description: 'Much longer and more detailed description', name: 'Much Longer Name' },
+        'test-merge-fields'
+      );
+
+      const result = await resolver.resolveConflict(conflict);
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.resolvedData.description).toBe('Much longer and more detailed description');
+        expect(result.resolvedData.name).toBe('Much Longer Name');
+      }
+    });
+
+    it('should concatenate notes and comments', async () => {
+      const conflict = createMockConflict(
+        { description: 'Local description', notes: 'Local notes' },
+        { description: 'Remote description', notes: 'Remote notes' },
+        'test-merge-fields'
+      );
+
+      const result = await resolver.resolveConflict(conflict);
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.resolvedData.description).toContain('Local description');
+        expect(result.resolvedData.description).toContain('Remote description');
+        expect(result.resolvedData.notes).toContain('Local notes');
+        expect(result.resolvedData.notes).toContain('Remote notes');
+      }
+    });
+
+    it('should handle budget conflicts conservatively', async () => {
+      const conflict = createMockConflict(
+        { budgetAmount: 1000, estimatedCost: 800 },
+        { budgetAmount: 1200, estimatedCost: 900 },
+        'test-merge-fields'
+      );
+
+      const result = await resolver.resolveConflict(conflict);
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.resolvedData.budgetAmount).toBe(1200); // Higher budget (more conservative)
+        expect(result.resolvedData.estimatedCost).toBe(900);
+      }
+    });
+
+    it('should handle priority conflicts correctly', async () => {
+      const conflict = createMockConflict(
+        { priority: 3 },
+        { priority: 1 },
+        'test-merge-fields'
+      );
+
+      const result = await resolver.resolveConflict(conflict);
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.resolvedData.priority).toBe(1); // Lower number = higher priority
+      }
+    });
+
+    it('should handle date conflicts appropriately', async () => {
+      const earlyDate = new Date('2024-06-15T14:00:00Z');
+      const lateDate = new Date('2024-06-15T16:00:00Z');
+
+      const conflict = createMockConflict(
+        { startTime: lateDate, endTime: earlyDate, deadline: lateDate },
+        { startTime: earlyDate, endTime: lateDate, deadline: earlyDate },
+        'test-merge-fields'
+      );
+
+      const result = await resolver.resolveConflict(conflict);
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.resolvedData.startTime).toEqual(earlyDate); // Earlier start time
+        expect(result.resolvedData.endTime).toEqual(lateDate); // Later end time
+        expect(result.resolvedData.deadline).toEqual(earlyDate); // Earlier deadline (more conservative)
+      }
+    });
+
+    it('should merge nested objects correctly', async () => {
+      const conflict = createMockConflict(
+        { 
+          contact: { email: 'local@test.com', phone: '555-0123' },
+          budget: { estimated: 1000 }
+        },
+        { 
+          contact: { email: 'remote@test.com', address: '123 Main St' },
+          budget: { estimated: 1200, actual: 1150 }
+        },
+        'test-merge-fields'
+      );
+
+      const result = await resolver.resolveConflict(conflict);
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.resolvedData.contact.email).toBeDefined();
+        expect(result.resolvedData.contact.phone).toBe('555-0123');
+        expect(result.resolvedData.contact.address).toBe('123 Main St');
+        expect(result.resolvedData.budget.actual).toBe(1150);
+      }
+    });
+  });
+
+  describe('Priority-Based Resolution', () => {
+    it('should resolve based on user role hierarchy', async () => {
+      const conflict = createMockConflict(
+        { title: 'Bride Title' },
+        { title: 'Planner Title' },
+        'test-priority-based'
+      );
+
+      // Set different user roles
+      conflict.localVersion.modifiedBy.role = 'bride';
+      conflict.remoteVersion.modifiedBy.role = 'planner';
+
+      const result = await resolver.resolveConflict(conflict);
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.resolvedData.title).toBe('Bride Title'); // Bride has higher priority than planner
+        expect(result.audit.details.strategy).toBe('priority-based');
+      }
+    });
+
+    it('should handle equal priority (bride/groom) by merging', async () => {
+      const conflict = createMockConflict(
+        { title: 'Bride Title', tags: ['tag1'] },
+        { title: 'Groom Title', tags: ['tag2'] },
+        'test-priority-based'
+      );
+
+      conflict.localVersion.modifiedBy.role = 'bride';
+      conflict.remoteVersion.modifiedBy.role = 'groom';
+
+      const result = await resolver.resolveConflict(conflict);
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        // Should merge when priorities are equal
+        expect(result.resolvedData.tags).toEqual(expect.arrayContaining(['tag1', 'tag2']));
+      }
+    });
+
+    it('should prioritize admin over all other roles', async () => {
+      const conflict = createMockConflict(
+        { title: 'Admin Decision' },
+        { title: 'Bride Preference' },
+        'test-priority-based'
+      );
+
+      conflict.localVersion.modifiedBy.role = 'admin';
+      conflict.remoteVersion.modifiedBy.role = 'bride';
+
+      const result = await resolver.resolveConflict(conflict);
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.resolvedData.title).toBe('Admin Decision');
+      }
+    });
+  });
+
+  describe('Manual Review Strategy', () => {
+    it('should require manual review', async () => {
+      const conflict = createMockConflict(
+        { criticalField: 'local' },
+        { criticalField: 'remote' },
+        'test-manual-review'
+      );
+
+      const result = await resolver.resolveConflict(conflict);
+
+      expect(result.success).toBe(false);
+      expect(result.requiresManualReview).toBe(true);
+      expect(result.error.code).toBe('MANUAL_REVIEW_REQUIRED');
+    });
+  });
+
+  describe('Error Handling', () => {
+    it('should handle unknown strategies', async () => {
+      const conflict = createMockConflict(
+        { field: 'local' },
+        { field: 'remote' },
+        'unknown-strategy'
+      );
+
+      const result = await resolver.resolveConflict(conflict);
+
+      expect(result.success).toBe(false);
+      expect(result.requiresManualReview).toBe(true);
+      expect(result.error.code).toBe('UNKNOWN_STRATEGY');
+    });
+
+    it('should handle already resolved conflicts', async () => {
+      const conflict = createMockConflict(
+        { field: 'local' },
+        { field: 'remote' }
+      );
+      conflict.isResolved = true;
+
+      const result = await resolver.resolveConflict(conflict);
+
+      expect(result.success).toBe(false);
+      expect(result.error.code).toBe('ALREADY_RESOLVED');
+    });
+
+    it('should handle resolution errors gracefully', async () => {
+      const conflict = createMockConflict(
+        { field: 'local' },
+        { field: 'remote' },
+        'test-merge-fields'
+      );
+
+      // Corrupt the data to cause an error
+      conflict.localVersion.data = null;
+
+      const result = await resolver.resolveConflict(conflict);
+
+      expect(result.success).toBe(false);
+      expect(result.requiresManualReview).toBe(true);
+    });
+  });
+
+  describe('Audit Trail', () => {
+    it('should maintain complete audit trail', async () => {
+      const conflict = createMockConflict(
+        { title: 'Local Title' },
+        { title: 'Remote Title' },
+        'test-last-write-wins'
+      );
+
+      const result = await resolver.resolveConflict(conflict);
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        const auditTrail = resolver.getAuditTrail(conflict.metadata.conflictId);
+        expect(auditTrail.length).toBeGreaterThan(0);
+        expect(auditTrail[0].conflictId).toBe(conflict.metadata.conflictId);
+        expect(auditTrail[0].action).toBe('resolved');
+      }
+    });
+
+    it('should allow clearing audit trail', () => {
+      resolver.clearAuditTrail();
+      const allEntries = resolver.getAllAuditEntries();
+      expect(allEntries.length).toBe(0);
+    });
+
+    it('should clear audit trail before specific timestamp', async () => {
+      const conflict1 = createMockConflict({ a: 1 }, { a: 2 }, 'test-last-write-wins');
+      const conflict2 = createMockConflict({ b: 1 }, { b: 2 }, 'test-last-write-wins');
+
+      await resolver.resolveConflict(conflict1);
+      
+      // Wait a bit then resolve second conflict
+      await new Promise(resolve => setTimeout(resolve, 10));
+      const cutoffTime = Date.now();
+      await new Promise(resolve => setTimeout(resolve, 10));
+      
+      await resolver.resolveConflict(conflict2);
+
+      const entriesBeforeCleanup = resolver.getAllAuditEntries();
+      expect(entriesBeforeCleanup.length).toBe(2);
+
+      resolver.clearAuditTrail(cutoffTime);
+
+      const entriesAfterCleanup = resolver.getAllAuditEntries();
+      expect(entriesAfterCleanup.length).toBe(1);
+      expect(entriesAfterCleanup[0].conflictId).toBe(conflict2.metadata.conflictId);
+    });
+  });
+});
+
+describe('Wedding-Specific Resolvers', () => {
+  describe('Timeline Resolver', () => {
+    it('should create timeline-specific resolver', () => {
+      const resolver = createTimelineResolver();
+      expect(resolver).toBeInstanceOf(ConflictResolver);
+    });
+
+    it('should handle timeline-specific merging', async () => {
+      const resolver = createTimelineResolver();
+      const conflict = createMockConflict(
+        {
+          title: 'Wedding Ceremony',
+          startTime: new Date('2024-06-15T15:00:00Z'),
+          assignedTo: ['planner-1'],
+          tags: ['ceremony']
+        } as Partial<TimelineItem>,
+        {
+          title: 'Wedding Ceremony Updated',
+          startTime: new Date('2024-06-15T15:00:00Z'),
+          assignedTo: ['planner-1', 'coordinator-1'],
+          tags: ['ceremony', 'outdoor']
+        } as Partial<TimelineItem>,
+        'timeline-item-merge-fields'
+      );
+
+      const result = await resolver.resolveConflict(conflict);
+      
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.resolvedData.assignedTo).toEqual(expect.arrayContaining(['planner-1', 'coordinator-1']));
+        expect(result.resolvedData.tags).toEqual(expect.arrayContaining(['ceremony', 'outdoor']));
+      }
+    });
+  });
+
+  describe('Vendor Resolver', () => {
+    it('should create vendor-specific resolver', () => {
+      const resolver = createVendorResolver();
+      expect(resolver).toBeInstanceOf(ConflictResolver);
+    });
+
+    it('should handle vendor contact merging', async () => {
+      const resolver = createVendorResolver();
+      const conflict = createMockConflict(
+        {
+          name: 'Amazing Photos',
+          contact: { email: 'old@email.com', phone: '555-0123' },
+          notes: ['Initial contact']
+        } as Partial<VendorContact>,
+        {
+          name: 'Amazing Photos LLC',
+          contact: { email: 'new@email.com', address: '123 Photo St' },
+          notes: ['Contract signed']
+        } as Partial<VendorContact>,
+        'vendor-contact-merge-fields'
+      );
+
+      const result = await resolver.resolveConflict(conflict);
+      
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.resolvedData.name).toBe('Amazing Photos LLC'); // Longer name
+        expect(result.resolvedData.contact.phone).toBe('555-0123');
+        expect(result.resolvedData.contact.address).toBe('123 Photo St');
+        expect(result.resolvedData.notes).toEqual(expect.arrayContaining(['Initial contact', 'Contract signed']));
+      }
+    });
+  });
+
+  describe('Guest List Resolver', () => {
+    it('should create guest-specific resolver', () => {
+      const resolver = createGuestListResolver();
+      expect(resolver).toBeInstanceOf(ConflictResolver);
+    });
+
+    it('should handle guest information merging', async () => {
+      const resolver = createGuestListResolver();
+      const conflict = createMockConflict(
+        {
+          name: 'John Smith',
+          email: 'john@email.com',
+          dietaryRestrictions: ['vegetarian'],
+          rsvpStatus: 'pending'
+        } as Partial<GuestEntry>,
+        {
+          name: 'John Smith',
+          phone: '555-0199',
+          dietaryRestrictions: ['vegetarian', 'gluten-free'],
+          rsvpStatus: 'accepted'
+        } as Partial<GuestEntry>,
+        'guest-list-merge-fields'
+      );
+
+      const result = await resolver.resolveConflict(conflict);
+      
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.resolvedData.email).toBe('john@email.com');
+        expect(result.resolvedData.phone).toBe('555-0199');
+        expect(result.resolvedData.dietaryRestrictions).toEqual(expect.arrayContaining(['vegetarian', 'gluten-free']));
+      }
+    });
+  });
+});
+
+describe('Batch Resolution', () => {
+  it('should resolve multiple conflicts in batch', async () => {
+    const resolver = new ConflictResolver<any>();
+    
+    const conflicts = [
+      createMockConflict({ a: 1 }, { a: 2 }, 'test-last-write-wins'),
+      createMockConflict({ b: 1 }, { b: 2 }, 'test-merge-fields'),
+      createMockConflict({ c: 1 }, { c: 2 }, 'test-manual-review')
+    ];
+
+    const result = await resolveBatchConflicts(conflicts, resolver);
+
+    expect(result.resolved.length).toBe(2); // First two should resolve successfully
+    expect(result.manualReviewRequired.length).toBe(1); // Third requires manual review
+    expect(result.failed.length).toBe(0);
+
+    expect(result.resolved[0].result.success).toBe(true);
+    expect(result.resolved[1].result.success).toBe(true);
+    expect(result.manualReviewRequired[0].result.requiresManualReview).toBe(true);
+  });
+
+  it('should handle batch resolution errors', async () => {
+    const resolver = new ConflictResolver<any>();
+    
+    const badConflict = createMockConflict({ a: 1 }, { a: 2 });
+    badConflict.localVersion.data = null; // Corrupt data to cause error
+
+    const conflicts = [badConflict];
+
+    const result = await resolveBatchConflicts(conflicts, resolver);
+
+    expect(result.resolved.length).toBe(0);
+    expect(result.failed.length).toBe(1);
+    expect(result.failed[0].result.success).toBe(false);
+  });
+});
+
+describe('Edge Cases and Performance', () => {
+  it('should handle very large datasets', async () => {
+    const resolver = new ConflictResolver<any>();
+    
+    const largeArray = Array.from({ length: 1000 }, (_, i) => `item-${i}`);
+    const conflict = createMockConflict(
+      { tags: largeArray.slice(0, 500) },
+      { tags: largeArray.slice(250, 750) },
+      'test-merge-fields'
+    );
+
+    const startTime = Date.now();
+    const result = await resolver.resolveConflict(conflict);
+    const duration = Date.now() - startTime;
+
+    expect(result.success).toBe(true);
+    expect(duration).toBeLessThan(1000); // Should resolve within 1 second
+    
+    if (result.success) {
+      expect(result.resolvedData.tags.length).toBe(750); // Union of both arrays
+    }
+  });
+
+  it('should handle unicode and special characters', async () => {
+    const resolver = new ConflictResolver<any>();
+    
+    const conflict = createMockConflict(
+      { name: 'Café Français', description: '🎉 Wedding celebration' },
+      { name: 'Café Français & Co', description: '🎊 Grand celebration event' },
+      'test-merge-fields'
+    );
+
+    const result = await resolver.resolveConflict(conflict);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.resolvedData.name).toBe('Café Français & Co'); // Longer name
+      expect(result.resolvedData.description).toContain('🎉');
+      expect(result.resolvedData.description).toContain('🎊');
+    }
+  });
+});

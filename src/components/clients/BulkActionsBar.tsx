@@ -1,0 +1,243 @@
+'use client';
+
+import { useState, useEffect, useCallback } from 'react';
+import {
+  Users,
+  Mail,
+  FileText,
+  Tag,
+  MoreVertical,
+  X,
+  Check,
+  ChevronUp,
+} from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { ClientData } from './ClientListViews';
+
+interface BulkActionsBarProps {
+  selectedCount: number;
+  totalCount: number;
+  onAction: (action: string) => void;
+  onClear: () => void;
+  isVisible: boolean;
+}
+
+const ACTIONS = [
+  { id: 'email', icon: Mail, label: 'Send Email', color: 'bg-blue-500' },
+  { id: 'form', icon: FileText, label: 'Send Form', color: 'bg-green-500' },
+  { id: 'tag', icon: Tag, label: 'Add Tags', color: 'bg-purple-500' },
+  { id: 'more', icon: MoreVertical, label: 'More', color: 'bg-gray-500' },
+];
+
+export function BulkActionsBar({
+  selectedCount,
+  totalCount,
+  onAction,
+  onClear,
+  isVisible,
+}: BulkActionsBarProps) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [lastTap, setLastTap] = useState(0);
+
+  // Double tap to expand on mobile
+  const handleDoubleTap = useCallback(() => {
+    const now = Date.now();
+    const DOUBLE_TAP_DELAY = 300;
+
+    if (now - lastTap < DOUBLE_TAP_DELAY) {
+      setIsExpanded(!isExpanded);
+    }
+    setLastTap(now);
+  }, [lastTap, isExpanded]);
+
+  // Auto-collapse when selection changes
+  useEffect(() => {
+    if (selectedCount === 0) {
+      setIsExpanded(false);
+    }
+  }, [selectedCount]);
+
+  if (!isVisible || selectedCount === 0) return null;
+
+  return (
+    <AnimatePresence>
+      <motion.div
+        initial={{ y: 100, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        exit={{ y: 100, opacity: 0 }}
+        transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+        className="fixed bottom-0 left-0 right-0 z-40 md:hidden"
+        style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+      >
+        {/* Backdrop blur */}
+        <div className="absolute inset-0 bg-white/80 backdrop-blur-lg" />
+
+        {/* Main bar */}
+        <div className="relative">
+          {/* Expand/Collapse handle */}
+          <button
+            onClick={handleDoubleTap}
+            className="absolute -top-6 left-1/2 -translate-x-1/2 w-12 h-6 flex items-center justify-center bg-white rounded-t-xl shadow-lg"
+            aria-label="Expand actions"
+          >
+            <ChevronUp
+              className={`w-4 h-4 text-gray-600 transition-transform ${
+                isExpanded ? 'rotate-180' : ''
+              }`}
+            />
+          </button>
+
+          {/* Selection info */}
+          <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200">
+            <div className="flex items-center gap-3">
+              <div className="flex items-center justify-center w-10 h-10 bg-blue-100 rounded-full">
+                <Users className="w-5 h-5 text-blue-600" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-gray-900">
+                  {selectedCount} selected
+                </p>
+                <p className="text-xs text-gray-500">of {totalCount} total</p>
+              </div>
+            </div>
+
+            <button
+              onClick={onClear}
+              className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+              aria-label="Clear selection"
+            >
+              <X className="w-5 h-5 text-gray-600" />
+            </button>
+          </div>
+
+          {/* Actions */}
+          <motion.div
+            animate={{ height: isExpanded ? 'auto' : '64px' }}
+            transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+            className="overflow-hidden"
+          >
+            <div className="p-4">
+              {/* Primary actions - always visible */}
+              <div className="grid grid-cols-4 gap-3 mb-3">
+                {ACTIONS.map((action) => {
+                  const Icon = action.icon;
+                  return (
+                    <button
+                      key={action.id}
+                      onClick={() => onAction(action.id)}
+                      className="flex flex-col items-center gap-1 p-3 rounded-xl hover:bg-gray-50 active:bg-gray-100 transition-all duration-200 touch-manipulation"
+                      data-testid={`bulk-action-${action.id}`}
+                    >
+                      <div
+                        className={`w-10 h-10 ${action.color} rounded-full flex items-center justify-center`}
+                      >
+                        <Icon className="w-5 h-5 text-white" />
+                      </div>
+                      <span className="text-xs text-gray-700 font-medium">
+                        {action.label}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Extended actions - visible when expanded */}
+              {isExpanded && (
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.1 }}
+                  className="pt-3 border-t border-gray-200"
+                >
+                  <div className="grid grid-cols-2 gap-3">
+                    <button
+                      onClick={() => onAction('status')}
+                      className="flex items-center justify-center gap-2 py-3 px-4 bg-gray-100 rounded-xl hover:bg-gray-200 active:bg-gray-300 transition-colors"
+                    >
+                      <Check className="w-4 h-4 text-gray-700" />
+                      <span className="text-sm font-medium text-gray-700">
+                        Update Status
+                      </span>
+                    </button>
+                    <button
+                      onClick={() => onAction('export')}
+                      className="flex items-center justify-center gap-2 py-3 px-4 bg-gray-100 rounded-xl hover:bg-gray-200 active:bg-gray-300 transition-colors"
+                    >
+                      <FileText className="w-4 h-4 text-gray-700" />
+                      <span className="text-sm font-medium text-gray-700">
+                        Export CSV
+                      </span>
+                    </button>
+                  </div>
+                </motion.div>
+              )}
+            </div>
+          </motion.div>
+        </div>
+      </motion.div>
+    </AnimatePresence>
+  );
+}
+
+// Desktop version - floating toolbar
+export function BulkActionsToolbar({
+  selectedCount,
+  totalCount,
+  onAction,
+  onClear,
+  isVisible,
+}: BulkActionsBarProps) {
+  if (!isVisible || selectedCount === 0) return null;
+
+  return (
+    <AnimatePresence>
+      <motion.div
+        initial={{ scale: 0.8, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.8, opacity: 0 }}
+        transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+        className="hidden md:flex fixed bottom-8 left-1/2 -translate-x-1/2 z-40 items-center gap-4 px-6 py-4 bg-white rounded-2xl shadow-2xl border border-gray-200"
+      >
+        {/* Selection info */}
+        <div className="flex items-center gap-3 pr-4 border-r border-gray-200">
+          <div className="flex items-center justify-center w-10 h-10 bg-blue-100 rounded-full">
+            <Users className="w-5 h-5 text-blue-600" />
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-gray-900">
+              {selectedCount} selected
+            </p>
+            <p className="text-xs text-gray-500">of {totalCount} total</p>
+          </div>
+        </div>
+
+        {/* Actions */}
+        <div className="flex items-center gap-2">
+          {ACTIONS.map((action) => {
+            const Icon = action.icon;
+            return (
+              <button
+                key={action.id}
+                onClick={() => onAction(action.id)}
+                className={`flex items-center gap-2 px-4 py-2 ${action.color} text-white rounded-lg hover:opacity-90 active:opacity-80 transition-opacity`}
+                data-testid={`bulk-action-${action.id}`}
+              >
+                <Icon className="w-4 h-4" />
+                <span className="text-sm font-medium">{action.label}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Clear button */}
+        <button
+          onClick={onClear}
+          className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+          aria-label="Clear selection"
+        >
+          <X className="w-5 h-5 text-gray-600" />
+        </button>
+      </motion.div>
+    </AnimatePresence>
+  );
+}

@@ -1,0 +1,229 @@
+/**
+ * @vitest-environment jsdom
+ */
+
+import React from 'react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import '@testing-library/jest-dom';
+import { JourneyCanvas } from '../JourneyCanvas';
+// Mock React Flow
+jest.mock('reactflow', () => ({
+  __esModule: true,
+  default: ({ children, nodes, edges }: { children: React.ReactNode; nodes: any[]; edges: any[] }) => (
+    <div data-testid="react-flow" data-node-count={nodes?.length || 0} data-edge-count={edges?.length || 0}>
+      {children}
+    </div>
+  ),
+  ReactFlowProvider: ({ children }: { children: React.ReactNode }) => (
+    <div data-testid="react-flow-provider">{children}</div>
+  Controls: () => <div data-testid="react-flow-controls" />,
+  MiniMap: () => <div data-testid="react-flow-minimap" />,
+  Background: () => <div data-testid="react-flow-background" />,
+  Panel: ({ children }: { children: React.ReactNode }) => (
+    <div data-testid="react-flow-panel">{children}</div>
+  useNodesState: (initialNodes: any[]) => [initialNodes, jest.fn(), jest.fn()],
+  useEdgesState: (initialEdges: any[]) => [initialEdges, jest.fn(), jest.fn()],
+  addEdge: jest.fn(),
+  BackgroundVariant: { Dots: 'dots' },
+}));
+// Generate test data
+const generateLargeJourneyData = (nodeCount: number) => {
+  const nodes = [];
+  const edges = [];
+  
+  for (let i = 0; i < nodeCount; i++) {
+    const nodeTypes = ['timeline', 'email', 'sms', 'form', 'meeting', 'review', 'referral', 'condition', 'split'];
+    const nodeType = nodeTypes[i % nodeTypes.length];
+    
+    nodes.push({
+      id: `node-${i}`,
+      type: nodeType,
+      position: { x: (i % 10) * 250, y: Math.floor(i / 10) * 150 },
+      data: {
+        label: `Node ${i} - ${nodeType}`,
+        description: `Auto-generated ${nodeType} node for testing`,
+        status: i % 3 === 0 ? 'active' : 'draft',
+        config: {
+          testProperty: `value-${i}`,
+          delay: i * 100,
+          priority: i % 5
+        }
+      }
+    });
+    // Create edges to connect nodes
+    if (i > 0 && i % 3 !== 0) {
+      edges.push({
+        id: `edge-${i}`,
+        source: `node-${i - 1}`,
+        target: `node-${i}`,
+        type: 'smoothstep',
+        animated: true
+      });
+    }
+  }
+  return { nodes, edges };
+};
+describe('Journey Builder Performance Tests', () => {
+  const mockProps = {
+    onSave: jest.fn(),
+    onPreview: jest.fn(),
+  };
+  beforeEach(() => {
+    jest.clearAllMocks();
+    // Mock performance.now for consistent testing
+    global.performance.now = jest.fn(() => Date.now());
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+  it('renders quickly with 50 nodes', async () => {
+    const startTime = performance.now();
+    render(<JourneyCanvas {...mockProps} />);
+    const endTime = performance.now();
+    const renderTime = endTime - startTime;
+    expect(screen.getByTestId('react-flow-provider')).toBeInTheDocument();
+    // Should render in less than 100ms (mocked, but tests the structure)
+    expect(renderTime).toBeLessThan(1000); // Relaxed for test environment
+  it('handles large number of node operations efficiently', async () => {
+    const { nodes, edges } = generateLargeJourneyData(50);
+    // Simulate adding multiple nodes
+    for (let i = 0; i < 10; i++) {
+      const newNode = {
+        id: `new-node-${i}`,
+        type: 'email',
+        position: { x: i * 100, y: 500 },
+        data: { label: `New Node ${i}` }
+      };
+      nodes.push(newNode);
+    const operationTime = endTime - startTime;
+    expect(operationTime).toBeLessThan(50); // Should be very fast for in-memory operations
+    expect(nodes.length).toBe(60); // 50 + 10 new nodes
+  it('efficiently processes drag and drop operations', async () => {
+    const component = render(<JourneyCanvas {...mockProps} />);
+    const palette = screen.getByText('Journey Nodes');
+    expect(palette).toBeInTheDocument();
+    // Simulate rapid drag operations
+      const dragEvent = new DragEvent('dragstart', {
+        dataTransfer: new DataTransfer()
+      
+      // Mock drag operation
+      fireEvent(palette, dragEvent);
+    const dragTime = endTime - startTime;
+    expect(dragTime).toBeLessThan(100); // Should handle multiple drags quickly
+  it('maintains performance with complex node configurations', () => {
+    const complexConfig = {
+      emailTemplate: 'complex-template',
+      conditions: [
+        { field: 'wedding_date', operator: 'after', value: '2024-01-01' },
+        { field: 'budget', operator: 'greater', value: 10000 },
+        { field: 'location', operator: 'contains', value: 'London' }
+      ],
+      customFields: Array.from({ length: 20 }, (_, i) => ({
+        id: `field-${i}`,
+        name: `Custom Field ${i}`,
+        type: 'text',
+        required: i % 2 === 0,
+        validation: `validation-rule-${i}`
+      })),
+      scheduling: {
+        timezone: 'Europe/London',
+        businessHours: { start: '09:00', end: '17:00' },
+        holidays: ['2024-12-25', '2024-12-26', '2024-01-01'],
+        skipWeekends: true
+    };
+    // Process complex configuration
+    const processedConfig = JSON.parse(JSON.stringify(complexConfig));
+    processedConfig.processedAt = new Date().toISOString();
+    const processingTime = endTime - startTime;
+    expect(processingTime).toBeLessThan(10); // Complex config processing should be fast
+    expect(processedConfig).toHaveProperty('processedAt');
+  it('efficiently manages memory with large journey data', () => {
+    const { nodes, edges } = generateLargeJourneyData(100);
+    // Test memory management by creating and disposing of large objects
+    const memoryTest = () => {
+      const largeJourneyData = {
+        nodes: nodes.map(node => ({ ...node, largeData: 'x'.repeat(1000) })),
+        edges: edges.map(edge => ({ ...edge, metadata: 'y'.repeat(1000) })),
+        history: Array.from({ length: 50 }, (_, i) => ({
+          timestamp: new Date(Date.now() - i * 1000).toISOString(),
+          action: `action-${i}`,
+          data: { largePayload: 'z'.repeat(1000) }
+        }))
+      return largeJourneyData;
+    // Create and process large data multiple times
+    for (let i = 0; i < 5; i++) {
+      const data = memoryTest();
+      expect(data.nodes.length).toBe(100);
+      expect(data.edges.length).toBeGreaterThan(0);
+      expect(data.history.length).toBe(50);
+    const memoryOperationTime = endTime - startTime;
+    expect(memoryOperationTime).toBeLessThan(200); // Should handle large data efficiently
+  it('validates connection performance with many edges', () => {
+    // Create additional complex connections
+    const additionalEdges = [];
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < Math.min(i + 5, nodes.length); j++) {
+        if (Math.random() > 0.7) { // 30% chance of connection
+          additionalEdges.push({
+            id: `complex-edge-${i}-${j}`,
+            source: nodes[i].id,
+            target: nodes[j].id,
+            type: 'smoothstep',
+            animated: true,
+            data: {
+              conditions: [
+                { field: 'status', value: 'active' },
+                { field: 'priority', value: 'high' }
+              ],
+              weight: Math.random() * 100
+            }
+          });
+    const allEdges = [...edges, ...additionalEdges];
+    // Validate connections
+    const connectionValidation = allEdges.every(edge => {
+      const sourceExists = nodes.some(node => node.id === edge.source);
+      const targetExists = nodes.some(node => node.id === edge.target);
+      return sourceExists && targetExists;
+    const validationTime = endTime - startTime;
+    expect(connectionValidation).toBe(true);
+    expect(validationTime).toBeLessThan(50); // Connection validation should be fast
+    expect(allEdges.length).toBeGreaterThan(edges.length);
+  it('benchmarks save operation performance', async () => {
+    const { nodes, edges } = generateLargeJourneyData(75);
+    // Simulate save operation
+    const saveButton = screen.getByText('Save');
+    fireEvent.click(saveButton);
+    // Wait for async operations
+    await waitFor(() => {
+      expect(mockProps.onSave).toHaveBeenCalled();
+    const saveTime = endTime - startTime;
+    expect(saveTime).toBeLessThan(500); // Save should complete quickly
+    expect(mockProps.onSave).toHaveBeenCalledTimes(1);
+  it('measures canvas rendering performance with viewport changes', () => {
+    const zoomInButton = screen.getByTestId('react-flow-controls');
+    expect(zoomInButton).toBeInTheDocument();
+    // Simulate multiple viewport changes
+    for (let i = 0; i < 20; i++) {
+      fireEvent.click(zoomInButton);
+    const viewportTime = endTime - startTime;
+    expect(viewportTime).toBeLessThan(200); // Viewport changes should be smooth
+});
+describe('Journey Builder Scalability Tests', () => {
+  it('handles extreme node counts gracefully', () => {
+    const { nodes, edges } = generateLargeJourneyData(200);
+    expect(nodes.length).toBe(200);
+    expect(edges.length).toBeGreaterThan(0);
+    // Test that data structure remains valid
+    nodes.forEach((node, index) => {
+      expect(node).toHaveProperty('id');
+      expect(node).toHaveProperty('type');
+      expect(node).toHaveProperty('position');
+      expect(node).toHaveProperty('data');
+      expect(node.id).toBe(`node-${index}`);
+  it('maintains type safety with large datasets', () => {
+    const { nodes } = generateLargeJourneyData(100);
+    nodes.forEach(node => {
+      expect(nodeTypes).toContain(node.type);
+      expect(typeof node.data.label).toBe('string');
+      expect(typeof node.position.x).toBe('number');
+      expect(typeof node.position.y).toBe('number');

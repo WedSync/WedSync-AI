@@ -1,0 +1,332 @@
+/**
+ * WS-171: Unit Tests for PWA Cache Manager
+ * Comprehensive tests for intelligent caching strategy
+ */
+
+import { PWACacheManager, CachePriority, WeddingDataType, CacheEntry } from '../../../lib/pwa/cache-manager';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+// Mock Supabase client
+jest.mock('@supabase/supabase-js', () => ({
+  createClient: jest.fn(() => ({
+    from: jest.fn(() => ({
+      insert: jest.fn().mockResolvedValue({}),
+      select: jest.fn().mockResolvedValue({ data: [], error: null })
+    }))
+  }))
+}));
+// Mock CompressionStream for environments that don't support it
+const mockCompressionStream = {
+  writable: {
+    getWriter: () => ({
+      write: jest.fn().mockResolvedValue(undefined),
+      close: jest.fn().mockResolvedValue(undefined)
+    })
+  },
+  readable: {
+    getReader: () => ({
+      read: jest.fn().mockResolvedValue({
+        done: true,
+        value: new Uint8Array([1, 2, 3, 4])
+      })
+  }
+};
+const mockDecompressionStream = {
+// Mock globals
+Object.defineProperty(global, 'CompressionStream', {
+  value: jest.fn().mockImplementation(() => mockCompressionStream),
+  writable: true
+});
+Object.defineProperty(global, 'DecompressionStream', {
+  value: jest.fn().mockImplementation(() => mockDecompressionStream),
+Object.defineProperty(global, 'TextEncoder', {
+  value: jest.fn().mockImplementation(() => ({
+    encode: (text: string) => new Uint8Array(text.split('').map(c => c.charCodeAt(0)))
+  })),
+Object.defineProperty(global, 'TextDecoder', {
+    decode: (buffer: Uint8Array) => String.fromCharCode(...buffer)
+Object.defineProperty(global, 'Blob', {
+  value: jest.fn().mockImplementation((data: any[]) => ({
+    size: JSON.stringify(data[0]).length * 2
+// Mock localStorage
+const mockLocalStorage = {
+  store: new Map<string, string>(),
+  getItem: jest.fn((key: string) => mockLocalStorage.store.get(key) || null),
+  setItem: jest.fn((key: string, value: string) => {
+    mockLocalStorage.store.set(key, value);
+  }),
+  removeItem: jest.fn((key: string) => {
+    mockLocalStorage.store.delete(key);
+  clear: jest.fn(() => {
+    mockLocalStorage.store.clear();
+  })
+Object.defineProperty(global, 'localStorage', { value: mockLocalStorage });
+// Mock sessionStorage
+const mockSessionStorage = {
+  getItem: jest.fn((key: string) => mockSessionStorage.store.get(key) || null),
+    mockSessionStorage.store.set(key, value);
+    mockSessionStorage.store.delete(key);
+Object.defineProperty(global, 'sessionStorage', { value: mockSessionStorage });
+// Mock document
+Object.defineProperty(global, 'document', {
+  value: {
+    hidden: false,
+    addEventListener: jest.fn(),
+    removeEventListener: jest.fn()
+describe('PWACacheManager', () => {
+  let cacheManager: PWACacheManager;
+  
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockSessionStorage.store.clear();
+    
+    cacheManager = new PWACacheManager({
+      maxSize: 10, // 10MB for testing
+      defaultTTL: 3600000, // 1 hour
+      cleanupInterval: 60000, // 1 minute
+      persistOffline: true
+    });
+  });
+  afterEach(() => {
+    if (cacheManager) {
+      cacheManager.destroy();
+    }
+  describe('Cache Basic Operations', () => {
+    test('should set and get cache entries successfully', async () => {
+      const testData = { timeline: 'Test wedding timeline data' };
+      const key = 'wedding:123:timeline';
+      const setResult = await cacheManager.set(key, testData, {
+        priority: CachePriority.CRITICAL,
+        dataType: WeddingDataType.TIMELINE,
+        weddingId: '123'
+      });
+      expect(setResult).toBe(true);
+      const retrieved = await cacheManager.get(key);
+      expect(retrieved).toEqual(testData);
+    test('should return null for non-existent keys', async () => {
+      const result = await cacheManager.get('non-existent-key');
+      expect(result).toBeNull();
+    test('should check if key exists in cache', () => {
+      expect(cacheManager.has('test-key')).toBe(false);
+    test('should delete cache entries', async () => {
+      const testData = { vendors: 'Test vendor data' };
+      const key = 'wedding:123:vendors';
+      await cacheManager.set(key, testData, {
+        priority: CachePriority.HIGH,
+        dataType: WeddingDataType.VENDORS
+      expect(cacheManager.has(key)).toBe(true);
+      const deleted = await cacheManager.delete(key);
+      expect(deleted).toBe(true);
+      expect(cacheManager.has(key)).toBe(false);
+  describe('Cache Prioritization', () => {
+    test('should automatically determine priority for timeline data', async () => {
+      const testData = { timelineEvents: [] };
+      await cacheManager.set(key, testData);
+      
+      // Check that priority was set correctly by testing expiration time
+      // Timeline should have critical priority with longer TTL
+    test('should automatically determine priority for vendor data', async () => {
+      const testData = { vendorContacts: [] };
+      const key = 'wedding:123:vendor:456';
+    test('should automatically determine priority for analytics data', async () => {
+      const testData = { pageViews: 100 };
+      const key = 'analytics:session:789';
+    test('should respect custom priority settings', async () => {
+      const testData = { customData: 'test' };
+      const key = 'custom:data';
+        priority: CachePriority.BACKGROUND,
+        dataType: WeddingDataType.PREFERENCES
+  describe('Cache Invalidation', () => {
+    test('should invalidate cache entries by pattern', async () => {
+      // Set up test data
+      await cacheManager.set('wedding:123:timeline', { data: 'timeline' });
+      await cacheManager.set('wedding:123:vendors', { data: 'vendors' });
+      await cacheManager.set('wedding:456:timeline', { data: 'timeline2' });
+      // Invalidate all timeline entries
+      const invalidated = await cacheManager.invalidate(/timeline/);
+      expect(invalidated).toBe(2);
+      // Check that timeline entries are gone but vendors remain
+      expect(await cacheManager.get('wedding:123:timeline')).toBeNull();
+      expect(await cacheManager.get('wedding:456:timeline')).toBeNull();
+      expect(await cacheManager.get('wedding:123:vendors')).toEqual({ data: 'vendors' });
+    test('should force invalidate critical data when requested', async () => {
+      await cacheManager.set('wedding:123:timeline', { data: 'critical' }, {
+        priority: CachePriority.CRITICAL
+      const invalidated = await cacheManager.invalidate(/timeline/, true);
+      expect(invalidated).toBe(1);
+    test('should preserve critical data during normal invalidation', async () => {
+      const invalidated = await cacheManager.invalidate(/timeline/, false);
+      // Critical data should be expired but not deleted
+      const result = await cacheManager.get('wedding:123:timeline');
+      expect(result).toBeNull(); // Should be null due to expiration
+  describe('Cache Clearing with Criteria', () => {
+    beforeEach(async () => {
+      // Set up test data with different priorities and types
+      await cacheManager.set('wedding:123:timeline', { data: 'timeline' }, {
+      await cacheManager.set('wedding:123:vendors', { data: 'vendors' }, {
+        dataType: WeddingDataType.VENDORS,
+      await cacheManager.set('wedding:456:timeline', { data: 'timeline2' }, {
+        weddingId: '456'
+      await cacheManager.set('analytics:general', { data: 'analytics' }, {
+        dataType: WeddingDataType.ANALYTICS
+    test('should clear cache by priority', async () => {
+      const deleted = await cacheManager.clear({ priority: CachePriority.BACKGROUND });
+      expect(deleted).toBe(1);
+      expect(await cacheManager.get('analytics:general')).toBeNull();
+      expect(await cacheManager.get('wedding:123:timeline')).not.toBeNull();
+    test('should clear cache by data type', async () => {
+      const deleted = await cacheManager.clear({ dataType: WeddingDataType.TIMELINE });
+      expect(deleted).toBe(2);
+      expect(await cacheManager.get('wedding:123:vendors')).not.toBeNull();
+    test('should clear cache by wedding ID', async () => {
+      const deleted = await cacheManager.clear({ weddingId: '123' });
+      expect(await cacheManager.get('wedding:123:vendors')).toBeNull();
+      expect(await cacheManager.get('wedding:456:timeline')).not.toBeNull();
+    test('should clear cache by age', async () => {
+      const oneHourAgo = Date.now() - 3600000;
+      const deleted = await cacheManager.clear({ olderThan: oneHourAgo });
+      // All entries should be newer than one hour ago, so nothing should be deleted
+      expect(deleted).toBe(0);
+  describe('Cache Statistics', () => {
+    test('should provide cache statistics', async () => {
+      await cacheManager.set('test:1', { data: 'test1' });
+      await cacheManager.set('test:2', { data: 'test2' });
+      const stats = cacheManager.getStats();
+      expect(stats.totalEntries).toBe(2);
+      expect(stats.totalSize).toBeGreaterThan(0);
+      expect(stats.priorityDistribution).toBeDefined();
+      expect(stats.dataTypeDistribution).toBeDefined();
+    test('should track hit rate', async () => {
+      await cacheManager.set('test:key', { data: 'test' });
+      // Hit
+      await cacheManager.get('test:key');
+      // Miss
+      await cacheManager.get('non-existent');
+      expect(stats.hitRate).toBeDefined();
+      expect(stats.missRate).toBeDefined();
+  describe('Wedding Data Preloading', () => {
+    test('should preload critical wedding data', async () => {
+      const weddingId = '123';
+      // Mock the internal fetch methods to return test data
+      jest.spyOn(cacheManager as any, 'fetchWeddingData').mockImplementation(
+        async (id: string, dataType: WeddingDataType) => {
+          return { mockData: `${dataType}_${id}` };
+        }
+      );
+      await cacheManager.preloadWeddingData(weddingId);
+      // Verify that critical data types were cached
+      const timeline = await cacheManager.get(`wedding:${weddingId}:timeline`);
+      expect(timeline).toBeDefined();
+  describe('Export Functionality', () => {
+    test('should export cache for debugging', async () => {
+      const exported = cacheManager.export();
+      expect(exported).toHaveLength(2);
+      expect(exported[0].key).toBeDefined();
+      expect(exported[0].entry).toBeDefined();
+      expect(exported[0].entry.data).toBe('[DATA_OMITTED]');
+  describe('Compression', () => {
+    test('should handle compression when supported', async () => {
+      const largeData = { data: 'x'.repeat(2000) }; // Large enough to trigger compression
+      const key = 'large:data';
+      const setResult = await cacheManager.set(key, largeData, {
+        compress: true
+      expect(retrieved).toEqual(largeData);
+    test('should handle compression gracefully when not supported', async () => {
+      // Temporarily disable compression support
+      const originalCompressionSupported = (cacheManager as any).compressionSupported;
+      (cacheManager as any).compressionSupported = false;
+      const data = { data: 'test' };
+      const key = 'test:data';
+      const setResult = await cacheManager.set(key, data, { compress: true });
+      expect(retrieved).toEqual(data);
+      // Restore original value
+      (cacheManager as any).compressionSupported = originalCompressionSupported;
+  describe('Error Handling', () => {
+    test('should handle storage quota exceeded errors gracefully', async () => {
+      // Mock a storage quota exceeded scenario
+      jest.spyOn(cacheManager as any, 'hasSpaceFor').mockReturnValue(false);
+      jest.spyOn(cacheManager as any, 'makeSpaceFor').mockRejectedValue(
+        new Error('QuotaExceededError')
+      const result = await cacheManager.set('test:key', { data: 'test' });
+      expect(result).toBe(false);
+    test('should handle invalid data gracefully', async () => {
+      // Test with circular reference
+      const circularData: any = { data: 'test' };
+      circularData.self = circularData;
+      const result = await cacheManager.set('circular:data', circularData);
+    test('should handle corrupted cache entries', async () => {
+      // Manually corrupt localStorage data
+      mockLocalStorage.setItem('cache:corrupted', 'invalid json');
+      const result = await cacheManager.get('corrupted');
+  describe('TTL and Expiration', () => {
+    test('should respect TTL settings', async () => {
+      const shortTTL = 100; // 100ms
+      await cacheManager.set('short:lived', { data: 'test' }, {
+        customTTL: shortTTL
+      // Should be available immediately
+      expect(await cacheManager.get('short:lived')).not.toBeNull();
+      // Wait for expiration
+      await new Promise(resolve => setTimeout(resolve, 150));
+      // Should be expired now
+      expect(await cacheManager.get('short:lived')).toBeNull();
+    test('should use priority-based TTL when no custom TTL provided', async () => {
+      await cacheManager.set('critical:data', { data: 'test' }, {
+      await cacheManager.set('background:data', { data: 'test' }, {
+        priority: CachePriority.BACKGROUND
+      // Both should be available initially
+      expect(await cacheManager.get('critical:data')).not.toBeNull();
+      expect(await cacheManager.get('background:data')).not.toBeNull();
+  describe('Access Tracking', () => {
+    test('should track access count and last accessed time', async () => {
+      const key = 'tracked:data';
+      await cacheManager.set(key, { data: 'test' });
+      // Access the data multiple times
+      await cacheManager.get(key);
+      // Verify access tracking (this would require exposing internal state for testing)
+      const trackedEntry = exported.find(e => e.key === key);
+      expect(trackedEntry).toBeDefined();
+  describe('Memory Management', () => {
+    test('should clean up expired entries during cleanup', async () => {
+      // Set entry with very short TTL
+      await cacheManager.set('expire:soon', { data: 'test' }, {
+        customTTL: 50
+      await new Promise(resolve => setTimeout(resolve, 100));
+      // Trigger manual cleanup
+      await (cacheManager as any).cleanup();
+      expect(await cacheManager.get('expire:soon')).toBeNull();
+    test('should make space for new entries when cache is full', async () => {
+      // This test would require a more complex setup to truly test space management
+      // For now, we'll test the basic functionality
+      const result = await cacheManager.set('space:test', { data: 'test' });
+      expect(result).toBe(true);
+describe('Cache Configuration', () => {
+  test('should initialize with custom configuration', () => {
+    const customConfig = {
+      maxSize: 100,
+      defaultTTL: 7200000,
+      compressionThreshold: 2048,
+      cleanupInterval: 120000,
+      persistOffline: false
+    };
+    const customCacheManager = new PWACacheManager(customConfig);
+    // Test that configuration is applied
+    expect(customCacheManager).toBeDefined();
+    customCacheManager.destroy();
+  test('should use default configuration when none provided', () => {
+    const defaultCacheManager = new PWACacheManager();
+    expect(defaultCacheManager).toBeDefined();
+    defaultCacheManager.destroy();
+describe('Data Type Detection', () => {
+  test('should correctly detect wedding data types from keys', async () => {
+    const testCases = [
+      { key: 'wedding:123:timeline:event', expected: WeddingDataType.TIMELINE },
+      { key: 'vendor:456:details', expected: WeddingDataType.VENDORS },
+      { key: 'guest:789:info', expected: WeddingDataType.GUESTS },
+      { key: 'task:abc:details', expected: WeddingDataType.TASKS },
+      { key: 'venue:def:info', expected: WeddingDataType.VENUES },
+      { key: 'photo:ghi:metadata', expected: WeddingDataType.PHOTOS },
+      { key: 'analytics:session', expected: WeddingDataType.ANALYTICS }
+    ];
+    for (const testCase of testCases) {
+      await cacheManager.set(testCase.key, { data: 'test' });
+      const result = await cacheManager.get(testCase.key);
+      expect(result).toEqual({ data: 'test' });

@@ -1,0 +1,271 @@
+/**
+ * WS-168: Health Intervention Service Integration Tests
+ */
+
+import { describe, it, expect, beforeAll, afterAll, jest } from '@jest/globals';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { healthInterventionService } from '@/lib/services/health-intervention-service';
+import { customerHealthService } from '@/lib/services/customer-health-service';
+import { emailService } from '@/lib/email/service';
+import { createClient } from '@/lib/supabase/server';
+// Mock dependencies
+jest.mock('@/lib/supabase/server');
+jest.mock('@/lib/redis');
+jest.mock('@/lib/email/service');
+describe('Health Intervention Service - WS-168', () => {
+  let mockSupabase: any;
+  const testOrganizationId = 'test-org-123';
+  const testSupplierId = 'test-supplier-456';
+  beforeAll(() => {
+    // Setup mock Supabase client
+    mockSupabase = {
+      auth: {
+        getUser: jest.fn().mockResolvedValue({
+          data: { user: { id: 'test-user-id' } },
+          error: null
+        })
+      },
+      from: jest.fn((table: string) => ({
+        select: jest.fn().mockReturnThis(),
+        insert: jest.fn().mockReturnThis(),
+        update: jest.fn().mockReturnThis(),
+        delete: jest.fn().mockReturnThis(),
+        eq: jest.fn().mockReturnThis(),
+        in: jest.fn().mockReturnThis(),
+        gte: jest.fn().mockReturnThis(),
+        lte: jest.fn().mockReturnThis(),
+        single: jest.fn().mockReturnThis(),
+        order: jest.fn().mockReturnThis(),
+        limit: jest.fn().mockReturnThis()
+      }))
+    };
+    (createClient as jest.Mock).mockResolvedValue(mockSupabase);
+  });
+  afterAll(() => {
+    jest.restoreAllMocks();
+  describe('Health Score Intervention Triggering', () => {
+    it('should trigger critical intervention for health score < 30', async () => {
+      // Mock health score calculation
+      jest.spyOn(customerHealthService, 'calculateHealthScoreFromActivity')
+        .mockResolvedValue({
+          healthScore: {
+            overallHealth: 25,
+            engagementFrequency: 20,
+            featureAdoptionBreadth: 30,
+            featureAdoptionDepth: 25,
+            onboardingCompletion: 25
+          },
+          activitySummary: {
+            totalSessions: 2,
+            averageSessionDuration: 300,
+            featuresUsed: 1,
+            tasksCompleted: 3,
+            engagementTrend: 'decreasing',
+            lastActiveDate: new Date()
+          recommendations: [
+            {
+              priority: 'high',
+              category: 'Engagement',
+              title: 'Increase Platform Usage',
+              description: 'Your usage is critically low',
+              actionItems: ['Log in daily', 'Check messages'],
+              expectedImpact: 'Better engagement',
+              timelineWeeks: 1
+            }
+          ],
+          riskIndicators: [
+              type: 'engagement',
+              severity: 'critical',
+              description: 'Very low login frequency',
+              threshold: 7,
+              currentValue: 2,
+              trend: 'declining'
+          ]
+        });
+      // Mock supplier details
+      mockSupabase.from().select().eq().single.mockResolvedValue({
+        data: {
+          id: testSupplierId,
+          email: 'supplier@example.com',
+          full_name: 'Test Supplier',
+          business_name: 'Test Wedding Business'
+        },
+        error: null
+      });
+      // Mock email send
+      const sendEmailSpy = jest.spyOn(emailService, 'sendEmail')
+          success: true,
+          notification: { id: 'notif-123' },
+          data: { id: 'email-123' }
+      // Execute intervention
+      const result = await healthInterventionService.processHealthIntervention(
+        testSupplierId,
+        testOrganizationId
+      );
+      // Assertions
+      expect(result.interventionTriggered).toBe(true);
+      expect(result.notifications).toHaveLength(1);
+      expect(result.notifications[0].riskLevel).toBe('critical');
+      expect(result.adminAlerts).toHaveLength(1);
+      expect(result.adminAlerts[0].severity).toBe('critical');
+      
+      // Verify email was sent
+      expect(sendEmailSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          templateType: 'health_intervention',
+          priority: 'urgent'
+    });
+    it('should trigger high risk intervention for health score 30-50', async () => {
+      // Mock health score
+            overallHealth: 45,
+            engagementFrequency: 40,
+            featureAdoptionBreadth: 45,
+            featureAdoptionDepth: 50,
+            onboardingCompletion: 45
+            totalSessions: 5,
+            averageSessionDuration: 600,
+            featuresUsed: 3,
+            tasksCompleted: 10,
+            engagementTrend: 'stable',
+          recommendations: [],
+          riskIndicators: []
+      expect(result.notifications[0].riskLevel).toBe('high');
+      expect(result.adminAlerts[0].severity).toBe('high');
+    it('should not trigger intervention within cooldown period', async () => {
+      // Mock recent intervention in cache
+      const redis = require('@/lib/redis').redis;
+      redis.get = jest.fn().mockResolvedValue(
+        JSON.stringify({
+          timestamp: new Date().toISOString(),
+          riskLevel: 'critical'
+      expect(result.interventionTriggered).toBe(false);
+      expect(result.notifications).toHaveLength(0);
+      expect(result.adminAlerts).toHaveLength(0);
+    it('should force intervention when forceNotification is true', async () => {
+      // Mock cache to simulate cooldown
+        testOrganizationId,
+        true // Force notification
+      expect(result.notifications.length).toBeGreaterThan(0);
+  describe('Batch Processing', () => {
+    it('should process multiple suppliers in batches', async () => {
+      const supplierIds = Array.from({ length: 25 }, (_, i) => `supplier-${i}`);
+      // Mock active suppliers
+      mockSupabase.from().select().eq().eq.mockResolvedValue({
+        data: supplierIds.map(id => ({ user_id: id })),
+      // Mock health scores
+          healthScore: { overallHealth: 75 },
+          activitySummary: {} as any,
+      const result = await healthInterventionService.batchProcessInterventions(
+      expect(result.processed).toBe(25);
+      expect(result.interventions).toBeLessThanOrEqual(25);
+    it('should consolidate admin alerts for multiple critical issues', async () => {
+      const criticalSuppliers = Array.from({ length: 5 }, (_, i) => `critical-${i}`);
+      // Mock all suppliers with critical health
+          healthScore: { overallHealth: 20 },
+        criticalSuppliers
+      // Should consolidate into single alert
+      expect(result.adminAlerts[0].alertType).toBe('mass_churn_risk');
+      expect(result.adminAlerts[0].affectedSuppliers).toHaveLength(5);
+  describe('Email Template Personalization', () => {
+    it('should personalize critical intervention email', async () => {
+      const healthResult = {
+        healthScore: { overallHealth: 20 },
+        recommendations: [
+          {
+            title: 'Increase Login Frequency',
+            description: 'Log in at least 3 times per week'
+            title: 'Complete Profile',
+            description: 'Add missing business information'
+          }
+        ],
+        riskIndicators: [
+            type: 'engagement',
+            description: 'No login for 14 days'
+        ]
+      };
+      // Mock and spy on email send
+      await healthInterventionService.processHealthIntervention(
+        true
+      // Verify personalization tokens were included
+          variables: expect.objectContaining({
+            recipientName: expect.any(String),
+            healthScore: expect.any(Number),
+            recommendations: expect.any(Array)
+          })
+  describe('Notification Tracking', () => {
+    it('should track email open events', async () => {
+      const notificationId = 'notif-123';
+      // Mock database update
+      const updateSpy = jest.fn().mockResolvedValue({ error: null });
+      mockSupabase.from().update = jest.fn().mockReturnValue({
+        eq: jest.fn().mockResolvedValue({ error: null })
+      await healthInterventionService.updateNotificationTracking(
+        notificationId,
+        'opened',
+        { timestamp: new Date().toISOString() }
+      expect(mockSupabase.from).toHaveBeenCalledWith('intervention_notifications');
+    it('should track email click events', async () => {
+      const notificationId = 'notif-456';
+        'clicked',
+        { url: 'https://app.wedsync.com/dashboard', trackingId: 'cta_dashboard' }
+    it('should track engagement responses', async () => {
+      const notificationId = 'notif-789';
+        'responded',
+        { response: 'scheduled_call', timestamp: new Date().toISOString() }
+  describe('Admin Alert Management', () => {
+    it('should create admin alert for critical health scores', async () => {
+      // Mock admin users
+      mockSupabase.from().select().eq().in().eq.mockResolvedValue({
+        data: [
+            user_id: 'admin-1',
+            user_profiles: {
+              id: 'admin-1',
+              email: 'admin@wedsync.com',
+              full_name: 'Admin User'
+      // Mock critical health score
+          healthScore: { overallHealth: 15 },
+              type: 'retention',
+              description: 'No activity for 21 days',
+              currentValue: 21,
+              trend: 'increasing'
+      expect(result.adminAlerts[0].actionItems).toContain(
+        'Schedule a check-in call with the supplier'
+    it('should not create admin alert for medium/low risk', async () => {
+  describe('Metrics and Reporting', () => {
+    it('should track intervention metrics', async () => {
+      const startDate = new Date('2024-01-01');
+      const endDate = new Date('2024-01-31');
+      mockSupabase.from().select().eq().gte().lte().order.mockResolvedValue({
+            date: '2024-01-15',
+            totalInterventions: 50,
+            byRiskLevel: { critical: 5, high: 15, medium: 20, low: 10 },
+            emailsSent: 50,
+            emailsOpened: 25,
+            emailsClicked: 10,
+            suppliersReactivated: 3,
+            healthScoreImprovements: 8,
+            averageResponseTime: 4.5
+      const metrics = await healthInterventionService.getInterventionMetrics(
+        startDate,
+        endDate
+      expect(metrics).toHaveLength(1);
+      expect(metrics[0].totalInterventions).toBe(50);
+      expect(metrics[0].emailsOpened).toBe(25);
+      expect(metrics[0].suppliersReactivated).toBe(3);
+  describe('Error Handling', () => {
+    it('should handle email send failures gracefully', async () => {
+      jest.spyOn(emailService, 'sendEmail')
+        .mockRejectedValue(new Error('Email service unavailable'));
+      // Should still return result with failed status
+      expect(result.notifications[0].status).toBe('failed');
+    it('should handle missing supplier data', async () => {
+        data: null,
+        error: { message: 'Supplier not found' }
+      await expect(
+        healthInterventionService.processHealthIntervention(
+          'non-existent-supplier',
+          testOrganizationId,
+          true
+        )
+      ).rejects.toThrow('Supplier not found');
+});

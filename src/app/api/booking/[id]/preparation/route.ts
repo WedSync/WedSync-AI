@@ -1,0 +1,202 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { MeetingPreparationWorkflowService } from '@/lib/meeting-preparation/workflow-service';
+import { createClient } from '@/lib/supabase/server';
+import { validateRateLimit } from '@/lib/security/booking-security';
+
+// Moved createClient inside functions
+const workflowService = new MeetingPreparationWorkflowService();
+
+// Get preparation tasks for a booking
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const { id } = await params;
+  try {
+    const supabase = await createClient();
+    const bookingId = id;
+
+    if (!bookingId) {
+      return NextResponse.json(
+        { error: 'Booking ID is required' },
+        { status: 400 },
+      );
+    }
+
+    // Verify booking exists and get basic info
+    const { data: booking, error: bookingError } = await supabase
+      .from('bookings')
+      .select('id, meeting_type, scheduled_for, status')
+      .eq('id', bookingId)
+      .single();
+
+    if (bookingError || !booking) {
+      return NextResponse.json({ error: 'Booking not found' }, { status: 404 });
+    }
+
+    // Get preparation tasks
+    const tasks = await workflowService.getPreparationTasks(bookingId);
+
+    // Get preparation status summary
+    const status = await workflowService.getPreparationStatus(bookingId);
+
+    return NextResponse.json({
+      bookingId,
+      meetingType: booking.meeting_type,
+      scheduledFor: booking.scheduled_for,
+      bookingStatus: booking.status,
+      preparationStatus: status,
+      tasks,
+    });
+  } catch (error) {
+    console.error('Preparation tasks API error:', error);
+
+    return NextResponse.json(
+      {
+        error: 'Internal server error',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+// Create preparation tasks for a booking
+export async function POST(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const { id } = await params;
+  try {
+    const clientIP =
+      request.ip || request.headers.get('x-forwarded-for') || 'unknown';
+
+    // Rate limiting
+    const rateLimitResult = await validateRateLimit(
+      clientIP,
+      'preparation_creation',
+      3,
+      300,
+    );
+    if (!rateLimitResult.allowed) {
+      return NextResponse.json(
+        { error: 'Rate limit exceeded. Please try again later.' },
+        { status: 429 },
+      );
+    }
+
+    const bookingId = id;
+
+    if (!bookingId) {
+      return NextResponse.json(
+        { error: 'Booking ID is required' },
+        { status: 400 },
+      );
+    }
+
+    // Check if tasks already exist
+    const existingTasks = await workflowService.getPreparationTasks(bookingId);
+    if (existingTasks.length > 0) {
+      return NextResponse.json(
+        { error: 'Preparation tasks already exist for this booking' },
+        { status: 409 },
+      );
+    }
+
+    // Create preparation tasks
+    const tasks = await workflowService.createPreparationTasks(bookingId);
+
+    return NextResponse.json(
+      {
+        success: true,
+        message: 'Preparation tasks created successfully',
+        tasksCreated: tasks.length,
+        tasks,
+      },
+      { status: 201 },
+    );
+  } catch (error: any) {
+    console.error('Create preparation tasks API error:', error);
+
+    return NextResponse.json(
+      {
+        success: false,
+        message: error.message || 'Internal server error',
+      },
+      { status: 500 },
+    );
+  }
+}
+
+// Update preparation task status
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const { id } = await params;
+  try {
+    const clientIP =
+      request.ip || request.headers.get('x-forwarded-for') || 'unknown';
+
+    // Rate limiting
+    const rateLimitResult = await validateRateLimit(
+      clientIP,
+      'task_update',
+      10,
+      60,
+    );
+    if (!rateLimitResult.allowed) {
+      return NextResponse.json(
+        { error: 'Rate limit exceeded. Please try again later.' },
+        { status: 429 },
+      );
+    }
+
+    const body = await request.json();
+    const { taskId, status, userId, notes } = body;
+
+    if (!taskId || !status || !userId) {
+      return NextResponse.json(
+        { error: 'Task ID, status, and user ID are required' },
+        { status: 400 },
+      );
+    }
+
+    const validStatuses = ['pending', 'in_progress', 'completed', 'skipped'];
+    if (!validStatuses.includes(status)) {
+      return NextResponse.json({ error: 'Invalid status' }, { status: 400 });
+    }
+
+    // Update task status
+    const success = await workflowService.updateTaskStatus(
+      taskId,
+      status,
+      userId,
+      notes,
+    );
+
+    if (success) {
+      // Get updated preparation status
+      const preparationStatus = await workflowService.getPreparationStatus(id);
+
+      return NextResponse.json({
+        success: true,
+        message: 'Task status updated successfully',
+        preparationStatus,
+      });
+    } else {
+      return NextResponse.json(
+        { error: 'Failed to update task status' },
+        { status: 500 },
+      );
+    }
+  } catch (error) {
+    console.error('Update task status API error:', error);
+
+    return NextResponse.json(
+      {
+        error: 'Internal server error',
+      },
+      { status: 500 },
+    );
+  }
+}

@@ -1,0 +1,279 @@
+// WS-129: Floral Cost Estimation API
+// API endpoint for calculating arrangement cost estimates
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { getCurrentUser } from '@/lib/auth/server';
+
+export async function POST(request: NextRequest) {
+  try {
+    const user = await getCurrentUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const {
+      template_id,
+      region,
+      wedding_month,
+      custom_flowers,
+      stem_counts,
+      arrangement_type
+    } = body;
+
+    const supabase = createClient();
+
+    if (template_id) {
+      // Use existing template for estimation
+      const currentMonth = wedding_month || new Date().getMonth() + 1;
+      const targetRegion = region || 'northeast';
+
+      const { data: estimate, error } = await supabase.rpc('calculate_arrangement_cost', {
+        template_id,
+        region: targetRegion,
+        wedding_month: currentMonth
+      });
+
+      if (error) {
+        throw new Error(`Failed to calculate template cost: ${error.message}`);
+      }
+
+      return NextResponse.json({ estimate });
+    } else if (custom_flowers && stem_counts && arrangement_type) {
+      // Custom arrangement estimation
+      const estimate = await calculateCustomArrangementCost(
+        supabase,
+        custom_flowers,
+        stem_counts,
+        arrangement_type,
+        region || 'northeast',
+        wedding_month || new Date().getMonth() + 1
+      );
+
+      return NextResponse.json({ estimate });
+    } else {
+      return NextResponse.json(
+        { error: 'Either template_id or (custom_flowers, stem_counts, arrangement_type) must be provided' },
+        { status: 400 }
+      );
+    }
+  } catch (error) {
+    console.error('Floral estimation error:', error);
+    return NextResponse.json(
+      { error: 'Failed to calculate cost estimate' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const user = await getCurrentUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { searchParams } = new URL(request.url);
+    const arrangementType = searchParams.get('type');
+    const style = searchParams.get('style');
+    const season = searchParams.get('season');
+    const budgetMax = searchParams.get('budget_max');
+
+    const supabase = createClient();
+
+    // Get cost estimates for different arrangements
+    let query = supabase
+      .from('floral_arrangement_templates')
+      .select('id, name, arrangement_type, style_category, estimated_cost_range, labor_difficulty, size_category');
+
+    if (arrangementType) {
+      query = query.eq('arrangement_type', arrangementType);
+    }
+
+    if (style) {
+      query = query.eq('style_category', style);
+    }
+
+    if (season && season !== 'any') {
+      query = query.eq('season', season);
+    }
+
+    const { data: templates, error } = await query.order('estimated_cost_range->min');
+
+    if (error) {
+      throw new Error(`Failed to fetch cost estimates: ${error.message}`);
+    }
+
+    // Filter by budget if provided
+    let filteredTemplates = templates;
+    if (budgetMax) {
+      const maxBudget = parseFloat(budgetMax);
+      filteredTemplates = templates.filter(template => {
+        const minCost = template.estimated_cost_range?.min || 0;
+        return minCost <= maxBudget;
+      });
+    }
+
+    // Group by arrangement type for easy comparison
+    const costEstimates = filteredTemplates.reduce((acc, template) => {
+      const type = template.arrangement_type;
+      if (!acc[type]) {
+        acc[type] = {
+          arrangement_type: type,
+          estimates: [],
+          price_range: { min: Infinity, max: 0 }
+        };
+      }
+
+      acc[type].estimates.push({
+        template_id: template.id,
+        name: template.name,
+        style: template.style_category,
+        cost_range: template.estimated_cost_range,
+        size: template.size_category,
+        complexity: template.labor_difficulty
+      });
+
+      // Update price range
+      const templateMin = template.estimated_cost_range?.min || 0;
+      const templateMax = template.estimated_cost_range?.max || 0;
+      
+      if (templateMin < acc[type].price_range.min) {
+        acc[type].price_range.min = templateMin;
+      }
+      if (templateMax > acc[type].price_range.max) {
+        acc[type].price_range.max = templateMax;
+      }
+
+      return acc;
+    }, {} as any);
+
+    // Convert to array and add summary stats
+    const estimatesArray = Object.values(costEstimates).map((group: any) => ({
+      ...group,
+      price_range: {
+        min: group.price_range.min === Infinity ? 0 : group.price_range.min,
+        max: group.price_range.max
+      },
+      template_count: group.estimates.length
+    }));
+
+    return NextResponse.json({ 
+      cost_estimates: estimatesArray,
+      filters_applied: {
+        arrangement_type: arrangementType,
+        style,
+        season,
+        budget_max: budgetMax
+      }
+    });
+  } catch (error) {
+    console.error('Cost estimates retrieval error:', error);
+    return NextResponse.json(
+      { error: 'Failed to fetch cost estimates' },
+      { status: 500 }
+    );
+  }
+}
+
+async function calculateCustomArrangementCost(
+  supabase: any,
+  flowerNames: string[],
+  stemCounts: { [key: string]: number },
+  arrangementType: string,
+  region: string,
+  weddingMonth: number
+) {
+  let materialCost = 0;
+  const costBreakdown: any = {};
+  const flowerDetails: any[] = [];
+
+  // Get cost for each flower type
+  for (const flowerName of flowerNames) {
+    const stemCount = stemCounts[flowerName] || 0;
+    if (stemCount === 0) continue;
+
+    // Query flower cost with seasonal adjustment
+    const { data: flowers, error } = await supabase
+      .from('flowers')
+      .select(`
+        id,
+        common_name,
+        base_cost_per_stem,
+        primary_colors,
+        seasonal_flower_availability!left(
+          cost_multiplier,
+          availability_status,
+          quality_rating
+        )
+      `)
+      .ilike('common_name', `%${flowerName}%`)
+      .eq('seasonal_flower_availability.region', region)
+      .eq('seasonal_flower_availability.month', weddingMonth)
+      .limit(1);
+
+    if (error) {
+      console.error(`Error fetching ${flowerName}:`, error);
+      continue;
+    }
+
+    if (flowers && flowers.length > 0) {
+      const flower = flowers[0];
+      const basePrice = flower.base_cost_per_stem || 0;
+      const seasonalMultiplier = flower.seasonal_flower_availability?.[0]?.cost_multiplier || 1.0;
+      const adjustedPrice = basePrice * seasonalMultiplier;
+      const totalCost = adjustedPrice * stemCount;
+
+      materialCost += totalCost;
+      
+      costBreakdown[flowerName] = {
+        stem_count: stemCount,
+        base_cost_per_stem: basePrice,
+        seasonal_multiplier: seasonalMultiplier,
+        adjusted_cost_per_stem: adjustedPrice,
+        total_cost: totalCost
+      };
+
+      flowerDetails.push({
+        name: flower.common_name,
+        colors: flower.primary_colors,
+        stems: stemCount,
+        cost_per_stem: adjustedPrice,
+        total: totalCost,
+        availability: flower.seasonal_flower_availability?.[0]?.availability_status || 'unknown'
+      });
+    }
+  }
+
+  // Calculate labor cost based on arrangement type
+  const laborMultipliers = {
+    bridal_bouquet: 0.6,
+    bridesmaid_bouquet: 0.4,
+    boutonniere: 0.8,
+    centerpiece: 0.5,
+    ceremony_arch: 0.7,
+    aisle_arrangements: 0.5
+  };
+
+  const laborMultiplier = laborMultipliers[arrangementType as keyof typeof laborMultipliers] || 0.5;
+  const laborCost = materialCost * laborMultiplier;
+  const totalCost = materialCost + laborCost;
+
+  return {
+    arrangement_type: arrangementType,
+    material_cost: parseFloat(materialCost.toFixed(2)),
+    labor_cost: parseFloat(laborCost.toFixed(2)),
+    total_cost: parseFloat(totalCost.toFixed(2)),
+    cost_breakdown: costBreakdown,
+    flower_details: flowerDetails,
+    region,
+    wedding_month: weddingMonth,
+    calculated_at: new Date().toISOString(),
+    notes: [
+      `Labor cost calculated at ${(laborMultiplier * 100).toFixed(0)}% of material cost for ${arrangementType}`,
+      `Seasonal pricing adjustments applied for ${region} region, month ${weddingMonth}`,
+      `${flowerDetails.length} different flower types included in estimate`
+    ]
+  };
+}

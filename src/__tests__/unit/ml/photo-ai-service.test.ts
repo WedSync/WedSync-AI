@@ -1,0 +1,423 @@
+/**
+ * WS-127: Photo AI Service Tests
+ * Comprehensive tests for AI-powered photography features
+ */
+
+import { describe, it, expect, vi, beforeEach, afterEach, Mock } from 'vitest';
+import { photoAIService, PhotoAIService } from '@/lib/ml/photo-ai-service';
+import { openaiService } from '@/lib/services/openai-service';
+import { photoService } from '@/lib/services/photoService';
+// Mock dependencies
+vi.mock('@/lib/services/openai-service');
+vi.mock('@/lib/services/photoService');
+const mockOpenAIService = openaiService as {
+  analyzeImage: Mock;
+  generateCompletion: Mock;
+};
+const mockPhotoService = photoService as {
+  downloadPhoto: Mock;
+  supabase: {
+    storage: {
+      from: Mock;
+    };
+  };
+describe('PhotoAIService', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  describe('analyzePhoto', () => {
+    it('should successfully analyze a photo with AI', async () => {
+      // Mock photo blob
+      const mockBlob = new Blob(['fake image data'], { type: 'image/jpeg' });
+      mockPhotoService.downloadPhoto.mockResolvedValue(mockBlob);
+      // Mock AI response
+      const mockAIResponse = {
+        analysis: {
+          primary_category: 'ceremony',
+          confidence: 0.92,
+          quality_score: 8,
+          categories: [{
+            category: 'ceremony',
+            confidence: 0.92,
+            reasoning: 'Wedding ceremony detected with bride and groom'
+          }],
+          enhancement_suggestions: [{
+            type: 'brightness',
+            priority: 'medium',
+            description: 'Slightly increase brightness',
+            estimated_improvement: 15,
+            processing_time_estimate: 300
+          tags: [{
+            tag: 'wedding',
+            confidence: 0.95,
+            category: 'event'
+          emotion_analysis: {
+            overall_mood: 'joyful',
+            emotion_scores: {
+              happiness: 0.9,
+              excitement: 0.7,
+              romance: 0.8,
+              formality: 0.6,
+              energy_level: 0.8
+            },
+            confidence: 0.85
+          },
+          scene_analysis: {
+            setting: 'outdoor',
+            lighting: 'natural',
+            composition: 'group',
+            color_palette: ['#FFFFFF', '#FFC0CB', '#32CD32'],
+            aesthetic_score: 8
+          }
+        },
+        processing_time_ms: 750,
+        model: 'gpt-4-vision-preview'
+      };
+      mockOpenAIService.analyzeImage.mockResolvedValue(mockAIResponse);
+      // Execute test
+      const result = await photoAIService.analyzePhoto('photo-123');
+      // Assertions
+      expect(result).toBeDefined();
+      expect(result.photo_id).toBe('photo-123');
+      expect(result.primary_category).toBe('ceremony');
+      expect(result.confidence_score).toBe(0.92);
+      expect(result.quality_score).toBe(8);
+      expect(result.categories).toHaveLength(1);
+      expect(result.enhancement_suggestions).toHaveLength(1);
+      expect(result.ai_generated_tags).toHaveLength(1);
+      expect(result.emotion_analysis.overall_mood).toBe('joyful');
+      expect(result.scene_analysis.setting).toBe('outdoor');
+      expect(result.processing_time_ms).toBeGreaterThan(0);
+      // Verify dependencies called
+      expect(mockPhotoService.downloadPhoto).toHaveBeenCalledWith('photo-123', 'preview');
+      expect(mockOpenAIService.analyzeImage).toHaveBeenCalledWith({
+        imageBase64: expect.any(String),
+        analysisType: 'wedding_photo',
+        maxTokens: 2000,
+        temperature: 0.3
+      });
+    });
+    it('should handle AI analysis failure gracefully', async () => {
+      // Mock AI failure
+      mockOpenAIService.analyzeImage.mockRejectedValue(new Error('AI service unavailable'));
+      await expect(photoAIService.analyzePhoto('photo-123')).rejects.toThrow('Photo analysis failed: AI service unavailable');
+    it('should handle photo download failure', async () => {
+      mockPhotoService.downloadPhoto.mockRejectedValue(new Error('Photo not found'));
+      await expect(photoAIService.analyzePhoto('photo-123')).rejects.toThrow('Photo analysis failed: Photo not found');
+  describe('batchAnalyzePhotos', () => {
+    it('should analyze multiple photos in batches', async () => {
+      const photoIds = ['photo-1', 'photo-2', 'photo-3'];
+      
+      // Mock successful analyses
+          primary_category: 'candid',
+          confidence: 0.85,
+          quality_score: 7
+        processing_time_ms: 800
+      const results = await photoAIService.batchAnalyzePhotos(photoIds);
+      expect(results).toHaveLength(3);
+      expect(mockPhotoService.downloadPhoto).toHaveBeenCalledTimes(3);
+      expect(mockOpenAIService.analyzeImage).toHaveBeenCalledTimes(3);
+      results.forEach((result, index) => {
+        expect(result.photo_id).toBe(photoIds[index]);
+        expect(result.primary_category).toBe('candid');
+    it('should handle partial failures in batch processing', async () => {
+      // Mock mixed success/failure
+      mockPhotoService.downloadPhoto
+        .mockResolvedValueOnce(mockBlob)
+        .mockRejectedValueOnce(new Error('Photo not found'))
+        .mockResolvedValueOnce(mockBlob);
+          primary_category: 'portrait',
+          confidence: 0.90,
+          quality_score: 8
+        }
+      // Should return results for successful analyses only
+      expect(results).toHaveLength(2);
+      expect(results[0].photo_id).toBe('photo-1');
+      expect(results[1].photo_id).toBe('photo-3');
+    it('should respect batch size limits', async () => {
+      const photoIds = Array.from({ length: 25 }, (_, i) => `photo-${i}`);
+        analysis: { primary_category: 'detail', confidence: 0.75, quality_score: 6 }
+      expect(results).toHaveLength(25);
+      // Should have processed in multiple batches (batch size is 10)
+      expect(mockPhotoService.downloadPhoto).toHaveBeenCalledTimes(25);
+  describe('generateSmartAlbums', () => {
+    const mockPhotos = [
+      {
+        id: 'photo-1',
+        albumId: undefined,
+        bucketId: 'bucket-1',
+        organizationId: 'org-1',
+        filename: 'ceremony1.jpg',
+        originalFilename: 'ceremony1.jpg',
+        filePath: '/photos/ceremony1.jpg',
+        fileSizeBytes: 2000000,
+        mimeType: 'image/jpeg',
+        width: 4000,
+        height: 3000,
+        thumbnailPath: undefined,
+        previewPath: undefined,
+        optimizedPath: undefined,
+        compressionRatio: undefined,
+        title: undefined,
+        description: undefined,
+        altText: undefined,
+        photographerCredit: undefined,
+        takenAt: undefined,
+        location: undefined,
+        sortOrder: 0,
+        isFeatured: false,
+        isApproved: false,
+        approvalStatus: 'pending' as const,
+        viewCount: 0,
+        downloadCount: 0,
+        createdAt: '2024-01-01T10:00:00Z',
+        updatedAt: '2024-01-01T10:00:00Z',
+        uploadedBy: 'user-1',
+        approvedBy: undefined,
+        tags: []
+      },
+        id: 'photo-2',
+        filename: 'reception1.jpg',
+        originalFilename: 'reception1.jpg',
+        filePath: '/photos/reception1.jpg',
+        fileSizeBytes: 1800000,
+        width: 3800,
+        height: 2800,
+        createdAt: '2024-01-01T18:00:00Z',
+        updatedAt: '2024-01-01T18:00:00Z',
+      }
+    ];
+    it('should generate smart album suggestions', async () => {
+      // Mock photo analyses
+      const mockAnalyses = [
+        {
+          id: 'analysis-1',
+          photo_id: 'photo-1',
+          confidence_score: 0.92,
+          categories: [{ category: 'ceremony', confidence: 0.92, reasoning: 'Wedding ceremony' }],
+          enhancement_suggestions: [],
+          faces_detected: [],
+          people_identified: [],
+          ai_generated_tags: [{ tag: 'wedding', confidence: 0.95, category: 'event', description: 'Wedding event' }],
+            overall_mood: 'joyful' as const,
+            emotion_scores: { happiness: 0.9, excitement: 0.7, romance: 0.8, formality: 0.6, energy_level: 0.8 },
+            setting: 'outdoor' as const,
+            lighting: 'natural' as const,
+            composition: 'group' as const,
+            color_palette: ['#FFFFFF'],
+          model_version: '1.0',
+          processing_time_ms: 750,
+          created_at: '2024-01-01T10:00:00Z',
+          analysis_type: 'categorization' as const
+          id: 'analysis-2',
+          photo_id: 'photo-2',
+          primary_category: 'reception',
+          confidence_score: 0.88,
+          quality_score: 7,
+          categories: [{ category: 'reception', confidence: 0.88, reasoning: 'Wedding reception' }],
+          ai_generated_tags: [{ tag: 'party', confidence: 0.90, category: 'event', description: 'Party atmosphere' }],
+            overall_mood: 'celebratory' as const,
+            emotion_scores: { happiness: 0.95, excitement: 0.9, romance: 0.5, formality: 0.3, energy_level: 0.9 },
+            confidence: 0.80
+            setting: 'indoor' as const,
+            lighting: 'artificial' as const,
+            color_palette: ['#FFD700'],
+            aesthetic_score: 7
+          processing_time_ms: 680,
+          created_at: '2024-01-01T18:00:00Z',
+      ];
+      // Mock batch analysis
+      vi.spyOn(photoAIService, 'batchAnalyzePhotos').mockResolvedValue(mockAnalyses);
+      const request = {
+        bucket_id: 'bucket-1',
+        photos: mockPhotos,
+        generation_criteria: {
+          max_albums: 5,
+          min_photos_per_album: 2,
+          categorization_strategy: 'thematic' as const,
+          include_highlights: true
+      const result = await photoAIService.generateSmartAlbums(request);
+      expect(result).toHaveLength(2); // Should create ceremony and reception albums
+      expect(result[0].suggested_name).toContain('Ceremony');
+      expect(result[1].suggested_name).toContain('Reception');
+      expect(result[0].photo_ids).toContain('photo-1');
+      expect(result[1].photo_ids).toContain('photo-2');
+      expect(result[0].confidence).toBeGreaterThan(0.8);
+    it('should respect generation criteria limits', async () => {
+      const manyPhotos = Array.from({ length: 20 }, (_, i) => ({
+        ...mockPhotos[0],
+        id: `photo-${i}`,
+        filename: `photo${i}.jpg`
+      }));
+      // Mock analyses for all photos
+      const mockAnalyses = manyPhotos.map(photo => ({
+        id: `analysis-${photo.id}`,
+        photo_id: photo.id,
+        primary_category: 'candid',
+        confidence_score: 0.85,
+        quality_score: 7,
+        categories: [{ category: 'candid', confidence: 0.85, reasoning: 'Candid moment' }],
+        enhancement_suggestions: [],
+        faces_detected: [],
+        people_identified: [],
+        ai_generated_tags: [],
+        emotion_analysis: {
+          overall_mood: 'joyful' as const,
+          emotion_scores: { happiness: 0.8, excitement: 0.6, romance: 0.4, formality: 0.5, energy_level: 0.7 },
+          confidence: 0.80
+        scene_analysis: {
+          setting: 'mixed' as const,
+          lighting: 'natural' as const,
+          composition: 'portrait' as const,
+          color_palette: ['#CCCCCC'],
+          aesthetic_score: 7
+        model_version: '1.0',
+        processing_time_ms: 600,
+        created_at: '2024-01-01T12:00:00Z',
+        analysis_type: 'categorization' as const
+        photos: manyPhotos,
+          max_albums: 3,
+          min_photos_per_album: 5,
+          categorization_strategy: 'mixed' as const,
+      expect(result).toHaveLength(1); // Only one album should meet criteria (20 photos >= 5 min)
+      expect(result[0].photo_ids).toHaveLength(20);
+  describe('enhancePhoto', () => {
+    it('should enhance photo quality using AI suggestions', async () => {
+      const photoId = 'photo-123';
+      const enhancementOptions = {
+        enhancement_type: 'auto' as const,
+        quality_target: 'web' as const,
+        preserve_original: true,
+        apply_watermark: false,
+        batch_processing: false
+      // Mock photo analysis
+      const mockAnalysis = {
+        id: 'analysis-123',
+        photo_id: photoId,
+        enhancement_suggestions: [{
+          type: 'brightness' as const,
+          priority: 'high' as const,
+          description: 'Increase brightness by 20%',
+          estimated_improvement: 25,
+          processing_time_estimate: 500
+        }],
+        quality_score: 6,
+        primary_category: 'portrait',
+        categories: [],
+          overall_mood: 'romantic' as const,
+          emotion_scores: { happiness: 0.7, excitement: 0.5, romance: 0.9, formality: 0.6, energy_level: 0.5 },
+          confidence: 0.75
+          setting: 'indoor' as const,
+          lighting: 'artificial' as const,
+          color_palette: ['#F0F0F0'],
+          aesthetic_score: 6
+        processing_time_ms: 800,
+        created_at: '2024-01-01T14:00:00Z',
+        analysis_type: 'enhancement' as const
+      vi.spyOn(photoAIService, 'analyzePhoto').mockResolvedValue(mockAnalysis);
+      const mockBlob = new Blob(['enhanced image data'], { type: 'image/jpeg' });
+      // Mock storage upload
+      const mockUpload = vi.fn().mockResolvedValue({ data: { path: 'enhanced_photo.jpg' }, error: null });
+      mockPhotoService.supabase.storage.from.mockReturnValue({ upload: mockUpload });
+      const result = await photoAIService.enhancePhoto(photoId, enhancementOptions);
+      expect(result.original_photo_id).toBe(photoId);
+      expect(result.enhanced_file_path).toContain('enhanced');
+      expect(result.quality_improvement).toBeGreaterThan(0);
+      expect(result.enhancement_applied).toHaveLength(1);
+      // Verify dependencies
+      expect(photoAIService.analyzePhoto).toHaveBeenCalledWith(photoId);
+      expect(mockPhotoService.downloadPhoto).toHaveBeenCalledWith(photoId, 'original');
+    it('should handle enhancement failure gracefully', async () => {
+      // Mock analysis failure
+      vi.spyOn(photoAIService, 'analyzePhoto').mockRejectedValue(new Error('Analysis failed'));
+      await expect(photoAIService.enhancePhoto(photoId, enhancementOptions))
+        .rejects.toThrow('Enhancement failed: Analysis failed');
+  describe('generateSmartTags', () => {
+    it('should generate smart tags for multiple photos', async () => {
+      const photoIds = ['photo-1', 'photo-2'];
+          ai_generated_tags: [
+            { tag: 'wedding', confidence: 0.95, category: 'event', description: 'Wedding ceremony' },
+            { tag: 'bride', confidence: 0.90, category: 'object', description: 'Bride in wedding dress' }
+          ],
+          categories: [],
+          analysis_type: 'smart_tagging' as const
+            { tag: 'reception', confidence: 0.88, category: 'event', description: 'Wedding reception' },
+            { tag: 'dancing', confidence: 0.85, category: 'action', description: 'People dancing' }
+      const result = await photoAIService.generateSmartTags(photoIds);
+      expect(result).toBeInstanceOf(Map);
+      expect(result.size).toBe(2);
+      expect(result.get('photo-1')).toHaveLength(2);
+      expect(result.get('photo-2')).toHaveLength(2);
+      const photo1Tags = result.get('photo-1');
+      expect(photo1Tags![0].name).toBe('wedding');
+      expect(photo1Tags![0].color).toBeDefined();
+      expect(photo1Tags![1].name).toBe('bride');
+    it('should filter tags by confidence threshold', async () => {
+      const photoIds = ['photo-1'];
+      const mockAnalyses = [{
+        id: 'analysis-1',
+        photo_id: 'photo-1',
+        ai_generated_tags: [
+          { tag: 'wedding', confidence: 0.95, category: 'event', description: 'High confidence tag' },
+          { tag: 'maybe-flowers', confidence: 0.60, category: 'object', description: 'Low confidence tag' }
+        ],
+        primary_category: 'ceremony',
+        confidence_score: 0.92,
+        quality_score: 8,
+          emotion_scores: { happiness: 0.9, excitement: 0.7, romance: 0.8, formality: 0.6, energy_level: 0.8 },
+          confidence: 0.85
+          setting: 'outdoor' as const,
+          composition: 'group' as const,
+          color_palette: ['#FFFFFF'],
+          aesthetic_score: 8
+        created_at: '2024-01-01T10:00:00Z',
+        analysis_type: 'smart_tagging' as const
+      }];
+      expect(photo1Tags).toHaveLength(1); // Only high confidence tag should remain
+});
+describe('PhotoAIService Integration', () => {
+  it('should handle complete workflow from analysis to enhancement', async () => {
+    const photoId = 'photo-workflow-test';
+    
+    // Mock dependencies for complete workflow
+    const mockBlob = new Blob(['test image'], { type: 'image/jpeg' });
+    mockPhotoService.downloadPhoto.mockResolvedValue(mockBlob);
+    const mockAIResponse = {
+      analysis: {
+        confidence: 0.90,
+          type: 'brightness',
+          priority: 'high',
+          description: 'Increase brightness',
+          estimated_improvement: 20,
+          processing_time_estimate: 400
+        }]
+    mockOpenAIService.analyzeImage.mockResolvedValue(mockAIResponse);
+    const mockUpload = vi.fn().mockResolvedValue({ data: { path: 'enhanced.jpg' }, error: null });
+    mockPhotoService.supabase.storage.from.mockReturnValue({ upload: mockUpload });
+    // 1. Analyze photo
+    const analysis = await photoAIService.analyzePhoto(photoId);
+    expect(analysis.primary_category).toBe('portrait');
+    // 2. Enhance based on analysis
+    const enhancement = await photoAIService.enhancePhoto(photoId, {
+      enhancement_type: 'auto',
+      quality_target: 'web',
+      preserve_original: true,
+      apply_watermark: false,
+      batch_processing: false
+    expect(enhancement.original_photo_id).toBe(photoId);
+    expect(enhancement.quality_improvement).toBeGreaterThan(0);
+    // 3. Generate tags
+    const tagsMap = await photoAIService.generateSmartTags([photoId]);
+    expect(tagsMap.has(photoId)).toBe(true);
+  it('should maintain performance with large batch operations', async () => {
+    const largePhotoIds = Array.from({ length: 100 }, (_, i) => `photo-${i}`);
+    const mockBlob = new Blob(['test'], { type: 'image/jpeg' });
+      analysis: { primary_category: 'candid', confidence: 0.80, quality_score: 7 }
+    const startTime = Date.now();
+    const results = await photoAIService.batchAnalyzePhotos(largePhotoIds);
+    const processingTime = Date.now() - startTime;
+    expect(results).toHaveLength(100);
+    // Should complete within reasonable time (allowing for batching and delays)
+    expect(processingTime).toBeLessThan(30000); // 30 seconds max

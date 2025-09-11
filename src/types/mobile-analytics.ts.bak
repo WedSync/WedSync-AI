@@ -1,0 +1,255 @@
+/**
+ * Mobile Analytics Types
+ * Comprehensive types for mobile-optimized vendor performance analytics
+ */
+
+// Core Analytics Data Types
+export interface VendorMetrics {
+  id: string;
+  name: string;
+  category: 'photographer' | 'venue' | 'caterer' | 'florist' | 'musician' | 'other';
+  responseTime: number; // avg hours to respond
+  completionRate: number; // percentage of completed tasks
+  clientRating: number; // 1-5 star rating
+  totalBookings: number;
+  revenue: number;
+  recentActivity: ActivityPoint[];
+  trendData: TrendPoint[];
+}
+
+export interface ActivityPoint {
+  timestamp: Date;
+  type: 'booking' | 'communication' | 'delivery' | 'payment';
+  value: number;
+  description: string;
+}
+
+export interface TrendPoint {
+  date: Date;
+  metric: 'revenue' | 'bookings' | 'rating' | 'response_time';
+  value: number;
+}
+
+// Mobile-Specific UI Types
+export interface TouchGesture {
+  type: 'tap' | 'swipe' | 'pinch' | 'pan' | 'long_press';
+  startPosition: { x: number; y: number };
+  endPosition?: { x: number; y: number };
+  scale?: number;
+  duration: number;
+  target: string;
+}
+
+export interface MobileChartConfig {
+  width: number;
+  height: number;
+  touchEnabled: boolean;
+  zoomEnabled: boolean;
+  panEnabled: boolean;
+  responsive: boolean;
+  orientation: 'portrait' | 'landscape';
+  touchArea: {
+    minSize: number; // minimum touch target size in pixels
+    padding: number;
+  };
+}
+
+export interface VendorComparisonData {
+  vendors: VendorMetrics[];
+  comparisonMetrics: ComparisonMetric[];
+  timeRange: TimeRange;
+}
+
+export interface ComparisonMetric {
+  key: string;
+  label: string;
+  type: 'currency' | 'percentage' | 'number' | 'rating' | 'time';
+  format: (value: number) => string;
+  mobileFormat: (value: number) => string; // shorter format for mobile
+}
+
+// Offline & Caching Types
+export interface OfflineAnalyticsData {
+  id: string;
+  vendorId: string;
+  timestamp: Date;
+  data: VendorMetrics;
+  syncStatus: 'pending' | 'synced' | 'failed';
+  lastSyncAttempt?: Date;
+  version: number;
+}
+
+export interface CacheEntry {
+  key: string;
+  data: any;
+  timestamp: Date;
+  ttl: number; // time to live in milliseconds
+  size: number; // size in bytes
+  priority: 'low' | 'medium' | 'high' | 'critical';
+}
+
+export interface CacheStats {
+  totalSize: number;
+  totalEntries: number;
+  hitRate: number;
+  memoryUsage: number;
+  lastCleanup: Date;
+}
+
+// Performance Types
+export interface MobilePerformanceMetrics {
+  renderTime: number;
+  chartLoadTime: number;
+  gestureResponseTime: number;
+  memoryUsage: number;
+  batteryImpact: 'low' | 'medium' | 'high';
+  networkUsage: number;
+  cacheEfficiency: number;
+}
+
+export interface ChartVirtualizationConfig {
+  itemHeight: number;
+  bufferSize: number;
+  overscan: number;
+  estimatedItemSize: number;
+  dynamicHeight: boolean;
+}
+
+// Touch Interaction Types
+export interface TouchInteraction {
+  id: string;
+  type: TouchGesture['type'];
+  timestamp: Date;
+  element: string;
+  successful: boolean;
+  duration: number;
+  accuracy: number; // 0-1, how accurate the touch was
+}
+
+export interface HapticFeedbackConfig {
+  enabled: boolean;
+  intensity: 'light' | 'medium' | 'heavy';
+  pattern: 'success' | 'error' | 'warning' | 'selection';
+}
+
+// Navigation Types
+export interface MobileNavigationState {
+  currentView: 'dashboard' | 'comparison' | 'detail' | 'settings';
+  selectedVendor?: string;
+  filters: AnalyticsFilters;
+  sortBy: SortOption;
+  viewMode: 'cards' | 'list' | 'charts';
+}
+
+export interface AnalyticsFilters {
+  category?: VendorMetrics['category'];
+  dateRange: TimeRange;
+  minRating?: number;
+  minRevenue?: number;
+  status?: 'active' | 'inactive' | 'all';
+}
+
+export interface SortOption {
+  field: keyof VendorMetrics;
+  direction: 'asc' | 'desc';
+  label: string;
+}
+
+// Time Range Types
+export interface TimeRange {
+  start: Date;
+  end: Date;
+  preset?: 'today' | 'week' | 'month' | 'quarter' | 'year' | 'custom';
+}
+
+// Security Types
+export interface MobileSecurityConfig {
+  encryptLocalData: boolean;
+  biometricAuth: boolean;
+  sessionTimeout: number; // minutes
+  allowScreenshots: boolean;
+  allowBackground: boolean;
+  requirePasscode: boolean;
+}
+
+export interface SecureAnalyticsSession {
+  id: string;
+  vendorId: string;
+  startTime: Date;
+  lastActivity: Date;
+  isAuthenticated: boolean;
+  permissions: string[];
+  deviceFingerprint: string;
+}
+
+// PWA Types
+export interface PWAInstallPrompt {
+  shown: boolean;
+  accepted: boolean;
+  dismissed: boolean;
+  timestamp: Date;
+  platform: string;
+}
+
+export interface AnalyticsNotification {
+  id: string;
+  type: 'performance_alert' | 'booking_milestone' | 'review_received' | 'payment_due';
+  title: string;
+  body: string;
+  data: Record<string, any>;
+  timestamp: Date;
+  read: boolean;
+  actions?: NotificationAction[];
+}
+
+export interface NotificationAction {
+  action: string;
+  title: string;
+  icon?: string;
+}
+
+// Component Props Types
+export interface MobileAnalyticsDashboardProps {
+  vendors: VendorMetrics[];
+  selectedVendor?: string;
+  onVendorSelect: (vendorId: string) => void;
+  onRefresh: () => Promise<void>;
+  loading?: boolean;
+  offline?: boolean;
+  className?: string;
+}
+
+export interface MobilePerformanceChartsProps {
+  data: VendorMetrics[];
+  chartType: 'line' | 'bar' | 'pie' | 'area';
+  metric: keyof VendorMetrics;
+  height?: number;
+  touchEnabled?: boolean;
+  onDataPointClick?: (data: any) => void;
+  className?: string;
+}
+
+export interface TouchVendorComparisonProps {
+  vendors: VendorMetrics[];
+  metrics: ComparisonMetric[];
+  onVendorSwipe?: (direction: 'left' | 'right', vendor: VendorMetrics) => void;
+  onMetricTap?: (metric: ComparisonMetric, vendor: VendorMetrics) => void;
+  className?: string;
+}
+
+// Error Types
+export interface MobileAnalyticsError {
+  code: string;
+  message: string;
+  context?: Record<string, any>;
+  timestamp: Date;
+  fatal: boolean;
+}
+
+// Export utility type for component refs
+export type MobileAnalyticsRef = {
+  refresh: () => Promise<void>;
+  clearCache: () => void;
+  exportData: () => Promise<Blob>;
+  screenshot: () => Promise<string>;
+};

@@ -1,0 +1,591 @@
+/**
+ * Comprehensive Integration Tests for WS-150 Audit Logging System
+ * Team C Implementation
+ * 
+ * Tests:
+ * - WebSocket server performance with 100+ concurrent clients
+ * - External service integrations with retry logic
+ * - Middleware performance impact (<10ms per request)
+ * - Real-time event filtering and routing
+ * - Connection state management and reconnection
+ */
+
+import { describe, beforeAll, afterAll, beforeEach, afterEach, it, expect, jest } from '@jest/test-env';
+import WebSocket from 'ws';
+import { AuditStreamServer, auditStreamServer } from '@/lib/websocket/audit-stream';
+import { AuditExternalServicesManager, loadExternalServicesConfig } from '@/lib/integrations/audit-external-services';
+import { AuditMiddleware, createAuditMiddleware } from '@/middleware/audit-middleware';
+import { NextRequest, NextResponse } from 'next/server';
+
+// Test configuration
+const TEST_CONFIG = {
+  websocketPort: 8082,
+  concurrentClients: 120,
+  performanceThresholdMs: 10,
+  testDuration: 30000, // 30 seconds
+  messageRate: 10, // messages per second
+};
+
+// Mock external services
+const mockFetch = jest.fn();
+global.fetch = mockFetch;
+
+describe('WS-150 Audit Logging System Integration Tests', () => {
+  let testServer: AuditStreamServer;
+  let clients: WebSocket[] = [];
+  let externalServices: AuditExternalServicesManager;
+  let auditMiddleware: ReturnType<typeof createAuditMiddleware>;
+
+  beforeAll(async () => {
+    // Initialize test server
+    testServer = new AuditStreamServer(TEST_CONFIG.websocketPort);
+    await testServer.start();
+
+    // Initialize external services with test config
+    const config = loadExternalServicesConfig();
+    config.datadog.enabled = true;
+    config.elasticsearch.enabled = true;
+    config.slack.enabled = true;
+    config.pagerduty.enabled = true;
+    externalServices = new AuditExternalServicesManager(config);
+
+    // Initialize audit middleware
+    auditMiddleware = createAuditMiddleware({
+      enablePerformanceMetrics: true,
+      logAllRequests: false,
+      performanceThresholds: {
+        slowRequest: 2000,
+        memoryUsage: 100 * 1024 * 1024,
+        responseSize: 10 * 1024 * 1024
+      },
+      sampling: {
+        rate: 1.0, // 100% for testing
+        highValueEndpoints: ['/api/test']
+      }
+    });
+  }, 30000);
+
+  afterAll(async () => {
+    // Clean up all connections
+    clients.forEach(client => client.close());
+    clients = [];
+    
+    // Shutdown services
+    await testServer.shutdown();
+    await externalServices.shutdown();
+  });
+
+  beforeEach(() => {
+    // Reset mocks
+    mockFetch.mockClear();
+    
+    // Mock successful responses for external services
+    mockFetch.mockImplementation((url) => {
+      if (url.includes('datadoghq.com')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          statusText: 'OK'
+        });
+      }
+      if (url.includes('elasticsearch')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ errors: false, took: 5, items: [] })
+        });
+      }
+      if (url.includes('slack.com') || url.includes('hooks.slack.com')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          statusText: 'OK'
+        });
+      }
+      if (url.includes('events.pagerduty.com')) {
+        return Promise.resolve({
+          ok: true,
+          status: 202,
+          json: () => Promise.resolve({ dedup_key: 'test-key', message: 'Event processed' })
+        });
+      }
+      return Promise.reject(new Error('Unknown URL'));
+    });
+  });
+
+  afterEach(() => {
+    // Clean up any test-specific clients
+    const testClients = clients.splice(0);
+    testClients.forEach(client => client.close());
+  });
+
+  describe('WebSocket Audit Stream Server', () => {
+    it('should handle 100+ concurrent clients with <100ms latency', async () => {
+      const connectionPromises: Promise<WebSocket>[] = [];
+      const latencies: number[] = [];
+      
+      // Create 120 concurrent connections
+      for (let i = 0; i < TEST_CONFIG.concurrentClients; i++) {
+        const promise = new Promise<WebSocket>((resolve, reject) => {
+          const startTime = Date.now();
+          const client = new WebSocket(`ws://localhost:${TEST_CONFIG.websocketPort}?userId=test-${i}`);
+          
+          client.on('open', () => {
+            const latency = Date.now() - startTime;
+            latencies.push(latency);
+            clients.push(client);
+            resolve(client);
+          });
+          
+          client.on('error', reject);
+          
+          // Timeout after 5 seconds
+          setTimeout(() => reject(new Error('Connection timeout')), 5000);
+        });
+        
+        connectionPromises.push(promise);
+      }
+
+      // Wait for all connections
+      const connectedClients = await Promise.all(connectionPromises);
+      
+      expect(connectedClients).toHaveLength(TEST_CONFIG.concurrentClients);
+      
+      // Check latency requirements
+      const averageLatency = latencies.reduce((sum, lat) => sum + lat, 0) / latencies.length;
+      const maxLatency = Math.max(...latencies);
+      
+      console.log(`Connection Stats: Avg=${averageLatency}ms, Max=${maxLatency}ms`);
+      
+      expect(averageLatency).toBeLessThan(100);
+      expect(maxLatency).toBeLessThan(200);
+      
+      // Verify server metrics
+      const metrics = testServer.getMetrics();
+      expect(metrics.activeConnections).toBe(TEST_CONFIG.concurrentClients);
+      
+    }, 15000);
+
+    it('should broadcast events to all subscribed clients with filtering', async () => {
+      // Create test clients with different filters
+      const clients = await Promise.all([
+        createTestClient({ types: ['security'], severities: ['high', 'critical'] }),
+        createTestClient({ types: ['admin'], severities: ['medium', 'high'] }),
+        createTestClient({ types: ['system'] }),
+        createTestClient({}) // No filters - receives all
+      ]);
+
+      const receivedEvents: any[][] = clients.map(() => []);
+      
+      // Set up event listeners
+      clients.forEach((client, index) => {
+        client.on('message', (data) => {
+          const message = JSON.parse(data.toString());
+          if (message.type === 'auditEvent') {
+            receivedEvents[index].push(message.payload);
+          }
+        });
+      });
+
+      // Send test events
+      const testEvents = [
+        {
+          id: 'test-1',
+          type: 'security' as const,
+          severity: 'critical' as const,
+          timestamp: new Date().toISOString(),
+          source: 'test',
+          event: { description: 'Security test event' }
+        },
+        {
+          id: 'test-2',
+          type: 'admin' as const,
+          severity: 'medium' as const,
+          timestamp: new Date().toISOString(),
+          source: 'test',
+          event: { description: 'Admin test event' }
+        },
+        {
+          id: 'test-3',
+          type: 'system' as const,
+          severity: 'low' as const,
+          timestamp: new Date().toISOString(),
+          source: 'test',
+          event: { description: 'System test event' }
+        }
+      ];
+
+      // Broadcast events
+      for (const event of testEvents) {
+        await testServer.broadcastAuditEvent(event);
+      }
+
+      // Wait for message delivery
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      // Verify filtering
+      expect(receivedEvents[0]).toHaveLength(1); // security + critical
+      expect(receivedEvents[0][0].id).toBe('test-1');
+      
+      expect(receivedEvents[1]).toHaveLength(1); // admin + medium
+      expect(receivedEvents[1][0].id).toBe('test-2');
+      
+      expect(receivedEvents[2]).toHaveLength(1); // system
+      expect(receivedEvents[2][0].id).toBe('test-3');
+      
+      expect(receivedEvents[3]).toHaveLength(3); // all events
+    });
+
+    it('should handle client disconnections gracefully', async () => {
+      const client = await createTestClient({});
+      const initialConnections = testServer.getMetrics().activeConnections;
+      
+      // Close client connection
+      client.close();
+      
+      // Wait for cleanup
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      const finalConnections = testServer.getMetrics().activeConnections;
+      expect(finalConnections).toBe(initialConnections - 1);
+    });
+
+    it('should maintain performance under high message load', async () => {
+      const client = await createTestClient({});
+      const messageCount = 1000;
+      const startTime = Date.now();
+      
+      // Send many events rapidly
+      const eventPromises = Array.from({ length: messageCount }, (_, i) => 
+        testServer.broadcastAuditEvent({
+          id: `load-test-${i}`,
+          type: 'system',
+          severity: 'low',
+          timestamp: new Date().toISOString(),
+          source: 'load-test',
+          event: { index: i }
+        })
+      );
+
+      await Promise.all(eventPromises);
+      const endTime = Date.now();
+      const duration = endTime - startTime;
+      const throughput = messageCount / (duration / 1000);
+
+      console.log(`Message throughput: ${throughput.toFixed(2)} events/second`);
+      
+      // Should handle at least 500 events per second
+      expect(throughput).toBeGreaterThan(500);
+    });
+  });
+
+  describe('External Service Integrations', () => {
+    it('should send events to DataDog with retry logic', async () => {
+      // Mock initial failure then success
+      let callCount = 0;
+      mockFetch.mockImplementation((url) => {
+        if (url.includes('datadoghq.com')) {
+          callCount++;
+          if (callCount === 1) {
+            return Promise.reject(new Error('Network error'));
+          }
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            statusText: 'OK'
+          });
+        }
+        return Promise.reject(new Error('Unknown URL'));
+      });
+
+      const testEvent = {
+        id: 'datadog-test',
+        type: 'security' as const,
+        severity: 'high' as const,
+        timestamp: new Date().toISOString(),
+        source: 'test',
+        event: { description: 'DataDog test event' }
+      };
+
+      await externalServices.processAuditEvent(testEvent);
+      
+      // Should have retried
+      expect(callCount).toBe(2);
+    });
+
+    it('should batch events to Elasticsearch efficiently', async () => {
+      const events = Array.from({ length: 150 }, (_, i) => ({
+        id: `es-test-${i}`,
+        type: 'system' as const,
+        severity: 'low' as const,
+        timestamp: new Date().toISOString(),
+        source: 'batch-test',
+        event: { index: i }
+      }));
+
+      // Process events
+      for (const event of events) {
+        await externalServices.processAuditEvent(event);
+      }
+
+      // Wait for batching
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      // Should have made batched requests
+      const esCalls = mockFetch.mock.calls.filter(call => 
+        call[0].includes('elasticsearch') || call[0].includes('_bulk')
+      );
+      
+      expect(esCalls.length).toBeGreaterThan(0);
+      expect(esCalls.length).toBeLessThan(events.length); // Batched, not individual
+    });
+
+    it('should trigger Slack notifications for critical events', async () => {
+      const criticalEvent = {
+        id: 'slack-test',
+        type: 'security' as const,
+        severity: 'critical' as const,
+        timestamp: new Date().toISOString(),
+        source: 'test',
+        event: { description: 'Critical security event' }
+      };
+
+      await externalServices.processAuditEvent(criticalEvent);
+      
+      // Should have called Slack webhook
+      const slackCalls = mockFetch.mock.calls.filter(call => 
+        call[0].includes('slack.com') || call[0].includes('hooks.slack.com')
+      );
+      
+      expect(slackCalls.length).toBeGreaterThan(0);
+    });
+
+    it('should create PagerDuty incidents for high severity events', async () => {
+      const highSeverityEvent = {
+        id: 'pagerduty-test',
+        type: 'admin' as const,
+        severity: 'critical' as const,
+        timestamp: new Date().toISOString(),
+        source: 'test',
+        event: { description: 'Critical admin event' }
+      };
+
+      await externalServices.processAuditEvent(highSeverityEvent);
+      
+      // Should have called PagerDuty API
+      const pgCalls = mockFetch.mock.calls.filter(call => 
+        call[0].includes('events.pagerduty.com')
+      );
+      
+      expect(pgCalls.length).toBeGreaterThan(0);
+    });
+
+    it('should handle external service failures gracefully', async () => {
+      // Mock all services to fail
+      mockFetch.mockRejectedValue(new Error('Service unavailable'));
+
+      const testEvent = {
+        id: 'failure-test',
+        type: 'system' as const,
+        severity: 'medium' as const,
+        timestamp: new Date().toISOString(),
+        source: 'test',
+        event: { description: 'Failure test event' }
+      };
+
+      // Should not throw error
+      await expect(externalServices.processAuditEvent(testEvent)).resolves.not.toThrow();
+    });
+  });
+
+  describe('Audit Middleware Performance', () => {
+    it('should add less than 10ms overhead per request', async () => {
+      const iterations = 100;
+      const overheadTimes: number[] = [];
+
+      for (let i = 0; i < iterations; i++) {
+        // Create test request
+        const request = new NextRequest(`https://example.com/api/test?iteration=${i}`, {
+          method: 'GET',
+          headers: {
+            'user-agent': 'Test Agent',
+            'x-forwarded-for': '127.0.0.1'
+          }
+        });
+
+        // Measure middleware overhead
+        const startTime = performance.now();
+        
+        const { context } = await auditMiddleware.processRequest(request);
+        
+        const response = new NextResponse(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        });
+        
+        await auditMiddleware.processResponse(context, response);
+        
+        const endTime = performance.now();
+        const overhead = endTime - startTime;
+        overheadTimes.push(overhead);
+      }
+
+      const averageOverhead = overheadTimes.reduce((sum, time) => sum + time, 0) / iterations;
+      const maxOverhead = Math.max(...overheadTimes);
+
+      console.log(`Middleware Overhead: Avg=${averageOverhead.toFixed(2)}ms, Max=${maxOverhead.toFixed(2)}ms`);
+
+      expect(averageOverhead).toBeLessThan(TEST_CONFIG.performanceThresholdMs);
+      expect(maxOverhead).toBeLessThan(TEST_CONFIG.performanceThresholdMs * 2);
+    });
+
+    it('should handle concurrent requests efficiently', async () => {
+      const concurrentRequests = 50;
+      const startTime = performance.now();
+
+      const requestPromises = Array.from({ length: concurrentRequests }, async (_, i) => {
+        const request = new NextRequest(`https://example.com/api/concurrent/${i}`, {
+          method: 'POST',
+          body: JSON.stringify({ data: `test-${i}` }),
+          headers: { 'content-type': 'application/json' }
+        });
+
+        const { context } = await auditMiddleware.processRequest(request);
+        
+        const response = new NextResponse(JSON.stringify({ id: i }), {
+          status: 200
+        });
+        
+        await auditMiddleware.processResponse(context, response);
+        
+        return { requestId: context.requestId, iteration: i };
+      });
+
+      const results = await Promise.all(requestPromises);
+      const endTime = performance.now();
+      const totalTime = endTime - startTime;
+      const throughput = concurrentRequests / (totalTime / 1000);
+
+      console.log(`Concurrent Request Throughput: ${throughput.toFixed(2)} req/second`);
+
+      expect(results).toHaveLength(concurrentRequests);
+      expect(throughput).toBeGreaterThan(100); // Should handle 100+ req/sec
+    });
+
+    it('should detect performance anomalies correctly', async () => {
+      // Test slow request detection
+      const slowRequest = new NextRequest('https://example.com/api/slow', {
+        method: 'GET'
+      });
+
+      const { context } = await auditMiddleware.processRequest(slowRequest);
+      
+      // Simulate slow processing
+      await new Promise(resolve => setTimeout(resolve, 2100)); // > 2000ms threshold
+      
+      const response = new NextResponse('Slow response', { status: 200 });
+      await auditMiddleware.processResponse(context, response);
+
+      // Should have detected slow request
+      expect(context.metrics.duration).toBeGreaterThan(2000);
+    });
+
+    it('should properly filter and sample events', async () => {
+      let processedEvents = 0;
+      
+      // Mock the broadcast to count processed events
+      const originalBroadcast = testServer.broadcastAuditEvent.bind(testServer);
+      testServer.broadcastAuditEvent = jest.fn().mockImplementation(async (event) => {
+        processedEvents++;
+        return originalBroadcast(event);
+      });
+
+      // Send 100 requests to non-high-value endpoints
+      const requests = Array.from({ length: 100 }, (_, i) => 
+        new NextRequest(`https://example.com/api/normal/${i}`, { method: 'GET' })
+      );
+
+      for (const request of requests) {
+        const { context } = await auditMiddleware.processRequest(request);
+        const response = new NextResponse('OK', { status: 200 });
+        await auditMiddleware.processResponse(context, response);
+      }
+
+      // Wait for async processing
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      // Should have sampled based on configuration
+      console.log(`Processed ${processedEvents} out of ${requests.length * 2} events`);
+      expect(processedEvents).toBeGreaterThan(0);
+    });
+  });
+
+  describe('Integration and Error Handling', () => {
+    it('should maintain system stability under error conditions', async () => {
+      // Create error conditions
+      mockFetch.mockRejectedValue(new Error('Service down'));
+      
+      // Send events that would normally trigger external services
+      const errorEvent = {
+        id: 'error-stability-test',
+        type: 'security' as const,
+        severity: 'critical' as const,
+        timestamp: new Date().toISOString(),
+        source: 'stability-test',
+        event: { description: 'Error stability test' }
+      };
+
+      // Should handle errors gracefully
+      await expect(testServer.broadcastAuditEvent(errorEvent)).resolves.not.toThrow();
+      await expect(externalServices.processAuditEvent(errorEvent)).resolves.not.toThrow();
+
+      // Server should still be responsive
+      const client = await createTestClient({});
+      expect(client.readyState).toBe(WebSocket.OPEN);
+      client.close();
+    });
+
+    it('should provide accurate metrics and monitoring data', async () => {
+      const serverMetrics = testServer.getMetrics();
+      const middlewareMetrics = auditMiddleware.getMetrics();
+
+      expect(serverMetrics).toHaveProperty('totalConnections');
+      expect(serverMetrics).toHaveProperty('activeConnections');
+      expect(serverMetrics).toHaveProperty('messagesDelivered');
+      expect(serverMetrics).toHaveProperty('bytesTransferred');
+
+      expect(middlewareMetrics).toHaveProperty('activeRequests');
+      expect(middlewareMetrics).toHaveProperty('queueSize');
+
+      expect(typeof serverMetrics.totalConnections).toBe('number');
+      expect(typeof middlewareMetrics.queueSize).toBe('number');
+    });
+  });
+
+  // Helper function to create test WebSocket client
+  async function createTestClient(filters: any = {}): Promise<WebSocket> {
+    return new Promise((resolve, reject) => {
+      const queryParams = new URLSearchParams({
+        userId: 'test-user',
+        sessionId: 'test-session',
+        ...Object.fromEntries(
+          Object.entries(filters).map(([key, value]) => [
+            key, 
+            Array.isArray(value) ? value.join(',') : String(value)
+          ])
+        )
+      });
+
+      const client = new WebSocket(`ws://localhost:${TEST_CONFIG.websocketPort}?${queryParams}`);
+      
+      client.on('open', () => {
+        clients.push(client);
+        resolve(client);
+      });
+      
+      client.on('error', reject);
+      
+      setTimeout(() => reject(new Error('Client connection timeout')), 5000);
+    });
+  }
+});

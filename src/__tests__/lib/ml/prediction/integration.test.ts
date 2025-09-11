@@ -1,0 +1,386 @@
+// WS-055: Integration Tests for Predictive Analytics System
+// Tests end-to-end integration of all ML prediction components
+
+import { BookingPredictor } from '@/lib/ml/prediction/booking-predictor'
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { ClientIntentScorer } from '@/lib/ml/prediction/intent-scorer'
+import { RealTimeScoring } from '@/lib/ml/prediction/real-time-scoring'
+import { HistoricalAnalyzer } from '@/lib/ml/prediction/historical-analyzer'
+import type { 
+  ClientBehaviorData, 
+  RealTimeActivity,
+  BookingPrediction,
+  IntentScore 
+} from '@/lib/ml/prediction/types'
+// Mock Supabase for integration tests
+vi.mock('@/lib/supabase', () => ({
+  createSupabaseClient: () => ({
+    from: jest.fn(() => ({
+      select: jest.fn(() => ({
+        eq: jest.fn(() => ({
+          single: vi.fn(),
+          order: jest.fn(() => ({
+            limit: vi.fn()
+          }))
+        })),
+        insert: vi.fn(),
+        gte: jest.fn(() => ({
+          lte: vi.fn(),
+          not: vi.fn(),
+          is: vi.fn(),
+          in: vi.fn()
+        }))
+      }))
+    })),
+    channel: jest.fn(() => ({
+      on: jest.fn(() => ({
+        subscribe: vi.fn()
+    }))
+  })
+}))
+describe('Predictive Analytics Integration', () => {
+  let bookingPredictor: BookingPredictor
+  let intentScorer: ClientIntentScorer
+  let realTimeScoring: RealTimeScoring
+  let historicalAnalyzer: HistoricalAnalyzer
+  beforeEach(async () => {
+    bookingPredictor = new BookingPredictor()
+    intentScorer = new ClientIntentScorer()
+    realTimeScoring = new RealTimeScoring()
+    historicalAnalyzer = new HistoricalAnalyzer()
+    // Initialize real-time scoring system
+    await realTimeScoring.initialize()
+  afterEach(async () => {
+    await realTimeScoring.cleanup()
+  describe('End-to-End Prediction Workflow', () => {
+    test('should complete full prediction workflow for high-intent client', async () => {
+      const mockClientData: ClientBehaviorData = {
+        client_id: 'integration-test-high',
+        engagement_score: 85,
+        questionnaire_completed_at: new Date('2024-01-15T10:30:00Z'),
+        initial_contact_at: new Date('2024-01-15T08:00:00Z'), // 2.5 hours to complete
+        last_activity_at: new Date('2024-01-16T10:00:00Z'),
+        responses_count: 12,
+        budget_range: 'high',
+        venue_booked: true,
+        timeline_interactions: 15,
+        vendor_inquiries: 8,
+        document_downloads: 5,
+        pricing_views: 20,
+        session_duration_avg: 450, // 7.5 minutes
+        page_views_total: 50,
+        form_interactions: 12,
+        response_time_avg: 900, // 15 minutes
+        message_length_avg: 200,
+        questions_asked: 8
+      }
+      // Mock data fetching for all components
+      vi.spyOn(bookingPredictor as any, 'fetchClientData').mockResolvedValue(mockClientData)
+      vi.spyOn(intentScorer as any, 'fetchClientBehaviorData').mockResolvedValue(mockClientData)
+      vi.spyOn(intentScorer as any, 'analyzeIntentTrend').mockResolvedValue('increasing')
+      // Step 1: Get intent score
+      const intentScore = await intentScorer.calculateIntentScore('integration-test-high')
+      expect(intentScore.score).toBeGreaterThan(70)
+      expect(intentScore.category).toMatch(/high|very_high/)
+      // Step 2: Get booking prediction
+      const bookingPrediction = await bookingPredictor.predictBookingProbability('integration-test-high')
+      expect(bookingPrediction.probability).toBeGreaterThan(0.7) // Should be high for quick questionnaire completion
+      // Step 3: Process real-time activity
+      const activity: RealTimeActivity = {
+        activity_type: 'booking_inquiry',
+        timestamp: new Date(),
+        metadata: { inquiry_type: 'pricing' },
+        value_score: 9
+      // Mock the scoring methods for real-time processing
+      vi.spyOn(intentScorer, 'calculateIntentScore').mockResolvedValue(intentScore)
+      vi.spyOn(bookingPredictor, 'predictBookingProbability').mockResolvedValue(bookingPrediction)
+      const scoreUpdate = await realTimeScoring.processActivity('integration-test-high', activity)
+      expect(scoreUpdate.client_id).toBe('integration-test-high')
+      expect(scoreUpdate.confidence).toBeGreaterThan(0.7)
+      // Verify that high-intent, quick questionnaire completion results in strong predictions
+      expect(intentScore.score).toBeGreaterThan(bookingPrediction.probability * 100 - 20) // Scores should be correlated
+    })
+    test('should complete workflow for low-intent client with churn risk', async () => {
+      const mockLowIntentClient: ClientBehaviorData = {
+        client_id: 'integration-test-low',
+        engagement_score: 25,
+        questionnaire_completed_at: new Date('2024-01-21T08:00:00Z'), // 6 days delay
+        initial_contact_at: new Date('2024-01-15T08:00:00Z'),
+        last_activity_at: new Date('2024-01-16T10:00:00Z'), // No recent activity
+        responses_count: 2,
+        budget_range: 'low',
+        venue_booked: false,
+        timeline_interactions: 1,
+        vendor_inquiries: 1,
+        document_downloads: 0,
+        pricing_views: 3,
+        session_duration_avg: 120, // 2 minutes
+        page_views_total: 8,
+        form_interactions: 1,
+        response_time_avg: 3600, // 1 hour
+        message_length_avg: 50,
+        questions_asked: 0
+      vi.spyOn(bookingPredictor as any, 'fetchClientData').mockResolvedValue(mockLowIntentClient)
+      vi.spyOn(intentScorer as any, 'fetchClientBehaviorData').mockResolvedValue(mockLowIntentClient)
+      vi.spyOn(intentScorer as any, 'analyzeIntentTrend').mockResolvedValue('decreasing')
+      const intentScore = await intentScorer.calculateIntentScore('integration-test-low')
+      const bookingPrediction = await bookingPredictor.predictBookingProbability('integration-test-low')
+      expect(intentScore.score).toBeLessThan(40)
+      expect(intentScore.category).toMatch(/low|medium/)
+      expect(bookingPrediction.probability).toBeLessThan(0.3) // Should be low for delayed completion
+      expect(bookingPrediction.risk_indicators.length).toBeGreaterThan(0)
+  describe('Real-Time Processing Integration', () => {
+    test('should handle rapid sequence of activities correctly', async () => {
+      const clientId = 'rapid-activity-client'
+      const activities: RealTimeActivity[] = [
+        {
+          client_id: clientId,
+          activity_type: 'page_view',
+          timestamp: new Date('2024-01-15T10:00:00Z'),
+          metadata: { page: 'pricing' },
+          value_score: 4
+        },
+          activity_type: 'vendor_inquiry',
+          timestamp: new Date('2024-01-15T10:05:00Z'),
+          metadata: { vendor_type: 'photographer' },
+          value_score: 7
+          activity_type: 'booking_inquiry',
+          timestamp: new Date('2024-01-15T10:10:00Z'),
+          metadata: { inquiry_type: 'consultation' },
+          value_score: 9
+        }
+      ]
+      // Mock progressive score increases
+      vi.spyOn(intentScorer, 'calculateIntentScore')
+        .mockResolvedValueOnce({
+          score: 60,
+          category: 'medium',
+          indicators: [],
+          trend: 'stable',
+          last_updated: new Date()
+        })
+          score: 75,
+          category: 'high',
+          trend: 'increasing',
+          score: 85,
+          category: 'very_high',
+      const results = []
+      for (const activity of activities) {
+        const result = await realTimeScoring.processActivity(clientId, activity)
+        results.push(result)
+      expect(results).toHaveLength(3)
+      // Verify that the last activity (booking inquiry) gets immediate processing
+      expect(results[2].update_reason).toContain('booking_inquiry')
+    test('should maintain performance under load', async () => {
+      const startTime = performance.now()
+      
+      // Simulate 10 concurrent predictions
+      const predictionPromises = Array.from({ length: 10 }, (_, i) => {
+        const mockClient = {
+          client_id: `load-test-${i}`,
+          engagement_score: 50 + i * 5,
+          questionnaire_completed_at: new Date(),
+          initial_contact_at: new Date(Date.now() - 24 * 60 * 60 * 1000),
+          last_activity_at: new Date(),
+          responses_count: 5,
+          budget_range: 'medium' as const,
+          venue_booked: false,
+          timeline_interactions: 3,
+          vendor_inquiries: 2,
+          document_downloads: 1,
+          pricing_views: 5,
+          session_duration_avg: 300,
+          page_views_total: 15,
+          form_interactions: 3,
+          response_time_avg: 1800,
+          message_length_avg: 100,
+          questions_asked: 2
+        vi.spyOn(bookingPredictor as any, 'fetchClientData').mockResolvedValue(mockClient)
+        return bookingPredictor.predictBookingProbability(`load-test-${i}`)
+      })
+      const results = await Promise.all(predictionPromises)
+      const endTime = performance.now()
+      expect(results).toHaveLength(10)
+      expect(endTime - startTime).toBeLessThan(3000) // Should complete within 3 seconds
+      // Verify all predictions are valid
+      results.forEach(prediction => {
+        expect(prediction.probability).toBeGreaterThanOrEqual(0)
+        expect(prediction.probability).toBeLessThanOrEqual(1)
+        expect(prediction.confidence).toBeGreaterThanOrEqual(0.3)
+  describe('Data Consistency and Validation', () => {
+    test('should maintain score consistency across components', async () => {
+      const clientId = 'consistency-test-client'
+        client_id: clientId,
+        engagement_score: 70,
+        questionnaire_completed_at: new Date('2024-01-15T12:00:00Z'),
+        initial_contact_at: new Date('2024-01-15T08:00:00Z'), // 4 hours
+        responses_count: 8,
+        budget_range: 'medium',
+        timeline_interactions: 6,
+        vendor_inquiries: 4,
+        document_downloads: 2,
+        pricing_views: 12,
+        session_duration_avg: 360,
+        page_views_total: 30,
+        form_interactions: 6,
+        response_time_avg: 1200, // 20 minutes
+        message_length_avg: 150,
+        questions_asked: 5
+      vi.spyOn(intentScorer as any, 'analyzeIntentTrend').mockResolvedValue('stable')
+      // Get scores from different components
+      const intentScore = await intentScorer.calculateIntentScore(clientId)
+      const bookingPrediction = await bookingPredictor.predictBookingProbability(clientId)
+      const currentScore = await realTimeScoring.getCurrentScore(clientId)
+      // Verify scores are in reasonable ranges and correlate
+      expect(intentScore.score).toBeGreaterThan(0)
+      expect(intentScore.score).toBeLessThan(100)
+      expect(bookingPrediction.probability).toBeGreaterThan(0)
+      expect(bookingPrediction.probability).toBeLessThan(1)
+      // Intent score and booking probability should be positively correlated
+      const expectedCorrelation = (intentScore.score / 100) - bookingPrediction.probability
+      expect(Math.abs(expectedCorrelation)).toBeLessThan(0.5) // Should be reasonably close
+    test('should validate the 24hr vs 5+ day requirement accurately', async () => {
+      // Test client with 24-hour questionnaire completion
+      const quickClient: ClientBehaviorData = {
+        client_id: 'quick-completion',
+        engagement_score: 80,
+        questionnaire_completed_at: new Date('2024-01-15T20:00:00Z'), // 12 hours after contact
+        responses_count: 10,
+        timeline_interactions: 8,
+        vendor_inquiries: 5,
+        document_downloads: 3,
+        pricing_views: 15,
+        session_duration_avg: 400,
+        page_views_total: 35,
+        form_interactions: 8,
+        response_time_avg: 900,
+        message_length_avg: 180,
+        questions_asked: 6
+      // Test client with 5+ day delay
+      const slowClient: ClientBehaviorData = {
+        client_id: 'slow-completion',
+        engagement_score: 40,
+        questionnaire_completed_at: new Date('2024-01-20T08:00:00Z'), // 5 days later
+        responses_count: 3,
+        timeline_interactions: 2,
+        pricing_views: 5,
+        session_duration_avg: 180,
+        page_views_total: 10,
+        form_interactions: 2,
+        response_time_avg: 2400,
+        message_length_avg: 80,
+        questions_asked: 1
+      vi.spyOn(bookingPredictor as any, 'fetchClientData')
+        .mockResolvedValueOnce(quickClient)
+        .mockResolvedValueOnce(slowClient)
+      const quickPrediction = await bookingPredictor.predictBookingProbability('quick-completion')
+      const slowPrediction = await bookingPredictor.predictBookingProbability('slow-completion')
+      // Verify the core requirement: 24hr completion should have significantly higher probability
+      expect(quickPrediction.probability).toBeGreaterThan(0.65) // Targeting ~80%
+      expect(slowPrediction.probability).toBeLessThan(0.35) // Targeting ~15%
+      const probabilityDifference = quickPrediction.probability - slowPrediction.probability
+      expect(probabilityDifference).toBeGreaterThan(0.4) // At least 40% difference
+      // Verify confidence is reasonable for both
+      expect(quickPrediction.confidence).toBeGreaterThan(0.7)
+      expect(slowPrediction.confidence).toBeGreaterThan(0.7)
+  describe('Historical Analysis Integration', () => {
+    test('should generate insights that align with prediction models', async () => {
+      const mockHistoricalData = [
+          client_id: 'hist-1',
+          final_outcome: 'booked',
+          engagement_metrics: {
+            questionnaire_completion_time_hours: 18, // Within 24h
+            total_interactions: 18,
+            response_time_avg_hours: 0.5,
+            vendor_inquiries: 6,
+            session_count: 12
+          }
+          client_id: 'hist-2',
+          final_outcome: 'churned',
+            questionnaire_completion_time_hours: 150, // 6+ days
+            total_interactions: 4,
+            response_time_avg_hours: 2,
+            vendor_inquiries: 1,
+            session_count: 3
+      vi.spyOn(historicalAnalyzer as any, 'fetchHistoricalData').mockResolvedValue(mockHistoricalData)
+      vi.spyOn(historicalAnalyzer, 'identifySeasonalPatterns').mockResolvedValue([])
+      vi.spyOn(historicalAnalyzer, 'analyzeChurnPatterns').mockResolvedValue([])
+      const analytics = await historicalAnalyzer.analyzeHistoricalPerformance(90)
+      // Verify that historical analysis aligns with prediction model assumptions
+      expect(analytics.conversion_metrics.by_questionnaire_timing.within_24h).toBe(1) // 100% booking rate
+      expect(analytics.conversion_metrics.by_questionnaire_timing.after_week).toBe(0) // 0% booking rate
+      expect(analytics.behavior_insights.most_predictive_factors).toContain('questionnaire_completion_speed')
+  describe('Error Handling and Recovery', () => {
+    test('should handle component failures gracefully', async () => {
+      const clientId = 'error-test-client'
+      // Simulate intent scorer failure
+      vi.spyOn(intentScorer, 'calculateIntentScore').mockRejectedValue(new Error('Intent scoring failed'))
+      await expect(intentScorer.calculateIntentScore(clientId))
+        .rejects.toThrow('Intent scoring failed')
+      // Verify that booking predictor still works independently
+      vi.spyOn(bookingPredictor as any, 'fetchClientData').mockResolvedValue({
+        engagement_score: 60,
+        questionnaire_completed_at: new Date(),
+        initial_contact_at: new Date(Date.now() - 24 * 60 * 60 * 1000),
+        last_activity_at: new Date(),
+        responses_count: 5,
+        timeline_interactions: 3,
+        vendor_inquiries: 2,
+        document_downloads: 1,
+        pricing_views: 8,
+        session_duration_avg: 300,
+        page_views_total: 20,
+        form_interactions: 4,
+        response_time_avg: 1800,
+        message_length_avg: 120,
+        questions_asked: 3
+      const prediction = await bookingPredictor.predictBookingProbability(clientId)
+      expect(prediction.probability).toBeGreaterThan(0)
+      expect(prediction.confidence).toBeGreaterThan(0.3)
+    test('should provide fallback scoring when primary methods fail', async () => {
+      const features = {
+        vendor_inquiries: 3
+      // Test fallback scoring capability
+      const fallbackScore = await realTimeScoring.calculateFallbackScore(features)
+      expect(fallbackScore.score).toBeGreaterThanOrEqual(0)
+      expect(fallbackScore.score).toBeLessThanOrEqual(100)
+      expect(fallbackScore.method).toBe('rule_based')
+  describe('System Performance Validation', () => {
+    test('should meet performance requirements across all components', async () => {
+      const testClient = {
+        client_id: 'perf-test',
+        engagement_score: 65,
+        initial_contact_at: new Date(Date.now() - 12 * 60 * 60 * 1000),
+        responses_count: 6,
+        budget_range: 'medium' as const,
+        timeline_interactions: 4,
+        vendor_inquiries: 3,
+        pricing_views: 10,
+        session_duration_avg: 350,
+        page_views_total: 25,
+        form_interactions: 5,
+        response_time_avg: 1500,
+        message_length_avg: 140,
+        questions_asked: 4
+      vi.spyOn(bookingPredictor as any, 'fetchClientData').mockResolvedValue(testClient)
+      vi.spyOn(intentScorer as any, 'fetchClientBehaviorData').mockResolvedValue(testClient)
+      // Test booking prediction performance (<100ms requirement)
+      const bookingStart = performance.now()
+      const prediction = await bookingPredictor.predictBookingProbability('perf-test')
+      const bookingEnd = performance.now()
+      expect(bookingEnd - bookingStart).toBeLessThan(1000) // Should be under 1 second
+      expect(prediction.inference_time_ms).toBeLessThan(500) // Internal tracking should be under 500ms
+      // Test intent scoring performance
+      const intentStart = performance.now()
+      const intentScore = await intentScorer.calculateIntentScore('perf-test')
+      const intentEnd = performance.now()
+      expect(intentEnd - intentStart).toBeLessThan(1000) // Should be under 1 second
+      // Test real-time scoring performance (<500ms requirement)
+        activity_type: 'vendor_inquiry',
+        metadata: {},
+        value_score: 6
+      const rtStart = performance.now()
+      const scoreUpdate = await realTimeScoring.processActivity('perf-test', activity)
+      const rtEnd = performance.now()
+      expect(rtEnd - rtStart).toBeLessThan(1000) // Should be under 1 second for real-time processing
+})

@@ -1,0 +1,175 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import { preferenceManager } from '@/lib/communications/CommunicationPreferenceManager';
+import { z } from 'zod';
+
+// Validation schema for preference updates
+const PreferenceUpdateSchema = z.object({
+  email_enabled: z.boolean().optional(),
+  sms_enabled: z.boolean().optional(),
+  in_app_enabled: z.boolean().optional(),
+  slack_enabled: z.boolean().optional(),
+  feature_requests: z.object({
+    new_requests: z.boolean().optional(),
+    status_updates: z.boolean().optional(),
+    comments: z.boolean().optional(),
+    votes: z.boolean().optional()
+  }).optional(),
+  wedding_updates: z.object({
+    timeline_changes: z.boolean().optional(),
+    vendor_updates: z.boolean().optional(),
+    urgent_notifications: z.boolean().optional()
+  }).optional(),
+  quiet_hours: z.object({
+    enabled: z.boolean(),
+    start_time: z.string().regex(/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/),
+    end_time: z.string().regex(/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/),
+    timezone: z.string()
+  }).optional(),
+  wedding_day_only_critical: z.boolean().optional(),
+  max_emails_per_day: z.number().min(0).max(20).optional(),
+  max_sms_per_day: z.number().min(0).max(10).optional()
+});
+
+/**
+ * GET - Get user's communication preferences
+ */
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
+    
+    // Authenticate user
+    const { data: { session }, error: authError } = await supabase.auth.getSession();
+    
+    if (authError || !session) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 }
+      );
+    }
+
+    // Get user preferences
+    const preferences = await preferenceManager.getUserPreferences(session.user.id);
+
+    return NextResponse.json({
+      success: true,
+      preferences
+    });
+
+  } catch (error) {
+    console.error('Get preferences error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * PUT - Update user's communication preferences
+ */
+export async function PUT(request: NextRequest) {
+  try {
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
+    
+    // Authenticate user
+    const { data: { session }, error: authError } = await supabase.auth.getSession();
+    
+    if (authError || !session) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 }
+      );
+    }
+
+    // Validate request body
+    const body = await request.json();
+    const validatedData = PreferenceUpdateSchema.parse(body);
+
+    // Update preferences
+    const updatedPreferences = await preferenceManager.updateUserPreferences(
+      session.user.id,
+      validatedData
+    );
+
+    return NextResponse.json({
+      success: true,
+      preferences: updatedPreferences,
+      message: 'Communication preferences updated successfully'
+    });
+
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { 
+          error: 'Invalid request data',
+          details: error.errors
+        },
+        { status: 400 }
+      );
+    }
+
+    console.error('Update preferences error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * POST - Check if communication is allowed for user
+ */
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
+    
+    // Authenticate user
+    const { data: { session }, error: authError } = await supabase.auth.getSession();
+    
+    if (authError || !session) {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 }
+      );
+    }
+
+    const { channel, urgency } = await request.json();
+
+    // Validate input
+    if (!['email', 'sms', 'in_app', 'slack'].includes(channel)) {
+      return NextResponse.json(
+        { error: 'Invalid channel' },
+        { status: 400 }
+      );
+    }
+
+    if (urgency && !['low', 'medium', 'high', 'critical'].includes(urgency)) {
+      return NextResponse.json(
+        { error: 'Invalid urgency level' },
+        { status: 400 }
+      );
+    }
+
+    // Check if communication is allowed
+    const result = await preferenceManager.canSendCommunication(
+      session.user.id,
+      channel,
+      urgency || 'medium'
+    );
+
+    return NextResponse.json({
+      success: true,
+      allowed: result.allowed,
+      reason: result.reason
+    });
+
+  } catch (error) {
+    console.error('Check communication permission error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}

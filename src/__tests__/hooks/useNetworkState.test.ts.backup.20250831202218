@@ -1,0 +1,116 @@
+/**
+ * Tests for useNetworkState hook - Network connection monitoring with wedding emergency mode
+ * WS-198 Error Handling System - Team D Mobile & PWA Architecture
+ */
+
+import { renderHook, act } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { useNetworkState } from '../../hooks/useNetworkState'
+// Mock navigator APIs
+const mockNavigator = {
+  connection: {
+    effectiveType: '4g' as any,
+    downlink: 10,
+    rtt: 50,
+    saveData: false,
+    addEventListener: jest.fn(),
+    removeEventListener: jest.fn()
+  },
+  onLine: true
+}
+Object.defineProperty(window, 'navigator', {
+  value: mockNavigator,
+  writable: true
+})
+Object.defineProperty(window, 'addEventListener', {
+  value: jest.fn(),
+Object.defineProperty(window, 'removeEventListener', {
+describe('useNetworkState', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+    // Reset to default good connection
+    mockNavigator.connection.effectiveType = '4g'
+    mockNavigator.connection.downlink = 10
+    mockNavigator.connection.rtt = 50
+    mockNavigator.onLine = true
+  })
+  it('should initialize with default network state', () => {
+    const { result } = renderHook(() => useNetworkState())
+    
+    expect(result.current.networkState).toEqual({
+      isOnline: true,
+      type: 'unknown',
+      effectiveType: '4g',
+      downlink: 10,
+      rtt: 50,
+      saveData: false,
+      quality: 'good',
+      isWeddingEmergency: false
+    })
+  it('should detect poor network quality on slow 3G', () => {
+    mockNavigator.connection.effectiveType = 'slow-2g'
+    mockNavigator.connection.downlink = 0.5
+    mockNavigator.connection.rtt = 2000
+    // Simulate connection change
+    act(() => {
+      const changeHandler = mockNavigator.connection.addEventListener.mock.calls.find(
+        call => call[0] === 'change'
+      )?.[1]
+      if (changeHandler) changeHandler()
+    expect(result.current.networkState.quality).toBe('poor')
+    expect(result.current.networkState.effectiveType).toBe('slow-2g')
+  it('should detect wedding emergency mode with poor connection', () => {
+    // Mock current date to be a Saturday (wedding day)
+    const saturdayDate = new Date('2024-02-17T14:00:00.000Z') // Saturday
+    jest.spyOn(Date, 'now').mockImplementation(() => saturdayDate.getTime())
+    mockNavigator.connection.downlink = 0.3
+    mockNavigator.connection.rtt = 3000
+    expect(result.current.networkState.isWeddingEmergency).toBe(true)
+    jest.restoreAllMocks()
+  it('should handle offline state correctly', () => {
+    mockNavigator.onLine = false
+      const offlineHandler = (window.addEventListener as jest.Mock).mock.calls.find(
+        call => call[0] === 'offline'
+      if (offlineHandler) offlineHandler()
+    expect(result.current.networkState.isOnline).toBe(false)
+    expect(result.current.networkState.quality).toBe('offline')
+  it('should return to online state when connection restored', () => {
+    // Go offline first
+      mockNavigator.onLine = false
+    // Come back online
+      mockNavigator.onLine = true
+      mockNavigator.connection.effectiveType = '4g'
+      const onlineHandler = (window.addEventListener as jest.Mock).mock.calls.find(
+        call => call[0] === 'online'
+      if (onlineHandler) onlineHandler()
+    expect(result.current.networkState.isOnline).toBe(true)
+    expect(result.current.networkState.quality).toBe('good')
+  it('should classify network quality correctly across different speeds', () => {
+    const testCases = [
+      { effectiveType: '4g', downlink: 20, rtt: 50, expected: 'excellent' },
+      { effectiveType: '4g', downlink: 8, rtt: 100, expected: 'good' },
+      { effectiveType: '3g', downlink: 3, rtt: 200, expected: 'fair' },
+      { effectiveType: 'slow-2g', downlink: 0.5, rtt: 2000, expected: 'poor' }
+    ]
+    testCases.forEach(({ effectiveType, downlink, rtt, expected }) => {
+      mockNavigator.connection.effectiveType = effectiveType as any
+      mockNavigator.connection.downlink = downlink
+      mockNavigator.connection.rtt = rtt
+      const { result } = renderHook(() => useNetworkState())
+      
+      act(() => {
+        const changeHandler = mockNavigator.connection.addEventListener.mock.calls.find(
+          call => call[0] === 'change'
+        )?.[1]
+        if (changeHandler) changeHandler()
+      })
+      expect(result.current.networkState.quality).toBe(expected)
+  it('should handle missing navigator.connection gracefully', () => {
+    // @ts-ignore
+    delete mockNavigator.connection
+  it('should clean up event listeners on unmount', () => {
+    const { unmount } = renderHook(() => useNetworkState())
+    unmount()
+    expect(window.removeEventListener).toHaveBeenCalledWith('online', expect.any(Function))
+    expect(window.removeEventListener).toHaveBeenCalledWith('offline', expect.any(Function))
+    expect(mockNavigator.connection?.removeEventListener).toHaveBeenCalledWith('change', expect.any(Function))

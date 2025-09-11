@@ -1,0 +1,613 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { z } from 'zod';
+
+const revisionSchema = z.object({
+  revision_type: z.enum([
+    'amendment',
+    'addendum',
+    'cancellation',
+    'renewal',
+    'correction',
+  ]),
+  title: z.string().min(1).max(255),
+  description: z.string().optional(),
+  reason: z.string().optional(),
+  changes_summary: z.string().optional(),
+  fields_changed: z
+    .record(
+      z.object({
+        old: z.any(),
+        new: z.any(),
+      }),
+    )
+    .optional(),
+  financial_impact: z.number().default(0),
+  requires_client_approval: z.boolean().default(true),
+  requires_supplier_approval: z.boolean().default(false),
+  client_signature_required: z.boolean().default(false),
+  legal_review_required: z.boolean().default(false),
+});
+
+const updateRevisionSchema = revisionSchema.partial().extend({
+  status: z
+    .enum(['draft', 'pending_review', 'approved', 'rejected', 'implemented'])
+    .optional(),
+  client_approved: z.boolean().optional(),
+  client_approved_by: z.string().max(255).optional(),
+  client_signed: z.boolean().optional(),
+  supplier_approved: z.boolean().optional(),
+  supplier_approved_by: z.string().max(255).optional(),
+  internal_approved: z.boolean().optional(),
+  legal_reviewed: z.boolean().optional(),
+  legal_reviewed_by: z.string().max(255).optional(),
+  implemented: z.boolean().optional(),
+});
+
+interface RouteParams {
+  params: Promise<{
+    id: string;
+  }>;
+}
+
+export async function GET(request: NextRequest, { params }: RouteParams) {
+  const { id } = await params;
+  try {
+    const supabase = await createClient();
+    const contractId = id;
+    const { searchParams } = new URL(request.url);
+    const status = searchParams.get('status');
+    const revision_type = searchParams.get('revision_type');
+
+    // Get user's organization
+    const { data: user } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!profile) {
+      return NextResponse.json({ error: 'Profile not found' }, { status: 404 });
+    }
+
+    // Verify contract exists and user has access
+    const { data: contract } = await supabase
+      .from('wedding_contracts')
+      .select('id, title, contract_number')
+      .eq('id', contractId)
+      .eq('organization_id', profile.organization_id)
+      .single();
+
+    if (!contract) {
+      return NextResponse.json(
+        { error: 'Contract not found' },
+        { status: 404 },
+      );
+    }
+
+    let query = supabase
+      .from('contract_revisions')
+      .select(
+        `
+        *,
+        created_by_user:user_profiles!contract_revisions_created_by_fkey(
+          id,
+          first_name,
+          last_name,
+          email
+        ),
+        internal_approved_by_user:user_profiles!contract_revisions_internal_approved_by_fkey(
+          id,
+          first_name,
+          last_name
+        ),
+        implemented_by_user:user_profiles!contract_revisions_implemented_by_fkey(
+          id,
+          first_name,
+          last_name
+        ),
+        original_document:business_documents!contract_revisions_original_document_id_fkey(
+          id,
+          title,
+          original_filename
+        ),
+        revised_document:business_documents!contract_revisions_revised_document_id_fkey(
+          id,
+          title,
+          original_filename
+        )
+      `,
+      )
+      .eq('contract_id', contractId)
+      .eq('organization_id', profile.organization_id);
+
+    // Apply filters
+    if (status) {
+      query = query.eq('status', status);
+    }
+    if (revision_type) {
+      query = query.eq('revision_type', revision_type);
+    }
+
+    const { data: revisions, error } = await query.order('revision_number', {
+      ascending: false,
+    });
+
+    if (error) {
+      console.error('Error fetching revisions:', error);
+      return NextResponse.json(
+        { error: 'Failed to fetch revisions' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({ revisions });
+  } catch (error) {
+    console.error('Revisions GET error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function POST(request: NextRequest, { params }: RouteParams) {
+  const { id } = await params;
+  try {
+    const supabase = await createClient();
+    const contractId = id;
+    const body = await request.json();
+
+    // Validate input
+    const validatedData = revisionSchema.parse(body);
+
+    // Get user's organization
+    const { data: user } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!profile) {
+      return NextResponse.json({ error: 'Profile not found' }, { status: 404 });
+    }
+
+    // Verify contract exists and user has access
+    const { data: contract } = await supabase
+      .from('wedding_contracts')
+      .select('id, title, contract_number, status')
+      .eq('id', contractId)
+      .eq('organization_id', profile.organization_id)
+      .single();
+
+    if (!contract) {
+      return NextResponse.json(
+        { error: 'Contract not found' },
+        { status: 404 },
+      );
+    }
+
+    // Check if contract can be revised
+    if (contract.status === 'cancelled' || contract.status === 'expired') {
+      return NextResponse.json(
+        {
+          error: 'Cannot create revisions for cancelled or expired contracts',
+        },
+        { status: 400 },
+      );
+    }
+
+    // Get next revision number
+    const { data: lastRevision } = await supabase
+      .from('contract_revisions')
+      .select('revision_number')
+      .eq('contract_id', contractId)
+      .order('revision_number', { ascending: false })
+      .limit(1)
+      .single();
+
+    const nextRevisionNumber = lastRevision
+      ? lastRevision.revision_number + 1
+      : 1;
+
+    // Create revision
+    const { data: revision, error } = await supabase
+      .from('contract_revisions')
+      .insert({
+        ...validatedData,
+        contract_id: contractId,
+        organization_id: profile.organization_id,
+        revision_number: nextRevisionNumber,
+        created_by: user.id,
+        status: 'draft',
+        client_approved: validatedData.requires_client_approval ? false : null,
+        supplier_approved: validatedData.requires_supplier_approval
+          ? false
+          : null,
+        internal_approved: false,
+        legal_reviewed: validatedData.legal_review_required ? false : null,
+        client_signed: validatedData.client_signature_required ? false : null,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error creating revision:', error);
+      return NextResponse.json(
+        { error: 'Failed to create revision' },
+        { status: 500 },
+      );
+    }
+
+    // Create alert for revision approval if required
+    if (
+      validatedData.requires_client_approval ||
+      validatedData.requires_supplier_approval ||
+      validatedData.legal_review_required
+    ) {
+      await supabase.from('contract_alerts').insert({
+        organization_id: profile.organization_id,
+        contract_id: contractId,
+        alert_type: 'revision_pending',
+        title: `Contract Revision Pending: ${validatedData.title}`,
+        message: `Contract revision "${validatedData.title}" requires approval for contract ${contract.contract_number}`,
+        priority: 'medium',
+        trigger_date: new Date().toISOString().split('T')[0],
+        status: 'scheduled',
+      });
+    }
+
+    // Get revision with relations
+    const { data: fullRevision } = await supabase
+      .from('contract_revisions')
+      .select(
+        `
+        *,
+        created_by_user:user_profiles!contract_revisions_created_by_fkey(
+          id,
+          first_name,
+          last_name,
+          email
+        )
+      `,
+      )
+      .eq('id', revision.id)
+      .single();
+
+    return NextResponse.json({ revision: fullRevision }, { status: 201 });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid input', details: error.errors },
+        { status: 400 },
+      );
+    }
+    console.error('Create revision error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function PUT(request: NextRequest, { params }: RouteParams) {
+  const { id } = await params;
+  try {
+    const supabase = await createClient();
+    const contractId = id;
+    const body = await request.json();
+    const { revision_id, ...updateData } = body;
+
+    // Validate input
+    const validatedData = updateRevisionSchema.parse(updateData);
+
+    // Get user's organization
+    const { data: user } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!profile) {
+      return NextResponse.json({ error: 'Profile not found' }, { status: 404 });
+    }
+
+    // Verify revision exists and user has access
+    const { data: existingRevision } = await supabase
+      .from('contract_revisions')
+      .select(
+        'id, status, requires_client_approval, requires_supplier_approval, legal_review_required',
+      )
+      .eq('id', revision_id)
+      .eq('contract_id', contractId)
+      .eq('organization_id', profile.organization_id)
+      .single();
+
+    if (!existingRevision) {
+      return NextResponse.json(
+        { error: 'Revision not found' },
+        { status: 404 },
+      );
+    }
+
+    // Check if revision can be updated based on current status
+    if (
+      existingRevision.status === 'implemented' ||
+      existingRevision.status === 'rejected'
+    ) {
+      return NextResponse.json(
+        {
+          error: 'Cannot update implemented or rejected revisions',
+        },
+        { status: 400 },
+      );
+    }
+
+    // Prepare update data
+    const updateFields: any = { ...validatedData };
+
+    // Handle approval workflow logic
+    if (
+      validatedData.client_approved &&
+      existingRevision.requires_client_approval
+    ) {
+      updateFields.client_approved_date = new Date().toISOString();
+    }
+
+    if (
+      validatedData.supplier_approved &&
+      existingRevision.requires_supplier_approval
+    ) {
+      updateFields.supplier_approved_date = new Date().toISOString();
+    }
+
+    if (validatedData.internal_approved) {
+      updateFields.internal_approved_by = user.id;
+      updateFields.internal_approved_date = new Date().toISOString();
+    }
+
+    if (
+      validatedData.legal_reviewed &&
+      existingRevision.legal_review_required
+    ) {
+      updateFields.legal_reviewed_date = new Date().toISOString();
+    }
+
+    if (validatedData.client_signed) {
+      updateFields.client_signed_date = new Date().toISOString();
+    }
+
+    if (validatedData.implemented) {
+      updateFields.implemented_by = user.id;
+      updateFields.implemented_date = new Date().toISOString();
+      updateFields.status = 'implemented';
+    }
+
+    // Auto-update status based on approval requirements
+    if (validatedData.status !== 'draft' && !updateFields.status) {
+      const clientApproved =
+        validatedData.client_approved ??
+        existingRevision.requires_client_approval !== true;
+      const supplierApproved =
+        validatedData.supplier_approved ??
+        existingRevision.requires_supplier_approval !== true;
+      const legalReviewed =
+        validatedData.legal_reviewed ??
+        existingRevision.legal_review_required !== true;
+      const internalApproved = validatedData.internal_approved ?? false;
+
+      if (
+        clientApproved &&
+        supplierApproved &&
+        legalReviewed &&
+        internalApproved
+      ) {
+        updateFields.status = 'approved';
+      } else {
+        updateFields.status = 'pending_review';
+      }
+    }
+
+    // Update revision
+    const { data: revision, error } = await supabase
+      .from('contract_revisions')
+      .update(updateFields)
+      .eq('id', revision_id)
+      .eq('contract_id', contractId)
+      .eq('organization_id', profile.organization_id)
+      .select(
+        `
+        *,
+        created_by_user:user_profiles!contract_revisions_created_by_fkey(
+          id,
+          first_name,
+          last_name,
+          email
+        ),
+        internal_approved_by_user:user_profiles!contract_revisions_internal_approved_by_fkey(
+          id,
+          first_name,
+          last_name
+        ),
+        implemented_by_user:user_profiles!contract_revisions_implemented_by_fkey(
+          id,
+          first_name,
+          last_name
+        )
+      `,
+      )
+      .single();
+
+    if (error) {
+      console.error('Error updating revision:', error);
+      return NextResponse.json(
+        { error: 'Failed to update revision' },
+        { status: 500 },
+      );
+    }
+
+    // Create alerts for status changes
+    if (
+      updateFields.status === 'approved' &&
+      existingRevision.status !== 'approved'
+    ) {
+      await supabase.from('contract_alerts').insert({
+        organization_id: profile.organization_id,
+        contract_id: contractId,
+        alert_type: 'revision_pending',
+        title: `Revision Approved: ${revision.title}`,
+        message: `Contract revision "${revision.title}" has been approved and is ready for implementation.`,
+        priority: 'medium',
+        trigger_date: new Date().toISOString().split('T')[0],
+        status: 'scheduled',
+      });
+    }
+
+    if (updateFields.status === 'implemented') {
+      await supabase.from('contract_alerts').insert({
+        organization_id: profile.organization_id,
+        contract_id: contractId,
+        alert_type: 'revision_pending',
+        title: `Revision Implemented: ${revision.title}`,
+        message: `Contract revision "${revision.title}" has been successfully implemented.`,
+        priority: 'low',
+        trigger_date: new Date().toISOString().split('T')[0],
+        status: 'sent',
+      });
+
+      // If this is a cancellation revision, update contract status
+      if (revision.revision_type === 'cancellation') {
+        await supabase
+          .from('wedding_contracts')
+          .update({ status: 'cancelled' })
+          .eq('id', contractId);
+      }
+
+      // If this is a renewal revision, extend contract dates
+      if (
+        revision.revision_type === 'renewal' &&
+        revision.fields_changed?.contract_expiry_date
+      ) {
+        await supabase
+          .from('wedding_contracts')
+          .update({
+            contract_expiry_date:
+              revision.fields_changed.contract_expiry_date.new,
+            status: 'active',
+          })
+          .eq('id', contractId);
+      }
+    }
+
+    return NextResponse.json({ revision });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid input', details: error.errors },
+        { status: 400 },
+      );
+    }
+    console.error('Update revision error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function DELETE(request: NextRequest, { params }: RouteParams) {
+  const { id } = await params;
+  try {
+    const supabase = await createClient();
+    const contractId = id;
+    const { searchParams } = new URL(request.url);
+    const revision_id = searchParams.get('revision_id');
+
+    if (!revision_id) {
+      return NextResponse.json(
+        { error: 'Revision ID is required' },
+        { status: 400 },
+      );
+    }
+
+    // Get user's organization
+    const { data: user } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('user_id', user.id)
+      .single();
+
+    if (!profile) {
+      return NextResponse.json({ error: 'Profile not found' }, { status: 404 });
+    }
+
+    // Check revision status - only allow deletion of draft revisions
+    const { data: revision } = await supabase
+      .from('contract_revisions')
+      .select('id, status')
+      .eq('id', revision_id)
+      .eq('contract_id', contractId)
+      .eq('organization_id', profile.organization_id)
+      .single();
+
+    if (!revision) {
+      return NextResponse.json(
+        { error: 'Revision not found' },
+        { status: 404 },
+      );
+    }
+
+    if (revision.status !== 'draft') {
+      return NextResponse.json(
+        {
+          error: 'Only draft revisions can be deleted',
+        },
+        { status: 400 },
+      );
+    }
+
+    // Delete revision
+    const { error } = await supabase
+      .from('contract_revisions')
+      .delete()
+      .eq('id', revision_id)
+      .eq('contract_id', contractId)
+      .eq('organization_id', profile.organization_id);
+
+    if (error) {
+      console.error('Error deleting revision:', error);
+      return NextResponse.json(
+        { error: 'Failed to delete revision' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({ message: 'Revision deleted successfully' });
+  } catch (error) {
+    console.error('Delete revision error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

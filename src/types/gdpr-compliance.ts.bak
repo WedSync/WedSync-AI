@@ -1,0 +1,548 @@
+/**
+ * WS-176 GDPR Compliance System - Team D Round 1
+ * Comprehensive type definitions for legal infrastructure and monitoring
+ * 
+ * @fileoverview Core type definitions for GDPR compliance monitoring, 
+ * retention policies, privacy breach detection, and multi-jurisdiction legal configuration
+ */
+
+import { z } from 'zod';
+
+// ====================== COMPLIANCE MONITORING TYPES ======================
+
+export interface ComplianceStatus {
+  compliant: boolean;
+  score: number; // 0-100 compliance score
+  lastChecked: Date;
+  issues: ComplianceIssue[];
+  nextReviewDate: Date;
+}
+
+export interface ComplianceIssue {
+  id: string;
+  type: ComplianceIssueType;
+  severity: 'critical' | 'high' | 'medium' | 'low';
+  description: string;
+  affectedDataSubjects: number;
+  legalReference: string;
+  detectedAt: Date;
+  resolvedAt?: Date;
+  remediation?: string;
+  jurisdiction: Jurisdiction;
+}
+
+export type ComplianceIssueType = 
+  | 'consent_expired'
+  | 'retention_violation'
+  | 'unauthorized_access'
+  | 'data_breach'
+  | 'missing_legal_basis'
+  | 'cross_border_violation'
+  | 'dpo_notification_overdue'
+  | 'supervisory_authority_unreported';
+
+export interface ComplianceEvent {
+  id: string;
+  type: ComplianceEventType;
+  timestamp: Date;
+  userId?: string;
+  dataType: PersonalDataType;
+  jurisdiction: Jurisdiction;
+  legalBasis: LegalBasis;
+  metadata: Record<string, any>;
+}
+
+export type ComplianceEventType = 
+  | 'data_collected'
+  | 'consent_granted'
+  | 'consent_withdrawn'
+  | 'data_accessed'
+  | 'data_modified'
+  | 'data_deleted'
+  | 'data_exported'
+  | 'breach_detected';
+
+// ====================== DATA RETENTION TYPES ======================
+
+export interface RetentionPolicy {
+  id: string;
+  name: string;
+  description: string;
+  dataType: PersonalDataType;
+  retentionPeriod: RetentionPeriod;
+  jurisdiction: Jurisdiction;
+  legalBasis: LegalBasis;
+  deletionMethod: DeletionMethod;
+  exceptions: RetentionException[];
+  isActive: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface RetentionPeriod {
+  duration: number;
+  unit: 'days' | 'months' | 'years';
+  startTrigger: RetentionTrigger;
+  gracePeriod?: number; // Additional days before deletion
+}
+
+export type RetentionTrigger = 
+  | 'data_collection'
+  | 'last_activity'
+  | 'consent_withdrawal'
+  | 'contract_termination'
+  | 'service_completion';
+
+export interface RetentionException {
+  id: string;
+  reason: ExceptionReason;
+  legalReference: string;
+  extendedPeriod?: RetentionPeriod;
+  metadata: Record<string, any>;
+}
+
+export type ExceptionReason = 
+  | 'legal_obligation'
+  | 'legitimate_interest'
+  | 'litigation_hold'
+  | 'tax_requirements'
+  | 'regulatory_requirement';
+
+export type DeletionMethod = 
+  | 'soft_delete'
+  | 'hard_delete'
+  | 'anonymization'
+  | 'pseudonymization'
+  | 'secure_wipe';
+
+export interface DeletionJob {
+  id: string;
+  userId: string;
+  dataType: PersonalDataType;
+  scheduledFor: Date;
+  status: DeletionStatus;
+  method: DeletionMethod;
+  retentionPolicyId: string;
+  verification: DeletionVerification;
+  createdAt: Date;
+  executedAt?: Date;
+}
+
+export type DeletionStatus = 
+  | 'scheduled'
+  | 'in_progress'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'on_hold';
+
+export interface DeletionVerification {
+  verified: boolean;
+  verifiedBy?: string;
+  verifiedAt?: Date;
+  checksum?: string;
+  auditTrail: string[];
+}
+
+// ====================== PRIVACY BREACH DETECTION TYPES ======================
+
+export interface PrivacyBreach {
+  id: string;
+  type: BreachType;
+  severity: BreachSeverity;
+  detectedAt: Date;
+  reportedAt?: Date;
+  affectedUsers: number;
+  affectedDataTypes: PersonalDataType[];
+  dataVolume: DataVolumeAssessment;
+  riskAssessment: RiskAssessment;
+  containmentActions: ContainmentAction[];
+  notifications: BreachNotification[];
+  status: BreachStatus;
+  jurisdiction: Jurisdiction;
+  investigationId?: string;
+}
+
+export type BreachType = 
+  | 'confidentiality_breach'
+  | 'integrity_breach'
+  | 'availability_breach'
+  | 'unauthorized_access'
+  | 'data_loss'
+  | 'system_compromise'
+  | 'human_error'
+  | 'malicious_attack';
+
+export type BreachSeverity = 
+  | 'critical' // Supervisory authority notification required (72h)
+  | 'high'     // Individual notification required
+  | 'medium'   // Internal documentation required
+  | 'low';     // Monitor only
+
+export interface DataVolumeAssessment {
+  recordCount: number;
+  estimatedSize: string; // Human readable size
+  dataCategories: PersonalDataType[];
+  sensitiveDataIncluded: boolean;
+}
+
+export interface RiskAssessment {
+  overallRisk: 'very_high' | 'high' | 'medium' | 'low';
+  identityTheftRisk: boolean;
+  financialLossRisk: boolean;
+  reputationDamageRisk: boolean;
+  physicalHarmRisk: boolean;
+  discriminationRisk: boolean;
+  justification: string;
+}
+
+export interface ContainmentAction {
+  id: string;
+  action: string;
+  performedBy: string;
+  performedAt: Date;
+  effectiveness: 'effective' | 'partial' | 'ineffective';
+  notes?: string;
+}
+
+export interface BreachNotification {
+  id: string;
+  recipient: NotificationRecipient;
+  method: NotificationMethod;
+  sentAt: Date;
+  acknowledged: boolean;
+  acknowledgedAt?: Date;
+  content: string;
+}
+
+export type NotificationRecipient = 
+  | 'supervisory_authority'
+  | 'data_subjects'
+  | 'dpo'
+  | 'management'
+  | 'legal_team'
+  | 'it_security';
+
+export type NotificationMethod = 
+  | 'email'
+  | 'sms'
+  | 'postal_mail'
+  | 'secure_portal'
+  | 'phone_call'
+  | 'official_submission';
+
+export type BreachStatus = 
+  | 'detected'
+  | 'investigating'
+  | 'contained'
+  | 'resolved'
+  | 'reported'
+  | 'closed';
+
+// ====================== LEGAL CONFIGURATION TYPES ======================
+
+export type Jurisdiction = 
+  | 'EU'
+  | 'UK'
+  | 'US_CALIFORNIA'
+  | 'US_VIRGINIA'
+  | 'CANADA'
+  | 'AUSTRALIA'
+  | 'BRAZIL'
+  | 'SINGAPORE'
+  | 'GLOBAL';
+
+export interface LegalConfiguration {
+  id: string;
+  jurisdiction: Jurisdiction;
+  regulations: Regulation[];
+  dataProtectionAuthority: DataProtectionAuthority;
+  requirements: LegalRequirement[];
+  penalties: PenaltyStructure;
+  transferRestrictions: TransferRestriction[];
+  isActive: boolean;
+  lastUpdated: Date;
+}
+
+export interface Regulation {
+  name: string;
+  abbreviation: string;
+  effectiveDate: Date;
+  lastAmended?: Date;
+  scope: string[];
+  keyRequirements: string[];
+  officialUrl: string;
+}
+
+export interface DataProtectionAuthority {
+  name: string;
+  jurisdiction: Jurisdiction;
+  contactInfo: ContactInformation;
+  reportingRequirements: ReportingRequirement[];
+  notificationTimeline: string; // e.g., "72 hours"
+}
+
+export interface ContactInformation {
+  address: string;
+  phone?: string;
+  email?: string;
+  website: string;
+  emergencyContact?: string;
+}
+
+export interface ReportingRequirement {
+  trigger: string;
+  timeline: string;
+  format: 'online_form' | 'email' | 'postal' | 'phone';
+  mandatoryFields: string[];
+}
+
+export interface LegalRequirement {
+  id: string;
+  category: RequirementCategory;
+  description: string;
+  legalReference: string;
+  compliance: ComplianceLevel;
+  implementationDeadline?: Date;
+  verificationMethod: string;
+}
+
+export type RequirementCategory = 
+  | 'consent_management'
+  | 'data_minimization'
+  | 'retention_limits'
+  | 'breach_notification'
+  | 'data_subject_rights'
+  | 'privacy_by_design'
+  | 'dpo_appointment'
+  | 'impact_assessments';
+
+export type ComplianceLevel = 
+  | 'mandatory'
+  | 'recommended'
+  | 'optional'
+  | 'not_applicable';
+
+export interface PenaltyStructure {
+  currency: string;
+  maxFineAmount?: number;
+  maxFinePercentage?: number; // Percentage of annual turnover
+  criminalLiability: boolean;
+  additionalConsequences: string[];
+}
+
+export interface TransferRestriction {
+  from: Jurisdiction;
+  to: Jurisdiction;
+  mechanism: TransferMechanism;
+  additionalSafeguards: string[];
+  isAllowed: boolean;
+}
+
+export type TransferMechanism = 
+  | 'adequacy_decision'
+  | 'standard_contractual_clauses'
+  | 'binding_corporate_rules'
+  | 'certification_scheme'
+  | 'approved_conduct_code'
+  | 'explicit_consent';
+
+// ====================== COMMON DATA TYPES ======================
+
+export type PersonalDataType = 
+  | 'contact_info'
+  | 'identification'
+  | 'financial'
+  | 'health'
+  | 'biometric'
+  | 'location'
+  | 'behavioral'
+  | 'professional'
+  | 'family_status'
+  | 'wedding_preferences'
+  | 'vendor_interactions'
+  | 'payment_history'
+  | 'communication_logs';
+
+export type LegalBasis = 
+  | 'consent'
+  | 'contract'
+  | 'legal_obligation'
+  | 'vital_interests'
+  | 'public_task'
+  | 'legitimate_interests';
+
+// ====================== MONITORING SYSTEM TYPES ======================
+
+export interface ComplianceMonitor {
+  id: string;
+  name: string;
+  description: string;
+  type: MonitorType;
+  jurisdiction: Jurisdiction;
+  schedule: MonitorSchedule;
+  thresholds: AlertThreshold[];
+  isActive: boolean;
+  lastRun?: Date;
+  nextRun?: Date;
+}
+
+export type MonitorType = 
+  | 'consent_expiry'
+  | 'retention_compliance'
+  | 'access_patterns'
+  | 'data_quality'
+  | 'cross_border_transfers'
+  | 'breach_indicators'
+  | 'regulatory_changes';
+
+export interface MonitorSchedule {
+  frequency: 'real_time' | 'hourly' | 'daily' | 'weekly' | 'monthly';
+  times?: string[]; // Specific times for scheduled monitors
+  timezone: string;
+}
+
+export interface AlertThreshold {
+  metric: string;
+  operator: '>' | '<' | '=' | '>=' | '<=';
+  value: number;
+  severity: 'critical' | 'high' | 'medium' | 'low';
+  notificationRecipients: string[];
+}
+
+// ====================== ZOD VALIDATION SCHEMAS ======================
+
+export const complianceStatusSchema = z.object({
+  compliant: z.boolean(),
+  score: z.number().min(0).max(100),
+  lastChecked: z.date(),
+  issues: z.array(z.any()),
+  nextReviewDate: z.date()
+});
+
+export const retentionPolicySchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().min(1).max(255),
+  description: z.string().max(1000),
+  dataType: z.enum([
+    'contact_info', 'identification', 'financial', 'health', 'biometric',
+    'location', 'behavioral', 'professional', 'family_status',
+    'wedding_preferences', 'vendor_interactions', 'payment_history',
+    'communication_logs'
+  ]),
+  retentionPeriod: z.object({
+    duration: z.number().positive(),
+    unit: z.enum(['days', 'months', 'years']),
+    startTrigger: z.enum([
+      'data_collection', 'last_activity', 'consent_withdrawal',
+      'contract_termination', 'service_completion'
+    ]),
+    gracePeriod: z.number().optional()
+  }),
+  jurisdiction: z.enum([
+    'EU', 'UK', 'US_CALIFORNIA', 'US_VIRGINIA', 'CANADA',
+    'AUSTRALIA', 'BRAZIL', 'SINGAPORE', 'GLOBAL'
+  ]),
+  legalBasis: z.enum([
+    'consent', 'contract', 'legal_obligation',
+    'vital_interests', 'public_task', 'legitimate_interests'
+  ]),
+  deletionMethod: z.enum([
+    'soft_delete', 'hard_delete', 'anonymization',
+    'pseudonymization', 'secure_wipe'
+  ]),
+  isActive: z.boolean()
+});
+
+export const privacyBreachSchema = z.object({
+  type: z.enum([
+    'confidentiality_breach', 'integrity_breach', 'availability_breach',
+    'unauthorized_access', 'data_loss', 'system_compromise',
+    'human_error', 'malicious_attack'
+  ]),
+  severity: z.enum(['critical', 'high', 'medium', 'low']),
+  affectedUsers: z.number().min(0),
+  affectedDataTypes: z.array(z.enum([
+    'contact_info', 'identification', 'financial', 'health', 'biometric',
+    'location', 'behavioral', 'professional', 'family_status',
+    'wedding_preferences', 'vendor_interactions', 'payment_history',
+    'communication_logs'
+  ])),
+  jurisdiction: z.enum([
+    'EU', 'UK', 'US_CALIFORNIA', 'US_VIRGINIA', 'CANADA',
+    'AUSTRALIA', 'BRAZIL', 'SINGAPORE', 'GLOBAL'
+  ])
+});
+
+export const legalConfigurationSchema = z.object({
+  id: z.string().uuid(),
+  jurisdiction: z.enum([
+    'EU', 'UK', 'US_CALIFORNIA', 'US_VIRGINIA', 'CANADA',
+    'AUSTRALIA', 'BRAZIL', 'SINGAPORE', 'GLOBAL'
+  ]),
+  isActive: z.boolean(),
+  lastUpdated: z.date()
+});
+
+export const complianceMonitorSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().min(1).max(255),
+  description: z.string().max(1000),
+  type: z.enum([
+    'consent_expiry', 'retention_compliance', 'access_patterns',
+    'data_quality', 'cross_border_transfers', 'breach_indicators',
+    'regulatory_changes'
+  ]),
+  jurisdiction: z.enum([
+    'EU', 'UK', 'US_CALIFORNIA', 'US_VIRGINIA', 'CANADA',
+    'AUSTRALIA', 'BRAZIL', 'SINGAPORE', 'GLOBAL'
+  ]),
+  isActive: z.boolean()
+});
+
+// ====================== ERROR TYPES ======================
+
+export class ComplianceError extends Error {
+  constructor(
+    message: string,
+    public code: string,
+    public jurisdiction?: Jurisdiction,
+    public severity?: 'critical' | 'high' | 'medium' | 'low'
+  ) {
+    super(message);
+    this.name = 'ComplianceError';
+  }
+}
+
+export class RetentionPolicyError extends Error {
+  constructor(
+    message: string,
+    public policyId?: string,
+    public dataType?: PersonalDataType
+  ) {
+    super(message);
+    this.name = 'RetentionPolicyError';
+  }
+}
+
+export class PrivacyBreachError extends Error {
+  constructor(
+    message: string,
+    public breachId?: string,
+    public severity?: BreachSeverity
+  ) {
+    super(message);
+    this.name = 'PrivacyBreachError';
+  }
+}
+
+export class LegalConfigurationError extends Error {
+  constructor(
+    message: string,
+    public jurisdiction?: Jurisdiction,
+    public requirement?: string
+  ) {
+    super(message);
+    this.name = 'LegalConfigurationError';
+  }
+}

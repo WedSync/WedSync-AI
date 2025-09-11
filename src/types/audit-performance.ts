@@ -1,0 +1,367 @@
+/**
+ * WS-177 Audit Logging System - Performance & Infrastructure Types
+ * Team D - Round 1: High-performance audit logging with security monitoring
+ *
+ * Comprehensive TypeScript definitions for wedding supplier audit logging
+ * optimized for high-volume operations (50+ weddings, frequent updates)
+ */
+
+// Base audit event structure
+export interface AuditEvent {
+  id: string;
+  timestamp: string; // ISO 8601
+  eventType: AuditEventType;
+  severity: AuditSeverity;
+  userId?: string;
+  sessionId?: string;
+  organizationId: string;
+  weddingId?: string;
+  supplierId?: string;
+
+  // Event details
+  resource: string; // Table/endpoint affected
+  action: AuditAction;
+  resourceId?: string;
+
+  // Data payload (encrypted in storage)
+  beforeData?: Record<string, any>;
+  afterData?: Record<string, any>;
+  metadata: AuditMetadata;
+
+  // Performance tracking
+  executionTimeMs: number;
+  requestId?: string;
+
+  // Security context
+  ipAddress?: string;
+  userAgent?: string;
+  apiKeyId?: string;
+
+  // Wedding-specific context
+  weddingDate?: string;
+  guestCount?: number;
+  supplierRole?: SupplierRole;
+}
+
+// Audit event types for wedding operations
+export enum AuditEventType {
+  USER_ACTION = 'user_action',
+  SYSTEM_EVENT = 'system_event',
+  SECURITY_EVENT = 'security_event',
+  PERFORMANCE_EVENT = 'performance_event',
+  DATA_CHANGE = 'data_change',
+  API_CALL = 'api_call',
+  AUTHENTICATION = 'authentication',
+  AUTHORIZATION = 'authorization',
+  WEDDING_MILESTONE = 'wedding_milestone',
+  SUPPLIER_INTERACTION = 'supplier_interaction',
+}
+
+// Security severity levels
+export enum AuditSeverity {
+  LOW = 'low',
+  MEDIUM = 'medium',
+  HIGH = 'high',
+  CRITICAL = 'critical',
+}
+
+// CRUD and wedding-specific actions
+export enum AuditAction {
+  CREATE = 'create',
+  READ = 'read',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LOGIN = 'login',
+  LOGOUT = 'logout',
+  EXPORT = 'export',
+  IMPORT = 'import',
+  SHARE = 'share',
+  ASSIGN_TASK = 'assign_task',
+  COMPLETE_TASK = 'complete_task',
+  APPROVE_VENDOR = 'approve_vendor',
+  UPDATE_GUEST_LIST = 'update_guest_list',
+  SEND_INVITATION = 'send_invitation',
+  PAYMENT_PROCESSED = 'payment_processed',
+  PHOTO_UPLOADED = 'photo_uploaded',
+}
+
+// Wedding supplier roles
+export enum SupplierRole {
+  WEDDING_PLANNER = 'wedding_planner',
+  VENUE_COORDINATOR = 'venue_coordinator',
+  PHOTOGRAPHER = 'photographer',
+  CATERER = 'caterer',
+  FLORIST = 'florist',
+  DJ_BAND = 'dj_band',
+  BAKER = 'baker',
+  DECORATOR = 'decorator',
+  TRANSPORTATION = 'transportation',
+  OFFICIANT = 'officiant',
+}
+
+// Extended metadata for context
+export interface AuditMetadata {
+  organizationId: string;
+  correlationId?: string;
+  parentEventId?: string;
+  clientVersion?: string;
+  feature?: string;
+  component?: string;
+
+  // Wedding-specific metadata
+  weddingPhase?: WeddingPhase;
+  guestsAffected?: number;
+  tasksModified?: number;
+  suppliersNotified?: number;
+
+  // Performance metadata
+  databaseQueryCount?: number;
+  cacheHitRatio?: number;
+  memoryUsageMB?: number;
+
+  // Security metadata
+  riskScore?: number;
+  fraudIndicators?: string[];
+  geolocation?: string;
+}
+
+export enum WeddingPhase {
+  PLANNING = 'planning',
+  PREPARATION = 'preparation',
+  EXECUTION = 'execution',
+  COMPLETION = 'completion',
+  POST_EVENT = 'post_event',
+}
+
+// Performance monitoring interfaces
+export interface PerformanceMetrics {
+  eventId: string;
+  timestamp: string;
+
+  // Timing metrics
+  totalExecutionTime: number;
+  databaseTime: number;
+  networkTime: number;
+  processingTime: number;
+
+  // Resource metrics
+  memoryUsed: number;
+  cpuUtilization: number;
+  diskIO: number;
+  networkIO: number;
+
+  // Wedding-specific performance
+  guestsProcessed: number;
+  tasksProcessed: number;
+  photosProcessed: number;
+
+  // Optimization flags
+  wasOptimized: boolean;
+  optimizationStrategy?: string;
+  cacheUtilized: boolean;
+  batchProcessed: boolean;
+}
+
+// Security alert definitions
+export interface SecurityAlert {
+  id: string;
+  timestamp: string;
+  alertType: SecurityAlertType;
+  severity: AuditSeverity;
+  description: string;
+
+  // Alert triggers
+  triggeredBy: string[];
+  eventIds: string[];
+  pattern: string;
+
+  // Affected resources
+  userId?: string;
+  organizationId: string;
+  weddingId?: string;
+  ipAddress?: string;
+
+  // Response tracking
+  acknowledged: boolean;
+  acknowledgedBy?: string;
+  acknowledgedAt?: string;
+  resolved: boolean;
+  resolvedBy?: string;
+  resolvedAt?: string;
+
+  // Wedding context
+  weddingDate?: string;
+  supplierRole?: SupplierRole;
+  guestDataExposed?: boolean;
+}
+
+export enum SecurityAlertType {
+  SUSPICIOUS_LOGIN = 'suspicious_login',
+  MULTIPLE_FAILED_ATTEMPTS = 'multiple_failed_attempts',
+  UNUSUAL_DATA_ACCESS = 'unusual_data_access',
+  BULK_DATA_EXPORT = 'bulk_data_export',
+  UNAUTHORIZED_API_ACCESS = 'unauthorized_api_access',
+  PRIVILEGE_ESCALATION = 'privilege_escalation',
+  DATA_INTEGRITY_VIOLATION = 'data_integrity_violation',
+  WEDDING_DATA_BREACH = 'wedding_data_breach',
+  SUPPLIER_IMPERSONATION = 'supplier_impersonation',
+  GUEST_DATA_EXPOSURE = 'guest_data_exposure',
+}
+
+// Log storage optimization
+export interface LogStorageConfig {
+  batchSize: number;
+  flushIntervalMs: number;
+  compressionEnabled: boolean;
+  encryptionEnabled: boolean;
+
+  // Database optimization
+  connectionPoolSize: number;
+  preparedStatements: boolean;
+  indexingStrategy: IndexingStrategy;
+
+  // Performance tuning
+  asyncLogging: boolean;
+  bufferSize: number;
+  memoryThresholdMB: number;
+
+  // Wedding-specific optimization
+  highVolumeMode: boolean; // For peak wedding season
+  guestDataCompression: boolean;
+  photoMetadataOptimization: boolean;
+}
+
+export enum IndexingStrategy {
+  TIMESTAMP_BASED = 'timestamp_based',
+  USER_BASED = 'user_based',
+  WEDDING_BASED = 'wedding_based',
+  RESOURCE_BASED = 'resource_based',
+  COMPOSITE = 'composite',
+}
+
+// Retention management
+export interface RetentionPolicy {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+
+  // Retention rules
+  retentionPeriodDays: number;
+  eventTypes: AuditEventType[];
+  severityThreshold: AuditSeverity;
+
+  // Wedding-specific rules
+  weddingDataRetentionDays: number;
+  guestDataRetentionDays: number;
+  supplierDataRetentionDays: number;
+  photoMetadataRetentionDays: number;
+
+  // Archive settings
+  archiveEnabled: boolean;
+  archiveLocation: string;
+  compressionLevel: number;
+  encryptArchive: boolean;
+
+  // Automated cleanup
+  cleanupSchedule: string; // Cron expression
+  notifyBeforeCleanup: boolean;
+  dryRunEnabled: boolean;
+}
+
+// Batch processing for performance
+export interface AuditBatch {
+  id: string;
+  timestamp: string;
+  events: AuditEvent[];
+  batchSize: number;
+
+  // Performance tracking
+  startTime: string;
+  endTime?: string;
+  processingTimeMs?: number;
+  success: boolean;
+  errors?: string[];
+
+  // Wedding context
+  weddingIds: string[];
+  organizationIds: string[];
+  totalGuestsAffected: number;
+  totalTasksModified: number;
+}
+
+// Real-time monitoring interface
+export interface AuditMonitor {
+  subscribe(callback: (event: AuditEvent) => void): () => void;
+  subscribeToAlerts(callback: (alert: SecurityAlert) => void): () => void;
+  getMetrics(): Promise<PerformanceMetrics[]>;
+  getActiveAlerts(): Promise<SecurityAlert[]>;
+
+  // Wedding-specific monitoring
+  monitorWedding(weddingId: string): Promise<void>;
+  getWeddingMetrics(weddingId: string): Promise<WeddingPerformanceMetrics>;
+}
+
+// Wedding-specific performance metrics
+export interface WeddingPerformanceMetrics {
+  weddingId: string;
+  weddingDate: string;
+  totalEvents: number;
+  guestUpdates: number;
+  taskModifications: number;
+  supplierInteractions: number;
+
+  // Performance indicators
+  averageResponseTime: number;
+  peakConcurrentUsers: number;
+  dataVolumeGB: number;
+  errorRate: number;
+
+  // Wedding milestones
+  planningPhaseEvents: number;
+  executionPhaseEvents: number;
+  completionEvents: number;
+}
+
+// API interfaces for team integration
+export interface AuditLogger {
+  logEvent(event: Omit<AuditEvent, 'id' | 'timestamp'>): Promise<string>;
+  logBatch(events: Omit<AuditEvent, 'id' | 'timestamp'>[]): Promise<string[]>;
+
+  // Performance optimized methods
+  logAsync(event: Omit<AuditEvent, 'id' | 'timestamp'>): void;
+  logWeddingMilestone(
+    weddingId: string,
+    milestone: WeddingPhase,
+    metadata?: AuditMetadata,
+  ): Promise<string>;
+
+  // Query methods for teams
+  queryEvents(filters: AuditEventFilters): Promise<AuditEvent[]>;
+  getEventById(id: string): Promise<AuditEvent | null>;
+  getWeddingAuditTrail(weddingId: string): Promise<AuditEvent[]>;
+}
+
+export interface AuditEventFilters {
+  startDate?: string;
+  endDate?: string;
+  eventTypes?: AuditEventType[];
+  userIds?: string[];
+  weddingIds?: string[];
+  organizationIds?: string[];
+  severityLevels?: AuditSeverity[];
+  actions?: AuditAction[];
+
+  // Wedding-specific filters
+  supplierRoles?: SupplierRole[];
+  weddingPhases?: WeddingPhase[];
+  guestCountRange?: { min: number; max: number };
+
+  // Pagination
+  limit?: number;
+  offset?: number;
+  sortBy?: string;
+  sortOrder?: 'asc' | 'desc';
+}
+
+// All types are exported individually above for team consumption

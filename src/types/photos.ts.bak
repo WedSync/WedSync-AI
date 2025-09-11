@@ -1,0 +1,240 @@
+// Enhanced Photo Gallery Types for WS-079
+
+export interface PhotoBucket {
+  id: string;
+  name: string;
+  description?: string;
+  clientId?: string;
+  vendorId?: string;
+  organizationId: string;
+  bucketType: 'engagement' | 'venue' | 'styling' | 'general' | 'portfolio';
+  isPublic: boolean;
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
+  albumCount?: number;
+  photoCount?: number;
+}
+
+export interface PhotoAlbum {
+  id: string;
+  name: string;
+  description?: string;
+  bucketId: string;
+  coverPhotoUrl?: string;
+  sortOrder: number;
+  isFeatured: boolean;
+  eventDate?: string;
+  location?: string;
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
+  photoCount?: number;
+  bucket?: PhotoBucket;
+}
+
+export interface Photo {
+  id: string;
+  albumId?: string;
+  bucketId: string;
+  organizationId: string;
+  
+  // File information
+  filename: string;
+  originalFilename?: string;
+  filePath: string; // Supabase storage path
+  fileSizeBytes?: number;
+  mimeType?: string;
+  width?: number;
+  height?: number;
+  
+  // Optimization data
+  thumbnailPath?: string; // Small thumbnail (150x150)
+  previewPath?: string;   // Medium preview (800x600)
+  optimizedPath?: string; // Optimized full size
+  compressionRatio?: number; // Percentage compressed
+  
+  // Photo metadata
+  title?: string;
+  description?: string;
+  altText?: string;
+  photographerCredit?: string;
+  takenAt?: string;
+  location?: string;
+  
+  // Organization
+  sortOrder: number;
+  isFeatured: boolean;
+  isApproved: boolean;
+  approvalStatus: 'pending' | 'approved' | 'rejected';
+  
+  // Tracking
+  viewCount: number;
+  downloadCount: number;
+  createdAt: string;
+  updatedAt: string;
+  uploadedBy: string;
+  approvedBy?: string;
+  
+  // Relations
+  album?: PhotoAlbum;
+  bucket?: PhotoBucket;
+  tags: PhotoTag[];
+  comments?: PhotoComment[];
+  sharingPermissions?: PhotoSharingPermission[];
+}
+
+export interface PhotoSharingPermission {
+  id: string;
+  photoId?: string;
+  albumId?: string;
+  bucketId?: string;
+  organizationId: string;
+  
+  // Permission details
+  sharedWithUserId: string;
+  sharedWithVendorType?: VendorType;
+  permissionLevel: 'view' | 'download' | 'edit' | 'share';
+  
+  // Access control
+  expiresAt?: string;
+  isActive: boolean;
+  canReshare: boolean;
+  
+  // Tracking
+  createdAt: string;
+  updatedAt: string;
+  sharedBy: string;
+}
+
+export type VendorType = 
+  | 'photographer' 
+  | 'videographer' 
+  | 'florist' 
+  | 'venue' 
+  | 'caterer' 
+  | 'dj' 
+  | 'band' 
+  | 'officiant' 
+  | 'planner' 
+  | 'decorator' 
+  | 'baker' 
+  | 'other';
+
+export interface PhotoTag {
+  id: string;
+  name: string;
+  description?: string;
+  color: string; // Hex color code
+  organizationId: string;
+  usageCount: number;
+  createdAt: string;
+  createdBy: string;
+}
+
+export interface PhotoTagAssignment {
+  id: string;
+  photoId: string;
+  tagId: string;
+  assignedAt: string;
+  assignedBy: string;
+  tag?: PhotoTag;
+}
+
+export interface PhotoComment {
+  id: string;
+  photoId: string;
+  organizationId: string;
+  content: string;
+  authorId: string;
+  parentCommentId?: string;
+  isResolved: boolean;
+  createdAt: string;
+  updatedAt: string;
+  author?: {
+    id: string;
+    name: string;
+    avatar?: string;
+  };
+  replies?: PhotoComment[];
+}
+
+export interface PhotoAccessLog {
+  id: string;
+  photoId: string;
+  userId?: string;
+  organizationId: string;
+  action: 'view' | 'download' | 'share' | 'upload' | 'delete' | 'edit';
+  ipAddress?: string;
+  userAgent?: string;
+  accessedAt: string;
+}
+
+// Legacy compatibility - can be removed later
+export interface Gallery extends PhotoAlbum {
+  clientId: string;
+  eventDate?: string;
+  photoCount: number;
+  shareSettings: ShareSettings;
+}
+
+export interface ShareSettings {
+  isPublic: boolean;
+  shareableLink?: string;
+  password?: string;
+  expiresAt?: string;
+  allowDownload: boolean;
+  allowComments: boolean;
+  watermarkEnabled: boolean;
+}
+
+export interface PhotoMetadata {
+  camera?: string;
+  lens?: string;
+  iso?: number;
+  aperture?: string;
+  shutterSpeed?: string;
+  focalLength?: string;
+  dateTaken?: string;
+  location?: {
+    lat: number;
+    lng: number;
+    name?: string;
+  };
+}
+
+export interface UploadProgress {
+  photoId: string;
+  filename: string;
+  progress: number;
+  status: 'pending' | 'uploading' | 'processing' | 'completed' | 'error';
+  error?: string;
+}
+
+export interface BatchUploadSession {
+  id: string;
+  totalFiles: number;
+  completedFiles: number;
+  failedFiles: number;
+  startedAt: string;
+  completedAt?: string;
+  uploads: UploadProgress[];
+}
+
+export interface PhotoFilters {
+  galleryId?: string;
+  clientId?: string;
+  tags?: string[];
+  dateFrom?: string;
+  dateTo?: string;
+  search?: string;
+  sortBy?: 'date' | 'name' | 'size';
+  sortOrder?: 'asc' | 'desc';
+}
+
+export interface PhotoDownloadOptions {
+  quality?: 'original' | 'high' | 'medium' | 'low';
+  format?: 'jpg' | 'png' | 'webp';
+  includeMetadata?: boolean;
+  watermark?: boolean;
+}

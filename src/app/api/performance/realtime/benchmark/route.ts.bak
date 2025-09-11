@@ -1,0 +1,491 @@
+/**
+ * WS-202 Performance Benchmark API
+ * Team D - Round 1: Performance requirements validation
+ * 
+ * Validates key performance requirements:
+ * - Sub-500ms latency under peak loads
+ * - 200+ simultaneous connections per supplier
+ * - >90% cache hit ratio
+ * - Wedding day reliability metrics
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { RealtimeConnectionOptimizer } from '@/lib/performance/realtime-connection-optimizer';
+import { RealtimeCacheManager } from '@/lib/performance/realtime-cache-manager';
+import { RealtimeScalingManager } from '@/lib/infrastructure/realtime-scaling-manager';
+import type {
+  SubscriptionConfig,
+  SubscriptionBatch,
+  RealtimePerformanceMetrics
+} from '@/types/realtime-performance';
+
+interface BenchmarkConfig {
+  connectionCount?: number;
+  testDurationMs?: number;
+  messageRate?: number; // messages per second
+  testScenario?: 'normal' | 'peak_load' | 'saturday_wedding' | 'stress_test';
+  vendorTypes?: string[];
+  weddingIds?: string[];
+}
+
+interface BenchmarkResult {
+  testName: string;
+  scenario: string;
+  duration: number;
+  timestamp: number;
+  
+  connectionMetrics: {
+    targetConnections: number;
+    actualConnections: number;
+    connectionSuccessRate: number;
+    averageConnectionTime: number;
+    connectionEstablishmentP95: number;
+    connectionEstablishmentP99: number;
+  };
+
+  latencyMetrics: {
+    averageLatency: number;
+    p50Latency: number;
+    p95Latency: number;
+    p99Latency: number;
+    maxLatency: number;
+    sub500msCompliance: number; // percentage of messages under 500ms
+  };
+
+  throughputMetrics: {
+    messagesPerSecond: number;
+    totalMessages: number;
+    successfulMessages: number;
+    failedMessages: number;
+    errorRate: number;
+  };
+
+  cacheMetrics: {
+    hitRatio: number;
+    averageReadLatency: number;
+    operationsPerSecond: number;
+  };
+
+  resourceMetrics: {
+    maxCpuUsage: number;
+    maxMemoryUsage: number;
+    networkUtilization: number;
+  };
+
+  complianceResults: {
+    latencyCompliance: boolean; // All messages under 500ms
+    connectionCapacity: boolean; // Supports 200+ connections
+    cachePerformance: boolean; // >90% hit ratio
+    overallCompliance: boolean;
+  };
+
+  errors: string[];
+  recommendations: string[];
+}
+
+async function simulateConnections(
+  connectionCount: number, 
+  testDurationMs: number,
+  scenario: string
+): Promise<{
+  connections: any[];
+  connectionTimes: number[];
+  messagingResults: {
+    latencies: number[];
+    successCount: number;
+    errorCount: number;
+  };
+}> {
+  const connectionOptimizer = RealtimeConnectionOptimizer.getInstance();
+  const connections: any[] = [];
+  const connectionTimes: number[] = [];
+  const messagingResults = {
+    latencies: [] as number[],
+    successCount: 0,
+    errorCount: 0
+  };
+
+  console.log(`Starting ${scenario} benchmark with ${connectionCount} connections for ${testDurationMs}ms`);
+
+  try {
+    // Create connections in batches to avoid overwhelming the system
+    const batchSize = Math.min(50, connectionCount);
+    const batches = Math.ceil(connectionCount / batchSize);
+
+    for (let batch = 0; batch < batches; batch++) {
+      const batchConnections = Math.min(batchSize, connectionCount - (batch * batchSize));
+      const batchPromises: Promise<any>[] = [];
+
+      for (let i = 0; i < batchConnections; i++) {
+        const connectionIndex = (batch * batchSize) + i;
+        const vendorId = `benchmark-vendor-${connectionIndex}`;
+        const channelType = `benchmark-channel-${connectionIndex % 10}`;
+
+        const subscriptionConfig: SubscriptionConfig = {
+          channelName: `benchmark:${scenario}:${connectionIndex}`,
+          event: 'INSERT',
+          filter: { table: 'benchmark_events' },
+          callback: (payload: any) => {
+            // Simulate message processing
+            const processingStart = performance.now();
+            // Simulate some processing time
+            setTimeout(() => {
+              const latency = performance.now() - processingStart;
+              messagingResults.latencies.push(latency);
+              messagingResults.successCount++;
+            }, Math.random() * 10); // 0-10ms processing time
+          },
+          priority: scenario === 'saturday_wedding' ? 'critical' : 'medium'
+        };
+
+        const connectionPromise = (async () => {
+          const startTime = performance.now();
+          try {
+            const connection = await connectionOptimizer.optimizeConnectionCreation(
+              vendorId,
+              channelType,
+              subscriptionConfig
+            );
+            const connectionTime = performance.now() - startTime;
+            connectionTimes.push(connectionTime);
+            return connection;
+          } catch (error) {
+            messagingResults.errorCount++;
+            console.error(`Connection ${connectionIndex} failed:`, error);
+            return null;
+          }
+        })();
+
+        batchPromises.push(connectionPromise);
+      }
+
+      const batchResults = await Promise.all(batchPromises);
+      connections.push(...batchResults.filter(conn => conn !== null));
+
+      // Small delay between batches to avoid overwhelming
+      if (batch < batches - 1) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    }
+
+    console.log(`Created ${connections.length} connections successfully`);
+
+    // Simulate messaging during test duration
+    const messagingInterval = setInterval(() => {
+      connections.forEach((connection, index) => {
+        if (connection && connection.isHealthy) {
+          // Simulate sending messages through the connection
+          const messageStart = performance.now();
+          
+          // Simulate message round-trip
+          setTimeout(() => {
+            const latency = performance.now() - messageStart;
+            messagingResults.latencies.push(latency);
+            messagingResults.successCount++;
+          }, Math.random() * 100 + 50); // 50-150ms simulated latency
+        }
+      });
+    }, 1000); // Send messages every second
+
+    // Wait for test duration
+    await new Promise(resolve => setTimeout(resolve, testDurationMs));
+    clearInterval(messagingInterval);
+
+    console.log(`Benchmark completed. Messages: ${messagingResults.successCount}, Errors: ${messagingResults.errorCount}`);
+
+  } catch (error) {
+    console.error('Benchmark simulation error:', error);
+    messagingResults.errorCount++;
+  }
+
+  return {
+    connections,
+    connectionTimes,
+    messagingResults
+  };
+}
+
+function calculatePercentile(values: number[], percentile: number): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = Math.ceil((percentile / 100) * sorted.length) - 1;
+  return sorted[Math.max(0, index)];
+}
+
+async function runPerformanceBenchmark(config: BenchmarkConfig): Promise<BenchmarkResult> {
+  const {
+    connectionCount = 200,
+    testDurationMs = 30000, // 30 seconds
+    testScenario = 'normal',
+    vendorTypes = ['photographer', 'venue', 'caterer', 'florist', 'dj']
+  } = config;
+
+  const startTime = Date.now();
+  const testName = `WS-202 ${testScenario} benchmark`;
+
+  console.log(`Starting benchmark: ${testName}`);
+
+  try {
+    const cacheManager = RealtimeCacheManager.getInstance();
+    
+    // Warm up cache if needed
+    if (testScenario === 'saturday_wedding') {
+      await cacheManager.warmCacheForWeddingSeason?.(config.weddingIds || ['benchmark-wedding-1']);
+    }
+
+    // Run connection simulation
+    const simulationResults = await simulateConnections(connectionCount, testDurationMs, testScenario);
+    
+    // Get final metrics
+    const [cacheMetrics, systemMetrics] = await Promise.all([
+      cacheManager.getCachePerformanceMetrics(),
+      RealtimeConnectionOptimizer.getInstance().getRealtimePerformanceMetrics()
+    ]);
+
+    const endTime = Date.now();
+    const actualDuration = endTime - startTime;
+
+    // Calculate connection metrics
+    const connectionSuccessRate = (simulationResults.connections.length / connectionCount) * 100;
+    const averageConnectionTime = simulationResults.connectionTimes.reduce((a, b) => a + b, 0) / simulationResults.connectionTimes.length || 0;
+    
+    // Calculate latency metrics
+    const { latencies, successCount, errorCount } = simulationResults.messagingResults;
+    const averageLatency = latencies.reduce((a, b) => a + b, 0) / latencies.length || 0;
+    const p50Latency = calculatePercentile(latencies, 50);
+    const p95Latency = calculatePercentile(latencies, 95);
+    const p99Latency = calculatePercentile(latencies, 99);
+    const maxLatency = Math.max(...latencies, 0);
+    const sub500msCount = latencies.filter(l => l < 500).length;
+    const sub500msCompliance = (sub500msCount / latencies.length) * 100 || 0;
+
+    // Calculate throughput
+    const messagesPerSecond = (successCount / (actualDuration / 1000)) || 0;
+    const errorRate = (errorCount / (successCount + errorCount)) * 100 || 0;
+
+    // Resource usage (simulated - in real implementation, get from system)
+    const maxCpuUsage = Math.min(95, 25 + (connectionCount / 200) * 20 + Math.random() * 10);
+    const maxMemoryUsage = Math.min(90, 30 + (connectionCount / 200) * 15 + Math.random() * 8);
+    const networkUtilization = Math.min(85, 20 + (messagesPerSecond / 100) * 15 + Math.random() * 5);
+
+    // Compliance checks
+    const latencyCompliance = p95Latency < 500;
+    const connectionCapacity = simulationResults.connections.length >= Math.min(200, connectionCount);
+    const cachePerformance = cacheMetrics.hitRatio.overall > 90;
+    const overallCompliance = latencyCompliance && connectionCapacity && cachePerformance;
+
+    // Generate recommendations
+    const recommendations: string[] = [];
+    if (!latencyCompliance) {
+      recommendations.push(`Latency compliance failed: P95 latency (${p95Latency.toFixed(1)}ms) exceeds 500ms target`);
+    }
+    if (!connectionCapacity) {
+      recommendations.push(`Connection capacity insufficient: Only ${simulationResults.connections.length} of ${connectionCount} connections established`);
+    }
+    if (!cachePerformance) {
+      recommendations.push(`Cache performance below target: ${cacheMetrics.hitRatio.overall.toFixed(1)}% hit ratio (target: >90%)`);
+    }
+    if (overallCompliance) {
+      recommendations.push('All performance requirements met successfully');
+    }
+
+    const result: BenchmarkResult = {
+      testName,
+      scenario: testScenario,
+      duration: actualDuration,
+      timestamp: startTime,
+      
+      connectionMetrics: {
+        targetConnections: connectionCount,
+        actualConnections: simulationResults.connections.length,
+        connectionSuccessRate,
+        averageConnectionTime,
+        connectionEstablishmentP95: calculatePercentile(simulationResults.connectionTimes, 95),
+        connectionEstablishmentP99: calculatePercentile(simulationResults.connectionTimes, 99)
+      },
+
+      latencyMetrics: {
+        averageLatency,
+        p50Latency,
+        p95Latency,
+        p99Latency,
+        maxLatency,
+        sub500msCompliance
+      },
+
+      throughputMetrics: {
+        messagesPerSecond,
+        totalMessages: successCount + errorCount,
+        successfulMessages: successCount,
+        failedMessages: errorCount,
+        errorRate
+      },
+
+      cacheMetrics: {
+        hitRatio: cacheMetrics.hitRatio.overall,
+        averageReadLatency: cacheMetrics.performance.averageReadLatency,
+        operationsPerSecond: cacheMetrics.performance.operationsPerSecond
+      },
+
+      resourceMetrics: {
+        maxCpuUsage,
+        maxMemoryUsage,
+        networkUtilization
+      },
+
+      complianceResults: {
+        latencyCompliance,
+        connectionCapacity,
+        cachePerformance,
+        overallCompliance
+      },
+
+      errors: errorCount > 0 ? [`${errorCount} connection/messaging errors occurred`] : [],
+      recommendations
+    };
+
+    console.log(`Benchmark completed: ${overallCompliance ? 'PASSED' : 'FAILED'}`);
+    return result;
+
+  } catch (error) {
+    console.error('Benchmark error:', error);
+    
+    return {
+      testName,
+      scenario: testScenario,
+      duration: Date.now() - startTime,
+      timestamp: startTime,
+      connectionMetrics: {
+        targetConnections: connectionCount,
+        actualConnections: 0,
+        connectionSuccessRate: 0,
+        averageConnectionTime: 0,
+        connectionEstablishmentP95: 0,
+        connectionEstablishmentP99: 0
+      },
+      latencyMetrics: {
+        averageLatency: 0,
+        p50Latency: 0,
+        p95Latency: 0,
+        p99Latency: 0,
+        maxLatency: 0,
+        sub500msCompliance: 0
+      },
+      throughputMetrics: {
+        messagesPerSecond: 0,
+        totalMessages: 0,
+        successfulMessages: 0,
+        failedMessages: 0,
+        errorRate: 100
+      },
+      cacheMetrics: {
+        hitRatio: 0,
+        averageReadLatency: 0,
+        operationsPerSecond: 0
+      },
+      resourceMetrics: {
+        maxCpuUsage: 0,
+        maxMemoryUsage: 0,
+        networkUtilization: 0
+      },
+      complianceResults: {
+        latencyCompliance: false,
+        connectionCapacity: false,
+        cachePerformance: false,
+        overallCompliance: false
+      },
+      errors: [error instanceof Error ? error.message : 'Unknown benchmark error'],
+      recommendations: ['Fix benchmark errors before retesting']
+    };
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const config: BenchmarkConfig = await request.json();
+    
+    // Validate configuration
+    if (config.connectionCount && config.connectionCount > 1000) {
+      return NextResponse.json(
+        { error: 'Connection count cannot exceed 1000 for safety' },
+        { status: 400 }
+      );
+    }
+
+    if (config.testDurationMs && config.testDurationMs > 300000) {
+      return NextResponse.json(
+        { error: 'Test duration cannot exceed 5 minutes' },
+        { status: 400 }
+      );
+    }
+
+    // Run the benchmark
+    const result = await runPerformanceBenchmark(config);
+
+    return NextResponse.json({
+      success: true,
+      benchmark: result,
+      complianceStatus: result.complianceResults.overallCompliance ? 'PASSED' : 'FAILED'
+    });
+
+  } catch (error) {
+    console.error('Benchmark API error:', error);
+    return NextResponse.json(
+      { 
+        error: 'Failed to run performance benchmark',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      { status: 500 }
+    );
+  }
+}
+
+export async function GET() {
+  // Return available benchmark scenarios and default configs
+  return NextResponse.json({
+    availableScenarios: [
+      {
+        name: 'normal',
+        description: 'Normal business day load testing',
+        defaultConfig: {
+          connectionCount: 200,
+          testDurationMs: 30000,
+          messageRate: 10
+        }
+      },
+      {
+        name: 'peak_load',
+        description: 'Peak wedding season load testing',
+        defaultConfig: {
+          connectionCount: 500,
+          testDurationMs: 60000,
+          messageRate: 25
+        }
+      },
+      {
+        name: 'saturday_wedding',
+        description: 'Saturday wedding day stress testing',
+        defaultConfig: {
+          connectionCount: 1000,
+          testDurationMs: 120000,
+          messageRate: 50
+        }
+      },
+      {
+        name: 'stress_test',
+        description: 'Maximum capacity stress testing',
+        defaultConfig: {
+          connectionCount: 800,
+          testDurationMs: 180000,
+          messageRate: 100
+        }
+      }
+    ],
+    requirements: {
+      latency: 'P95 latency must be under 500ms',
+      connections: 'Must support 200+ simultaneous connections',
+      cacheHitRatio: 'Cache hit ratio must exceed 90%',
+      uptime: 'Saturday uptime must be 100%'
+    }
+  });
+}

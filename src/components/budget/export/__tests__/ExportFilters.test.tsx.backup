@@ -1,0 +1,329 @@
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { jest } from '@jest/globals';
+import userEvent from '@testing-library/user-event';
+import { ExportFilters } from '../ExportFilters';
+import { DEFAULT_EXPORT_FILTERS } from '@/types/budget-export';
+
+const mockAvailableCategories = ['Venue', 'Catering', 'Photography', 'Flowers', 'Music'];
+
+const defaultProps = {
+  filters: DEFAULT_EXPORT_FILTERS,
+  onFiltersChange: jest.fn(),
+  availableCategories: mockAvailableCategories,
+  isLoading: false
+};
+
+describe('ExportFilters', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('renders filter sections', () => {
+    render(<ExportFilters {...defaultProps} />);
+    
+    expect(screen.getByText('Export Filters')).toBeInTheDocument();
+    expect(screen.getByText('Categories')).toBeInTheDocument();
+    expect(screen.getByText('Date Range')).toBeInTheDocument();
+    expect(screen.getByText('Payment Status')).toBeInTheDocument();
+    expect(screen.getByText('Additional Options')).toBeInTheDocument();
+  });
+
+  it('displays available categories', () => {
+    render(<ExportFilters {...defaultProps} />);
+    
+    mockAvailableCategories.forEach(category => {
+      expect(screen.getByText(category)).toBeInTheDocument();
+    });
+  });
+
+  it('handles category selection', async () => {
+    const user = userEvent.setup();
+    render(<ExportFilters {...defaultProps} />);
+    
+    await user.click(screen.getByLabelText('Venue'));
+    
+    expect(defaultProps.onFiltersChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        categories: ['Venue']
+      })
+    );
+  });
+
+  it('handles category deselection', async () => {
+    const user = userEvent.setup();
+    const propsWithSelectedCategories = {
+      ...defaultProps,
+      filters: {
+        ...DEFAULT_EXPORT_FILTERS,
+        categories: ['Venue', 'Catering']
+      }
+    };
+    
+    render(<ExportFilters {...propsWithSelectedCategories} />);
+    
+    await user.click(screen.getByLabelText('Venue'));
+    
+    expect(defaultProps.onFiltersChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        categories: ['Catering']
+      })
+    );
+  });
+
+  it('handles "Select All" for categories', async () => {
+    const user = userEvent.setup();
+    render(<ExportFilters {...defaultProps} />);
+    
+    await user.click(screen.getByText('Select All'));
+    
+    expect(defaultProps.onFiltersChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        categories: mockAvailableCategories
+      })
+    );
+  });
+
+  it('handles "Clear All" for categories', async () => {
+    const user = userEvent.setup();
+    const propsWithSelectedCategories = {
+      ...defaultProps,
+      filters: {
+        ...DEFAULT_EXPORT_FILTERS,
+        categories: ['Venue', 'Catering']
+      }
+    };
+    
+    render(<ExportFilters {...propsWithSelectedCategories} />);
+    
+    await user.click(screen.getByText('Clear All'));
+    
+    expect(defaultProps.onFiltersChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        categories: []
+      })
+    );
+  });
+
+  it('handles date range selection', async () => {
+    const user = userEvent.setup();
+    render(<ExportFilters {...defaultProps} />);
+    
+    // Mock date inputs (in real implementation, this would use a date picker)
+    const startDateInput = screen.getByLabelText('Start Date');
+    const endDateInput = screen.getByLabelText('End Date');
+    
+    await user.type(startDateInput, '2024-01-01');
+    await user.type(endDateInput, '2024-12-31');
+    
+    // Simulate date change events
+    fireEvent.change(startDateInput, { target: { value: '2024-01-01' } });
+    fireEvent.change(endDateInput, { target: { value: '2024-12-31' } });
+    
+    expect(defaultProps.onFiltersChange).toHaveBeenCalled();
+  });
+
+  it('clears date range when Clear Date Range is clicked', async () => {
+    const user = userEvent.setup();
+    const propsWithDateRange = {
+      ...defaultProps,
+      filters: {
+        ...DEFAULT_EXPORT_FILTERS,
+        dateRange: {
+          start: new Date('2024-01-01'),
+          end: new Date('2024-12-31')
+        }
+      }
+    };
+    
+    render(<ExportFilters {...propsWithDateRange} />);
+    
+    await user.click(screen.getByText('Clear Date Range'));
+    
+    expect(defaultProps.onFiltersChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dateRange: null
+      })
+    );
+  });
+
+  it('handles payment status change', async () => {
+    const user = userEvent.setup();
+    render(<ExportFilters {...defaultProps} />);
+    
+    // Open the payment status select
+    await user.click(screen.getByText('All Statuses'));
+    
+    // Select "Paid" option
+    await user.click(screen.getByText('Paid Only'));
+    
+    expect(defaultProps.onFiltersChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        paymentStatus: 'paid'
+      })
+    );
+  });
+
+  it('handles additional options toggles', async () => {
+    const user = userEvent.setup();
+    render(<ExportFilters {...defaultProps} />);
+    
+    await user.click(screen.getByLabelText('Include notes and descriptions'));
+    
+    expect(defaultProps.onFiltersChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        includeNotes: false // Should toggle from true to false
+      })
+    );
+    
+    await user.click(screen.getByLabelText('Include receipt attachments'));
+    
+    expect(defaultProps.onFiltersChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        includeReceipts: true // Should toggle from false to true
+      })
+    );
+  });
+
+  it('shows active filter summary', () => {
+    const propsWithFilters = {
+      ...defaultProps,
+      filters: {
+        ...DEFAULT_EXPORT_FILTERS,
+        categories: ['Venue', 'Catering'],
+        paymentStatus: 'paid' as const,
+        dateRange: {
+          start: new Date('2024-01-01'),
+          end: new Date('2024-12-31')
+        }
+      }
+    };
+    
+    render(<ExportFilters {...propsWithFilters} />);
+    
+    expect(screen.getByText('Active Filters')).toBeInTheDocument();
+    expect(screen.getByText('2 categories selected')).toBeInTheDocument();
+    expect(screen.getByText('Jan 1, 2024 - Dec 31, 2024')).toBeInTheDocument();
+    expect(screen.getByText('Paid Only')).toBeInTheDocument();
+  });
+
+  it('validates date range', async () => {
+    const user = userEvent.setup();
+    render(<ExportFilters {...defaultProps} />);
+    
+    // Try to set end date before start date
+    const startDateInput = screen.getByLabelText('Start Date');
+    const endDateInput = screen.getByLabelText('End Date');
+    
+    fireEvent.change(startDateInput, { target: { value: '2024-12-31' } });
+    fireEvent.change(endDateInput, { target: { value: '2024-01-01' } });
+    
+    expect(screen.getByText('End date must be after start date')).toBeInTheDocument();
+  });
+
+  it('shows loading state', () => {
+    render(<ExportFilters {...defaultProps} isLoading={true} />);
+    
+    // Should show skeleton or loading state
+    expect(screen.getByText('Loading filters...')).toBeInTheDocument();
+  });
+
+  it('handles empty categories list', () => {
+    render(<ExportFilters {...defaultProps} availableCategories={[]} />);
+    
+    expect(screen.getByText('No categories available')).toBeInTheDocument();
+  });
+
+  it('shows preset date range options', async () => {
+    const user = userEvent.setup();
+    render(<ExportFilters {...defaultProps} />);
+    
+    expect(screen.getByText('Last 30 days')).toBeInTheDocument();
+    expect(screen.getByText('Last 3 months')).toBeInTheDocument();
+    expect(screen.getByText('This year')).toBeInTheDocument();
+    expect(screen.getByText('All time')).toBeInTheDocument();
+    
+    await user.click(screen.getByText('Last 30 days'));
+    
+    expect(defaultProps.onFiltersChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dateRange: expect.objectContaining({
+          start: expect.any(Date),
+          end: expect.any(Date)
+        })
+      })
+    );
+  });
+
+  it('handles clear all filters', async () => {
+    const user = userEvent.setup();
+    const propsWithFilters = {
+      ...defaultProps,
+      filters: {
+        categories: ['Venue', 'Catering'],
+        dateRange: {
+          start: new Date('2024-01-01'),
+          end: new Date('2024-12-31')
+        },
+        paymentStatus: 'paid' as const,
+        includeNotes: false,
+        includeReceipts: true,
+        includeVendors: false
+      }
+    };
+    
+    render(<ExportFilters {...propsWithFilters} />);
+    
+    await user.click(screen.getByText('Clear All Filters'));
+    
+    expect(defaultProps.onFiltersChange).toHaveBeenCalledWith(DEFAULT_EXPORT_FILTERS);
+  });
+
+  it('shows filter count in categories section', () => {
+    const propsWithSelectedCategories = {
+      ...defaultProps,
+      filters: {
+        ...DEFAULT_EXPORT_FILTERS,
+        categories: ['Venue', 'Catering', 'Photography']
+      }
+    };
+    
+    render(<ExportFilters {...propsWithSelectedCategories} />);
+    
+    expect(screen.getByText('3 of 5 selected')).toBeInTheDocument();
+  });
+
+  it('handles keyboard navigation in category list', async () => {
+    render(<ExportFilters {...defaultProps} />);
+    
+    const venueCheckbox = screen.getByLabelText('Venue');
+    
+    venueCheckbox.focus();
+    fireEvent.keyDown(venueCheckbox, { key: 'Enter' });
+    
+    expect(defaultProps.onFiltersChange).toHaveBeenCalled();
+  });
+
+  it('preserves existing filters when updating single filter', async () => {
+    const user = userEvent.setup();
+    const existingFilters = {
+      categories: ['Venue'],
+      dateRange: {
+        start: new Date('2024-01-01'),
+        end: new Date('2024-12-31')
+      },
+      paymentStatus: 'paid' as const,
+      includeNotes: false,
+      includeReceipts: true,
+      includeVendors: false
+    };
+    
+    render(<ExportFilters {...defaultProps} filters={existingFilters} />);
+    
+    await user.click(screen.getByLabelText('Catering'));
+    
+    expect(defaultProps.onFiltersChange).toHaveBeenCalledWith({
+      ...existingFilters,
+      categories: ['Venue', 'Catering']
+    });
+  });
+});

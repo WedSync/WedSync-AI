@@ -1,0 +1,199 @@
+import { createClient } from '@supabase/supabase-js';
+import { NextRequest, NextResponse } from 'next/server';
+import { headers } from 'next/headers';
+import crypto from 'crypto';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    (() => {
+      throw new Error('Missing environment variable: NEXT_PUBLIC_SUPABASE_URL');
+    })(),
+  process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    (() => {
+      throw new Error(
+        'Missing environment variable: SUPABASE_SERVICE_ROLE_KEY',
+      );
+    })(),
+);
+
+function verifyResendSignature(payload: string, signature: string): boolean {
+  const expectedSignature = crypto
+    .createHmac(
+      'sha256',
+      process.env.RESEND_WEBHOOK_SECRET ||
+        (() => {
+          throw new Error(
+            'Missing environment variable: RESEND_WEBHOOK_SECRET',
+          );
+        })(),
+    )
+    .update(payload)
+    .digest('hex');
+
+  return crypto.timingSafeEqual(
+    Buffer.from(signature),
+    Buffer.from(expectedSignature),
+  );
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const headersList = await headers();
+    const signature = headersList.get('resend-signature');
+
+    if (!signature) {
+      return NextResponse.json({ error: 'Missing signature' }, { status: 401 });
+    }
+
+    const payload = await request.text();
+
+    if (!verifyResendSignature(payload, signature)) {
+      return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
+    }
+
+    const event = JSON.parse(payload);
+
+    // Log webhook event
+    await supabase.from('broadcast_webhook_logs').insert({
+      webhook_id: crypto.randomUUID(),
+      service: 'resend',
+      event_type: event.type,
+      payload: event,
+      processed_at: new Date().toISOString(),
+      status: 'received',
+    });
+
+    // Process different event types
+    switch (event.type) {
+      case 'email.sent':
+        await handleEmailSent(event);
+        break;
+      case 'email.delivered':
+        await handleEmailDelivered(event);
+        break;
+      case 'email.opened':
+        await handleEmailOpened(event);
+        break;
+      case 'email.clicked':
+        await handleEmailClicked(event);
+        break;
+      case 'email.bounced':
+        await handleEmailBounced(event);
+        break;
+      case 'email.complained':
+        await handleEmailComplained(event);
+        break;
+      default:
+        console.log('Unhandled email event type:', event.type);
+    }
+
+    // Update webhook log status
+    await supabase
+      .from('broadcast_webhook_logs')
+      .update({ status: 'processed' })
+      .eq('webhook_id', event.id);
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error('Email webhook error:', error);
+
+    // Log error
+    await supabase.from('broadcast_webhook_logs').insert({
+      webhook_id: crypto.randomUUID(),
+      service: 'resend',
+      event_type: 'error',
+      payload: {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      },
+      processed_at: new Date().toISOString(),
+      status: 'error',
+    });
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+async function handleEmailSent(event: any) {
+  await supabase.from('broadcast_analytics').upsert({
+    message_id: event.data.email_id,
+    event_type: 'sent',
+    timestamp: new Date(event.created_at).toISOString(),
+    metadata: {
+      to: event.data.to,
+      from: event.data.from,
+      subject: event.data.subject,
+    },
+  });
+}
+
+async function handleEmailDelivered(event: any) {
+  await supabase.from('broadcast_analytics').upsert({
+    message_id: event.data.email_id,
+    event_type: 'delivered',
+    timestamp: new Date(event.created_at).toISOString(),
+  });
+}
+
+async function handleEmailOpened(event: any) {
+  await supabase.from('broadcast_analytics').upsert({
+    message_id: event.data.email_id,
+    event_type: 'opened',
+    timestamp: new Date(event.created_at).toISOString(),
+    metadata: {
+      ip_address: event.data.ip_address,
+      user_agent: event.data.user_agent,
+    },
+  });
+}
+
+async function handleEmailClicked(event: any) {
+  await supabase.from('broadcast_analytics').upsert({
+    message_id: event.data.email_id,
+    event_type: 'clicked',
+    timestamp: new Date(event.created_at).toISOString(),
+    metadata: {
+      url: event.data.link.url,
+      ip_address: event.data.ip_address,
+    },
+  });
+}
+
+async function handleEmailBounced(event: any) {
+  await supabase.from('broadcast_analytics').upsert({
+    message_id: event.data.email_id,
+    event_type: 'bounced',
+    timestamp: new Date(event.created_at).toISOString(),
+    metadata: {
+      bounce_type: event.data.bounce_type,
+      reason: event.data.reason,
+    },
+  });
+
+  // Mark email as bounced in wedding communication log
+  await supabase.from('wedding_communication_log').insert({
+    message_id: event.data.email_id,
+    communication_type: 'email',
+    status: 'bounced',
+    error_details: event.data.reason,
+    logged_at: new Date().toISOString(),
+  });
+}
+
+async function handleEmailComplained(event: any) {
+  await supabase.from('broadcast_analytics').upsert({
+    message_id: event.data.email_id,
+    event_type: 'complained',
+    timestamp: new Date(event.created_at).toISOString(),
+  });
+
+  // Mark recipient as complained for future suppression
+  await supabase.from('wedding_communication_log').insert({
+    message_id: event.data.email_id,
+    communication_type: 'email',
+    status: 'complained',
+    logged_at: new Date().toISOString(),
+  });
+}

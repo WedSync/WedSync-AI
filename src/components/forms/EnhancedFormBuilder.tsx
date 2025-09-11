@@ -1,0 +1,493 @@
+'use client';
+
+import React, {
+  useState,
+  useCallback,
+  useMemo,
+  lazy,
+  Suspense,
+  useEffect,
+} from 'react';
+import { FormCanvas } from './OptimizedFormCanvas';
+import { FieldPalette } from './OptimizedFieldPalette';
+import { CoreFieldsPanel } from './CoreFieldsPanel';
+import { FormField, FormBuilderState } from '../../types/forms';
+import { useAutoSave, SaveStatusIndicator } from '../../hooks/useAutoSave';
+import { createFormSchema } from '../../lib/form-validation';
+import { generateAlphanumericId } from '../../lib/crypto-utils';
+import { detectCoreFieldFromLabel } from '@/types/core-fields';
+import { motion, AnimatePresence } from 'framer-motion';
+import { SparklesIcon } from '@heroicons/react/24/outline';
+
+// Lazy load the preview component
+const FormPreview = lazy(() =>
+  import('./FormPreview').then((mod) => ({ default: mod.FormPreview })),
+);
+
+interface EnhancedFormBuilderProps {
+  formId?: string;
+  clientId?: string;
+  pdfExtractedData?: {
+    fields: Record<string, any>;
+    confidence: Record<string, number>;
+    sourceFile: string;
+  };
+}
+
+// Enhanced form builder with core fields integration
+export const EnhancedFormBuilder = React.memo(function FormBuilder({
+  formId = `form-${Date.now()}`,
+  clientId = '',
+  pdfExtractedData,
+}: EnhancedFormBuilderProps) {
+  const [state, setState] = useState<FormBuilderState>({
+    fields: [],
+    selectedField: null,
+    isPreview: false,
+  });
+
+  const [isMobilePaletteOpen, setIsMobilePaletteOpen] = useState(false);
+  const [showCoreFields, setShowCoreFields] = useState(true);
+  const [autoFilledFields, setAutoFilledFields] = useState<Set<string>>(
+    new Set(),
+  );
+  const [fieldConfidences, setFieldConfidences] = useState<Map<string, number>>(
+    new Map(),
+  );
+
+  // Auto-save hook with 30-second interval
+  const { saveStatus, lastSaved, saveNow, debouncedSave } = useAutoSave(state, {
+    intervalMs: 30000,
+    debounceMs: 1000,
+    onSave: async (data) => {
+      // Save to localStorage or Supabase
+      localStorage.setItem('form-builder-draft', JSON.stringify(data));
+      console.log('Form auto-saved:', new Date().toISOString());
+    },
+    enabled: true,
+  });
+
+  // Memoized validation schema
+  const validationSchema = useMemo(
+    () => createFormSchema(state.fields),
+    [state.fields],
+  );
+
+  // Handle core fields population
+  const handleCoreFieldsPopulated = useCallback(
+    (populatedData: Record<string, any>) => {
+      const newAutoFilledFields = new Set<string>();
+      const newFieldConfidences = new Map<string, number>();
+
+      setState((prev) => {
+        const updatedFields = prev.fields.map((field) => {
+          // Detect if this field matches a core field
+          const detection = detectCoreFieldFromLabel(field.label);
+
+          if (detection.field_key && populatedData[detection.field_key]) {
+            newAutoFilledFields.add(field.id);
+            newFieldConfidences.set(field.id, detection.confidence);
+
+            return {
+              ...field,
+              value: populatedData[detection.field_key],
+              metadata: {
+                ...field.metadata,
+                isAutoFilled: true,
+                coreFieldKey: detection.field_key,
+                confidence: detection.confidence,
+              },
+            };
+          }
+
+          return field;
+        });
+
+        return {
+          ...prev,
+          fields: updatedFields,
+        };
+      });
+
+      setAutoFilledFields(newAutoFilledFields);
+      setFieldConfidences(newFieldConfidences);
+      debouncedSave();
+    },
+    [debouncedSave],
+  );
+
+  // Optimized callbacks with useCallback
+  const handleAddField = useCallback(
+    (fieldType: string) => {
+      const newField: FormField = {
+        id: `field-${Date.now()}-${generateAlphanumericId(9)}`,
+        type: fieldType as FormField['type'],
+        label: `New ${fieldType} Field`,
+        required: false,
+        placeholder: '',
+        options: ['select', 'radio', 'checkbox'].includes(fieldType)
+          ? ['Option 1']
+          : undefined,
+      };
+
+      setState((prev) => ({
+        ...prev,
+        fields: [...prev.fields, newField],
+        selectedField: newField.id,
+      }));
+
+      setIsMobilePaletteOpen(false);
+      debouncedSave();
+    },
+    [debouncedSave],
+  );
+
+  const handleUpdateField = useCallback(
+    (fieldId: string, updates: Partial<FormField>) => {
+      setState((prev) => ({
+        ...prev,
+        fields: prev.fields.map((field) =>
+          field.id === fieldId ? { ...field, ...updates } : field,
+        ),
+      }));
+
+      // If label changed, re-detect core field mapping
+      if (updates.label) {
+        const field = state.fields.find((f) => f.id === fieldId);
+        if (field) {
+          const detection = detectCoreFieldFromLabel(updates.label);
+          if (detection.field_key && detection.confidence > 0.7) {
+            setFieldConfidences((prev) =>
+              new Map(prev).set(fieldId, detection.confidence),
+            );
+          }
+        }
+      }
+
+      debouncedSave();
+    },
+    [debouncedSave, state.fields],
+  );
+
+  const handleDeleteField = useCallback(
+    (fieldId: string) => {
+      setState((prev) => ({
+        ...prev,
+        fields: prev.fields.filter((field) => field.id !== fieldId),
+        selectedField:
+          prev.selectedField === fieldId ? null : prev.selectedField,
+      }));
+
+      setAutoFilledFields((prev) => {
+        const newSet = new Set(prev);
+        newSet.delete(fieldId);
+        return newSet;
+      });
+
+      setFieldConfidences((prev) => {
+        const newMap = new Map(prev);
+        newMap.delete(fieldId);
+        return newMap;
+      });
+
+      debouncedSave();
+    },
+    [debouncedSave],
+  );
+
+  const handleReorderFields = useCallback(
+    (startIndex: number, endIndex: number) => {
+      setState((prev) => {
+        const result = Array.from(prev.fields);
+        const [removed] = result.splice(startIndex, 1);
+        result.splice(endIndex, 0, removed);
+
+        return {
+          ...prev,
+          fields: result,
+        };
+      });
+      debouncedSave();
+    },
+    [debouncedSave],
+  );
+
+  const handleSelectField = useCallback((fieldId: string | null) => {
+    setState((prev) => ({
+      ...prev,
+      selectedField: fieldId,
+    }));
+  }, []);
+
+  const togglePreview = useCallback(() => {
+    setState((prev) => ({
+      ...prev,
+      isPreview: !prev.isPreview,
+      selectedField: null,
+    }));
+  }, []);
+
+  const toggleMobilePalette = useCallback(() => {
+    setIsMobilePaletteOpen((prev) => !prev);
+  }, []);
+
+  // Memoized selected field data
+  const selectedFieldData = useMemo(
+    () => state.fields.find((f) => f.id === state.selectedField) || null,
+    [state.fields, state.selectedField],
+  );
+
+  // Stats for display
+  const autoFillStats = useMemo(() => {
+    const total = state.fields.length;
+    const autoFilled = autoFilledFields.size;
+    const percentage = total > 0 ? Math.round((autoFilled / total) * 100) : 0;
+    return { total, autoFilled, percentage };
+  }, [state.fields.length, autoFilledFields.size]);
+
+  return (
+    <div className="flex flex-col h-screen bg-gray-50 md:flex-row">
+      {/* Mobile Header */}
+      <div className="flex items-center justify-between p-4 bg-white border-b md:hidden">
+        <div className="flex items-center gap-2">
+          <h1 className="text-lg font-semibold text-gray-900">Form Builder</h1>
+          <SaveStatusIndicator status={saveStatus} lastSaved={lastSaved} />
+        </div>
+        <div className="flex items-center gap-2">
+          {autoFillStats.autoFilled > 0 && (
+            <div className="flex items-center space-x-1 px-2 py-1 bg-green-50 rounded-md">
+              <SparklesIcon className="h-4 w-4 text-green-600" />
+              <span className="text-xs text-green-700 font-medium">
+                {autoFillStats.autoFilled} auto-filled
+              </span>
+            </div>
+          )}
+          <button
+            onClick={togglePreview}
+            className="px-3 py-2 text-sm font-medium text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            aria-label={state.isPreview ? 'Edit mode' : 'Preview mode'}
+          >
+            {state.isPreview ? 'Edit' : 'Preview'}
+          </button>
+        </div>
+      </div>
+
+      {/* Desktop Sidebar */}
+      <div className="hidden md:flex md:w-80 md:flex-col md:bg-white md:border-r">
+        <div className="p-6 border-b">
+          <div className="flex items-center justify-between mb-2">
+            <h1 className="text-xl font-semibold text-gray-900">
+              Form Builder
+            </h1>
+            <button
+              onClick={togglePreview}
+              className="px-4 py-2 text-sm font-medium text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              {state.isPreview ? 'Edit' : 'Preview'}
+            </button>
+          </div>
+          <SaveStatusIndicator status={saveStatus} lastSaved={lastSaved} />
+
+          {autoFillStats.autoFilled > 0 && (
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mt-3 flex items-center justify-between px-3 py-2 bg-gradient-to-r from-green-50 to-emerald-50 rounded-lg border border-green-200"
+            >
+              <div className="flex items-center space-x-2">
+                <SparklesIcon className="h-5 w-5 text-green-600" />
+                <span className="text-sm font-medium text-green-800">
+                  {autoFillStats.percentage}% Auto-filled
+                </span>
+              </div>
+              <span className="text-xs text-green-600">
+                {autoFillStats.autoFilled}/{autoFillStats.total} fields
+              </span>
+            </motion.div>
+          )}
+        </div>
+
+        <FieldPalette
+          onAddField={handleAddField}
+          selectedField={state.selectedField}
+          fields={state.fields}
+          onUpdateField={handleUpdateField}
+          className="flex-1 overflow-y-auto"
+        />
+      </div>
+
+      {/* Main Content Area */}
+      <div className="flex-1 flex flex-col min-h-0">
+        {/* Core Fields Panel - Always visible when not in preview */}
+        {!state.isPreview && showCoreFields && clientId && (
+          <div className="bg-white border-b">
+            <CoreFieldsPanel
+              formId={formId}
+              clientId={clientId}
+              onFieldsPopulated={handleCoreFieldsPopulated}
+              extractedPDFData={pdfExtractedData}
+            />
+          </div>
+        )}
+
+        {state.isPreview ? (
+          <Suspense
+            fallback={
+              <div className="flex items-center justify-center h-full">
+                <div className="text-center">
+                  <svg
+                    className="animate-spin h-8 w-8 text-blue-600 mx-auto mb-4"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                  >
+                    <circle
+                      className="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      strokeWidth="4"
+                    />
+                    <path
+                      className="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                    />
+                  </svg>
+                  <p className="text-gray-600">Loading preview...</p>
+                </div>
+              </div>
+            }
+          >
+            <FormPreview
+              fields={state.fields}
+              title="Form Preview"
+              className="flex-1 overflow-y-auto p-4"
+            />
+          </Suspense>
+        ) : (
+          <div className="flex-1 relative">
+            <FormCanvas
+              fields={state.fields.map((field) => ({
+                ...field,
+                className: autoFilledFields.has(field.id)
+                  ? 'ring-2 ring-green-500 ring-opacity-50 bg-green-50'
+                  : '',
+              }))}
+              selectedField={state.selectedField}
+              onSelectField={handleSelectField}
+              onUpdateField={handleUpdateField}
+              onDeleteField={handleDeleteField}
+              onReorderFields={handleReorderFields}
+              isPreview={false}
+              className="flex-1"
+            />
+
+            {/* Auto-fill indicator overlay */}
+            <AnimatePresence>
+              {autoFilledFields.size > 0 && (
+                <motion.div
+                  initial={{ opacity: 0, x: 20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: 20 }}
+                  className="absolute top-4 right-4 bg-white rounded-lg shadow-lg border border-gray-200 p-3"
+                >
+                  <div className="flex items-center space-x-2">
+                    <div className="p-2 bg-green-100 rounded-full">
+                      <SparklesIcon className="h-5 w-5 text-green-600" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">
+                        Core Fields Active
+                      </p>
+                      <p className="text-xs text-gray-500">
+                        {autoFillStats.autoFilled} fields auto-populated
+                      </p>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        )}
+      </div>
+
+      {/* Mobile Drawer */}
+      {isMobilePaletteOpen && !state.isPreview && (
+        <MobileDrawer
+          onClose={toggleMobilePalette}
+          onAddField={handleAddField}
+          selectedField={selectedFieldData}
+          fields={state.fields}
+          onUpdateField={handleUpdateField}
+        />
+      )}
+    </div>
+  );
+});
+
+// Memoized mobile drawer component
+const MobileDrawer = React.memo(function MobileDrawer({
+  onClose,
+  onAddField,
+  selectedField,
+  fields,
+  onUpdateField,
+}: {
+  onClose: () => void;
+  onAddField: (type: string) => void;
+  selectedField: FormField | null;
+  fields: FormField[];
+  onUpdateField: (id: string, updates: Partial<FormField>) => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 md:hidden">
+      {/* Backdrop */}
+      <div
+        className="absolute inset-0 bg-black bg-opacity-50"
+        onClick={onClose}
+      />
+
+      {/* Drawer */}
+      <div className="absolute bottom-0 left-0 right-0 bg-white rounded-t-2xl max-h-[80vh] flex flex-col animate-slide-in-bottom">
+        {/* Drag Handle */}
+        <div className="flex justify-center py-3">
+          <div className="w-12 h-1 bg-gray-300 rounded-full" />
+        </div>
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 pb-4 border-b">
+          <h2 className="text-lg font-semibold text-gray-900">Add Fields</h2>
+          <button
+            onClick={onClose}
+            className="p-2 text-gray-500 hover:text-gray-700 focus:outline-none focus:ring-2 focus:ring-gray-500 rounded-lg"
+            aria-label="Close palette"
+          >
+            <svg
+              className="w-5 h-5"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M6 18L18 6M6 6l12 12"
+              />
+            </svg>
+          </button>
+        </div>
+
+        <FieldPalette
+          onAddField={onAddField}
+          selectedField={selectedField?.id || null}
+          fields={fields}
+          onUpdateField={onUpdateField}
+          className="flex-1 overflow-y-auto px-6 pb-6"
+          isMobile={true}
+        />
+      </div>
+    </div>
+  );
+});

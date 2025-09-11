@@ -1,0 +1,293 @@
+import { SyncProgressTracker, SyncProgress, ExtendedSyncOperation, WeddingProgressContext } from '@/lib/offline/progress-tracker';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { SyncEventType, SyncPriority } from '@/lib/offline/background-sync';
+import { EventEmitter } from 'events';
+
+describe('SyncProgressTracker', () => {
+  let progressTracker: SyncProgressTracker;
+  beforeEach(() => {
+    progressTracker = new SyncProgressTracker();
+    vi.clearAllMocks();
+  });
+  afterEach(() => {
+    progressTracker.destroy();
+  describe('progress tracking lifecycle', () => {
+    it('should start tracking a sync operation', () => {
+      const operation: ExtendedSyncOperation = {
+        id: 'op-1',
+        type: SyncEventType.CLIENT_DATA_SYNC,
+        data: { clientId: 'client-1', updates: ['timeline', 'vendors'] },
+        priority: SyncPriority.MEDIUM,
+        estimatedSize: 500000,
+        estimatedDuration: 30000,
+      };
+      const progress = progressTracker.startTracking(operation);
+      expect(progress).toBeDefined();
+      expect(progress.operationId).toBe('op-1');
+      expect(progress.status).toBe('initializing');
+      expect(progress.percentage).toBe(0);
+      expect(progress.userMessage).toContain('Preparing to sync');
+    });
+    it('should start tracking with wedding context', () => {
+        id: 'wedding-op-1',
+        type: SyncEventType.GUEST_LIST_UPDATE,
+        data: { guestId: 'guest-1', status: 'confirmed' },
+        priority: SyncPriority.HIGH,
+        estimatedSize: 100000,
+        estimatedDuration: 15000,
+      const weddingContext: WeddingProgressContext = {
+        weddingId: 'wedding-123',
+        eventDate: Date.now() + 86400000, // Tomorrow
+        isEventDay: false,
+        coordinatorName: 'Sarah Johnson',
+        guestImpact: true,
+        vendorCritical: false,
+      const progress = progressTracker.startTracking(operation, weddingContext);
+      expect(progress.weddingContext).toEqual(weddingContext);
+      expect(progress.userMessage).toContain('guest list');
+      expect(progress.contextIndicators).toContain('Guest Impact');
+    it('should generate appropriate user messages for different operation types', () => {
+      const operations = [
+        {
+          type: SyncEventType.CLIENT_DATA_SYNC,
+          expected: 'client information',
+        },
+          type: SyncEventType.VENDOR_COMMUNICATION,
+          expected: 'vendor messages',
+          type: SyncEventType.GUEST_LIST_UPDATE,
+          expected: 'guest list',
+          type: SyncEventType.TIMELINE_CHANGES,
+          expected: 'timeline updates',
+          type: SyncEventType.MEDIA_UPLOAD,
+          expected: 'photos and documents',
+      ];
+      operations.forEach(({ type, expected }) => {
+        const operation: ExtendedSyncOperation = {
+          id: `op-${type}`,
+          type,
+          data: {},
+          priority: SyncPriority.MEDIUM,
+        };
+        const progress = progressTracker.startTracking(operation);
+        expect(progress.userMessage.toLowerCase()).toContain(expected);
+      });
+  describe('progress updates', () => {
+    let operationId: string;
+    beforeEach(() => {
+        id: 'update-test-op',
+        data: {},
+        estimatedSize: 1000000,
+        estimatedDuration: 60000,
+      operationId = progress.operationId;
+    it('should update progress percentage and status', () => {
+      const updated = progressTracker.updateProgress(operationId, {
+        percentage: 45,
+        status: 'uploading',
+      expect(updated).toBe(true);
+      const progress = progressTracker.getProgress(operationId);
+      expect(progress?.percentage).toBe(45);
+      expect(progress?.status).toBe('uploading');
+    it('should update network impact information', () => {
+        networkImpact: {
+          currentSpeed: 2.5,
+          estimatedTimeRemaining: 25000,
+          retryCount: 1,
+          qualityLevel: 'good',
+      expect(progress?.networkImpact?.currentSpeed).toBe(2.5);
+      expect(progress?.networkImpact?.retryCount).toBe(1);
+    it('should update user message dynamically', () => {
+      progressTracker.updateProgress(operationId, {
+        percentage: 75,
+        status: 'finalizing',
+        userMessage: 'Almost done syncing your data...',
+      expect(progress?.userMessage).toBe('Almost done syncing your data...');
+    it('should handle invalid operation ID gracefully', () => {
+      const updated = progressTracker.updateProgress('non-existent-id', {
+        percentage: 50,
+      expect(updated).toBe(false);
+    it('should validate percentage bounds', () => {
+      // Test negative percentage
+      progressTracker.updateProgress(operationId, { percentage: -10 });
+      let progress = progressTracker.getProgress(operationId);
+      expect(progress?.percentage).toBe(0);
+      // Test percentage over 100
+      progressTracker.updateProgress(operationId, { percentage: 150 });
+      progress = progressTracker.getProgress(operationId);
+      expect(progress?.percentage).toBe(100);
+  describe('progress completion', () => {
+    it('should complete operation successfully', () => {
+        id: 'complete-op',
+        type: SyncEventType.VENDOR_COMMUNICATION,
+      progressTracker.startTracking(operation);
+      const completed = progressTracker.completeOperation('complete-op', {
+        success: true,
+        message: 'Vendor messages synced successfully',
+        syncedItems: 5,
+      expect(completed).toBe(true);
+      const progress = progressTracker.getProgress('complete-op');
+      expect(progress?.status).toBe('completed');
+      expect(progress?.completionResult?.success).toBe(true);
+      expect(progress?.completionResult?.syncedItems).toBe(5);
+    it('should handle operation failure', () => {
+        id: 'failed-op',
+      const completed = progressTracker.completeOperation('failed-op', {
+        success: false,
+        error: 'Network timeout after 3 retries',
+        retryAvailable: true,
+      const progress = progressTracker.getProgress('failed-op');
+      expect(progress?.status).toBe('failed');
+      expect(progress?.completionResult?.success).toBe(false);
+      expect(progress?.completionResult?.retryAvailable).toBe(true);
+    it('should emit completion events', (done) => {
+        id: 'event-op',
+      progressTracker.on('operation-completed', (result) => {
+        expect(result.operationId).toBe('event-op');
+        expect(result.success).toBe(true);
+        done();
+      progressTracker.completeOperation('event-op', { success: true });
+  describe('wedding context handling', () => {
+    it('should generate event day specific messages', () => {
+        id: 'event-day-op',
+        priority: SyncPriority.CRITICAL,
+      const eventDayContext: WeddingProgressContext = {
+        eventDate: Date.now(), // Today
+        isEventDay: true,
+        coordinatorName: 'Sarah',
+      const progress = progressTracker.startTracking(operation, eventDayContext);
+      expect(progress.userMessage).toContain('event day');
+      expect(progress.contextIndicators).toContain('Event Day');
+    it('should handle vendor critical scenarios', () => {
+        id: 'vendor-critical-op',
+      const vendorCriticalContext: WeddingProgressContext = {
+        weddingId: 'wedding-456',
+        eventDate: Date.now() + 172800000, // 2 days from now
+        coordinatorName: 'Mike',
+        guestImpact: false,
+        vendorCritical: true,
+      const progress = progressTracker.startTracking(operation, vendorCriticalContext);
+      expect(progress.contextIndicators).toContain('Vendor Impact');
+      expect(progress.userMessage).toContain('vendor');
+    it('should update estimated time based on wedding context', () => {
+        id: 'time-estimate-op',
+        type: SyncEventType.TIMELINE_CHANGES,
+        estimatedDuration: 30000, // 30 seconds
+      const urgentContext: WeddingProgressContext = {
+        weddingId: 'wedding-789',
+        eventDate: Date.now() + 3600000, // 1 hour from now
+        coordinatorName: 'Lisa',
+      const progress = progressTracker.startTracking(operation, urgentContext);
+      // Should reduce estimated time for urgent contexts
+      expect(progress.estimatedTimeRemaining).toBeLessThan(30000);
+  describe('bulk operations', () => {
+    it('should get all active progress items', () => {
+        { id: 'bulk-1', type: SyncEventType.CLIENT_DATA_SYNC },
+        { id: 'bulk-2', type: SyncEventType.VENDOR_COMMUNICATION },
+        { id: 'bulk-3', type: SyncEventType.GUEST_LIST_UPDATE },
+      operations.forEach(({ id, type }) => {
+          id,
+        progressTracker.startTracking(operation);
+      const allProgress = progressTracker.getAllProgress();
+      
+      expect(allProgress).toHaveLength(3);
+      expect(allProgress.map(p => p.operationId)).toEqual(['bulk-1', 'bulk-2', 'bulk-3']);
+    it('should filter progress by wedding ID', () => {
+      const wedding1Context: WeddingProgressContext = {
+        weddingId: 'wedding-1',
+        eventDate: Date.now(),
+        coordinatorName: 'Alice',
+      const wedding2Context: WeddingProgressContext = {
+        weddingId: 'wedding-2',
+        coordinatorName: 'Bob',
+      // Create operations for different weddings
+      progressTracker.startTracking({
+        id: 'w1-op1',
+      }, wedding1Context);
+        id: 'w1-op2',
+        id: 'w2-op1',
+      }, wedding2Context);
+      const wedding1Progress = progressTracker.getProgressByWedding('wedding-1');
+      const wedding2Progress = progressTracker.getProgressByWedding('wedding-2');
+      expect(wedding1Progress).toHaveLength(2);
+      expect(wedding2Progress).toHaveLength(1);
+      expect(wedding1Progress[0].weddingContext?.weddingId).toBe('wedding-1');
+      expect(wedding2Progress[0].weddingContext?.weddingId).toBe('wedding-2');
+    it('should clear completed operations', () => {
+        id: 'clear-test-op',
+      progressTracker.completeOperation('clear-test-op', { success: true });
+      expect(progressTracker.getAllProgress()).toHaveLength(1);
+      progressTracker.clearCompleted();
+      expect(progressTracker.getAllProgress()).toHaveLength(0);
+  describe('event emission', () => {
+    it('should emit progress update events', (done) => {
+        id: 'event-test-op',
+      progressTracker.on('progress-updated', (progress) => {
+        expect(progress.operationId).toBe('event-test-op');
+        expect(progress.percentage).toBe(50);
+      progressTracker.updateProgress('event-test-op', { percentage: 50 });
+    it('should emit operation started events', (done) => {
+        id: 'start-event-op',
+      progressTracker.on('operation-started', (progress) => {
+        expect(progress.operationId).toBe('start-event-op');
+        expect(progress.status).toBe('initializing');
+    it('should emit wedding context events for critical operations', (done) => {
+        id: 'wedding-event-op',
+      const context: WeddingProgressContext = {
+      progressTracker.on('wedding-critical-operation', (data) => {
+        expect(data.operationId).toBe('wedding-event-op');
+        expect(data.isEventDay).toBe(true);
+        expect(data.guestImpact).toBe(true);
+      progressTracker.startTracking(operation, context);
+  describe('error handling and edge cases', () => {
+    it('should handle operations without estimated duration', () => {
+        id: 'no-duration-op',
+        // No estimatedDuration provided
+      expect(progress.estimatedTimeRemaining).toBeGreaterThan(0);
+      expect(progress.estimatedTimeRemaining).toBeLessThan(60000); // Should use fallback
+    it('should handle operations with invalid data', () => {
+        id: 'invalid-data-op',
+        type: null as any,
+        data: undefined as any,
+        priority: 'invalid' as any,
+      expect(() => {
+      }).not.toThrow();
+      const progress = progressTracker.getProgress('invalid-data-op');
+      expect(progress?.userMessage).toBeDefined();
+    it('should handle concurrent updates to the same operation', () => {
+        id: 'concurrent-op',
+      // Simulate concurrent updates
+      const updates = [
+        { percentage: 10 },
+        { percentage: 20 },
+        { percentage: 30 },
+        { percentage: 40 },
+        { percentage: 50 },
+      const promises = updates.map(update =>
+        Promise.resolve(progressTracker.updateProgress('concurrent-op', update))
+      );
+      return Promise.all(promises).then(results => {
+        expect(results.every(result => result === true)).toBe(true);
+        
+        const finalProgress = progressTracker.getProgress('concurrent-op');
+        expect(finalProgress?.percentage).toBe(50);
+    it('should handle memory cleanup for completed operations', () => {
+      const operationIds: string[] = [];
+      // Create many operations
+      for (let i = 0; i < 100; i++) {
+          id: `cleanup-op-${i}`,
+        operationIds.push(operation.id);
+      }
+      // Complete all operations
+      operationIds.forEach(id => {
+        progressTracker.completeOperation(id, { success: true });
+      expect(progressTracker.getAllProgress()).toHaveLength(100);
+      // Clear completed
+  describe('destroy and cleanup', () => {
+    it('should cleanup all resources on destroy', () => {
+        id: 'cleanup-test-op',
+      progressTracker.destroy();
+    it('should remove all event listeners on destroy', () => {
+      const removeAllListenersSpy = vi.spyOn(progressTracker, 'removeAllListeners');
+      expect(removeAllListenersSpy).toHaveBeenCalled();
+    it('should handle operations gracefully after destroy', () => {
+        id: 'post-destroy-op',
+});

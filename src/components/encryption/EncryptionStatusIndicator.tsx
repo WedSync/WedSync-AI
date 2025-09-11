@@ -1,0 +1,326 @@
+'use client';
+
+/**
+ * WS-175 Advanced Data Encryption - Team A Round 1
+ * EncryptionStatusIndicator Component
+ *
+ * Shows encryption status with visual indicators for wedding supplier data protection.
+ * Displays encryption level, status, and compliance information with accessible design.
+ */
+
+import React from 'react';
+import { cn } from '@/lib/utils';
+import { Badge } from '@/components/untitled-ui/badge';
+import {
+  Shield,
+  ShieldCheck,
+  ShieldAlert,
+  ShieldX,
+  Loader2,
+  Lock,
+  Unlock,
+  AlertTriangle,
+  CheckCircle2,
+  Clock,
+  Zap,
+} from 'lucide-react';
+import {
+  EncryptionStatusIndicatorProps,
+  EncryptionDisplayStatus,
+  EncryptionStatusLevel,
+} from '@/types/encryption';
+
+export function EncryptionStatusIndicator({
+  status,
+  level,
+  fieldName,
+  algorithm,
+  lastEncrypted,
+  keyId,
+  complianceLevel,
+  showDetails = false,
+  className,
+  size = 'md',
+  variant = 'badge',
+  interactive = false,
+  onStatusClick,
+}: EncryptionStatusIndicatorProps) {
+  // Status configurations with colors, icons, and messages
+  const statusConfig = {
+    encrypted: {
+      icon: ShieldCheck,
+      color: 'bg-green-50 text-green-700 border-green-200',
+      badgeColor: 'bg-green-100 text-green-800',
+      label: 'Encrypted',
+      description: 'Data is securely encrypted',
+    },
+    decrypted: {
+      icon: Unlock,
+      color: 'bg-amber-50 text-amber-700 border-amber-200',
+      badgeColor: 'bg-amber-100 text-amber-800',
+      label: 'Decrypted',
+      description: 'Data is currently readable',
+    },
+    pending: {
+      icon: Clock,
+      color: 'bg-blue-50 text-blue-700 border-blue-200',
+      badgeColor: 'bg-blue-100 text-blue-800',
+      label: 'Processing',
+      description: 'Encryption in progress',
+    },
+    loading: {
+      icon: Loader2,
+      color: 'bg-gray-50 text-gray-700 border-gray-200',
+      badgeColor: 'bg-gray-100 text-gray-800',
+      label: 'Loading',
+      description: 'Checking encryption status',
+    },
+    error: {
+      icon: ShieldX,
+      color: 'bg-red-50 text-red-700 border-red-200',
+      badgeColor: 'bg-red-100 text-red-800',
+      label: 'Error',
+      description: 'Encryption failed or compromised',
+    },
+  };
+
+  // Level configurations with security strength indicators
+  const levelConfig = {
+    none: {
+      icon: ShieldX,
+      strength: 'No Protection',
+      color: 'text-red-600',
+      bgColor: 'bg-red-50',
+      description: 'No encryption applied',
+    },
+    basic: {
+      icon: Shield,
+      strength: 'Basic',
+      color: 'text-orange-600',
+      bgColor: 'bg-orange-50',
+      description: 'AES-128 encryption',
+    },
+    standard: {
+      icon: ShieldCheck,
+      strength: 'Standard',
+      color: 'text-blue-600',
+      bgColor: 'bg-blue-50',
+      description: 'AES-256 encryption',
+    },
+    high: {
+      icon: ShieldCheck,
+      strength: 'High Security',
+      color: 'text-green-600',
+      bgColor: 'bg-green-50',
+      description: 'AES-256 with key wrapping',
+    },
+    maximum: {
+      icon: Zap,
+      strength: 'Maximum Security',
+      color: 'text-purple-600',
+      bgColor: 'bg-purple-50',
+      description: 'AES-256-GCM with PBKDF2',
+    },
+  };
+
+  // Compliance level badges
+  const complianceConfig = {
+    GDPR: { color: 'bg-blue-100 text-blue-800', label: 'GDPR' },
+    PCI: { color: 'bg-purple-100 text-purple-800', label: 'PCI DSS' },
+    HIPAA: { color: 'bg-green-100 text-green-800', label: 'HIPAA' },
+    SOX: { color: 'bg-orange-100 text-orange-800', label: 'SOX' },
+  };
+
+  const currentStatus = statusConfig[status];
+  const currentLevel = levelConfig[level];
+  const StatusIcon = currentStatus.icon;
+  const LevelIcon = currentLevel.icon;
+  const isAnimated = status === 'loading' || status === 'pending';
+
+  // Size configurations
+  const sizeConfig = {
+    sm: {
+      icon: 'h-3 w-3',
+      text: 'text-xs',
+      padding: 'px-2 py-1',
+      badge: 'text-xs px-1.5 py-0.5',
+    },
+    md: {
+      icon: 'h-4 w-4',
+      text: 'text-sm',
+      padding: 'px-3 py-1.5',
+      badge: 'text-xs px-2 py-1',
+    },
+    lg: {
+      icon: 'h-5 w-5',
+      text: 'text-base',
+      padding: 'px-4 py-2',
+      badge: 'text-sm px-2.5 py-1',
+    },
+  };
+
+  const sizeClasses = sizeConfig[size];
+
+  // Format last encrypted timestamp
+  const formatLastEncrypted = (date?: Date) => {
+    if (!date) return null;
+    const now = new Date();
+    const diff = now.getTime() - date.getTime();
+    const minutes = Math.floor(diff / 60000);
+    const hours = Math.floor(diff / 3600000);
+    const days = Math.floor(diff / 86400000);
+
+    if (minutes < 60) return `${minutes}m ago`;
+    if (hours < 24) return `${hours}h ago`;
+    return `${days}d ago`;
+  };
+
+  // Badge variant for simple status display
+  if (variant === 'badge') {
+    return (
+      <Badge
+        className={cn(
+          currentStatus.badgeColor,
+          sizeClasses.badge,
+          interactive && 'cursor-pointer hover:opacity-80 transition-opacity',
+          className,
+        )}
+        onClick={interactive ? onStatusClick : undefined}
+      >
+        <StatusIcon
+          className={cn(sizeClasses.icon, 'mr-1', isAnimated && 'animate-spin')}
+        />
+        {currentStatus.label}
+      </Badge>
+    );
+  }
+
+  // Inline variant for compact display
+  if (variant === 'inline') {
+    return (
+      <div
+        className={cn(
+          'inline-flex items-center gap-1.5',
+          sizeClasses.text,
+          currentStatus.color,
+          interactive && 'cursor-pointer hover:opacity-80 transition-opacity',
+          className,
+        )}
+        onClick={interactive ? onStatusClick : undefined}
+      >
+        <StatusIcon
+          className={cn(sizeClasses.icon, isAnimated && 'animate-spin')}
+        />
+        <span className="font-medium">{currentStatus.label}</span>
+        {level !== 'none' && (
+          <span className="opacity-75">({currentLevel.strength})</span>
+        )}
+        {complianceLevel && (
+          <Badge
+            className={cn(complianceConfig[complianceLevel].color, 'text-xs')}
+          >
+            {complianceConfig[complianceLevel].label}
+          </Badge>
+        )}
+      </div>
+    );
+  }
+
+  // Detailed variant with comprehensive information
+  return (
+    <div
+      className={cn(
+        'flex items-start gap-3 p-3 rounded-lg border',
+        currentStatus.color,
+        interactive && 'cursor-pointer hover:shadow-sm transition-shadow',
+        className,
+      )}
+      onClick={interactive ? onStatusClick : undefined}
+    >
+      {/* Status Icon */}
+      <div
+        className={cn(
+          'flex-shrink-0 mt-0.5',
+          currentLevel.bgColor,
+          'p-1.5 rounded-md',
+        )}
+      >
+        <StatusIcon
+          className={cn(
+            'h-5 w-5',
+            currentLevel.color,
+            isAnimated && 'animate-spin',
+          )}
+        />
+      </div>
+
+      {/* Status Information */}
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center justify-between gap-2 mb-1">
+          <div className="flex items-center gap-2">
+            <span className="font-semibold text-sm">
+              {fieldName
+                ? `${fieldName} - ${currentStatus.label}`
+                : currentStatus.label}
+            </span>
+            {complianceLevel && (
+              <Badge
+                className={cn(
+                  complianceConfig[complianceLevel].color,
+                  'text-xs',
+                )}
+              >
+                {complianceConfig[complianceLevel].label}
+              </Badge>
+            )}
+          </div>
+          {level !== 'none' && (
+            <Badge className={cn(currentLevel.color, 'text-xs font-medium')}>
+              {currentLevel.strength}
+            </Badge>
+          )}
+        </div>
+
+        <p className="text-xs opacity-80 mb-2">
+          {currentStatus.description}
+          {level !== 'none' &&
+            ` using ${currentLevel.description.toLowerCase()}`}
+        </p>
+
+        {showDetails && (
+          <div className="space-y-1.5 text-xs opacity-75">
+            {algorithm && (
+              <div className="flex items-center gap-1">
+                <Lock className="h-3 w-3" />
+                <span>Algorithm: {algorithm}</span>
+              </div>
+            )}
+            {keyId && (
+              <div className="flex items-center gap-1">
+                <Shield className="h-3 w-3" />
+                <span>Key ID: {keyId.slice(0, 8)}...</span>
+              </div>
+            )}
+            {lastEncrypted && (
+              <div className="flex items-center gap-1">
+                <Clock className="h-3 w-3" />
+                <span>
+                  Last encrypted: {formatLastEncrypted(lastEncrypted)}
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Level Indicator */}
+      {level !== 'none' && (
+        <div className="flex-shrink-0">
+          <LevelIcon className={cn('h-4 w-4', currentLevel.color)} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default EncryptionStatusIndicator;

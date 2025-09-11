@@ -1,0 +1,270 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { Button } from '@/components/ui/button-untitled';
+import { Badge } from '@/components/ui/badge';
+import { Card } from '@/components/ui/card-untitled';
+import { Tag as TagIcon, Plus, Edit, X, Loader2 } from 'lucide-react';
+import { Tag } from '@/components/tags/TagManager';
+import TagInput from '@/components/tags/TagInput';
+
+interface TagsSectionProps {
+  clientId: string;
+  canEdit?: boolean;
+  onTagsUpdate?: () => void;
+}
+
+export default function TagsSection({
+  clientId,
+  canEdit = false,
+  onTagsUpdate,
+}: TagsSectionProps) {
+  const [clientTags, setClientTags] = useState<Tag[]>([]);
+  const [isEditing, setIsEditing] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetchClientTags();
+  }, [clientId]);
+
+  const fetchClientTags = async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/clients/${clientId}/tags`);
+      if (!response.ok) throw new Error('Failed to fetch tags');
+      const data = await response.json();
+      setClientTags(data.tags || []);
+    } catch (error) {
+      console.error('Error fetching client tags:', error);
+      setError('Failed to load tags');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleTagsUpdate = async (newTags: Tag[]) => {
+    if (!canEdit) return;
+
+    setIsLoading(true);
+    try {
+      // Get current tag IDs
+      const currentTagIds = clientTags.map((tag) => tag.id);
+      const newTagIds = newTags.map((tag) => tag.id);
+
+      // Find tags to add and remove
+      const tagsToAdd = newTagIds.filter((id) => !currentTagIds.includes(id));
+      const tagsToRemove = currentTagIds.filter(
+        (id) => !newTagIds.includes(id),
+      );
+
+      // Add new tags
+      if (tagsToAdd.length > 0) {
+        const response = await fetch(`/api/clients/${clientId}/tags`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tag_ids: tagsToAdd }),
+        });
+        if (!response.ok) throw new Error('Failed to add tags');
+      }
+
+      // Remove tags
+      if (tagsToRemove.length > 0) {
+        const response = await fetch(`/api/clients/${clientId}/tags`, {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tag_ids: tagsToRemove }),
+        });
+        if (!response.ok) throw new Error('Failed to remove tags');
+      }
+
+      setClientTags(newTags);
+      setIsEditing(false);
+      onTagsUpdate?.();
+    } catch (error) {
+      console.error('Error updating tags:', error);
+      setError('Failed to update tags');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const getTagColorClasses = (color: string) => {
+    const colorMap: Record<string, string> = {
+      gray: 'bg-gray-100 text-gray-800 border-gray-200',
+      red: 'bg-red-50 text-red-700 border-red-200',
+      orange: 'bg-orange-50 text-orange-700 border-orange-200',
+      amber: 'bg-amber-50 text-amber-700 border-amber-200',
+      yellow: 'bg-yellow-50 text-yellow-700 border-yellow-200',
+      lime: 'bg-lime-50 text-lime-700 border-lime-200',
+      green: 'bg-green-50 text-green-700 border-green-200',
+      emerald: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+      teal: 'bg-teal-50 text-teal-700 border-teal-200',
+      cyan: 'bg-cyan-50 text-cyan-700 border-cyan-200',
+      sky: 'bg-sky-50 text-sky-700 border-sky-200',
+      blue: 'bg-blue-50 text-blue-700 border-blue-200',
+      indigo: 'bg-indigo-50 text-indigo-700 border-indigo-200',
+      violet: 'bg-violet-50 text-violet-700 border-violet-200',
+      purple: 'bg-purple-50 text-purple-700 border-purple-200',
+      fuchsia: 'bg-fuchsia-50 text-fuchsia-700 border-fuchsia-200',
+      pink: 'bg-pink-50 text-pink-700 border-pink-200',
+      rose: 'bg-rose-50 text-rose-700 border-rose-200',
+    };
+    return colorMap[color] || colorMap.blue;
+  };
+
+  return (
+    <Card className="p-6" data-testid="client-tags-section">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <TagIcon className="w-5 h-5 text-gray-600" />
+          <h3 className="text-lg font-semibold text-gray-900">Tags</h3>
+          {clientTags.length > 0 && (
+            <Badge variant="outline" className="text-xs">
+              {clientTags.length}
+            </Badge>
+          )}
+        </div>
+
+        {canEdit && !isEditing && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setIsEditing(true)}
+            className="gap-2"
+            data-testid="add-tags"
+          >
+            <Plus className="w-4 h-4" />
+            {clientTags.length === 0 ? 'Add Tags' : 'Edit'}
+          </Button>
+        )}
+      </div>
+
+      {error && (
+        <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+          {error}
+        </div>
+      )}
+
+      {/* Loading State */}
+      {isLoading && (
+        <div className="flex items-center justify-center py-8">
+          <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
+          <span className="ml-2 text-sm text-gray-500">
+            {isEditing ? 'Updating tags...' : 'Loading tags...'}
+          </span>
+        </div>
+      )}
+
+      {/* Edit Mode */}
+      {isEditing && !isLoading && canEdit && (
+        <div className="space-y-4">
+          <TagInput
+            selectedTags={clientTags}
+            onTagsChange={handleTagsUpdate}
+            placeholder="Search and select tags for this client..."
+            maxTags={20}
+          />
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setIsEditing(false);
+                setError(null);
+              }}
+              disabled={isLoading}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Display Mode */}
+      {!isEditing && !isLoading && (
+        <div>
+          {clientTags.length === 0 ? (
+            <div className="text-center py-8">
+              <TagIcon className="w-8 h-8 text-gray-400 mx-auto mb-3" />
+              <p className="text-sm text-gray-500 mb-2">No tags assigned</p>
+              {canEdit && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setIsEditing(true)}
+                  className="gap-2"
+                >
+                  <Plus className="w-4 h-4" />
+                  Add First Tag
+                </Button>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {/* Tags by Category */}
+              {Object.entries(
+                clientTags.reduce(
+                  (acc, tag) => {
+                    if (!acc[tag.category]) acc[tag.category] = [];
+                    acc[tag.category].push(tag);
+                    return acc;
+                  },
+                  {} as Record<string, Tag[]>,
+                ),
+              ).map(([category, categoryTags]) => (
+                <div key={category}>
+                  <div className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">
+                    {category.replace('_', ' ')}
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {categoryTags.map((tag) => (
+                      <Badge
+                        key={tag.id}
+                        className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-medium border ${getTagColorClasses(tag.color)}`}
+                        data-testid={`client-tag-${tag.name.toLowerCase().replace(/\s+/g, '-')}`}
+                      >
+                        {tag.name}
+                        {tag.description && (
+                          <span
+                            className="ml-1 text-xs opacity-75"
+                            title={tag.description}
+                          >
+                            ℹ
+                          </span>
+                        )}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              ))}
+
+              {/* Tag Details */}
+              <div className="mt-4 pt-4 border-t border-gray-200">
+                <div className="text-xs text-gray-500">
+                  {clientTags.length} tag{clientTags.length !== 1 ? 's' : ''}{' '}
+                  assigned
+                  {clientTags.length > 0 && (
+                    <span className="ml-2">
+                      Last updated:{' '}
+                      {clientTags
+                        .reduce((latest, tag) => {
+                          const tagDate = new Date(
+                            tag.assigned_at || tag.created_at,
+                          );
+                          return tagDate > latest ? tagDate : latest;
+                        }, new Date(0))
+                        .toLocaleDateString()}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}

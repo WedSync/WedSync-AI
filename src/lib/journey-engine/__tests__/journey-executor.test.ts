@@ -1,0 +1,305 @@
+import { describe, it, expect, jest, beforeEach, afterEach } from '@jest/globals';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { JourneyExecutor } from '../executor';
+import { EmailExecutor } from '../executors/email-executor';
+import { SMSExecutor } from '../executors/sms-executor';
+import { WaitNodeExecutor } from '../executors/wait-executor';
+import { ConditionNodeExecutor } from '../executors/condition-executor';
+
+// Mock Supabase
+jest.mock('@supabase/supabase-js', () => ({
+  createClient: jest.fn(() => ({
+    from: jest.fn(() => ({
+      select: jest.fn(() => ({
+        eq: jest.fn(() => ({
+          single: jest.fn(() => Promise.resolve({
+            data: null,
+            error: null
+          }))
+        })),
+        order: jest.fn(() => Promise.resolve({
+          data: [],
+          error: null
+        }))
+      })),
+      insert: jest.fn(() => ({
+        select: jest.fn(() => ({
+            data: { id: 'test-id' },
+      update: jest.fn(() => ({
+        eq: jest.fn(() => Promise.resolve({
+      }))
+    })),
+    auth: {
+      getUser: jest.fn(() => Promise.resolve({
+        data: { user: { id: 'test-user' } },
+        error: null
+    }
+  }))
+}));
+describe('JourneyExecutor', () => {
+  let executor: JourneyExecutor;
+  beforeEach(() => {
+    executor = new JourneyExecutor();
+    jest.clearAllMocks();
+  });
+  describe('executeJourney', () => {
+    it('should execute a simple linear journey', async () => {
+      const mockExecution = {
+        id: 'exec-1',
+        template_id: 'journey-1',
+        client_id: 'client-1',
+        vendor_id: 'vendor-1',
+        status: 'running',
+        context: {
+          client_name: 'John Doe',
+          vendor_name: 'Test Vendor'
+        }
+      };
+      const mockSteps = [
+        {
+          id: 'step-1',
+          node_type: 'email',
+          config: {
+            template: 'welcome_vendor_onboarding'
+          },
+          position: 1
+        },
+          id: 'step-2',
+          node_type: 'wait',
+            duration: 1,
+            unit: 'hours'
+          position: 2
+      ];
+      // Mock getJourneyInstance
+      jest.spyOn(executor as any, 'getJourneyInstance')
+        .mockResolvedValue(mockExecution);
+      // Mock getJourneySteps
+      jest.spyOn(executor as any, 'getJourneySteps')
+        .mockResolvedValue(mockSteps);
+      // Mock executeStep
+      const executeStepSpy = jest.spyOn(executor as any, 'executeStep')
+        .mockResolvedValue({ success: true });
+      await executor.executeJourney('exec-1');
+      expect(executeStepSpy).toHaveBeenCalledTimes(2);
+      expect(executeStepSpy).toHaveBeenCalledWith(
+        mockExecution,
+        mockSteps[0],
+        expect.any(Object)
+      );
+    });
+    it('should handle journey execution errors', async () => {
+        .mockRejectedValue(new Error('Database error'));
+      await expect(executor.executeJourney('exec-1'))
+        .rejects.toThrow('Database error');
+  describe('Node Executors', () => {
+    describe('EmailExecutor', () => {
+      it('should execute email node successfully', async () => {
+        const context = {
+          executionId: 'exec-1',
+          stepId: 'step-1',
+          vendorData: {
+            id: 'vendor-1',
+            name: 'Test Vendor',
+            email: 'vendor@test.com'
+          clientData: {
+            id: 'client-1',
+            name: 'John Doe',
+            email: 'john@test.com'
+          variables: {}
+        };
+        const config = {
+          template: 'welcome_vendor_onboarding',
+          trackOpens: true
+        const result = await EmailExecutor.execute(
+          'exec-1',
+          'client-1',
+          'vendor-1',
+          'org-1',
+          config,
+          {}
+        );
+        expect(result).toHaveProperty('messageId');
+        expect(result.status).toBe('sent');
+      });
+      it('should handle email sending failures', async () => {
+        // Mock email service to fail
+        jest.spyOn(require('../services/email-templates').emailService, 'sendTemplateEmail')
+          .mockRejectedValue(new Error('SMTP error'));
+          { template: 'test' },
+        expect(result.status).toBe('failed');
+        expect(result.error).toContain('error');
+    describe('SMSExecutor', () => {
+      it('should execute SMS node successfully', async () => {
+          template: 'form_reminder',
+          enableDeliveryTracking: true
+        const result = await SMSExecutor.execute(
+      it('should validate phone numbers', async () => {
+          template: 'test',
+          to: 'invalid-phone'
+        const validation = SMSExecutor.validateConfig(config);
+        expect(validation.valid).toBe(false);
+        expect(validation.errors).toContain('Invalid phone number format');
+    describe('WaitNodeExecutor', () => {
+      it('should calculate wait time correctly', async () => {
+        const executor = new WaitNodeExecutor();
+          vendorData: {},
+          clientData: {},
+          duration: 2,
+          unit: 'hours' as const
+        const result = await executor.execute(context, config);
+        expect(result.success).toBe(true);
+        expect(result.output?.waitUntil).toBeDefined();
+    describe('ConditionNodeExecutor', () => {
+      it('should evaluate conditions correctly', async () => {
+        const executor = new ConditionNodeExecutor();
+          variables: {
+            formCompleted: true,
+            score: 85
+          }
+          conditions: [
+            {
+              field: 'formCompleted',
+              operator: 'equals' as const,
+              value: true
+            },
+              field: 'score',
+              operator: 'greater_than' as const,
+              value: 80
+            }
+          ],
+          logic: 'and' as const
+        expect(result.output?.conditionMet).toBe(true);
+  describe('Journey Flow Control', () => {
+    it('should handle conditional branching', async () => {
+          paymentReceived: true
+          node_type: 'condition',
+            conditions: [{
+              field: 'paymentReceived',
+              operator: 'equals',
+            }]
+            template: 'thank_you'
+          depends_on: 'step-1',
+          condition: 'true'
+          id: 'step-3',
+            template: 'payment_reminder'
+          condition: 'false'
+        .mockImplementation((execution, step) => {
+          if (step.node_type === 'condition') {
+            return Promise.resolve({
+              success: true,
+              output: { conditionMet: true }
+            });
+          return Promise.resolve({ success: true });
+        });
+      // Should execute condition and thank you email, but not payment reminder
+        expect.any(Object),
+        expect.objectContaining({ id: 'step-1' }),
+        expect.objectContaining({ id: 'step-2' }),
+      expect(executeStepSpy).not.toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'step-3' }),
+    it('should handle parallel execution', async () => {
+          config: { template: 'welcome' },
+          id: 'step-2a',
+          node_type: 'sms',
+          position: 2,
+          parallel_group: 'group1'
+          id: 'step-2b',
+          node_type: 'task',
+          config: { title: 'Review client info' },
+      // Verify parallel steps are executed concurrently
+      const executionTimes: Record<string, number> = {};
+      executeStepSpy.mockImplementation(async (execution, step) => {
+        executionTimes[step.id] = Date.now();
+        await new Promise(resolve => setTimeout(resolve, 10));
+        return { success: true };
+      // Steps 2a and 2b should start at approximately the same time
+      const timeDiff = Math.abs(
+        executionTimes['step-2a'] - executionTimes['step-2b']
+      expect(timeDiff).toBeLessThan(5);
+  describe('Error Handling', () => {
+    it('should retry failed steps', async () => {
+      let attemptCount = 0;
+        .mockImplementation(() => {
+          attemptCount++;
+          if (attemptCount < 3) {
+            return Promise.reject(new Error('Temporary failure'));
+      const mockStep = {
+        id: 'step-1',
+        node_type: 'email',
+        config: { template: 'test' },
+        retry_config: {
+          max_attempts: 3,
+          delay_seconds: 1
+        .mockResolvedValue([mockStep]);
+      expect(attemptCount).toBe(3);
+      expect(executeStepSpy).toHaveBeenCalledTimes(3);
+    it('should handle timeout conditions', async () => {
+        node_type: 'webhook',
+        config: {
+          url: 'https://slow-api.example.com',
+          timeout: 1000
+      jest.spyOn(executor as any, 'executeStep')
+          return new Promise((resolve, reject) => {
+            setTimeout(() => reject(new Error('Timeout')), 2000);
+          });
+      const timeoutPromise = Promise.race([
+        executor.executeJourney('exec-1'),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Execution timeout')), 1500)
+        )
+      ]);
+      await expect(timeoutPromise).rejects.toThrow('timeout');
+  describe('State Management', () => {
+    it('should persist execution state between steps', async () => {
+      const states: any[] = [];
+      
+        .mockImplementation((execution, step, state) => {
+          states.push({ ...state });
+          return Promise.resolve({
+            success: true,
+            output: { stepData: `data-${step.id}` }
+        { id: 'step-1', node_type: 'email', config: {} },
+        { id: 'step-2', node_type: 'sms', config: {} },
+        { id: 'step-3', node_type: 'task', config: {} }
+      // Verify state accumulates across steps
+      expect(states[0]).toEqual({});
+      expect(states[1]).toHaveProperty('step-1');
+      expect(states[2]).toHaveProperty('step-1');
+      expect(states[2]).toHaveProperty('step-2');
+});
+describe('Journey Engine Integration Tests', () => {
+  it('should execute a complete customer onboarding journey', async () => {
+    const executor = new JourneyExecutor();
+    
+    // Mock complete journey with all node types
+    const onboardingJourney = {
+      id: 'onboarding-1',
+      steps: [
+          id: 'welcome',
+          type: 'email',
+          config: { template: 'welcome_vendor_onboarding' }
+          id: 'wait-1h',
+          type: 'wait',
+          config: { duration: 1, unit: 'hours' }
+          id: 'send-form',
+          type: 'form',
+          config: { formId: 'client-questionnaire' }
+          id: 'check-form',
+          type: 'condition',
+            conditions: [{ field: 'form_completed', operator: 'equals', value: true }]
+          id: 'reminder',
+          type: 'sms',
+          config: { template: 'form_reminder' },
+          condition: 'form_not_completed'
+          id: 'schedule-meeting',
+          type: 'task',
+          config: { title: 'Schedule consultation' },
+          condition: 'form_completed'
+          id: 'review-request',
+          type: 'review',
+          config: { platform: 'google', sendDelay: 7 }
+      ]
+    };
+    // Execute and verify all steps complete
+    const result = await executor.executeJourney('onboarding-1');
+    expect(result).toBeDefined();

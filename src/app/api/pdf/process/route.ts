@@ -1,0 +1,690 @@
+import '@/lib/dom-polyfill';
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { validateAuth, authenticateRequest } from '@/lib/auth-middleware';
+import {
+  OCRProcessingPipeline,
+  ProcessingResult,
+  EnhancedField,
+} from '@/lib/ocr/processing-pipeline';
+import { OptimizedPDFProcessor } from '@/lib/ocr/optimized-processor';
+import { auditLogger, AuditEventType, AuditSeverity } from '@/lib/audit-logger';
+import { secureFileStorage } from '@/lib/secure-file-storage';
+import { z } from 'zod';
+import { readFile } from 'fs/promises';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+);
+
+const processingPipeline = new OCRProcessingPipeline();
+
+// Helper function to create form from PDF internally
+async function createFormFromPDF(
+  payload: { pdfId: string; mapping: Record<string, string>; fields: any[] },
+  userId: string,
+  organizationId: string,
+  supabaseClient: any,
+): Promise<{ success: boolean; formId?: string; error?: string }> {
+  try {
+    const { generateSecureId } = await import('@/lib/crypto-utils');
+
+    // Get PDF import details
+    const { data: pdfImport, error: pdfError } = await supabaseClient
+      .from('pdf_imports')
+      .select('*')
+      .eq('id', payload.pdfId)
+      .single();
+
+    if (pdfError || !pdfImport) {
+      return { success: false, error: 'PDF not found' };
+    }
+
+    // Wedding core fields configuration
+    const WEDDING_CORE_FIELDS = {
+      bride_name: {
+        label: 'Bride Name',
+        type: 'text',
+        required: true,
+        placeholder: "Enter bride's full name",
+      },
+      groom_name: {
+        label: 'Groom Name',
+        type: 'text',
+        required: true,
+        placeholder: "Enter groom's full name",
+      },
+      wedding_date: {
+        label: 'Wedding Date',
+        type: 'date',
+        required: true,
+        placeholder: 'Select wedding date',
+      },
+      venue_name: {
+        label: 'Venue Name',
+        type: 'text',
+        required: false,
+        placeholder: 'Enter venue name',
+      },
+      venue_address: {
+        label: 'Venue Address',
+        type: 'textarea',
+        required: false,
+        placeholder: 'Enter complete venue address',
+      },
+      email: {
+        label: 'Primary Email',
+        type: 'email',
+        required: true,
+        placeholder: 'Enter primary email address',
+      },
+      phone: {
+        label: 'Primary Phone',
+        type: 'tel',
+        required: true,
+        placeholder: 'Enter primary phone number',
+      },
+      guest_count: {
+        label: 'Guest Count',
+        type: 'number',
+        required: false,
+        placeholder: 'Approximate number of guests',
+      },
+    };
+
+    // Create form structure
+    const formId = generateSecureId(16);
+    const formFields: any[] = [];
+    let fieldOrder = 1;
+
+    // Add mapped core fields
+    Object.entries(payload.mapping).forEach(
+      ([coreFieldId, detectedFieldId]) => {
+        const coreFieldConfig =
+          WEDDING_CORE_FIELDS[coreFieldId as keyof typeof WEDDING_CORE_FIELDS];
+        const detectedField = payload.fields.find(
+          (f: any) => f.id === detectedFieldId,
+        );
+
+        if (coreFieldConfig && detectedField) {
+          formFields.push({
+            id: generateSecureId(12),
+            type: coreFieldConfig.type,
+            label: coreFieldConfig.label,
+            placeholder: coreFieldConfig.placeholder,
+            helperText: `Extracted from PDF with ${Math.round(detectedField.confidence * 100)}% confidence`,
+            defaultValue: detectedField.value,
+            validation: {
+              required: coreFieldConfig.required,
+            },
+            width: 'full',
+            order: fieldOrder++,
+          });
+        }
+      },
+    );
+
+    // Add unmapped high-confidence fields as additional fields
+    const unmappedFields = payload.fields.filter(
+      (field: any) =>
+        !Object.values(payload.mapping).includes(field.id) &&
+        field.confidence >= 0.8,
+    );
+
+    unmappedFields.forEach((field: any) => {
+      formFields.push({
+        id: generateSecureId(12),
+        type: field.type,
+        label: field.label,
+        placeholder: `Additional field from PDF`,
+        helperText: `Extracted with ${Math.round(field.confidence * 100)}% confidence`,
+        defaultValue: field.value,
+        validation: {
+          required: false,
+        },
+        width: 'full',
+        order: fieldOrder++,
+      });
+    });
+
+    // Create the form in database
+    const { data: formData, error: formError } = await supabaseClient
+      .from('forms')
+      .insert({
+        id: formId,
+        title: `Form from ${pdfImport.original_filename}`,
+        description: `Auto-generated form from PDF import with ${formFields.length} fields`,
+        fields: formFields,
+        settings: {
+          allowAnonymous: false,
+          requireAuth: true,
+          submitOnce: false,
+          showProgress: true,
+          confirmationMessage: 'Thank you for your submission!',
+          pdfSource: {
+            pdfId: pdfImport.id,
+            filename: pdfImport.original_filename,
+            confidence: pdfImport.ocr_confidence,
+            fieldsExtracted: payload.fields.length,
+            fieldsMapped: Object.keys(payload.mapping).length,
+            createdAt: new Date().toISOString(),
+          },
+        },
+        status: 'draft',
+        organization_id: organizationId,
+        created_by: userId,
+      })
+      .select()
+      .single();
+
+    if (formError) {
+      return { success: false, error: formError.message };
+    }
+
+    // Update PDF import with generated form ID
+    await supabaseClient
+      .from('pdf_imports')
+      .update({
+        generated_form_id: formId,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', payload.pdfId);
+
+    return { success: true, formId };
+  } catch (error) {
+    console.error('Internal form creation error:', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to create form',
+    };
+  }
+}
+
+// Validation schema
+const processRequestSchema = z.object({
+  uploadId: z.string().uuid(),
+  options: z
+    .object({
+      qualityCheck: z.boolean().optional().default(true),
+      parallel: z.boolean().optional().default(true),
+      skipCache: z.boolean().optional().default(false),
+      priority: z.number().min(1).max(5).optional().default(1),
+      autoCreateForm: z.boolean().optional().default(true), // Auto-create form by default
+    })
+    .optional()
+    .default({}),
+});
+
+// Background job queue (in production, use Redis or similar)
+const processingQueue: Map<
+  string,
+  {
+    uploadId: string;
+    userId: string;
+    organizationId: string;
+    priority: number;
+    startedAt?: Date;
+  }
+> = new Map();
+
+// Process PDF in background
+async function processInBackground(
+  uploadId: string,
+  userId: string,
+  organizationId: string,
+  filePath: string,
+  filename: string,
+  options: {
+    qualityCheck?: boolean;
+    parallel?: boolean;
+    skipCache?: boolean;
+    autoCreateForm?: boolean;
+  },
+) {
+  try {
+    console.log(`Starting background processing for ${uploadId}`);
+
+    // Update status to processing
+    await supabase
+      .from('pdf_imports')
+      .update({
+        upload_status: 'processing',
+        processed_at: new Date().toISOString(),
+      })
+      .eq('id', uploadId);
+
+    // Get file size to determine processing method
+    const fileStats = await readFile(filePath);
+    const fileSizeMB = fileStats.byteLength / (1024 * 1024);
+    const useLargeFileProcessor = fileSizeMB > 5; // Use optimized processor for files > 5MB
+
+    let result: ProcessingResult;
+
+    if (useLargeFileProcessor) {
+      // Use optimized processor for large files
+      console.log(
+        `Using optimized processor for large file (${fileSizeMB.toFixed(2)}MB)`,
+      );
+      const processor = new OptimizedPDFProcessor({
+        maxConcurrency: 4,
+        chunkSize: 10,
+        enableCaching: !options.skipCache,
+        progressCallback: (progress) => {
+          console.log(`Processing progress: ${progress.toFixed(1)}%`);
+        },
+      });
+
+      const optimizedResult = await processor.processLargePDF(fileStats.buffer);
+
+      // Convert to standard ProcessingResult format
+      result = {
+        id: `proc_${Date.now()}`,
+        status: 'completed',
+        fields: optimizedResult.fields.map((f) => ({
+          ...f,
+          coreFieldKey: null,
+          coreFieldConfidence: 0,
+          validated: false,
+          contextClues: [],
+          nearbyFields: [],
+        })),
+        accuracy: 0.85, // Average accuracy for optimized processing
+        pageCount: optimizedResult.pageCount,
+        processingTimeMs: optimizedResult.metadata.processingTime,
+        extractedText: optimizedResult.text,
+        metadata: {
+          confidence: 0.85,
+          language: 'en',
+          documentType: 'pdf',
+          hasWeddingContent:
+            optimizedResult.text.toLowerCase().includes('wedding') ||
+            optimizedResult.text.toLowerCase().includes('bride') ||
+            optimizedResult.text.toLowerCase().includes('groom'),
+        },
+      };
+    } else {
+      // Use standard pipeline for smaller files
+      result = await processingPipeline.processPDF(filePath, filename, userId, {
+        qualityCheck: options.qualityCheck,
+        parallel: options.parallel,
+        skipCache: options.skipCache,
+      });
+    }
+
+    // Update status to completed with extracted fields
+    await supabase
+      .from('pdf_imports')
+      .update({
+        upload_status: 'processed',
+        processing_id: result.id,
+        detected_fields: result.fields,
+        ocr_confidence: result.accuracy,
+        extracted_text: result.extractedText?.substring(0, 10000),
+        status: 'completed',
+      })
+      .eq('id', uploadId);
+
+    console.log(`Completed background processing for ${uploadId}`);
+
+    // CRITICAL FIX: Auto-create form from extracted fields if fields were detected
+    if (options.autoCreateForm && result.fields && result.fields.length > 0) {
+      try {
+        console.log(
+          `Auto-creating form from ${result.fields.length} extracted fields`,
+        );
+
+        // Prepare field mapping for high-confidence core fields
+        const mapping: Record<string, string> = {};
+        const coreFields = result.fields.filter(
+          (f) =>
+            f.coreFieldKey &&
+            f.coreFieldConfidence &&
+            f.coreFieldConfidence > 0.7,
+        );
+
+        coreFields.forEach((field) => {
+          if (field.coreFieldKey) {
+            mapping[field.coreFieldKey] = field.id;
+          }
+        });
+
+        // Create form directly through service integration
+        const formPayload = {
+          pdfId: uploadId,
+          mapping,
+          fields: result.fields.map((f: EnhancedField) => ({
+            id: f.id,
+            type: f.type || 'text',
+            label: f.label,
+            value: f.value,
+            confidence: f.confidence,
+          })),
+        };
+
+        // Call form creation service directly (avoiding HTTP overhead)
+        const formResult = await createFormFromPDF(
+          formPayload,
+          userId,
+          organizationId,
+          supabase,
+        );
+
+        if (formResult.success) {
+          console.log(`Form created successfully: ${formResult.formId}`);
+
+          // Update PDF import with form reference is already handled in createFormFromPDF
+        } else {
+          console.error('Form creation failed:', formResult.error);
+        }
+      } catch (formError) {
+        console.error('Failed to auto-create form:', formError);
+        // Don't fail the entire process if form creation fails
+      }
+    }
+
+    // Remove from queue
+    processingQueue.delete(uploadId);
+
+    return result;
+  } catch (error) {
+    console.error(`Background processing failed for ${uploadId}:`, error);
+
+    // Update status to failed
+    await supabase
+      .from('pdf_imports')
+      .update({
+        upload_status: 'failed',
+      })
+      .eq('id', uploadId);
+
+    // Remove from queue
+    processingQueue.delete(uploadId);
+
+    throw error;
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    // Enhanced authentication with organization context
+    const authResult = await validateAuth(request);
+    if (!authResult.success || !authResult.user) {
+      // Log unauthorized access attempt
+      await auditLogger.log({
+        event_type: AuditEventType.UNAUTHORIZED_ACCESS,
+        severity: AuditSeverity.WARNING,
+        action: 'Unauthorized PDF processing attempt',
+        details: {
+          endpoint: '/api/pdf/process',
+          method: 'POST',
+        },
+        ip_address: request.headers.get('x-forwarded-for') || undefined,
+        user_agent: request.headers.get('user-agent') || undefined,
+      });
+
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const userId = authResult.user.id;
+    const userEmail = authResult.user.email;
+    const organizationId = authResult.user.organizationId;
+
+    if (!organizationId) {
+      await auditLogger.log({
+        event_type: AuditEventType.PDF_ACCESS_DENIED,
+        severity: AuditSeverity.ERROR,
+        user_id: userId,
+        user_email: userEmail,
+        action: 'PDF processing denied - no organization',
+        details: { reason: 'User not associated with organization' },
+      });
+
+      return NextResponse.json(
+        { error: 'Organization context required' },
+        { status: 403 },
+      );
+    }
+
+    // Parse and validate request
+    const body = await request.json();
+    const { uploadId, options } = processRequestSchema.parse(body);
+
+    // Log processing attempt
+    await auditLogger.log({
+      event_type: AuditEventType.PDF_PROCESS_START,
+      severity: AuditSeverity.INFO,
+      user_id: userId,
+      user_email: userEmail,
+      organization_id: organizationId,
+      resource_id: uploadId,
+      resource_type: 'pdf_upload',
+      action: 'PDF processing started',
+      details: { uploadId, options },
+    });
+
+    // Get upload metadata with organization check
+    const { data: upload, error: uploadError } = await supabase
+      .from('pdf_imports')
+      .select('*')
+      .eq('id', uploadId)
+      .eq('user_id', userId)
+      .eq('organization_id', organizationId)
+      .single();
+
+    if (uploadError || !upload) {
+      return NextResponse.json({ error: 'Upload not found' }, { status: 404 });
+    }
+
+    // Check if already processing
+    if (upload.upload_status === 'processing') {
+      return NextResponse.json(
+        { error: 'File is already being processed' },
+        { status: 409 },
+      );
+    }
+
+    // Check if already processed
+    if (upload.upload_status === 'processed') {
+      // Return existing processing result
+      const existingResult = await processingPipeline.getProcessingResult(
+        upload.processing_id,
+      );
+      if (existingResult) {
+        return NextResponse.json({
+          success: true,
+          processId: upload.processing_id,
+          result: existingResult,
+          message: 'File was already processed',
+        });
+      }
+    }
+
+    // Add to processing queue
+    const queueEntry = {
+      uploadId,
+      userId,
+      organizationId,
+      priority: options.priority || 1,
+    };
+
+    processingQueue.set(uploadId, queueEntry);
+
+    // Start background processing
+    processInBackground(
+      uploadId,
+      userId,
+      organizationId,
+      upload.file_path,
+      upload.original_filename,
+      options,
+    ).catch(async (error) => {
+      console.error('Background processing error:', error);
+
+      // Log processing failure
+      await auditLogger.log({
+        event_type: AuditEventType.PDF_PROCESS_FAILED,
+        severity: AuditSeverity.ERROR,
+        user_id: userId,
+        user_email: userEmail,
+        organization_id: organizationId,
+        resource_id: uploadId,
+        resource_type: 'pdf_upload',
+        action: 'PDF processing failed',
+        details: {
+          error: error.message,
+          uploadId,
+        },
+      });
+    });
+
+    return NextResponse.json({
+      success: true,
+      uploadId,
+      message: 'Processing started',
+      estimatedTime: '30-60 seconds',
+    });
+  } catch (error) {
+    console.error('Process request error:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid request data', details: error.errors },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Failed to start processing' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    // Enhanced authentication with organization context
+    const authResult = await validateAuth(request);
+    if (!authResult.success || !authResult.user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const userId = authResult.user.id;
+    const organizationId = authResult.user.organizationId;
+
+    if (!organizationId) {
+      return NextResponse.json(
+        { error: 'Organization context required' },
+        { status: 403 },
+      );
+    }
+
+    const { searchParams } = new URL(request.url);
+    const uploadId = searchParams.get('uploadId');
+    const processId = searchParams.get('processId');
+
+    if (!uploadId && !processId) {
+      return NextResponse.json(
+        { error: 'Upload ID or Process ID is required' },
+        { status: 400 },
+      );
+    }
+
+    if (processId) {
+      // Get processing status by process ID
+      const status = await processingPipeline.getProcessingStatus(processId);
+      const result =
+        status?.status === 'completed'
+          ? await processingPipeline.getProcessingResult(processId)
+          : null;
+
+      return NextResponse.json({
+        status,
+        result,
+      });
+    }
+
+    if (uploadId) {
+      // Get upload status with organization check
+      const { data: upload, error } = await supabase
+        .from('pdf_imports')
+        .select('*')
+        .eq('id', uploadId)
+        .eq('user_id', userId)
+        .eq('organization_id', organizationId)
+        .single();
+
+      if (error || !upload) {
+        return NextResponse.json(
+          { error: 'Upload not found' },
+          { status: 404 },
+        );
+      }
+
+      let processingStatus = null;
+      let processingResult = null;
+
+      if (upload.processing_id) {
+        processingStatus = await processingPipeline.getProcessingStatus(
+          upload.processing_id,
+        );
+        if (processingStatus?.status === 'completed') {
+          processingResult = await processingPipeline.getProcessingResult(
+            upload.processing_id,
+          );
+        }
+      }
+
+      // Check queue status
+      const queueEntry = processingQueue.get(uploadId);
+      const isInQueue = !!queueEntry;
+      const queuePosition = isInQueue
+        ? Array.from(processingQueue.values())
+            .sort((a, b) => b.priority - a.priority)
+            .findIndex((entry) => entry.uploadId === uploadId) + 1
+        : 0;
+
+      return NextResponse.json({
+        upload: {
+          id: upload.id,
+          filename: upload.original_filename,
+          status: upload.upload_status,
+          uploadedAt: upload.created_at,
+          processedAt: upload.processed_at,
+        },
+        queue: {
+          isInQueue,
+          position: queuePosition,
+          estimatedWait: queuePosition * 45, // 45 seconds per file estimate
+        },
+        processing: {
+          processId: upload.processing_id,
+          status: processingStatus,
+          result: processingResult,
+        },
+      });
+    }
+  } catch (error) {
+    console.error('Get processing status error:', error);
+    return NextResponse.json(
+      { error: 'Failed to get processing status' },
+      { status: 500 },
+    );
+  }
+}
+
+// Health check endpoint
+export async function HEAD(request: NextRequest) {
+  try {
+    // Check OCR service health
+    const health = await processingPipeline.healthCheck();
+
+    if (health.overall) {
+      return new NextResponse(null, { status: 200 });
+    } else {
+      return new NextResponse(null, { status: 503 });
+    }
+  } catch (error) {
+    return new NextResponse(null, { status: 503 });
+  }
+}

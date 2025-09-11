@@ -1,0 +1,271 @@
+name: 🏢 SonarQube Enterprise Analysis
+on:
+  # Run on pull requests to main
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  
+  # Run on pushes to main (after merges)
+  push:
+    branches: [main]
+  
+  # Allow manual triggering for enterprise analysis
+  workflow_dispatch:
+    inputs:
+      analysis_type:
+        description: 'Analysis Type'
+        required: true
+        default: 'full'
+        type: choice
+        options:
+          - full
+          - security-only
+          - wedding-critical
+      
+      # Emergency scan option for wedding season
+      emergency_scan:
+        description: 'Emergency Wedding Day Scan'
+        required: false
+        default: false
+        type: boolean
+
+  # Scheduled weekly scans during wedding season
+  schedule:
+    # Every Monday at 2 AM UTC (off-peak hours)
+    - cron: '0 2 * 5-10 1'  # May-October (wedding season)
+    # Every two weeks during off-season
+    - cron: '0 2 */14 11-4 1'  # November-April
+
+jobs:
+  sonarqube-enterprise:
+    name: 🔍 Enterprise Code Analysis (2.2M+ LOC)
+    runs-on: ubuntu-latest
+    
+    # Prevent Saturday deployments (wedding day protection)
+    if: ${{ github.event.inputs.emergency_scan == 'true' || !contains(github.event.schedule, 'saturday') }}
+    
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      NODE_OPTIONS: '--max_old_space_size=8192'  # 8GB memory for large codebase
+      
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+        with:
+          # Fetch full history for better analysis
+          fetch-depth: 0
+          
+      - name: 🟢 Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          
+      - name: 📦 Install Dependencies
+        run: |
+          npm ci --prefer-offline --no-audit
+          # Install global SonarQube scanner
+          npm install -g sonarqube-scanner
+          
+      - name: 🧪 Run Tests with Coverage
+        run: |
+          # Generate coverage report for SonarQube
+          npm run test:coverage || echo "Tests failed - continuing with analysis"
+          
+      - name: 📊 Validate Enterprise Configuration
+        run: |
+          echo "🔍 Validating enterprise SonarQube configuration..."
+          
+          # Check if we have the enterprise configuration
+          if [[ ! -f "sonar-project.properties" ]]; then
+            echo "❌ SonarQube configuration not found"
+            exit 1
+          fi
+          
+          # Check if configuration includes all source directories
+          if ! grep -q "src,wedsync/src,wedsync/wedsync/src" sonar-project.properties; then
+            echo "❌ Enterprise source configuration not found"
+            echo "Current configuration may only scan partial codebase"
+            exit 1
+          fi
+          
+          # Count actual LOC to be scanned
+          ACTUAL_LOC=$(find ./src ./wedsync/src ./wedsync/wedsync/src -type f \( -name "*.ts" -o -name "*.tsx" -o -name "*.js" -o -name "*.jsx" \) -exec wc -l {} + 2>/dev/null | tail -1 | awk '{print $1}' || echo "0")
+          echo "📊 Lines of code to analyze: $(printf "%'d" $ACTUAL_LOC)"
+          
+          if [[ $ACTUAL_LOC -lt 1000000 ]]; then
+            echo "⚠️  Warning: LOC count lower than expected 2.2M+"
+          fi
+          
+      - name: 🏢 Run Enterprise SonarQube Analysis
+        env:
+          # Optimize for large codebase
+          SONAR_SCANNER_OPTS: "-Xmx6G -Xms2G"
+        run: |
+          echo "🚀 Starting enterprise SonarQube analysis..."
+          echo "📊 Platform: WedSync Wedding Platform (2.2M+ LOC)"
+          echo "🕒 Started: $(date)"
+          
+          # Create analysis metadata
+          echo "ANALYSIS_START_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_ENV
+          
+          # Run the enterprise scan
+          sonar-scanner \
+            -Dsonar.projectKey=WedSync_WedSync2 \
+            -Dsonar.organization=wedsync \
+            -Dsonar.host.url=https://sonarcloud.io \
+            -Dsonar.login=$SONAR_TOKEN \
+            -Dsonar.qualitygate.wait=true \
+            -Dsonar.qualitygate.timeout=900 \
+            -Dsonar.analysis.mode=publish \
+            -Dsonar.buildString="GitHub-Actions-$(echo $GITHUB_SHA | cut -c1-8)" \
+            -Dsonar.scm.provider=git \
+            -Dsonar.links.ci=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions \
+            -Dsonar.verbose=false
+            
+      - name: 📊 Post-Analysis Validation
+        run: |
+          echo "✅ SonarQube analysis completed"
+          echo "🕒 Finished: $(date)"
+          
+          # Wait for SonarCloud processing
+          echo "⏳ Waiting for SonarCloud processing..."
+          sleep 30
+          
+      - name: 🔍 Generate Enterprise Analysis Report
+        if: always()
+        run: |
+          echo "📋 Generating enterprise analysis report..."
+          
+          # Run our custom enterprise analyzer
+          if [[ -f "scripts/sonarqube-enterprise-analyzer.js" ]]; then
+            node scripts/sonarqube-enterprise-analyzer.js
+          else
+            echo "⚠️  Enterprise analyzer not found"
+          fi
+          
+      - name: 💒 Wedding Day Impact Assessment
+        if: always()
+        run: |
+          echo "💍 Conducting wedding day impact assessment..."
+          
+          # Check for wedding-critical issues
+          if [[ -f "sonarqube-enterprise-*.json" ]]; then
+            # Extract wedding risk level from analysis
+            WEDDING_RISK=$(node -e "
+              const fs = require('fs');
+              const files = fs.readdirSync('.').filter(f => f.startsWith('sonarqube-enterprise-') && f.endsWith('.json'));
+              if (files.length > 0) {
+                const data = JSON.parse(fs.readFileSync(files[0]));
+                console.log(data.weddingAnalysis?.riskLevel || 'UNKNOWN');
+              } else {
+                console.log('NO_DATA');
+              }
+            ")
+            
+            echo "🎂 Wedding Day Risk Level: $WEDDING_RISK"
+            echo "WEDDING_RISK_LEVEL=$WEDDING_RISK" >> $GITHUB_ENV
+            
+            # Set job status based on risk level
+            if [[ "$WEDDING_RISK" == "CRITICAL" ]]; then
+              echo "🚨 CRITICAL wedding day risk detected!"
+              echo "❌ This code MUST NOT be deployed on wedding days"
+              exit 1
+            elif [[ "$WEDDING_RISK" == "HIGH" ]]; then
+              echo "⚠️  HIGH wedding day risk - review required"
+            fi
+          fi
+          
+      - name: 📊 Upload Analysis Artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sonarqube-enterprise-analysis
+          path: |
+            sonarqube-*.json
+            sonarqube-*.html
+            sonarqube-*.md
+          retention-days: 30
+          
+      - name: 📋 Comment PR with Analysis Summary
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            
+            // Find the latest analysis report
+            const files = fs.readdirSync('.').filter(f => 
+              f.startsWith('sonarqube-enterprise-') && f.endsWith('.json')
+            );
+            
+            if (files.length === 0) {
+              console.log('No analysis report found');
+              return;
+            }
+            
+            const reportFile = files[files.length - 1];
+            const report = JSON.parse(fs.readFileSync(reportFile));
+            
+            const comment = `## 🏢 Enterprise SonarQube Analysis Report
+            
+            **Platform**: ${report.platform || 'WedSync Wedding Platform'}  
+            **Lines of Code Analyzed**: ${(report.metrics?.actualLOC || 0).toLocaleString()}  
+            **Quality Gate**: ${report.qualityGate?.status || 'Unknown'}  
+            **Wedding Day Risk**: ${report.weddingAnalysis?.riskLevel || 'Unknown'}  
+            
+            ### 📊 Key Metrics
+            - **Issues Found**: ${report.issues?.total || 0}
+            - **Security Hotspots**: ${report.issues?.hotspots?.length || 0}
+            - **Test Coverage**: ${report.coverage?.overall || 0}%
+            - **Technical Debt**: ${report.technicalDebt?.total || 'Unknown'}
+            
+            ### 🎯 Top Recommendations
+            ${(report.recommendations || []).slice(0, 3).map(rec => 
+              `- **${rec.priority}**: ${rec.action}`
+            ).join('\n')}
+            
+            ### 🔗 Links
+            - [View Full Report in SonarCloud](https://sonarcloud.io/project/overview?id=WedSync_WedSync2)
+            - [Download Analysis Report](${context.payload.pull_request.html_url}/checks)
+            
+            ${report.weddingAnalysis?.riskLevel === 'CRITICAL' ? 
+              '🚨 **CRITICAL**: This PR introduces wedding day risks and should not be deployed during wedding season!' : 
+              ''}
+            `;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+            
+      - name: 📧 Notify on Critical Issues
+        if: env.WEDDING_RISK_LEVEL == 'CRITICAL' || env.WEDDING_RISK_LEVEL == 'HIGH'
+        run: |
+          echo "🚨 Critical wedding platform issues detected!"
+          echo "Risk Level: $WEDDING_RISK_LEVEL"
+          # Here you could add Slack/email notifications
+          
+      - name: 📈 Set Quality Gate Status
+        run: |
+          if [[ -f "sonarqube-enterprise-*.json" ]]; then
+            QUALITY_GATE=$(node -e "
+              const fs = require('fs');
+              const files = fs.readdirSync('.').filter(f => f.startsWith('sonarqube-enterprise-') && f.endsWith('.json'));
+              if (files.length > 0) {
+                const data = JSON.parse(fs.readFileSync(files[0]));
+                console.log(data.qualityGate?.status || 'UNKNOWN');
+              }
+            ")
+            
+            echo "Quality Gate Status: $QUALITY_GATE"
+            
+            if [[ "$QUALITY_GATE" == "ERROR" ]]; then
+              echo "❌ Quality gate failed - fix issues before merging"
+              exit 1
+            fi
+          fi

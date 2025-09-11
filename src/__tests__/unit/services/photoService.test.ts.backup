@@ -1,0 +1,374 @@
+/**
+ * PhotoService Unit Tests - WS-079 Photo Gallery System
+ */
+
+import { PhotoService } from '@/lib/services/photoService';
+import { createClient } from '@supabase/supabase-js';
+
+// Mock Supabase client
+jest.mock('@supabase/supabase-js');
+const mockSupabase = {
+  storage: {
+    listBuckets: jest.fn(),
+    createBucket: jest.fn(),
+    from: jest.fn(() => ({
+      upload: jest.fn(),
+      download: jest.fn(),
+      remove: jest.fn(),
+      getPublicUrl: jest.fn()
+    }))
+  },
+  from: jest.fn(() => ({
+    select: jest.fn(() => ({
+      eq: jest.fn(() => ({
+        single: jest.fn(),
+        order: jest.fn(() => ({
+          range: jest.fn()
+        }))
+      })),
+      insert: jest.fn(() => ({
+        select: jest.fn(() => ({
+          single: jest.fn()
+        }))
+      })),
+      delete: jest.fn(() => ({
+        eq: jest.fn()
+      }))
+    }))
+  }),
+  auth: {
+    getUser: jest.fn()
+  },
+  rpc: jest.fn()
+};
+
+(createClient as jest.Mock).mockReturnValue(mockSupabase);
+
+describe('PhotoService', () => {
+  let photoService: PhotoService;
+
+  beforeEach(() => {
+    photoService = PhotoService.getInstance();
+    jest.clearAllMocks();
+  });
+
+  describe('Singleton Pattern', () => {
+    it('should return the same instance', () => {
+      const instance1 = PhotoService.getInstance();
+      const instance2 = PhotoService.getInstance();
+      expect(instance1).toBe(instance2);
+    });
+  });
+
+  describe('ensureStorageBucket', () => {
+    it('should create bucket if it does not exist', async () => {
+      mockSupabase.storage.listBuckets.mockResolvedValue({ data: [] });
+      mockSupabase.storage.createBucket.mockResolvedValue({ error: null });
+
+      await photoService.ensureStorageBucket();
+
+      expect(mockSupabase.storage.createBucket).toHaveBeenCalledWith('photos', {
+        public: false,
+        allowedMimeTypes: ['image/jpeg', 'image/png', 'image/heic', 'image/webp'],
+        fileSizeLimit: '50MB'
+      });
+    });
+
+    it('should not create bucket if it already exists', async () => {
+      mockSupabase.storage.listBuckets.mockResolvedValue({
+        data: [{ name: 'photos' }]
+      });
+
+      await photoService.ensureStorageBucket();
+
+      expect(mockSupabase.storage.createBucket).not.toHaveBeenCalled();
+    });
+
+    it('should throw error if bucket creation fails', async () => {
+      mockSupabase.storage.listBuckets.mockResolvedValue({ data: [] });
+      mockSupabase.storage.createBucket.mockResolvedValue({ 
+        error: { message: 'Creation failed' } 
+      });
+
+      await expect(photoService.ensureStorageBucket()).rejects.toThrow(
+        'Failed to create photos bucket: Creation failed'
+      );
+    });
+  });
+
+  describe('compressImage', () => {
+    it('should compress image to specified quality', async () => {
+      // Create a mock file
+      const mockFile = new File(['test'], 'test.jpg', { type: 'image/jpeg' });
+      
+      // Mock canvas and context
+      const mockCanvas = {
+        width: 0,
+        height: 0,
+        getContext: jest.fn(() => ({
+          drawImage: jest.fn()
+        })),
+        toBlob: jest.fn((callback) => {
+          const compressedBlob = new Blob(['compressed'], { type: 'image/jpeg' });
+          callback(compressedBlob);
+        })
+      };
+
+      const mockImg = {
+        onload: null as any,
+        onerror: null as any,
+        width: 1000,
+        height: 800,
+        src: ''
+      };
+
+      // Mock DOM methods
+      global.document.createElement = jest.fn((tagName) => {
+        if (tagName === 'canvas') return mockCanvas as any;
+        return {};
+      });
+
+      global.Image = jest.fn(() => mockImg) as any;
+      global.URL.createObjectURL = jest.fn(() => 'mock-url');
+
+      const settings = { width: 400, height: 300, quality: 0.8 };
+      
+      // Set up the image onload to fire immediately
+      setTimeout(() => mockImg.onload(), 0);
+
+      const result = await photoService.compressImage(mockFile, settings);
+
+      expect(result).toHaveProperty('blob');
+      expect(result).toHaveProperty('compressionRatio');
+    });
+  });
+
+  describe('createBucket', () => {
+    it('should create photo bucket with correct parameters', async () => {
+      const mockBucketData = {
+        id: 'bucket-id',
+        name: 'Test Bucket',
+        bucket_type: 'engagement',
+        is_public: false
+      };
+
+      mockSupabase.from().insert().select().single.mockResolvedValue({
+        data: mockBucketData,
+        error: null
+      });
+
+      const result = await photoService.createBucket(
+        'Test Bucket',
+        'Test Description',
+        'engagement',
+        'client-id',
+        'vendor-id'
+      );
+
+      expect(mockSupabase.from).toHaveBeenCalledWith('photo_buckets');
+      expect(result.name).toBe('Test Bucket');
+      expect(result.bucketType).toBe('engagement');
+    });
+  });
+
+  describe('createAlbum', () => {
+    it('should create photo album with correct parameters', async () => {
+      const mockAlbumData = {
+        id: 'album-id',
+        name: 'Test Album',
+        bucket_id: 'bucket-id',
+        is_featured: false
+      };
+
+      mockSupabase.from().insert().select().single.mockResolvedValue({
+        data: mockAlbumData,
+        error: null
+      });
+
+      const result = await photoService.createAlbum(
+        'bucket-id',
+        'Test Album',
+        'Test Description',
+        '2024-01-01',
+        'Test Location'
+      );
+
+      expect(mockSupabase.from).toHaveBeenCalledWith('photo_albums');
+      expect(result.name).toBe('Test Album');
+      expect(result.bucketId).toBe('bucket-id');
+    });
+  });
+
+  describe('shareWithVendors', () => {
+    it('should create sharing permissions for vendors', async () => {
+      const mockUser = { user: { id: 'user-id' } };
+      mockSupabase.auth.getUser.mockResolvedValue({ data: mockUser });
+
+      const mockSharingData = [{
+        id: 'permission-id',
+        photo_id: 'photo-id',
+        shared_with_vendor_type: 'florist',
+        permission_level: 'view'
+      }];
+
+      mockSupabase.from().insert().select.mockResolvedValue({
+        data: mockSharingData,
+        error: null
+      });
+
+      const result = await photoService.shareWithVendors(
+        'photo-id',
+        undefined,
+        undefined,
+        ['florist', 'venue'],
+        'view',
+        '2024-12-31'
+      );
+
+      expect(mockSupabase.from).toHaveBeenCalledWith('photo_sharing_permissions');
+      expect(result).toHaveLength(1);
+      expect(result[0].sharedWithVendorType).toBe('florist');
+    });
+
+    it('should throw error if user not authenticated', async () => {
+      mockSupabase.auth.getUser.mockResolvedValue({ data: { user: null } });
+
+      await expect(
+        photoService.shareWithVendors('photo-id', undefined, undefined, ['florist'], 'view')
+      ).rejects.toThrow('User not authenticated');
+    });
+  });
+
+  describe('getPhotos', () => {
+    it('should retrieve photos with filters', async () => {
+      const mockPhotosData = [{
+        id: 'photo-id',
+        filename: 'test.jpg',
+        file_path: '/photos/test.jpg'
+      }];
+
+      const mockQuery = {
+        eq: jest.fn(() => mockQuery),
+        contains: jest.fn(() => mockQuery),
+        order: jest.fn(() => mockQuery),
+        range: jest.fn(() => ({
+          data: mockPhotosData,
+          error: null,
+          count: 1
+        }))
+      };
+
+      mockSupabase.from().select.mockReturnValue(mockQuery);
+
+      const result = await photoService.getPhotos('bucket-id', 'album-id', 'florist');
+
+      expect(result.photos).toHaveLength(1);
+      expect(result.total).toBe(1);
+      expect(mockQuery.eq).toHaveBeenCalledWith('bucket_id', 'bucket-id');
+      expect(mockQuery.eq).toHaveBeenCalledWith('album_id', 'album-id');
+      expect(mockQuery.contains).toHaveBeenCalledWith('shared_with_vendor_types', ['florist']);
+    });
+  });
+
+  describe('deletePhoto', () => {
+    it('should delete photo and associated files', async () => {
+      const mockPhotoData = {
+        file_path: '/photos/test.jpg',
+        thumbnail_path: '/photos/thumbs/test_thumb.jpg',
+        preview_path: '/photos/previews/test_preview.jpg',
+        optimized_path: '/photos/optimized/test_opt.jpg'
+      };
+
+      mockSupabase.from().select().eq().single.mockResolvedValue({
+        data: mockPhotoData,
+        error: null
+      });
+
+      mockSupabase.storage.from().remove.mockResolvedValue({ error: null });
+      mockSupabase.from().delete().eq.mockResolvedValue({ error: null });
+
+      await photoService.deletePhoto('photo-id');
+
+      expect(mockSupabase.storage.from).toHaveBeenCalledWith('photos');
+      expect(mockSupabase.from).toHaveBeenCalledWith('photos');
+    });
+  });
+
+  describe('getPhotoAnalytics', () => {
+    it('should return photo analytics', async () => {
+      const mockPhotoData = {
+        view_count: 100,
+        download_count: 25
+      };
+
+      mockSupabase.from().select().eq().single.mockResolvedValue({
+        data: mockPhotoData,
+        error: null
+      });
+
+      // Mock sharing permissions count
+      const mockCountQuery = {
+        eq: jest.fn(() => mockCountQuery),
+        select: jest.fn(() => mockCountQuery)
+      };
+
+      mockSupabase.from().select.mockReturnValue(mockCountQuery);
+
+      const result = await photoService.getPhotoAnalytics('photo-id');
+
+      expect(result.views).toBe(100);
+      expect(result.downloads).toBe(25);
+      expect(typeof result.shares).toBe('number');
+    });
+  });
+
+  describe('addTags', () => {
+    it('should add tags to photo', async () => {
+      mockSupabase.from().insert.mockResolvedValue({ error: null });
+
+      await photoService.addTags('photo-id', ['tag1', 'tag2']);
+
+      expect(mockSupabase.from).toHaveBeenCalledWith('photo_tag_assignments');
+      expect(mockSupabase.from().insert).toHaveBeenCalledWith([
+        { photo_id: 'photo-id', tag_id: 'tag1' },
+        { photo_id: 'photo-id', tag_id: 'tag2' }
+      ]);
+    });
+  });
+
+  describe('removeTag', () => {
+    it('should remove tag from photo', async () => {
+      mockSupabase.from().delete().eq.mockResolvedValue({ error: null });
+
+      await photoService.removeTag('photo-id', 'tag-id');
+
+      expect(mockSupabase.from).toHaveBeenCalledWith('photo_tag_assignments');
+    });
+  });
+
+  describe('getPhotoPublicUrl', () => {
+    it('should return public URL for photo', async () => {
+      const mockUrl = 'https://example.com/photo.jpg';
+      mockSupabase.storage.from().getPublicUrl.mockReturnValue({
+        data: { publicUrl: mockUrl }
+      });
+
+      const result = await photoService.getPhotoPublicUrl('/photos/test.jpg');
+
+      expect(result).toBe(mockUrl);
+    });
+  });
+
+  describe('Error Handling', () => {
+    it('should handle database errors gracefully', async () => {
+      mockSupabase.from().insert().select().single.mockResolvedValue({
+        data: null,
+        error: { message: 'Database error' }
+      });
+
+      await expect(
+        photoService.createBucket('Test', 'Desc', 'general')
+      ).rejects.toThrow();
+    });
+  });
+});

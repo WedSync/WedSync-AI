@@ -1,0 +1,402 @@
+/**
+ * WS-170: Viral Optimization System - Referral Statistics API
+ * 
+ * GET /api/referrals/stats
+ * Retrieves comprehensive referral statistics and viral metrics for authenticated users
+ * 
+ * Features:
+ * - User referral statistics calculation
+ * - Viral coefficient calculation  
+ * - Performance optimized (<200ms)
+ * - Pagination support
+ * - Date range filtering
+ * - RLS policy enforcement
+ */
+
+import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@/lib/supabase/server'
+import { sanitizeUserInput } from '@/lib/security/xss-protection'
+import { 
+  type ReferralStats, 
+  type ReferralStatsResponse,
+  type ReferralStatsQuery,
+  REFERRAL_DEFAULTS 
+} from '@/types/referrals'
+import { 
+  referralStatsQuerySchema,
+  sanitizeReferralInput,
+  REFERRAL_ERROR_MESSAGES
+} from '@/lib/validations/referrals'
+
+/**
+ * Calculate viral coefficient based on referral performance
+ * Viral coefficient = (Invitations sent × Conversion rate) per user
+ */
+function calculateViralCoefficient(
+  totalInvitations: number, 
+  totalConversions: number, 
+  totalUsers: number
+): number {
+  if (totalUsers === 0 || totalInvitations === 0) return 0
+  
+  const conversionRate = totalConversions / totalInvitations
+  const invitationsPerUser = totalInvitations / totalUsers
+  
+  return Math.round((invitationsPerUser * conversionRate) * 100) / 100
+}
+
+/**
+ * Get optimized referral statistics for a user
+ */
+async function getUserReferralStats(
+  supabase: any, 
+  userId: string, 
+  filters: {
+    startDate?: string
+    endDate?: string
+    campaignName?: string
+  }
+): Promise<Partial<ReferralStats>> {
+  const { startDate, endDate, campaignName } = filters
+
+  // Build date filter conditions
+  const dateFilter = startDate && endDate 
+    ? `created_at.gte.${startDate},created_at.lte.${endDate}`
+    : startDate 
+    ? `created_at.gte.${startDate}`
+    : endDate
+    ? `created_at.lte.${endDate}`
+    : null
+
+  // Build campaign filter
+  const campaignFilter = campaignName ? `campaign_name.eq.${campaignName}` : null
+
+  // Combine filters
+  let query = supabase
+    .from('referral_codes')
+    .select(`
+      *,
+      referral_conversions(
+        id,
+        converted_at,
+        revenue_generated,
+        conversion_type
+      )
+    `)
+    .eq('user_id', userId)
+
+  if (dateFilter) {
+    if (startDate) query = query.gte('created_at', startDate)
+    if (endDate) query = query.lte('created_at', endDate)
+  }
+
+  if (campaignFilter) {
+    query = query.eq('campaign_name', campaignName)
+  }
+
+  const { data: codes, error } = await query
+
+  if (error) {
+    throw new Error(`Failed to fetch referral codes: ${error.message}`)
+  }
+
+  const now = new Date()
+  const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
+
+  // Calculate basic stats
+  const totalCodes = codes.length
+  const activeCodes = codes.filter(c => c.is_active && (!c.expires_at || new Date(c.expires_at) > now)).length
+  const expiredCodes = codes.filter(c => c.expires_at && new Date(c.expires_at) <= now).length
+
+  // Calculate conversion stats
+  const allConversions = codes.flatMap(c => c.referral_conversions || [])
+  const totalConversions = allConversions.length
+  const totalClicks = codes.reduce((sum, c) => sum + (c.uses || 0), 0)
+  const totalRevenue = allConversions.reduce((sum, conv) => sum + (conv.revenue_generated || 0), 0)
+
+  const conversionRate = totalClicks > 0 ? Math.round((totalConversions / totalClicks) * 10000) / 100 : 0
+  const averageRevenuePerConversion = totalConversions > 0 ? Math.round((totalRevenue / totalConversions) * 100) / 100 : 0
+
+  // Find most successful code
+  const codeStats = codes.map(code => ({
+    code: code.code,
+    conversions: code.referral_conversions?.length || 0,
+    revenue: code.referral_conversions?.reduce((sum: number, conv: any) => sum + (conv.revenue_generated || 0), 0) || 0
+  }))
+
+  const mostSuccessfulCode = codeStats.reduce((best, current) => 
+    current.conversions > best.conversions ? current : best, 
+    { code: '', conversions: 0, revenue: 0 }
+  )
+
+  // Calculate recent activity (last 30 days)
+  const recentCodes = codes.filter(c => new Date(c.created_at) >= thirtyDaysAgo)
+  const recentConversions = allConversions.filter(c => new Date(c.converted_at) >= thirtyDaysAgo)
+  const recentClicks = recentCodes.reduce((sum, c) => sum + (c.uses || 0), 0)
+  const recentRevenue = recentConversions.reduce((sum, conv) => sum + (conv.revenue_generated || 0), 0)
+
+  // Calculate viral coefficient (simplified)
+  const viralCoefficient = calculateViralCoefficient(totalClicks, totalConversions, 1)
+
+  return {
+    user_id: userId,
+    total_codes: totalCodes,
+    active_codes: activeCodes,
+    expired_codes: expiredCodes,
+    total_clicks: totalClicks,
+    total_conversions: totalConversions,
+    total_revenue: totalRevenue,
+    conversion_rate: conversionRate,
+    viral_coefficient: viralCoefficient,
+    average_revenue_per_conversion: averageRevenuePerConversion,
+    most_successful_code: mostSuccessfulCode.conversions > 0 ? mostSuccessfulCode : undefined,
+    recent_activity: {
+      codes_created_last_30d: recentCodes.length,
+      clicks_last_30d: recentClicks,
+      conversions_last_30d: recentConversions.length,
+      revenue_last_30d: recentRevenue
+    }
+  }
+}
+
+/**
+ * Get campaign performance statistics
+ */
+async function getCampaignStats(
+  supabase: any,
+  userId: string,
+  filters: { startDate?: string; endDate?: string }
+): Promise<Array<{ campaign_name: string; codes: number; conversions: number; revenue: number }>> {
+  let query = supabase
+    .from('referral_codes')
+    .select(`
+      campaign_name,
+      referral_conversions(revenue_generated)
+    `)
+    .eq('user_id', userId)
+    .not('campaign_name', 'is', null)
+
+  if (filters.startDate) query = query.gte('created_at', filters.startDate)
+  if (filters.endDate) query = query.lte('created_at', filters.endDate)
+
+  const { data: campaigns, error } = await query
+
+  if (error) {
+    throw new Error(`Failed to fetch campaign stats: ${error.message}`)
+  }
+
+  // Group by campaign and calculate stats
+  const campaignMap = new Map()
+
+  campaigns.forEach((item: any) => {
+    const campaignName = item.campaign_name
+    
+    if (!campaignMap.has(campaignName)) {
+      campaignMap.set(campaignName, {
+        campaign_name: campaignName,
+        codes: 0,
+        conversions: 0,
+        revenue: 0
+      })
+    }
+
+    const campaign = campaignMap.get(campaignName)
+    campaign.codes += 1
+    
+    if (item.referral_conversions) {
+      campaign.conversions += item.referral_conversions.length
+      campaign.revenue += item.referral_conversions.reduce(
+        (sum: number, conv: any) => sum + (conv.revenue_generated || 0), 0
+      )
+    }
+  })
+
+  return Array.from(campaignMap.values())
+    .sort((a, b) => b.revenue - a.revenue)
+    .slice(0, 10) // Top 10 campaigns
+}
+
+/**
+ * Get paginated referral history
+ */
+async function getReferralHistory(
+  supabase: any,
+  userId: string,
+  page: number,
+  limit: number,
+  filters: { startDate?: string; endDate?: string; campaignName?: string }
+) {
+  const offset = (page - 1) * limit
+
+  let query = supabase
+    .from('referral_codes')
+    .select(`
+      id,
+      code,
+      description,
+      campaign_name,
+      created_at,
+      expires_at,
+      uses,
+      is_active,
+      referral_conversions(revenue_generated)
+    `, { count: 'exact' })
+    .eq('user_id', userId)
+
+  if (filters.startDate) query = query.gte('created_at', filters.startDate)
+  if (filters.endDate) query = query.lte('created_at', filters.endDate)
+  if (filters.campaignName) query = query.eq('campaign_name', filters.campaignName)
+
+  query = query
+    .order('created_at', { ascending: false })
+    .range(offset, offset + limit - 1)
+
+  const { data: history, error, count } = await query
+
+  if (error) {
+    throw new Error(`Failed to fetch referral history: ${error.message}`)
+  }
+
+  const formattedHistory = history?.map((item: any) => ({
+    id: item.id,
+    code: item.code,
+    description: item.description,
+    campaign_name: item.campaign_name,
+    created_at: item.created_at,
+    expires_at: item.expires_at,
+    uses: item.uses || 0,
+    conversions: item.referral_conversions?.length || 0,
+    revenue: item.referral_conversions?.reduce(
+      (sum: number, conv: any) => sum + (conv.revenue_generated || 0), 0
+    ) || 0,
+    is_active: item.is_active
+  })) || []
+
+  return {
+    history: formattedHistory,
+    total: count || 0
+  }
+}
+
+export async function GET(request: NextRequest): Promise<NextResponse<ReferralStatsResponse>> {
+  const startTime = Date.now()
+
+  try {
+    // Create Supabase client with RLS enabled
+    const supabase = createClient()
+
+    // Get authenticated user
+    const { data: { user }, error: userError } = await supabase.auth.getUser()
+    
+    if (userError || !user) {
+      return NextResponse.json(
+        { success: false, error: 'Authentication required' },
+        { status: 401 }
+      )
+    }
+
+    // Parse and validate query parameters
+    const url = new URL(request.url)
+    const queryParams = Object.fromEntries(url.searchParams)
+
+    const validation = referralStatsQuerySchema.safeParse(queryParams)
+    if (!validation.success) {
+      return NextResponse.json(
+        { 
+          success: false, 
+          error: 'Invalid query parameters',
+          details: validation.error.issues
+        },
+        { status: 400 }
+      )
+    }
+
+    const { page, limit, start_date, end_date, campaign_name, include_history } = validation.data
+
+    // Sanitize optional string inputs
+    const filters = {
+      startDate: start_date ? sanitizeReferralInput(start_date) : undefined,
+      endDate: end_date ? sanitizeReferralInput(end_date) : undefined,
+      campaignName: campaign_name ? sanitizeReferralInput(campaign_name) : undefined
+    }
+
+    // Additional date range validation (already handled in schema but double-check)
+    if (filters.startDate && filters.endDate && new Date(filters.startDate) > new Date(filters.endDate)) {
+      return NextResponse.json(
+        { success: false, error: REFERRAL_ERROR_MESSAGES.INVALID_DATE_RANGE },
+        { status: 400 }
+      )
+    }
+
+    // Get base statistics (performance optimized)
+    const [baseStats, campaignStats] = await Promise.all([
+      getUserReferralStats(supabase, user.id, filters),
+      getCampaignStats(supabase, user.id, filters)
+    ])
+
+    let referralHistory
+    let pagination
+
+    // Include detailed history if requested
+    if (include_history) {
+      const historyResult = await getReferralHistory(supabase, user.id, page, limit, filters)
+      referralHistory = historyResult.history
+      
+      pagination = {
+        page,
+        limit,
+        total: historyResult.total,
+        total_pages: Math.ceil(historyResult.total / limit)
+      }
+    }
+
+    const responseData: ReferralStats = {
+      ...baseStats,
+      top_campaigns: campaignStats.length > 0 ? campaignStats : undefined,
+      referral_history: referralHistory
+    } as ReferralStats
+
+    const executionTime = Date.now() - startTime
+
+    // Log performance warning if over 200ms
+    if (executionTime > 200) {
+      console.warn(`Referral stats API took ${executionTime}ms - consider optimization`)
+    }
+
+    const response: ReferralStatsResponse = {
+      success: true,
+      data: responseData,
+      ...(pagination && { pagination })
+    }
+
+    return NextResponse.json(response, { 
+      status: 200,
+      headers: {
+        'X-Response-Time': `${executionTime}ms`,
+        'Cache-Control': `private, max-age=${REFERRAL_DEFAULTS.CACHE_DURATION_SECONDS}`, // Cache for 1 minute
+      }
+    })
+
+  } catch (error) {
+    const executionTime = Date.now() - startTime
+    console.error('Referral stats error:', error, `(${executionTime}ms)`)
+    
+    // Don't leak internal error details
+    return NextResponse.json(
+      { success: false, error: 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}
+
+// OPTIONS handler for CORS preflight
+export async function OPTIONS(request: NextRequest): Promise<NextResponse> {
+  return NextResponse.json({}, { 
+    status: 200,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    },
+  })
+}

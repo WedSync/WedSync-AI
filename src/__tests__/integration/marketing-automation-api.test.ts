@@ -1,0 +1,280 @@
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { createMocks } from 'node-mocks-http';
+import { GET as getCampaigns, POST as createCampaign } from '@/app/api/marketing/campaigns/route';
+import { GET as getCampaign, PUT as updateCampaign, DELETE as deleteCampaign } from '@/app/api/marketing/campaigns/[id]/route';
+import { GET as getSegments, POST as createSegment } from '@/app/api/marketing/segments/route';
+
+// Mock Supabase client
+vi.mock('@supabase/auth-helpers-nextjs');
+vi.mock('next/headers');
+const mockSupabaseClient = {
+  auth: {
+    getSession: vi.fn()
+  },
+  from: vi.fn().mockReturnThis(),
+  select: vi.fn().mockReturnThis(),
+  insert: vi.fn().mockReturnThis(),
+  update: vi.fn().mockReturnThis(),
+  delete: vi.fn().mockReturnThis(),
+  eq: vi.fn().mockReturnThis(),
+  single: vi.fn(),
+  order: vi.fn().mockReturnThis(),
+  range: vi.fn().mockReturnThis(),
+  rpc: vi.fn()
+};
+const mockSession = {
+  user: {
+    id: 'user-123',
+    email: 'test@example.com'
+  }
+const mockProfile = {
+  organization_id: 'org-123'
+describe('Marketing Automation API Integration Tests', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    
+    (require('@supabase/auth-helpers-nextjs').createServerComponentClient as ReturnType<typeof vi.fn>)
+      .mockReturnValue(mockSupabaseClient);
+    mockSupabaseClient.auth.getSession.mockResolvedValue({
+      data: { session: mockSession },
+      error: null
+    });
+  });
+  afterEach(() => {
+    vi.resetAllMocks();
+  describe('/api/marketing/campaigns', () => {
+    describe('GET', () => {
+      it('should return campaigns for authorized user', async () => {
+        const mockCampaigns = [
+          {
+            id: 'campaign-1',
+            name: 'Welcome Campaign',
+            campaign_type: 'email',
+            status: 'active',
+            total_sent: 100,
+            open_rate: 0.25,
+            organization_id: 'org-123'
+          },
+            id: 'campaign-2',
+            name: 'Follow-up Campaign',
+            campaign_type: 'sms',
+            status: 'draft',
+            total_sent: 0,
+            open_rate: 0,
+          }
+        ];
+        mockSupabaseClient.single
+          .mockResolvedValueOnce({ data: mockProfile, error: null });
+        
+        mockSupabaseClient.range.mockResolvedValueOnce({
+          data: mockCampaigns,
+          error: null
+        });
+        mockSupabaseClient.select.mockResolvedValueOnce({
+          count: 2,
+        const { req } = createMocks({
+          method: 'GET',
+          url: '/api/marketing/campaigns'
+        const response = await getCampaigns(req);
+        const responseData = await response.json();
+        expect(response.status).toBe(200);
+        expect(responseData.campaigns).toHaveLength(2);
+        expect(responseData.campaigns[0].name).toBe('Welcome Campaign');
+        expect(responseData.pagination.total).toBe(2);
+      });
+      it('should filter campaigns by status', async () => {
+        mockSupabaseClient.eq.mockReturnThis();
+          data: [{ id: 'campaign-1', status: 'active' }],
+          url: '/api/marketing/campaigns?status=active'
+        expect(mockSupabaseClient.eq).toHaveBeenCalledWith('status', 'active');
+      it('should return 401 for unauthorized requests', async () => {
+        mockSupabaseClient.auth.getSession.mockResolvedValue({
+          data: { session: null },
+          method: 'GET'
+        expect(response.status).toBe(401);
+        expect(responseData.error).toBe('Unauthorized');
+      it('should return 404 for user without profile', async () => {
+          .mockResolvedValueOnce({ data: null, error: null });
+        expect(response.status).toBe(404);
+        expect(responseData.error).toBe('Profile not found');
+    describe('POST', () => {
+      const validCampaignData = {
+        name: 'New Campaign',
+        description: 'Test campaign',
+        campaign_type: 'email',
+        target_audience: { segment: 'new_clients' },
+        workflow_config: { steps: [] }
+      };
+      it('should create campaign with valid data', async () => {
+        const createdCampaign = {
+          id: 'campaign-new',
+          ...validCampaignData,
+          organization_id: 'org-123',
+          created_by: 'user-123'
+        };
+          .mockResolvedValueOnce({ data: mockProfile, error: null })
+          .mockResolvedValueOnce({ data: createdCampaign, error: null });
+          method: 'POST',
+          body: validCampaignData
+        const response = await createCampaign(req);
+        expect(response.status).toBe(201);
+        expect(responseData.campaign.name).toBe('New Campaign');
+        expect(mockSupabaseClient.insert).toHaveBeenCalledWith(
+          expect.objectContaining({
+            name: 'New Campaign',
+            organization_id: 'org-123',
+            created_by: 'user-123'
+          })
+        );
+      it('should return 400 for missing required fields', async () => {
+          body: { description: 'Missing name and type' }
+        expect(response.status).toBe(400);
+        expect(responseData.error).toBe('Name and campaign type are required');
+      it('should return 400 for invalid campaign type', async () => {
+          body: {
+            name: 'Test Campaign',
+            campaign_type: 'invalid_type'
+        expect(responseData.error).toBe('Invalid campaign type');
+  describe('/api/marketing/campaigns/[id]', () => {
+      it('should return campaign details', async () => {
+        const mockCampaign = {
+          id: 'campaign-1',
+          name: 'Test Campaign',
+          campaign_steps: [
+            { id: 'step-1', step_name: 'Welcome Email', step_order: 1 }
+          ],
+          executions: [
+            { id: 'exec-1', status: 'completed', client: { name: 'John Doe' } }
+          ]
+          .mockResolvedValueOnce({ data: mockCampaign, error: null });
+        const response = await getCampaign(req, { params: { id: 'campaign-1' } });
+        expect(responseData.campaign.name).toBe('Test Campaign');
+        expect(responseData.campaign.campaign_steps).toHaveLength(1);
+        expect(responseData.campaign.executions).toHaveLength(1);
+      it('should return 404 for non-existent campaign', async () => {
+          .mockResolvedValueOnce({ data: null, error: { code: 'PGRST116' } });
+        const response = await getCampaign(req, { params: { id: 'non-existent' } });
+        expect(responseData.error).toBe('Campaign not found');
+    describe('PUT', () => {
+      it('should update campaign successfully', async () => {
+        const updatedCampaign = {
+          name: 'Updated Campaign',
+          status: 'active'
+          .mockResolvedValueOnce({ data: updatedCampaign, error: null });
+          method: 'PUT',
+            name: 'Updated Campaign',
+            status: 'active'
+        const response = await updateCampaign(req, { params: { id: 'campaign-1' } });
+        expect(responseData.campaign.name).toBe('Updated Campaign');
+        expect(mockSupabaseClient.update).toHaveBeenCalledWith(
+      it('should set started_at when activating campaign', async () => {
+          .mockResolvedValueOnce({ data: { status: 'active' }, error: null });
+          body: { status: 'active' }
+        await updateCampaign(req, { params: { id: 'campaign-1' } });
+            started_at: expect.any(String)
+      it('should return 400 for invalid status', async () => {
+          body: { status: 'invalid_status' }
+        expect(responseData.error).toBe('Invalid status');
+    describe('DELETE', () => {
+      it('should delete non-active campaign', async () => {
+          .mockResolvedValueOnce({ data: { id: 'campaign-1', status: 'draft' }, error: null });
+        mockSupabaseClient.delete.mockResolvedValue({ data: null, error: null });
+          method: 'DELETE'
+        const response = await deleteCampaign(req, { params: { id: 'campaign-1' } });
+        expect(responseData.message).toBe('Campaign deleted successfully');
+        expect(mockSupabaseClient.delete).toHaveBeenCalled();
+      it('should prevent deletion of active campaigns', async () => {
+          .mockResolvedValueOnce({ data: { id: 'campaign-1', status: 'active' }, error: null });
+        expect(responseData.error).toBe('Cannot delete active campaign. Please pause or complete it first.');
+        expect(mockSupabaseClient.delete).not.toHaveBeenCalled();
+        const response = await deleteCampaign(req, { params: { id: 'non-existent' } });
+  describe('/api/marketing/segments', () => {
+      it('should return user segments', async () => {
+        const mockSegments = [
+            id: 'segment-1',
+            name: 'New Clients',
+            dynamic: true,
+            total_users: 150,
+          data: mockSegments,
+          count: 1,
+        const response = await getSegments(req);
+        expect(responseData.segments).toHaveLength(1);
+        expect(responseData.segments[0].name).toBe('New Clients');
+      it('should filter segments by dynamic flag', async () => {
+          data: [],
+          url: '/api/marketing/segments?dynamic=true'
+        expect(mockSupabaseClient.eq).toHaveBeenCalledWith('dynamic', true);
+      it('should create segment with valid data', async () => {
+        const segmentData = {
+          name: 'VIP Clients',
+          description: 'High-value clients',
+          rules: {
+            wedding_budget: { min: 50000 },
+            created_after: '2024-01-01'
+          dynamic: true
+        const createdSegment = {
+          id: 'segment-new',
+          ...segmentData,
+          .mockResolvedValueOnce({ data: createdSegment, error: null });
+        // Mock client query for initial calculation
+          data: [
+            { id: 'client-1', name: 'John Doe' },
+            { id: 'client-2', name: 'Jane Smith' }
+        mockSupabaseClient.insert.mockResolvedValue({ data: null, error: null });
+          body: segmentData
+        const response = await createSegment(req);
+        expect(responseData.segment.name).toBe('VIP Clients');
+            name: 'VIP Clients',
+            rules: segmentData.rules,
+      it('should return 400 for missing name', async () => {
+          body: { description: 'Missing name' }
+        expect(responseData.error).toBe('Name is required');
+      it('should return 400 for invalid rules', async () => {
+            name: 'Test Segment',
+            rules: 'invalid_rules_format'
+        expect(responseData.error).toBe('Rules must be a valid JSON object');
+  describe('Error Handling', () => {
+    it('should handle database connection errors', async () => {
+      mockSupabaseClient.auth.getSession.mockRejectedValue(
+        new Error('Database connection failed')
+      );
+      const { req } = createMocks({
+        method: 'GET'
+      const response = await getCampaigns(req);
+      const responseData = await response.json();
+      expect(response.status).toBe(500);
+      expect(responseData.error).toBe('Internal server error');
+    it('should handle malformed request body', async () => {
+      mockSupabaseClient.single
+        .mockResolvedValueOnce({ data: mockProfile, error: null });
+      // Mock malformed JSON that would cause parsing error
+        method: 'POST',
+        body: undefined // This will cause JSON parsing to fail
+      // Simulate JSON parse error
+      const originalJson = req.json;
+      req.json = async () => {
+        throw new Error('Invalid JSON');
+      const response = await createCampaign(req);
+  describe('Performance Tests', () => {
+    it('should handle large campaign lists efficiently', async () => {
+      const largeCampaignList = Array.from({ length: 1000 }, (_, i) => ({
+        id: `campaign-${i}`,
+        name: `Campaign ${i}`,
+        organization_id: 'org-123'
+      }));
+      
+      mockSupabaseClient.range.mockResolvedValueOnce({
+        data: largeCampaignList.slice(0, 50), // Paginated result
+        error: null
+      mockSupabaseClient.select.mockResolvedValueOnce({
+        count: 1000,
+      const startTime = Date.now();
+        method: 'GET',
+        url: '/api/marketing/campaigns?limit=50'
+      const endTime = Date.now();
+      expect(response.status).toBe(200);
+      expect(responseData.campaigns).toHaveLength(50);
+      expect(responseData.pagination.total).toBe(1000);
+      expect(endTime - startTime).toBeLessThan(1000); // Should complete within 1 second
+});

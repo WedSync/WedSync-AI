@@ -1,0 +1,336 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+
+interface Insight {
+  id: string;
+  type:
+    | 'pricing'
+    | 'timing'
+    | 'competition'
+    | 'seasonality'
+    | 'bundling'
+    | 'performance'
+    | 'opportunity';
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  title: string;
+  description: string;
+  impact: string;
+  actionable: boolean;
+  suggestedActions: Array<{
+    action: string;
+    description: string;
+    estimatedUplift: string;
+  }>;
+  weddingContext: string;
+  expires_at: string;
+}
+
+interface PricingOptimization {
+  templateId: string;
+  currentPrice: number;
+  suggestedPrice: number;
+  expectedUplift: number;
+  confidence: number;
+}
+
+interface BundleOpportunity {
+  templates: string[];
+  bundleName: string;
+  individualPrice: number;
+  suggestedBundlePrice: number;
+  projectedSales: number;
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+
+    // Get authenticated user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Generate fresh insights
+    await supabase.rpc('generate_creator_insights', {
+      p_creator_id: user.id,
+    });
+
+    // Fetch active insights
+    const { data: insightsData, error: insightsError } = await supabase
+      .from('creator_insights')
+      .select('*')
+      .eq('creator_id', user.id)
+      .eq('is_active', true)
+      .order('severity', { ascending: false })
+      .order('created_at', { ascending: false });
+
+    if (insightsError) {
+      console.error('Error fetching insights:', insightsError);
+      return NextResponse.json(
+        { error: 'Failed to fetch insights' },
+        { status: 500 },
+      );
+    }
+
+    const insights: Insight[] =
+      insightsData?.map((insight) => ({
+        id: insight.id,
+        type: insight.insight_type as Insight['type'],
+        severity: insight.severity as Insight['severity'],
+        title: insight.title,
+        description: insight.description,
+        impact: insight.impact_description || '',
+        actionable: insight.actionable,
+        suggestedActions: insight.suggested_actions || [],
+        weddingContext: insight.wedding_context || '',
+        expires_at: insight.expires_at,
+      })) || [];
+
+    // Analyze bundle opportunities
+    const { data: bundleData } = await supabase.rpc(
+      'analyze_bundle_opportunities',
+      {
+        p_creator_id: user.id,
+        p_days_back: 30,
+      },
+    );
+
+    const bundleOpportunities: BundleOpportunity[] = [];
+
+    if (bundleData && bundleData.length > 0) {
+      // Fetch template details for bundles
+      const allTemplateIds = bundleData.flatMap((b: any) => b.template_ids);
+      const { data: templates } = await supabase
+        .from('marketplace_templates')
+        .select('id, title, price_cents')
+        .in('id', allTemplateIds);
+
+      const templateMap = new Map(templates?.map((t) => [t.id, t]) || []);
+
+      bundleData.forEach((bundle: any) => {
+        const bundleTemplates = bundle.template_ids.map((id: string) =>
+          templateMap.get(id),
+        );
+        const bundleName =
+          bundleTemplates.map((t: any) => t?.title?.split(' ')[0]).join(' + ') +
+          ' Bundle';
+
+        bundleOpportunities.push({
+          templates: bundle.template_ids,
+          bundleName,
+          individualPrice: bundle.individual_total,
+          suggestedBundlePrice: Math.round(bundle.individual_total * 0.85), // 15% discount
+          projectedSales: Math.round(bundle.frequency * 100), // Convert to percentage
+        });
+      });
+    }
+
+    // Analyze pricing optimization opportunities
+    const { data: templateMetrics } = await supabase
+      .from('creator_analytics_events')
+      .select(
+        `
+        template_id,
+        event_type,
+        marketplace_templates!inner(id, title, price_cents)
+      `,
+      )
+      .eq('creator_id', user.id)
+      .gte(
+        'created_at',
+        new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+      );
+
+    const templatePerformance = new Map<
+      string,
+      { views: number; purchases: number; price: number; title: string }
+    >();
+
+    templateMetrics?.forEach((event: any) => {
+      const templateId = event.template_id;
+      if (!templatePerformance.has(templateId)) {
+        templatePerformance.set(templateId, {
+          views: 0,
+          purchases: 0,
+          price: event.marketplace_templates.price_cents,
+          title: event.marketplace_templates.title,
+        });
+      }
+
+      const perf = templatePerformance.get(templateId)!;
+      if (event.event_type === 'view') perf.views++;
+      if (event.event_type === 'purchase') perf.purchases++;
+    });
+
+    const pricingOptimizations: PricingOptimization[] = [];
+
+    // Analyze each template for pricing optimization
+    templatePerformance.forEach((perf, templateId) => {
+      const conversionRate = perf.views > 0 ? perf.purchases / perf.views : 0;
+
+      // If conversion rate is low, suggest price reduction
+      if (conversionRate < 0.02 && perf.views > 50) {
+        const suggestedReduction = conversionRate < 0.01 ? 0.2 : 0.1; // 20% or 10% reduction
+        pricingOptimizations.push({
+          templateId,
+          currentPrice: perf.price,
+          suggestedPrice: Math.round(perf.price * (1 - suggestedReduction)),
+          expectedUplift: Math.round(suggestedReduction * 100 + 10), // Expected sales uplift
+          confidence: Math.min(0.95, 0.5 + perf.views / 200), // Confidence based on sample size
+        });
+      }
+
+      // If conversion rate is very high, suggest price increase
+      if (conversionRate > 0.05 && perf.purchases > 10) {
+        const suggestedIncrease = 0.15; // 15% increase
+        pricingOptimizations.push({
+          templateId,
+          currentPrice: perf.price,
+          suggestedPrice: Math.round(perf.price * (1 + suggestedIncrease)),
+          expectedUplift: -5, // Might lose 5% of sales but increase revenue
+          confidence: Math.min(0.9, 0.6 + perf.purchases / 50),
+        });
+      }
+    });
+
+    // Seasonal strategy recommendations
+    const seasonalStrategies = [
+      {
+        season: 'spring',
+        strategy:
+          'Launch romantic and outdoor wedding templates 60 days before spring',
+        expectedImpact:
+          '+30% revenue during peak spring booking (January-March)',
+      },
+      {
+        season: 'summer',
+        strategy: 'Focus on beach and destination wedding templates',
+        expectedImpact: '+25% conversion for luxury coordinator segment',
+      },
+      {
+        season: 'fall',
+        strategy: 'Promote rustic and harvest-themed templates',
+        expectedImpact: '+20% engagement from budget-conscious coordinators',
+      },
+      {
+        season: 'winter',
+        strategy: 'Offer bundled packages for indoor venue planning',
+        expectedImpact: '+35% average order value during holiday season',
+      },
+    ];
+
+    // Add dynamic insights based on current data
+    if (insights.length === 0) {
+      // Generate a default insight if none exist
+      insights.push({
+        id: `default-${Date.now()}`,
+        type: 'opportunity',
+        severity: 'medium',
+        title: 'Optimize Your Template Performance',
+        description:
+          'Your analytics show potential for growth. Consider A/B testing your top templates.',
+        impact: 'Could increase revenue by 15-25%',
+        actionable: true,
+        suggestedActions: [
+          {
+            action: 'Run pricing experiments',
+            description:
+              'Test different price points for your best-selling templates',
+            estimatedUplift: '+20% revenue',
+          },
+          {
+            action: 'Improve template descriptions',
+            description:
+              'Add specific wedding use cases and time-saving benefits',
+            estimatedUplift: '+15% conversion',
+          },
+        ],
+        weddingContext:
+          'Wedding coordinators make purchasing decisions based on clear value propositions and proven results.',
+        expires_at: new Date(
+          Date.now() + 7 * 24 * 60 * 60 * 1000,
+        ).toISOString(),
+      });
+    }
+
+    const response = {
+      insights,
+      recommendations: {
+        pricingOptimization: pricingOptimizations.slice(0, 5), // Top 5 pricing recommendations
+        bundleOpportunities: bundleOpportunities.slice(0, 3), // Top 3 bundle opportunities
+        seasonalStrategies,
+      },
+    };
+
+    return NextResponse.json(response);
+  } catch (error) {
+    console.error('Insights API error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+// Mark an insight as dismissed
+export async function PATCH(request: NextRequest) {
+  try {
+    const supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+
+    // Get authenticated user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { insightId, action } = await request.json();
+
+    if (!insightId || !action) {
+      return NextResponse.json(
+        { error: 'Missing required fields' },
+        { status: 400 },
+      );
+    }
+
+    if (action === 'dismiss') {
+      const { error } = await supabase
+        .from('creator_insights')
+        .update({
+          is_active: false,
+          dismissed_at: new Date().toISOString(),
+        })
+        .eq('id', insightId)
+        .eq('creator_id', user.id);
+
+      if (error) {
+        console.error('Error dismissing insight:', error);
+        return NextResponse.json(
+          { error: 'Failed to dismiss insight' },
+          { status: 500 },
+        );
+      }
+    }
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error('Insight update error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

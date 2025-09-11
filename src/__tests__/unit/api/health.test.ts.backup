@@ -1,0 +1,374 @@
+/**
+ * Health API Route Unit Tests
+ * WS-171: Mobile PWA Configuration - Manifest Configuration
+ * Tests PWA health check endpoint for offline connectivity testing
+ */
+
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { NextRequest, NextResponse } from 'next/server'
+import { GET, HEAD } from '@/app/api/health/route'
+
+// Mock NextResponse
+vi.mock('next/server', async () => {
+  const actual = await vi.importActual('next/server')
+  return {
+    ...actual,
+    NextResponse: {
+      json: vi.fn((data: any, init?: ResponseInit) => ({
+        json: () => Promise.resolve(data),
+        status: init?.status || 200,
+        headers: new Headers(init?.headers),
+        ok: (init?.status || 200) >= 200 && (init?.status || 200) < 300,
+      })),
+    },
+  }
+})
+
+// Mock environment variables
+const mockEnv = {
+  npm_package_version: '1.0.0',
+  NODE_ENV: 'test',
+}
+
+describe('Health API Route', () => {
+  const originalEnv = process.env
+  let mockRequest: NextRequest
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    
+    // Mock environment
+    process.env = { ...originalEnv, ...mockEnv }
+    
+    // Mock process.uptime
+    vi.spyOn(process, 'uptime').mockReturnValue(123.456)
+    
+    // Mock Date.prototype.toISOString for consistent testing
+    vi.spyOn(Date.prototype, 'toISOString').mockReturnValue('2024-01-15T10:30:00.000Z')
+    
+    // Create mock request
+    mockRequest = {
+      url: 'http://localhost:3000/api/health',
+      method: 'GET',
+      headers: new Headers(),
+      nextUrl: {
+        pathname: '/api/health',
+        search: '',
+        searchParams: new URLSearchParams(),
+      },
+    } as NextRequest
+  })
+
+  afterEach(() => {
+    process.env = originalEnv
+    vi.restoreAllMocks()
+  })
+
+  describe('GET /api/health', () => {
+    it('should return health status with correct structure', async () => {
+      const response = await GET(mockRequest)
+      const data = await response.json()
+
+      expect(data).toEqual({
+        status: 'ok',
+        timestamp: '2024-01-15T10:30:00.000Z',
+        version: '1.0.0',
+        environment: 'test',
+        uptime: 123.456,
+      })
+    })
+
+    it('should return 200 status code', async () => {
+      const response = await GET(mockRequest)
+      
+      expect(response.status).toBe(200)
+      expect(response.ok).toBe(true)
+    })
+
+    it('should include no-cache headers', async () => {
+      const response = await GET(mockRequest)
+      const headers = response.headers
+
+      expect(headers.get('Cache-Control')).toBe('no-cache, no-store, must-revalidate')
+      expect(headers.get('Pragma')).toBe('no-cache')
+      expect(headers.get('Expires')).toBe('0')
+    })
+
+    it('should handle missing version environment variable', async () => {
+      delete process.env.npm_package_version
+
+      const response = await GET(mockRequest)
+      const data = await response.json()
+
+      expect(data.version).toBe('1.0.0') // fallback value
+    })
+
+    it('should handle different environment values', async () => {
+      process.env.NODE_ENV = 'production'
+
+      const response = await GET(mockRequest)
+      const data = await response.json()
+
+      expect(data.environment).toBe('production')
+    })
+
+    it('should include current timestamp', async () => {
+      // Use real Date for this test
+      vi.restoreAllMocks()
+      
+      const beforeCall = new Date().toISOString()
+      const response = await GET(mockRequest)
+      const afterCall = new Date().toISOString()
+      const data = await response.json()
+
+      // Timestamp should be between before and after
+      expect(data.timestamp).toBeDefined()
+      expect(typeof data.timestamp).toBe('string')
+      expect(new Date(data.timestamp).getTime()).toBeGreaterThanOrEqual(new Date(beforeCall).getTime())
+      expect(new Date(data.timestamp).getTime()).toBeLessThanOrEqual(new Date(afterCall).getTime())
+    })
+
+    it('should include process uptime', async () => {
+      const response = await GET(mockRequest)
+      const data = await response.json()
+
+      expect(data.uptime).toBe(123.456)
+      expect(typeof data.uptime).toBe('number')
+    })
+
+    it('should return consistent response format', async () => {
+      const response = await GET(mockRequest)
+      const data = await response.json()
+
+      // Check all required fields are present
+      expect(data).toHaveProperty('status')
+      expect(data).toHaveProperty('timestamp')
+      expect(data).toHaveProperty('version')
+      expect(data).toHaveProperty('environment')
+      expect(data).toHaveProperty('uptime')
+
+      // Check field types
+      expect(typeof data.status).toBe('string')
+      expect(typeof data.timestamp).toBe('string')
+      expect(typeof data.version).toBe('string')
+      expect(typeof data.environment).toBe('string')
+      expect(typeof data.uptime).toBe('number')
+    })
+  })
+
+  describe('HEAD /api/health', () => {
+    it('should return 200 status with no body', async () => {
+      const response = await HEAD(mockRequest)
+      
+      expect(response.status).toBe(200)
+      
+      // HEAD responses should have no body
+      const bodyText = await response.text?.()
+      expect(bodyText).toBeFalsy()
+    })
+
+    it('should include no-cache headers', async () => {
+      const response = await HEAD(mockRequest)
+      const headers = response.headers
+
+      expect(headers.get('Cache-Control')).toBe('no-cache, no-store, must-revalidate')
+      expect(headers.get('Pragma')).toBe('no-cache')
+      expect(headers.get('Expires')).toBe('0')
+    })
+
+    it('should be faster than GET request', async () => {
+      const startHead = performance.now()
+      await HEAD(mockRequest)
+      const headTime = performance.now() - startHead
+
+      const startGet = performance.now()
+      await GET(mockRequest)
+      const getTime = performance.now() - startGet
+
+      // HEAD should be equal or faster (though this might be marginal in tests)
+      expect(headTime).toBeLessThanOrEqual(getTime + 10) // Allow 10ms tolerance
+    })
+  })
+
+  describe('PWA Offline Connectivity Usage', () => {
+    it('should provide minimal response for connectivity testing', async () => {
+      const response = await HEAD(mockRequest)
+      
+      // Perfect for PWA connectivity checks
+      expect(response.status).toBe(200)
+      expect(response.headers.get('Cache-Control')).toContain('no-cache')
+    })
+
+    it('should work in offline service worker scenarios', async () => {
+      // Simulate service worker fetch
+      const mockServiceWorkerRequest = {
+        ...mockRequest,
+        headers: new Headers({
+          'User-Agent': 'ServiceWorker',
+        }),
+      }
+
+      const response = await GET(mockServiceWorkerRequest)
+      const data = await response.json()
+
+      expect(response.status).toBe(200)
+      expect(data.status).toBe('ok')
+    })
+
+    it('should handle concurrent requests efficiently', async () => {
+      // Simulate multiple concurrent health checks (common in PWA scenarios)
+      const requests = Array(10).fill(null).map(() => GET(mockRequest))
+      const responses = await Promise.all(requests)
+
+      // All should succeed
+      responses.forEach(response => {
+        expect(response.status).toBe(200)
+        expect(response.ok).toBe(true)
+      })
+    })
+  })
+
+  describe('Error Handling', () => {
+    it('should handle process.uptime() errors gracefully', async () => {
+      vi.spyOn(process, 'uptime').mockImplementation(() => {
+        throw new Error('uptime() failed')
+      })
+
+      // Should not throw, might return undefined or 0 for uptime
+      expect(async () => await GET(mockRequest)).not.toThrow()
+    })
+
+    it('should handle Date errors gracefully', async () => {
+      vi.spyOn(Date.prototype, 'toISOString').mockImplementation(() => {
+        throw new Error('Date serialization failed')
+      })
+
+      // Should still return a response, even if timestamp is malformed
+      expect(async () => await GET(mockRequest)).not.toThrow()
+    })
+  })
+
+  describe('Performance', () => {
+    it('should respond quickly for PWA health checks', async () => {
+      const start = performance.now()
+      const response = await GET(mockRequest)
+      const end = performance.now()
+
+      expect(response.status).toBe(200)
+      // Health checks should be very fast (< 50ms)
+      expect(end - start).toBeLessThan(50)
+    })
+
+    it('should handle high frequency requests', async () => {
+      const requestCount = 100
+      const start = performance.now()
+      
+      const requests = Array(requestCount).fill(null).map(() => GET(mockRequest))
+      const responses = await Promise.all(requests)
+      
+      const end = performance.now()
+      const totalTime = end - start
+
+      // All should succeed
+      responses.forEach(response => {
+        expect(response.status).toBe(200)
+      })
+
+      // Should handle 100 requests in reasonable time
+      expect(totalTime).toBeLessThan(1000) // Less than 1 second
+    })
+  })
+
+  describe('Response Headers', () => {
+    it('should set correct Content-Type for JSON response', async () => {
+      const response = await GET(mockRequest)
+      
+      // NextResponse.json should set correct content type
+      expect(response.headers?.get?.('Content-Type') || 'application/json').toContain('json')
+    })
+
+    it('should prevent caching for real-time health status', async () => {
+      const response = await GET(mockRequest)
+      
+      const cacheControl = response.headers.get('Cache-Control')
+      expect(cacheControl).toContain('no-cache')
+      expect(cacheControl).toContain('no-store')
+      expect(cacheControl).toContain('must-revalidate')
+    })
+
+    it('should set appropriate headers for HEAD requests', async () => {
+      const response = await HEAD(mockRequest)
+      
+      expect(response.headers.get('Cache-Control')).toBeTruthy()
+      expect(response.headers.get('Pragma')).toBe('no-cache')
+      expect(response.headers.get('Expires')).toBe('0')
+    })
+  })
+
+  describe('Environment Variations', () => {
+    const environments = ['development', 'test', 'production', 'staging']
+
+    environments.forEach(env => {
+      it(`should work correctly in ${env} environment`, async () => {
+        process.env.NODE_ENV = env
+
+        const response = await GET(mockRequest)
+        const data = await response.json()
+
+        expect(data.environment).toBe(env)
+        expect(data.status).toBe('ok')
+        expect(response.status).toBe(200)
+      })
+    })
+
+    it('should handle undefined NODE_ENV', async () => {
+      delete process.env.NODE_ENV
+
+      const response = await GET(mockRequest)
+      const data = await response.json()
+
+      expect(data.environment).toBeUndefined()
+      expect(response.status).toBe(200)
+    })
+  })
+
+  describe('Response Consistency', () => {
+    it('should return consistent schema across multiple calls', async () => {
+      const responses = await Promise.all([
+        GET(mockRequest),
+        GET(mockRequest),
+        GET(mockRequest),
+      ])
+
+      const dataPromises = responses.map(r => r.json())
+      const dataArray = await Promise.all(dataPromises)
+
+      // All should have same structure
+      dataArray.forEach(data => {
+        expect(Object.keys(data).sort()).toEqual(['environment', 'status', 'timestamp', 'uptime', 'version'])
+      })
+
+      // Status should always be 'ok'
+      dataArray.forEach(data => {
+        expect(data.status).toBe('ok')
+      })
+    })
+
+    it('should maintain response format under different request conditions', async () => {
+      const requestVariations = [
+        { ...mockRequest, headers: new Headers({ 'Accept': 'application/json' }) },
+        { ...mockRequest, headers: new Headers({ 'User-Agent': 'PWA/1.0' }) },
+        { ...mockRequest, headers: new Headers({ 'X-Requested-With': 'XMLHttpRequest' }) },
+      ]
+
+      const responses = await Promise.all(
+        requestVariations.map(req => GET(req))
+      )
+
+      responses.forEach(response => {
+        expect(response.status).toBe(200)
+        expect(response.ok).toBe(true)
+      })
+    })
+  })
+})

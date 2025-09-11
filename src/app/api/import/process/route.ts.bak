@@ -1,0 +1,357 @@
+/**
+ * Import Processing API Endpoint
+ * WS-033: Process validated import data with batch operations and rollback
+ */
+
+import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@/lib/supabase/server'
+import { weddingDataParser } from '@/lib/import/parser'
+
+const BATCH_SIZE = 100
+const MAX_PROCESSING_TIME = 60000 // 60 seconds
+
+interface ProcessRequest {
+  importId: string
+  mappings?: Record<string, string>
+  options?: {
+    skipDuplicates?: boolean
+    updateExisting?: boolean
+  }
+}
+
+export async function POST(request: NextRequest) {
+  const startTime = Date.now()
+  
+  try {
+    const supabase = await createClient()
+    
+    // Check authentication
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      )
+    }
+
+    const body: ProcessRequest = await request.json()
+    const { importId, mappings, options = {} } = body
+
+    if (!importId) {
+      return NextResponse.json(
+        { error: 'Import ID is required' },
+        { status: 400 }
+      )
+    }
+
+    // Get import job
+    const { data: importJob, error: jobError } = await supabase
+      .from('import_jobs')
+      .select('*')
+      .eq('id', importId)
+      .eq('user_id', user.id)
+      .single()
+
+    if (jobError || !importJob) {
+      return NextResponse.json(
+        { error: 'Import job not found' },
+        { status: 404 }
+      )
+    }
+
+    if (importJob.status === 'completed') {
+      return NextResponse.json(
+        { error: 'Import already completed' },
+        { status: 400 }
+      )
+    }
+
+    // Update status to processing
+    await supabase
+      .from('import_jobs')
+      .update({ 
+        status: 'processing',
+        started_at: new Date().toISOString()
+      })
+      .eq('id', importId)
+
+    // Download import data from storage
+    const { data: fileData, error: downloadError } = await supabase.storage
+      .from('temp')
+      .download(`imports/${user.id}/${importId}/data.json`)
+
+    if (downloadError || !fileData) {
+      await supabase
+        .from('import_jobs')
+        .update({ 
+          status: 'failed',
+          error: 'Failed to retrieve import data'
+        })
+        .eq('id', importId)
+
+      return NextResponse.json(
+        { error: 'Failed to retrieve import data' },
+        { status: 500 }
+      )
+    }
+
+    // Parse stored data
+    const importData = JSON.parse(await fileData.text())
+    const { data: rawData, mappings: storedMappings } = importData
+    const finalMappings = mappings || storedMappings
+
+    // Process in batches
+    let processedCount = 0
+    let successCount = 0
+    let failedCount = 0
+    const errors: any[] = []
+    const importedClientIds: string[] = []
+
+    for (let i = 0; i < rawData.length; i += BATCH_SIZE) {
+      // Check processing time
+      if (Date.now() - startTime > MAX_PROCESSING_TIME) {
+        await supabase
+          .from('import_jobs')
+          .update({ 
+            status: 'timeout',
+            error: 'Import timed out - too many records'
+          })
+          .eq('id', importId)
+
+        return NextResponse.json(
+          { error: 'Import timed out. Please try with fewer records.' },
+          { status: 408 }
+        )
+      }
+
+      const batch = rawData.slice(i, i + BATCH_SIZE)
+      
+      // Parse batch
+      const parsedBatch = batch.map((row: any) => 
+        weddingDataParser.parseRow(row, finalMappings)
+      )
+
+      // Transform to database format
+      const clientsToInsert = parsedBatch.map((client: any) => ({
+        user_id: user.id,
+        first_name: client.first_name || '',
+        last_name: client.last_name || '',
+        partner_first_name: client.partner_first_name,
+        partner_last_name: client.partner_last_name,
+        email: client.email,
+        phone: client.phone,
+        wedding_date: client.wedding_date ? new Date(client.wedding_date).toISOString() : null,
+        venue_name: client.venue_name,
+        venue_address: client.venue_address,
+        guest_count: client.guest_count,
+        budget_range: client.budget_range,
+        status: client.status || 'lead',
+        notes: client.notes,
+        package_name: client.package_name,
+        package_price: client.package_price,
+        priority_level: client.priority_level || 'medium',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        imported_at: new Date().toISOString(),
+        import_id: importId
+      }))
+
+      // Check for duplicates if skipDuplicates is true
+      let finalClientsToInsert = clientsToInsert
+      
+      if (options.skipDuplicates) {
+        const emails = clientsToInsert
+          .map(c => c.email)
+          .filter(Boolean)
+        
+        if (emails.length > 0) {
+          const { data: existingClients } = await supabase
+            .from('clients')
+            .select('email')
+            .in('email', emails)
+
+          const existingEmails = new Set(existingClients?.map(c => c.email) || [])
+          finalClientsToInsert = clientsToInsert.filter(
+            c => !c.email || !existingEmails.has(c.email)
+          )
+        }
+      }
+
+      // Insert batch
+      if (finalClientsToInsert.length > 0) {
+        const { data: insertedClients, error: insertError } = await supabase
+          .from('clients')
+          .insert(finalClientsToInsert)
+          .select('id')
+
+        if (insertError) {
+          console.error('Batch insert error:', insertError)
+          failedCount += batch.length
+          errors.push({
+            batch: Math.floor(i / BATCH_SIZE) + 1,
+            error: insertError.message,
+            rows: batch.length
+          })
+        } else {
+          successCount += insertedClients?.length || 0
+          importedClientIds.push(...(insertedClients?.map(c => c.id) || []))
+        }
+      }
+
+      processedCount += batch.length
+
+      // Update progress
+      await supabase
+        .from('import_jobs')
+        .update({ 
+          processed_rows: processedCount,
+          successful_rows: successCount,
+          failed_rows: failedCount,
+          progress: Math.round((processedCount / rawData.length) * 100)
+        })
+        .eq('id', importId)
+    }
+
+    // Calculate processing time
+    const processingTime = Date.now() - startTime
+
+    // Clean up temporary storage
+    await supabase.storage
+      .from('temp')
+      .remove([`imports/${user.id}/${importId}/data.json`])
+
+    // Update final status
+    const finalStatus = failedCount === 0 ? 'completed' : 'completed_with_errors'
+    
+    await supabase
+      .from('import_jobs')
+      .update({ 
+        status: finalStatus,
+        completed_at: new Date().toISOString(),
+        total_rows: rawData.length,
+        processed_rows: processedCount,
+        successful_rows: successCount,
+        failed_rows: failedCount,
+        processing_time_ms: processingTime,
+        imported_client_ids: importedClientIds,
+        errors: errors.length > 0 ? errors : null,
+        performance_metrics: {
+          file_size_mb: (importJob.file_size / (1024 * 1024)).toFixed(2),
+          processing_time_ms: processingTime,
+          batch_size: BATCH_SIZE,
+          batches_processed: Math.ceil(rawData.length / BATCH_SIZE),
+          rows_per_second: Math.round((processedCount / processingTime) * 1000)
+        }
+      })
+      .eq('id', importId)
+
+    // Return result
+    return NextResponse.json({
+      success: true,
+      importId,
+      result: {
+        success: finalStatus === 'completed',
+        total_clients: rawData.length,
+        successful_imports: successCount,
+        failed_imports: failedCount,
+        errors: errors,
+        performance_metrics: {
+          file_size_mb: (importJob.file_size / (1024 * 1024)).toFixed(2),
+          processing_time_ms: processingTime,
+          batch_size: BATCH_SIZE,
+          batches_processed: Math.ceil(rawData.length / BATCH_SIZE)
+        }
+      }
+    })
+
+  } catch (error) {
+    console.error('Import processing error:', error)
+    
+    // Try to update job status
+    try {
+      const supabase = await createClient()
+      const body: ProcessRequest = await request.json().catch(() => ({ importId: '' }))
+      
+      if (body.importId) {
+        await supabase
+          .from('import_jobs')
+          .update({ 
+            status: 'failed',
+            error: error instanceof Error ? error.message : 'Unknown error'
+          })
+          .eq('id', body.importId)
+      }
+    } catch {}
+
+    return NextResponse.json(
+      { 
+        error: 'Failed to process import',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      { status: 500 }
+    )
+  }
+}
+
+// GET method to check import status
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = await createClient()
+    
+    // Check authentication
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      )
+    }
+
+    const url = new URL(request.url)
+    const importId = url.searchParams.get('importId')
+
+    if (!importId) {
+      return NextResponse.json(
+        { error: 'Import ID is required' },
+        { status: 400 }
+      )
+    }
+
+    // Get import job status
+    const { data: importJob, error: jobError } = await supabase
+      .from('import_jobs')
+      .select('*')
+      .eq('id', importId)
+      .eq('user_id', user.id)
+      .single()
+
+    if (jobError || !importJob) {
+      return NextResponse.json(
+        { error: 'Import job not found' },
+        { status: 404 }
+      )
+    }
+
+    return NextResponse.json({
+      importId: importJob.id,
+      status: importJob.status,
+      progress: importJob.progress || 0,
+      totalRows: importJob.total_rows,
+      processedRows: importJob.processed_rows || 0,
+      successfulRows: importJob.successful_rows || 0,
+      failedRows: importJob.failed_rows || 0,
+      errors: importJob.errors,
+      validationSummary: importJob.validation_summary,
+      performanceMetrics: importJob.performance_metrics,
+      createdAt: importJob.created_at,
+      completedAt: importJob.completed_at
+    })
+
+  } catch (error) {
+    console.error('Status check error:', error)
+    return NextResponse.json(
+      { error: 'Failed to check import status' },
+      { status: 500 }
+    )
+  }
+}

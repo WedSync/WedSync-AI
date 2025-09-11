@@ -1,0 +1,265 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { Resend } from 'resend';
+import { Database } from '@/types/database';
+
+type EmailNotification =
+  Database['public']['Tables']['email_notifications']['Row'];
+type EmailNotificationInsert =
+  Database['public']['Tables']['email_notifications']['Insert'];
+
+const resend = new Resend(process.env.RESEND_API_KEY);
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const body = await request.json();
+
+    const {
+      recipient_email,
+      recipient_name,
+      recipient_id,
+      recipient_type,
+      template_type,
+      subject,
+      html_content,
+      text_content,
+      variables,
+      priority = 'normal',
+      scheduled_for,
+      organization_id,
+    } = body;
+
+    if (
+      !recipient_email ||
+      !subject ||
+      !html_content ||
+      !template_type ||
+      !organization_id
+    ) {
+      return NextResponse.json(
+        { error: 'Missing required fields' },
+        { status: 400 },
+      );
+    }
+
+    // Get user to verify access
+    const { data: user } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get sender info
+    const { data: userProfile } = await supabase
+      .from('user_profiles')
+      .select('display_name')
+      .eq('user_id', user.id)
+      .single();
+
+    // Create email notification record
+    const emailData: EmailNotificationInsert = {
+      organization_id,
+      recipient_email,
+      recipient_name,
+      recipient_id,
+      recipient_type,
+      sender_id: user.id,
+      sender_name: userProfile?.display_name || 'System',
+      template_type,
+      subject,
+      html_content,
+      text_content,
+      variables,
+      status: scheduled_for ? 'pending' : 'pending',
+      provider: 'resend',
+      priority,
+      scheduled_for,
+      retry_count: 0,
+    };
+
+    const { data: emailNotification, error: insertError } = await supabase
+      .from('email_notifications')
+      .insert(emailData)
+      .select()
+      .single();
+
+    if (insertError) {
+      console.error('Error creating email notification record:', insertError);
+      return NextResponse.json(
+        { error: 'Failed to create email notification' },
+        { status: 500 },
+      );
+    }
+
+    // If scheduled for later, don't send immediately
+    if (scheduled_for && new Date(scheduled_for) > new Date()) {
+      return NextResponse.json({
+        notification: emailNotification,
+        status: 'scheduled',
+      });
+    }
+
+    // Send email immediately
+    try {
+      const emailData = {
+        from: process.env.EMAIL_FROM || 'WedSync <noreply@wedsync.com>',
+        to: [recipient_email],
+        subject,
+        html: html_content,
+        text: text_content,
+      };
+
+      const { data: sendData, error: sendError } =
+        await resend.emails.send(emailData);
+
+      if (sendError) {
+        console.error('Error sending email:', sendError);
+
+        // Update notification status to failed
+        await supabase
+          .from('email_notifications')
+          .update({
+            status: 'failed',
+            error_message: sendError.message,
+            provider_response: sendError,
+          })
+          .eq('id', emailNotification.id);
+
+        return NextResponse.json(
+          { error: 'Failed to send email', details: sendError },
+          { status: 500 },
+        );
+      }
+
+      // Update notification status to sent
+      const { error: updateError } = await supabase
+        .from('email_notifications')
+        .update({
+          status: 'sent',
+          sent_at: new Date().toISOString(),
+          provider_id: sendData?.id || null,
+          provider_response: sendData,
+        })
+        .eq('id', emailNotification.id);
+
+      if (updateError) {
+        console.error('Error updating email notification status:', updateError);
+      }
+
+      // Create activity feed entry
+      try {
+        await supabase.from('activity_feeds').insert({
+          organization_id,
+          entity_type: 'client',
+          entity_id: recipient_id || 'unknown',
+          activity_type: 'email_sent',
+          title: `Email sent: ${subject}`,
+          description: `Email notification sent to ${recipient_email}`,
+          actor_id: user.id,
+          actor_name: userProfile?.display_name || 'System',
+          actor_type: 'system',
+          target_user_ids: recipient_id ? [recipient_id] : null,
+          is_public: false,
+          icon: 'mail',
+          color: '#10b981',
+          data: {
+            template_type,
+            recipient_email,
+            provider: 'resend',
+            provider_id: sendData?.id,
+          },
+        });
+      } catch (activityError) {
+        console.error('Error creating activity feed entry:', activityError);
+      }
+
+      return NextResponse.json({
+        notification: emailNotification,
+        status: 'sent',
+        provider_data: sendData,
+      });
+    } catch (error) {
+      console.error('Error in email sending process:', error);
+
+      // Update notification status to failed
+      await supabase
+        .from('email_notifications')
+        .update({
+          status: 'failed',
+          error_message:
+            error instanceof Error ? error.message : 'Unknown error',
+        })
+        .eq('id', emailNotification.id);
+
+      return NextResponse.json(
+        { error: 'Failed to send email' },
+        { status: 500 },
+      );
+    }
+  } catch (error) {
+    console.error('Error in email notification POST:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const { searchParams } = new URL(request.url);
+    const organizationId = searchParams.get('organization_id');
+    const status = searchParams.get('status');
+    const page = parseInt(searchParams.get('page') || '1');
+    const limit = parseInt(searchParams.get('limit') || '20');
+    const offset = (page - 1) * limit;
+
+    if (!organizationId) {
+      return NextResponse.json(
+        { error: 'Missing organization_id parameter' },
+        { status: 400 },
+      );
+    }
+
+    // Get user to verify access
+    const { data: user } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    let query = supabase
+      .from('email_notifications')
+      .select('*')
+      .eq('organization_id', organizationId)
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (status) {
+      query = query.eq('status', status);
+    }
+
+    const { data: notifications, error } = await query;
+
+    if (error) {
+      console.error('Error fetching email notifications:', error);
+      return NextResponse.json(
+        { error: 'Failed to fetch notifications' },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({
+      notifications: notifications || [],
+      page,
+      limit,
+      total: notifications?.length || 0,
+    });
+  } catch (error) {
+    console.error('Error in email notifications GET:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

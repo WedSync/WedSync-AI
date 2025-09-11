@@ -1,0 +1,161 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { adminAuditLogger } from '@/lib/admin/auditLogger';
+import { verifyAdminAccess } from '@/lib/admin/auth';
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+
+    // Verify admin authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized access' },
+        { status: 401 },
+      );
+    }
+
+    const isAdmin = await verifyAdminAccess(user.id);
+    if (!isAdmin) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions' },
+        { status: 403 },
+      );
+    }
+
+    // Parse query parameters
+    const { searchParams } = new URL(request.url);
+    const page = parseInt(searchParams.get('page') || '1');
+    const limit = parseInt(searchParams.get('limit') || '10');
+    const status = searchParams.get('status') || undefined;
+    const action = searchParams.get('action') || undefined;
+    const timeRange = searchParams.get('timeRange') || '24h';
+    const adminId = searchParams.get('adminId') || undefined;
+
+    // Calculate time range
+    let startDate: string | undefined;
+    const now = new Date();
+
+    switch (timeRange) {
+      case '1h':
+        startDate = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
+        break;
+      case '24h':
+        startDate = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
+        break;
+      case '7d':
+        startDate = new Date(
+          now.getTime() - 7 * 24 * 60 * 60 * 1000,
+        ).toISOString();
+        break;
+      case '30d':
+        startDate = new Date(
+          now.getTime() - 30 * 24 * 60 * 60 * 1000,
+        ).toISOString();
+        break;
+    }
+
+    // Fetch audit entries
+    const entries = await adminAuditLogger.getAuditEntries({
+      adminId,
+      action,
+      status: status as 'success' | 'failed' | 'error' | undefined,
+      startDate,
+      limit,
+      offset: (page - 1) * limit,
+    });
+
+    // Get total count for pagination (simplified approach)
+    const totalPages = Math.ceil(Math.max(entries.length, limit) / limit);
+
+    return NextResponse.json({
+      success: true,
+      entries,
+      pagination: {
+        currentPage: page,
+        totalPages,
+        limit,
+        hasMore: entries.length === limit,
+      },
+    });
+  } catch (error) {
+    console.error('Audit log fetch error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+
+    // Verify admin authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized access' },
+        { status: 401 },
+      );
+    }
+
+    const isAdmin = await verifyAdminAccess(user.id);
+    if (!isAdmin) {
+      return NextResponse.json(
+        { error: 'Insufficient permissions' },
+        { status: 403 },
+      );
+    }
+
+    const body = await request.json();
+    const { action, daysToKeep } = body;
+
+    switch (action) {
+      case 'cleanup':
+        await adminAuditLogger.cleanupOldEntries(daysToKeep || 90);
+
+        // Log the cleanup action
+        await adminAuditLogger.logAction({
+          adminId: user.id,
+          adminEmail: user.email || 'unknown',
+          action: 'audit_log_cleanup',
+          status: 'success',
+          details: { days_kept: daysToKeep || 90 },
+          timestamp: new Date().toISOString(),
+          clientIP: request.headers.get('x-forwarded-for') || 'unknown',
+          requiresMFA: false,
+        });
+
+        return NextResponse.json({
+          success: true,
+          message: 'Audit log cleanup completed',
+        });
+
+      case 'export':
+        // Get audit summary for export
+        const summary = await adminAuditLogger.getAuditSummary(30);
+
+        return NextResponse.json({
+          success: true,
+          data: summary,
+        });
+
+      default:
+        return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
+    }
+  } catch (error) {
+    console.error('Audit log action error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

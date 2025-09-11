@@ -1,0 +1,588 @@
+/* WS-154 Seating Arrangements - Responsive Design System */
+/* Following specifications: Desktop (1920px+), Tablet (768px-1919px), Mobile (375px-767px) */
+
+/* =============================================================================
+   BASE STYLES AND CUSTOM PROPERTIES
+============================================================================= */
+
+:root {
+  /* Seating-specific spacing */
+  --seating-grid-size: 20px;
+  --seating-table-min-size: 80px;
+  --seating-table-max-size: 200px;
+  
+  /* Touch interaction areas */
+  --touch-target-min: 44px;
+  --touch-spacing: 16px;
+  
+  /* Responsive breakpoints */
+  --mobile-max: 767px;
+  --tablet-min: 768px;
+  --tablet-max: 1919px;
+  --desktop-min: 1920px;
+  
+  /* Layout dimensions */
+  --sidebar-width-mobile: 100vw;
+  --sidebar-width-tablet: 320px;
+  --sidebar-width-desktop: 360px;
+  --toolbar-height-mobile: auto;
+  --toolbar-height-desktop: 60px;
+}
+
+/* =============================================================================
+   SEATING ARRANGEMENT MANAGER - RESPONSIVE LAYOUT
+============================================================================= */
+
+.seating-arrangement-manager {
+  @apply relative w-full h-full flex;
+  min-height: 100vh;
+}
+
+/* Desktop Layout (1920px+) - Full drag-drop with sidebar */
+@media (min-width: 1920px) {
+  .seating-arrangement-manager {
+    @apply flex-row;
+  }
+  
+  .seating-sidebar {
+    @apply w-80 flex-shrink-0 border-r;
+    width: var(--sidebar-width-desktop);
+  }
+  
+  .seating-main-content {
+    @apply flex-1 flex flex-col;
+  }
+  
+  .seating-toolbar {
+    @apply flex-shrink-0;
+    height: var(--toolbar-height-desktop);
+  }
+  
+  .seating-canvas-area {
+    @apply flex-1 relative;
+  }
+  
+  /* Desktop-specific table interactions */
+  .table-card {
+    @apply hover:shadow-xl transition-all duration-200;
+  }
+  
+  .table-card:hover .table-actions {
+    @apply opacity-100;
+  }
+  
+  .guest-chip {
+    @apply cursor-grab active:cursor-grabbing;
+  }
+}
+
+/* Tablet Layout (768px-1919px) - Touch-optimized */
+@media (min-width: 768px) and (max-width: 1919px) {
+  .seating-arrangement-manager {
+    @apply flex-row;
+  }
+  
+  .seating-sidebar {
+    @apply w-80 flex-shrink-0 border-r;
+    width: var(--sidebar-width-tablet);
+  }
+  
+  .seating-main-content {
+    @apply flex-1 flex flex-col;
+  }
+  
+  .seating-toolbar {
+    @apply flex-shrink-0 p-3;
+    height: auto;
+  }
+  
+  .seating-canvas-area {
+    @apply flex-1 relative;
+  }
+  
+  /* Tablet-specific touch optimizations */
+  .table-card {
+    @apply touch-manipulation;
+    min-width: var(--touch-target-min);
+    min-height: var(--touch-target-min);
+  }
+  
+  .guest-chip {
+    @apply touch-manipulation;
+    min-height: var(--touch-target-min);
+    padding: 8px 12px;
+  }
+  
+  .table-actions button {
+    min-width: var(--touch-target-min);
+    min-height: var(--touch-target-min);
+  }
+  
+  /* Larger tap targets for tablet */
+  .zoom-controls button {
+    @apply w-12 h-12;
+  }
+}
+
+/* Mobile Fallback (375px-767px) - List-based interface */
+@media (max-width: 767px) {
+  .seating-arrangement-manager {
+    @apply flex-col;
+  }
+  
+  /* Mobile: Stack sidebar and main content vertically */
+  .seating-sidebar {
+    @apply w-full border-r-0 border-b order-2;
+    height: 50vh;
+    min-height: 300px;
+  }
+  
+  .seating-main-content {
+    @apply order-1 flex-1 min-h-0;
+  }
+  
+  .seating-toolbar {
+    @apply flex-shrink-0 p-3;
+    height: auto;
+  }
+  
+  .seating-canvas-area {
+    @apply hidden; /* Hide visual layout on mobile */
+  }
+  
+  /* Mobile: Show list-based interface instead */
+  .seating-mobile-list {
+    @apply block flex-1 overflow-y-auto;
+  }
+  
+  /* Mobile-specific table list */
+  .mobile-table-list {
+    @apply space-y-2 p-4;
+  }
+  
+  .mobile-table-item {
+    @apply border rounded-lg p-3 bg-white shadow-sm;
+  }
+  
+  .mobile-table-header {
+    @apply flex items-center justify-between mb-2;
+  }
+  
+  .mobile-table-name {
+    @apply font-semibold text-base;
+  }
+  
+  .mobile-table-capacity {
+    @apply text-sm text-slate-600;
+  }
+  
+  .mobile-guest-grid {
+    @apply grid grid-cols-1 gap-2 mt-2;
+  }
+  
+  /* Mobile guest chips - larger and more touch-friendly */
+  .guest-chip {
+    @apply touch-manipulation text-sm px-4 py-3;
+    min-height: var(--touch-target-min);
+  }
+  
+  .guest-chip-mobile {
+    @apply flex items-center justify-between w-full border rounded-lg p-3 bg-slate-50;
+  }
+  
+  .guest-info-mobile {
+    @apply flex-1 mr-2;
+  }
+  
+  .guest-name-mobile {
+    @apply font-medium text-base;
+  }
+  
+  .guest-meta-mobile {
+    @apply text-xs text-slate-600 mt-1;
+  }
+  
+  .guest-actions-mobile {
+    @apply flex-shrink-0;
+  }
+  
+  /* Mobile toolbar adjustments */
+  .toolbar-mobile {
+    @apply flex-wrap gap-2;
+  }
+  
+  .toolbar-section {
+    @apply w-full sm:w-auto;
+  }
+  
+  /* Mobile-specific buttons */
+  .button-mobile {
+    @apply w-full justify-center py-3;
+    min-height: var(--touch-target-min);
+  }
+  
+  .button-icon-mobile {
+    @apply w-10 h-10 p-2;
+  }
+}
+
+/* =============================================================================
+   TABLE LAYOUT - RESPONSIVE CANVAS
+============================================================================= */
+
+.table-layout-container {
+  @apply relative w-full h-full;
+}
+
+/* Desktop table layout */
+@media (min-width: 1920px) {
+  .table-layout-container {
+    @apply cursor-default;
+  }
+  
+  .table-layout-canvas {
+    @apply cursor-move;
+  }
+  
+  .table-card {
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+  }
+  
+  .table-card:hover {
+    transform: scale(1.02);
+  }
+  
+  .zoom-controls {
+    @apply opacity-90 hover:opacity-100;
+  }
+}
+
+/* Tablet table layout - touch optimizations */
+@media (min-width: 768px) and (max-width: 1919px) {
+  .table-layout-container {
+    @apply touch-pan-x touch-pan-y touch-pinch-zoom;
+  }
+  
+  .table-card {
+    @apply touch-manipulation;
+  }
+  
+  .zoom-controls {
+    @apply opacity-100;
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    z-index: 50;
+  }
+  
+  .grid-toggle {
+    @apply block;
+  }
+}
+
+/* =============================================================================
+   GUEST LIST - RESPONSIVE SIDEBAR
+============================================================================= */
+
+.guest-list-container {
+  @apply flex flex-col h-full;
+}
+
+/* Desktop guest list */
+@media (min-width: 1920px) {
+  .guest-list-header {
+    @apply p-4 border-b;
+  }
+  
+  .guest-list-content {
+    @apply flex-1 overflow-y-auto p-4;
+  }
+  
+  .guest-search {
+    @apply w-full mb-3;
+  }
+  
+  .guest-filters {
+    @apply grid grid-cols-2 gap-2 mb-3;
+  }
+}
+
+/* Tablet guest list */
+@media (min-width: 768px) and (max-width: 1919px) {
+  .guest-list-header {
+    @apply p-3 border-b;
+  }
+  
+  .guest-list-content {
+    @apply flex-1 overflow-y-auto p-3;
+  }
+  
+  .guest-search {
+    @apply w-full mb-3;
+  }
+  
+  .guest-filters {
+    @apply grid grid-cols-1 gap-2 mb-3;
+  }
+}
+
+/* Mobile guest list */
+@media (max-width: 767px) {
+  .guest-list-header {
+    @apply p-3 border-b;
+  }
+  
+  .guest-list-content {
+    @apply flex-1 overflow-y-auto p-3;
+  }
+  
+  .guest-search {
+    @apply w-full mb-3 text-base; /* Prevent zoom on iOS */
+  }
+  
+  .guest-filters {
+    @apply flex flex-col gap-2 mb-3;
+  }
+  
+  .guest-group-header {
+    @apply text-base font-semibold py-3;
+  }
+  
+  .guest-group-content {
+    @apply space-y-2;
+  }
+}
+
+/* =============================================================================
+   CONFLICT ALERTS - RESPONSIVE POSITIONING
+============================================================================= */
+
+.conflict-alert-container {
+  @apply fixed z-50;
+}
+
+/* Desktop conflict alerts - top-right */
+@media (min-width: 1920px) {
+  .conflict-alert-container {
+    @apply top-4 right-4 w-96;
+  }
+}
+
+/* Tablet conflict alerts - top-center */
+@media (min-width: 768px) and (max-width: 1919px) {
+  .conflict-alert-container {
+    @apply top-4 left-1/2 transform -translate-x-1/2 w-80;
+  }
+}
+
+/* Mobile conflict alerts - bottom overlay */
+@media (max-width: 767px) {
+  .conflict-alert-container {
+    @apply bottom-0 left-0 right-0 w-full p-4;
+  }
+  
+  .conflict-alert {
+    @apply w-full;
+  }
+  
+  .conflict-alert-content {
+    @apply text-base; /* Larger text for mobile */
+  }
+  
+  .conflict-action-buttons {
+    @apply flex-col space-y-2 space-x-0;
+  }
+  
+  .conflict-action-button {
+    @apply w-full justify-center py-3;
+    min-height: var(--touch-target-min);
+  }
+}
+
+/* =============================================================================
+   LOADING STATES - RESPONSIVE
+============================================================================= */
+
+.loading-overlay {
+  @apply fixed inset-0 bg-white/80 backdrop-blur-sm z-50;
+}
+
+.loading-spinner {
+  @apply absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2;
+}
+
+/* Mobile loading adjustments */
+@media (max-width: 767px) {
+  .loading-message {
+    @apply text-lg px-4 text-center;
+  }
+}
+
+/* =============================================================================
+   ACCESSIBILITY ENHANCEMENTS
+============================================================================= */
+
+/* High contrast mode support */
+@media (prefers-contrast: high) {
+  .table-card {
+    @apply border-2 border-slate-900;
+  }
+  
+  .guest-chip {
+    @apply border-2 border-slate-700;
+  }
+  
+  .conflict-alert {
+    @apply border-2 border-red-700;
+  }
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  .table-card,
+  .guest-chip,
+  .conflict-alert {
+    @apply transition-none;
+  }
+  
+  .table-layout-canvas {
+    @apply transform-none;
+  }
+}
+
+/* Focus indicators - enhanced for keyboard navigation */
+.table-card:focus-visible,
+.guest-chip:focus-visible,
+.toolbar-button:focus-visible {
+  @apply ring-2 ring-blue-500 ring-offset-2 outline-none;
+}
+
+/* Mobile focus adjustments */
+@media (max-width: 767px) {
+  .table-card:focus-visible,
+  .guest-chip:focus-visible {
+    @apply ring-4 ring-blue-500;
+  }
+}
+
+/* =============================================================================
+   PRINT STYLES
+============================================================================= */
+
+@media print {
+  .seating-arrangement-manager {
+    @apply text-black bg-white;
+  }
+  
+  .seating-sidebar,
+  .seating-toolbar,
+  .zoom-controls,
+  .conflict-alert-container {
+    @apply hidden;
+  }
+  
+  .seating-canvas-area {
+    @apply w-full h-auto;
+  }
+  
+  .table-card {
+    @apply border border-black bg-white shadow-none;
+  }
+  
+  .guest-chip {
+    @apply border border-gray-400 bg-gray-100;
+  }
+  
+  /* Print-specific layout */
+  .print-table-list {
+    @apply block space-y-4;
+  }
+  
+  .print-table-summary {
+    @apply border border-black p-2 mb-2;
+  }
+  
+  .print-guest-list {
+    @apply grid grid-cols-3 gap-1 text-xs;
+  }
+}
+
+/* =============================================================================
+   PERFORMANCE OPTIMIZATIONS
+============================================================================= */
+
+/* Hardware acceleration for smooth animations on mobile */
+.table-card,
+.guest-chip {
+  transform: translateZ(0);
+  will-change: transform;
+}
+
+/* Optimize scrolling performance */
+.guest-list-content,
+.seating-canvas-area {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+/* Reduce paint operations during drag */
+.is-dragging {
+  pointer-events: none;
+  will-change: transform, opacity;
+}
+
+/* =============================================================================
+   UTILITY CLASSES
+============================================================================= */
+
+.mobile-only {
+  @apply block;
+}
+
+@media (min-width: 768px) {
+  .mobile-only {
+    @apply hidden;
+  }
+}
+
+.tablet-up {
+  @apply hidden;
+}
+
+@media (min-width: 768px) {
+  .tablet-up {
+    @apply block;
+  }
+}
+
+.desktop-only {
+  @apply hidden;
+}
+
+@media (min-width: 1920px) {
+  .desktop-only {
+    @apply block;
+  }
+}
+
+/* Touch-friendly spacing */
+.touch-spacing > * + * {
+  margin-top: var(--touch-spacing);
+}
+
+/* Responsive grid utilities */
+.grid-mobile {
+  @apply grid grid-cols-1 gap-4;
+}
+
+@media (min-width: 768px) {
+  .grid-tablet {
+    @apply grid-cols-2;
+  }
+}
+
+@media (min-width: 1920px) {
+  .grid-desktop {
+    @apply grid-cols-3;
+  }
+}

@@ -1,0 +1,217 @@
+/**
+ * Unit tests for subscription upgrade API endpoint
+ * WS-131 Pricing Strategy System - Team D Round 1
+ */
+
+import { NextRequest } from 'next/server';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll, Mock } from 'vitest';
+import { POST } from '@/app/api/billing/subscription/upgrade/route';
+import { createMocks } from 'node-mocks-http';
+// Mock SubscriptionService
+const mockSubscriptionService = {
+  getUserSubscription: jest.fn(),
+  createSubscription: jest.fn(),
+  updateSubscription: jest.fn()
+};
+jest.mock('@/lib/services/subscriptionService', () => ({
+  SubscriptionService: jest.fn().mockImplementation(() => mockSubscriptionService)
+}));
+// Mock Supabase
+const mockSupabaseClient = {
+  from: jest.fn(() => ({
+    select: jest.fn(() => ({
+      eq: jest.fn(() => ({
+        single: jest.fn(() => ({
+          data: null,
+          error: null
+        }))
+      }))
+    })),
+    insert: jest.fn(() => ({
+      data: { id: 'event-123' },
+      error: null
+    }))
+  })),
+  auth: {
+    getUser: jest.fn()
+  }
+jest.mock('@supabase/supabase-js', () => ({
+  createClient: jest.fn(() => mockSupabaseClient)
+// Mock Stripe
+jest.mock('stripe', () => {
+  return jest.fn().mockImplementation(() => ({}));
+});
+const mockUser = {
+  id: 'user-123',
+  email: 'test@example.com'
+const mockCurrentSubscription = {
+  subscription: {
+    id: 'sub-123',
+    stripe_subscription_id: 'stripe-sub-123',
+    plan_id: 'plan-starter-id',
+    status: 'active',
+    current_period_end: '2025-02-24T00:00:00Z'
+  },
+  plan: {
+    tier: 'starter',
+    sort_order: 1
+const mockTargetPlan = {
+  id: 'plan-professional-id',
+  tier: 'professional',
+  display_name: 'Professional',
+  price: 29.00,
+  yearly_price: 290.00,
+  stripe_price_id: 'price_professional_monthly',
+  yearly_stripe_price_id: 'price_professional_yearly',
+  sort_order: 2,
+  trial_days: 14,
+  limits: {
+    guests: 300,
+    events: 3,
+    storage_gb: 10,
+    team_members: 5,
+    templates: 25
+  features: ['Advanced guest management', 'Analytics']
+describe('/api/billing/subscription/upgrade', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    
+    // Mock authentication
+    mockSupabaseClient.auth.getUser.mockResolvedValue({
+      data: { user: mockUser },
+    });
+  });
+  describe('POST /api/billing/subscription/upgrade', () => {
+    it('should upgrade an existing subscription successfully', async () => {
+      // Setup mocks
+      mockSubscriptionService.getUserSubscription.mockResolvedValue(mockCurrentSubscription);
+      
+      mockSupabaseClient.from.mockReturnValue({
+        select: jest.fn().mockReturnValue({
+          eq: jest.fn().mockReturnValue({
+            single: jest.fn().mockResolvedValue({
+              data: mockTargetPlan,
+              error: null
+            })
+          })
+        }),
+        insert: jest.fn().mockResolvedValue({
+          data: { id: 'event-123' },
+        })
+      });
+      const mockUpgradeResult = {
+        subscription: {
+          id: 'sub-123',
+          stripe_subscription_id: 'stripe-sub-123',
+          current_period_end: '2025-02-24T00:00:00Z',
+          trial_end: null
+        }
+      };
+      mockSubscriptionService.updateSubscription.mockResolvedValue(mockUpgradeResult);
+      const { req } = createMocks({
+        method: 'POST',
+        headers: {
+          'authorization': 'Bearer valid-token',
+          'content-type': 'application/json'
+        },
+        body: {
+          targetPlan: 'professional',
+          billingCycle: 'monthly',
+          prorationBehavior: 'create_prorations'
+      const request = req as unknown as NextRequest;
+      const response = await POST(request);
+      const data = await response.json();
+      expect(response.status).toBe(200);
+      expect(data.success).toBe(true);
+      expect(data.data.plan.tier).toBe('professional');
+      expect(data.message).toContain('Successfully upgraded to Professional');
+      expect(mockSubscriptionService.updateSubscription).toHaveBeenCalledWith(
+        'stripe-sub-123',
+        {
+          priceId: 'price_professional_monthly',
+          paymentMethodId: undefined,
+      );
+    it('should create a new subscription if user has none', async () => {
+      // Mock no existing subscription
+      mockSubscriptionService.getUserSubscription.mockResolvedValue({
+        subscription: null,
+        plan: null
+      const mockCreateResult = {
+          id: 'sub-new-123',
+          stripe_subscription_id: 'stripe-sub-new-123',
+          trial_end: '2025-02-07T00:00:00Z'
+      mockSubscriptionService.createSubscription.mockResolvedValue(mockCreateResult);
+          paymentMethodId: 'pm_test_123'
+      expect(mockSubscriptionService.createSubscription).toHaveBeenCalledWith({
+        userId: 'user-123',
+        priceId: 'price_professional_monthly',
+        paymentMethodId: 'pm_test_123',
+        trialDays: 14
+    it('should use yearly pricing when billingCycle is yearly', async () => {
+      mockSubscriptionService.updateSubscription.mockResolvedValue({
+        subscription: { id: 'sub-123' }
+          billingCycle: 'yearly'
+      await POST(request);
+        expect.objectContaining({
+          priceId: 'price_professional_yearly'
+    it('should return 401 for unauthenticated requests', async () => {
+      mockSupabaseClient.auth.getUser.mockResolvedValue({
+        data: { user: null },
+        error: new Error('Invalid token')
+          'authorization': 'Bearer invalid-token',
+          billingCycle: 'monthly'
+      expect(response.status).toBe(401);
+      expect(data.error).toBe('Unauthorized');
+    it('should return 400 for missing required fields', async () => {
+          targetPlan: 'professional'
+          // Missing billingCycle
+      expect(response.status).toBe(400);
+      expect(data.error).toBe('targetPlan and billingCycle are required');
+    it('should return 400 for invalid billing cycle', async () => {
+          billingCycle: 'invalid'
+      expect(data.error).toBe('billingCycle must be "monthly" or "yearly"');
+    it('should return 404 for non-existent target plan', async () => {
+              data: null,
+              error: { message: 'Plan not found' }
+          targetPlan: 'nonexistent',
+      expect(response.status).toBe(404);
+      expect(data.error).toBe('Target plan not found or inactive');
+    it('should prevent downgrade attempts through upgrade endpoint', async () => {
+      const higherTierCurrentSub = {
+          plan_id: 'plan-premium-id'
+        plan: {
+          tier: 'premium'
+      mockSubscriptionService.getUserSubscription.mockResolvedValue(higherTierCurrentSub);
+      // Mock current plan with higher sort_order
+      mockSupabaseClient.from.mockImplementation((table: string) => {
+        if (table === 'subscription_plans') {
+          return {
+            select: jest.fn().mockReturnValue({
+              eq: jest.fn().mockImplementation((field: string, value: string) => {
+                if (field === 'tier' && value === 'professional') {
+                  // Target plan
+                  return {
+                    single: jest.fn().mockResolvedValue({
+                      data: { ...mockTargetPlan, sort_order: 2 },
+                      error: null
+                    })
+                  };
+                } else if (field === 'id' && value === 'plan-premium-id') {
+                  // Current plan
+                      data: { tier: 'premium', sort_order: 3 },
+                }
+                return {
+                  single: jest.fn().mockResolvedValue({ data: null, error: null })
+                };
+              })
+          };
+        return {
+          insert: jest.fn().mockResolvedValue({ data: { id: 'event-123' }, error: null })
+        };
+      expect(data.error).toContain('Cannot upgrade to a lower or same tier');
+    it('should track upgrade events in database', async () => {
+      expect(mockSupabaseClient.from).toHaveBeenCalledWith('subscription_events');
+    it('should calculate upgrade benefits correctly', async () => {
+      expect(data.data.upgrade_benefits).toBeDefined();
+      expect(data.data.upgrade_benefits.improved_limits).toBeInstanceOf(Array);
+      expect(data.data.upgrade_benefits.new_features).toBeInstanceOf(Array);

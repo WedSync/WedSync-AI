@@ -1,0 +1,239 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createServerClient } from '@supabase/ssr';
+import { cookies } from 'next/headers';
+import { BackupValidationService } from '@/lib/services/backup/BackupValidationService';
+import { BackupEncryptionService } from '@/lib/services/backup/BackupEncryptionService';
+
+export const runtime = 'nodejs';
+export const maxDuration = 180; // 3 minutes for validation operations
+
+export async function POST(request: NextRequest) {
+  try {
+    const cookieStore = await cookies();
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      {
+        cookies: {
+          getAll: () => cookieStore.getAll(),
+          setAll: (cookiesToSet) => {
+            cookiesToSet.forEach(({ name, value, options }) =>
+              cookieStore.set(name, value, options),
+            );
+          },
+        },
+      },
+    );
+
+    // Verify authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const {
+      backupId,
+      validationType,
+      includeIntegrityCheck,
+      includeEncryptionValidation,
+      includeDataConsistencyCheck,
+    } = body;
+
+    if (!backupId) {
+      return NextResponse.json(
+        { error: 'Backup ID is required' },
+        { status: 400 },
+      );
+    }
+
+    // Initialize validation services
+    const validationService = new BackupValidationService(supabase);
+    const encryptionService = new BackupEncryptionService();
+
+    // Perform comprehensive backup validation
+    const validationConfig = {
+      backupId,
+      validationType: validationType || 'FULL',
+      includeIntegrityCheck: includeIntegrityCheck ?? true,
+      includeEncryptionValidation: includeEncryptionValidation ?? true,
+      includeDataConsistencyCheck: includeDataConsistencyCheck ?? true,
+      userId: user.id,
+      initiatedAt: new Date(),
+    };
+
+    const validationResult = await validationService.validateBackup(
+      backupId,
+      validationConfig,
+    );
+
+    // Additional encryption validation if requested
+    if (includeEncryptionValidation) {
+      const encryptionValidation =
+        await encryptionService.validateBackupEncryption(backupId);
+      validationResult.encryption = encryptionValidation;
+    }
+
+    return NextResponse.json({
+      success: true,
+      validation: {
+        backupId,
+        isValid: validationResult.isValid,
+        validationScore: validationResult.validationScore,
+        issues: validationResult.issues,
+        warnings: validationResult.warnings,
+        completedChecks: validationResult.completedChecks,
+        validatedAt: new Date(),
+        encryption: validationResult.encryption,
+      },
+    });
+  } catch (error) {
+    console.error('Backup validation error:', error);
+    return NextResponse.json(
+      { error: 'Failed to validate backup' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const cookieStore = await cookies();
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      {
+        cookies: {
+          getAll: () => cookieStore.getAll(),
+          setAll: (cookiesToSet) => {
+            cookiesToSet.forEach(({ name, value, options }) =>
+              cookieStore.set(name, value, options),
+            );
+          },
+        },
+      },
+    );
+
+    // Verify authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { searchParams } = new URL(request.url);
+    const backupId = searchParams.get('backupId');
+    const organizationId = searchParams.get('organizationId');
+    const validationId = searchParams.get('validationId');
+
+    const validationService = new BackupValidationService(supabase);
+
+    if (validationId) {
+      // Get specific validation result
+      const validationResult =
+        await validationService.getValidationResult(validationId);
+      return NextResponse.json({
+        success: true,
+        validation: validationResult,
+      });
+    }
+
+    if (backupId) {
+      // Get validation history for specific backup
+      const validationHistory =
+        await validationService.getBackupValidationHistory(backupId);
+      return NextResponse.json({
+        success: true,
+        validations: validationHistory,
+      });
+    }
+
+    if (organizationId) {
+      // Get organization validation summary
+      const validationSummary =
+        await validationService.getOrganizationValidationSummary(
+          organizationId,
+        );
+      return NextResponse.json({
+        success: true,
+        summary: validationSummary,
+      });
+    }
+
+    return NextResponse.json(
+      { error: 'Backup ID, Organization ID, or Validation ID is required' },
+      { status: 400 },
+    );
+  } catch (error) {
+    console.error('Get validation results error:', error);
+    return NextResponse.json(
+      { error: 'Failed to retrieve validation results' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function PUT(request: NextRequest) {
+  try {
+    const cookieStore = await cookies();
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      {
+        cookies: {
+          getAll: () => cookieStore.getAll(),
+          setAll: (cookiesToSet) => {
+            cookiesToSet.forEach(({ name, value, options }) =>
+              cookieStore.set(name, value, options),
+            );
+          },
+        },
+      },
+    );
+
+    // Verify authentication
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const { organizationId, validationSchedule } = body;
+
+    if (!organizationId || !validationSchedule) {
+      return NextResponse.json(
+        { error: 'Organization ID and validation schedule are required' },
+        { status: 400 },
+      );
+    }
+
+    // Schedule automated validation
+    const validationService = new BackupValidationService(supabase);
+    const scheduledValidation =
+      await validationService.scheduleAutomatedValidation({
+        organizationId,
+        validationSchedule,
+        userId: user.id,
+      });
+
+    return NextResponse.json({
+      success: true,
+      scheduledValidation,
+      message: 'Automated validation scheduled successfully',
+    });
+  } catch (error) {
+    console.error('Schedule validation error:', error);
+    return NextResponse.json(
+      { error: 'Failed to schedule automated validation' },
+      { status: 500 },
+    );
+  }
+}

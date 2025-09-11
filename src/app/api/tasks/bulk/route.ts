@@ -1,0 +1,586 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+);
+
+interface BulkOperation {
+  type:
+    | 'assign'
+    | 'status'
+    | 'priority'
+    | 'deadline'
+    | 'delete'
+    | 'archive'
+    | 'duplicate'
+    | 'category';
+  value?: any;
+  description?: string;
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const { action, data } = await request.json();
+
+    switch (action) {
+      case 'bulk_operation':
+        return await handleBulkOperation(data);
+
+      case 'bulk_export':
+        return await handleBulkExport(data);
+
+      case 'bulk_import':
+        return await handleBulkImport(data);
+
+      default:
+        return NextResponse.json(
+          { error: `Unknown action: ${action}` },
+          { status: 400 },
+        );
+    }
+  } catch (error) {
+    console.error('Bulk API error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+async function handleBulkOperation(data: {
+  task_ids: string[];
+  operation: BulkOperation;
+}) {
+  const { task_ids, operation } = data;
+
+  if (!task_ids || task_ids.length === 0) {
+    return NextResponse.json(
+      { error: 'No task IDs provided' },
+      { status: 400 },
+    );
+  }
+
+  try {
+    let result;
+
+    switch (operation.type) {
+      case 'assign':
+        result = await bulkAssign(task_ids, operation.value);
+        break;
+
+      case 'status':
+        result = await bulkUpdateStatus(task_ids, operation.value);
+        break;
+
+      case 'priority':
+        result = await bulkUpdatePriority(task_ids, operation.value);
+        break;
+
+      case 'deadline':
+        result = await bulkUpdateDeadline(task_ids, operation.value);
+        break;
+
+      case 'category':
+        result = await bulkUpdateCategory(task_ids, operation.value);
+        break;
+
+      case 'delete':
+        result = await bulkDelete(task_ids);
+        break;
+
+      case 'archive':
+        result = await bulkArchive(task_ids);
+        break;
+
+      case 'duplicate':
+        result = await bulkDuplicate(task_ids);
+        break;
+
+      default:
+        return NextResponse.json(
+          { error: `Unknown operation type: ${operation.type}` },
+          { status: 400 },
+        );
+    }
+
+    // Log the bulk operation
+    await logBulkOperation(task_ids, operation);
+
+    return NextResponse.json({
+      success: true,
+      result,
+      message: `Successfully performed ${operation.type} operation on ${task_ids.length} tasks`,
+    });
+  } catch (error) {
+    console.error(`Bulk ${operation.type} operation failed:`, error);
+    return NextResponse.json(
+      { error: `Failed to perform ${operation.type} operation` },
+      { status: 500 },
+    );
+  }
+}
+
+async function bulkAssign(taskIds: string[], assigneeId: string | null) {
+  const { data, error } = await supabase
+    .from('tasks')
+    .update({
+      assigned_to: assigneeId,
+      updated_at: new Date().toISOString(),
+    })
+    .in('id', taskIds)
+    .select('id, title, assigned_to');
+
+  if (error) throw error;
+
+  // Create task assignment logs
+  if (assigneeId && data) {
+    const assignmentLogs = data.map((task) => ({
+      task_id: task.id,
+      assigned_to: assigneeId,
+      assigned_by: 'system', // Would be actual user ID in real implementation
+      assignment_method: 'bulk_operation',
+      assignment_reason: 'Bulk assignment operation',
+    }));
+
+    await supabase.from('task_assignment_log').insert(assignmentLogs);
+  }
+
+  return data;
+}
+
+async function bulkUpdateStatus(taskIds: string[], status: string) {
+  const updateData: any = {
+    status,
+    updated_at: new Date().toISOString(),
+  };
+
+  // If marking as completed, set completion date
+  if (status === 'completed') {
+    updateData.completion_date = new Date().toISOString();
+  }
+
+  // If starting work, set start date
+  if (status === 'in_progress') {
+    updateData.start_date = new Date().toISOString();
+  }
+
+  const { data, error } = await supabase
+    .from('tasks')
+    .update(updateData)
+    .in('id', taskIds)
+    .select('id, title, status');
+
+  if (error) throw error;
+
+  // Cancel reminders for completed tasks
+  if (status === 'completed' && data) {
+    await supabase
+      .from('task_reminders')
+      .update({ status: 'cancelled' })
+      .in('task_id', taskIds)
+      .eq('status', 'scheduled');
+  }
+
+  return data;
+}
+
+async function bulkUpdatePriority(taskIds: string[], priority: string) {
+  const { data, error } = await supabase
+    .from('tasks')
+    .update({
+      priority,
+      updated_at: new Date().toISOString(),
+    })
+    .in('id', taskIds)
+    .select('id, title, priority');
+
+  if (error) throw error;
+
+  // Reschedule reminders for critical tasks
+  if (priority === 'critical' && data) {
+    // This would trigger reminder rescheduling in a real implementation
+    console.log(
+      'Rescheduling reminders for critical tasks:',
+      data.map((t) => t.id),
+    );
+  }
+
+  return data;
+}
+
+async function bulkUpdateDeadline(taskIds: string[], deadline: string) {
+  const { data, error } = await supabase
+    .from('tasks')
+    .update({
+      deadline,
+      updated_at: new Date().toISOString(),
+    })
+    .in('id', taskIds)
+    .select('id, title, deadline');
+
+  if (error) throw error;
+
+  // Reschedule reminders for updated deadlines
+  if (data) {
+    await supabase
+      .from('task_reminders')
+      .delete()
+      .in('task_id', taskIds)
+      .eq('status', 'scheduled');
+
+    // Would trigger new reminder scheduling in real implementation
+    console.log(
+      'Rescheduling reminders for deadline changes:',
+      data.map((t) => t.id),
+    );
+  }
+
+  return data;
+}
+
+async function bulkUpdateCategory(taskIds: string[], category: string) {
+  const { data, error } = await supabase
+    .from('tasks')
+    .update({
+      category,
+      updated_at: new Date().toISOString(),
+    })
+    .in('id', taskIds)
+    .select('id, title, category');
+
+  if (error) throw error;
+  return data;
+}
+
+async function bulkDelete(taskIds: string[]) {
+  // First, delete related data
+  await supabase.from('task_reminders').delete().in('task_id', taskIds);
+  await supabase
+    .from('task_dependencies')
+    .delete()
+    .in('predecessor_task_id', taskIds);
+  await supabase
+    .from('task_dependencies')
+    .delete()
+    .in('successor_task_id', taskIds);
+  await supabase.from('task_assignment_log').delete().in('task_id', taskIds);
+
+  // Then delete the tasks
+  const { data, error } = await supabase
+    .from('tasks')
+    .delete()
+    .in('id', taskIds)
+    .select('id, title');
+
+  if (error) throw error;
+  return data;
+}
+
+async function bulkArchive(taskIds: string[]) {
+  const { data, error } = await supabase
+    .from('tasks')
+    .update({
+      status: 'archived',
+      archived_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .in('id', taskIds)
+    .select('id, title, status');
+
+  if (error) throw error;
+
+  // Cancel any scheduled reminders for archived tasks
+  await supabase
+    .from('task_reminders')
+    .update({ status: 'cancelled' })
+    .in('task_id', taskIds)
+    .eq('status', 'scheduled');
+
+  return data;
+}
+
+async function bulkDuplicate(taskIds: string[]) {
+  // Get the original tasks
+  const { data: originalTasks, error: fetchError } = await supabase
+    .from('tasks')
+    .select('*')
+    .in('id', taskIds);
+
+  if (fetchError) throw fetchError;
+  if (!originalTasks) return [];
+
+  // Create duplicated tasks
+  const duplicatedTasks = originalTasks.map((task) => {
+    const {
+      id,
+      created_at,
+      updated_at,
+      completion_date,
+      start_date,
+      ...taskData
+    } = task;
+    return {
+      ...taskData,
+      title: `${task.title} (Copy)`,
+      status: 'todo',
+      assigned_to: null, // Reset assignment for duplicates
+      metadata: {
+        ...task.metadata,
+        duplicated_from: task.id,
+        duplicated_at: new Date().toISOString(),
+      },
+    };
+  });
+
+  const { data, error } = await supabase
+    .from('tasks')
+    .insert(duplicatedTasks)
+    .select('id, title');
+
+  if (error) throw error;
+  return data;
+}
+
+async function logBulkOperation(taskIds: string[], operation: BulkOperation) {
+  try {
+    await supabase.from('bulk_operation_log').insert({
+      task_ids: taskIds,
+      operation_type: operation.type,
+      operation_value: operation.value,
+      operation_description: operation.description,
+      task_count: taskIds.length,
+      performed_at: new Date().toISOString(),
+      performed_by: 'system', // Would be actual user ID in real implementation
+    });
+  } catch (error) {
+    console.error('Failed to log bulk operation:', error);
+    // Don't throw - logging failure shouldn't break the operation
+  }
+}
+
+async function handleBulkExport(data: {
+  task_ids?: string[];
+  filters?: any;
+  format?: 'csv' | 'json' | 'xlsx';
+}) {
+  const { task_ids, filters, format = 'csv' } = data;
+
+  try {
+    let query = supabase.from('tasks').select(`
+        id,
+        title,
+        description,
+        category,
+        priority,
+        status,
+        deadline,
+        estimated_duration,
+        buffer_time,
+        assigned_to,
+        wedding_id,
+        created_at,
+        updated_at,
+        assigned_user:team_members(name, email),
+        wedding:weddings(client_name, wedding_date)
+      `);
+
+    if (task_ids && task_ids.length > 0) {
+      query = query.in('id', task_ids);
+    }
+
+    // Apply filters if provided
+    if (filters) {
+      if (filters.status) query = query.in('status', filters.status);
+      if (filters.priority) query = query.in('priority', filters.priority);
+      if (filters.category) query = query.in('category', filters.category);
+      if (filters.wedding_id)
+        query = query.in('wedding_id', filters.wedding_id);
+    }
+
+    const { data: exportData, error } = await query;
+
+    if (error) throw error;
+
+    // Transform data for export
+    const transformedData =
+      exportData?.map((task) => ({
+        id: task.id,
+        title: task.title,
+        description: task.description,
+        category: task.category,
+        priority: task.priority,
+        status: task.status,
+        deadline: task.deadline,
+        estimated_duration: task.estimated_duration,
+        buffer_time: task.buffer_time,
+        assigned_to: task.assigned_user?.name || 'Unassigned',
+        assigned_email: task.assigned_user?.email || '',
+        client_name: task.wedding?.client_name || '',
+        wedding_date: task.wedding?.wedding_date || '',
+        created_at: task.created_at,
+        updated_at: task.updated_at,
+      })) || [];
+
+    return NextResponse.json({
+      success: true,
+      data: transformedData,
+      count: transformedData.length,
+      format,
+      exported_at: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error('Export failed:', error);
+    return NextResponse.json(
+      { error: 'Failed to export tasks' },
+      { status: 500 },
+    );
+  }
+}
+
+async function handleBulkImport(data: {
+  tasks: any[];
+  wedding_id?: string;
+  merge_strategy?: 'create' | 'update' | 'upsert';
+}) {
+  const { tasks, wedding_id, merge_strategy = 'create' } = data;
+
+  if (!tasks || tasks.length === 0) {
+    return NextResponse.json(
+      { error: 'No tasks provided for import' },
+      { status: 400 },
+    );
+  }
+
+  try {
+    const results = {
+      created: 0,
+      updated: 0,
+      errors: [] as string[],
+    };
+
+    for (const taskData of tasks) {
+      try {
+        // Validate required fields
+        if (!taskData.title || !taskData.category) {
+          results.errors.push(
+            `Task missing required fields: ${JSON.stringify(taskData)}`,
+          );
+          continue;
+        }
+
+        // Prepare task data
+        const preparedTask = {
+          title: taskData.title,
+          description: taskData.description || '',
+          category: taskData.category,
+          priority: taskData.priority || 'medium',
+          status: taskData.status || 'todo',
+          deadline:
+            taskData.deadline ||
+            new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+          estimated_duration: taskData.estimated_duration || 1,
+          buffer_time: taskData.buffer_time || 0,
+          wedding_id: wedding_id || taskData.wedding_id,
+          metadata: {
+            imported: true,
+            imported_at: new Date().toISOString(),
+            original_data: taskData,
+          },
+        };
+
+        if (merge_strategy === 'create' || !taskData.id) {
+          // Create new task
+          const { error } = await supabase.from('tasks').insert(preparedTask);
+
+          if (error) throw error;
+          results.created++;
+        } else if (merge_strategy === 'update' && taskData.id) {
+          // Update existing task
+          const { error } = await supabase
+            .from('tasks')
+            .update(preparedTask)
+            .eq('id', taskData.id);
+
+          if (error) throw error;
+          results.updated++;
+        } else if (merge_strategy === 'upsert') {
+          // Upsert task
+          const { error } = await supabase.from('tasks').upsert(preparedTask);
+
+          if (error) throw error;
+          results.created++; // Simplified - could track actual upsert behavior
+        }
+      } catch (taskError) {
+        console.error('Failed to import task:', taskError);
+        results.errors.push(
+          `Failed to import task "${taskData.title}": ${taskError}`,
+        );
+      }
+    }
+
+    return NextResponse.json({
+      success: true,
+      results,
+      message: `Import completed: ${results.created} created, ${results.updated} updated, ${results.errors.length} errors`,
+    });
+  } catch (error) {
+    console.error('Import failed:', error);
+    return NextResponse.json(
+      { error: 'Failed to import tasks' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const action = searchParams.get('action');
+
+    switch (action) {
+      case 'export_template':
+        return NextResponse.json({
+          success: true,
+          template: {
+            title: 'Task Title',
+            description: 'Task Description',
+            category: 'venue_management',
+            priority: 'medium',
+            status: 'todo',
+            deadline: '2024-12-31T23:59:59Z',
+            estimated_duration: 1,
+            buffer_time: 0,
+            wedding_id: 'wedding-uuid',
+          },
+        });
+
+      case 'operation_history':
+        const { data: history, error } = await supabase
+          .from('bulk_operation_log')
+          .select('*')
+          .order('performed_at', { ascending: false })
+          .limit(50);
+
+        if (error) throw error;
+
+        return NextResponse.json({
+          success: true,
+          history,
+        });
+
+      default:
+        return NextResponse.json(
+          { error: `Unknown action: ${action}` },
+          { status: 400 },
+        );
+    }
+  } catch (error) {
+    console.error('Bulk GET API error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

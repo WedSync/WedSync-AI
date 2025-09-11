@@ -1,0 +1,225 @@
+export enum UserRole {
+  ADMIN = 'admin',
+  WEDDING_PLANNER = 'wedding_planner',
+  SENIOR_COORDINATOR = 'senior_coordinator',
+  COORDINATOR = 'coordinator',
+  SPECIALIST = 'specialist',
+  VENDOR = 'vendor',
+  CLIENT = 'client',
+}
+
+export enum Permission {
+  // Task permissions
+  CREATE_TASKS = 'create_tasks',
+  EDIT_TASKS = 'edit_tasks',
+  DELETE_TASKS = 'delete_tasks',
+  ASSIGN_TASKS = 'assign_tasks',
+  VIEW_ALL_TASKS = 'view_all_tasks',
+
+  // Team permissions
+  MANAGE_TEAM = 'manage_team',
+  VIEW_TEAM_WORKLOAD = 'view_team_workload',
+  ASSIGN_TEAM_MEMBERS = 'assign_team_members',
+
+  // Workflow permissions
+  MANAGE_WORKFLOWS = 'manage_workflows',
+  APPROVE_DELEGATIONS = 'approve_delegations',
+  OVERRIDE_ASSIGNMENTS = 'override_assignments',
+
+  // Vendor permissions
+  MANAGE_VENDORS = 'manage_vendors',
+  ASSIGN_VENDOR_TASKS = 'assign_vendor_tasks',
+
+  // Client permissions
+  VIEW_CLIENT_TASKS = 'view_client_tasks',
+  APPROVE_CLIENT_REQUESTS = 'approve_client_requests',
+
+  // System permissions
+  MANAGE_SETTINGS = 'manage_settings',
+  VIEW_ANALYTICS = 'view_analytics',
+  EXPORT_DATA = 'export_data',
+}
+
+export interface RoleDefinition {
+  role: UserRole;
+  name: string;
+  description: string;
+  permissions: Permission[];
+  level: number; // Hierarchy level (higher = more authority)
+  canDelegate: boolean;
+  canReceiveDelegations: boolean;
+  maxDelegationLevel: number; // How many levels down they can delegate
+}
+
+export interface DelegationRequest {
+  id: string;
+  task_id: string;
+  from_user_id: string;
+  to_user_id: string;
+  delegated_by: string;
+  delegation_type: 'assignment' | 'approval' | 'review' | 'collaboration';
+  authority_level: number;
+  deadline?: Date;
+  instructions?: string;
+  status: 'pending' | 'approved' | 'rejected' | 'auto_approved';
+  created_at: Date;
+  responded_at?: Date;
+  response_notes?: string;
+}
+
+export interface TeamHierarchy {
+  id: string;
+  parent_id?: string;
+  user_id: string;
+  role: UserRole;
+  level: number;
+  reports_to?: string;
+  can_approve_for?: string[]; // User IDs they can approve for
+  department?: string;
+  specializations: string[];
+}
+
+export interface WorkflowApproval {
+  id: string;
+  workflow_type:
+    | 'task_creation'
+    | 'task_assignment'
+    | 'deadline_change'
+    | 'priority_change'
+    | 'resource_allocation';
+  entity_id: string; // Task ID, etc.
+  requested_by: string;
+  approver_id: string;
+  status: 'pending' | 'approved' | 'rejected';
+  request_data: Record<string, any>;
+  approval_notes?: string;
+  created_at: Date;
+  approved_at?: Date;
+  expires_at?: Date;
+}
+
+export const ROLE_DEFINITIONS: Record<UserRole, RoleDefinition> = {
+  [UserRole.ADMIN]: {
+    role: UserRole.ADMIN,
+    name: 'Administrator',
+    description: 'Full system access and management',
+    permissions: Object.values(Permission),
+    level: 100,
+    canDelegate: true,
+    canReceiveDelegations: false,
+    maxDelegationLevel: 5,
+  },
+
+  [UserRole.WEDDING_PLANNER]: {
+    role: UserRole.WEDDING_PLANNER,
+    name: 'Wedding Planner',
+    description:
+      'Lead wedding coordinator with full wedding management authority',
+    permissions: [
+      Permission.CREATE_TASKS,
+      Permission.EDIT_TASKS,
+      Permission.DELETE_TASKS,
+      Permission.ASSIGN_TASKS,
+      Permission.VIEW_ALL_TASKS,
+      Permission.MANAGE_TEAM,
+      Permission.VIEW_TEAM_WORKLOAD,
+      Permission.ASSIGN_TEAM_MEMBERS,
+      Permission.MANAGE_WORKFLOWS,
+      Permission.APPROVE_DELEGATIONS,
+      Permission.OVERRIDE_ASSIGNMENTS,
+      Permission.MANAGE_VENDORS,
+      Permission.ASSIGN_VENDOR_TASKS,
+      Permission.VIEW_CLIENT_TASKS,
+      Permission.APPROVE_CLIENT_REQUESTS,
+      Permission.VIEW_ANALYTICS,
+      Permission.EXPORT_DATA,
+    ],
+    level: 90,
+    canDelegate: true,
+    canReceiveDelegations: true,
+    maxDelegationLevel: 4,
+  },
+
+  [UserRole.SENIOR_COORDINATOR]: {
+    role: UserRole.SENIOR_COORDINATOR,
+    name: 'Senior Coordinator',
+    description: 'Senior team lead with delegation and approval authority',
+    permissions: [
+      Permission.CREATE_TASKS,
+      Permission.EDIT_TASKS,
+      Permission.ASSIGN_TASKS,
+      Permission.VIEW_ALL_TASKS,
+      Permission.VIEW_TEAM_WORKLOAD,
+      Permission.ASSIGN_TEAM_MEMBERS,
+      Permission.APPROVE_DELEGATIONS,
+      Permission.ASSIGN_VENDOR_TASKS,
+      Permission.VIEW_CLIENT_TASKS,
+      Permission.VIEW_ANALYTICS,
+    ],
+    level: 70,
+    canDelegate: true,
+    canReceiveDelegations: true,
+    maxDelegationLevel: 3,
+  },
+
+  [UserRole.COORDINATOR]: {
+    role: UserRole.COORDINATOR,
+    name: 'Coordinator',
+    description: 'Team coordinator with limited delegation authority',
+    permissions: [
+      Permission.CREATE_TASKS,
+      Permission.EDIT_TASKS,
+      Permission.ASSIGN_TASKS,
+      Permission.VIEW_ALL_TASKS,
+      Permission.ASSIGN_VENDOR_TASKS,
+      Permission.VIEW_CLIENT_TASKS,
+    ],
+    level: 50,
+    canDelegate: true,
+    canReceiveDelegations: true,
+    maxDelegationLevel: 2,
+  },
+
+  [UserRole.SPECIALIST]: {
+    role: UserRole.SPECIALIST,
+    name: 'Specialist',
+    description: 'Subject matter expert with execution focus',
+    permissions: [
+      Permission.CREATE_TASKS,
+      Permission.EDIT_TASKS,
+      Permission.VIEW_CLIENT_TASKS,
+    ],
+    level: 30,
+    canDelegate: false,
+    canReceiveDelegations: true,
+    maxDelegationLevel: 1,
+  },
+
+  [UserRole.VENDOR]: {
+    role: UserRole.VENDOR,
+    name: 'Vendor',
+    description: 'External vendor with limited task access',
+    permissions: [
+      Permission.EDIT_TASKS, // Only tasks assigned to them
+      Permission.VIEW_CLIENT_TASKS, // Only related to their work
+    ],
+    level: 20,
+    canDelegate: false,
+    canReceiveDelegations: true,
+    maxDelegationLevel: 0,
+  },
+
+  [UserRole.CLIENT]: {
+    role: UserRole.CLIENT,
+    name: 'Client',
+    description: 'Wedding client with view and approval access',
+    permissions: [
+      Permission.VIEW_CLIENT_TASKS,
+      Permission.APPROVE_CLIENT_REQUESTS,
+    ],
+    level: 10,
+    canDelegate: false,
+    canReceiveDelegations: false,
+    maxDelegationLevel: 0,
+  },
+};

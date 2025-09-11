@@ -1,0 +1,561 @@
+/**
+ * WS-172: Offline Sync Engine Backend - Batch Sync Processing
+ * Team B - Round 3 - Batch 21
+ * 
+ * Handles offline synchronization with conflict resolution and transaction safety
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
+import { withSecureValidation } from '@/lib/validation/middleware';
+
+// Validation schemas for sync operations
+const SyncChangeSchema = z.object({
+  action: z.enum(['create', 'update', 'delete']),
+  table: z.string().min(1).max(50),
+  id: z.string().uuid(),
+  data: z.object({}).passthrough(),
+  timestamp: z.string().datetime(),
+  clientVersion: z.string().optional(),
+  deviceId: z.string().optional(),
+  checksum: z.string().optional()
+});
+
+const SyncRequestSchema = z.object({
+  changes: z.array(SyncChangeSchema),
+  lastSyncTime: z.string().datetime(),
+  batchId: z.string().uuid(),
+  deviceInfo: z.object({
+    deviceId: z.string(),
+    appVersion: z.string(),
+    platform: z.string(),
+    connectionQuality: z.enum(['offline', 'poor', 'good', 'excellent']).optional()
+  }).optional(),
+  options: z.object({
+    conflictResolution: z.enum(['client_wins', 'server_wins', 'merge', 'manual']).optional(),
+    validateChecksums: z.boolean().optional(),
+    dryRun: z.boolean().optional()
+  }).optional()
+});
+
+// Use Supabase MCP for database operations
+const supabaseMcp = {
+  async executeQuery(query: string, params?: any[]) {
+    // This would use the actual Supabase MCP connection
+    // For now, implementing the interface
+    return { data: [], error: null };
+  },
+  
+  async callFunction(functionName: string, params: any) {
+    // This would use the actual Supabase MCP function calling
+    return { data: null, error: null };
+  }
+};
+
+/**
+ * POST /api/offline/sync - Main batch sync processing endpoint
+ */
+export const POST = withSecureValidation(
+  SyncRequestSchema,
+  async (request: NextRequest, validatedData) => {
+    const userId = request.headers.get('x-user-id');
+    if (!userId) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const sessionId = crypto.randomUUID();
+    const startTime = Date.now();
+
+    try {
+      // Validate user ownership of all changes
+      const userOwnedChanges = await validateUserOwnership(userId, validatedData.changes);
+      if (!userOwnedChanges) {
+        return NextResponse.json({ error: 'Forbidden - invalid data ownership' }, { status: 403 });
+      }
+
+      // If this is a dry run, just validate without applying changes
+      if (validatedData.options?.dryRun) {
+        const validation = await validateSyncBatch(userId, validatedData);
+        return NextResponse.json({
+          success: true,
+          dryRun: true,
+          validation,
+          sessionId
+        });
+      }
+
+      // Process the sync batch with transaction safety
+      const result = await processSyncBatchTransaction(userId, validatedData, sessionId);
+
+      // Record performance metrics
+      await recordSyncMetrics(userId, sessionId, {
+        batchSize: validatedData.changes.length,
+        processingTime: Date.now() - startTime,
+        itemsProcessed: result.processed.length,
+        conflictsDetected: result.conflicts.length,
+        failuresCount: result.failures.length
+      });
+
+      return NextResponse.json({
+        success: true,
+        sessionId,
+        processed: result.processed,
+        conflicts: result.conflicts,
+        failures: result.failures,
+        serverChanges: result.serverChanges,
+        nextSyncTime: new Date().toISOString(),
+        processingTime: Date.now() - startTime
+      });
+
+    } catch (error) {
+      console.error(`[Sync Error] Session ${sessionId}:`, error);
+      
+      // Record failed sync attempt
+      await recordSyncMetrics(userId, sessionId, {
+        batchSize: validatedData.changes.length,
+        processingTime: Date.now() - startTime,
+        itemsProcessed: 0,
+        conflictsDetected: 0,
+        failuresCount: validatedData.changes.length,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+
+      return NextResponse.json({
+        error: 'Sync processing failed',
+        sessionId,
+        details: error instanceof Error ? error.message : 'Unknown error'
+      }, { status: 500 });
+    }
+  }
+);
+
+/**
+ * GET /api/offline/sync - Get sync queue status and server changes
+ */
+export async function GET(request: NextRequest) {
+  const userId = request.headers.get('x-user-id');
+  if (!userId) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  try {
+    // Get pending sync items count
+    const { data: queueStatus } = await supabaseMcp.callFunction('get_user_sync_status', { p_user_id: userId });
+    
+    // Get any server changes since last sync
+    const lastSync = new URL(request.url).searchParams.get('since');
+    const serverChanges = lastSync ? await getServerChangesSince(userId, lastSync) : [];
+
+    return NextResponse.json({
+      success: true,
+      status: queueStatus || {
+        queuedItems: 0,
+        failedItems: 0,
+        syncInProgress: false,
+        lastSyncTime: null
+      },
+      serverChanges,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('[Sync Status Error]:', error);
+    return NextResponse.json({
+      error: 'Failed to get sync status',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    }, { status: 500 });
+  }
+}
+
+/**
+ * Validate that the user owns all data being synced
+ */
+async function validateUserOwnership(userId: string, changes: any[]): Promise<boolean> {
+  try {
+    for (const change of changes) {
+      const { data } = await supabaseMcp.executeQuery(`
+        SELECT id FROM ${change.table} 
+        WHERE id = $1 AND user_id = $2
+      `, [change.id, userId]);
+      
+      if (change.action !== 'create' && (!data || data.length === 0)) {
+        return false;
+      }
+    }
+    return true;
+  } catch (error) {
+    console.error('[Ownership Validation Error]:', error);
+    return false;
+  }
+}
+
+/**
+ * Validate sync batch without applying changes
+ */
+async function validateSyncBatch(userId: string, syncData: any) {
+  const validation = {
+    valid: true,
+    conflicts: [],
+    errors: [],
+    warnings: []
+  };
+
+  for (const change of syncData.changes) {
+    try {
+      // Check for conflicts
+      const conflict = await detectConflict(userId, change);
+      if (conflict.hasConflict) {
+        validation.conflicts.push({
+          changeId: change.id,
+          table: change.table,
+          conflict: conflict
+        });
+      }
+
+      // Validate data schema
+      const schemaValidation = await validateChangeSchema(change);
+      if (!schemaValidation.valid) {
+        validation.errors.push({
+          changeId: change.id,
+          error: schemaValidation.error
+        });
+        validation.valid = false;
+      }
+
+    } catch (error) {
+      validation.errors.push({
+        changeId: change.id,
+        error: error instanceof Error ? error.message : 'Unknown validation error'
+      });
+      validation.valid = false;
+    }
+  }
+
+  return validation;
+}
+
+/**
+ * Process sync batch with full transaction safety
+ */
+async function processSyncBatchTransaction(userId: string, syncData: any, sessionId: string) {
+  const result = {
+    processed: [],
+    conflicts: [],
+    failures: [],
+    serverChanges: []
+  };
+
+  // Start transaction
+  const { data: transactionResult } = await supabaseMcp.callFunction('begin_sync_transaction', {
+    p_user_id: userId,
+    p_session_id: sessionId,
+    p_batch_size: syncData.changes.length
+  });
+
+  try {
+    for (const change of syncData.changes) {
+      try {
+        // Detect conflicts first
+        const conflictResult = await detectConflict(userId, change);
+        
+        if (conflictResult.hasConflict) {
+          // Handle conflict based on resolution strategy
+          const resolution = await resolveConflict(
+            userId,
+            change,
+            conflictResult,
+            syncData.options?.conflictResolution || 'server_wins'
+          );
+          
+          result.conflicts.push({
+            changeId: change.id,
+            table: change.table,
+            conflict: conflictResult,
+            resolution: resolution
+          });
+          
+          if (resolution.applied) {
+            result.processed.push({
+              changeId: change.id,
+              serverId: resolution.serverId,
+              action: 'resolved'
+            });
+          }
+          
+          continue;
+        }
+
+        // Apply the change
+        const applyResult = await applySyncChange(userId, change);
+        
+        result.processed.push({
+          changeId: change.id,
+          serverId: applyResult.serverId,
+          action: change.action
+        });
+
+      } catch (error) {
+        result.failures.push({
+          changeId: change.id,
+          table: change.table,
+          error: error instanceof Error ? error.message : 'Unknown error',
+          retryable: isRetryableError(error)
+        });
+      }
+    }
+
+    // Get server changes since last sync
+    if (syncData.lastSyncTime) {
+      result.serverChanges = await getServerChangesSince(userId, syncData.lastSyncTime);
+    }
+
+    // Commit transaction
+    await supabaseMcp.callFunction('commit_sync_transaction', {
+      p_session_id: sessionId,
+      p_processed_count: result.processed.length,
+      p_conflict_count: result.conflicts.length,
+      p_failure_count: result.failures.length
+    });
+
+    return result;
+
+  } catch (error) {
+    // Rollback transaction on any error
+    await supabaseMcp.callFunction('rollback_sync_transaction', {
+      p_session_id: sessionId,
+      p_error: error instanceof Error ? error.message : 'Unknown error'
+    });
+    
+    throw error;
+  }
+}
+
+/**
+ * Detect conflicts for a sync change
+ */
+async function detectConflict(userId: string, change: any) {
+  try {
+    const { data: conflictResult } = await supabaseMcp.callFunction('detect_sync_conflicts', {
+      p_user_id: userId,
+      p_table_name: change.table,
+      p_record_id: change.id,
+      p_client_data: change.data,
+      p_client_timestamp: change.timestamp
+    });
+
+    return conflictResult || { hasConflict: false };
+  } catch (error) {
+    console.error('[Conflict Detection Error]:', error);
+    return { hasConflict: false, error: error.message };
+  }
+}
+
+/**
+ * Resolve conflicts based on strategy
+ */
+async function resolveConflict(userId: string, change: any, conflictData: any, strategy: string) {
+  const resolution = {
+    strategy,
+    applied: false,
+    serverId: null,
+    mergedData: null
+  };
+
+  try {
+    switch (strategy) {
+      case 'client_wins':
+        // Apply client changes
+        const clientResult = await applySyncChange(userId, change);
+        resolution.applied = true;
+        resolution.serverId = clientResult.serverId;
+        break;
+
+      case 'server_wins':
+        // Keep server data, don't apply client changes
+        resolution.applied = false;
+        resolution.serverId = conflictData.serverId;
+        break;
+
+      case 'merge':
+        // Merge client and server data
+        const mergedData = mergeConflictData(change.data, conflictData.serverData);
+        const mergeChange = { ...change, data: mergedData };
+        const mergeResult = await applySyncChange(userId, mergeChange);
+        resolution.applied = true;
+        resolution.serverId = mergeResult.serverId;
+        resolution.mergedData = mergedData;
+        break;
+
+      case 'manual':
+        // Log conflict for manual resolution
+        await supabaseMcp.callFunction('log_conflict_for_manual_resolution', {
+          p_user_id: userId,
+          p_change: change,
+          p_conflict_data: conflictData
+        });
+        resolution.applied = false;
+        break;
+
+      default:
+        throw new Error(`Unknown conflict resolution strategy: ${strategy}`);
+    }
+
+    return resolution;
+  } catch (error) {
+    console.error('[Conflict Resolution Error]:', error);
+    return { ...resolution, error: error.message };
+  }
+}
+
+/**
+ * Apply a single sync change to the database
+ */
+async function applySyncChange(userId: string, change: any) {
+  const { action, table, id, data } = change;
+
+  switch (action) {
+    case 'create':
+      const { data: created } = await supabaseMcp.executeQuery(`
+        INSERT INTO ${table} (id, user_id, ${Object.keys(data).join(', ')})
+        VALUES ($1, $2, ${Object.keys(data).map((_, i) => `$${i + 3}`).join(', ')})
+        RETURNING id
+      `, [id, userId, ...Object.values(data)]);
+      
+      return { serverId: created?.[0]?.id || id };
+
+    case 'update':
+      const setClause = Object.keys(data).map((key, i) => `${key} = $${i + 3}`).join(', ');
+      const { data: updated } = await supabaseMcp.executeQuery(`
+        UPDATE ${table} 
+        SET ${setClause}, updated_at = NOW()
+        WHERE id = $1 AND user_id = $2
+        RETURNING id
+      `, [id, userId, ...Object.values(data)]);
+      
+      return { serverId: updated?.[0]?.id || id };
+
+    case 'delete':
+      await supabaseMcp.executeQuery(`
+        DELETE FROM ${table} WHERE id = $1 AND user_id = $2
+      `, [id, userId]);
+      
+      return { serverId: id };
+
+    default:
+      throw new Error(`Unknown sync action: ${action}`);
+  }
+}
+
+/**
+ * Get server changes since last sync time
+ */
+async function getServerChangesSince(userId: string, lastSyncTime: string) {
+  try {
+    const { data: changes } = await supabaseMcp.executeQuery(`
+      SELECT 
+        'clients' as table_name,
+        id,
+        'update' as action,
+        row_to_json(clients.*) as data,
+        updated_at as timestamp
+      FROM clients 
+      WHERE user_id = $1 AND updated_at > $2
+      
+      UNION ALL
+      
+      SELECT 
+        'timeline_items' as table_name,
+        id,
+        'update' as action,
+        row_to_json(timeline_items.*) as data,
+        updated_at as timestamp
+      FROM timeline_items 
+      WHERE user_id = $1 AND updated_at > $2
+      
+      ORDER BY timestamp DESC
+      LIMIT 100
+    `, [userId, lastSyncTime]);
+
+    return changes || [];
+  } catch (error) {
+    console.error('[Server Changes Error]:', error);
+    return [];
+  }
+}
+
+/**
+ * Validate change against table schema
+ */
+async function validateChangeSchema(change: any) {
+  try {
+    // Basic validation - in production would use actual schema validation
+    if (!change.table || !change.id || !change.action) {
+      return { valid: false, error: 'Missing required fields' };
+    }
+
+    if (change.action === 'create' || change.action === 'update') {
+      if (!change.data || typeof change.data !== 'object') {
+        return { valid: false, error: 'Invalid data format' };
+      }
+    }
+
+    return { valid: true };
+  } catch (error) {
+    return { valid: false, error: error.message };
+  }
+}
+
+/**
+ * Merge conflict data using simple strategy
+ */
+function mergeConflictData(clientData: any, serverData: any): any {
+  // Simple merge strategy - in production would use more sophisticated merging
+  if (typeof clientData === 'object' && typeof serverData === 'object') {
+    return { ...serverData, ...clientData };
+  }
+  
+  // For non-objects, prefer client data
+  return clientData;
+}
+
+/**
+ * Check if error is retryable
+ */
+function isRetryableError(error: any): boolean {
+  const retryableErrors = [
+    'connection timeout',
+    'network error',
+    'temporary failure',
+    'rate limit exceeded'
+  ];
+
+  const errorMessage = error?.message?.toLowerCase() || '';
+  return retryableErrors.some(msg => errorMessage.includes(msg));
+}
+
+/**
+ * Record sync performance metrics
+ */
+async function recordSyncMetrics(userId: string, sessionId: string, metrics: any) {
+  try {
+    await supabaseMcp.executeQuery(`
+      INSERT INTO sync_performance_metrics (
+        user_id, sync_session_id, batch_size, processing_time_ms,
+        items_synced, conflicts_detected, failures_count, 
+        throughput_per_second, error_message
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    `, [
+      userId,
+      sessionId,
+      metrics.batchSize,
+      metrics.processingTime,
+      metrics.itemsProcessed,
+      metrics.conflictsDetected,
+      metrics.failuresCount,
+      metrics.batchSize / (metrics.processingTime / 1000) || 0,
+      metrics.error || null
+    ]);
+  } catch (error) {
+    console.error('[Metrics Recording Error]:', error);
+  }
+}

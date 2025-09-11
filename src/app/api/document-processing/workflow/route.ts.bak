@@ -1,0 +1,366 @@
+/**
+ * PDF Mapping Workflow API Endpoint
+ * POST /api/document-processing/workflow - Start complete PDF to form workflow
+ * GET /api/document-processing/workflow - Get workflow status
+ * Integration Layer for WS-121 (PDF Analysis) + WS-122 (Field Extraction) + WS-123 (Smart Mapping)
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { PDFMappingIntegrationService } from '@/lib/services/pdf-mapping-integration-service';
+import { auth } from '@/lib/auth';
+import { z } from 'zod';
+
+// Request validation schemas
+const WorkflowRequestSchema = z.object({
+  documentId: z.string().min(1),
+  options: z.object({
+    enableOCR: z.boolean().optional(),
+    confidenceThreshold: z.number().min(0.5).max(1.0).optional(),
+    enableLearning: z.boolean().optional(),
+    createRecord: z.boolean().optional(),
+    autoApplyBestTemplate: z.boolean().optional(),
+    preserveRawData: z.boolean().optional()
+  }).optional()
+});
+
+const ResumeWorkflowSchema = z.object({
+  documentId: z.string().min(1),
+  fromStep: z.enum(['extraction', 'mapping', 'form_creation']),
+  options: z.object({
+    enableOCR: z.boolean().optional(),
+    confidenceThreshold: z.number().min(0.5).max(1.0).optional(),
+    enableLearning: z.boolean().optional(),
+    createRecord: z.boolean().optional(),
+    autoApplyBestTemplate: z.boolean().optional(),
+    preserveRawData: z.boolean().optional()
+  }).optional()
+});
+
+const WorkflowQuerySchema = z.object({
+  documentId: z.string().min(1),
+  includeDetails: z.string().transform(val => val === 'true').optional()
+});
+
+export async function POST(request: NextRequest) {
+  const startTime = Date.now();
+
+  try {
+    // Authenticate user
+    const session = await auth();
+    if (!session?.user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    // Parse and validate request
+    const body = await request.json();
+    const { searchParams } = new URL(request.url);
+    const action = searchParams.get('action') || 'start';
+
+    // Initialize integration service
+    const integrationService = new PDFMappingIntegrationService();
+
+    switch (action) {
+      case 'start': {
+        const validatedData = WorkflowRequestSchema.parse(body);
+        
+        // Start complete workflow
+        const workflow = await integrationService.processDocumentToForm(
+          validatedData.documentId,
+          session.user.id,
+          validatedData.options || {}
+        );
+
+        // Calculate workflow metrics
+        const metrics = {
+          totalSteps: 3,
+          completedSteps: workflow.status === 'completed' ? 3 :
+                          workflow.status === 'creating_form' ? 2 :
+                          workflow.status === 'mapping' ? 1 : 0,
+          accuracyMetrics: {
+            extraction: workflow.extractionResults?.accuracy,
+            mapping: workflow.mappingResults?.accuracy,
+            overall: workflow.mappingResults?.accuracy || workflow.extractionResults?.accuracy || 0
+          },
+          performanceMetrics: {
+            extractionTime: workflow.extractionResults?.processingTime,
+            mappingTime: workflow.mappingResults?.processingTime,
+            formCreationTime: workflow.formResults?.processingTime,
+            totalTime: workflow.totalProcessingTime
+          }
+        };
+
+        console.log(`PDF mapping workflow ${action} for document ${validatedData.documentId}:`, {
+          status: workflow.status,
+          userId: session.user.id,
+          metrics
+        });
+
+        return NextResponse.json({
+          success: true,
+          data: {
+            workflow,
+            metrics,
+            message: `Workflow ${workflow.status === 'completed' ? 'completed successfully' : 'in progress'}`
+          }
+        });
+      }
+
+      case 'resume': {
+        const validatedData = ResumeWorkflowSchema.parse(body);
+        
+        // Resume workflow from specific step
+        const workflow = await integrationService.resumeWorkflow(
+          validatedData.documentId,
+          validatedData.fromStep,
+          session.user.id,
+          validatedData.options || {}
+        );
+
+        console.log(`PDF mapping workflow resumed from ${validatedData.fromStep} for document ${validatedData.documentId}:`, {
+          status: workflow.status,
+          userId: session.user.id
+        });
+
+        return NextResponse.json({
+          success: true,
+          data: {
+            workflow,
+            message: `Workflow resumed from ${validatedData.fromStep} step`
+          }
+        });
+      }
+
+      case 'validate': {
+        const { documentId } = WorkflowRequestSchema.parse(body);
+        
+        // Validate workflow completion
+        const validation = await integrationService.validateWorkflowCompletion(documentId);
+
+        return NextResponse.json({
+          success: true,
+          data: {
+            validation,
+            message: validation.isComplete 
+              ? 'Workflow validation passed'
+              : `Workflow validation failed: ${validation.issues.join(', ')}`
+          }
+        });
+      }
+
+      case 'export': {
+        const { documentId } = WorkflowRequestSchema.parse(body);
+        const format = searchParams.get('format') as 'json' | 'csv' | 'pdf' || 'json';
+        
+        // Export workflow results
+        const exportResult = await integrationService.exportWorkflowResults(documentId, format);
+
+        if (!exportResult.success) {
+          return NextResponse.json(
+            { error: exportResult.error },
+            { status: 400 }
+          );
+        }
+
+        return NextResponse.json({
+          success: true,
+          data: {
+            exportData: exportResult.data,
+            format,
+            message: `Workflow results exported in ${format} format`
+          }
+        });
+      }
+
+      default:
+        return NextResponse.json(
+          { error: 'Invalid action. Use: start, resume, validate, or export' },
+          { status: 400 }
+        );
+    }
+
+  } catch (error) {
+    console.error('PDF mapping workflow error:', error);
+
+    // Handle validation errors
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { 
+          error: 'Invalid request data',
+          details: error.errors,
+          code: 'VALIDATION_ERROR'
+        },
+        { status: 400 }
+      );
+    }
+
+    // Handle service errors
+    if (error instanceof Error) {
+      return NextResponse.json(
+        { 
+          error: 'Workflow execution failed',
+          message: error.message,
+          code: 'WORKFLOW_ERROR'
+        },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json(
+      { 
+        error: 'Internal server error',
+        code: 'INTERNAL_ERROR'
+      },
+      { status: 500 }
+    );
+
+  } finally {
+    const processingTime = Date.now() - startTime;
+    console.log(`PDF mapping workflow API call completed in ${processingTime}ms`);
+  }
+}
+
+export async function GET(request: NextRequest) {
+  const startTime = Date.now();
+
+  try {
+    // Authenticate user
+    const session = await auth();
+    if (!session?.user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    // Parse query parameters
+    const { searchParams } = new URL(request.url);
+    const queryParams = Object.fromEntries(searchParams);
+    const validatedQuery = WorkflowQuerySchema.parse(queryParams);
+
+    // Initialize integration service
+    const integrationService = new PDFMappingIntegrationService();
+
+    const action = searchParams.get('action') || 'status';
+
+    switch (action) {
+      case 'status': {
+        // Get workflow status
+        const workflow = await integrationService.getWorkflowStatus(validatedQuery.documentId);
+
+        if (!workflow) {
+          return NextResponse.json(
+            { error: 'Workflow not found' },
+            { status: 404 }
+          );
+        }
+
+        // Include detailed breakdown if requested
+        let detailedMetrics = {};
+        if (validatedQuery.includeDetails) {
+          const validation = await integrationService.validateWorkflowCompletion(validatedQuery.documentId);
+          
+          detailedMetrics = {
+            validation,
+            stepProgress: {
+              extraction: !!workflow.extractionResults,
+              mapping: !!workflow.mappingResults,
+              formCreation: !!workflow.formResults
+            },
+            fieldsBreakdown: {
+              extractedCount: workflow.extractionResults?.fields?.length || 0,
+              mappedCount: workflow.mappingResults?.mappings?.length || 0,
+              highConfidenceCount: workflow.mappingResults?.mappings?.filter(m => m.confidence >= 0.85).length || 0
+            }
+          };
+        }
+
+        return NextResponse.json({
+          success: true,
+          data: {
+            workflow,
+            ...(validatedQuery.includeDetails && { details: detailedMetrics }),
+            message: `Workflow status: ${workflow.status}`
+          }
+        });
+      }
+
+      case 'analytics': {
+        const timeRange = searchParams.get('timeRange') as 'day' | 'week' | 'month' || 'week';
+        
+        // Get workflow analytics
+        const analytics = await integrationService.getWorkflowAnalytics(session.user.id, timeRange);
+
+        return NextResponse.json({
+          success: true,
+          data: {
+            analytics,
+            timeRange,
+            message: `Analytics for last ${timeRange}`
+          }
+        });
+      }
+
+      case 'templates': {
+        // Get best matching template for document
+        const workflow = await integrationService.getWorkflowStatus(validatedQuery.documentId);
+        
+        if (!workflow?.extractionResults) {
+          return NextResponse.json(
+            { error: 'No extraction results found for template matching' },
+            { status: 400 }
+          );
+        }
+
+        const bestTemplate = await integrationService.getBestMatchingTemplate(
+          workflow.extractionResults.fields
+        );
+
+        return NextResponse.json({
+          success: true,
+          data: {
+            bestTemplate,
+            message: bestTemplate 
+              ? `Found matching template: ${bestTemplate.name}`
+              : 'No suitable template found'
+          }
+        });
+      }
+
+      default:
+        return NextResponse.json(
+          { error: 'Invalid action. Use: status, analytics, or templates' },
+          { status: 400 }
+        );
+    }
+
+  } catch (error) {
+    console.error('Get PDF mapping workflow error:', error);
+
+    // Handle validation errors
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { 
+          error: 'Invalid query parameters',
+          details: error.errors,
+          code: 'VALIDATION_ERROR'
+        },
+        { status: 400 }
+      );
+    }
+
+    return NextResponse.json(
+      { 
+        error: 'Failed to retrieve workflow information',
+        code: 'RETRIEVAL_ERROR'
+      },
+      { status: 500 }
+    );
+
+  } finally {
+    const processingTime = Date.now() - startTime;
+    console.log(`Get workflow API call completed in ${processingTime}ms`);
+  }
+}

@@ -1,0 +1,287 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
+import { createClient } from '@/lib/supabase/server';
+import type {
+  CreateDashboardTemplateRequest,
+  DashboardTemplate,
+  DashboardTemplateResponse,
+} from '@/types/dashboard-templates';
+
+// Validation schemas
+const createTemplateSchema = z.object({
+  name: z
+    .string()
+    .min(1, 'Template name is required')
+    .max(100, 'Template name too long'),
+  description: z
+    .string()
+    .min(1, 'Description is required')
+    .max(500, 'Description too long'),
+  category: z.enum([
+    'luxury',
+    'standard',
+    'budget',
+    'destination',
+    'venue_specific',
+    'photographer_focused',
+    'planner_focused',
+    'multi_vendor',
+    'custom',
+  ]),
+  target_criteria: z
+    .object({
+      budget_range: z
+        .object({
+          min: z.number().min(0),
+          max: z.number().min(0),
+          currency: z.string().length(3),
+        })
+        .optional(),
+      guest_count_range: z
+        .object({
+          min: z.number().min(1),
+          max: z.number().min(1),
+        })
+        .optional(),
+      wedding_style: z.array(z.string()).optional(),
+      venue_types: z.array(z.string()).optional(),
+      season: z
+        .array(z.enum(['spring', 'summer', 'fall', 'winter']))
+        .optional(),
+      location_type: z
+        .array(z.enum(['local', 'destination', 'international']))
+        .optional(),
+      planning_timeline: z
+        .object({
+          min_months: z.number().min(1),
+          max_months: z.number().min(1),
+        })
+        .optional(),
+      services_required: z.array(z.string()).optional(),
+      complexity_level: z
+        .enum(['simple', 'moderate', 'complex', 'luxury'])
+        .optional(),
+    })
+    .optional(),
+  branding_config: z
+    .object({
+      colors: z.object({
+        primary: z.string().regex(/^#[0-9A-Fa-f]{6}$/, 'Invalid color format'),
+        secondary: z
+          .string()
+          .regex(/^#[0-9A-Fa-f]{6}$/, 'Invalid color format')
+          .optional(),
+        accent: z
+          .string()
+          .regex(/^#[0-9A-Fa-f]{6}$/, 'Invalid color format')
+          .optional(),
+        text: z.string().regex(/^#[0-9A-Fa-f]{6}$/, 'Invalid color format'),
+        background: z
+          .string()
+          .regex(/^#[0-9A-Fa-f]{6}$/, 'Invalid color format'),
+        surface: z.string().regex(/^#[0-9A-Fa-f]{6}$/, 'Invalid color format'),
+        border: z.string().regex(/^#[0-9A-Fa-f]{6}$/, 'Invalid color format'),
+      }),
+      typography: z
+        .object({
+          font_family: z.string(),
+          heading_font: z.string().optional(),
+          font_size_base: z.number().min(12).max(24),
+          font_weights: z.object({
+            normal: z.number().min(100).max(900),
+            medium: z.number().min(100).max(900),
+            bold: z.number().min(100).max(900),
+          }),
+          line_height: z.number().min(1).max(3),
+          letter_spacing: z.number().min(-2).max(2).optional(),
+        })
+        .optional(),
+    })
+    .optional(),
+  sections: z.array(
+    z.object({
+      section_type: z.string(),
+      title: z.string().min(1).max(100),
+      description: z.string().max(500),
+      position: z.object({
+        x: z.number().min(0).max(11),
+        y: z.number().min(0),
+      }),
+      size: z.object({
+        width: z.number().min(1).max(12),
+        height: z.number().min(1).max(12),
+        min_width: z.number().optional(),
+        min_height: z.number().optional(),
+        max_width: z.number().optional(),
+        max_height: z.number().optional(),
+      }),
+      is_active: z.boolean().default(true),
+      is_required: z.boolean().default(false),
+      is_collapsible: z.boolean().default(false),
+      is_moveable: z.boolean().default(true),
+      is_resizable: z.boolean().default(true),
+      sort_order: z.number().default(0),
+      section_config: z.record(z.any()).default({}),
+    }),
+  ),
+});
+
+// GET - List dashboard templates for supplier
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const supabase = await createClient();
+
+    // Get authenticated user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get supplier organization
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('id', user.id)
+      .single();
+
+    if (!profile?.organization_id) {
+      return NextResponse.json(
+        { error: 'Organization not found' },
+        { status: 404 },
+      );
+    }
+
+    // Parse query parameters
+    const category = searchParams.get('category');
+    const isActive = searchParams.get('is_active');
+    const limit = parseInt(searchParams.get('limit') || '50');
+    const offset = parseInt(searchParams.get('offset') || '0');
+
+    // Mock response for now - replace with actual database queries
+    const mockTemplates: DashboardTemplateResponse[] = [
+      {
+        id: '550e8400-e29b-41d4-a716-446655440001',
+        supplier_id: profile.organization_id,
+        name: 'Luxury Wedding Dashboard',
+        description: 'Premium dashboard template for high-end weddings',
+        category: 'luxury',
+        is_active: true,
+        is_default: false,
+        is_premium: true,
+        sort_order: 0,
+        target_criteria: {},
+        assignment_rules: [],
+        cache_duration_minutes: 5,
+        priority_loading: false,
+        usage_count: 12,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        sections: [],
+        clients: [],
+        usage_statistics: {
+          active_assignments: 5,
+          average_rating: 4.8,
+          total_views: 124,
+        },
+      },
+    ];
+
+    return NextResponse.json({
+      templates: mockTemplates,
+      total: mockTemplates.length,
+      offset,
+      limit,
+    });
+  } catch (error) {
+    console.error('API error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}
+
+// POST - Create new dashboard template
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+
+    // Get authenticated user
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Get supplier organization
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('organization_id')
+      .eq('id', user.id)
+      .single();
+
+    if (!profile?.organization_id) {
+      return NextResponse.json(
+        { error: 'Organization not found' },
+        { status: 404 },
+      );
+    }
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validatedData = createTemplateSchema.parse(body);
+
+    // Mock creation response - replace with actual database operations
+    const newTemplate: DashboardTemplate = {
+      id: `template-${Date.now()}`,
+      supplier_id: profile.organization_id,
+      name: validatedData.name,
+      description: validatedData.description,
+      category: validatedData.category,
+      is_active: true,
+      is_default: false,
+      is_premium: false,
+      sort_order: 0,
+      target_criteria: validatedData.target_criteria || {},
+      assignment_rules: [],
+      cache_duration_minutes: 5,
+      priority_loading: false,
+      usage_count: 0,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      sections: [],
+      clients: [],
+    };
+
+    return NextResponse.json(
+      {
+        message: 'Dashboard template created successfully',
+        template: newTemplate,
+      },
+      { status: 201 },
+    );
+  } catch (error) {
+    console.error('API error:', error);
+
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Validation error',
+          details: error.errors,
+        },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

@@ -1,0 +1,144 @@
+/**
+ * Weather API Routes
+ * Handles weather data requests for wedding planning
+ */
+
+import { NextRequest, NextResponse } from 'next/server'
+import { OpenWeatherService } from '@/lib/weather/openweather-service'
+import { WeatherApiResponse } from '@/types/weather'
+
+const weatherService = new OpenWeatherService()
+
+export async function GET(request: NextRequest) {
+  try {
+    const searchParams = request.nextUrl.searchParams
+    const lat = searchParams.get('lat')
+    const lon = searchParams.get('lon')
+    const weddingId = searchParams.get('weddingId')
+    const weddingDate = searchParams.get('weddingDate')
+    const type = searchParams.get('type') || 'current'
+
+    if (!lat || !lon) {
+      return NextResponse.json({
+        success: false,
+        error: 'Latitude and longitude are required',
+        timestamp: new Date().toISOString()
+      }, { status: 400 })
+    }
+
+    const latitude = parseFloat(lat)
+    const longitude = parseFloat(lon)
+
+    if (isNaN(latitude) || isNaN(longitude)) {
+      return NextResponse.json({
+        success: false,
+        error: 'Invalid latitude or longitude values',
+        timestamp: new Date().toISOString()
+      }, { status: 400 })
+    }
+
+    let response: WeatherApiResponse
+
+    switch (type) {
+      case 'current':
+        response = await weatherService.getCurrentWeather(latitude, longitude)
+        break
+      
+      case 'forecast':
+        const days = parseInt(searchParams.get('days') || '8')
+        response = await weatherService.getWeatherForecast(latitude, longitude, days)
+        break
+      
+      case 'wedding':
+        if (!weddingDate) {
+          return NextResponse.json({
+            success: false,
+            error: 'Wedding date is required for wedding weather type',
+            timestamp: new Date().toISOString()
+          }, { status: 400 })
+        }
+        response = await weatherService.getWeatherForWeddingDate(latitude, longitude, weddingDate)
+        if (response.success && response.data && weddingId) {
+          response.data.weddingId = weddingId
+        }
+        break
+      
+      case 'analysis':
+        if (!weddingDate) {
+          return NextResponse.json({
+            success: false,
+            error: 'Wedding date is required for weather analysis',
+            timestamp: new Date().toISOString()
+          }, { status: 400 })
+        }
+        const isOutdoor = searchParams.get('outdoor') === 'true'
+        response = await weatherService.analyzeWeatherRisk(latitude, longitude, weddingDate, isOutdoor)
+        break
+      
+      default:
+        return NextResponse.json({
+          success: false,
+          error: 'Invalid weather type. Supported types: current, forecast, wedding, analysis',
+          timestamp: new Date().toISOString()
+        }, { status: 400 })
+    }
+
+    if (!response.success) {
+      return NextResponse.json(response, { status: 500 })
+    }
+
+    return NextResponse.json(response, { 
+      status: 200,
+      headers: {
+        'Cache-Control': 'public, max-age=3600', // Cache for 1 hour
+      }
+    })
+
+  } catch (error) {
+    console.error('Weather API error:', error)
+    return NextResponse.json({
+      success: false,
+      error: 'Internal server error',
+      timestamp: new Date().toISOString()
+    }, { status: 500 })
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json()
+    const { action, ...params } = body
+
+    switch (action) {
+      case 'clearCache':
+        weatherService.clearCache()
+        return NextResponse.json({
+          success: true,
+          message: 'Weather cache cleared',
+          timestamp: new Date().toISOString()
+        })
+      
+      case 'cacheStats':
+        const stats = weatherService.getCacheStats()
+        return NextResponse.json({
+          success: true,
+          data: stats,
+          timestamp: new Date().toISOString()
+        })
+      
+      default:
+        return NextResponse.json({
+          success: false,
+          error: 'Invalid action',
+          timestamp: new Date().toISOString()
+        }, { status: 400 })
+    }
+  } catch (error) {
+    console.error('Weather API POST error:', error)
+    return NextResponse.json({
+      success: false,
+      error: 'Internal server error',
+      timestamp: new Date().toISOString()
+    }, { status: 500 })
+  }
+}

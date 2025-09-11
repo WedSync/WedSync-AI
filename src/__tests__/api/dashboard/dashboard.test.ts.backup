@@ -1,0 +1,697 @@
+/**
+ * Dashboard API Tests - WS-037 Test Suite
+ * Team B - Round 2 Implementation
+ * Comprehensive testing for dashboard API endpoints
+ */
+
+import { NextRequest } from 'next/server'
+import { GET, POST, PATCH } from '@/app/api/dashboard/route'
+import { createClient } from '@/lib/supabase/server'
+import { DashboardService } from '@/lib/services/dashboardService'
+import { DashboardCache } from '@/lib/cache/dashboardCache'
+
+// Mock dependencies
+jest.mock('@/lib/supabase/server')
+jest.mock('@/lib/services/dashboardService')
+jest.mock('@/lib/cache/dashboardCache')
+jest.mock('@/lib/rate-limit')
+
+const mockCreateClient = createClient as jest.MockedFunction<typeof createClient>
+const mockDashboardService = DashboardService as jest.MockedClass<typeof DashboardService>
+
+// Mock Supabase client
+const mockSupabaseClient = {
+  auth: {
+    getUser: jest.fn()
+  },
+  from: jest.fn(() => ({
+    select: jest.fn().mockReturnThis(),
+    eq: jest.fn().mockReturnThis(),
+    single: jest.fn(),
+    insert: jest.fn().mockReturnThis(),
+    update: jest.fn().mockReturnThis(),
+    upsert: jest.fn().mockReturnThis(),
+    delete: jest.fn().mockReturnThis()
+  })),
+  rpc: jest.fn()
+}
+
+// Mock rate limiter
+const mockRateLimit = {
+  check: jest.fn().mockResolvedValue({
+    success: true,
+    limit: 200,
+    remaining: 199,
+    reset: Date.now() + 60000
+  })
+}
+
+// Mock user data
+const mockUser = {
+  id: '123e4567-e89b-12d3-a456-426614174000',
+  email: 'test@example.com'
+}
+
+const mockSupplier = {
+  id: mockUser.id,
+  status: 'active'
+}
+
+// Mock dashboard data
+const mockDashboardData = {
+  totalWeddings: 10,
+  activeWeddings: 5,
+  completedWeddings: 5,
+  totalRevenue: 50000,
+  averageBudget: 5000,
+  newWeddings30d: 3,
+  pendingTasks: 8,
+  overdueTasks: 2,
+  unreadMessages: 4,
+  recentActivity: [
+    {
+      id: '1',
+      type: 'wedding_created',
+      title: 'New wedding added',
+      description: 'Smith Wedding created',
+      timestamp: new Date().toISOString(),
+      metadata: {}
+    }
+  ]
+}
+
+describe('Dashboard API', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+    mockCreateClient.mockReturnValue(mockSupabaseClient as any)
+    
+    // Mock rate limiter
+    require('@/lib/rate-limit').default = jest.fn(() => mockRateLimit)
+  })
+
+  describe('GET /api/dashboard', () => {
+    it('should return dashboard data for authenticated user', async () => {
+      // Setup mocks
+      mockSupabaseClient.auth.getUser.mockResolvedValue({
+        data: { user: mockUser },
+        error: null
+      })
+
+      mockSupabaseClient.from().select().eq().single.mockResolvedValue({
+        data: mockSupplier,
+        error: null
+      })
+
+      const mockServiceInstance = {
+        getDashboardData: jest.fn().mockResolvedValue(mockDashboardData),
+        invalidateCache: jest.fn()
+      }
+      mockDashboardService.mockImplementation(() => mockServiceInstance as any)
+
+      // Create test request
+      const request = new NextRequest('http://localhost:3000/api/dashboard', {
+        method: 'GET'
+      })
+
+      // Execute
+      const response = await GET(request)
+      const data = await response.json()
+
+      // Assertions
+      expect(response.status).toBe(200)
+      expect(data.success).toBe(true)
+      expect(data.data).toEqual(mockDashboardData)
+      expect(data.meta.supplier_id).toBe(mockUser.id)
+      expect(mockServiceInstance.getDashboardData).toHaveBeenCalledWith({
+        dateRange: undefined,
+        status: undefined,
+        weddingType: undefined
+      })
+    })
+
+    it('should handle query parameters correctly', async () => {
+      // Setup mocks
+      mockSupabaseClient.auth.getUser.mockResolvedValue({
+        data: { user: mockUser },
+        error: null
+      })
+
+      mockSupabaseClient.from().select().eq().single.mockResolvedValue({
+        data: mockSupplier,
+        error: null
+      })
+
+      const mockServiceInstance = {
+        getDashboardData: jest.fn().mockResolvedValue(mockDashboardData),
+        invalidateCache: jest.fn()
+      }
+      mockDashboardService.mockImplementation(() => mockServiceInstance as any)
+
+      // Create test request with query parameters
+      const request = new NextRequest('http://localhost:3000/api/dashboard?dateRange=30d&status=active,pending&refreshCache=true', {
+        method: 'GET'
+      })
+
+      // Execute
+      const response = await GET(request)
+      const data = await response.json()
+
+      // Assertions
+      expect(response.status).toBe(200)
+      expect(mockServiceInstance.invalidateCache).toHaveBeenCalled()
+      expect(mockServiceInstance.getDashboardData).toHaveBeenCalledWith({
+        dateRange: '30d',
+        status: ['active', 'pending'],
+        weddingType: undefined
+      })
+    })
+
+    it('should return 401 for unauthenticated user', async () => {
+      // Setup mocks
+      mockSupabaseClient.auth.getUser.mockResolvedValue({
+        data: { user: null },
+        error: new Error('Authentication required')
+      })
+
+      // Create test request
+      const request = new NextRequest('http://localhost:3000/api/dashboard', {
+        method: 'GET'
+      })
+
+      // Execute
+      const response = await GET(request)
+      const data = await response.json()
+
+      // Assertions
+      expect(response.status).toBe(401)
+      expect(data.success).toBe(false)
+      expect(data.error).toContain('Authentication required')
+    })
+
+    it('should return 403 for inactive supplier', async () => {
+      // Setup mocks
+      mockSupabaseClient.auth.getUser.mockResolvedValue({
+        data: { user: mockUser },
+        error: null
+      })
+
+      mockSupabaseClient.from().select().eq().single.mockResolvedValue({
+        data: { ...mockSupplier, status: 'inactive' },
+        error: null
+      })
+
+      // Create test request
+      const request = new NextRequest('http://localhost:3000/api/dashboard', {
+        method: 'GET'
+      })
+
+      // Execute
+      const response = await GET(request)
+      const data = await response.json()
+
+      // Assertions
+      expect(response.status).toBe(403)
+      expect(data.success).toBe(false)
+      expect(data.error).toContain('not active')
+    })
+
+    it('should handle rate limiting', async () => {
+      // Setup rate limit mock
+      mockRateLimit.check.mockResolvedValue({
+        success: false,
+        limit: 200,
+        remaining: 0,
+        reset: Date.now() + 60000,
+        retryAfter: 60
+      })
+
+      // Create test request
+      const request = new NextRequest('http://localhost:3000/api/dashboard', {
+        method: 'GET'
+      })
+
+      // Execute
+      const response = await GET(request)
+      const data = await response.json()
+
+      // Assertions
+      expect(response.status).toBe(429)
+      expect(data.error).toContain('Rate limit exceeded')
+      expect(response.headers.get('Retry-After')).toBe('60')
+    })
+
+    it('should handle service errors gracefully', async () => {
+      // Setup mocks
+      mockSupabaseClient.auth.getUser.mockResolvedValue({
+        data: { user: mockUser },
+        error: null
+      })
+
+      mockSupabaseClient.from().select().eq().single.mockResolvedValue({
+        data: mockSupplier,
+        error: null
+      })
+
+      const mockServiceInstance = {
+        getDashboardData: jest.fn().mockRejectedValue(new Error('Database connection failed')),
+        invalidateCache: jest.fn()
+      }
+      mockDashboardService.mockImplementation(() => mockServiceInstance as any)
+
+      // Create test request
+      const request = new NextRequest('http://localhost:3000/api/dashboard', {
+        method: 'GET'
+      })
+
+      // Execute
+      const response = await GET(request)
+      const data = await response.json()
+
+      // Assertions
+      expect(response.status).toBe(500)
+      expect(data.success).toBe(false)
+      expect(data.error).toContain('Database connection failed')
+    })
+  })
+
+  describe('POST /api/dashboard', () => {
+    it('should log activity successfully', async () => {
+      // Setup mocks
+      mockSupabaseClient.auth.getUser.mockResolvedValue({
+        data: { user: mockUser },
+        error: null
+      })
+
+      mockSupabaseClient.from().select().eq().single.mockResolvedValue({
+        data: mockSupplier,
+        error: null
+      })
+
+      const mockServiceInstance = {
+        logActivity: jest.fn().mockResolvedValue(undefined)
+      }
+      mockDashboardService.mockImplementation(() => mockServiceInstance as any)
+
+      // Create test request
+      const request = new NextRequest('http://localhost:3000/api/dashboard', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-csrf-token': 'test-token'
+        },
+        body: JSON.stringify({
+          action: 'log_activity',
+          data: {
+            activity_type: 'wedding_created',
+            entity_type: 'wedding',
+            title: 'New wedding added',
+            description: 'Smith Wedding created',
+            entity_id: 'wedding-123',
+            metadata: { source: 'manual' }
+          }
+        })
+      })
+
+      // Mock CSRF validation
+      Object.defineProperty(request, 'cookies', {
+        value: {
+          get: jest.fn().mockReturnValue({ value: 'test-token' })
+        }
+      })
+
+      // Execute
+      const response = await POST(request)
+      const data = await response.json()
+
+      // Assertions
+      expect(response.status).toBe(200)
+      expect(data.success).toBe(true)
+      expect(data.result.message).toBe('Activity logged successfully')
+      expect(mockServiceInstance.logActivity).toHaveBeenCalledWith(
+        'wedding_created',
+        'wedding',
+        'New wedding added',
+        'Smith Wedding created',
+        'wedding-123',
+        { source: 'manual' }
+      )
+    })
+
+    it('should refresh metrics successfully', async () => {
+      // Setup mocks
+      mockSupabaseClient.auth.getUser.mockResolvedValue({
+        data: { user: mockUser },
+        error: null
+      })
+
+      mockSupabaseClient.from().select().eq().single.mockResolvedValue({
+        data: mockSupplier,
+        error: null
+      })
+
+      mockSupabaseClient.rpc.mockResolvedValue({
+        data: null,
+        error: null
+      })
+
+      const mockServiceInstance = {
+        invalidateCache: jest.fn().mockResolvedValue(5)
+      }
+      mockDashboardService.mockImplementation(() => mockServiceInstance as any)
+
+      // Create test request
+      const request = new NextRequest('http://localhost:3000/api/dashboard', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-csrf-token': 'test-token'
+        },
+        body: JSON.stringify({
+          action: 'refresh_metrics'
+        })
+      })
+
+      // Mock CSRF validation
+      Object.defineProperty(request, 'cookies', {
+        value: {
+          get: jest.fn().mockReturnValue({ value: 'test-token' })
+        }
+      })
+
+      // Execute
+      const response = await POST(request)
+      const data = await response.json()
+
+      // Assertions
+      expect(response.status).toBe(200)
+      expect(data.success).toBe(true)
+      expect(data.result.message).toBe('Metrics refreshed successfully')
+      expect(mockSupabaseClient.rpc).toHaveBeenCalledWith('refresh_dashboard_metrics')
+      expect(mockServiceInstance.invalidateCache).toHaveBeenCalledWith('metrics:*')
+    })
+
+    it('should invalidate cache successfully', async () => {
+      // Setup mocks
+      mockSupabaseClient.auth.getUser.mockResolvedValue({
+        data: { user: mockUser },
+        error: null
+      })
+
+      mockSupabaseClient.from().select().eq().single.mockResolvedValue({
+        data: mockSupplier,
+        error: null
+      })
+
+      const mockServiceInstance = {
+        invalidateCache: jest.fn().mockResolvedValue(10)
+      }
+      mockDashboardService.mockImplementation(() => mockServiceInstance as any)
+
+      // Create test request
+      const request = new NextRequest('http://localhost:3000/api/dashboard', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-csrf-token': 'test-token'
+        },
+        body: JSON.stringify({
+          action: 'invalidate_cache',
+          data: {
+            cache_pattern: 'dashboard:*'
+          }
+        })
+      })
+
+      // Mock CSRF validation
+      Object.defineProperty(request, 'cookies', {
+        value: {
+          get: jest.fn().mockReturnValue({ value: 'test-token' })
+        }
+      })
+
+      // Execute
+      const response = await POST(request)
+      const data = await response.json()
+
+      // Assertions
+      expect(response.status).toBe(200)
+      expect(data.success).toBe(true)
+      expect(data.result.invalidated_keys).toBe(10)
+      expect(mockServiceInstance.invalidateCache).toHaveBeenCalledWith('dashboard:*')
+    })
+
+    it('should return 400 for invalid action', async () => {
+      // Setup mocks
+      mockSupabaseClient.auth.getUser.mockResolvedValue({
+        data: { user: mockUser },
+        error: null
+      })
+
+      mockSupabaseClient.from().select().eq().single.mockResolvedValue({
+        data: mockSupplier,
+        error: null
+      })
+
+      // Create test request
+      const request = new NextRequest('http://localhost:3000/api/dashboard', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-csrf-token': 'test-token'
+        },
+        body: JSON.stringify({
+          action: 'invalid_action'
+        })
+      })
+
+      // Mock CSRF validation
+      Object.defineProperty(request, 'cookies', {
+        value: {
+          get: jest.fn().mockReturnValue({ value: 'test-token' })
+        }
+      })
+
+      // Execute
+      const response = await POST(request)
+      const data = await response.json()
+
+      // Assertions
+      expect(response.status).toBe(400)
+      expect(data.success).toBe(false)
+      expect(data.error).toContain('Invalid')
+    })
+
+    it('should return 403 for invalid CSRF token', async () => {
+      // Create test request with mismatched CSRF token
+      const request = new NextRequest('http://localhost:3000/api/dashboard', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-csrf-token': 'wrong-token'
+        },
+        body: JSON.stringify({
+          action: 'log_activity',
+          data: {
+            activity_type: 'test',
+            entity_type: 'test',
+            title: 'Test'
+          }
+        })
+      })
+
+      // Mock CSRF validation
+      Object.defineProperty(request, 'cookies', {
+        value: {
+          get: jest.fn().mockReturnValue({ value: 'different-token' })
+        }
+      })
+
+      // Execute
+      const response = await POST(request)
+      const data = await response.json()
+
+      // Assertions
+      expect(response.status).toBe(403)
+      expect(data.error).toContain('Invalid CSRF token')
+    })
+  })
+
+  describe('PATCH /api/dashboard', () => {
+    it('should update dashboard settings successfully', async () => {
+      // Setup mocks
+      mockSupabaseClient.auth.getUser.mockResolvedValue({
+        data: { user: mockUser },
+        error: null
+      })
+
+      mockSupabaseClient.from().select().eq().single.mockResolvedValue({
+        data: mockSupplier,
+        error: null
+      })
+
+      mockSupabaseClient.from().upsert.mockResolvedValue({
+        data: null,
+        error: null
+      })
+
+      const mockServiceInstance = {
+        invalidateCache: jest.fn().mockResolvedValue(undefined)
+      }
+      mockDashboardService.mockImplementation(() => mockServiceInstance as any)
+
+      // Create test request
+      const request = new NextRequest('http://localhost:3000/api/dashboard', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-csrf-token': 'test-token'
+        },
+        body: JSON.stringify({
+          settings: {
+            auto_refresh: false,
+            refresh_interval: 600,
+            default_date_range: '7d'
+          },
+          layout: {
+            grid_columns: 24,
+            compact_mode: true
+          }
+        })
+      })
+
+      // Mock CSRF validation
+      Object.defineProperty(request, 'cookies', {
+        value: {
+          get: jest.fn().mockReturnValue({ value: 'test-token' })
+        }
+      })
+
+      // Execute
+      const response = await PATCH(request)
+      const data = await response.json()
+
+      // Assertions
+      expect(response.status).toBe(200)
+      expect(data.success).toBe(true)
+      expect(data.message).toBe('Dashboard settings updated successfully')
+      expect(mockSupabaseClient.from().upsert).toHaveBeenCalled()
+      expect(mockServiceInstance.invalidateCache).toHaveBeenCalled()
+    })
+
+    it('should handle database errors when updating settings', async () => {
+      // Setup mocks
+      mockSupabaseClient.auth.getUser.mockResolvedValue({
+        data: { user: mockUser },
+        error: null
+      })
+
+      mockSupabaseClient.from().select().eq().single.mockResolvedValue({
+        data: mockSupplier,
+        error: null
+      })
+
+      mockSupabaseClient.from().upsert.mockResolvedValue({
+        data: null,
+        error: new Error('Database update failed')
+      })
+
+      // Create test request
+      const request = new NextRequest('http://localhost:3000/api/dashboard', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-csrf-token': 'test-token'
+        },
+        body: JSON.stringify({
+          settings: {
+            auto_refresh: false
+          }
+        })
+      })
+
+      // Mock CSRF validation
+      Object.defineProperty(request, 'cookies', {
+        value: {
+          get: jest.fn().mockReturnValue({ value: 'test-token' })
+        }
+      })
+
+      // Execute
+      const response = await PATCH(request)
+      const data = await response.json()
+
+      // Assertions
+      expect(response.status).toBe(500)
+      expect(data.success).toBe(false)
+      expect(data.error).toContain('Failed to update dashboard settings')
+    })
+  })
+
+  describe('Performance and Caching', () => {
+    it('should include performance metrics in response', async () => {
+      // Setup mocks
+      mockSupabaseClient.auth.getUser.mockResolvedValue({
+        data: { user: mockUser },
+        error: null
+      })
+
+      mockSupabaseClient.from().select().eq().single.mockResolvedValue({
+        data: mockSupplier,
+        error: null
+      })
+
+      const mockServiceInstance = {
+        getDashboardData: jest.fn().mockResolvedValue(mockDashboardData)
+      }
+      mockDashboardService.mockImplementation(() => mockServiceInstance as any)
+
+      // Create test request
+      const request = new NextRequest('http://localhost:3000/api/dashboard', {
+        method: 'GET'
+      })
+
+      // Execute
+      const response = await GET(request)
+      const data = await response.json()
+
+      // Assertions
+      expect(response.status).toBe(200)
+      expect(data.meta.response_time_ms).toBeDefined()
+      expect(typeof data.meta.response_time_ms).toBe('number')
+      expect(response.headers.get('X-Response-Time')).toBeDefined()
+      expect(response.headers.get('Cache-Control')).toBe('private, max-age=300')
+    })
+
+    it('should include rate limit headers', async () => {
+      // Setup mocks
+      mockSupabaseClient.auth.getUser.mockResolvedValue({
+        data: { user: mockUser },
+        error: null
+      })
+
+      mockSupabaseClient.from().select().eq().single.mockResolvedValue({
+        data: mockSupplier,
+        error: null
+      })
+
+      const mockServiceInstance = {
+        getDashboardData: jest.fn().mockResolvedValue(mockDashboardData)
+      }
+      mockDashboardService.mockImplementation(() => mockServiceInstance as any)
+
+      // Create test request
+      const request = new NextRequest('http://localhost:3000/api/dashboard', {
+        method: 'GET'
+      })
+
+      // Execute
+      const response = await GET(request)
+
+      // Assertions
+      expect(response.status).toBe(200)
+      expect(response.headers.get('X-RateLimit-Limit')).toBe('200')
+      expect(response.headers.get('X-RateLimit-Remaining')).toBe('199')
+      expect(response.headers.get('X-RateLimit-Reset')).toBeDefined()
+    })
+  })
+})

@@ -1,0 +1,391 @@
+/**
+ * WS-187: App Store Submission Management API
+ * Handles Microsoft Store and Google Play submission automation
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
+import { withSecureValidation } from '@/lib/validation/middleware';
+import { getServerSession } from 'next-auth/next';
+import { authOptions } from '@/app/api/auth/[...nextauth]/route';
+import { StoreSubmissionService } from '@/lib/app-store/store-apis';
+import { createClient } from '@/lib/supabase/server';
+
+const submissionSchema = z.object({
+  platform: z.enum(['microsoft', 'google_play', 'apple']),
+  submission_type: z.enum(['initial', 'update', 'metadata_only']),
+  version_number: z.string().regex(/^\d+\.\d+\.\d+$/),
+  asset_ids: z.array(z.string().uuid()),
+  submission_notes: z.string().max(1000).optional(),
+  release_type: z.enum(['manual', 'automatic']).default('manual'),
+  phased_release: z.boolean().default(false),
+  metadata: z.object({
+    app_title: z.string().max(255),
+    app_subtitle: z.string().max(255).optional(),
+    app_description: z.string().max(4000),
+    keywords: z.array(z.string()).max(100),
+    category: z.string(),
+    content_rating: z.string(),
+    privacy_policy_url: z.string().url(),
+    support_url: z.string().url(),
+    promotional_text: z.string().max(170).optional(),
+    release_notes: z.string().max(4000).optional(),
+  }),
+  pricing: z
+    .object({
+      price_tier: z.string(),
+      markets: z.array(z.string()).optional(),
+      availability_date: z.string().datetime().optional(),
+    })
+    .optional(),
+  credentials_id: z.string().uuid(),
+});
+
+export const POST = withSecureValidation(
+  submissionSchema,
+  async (request: NextRequest, validatedData) => {
+    try {
+      const session = await getServerSession(authOptions);
+      if (!session?.user?.id) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: { code: 'UNAUTHORIZED', message: 'Authentication required' },
+          },
+          { status: 401 },
+        );
+      }
+
+      const supabase = await createClient();
+
+      // Get user's organization
+      const { data: profile } = await supabase
+        .from('user_profiles')
+        .select('organization_id')
+        .eq('user_id', session.user.id)
+        .single();
+
+      if (!profile?.organization_id) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: { code: 'FORBIDDEN', message: 'No organization access' },
+          },
+          { status: 403 },
+        );
+      }
+
+      // Validate assets belong to organization
+      const { data: assets, error: assetsError } = await supabase
+        .from('app_store_assets')
+        .select('id, status, asset_type')
+        .in('id', validatedData.asset_ids)
+        .eq('organization_id', profile.organization_id);
+
+      if (
+        assetsError ||
+        !assets ||
+        assets.length !== validatedData.asset_ids.length
+      ) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: {
+              code: 'INVALID_ASSETS',
+              message: 'Invalid or inaccessible assets',
+            },
+          },
+          { status: 400 },
+        );
+      }
+
+      // Check all assets are ready
+      const notReadyAssets = assets.filter((asset) => asset.status !== 'ready');
+      if (notReadyAssets.length > 0) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: {
+              code: 'ASSETS_NOT_READY',
+              message: `${notReadyAssets.length} assets are not ready for submission`,
+              details: { not_ready_assets: notReadyAssets.map((a) => a.id) },
+            },
+          },
+          { status: 400 },
+        );
+      }
+
+      // Create submission record
+      const submissionData = {
+        organization_id: profile.organization_id,
+        platform: validatedData.platform,
+        submission_type: validatedData.submission_type,
+        version_number: validatedData.version_number,
+        asset_ids: validatedData.asset_ids,
+        submission_notes: validatedData.submission_notes,
+        automated_checks: {},
+        created_by: session.user.id,
+      };
+
+      const { data: submission, error: submissionError } = await supabase
+        .from('store_submissions')
+        .insert(submissionData)
+        .select()
+        .single();
+
+      if (submissionError) {
+        throw submissionError;
+      }
+
+      // Initialize store submission service
+      const storeService = new StoreSubmissionService(supabase);
+
+      // Start submission process
+      const submissionResult = await storeService.submitToStore({
+        submission_id: submission.id,
+        platform: validatedData.platform,
+        metadata: validatedData.metadata,
+        assets: assets,
+        credentials_id: validatedData.credentials_id,
+        pricing: validatedData.pricing,
+        release_options: {
+          type: validatedData.release_type,
+          phased_release: validatedData.phased_release,
+        },
+      });
+
+      // Update submission with store reference
+      await supabase
+        .from('store_submissions')
+        .update({
+          store_id: submissionResult.store_reference_id,
+          status: 'submitted',
+          submission_date: new Date().toISOString(),
+          estimated_review_time: submissionResult.estimated_review_hours,
+          automated_checks: submissionResult.validation_results,
+        })
+        .eq('id', submission.id);
+
+      return NextResponse.json({
+        success: true,
+        data: {
+          submission_id: submission.id,
+          store_reference_id: submissionResult.store_reference_id,
+          status: 'submitted',
+          estimated_review_time_hours: submissionResult.estimated_review_hours,
+          tracking_url: `/api/app-store/submissions/${submission.id}/status`,
+          store_console_url: submissionResult.console_url,
+        },
+      });
+    } catch (error) {
+      console.error('Store submission error:', error);
+
+      // Handle different types of store API errors
+      if (error instanceof Error && error.message.includes('STORE_API_ERROR')) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: {
+              code: 'STORE_API_ERROR',
+              message: 'Store platform rejected the submission',
+              details: { reason: error.message },
+              timestamp: new Date().toISOString(),
+            },
+          },
+          { status: 422 },
+        );
+      }
+
+      return NextResponse.json(
+        {
+          success: false,
+          error: {
+            code: 'SUBMISSION_ERROR',
+            message:
+              error instanceof Error
+                ? error.message
+                : 'Failed to submit to store',
+            timestamp: new Date().toISOString(),
+          },
+        },
+        { status: 500 },
+      );
+    }
+  },
+);
+
+export const GET = withSecureValidation(
+  z.object({}),
+  async (request: NextRequest) => {
+    try {
+      const session = await getServerSession(authOptions);
+      if (!session?.user?.id) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: { code: 'UNAUTHORIZED', message: 'Authentication required' },
+          },
+          { status: 401 },
+        );
+      }
+
+      const supabase = await createClient();
+      const url = new URL(request.url);
+      const page = parseInt(url.searchParams.get('page') || '1');
+      const limit = Math.min(
+        parseInt(url.searchParams.get('limit') || '10'),
+        50,
+      );
+      const platform = url.searchParams.get('platform');
+      const status = url.searchParams.get('status');
+
+      // Get user's organization
+      const { data: profile } = await supabase
+        .from('user_profiles')
+        .select('organization_id')
+        .eq('user_id', session.user.id)
+        .single();
+
+      if (!profile?.organization_id) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: { code: 'FORBIDDEN', message: 'No organization access' },
+          },
+          { status: 403 },
+        );
+      }
+
+      // Build query with filters
+      let query = supabase
+        .from('store_submissions')
+        .select(
+          `
+          *,
+          user_profiles!store_submissions_created_by_fkey(full_name)
+        `,
+        )
+        .eq('organization_id', profile.organization_id)
+        .order('created_at', { ascending: false });
+
+      if (platform) {
+        query = query.eq('platform', platform);
+      }
+
+      if (status) {
+        query = query.eq('status', status);
+      }
+
+      // Execute paginated query
+      const {
+        data: submissions,
+        error,
+        count,
+      } = await query.range((page - 1) * limit, page * limit - 1);
+
+      if (error) {
+        throw error;
+      }
+
+      // Format response data
+      const formattedSubmissions =
+        submissions?.map((submission) => ({
+          id: submission.id,
+          platform: submission.platform,
+          submission_type: submission.submission_type,
+          version_number: submission.version_number,
+          status: submission.status,
+          store_id: submission.store_id,
+          submission_date: submission.submission_date,
+          review_date: submission.review_date,
+          publication_date: submission.publication_date,
+          estimated_review_time: submission.estimated_review_time,
+          rejection_reasons: submission.rejection_reasons,
+          created_by: submission.user_profiles?.full_name,
+          created_at: submission.created_at,
+        })) || [];
+
+      return NextResponse.json({
+        success: true,
+        data: {
+          submissions: formattedSubmissions,
+          pagination: {
+            page,
+            limit,
+            total: count || 0,
+            pages: Math.ceil((count || 0) / limit),
+          },
+          summary: {
+            total_submissions: count || 0,
+            by_status: await getSubmissionStatusSummary(
+              supabase,
+              profile.organization_id,
+            ),
+            by_platform: await getSubmissionPlatformSummary(
+              supabase,
+              profile.organization_id,
+            ),
+          },
+        },
+      });
+    } catch (error) {
+      console.error('Submission list error:', error);
+
+      return NextResponse.json(
+        {
+          success: false,
+          error: {
+            code: 'FETCH_ERROR',
+            message: 'Failed to fetch submissions',
+            timestamp: new Date().toISOString(),
+          },
+        },
+        { status: 500 },
+      );
+    }
+  },
+);
+
+/**
+ * Get submission status summary for organization
+ */
+async function getSubmissionStatusSummary(
+  supabase: any,
+  organizationId: string,
+) {
+  const { data, error } = await supabase
+    .from('store_submissions')
+    .select('status')
+    .eq('organization_id', organizationId);
+
+  if (error) return {};
+
+  const summary: Record<string, number> = {};
+  data?.forEach((submission: any) => {
+    summary[submission.status] = (summary[submission.status] || 0) + 1;
+  });
+
+  return summary;
+}
+
+/**
+ * Get submission platform summary for organization
+ */
+async function getSubmissionPlatformSummary(
+  supabase: any,
+  organizationId: string,
+) {
+  const { data, error } = await supabase
+    .from('store_submissions')
+    .select('platform')
+    .eq('organization_id', organizationId);
+
+  if (error) return {};
+
+  const summary: Record<string, number> = {};
+  data?.forEach((submission: any) => {
+    summary[submission.platform] = (summary[submission.platform] || 0) + 1;
+  });
+
+  return summary;
+}

@@ -1,0 +1,233 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { rateLimit, rateLimitConfigs } from '@/lib/rate-limit';
+import { z } from 'zod';
+import { ReferralEngine } from '@/lib/referrals/referral-engine';
+import DOMPurify from 'isomorphic-dompurify';
+
+// Validation schemas
+const trackClickSchema = z.object({
+  ipAddress: z.string().ip(),
+  userAgent: z.string().min(1),
+});
+
+const trackConversionSchema = z.object({
+  referredEmail: z.string().email(),
+  coupleId: z.string().optional(),
+});
+
+// Comprehensive input sanitization
+function sanitizeTrackingData(data: any): any {
+  if (typeof data === 'string') {
+    return DOMPurify.sanitize(data, {
+      ALLOWED_TAGS: [],
+      ALLOWED_ATTR: [],
+      KEEP_CONTENT: true,
+    });
+  }
+
+  if (Array.isArray(data)) {
+    return data.map(sanitizeTrackingData);
+  }
+
+  if (data && typeof data === 'object') {
+    const sanitized: any = {};
+    for (const [key, value] of Object.entries(data)) {
+      sanitized[key] = sanitizeTrackingData(value);
+    }
+    return sanitized;
+  }
+
+  return data;
+}
+
+// GET /api/referrals/codes/[coupleId]
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ code: string }> },
+) {
+  try {
+    // Apply rate limiting
+    const rateLimitResult = await rateLimit(request, rateLimitConfigs.api);
+    if (rateLimitResult) return rateLimitResult;
+
+    const supabase = await createClient();
+    const { code } = await params;
+
+    // Get referral code data with stats
+    const { data: referralCode, error } = await supabase
+      .from('referral_codes')
+      .select(
+        `
+        id,
+        code,
+        landing_page_url,
+        qr_code_url,
+        total_clicks,
+        total_conversions,
+        status,
+        created_at,
+        referral_programs!inner(
+          id,
+          name,
+          referrer_reward_amount,
+          referee_reward_amount
+        )
+      `,
+      )
+      .eq('code', code)
+      .single();
+
+    if (error || !referralCode) {
+      return NextResponse.json(
+        { error: 'Referral code not found' },
+        { status: 404 },
+      );
+    }
+
+    // Calculate total earnings from conversions
+    const { data: conversions } = await supabase
+      .from('referral_conversions')
+      .select('reward_amount')
+      .eq('referral_code_id', referralCode.id)
+      .not('reward_amount', 'is', null);
+
+    const totalEarnings =
+      conversions?.reduce(
+        (sum, conversion) => sum + (conversion.reward_amount || 0),
+        0,
+      ) || 0;
+
+    return NextResponse.json({
+      success: true,
+      code: referralCode.code,
+      landingPageUrl: referralCode.landing_page_url,
+      qrCodeUrl: referralCode.qr_code_url,
+      stats: {
+        clicks: referralCode.total_clicks,
+        conversions: referralCode.total_conversions,
+        totalEarnings: totalEarnings,
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching referral code:', error);
+    return NextResponse.json(
+      { error: 'Failed to fetch referral code' },
+      { status: 500 },
+    );
+  }
+}
+
+// POST /api/referrals/track-click
+export async function POST(request: NextRequest) {
+  try {
+    // Apply rate limiting
+    const rateLimitResult = await rateLimit(request, rateLimitConfigs.api);
+    if (rateLimitResult) return rateLimitResult;
+
+    const rawBody = await request.json();
+    const action = request.nextUrl.searchParams.get('action');
+
+    // Sanitize input data first
+    const sanitizedBody = sanitizeTrackingData(rawBody);
+
+    // Initialize referral engine
+    const referralEngine = new ReferralEngine();
+
+    if (action === 'click') {
+      // Validate for click tracking
+      const validatedData = trackClickSchema.parse(sanitizedBody);
+
+      const conversion = await referralEngine.trackClick(sanitizedBody.code, {
+        ipAddress: validatedData.ipAddress,
+        userAgent: validatedData.userAgent,
+      });
+
+      return NextResponse.json({
+        success: true,
+        conversionId: conversion.id,
+      });
+    } else if (action === 'conversion') {
+      // Validate for conversion tracking
+      const validatedData = trackConversionSchema.parse(sanitizedBody);
+
+      const conversion = await referralEngine.processConversion(
+        sanitizedBody.code,
+        {
+          referredEmail: validatedData.referredEmail,
+          coupleId: validatedData.coupleId,
+        },
+      );
+
+      return NextResponse.json({
+        success: true,
+        conversion: conversion,
+      });
+    } else {
+      return NextResponse.json(
+        { error: 'Invalid action. Use ?action=click or ?action=conversion' },
+        { status: 400 },
+      );
+    }
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Validation error', details: error.errors },
+        { status: 400 },
+      );
+    }
+    console.error('Error tracking referral action:', error);
+    return NextResponse.json(
+      { error: 'Failed to track referral action' },
+      { status: 500 },
+    );
+  }
+}
+
+// Additional endpoints for analytics
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ code: string }> },
+) {
+  try {
+    // Apply rate limiting
+    const rateLimitResult = await rateLimit(request, rateLimitConfigs.api);
+    if (rateLimitResult) return rateLimitResult;
+
+    const supabase = await createClient();
+    const { data: user } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { code } = await params;
+    const rawBody = await request.json();
+    const sanitizedBody = sanitizeTrackingData(rawBody);
+
+    // Update referral code status
+    const { data, error } = await supabase
+      .from('referral_codes')
+      .update({
+        status: sanitizedBody.status,
+      })
+      .eq('code', code)
+      .select()
+      .single();
+
+    if (error) {
+      throw error;
+    }
+
+    return NextResponse.json({
+      success: true,
+      data: data,
+    });
+  } catch (error) {
+    console.error('Error updating referral code:', error);
+    return NextResponse.json(
+      { error: 'Failed to update referral code' },
+      { status: 500 },
+    );
+  }
+}

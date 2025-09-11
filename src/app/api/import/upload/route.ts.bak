@@ -1,0 +1,261 @@
+/**
+ * File Upload API Endpoint for CSV/Excel Import
+ * WS-033: Secure file upload with validation and chunked processing
+ */
+
+import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@/lib/supabase/server'
+import { rateLimitService } from '@/lib/rate-limiter'
+import Papa from 'papaparse'
+import * as XLSX from 'xlsx'
+import { columnMapper } from '@/lib/import/columnMapper'
+import { weddingDataParser } from '@/lib/import/parser'
+import { importValidator } from '@/lib/import/validator'
+
+const MAX_FILE_SIZE = 50 * 1024 * 1024 // 50MB
+const ALLOWED_EXTENSIONS = ['.csv', '.xlsx', '.xls']
+const BATCH_SIZE = 100
+
+export async function POST(request: NextRequest) {
+  try {
+    // Rate limiting
+    const ip = request.headers.get('x-forwarded-for') || 'unknown'
+    const rateLimitResult = await rateLimitService.checkRateLimit(ip, 'import')
+    
+    if (!rateLimitResult.allowed) {
+      return NextResponse.json(
+        { error: 'Too many import attempts. Please wait before trying again.' },
+        { status: 429 }
+      )
+    }
+
+    const supabase = await createClient()
+    
+    // Check authentication
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      )
+    }
+
+    // Parse form data
+    const formData = await request.formData()
+    const file = formData.get('file') as File
+    
+    if (!file) {
+      return NextResponse.json(
+        { error: 'No file provided' },
+        { status: 400 }
+      )
+    }
+
+    // Validate file size
+    if (file.size > MAX_FILE_SIZE) {
+      return NextResponse.json(
+        { 
+          error: 'File too large',
+          details: `Maximum file size is ${MAX_FILE_SIZE / (1024 * 1024)}MB`
+        },
+        { status: 400 }
+      )
+    }
+
+    // Validate file extension
+    const fileExtension = '.' + file.name.split('.').pop()?.toLowerCase()
+    if (!ALLOWED_EXTENSIONS.includes(fileExtension)) {
+      return NextResponse.json(
+        { 
+          error: 'Invalid file format',
+          details: `Allowed formats: ${ALLOWED_EXTENSIONS.join(', ')}`
+        },
+        { status: 400 }
+      )
+    }
+
+    // Generate unique import session ID
+    const importId = crypto.randomUUID()
+    
+    // Store file metadata in database
+    const { error: metadataError } = await supabase
+      .from('import_jobs')
+      .insert({
+        id: importId,
+        user_id: user.id,
+        file_name: file.name,
+        file_size: file.size,
+        status: 'processing',
+        created_at: new Date().toISOString()
+      })
+
+    if (metadataError) {
+      console.error('Failed to create import job:', metadataError)
+      return NextResponse.json(
+        { error: 'Failed to initialize import' },
+        { status: 500 }
+      )
+    }
+
+    // Process file based on type
+    let parsedData: any[] = []
+    let columns: string[] = []
+
+    if (fileExtension === '.csv') {
+      // Parse CSV
+      const text = await file.text()
+      const parseResult = Papa.parse(text, {
+        header: true,
+        skipEmptyLines: true,
+        transformHeader: (header) => header.trim()
+      })
+      
+      parsedData = parseResult.data as any[]
+      columns = parseResult.meta.fields || []
+    } else {
+      // Parse Excel
+      const buffer = await file.arrayBuffer()
+      const workbook = XLSX.read(buffer, { type: 'array' })
+      const sheetName = workbook.SheetNames[0]
+      const worksheet = workbook.Sheets[sheetName]
+      
+      // Convert to JSON
+      const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as any[][]
+      
+      if (jsonData.length < 2) {
+        await supabase
+          .from('import_jobs')
+          .update({ status: 'failed', error: 'File must contain headers and data' })
+          .eq('id', importId)
+
+        return NextResponse.json(
+          { error: 'File must contain at least headers and one data row' },
+          { status: 400 }
+        )
+      }
+
+      // Extract headers and data
+      columns = jsonData[0].map((h: any) => String(h || '').trim())
+      const rows = jsonData.slice(1)
+      
+      // Convert to objects
+      parsedData = rows.map((row: any[]) => {
+        const obj: any = {}
+        columns.forEach((col, index) => {
+          if (row[index] !== undefined && row[index] !== null) {
+            obj[col] = row[index]
+          }
+        })
+        return obj
+      }).filter(row => Object.keys(row).length > 0)
+    }
+
+    // Auto-detect column mappings
+    const mappings = columnMapper.autoDetectMappings(columns, parsedData.slice(0, 10))
+    
+    // Convert mappings to simple object
+    const columnMappingsObj: Record<string, string> = {}
+    mappings.forEach(m => {
+      if (m.targetField) {
+        columnMappingsObj[m.sourceColumn] = m.targetField
+      }
+    })
+
+    // Parse and validate first batch
+    const firstBatch = parsedData.slice(0, Math.min(BATCH_SIZE, parsedData.length))
+    const parsedBatch = weddingDataParser.parseRows(firstBatch, columnMappingsObj)
+    
+    // Validate parsed data
+    const validationResult = await importValidator.validateBatch(parsedBatch.data, true)
+
+    // Store upload data temporarily in Supabase Storage
+    const uploadPath = `imports/${user.id}/${importId}/data.json`
+    const { error: storageError } = await supabase.storage
+      .from('temp')
+      .upload(uploadPath, JSON.stringify({
+        columns,
+        data: parsedData,
+        mappings: columnMappingsObj
+      }), {
+        contentType: 'application/json',
+        upsert: true
+      })
+
+    if (storageError) {
+      console.error('Failed to store import data:', storageError)
+      await supabase
+        .from('import_jobs')
+        .update({ status: 'failed', error: 'Failed to store import data' })
+        .eq('id', importId)
+
+      return NextResponse.json(
+        { error: 'Failed to store import data' },
+        { status: 500 }
+      )
+    }
+
+    // Update import job with preview data
+    const { error: updateError } = await supabase
+      .from('import_jobs')
+      .update({
+        status: 'preview',
+        total_rows: parsedData.length,
+        column_mappings: columnMappingsObj,
+        validation_summary: {
+          valid: validationResult.valid,
+          errors: validationResult.errors.length,
+          warnings: validationResult.warnings.length,
+          duplicates: validationResult.duplicates.length,
+          statistics: validationResult.statistics
+        }
+      })
+      .eq('id', importId)
+
+    if (updateError) {
+      console.error('Failed to update import job:', updateError)
+    }
+
+    // Return preview data
+    return NextResponse.json({
+      success: true,
+      importId,
+      preview: {
+        totalRows: parsedData.length,
+        columns,
+        mappings,
+        sampleData: parsedBatch.data.slice(0, 10),
+        validation: {
+          valid: validationResult.valid,
+          errors: validationResult.errors.slice(0, 20),
+          warnings: validationResult.warnings.slice(0, 20),
+          duplicates: validationResult.duplicates.slice(0, 10),
+          statistics: validationResult.statistics
+        },
+        parseStatistics: parsedBatch.summary
+      }
+    })
+
+  } catch (error) {
+    console.error('Import upload error:', error)
+    return NextResponse.json(
+      { 
+        error: 'Failed to process file',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      { status: 500 }
+    )
+  }
+}
+
+// OPTIONS method for CORS
+export async function OPTIONS(request: NextRequest) {
+  return new NextResponse(null, {
+    status: 200,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      'Access-Control-Max-Age': '86400',
+    },
+  })
+}

@@ -1,0 +1,44 @@
+'use client';
+
+import { forwardRef } from 'react';
+import { cn } from '@/lib/utils';
+
+interface AvatarProps extends React.HTMLAttributes<HTMLDivElement> {
+  src?: string;
+  alt?: string;
+  initials?: string;
+  size?: 'sm' | 'md' | 'lg';
+}
+
+export const Avatar = forwardRef<HTMLDivElement, AvatarProps>(
+  ({ className, src, alt, initials, size = 'md', ...props }, ref) => {
+    const sizeClasses = {
+      sm: 'h-8 w-8 text-xs',
+      md: 'h-10 w-10 text-sm',
+      lg: 'h-12 w-12 text-base',
+    };
+
+    return (
+      <div
+        ref={ref}
+        className={cn('relative inline-block', sizeClasses[size], className)}
+        {...props}
+      >
+        {src ? (
+          <img
+            className="h-full w-full rounded-full object-cover"
+            src={src}
+            alt={alt || ''}
+          />
+        ) : (
+          <span className="inline-flex h-full w-full items-center justify-center rounded-full bg-gray-500">
+            <span className="font-medium leading-none text-white">
+              {initials || '?'}
+            </span>
+          </span>
+        )}
+      </div>
+    );
+  }
+);
+Avatar.displayName = 'Avatar';

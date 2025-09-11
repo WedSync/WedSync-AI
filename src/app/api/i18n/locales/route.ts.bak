@@ -1,0 +1,800 @@
+/**
+ * Language and Region Management API Endpoint
+ * 
+ * Handles CRUD operations for WedSync's locale configurations.
+ * Manages supported languages, regions, and cultural wedding data.
+ * 
+ * @fileoverview Locale management API for WedSync multilingual support
+ * @author WedSync Development Team
+ * @since 2025-01-09
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
+import { z } from 'zod';
+
+// ===== TYPE DEFINITIONS =====
+
+/**
+ * Locale configuration interface with cultural wedding data
+ */
+interface LocaleConfig {
+  id: string;
+  language_code: string;
+  region_code: string;
+  locale_code: string; // Combined: en-US, es-ES, etc.
+  display_name: string;
+  native_name: string;
+  is_rtl: boolean;
+  date_format: string;
+  time_format: string;
+  currency_code: string;
+  currency_symbol: string;
+  number_format: {
+    decimal_separator: string;
+    thousand_separator: string;
+    decimal_places: number;
+  };
+  cultural_data: {
+    wedding_traditions: string[];
+    ceremony_types: string[];
+    cultural_colors: string[];
+    traditional_music_genres: string[];
+    common_venues: string[];
+    gift_giving_customs: string[];
+    photography_preferences: string[];
+  };
+  is_active: boolean;
+  priority: number;
+  translation_stats?: {
+    total_keys: number;
+    translated_keys: number;
+    completion_percentage: number;
+    last_updated: string;
+  };
+  created_at: string;
+  updated_at: string;
+  created_by: string;
+  updated_by: string;
+}
+
+/**
+ * API response wrapper
+ */
+interface ApiResponse<T = unknown> {
+  success: boolean;
+  data?: T;
+  error?: {
+    code: string;
+    message: string;
+    details?: Record<string, unknown>;
+  };
+  meta?: {
+    total?: number;
+    page?: number;
+    per_page?: number;
+    has_more?: boolean;
+  };
+}
+
+// ===== VALIDATION SCHEMAS =====
+
+/**
+ * Schema for locale configuration
+ */
+const localeConfigSchema = z.object({
+  language_code: z.string()
+    .min(2)
+    .max(3)
+    .regex(/^[a-z]{2,3}$/, 'Invalid language code format'),
+  region_code: z.string()
+    .min(2)
+    .max(3)
+    .regex(/^[A-Z]{2,3}$/, 'Invalid region code format'),
+  display_name: z.string()
+    .min(1, 'Display name is required')
+    .max(100, 'Display name too long'),
+  native_name: z.string()
+    .min(1, 'Native name is required')
+    .max(100, 'Native name too long'),
+  is_rtl: z.boolean().default(false),
+  date_format: z.string()
+    .min(1, 'Date format is required')
+    .max(20, 'Date format too long'),
+  time_format: z.string()
+    .min(1, 'Time format is required')
+    .max(20, 'Time format too long'),
+  currency_code: z.string()
+    .length(3, 'Currency code must be 3 characters')
+    .regex(/^[A-Z]{3}$/, 'Invalid currency code'),
+  currency_symbol: z.string()
+    .min(1, 'Currency symbol is required')
+    .max(5, 'Currency symbol too long'),
+  number_format: z.object({
+    decimal_separator: z.string().length(1, 'Decimal separator must be 1 character'),
+    thousand_separator: z.string().length(1, 'Thousand separator must be 1 character'),
+    decimal_places: z.number().min(0).max(4)
+  }),
+  cultural_data: z.object({
+    wedding_traditions: z.array(z.string()).default([]),
+    ceremony_types: z.array(z.string()).default([]),
+    cultural_colors: z.array(z.string()).default([]),
+    traditional_music_genres: z.array(z.string()).default([]),
+    common_venues: z.array(z.string()).default([]),
+    gift_giving_customs: z.array(z.string()).default([]),
+    photography_preferences: z.array(z.string()).default([])
+  }),
+  is_active: z.boolean().default(true),
+  priority: z.number().min(1).max(100).default(50)
+});
+
+/**
+ * Schema for updating locale configuration
+ */
+const updateLocaleSchema = localeConfigSchema.partial().extend({
+  id: z.string().uuid('Invalid locale ID').optional()
+});
+
+/**
+ * Schema for query parameters
+ */
+const queryParamsSchema = z.object({
+  active_only: z.coerce.boolean().default(false),
+  include_stats: z.coerce.boolean().default(false),
+  sort_by: z.enum(['priority', 'name', 'completion']).default('priority'),
+  page: z.coerce.number().min(1).default(1),
+  per_page: z.coerce.number().min(1).max(100).default(20)
+});
+
+/**
+ * Schema for delete operations
+ */
+const deleteLocaleSchema = z.object({
+  id: z.string().uuid('Invalid locale ID').optional(),
+  language_code: z.string().min(2).max(3).optional(),
+  region_code: z.string().min(2).max(3).optional(),
+  force_delete: z.boolean().default(false)
+}).refine(data => 
+  data.id || (data.language_code && data.region_code),
+  { message: 'Either id or language_code + region_code must be provided' }
+);
+
+// ===== UTILITY FUNCTIONS =====
+
+/**
+ * Simple rate limiting using in-memory store
+ */
+const rateLimitStore = new Map<string, { count: number; resetTime: number }>();
+
+function checkRateLimit(identifier: string, limit = 60, windowMs = 60000): { success: boolean; reset?: number } {
+  const now = Date.now();
+  const key = identifier;
+  
+  const record = rateLimitStore.get(key);
+  
+  if (!record || now > record.resetTime) {
+    rateLimitStore.set(key, { count: 1, resetTime: now + windowMs });
+    return { success: true };
+  }
+  
+  if (record.count >= limit) {
+    return { success: false, reset: record.resetTime };
+  }
+  
+  record.count++;
+  return { success: true };
+}
+
+/**
+ * Creates a standardized API response
+ */
+function createResponse<T>(
+  success: boolean, 
+  data?: T, 
+  error?: ApiResponse['error'],
+  meta?: ApiResponse['meta']
+): NextResponse<ApiResponse<T>> {
+  const response: ApiResponse<T> = { success };
+  
+  if (data !== undefined) response.data = data;
+  if (error) response.error = error;
+  if (meta) response.meta = meta;
+  
+  const status = success ? 200 : (error?.code === 'VALIDATION_ERROR' ? 400 : 500);
+  
+  return NextResponse.json(response, { status });
+}
+
+/**
+ * Validates user permissions for admin operations
+ */
+async function validateAdminPermissions(supabase: any, userId: string): Promise<boolean> {
+  try {
+    const { data: profile, error } = await supabase
+      .from('user_profiles')
+      .select('role, permissions')
+      .eq('id', userId)
+      .single();
+
+    if (error || !profile) return false;
+
+    // Check if user has admin role or specific locale management permissions
+    return profile.role === 'admin' || 
+           profile.role === 'super_admin' ||
+           (profile.permissions && (
+             profile.permissions.includes('manage_locales') ||
+             profile.permissions.includes('manage_translations')
+           ));
+  } catch (error) {
+    console.error('Permission validation error:', error);
+    return false;
+  }
+}
+
+/**
+ * Get translation statistics for a locale
+ */
+async function getTranslationStats(supabase: any, localeCode: string) {
+  try {
+    // Get total translation keys count
+    const { count: totalKeys, error: totalError } = await supabase
+      .from('translations')
+      .select('key', { count: 'exact' })
+      .eq('locale', 'en') // Base locale for total count
+      .eq('is_active', true);
+
+    if (totalError) {
+      console.error('Error getting total keys:', totalError);
+      return null;
+    }
+
+    // Get translated keys for this locale
+    const { count: translatedKeys, error: translatedError } = await supabase
+      .from('translations')
+      .select('*', { count: 'exact' })
+      .eq('locale', localeCode)
+      .eq('is_active', true)
+      .not('value', 'is', null)
+      .neq('value', '');
+
+    if (translatedError) {
+      console.error('Error getting translated keys:', translatedError);
+      return null;
+    }
+
+    // Get last updated timestamp
+    const { data: lastUpdate, error: updateError } = await supabase
+      .from('translations')
+      .select('updated_at')
+      .eq('locale', localeCode)
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .single();
+
+    const completionPercentage = totalKeys ? Math.round((translatedKeys || 0) / totalKeys * 100) : 0;
+
+    return {
+      total_keys: totalKeys || 0,
+      translated_keys: translatedKeys || 0,
+      completion_percentage: completionPercentage,
+      last_updated: lastUpdate?.updated_at || new Date().toISOString()
+    };
+  } catch (error) {
+    console.error('Error calculating translation stats:', error);
+    return null;
+  }
+}
+
+// ===== API HANDLERS =====
+
+/**
+ * GET /api/i18n/locales
+ * 
+ * Retrieve available locales with optional statistics
+ */
+export async function GET(request: NextRequest) {
+  try {
+    // Rate limiting
+    const identifier = request.headers.get('x-forwarded-for') ?? 
+                      request.headers.get('x-real-ip') ?? 
+                      request.headers.get('remote-addr') ?? 
+                      'anonymous';
+    const rateLimitResult = checkRateLimit(identifier);
+    
+    if (!rateLimitResult.success) {
+      return createResponse(false, null, {
+        code: 'RATE_LIMIT_EXCEEDED',
+        message: 'Too many requests. Please try again later.',
+        details: { reset_time: rateLimitResult.reset }
+      });
+    }
+
+    // Parse and validate query parameters
+    const url = new URL(request.url);
+    const queryParams = Object.fromEntries(url.searchParams);
+    
+    const validationResult = queryParamsSchema.safeParse(queryParams);
+    if (!validationResult.success) {
+      return createResponse(false, null, {
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid query parameters',
+        details: validationResult.error.flatten()
+      });
+    }
+
+    const params = validationResult.data;
+
+    // Initialize Supabase client
+    const cookieStore = cookies();
+    const supabase = createServerComponentClient({ cookies: () => cookieStore });
+
+    // Build query
+    let query = supabase
+      .from('locale_configurations')
+      .select('*', { count: 'exact' });
+
+    // Apply filters
+    if (params.active_only) {
+      query = query.eq('is_active', true);
+    }
+
+    // Apply sorting
+    switch (params.sort_by) {
+      case 'priority':
+        query = query.order('priority', { ascending: false });
+        break;
+      case 'name':
+        query = query.order('display_name', { ascending: true });
+        break;
+      case 'completion':
+        // We'll sort by completion after fetching stats
+        query = query.order('priority', { ascending: false });
+        break;
+      default:
+        query = query.order('priority', { ascending: false });
+    }
+
+    // Apply pagination
+    const offset = (params.page - 1) * params.per_page;
+    query = query.range(offset, offset + params.per_page - 1);
+
+    // Execute query
+    const { data: locales, error, count } = await query;
+
+    if (error) {
+      console.error('Database query error:', error);
+      return createResponse(false, null, {
+        code: 'DATABASE_ERROR',
+        message: 'Failed to retrieve locales',
+        details: { database_error: error.message }
+      });
+    }
+
+    // Enrich locales with translation statistics if requested
+    const enrichedLocales: LocaleConfig[] = [];
+    
+    for (const locale of locales || []) {
+      const localeCode = `${locale.language_code}-${locale.region_code}`;
+      const localeConfig: LocaleConfig = {
+        ...locale,
+        locale_code: localeCode
+      };
+
+      if (params.include_stats) {
+        const stats = await getTranslationStats(supabase, localeCode);
+        if (stats) {
+          localeConfig.translation_stats = stats;
+        }
+      }
+
+      enrichedLocales.push(localeConfig);
+    }
+
+    // Sort by completion percentage if requested
+    if (params.sort_by === 'completion' && params.include_stats) {
+      enrichedLocales.sort((a, b) => 
+        (b.translation_stats?.completion_percentage || 0) - 
+        (a.translation_stats?.completion_percentage || 0)
+      );
+    }
+
+    // Calculate pagination meta
+    const totalPages = count ? Math.ceil(count / params.per_page) : 0;
+    const hasMore = params.page < totalPages;
+
+    return createResponse(true, enrichedLocales, undefined, {
+      total: count || 0,
+      page: params.page,
+      per_page: params.per_page,
+      has_more: hasMore
+    });
+
+  } catch (error) {
+    console.error('GET /api/i18n/locales error:', error);
+    return createResponse(false, null, {
+      code: 'INTERNAL_ERROR',
+      message: 'An unexpected error occurred',
+      details: { error: String(error) }
+    });
+  }
+}
+
+/**
+ * POST /api/i18n/locales
+ * 
+ * Add new locale support (admin only)
+ */
+export async function POST(request: NextRequest) {
+  try {
+    // Rate limiting for admin operations
+    const identifier = request.headers.get('x-forwarded-for') ?? 
+                      request.headers.get('x-real-ip') ?? 
+                      request.headers.get('remote-addr') ?? 
+                      'anonymous';
+    const rateLimitResult = checkRateLimit(identifier, 10); // Stricter limit for admin ops
+    
+    if (!rateLimitResult.success) {
+      return createResponse(false, null, {
+        code: 'RATE_LIMIT_EXCEEDED',
+        message: 'Too many requests. Please try again later.'
+      });
+    }
+
+    // Initialize Supabase client and get user
+    const cookieStore = cookies();
+    const supabase = createServerComponentClient({ cookies: () => cookieStore });
+    
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    
+    if (authError || !user) {
+      return createResponse(false, null, {
+        code: 'UNAUTHORIZED',
+        message: 'Authentication required'
+      });
+    }
+
+    // Validate admin permissions
+    const hasPermissions = await validateAdminPermissions(supabase, user.id);
+    if (!hasPermissions) {
+      return createResponse(false, null, {
+        code: 'FORBIDDEN',
+        message: 'Admin permissions required for this operation'
+      });
+    }
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validationResult = localeConfigSchema.safeParse(body);
+
+    if (!validationResult.success) {
+      return createResponse(false, null, {
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid locale configuration',
+        details: validationResult.error.flatten()
+      });
+    }
+
+    const localeData = validationResult.data;
+    const localeCode = `${localeData.language_code}-${localeData.region_code}`;
+
+    // Check if locale already exists
+    const { data: existing, error: checkError } = await supabase
+      .from('locale_configurations')
+      .select('id')
+      .eq('language_code', localeData.language_code)
+      .eq('region_code', localeData.region_code)
+      .single();
+
+    if (checkError && checkError.code !== 'PGRST116') {
+      console.error('Database error checking existing locale:', checkError);
+      return createResponse(false, null, {
+        code: 'DATABASE_ERROR',
+        message: 'Failed to check existing locale'
+      });
+    }
+
+    if (existing) {
+      return createResponse(false, null, {
+        code: 'LOCALE_EXISTS',
+        message: 'Locale configuration already exists'
+      });
+    }
+
+    // Insert new locale configuration
+    const { data: newLocale, error: insertError } = await supabase
+      .from('locale_configurations')
+      .insert({
+        ...localeData,
+        created_by: user.id,
+        updated_by: user.id,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      })
+      .select()
+      .single();
+
+    if (insertError) {
+      console.error('Database error creating locale:', insertError);
+      return createResponse(false, null, {
+        code: 'DATABASE_ERROR',
+        message: 'Failed to create locale configuration',
+        details: { database_error: insertError.message }
+      });
+    }
+
+    const enrichedLocale: LocaleConfig = {
+      ...newLocale,
+      locale_code: localeCode
+    };
+
+    console.log(`Created locale configuration ${localeCode} by user ${user.id}`);
+
+    return createResponse(true, enrichedLocale);
+
+  } catch (error) {
+    console.error('POST /api/i18n/locales error:', error);
+    return createResponse(false, null, {
+      code: 'INTERNAL_ERROR',
+      message: 'An unexpected error occurred',
+      details: { error: String(error) }
+    });
+  }
+}
+
+/**
+ * PUT /api/i18n/locales
+ * 
+ * Update locale configuration (admin only)
+ */
+export async function PUT(request: NextRequest) {
+  try {
+    // Rate limiting
+    const identifier = request.headers.get('x-forwarded-for') ?? 
+                      request.headers.get('x-real-ip') ?? 
+                      request.headers.get('remote-addr') ?? 
+                      'anonymous';
+    const rateLimitResult = checkRateLimit(identifier, 10);
+    
+    if (!rateLimitResult.success) {
+      return createResponse(false, null, {
+        code: 'RATE_LIMIT_EXCEEDED',
+        message: 'Too many requests. Please try again later.'
+      });
+    }
+
+    // Initialize Supabase client and get user
+    const cookieStore = cookies();
+    const supabase = createServerComponentClient({ cookies: () => cookieStore });
+    
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    
+    if (authError || !user) {
+      return createResponse(false, null, {
+        code: 'UNAUTHORIZED',
+        message: 'Authentication required'
+      });
+    }
+
+    // Validate admin permissions
+    const hasPermissions = await validateAdminPermissions(supabase, user.id);
+    if (!hasPermissions) {
+      return createResponse(false, null, {
+        code: 'FORBIDDEN',
+        message: 'Admin permissions required for this operation'
+      });
+    }
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validationResult = updateLocaleSchema.safeParse(body);
+
+    if (!validationResult.success) {
+      return createResponse(false, null, {
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid update data',
+        details: validationResult.error.flatten()
+      });
+    }
+
+    const { id, language_code, region_code, ...updateData } = validationResult.data;
+
+    // Find locale to update
+    let query = supabase.from('locale_configurations').select('*');
+    
+    if (id) {
+      query = query.eq('id', id);
+    } else if (language_code && region_code) {
+      query = query
+        .eq('language_code', language_code)
+        .eq('region_code', region_code);
+    } else {
+      return createResponse(false, null, {
+        code: 'MISSING_IDENTIFIER',
+        message: 'Either id or language_code + region_code must be provided'
+      });
+    }
+
+    const { data: updatedLocale, error: updateError } = await query
+      .update({
+        ...updateData,
+        updated_by: user.id,
+        updated_at: new Date().toISOString()
+      })
+      .select()
+      .single();
+
+    if (updateError) {
+      if (updateError.code === 'PGRST116') {
+        return createResponse(false, null, {
+          code: 'NOT_FOUND',
+          message: 'Locale configuration not found'
+        });
+      }
+      console.error('Database error updating locale:', updateError);
+      return createResponse(false, null, {
+        code: 'DATABASE_ERROR',
+        message: 'Failed to update locale configuration',
+        details: { database_error: updateError.message }
+      });
+    }
+
+    const enrichedLocale: LocaleConfig = {
+      ...updatedLocale,
+      locale_code: `${updatedLocale.language_code}-${updatedLocale.region_code}`
+    };
+
+    console.log(`Updated locale configuration ${enrichedLocale.locale_code} by user ${user.id}`);
+
+    return createResponse(true, enrichedLocale);
+
+  } catch (error) {
+    console.error('PUT /api/i18n/locales error:', error);
+    return createResponse(false, null, {
+      code: 'INTERNAL_ERROR',
+      message: 'An unexpected error occurred',
+      details: { error: String(error) }
+    });
+  }
+}
+
+/**
+ * DELETE /api/i18n/locales
+ * 
+ * Disable locale support (admin only)
+ * Note: Soft delete by default to preserve translation data
+ */
+export async function DELETE(request: NextRequest) {
+  try {
+    // Rate limiting (stricter for delete operations)
+    const identifier = request.headers.get('x-forwarded-for') ?? 
+                      request.headers.get('x-real-ip') ?? 
+                      request.headers.get('remote-addr') ?? 
+                      'anonymous';
+    const rateLimitResult = checkRateLimit(identifier, 5);
+    
+    if (!rateLimitResult.success) {
+      return createResponse(false, null, {
+        code: 'RATE_LIMIT_EXCEEDED',
+        message: 'Too many requests. Please try again later.'
+      });
+    }
+
+    // Initialize Supabase client and get user
+    const cookieStore = cookies();
+    const supabase = createServerComponentClient({ cookies: () => cookieStore });
+    
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    
+    if (authError || !user) {
+      return createResponse(false, null, {
+        code: 'UNAUTHORIZED',
+        message: 'Authentication required'
+      });
+    }
+
+    // Validate admin permissions
+    const hasPermissions = await validateAdminPermissions(supabase, user.id);
+    if (!hasPermissions) {
+      return createResponse(false, null, {
+        code: 'FORBIDDEN',
+        message: 'Admin permissions required for this operation'
+      });
+    }
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validationResult = deleteLocaleSchema.safeParse(body);
+
+    if (!validationResult.success) {
+      return createResponse(false, null, {
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid delete request',
+        details: validationResult.error.flatten()
+      });
+    }
+
+    const { id, language_code, region_code, force_delete } = validationResult.data;
+
+    // Find locale to delete
+    let query = supabase.from('locale_configurations').select('*');
+    
+    if (id) {
+      query = query.eq('id', id);
+    } else if (language_code && region_code) {
+      query = query
+        .eq('language_code', language_code)
+        .eq('region_code', region_code);
+    }
+
+    if (force_delete) {
+      // Hard delete - permanently remove
+      const { data: deletedLocale, error: deleteError } = await query
+        .delete()
+        .select()
+        .single();
+
+      if (deleteError) {
+        if (deleteError.code === 'PGRST116') {
+          return createResponse(false, null, {
+            code: 'NOT_FOUND',
+            message: 'Locale configuration not found'
+          });
+        }
+        console.error('Database error deleting locale:', deleteError);
+        return createResponse(false, null, {
+          code: 'DATABASE_ERROR',
+          message: 'Failed to delete locale configuration'
+        });
+      }
+
+      console.log(`Hard deleted locale configuration by user ${user.id}`);
+
+      return createResponse(true, {
+        message: 'Locale configuration permanently deleted'
+      });
+
+    } else {
+      // Soft delete - set as inactive
+      const { data: updatedLocale, error: updateError } = await query
+        .update({
+          is_active: false,
+          updated_by: user.id,
+          updated_at: new Date().toISOString()
+        })
+        .select()
+        .single();
+
+      if (updateError) {
+        if (updateError.code === 'PGRST116') {
+          return createResponse(false, null, {
+            code: 'NOT_FOUND',
+            message: 'Locale configuration not found'
+          });
+        }
+        console.error('Database error deactivating locale:', updateError);
+        return createResponse(false, null, {
+          code: 'DATABASE_ERROR',
+          message: 'Failed to deactivate locale configuration'
+        });
+      }
+
+      const enrichedLocale: LocaleConfig = {
+        ...updatedLocale,
+        locale_code: `${updatedLocale.language_code}-${updatedLocale.region_code}`
+      };
+
+      console.log(`Deactivated locale configuration ${enrichedLocale.locale_code} by user ${user.id}`);
+
+      return createResponse(true, enrichedLocale);
+    }
+
+  } catch (error) {
+    console.error('DELETE /api/i18n/locales error:', error);
+    return createResponse(false, null, {
+      code: 'INTERNAL_ERROR',
+      message: 'An unexpected error occurred',
+      details: { error: String(error) }
+    });
+  }
+}
